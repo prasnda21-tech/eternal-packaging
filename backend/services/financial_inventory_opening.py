@@ -244,14 +244,49 @@ async def _require_lease(db, token: str) -> None:
 async def _release_lease(db, token: str, state: str) -> None:
     """Release only while this token is still the unexpired owner."""
     now = _utc_now().isoformat()
+    claim = str(token or "")
+    await db[COLLECTION].update_many(
+        {"write_token": claim, "write_expires_at": {"$gt": now}},
+        {"$set": {"write_expires_at": now}},
+    )
     await db[CLAIMS].update_one(
         {
             "_id": CLAIM_ID,
-            "lease_token": str(token or ""),
+            "lease_token": claim,
             "lease_expires_at": {"$gt": now},
         },
         {"$set": {"state": state, "lease_expires_at": None, "lease_token": None}},
     )
+
+
+async def _claim_opening_write(db, opening_id: str, token: str) -> None:
+    """Move write ownership onto the opening document itself.
+
+    Standalone Mongo applies this find-and-update to one document. The claim
+    document and the opening document are not one atomic transaction.
+    """
+    now = _utc_now()
+    expires = (now + timedelta(seconds=LEASE_SECONDS)).isoformat()
+    claimed = await db[COLLECTION].find_one_and_update(
+        {
+            "id": str(opening_id),
+            "$or": [
+                {"write_token": str(token)},
+                {"write_token": {"$in": [None, ""]}},
+                {"write_token": {"$exists": False}},
+                {"write_expires_at": {"$in": [None, ""]}},
+                {"write_expires_at": {"$exists": False}},
+                {"write_expires_at": {"$lte": now.isoformat()}},
+            ],
+        },
+        {"$set": {"write_token": str(token), "write_expires_at": expires}},
+        return_document=ReturnDocument.AFTER,
+    )
+    if not claimed or str(claimed.get("write_token") or "") != str(token):
+        raise OpeningBlocked(
+            "OPENING_LEASE_LOST",
+            "Lease opening tidak lagi sah. Penulisan dihentikan.",
+        )
 
 
 def _line_fingerprint(lines: List[dict]) -> str:
@@ -1316,6 +1351,33 @@ async def _opening_is_consumed(db, opening: dict) -> bool:
     return found is not None
 
 
+async def opening_consumption_lock_keys(db, journal: dict) -> List[str]:
+    """Item keys whose COGS lock must cover a reversal of this journal."""
+    journal_id = str((journal or {}).get("id") or "")
+    if not journal_id:
+        return []
+    source_type = str(journal.get("source_type") or "")
+    source_id = str(journal.get("source_id") or "")
+    clauses = [{"posted_journal_id": journal_id}]
+    if source_type == SOURCE_TYPE and source_id:
+        clauses.append({"id": source_id})
+    if source_type == SOURCE_OPENING_BALANCE and source_id:
+        clauses.append({
+            "journal_origin": "existing_opening_voucher",
+            "existing_opening_voucher_id": source_id,
+        })
+    openings = await db[COLLECTION].find(
+        {"status": STATUS_POSTED, "$or": clauses},
+        {"_id": 0},
+    ).to_list(20)
+    keys: List[str] = []
+    for opening in openings:
+        for key in _opening_item_keys(opening):
+            if key not in keys:
+                keys.append(key)
+    return keys
+
+
 async def guard_consumed_opening_journal(db, journal: dict) -> None:
     """Block a direct journal reversal after COGS has consumed the opening.
 
@@ -1529,11 +1591,30 @@ async def financial_display_by_item(db) -> Dict[str, dict]:
     return by_item
 
 
-async def _mark(db, opening_id: str, fields: dict) -> None:
-    await db[COLLECTION].update_one({"id": opening_id}, {"$set": fields})
+async def _mark(db, opening_id: str, fields: dict, *, token: Optional[str] = None) -> None:
+    """Write opening status or basis.
+
+    With a token, the filter is the fence: one document update matches only
+    the unexpired write token. A read of the claim beforehand is not the
+    guard. Standalone Mongo does not wrap this update and a journal insert
+    in one transaction; the primary-journal unique index stops a second
+    journal for the same opening.
+    """
+    query: Dict[str, Any] = {"id": str(opening_id)}
+    if token is not None:
+        query["write_token"] = str(token)
+        query["write_expires_at"] = {"$gt": _utc_now().isoformat()}
+        if fields.get("status") == STATUS_NEEDS_RECOVERY:
+            query["status"] = {"$nin": [STATUS_POSTED, STATUS_REVERSED]}
+    result = await db[COLLECTION].update_one(query, {"$set": fields})
+    if token is not None and int(getattr(result, "matched_count", 0) or 0) != 1:
+        raise OpeningBlocked(
+            "OPENING_LEASE_LOST",
+            "Lease opening tidak lagi sah. Penulisan dihentikan.",
+        )
 
 
-async def _finish_posted(db, doc: dict, journal: dict, *, user: Optional[dict]) -> dict:
+async def _finish_posted(db, doc: dict, journal: dict, *, user: Optional[dict], token: str) -> dict:
     candidate = {**doc, "status": STATUS_POSTED, "posted_journal_id": journal.get("id")}
     problem = await _opening_journal_problem(db, candidate)
     if problem:
@@ -1547,7 +1628,7 @@ async def _finish_posted(db, doc: dict, journal: dict, *, user: Optional[dict]) 
         "blocker_code": None,
         "blocker_message": None,
         "updated_at": now_iso(),
-    })
+    }, token=token)
     saved = await get_financial_opening(db, doc["id"])
     await record_accounting_event(
         db,
@@ -1561,7 +1642,7 @@ async def _finish_posted(db, doc: dict, journal: dict, *, user: Optional[dict]) 
     return saved
 
 
-async def _write_opening_journal(db, doc: dict, user: Optional[dict]) -> dict:
+async def _write_opening_journal(db, doc: dict, user: Optional[dict], token: str) -> dict:
     """Post or reuse the journal described by the frozen opening document."""
     source_id = doc["id"]
     if doc.get("journal_origin") == "existing_opening_voucher":
@@ -1575,13 +1656,13 @@ async def _write_opening_journal(db, doc: dict, user: Optional[dict]) -> dict:
                 "blocker_code": problem["code"],
                 "blocker_message": problem["message"],
                 "updated_at": now_iso(),
-            })
+            }, token=token)
             raise OpeningBlocked(str(problem["code"]), str(problem["message"]), extra=problem)
         await _mark(db, source_id, {
             "posted_journal_id": journal["id"],
             "journal_origin": "existing_opening_voucher",
             "updated_at": now_iso(),
-        })
+        }, token=token)
         return journal
     journal = await find_primary_journal_for_source(db, SOURCE_TYPE, source_id)
     if journal and await _journal_has_reversal(db, journal):
@@ -1606,6 +1687,7 @@ async def _write_opening_journal(db, doc: dict, user: Optional[dict]) -> dict:
         {"account_id": doc.get("offset_account_id"), "debit": 0, "credit": money_round(amount), "description": description},
     ]
     try:
+        await _mark(db, source_id, {"updated_at": now_iso()}, token=token)
         journal = await post_balanced_journal(
             db,
             date=str(doc.get("effective_date") or ""),
@@ -1621,7 +1703,7 @@ async def _write_opening_journal(db, doc: dict, user: Optional[dict]) -> dict:
             "blocker_code": "PERIOD_CLOSED",
             "blocker_message": str(exc),
             "updated_at": now_iso(),
-        })
+        }, token=token)
         raise OpeningBlocked("PERIOD_CLOSED", str(exc)) from exc
     if await _journal_has_reversal(db, journal):
         raise OpeningBlocked(
@@ -1632,7 +1714,7 @@ async def _write_opening_journal(db, doc: dict, user: Optional[dict]) -> dict:
         "posted_journal_id": journal.get("id"),
         "journal_origin": "new_journal",
         "updated_at": now_iso(),
-    })
+    }, token=token)
     return journal
 
 
@@ -1757,6 +1839,8 @@ async def post_financial_opening(db, payload: dict, user: Optional[dict] = None)
                 "excluded_receipt_ids": excluded,
                 "ambiguous_receipt_ids": ambiguous,
                 "stock_snapshots": coverage["snapshots"],
+                "write_token": token,
+                "write_expires_at": str(lease.get("lease_expires_at") or ""),
                 "created_at": stamp,
                 "created_by": actor,
                 "updated_at": stamp,
@@ -1776,39 +1860,41 @@ async def post_financial_opening(db, payload: dict, user: Optional[dict] = None)
             doc = existing
         await _after_step("lines")
         await _require_lease(db, token)
-        journal = await _write_opening_journal(db, doc, user)
+        await _claim_opening_write(db, doc["id"], token)
+        journal = await _write_opening_journal(db, doc, user, token)
         await _after_step("journal")
         await _require_lease(db, token)
         doc = await get_financial_opening(db, doc["id"])
-        saved = await _finish_posted(db, doc, journal, user=user)
+        saved = await _finish_posted(db, doc, journal, user=user, token=token)
         return saved
     except OpeningBlocked:
         raise
     except Exception as exc:
-        held = await db[CLAIMS].find_one({"_id": CLAIM_ID}, {"_id": 0})
-        if (
-            not held
-            or str(held.get("lease_token") or "") != token
-            or _lease_is_expired(held.get("lease_expires_at"))
-        ):
+        existing = await db[COLLECTION].find_one({"client_request_id": request_id}, {"_id": 0, "id": 1, "status": 1})
+        if existing and existing.get("status") in {STATUS_POSTED, STATUS_REVERSED}:
             raise OpeningBlocked(
                 "OPENING_LEASE_LOST",
                 "Lease opening tidak lagi sah. Penulisan dihentikan.",
             ) from exc
-        existing = await db[COLLECTION].find_one({"client_request_id": request_id}, {"_id": 0, "id": 1, "status": 1})
-        if existing and existing.get("status") != STATUS_POSTED:
-            await _mark(db, existing["id"], {
-                "status": STATUS_NEEDS_RECOVERY,
-                "blocker_code": "OPENING_NEEDS_RECOVERY",
-                "blocker_message": str(exc),
-                "updated_at": now_iso(),
-            })
+        if existing:
+            try:
+                await _mark(db, existing["id"], {
+                    "status": STATUS_NEEDS_RECOVERY,
+                    "blocker_code": "OPENING_NEEDS_RECOVERY",
+                    "blocker_message": str(exc),
+                    "updated_at": now_iso(),
+                }, token=token)
+            except OpeningBlocked:
+                raise OpeningBlocked(
+                    "OPENING_LEASE_LOST",
+                    "Lease opening tidak lagi sah. Penulisan dihentikan.",
+                ) from exc
         raise OpeningBlocked("OPENING_NEEDS_RECOVERY", "Opening finansial belum selesai dan tidak berstatus sukses.") from exc
     finally:
         await _release_lease(db, token, "IDLE")
 
 
-async def _complete_interrupted_reversal(db, doc: dict, user: Optional[dict]) -> dict:
+async def _complete_interrupted_reversal(db, doc: dict, user: Optional[dict], token: Optional[str] = None) -> dict:
     if await _opening_is_consumed(db, doc):
         raise OpeningBlocked(
             "OPENING_REVERSED_WHILE_CONSUMED",
@@ -1819,8 +1905,21 @@ async def _complete_interrupted_reversal(db, doc: dict, user: Optional[dict]) ->
         "reversed_at": doc.get("reversed_at") or now_iso(),
         "reversed_by": doc.get("reversed_by") or actor_snapshot(user),
         "updated_at": now_iso(),
-    })
+    }, token=token)
     return await get_financial_opening(db, doc["id"])
+
+
+async def _owned_recovery(db, doc: dict, user: Optional[dict], action):
+    """Recovery writes use the same opening write token as post."""
+    request_id = str(doc.get("client_request_id") or "")
+    lease = await _acquire_lease(db, request_id)
+    token = str(lease.get("lease_token") or "")
+    try:
+        await _claim_opening_write(db, doc["id"], token)
+        fresh = await get_financial_opening(db, doc["id"])
+        return await action(fresh or doc, token)
+    finally:
+        await _release_lease(db, token, "IDLE")
 
 
 async def recover_financial_opening(db, *, client_request_id: str, user: Optional[dict] = None) -> dict:
@@ -1831,7 +1930,12 @@ async def recover_financial_opening(db, *, client_request_id: str, user: Optiona
     if doc.get("status") == STATUS_POSTED:
         posted_journal = await db.journal_entries.find_one({"id": doc.get("posted_journal_id")}, {"_id": 0})
         if posted_journal and await _journal_has_reversal(db, posted_journal):
-            return await _complete_interrupted_reversal(db, doc, user)
+            return await _owned_recovery(
+                db,
+                doc,
+                user,
+                lambda fresh, token: _complete_interrupted_reversal(db, fresh, user, token),
+            )
         problem = await _opening_journal_problem(db, doc)
         if problem:
             raise OpeningBlocked(str(problem["code"]), str(problem["message"]), extra=problem)
@@ -1851,7 +1955,12 @@ async def recover_financial_opening(db, *, client_request_id: str, user: Optiona
         linked = await db.journal_entries.find_one({"id": doc.get("posted_journal_id")}, {"_id": 0})
         journal = linked or journal
     if journal and await _journal_has_reversal(db, journal):
-        return await _complete_interrupted_reversal(db, doc, user)
+        return await _owned_recovery(
+            db,
+            doc,
+            user,
+            lambda fresh, token: _complete_interrupted_reversal(db, fresh, user, token),
+        )
     if not journal:
         return await post_financial_opening(
             db,
@@ -1863,19 +1972,29 @@ async def recover_financial_opening(db, *, client_request_id: str, user: Optiona
             },
             user,
         )
-    candidate = {**doc, "status": STATUS_POSTED, "posted_journal_id": journal.get("id")}
-    problem = await _opening_journal_problem(db, candidate)
-    if problem:
-        raise OpeningBlocked(str(problem["code"]), str(problem["message"]), extra=problem)
-    saved = await _finish_posted(db, doc, journal, user=user)
-    journals = await db.journal_entries.count_documents({
-        "source_type": SOURCE_TYPE,
-        "source_id": doc["id"],
-        "reversal_of": None,
-    })
-    if doc.get("journal_origin") != "existing_opening_voucher" and journals != 1:
-        raise OpeningBlocked("OPENING_JOURNAL_DUPLICATE", "Recovery menghasilkan jurnal ganda.")
-    return saved
+
+    async def finish(fresh: dict, token: str) -> dict:
+        current = await find_primary_journal_for_source(db, SOURCE_TYPE, fresh["id"])
+        if fresh.get("journal_origin") == "existing_opening_voucher":
+            linked = await db.journal_entries.find_one({"id": fresh.get("posted_journal_id")}, {"_id": 0})
+            current = linked or current
+        if not current:
+            raise OpeningBlocked("OPENING_LEASE_LOST", "Jurnal opening tidak lagi ada untuk recovery ini.")
+        candidate = {**fresh, "status": STATUS_POSTED, "posted_journal_id": current.get("id")}
+        problem = await _opening_journal_problem(db, candidate)
+        if problem:
+            raise OpeningBlocked(str(problem["code"]), str(problem["message"]), extra=problem)
+        saved = await _finish_posted(db, fresh, current, user=user, token=token)
+        journals = await db.journal_entries.count_documents({
+            "source_type": SOURCE_TYPE,
+            "source_id": fresh["id"],
+            "reversal_of": None,
+        })
+        if fresh.get("journal_origin") != "existing_opening_voucher" and journals != 1:
+            raise OpeningBlocked("OPENING_JOURNAL_DUPLICATE", "Recovery menghasilkan jurnal ganda.")
+        return saved
+
+    return await _owned_recovery(db, doc, user, finish)
 
 
 async def reverse_financial_opening(db, opening_id: str, user: Optional[dict], reason: str) -> dict:
@@ -1921,6 +2040,7 @@ async def reverse_financial_opening(db, opening_id: str, user: Optional[dict], r
                 source_id=f"{doc['id']}:reversal",
                 posted_by=user,
                 description=text,
+                held_item_locks=locks,
             )
         except PeriodLockedError as exc:
             raise OpeningBlocked("PERIOD_CLOSED", str(exc)) from exc

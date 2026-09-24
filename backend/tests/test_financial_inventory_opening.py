@@ -2419,3 +2419,192 @@ async def test_books_sales_expense_and_reports_match_journals():
     assert sales["total_amount"] == 30000.0
     assert sales["historical_as_of"] is False
     assert accounts["cogs"]["id"]
+
+
+async def _opening_owner_snapshot(opening_id: str) -> dict:
+    doc = await server.db.financial_inventory_openings.find_one({"id": opening_id}, {"_id": 0})
+    journal_id = str((doc or {}).get("posted_journal_id") or "")
+    journal = await server.db[JOURNAL_ENTRIES].find_one({"id": journal_id}, {"_id": 0}) if journal_id else None
+    lines = []
+    if journal:
+        lines = await server.db[JOURNAL_LINES].find({"journal_id": journal["id"]}, {"_id": 0}).to_list(10)
+    return {
+        "status": (doc or {}).get("status"),
+        "posted_journal_id": (doc or {}).get("posted_journal_id"),
+        "journal_origin": (doc or {}).get("journal_origin"),
+        "inventory_account_id": (doc or {}).get("inventory_account_id"),
+        "offset_account_id": (doc or {}).get("offset_account_id"),
+        "effective_date": (doc or {}).get("effective_date"),
+        "total": (doc or {}).get("total"),
+        "posted_at": (doc or {}).get("posted_at"),
+        "journal_status": (journal or {}).get("status"),
+        "journal_date": (journal or {}).get("date"),
+        "journal_count": await server.db[JOURNAL_ENTRIES].count_documents({
+            "source_type": SOURCE_TYPE,
+            "source_id": opening_id,
+            "reversal_of": None,
+        }),
+        "line_accounts": sorted(str(row.get("account_id") or "") for row in lines),
+    }
+
+
+def _pause_before_posted_mark(fio):
+    """Stop inside the status write, after the lease read has already returned."""
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    state = {"used": False}
+    original = fio._mark
+
+    async def wrapped(db, opening_id, fields, *args, **kwargs):
+        if fields.get("status") == "POSTED" and not state["used"]:
+            state["used"] = True
+            entered.set()
+            await release.wait()
+        return await original(db, opening_id, fields, *args, **kwargs)
+
+    fio._mark = wrapped
+    return entered, release, original
+
+
+async def test_stale_worker_cannot_overwrite_owner_after_lease_check():
+    from datetime import datetime, timedelta, timezone
+    import services.financial_inventory_opening as fio
+
+    await _configure()
+    mid = await _master()
+    clock = {"now": datetime(2026, 10, 1, 3, 0, tzinfo=timezone.utc)}
+    original_now = fio._utc_now
+    fio._utc_now = lambda: clock["now"]
+    entered, release, original_mark = _pause_before_posted_mark(fio)
+    task = asyncio.create_task(
+        post_financial_opening(server.db, _opening_payload(mid, 100, 1000, "lease-barrier"), USER)
+    )
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=10)
+        clock["now"] = clock["now"] + timedelta(seconds=fio.LEASE_SECONDS + 5)
+        saved = await post_financial_opening(
+            server.db, _opening_payload(mid, 100, 1000, "lease-barrier"), USER,
+        )
+        assert saved["status"] == "POSTED"
+        owner = await _opening_owner_snapshot(saved["id"])
+        release.set()
+        try:
+            await task
+        except OpeningBlocked as exc:
+            assert exc.code == "OPENING_LEASE_LOST"
+        assert await _opening_owner_snapshot(saved["id"]) == owner
+    finally:
+        release.set()
+        fio._mark = original_mark
+        fio._utc_now = original_now
+        if not task.done():
+            task.cancel()
+
+
+async def test_recovery_loses_the_write_when_its_lease_expires():
+    from datetime import datetime, timedelta, timezone
+    import services.financial_inventory_opening as fio
+
+    await _configure()
+    mid = await _master()
+    original_step = fio._after_step
+
+    async def crash(step):
+        if step == "journal":
+            raise RuntimeError("crash after journal")
+
+    fio._after_step = crash
+    try:
+        with pytest.raises(OpeningBlocked):
+            await post_financial_opening(server.db, _opening_payload(mid, 40, 1000, "recover-barrier"), USER)
+    finally:
+        fio._after_step = original_step
+    stored = await server.db.financial_inventory_openings.find_one(
+        {"client_request_id": "recover-barrier"}, {"_id": 0},
+    )
+    assert stored["status"] != "POSTED"
+    assert stored.get("posted_journal_id")
+    clock = {"now": datetime(2026, 10, 1, 4, 0, tzinfo=timezone.utc)}
+    original_now = fio._utc_now
+    fio._utc_now = lambda: clock["now"]
+    entered, release, original_mark = _pause_before_posted_mark(fio)
+    task = asyncio.create_task(
+        recover_financial_opening(server.db, client_request_id="recover-barrier", user=USER)
+    )
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=10)
+        clock["now"] = clock["now"] + timedelta(seconds=fio.LEASE_SECONDS + 5)
+        saved = await recover_financial_opening(server.db, client_request_id="recover-barrier", user=USER)
+        assert saved["status"] == "POSTED"
+        owner = await _opening_owner_snapshot(saved["id"])
+        release.set()
+        try:
+            await task
+        except OpeningBlocked as exc:
+            assert exc.code == "OPENING_LEASE_LOST"
+        assert await _opening_owner_snapshot(saved["id"]) == owner
+    finally:
+        release.set()
+        fio._mark = original_mark
+        fio._utc_now = original_now
+        if not task.done():
+            task.cancel()
+
+
+async def test_direct_reverse_cannot_commit_after_cogs_posts_in_the_gap():
+    from services.journal_core import reverse_journal
+    import services.financial_inventory_opening as fio
+
+    await _configure()
+    mid = await _master()
+    opening = await post_financial_opening(server.db, _opening_payload(mid, 100, 1000, "reverse-gap"), USER)
+    movement = _pengiriman(mid, 10)
+    await server.db.stock_movements.insert_one(movement)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    state = {"used": False}
+    original = fio.guard_consumed_opening_journal
+
+    async def pause_after_check(db, journal):
+        await original(db, journal)
+        if not state["used"]:
+            state["used"] = True
+            entered.set()
+            await release.wait()
+
+    fio.guard_consumed_opening_journal = pause_after_check
+    task = asyncio.create_task(reverse_journal(
+        server.db,
+        opening["posted_journal_id"],
+        source_type="financial_inventory_opening_reversal",
+        source_id=f"{opening['id']}:gap",
+        posted_by=USER,
+        description="reversal saat HPP menyusul",
+    ))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=10)
+        try:
+            await post_inventory_issue_accounting(server.db, movement["id"], USER)
+        except HTTPException:
+            pass
+        release.set()
+        try:
+            await task
+        except Exception:
+            pass
+    finally:
+        release.set()
+        fio.guard_consumed_opening_journal = original
+        if not task.done():
+            task.cancel()
+    journal = await server.db[JOURNAL_ENTRIES].find_one({"id": opening["posted_journal_id"]}, {"_id": 0})
+    prefix = f"opening:{opening['id']}:"
+    consumed = await server.db.inventory_issue_accounting.find_one(
+        {"$or": [
+            {"accounting_posting_basis.consumed_acquisitions.acquisition_key": {"$regex": f"^{prefix}"}},
+            {"accounting_posting_basis.pool_acquisition_keys": {"$regex": f"^{prefix}"}},
+        ]},
+        {"_id": 1},
+    )
+    reversed_source = str((journal or {}).get("status") or "") == "reversed"
+    assert not (reversed_source and consumed)

@@ -341,8 +341,15 @@ async def reverse_journal(
     posted_by: Optional[dict] = None,
     description: Optional[str] = None,
     writer_claim_token: Optional[str] = None,
+    held_item_locks: Optional[list] = None,
 ) -> dict:
-    """Create exact opposite journal; mark original reversed. Only once."""
+    """Create exact opposite journal; mark original reversed. Only once.
+
+    An opening journal keeps the same item locks COGS uses from the
+    consumption check through the status update. Callers that already hold
+    those locks pass them in so this function renews instead of taking a
+    second holder.
+    """
     oid = str(original_journal_id or "").strip()
     if not oid:
         raise JournalValidationError("Jurnal asli tidak valid")
@@ -364,53 +371,94 @@ async def reverse_journal(
             raise JournalValidationError("Hanya jurnal posted yang dapat dibatalkan")
         if original.get("reversal_of"):
             raise JournalValidationError("Tidak dapat membatalkan jurnal reversal")
-        from services.financial_inventory_opening import guard_consumed_opening_journal
-        await guard_consumed_opening_journal(db, original)
-
-        existing_rev = await db[JOURNAL_ENTRIES].find_one({"reversal_of": oid}, {"_id": 0})
-        if existing_rev:
-            raise JournalConflictError("Reversal sudah ada")
-
-        orig_lines = await db[JOURNAL_LINES].find(
-            {"journal_id": oid}, {"_id": 0}
-        ).to_list(100)
-        if not orig_lines:
-            raise JournalValidationError("Jurnal asli tidak memiliki baris")
-
-        reverse_lines = [
-            {
-                "account_id": ln["account_id"],
-                "debit": ln.get("credit") or 0,
-                "credit": ln.get("debit") or 0,
-                "description": ln.get("description"),
-            }
-            for ln in orig_lines
-        ]
-        desc = description or f"Reversal {original.get('number') or oid}"
-        rev_date = original.get("date") or ""
-        try:
-            async with _period_writer_guard(db, rev_date, writer_claim_token) as token:
-                rev_doc = await _insert_journal_atomic(
-                    db,
-                    date=rev_date,
-                    source_type=source_type or SOURCE_REVERSAL,
-                    source_id=source_id,
-                    description=desc,
-                    lines=reverse_lines,
-                    posted_by=posted_by,
-                    reversal_of=oid,
-                    status=STATUS_POSTED,
-                    writer_claim_token=token,
-                )
-        except PeriodValidationError as exc:
-            raise JournalValidationError(str(exc)) from exc
-        except PeriodLockedError:
-            raise
-        except DuplicateKeyError as exc:
-            raise JournalConflictError("Reversal sudah ada") from exc
-
-        await db[JOURNAL_ENTRIES].update_one(
-            {"id": oid, "status": STATUS_POSTED},
-            {"$set": {"status": STATUS_REVERSED}},
+        from services.financial_inventory_opening import (
+            guard_consumed_opening_journal,
+            opening_consumption_lock_keys,
         )
-        return rev_doc
+        from services.inventory_financial_locks import (
+            acquire_item_locks,
+            release_item_locks,
+            renew_item_locks,
+        )
+
+        keys = await opening_consumption_lock_keys(db, original)
+        owned_locks = None
+        if keys:
+            if held_item_locks:
+                renewed = await renew_item_locks(db, held_item_locks)
+                if not renewed:
+                    raise JournalConflictError("Kunci item opening tidak lagi sah.")
+                held_keys = {
+                    str(row.get("financial_inventory_item_key") or "")
+                    for row in renewed
+                }
+                if not set(keys).issubset(held_keys):
+                    raise JournalConflictError("Kunci item opening tidak lagi sah.")
+            else:
+                from services.inventory_financial_locks import ensure_indexes as ensure_lock_indexes
+
+                await ensure_lock_indexes(db)
+                owned_locks = await acquire_item_locks(db, keys, f"journal-reverse:{oid}")
+                if owned_locks is None:
+                    raise JournalConflictError(
+                        "Item persediaan sedang dikunci oleh proses accounting lain."
+                    )
+        try:
+            await guard_consumed_opening_journal(db, original)
+            if keys and held_item_locks:
+                if not await renew_item_locks(db, held_item_locks):
+                    raise JournalConflictError("Kunci item opening tidak lagi sah.")
+            elif owned_locks and not await renew_item_locks(db, owned_locks):
+                raise JournalConflictError("Kunci item opening tidak lagi sah.")
+            await guard_consumed_opening_journal(db, original)
+
+            existing_rev = await db[JOURNAL_ENTRIES].find_one({"reversal_of": oid}, {"_id": 0})
+            if existing_rev:
+                raise JournalConflictError("Reversal sudah ada")
+
+            orig_lines = await db[JOURNAL_LINES].find(
+                {"journal_id": oid}, {"_id": 0}
+            ).to_list(100)
+            if not orig_lines:
+                raise JournalValidationError("Jurnal asli tidak memiliki baris")
+
+            reverse_lines = [
+                {
+                    "account_id": ln["account_id"],
+                    "debit": ln.get("credit") or 0,
+                    "credit": ln.get("debit") or 0,
+                    "description": ln.get("description"),
+                }
+                for ln in orig_lines
+            ]
+            desc = description or f"Reversal {original.get('number') or oid}"
+            rev_date = original.get("date") or ""
+            try:
+                async with _period_writer_guard(db, rev_date, writer_claim_token) as token:
+                    rev_doc = await _insert_journal_atomic(
+                        db,
+                        date=rev_date,
+                        source_type=source_type or SOURCE_REVERSAL,
+                        source_id=source_id,
+                        description=desc,
+                        lines=reverse_lines,
+                        posted_by=posted_by,
+                        reversal_of=oid,
+                        status=STATUS_POSTED,
+                        writer_claim_token=token,
+                    )
+            except PeriodValidationError as exc:
+                raise JournalValidationError(str(exc)) from exc
+            except PeriodLockedError:
+                raise
+            except DuplicateKeyError as exc:
+                raise JournalConflictError("Reversal sudah ada") from exc
+
+            await db[JOURNAL_ENTRIES].update_one(
+                {"id": oid, "status": STATUS_POSTED},
+                {"$set": {"status": STATUS_REVERSED}},
+            )
+            return rev_doc
+        finally:
+            if owned_locks:
+                await release_item_locks(db, owned_locks)

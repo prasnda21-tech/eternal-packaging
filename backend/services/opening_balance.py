@@ -620,6 +620,7 @@ async def reverse_voucher(db, voucher_id: str, *, user: Optional[dict] = None) -
                     source_id=doc["id"],
                     posted_by=user,
                     description=f"Reversal {doc.get('number')}",
+                    held_item_locks=locks,
                 )
             except KeyError:
                 raise KeyError("missing") from None
