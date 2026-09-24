@@ -3591,6 +3591,47 @@ html:has(.prod-schedule-page) #root{
 .stock-neg td{background:#fdf3f1}
 .stock-neg-val{color:var(--red);font-weight:700}
 .prod-table thead th .prod-th-label{color:inherit}
+.inventory-value-summary{display:grid;grid-template-columns:2fr repeat(3,minmax(0,1fr));border:1px solid var(--line);background:#fff;margin-bottom:12px}
+.inventory-value-summary-card{display:flex;flex-direction:column;gap:5px;padding:12px 14px;border-right:1px solid var(--line);min-width:0}
+.inventory-value-summary-card:last-child{border-right:0}
+.inventory-value-summary-card span{font:10px 'IBM Plex Mono';letter-spacing:.09em;text-transform:uppercase;color:var(--soft)}
+.inventory-value-summary-card strong{font:18px 'IBM Plex Mono';font-variant-numeric:tabular-nums;color:var(--ink)}
+.inventory-value-summary-card.is-total strong{font-size:21px;color:var(--green)}
+.inventory-value-summary-card.is-problem strong{color:var(--red)}
+.inventory-value-status{display:inline-flex;align-items:center;white-space:nowrap;padding:3px 7px;border:1px solid var(--line);border-radius:999px;font:600 10px 'IBM Plex Mono';letter-spacing:.03em}
+.inventory-value-status.is-ok{color:#17613b;background:#eef8f2;border-color:#b8dbc7}
+.inventory-value-status.is-missing_cost,.inventory-value-status.is-needs_cost{color:#7a5a13;background:#fff8e5;border-color:#e8d59d}
+.inventory-value-status.is-needs_uom,.inventory-value-status.is-qty_mismatch,.inventory-value-status.is-failed{color:#9b2f20;background:#fdf0ed;border-color:#e7b9b1}
+.inventory-opening-active{padding:6px 9px;border:1px solid #b8dbc7;background:#eef8f2;color:#17613b;font-size:11px}
+.inventory-opening-backdrop{position:fixed;inset:0;z-index:100;background:rgba(15,23,42,.48);display:flex;align-items:center;justify-content:center;padding:18px}
+.inventory-opening-dialog{width:min(1180px,96vw);max-height:92vh;overflow:hidden;background:#fff;border:1px solid var(--line);box-shadow:0 20px 60px rgba(15,23,42,.25);display:flex;flex-direction:column;gap:12px;padding:16px}
+.inventory-opening-head{display:flex;justify-content:space-between;gap:16px;align-items:flex-start}
+.inventory-opening-head h2{margin:2px 0 6px;font-size:20px}
+.inventory-opening-head p{max-width:850px;margin:0}
+.inventory-opening-summary{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));border:1px solid var(--line)}
+.inventory-opening-summary>div{padding:9px 11px;border-right:1px solid var(--line);display:flex;flex-direction:column;gap:4px}
+.inventory-opening-summary>div:last-child{border-right:0}
+.inventory-opening-summary span{font:9px 'IBM Plex Mono';letter-spacing:.08em;text-transform:uppercase;color:var(--soft)}
+.inventory-opening-summary strong{font:16px 'IBM Plex Mono';font-variant-numeric:tabular-nums}
+.inventory-opening-table-wrap{overflow:auto;min-height:180px;border:1px solid var(--line)}
+.inventory-opening-table-wrap .prod-table{margin:0;min-width:980px}
+.inventory-opening-status{display:block;font:600 10px 'IBM Plex Mono';white-space:nowrap}
+.inventory-opening-status.is-siap{color:#17613b}
+.inventory-opening-status:not(.is-siap){color:#9b2f20}
+.inventory-opening-table-wrap td small{display:block;margin-top:3px;max-width:220px}
+.inventory-opening-actions{display:flex;justify-content:flex-end;gap:8px}
+@media (max-width:900px){
+  .inventory-value-summary{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .inventory-value-summary-card:nth-child(2){border-right:0}
+  .inventory-value-summary-card:nth-child(-n+2){border-bottom:1px solid var(--line)}
+  .inventory-opening-summary{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .inventory-opening-summary>div{border-bottom:1px solid var(--line)}
+}
+@media (max-width:560px){
+  .inventory-value-summary{grid-template-columns:1fr}
+  .inventory-value-summary-card{border-right:0;border-bottom:1px solid var(--line)}
+  .inventory-value-summary-card:last-child{border-bottom:0}
+}
 
 /* -------- Status Pengiriman Barang (Accurate-like monitoring grid) -------- */
 html:has(.ship-status-page),
