@@ -112,6 +112,7 @@ export default function MasterItemSearchSelect({
   const inputRef = useRef(null);
   const reqSeq = useRef(0);
   const [listBox, setListBox] = useState(null);
+  const [overModal, setOverModal] = useState(false);
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [items, setItems] = useState([]);
@@ -175,6 +176,8 @@ export default function MasterItemSearchSelect({
       setListBox(null);
       return;
     }
+    const nextOverModal = Boolean(anchor.closest?.(".modal"));
+    setOverModal((prev) => (prev === nextOverModal ? prev : nextOverModal));
     const rect = anchor.getBoundingClientRect();
     const measured = listRef.current ? listRef.current.scrollHeight : 0;
     const next = placeMasterItemListBox(rect, {
@@ -200,6 +203,7 @@ export default function MasterItemSearchSelect({
   useLayoutEffect(() => {
     if (!open || disabled || readOnly) {
       setListBox(null);
+      setOverModal(false);
       return undefined;
     }
     placeList();
@@ -321,7 +325,7 @@ export default function MasterItemSearchSelect({
         <ul
           id={listId}
           ref={listRef}
-          className="mis-list"
+          className={`mis-list${overModal ? " mis-list-over-modal" : ""}`}
           role="listbox"
           data-testid={`${testId}-list`}
           data-view={view}
