@@ -63,6 +63,11 @@
   box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
 }
 
+/* Ubah Item PO (and any .modal) paints at z-index 80. This portal stays at 65 on the page. */
+.mis-list.mis-list-over-modal {
+  z-index: 90;
+}
+
 .mis-status {
   padding: 10px 12px;
   color: #64748b;
