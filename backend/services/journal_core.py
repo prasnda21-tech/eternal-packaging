@@ -364,6 +364,8 @@ async def reverse_journal(
             raise JournalValidationError("Hanya jurnal posted yang dapat dibatalkan")
         if original.get("reversal_of"):
             raise JournalValidationError("Tidak dapat membatalkan jurnal reversal")
+        from services.financial_inventory_opening import guard_consumed_opening_journal
+        await guard_consumed_opening_journal(db, original)
 
         existing_rev = await db[JOURNAL_ENTRIES].find_one({"reversal_of": oid}, {"_id": 0})
         if existing_rev:

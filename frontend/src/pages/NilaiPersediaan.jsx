@@ -47,7 +47,7 @@ function moneyOrGap(value) {
 }
 
 function openingPayload(form, requestId) {
-  return {
+  const payload = {
     client_request_id: requestId,
     effective_date: form.effective_date,
     lines: [{
@@ -58,6 +58,8 @@ function openingPayload(form, requestId) {
       source: "APPROVED_OPENING",
     }],
   };
+  if (form.snapshot_id) payload.snapshot_id = form.snapshot_id;
+  return payload;
 }
 
 export default function NilaiPersediaan() {
@@ -65,13 +67,17 @@ export default function NilaiPersediaan() {
   const canExport = hasPerm("inventory_valuation.export");
   const canViewOpening = hasPerm("inventory_valuation.view");
   const canPostOpening = hasPerm("inventory_valuation.manage_opening");
+  const canViewIssues = hasPerm("inventory_issue.view");
+  const canPostIssues = hasPerm("inventory_issue.post");
   const [openingForm, setOpeningForm] = useState({
     effective_date: "",
     master_item_id: "",
     qty: "",
     unit_cost: "",
     base_uom: "PCS",
+    snapshot_id: "",
   });
+  const [formDirty, setFormDirty] = useState(false);
   const [requestId, setRequestId] = useState("");
   const [openingNotice, setOpeningNotice] = useState("");
   const [postingOpening, setPostingOpening] = useState(false);
@@ -80,6 +86,15 @@ export default function NilaiPersediaan() {
   const [book, setBook] = useState(null);
   const [openings, setOpenings] = useState([]);
   const [recovering, setRecovering] = useState(false);
+  const [capturing, setCapturing] = useState(false);
+  const [issues, setIssues] = useState([]);
+  const [postingIssueId, setPostingIssueId] = useState("");
+  const [issueNotice, setIssueNotice] = useState("");
+  const [reportStart, setReportStart] = useState("2026-10-01");
+  const [reportEnd, setReportEnd] = useState("2026-10-31");
+  const [purchaseReport, setPurchaseReport] = useState(null);
+  const [salesReport, setSalesReport] = useState(null);
+  const [loadingReports, setLoadingReports] = useState(false);
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -98,6 +113,7 @@ export default function NilaiPersediaan() {
   const [pageSize, setPageSize] = useState(50);
   const [exporting, setExporting] = useState(false);
   const loadSeq = useRef(0);
+  const actionGuard = useRef(false);
 
   useEffect(() => { setPage(1); }, [q]);
 
@@ -150,6 +166,28 @@ export default function NilaiPersediaan() {
 
   useEffect(() => { loadBook(); }, [loadBook]);
 
+  useEffect(() => {
+    if (!formDirty) return undefined;
+    const onBeforeUnload = (event) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [formDirty]);
+
+  const loadIssues = useCallback(async () => {
+    if (!canViewIssues) return;
+    try {
+      const response = await api.inventoryIssues();
+      setIssues(response.items || []);
+    } catch (exception) {
+      setIssueNotice(detailMessage(exception, "Antrean HPP gagal dimuat"));
+    }
+  }, [canViewIssues]);
+
+  useEffect(() => { loadIssues(); }, [loadIssues]);
+
   const cycleSort = (column) => {
     if (sortBy === column) setSortDir((direction) => (direction === "asc" ? "desc" : "asc"));
     else {
@@ -187,6 +225,11 @@ export default function NilaiPersediaan() {
     }
   };
 
+  const updateOpening = (patch) => {
+    setFormDirty(true);
+    setOpeningForm((current) => ({ ...current, ...patch }));
+  };
+
   const ensureRequestId = () => {
     const nextRequestId = requestId || (window.crypto?.randomUUID?.() || `fio-${Date.now()}`);
     if (!requestId) setRequestId(nextRequestId);
@@ -198,7 +241,17 @@ export default function NilaiPersediaan() {
     return typeof detail === "object" ? (detail.message || detail.code) : (detail || fallback);
   };
 
-  const previewOpening = async () => {
+  const runExclusive = async (work) => {
+    if (actionGuard.current) return;
+    actionGuard.current = true;
+    try {
+      await work();
+    } finally {
+      actionGuard.current = false;
+    }
+  };
+
+  const previewOpening = () => runExclusive(async () => {
     const nextRequestId = ensureRequestId();
     setPreviewing(true);
     setOpeningNotice("");
@@ -218,34 +271,108 @@ export default function NilaiPersediaan() {
     } finally {
       setPreviewing(false);
     }
+  });
+
+  const postOpening = (event) => {
+    event.preventDefault();
+    return runExclusive(async () => {
+      const nextRequestId = ensureRequestId();
+      setPostingOpening(true);
+      setOpeningNotice("");
+      setError("");
+      try {
+        const saved = await api.postFinancialInventoryOpening(openingPayload(openingForm, nextRequestId));
+        const item = saved.item || saved;
+        if (item.status === "POSTED") setFormDirty(false);
+        setOpeningNotice(
+          item.status === "POSTED"
+            ? `Opening posted. Jurnal ${item.journal_number || item.posted_journal_id || ""}. Asal ${item.journal_origin || "jurnal"}. Sumber APPROVED_OPENING, bukan HPP Published.`
+            : (item.blocker_message || item.status || "Opening tidak selesai")
+        );
+        await load();
+        await loadBook();
+      } catch (exception) {
+        const message = detailMessage(exception, "Posting opening gagal");
+        setError(message);
+        setOpeningNotice(message);
+      } finally {
+        setPostingOpening(false);
+      }
+    });
   };
 
-  const postOpening = async (event) => {
-    event.preventDefault();
+  const captureSnapshot = () => runExclusive(async () => {
     const nextRequestId = ensureRequestId();
-    setPostingOpening(true);
+    setCapturing(true);
     setOpeningNotice("");
     setError("");
     try {
-      const saved = await api.postFinancialInventoryOpening(openingPayload(openingForm, nextRequestId));
+      const saved = await api.captureFinancialOpeningSnapshot({
+        client_request_id: `${nextRequestId}-snapshot`,
+        lines: [{
+          master_item_id: openingForm.master_item_id.trim(),
+          base_uom: openingForm.base_uom.trim(),
+        }],
+      });
       const item = saved.item || saved;
+      setOpeningForm((current) => ({ ...current, snapshot_id: item.id || "" }));
+      setFormDirty(true);
+      const line = (item.lines || [])[0];
       setOpeningNotice(
-        item.status === "POSTED"
-          ? `Opening posted. Jurnal ${item.journal_number || item.posted_journal_id || ""}. Asal ${item.journal_origin || "jurnal"}. Sumber APPROVED_OPENING, bukan HPP Published.`
-          : (item.blocker_message || item.status || "Opening tidak selesai")
+        item.status === "CAPTURED"
+          ? `Snapshot ${item.business_date} tersimpan. Qty ${line ? line.qty : "—"} ${line ? line.base_uom : ""}. Nilai buku belum diisi dari Published Pricing.`
+          : (item.blocker_message || "Snapshot tidak tersimpan")
       );
-      await load();
+    } catch (exception) {
+      setOpeningNotice(detailMessage(exception, "Snapshot gagal"));
+      setError(detailMessage(exception, "Snapshot gagal"));
+    } finally {
+      setCapturing(false);
+    }
+  });
+
+  const postIssue = (movementId) => runExclusive(async () => {
+    setPostingIssueId(movementId);
+    setIssueNotice("");
+    setError("");
+    try {
+      const saved = await api.postInventoryIssue(movementId);
+      const item = saved.item || saved;
+      if (item.financial_status === "posted" || item.status === "posted") {
+        setIssueNotice(`HPP ${movementId} posted. Jurnal ${item.accounting_journal_id || ""}.`);
+      } else {
+        setIssueNotice(item.blocker_message || "Posting HPP tidak selesai");
+      }
+      await loadIssues();
       await loadBook();
     } catch (exception) {
-      const message = detailMessage(exception, "Posting opening gagal");
+      const message = detailMessage(exception, "Posting HPP gagal");
+      setIssueNotice(message);
       setError(message);
-      setOpeningNotice(message);
     } finally {
-      setPostingOpening(false);
+      setPostingIssueId("");
+    }
+  });
+
+  const loadReports = async () => {
+    setLoadingReports(true);
+    setError("");
+    try {
+      const params = { start_date: reportStart, end_date: reportEnd, page: 1, page_size: 50 };
+      const [purchases, sales] = await Promise.all([
+        api.purchaseActivityReport(params),
+        api.salesActivityReport(params),
+      ]);
+      setPurchaseReport(purchases);
+      setSalesReport(sales);
+    } catch (exception) {
+      setError(detailMessage(exception, "Laporan gagal dimuat"));
+    } finally {
+      setLoadingReports(false);
     }
   };
 
-  const recoverOpening = async (clientRequestId) => {
+  const recoverOpening = (clientRequestId) => runExclusive(async () => {
     setRecovering(true);
     setError("");
     try {
@@ -262,7 +389,7 @@ export default function NilaiPersediaan() {
     } finally {
       setRecovering(false);
     }
-  };
+  });
 
   const items = data?.items || [];
   const summary = data?.summary || {};
@@ -355,11 +482,18 @@ export default function NilaiPersediaan() {
             </div>
           </div>
           <p className="muted small" data-testid="financial-book-identity">
-            Opening posted + GR posted − COGS posted = sisa finansial.
+            {`Opening posted + GR posted − COGS posted = sisa finansial. Qty finansial ${book.financial_qty_remaining == null ? "belum terbentuk" : fmtQty(book.financial_qty_remaining)} dari opening ${book.opening_qty == null ? "—" : fmtQty(book.opening_qty)} + GR ${book.goods_receipt_qty == null ? "—" : fmtQty(book.goods_receipt_qty)} − COGS ${book.cogs_qty == null ? "—" : fmtQty(book.cogs_qty)}. `}
             GR historis yang masih aktif: {moneyOrGap(book.historical_gr_overlap)}.
             Sumber GL lain: {moneyOrGap(book.other_gl_total)}.
             Valuasi Published tetap bukan saldo buku.
+            {book.pending_cogs_count ? ` Posting HPP pending: ${book.pending_cogs_count}. Status bukan MATCH.` : ""}
           </p>
+          {book.physical_vs_financial && (
+            <p className="muted small" data-testid="financial-book-physical">{book.physical_vs_financial}</p>
+          )}
+          {book.item_hpp_scope && (
+            <p className="muted small" data-testid="financial-book-hpp-scope">{book.item_hpp_scope}</p>
+          )}
         </div>
       )}
 
@@ -378,21 +512,21 @@ export default function NilaiPersediaan() {
           <div className="prod-filter-row">
             <input
               value={openingForm.effective_date}
-              onChange={(event) => setOpeningForm((current) => ({ ...current, effective_date: event.target.value }))}
+              onChange={(event) => updateOpening({ effective_date: event.target.value })}
               placeholder="Tanggal efektif YYYY-MM-DD"
               aria-label="Tanggal efektif opening"
               data-testid="financial-opening-date"
             />
             <input
               value={openingForm.master_item_id}
-              onChange={(event) => setOpeningForm((current) => ({ ...current, master_item_id: event.target.value }))}
+              onChange={(event) => updateOpening({ master_item_id: event.target.value })}
               placeholder="ID item"
               aria-label="Item opening"
               data-testid="financial-opening-item"
             />
             <input
               value={openingForm.qty}
-              onChange={(event) => setOpeningForm((current) => ({ ...current, qty: event.target.value }))}
+              onChange={(event) => updateOpening({ qty: event.target.value })}
               placeholder="Qty"
               aria-label="Qty opening"
               inputMode="decimal"
@@ -400,28 +534,43 @@ export default function NilaiPersediaan() {
             />
             <input
               value={openingForm.unit_cost}
-              onChange={(event) => setOpeningForm((current) => ({ ...current, unit_cost: event.target.value }))}
-              placeholder="Harga pokok"
+              onChange={(event) => updateOpening({ unit_cost: event.target.value })}
+              placeholder="Harga pokok disetujui"
               aria-label="Harga pokok opening"
               inputMode="decimal"
               data-testid="financial-opening-cost"
             />
             <input
               value={openingForm.base_uom}
-              onChange={(event) => setOpeningForm((current) => ({ ...current, base_uom: event.target.value }))}
+              onChange={(event) => updateOpening({ base_uom: event.target.value })}
               placeholder="Base UOM"
               aria-label="Base UOM"
               data-testid="financial-opening-uom"
             />
+            <input
+              value={openingForm.snapshot_id}
+              onChange={(event) => updateOpening({ snapshot_id: event.target.value })}
+              placeholder="ID snapshot, bila rekonstruksi tidak terbukti"
+              aria-label="Snapshot opening"
+              data-testid="financial-opening-snapshot"
+            />
+            {canPostOpening && (
+              <button className="ghost" type="button" onClick={captureSnapshot} disabled={capturing || postingOpening} data-testid="financial-opening-capture">
+                {capturing ? "Mengambil…" : "Ambil snapshot"}
+              </button>
+            )}
             <button className="ghost" type="button" onClick={previewOpening} disabled={previewing} data-testid="financial-opening-preview-button">
               {previewing ? "Menghitung…" : "Preview"}
             </button>
             {canPostOpening && (
-              <button className="primary" type="submit" disabled={postingOpening || (preview && preview.can_post === false)} data-testid="financial-opening-post">
+              <button className="primary" type="submit" disabled={postingOpening || capturing || (preview && preview.can_post === false)} data-testid="financial-opening-post">
                 {postingOpening ? "Memposting…" : "Posting opening"}
               </button>
             )}
           </div>
+          {formDirty && (
+            <p className="muted small" data-testid="financial-opening-dirty">Perubahan formulir belum diposting.</p>
+          )}
           {openingNotice && (
             <p className="muted small" data-testid="financial-opening-notice">{openingNotice}</p>
           )}
@@ -450,6 +599,7 @@ export default function NilaiPersediaan() {
               Opening posted {row.effective_date}. Status jurnal {row.status}.
               Nomor {row.journal_number || row.posted_journal_id || "—"}.
               Asal {row.journal_origin === "existing_opening_voucher" ? "voucher saldo awal yang sudah ada" : "jurnal opening baru"}.
+              Otoritas jurnal {row.journal_authority || "belum diperiksa"}.
               Nilai {formatRupiah(row.total)}.
             </p>
           ))}
@@ -466,6 +616,124 @@ export default function NilaiPersediaan() {
             </button>
           ))}
         </form>
+      )}
+
+      {canViewIssues && (
+        <section data-testid="cogs-queue" className="inventory-cogs-queue">
+          <h2>Antrean HPP penjualan</h2>
+          <p className="muted small">Status keuangan terpisah dari status operasional pengiriman. Posting hanya lewat tombol ini.</p>
+          {issueNotice && <p className="muted small" data-testid="cogs-queue-notice">{issueNotice}</p>}
+          <div className="prod-table-wrap">
+            <table className="prod-table" data-testid="cogs-queue-table">
+              <thead>
+                <tr>
+                  <th>Mutasi</th>
+                  <th>Tanggal jurnal</th>
+                  <th>Qty</th>
+                  <th>Nilai</th>
+                  <th>Status keuangan</th>
+                  <th>Sumber acquisition</th>
+                  <th>Jurnal</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {issues.length === 0 && (
+                  <tr><td colSpan={8} className="muted small">Tidak ada pengeluaran yang menunggu atau sudah diposting.</td></tr>
+                )}
+                {issues.map((issue) => (
+                  <tr key={issue.movement_id} data-testid={`cogs-row-${issue.movement_id}`}>
+                    <td className="mono">{issue.reference_number || issue.movement_id}</td>
+                    <td>{issue.journal_date || "—"}</td>
+                    <td>{issue.base_qty} {issue.base_uom}</td>
+                    <td>{issue.computed_cogs != null ? formatRupiah(issue.computed_cogs) : "—"}</td>
+                    <td>{issue.financial_status || issue.status}{issue.blocker_message ? ` — ${issue.blocker_message}` : ""}</td>
+                    <td>{(issue.acquisition_sources || []).map((source) => source.acquisition_key).join(", ") || "—"}</td>
+                    <td>{issue.accounting_journal_id ? <a href="/buku-besar/jurnal-umum">{issue.accounting_journal_id}</a> : "—"}</td>
+                    <td>
+                      {canPostIssues && issue.can_post && (
+                        <button
+                          type="button"
+                          className="primary"
+                          disabled={postingIssueId === issue.movement_id}
+                          data-testid={`cogs-post-${issue.movement_id}`}
+                          onClick={() => postIssue(issue.movement_id)}
+                        >
+                          {postingIssueId === issue.movement_id ? "Memposting…" : "Posting HPP"}
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
+      {canViewOpening && (
+        <section data-testid="activity-reports" className="inventory-activity-reports">
+          <h2>Laporan pembelian dan penjualan</h2>
+          <p className="muted small">Filter tanggal adalah tanggal dokumen inklusif (WIB). Bukan saldo historis as-of. Total memakai seluruh hasil filter.</p>
+          <div className="prod-filter-row">
+            <input value={reportStart} onChange={(event) => setReportStart(event.target.value)} aria-label="Tanggal mulai laporan" data-testid="activity-report-start" />
+            <input value={reportEnd} onChange={(event) => setReportEnd(event.target.value)} aria-label="Tanggal akhir laporan" data-testid="activity-report-end" />
+            <button type="button" className="ghost" onClick={loadReports} disabled={loadingReports} data-testid="activity-report-load">
+              {loadingReports ? "Memuat…" : "Muat laporan"}
+            </button>
+            <a href="/buku-besar/laba-rugi">Laba/Rugi dari jurnal posted</a>
+          </div>
+          {purchaseReport && (
+            <p data-testid="purchase-report-total">Pembelian {purchaseReport.filtered_count} baris, nilai {formatRupiah(purchaseReport.total_amount || 0)}. Halaman ini {purchaseReport.items?.length || 0} baris.</p>
+          )}
+          {salesReport && (
+            <p data-testid="sales-report-total">Penjualan {salesReport.filtered_count} baris, nilai {formatRupiah(salesReport.total_amount || 0)}.</p>
+          )}
+          <div className="prod-table-wrap">
+            <table className="prod-table" data-testid="purchase-report-table">
+              <thead>
+                <tr><th>Supplier</th><th>Dokumen</th><th>Tanggal</th><th>Qty</th><th>Nilai</th><th>Penerimaan</th><th>Faktur</th><th>Bayar</th><th>Posting</th></tr>
+              </thead>
+              <tbody>
+                {(purchaseReport?.items || []).map((row) => (
+                  <tr key={`${row.document_id}-${row.master_item_id}`}>
+                    <td>{row.supplier || "—"}</td>
+                    <td>{row.document_number}</td>
+                    <td>{row.date}</td>
+                    <td>{row.qty} {row.uom}</td>
+                    <td>{row.amount != null ? formatRupiah(row.amount) : "—"}</td>
+                    <td>{row.receipt_status}</td>
+                    <td>{(row.invoice_numbers || []).join(", ") || "—"}</td>
+                    <td>{(row.payment_numbers || []).join(", ") || "—"}</td>
+                    <td>{row.stock_posting_status}{row.journal_id ? <a href="/buku-besar/jurnal-umum"> {row.journal_number || row.journal_id}</a> : ""}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="prod-table-wrap">
+            <table className="prod-table" data-testid="sales-report-table">
+              <thead>
+                <tr><th>Customer</th><th>Dokumen</th><th>Tanggal</th><th>Qty</th><th>Nilai</th><th>Pengiriman</th><th>Faktur</th><th>Terima</th><th>Posting</th></tr>
+              </thead>
+              <tbody>
+                {(salesReport?.items || []).map((row) => (
+                  <tr key={`${row.document_id}-${row.item_name}`}>
+                    <td>{row.customer || "—"}</td>
+                    <td>{row.document_number}</td>
+                    <td>{row.date}</td>
+                    <td>{row.qty}</td>
+                    <td>{row.amount != null ? formatRupiah(row.amount) : "—"}</td>
+                    <td>{row.delivery_status || "—"}</td>
+                    <td>{row.invoice_status || "—"}</td>
+                    <td>{(row.receipt_numbers || []).join(", ") || "—"}</td>
+                    <td>{row.posting_status}{row.journal_id ? <a href="/buku-besar/jurnal-umum"> {row.journal_number || row.journal_id}</a> : ""}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
       )}
 
       <div className="prod-filters" data-testid="inventory-value-filters">
@@ -587,6 +855,7 @@ export default function NilaiPersediaan() {
                   </td>
                   <td className="col-fit small" style={CENTER_CELL} data-testid={`inventory-value-source-${key}`}>
                     {sourceLabel(item.hpp_source)}
+                    {item.financial_opening_source ? ` · buku ${sourceLabel(item.financial_opening_source)}${item.financial_opening_unit_cost != null ? ` ${formatRupiah(item.financial_opening_unit_cost)}` : ""}` : ""}
                   </td>
                   <td className="col-fit small" style={CENTER_CELL} data-testid={`inventory-value-posting-${key}`}>
                     {POSTING_LABELS[item.financial_posting_status] || item.financial_posting_status || "Belum diposting"}

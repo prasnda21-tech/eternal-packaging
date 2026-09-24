@@ -11381,6 +11381,44 @@ async def financial_opening_reverse(opening_id: str, payload: dict, user=Depends
     return {"item": saved}
 
 
+@api_router.post("/inventory/financial-opening/snapshot")
+async def financial_opening_snapshot(payload: dict, user=Depends(require_perm("inventory_valuation.manage_opening"))):
+    from services.financial_inventory_opening import capture_financial_opening_snapshot
+    try:
+        saved = await capture_financial_opening_snapshot(db, payload or {}, user)
+    except Exception as exc:
+        _opening_http(exc)
+    return {"item": saved}
+
+
+@api_router.get("/inventory/reports/purchases")
+async def inventory_purchase_activity_report(
+    start_date: str = "",
+    end_date: str = "",
+    page: int = 1,
+    page_size: int = 50,
+    user=Depends(require_perm("inventory_valuation.view")),
+):
+    from services.commercial_activity_reports import purchase_activity_report
+    return await purchase_activity_report(
+        db, start_date=start_date, end_date=end_date, page=page, page_size=page_size,
+    )
+
+
+@api_router.get("/inventory/reports/sales")
+async def inventory_sales_activity_report(
+    start_date: str = "",
+    end_date: str = "",
+    page: int = 1,
+    page_size: int = 50,
+    user=Depends(require_perm("inventory_valuation.view")),
+):
+    from services.commercial_activity_reports import sales_activity_report
+    return await sales_activity_report(
+        db, start_date=start_date, end_date=end_date, page=page, page_size=page_size,
+    )
+
+
 @api_router.get("/current-stock")
 async def current_stock_list(
     q: str = "",

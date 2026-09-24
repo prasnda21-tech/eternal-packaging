@@ -1295,6 +1295,7 @@ async def evaluate_inventory_issues(db, *, movement_ids: Optional[List[str]] = N
                 row["hpp_method"] = posted_basis.get("hpp_method")
                 row["computed_cogs"] = posted_basis.get("total_cogs")
                 row["accounting_journal_id"] = live.get("id") if live else row.get("accounting_journal_id")
+                row["acquisition_sources"] = acquisition_trace(posted_basis)
             evaluated.append(row)
             continue
         if row["status"] in {STATUS_EXCLUDED, STATUS_BLOCKED}:
@@ -1358,6 +1359,7 @@ async def evaluate_inventory_issues(db, *, movement_ids: Optional[List[str]] = N
             evaluated.append(row)
             continue
         row["computed_cogs"] = (computed or {}).get("total_cogs")
+        row["acquisition_sources"] = acquisition_trace(computed)
         row["_computed"] = computed
         row["status"] = STATUS_PENDING
         row["can_post"] = True
@@ -1418,6 +1420,29 @@ async def evaluate_inventory_issue(db, movement_id: str) -> Optional[dict]:
     return rows[0] if rows else _empty_view(str(movement_id), status=STATUS_EXCLUDED, **{"blocker_code": CODE_NOT_PENGIRIMAN, "blocker_message": _blocker(CODE_NOT_PENGIRIMAN)[1]})
 
 
+def acquisition_trace(basis: Optional[dict]) -> List[dict]:
+    """Read-only source keys for a COGS basis. Not a current item HPP."""
+    src = basis or {}
+    rows = []
+    for consumed in src.get("consumed_acquisitions") or []:
+        if not isinstance(consumed, dict):
+            continue
+        rows.append({
+            "acquisition_key": consumed.get("acquisition_key"),
+            "base_qty": consumed.get("base_qty_consumed") if consumed.get("base_qty_consumed") is not None else consumed.get("base_qty"),
+            "unit_cost": consumed.get("unit_cost") if consumed.get("unit_cost") is not None else consumed.get("base_unit_cost"),
+            "total_cost": consumed.get("total_cost"),
+            "source": consumed.get("source") or "acquisition",
+        })
+    if rows:
+        return rows
+    for key in src.get("pool_acquisition_keys") or []:
+        text = str(key or "").strip()
+        if text:
+            rows.append({"acquisition_key": text, "source": "average_pool"})
+    return rows
+
+
 def public_issue_view(row: Optional[dict]) -> Dict[str, Any]:
     src = row or {}
     return {
@@ -1440,6 +1465,9 @@ def public_issue_view(row: Optional[dict]) -> Dict[str, Any]:
         "blocker_code": src.get("blocker_code"),
         "blocker_message": src.get("blocker_message"),
         "accounting_journal_id": src.get("accounting_journal_id"),
+        "acquisition_sources": src.get("acquisition_sources") or [],
+        "financial_status": src.get("status"),
+        "operational_note": "Status ini adalah posting keuangan, bukan status pengiriman operasional.",
     }
 
 

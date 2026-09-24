@@ -1989,3 +1989,433 @@ async def test_retry_uses_frozen_accounts_after_settings_change():
     assert journal["date"] == "2026-10-01"
     assert journal["source_type"] == SOURCE_TYPE
     assert journal["source_id"] == recovered["id"]
+
+
+async def test_expired_lease_token_cannot_clear_the_new_holder():
+    from datetime import datetime, timedelta, timezone
+    import services.financial_inventory_opening as fio
+
+    past = (datetime.now(timezone.utc) - timedelta(seconds=5)).isoformat()
+    await server.db[fio.CLAIMS].update_one(
+        {"_id": fio.CLAIM_ID},
+        {"$set": {
+            "state": "BUILDING",
+            "client_request_id": "fence",
+            "lease_token": "old-token",
+            "lease_expires_at": past,
+        }},
+        upsert=True,
+    )
+    claimed = await fio._acquire_lease(server.db, "fence")
+    assert claimed["lease_token"] != "old-token"
+    await fio._release_lease(server.db, "old-token", "IDLE")
+    still = await server.db[fio.CLAIMS].find_one({"_id": fio.CLAIM_ID})
+    assert still["lease_token"] == claimed["lease_token"]
+    assert still["state"] == "BUILDING"
+    await fio._release_lease(server.db, claimed["lease_token"], "IDLE")
+    released = await server.db[fio.CLAIMS].find_one({"_id": fio.CLAIM_ID})
+    assert not released.get("lease_token")
+
+
+async def test_consumed_opening_journal_reverse_stays_posted():
+    from services.journal_core import JournalConflictError, reverse_journal
+
+    await _configure()
+    mid = await _master()
+    opening = await post_financial_opening(server.db, _opening_payload(mid, 100, 1000, "guard-journal"), USER)
+    movement = _pengiriman(mid, 10)
+    await server.db.stock_movements.insert_one(movement)
+    await post_inventory_issue_accounting(server.db, movement["id"], USER)
+    before = await server.db[JOURNAL_ENTRIES].count_documents({})
+    with pytest.raises(JournalConflictError):
+        await reverse_journal(
+            server.db,
+            opening["posted_journal_id"],
+            source_type="financial_inventory_opening_reversal",
+            source_id=f"{opening['id']}:blocked",
+            posted_by=USER,
+            description="jangan balik setelah konsumsi",
+        )
+    assert await server.db[JOURNAL_ENTRIES].count_documents({}) == before
+    journal = await server.db[JOURNAL_ENTRIES].find_one({"id": opening["posted_journal_id"]}, {"_id": 0})
+    assert journal["status"] == "posted"
+    stored = await server.db.financial_inventory_openings.find_one({"id": opening["id"]}, {"_id": 0, "status": 1})
+    assert stored["status"] == "POSTED"
+    listed = await server.db.financial_inventory_openings.find_one({"id": opening["id"]}, {"_id": 0})
+    from services.financial_inventory_opening import list_financial_openings
+
+    rows = await list_financial_openings(server.db)
+    match = next(row for row in rows if row["id"] == opening["id"])
+    assert match["journal_authority"] == "valid"
+    assert listed["status"] == "POSTED"
+
+
+async def test_snapshot_is_not_backdated_and_stale_snapshot_cannot_post():
+    from datetime import datetime, timezone
+    import services.financial_inventory_opening as fio
+
+    await _configure()
+    mid = await _master(100)
+    before_qty = (await server.db.product_stock_state.find_one({"master_item_id": mid}))["total_qty"]
+    original = fio._utc_now
+    fio._utc_now = lambda: datetime(2026, 10, 4, 17, 0, tzinfo=timezone.utc)
+    try:
+        captured = await fio.capture_financial_opening_snapshot(server.db, {
+            "client_request_id": "snap-1",
+            "lines": [{"master_item_id": mid, "base_uom": "PCS"}],
+        }, USER)
+        again = await fio.capture_financial_opening_snapshot(server.db, {
+            "client_request_id": "snap-1",
+            "lines": [{"master_item_id": mid, "base_uom": "PCS"}],
+        }, USER)
+    finally:
+        fio._utc_now = original
+    after_qty = (await server.db.product_stock_state.find_one({"master_item_id": mid}))["total_qty"]
+    assert after_qty == before_qty
+    assert captured["id"] == again["id"]
+    assert captured["business_date"] == "2026-10-05"
+    assert captured["backdated"] is False
+    assert await server.db.financial_inventory_opening_snapshots.count_documents({"client_request_id": "snap-1"}) == 1
+    with pytest.raises(OpeningBlocked) as exc:
+        await post_financial_opening(server.db, {
+            **_opening_payload(mid, 100, 1000, "snap-back"),
+            "snapshot_id": captured["id"],
+            "effective_date": "2026-10-01",
+        }, USER)
+    assert exc.value.code == "OPENING_SNAPSHOT_BACKDATED"
+    await server.db.product_stock_state.update_one({"master_item_id": mid}, {"$set": {"version": 9, "total_qty": 90}})
+    stale = await preview_financial_opening(server.db, {
+        **_opening_payload(mid, 100, 1000, "snap-stale-preview", effective="2026-10-05"),
+        "snapshot_id": captured["id"],
+    })
+    assert stale["writes"] == 0
+    assert stale["can_post"] is False
+    assert stale["blockers"][0]["code"] == "STALE_SNAPSHOT"
+    with pytest.raises(OpeningBlocked) as exc:
+        await post_financial_opening(server.db, {
+            **_opening_payload(mid, 100, 1000, "snap-stale", effective="2026-10-05"),
+            "snapshot_id": captured["id"],
+        }, USER)
+    assert exc.value.code == "STALE_SNAPSHOT"
+    await server.db.product_stock_state.update_one({"master_item_id": mid}, {"$set": {"version": 1, "total_qty": 100}})
+    posted = await post_financial_opening(server.db, {
+        **_opening_payload(mid, 100, 1000, "snap-ok", effective="2026-10-05"),
+        "snapshot_id": captured["id"],
+    }, USER)
+    assert posted["status"] == "POSTED"
+    assert posted["effective_date"] == "2026-10-05"
+    assert posted["snapshot_id"] == captured["id"]
+
+
+async def test_snapshot_capture_rejects_a_boundary_that_changes_mid_read():
+    import services.financial_inventory_opening as fio
+
+    await _configure()
+    mid = await _master(100)
+    original = fio._read_item_boundary
+    calls = {"n": 0}
+
+    async def shifting(db, master_item_id, base_uom, *, settle_pending):
+        observed = await original(db, master_item_id, base_uom, settle_pending=settle_pending)
+        calls["n"] += 1
+        if calls["n"] >= 2:
+            state = dict(observed.get("state") or {})
+            state["version"] = int(state.get("version") or 0) + 7
+            state["total_qty"] = 80
+            observed = {**observed, "state": state}
+        return observed
+
+    fio._read_item_boundary = shifting
+    try:
+        with pytest.raises(OpeningBlocked) as exc:
+            await fio.capture_financial_opening_snapshot(server.db, {
+                "client_request_id": "snap-race",
+                "lines": [{"master_item_id": mid, "base_uom": "PCS"}],
+            }, USER)
+        assert exc.value.code == "STALE_SNAPSHOT"
+    finally:
+        fio._read_item_boundary = original
+    assert await server.db.financial_inventory_opening_snapshots.count_documents({"client_request_id": "snap-race"}) == 0
+    stored = await server.db.product_stock_state.find_one({"master_item_id": mid})
+    assert stored["total_qty"] == 100
+    assert stored["version"] == 1
+
+
+async def test_operational_writer_moves_stock_and_books_match():
+    from services.physical_stock_engine import handle_goods_receipt_created, handle_sales_delivery_created
+
+    await _configure()
+    mid = await _master(100)
+    opening = await post_financial_opening(server.db, _opening_payload(mid, 100, 1000, "writer-open"), USER)
+    assert opening["status"] == "POSTED"
+    start = await server.db.product_stock_state.find_one({"master_item_id": mid})
+    assert start["total_qty"] == 100
+
+    po_id = f"po-{uuid.uuid4().hex[:8]}"
+    line_id = f"ln-{uuid.uuid4().hex[:8]}"
+    await server.db.purchase_orders.insert_one({
+        "id": po_id,
+        "po_number": "PB-WRITER",
+        "supplier": "Supplier",
+        "cancelled": False,
+        "physical_stock_snapshot": {"enabled": True, "stock_in_trigger": "goods_receipt"},
+        "lines": [{
+            "line_id": line_id,
+            "ordered_qty": 50,
+            "unit_price": 1200,
+            "unit": "PCS",
+            "master_item_id": mid,
+        }],
+    })
+    rid = str(uuid.uuid4())
+    receipt = {
+        "id": rid,
+        "receipt_number": "GR-WRITER",
+        "purchase_order_id": po_id,
+        "po_number": "PB-WRITER",
+        "supplier": "Supplier",
+        "receipt_date": "2026-10-02",
+        "cancelled": False,
+        "lines": [{
+            "line_id": "gl-writer",
+            "purchase_order_line_id": line_id,
+            "received_qty": 50,
+            "unit": "PCS",
+            "master_item_id": mid,
+            "unit_price": 1200,
+        }],
+    }
+    await server.db.purchase_goods_receipts.insert_one(dict(receipt))
+    import services.physical_stock_engine as stock_engine
+
+    original_now = stock_engine.now_iso
+    stock_engine.now_iso = lambda: "2026-10-05T03:00:00+00:00"
+    try:
+        receipts = await handle_goods_receipt_created(server.db, receipt, USER)
+        assert len(receipts) == 1
+        after_gr = await server.db.product_stock_state.find_one({"master_item_id": mid})
+        assert after_gr["total_qty"] == 150
+        assert after_gr["unprinted_qty"] == 150
+        posted_gr = await post_purchase_goods_receipt_accounting(server.db, rid, USER, serialize_in_process=False)
+        assert isinstance(posted_gr, dict)
+        order = {
+            "id": "so-writer",
+            "po_number": "SO-WRITER",
+            "customer": "Pelanggan Uji",
+            "physical_stock_snapshot": {"enabled": True, "stock_out_trigger": "sales_delivery"},
+            "line_items": [{"line_idx": 0, "line_id": "ol-writer", "master_item_id": mid, "quantity": 15, "unit": "PCS"}],
+        }
+        delivery = {
+            "id": "sj-writer",
+            "sj_number": "SJ-WRITER",
+            "customer": "Pelanggan Uji",
+            "line_items": [{
+                "line_id": "dl-writer",
+                "line_idx": 0,
+                "qty": 15,
+                "unit": "PCS",
+                "master_item_id": mid,
+                "production_process": "non_print",
+            }],
+        }
+        deliveries = await handle_sales_delivery_created(server.db, order, delivery, USER)
+    finally:
+        stock_engine.now_iso = original_now
+    assert len(deliveries) == 1
+    after_out = await server.db.product_stock_state.find_one({"master_item_id": mid})
+    assert after_out["total_qty"] == 135
+    movement_id = str(deliveries[0].get("id") or "")
+    assert movement_id
+    await post_inventory_issue_accounting(server.db, movement_id, USER)
+    book = await build_financial_book_reconciliation(server.db)
+    assert book["opening_qty"] == 100.0
+    assert book["goods_receipt_qty"] == 50.0
+    assert book["cogs_qty"] == 15.0
+    assert book["financial_qty_remaining"] == 135.0
+    assert book["financial_remaining"] == 144000.0
+    assert book["inventory_gl_balance"] == 144000.0
+    assert book["reconciliation_status"] == "MATCH"
+    assert book["pending_cogs_count"] == 0
+    assert book["historical_as_of"] is False
+    physical = await server.db.product_stock_state.find_one({"master_item_id": mid})
+    assert physical["total_qty"] == 135
+
+
+async def test_books_sales_expense_and_reports_match_journals():
+    from services.commercial_activity_reports import purchase_activity_report, sales_activity_report
+    from services.general_journal import create_draft as create_general_draft
+    from services.general_journal import post_voucher as post_general_voucher
+    from services.profit_loss import get_profit_loss
+    from services.sales_accounting_settings import SETTINGS_KEY as SALES_SETTINGS
+
+    accounts = await _configure()
+    revenue = await _coa("41", "Pendapatan", "REVE")
+    receivable = await _coa("11", "Piutang", "AREC")
+    tax = await _coa("22", "PPN", "OCLY")
+    expense = await _coa("61", "Beban operasional", "EXPS")
+    bank = await _coa("12", "Kas", "BANK")
+    mid = await _master()
+    await post_financial_opening(server.db, _opening_payload(mid, 100, 1000, "e2e-open"), USER)
+    rid = await _gr(mid, 50, 1200, "2026-10-02", post=True)
+    mov_id = str(uuid.uuid4())
+    await server.db.stock_movements.insert_one({
+        "id": mov_id,
+        "movement_type": "PENGIRIMAN",
+        "master_item_id": mid,
+        "date": "2026-10-05T03:00:00Z",
+        "transaction_qty": 15,
+        "transaction_uom": "PCS",
+        "conversion_factor": 1,
+        "base_qty": 15,
+        "base_uom": "PCS",
+        "reference_type": "sales_delivery",
+        "reference_number": "SJ-E2E",
+        "status": "POSTED",
+    })
+    await post_inventory_issue_accounting(server.db, mov_id, USER)
+    book = await build_financial_book_reconciliation(server.db)
+    assert book["financial_remaining"] == 144000.0
+    assert book["inventory_gl_balance"] == 144000.0
+    assert book["opening_qty"] == 100.0
+    assert book["goods_receipt_qty"] == 50.0
+    assert book["cogs_qty"] == 15.0
+    assert book["financial_qty_remaining"] == 135.0
+    assert book["reconciliation_status"] == "MATCH"
+    await server.db.app_settings.update_one(
+        {"key": SALES_SETTINGS},
+        {"$set": {
+            "key": SALES_SETTINGS,
+            "receivable_account_id": receivable["id"],
+            "revenue_account_id": revenue["id"],
+            "output_tax_account_id": tax["id"],
+        }},
+        upsert=True,
+    )
+    po_id = str(uuid.uuid4())
+    await server.db.orders.insert_one({
+        "id": po_id,
+        "po_number": "SO-E2E",
+        "customer": "Pelanggan Uji",
+        "line_items": [{"line_idx": 0, "line_id": "l0", "name": "Cup", "quantity": 1, "unit": "pcs"}],
+        "total_quantity": 1,
+        "current_stage": 5,
+        "status_label": "Penjadwalan",
+        "payment_status": "Waiting",
+        "events": [{"stage": 0, "name": "Order Masuk"}],
+        "created_at": "2026-10-06T00:00:00Z",
+    })
+    _admin()
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            created = await client.post("/api/sales-invoices", json={
+                "po_id": po_id,
+                "invoice_date": "2026-10-06",
+                "discount_amount": 0,
+                "ppn_percent": 0,
+                "lines": [{"line_idx": 0, "quantity": 1, "unit_price": 30000}],
+            })
+            assert created.status_code == 200, created.text
+            invoice = created.json()["invoice"]
+            finalized = await client.post(f"/api/sales-invoices/{invoice['id']}/finalize")
+            assert finalized.status_code == 200, finalized.text
+            posted = await client.post(f"/api/sales-invoices/{invoice['id']}/post-accounting")
+            assert posted.status_code == 200, posted.text
+            from services.cash_bank_master import create_cash_bank
+            cash = await create_cash_bank(server.db, {"name": "Kas Uji", "account_id": bank["id"], "active": True}, user=USER)
+            receipt = await client.post("/api/sales-receipts", json={
+                "invoice_id": invoice["id"],
+                "receipt_date": "2026-10-07",
+                "amount": 30000,
+                "cash_bank_id": cash["id"],
+                "notes": "pelunasan",
+            })
+            assert receipt.status_code == 200, receipt.text
+            posted_receipt = await client.post(f"/api/sales-receipts/{receipt.json()['receipt']['id']}/post-accounting")
+            assert posted_receipt.status_code == 200, posted_receipt.text
+            from services.purchase_invoice_posting import post_purchase_invoice_accounting
+            from services.purchase_payment_posting import post_purchase_payment_accounting
+            from services.purchase_payments import SETTLEMENT_PAID, SUBMISSION_SUBMITTED
+
+            receipt_doc = await server.db.purchase_goods_receipts.find_one({"id": rid}, {"_id": 0})
+            invoice_id = str(uuid.uuid4())
+            await server.db.purchase_invoices.insert_one({
+                "id": invoice_id,
+                "invoice_number": "FPB-E2E",
+                "invoice_date": "2026-10-03",
+                "supplier": "Supplier",
+                "purchase_order_id": receipt_doc["purchase_order_id"],
+                "receipt_id": rid,
+                "grand_total": 60000,
+                "cancelled": False,
+            })
+            await post_purchase_invoice_accounting(server.db, invoice_id, USER, serialize_in_process=False)
+            pay_id = str(uuid.uuid4())
+            await server.db.purchase_payments.insert_one({
+                "id": pay_id,
+                "payment_number": "PPB-E2E",
+                "purchase_invoice_id": invoice_id,
+                "invoice_number": "FPB-E2E",
+                "supplier": "Supplier",
+                "amount": 60000,
+                "payment_date": "2026-10-04",
+                "settlement_status": SETTLEMENT_PAID,
+                "submission_status": SUBMISSION_SUBMITTED,
+                "cancelled": False,
+            })
+            await post_purchase_payment_accounting(
+                server.db, pay_id, USER, cash_bank_id=cash["id"], serialize_in_process=False
+            )
+            await post_purchase_payment_accounting(
+                server.db, pay_id, USER, cash_bank_id=cash["id"], serialize_in_process=False
+            )
+            assert await server.db[JOURNAL_ENTRIES].count_documents(
+                {"source_type": "purchase_payment", "source_id": pay_id, "reversal_of": None}
+            ) == 1
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+    draft = await create_general_draft(server.db, {
+        "date": "2026-10-08",
+        "description": "Beban operasional uji",
+        "lines": [
+            {"account_id": expense["id"], "debit": 5000, "credit": 0},
+            {"account_id": bank["id"], "debit": 0, "credit": 5000},
+        ],
+    }, user=USER)
+    await post_general_voucher(server.db, draft["id"], user=USER)
+    statement = await get_profit_loss(server.db, start_date="2026-10-01", end_date="2026-10-31")
+    assert statement["totals"]["revenue_total"] == 30000.0
+    assert statement["totals"]["cogs_total"] == 16000.0
+    assert statement["totals"]["gross_profit"] == 14000.0
+    assert statement["totals"]["expense_total"] == 5000.0
+    assert statement["totals"]["net_profit"] == 9000.0
+    ar_lines = await server.db[JOURNAL_LINES].find({"account_id": receivable["id"]}, {"_id": 0}).to_list(10)
+    ar_net = sum(Decimal(str(row.get("debit") or 0)) - Decimal(str(row.get("credit") or 0)) for row in ar_lines)
+    assert ar_net == Decimal("0")
+    bank_lines = await server.db[JOURNAL_LINES].find({"account_id": bank["id"]}, {"_id": 0}).to_list(10)
+    bank_net = sum(Decimal(str(row.get("debit") or 0)) - Decimal(str(row.get("credit") or 0)) for row in bank_lines)
+    assert bank_net == Decimal("-35000")
+    ap_lines = await server.db[JOURNAL_LINES].find({"account_id": accounts["payable"]["id"]}, {"_id": 0}).to_list(10)
+    ap_net = sum(Decimal(str(row.get("debit") or 0)) - Decimal(str(row.get("credit") or 0)) for row in ap_lines)
+    assert ap_net == Decimal("0")
+    clearing_lines = await server.db[JOURNAL_LINES].find({"account_id": accounts["clearing"]["id"]}, {"_id": 0}).to_list(10)
+    clearing_net = sum(Decimal(str(row.get("debit") or 0)) - Decimal(str(row.get("credit") or 0)) for row in clearing_lines)
+    assert clearing_net == Decimal("0")
+    book_after_pay = await build_financial_book_reconciliation(server.db)
+    assert book_after_pay["financial_remaining"] == 144000.0
+    assert book_after_pay["inventory_gl_balance"] == 144000.0
+    assert book_after_pay["reconciliation_status"] == "MATCH"
+    purchases = await purchase_activity_report(server.db, start_date="2026-10-01", end_date="2026-10-31")
+    assert purchases["writes"] == 0
+    assert purchases["filtered_count"] >= 1
+    assert purchases["total_amount"] == 60000.0
+    purchase_row = purchases["items"][0]
+    assert purchase_row["invoice_numbers"] == ["FPB-E2E"]
+    assert purchase_row["invoice_posting"] == ["POSTED"]
+    assert purchase_row["payment_numbers"] == ["PPB-E2E"]
+    assert purchase_row["payment_posting"] == ["POSTED"]
+    sales = await sales_activity_report(server.db, start_date="2026-10-01", end_date="2026-10-31")
+    assert sales["writes"] == 0
+    assert sales["filtered_count"] == 1
+    assert sales["total_amount"] == 30000.0
+    assert sales["historical_as_of"] is False
+    assert accounts["cogs"]["id"]

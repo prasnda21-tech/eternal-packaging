@@ -41,6 +41,7 @@ from services.purchase_accounting_settings import (
 from services.purchase_common import actor_snapshot, money_round, now_iso, qty_round
 
 COLLECTION = "financial_inventory_openings"
+SNAPSHOTS = "financial_inventory_opening_snapshots"
 CLAIMS = "financial_inventory_opening_claims"
 CLAIM_ID = "financial_inventory_opening"
 ISSUE_COLLECTION = "inventory_issue_accounting"
@@ -141,6 +142,13 @@ async def ensure_indexes(db) -> None:
         unique=True,
         partialFilterExpression={"status": STATUS_POSTED},
         name="uniq_posted_financial_opening_date",
+    )
+    await db[SNAPSHOTS].create_index("id", unique=True)
+    await db[SNAPSHOTS].create_index(
+        "client_request_id",
+        unique=True,
+        partialFilterExpression={"client_request_id": {"$type": "string"}},
+        name="uniq_financial_opening_snapshot_request",
     )
     await db[CLAIMS].update_one(
         {"_id": CLAIM_ID},
@@ -258,7 +266,17 @@ def _line_fingerprint(lines: List[dict]) -> str:
     return "\n".join(sorted(parts))
 
 
-def _same_opening_payload(existing: dict, effective: str, lines: List[dict], total: Decimal) -> bool:
+def _same_opening_payload(
+    existing: dict,
+    effective: str,
+    lines: List[dict],
+    total: Decimal,
+    snapshot_id: str = "",
+) -> bool:
+    stored_snapshot = str(existing.get("snapshot_id") or "")
+    incoming_snapshot = str(snapshot_id or "")
+    if incoming_snapshot and stored_snapshot and incoming_snapshot != stored_snapshot:
+        return False
     return (
         str(existing.get("effective_date") or "") == effective
         and _money(existing.get("total")) == _money(total)
@@ -749,6 +767,387 @@ async def _freeze_receipt_exclusion(db, lines: List[dict], effective_date: str) 
     return coverage
 
 
+def _chain_fingerprint(chain: List[dict]) -> str:
+    parts = []
+    for movement in chain or []:
+        parts.append("|".join([
+            str(movement.get("id") or movement.get("event_key") or ""),
+            str(movement.get("stock_applied_at") or ""),
+            str(movement.get("balance_before")),
+            str(movement.get("balance_after")),
+            str(movement.get("reference_type") or ""),
+            str(movement.get("reference_id") or ""),
+            str(movement.get("base_uom") or ""),
+        ]))
+    return "\n".join(parts)
+
+
+def _state_version(state: Optional[dict]) -> int:
+    try:
+        return int((state or {}).get("version") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _annotate_reconstruction_blockers(blockers: List[dict]) -> List[dict]:
+    needs_snapshot = {
+        "STOCK_COMMIT_UNPROVEN",
+        "STOCK_SNAPSHOT_UNPROVEN",
+        "STOCK_CHAIN_UNPROVEN",
+        "STOCK_CHAIN_AMBIGUOUS",
+        "STOCK_CHAIN_ORDER_CONFLICT",
+        "STOCK_PENDING",
+        "STOCK_COVERAGE_UNPROVEN",
+    }
+    annotated = []
+    for row in blockers or []:
+        item = dict(row)
+        if str(item.get("code") or "") in needs_snapshot:
+            item["snapshot_required"] = True
+            item["valid_snapshot_rule"] = (
+                "Rekonstruksi historis ke cutoff tidak terbukti. Ambil snapshot pada tanggal "
+                "efektif, tidak sebelum 00:00 WIB tanggal itu. Snapshot yang dibuat kemudian "
+                "tidak boleh diberi tanggal mundur."
+            )
+        annotated.append(item)
+    return annotated
+
+
+async def _read_item_boundary(db, master_item_id: str, base_uom: str, *, settle_pending: bool) -> dict:
+    from services.hpp_cutover import prove_stock_application_chain
+    from services.physical_stock_engine import reconcile_pending_product_claim
+
+    mid = str(master_item_id or "")
+    if settle_pending:
+        state = await db.product_stock_state.find_one(
+            {"$or": [{"_id": mid}, {"master_item_id": mid}]},
+            {"_id": 0, "pending_event": 1, "total_qty": 1},
+        )
+        if state and state.get("pending_event"):
+            await reconcile_pending_product_claim(db, mid)
+    proof = await prove_stock_application_chain(db, mid, base_uom=base_uom)
+    state = proof.get("state") or await db.product_stock_state.find_one(
+        {"$or": [{"_id": mid}, {"master_item_id": mid}]},
+        {"_id": 0},
+    )
+    return {"proof": proof, "state": state}
+
+
+async def capture_financial_opening_snapshot(db, payload: dict, user: Optional[dict] = None) -> dict:
+    """Record current proven stock. Does not change qty to manufacture a snapshot."""
+    request_id = str((payload or {}).get("client_request_id") or "").strip()
+    if not request_id:
+        raise OpeningBlocked("REQUEST_ID_REQUIRED", "client_request_id wajib diisi.", status_code=400)
+    identities = (payload or {}).get("lines") or (payload or {}).get("items")
+    if not isinstance(identities, list) or not identities:
+        raise OpeningBlocked("OPENING_LINES_REQUIRED", "Item snapshot wajib diisi.", status_code=400)
+    before_stock = await db.product_stock_state.count_documents({})
+    before_movements = await db.stock_movements.count_documents({})
+    existing = await db[SNAPSHOTS].find_one({"client_request_id": request_id}, {"_id": 0})
+    wanted = []
+    seen = set()
+    for raw in identities:
+        if not isinstance(raw, dict):
+            raise OpeningBlocked("OPENING_LINE_INVALID", "Baris snapshot tidak valid.", status_code=400)
+        mid = str(raw.get("master_item_id") or "").strip()
+        base_uom = str(raw.get("base_uom") or "").strip().upper()
+        if not mid or not base_uom:
+            raise OpeningBlocked("OPENING_LINE_INVALID", "Item dan base UOM snapshot wajib diisi.", status_code=400)
+        if mid in seen:
+            raise OpeningBlocked("OPENING_LINE_DUPLICATE", "Item snapshot tidak boleh ganda.", status_code=400)
+        seen.add(mid)
+        wanted.append({"master_item_id": mid, "base_uom": base_uom})
+    if existing:
+        stored = sorted(str(row.get("master_item_id") or "") for row in existing.get("lines") or [])
+        if stored != sorted(row["master_item_id"] for row in wanted):
+            raise OpeningBlocked(
+                "OPENING_PAYLOAD_MISMATCH",
+                "Request snapshot yang sama tidak boleh mengganti item yang sudah diambil.",
+            )
+        return existing
+    captured_at = _utc_now()
+    actor = actor_snapshot(user)
+    lines = []
+    blockers = []
+    for row in wanted:
+        mid = row["master_item_id"]
+        observed = await _read_item_boundary(db, mid, row["base_uom"], settle_pending=True)
+        state = observed.get("state") or {}
+        if state.get("pending_event"):
+            blockers.append({
+                "code": "STOCK_PENDING",
+                "message": "Mutasi stok masih in-flight. Snapshot tidak mengubah qty dan tidak dibuat.",
+                "master_item_id": mid,
+                "snapshot_required": True,
+            })
+            continue
+        proof = observed.get("proof") or {}
+        if not proof.get("ok"):
+            blockers.append({
+                "code": proof.get("reason") or "STOCK_COMMIT_UNPROVEN",
+                "message": "Batas sebelum/sesudah snapshot tidak terbukti. Timestamp tidak diisi mundur.",
+                "master_item_id": mid,
+                "movement_id": proof.get("movement_id"),
+                "evidence_reason": proof.get("evidence_reason"),
+                "snapshot_required": True,
+            })
+            continue
+        again = await _read_item_boundary(db, mid, row["base_uom"], settle_pending=False)
+        again_state = again.get("state") or {}
+        again_proof = again.get("proof") or {}
+        chain = again_proof.get("chain") or []
+        if (
+            again_state.get("pending_event")
+            or not again_proof.get("ok")
+            or _state_version(again_state) != _state_version(state)
+            or _chain_fingerprint(chain) != _chain_fingerprint(proof.get("chain") or [])
+        ):
+            blockers.append({
+                "code": "STALE_SNAPSHOT",
+                "message": "Stok berubah saat snapshot diambil. Snapshot tidak disimpan.",
+                "master_item_id": mid,
+            })
+            continue
+        physical_qty = again_state.get("total_qty")
+        if physical_qty is None:
+            physical_qty = chain[-1].get("balance_after") if chain else None
+        state_uom = str(again_state.get("base_uom") or row["base_uom"]).strip().upper()
+        if state_uom != row["base_uom"]:
+            blockers.append({
+                "code": "OPENING_UOM_AMBIGUOUS",
+                "message": "Base UOM snapshot tidak sama dengan satuan stok.",
+                "master_item_id": mid,
+            })
+            continue
+        lines.append({
+            "master_item_id": mid,
+            "base_uom": state_uom,
+            "qty": qty_round(physical_qty) if physical_qty is not None else None,
+            "revision": _state_version(again_state),
+            "fingerprint": _chain_fingerprint(chain),
+            "event_count": len(chain),
+            "identity": financial_inventory_item_key({"master_item_id": mid}),
+            "provenance": {
+                "source": "CAPTURED_STOCK_BOUNDARY",
+                "actor": actor,
+                "captured_at": captured_at.isoformat(),
+                "published_price_ignored": True,
+                "qty_adjusted_for_snapshot": False,
+            },
+        })
+    if blockers or len(lines) != len(wanted):
+        if await db.product_stock_state.count_documents({}) != before_stock:
+            raise OpeningBlocked("SNAPSHOT_MUTATED_STOCK", "Snapshot mengubah jumlah dokumen stok.", status_code=500)
+        raise OpeningBlocked(
+            str(blockers[0].get("code") if blockers else "STOCK_SNAPSHOT_UNPROVEN"),
+            str(blockers[0].get("message") if blockers else "Snapshot tidak terbukti."),
+            extra={"blockers": _annotate_reconstruction_blockers(blockers)},
+        )
+    doc = {
+        "id": str(uuid.uuid4()),
+        "client_request_id": request_id,
+        "status": "CAPTURED",
+        "captured_at": captured_at.isoformat(),
+        "boundary_at": captured_at.isoformat(),
+        "business_date": captured_at.astimezone(WIB).date().isoformat(),
+        "timezone": TARGET_TIMEZONE,
+        "lines": lines,
+        "created_by": actor,
+        "created_at": captured_at.isoformat(),
+        "backdated": False,
+    }
+    try:
+        await db[SNAPSHOTS].insert_one(dict(doc))
+    except DuplicateKeyError:
+        raced = await db[SNAPSHOTS].find_one({"client_request_id": request_id}, {"_id": 0})
+        if raced:
+            return raced
+        raise OpeningBlocked("OPENING_CONFLICT", "Snapshot bentrok dengan proses lain.")
+    doc.pop("_id", None)
+    if await db.stock_movements.count_documents({}) != before_movements and any(
+        (observed_line.get("provenance") or {}).get("qty_adjusted_for_snapshot") for observed_line in lines
+    ):
+        raise OpeningBlocked("SNAPSHOT_MUTATED_STOCK", "Snapshot mengubah qty.", status_code=500)
+    await record_accounting_event(
+        db,
+        event_type="financial_inventory_opening_snapshot_captured",
+        entity_type="financial_inventory_opening_snapshot",
+        entity_id=doc["id"],
+        actor=user,
+        after={"business_date": doc["business_date"], "line_count": len(lines)},
+        operation_key=f"fio-snapshot:{doc['id']}",
+    )
+    return doc
+
+
+async def _coverage_from_snapshot(db, lines: List[dict], effective_date: str, snapshot_id: str) -> dict:
+    from services.hpp_cutover import applied_marker_instant, cutoff_snapshot_qty
+
+    snapshot = await db[SNAPSHOTS].find_one({"id": str(snapshot_id)}, {"_id": 0})
+    if not snapshot or snapshot.get("status") != "CAPTURED":
+        raise OpeningBlocked("SNAPSHOT_NOT_FOUND", "Snapshot opening tidak ditemukan.", status_code=404)
+    business = str(snapshot.get("business_date") or "")
+    if effective_date < business:
+        raise OpeningBlocked(
+            "OPENING_SNAPSHOT_BACKDATED",
+            "Snapshot dibuat setelah tanggal yang diminta. Opening tidak diberi tanggal mundur.",
+            extra={"snapshot_business_date": business, "effective_date": effective_date},
+        )
+    if effective_date != business:
+        raise OpeningBlocked(
+            "OPENING_SNAPSHOT_DATE_MISMATCH",
+            "Tanggal opening harus sama dengan tanggal WIB saat snapshot diambil.",
+            extra={"snapshot_business_date": business, "effective_date": effective_date},
+        )
+    captured_lines = {
+        str(row.get("master_item_id") or ""): row
+        for row in snapshot.get("lines") or []
+    }
+    boundary = _cutoff_instant(business)
+    parsed_boundary = snapshot.get("boundary_at")
+    stamp = str(parsed_boundary or "")
+    if stamp.endswith("Z"):
+        stamp = stamp[:-1] + "+00:00"
+    try:
+        boundary = datetime.fromisoformat(stamp)
+    except ValueError as exc:
+        raise OpeningBlocked("SNAPSHOT_BOUNDARY_UNPROVEN", "Waktu batas snapshot tidak terbaca.") from exc
+    if boundary.tzinfo is None:
+        raise OpeningBlocked("SNAPSHOT_BOUNDARY_UNPROVEN", "Waktu batas snapshot tidak memiliki zona waktu.")
+    excluded: List[str] = []
+    ambiguous: List[str] = []
+    blockers: List[dict] = []
+    snapshots: List[dict] = []
+    for line in lines:
+        mid = str(line.get("master_item_id") or "")
+        captured = captured_lines.get(mid)
+        if not captured:
+            blockers.append({
+                "code": "SNAPSHOT_ITEM_MISSING",
+                "message": "Item opening tidak ada pada snapshot yang dipilih.",
+                "master_item_id": mid,
+            })
+            continue
+        if str(line.get("base_uom") or "").strip().upper() != str(captured.get("base_uom") or "").strip().upper():
+            blockers.append({
+                "code": "OPENING_UOM_AMBIGUOUS",
+                "message": "Base UOM opening tidak sama dengan snapshot.",
+                "master_item_id": mid,
+            })
+            continue
+        if captured.get("qty") is None or _dec(line.get("qty")) != _dec(captured.get("qty")):
+            blockers.append({
+                "code": "OPENING_SNAPSHOT_MISMATCH",
+                "message": "Qty opening harus sama dengan qty snapshot. Qty tidak diubah agar snapshot ada.",
+                "master_item_id": mid,
+                "snapshot_qty": captured.get("qty"),
+                "declared_qty": line.get("qty"),
+            })
+            continue
+        observed = await _read_item_boundary(db, mid, captured.get("base_uom") or "", settle_pending=False)
+        state = observed.get("state") or {}
+        proof = observed.get("proof") or {}
+        chain = proof.get("chain") or []
+        if state.get("pending_event") or not proof.get("ok"):
+            blockers.append({
+                "code": "STALE_SNAPSHOT" if proof.get("ok") else (proof.get("reason") or "STALE_SNAPSHOT"),
+                "message": "Snapshot tidak lagi menggambarkan stok. Posting ditolak.",
+                "master_item_id": mid,
+                "snapshot_required": True,
+            })
+            continue
+        if (
+            _state_version(state) != int(captured.get("revision") or 0)
+            or _chain_fingerprint(chain) != str(captured.get("fingerprint") or "")
+            or _dec(state.get("total_qty") or 0) != _dec(captured.get("qty"))
+        ):
+            blockers.append({
+                "code": "STALE_SNAPSHOT",
+                "message": "Revisi stok berubah setelah snapshot. Snapshot basi tidak diposting.",
+                "master_item_id": mid,
+                "captured_revision": captured.get("revision"),
+                "current_revision": _state_version(state),
+            })
+            continue
+        placed = cutoff_snapshot_qty(chain, boundary, require_applied_marker=True)
+        if not placed.get("ok"):
+            blockers.append({
+                "code": placed.get("reason") or "STOCK_COMMIT_UNPROVEN",
+                "message": "Event sebelum dan sesudah batas snapshot tidak terbukti.",
+                "master_item_id": mid,
+                "movement_id": placed.get("movement_id"),
+                "snapshot_required": True,
+            })
+            continue
+        receipts = await db.purchase_goods_receipts.find(
+            {"cancelled": {"$ne": True}, "lines.master_item_id": mid},
+            {"_id": 0, "id": 1, "receipt_date": 1, "receipt_number": 1},
+        ).to_list(5000)
+        by_receipt: Dict[str, List[dict]] = {}
+        for movement in chain:
+            if str(movement.get("reference_type") or "") != "goods_receipt":
+                continue
+            by_receipt.setdefault(str(movement.get("reference_id") or ""), []).append(movement)
+        snapshots.append({
+            "master_item_id": mid,
+            "base_uom": captured.get("base_uom"),
+            "snapshot_qty": captured.get("qty"),
+            "snapshot_id": snapshot["id"],
+            "boundary_at": snapshot.get("boundary_at"),
+            "events_before_cutoff": len(placed.get("events_before") or []),
+            "events_after_cutoff": len(placed.get("events_after") or []),
+            "snapshot_is_current_stock": True,
+            "backdated": False,
+        })
+        for receipt in receipts:
+            receipt_id = str(receipt.get("id") or "")
+            business_date = wib_business_date(receipt.get("receipt_date"))
+            moves = by_receipt.get(receipt_id) or []
+            if business_date is None:
+                ambiguous.append(receipt_id)
+                blockers.append({
+                    "code": "AMBIGUOUS_RECEIPT_DATE",
+                    "message": "Tanggal penerimaan tidak dapat dibaca.",
+                    "receipt_id": receipt_id,
+                    "master_item_id": mid,
+                })
+                continue
+            if not moves:
+                blockers.append({
+                    "code": "STOCK_COVERAGE_UNPROVEN",
+                    "message": "Penerimaan belum punya efek stok yang terbukti terhadap batas snapshot.",
+                    "receipt_id": receipt_id,
+                    "master_item_id": mid,
+                })
+                continue
+            writer = applied_marker_instant(moves[0])
+            stock_before = bool(writer and writer < boundary)
+            accounting_before = business_date < effective_date or (business_date == effective_date and stock_before)
+            if stock_before and accounting_before:
+                excluded.append(receipt_id)
+            elif stock_before and not accounting_before:
+                blockers.append({
+                    "code": "STOCK_APPLIED_BEFORE_ACCOUNTING_DATE",
+                    "message": "Stok GR sudah masuk sebelum batas snapshot, tetapi tanggal akuntansi belum.",
+                    "receipt_id": receipt_id,
+                    "master_item_id": mid,
+                })
+            elif not stock_before and business_date < effective_date:
+                blockers.append({
+                    "code": "HISTORICAL_DOCUMENT_STOCK_AFTER_CUTOFF",
+                    "message": "Tanggal akuntansi sebelum batas, tetapi efek stok belum terbukti sebelumnya.",
+                    "receipt_id": receipt_id,
+                    "master_item_id": mid,
+                })
+    return {
+        "excluded": excluded,
+        "ambiguous": ambiguous,
+        "blockers": blockers,
+        "snapshots": snapshots,
+        "snapshot_id": snapshot["id"],
+    }
+
+
 async def preview_financial_opening(db, payload: dict) -> dict:
     """Zero-write plan. Does not insert, post, or activate a date."""
     before_openings = await db[COLLECTION].count_documents({})
@@ -775,7 +1174,12 @@ async def preview_financial_opening(db, payload: dict) -> dict:
         inventory_account_id=inventory_id,
         total=total,
     )
-    coverage = await classify_opening_coverage(db, lines, effective)
+    snapshot_id = str((payload or {}).get("snapshot_id") or "").strip()
+    if snapshot_id:
+        coverage = await _coverage_from_snapshot(db, lines, effective, snapshot_id)
+    else:
+        coverage = await classify_opening_coverage(db, lines, effective)
+        coverage["blockers"] = _annotate_reconstruction_blockers(coverage["blockers"])
     excluded = coverage["excluded"]
     ambiguous = coverage["ambiguous"]
     watched = list(dict.fromkeys(excluded + [
@@ -806,11 +1210,19 @@ async def preview_financial_opening(db, payload: dict) -> dict:
         "can_post": not coverage["blockers"],
         "book_value_source": SOURCE_APPROVED,
         "published_is_book_value": False,
+        "snapshot_id": snapshot_id or None,
+        "historical_reconstruction": not bool(snapshot_id),
     }
 
 
 async def list_financial_openings(db) -> List[dict]:
     rows = await db[COLLECTION].find({}, {"_id": 0}).sort("created_at", -1).to_list(50)
+    for row in rows:
+        if row.get("status") == STATUS_POSTED:
+            problem = await _opening_journal_problem(db, row)
+            row["journal_authority"] = "valid" if problem is None else str(problem.get("code") or "")
+        else:
+            row["journal_authority"] = None
     return rows
 
 
@@ -902,6 +1314,38 @@ async def _opening_is_consumed(db, opening: dict) -> bool:
         {"_id": 1},
     )
     return found is not None
+
+
+async def guard_consumed_opening_journal(db, journal: dict) -> None:
+    """Block a direct journal reversal after COGS has consumed the opening.
+
+    Linked vouchers are also covered. The opening-balance path still takes
+    the item lock first; this guard is the journal_core backstop.
+    """
+    from services.journal_core import JournalConflictError
+
+    journal_id = str((journal or {}).get("id") or "")
+    if not journal_id:
+        return
+    source_type = str(journal.get("source_type") or "")
+    source_id = str(journal.get("source_id") or "")
+    clauses = [{"posted_journal_id": journal_id}]
+    if source_type == SOURCE_TYPE and source_id:
+        clauses.append({"id": source_id})
+    if source_type == SOURCE_OPENING_BALANCE and source_id:
+        clauses.append({
+            "journal_origin": "existing_opening_voucher",
+            "existing_opening_voucher_id": source_id,
+        })
+    openings = await db[COLLECTION].find(
+        {"status": STATUS_POSTED, "$or": clauses},
+        {"_id": 0},
+    ).to_list(20)
+    for opening in openings:
+        if await _opening_is_consumed(db, opening):
+            raise JournalConflictError(
+                "Jurnal opening yang sudah dikonsumsi HPP tidak dapat direversal."
+            )
 
 
 async def _journal_has_reversal(db, journal: Optional[dict]) -> bool:
@@ -1204,11 +1648,12 @@ async def post_financial_opening(db, payload: dict, user: Optional[dict] = None)
     total = _opening_total(lines)
     if total <= 0:
         raise OpeningBlocked("OPENING_TOTAL_ZERO", "Total opening nol tidak diposting sebagai jurnal.", status_code=400)
+    snapshot_id = str((payload or {}).get("snapshot_id") or "").strip()
     lease = await _acquire_lease(db, request_id)
     token = str(lease.get("lease_token") or "")
     try:
         existing = await db[COLLECTION].find_one({"client_request_id": request_id}, {"_id": 0})
-        if existing and not _same_opening_payload(existing, effective, lines, total):
+        if existing and not _same_opening_payload(existing, effective, lines, total, snapshot_id):
             raise OpeningBlocked(
                 "OPENING_PAYLOAD_MISMATCH",
                 "Request yang sama tidak boleh mengubah qty, harga, tanggal, atau item yang sudah dibekukan.",
@@ -1227,6 +1672,7 @@ async def post_financial_opening(db, payload: dict, user: Optional[dict] = None)
             inventory_id = str(existing.get("inventory_account_id") or "")
             effective = str(existing.get("effective_date") or "")
             total = _money(existing.get("total"))
+            frozen_snapshot = str(existing.get("snapshot_id") or "")
         else:
             settings = await get_purchase_accounting_settings(db)
             inventory_id = str(settings.get("inventory_account_id") or "")
@@ -1240,13 +1686,18 @@ async def post_financial_opening(db, payload: dict, user: Optional[dict] = None)
                 inventory_account_id=inventory_id,
                 total=total,
             )
+            frozen_snapshot = snapshot_id
         posted_same_day = await db[COLLECTION].find_one(
             {"status": STATUS_POSTED, "effective_date": effective, "client_request_id": {"$ne": request_id}},
             {"_id": 0, "id": 1},
         )
         if posted_same_day:
             raise OpeningBlocked("OPENING_ALREADY_POSTED", "Opening finansial untuk tanggal ini sudah diposting.")
-        coverage = await classify_opening_coverage(db, lines, effective)
+        if frozen_snapshot:
+            coverage = await _coverage_from_snapshot(db, lines, effective, frozen_snapshot)
+        else:
+            coverage = await classify_opening_coverage(db, lines, effective)
+            coverage["blockers"] = _annotate_reconstruction_blockers(coverage["blockers"])
         excluded = coverage["excluded"]
         ambiguous = coverage["ambiguous"]
         watched = list(dict.fromkeys(excluded + [
@@ -1262,6 +1713,13 @@ async def post_financial_opening(db, payload: dict, user: Optional[dict] = None)
                 str(first.get("message") or "Cakupan stok pada cutoff tidak terbukti."),
                 extra={"blockers": coverage["blockers"], "snapshots": coverage["snapshots"]},
             )
+        if existing:
+            frozen_excluded = {str(rid) for rid in existing.get("excluded_receipt_ids") or []}
+            if frozen_excluded != {str(rid) for rid in excluded}:
+                raise OpeningBlocked(
+                    "OPENING_COVERAGE_CHANGED",
+                    "Cakupan penerimaan berubah sejak basis dibekukan. Settings dan stok baru tidak mengganti basis diam-diam.",
+                )
         actor = actor_snapshot(user)
         stamp = now_iso()
         if not existing:
@@ -1278,6 +1736,7 @@ async def post_financial_opening(db, payload: dict, user: Optional[dict] = None)
                         "effective_date": effective,
                         "timezone": TARGET_TIMEZONE,
                         "published_price_ignored": True,
+                        "snapshot_id": snapshot_id or None,
                     },
                 })
             doc = {
@@ -1292,6 +1751,7 @@ async def post_financial_opening(db, payload: dict, user: Optional[dict] = None)
                 "journal_origin": "existing_opening_voucher" if resolution["mode"] == "link_existing" else "new_journal",
                 "existing_opening_voucher_id": resolution.get("voucher_id"),
                 "posted_journal_id": resolution.get("journal_id"),
+                "snapshot_id": snapshot_id or None,
                 "lines": frozen_lines,
                 "total": money_round(total),
                 "excluded_receipt_ids": excluded,
@@ -1399,6 +1859,7 @@ async def recover_financial_opening(db, *, client_request_id: str, user: Optiona
                 "client_request_id": request_id,
                 "effective_date": doc.get("effective_date"),
                 "lines": doc.get("lines") or [],
+                "snapshot_id": doc.get("snapshot_id") or "",
             },
             user,
         )
@@ -1546,7 +2007,13 @@ async def build_financial_book_reconciliation(db) -> dict:
     A linked opening voucher is counted once. Overlap and other GL sources stay
     visible. Missing coverage is not reported as zero or MATCH.
     """
-    from services.inventory_issue_accounting import load_live_acquisitions, load_live_issue_bases
+    from services.inventory_issue_accounting import (
+        load_live_acquisitions,
+        load_live_issue_bases,
+        load_live_issue_journals_by_movement,
+        load_pengiriman_movements,
+        movement_id_of,
+    )
 
     before_openings = await db[COLLECTION].count_documents({})
     before_journals = await db.journal_entries.count_documents({})
@@ -1563,6 +2030,10 @@ async def build_financial_book_reconciliation(db) -> dict:
             "opening_value": None,
             "goods_receipt_value": None,
             "cogs_value": None,
+            "opening_qty": None,
+            "goods_receipt_qty": None,
+            "cogs_qty": None,
+            "financial_qty_remaining": None,
             "financial_remaining": None,
             "inventory_gl_balance": None,
             "historical_gr_overlap": None,
@@ -1573,7 +2044,18 @@ async def build_financial_book_reconciliation(db) -> dict:
             "reconciliation_status": "BLOCKED",
             "blockers": problems,
             "published_is_book_value": False,
+            "pending_cogs_count": None,
+            "physical_vs_financial": (
+                "Qty fisik adalah saldo operasional saat ini. Qty finansial adalah opening dan GR yang jurnalnya masih sah, dikurangi COGS posted. "
+                "Keduanya berbeda saat posting keuangan masih pending."
+            ),
+            "item_hpp_scope": (
+                "HPP barang hanya dari acquisition opening atau GR yang disetujui. "
+                "Harga cup kosong dan Published Pricing tidak menutup biaya sablon. "
+                "Biaya produksi yang sudah dijurnal tetap pada klasifikasi akunnya."
+            ),
             "identity": "opening_posted + gr_posted - cogs_posted = financial_remaining",
+            "historical_as_of": False,
         }
     settings = await get_purchase_accounting_settings(db)
     inventory_id = str(settings.get("inventory_account_id") or "")
@@ -1592,6 +2074,18 @@ async def build_financial_book_reconciliation(db) -> dict:
         (_money((row.get("basis") or {}).get("total_cogs")) for row in issues),
         Decimal("0"),
     ))
+    opening_qty = sum(
+        (_dec(row.get("base_qty")) for row in acquisitions if row.get("source") == SOURCE_APPROVED),
+        Decimal("0"),
+    )
+    gr_qty = sum(
+        (_dec(row.get("base_qty")) for row in acquisitions if row.get("source") != SOURCE_APPROVED),
+        Decimal("0"),
+    )
+    cogs_qty = sum(
+        (_dec((row.get("basis") or {}).get("issue_base_qty") or (row.get("basis") or {}).get("base_qty")) for row in issues),
+        Decimal("0"),
+    )
     has_basis = bool(acquisitions or issues or openings)
     remaining = _money(opening_value + gr_value - cogs_value) if has_basis else None
     excluded = {str(rid) for opening in openings for rid in (opening.get("excluded_receipt_ids") or [])}
@@ -1633,10 +2127,16 @@ async def build_financial_book_reconciliation(db) -> dict:
     overlap = buckets.get("historical_gr_overlap", Decimal("0.00"))
     other_keys = {key: money_round(value) for key, value in buckets.items() if key.startswith("other:")}
     other_total = _money(sum((_dec(value) for value in other_keys.values()), Decimal("0")))
-    coverage_complete = not ambiguous and overlap == 0 and not other_keys
+    live_issue_journals = await load_live_issue_journals_by_movement(db)
+    pending_cogs = [
+        movement_id_of(movement)
+        for movement in await load_pengiriman_movements(db)
+        if movement_id_of(movement) not in live_issue_journals
+    ]
+    coverage_complete = not ambiguous and overlap == 0 and not other_keys and not pending_cogs
     if remaining is None:
         status = "INCOMPLETE"
-    elif not coverage_complete:
+    elif pending_cogs or not coverage_complete:
         status = "INCOMPLETE"
     elif gl_total is not None and remaining == gl_total:
         status = "MATCH"
@@ -1653,6 +2153,10 @@ async def build_financial_book_reconciliation(db) -> dict:
         "opening_value": money_round(opening_value),
         "goods_receipt_value": money_round(gr_value),
         "cogs_value": money_round(cogs_value),
+        "opening_qty": float(qty_round(opening_qty)) if has_basis else None,
+        "goods_receipt_qty": float(qty_round(gr_qty)) if has_basis else None,
+        "cogs_qty": float(qty_round(cogs_qty)) if has_basis else None,
+        "financial_qty_remaining": float(qty_round(opening_qty + gr_qty - cogs_qty)) if has_basis else None,
         "financial_remaining": None if remaining is None else money_round(remaining),
         "inventory_gl_balance": None if gl_total is None else money_round(gl_total),
         "historical_gr_overlap": money_round(overlap),
@@ -1662,5 +2166,16 @@ async def build_financial_book_reconciliation(db) -> dict:
         "coverage_complete": coverage_complete,
         "reconciliation_status": status,
         "published_is_book_value": False,
+        "pending_cogs_count": len(pending_cogs),
+        "physical_vs_financial": (
+            "Qty fisik adalah saldo operasional saat ini. Qty finansial adalah opening dan GR yang jurnalnya masih sah, dikurangi COGS posted. "
+            "Keduanya berbeda saat posting keuangan masih pending."
+        ),
+        "item_hpp_scope": (
+            "HPP barang hanya dari acquisition opening atau GR yang disetujui. "
+            "Harga cup kosong dan Published Pricing tidak menutup biaya sablon. "
+            "Biaya produksi yang sudah dijurnal tetap pada klasifikasi akunnya."
+        ),
         "identity": "opening_posted + gr_posted - cogs_posted = financial_remaining",
+        "historical_as_of": False,
     }

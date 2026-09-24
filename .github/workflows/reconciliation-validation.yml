@@ -17,7 +17,7 @@ jobs:
   backend-focused:
     name: Backend focused tests
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     services:
       mongodb:
         image: mongo:7
@@ -64,6 +64,8 @@ jobs:
           tests/test_stock_v2_off_state_compat.py
           tests/test_line_product_replacement_concurrency.py
           tests/test_sales_pwa_scope.py
+          tests/test_financial_inventory_opening.py
+          tests/test_inventory_issue_posting.py
 
   frontend-focused:
     name: Frontend tests and build
@@ -98,6 +100,8 @@ jobs:
           src/mobile/MobileTasksPage.test.js
           src/pages/HoPDashboard.test.js
           src/pages/inventoryPersediaanLiveSearch.contract.test.js
+          src/pages/NilaiPersediaan.test.js
+          src/pages/NilaiPersediaan.interaction.test.js
           src/sales/SalesPwaLayout.test.js
           src/sales/SalesPwaOrdersPage.test.js
           src/sales/SalesPwaDashboardPage.test.js
