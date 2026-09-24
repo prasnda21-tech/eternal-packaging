@@ -16,7 +16,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 os.environ.setdefault("MONGO_URL", "mongodb://127.0.0.1:27017")
 _worker = os.environ.get("PYTEST_XDIST_WORKER") or "main"
-os.environ["DB_NAME"] = f"eternal_packaging_purchase_invoice_posting_test_{_worker}"
+TEST_DB_NAME = f"eternal_packaging_purchase_invoice_posting_test_{_worker}"
+os.environ["DB_NAME"] = TEST_DB_NAME
 os.environ.setdefault("JWT_SECRET", "test-secret-key-12345678901234567890")
 os.environ.setdefault("CORS_ORIGINS", "*")
 
@@ -79,11 +80,13 @@ def bind_motor():
     from motor.motor_asyncio import AsyncIOMotorClient
 
     server.client = AsyncIOMotorClient(os.environ["MONGO_URL"])
-    server.db = server.client[os.environ["DB_NAME"]]
+    server.db = server.client[TEST_DB_NAME]
 
 
 @pytest.fixture(autouse=True)
 async def indexes(bind_motor):
+    await server.client.drop_database(TEST_DB_NAME)
+    server.db = server.client[TEST_DB_NAME]
     await ensure_coa(server.db)
     await ensure_journal(server.db)
     await ensure_periods(server.db)

@@ -591,6 +591,19 @@ async def recalculate_hpp(
     method = normalize_method(method)
     recognition_point = normalize_recognition(recognition_point)
 
+    from services.hpp_cutover import get_active_cutover, rebuild_cutover_valuation
+    active_cutover = await get_active_cutover(db)
+    if active_cutover:
+        return await rebuild_cutover_valuation(
+            db,
+            active_cutover,
+            user=user,
+            issues=issues,
+            requested_method=method,
+            requested_recognition=recognition_point,
+            activate_cutover=False,
+        )
+
     async with get_named_lock("hpp_recalc"):
         lock = await db.app_settings.find_one_and_update(
             {"key": LOCK_KEY, "$or": [{"locked": {"$ne": True}}, {"locked": {"$exists": False}}]},
