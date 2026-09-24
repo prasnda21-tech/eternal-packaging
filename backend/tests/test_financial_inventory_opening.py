@@ -2608,3 +2608,249 @@ async def test_direct_reverse_cannot_commit_after_cogs_posts_in_the_gap():
     )
     reversed_source = str((journal or {}).get("status") or "") == "reversed"
     assert not (reversed_source and consumed)
+
+
+async def test_direct_reverse_loses_item_lock_before_reversal_insert():
+    """A passed the last consumption check, then the 600s item lock expired before insert."""
+    from datetime import datetime, timedelta, timezone
+
+    import services.inventory_financial_locks as item_locks
+    import services.journal_core as journal_core
+
+    await _configure()
+    mid = await _master()
+    opening = await post_financial_opening(
+        server.db, _opening_payload(mid, 100, 1000, "reverse-lock-expiry"), USER,
+    )
+    movement = _pengiriman(mid, 10)
+    await server.db.stock_movements.insert_one(movement)
+    clock = {"now": datetime(2026, 10, 5, 3, 0, tzinfo=timezone.utc)}
+    original_now = item_locks._utc_now
+    item_locks._utc_now = lambda: clock["now"]
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    original_seam = journal_core._before_reversal_insert
+
+    async def pause():
+        entered.set()
+        await release.wait()
+
+    journal_core._before_reversal_insert = pause
+    task = asyncio.create_task(journal_core.reverse_journal(
+        server.db,
+        opening["posted_journal_id"],
+        source_type="financial_inventory_opening_reversal",
+        source_id=f"{opening['id']}:lock-expiry",
+        posted_by=USER,
+        description="reversal setelah kunci item kedaluwarsa",
+    ))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=10)
+        clock["now"] = clock["now"] + timedelta(seconds=item_locks.LEASE_SECONDS + 5)
+        await post_inventory_issue_accounting(server.db, movement["id"], USER)
+        release.set()
+        try:
+            await task
+        except journal_core.JournalConflictError:
+            pass
+    finally:
+        release.set()
+        journal_core._before_reversal_insert = original_seam
+        item_locks._utc_now = original_now
+        if not task.done():
+            task.cancel()
+    journal = await server.db[JOURNAL_ENTRIES].find_one(
+        {"id": opening["posted_journal_id"]}, {"_id": 0},
+    )
+    prefix = f"opening:{opening['id']}:"
+    consumed = await server.db.inventory_issue_accounting.find_one(
+        {"$or": [
+            {"accounting_posting_basis.consumed_acquisitions.acquisition_key": {"$regex": f"^{prefix}"}},
+            {"accounting_posting_basis.pool_acquisition_keys": {"$regex": f"^{prefix}"}},
+        ]},
+        {"_id": 1},
+    )
+    reversal = await server.db[JOURNAL_ENTRIES].find_one(
+        {"reversal_of": opening["posted_journal_id"]},
+        {"_id": 1, "status": 1},
+    )
+    reversed_source = str((journal or {}).get("status") or "") == "reversed"
+    assert consumed
+    assert not reversal
+    assert not reversed_source
+    assert not (reversed_source and consumed)
+
+
+class _ProcessCrash(BaseException):
+    """Stands in for a killed process. Exception handlers must not recover this."""
+
+
+async def _opening_consumed(opening_id: str):
+    prefix = f"opening:{opening_id}:"
+    return await server.db.inventory_issue_accounting.find_one(
+        {"$or": [
+            {"accounting_posting_basis.consumed_acquisitions.acquisition_key": {"$regex": f"^{prefix}"}},
+            {"accounting_posting_basis.pool_acquisition_keys": {"$regex": f"^{prefix}"}},
+        ]},
+        {"_id": 1},
+    )
+
+
+async def _crash_reversal_then_recover(opening, movement, *, crash):
+    """Kill the writer after a durable marker, expire the lock, then retry."""
+    from datetime import datetime, timedelta, timezone
+    from decimal import Decimal
+
+    import services.inventory_financial_locks as item_locks
+    import services.journal_core as journal_core
+    from services.financial_inventory_opening import get_financial_opening
+
+    clock = {"now": datetime(2026, 10, 5, 3, 0, tzinfo=timezone.utc)}
+    original_now = item_locks._utc_now
+    original_release = item_locks.release_item_locks
+    original_status = journal_core._after_reversal_status_commit
+    original_header = journal_core._after_reversal_header_insert
+    original_line = journal_core._after_reversal_line_inserted
+    item_locks._utc_now = lambda: clock["now"]
+
+    async def hold_release(_db, _locks):
+        return None
+
+    item_locks.release_item_locks = hold_release
+    crash(journal_core)
+    source_id = opening["posted_journal_id"]
+    try:
+        with pytest.raises(_ProcessCrash):
+            await journal_core.reverse_journal(
+                server.db,
+                source_id,
+                source_type="financial_inventory_opening_reversal",
+                source_id=f"{opening['id']}:crash",
+                posted_by=USER,
+                description="reversal terputus",
+            )
+        item_locks.release_item_locks = original_release
+        journal_core._after_reversal_status_commit = original_status
+        journal_core._after_reversal_header_insert = original_header
+        journal_core._after_reversal_line_inserted = original_line
+        clock["now"] = clock["now"] + timedelta(seconds=item_locks.LEASE_SECONDS + 5)
+        source = await server.db[JOURNAL_ENTRIES].find_one({"id": source_id}, {"_id": 0})
+        assert str(source.get("status")) == "reversed"
+        assert str((source.get("reversal_intent") or {}).get("phase") or "") != "complete"
+        assert str(source.get("reversal_owner_expires_at") or "") <= clock["now"].isoformat()
+        headers_before = await server.db[JOURNAL_ENTRIES].count_documents({"reversal_of": source_id})
+        lines_before = 0
+        header_before = await server.db[JOURNAL_ENTRIES].find_one({"reversal_of": source_id}, {"_id": 0})
+        if header_before:
+            lines_before = await server.db[JOURNAL_LINES].count_documents({"journal_id": header_before["id"]})
+        assert not await journal_core.reversal_is_complete(server.db, source)
+        await journal_core.get_journal(server.db, source_id)
+        await get_financial_opening(server.db, opening["id"])
+        assert await server.db[JOURNAL_ENTRIES].count_documents({"reversal_of": source_id}) == headers_before
+        if header_before:
+            assert await server.db[JOURNAL_LINES].count_documents({"journal_id": header_before["id"]}) == lines_before
+        phase_after_get = (
+            await server.db[JOURNAL_ENTRIES].find_one({"id": source_id}, {"_id": 0})
+        )["reversal_intent"]["phase"]
+        assert phase_after_get == source["reversal_intent"]["phase"]
+        with pytest.raises(HTTPException):
+            await post_inventory_issue_accounting(server.db, movement["id"], USER)
+        assert not await _opening_consumed(opening["id"])
+
+        recovered = await journal_core.reverse_journal(
+            server.db,
+            source_id,
+            source_type="financial_inventory_opening_reversal",
+            source_id=f"{opening['id']}:retry",
+            posted_by=USER,
+            description="retry setelah kunci kedaluwarsa",
+        )
+        headers = await server.db[JOURNAL_ENTRIES].find({"reversal_of": source_id}, {"_id": 0}).to_list(10)
+        assert len(headers) == 1
+        assert headers[0]["status"] == "posted"
+        if header_before:
+            assert headers[0]["id"] == header_before["id"]
+        lines = await server.db[JOURNAL_LINES].find({"journal_id": headers[0]["id"]}, {"_id": 0}).to_list(20)
+        intent_lines = source["reversal_intent"]["lines"]
+        assert len(lines) == len(intent_lines) >= 2
+        by_id = {row["id"]: row for row in lines}
+        total_dr = Decimal("0.00")
+        total_cr = Decimal("0.00")
+        for wanted in intent_lines:
+            got = by_id[wanted["id"]]
+            assert got["account_id"] == wanted["account_id"]
+            total_dr += Decimal(str(got["debit"]))
+            total_cr += Decimal(str(got["credit"]))
+        assert total_dr == total_cr
+        assert total_dr > 0
+        finished = await server.db[JOURNAL_ENTRIES].find_one({"id": source_id}, {"_id": 0})
+        assert finished["status"] == "reversed"
+        assert finished["reversal_intent"]["phase"] == "complete"
+        assert await journal_core.reversal_is_complete(server.db, finished)
+        assert recovered["id"] == headers[0]["id"]
+        assert len(recovered["lines"]) == len(lines)
+        again = await journal_core.reverse_journal(
+            server.db,
+            source_id,
+            source_type="financial_inventory_opening_reversal",
+            source_id=f"{opening['id']}:retry-2",
+            posted_by=USER,
+            description="retry kedua",
+        )
+        assert again["id"] == headers[0]["id"]
+        assert await server.db[JOURNAL_ENTRIES].count_documents({"reversal_of": source_id}) == 1
+        assert not await _opening_consumed(opening["id"])
+    finally:
+        item_locks._utc_now = original_now
+        item_locks.release_item_locks = original_release
+        journal_core._after_reversal_status_commit = original_status
+        journal_core._after_reversal_header_insert = original_header
+        journal_core._after_reversal_line_inserted = original_line
+
+
+async def test_reversal_crash_after_status_commit_recovers_one_balanced_journal():
+    await _configure()
+    mid = await _master()
+    opening = await post_financial_opening(
+        server.db, _opening_payload(mid, 100, 1000, "crash-status"), USER,
+    )
+    movement = _pengiriman(mid, 10)
+    await server.db.stock_movements.insert_one(movement)
+
+    def crash(module):
+        async def boom():
+            raise _ProcessCrash()
+
+        module._after_reversal_status_commit = boom
+
+    await _crash_reversal_then_recover(opening, movement, crash=crash)
+
+
+async def test_reversal_crash_after_header_before_all_lines_keeps_the_header():
+    await _configure()
+    mid = await _master()
+    opening = await post_financial_opening(
+        server.db, _opening_payload(mid, 100, 1000, "crash-lines"), USER,
+    )
+    movement = _pengiriman(mid, 10)
+    await server.db.stock_movements.insert_one(movement)
+    seen = {"lines": None}
+
+    def crash(module):
+        async def after_line(index):
+            if index == 0:
+                source = await server.db[JOURNAL_ENTRIES].find_one(
+                    {"id": opening["posted_journal_id"]}, {"_id": 0},
+                )
+                header = await server.db[JOURNAL_ENTRIES].find_one(
+                    {"reversal_of": opening["posted_journal_id"]}, {"_id": 0},
+                )
+                seen["lines"] = await server.db[JOURNAL_LINES].count_documents({"journal_id": header["id"]})
+                assert source["reversal_intent"]["phase"] == "header_written"
+                assert seen["lines"] == 1
+                raise _ProcessCrash()
+
+        module._after_reversal_line_inserted = after_line
+
+    await _crash_reversal_then_recover(opening, movement, crash=crash)
+    assert seen["lines"] == 1

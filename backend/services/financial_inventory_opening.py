@@ -1894,6 +1894,32 @@ async def post_financial_opening(db, payload: dict, user: Optional[dict] = None)
         await _release_lease(db, token, "IDLE")
 
 
+async def _finalize_opening_reversal(db, doc: dict, user: Optional[dict], token: Optional[str] = None, held_item_locks: Optional[list] = None) -> dict:
+    """Finish a crashed journal reversal before the opening is marked reversed."""
+    from services.journal_core import finish_interrupted_reversal, reversal_is_complete
+
+    journal_id = str((doc or {}).get("posted_journal_id") or "")
+    journal = await db.journal_entries.find_one({"id": journal_id}, {"_id": 0}) if journal_id else None
+    if not journal:
+        raise OpeningBlocked(
+            "REVERSAL_INCOMPLETE",
+            "Reversal jurnal belum lengkap. Opening tidak ditandai sukses.",
+        )
+    await finish_interrupted_reversal(
+        db,
+        journal_id,
+        posted_by=user,
+        held_item_locks=held_item_locks,
+    )
+    fresh = await db.journal_entries.find_one({"id": journal_id}, {"_id": 0})
+    if not await reversal_is_complete(db, fresh):
+        raise OpeningBlocked(
+            "REVERSAL_INCOMPLETE",
+            "Reversal jurnal belum lengkap. Opening tidak ditandai sukses.",
+        )
+    return await _complete_interrupted_reversal(db, doc, user, token)
+
+
 async def _complete_interrupted_reversal(db, doc: dict, user: Optional[dict], token: Optional[str] = None) -> dict:
     if await _opening_is_consumed(db, doc):
         raise OpeningBlocked(
@@ -1934,7 +1960,7 @@ async def recover_financial_opening(db, *, client_request_id: str, user: Optiona
                 db,
                 doc,
                 user,
-                lambda fresh, token: _complete_interrupted_reversal(db, fresh, user, token),
+                lambda fresh, token: _finalize_opening_reversal(db, fresh, user, token),
             )
         problem = await _opening_journal_problem(db, doc)
         if problem:
@@ -1959,7 +1985,7 @@ async def recover_financial_opening(db, *, client_request_id: str, user: Optiona
             db,
             doc,
             user,
-            lambda fresh, token: _complete_interrupted_reversal(db, fresh, user, token),
+            lambda fresh, token: _finalize_opening_reversal(db, fresh, user, token),
         )
     if not journal:
         return await post_financial_opening(
@@ -2027,7 +2053,7 @@ async def reverse_financial_opening(db, opening_id: str, user: Optional[dict], r
             )
         journal = await db.journal_entries.find_one({"id": doc.get("posted_journal_id")}, {"_id": 0})
         if journal and await _journal_has_reversal(db, journal):
-            return await _complete_interrupted_reversal(db, doc, user)
+            return await _finalize_opening_reversal(db, doc, user, held_item_locks=locks)
         problem = await _opening_journal_problem(db, doc)
         if problem:
             raise OpeningBlocked(str(problem["code"]), str(problem["message"]), extra=problem)

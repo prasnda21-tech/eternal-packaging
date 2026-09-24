@@ -46,6 +46,344 @@ class JournalConflictError(Exception):
     """Duplicate source journal or repeated reversal."""
 
 
+async def _before_reversal_insert() -> None:
+    """Seam after the last consumption check and immediately before the reversal write."""
+    return None
+
+
+async def _after_reversal_status_commit() -> None:
+    """Seam after the source status CAS and before the reversal header insert."""
+    return None
+
+
+async def _after_reversal_header_insert() -> None:
+    """Seam after the reversal header is durable and before its lines are written."""
+    return None
+
+
+async def _after_reversal_line_inserted(_index: int) -> None:
+    """Seam after one reversal line is durable."""
+    return None
+
+
+async def _bind_reversal_owner(db, journal_id: str, tokens: List[str], expires_at: str) -> None:
+    """Copy the live item-lock lease onto the source journal.
+
+    Standalone Mongo cannot bind the later insert to another collection.
+    The lease deadline stored here is what the reversal write filters on.
+    """
+    from services.inventory_financial_locks import _utc_now
+
+    now = _utc_now().isoformat()
+    result = await db[JOURNAL_ENTRIES].update_one(
+        {
+            "id": journal_id,
+            "status": STATUS_POSTED,
+            "$or": [
+                {"reversal_owner_tokens": {"$exists": False}},
+                {"reversal_owner_tokens": None},
+                {"reversal_owner_tokens": []},
+                {"reversal_owner_expires_at": {"$exists": False}},
+                {"reversal_owner_expires_at": None},
+                {"reversal_owner_expires_at": ""},
+                {"reversal_owner_expires_at": {"$lte": now}},
+                {"reversal_owner_tokens": tokens},
+            ],
+        },
+        {"$set": {
+            "reversal_owner_tokens": list(tokens),
+            "reversal_owner_expires_at": expires_at,
+        }},
+    )
+    if int(getattr(result, "matched_count", 0) or 0) != 1:
+        raise JournalConflictError("Kunci item opening tidak lagi sah.")
+
+
+async def _commit_reversal_owner(db, journal_id: str, tokens: List[str], intent: dict) -> bool:
+    """Flip the source journal only while its copied lease is still unexpired.
+
+    The same update stores the reversal operation. A crashed process leaves
+    that marker; it does not rely on an in-process exception handler.
+    """
+    from services.inventory_financial_locks import _utc_now
+
+    now = _utc_now().isoformat()
+    result = await db[JOURNAL_ENTRIES].update_one(
+        {
+            "id": journal_id,
+            "status": STATUS_POSTED,
+            "reversal_owner_tokens": list(tokens),
+            "reversal_owner_expires_at": {"$gt": now},
+            "$or": [
+                {"reversal_intent": {"$exists": False}},
+                {"reversal_intent": None},
+            ],
+        },
+        {"$set": {
+            "status": STATUS_REVERSED,
+            "reversal_intent": intent,
+        }},
+    )
+    return int(getattr(result, "matched_count", 0) or 0) == 1
+
+
+def _lines_match_intent(stored: Sequence[dict], intent_lines: Sequence[dict]) -> bool:
+    if len(list(stored or [])) != len(list(intent_lines or [])):
+        return False
+    by_id = {str(row.get("id") or ""): row for row in stored or []}
+    total_dr = Decimal("0.00")
+    total_cr = Decimal("0.00")
+    for wanted in intent_lines or []:
+        got = by_id.get(str(wanted.get("id") or ""))
+        if not got:
+            return False
+        if str(got.get("account_id") or "") != str(wanted.get("account_id") or ""):
+            return False
+        debit = _money(got.get("debit") or 0)
+        credit = _money(got.get("credit") or 0)
+        if debit != _money(wanted.get("debit") or 0) or credit != _money(wanted.get("credit") or 0):
+            return False
+        total_dr += debit
+        total_cr += credit
+    return total_dr == total_cr and total_dr > 0
+
+
+def _balanced_lines(lines: Sequence[dict]) -> bool:
+    rows = list(lines or [])
+    if len(rows) < 2:
+        return False
+    total_dr = Decimal("0.00")
+    total_cr = Decimal("0.00")
+    for row in rows:
+        total_dr += _money(row.get("debit") or 0)
+        total_cr += _money(row.get("credit") or 0)
+    return total_dr == total_cr and total_dr > 0
+
+
+async def reversal_is_complete(db, journal: Optional[dict]) -> bool:
+    """Read-only. Incomplete reversal headers are not success."""
+    if not journal:
+        return False
+    intent = journal.get("reversal_intent") or {}
+    phase = str(intent.get("phase") or "")
+    header = await db[JOURNAL_ENTRIES].find_one({"reversal_of": journal.get("id")}, {"_id": 0})
+    if intent:
+        if phase != "complete" or not header or str(header.get("status") or "") != STATUS_POSTED:
+            return False
+        lines = await db[JOURNAL_LINES].find(
+            {"journal_id": header.get("id")}, {"_id": 0}
+        ).to_list(100)
+        return _lines_match_intent(lines, intent.get("lines") or [])
+    if str(journal.get("status") or "") != STATUS_REVERSED or not header:
+        return False
+    if str(header.get("status") or "") != STATUS_POSTED:
+        return False
+    lines = await db[JOURNAL_LINES].find(
+        {"journal_id": header.get("id")}, {"_id": 0}
+    ).to_list(100)
+    return _balanced_lines(lines)
+
+
+async def _ensure_reversal_header(db, original: dict, intent: dict) -> dict:
+    oid = str(original.get("id") or "")
+    existing = await db[JOURNAL_ENTRIES].find_one({"reversal_of": oid}, {"_id": 0})
+    if not existing:
+        existing = await db[JOURNAL_ENTRIES].find_one(
+            {"id": intent.get("reversal_journal_id")}, {"_id": 0}
+        )
+    if existing:
+        return existing
+    now = now_iso()
+    header = {
+        "id": str(intent.get("reversal_journal_id") or ""),
+        "number": "",
+        "date": str(intent.get("date") or ""),
+        "source_type": str(intent.get("source_type") or SOURCE_REVERSAL),
+        "source_id": str(intent.get("source_id") or ""),
+        "description": str(intent.get("description") or ""),
+        "status": STATUS_POSTED,
+        "reversal_of": oid,
+        "reversal_operation_id": str(intent.get("operation_id") or ""),
+        "posted_at": now,
+        "posted_by": str(intent.get("posted_by") or ""),
+        "created_at": now,
+    }
+    if not header["id"]:
+        raise JournalConflictError("Reversal belum lengkap")
+    last_err = None
+    for _ in range(25):
+        header["number"] = await next_dated_seq(db, JOURNAL_ENTRIES, "number", PREFIX_JOURNAL)
+        try:
+            await db[JOURNAL_ENTRIES].insert_one(dict(header))
+            header.pop("_id", None)
+            return header
+        except DuplicateKeyError as exc:
+            last_err = exc
+            msg = str(exc)
+            if "uniq_reversal_of" in msg or "reversal_of" in msg:
+                found = await db[JOURNAL_ENTRIES].find_one({"reversal_of": oid}, {"_id": 0})
+                if found:
+                    return found
+            if "id" in msg:
+                found = await db[JOURNAL_ENTRIES].find_one({"id": header["id"]}, {"_id": 0})
+                if found:
+                    return found
+            if "number" in msg or "E11000" in msg:
+                continue
+            raise JournalConflictError("Reversal sudah ada") from exc
+    raise JournalConflictError(f"Gagal mengalokasikan nomor jurnal. {last_err}")
+
+
+async def _ensure_reversal_line(db, journal_id: str, line: dict) -> None:
+    line_id = str(line.get("id") or "")
+    if not line_id:
+        raise JournalConflictError("Reversal belum lengkap")
+    existing = await db[JOURNAL_LINES].find_one({"id": line_id}, {"_id": 1})
+    if existing:
+        return
+    try:
+        await db[JOURNAL_LINES].insert_one({
+            "id": line_id,
+            "journal_id": journal_id,
+            "account_id": str(line.get("account_id") or ""),
+            "debit": line.get("debit") or 0,
+            "credit": line.get("credit") or 0,
+            "description": line.get("description"),
+            "created_at": now_iso(),
+        })
+    except DuplicateKeyError:
+        found = await db[JOURNAL_LINES].find_one({"id": line_id}, {"_id": 1})
+        if not found:
+            raise
+
+
+async def _materialize_reversal_intent(db, journal_id: str, writer_claim_token: Optional[str] = None) -> dict:
+    """Finish the durable reversal. Never deletes a header or a line."""
+    original = await db[JOURNAL_ENTRIES].find_one({"id": str(journal_id)}, {"_id": 0})
+    intent = (original or {}).get("reversal_intent") or {}
+    if not intent.get("operation_id") or not intent.get("lines"):
+        raise JournalConflictError("Reversal belum lengkap")
+    async with _period_writer_guard(db, str(intent.get("date") or ""), writer_claim_token):
+        header = await _ensure_reversal_header(db, original, intent)
+        await db[JOURNAL_ENTRIES].update_one(
+            {
+                "id": str(journal_id),
+                "reversal_intent.operation_id": intent.get("operation_id"),
+            },
+            {"$set": {"reversal_intent.phase": "header_written"}},
+        )
+        await _after_reversal_header_insert()
+        for index, line in enumerate(intent.get("lines") or []):
+            await _ensure_reversal_line(db, str(header.get("id") or ""), line)
+            await _after_reversal_line_inserted(index)
+        stored = await db[JOURNAL_LINES].find(
+            {"journal_id": header.get("id")}, {"_id": 0}
+        ).to_list(100)
+        if not _lines_match_intent(stored, intent.get("lines") or []):
+            raise JournalConflictError("Reversal belum lengkap")
+        await db[JOURNAL_ENTRIES].update_one(
+            {
+                "id": str(journal_id),
+                "status": STATUS_REVERSED,
+                "reversal_intent.operation_id": intent.get("operation_id"),
+            },
+            {"$set": {"reversal_intent.phase": "complete"}},
+        )
+        fresh = await db[JOURNAL_ENTRIES].find_one({"id": str(journal_id)}, {"_id": 0})
+        if not await reversal_is_complete(db, fresh):
+            raise JournalConflictError("Reversal belum lengkap")
+        return public_journal(header, stored)
+
+
+async def _restore_posted_without_reversal_header(db, journal_id: str) -> bool:
+    """Return the source to posted only when no reversal header exists."""
+    header = await db[JOURNAL_ENTRIES].find_one({"reversal_of": str(journal_id)}, {"_id": 1})
+    if header:
+        return False
+    result = await db[JOURNAL_ENTRIES].update_one(
+        {
+            "id": str(journal_id),
+            "status": STATUS_REVERSED,
+            "reversal_intent": {"$in": [None]},
+        },
+        {"$set": {"status": STATUS_POSTED}, "$unset": {"reversal_intent": ""}},
+    )
+    if int(getattr(result, "matched_count", 0) or 0) == 1:
+        return True
+    missing_intent = await db[JOURNAL_ENTRIES].update_one(
+        {
+            "id": str(journal_id),
+            "status": STATUS_REVERSED,
+            "reversal_intent": {"$exists": False},
+        },
+        {"$set": {"status": STATUS_POSTED}},
+    )
+    return int(getattr(missing_intent, "matched_count", 0) or 0) == 1
+
+
+async def finish_interrupted_reversal(
+    db,
+    journal_id: str,
+    *,
+    posted_by: Optional[dict] = None,
+    held_item_locks: Optional[list] = None,
+) -> Optional[dict]:
+    """Explicit recovery after a crashed reversal. GET paths must not call this."""
+    oid = str(journal_id or "").strip()
+    original = await db[JOURNAL_ENTRIES].find_one({"id": oid}, {"_id": 0})
+    if not original:
+        raise KeyError("missing")
+    intent = original.get("reversal_intent") or {}
+    if await reversal_is_complete(db, original):
+        header = await db[JOURNAL_ENTRIES].find_one({"reversal_of": oid}, {"_id": 0})
+        lines = await db[JOURNAL_LINES].find(
+            {"journal_id": (header or {}).get("id")}, {"_id": 0}
+        ).to_list(100)
+        return public_journal(header, lines)
+    if not intent:
+        if str(original.get("status") or "") != STATUS_REVERSED:
+            raise JournalConflictError("Reversal belum lengkap")
+        header = await db[JOURNAL_ENTRIES].find_one({"reversal_of": oid}, {"_id": 0})
+        if not header:
+            await _restore_posted_without_reversal_header(db, oid)
+            raise JournalConflictError("Jurnal sudah dibatalkan")
+        lines = await db[JOURNAL_LINES].find(
+            {"journal_id": header.get("id")}, {"_id": 0}
+        ).to_list(100)
+        if _balanced_lines(lines) and str(header.get("status") or "") == STATUS_POSTED:
+            return public_journal(header, lines)
+        raise JournalConflictError("Reversal belum lengkap")
+
+    from services.financial_inventory_opening import opening_consumption_lock_keys
+    from services.inventory_financial_locks import (
+        acquire_item_locks,
+        release_item_locks,
+        renew_item_locks,
+    )
+
+    keys = await opening_consumption_lock_keys(db, original)
+    owned = None
+    if keys:
+        if held_item_locks:
+            renewed = await renew_item_locks(db, held_item_locks)
+            if not renewed:
+                raise JournalConflictError("Kunci item opening tidak lagi sah.")
+        else:
+            from services.inventory_financial_locks import ensure_indexes as ensure_lock_indexes
+
+            await ensure_lock_indexes(db)
+            owned = await acquire_item_locks(db, keys, f"journal-recover:{oid}")
+            if owned is None:
+                raise JournalConflictError(
+                    "Item persediaan sedang dikunci oleh proses accounting lain."
+                )
+    try:
+        return await _materialize_reversal_intent(db, oid)
+    finally:
+        if owned:
+            await release_item_locks(db, owned)
+
+
 def _money(raw: Any) -> Decimal:
     try:
         return Decimal(str(raw)).quantize(Decimal("0.01"))
@@ -348,7 +686,8 @@ async def reverse_journal(
     An opening journal keeps the same item locks COGS uses from the
     consumption check through the status update. Callers that already hold
     those locks pass them in so this function renews instead of taking a
-    second holder.
+    second holder. The reversal itself is an update filtered by that lease
+    token and its expiry; after the lease is gone the update matches nothing.
     """
     oid = str(original_journal_id or "").strip()
     if not oid:
@@ -358,15 +697,8 @@ async def reverse_journal(
         original = await db[JOURNAL_ENTRIES].find_one({"id": oid}, {"_id": 0})
         if not original:
             raise KeyError("missing")
-        if original.get("status") == STATUS_REVERSED:
-            # Already reversed — return existing reversal if present
-            rev = await db[JOURNAL_ENTRIES].find_one({"reversal_of": oid}, {"_id": 0})
-            if rev:
-                lines = await db[JOURNAL_LINES].find(
-                    {"journal_id": rev["id"]}, {"_id": 0}
-                ).to_list(100)
-                return public_journal(rev, lines)
-            raise JournalConflictError("Jurnal sudah dibatalkan")
+        if original.get("status") == STATUS_REVERSED or (original.get("reversal_intent") or {}).get("phase"):
+            return await finish_interrupted_reversal(db, oid, posted_by=posted_by)
         if original.get("status") != STATUS_POSTED:
             raise JournalValidationError("Hanya jurnal posted yang dapat dibatalkan")
         if original.get("reversal_of"):
@@ -405,12 +737,23 @@ async def reverse_journal(
                     )
         try:
             await guard_consumed_opening_journal(db, original)
+            renewed_rows = None
             if keys and held_item_locks:
-                if not await renew_item_locks(db, held_item_locks):
+                renewed_rows = await renew_item_locks(db, held_item_locks)
+                if not renewed_rows:
                     raise JournalConflictError("Kunci item opening tidak lagi sah.")
-            elif owned_locks and not await renew_item_locks(db, owned_locks):
-                raise JournalConflictError("Kunci item opening tidak lagi sah.")
+            elif owned_locks:
+                renewed_rows = await renew_item_locks(db, owned_locks)
+                if not renewed_rows:
+                    raise JournalConflictError("Kunci item opening tidak lagi sah.")
             await guard_consumed_opening_journal(db, original)
+            owner_tokens: Optional[List[str]] = None
+            if renewed_rows:
+                owner_tokens = sorted(str(row.get("token") or "") for row in renewed_rows)
+                owner_expires = min(str(row.get("expires_at") or "") for row in renewed_rows)
+                if not owner_expires or any(not token for token in owner_tokens):
+                    raise JournalConflictError("Kunci item opening tidak lagi sah.")
+                await _bind_reversal_owner(db, oid, owner_tokens, owner_expires)
 
             existing_rev = await db[JOURNAL_ENTRIES].find_one({"reversal_of": oid}, {"_id": 0})
             if existing_rev:
@@ -433,6 +776,40 @@ async def reverse_journal(
             ]
             desc = description or f"Reversal {original.get('number') or oid}"
             rev_date = original.get("date") or ""
+            if owner_tokens:
+                actor = ""
+                if posted_by:
+                    actor = str(
+                        posted_by.get("email")
+                        or posted_by.get("name")
+                        or posted_by.get("id")
+                        or ""
+                    ).strip()
+                intent = {
+                    "operation_id": str(uuid.uuid4()),
+                    "phase": "status_committed",
+                    "reversal_journal_id": str(uuid.uuid4()),
+                    "source_type": source_type or SOURCE_REVERSAL,
+                    "source_id": str(source_id),
+                    "description": desc,
+                    "date": rev_date,
+                    "posted_by": actor,
+                    "lines": [
+                        {
+                            "id": str(uuid.uuid4()),
+                            "account_id": ln["account_id"],
+                            "debit": ln.get("debit") or 0,
+                            "credit": ln.get("credit") or 0,
+                            "description": ln.get("description"),
+                        }
+                        for ln in reverse_lines
+                    ],
+                }
+                await _before_reversal_insert()
+                if not await _commit_reversal_owner(db, oid, owner_tokens, intent):
+                    raise JournalConflictError("Kunci item opening tidak lagi sah.")
+                await _after_reversal_status_commit()
+                return await _materialize_reversal_intent(db, oid, writer_claim_token)
             try:
                 async with _period_writer_guard(db, rev_date, writer_claim_token) as token:
                     rev_doc = await _insert_journal_atomic(
@@ -453,7 +830,6 @@ async def reverse_journal(
                 raise
             except DuplicateKeyError as exc:
                 raise JournalConflictError("Reversal sudah ada") from exc
-
             await db[JOURNAL_ENTRIES].update_one(
                 {"id": oid, "status": STATUS_POSTED},
                 {"$set": {"status": STATUS_REVERSED}},
