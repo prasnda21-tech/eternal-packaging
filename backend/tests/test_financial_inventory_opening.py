@@ -3038,3 +3038,193 @@ async def test_reversal_crash_after_header_before_all_lines_keeps_the_header():
 
     await _crash_reversal_then_recover(opening, movement, crash=crash)
     assert seen["lines"] == 1
+
+
+async def _stored_counts():
+    return (
+        await server.db[JOURNAL_ENTRIES].count_documents({}),
+        await server.db[JOURNAL_LINES].count_documents({}),
+        await server.db.financial_inventory_openings.count_documents({}),
+    )
+
+
+async def test_general_ledger_summary_shows_pending_reversal_through_filters():
+    """Pending reversal stays visible on the ledger summary, including opening balance."""
+    from datetime import datetime, timedelta, timezone
+
+    import services.inventory_financial_locks as item_locks
+    import services.journal_core as journal_core
+    from services.general_ledger import get_general_ledger
+    from services.profit_loss import get_profit_loss
+    from services.trial_balance import get_trial_balance
+
+    accounts = await _configure()
+    mid = await _master()
+    opening = await post_financial_opening(
+        server.db, _opening_payload(mid, 100, 1000, "gl-pending-summary"), USER,
+    )
+    inventory_id = accounts["inventory"]["id"]
+    equity_id = accounts["equity"]["id"]
+    cogs_id = accounts["cogs"]["id"]
+    clock = {"now": datetime(2026, 10, 5, 3, 0, tzinfo=timezone.utc)}
+    original_now = item_locks._utc_now
+    original_release = item_locks.release_item_locks
+    original_line = journal_core._after_reversal_line_inserted
+    item_locks._utc_now = lambda: clock["now"]
+
+    async def hold_release(_db, _locks):
+        return None
+
+    async def after_line(index):
+        if index == 0:
+            raise _ProcessCrash()
+
+    item_locks.release_item_locks = hold_release
+    journal_core._after_reversal_line_inserted = after_line
+    source_id = opening["posted_journal_id"]
+    try:
+        with pytest.raises(_ProcessCrash):
+            await journal_core.reverse_journal(
+                server.db,
+                source_id,
+                source_type="financial_inventory_opening_reversal",
+                source_id=f"{opening['id']}:gl-summary",
+                posted_by=USER,
+                description="reversal tertahan untuk ringkasan",
+            )
+        item_locks.release_item_locks = original_release
+        journal_core._after_reversal_line_inserted = original_line
+        clock["now"] = clock["now"] + timedelta(seconds=item_locks.LEASE_SECONDS + 5)
+
+        before_counts = await _stored_counts()
+        period = await get_general_ledger(
+            server.db, account_id=inventory_id, start_date="2026-10-01", end_date="2026-10-31",
+        )
+        assert period["completeness_status"] == "incomplete"
+        assert period["coverage_status"] == "incomplete"
+        assert period["blocker_code"] == "REVERSAL_INCOMPLETE"
+        assert period["opening_balance"] == 0
+        assert period["ending_balance"] == 100000
+        assert period["total_debit"] == 100000
+        assert any(row.get("blocker_code") == "REVERSAL_INCOMPLETE" for row in period["items"])
+
+        opening_range = await get_general_ledger(
+            server.db, account_id=inventory_id, start_date="2026-11-01", end_date="2026-11-30",
+        )
+        assert opening_range["opening_balance"] == 100000
+        assert opening_range["ending_balance"] == 100000
+        assert opening_range["total_debit"] == 0
+        assert opening_range["items"] == []
+        assert opening_range["completeness_status"] == "incomplete"
+        assert opening_range["coverage_status"] == "incomplete"
+        assert opening_range["blocker_code"] == "REVERSAL_INCOMPLETE"
+
+        hidden = await get_general_ledger(
+            server.db,
+            account_id=inventory_id,
+            start_date="2026-10-01",
+            end_date="2026-10-31",
+            source_type="cash_bank_receipt",
+        )
+        searched = await get_general_ledger(
+            server.db,
+            account_id=inventory_id,
+            start_date="2026-10-01",
+            end_date="2026-10-31",
+            q="bukan-jurnal-ini",
+        )
+        assert hidden["items"] == []
+        assert hidden["total"] == 0
+        assert hidden["period_count"] == period["period_count"]
+        assert hidden["ending_balance"] == period["ending_balance"]
+        assert hidden["total_debit"] == period["total_debit"]
+        assert hidden["completeness_status"] == "incomplete"
+        assert hidden["blocker_code"] == "REVERSAL_INCOMPLETE"
+        assert searched["items"] == []
+        assert searched["ending_balance"] == period["ending_balance"]
+        assert searched["completeness_status"] == "incomplete"
+        assert searched["blocker_code"] == "REVERSAL_INCOMPLETE"
+
+        equity = await get_general_ledger(
+            server.db, account_id=equity_id, start_date="2026-10-01", end_date="2026-10-31",
+        )
+        assert equity["completeness_status"] == "incomplete"
+        assert equity["blocker_code"] == "REVERSAL_INCOMPLETE"
+        assert equity["ending_balance"] == -100000
+        cogs = await get_general_ledger(
+            server.db, account_id=cogs_id, start_date="2026-10-01", end_date="2026-10-31",
+        )
+        assert cogs["completeness_status"] == "complete"
+        assert cogs["coverage_status"] == "complete"
+        assert cogs["blocker_code"] is None
+        assert cogs["ending_balance"] == 0
+
+        tb = await get_trial_balance(server.db, start_date="2026-10-01", end_date="2026-10-31")
+        tb_hidden = await get_trial_balance(
+            server.db, start_date="2026-10-01", end_date="2026-10-31", q="zzz-bukan-akun",
+        )
+        tb_opening = await get_trial_balance(server.db, start_date="2026-11-01", end_date="2026-11-30")
+        assert tb["completeness_status"] == "incomplete"
+        assert tb["coverage_status"] == "incomplete"
+        assert tb["blocker_code"] == "REVERSAL_INCOMPLETE"
+        assert tb["totals"]["period_debit"] == 100000
+        assert tb["totals"]["period_credit"] == 100000
+        assert tb["totals"]["period_diff"] == 0
+        assert tb_hidden["items"] == []
+        assert tb_hidden["totals"] == tb["totals"]
+        assert tb_hidden["completeness_status"] == "incomplete"
+        assert tb_hidden["blocker_code"] == "REVERSAL_INCOMPLETE"
+        assert tb_opening["blocker_code"] == "REVERSAL_INCOMPLETE"
+        assert tb_opening["totals"]["opening_debit"] == 100000
+        assert tb_opening["totals"]["opening_credit"] == 100000
+        assert tb_opening["totals"]["opening_diff"] == 0
+
+        pl = await get_profit_loss(server.db, start_date="2026-10-01", end_date="2026-10-31")
+        pl_later = await get_profit_loss(server.db, start_date="2026-11-01", end_date="2026-11-30")
+        assert pl["totals"]["net_profit"] == 0
+        assert pl["totals"]["cogs_total"] == 0
+        assert pl_later["totals"] == pl["totals"]
+        assert "blocker_code" not in pl
+        assert "completeness_status" not in pl
+        assert await _stored_counts() == before_counts
+
+        await journal_core.reverse_journal(
+            server.db,
+            source_id,
+            source_type="financial_inventory_opening_reversal",
+            source_id=f"{opening['id']}:gl-summary-retry",
+            posted_by=USER,
+            description="selesaikan reversal untuk ringkasan",
+        )
+        finished = await get_general_ledger(
+            server.db, account_id=inventory_id, start_date="2026-10-01", end_date="2026-10-31",
+        )
+        finished_opening = await get_general_ledger(
+            server.db, account_id=inventory_id, start_date="2026-11-01", end_date="2026-11-30",
+        )
+        assert finished["completeness_status"] == "complete"
+        assert finished["coverage_status"] == "complete"
+        assert finished["blocker_code"] is None
+        assert finished["ending_balance"] == 0
+        assert all(row.get("blocker_code") is None for row in finished["items"])
+        assert finished_opening["completeness_status"] == "complete"
+        assert finished_opening["blocker_code"] is None
+        assert finished_opening["opening_balance"] == 0
+        assert finished_opening["ending_balance"] == 0
+        tb_done = await get_trial_balance(server.db, start_date="2026-10-01", end_date="2026-10-31")
+        tb_done_opening = await get_trial_balance(server.db, start_date="2026-11-01", end_date="2026-11-30")
+        assert tb_done["completeness_status"] == "complete"
+        assert tb_done["blocker_code"] is None
+        assert tb_done["totals"]["ending_diff"] == 0
+        assert tb_done["totals"]["period_debit"] == 200000
+        assert tb_done["totals"]["period_credit"] == 200000
+        assert tb_done_opening["completeness_status"] == "complete"
+        assert tb_done_opening["blocker_code"] is None
+        assert tb_done_opening["totals"]["opening_debit"] == 0
+        assert tb_done_opening["totals"]["opening_credit"] == 0
+        headers = await server.db[JOURNAL_ENTRIES].count_documents({"reversal_of": source_id})
+        assert headers == 1
+    finally:
+        item_locks._utc_now = original_now
+        item_locks.release_item_locks = original_release
+        journal_core._after_reversal_line_inserted = original_line

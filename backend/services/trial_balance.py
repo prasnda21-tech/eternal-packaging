@@ -20,6 +20,11 @@ from services.financial_statement_common import (
     parse_financial_date_range,
     sum_journal_lines_by_account,
 )
+from services.journal_core import (
+    COMPLETENESS_COMPLETE,
+    COMPLETENESS_INCOMPLETE,
+    reversal_incomplete_blocker,
+)
 
 PERM_VIEW = "trial_balance.view"
 
@@ -131,6 +136,15 @@ async def get_trial_balance(
     if needle:
         visible = [row for row in visible if _row_matches_search(row, needle)]
 
+    blocker_code = await reversal_incomplete_blocker(
+        db,
+        (
+            {"date": {"$lt": start}},
+            {"date": {"$gte": start, "$lte": end}},
+        ),
+    )
+    completeness_status = COMPLETENESS_INCOMPLETE if blocker_code else COMPLETENESS_COMPLETE
+
     return {
         "start_date": start,
         "end_date": end,
@@ -138,4 +152,7 @@ async def get_trial_balance(
         "total": len(visible),
         "account_count": len(items),
         "totals": totals,
+        "completeness_status": completeness_status,
+        "coverage_status": completeness_status,
+        "blocker_code": blocker_code,
     }

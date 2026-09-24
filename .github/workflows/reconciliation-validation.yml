@@ -102,6 +102,8 @@ jobs:
           src/pages/inventoryPersediaanLiveSearch.contract.test.js
           src/pages/NilaiPersediaan.test.js
           src/pages/NilaiPersediaan.interaction.test.js
+          src/pages/BukuBesar.test.js
+          src/pages/NeracaSaldo.test.js
           src/sales/SalesPwaLayout.test.js
           src/sales/SalesPwaOrdersPage.test.js
           src/sales/SalesPwaDashboardPage.test.js

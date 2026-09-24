@@ -6,6 +6,8 @@ Original + reversal journals both remain so nets stay correct.
 
 Display filters (source_type, search) narrow returned rows only.
 Opening / period totals / ending stay full-period for the selected account.
+Completeness and the report blocker stay on the summary, including a pending
+reversal dated before start_date. Filters do not remove that summary.
 """
 from __future__ import annotations
 
@@ -22,9 +24,14 @@ from services.journal_core import (
     SOURCE_RECEIPT,
     SOURCE_REVERSAL,
     SOURCE_TRANSFER,
+    COMPLETENESS_COMPLETE,
+    COMPLETENESS_INCOMPLETE,
+    REVERSAL_INCOMPLETE,
     STATUS_INCOMPLETE,
     STATUS_POSTED,
     STATUS_REVERSED,
+    reversal_incomplete_blocker,
+    reversal_is_pending,
 )
 from services.opening_balance import SOURCE_OPENING_BALANCE, SOURCE_OPENING_BALANCE_REVERSAL
 
@@ -164,6 +171,16 @@ async def get_general_ledger(
     if not account:
         raise GeneralLedgerValidationError("Akun Perkiraan tidak ditemukan")
 
+    blocker_code = await reversal_incomplete_blocker(
+        db,
+        (
+            {"date": {"$lt": start}},
+            {"date": {"$gte": start, "$lte": end}},
+        ),
+        account_id=aid,
+    )
+    completeness_status = COMPLETENESS_INCOMPLETE if blocker_code else COMPLETENESS_COMPLETE
+
     opening_journals = await db[JOURNAL_ENTRIES].find(
         {"date": {"$lt": start}},
         {"_id": 0, "id": 1, "status": 1},
@@ -222,16 +239,11 @@ async def get_general_ledger(
 
             journal_desc = str(j.get("description") or "")
             line_desc = str(ln.get("description") or "") if ln.get("description") is not None else ""
-            intent = j.get("reversal_intent") or {}
-            open_intent = (
-                bool(intent.get("operation_id"))
-                and str(intent.get("phase") or "") != "complete"
-            )
             row_status = j.get("status")
-            blocker_code = None
-            if open_intent or str(j.get("status") or "") == STATUS_INCOMPLETE:
+            row_blocker = None
+            if reversal_is_pending(j):
                 row_status = STATUS_INCOMPLETE
-                blocker_code = "REVERSAL_INCOMPLETE"
+                row_blocker = REVERSAL_INCOMPLETE
 
             items.append({
                 "date": j.get("date"),
@@ -250,8 +262,8 @@ async def get_general_ledger(
                 "status": row_status,
                 "reversal_of": j.get("reversal_of"),
             })
-            if blocker_code:
-                items[-1]["blocker_code"] = blocker_code
+            if row_blocker:
+                items[-1]["blocker_code"] = row_blocker
 
     ending = opening + total_debit - total_credit
 
@@ -278,4 +290,7 @@ async def get_general_ledger(
         "items": visible,
         "total": len(visible),
         "period_count": len(items),
+        "completeness_status": completeness_status,
+        "coverage_status": completeness_status,
+        "blocker_code": blocker_code,
     }

@@ -33,6 +33,55 @@ STATUS_POSTED = "posted"
 STATUS_REVERSED = "reversed"
 STATUS_INCOMPLETE = "incomplete"
 REVERSAL_INCOMPLETE = "REVERSAL_INCOMPLETE"
+COMPLETENESS_COMPLETE = "complete"
+COMPLETENESS_INCOMPLETE = "incomplete"
+
+
+def reversal_is_pending(doc: Optional[dict]) -> bool:
+    """A stored reversal that is not finished. Read-only; does not change amounts."""
+    if not doc:
+        return False
+    if str(doc.get("status") or "").strip() == STATUS_INCOMPLETE:
+        return True
+    intent = doc.get("reversal_intent") or {}
+    return bool(intent.get("operation_id")) and str(intent.get("phase") or "") != "complete"
+
+
+async def reversal_incomplete_blocker(
+    db,
+    date_queries: Sequence[dict],
+    *,
+    account_id: Optional[str] = None,
+) -> Optional[str]:
+    """Report-level blocker when a pending reversal touches the date queries.
+
+    Includes journals before the period when that query is supplied. A display
+    filter must not call this with a narrowed row set. Zero-write.
+    """
+    pending_ids: List[str] = []
+    seen = set()
+    for query in date_queries:
+        cursor = db[JOURNAL_ENTRIES].find(
+            query,
+            {"_id": 0, "id": 1, "status": 1, "reversal_intent": 1},
+        )
+        async for doc in cursor:
+            journal_id = str((doc or {}).get("id") or "").strip()
+            if not journal_id or journal_id in seen or not reversal_is_pending(doc):
+                continue
+            seen.add(journal_id)
+            pending_ids.append(journal_id)
+    if not pending_ids:
+        return None
+    line_filter: Dict[str, Any] = {"journal_id": {"$in": pending_ids}}
+    account = str(account_id or "").strip()
+    if account:
+        line_filter["account_id"] = account
+    hit = await db[JOURNAL_LINES].find_one(line_filter, {"_id": 1})
+    if not hit:
+        return None
+    return REVERSAL_INCOMPLETE
+
 
 SOURCE_RECEIPT = "cash_bank_receipt"
 SOURCE_PAYMENT = "cash_bank_payment"
