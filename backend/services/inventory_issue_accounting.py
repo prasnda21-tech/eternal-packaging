@@ -475,9 +475,16 @@ async def load_live_acquisition_coverage(db) -> Tuple[List[dict], dict]:
             acq = _line_acquisition(receipt, basis, line)
             if acq:
                 out.append(acq)
-    from services.financial_inventory_opening import apply_opening_to_acquisitions, load_posted_openings
+    from services.financial_inventory_opening import apply_opening_to_acquisitions, partition_posted_openings
 
-    openings = await load_posted_openings(db)
+    openings, problems = await partition_posted_openings(db)
+    for problem in problems:
+        keys = [str(key) for key in (problem.get("item_keys") or []) if str(key or "").strip()]
+        if keys:
+            report["item_keys"].update(keys)
+        else:
+            report["unresolved"] = True
+        report.setdefault("opening_ids", []).append(problem.get("opening_id"))
     out = apply_opening_to_acquisitions(out, openings, report)
     return out, report
 
@@ -505,9 +512,9 @@ async def load_live_acquisitions(db) -> List[dict]:
             acq = _line_acquisition(receipt, basis, line)
             if acq:
                 out.append(acq)
-    from services.financial_inventory_opening import apply_opening_to_acquisitions, load_posted_openings
+    from services.financial_inventory_opening import apply_opening_to_acquisitions, partition_posted_openings
 
-    openings = await load_posted_openings(db)
+    openings, _problems = await partition_posted_openings(db)
     return apply_opening_to_acquisitions(out, openings)
 
 

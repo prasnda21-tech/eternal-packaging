@@ -21,6 +21,12 @@ from services.accounting_audit import record_accounting_event
 from services.accounting_periods import PeriodLockedError
 from services.chart_of_accounts import get_account
 from services.inventory_accounting import financial_inventory_item_key, parse_business_date
+from services.inventory_financial_locks import (
+    LOCK_CONFLICT_CODE,
+    LOCK_CONFLICT_MESSAGE,
+    acquire_item_locks,
+    release_item_locks,
+)
 from services.journal_core import (
     find_primary_journal_for_source,
     post_balanced_journal,
@@ -141,6 +147,9 @@ async def ensure_indexes(db) -> None:
         {"$setOnInsert": {"state": "IDLE", "lease_owner": None, "lease_expires_at": None, "client_request_id": None}},
         upsert=True,
     )
+    from services.inventory_financial_locks import ensure_indexes as ensure_lock_indexes
+
+    await ensure_lock_indexes(db)
 
 
 def _public(doc: Optional[dict]) -> Optional[dict]:
@@ -149,13 +158,39 @@ def _public(doc: Optional[dict]) -> Optional[dict]:
     return {key: value for key, value in doc.items() if key != "_id"}
 
 
-async def _acquire_lease(db, owner: str, request_id: str) -> dict:
-    now = now_iso()
-    expires = (datetime.now(timezone.utc) + timedelta(seconds=LEASE_SECONDS)).isoformat()
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _lease_is_expired(raw, *, now: Optional[datetime] = None) -> bool:
+    current = now or _utc_now()
+    text = str(raw or "").strip()
+    if not text:
+        return True
+    stamp = text[:-1] + "+00:00" if text.endswith("Z") else text
+    try:
+        parsed = datetime.fromisoformat(stamp)
+    except ValueError:
+        return True
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc) <= current
+
+
+async def _acquire_lease(db, request_id: str) -> dict:
+    """Take the opening lease with a new token. Request id is not a takeover right."""
+    token = str(uuid.uuid4())
+    now = _utc_now()
+    expires = (now + timedelta(seconds=LEASE_SECONDS)).isoformat()
     try:
         await db[CLAIMS].update_one(
             {"_id": CLAIM_ID},
-            {"$setOnInsert": {"state": "IDLE", "lease_owner": None, "lease_expires_at": None, "client_request_id": None}},
+            {"$setOnInsert": {
+                "state": "IDLE",
+                "lease_token": None,
+                "lease_expires_at": None,
+                "client_request_id": None,
+            }},
             upsert=True,
         )
     except DuplicateKeyError:
@@ -165,27 +200,49 @@ async def _acquire_lease(db, owner: str, request_id: str) -> dict:
             "_id": CLAIM_ID,
             "$or": [
                 {"state": {"$in": ["IDLE", "FAILED", STATUS_NEEDS_RECOVERY, STATUS_BLOCKED]}},
-                {"state": STATUS_BUILDING, "lease_expires_at": {"$lt": now}},
-                {"state": STATUS_BUILDING, "client_request_id": request_id},
+                {"lease_token": {"$in": [None, ""]}},
+                {"lease_expires_at": {"$in": [None, ""]}},
+                {"state": STATUS_BUILDING, "lease_expires_at": {"$lt": now.isoformat()}},
             ],
         },
         {"$set": {
             "state": STATUS_BUILDING,
-            "lease_owner": owner,
+            "lease_token": token,
             "client_request_id": request_id,
             "lease_expires_at": expires,
         }},
         return_document=ReturnDocument.AFTER,
     )
-    if not claimed or claimed.get("lease_owner") != owner or claimed.get("client_request_id") != request_id:
+    if not claimed or str(claimed.get("lease_token") or "") != token:
         raise OpeningBlocked("OPENING_IN_PROGRESS", "Opening finansial sedang diproses oleh proses lain.")
+    claimed.pop("_id", None)
     return claimed
 
 
-async def _release_lease(db, owner: str, request_id: str, state: str) -> None:
+async def _require_lease(db, token: str) -> None:
+    """Fencing token must still be the unexpired holder before a critical write."""
+    row = await db[CLAIMS].find_one({"_id": CLAIM_ID}, {"_id": 0})
+    if (
+        not row
+        or str(row.get("lease_token") or "") != str(token or "")
+        or _lease_is_expired(row.get("lease_expires_at"))
+    ):
+        raise OpeningBlocked(
+            "OPENING_LEASE_LOST",
+            "Lease opening tidak lagi sah. Penulisan dihentikan.",
+        )
+
+
+async def _release_lease(db, token: str, state: str) -> None:
+    """Release only while this token is still the unexpired owner."""
+    now = _utc_now().isoformat()
     await db[CLAIMS].update_one(
-        {"_id": CLAIM_ID, "lease_owner": owner, "client_request_id": request_id},
-        {"$set": {"state": state, "lease_expires_at": None}},
+        {
+            "_id": CLAIM_ID,
+            "lease_token": str(token or ""),
+            "lease_expires_at": {"$gt": now},
+        },
+        {"$set": {"state": state, "lease_expires_at": None, "lease_token": None}},
     )
 
 
@@ -796,8 +853,17 @@ async def receipt_blocked_for_new_acquisition(db, receipt: dict) -> Optional[str
         for line in (receipt or {}).get("lines") or []
         if isinstance(line, dict)
     }
-    openings = await load_posted_openings(db)
-    for opening in openings:
+    good, problems = await partition_posted_openings(db)
+    for problem in problems:
+        covered = {
+            key[2:] if str(key).startswith("m:") else str(key)
+            for key in (problem.get("item_keys") or [])
+            if str(key or "").strip()
+        }
+        if item_ids and covered and item_ids.isdisjoint(covered):
+            continue
+        return str(problem.get("code") or "OPENING_JOURNAL_NOT_AUTHORITATIVE")
+    for opening in good:
         covered = {str(line.get("master_item_id") or "") for line in opening.get("lines") or []}
         if item_ids and covered and item_ids.isdisjoint(covered):
             continue
@@ -817,6 +883,176 @@ async def load_posted_openings(db) -> List[dict]:
     return await db[COLLECTION].find({"status": STATUS_POSTED}, {"_id": 0}).to_list(None)
 
 
+def _opening_item_keys(opening: dict) -> List[str]:
+    keys = []
+    for line in (opening or {}).get("lines") or []:
+        key = str(line.get("financial_inventory_item_key") or "").strip()
+        if key and key not in keys:
+            keys.append(key)
+    return keys
+
+
+async def _opening_is_consumed(db, opening: dict) -> bool:
+    prefix = re.escape(f"opening:{opening.get('id')}:")
+    found = await db[ISSUE_COLLECTION].find_one(
+        {"$or": [
+            {"accounting_posting_basis.consumed_acquisitions.acquisition_key": {"$regex": f"^{prefix}"}},
+            {"accounting_posting_basis.pool_acquisition_keys": {"$regex": f"^{prefix}"}},
+        ]},
+        {"_id": 1},
+    )
+    return found is not None
+
+
+async def _journal_has_reversal(db, journal: Optional[dict]) -> bool:
+    if not journal:
+        return True
+    if str(journal.get("status") or "") == "reversed" or journal.get("reversal_of") is not None:
+        return True
+    reversal = await db.journal_entries.find_one(
+        {"reversal_of": journal.get("id"), "status": "posted"},
+        {"_id": 1},
+    )
+    return reversal is not None
+
+
+async def _opening_journal_problem(db, opening: dict) -> Optional[dict]:
+    """Posted opening is an acquisition only when its source journal still matches."""
+    keys = _opening_item_keys(opening)
+
+    def problem(message: str) -> dict:
+        return {
+            "code": "OPENING_JOURNAL_NOT_AUTHORITATIVE",
+            "message": message,
+            "opening_id": opening.get("id"),
+            "item_keys": keys,
+        }
+
+    journal_id = str(opening.get("posted_journal_id") or "")
+    journal = await db.journal_entries.find_one({"id": journal_id}, {"_id": 0}) if journal_id else None
+    if not journal:
+        return problem("Jurnal sumber opening tidak ada.")
+    if await _journal_has_reversal(db, journal) or str(journal.get("status") or "") != "posted":
+        return problem("Jurnal sumber opening tidak posted atau sudah direverse.")
+    if str(journal.get("date") or "") != str(opening.get("effective_date") or ""):
+        return problem("Tanggal jurnal tidak sama dengan tanggal opening yang dibekukan.")
+    lines = await db.journal_lines.find({"journal_id": journal_id}, {"_id": 0}).to_list(30)
+    inventory_id = str(opening.get("inventory_account_id") or "")
+    total = _money(opening.get("total"))
+    debit = sum(
+        (_money(line.get("debit") or 0) for line in lines if str(line.get("account_id") or "") == inventory_id),
+        Decimal("0"),
+    )
+    if debit != total:
+        return problem("Debit persediaan pada jurnal tidak sama dengan total opening yang dibekukan.")
+    if opening.get("journal_origin") == "existing_opening_voucher":
+        if str(journal.get("source_type") or "") != SOURCE_OPENING_BALANCE:
+            return problem("Jurnal tertaut bukan saldo awal.")
+        voucher_id = str(opening.get("existing_opening_voucher_id") or "")
+        if voucher_id and str(journal.get("source_id") or "") != voucher_id:
+            return problem("Jurnal tertaut bukan voucher opening yang dibekukan.")
+        credits = []
+        for line in lines:
+            if _money(line.get("credit") or 0) <= 0:
+                continue
+            account_id = str(line.get("account_id") or "")
+            if account_id and account_id not in credits:
+                credits.append(account_id)
+        if len(credits) != 1 or not await _account_allowed_offset(db, credits[0]):
+            return problem("Kredit jurnal saldo awal tidak lagi satu akun lawan yang diizinkan.")
+        return None
+    if str(journal.get("source_type") or "") != SOURCE_TYPE or str(journal.get("source_id") or "") != str(opening.get("id") or ""):
+        return problem("Jurnal bukan jurnal opening yang dibekukan.")
+    offset_id = str(opening.get("offset_account_id") or "")
+    credit = sum(
+        (_money(line.get("credit") or 0) for line in lines if str(line.get("account_id") or "") == offset_id),
+        Decimal("0"),
+    )
+    if credit != total:
+        return problem("Kredit akun lawan tidak sama dengan total opening yang dibekukan.")
+    return None
+
+
+async def partition_posted_openings(db) -> Tuple[List[dict], List[dict]]:
+    good: List[dict] = []
+    problems: List[dict] = []
+    for opening in await load_posted_openings(db):
+        problem = await _opening_journal_problem(db, opening)
+        if problem:
+            problems.append(problem)
+        else:
+            good.append(opening)
+    return good, problems
+
+
+async def _frozen_basis_error(db, doc: dict) -> Optional[OpeningBlocked]:
+    """Frozen accounts stay frozen. A newer setting must not be substituted."""
+    try:
+        _validate_inventory(await get_account(db, doc.get("inventory_account_id")))
+    except HTTPException as exc:
+        return OpeningBlocked(
+            "FROZEN_BASIS_INVALID",
+            f"Akun persediaan yang dibekukan tidak lagi sah. Settings baru tidak menggantikannya. {exc.detail}",
+        )
+    if _money(doc.get("total")) <= 0 or not parse_business_date(str(doc.get("effective_date") or "")):
+        return OpeningBlocked(
+            "FROZEN_BASIS_INVALID",
+            "Total atau tanggal opening yang dibekukan tidak sah.",
+        )
+    if doc.get("journal_origin") == "existing_opening_voucher":
+        return None
+    if not await _account_allowed_offset(db, doc.get("offset_account_id")):
+        return OpeningBlocked(
+            "FROZEN_BASIS_INVALID",
+            "Akun lawan yang dibekukan tidak lagi sah. Settings baru tidak menggantikannya.",
+        )
+    return None
+
+
+async def begin_voucher_reversal_guard(db, voucher: dict) -> List[dict]:
+    """Hold item locks and refuse when a linked opening was already consumed."""
+    from services.opening_balance import OpeningBalanceConflictError
+
+    voucher_id = str((voucher or {}).get("id") or "")
+    journal_id = str((voucher or {}).get("posted_journal_id") or "")
+    openings = await db[COLLECTION].find(
+        {
+            "status": STATUS_POSTED,
+            "journal_origin": "existing_opening_voucher",
+            "$or": [
+                {"existing_opening_voucher_id": voucher_id},
+                {"posted_journal_id": journal_id},
+            ],
+        },
+        {"_id": 0},
+    ).to_list(20)
+    keys = []
+    for opening in openings:
+        for key in _opening_item_keys(opening):
+            if key not in keys:
+                keys.append(key)
+    if keys:
+        from services.inventory_financial_locks import ensure_indexes as ensure_lock_indexes
+
+        await ensure_lock_indexes(db)
+    locks = await acquire_item_locks(db, keys, f"voucher-reverse:{voucher_id}") if keys else []
+    if keys and locks is None:
+        raise OpeningBalanceConflictError(LOCK_CONFLICT_MESSAGE)
+    try:
+        for opening in openings:
+            fresh = await get_financial_opening(db, opening.get("id"))
+            if not fresh or fresh.get("status") != STATUS_POSTED:
+                continue
+            if await _opening_is_consumed(db, fresh):
+                raise OpeningBalanceConflictError(
+                    "Opening finansial yang menempel pada saldo awal ini sudah dikonsumsi HPP dan tidak dapat dibatalkan."
+                )
+    except Exception:
+        await release_item_locks(db, locks)
+        raise
+    return locks or []
+
+
 async def financial_display_by_item(db) -> Dict[str, dict]:
     """Read-only map for Nilai Persediaan. Does not post or repair."""
     openings = await db[COLLECTION].find({}, {"_id": 0}).sort("created_at", -1).to_list(20)
@@ -825,6 +1061,9 @@ async def financial_display_by_item(db) -> Dict[str, dict]:
     by_item: Dict[str, dict] = {}
     if not active:
         return by_item
+    problem = None
+    if active.get("status") == STATUS_POSTED:
+        problem = await _opening_journal_problem(db, active)
     for line in active.get("lines") or []:
         mid = str(line.get("master_item_id") or "")
         if not mid:
@@ -838,8 +1077,9 @@ async def financial_display_by_item(db) -> Dict[str, dict]:
             "financial_effective_date": active.get("effective_date"),
             "financial_journal_id": active.get("posted_journal_id"),
             "financial_journal_origin": active.get("journal_origin"),
-            "financial_blocker": active.get("blocker_code"),
-            "financial_blocker_message": active.get("blocker_message"),
+            "financial_blocker": (problem or {}).get("code") or active.get("blocker_code"),
+            "financial_blocker_message": (problem or {}).get("message") or active.get("blocker_message"),
+            "financial_book_authoritative": problem is None and active.get("status") == STATUS_POSTED,
             "published_is_book_value": False,
         }
     return by_item
@@ -850,6 +1090,10 @@ async def _mark(db, opening_id: str, fields: dict) -> None:
 
 
 async def _finish_posted(db, doc: dict, journal: dict, *, user: Optional[dict]) -> dict:
+    candidate = {**doc, "status": STATUS_POSTED, "posted_journal_id": journal.get("id")}
+    problem = await _opening_journal_problem(db, candidate)
+    if problem:
+        raise OpeningBlocked(str(problem["code"]), str(problem["message"]), extra=problem)
     await _after_step("status")
     await _mark(db, doc["id"], {
         "status": STATUS_POSTED,
@@ -873,6 +1117,81 @@ async def _finish_posted(db, doc: dict, journal: dict, *, user: Optional[dict]) 
     return saved
 
 
+async def _write_opening_journal(db, doc: dict, user: Optional[dict]) -> dict:
+    """Post or reuse the journal described by the frozen opening document."""
+    source_id = doc["id"]
+    if doc.get("journal_origin") == "existing_opening_voucher":
+        journal_id = str(doc.get("posted_journal_id") or "")
+        journal = await db.journal_entries.find_one({"id": journal_id}, {"_id": 0}) if journal_id else None
+        candidate = {**doc, "status": STATUS_POSTED, "posted_journal_id": (journal or {}).get("id")}
+        problem = await _opening_journal_problem(db, candidate)
+        if problem:
+            await _mark(db, source_id, {
+                "status": STATUS_BLOCKED,
+                "blocker_code": problem["code"],
+                "blocker_message": problem["message"],
+                "updated_at": now_iso(),
+            })
+            raise OpeningBlocked(str(problem["code"]), str(problem["message"]), extra=problem)
+        await _mark(db, source_id, {
+            "posted_journal_id": journal["id"],
+            "journal_origin": "existing_opening_voucher",
+            "updated_at": now_iso(),
+        })
+        return journal
+    journal = await find_primary_journal_for_source(db, SOURCE_TYPE, source_id)
+    if journal and await _journal_has_reversal(db, journal):
+        raise OpeningBlocked(
+            "OPENING_JOURNAL_NOT_AUTHORITATIVE",
+            "Jurnal opening sudah direverse. Retry tidak membuat jurnal baru.",
+        )
+    if journal:
+        candidate = {**doc, "status": STATUS_POSTED, "posted_journal_id": journal.get("id")}
+        problem = await _opening_journal_problem(db, candidate)
+        if problem:
+            raise OpeningBlocked(
+                "FROZEN_BASIS_MISMATCH",
+                "Jurnal yang sudah ada tidak sama dengan basis opening yang dibekukan.",
+                extra=problem,
+            )
+        return journal
+    description = f"Opening persediaan finansial {doc.get('effective_date')}"
+    amount = _money(doc.get("total"))
+    journal_lines = [
+        {"account_id": doc.get("inventory_account_id"), "debit": money_round(amount), "credit": 0, "description": description},
+        {"account_id": doc.get("offset_account_id"), "debit": 0, "credit": money_round(amount), "description": description},
+    ]
+    try:
+        journal = await post_balanced_journal(
+            db,
+            date=str(doc.get("effective_date") or ""),
+            source_type=SOURCE_TYPE,
+            source_id=source_id,
+            description=description,
+            lines=journal_lines,
+            posted_by=user,
+        )
+    except PeriodLockedError as exc:
+        await _mark(db, source_id, {
+            "status": STATUS_BLOCKED,
+            "blocker_code": "PERIOD_CLOSED",
+            "blocker_message": str(exc),
+            "updated_at": now_iso(),
+        })
+        raise OpeningBlocked("PERIOD_CLOSED", str(exc)) from exc
+    if await _journal_has_reversal(db, journal):
+        raise OpeningBlocked(
+            "OPENING_JOURNAL_NOT_AUTHORITATIVE",
+            "Jurnal opening sudah direverse. Retry tidak membuat jurnal baru.",
+        )
+    await _mark(db, source_id, {
+        "posted_journal_id": journal.get("id"),
+        "journal_origin": "new_journal",
+        "updated_at": now_iso(),
+    })
+    return journal
+
+
 async def post_financial_opening(db, payload: dict, user: Optional[dict] = None) -> dict:
     request_id = str((payload or {}).get("client_request_id") or "").strip()
     if not request_id:
@@ -882,23 +1201,11 @@ async def post_financial_opening(db, payload: dict, user: Optional[dict] = None)
         raise OpeningBlocked("OPENING_DATE_INVALID", "Tanggal efektif opening harus YYYY-MM-DD.", status_code=400)
     lines = _normalize_lines((payload or {}).get("lines"))
     await _validate_uom(db, lines)
-    settings = await get_purchase_accounting_settings(db)
-    inventory_id = str(settings.get("inventory_account_id") or "")
-    try:
-        _validate_inventory(await get_account(db, inventory_id) if inventory_id else None)
-    except HTTPException as exc:
-        raise OpeningBlocked("INVENTORY_ACCOUNT_UNCONFIGURED", str(exc.detail), status_code=409) from exc
     total = _opening_total(lines)
     if total <= 0:
         raise OpeningBlocked("OPENING_TOTAL_ZERO", "Total opening nol tidak diposting sebagai jurnal.", status_code=400)
-    resolution = await resolve_offset_and_gl(
-        db,
-        effective_date=effective,
-        inventory_account_id=inventory_id,
-        total=total,
-    )
-    owner = str((actor_snapshot(user) or {}).get("id") or uuid.uuid4())
-    await _acquire_lease(db, owner, request_id)
+    lease = await _acquire_lease(db, request_id)
+    token = str(lease.get("lease_token") or "")
     try:
         existing = await db[COLLECTION].find_one({"client_request_id": request_id}, {"_id": 0})
         if existing and not _same_opening_payload(existing, effective, lines, total):
@@ -907,9 +1214,32 @@ async def post_financial_opening(db, payload: dict, user: Optional[dict] = None)
                 "Request yang sama tidak boleh mengubah qty, harga, tanggal, atau item yang sudah dibekukan.",
             )
         if existing and existing.get("status") == STATUS_POSTED:
+            problem = await _opening_journal_problem(db, existing)
+            if problem:
+                raise OpeningBlocked(str(problem["code"]), str(problem["message"]), extra=problem)
             return existing
         if existing and existing.get("status") == STATUS_REVERSED:
             raise OpeningBlocked("OPENING_REVERSED", "Opening ini sudah direversal.")
+        if existing:
+            frozen_error = await _frozen_basis_error(db, existing)
+            if frozen_error:
+                raise frozen_error
+            inventory_id = str(existing.get("inventory_account_id") or "")
+            effective = str(existing.get("effective_date") or "")
+            total = _money(existing.get("total"))
+        else:
+            settings = await get_purchase_accounting_settings(db)
+            inventory_id = str(settings.get("inventory_account_id") or "")
+            try:
+                _validate_inventory(await get_account(db, inventory_id) if inventory_id else None)
+            except HTTPException as exc:
+                raise OpeningBlocked("INVENTORY_ACCOUNT_UNCONFIGURED", str(exc.detail), status_code=409) from exc
+            resolution = await resolve_offset_and_gl(
+                db,
+                effective_date=effective,
+                inventory_account_id=inventory_id,
+                total=total,
+            )
         posted_same_day = await db[COLLECTION].find_one(
             {"status": STATUS_POSTED, "effective_date": effective, "client_request_id": {"$ne": request_id}},
             {"_id": 0, "id": 1},
@@ -935,6 +1265,7 @@ async def post_financial_opening(db, payload: dict, user: Optional[dict] = None)
         actor = actor_snapshot(user)
         stamp = now_iso()
         if not existing:
+            await _require_lease(db, token)
             opening_id = str(uuid.uuid4())
             frozen_lines = []
             for line in lines:
@@ -960,7 +1291,7 @@ async def post_financial_opening(db, payload: dict, user: Optional[dict] = None)
                 "offset_resolution": resolution.get("offset_resolution"),
                 "journal_origin": "existing_opening_voucher" if resolution["mode"] == "link_existing" else "new_journal",
                 "existing_opening_voucher_id": resolution.get("voucher_id"),
-                "posted_journal_id": None,
+                "posted_journal_id": resolution.get("journal_id"),
                 "lines": frozen_lines,
                 "total": money_round(total),
                 "excluded_receipt_ids": excluded,
@@ -975,74 +1306,35 @@ async def post_financial_opening(db, payload: dict, user: Optional[dict] = None)
             except DuplicateKeyError:
                 raced = await db[COLLECTION].find_one({"client_request_id": request_id}, {"_id": 0})
                 if raced and raced.get("status") == STATUS_POSTED:
+                    problem = await _opening_journal_problem(db, raced)
+                    if problem:
+                        raise OpeningBlocked(str(problem["code"]), str(problem["message"]), extra=problem)
                     return raced
                 raise OpeningBlocked("OPENING_CONFLICT", "Opening finansial bentrok dengan proses lain.")
             doc.pop("_id", None)
         else:
             doc = existing
         await _after_step("lines")
-        source_id = doc["id"]
-        if doc.get("journal_origin") == "existing_opening_voucher" or resolution["mode"] == "link_existing":
-            journal = await db.journal_entries.find_one({"id": resolution.get("journal_id") or doc.get("posted_journal_id")}, {"_id": 0})
-            if not journal or journal.get("status") != "posted" or journal.get("reversal_of") is not None:
-                await _mark(db, source_id, {
-                    "status": STATUS_BLOCKED,
-                    "blocker_code": "GL_OPENING_JOURNAL_MISSING",
-                    "blocker_message": "Jurnal saldo awal yang akan dihubungkan tidak posted.",
-                    "updated_at": now_iso(),
-                })
-                raise OpeningBlocked("GL_OPENING_JOURNAL_MISSING", "Jurnal saldo awal yang akan dihubungkan tidak posted.")
-            if str(journal.get("source_type") or "") != SOURCE_OPENING_BALANCE:
-                await _mark(db, source_id, {"status": STATUS_BLOCKED, "blocker_code": "GL_OPENING_SOURCE_MISMATCH"})
-                raise OpeningBlocked("GL_OPENING_SOURCE_MISMATCH", "Jurnal yang dihubungkan bukan saldo awal.")
-            await _mark(db, source_id, {
-                "posted_journal_id": journal["id"],
-                "journal_origin": "existing_opening_voucher",
-                "updated_at": now_iso(),
-            })
-        else:
-            description = f"Opening persediaan finansial {effective}"
-            amount = _money(doc.get("total") if doc.get("total") is not None else total)
-            journal_lines = [
-                {"account_id": inventory_id, "debit": money_round(amount), "credit": 0, "description": description},
-                {
-                    "account_id": resolution["offset_account_id"],
-                    "debit": 0,
-                    "credit": money_round(amount),
-                    "description": description,
-                },
-            ]
-            try:
-                journal = await post_balanced_journal(
-                    db,
-                    date=effective,
-                    source_type=SOURCE_TYPE,
-                    source_id=source_id,
-                    description=description,
-                    lines=journal_lines,
-                    posted_by=user,
-                )
-            except PeriodLockedError as exc:
-                await _mark(db, source_id, {
-                    "status": STATUS_BLOCKED,
-                    "blocker_code": "PERIOD_CLOSED",
-                    "blocker_message": str(exc),
-                    "updated_at": now_iso(),
-                })
-                raise OpeningBlocked("PERIOD_CLOSED", str(exc)) from exc
-            await _mark(db, source_id, {
-                "posted_journal_id": journal.get("id"),
-                "journal_origin": "new_journal",
-                "offset_account_id": resolution.get("offset_account_id"),
-                "updated_at": now_iso(),
-            })
+        await _require_lease(db, token)
+        journal = await _write_opening_journal(db, doc, user)
         await _after_step("journal")
-        doc = await get_financial_opening(db, source_id)
+        await _require_lease(db, token)
+        doc = await get_financial_opening(db, doc["id"])
         saved = await _finish_posted(db, doc, journal, user=user)
         return saved
     except OpeningBlocked:
         raise
     except Exception as exc:
+        held = await db[CLAIMS].find_one({"_id": CLAIM_ID}, {"_id": 0})
+        if (
+            not held
+            or str(held.get("lease_token") or "") != token
+            or _lease_is_expired(held.get("lease_expires_at"))
+        ):
+            raise OpeningBlocked(
+                "OPENING_LEASE_LOST",
+                "Lease opening tidak lagi sah. Penulisan dihentikan.",
+            ) from exc
         existing = await db[COLLECTION].find_one({"client_request_id": request_id}, {"_id": 0, "id": 1, "status": 1})
         if existing and existing.get("status") != STATUS_POSTED:
             await _mark(db, existing["id"], {
@@ -1053,7 +1345,22 @@ async def post_financial_opening(db, payload: dict, user: Optional[dict] = None)
             })
         raise OpeningBlocked("OPENING_NEEDS_RECOVERY", "Opening finansial belum selesai dan tidak berstatus sukses.") from exc
     finally:
-        await _release_lease(db, owner, request_id, "IDLE")
+        await _release_lease(db, token, "IDLE")
+
+
+async def _complete_interrupted_reversal(db, doc: dict, user: Optional[dict]) -> dict:
+    if await _opening_is_consumed(db, doc):
+        raise OpeningBlocked(
+            "OPENING_REVERSED_WHILE_CONSUMED",
+            "Jurnal opening sudah direverse tetapi HPP masih mengonsumsinya. Status tidak dijadikan sukses.",
+        )
+    await _mark(db, doc["id"], {
+        "status": STATUS_REVERSED,
+        "reversed_at": doc.get("reversed_at") or now_iso(),
+        "reversed_by": doc.get("reversed_by") or actor_snapshot(user),
+        "updated_at": now_iso(),
+    })
+    return await get_financial_opening(db, doc["id"])
 
 
 async def recover_financial_opening(db, *, client_request_id: str, user: Optional[dict] = None) -> dict:
@@ -1062,6 +1369,12 @@ async def recover_financial_opening(db, *, client_request_id: str, user: Optiona
     if not doc:
         raise OpeningBlocked("OPENING_NOT_FOUND", "Opening finansial tidak ditemukan.", status_code=404)
     if doc.get("status") == STATUS_POSTED:
+        posted_journal = await db.journal_entries.find_one({"id": doc.get("posted_journal_id")}, {"_id": 0})
+        if posted_journal and await _journal_has_reversal(db, posted_journal):
+            return await _complete_interrupted_reversal(db, doc, user)
+        problem = await _opening_journal_problem(db, doc)
+        if problem:
+            raise OpeningBlocked(str(problem["code"]), str(problem["message"]), extra=problem)
         journals = await db.journal_entries.count_documents({
             "source_type": SOURCE_TYPE,
             "source_id": doc["id"],
@@ -1077,6 +1390,8 @@ async def recover_financial_opening(db, *, client_request_id: str, user: Optiona
     if doc.get("journal_origin") == "existing_opening_voucher":
         linked = await db.journal_entries.find_one({"id": doc.get("posted_journal_id")}, {"_id": 0})
         journal = linked or journal
+    if journal and await _journal_has_reversal(db, journal):
+        return await _complete_interrupted_reversal(db, doc, user)
     if not journal:
         return await post_financial_opening(
             db,
@@ -1087,6 +1402,10 @@ async def recover_financial_opening(db, *, client_request_id: str, user: Optiona
             },
             user,
         )
+    candidate = {**doc, "status": STATUS_POSTED, "posted_journal_id": journal.get("id")}
+    problem = await _opening_journal_problem(db, candidate)
+    if problem:
+        raise OpeningBlocked(str(problem["code"]), str(problem["message"]), extra=problem)
     saved = await _finish_posted(db, doc, journal, user=user)
     journals = await db.journal_entries.count_documents({
         "source_type": SOURCE_TYPE,
@@ -1102,56 +1421,72 @@ async def reverse_financial_opening(db, opening_id: str, user: Optional[dict], r
     doc = await get_financial_opening(db, opening_id)
     if not doc or doc.get("status") != STATUS_POSTED:
         raise OpeningBlocked("OPENING_NOT_POSTED", "Opening posted tidak ditemukan.", status_code=404)
-    prefix = re.escape(f"opening:{doc['id']}:")
-    consumed = await db[ISSUE_COLLECTION].find_one(
-        {"$or": [
-            {"accounting_posting_basis.consumed_acquisitions.acquisition_key": {"$regex": f"^{prefix}"}},
-            {"accounting_posting_basis.pool_acquisition_keys": {"$regex": f"^{prefix}"}},
-        ]},
-        {"_id": 0, "movement_id": 1},
-    )
-    if consumed:
-        raise OpeningBlocked(
-            "OPENING_ALREADY_CONSUMED",
-            "Opening sudah dikonsumsi HPP dan tidak dapat direversal.",
-        )
-    if doc.get("journal_origin") == "existing_opening_voucher":
-        raise OpeningBlocked(
-            "OPENING_LINKED_VOUCHER",
-            "Opening ini menempel pada saldo awal GL yang sudah ada. Batalkan lewat saldo awal, bukan jurnal kedua.",
-        )
     text = str(reason or "").strip()
     if len(text) < 3:
         raise OpeningBlocked("REVERSAL_REASON_REQUIRED", "Alasan reversal wajib diisi.", status_code=400)
-    journal_id = str(doc.get("posted_journal_id") or "")
+    keys = _opening_item_keys(doc)
+    from services.inventory_financial_locks import ensure_indexes as ensure_lock_indexes
+
+    await ensure_lock_indexes(db)
+    locks = await acquire_item_locks(db, keys, f"opening-reverse:{doc['id']}")
+    if keys and locks is None:
+        raise OpeningBlocked(LOCK_CONFLICT_CODE, LOCK_CONFLICT_MESSAGE)
     try:
-        await reverse_journal(
+        doc = await get_financial_opening(db, opening_id)
+        if not doc or doc.get("status") != STATUS_POSTED:
+            raise OpeningBlocked("OPENING_NOT_POSTED", "Opening posted tidak ditemukan.", status_code=404)
+        if await _opening_is_consumed(db, doc):
+            raise OpeningBlocked(
+                "OPENING_ALREADY_CONSUMED",
+                "Opening sudah dikonsumsi HPP dan tidak dapat direversal.",
+            )
+        if doc.get("journal_origin") == "existing_opening_voucher":
+            raise OpeningBlocked(
+                "OPENING_LINKED_VOUCHER",
+                "Opening ini menempel pada saldo awal GL yang sudah ada. Batalkan lewat saldo awal, bukan jurnal kedua.",
+            )
+        journal = await db.journal_entries.find_one({"id": doc.get("posted_journal_id")}, {"_id": 0})
+        if journal and await _journal_has_reversal(db, journal):
+            return await _complete_interrupted_reversal(db, doc, user)
+        problem = await _opening_journal_problem(db, doc)
+        if problem:
+            raise OpeningBlocked(str(problem["code"]), str(problem["message"]), extra=problem)
+        await _after_step("reverse-checked")
+        try:
+            await reverse_journal(
+                db,
+                str(doc.get("posted_journal_id") or ""),
+                source_type=SOURCE_REVERSAL,
+                source_id=f"{doc['id']}:reversal",
+                posted_by=user,
+                description=text,
+            )
+        except PeriodLockedError as exc:
+            raise OpeningBlocked("PERIOD_CLOSED", str(exc)) from exc
+        if await _opening_is_consumed(db, doc):
+            raise OpeningBlocked(
+                "OPENING_REVERSED_WHILE_CONSUMED",
+                "Jurnal opening sudah direverse tetapi HPP masih mengonsumsinya. Status tidak dijadikan sukses.",
+            )
+        await _mark(db, doc["id"], {
+            "status": STATUS_REVERSED,
+            "reversed_at": now_iso(),
+            "reversed_by": actor_snapshot(user),
+            "reversal_reason": text,
+            "updated_at": now_iso(),
+        })
+        await record_accounting_event(
             db,
-            journal_id,
-            source_type=SOURCE_REVERSAL,
-            source_id=f"{doc['id']}:reversal",
-            posted_by=user,
-            description=text,
+            event_type="financial_inventory_opening_reversed",
+            entity_type=SOURCE_TYPE,
+            entity_id=doc["id"],
+            actor=user,
+            reason=text,
+            operation_key=f"fio-reverse:{doc['id']}",
         )
-    except PeriodLockedError as exc:
-        raise OpeningBlocked("PERIOD_CLOSED", str(exc)) from exc
-    await _mark(db, doc["id"], {
-        "status": STATUS_REVERSED,
-        "reversed_at": now_iso(),
-        "reversed_by": actor_snapshot(user),
-        "reversal_reason": text,
-        "updated_at": now_iso(),
-    })
-    await record_accounting_event(
-        db,
-        event_type="financial_inventory_opening_reversed",
-        entity_type=SOURCE_TYPE,
-        entity_id=doc["id"],
-        actor=user,
-        reason=text,
-        operation_key=f"fio-reverse:{doc['id']}",
-    )
-    return await get_financial_opening(db, doc["id"])
+        return await get_financial_opening(db, doc["id"])
+    finally:
+        await release_item_locks(db, locks)
 
 
 def apply_opening_to_acquisitions(
@@ -1215,6 +1550,31 @@ async def build_financial_book_reconciliation(db) -> dict:
 
     before_openings = await db[COLLECTION].count_documents({})
     before_journals = await db.journal_entries.count_documents({})
+    _good, problems = await partition_posted_openings(db)
+    if problems:
+        if (
+            await db[COLLECTION].count_documents({}) != before_openings
+            or await db.journal_entries.count_documents({}) != before_journals
+        ):
+            raise OpeningBlocked("RECONCILIATION_WROTE", "Rekonsiliasi menulis data.", status_code=500)
+        return {
+            "writes": 0,
+            "inventory_account_id": None,
+            "opening_value": None,
+            "goods_receipt_value": None,
+            "cogs_value": None,
+            "financial_remaining": None,
+            "inventory_gl_balance": None,
+            "historical_gr_overlap": None,
+            "other_gl_sources": {},
+            "other_gl_total": None,
+            "sources": {},
+            "coverage_complete": False,
+            "reconciliation_status": "BLOCKED",
+            "blockers": problems,
+            "published_is_book_value": False,
+            "identity": "opening_posted + gr_posted - cogs_posted = financial_remaining",
+        }
     settings = await get_purchase_accounting_settings(db)
     inventory_id = str(settings.get("inventory_account_id") or "")
     acquisitions = await load_live_acquisitions(db)

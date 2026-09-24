@@ -55,7 +55,12 @@ from services.inventory_issue_accounting import (
 from services.inventory_issue_posting import post_inventory_issue_accounting
 from services.inventory_valuation import build_inventory_valuation_rows, export_xlsx, filter_sort_all
 from services.journal_core import JOURNAL_ENTRIES, JOURNAL_LINES, ensure_indexes as ensure_journal
-from services.opening_balance import create_draft, post_voucher
+from services.opening_balance import (
+    OpeningBalanceConflictError,
+    create_draft,
+    post_voucher,
+    reverse_voucher,
+)
 from services.purchase_accounting_settings import SETTINGS_KEY
 from services.purchase_goods_receipt_posting import post_purchase_goods_receipt_accounting
 from services.purchase_goods_receipts import create_purchase_goods_receipt
@@ -1654,3 +1659,333 @@ async def test_durable_movement_with_applied_marker_still_posts():
     assert opening["stock_snapshots"][0]["snapshot_qty"] == 100
     assert opening["stock_snapshots"][0]["events_before_cutoff"] == 0
     assert await server.db[JOURNAL_ENTRIES].count_documents({"source_type": SOURCE_TYPE, "source_id": opening["id"]}) == 1
+
+
+def _pengiriman(mid, qty, when="2026-10-05T03:00:00Z"):
+    return {
+        "id": str(uuid.uuid4()),
+        "movement_type": "PENGIRIMAN",
+        "master_item_id": mid,
+        "date": when,
+        "created_at": when,
+        "transaction_qty": qty,
+        "transaction_uom": "PCS",
+        "conversion_factor": 1,
+        "base_qty": qty,
+        "base_uom": "PCS",
+        "status": "POSTED",
+    }
+
+
+async def test_same_user_and_request_cannot_take_an_active_lease():
+    await _configure()
+    mid = await _master()
+    import services.financial_inventory_opening as fio
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    original = fio._after_step
+
+    async def pause(step):
+        if step == "lines":
+            entered.set()
+            await release.wait()
+
+    fio._after_step = pause
+    task = asyncio.create_task(
+        post_financial_opening(server.db, _opening_payload(mid, 100, 1000, "lease-same"), USER)
+    )
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=10)
+        with pytest.raises(OpeningBlocked) as exc:
+            await asyncio.wait_for(
+                post_financial_opening(server.db, _opening_payload(mid, 100, 1000, "lease-same"), USER),
+                timeout=5,
+            )
+        assert exc.value.code == "OPENING_IN_PROGRESS"
+        assert await server.db[JOURNAL_ENTRIES].count_documents({"source_type": SOURCE_TYPE}) == 0
+    finally:
+        release.set()
+        fio._after_step = original
+    saved = await task
+    assert saved["status"] == "POSTED"
+    assert await server.db[JOURNAL_ENTRIES].count_documents({
+        "source_type": SOURCE_TYPE,
+        "source_id": saved["id"],
+        "status": "posted",
+        "reversal_of": None,
+    }) == 1
+
+
+async def test_old_worker_cannot_write_after_a_new_lease_token():
+    await _configure()
+    mid = await _master()
+    import services.financial_inventory_opening as fio
+    from datetime import datetime, timedelta, timezone
+
+    original = fio._after_step
+    stolen = {}
+
+    async def hijack(step):
+        if step != "lines":
+            return
+        past = (datetime.now(timezone.utc) - timedelta(seconds=5)).isoformat()
+        await server.db[fio.CLAIMS].update_one(
+            {"_id": fio.CLAIM_ID},
+            {"$set": {"lease_expires_at": past}},
+        )
+        stolen["lease"] = await fio._acquire_lease(server.db, "fence-req")
+
+    fio._after_step = hijack
+    try:
+        with pytest.raises(OpeningBlocked) as exc:
+            await post_financial_opening(server.db, _opening_payload(mid, 100, 1000, "fence-req"), USER)
+        assert exc.value.code == "OPENING_LEASE_LOST"
+    finally:
+        fio._after_step = original
+    assert await server.db[JOURNAL_ENTRIES].count_documents({"source_type": SOURCE_TYPE}) == 0
+    claim = await server.db[fio.CLAIMS].find_one({"_id": fio.CLAIM_ID})
+    assert claim["lease_token"] == stolen["lease"]["lease_token"]
+    assert claim["state"] == "BUILDING"
+
+
+async def test_reversal_and_cogs_cannot_both_commit():
+    await _configure()
+    mid = await _master()
+    opening = await post_financial_opening(server.db, _opening_payload(mid, 100, 1000, "race-open"), USER)
+    movement = _pengiriman(mid, 10)
+    await server.db.stock_movements.insert_one(movement)
+    import services.financial_inventory_opening as fio
+
+    checked = asyncio.Event()
+    cogs_finished = asyncio.Event()
+    real_reverse = fio.reverse_journal
+
+    async def reverse_after_cogs(*args, **kwargs):
+        checked.set()
+        await cogs_finished.wait()
+        return await real_reverse(*args, **kwargs)
+
+    fio.reverse_journal = reverse_after_cogs
+    barrier = asyncio.Barrier(2)
+
+    async def do_reverse():
+        await barrier.wait()
+        try:
+            await reverse_financial_opening(server.db, opening["id"], USER, "race reversal")
+            return "reversed"
+        except OpeningBlocked as exc:
+            return exc.code
+
+    async def do_cogs():
+        await barrier.wait()
+        await checked.wait()
+        try:
+            await post_inventory_issue_accounting(server.db, movement["id"], USER)
+            return "posted"
+        except HTTPException as exc:
+            detail = exc.detail if isinstance(exc.detail, dict) else {}
+            return detail.get("code") or "http"
+        finally:
+            cogs_finished.set()
+
+    try:
+        results = await asyncio.gather(do_reverse(), do_cogs())
+    finally:
+        fio.reverse_journal = real_reverse
+    stored = await server.db.financial_inventory_openings.find_one({"id": opening["id"]}, {"_id": 0})
+    issue = await server.db.inventory_issue_accounting.find_one({"movement_id": movement["id"]}, {"_id": 0}) or {}
+    basis = issue.get("accounting_posting_basis") or {}
+    prefix = f"opening:{opening['id']}:"
+    consumed = any(
+        str(row.get("acquisition_key") or "").startswith(prefix)
+        for row in basis.get("consumed_acquisitions") or []
+    ) or any(str(key).startswith(prefix) for key in basis.get("pool_acquisition_keys") or [])
+    assert not (stored["status"] == "REVERSED" and consumed), (results, stored["status"], consumed)
+    assert stored["status"] in {"POSTED", "REVERSED"}
+    if stored["status"] == "REVERSED":
+        assert "reversed" in results
+        assert not consumed
+    else:
+        assert "OPENING_ALREADY_CONSUMED" in results
+        assert consumed
+
+
+async def test_multi_item_reversal_locks_in_sorted_order():
+    await _configure()
+    first = await _master()
+    second = await _master()
+    opening = await post_financial_opening(server.db, {
+        "client_request_id": "two-items",
+        "effective_date": EFFECTIVE,
+        "lines": [
+            {"master_item_id": second, "qty": 4, "unit_cost": 1000, "base_uom": "PCS", "source": "APPROVED_OPENING"},
+            {"master_item_id": first, "qty": 6, "unit_cost": 1000, "base_uom": "PCS", "source": "APPROVED_OPENING"},
+        ],
+    }, USER)
+    import services.inventory_financial_locks as locks
+
+    seen = []
+    real = locks.acquire_item_lock
+
+    async def spy(db, key, holder, **kwargs):
+        seen.append(key)
+        return await real(db, key, holder, **kwargs)
+
+    locks.acquire_item_lock = spy
+    try:
+        reversed_opening = await reverse_financial_opening(server.db, opening["id"], USER, "urut kunci")
+    finally:
+        locks.acquire_item_lock = real
+    assert reversed_opening["status"] == "REVERSED"
+    assert seen == sorted(seen)
+    assert len(seen) == 2
+
+
+async def test_reversed_journal_is_not_an_acquisition_and_get_does_not_write():
+    from services.inventory_issue_accounting import load_live_acquisition_coverage
+    from services.journal_core import reverse_journal
+
+    await _configure()
+    mid = await _master()
+    opening = await post_financial_opening(server.db, _opening_payload(mid, 100, 1000, "rev-crash"), USER)
+    await reverse_journal(
+        server.db,
+        opening["posted_journal_id"],
+        source_type="financial_inventory_opening_reversal",
+        source_id=f"{opening['id']}:reversal",
+        posted_by=USER,
+        description="crash sesudah jurnal",
+    )
+    before_openings = await server.db.financial_inventory_openings.count_documents({})
+    before_journals = await server.db[JOURNAL_ENTRIES].count_documents({})
+    book = await build_financial_book_reconciliation(server.db)
+    acquisitions, report = await load_live_acquisition_coverage(server.db)
+    listed = await server.db.financial_inventory_openings.find_one({"id": opening["id"]}, {"_id": 0})
+    assert book["writes"] == 0
+    assert await server.db.financial_inventory_openings.count_documents({}) == before_openings
+    assert await server.db[JOURNAL_ENTRIES].count_documents({}) == before_journals
+    assert listed["status"] == "POSTED"
+    assert book["reconciliation_status"] != "MATCH"
+    assert book["financial_remaining"] is None
+    assert book["opening_value"] is None
+    assert book["blockers"][0]["code"]
+    assert all(row.get("source") != "APPROVED_OPENING" for row in acquisitions)
+    assert f"m:{mid}" in report["item_keys"]
+    movement = _pengiriman(mid, 10)
+    await server.db.stock_movements.insert_one(movement)
+    with pytest.raises(HTTPException) as exc:
+        await post_inventory_issue_accounting(server.db, movement["id"], USER)
+    assert exc.value.detail["code"] == "INVALID_ACQUISITION_BASIS"
+    recovered = await recover_financial_opening(server.db, client_request_id="rev-crash", user=USER)
+    assert recovered["status"] == "REVERSED"
+    assert await server.db[JOURNAL_ENTRIES].count_documents({
+        "source_type": SOURCE_TYPE,
+        "source_id": opening["id"],
+        "status": "posted",
+        "reversal_of": None,
+    }) == 0
+
+
+async def test_linked_voucher_reversal_cannot_skip_consumption():
+    from services.inventory_issue_accounting import load_live_acquisitions
+
+    accounts = await _configure(offset=False)
+    mid = await _master()
+    draft = await create_draft(server.db, {
+        "cutoff_date": EFFECTIVE,
+        "description": "Saldo awal tertaut",
+        "lines": [
+            {"account_id": accounts["inventory"]["id"], "debit": 100000, "credit": 0},
+            {"account_id": accounts["equity"]["id"], "debit": 0, "credit": 100000},
+        ],
+    }, user=USER)
+    voucher = await post_voucher(server.db, draft["id"], user=USER)
+    opening = await post_financial_opening(server.db, _opening_payload(mid, 100, 1000, "linked-consume"), USER)
+    movement = _pengiriman(mid, 5, "2026-10-06T03:00:00Z")
+    await server.db.stock_movements.insert_one(movement)
+    await post_inventory_issue_accounting(server.db, movement["id"], USER)
+    with pytest.raises(OpeningBalanceConflictError):
+        await reverse_voucher(server.db, voucher["id"], user=USER)
+    journal = await server.db[JOURNAL_ENTRIES].find_one({"id": opening["posted_journal_id"]}, {"_id": 0})
+    assert journal["status"] == "posted"
+    stored = await server.db.financial_inventory_openings.find_one({"id": opening["id"]}, {"_id": 0})
+    assert stored["status"] == "POSTED"
+    live = await load_live_acquisitions(server.db)
+    assert any(str(row.get("acquisition_key") or "").startswith(f"opening:{opening['id']}:") for row in live)
+
+    accounts = await _configure(offset=False)
+    mid = await _master()
+    draft = await create_draft(server.db, {
+        "cutoff_date": "2026-10-02",
+        "description": "Saldo awal tanpa konsumsi",
+        "lines": [
+            {"account_id": accounts["inventory"]["id"], "debit": 20000, "credit": 0},
+            {"account_id": accounts["equity"]["id"], "debit": 0, "credit": 20000},
+        ],
+    }, user=USER)
+    voucher = await post_voucher(server.db, draft["id"], user=USER)
+    opening = await post_financial_opening(
+        server.db, _opening_payload(mid, 20, 1000, "linked-free", effective="2026-10-02"), USER,
+    )
+    await reverse_voucher(server.db, voucher["id"], user=USER)
+    after_openings = await server.db.financial_inventory_openings.count_documents({})
+    after_journals = await server.db[JOURNAL_ENTRIES].count_documents({})
+    book = await build_financial_book_reconciliation(server.db)
+    assert book["writes"] == 0
+    assert await server.db.financial_inventory_openings.count_documents({}) == after_openings
+    assert await server.db[JOURNAL_ENTRIES].count_documents({}) == after_journals
+    assert book["reconciliation_status"] == "BLOCKED"
+    assert book["opening_value"] is None
+    assert book["financial_remaining"] is None
+    live = await load_live_acquisitions(server.db)
+    assert all(not str(row.get("acquisition_key") or "").startswith(f"opening:{opening['id']}:") for row in live)
+
+
+async def test_retry_uses_frozen_accounts_after_settings_change():
+    from services.purchase_accounting_settings import update_purchase_accounting_settings
+    import services.financial_inventory_opening as fio
+
+    accounts = await _configure()
+    mid = await _master()
+    original = fio._after_step
+
+    async def crash(step):
+        if step == "lines":
+            raise RuntimeError("crash after frozen doc")
+
+    fio._after_step = crash
+    try:
+        with pytest.raises(OpeningBlocked):
+            await post_financial_opening(server.db, _opening_payload(mid, 100, 1000, "frozen-retry"), USER)
+    finally:
+        fio._after_step = original
+    doc = await server.db.financial_inventory_openings.find_one({"client_request_id": "frozen-retry"}, {"_id": 0})
+    assert doc["status"] != "POSTED"
+    frozen_inventory = doc["inventory_account_id"]
+    frozen_offset = doc["offset_account_id"]
+    new_inventory = await _coa("13", "Persediaan baru", "INTR")
+    new_offset = await _coa("32", "Modal baru", "EQTY")
+    await update_purchase_accounting_settings(server.db, {
+        "payable_account_id": accounts["payable"]["id"],
+        "purchase_clearing_account_id": accounts["clearing"]["id"],
+        "inventory_account_id": new_inventory["id"],
+        "cogs_account_id": accounts["cogs"]["id"],
+        "inventory_accounting_effective_date": "2026-01-01",
+        "inventory_opening_offset_account_id": new_offset["id"],
+    }, USER)
+    recovered = await post_financial_opening(server.db, _opening_payload(mid, 100, 1000, "frozen-retry"), USER)
+    assert recovered["inventory_account_id"] == frozen_inventory
+    assert recovered["offset_account_id"] == frozen_offset
+    assert recovered["status"] == "POSTED"
+    journal = await server.db[JOURNAL_ENTRIES].find_one({"id": recovered["posted_journal_id"]}, {"_id": 0})
+    lines = await server.db[JOURNAL_LINES].find({"journal_id": journal["id"]}, {"_id": 0}).to_list(10)
+    debited = {row["account_id"] for row in lines if Decimal(str(row.get("debit") or 0)) > 0}
+    credited = {row["account_id"] for row in lines if Decimal(str(row.get("credit") or 0)) > 0}
+    assert debited == {frozen_inventory}
+    assert credited == {frozen_offset}
+    assert new_inventory["id"] not in debited
+    assert new_offset["id"] not in credited
+    assert journal["date"] == "2026-10-01"
+    assert journal["source_type"] == SOURCE_TYPE
+    assert journal["source_id"] == recovered["id"]
