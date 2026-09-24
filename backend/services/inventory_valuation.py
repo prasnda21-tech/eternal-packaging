@@ -137,6 +137,9 @@ async def build_inventory_valuation_rows(db) -> dict:
         if row.get("master_item_id")
     }
     published_candidates = await load_effective_published_hpp(db)
+    from services.financial_inventory_opening import financial_display_by_item
+
+    financial_by_item = await financial_display_by_item(db)
 
     rows: List[dict] = []
     for master in masters:
@@ -252,6 +255,25 @@ async def build_inventory_valuation_rows(db) -> dict:
             ),
             "published_pricing_version_id": (
                 published.get("version_id") if published else None
+            ),
+            "valuation_status": status,
+            "financial_posting_status": (financial_by_item.get(mid) or {}).get("financial_posting_status") or "UNPOSTED",
+            "financial_opening_qty": (financial_by_item.get(mid) or {}).get("financial_opening_qty"),
+            "financial_opening_unit_cost": (financial_by_item.get(mid) or {}).get("financial_opening_unit_cost"),
+            "financial_opening_total": (financial_by_item.get(mid) or {}).get("financial_opening_total"),
+            "financial_opening_source": (financial_by_item.get(mid) or {}).get("financial_opening_source"),
+            "financial_effective_date": (financial_by_item.get(mid) or {}).get("financial_effective_date"),
+            "financial_journal_id": (financial_by_item.get(mid) or {}).get("financial_journal_id"),
+            "financial_journal_origin": (financial_by_item.get(mid) or {}).get("financial_journal_origin"),
+            "financial_blocker": (financial_by_item.get(mid) or {}).get("financial_blocker"),
+            "financial_blocker_message": (financial_by_item.get(mid) or {}).get("financial_blocker_message"),
+            "published_is_book_value": False,
+            "reconciliation_difference": difference,
+            "reconciliation_explanation": (
+                "Selisih stok fisik dan qty valuasi manajerial. "
+                "HPP Published bukan saldo buku posted."
+                if (position.get("hpp_source") == SOURCE_PUBLISHED_FALLBACK or not canonical_exists)
+                else "Selisih stok fisik terhadap qty valuasi rata-rata pembelian."
             ),
             "updated_at": _latest_text(
                 position.get("updated_at"),
@@ -378,6 +400,12 @@ def export_xlsx(rows: List[dict]) -> bytes:
         "HPP Rata-Rata",
         "Nilai Persediaan",
         "Status HPP",
+        "Sumber HPP",
+        "Posting Finansial",
+        "Opening Disetujui",
+        "Selisih",
+        "Penjelasan Selisih",
+        "Hambatan",
         "Terakhir Update",
     ]
     ws.append(headers)
@@ -397,13 +425,19 @@ def export_xlsx(rows: List[dict]) -> bytes:
             row.get("current_hpp"),
             row.get("inventory_value"),
             row.get("hpp_status") or "",
+            row.get("hpp_source") or "",
+            row.get("financial_posting_status") or "",
+            row.get("financial_opening_total"),
+            row.get("reconciliation_difference"),
+            row.get("reconciliation_explanation") or "",
+            row.get("financial_blocker_message") or row.get("hpp_reason") or "",
             row.get("updated_at") or "",
         ])
     for row_index in range(2, ws.max_row + 1):
         ws.cell(row=row_index, column=4).number_format = "#,##0.######"
         ws.cell(row=row_index, column=5).number_format = '"Rp " #,##0.00'
         ws.cell(row=row_index, column=6).number_format = '"Rp " #,##0'
-    widths = [16, 34, 12, 16, 18, 22, 18, 24]
+    widths = [16, 34, 12, 16, 18, 22, 18, 28, 18, 18, 14, 42, 28, 24]
     for index, width in enumerate(widths, start=1):
         ws.column_dimensions[chr(64 + index)].width = width
     ws.auto_filter.ref = ws.dimensions

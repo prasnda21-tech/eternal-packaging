@@ -2608,3 +2608,119 @@ async def test_65_goods_receipt_crash_recovery(mock_db):
     assert st_fin["total_qty"] == 600.0
     assert st_fin.get("pending_event") is None
 
+
+@pytest.mark.anyio
+async def test_64_applied_marker_is_stored_with_balance_and_copied_on_retry(mock_db, monkeypatch):
+    """Crash after the balance write must keep the stored transition marker.
+
+    GR, pengiriman, and opname share finalize. A later clock must not restamp it.
+    """
+    import services.physical_stock_engine as engine
+    from services.stock_ledger import MOVEMENT_KOREKSI
+
+    apply_clock = "2026-09-30T16:30:00+00:00"
+    retry_clock = "2026-10-02T01:00:00+00:00"
+    claim_clock = "2026-09-30T16:00:00+00:00"
+    cases = [
+        ("gr", MOVEMENT_PENERIMAAN, 50.0, None, 150.0),
+        ("sj", MOVEMENT_PENGIRIMAN, 20.0, False, 80.0),
+        ("op", MOVEMENT_KOREKSI, -10.0, None, 90.0),
+    ]
+    real_record = engine.record_stock_movement
+
+    async def crash_before_movement(*_args, **_kwargs):
+        raise RuntimeError("crash before movement")
+
+    for name, movement_type, qty, is_print, after in cases:
+        item = f"prod-atom-{name}"
+        await setup_initialized_product(mock_db, item, unprinted=100.0, printed=0.0)
+        monkeypatch.setattr(engine, "now_iso", lambda clock=apply_clock: clock)
+        kwargs = {
+            "event_id": f"ev-{name}",
+            "master_item_id": item,
+            "movement_type": movement_type,
+            "transaction_qty": qty,
+            "transaction_uom": "PCS",
+            "source_entity": "GUDANG",
+            "destination_entity": "LAIN",
+            "reference_number": name,
+            "reference_type": name,
+            "now": claim_clock,
+        }
+        if is_print is not None:
+            kwargs["is_print"] = is_print
+        claim = await claim_durable_stock_event(mock_db, **kwargs)
+        assert claim["status"] == "CLAIMED", name
+        claimed_state = await get_product_stock_state(mock_db, item)
+        assert claimed_state["total_qty"] == 100.0
+        assert not (claimed_state.get("pending_event") or {}).get("stock_applied_at")
+
+        monkeypatch.setattr(engine, "record_stock_movement", crash_before_movement)
+        with pytest.raises(RuntimeError, match="crash before movement"):
+            await finalize_durable_stock_event(
+                mock_db, event_id=f"ev-{name}", master_item_id=item, now=claim_clock,
+            )
+        crashed = await get_product_stock_state(mock_db, item)
+        assert crashed["total_qty"] == after, name
+        assert crashed["pending_event"]["stage"] == "STATE_APPLIED"
+        assert crashed["pending_event"]["stock_applied_at"] == apply_clock
+
+        monkeypatch.setattr(engine, "now_iso", lambda clock=retry_clock: clock)
+        monkeypatch.setattr(engine, "record_stock_movement", real_record)
+        movement = await finalize_durable_stock_event(
+            mock_db, event_id=f"ev-{name}", master_item_id=item, now=claim_clock,
+        )
+        assert movement["stock_applied_at"] == apply_clock, name
+        assert movement["stock_applied_at"] != retry_clock
+        assert movement["claimed_at"] == claim_clock
+        finished = await get_product_stock_state(mock_db, item)
+        assert finished["total_qty"] == after, name
+        assert finished.get("pending_event") is None
+        again = await finalize_durable_stock_event(
+            mock_db, event_id=f"ev-{name}", master_item_id=item, now=claim_clock,
+        )
+        assert again["stock_applied_at"] == apply_clock
+        assert (await get_product_stock_state(mock_db, item))["total_qty"] == after
+
+
+@pytest.mark.anyio
+async def test_65_recovery_does_not_mint_applied_timestamp_for_historical_crash(mock_db, monkeypatch):
+    """A STATE_APPLIED crash from before the marker existed stays unstamped."""
+    import services.physical_stock_engine as engine
+
+    minted = "2026-10-05T08:00:00+00:00"
+    monkeypatch.setattr(engine, "now_iso", lambda: minted)
+    await setup_initialized_product(mock_db, "prod-hist", unprinted=100.0, printed=0.0)
+    claim = await claim_durable_stock_event(
+        mock_db,
+        event_id="ev-hist",
+        master_item_id="prod-hist",
+        movement_type=MOVEMENT_PENGIRIMAN,
+        transaction_qty=20.0,
+        transaction_uom="PCS",
+        source_entity="BELUM_DICETAK",
+        destination_entity="CUSTOMER",
+        reference_number="SJ-HIST",
+        reference_type="sales_delivery",
+        is_print=False,
+        now="2026-09-30T16:00:00+00:00",
+    )
+    assert claim["status"] == "CLAIMED"
+    await mock_db[STATE_COLLECTION].update_one(
+        {"_id": "prod-hist"},
+        {
+            "$inc": {"unprinted_qty": -20.0, "total_qty": -20.0},
+            "$set": {"pending_event.stage": "STATE_APPLIED"},
+            "$unset": {"pending_event.stock_applied_at": ""},
+        },
+    )
+    recovered = await reconcile_pending_product_claim(mock_db, "prod-hist")
+    assert recovered["status"] == "FINALIZED"
+    assert recovered["movement"].get("stock_applied_at") in (None, "")
+    assert recovered["movement"].get("stock_applied_at") != minted
+    state = await get_product_stock_state(mock_db, "prod-hist")
+    assert state["total_qty"] == 80.0
+    assert state.get("pending_event") is None
+    rows = await list_product_mutations(mock_db, "prod-hist")
+    assert rows["total"] == 2
+

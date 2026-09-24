@@ -102,7 +102,15 @@ QTY_IN_PROGRESS = STABILITY_IN_PROGRESS
 
 SOURCE_GR = CANONICAL_GR
 SOURCE_GR_REVERSAL = CANONICAL_GR_REVERSAL
-INVENTORY_FAMILY = frozenset({SOURCE_GR, SOURCE_GR_REVERSAL, SOURCE_ISSUE})
+SOURCE_FINANCIAL_OPENING = "financial_inventory_opening"
+SOURCE_FINANCIAL_OPENING_REVERSAL = "financial_inventory_opening_reversal"
+INVENTORY_FAMILY = frozenset({
+    SOURCE_GR,
+    SOURCE_GR_REVERSAL,
+    SOURCE_ISSUE,
+    SOURCE_FINANCIAL_OPENING,
+    SOURCE_FINANCIAL_OPENING_REVERSAL,
+})
 
 MONEY_Q = Decimal("0.01")
 DOCUMENT_ID_BATCH_SIZE = 400
@@ -1010,6 +1018,16 @@ async def build_inventory_reconciliation_context(db) -> dict:
     rejected_gr_ids: set = set()
     rejected_issue_ids: set = set()
 
+    posted_openings = await db.financial_inventory_openings.find(
+        {"status": "POSTED"},
+        {"_id": 0},
+    ).to_list(None)
+    excluded_opening_receipts = {
+        str(receipt_id)
+        for opening in posted_openings
+        for receipt_id in (opening.get("excluded_receipt_ids") or [])
+    }
+
     # Recognize live GR acquisitions from journals first.
     for source_id, journal in sorted(live_gr_journals.items()):
         receipt = receipts_by_id.get(source_id)
@@ -1047,6 +1065,21 @@ async def build_inventory_reconciliation_context(db) -> dict:
             anomalies.append(_anomaly(
                 code=CODE_INVALID_ACQUISITION_BASIS,
                 message="Basis GR memiliki eligible_inventory_lines yang tidak valid.",
+                source_type=SOURCE_GR,
+                source_id=source_id,
+                journal_id=journal_id or None,
+                receipt_id=source_id,
+            ))
+            continue
+        if source_id in excluded_opening_receipts:
+            coverage_complete = False
+            anomalies.append(_anomaly(
+                code="HISTORICAL_GR_JOURNAL_OVERLAPS_OPENING",
+                message=(
+                    "Jurnal GR masih aktif untuk penerimaan yang sudah masuk opening. "
+                    "Nilainya tidak dikurangi dari GL dan tidak ditambahkan ke basis, "
+                    "supaya selisih sumber tidak saling meniadakan."
+                ),
                 source_type=SOURCE_GR,
                 source_id=source_id,
                 journal_id=journal_id or None,
@@ -1368,6 +1401,45 @@ async def build_inventory_reconciliation_context(db) -> dict:
     inventory_account_ids |= set(historical_inventory)
     cogs_account_ids |= set(historical_cogs)
     unresolved_accounts: Dict[str, Decimal] = {}
+
+    for opening in posted_openings:
+        aid = _text(opening.get("inventory_account_id"))
+        try:
+            total = parse_money(opening.get("total"), field="opening_total")
+        except InvalidMoneyError:
+            coverage_complete = False
+            anomalies.append(_anomaly(
+                code=CODE_INVALID_MONETARY_VALUE,
+                message="Total opening finansial tidak valid.",
+                source_type=SOURCE_FINANCIAL_OPENING,
+                source_id=_text(opening.get("id")) or None,
+            ))
+            continue
+        if aid:
+            historical_inventory.add(aid)
+            _add_money(inventory_basis, aid, total)
+        if opening.get("journal_origin") == "existing_opening_voucher":
+            linked = next(
+                (row for row in legitimate if _text(row.get("id")) == _text(opening.get("posted_journal_id"))),
+                None,
+            )
+            if linked:
+                signed, _issues = _signed_lines(linked.get("lines") or [])
+                for account_id, amount in signed.items():
+                    _add_money(family_signed_by_account, account_id, amount)
+        for line in opening.get("lines") or []:
+            item_key = _text(line.get("financial_inventory_item_key"))
+            if not item_key:
+                continue
+            if item_key not in item_keys_order:
+                item_keys_order.append(item_key)
+            master_id = _text(line.get("master_item_id"))
+            if master_id:
+                item_master.setdefault(item_key, master_id)
+            try:
+                _add_qty(item_acq_qty, item_key, parse_qty(line.get("qty"), field="opening_qty"))
+            except (InvalidMoneyError, InvalidQtyError):
+                coverage_complete = False
 
     for aid, amount in family_signed_by_account.items():
         kind = _classify_inventory_account(

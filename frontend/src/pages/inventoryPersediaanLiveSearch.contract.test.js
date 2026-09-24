@@ -88,7 +88,7 @@ describe("Persediaan live search inventory scope", () => {
     expect(value).toMatch(/liveSearchTableView/);
     expect(value).toMatch(/api\.inventoryValuation\(/);
     expect(value).toMatch(/api\.inventoryValuationExport\(/);
-    expect(value).toMatch(/Stock Fisik × HPP Rata-Rata/);
+    expect(value).toMatch(/Nilai manajerial = Stock Fisik × HPP/);
     expect(value).toMatch(/Belum Ada HPP/);
     expect(value).not.toMatch(/currentStockUpdate|manual_hpp|hpp_snapshot|tier_prices/);
   });

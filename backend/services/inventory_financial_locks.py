@@ -37,6 +37,11 @@ def _parse_iso(raw: Any) -> Optional[datetime]:
     return parsed.astimezone(timezone.utc)
 
 
+def _utc_now() -> datetime:
+    """Clock for item-lock leases. Tests advance this; production uses UTC now."""
+    return datetime.now(timezone.utc)
+
+
 def lock_is_active(doc: Optional[dict], *, now: Optional[datetime] = None) -> bool:
     row = doc or {}
     token = str(row.get("token") or "").strip()
@@ -45,12 +50,12 @@ def lock_is_active(doc: Optional[dict], *, now: Optional[datetime] = None) -> bo
     expires = _parse_iso(row.get("expires_at"))
     if expires is None:
         return False
-    current = now or datetime.now(timezone.utc)
+    current = now or _utc_now()
     return current < expires
 
 
 def _stale_or_same_holder_clause(holder_movement_id: str, *, now: Optional[datetime] = None) -> Dict[str, Any]:
-    current = now or datetime.now(timezone.utc)
+    current = now or _utc_now()
     return {
         "$or": [
             {"token": {"$exists": False}},
@@ -83,7 +88,7 @@ async def acquire_item_lock(
     if not key or not holder:
         return None
     claim_token = str(token or uuid.uuid4())
-    current = now or datetime.now(timezone.utc)
+    current = now or _utc_now()
     claimed_at = current.isoformat()
     expires_at = (current + timedelta(seconds=LEASE_SECONDS)).isoformat()
     try:
@@ -184,7 +189,7 @@ async def renew_item_lock(
     claim = str(token or "").strip()
     if not key or not claim:
         return None
-    current = now or datetime.now(timezone.utc)
+    current = now or _utc_now()
     expires_at = (current + timedelta(seconds=LEASE_SECONDS)).isoformat()
     doc = await db[COLLECTION].find_one_and_update(
         {

@@ -232,6 +232,12 @@ async def test_search_filter_pagination_and_export_are_read_only(db):
         "HPP Rata-Rata",
         "Nilai Persediaan",
         "Status HPP",
+        "Sumber HPP",
+        "Posting Finansial",
+        "Opening Disetujui",
+        "Selisih",
+        "Penjelasan Selisih",
+        "Hambatan",
         "Terakhir Update",
     ]
     assert sheet["A2"].value == "BB-001"

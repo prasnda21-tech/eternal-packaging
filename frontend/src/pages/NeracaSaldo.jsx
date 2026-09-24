@@ -115,6 +115,12 @@ export default function NeracaSaldo() {
         </div>
       </div>
 
+      {data?.completeness_status === "incomplete" && (
+        <div className="form-error" role="status" data-testid="neraca-saldo-completeness">
+          <AlertCircle size={16} /> Reversal belum lengkap ({data.blocker_code || "REVERSAL_INCOMPLETE"}). Angka pada ringkasan ini belum final.
+        </div>
+      )}
+
       {data && (
         <div className="kb-tb-summary" data-testid="neraca-saldo-summary">
           <div className="kb-tb-summary-group" data-testid="neraca-saldo-summary-opening">

@@ -35,6 +35,10 @@ describe("Neraca Saldo frontend contracts", () => {
 
   test("summary equality display and table alignment", () => {
     expect(src).toMatch(/neraca-saldo-summary/);
+    expect(src).toMatch(/neraca-saldo-completeness/);
+    expect(src).toMatch(/completeness_status/);
+    expect(src).toMatch(/blocker_code/);
+    expect(src).toMatch(/belum final/);
     expect(src).toMatch(/Saldo Awal/);
     expect(src).toMatch(/Mutasi/);
     expect(src).toMatch(/Saldo Akhir/);

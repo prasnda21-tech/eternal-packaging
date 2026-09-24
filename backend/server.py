@@ -11314,6 +11314,111 @@ async def inventory_valuation_export(
     )
 
 
+def _opening_http(exc):
+    from services.financial_inventory_opening import OpeningBlocked
+    if isinstance(exc, OpeningBlocked):
+        raise HTTPException(exc.status_code, exc.as_detail())
+    raise exc
+
+
+@api_router.get("/inventory/financial-opening")
+async def financial_opening_list(user=Depends(require_perm("inventory_valuation.view"))):
+    from services.financial_inventory_opening import list_financial_openings
+    return {"items": await list_financial_openings(db), "writes": 0}
+
+
+@api_router.get("/inventory/financial-opening/reconciliation")
+async def financial_opening_reconciliation(user=Depends(require_perm("inventory_valuation.view"))):
+    from services.financial_inventory_opening import build_financial_book_reconciliation
+    return await build_financial_book_reconciliation(db)
+
+
+@api_router.post("/inventory/financial-opening/preview")
+async def financial_opening_preview(payload: dict, user=Depends(require_perm("inventory_valuation.view"))):
+    from services.financial_inventory_opening import preview_financial_opening
+    try:
+        return await preview_financial_opening(db, payload or {})
+    except Exception as exc:
+        _opening_http(exc)
+
+
+@api_router.post("/inventory/financial-opening")
+async def financial_opening_post(payload: dict, user=Depends(require_perm("inventory_valuation.manage_opening"))):
+    from services.financial_inventory_opening import post_financial_opening
+    try:
+        saved = await post_financial_opening(db, payload or {}, user)
+    except Exception as exc:
+        _opening_http(exc)
+    return {"item": saved}
+
+
+@api_router.post("/inventory/financial-opening/recover")
+async def financial_opening_recover(payload: dict, user=Depends(require_perm("inventory_valuation.manage_opening"))):
+    from services.financial_inventory_opening import recover_financial_opening
+    try:
+        saved = await recover_financial_opening(
+            db,
+            client_request_id=str((payload or {}).get("client_request_id") or ""),
+            user=user,
+        )
+    except Exception as exc:
+        _opening_http(exc)
+    return {"item": saved}
+
+
+@api_router.post("/inventory/financial-opening/{opening_id}/reverse")
+async def financial_opening_reverse(opening_id: str, payload: dict, user=Depends(require_perm("inventory_valuation.manage_opening"))):
+    from services.financial_inventory_opening import reverse_financial_opening
+    try:
+        saved = await reverse_financial_opening(
+            db,
+            opening_id,
+            user,
+            str((payload or {}).get("reason") or ""),
+        )
+    except Exception as exc:
+        _opening_http(exc)
+    return {"item": saved}
+
+
+@api_router.post("/inventory/financial-opening/snapshot")
+async def financial_opening_snapshot(payload: dict, user=Depends(require_perm("inventory_valuation.manage_opening"))):
+    from services.financial_inventory_opening import capture_financial_opening_snapshot
+    try:
+        saved = await capture_financial_opening_snapshot(db, payload or {}, user)
+    except Exception as exc:
+        _opening_http(exc)
+    return {"item": saved}
+
+
+@api_router.get("/inventory/reports/purchases")
+async def inventory_purchase_activity_report(
+    start_date: str = "",
+    end_date: str = "",
+    page: int = 1,
+    page_size: int = 50,
+    user=Depends(require_perm("inventory_valuation.view")),
+):
+    from services.commercial_activity_reports import purchase_activity_report
+    return await purchase_activity_report(
+        db, start_date=start_date, end_date=end_date, page=page, page_size=page_size,
+    )
+
+
+@api_router.get("/inventory/reports/sales")
+async def inventory_sales_activity_report(
+    start_date: str = "",
+    end_date: str = "",
+    page: int = 1,
+    page_size: int = 50,
+    user=Depends(require_perm("inventory_valuation.view")),
+):
+    from services.commercial_activity_reports import sales_activity_report
+    return await sales_activity_report(
+        db, start_date=start_date, end_date=end_date, page=page, page_size=page_size,
+    )
+
+
 @api_router.get("/current-stock")
 async def current_stock_list(
     q: str = "",
@@ -13646,6 +13751,8 @@ async def seed():
     await db.hpp_cost_layers.create_index([("calculation_version", 1), ("layer_id", 1)], unique=True)
     from services.hpp_cutover import ensure_indexes as _hpp_cutover_ensure_indexes
     await _hpp_cutover_ensure_indexes(db)
+    from services.financial_inventory_opening import ensure_indexes as _financial_opening_ensure_indexes
+    await _financial_opening_ensure_indexes(db)
     from services.customer_pricing import ensure_indexes as _customer_pricing_ensure_indexes
     await _customer_pricing_ensure_indexes(db)
     from services.cash_bank_master import ensure_indexes as _cash_bank_master_ensure_indexes

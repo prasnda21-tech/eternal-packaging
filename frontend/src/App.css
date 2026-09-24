@@ -3612,6 +3612,17 @@ html:has(.prod-schedule-page) #root{
   .inventory-value-summary-card{border-right:0;border-bottom:1px solid var(--line)}
   .inventory-value-summary-card:last-child{border-bottom:0}
 }
+.inventory-cogs-queue,.inventory-activity-reports{margin:16px 0}
+.inventory-cogs-queue h2,.inventory-activity-reports h2{font-size:16px;margin:0 0 8px}
+.inventory-opening-form input{min-width:0;height:34px}
+.inventory-opening-form .prod-filter-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.inventory-opening-form button{height:34px}
+.inventory-opening-preview{margin-top:8px;padding:8px 10px;border:1px solid var(--line);background:#fff}
+.inventory-opening-preview p{margin:0 0 4px;font-size:13px}
+.inventory-book-recon{grid-template-columns:repeat(6,minmax(0,1fr))}
+@media (max-width:900px){
+  .inventory-book-recon{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
 
 /* -------- Status Pengiriman Barang (Accurate-like monitoring grid) -------- */
 html:has(.ship-status-page),

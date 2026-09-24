@@ -41,7 +41,9 @@ describe("Nilai Persediaan read-only page", () => {
     expect(source).not.toMatch(/confirmInventoryValuationOpening/);
     expect(source).not.toMatch(/Konfirmasi HPP Awal/);
     expect(source).not.toMatch(/window\.confirm/);
-    expect(source).toMatch(/HPP Published \/ Awal/);
+    expect(source).toMatch(/Valuasi Published \(bukan saldo buku\)/);
+    expect(source).toMatch(/Posting opening/);
+    expect(source).toMatch(/bukan saldo buku posted/);
     expect(source).toMatch(/HPP Rata-Rata \/ OK/);
   });
 });
