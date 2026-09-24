@@ -31,6 +31,8 @@ PREFIX_JOURNAL = "JE"
 
 STATUS_POSTED = "posted"
 STATUS_REVERSED = "reversed"
+STATUS_INCOMPLETE = "incomplete"
+REVERSAL_INCOMPLETE = "REVERSAL_INCOMPLETE"
 
 SOURCE_RECEIPT = "cash_bank_receipt"
 SOURCE_PAYMENT = "cash_bank_payment"
@@ -201,7 +203,7 @@ async def _ensure_reversal_header(db, original: dict, intent: dict) -> dict:
         "source_type": str(intent.get("source_type") or SOURCE_REVERSAL),
         "source_id": str(intent.get("source_id") or ""),
         "description": str(intent.get("description") or ""),
-        "status": STATUS_POSTED,
+        "status": STATUS_INCOMPLETE,
         "reversal_of": oid,
         "reversal_operation_id": str(intent.get("operation_id") or ""),
         "posted_at": now,
@@ -281,7 +283,18 @@ async def _materialize_reversal_intent(db, journal_id: str, writer_claim_token: 
         ).to_list(100)
         if not _lines_match_intent(stored, intent.get("lines") or []):
             raise JournalConflictError("Reversal belum lengkap")
-        await db[JOURNAL_ENTRIES].update_one(
+        posted = await db[JOURNAL_ENTRIES].update_one(
+            {
+                "id": str(header.get("id") or ""),
+                "reversal_of": str(journal_id),
+                "status": {"$in": [STATUS_INCOMPLETE, STATUS_POSTED]},
+            },
+            {"$set": {"status": STATUS_POSTED}},
+        )
+        if int(getattr(posted, "matched_count", 0) or 0) != 1:
+            raise JournalConflictError("Reversal belum lengkap")
+        header["status"] = STATUS_POSTED
+        phase = await db[JOURNAL_ENTRIES].update_one(
             {
                 "id": str(journal_id),
                 "status": STATUS_REVERSED,
@@ -289,6 +302,8 @@ async def _materialize_reversal_intent(db, journal_id: str, writer_claim_token: 
             },
             {"$set": {"reversal_intent.phase": "complete"}},
         )
+        if int(getattr(phase, "matched_count", 0) or 0) != 1:
+            raise JournalConflictError("Reversal belum lengkap")
         fresh = await db[JOURNAL_ENTRIES].find_one({"id": str(journal_id)}, {"_id": 0})
         if not await reversal_is_complete(db, fresh):
             raise JournalConflictError("Reversal belum lengkap")
@@ -463,6 +478,26 @@ async def ensure_indexes(db) -> None:
     await lines.create_index("account_id")
 
 
+def _present_journal(doc: Optional[dict], lines: Optional[List[dict]] = None) -> Optional[dict]:
+    """Read-only view. An unfinished reversal is not a posted journal."""
+    out = public_journal(doc, lines)
+    if not out or not doc:
+        return out
+    status = str(doc.get("status") or "")
+    intent = doc.get("reversal_intent") or {}
+    phase = str(intent.get("phase") or "")
+    open_intent = bool(intent.get("operation_id")) and phase != "complete"
+    partial_header = (
+        bool(doc.get("reversal_of"))
+        and lines is not None
+        and not _balanced_lines(lines)
+    )
+    if status == STATUS_INCOMPLETE or open_intent or partial_header:
+        out["status"] = STATUS_INCOMPLETE
+        out["blocker_code"] = REVERSAL_INCOMPLETE
+    return out
+
+
 def public_journal(doc: Optional[dict], lines: Optional[List[dict]] = None) -> Optional[dict]:
     if not doc:
         return None
@@ -503,7 +538,7 @@ async def get_journal(db, journal_id: str, *, with_lines: bool = True) -> Option
         lines = await db[JOURNAL_LINES].find(
             {"journal_id": doc["id"]}, {"_id": 0}
         ).sort("debit", -1).to_list(100)
-    return public_journal(doc, lines)
+    return _present_journal(doc, lines)
 
 
 async def find_primary_journal_for_source(
@@ -748,12 +783,12 @@ async def reverse_journal(
                     raise JournalConflictError("Kunci item opening tidak lagi sah.")
             await guard_consumed_opening_journal(db, original)
             owner_tokens: Optional[List[str]] = None
+            owner_expires = ""
             if renewed_rows:
                 owner_tokens = sorted(str(row.get("token") or "") for row in renewed_rows)
                 owner_expires = min(str(row.get("expires_at") or "") for row in renewed_rows)
                 if not owner_expires or any(not token for token in owner_tokens):
                     raise JournalConflictError("Kunci item opening tidak lagi sah.")
-                await _bind_reversal_owner(db, oid, owner_tokens, owner_expires)
 
             existing_rev = await db[JOURNAL_ENTRIES].find_one({"reversal_of": oid}, {"_id": 0})
             if existing_rev:
@@ -805,11 +840,18 @@ async def reverse_journal(
                         for ln in reverse_lines
                     ],
                 }
-                await _before_reversal_insert()
-                if not await _commit_reversal_owner(db, oid, owner_tokens, intent):
-                    raise JournalConflictError("Kunci item opening tidak lagi sah.")
-                await _after_reversal_status_commit()
-                return await _materialize_reversal_intent(db, oid, writer_claim_token)
+                try:
+                    async with _period_writer_guard(db, rev_date, writer_claim_token) as token:
+                        await _bind_reversal_owner(db, oid, owner_tokens, owner_expires)
+                        await _before_reversal_insert()
+                        if not await _commit_reversal_owner(db, oid, owner_tokens, intent):
+                            raise JournalConflictError("Kunci item opening tidak lagi sah.")
+                        await _after_reversal_status_commit()
+                        return await _materialize_reversal_intent(db, oid, token)
+                except PeriodValidationError as exc:
+                    raise JournalValidationError(str(exc)) from exc
+                except PeriodLockedError:
+                    raise
             try:
                 async with _period_writer_guard(db, rev_date, writer_claim_token) as token:
                     rev_doc = await _insert_journal_atomic(
@@ -824,17 +866,17 @@ async def reverse_journal(
                         status=STATUS_POSTED,
                         writer_claim_token=token,
                     )
+                    await db[JOURNAL_ENTRIES].update_one(
+                        {"id": oid, "status": STATUS_POSTED},
+                        {"$set": {"status": STATUS_REVERSED}},
+                    )
+                    return rev_doc
             except PeriodValidationError as exc:
                 raise JournalValidationError(str(exc)) from exc
             except PeriodLockedError:
                 raise
             except DuplicateKeyError as exc:
                 raise JournalConflictError("Reversal sudah ada") from exc
-            await db[JOURNAL_ENTRIES].update_one(
-                {"id": oid, "status": STATUS_POSTED},
-                {"$set": {"status": STATUS_REVERSED}},
-            )
-            return rev_doc
         finally:
             if owned_locks:
                 await release_item_locks(db, owned_locks)

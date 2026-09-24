@@ -22,6 +22,7 @@ from services.journal_core import (
     SOURCE_RECEIPT,
     SOURCE_REVERSAL,
     SOURCE_TRANSFER,
+    STATUS_INCOMPLETE,
     STATUS_POSTED,
     STATUS_REVERSED,
 )
@@ -221,6 +222,16 @@ async def get_general_ledger(
 
             journal_desc = str(j.get("description") or "")
             line_desc = str(ln.get("description") or "") if ln.get("description") is not None else ""
+            intent = j.get("reversal_intent") or {}
+            open_intent = (
+                bool(intent.get("operation_id"))
+                and str(intent.get("phase") or "") != "complete"
+            )
+            row_status = j.get("status")
+            blocker_code = None
+            if open_intent or str(j.get("status") or "") == STATUS_INCOMPLETE:
+                row_status = STATUS_INCOMPLETE
+                blocker_code = "REVERSAL_INCOMPLETE"
 
             items.append({
                 "date": j.get("date"),
@@ -236,9 +247,11 @@ async def get_general_ledger(
                 "debit": _money_float(debit),
                 "credit": _money_float(credit),
                 "running_balance": _money_float(running),
-                "status": j.get("status"),
+                "status": row_status,
                 "reversal_of": j.get("reversal_of"),
             })
+            if blocker_code:
+                items[-1]["blocker_code"] = blocker_code
 
     ending = opening + total_debit - total_credit
 
