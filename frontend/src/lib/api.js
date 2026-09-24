@@ -323,6 +323,17 @@ export const api = {
   },
   stockOpnameImportApply: (payload) =>
     client.post(`/stock-opname/import/apply`, payload).then((r) => r.data),
+  hppOpeningExportTemplate: () =>
+    client.get(`/hpp-opening/export-template`, { responseType: "blob" }).then((r) => r.data),
+  hppOpeningImportPreview: (file) => {
+    const form = new FormData();
+    form.append("file", file);
+    return client.post(`/hpp-opening/import/preview`, form, {
+      headers: { "Content-Type": "multipart/form-data" },
+    }).then((r) => r.data);
+  },
+  hppOpeningImportConfirm: (payload) =>
+    client.post(`/hpp-opening/import/confirm`, payload).then((r) => r.data),
   currentStockImportPreview: (file) => {
     const form = new FormData();
     form.append("file", file);

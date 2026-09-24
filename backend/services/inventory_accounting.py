@@ -235,6 +235,15 @@ def annotate_acquisition_event(
         out["financial_ineligibility_reasons"] = [REASON_PURCHASE_ORDER_RECOGNITION]
         return out
 
+    if source == "OPENING_HPP":
+        # Management opening cost basis — not a financial GR acquisition.
+        out["canonical_source_type"] = "OPENING_HPP"
+        out["canonical_source_id"] = out.get("source_id")
+        out["financial_inventory_eligible"] = False
+        out["financial_ineligibility_reason"] = "OPENING_HPP_NOT_FINANCIAL"
+        out["financial_ineligibility_reasons"] = ["OPENING_HPP_NOT_FINANCIAL"]
+        return out
+
     if source == "goods_receipt_allocation":
         out["canonical_source_type"] = "goods_receipt_allocation"
         out["canonical_source_id"] = out.get("source_id")
