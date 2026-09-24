@@ -666,6 +666,9 @@ async def finalize_durable_stock_event(
         d_tot = safe_float(pending.get("delta_total", 0.0))
         d_unp = safe_float(pending.get("delta_unprinted", 0.0))
         d_pri = safe_float(pending.get("delta_printed", 0.0))
+        # Transition marker, stored in the same state write as the balance change.
+        # It is not a later claim that the database commit happened at this clock.
+        applied_marker = now_iso()
 
         await db[STATE_COLLECTION].update_one(
             {"$or": [{"_id": mid}, {"master_item_id": mid}], "pending_event.event_id": ev_id, "pending_event.stage": "CLAIMED"},
@@ -678,10 +681,28 @@ async def finalize_durable_stock_event(
                 },
                 "$set": {
                     "pending_event.stage": "STATE_APPLIED",
+                    "pending_event.stock_applied_at": applied_marker,
                     "updated_at": stamp,
                 }
             }
         )
+        curr = await db[STATE_COLLECTION].find_one(
+            {"$or": [{"_id": mid}, {"master_item_id": mid}]}
+        )
+        pending = curr.get("pending_event") if curr else None
+        if not pending or not isinstance(pending, dict) or pending.get("event_id") != ev_id:
+            raced = await db.stock_movements.find_one(
+                {"$or": [{"_id": ev_id}, {"id": ev_id}, {"event_key": ev_id}]},
+                {"_id": 0},
+            )
+            if raced:
+                return raced
+            raise RuntimeError(f"Klaim stok '{ev_id}' tidak lagi menunggu penerapan.")
+        if pending.get("stage") != "STATE_APPLIED":
+            raise RuntimeError(f"Penerapan stok '{ev_id}' tidak tersimpan pada dokumen state.")
+
+    stored_applied = str((pending or {}).get("stock_applied_at") or "").strip()
+    applied_at = stored_applied or None
 
     m_type = pending.get("movement_type") or MOVEMENT_PENERIMAAN
     t_qty = pending.get("transaction_qty")
@@ -716,6 +737,8 @@ async def finalize_durable_stock_event(
         movement_id=ev_id,
         balance_before=pending.get("total_before", 0.0),
         balance_after=pending.get("total_after", 0.0),
+        claimed_at=pending.get("claimed_at") or pending.get("started_at"),
+        stock_applied_at=applied_at,
         unprinted_before=pending.get("unprinted_before", 0.0),
         unprinted_after=pending.get("unprinted_after", 0.0),
         printed_before=pending.get("printed_before", 0.0),

@@ -133,6 +133,8 @@ async def record_stock_movement(
     source_event_id: Optional[str] = None,
     reference_type: Optional[str] = None,
     change_metadata: Optional[Dict[str, Any]] = None,
+    claimed_at: Optional[str] = None,
+    stock_applied_at: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Records an immutable stock movement atomically.
     
@@ -284,6 +286,8 @@ async def record_stock_movement(
             "production_process": str(production_process).strip().lower() if production_process else None,
             "balance_before": bal_before,
             "balance_after": bal_after,
+            "claimed_at": str(claimed_at).strip() if claimed_at else None,
+            "stock_applied_at": str(stock_applied_at).strip() if stock_applied_at else None,
             "unprinted_before": safe_float(unprinted_before) if unprinted_before is not None else None,
             "unprinted_after": safe_float(unprinted_after) if unprinted_after is not None else None,
             "printed_before": safe_float(printed_before) if printed_before is not None else None,

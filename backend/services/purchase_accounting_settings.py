@@ -32,6 +32,9 @@ INVENTORY_ACCOUNT_FIELDS = (
     "inventory_account_id",
     "cogs_account_id",
 )
+OFFSET_FIELD = "inventory_opening_offset_account_id"
+OPENING_OFFSET_TYPES = frozenset({"EQTY", "OCLY", "OASS", "OCAS", "LTLY"})
+REJECTED_OFFSET_TYPES = frozenset({"APAY", "REVE", "EXPS", "OEXP", "COGS", "AREC", "BANK", "INTR"})
 
 CLEARING_ACCOUNT_TYPES = frozenset({"OCLY", "OASS"})
 REJECTED_CLEARING_TYPES = frozenset({"REVE", "EXPS", "OEXP", "COGS", "AREC", "BANK"})
@@ -107,6 +110,7 @@ def _public_unconfigured(stored: Optional[dict] = None) -> Dict[str, Any]:
         "inventory_accounting_effective_date": parse_business_date(
             stored.get("inventory_accounting_effective_date")
         ),
+        OFFSET_FIELD: _account_id(stored.get(OFFSET_FIELD)),
     }
 
 
@@ -162,6 +166,19 @@ def _validate_inventory(account: Optional[dict]) -> dict:
     return account
 
 
+def _validate_opening_offset(account: Optional[dict]) -> dict:
+    if not account:
+        raise HTTPException(400, "Akun lawan opening wajib dipilih (COA exact).")
+    account_type = str(account.get("account_type") or "").strip().upper()
+    if account_type in REJECTED_OFFSET_TYPES or account_type not in OPENING_OFFSET_TYPES:
+        raise HTTPException(
+            400,
+            "Akun lawan opening harus bertipe EQTY, OCLY, OASS, OCAS, atau LTLY. "
+            "Utang, pendapatan, beban, HPP, kas/bank, dan persediaan tidak dipakai.",
+        )
+    return account
+
+
 def _validate_cogs(account: Optional[dict]) -> dict:
     if not account:
         raise HTTPException(400, "Akun HPP / COGS wajib dipilih (COA exact).")
@@ -181,6 +198,7 @@ def _audit_snapshot(doc: Optional[dict]) -> Dict[str, Optional[str]]:
         "inventory_accounting_effective_date": parse_business_date(
             doc.get("inventory_accounting_effective_date")
         ),
+        "inventory_opening_offset_account_id": _account_id(doc.get(OFFSET_FIELD)),
     }
 
 
@@ -264,12 +282,14 @@ async def get_purchase_accounting_settings(db) -> Dict[str, Any]:
         "inventory_configured": inventory_public["inventory_configured"],
         "inventory_account_id": inventory_public["inventory_account_id"],
         "cogs_account_id": inventory_public["cogs_account_id"],
-        "inventory_accounting_effective_date": inventory_public["inventory_accounting_effective_date"],
+            "inventory_accounting_effective_date": inventory_public["inventory_accounting_effective_date"],
+            OFFSET_FIELD: _account_id(doc.get(OFFSET_FIELD)),
         "accounts": {
             "payable": _account_display(payable),
             "purchase_clearing": _account_display(clearing),
             "inventory": inventory_public["inventory"],
             "cogs": inventory_public["cogs"],
+            "opening_offset": _account_display(await _load_account(db, _account_id(doc.get(OFFSET_FIELD)))),
         },
         "updated_at": doc.get("updated_at"),
         "updated_by": doc.get("updated_by") or None,
@@ -313,6 +333,23 @@ async def update_purchase_accounting_settings(db, payload: Dict[str, Any], user:
         saved["inventory_account_id"] = str(inventory["id"])
         saved["cogs_account_id"] = str(cogs["id"])
         saved["inventory_accounting_effective_date"] = effective
+
+    if OFFSET_FIELD in payload:
+        offset_id = _account_id(payload.get(OFFSET_FIELD))
+        account = _validate_opening_offset(await _load_account(db, offset_id))
+        occupied = {
+            str(value)
+            for value in (
+                saved.get("payable_account_id"),
+                saved.get("purchase_clearing_account_id"),
+                saved.get("inventory_account_id") or (before or {}).get("inventory_account_id"),
+                saved.get("cogs_account_id") or (before or {}).get("cogs_account_id"),
+            )
+            if value
+        }
+        if str(account["id"]) in occupied:
+            raise HTTPException(400, "Akun lawan opening harus berbeda dari hutang, clearing, persediaan, dan HPP.")
+        saved[OFFSET_FIELD] = str(account["id"])
 
     await db.app_settings.update_one({"key": SETTINGS_KEY}, {"$set": saved}, upsert=True)
     after_doc = await db.app_settings.find_one({"key": SETTINGS_KEY}, {"_id": 0})

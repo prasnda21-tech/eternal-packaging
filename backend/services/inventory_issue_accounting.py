@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from services.financial_inventory_opening import wib_business_date
 from services.inventory_accounting import (
     ITEM_TYPE_INVENTORY,
     ITEM_TYPE_SERVICE,
@@ -405,7 +406,8 @@ def _line_acquisition(receipt: dict, basis: dict, line: dict) -> Optional[dict]:
         "purchase_order_line_id": str(line.get("purchase_order_line_id") or ""),
         "financial_inventory_item_key": item_key,
         "inventory_account_id": inv_account,
-        "receipt_date": str(basis.get("receipt_date") or receipt.get("receipt_date") or "")[:10],
+        "receipt_date": wib_business_date(receipt.get("receipt_date") or basis.get("receipt_date"))
+        or str(receipt.get("receipt_date") or basis.get("receipt_date") or ""),
         "base_qty": base_qty,
         "base_unit_cost": _money(line.get("base_unit_cost")),
         "total_cost": _money(line.get("total_cost") or line.get("line_financial_amount")),
@@ -433,13 +435,13 @@ async def load_live_acquisition_coverage(db) -> Tuple[List[dict], dict]:
     """
     report = {"unresolved": False, "item_keys": set(), "receipt_ids": []}
     live_journals = await load_live_gr_journals_by_receipt(db)
-    if not live_journals:
-        return [], report
-    receipts = await db[GOODS_RECEIPTS].find(
-        {"id": {"$in": list(live_journals.keys())}},
-        {"_id": 0},
-    ).to_list(len(live_journals) + 10)
     out: List[dict] = []
+    receipts = []
+    if live_journals:
+        receipts = await db[GOODS_RECEIPTS].find(
+            {"id": {"$in": list(live_journals.keys())}},
+            {"_id": 0},
+        ).to_list(len(live_journals) + 10)
     for receipt in receipts or []:
         rid = str(receipt.get("id") or "")
         journal = live_journals.get(rid)
@@ -473,18 +475,22 @@ async def load_live_acquisition_coverage(db) -> Tuple[List[dict], dict]:
             acq = _line_acquisition(receipt, basis, line)
             if acq:
                 out.append(acq)
+    from services.financial_inventory_opening import apply_opening_to_acquisitions, load_posted_openings
+
+    openings = await load_posted_openings(db)
+    out = apply_opening_to_acquisitions(out, openings, report)
     return out, report
 
 
 async def load_live_acquisitions(db) -> List[dict]:
     live_journals = await load_live_gr_journals_by_receipt(db)
-    if not live_journals:
-        return []
-    receipts = await db[GOODS_RECEIPTS].find(
-        {"id": {"$in": list(live_journals.keys())}},
-        {"_id": 0},
-    ).to_list(len(live_journals) + 10)
     out: List[dict] = []
+    receipts = []
+    if live_journals:
+        receipts = await db[GOODS_RECEIPTS].find(
+            {"id": {"$in": list(live_journals.keys())}},
+            {"_id": 0},
+        ).to_list(len(live_journals) + 10)
     for receipt in receipts or []:
         rid = str(receipt.get("id") or "")
         journal = live_journals.get(rid)
@@ -499,7 +505,10 @@ async def load_live_acquisitions(db) -> List[dict]:
             acq = _line_acquisition(receipt, basis, line)
             if acq:
                 out.append(acq)
-    return out
+    from services.financial_inventory_opening import apply_opening_to_acquisitions, load_posted_openings
+
+    openings = await load_posted_openings(db)
+    return apply_opening_to_acquisitions(out, openings)
 
 
 async def load_live_issue_bases(db) -> List[dict]:
@@ -827,12 +836,16 @@ def compute_rata_rata(
         return None, CODE_INVALID_TS
     current_key = current_issue_order_key(issue_date, issue_instant, issue_id)
     events: List[dict] = []
+    pool_keys: List[str] = []
     for acq in acquisitions:
         if str(acq.get("financial_inventory_item_key") or "") != item_key:
             continue
         receipt_date = financial_business_date(acq.get("receipt_date"))
         if receipt_date is None or receipt_date > issue_date:
             continue
+        key = str(acq.get("acquisition_key") or "").strip()
+        if key:
+            pool_keys.append(key)
         events.append({
             "kind": "acquisition",
             "business_date": receipt_date,
@@ -925,6 +938,7 @@ def compute_rata_rata(
         "inventory_value_after": value_after,
         "inventory_account_id": inventory_account_id,
         "prior_issue_ids": [pid for pid in prior_ids if pid],
+        "pool_acquisition_keys": pool_keys,
         "journal_date": issue_journal_date,
         "issue_instant": issue_instant,
     }, None
@@ -1480,6 +1494,9 @@ def build_cogs_posting_basis(
         "inventory_value_after": money_round(computed.get("inventory_value_after") or 0),
         "inventory_account_id": computed.get("inventory_account_id"),
         "prior_issue_ids": list(computed.get("prior_issue_ids") or []),
+        "pool_acquisition_keys": [
+            str(key) for key in (computed.get("pool_acquisition_keys") or []) if str(key or "").strip()
+        ],
         "total_cogs": money_round(computed.get("total_cogs") or 0),
     })
     return common

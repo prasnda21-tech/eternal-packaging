@@ -11248,6 +11248,139 @@ def _stock_xlsx(rows: list, *, v2: bool = True) -> FastAPIResponse:
     )
 
 
+@api_router.get("/inventory-valuation")
+async def inventory_valuation_list(
+    q: str = "",
+    status_filter: str = "all",
+    sort_by: str = "name",
+    sort_dir: str = "asc",
+    page: int = 1,
+    page_size: int = 50,
+    user=Depends(require_perm("inventory_valuation.view")),
+):
+    """Read-only Stock V2 × canonical moving-average HPP view."""
+    from services.inventory_valuation import (
+        build_inventory_valuation_rows,
+        filter_sort_page,
+    )
+
+    view = await build_inventory_valuation_rows(db)
+    payload = filter_sort_page(
+        view["rows"],
+        q=q,
+        status_filter=status_filter,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+        page=page,
+        page_size=page_size,
+    )
+    payload.update({
+        "summary": view["summary"],
+        "method": view["method"],
+        "active_version": view["active_version"],
+        "cutover_id": view["cutover_id"],
+    })
+    return payload
+
+
+@api_router.get("/inventory-valuation/export")
+async def inventory_valuation_export(
+    q: str = "",
+    status_filter: str = "all",
+    sort_by: str = "name",
+    sort_dir: str = "asc",
+    user=Depends(require_perm("inventory_valuation.export")),
+):
+    """Read-only Excel export; no inventory or HPP data is mutated."""
+    from services.inventory_valuation import (
+        build_inventory_valuation_rows,
+        export_xlsx,
+        filter_sort_all,
+    )
+
+    view = await build_inventory_valuation_rows(db)
+    filtered = filter_sort_all(
+        view["rows"],
+        q=q,
+        status_filter=status_filter,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+    )
+    filename = f"nilai-persediaan-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M')}.xlsx"
+    return FastAPIResponse(
+        content=export_xlsx(filtered),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+def _opening_http(exc):
+    from services.financial_inventory_opening import OpeningBlocked
+    if isinstance(exc, OpeningBlocked):
+        raise HTTPException(exc.status_code, exc.as_detail())
+    raise exc
+
+
+@api_router.get("/inventory/financial-opening")
+async def financial_opening_list(user=Depends(require_perm("inventory_valuation.view"))):
+    from services.financial_inventory_opening import list_financial_openings
+    return {"items": await list_financial_openings(db), "writes": 0}
+
+
+@api_router.get("/inventory/financial-opening/reconciliation")
+async def financial_opening_reconciliation(user=Depends(require_perm("inventory_valuation.view"))):
+    from services.financial_inventory_opening import build_financial_book_reconciliation
+    return await build_financial_book_reconciliation(db)
+
+
+@api_router.post("/inventory/financial-opening/preview")
+async def financial_opening_preview(payload: dict, user=Depends(require_perm("inventory_valuation.view"))):
+    from services.financial_inventory_opening import preview_financial_opening
+    try:
+        return await preview_financial_opening(db, payload or {})
+    except Exception as exc:
+        _opening_http(exc)
+
+
+@api_router.post("/inventory/financial-opening")
+async def financial_opening_post(payload: dict, user=Depends(require_perm("inventory_valuation.manage_opening"))):
+    from services.financial_inventory_opening import post_financial_opening
+    try:
+        saved = await post_financial_opening(db, payload or {}, user)
+    except Exception as exc:
+        _opening_http(exc)
+    return {"item": saved}
+
+
+@api_router.post("/inventory/financial-opening/recover")
+async def financial_opening_recover(payload: dict, user=Depends(require_perm("inventory_valuation.manage_opening"))):
+    from services.financial_inventory_opening import recover_financial_opening
+    try:
+        saved = await recover_financial_opening(
+            db,
+            client_request_id=str((payload or {}).get("client_request_id") or ""),
+            user=user,
+        )
+    except Exception as exc:
+        _opening_http(exc)
+    return {"item": saved}
+
+
+@api_router.post("/inventory/financial-opening/{opening_id}/reverse")
+async def financial_opening_reverse(opening_id: str, payload: dict, user=Depends(require_perm("inventory_valuation.manage_opening"))):
+    from services.financial_inventory_opening import reverse_financial_opening
+    try:
+        saved = await reverse_financial_opening(
+            db,
+            opening_id,
+            user,
+            str((payload or {}).get("reason") or ""),
+        )
+    except Exception as exc:
+        _opening_http(exc)
+    return {"item": saved}
+
+
 @api_router.get("/current-stock")
 async def current_stock_list(
     q: str = "",
@@ -13578,6 +13711,10 @@ async def seed():
     await db.hpp_cost_versions.create_index("status")
     await db.hpp_cost_layers.create_index("calculation_version")
     await db.hpp_cost_layers.create_index([("calculation_version", 1), ("layer_id", 1)], unique=True)
+    from services.hpp_cutover import ensure_indexes as _hpp_cutover_ensure_indexes
+    await _hpp_cutover_ensure_indexes(db)
+    from services.financial_inventory_opening import ensure_indexes as _financial_opening_ensure_indexes
+    await _financial_opening_ensure_indexes(db)
     from services.customer_pricing import ensure_indexes as _customer_pricing_ensure_indexes
     await _customer_pricing_ensure_indexes(db)
     from services.cash_bank_master import ensure_indexes as _cash_bank_master_ensure_indexes

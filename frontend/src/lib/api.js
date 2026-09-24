@@ -311,6 +311,19 @@ export const api = {
   currentStockUpdate: (itemId, payload) => client.patch(`/current-stock/${itemId}`, payload).then((r) => r.data),
   currentStockExport: (params = {}) =>
     client.get(`/current-stock/export`, { params, responseType: "blob" }).then((r) => r.data),
+  inventoryValuation: (params = {}) =>
+    client.get(`/inventory-valuation`, { params }).then((r) => r.data),
+  inventoryValuationExport: (params = {}) =>
+    client.get(`/inventory-valuation/export`, { params, responseType: "blob" }).then((r) => r.data),
+  financialInventoryOpenings: () => client.get(`/inventory/financial-opening`).then((r) => r.data),
+  previewFinancialInventoryOpening: (payload) =>
+    client.post(`/inventory/financial-opening/preview`, payload).then((r) => r.data),
+  postFinancialInventoryOpening: (payload) =>
+    client.post(`/inventory/financial-opening`, payload).then((r) => r.data),
+  recoverFinancialInventoryOpening: (payload) =>
+    client.post(`/inventory/financial-opening/recover`, payload).then((r) => r.data),
+  financialBookReconciliation: () =>
+    client.get(`/inventory/financial-opening/reconciliation`).then((r) => r.data),
   stockOpnameItems: (params = {}) => client.get(`/stock-opname/items`, { params }).then((r) => r.data),
   stockOpnameExportTemplate: () =>
     client.get(`/stock-opname/export-template`, { responseType: "blob" }).then((r) => r.data),

@@ -120,6 +120,7 @@ def anyio_backend():
 def bind_motor():
     from motor.motor_asyncio import AsyncIOMotorClient
 
+    os.environ["DB_NAME"] = f"eternal_packaging_inv_reconciliation_test_{_worker}"
     server.client = AsyncIOMotorClient(os.environ["MONGO_URL"])
     server.db = server.client[os.environ["DB_NAME"]]
 
@@ -144,6 +145,8 @@ async def indexes(bind_motor):
     await server.db.ledger_accounts.delete_many({})
     await server.db[JOURNAL_ENTRIES].delete_many({})
     await server.db[JOURNAL_LINES].delete_many({})
+    await server.db.financial_inventory_openings.delete_many({})
+    await server.db.financial_inventory_opening_claims.delete_many({})
     await server.db.app_settings.update_one(
         {"key": "physical_stock"},
         {"$set": {"key": "physical_stock", "enabled": False, "stock_in_trigger": "goods_receipt"}},
