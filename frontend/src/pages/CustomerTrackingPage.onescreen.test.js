@@ -106,6 +106,26 @@ describe("Customer tracking one-screen dashboard", () => {
     expect(host.querySelector('[data-testid="tracking-doc-tile-design"]')).toBeTruthy();
     expect(host.querySelector('[data-testid="tracking-doc-tile-payment"]').disabled).toBe(true);
     expect(host.querySelector('[data-testid="tracking-doc-tile-sj"]').disabled).toBe(true);
+    const docs = host.querySelector('[data-testid="tracking-documents"]');
+    const faktur = docs.querySelector('[data-testid="tracking-doc-tile-faktur"]');
+    expect(faktur).toBeTruthy();
+    expect(faktur.disabled).toBe(true);
+    expect(faktur.textContent).toMatch(/Belum tersedia/);
+    expect(faktur.textContent).not.toMatch(/Rp/);
+    expect(host.querySelector('[data-testid="tracking-invoices"]')).toBeNull();
+    expect(host.textContent).not.toMatch(/Tagihan/);
+    const workflow = host.querySelector('[data-testid="tracking-workflow"]');
+    expect(host.querySelector('[data-testid="tracking-po-summary"]').compareDocumentPosition(workflow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(workflow.compareDocumentPosition(docs) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const gridIds = [...docs.querySelector(".tracking-doc-grid").querySelectorAll("[data-testid^='tracking-doc-tile-']")]
+      .map((node) => node.getAttribute("data-testid"));
+    expect(gridIds).toEqual([
+      "tracking-doc-tile-design",
+      "tracking-doc-tile-payment",
+      "tracking-doc-tile-faktur",
+      "tracking-doc-tile-sj",
+      "tracking-doc-tile-ship",
+    ]);
     await act(async () => { root.unmount(); });
   });
 

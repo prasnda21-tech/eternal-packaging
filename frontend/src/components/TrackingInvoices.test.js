@@ -58,6 +58,10 @@ async function mount() {
   return { host, root };
 }
 
+function tile(host) {
+  return host.querySelector('[data-testid="tracking-doc-tile-faktur"]');
+}
+
 describe("TrackingInvoices", () => {
   beforeEach(() => {
     api.publicTrackingInvoices.mockReset();
@@ -65,7 +69,7 @@ describe("TrackingInvoices", () => {
     document.body.innerHTML = "";
   });
 
-  test("loading, empty, and load failure stay distinct", async () => {
+  test("loading, empty, and load failure stay distinct on the document tile", async () => {
     let resolveList;
     api.publicTrackingInvoices.mockReturnValue(new Promise((resolve) => {
       resolveList = resolve;
@@ -76,45 +80,46 @@ describe("TrackingInvoices", () => {
     await act(async () => {
       root.render(<TrackingInvoices token="tok-public-aaaaaaaa" />);
     });
-    expect(host.querySelector('[data-testid="tracking-invoices-loading"]').textContent).toBe("Memuat tagihan...");
+    expect(host.querySelector('[data-testid="tracking-invoices-loading"]').textContent).toBe("Memuat...");
+    expect(tile(host).disabled).toBe(true);
     expect(host.querySelector('[data-testid="tracking-invoices-empty"]')).toBeNull();
-    expect(host.textContent).not.toMatch(/Faktur belum tersedia/);
+    expect(host.textContent).not.toMatch(/Belum tersedia/);
+    expect(host.textContent).not.toMatch(/Rp/);
 
     await act(async () => {
       resolveList({ invoices: [] });
     });
     await flush();
-    expect(host.querySelector('[data-testid="tracking-invoices-empty"]').textContent).toBe("Faktur belum tersedia");
+    expect(host.querySelector('[data-testid="tracking-invoices-empty"]').textContent).toMatch(/Belum tersedia/);
+    expect(tile(host).disabled).toBe(true);
+    expect(tile(host).textContent).toMatch(/Faktur Penjualan/);
     expect(host.querySelector('[data-testid="tracking-invoices-error"]')).toBeNull();
+    expect(document.querySelector('[data-testid="tracking-invoice-sheet"]')).toBeNull();
 
-    api.publicTrackingInvoices.mockRejectedValueOnce({ response: { status: 500 } });
-    await act(async () => {
-      host.querySelector('[data-testid="tracking-invoices-retry"]')
-        ? host.querySelector('[data-testid="tracking-invoices-retry"]').click()
-        : null;
-    });
-    api.publicTrackingInvoices.mockRejectedValueOnce({ response: { status: 500 } });
     await act(async () => { root.unmount(); });
 
     api.publicTrackingInvoices.mockRejectedValue({ response: { status: 502 } });
     const failed = await mount();
-    expect(failed.host.querySelector('[data-testid="tracking-invoices-error"]').textContent).toMatch(/Tagihan gagal dimuat/);
-    expect(failed.host.textContent).not.toMatch(/Faktur belum tersedia/);
+    expect(failed.host.querySelector('[data-testid="tracking-invoices-error"]').textContent).toBe("Gagal dimuat");
+    expect(tile(failed.host).disabled).toBe(false);
+    expect(failed.host.querySelector('[data-testid="tracking-invoices-retry"]').textContent).toBe("Coba lagi");
+    expect(failed.host.textContent).not.toMatch(/Belum tersedia/);
     expect(failed.host.textContent).not.toMatch(/Lunas/);
     api.publicTrackingInvoices.mockReset();
     api.publicTrackingInvoices.mockResolvedValue({ invoices: [issued] });
     await act(async () => {
-      failed.host.querySelector('[data-testid="tracking-invoices-retry"]').click();
+      tile(failed.host).click();
     });
     await flush();
     await flush();
-    expect(failed.host.querySelector('[data-testid="tracking-invoice-number-inv-1"]').textContent)
-      .toBe("INV/2026/09/01/0007");
-    expect(failed.host.querySelector('[data-testid="tracking-invoices-empty"]')).toBeNull();
+    expect(tile(failed.host).textContent).toMatch(/1 faktur/);
+    expect(tile(failed.host).disabled).toBe(false);
+    expect(failed.host.querySelector('[data-testid="tracking-invoice-number-inv-1"]')).toBeNull();
+    expect(document.querySelector('[data-testid="tracking-invoice-sheet"]')).toBeNull();
     await act(async () => { failed.root.unmount(); });
   });
 
-  test("lihat faktur opens the matching detail and pdf link is token scoped", async () => {
+  test("lihat opens a closable drawer with separate invoices, detail, and token pdf", async () => {
     api.publicTrackingInvoices.mockResolvedValue({
       invoices: [
         issued,
@@ -131,33 +136,72 @@ describe("TrackingInvoices", () => {
       ],
     });
     api.publicTrackingInvoice.mockImplementation(async (_token, id) => (
-      id === "inv-2" ? { ...detail, id: "inv-2", invoice_number: "INV/2026/09/01/0007_2", payment_label: "Sebagian" } : detail
+      id === "inv-2"
+        ? { ...detail, id: "inv-2", invoice_number: "INV/2026/09/01/0007_2", payment_label: "Sebagian" }
+        : detail
     ));
     const { host, root } = await mount();
-    expect(host.querySelectorAll(".tracking-inv-row")).toHaveLength(2);
-    expect(host.querySelector('[data-testid="tracking-invoice-status-inv-1"]').textContent).toBe("Belum lunas");
-    expect(host.querySelector('[data-testid="tracking-invoice-status-inv-2"]').textContent).toBe("Sebagian");
-    expect(host.querySelector('[data-testid="tracking-invoice-pdf-inv-1"]').getAttribute("href"))
-      .toBe("http://localhost:8000/api/public/tracking/tok-public-aaaaaaaa/invoices/inv-1/pdf?disposition=attachment");
-    expect(host.querySelector('[data-testid="tracking-invoice-detail-inv-1"]')).toBeNull();
+    expect(tile(host).textContent).toMatch(/2 faktur/);
+    expect(tile(host).textContent).not.toMatch(/Rp|INV\//);
+    expect(document.querySelector('[data-testid="tracking-invoice-sheet"]')).toBeNull();
 
     await act(async () => {
-      host.querySelector('[data-testid="tracking-invoice-open-inv-1"]').click();
+      tile(host).click();
+    });
+    const sheet = document.querySelector('[data-testid="tracking-invoice-sheet"]');
+    expect(sheet).toBeTruthy();
+    expect(sheet.parentElement).toBe(document.body);
+    expect(host.querySelector('[data-testid="tracking-invoice-sheet"]')).toBeNull();
+    expect(document.querySelectorAll(".tracking-inv-row")).toHaveLength(2);
+    expect(document.querySelector('[data-testid="tracking-invoice-status-inv-1"]').textContent).toBe("Belum lunas");
+    expect(document.querySelector('[data-testid="tracking-invoice-status-inv-2"]').textContent).toBe("Sebagian");
+    expect(document.querySelector('[data-testid="tracking-invoice-total-inv-1"]').textContent).toBe(formatInvoiceMoney(110000));
+    expect(document.querySelector('[data-testid="tracking-invoice-outstanding-inv-2"]').textContent).toBe(formatInvoiceMoney(20000));
+    expect(document.querySelector('[data-testid="tracking-invoice-pdf-inv-1"]').getAttribute("href"))
+      .toBe("http://localhost:8000/api/public/tracking/tok-public-aaaaaaaa/invoices/inv-1/pdf?disposition=attachment");
+    expect(document.querySelector('[data-testid="tracking-invoice-pdf-inv-1"]').getAttribute("download")).not.toBeNull();
+    expect(document.querySelector('[data-testid="tracking-invoice-detail-inv-1"]')).toBeNull();
+
+    await act(async () => {
+      document.querySelector('[data-testid="tracking-invoice-open-inv-1"]').click();
     });
     await flush();
-    const panel = host.querySelector('[data-testid="tracking-invoice-detail-inv-1"]');
+    const panel = document.querySelector('[data-testid="tracking-invoice-detail-inv-1"]');
     expect(panel).toBeTruthy();
     expect(panel.textContent).toMatch(/Cup 8oz/);
     expect(panel.textContent).toMatch(/Status pembayaran: Belum lunas/);
-    expect(host.querySelector('[data-testid="tracking-invoice-detail-total"]').textContent).toBe(formatInvoiceMoney(110000));
+    expect(document.querySelector('[data-testid="tracking-invoice-detail-total"]').textContent).toBe(formatInvoiceMoney(110000));
     expect(api.publicTrackingInvoice).toHaveBeenCalledWith("tok-public-aaaaaaaa", "inv-1");
-    expect(host.querySelector('[data-testid="tracking-invoice-detail-inv-2"]')).toBeNull();
+    expect(document.querySelector('[data-testid="tracking-invoice-detail-inv-2"]')).toBeNull();
+    expect(document.querySelector('[data-testid="tracking-invoice-open-inv-1"]').textContent).toBe("Tutup detail");
 
     await act(async () => {
-      host.querySelector('[data-testid="tracking-invoice-open-inv-1"]').click();
+      document.querySelector('[data-testid="tracking-invoice-open-inv-1"]').click();
     });
-    expect(host.querySelector('[data-testid="tracking-invoice-detail-inv-1"]')).toBeNull();
-    expect(host.querySelector('[data-testid="tracking-invoice-open-inv-1"]').textContent).toBe("Lihat Faktur");
+    expect(document.querySelector('[data-testid="tracking-invoice-detail-inv-1"]')).toBeNull();
+    expect(document.querySelector('[data-testid="tracking-invoice-open-inv-1"]').textContent).toBe("Detail");
+
+    await act(async () => {
+      document.querySelector('[data-testid="tracking-invoice-sheet-close"]').click();
+    });
+    expect(document.querySelector('[data-testid="tracking-invoice-sheet"]')).toBeNull();
+
+    await act(async () => {
+      tile(host).click();
+    });
+    expect(document.querySelector('[data-testid="tracking-invoice-sheet"]')).toBeTruthy();
+    await act(async () => {
+      document.querySelector('[data-testid="tracking-invoice-sheet"]').click();
+    });
+    expect(document.querySelector('[data-testid="tracking-invoice-sheet"]')).toBeNull();
+
+    await act(async () => {
+      tile(host).click();
+    });
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    expect(document.querySelector('[data-testid="tracking-invoice-sheet"]')).toBeNull();
     expect(host.scrollWidth).toBeLessThanOrEqual(host.clientWidth + 1);
     await act(async () => { root.unmount(); });
   });
@@ -167,17 +211,20 @@ describe("TrackingInvoices", () => {
     api.publicTrackingInvoice.mockRejectedValue({ response: { status: 500 } });
     const { host, root } = await mount();
     await act(async () => {
-      host.querySelector('[data-testid="tracking-invoice-open-inv-1"]').click();
+      tile(host).click();
+    });
+    await act(async () => {
+      document.querySelector('[data-testid="tracking-invoice-open-inv-1"]').click();
     });
     await flush();
-    expect(host.querySelector('[data-testid="tracking-invoice-detail-error"]').textContent).toMatch(/Detail faktur gagal dimuat/);
-    expect(host.querySelector('[data-testid="tracking-invoice-detail-inv-1"]').textContent).not.toMatch(/Faktur belum tersedia/);
+    expect(document.querySelector('[data-testid="tracking-invoice-detail-error"]').textContent).toMatch(/Detail faktur gagal dimuat/);
+    expect(document.querySelector('[data-testid="tracking-invoice-detail-inv-1"]').textContent).not.toMatch(/Belum tersedia/);
     api.publicTrackingInvoice.mockResolvedValueOnce(detail);
     await act(async () => {
-      host.querySelector('[data-testid="tracking-invoice-detail-retry"]').click();
+      document.querySelector('[data-testid="tracking-invoice-detail-retry"]').click();
     });
     await flush();
-    expect(host.querySelector('[data-testid="tracking-invoice-detail-status"]').textContent).toMatch(/Belum lunas/);
+    expect(document.querySelector('[data-testid="tracking-invoice-detail-status"]').textContent).toMatch(/Belum lunas/);
     await act(async () => { root.unmount(); });
   });
 
@@ -192,10 +239,13 @@ describe("TrackingInvoices", () => {
       invoices: [{ ...issued, payment_label: "Batal", financial_status: "cancelled", outstanding_amount: 0 }],
     });
     const { host, root } = await mount();
-    const status = host.querySelector('[data-testid="tracking-invoice-status-inv-1"]');
+    await act(async () => {
+      tile(host).click();
+    });
+    const status = document.querySelector('[data-testid="tracking-invoice-status-inv-1"]');
     expect(status.textContent).toBe("Batal");
     expect(status.className).toMatch(/is-void/);
-    expect(host.querySelector('[data-testid="tracking-invoice-outstanding-inv-1"]').textContent).toBe("Rp 0");
+    expect(document.querySelector('[data-testid="tracking-invoice-outstanding-inv-1"]').textContent).toBe("Rp 0");
     await act(async () => { root.unmount(); });
   });
 });
