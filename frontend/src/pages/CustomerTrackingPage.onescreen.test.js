@@ -46,6 +46,8 @@ jest.mock("../lib/api", () => ({
   publicApiUrl: (path) => (path ? `http://localhost:8000${path}` : ""),
   default: {
     publicTracking: jest.fn(),
+    publicTrackingInvoices: jest.fn(),
+    publicTrackingInvoice: jest.fn(),
   },
 }));
 
@@ -74,6 +76,9 @@ describe("Customer tracking one-screen dashboard", () => {
   beforeEach(() => {
     api.publicTracking.mockReset();
     api.publicTracking.mockResolvedValue(payload);
+    api.publicTrackingInvoices.mockReset();
+    api.publicTrackingInvoices.mockResolvedValue({ invoices: [] });
+    api.publicTrackingInvoice.mockReset();
     document.body.innerHTML = "";
   });
 

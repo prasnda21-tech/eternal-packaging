@@ -3,6 +3,7 @@ import { useParams } from "react-router-dom";
 import { Check, Copy, FileText, Image as ImageIcon } from "lucide-react";
 import api, { publicApiUrl } from "../lib/api";
 import BrandMark from "../components/BrandMark";
+import TrackingInvoices from "../components/TrackingInvoices";
 import {
   approvalActionPath,
   compactItemSummary,
@@ -234,6 +235,8 @@ export default function CustomerTrackingPage() {
                 </div>
               </div>
             </section>
+
+            <TrackingInvoices token={token} />
 
             {hasApprovalCta(approval) && (
               <section className="tracking-action" data-testid="tracking-approval-card">
