@@ -3753,6 +3753,7 @@ html:has(.prod-schedule-page) #root{
 .inventory-opening-fields input,
 .inventory-opening-fields .mis-input{width:100%;min-width:0}
 .inventory-value-page .signal-strip{flex:0 0 auto}
+.inventory-value-page .inventory-panel-scroll h2{font-size:16px;margin:4px 0 8px;font-weight:650}
 .inventory-detail-drawer{
   position:fixed;
   top:calc(var(--ep-topbar-height,48px) + var(--ep-workspace-tabs-height,34px));

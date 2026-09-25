@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { formatRupiah } from "../lib/purchaseUi";
+import { estimateCoverage, openingHistoryCells } from "./NilaiPersediaan";
 
 const source = fs.readFileSync(path.join(__dirname, "NilaiPersediaan.jsx"), "utf8");
 
@@ -60,5 +61,64 @@ describe("Nilai Persediaan read-only page", () => {
     expect(source).toMatch(/Perlu diselesaikan/);
     expect(source).toMatch(/Cocok/);
     expect(source).toMatch(/Tidak masuk periode/);
+    expect(source).toMatch(/Belum dapat dihitung/);
+    expect(source).toMatch(/Estimasi sebagian/);
+    expect(source).toMatch(/Kelengkapan nilai belum diketahui/);
+  });
+
+  test("classifies estimate coverage from summary metadata, not a zero total", () => {
+    const base = { total_inventory_value: 0, valued_items: 0, items_without_hpp: 1, problem_items: 0 };
+    expect(estimateCoverage({ summary: base, total: 1, loading: false, failed: false, filterActive: false }).value).toBe("Belum dapat dihitung");
+    expect(estimateCoverage({
+      summary: { total_inventory_value: 500000, valued_items: 1, items_without_hpp: 2, problem_items: 1 },
+      total: 4,
+      loading: false,
+      failed: false,
+      filterActive: false,
+    })).toMatchObject({ state: "partial", label: "Estimasi sebagian", value: "Rp 500.000" });
+    expect(estimateCoverage({
+      summary: { total_inventory_value: 0, valued_items: 2, items_without_hpp: 0, problem_items: 0 },
+      total: 2,
+      loading: false,
+      failed: false,
+      filterActive: false,
+    })).toMatchObject({ state: "complete", label: "Nilai estimasi stok", value: "Rp 0" });
+    expect(estimateCoverage({ summary: base, total: 0, loading: false, failed: false, filterActive: false }).value).toBe("Tidak ada barang");
+    expect(estimateCoverage({ summary: null, total: 3, loading: false, failed: true, filterActive: false }).value).toBe("Gagal dimuat");
+    expect(estimateCoverage({ summary: null, total: 3, loading: true, failed: false, filterActive: false }).value).toBe("Memuat…");
+    expect(estimateCoverage({
+      summary: { total_inventory_value: 500000, valued_items: 1, items_without_hpp: 0, problem_items: 0 },
+      total: 1,
+      loading: false,
+      failed: false,
+      filterActive: true,
+    }).value).toBe("Kelengkapan nilai belum diketahui");
+  });
+
+  test("opening history keeps unidentified and mixed-unit rows blank", () => {
+    expect(openingHistoryCells({
+      effective_date: "2026-10-01",
+      total: 100000,
+      status: "POSTED",
+      lines: [{ master_item_id: "mid-1", item_code: "CUP", item_name: "Cup", qty: 100, base_uom: "PCS" }],
+    })).toMatchObject({ date: "2026-10-01", barang: "CUP · Cup", qty: "100 PCS", nilai: "Rp 100.000", status: "Posted" });
+    expect(openingHistoryCells({
+      effective_date: "2026-10-02",
+      total: 30000,
+      status: "NEEDS_RECOVERY",
+      lines: [
+        { master_item_id: "a", qty: 2, base_uom: "PCS" },
+        { master_item_id: "b", item_name: "Tinta", qty: 3, base_uom: "KG" },
+      ],
+    })).toMatchObject({ barang: "2 barang", qty: "—", status: "Perlu pemulihan" });
+    expect(openingHistoryCells({
+      status: "POSTED",
+      lines: [
+        { item_code: "A", qty: 2, base_uom: "PCS" },
+        { item_code: "B", qty: 3, base_uom: "PCS" },
+      ],
+      total: 50,
+    }).qty).toBe("5 PCS");
+    expect(openingHistoryCells({ status: "POSTED", lines: [{ master_item_id: "only-id", qty: 4, base_uom: "PCS" }] }).barang).toBe("—");
   });
 });

@@ -55,6 +55,92 @@ function moneyOrGap(value) {
   return formatRupiah(value);
 }
 
+function estimateUnknown(note = "Nilai estimasi, bukan saldo buku.") {
+  return {
+    state: "unknown",
+    label: "Nilai estimasi stok",
+    value: "Kelengkapan nilai belum diketahui",
+    note,
+  };
+}
+
+/** Coverage uses the API summary for the unfiltered catalog only. */
+export function estimateCoverage({ summary, total, loading, failed, filterActive }) {
+  const bookNote = "Nilai estimasi, bukan saldo buku.";
+  if (loading) {
+    return { state: "loading", label: "Nilai estimasi stok", value: "Memuat…", note: bookNote };
+  }
+  if (failed) {
+    return { state: "failed", label: "Nilai estimasi stok", value: "Gagal dimuat", note: bookNote };
+  }
+  if (Number(total) === 0) {
+    return { state: "empty", label: "Nilai estimasi stok", value: "Tidak ada barang", note: bookNote };
+  }
+  const fields = ["valued_items", "items_without_hpp", "problem_items", "total_inventory_value"];
+  const known = summary && fields.every((key) => summary[key] != null && summary[key] !== "");
+  if (!known || filterActive) return estimateUnknown(bookNote);
+  const valued = Number(summary.valued_items);
+  const missing = Number(summary.items_without_hpp);
+  const problems = Number(summary.problem_items);
+  if (![valued, missing, problems].every((value) => Number.isFinite(value))) return estimateUnknown(bookNote);
+  const uncovered = missing > 0 || problems > 0;
+  if (!uncovered) {
+    if (Number(total) !== valued) return estimateUnknown(bookNote);
+    return {
+      state: "complete",
+      label: "Nilai estimasi stok",
+      value: formatRupiah(summary.total_inventory_value),
+      note: bookNote,
+    };
+  }
+  if (valued === 0) {
+    return {
+      state: "unvalued",
+      label: "Nilai estimasi stok",
+      value: "Belum dapat dihitung",
+      note: `Ada barang yang belum punya harga pokok atau stoknya tidak terbukti. ${bookNote}`,
+    };
+  }
+  return {
+    state: "partial",
+    label: "Estimasi sebagian",
+    value: formatRupiah(summary.total_inventory_value),
+    note: `Barang tanpa HPP atau stok tidak terbukti belum tercakup. ${bookNote}`,
+  };
+}
+
+function openingLineIdentity(line) {
+  const code = String(line?.item_code || "").trim();
+  const name = String(line?.item_name || line?.name || "").trim();
+  if (code && name) return `${code} · ${name}`;
+  return code || name || "";
+}
+
+export function openingHistoryCells(row) {
+  const lines = Array.isArray(row?.lines) ? row.lines : [];
+  let barang = "—";
+  if (lines.length > 1) barang = `${lines.length} barang`;
+  else if (lines.length === 1) barang = openingLineIdentity(lines[0]) || "—";
+  let qty = "—";
+  if (lines.length === 1 && lines[0].qty != null && lines[0].qty !== "") {
+    qty = `${fmtQty(lines[0].qty)}${lines[0].base_uom ? ` ${lines[0].base_uom}` : ""}`;
+  } else if (lines.length > 1) {
+    const units = [...new Set(lines.map((line) => String(line.base_uom || "").trim()).filter(Boolean))];
+    const numeric = lines.every((line) => line.qty != null && line.qty !== "" && Number.isFinite(Number(line.qty)));
+    if (units.length === 1 && numeric) {
+      const sum = lines.reduce((total, line) => total + Number(line.qty), 0);
+      qty = `${fmtQty(sum)} ${units[0]}`;
+    }
+  }
+  return {
+    date: row?.effective_date || "—",
+    barang,
+    qty,
+    nilai: row?.total != null && row.total !== "" ? formatRupiah(row.total) : "—",
+    status: POSTING_LABELS[row?.status] || row?.status || "—",
+  };
+}
+
 function stockLabel(item) {
   if (!item || item.stock_fisik == null || item.hpp_reason === "STOCK_STATE_UNAVAILABLE") {
     return "Tidak tersedia";
@@ -166,6 +252,7 @@ export default function NilaiPersediaan() {
   const [loadingReports, setLoadingReports] = useState(false);
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [valuationError, setValuationError] = useState("");
   const [error, setError] = useState("");
   const [drawer, setDrawer] = useState(null);
   const {
@@ -197,6 +284,7 @@ export default function NilaiPersediaan() {
     const seq = ++loadSeq.current;
     setLoading(true);
     setError("");
+    setValuationError("");
     setData((previous) => (previous ? { ...previous, items: [] } : previous));
     try {
       const response = await api.inventoryValuation({
@@ -212,7 +300,10 @@ export default function NilaiPersediaan() {
     } catch (exception) {
       if (seq !== loadSeq.current) return;
       const detail = exception.response?.data?.detail;
-      setError(typeof detail === "object" ? detail.message : (detail || "Gagal memuat Nilai Persediaan"));
+      const message = typeof detail === "object" ? detail.message : (detail || "Gagal memuat Nilai Persediaan");
+      setValuationError(message);
+      setError(message);
+      setData(null);
     } finally {
       if (seq === loadSeq.current) setLoading(false);
     }
@@ -492,9 +583,18 @@ export default function NilaiPersediaan() {
     loading,
     itemCount: items.length,
   });
-  const summaryMoney = !summary ? (error ? "Gagal dimuat" : "Memuat…") : moneyOrGap(summary.total_inventory_value);
+  const estimate = estimateCoverage({
+    summary,
+    total: data?.total,
+    loading: loading || searchPending,
+    failed: Boolean(valuationError),
+    filterActive: Boolean(String(q || "").trim()) || statusFilter !== "all",
+  });
   const summaryCount = (key) => {
-    if (!summary || summary[key] == null) return error ? "Gagal dimuat" : "—";
+    if (estimate.state === "loading") return "Memuat…";
+    if (estimate.state === "failed") return "Gagal dimuat";
+    if (estimate.state === "empty") return "0";
+    if (estimate.state === "unknown" || !summary || summary[key] == null) return "—";
     return String(summary[key]);
   };
   const physicalRow = items.find((row) => row.master_item_id === openingForm.master_item_id);
@@ -542,8 +642,8 @@ export default function NilaiPersediaan() {
         <section className="inventory-value-panel" data-testid="inventory-panel-daftar">
           <div className="inventory-value-summary is-estimate" data-testid="inventory-value-summary">
             <div className="inventory-value-summary-card is-total">
-              <span>Nilai estimasi stok</span>
-              <strong data-testid="inventory-estimate-total">{summaryMoney}</strong>
+              <span data-testid="inventory-estimate-label">{estimate.label}</span>
+              <strong data-testid="inventory-estimate-total">{estimate.value}</strong>
             </div>
             <div className="inventory-value-summary-card">
               <span>Barang tanpa harga pokok</span>
@@ -555,7 +655,7 @@ export default function NilaiPersediaan() {
             </div>
           </div>
           <p className="muted small" data-testid="inventory-value-summary-scope">
-            Angka dari seluruh barang pada filter ini, bukan dari halaman tabel. Nilai estimasi, bukan saldo buku.
+            {estimate.note}
           </p>
 
           <div className="prod-filters" data-testid="inventory-value-filters">
@@ -864,32 +964,64 @@ export default function NilaiPersediaan() {
                   </div>
                 )}
                 <div data-testid="financial-opening-list">
-                  {openings.map((row) => (
-                    <p key={row.id} className="muted small" data-testid={row.status === "POSTED" ? "financial-opening-journal" : `financial-opening-row-${row.id}`}>
-                      {POSTING_LABELS[row.status] || row.status} {row.effective_date}. ID {row.id}.
-                      Nomor {row.journal_number || row.posted_journal_id || "—"}.
-                      Asal {row.journal_origin === "existing_opening_voucher" ? "voucher saldo awal yang sudah ada" : "jurnal opening baru"}.
-                      Otoritas jurnal {row.journal_authority || "belum diperiksa"}.
-                      Nilai {row.total != null ? formatRupiah(row.total) : "—"}.
-                    </p>
-                  ))}
-                  {canPostOpening && openings.filter((row) => row.status === "NEEDS_RECOVERY").map((row) => (
-                    <button
-                      key={row.id}
-                      type="button"
-                      className="ghost"
-                      disabled={recovering}
-                      data-testid="financial-opening-recover"
-                      onClick={() => recoverOpening(row.client_request_id)}
-                    >
-                      Pulihkan {row.client_request_id}
-                    </button>
-                  ))}
-                  {canPostOpening && openings.filter((row) => row.status === "REVERSED").map((row) => (
-                    <p key={`${row.id}-reversed`} className="muted small" data-testid="financial-opening-reversed">
-                      Direversal {row.id}. {row.reversal_reason || row.blocker_message || ""}
-                    </p>
-                  ))}
+                  <h2>Riwayat saldo awal</h2>
+                  {bookError && (
+                    <p data-testid="financial-opening-history-error" role="alert">Gagal dimuat.</p>
+                  )}
+                  {!bookError && openings.length === 0 && (
+                    <p data-testid="financial-opening-history-empty">Belum ada saldo awal.</p>
+                  )}
+                  {!bookError && openings.length > 0 && (
+                    <div className="prod-table-wrap">
+                      <table className="prod-table" data-testid="financial-opening-history">
+                        <thead>
+                          <tr>
+                            <th>Tanggal</th>
+                            <th>Barang</th>
+                            <th>Qty</th>
+                            <th>Nilai</th>
+                            <th>Status</th>
+                            <th>Detail</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {openings.map((row) => {
+                            const cells = openingHistoryCells(row);
+                            return (
+                              <tr key={row.id} data-testid={`financial-opening-row-${row.id}`}>
+                                <td>{cells.date}</td>
+                                <td>{cells.barang}</td>
+                                <td>{cells.qty}</td>
+                                <td>{cells.nilai}</td>
+                                <td>{cells.status}</td>
+                                <td>
+                                  <button
+                                    type="button"
+                                    className="ghost sm"
+                                    data-testid={`financial-opening-detail-${row.id}`}
+                                    onClick={() => setDrawer({ kind: "opening", opening: row })}
+                                  >
+                                    Detail
+                                  </button>
+                                  {canPostOpening && row.status === "NEEDS_RECOVERY" && (
+                                    <button
+                                      type="button"
+                                      className="ghost sm"
+                                      disabled={recovering}
+                                      data-testid="financial-opening-recover"
+                                      onClick={() => recoverOpening(row.client_request_id)}
+                                    >
+                                      Pulihkan
+                                    </button>
+                                  )}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
                 </div>
               </div>
             </>
@@ -1111,6 +1243,37 @@ export default function NilaiPersediaan() {
             <p className="muted small">Anda tidak memiliki akses rekonsiliasi.</p>
           )}
         </section>
+      )}
+
+      {drawer?.kind === "opening" && (
+        <aside className="inventory-detail-drawer" data-testid="financial-opening-drawer" role="dialog" aria-label="Detail saldo awal">
+          <div className="inventory-detail-drawer-head">
+            <strong>Saldo awal {drawer.opening.effective_date || "—"}</strong>
+            <button type="button" className="ghost sm" onClick={() => setDrawer(null)} data-testid="financial-opening-drawer-close">Tutup</button>
+          </div>
+          <div className="inventory-detail-drawer-body">
+            <p data-testid="financial-opening-journal">
+              Status {drawer.opening.status || "—"}. {POSTING_LABELS[drawer.opening.status] || ""}.
+              Otoritas jurnal {drawer.opening.journal_authority || "belum diperiksa"}.
+            </p>
+            <p>ID {drawer.opening.id || "—"}.</p>
+            <p>Nomor jurnal {drawer.opening.journal_number || drawer.opening.posted_journal_id || "—"}.</p>
+            <p>
+              Sumber jurnal {drawer.opening.journal_origin === "existing_opening_voucher" ? "voucher saldo awal yang sudah ada" : (drawer.opening.journal_origin || "—")}.
+            </p>
+            <p>Akun {drawer.opening.inventory_account_id || "—"}.</p>
+            <p>Snapshot {drawer.opening.snapshot_id || "—"}.</p>
+            <p>{drawer.opening.blocker_message || drawer.opening.reversal_reason || "Tidak ada blocker."}</p>
+            {(drawer.opening.lines || []).map((line, index) => (
+              <p key={line.line_id || line.master_item_id || index} data-testid="financial-opening-line">
+                {openingLineIdentity(line) || "—"} · ID {line.master_item_id || "—"} · Qty {line.qty == null ? "—" : fmtQty(line.qty)} {line.base_uom || ""} · Nilai {line.total != null ? formatRupiah(line.total) : "—"}.
+              </p>
+            ))}
+            {drawer.opening.status === "REVERSED" && (
+              <p data-testid="financial-opening-reversed">Direversal. {drawer.opening.reversal_reason || drawer.opening.blocker_message || ""}</p>
+            )}
+          </div>
+        </aside>
       )}
 
       {drawer?.kind === "item" && (
