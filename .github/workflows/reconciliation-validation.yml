@@ -71,6 +71,11 @@ jobs:
           tests/test_financial_dashboard.py
           tests/test_nav_permissions.py
           tests/test_sales_order_line_prices.py
+          tests/test_sales_order_item_images.py
+          tests/test_sales_order_list_read.py
+          tests/test_customer_tracking.py
+          tests/test_customer_tracking_invoices.py
+          tests/test_tracking_delivery_signature.py
 
   frontend-focused:
     name: Frontend tests and build
@@ -126,6 +131,15 @@ jobs:
           src/pages/PesananPenjualan.createWorkspace.test.js
           src/pages/PesananPenjualan.test.js
           src/pages/FakturPenjualan.test.js
+          src/components/MasterItemSearchSelect.picker.test.js
+          src/lib/salesOrderListPresentation.test.js
+          src/pages/PesananPenjualan.searchDebounce.test.js
+          src/components/TrackingInvoicePdfViewer.test.js
+          src/components/TrackingInvoices.test.js
+          src/lib/customerTracking.test.js
+          src/lib/liveTracking.test.js
+          src/pages/CustomerTrackingPage.test.js
+          src/pages/CustomerTrackingPage.onescreen.test.js
       - name: Build production frontend
         if: ${{ always() }}
         env:

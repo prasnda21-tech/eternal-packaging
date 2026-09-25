@@ -13750,6 +13750,7 @@ app.include_router(_ca_router)
 import services.customer_tracking as _ct_mod
 _ct_router = _ct_mod.build_router({
     "db": db,
+    "get_db": lambda: db,
     "current_user": current_user,
     "require_perm": _require_perm,
     "logger": logging.getLogger("customer_tracking"),

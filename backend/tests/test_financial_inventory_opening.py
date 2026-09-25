@@ -888,7 +888,8 @@ async def test_same_request_id_rejects_different_payload():
 
 def _opening_process_worker(db_name, mid, request_id, barrier, queue):
     try:
-        os.environ["MONGO_URL"] = "mongodb://127.0.0.1:27017"
+        if not os.environ.get("MONGO_URL"):
+            raise RuntimeError("MONGO_URL wajib diwariskan dari runner tes")
         os.environ["DB_NAME"] = db_name
         barrier.wait(20)
         import asyncio
@@ -1630,7 +1631,7 @@ async def test_opening_balance_correction_without_applied_marker_blocks():
         },
         USER,
         app_env="local",
-        mongo_url="mongodb://127.0.0.1:27017",
+        mongo_url=os.environ["MONGO_URL"],
     )
     movement = result["movement"]
     assert movement["movement_type"] == MOVEMENT_KOREKSI
@@ -3914,7 +3915,7 @@ async def test_barrier_opening_correction_before_state_apply_blocks_capture():
             {"unprinted_qty": 80, "printed_qty": 0, "note": "koreksi barrier", "client_request_id": "barrier-corr"},
             USER,
             app_env="local",
-            mongo_url="mongodb://127.0.0.1:27017",
+            mongo_url=os.environ["MONGO_URL"],
         )
     finally:
         product_stock.record_stock_movement = real_record
