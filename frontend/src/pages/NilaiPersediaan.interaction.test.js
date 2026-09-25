@@ -119,6 +119,7 @@ describe("Nilai Persediaan financial actions", () => {
       ],
       summary: {
         total_inventory_value: 500000,
+        valued_items: 1,
         items_without_hpp: 4,
         problem_items: 2,
       },
@@ -146,10 +147,23 @@ describe("Nilai Persediaan financial actions", () => {
           effective_date: "2026-10-01",
           journal_number: "JU-1",
           journal_origin: "new_journal",
-          journal_authority: "valid",
-          total: 100000,
-          client_request_id: "req-open",
-        },
+        journal_authority: "valid",
+        total: 100000,
+        client_request_id: "req-open",
+        snapshot_id: "snap-9",
+        inventory_account_id: "1-100",
+        lines: [{ master_item_id: "mid-1", item_code: "CUP", item_name: "Cup", qty: 100, base_uom: "PCS", total: 100000 }],
+      },
+      {
+        id: "open-multi",
+        status: "POSTED",
+        effective_date: "2026-10-02",
+        total: 30000,
+        lines: [
+          { master_item_id: "a", item_code: "AAA", item_name: "Dus", qty: 2, base_uom: "PCS", total: 10000 },
+          { master_item_id: "b", item_code: "BBB", item_name: "Tinta", qty: 3, base_uom: "KG", total: 20000 },
+        ],
+      },
         {
           id: "open-2",
           status: "NEEDS_RECOVERY",
@@ -266,8 +280,10 @@ describe("Nilai Persediaan financial actions", () => {
     expect(container.querySelectorAll('[role="tab"]')).toHaveLength(4);
     expect(container.querySelector('[data-testid="financial-opening-form"]')).toBeNull();
     expect(container.querySelector('[data-testid="financial-book-status"]')).toBeNull();
+    expect(container.querySelector('[data-testid="inventory-estimate-label"]').textContent).toBe("Estimasi sebagian");
     expect(container.querySelector('[data-testid="inventory-estimate-total"]').textContent).toMatch(/Rp 500\.000/);
     expect(container.querySelector('[data-testid="inventory-estimate-total"]').textContent).not.toMatch(/144\.000/);
+    expect(container.querySelector('[data-testid="inventory-value-summary-scope"]').textContent).toMatch(/belum tercakup/);
     expect(container.querySelector('[data-testid="inventory-estimate-missing"]').textContent).toBe("4");
     expect(container.querySelector('[data-testid="inventory-estimate-review"]').textContent).toBe("2");
     expect(container.querySelector('[data-testid="inventory-value-stock-mid-zero"]').textContent).toBe("0");
@@ -294,7 +310,17 @@ describe("Nilai Persediaan financial actions", () => {
     expect(container.querySelector('[data-testid="financial-opening-selected"]').textContent).toMatch(/Cup/);
     expect(container.querySelector('[data-testid="financial-opening-selected"]').textContent).toMatch(/PCS/);
     expect(container.querySelector('[data-testid="financial-opening-cost"]').value).toBe("1000");
+    expect(container.querySelector('[data-testid="financial-opening-row-open-1"]').textContent).toMatch(/CUP · Cup/);
+    expect(container.querySelector('[data-testid="financial-opening-row-open-multi"]').textContent).toMatch(/2 barang/);
+    expect(container.querySelector('[data-testid="financial-opening-row-open-multi"]').textContent).not.toMatch(/5 /);
+    await act(async () => {
+      container.querySelector('[data-testid="financial-opening-detail-open-1"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
     expect(container.querySelector('[data-testid="financial-opening-journal"]').textContent).toMatch(/Otoritas jurnal valid/);
+    expect(container.querySelector('[data-testid="financial-opening-drawer"]').textContent).toMatch(/snap-9/);
+    expect(mockApi.captureFinancialOpeningSnapshot).not.toHaveBeenCalled();
+    expect(mockApi.postFinancialInventoryOpening).not.toHaveBeenCalled();
+    expect(mockApi.recoverFinancialInventoryOpening).not.toHaveBeenCalled();
     expect(container.querySelector('[data-testid="financial-opening-dirty"]').textContent).toMatch(/belum diposting/);
     expect(mockApi.captureFinancialOpeningSnapshot).not.toHaveBeenCalled();
 
@@ -478,6 +504,10 @@ describe("Nilai Persediaan financial actions", () => {
     expect(container.querySelector('[data-testid="financial-book-status"]')).toBeNull();
     expect(container.querySelector('[data-testid="financial-book-error"]').textContent).not.toMatch(/Cocok/);
     expect(container.querySelector('[data-testid="inventory-panel-recon"]').textContent).not.toMatch(/Rp 0/);
+    await openTab("opening");
+    expect(container.querySelector('[data-testid="financial-opening-history-error"]').textContent).toMatch(/Gagal dimuat/);
+    expect(container.querySelector('[data-testid="financial-opening-history-empty"]')).toBeNull();
+    expect(container.querySelector('[data-testid="financial-opening-history"]')).toBeNull();
   });
 
   test("incomplete status is labeled and opening recovery follows permission", async () => {
@@ -545,5 +575,88 @@ describe("Nilai Persediaan financial actions", () => {
     }));
     URL.createObjectURL = originalCreate;
     URL.revokeObjectURL = originalRevoke;
+  });
+
+  test("stock without a cost is not shown as a zero estimate", async () => {
+    mockApi.inventoryValuation.mockResolvedValue({
+      items: [{
+        master_item_id: "mid-1",
+        item_code: "CUP",
+        item_name: "Cup",
+        unit: "PCS",
+        stock_fisik: 135,
+        current_hpp: null,
+        inventory_value: null,
+        hpp_status: "MISSING_COST",
+      }],
+      summary: { total_inventory_value: 0, valued_items: 0, items_without_hpp: 1, problem_items: 0 },
+      total: 1,
+      page: 1,
+      page_count: 1,
+    });
+    await renderPage();
+    expect(container.querySelector('[data-testid="inventory-estimate-total"]').textContent).toBe("Belum dapat dihitung");
+    expect(container.querySelector('[data-testid="inventory-estimate-label"]').textContent).toBe("Nilai estimasi stok");
+    expect(container.querySelector('[data-testid="inventory-value-stock-mid-1"]').textContent).toBe("135");
+    expect(container.querySelector('[data-testid="inventory-value-summary"]').textContent).not.toMatch(/Rp 0/);
+  });
+
+  test("a real zero estimate stays Rp 0 and an empty filter does not", async () => {
+    mockApi.inventoryValuation.mockResolvedValue({
+      items: [{
+        master_item_id: "mid-zero",
+        item_code: "Z",
+        item_name: "Kosong",
+        unit: "PCS",
+        stock_fisik: 0,
+        current_hpp: 10,
+        inventory_value: 0,
+        hpp_status: "OK",
+      }],
+      summary: { total_inventory_value: 0, valued_items: 1, items_without_hpp: 0, problem_items: 0 },
+      total: 1,
+      page: 1,
+      page_count: 1,
+    });
+    await renderPage();
+    expect(container.querySelector('[data-testid="inventory-estimate-label"]').textContent).toBe("Nilai estimasi stok");
+    expect(container.querySelector('[data-testid="inventory-estimate-total"]').textContent).toMatch(/^Rp 0$/);
+
+    mockApi.inventoryValuation.mockResolvedValue({
+      items: [],
+      summary: { total_inventory_value: 0, valued_items: 0, items_without_hpp: 0, problem_items: 0 },
+      total: 0,
+      page: 1,
+      page_count: 1,
+    });
+    await act(() => root.unmount());
+    container.remove();
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await renderPage();
+    expect(container.querySelector('[data-testid="inventory-estimate-total"]').textContent).toBe("Tidak ada barang");
+  });
+
+  test("a failed valuation load is not a complete zero", async () => {
+    mockApi.inventoryValuation.mockRejectedValue({ response: { data: { detail: "valuasi gagal" } } });
+    await renderPage();
+    expect(container.querySelector('[data-testid="inventory-estimate-total"]').textContent).toBe("Gagal dimuat");
+    expect(container.querySelector('[data-testid="inventory-estimate-total"]').textContent).not.toMatch(/Rp/);
+    expect(container.querySelector('[data-testid="inventory-value-summary-scope"]').textContent).toMatch(/bukan saldo buku/);
+  });
+
+  test("an active filter does not reuse the unfiltered summary or the current page", async () => {
+    await renderPage();
+    const select = container.querySelector('[data-testid="inventory-value-status-filter"]');
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, "value").set;
+      setter.call(select, "missing");
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await act(async () => { await Promise.resolve(); });
+    expect(container.querySelector('[data-testid="inventory-estimate-total"]').textContent).toBe("Kelengkapan nilai belum diketahui");
+    expect(container.querySelector('[data-testid="inventory-estimate-total"]').textContent).not.toMatch(/500\.000|144\.000/);
+    expect(mockApi.inventoryValuation).toHaveBeenCalledWith(expect.objectContaining({ status_filter: "missing" }));
   });
 });
