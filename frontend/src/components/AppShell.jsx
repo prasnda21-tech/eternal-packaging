@@ -5,7 +5,7 @@ import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { ROLES } from "../lib/constants";
 import { canAccessRoutePage } from "../lib/independentRoute";
-import { NAV_KEYS, cashBankMenuItems, cashBankNavVisible, employeeAdminMenuItems, employeeAdminNavVisible, hrPayrollMenuItems, hrPayrollNavVisible, inventoryMenuItems, inventoryNavVisible, ledgerMenuItems, ledgerNavVisible, productionMenuItems, productionNavVisible, purchasingMenuItems, purchasingNavVisible, reportsMenuItems, reportsNavVisible, salesMenuItems, salesNavVisible, settingsMenuItems, taskMenuItems } from "../lib/navAccess";
+import { NAV_KEYS, cashBankMenuItems, cashBankNavVisible, dashboardMenuItems, dashboardNavVisible, employeeAdminMenuItems, employeeAdminNavVisible, hrPayrollMenuItems, hrPayrollNavVisible, inventoryMenuItems, inventoryNavVisible, ledgerMenuItems, ledgerNavVisible, productionMenuItems, productionNavVisible, purchasingMenuItems, purchasingNavVisible, reportsMenuItems, reportsNavVisible, salesMenuItems, salesNavVisible, settingsMenuItems, taskMenuItems } from "../lib/navAccess";
 import { nextSidebarMenu, placeSidebarFlyout } from "../lib/sidebarFlyout";
 import { canSeeSpkNav } from "../lib/spk";
 import { moduleFromPath } from "../lib/uiModule";
@@ -20,6 +20,8 @@ import { useGlobalWorkspaceTabs } from "../hooks/useGlobalWorkspaceTabs";
 const railLinkClass = ({ isActive }) => "rail-btn" + (isActive ? " is-active" : "");
 
 const TILE_ICONS = {
+  [NAV_KEYS.dashboard]: LayoutDashboard,
+  [NAV_KEYS.dashboardFinance]: Landmark,
   [NAV_KEYS.salesCustomers]: Users,
   [NAV_KEYS.productRequests]: ClipboardList,
   [NAV_KEYS.salesOrder]: ShoppingCart,
@@ -154,6 +156,7 @@ export default function AppShell() {
   );
   const workspaceTabsVisible = workspace.visible || workspaceTabs.length > 0;
   const settingsActive = location.pathname.startsWith("/settings");
+  const dashboardActive = location.pathname === "/dashboard" || location.pathname.startsWith("/dashboard/");
   const salesReportActive = location.pathname === "/laporan/status-po" || location.pathname === "/laporan/prediksi-order";
   const salesActive = location.pathname.startsWith("/admin/import") || location.pathname.startsWith("/penjualan") || salesReportActive;
   const reportsActive = location.pathname.startsWith("/laporan") && !salesReportActive;
@@ -354,12 +357,15 @@ export default function AppShell() {
   const settingsItems = settingsMenuItems(hasPerm);
   void productionNav.deliveryToday;
   const showDashboard = hasPerm(NAV_KEYS.dashboard);
+  const dashboardNav = dashboardNavVisible(hasPerm);
+  const dashboardItems = dashboardMenuItems(hasPerm);
   const showSpk = canSeeSpkNav(hasPerm);
   const showChat = hasPerm(NAV_KEYS.chat) || hasPerm("chat.use");
   const showRouteOptimizer = canAccessRoutePage(hasPerm);
   const showSettings = hasPerm(NAV_KEYS.settings);
 
   const flyoutOpen = !!activeSidebarMenu;
+  const dashboardOpen = activeSidebarMenu === "dashboard";
   const produksiOpen = activeSidebarMenu === "produksi";
   const salesOpen = activeSidebarMenu === "sales";
   const purchasingOpen = activeSidebarMenu === "purchasing";
@@ -382,15 +388,20 @@ export default function AppShell() {
           <BrandMark compact onDark />
         </Link>
         <nav className="app-sidebar-nav" aria-label="Menu utama">
-          {showDashboard && (
-            <RailNavLink
-              to="/dashboard"
-              end
-              testid="top-nav-dashboard"
-              label="Dashboard"
-              icon={LayoutDashboard}
-              onNavigate={closeFlyout}
-            />
+          {(dashboardNav.parent && (showDashboard || dashboardNav.finance)) && (
+            <div className="nav-group" data-testid="top-nav-dashboard-group">
+              <RailButton
+                ref={(el) => { railRefs.current.dashboard = el; }}
+                testid="top-nav-dashboard"
+                label="Dashboard"
+                icon={LayoutDashboard}
+                expanded={dashboardOpen}
+                controls="sidebar-flyout-dashboard"
+                active={dashboardActive}
+                open={dashboardOpen}
+                onClick={() => toggleMenu("dashboard")}
+              />
+            </div>
           )}
           {showSpk && (
             <RailNavLink
@@ -572,6 +583,21 @@ export default function AppShell() {
           )}
         </nav>
       </aside>
+
+      {dashboardOpen && dashboardItems.length > 0 && (
+        <SidebarFlyoutGrid
+          innerRef={flyoutRef}
+          id="sidebar-flyout-dashboard"
+          testid="sidebar-flyout-dashboard"
+          title="Dashboard"
+          ariaLabel="Menu Dashboard"
+          placement={flyoutPos.placement}
+          style={flyoutStyle}
+          items={dashboardItems}
+          icons={TILE_ICONS}
+          onNavigate={closeFlyout}
+        />
+      )}
 
       {produksiOpen && (productionItems.length + taskItems.length) > 0 && (
         <SidebarFlyoutGrid

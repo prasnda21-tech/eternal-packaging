@@ -70,6 +70,11 @@ describe("sidebar flyout interaction", () => {
     expect(shell).toMatch(/taskMenuItems\(hasPerm\)/);
     expect(shell).toMatch(/salesNavVisible\(hasPerm\)/);
     expect(shell).toMatch(/hasPerm\(NAV_KEYS\.dashboard\)/);
+    expect(shell).toMatch(/sidebar-flyout-dashboard/);
+    expect(shell).toMatch(/dashboardNavVisible\(hasPerm\)/);
+    expect(shell).toMatch(/dashboardMenuItems\(hasPerm\)/);
+    expect(nav).toMatch(/Dashboard Produksi/);
+    expect(nav).toMatch(/Dashboard Keuangan/);
     expect(shell).toMatch(/TASK_NAV_ORDER\.map/);
     expect(shell).not.toMatch(/Tugas per Divisi/);
     expect(shell).toMatch(/productionNav\.deliveryToday/);
@@ -106,6 +111,7 @@ describe("sidebar flyout interaction", () => {
   });
 
   test("every parent with children reuses the Penjualan tile grid", () => {
+    expect(shell).toMatch(/id="sidebar-flyout-dashboard"/);
     expect(shell).toMatch(/id="sidebar-flyout-produksi"/);
     expect(shell).toMatch(/id="sidebar-flyout-sales"/);
     expect(shell).toMatch(/id="sidebar-flyout-purchasing"/);
@@ -123,7 +129,8 @@ describe("sidebar flyout interaction", () => {
     expect(shell).toMatch(/reportsOpen && reportsItems\.length > 0/);
     expect(shell).toMatch(/employeeAdminOpen && employeeAdminItems\.length > 0/);
     expect(shell).toMatch(/hrPayrollOpen && hrPayrollItems\.length > 0/);
-    expect(shell.match(/<SidebarFlyoutGrid/g).length).toBe(10);
+    expect(shell).toMatch(/dashboardOpen && dashboardItems\.length > 0/);
+    expect(shell.match(/<SidebarFlyoutGrid/g).length).toBe(11);
     expect(shell).toMatch(/id="sidebar-flyout-settings"/);
     expect(grid).toMatch(/if \(!blocks\.length\) return null/);
   });
@@ -139,10 +146,13 @@ describe("sidebar flyout interaction", () => {
     expect(shell).not.toMatch(/useCashBankWorkspaceTabs/);
   });
 
-  test("direct-link parents stay rail links without flyout", () => {
-    expect(shell).toMatch(/to="\/dashboard"/);
-    expect(shell).not.toMatch(/sidebar-flyout-dashboard/);
-    expect(shell).not.toMatch(/toggleMenu\("dashboard"\)/);
+  test("SPK and Chat stay direct rail links while Dashboard opens a submenu", () => {
+    expect(shell).toMatch(/to="\/spk"/);
+    expect(shell).toMatch(/to="\/chat"/);
+    expect(shell).not.toMatch(/sidebar-flyout-spk/);
+    expect(shell).toMatch(/sidebar-flyout-dashboard/);
+    expect(shell).toMatch(/toggleMenu\("dashboard"\)/);
+    expect(shell).not.toMatch(/to="\/dashboard"/);
   });
 
   test("Pengaturan rail opens the shared tile flyout without navigating", () => {
