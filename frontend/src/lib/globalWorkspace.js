@@ -57,7 +57,10 @@ export function visibleGlobalWorkspaceCatalog(hasPerm) {
   const tabs = [];
 
   if (canSeeNav(hasPerm, NAV_KEYS.dashboard)) {
-    tabs.push({ id: "dashboard", path: "/dashboard", label: "Dashboard" });
+    tabs.push({ id: "dashboard", path: "/dashboard", label: "Dashboard Produksi" });
+  }
+  if (canSeeNav(hasPerm, NAV_KEYS.dashboardFinance) || (typeof hasPerm === "function" && hasPerm("dashboard.finance.view"))) {
+    tabs.push({ id: "dashboard-keuangan", path: "/dashboard/keuangan", label: "Dashboard Keuangan" });
   }
 
   if (canSeeNav(hasPerm, NAV_KEYS.chat) || (typeof hasPerm === "function" && hasPerm("chat.use"))) {

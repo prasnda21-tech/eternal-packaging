@@ -50,6 +50,7 @@ const OptimasiRuteEditor = lazy(() => import("./pages/OptimasiRuteEditor"));
 const Dashboard = lazy(() => import("./pages/Dashboard"));
 const PODetail = lazy(() => import("./pages/PODetail"));
 const HoPDashboard = lazy(() => import("./pages/HoPDashboard"));
+const FinancialDashboard = lazy(() => import("./pages/FinancialDashboard"));
 const ProductionSchedule = lazy(() => import("./pages/ProductionSchedule"));
 const SuratJalan = lazy(() => import("./pages/SuratJalan"));
 const PesananPenjualan = lazy(() => import("./pages/PesananPenjualan"));
@@ -271,6 +272,7 @@ export default function App() {
             <Route path="/spk" element={<PermGate anyOf={SPK_ACCESS_KEYS}><SpkDashboard /></PermGate>} />
             <Route path="/chat" element={<PermGate anyOf={[NAV_KEYS.chat, "chat.use"]}><ChatPage /></PermGate>} />
             <Route path="/chat/:roomId" element={<PermGate anyOf={[NAV_KEYS.chat, "chat.use"]}><ChatPage /></PermGate>} />
+            <Route path="/dashboard/keuangan" element={<PermGate anyOf={["dashboard.finance.view", NAV_KEYS.dashboardFinance]}><FinancialDashboard /></PermGate>} />
             <Route path="/dashboard" element={<PermGate anyOf={[NAV_KEYS.dashboard]}><HoPDashboard /></PermGate>} />
             <Route path="/tasks" element={<DivisionTaskIndex />} />
             <Route path="/tasks/designer" element={<PermGate anyOf={[NAV_KEYS.tasksDesigner, "design.upload"]}><DivisionTaskPage /></PermGate>} />
