@@ -4,6 +4,7 @@ on:
   pull_request:
     branches:
       - main
+      - cursor/hpp-financial-opening-13bd
   workflow_dispatch:
 
 permissions:
@@ -66,6 +67,8 @@ jobs:
           tests/test_sales_pwa_scope.py
           tests/test_financial_inventory_opening.py
           tests/test_inventory_issue_posting.py
+          tests/test_financial_dashboard.py
+          tests/test_nav_permissions.py
 
   frontend-focused:
     name: Frontend tests and build
@@ -108,6 +111,15 @@ jobs:
           src/sales/SalesPwaOrdersPage.test.js
           src/sales/SalesPwaDashboardPage.test.js
           src/sales/SalesPwaVisitsPage.test.js
+          src/lib/financialDashboard.test.js
+          src/components/AppShell.test.js
+          src/lib/navAccess.test.js
+          src/lib/navAccess.cashBank.test.js
+          src/lib/navAccess.employeeAdmin.test.js
+          src/lib/navAccess.formAccess.test.js
+          src/lib/navAccess.hrPayroll.test.js
+          src/lib/navAccess.ledger.test.js
+          src/lib/globalWorkspace.test.js
       - name: Build production frontend
         if: ${{ always() }}
         env:
