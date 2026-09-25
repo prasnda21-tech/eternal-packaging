@@ -2,6 +2,7 @@ import {
   agingChartStatus,
   chartPlotsSeries,
   formatAxisMoney,
+  groupDetailNotes,
   formatMargin,
   formatMetric,
   jakartaDate,
@@ -80,5 +81,17 @@ describe("financial dashboard presentation", () => {
     expect(agingChartStatus("zero", "zero")).toBe("zero");
     expect(agingChartStatus("error", "error")).toBe("error");
     expect(agingChartStatus("complete", "error")).toBe("complete");
+  });
+
+  test("merges identical detail notes and keeps the affected metrics", () => {
+    expect(groupDetailNotes([
+      { metric: "Pendapatan", text: "Ada reversal yang belum selesai." },
+      { metric: "Laba bersih", text: "Ada reversal yang belum selesai." },
+      { metric: "Persediaan", text: "Cakupan opening belum lengkap." },
+      { metric: "", text: "   " },
+    ])).toEqual([
+      { text: "Ada reversal yang belum selesai.", metrics: ["Pendapatan", "Laba bersih"] },
+      { text: "Cakupan opening belum lengkap.", metrics: ["Persediaan"] },
+    ]);
   });
 });

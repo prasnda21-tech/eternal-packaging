@@ -73,6 +73,24 @@ export function agingChartStatus(receivableStatus, payableStatus) {
   return "complete";
 }
 
+export function groupDetailNotes(entries) {
+  const grouped = [];
+  const index = new Map();
+  (entries || []).forEach((entry) => {
+    const text = String(entry?.text || "").replace(/\s+/g, " ").trim();
+    const metric = String(entry?.metric || "").replace(/\s+/g, " ").trim();
+    if (!text) return;
+    if (!index.has(text)) {
+      const item = { text, metrics: [] };
+      index.set(text, item);
+      grouped.push(item);
+    }
+    const item = index.get(text);
+    if (metric && !item.metrics.includes(metric)) item.metrics.push(metric);
+  });
+  return grouped;
+}
+
 export function formatLoadedAt(iso) {
   if (!iso) return "Belum dimuat";
   const parsed = new Date(iso);

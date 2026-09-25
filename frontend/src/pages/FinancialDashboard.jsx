@@ -7,6 +7,7 @@ import {
   chartPlotsSeries,
   formatAxisMoney,
   formatLoadedAt,
+  groupDetailNotes,
   formatMargin,
   formatMetric,
   formatMoney,
@@ -238,19 +239,16 @@ export default function FinancialDashboard() {
     ]
     : [];
   const openControls = (payload?.controls?.items || []).filter((item) => item.kind === "action" && (item.status === "incomplete" || item.status === "error")).length;
-  const notes = [
-    completeness.detail,
-    performance.detail,
-    position.cash_and_bank?.warning,
-    position.accounts_receivable?.warning,
-    position.accounts_payable?.warning,
-    position.inventory_book?.warning,
-    position.grni?.detail,
-    cash.detail,
-    payload?.receivables?.detail,
-    payload?.payables?.detail,
-    payload?.controls?.detail,
-  ].filter(Boolean);
+  const completenessNotes = groupDetailNotes([
+    { metric: "Kelengkapan", text: completeness.detail },
+    { metric: "Pendapatan, laba kotor, dan laba bersih", text: performance.detail },
+    { metric: "Saldo kas dan bank", text: position.cash_and_bank?.warning },
+    { metric: "Piutang usaha", text: position.accounts_receivable?.warning },
+    { metric: "Utang usaha", text: position.accounts_payable?.warning },
+    { metric: "Nilai buku persediaan", text: position.inventory_book?.warning },
+    { metric: "GRNI", text: position.grni?.status && position.grni.status !== "complete" ? position.grni.detail : "" },
+    { metric: "Pergerakan kas", text: cash.blocker_code ? cash.detail : "" },
+  ]);
 
   return (
     <div className="finance-dashboard-page" data-testid="finance-dashboard-page">
@@ -377,16 +375,21 @@ export default function FinancialDashboard() {
           <div className="fd-drawer" role="dialog" aria-label="Detail dashboard keuangan" data-testid="finance-detail-drawer">
             <header>
               <h3>Detail</h3>
-              <button type="button" onClick={() => setDetailOpen(false)}>Tutup</button>
+              <button type="button" onClick={() => setDetailOpen(false)} data-testid="finance-detail-close">Tutup</button>
             </header>
             <div className="fd-drawer-body">
-              <section>
+              <section data-testid="finance-detail-kelengkapan">
                 <h3>Kelengkapan</h3>
                 <p className={`fd-status is-${completeness.status || "unavailable"}`}>{statusLabel(completeness.status)}</p>
-                {notes.map((note) => <p key={note} className="fd-hint">{note}</p>)}
+                {completenessNotes.map((note) => (
+                  <p key={note.text} className="fd-note">
+                    {note.text}
+                    {note.metrics.length ? <span>Metrik: {note.metrics.join(", ")}.</span> : null}
+                  </p>
+                ))}
               </section>
               <section data-testid="finance-cash-drawer">
-                <h3>Rincian rekening kas</h3>
+                <h3>Kas/Bank</h3>
                 <p className="fd-hint">Transfer internal tidak masuk total kas masuk atau kas keluar gabungan. Bukan laporan arus kas formal.</p>
                 <div className="fd-table-scroll">
                   <table>
@@ -415,10 +418,11 @@ export default function FinancialDashboard() {
                   </table>
                 </div>
               </section>
-              <OutstandingTable title="Piutang usaha" data={payload?.receivables} testid="finance-receivables" />
-              <OutstandingTable title="Utang usaha" data={payload?.payables} testid="finance-payables" />
+              <OutstandingTable title="Piutang" data={payload?.receivables} testid="finance-receivables" />
+              <OutstandingTable title="Utang" data={payload?.payables} testid="finance-payables" />
               <section data-testid="finance-panel-kontrol">
                 <h3>Kontrol pembukuan</h3>
+                <p className="fd-hint">Dashboard hanya membaca. Tidak ada posting dari halaman ini.</p>
                 <ul className="fd-controls">
                   {(payload?.controls?.items || []).map((item) => (
                     <li key={item.key} className={`is-${item.kind} is-${item.status}`} data-testid={`finance-control-${item.key}`}>
