@@ -39,6 +39,40 @@ export function formatMargin(value) {
   return `${(Number(value) * 100).toLocaleString("id-ID", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%`;
 }
 
+export function formatAxisMoney(amount) {
+  if (amount == null || amount === "") return "";
+  const value = Number(amount);
+  if (!Number.isFinite(value)) return "";
+  const sign = value < 0 ? "-" : "";
+  const abs = Math.abs(value);
+  const compact = (n, suffix) => {
+    const text = n.toLocaleString("id-ID", { maximumFractionDigits: 1, minimumFractionDigits: 0 });
+    return `${sign}${text} ${suffix}`;
+  };
+  if (abs >= 1_000_000_000) return compact(abs / 1_000_000_000, "M");
+  if (abs >= 1_000_000) return compact(abs / 1_000_000, "jt");
+  if (abs >= 1_000) return compact(abs / 1_000, "rb");
+  return `${sign}${abs.toLocaleString("id-ID", { maximumFractionDigits: 0 })}`;
+}
+
+export function chartPlotsSeries(status) {
+  return status === "complete" || status === "zero" || status === "incomplete";
+}
+
+export function trendShowsDot(pointCount) {
+  return pointCount === 1;
+}
+
+export function agingChartStatus(receivableStatus, payableStatus) {
+  const sides = [receivableStatus, payableStatus];
+  if (sides.every((status) => status === "error")) return "error";
+  if (sides.every((status) => !status || status === "unavailable")) return "unavailable";
+  const plottable = sides.filter((status) => chartPlotsSeries(status));
+  if (!plottable.length) return "empty";
+  if (plottable.every((status) => status === "zero")) return "zero";
+  return "complete";
+}
+
 export function formatLoadedAt(iso) {
   if (!iso) return "Belum dimuat";
   const parsed = new Date(iso);

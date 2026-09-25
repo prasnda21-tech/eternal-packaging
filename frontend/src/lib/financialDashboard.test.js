@@ -1,4 +1,14 @@
-import { formatMargin, formatMetric, jakartaDate, periodRange, shouldApplyDashboardResponse } from "./financialDashboard";
+import {
+  agingChartStatus,
+  chartPlotsSeries,
+  formatAxisMoney,
+  formatMargin,
+  formatMetric,
+  jakartaDate,
+  periodRange,
+  shouldApplyDashboardResponse,
+  trendShowsDot,
+} from "./financialDashboard";
 import { dashboardMenuItems, dashboardNavVisible, NAV_KEYS } from "./navAccess";
 
 const has = (...keys) => (key) => keys.includes(key);
@@ -52,5 +62,23 @@ describe("financial dashboard presentation", () => {
   test("ignores a response that is older than the latest filter", () => {
     expect(shouldApplyDashboardResponse(1, 2)).toBe(false);
     expect(shouldApplyDashboardResponse(2, 2)).toBe(true);
+  });
+
+  test("compacts axis amounts and keeps a single real point visible", () => {
+    expect(formatAxisMoney(30000)).toBe("30 rb");
+    expect(formatAxisMoney(144000)).toBe("144 rb");
+    expect(formatAxisMoney(1500000)).toBe("1,5 jt");
+    expect(formatAxisMoney(-35000)).toBe("-35 rb");
+    expect(formatAxisMoney(0)).toBe("0");
+    expect(formatAxisMoney(null)).toBe("");
+    expect(chartPlotsSeries("empty")).toBe(false);
+    expect(chartPlotsSeries("error")).toBe(false);
+    expect(chartPlotsSeries("zero")).toBe(true);
+    expect(trendShowsDot(1)).toBe(true);
+    expect(trendShowsDot(12)).toBe(false);
+    expect(agingChartStatus("empty", "empty")).toBe("empty");
+    expect(agingChartStatus("zero", "zero")).toBe("zero");
+    expect(agingChartStatus("error", "error")).toBe("error");
+    expect(agingChartStatus("complete", "error")).toBe("complete");
   });
 });
