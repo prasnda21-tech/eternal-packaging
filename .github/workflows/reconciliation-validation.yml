@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - cursor/hpp-financial-opening-13bd
+      - cursor/sales-order-redesign-b7d7
   workflow_dispatch:
 
 permissions:
@@ -69,6 +70,7 @@ jobs:
           tests/test_inventory_issue_posting.py
           tests/test_financial_dashboard.py
           tests/test_nav_permissions.py
+          tests/test_sales_order_line_prices.py
 
   frontend-focused:
     name: Frontend tests and build
@@ -120,6 +122,10 @@ jobs:
           src/lib/navAccess.hrPayroll.test.js
           src/lib/navAccess.ledger.test.js
           src/lib/globalWorkspace.test.js
+          src/lib/salesOrderCreateWorkspace.test.js
+          src/pages/PesananPenjualan.createWorkspace.test.js
+          src/pages/PesananPenjualan.test.js
+          src/pages/FakturPenjualan.test.js
       - name: Build production frontend
         if: ${{ always() }}
         env:

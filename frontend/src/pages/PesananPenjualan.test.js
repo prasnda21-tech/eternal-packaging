@@ -341,18 +341,18 @@ describe("Pesanan Penjualan Line Items UX & Live Search", () => {
     expect(updatedLines[0].name).toBe("Dus A");
   });
 
-  test("9. item table grows with the page and does not own a vertical scroller", () => {
+  test("9. item table scrolls inside the create workspace", () => {
     const css = fs.readFileSync(path.join(__dirname, "pesananPenjualan.css"), "utf8");
     expect(src).toMatch(/data-testid="line-items-table-container"/);
-    expect(src).toMatch(/data-scroll-owner=\{viewMode === "create" \? "page" : undefined\}/);
-    expect(src).not.toMatch(/data-scroll-owner="line-items"/);
+    expect(src).toMatch(/data-scroll-owner="line-items"/);
+    expect(src).toMatch(/data-scroll-owner=\{viewMode === "create" \? "workspace" : "list"\}/);
     expect(src).not.toMatch(/minHeight:\s*"380px"/);
     expect(src).not.toMatch(/maxHeight:\s*"560px"/);
-    expect(css).toMatch(/\.so-create-lines-table thead th\s*\{[^}]*position:\s*static/);
-    expect(css).not.toMatch(/\.so-create-lines-table thead th\s*\{[^}]*position:\s*sticky/);
+    expect(css).toMatch(/\.so-create-lines-table thead th\s*\{[^}]*position:\s*sticky/);
     expect(css).toMatch(/\.so-create-lines-scroll\s*\{[^}]*overflow-x:\s*auto/);
-    expect(css).toMatch(/\.so-create-lines-scroll\s*\{[^}]*overflow-y:\s*visible/);
-    expect(css).not.toMatch(/\.so-create-lines-scroll\s*\{[^}]*overflow:\s*auto/);
+    expect(css).toMatch(/\.so-create-lines-scroll\s*\{[^}]*overflow-y:\s*auto/);
+    expect(css).toMatch(/\.so-create-lines-scroll\s*\{[^}]*min-height:\s*0/);
+    expect(css).toMatch(/\.so-thumb\s*\{[^}]*object-fit:\s*contain/);
     expect(css).not.toMatch(/\.so-create-lines-scroll\s*\{[^}]*max-height:\s*\d+vh/);
   });
 });
