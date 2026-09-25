@@ -315,12 +315,16 @@ export default function NilaiPersediaan() {
         }],
       });
       const item = saved.item || saved;
-      setOpeningForm((current) => ({ ...current, snapshot_id: item.id || "" }));
+      setOpeningForm((current) => ({
+        ...current,
+        snapshot_id: item.id || "",
+        effective_date: item.business_date || current.effective_date,
+      }));
       setFormDirty(true);
       const line = (item.lines || [])[0];
       setOpeningNotice(
         item.status === "CAPTURED"
-          ? `Snapshot ${item.business_date} tersimpan. Qty ${line ? line.qty : "—"} ${line ? line.base_uom : ""}. Nilai buku belum diisi dari Published Pricing.`
+          ? `Snapshot saldo sekarang ${item.business_date} tersimpan. Qty ${line ? line.qty : "—"} ${line ? line.base_uom : ""}. Opening harus memakai tanggal ini. Snapshot tidak memundurkan cutoff lama, dan nilai buku tidak diisi dari Published Pricing.`
           : (item.blocker_message || "Snapshot tidak tersimpan")
       );
     } catch (exception) {
@@ -487,10 +491,18 @@ export default function NilaiPersediaan() {
             Sumber GL lain: {moneyOrGap(book.other_gl_total)}.
             Valuasi Published tetap bukan saldo buku.
             {book.pending_cogs_count ? ` Posting HPP pending: ${book.pending_cogs_count}. Status bukan MATCH.` : ""}
+            {(book.blocked_stock_receipts || []).length
+              ? ` Penerimaan yang sudah mengubah stok tetapi ditolak posting: ${(book.blocked_stock_receipts || []).length}. Status bukan MATCH.`
+              : ""}
           </p>
           {book.physical_vs_financial && (
             <p className="muted small" data-testid="financial-book-physical">{book.physical_vs_financial}</p>
           )}
+          {(book.blocked_stock_receipts || []).map((row) => (
+            <p key={row.receipt_id || row.receipt_number} className="muted small" data-testid="financial-book-blocked-receipt">
+              {row.code}: {row.receipt_number || row.receipt_id}. {row.message}
+            </p>
+          ))}
           {book.item_hpp_scope && (
             <p className="muted small" data-testid="financial-book-hpp-scope">{book.item_hpp_scope}</p>
           )}
@@ -576,8 +588,11 @@ export default function NilaiPersediaan() {
           )}
           {preview && (
             <div className="inventory-opening-preview" data-testid="financial-opening-preview">
-              <p>
-                Sumber {preview.book_value_source || "APPROVED_OPENING"}. Tanggal efektif {preview.effective_date} ({preview.timezone}).
+              <p data-testid="financial-opening-boundary">
+                {preview.historical_reconstruction
+                  ? "Jalur rekonstruksi historis. Bukan snapshot saldo sekarang."
+                  : `Jalur snapshot saldo sekarang${preview.snapshot_business_date ? ` ${preview.snapshot_business_date}` : ""}. Tanggal efektif harus sama dengan tanggal snapshot.`}
+                {" "}Sumber {preview.book_value_source || "APPROVED_OPENING"}. Tanggal efektif {preview.effective_date} ({preview.timezone}).
                 Total {formatRupiah(preview.total)}. {preview.can_post ? "Siap diposting." : "Belum dapat diposting."}
               </p>
               {(preview.snapshots || []).map((row) => (
@@ -589,7 +604,10 @@ export default function NilaiPersediaan() {
               {(preview.blockers || []).map((row, index) => (
                 <p key={`${row.code}-${index}`} data-testid="financial-opening-blocker">
                   {row.code}: {row.message}
+                  {row.boundary_kind === "historical_reconstruction" ? " Rekonstruksi historis." : ""}
+                  {row.boundary_kind === "current_balance" ? " Snapshot saldo sekarang." : ""}
                   {row.receipt_id ? ` Penerimaan ${row.receipt_number || row.receipt_id}.` : ""}
+                  {row.valid_snapshot_rule ? ` ${row.valid_snapshot_rule}` : ""}
                 </p>
               ))}
             </div>
