@@ -338,6 +338,7 @@ export default function PesananPenjualan() {
     searchParams.get(REPEAT_ORDER_QUERY_PARAM) ? "create" : "list"
   ); // 'list' | 'create'
   const [createTab, setCreateTab] = useState("items");
+  const [detailRowKey, setDetailRowKey] = useState(undefined);
   const [editingField, setEditingField] = useState("");
   
   // List state
@@ -1022,6 +1023,7 @@ export default function PesananPenjualan() {
   const addLineItem = () => {
     const line = createSalesOrderLineItem();
     focusLineKeyRef.current = line.rowKey;
+    setDetailRowKey(line.rowKey);
     dirtyRef.current = true;
     setFormData((prev) => ({
       ...prev,
@@ -1964,7 +1966,7 @@ export default function PesananPenjualan() {
           <div className="so-create-stage">
             <section className="so-create-main" data-so-region="main">
               <div className="so-sum-row" data-testid="so-main-fields">
-                <div className={`so-sum-chip${editingField === "customer" ? " is-editing" : ""}`}>
+                <div className={`so-sum-chip is-customer${editingField === "customer" ? " is-editing" : ""}`}>
                   <SoField field="customer" label="Pelanggan" required error={fieldHasError("customer")} className="so-sum-field">
                     {editingField !== "customer" && <div className="so-sum-text">{formData.customer || "—"}</div>}
                     <div className={editingField === "customer" ? "so-sum-editor" : "so-sum-dormant"}>
@@ -1985,16 +1987,6 @@ export default function PesananPenjualan() {
                     <Pencil size={14} />
                   </button>
                 </div>
-                <button
-                  type="button"
-                  className="so-create-repeat"
-                  data-testid="btn-repeat-order"
-                  onClick={handleRepeatOrderClick}
-                  disabled={!formData.customer_id || repeatBusy || formBusy}
-                  title={formData.customer_id ? "Salin detail dari PO valid terakhir customer ini" : "Pilih customer terdaftar terlebih dahulu"}
-                >
-                  {repeatBusy ? "Mencari…" : "Repeat Order"}
-                </button>
 
                 <div className={`so-sum-chip${editingField === "outlet" ? " is-editing" : ""}`}>
                   <SoField field="outlet" label="Outlet" className="so-sum-field">
@@ -2155,9 +2147,21 @@ export default function PesananPenjualan() {
                     <span data-testid="so-line-count">{formData.line_items.length} item</span>
                     <span data-testid="so-total-items">{formData.line_items.length} jenis</span>
                   </div>
-                  <button type="button" className="so-create-add" onClick={addLineItem} data-testid="btn-add-line-item">
-                    <Plus size={14} /> Tambah barang
-                  </button>
+                  <div className="so-create-line-actions">
+                    <button
+                      type="button"
+                      className="so-create-repeat"
+                      data-testid="btn-repeat-order"
+                      onClick={handleRepeatOrderClick}
+                      disabled={!formData.customer_id || repeatBusy || formBusy}
+                      title={formData.customer_id ? "Salin detail dari PO valid terakhir customer ini" : "Pilih customer terdaftar terlebih dahulu"}
+                    >
+                      {repeatBusy ? "Mencari…" : "Repeat Order"}
+                    </button>
+                    <button type="button" className="so-create-add" onClick={addLineItem} data-testid="btn-add-line-item">
+                      <Plus size={14} /> Tambah barang
+                    </button>
+                  </div>
                 </div>
                 <div className="so-create-lines-scroll" data-testid="line-items-table-container" data-scroll-owner="line-items">
                   <table className="so-create-lines-table">
@@ -2183,9 +2187,23 @@ export default function PesananPenjualan() {
                         const mode = lineModes[line.rowKey] || "master";
                         const imagePath = itemImages[String(line.accurate_item_id || "").trim()]?.url;
                         const subtotal = lineSellingSubtotal(line.quantity, line.unit_price);
+                        const detailStillPresent = formData.line_items.some((item) => item.rowKey === detailRowKey);
+                        const activeDetailKey = detailRowKey === ""
+                          ? ""
+                          : (detailStillPresent ? detailRowKey : formData.line_items[0]?.rowKey);
+                        const detailOpen = activeDetailKey === line.rowKey;
+                        const detailSummary = [
+                          line.item_code,
+                          line.production_process === "non_print" ? "Tidak Cetak" : "",
+                          line.color,
+                          line.notes,
+                        ].filter(Boolean).join(" · ");
                         return (
                           <Fragment key={line.rowKey}>
-                            <tr data-testid={`line-item-row-${originalIndex}`}>
+                            <tr
+                              data-testid={`line-item-row-${originalIndex}`}
+                              onFocusCapture={() => setDetailRowKey(line.rowKey)}
+                            >
                               <td className="so-col-no" data-testid={`line-item-number-${originalIndex}`}>{originalIndex + 1}</td>
                               <td className="so-col-name">
                                 <div className="so-line-product">
@@ -2228,6 +2246,20 @@ export default function PesananPenjualan() {
                                       />
                                     )}
                                     <div className="so-line-code">{line.item_code || "Kode barang"}</div>
+                                    <button
+                                      type="button"
+                                      className="so-line-detail-toggle"
+                                      aria-expanded={detailOpen}
+                                      data-testid={`btn-line-detail-${originalIndex}`}
+                                      onClick={() => setDetailRowKey(detailOpen ? "" : line.rowKey)}
+                                    >
+                                      {detailOpen ? "Tutup detail" : "Detail"}
+                                    </button>
+                                    {!detailOpen && (
+                                      <div className="so-line-detail-summary" data-testid={`line-detail-summary-${originalIndex}`}>
+                                        {detailSummary || "Kode, cetak, warna, catatan"}
+                                      </div>
+                                    )}
                                   </div>
                                 </div>
                               </td>
@@ -2285,7 +2317,13 @@ export default function PesananPenjualan() {
                                 </button>
                               </td>
                             </tr>
-                            <tr className="so-line-detail" data-testid={`line-item-detail-${originalIndex}`}>
+                            <tr
+                              className="so-line-detail"
+                              hidden={!detailOpen}
+                              data-open={detailOpen ? "true" : "false"}
+                              data-testid={`line-item-detail-${originalIndex}`}
+                              onFocusCapture={() => setDetailRowKey(line.rowKey)}
+                            >
                               <td />
                               <td colSpan={6}>
                                 <div className="so-line-meta">

@@ -1557,7 +1557,7 @@ export default function FakturPenjualan() {
                 </div>
               )}
 
-              <div style={{ display: "flex", justifyContent: "flex-end", gap: 12, marginTop: 20 }}>
+              <div className="invoice-actions" style={{ display: "flex", justifyContent: "flex-end", gap: 12, marginTop: 20, paddingRight: 96 }}>
                 <button
                   type="button"
                   className="ghost"
@@ -1926,7 +1926,7 @@ export default function FakturPenjualan() {
                 </div>
               )}
 
-              <div style={{ display: "flex", justifyContent: "flex-end", gap: 12, marginTop: 20 }}>
+              <div className="invoice-actions" style={{ display: "flex", justifyContent: "flex-end", gap: 12, marginTop: 20, paddingRight: 96 }}>
                 <button
                   type="button"
                   className="ghost"
