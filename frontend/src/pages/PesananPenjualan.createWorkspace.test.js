@@ -662,27 +662,34 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
     expect(api.createSalesOrder).not.toHaveBeenCalled();
   });
 
-  test("workspace CSS locks the page and scrolls the item table internally", () => {
+  test("create form uses one vertical scroll and the list workspace scroll stays internal", () => {
     const css = fs.readFileSync(path.join(__dirname, "pesananPenjualan.css"), "utf8");
     const page = fs.readFileSync(path.join(__dirname, "PesananPenjualan.jsx"), "utf8");
     const detail = fs.readFileSync(path.join(__dirname, "PODetail.jsx"), "utf8");
     expect(page).toMatch(/hasPerm\("sales_order\.create"\) \|\| hasPerm\("po\.edit"\) \|\| user\?\.role === "admin"/);
     expect(css).not.toMatch(/--so-notif-safe:\s*96px/);
-    expect(css).toMatch(/\.app-shell:has\(\.so-create-workspace\)\s*\{[^}]*overflow:\s*hidden/);
-    expect(css).toMatch(/\.content:has\(\.so-create-workspace\)\s*\{[^}]*overflow:\s*hidden/);
-    expect(css).toMatch(/\.so-create-lines-scroll\s*\{[^}]*overflow-y:\s*auto/);
-    expect(css).toMatch(/\.so-create-lines-scroll\s*\{[^}]*min-height:\s*0/);
+    expect(css).toMatch(/\.app-shell:has\(\.so-list-workspace\)[\s\S]*overflow:\s*hidden/);
     expect(css).toMatch(/\.so-list-table-scroll\s*\{[^}]*overflow:\s*auto/);
+    expect(css).toMatch(/\.so-create-stage\s*\{[^}]*overflow-y:\s*auto/);
+    expect(css).toMatch(/\.so-create-lines-scroll\s*\{[^}]*overflow:\s*visible/);
+    expect(css).toMatch(/\.so-create-lines-scroll\s*\{[^}]*max-height:\s*none/);
+    expect(css).not.toMatch(/\.so-create-lines-scroll\s*\{[^}]*overflow-y:\s*auto/);
+    expect(css).toMatch(/\.so-create-workspace \.so-ship-panel,[\s\S]*?max-height:\s*none/);
+    expect(css).toMatch(/\.so-sum-chip\.is-po \.so-sum-text\s*\{[^}]*overflow:\s*visible/);
+    expect(css).toMatch(/\.so-ship-card span\s*\{[^}]*overflow-wrap:\s*anywhere/);
+    expect(css).toMatch(/\.so-create-stage\s*\{[^}]*padding:\s*6px 12px 36px/);
     expect(css).toMatch(/\.so-create-actionbar\s*\{[^}]*position:\s*static/);
     expect(css).not.toMatch(/\.so-create-actionbar\s*\{[^}]*position:\s*fixed/);
     expect(css).not.toMatch(/\.so-create-actionbar\s*\{[^}]*position:\s*sticky/);
-    expect(css).toMatch(/@media \(min-width: 1024px\)\s*\{\s*\.so-create-workspace \.so-create-actionbar\s*\{[^}]*padding-right:\s*72px/);
+    expect(css).toMatch(/@media \(min-width: 1024px\)\s*\{[^}]*\.so-create-workspace \.so-create-actionbar\s*\{[^}]*padding-right:\s*96px/);
     expect(css).not.toMatch(/(^|\n)\s*(input|table|\.card|\.btn)\s*[,{]/);
     expect(css).not.toMatch(/\.po-detail/);
     expect(detail).not.toMatch(/so-create-workspace/);
     expect(page).toMatch(/data-testid="so-create-actionbar"/);
     expect(page).toMatch(/data-testid="btn-submit-sales-order"/);
+    expect(page).toMatch(/data-scroll-owner="form"/);
     expect(page).toMatch(/data-scroll-owner=\{viewMode === "create" \? "workspace" : "list"\}/);
+    expect(page).not.toMatch(/data-scroll-owner="line-items"/);
   });
 
   test("first row is visible as number 1 and there is no global item search", async () => {
@@ -693,7 +700,18 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
     expect(container.querySelector('[data-testid="line-item-search-0-input"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="sales-order-page"]').getAttribute("data-scroll-owner")).toBe("workspace");
     const table = container.querySelector('[data-testid="line-items-table-container"]');
-    expect(table.getAttribute("data-scroll-owner")).toBe("line-items");
+    expect(table.getAttribute("data-scroll-owner")).toBeNull();
+    expect(container.querySelector('[data-testid="so-create-scroll"]').getAttribute("data-scroll-owner")).toBe("form");
+  });
+
+  test("adding a line focuses the new row search", async () => {
+    await openCreate();
+    await act(async () => {
+      container.querySelector('[data-testid="btn-add-line-item"]').click();
+    });
+    const search = container.querySelector('[data-testid="line-item-search-1-input"]');
+    expect(search).toBeTruthy();
+    expect(document.activeElement).toBe(search);
   });
 
   test("item autocomplete portals to the document and closes on Escape and outside click", async () => {
