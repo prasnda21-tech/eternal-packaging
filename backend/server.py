@@ -225,6 +225,7 @@ from services.accounts_payable_http import register_accounts_payable_routes
 from services.purchase_accounting_settings_http import register_purchase_accounting_settings_routes
 from services.trial_balance_http import register_trial_balance_routes
 from services.profit_loss_http import register_profit_loss_routes
+from services.financial_dashboard_http import register_financial_dashboard_routes
 from services.balance_sheet_http import register_balance_sheet_routes
 from services.inventory_reconciliation_http import register_inventory_reconciliation_routes
 from services.chart_of_accounts import COLLECTION as LEDGER_ACCOUNTS_COLLECTION
@@ -12133,6 +12134,14 @@ register_profit_loss_routes(
     get_db=lambda: db,
     current_user=current_user,
     require_perm=require_perm,
+    Depends=Depends,
+)
+register_financial_dashboard_routes(
+    api_router,
+    get_db=lambda: db,
+    current_user=current_user,
+    require_perm=require_perm,
+    user_permissions=user_permissions,
     Depends=Depends,
 )
 register_balance_sheet_routes(
