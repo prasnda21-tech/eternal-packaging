@@ -32,6 +32,7 @@ jest.mock("../lib/api", () => ({
     salesOrderRepeatSource: jest.fn(),
     masterItemsPicker: jest.fn(),
     salesOrderItemImages: jest.fn(),
+    salesOrderPriceQuote: jest.fn().mockResolvedValue({ status: "missing", unit_price: null }),
   },
 }));
 
@@ -94,6 +95,8 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
     api.masterItemsPicker.mockResolvedValue({ items: [] });
     api.salesOrderItemImages.mockReset();
     api.salesOrderItemImages.mockResolvedValue({ images: {} });
+    api.salesOrderPriceQuote.mockReset();
+    api.salesOrderPriceQuote.mockResolvedValue({ status: "missing", unit_price: null });
     mockNavigate.mockReset();
   });
 
@@ -722,5 +725,107 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
       document.body.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
     });
     expect(document.body.querySelector('[data-testid="line-item-search-0-list"]')).toBeNull();
+  });
+
+  test("price quote is a real client method, not a test-only guard", () => {
+    const apiSrc = fs.readFileSync(path.join(__dirname, "../lib/api.js"), "utf8");
+    const page = fs.readFileSync(path.join(__dirname, "PesananPenjualan.jsx"), "utf8");
+    expect(apiSrc).toMatch(/salesOrderPriceQuote:\s*\(payload[\s\S]*?\/sales-orders\/price-quote/);
+    expect(page).toMatch(/api\.salesOrderPriceQuote\(/);
+    expect(page).not.toMatch(/typeof api\.salesOrderPriceQuote/);
+  });
+
+  async function chooseFirstMaster(query) {
+    const search = container.querySelector('[data-testid="line-item-search-0-input"]');
+    await act(async () => {
+      search.focus();
+      setNativeValue(search, query);
+    });
+    await tick(350);
+    await act(async () => {
+      document.body.querySelector('[data-testid="line-item-search-0-option-a1"]').click();
+    });
+    await tick(0);
+  }
+
+  test("selecting an item loads the selling price and the saved payload keeps it", async () => {
+    api.masterItemsPicker.mockResolvedValue({
+      items: [{ id: "m-cup", accurate_item_id: "a1", item_name: "Cup PET", item_code: "BRG-CP001", unit: "pcs" }],
+    });
+    api.salesOrderPriceQuote.mockResolvedValue({
+      status: "matched",
+      unit_price: 700,
+      source: "pengaturan_harga",
+    });
+    await openCreate();
+    await act(async () => {
+      setNativeValue(container.querySelector('[data-testid="line-qty-0"]'), "1000");
+    });
+    await chooseFirstMaster("Cup");
+    expect(api.salesOrderPriceQuote).toHaveBeenCalledWith({
+      accurate_item_id: "a1",
+      unit: "pcs",
+      quantity: 1000,
+    });
+    expect(container.querySelector('[data-testid="line-price-0"]').value).toBe("700");
+    expect(container.querySelector('[data-testid="line-price-source-0"]').textContent).toBe("Harga dari Pengaturan Harga");
+    expect(container.querySelector('[data-testid="line-subtotal-0"]').textContent).toContain("700.000");
+    await act(async () => {
+      container.querySelector('[data-testid="so-tab-ship"]').click();
+    });
+    await act(async () => {
+      container.querySelector('[data-testid="so-tab-items"]').click();
+    });
+    expect(container.querySelector('[data-testid="line-price-0"]').value).toBe("700");
+    await act(async () => {
+      setNativeValue(container.querySelector('[data-testid="input-customer"]'), "GOHO COFFEE");
+      setNativeValue(container.querySelector('[data-testid="input-customer-phone"]'), "0812");
+      setNativeValue(container.querySelector('[data-testid="input-address"]'), "Jl. Malioboro");
+    });
+    await act(async () => {
+      container.querySelector('[data-testid="btn-submit-sales-order"]').click();
+    });
+    await tick(0);
+    const line = api.createSalesOrder.mock.calls[0][0].line_items[0];
+    expect(line.unit_price).toBe(700);
+    expect(line.price_source).toBe("pengaturan_harga");
+    expect(line.quantity).toBe(1000);
+    expect(line.unit_price).not.toBe(0);
+    expect(line.price_message).toBeUndefined();
+  });
+
+  test("a failed or missing quote stays blank and explains that manual input is required", async () => {
+    api.masterItemsPicker.mockResolvedValue({
+      items: [{ id: "m-cup", accurate_item_id: "a1", item_name: "Cup PET", item_code: "BRG-CP001", unit: "pcs" }],
+    });
+    api.salesOrderPriceQuote.mockRejectedValue(new Error("quote down"));
+    await openCreate();
+    await chooseFirstMaster("Cup");
+    expect(container.querySelector('[data-testid="line-price-0"]').value).toBe("");
+    expect(container.querySelector('[data-testid="line-price-source-0"]').textContent).toBe("Harga jual tidak dapat diambil. Isi manual.");
+    expect(container.querySelector('[data-testid="line-subtotal-0"]').textContent).not.toContain("Rp0");
+
+    api.salesOrderPriceQuote.mockResolvedValue({ status: "missing", unit_price: 0 });
+    await act(async () => {
+      container.querySelector('[data-testid="btn-add-line-item"]').click();
+    });
+    const search = container.querySelector('[data-testid="line-item-search-1-input"]');
+    await act(async () => {
+      search.focus();
+      setNativeValue(search, "Lid");
+    });
+    await tick(350);
+    await act(async () => {
+      document.body.querySelector('[data-testid="line-item-search-1-option-a1"]').click();
+    });
+    await tick(0);
+    expect(container.querySelector('[data-testid="line-price-1"]').value).toBe("");
+    expect(container.querySelector('[data-testid="line-price-source-1"]').textContent).toBe("Harga jual tidak ditemukan di Pengaturan Harga. Isi manual.");
+
+    await act(async () => {
+      setNativeValue(container.querySelector('[data-testid="line-price-1"]'), "150");
+    });
+    expect(container.querySelector('[data-testid="line-price-source-1"]').textContent).toBe("Input manual");
+    expect(container.querySelector('[data-testid="line-price-1"]').value).toBe("150");
   });
 });

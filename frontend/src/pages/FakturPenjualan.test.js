@@ -28,6 +28,9 @@ describe("Faktur Penjualan UI & Navigation Suite", () => {
     expect(pageSrc).toMatch(/invoice-ppn-input/);
     expect(pageSrc).toMatch(/qty-input/);
     expect(pageSrc).toMatch(/unit-price-input/);
+    expect(pageSrc).toMatch(/price_from_order/);
+    expect(pageSrc).toMatch(/Harga kosong tidak dijadikan Rp0/);
+    expect(pageSrc).not.toMatch(/initialPrices\[l\.line_idx\] = l\.unit_price \|\| ""/);
     expect(pageSrc).toMatch(/save-invoice-btn/);
   });
 

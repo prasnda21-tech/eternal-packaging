@@ -62,6 +62,10 @@ function mapLineItem(raw) {
     notes: raw.notes != null ? String(raw.notes) : "",
     accurate_item_id: raw.accurate_item_id || null,
     master_item_id: raw.master_item_id || null,
+    unit_price: "",
+    price_source: "",
+    price_review: true,
+    price_lock: false,
   };
 }
 
@@ -137,6 +141,10 @@ export function clearRepeatDerivedFormFields(prev, { keepCustomer = true } = {})
       notes: "",
       accurate_item_id: null,
       master_item_id: null,
+      unit_price: "",
+      price_source: "",
+      price_review: false,
+      price_lock: false,
     },
   ];
   return next;

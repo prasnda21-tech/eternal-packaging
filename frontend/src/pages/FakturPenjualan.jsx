@@ -320,7 +320,7 @@ export default function FakturPenjualan() {
       const initialPrices = {};
       const initialQtys = {};
       (data.lines || []).forEach((l) => {
-        initialPrices[l.line_idx] = l.unit_price || "";
+        initialPrices[l.line_idx] = l.unit_price === null || l.unit_price === undefined || l.unit_price === "" ? "" : l.unit_price;
         initialQtys[l.line_idx] = l.remaining_invoice_qty != null ? l.remaining_invoice_qty : l.quantity;
       });
       setLinePrices(initialPrices);
@@ -391,17 +391,20 @@ export default function FakturPenjualan() {
       if (isQtyOver) hasErrors = true;
 
       const rawP = linePrices[l.line_idx];
-      const p = Math.max(0, Number(rawP) || 0);
-      const lineTotal = q * p;
+      const priceMissing = rawP === "" || rawP === null || rawP === undefined || Number.isNaN(Number(rawP));
+      const p = priceMissing ? null : Math.max(0, Number(rawP));
+      const lineTotal = p === null ? null : q * p;
       totalQty += q;
-      subtotal += lineTotal;
+      if (lineTotal !== null) subtotal += lineTotal;
+      if (q > 0 && priceMissing) hasErrors = true;
       return {
         ...l,
         remaining,
         invoiceQty: rawQ !== undefined ? rawQ : remaining,
         numericQty: q,
-        unitPrice: rawP !== undefined ? rawP : 0,
-        numericPrice: p,
+        unitPrice: priceMissing ? "" : rawP,
+        numericPrice: p === null ? 0 : p,
+        priceMissing,
         lineTotal,
         isQtyOver,
       };
@@ -421,7 +424,8 @@ export default function FakturPenjualan() {
       0
     );
 
-    return { lines: computedLines, subtotal, discount: disc, afterDiscount, ppn, ppnPercent: ppnPct, grandTotal, totalQty, totalRemaining, hasErrors, isDiscOver };
+    const priceMissingAny = computedLines.some((line) => line.numericQty > 0 && line.priceMissing);
+    return { lines: computedLines, subtotal, discount: disc, afterDiscount, ppn, ppnPercent: ppnPct, grandTotal, totalQty, totalRemaining, hasErrors, isDiscOver, priceMissingAny };
   }, [previewData, lineQuantities, linePrices, discountAmount, ppnPercent]);
 
   // Handle Save Invoice
@@ -432,7 +436,9 @@ export default function FakturPenjualan() {
       return;
     }
     if (createCalculations.hasErrors) {
-      if (createCalculations.isDiscOver) {
+      if (createCalculations.priceMissingAny) {
+        setFormErr("Lengkapi harga jual yang belum tersedia. Harga kosong tidak dijadikan Rp0.");
+      } else if (createCalculations.isDiscOver) {
         setFormErr(`Diskon (${formatRupiah(createCalculations.discount)}) tidak boleh melebihi subtotal (${formatRupiah(createCalculations.subtotal)}).`);
       } else {
         setFormErr("Terdapat jumlah kuantitas faktur yang melebihi sisa PO.");
@@ -447,15 +453,19 @@ export default function FakturPenjualan() {
     try {
       const linesPayload = (createCalculations.lines || []).map((l) => {
         const rawP = linePrices[l.line_idx];
+        const blank = rawP === "" || rawP === null || rawP === undefined;
         const numP = Number(rawP);
-        if (numP < 0) {
+        if (l.numericQty > 0 && (blank || Number.isNaN(numP))) {
+          throw new Error(`Lengkapi harga jual untuk '${l.item_name}'. Harga kosong tidak dijadikan Rp0.`);
+        }
+        if (!blank && numP < 0) {
           throw new Error(`Harga satuan untuk '${l.item_name}' tidak boleh negatif.`);
         }
         return {
           line_idx: l.line_idx,
           line_id: l.line_id,
           quantity: l.numericQty,
-          unit_price: isNaN(numP) ? 0 : numP,
+          unit_price: blank ? null : numP,
         };
       });
 
@@ -564,7 +574,11 @@ export default function FakturPenjualan() {
     try {
       const linesPayload = (detailData.lines || []).map((l) => {
         const rawP = detailPrices[l.line_idx];
+        const blank = rawP === "" || rawP === null || rawP === undefined;
         const numP = Number(rawP);
+        if (blank || Number.isNaN(numP)) {
+          throw new Error(`Lengkapi harga jual untuk '${l.item_name}'. Harga kosong tidak dijadikan Rp0.`);
+        }
         if (numP < 0) {
           throw new Error(`Harga satuan untuk '${l.item_name}' tidak boleh negatif.`);
         }
@@ -572,7 +586,7 @@ export default function FakturPenjualan() {
           line_idx: l.line_idx,
           line_id: l.line_id,
           quantity: l.quantity,
-          unit_price: isNaN(numP) ? 0 : numP,
+          unit_price: numP,
         };
       });
 
@@ -1415,7 +1429,8 @@ export default function FakturPenjualan() {
                                 const val = e.target.value;
                                 setLinePrices((prev) => ({ ...prev, [li.line_idx]: val }));
                               }}
-                              placeholder="0"
+                              readOnly={Boolean(li.price_from_order)}
+                              placeholder={li.price_from_order ? "" : "Isi harga"}
                               data-testid={`unit-price-input-${li.line_idx}`}
                               style={{
                                 width: "100%",
@@ -1424,11 +1439,18 @@ export default function FakturPenjualan() {
                                 borderRadius: 6,
                                 fontWeight: 600,
                                 textAlign: "right",
+                                background: li.price_from_order ? "#f0fdf4" : "#fff",
                               }}
                             />
+                            {li.price_from_order && (
+                              <div style={{ fontSize: "0.75rem", color: "#166534", marginTop: 2 }}>Harga dari pesanan</div>
+                            )}
+                            {li.priceMissing && li.numericQty > 0 && (
+                              <div style={{ fontSize: "0.75rem", color: "#b45309", marginTop: 2 }}>Lengkapi harga jual</div>
+                            )}
                           </td>
-                          <td style={{ padding: "10px 12px", textAlign: "right", fontWeight: 700, color: "#0f172a" }}>
-                            {formatRupiah(li.lineTotal)}
+                          <td style={{ padding: "10px 12px", textAlign: "right", fontWeight: 700, color: "#0f172a" }} data-testid={`line-total-${li.line_idx}`}>
+                            {li.lineTotal === null ? "—" : formatRupiah(li.lineTotal)}
                           </td>
                         </tr>
                       ))}

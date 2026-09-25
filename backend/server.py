@@ -9119,6 +9119,15 @@ class SalesOrderLineItemInput(BaseModel):
     notes: Optional[str] = ""
     accurate_item_id: Optional[str] = None
     master_item_id: Optional[str] = None
+    unit_price: Optional[Union[int, float, str]] = None
+    price_source: Optional[str] = None
+    price_review: Optional[bool] = None
+
+
+class SalesOrderPriceQuotePayload(BaseModel):
+    accurate_item_id: Optional[str] = None
+    unit: Optional[str] = None
+    quantity: Optional[Union[int, float, str]] = None
 
 
 class SalesOrderDesignFileInput(BaseModel):
@@ -9189,7 +9198,7 @@ class SalesInvoiceLineItemInput(BaseModel):
     line_id: Optional[str] = None
     quantity: Optional[Union[int, float, str]] = None
     invoice_qty: Optional[Union[int, float, str]] = None
-    unit_price: Union[int, float, str, None] = 0
+    unit_price: Optional[Union[int, float, str]] = None
 
 
 class SalesInvoiceCreatePayload(BaseModel):
@@ -9564,6 +9573,9 @@ async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(curr
             "notes": (li.notes or "").strip() or None,
             "accurate_item_id": (li.accurate_item_id or "").strip() or None,
             "master_item_id": (li.master_item_id or "").strip() or None,
+            "unit_price": li.unit_price,
+            "price_source": li.price_source,
+            "price_review": bool(li.price_review),
         })
     
     order_date = _parse_order_date_iso(payload.order_date, default_days_ahead=0)
@@ -9605,6 +9617,9 @@ async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(curr
         city=payload.customer_city,
         user_email=user.get("email"),
     )
+
+    from services.sales_order_prices import price_order_lines
+    normalized_lines, selling_total, selling_prices_complete = await price_order_lines(db, normalized_lines)
 
     now = now_iso()
     total_qty = sum(li["quantity"] for li in normalized_lines)
@@ -9676,6 +9691,8 @@ async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(curr
         "line_items": normalized_lines,
         "total_quantity": total_qty,
         "item_count": item_cnt,
+        "selling_total": selling_total,
+        "selling_prices_complete": selling_prices_complete,
         "operator_splits": [],
         "design_files": seeded_design_files,
         "sample_files": [],
@@ -10171,6 +10188,24 @@ def _sales_order_date_clause(date_from: Optional[str], date_to: Optional[str]) -
     if end:
         clause["$lte"] = f"{end}T23:59:59.999999"
     return {"order_date": clause} if clause else {}
+
+
+@api_router.post("/sales-orders/price-quote")
+async def quote_sales_order_price(payload: SalesOrderPriceQuotePayload, user=Depends(current_user)):
+    """Published selling price for one exact item, unit, and quantity tier.
+
+    Returns no amount when the match is missing or ambiguous.
+    HPP and the tier matrix are not included.
+    """
+    reject_sales_pwa_bypass(user)
+    await _require_any_perm(user, "sales_order.view", "sales_order.create", "po.view", "po.edit")
+    from services.sales_order_prices import quote_selling_price
+    return await quote_selling_price(
+        db,
+        accurate_item_id=payload.accurate_item_id,
+        unit=payload.unit,
+        quantity=payload.quantity,
+    )
 
 
 @api_router.get("/sales-orders/item-images")

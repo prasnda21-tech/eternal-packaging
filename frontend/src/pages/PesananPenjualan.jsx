@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import {
   AlertCircle,
@@ -6,11 +6,14 @@ import {
   CheckCircle2,
   FileText,
   Filter,
+  Info,
+  Pencil,
   Plus,
   RefreshCw,
   Search,
   Sparkles,
   Trash2,
+  Truck,
   X,
 } from "lucide-react";
 import api, { publicApiUrl } from "../lib/api";
@@ -67,6 +70,14 @@ import {
   quantityByUnitFromLines,
   salesOrderListRequest,
 } from "../lib/salesOrderListPresentation";
+import {
+  formatOrderRupiah,
+  linePriceNumber,
+  lineSellingSubtotal,
+  orderSellingTotal,
+  priceSourceLabel,
+  quoteFailureMessage,
+} from "../lib/salesOrderLinePrice";
 
 let salesOrderLineKeySeq = 0;
 
@@ -148,15 +159,21 @@ export function buildSalesOrderCreatePayload(formData) {
     po_number: String(formData.po_number || "").trim() || undefined,
     customer: String(formData.customer || "").trim(),
     line_items: (formData.line_items || []).map((li) => {
-      const next = {
+      const price = linePriceNumber(li.unit_price);
+    const next = {
         ...li,
         name: String(li.name || "").trim(),
         quantity: Number(li.quantity),
         unit: (li.unit || "pcs").trim(),
         production_process: li.production_process === "non_print" ? "non_print" : "print",
+        unit_price: price,
+        price_source: price === null ? null : (li.price_source === "pengaturan_harga" ? "pengaturan_harga" : "manual"),
+        price_review: Boolean(li.price_review),
       };
       delete next.entry_mode;
       delete next.rowKey;
+      delete next.price_lock;
+      delete next.price_message;
       return next;
     }),
   };
@@ -185,7 +202,25 @@ const INITIAL_LINE_ITEM = {
   notes: "",
   accurate_item_id: null,
   master_item_id: null,
+  unit_price: "",
+  price_source: "",
+  price_review: false,
+  price_lock: false,
 };
+
+const CHIP_MONTHS = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"];
+
+function formatChipDate(iso) {
+  const match = String(iso || "").match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!match) return "";
+  return `${match[3]}/${match[2]}/${match[1]}`;
+}
+
+function formatShipCardDate(iso) {
+  const match = String(iso || "").match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!match) return "";
+  return `${Number(match[3])} ${CHIP_MONTHS[Number(match[2]) - 1]} ${match[1]}`;
+}
 
 function SalesOrderThumb({ src }) {
   const [broken, setBroken] = useState(false);
@@ -302,6 +337,8 @@ export default function PesananPenjualan() {
   const [viewMode, setViewMode] = useState(() =>
     searchParams.get(REPEAT_ORDER_QUERY_PARAM) ? "create" : "list"
   ); // 'list' | 'create'
+  const [createTab, setCreateTab] = useState("items");
+  const [editingField, setEditingField] = useState("");
   
   // List state
   const [orders, setOrders] = useState([]);
@@ -408,6 +445,19 @@ export default function PesananPenjualan() {
   useEffect(() => {
     const issue = salesOrderIssuePlacement(formErr);
     if (!issue?.field) return undefined;
+    if (
+      issue.region === "drawer"
+      || issue.field === "customer_phone"
+      || issue.field === "address"
+      || issue.field === "notes"
+    ) {
+      setCreateTab("ship");
+    } else if (issue.region === "lines" || issue.region === "main") {
+      setCreateTab("items");
+    }
+    if (issue.field === "customer" || issue.field === "outlet" || issue.field === "po_number" || issue.field === "order_date" || issue.field === "estimated_delivery") {
+      setEditingField(issue.field);
+    }
     const field = document.querySelector(
       `[data-so-field="${issue.field}"] input, [data-so-field="${issue.field}"] textarea, [data-so-field="${issue.field}"] select`
     );
@@ -788,38 +838,185 @@ export default function PesananPenjualan() {
     }
   };
 
-  // Line item handlers
-  const handleLineChange = (index, field, value) => {
+  const applyAutomaticQuote = useCallback((index, identity, quote, failed) => {
     setFormData((prev) => {
       const lines = [...prev.line_items];
-      lines[index] = { ...lines[index], [field]: value };
+      const line = lines[index];
+      if (!line) return prev;
+      if (String(line.accurate_item_id || "") !== String(identity.accurate_item_id || "")) return prev;
+      if (String(line.unit || "") !== String(identity.unit || "")) return prev;
+      if (Number(line.quantity) !== Number(identity.quantity)) return prev;
+      if (line.price_lock || line.price_source === "manual") return prev;
+      if (linePriceNumber(line.unit_price) !== null) return prev;
+      const matched = !failed
+        && quote?.status === "matched"
+        && linePriceNumber(quote.unit_price) !== null;
+      if (!matched) {
+        lines[index] = {
+          ...line,
+          unit_price: "",
+          price_source: "",
+          price_lock: false,
+          price_message: quoteFailureMessage(quote, failed),
+        };
+        return { ...prev, line_items: lines };
+      }
+      lines[index] = {
+        ...line,
+        unit_price: String(quote.unit_price),
+        price_source: "pengaturan_harga",
+        price_review: false,
+        price_lock: false,
+        price_message: "",
+      };
       return { ...prev, line_items: lines };
     });
-  };
+  }, []);
 
-  const handleSelectMasterItem = (index, master) => {
-    setFormData((prev) => {
-      const lines = [...prev.line_items];
-      if (!master) {
+  const requestSellingQuote = useCallback((index, identity) => {
+    if (!identity?.accurate_item_id) return;
+    api.salesOrderPriceQuote({
+      accurate_item_id: identity.accurate_item_id,
+      unit: identity.unit,
+      quantity: Number(identity.quantity),
+    }).then((quote) => {
+      applyAutomaticQuote(index, identity, quote, false);
+    }).catch(() => {
+      applyAutomaticQuote(index, identity, null, true);
+    });
+  }, [applyAutomaticQuote]);
+
+  const reviewLinePrice = async (index) => {
+    const line = formData.line_items[index];
+    if (!line?.accurate_item_id) {
+      setFormData((prev) => {
+        const lines = [...prev.line_items];
+        if (!lines[index]) return prev;
         lines[index] = {
           ...lines[index],
-          name: "",
-          item_code: "",
-          accurate_item_id: null,
-          master_item_id: null,
+          price_review: true,
+          price_message: "Barang belum terhubung ke Pengaturan Harga. Isi manual.",
+        };
+        return { ...prev, line_items: lines };
+      });
+      return;
+    }
+    let quote = null;
+    let failed = false;
+    try {
+      quote = await api.salesOrderPriceQuote({
+        accurate_item_id: line.accurate_item_id,
+        unit: line.unit,
+        quantity: Number(line.quantity),
+      });
+    } catch {
+      failed = true;
+    }
+    setFormData((prev) => {
+      const lines = [...prev.line_items];
+      const current = lines[index];
+      if (!current) return prev;
+      const matched = !failed && quote?.status === "matched" && linePriceNumber(quote?.unit_price) !== null;
+      if (matched) {
+        lines[index] = {
+          ...current,
+          unit_price: String(quote.unit_price),
+          price_source: "pengaturan_harga",
+          price_review: false,
+          price_lock: false,
+          price_message: "",
         };
       } else {
         lines[index] = {
-          ...lines[index],
-          name: master.item_name || lines[index].name,
-          item_code: master.item_code || lines[index].item_code,
-          unit: master.unit || lines[index].unit || "pcs",
-          accurate_item_id: master.accurate_item_id || null,
-          master_item_id: master.id || master.master_item_id || null,
+          ...current,
+          price_review: true,
+          price_message: quoteFailureMessage(quote, failed),
         };
       }
       return { ...prev, line_items: lines };
     });
+    dirtyRef.current = true;
+  };
+
+  // Line item handlers
+  const handleLineChange = (index, field, value) => {
+    let quoteIdentity = null;
+    setFormData((prev) => {
+      const lines = [...prev.line_items];
+      const current = lines[index];
+      if (!current) return prev;
+      const next = { ...current, [field]: value };
+      if (field === "unit_price") {
+        next.price_message = "";
+        if (String(value).trim() === "") {
+          next.price_source = "";
+          next.price_lock = false;
+          next.price_review = false;
+        } else {
+          next.price_source = "manual";
+          next.price_lock = true;
+          next.price_review = false;
+        }
+      } else if (field === "quantity" || field === "unit") {
+        const hadPrice = linePriceNumber(current.unit_price) !== null;
+        if (hadPrice || current.price_lock || current.price_source === "pengaturan_harga") {
+          next.price_review = true;
+        } else if (!current.price_review && current.accurate_item_id) {
+          quoteIdentity = {
+            accurate_item_id: current.accurate_item_id,
+            unit: field === "unit" ? value : current.unit,
+            quantity: field === "quantity" ? value : current.quantity,
+          };
+        }
+      }
+      lines[index] = next;
+      return { ...prev, line_items: lines };
+    });
+    if (quoteIdentity) requestSellingQuote(index, quoteIdentity);
+  };
+
+  const handleSelectMasterItem = (index, master) => {
+    let quoteIdentity = null;
+    setFormData((prev) => {
+      const lines = [...prev.line_items];
+      const current = lines[index];
+      if (!current) return prev;
+      const hadPrice = linePriceNumber(current.unit_price) !== null;
+      if (!master) {
+        lines[index] = {
+          ...current,
+          name: "",
+          item_code: "",
+          accurate_item_id: null,
+          master_item_id: null,
+          price_review: hadPrice || current.price_lock || current.price_source === "pengaturan_harga",
+          price_source: hadPrice ? "manual" : "",
+        };
+      } else {
+        const next = {
+          ...current,
+          name: master.item_name || current.name,
+          item_code: master.item_code || current.item_code,
+          unit: master.unit || current.unit || "pcs",
+          accurate_item_id: master.accurate_item_id || null,
+          master_item_id: master.id || master.master_item_id || null,
+          price_message: "",
+        };
+        if (hadPrice || current.price_lock) {
+          next.price_review = true;
+          if (next.price_source === "pengaturan_harga") next.price_source = "manual";
+        } else if (!current.price_review && next.accurate_item_id) {
+          quoteIdentity = {
+            accurate_item_id: next.accurate_item_id,
+            unit: next.unit,
+            quantity: next.quantity,
+          };
+        }
+        lines[index] = next;
+      }
+      return { ...prev, line_items: lines };
+    });
+    if (quoteIdentity) requestSellingQuote(index, quoteIdentity);
   };
 
   const addLineItem = () => {
@@ -858,7 +1055,12 @@ export default function PesananPenjualan() {
     setLineModes((prev) => ({ ...prev, [rowKey]: nextMode }));
     setFormData((prev) => {
       const lines = [...prev.line_items];
-      lines[index] = lineAfterEntryModeChange(lines[index], nextMode);
+      const next = lineAfterEntryModeChange(lines[index], nextMode);
+      if (nextMode === "manual" && (next.price_source === "pengaturan_harga" || linePriceNumber(next.unit_price) !== null)) {
+        next.price_source = linePriceNumber(next.unit_price) === null ? "" : "manual";
+        next.price_review = true;
+      }
+      lines[index] = next;
       return { ...prev, line_items: lines };
     });
   };
@@ -879,7 +1081,21 @@ export default function PesananPenjualan() {
     [formData.line_items],
   );
   const quantityLabel = formatQuantityByUnit(quantityParts);
+  const sellingTotal = orderSellingTotal(formData.line_items);
+  const sellingIncomplete = (formData.line_items || []).some((line) => linePriceNumber(line.unit_price) === null);
   const formProgress = useMemo(() => salesOrderProgress(formData), [formData]);
+  const openSummaryEditor = (field) => {
+    setEditingField(field);
+    if (field === "customer_phone" || field === "address" || field === "expedition" || field === "notes") {
+      setCreateTab("ship");
+    }
+    window.requestAnimationFrame(() => {
+      const node = document.querySelector(
+        `[data-so-field="${field}"] input, [data-so-field="${field}"] textarea, [data-so-field="${field}"] select`
+      );
+      node?.focus();
+    });
+  };
   const formIssue = useMemo(() => salesOrderIssuePlacement(formErr), [formErr]);
 
   const toggleSelect = (id) => {
@@ -948,6 +1164,8 @@ export default function PesananPenjualan() {
     setSuccessMsg("");
     setLineModes({});
     setItemImages({});
+    setCreateTab("items");
+    setEditingField("");
     dirtyRef.current = false;
     focusLineKeyRef.current = "";
   };
@@ -1178,7 +1396,7 @@ export default function PesananPenjualan() {
   const pageButtons = [];
   for (let n = pageWindowStart; n <= pageWindowEnd; n += 1) pageButtons.push(n);
   const extraFields = SALES_ORDER_DRAWER_INPUTS.filter(
-    (item) => item.field !== "estimated_delivery" && item.field !== "notes",
+    (item) => !["estimated_delivery", "notes", "outlet"].includes(item.field),
   );
 
   const openOrder = (order) => {
@@ -1699,6 +1917,7 @@ export default function PesananPenjualan() {
       {viewMode === "create" && (
         <form
           className="so-create-form"
+          data-create-tab={createTab}
           onSubmit={handleFormSubmit}
           onChange={() => { dirtyRef.current = true; }}
           data-testid="sales-order-form"
@@ -1742,105 +1961,365 @@ export default function PesananPenjualan() {
             </div>
           )}
 
-          <div className="so-create-columns">
+          <div className="so-create-stage">
             <section className="so-create-main" data-so-region="main">
-              <div className="so-create-fields" data-testid="so-main-fields">
-                <h2 className="so-section-head is-customer">Informasi Pelanggan</h2>
-                <SoField field="customer" label="Pelanggan" required error={fieldHasError("customer")} className="so-create-field-customer">
-                  <CustomerSearchSelect
-                    customers={masterCustomersForSearch}
-                    value={formData.customer}
-                    selectedId={formData.customer_id}
-                    onTextChange={handleCustomerTextChange}
-                    onSelectCustomer={handleCustomerSelect}
-                    onClear={handleCustomerClear}
-                    disabled={formBusy}
-                    required
-                    testId="input-customer"
-                  />
-                  <div className="so-create-inline">
-                    <button
-                      type="button"
-                      className="so-create-repeat"
-                      data-testid="btn-repeat-order"
-                      onClick={handleRepeatOrderClick}
-                      disabled={!formData.customer_id || repeatBusy || formBusy}
-                      title={formData.customer_id ? "Salin detail dari PO valid terakhir customer ini" : "Pilih customer terdaftar terlebih dahulu"}
-                    >
-                      {repeatBusy ? "Mencari…" : "Repeat Order"}
-                    </button>
-                  </div>
-                  {formData.customer?.trim() && (
-                    <div className="so-create-note">
-                      {formData.customer_id ? (
-                        <span data-testid="badge-customer-registered">✓ Pelanggan Terdaftar di Master</span>
+              <div className="so-sum-row" data-testid="so-main-fields">
+                <div className={`so-sum-chip${editingField === "customer" ? " is-editing" : ""}`}>
+                  <SoField field="customer" label="Pelanggan" required error={fieldHasError("customer")} className="so-sum-field">
+                    {editingField !== "customer" && <div className="so-sum-text">{formData.customer || "—"}</div>}
+                    <div className={editingField === "customer" ? "so-sum-editor" : "so-sum-dormant"}>
+                      <CustomerSearchSelect
+                        customers={masterCustomersForSearch}
+                        value={formData.customer}
+                        selectedId={formData.customer_id}
+                        onTextChange={handleCustomerTextChange}
+                        onSelectCustomer={handleCustomerSelect}
+                        onClear={handleCustomerClear}
+                        disabled={formBusy}
+                        required
+                        testId="input-customer"
+                      />
+                    </div>
+                  </SoField>
+                  <button type="button" className="so-sum-pencil" data-testid="so-edit-customer" aria-label="Ubah pelanggan" onClick={() => openSummaryEditor("customer")}>
+                    <Pencil size={14} />
+                  </button>
+                </div>
+                <button
+                  type="button"
+                  className="so-create-repeat"
+                  data-testid="btn-repeat-order"
+                  onClick={handleRepeatOrderClick}
+                  disabled={!formData.customer_id || repeatBusy || formBusy}
+                  title={formData.customer_id ? "Salin detail dari PO valid terakhir customer ini" : "Pilih customer terdaftar terlebih dahulu"}
+                >
+                  {repeatBusy ? "Mencari…" : "Repeat Order"}
+                </button>
+
+                <div className={`so-sum-chip${editingField === "outlet" ? " is-editing" : ""}`}>
+                  <SoField field="outlet" label="Outlet" className="so-sum-field">
+                    {editingField !== "outlet" && <div className="so-sum-text">{formData.outlet || "—"}</div>}
+                    <div className={editingField === "outlet" ? "so-sum-editor" : "so-sum-dormant"}>
+                      {outletsForSelectedCustomer.length > 0 ? (
+                        <select
+                          id="so-outlet"
+                          className="so-line-input"
+                          value={formData.outlet}
+                          onChange={(e) => handleOutletChange(e.target.value)}
+                          data-testid="input-outlet"
+                        >
+                          <option value="">Pilih outlet</option>
+                          {outletsForSelectedCustomer.map((outlet) => (
+                            <option key={outlet.id || outlet.outlet} value={outlet.outlet}>{outlet.outlet || "Outlet"}</option>
+                          ))}
+                          {formData.outlet && !outletsForSelectedCustomer.some((outlet) => outlet.outlet === formData.outlet) && (
+                            <option value={formData.outlet}>{formData.outlet}</option>
+                          )}
+                        </select>
                       ) : (
-                        <span data-testid="badge-customer-new">+ Pelanggan Baru (otomatis masuk ke Data Pelanggan saat PO disimpan)</span>
+                        <input
+                          id="so-outlet"
+                          type="text"
+                          className="so-line-input"
+                          value={formData.outlet}
+                          onChange={(e) => handleOutletChange(e.target.value)}
+                          placeholder="Outlet / cabang"
+                          data-testid="input-outlet"
+                        />
                       )}
                     </div>
-                  )}
-                  {repeatSourceIndicator ? (
-                    <div className="so-create-note" data-testid="repeat-source-indicator">
-                      Repeat dari PO: {repeatSourceIndicator}
-                    </div>
-                  ) : null}
-                  {repeatMsg ? (
-                    <div className="so-create-note is-warn" data-testid="repeat-empty-message">{repeatMsg}</div>
-                  ) : null}
-                </SoField>
+                  </SoField>
+                  <button type="button" className="so-sum-pencil" data-testid="so-edit-outlet" aria-label="Ubah outlet" onClick={() => openSummaryEditor("outlet")}>
+                    <Pencil size={14} />
+                  </button>
+                </div>
 
-                <SoField field="outlet" label="Outlet">
-                  {outletsForSelectedCustomer.length > 0 ? (
-                    <select
-                      id="so-outlet"
-                      className="so-line-input"
-                      value={formData.outlet}
-                      onChange={(e) => handleOutletChange(e.target.value)}
-                      data-testid="input-outlet"
-                    >
-                      <option value="">Pilih outlet</option>
-                      {outletsForSelectedCustomer.map((outlet) => (
-                        <option key={outlet.id || outlet.outlet} value={outlet.outlet}>{outlet.outlet || "Outlet"}</option>
-                      ))}
-                      {formData.outlet && !outletsForSelectedCustomer.some((outlet) => outlet.outlet === formData.outlet) && (
-                        <option value={formData.outlet}>{formData.outlet}</option>
-                      )}
-                    </select>
+                <div className={`so-sum-chip${editingField === "po_number" ? " is-editing" : ""}`}>
+                  <SoField field="po_number" label="Nomor PO" className="so-sum-field">
+                    {editingField !== "po_number" && <div className="so-sum-text">{formData.po_number || "—"}</div>}
+                    <div className={editingField === "po_number" ? "so-sum-editor" : "so-sum-dormant"}>
+                      <input
+                        id="so-po_number"
+                        type="text"
+                        className="so-line-input"
+                        value={formData.po_number}
+                        onChange={(e) => setFormData((p) => ({ ...p, po_number: e.target.value }))}
+                        placeholder="mis. PO/26/09/26/002"
+                        data-testid="input-po-number"
+                      />
+                    </div>
+                  </SoField>
+                  <button type="button" className="so-create-auto" onClick={generatePoNumber} title="Buat Nomor Otomatis" data-testid="btn-generate-po">
+                    <Sparkles size={14} /> Auto
+                  </button>
+                  <button type="button" className="so-sum-pencil" data-testid="so-edit-po" aria-label="Ubah nomor PO" onClick={() => openSummaryEditor("po_number")}>
+                    <Pencil size={14} />
+                  </button>
+                </div>
+
+                <div className={`so-sum-chip${editingField === "order_date" ? " is-editing" : ""}`}>
+                  <SoField field="order_date" label="Tanggal PO" className="so-sum-field">
+                    {editingField !== "order_date" && <div className="so-sum-text">{formatChipDate(formData.order_date) || "—"}</div>}
+                    <div className={editingField === "order_date" ? "so-sum-editor" : "so-sum-dormant"}>
+                      <input
+                        id="so-order_date"
+                        type="date"
+                        className="so-line-input"
+                        value={formData.order_date}
+                        onChange={(e) => setFormData((p) => ({ ...p, order_date: e.target.value }))}
+                        data-testid="input-order-date"
+                      />
+                    </div>
+                  </SoField>
+                  <button type="button" className="so-sum-pencil" data-testid="so-edit-order-date" aria-label="Ubah tanggal PO" onClick={() => openSummaryEditor("order_date")}>
+                    <Pencil size={14} />
+                  </button>
+                </div>
+
+                <div className={`so-sum-chip${editingField === "estimated_delivery" ? " is-editing" : ""}`}>
+                  <SoField field="estimated_delivery" label="Rencana kirim" className="so-sum-field">
+                    {editingField !== "estimated_delivery" && <div className="so-sum-text">{formatChipDate(formData.estimated_delivery) || "—"}</div>}
+                    <div className={editingField === "estimated_delivery" ? "so-sum-editor" : "so-sum-dormant"}>
+                      <input
+                        id="so-estimated_delivery"
+                        type="date"
+                        className="so-line-input"
+                        value={formData.estimated_delivery}
+                        onChange={(e) => setFormData((p) => ({ ...p, estimated_delivery: e.target.value }))}
+                        data-testid="input-estimated-delivery"
+                      />
+                    </div>
+                  </SoField>
+                  <button type="button" className="so-sum-pencil" data-testid="so-edit-ship-date" aria-label="Ubah rencana kirim" onClick={() => openSummaryEditor("estimated_delivery")}>
+                    <Pencil size={14} />
+                  </button>
+                </div>
+
+                <div className="so-ship-card">
+                  <span className="so-ship-icon" aria-hidden="true"><Truck size={18} /></span>
+                  <div>
+                    <strong>Kirim {formatShipCardDate(formData.estimated_delivery) || "—"}</strong>
+                    <span>{formData.expedition || "Ekspedisi"} · {formData.address || "Alamat belum diisi"}</span>
+                  </div>
+                  <button type="button" className="so-sum-pencil" data-testid="so-edit-delivery" aria-label="Ubah pengiriman" onClick={() => openSummaryEditor("expedition")}>
+                    <Pencil size={14} />
+                  </button>
+                </div>
+              </div>
+
+              {formData.customer?.trim() && (
+                <div className="so-create-note">
+                  {formData.customer_id ? (
+                    <span data-testid="badge-customer-registered">✓ Pelanggan Terdaftar di Master</span>
                   ) : (
-                    <input
-                      id="so-outlet"
-                      type="text"
-                      className="so-line-input"
-                      value={formData.outlet}
-                      onChange={(e) => handleOutletChange(e.target.value)}
-                      placeholder="Outlet / cabang"
-                      data-testid="input-outlet"
-                    />
+                    <span data-testid="badge-customer-new">+ Pelanggan Baru (otomatis masuk ke Data Pelanggan saat PO disimpan)</span>
                   )}
-                </SoField>
+                </div>
+              )}
+              {repeatSourceIndicator ? (
+                <div className="so-create-note" data-testid="repeat-source-indicator">
+                  Repeat dari PO: {repeatSourceIndicator}. Harga perlu diperiksa.
+                </div>
+              ) : null}
+              {repeatMsg ? (
+                <div className="so-create-note is-warn" data-testid="repeat-empty-message">{repeatMsg}</div>
+              ) : null}
 
-                <SoField field="order_date" label="Tanggal PO">
-                  <input
-                    id="so-order_date"
-                    type="date"
-                    className="so-line-input"
-                    value={formData.order_date}
-                    onChange={(e) => setFormData((p) => ({ ...p, order_date: e.target.value }))}
-                    data-testid="input-order-date"
-                  />
-                </SoField>
+              <div className="so-form-tabs" role="tablist" aria-label="Bagian pesanan">
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={createTab === "items"}
+                  className={createTab === "items" ? "is-active" : ""}
+                  data-testid="so-tab-items"
+                  onClick={() => setCreateTab("items")}
+                >
+                  Barang & Harga
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={createTab === "ship"}
+                  className={createTab === "ship" ? "is-active" : ""}
+                  data-testid="so-tab-ship"
+                  onClick={() => setCreateTab("ship")}
+                >
+                  Pengiriman & Detail
+                </button>
+              </div>
 
-                <SoField field="estimated_delivery" label="Rencana kirim">
-                  <input
-                    id="so-estimated_delivery"
-                    type="date"
-                    className="so-line-input"
-                    value={formData.estimated_delivery}
-                    onChange={(e) => setFormData((p) => ({ ...p, estimated_delivery: e.target.value }))}
-                    data-testid="input-estimated-delivery"
-                  />
-                </SoField>
+              <div className="so-create-lines so-items-only" data-so-region="lines">
+                <div className="so-create-line-toolbar" data-testid="so-line-toolbar">
+                  <div className="so-create-line-heading">
+                    <h2>Daftar Barang</h2>
+                    <span data-testid="so-line-count">{formData.line_items.length} item</span>
+                    <span data-testid="so-total-items">{formData.line_items.length} jenis</span>
+                  </div>
+                  <button type="button" className="so-create-add" onClick={addLineItem} data-testid="btn-add-line-item">
+                    <Plus size={14} /> Tambah barang
+                  </button>
+                </div>
+                <div className="so-create-lines-scroll" data-testid="line-items-table-container" data-scroll-owner="line-items">
+                  <table className="so-create-lines-table">
+                    <thead>
+                      <tr>
+                        <th className="so-col-no" scope="col">#</th>
+                        <th className="so-col-name">Barang <span className="so-req">*</span></th>
+                        <th className="so-col-qty">Qty <span className="so-req">*</span></th>
+                        <th className="so-col-unit">Satuan</th>
+                        <th className="so-col-price">Harga Jual / Satuan</th>
+                        <th className="so-col-sub">Subtotal</th>
+                        <th className="so-col-action">Aksi</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {formData.line_items.length === 0 ? (
+                        <tr>
+                          <td colSpan={7} data-testid="line-items-empty-state" className="so-create-empty">
+                            Tidak ada barang/jasa yang cocok.
+                          </td>
+                        </tr>
+                      ) : formData.line_items.map((line, originalIndex) => {
+                        const mode = lineModes[line.rowKey] || "master";
+                        const imagePath = itemImages[String(line.accurate_item_id || "").trim()]?.url;
+                        const subtotal = lineSellingSubtotal(line.quantity, line.unit_price);
+                        return (
+                          <Fragment key={line.rowKey}>
+                            <tr data-testid={`line-item-row-${originalIndex}`}>
+                              <td className="so-col-no" data-testid={`line-item-number-${originalIndex}`}>{originalIndex + 1}</td>
+                              <td className="so-col-name">
+                                <div className="so-line-product">
+                                  <SalesOrderThumb src={imagePath ? publicApiUrl(imagePath) : ""} />
+                                  <div className="so-line-product-body">
+                                    <div className="so-line-mode" role="group" aria-label={`Mode barang baris ${originalIndex + 1}`}>
+                                      <button type="button" aria-pressed={mode === "master"} data-testid={`line-mode-master-${originalIndex}`} onClick={() => changeLineMode(originalIndex, "master")}>
+                                        Pilih Master
+                                      </button>
+                                      <button type="button" aria-pressed={mode === "manual"} data-testid={`line-mode-manual-${originalIndex}`} onClick={() => changeLineMode(originalIndex, "manual")}>
+                                        Input Manual
+                                      </button>
+                                    </div>
+                                    {mode === "master" ? (
+                                      <MasterItemSearchSelect
+                                        testId={`line-item-search-${originalIndex}`}
+                                        value={
+                                          line.accurate_item_id || line.master_item_id
+                                            ? {
+                                              accurate_item_id: line.accurate_item_id,
+                                              id: line.master_item_id,
+                                              master_item_id: line.master_item_id,
+                                              item_name: line.name,
+                                              item_code: line.item_code,
+                                              unit: line.unit,
+                                            }
+                                            : null
+                                        }
+                                        onChange={(master) => handleSelectMasterItem(originalIndex, master)}
+                                        placeholder="Cari nama / kode barang…"
+                                      />
+                                    ) : (
+                                      <input
+                                        type="text"
+                                        className="so-line-input"
+                                        value={line.name}
+                                        onChange={(e) => handleLineChange(originalIndex, "name", e.target.value)}
+                                        placeholder="Ketik nama bebas (tanpa master)"
+                                        data-testid={`line-name-${originalIndex}`}
+                                      />
+                                    )}
+                                    <div className="so-line-code">{line.item_code || "Kode barang"}</div>
+                                  </div>
+                                </div>
+                              </td>
+                              <td>
+                                <input
+                                  type="number"
+                                  min="1"
+                                  className="so-line-input"
+                                  value={line.quantity}
+                                  onChange={(e) => handleLineChange(originalIndex, "quantity", e.target.value)}
+                                  data-testid={`line-qty-${originalIndex}`}
+                                  required
+                                />
+                              </td>
+                              <td>
+                                <input
+                                  type="text"
+                                  className="so-line-input"
+                                  value={line.unit || "pcs"}
+                                  onChange={(e) => handleLineChange(originalIndex, "unit", e.target.value)}
+                                  data-testid={`line-unit-${originalIndex}`}
+                                />
+                              </td>
+                              <td className="so-col-price">
+                                <input
+                                  type="text"
+                                  inputMode="decimal"
+                                  className="so-line-input so-price-input"
+                                  value={line.unit_price ?? ""}
+                                  onChange={(e) => handleLineChange(originalIndex, "unit_price", e.target.value)}
+                                  placeholder="Harga"
+                                  data-testid={`line-price-${originalIndex}`}
+                                />
+                                <div className={`so-price-source${line.price_review || line.price_message ? " is-review" : ""}`} data-testid={`line-price-source-${originalIndex}`}>
+                                  {priceSourceLabel(line)}
+                                </div>
+                                {line.price_review && (
+                                  <button type="button" className="so-price-review" data-testid={`btn-review-price-${originalIndex}`} onClick={() => reviewLinePrice(originalIndex)}>
+                                    Pakai harga Pengaturan Harga
+                                  </button>
+                                )}
+                              </td>
+                              <td className="so-col-sub" data-testid={`line-subtotal-${originalIndex}`}>
+                                {formatOrderRupiah(subtotal)}
+                              </td>
+                              <td className="so-col-action">
+                                <button
+                                  type="button"
+                                  onClick={() => removeLineItem(originalIndex)}
+                                  disabled={formData.line_items.length <= 1}
+                                  data-testid={`btn-remove-line-${originalIndex}`}
+                                  aria-label="Hapus baris"
+                                >
+                                  Hapus
+                                </button>
+                              </td>
+                            </tr>
+                            <tr className="so-line-detail" data-testid={`line-item-detail-${originalIndex}`}>
+                              <td />
+                              <td colSpan={6}>
+                                <div className="so-line-meta">
+                                  <label>
+                                    Kode Barang
+                                    <input type="text" className="so-line-input" value={line.item_code || ""} onChange={(e) => handleLineChange(originalIndex, "item_code", e.target.value)} data-testid={`line-code-${originalIndex}`} />
+                                  </label>
+                                  <label>
+                                    Jenis Cetak
+                                    <select className="so-line-input" value={line.production_process} onChange={(e) => handleLineChange(originalIndex, "production_process", e.target.value)} data-testid={`line-process-${originalIndex}`} aria-label="Proses">
+                                      <option value="print">Cetak</option>
+                                      <option value="non_print">Tidak Cetak</option>
+                                    </select>
+                                  </label>
+                                  <label>
+                                    Warna
+                                    <input type="text" className="so-line-input" value={line.color || ""} onChange={(e) => handleLineChange(originalIndex, "color", e.target.value)} placeholder="Warna" data-testid={`line-color-${originalIndex}`} />
+                                  </label>
+                                  <label>
+                                    Catatan Item
+                                    <input type="text" className="so-line-input" value={line.notes || ""} onChange={(e) => handleLineChange(originalIndex, "notes", e.target.value)} placeholder="Catatan item" data-testid={`line-notes-${originalIndex}`} />
+                                  </label>
+                                </div>
+                              </td>
+                            </tr>
+                          </Fragment>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
 
+              <div className="so-ship-panel so-ship-only">
                 <SoField field="customer_phone" label="No. HP / WhatsApp Pelanggan" required={newCustomer} error={fieldHasError("customer_phone")}>
                   <input
                     id="so-customer_phone"
@@ -1853,30 +2332,6 @@ export default function PesananPenjualan() {
                     aria-invalid={fieldHasError("customer_phone") || undefined}
                   />
                 </SoField>
-
-                <SoField field="po_number" label="Nomor PO">
-                  <div className="so-create-inline">
-                    <input
-                      id="so-po_number"
-                      type="text"
-                      className="so-line-input"
-                      value={formData.po_number}
-                      onChange={(e) => setFormData((p) => ({ ...p, po_number: e.target.value }))}
-                      placeholder="mis. PO-2026-001"
-                      data-testid="input-po-number"
-                    />
-                    <button
-                      type="button"
-                      className="so-create-auto"
-                      onClick={generatePoNumber}
-                      title="Buat Nomor Otomatis"
-                      data-testid="btn-generate-po"
-                    >
-                      <Sparkles size={14} /> Auto
-                    </button>
-                  </div>
-                </SoField>
-
                 <SoField field="address" label="Alamat Lengkap Pengiriman" required={newCustomer} error={fieldHasError("address")} className="so-create-field-address">
                   <textarea
                     id="so-address"
@@ -1890,246 +2345,73 @@ export default function PesananPenjualan() {
                   />
                 </SoField>
               </div>
-
-              <div className="so-create-lines" data-so-region="lines">
-                <div className="so-create-line-toolbar" data-testid="so-line-toolbar">
-                  <div className="so-create-line-heading">
-                    <h2>Daftar Barang</h2>
-                    <span data-testid="so-line-count">{formData.line_items.length} item</span>
-                  </div>
-                  <button
-                    type="button"
-                    className="so-create-add"
-                    onClick={addLineItem}
-                    data-testid="btn-add-line-item"
-                  >
-                    <Plus size={14} /> Tambah barang
-                  </button>
-                </div>
-                <div className="so-create-lines-scroll" data-testid="line-items-table-container" data-scroll-owner="line-items">
-                  <table className="so-create-lines-table">
-                    <thead>
-                      <tr>
-                        <th className="so-col-no" scope="col">#</th>
-                        <th className="so-col-name">Barang <span className="so-req">*</span></th>
-                        <th className="so-col-qty">Qty <span className="so-req">*</span></th>
-                        <th className="so-col-unit">Satuan</th>
-                        <th className="so-col-action">Aksi</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {formData.line_items.length === 0 ? (
-                        <tr>
-                          <td colSpan={5} data-testid="line-items-empty-state" className="so-create-empty">
-                            Tidak ada barang/jasa yang cocok.
-                          </td>
-                        </tr>
-                      ) : formData.line_items.map((line, originalIndex) => {
-                        const mode = lineModes[line.rowKey] || "master";
-                        const imagePath = itemImages[String(line.accurate_item_id || "").trim()]?.url;
-                        return (
-                          <tr key={line.rowKey} data-testid={`line-item-row-${originalIndex}`}>
-                            <td className="so-col-no" data-testid={`line-item-number-${originalIndex}`}>{originalIndex + 1}</td>
-                            <td className="so-col-name">
-                              <div className="so-line-product">
-                                <SalesOrderThumb src={imagePath ? publicApiUrl(imagePath) : ""} />
-                                <div className="so-line-product-body">
-                                  <div className="so-line-mode" role="group" aria-label={`Mode barang baris ${originalIndex + 1}`}>
-                                    <button
-                                      type="button"
-                                      aria-pressed={mode === "master"}
-                                      data-testid={`line-mode-master-${originalIndex}`}
-                                      onClick={() => changeLineMode(originalIndex, "master")}
-                                    >
-                                      Pilih Master
-                                    </button>
-                                    <button
-                                      type="button"
-                                      aria-pressed={mode === "manual"}
-                                      data-testid={`line-mode-manual-${originalIndex}`}
-                                      onClick={() => changeLineMode(originalIndex, "manual")}
-                                    >
-                                      Input Manual
-                                    </button>
-                                  </div>
-                                  {mode === "master" ? (
-                                    <MasterItemSearchSelect
-                                      testId={`line-item-search-${originalIndex}`}
-                                      value={
-                                        line.accurate_item_id || line.master_item_id
-                                          ? {
-                                            accurate_item_id: line.accurate_item_id,
-                                            id: line.master_item_id,
-                                            master_item_id: line.master_item_id,
-                                            item_name: line.name,
-                                            item_code: line.item_code,
-                                            unit: line.unit,
-                                          }
-                                          : null
-                                      }
-                                      onChange={(master) => handleSelectMasterItem(originalIndex, master)}
-                                      placeholder="Cari nama / kode barang…"
-                                    />
-                                  ) : (
-                                    <input
-                                      type="text"
-                                      className="so-line-input"
-                                      value={line.name}
-                                      onChange={(e) => handleLineChange(originalIndex, "name", e.target.value)}
-                                      placeholder="Ketik nama bebas (tanpa master)"
-                                      data-testid={`line-name-${originalIndex}`}
-                                    />
-                                  )}
-                                  <div className="so-line-meta">
-                                    <input
-                                      type="text"
-                                      className="so-line-input"
-                                      value={line.item_code || ""}
-                                      onChange={(e) => handleLineChange(originalIndex, "item_code", e.target.value)}
-                                      placeholder="Kode"
-                                      data-testid={`line-code-${originalIndex}`}
-                                    />
-                                    <select
-                                      className="so-line-input"
-                                      value={line.production_process}
-                                      onChange={(e) => handleLineChange(originalIndex, "production_process", e.target.value)}
-                                      data-testid={`line-process-${originalIndex}`}
-                                      aria-label="Proses"
-                                    >
-                                      <option value="print">Cetak</option>
-                                      <option value="non_print">Tidak Cetak</option>
-                                    </select>
-                                    <input
-                                      type="text"
-                                      className="so-line-input"
-                                      value={line.color || ""}
-                                      onChange={(e) => handleLineChange(originalIndex, "color", e.target.value)}
-                                      placeholder="Warna"
-                                      data-testid={`line-color-${originalIndex}`}
-                                    />
-                                    <input
-                                      type="text"
-                                      className="so-line-input"
-                                      value={line.notes || ""}
-                                      onChange={(e) => handleLineChange(originalIndex, "notes", e.target.value)}
-                                      placeholder="Catatan item"
-                                      data-testid={`line-notes-${originalIndex}`}
-                                    />
-                                  </div>
-                                </div>
-                              </div>
-                            </td>
-                            <td>
-                              <input
-                                type="number"
-                                min="1"
-                                className="so-line-input"
-                                value={line.quantity}
-                                onChange={(e) => handleLineChange(originalIndex, "quantity", e.target.value)}
-                                data-testid={`line-qty-${originalIndex}`}
-                                required
-                              />
-                            </td>
-                            <td>
-                              <input
-                                type="text"
-                                className="so-line-input"
-                                value={line.unit || "pcs"}
-                                onChange={(e) => handleLineChange(originalIndex, "unit", e.target.value)}
-                                data-testid={`line-unit-${originalIndex}`}
-                              />
-                            </td>
-                            <td className="so-col-action">
-                              <button
-                                type="button"
-                                onClick={() => removeLineItem(originalIndex)}
-                                disabled={formData.line_items.length <= 1}
-                                data-testid={`btn-remove-line-${originalIndex}`}
-                                aria-label="Hapus baris"
-                              >
-                                Hapus
-                              </button>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
             </section>
 
-            <aside className="so-create-side" data-testid="so-order-summary">
-              <div className="so-summary-head">
-                <h2>Ringkasan Pesanan</h2>
-              </div>
-              <div className="so-create-side-body" data-scroll-owner="summary">
-                <dl className="so-summary-list">
-                  <div><dt>Pelanggan</dt><dd>{formData.customer || "—"}</dd></div>
-                  <div><dt>Outlet</dt><dd>{formData.outlet || "—"}</dd></div>
-                  <div><dt>Tanggal PO</dt><dd>{formatDisplayDate(formData.order_date) || "—"}</dd></div>
-                  <div><dt>Rencana kirim</dt><dd>{formatDisplayDate(formData.estimated_delivery) || "—"}</dd></div>
-                </dl>
-                <div className="so-summary-qty">
-                  <span data-testid="so-total-items">Jumlah jenis barang <strong>{formData.line_items.length}</strong></span>
-                  <span data-testid="so-total-qty">Total kuantitas <strong>{quantityLabel}</strong></span>
-                </div>
-                <SoField field="notes" label="Catatan">
-                  <textarea
-                    id="so-notes"
-                    className="so-line-input so-create-address"
-                    value={formData.notes}
-                    onChange={(e) => setFormData((p) => ({ ...p, notes: e.target.value }))}
-                    placeholder="Catatan khusus pengerjaan, packing, atau instruksi"
-                    rows={3}
-                    data-testid="input-notes"
+            <div className="so-order-summary so-ship-only" data-testid="so-order-summary">
+              <SoField field="notes" label="Catatan Pesanan" error={fieldHasError("notes")}>
+                <textarea
+                  id="so-notes"
+                  className="so-line-input so-create-address"
+                  value={formData.notes}
+                  onChange={(e) => setFormData((p) => ({ ...p, notes: e.target.value }))}
+                  placeholder="Catatan khusus pengerjaan, packing, atau instruksi"
+                  rows={3}
+                  data-testid="input-notes"
+                />
+              </SoField>
+            </div>
+
+            <div className="so-create-extra so-ship-only" data-so-region="drawer" data-testid="so-extra-fields">
+              <h3>Pengiriman & Detail</h3>
+              {extraFields.map((item) => (
+                <SoField key={item.field} field={item.field} label={item.label} error={fieldHasError(item.field)}>
+                  <input
+                    id={`so-${item.field}`}
+                    type={item.type || "text"}
+                    className="so-line-input"
+                    list={item.list}
+                    value={formData[item.field]}
+                    onChange={(e) => setFormData((p) => ({ ...p, [item.field]: e.target.value }))}
+                    placeholder={item.placeholder}
+                    data-testid={item.testId}
+                    aria-invalid={fieldHasError(item.field) || undefined}
                   />
+                  {item.field === "sales" && (
+                    <datalist id="sales-suggestions">
+                      {options.sales_options?.map((s) => (
+                        <option key={s} value={s} />
+                      ))}
+                    </datalist>
+                  )}
                 </SoField>
-                <div className="so-create-extra" data-so-region="drawer" data-testid="so-extra-fields">
-                  <h3>Detail tambahan</h3>
-                  {extraFields.map((item) => (
-                    <SoField key={item.field} field={item.field} label={item.label} error={fieldHasError(item.field)}>
-                      <input
-                        id={`so-${item.field}`}
-                        type={item.type || "text"}
-                        className="so-line-input"
-                        list={item.list}
-                        value={formData[item.field]}
-                        onChange={(e) => setFormData((p) => ({ ...p, [item.field]: e.target.value }))}
-                        placeholder={item.placeholder}
-                        data-testid={item.testId}
-                        aria-invalid={fieldHasError(item.field) || undefined}
-                      />
-                      {item.field === "sales" && (
-                        <datalist id="sales-suggestions">
-                          {options.sales_options?.map((s) => (
-                            <option key={s} value={s} />
-                          ))}
-                        </datalist>
-                      )}
-                    </SoField>
-                  ))}
-                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="so-create-actionbar" data-testid="so-create-actionbar">
+            <div className="so-price-note">
+              <Info size={16} />
+              <span>Harga tersimpan di pesanan dan otomatis terisi saat membuat faktur.</span>
+              {sellingIncomplete ? <em data-testid="so-price-incomplete">Ada harga yang belum diisi.</em> : null}
+            </div>
+            <div className="so-footer-totals">
+              <div>
+                <span>Total Qty</span>
+                <strong data-testid="so-total-qty">{quantityLabel}</strong>
               </div>
-              <div className="so-create-actionbar" data-testid="so-create-actionbar">
-                <button
-                  type="button"
-                  data-testid="btn-cancel-form"
-                  disabled={formBusy}
-                  onClick={leaveCreate}
-                >
-                  Batal
-                </button>
-                <button
-                  type="submit"
-                  className="so-create-save"
-                  disabled={formBusy}
-                  data-testid="btn-submit-sales-order"
-                >
-                  {formBusy ? "Menyimpan..." : "Simpan Pesanan"}
-                </button>
+              <div>
+                <span>Total Pesanan</span>
+                <strong data-testid="so-order-total">{formatOrderRupiah(sellingTotal)}</strong>
               </div>
-            </aside>
+            </div>
+            <div className="so-footer-actions">
+              <button type="button" data-testid="btn-cancel-form" disabled={formBusy} onClick={leaveCreate}>
+                Batal
+              </button>
+              <button type="submit" className="so-create-save" disabled={formBusy} data-testid="btn-submit-sales-order">
+                {formBusy ? "Menyimpan..." : "Simpan Pesanan"}
+              </button>
+            </div>
           </div>
         </form>
       )}
