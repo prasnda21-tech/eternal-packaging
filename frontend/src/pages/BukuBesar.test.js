@@ -41,6 +41,10 @@ describe("Buku Besar frontend contracts", () => {
 
   test("summary, table alignment, running balance, empty state", () => {
     expect(src).toMatch(/buku-besar-summary/);
+    expect(src).toMatch(/buku-besar-completeness/);
+    expect(src).toMatch(/completeness_status/);
+    expect(src).toMatch(/blocker_code/);
+    expect(src).toMatch(/belum final/);
     expect(src).toMatch(/Saldo Awal/);
     expect(src).toMatch(/Total Debit/);
     expect(src).toMatch(/Total Kredit/);

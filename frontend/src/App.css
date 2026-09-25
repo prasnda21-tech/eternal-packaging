@@ -3591,6 +3591,201 @@ html:has(.prod-schedule-page) #root{
 .stock-neg td{background:#fdf3f1}
 .stock-neg-val{color:var(--red);font-weight:700}
 .prod-table thead th .prod-th-label{color:inherit}
+.inventory-value-summary{display:grid;grid-template-columns:2fr repeat(3,minmax(0,1fr));border:1px solid var(--line);background:#fff;margin-bottom:12px}
+.inventory-value-summary-card{display:flex;flex-direction:column;gap:5px;padding:12px 14px;border-right:1px solid var(--line);min-width:0}
+.inventory-value-summary-card:last-child{border-right:0}
+.inventory-value-summary-card span{font:10px 'IBM Plex Mono';letter-spacing:.09em;text-transform:uppercase;color:var(--soft)}
+.inventory-value-summary-card strong{font:18px 'IBM Plex Mono';font-variant-numeric:tabular-nums;color:var(--ink)}
+.inventory-value-summary-card.is-total strong{font-size:21px;color:var(--green)}
+.inventory-value-summary-card.is-problem strong{color:var(--red)}
+.inventory-value-status{display:inline-flex;align-items:center;white-space:nowrap;padding:3px 7px;border:1px solid var(--line);border-radius:999px;font:600 10px 'IBM Plex Mono';letter-spacing:.03em}
+.inventory-value-status.is-ok{color:#17613b;background:#eef8f2;border-color:#b8dbc7}
+.inventory-value-status.is-missing_cost,.inventory-value-status.is-needs_cost{color:#7a5a13;background:#fff8e5;border-color:#e8d59d}
+.inventory-value-status.is-needs_uom,.inventory-value-status.is-qty_mismatch,.inventory-value-status.is-failed{color:#9b2f20;background:#fdf0ed;border-color:#e7b9b1}
+@media (max-width:900px){
+  .inventory-value-summary{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .inventory-value-summary-card:nth-child(2){border-right:0}
+  .inventory-value-summary-card:nth-child(-n+2){border-bottom:1px solid var(--line)}
+}
+@media (max-width:560px){
+  .inventory-value-summary{grid-template-columns:1fr}
+  .inventory-value-summary-card{border-right:0;border-bottom:1px solid var(--line)}
+  .inventory-value-summary-card:last-child{border-bottom:0}
+}
+.inventory-cogs-queue,.inventory-activity-reports{margin:16px 0}
+.inventory-cogs-queue h2,.inventory-activity-reports h2{font-size:16px;margin:0 0 8px}
+.inventory-opening-form input{min-width:0;height:34px}
+.inventory-opening-form .prod-filter-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.inventory-opening-form button{height:34px}
+.inventory-opening-preview{margin-top:8px;padding:8px 10px;border:1px solid var(--line);background:#fff}
+.inventory-opening-preview p{margin:0 0 4px;font-size:13px}
+.inventory-book-recon{grid-template-columns:repeat(6,minmax(0,1fr))}
+@media (max-width:900px){
+  .inventory-book-recon{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+
+.app-shell:has(.inventory-value-page){
+  height:100dvh;
+  max-height:100dvh;
+  overflow:hidden;
+}
+.app-main:has(.inventory-value-page){
+  min-width:0;
+  min-height:0;
+  height:100%;
+  max-height:100%;
+  overflow:hidden;
+}
+.app-main:has(.inventory-value-page) .topbar{flex-shrink:0}
+.content:has(.inventory-value-page),
+.content.content-workspace:has(.inventory-value-page){
+  flex:1 1 auto;
+  min-height:0;
+  max-width:none;
+  width:100%;
+  margin:0;
+  padding:0;
+  overflow:hidden;
+  display:flex;
+  flex-direction:column;
+  box-sizing:border-box;
+}
+.content:has(.inventory-value-page) > .kb-workspace-tabs{
+  top:0;
+  flex:0 0 auto;
+}
+.inventory-value-page{
+  display:flex;
+  flex-direction:column;
+  flex:1 1 auto;
+  min-height:0;
+  min-width:0;
+  height:auto;
+  overflow:hidden;
+  padding:8px 12px 8px;
+  gap:8px;
+  box-sizing:border-box;
+}
+.inventory-value-page .prod-heading{margin:0;flex:0 0 auto}
+.inventory-value-page .prod-heading .subhead{margin:2px 0 0;font-size:14px;line-height:1.35}
+.inventory-value-tabs{
+  display:flex;
+  flex:0 0 auto;
+  gap:6px;
+  min-width:0;
+}
+.inventory-value-tabs button{
+  height:34px;
+  padding:0 12px;
+  border:1px solid var(--line);
+  background:#fff;
+  color:var(--ink);
+  font-size:14px;
+  line-height:1.2;
+  cursor:pointer;
+}
+.inventory-value-tabs button.is-active{
+  background:var(--ep-dark,#143d32);
+  color:#fff;
+  border-color:var(--ep-dark,#143d32);
+}
+.inventory-value-panel{
+  display:flex;
+  flex-direction:column;
+  flex:1 1 auto;
+  min-height:0;
+  min-width:0;
+  gap:8px;
+  overflow:hidden;
+}
+.inventory-value-page .inventory-panel-scroll{
+  flex:1 1 auto;
+  min-height:0;
+  overflow:auto;
+}
+.inventory-value-page .inventory-value-summary{
+  flex:0 0 auto;
+  margin-bottom:0;
+}
+.inventory-value-page .inventory-value-summary.is-estimate{
+  grid-template-columns:repeat(3,minmax(0,1fr));
+}
+.inventory-value-page .inventory-value-summary-card span{
+  font-size:12px;
+  letter-spacing:.04em;
+}
+.inventory-value-page .inventory-value-summary-card strong{font-size:16px}
+.inventory-value-page .inventory-value-summary-card.is-total strong{font-size:18px}
+.inventory-value-page .prod-filters{flex:0 0 auto;margin:0}
+.inventory-value-page .prod-table-wrap{
+  flex:1 1 auto;
+  min-height:0;
+  max-height:none;
+  overflow:auto;
+  margin-top:0;
+}
+.inventory-value-page .prod-table{min-width:0}
+.inventory-value-page .prod-table thead th{
+  position:sticky;
+  top:0;
+  font-size:12px;
+  letter-spacing:.04em;
+}
+.inventory-value-page .prod-table tbody td{font-size:14px}
+.inventory-value-page .master-pager{flex:0 0 auto}
+.inventory-value-page .inventory-book-recon{
+  grid-template-columns:repeat(auto-fit,minmax(148px,1fr));
+}
+.inventory-opening-actions{flex:0 0 auto}
+.inventory-opening-fields{
+  display:grid;
+  grid-template-columns:repeat(4,minmax(0,1fr));
+  gap:8px;
+  align-items:end;
+}
+.inventory-opening-fields label{
+  display:flex;
+  flex-direction:column;
+  gap:4px;
+  font-size:14px;
+  min-width:0;
+}
+.inventory-opening-fields input,
+.inventory-opening-fields .mis-input{width:100%;min-width:0}
+.inventory-value-page .signal-strip{flex:0 0 auto}
+.inventory-value-page .inventory-panel-scroll h2{font-size:16px;margin:4px 0 8px;font-weight:650}
+.inventory-detail-drawer{
+  position:fixed;
+  top:calc(var(--ep-topbar-height,48px) + var(--ep-workspace-tabs-height,34px));
+  right:0;
+  bottom:0;
+  width:min(420px,100vw);
+  background:#fff;
+  border-left:1px solid var(--line);
+  display:flex;
+  flex-direction:column;
+  z-index:60;
+  box-shadow:-8px 0 24px rgba(0,0,0,.08);
+}
+.inventory-detail-drawer-head{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  gap:8px;
+  padding:10px 12px;
+  border-bottom:1px solid var(--line);
+  flex:0 0 auto;
+}
+.inventory-detail-drawer-body{
+  overflow:auto;
+  padding:12px;
+  font-size:14px;
+  line-height:1.45;
+}
+.inventory-detail-drawer-body p{margin:0 0 8px}
+@media (max-width:1100px){
+  .inventory-opening-fields{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
 
 /* -------- Status Pengiriman Barang (Accurate-like monitoring grid) -------- */
 html:has(.ship-status-page),

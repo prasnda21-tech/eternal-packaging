@@ -438,6 +438,11 @@ async def _execute_operational_goods_receipt_cancel(
             user=user,
             order_id=doc.get("purchase_order_id"),
         )
+        # HPP reversal is durable and idempotent. Run it after Stock V2 reversal
+        # and before marking the receipt cancelled so retry can finish only the
+        # incomplete HPP side without creating another receipt or stock event.
+        from services.hpp_cutover import reverse_goods_receipt_hpp
+        await reverse_goods_receipt_hpp(db, doc, user)
         fields = cancellation_fields(user, reason)
         fields.update({
             "status": "CANCELLED",
@@ -494,7 +499,10 @@ async def create_purchase_goods_receipt(db, payload: Dict[str, Any], user: dict)
         if idem:
             existing = await db[COLLECTION].find_one({"idempotency_key": idem}, {"_id": 0})
             if existing:
+                from services.hpp_cutover import register_baseline_participants, recognize_posted_goods_receipt
+                await register_baseline_participants(db, existing)
                 await handle_goods_receipt_created(db, existing, user)
+                await recognize_posted_goods_receipt(db, existing, user)
                 return existing
 
         preview = await get_po_receipt_preview(db, po_id)
@@ -576,7 +584,10 @@ async def create_purchase_goods_receipt(db, payload: Dict[str, Any], user: dict)
             return candidate
 
         saved = await insert_with_unique_number(db, COLLECTION, "receipt_number", doc, _alloc)
+        from services.hpp_cutover import register_baseline_participants, recognize_posted_goods_receipt
+        await register_baseline_participants(db, saved)
         await handle_goods_receipt_created(db, saved, user)
+        await recognize_posted_goods_receipt(db, saved, user)
         out = await enrich_goods_receipt(db, saved)
         from services.purchase_goods_receipt_posting import attach_goods_receipt_accounting_fields
 

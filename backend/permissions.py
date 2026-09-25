@@ -69,6 +69,9 @@ PERMISSION_CATALOG = [
     ("Persediaan", "current_stock.update", "Ubah Qty Saat Ini / Pembelian Barang"),
     ("Persediaan", "current_stock.import", "Impor & Sesuaikan Stock Saat Ini"),
     ("Persediaan", "current_stock.export", "Export Stock Saat Ini"),
+    ("Persediaan", "inventory_valuation.view", "Lihat Nilai Persediaan"),
+    ("Persediaan", "inventory_valuation.export", "Export Nilai Persediaan"),
+    ("Persediaan", "inventory_valuation.manage_opening", "Atur HPP Awal Persediaan"),
     ("Pembelian", "purchase_receipts.view", "Lihat Penerimaan Barang"),
     ("Pembelian", "purchase_receipts.sync", "Sinkronkan Penerimaan Barang dari Accurate"),
     ("Pembelian", "purchase_receipts.export", "Export Penerimaan Barang"),
@@ -265,6 +268,7 @@ PERMISSION_CATALOG = [
     ("Akses Menu", "nav.inventory", "Menu Persediaan"),
     ("Akses Menu", "nav.inventory.master_items", "Menu Barang/Jasa"),
     ("Akses Menu", "nav.inventory.current_stock", "Menu Stock Saat Ini"),
+    ("Akses Menu", "nav.inventory.inventory_value", "Menu Nilai Persediaan"),
     ("Akses Menu", "nav.reports", "Menu Laporan"),
     ("Akses Menu", "nav.reports.analytics_output", "Menu Analitik Output"),
     ("Akses Menu", "nav.reports.shipment_status", "Menu Status Pengiriman"),
@@ -395,6 +399,7 @@ NAV_MENU_ITEMS = (
     ("nav.inventory", "Persediaan", None),
     ("nav.inventory.master_items", "Barang/Jasa", "nav.inventory"),
     ("nav.inventory.current_stock", "Stock Saat Ini", "nav.inventory"),
+    ("nav.inventory.inventory_value", "Nilai Persediaan", "nav.inventory"),
     ("nav.reports", "Laporan", None),
     ("nav.reports.analytics_output", "Analitik Output", "nav.reports"),
     ("nav.reports.status_po", "Status PO", "nav.reports"),
@@ -462,6 +467,9 @@ def derived_nav_permissions(existing: set) -> set:
     if "current_stock.view" in existing:
         nav.add("nav.inventory")
         nav.add("nav.inventory.current_stock")
+    if "inventory_valuation.view" in existing:
+        nav.add("nav.inventory")
+        nav.add("nav.inventory.inventory_value")
     if "purchase_receipts.view" in existing:
         nav.add("nav.purchasing")
         nav.add("nav.purchasing.receipts")
@@ -747,6 +755,9 @@ ROLE_DEFAULT_PERMISSIONS = {
     ],
     "holding_team": [
         "product_request.read_all",
+        "inventory_valuation.view",
+        "inventory_valuation.export",
+        "inventory_valuation.manage_opening",
     ],
     "direktur_utama": [
         "product_request.read_all",
