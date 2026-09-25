@@ -873,6 +873,8 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
       container.querySelector('[data-testid="so-tab-items"]').click();
     });
     expect(container.querySelector('[data-testid="input-po-number"]').value).toBe(poBefore);
+    expect(container.querySelector(".so-ship-card").textContent).toContain("Ekspedisi Uji Draf");
+    expect(container.querySelector(".so-ship-card").textContent).toContain("Jl. Malioboro 10");
     expect(container.querySelector(".so-sum-chip.is-customer .so-sum-text").textContent).toBe("GOHO COFFEE");
     expect(container.querySelector('[data-testid="line-qty-0"]').value).toBe("1000");
     expect(container.querySelector('[data-testid="line-price-0"]').value).toBe("700");
@@ -882,6 +884,8 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
     });
     expect(container.querySelector('[data-testid="input-expedition"]').value).toBe("Ekspedisi Uji Draf");
     expect(container.querySelector('[data-testid="input-address"]').value).toBe("Jl. Malioboro 10");
+    expect(container.querySelector(".so-ship-card").textContent).toContain("Ekspedisi Uji Draf");
+    expect(container.querySelector(".so-ship-card").textContent).toContain("Jl. Malioboro 10");
     expect(container.querySelector('[data-testid="input-po-number"]').value).toBe(poBefore);
   });
 });
