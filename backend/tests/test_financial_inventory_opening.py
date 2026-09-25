@@ -2153,7 +2153,16 @@ async def test_snapshot_is_not_backdated_and_stale_snapshot_cannot_post():
     import services.financial_inventory_opening as fio
 
     await _configure()
-    mid = await _master(100)
+    mid = await _bare_master()
+    await initialize_opening_balance(server.db, mid, {
+        "unprinted_qty": 100,
+        "printed_qty": 0,
+        "total_qty": 100,
+        "base_uom": "PCS",
+        "initialization_source": "MANUAL",
+        "client_request_id": "snap-physical",
+        "note": "saldo awal snapshot",
+    }, USER)
     before_qty = (await server.db.product_stock_state.find_one({"master_item_id": mid}))["total_qty"]
     original = fio._utc_now
     fio._utc_now = lambda: datetime(2026, 10, 4, 17, 0, tzinfo=timezone.utc)
@@ -2209,7 +2218,16 @@ async def test_snapshot_capture_rejects_a_boundary_that_changes_mid_read():
     import services.financial_inventory_opening as fio
 
     await _configure()
-    mid = await _master(100)
+    mid = await _bare_master()
+    await initialize_opening_balance(server.db, mid, {
+        "unprinted_qty": 100,
+        "printed_qty": 0,
+        "total_qty": 100,
+        "base_uom": "PCS",
+        "initialization_source": "MANUAL",
+        "client_request_id": "snap-race-physical",
+        "note": "saldo awal snapshot",
+    }, USER)
     original = fio._read_item_boundary
     calls = {"n": 0}
 
@@ -3228,3 +3246,870 @@ async def test_general_ledger_summary_shows_pending_reversal_through_filters():
         item_locks._utc_now = original_now
         item_locks.release_item_locks = original_release
         journal_core._after_reversal_line_inserted = original_line
+
+
+async def _physical_opening(mid, qty=100, request_id="api-physical"):
+    return await initialize_opening_balance(server.db, mid, {
+        "unprinted_qty": qty,
+        "printed_qty": 0,
+        "total_qty": qty,
+        "base_uom": "PCS",
+        "initialization_source": "MANUAL",
+        "client_request_id": request_id,
+        "note": "saldo awal API",
+    }, USER)
+
+
+async def test_manual_opening_snapshot_posts_one_journal_without_backfill():
+    """Path B freezes the current balance. Path A stays blocked. Markers are not backfilled."""
+    from datetime import datetime, timezone
+    import services.financial_inventory_opening as fio
+
+    await _configure()
+    mid = await _bare_master()
+    opened = await _physical_opening(mid)
+    movement = opened["movement"]
+    assert movement["movement_type"] == MOVEMENT_SALDO_AWAL
+    assert not str(movement.get("stock_applied_at") or "").strip()
+    historical = await preview_financial_opening(server.db, _opening_payload(mid, 100, 1000, "hist-preview"))
+    assert historical["historical_reconstruction"] is True
+    assert historical["can_post"] is False
+    assert historical["writes"] == 0
+    assert historical["blockers"][0]["code"] == "STOCK_COMMIT_UNPROVEN"
+    assert historical["blockers"][0]["snapshot_available"] is True
+    assert "tidak memundurkan" in historical["blockers"][0]["valid_snapshot_rule"]
+    before_journals = await server.db[JOURNAL_ENTRIES].count_documents({})
+    with pytest.raises(OpeningBlocked) as exc:
+        await post_financial_opening(server.db, _opening_payload(mid, 100, 1000, "hist-post"), USER)
+    assert exc.value.code == "STOCK_COMMIT_UNPROVEN"
+    assert await server.db[JOURNAL_ENTRIES].count_documents({}) == before_journals
+
+    before_qty = (await server.db.product_stock_state.find_one({"_id": mid}))["total_qty"]
+    before_movements = await server.db.stock_movements.count_documents({})
+    original = fio._utc_now
+    fio._utc_now = lambda: datetime(2026, 10, 4, 17, 0, tzinfo=timezone.utc)
+    try:
+        captured = await fio.capture_financial_opening_snapshot(server.db, {
+            "client_request_id": "snap-current",
+            "lines": [{"master_item_id": mid, "base_uom": "PCS"}],
+        }, USER)
+        replay = await fio.capture_financial_opening_snapshot(server.db, {
+            "client_request_id": "snap-current",
+            "lines": [{"master_item_id": mid, "base_uom": "PCS"}],
+        }, USER)
+    finally:
+        fio._utc_now = original
+    assert captured["id"] == replay["id"]
+    assert captured["boundary_kind"] == "current_balance"
+    assert captured["backdated"] is False
+    assert captured["business_date"] == "2026-10-05"
+    assert captured["lines"][0]["qty"] == 100
+    assert await server.db.financial_inventory_opening_snapshots.count_documents({"client_request_id": "snap-current"}) == 1
+    assert (await server.db.product_stock_state.find_one({"_id": mid}))["total_qty"] == before_qty
+    assert await server.db.stock_movements.count_documents({}) == before_movements
+    stored_movement = await server.db.stock_movements.find_one({"id": movement["id"]}, {"_id": 0})
+    assert not str(stored_movement.get("stock_applied_at") or "").strip()
+
+    with pytest.raises(OpeningBlocked) as exc:
+        await post_financial_opening(server.db, {
+            **_opening_payload(mid, 100, 1000, "date-too-early"),
+            "snapshot_id": captured["id"],
+            "effective_date": "2026-10-01",
+        }, USER)
+    assert exc.value.code == "OPENING_SNAPSHOT_BACKDATED"
+    assert "2026-10-01" in exc.value.message
+    assert "2026-10-05" in exc.value.message
+    assert "tidak diberi tanggal mundur" in exc.value.message
+
+    openings_before = await server.db.financial_inventory_openings.count_documents({})
+    journals_before = await server.db[JOURNAL_ENTRIES].count_documents({})
+    preview = await preview_financial_opening(server.db, {
+        **_opening_payload(mid, 100, 1000, "snap-preview", effective="2026-10-05"),
+        "snapshot_id": captured["id"],
+    })
+    assert preview["writes"] == 0
+    assert preview["can_post"] is True
+    assert preview["historical_reconstruction"] is False
+    assert preview["boundary_kind"] == "current_balance"
+    assert await server.db.financial_inventory_openings.count_documents({}) == openings_before
+    assert await server.db[JOURNAL_ENTRIES].count_documents({}) == journals_before
+    _admin()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        listed = await client.get("/api/inventory/financial-opening")
+        assert listed.status_code == 200
+    app.dependency_overrides.clear()
+    assert await server.db[JOURNAL_ENTRIES].count_documents({}) == journals_before
+
+    posted = await post_financial_opening(server.db, {
+        **_opening_payload(mid, 100, 1000, "snap-post", effective="2026-10-05"),
+        "snapshot_id": captured["id"],
+    }, USER)
+    again = await post_financial_opening(server.db, {
+        **_opening_payload(mid, 100, 1000, "snap-post", effective="2026-10-05"),
+        "snapshot_id": captured["id"],
+    }, USER)
+    assert posted["status"] == "POSTED"
+    assert again["id"] == posted["id"]
+    assert again["posted_journal_id"] == posted["posted_journal_id"]
+    assert await server.db[JOURNAL_ENTRIES].count_documents({
+        "source_type": SOURCE_TYPE,
+        "status": "posted",
+    }) == 1
+    assert (await server.db.product_stock_state.find_one({"_id": mid}))["total_qty"] == 100
+
+
+async def test_incomplete_or_inflight_state_cannot_capture_snapshot():
+    import services.financial_inventory_opening as fio
+
+    await _configure()
+    mid = await _bare_master()
+    await server.db.product_stock_state.insert_one({
+        "_id": mid,
+        "master_item_id": mid,
+        "base_uom": "PCS",
+        "total_qty": 100,
+        "unprinted_qty": 100,
+        "printed_qty": 0,
+        "status": "INITIALIZING",
+        "initialized": False,
+        "pending_event": None,
+        "version": 1,
+        "opening_movement_id": None,
+    })
+    with pytest.raises(OpeningBlocked) as exc:
+        await fio.capture_financial_opening_snapshot(server.db, {
+            "client_request_id": "snap-init",
+            "lines": [{"master_item_id": mid, "base_uom": "PCS"}],
+        }, USER)
+    assert exc.value.code == "STOCK_STATE_INCOMPLETE"
+    assert "belum selesai" in exc.value.message
+    assert await server.db.financial_inventory_opening_snapshots.count_documents({}) == 0
+    assert (await server.db.product_stock_state.find_one({"_id": mid}))["total_qty"] == 100
+
+    await server.db.product_stock_state.delete_many({"master_item_id": mid})
+    await _physical_opening(mid, request_id="inflight-physical")
+    await server.db.product_stock_state.update_one(
+        {"_id": mid},
+        {"$set": {"pending_event": {"event_id": "opening_correction:inflight", "stage": "CLAIMED"}}},
+    )
+    with pytest.raises(OpeningBlocked) as exc:
+        await fio.capture_financial_opening_snapshot(server.db, {
+            "client_request_id": "snap-pending",
+            "lines": [{"master_item_id": mid, "base_uom": "PCS"}],
+        }, USER)
+    assert exc.value.code == "STOCK_PENDING"
+    assert "masih berjalan" in exc.value.message
+    await server.db.stock_movements.insert_one({
+        "id": "corr-half",
+        "master_item_id": mid,
+        "movement_type": "KOREKSI",
+        "reference_type": "opening_balance_correction",
+        "reference_id": "corr-half",
+        "base_uom": "PCS",
+        "delta": -20,
+        "balance_before": 100,
+        "balance_after": 80,
+        "status": "POSTED",
+    })
+    with pytest.raises(OpeningBlocked) as exc:
+        await fio.capture_financial_opening_snapshot(server.db, {
+            "client_request_id": "snap-pending-moved",
+            "lines": [{"master_item_id": mid, "base_uom": "PCS"}],
+        }, USER)
+    assert exc.value.code == "STOCK_PENDING"
+    await server.db.product_stock_state.update_one({"_id": mid}, {"$set": {"pending_event": None}})
+    with pytest.raises(OpeningBlocked) as exc:
+        await fio.capture_financial_opening_snapshot(server.db, {
+            "client_request_id": "snap-mismatch",
+            "lines": [{"master_item_id": mid, "base_uom": "PCS"}],
+        }, USER)
+    assert exc.value.code == "STOCK_STATE_MOVEMENT_MISMATCH"
+    assert (await server.db.product_stock_state.find_one({"_id": mid}))["total_qty"] == 100
+    assert await server.db.financial_inventory_opening_snapshots.count_documents({}) == 0
+
+
+async def test_snapshot_membership_does_not_drop_or_double_count_receipts():
+    """Receipts inside the frozen chain stay excluded. A later receipt is a new acquisition."""
+    from datetime import datetime, timezone
+    import services.financial_inventory_opening as fio
+
+    await _configure()
+    mid = await _bare_master()
+    await _physical_opening(mid, request_id="gr-boundary-physical")
+    uncovered = f"gr-open-{uuid.uuid4().hex[:8]}"
+    await server.db.purchase_goods_receipts.insert_one({
+        "id": uncovered,
+        "receipt_number": "GR-OPEN",
+        "receipt_date": "2026-10-05",
+        "cancelled": False,
+        "physical_stock_snapshot": {"enabled": True, "stock_in_trigger": "goods_receipt"},
+        "lines": [{"master_item_id": mid, "received_qty": 20, "unit": "PCS"}],
+    })
+    with pytest.raises(OpeningBlocked) as exc:
+        await fio.capture_financial_opening_snapshot(server.db, {
+            "client_request_id": "snap-uncovered",
+            "lines": [{"master_item_id": mid, "base_uom": "PCS"}],
+        }, USER)
+    assert exc.value.code == "STOCK_COVERAGE_UNPROVEN"
+    assert "Tanggal dokumen tidak dipakai" in exc.value.message
+    assert await server.db.financial_inventory_opening_snapshots.count_documents({}) == 0
+    await server.db.purchase_goods_receipts.delete_one({"id": uncovered})
+
+    po_id = f"po-{uuid.uuid4().hex[:8]}"
+    line_id = f"ln-{uuid.uuid4().hex[:8]}"
+    await server.db.purchase_orders.insert_one({
+        "id": po_id,
+        "po_number": "PB-IN",
+        "supplier": "Supplier",
+        "cancelled": False,
+        "physical_stock_snapshot": {"enabled": True, "stock_in_trigger": "goods_receipt"},
+        "lines": [{
+            "line_id": line_id,
+            "ordered_qty": 50,
+            "unit_price": 1100,
+            "unit": "PCS",
+            "master_item_id": mid,
+        }],
+    })
+    inside_id = str(uuid.uuid4())
+    inside = {
+        "id": inside_id,
+        "receipt_number": "GR-IN",
+        "purchase_order_id": po_id,
+        "po_number": "PB-IN",
+        "supplier": "Supplier",
+        "receipt_date": "2026-10-04",
+        "cancelled": False,
+        "physical_stock_snapshot": {"enabled": True, "stock_in_trigger": "goods_receipt"},
+        "lines": [{
+            "line_id": "gl-in",
+            "purchase_order_line_id": line_id,
+            "received_qty": 20,
+            "unit": "PCS",
+            "master_item_id": mid,
+            "unit_price": 1100,
+        }],
+    }
+    await server.db.purchase_goods_receipts.insert_one(dict(inside))
+    original_now = stock_engine.now_iso
+    stock_engine.now_iso = lambda: "2026-10-04T10:00:00+00:00"
+    try:
+        await stock_engine.handle_goods_receipt_created(server.db, inside, USER)
+    finally:
+        stock_engine.now_iso = original_now
+    assert (await server.db.product_stock_state.find_one({"_id": mid}))["total_qty"] == 120
+    original = fio._utc_now
+    fio._utc_now = lambda: datetime(2026, 10, 4, 17, 0, tzinfo=timezone.utc)
+    try:
+        captured = await fio.capture_financial_opening_snapshot(server.db, {
+            "client_request_id": "snap-members",
+            "lines": [{"master_item_id": mid, "base_uom": "PCS"}],
+        }, USER)
+    finally:
+        fio._utc_now = original
+    assert captured["lines"][0]["qty"] == 120
+    assert inside_id in captured["lines"][0]["included_receipt_ids"]
+    assert (await server.db.product_stock_state.find_one({"_id": mid}))["total_qty"] == 120
+    posted = await post_financial_opening(server.db, {
+        **_opening_payload(mid, 120, 1000, "snap-members-post", effective="2026-10-05"),
+        "snapshot_id": captured["id"],
+    }, USER)
+    assert inside_id in posted["excluded_receipt_ids"]
+    with pytest.raises(HTTPException) as exc:
+        await post_purchase_goods_receipt_accounting(server.db, inside_id, USER, serialize_in_process=False)
+    assert exc.value.status_code == 409
+    assert exc.value.detail["code"] == "HISTORICAL_RECEIPT_EXCLUDED"
+
+    outside_id = str(uuid.uuid4())
+    outside = {
+        "id": outside_id,
+        "receipt_number": "GR-OUT",
+        "purchase_order_id": po_id,
+        "po_number": "PB-IN",
+        "supplier": "Supplier",
+        "receipt_date": "2026-10-05",
+        "cancelled": False,
+        "physical_stock_snapshot": {"enabled": True, "stock_in_trigger": "goods_receipt"},
+        "lines": [{
+            "line_id": "gl-out",
+            "purchase_order_line_id": line_id,
+            "received_qty": 30,
+            "unit": "PCS",
+            "master_item_id": mid,
+            "unit_price": 1200,
+        }],
+    }
+    await server.db.purchase_goods_receipts.insert_one(dict(outside))
+    stock_engine.now_iso = lambda: "2026-10-05T02:00:00+00:00"
+    try:
+        await stock_engine.handle_goods_receipt_created(server.db, outside, USER)
+    finally:
+        stock_engine.now_iso = original_now
+    assert (await server.db.product_stock_state.find_one({"_id": mid}))["total_qty"] == 150
+    posted_out = await post_purchase_goods_receipt_accounting(
+        server.db, outside_id, USER, serialize_in_process=False,
+    )
+    assert isinstance(posted_out, dict)
+    acquisitions, _report = await load_live_acquisition_coverage(server.db)
+    qty, value, _rows = _covered(acquisitions, mid)
+    assert qty == Decimal("150")
+    # Inside 20 is only in the opening book value. The later 30 uses the PO price, once.
+    assert value == Decimal("153000.00")
+    assert await server.db[JOURNAL_ENTRIES].count_documents({
+        "source_type": "purchase_goods_receipt",
+        "source_id": inside_id,
+        "status": "posted",
+    }) == 0
+    assert await server.db[JOURNAL_ENTRIES].count_documents({
+        "source_type": "purchase_goods_receipt",
+        "source_id": outside_id,
+        "status": "posted",
+    }) == 1
+
+
+async def test_snapshot_capture_rejects_a_receipt_that_appears_between_reads():
+    import services.financial_inventory_opening as fio
+
+    await _configure()
+    mid = await _bare_master()
+    await _physical_opening(mid, request_id="race-receipt-physical")
+    original = fio._read_item_boundary
+    calls = {"n": 0}
+
+    async def appear(db, master_item_id, base_uom, *, settle_pending):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            await db.purchase_goods_receipts.insert_one({
+                "id": "gr-mid-read",
+                "receipt_number": "GR-MID",
+                "receipt_date": "2026-10-05",
+                "cancelled": False,
+                "physical_stock_snapshot": {"enabled": True, "stock_in_trigger": "goods_receipt"},
+                "lines": [{"master_item_id": mid, "received_qty": 5, "unit": "PCS"}],
+            })
+        return await original(db, master_item_id, base_uom, settle_pending=settle_pending)
+
+    fio._read_item_boundary = appear
+    try:
+        with pytest.raises(OpeningBlocked) as exc:
+            await fio.capture_financial_opening_snapshot(server.db, {
+                "client_request_id": "snap-mid-read",
+                "lines": [{"master_item_id": mid, "base_uom": "PCS"}],
+            }, USER)
+        assert exc.value.code == "STOCK_COVERAGE_UNPROVEN"
+    finally:
+        fio._read_item_boundary = original
+    assert await server.db.financial_inventory_opening_snapshots.count_documents({"client_request_id": "snap-mid-read"}) == 0
+    assert (await server.db.product_stock_state.find_one({"_id": mid}))["total_qty"] == 100
+
+
+def _po_and_receipt(mid, qty, receipt_date, *, price=1100):
+    po_id = f"po-{uuid.uuid4().hex[:8]}"
+    line_id = f"ln-{uuid.uuid4().hex[:8]}"
+    po_number = f"PB-{uuid.uuid4().hex[:6]}"
+    receipt_id = str(uuid.uuid4())
+    gl_id = f"gl-{uuid.uuid4().hex[:6]}"
+    po = {
+        "id": po_id,
+        "po_number": po_number,
+        "supplier": "Supplier",
+        "cancelled": False,
+        "physical_stock_snapshot": {"enabled": True, "stock_in_trigger": "goods_receipt"},
+        "lines": [{
+            "line_id": line_id,
+            "ordered_qty": qty,
+            "unit_price": price,
+            "unit": "PCS",
+            "master_item_id": mid,
+        }],
+    }
+    receipt = {
+        "id": receipt_id,
+        "receipt_number": f"GR-{uuid.uuid4().hex[:6]}",
+        "purchase_order_id": po_id,
+        "po_number": po_number,
+        "supplier": "Supplier",
+        "receipt_date": receipt_date,
+        "cancelled": False,
+        "physical_stock_snapshot": {"enabled": True, "stock_in_trigger": "goods_receipt"},
+        "lines": [{
+            "line_id": gl_id,
+            "purchase_order_line_id": line_id,
+            "received_qty": qty,
+            "unit": "PCS",
+            "master_item_id": mid,
+            "unit_price": price,
+        }],
+    }
+    return po, receipt
+
+
+async def _insert_po(po):
+    await server.db.purchase_orders.insert_one(dict(po))
+
+
+def _snap_lines(mid):
+    return {"client_request_id": f"snap-{uuid.uuid4().hex[:8]}", "lines": [{"master_item_id": mid, "base_uom": "PCS"}]}
+
+
+async def test_barrier_gr_claim_before_qty_change_blocks_capture():
+    """Seam: claim_durable_stock_event returns, before finalize changes qty."""
+    import services.financial_inventory_opening as fio
+
+    await _configure()
+    mid = await _bare_master()
+    await _physical_opening(mid, request_id="barrier-claim-open")
+    po, receipt = _po_and_receipt(mid, 20, "2026-09-20")
+    await _insert_po(po)
+    await server.db.purchase_goods_receipts.insert_one(dict(receipt))
+    before = await server.db.product_stock_state.find_one({"_id": mid})
+    real_claim = stock_engine.claim_durable_stock_event
+    seen = {}
+
+    async def claim_then_capture(db, **kwargs):
+        result = await real_claim(db, **kwargs)
+        state = await server.db.product_stock_state.find_one({"_id": mid})
+        seen["qty"] = state["total_qty"]
+        seen["version"] = int(state.get("version") or 0)
+        seen["stage"] = (state.get("pending_event") or {}).get("stage")
+        seen["event_id"] = (state.get("pending_event") or {}).get("event_id")
+        assert state["total_qty"] == before["total_qty"]
+        assert int(state.get("version") or 0) == int(before.get("version") or 0)
+        assert seen["stage"] == "CLAIMED"
+        assert await server.db.stock_movements.count_documents({"event_key": seen["event_id"]}) == 0
+        with pytest.raises(OpeningBlocked) as exc:
+            await fio.capture_financial_opening_snapshot(server.db, _snap_lines(mid), USER)
+        assert exc.value.code == "STOCK_PENDING"
+        seen["blocked"] = exc.value.code
+        assert await server.db.financial_inventory_opening_snapshots.count_documents({}) == 0
+        return result
+
+    stock_engine.claim_durable_stock_event = claim_then_capture
+    try:
+        movements = await stock_engine.handle_goods_receipt_created(server.db, receipt, USER)
+    finally:
+        stock_engine.claim_durable_stock_event = real_claim
+    assert seen["blocked"] == "STOCK_PENDING"
+    assert movements
+    state = await server.db.product_stock_state.find_one({"_id": mid})
+    assert state["total_qty"] == 120
+    assert int(state["version"]) == int(before.get("version") or 0) + 1
+    assert not state.get("pending_event")
+    captured = await fio.capture_financial_opening_snapshot(server.db, _snap_lines(mid), USER)
+    assert captured["lines"][0]["qty"] == 120
+    assert captured["lines"][0]["included_receipt_ids"] == [receipt["id"]]
+    posted = await post_financial_opening(server.db, {
+        **_opening_payload(mid, 120, 1000, "barrier-claim-post", effective=captured["business_date"]),
+        "snapshot_id": captured["id"],
+    }, USER)
+    assert receipt["id"] in posted["excluded_receipt_ids"]
+    with pytest.raises(HTTPException) as exc:
+        await post_purchase_goods_receipt_accounting(server.db, receipt["id"], USER, serialize_in_process=False)
+    assert exc.value.status_code == 409
+    assert exc.value.detail["code"] == "HISTORICAL_RECEIPT_EXCLUDED"
+    assert await server.db.purchase_goods_receipts.count_documents({"id": receipt["id"]}) == 1
+    assert await server.db[JOURNAL_ENTRIES].count_documents({
+        "source_type": "purchase_goods_receipt",
+        "source_id": receipt["id"],
+        "status": "posted",
+    }) == 0
+    acquisitions, _report = await load_live_acquisition_coverage(server.db)
+    qty, _value, _rows = _covered(acquisitions, mid)
+    assert qty == Decimal("120")
+
+
+async def test_barrier_gr_after_qty_before_movement_blocks_capture():
+    """Seam: physical_stock_engine.record_stock_movement, after STATE_APPLIED."""
+    import services.financial_inventory_opening as fio
+
+    await _configure()
+    mid = await _bare_master()
+    await _physical_opening(mid, request_id="barrier-applied-open")
+    po, receipt = _po_and_receipt(mid, 20, "2026-09-20")
+    await _insert_po(po)
+    await server.db.purchase_goods_receipts.insert_one(dict(receipt))
+    before = await server.db.product_stock_state.find_one({"_id": mid})
+    real_record = stock_engine.record_stock_movement
+    seen = {}
+
+    async def pause_before_movement(db, **kwargs):
+        state = await server.db.product_stock_state.find_one({"_id": mid})
+        pending = state.get("pending_event") or {}
+        seen["qty"] = state["total_qty"]
+        seen["version"] = int(state.get("version") or 0)
+        seen["stage"] = pending.get("stage")
+        event_id = kwargs.get("event_key")
+        assert state["total_qty"] == 120
+        assert seen["version"] == int(before.get("version") or 0) + 1
+        assert seen["stage"] == "STATE_APPLIED"
+        assert await server.db.stock_movements.count_documents({"event_key": event_id}) == 0
+        with pytest.raises(OpeningBlocked) as exc:
+            await fio.capture_financial_opening_snapshot(server.db, _snap_lines(mid), USER)
+        assert exc.value.code == "STOCK_PENDING"
+        seen["blocked"] = exc.value.code
+        assert await server.db.financial_inventory_opening_snapshots.count_documents({}) == 0
+        return await real_record(db, **kwargs)
+
+    stock_engine.record_stock_movement = pause_before_movement
+    try:
+        await stock_engine.handle_goods_receipt_created(server.db, receipt, USER)
+    finally:
+        stock_engine.record_stock_movement = real_record
+    assert seen["blocked"] == "STOCK_PENDING"
+    state = await server.db.product_stock_state.find_one({"_id": mid})
+    assert state["total_qty"] == 120
+    assert not state.get("pending_event")
+    captured = await fio.capture_financial_opening_snapshot(server.db, _snap_lines(mid), USER)
+    assert captured["lines"][0]["qty"] == 120
+    assert captured["lines"][0]["included_receipt_ids"].count(receipt["id"]) == 1
+    assert await server.db.stock_movements.count_documents({
+        "reference_type": "goods_receipt",
+        "reference_id": receipt["id"],
+    }) == 1
+
+
+async def test_barrier_gr_committed_during_snapshot_insert_is_not_saved():
+    """Seam: _insert_snapshot_document, after the accepted read and before the row is kept."""
+    import services.financial_inventory_opening as fio
+
+    await _configure()
+    mid = await _bare_master()
+    await _physical_opening(mid, request_id="barrier-insert-open")
+    po, receipt = _po_and_receipt(mid, 20, "2026-09-20")
+    await _insert_po(po)
+    journals_before = await server.db[JOURNAL_ENTRIES].count_documents({})
+    real_insert = fio._insert_snapshot_document
+    seen = {}
+
+    async def gr_then_insert(db, doc):
+        seen["attempted_qty"] = doc["lines"][0]["qty"]
+        seen["snapshot_id"] = doc["id"]
+        await server.db.purchase_goods_receipts.insert_one(dict(receipt))
+        moves = await stock_engine.handle_goods_receipt_created(server.db, receipt, USER)
+        assert moves
+        await real_insert(db, doc)
+
+    fio._insert_snapshot_document = gr_then_insert
+    try:
+        with pytest.raises(OpeningBlocked) as exc:
+            await fio.capture_financial_opening_snapshot(server.db, _snap_lines(mid), USER)
+        assert exc.value.code == "STALE_SNAPSHOT"
+    finally:
+        fio._insert_snapshot_document = real_insert
+    assert seen["attempted_qty"] == 100
+    assert await server.db.financial_inventory_opening_snapshots.count_documents({"id": seen["snapshot_id"]}) == 0
+    assert await server.db[JOURNAL_ENTRIES].count_documents({}) == journals_before
+    state = await server.db.product_stock_state.find_one({"_id": mid})
+    assert state["total_qty"] == 120
+    assert await server.db.purchase_goods_receipts.count_documents({"id": receipt["id"]}) == 1
+    captured = await fio.capture_financial_opening_snapshot(server.db, _snap_lines(mid), USER)
+    assert captured["lines"][0]["qty"] == 120
+    assert captured["lines"][0]["included_receipt_ids"].count(receipt["id"]) == 1
+    posted = await post_financial_opening(server.db, {
+        **_opening_payload(mid, 120, 1000, "barrier-insert-post", effective=captured["business_date"]),
+        "snapshot_id": captured["id"],
+    }, USER)
+    assert receipt["id"] in posted["excluded_receipt_ids"]
+    with pytest.raises(HTTPException) as exc:
+        await post_purchase_goods_receipt_accounting(server.db, receipt["id"], USER, serialize_in_process=False)
+    assert exc.value.detail["code"] == "HISTORICAL_RECEIPT_EXCLUDED"
+    acquisitions, _report = await load_live_acquisition_coverage(server.db)
+    qty, value, _rows = _covered(acquisitions, mid)
+    assert qty == Decimal("120")
+    assert value == Decimal("120000.00")
+
+
+async def test_barrier_manual_opening_partial_writes_block_capture():
+    """Seams: entry and return of product_stock_state.record_stock_movement."""
+    import services.financial_inventory_opening as fio
+    import services.product_stock_state as product_stock
+
+    await _configure()
+    mid = await _bare_master()
+    real_record = product_stock.record_stock_movement
+    seen = {"entry": False, "after": False}
+
+    async def opening_record(db, *args, **kwargs):
+        if seen["entry"]:
+            return await real_record(db, *args, **kwargs)
+        seen["entry"] = True
+        state = await server.db.product_stock_state.find_one({"_id": mid})
+        assert state["status"] == "INITIALIZING"
+        assert state["total_qty"] == 100
+        assert int(state.get("version") or 0) == 1
+        assert state.get("opening_movement_id") in (None, "")
+        assert await server.db.stock_movements.count_documents({"master_item_id": mid}) == 0
+        with pytest.raises(OpeningBlocked) as exc:
+            await fio.capture_financial_opening_snapshot(server.db, _snap_lines(mid), USER)
+        assert exc.value.code == "STOCK_STATE_INCOMPLETE"
+        movement = await real_record(db, *args, **kwargs)
+        state = await server.db.product_stock_state.find_one({"_id": mid})
+        assert state["status"] == "INITIALIZING"
+        assert state["total_qty"] == 100
+        assert int(state.get("version") or 0) == 1
+        assert state.get("opening_movement_id") in (None, "")
+        assert await server.db.stock_movements.count_documents({"id": movement["id"]}) == 1
+        with pytest.raises(OpeningBlocked) as after_exc:
+            await fio.capture_financial_opening_snapshot(server.db, _snap_lines(mid), USER)
+        assert after_exc.value.code == "STOCK_STATE_INCOMPLETE"
+        seen["after"] = True
+        assert await server.db.financial_inventory_opening_snapshots.count_documents({}) == 0
+        return movement
+
+    product_stock.record_stock_movement = opening_record
+    try:
+        opened = await _physical_opening(mid, request_id="barrier-manual-open")
+    finally:
+        product_stock.record_stock_movement = real_record
+    assert seen["entry"] and seen["after"]
+    state = await server.db.product_stock_state.find_one({"_id": mid})
+    assert state["status"] == "INITIALIZED"
+    assert int(state.get("version") or 0) == 1
+    assert state["opening_movement_id"]
+    assert not str(opened["movement"].get("stock_applied_at") or "").strip()
+    captured = await fio.capture_financial_opening_snapshot(server.db, _snap_lines(mid), USER)
+    assert captured["lines"][0]["qty"] == 100
+    assert captured["lines"][0]["opening_movement_id"] == state["opening_movement_id"]
+
+
+async def test_barrier_opening_correction_before_state_apply_blocks_capture():
+    """Seam: product_stock_state.record_stock_movement inside correct_opening_balance."""
+    import services.financial_inventory_opening as fio
+    import services.product_stock_state as product_stock
+
+    await _configure()
+    mid = await _bare_master()
+    await _physical_opening(mid, request_id="barrier-corr-open")
+    before = await server.db.product_stock_state.find_one({"_id": mid})
+    real_record = product_stock.record_stock_movement
+    seen = {}
+
+    async def correction_record(db, *args, **kwargs):
+        state = await server.db.product_stock_state.find_one({"_id": mid})
+        assert state.get("pending_event")
+        assert state["total_qty"] == 100
+        assert int(state.get("version") or 0) == int(before.get("version") or 0)
+        with pytest.raises(OpeningBlocked) as exc:
+            await fio.capture_financial_opening_snapshot(server.db, _snap_lines(mid), USER)
+        assert exc.value.code == "STOCK_PENDING"
+        seen["before_code"] = exc.value.code
+        movement = await real_record(db, *args, **kwargs)
+        state = await server.db.product_stock_state.find_one({"_id": mid})
+        assert state.get("pending_event")
+        assert state["total_qty"] == 100
+        assert int(state.get("version") or 0) == int(before.get("version") or 0)
+        assert await server.db.stock_movements.count_documents({"id": movement["id"]}) == 1
+        with pytest.raises(OpeningBlocked) as after_exc:
+            await fio.capture_financial_opening_snapshot(server.db, _snap_lines(mid), USER)
+        assert after_exc.value.code == "STOCK_PENDING"
+        seen["after_code"] = after_exc.value.code
+        assert await server.db.financial_inventory_opening_snapshots.count_documents({}) == 0
+        return movement
+
+    product_stock.record_stock_movement = correction_record
+    try:
+        corrected = await correct_opening_balance(
+            server.db,
+            mid,
+            {"unprinted_qty": 80, "printed_qty": 0, "note": "koreksi barrier", "client_request_id": "barrier-corr"},
+            USER,
+            app_env="local",
+            mongo_url="mongodb://127.0.0.1:27017",
+        )
+    finally:
+        product_stock.record_stock_movement = real_record
+    assert seen["before_code"] == "STOCK_PENDING"
+    assert seen["after_code"] == "STOCK_PENDING"
+    state = await server.db.product_stock_state.find_one({"_id": mid})
+    assert state["total_qty"] == 80
+    assert int(state.get("version") or 0) == int(before.get("version") or 0) + 1
+    assert not state.get("pending_event")
+    assert not str(corrected["movement"].get("stock_applied_at") or "").strip()
+    captured = await fio.capture_financial_opening_snapshot(server.db, _snap_lines(mid), USER)
+    assert captured["lines"][0]["qty"] == 80
+
+
+async def test_barrier_opname_after_movement_before_state_blocks_capture():
+    """Seam: stock_engine_v2.record_stock_movement, before the opname state update. Version stays put."""
+    import services.financial_inventory_opening as fio
+
+    await _configure()
+    mid = await _bare_master()
+    await _physical_opening(mid, request_id="barrier-opname-open")
+    before = await server.db.product_stock_state.find_one({"_id": mid})
+    real_record = stock_engine_v2.record_stock_movement
+    seen = {}
+
+    async def after_opname_movement(db, *args, **kwargs):
+        movement = await real_record(db, *args, **kwargs)
+        state = await server.db.product_stock_state.find_one({"_id": mid})
+        assert int(state.get("version") or 0) == int(before.get("version") or 0)
+        assert state["total_qty"] == 100
+        assert not state.get("pending_event")
+        assert movement["balance_before"] == 100
+        assert movement["balance_after"] == 80
+        with pytest.raises(OpeningBlocked) as exc:
+            await fio.capture_financial_opening_snapshot(server.db, _snap_lines(mid), USER)
+        assert exc.value.code == "STOCK_STATE_MOVEMENT_MISMATCH"
+        seen["code"] = exc.value.code
+        assert await server.db.financial_inventory_opening_snapshots.count_documents({}) == 0
+        return movement
+
+    stock_engine_v2.record_stock_movement = after_opname_movement
+    try:
+        result = await apply_stock_opname(
+            server.db,
+            master_item_id=mid,
+            target_stock_current_qty=80,
+            outstanding_so_qty=0,
+            note="opname barrier",
+            user=USER,
+            client_request_id="barrier-opname",
+        )
+    finally:
+        stock_engine_v2.record_stock_movement = real_record
+    assert seen["code"] == "STOCK_STATE_MOVEMENT_MISMATCH"
+    assert result["stock_state"]["total_qty"] == 80
+    state = await server.db.product_stock_state.find_one({"_id": mid})
+    assert int(state.get("version") or 0) == int(before.get("version") or 0)
+    captured = await fio.capture_financial_opening_snapshot(server.db, _snap_lines(mid), USER)
+    assert captured["lines"][0]["qty"] == 80
+    assert captured["lines"][0]["revision"] == int(before.get("version") or 0)
+
+
+async def test_barrier_goods_receipt_after_capture_before_post_is_stale():
+    """Real GR after a saved snapshot, before opening post."""
+    import services.financial_inventory_opening as fio
+
+    await _configure()
+    mid = await _bare_master()
+    await _physical_opening(mid, request_id="barrier-stale-open")
+    captured = await fio.capture_financial_opening_snapshot(server.db, _snap_lines(mid), USER)
+    frozen_qty = captured["lines"][0]["qty"]
+    journals_before = await server.db[JOURNAL_ENTRIES].count_documents({})
+    po, receipt = _po_and_receipt(mid, 25, captured["business_date"])
+    await _insert_po(po)
+    await server.db.purchase_goods_receipts.insert_one(dict(receipt))
+    await stock_engine.handle_goods_receipt_created(server.db, receipt, USER)
+    assert (await server.db.product_stock_state.find_one({"_id": mid}))["total_qty"] == 125
+    preview = await preview_financial_opening(server.db, {
+        **_opening_payload(mid, frozen_qty, 1000, "barrier-stale-preview", effective=captured["business_date"]),
+        "snapshot_id": captured["id"],
+    })
+    assert preview["writes"] == 0
+    assert preview["can_post"] is False
+    assert preview["blockers"][0]["code"] == "STALE_SNAPSHOT"
+    with pytest.raises(OpeningBlocked) as exc:
+        await post_financial_opening(server.db, {
+            **_opening_payload(mid, frozen_qty, 1000, "barrier-stale-post", effective=captured["business_date"]),
+            "snapshot_id": captured["id"],
+        }, USER)
+    assert exc.value.code == "STALE_SNAPSHOT"
+    assert await server.db[JOURNAL_ENTRIES].count_documents({}) == journals_before
+    assert await server.db.financial_inventory_openings.count_documents({"status": "POSTED"}) == 0
+    stored = await server.db.financial_inventory_opening_snapshots.find_one({"id": captured["id"]}, {"_id": 0})
+    assert stored["lines"][0]["qty"] == frozen_qty
+    assert receipt["id"] not in stored["lines"][0]["included_receipt_ids"]
+    assert await server.db.stock_movements.count_documents({
+        "reference_type": "goods_receipt",
+        "reference_id": receipt["id"],
+    }) == 1
+
+
+async def test_barrier_older_document_date_after_snapshot_is_explicit():
+    """A post-snapshot GR with an older document date is blocked, not deleted."""
+    import services.financial_inventory_opening as fio
+
+    await _configure()
+    mid = await _bare_master()
+    await _physical_opening(mid, request_id="barrier-old-date-open")
+    captured = await fio.capture_financial_opening_snapshot(server.db, _snap_lines(mid), USER)
+    posted = await post_financial_opening(server.db, {
+        **_opening_payload(mid, 100, 1000, "barrier-old-date-post", effective=captured["business_date"]),
+        "snapshot_id": captured["id"],
+    }, USER)
+    assert posted["status"] == "POSTED"
+    po, receipt = _po_and_receipt(mid, 20, "2026-09-01")
+    await _insert_po(po)
+    await server.db.purchase_goods_receipts.insert_one(dict(receipt))
+    await stock_engine.handle_goods_receipt_created(server.db, receipt, USER)
+    assert (await server.db.product_stock_state.find_one({"_id": mid}))["total_qty"] == 120
+    with pytest.raises(HTTPException) as exc:
+        await post_purchase_goods_receipt_accounting(server.db, receipt["id"], USER, serialize_in_process=False)
+    assert exc.value.status_code == 409
+    assert exc.value.detail["code"] == "HISTORICAL_RECEIPT_EXCLUDED"
+    assert await server.db.purchase_goods_receipts.count_documents({"id": receipt["id"]}) == 1
+    assert await server.db.stock_movements.count_documents({
+        "reference_type": "goods_receipt",
+        "reference_id": receipt["id"],
+    }) == 1
+    assert await server.db[JOURNAL_ENTRIES].count_documents({
+        "source_type": "purchase_goods_receipt",
+        "source_id": receipt["id"],
+    }) == 0
+    assert await server.db[JOURNAL_ENTRIES].count_documents({
+        "source_type": SOURCE_TYPE,
+        "status": "posted",
+    }) == 1
+    acquisitions, _report = await load_live_acquisition_coverage(server.db)
+    qty, _value, _rows = _covered(acquisitions, mid)
+    assert qty == Decimal("100")
+    book = await build_financial_book_reconciliation(server.db)
+    assert book["writes"] == 0
+    assert book["reconciliation_status"] != "MATCH"
+    blocked = [row for row in book["blocked_stock_receipts"] if row["receipt_id"] == receipt["id"]]
+    assert len(blocked) == 1
+    assert blocked[0]["code"] == "HISTORICAL_RECEIPT_EXCLUDED"
+    assert receipt["id"] in {row["receipt_id"] for row in book["blockers"]}
+
+
+async def test_barrier_snapshot_date_follows_wib_midnight_confirmation():
+    """fio._utc_now alone crosses WIB midnight. Stock writer clocks stay unpinned."""
+    from datetime import datetime, timezone
+    import services.financial_inventory_opening as fio
+
+    await _configure()
+    mid = await _bare_master()
+    opened = await _physical_opening(mid, request_id="barrier-midnight-open")
+    movement_stamp = str(opened["movement"].get("created_at") or "")
+    pre = datetime(2026, 10, 4, 16, 59, 59, tzinfo=timezone.utc)
+    post = datetime(2026, 10, 4, 17, 0, 0, tzinfo=timezone.utc)
+    assert wib_business_date(pre.isoformat()) == "2026-10-04"
+    assert wib_business_date(post.isoformat()) == "2026-10-05"
+    clock = {"at": pre}
+    original_now = fio._utc_now
+    original_read = fio._read_item_boundary
+    calls = {"n": 0}
+
+    def stamped_now():
+        return clock["at"]
+
+    async def cross_after_first_read(db, master_item_id, base_uom, *, settle_pending):
+        calls["n"] += 1
+        observed = await original_read(db, master_item_id, base_uom, settle_pending=settle_pending)
+        if calls["n"] == 1:
+            assert clock["at"] == pre
+            clock["at"] = post
+        return observed
+
+    fio._utc_now = stamped_now
+    fio._read_item_boundary = cross_after_first_read
+    try:
+        captured = await fio.capture_financial_opening_snapshot(server.db, _snap_lines(mid), USER)
+    finally:
+        fio._utc_now = original_now
+        fio._read_item_boundary = original_read
+    assert calls["n"] >= 2
+    assert captured["captured_at"] == post.isoformat()
+    assert captured["boundary_at"] == captured["captured_at"]
+    assert captured["business_date"] == "2026-10-05"
+    assert wib_business_date(captured["captured_at"]) == captured["business_date"]
+    assert not movement_stamp.startswith("2026-10-04T16:59:59")
+    assert not movement_stamp.startswith("2026-10-04T17:00:00")
+    assert (await server.db.product_stock_state.find_one({"_id": mid}))["total_qty"] == 100
+    posted = await post_financial_opening(server.db, {
+        **_opening_payload(mid, 100, 1000, "barrier-midnight-post", effective=captured["business_date"]),
+        "snapshot_id": captured["id"],
+    }, USER)
+    assert posted["effective_date"] == "2026-10-05"
+    assert posted["effective_date"] == captured["business_date"]

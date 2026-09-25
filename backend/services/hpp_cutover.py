@@ -1142,6 +1142,95 @@ def order_stock_application_chain(
     return {"ok": True, "reason": None, "chain": ordered}
 
 
+def order_balance_chain(movements: List[dict], *, base_uom: str = "") -> dict:
+    """Link live stock effects by balance_before/after only.
+
+    A current-balance snapshot uses this chain as the qty already on hand.
+    It does not place a past cutoff and does not read created_at,
+    claimed_at, updated_at, or a document date as application evidence.
+    """
+    wanted_uom = str(base_uom or "").strip().upper()
+    usable = []
+    for movement in movements or []:
+        if not _movement_is_live(movement):
+            continue
+        before = movement.get("balance_before")
+        after = movement.get("balance_after")
+        delta = _dec(movement.get("delta") or 0)
+        if before is None or after is None:
+            if delta != 0:
+                return {
+                    "ok": False,
+                    "reason": "STOCK_SNAPSHOT_UNPROVEN",
+                    "movement_id": movement_evidence_id(movement),
+                    "evidence_reason": "Movement hidup tidak punya saldo sebelum dan sesudah.",
+                    "chain": [],
+                }
+            continue
+        if _dec(before) == _dec(after):
+            continue
+        movement_uom = str(movement.get("base_uom") or "").strip().upper()
+        if wanted_uom and movement_uom and movement_uom != wanted_uom:
+            return {
+                "ok": False,
+                "reason": "STOCK_UOM_AMBIGUOUS",
+                "movement_id": movement_evidence_id(movement),
+                "evidence_reason": "Satuan movement tidak sama dengan satuan saldo.",
+                "chain": [],
+            }
+        usable.append(movement)
+    if not usable:
+        return {"ok": True, "reason": None, "chain": []}
+    by_before = {}
+    for movement in usable:
+        key = str(qty_round(movement.get("balance_before")))
+        if key in by_before:
+            return {
+                "ok": False,
+                "reason": "STOCK_CHAIN_AMBIGUOUS",
+                "movement_id": movement_evidence_id(movement),
+                "evidence_reason": "Dua movement hidup mengklaim saldo awal yang sama.",
+                "chain": [],
+            }
+        by_before[key] = movement
+    after_keys = {str(qty_round(movement.get("balance_after"))) for movement in usable}
+    starts = [
+        movement for movement in usable
+        if str(qty_round(movement.get("balance_before"))) not in after_keys
+    ]
+    if len(starts) != 1:
+        return {
+            "ok": False,
+            "reason": "STOCK_CHAIN_AMBIGUOUS",
+            "evidence_reason": "Rantai saldo tidak punya satu awal yang tunggal.",
+            "chain": [],
+        }
+    ordered = []
+    current = starts[0]
+    seen = set()
+    while current is not None:
+        ident = str(current.get("id") or current.get("event_key") or "")
+        if not ident or ident in seen:
+            return {
+                "ok": False,
+                "reason": "STOCK_CHAIN_AMBIGUOUS",
+                "movement_id": movement_evidence_id(current),
+                "evidence_reason": "Rantai saldo berputar atau movement tidak punya identitas.",
+                "chain": [],
+            }
+        seen.add(ident)
+        ordered.append(current)
+        current = by_before.get(str(qty_round(current.get("balance_after"))))
+    if len(ordered) != len(usable):
+        return {
+            "ok": False,
+            "reason": "STOCK_CHAIN_UNPROVEN",
+            "evidence_reason": "Ada movement hidup yang tidak tersambung ke rantai saldo.",
+            "chain": [],
+        }
+    return {"ok": True, "reason": None, "chain": ordered}
+
+
 def cutoff_snapshot_qty(chain: List[dict], cutoff: datetime, *, require_applied_marker: bool = True) -> dict:
     """Stock qty at cutoff from the full balance chain.
 

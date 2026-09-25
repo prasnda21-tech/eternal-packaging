@@ -825,47 +825,295 @@ def _state_version(state: Optional[dict]) -> int:
 
 
 def _annotate_reconstruction_blockers(blockers: List[dict]) -> List[dict]:
-    needs_snapshot = {
+    """Path A: reconstructing a past cutoff. A current snapshot is a different path.
+
+    Missing historical markers may be replaced by a new current-balance snapshot.
+    An in-flight mutation cannot. The message must not tell the user to snapshot
+    a past date or to use created_at as application evidence.
+    """
+    historical = {
         "STOCK_COMMIT_UNPROVEN",
         "STOCK_SNAPSHOT_UNPROVEN",
         "STOCK_CHAIN_UNPROVEN",
         "STOCK_CHAIN_AMBIGUOUS",
         "STOCK_CHAIN_ORDER_CONFLICT",
-        "STOCK_PENDING",
         "STOCK_COVERAGE_UNPROVEN",
     }
     annotated = []
     for row in blockers or []:
         item = dict(row)
-        if str(item.get("code") or "") in needs_snapshot:
-            item["snapshot_required"] = True
+        code = str(item.get("code") or "")
+        if code == "STOCK_PENDING":
+            item["boundary_kind"] = "historical_reconstruction"
+            item["snapshot_available"] = False
+            item["snapshot_required"] = False
             item["valid_snapshot_rule"] = (
-                "Rekonstruksi historis ke cutoff tidak terbukti. Ambil snapshot pada tanggal "
-                "efektif, tidak sebelum 00:00 WIB tanggal itu. Snapshot yang dibuat kemudian "
-                "tidak boleh diberi tanggal mundur."
+                "Rekonstruksi historis tidak terbukti, dan snapshot saldo sekarang juga terblokir "
+                "selama mutasi masih berjalan. Selesaikan mutasi itu. Jangan mengambil snapshot sekarang."
+            )
+        elif code in historical:
+            item["boundary_kind"] = "historical_reconstruction"
+            item["snapshot_available"] = True
+            item["snapshot_required"] = False
+            item["valid_snapshot_rule"] = (
+                "Rekonstruksi historis ke cutoff masa lalu tidak terbukti. Snapshot saldo sekarang "
+                "dapat diambil dan hanya membekukan qty pada saat diambil. Snapshot itu tidak "
+                "memundurkan opening ke tanggal cutoff yang diminta."
             )
         annotated.append(item)
     return annotated
 
 
-async def _read_item_boundary(db, master_item_id: str, base_uom: str, *, settle_pending: bool) -> dict:
-    from services.hpp_cutover import prove_stock_application_chain
-    from services.physical_stock_engine import reconcile_pending_product_claim
+def _capture_blocker_message(code: str) -> str:
+    return {
+        "STOCK_PENDING": (
+            "Snapshot terblokir karena mutasi stok masih berjalan. Qty tidak diubah. "
+            "Selesaikan mutasi sebelum mengambil snapshot."
+        ),
+        "STOCK_STATE_INCOMPLETE": (
+            "Snapshot terblokir karena state saldo belum selesai. Movement dan perubahan state "
+            "yang ditulis terpisah tidak dibekukan saat salah satunya belum selesai."
+        ),
+        "STOCK_STATE_MOVEMENT_MISMATCH": (
+            "Snapshot terblokir karena qty state tidak sama dengan movement yang sudah tertulis. "
+            "Salah satu penulisan belum selesai atau tidak konsisten."
+        ),
+        "STOCK_CHAIN_AMBIGUOUS": "Snapshot terblokir karena rantai saldo ambigu. Qty tidak diubah.",
+        "STOCK_CHAIN_UNPROVEN": "Snapshot terblokir karena rantai saldo tidak utuh. Qty tidak diubah.",
+        "STOCK_SNAPSHOT_UNPROVEN": (
+            "Snapshot terblokir karena ada movement tanpa saldo sebelum dan sesudah. Qty tidak diubah."
+        ),
+        "STOCK_UOM_AMBIGUOUS": "Snapshot terblokir karena satuan movement tidak sama dengan satuan saldo.",
+        "STOCK_COVERAGE_UNPROVEN": (
+            "Snapshot terblokir karena penerimaan sudah tercatat tetapi efek stoknya belum masuk rantai. "
+            "Tanggal dokumen tidak dipakai sebagai batas. Selesaikan mutasi stok terlebih dahulu."
+        ),
+        "STALE_SNAPSHOT": (
+            "Stok berubah saat snapshot diambil. Snapshot tidak disimpan dan qty tidak diubah. "
+            "Ulangi setelah mutasi selesai."
+        ),
+        "OPENING_UOM_AMBIGUOUS": "Base UOM snapshot tidak sama dengan satuan stok.",
+    }.get(code, "Snapshot saldo sekarang tidak dapat diambil.")
 
-    mid = str(master_item_id or "")
-    if settle_pending:
-        state = await db.product_stock_state.find_one(
-            {"$or": [{"_id": mid}, {"master_item_id": mid}]},
-            {"_id": 0, "pending_event": 1, "total_qty": 1},
-        )
-        if state and state.get("pending_event"):
-            await reconcile_pending_product_claim(db, mid)
-    proof = await prove_stock_application_chain(db, mid, base_uom=base_uom)
-    state = proof.get("state") or await db.product_stock_state.find_one(
+
+def _boundary_token(observed: dict) -> tuple:
+    state = observed.get("state") or {}
+    proof = observed.get("proof") or {}
+    qty = state.get("total_qty")
+    return (
+        bool(proof.get("ok")),
+        str(proof.get("reason") or ""),
+        _state_version(state),
+        None if qty is None else qty_round(qty),
+        str(state.get("status") or ""),
+        str(state.get("opening_movement_id") or ""),
+        bool(state.get("pending_event")),
+        _chain_fingerprint(proof.get("chain") or []),
+        tuple(proof.get("included_receipt_ids") or []),
+    )
+
+
+async def prove_current_balance_boundary(db, master_item_id: str, base_uom: str = "") -> dict:
+    """Prove the qty on hand now. This is not a reconstruction of a past cutoff.
+
+    Consistency is the finished state plus a balance chain that ends at that qty,
+    with no in-flight claim and no goods receipt whose stock effect is still missing.
+    created_at is not application evidence. stock_applied_at on older movements is
+    not backfilled and is not required for this boundary.
+    """
+    from services.hpp_cutover import order_balance_chain
+
+    mid = str(master_item_id or "").strip()
+    state = await db.product_stock_state.find_one(
         {"$or": [{"_id": mid}, {"master_item_id": mid}]},
         {"_id": 0},
     )
-    return {"proof": proof, "state": state}
+    movements = await db.stock_movements.find({"master_item_id": mid}, {"_id": 0}).to_list(20000)
+    base = {
+        "ok": False,
+        "chain": [],
+        "state": state,
+        "included_receipt_ids": [],
+        "boundary_kind": "current_balance",
+    }
+    if not state:
+        return {**base, "reason": "STOCK_STATE_INCOMPLETE", "evidence_reason": "State stok belum ada."}
+    if state.get("pending_event"):
+        return {**base, "reason": "STOCK_PENDING", "evidence_reason": "pending_event masih terisi."}
+    if state.get("status") != "INITIALIZED" or state.get("initialized") is not True:
+        return {
+            **base,
+            "reason": "STOCK_STATE_INCOMPLETE",
+            "evidence_reason": "State belum selesai diinisialisasi.",
+        }
+    wanted_uom = str(base_uom or state.get("base_uom") or "").strip().upper()
+    ordered = order_balance_chain(movements, base_uom=wanted_uom)
+    if not ordered.get("ok"):
+        return {
+            **base,
+            "reason": ordered.get("reason") or "STOCK_CHAIN_UNPROVEN",
+            "movement_id": ordered.get("movement_id"),
+            "evidence_reason": ordered.get("evidence_reason"),
+        }
+    chain = ordered.get("chain") or []
+    terminal = chain[-1].get("balance_after") if chain else 0
+    if _dec(qty_round(state.get("total_qty"))) != _dec(qty_round(terminal)):
+        return {
+            **base,
+            "reason": "STOCK_STATE_MOVEMENT_MISMATCH",
+            "chain": chain,
+            "evidence_reason": "total_qty tidak sama dengan balance_after movement terakhir.",
+        }
+    opening_id = str(state.get("opening_movement_id") or "")
+    chain_ids = {str(movement.get("id") or movement.get("event_key") or "") for movement in chain}
+    if opening_id and opening_id not in chain_ids:
+        return {
+            **base,
+            "reason": "STOCK_STATE_MOVEMENT_MISMATCH",
+            "chain": chain,
+            "evidence_reason": "opening_movement_id tidak ada pada rantai saldo.",
+        }
+    state_uom = str(state.get("base_uom") or "").strip().upper()
+    if wanted_uom and state_uom and state_uom != wanted_uom:
+        return {
+            **base,
+            "reason": "OPENING_UOM_AMBIGUOUS",
+            "chain": chain,
+            "evidence_reason": "Base UOM state tidak sama dengan permintaan snapshot.",
+        }
+    receipts = await db.purchase_goods_receipts.find(
+        {"cancelled": {"$ne": True}, "lines.master_item_id": mid},
+        {"_id": 0, "id": 1, "receipt_number": 1, "lines": 1, "physical_stock_snapshot": 1},
+    ).to_list(5000)
+    settings = await db.app_settings.find_one({"key": "physical_stock"}, {"_id": 0, "enabled": 1, "stock_in_trigger": 1})
+    by_receipt: Dict[str, List[dict]] = {}
+    for movement in chain:
+        if str(movement.get("reference_type") or "") != "goods_receipt":
+            continue
+        by_receipt.setdefault(str(movement.get("reference_id") or ""), []).append(movement)
+    included: List[str] = []
+    for receipt in receipts:
+        receipt_id = str(receipt.get("id") or "")
+        if not _receipt_moves_this_item(receipt, mid):
+            continue
+        moves = by_receipt.get(receipt_id) or []
+        if moves:
+            included.append(receipt_id)
+            continue
+        if _receipt_expects_goods_receipt_stock(receipt, settings):
+            return {
+                **base,
+                "reason": "STOCK_COVERAGE_UNPROVEN",
+                "chain": chain,
+                "receipt_id": receipt_id,
+                "receipt_number": receipt.get("receipt_number"),
+                "evidence_reason": "Dokumen penerimaan ada tanpa movement stok pada rantai.",
+            }
+    return {
+        "ok": True,
+        "reason": None,
+        "chain": chain,
+        "state": state,
+        "included_receipt_ids": sorted(set(included)),
+        "boundary_kind": "current_balance",
+        "terminal_qty": qty_round(terminal),
+    }
+
+
+def _receipt_moves_this_item(receipt: dict, master_item_id: str) -> bool:
+    for line in receipt.get("lines") or []:
+        if str(line.get("master_item_id") or "") != master_item_id:
+            continue
+        if abs(float(line.get("received_qty") or line.get("quantity") or 0)) > 1e-9:
+            return True
+    return False
+
+
+def _receipt_expects_goods_receipt_stock(receipt: dict, settings: Optional[dict]) -> bool:
+    enabled = bool((settings or {}).get("enabled"))
+    trigger = str((settings or {}).get("stock_in_trigger") or "")
+    snap = receipt.get("physical_stock_snapshot") or {}
+    if snap:
+        enabled = bool(snap.get("enabled", enabled))
+        trigger = str(snap.get("stock_in_trigger") or trigger)
+    return bool(enabled and trigger == "goods_receipt")
+
+
+async def _read_item_boundary(db, master_item_id: str, base_uom: str, *, settle_pending: bool) -> dict:
+    """Read the current balance boundary. Does not finish or settle an in-flight mutation.
+
+    settle_pending is retained for callers and is intentionally ignored. Completing
+    a pending claim here would change physical qty while a snapshot is being read.
+    """
+    del settle_pending
+    proof = await prove_current_balance_boundary(db, master_item_id, base_uom)
+    return {"proof": proof, "state": proof.get("state") or {}}
+
+
+async def _boundary_drift(db, wanted: list, tokens: dict) -> Optional[dict]:
+    """Re-read state, the balance chain, and receipt membership against an accepted token."""
+    for row in wanted:
+        mid = row["master_item_id"]
+        observed = await _read_item_boundary(db, mid, row["base_uom"], settle_pending=False)
+        proof = observed.get("proof") or {}
+        if not proof.get("ok"):
+            code = str(proof.get("reason") or "STOCK_STATE_INCOMPLETE")
+            return {
+                "code": code,
+                "message": _capture_blocker_message(code),
+                "master_item_id": mid,
+                "movement_id": proof.get("movement_id"),
+                "receipt_id": proof.get("receipt_id"),
+                "receipt_number": proof.get("receipt_number"),
+                "evidence_reason": proof.get("evidence_reason"),
+                "boundary_kind": "current_balance",
+                "snapshot_available": False,
+            }
+        if _boundary_token(observed) != tokens.get(mid):
+            return {
+                "code": "STALE_SNAPSHOT",
+                "message": _capture_blocker_message("STALE_SNAPSHOT"),
+                "master_item_id": mid,
+                "boundary_kind": "current_balance",
+                "snapshot_available": False,
+            }
+    return None
+
+
+def _raise_boundary_drift(drift: dict) -> None:
+    raise OpeningBlocked(
+        str(drift.get("code") or "STALE_SNAPSHOT"),
+        str(drift.get("message") or _capture_blocker_message("STALE_SNAPSHOT")),
+        extra={"blockers": [drift], "boundary_kind": "current_balance"},
+    )
+
+
+async def _insert_snapshot_document(db, doc: dict) -> None:
+    await db[SNAPSHOTS].insert_one(dict(doc))
+
+
+async def _commit_snapshot_document(db, doc: dict, wanted: list, tokens: dict) -> None:
+    """Insert only if the accepted boundary is still the boundary after the insert.
+
+    Read order is state, then movements, then receipts. The comparison is the
+    full token, not version or qty alone. A writer that commits after the
+    accepted read and before this insert, or during the insert, fails this
+    check. The inserted document is removed and qty on that document is not
+    replaced with the newer balance.
+
+    Crash boundary, not covered by a process-kill test: if the process stops
+    after insert_one and before delete_one, the stale snapshot document can
+    remain. Posting that document must fail. Qty on the document is not
+    replaced with the later balance.
+    """
+    drift = await _boundary_drift(db, wanted, tokens)
+    if drift:
+        _raise_boundary_drift(drift)
+    await _insert_snapshot_document(db, doc)
+    drift = await _boundary_drift(db, wanted, tokens)
+    if drift:
+        await db[SNAPSHOTS].delete_one({"id": doc["id"]})
+        _raise_boundary_drift(drift)
 
 
 async def capture_financial_opening_snapshot(db, payload: dict, user: Optional[dict] = None) -> dict:
@@ -900,99 +1148,131 @@ async def capture_financial_opening_snapshot(db, payload: dict, user: Optional[d
                 "Request snapshot yang sama tidak boleh mengganti item yang sudah diambil.",
             )
         return existing
-    captured_at = _utc_now()
     actor = actor_snapshot(user)
-    lines = []
+    accepted = []
     blockers = []
     for row in wanted:
         mid = row["master_item_id"]
-        observed = await _read_item_boundary(db, mid, row["base_uom"], settle_pending=True)
-        state = observed.get("state") or {}
-        if state.get("pending_event"):
-            blockers.append({
-                "code": "STOCK_PENDING",
-                "message": "Mutasi stok masih in-flight. Snapshot tidak mengubah qty dan tidak dibuat.",
-                "master_item_id": mid,
-                "snapshot_required": True,
-            })
-            continue
+        observed = await _read_item_boundary(db, mid, row["base_uom"], settle_pending=False)
         proof = observed.get("proof") or {}
         if not proof.get("ok"):
+            code = str(proof.get("reason") or "STOCK_STATE_INCOMPLETE")
             blockers.append({
-                "code": proof.get("reason") or "STOCK_COMMIT_UNPROVEN",
-                "message": "Batas sebelum/sesudah snapshot tidak terbukti. Timestamp tidak diisi mundur.",
+                "code": code,
+                "message": _capture_blocker_message(code),
                 "master_item_id": mid,
                 "movement_id": proof.get("movement_id"),
+                "receipt_id": proof.get("receipt_id"),
+                "receipt_number": proof.get("receipt_number"),
                 "evidence_reason": proof.get("evidence_reason"),
-                "snapshot_required": True,
+                "boundary_kind": "current_balance",
+                "snapshot_available": False,
             })
             continue
         again = await _read_item_boundary(db, mid, row["base_uom"], settle_pending=False)
-        again_state = again.get("state") or {}
         again_proof = again.get("proof") or {}
-        chain = again_proof.get("chain") or []
-        if (
-            again_state.get("pending_event")
-            or not again_proof.get("ok")
-            or _state_version(again_state) != _state_version(state)
-            or _chain_fingerprint(chain) != _chain_fingerprint(proof.get("chain") or [])
-        ):
+        if not again_proof.get("ok"):
+            code = str(again_proof.get("reason") or "STALE_SNAPSHOT")
             blockers.append({
-                "code": "STALE_SNAPSHOT",
-                "message": "Stok berubah saat snapshot diambil. Snapshot tidak disimpan.",
+                "code": code,
+                "message": _capture_blocker_message(code),
                 "master_item_id": mid,
+                "movement_id": again_proof.get("movement_id"),
+                "receipt_id": again_proof.get("receipt_id"),
+                "evidence_reason": again_proof.get("evidence_reason"),
+                "boundary_kind": "current_balance",
+                "snapshot_available": False,
             })
             continue
-        physical_qty = again_state.get("total_qty")
-        if physical_qty is None:
-            physical_qty = chain[-1].get("balance_after") if chain else None
+        if _boundary_token(observed) != _boundary_token(again):
+            blockers.append({
+                "code": "STALE_SNAPSHOT",
+                "message": _capture_blocker_message("STALE_SNAPSHOT"),
+                "master_item_id": mid,
+                "boundary_kind": "current_balance",
+                "snapshot_available": False,
+            })
+            continue
+        again_state = again.get("state") or {}
         state_uom = str(again_state.get("base_uom") or row["base_uom"]).strip().upper()
         if state_uom != row["base_uom"]:
             blockers.append({
                 "code": "OPENING_UOM_AMBIGUOUS",
-                "message": "Base UOM snapshot tidak sama dengan satuan stok.",
+                "message": _capture_blocker_message("OPENING_UOM_AMBIGUOUS"),
                 "master_item_id": mid,
+                "boundary_kind": "current_balance",
+                "snapshot_available": False,
             })
             continue
-        lines.append({
-            "master_item_id": mid,
+        accepted.append({
+            "row": row,
+            "observed": again,
+            "token": _boundary_token(again),
             "base_uom": state_uom,
-            "qty": qty_round(physical_qty) if physical_qty is not None else None,
-            "revision": _state_version(again_state),
-            "fingerprint": _chain_fingerprint(chain),
-            "event_count": len(chain),
-            "identity": financial_inventory_item_key({"master_item_id": mid}),
-            "provenance": {
-                "source": "CAPTURED_STOCK_BOUNDARY",
-                "actor": actor,
-                "captured_at": captured_at.isoformat(),
-                "published_price_ignored": True,
-                "qty_adjusted_for_snapshot": False,
-            },
         })
-    if blockers or len(lines) != len(wanted):
+    if blockers or len(accepted) != len(wanted):
         if await db.product_stock_state.count_documents({}) != before_stock:
             raise OpeningBlocked("SNAPSHOT_MUTATED_STOCK", "Snapshot mengubah jumlah dokumen stok.", status_code=500)
         raise OpeningBlocked(
             str(blockers[0].get("code") if blockers else "STOCK_SNAPSHOT_UNPROVEN"),
             str(blockers[0].get("message") if blockers else "Snapshot tidak terbukti."),
-            extra={"blockers": _annotate_reconstruction_blockers(blockers)},
+            extra={"blockers": blockers, "boundary_kind": "current_balance"},
         )
+    # Consistency point: the matching read just accepted. This clock is that
+    # point, so the WIB opening date cannot stay on the previous calendar day
+    # when confirmation itself crosses midnight. It is not a movement timestamp.
+    captured_at = _utc_now()
+    captured_text = captured_at.isoformat()
+    business_date = captured_at.astimezone(WIB).date().isoformat()
+    lines = []
+    tokens = {}
+    for item in accepted:
+        again = item["observed"]
+        again_proof = again.get("proof") or {}
+        again_state = again.get("state") or {}
+        chain = again_proof.get("chain") or []
+        mid = item["row"]["master_item_id"]
+        physical_qty = again_state.get("total_qty")
+        tokens[mid] = item["token"]
+        lines.append({
+            "master_item_id": mid,
+            "base_uom": item["base_uom"],
+            "qty": qty_round(physical_qty) if physical_qty is not None else None,
+            "revision": _state_version(again_state),
+            "fingerprint": _chain_fingerprint(chain),
+            "event_count": len(chain),
+            "movement_ids": [
+                str(movement.get("id") or movement.get("event_key") or "") for movement in chain
+            ],
+            "included_receipt_ids": list(again_proof.get("included_receipt_ids") or []),
+            "opening_movement_id": str(again_state.get("opening_movement_id") or ""),
+            "identity": financial_inventory_item_key({"master_item_id": mid}),
+            "boundary_kind": "current_balance",
+            "provenance": {
+                "source": "CURRENT_BALANCE_BOUNDARY",
+                "actor": actor,
+                "captured_at": captured_text,
+                "published_price_ignored": True,
+                "qty_adjusted_for_snapshot": False,
+                "historical_markers_not_backfilled": True,
+            },
+        })
     doc = {
         "id": str(uuid.uuid4()),
         "client_request_id": request_id,
         "status": "CAPTURED",
-        "captured_at": captured_at.isoformat(),
-        "boundary_at": captured_at.isoformat(),
-        "business_date": captured_at.astimezone(WIB).date().isoformat(),
+        "boundary_kind": "current_balance",
+        "captured_at": captured_text,
+        "boundary_at": captured_text,
+        "business_date": business_date,
         "timezone": TARGET_TIMEZONE,
         "lines": lines,
         "created_by": actor,
-        "created_at": captured_at.isoformat(),
+        "created_at": captured_text,
         "backdated": False,
     }
     try:
-        await db[SNAPSHOTS].insert_one(dict(doc))
+        await _commit_snapshot_document(db, doc, wanted, tokens)
     except DuplicateKeyError:
         raced = await db[SNAPSHOTS].find_one({"client_request_id": request_id}, {"_id": 0})
         if raced:
@@ -1016,8 +1296,6 @@ async def capture_financial_opening_snapshot(db, payload: dict, user: Optional[d
 
 
 async def _coverage_from_snapshot(db, lines: List[dict], effective_date: str, snapshot_id: str) -> dict:
-    from services.hpp_cutover import applied_marker_instant, cutoff_snapshot_qty
-
     snapshot = await db[SNAPSHOTS].find_one({"id": str(snapshot_id)}, {"_id": 0})
     if not snapshot or snapshot.get("status") != "CAPTURED":
         raise OpeningBlocked("SNAPSHOT_NOT_FOUND", "Snapshot opening tidak ditemukan.", status_code=404)
@@ -1025,14 +1303,28 @@ async def _coverage_from_snapshot(db, lines: List[dict], effective_date: str, sn
     if effective_date < business:
         raise OpeningBlocked(
             "OPENING_SNAPSHOT_BACKDATED",
-            "Snapshot dibuat setelah tanggal yang diminta. Opening tidak diberi tanggal mundur.",
-            extra={"snapshot_business_date": business, "effective_date": effective_date},
+            (
+                f"Tanggal efektif {effective_date} lebih awal dari snapshot saldo sekarang {business}. "
+                "Snapshot ini tidak mendukung cutoff itu dan tidak diberi tanggal mundur."
+            ),
+            extra={
+                "snapshot_business_date": business,
+                "effective_date": effective_date,
+                "boundary_kind": "current_balance",
+            },
         )
     if effective_date != business:
         raise OpeningBlocked(
             "OPENING_SNAPSHOT_DATE_MISMATCH",
-            "Tanggal opening harus sama dengan tanggal WIB saat snapshot diambil.",
-            extra={"snapshot_business_date": business, "effective_date": effective_date},
+            (
+                f"Tanggal efektif {effective_date} tidak didukung snapshot {business}. "
+                "Opening pada snapshot saldo sekarang harus memakai tanggal WIB saat snapshot diambil."
+            ),
+            extra={
+                "snapshot_business_date": business,
+                "effective_date": effective_date,
+                "boundary_kind": "current_balance",
+            },
         )
     captured_lines = {
         str(row.get("master_item_id") or ""): row
@@ -1083,103 +1375,114 @@ async def _coverage_from_snapshot(db, lines: List[dict], effective_date: str, sn
         state = observed.get("state") or {}
         proof = observed.get("proof") or {}
         chain = proof.get("chain") or []
-        if state.get("pending_event") or not proof.get("ok"):
-            blockers.append({
-                "code": "STALE_SNAPSHOT" if proof.get("ok") else (proof.get("reason") or "STALE_SNAPSHOT"),
-                "message": "Snapshot tidak lagi menggambarkan stok. Posting ditolak.",
-                "master_item_id": mid,
-                "snapshot_required": True,
-            })
-            continue
-        if (
-            _state_version(state) != int(captured.get("revision") or 0)
-            or _chain_fingerprint(chain) != str(captured.get("fingerprint") or "")
-            or _dec(state.get("total_qty") or 0) != _dec(captured.get("qty"))
-        ):
-            blockers.append({
-                "code": "STALE_SNAPSHOT",
-                "message": "Revisi stok berubah setelah snapshot. Snapshot basi tidak diposting.",
-                "master_item_id": mid,
-                "captured_revision": captured.get("revision"),
-                "current_revision": _state_version(state),
-            })
-            continue
-        placed = cutoff_snapshot_qty(chain, boundary, require_applied_marker=True)
-        if not placed.get("ok"):
-            blockers.append({
-                "code": placed.get("reason") or "STOCK_COMMIT_UNPROVEN",
-                "message": "Event sebelum dan sesudah batas snapshot tidak terbukti.",
-                "master_item_id": mid,
-                "movement_id": placed.get("movement_id"),
-                "snapshot_required": True,
-            })
+        frozen_receipts = sorted(str(rid) for rid in (captured.get("included_receipt_ids") or []))
+        current_receipts = list(proof.get("included_receipt_ids") or [])
+        frozen_opening = str(captured.get("opening_movement_id") or "")
+        current_opening = str(state.get("opening_movement_id") or "")
+        still_current = (
+            bool(proof.get("ok"))
+            and not state.get("pending_event")
+            and _state_version(state) == int(captured.get("revision") or 0)
+            and _chain_fingerprint(chain) == str(captured.get("fingerprint") or "")
+            and _dec(state.get("total_qty") or 0) == _dec(captured.get("qty"))
+            and current_receipts == frozen_receipts
+            and current_opening == frozen_opening
+        )
+        if not still_current:
+            if state.get("pending_event"):
+                blockers.append({
+                    "code": "STOCK_PENDING",
+                    "message": (
+                        "Snapshot tidak diposting karena mutasi stok masih berjalan. "
+                        "Saldo terbaru tidak menggantikan snapshot."
+                    ),
+                    "master_item_id": mid,
+                    "boundary_kind": "current_balance",
+                    "snapshot_available": False,
+                })
+            else:
+                blockers.append({
+                    "code": "STALE_SNAPSHOT",
+                    "message": (
+                        "Snapshot basi. Saldo terbaru tidak dipakai. Ambil snapshot baru setelah "
+                        "state dan movement konsisten."
+                    ),
+                    "master_item_id": mid,
+                    "boundary_kind": "current_balance",
+                    "snapshot_available": True,
+                    "captured_revision": captured.get("revision"),
+                    "current_revision": _state_version(state),
+                    "evidence_reason": None if proof.get("ok") else proof.get("evidence_reason"),
+                })
             continue
         receipts = await db.purchase_goods_receipts.find(
             {"cancelled": {"$ne": True}, "lines.master_item_id": mid},
-            {"_id": 0, "id": 1, "receipt_date": 1, "receipt_number": 1},
+            {"_id": 0, "id": 1, "receipt_date": 1, "receipt_number": 1, "lines": 1},
         ).to_list(5000)
-        by_receipt: Dict[str, List[dict]] = {}
-        for movement in chain:
-            if str(movement.get("reference_type") or "") != "goods_receipt":
-                continue
-            by_receipt.setdefault(str(movement.get("reference_id") or ""), []).append(movement)
+        frozen_ids = set(frozen_receipts)
+        chain_ids = {str(movement.get("id") or movement.get("event_key") or "") for movement in chain}
+        later_count = 0
         snapshots.append({
             "master_item_id": mid,
             "base_uom": captured.get("base_uom"),
             "snapshot_qty": captured.get("qty"),
             "snapshot_id": snapshot["id"],
             "boundary_at": snapshot.get("boundary_at"),
-            "events_before_cutoff": len(placed.get("events_before") or []),
-            "events_after_cutoff": len(placed.get("events_after") or []),
+            "boundary_kind": "current_balance",
+            "events_before_cutoff": len(chain),
+            "events_after_cutoff": later_count,
             "snapshot_is_current_stock": True,
             "backdated": False,
         })
         for receipt in receipts:
             receipt_id = str(receipt.get("id") or "")
+            if not _receipt_moves_this_item(receipt, mid):
+                continue
             business_date = wib_business_date(receipt.get("receipt_date"))
-            moves = by_receipt.get(receipt_id) or []
+            in_frozen_chain = receipt_id in frozen_ids or any(
+                str(movement.get("reference_id") or "") == receipt_id
+                and str(movement.get("id") or movement.get("event_key") or "") in chain_ids
+                and str(movement.get("reference_type") or "") == "goods_receipt"
+                for movement in chain
+            )
+            if in_frozen_chain:
+                excluded.append(receipt_id)
+                continue
             if business_date is None:
                 ambiguous.append(receipt_id)
                 blockers.append({
                     "code": "AMBIGUOUS_RECEIPT_DATE",
-                    "message": "Tanggal penerimaan tidak dapat dibaca.",
+                    "message": "Tanggal penerimaan tidak dapat dibaca. Dokumen tidak diloloskan dari tanggal saja.",
                     "receipt_id": receipt_id,
+                    "receipt_number": receipt.get("receipt_number"),
                     "master_item_id": mid,
+                    "boundary_kind": "current_balance",
                 })
                 continue
-            if not moves:
-                blockers.append({
-                    "code": "STOCK_COVERAGE_UNPROVEN",
-                    "message": "Penerimaan belum punya efek stok yang terbukti terhadap batas snapshot.",
-                    "receipt_id": receipt_id,
-                    "master_item_id": mid,
-                })
-                continue
-            writer = applied_marker_instant(moves[0])
-            stock_before = bool(writer and writer < boundary)
-            accounting_before = business_date < effective_date or (business_date == effective_date and stock_before)
-            if stock_before and accounting_before:
-                excluded.append(receipt_id)
-            elif stock_before and not accounting_before:
-                blockers.append({
-                    "code": "STOCK_APPLIED_BEFORE_ACCOUNTING_DATE",
-                    "message": "Stok GR sudah masuk sebelum batas snapshot, tetapi tanggal akuntansi belum.",
-                    "receipt_id": receipt_id,
-                    "master_item_id": mid,
-                })
-            elif not stock_before and business_date < effective_date:
+            if business_date < effective_date:
                 blockers.append({
                     "code": "HISTORICAL_DOCUMENT_STOCK_AFTER_CUTOFF",
-                    "message": "Tanggal akuntansi sebelum batas, tetapi efek stok belum terbukti sebelumnya.",
+                    "message": (
+                        "Tanggal dokumen sebelum batas snapshot, tetapi efek stoknya tidak ada di saldo yang dibekukan. "
+                        "Tanggal dokumen tidak cukup sebagai batas."
+                    ),
                     "receipt_id": receipt_id,
+                    "receipt_number": receipt.get("receipt_number"),
                     "master_item_id": mid,
+                    "boundary_kind": "current_balance",
                 })
+                continue
+            later_count += 1
+        if snapshots:
+            snapshots[-1]["events_after_cutoff"] = later_count
     return {
         "excluded": excluded,
         "ambiguous": ambiguous,
         "blockers": blockers,
         "snapshots": snapshots,
         "snapshot_id": snapshot["id"],
+        "snapshot_business_date": business,
+        "boundary_kind": "current_balance",
     }
 
 
@@ -1247,6 +1550,8 @@ async def preview_financial_opening(db, payload: dict) -> dict:
         "published_is_book_value": False,
         "snapshot_id": snapshot_id or None,
         "historical_reconstruction": not bool(snapshot_id),
+        "boundary_kind": "current_balance" if snapshot_id else "historical_reconstruction",
+        "snapshot_business_date": coverage.get("snapshot_business_date"),
     }
 
 
@@ -2147,6 +2452,70 @@ def apply_opening_to_acquisitions(
     return kept
 
 
+async def _blocked_stock_receipts_outside_opening(db, openings: List[dict]) -> List[dict]:
+    """Receipts whose stock moved and whose financial post is refused.
+
+    A receipt already inside the opening baseline is excluded on purpose.
+    One that moved stock after that baseline, with a document date before
+    the opening, stays on the document and must stay visible here.
+    """
+    excluded = {str(rid) for opening in openings for rid in (opening.get("excluded_receipt_ids") or [])}
+    receipts = await db.purchase_goods_receipts.find(
+        {"cancelled": {"$ne": True}},
+        {"_id": 0, "id": 1, "receipt_number": 1, "receipt_date": 1, "lines": 1},
+    ).to_list(5000)
+    ids = [str(row.get("id") or "") for row in receipts if row.get("id")]
+    movements = await db.stock_movements.find(
+        {"reference_type": "goods_receipt", "reference_id": {"$in": ids}},
+        {"_id": 0, "reference_id": 1, "status": 1, "voided_at": 1},
+    ).to_list(20000) if ids else []
+    live_ids = {
+        str(movement.get("reference_id") or "")
+        for movement in movements
+        if str(movement.get("status") or "").upper() not in {"VOID", "CANCELLED"}
+        and not movement.get("voided_at")
+    }
+    blocked: List[dict] = []
+    for receipt in receipts:
+        receipt_id = str(receipt.get("id") or "")
+        if not receipt_id or receipt_id in excluded or receipt_id not in live_ids:
+            continue
+        item_ids = {
+            str(line.get("master_item_id") or "")
+            for line in (receipt.get("lines") or [])
+            if isinstance(line, dict)
+        }
+        business = wib_business_date(receipt.get("receipt_date"))
+        code = None
+        for opening in openings:
+            covered = {str(line.get("master_item_id") or "") for line in opening.get("lines") or []}
+            if item_ids and covered and item_ids.isdisjoint(covered):
+                continue
+            if receipt_id in set(opening.get("ambiguous_receipt_ids") or []):
+                code = "AMBIGUOUS_RECEIPT_DATE"
+                break
+            effective = str(opening.get("effective_date") or "")
+            if business is None:
+                code = "AMBIGUOUS_RECEIPT_DATE"
+                break
+            if effective and business < effective:
+                code = "HISTORICAL_RECEIPT_EXCLUDED"
+                break
+        if not code:
+            continue
+        blocked.append({
+            "code": code,
+            "receipt_id": receipt_id,
+            "receipt_number": receipt.get("receipt_number"),
+            "receipt_date": business,
+            "message": (
+                "Penerimaan sudah mengubah stok, tetapi posting finansial ditolak. "
+                "Dokumen tidak dihapus dan tidak masuk akuisisi baru."
+            ),
+        })
+    return blocked
+
+
 async def build_financial_book_reconciliation(db) -> dict:
     """Read-only opening + posted GR − posted COGS against the inventory GL.
 
@@ -2279,7 +2648,10 @@ async def build_financial_book_reconciliation(db) -> dict:
         for movement in await load_pengiriman_movements(db)
         if movement_id_of(movement) not in live_issue_journals
     ]
-    coverage_complete = not ambiguous and overlap == 0 and not other_keys and not pending_cogs
+    blocked_stock_receipts = await _blocked_stock_receipts_outside_opening(db, openings)
+    coverage_complete = (
+        not ambiguous and overlap == 0 and not other_keys and not pending_cogs and not blocked_stock_receipts
+    )
     if remaining is None:
         status = "INCOMPLETE"
     elif pending_cogs or not coverage_complete:
@@ -2313,6 +2685,8 @@ async def build_financial_book_reconciliation(db) -> dict:
         "reconciliation_status": status,
         "published_is_book_value": False,
         "pending_cogs_count": len(pending_cogs),
+        "blocked_stock_receipts": blocked_stock_receipts,
+        "blockers": blocked_stock_receipts,
         "physical_vs_financial": (
             "Qty fisik adalah saldo operasional saat ini. Qty finansial adalah opening dan GR yang jurnalnya masih sah, dikurangi COGS posted. "
             "Keduanya berbeda saat posting keuangan masih pending."
