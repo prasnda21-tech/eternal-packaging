@@ -148,8 +148,9 @@
   text-underline-offset: 2px;
 }
 
-/* Pesanan Penjualan list + Buat Pesanan.
-   The page does not scroll. The order list, item table, and summary body scroll internally. */
+/* Pesanan Penjualan list keeps its own viewport lock and table scroll.
+   Buat Pesanan uses one vertical scroll for the form body (summary, tabs, and tab content).
+   Do not change the list workspace or other pages from the create-form rules below. */
 
 .app-shell:has(.so-list-workspace),
 .app-shell:has(.so-create-workspace) {
@@ -736,11 +737,13 @@
   min-height: 34px !important;
 }
 .so-create-workspace textarea.so-line-input.so-create-address {
-  height: 56px;
-  min-height: 52px !important;
-  padding: 8px 10px;
+  height: auto;
+  min-height: 44px !important;
+  max-height: none;
+  padding: 6px 8px;
   line-height: 1.35;
-  resize: none;
+  resize: vertical;
+  field-sizing: content;
 }
 .so-create-workspace .so-create-auto,
 .so-create-workspace .so-create-repeat {
@@ -783,11 +786,12 @@
 .so-create-workspace .so-create-line-heading span { color: var(--so-muted); font-size: 12px; font-weight: 600; }
 .so-create-workspace .so-create-add { height: 34px; padding: 0 12px; margin-left: auto; }
 .so-create-workspace .so-create-lines-scroll {
-  flex: 1 1 auto;
+  flex: none;
+  height: auto;
+  max-height: none;
   min-height: 0;
   min-width: 0;
-  overflow-x: auto;
-  overflow-y: auto;
+  overflow: visible;
 }
 .so-create-workspace .so-create-lines-table {
   width: 100%;
@@ -797,8 +801,8 @@
   font-size: 13px;
 }
 .so-create-workspace .so-create-lines-table thead th {
-  position: sticky;
-  top: 0;
+  position: static;
+  top: auto;
   z-index: 1;
   background: #e8f3ee !important;
   color: #14532d !important;
@@ -987,9 +991,8 @@
 }
 
 @media (min-width: 1024px) {
-  .so-create-workspace .so-create-actionbar { padding-right: 72px; }
-  .so-list-workspace .so-list-pager { padding-right: 88px; }
   .so-create-workspace .so-create-actionbar { padding-right: 96px; }
+  .so-list-workspace .so-list-pager { padding-right: 88px; }
   .so-create-workspace .so-create-side-body { padding-right: 88px; padding-bottom: 12px; }
 }
 @media (max-width: 1100px) {
@@ -1001,27 +1004,28 @@
   .so-create-workspace .so-line-meta { grid-template-columns: 1fr 1fr; }
 }
 
-/* Approved create layout: summary chips, two tabs, priced table, fixed footer. */
+/* Approved create layout: summary chips, two tabs, priced table, pinned footer.
+   The stage is the only vertical scroller for customer info, summary, tabs, and tab content. */
 .so-create-workspace .so-create-stage {
   flex: 1 1 auto;
   min-height: 0;
   min-width: 0;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
-  padding: 10px 12px 0;
-  gap: 8px;
-}
-.so-create-workspace .so-create-form[data-create-tab="ship"] .so-create-stage {
-  overflow: auto;
+  overflow-x: auto;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 6px 12px 36px;
+  gap: 6px;
+  scroll-padding-bottom: 36px;
 }
 .so-create-workspace .so-create-form[data-create-tab="items"] .so-ship-only { display: none; }
 .so-create-workspace .so-create-form[data-create-tab="ship"] .so-items-only { display: none; }
 .so-create-workspace .so-sum-row {
   display: flex;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   align-items: stretch;
-  gap: 8px;
+  gap: 6px;
   flex: 0 0 auto;
   min-width: 0;
 }
@@ -1030,36 +1034,49 @@
   position: relative;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   min-width: 0;
-  max-width: 180px;
-  flex: 1 1 128px;
+  max-width: 168px;
+  flex: 1 1 120px;
   background: #fff;
   border: 1px solid #e2e8e6;
-  border-radius: 12px;
-  padding: 8px 34px 8px 12px;
-  box-shadow: 0 1px 0 rgba(15, 23, 42, 0.03);
+  border-radius: 8px;
+  padding: 4px 26px 4px 8px;
+  box-shadow: none;
 }
 .so-create-workspace .so-sum-chip.is-customer {
-  flex: 1.5 0 220px;
+  flex: 1.4 1 200px;
   max-width: none;
-  min-width: 220px;
+  min-width: 180px;
+}
+.so-create-workspace .so-sum-chip.is-po {
+  flex: 0 1 auto;
+  max-width: none;
+  min-width: min(100%, 12.5rem);
 }
 .so-create-workspace .so-ship-card {
-  max-width: 320px;
-  min-width: 210px;
-  flex: 1.3 1 230px;
+  max-width: none;
+  min-width: 180px;
+  flex: 1.4 1 220px;
+  align-items: flex-start;
   background: #f0fdf4;
   border-color: #bbf7d0;
   color: #14532d;
 }
 .so-create-workspace .so-ship-card strong,
 .so-create-workspace .so-ship-card span { display: block; }
-.so-create-workspace .so-ship-card strong { font-size: 13px; }
-.so-create-workspace .so-ship-card span { font-size: 12px; color: #166534; font-weight: 500; }
+.so-create-workspace .so-ship-card strong { font-size: 13px; line-height: 1.25; }
+.so-create-workspace .so-ship-card span {
+  font-size: 12px;
+  color: #166534;
+  font-weight: 500;
+  line-height: 1.3;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
 .so-create-workspace .so-ship-icon {
-  width: 32px;
-  height: 32px;
+  width: 26px;
+  height: 26px;
   border-radius: 8px;
   display: grid;
   place-items: center;
@@ -1076,16 +1093,20 @@
   color: #64748b;
 }
 .so-create-workspace .so-sum-text {
-  font-size: 14px;
+  font-size: 13px;
+  line-height: 1.25;
   font-weight: 700;
   color: #172126;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.so-create-workspace .so-sum-chip.is-customer .so-sum-text {
+.so-create-workspace .so-sum-chip.is-customer .so-sum-text,
+.so-create-workspace .so-sum-chip.is-po .so-sum-text {
   overflow: visible;
   text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .so-create-workspace .so-sum-dormant {
   position: absolute;
@@ -1103,10 +1124,10 @@
 .so-create-workspace .so-sum-editor input { height: 30px; }
 .so-create-workspace .so-sum-pencil {
   position: absolute;
-  top: 8px;
-  right: 8px;
-  width: 22px;
-  height: 22px;
+  top: 4px;
+  right: 4px;
+  width: 20px;
+  height: 20px;
   border: 0;
   background: transparent;
   color: #64748b;
@@ -1118,9 +1139,9 @@
 .so-create-workspace .so-sum-pencil:hover { background: #e8f3ee; color: #166534; }
 .so-create-workspace .so-sum-chip .so-create-auto {
   position: absolute;
-  right: 32px;
-  top: 8px;
-  height: 22px;
+  right: 26px;
+  top: 3px;
+  height: 20px;
   padding: 0 6px;
 }
 .so-create-workspace .so-form-tabs {
@@ -1143,14 +1164,16 @@
   border-bottom-color: #166534;
 }
 .so-create-workspace .so-create-lines {
-  flex: 1 1 auto;
+  flex: none;
+  height: auto;
+  max-height: none;
   min-height: 0;
   display: flex;
   flex-direction: column;
   background: #fff;
   border: 1px solid #e2e8e6;
   border-radius: 12px;
-  overflow: hidden;
+  overflow: visible;
 }
 .so-create-workspace .so-create-lines-table { min-width: 980px; }
 .so-create-workspace .so-col-price { width: 180px; }
@@ -1212,10 +1235,13 @@
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
+  height: auto;
+  max-height: none;
+  overflow: visible;
   background: #fff;
   border: 1px solid #e2e8e6;
   border-radius: 12px;
-  padding: 12px;
+  padding: 10px;
 }
 .so-create-workspace .so-create-extra { grid-column: 1 / -1; }
 .so-create-workspace .so-create-extra h3 { grid-column: 1 / -1; margin: 0; }
@@ -1244,14 +1270,16 @@
 .so-create-workspace .so-footer-actions { display: flex; gap: 8px; margin-left: auto; flex: 0 0 auto; }
 .so-create-workspace .so-create-repeat { height: 36px; align-self: center; padding: 0 12px; }
 .so-create-workspace .so-create-main {
-  flex: 1 1 auto;
-  gap: 8px;
+  flex: none;
+  height: auto;
+  max-height: none;
+  gap: 6px;
   background: transparent;
   border: 0;
   border-radius: 0;
-  overflow: hidden;
+  overflow: visible;
 }
 .so-create-workspace .so-create-form[data-create-tab="ship"] .so-create-main {
-  flex: 0 0 auto;
+  flex: none;
   overflow: visible;
 }
