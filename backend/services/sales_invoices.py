@@ -80,6 +80,25 @@ def derive_invoice_number(po_number: str, invoice_index: int) -> str:
     return f"{base}_{invoice_index}"
 
 
+def stored_order_unit_price(line: Optional[dict]) -> Optional[float]:
+    """A missing order price is None, never an implied zero."""
+    if not isinstance(line, dict) or "unit_price" not in line:
+        return None
+    raw = line.get("unit_price")
+    if raw is None or raw == "":
+        return None
+    return _parse_non_negative_price(raw, "Harga jual pesanan")
+
+
+def _require_explicit_price(raw: Any, field_name: str) -> float:
+    if raw is None or (isinstance(raw, str) and not str(raw).strip()):
+        raise HTTPException(
+            400,
+            f"{field_name} wajib diisi. Harga kosong tidak dijadikan Rp0.",
+        )
+    return _parse_non_negative_price(raw, field_name)
+
+
 def _parse_non_negative_price(raw: Any, field_name: str = "Harga satuan") -> float:
     """Strictly validates and converts numeric input to a non-negative float.
     Rejects malformed strings, None, negative numbers, etc.
@@ -330,6 +349,10 @@ async def get_po_invoice_preview(db, po_id_or_doc: Any, exclude_invoice_id: Opti
 
         total_ordered_qty += ordered_qty
         total_remaining_invoice_qty += remaining_invoice_qty
+        stored_price = stored_order_unit_price(li)
+        stored_subtotal = None
+        if stored_price is not None:
+            stored_subtotal = round(float(Decimal(str(remaining_invoice_qty)) * Decimal(str(stored_price))), 2)
 
         preview_lines.append({
             "line_idx": line_idx,
@@ -342,9 +365,11 @@ async def get_po_invoice_preview(db, po_id_or_doc: Any, exclude_invoice_id: Opti
             "remaining_invoice_qty": remaining_invoice_qty,
             "quantity": remaining_invoice_qty,  # Default suggested qty to invoice
             "unit": unit,
-            "unit_price": 0.0,
-            "line_subtotal": 0.0,
-            "line_total": 0.0,
+            "unit_price": stored_price,
+            "price_from_order": stored_price is not None,
+            "price_source": li.get("price_source") if stored_price is not None else None,
+            "line_subtotal": stored_subtotal,
+            "line_total": stored_subtotal,
         })
 
     return {
@@ -427,8 +452,10 @@ async def create_sales_invoice(db, payload: Dict[str, Any], user: dict) -> Dict[
                 if input_lines:
                     continue
                 invoice_qty = p_line["remaining_invoice_qty"]
-                raw_unit_price = 0
             else:
+                sent_line_id = str(matched_input.get("line_id") or "").strip()
+                if sent_line_id and sent_line_id != str(p_line.get("line_id") or ""):
+                    raise HTTPException(400, f"Identitas baris faktur tidak cocok dengan pesanan untuk '{p_line['item_name']}'.")
                 raw_qty = matched_input.get("quantity")
                 if raw_qty is None or raw_qty == "":
                     raw_qty = matched_input.get("invoice_qty")
@@ -439,7 +466,6 @@ async def create_sales_invoice(db, payload: Dict[str, Any], user: dict) -> Dict[
                         invoice_qty = int(raw_qty)
                     except (ValueError, TypeError):
                         raise HTTPException(400, f"Kuantitas faktur untuk '{p_line['item_name']}' harus berupa bilangan bulat.")
-                raw_unit_price = matched_input.get("unit_price", 0)
 
             if invoice_qty < 0:
                 raise HTTPException(400, f"Kuantitas faktur untuk '{p_line['item_name']}' tidak boleh negatif.")
@@ -455,7 +481,18 @@ async def create_sales_invoice(db, payload: Dict[str, Any], user: dict) -> Dict[
                     f"Kuantitas faktur ({invoice_qty}) untuk '{p_line['item_name']}' melebihi sisa PO ({remaining} {p_line['unit']})."
                 )
 
-            unit_price = _parse_non_negative_price(raw_unit_price, f"Harga satuan '{p_line['item_name']}'")
+            if p_line.get("price_from_order"):
+                unit_price = float(p_line["unit_price"])
+            elif matched_input is None or "unit_price" not in matched_input:
+                raise HTTPException(
+                    400,
+                    f"Harga jual untuk '{p_line['item_name']}' belum ada di pesanan. Lengkapi harga sebelum membuat faktur.",
+                )
+            else:
+                unit_price = _require_explicit_price(
+                    matched_input.get("unit_price"),
+                    f"Harga jual '{p_line['item_name']}'",
+                )
 
             line_subtotal = round(float(Decimal(str(invoice_qty)) * Decimal(str(unit_price))), 2)
             authoritative_subtotal += line_subtotal
@@ -657,7 +694,7 @@ async def update_sales_invoice(db, invoice_id: str, payload: Dict[str, Any], use
             line_idx = int(el.get("line_idx", idx))
             qty = int(el.get("quantity") or 0)
 
-            if line_idx in input_by_idx:
+            if line_idx in input_by_idx and input_by_idx[line_idx].get("unit_price") not in (None, ""):
                 raw_price = input_by_idx[line_idx].get("unit_price")
                 unit_price = _parse_non_negative_price(raw_price, f"Harga satuan '{el.get('item_name')}'")
             else:

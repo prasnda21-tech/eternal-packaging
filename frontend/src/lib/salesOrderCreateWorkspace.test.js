@@ -269,6 +269,9 @@ describe("sales order create workspace contract", () => {
       notes: "n",
       accurate_item_id: "a1",
       master_item_id: "m1",
+      unit_price: null,
+      price_source: null,
+      price_review: false,
     });
     expect(payload.line_items[1].name).toBe("Box");
     expect(payload.line_items[1].quantity).toBe(3);
@@ -286,6 +289,7 @@ describe("sales order create workspace contract", () => {
     }));
     expect(withUi.line_items[0].rowKey).toBeUndefined();
     expect(withUi.line_items[0].entry_mode).toBeUndefined();
+    expect(withUi.line_items[0].price_lock).toBeUndefined();
     expect(withUi.line_items[0].name).toBe("Box");
   });
 

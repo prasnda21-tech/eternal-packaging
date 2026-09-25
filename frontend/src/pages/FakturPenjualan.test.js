@@ -28,7 +28,12 @@ describe("Faktur Penjualan UI & Navigation Suite", () => {
     expect(pageSrc).toMatch(/invoice-ppn-input/);
     expect(pageSrc).toMatch(/qty-input/);
     expect(pageSrc).toMatch(/unit-price-input/);
+    expect(pageSrc).toMatch(/price_from_order/);
+    expect(pageSrc).toMatch(/Harga kosong tidak dijadikan Rp0/);
+    expect(pageSrc).not.toMatch(/initialPrices\[l\.line_idx\] = l\.unit_price \|\| ""/);
     expect(pageSrc).toMatch(/save-invoice-btn/);
+    expect(pageSrc).toMatch(/className="invoice-actions"[\s\S]{0,180}paddingRight:\s*96/);
+    expect(pageSrc.match(/className="invoice-actions"/g)).toHaveLength(2);
   });
 
   test("PODetail -> Faktur Penjualan passes exact po_id and bypasses redundant PO chooser", () => {

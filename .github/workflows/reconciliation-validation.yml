@@ -4,6 +4,7 @@ on:
   pull_request:
     branches:
       - main
+      - cursor/sales-order-redesign-b7d7
   workflow_dispatch:
 
 permissions:
@@ -64,6 +65,7 @@ jobs:
           tests/test_stock_v2_off_state_compat.py
           tests/test_line_product_replacement_concurrency.py
           tests/test_sales_pwa_scope.py
+          tests/test_sales_order_line_prices.py
 
   frontend-focused:
     name: Frontend tests and build
@@ -102,6 +104,10 @@ jobs:
           src/sales/SalesPwaOrdersPage.test.js
           src/sales/SalesPwaDashboardPage.test.js
           src/sales/SalesPwaVisitsPage.test.js
+          src/lib/salesOrderCreateWorkspace.test.js
+          src/pages/PesananPenjualan.createWorkspace.test.js
+          src/pages/PesananPenjualan.test.js
+          src/pages/FakturPenjualan.test.js
       - name: Build production frontend
         if: ${{ always() }}
         env:
