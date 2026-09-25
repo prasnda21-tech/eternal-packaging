@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { FileText } from "lucide-react";
 import api, { publicApiUrl } from "../lib/api";
+import TrackingInvoicePdfViewer from "./TrackingInvoicePdfViewer";
 import {
   formatInvoiceDate,
   formatInvoiceMoney,
@@ -28,14 +29,18 @@ export default function TrackingInvoices({ token }) {
   const [openId, setOpenId] = useState("");
   const [detail, setDetail] = useState(null);
   const [detailPhase, setDetailPhase] = useState("idle");
+  const [pdfTarget, setPdfTarget] = useState(null);
   const listReq = useRef(0);
   const detailReq = useRef(0);
+  const bodyRef = useRef(null);
+  const scrollRef = useRef(0);
 
   const loadList = useCallback(() => {
     const req = ++listReq.current;
     detailReq.current += 1;
     setPhase("loading");
     setDrawer(false);
+    setPdfTarget(null);
     setOpenId("");
     setDetail(null);
     setDetailPhase("idle");
@@ -63,10 +68,25 @@ export default function TrackingInvoices({ token }) {
   const closeDrawer = useCallback(() => {
     detailReq.current += 1;
     setDrawer(false);
+    setPdfTarget(null);
     setOpenId("");
     setDetail(null);
     setDetailPhase("idle");
   }, []);
+
+  const openPdf = (invoice) => {
+    const path = safeInvoicePdfPath(invoice?.pdf_url);
+    if (!path) return;
+    scrollRef.current = bodyRef.current?.scrollTop || 0;
+    setPdfTarget({ id: invoice.id, number: invoice.invoice_number, path });
+  };
+
+  const closePdf = () => setPdfTarget(null);
+
+  useEffect(() => {
+    if (pdfTarget || !bodyRef.current) return;
+    bodyRef.current.scrollTop = scrollRef.current;
+  }, [pdfTarget]);
 
   useEffect(() => {
     if (!drawer) return undefined;
@@ -165,13 +185,29 @@ export default function TrackingInvoices({ token }) {
         aria-label="Faktur Penjualan"
         onClick={(event) => event.stopPropagation()}
       >
-        <header className="tracking-sheet-head">
-          <h2>Faktur Penjualan</h2>
+        <header className={`tracking-sheet-head${pdfTarget ? " is-pdf" : ""}`}>
+          {pdfTarget ? (
+            <button type="button" className="ghost sm" data-testid="tracking-invoice-pdf-back" onClick={closePdf}>
+              Kembali
+            </button>
+          ) : null}
+          <h2 data-testid="tracking-invoice-sheet-title">{pdfTarget ? pdfTarget.number : "Faktur Penjualan"}</h2>
           <button type="button" className="ghost sm" data-testid="tracking-invoice-sheet-close" onClick={closeDrawer}>
             Tutup
           </button>
         </header>
-        <div className="tracking-sheet-body">
+        <div
+          className={`tracking-sheet-body${pdfTarget ? " is-pdf" : ""}`}
+          ref={bodyRef}
+          data-testid="tracking-invoice-sheet-body"
+        >
+          {pdfTarget ? (
+            <TrackingInvoicePdfViewer
+              key={pdfTarget.id}
+              pdfPath={pdfTarget.path}
+              invoiceId={pdfTarget.id}
+            />
+          ) : (
           <div className="tracking-inv-list">
             {invoices.map((inv) => {
               const pdfPath = safeInvoicePdfPath(inv.pdf_url);
@@ -215,6 +251,16 @@ export default function TrackingInvoices({ token }) {
                     >
                       {open ? "Tutup detail" : "Detail"}
                     </button>
+                    {pdfPath ? (
+                      <button
+                        type="button"
+                        className="tracking-inv-btn is-ghost"
+                        data-testid={`tracking-invoice-view-pdf-${inv.id}`}
+                        onClick={() => openPdf(inv)}
+                      >
+                        Buka PDF
+                      </button>
+                    ) : null}
                     {pdfPath ? (
                       <a
                         className="tracking-inv-btn is-ghost"
@@ -273,6 +319,7 @@ export default function TrackingInvoices({ token }) {
               );
             })}
           </div>
+          )}
         </div>
       </div>
     </div>

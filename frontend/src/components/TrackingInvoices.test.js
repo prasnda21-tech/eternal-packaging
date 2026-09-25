@@ -4,6 +4,13 @@ import api from "../lib/api";
 import TrackingInvoices from "./TrackingInvoices";
 import { formatInvoiceMoney, safeInvoicePdfPath } from "../lib/trackingInvoices";
 
+jest.mock("./TrackingInvoicePdfViewer", () => ({
+  __esModule: true,
+  default: ({ invoiceId, pdfPath }) => (
+    <div data-testid="tracking-invoice-pdf-viewer" data-invoice-id={invoiceId} data-path={pdfPath} />
+  ),
+}));
+
 jest.mock("../lib/api", () => ({
   __esModule: true,
   publicApiUrl: (path) => (path ? `http://localhost:8000${path}` : ""),
@@ -160,6 +167,8 @@ describe("TrackingInvoices", () => {
     expect(document.querySelector('[data-testid="tracking-invoice-pdf-inv-1"]').getAttribute("href"))
       .toBe("http://localhost:8000/api/public/tracking/tok-public-aaaaaaaa/invoices/inv-1/pdf?disposition=attachment");
     expect(document.querySelector('[data-testid="tracking-invoice-pdf-inv-1"]').getAttribute("download")).not.toBeNull();
+    expect(document.querySelector('[data-testid="tracking-invoice-view-pdf-inv-1"]').textContent).toBe("Buka PDF");
+    expect(document.querySelector('[data-testid="tracking-invoice-view-pdf-inv-2"]').textContent).toBe("Buka PDF");
     expect(document.querySelector('[data-testid="tracking-invoice-detail-inv-1"]')).toBeNull();
 
     await act(async () => {
@@ -203,6 +212,63 @@ describe("TrackingInvoices", () => {
     });
     expect(document.querySelector('[data-testid="tracking-invoice-sheet"]')).toBeNull();
     expect(host.scrollWidth).toBeLessThanOrEqual(host.clientWidth + 1);
+    await act(async () => { root.unmount(); });
+  });
+
+  test("buka pdf replaces the drawer, then back restores detail and scroll", async () => {
+    const openSpy = jest.spyOn(window, "open").mockImplementation(() => null);
+    api.publicTrackingInvoices.mockResolvedValue({
+      invoices: [
+        issued,
+        {
+          ...issued,
+          id: "inv-2",
+          invoice_number: "INV/2026/09/01/0007_2",
+          pdf_url: "/api/public/tracking/tok-public-aaaaaaaa/invoices/inv-2/pdf?disposition=attachment",
+        },
+      ],
+    });
+    api.publicTrackingInvoice.mockResolvedValue(detail);
+    const { host, root } = await mount();
+    await act(async () => { tile(host).click(); });
+    await act(async () => {
+      document.querySelector('[data-testid="tracking-invoice-open-inv-1"]').click();
+    });
+    await flush();
+    const body = document.querySelector('[data-testid="tracking-invoice-sheet-body"]');
+    body.scrollTop = 120;
+    await act(async () => {
+      document.querySelector('[data-testid="tracking-invoice-view-pdf-inv-1"]').click();
+    });
+    const viewer = document.querySelector('[data-testid="tracking-invoice-pdf-viewer"]');
+    expect(viewer.getAttribute("data-invoice-id")).toBe("inv-1");
+    expect(viewer.getAttribute("data-path")).toContain("/invoices/inv-1/pdf");
+    expect(document.querySelector(".tracking-inv-list")).toBeNull();
+    expect(document.querySelectorAll(".tracking-sheet-root")).toHaveLength(1);
+    expect(document.querySelector('[data-testid="tracking-invoice-sheet-title"]').textContent).toBe("INV/2026/09/01/0007");
+    expect(document.querySelector('[data-testid="tracking-invoice-pdf-back"]').textContent).toBe("Kembali");
+    expect(openSpy).not.toHaveBeenCalled();
+
+    await act(async () => {
+      document.querySelector('[data-testid="tracking-invoice-pdf-back"]').click();
+    });
+    const restored = document.querySelector('[data-testid="tracking-invoice-sheet-body"]');
+    expect(restored.querySelector(".tracking-inv-list")).toBeTruthy();
+    expect(restored.scrollTop).toBe(120);
+    expect(document.querySelector('[data-testid="tracking-invoice-detail-inv-1"]')).toBeTruthy();
+    expect(document.querySelector('[data-testid="tracking-invoice-sheet-title"]').textContent).toBe("Faktur Penjualan");
+
+    await act(async () => {
+      document.querySelector('[data-testid="tracking-invoice-view-pdf-inv-2"]').click();
+    });
+    expect(document.querySelector('[data-testid="tracking-invoice-pdf-viewer"]').getAttribute("data-invoice-id")).toBe("inv-2");
+    expect(document.querySelector('[data-testid="tracking-invoice-pdf-viewer"]').getAttribute("data-path")).toContain("/invoices/inv-2/pdf");
+    await act(async () => {
+      document.querySelector('[data-testid="tracking-invoice-sheet-close"]').click();
+    });
+    expect(document.querySelector('[data-testid="tracking-invoice-pdf-viewer"]')).toBeNull();
+    expect(document.querySelector('[data-testid="tracking-invoice-sheet"]')).toBeNull();
+    openSpy.mockRestore();
     await act(async () => { root.unmount(); });
   });
 
