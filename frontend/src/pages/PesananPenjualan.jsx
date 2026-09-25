@@ -4,11 +4,8 @@ import {
   AlertCircle,
   ArrowLeft,
   CheckCircle2,
-  CircleHelp,
-  Ellipsis,
   FileText,
   Filter,
-  Package,
   Plus,
   RefreshCw,
   Search,
@@ -16,7 +13,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import api from "../lib/api";
+import api, { publicApiUrl } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDisplayDate } from "../lib/constants";
 import { Popover, PopoverContent, PopoverTrigger } from "../components/ui/popover";
@@ -58,6 +55,18 @@ import {
   lineEntryModeAfterRepeat,
   salesOrderIssuePlacement,
 } from "../lib/salesOrderCreateWorkspace";
+import {
+  SALES_ORDER_PAGE_SIZES,
+  canShowAktifSummary,
+  formatQuantityByUnit,
+  listPageCount,
+  listProgressText,
+  listRangeLabel,
+  orderQuantityLabel,
+  periodBounds,
+  quantityByUnitFromLines,
+  salesOrderListRequest,
+} from "../lib/salesOrderListPresentation";
 
 let salesOrderLineKeySeq = 0;
 
@@ -134,7 +143,7 @@ export function salesOrderProgress(formData) {
 }
 
 export function buildSalesOrderCreatePayload(formData) {
-  return {
+  const payload = {
     ...formData,
     po_number: String(formData.po_number || "").trim() || undefined,
     customer: String(formData.customer || "").trim(),
@@ -151,6 +160,8 @@ export function buildSalesOrderCreatePayload(formData) {
       return next;
     }),
   };
+  delete payload.outlet_id;
+  return payload;
 }
 
 function getTodayString() {
@@ -175,6 +186,31 @@ const INITIAL_LINE_ITEM = {
   accurate_item_id: null,
   master_item_id: null,
 };
+
+function SalesOrderThumb({ src }) {
+  const [broken, setBroken] = useState(false);
+  if (!src || broken) {
+    return <span className="so-thumb so-thumb-empty" aria-hidden="true" />;
+  }
+  return (
+    <img
+      className="so-thumb"
+      src={src}
+      alt=""
+      loading="lazy"
+      onError={() => setBroken(true)}
+    />
+  );
+}
+
+function confirmDiscardSalesOrder() {
+  if (typeof window === "undefined" || typeof window.confirm !== "function") return true;
+  try {
+    return window.confirm("Ada perubahan yang belum disimpan. Tinggalkan formulir ini?");
+  } catch {
+    return true;
+  }
+}
 
 function SalesOrderHeaderFilter({ label, testid, active, alignEnd, onClear, children }) {
   return (
@@ -268,7 +304,33 @@ export default function PesananPenjualan() {
     flush: flushSearch,
     clear: clearSearch,
   } = useDebouncedLiveSearch(searchParams.get("q") || "");
-  const [statusFilter, setStatusFilter] = useState(() => searchParams.get("status") || "all");
+  const [listTab, setListTab] = useState(() => {
+    const tab = searchParams.get("tab");
+    const status = searchParams.get("status");
+    if (tab === "histori" || status === "histori" || status === "selesai" || status === "cancelled") {
+      return "histori";
+    }
+    return "aktif";
+  });
+  const [statusFilter, setStatusFilter] = useState(() => {
+    const status = searchParams.get("status");
+    if (status) return status;
+    return searchParams.get("tab") === "histori" ? "histori" : "aktif";
+  });
+  const [period, setPeriod] = useState(() => {
+    const value = searchParams.get("period") || "all";
+    return value === "this_month" || value === "last_month" ? value : "all";
+  });
+  const [page, setPage] = useState(() => {
+    const value = Number(searchParams.get("page"));
+    return Number.isFinite(value) && value >= 1 ? Math.floor(value) : 1;
+  });
+  const [pageSize, setPageSize] = useState(() => {
+    const value = Number(searchParams.get("page_size"));
+    return SALES_ORDER_PAGE_SIZES.includes(value) ? value : 10;
+  });
+  const [listMeta, setListMeta] = useState({ total: null, capped: false });
+  const [itemImages, setItemImages] = useState({});
   const [columnFilters, setColumnFilters] = useState(EMPTY_SALES_ORDER_COLUMN_FILTERS);
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [deleteConfirm, setDeleteConfirm] = useState(null);
@@ -314,16 +376,10 @@ export default function PesananPenjualan() {
   const [formErr, setFormErr] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
   const [lineModes, setLineModes] = useState({});
-  const [drawerOpen, setDrawerOpen] = useState(false);
-  const [drawerIssueField, setDrawerIssueField] = useState("");
-  const [moreOpen, setMoreOpen] = useState(false);
-  const detailBtnRef = useRef(null);
-  const drawerRef = useRef(null);
-  const drawerCloseRef = useRef(null);
-  const moreBtnRef = useRef(null);
-  const moreMenuRef = useRef(null);
   const submitLockRef = useRef(false);
-  const drawerWasOpenRef = useRef(false);
+  const dirtyRef = useRef(false);
+  const focusLineKeyRef = useRef("");
+  const skipPageResetRef = useRef(true);
 
   // Repeat Order (create-form prefill only)
   const [repeatSourceIndicator, setRepeatSourceIndicator] = useState("");
@@ -339,99 +395,26 @@ export default function PesananPenjualan() {
     selectedCustomerIdRef.current = formData.customer_id || null;
   }, [formData.customer_id]);
 
-  const closeDrawer = useCallback(() => {
-    setDrawerOpen(false);
-  }, []);
-
-  useEffect(() => {
-    if (!drawerOpen) {
-      if (drawerWasOpenRef.current) {
-        drawerWasOpenRef.current = false;
-        detailBtnRef.current?.focus();
-      }
-      return undefined;
-    }
-    drawerWasOpenRef.current = true;
-    if (drawerIssueField && drawerRef.current) {
-      const field = drawerRef.current.querySelector(`[data-so-field="${drawerIssueField}"] input, [data-so-field="${drawerIssueField}"] textarea, [data-so-field="${drawerIssueField}"] select`);
-      if (field) field.focus();
-      else drawerCloseRef.current?.focus();
-    } else {
-      drawerCloseRef.current?.focus();
-    }
-    const onKey = (event) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        event.stopPropagation();
-        setDrawerOpen(false);
-        return;
-      }
-      if (event.key !== "Tab" || !drawerRef.current) return;
-      const root = drawerRef.current;
-      const nodes = root.querySelectorAll(
-        'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
-      );
-      const focusable = Array.from(nodes);
-      if (!focusable.length) return;
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      const active = document.activeElement;
-      const inside = root.contains(active);
-      if (!inside) {
-        event.preventDefault();
-        (event.shiftKey ? last : first).focus();
-        return;
-      }
-      if (event.shiftKey && active === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && active === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [drawerOpen, drawerIssueField]);
-
-  useEffect(() => {
-    if (viewMode === "create") return undefined;
-    setDrawerOpen((open) => (open ? false : open));
-    setMoreOpen((open) => (open ? false : open));
-  }, [viewMode]);
-
-  useEffect(() => {
-    if (!moreOpen) return undefined;
-    moreMenuRef.current?.querySelector("button")?.focus();
-    const onKey = (event) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      setMoreOpen(false);
-      moreBtnRef.current?.focus();
-    };
-    const onPointer = (event) => {
-      if (moreBtnRef.current?.contains(event.target) || moreMenuRef.current?.contains(event.target)) return;
-      setMoreOpen(false);
-    };
-    document.addEventListener("keydown", onKey);
-    document.addEventListener("mousedown", onPointer);
-    return () => {
-      document.removeEventListener("keydown", onKey);
-      document.removeEventListener("mousedown", onPointer);
-    };
-  }, [moreOpen]);
-
   useEffect(() => {
     const issue = salesOrderIssuePlacement(formErr);
-    if (issue?.region === "drawer") {
-      setDrawerIssueField(issue.field);
-      setDrawerOpen(true);
-      return;
-    }
-    setDrawerIssueField("");
+    if (!issue?.field) return undefined;
+    const field = document.querySelector(
+      `[data-so-field="${issue.field}"] input, [data-so-field="${issue.field}"] textarea, [data-so-field="${issue.field}"] select`
+    );
+    field?.focus();
+    return undefined;
   }, [formErr]);
+
+  useEffect(() => {
+    if (viewMode !== "create") return undefined;
+    const onBeforeUnload = (event) => {
+      if (!dirtyRef.current) return;
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [viewMode]);
 
   const clearRepeatState = useCallback(() => {
     setRepeatSourceIndicator("");
@@ -468,12 +451,22 @@ export default function PesananPenjualan() {
     setListLoading(true);
     setListErr("");
     try {
-      const params = {};
-      if (searchQuery.trim()) params.q = searchQuery.trim();
-      if (statusFilter !== "all") params.status = statusFilter;
+      const bounds = periodBounds(period);
+      const params = salesOrderListRequest({
+        q: searchQuery,
+        status: statusFilter,
+        dateFrom: bounds.date_from,
+        dateTo: bounds.date_to,
+        page,
+        pageSize,
+      });
       const res = await api.listSalesOrders(params, { signal: ac.signal });
       if (ac.signal.aborted) return;
       setOrders(res.orders || []);
+      setListMeta({
+        total: res.total == null ? null : Number(res.total),
+        capped: Boolean(res.capped),
+      });
       setSelectedIds(new Set());
     } catch (e) {
       if (e?.code === "ERR_CANCELED" || e?.name === "CanceledError" || ac.signal.aborted) {
@@ -486,13 +479,25 @@ export default function PesananPenjualan() {
         setListLoading(false);
       }
     }
-  }, [searchQuery, statusFilter]);
+  }, [searchQuery, statusFilter, period, page, pageSize]);
 
-  const displayedOrders = useMemo(
+  const filteredOrders = useMemo(
     () => applySalesOrderColumnFilters(orders, columnFilters),
     [orders, columnFilters]
   );
-  const columnFiltersActive = salesOrderColumnFiltersAreActive(columnFilters, statusFilter);
+  const serverPaged = listMeta.total != null && Number.isFinite(Number(listMeta.total));
+  const displayedOrders = useMemo(() => {
+    if (serverPaged) return filteredOrders;
+    const start = (page - 1) * pageSize;
+    return filteredOrders.slice(start, start + pageSize);
+  }, [filteredOrders, serverPaged, page, pageSize]);
+  const listTotal = serverPaged ? Number(listMeta.total) : filteredOrders.length;
+  const pageCount = listPageCount(listTotal, pageSize);
+  const tabDefaultStatus = listTab === "histori" ? "histori" : "aktif";
+  const columnFiltersActive = salesOrderColumnFiltersAreActive(
+    columnFilters,
+    statusFilter === tabDefaultStatus ? "all" : statusFilter,
+  );
   const deliveryStatusOptions = useMemo(() => uniqueDeliveryStatuses(orders), [orders]);
 
   const patchColumnFilter = (patch) => {
@@ -533,12 +538,29 @@ export default function PesananPenjualan() {
     if (searchParams.get(REPEAT_ORDER_QUERY_PARAM)) return;
     const next = new URLSearchParams();
     if (searchQuery.trim()) next.set("q", searchQuery.trim());
-    if (statusFilter && statusFilter !== "all") next.set("status", statusFilter);
+    const tabDefault = listTab === "histori" ? "histori" : "aktif";
+    if (statusFilter && statusFilter !== tabDefault) next.set("status", statusFilter);
+    if (listTab === "histori") next.set("tab", "histori");
+    if (period !== "all") next.set("period", period);
+    if (page > 1) next.set("page", String(page));
+    if (pageSize !== 10) next.set("page_size", String(pageSize));
     const nextStr = next.toString();
     const curStr = searchParams.toString();
     if (nextStr === curStr) return;
     setSearchParams(next, { replace: true });
-  }, [searchQuery, statusFilter, viewMode, searchParams, setSearchParams]);
+  }, [searchQuery, statusFilter, listTab, period, page, pageSize, viewMode, searchParams, setSearchParams]);
+
+  useEffect(() => {
+    if (skipPageResetRef.current) {
+      skipPageResetRef.current = false;
+      return;
+    }
+    setPage(1);
+  }, [searchQuery, statusFilter, period, pageSize, listTab]);
+
+  useEffect(() => {
+    if (page > pageCount) setPage(pageCount);
+  }, [page, pageCount]);
 
   const poListNavState = (extra = {}) => poNavStateFromList({
     pathname: location.pathname,
@@ -560,6 +582,50 @@ export default function PesananPenjualan() {
       loadOptions();
     }
   }, [viewMode, loadOptions]);
+
+  const imageIds = useMemo(() => {
+    const ids = [];
+    const seen = new Set();
+    (formData.line_items || []).forEach((line) => {
+      const id = String(line?.accurate_item_id || "").trim();
+      if (!id || seen.has(id)) return;
+      seen.add(id);
+      ids.push(id);
+    });
+    return ids;
+  }, [formData.line_items]);
+
+  useEffect(() => {
+    if (viewMode !== "create" || imageIds.length === 0) {
+      setItemImages({});
+      return undefined;
+    }
+    const ac = new AbortController();
+    Promise.resolve()
+      .then(() => api.salesOrderItemImages(
+        { accurate_item_ids: imageIds.join(",") },
+        { signal: ac.signal },
+      ))
+      .then((res) => {
+        if (!ac.signal.aborted) setItemImages(res?.images || {});
+      })
+      .catch((error) => {
+        if (error?.code === "ERR_CANCELED" || error?.name === "CanceledError" || ac.signal.aborted) return;
+        if (!ac.signal.aborted) setItemImages({});
+      });
+    return () => ac.abort();
+  }, [viewMode, imageIds]);
+
+  useEffect(() => {
+    const key = focusLineKeyRef.current;
+    if (!key || viewMode !== "create") return;
+    const index = formData.line_items.findIndex((line) => line.rowKey === key);
+    if (index < 0) return;
+    const node = document.querySelector(`[data-testid="line-item-search-${index}-input"]`);
+    if (!node) return;
+    node.focus();
+    focusLineKeyRef.current = "";
+  }, [formData.line_items, viewMode]);
 
   useEffect(() => {
     if (viewMode === "list") {
@@ -589,12 +655,16 @@ export default function PesananPenjualan() {
       patch = {
         ...patch,
         outlet: o.outlet || "",
+        outlet_id: o.id || "",
         address: o.address || patch.address || "",
         recipient: o.recipient || patch.recipient || "",
         delivery_zone: o.delivery_zone || "",
         sales: o.sales || "",
         payment_terms: o.payment_terms || "",
       };
+    } else {
+      patch.outlet = "";
+      patch.outlet_id = "";
     }
     return patch;
   };
@@ -617,6 +687,8 @@ export default function PesananPenjualan() {
     const patch = {
       customer: newCustomer,
       customer_id: null,
+      outlet: "",
+      outlet_id: "",
     };
     setFormData((prev) => {
       const base = hadRepeat
@@ -674,6 +746,8 @@ export default function PesananPenjualan() {
         customer_pic: "",
         customer_email: "",
         customer_city: "",
+        outlet: "",
+        outlet_id: "",
         po_number: prev.po_number,
         order_date: prev.order_date,
         created_by_user: prev.created_by_user,
@@ -692,6 +766,7 @@ export default function PesananPenjualan() {
       setFormData((prev) => ({
         ...prev,
         outlet: newOutlet,
+        outlet_id: match.id || "",
         address: match.address || prev.address,
         recipient: match.recipient || prev.recipient,
         delivery_zone: match.delivery_zone || prev.delivery_zone,
@@ -699,7 +774,7 @@ export default function PesananPenjualan() {
         payment_terms: match.payment_terms || prev.payment_terms,
       }));
     } else {
-      setFormData((prev) => ({ ...prev, outlet: newOutlet }));
+      setFormData((prev) => ({ ...prev, outlet: newOutlet, outlet_id: "" }));
     }
   };
 
@@ -739,6 +814,8 @@ export default function PesananPenjualan() {
 
   const addLineItem = () => {
     const line = createSalesOrderLineItem();
+    focusLineKeyRef.current = line.rowKey;
+    dirtyRef.current = true;
     setFormData((prev) => ({
       ...prev,
       line_items: [...prev.line_items, line],
@@ -748,6 +825,7 @@ export default function PesananPenjualan() {
 
   const removeLineItem = (index) => {
     if (formData.line_items.length <= 1) return;
+    dirtyRef.current = true;
     const rowKey = formData.line_items[index]?.rowKey;
     setFormData((prev) => ({
       ...prev,
@@ -786,9 +864,11 @@ export default function PesananPenjualan() {
     }
   };
 
-  const totalQty = useMemo(() => {
-    return formData.line_items.reduce((sum, li) => sum + (Number(li.quantity) || 0), 0);
-  }, [formData.line_items]);
+  const quantityParts = useMemo(
+    () => quantityByUnitFromLines(formData.line_items),
+    [formData.line_items],
+  );
+  const quantityLabel = formatQuantityByUnit(quantityParts);
   const formProgress = useMemo(() => salesOrderProgress(formData), [formData]);
   const formIssue = useMemo(() => salesOrderIssuePlacement(formErr), [formErr]);
 
@@ -857,9 +937,15 @@ export default function PesananPenjualan() {
     setFormErr("");
     setSuccessMsg("");
     setLineModes({});
-    setDrawerOpen(false);
-    setDrawerIssueField("");
-    setMoreOpen(false);
+    setItemImages({});
+    dirtyRef.current = false;
+    focusLineKeyRef.current = "";
+  };
+
+  const leaveCreate = () => {
+    if (dirtyRef.current && !confirmDiscardSalesOrder()) return;
+    dirtyRef.current = false;
+    setViewMode("list");
   };
 
   const handleRepeatOrderClick = async () => {
@@ -1007,6 +1093,7 @@ export default function PesananPenjualan() {
     setRepeatSourceIndicator(sourcePoNumber || "");
     setRepeatConfirm(null);
     setRepeatMsg("");
+    dirtyRef.current = true;
   };
 
   useEffect(() => {
@@ -1047,6 +1134,7 @@ export default function PesananPenjualan() {
           loadOrders();
         }
       }, 700);
+      return;
     } catch (err) {
       const det = err.response?.data?.detail;
       if (typeof det === "object" && det?.message) {
@@ -1054,10 +1142,9 @@ export default function PesananPenjualan() {
       } else {
         setFormErr(det || "Gagal menyimpan Pesanan Penjualan");
       }
-    } finally {
-      submitLockRef.current = false;
-      setFormBusy(false);
     }
+    submitLockRef.current = false;
+    setFormBusy(false);
   };
 
   const outletsForSelectedCustomer = useMemo(() => {
@@ -1066,30 +1153,71 @@ export default function PesananPenjualan() {
 
   const fieldHasError = (id) => formIssue?.field === id;
   const newCustomer = !formData.customer_id;
+  const showAktifCount = canShowAktifSummary({
+    tab: listTab,
+    status: statusFilter,
+    q: searchQuery,
+    period,
+    columnFiltersActive,
+    total: listMeta.total,
+    capped: listMeta.capped,
+  });
+  const statusSelectValue = statusFilter === tabDefaultStatus ? "__tab__" : statusFilter;
+  const pageWindowStart = Math.max(1, Math.min(page - 2, pageCount - 4));
+  const pageWindowEnd = Math.min(pageCount, pageWindowStart + 4);
+  const pageButtons = [];
+  for (let n = pageWindowStart; n <= pageWindowEnd; n += 1) pageButtons.push(n);
+  const extraFields = SALES_ORDER_DRAWER_INPUTS.filter(
+    (item) => item.field !== "estimated_delivery" && item.field !== "notes",
+  );
+
+  const openOrder = (order) => {
+    onOpenPo(order.id);
+    navigate(`/po/${order.id}`, {
+      state: poListNavState({ po_number: order.po_number, customer: order.customer }),
+    });
+  };
+
+  const onStatusChange = (value) => {
+    if (!value || value === "__tab__") {
+      setStatusFilter(listTab === "histori" ? "histori" : "aktif");
+      return;
+    }
+    setStatusFilter(value);
+    if (value === "selesai" || value === "cancelled" || value === "histori") setListTab("histori");
+    else if (value === "aktif" || value === "hold" || value === "all") setListTab("aktif");
+  };
+
+  const resetToolbar = () => {
+    clearSearch();
+    setPeriod("all");
+    clearAllColumnFilters();
+    setStatusFilter(listTab === "histori" ? "histori" : "aktif");
+    setPage(1);
+  };
 
   return (
     <div
       className={viewMode === "create"
-        ? `sales-order-page so-create-workspace${drawerOpen ? " is-drawer-open" : ""}`
-        : "sales-order-page penjualan-page penjualan-workspace"}
+        ? "sales-order-page so-create-workspace"
+        : "sales-order-page penjualan-page penjualan-workspace so-list-workspace"}
       data-testid="sales-order-page"
       data-view={viewMode}
-      data-scroll-owner={viewMode === "create" ? "page" : undefined}
-      style={viewMode === "create" ? undefined : { padding: "20px 24px", maxWidth: 1200, margin: "0 auto" }}
+      data-scroll-owner={viewMode === "create" ? "workspace" : "list"}
     >
       {viewMode === "list" && (
-      <div className="page-heading" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
-        <div>
-          <h1 data-testid="sales-order-title" style={{ fontSize: "1.75rem", fontWeight: 700, margin: 0, color: "#0f172a" }}>
-            Pesanan Penjualan
-          </h1>
-        </div>
-
-        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+        <div className="so-list" data-testid="sales-order-list">
+          <header className="so-list-header">
+            <div>
+              <h1 data-testid="sales-order-title">Pesanan Penjualan</h1>
+              <p>Daftar pesanan penjualan dari pelanggan.</p>
+            </div>
+            <div className="so-list-header-actions">
               {canDelete && selectedIds.size > 0 && (
                 <button
                   type="button"
                   data-testid="btn-hapus-terpilih"
+                  className="so-list-delete"
                   onClick={() => {
                     setDeleteErr("");
                     setDeleteConfirm({
@@ -1097,628 +1225,158 @@ export default function PesananPenjualan() {
                       numbers: orders.filter((o) => selectedIds.has(o.id)).map((o) => o.po_number),
                     });
                   }}
-                  style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 14px", borderRadius: 8, background: "#fee2e2", color: "#b91c1c", border: "1px solid #fecaca", cursor: "pointer", fontWeight: 600 }}
                 >
                   <Trash2 size={16} /> Hapus Terpilih ({selectedIds.size})
                 </button>
               )}
               <button
-                className="icon-button"
+                type="button"
+                className="so-list-refresh"
                 onClick={loadOrders}
                 disabled={listLoading}
                 data-testid="sales-order-refresh-button"
                 aria-label="Muat ulang"
-                style={{ background: "#fff", border: "1px solid #e2e8f0", borderRadius: 8, padding: "8px 12px", cursor: "pointer", display: "flex", alignItems: "center" }}
               >
                 <RefreshCw size={16} className={listLoading ? "spin" : ""} />
               </button>
               {canCreate && (
                 <button
-                  className="primary"
+                  type="button"
+                  className="so-list-create"
                   onClick={() => {
                     resetForm();
                     setViewMode("create");
                   }}
                   data-testid="create-sales-order-btn"
-                  style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 16px", borderRadius: 8, fontWeight: 600, background: "#0284c7", color: "#fff", border: "none", cursor: "pointer" }}
                 >
-                  <Plus size={16} /> Buat Pesanan Penjualan
+                  <Plus size={16} /> Buat Pesanan
                 </button>
               )}
-        </div>
-      </div>
-      )}
-
-      {viewMode === "create" && (
-        <form className="so-create-form" onSubmit={handleFormSubmit} data-testid="sales-order-form">
-          <header className="so-create-header" data-testid="so-create-header">
-            <div className="so-create-heading">
-              <h1 data-testid="sales-order-title">Buat Pesanan Penjualan</h1>
-              <div className="so-create-progress" data-testid="so-create-progress">
-                <span data-testid="so-progress-label">{formProgress.label}</span>
-                <span
-                  className={`so-create-chip${formProgress.complete ? " is-complete" : " is-incomplete"}`}
-                  data-testid="so-status-chip"
-                >
-                  {formProgress.statusLabel}
-                </span>
-              </div>
-              <button
-                type="button"
-                className="so-create-help"
-                title="Struktur data, validasi, dan alur workflow sama persis dengan PO Masuk / Import PO"
-                aria-label="Struktur data, validasi, dan alur workflow sama persis dengan PO Masuk / Import PO"
-              >
-                <CircleHelp size={14} />
-              </button>
-            </div>
-            <div className="so-create-header-actions">
-              <button
-                type="button"
-                ref={detailBtnRef}
-                className={`so-create-detail${drawerIssueField ? " is-error" : ""}`}
-                data-testid="btn-detail-tambahan"
-                aria-expanded={drawerOpen}
-                aria-controls="so-extra-drawer"
-                onClick={() => (drawerOpen ? closeDrawer() : setDrawerOpen(true))}
-              >
-                Detail Tambahan
-                {drawerIssueField ? <span className="so-create-dot" data-testid="so-drawer-error-dot" /> : null}
-              </button>
-              <button
-                type="button"
-                className="so-create-back"
-                onClick={() => setViewMode("list")}
-                data-testid="back-to-list-btn"
-                aria-label="Kembali ke daftar"
-              >
-                <ArrowLeft size={16} /> Kembali
-              </button>
             </div>
           </header>
 
-          {formErr && (
-            <div className="so-create-banner is-error" data-testid="form-error-banner" role="alert">
-              <AlertCircle size={16} />
-              <span>{formErr}</span>
-            </div>
-          )}
-          {successMsg && (
-            <div className="so-create-banner is-success" data-testid="form-success-banner">
-              <CheckCircle2 size={16} />
-              <span>{successMsg}</span>
+          {showAktifCount && (
+            <div className="so-list-summary" data-testid="sales-order-aktif-count">
+              <strong>{Number(listMeta.total).toLocaleString("id-ID")}</strong>
+              <span>Pesanan aktif</span>
             </div>
           )}
 
-          <div className="so-create-fields" data-testid="so-main-fields" data-so-region="main">
-            <SoField field="po_number" label="Nomor PO">
-              <div className="so-create-inline">
-                  <input
-                  id="so-po_number"
-                    type="text"
-                  className="so-line-input"
-                    value={formData.po_number}
-                    onChange={(e) => setFormData((p) => ({ ...p, po_number: e.target.value }))}
-                    placeholder="mis. PO-2026-001"
-                    data-testid="input-po-number"
-                  />
-                  <button
-                    type="button"
-                  className="so-create-auto"
-                    onClick={generatePoNumber}
-                    title="Buat Nomor Otomatis"
-                    data-testid="btn-generate-po"
-                  >
-                    <Sparkles size={14} /> Auto
-                  </button>
-                </div>
-            </SoField>
-
-            <SoField field="order_date" label="Tanggal PO">
-                <input
-                id="so-order_date"
-                  type="date"
-                className="so-line-input"
-                  value={formData.order_date}
-                  onChange={(e) => setFormData((p) => ({ ...p, order_date: e.target.value }))}
-                  data-testid="input-order-date"
-                />
-            </SoField>
-
-            <SoField field="customer" label="Customer" required error={fieldHasError("customer")} className="so-create-field-customer">
-              <div className="so-create-inline">
-                <CustomerSearchSelect
-                  customers={masterCustomersForSearch}
-                  value={formData.customer}
-                  selectedId={formData.customer_id}
-                  onTextChange={handleCustomerTextChange}
-                  onSelectCustomer={handleCustomerSelect}
-                  onClear={handleCustomerClear}
-                  disabled={formBusy}
-                  required
-                  testId="input-customer"
-                />
-                  <button
-                    type="button"
-                  className="so-create-repeat"
-                    data-testid="btn-repeat-order"
-                    onClick={handleRepeatOrderClick}
-                    disabled={!formData.customer_id || repeatBusy || formBusy}
-                    title={formData.customer_id ? "Salin detail dari PO valid terakhir customer ini" : "Pilih customer terdaftar terlebih dahulu"}
-                  >
-                    {repeatBusy ? "Mencari…" : "Repeat Order"}
-                  </button>
-              </div>
-              {formData.customer?.trim() && (
-                <div className="so-create-note">
-                  {formData.customer_id ? (
-                    <span data-testid="badge-customer-registered">✓ Pelanggan Terdaftar di Master</span>
-                  ) : (
-                    <span data-testid="badge-customer-new">+ Pelanggan Baru (otomatis masuk ke Data Pelanggan saat PO disimpan)</span>
-                  )}
-                </div>
-              )}
-                  {repeatSourceIndicator ? (
-                <div className="so-create-note" data-testid="repeat-source-indicator">
-                      Repeat dari PO: {repeatSourceIndicator}
-                  </div>
-                ) : null}
-              {repeatMsg ? (
-                <div className="so-create-note is-warn" data-testid="repeat-empty-message">{repeatMsg}</div>
-              ) : null}
-            </SoField>
-
-            <SoField field="customer_phone" label="No. HP / WhatsApp Pelanggan" required={newCustomer} error={fieldHasError("customer_phone")}>
-                <input
-                id="so-customer_phone"
-                  type="text"
-                className="so-line-input"
-                  value={formData.customer_phone || ""}
-                  onChange={(e) => setFormData((p) => ({ ...p, customer_phone: e.target.value }))}
-                  placeholder="mis. 0812-3456-7890"
-                  data-testid="input-customer-phone"
-                aria-invalid={fieldHasError("customer_phone") || undefined}
-                />
-            </SoField>
-
-            <SoField field="address" label="Alamat Lengkap Pengiriman" required={newCustomer} error={fieldHasError("address")} className="so-create-field-address">
-              <textarea
-                id="so-address"
-                className="so-line-input so-create-address"
-                value={formData.address}
-                onChange={(e) => setFormData((p) => ({ ...p, address: e.target.value }))}
-                placeholder="Alamat jalan, gedung, nomor, patokan"
-                rows={2}
-                data-testid="input-address"
-                aria-invalid={fieldHasError("address") || undefined}
-              />
-            </SoField>
-            </div>
-
-          <div className="so-create-lines" data-so-region="lines">
-            <div className="so-create-line-toolbar" data-testid="so-line-toolbar">
-              <div className="so-create-line-heading">
-                <h2>Daftar Item</h2>
-                <span data-testid="so-line-count">{formData.line_items.length} item</span>
-              </div>
-              <button
-                type="button"
-                className="so-create-help"
-                title="Masing-masing baris item memiliki identitas independen (tidak akan dimerge otomatis)."
-                aria-label="Masing-masing baris item memiliki identitas independen (tidak akan dimerge otomatis)."
-              >
-                <CircleHelp size={14} />
-              </button>
-              <button
-                type="button"
-                className="so-create-add"
-                onClick={addLineItem}
-                data-testid="btn-add-line-item"
-              >
-                <Plus size={14} /> Tambah Baris
-              </button>
-            </div>
-
-            <div
-              className="so-create-lines-scroll"
-              data-testid="line-items-table-container"
-            >
-              <table className="so-create-lines-table">
-                <thead>
-                  <tr>
-                    <th className="so-col-no" scope="col">#</th>
-                    <th className="so-col-name">Barang / Jasa <span className="so-req">*</span></th>
-                    <th className="so-col-code">Kode</th>
-                    <th className="so-col-process">Proses</th>
-                    <th className="so-col-qty">Qty <span className="so-req">*</span></th>
-                    <th className="so-col-unit">Satuan</th>
-                    <th className="so-col-color">Warna</th>
-                    <th className="so-col-notes">Catatan Item</th>
-                    <th className="so-col-action">Aksi</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {formData.line_items.length === 0 ? (
-                    <tr>
-                      <td colSpan={9} data-testid="line-items-empty-state" className="so-create-empty">
-                        Tidak ada barang/jasa yang cocok.
-                      </td>
-                    </tr>
-                  ) : (
-                    formData.line_items.map((line, originalIndex) => {
-                      const mode = lineModes[line.rowKey] || "master";
-                      return (
-                        <tr key={line.rowKey} data-testid={`line-item-row-${originalIndex}`}>
-                          <td className="so-col-no" data-testid={`line-item-number-${originalIndex}`}>{originalIndex + 1}</td>
-                          <td className="so-col-name">
-                            <div className="so-line-mode" role="group" aria-label={`Mode barang baris ${originalIndex + 1}`}>
-                              <button
-                                type="button"
-                                aria-pressed={mode === "master"}
-                                data-testid={`line-mode-master-${originalIndex}`}
-                                onClick={() => changeLineMode(originalIndex, "master")}
-                              >
-                                Pilih Master
-                              </button>
-                              <button
-                                type="button"
-                                aria-pressed={mode === "manual"}
-                                data-testid={`line-mode-manual-${originalIndex}`}
-                                onClick={() => changeLineMode(originalIndex, "manual")}
-                              >
-                                Input Manual
-                              </button>
-                            </div>
-                            {mode === "master" ? (
-                          <MasterItemSearchSelect
-                            testId={`line-item-search-${originalIndex}`}
-                            value={
-                              line.accurate_item_id || line.master_item_id
-                                ? {
-                                    accurate_item_id: line.accurate_item_id,
-                                    id: line.master_item_id,
-                                    master_item_id: line.master_item_id,
-                                    item_name: line.name,
-                                    item_code: line.item_code,
-                                    unit: line.unit,
-                                  }
-                                : null
-                            }
-                            onChange={(master) => handleSelectMasterItem(originalIndex, master)}
-                            placeholder="Cari nama / kode barang…"
-                          />
-                            ) : (
-                            <input
-                              type="text"
-                                className="so-line-input"
-                              value={line.name}
-                              onChange={(e) => handleLineChange(originalIndex, "name", e.target.value)}
-                                placeholder="Ketik nama bebas (tanpa master)"
-                              data-testid={`line-name-${originalIndex}`}
-                            />
-                          )}
-                        </td>
-                          <td>
-                          <input
-                            type="text"
-                              className="so-line-input"
-                            value={line.item_code || ""}
-                            onChange={(e) => handleLineChange(originalIndex, "item_code", e.target.value)}
-                            placeholder="Kode"
-                            data-testid={`line-code-${originalIndex}`}
-                          />
-                        </td>
-                          <td>
-                          <select
-                              className="so-line-input"
-                            value={line.production_process}
-                            onChange={(e) => handleLineChange(originalIndex, "production_process", e.target.value)}
-                            data-testid={`line-process-${originalIndex}`}
-                          >
-                            <option value="print">Cetak</option>
-                            <option value="non_print">Tidak Cetak</option>
-                          </select>
-                        </td>
-                          <td>
-                          <input
-                            type="number"
-                            min="1"
-                              className="so-line-input"
-                            value={line.quantity}
-                            onChange={(e) => handleLineChange(originalIndex, "quantity", e.target.value)}
-                            data-testid={`line-qty-${originalIndex}`}
-                            required
-                          />
-                        </td>
-                          <td>
-                          <input
-                            type="text"
-                              className="so-line-input"
-                            value={line.unit || "pcs"}
-                            onChange={(e) => handleLineChange(originalIndex, "unit", e.target.value)}
-                            data-testid={`line-unit-${originalIndex}`}
-                          />
-                        </td>
-                          <td>
-                          <input
-                            type="text"
-                              className="so-line-input"
-                            value={line.color || ""}
-                            onChange={(e) => handleLineChange(originalIndex, "color", e.target.value)}
-                            placeholder="mis. Full color"
-                            data-testid={`line-color-${originalIndex}`}
-                          />
-                        </td>
-                          <td>
-                          <input
-                            type="text"
-                              className="so-line-input"
-                            value={line.notes || ""}
-                            onChange={(e) => handleLineChange(originalIndex, "notes", e.target.value)}
-                            placeholder="Catatan..."
-                            data-testid={`line-notes-${originalIndex}`}
-                          />
-                        </td>
-                          <td className="so-col-action">
-                          <button
-                            type="button"
-                            onClick={() => removeLineItem(originalIndex)}
-                            disabled={formData.line_items.length <= 1}
-                            data-testid={`btn-remove-line-${originalIndex}`}
-                              aria-label="Hapus baris"
-                            title="Hapus baris"
-                          >
-                            <Trash2 size={16} />
-                          </button>
-                        </td>
-                      </tr>
-                      );
-                    })
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          <div className="so-create-actionbar" data-testid="so-create-actionbar">
-            <div className="so-create-totals">
-              <span data-testid="so-total-items">
-                Total Item: <strong>{formData.line_items.length}</strong>
-              </span>
-              <span data-testid="so-total-qty">
-                Total Quantity: <strong>{totalQty.toLocaleString("id-ID")} pcs</strong>
-              </span>
-            </div>
-            <div className="so-create-actions">
-              <div className="so-create-more">
+          <div className="so-list-tabs" role="tablist" aria-label="Klasifikasi pesanan">
             <button
               type="button"
-                  ref={moreBtnRef}
-                  data-testid="btn-lainnya"
-                  aria-haspopup="menu"
-                  aria-expanded={moreOpen}
-                  onClick={() => setMoreOpen((open) => !open)}
-                >
-                  <Ellipsis size={16} /> Lainnya
-                </button>
-                {moreOpen && (
-                  <div className="so-create-more-menu" ref={moreMenuRef} role="menu" data-testid="so-more-menu">
-                    <button
-                      type="button"
-                      role="menuitem"
-                      data-testid="btn-cancel-form"
-                      disabled={formBusy}
-              onClick={() => setViewMode("list")}
+              role="tab"
+              aria-selected={listTab === "aktif"}
+              data-testid="sales-order-tab-aktif"
+              className={listTab === "aktif" ? "is-active" : ""}
+              onClick={() => {
+                setListTab("aktif");
+                setStatusFilter("aktif");
+              }}
             >
-              Batal
+              Aktif
             </button>
-                  </div>
-                )}
-              </div>
             <button
-              type="submit"
-                className="so-create-save"
-              disabled={formBusy}
-              data-testid="btn-submit-sales-order"
+              type="button"
+              role="tab"
+              aria-selected={listTab === "histori"}
+              data-testid="sales-order-tab-histori"
+              className={listTab === "histori" ? "is-active" : ""}
+              onClick={() => {
+                setListTab("histori");
+                setStatusFilter("histori");
+              }}
             >
-              {formBusy ? "Menyimpan..." : "Simpan Pesanan Penjualan"}
+              Histori
             </button>
           </div>
-          </div>
 
-          {drawerOpen && (
-            <>
-              <button
-                type="button"
-                className="so-create-drawer-backdrop"
-                data-testid="so-drawer-backdrop"
-                aria-label="Tutup detail tambahan"
-                onClick={closeDrawer}
-              />
-              <aside
-                id="so-extra-drawer"
-                ref={drawerRef}
-                className="so-create-drawer"
-                role="dialog"
-                aria-modal="true"
-                aria-labelledby="so-extra-drawer-title"
-                data-testid="so-extra-drawer"
-                data-so-region="drawer"
-              >
-                <div className="so-create-drawer-head">
-                  <h2 id="so-extra-drawer-title">Detail Tambahan</h2>
-                  <button
-                    type="button"
-                    ref={drawerCloseRef}
-                    className="so-create-drawer-x"
-                    data-testid="so-drawer-close"
-                    aria-label="Tutup detail tambahan"
-                    onClick={closeDrawer}
-                  >
-                    ×
-                  </button>
-                </div>
-                <div className="so-create-drawer-body" data-scroll-owner="drawer">
-                  {SALES_ORDER_DRAWER_INPUTS.map((item) => (
-                    <SoField key={item.field} field={item.field} label={item.label} error={fieldHasError(item.field)}>
-                      <input
-                        id={`so-${item.field}`}
-                        type={item.type || "text"}
-                        className="so-line-input"
-                        list={item.list}
-                        value={formData[item.field]}
-                        onChange={(e) => {
-                          if (item.field === "outlet") handleOutletChange(e.target.value);
-                          else setFormData((p) => ({ ...p, [item.field]: e.target.value }));
-                        }}
-                        placeholder={item.placeholder}
-                        data-testid={item.testId}
-                        aria-invalid={fieldHasError(item.field) || undefined}
-                      />
-                      {item.field === "outlet" && (
-                        <datalist id="outlet-suggestions">
-                          {outletsForSelectedCustomer.map((o) => (
-                            <option key={o.outlet} value={o.outlet} />
-                          ))}
-                        </datalist>
-                      )}
-                      {item.field === "sales" && (
-                        <datalist id="sales-suggestions">
-                          {options.sales_options?.map((s) => (
-                            <option key={s} value={s} />
-                          ))}
-                        </datalist>
-                      )}
-                    </SoField>
-                  ))}
-                </div>
-                <div className="so-create-drawer-foot">
-                  <button type="button" className="so-drawer-done" data-testid="so-drawer-done" onClick={closeDrawer}>
-                    Tutup
-                  </button>
-                </div>
-              </aside>
-            </>
-          )}
-        </form>
-      )}
-
-      {/* VIEW: LIST ORDERS */}
-      {viewMode === "list" && (
-        <section className="panel" style={{ background: "#fff", border: "1px solid #e2e8f0", borderRadius: 10, padding: 20, boxShadow: "0 1px 3px rgba(0,0,0,0.05)" }}>
-          {listErr && (
-            <div
-              className="alert-box error"
-              data-testid="list-error-banner"
-              style={{ background: "#fef2f2", border: "1px solid #fecaca", color: "#b91c1c", padding: "10px 14px", borderRadius: 8, marginBottom: 16, display: "flex", alignItems: "center", gap: 10 }}
-            >
-              <AlertCircle size={16} />
-              <span>{listErr}</span>
-            </div>
-          )}
-
-          {/* Filter Bar */}
-          <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 16 }}>
-            <div style={{ position: "relative", minWidth: 280, flex: "1 1 300px" }}>
-              <Search size={16} style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: "#94a3b8" }} />
+          <div className="so-list-toolbar">
+            <div className="so-list-search">
+              <Search size={16} />
               <input
                 type="text"
-                placeholder="Cari No PO / Customer / Outlet / Sales..."
+                placeholder="Cari pelanggan atau nomor PO..."
                 value={searchInput}
                 onChange={(e) => setSearchInput(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === "Enter") flushSearch(e);
                 }}
                 data-testid="search-sales-orders-input"
-                style={{ width: "100%", padding: "8px 12px 8px 34px", border: "1px solid #cbd5e1", borderRadius: 6, fontSize: "0.9rem", boxSizing: "border-box" }}
               />
               {searchInput && (
                 <button
                   type="button"
                   onClick={() => clearSearch()}
                   data-testid="search-sales-orders-clear"
-                  style={{ position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", color: "#94a3b8" }}
+                  aria-label="Hapus pencarian"
                 >
                   <X size={14} />
                 </button>
               )}
             </div>
-
-            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
-              {SALES_ORDER_STATUS_FILTERS.map((tab) => (
-                <button
-                  key={tab.id}
-                  type="button"
-                  onClick={() => setStatusFilter(tab.id)}
-                  data-testid={`filter-status-${tab.id}`}
-                  style={{
-                    padding: "6px 14px",
-                    borderRadius: 6,
-                    border: "1px solid",
-                    borderColor: statusFilter === tab.id ? "#0284c7" : "#e2e8f0",
-                    background: statusFilter === tab.id ? "#e0f2fe" : "#f8fafc",
-                    color: statusFilter === tab.id ? "#0369a1" : "#475569",
-                    fontWeight: statusFilter === tab.id ? 600 : 500,
-                    cursor: "pointer",
-                    fontSize: "0.85rem",
-                  }}
-                >
-                  {tab.label}
-                </button>
-              ))}
-              {columnFiltersActive && (
-                <button
-                  type="button"
-                  className="so-clear-columns"
-                  onClick={clearAllColumnFilters}
-                  data-testid="sales-order-clear-column-filters"
-                >
-                  Hapus filter kolom
-                </button>
-              )}
-            </div>
+            <select
+              data-testid="sales-order-status-filter"
+              value={statusSelectValue}
+              onChange={(e) => onStatusChange(e.target.value)}
+              aria-label="Status"
+            >
+              <option value="__tab__">Semua status</option>
+              <option value="aktif">Aktif</option>
+              <option value="hold">HOLD</option>
+              <option value="selesai">Selesai</option>
+              <option value="cancelled">Batal</option>
+            </select>
+            <select
+              data-testid="sales-order-period-filter"
+              value={period}
+              onChange={(e) => setPeriod(e.target.value)}
+              aria-label="Periode"
+            >
+              <option value="all">Semua periode</option>
+              <option value="this_month">Bulan ini</option>
+              <option value="last_month">Bulan lalu</option>
+            </select>
+            <button type="button" className="so-list-reset" data-testid="sales-order-reset-filters" onClick={resetToolbar}>
+              Reset
+            </button>
+            {columnFiltersActive && (
+              <button
+                type="button"
+                className="so-clear-columns"
+                onClick={clearAllColumnFilters}
+                data-testid="sales-order-clear-column-filters"
+              >
+                Hapus filter kolom
+              </button>
+            )}
           </div>
 
-          {/* Orders Table */}
-          <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "left", fontSize: "0.9rem" }}>
+          {listErr && (
+            <div className="so-list-error" data-testid="list-error-banner" role="alert">
+              <AlertCircle size={16} />
+              <span>{listErr}</span>
+            </div>
+          )}
+
+          <div className="so-list-table-scroll" data-testid="sales-order-table-scroll">
+            <table className="so-list-table">
               <thead>
-                <tr style={{ background: "#f8fafc", borderBottom: "2px solid #e2e8f0", color: "#475569" }}>
+                <tr>
                   {canDelete && (
-                    <th style={{ padding: "10px 8px", width: 36 }}>
-                      <input type="checkbox" data-testid="select-all-orders" checked={displayedOrders.length > 0 && selectedIds.size === displayedOrders.length} onChange={toggleSelectAll} aria-label="Pilih semua baris tampilan" />
+                    <th className="so-list-check">
+                      <input
+                        type="checkbox"
+                        data-testid="select-all-orders"
+                        checked={displayedOrders.length > 0 && selectedIds.size === displayedOrders.length}
+                        onChange={toggleSelectAll}
+                        aria-label="Pilih semua baris tampilan"
+                      />
                     </th>
                   )}
-                  <th style={{ padding: "10px 12px" }}>
+                  <th>
                     <SalesOrderHeaderFilter
-                      label="No PO"
-                      testid="so-th-filter-po"
-                      active={salesOrderColumnFilterActive("po", columnFilters)}
-                      onClear={() => clearColumnKey("po")}
-                    >
-                      <input
-                        type="text"
-                        placeholder="Cari No PO"
-                        value={columnFilters.po}
-                        onChange={(e) => patchColumnFilter({ po: e.target.value })}
-                        data-testid="so-filter-po"
-                      />
-                    </SalesOrderHeaderFilter>
-                  </th>
-                  <th style={{ padding: "10px 12px" }}>
-                    <SalesOrderHeaderFilter
-                      label="Tanggal PO"
-                      testid="so-th-filter-date"
-                      active={salesOrderColumnFilterActive("date", columnFilters)}
-                      onClear={() => clearColumnKey("date")}
-                    >
-                      <label>Dari <input type="date" value={columnFilters.dateFrom} onChange={(e) => patchColumnFilter({ dateFrom: e.target.value })} data-testid="so-filter-date-from" /></label>
-                      <label>Sampai <input type="date" value={columnFilters.dateTo} onChange={(e) => patchColumnFilter({ dateTo: e.target.value })} data-testid="so-filter-date-to" /></label>
-                    </SalesOrderHeaderFilter>
-                  </th>
-                  <th style={{ padding: "10px 12px" }}>
-                    <SalesOrderHeaderFilter
-                      label="Customer"
+                      label="Pelanggan / No. PO"
                       testid="so-th-filter-customer"
                       active={salesOrderColumnFilterActive("customer", columnFilters)}
                       onClear={() => clearColumnKey("customer")}
@@ -1731,8 +1389,20 @@ export default function PesananPenjualan() {
                         data-testid="so-filter-customer"
                       />
                     </SalesOrderHeaderFilter>
-                  </th>
-                  <th style={{ padding: "10px 12px" }}>
+                    <SalesOrderHeaderFilter
+                      label="No. PO"
+                      testid="so-th-filter-po"
+                      active={salesOrderColumnFilterActive("po", columnFilters)}
+                      onClear={() => clearColumnKey("po")}
+                    >
+                      <input
+                        type="text"
+                        placeholder="Cari No PO"
+                        value={columnFilters.po}
+                        onChange={(e) => patchColumnFilter({ po: e.target.value })}
+                        data-testid="so-filter-po"
+                      />
+                    </SalesOrderHeaderFilter>
                     <SalesOrderHeaderFilter
                       label="Outlet"
                       testid="so-th-filter-outlet"
@@ -1748,33 +1418,41 @@ export default function PesananPenjualan() {
                       />
                     </SalesOrderHeaderFilter>
                   </th>
-                  <th style={{ padding: "10px 12px", textAlign: "right" }}>
+                  <th>
                     <SalesOrderHeaderFilter
-                      label="Total Qty"
+                      label="Tanggal PO"
+                      testid="so-th-filter-date"
+                      active={salesOrderColumnFilterActive("date", columnFilters)}
+                      onClear={() => clearColumnKey("date")}
+                    >
+                      <label>Dari <input type="date" value={columnFilters.dateFrom} onChange={(e) => patchColumnFilter({ dateFrom: e.target.value })} data-testid="so-filter-date-from" /></label>
+                      <label>Sampai <input type="date" value={columnFilters.dateTo} onChange={(e) => patchColumnFilter({ dateTo: e.target.value })} data-testid="so-filter-date-to" /></label>
+                    </SalesOrderHeaderFilter>
+                  </th>
+                  <th>Tanggal kirim</th>
+                  <th>
+                    <SalesOrderHeaderFilter
+                      label="Qty"
                       testid="so-th-filter-qty"
                       active={salesOrderColumnFilterActive("qty", columnFilters)}
-                      alignEnd
                       onClear={() => clearColumnKey("qty")}
                     >
                       <label>Min <input type="number" value={columnFilters.qtyMin} onChange={(e) => patchColumnFilter({ qtyMin: e.target.value })} data-testid="so-filter-qty-min" /></label>
                       <label>Max <input type="number" value={columnFilters.qtyMax} onChange={(e) => patchColumnFilter({ qtyMax: e.target.value })} data-testid="so-filter-qty-max" /></label>
                     </SalesOrderHeaderFilter>
                   </th>
-                  <th style={{ padding: "10px 12px", textAlign: "right" }}>
+                  <th>
                     <SalesOrderHeaderFilter
-                      label="Sisa Kirim"
+                      label="Sisa"
                       testid="so-th-filter-remain"
                       active={salesOrderColumnFilterActive("remain", columnFilters)}
-                      alignEnd
                       onClear={() => clearColumnKey("remain")}
                     >
-                      <label>Min <input type="number" value={columnFilters.remainMin} onChange={(e) => patchColumnFilter({ remainMin: e.target.value })} data-testid="so-filter-remain-min" /></label>
-                      <label>Max <input type="number" value={columnFilters.remainMax} onChange={(e) => patchColumnFilter({ remainMax: e.target.value })} data-testid="so-filter-remain-max" /></label>
+                      <label>Sisa min <input type="number" value={columnFilters.remainMin} onChange={(e) => patchColumnFilter({ remainMin: e.target.value })} data-testid="so-filter-remain-min" /></label>
+                      <label>Sisa max <input type="number" value={columnFilters.remainMax} onChange={(e) => patchColumnFilter({ remainMax: e.target.value })} data-testid="so-filter-remain-max" /></label>
                     </SalesOrderHeaderFilter>
-                  </th>
-                  <th style={{ padding: "10px 12px" }}>
                     <SalesOrderHeaderFilter
-                      label="Status Kirim"
+                      label="Progress"
                       testid="so-th-filter-delivery"
                       active={salesOrderColumnFilterActive("delivery", columnFilters)}
                       onClear={() => clearColumnKey("delivery")}
@@ -1802,7 +1480,34 @@ export default function PesananPenjualan() {
                       </div>
                     </SalesOrderHeaderFilter>
                   </th>
-                  <th style={{ padding: "10px 12px" }}>
+                  <th>
+                    <SalesOrderHeaderFilter
+                      label="Status"
+                      testid="so-th-filter-stage"
+                      active={salesOrderColumnFilterActive(
+                        "stage",
+                        columnFilters,
+                        statusFilter === tabDefaultStatus ? "all" : statusFilter,
+                      )}
+                      onClear={() => clearColumnKey("stage")}
+                    >
+                      <select
+                        value={statusFilter}
+                        onChange={(e) => onStatusChange(e.target.value)}
+                        data-testid="so-filter-stage-status"
+                      >
+                        {SALES_ORDER_STATUS_FILTERS.map((tab) => (
+                          <option key={tab.id} value={tab.id}>{tab.label}</option>
+                        ))}
+                      </select>
+                      <input
+                        type="text"
+                        placeholder="Cari status / stage"
+                        value={columnFilters.stageText}
+                        onChange={(e) => patchColumnFilter({ stageText: e.target.value })}
+                        data-testid="so-filter-stage-text"
+                      />
+                    </SalesOrderHeaderFilter>
                     <SalesOrderHeaderFilter
                       label="Sales"
                       testid="so-th-filter-sales"
@@ -1818,46 +1523,19 @@ export default function PesananPenjualan() {
                       />
                     </SalesOrderHeaderFilter>
                   </th>
-                  <th style={{ padding: "10px 12px" }}>
-                    <SalesOrderHeaderFilter
-                      label="Status / Stage"
-                      testid="so-th-filter-stage"
-                      active={salesOrderColumnFilterActive("stage", columnFilters, statusFilter)}
-                      onClear={() => clearColumnKey("stage")}
-                    >
-                      <select
-                        value={statusFilter}
-                        onChange={(e) => setStatusFilter(e.target.value)}
-                        data-testid="so-filter-stage-status"
-                      >
-                        {SALES_ORDER_STATUS_FILTERS.map((tab) => (
-                          <option key={tab.id} value={tab.id}>{tab.label}</option>
-                        ))}
-                      </select>
-                      <input
-                        type="text"
-                        placeholder="Cari status / stage"
-                        value={columnFilters.stageText}
-                        onChange={(e) => patchColumnFilter({ stageText: e.target.value })}
-                        data-testid="so-filter-stage-text"
-                      />
-                    </SalesOrderHeaderFilter>
-                  </th>
-                  <th style={{ padding: "10px 12px", textAlign: "center" }}>Aksi</th>
+                  <th>Aksi</th>
                 </tr>
               </thead>
               <tbody>
                 {listLoading ? (
                   <tr>
-                    <td colSpan={canDelete ? 11 : 10} style={{ padding: 32, textAlign: "center", color: "#64748b" }}>
-                      Memuat daftar Pesanan Penjualan...
-                    </td>
+                    <td colSpan={canDelete ? 8 : 7} className="so-list-empty">Memuat daftar Pesanan Penjualan...</td>
                   </tr>
                 ) : displayedOrders.length === 0 ? (
                   <tr>
-                    <td colSpan={canDelete ? 11 : 10} style={{ padding: 40, textAlign: "center", color: "#64748b" }} data-testid="empty-sales-orders">
-                      <FileText size={32} style={{ opacity: 0.4, marginBottom: 8 }} />
-                      <p style={{ margin: 0, fontWeight: 500 }}>Belum ada Pesanan Penjualan yang sesuai filter.</p>
+                    <td colSpan={canDelete ? 8 : 7} className="so-list-empty" data-testid="empty-sales-orders">
+                      <FileText size={28} />
+                      <p>Belum ada Pesanan Penjualan yang sesuai filter.</p>
                       {canCreate && (
                         <button
                           type="button"
@@ -1865,134 +1543,577 @@ export default function PesananPenjualan() {
                             resetForm();
                             setViewMode("create");
                           }}
-                          style={{ marginTop: 12, padding: "6px 14px", background: "#0284c7", color: "#fff", border: "none", borderRadius: 6, cursor: "pointer", fontWeight: 600, fontSize: "0.85rem" }}
                         >
-                          + Buat PO Baru
+                          <Plus size={14} /> Buat Pesanan
                         </button>
                       )}
                     </td>
                   </tr>
-                ) : (
-                  displayedOrders.map((o) => {
-                    const isCancelled = !!o.cancelled;
-                    const isHold = !!o.hold;
-                    const stageLabel = salesOrderStageLabel(o) || `Tahap ${o.current_stage}`;
-                    const remainQty = salesOrderRemainingQty(o);
-                    const delivStatus = salesOrderDeliveryStatus(o);
-                    const canProcessDelivery = !isCancelled && remainQty > 0;
-
-                    return (
-                      <tr key={o.id} data-testid={`order-row-${o.id}`} style={{ borderBottom: "1px solid #f1f5f9" }}>
-                        {canDelete && (
-                          <td style={{ padding: "10px 8px" }}>
-                            <input type="checkbox" data-testid={`order-checkbox-${o.id}`} checked={selectedIds.has(o.id)} onChange={() => toggleSelect(o.id)} aria-label={`Pilih ${o.po_number}`} />
-                          </td>
+                ) : displayedOrders.map((o) => {
+                  const isCancelled = !!o.cancelled;
+                  const isHold = !!o.hold;
+                  const stageLabel = salesOrderStageLabel(o) || (o.current_stage == null ? "" : `Tahap ${o.current_stage}`);
+                  const remainQty = salesOrderRemainingQty(o);
+                  const canProcessDelivery = !isCancelled && remainQty > 0;
+                  return (
+                    <tr
+                      key={o.id}
+                      data-testid={`order-row-${o.id}`}
+                      className="so-list-row"
+                      onClick={() => openOrder(o)}
+                    >
+                      {canDelete && (
+                        <td className="so-list-check" onClick={(e) => e.stopPropagation()}>
+                          <input
+                            type="checkbox"
+                            data-testid={`order-checkbox-${o.id}`}
+                            checked={selectedIds.has(o.id)}
+                            onChange={() => toggleSelect(o.id)}
+                            aria-label={`Pilih ${o.po_number}`}
+                          />
+                        </td>
+                      )}
+                      <td>
+                        <div className="so-list-customer">{o.customer || "—"}</div>
+                        <Link
+                          to={`/po/${o.id}`}
+                          state={poListNavState({ po_number: o.po_number, customer: o.customer })}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onOpenPo(o.id);
+                          }}
+                          className="so-list-po"
+                          data-testid={`po-link-${o.po_number}`}
+                        >
+                          {o.po_number}
+                        </Link>
+                        {o.outlet ? <div className="so-list-outlet">{o.outlet}</div> : null}
+                      </td>
+                      <td>{formatDisplayDate(o.order_date) || "—"}</td>
+                      <td>{formatDisplayDate(o.tanggal_pengiriman) || "—"}</td>
+                      <td data-testid={`order-qty-${o.id}`}>{orderQuantityLabel(o)}</td>
+                      <td>{listProgressText(o)}</td>
+                      <td>
+                        {isCancelled ? (
+                          <span className="so-list-badge is-cancel">Cancelled</span>
+                        ) : isHold ? (
+                          <span className="so-list-badge is-hold">HOLD</span>
+                        ) : (
+                          <span className={`so-list-badge${o.current_stage >= 14 ? " is-done" : " is-open"}`}>{stageLabel || "—"}</span>
                         )}
-                        <td style={{ padding: "10px 12px", fontWeight: 600 }}>
+                      </td>
+                      <td onClick={(e) => e.stopPropagation()}>
+                        <div className="so-list-actions">
                           <Link
                             to={`/po/${o.id}`}
                             state={poListNavState({ po_number: o.po_number, customer: o.customer })}
                             onClick={() => onOpenPo(o.id)}
-                            style={{ color: "#0284c7", textDecoration: "none" }}
-                            data-testid={`po-link-${o.po_number}`}
+                            data-testid={`btn-view-po-${o.id}`}
                           >
-                            {o.po_number}
+                            Lihat PO
                           </Link>
-                        </td>
-                        <td style={{ padding: "10px 12px", color: "#475569" }}>
-                          {formatDisplayDate(o.order_date) || "-"}
-                        </td>
-                        <td style={{ padding: "10px 12px", fontWeight: 500, color: "#1e293b" }}>
-                          {o.customer || "-"}
-                        </td>
-                        <td style={{ padding: "10px 12px", color: "#475569" }}>
-                          {o.outlet || "-"}
-                        </td>
-                        <td style={{ padding: "10px 12px", textAlign: "right", fontWeight: 600, color: "#0f172a" }}>
-                          {Number(o.total_quantity || 0).toLocaleString("id-ID")} pcs
-                        </td>
-                        <td style={{ padding: "10px 12px", textAlign: "right", fontWeight: 600, color: remainQty > 0 ? "#0284c7" : "#16a34a" }}>
-                          {remainQty.toLocaleString("id-ID")} pcs
-                        </td>
-                        <td style={{ padding: "10px 12px" }}>
-                          <span
-                            style={{
-                              display: "inline-block",
-                              padding: "2px 8px",
-                              borderRadius: 12,
-                              fontSize: "0.75rem",
-                              fontWeight: 600,
-                              background: (delivStatus === "SELESAI" || delivStatus === "SELESAI PENGIRIMAN") ? "#dcfce7" : (delivStatus === "SEBAGIAN" || delivStatus === "SEBAGIAN DIKIRIM") ? "#e0f2fe" : "#f1f5f9",
-                              color: (delivStatus === "SELESAI" || delivStatus === "SELESAI PENGIRIMAN") ? "#166534" : (delivStatus === "SEBAGIAN" || delivStatus === "SEBAGIAN DIKIRIM") ? "#0369a1" : "#475569",
-                            }}
-                          >
-                            {delivStatus}
-                          </span>
-                        </td>
-                        <td style={{ padding: "10px 12px", color: "#475569" }}>
-                          {salesOrderSalesName(o) || "-"}
-                        </td>
-                        <td style={{ padding: "10px 12px" }}>
-                          {isCancelled ? (
-                            <span className="pj-status-badge" style={{ display: "inline-block", padding: "2px 8px", background: "#fee2e2", color: "#991b1b", borderRadius: 12, fontSize: "0.75rem", fontWeight: 600, border: "1.5px solid #fca5a5" }}>
-                              Cancelled
-                            </span>
-                          ) : isHold ? (
-                            <span className="pj-status-badge" style={{ display: "inline-block", padding: "2px 8px", background: "#fef3c7", color: "#92400e", borderRadius: 12, fontSize: "0.75rem", fontWeight: 600, border: "1.5px solid #fcd34d" }}>
-                              HOLD
-                            </span>
-                          ) : (
-                            <span className="pj-status-badge" style={{ display: "inline-block", padding: "2px 8px", background: o.current_stage >= 14 ? "#dcfce7" : "#e0f2fe", color: o.current_stage >= 14 ? "#166534" : "#075985", borderRadius: 12, fontSize: "0.75rem", fontWeight: 600, border: o.current_stage >= 14 ? "1.5px solid #86efac" : "1.5px solid #7dd3fc" }}>
-                              {stageLabel}
-                            </span>
-                          )}
-                        </td>
-                        <td style={{ padding: "10px 12px", textAlign: "center" }}>
-                          <div style={{ display: "flex", justifyContent: "center", gap: 6 }}>
-                            <Link
-                              to={`/po/${o.id}`}
-                              state={poListNavState({ po_number: o.po_number, customer: o.customer })}
-                              onClick={() => onOpenPo(o.id)}
-                              data-testid={`btn-view-po-${o.id}`}
-                              style={{ display: "inline-block", padding: "4px 8px", background: "#f1f5f9", color: "#334155", borderRadius: 6, textDecoration: "none", fontSize: "0.8rem", fontWeight: 600 }}
+                          {canCreate && !isCancelled && (
+                            <button
+                              type="button"
+                              data-testid={`btn-repeat-order-${o.id}`}
+                              onClick={() => {
+                                resetForm();
+                                setViewMode("create");
+                                void handleRepeatSpecificPo(o.id);
+                              }}
                             >
-                              Lihat PO
+                              Repeat Order
+                            </button>
+                          )}
+                          {canProcessDelivery && (
+                            <Link
+                              to={`/penjualan/pengiriman-pesanan?po_id=${o.id}&action=create`}
+                              data-testid={`btn-process-delivery-${o.id}`}
+                            >
+                              + Kirim
                             </Link>
-                            {canCreate && !isCancelled && (
-                              <button
-                                type="button"
-                                data-testid={`btn-repeat-order-${o.id}`}
-                                title="Repeat Order dari PO ini"
-                                onClick={() => {
-                                  resetForm();
-                                  setViewMode("create");
-                                  void handleRepeatSpecificPo(o.id);
-                                }}
-                                style={{ display: "inline-block", padding: "4px 8px", background: "#f8fafc", color: "#0f172a", borderRadius: 6, border: "1px solid #cbd5e1", fontSize: "0.8rem", fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}
-                              >
-                                Repeat Order
-                              </button>
-                            )}
-                            {canProcessDelivery && (
-                              <Link
-                                to={`/penjualan/pengiriman-pesanan?po_id=${o.id}&action=create`}
-                                data-testid={`btn-process-delivery-${o.id}`}
-                                title="Proses ke Pengiriman Pesanan"
-                                style={{ display: "inline-block", padding: "4px 8px", background: "#e0f2fe", color: "#0369a1", borderRadius: 6, textDecoration: "none", fontSize: "0.8rem", fontWeight: 600, whiteSpace: "nowrap" }}
-                              >
-                                + Kirim
-                              </Link>
-                            )}
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })
-                )}
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
-        </section>
+
+          <footer className="so-list-pager" data-testid="sales-order-pagination">
+            <span>{listRangeLabel(listTotal, page, pageSize)}</span>
+            <span className="so-list-pager-note">Klik pesanan untuk membuka detail.</span>
+            <label>
+              Baris per halaman
+              <select
+                data-testid="sales-order-page-size"
+                value={pageSize}
+                onChange={(e) => setPageSize(Number(e.target.value))}
+              >
+                {SALES_ORDER_PAGE_SIZES.map((size) => (
+                  <option key={size} value={size}>{size}</option>
+                ))}
+              </select>
+            </label>
+            <div className="so-list-pages">
+              <button type="button" data-testid="sales-order-page-prev" disabled={page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>
+                Sebelumnya
+              </button>
+              {pageButtons.map((n) => (
+                <button
+                  key={n}
+                  type="button"
+                  data-testid={`sales-order-page-${n}`}
+                  aria-current={n === page ? "page" : undefined}
+                  className={n === page ? "is-current" : ""}
+                  onClick={() => setPage(n)}
+                >
+                  {n}
+                </button>
+              ))}
+              <button type="button" data-testid="sales-order-page-next" disabled={page >= pageCount} onClick={() => setPage((value) => value + 1)}>
+                Berikutnya
+              </button>
+            </div>
+          </footer>
+        </div>
+      )}
+
+      {viewMode === "create" && (
+        <form
+          className="so-create-form"
+          onSubmit={handleFormSubmit}
+          onChange={() => { dirtyRef.current = true; }}
+          data-testid="sales-order-form"
+        >
+          <header className="so-create-header" data-testid="so-create-header">
+            <button
+              type="button"
+              className="so-create-back"
+              onClick={leaveCreate}
+              data-testid="back-to-list-btn"
+            >
+              <ArrowLeft size={16} /> Kembali
+            </button>
+            <div className="so-create-heading">
+              <div>
+                <h1 data-testid="sales-order-title">Buat Pesanan Penjualan</h1>
+                <p>Input pesanan penjualan baru dari pelanggan.</p>
+              </div>
+              <div className="so-create-progress" data-testid="so-create-progress">
+                <span data-testid="so-progress-label">{formProgress.label}</span>
+                <span
+                  className={`so-create-chip${formProgress.complete ? " is-complete" : " is-incomplete"}`}
+                  data-testid="so-status-chip"
+                >
+                  {formProgress.statusLabel}
+                </span>
+              </div>
+            </div>
+          </header>
+
+          {formErr && (
+            <div className="so-create-banner is-error" data-testid="form-error-banner" role="alert">
+              <AlertCircle size={16} />
+              <span>{formErr}</span>
+            </div>
+          )}
+          {successMsg && (
+            <div className="so-create-banner is-success" data-testid="form-success-banner">
+              <CheckCircle2 size={16} />
+              <span>{successMsg}</span>
+            </div>
+          )}
+
+          <div className="so-create-columns">
+            <section className="so-create-main" data-so-region="main">
+              <div className="so-create-fields" data-testid="so-main-fields">
+                <SoField field="customer" label="Pelanggan" required error={fieldHasError("customer")} className="so-create-field-customer">
+                  <CustomerSearchSelect
+                    customers={masterCustomersForSearch}
+                    value={formData.customer}
+                    selectedId={formData.customer_id}
+                    onTextChange={handleCustomerTextChange}
+                    onSelectCustomer={handleCustomerSelect}
+                    onClear={handleCustomerClear}
+                    disabled={formBusy}
+                    required
+                    testId="input-customer"
+                  />
+                  <div className="so-create-inline">
+                    <button
+                      type="button"
+                      className="so-create-repeat"
+                      data-testid="btn-repeat-order"
+                      onClick={handleRepeatOrderClick}
+                      disabled={!formData.customer_id || repeatBusy || formBusy}
+                      title={formData.customer_id ? "Salin detail dari PO valid terakhir customer ini" : "Pilih customer terdaftar terlebih dahulu"}
+                    >
+                      {repeatBusy ? "Mencari…" : "Repeat Order"}
+                    </button>
+                  </div>
+                  {formData.customer?.trim() && (
+                    <div className="so-create-note">
+                      {formData.customer_id ? (
+                        <span data-testid="badge-customer-registered">✓ Pelanggan Terdaftar di Master</span>
+                      ) : (
+                        <span data-testid="badge-customer-new">+ Pelanggan Baru (otomatis masuk ke Data Pelanggan saat PO disimpan)</span>
+                      )}
+                    </div>
+                  )}
+                  {repeatSourceIndicator ? (
+                    <div className="so-create-note" data-testid="repeat-source-indicator">
+                      Repeat dari PO: {repeatSourceIndicator}
+                    </div>
+                  ) : null}
+                  {repeatMsg ? (
+                    <div className="so-create-note is-warn" data-testid="repeat-empty-message">{repeatMsg}</div>
+                  ) : null}
+                </SoField>
+
+                <SoField field="outlet" label="Outlet">
+                  {outletsForSelectedCustomer.length > 0 ? (
+                    <select
+                      id="so-outlet"
+                      className="so-line-input"
+                      value={formData.outlet}
+                      onChange={(e) => handleOutletChange(e.target.value)}
+                      data-testid="input-outlet"
+                    >
+                      <option value="">Pilih outlet</option>
+                      {outletsForSelectedCustomer.map((outlet) => (
+                        <option key={outlet.id || outlet.outlet} value={outlet.outlet}>{outlet.outlet || "Outlet"}</option>
+                      ))}
+                      {formData.outlet && !outletsForSelectedCustomer.some((outlet) => outlet.outlet === formData.outlet) && (
+                        <option value={formData.outlet}>{formData.outlet}</option>
+                      )}
+                    </select>
+                  ) : (
+                    <input
+                      id="so-outlet"
+                      type="text"
+                      className="so-line-input"
+                      value={formData.outlet}
+                      onChange={(e) => handleOutletChange(e.target.value)}
+                      placeholder="Outlet / cabang"
+                      data-testid="input-outlet"
+                    />
+                  )}
+                </SoField>
+
+                <SoField field="order_date" label="Tanggal PO">
+                  <input
+                    id="so-order_date"
+                    type="date"
+                    className="so-line-input"
+                    value={formData.order_date}
+                    onChange={(e) => setFormData((p) => ({ ...p, order_date: e.target.value }))}
+                    data-testid="input-order-date"
+                  />
+                </SoField>
+
+                <SoField field="estimated_delivery" label="Rencana kirim">
+                  <input
+                    id="so-estimated_delivery"
+                    type="date"
+                    className="so-line-input"
+                    value={formData.estimated_delivery}
+                    onChange={(e) => setFormData((p) => ({ ...p, estimated_delivery: e.target.value }))}
+                    data-testid="input-estimated-delivery"
+                  />
+                </SoField>
+
+                <SoField field="customer_phone" label="No. HP / WhatsApp Pelanggan" required={newCustomer} error={fieldHasError("customer_phone")}>
+                  <input
+                    id="so-customer_phone"
+                    type="text"
+                    className="so-line-input"
+                    value={formData.customer_phone || ""}
+                    onChange={(e) => setFormData((p) => ({ ...p, customer_phone: e.target.value }))}
+                    placeholder="mis. 0812-3456-7890"
+                    data-testid="input-customer-phone"
+                    aria-invalid={fieldHasError("customer_phone") || undefined}
+                  />
+                </SoField>
+
+                <SoField field="po_number" label="Nomor PO">
+                  <div className="so-create-inline">
+                    <input
+                      id="so-po_number"
+                      type="text"
+                      className="so-line-input"
+                      value={formData.po_number}
+                      onChange={(e) => setFormData((p) => ({ ...p, po_number: e.target.value }))}
+                      placeholder="mis. PO-2026-001"
+                      data-testid="input-po-number"
+                    />
+                    <button
+                      type="button"
+                      className="so-create-auto"
+                      onClick={generatePoNumber}
+                      title="Buat Nomor Otomatis"
+                      data-testid="btn-generate-po"
+                    >
+                      <Sparkles size={14} /> Auto
+                    </button>
+                  </div>
+                </SoField>
+
+                <SoField field="address" label="Alamat Lengkap Pengiriman" required={newCustomer} error={fieldHasError("address")} className="so-create-field-address">
+                  <textarea
+                    id="so-address"
+                    className="so-line-input so-create-address"
+                    value={formData.address}
+                    onChange={(e) => setFormData((p) => ({ ...p, address: e.target.value }))}
+                    placeholder="Alamat jalan, gedung, nomor, patokan"
+                    rows={2}
+                    data-testid="input-address"
+                    aria-invalid={fieldHasError("address") || undefined}
+                  />
+                </SoField>
+              </div>
+
+              <div className="so-create-lines" data-so-region="lines">
+                <div className="so-create-line-toolbar" data-testid="so-line-toolbar">
+                  <div className="so-create-line-heading">
+                    <h2>Daftar Barang</h2>
+                    <span data-testid="so-line-count">{formData.line_items.length} item</span>
+                  </div>
+                  <button
+                    type="button"
+                    className="so-create-add"
+                    onClick={addLineItem}
+                    data-testid="btn-add-line-item"
+                  >
+                    <Plus size={14} /> Tambah barang
+                  </button>
+                </div>
+                <div className="so-create-lines-scroll" data-testid="line-items-table-container" data-scroll-owner="line-items">
+                  <table className="so-create-lines-table">
+                    <thead>
+                      <tr>
+                        <th className="so-col-no" scope="col">#</th>
+                        <th className="so-col-name">Barang <span className="so-req">*</span></th>
+                        <th className="so-col-qty">Qty <span className="so-req">*</span></th>
+                        <th className="so-col-unit">Satuan</th>
+                        <th className="so-col-action">Aksi</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {formData.line_items.length === 0 ? (
+                        <tr>
+                          <td colSpan={5} data-testid="line-items-empty-state" className="so-create-empty">
+                            Tidak ada barang/jasa yang cocok.
+                          </td>
+                        </tr>
+                      ) : formData.line_items.map((line, originalIndex) => {
+                        const mode = lineModes[line.rowKey] || "master";
+                        const imagePath = itemImages[String(line.accurate_item_id || "").trim()]?.url;
+                        return (
+                          <tr key={line.rowKey} data-testid={`line-item-row-${originalIndex}`}>
+                            <td className="so-col-no" data-testid={`line-item-number-${originalIndex}`}>{originalIndex + 1}</td>
+                            <td className="so-col-name">
+                              <div className="so-line-product">
+                                <SalesOrderThumb src={imagePath ? publicApiUrl(imagePath) : ""} />
+                                <div className="so-line-product-body">
+                                  <div className="so-line-mode" role="group" aria-label={`Mode barang baris ${originalIndex + 1}`}>
+                                    <button
+                                      type="button"
+                                      aria-pressed={mode === "master"}
+                                      data-testid={`line-mode-master-${originalIndex}`}
+                                      onClick={() => changeLineMode(originalIndex, "master")}
+                                    >
+                                      Pilih Master
+                                    </button>
+                                    <button
+                                      type="button"
+                                      aria-pressed={mode === "manual"}
+                                      data-testid={`line-mode-manual-${originalIndex}`}
+                                      onClick={() => changeLineMode(originalIndex, "manual")}
+                                    >
+                                      Input Manual
+                                    </button>
+                                  </div>
+                                  {mode === "master" ? (
+                                    <MasterItemSearchSelect
+                                      testId={`line-item-search-${originalIndex}`}
+                                      value={
+                                        line.accurate_item_id || line.master_item_id
+                                          ? {
+                                            accurate_item_id: line.accurate_item_id,
+                                            id: line.master_item_id,
+                                            master_item_id: line.master_item_id,
+                                            item_name: line.name,
+                                            item_code: line.item_code,
+                                            unit: line.unit,
+                                          }
+                                          : null
+                                      }
+                                      onChange={(master) => handleSelectMasterItem(originalIndex, master)}
+                                      placeholder="Cari nama / kode barang…"
+                                    />
+                                  ) : (
+                                    <input
+                                      type="text"
+                                      className="so-line-input"
+                                      value={line.name}
+                                      onChange={(e) => handleLineChange(originalIndex, "name", e.target.value)}
+                                      placeholder="Ketik nama bebas (tanpa master)"
+                                      data-testid={`line-name-${originalIndex}`}
+                                    />
+                                  )}
+                                  <div className="so-line-meta">
+                                    <input
+                                      type="text"
+                                      className="so-line-input"
+                                      value={line.item_code || ""}
+                                      onChange={(e) => handleLineChange(originalIndex, "item_code", e.target.value)}
+                                      placeholder="Kode"
+                                      data-testid={`line-code-${originalIndex}`}
+                                    />
+                                    <select
+                                      className="so-line-input"
+                                      value={line.production_process}
+                                      onChange={(e) => handleLineChange(originalIndex, "production_process", e.target.value)}
+                                      data-testid={`line-process-${originalIndex}`}
+                                      aria-label="Proses"
+                                    >
+                                      <option value="print">Cetak</option>
+                                      <option value="non_print">Tidak Cetak</option>
+                                    </select>
+                                    <input
+                                      type="text"
+                                      className="so-line-input"
+                                      value={line.color || ""}
+                                      onChange={(e) => handleLineChange(originalIndex, "color", e.target.value)}
+                                      placeholder="Warna"
+                                      data-testid={`line-color-${originalIndex}`}
+                                    />
+                                    <input
+                                      type="text"
+                                      className="so-line-input"
+                                      value={line.notes || ""}
+                                      onChange={(e) => handleLineChange(originalIndex, "notes", e.target.value)}
+                                      placeholder="Catatan item"
+                                      data-testid={`line-notes-${originalIndex}`}
+                                    />
+                                  </div>
+                                </div>
+                              </div>
+                            </td>
+                            <td>
+                              <input
+                                type="number"
+                                min="1"
+                                className="so-line-input"
+                                value={line.quantity}
+                                onChange={(e) => handleLineChange(originalIndex, "quantity", e.target.value)}
+                                data-testid={`line-qty-${originalIndex}`}
+                                required
+                              />
+                            </td>
+                            <td>
+                              <input
+                                type="text"
+                                className="so-line-input"
+                                value={line.unit || "pcs"}
+                                onChange={(e) => handleLineChange(originalIndex, "unit", e.target.value)}
+                                data-testid={`line-unit-${originalIndex}`}
+                              />
+                            </td>
+                            <td className="so-col-action">
+                              <button
+                                type="button"
+                                onClick={() => removeLineItem(originalIndex)}
+                                disabled={formData.line_items.length <= 1}
+                                data-testid={`btn-remove-line-${originalIndex}`}
+                                aria-label="Hapus baris"
+                              >
+                                Hapus
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </section>
+
+            <aside className="so-create-side" data-testid="so-order-summary">
+              <div className="so-create-side-body" data-scroll-owner="summary">
+                <h2>Ringkasan Pesanan</h2>
+                <dl className="so-summary-list">
+                  <div><dt>Pelanggan</dt><dd>{formData.customer || "—"}</dd></div>
+                  <div><dt>Outlet</dt><dd>{formData.outlet || "—"}</dd></div>
+                  <div><dt>Tanggal PO</dt><dd>{formatDisplayDate(formData.order_date) || "—"}</dd></div>
+                  <div><dt>Rencana kirim</dt><dd>{formatDisplayDate(formData.estimated_delivery) || "—"}</dd></div>
+                </dl>
+                <div className="so-summary-qty">
+                  <span data-testid="so-total-items">Jumlah jenis barang <strong>{formData.line_items.length}</strong></span>
+                  <span data-testid="so-total-qty">Total kuantitas <strong>{quantityLabel}</strong></span>
+                </div>
+                <SoField field="notes" label="Catatan">
+                  <textarea
+                    id="so-notes"
+                    className="so-line-input so-create-address"
+                    value={formData.notes}
+                    onChange={(e) => setFormData((p) => ({ ...p, notes: e.target.value }))}
+                    placeholder="Catatan khusus pengerjaan, packing, atau instruksi"
+                    rows={3}
+                    data-testid="input-notes"
+                  />
+                </SoField>
+                <div className="so-create-extra" data-so-region="drawer" data-testid="so-extra-fields">
+                  <h3>Detail tambahan</h3>
+                  {extraFields.map((item) => (
+                    <SoField key={item.field} field={item.field} label={item.label} error={fieldHasError(item.field)}>
+                      <input
+                        id={`so-${item.field}`}
+                        type={item.type || "text"}
+                        className="so-line-input"
+                        list={item.list}
+                        value={formData[item.field]}
+                        onChange={(e) => setFormData((p) => ({ ...p, [item.field]: e.target.value }))}
+                        placeholder={item.placeholder}
+                        data-testid={item.testId}
+                        aria-invalid={fieldHasError(item.field) || undefined}
+                      />
+                      {item.field === "sales" && (
+                        <datalist id="sales-suggestions">
+                          {options.sales_options?.map((s) => (
+                            <option key={s} value={s} />
+                          ))}
+                        </datalist>
+                      )}
+                    </SoField>
+                  ))}
+                </div>
+              </div>
+              <div className="so-create-actionbar" data-testid="so-create-actionbar">
+                <button
+                  type="button"
+                  data-testid="btn-cancel-form"
+                  disabled={formBusy}
+                  onClick={leaveCreate}
+                >
+                  Batal
+                </button>
+                <button
+                  type="submit"
+                  className="so-create-save"
+                  disabled={formBusy}
+                  data-testid="btn-submit-sales-order"
+                >
+                  {formBusy ? "Menyimpan..." : "Simpan Pesanan"}
+                </button>
+              </div>
+            </aside>
+          </div>
+        </form>
       )}
 
       {deleteConfirm && (

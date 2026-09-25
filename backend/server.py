@@ -9478,6 +9478,7 @@ async def get_sales_order_options(user=Depends(current_user)):
         cname = (o.get("customer_name") or "").strip()
         if cname:
             outlets_by_customer.setdefault(cname, []).append({
+                "id": str(o.get("id") or ""),
                 "outlet": o.get("name") or "",
                 "address": o.get("formatted_address") or "",
                 "recipient": "",
@@ -10065,6 +10066,25 @@ async def replace_sales_order_line_product(
     }
 
 
+def _quantity_by_unit(lines) -> List[dict]:
+    """Sum quantity per stored unit. Different units are not folded into pcs."""
+    totals: Dict[str, int] = {}
+    order: List[str] = []
+    for li in lines or []:
+        if not isinstance(li, dict):
+            continue
+        unit = str(li.get("unit") or "").strip() or "pcs"
+        try:
+            qty = int(li.get("quantity") or 0)
+        except (TypeError, ValueError):
+            qty = 0
+        if unit not in totals:
+            order.append(unit)
+            totals[unit] = 0
+        totals[unit] += qty
+    return [{"unit": unit, "quantity": totals[unit]} for unit in order]
+
+
 def _mongo_array_nonempty_expr(field: str) -> dict:
     """True when `field` is a non-empty array, without returning array contents."""
     return {
@@ -10110,41 +10130,134 @@ _SALES_ORDER_LIST_PROJECTION = {
     "delivery_status": 1,
     "_has_design_files": _mongo_array_nonempty_expr("design_files"),
     "_has_payment_files": _mongo_array_nonempty_expr("payment_files"),
+    "line_items": {
+        "$map": {
+            "input": {"$ifNull": ["$line_items", []]},
+            "as": "li",
+            "in": {
+                "quantity": "$$li.quantity",
+                "unit": "$$li.unit",
+            },
+        }
+    },
 }
+
+
+def _sales_order_status_clause(status: Optional[str]) -> dict:
+    """Existing list classifications. `histori` is selesai + batal, not a new state."""
+    st = (status or "all").lower()
+    if st == "cancelled":
+        return {"cancelled": True}
+    if st == "aktif":
+        return {"cancelled": {"$ne": True}, "current_stage": {"$lt": 14}}
+    if st == "selesai":
+        return {"cancelled": {"$ne": True}, "current_stage": {"$gte": 14}}
+    if st == "hold":
+        return {"cancelled": {"$ne": True}}
+    if st == "histori":
+        return {"$or": [
+            {"cancelled": True},
+            {"cancelled": {"$ne": True}, "current_stage": {"$gte": 14}},
+        ]}
+    return {}
+
+
+def _sales_order_date_clause(date_from: Optional[str], date_to: Optional[str]) -> dict:
+    clause = {}
+    start = (date_from or "").strip()[:10]
+    end = (date_to or "").strip()[:10]
+    if start:
+        clause["$gte"] = start
+    if end:
+        clause["$lte"] = f"{end}T23:59:59.999999"
+    return {"order_date": clause} if clause else {}
+
+
+@api_router.get("/sales-orders/item-images")
+async def list_sales_order_item_images(
+    accurate_item_ids: Optional[str] = None,
+    master_item_ids: Optional[str] = None,
+    user=Depends(current_user),
+):
+    """Batch product-photo URLs for sales order lines. No price or HPP fields."""
+    reject_sales_pwa_bypass(user)
+    await _require_any_perm(user, "sales_order.view", "sales_order.create", "po.view", "po.edit")
+    from services.sales_order_item_images import (
+        public_image_map,
+        resolve_product_image_refs,
+        split_id_param,
+    )
+    refs = await resolve_product_image_refs(
+        db,
+        accurate_item_ids=split_id_param(accurate_item_ids),
+        master_item_ids=split_id_param(master_item_ids),
+    )
+    return {"images": public_image_map(refs)}
+
+
+@api_router.get("/sales-orders/item-images/{accurate_item_id}")
+async def get_sales_order_item_image(
+    accurate_item_id: str,
+    user=Depends(current_user),
+):
+    """Serve one Customer Pricing product photo. Bytes only."""
+    reject_sales_pwa_bypass(user)
+    await _require_any_perm(user, "sales_order.view", "sales_order.create", "po.view", "po.edit")
+    from fastapi.responses import Response as BinaryResponse
+    from services.customer_pricing_catalog import get_product_image
+    from services.sales_order_item_images import resolve_product_image_refs
+
+    refs = await resolve_product_image_refs(db, accurate_item_ids=[accurate_item_id])
+    ref = refs.get(str(accurate_item_id or "").strip())
+    if not ref or not ref.get("group_id"):
+        raise HTTPException(404, "Foto produk tidak tersedia.")
+    data, content_type, _filename = await get_product_image(
+        db, group_id=ref["group_id"], accurate_item_id=ref["accurate_item_id"]
+    )
+    return BinaryResponse(
+        content=data,
+        media_type=content_type,
+        headers={
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @api_router.get("/sales-orders")
 async def list_sales_orders(
     q: Optional[str] = None,
     status: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    page: Optional[int] = None,
+    page_size: Optional[int] = None,
     user=Depends(current_user),
 ):
     """List sales orders with search and status filtering for Pesanan Penjualan page."""
     reject_sales_pwa_bypass(user)
     await _require_any_perm(user, "sales_order.view", "sales_order.create", "po.view")
-    
-    query: dict = {}
-    query.update(sales_owner_match(user))
+
+    clauses = []
+    owner = sales_owner_match(user)
+    if owner:
+        clauses.append(owner)
     st = (status or "all").lower()
-    if st == "cancelled":
-        query["cancelled"] = True
-    elif st == "aktif":
-        query["cancelled"] = {"$ne": True}
-        query["current_stage"] = {"$lt": 14}
-    elif st == "selesai":
-        query["cancelled"] = {"$ne": True}
-        query["current_stage"] = {"$gte": 14}
-    elif st == "hold":
-        query["cancelled"] = {"$ne": True}
-    
+    status_clause = _sales_order_status_clause(st)
+    if status_clause:
+        clauses.append(status_clause)
     if q and q.strip():
         needle = re.escape(q.strip())
-        query["$or"] = [
+        clauses.append({"$or": [
             {"po_number": {"$regex": needle, "$options": "i"}},
             {"customer": {"$regex": needle, "$options": "i"}},
             {"outlet": {"$regex": needle, "$options": "i"}},
             {"sales": {"$regex": needle, "$options": "i"}},
-        ]
+        ]})
+    date_clause = _sales_order_date_clause(date_from, date_to)
+    if date_clause:
+        clauses.append(date_clause)
+    query: dict = {"$and": clauses} if clauses else {}
     
     orders = await db.orders.aggregate([
         {"$match": query},
@@ -10164,7 +10277,9 @@ async def list_sales_orders(
         ]
         shipped_aggregates = {doc["_id"]: doc async for doc in db.sales_deliveries.aggregate(pipe)}
 
+    fetched_count = len(orders)
     for o in orders:
+        o["quantity_by_unit"] = _quantity_by_unit(o.pop("line_items", None))
         o["design_files"] = [True] if o.pop("_has_design_files", False) else []
         o["payment_files"] = [True] if o.pop("_has_payment_files", False) else []
         _apply_hold_snapshot(o)
@@ -10197,8 +10312,33 @@ async def list_sales_orders(
         orders = [o for o in orders if o.get("hold")]
     elif st == "aktif":
         orders = [o for o in orders if not o.get("hold")]
-    
-    return {"orders": orders, "count": len(orders)}
+
+    paging = page is not None or page_size is not None
+    if not paging:
+        return {"orders": orders, "count": len(orders)}
+
+    size = page_size if page_size is not None else 10
+    try:
+        size = int(size)
+    except (TypeError, ValueError):
+        size = 10
+    size = min(50, max(1, size))
+    try:
+        current = int(page or 1)
+    except (TypeError, ValueError):
+        current = 1
+    current = max(1, current)
+    total = len(orders)
+    start = (current - 1) * size
+    page_rows = orders[start:start + size]
+    return {
+        "orders": page_rows,
+        "count": len(page_rows),
+        "total": total,
+        "page": current,
+        "page_size": size,
+        "capped": fetched_count >= 1000,
+    }
 
 
 # ==================================================

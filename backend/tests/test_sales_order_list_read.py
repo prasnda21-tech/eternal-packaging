@@ -194,7 +194,46 @@ async def test_list_omits_heavy_file_payload_and_keeps_table_fields():
                 key=lambda d: d["created_at"],
                 reverse=True,
             )]
+            assert body["orders"][0]["quantity_by_unit"] == [{"unit": "pcs", "quantity": 100}]
+
+            mixed_id = str(uuid.uuid4())
+            await server.db.orders.insert_one(_order(
+                marker=f"M{marker}",
+                id=mixed_id,
+                customer=f"Cust {marker}",
+                line_items=[
+                    {"name": "Cup", "quantity": 10, "unit": "pcs"},
+                    {"name": "Dus", "quantity": 2, "unit": "dus"},
+                ],
+                total_quantity=12,
+                created_at="2026-09-02T00:00:00+00:00",
+            ))
+            paged = await client.get("/api/sales-orders", params={
+                "q": marker,
+                "status": "histori",
+                "page": 1,
+                "page_size": 1,
+            })
+            assert paged.status_code == 200
+            page_body = paged.json()
+            assert page_body["total"] == 2
+            assert page_body["count"] == 1
+            assert page_body["total"] != page_body["count"]
+            assert {row["id"] for row in page_body["orders"]} <= {cancelled["id"], done["id"]}
+
+            mixed = await client.get("/api/sales-orders", params={"q": f"M{marker}"})
+            mixed_row = mixed.json()["orders"][0]
+            assert mixed_row["quantity_by_unit"] == [
+                {"unit": "pcs", "quantity": 10},
+                {"unit": "dus", "quantity": 2},
+            ]
+            assert "line_items" not in mixed_row
+            assert {part["unit"] for part in mixed_row["quantity_by_unit"]} == {"pcs", "dus"}
+            assert not any(
+                part["unit"] == "pcs" and part["quantity"] == 12
+                for part in mixed_row["quantity_by_unit"]
+            )
     finally:
         app.dependency_overrides.pop(current_user, None)
-        await server.db.orders.delete_many({"id": {"$in": [hold_doc["id"], ready_doc["id"], scheduled["id"], cancelled["id"], done["id"]]}})
+        await server.db.orders.delete_many({"po_number": {"$regex": marker}})
         await server.db.sales_deliveries.delete_many({"po_id": ready_doc["id"]})

@@ -204,6 +204,7 @@ export const api = {
   salesOrderOptions: () => client.get(`/sales-orders/options`).then((r) => r.data),
   createSalesOrder: (payload) => client.post(`/sales-orders`, payload).then((r) => r.data),
   listSalesOrders: (params = {}, config = {}) => client.get(`/sales-orders`, { params, ...config }).then((r) => r.data),
+  salesOrderItemImages: (params = {}, config = {}) => client.get(`/sales-orders/item-images`, { params, ...config }).then((r) => r.data),
   salesOrderRepeatSource: (customerId, config = {}) =>
     client
       .get(`/sales-orders/repeat-source`, {
