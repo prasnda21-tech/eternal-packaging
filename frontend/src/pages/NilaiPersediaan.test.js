@@ -11,9 +11,10 @@ describe("Nilai Persediaan read-only page", () => {
   });
 
   test("renders canonical API values and all required statuses", () => {
-    expect(source).toMatch(/Stock Fisik/);
-    expect(source).toMatch(/HPP Rata-Rata/);
-    expect(source).toMatch(/Nilai Persediaan/);
+    expect(source).toMatch(/Stok Fisik/);
+    expect(source).toMatch(/Harga Pokok/);
+    expect(source).not.toMatch(/HPP Rata-Rata/);
+    expect(source).toMatch(/Nilai Estimasi/);
     [
       "OK",
       "MISSING_COST",
@@ -26,6 +27,8 @@ describe("Nilai Persediaan read-only page", () => {
     expect(source).toMatch(/item\.inventory_value != null/);
     expect(source).toMatch(/hasHpp \? formatRupiah\(item\.current_hpp\) : "Belum Ada HPP"/);
     expect(source).toMatch(/hasValue \? formatRupiah\(item\.inventory_value\) : "—"/);
+    expect(source).toMatch(/STOCK_STATE_UNAVAILABLE/);
+    expect(source).toMatch(/Tidak tersedia/);
   });
 
   test("contains no stock, purchasing, or customer-pricing write calls", () => {
@@ -35,15 +38,27 @@ describe("Nilai Persediaan read-only page", () => {
     expect(source).not.toMatch(/current_stock\.(view|export)/);
   });
 
-  test("has no manual opening or confirmation workflow", () => {
+  test("keeps opening explicit and separates estimate from book value", () => {
     expect(source).not.toMatch(/Atur HPP Awal/);
     expect(source).not.toMatch(/inventoryValuationOpeningPreview/);
     expect(source).not.toMatch(/confirmInventoryValuationOpening/);
     expect(source).not.toMatch(/Konfirmasi HPP Awal/);
     expect(source).not.toMatch(/window\.confirm/);
     expect(source).toMatch(/Valuasi Published \(bukan saldo buku\)/);
-    expect(source).toMatch(/Posting opening/);
+    expect(source).toMatch(/Posting saldo awal/);
     expect(source).toMatch(/bukan saldo buku posted/);
-    expect(source).toMatch(/HPP Rata-Rata \/ OK/);
+    expect(source).not.toMatch(/HPP Rata-Rata \/ OK/);
+    expect(source).toMatch(/Daftar Barang/);
+    expect(source).toMatch(/Saldo Awal/);
+    expect(source).toMatch(/HPP Penjualan/);
+    expect(source).toMatch(/Rekonsiliasi & Laporan/);
+    expect(source).toMatch(/MasterItemSearchSelect/);
+    expect(source).toMatch(/exactMasterItemId/);
+    expect(source).toMatch(/Ambil snapshot saldo sekarang/);
+    expect(source).toMatch(/Periksa saldo awal/);
+    expect(source).toMatch(/Belum lengkap/);
+    expect(source).toMatch(/Perlu diselesaikan/);
+    expect(source).toMatch(/Cocok/);
+    expect(source).toMatch(/Tidak masuk periode/);
   });
 });
