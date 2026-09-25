@@ -30,13 +30,13 @@
 }
 
 .sales-order-page .so-th-filter:hover {
-  color: #0369a1;
-  background: #e0f2fe;
+  color: #1e3a8a;
+  background: #eff6ff;
 }
 
 .sales-order-page .so-th-filter.is-active {
-  color: #0369a1;
-  background: #e0f2fe;
+  color: #1e3a8a;
+  background: #dbeafe;
 }
 
 .sales-order-page .so-th-dot {
@@ -72,15 +72,26 @@
 .sales-order-page-popover input[type="number"],
 .sales-order-page-popover input[type="text"] {
   width: 100%;
-  border: 1px solid #cbd5e1;
-  background: #fff;
+  border: 1px solid #cbd5e1 !important;
+  background: #fff !important;
+  box-shadow: none !important;
   padding: 4px 8px;
   font-size: 12px;
-  color: #0f172a;
+  color: #0f172a !important;
   font-family: inherit;
-  min-height: 28px;
+  min-height: 28px !important;
   border-radius: 6px;
   box-sizing: border-box;
+}
+.sales-order-page-popover select:focus,
+.sales-order-page-popover input:focus,
+.sales-order-page-popover select:focus-visible,
+.sales-order-page-popover input:focus-visible {
+  outline: 2px solid #166534 !important;
+  outline-offset: 1px;
+  border-color: #166534 !important;
+  box-shadow: 0 0 0 3px rgba(22, 101, 52, 0.28) !important;
+  background: #fff !important;
 }
 
 .sales-order-page-popover label {
@@ -169,26 +180,33 @@
   width: 100%;
   margin: 0;
   padding: 0;
-  height: calc(100vh - var(--ep-topbar-height, 48px));
-  max-height: calc(100vh - var(--ep-topbar-height, 48px));
+  flex: 1 1 auto;
+  height: auto;
+  max-height: none;
   overflow: hidden;
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
   min-height: 0;
+  background: #f5f7fa;
 }
+/* .content is already below the topbar. Sticky top:48px would paint the tabs over the page title. */
 .content:has(.so-list-workspace) > .kb-workspace-tabs,
 .content:has(.so-list-workspace) > [data-testid="workspace-tabs"],
 .content:has(.so-create-workspace) > .kb-workspace-tabs,
 .content:has(.so-create-workspace) > [data-testid="workspace-tabs"] {
+  position: static;
+  top: auto;
   flex: 0 0 auto;
   margin: 0;
+  z-index: auto;
 }
 
+.sales-order-page.penjualan-page.penjualan-workspace.so-list-workspace,
 .sales-order-page.so-list-workspace,
 .sales-order-page.so-create-workspace {
-  --so-green: #1f6b3d;
-  --so-green-strong: #175230;
+  --so-green: #166534;
+  --so-green-strong: #14532d;
   --so-line: #e2e8e6;
   --so-ink: #172126;
   --so-muted: #64748b;
@@ -196,11 +214,12 @@
   min-height: 0;
   width: 100%;
   margin: 0;
+  padding: 0 !important;
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: #f4f7f5;
+  background: #f5f7fa;
   color: var(--so-ink);
   font-family: "IBM Plex Sans", sans-serif;
 }
@@ -211,8 +230,8 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  padding: 12px 16px 8px;
-  gap: 8px;
+  padding: 8px 12px 6px;
+  gap: 6px;
 }
 .so-list-workspace .so-list-header,
 .so-list-workspace .so-list-header-actions,
@@ -404,24 +423,29 @@
   position: sticky;
   top: 0;
   z-index: 2;
-  background: #f8faf9;
-  color: #64748b;
+  background: #e8f3ee !important;
+  color: #14532d !important;
   font: 700 11px/1.2 "IBM Plex Sans", sans-serif;
   letter-spacing: 0.04em;
   text-transform: uppercase;
   text-align: left;
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--so-line);
+  padding: 5px 8px;
+  border-bottom: 1px solid #c5e0d4 !important;
+  border-right: 0 !important;
   white-space: nowrap;
 }
 .so-list-workspace .so-list-table td {
-  padding: 8px 10px;
+  padding: 4px 8px;
   border-bottom: 1px solid #eef2f1;
   vertical-align: middle;
   background: #fff;
+  color: #172126;
 }
 .so-list-workspace .so-list-row { cursor: pointer; }
-.so-list-workspace .so-list-row:hover td { background: #f3faf5; }
+.so-list-workspace .so-list-row:hover td { background: #eff6ff !important; }
+.so-list-workspace .so-list-row.is-selected td { background: #dbeafe !important; }
+.so-list-workspace .so-list-row.is-selected td:first-child { box-shadow: inset 3px 0 0 #1d4ed8; }
+.so-list-workspace .so-list-row.is-selected:hover td { background: #dbeafe !important; }
 .so-list-workspace .so-list-customer { font-weight: 700; color: #0f172a; }
 .so-list-workspace .so-list-po {
   display: inline-block;
@@ -431,31 +455,83 @@
   text-decoration: none;
 }
 .so-list-workspace .so-list-outlet { font-size: 12px; color: var(--so-muted); }
-.so-list-workspace .so-list-badge {
+.so-list-workspace .so-list-badge,
+.so-list-workspace .so-progress {
   display: inline-flex;
   align-items: center;
-  height: 22px;
-  padding: 0 8px;
+  max-width: 100%;
+  min-height: 20px;
+  padding: 1px 8px;
   border-radius: 99px;
+  border: 1px solid transparent;
   font-size: 11px;
   font-weight: 700;
-  background: #ecfdf5;
-  color: #047857;
+  line-height: 1.3;
+  color: #713f12;
+  background: #fef9c3;
 }
-.so-list-workspace .so-list-badge.is-hold { background: #fffbeb; color: #92400e; }
-.so-list-workspace .so-list-badge.is-cancel { background: #fef2f2; color: #b91c1c; }
-.so-list-workspace .so-list-badge.is-done { background: #f1f5f9; color: #334155; }
-.so-list-workspace .so-list-actions { flex-wrap: wrap; }
+.so-list-workspace .so-progress { border-radius: 6px; white-space: normal; }
+.so-list-workspace .so-list-badge.is-open,
+.so-list-workspace .so-progress.is-open,
+.so-list-workspace .so-progress.is-wait {
+  background: #fef9c3;
+  color: #713f12;
+  border-color: #fde047;
+  box-shadow: inset 3px 0 0 #2563eb;
+}
+.so-list-workspace .so-list-badge.is-done,
+.so-list-workspace .so-progress.is-done {
+  background: #dcfce7;
+  color: #14532d;
+  border-color: #86efac;
+  box-shadow: none;
+}
+.so-list-workspace .so-list-badge.is-hold,
+.so-list-workspace .so-progress.is-hold {
+  background: #fee2e2;
+  color: #991b1b;
+  border-color: #fecaca;
+  box-shadow: none;
+}
+.so-list-workspace .so-list-badge.is-cancel,
+.so-list-workspace .so-progress.is-cancel {
+  background: #f1f5f9;
+  color: #334155;
+  border-color: #cbd5e1;
+  box-shadow: none;
+}
+.so-list-workspace .so-list-actions { flex-wrap: wrap; gap: 4px; }
 .so-list-workspace .so-list-actions a,
 .so-list-workspace .so-list-actions button {
   border: 1px solid #d5ddd9;
   background: #fff;
-  color: var(--so-ink);
+  color: #172126;
   border-radius: 6px;
-  font: 600 12px/1 "IBM Plex Sans", sans-serif;
-  padding: 6px 8px;
+  font: 600 12px/1.2 "IBM Plex Sans", sans-serif;
+  padding: 4px 8px;
   text-decoration: none;
   cursor: pointer;
+}
+.so-list-workspace .so-act-view {
+  background: #dbeafe !important;
+  color: #1e3a8a !important;
+  border-color: #93c5fd !important;
+}
+.so-list-workspace .so-act-repeat,
+.so-create-workspace .so-create-repeat {
+  background: #ede9fe !important;
+  color: #5b21b6 !important;
+  border-color: #c4b5fd !important;
+}
+.so-list-workspace .so-act-ship {
+  background: #ccfbf1 !important;
+  color: #115e59 !important;
+  border-color: #5eead4 !important;
+}
+.so-list-workspace .so-list-delete {
+  background: #fee2e2 !important;
+  color: #991b1b !important;
+  border-color: #f87171 !important;
 }
 .so-list-workspace .so-list-empty {
   text-align: center;
@@ -586,9 +662,27 @@
   flex: 0 0 auto;
   display: grid;
   grid-template-columns: minmax(0, 1.2fr) minmax(0, 0.8fr);
-  gap: 10px 12px;
-  padding: 12px;
+  gap: 8px 12px;
+  padding: 0 12px 10px;
   border-bottom: 1px solid var(--so-line);
+}
+.so-create-workspace .so-section-head {
+  display: flex;
+  align-items: center;
+  margin: 0;
+  min-height: 34px;
+  padding: 6px 12px;
+  font-size: 14px;
+  line-height: 1.2;
+  font-weight: 700;
+  color: #1e3a8a;
+}
+.so-create-workspace .so-section-head.is-customer {
+  grid-column: 1 / -1;
+  margin: 0 -12px 2px;
+  background: #eff6ff;
+  border-bottom: 1px solid #bfdbfe;
+  color: #1e3a8a;
 }
 .so-create-workspace .so-create-field-address { grid-column: 1 / -1; }
 .so-create-workspace .so-create-field label {
@@ -608,18 +702,28 @@
 .so-create-workspace .mis-input {
   width: 100%;
   box-sizing: border-box;
-  border: 1px solid #d5ddd9;
-  border-radius: 8px;
-  background: #fff;
-  color: var(--so-ink);
+  border: 1px solid #cbd5e1 !important;
+  border-radius: 8px !important;
+  background: #fff !important;
+  color: #172126 !important;
+  box-shadow: none !important;
   font-family: "IBM Plex Sans", sans-serif;
-  height: 36px;
+  height: 34px;
+  min-height: 34px !important;
   padding: 0 10px;
   font-size: 14px;
 }
+.so-list-workspace .so-list-toolbar select,
+.so-list-workspace .so-list-pager select {
+  background: #fff !important;
+  border: 1px solid #cbd5e1 !important;
+  color: #172126 !important;
+  box-shadow: none !important;
+  min-height: 34px !important;
+}
 .so-create-workspace textarea.so-line-input.so-create-address {
-  height: 64px;
-  min-height: 56px;
+  height: 56px;
+  min-height: 52px !important;
   padding: 8px 10px;
   line-height: 1.35;
   resize: none;
@@ -649,9 +753,11 @@
 }
 .so-create-workspace .so-create-line-toolbar {
   justify-content: space-between;
-  padding: 8px 12px;
+  padding: 6px 12px;
   flex: 0 0 auto;
-  border-bottom: 1px solid var(--so-line);
+  background: #e8f3ee;
+  color: #14532d;
+  border-bottom: 1px solid #c5e0d4;
 }
 .so-create-workspace .so-create-line-heading h2,
 .so-create-workspace .so-create-side h2 {
@@ -680,18 +786,19 @@
   position: sticky;
   top: 0;
   z-index: 1;
-  background: #f8fafc;
-  color: #475569;
+  background: #e8f3ee !important;
+  color: #14532d !important;
   font: 700 11px/1.2 "IBM Plex Sans", sans-serif;
   letter-spacing: 0.03em;
   text-transform: uppercase;
   text-align: left;
-  padding: 8px 6px;
-  border-bottom: 1px solid var(--so-line);
+  padding: 5px 6px;
+  border-bottom: 1px solid #c5e0d4 !important;
+  border-right: 0 !important;
   white-space: nowrap;
 }
 .so-create-workspace .so-create-lines-table td {
-  padding: 6px;
+  padding: 4px 6px;
   border-bottom: 1px solid #eef2f1;
   vertical-align: middle;
   background: #fff;
@@ -735,13 +842,13 @@
   padding: 0 7px;
   cursor: pointer;
 }
-.so-create-workspace .so-line-mode button[aria-pressed="true"] { background: #f0fdfa; color: var(--so-green); }
+.so-create-workspace .so-line-mode button[aria-pressed="true"] { background: #e8f3ee; color: var(--so-green); }
 .so-create-workspace .so-create-lines .so-line-input,
 .so-create-workspace .so-create-lines .mis-input { height: 36px; font-size: 13px; border-radius: 6px; }
 .so-create-workspace .so-col-action button {
-  border: 1px solid #fecaca;
-  background: #fff;
-  color: #b91c1c;
+  border: 1px solid #f87171 !important;
+  background: #fee2e2 !important;
+  color: #991b1b !important;
   cursor: pointer;
   padding: 4px 8px;
   border-radius: 6px;
@@ -749,14 +856,27 @@
 }
 .so-create-workspace .so-col-action button:disabled { color: #cbd5e1; border-color: #e2e8f0; cursor: not-allowed; }
 .so-create-workspace .so-create-empty { padding: 16px; text-align: center; color: var(--so-muted); }
+.so-create-workspace .so-summary-head {
+  flex: 0 0 auto;
+  padding: 8px 12px;
+  background: #e8f3ee;
+  border-bottom: 1px solid #c5e0d4;
+  color: #14532d;
+}
+.so-create-workspace .so-summary-head h2 {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.2;
+  font-weight: 700;
+}
 .so-create-workspace .so-create-side-body {
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
-  padding: 12px;
+  padding: 10px 12px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
 }
 .so-create-workspace .so-summary-list { margin: 0; display: flex; flex-direction: column; gap: 6px; }
 .so-create-workspace .so-summary-list div { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; }
@@ -765,13 +885,27 @@
 .so-create-workspace .so-summary-qty {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding-top: 8px;
-  border-top: 1px solid var(--so-line);
+  gap: 6px;
+  padding: 8px;
+  border-radius: 8px;
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
   font-size: 13px;
   color: #334155;
 }
-.so-create-workspace .so-summary-qty strong { float: right; }
+.so-create-workspace .so-summary-qty span {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+}
+.so-create-workspace .so-summary-qty strong {
+  float: none;
+  font-size: 20px;
+  line-height: 1.1;
+  font-weight: 800;
+  color: #166534;
+}
 .so-create-workspace .so-create-extra h3 {
   margin: 4px 0 8px;
   font-size: 13px;
@@ -790,11 +924,52 @@
 }
 .so-create-workspace .so-create-actionbar [data-testid="btn-cancel-form"] { height: 40px; padding: 0 14px; }
 .so-create-workspace .so-create-save { height: 40px; padding: 0 14px; }
-.so-create-workspace input:focus,
+.so-list-workspace .so-list-search {
+  background: #fff !important;
+  border: 1px solid #cbd5e1 !important;
+}
+.so-list-workspace .so-list-search input {
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+  min-height: 0 !important;
+  height: 32px;
+  padding: 0 !important;
+  color: #172126 !important;
+}
+.so-list-workspace .so-list-search input:focus,
+.so-list-workspace .so-list-search input:focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
+}
+.so-list-workspace .so-list-search:focus-within {
+  border-color: #166534 !important;
+  box-shadow: 0 0 0 3px rgba(22, 101, 52, 0.28);
+}
+.so-create-workspace .so-line-input:focus,
+.so-create-workspace .so-line-input:focus-visible,
+.so-create-workspace .mis-input:focus,
+.so-create-workspace .mis-input:focus-visible,
 .so-create-workspace select:focus,
-.so-create-workspace textarea:focus {
-  outline: 2px solid rgba(31, 107, 61, 0.28);
-  border-color: var(--so-green);
+.so-create-workspace select:focus-visible,
+.so-create-workspace textarea:focus,
+.so-create-workspace textarea:focus-visible,
+.so-list-workspace .so-list-toolbar select:focus,
+.so-list-workspace .so-list-toolbar select:focus-visible,
+.so-list-workspace .so-list-pager select:focus,
+.so-list-workspace .so-list-pager select:focus-visible {
+  outline: 2px solid #166534 !important;
+  outline-offset: 1px;
+  border-color: #166534 !important;
+  background: #fff !important;
+  box-shadow: 0 0 0 3px rgba(22, 101, 52, 0.28) !important;
+}
+.so-create-workspace .so-line-input:hover,
+.so-create-workspace .mis-input:hover,
+.so-list-workspace .so-list-toolbar select:hover,
+.so-list-workspace .so-list-pager select:hover {
+  background: #fff !important;
+  border-color: #94a3b8 !important;
 }
 
 @media (min-width: 1024px) {

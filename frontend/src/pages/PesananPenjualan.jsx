@@ -203,6 +203,16 @@ function SalesOrderThumb({ src }) {
   );
 }
 
+function salesOrderProgressTone(order) {
+  if (order?.cancelled) return "is-cancel";
+  if (order?.hold) return "is-hold";
+  const status = salesOrderDeliveryStatus(order);
+  if (status === "SELESAI" || status === "SELESAI PENGIRIMAN") return "is-done";
+  if (status === "DIBATALKAN") return "is-cancel";
+  if (status === "SEBAGIAN" || status === "SEBAGIAN DIKIRIM") return "is-open";
+  return "is-wait";
+}
+
 function confirmDiscardSalesOrder() {
   if (typeof window === "undefined" || typeof window.confirm !== "function") return true;
   try {
@@ -1559,7 +1569,7 @@ export default function PesananPenjualan() {
                     <tr
                       key={o.id}
                       data-testid={`order-row-${o.id}`}
-                      className="so-list-row"
+                      className={`so-list-row${selectedIds.has(o.id) ? " is-selected" : ""}`}
                       onClick={() => openOrder(o)}
                     >
                       {canDelete && (
@@ -1592,7 +1602,9 @@ export default function PesananPenjualan() {
                       <td>{formatDisplayDate(o.order_date) || "—"}</td>
                       <td>{formatDisplayDate(o.tanggal_pengiriman) || "—"}</td>
                       <td data-testid={`order-qty-${o.id}`}>{orderQuantityLabel(o)}</td>
-                      <td>{listProgressText(o)}</td>
+                      <td>
+                        <span className={`so-progress ${salesOrderProgressTone(o)}`}>{listProgressText(o)}</span>
+                      </td>
                       <td>
                         {isCancelled ? (
                           <span className="so-list-badge is-cancel">Cancelled</span>
@@ -1608,6 +1620,7 @@ export default function PesananPenjualan() {
                             to={`/po/${o.id}`}
                             state={poListNavState({ po_number: o.po_number, customer: o.customer })}
                             onClick={() => onOpenPo(o.id)}
+                            className="so-act-view"
                             data-testid={`btn-view-po-${o.id}`}
                           >
                             Lihat PO
@@ -1615,6 +1628,7 @@ export default function PesananPenjualan() {
                           {canCreate && !isCancelled && (
                             <button
                               type="button"
+                              className="so-act-repeat"
                               data-testid={`btn-repeat-order-${o.id}`}
                               onClick={() => {
                                 resetForm();
@@ -1628,6 +1642,7 @@ export default function PesananPenjualan() {
                           {canProcessDelivery && (
                             <Link
                               to={`/penjualan/pengiriman-pesanan?po_id=${o.id}&action=create`}
+                              className="so-act-ship"
                               data-testid={`btn-process-delivery-${o.id}`}
                             >
                               + Kirim
@@ -1730,6 +1745,7 @@ export default function PesananPenjualan() {
           <div className="so-create-columns">
             <section className="so-create-main" data-so-region="main">
               <div className="so-create-fields" data-testid="so-main-fields">
+                <h2 className="so-section-head is-customer">Informasi Pelanggan</h2>
                 <SoField field="customer" label="Pelanggan" required error={fieldHasError("customer")} className="so-create-field-customer">
                   <CustomerSearchSelect
                     customers={masterCustomersForSearch}
@@ -2044,8 +2060,10 @@ export default function PesananPenjualan() {
             </section>
 
             <aside className="so-create-side" data-testid="so-order-summary">
-              <div className="so-create-side-body" data-scroll-owner="summary">
+              <div className="so-summary-head">
                 <h2>Ringkasan Pesanan</h2>
+              </div>
+              <div className="so-create-side-body" data-scroll-owner="summary">
                 <dl className="so-summary-list">
                   <div><dt>Pelanggan</dt><dd>{formData.customer || "—"}</dd></div>
                   <div><dt>Outlet</dt><dd>{formData.outlet || "—"}</dd></div>
