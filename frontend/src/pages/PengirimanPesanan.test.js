@@ -30,6 +30,8 @@ describe("Pengiriman Pesanan UI & Data Invariants", () => {
     expect(src).toMatch(/expedition/);
     expect(src).toMatch(/notes/);
     expect(src).toMatch(/SjDeliveryLocationPicker/);
+    expect(src).toMatch(/Nomor SJ/);
+    expect(src).not.toMatch(/Backend-Authoritative/);
     expect(src).toMatch(/sjOverridePayload/);
     expect(src).toMatch(/delivery_location/);
   });

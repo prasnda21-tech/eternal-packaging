@@ -505,7 +505,7 @@ export default function PengirimanPesanan() {
 
       {/* VIEW: CREATE DELIVERY ORDER */}
       {viewMode === "create" && (
-        <form className="sd-form-fill" data-form-tab={deliveryFormTab} onSubmit={handleSubmitDelivery}>
+        <form className="sd-form-fill pj-delivery-form" data-form-tab={deliveryFormTab} onSubmit={handleSubmitDelivery}>
           <div className="sd-form-stage">
           <div className="sd-form-tabs" role="tablist" aria-label="Bagian pengiriman">
             <button type="button" className={deliveryFormTab === "terms" ? "is-active" : ""} onClick={() => setDeliveryFormTab("terms")}>Pengiriman</button>
@@ -523,15 +523,15 @@ export default function PengirimanPesanan() {
           )}
 
           {/* Section 1: PO Selection & Information */}
-          <section className="panel sd-pane-terms" style={{ background: "#fff", border: "1px solid #e2e8f0", borderRadius: 10, padding: 20, marginBottom: 20, boxShadow: "0 1px 3px rgba(0,0,0,0.05)" }}>
-            <header style={{ borderBottom: "1px solid #f1f5f9", paddingBottom: 12, marginBottom: 16 }}>
+          <section className="panel sd-pane-terms" style={{ background: "#fff", border: "1px solid #CBD5E1", borderRadius: 10, padding: 12, marginBottom: 8 }}>
+            <header style={{ borderBottom: "1px solid #f1f5f9", paddingBottom: 8, marginBottom: 10 }}>
               <h3 style={{ margin: 0, fontSize: "1.1rem", color: "#1e293b" }}>1. Data Pesanan Penjualan (PO Asal)</h3>
               <p style={{ margin: "4px 0 0 0", fontSize: "0.85rem", color: "#64748b" }}>
                 Data diisi otomatis dari Pesanan Penjualan dan dapat disesuaikan untuk pengiriman ini.
               </p>
             </header>
 
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 16 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 10 }}>
               {/* Select PO */}
               <div>
                 <label style={{ display: "block", fontSize: "0.85rem", fontWeight: 600, color: "#334155", marginBottom: 4 }}>
@@ -543,7 +543,7 @@ export default function PengirimanPesanan() {
                     readOnly
                     value={poSummary?.po_number ? `${poSummary.po_number}` : queryPoId}
                     data-testid="display-po-number"
-                    style={{ width: "100%", padding: "8px 12px", border: "1px solid #cbd5e1", borderRadius: 6, fontSize: "0.95rem", background: "#f8fafc", color: "#0f172a", fontWeight: 600, boxSizing: "border-box" }}
+                    style={{ width: "100%", padding: "8px 12px", border: "1px solid #CBD5E1", borderRadius: 6, fontSize: "0.95rem", background: "#f8fafc", color: "#334155", fontWeight: 600, boxSizing: "border-box" }}
                   />
                 ) : (
                   <select
@@ -570,14 +570,14 @@ export default function PengirimanPesanan() {
               {/* SJ Number Read-Only Indicator */}
               <div>
                 <label style={{ display: "block", fontSize: "0.85rem", fontWeight: 600, color: "#334155", marginBottom: 4 }}>
-                  Nomor SJ (Backend-Authoritative)
+                  Nomor SJ
                 </label>
                 <input
                   type="text"
                   readOnly
                   value={poSummary?.suggested_sj_number ? `${poSummary.suggested_sj_number} (Pengiriman #${poSummary.next_shipment_index})` : "(Pilih PO untuk melihat No SJ)"}
                   data-testid="display-suggested-sj"
-                  style={{ width: "100%", padding: "8px 12px", border: "1px solid #e2e8f0", borderRadius: 6, fontSize: "0.95rem", background: "#f1f5f9", color: "#0369a1", fontWeight: 600, boxSizing: "border-box" }}
+                  style={{ width: "100%", padding: "8px 12px", border: "1px solid #CBD5E1", borderRadius: 6, fontSize: "0.95rem", background: "#f8fafc", color: "#334155", fontWeight: 600, boxSizing: "border-box" }}
                 />
                 <p style={{ margin: "4px 0 0 0", fontSize: "0.75rem", color: "#64748b" }}>
                   Terkunci berdasarkan PO dan urutan pengiriman.
@@ -609,7 +609,7 @@ export default function PengirimanPesanan() {
                   readOnly
                   value={poSummary?.customer || "-"}
                   data-testid="display-customer"
-                  style={{ width: "100%", padding: "8px 12px", border: "1px solid #e2e8f0", borderRadius: 6, fontSize: "0.95rem", background: "#f8fafc", color: "#334155", boxSizing: "border-box" }}
+                  style={{ width: "100%", padding: "8px 12px", border: "1px solid #CBD5E1", borderRadius: 6, fontSize: "0.95rem", background: "#f8fafc", color: "#334155", boxSizing: "border-box" }}
                 />
               </div>
 
@@ -730,8 +730,8 @@ export default function PengirimanPesanan() {
           </section>
 
           {/* Section 2: Line Items & Quantity Allocation */}
-          <section className="panel sd-pane-items" style={{ background: "#fff", border: "1px solid #e2e8f0", borderRadius: 10, padding: 20, marginBottom: 20, boxShadow: "0 1px 3px rgba(0,0,0,0.05)" }}>
-            <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid #f1f5f9", paddingBottom: 12, marginBottom: 16, flexWrap: "wrap", gap: 8 }}>
+          <section className="panel sd-pane-items" style={{ background: "#fff", border: "1px solid #CBD5E1", borderRadius: 10, padding: 12, marginBottom: 8 }}>
+            <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid #f1f5f9", paddingBottom: 8, marginBottom: 10, flexWrap: "wrap", gap: 8 }}>
               <div>
                 <h3 style={{ margin: 0, fontSize: "1.1rem", color: "#1e293b" }}>2. Alokasi Kuantitas Pengiriman</h3>
                 <p style={{ margin: "2px 0 0 0", fontSize: "0.85rem", color: "#64748b" }}>
@@ -744,7 +744,7 @@ export default function PengirimanPesanan() {
                     type="button"
                     onClick={handleFillAllRemaining}
                     data-testid="btn-fill-all-remaining"
-                    style={{ padding: "6px 12px", background: "#e0f2fe", color: "#0369a1", border: "1px solid #bae6fd", borderRadius: 6, fontSize: "0.8rem", fontWeight: 600, cursor: "pointer" }}
+                    style={{ padding: "6px 12px", background: "#fff", color: "#166534", border: "1px solid #CBD5E1", borderRadius: 6, fontSize: "0.8rem", fontWeight: 600, cursor: "pointer" }}
                   >
                     Kirim Semua Sisa
                   </button>

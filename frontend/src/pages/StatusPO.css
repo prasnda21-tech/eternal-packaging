@@ -326,13 +326,16 @@
   border-radius:4px;
   background:var(--spo-surface);
   box-shadow:none;
-  overflow:auto;
+  overflow-x:auto;
+  overflow-y:auto;
   min-height:0;
   flex:1 1 auto;
+  min-width:0;
 }
 
 .status-po-page .spo-table.ship-table{
   width:100%;
+  max-width:100%;
   min-width:0;
   border-collapse:separate;
   border-spacing:0;
@@ -425,11 +428,14 @@
 .status-po-page .spo-resize{
   position:absolute;
   top:0;
-  right:-3px;
-  width:7px;
+  right:0;
+  width:6px;
   height:100%;
   cursor:col-resize;
   z-index:8;
+}
+.status-po-page .spo-table thead th{
+  overflow:hidden;
 }
 .status-po-page .spo-resize:hover,
 .status-po-page .spo-resize.is-active{
@@ -513,12 +519,13 @@
   align-items:center;
   gap:2px;
   width:100%;
-  min-width:168px;
+  max-width:100%;
+  min-width:0;
 }
 .status-po-page .spo-seg{
   flex:1 1 0;
   height:10px;
-  min-width:6px;
+  min-width:0;
   border-radius:2px;
   background:var(--spo-empty);
 }

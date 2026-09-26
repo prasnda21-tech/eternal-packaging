@@ -431,6 +431,24 @@ export default function FakturPenjualan() {
     return { lines: computedLines, subtotal, discount: disc, afterDiscount, ppn, ppnPercent: ppnPct, grandTotal, totalQty, totalRemaining, hasErrors, isDiscOver, priceMissingAny };
   }, [previewData, lineQuantities, linePrices, discountAmount, ppnPercent]);
 
+  const invoiceCompleteness = useMemo(() => {
+    const lines = createCalculations?.lines || [];
+    const poOk = Boolean(selectedPoId || queryPoId);
+    const dateOk = Boolean(invoiceDate);
+    const qtyOk = lines.some((line) => Number(line.numericQty || 0) > 0);
+    const priceOk = qtyOk && !createCalculations.priceMissingAny;
+    const limitsOk = !lines.some((line) => line.isQtyOver) && !createCalculations.isDiscOver;
+    const checks = [poOk, dateOk, qtyOk, priceOk, limitsOk];
+    const completed = checks.filter(Boolean).length;
+    return {
+      percentage: Math.round((completed / checks.length) * 100),
+      completed,
+      total: checks.length,
+      complete: completed === checks.length,
+      totalsReady: Boolean(previewData) && !createCalculations.priceMissingAny,
+    };
+  }, [createCalculations, selectedPoId, queryPoId, invoiceDate, previewData]);
+
   // Handle Save Invoice
   const handleSaveInvoice = async (e) => {
     e.preventDefault();
@@ -810,6 +828,22 @@ export default function FakturPenjualan() {
               {detailData?.invoice_number || detailData?.id || selectedInvoiceId || ""}
             </span>
           )}
+          {viewMode === "create" && (
+            <>
+              <span
+                className={"fp-chip " + (invoiceCompleteness.complete ? "is-complete" : "is-incomplete")}
+                data-testid="invoice-completeness"
+              >
+                {invoiceCompleteness.complete ? "Lengkap" : "Belum lengkap"}
+              </span>
+              <FormProgress
+                percentage={invoiceCompleteness.percentage}
+                completed={invoiceCompleteness.completed}
+                total={invoiceCompleteness.total}
+                className="fp-progress-sr"
+              />
+            </>
+          )}
         </div>
 
         {viewMode === "list" && (
@@ -1060,21 +1094,15 @@ export default function FakturPenjualan() {
 
       {/* VIEW: CREATE */}
       {viewMode === "create" && (
-        <div className="sd-form">
-          <FormProgress
-            percentage={Math.round(([selectedPoId || queryPoId, invoiceDate, (createCalculations?.lines || []).some(l => Number(l.numericQty || 0) > 0)].filter(Boolean).length / 3) * 100)}
-            completed={[selectedPoId || queryPoId, invoiceDate, (createCalculations?.lines || []).some(l => Number(l.numericQty || 0) > 0)].filter(Boolean).length}
-            total={3}
-            className="mb-4"
-          />
-
+        <div className="sd-form fp-create">
           {/* Step 1: PO Selector Panel (Only shown if opened directly from menu without pre-selected PO) */}
           {!queryPoId && (
             <FormSection
               id="fp-select-po"
-              title="1. Pilih Pesanan Penjualan (PO Asal)"
+              title="Pilih Pesanan Penjualan"
               description="Pilih PO yang eligible untuk dibuatkan faktur penjualan."
-              status={selectedPoId ? "complete" : "incomplete"}
+              status={computeStatus([{ value: selectedPoId, isRequired: true }])}
+              className="fp-po-section"
             >
               <div style={{ maxWidth: 540 }}>
                 <FormField id="fp-po-selector-field" label="Nomor PO" isRequired value={selectedPoId}>
@@ -1103,55 +1131,35 @@ export default function FakturPenjualan() {
             </FormSection>
           )}
 
-          {/* Step 2: PO Snapshot & Financial Config */}
           {previewLoading ? (
-            <div style={{ padding: 32, textAlign: "center", color: "#64748b" }}>Memuat data PO...</div>
+            <div className="sd-form-stage" style={{ padding: 32, textAlign: "center", color: "#64748b" }}>Memuat data PO...</div>
           ) : previewData ? (
             <form className="sd-form-fill" data-form-tab={invoiceFormTab} onSubmit={handleSaveInvoice}>
               <div className="sd-form-stage">
-              <div className="sd-form-tabs" role="tablist" aria-label="Bagian faktur">
-                <button type="button" className={invoiceFormTab === "items" ? "is-active" : ""} onClick={() => setInvoiceFormTab("items")}>Barang</button>
-                <button type="button" className={invoiceFormTab === "terms" ? "is-active" : ""} onClick={() => setInvoiceFormTab("terms")}>Ketentuan</button>
-              </div>
-              <FormSection
-                id="fp-snapshot-financial"
-                title={queryPoId ? "Informasi PO & Konfigurasi Finansial Faktur" : "2. Informasi PO Snapshot & Konfigurasi Finansial"}
-                description="Detail PO asal dan ketentuan termin pembayaran faktur."
-                status={computeStatus([{ value: invoiceDate, isRequired: true }])}
-                className="panel"
-              >
-                <div data-testid="po-snapshot-card">
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 16 }}>
-                  <div>
-                    <span style={{ fontSize: "0.75rem", color: "#64748b", textTransform: "uppercase" }}>No PO</span>
-                    <strong data-testid="snapshot-po-number" style={{ display: "block", fontSize: "0.95rem", color: "#0f172a" }}>{previewData.po_number}</strong>
-                  </div>
-                  <div>
-                    <span style={{ fontSize: "0.75rem", color: "#64748b", textTransform: "uppercase" }}>Customer</span>
-                    <strong data-testid="snapshot-customer" style={{ display: "block", fontSize: "0.95rem", color: "#0f172a" }}>{previewData.customer}</strong>
-                  </div>
-                  <div>
-                    <span style={{ fontSize: "0.75rem", color: "#64748b", textTransform: "uppercase" }}>Outlet</span>
-                    <span data-testid="snapshot-outlet" style={{ display: "block", fontSize: "0.95rem", color: "#334155" }}>{previewData.outlet || "-"}</span>
-                  </div>
-                  <div>
-                    <span style={{ fontSize: "0.75rem", color: "#64748b", textTransform: "uppercase" }}>Sales</span>
-                    <span data-testid="snapshot-sales" style={{ display: "block", fontSize: "0.95rem", color: "#334155" }}>{previewData.sales || "-"}</span>
-                  </div>
+              <div className="fp-summary" data-testid="po-snapshot-card">
+                <div>
+                  <span>Nomor PO</span>
+                  <strong data-testid="snapshot-po-number">{previewData.po_number}</strong>
                 </div>
+                <div>
+                  <span>Customer</span>
+                  <strong data-testid="snapshot-customer">{previewData.customer}</strong>
+                </div>
+                <div>
+                  <span>Outlet / Cabang</span>
+                  <strong data-testid="snapshot-outlet">{previewData.outlet || "-"}</strong>
+                </div>
+                <div>
+                  <span>Sales Representative</span>
+                  <strong data-testid="snapshot-sales">{previewData.sales || "-"}</strong>
+                </div>
+              </div>
+              <div className="sd-form-tabs" role="tablist" aria-label="Bagian faktur">
+                <button type="button" className={invoiceFormTab === "items" ? "is-active" : ""} onClick={() => setInvoiceFormTab("items")}>Barang & Harga</button>
+                <button type="button" className={invoiceFormTab === "terms" ? "is-active" : ""} onClick={() => setInvoiceFormTab("terms")}>Tanggal & Ketentuan</button>
+              </div>
 
-                {/* Financial Controls: Tanggal, Termin, Diskon, PPN */}
-                <div
-                  className="sd-pane-terms"
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
-                    gap: 16,
-                    marginTop: 18,
-                    paddingTop: 16,
-                    borderTop: "1px solid #f1f5f9",
-                  }}
-                >
+              <div className="fp-terms sd-pane-terms">
                   <div>
                     <label style={{ fontSize: "0.85rem", fontWeight: 600, color: "#334155", display: "block", marginBottom: 6 }}>
                       Tanggal Faktur <span style={{ color: "#ef4444" }}>*</span>
@@ -1228,42 +1236,26 @@ export default function FakturPenjualan() {
                       style={{ width: "100%", padding: "8px 12px", border: "1px solid #cbd5e1", borderRadius: 6 }}
                     />
                   </div>
-                </div>
-                </div>
-              </FormSection>
+              </div>
 
-              {/* Table Line Items with Partial Invoicing Quantity */}
-              <FormSection
-                id="fp-line-items"
-                title="3. Rincian Barang, Kuantitas Faktur & Harga Satuan"
-                description="Mendukung faktur parsial. Masukkan jumlah kuantitas yang ditagihkan (maksimal sisa PO) dan harga satuan per baris."
-                status={(createCalculations?.lines || []).some(l => Number(l.numericQty || 0) > 0) ? "complete" : "incomplete"}
-                className="panel sd-pane-items"
-              >
-
+              <div className="fp-items sd-pane-items">
                 <div className="sd-lines">
-                  <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "left", fontSize: "0.9rem" }}>
+                  <table className="fp-lines">
                     <thead>
-                      <tr style={{ background: "#f8fafc", borderBottom: "2px solid #e2e8f0", color: "#475569" }}>
-                        <th style={{ padding: "10px 12px", width: 40 }}>#</th>
-                        <th style={{ padding: "10px 12px", minWidth: 200 }}>Barang / Jasa</th>
-                        <th style={{ padding: "10px 12px", width: 140, textAlign: "right" }}>Sisa PO</th>
-                        <th style={{ padding: "10px 12px", width: 150, textAlign: "right" }}>
-                          Qty Faktur <span style={{ color: "#ef4444" }}>*</span>
-                        </th>
-                        <th style={{ padding: "10px 12px", width: 180, textAlign: "right" }}>
-                          Harga Satuan (Rp) <span style={{ color: "#ef4444" }}>*</span>
-                        </th>
-                        <th style={{ padding: "10px 12px", width: 180, textAlign: "right" }}>Total Line (Rp)</th>
+                      <tr>
+                        <th>Barang</th>
+                        <th>Sisa dapat difakturkan</th>
+                        <th>Qty faktur</th>
+                        <th>Harga satuan</th>
+                        <th>Total baris</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {createCalculations.lines.map((li, index) => (
-                        <tr key={li.line_idx} style={{ borderBottom: "1px solid #f1f5f9" }} data-testid={`create-line-${li.line_idx}`}>
-                          <td style={{ padding: "10px 12px", color: "#64748b", fontWeight: 600 }}>{index + 1}</td>
-                          <td style={{ padding: "10px 12px" }}>
-                            <div style={{ fontWeight: 600, color: "#1e293b" }}>{li.item_name}</div>
-                            {li.color && <div style={{ fontSize: "0.75rem", color: "#64748b" }}>Warna: {li.color}</div>}
+                      {createCalculations.lines.map((li) => (
+                        <tr key={li.line_idx} data-testid={`create-line-${li.line_idx}`}>
+                          <td>
+                            <div className="fp-item-name">{li.item_name}</div>
+                            {li.color && <div className="fp-item-meta">Warna: {li.color}</div>}
                           </td>
                           <td style={{ padding: "10px 12px", textAlign: "right", color: "#64748b" }}>
                             <strong>{Number(li.remaining).toLocaleString("id-ID")}</strong> {li.unit || "pcs"}
@@ -1279,6 +1271,7 @@ export default function FakturPenjualan() {
                                 setLineQuantities((prev) => ({ ...prev, [li.line_idx]: val }));
                               }}
                               data-testid={`qty-input-${li.line_idx}`}
+                              className={li.isQtyOver ? "is-over" : undefined}
                               style={{
                                 width: 120,
                                 padding: "6px 10px",
@@ -1309,11 +1302,11 @@ export default function FakturPenjualan() {
                               style={{
                                 width: "100%",
                                 padding: "6px 10px",
-                                border: "1px solid #cbd5e1",
+                                border: "1px solid #CBD5E1",
                                 borderRadius: 6,
                                 fontWeight: 600,
                                 textAlign: "right",
-                                background: li.price_from_order ? "#f0fdf4" : "#fff",
+                                background: li.price_from_order ? "#f8fafc" : "#fff",
                               }}
                             />
                             {li.price_from_order && (
@@ -1332,63 +1325,22 @@ export default function FakturPenjualan() {
                   </table>
                 </div>
 
-                {/* Live Calculation Summary Breakdown */}
-                <div
-                  style={{
-                    marginTop: 20,
-                    padding: 16,
-                    background: "#f8fafc",
-                    borderRadius: 8,
-                    border: "1px solid #e2e8f0",
-                    display: "flex",
-                    justifyContent: "flex-end",
-                  }}
-                >
-                  <div style={{ width: 340 }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6, fontSize: "0.9rem" }}>
-                      <span style={{ color: "#64748b" }}>Subtotal ({createCalculations.totalQty} pcs):</span>
-                      <span style={{ fontWeight: 600, color: "#1e293b" }}>{formatRupiah(createCalculations.subtotal)}</span>
-                    </div>
-
-                    {createCalculations.discount > 0 && (
-                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6, fontSize: "0.9rem" }}>
-                        <span style={{ color: "#64748b" }}>Diskon:</span>
-                        <span style={{ fontWeight: 600, color: "#dc2626" }}>- {formatRupiah(createCalculations.discount)}</span>
-                      </div>
-                    )}
-
-                    {createCalculations.discount > 0 && (
-                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6, fontSize: "0.9rem" }}>
-                        <span style={{ color: "#64748b" }}>Setelah Diskon (DPP):</span>
-                        <span style={{ fontWeight: 600, color: "#1e293b" }}>{formatRupiah(createCalculations.afterDiscount)}</span>
-                      </div>
-                    )}
-
-                    {createCalculations.ppnPercent > 0 && (
-                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6, fontSize: "0.9rem" }}>
-                        <span style={{ color: "#64748b" }}>PPN ({createCalculations.ppnPercent}%):</span>
-                        <span style={{ fontWeight: 600, color: "#1e293b" }}>+ {formatRupiah(createCalculations.ppn)}</span>
-                      </div>
-                    )}
-
-                    <div
-                      style={{
-                        display: "flex",
-                        justifyContent: "space-between",
-                        paddingTop: 8,
-                        marginTop: 8,
-                        borderTop: "2px solid #cbd5e1",
-                        fontSize: "1.1rem",
-                        fontWeight: 800,
-                        color: "#0f172a",
-                      }}
-                    >
-                      <span>Total Faktur:</span>
-                      <span style={{ color: "#9333ea" }}>{formatRupiah(createCalculations.grandTotal)}</span>
-                    </div>
+                <p className="fp-price-note">Harga mengikuti pesanan penjualan.</p>
+                <div className="fp-breakdown" data-testid="invoice-breakdown">
+                  <div>
+                    <span>Subtotal</span>
+                    <strong>{invoiceCompleteness.totalsReady ? formatRupiah(createCalculations.subtotal) : "Belum lengkap"}</strong>
+                  </div>
+                  <div>
+                    <span>Diskon</span>
+                    <strong>{formatRupiah(createCalculations.discount)}</strong>
+                  </div>
+                  <div>
+                    <span>PPN ({createCalculations.ppnPercent}%)</span>
+                    <strong>{invoiceCompleteness.totalsReady ? formatRupiah(createCalculations.ppn) : "Belum lengkap"}</strong>
                   </div>
                 </div>
-              </FormSection>
+              </div>
 
               {createCalculations.totalRemaining <= 0 && (
                 <div
@@ -1432,7 +1384,12 @@ export default function FakturPenjualan() {
               )}
 
               </div>
-              <div className="invoice-actions" style={{ display: "flex", justifyContent: "flex-end", gap: 12, paddingRight: 96 }}>
+              <div className="invoice-actions" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, paddingRight: 96 }}>
+                <div className="fp-total">
+                  <span>Total faktur</span>
+                  <strong data-testid="invoice-grand-total">{invoiceCompleteness.totalsReady ? formatRupiah(createCalculations.grandTotal) : "Belum lengkap"}</strong>
+                </div>
+                <div className="fp-action-buttons">
                 <button
                   type="button"
                   className="ghost"
@@ -1441,7 +1398,7 @@ export default function FakturPenjualan() {
                     setViewMode("list");
                   }}
                   disabled={formBusy}
-                  style={{ padding: "10px 20px", borderRadius: 8, border: "1px solid #cbd5e1", background: "#fff", cursor: "pointer", fontWeight: 600 }}
+                  style={{ padding: "10px 20px", borderRadius: 8, border: "1px solid #CBD5E1", background: "#fff", cursor: "pointer", fontWeight: 600 }}
                 >
                   Batal
                 </button>
@@ -1453,15 +1410,16 @@ export default function FakturPenjualan() {
                   style={{
                     padding: "10px 24px",
                     borderRadius: 8,
-                    background: formBusy || createCalculations.hasErrors || createCalculations.totalRemaining <= 0 || createCalculations.totalQty <= 0 ? "#94a3b8" : "#9333ea",
+                    background: formBusy || createCalculations.hasErrors || createCalculations.totalRemaining <= 0 || createCalculations.totalQty <= 0 ? "#94a3b8" : "#166534",
                     color: "#fff",
                     border: "none",
                     cursor: formBusy || createCalculations.hasErrors || createCalculations.totalRemaining <= 0 || createCalculations.totalQty <= 0 ? "not-allowed" : "pointer",
                     fontWeight: 600,
                   }}
                 >
-                  {formBusy ? "Menyimpan..." : "Simpan Faktur Penjualan"}
+                  {formBusy ? "Menyimpan..." : "Simpan Faktur"}
                 </button>
+                </div>
               </div>
             </form>
           ) : (
@@ -1481,8 +1439,8 @@ export default function FakturPenjualan() {
             <form className="sd-form-fill" data-form-tab={invoiceFormTab} onSubmit={handleUpdateInvoice}>
               <div className="sd-form-stage">
               <div className="sd-form-tabs" role="tablist" aria-label="Bagian detail faktur">
-                <button type="button" className={invoiceFormTab === "items" ? "is-active" : ""} onClick={() => setInvoiceFormTab("items")}>Barang</button>
-                <button type="button" className={invoiceFormTab === "terms" ? "is-active" : ""} onClick={() => setInvoiceFormTab("terms")}>Ketentuan</button>
+                <button type="button" className={invoiceFormTab === "items" ? "is-active" : ""} onClick={() => setInvoiceFormTab("items")}>Barang & Harga</button>
+                <button type="button" className={invoiceFormTab === "terms" ? "is-active" : ""} onClick={() => setInvoiceFormTab("terms")}>Tanggal & Ketentuan</button>
               </div>
               {/* Payment Summary Bar */}
               <div
