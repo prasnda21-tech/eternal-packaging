@@ -733,3 +733,56 @@
 .prq-unsaved-card h2{margin:0 0 8px;font-size:16px}
 .prq-unsaved-card p{margin:0 0 14px;font-size:13px;line-height:1.45}
 .prq-unsaved-actions{display:flex;justify-content:flex-end;gap:8px}
+
+/* Density aligned with Pesanan Penjualan. Existing grid contract stays. */
+.prq-list-page .prq-table thead th{
+  background:#0f766e;
+  color:#fff;
+  font:700 11px/1.15 "IBM Plex Sans",sans-serif;
+  letter-spacing:.03em;
+}
+.prq-list-page .prq-table tbody td{
+  height:60px;
+  font-size:13px;
+  vertical-align:middle;
+  background:#fff;
+}
+.prq-list-page .prq-table tbody tr:nth-child(even) td{background:#f6f7f8}
+.prq-list-page .prq-table tbody tr:hover td{background:#d5f5ef}
+.prq-list-page .prq-customer{
+  display:block;
+  font-size:14px;
+  font-weight:700;
+  line-height:1.15;
+  color:#0f172a;
+}
+.prq-list-page .prq-identity .prq-doc,
+.prq-list-page .prq-doc{
+  display:block;
+  font-size:12px;
+  line-height:1.15;
+  color:#166534;
+  font-weight:650;
+}
+.prq-list-page .prq-btn-view,
+.prq-list-page .prq-btn-continue{
+  height:28px;
+  min-height:28px;
+  max-height:28px;
+  align-items:center;
+  justify-content:center;
+}
+.prq-list-page .prq-btn-view{
+  background:#dbeafe;
+  color:#1e3a8a;
+  border:1px solid #93c5fd;
+}
+.prq-btn-primary,
+.prq-form-page .prq-submit{
+  background:#166534;
+  color:#fff;
+}
+.prq-form-page > .prq-body.prq-body{
+  padding-bottom:28px;
+  scroll-padding-bottom:28px;
+}

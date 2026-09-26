@@ -1,0 +1,100 @@
+/* Prediksi Order only. Do not restyle the shared .ship-status-page token. */
+
+.prediksi-order-page{
+  height:calc(100vh - 104px);
+  min-height:0;
+  display:flex;
+  flex-direction:column;
+  overflow:hidden;
+}
+.prediksi-order-page .ship-status-chrome{flex:0 0 auto}
+.prediksi-order-page .ship-status-grid,
+.prediksi-order-page .prediksi-compact-table{
+  flex:1 1 auto;
+  min-height:0;
+  max-height:none !important;
+  overflow:auto;
+}
+
+.prediksi-order-page .ship-status-heading h1,
+.prediksi-order-page .prediksi-heading h1{
+  font-size:18px;
+  line-height:1.15;
+}
+.prediksi-order-page .prediksi-compact-table .ship-table th,
+.prediksi-order-page .ship-table thead th{
+  position:sticky;
+  top:0;
+  z-index:2;
+  background:#0f766e !important;
+  color:#fff !important;
+  font:700 11px/1.15 "IBM Plex Sans",sans-serif !important;
+  letter-spacing:.03em;
+  text-transform:uppercase;
+  padding:4px 6px !important;
+}
+.prediksi-order-page .ship-table tbody td,
+.prediksi-order-page .prediksi-compact-table .ship-table td{
+  height:56px;
+  font-size:13px;
+  vertical-align:middle;
+  background:#fff;
+}
+.prediksi-order-page .ship-table tbody tr:nth-child(even) td,
+.prediksi-order-page .prediksi-compact-table .ship-table tbody tr:nth-child(even) td{
+  background:#f6f7f8;
+}
+.prediksi-order-page .ship-table tbody tr:hover td{
+  background:#d5f5ef;
+}
+.prediksi-order-page .prediksi-customer-cell strong{
+  font-size:14px;
+  font-weight:700;
+  color:#0f172a;
+}
+.prediksi-order-page .prediksi-detail-button{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  height:28px;
+  min-height:28px;
+  padding:0 8px;
+  border-radius:6px;
+  background:#dbeafe !important;
+  color:#1e3a8a !important;
+  border:1px solid #93c5fd !important;
+  font:600 12px/1 "IBM Plex Sans",sans-serif;
+}
+.prediksi-order-page .ship-status-toolbar input,
+.prediksi-order-page .ship-status-toolbar select,
+.prediksi-order-page .ship-icon-btn,
+.prediksi-order-page .ship-reset-btn{
+  height:34px;
+  min-height:34px;
+  background:#fff;
+}
+.prediksi-order-page .primary{
+  background:#166534;
+  border-color:#166534;
+  color:#fff;
+}
+.prediksi-order-page .ship-status-chrome{display:flex;flex-direction:column;gap:2px}
+.prediksi-order-page .ship-status-heading,
+.prediksi-order-page .prediksi-heading{margin:0;padding:0;align-items:center}
+.prediksi-order-page .prediksi-heading-copy{display:flex;align-items:baseline;gap:8px;min-width:0}
+.prediksi-order-page .prediksi-heading-copy p{margin:0;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.prediksi-order-page .ship-status-toolbar{padding:0;min-height:0}
+.prediksi-order-page .ship-status-toolbar input,
+.prediksi-order-page .ship-status-toolbar select,
+.prediksi-order-page .ship-icon-btn,
+.prediksi-order-page .ship-reset-btn{height:32px;min-height:32px}
+.prediksi-order-page .prediksi-kpi{
+  display:flex;
+  gap:6px;
+  margin:0;
+}
+.prediksi-order-page .prediksi-kpi > *{
+  flex:1 1 0;
+  min-height:0;
+  padding:4px 8px;
+}
