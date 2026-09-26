@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Link, Navigate, useLocation, useNavigate, useParams } from "react-router-dom";
 import { AlertCircle, AlertTriangle, ArrowLeft, CalendarClock, Check, ChevronDown, Copy, Eye, FileCheck2, FileText, List, MapPin, MessageSquare, RefreshCw, RotateCcw, ScanLine, ShieldOff, Trash2, Truck, X, XCircle, Zap } from "lucide-react";
 import api from "../lib/api";
@@ -42,8 +42,9 @@ import AppendQtyEntries from "../components/AppendQtyEntries";
 import ConfirmActionModal from "../components/ConfirmActionModal";
 import { newActionId } from "../lib/workflowEntries";
 import { MAX_PAYMENT_PROOFS, canAddPaymentProof, paymentProofCount } from "../lib/paymentProof";
-import { canViewSalesReceiptPaymentProof, receiptHasPaymentProof } from "../lib/salesReceiptPaymentProof";
-import { openPaymentProofSource, paymentProofIsImage, paymentProofIsPdf, paymentProofSource, proofErrorMessage } from "../lib/paymentProofOpen";
+import InAppDocumentViewer from "../components/InAppDocumentViewer";
+import { canViewSalesReceiptPaymentProof, orderReceiptProofStamp, paymentEvidenceBadge, receiptHasPaymentProof, receiptProofStatusLabel } from "../lib/salesReceiptPaymentProof";
+import { dataUrlToBlob, paymentProofIsImage, paymentProofIsPdf, paymentProofSource } from "../lib/paymentProofOpen";
 import { canManageUrgent as canManageUrgentPerm } from "../lib/poUrgent";
 import { formatApiError } from "../lib/errors";
 import { schedulePoHref } from "../lib/workPanel";
@@ -88,7 +89,8 @@ export default function PODetail() {
   const [salesReceipts, setSalesReceipts] = useState([]);
   const [salesReceiptsLoading, setSalesReceiptsLoading] = useState(false);
   const [salesReceiptsErr, setSalesReceiptsErr] = useState("");
-  const [proofViewBusyId, setProofViewBusyId] = useState("");
+  const [proofViewerReceipt, setProofViewerReceipt] = useState(null);
+  const [receiptRefreshTick, setReceiptRefreshTick] = useState(0);
   const [screenerDraft, setScreenerDraft] = useState("");
   const [screenerNotes, setScreenerNotes] = useState("");
   const [actionConfirm, setActionConfirm] = useState(null);
@@ -210,8 +212,18 @@ export default function PODetail() {
     }
   }, [order?.id, selectedWorkflowStage]);
 
+  useEffect(() => {
+    const bump = () => setReceiptRefreshTick((n) => n + 1);
+    window.addEventListener("focus", bump);
+    window.addEventListener("eternal:sales-receipt-saved", bump);
+    return () => {
+      window.removeEventListener("focus", bump);
+      window.removeEventListener("eternal:sales-receipt-saved", bump);
+    };
+  }, []);
+
   // Start with route id (parallel to getOrder) — do not wait for order payload.
-  // Payment stamps still trigger refetch after order hydrate / payment changes.
+  // Payment stamps and a saved penerimaan refresh this list without a manual reload.
   useEffect(() => {
     if (!id) {
       setSalesReceipts([]);
@@ -234,25 +246,7 @@ export default function PODetail() {
         if (!cancelled) setSalesReceiptsLoading(false);
       });
     return () => { cancelled = true; };
-  }, [id, order?.payment_fact?.updated_at, order?.payment_approved_at]);
-
-  const viewSalesReceiptProof = async (receiptId) => {
-    if (!receiptId) return;
-    setProofViewBusyId(receiptId);
-    const preview = window.open("", "_blank");
-    try {
-      const blob = await api.downloadSalesReceiptPaymentProof(receiptId, false);
-      const url = URL.createObjectURL(blob);
-      if (preview) preview.location.href = url;
-      else window.open(url, "_blank", "noopener,noreferrer");
-      setTimeout(() => URL.revokeObjectURL(url), 60000);
-    } catch (e) {
-      if (preview) preview.close();
-      showToast(await proofErrorMessage(e, "Gagal membuka Bukti Payment"));
-    } finally {
-      setProofViewBusyId("");
-    }
-  };
+  }, [id, order?.payment_fact?.updated_at, order?.payment_approved_at, orderReceiptProofStamp(order), receiptRefreshTick]);
 
   // Batch 2: auto refresh 30s untuk PODetail — hanya update server-backed state
   // (order), tidak menyentuh state form lokal panel-panel (Helper draft,
@@ -263,6 +257,16 @@ export default function PODetail() {
     () => api.getOrder(id),
     { intervalMs: 30_000, enabled: !!order, onData: (d) => { if (d?.order) commitOrder(d.order); } }
   );
+
+  const loadReceiptProof = useCallback(({ download = false, signal } = {}) => {
+    const receiptId = proofViewerReceipt?.id;
+    if (!receiptId) {
+      const error = new Error("missing");
+      error.status = 404;
+      return Promise.reject(error);
+    }
+    return api.downloadSalesReceiptPaymentProof(receiptId, download, { signal });
+  }, [proofViewerReceipt?.id]);
 
   if (!hasPerm("po.view")) {
     const href = schedulePoHref(id, hasPerm);
@@ -1224,65 +1228,14 @@ export default function PODetail() {
           <span className="muted small" data-testid="payment-proof-count">
             Bukti Payment {paymentProofCount(order.payment_files)} / {MAX_PAYMENT_PROOFS} file
           </span>
-          <PaymentStatusBadge order={order} />
+          <PaymentStatusBadge order={order} receipts={salesReceipts} />
         </header>
         <div className="po-pair-grid">
         <div className="po-pair-col" data-testid="workflow-slot-3" data-workflow-stage="3">
         <div data-testid="payment-panel">
         <h4 className="po-pair-col-title">Bukti Payment</h4>
         <div className="payment-body">
-          <div className="sales-receipts-payment" data-testid="sales-receipts-payment-section">
-            <h4 style={{ margin: "0 0 8px 0", fontSize: 13 }}>Penerimaan Penjualan</h4>
-            {salesReceiptsLoading && (
-              <p className="muted small" data-testid="sales-receipts-loading">Memuat penerimaan…</p>
-            )}
-            {salesReceiptsErr && (
-              <div className="error" data-testid="sales-receipts-error">{salesReceiptsErr}</div>
-            )}
-            {!salesReceiptsLoading && !salesReceiptsErr && salesReceipts.length === 0 && (
-              <p className="muted small" data-testid="sales-receipts-empty">
-                Belum ada Penerimaan Penjualan untuk PO ini.
-              </p>
-            )}
-            {salesReceipts.length > 0 && (
-              <ul className="payment-files" data-testid="sales-receipts-payment-list">
-                {salesReceipts.map((r) => {
-                  const hasProof = receiptHasPaymentProof(r);
-                  return (
-                    <li key={r.id} data-testid={`sales-receipt-payment-row-${r.id}`} style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", justifyContent: "space-between" }}>
-                      <div style={{ minWidth: 0 }}>
-                        <div className="mono small">{r.receipt_number || r.id}</div>
-                        <div className="muted small">
-                          {formatDisplayDate(r.receipt_date || r.created_at)}
-                          {" · "}
-                          Rp {Number(r.amount || 0).toLocaleString("id-ID")}
-                          {r.payment_state ? ` · ${r.payment_state}` : ""}
-                        </div>
-                      </div>
-                      <div>
-                        {hasProof && canViewReceiptProof ? (
-                          <button
-                            type="button"
-                            className="ghost sm"
-                            data-testid={`btn-view-receipt-proof-${r.id}`}
-                            disabled={proofViewBusyId === r.id}
-                            onClick={() => viewSalesReceiptProof(r.id)}
-                          >
-                            <Eye size={14} /> {proofViewBusyId === r.id ? "Membuka…" : "Lihat Bukti Payment"}
-                          </button>
-                        ) : !hasProof ? (
-                          <span className="muted small" data-testid={`receipt-no-proof-${r.id}`}>
-                            Tidak ada bukti payment
-                          </span>
-                        ) : null}
-                      </div>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-          </div>
-          <PaymentFilesList files={order.payment_files || []} order={order} />
+          <PaymentFilesList files={order.payment_files || []} order={order} hasReceiptProof={salesReceipts.some(receiptHasPaymentProof)} />
           {payUploadErr && (
             <div className="error" data-testid="payment-upload-error">{payUploadErr}</div>
           )}
@@ -1319,6 +1272,57 @@ export default function PODetail() {
       <div className="po-pair-col" data-testid="workflow-slot-4" data-workflow-stage="4">
       <div data-testid="approval-payment-panel">
         <h4 className="po-pair-col-title">Approval Payment</h4>
+        <div className="sales-receipts-payment" data-testid="sales-receipts-payment-section">
+          <h4 style={{ margin: "0 0 8px 0", fontSize: 13 }}>Penerimaan Penjualan</h4>
+          {salesReceiptsLoading && (
+            <p className="muted small" data-testid="sales-receipts-loading">Memuat penerimaan…</p>
+          )}
+          {salesReceiptsErr && (
+            <div className="error" data-testid="sales-receipts-error">{salesReceiptsErr}</div>
+          )}
+          {!salesReceiptsLoading && !salesReceiptsErr && salesReceipts.length === 0 && (
+            <p className="muted small" data-testid="sales-receipts-empty">
+              Belum ada Penerimaan Penjualan untuk PO ini.
+            </p>
+          )}
+          {salesReceipts.length > 0 && (
+            <ul className="payment-files" data-testid="sales-receipts-payment-list">
+              {salesReceipts.map((r) => {
+                const hasProof = receiptHasPaymentProof(r);
+                return (
+                  <li key={r.id} data-testid={`sales-receipt-payment-row-${r.id}`} style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", justifyContent: "space-between" }}>
+                    <div style={{ minWidth: 0 }}>
+                      <div className="mono small">{r.receipt_number || r.id}</div>
+                      <div className="muted small">
+                        {formatDisplayDate(r.receipt_date || r.created_at)}
+                        {" · "}
+                        Rp {Number(r.amount || 0).toLocaleString("id-ID")}
+                        {" · "}
+                        {receiptProofStatusLabel(r)}
+                      </div>
+                    </div>
+                    <div>
+                      {hasProof && canViewReceiptProof ? (
+                        <button
+                          type="button"
+                          className="ghost sm"
+                          data-testid={`btn-view-receipt-proof-${r.id}`}
+                          onClick={() => setProofViewerReceipt(r)}
+                        >
+                          <Eye size={14} /> Lihat Bukti Payment
+                        </button>
+                      ) : !hasProof ? (
+                        <span className="muted small" data-testid={`receipt-no-proof-${r.id}`}>
+                          Tidak ada bukti payment
+                        </span>
+                      ) : null}
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
         <div className="workflow-stage-actions" data-testid="approval-payment-actions">
           {canApprovePayment && order.payment_files?.length > 0 && order.payment_status !== "Approved" && !order.payment_bypassed && (
             <button className="primary" onClick={approvePayment} disabled={busy} data-testid="approve-payment-button">
@@ -1760,16 +1764,26 @@ export default function PODetail() {
           showToast("Informasi PO diperbarui");
         }}
       />
+      {proofViewerReceipt && (
+        <InAppDocumentViewer
+          documentKey={proofViewerReceipt.id}
+          title={`Bukti ${proofViewerReceipt.receipt_number || "pembayaran"}`}
+          fileName={proofViewerReceipt.payment_proof?.name || "bukti-pembayaran"}
+          contentType={proofViewerReceipt.payment_proof?.content_type || ""}
+          loadFile={loadReceiptProof}
+          allowDownload
+          onClose={() => setProofViewerReceipt(null)}
+          testId="po-receipt-proof-viewer"
+        />
+      )}
     </div>
   );
 }
 
-function PaymentStatusBadge({ order }) {
-  if (order.payment_bypassed) return <span className="pill sm pill-bypass" data-testid="payment-status-badge">Payment Bypass</span>;
-  const files = order.payment_files || [];
-  if (order.payment_status === "Approved") return <span className="pill sm pill-ok" data-testid="payment-status-badge">Payment Approved</span>;
-  if (files.length === 0) return <span className="pill sm pill-warn" data-testid="payment-status-badge">Belum Ada Bukti Payment</span>;
-  return <span className="pill sm pill-warn" data-testid="payment-status-badge">Menunggu Approval Payment</span>;
+function PaymentStatusBadge({ order, receipts = [] }) {
+  const badge = paymentEvidenceBadge(order, receipts);
+  const tone = badge.tone === "ok" ? "pill-ok" : badge.tone === "bypass" ? "pill-bypass" : "pill-warn";
+  return <span className={`pill sm ${tone}`} data-testid="payment-status-badge">{badge.label}</span>;
 }
 
 function DesignStatusBadge({ order }) {
@@ -1782,9 +1796,15 @@ function DesignStatusBadge({ order }) {
   return <span className="pill sm pill-warn" data-testid="design-status-badge">Menunggu Approval Design</span>;
 }
 
-function PaymentFilesList({ files, order }) {
+function PaymentFilesList({ files, order, hasReceiptProof = false }) {
   if (!files || !files.length) {
-    return <p className="muted small" data-testid="payment-files-empty">Belum ada bukti pembayaran. Silakan upload gambar (JPG/PNG) atau PDF.</p>;
+    return (
+      <p className="muted small" data-testid="payment-files-empty">
+        {hasReceiptProof
+          ? "Belum ada unggahan bukti di PO ini. Bukti Penerimaan Penjualan ada di panel Approval Payment."
+          : "Belum ada bukti pembayaran. Silakan upload gambar (JPG/PNG) atau PDF."}
+      </p>
+    );
   }
   return (
     <>
@@ -1809,76 +1829,17 @@ export function PaymentFileRow({ file, index, orderId }) {
   const ct = String(file?.content_type || "");
   const isImage = paymentProofIsImage(file, url) || ct.startsWith("image/") || /\.(jpe?g|png|gif|webp)$/i.test(name);
   const isPdf = paymentProofIsPdf(file, url) || ct.includes("pdf") || /\.pdf$/i.test(name);
-  const [previewUrl, setPreviewUrl] = useState("");
-  const [localErr, setLocalErr] = useState("");
-  const objectUrlRef = useRef(null);
-
-  const revokeObjectUrl = () => {
-    if (objectUrlRef.current) {
-      URL.revokeObjectURL(objectUrlRef.current);
-      objectUrlRef.current = null;
-    }
-  };
-
-  const closePreview = () => {
-    revokeObjectUrl();
-    setPreviewUrl("");
-  };
-
-  useEffect(() => () => revokeObjectUrl(), []);
-
-  const handleOpen = async (e) => {
-    e.preventDefault();
-    setLocalErr("");
-    if (url) {
-      const result = openPaymentProofSource(url);
-      if (!result.ok) {
-        setLocalErr("Gagal memuat file. Coba lagi.");
-      }
-      return;
-    }
-    if (!orderId || !file?.id) {
-      setLocalErr("Gagal memuat file. Coba lagi.");
-      return;
-    }
-    let placeholder = null;
-    if (isPdf) {
-      placeholder = window.open("about:blank", "_blank");
-      if (placeholder) placeholder.opener = null;
-    }
-    try {
-      const blob = await api.getOrderAttachment(orderId, "payment", file.id);
-      revokeObjectUrl();
-      const objectUrl = URL.createObjectURL(blob);
-      objectUrlRef.current = objectUrl;
-      if (isPdf) {
-        if (!placeholder) {
-          setLocalErr("Gagal memuat file. Coba lagi.");
-          return;
-        }
-        placeholder.location.replace(objectUrl);
-        setTimeout(() => {
-          if (objectUrlRef.current === objectUrl) {
-            URL.revokeObjectURL(objectUrl);
-            objectUrlRef.current = null;
-          }
-        }, 60000);
-        return;
-      }
-      if (isImage) {
-        setPreviewUrl(objectUrl);
-        return;
-      }
-      setLocalErr("Gagal memuat file. Coba lagi.");
-    } catch {
-      if (placeholder) {
-        try { placeholder.close(); } catch { /* ignore */ }
-      }
-      setLocalErr("Gagal memuat file. Coba lagi.");
-    }
-  };
-
+  const [open, setOpen] = useState(false);
   const openId = file.id || file.name;
+  const loadFile = useCallback(async ({ signal } = {}) => {
+    if (url && String(url).startsWith("data:")) return dataUrlToBlob(url);
+    if (!orderId || !file?.id) {
+      const error = new Error("missing");
+      error.status = 404;
+      throw error;
+    }
+    return api.getOrderAttachment(orderId, "payment", file.id, { signal });
+  }, [url, orderId, file?.id]);
 
   return (
     <li className="payment-file" data-testid={`payment-file-${openId}`}>
@@ -1887,7 +1848,7 @@ export function PaymentFileRow({ file, index, orderId }) {
           <button
             type="button"
             className={isPdf ? "pdf-thumb" : "ghost sm"}
-            onClick={handleOpen}
+            onClick={() => setOpen(true)}
             data-testid={`payment-file-open-${openId}`}
           >
             <FileText size={22} /> {isPdf ? "PDF" : "Lihat"}
@@ -1905,12 +1866,18 @@ export function PaymentFileRow({ file, index, orderId }) {
         {file.uploaded_at && (
           <span className="muted small">{formatDate(file.uploaded_at)}</span>
         )}
-        {localErr && <span className="error" data-testid={`payment-file-error-${openId}`}>{localErr}</span>}
       </div>
-      {previewUrl && (
-        <div className="lightbox" onClick={closePreview} data-testid={`payment-file-preview-${openId}`}>
-          <img src={previewUrl} alt={file.name} />
-        </div>
+      {open && (
+        <InAppDocumentViewer
+          documentKey={`${orderId || "po"}:${openId}`}
+          title={file.name || "Bukti pembayaran"}
+          fileName={file.name || "bukti-pembayaran"}
+          contentType={ct}
+          loadFile={loadFile}
+          allowDownload
+          onClose={() => setOpen(false)}
+          testId={`payment-file-viewer-${openId}`}
+        />
       )}
     </li>
   );

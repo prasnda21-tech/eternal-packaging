@@ -470,6 +470,7 @@ export default function PenerimaanPenjualan() {
         payment_proof,
       };
       const res = await api.createSalesReceipt(payload);
+      window.dispatchEvent(new CustomEvent("eternal:sales-receipt-saved"));
       setSuccessMsg(res.message || "Penerimaan Penjualan berhasil disimpan!");
       setTimeout(() => {
         setSuccessMsg("");

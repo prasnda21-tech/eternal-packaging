@@ -81,3 +81,33 @@ export function canViewSalesReceiptPaymentProof(hasPerm) {
   if (typeof hasPerm !== "function") return false;
   return SALES_RECEIPT_PROOF_VIEW_PERMS.some((p) => hasPerm(p));
 }
+
+export function receiptIsReversed(receipt) {
+  const status = String(receipt?.financial_status || "").toLowerCase();
+  return status === "cancelled" || status === "reversed" || receipt?.cancelled === true;
+}
+
+export function receiptProofStatusLabel(receipt) {
+  if (receiptIsReversed(receipt)) return "Dibatalkan";
+  const state = String(receipt?.payment_state || "").toUpperCase();
+  if (state === "LUNAS") return "LUNAS";
+  if (state === "DP") return "DP";
+  return state || "DP";
+}
+
+export function orderReceiptProofStamp(order) {
+  return (order?.payment_receipts || [])
+    .map((row) => `${row?.receipt_id || ""}:${row?.payment_proof?.id || ""}`)
+    .join("|");
+}
+
+/** Badge considers legacy PO files and penerimaan proofs. Approval text stays unchanged. */
+export function paymentEvidenceBadge(order, receipts) {
+  if (order?.payment_bypassed) return { tone: "bypass", label: "Payment Bypass" };
+  if (order?.payment_status === "Approved") return { tone: "ok", label: "Payment Approved" };
+  const legacy = (order?.payment_files || []).length > 0;
+  const receiptProof = (receipts || []).some(receiptHasPaymentProof);
+  if (!legacy && !receiptProof) return { tone: "warn", label: "Belum Ada Bukti Payment" };
+  if (legacy) return { tone: "warn", label: "Menunggu Approval Payment" };
+  return { tone: "warn", label: "Bukti Penerimaan Tersimpan" };
+}

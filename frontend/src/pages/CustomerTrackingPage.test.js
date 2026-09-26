@@ -129,6 +129,16 @@ describe("Customer tracking public page", () => {
     expect(page).not.toMatch(/storage_path/);
   });
 
+  test("design preview uses the in-app viewer and surat jalan keeps its href", () => {
+    expect(page).toMatch(/InAppDocumentViewer/);
+    expect(page).toMatch(/tracking-design-viewer/);
+    expect(page).toMatch(/TrackingPaymentProofs/);
+    const lihat = page.split("tracking-lihat-design")[1].slice(0, 400);
+    expect(lihat).toMatch(/openDesignDocument/);
+    expect(lihat).not.toMatch(/window\.open/);
+    expect(page).toMatch(/tracking-sj-\$\{d\.id\}-open/);
+  });
+
   test("approved design and surat jalan open/download controls", () => {
     expect(page).toMatch(/tracking-design-approved/);
     expect(page).toMatch(/tracking-surat-jalan/);

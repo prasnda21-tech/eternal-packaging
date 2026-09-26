@@ -1,9 +1,11 @@
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { Check, Copy, FileText, Image as ImageIcon } from "lucide-react";
-import api, { publicApiUrl } from "../lib/api";
+import api, { publicApiUrl, publicBlobRequest } from "../lib/api";
 import BrandMark from "../components/BrandMark";
+import InAppDocumentViewer from "../components/InAppDocumentViewer";
 import TrackingInvoices from "../components/TrackingInvoices";
+import TrackingPaymentProofs from "../components/TrackingPaymentProofs";
 import {
   approvalActionPath,
   compactItemSummary,
@@ -109,6 +111,16 @@ export default function CustomerTrackingPage() {
   const [preview, setPreview] = useState(null);
   const [copied, setCopied] = useState(false);
   const [sheet, setSheet] = useState("");
+  const [docViewer, setDocViewer] = useState(null);
+  const loadTrackedDocument = useCallback(({ download = false, signal } = {}) => {
+    const path = download ? docViewer?.downloadPath : docViewer?.previewPath;
+    if (!path) {
+      const error = new Error("missing");
+      error.status = 404;
+      return Promise.reject(error);
+    }
+    return publicBlobRequest(path, { signal });
+  }, [docViewer?.downloadPath, docViewer?.previewPath]);
 
   useEffect(() => {
     let cancelled = false;
@@ -129,16 +141,17 @@ export default function CustomerTrackingPage() {
   }, [token]);
 
   useEffect(() => {
-    if (!sheet && !preview) return undefined;
+    if (!sheet && !preview && !docViewer) return undefined;
     const onKey = (e) => {
       if (e.key === "Escape") {
         setSheet("");
         setPreview(null);
+        setDocViewer(null);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [sheet, preview]);
+  }, [sheet, preview, docViewer]);
 
   const proofs = (data?.delivery_proofs || []).slice(0, 5);
   const designDocs = data?.documents?.design_approved || [];
@@ -166,10 +179,32 @@ export default function CustomerTrackingPage() {
     }
   };
 
+  const openDesignDocument = (doc) => {
+    const previewPath = doc?.preview_url || "";
+    if (!previewPath) return;
+    setDocViewer({
+      key: doc.id || previewPath,
+      title: doc.name || "Design",
+      fileName: doc.name || "design",
+      contentType: doc.content_type || "",
+      previewPath,
+      downloadPath: doc.download_url || previewPath,
+    });
+  };
+
   const openTile = (tile) => {
     if (!tile?.available || !tile.href) return;
     if (tile.approval && ctaPath) {
       window.location.assign(ctaPath);
+      return;
+    }
+    if (tile.key === "design") {
+      const doc = designDocs.find((row) => row.preview_url === tile.href) || designDocs[0] || {
+        preview_url: tile.href,
+        content_type: tile.image ? "image/png" : "application/pdf",
+        name: "Design",
+      };
+      openDesignDocument(doc);
       return;
     }
     if (tile.key === "ship") {
@@ -303,10 +338,7 @@ export default function CustomerTrackingPage() {
                     type="button"
                     className="tracking-cta is-ghost"
                     data-testid="tracking-lihat-design"
-                    onClick={() => openPublicHref(designDocs[0].preview_url, {
-                      image: String(designDocs[0].content_type || "").startsWith("image/"),
-                      onPreview: setPreview,
-                    })}
+                    onClick={() => openDesignDocument(designDocs[0])}
                   >
                     Lihat Design
                   </button>
@@ -335,7 +367,7 @@ export default function CustomerTrackingPage() {
               <div className="tracking-doc-grid">
                 {tiles.map((tile) => (
                   <Fragment key={tile.key}>
-                    {renderDocTile(tile)}
+                    {tile.key === "payment" ? <TrackingPaymentProofs token={token} /> : renderDocTile(tile)}
                     {tile.key === "payment" ? <TrackingInvoices token={token} /> : null}
                   </Fragment>
                 ))}
@@ -596,15 +628,14 @@ export default function CustomerTrackingPage() {
                     <span className="muted small">Disetujui</span>
                   </div>
                   <div className="tracking-doc-actions" data-testid={`tracking-design-${d.id}-actions`}>
-                    <a
-                      href={publicApiUrl(d.preview_url)}
-                      target="_blank"
-                      rel="noopener noreferrer"
+                    <button
+                      type="button"
                       className="ghost sm"
                       data-testid={`tracking-design-${d.id}-open`}
+                      onClick={() => openDesignDocument(d)}
                     >
                       Lihat
-                    </a>
+                    </button>
                     <a
                       href={publicApiUrl(d.download_url)}
                       className="ghost sm"
@@ -659,6 +690,18 @@ export default function CustomerTrackingPage() {
         <div className="tracking-lightbox" data-testid="tracking-lightbox" onClick={() => setPreview(null)}>
           <img src={preview} alt="Pratinjau" />
         </div>
+      )}
+      {docViewer && (
+        <InAppDocumentViewer
+          documentKey={docViewer.key}
+          title={docViewer.title}
+          fileName={docViewer.fileName}
+          contentType={docViewer.contentType}
+          loadFile={loadTrackedDocument}
+          allowDownload
+          onClose={() => setDocViewer(null)}
+          testId="tracking-design-viewer"
+        />
       )}
     </main>
   );

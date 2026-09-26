@@ -7,6 +7,11 @@ import { useGlobalWorkspaceTabs } from "../hooks/useGlobalWorkspaceTabs";
 import WorkspaceTabs from "../components/WorkspaceTabs";
 import PODetail from "./PODetail";
 
+jest.mock("pdfjs-dist", () => ({
+  GlobalWorkerOptions: { workerSrc: "" },
+  getDocument: jest.fn(),
+}));
+
 const mockPermissions = [...Object.values(NAV_KEYS), "po.view", "sales_order.view"];
 const mockAuthUser = {
   id: "u-1",

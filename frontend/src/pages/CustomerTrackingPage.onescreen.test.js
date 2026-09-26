@@ -1,4 +1,9 @@
 import { act } from "react";
+
+jest.mock("pdfjs-dist", () => ({
+  GlobalWorkerOptions: { workerSrc: "" },
+  getDocument: jest.fn(),
+}));
 import { createRoot } from "react-dom/client";
 import api from "../lib/api";
 import CustomerTrackingPage from "./CustomerTrackingPage";
@@ -44,10 +49,13 @@ jest.mock("react-router-dom", () => ({
 jest.mock("../lib/api", () => ({
   __esModule: true,
   publicApiUrl: (path) => (path ? `http://localhost:8000${path}` : ""),
+  publicBlobRequest: jest.fn(),
   default: {
     publicTracking: jest.fn(),
     publicTrackingInvoices: jest.fn(),
     publicTrackingInvoice: jest.fn(),
+    publicTrackingPaymentProofs: jest.fn(),
+    publicTrackingPaymentProofFile: jest.fn(),
   },
 }));
 
@@ -79,6 +87,8 @@ describe("Customer tracking one-screen dashboard", () => {
     api.publicTrackingInvoices.mockReset();
     api.publicTrackingInvoices.mockResolvedValue({ invoices: [] });
     api.publicTrackingInvoice.mockReset();
+    api.publicTrackingPaymentProofs.mockReset();
+    api.publicTrackingPaymentProofs.mockResolvedValue({ proofs: [] });
     document.body.innerHTML = "";
   });
 
