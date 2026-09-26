@@ -1287,7 +1287,8 @@ def generate_sales_invoice_pdf_bytes(invoice: dict) -> bytes:
             Paragraph(f": {escape(str(invoice.get('payment_status') or '-'))}", meta_val_style),
         ],
         [
-            # `notes` is the customer-facing remark. Account, journal, HPP, and margin stay off the PDF.
+            # Same `notes` field the official invoice PDF already printed as Catatan.
+            # The form label is Catatan Faktur. Account, journal, HPP, and margin stay off the PDF.
             Paragraph("<b>Catatan</b>", meta_label_style),
             Paragraph(f": {escape(str(invoice.get('notes') or '-'))}", meta_val_style),
             Paragraph("", meta_label_style),
