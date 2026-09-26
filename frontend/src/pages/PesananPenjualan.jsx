@@ -286,6 +286,8 @@ function SalesOrderHeaderFilter({ label, testid, active, alignEnd, onClear, chil
         </PopoverTrigger>
         <PopoverContent
           align="start"
+          sideOffset={6}
+          collisionPadding={12}
           className="so-th-popover sales-order-page-popover"
           onClick={(e) => e.stopPropagation()}
         >
@@ -1776,7 +1778,7 @@ export default function PesananPenjualan() {
                       ]}
                     />
                   </th>
-                  <th>
+                  <th className="so-th-status">
                     <SalesOrderHeaderFilter
                       label="Status / Sales"
                       sections={[
