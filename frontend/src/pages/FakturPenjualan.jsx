@@ -1104,7 +1104,7 @@ export default function FakturPenjualan() {
               status={computeStatus([{ value: selectedPoId, isRequired: true }])}
               className="fp-po-section"
             >
-              <div style={{ maxWidth: 540 }}>
+              <div className="fp-po-select">
                 <FormField id="fp-po-selector-field" label="Nomor PO" isRequired value={selectedPoId}>
                   <select
                     value={selectedPoId}

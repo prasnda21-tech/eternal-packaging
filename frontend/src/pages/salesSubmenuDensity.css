@@ -660,12 +660,28 @@
 }
 .sd-density .fp-chip.is-incomplete{background:#fffbeb;color:#92400e;border-color:#fde68a}
 .sd-density .fp-chip.is-complete{background:#ecfdf5;color:#047857;border-color:#a7f3d0}
-.sd-density .fp-po-section{
-  flex:0 0 auto;
+.sd-density .fp-create > .fp-po-section{
+  flex:0 0 auto !important;
+  display:flex !important;
+  align-items:center;
+  gap:12px;
   margin:8px 12px 0 !important;
-  padding:10px 12px !important;
+  padding:8px 12px !important;
+  min-height:52px;
 }
-.sd-density .fp-po-section .fs-section-head{margin-bottom:8px !important;padding-bottom:0 !important}
+.sd-density .fp-po-section .fs-section-head{
+  margin:0 !important;
+  padding:0 !important;
+  flex:0 0 auto;
+}
+.sd-density .fp-po-section .fs-section-head p,
+.sd-density .fp-po-section .fs-status-pill{display:none !important}
+.sd-density .fp-po-section .fs-section-head h3{
+  margin:0 !important;
+  font-size:13px !important;
+  white-space:nowrap;
+}
+.sd-density .fp-po-select{flex:1 1 auto;min-width:0;max-width:none}
 .sd-density .fp-summary{
   display:grid;
   grid-template-columns:repeat(4,minmax(0,1fr));
