@@ -144,11 +144,16 @@ export function salesOrderProgress(formData) {
   const completed = checks.filter((item) => item.filled).length;
   const total = checks.length;
   const complete = validateSalesOrderCreate(formData) === "";
+  const ids = checks.map((item) => item.id);
+  const customerAndGoodsOnly = ids.length === 2 && ids[0] === "customer" && ids[1] === "line_items";
   return {
     completed,
     total,
     complete,
-    label: `${completed}/${total} wajib`,
+    customerAndGoodsOnly,
+    label: customerAndGoodsOnly
+      ? `${completed}/${total} pelanggan & barang`
+      : `${completed}/${total} wajib`,
     statusLabel: complete ? "Lengkap" : "Belum Lengkap",
   };
 }
@@ -1940,7 +1945,14 @@ export default function PesananPenjualan() {
                 <p>Input pesanan penjualan baru dari pelanggan.</p>
               </div>
               <div className="so-create-progress" data-testid="so-create-progress">
-                <span data-testid="so-progress-label">{formProgress.label}</span>
+                <span
+                  data-testid="so-progress-label"
+                  title={formProgress.customerAndGoodsOnly
+                    ? "Hitungan ini hanya pelanggan dan barang. Harga kosong tidak masuk hitungan dan tetap diperingatkan."
+                    : "Hitungan wajib: pelanggan, barang, nomor HP, dan alamat. Harga kosong tetap diperingatkan terpisah."}
+                >
+                  {formProgress.label}
+                </span>
                 <span
                   className={`so-create-chip${formProgress.complete ? " is-complete" : " is-incomplete"}`}
                   data-testid="so-status-chip"

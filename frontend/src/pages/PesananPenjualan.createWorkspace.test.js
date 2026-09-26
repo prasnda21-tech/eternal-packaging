@@ -505,7 +505,7 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
     expect(requiredMarker("address")).toBe(false);
     expect(container.querySelector(".so-col-name").textContent).toContain("*");
     expect(container.querySelector(".so-col-qty").textContent).toContain("*");
-    expect(container.querySelector('[data-testid="so-progress-label"]').textContent).toBe("1/2 wajib");
+    expect(container.querySelector('[data-testid="so-progress-label"]').textContent).toBe("1/2 pelanggan & barang");
 
     await act(async () => {
       container.querySelector('[data-testid="line-mode-manual-0"]').click();
@@ -516,7 +516,7 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
     const screenForm = formFromScreen();
     const validationError = validateSalesOrderCreate(screenForm);
     expect(validationError).toBe("");
-    expect(container.querySelector('[data-testid="so-progress-label"]').textContent).toBe("2/2 wajib");
+    expect(container.querySelector('[data-testid="so-progress-label"]').textContent).toBe("2/2 pelanggan & barang");
     expect(container.querySelector('[data-testid="so-status-chip"]').textContent).toBe(
       validationError === "" ? "Lengkap" : "Belum Lengkap"
     );
@@ -534,7 +534,7 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
     await act(async () => {
       container.querySelector('[data-testid="input-customer-option-c1"]').click();
     });
-    expect(container.querySelector('[data-testid="so-progress-label"]').textContent).toBe("1/2 wajib");
+    expect(container.querySelector('[data-testid="so-progress-label"]').textContent).toBe("1/2 pelanggan & barang");
     expect(container.querySelector('[data-testid="so-status-chip"]').textContent).toBe("Belum Lengkap");
 
     await act(async () => {
@@ -543,7 +543,7 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
     await act(async () => {
       setNativeValue(container.querySelector('[data-testid="line-name-0"]'), "Dus");
     });
-    expect(container.querySelector('[data-testid="so-progress-label"]').textContent).toBe("2/2 wajib");
+    expect(container.querySelector('[data-testid="so-progress-label"]').textContent).toBe("2/2 pelanggan & barang");
     expect(container.querySelector('[data-testid="so-status-chip"]').textContent).toBe("Lengkap");
 
     await act(async () => {
