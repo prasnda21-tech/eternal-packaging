@@ -1944,8 +1944,9 @@ export default function PesananPenjualan() {
                               to={`/penjualan/pengiriman-pesanan?po_id=${o.id}&action=create`}
                               className="so-act-ship"
                               data-testid={`btn-process-delivery-${o.id}`}
+                              aria-label="+ Kirim"
                             >
-                              + Kirim
+                              <span className="so-act-plus" aria-hidden="true">+</span><span>Kirim</span>
                             </Link>
                           )}
                         </div>
