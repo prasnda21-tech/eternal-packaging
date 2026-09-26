@@ -600,6 +600,12 @@ export const api = {
     if (!r.ok) throw { response: { status: r.status, data: d } };
     return d;
   },
+  publicTrackingInvoices: (token) =>
+    publicJsonRequest(`/public/tracking/${encodeURIComponent(token)}/invoices`),
+  publicTrackingInvoice: (token, invoiceId) =>
+    publicJsonRequest(
+      `/public/tracking/${encodeURIComponent(token)}/invoices/${encodeURIComponent(invoiceId)}`,
+    ),
   // ---- Sales Delivery (Pengiriman Pesanan) ----
   listSalesDeliveries: (params = {}) => client.get(`/sales-deliveries`, { params }).then((r) => r.data),
   getSalesDelivery: (id) => client.get(`/sales-deliveries/${encodeURIComponent(id)}`).then((r) => r.data),

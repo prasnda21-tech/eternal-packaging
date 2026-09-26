@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 
 from quantity_rules import (
     valid_delivery_proofs,
@@ -492,6 +492,7 @@ async def ensure_tracking_token(db, order: dict) -> str:
 
 def build_router(deps: dict) -> APIRouter:
     db = deps["db"]
+    get_db = deps.get("get_db") or (lambda: db)
     current_user = deps["current_user"]
     require_perm = deps["require_perm"]
     logger = deps["logger"]
@@ -639,7 +640,7 @@ def build_router(deps: dict) -> APIRouter:
         if not _token_usable(token):
             raise HTTPException(404, PUBLIC_NOT_FOUND)
         try:
-            order = await db.orders.find_one({"tracking_token": token}, {"_id": 0})
+            order = await get_db().orders.find_one({"tracking_token": token}, {"_id": 0})
         except Exception:
             logger.warning("public tracking lookup failed token=%s", mask_token(token))
             raise HTTPException(404, PUBLIC_NOT_FOUND)
@@ -833,6 +834,41 @@ def build_router(deps: dict) -> APIRouter:
         if not str(media).startswith("image/"):
             media = "image/png"
         return Response(content=data, media_type=media)
+
+    _INVOICE_HEADERS = {
+        "Cache-Control": "private, no-store",
+        "X-Content-Type-Options": "nosniff",
+    }
+
+    @router.get("/public/tracking/{token}/invoices")
+    async def public_tracking_invoices(token: str):
+        order = await _order_for_token(token)
+        from services.customer_tracking_invoices import public_invoice_list
+        body = await public_invoice_list(get_db(), order, token.strip())
+        return JSONResponse(body, headers=_INVOICE_HEADERS)
+
+    @router.get("/public/tracking/{token}/invoices/{invoice_id}")
+    async def public_tracking_invoice_detail(token: str, invoice_id: str):
+        order = await _order_for_token(token)
+        from services.customer_tracking_invoices import public_invoice_detail_payload
+        body = await public_invoice_detail_payload(get_db(), order, token.strip(), invoice_id)
+        if body is None:
+            raise HTTPException(404, PUBLIC_NOT_FOUND)
+        return JSONResponse(body, headers=_INVOICE_HEADERS)
+
+    @router.get("/public/tracking/{token}/invoices/{invoice_id}/pdf")
+    async def public_tracking_invoice_pdf(token: str, invoice_id: str, disposition: str = "attachment"):
+        order = await _order_for_token(token)
+        from services.customer_tracking_invoices import render_customer_invoice_pdf, visible_invoice_for_order
+        inv = await visible_invoice_for_order(get_db(), order, invoice_id)
+        if not inv:
+            raise HTTPException(404, PUBLIC_NOT_FOUND)
+        pdf_bytes = render_customer_invoice_pdf(inv, order)
+        number = str(inv.get("invoice_number") or "faktur").replace("/", "_").replace("\\", "_")
+        headers = _disposition_headers(f"Faktur_{number}.pdf", disposition, "application/pdf")
+        headers["Cache-Control"] = "private, no-store"
+        headers["X-Content-Type-Options"] = "nosniff"
+        return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
 
     @router.post("/orders/{order_id}/tracking-link")
     async def tracking_link(order_id: str, user=Depends(current_user)):
