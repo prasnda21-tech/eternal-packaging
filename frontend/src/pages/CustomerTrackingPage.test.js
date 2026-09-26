@@ -106,9 +106,13 @@ describe("Customer tracking public page", () => {
     expect(cssMobileLayout());
   });
 
-  test("surat jalan view stays existing read-only hrefs", () => {
+  test("surat jalan view opens in-app and keeps a separate download href", () => {
     expect(page).toMatch(/tracking-sj-\$\{d\.id\}-open/);
+    expect(page).toMatch(/openSuratJalanDocument\(d\)/);
     expect(page).toMatch(/preview_url/);
+    expect(page).toMatch(/tracking-sj-\$\{d\.id\}-download/);
+    expect(page).toMatch(/download_url/);
+    expect(page).not.toMatch(/target="_blank"/);
     expect(page).not.toMatch(/surat-jalan", \{ method/);
     expect(page).not.toMatch(/packed_qty/);
   });
@@ -129,14 +133,19 @@ describe("Customer tracking public page", () => {
     expect(page).not.toMatch(/storage_path/);
   });
 
-  test("design preview uses the in-app viewer and surat jalan keeps its href", () => {
+  test("design preview and surat jalan Lihat PDF use the in-app viewer", () => {
     expect(page).toMatch(/InAppDocumentViewer/);
     expect(page).toMatch(/tracking-design-viewer/);
+    expect(page).toMatch(/tracking-sj-viewer/);
     expect(page).toMatch(/TrackingPaymentProofs/);
     const lihat = page.split("tracking-lihat-design")[1].slice(0, 400);
     expect(lihat).toMatch(/openDesignDocument/);
     expect(lihat).not.toMatch(/window\.open/);
-    expect(page).toMatch(/tracking-sj-\$\{d\.id\}-open/);
+    expect(page).toMatch(/openSuratJalanDocument/);
+    expect(page).not.toMatch(/target="_blank"/);
+    const sjOpen = page.split("tracking-sj-${d.id}-open")[1].slice(0, 120);
+    expect(sjOpen).toMatch(/openSuratJalanDocument/);
+    expect(sjOpen).not.toMatch(/href=/);
   });
 
   test("approved design and surat jalan open/download controls", () => {

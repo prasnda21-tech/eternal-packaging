@@ -5,7 +5,7 @@ jest.mock("pdfjs-dist", () => ({
   getDocument: jest.fn(),
 }));
 import { createRoot } from "react-dom/client";
-import api from "../lib/api";
+import api, { publicBlobRequest } from "../lib/api";
 import CustomerTrackingPage from "./CustomerTrackingPage";
 
 const STAGES = [
@@ -206,6 +206,15 @@ describe("Customer tracking one-screen dashboard", () => {
     expect(tile.textContent).not.toMatch(/Bertanda tangan/);
     expect(host.querySelector('[data-testid="tracking-surat-jalan"]')).toBeFalsy();
     expect(host.querySelector('[data-testid="tracking-sj-sj-open"]')).toBeFalsy();
+    publicBlobRequest.mockRejectedValueOnce(Object.assign(new Error("denied"), { status: 404 }));
+    const opened = jest.spyOn(window, "open").mockImplementation(() => null);
+    await act(async () => { tile.click(); });
+    await flush();
+    expect(opened).not.toHaveBeenCalled();
+    expect(host.querySelector('[data-testid="tracking-sj-viewer"]')).toBeTruthy();
+    expect(host.querySelector('[data-testid="tracking-sj-viewer"]').getAttribute("data-document-key"))
+      .toBe("sj:sj-open");
+    opened.mockRestore();
     expect(api.publicTracking).toHaveBeenCalledTimes(1);
     await act(async () => { root.unmount(); });
   });
@@ -253,8 +262,23 @@ describe("Customer tracking one-screen dashboard", () => {
     expect(row.textContent).not.toMatch(/SJ\/B/);
     expect(host.querySelector('[data-testid="tracking-sj-sj-b"]')).toBeFalsy();
     expect(host.querySelectorAll('[data-testid="tracking-sj-sj-a1"]')).toHaveLength(1);
-    expect(host.querySelector('[data-testid="tracking-sj-sj-a1-open"]').getAttribute("href"))
-      .toMatch(/\/surat-jalan\/sj-a1/);
+    const open = host.querySelector('[data-testid="tracking-sj-sj-a1-open"]');
+    expect(open.tagName).toBe("BUTTON");
+    expect(open.getAttribute("href")).toBeNull();
+    expect(open.getAttribute("target")).toBeNull();
+    const download = host.querySelector('[data-testid="tracking-sj-sj-a1-download"]');
+    expect(download.tagName).toBe("A");
+    expect(download.getAttribute("href")).toMatch(/\/surat-jalan\/sj-a1\?disposition=attachment/);
+    expect(download.getAttribute("download")).toBe("SJ-A1.pdf");
+    publicBlobRequest.mockRejectedValueOnce(Object.assign(new Error("denied"), { status: 404 }));
+    const opened = jest.spyOn(window, "open").mockImplementation(() => null);
+    await act(async () => { open.click(); });
+    await flush();
+    expect(opened).not.toHaveBeenCalled();
+    expect(host.querySelector('[data-testid="tracking-sj-viewer"]')).toBeTruthy();
+    expect(host.querySelector('[data-testid="tracking-sj-viewer"]').getAttribute("data-document-key"))
+      .toBe("sj:sj-a1");
+    opened.mockRestore();
     expect(host.querySelector('[data-testid="tracking-order-number"]').textContent).toBe("PO-2025-00123");
     expect(host.querySelector('[data-testid="tracking-doc-tile-sj"]').textContent).toMatch(/Bertanda tangan/);
     expect(api.publicTracking).toHaveBeenCalledTimes(1);

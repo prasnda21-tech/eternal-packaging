@@ -179,16 +179,35 @@ export default function CustomerTrackingPage() {
     }
   };
 
-  const openDesignDocument = (doc) => {
+  const openTrackedDocument = (doc, { title, fileName, kind, fallbackType }) => {
     const previewPath = doc?.preview_url || "";
     if (!previewPath) return;
     setDocViewer({
-      key: doc.id || previewPath,
-      title: doc.name || "Design",
-      fileName: doc.name || "design",
-      contentType: doc.content_type || "",
+      key: `${kind}:${doc.id || previewPath}`,
+      title,
+      fileName,
+      contentType: doc.content_type || fallbackType || "",
       previewPath,
       downloadPath: doc.download_url || previewPath,
+      kind,
+    });
+  };
+
+  const openDesignDocument = (doc) => {
+    openTrackedDocument(doc, {
+      title: doc?.name || "Design",
+      fileName: doc?.name || "design",
+      kind: "design",
+      fallbackType: "",
+    });
+  };
+
+  const openSuratJalanDocument = (doc) => {
+    openTrackedDocument(doc, {
+      title: doc?.sj_number || doc?.name || "Surat Jalan",
+      fileName: doc?.name || "surat-jalan.pdf",
+      kind: "sj",
+      fallbackType: "application/pdf",
     });
   };
 
@@ -205,6 +224,11 @@ export default function CustomerTrackingPage() {
         name: "Design",
       };
       openDesignDocument(doc);
+      return;
+    }
+    if (tile.key === "sj") {
+      const doc = sjDocs.find((row) => row.preview_url === tile.href) || sjDocs[0];
+      if (doc) openSuratJalanDocument(doc);
       return;
     }
     if (tile.key === "ship") {
@@ -391,15 +415,14 @@ export default function CustomerTrackingPage() {
                         </span>
                       </div>
                       <div className="tracking-doc-actions" data-testid={`tracking-sj-${d.id}-actions`}>
-                        <a
-                          href={publicApiUrl(d.preview_url)}
-                          target="_blank"
-                          rel="noopener noreferrer"
+                        <button
+                          type="button"
                           className="ghost sm"
                           data-testid={`tracking-sj-${d.id}-open`}
+                          onClick={() => openSuratJalanDocument(d)}
                         >
                           Lihat PDF
-                        </a>
+                        </button>
                         <a
                           href={publicApiUrl(d.download_url)}
                           className="ghost sm"
@@ -661,15 +684,14 @@ export default function CustomerTrackingPage() {
                     </span>
                   </div>
                   <div className="tracking-doc-actions" data-testid={`tracking-sj-${d.id}-actions`}>
-                    <a
-                      href={publicApiUrl(d.preview_url)}
-                      target="_blank"
-                      rel="noopener noreferrer"
+                    <button
+                      type="button"
                       className="ghost sm"
                       data-testid={`tracking-sj-${d.id}-open`}
+                      onClick={() => openSuratJalanDocument(d)}
                     >
                       Lihat PDF
-                    </a>
+                    </button>
                     <a
                       href={publicApiUrl(d.download_url)}
                       className="ghost sm"
@@ -700,7 +722,7 @@ export default function CustomerTrackingPage() {
           loadFile={loadTrackedDocument}
           allowDownload
           onClose={() => setDocViewer(null)}
-          testId="tracking-design-viewer"
+          testId={docViewer.kind === "sj" ? "tracking-sj-viewer" : "tracking-design-viewer"}
         />
       )}
     </main>

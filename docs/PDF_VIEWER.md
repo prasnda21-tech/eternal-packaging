@@ -2,7 +2,7 @@
 
 Fitur yang menampilkan PDF kepada pengguna memakai viewer internal `pdfjs-dist` lewat komponen `frontend/src/components/InAppDocumentViewer.jsx`. Worker yang dipakai adalah `frontend/public/pdf.worker.min.mjs` (disalin dari `pdfjs-dist` 4.8.69). Jangan menambah library PDF lain.
 
-Berlaku untuk bukti pembayaran di Approval Payment, Penerimaan Penjualan, dan Live Tracking, serta preview desain PDF di Live Tracking. Faktur pelanggan dan Surat Jalan mempertahankan viewer yang sudah berjalan.
+Berlaku untuk bukti pembayaran di Approval Payment, Penerimaan Penjualan, dan Live Tracking, preview desain PDF di Live Tracking, serta aksi Lihat PDF Surat Jalan di Live Tracking. Unduh Surat Jalan tetap aksi terpisah dengan izin akses yang sudah ada. Faktur pelanggan mempertahankan viewer yang sudah berjalan.
 
 ## Aturan
 
