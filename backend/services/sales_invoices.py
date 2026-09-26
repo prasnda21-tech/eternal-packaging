@@ -700,7 +700,10 @@ async def create_sales_invoice(db, payload: Dict[str, Any], user: dict) -> Dict[
 
         authoritative_subtotal = round(authoritative_subtotal, 2)
 
-        # Discount and PPN stay on goods. Other charges are validated and added after.
+        # Discount and PPN stay on goods. Charges are added after that total.
+        # Owner decision for ongkir only: shipping is not reduced by the invoice discount
+        # and is not part of the goods PPN base. The same arithmetic is still used for
+        # other charge rows; that is not a tax decision for those charge types.
         discount_amount = _parse_non_negative_price(payload.get("discount_amount", 0), "Diskon")
         if discount_amount > authoritative_subtotal:
             raise HTTPException(400, f"Diskon (Rp {discount_amount:,.2f}) tidak boleh melebihi subtotal (Rp {authoritative_subtotal:,.2f}).")

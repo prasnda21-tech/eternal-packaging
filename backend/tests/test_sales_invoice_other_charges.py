@@ -385,6 +385,98 @@ async def test_invalid_accounts_and_amounts_are_rejected_and_not_stored():
 
 
 @pytest.mark.anyio
+async def test_owner_ongkir_is_added_after_goods_discount_and_ppn():
+    """Ongkir stays outside the goods discount and the goods PPN base.
+
+    This owner example does not decide the tax treatment of other charge types.
+    """
+    po = await _seed_po(qty=100, unit_price=7000, sales="Sari Penjualan")
+    shipping = await _coa("73", "Biaya Kirim Contoh", "EXPS")
+    rec = await _coa("13", "Piutang Ongkir", "AREC")
+    rev = await _coa("43", "Penjualan Ongkir", "REVE")
+    tax = await _coa("23", "PPN Keluaran Ongkir", "OCLY")
+    await _configure(rec, rev, tax)
+    _admin()
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            created = await client.post("/api/sales-invoices", json={
+                "po_id": po["id"],
+                "invoice_date": "2026-09-08",
+                "discount_amount": 50000,
+                "ppn_percent": 11,
+                "notes": "catatan internal gudang",
+                "lines": _lines(100, 1),
+                "other_charges": [
+                    {"account_id": shipping["id"], "description": "Ongkir", "amount": 20000},
+                ],
+            })
+            assert created.status_code == 200, created.text
+            inv = created.json()["invoice"]
+            assert inv["subtotal"] == 700000
+            assert inv["discount_amount"] == 50000
+            assert inv["after_discount"] == 650000
+            assert inv["ppn_percent"] == 11
+            assert inv["ppn_amount"] == 71500
+            assert inv["other_charges_total"] == 20000
+            assert inv["grand_total"] == 741500
+            assert inv["outstanding_amount"] == 741500
+            assert await _journals(inv["id"]) == []
+
+            fin = await client.post(f"/api/sales-invoices/{inv['id']}/finalize")
+            assert fin.status_code == 200, fin.text
+            posted = await client.post(f"/api/sales-invoices/{inv['id']}/post-accounting")
+            assert posted.status_code == 200, posted.text
+            journal_id = posted.json()["invoice"]["accounting_journal_id"]
+            lines = await _lines_for(journal_id)
+            debit = sum(Decimal(str(row["debit"])) for row in lines)
+            credit = sum(Decimal(str(row["credit"])) for row in lines)
+            assert debit == credit == Decimal("741500.00")
+            by_account = {}
+            for row in lines:
+                by_account.setdefault(row["account_id"], {"debit": Decimal("0"), "credit": Decimal("0")})
+                by_account[row["account_id"]]["debit"] += Decimal(str(row["debit"]))
+                by_account[row["account_id"]]["credit"] += Decimal(str(row["credit"]))
+            assert by_account[rec["id"]]["debit"] == Decimal("741500.00")
+            assert by_account[rev["id"]]["credit"] == Decimal("650000.00")
+            assert by_account[tax["id"]]["credit"] == Decimal("71500.00")
+            assert by_account[shipping["id"]]["credit"] == Decimal("20000.00")
+            assert by_account[rev["id"]]["credit"] != Decimal("741500.00")
+
+            retry = await client.post(f"/api/sales-invoices/{inv['id']}/post-accounting")
+            assert retry.status_code == 200
+            assert retry.json()["invoice"]["accounting_journal_id"] == journal_id
+            assert len(await _journals(inv["id"])) == 1
+
+            ledger = await get_general_ledger(
+                server.db, account_id=shipping["id"], start_date="2026-09-01", end_date="2026-09-30",
+            )
+            ship_rows = [row for row in ledger["items"] if row["source_id"] == inv["id"]]
+            assert len(ship_rows) == 1
+            assert ship_rows[0]["credit"] == 20000
+            assert ship_rows[0]["debit"] == 0
+            receivable = await get_general_ledger(
+                server.db, account_id=rec["id"], start_date="2026-09-01", end_date="2026-09-30",
+            )
+            ar_rows = [row for row in receivable["items"] if row["source_id"] == inv["id"]]
+            assert ar_rows[0]["debit"] == 741500
+
+            pdf_res = await client.get(f"/api/sales-invoices/{inv['id']}/pdf")
+            assert pdf_res.status_code == 200
+            text = _pdf_text(pdf_res.content)
+            assert "700.000" in text
+            assert "50.000" in text
+            assert "71.500" in text
+            assert "20.000" in text
+            assert "741.500" in text
+            assert "Ongkir" in text
+            assert "Sari Penjualan" in text
+            assert shipping["code"] not in text
+            assert "Biaya Kirim Contoh" not in text
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
 async def test_partial_invoice_does_not_copy_charges_and_goods_tax_stays_on_goods():
     po = await _seed_po(qty=100, unit_price=1000, sales="")
     expense = await _coa("77", "Ongkir Parsial", "EXPS")
