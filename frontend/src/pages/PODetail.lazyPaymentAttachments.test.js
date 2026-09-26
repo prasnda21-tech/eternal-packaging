@@ -190,7 +190,9 @@ describe("PaymentFileRow lazy fetch", () => {
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
     expect(container.querySelector('[data-testid="payment-file-viewer-pdfp-canvas"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="payment-file-viewer-pdfp-next"]').disabled).toBe(true);
+    expect(container.querySelector('[data-testid="payment-file-viewer-pdfp-next"]')).toBeNull();
+    expect(container.querySelector('[data-testid="payment-file-viewer-pdfp-prev"]')).toBeNull();
+    expect(container.querySelector('[data-testid="payment-file-viewer-pdfp-fit"]')).toBeNull();
   });
 
   test("Payment PDF fetch failure shows in-app error without a placeholder tab", async () => {

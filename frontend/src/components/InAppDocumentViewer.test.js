@@ -52,12 +52,11 @@ function mockPdf(pages = 3) {
   };
 }
 
-function installMedia(mobile) {
-  window.matchMedia = jest.fn(() => ({
-    matches: mobile,
-    addEventListener: jest.fn(),
-    removeEventListener: jest.fn(),
-  }));
+function installWidth(px) {
+  Object.defineProperty(HTMLElement.prototype, "clientWidth", {
+    configurable: true,
+    get() { return px; },
+  });
 }
 
 async function renderViewer(props) {
@@ -79,7 +78,7 @@ describe("InAppDocumentViewer", () => {
     URL.createObjectURL = jest.fn(() => "blob:doc");
     URL.revokeObjectURL = jest.fn();
     window.open = jest.fn();
-    installMedia(false);
+    installWidth(800);
     jest.spyOn(Storage.prototype, "setItem").mockImplementation(() => {});
     jest.spyOn(Storage.prototype, "getItem").mockImplementation(() => null);
   });
@@ -88,8 +87,8 @@ describe("InAppDocumentViewer", () => {
     jest.restoreAllMocks();
   });
 
-  test("multi-page PDF navigates, zooms, fits, and closes without a new tab", async () => {
-    const { pdf } = mockPdf(3);
+  test("multi-page PDF stacks every page, keeps the header, and closes without a new tab", async () => {
+    const { pdf, render } = mockPdf(2);
     getDocument.mockReturnValue({ promise: Promise.resolve(pdf), destroy: jest.fn() });
     const onClose = jest.fn();
     const { host, root } = await renderViewer({
@@ -100,23 +99,26 @@ describe("InAppDocumentViewer", () => {
       loadFile: jest.fn(async () => pdfBlob()),
       onClose,
     });
-    expect(host.querySelector('[data-testid="doc-canvas"]')).toBeTruthy();
-    expect(host.querySelector('[data-testid="doc-page"]').textContent).toBe("Halaman 1 / 3");
-    expect(host.querySelector('[data-testid="doc-prev"]').disabled).toBe(true);
-    expect(host.querySelector('[data-testid="doc-next"]').disabled).toBe(false);
-    expect(host.querySelector('[data-testid="doc"]').getAttribute("data-fit")).toBe("zoom");
-    await act(async () => {
-      host.querySelector('[data-testid="doc-next"]').click();
+    const sheets = host.querySelectorAll(".inapp-doc-sheet");
+    const canvases = host.querySelectorAll('[data-testid="doc-canvas"]');
+    expect(sheets).toHaveLength(2);
+    expect(canvases).toHaveLength(2);
+    expect(canvases[0].getAttribute("data-page")).toBe("1");
+    expect(canvases[1].getAttribute("data-page")).toBe("2");
+    expect(host.querySelector('[data-testid="doc"]').getAttribute("data-page-count")).toBe("2");
+    expect(host.querySelector('[data-testid="doc"]').getAttribute("data-page-width")).toBe("784");
+    expect(Number(canvases[0].style.width.replace("px", ""))).toBeLessThanOrEqual(920);
+    expect(host.querySelector('[data-testid="doc-stage"]').contains(sheets[0])).toBe(true);
+    expect(host.querySelector(".inapp-doc-head").textContent).toMatch(/Bukti/);
+    expect(host.querySelector('[data-testid="doc-download"]')).toBeTruthy();
+    expect(host.querySelector('[data-testid="doc-close"]')).toBeTruthy();
+    expect(host.querySelector(".inapp-doc-head").compareDocumentPosition(host.querySelector('[data-testid="doc-stage"]')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    ["prev", "next", "page", "zoom-in", "zoom-out", "fit"].forEach((name) => {
+      expect(host.querySelector(`[data-testid="doc-${name}"]`)).toBeFalsy();
     });
-    expect(host.querySelector('[data-testid="doc-page"]').textContent).toBe("Halaman 2 / 3");
-    await act(async () => {
-      host.querySelector('[data-testid="doc-zoom-in"]').click();
-    });
-    expect(host.querySelector('[data-testid="doc"]').getAttribute("data-fit")).toBe("zoom");
-    await act(async () => {
-      host.querySelector('[data-testid="doc-fit"]').click();
-    });
-    expect(host.querySelector('[data-testid="doc"]').getAttribute("data-fit")).toBe("width");
+    expect(host.textContent).not.toMatch(/Sebelumnya|Berikutnya|Sesuaikan Lebar|Halaman \d+ \/ \d+/);
+    expect(pdf.getPage).toHaveBeenCalledTimes(2);
+    expect(render).toHaveBeenCalled();
     await act(async () => {
       host.querySelector('[data-testid="doc-close"]').click();
     });
@@ -125,22 +127,25 @@ describe("InAppDocumentViewer", () => {
     expect(localStorage.setItem).not.toHaveBeenCalled();
     await act(async () => { root.unmount(); });
     expect(pdf.destroy).toHaveBeenCalled();
+    expect(render.mock.results[0].value.cancel).toHaveBeenCalled();
   });
 
-  test("one page keeps navigation inactive and mobile starts fitted", async () => {
-    installMedia(true);
-    const { pdf } = mockPdf(1);
+  test("narrow stage caps page width to the available space", async () => {
+    installWidth(390);
+    const { pdf } = mockPdf(2);
     getDocument.mockReturnValue({ promise: Promise.resolve(pdf), destroy: jest.fn() });
     const { host, root } = await renderViewer({
-      documentKey: "one",
-      fileName: "one.pdf",
+      documentKey: "narrow",
+      fileName: "bukti.pdf",
       contentType: "application/pdf",
       loadFile: jest.fn(async () => pdfBlob()),
       onClose: jest.fn(),
     });
-    expect(host.querySelector('[data-testid="doc-prev"]').disabled).toBe(true);
-    expect(host.querySelector('[data-testid="doc-next"]').disabled).toBe(true);
-    expect(host.querySelector('[data-testid="doc"]').getAttribute("data-fit")).toBe("width");
+    expect(host.querySelectorAll('[data-testid="doc-canvas"]')).toHaveLength(2);
+    expect(host.querySelector('[data-testid="doc"]').getAttribute("data-page-width")).toBe("374");
+    const width = Number(host.querySelector('[data-testid="doc-canvas"]').style.width.replace("px", ""));
+    expect(width).toBe(374);
+    expect(width).toBeLessThanOrEqual(390);
     await act(async () => { root.unmount(); });
   });
 
@@ -250,5 +255,7 @@ describe("InAppDocumentViewer", () => {
     expect(src).not.toMatch(/localStorage/);
     expect(src).not.toMatch(/window\.open/);
     expect(src).not.toMatch(/target=_blank/);
+    expect(src).toMatch(/MAX_PAGE_WIDTH = 920/);
+    expect(src).not.toMatch(/Sebelumnya|Berikutnya|Sesuaikan Lebar|Zoom -/);
   });
 });
