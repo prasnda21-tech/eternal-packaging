@@ -1,6 +1,7 @@
 """Public live-tracking invoices. Isolated test database only."""
 from __future__ import annotations
 
+import io
 import os
 import sys
 import uuid
@@ -8,6 +9,7 @@ import zlib
 from pathlib import Path
 
 import httpx
+import pdfplumber
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -20,12 +22,15 @@ os.environ.setdefault("CORS_ORIGINS", "*")
 assert os.environ["DB_NAME"] != "eternal_packaging"
 
 import server
+from services.chart_of_accounts import create_account, ensure_indexes as ensure_coa
 from services.customer_tracking import PUBLIC_NOT_FOUND, new_tracking_token, public_payload
+from services.customer_tracking_invoices import customer_invoice_pdf_source
 from services.sales_invoice_posting import ACCOUNTING_POSTED
 from services.sales_invoices import (
     cancel_sales_invoice,
     create_sales_invoice,
     finalize_sales_invoice,
+    generate_sales_invoice_pdf_bytes,
     get_sales_invoice_detail,
 )
 from services.sales_receipt_posting import _finalize_reversal_operational_state
@@ -88,6 +93,11 @@ async def _order(customer="PT Sumber Rejeki", qty=100, **extra):
 
 
 async def _invoice(order, qty, unit_price, *, term=14, date="2026-09-01", notes="catatan internal faktur"):
+    # The invoice service snapshots the PO price. The figure belongs on the order first.
+    await server.db.orders.update_one(
+        {"id": order["id"]},
+        {"$set": {"line_items.0.unit_price": unit_price}},
+    )
     return await create_sales_invoice(server.db, {
         "po_id": order["id"],
         "invoice_date": date,
@@ -393,6 +403,167 @@ async def test_pdf_uses_customer_label_and_blocks_other_order_number():
     assert inv["invoice_number"] in text
     assert "Belum lunas" in text
     assert "catatan internal" not in text.lower()
+
+
+def _pdf_pages(data: bytes):
+    with pdfplumber.open(io.BytesIO(data)) as pdf:
+        pages = []
+        for page in pdf.pages:
+            pages.append({
+                "text": page.extract_text() or "",
+                "words": page.extract_words() or [],
+            })
+    return pages
+
+
+def _phrase_band(words, phrase):
+    tokens = phrase.split()
+    for index, word in enumerate(words):
+        window = words[index:index + len(tokens)]
+        if [item["text"] for item in window] != tokens:
+            continue
+        tops = [item["top"] for item in window]
+        bottoms = [item["bottom"] for item in window]
+        if max(tops) - min(tops) > 3:
+            continue
+        return {"top": min(tops), "bottom": max(bottoms)}
+    raise AssertionError(f"PDF is missing a single line for {phrase}")
+
+
+def _bands_separated(first, second):
+    return first["bottom"] <= second["top"] + 0.5 or second["bottom"] <= first["top"] + 0.5
+
+
+async def _charge_account(name):
+    await ensure_coa(server.db)
+    return await create_account(
+        server.db,
+        {"code": f"79{uuid.uuid4().hex[:6]}", "name": name, "account_type": "EXPS"},
+        user=USER,
+    )
+
+
+@pytest.mark.anyio
+async def test_public_pdf_forwards_sales_charges_and_stored_total():
+    """Passthrough of stored charges. Packing here is not a tax-policy decision."""
+    assert server.db.name == "eternal_packaging_tracking_invoices_test"
+    assert server.db.name != "eternal_packaging"
+    await server.db.command("ping")
+
+    async def priced_order():
+        created = await _order(customer="PT Uji Biaya", sales="Sari Penjualan", qty=100)
+        await server.db.orders.update_one(
+            {"id": created["id"]},
+            {"$set": {"line_items.0.unit_price": 7000, "line_items.0.name": "Dus Uji"}},
+        )
+        return created
+
+    plain_order = await priced_order()
+    both_order = await priced_order()
+    ongkir_order = await priced_order()
+    shipping = await _charge_account("Biaya Kirim Uji")
+    packing = await _charge_account("Packing Pelanggan Uji")
+    plain = await _finalize(await create_sales_invoice(server.db, {
+        "po_id": plain_order["id"],
+        "invoice_date": "2026-09-03",
+        "notes": "catatan internal faktur lama",
+        "lines": [{"line_idx": 0, "quantity": 10, "unit_price": 1}],
+    }, USER))
+    both = await _finalize(await create_sales_invoice(server.db, {
+        "po_id": both_order["id"],
+        "invoice_date": "2026-09-04",
+        "notes": "catatan internal faktur",
+        "lines": [{"line_idx": 0, "quantity": 100, "unit_price": 1}],
+        "other_charges": [
+            {"account_id": shipping["id"], "description": "Ongkos kirim", "amount": 15000},
+            {"account_id": packing["id"], "description": "Packing pelanggan", "amount": 5000},
+        ],
+    }, USER))
+    ongkir = await _finalize(await create_sales_invoice(server.db, {
+        "po_id": ongkir_order["id"],
+        "invoice_date": "2026-09-05",
+        "discount_amount": 50000,
+        "ppn_percent": 11,
+        "notes": "catatan internal ongkir",
+        "lines": [{"line_idx": 0, "quantity": 100, "unit_price": 1}],
+        "other_charges": [
+            {"account_id": shipping["id"], "description": "Ongkir", "amount": 20000},
+        ],
+    }, USER))
+    assert plain["other_charges"] == []
+    assert plain["grand_total"] == 70000
+    assert both["subtotal"] == 700000
+    assert both["other_charges_total"] == 20000
+    assert both["grand_total"] == 720000
+    assert ongkir["after_discount"] == 650000
+    assert ongkir["ppn_amount"] == 71500
+    assert ongkir["grand_total"] == 741500
+
+    other = await _order()
+    before = await _counts()
+    before_both = await server.db.sales_invoices.find_one({"id": both["id"]}, {"_id": 0, "updated_at": 1, "grand_total": 1})
+    async with _client() as client:
+        denied = await client.get(f"/api/public/tracking/{other['tracking_token']}/invoices/{both['id']}/pdf")
+        old_pdf = await client.get(f"/api/public/tracking/{plain_order['tracking_token']}/invoices/{plain['id']}/pdf")
+        public_both = await client.get(f"/api/public/tracking/{both_order['tracking_token']}/invoices/{both['id']}/pdf")
+        public_ongkir = await client.get(f"/api/public/tracking/{ongkir_order['tracking_token']}/invoices/{ongkir['id']}/pdf")
+    assert denied.status_code == 404
+    assert old_pdf.status_code == public_both.status_code == public_ongkir.status_code == 200
+    assert public_both.headers["cache-control"] == "private, no-store"
+    assert await _counts() == before
+    after_both = await server.db.sales_invoices.find_one({"id": both["id"]}, {"_id": 0, "updated_at": 1, "grand_total": 1})
+    assert after_both == before_both
+
+    stored_both = await get_sales_invoice_detail(server.db, both["id"])
+    stored_ongkir = await get_sales_invoice_detail(server.db, ongkir["id"])
+    allow_both = customer_invoice_pdf_source(stored_both, both_order)
+    assert allow_both["notes"] == ""
+    assert allow_both["sales"] == "Sari Penjualan"
+    assert allow_both["other_charges"] == [
+        {"description": "Ongkos kirim", "amount": 15000},
+        {"description": "Packing pelanggan", "amount": 5000},
+    ]
+    assert allow_both["grand_total"] == stored_both["grand_total"] == 720000
+    blob = str(allow_both)
+    for secret in (shipping["id"], shipping["code"], shipping["name"], packing["code"], packing["name"], "catatan internal"):
+        assert secret not in blob
+
+    internal_both = _pdf_pages(generate_sales_invoice_pdf_bytes(stored_both))
+    public_pages = _pdf_pages(public_both.content)
+    public_text = "\n".join(page["text"] for page in public_pages)
+    internal_text = "\n".join(page["text"] for page in internal_both)
+    for needle in ("Sari Penjualan", "Ongkos kirim", "Packing pelanggan", "Rp 15.000", "Rp 5.000", "Rp 720.000"):
+        assert needle in public_text
+        assert needle in internal_text
+    for secret in (
+        shipping["code"], packing["code"], shipping["name"], packing["name"],
+        "catatan internal", stored_both.get("accounting_journal_id") or "journal-entry",
+    ):
+        assert secret not in public_text
+    old_text = "\n".join(page["text"] for page in _pdf_pages(old_pdf.content))
+    assert "Rp 70.000" in old_text
+    assert "Ongkos kirim" not in old_text
+    assert "catatan internal" not in old_text.lower()
+
+    words = public_pages[0]["words"]
+    kirim = _phrase_band(words, "Ongkos kirim")
+    packing_band = _phrase_band(words, "Packing pelanggan")
+    assert _bands_separated(kirim, packing_band)
+    assert abs(kirim["top"] - packing_band["top"]) >= 8
+
+    ongkir_pages = _pdf_pages(public_ongkir.content)
+    ongkir_text = "\n".join(page["text"] for page in ongkir_pages)
+    internal_ongkir = "\n".join(page["text"] for page in _pdf_pages(generate_sales_invoice_pdf_bytes(stored_ongkir)))
+    for needle in ("Sari Penjualan", "Ongkir", "Rp 50.000", "Rp 71.500", "Rp 20.000", "Rp 741.500"):
+        assert needle in ongkir_text
+        assert needle in internal_ongkir
+    assert "catatan internal ongkir" not in ongkir_text
+    assert shipping["code"] not in ongkir_text
+    ongkir_band = _phrase_band(ongkir_pages[0]["words"], "Ongkir")
+    ppn_band = _phrase_band(ongkir_pages[0]["words"], "PPN (11.0%)")
+    total_band = _phrase_band(ongkir_pages[0]["words"], "GRAND TOTAL")
+    assert _bands_separated(ppn_band, ongkir_band)
+    assert _bands_separated(ongkir_band, total_band)
 
 
 def test_invoice_routes_do_not_write():
