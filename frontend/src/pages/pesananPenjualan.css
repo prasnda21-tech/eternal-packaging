@@ -50,13 +50,44 @@
   box-shadow: 0 0 0 1px #fff;
 }
 
+/* Portaled to document.body. Opaque paint lives on this element, which also
+   forms the stacking context copied onto the popper wrapper. */
+[data-radix-popper-content-wrapper]:has(> .sales-order-page-popover) {
+  min-width: 0 !important;
+  max-width: min(320px, calc(100vw - 16px));
+}
 .sales-order-page-popover.so-th-popover {
+  isolation: isolate;
   z-index: 80;
-  width: 220px;
-  padding: 8px;
+  box-sizing: border-box;
+  width: min(320px, var(--radix-popper-available-width, 320px));
+  max-width: min(320px, calc(100vw - 16px));
+  min-width: 0;
+  max-height: var(--radix-popper-available-height, calc(100vh - 16px));
+  overflow: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background-color: #ffffff;
+  background-image: none;
+  opacity: 1;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  mix-blend-mode: normal;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.12);
+  color: #0f172a;
+}
+.sales-order-page-popover .so-th-pop-section {
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+.sales-order-page-popover .so-th-pop-section + .so-th-pop-section {
+  border-top: 1px solid #e2e8f0;
+  padding-top: 8px;
 }
 
 .sales-order-page-popover .so-th-pop-label {
@@ -231,15 +262,15 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  padding: 8px 12px 6px;
-  gap: 6px;
+  padding: 4px 10px 2px;
+  gap: 4px;
 }
 .so-list-workspace .so-list-header,
+.so-list-workspace .so-list-heading,
 .so-list-workspace .so-list-header-actions,
 .so-list-workspace .so-list-tabs,
 .so-list-workspace .so-list-toolbar,
-.so-list-workspace .so-list-pager,
-.so-list-workspace .so-list-actions {
+.so-list-workspace .so-list-pager {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -256,6 +287,12 @@
   line-height: 1.2;
   font-weight: 700;
   color: var(--so-ink);
+}
+.so-list-workspace .so-list-heading { flex: 1 1 auto; gap: 10px; }
+.so-list-workspace .so-list-header h1 {
+  font-size: 18px;
+  line-height: 1.15;
+  white-space: nowrap;
 }
 .so-list-workspace .so-list-header p,
 .so-create-workspace .so-create-heading p {
@@ -277,7 +314,7 @@
   align-items: center;
   gap: 6px;
 }
-.so-list-workspace .so-list-create { height: 38px; padding: 0 14px; }
+.so-list-workspace .so-list-create { height: 34px; padding: 0 12px; }
 .so-list-workspace .so-list-create:hover,
 .so-create-workspace .so-create-save:hover,
 .so-create-workspace .so-create-add:hover { background: var(--so-green-strong); }
@@ -296,15 +333,15 @@
   cursor: pointer;
 }
 .so-list-workspace .so-list-refresh {
-  width: 38px;
-  height: 38px;
+  width: 34px;
+  height: 34px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   padding: 0;
 }
 .so-list-workspace .so-list-delete {
-  height: 38px;
+  height: 34px;
   padding: 0 12px;
   display: inline-flex;
   align-items: center;
@@ -313,26 +350,33 @@
   border-color: #fecaca;
 }
 .so-list-workspace .so-list-summary {
-  flex: 0 0 auto;
-  display: flex;
+  flex: 0 1 auto;
+  display: inline-flex;
   align-items: baseline;
-  gap: 8px;
+  gap: 6px;
+  min-width: 0;
 }
 .so-list-workspace .so-list-summary strong {
-  font-size: 22px;
+  font-size: 16px;
+  line-height: 1;
   color: var(--so-green);
   font-weight: 700;
 }
-.so-list-workspace .so-list-summary span { font-size: 13px; color: var(--so-muted); }
+.so-list-workspace .so-list-summary span {
+  font-size: 13px;
+  line-height: 1;
+  color: var(--so-muted);
+  white-space: nowrap;
+}
 .so-list-workspace .so-list-tabs {
   flex: 0 0 auto;
-  gap: 16px;
+  gap: 14px;
   border-bottom: 1px solid var(--so-line);
 }
 .so-list-workspace .so-list-tabs button {
   border: 0;
   background: transparent;
-  padding: 8px 2px;
+  padding: 4px 2px;
   margin-bottom: -1px;
   font: 650 14px/1 "IBM Plex Sans", sans-serif;
   color: #64748b;
@@ -343,14 +387,14 @@
   color: var(--so-green);
   border-bottom-color: var(--so-green);
 }
-.so-list-workspace .so-list-toolbar { flex: 0 0 auto; flex-wrap: wrap; }
+.so-list-workspace .so-list-toolbar { flex: 0 0 auto; flex-wrap: nowrap; gap: 6px; }
 .so-list-workspace .so-list-search {
-  flex: 1 1 240px;
-  min-width: 180px;
+  flex: 1 1 180px;
+  min-width: 140px;
   display: flex;
   align-items: center;
   gap: 6px;
-  height: 36px;
+  height: 34px;
   padding: 0 10px;
   background: #fff;
   border: 1px solid #d5ddd9;
@@ -376,7 +420,7 @@
 }
 .so-list-workspace .so-list-toolbar select,
 .so-list-workspace .so-list-pager select {
-  height: 36px;
+  height: 34px;
   border: 1px solid #d5ddd9;
   border-radius: 8px;
   background: #fff;
@@ -384,7 +428,7 @@
   font: 13px/1 "IBM Plex Sans", sans-serif;
   padding: 0 8px;
 }
-.so-list-workspace .so-list-reset { height: 36px; padding: 0 12px; }
+.so-list-workspace .so-list-reset { height: 34px; padding: 0 10px; flex: 0 0 auto; }
 .so-list-workspace .so-list-error,
 .so-create-workspace .so-create-banner {
   display: flex;
@@ -410,56 +454,139 @@
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
+  overflow-x: hidden;
   background: #fff;
   border: 1px solid var(--so-line);
   border-radius: 10px;
   box-sizing: border-box;
-  padding-right: 88px;
+  padding-right: 84px;
 }
 .so-list-workspace .so-list-table {
   width: 100%;
   border-collapse: separate;
   border-spacing: 0;
+  table-layout: fixed;
   font-size: 13px;
 }
+.so-list-workspace .so-col-check { width: 36px; }
+.so-list-workspace .so-col-date { width: 86px; }
+.so-list-workspace .so-col-qty { width: 78px; }
+.so-list-workspace .so-col-progress { width: 158px; }
+.so-list-workspace .so-col-status { width: 176px; }
+.so-list-workspace .so-col-actions { width: 246px; }
 .so-list-workspace .so-list-table thead th {
   position: sticky;
   top: 0;
   z-index: 2;
-  background: #e8f3ee !important;
-  color: #14532d !important;
-  font: 700 11px/1.2 "IBM Plex Sans", sans-serif;
-  letter-spacing: 0.04em;
+  background: #0f766e !important;
+  color: #fff !important;
+  font: 700 11px/1.15 "IBM Plex Sans", sans-serif;
+  letter-spacing: 0.03em;
   text-transform: uppercase;
   text-align: left;
-  padding: 5px 8px;
-  border-bottom: 1px solid #c5e0d4 !important;
+  padding: 6px 8px;
+  border-bottom: 1px solid #0b5f59 !important;
   border-right: 0 !important;
   white-space: nowrap;
 }
+.so-list-workspace .so-list-table thead th.so-th-status {
+  padding-right: 12px;
+}
+.so-list-workspace .so-th-status .so-th-inner {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
+.so-list-workspace .so-th-status .so-th-label {
+  flex: 0 0 auto;
+  min-width: max-content;
+}
+.so-list-workspace .so-th-status .so-th-filter {
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0;
+}
+.so-list-workspace .so-list-table thead .so-th-filter {
+  color: rgba(255, 255, 255, 0.92);
+}
+.so-list-workspace .so-list-table thead .so-th-filter:hover,
+.so-list-workspace .so-list-table thead .so-th-filter.is-active {
+  color: #0f766e;
+  background: #fff;
+}
+.so-list-workspace .so-list-table thead .so-th-dot {
+  background: #fde68a;
+  box-shadow: 0 0 0 1px #0f766e;
+}
 .so-list-workspace .so-list-table td {
-  padding: 4px 8px;
+  padding: 2px 8px;
+  height: 60px;
   border-bottom: 1px solid #eef2f1;
   vertical-align: middle;
   background: #fff;
   color: #172126;
+  font-size: 13px;
+  line-height: 1.15;
 }
-.so-list-workspace .so-list-row { cursor: pointer; }
-.so-list-workspace .so-list-row:hover td { background: #eff6ff !important; }
+.so-list-workspace .so-list-row { cursor: pointer; height: 60px; }
+.so-list-workspace .so-list-row:nth-child(even) td { background: #f6f7f8; }
+.so-list-workspace .so-list-row:hover td { background: #d5f5ef !important; }
 .so-list-workspace .so-list-row.is-selected td { background: #dbeafe !important; }
 .so-list-workspace .so-list-row.is-selected td:first-child { box-shadow: inset 3px 0 0 #1d4ed8; }
 .so-list-workspace .so-list-row.is-selected:hover td { background: #dbeafe !important; }
-.so-list-workspace .so-list-customer { font-weight: 700; color: #0f172a; }
+.so-list-workspace .so-list-identity { min-width: 0; max-width: 100%; }
+.so-list-workspace .so-list-customer {
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.12;
+  color: #0f172a;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
 .so-list-workspace .so-list-po {
-  display: inline-block;
-  margin-top: 2px;
-  font-size: 12px;
+  display: block;
+  max-width: 100%;
+  margin-top: 0;
+  font-size: 13px;
+  line-height: 1.12;
   color: var(--so-green);
   text-decoration: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-.so-list-workspace .so-list-outlet { font-size: 12px; color: var(--so-muted); }
-.so-list-workspace .so-list-badge,
-.so-list-workspace .so-progress {
+.so-list-workspace .so-list-outlet {
+  font-size: 12px;
+  line-height: 1.12;
+  color: var(--so-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.so-list-workspace .so-list-status {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+}
+.so-list-workspace .so-list-sales {
+  max-width: 100%;
+  font-size: 12px;
+  line-height: 1.1;
+  color: var(--so-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.so-list-workspace .so-list-badge {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -481,51 +608,134 @@
   box-shadow: none;
 }
 .so-list-workspace .so-list-badge::before,
-.so-list-workspace .so-list-badge::after,
-.so-list-workspace .so-progress::before,
-.so-list-workspace .so-progress::after {
+.so-list-workspace .so-list-badge::after {
   content: none;
 }
-.so-list-workspace .so-list-badge.is-open,
-.so-list-workspace .so-progress.is-open,
-.so-list-workspace .so-progress.is-wait {
+.so-list-workspace .so-list-badge.is-open {
   background: #fef3c7;
   color: #92400e;
   border-color: #fde68a;
   box-shadow: none;
 }
-.so-list-workspace .so-list-badge.is-done,
-.so-list-workspace .so-progress.is-done {
+.so-list-workspace .so-list-badge.is-done {
   background: #dcfce7;
   color: #14532d;
   border-color: #86efac;
   box-shadow: none;
 }
-.so-list-workspace .so-list-badge.is-hold,
-.so-list-workspace .so-progress.is-hold {
+.so-list-workspace .so-list-badge.is-hold {
   background: #fee2e2;
   color: #991b1b;
   border-color: #fecaca;
   box-shadow: none;
 }
-.so-list-workspace .so-list-badge.is-cancel,
-.so-list-workspace .so-progress.is-cancel {
+.so-list-workspace .so-list-badge.is-cancel {
   background: #f1f5f9;
   color: #334155;
   border-color: #cbd5e1;
   box-shadow: none;
 }
-.so-list-workspace .so-list-actions { flex-wrap: wrap; gap: 4px; }
+.so-list-workspace .so-progress {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: center;
+  gap: 3px;
+  width: 100%;
+  min-width: 0;
+  height: auto;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  color: #334155;
+  white-space: normal;
+}
+.so-list-workspace .so-progress-track {
+  display: block;
+  height: 6px;
+  border-radius: 999px;
+  background: #e5e7eb;
+  overflow: hidden;
+}
+.so-list-workspace .so-progress-fill {
+  display: block;
+  height: 100%;
+  width: 0;
+  min-width: 0;
+  border-radius: inherit;
+  background: transparent;
+}
+.so-list-workspace .so-progress.is-open .so-progress-fill,
+.so-list-workspace .so-progress.is-wait .so-progress-fill { background: #eab308; }
+.so-list-workspace .so-progress.is-done .so-progress-fill { background: #16a34a; }
+.so-list-workspace .so-progress.is-hold .so-progress-fill { background: #f9a8d4; }
+.so-list-workspace .so-progress.is-cancel .so-progress-fill { background: #94a3b8; }
+.so-list-workspace .so-progress-label {
+  display: block;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.15;
+  font-weight: 650;
+  color: #334155;
+}
+.so-list-workspace .so-list-table td:has(.so-list-actions) {
+  vertical-align: middle;
+}
+.so-list-workspace .so-list-actions {
+  display: inline-flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 4px;
+  height: 28px;
+  margin: 0;
+  padding: 0;
+  line-height: 0;
+}
 .so-list-workspace .so-list-actions a,
 .so-list-workspace .so-list-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  align-self: center;
+  box-sizing: border-box;
+  height: 28px;
+  min-height: 28px;
+  max-height: 28px;
+  width: auto;
+  margin: 0;
+  padding: 0 8px;
   border: 1px solid #d5ddd9;
+  border-radius: 6px;
   background: #fff;
   color: #172126;
-  border-radius: 6px;
-  font: 600 12px/1.2 "IBM Plex Sans", sans-serif;
-  padding: 4px 8px;
+  appearance: none;
+  -webkit-appearance: none;
+  font-family: "IBM Plex Sans", sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  font-style: normal;
+  line-height: 1;
+  letter-spacing: 0;
   text-decoration: none;
+  text-transform: none;
+  white-space: nowrap;
   cursor: pointer;
+  flex: 0 0 auto;
+  gap: 4px;
+  vertical-align: middle;
+}
+.so-list-workspace .so-act-plus {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  font-size: 12px;
+  font-weight: 600;
 }
 .so-list-workspace .so-act-view {
   background: #dbeafe !important;
@@ -570,12 +780,21 @@
 .so-list-workspace .so-list-pager {
   flex: 0 0 auto;
   justify-content: space-between;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   font-size: 12px;
   color: #475569;
-  gap: 8px 12px;
+  gap: 8px;
+  min-height: 32px;
+  padding-right: 84px;
 }
-.so-list-workspace .so-list-pager-note { color: var(--so-muted); }
+.so-list-workspace .so-list-pager-note {
+  color: var(--so-muted);
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .so-list-workspace .so-list-pager label {
   display: inline-flex;
   align-items: center;
@@ -583,8 +802,9 @@
 }
 .so-list-workspace .so-list-pages { display: flex; gap: 4px; }
 .so-list-workspace .so-list-pages button {
-  min-width: 32px;
-  height: 32px;
+  min-width: 28px;
+  height: 28px;
+  padding: 0 6px;
   border: 1px solid #d5ddd9;
   background: #fff;
   border-radius: 6px;
@@ -992,7 +1212,7 @@
 
 @media (min-width: 1024px) {
   .so-create-workspace .so-create-actionbar { padding-right: 96px; }
-  .so-list-workspace .so-list-pager { padding-right: 88px; }
+  .so-list-workspace .so-list-pager { padding-right: 84px; }
   .so-create-workspace .so-create-side-body { padding-right: 88px; padding-bottom: 12px; }
 }
 @media (max-width: 1100px) {

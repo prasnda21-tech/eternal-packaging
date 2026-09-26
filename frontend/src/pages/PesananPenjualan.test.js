@@ -120,6 +120,7 @@ describe("Pesanan Penjualan UI & Data Invariants", () => {
     expect(src).not.toMatch(/Penjualan · Pesanan Penjualan/);
     expect(src).not.toMatch(/Daftar PO Penjualan dan pembuatan Sales Order baru/);
     expect(src).toMatch(/data-testid="sales-order-title"/);
+    expect(src).not.toMatch(/Daftar pesanan penjualan dari pelanggan/);
     expect(src).toMatch(/so-th-filter-po/);
     expect(src).toMatch(/so-th-filter-date/);
     expect(src).toMatch(/so-th-filter-customer/);

@@ -37,25 +37,37 @@ export function orderQuantityLabel(order) {
   return qty.toLocaleString("id-ID");
 }
 
-/** Delivery progress from the existing summary. Mixed units are not added together. */
-export function listProgressText(order) {
+/**
+ * Delivery progress from shipped vs ordered on the existing summary.
+ * Mixed units are not added into one ratio. A zero shipped count is ratio 0.
+ */
+export function listDeliveryProgress(order) {
   const status = salesOrderDeliveryStatus(order);
   const parts = Array.isArray(order?.quantity_by_unit) ? order.quantity_by_unit : [];
   const summary = order?.delivery_summary;
-  if (
-    parts.length === 1
-    && summary
-    && summary.total_ordered != null
-    && summary.total_shipped != null
-  ) {
-    const shipped = Number(summary.total_shipped);
-    const ordered = Number(summary.total_ordered);
-    if (Number.isFinite(shipped) && Number.isFinite(ordered)) {
-      const unit = parts[0].unit ? ` ${parts[0].unit}` : "";
-      return `${status} · ${shipped.toLocaleString("id-ID")}/${ordered.toLocaleString("id-ID")}${unit}`;
-    }
+  const shipped = summary && summary.total_shipped != null && summary.total_shipped !== ""
+    ? Number(summary.total_shipped)
+    : null;
+  const ordered = summary && summary.total_ordered != null && summary.total_ordered !== ""
+    ? Number(summary.total_ordered)
+    : null;
+  const numbersOk = parts.length === 1
+    && Number.isFinite(shipped)
+    && Number.isFinite(ordered)
+    && ordered >= 0;
+  if (!numbersOk) {
+    return { status, shipped: null, ordered: null, unit: "", ratio: null, label: status };
   }
-  return status;
+  const unit = String(parts[0].unit || "").trim();
+  const ratio = ordered > 0 ? Math.min(1, Math.max(0, shipped / ordered)) : 0;
+  const unitSuffix = unit ? ` ${unit}` : "";
+  const label = `${shipped.toLocaleString("id-ID")} terkirim / ${ordered.toLocaleString("id-ID")} pesanan${unitSuffix}`;
+  return { status, shipped, ordered, unit, ratio, label };
+}
+
+/** Delivery progress from the existing summary. Mixed units are not added together. */
+export function listProgressText(order) {
+  return listDeliveryProgress(order).label;
 }
 
 export function periodBounds(period, today = new Date()) {

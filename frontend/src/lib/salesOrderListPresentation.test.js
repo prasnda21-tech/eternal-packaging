@@ -1,6 +1,7 @@
 import {
   canShowAktifSummary,
   formatQuantityByUnit,
+  listDeliveryProgress,
   listProgressText,
   orderQuantityLabel,
   quantityByUnitFromLines,
@@ -39,11 +40,18 @@ describe("sales order quantity presentation", () => {
     expect(text).not.toMatch(/Siap kirim|Kendala/);
   });
 
-  test("one unit can show the existing shipped and ordered counts", () => {
+  test("one unit labels shipped over ordered and keeps a zero bar empty", () => {
     expect(listProgressText({
       quantity_by_unit: [{ unit: "pcs", quantity: 100 }],
       delivery_summary: { status: "SEBAGIAN", total_ordered: 100, total_shipped: 40 },
-    })).toBe("SEBAGIAN · 40/100 pcs");
+    })).toBe("40 terkirim / 100 pesanan pcs");
+    const empty = listDeliveryProgress({
+      quantity_by_unit: [{ unit: "pcs", quantity: 80 }],
+      delivery_summary: { status: "BELUM DIKIRIM", total_ordered: 80, total_shipped: 0, total_remaining: 80 },
+    });
+    expect(empty.ratio).toBe(0);
+    expect(empty.label).toBe("0 terkirim / 80 pesanan pcs");
+    expect(empty.status).toBe("BELUM DIKIRIM");
   });
 });
 
