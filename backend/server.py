@@ -9051,6 +9051,7 @@ from services.sales_deliveries import (
 )
 from services.sales_invoices import (
     get_po_invoice_preview as _get_po_invoice_preview,
+    list_charge_account_options as _list_charge_account_options,
     create_sales_invoice as _create_sales_invoice,
     generate_sales_invoice_pdf_bytes,
     list_sales_invoices as _list_sales_invoices,
@@ -9202,6 +9203,14 @@ class SalesInvoiceLineItemInput(BaseModel):
     unit_price: Optional[Union[int, float, str]] = None
 
 
+class SalesInvoiceOtherChargeInput(BaseModel):
+    id: Optional[str] = None
+    account_id: Optional[str] = None
+    description: Optional[str] = None
+    keterangan: Optional[str] = None
+    amount: Optional[Union[int, float, str]] = None
+
+
 class SalesInvoiceCreatePayload(BaseModel):
     po_id: str
     invoice_date: Optional[str] = None
@@ -9212,6 +9221,7 @@ class SalesInvoiceCreatePayload(BaseModel):
     idempotency_key: Optional[str] = None
     lines: Optional[List[SalesInvoiceLineItemInput]] = None
     line_items: Optional[List[SalesInvoiceLineItemInput]] = None
+    other_charges: Optional[List[SalesInvoiceOtherChargeInput]] = None
 
 
 class SalesInvoiceUpdatePayload(BaseModel):
@@ -9222,6 +9232,7 @@ class SalesInvoiceUpdatePayload(BaseModel):
     notes: Optional[str] = ""
     lines: Optional[List[SalesInvoiceLineItemInput]] = None
     line_items: Optional[List[SalesInvoiceLineItemInput]] = None
+    other_charges: Optional[List[SalesInvoiceOtherChargeInput]] = None
 
 
 class SalesInvoiceReverseAccountingPayload(BaseModel):
@@ -10460,6 +10471,23 @@ async def list_sales_invoices_endpoint(
         await ensure_owned_po_id(db, user, po_id)
     invoices = await _list_sales_invoices(db, q=q, po_id=po_id)
     return {"invoices": invoices, "count": len(invoices)}
+
+
+@api_router.get("/sales-invoices/charge-accounts")
+async def list_sales_invoice_charge_accounts_endpoint(
+    q: Optional[str] = None,
+    user=Depends(current_user),
+):
+    """Search COA accounts that may be credited as Biaya Lainnya. Does not post or create accounts."""
+    await _require_any_perm(
+        user,
+        "sales.invoice.create",
+        "sales.invoice.edit",
+        "sales_order.create",
+        "po.edit",
+    )
+    items = await _list_charge_account_options(db, q=q)
+    return {"items": items, "total": len(items)}
 
 
 @api_router.get("/sales-invoices/po/{po_id}/preview")

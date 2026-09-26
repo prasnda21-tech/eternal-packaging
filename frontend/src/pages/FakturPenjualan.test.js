@@ -73,10 +73,25 @@ describe("Faktur Penjualan UI & Navigation Suite", () => {
     expect(appSrc).toMatch(/NAV_KEYS\.salesInvoice/);
   });
 
+  test("Biaya Lainnya rows stay in draft state and post through the invoice API", () => {
+    expect(pageSrc).toMatch(/Biaya Lainnya/);
+    expect(pageSrc).toMatch(/idPrefix="create"/);
+    expect(pageSrc).toMatch(/idPrefix="detail"/);
+    expect(pageSrc).toMatch(/\$\{idPrefix\}-add-other-charge/);
+    expect(pageSrc).toMatch(/\$\{idPrefix\}-remove-other-charge-/);
+    expect(pageSrc).toMatch(/salesInvoiceChargeAccounts/);
+    expect(pageSrc).toMatch(/other_charges: otherChargePayload\(otherCharges\)/);
+    expect(pageSrc).toMatch(/other_charges: otherChargePayload\(detailCharges\)/);
+    expect(pageSrc).toMatch(/setDetailCharges\(\(inv\.other_charges \|\| \[\]\)\.map\(otherChargeFromStored\)\)/);
+    expect(pageSrc).toMatch(/chargesIncomplete/);
+    expect(pageSrc).not.toMatch(/700031/);
+  });
+
   test("api.js exposes complete sales invoice methods", () => {
     expect(apiSrc).toMatch(/listSalesInvoices:/);
     expect(apiSrc).toMatch(/getSalesInvoice:/);
     expect(apiSrc).toMatch(/getPoInvoicePreview:/);
+    expect(apiSrc).toMatch(/salesInvoiceChargeAccounts:/);
     expect(apiSrc).toMatch(/createSalesInvoice:/);
     expect(apiSrc).toMatch(/updateSalesInvoice:/);
     expect(apiSrc).toMatch(/finalizeSalesInvoice:/);
@@ -101,7 +116,7 @@ describe("Faktur Penjualan UI & Navigation Suite", () => {
   test("Faktur lifecycle UI has finalize confirmation and status badges", () => {
     expect(pageSrc).toMatch(/btn-finalize-invoice/);
     expect(pageSrc).toMatch(/finalize-confirm-modal/);
-    expect(pageSrc).toMatch(/Finalisasi akan mengunci tanggal, item, harga, diskon, PPN, dan total invoice/);
+    expect(pageSrc).toMatch(/Finalisasi akan mengunci tanggal, item, harga, diskon, PPN, biaya lainnya, dan total invoice/);
     expect(pageSrc).toMatch(/invoice-financial-badge-/);
     expect(pageSrc).toMatch(/btn-cancel-invoice/);
     expect(pageSrc).toMatch(/btn-post-accounting/);

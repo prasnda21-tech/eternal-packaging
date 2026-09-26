@@ -22,6 +22,7 @@ from services.sales_invoices import (
     apply_invoice_payment_fields,
     effective_financial_status,
     generate_sales_invoice_pdf_bytes,
+    invoice_sales_label,
 )
 
 PUBLIC_INVOICE_STATUSES = frozenset({FINANCIAL_FINALIZED, FINANCIAL_CANCELLED})
@@ -162,8 +163,27 @@ def public_invoice_detail(invoice: dict, token: str, order: dict) -> Dict[str, A
     return row
 
 
+def public_charge_lines(invoice: Optional[dict]) -> List[dict]:
+    """Billing rows the customer may see. Account id, code, and name stay behind."""
+    rows: List[dict] = []
+    for raw in (invoice or {}).get("other_charges") or []:
+        if not isinstance(raw, dict):
+            continue
+        description = _norm(raw.get("description"))
+        amount = _money(raw.get("amount"))
+        if not description or amount <= 0:
+            continue
+        rows.append({"description": description, "amount": amount})
+    return rows
+
+
 def customer_invoice_pdf_source(invoice: dict, order: dict) -> Dict[str, Any]:
-    """Fields the existing PDF renderer is allowed to see. No internal notes."""
+    """Fields the existing PDF renderer is allowed to see.
+
+    `notes` stays empty. The internal invoice PDF already prints that field,
+    which does not show that every historical note is safe to publish.
+    Sales is the invoice snapshot only. Charge rows are an explicit allowlist.
+    """
     lines = []
     for li in invoice.get("lines") or []:
         if not isinstance(li, dict):
@@ -180,12 +200,14 @@ def customer_invoice_pdf_source(invoice: dict, order: dict) -> Dict[str, Any]:
         "po_number": _norm(order.get("po_number")),
         "customer": _norm(order.get("customer") or order.get("customer_name")),
         "address": "",
+        "sales": invoice_sales_label(invoice),
         "invoice_date": _norm(invoice.get("invoice_date"))[:10],
         "payment_term_days": invoice.get("payment_term_days") or 0,
         "due_date": _norm(invoice.get("due_date"))[:10],
         "notes": "",
         "payment_status": customer_payment_label(invoice),
         "lines": lines,
+        "other_charges": public_charge_lines(invoice),
         "subtotal": _money(invoice.get("subtotal")),
         "discount_amount": _money(invoice.get("discount_amount")),
         "ppn_percent": invoice.get("ppn_percent") or 0,
