@@ -16,6 +16,8 @@ import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDisplayDate } from "../lib/constants";
 import { FormSection, FormField, FormProgress, computeStatus } from "../components/form-standard";
+import { loadedRangeLabel, showLoadedDocumentCount } from "../lib/salesSubmenuDensity";
+import "./salesSubmenuDensity.css";
 
 function getTodayString() {
   const d = new Date();
@@ -25,6 +27,239 @@ function getTodayString() {
 function formatRupiah(num) {
   const n = Number(num) || 0;
   return "Rp " + n.toLocaleString("id-ID");
+}
+
+const OTHER_CHARGE_ACCOUNT_TYPES = new Set(["EXPS", "OEXP", "OINC", "REVE"]);
+
+function chargeAccountEligible(account) {
+  if (!account || !account.id) return false;
+  const status = String(account.status || account.account_status || "").trim().toLowerCase();
+  if (["inactive", "nonaktif", "disabled", "non-aktif"].includes(status)) return false;
+  if (account.is_active === false || account.active === false) return false;
+  if (account.is_header === true || account.header === true) return false;
+  if (account.postable === false || account.can_post === false) return false;
+  return OTHER_CHARGE_ACCOUNT_TYPES.has(String(account.account_type || "").trim().toUpperCase());
+}
+
+function chargeAccountLabel(account) {
+  if (!account) return "";
+  return [account.code || account.account_code, account.name || account.account_name].filter(Boolean).join(" · ");
+}
+
+let otherChargeKeySeq = 0;
+function blankOtherCharge() {
+  otherChargeKeySeq += 1;
+  return {
+    key: `other-charge-${otherChargeKeySeq}`,
+    id: "",
+    account_id: "",
+    account_code: "",
+    account_name: "",
+    description: "",
+    amount: "",
+  };
+}
+
+function otherChargeFromStored(row) {
+  otherChargeKeySeq += 1;
+  return {
+    key: row.id || `other-charge-${otherChargeKeySeq}`,
+    id: row.id || "",
+    account_id: row.account_id || "",
+    account_code: row.account_code || "",
+    account_name: row.account_name || "",
+    description: row.description || "",
+    amount: row.amount === 0 || row.amount ? row.amount : "",
+  };
+}
+
+function otherChargeRowMessage(row, index) {
+  const n = index + 1;
+  const missing = [];
+  if (!String(row?.account_id || "").trim()) missing.push("akun perkiraan");
+  if (!String(row?.description || "").trim()) missing.push("keterangan");
+  const raw = row?.amount;
+  const blank = raw === "" || raw === null || raw === undefined;
+  if (blank) missing.push("nominal");
+  if (missing.length) {
+    return `Baris biaya ${n} belum lengkap: ${missing.join(", ")} wajib diisi.`;
+  }
+  const amount = Number(String(raw).replace(",", "."));
+  if (!Number.isFinite(amount)) return `Baris biaya ${n}: nominal tidak valid.`;
+  if (amount < 0) return `Baris biaya ${n}: nominal tidak boleh negatif.`;
+  if (amount === 0) return `Baris biaya ${n}: nominal harus lebih besar dari 0.`;
+  return "";
+}
+
+function summarizeOtherCharges(rows) {
+  let total = 0;
+  let message = "";
+  (rows || []).forEach((row, index) => {
+    const rowMessage = otherChargeRowMessage(row, index);
+    if (rowMessage) {
+      if (!message) message = rowMessage;
+      return;
+    }
+    total += Number(String(row.amount).replace(",", "."));
+  });
+  return {
+    total: Math.round(total * 100) / 100,
+    incomplete: Boolean(message),
+    message,
+  };
+}
+
+function otherChargePayload(rows) {
+  return (rows || []).map((row) => ({
+    id: row.id || undefined,
+    account_id: String(row.account_id || "").trim(),
+    description: String(row.description || "").trim(),
+    amount: row.amount === "" || row.amount === null || row.amount === undefined ? "" : row.amount,
+  }));
+}
+
+function ChargeAccountSearch({ accounts, row, onSelect, disabled, testId }) {
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const selected = (accounts || []).find((account) => account.id === row.account_id);
+  const label = selected
+    ? chargeAccountLabel(selected)
+    : chargeAccountLabel({ code: row.account_code, name: row.account_name });
+  const needle = query.trim().toLowerCase();
+  const matches = (accounts || []).filter((account) => {
+    if (!chargeAccountEligible(account) && account.id !== row.account_id) return false;
+    if (!needle) return true;
+    return `${account.code || ""} ${account.name || ""}`.toLowerCase().includes(needle);
+  }).slice(0, 12);
+
+  return (
+    <div className="fp-account-pick">
+      <input
+        type="text"
+        value={open ? query : label}
+        disabled={disabled}
+        placeholder="Cari kode atau nama akun"
+        data-testid={testId}
+        onFocus={() => {
+          if (disabled) return;
+          setOpen(true);
+          setQuery("");
+        }}
+        onChange={(event) => {
+          setQuery(event.target.value);
+          setOpen(true);
+        }}
+        onBlur={() => {
+          window.setTimeout(() => setOpen(false), 150);
+        }}
+      />
+      {open && !disabled && (
+        <ul className="fp-account-results" data-testid={`${testId}-results`}>
+          {matches.length === 0 ? (
+            <li className="is-empty">Tidak ada akun yang cocok</li>
+          ) : matches.map((account) => (
+            <li key={account.id}>
+              <button
+                type="button"
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  onSelect(account);
+                  setOpen(false);
+                  setQuery("");
+                }}
+              >
+                {chargeAccountLabel(account)}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function OtherChargesEditor({ rows, accounts, disabled, showErrors, onChange, idPrefix }) {
+  return (
+    <div className="fp-charges" data-testid={`${idPrefix}-other-charges`}>
+      <div className="fp-charges-head">
+        <strong>Biaya Lainnya</strong>
+        <button
+          type="button"
+          data-testid={`${idPrefix}-add-other-charge`}
+          disabled={disabled}
+          onClick={() => onChange([...(rows || []), blankOtherCharge()])}
+        >
+          <Plus size={14} /> Tambah Biaya
+        </button>
+      </div>
+      <p className="fp-charges-note">Ditagihkan ke pelanggan. Saat posting, nominal dikredit ke akun yang dipilih.</p>
+      {(rows || []).length === 0 ? (
+        <div className="fp-charges-empty">Belum ada biaya lainnya.</div>
+      ) : (rows || []).map((row, index) => {
+        const message = showErrors ? otherChargeRowMessage(row, index) : "";
+        return (
+          <div key={row.key} className="fp-charge-row" data-testid={`${idPrefix}-other-charge-${index}`}>
+            <label>
+              Akun Perkiraan
+              <ChargeAccountSearch
+                accounts={accounts}
+                row={row}
+                disabled={disabled}
+                testId={`${idPrefix}-charge-account-${index}`}
+                onSelect={(account) => onChange((rows || []).map((item) => (
+                  item.key === row.key
+                    ? {
+                      ...item,
+                      account_id: account.id,
+                      account_code: account.code || "",
+                      account_name: account.name || "",
+                    }
+                    : item
+                )))}
+              />
+            </label>
+            <label>
+              Keterangan biaya
+              <input
+                type="text"
+                value={row.description}
+                disabled={disabled}
+                placeholder="Keterangan untuk pelanggan"
+                data-testid={`${idPrefix}-charge-description-${index}`}
+                onChange={(event) => onChange((rows || []).map((item) => (
+                  item.key === row.key ? { ...item, description: event.target.value } : item
+                )))}
+              />
+            </label>
+            <label>
+              Nominal
+              <input
+                type="number"
+                min="0"
+                step="any"
+                value={row.amount}
+                disabled={disabled}
+                data-testid={`${idPrefix}-charge-amount-${index}`}
+                onChange={(event) => onChange((rows || []).map((item) => (
+                  item.key === row.key ? { ...item, amount: event.target.value } : item
+                )))}
+              />
+            </label>
+            <button
+              type="button"
+              className="fp-charge-remove"
+              data-testid={`${idPrefix}-remove-other-charge-${index}`}
+              disabled={disabled}
+              onClick={() => onChange((rows || []).filter((item) => item.key !== row.key))}
+            >
+              Hapus
+            </button>
+            {message && <div className="fp-charge-error" data-testid={`${idPrefix}-charge-error-${index}`}>{message}</div>}
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 function invoiceFinancialStatus(inv) {
@@ -165,6 +400,9 @@ export default function FakturPenjualan() {
   const [discountAmount, setDiscountAmount] = useState(0);
   const [ppnPercent, setPpnPercent] = useState(0);
   const [invoiceNotes, setInvoiceNotes] = useState("");
+  const [otherCharges, setOtherCharges] = useState([]);
+  const [chargeAccounts, setChargeAccounts] = useState([]);
+  const [showChargeErrors, setShowChargeErrors] = useState(false);
   const [lineQuantities, setLineQuantities] = useState({});
   const [linePrices, setLinePrices] = useState({});
   const [formBusy, setFormBusy] = useState(false);
@@ -182,6 +420,8 @@ export default function FakturPenjualan() {
   const [detailTermDays, setDetailTermDays] = useState(0);
   const [detailDate, setDetailDate] = useState("");
   const [detailNotes, setDetailNotes] = useState("");
+  const [detailCharges, setDetailCharges] = useState([]);
+  const [showDetailChargeErrors, setShowDetailChargeErrors] = useState(false);
   const [detailSaving, setDetailSaving] = useState(false);
   const [finalizeConfirm, setFinalizeConfirm] = useState(false);
   const [cancelConfirm, setCancelConfirm] = useState(false);
@@ -190,6 +430,7 @@ export default function FakturPenjualan() {
   const [reverseReason, setReverseReason] = useState("");
   const [reverseErr, setReverseErr] = useState("");
   const [lifecycleBusy, setLifecycleBusy] = useState(false);
+  const [invoiceFormTab, setInvoiceFormTab] = useState("items");
 
   // Load Invoices List
   const loadInvoices = useCallback(async () => {
@@ -320,7 +561,7 @@ export default function FakturPenjualan() {
       const initialPrices = {};
       const initialQtys = {};
       (data.lines || []).forEach((l) => {
-        initialPrices[l.line_idx] = l.unit_price || "";
+        initialPrices[l.line_idx] = l.unit_price === null || l.unit_price === undefined || l.unit_price === "" ? "" : l.unit_price;
         initialQtys[l.line_idx] = l.remaining_invoice_qty != null ? l.remaining_invoice_qty : l.quantity;
       });
       setLinePrices(initialPrices);
@@ -348,10 +589,27 @@ export default function FakturPenjualan() {
     }
   }, [viewMode, loadInvoices, loadAvailablePOs, loadPoPreview, selectedPoId]);
 
+  useEffect(() => {
+    if (viewMode === "list") return undefined;
+    let cancelled = false;
+    api.salesInvoiceChargeAccounts()
+      .then((res) => {
+        if (!cancelled) setChargeAccounts(res.items || []);
+      })
+      .catch(() => {
+        if (!cancelled) setChargeAccounts([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [viewMode]);
+
   // Handle PO selector change
   const handleSelectPo = (e) => {
     const pId = e.target.value;
     setSelectedPoId(pId);
+    setOtherCharges([]);
+    setShowChargeErrors(false);
     if (pId) {
       setSearchParams({ action: "create", po_id: pId });
       loadPoPreview(pId);
@@ -391,17 +649,20 @@ export default function FakturPenjualan() {
       if (isQtyOver) hasErrors = true;
 
       const rawP = linePrices[l.line_idx];
-      const p = Math.max(0, Number(rawP) || 0);
-      const lineTotal = q * p;
+      const priceMissing = rawP === "" || rawP === null || rawP === undefined || Number.isNaN(Number(rawP));
+      const p = priceMissing ? null : Math.max(0, Number(rawP));
+      const lineTotal = p === null ? null : q * p;
       totalQty += q;
-      subtotal += lineTotal;
+      if (lineTotal !== null) subtotal += lineTotal;
+      if (q > 0 && priceMissing) hasErrors = true;
       return {
         ...l,
         remaining,
         invoiceQty: rawQ !== undefined ? rawQ : remaining,
         numericQty: q,
-        unitPrice: rawP !== undefined ? rawP : 0,
-        numericPrice: p,
+        unitPrice: priceMissing ? "" : rawP,
+        numericPrice: p === null ? 0 : p,
+        priceMissing,
         lineTotal,
         isQtyOver,
       };
@@ -414,15 +675,51 @@ export default function FakturPenjualan() {
     const afterDiscount = Math.max(0, subtotal - disc);
     const ppnPct = Math.max(0, Number(ppnPercent) || 0);
     const ppn = Math.round(afterDiscount * (ppnPct / 100));
-    const grandTotal = afterDiscount + ppn;
+    const chargeSummary = summarizeOtherCharges(otherCharges);
+    const grandTotal = chargeSummary.incomplete ? null : afterDiscount + ppn + chargeSummary.total;
 
     const totalRemaining = previewData.lines.reduce(
       (acc, l) => acc + (Number(l.remaining_invoice_qty != null ? l.remaining_invoice_qty : l.quantity) || 0),
       0
     );
 
-    return { lines: computedLines, subtotal, discount: disc, afterDiscount, ppn, ppnPercent: ppnPct, grandTotal, totalQty, totalRemaining, hasErrors, isDiscOver };
-  }, [previewData, lineQuantities, linePrices, discountAmount, ppnPercent]);
+    const priceMissingAny = computedLines.some((line) => line.numericQty > 0 && line.priceMissing);
+    return {
+      lines: computedLines,
+      subtotal,
+      discount: disc,
+      afterDiscount,
+      ppn,
+      ppnPercent: ppnPct,
+      chargesTotal: chargeSummary.total,
+      chargesIncomplete: chargeSummary.incomplete,
+      chargesMessage: chargeSummary.message,
+      grandTotal,
+      totalQty,
+      totalRemaining,
+      hasErrors,
+      isDiscOver,
+      priceMissingAny,
+    };
+  }, [previewData, lineQuantities, linePrices, discountAmount, ppnPercent, otherCharges]);
+
+  const invoiceCompleteness = useMemo(() => {
+    const lines = createCalculations?.lines || [];
+    const poOk = Boolean(selectedPoId || queryPoId);
+    const dateOk = Boolean(invoiceDate);
+    const qtyOk = lines.some((line) => Number(line.numericQty || 0) > 0);
+    const priceOk = qtyOk && !createCalculations.priceMissingAny;
+    const limitsOk = !lines.some((line) => line.isQtyOver) && !createCalculations.isDiscOver;
+    const checks = [poOk, dateOk, qtyOk, priceOk, limitsOk];
+    const completed = checks.filter(Boolean).length;
+    return {
+      percentage: Math.round((completed / checks.length) * 100),
+      completed,
+      total: checks.length,
+      complete: completed === checks.length,
+      totalsReady: Boolean(previewData) && !createCalculations.priceMissingAny,
+    };
+  }, [createCalculations, selectedPoId, queryPoId, invoiceDate, previewData]);
 
   // Handle Save Invoice
   const handleSaveInvoice = async (e) => {
@@ -431,8 +728,16 @@ export default function FakturPenjualan() {
       setFormErr("Silakan pilih Pesanan Penjualan (PO) terlebih dahulu.");
       return;
     }
+    if (createCalculations.chargesIncomplete) {
+      setShowChargeErrors(true);
+      setInvoiceFormTab("terms");
+      setFormErr(createCalculations.chargesMessage);
+      return;
+    }
     if (createCalculations.hasErrors) {
-      if (createCalculations.isDiscOver) {
+      if (createCalculations.priceMissingAny) {
+        setFormErr("Lengkapi harga jual yang belum tersedia. Harga kosong tidak dijadikan Rp0.");
+      } else if (createCalculations.isDiscOver) {
         setFormErr(`Diskon (${formatRupiah(createCalculations.discount)}) tidak boleh melebihi subtotal (${formatRupiah(createCalculations.subtotal)}).`);
       } else {
         setFormErr("Terdapat jumlah kuantitas faktur yang melebihi sisa PO.");
@@ -447,15 +752,19 @@ export default function FakturPenjualan() {
     try {
       const linesPayload = (createCalculations.lines || []).map((l) => {
         const rawP = linePrices[l.line_idx];
+        const blank = rawP === "" || rawP === null || rawP === undefined;
         const numP = Number(rawP);
-        if (numP < 0) {
+        if (l.numericQty > 0 && (blank || Number.isNaN(numP))) {
+          throw new Error(`Lengkapi harga jual untuk '${l.item_name}'. Harga kosong tidak dijadikan Rp0.`);
+        }
+        if (!blank && numP < 0) {
           throw new Error(`Harga satuan untuk '${l.item_name}' tidak boleh negatif.`);
         }
         return {
           line_idx: l.line_idx,
           line_id: l.line_id,
           quantity: l.numericQty,
-          unit_price: isNaN(numP) ? 0 : numP,
+          unit_price: blank ? null : numP,
         };
       });
 
@@ -466,6 +775,7 @@ export default function FakturPenjualan() {
         discount_amount: Number(discountAmount) || 0,
         ppn_percent: Number(ppnPercent) || 0,
         notes: invoiceNotes.trim(),
+        other_charges: otherChargePayload(otherCharges),
         lines: linesPayload,
       };
 
@@ -505,6 +815,8 @@ export default function FakturPenjualan() {
       setDetailDiscount(inv.discount_amount || 0);
       setDetailPpn(inv.ppn_percent || 0);
       setDetailNotes(inv.notes || "");
+      setDetailCharges((inv.other_charges || []).map(otherChargeFromStored));
+      setShowDetailChargeErrors(false);
       const prices = {};
       (inv.lines || []).forEach((l) => {
         prices[l.line_idx] = l.unit_price != null ? l.unit_price : 0;
@@ -548,15 +860,34 @@ export default function FakturPenjualan() {
     const afterDiscount = Math.max(0, subtotal - disc);
     const ppnPct = Math.max(0, Number(detailPpn) || 0);
     const ppn = Math.round(afterDiscount * (ppnPct / 100));
-    const grandTotal = afterDiscount + ppn;
+    const chargeSummary = summarizeOtherCharges(detailCharges);
+    const grandTotal = chargeSummary.incomplete ? null : afterDiscount + ppn + chargeSummary.total;
 
-    return { lines: computedLines, subtotal, discount: disc, afterDiscount, ppn, ppnPercent: ppnPct, grandTotal, totalQty };
-  }, [detailData, detailPrices, detailDiscount, detailPpn]);
+    return {
+      lines: computedLines,
+      subtotal,
+      discount: disc,
+      afterDiscount,
+      ppn,
+      ppnPercent: ppnPct,
+      chargesTotal: chargeSummary.total,
+      chargesIncomplete: chargeSummary.incomplete,
+      chargesMessage: chargeSummary.message,
+      grandTotal,
+      totalQty,
+    };
+  }, [detailData, detailPrices, detailDiscount, detailPpn, detailCharges]);
 
   // Handle Update Invoice
   const handleUpdateInvoice = async (e) => {
     e.preventDefault();
     if (!selectedInvoiceId || !detailData) return;
+    if (detailCalculations.chargesIncomplete) {
+      setShowDetailChargeErrors(true);
+      setInvoiceFormTab("terms");
+      setDetailErr(detailCalculations.chargesMessage);
+      return;
+    }
     setDetailSaving(true);
     setDetailErr("");
     setSuccessMsg("");
@@ -564,7 +895,11 @@ export default function FakturPenjualan() {
     try {
       const linesPayload = (detailData.lines || []).map((l) => {
         const rawP = detailPrices[l.line_idx];
+        const blank = rawP === "" || rawP === null || rawP === undefined;
         const numP = Number(rawP);
+        if (blank || Number.isNaN(numP)) {
+          throw new Error(`Lengkapi harga jual untuk '${l.item_name}'. Harga kosong tidak dijadikan Rp0.`);
+        }
         if (numP < 0) {
           throw new Error(`Harga satuan untuk '${l.item_name}' tidak boleh negatif.`);
         }
@@ -572,7 +907,7 @@ export default function FakturPenjualan() {
           line_idx: l.line_idx,
           line_id: l.line_id,
           quantity: l.quantity,
-          unit_price: isNaN(numP) ? 0 : numP,
+          unit_price: numP,
         };
       });
 
@@ -582,12 +917,15 @@ export default function FakturPenjualan() {
         discount_amount: Number(detailDiscount) || 0,
         ppn_percent: Number(detailPpn) || 0,
         notes: detailNotes.trim(),
+        other_charges: otherChargePayload(detailCharges),
         lines: linesPayload,
       };
 
       const res = await api.updateSalesInvoice(selectedInvoiceId, payload);
       const updated = res.invoice || res;
       setDetailData(updated);
+      setDetailCharges((updated.other_charges || []).map(otherChargeFromStored));
+      setShowDetailChargeErrors(false);
       setSuccessMsg("Perubahan Faktur Penjualan berhasil disimpan");
       setTimeout(() => setSuccessMsg(""), 2500);
     } catch (err) {
@@ -749,86 +1087,84 @@ export default function FakturPenjualan() {
     detailData?.accounting_ready === false;
   const canEditFinancial = canEdit && !financialLocked;
 
+  const showInvoiceCount = showLoadedDocumentCount({
+    loading: listLoading,
+    error: listErr,
+    query: searchQuery,
+  });
+
   return (
     <div
-      className="page-container penjualan-page penjualan-workspace"
+      className={"page-container penjualan-page penjualan-workspace sd-density " + (viewMode === "list" ? "sd-list-mode" : "sd-form-mode")}
       data-testid="faktur-penjualan-page"
-      style={{ padding: 24, maxWidth: 1200, margin: "0 auto" }}
     >
-      {/* HEADER SECTION */}
-      <div
-        className="page-heading"
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          marginBottom: 20,
-          flexWrap: "wrap",
-          gap: 12,
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          {viewMode !== "list" ? (
+      <header className={viewMode === "list" ? "sd-list-header" : "sd-form-header"}>
+        <div className={viewMode === "list" ? "sd-list-heading" : "sd-form-heading"}>
+          {viewMode !== "list" && (
             <button
               type="button"
-              className="ghost sm"
+              className="sd-back"
               onClick={() => {
                 setSearchParams({});
                 setViewMode("list");
               }}
               data-testid="back-to-list-btn"
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 6,
-                padding: "6px 12px",
-                borderRadius: 6,
-                border: "1px solid #cbd5e1",
-                background: "#f8fafc",
-                cursor: "pointer",
-              }}
             >
               <ArrowLeft size={16} /> Kembali
             </button>
-          ) : (
-            <div
-              style={{
-                width: 40,
-                height: 40,
-                borderRadius: 10,
-                background: "#f3e8ff",
-                color: "#9333ea",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-              }}
-            >
-              <FileText size={22} />
+          )}
+          <h1>
+            {viewMode === "create"
+              ? "Buat Faktur Penjualan"
+              : viewMode === "detail"
+              ? "Detail Faktur Penjualan"
+              : "Faktur Penjualan"}
+          </h1>
+          {viewMode === "list" && showInvoiceCount && (
+            <div className="sd-list-summary" data-testid="invoice-list-count">
+              <strong>{invoices.length.toLocaleString("id-ID")}</strong>
+              <span>faktur</span>
             </div>
           )}
-          <div>
-            <h1 style={{ margin: 0, fontSize: "1.5rem", fontWeight: 700, color: "#0f172a" }}>
-              {viewMode === "create"
-                ? "Buat Faktur Penjualan"
-                : viewMode === "detail"
-                ? "Detail Faktur Penjualan"
-                : "Faktur Penjualan"}
-            </h1>
-            <p style={{ margin: "2px 0 0 0", fontSize: "0.85rem", color: "#64748b" }}>
-              {viewMode === "create"
-                ? "Buat Faktur Penjualan (parsial / penuh) dengan Diskon, PPN & Termin."
-                : viewMode === "detail"
-                ? `Dokumen Faktur #${detailData?.invoice_number || detailData?.id || selectedInvoiceId}`
-                : "Daftar Faktur Penjualan dan status pelunasan pembayaran"}
-            </p>
-          </div>
+          {viewMode === "detail" && (
+            <span className="sd-support">
+              {detailData?.invoice_number || detailData?.id || selectedInvoiceId || ""}
+            </span>
+          )}
+          {viewMode === "create" && (
+            <>
+              <span
+                className={"fp-chip " + (invoiceCompleteness.complete ? "is-complete" : "is-incomplete")}
+                data-testid="invoice-completeness"
+              >
+                {invoiceCompleteness.complete ? "Lengkap" : "Belum lengkap"}
+              </span>
+              <FormProgress
+                percentage={invoiceCompleteness.percentage}
+                completed={invoiceCompleteness.completed}
+                total={invoiceCompleteness.total}
+                className="fp-progress-sr"
+              />
+            </>
+          )}
         </div>
+        {viewMode === "detail" && detailData && Number(detailData.outstanding_amount) > 0 && canCreate && (
+          <button
+            type="button"
+            className="fp-header-action"
+            data-testid="btn-buat-penerimaan"
+            onClick={() => navigate(`/penjualan/penerimaan-penjualan?invoice_id=${detailData.id}`)}
+          >
+            <CreditCard size={15} /> + Buat Penerimaan
+          </button>
+        )}
 
         {viewMode === "list" && (
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <div className="sd-list-header-actions">
             {canDelete && selectedIds.size > 0 && (
               <button
                 type="button"
+                className="sd-btn-danger"
                 data-testid="btn-hapus-terpilih"
                 onClick={() => {
                   const ids = Array.from(selectedIds);
@@ -836,54 +1172,39 @@ export default function FakturPenjualan() {
                   setDeleteErr("");
                   setDeleteConfirm({ ids, numbers });
                 }}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 6,
-                  padding: "8px 14px",
-                  borderRadius: 8,
-                  background: "#fee2e2",
-                  color: "#b91c1c",
-                  border: "1px solid #fecaca",
-                  cursor: "pointer",
-                  fontWeight: 600,
-                  fontSize: "0.9rem",
-                }}
               >
                 <Trash2 size={16} /> Hapus Terpilih ({selectedIds.size})
               </button>
             )}
+            <button
+              type="button"
+              className="sd-list-refresh"
+              onClick={loadInvoices}
+              disabled={listLoading}
+              title="Refresh data"
+              data-testid="refresh-invoice-btn"
+            >
+              <RefreshCw size={16} className={listLoading ? "spin" : ""} />
+            </button>
             {canCreate && (
-          <button
-            type="button"
-            className="primary"
-            onClick={() => {
-              setSelectedPoId("");
-              setPreviewData(null);
-              setSearchParams({ action: "create" });
-              setViewMode("create");
-            }}
-            data-testid="btn-create-invoice"
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              padding: "8px 16px",
-              borderRadius: 8,
-              background: "#9333ea",
-              color: "#fff",
-              border: "none",
-              cursor: "pointer",
-              fontWeight: 600,
-              fontSize: "0.9rem",
-            }}
-          >
-            <Plus size={16} /> + Buat Faktur dari PO
-          </button>
+              <button
+                type="button"
+                className="sd-btn-primary"
+                onClick={() => {
+                  setSelectedPoId("");
+                  setPreviewData(null);
+                  setInvoiceFormTab("items");
+                  setSearchParams({ action: "create" });
+                  setViewMode("create");
+                }}
+                data-testid="btn-create-invoice"
+              >
+                <Plus size={16} /> Buat Faktur dari PO
+              </button>
             )}
           </div>
         )}
-      </div>
+      </header>
 
       {/* SUCCESS BANNER */}
       {successMsg && (
@@ -918,58 +1239,17 @@ export default function FakturPenjualan() {
 
       {/* VIEW: LIST */}
       {viewMode === "list" && (
-        <section
-          className="panel"
-          style={{
-            background: "#fff",
-            border: "1px solid #e2e8f0",
-            borderRadius: 10,
-            padding: 20,
-            boxShadow: "0 1px 3px rgba(0,0,0,0.05)",
-          }}
-        >
+        <section className="sd-list-panel">
           {listErr && (
-            <div
-              className="alert-box error"
-              style={{
-                background: "#fef2f2",
-                border: "1px solid #fecaca",
-                color: "#b91c1c",
-                padding: "10px 14px",
-                borderRadius: 8,
-                marginBottom: 16,
-                display: "flex",
-                alignItems: "center",
-                gap: 10,
-              }}
-            >
+            <div className="sd-banner is-error" role="alert">
               <AlertCircle size={16} />
               <span>{listErr}</span>
             </div>
           )}
 
-          {/* Search & Refresh Toolbar */}
-          <div
-            style={{
-              display: "flex",
-              flexWrap: "wrap",
-              justifyContent: "space-between",
-              alignItems: "center",
-              gap: 12,
-              marginBottom: 16,
-            }}
-          >
-            <div style={{ position: "relative", minWidth: 280, flex: "1 1 300px" }}>
-              <Search
-                size={16}
-                style={{
-                  position: "absolute",
-                  left: 10,
-                  top: "50%",
-                  transform: "translateY(-50%)",
-                  color: "#94a3b8",
-                }}
-              />
+          <div className="sd-list-toolbar">
+            <div className="sd-list-search">
+              <Search size={16} />
               <input
                 type="text"
                 placeholder="Cari No PO / Customer / Sales / Faktur..."
@@ -979,51 +1259,27 @@ export default function FakturPenjualan() {
                   if (e.key === "Enter") loadInvoices();
                 }}
                 data-testid="search-invoice-input"
-                style={{
-                  width: "100%",
-                  padding: "8px 12px 8px 34px",
-                  border: "1px solid #cbd5e1",
-                  borderRadius: 6,
-                  fontSize: "0.9rem",
-                  boxSizing: "border-box",
-                }}
               />
             </div>
-
-            <button
-              type="button"
-              onClick={loadInvoices}
-              disabled={listLoading}
-              title="Refresh data"
-              data-testid="refresh-invoice-btn"
-              style={{
-                padding: "8px 14px",
-                borderRadius: 6,
-                border: "1px solid #cbd5e1",
-                background: "#f8fafc",
-                color: "#475569",
-                cursor: "pointer",
-                display: "flex",
-                alignItems: "center",
-                gap: 6,
-                fontWeight: 500,
-                fontSize: "0.85rem",
-              }}
-            >
-              <RefreshCw size={14} className={listLoading ? "spin" : ""} /> Refresh
-            </button>
           </div>
 
-          {/* Invoices Table */}
-          <div style={{ overflowX: "auto" }}>
-            <table
-              style={{ width: "100%", borderCollapse: "collapse", textAlign: "left", fontSize: "0.9rem" }}
-              data-testid="invoices-table"
-            >
+          <div className="sd-list-table-scroll">
+            <table className="sd-list-table" data-testid="invoices-table">
+              <colgroup>
+                {canDelete && <col style={{ width: 36 }} />}
+                <col />
+                <col style={{ width: 148 }} />
+                <col style={{ width: 92 }} />
+                <col style={{ width: 118 }} />
+                <col style={{ width: 118 }} />
+                <col style={{ width: 108 }} />
+                <col style={{ width: 108 }} />
+                <col style={{ width: 248 }} />
+              </colgroup>
               <thead>
-                <tr style={{ background: "#f8fafc", borderBottom: "2px solid #e2e8f0", color: "#475569" }}>
+                <tr>
                   {canDelete && (
-                    <th style={{ padding: "10px 8px", width: 36 }}>
+                    <th>
                       <input
                         type="checkbox"
                         data-testid="select-all-invoices"
@@ -1033,27 +1289,26 @@ export default function FakturPenjualan() {
                       />
                     </th>
                   )}
-                  <th style={{ padding: "10px 12px" }}>No. Faktur</th>
-                  <th style={{ padding: "10px 12px" }}>No. PO</th>
-                  <th style={{ padding: "10px 12px" }}>Customer</th>
-                  <th style={{ padding: "10px 12px" }}>Tanggal</th>
-                  <th style={{ padding: "10px 12px", textAlign: "right" }}>Total Faktur</th>
-                  <th style={{ padding: "10px 12px", textAlign: "right" }}>Sisa Tagihan</th>
-                  <th style={{ padding: "10px 12px", textAlign: "center" }}>Status Faktur</th>
-                  <th style={{ padding: "10px 12px", textAlign: "center" }}>Status Pembayaran</th>
-                  <th style={{ padding: "10px 12px", textAlign: "center" }}>Aksi</th>
+                  <th>Pelanggan / No. Faktur</th>
+                  <th>No. PO</th>
+                  <th>Tanggal</th>
+                  <th>Total Faktur</th>
+                  <th>Sisa Tagihan</th>
+                  <th>Status Faktur</th>
+                  <th>Pembayaran</th>
+                  <th>Aksi</th>
                 </tr>
               </thead>
               <tbody>
                 {listLoading ? (
                   <tr>
-                    <td colSpan={canDelete ? 10 : 9} style={{ padding: 32, textAlign: "center", color: "#64748b" }}>
+                    <td colSpan={canDelete ? 9 : 8} className="sd-list-empty">
                       Memuat daftar Faktur Penjualan...
                     </td>
                   </tr>
                 ) : invoices.length === 0 ? (
                   <tr>
-                    <td colSpan={canDelete ? 10 : 9} style={{ padding: "36px 20px", textAlign: "center", color: "#64748b" }} data-testid="empty-invoices">
+                    <td colSpan={canDelete ? 9 : 8} className="sd-list-empty" data-testid="empty-invoices">
                       <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
                         <FileText size={32} color="#94a3b8" />
                         <div style={{ fontWeight: 600, color: "#1e293b", marginTop: 8 }}>Belum ada Faktur Penjualan</div>
@@ -1062,9 +1317,9 @@ export default function FakturPenjualan() {
                   </tr>
                 ) : (
                   invoices.map((inv) => (
-                    <tr key={inv.id} style={{ borderBottom: "1px solid #f1f5f9" }} data-testid={`invoice-row-${inv.id}`}>
+                    <tr key={inv.id} data-testid={`invoice-row-${inv.id}`}>
                       {canDelete && (
-                        <td style={{ padding: "10px 8px" }}>
+                        <td>
                           <input
                             type="checkbox"
                             data-testid={`invoice-checkbox-${inv.id}`}
@@ -1074,92 +1329,57 @@ export default function FakturPenjualan() {
                           />
                         </td>
                       )}
-                      <td style={{ padding: "10px 12px", fontWeight: 700, color: "#9333ea" }}>
-                        <span className="mono" data-testid={`invoice-number-${inv.id}`}>
+                      <td className="sd-identity">
+                        <div className="sd-customer">{inv.customer || "-"}</div>
+                        <span className="sd-doc is-static" data-testid={`invoice-number-${inv.id}`}>
                           {inv.invoice_number || "-"}
                         </span>
+                        {inv.outlet ? <span className="sd-support">{inv.outlet}</span> : null}
                       </td>
-                      <td style={{ padding: "10px 12px", fontWeight: 500 }}>
-                        <Link to={`/po/${inv.po_id}`} style={{ color: "#0284c7", textDecoration: "none" }} title="Buka PO">
+                      <td>
+                        <Link to={`/po/${inv.po_id}`} className="sd-doc" title="Buka PO">
                           {inv.po_number || "-"}
                         </Link>
                       </td>
-                      <td style={{ padding: "10px 12px", fontWeight: 500, color: "#1e293b" }}>
-                        <div>{inv.customer || "-"}</div>
-                        {inv.outlet && <div style={{ fontSize: "0.75rem", color: "#64748b" }}>{inv.outlet}</div>}
-                      </td>
-                      <td style={{ padding: "10px 12px", color: "#475569" }}>
-                        {formatDisplayDate(inv.invoice_date || inv.created_at)}
-                      </td>
-                      <td style={{ padding: "10px 12px", textAlign: "right", fontWeight: 700, color: "#0f172a" }}>
-                        {formatRupiah(inv.grand_total)}
-                      </td>
-                      <td style={{ padding: "10px 12px", textAlign: "right", fontWeight: 600, color: (inv.outstanding_amount > 0 ? "#dc2626" : "#059669") }}>
+                      <td>{formatDisplayDate(inv.invoice_date || inv.created_at)}</td>
+                      <td className="sd-money">{formatRupiah(inv.grand_total)}</td>
+                      <td className={"sd-money " + (Number(inv.outstanding_amount) > 0 ? "is-due" : "is-zero")}>
                         {formatRupiah(inv.outstanding_amount)}
                       </td>
-                      <td style={{ padding: "10px 12px", textAlign: "center" }}>
+                      <td>
                         {renderFinancialBadge(inv.financial_status)}
                         {(invoiceFinancialStatus(inv) !== "draft" || accountingStatusOf(inv) !== "not_posted") &&
                           renderAccountingBadge(accountingStatusOf(inv))}
                       </td>
-                      <td style={{ padding: "10px 12px", textAlign: "center" }}>
-                        {renderPaymentBadge(inv.payment_status)}
-                      </td>
-                      <td style={{ padding: "10px 12px", textAlign: "center" }}>
-                        <div style={{ display: "flex", justifyContent: "center", gap: 6 }}>
+                      <td>{renderPaymentBadge(inv.payment_status)}</td>
+                      <td>
+                        <div className="sd-actions">
                         <button
                           type="button"
+                          className="sd-act sd-act-view"
                           onClick={() => handleOpenDetail(inv.id)}
                           data-testid={`view-invoice-btn-${inv.id}`}
-                          style={{
-                            padding: "5px 12px",
-                            fontSize: "0.8rem",
-                            borderRadius: 6,
-                            border: "1px solid #cbd5e1",
-                            background: "#f8fafc",
-                            color: "#334155",
-                            cursor: "pointer",
-                            fontWeight: 500,
-                          }}
                         >
                           {invoiceFinancialStatus(inv) === "draft" ? "Lihat / Edit" : "Lihat"}
                         </button>
                         <button
                           type="button"
+                          className="sd-act sd-act-view"
                           onClick={(e) => handlePrintPdf(e, inv.id)}
                           data-testid={`btn-print-pdf-${inv.id}`}
                           disabled={pdfLoadingId === inv.id}
                           title="Cetak PDF Faktur Penjualan"
-                          style={{
-                            padding: "5px 12px",
-                            fontSize: "0.8rem",
-                            borderRadius: 6,
-                            border: "1px solid #cbd5e1",
-                            background: "#f8fafc",
-                            color: "#0284c7",
-                            cursor: pdfLoadingId === inv.id ? "wait" : "pointer",
-                            fontWeight: 600,
-                          }}
                         >
                           {pdfLoadingId === inv.id ? "Memuat..." : "Cetak PDF"}
                         </button>
                         {canDelete && invoiceFinancialStatus(inv) === "draft" && (
                           <button
                             type="button"
+                            className="sd-act sd-act-delete"
                             data-testid={`btn-delete-invoice-${inv.id}`}
                             onClick={() => {
                               setDeleteErr("");
                               setDeleteConfirm({ id: inv.id, number: inv.invoice_number, numbers: [inv.invoice_number] });
-                            }}
-                            style={{
-                              padding: "5px 10px",
-                              fontSize: "0.8rem",
-                              borderRadius: 6,
-                              border: "1px solid #fecaca",
-                              background: "#fef2f2",
-                              color: "#b91c1c",
-                              cursor: "pointer",
-                              fontWeight: 600,
                             }}
                           >
                             Hapus
@@ -1173,28 +1393,31 @@ export default function FakturPenjualan() {
               </tbody>
             </table>
           </div>
+          <footer className="sd-list-footer" data-testid="invoice-list-footer">
+            <span>
+              {listLoading
+                ? "Memuat daftar faktur..."
+                : listErr
+                ? "Daftar faktur belum dapat ditampilkan"
+                : loadedRangeLabel(invoices.length, "faktur")}
+            </span>
+          </footer>
         </section>
       )}
 
       {/* VIEW: CREATE */}
       {viewMode === "create" && (
-        <div>
-          <FormProgress
-            percentage={Math.round(([selectedPoId || queryPoId, invoiceDate, (createCalculations?.lines || []).some(l => Number(l.numericQty || 0) > 0)].filter(Boolean).length / 3) * 100)}
-            completed={[selectedPoId || queryPoId, invoiceDate, (createCalculations?.lines || []).some(l => Number(l.numericQty || 0) > 0)].filter(Boolean).length}
-            total={3}
-            className="mb-4"
-          />
-
+        <div className="sd-form fp-create">
           {/* Step 1: PO Selector Panel (Only shown if opened directly from menu without pre-selected PO) */}
           {!queryPoId && (
             <FormSection
               id="fp-select-po"
-              title="1. Pilih Pesanan Penjualan (PO Asal)"
+              title="Pilih Pesanan Penjualan"
               description="Pilih PO yang eligible untuk dibuatkan faktur penjualan."
-              status={selectedPoId ? "complete" : "incomplete"}
+              status={computeStatus([{ value: selectedPoId, isRequired: true }])}
+              className="fp-po-section"
             >
-              <div style={{ maxWidth: 540 }}>
+              <div className="fp-po-select">
                 <FormField id="fp-po-selector-field" label="Nomor PO" isRequired value={selectedPoId}>
                   <select
                     value={selectedPoId}
@@ -1221,49 +1444,35 @@ export default function FakturPenjualan() {
             </FormSection>
           )}
 
-          {/* Step 2: PO Snapshot & Financial Config */}
           {previewLoading ? (
-            <div style={{ padding: 32, textAlign: "center", color: "#64748b" }}>Memuat data PO...</div>
+            <div className="sd-form-stage" style={{ padding: 32, textAlign: "center", color: "#64748b" }}>Memuat data PO...</div>
           ) : previewData ? (
-            <form onSubmit={handleSaveInvoice}>
-              <FormSection
-                id="fp-snapshot-financial"
-                title={queryPoId ? "Informasi PO & Konfigurasi Finansial Faktur" : "2. Informasi PO Snapshot & Konfigurasi Finansial"}
-                description="Detail PO asal dan ketentuan termin pembayaran faktur."
-                status={computeStatus([{ value: invoiceDate, isRequired: true }])}
-                className="panel"
-              >
-                <div data-testid="po-snapshot-card">
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 16 }}>
-                  <div>
-                    <span style={{ fontSize: "0.75rem", color: "#64748b", textTransform: "uppercase" }}>No PO</span>
-                    <strong data-testid="snapshot-po-number" style={{ display: "block", fontSize: "0.95rem", color: "#0f172a" }}>{previewData.po_number}</strong>
-                  </div>
-                  <div>
-                    <span style={{ fontSize: "0.75rem", color: "#64748b", textTransform: "uppercase" }}>Customer</span>
-                    <strong data-testid="snapshot-customer" style={{ display: "block", fontSize: "0.95rem", color: "#0f172a" }}>{previewData.customer}</strong>
-                  </div>
-                  <div>
-                    <span style={{ fontSize: "0.75rem", color: "#64748b", textTransform: "uppercase" }}>Outlet</span>
-                    <span data-testid="snapshot-outlet" style={{ display: "block", fontSize: "0.95rem", color: "#334155" }}>{previewData.outlet || "-"}</span>
-                  </div>
-                  <div>
-                    <span style={{ fontSize: "0.75rem", color: "#64748b", textTransform: "uppercase" }}>Sales</span>
-                    <span data-testid="snapshot-sales" style={{ display: "block", fontSize: "0.95rem", color: "#334155" }}>{previewData.sales || "-"}</span>
-                  </div>
+            <form className="sd-form-fill" data-form-tab={invoiceFormTab} onSubmit={handleSaveInvoice}>
+              <div className="sd-form-stage">
+              <div className="fp-summary" data-testid="po-snapshot-card">
+                <div>
+                  <span>Nomor PO</span>
+                  <strong data-testid="snapshot-po-number">{previewData.po_number}</strong>
                 </div>
+                <div>
+                  <span>Customer</span>
+                  <strong data-testid="snapshot-customer">{previewData.customer}</strong>
+                </div>
+                <div>
+                  <span>Outlet / Cabang</span>
+                  <strong data-testid="snapshot-outlet">{previewData.outlet || "-"}</strong>
+                </div>
+                <div>
+                  <span>Sales Representative</span>
+                  <strong data-testid="snapshot-sales">{previewData.sales || "-"}</strong>
+                </div>
+              </div>
+              <div className="sd-form-tabs" role="tablist" aria-label="Bagian faktur">
+                <button type="button" className={invoiceFormTab === "items" ? "is-active" : ""} onClick={() => setInvoiceFormTab("items")}>Barang & Harga</button>
+                <button type="button" className={invoiceFormTab === "terms" ? "is-active" : ""} onClick={() => setInvoiceFormTab("terms")}>Tanggal & Ketentuan</button>
+              </div>
 
-                {/* Financial Controls: Tanggal, Termin, Diskon, PPN */}
-                <div
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
-                    gap: 16,
-                    marginTop: 18,
-                    paddingTop: 16,
-                    borderTop: "1px solid #f1f5f9",
-                  }}
-                >
+              <div className="fp-terms sd-pane-terms">
                   <div>
                     <label style={{ fontSize: "0.85rem", fontWeight: 600, color: "#334155", display: "block", marginBottom: 6 }}>
                       Tanggal Faktur <span style={{ color: "#ef4444" }}>*</span>
@@ -1340,42 +1549,34 @@ export default function FakturPenjualan() {
                       style={{ width: "100%", padding: "8px 12px", border: "1px solid #cbd5e1", borderRadius: 6 }}
                     />
                   </div>
-                </div>
-                </div>
-              </FormSection>
+                  <OtherChargesEditor
+                    rows={otherCharges}
+                    accounts={chargeAccounts}
+                    disabled={formBusy}
+                    showErrors={showChargeErrors}
+                    onChange={setOtherCharges}
+                    idPrefix="create"
+                  />
+              </div>
 
-              {/* Table Line Items with Partial Invoicing Quantity */}
-              <FormSection
-                id="fp-line-items"
-                title="3. Rincian Barang, Kuantitas Faktur & Harga Satuan"
-                description="Mendukung faktur parsial. Masukkan jumlah kuantitas yang ditagihkan (maksimal sisa PO) dan harga satuan per baris."
-                status={(createCalculations?.lines || []).some(l => Number(l.numericQty || 0) > 0) ? "complete" : "incomplete"}
-                className="panel"
-              >
-
-                <div style={{ overflowX: "auto" }}>
-                  <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "left", fontSize: "0.9rem" }}>
+              <div className="fp-items sd-pane-items">
+                <div className="sd-lines">
+                  <table className="fp-lines">
                     <thead>
-                      <tr style={{ background: "#f8fafc", borderBottom: "2px solid #e2e8f0", color: "#475569" }}>
-                        <th style={{ padding: "10px 12px", width: 40 }}>#</th>
-                        <th style={{ padding: "10px 12px", minWidth: 200 }}>Barang / Jasa</th>
-                        <th style={{ padding: "10px 12px", width: 140, textAlign: "right" }}>Sisa PO</th>
-                        <th style={{ padding: "10px 12px", width: 150, textAlign: "right" }}>
-                          Qty Faktur <span style={{ color: "#ef4444" }}>*</span>
-                        </th>
-                        <th style={{ padding: "10px 12px", width: 180, textAlign: "right" }}>
-                          Harga Satuan (Rp) <span style={{ color: "#ef4444" }}>*</span>
-                        </th>
-                        <th style={{ padding: "10px 12px", width: 180, textAlign: "right" }}>Total Line (Rp)</th>
+                      <tr>
+                        <th>Barang</th>
+                        <th>Sisa dapat difakturkan</th>
+                        <th>Qty faktur</th>
+                        <th>Harga satuan</th>
+                        <th>Total baris</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {createCalculations.lines.map((li, index) => (
-                        <tr key={li.line_idx} style={{ borderBottom: "1px solid #f1f5f9" }} data-testid={`create-line-${li.line_idx}`}>
-                          <td style={{ padding: "10px 12px", color: "#64748b", fontWeight: 600 }}>{index + 1}</td>
-                          <td style={{ padding: "10px 12px" }}>
-                            <div style={{ fontWeight: 600, color: "#1e293b" }}>{li.item_name}</div>
-                            {li.color && <div style={{ fontSize: "0.75rem", color: "#64748b" }}>Warna: {li.color}</div>}
+                      {createCalculations.lines.map((li) => (
+                        <tr key={li.line_idx} data-testid={`create-line-${li.line_idx}`}>
+                          <td>
+                            <div className="fp-item-name">{li.item_name}</div>
+                            {li.color && <div className="fp-item-meta">Warna: {li.color}</div>}
                           </td>
                           <td style={{ padding: "10px 12px", textAlign: "right", color: "#64748b" }}>
                             <strong>{Number(li.remaining).toLocaleString("id-ID")}</strong> {li.unit || "pcs"}
@@ -1391,6 +1592,7 @@ export default function FakturPenjualan() {
                                 setLineQuantities((prev) => ({ ...prev, [li.line_idx]: val }));
                               }}
                               data-testid={`qty-input-${li.line_idx}`}
+                              className={li.isQtyOver ? "is-over" : undefined}
                               style={{
                                 width: 120,
                                 padding: "6px 10px",
@@ -1415,20 +1617,28 @@ export default function FakturPenjualan() {
                                 const val = e.target.value;
                                 setLinePrices((prev) => ({ ...prev, [li.line_idx]: val }));
                               }}
-                              placeholder="0"
+                              readOnly={Boolean(li.price_from_order)}
+                              placeholder={li.price_from_order ? "" : "Isi harga"}
                               data-testid={`unit-price-input-${li.line_idx}`}
                               style={{
                                 width: "100%",
                                 padding: "6px 10px",
-                                border: "1px solid #cbd5e1",
+                                border: "1px solid #CBD5E1",
                                 borderRadius: 6,
                                 fontWeight: 600,
                                 textAlign: "right",
+                                background: li.price_from_order ? "#f8fafc" : "#fff",
                               }}
                             />
+                            {li.price_from_order && (
+                              <div style={{ fontSize: "0.75rem", color: "#166534", marginTop: 2 }}>Harga dari pesanan</div>
+                            )}
+                            {li.priceMissing && li.numericQty > 0 && (
+                              <div style={{ fontSize: "0.75rem", color: "#b45309", marginTop: 2 }}>Lengkapi harga jual</div>
+                            )}
                           </td>
-                          <td style={{ padding: "10px 12px", textAlign: "right", fontWeight: 700, color: "#0f172a" }}>
-                            {formatRupiah(li.lineTotal)}
+                          <td style={{ padding: "10px 12px", textAlign: "right", fontWeight: 700, color: "#0f172a" }} data-testid={`line-total-${li.line_idx}`}>
+                            {li.lineTotal === null ? "—" : formatRupiah(li.lineTotal)}
                           </td>
                         </tr>
                       ))}
@@ -1436,63 +1646,28 @@ export default function FakturPenjualan() {
                   </table>
                 </div>
 
-                {/* Live Calculation Summary Breakdown */}
-                <div
-                  style={{
-                    marginTop: 20,
-                    padding: 16,
-                    background: "#f8fafc",
-                    borderRadius: 8,
-                    border: "1px solid #e2e8f0",
-                    display: "flex",
-                    justifyContent: "flex-end",
-                  }}
-                >
-                  <div style={{ width: 340 }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6, fontSize: "0.9rem" }}>
-                      <span style={{ color: "#64748b" }}>Subtotal ({createCalculations.totalQty} pcs):</span>
-                      <span style={{ fontWeight: 600, color: "#1e293b" }}>{formatRupiah(createCalculations.subtotal)}</span>
-                    </div>
-
-                    {createCalculations.discount > 0 && (
-                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6, fontSize: "0.9rem" }}>
-                        <span style={{ color: "#64748b" }}>Diskon:</span>
-                        <span style={{ fontWeight: 600, color: "#dc2626" }}>- {formatRupiah(createCalculations.discount)}</span>
-                      </div>
-                    )}
-
-                    {createCalculations.discount > 0 && (
-                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6, fontSize: "0.9rem" }}>
-                        <span style={{ color: "#64748b" }}>Setelah Diskon (DPP):</span>
-                        <span style={{ fontWeight: 600, color: "#1e293b" }}>{formatRupiah(createCalculations.afterDiscount)}</span>
-                      </div>
-                    )}
-
-                    {createCalculations.ppnPercent > 0 && (
-                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6, fontSize: "0.9rem" }}>
-                        <span style={{ color: "#64748b" }}>PPN ({createCalculations.ppnPercent}%):</span>
-                        <span style={{ fontWeight: 600, color: "#1e293b" }}>+ {formatRupiah(createCalculations.ppn)}</span>
-                      </div>
-                    )}
-
-                    <div
-                      style={{
-                        display: "flex",
-                        justifyContent: "space-between",
-                        paddingTop: 8,
-                        marginTop: 8,
-                        borderTop: "2px solid #cbd5e1",
-                        fontSize: "1.1rem",
-                        fontWeight: 800,
-                        color: "#0f172a",
-                      }}
-                    >
-                      <span>Total Faktur:</span>
-                      <span style={{ color: "#9333ea" }}>{formatRupiah(createCalculations.grandTotal)}</span>
-                    </div>
+                <p className="fp-price-note">Harga mengikuti pesanan penjualan.</p>
+                <div className="fp-breakdown" data-testid="invoice-breakdown">
+                  <div>
+                    <span>Subtotal</span>
+                    <strong>{invoiceCompleteness.totalsReady ? formatRupiah(createCalculations.subtotal) : "Belum lengkap"}</strong>
+                  </div>
+                  <div>
+                    <span>Diskon</span>
+                    <strong>{formatRupiah(createCalculations.discount)}</strong>
+                  </div>
+                  <div>
+                    <span>PPN ({createCalculations.ppnPercent}%)</span>
+                    <strong>{invoiceCompleteness.totalsReady ? formatRupiah(createCalculations.ppn) : "Belum lengkap"}</strong>
+                  </div>
+                  <div>
+                    <span>Biaya lainnya</span>
+                    <strong data-testid="invoice-other-charges-total">
+                      {createCalculations.chargesIncomplete ? "Belum lengkap" : formatRupiah(createCalculations.chargesTotal)}
+                    </strong>
                   </div>
                 </div>
-              </FormSection>
+              </div>
 
               {createCalculations.totalRemaining <= 0 && (
                 <div
@@ -1535,7 +1710,13 @@ export default function FakturPenjualan() {
                 </div>
               )}
 
-              <div style={{ display: "flex", justifyContent: "flex-end", gap: 12, marginTop: 20 }}>
+              </div>
+              <div className="invoice-actions" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, paddingRight: 96 }}>
+                <div className="fp-total">
+                  <span>Total faktur</span>
+                  <strong data-testid="invoice-grand-total">{invoiceCompleteness.totalsReady && createCalculations.grandTotal !== null ? formatRupiah(createCalculations.grandTotal) : "Belum lengkap"}</strong>
+                </div>
+                <div className="fp-action-buttons">
                 <button
                   type="button"
                   className="ghost"
@@ -1544,7 +1725,7 @@ export default function FakturPenjualan() {
                     setViewMode("list");
                   }}
                   disabled={formBusy}
-                  style={{ padding: "10px 20px", borderRadius: 8, border: "1px solid #cbd5e1", background: "#fff", cursor: "pointer", fontWeight: 600 }}
+                  style={{ padding: "10px 20px", borderRadius: 8, border: "1px solid #CBD5E1", background: "#fff", cursor: "pointer", fontWeight: 600 }}
                 >
                   Batal
                 </button>
@@ -1556,15 +1737,16 @@ export default function FakturPenjualan() {
                   style={{
                     padding: "10px 24px",
                     borderRadius: 8,
-                    background: formBusy || createCalculations.hasErrors || createCalculations.totalRemaining <= 0 || createCalculations.totalQty <= 0 ? "#94a3b8" : "#9333ea",
+                    background: formBusy || createCalculations.hasErrors || createCalculations.totalRemaining <= 0 || createCalculations.totalQty <= 0 ? "#94a3b8" : "#166534",
                     color: "#fff",
                     border: "none",
                     cursor: formBusy || createCalculations.hasErrors || createCalculations.totalRemaining <= 0 || createCalculations.totalQty <= 0 ? "not-allowed" : "pointer",
                     fontWeight: 600,
                   }}
                 >
-                  {formBusy ? "Menyimpan..." : "Simpan Faktur Penjualan"}
+                  {formBusy ? "Menyimpan..." : "Simpan Faktur"}
                 </button>
+                </div>
               </div>
             </form>
           ) : (
@@ -1577,224 +1759,141 @@ export default function FakturPenjualan() {
 
       {/* VIEW: DETAIL / EDIT */}
       {viewMode === "detail" && (
-        <div>
+        <div className="sd-form fp-detail">
           {detailLoading ? (
-            <div style={{ padding: 40, textAlign: "center", color: "#64748b" }}>Memuat detail Faktur Penjualan...</div>
+            <div className="sd-form-stage" style={{ padding: 40, textAlign: "center", color: "#64748b" }}>Memuat detail Faktur Penjualan...</div>
           ) : detailData ? (
-            <form onSubmit={handleUpdateInvoice}>
-              {/* Payment Summary Bar */}
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
-                  gap: 14,
-                  marginBottom: 20,
-                }}
-              >
-                <div style={{ backgroundColor: "#fff", border: "1px solid #e2e8f0", borderRadius: 8, padding: 14 }}>
-                  <span style={{ fontSize: 12, color: "#64748b" }}>Total Tagihan Faktur</span>
-                  <div style={{ fontSize: 18, fontWeight: 800, color: "#0f172a", marginTop: 4 }}>
-                    {formatRupiah(detailData.grand_total)}
+            <form className="sd-form-fill" data-form-tab={invoiceFormTab} onSubmit={handleUpdateInvoice}>
+              <div className="sd-form-stage">
+              <div className="fp-summary" data-testid="detail-summary">
+                <div>
+                  <span>No. Faktur</span>
+                  <strong data-testid="detail-invoice-number">{detailData.invoice_number || "-"}</strong>
+                </div>
+                <div>
+                  <span>Status Faktur</span>
+                  <div className="fp-detail-badges">
+                    {renderFinancialBadge(detailStatus)}
+                    {(detailStatus !== "draft" || isAccountingPosted || isAccountingReversed) &&
+                      renderAccountingBadge(accountingStatus)}
                   </div>
                 </div>
-
-                <div style={{ backgroundColor: "#fff", border: "1px solid #e2e8f0", borderRadius: 8, padding: 14 }}>
-                  <span style={{ fontSize: 12, color: "#64748b" }}>Sudah Diterima (Terbayar)</span>
-                  <div style={{ fontSize: 18, fontWeight: 800, color: "#059669", marginTop: 4 }}>
-                    {formatRupiah(detailData.paid_total)}
-                  </div>
+                <div>
+                  <span>No PO</span>
+                  <strong>{detailData.po_number}</strong>
                 </div>
-
-                <div style={{ backgroundColor: "#fff", border: "1px solid #e2e8f0", borderRadius: 8, padding: 14 }}>
-                  <span style={{ fontSize: 12, color: "#64748b" }}>Sisa Tagihan</span>
-                  <div style={{ fontSize: 18, fontWeight: 800, color: detailData.outstanding_amount > 0 ? "#dc2626" : "#059669", marginTop: 4 }}>
-                    {formatRupiah(detailData.outstanding_amount)}
-                  </div>
+                <div>
+                  <span>Customer</span>
+                  <strong>{detailData.customer}</strong>
                 </div>
-
-                <div style={{ backgroundColor: "#fff", border: "1px solid #e2e8f0", borderRadius: 8, padding: 14, display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
-                  <span style={{ fontSize: 12, color: "#64748b" }}>Status Pembayaran</span>
-                  <div style={{ marginTop: 4 }}>
-                    {renderPaymentBadge(detailData.payment_status)}
-                  </div>
+                <div>
+                  <span>Sales</span>
+                  <strong data-testid="detail-sales">{detailData.sales || "-"}</strong>
+                </div>
+                <div>
+                  <span>Jatuh Tempo</span>
+                  <strong>{formatDisplayDate(detailData.due_date)}</strong>
+                </div>
+                <div>
+                  <span>Total Tagihan</span>
+                  <strong>{formatRupiah(detailData.grand_total)}</strong>
+                </div>
+                <div>
+                  <span>Sudah Diterima</span>
+                  <strong>{formatRupiah(detailData.paid_total)}</strong>
+                </div>
+                <div>
+                  <span>Sisa Tagihan</span>
+                  <strong className={Number(detailData.outstanding_amount) > 0 ? "is-due" : "is-paid"}>{formatRupiah(detailData.outstanding_amount)}</strong>
+                </div>
+                <div>
+                  <span>Status Pembayaran</span>
+                  <div className="fp-detail-badges">{renderPaymentBadge(detailData.payment_status)}</div>
                 </div>
               </div>
+              {showAccountingUnconfigured && (
+                <p data-testid="invoice-accounting-unconfigured" className="fp-detail-note">
+                  Accounting belum dikonfigurasi.{" "}
+                  <Link to="/settings?tab=sales-accounting">Buka Pengaturan Akuntansi Penjualan</Link>
+                </p>
+              )}
+              <div className="sd-form-tabs" role="tablist" aria-label="Bagian detail faktur">
+                <button type="button" className={invoiceFormTab === "items" ? "is-active" : ""} onClick={() => setInvoiceFormTab("items")}>Barang & Harga</button>
+                <button type="button" className={invoiceFormTab === "terms" ? "is-active" : ""} onClick={() => setInvoiceFormTab("terms")}>Tanggal & Ketentuan</button>
+              </div>
 
-              {/* Snapshot Info Card */}
-              <section
-                className="panel"
-                style={{
-                  background: "#fff",
-                  border: "1px solid #e2e8f0",
-                  borderRadius: 10,
-                  padding: 20,
-                  marginBottom: 20,
-                }}
-              >
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid #f1f5f9", paddingBottom: 12, marginBottom: 16 }}>
-                  <div>
-                    <span style={{ fontSize: "0.75rem", color: "#64748b", textTransform: "uppercase" }}>No. Faktur</span>
-                    <h2 style={{ margin: "2px 0 0", fontSize: "1.25rem", fontWeight: 700, color: "#9333ea" }} data-testid="detail-invoice-number">
-                      {detailData.invoice_number || "-"}
-                    </h2>
-                    <div style={{ marginTop: 8 }}>
-                      {renderFinancialBadge(detailStatus)}
-                      {(detailStatus !== "draft" || isAccountingPosted || isAccountingReversed) &&
-                        renderAccountingBadge(accountingStatus)}
-                    </div>
-                    {showAccountingUnconfigured && (
-                      <p data-testid="invoice-accounting-unconfigured" style={{ margin: "8px 0 0", fontSize: "0.85rem", color: "#b45309" }}>
-                        Accounting belum dikonfigurasi.{" "}
-                        <Link to="/settings?tab=sales-accounting" style={{ color: "#7c3aed", fontWeight: 600 }}>
-                          Buka Pengaturan Akuntansi Penjualan
-                        </Link>
-                      </p>
-                    )}
-                  </div>
-                  {detailData.outstanding_amount > 0 && canCreate && (
-                    <button
-                      type="button"
-                      onClick={() => navigate(`/penjualan/penerimaan-penjualan?invoice_id=${detailData.id}`)}
-                      style={{
-                        display: "inline-flex",
-                        alignItems: "center",
-                        gap: 6,
-                        padding: "8px 14px",
-                        backgroundColor: "#059669",
-                        color: "#fff",
-                        border: "none",
-                        borderRadius: 6,
-                        fontWeight: 600,
-                        fontSize: 13,
-                        cursor: "pointer",
-                      }}
-                    >
-                      <CreditCard size={15} /> + Buat Penerimaan
-                    </button>
-                  )}
+              <div className="fp-terms sd-pane-terms">
+                <div>
+                  <label>Tanggal Faktur</label>
+                  <input
+                    type="date"
+                    value={detailDate}
+                    onChange={(e) => setDetailDate(e.target.value)}
+                    disabled={!canEditFinancial}
+                  />
                 </div>
-
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 16 }}>
-                  <div>
-                    <span style={{ fontSize: "0.75rem", color: "#64748b", textTransform: "uppercase" }}>No PO</span>
-                    <strong style={{ display: "block" }}>{detailData.po_number}</strong>
-                  </div>
-                  <div>
-                    <span style={{ fontSize: "0.75rem", color: "#64748b", textTransform: "uppercase" }}>Customer</span>
-                    <strong style={{ display: "block" }}>{detailData.customer}</strong>
-                  </div>
-                  <div>
-                    <span style={{ fontSize: "0.75rem", color: "#64748b", textTransform: "uppercase" }}>Jatuh Tempo</span>
-                    <span style={{ display: "block", color: "#334155" }}>{formatDisplayDate(detailData.due_date)}</span>
-                  </div>
+                <div>
+                  <label>Diskon (Rp)</label>
+                  <input
+                    type="number"
+                    min="0"
+                    value={detailDiscount}
+                    onChange={(e) => setDetailDiscount(e.target.value)}
+                    disabled={!canEditFinancial}
+                  />
                 </div>
-
-                {/* Editable fields */}
-                <div
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
-                    gap: 16,
-                    marginTop: 16,
-                    paddingTop: 16,
-                    borderTop: "1px solid #f1f5f9",
-                  }}
-                >
-                  <div>
-                    <label style={{ fontSize: "0.85rem", fontWeight: 600, color: "#334155", display: "block", marginBottom: 6 }}>
-                      Tanggal Faktur
-                    </label>
-                    <input
-                      type="date"
-                      value={detailDate}
-                      onChange={(e) => setDetailDate(e.target.value)}
-                      disabled={!canEditFinancial}
-                      style={{ width: "100%", padding: "8px 12px", border: "1px solid #cbd5e1", borderRadius: 6 }}
-                    />
-                  </div>
-
-                  <div>
-                    <label style={{ fontSize: "0.85rem", fontWeight: 600, color: "#334155", display: "block", marginBottom: 6 }}>
-                      Diskon (Rp)
-                    </label>
-                    <input
-                      type="number"
-                      min="0"
-                      value={detailDiscount}
-                      onChange={(e) => setDetailDiscount(e.target.value)}
-                      disabled={!canEditFinancial}
-                      style={{ width: "100%", padding: "8px 12px", border: "1px solid #cbd5e1", borderRadius: 6 }}
-                    />
-                  </div>
-
-                  <div>
-                    <label style={{ fontSize: "0.85rem", fontWeight: 600, color: "#334155", display: "block", marginBottom: 6 }}>
-                      PPN (%)
-                    </label>
-                    <input
-                      type="number"
-                      min="0"
-                      max="100"
-                      step="any"
-                      value={detailPpn}
-                      onChange={(e) => setDetailPpn(e.target.value)}
-                      disabled={!canEditFinancial}
-                      style={{ width: "100%", padding: "8px 12px", border: "1px solid #cbd5e1", borderRadius: 6 }}
-                    />
-                  </div>
-
-                  <div style={{ gridColumn: "1 / -1" }}>
-                    <label style={{ fontSize: "0.85rem", fontWeight: 600, color: "#334155", display: "block", marginBottom: 6 }}>
-                      Catatan Faktur
-                    </label>
-                    <input
-                      type="text"
-                      value={detailNotes}
-                      onChange={(e) => setDetailNotes(e.target.value)}
-                      disabled={!canEditFinancial}
-                      style={{ width: "100%", padding: "8px 12px", border: "1px solid #cbd5e1", borderRadius: 6 }}
-                    />
-                  </div>
+                <div>
+                  <label>PPN (%)</label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    step="any"
+                    value={detailPpn}
+                    onChange={(e) => setDetailPpn(e.target.value)}
+                    disabled={!canEditFinancial}
+                  />
                 </div>
-              </section>
+                <div className="fp-terms-wide">
+                  <label>Catatan Faktur</label>
+                  <input
+                    type="text"
+                    value={detailNotes}
+                    onChange={(e) => setDetailNotes(e.target.value)}
+                    disabled={!canEditFinancial}
+                  />
+                </div>
+                <OtherChargesEditor
+                  rows={detailCharges}
+                  accounts={chargeAccounts}
+                  disabled={!canEditFinancial || detailSaving}
+                  showErrors={showDetailChargeErrors}
+                  onChange={setDetailCharges}
+                  idPrefix="detail"
+                />
+              </div>
 
-              {/* Items Table */}
-              <section
-                className="panel"
-                style={{
-                  background: "#fff",
-                  border: "1px solid #e2e8f0",
-                  borderRadius: 10,
-                  padding: 20,
-                  marginBottom: 20,
-                }}
-              >
-                <header style={{ borderBottom: "1px solid #f1f5f9", paddingBottom: 12, marginBottom: 16 }}>
-                  <h3 style={{ margin: 0, fontSize: "1.1rem", color: "#1e293b" }}>Rincian Barang &amp; Harga Satuan</h3>
-                </header>
-
-                <div style={{ overflowX: "auto" }}>
-                  <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "left", fontSize: "0.9rem" }}>
+              <div className="fp-items sd-pane-items">
+                <div className="sd-lines">
+                  <table className="fp-detail-lines">
                     <thead>
-                      <tr style={{ background: "#f8fafc", borderBottom: "2px solid #e2e8f0", color: "#475569" }}>
-                        <th style={{ padding: "10px 12px", width: 40 }}>#</th>
-                        <th style={{ padding: "10px 12px", minWidth: 200 }}>Barang / Jasa</th>
-                        <th style={{ padding: "10px 12px", width: 120, textAlign: "right" }}>Qty</th>
-                        <th style={{ padding: "10px 12px", width: 80, textAlign: "center" }}>Unit</th>
-                        <th style={{ padding: "10px 12px", width: 180, textAlign: "right" }}>Harga Satuan (Rp)</th>
-                        <th style={{ padding: "10px 12px", width: 180, textAlign: "right" }}>Total Line (Rp)</th>
+                      <tr>
+                        <th>#</th>
+                        <th>Barang / Jasa</th>
+                        <th className="is-num">Qty</th>
+                        <th className="is-center">Unit</th>
+                        <th className="is-num">Harga Satuan (Rp)</th>
+                        <th className="is-num">Total Line (Rp)</th>
                       </tr>
                     </thead>
                     <tbody>
                       {detailCalculations.lines.map((li, index) => (
-                        <tr key={li.line_idx} style={{ borderBottom: "1px solid #f1f5f9" }}>
-                          <td style={{ padding: "10px 12px", color: "#64748b", fontWeight: 600 }}>{index + 1}</td>
-                          <td style={{ padding: "10px 12px", fontWeight: 600, color: "#1e293b" }}>{li.item_name}</td>
-                          <td style={{ padding: "10px 12px", textAlign: "right", fontWeight: 600 }}>
-                            {Number(li.quantity || 0).toLocaleString("id-ID")}
-                          </td>
-                          <td style={{ padding: "10px 12px", textAlign: "center", color: "#64748b" }}>{li.unit || "pcs"}</td>
-                          <td style={{ padding: "8px 12px", textAlign: "right" }}>
+                        <tr key={li.line_idx}>
+                          <td>{index + 1}</td>
+                          <td className="fp-item-name">{li.item_name}</td>
+                          <td className="is-num">{Number(li.quantity || 0).toLocaleString("id-ID")}</td>
+                          <td className="is-center">{li.unit || "pcs"}</td>
+                          <td className="is-num">
                             <input
                               type="number"
                               min="0"
@@ -1805,96 +1904,73 @@ export default function FakturPenjualan() {
                                 setDetailPrices((prev) => ({ ...prev, [li.line_idx]: val }));
                               }}
                               disabled={!canEditFinancial}
-                              style={{ width: "100%", padding: "6px 10px", border: "1px solid #cbd5e1", borderRadius: 6, textAlign: "right", fontWeight: 600 }}
                             />
                           </td>
-                          <td style={{ padding: "10px 12px", textAlign: "right", fontWeight: 700, color: "#0f172a" }}>
-                            {formatRupiah(li.lineTotal)}
-                          </td>
+                          <td className="is-num">{formatRupiah(li.lineTotal)}</td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
                 </div>
-
-                <div style={{ marginTop: 16, display: "flex", justifyContent: "flex-end" }}>
-                  <div style={{ width: 340 }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
-                      <span style={{ color: "#64748b" }}>Subtotal:</span>
-                      <span style={{ fontWeight: 600 }}>{formatRupiah(detailCalculations.subtotal)}</span>
+                <div className="fp-breakdown">
+                  <div>
+                    <span>Subtotal</span>
+                    <strong>{formatRupiah(detailCalculations.subtotal)}</strong>
+                  </div>
+                  {detailCalculations.discount > 0 && (
+                    <div>
+                      <span>Diskon</span>
+                      <strong>- {formatRupiah(detailCalculations.discount)}</strong>
                     </div>
-                    {detailCalculations.discount > 0 && (
-                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
-                        <span style={{ color: "#64748b" }}>Diskon:</span>
-                        <span style={{ fontWeight: 600, color: "#dc2626" }}>- {formatRupiah(detailCalculations.discount)}</span>
-                      </div>
-                    )}
-                    {detailCalculations.ppnPercent > 0 && (
-                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
-                        <span style={{ color: "#64748b" }}>PPN ({detailCalculations.ppnPercent}%):</span>
-                        <span style={{ fontWeight: 600 }}>+ {formatRupiah(detailCalculations.ppn)}</span>
-                      </div>
-                    )}
-                    <div style={{ display: "flex", justifyContent: "space-between", paddingTop: 8, borderTop: "2px solid #cbd5e1", fontWeight: 800 }}>
-                      <span>Total Faktur:</span>
-                      <span style={{ color: "#9333ea", fontSize: "1.15rem" }}>{formatRupiah(detailCalculations.grandTotal)}</span>
+                  )}
+                  {detailCalculations.ppnPercent > 0 && (
+                    <div>
+                      <span>PPN ({detailCalculations.ppnPercent}%)</span>
+                      <strong>+ {formatRupiah(detailCalculations.ppn)}</strong>
                     </div>
+                  )}
+                  <div>
+                    <span>Biaya lainnya</span>
+                    <strong data-testid="detail-other-charges-total">
+                      {detailCalculations.chargesIncomplete ? "Belum lengkap" : formatRupiah(detailCalculations.chargesTotal || 0)}
+                    </strong>
+                  </div>
+                  <div>
+                    <span>Total Faktur</span>
+                    <strong>{detailCalculations.grandTotal === null ? "Belum lengkap" : formatRupiah(detailCalculations.grandTotal)}</strong>
                   </div>
                 </div>
-              </section>
+              </div>
 
-              {/* Linked Receipts History */}
-              <section
-                className="panel"
-                style={{
-                  background: "#fff",
-                  border: "1px solid #e2e8f0",
-                  borderRadius: 10,
-                  padding: 20,
-                  marginBottom: 20,
-                }}
-              >
-                <header style={{ borderBottom: "1px solid #f1f5f9", paddingBottom: 12, marginBottom: 16 }}>
-                  <h3 style={{ margin: 0, fontSize: "1.1rem", color: "#1e293b" }}>Riwayat Penerimaan Pembayaran</h3>
-                </header>
-
+              <section className="fp-detail-receipts">
+                <h3>Riwayat Penerimaan Pembayaran</h3>
                 {(detailData.receipts || []).length === 0 ? (
-                  <div style={{ padding: 24, textAlign: "center", color: "#64748b" }}>
-                    Belum ada pembayaran yang diterima untuk faktur ini.
-                  </div>
+                  <div className="fp-detail-empty">Belum ada pembayaran yang diterima untuk faktur ini.</div>
                 ) : (
-                  <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "left", fontSize: "0.85rem" }}>
-                    <thead>
-                      <tr style={{ background: "#f8fafc", borderBottom: "1px solid #e2e8f0", color: "#475569" }}>
-                        <th style={{ padding: "8px 12px" }}>No. Penerimaan</th>
-                        <th style={{ padding: "8px 12px" }}>Tanggal</th>
-                        <th style={{ padding: "8px 12px", textAlign: "right" }}>Jumlah Penerimaan</th>
-                        <th style={{ padding: "8px 12px", textAlign: "center" }}>Status</th>
-                        <th style={{ padding: "8px 12px" }}>Catatan</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {detailData.receipts.map((r, idx) => (
-                        <tr key={r.id || idx} style={{ borderBottom: "1px solid #f1f5f9" }}>
-                          <td style={{ padding: "8px 12px" }}>
-                            <span style={{ fontFamily: "monospace", color: "#059669", fontWeight: 700 }}>
-                              {r.receipt_number || r.id}
-                            </span>
-                          </td>
-                          <td style={{ padding: "8px 12px", fontWeight: 500 }}>{formatDisplayDate(r.receipt_date)}</td>
-                          <td style={{ padding: "8px 12px", textAlign: "right", fontWeight: 700, color: "#059669" }}>
-                            {formatRupiah(r.amount)}
-                          </td>
-                          <td style={{ padding: "8px 12px", textAlign: "center" }}>
-                            <span style={{ fontSize: 11, fontWeight: 700, color: r.payment_state === "LUNAS" ? "#065f46" : "#3730a3" }}>
-                              {r.payment_state}
-                            </span>
-                          </td>
-                          <td style={{ padding: "8px 12px", color: "#64748b" }}>{r.notes || "-"}</td>
+                  <div className="sd-lines">
+                    <table className="fp-detail-lines">
+                      <thead>
+                        <tr>
+                          <th>No. Penerimaan</th>
+                          <th>Tanggal</th>
+                          <th className="is-num">Jumlah Penerimaan</th>
+                          <th className="is-center">Status</th>
+                          <th>Catatan</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                      </thead>
+                      <tbody>
+                        {detailData.receipts.map((r, idx) => (
+                          <tr key={r.id || idx}>
+                            <td className="fp-receipt-no">{r.receipt_number || r.id}</td>
+                            <td>{formatDisplayDate(r.receipt_date)}</td>
+                            <td className="is-num">{formatRupiah(r.amount)}</td>
+                            <td className="is-center">{r.payment_state}</td>
+                            <td>{r.notes || "-"}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 )}
               </section>
 
@@ -1904,7 +1980,8 @@ export default function FakturPenjualan() {
                 </div>
               )}
 
-              <div style={{ display: "flex", justifyContent: "flex-end", gap: 12, marginTop: 20 }}>
+              </div>
+              <div className="invoice-actions" style={{ display: "flex", justifyContent: "flex-end", gap: 12, paddingRight: 96 }}>
                 <button
                   type="button"
                   className="ghost"
@@ -2079,7 +2156,7 @@ export default function FakturPenjualan() {
           <div style={{ background: "#fff", borderRadius: 12, padding: 24, width: "100%", maxWidth: 480, boxShadow: "0 20px 40px rgba(0,0,0,0.15)" }}>
             <h3 style={{ margin: "0 0 8px", fontSize: "1.1rem" }}>Finalisasi Invoice?</h3>
             <p style={{ margin: "0 0 16px", color: "#334155", fontSize: "0.9rem" }}>
-              Finalisasi akan mengunci tanggal, item, harga, diskon, PPN, dan total invoice untuk kebutuhan accounting.
+              Finalisasi akan mengunci tanggal, item, harga, diskon, PPN, biaya lainnya, dan total invoice untuk kebutuhan accounting.
             </p>
             <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
               <button type="button" onClick={() => setFinalizeConfirm(false)} disabled={lifecycleBusy} style={{ padding: "8px 14px", borderRadius: 8, border: "1px solid #cbd5e1", background: "#fff", cursor: "pointer" }}>

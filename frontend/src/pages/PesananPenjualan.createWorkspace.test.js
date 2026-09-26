@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import fs from "fs";
 import path from "path";
 import api from "../lib/api";
-import PesananPenjualan, { validateSalesOrderCreate } from "./PesananPenjualan";
+import PesananPenjualan, { buildSalesOrderCreatePayload, validateSalesOrderCreate } from "./PesananPenjualan";
 
 const mockNavigate = jest.fn();
 const mockSetSearchParams = jest.fn();
@@ -31,6 +31,8 @@ jest.mock("../lib/api", () => ({
     createSalesOrder: jest.fn(),
     salesOrderRepeatSource: jest.fn(),
     masterItemsPicker: jest.fn(),
+    salesOrderItemImages: jest.fn(),
+    salesOrderPriceQuote: jest.fn().mockResolvedValue({ status: "missing", unit_price: null }),
   },
 }));
 
@@ -91,6 +93,10 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
     api.salesOrderRepeatSource.mockReset();
     api.masterItemsPicker.mockReset();
     api.masterItemsPicker.mockResolvedValue({ items: [] });
+    api.salesOrderItemImages.mockReset();
+    api.salesOrderItemImages.mockResolvedValue({ images: {} });
+    api.salesOrderPriceQuote.mockReset();
+    api.salesOrderPriceQuote.mockResolvedValue({ status: "missing", unit_price: null });
     mockNavigate.mockReset();
   });
 
@@ -128,73 +134,101 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
     expect(container.querySelector('[data-testid="btn-detail-tambahan"]')).toBeNull();
   });
 
-  test("required fields stay on the main page and optional fields open in the drawer", async () => {
+  test("required fields stay on the main page and extra fields stay in the summary", async () => {
     await openCreate();
     const main = mainRegion();
-    ["input-po-number", "btn-generate-po", "input-order-date", "input-customer", "btn-repeat-order", "input-customer-phone", "input-address"]
+    ["input-po-number", "btn-generate-po", "input-order-date", "input-customer", "btn-repeat-order", "input-customer-phone", "input-address", "input-outlet", "input-estimated-delivery"]
       .forEach((id) => {
         expect(main.querySelector(`[data-testid="${id}"]`)).toBeTruthy();
       });
-    expect(container.querySelector('[data-testid="input-outlet"]')).toBeNull();
-    const opener = container.querySelector('[data-testid="btn-detail-tambahan"]');
-    opener.focus();
-    await act(async () => {
-      opener.click();
-    });
-    expect(opener.getAttribute("aria-expanded")).toBe("true");
-    expect(opener.getAttribute("aria-controls")).toBe("so-extra-drawer");
-    const drawer = container.querySelector('[data-testid="so-extra-drawer"]');
-    expect(drawer).toBeTruthy();
-    ["input-outlet", "input-sales", "input-created-by-user", "input-recipient", "input-delivery-zone", "input-estimated-delivery", "input-tanggal-pengiriman", "input-payment-terms", "input-expedition", "input-notes"]
+    const extra = container.querySelector('[data-testid="so-extra-fields"]');
+    expect(extra).toBeTruthy();
+    ["input-sales", "input-created-by-user", "input-recipient", "input-delivery-zone", "input-tanggal-pengiriman", "input-payment-terms", "input-expedition"]
       .forEach((id) => {
-        expect(drawer.querySelector(`[data-testid="${id}"]`)).toBeTruthy();
+        expect(extra.querySelector(`[data-testid="${id}"]`)).toBeTruthy();
         expect(main.querySelector(`[data-testid="${id}"]`)).toBeNull();
       });
-    expect(drawer.querySelector('[data-testid="input-customer-phone"]')).toBeNull();
-    expect(document.activeElement).toBe(container.querySelector('[data-testid="so-drawer-close"]'));
+    expect(container.querySelector('[data-testid="so-order-summary"]').querySelector('[data-testid="input-notes"]')).toBeTruthy();
+    expect(extra.querySelector('[data-testid="input-customer-phone"]')).toBeNull();
+    expect(container.querySelector('[data-testid="so-extra-drawer"]')).toBeNull();
+    expect(container.querySelector('[data-testid="btn-detail-tambahan"]')).toBeNull();
   });
 
-  test("drawer keeps values, closes on Selesai, Escape, and backdrop, then restores focus", async () => {
+  test("outlet and notes stay on the form without a drawer", async () => {
     await openCreate();
-    const opener = container.querySelector('[data-testid="btn-detail-tambahan"]');
-    await act(async () => {
-      opener.click();
-    });
     const outlet = container.querySelector('[data-testid="input-outlet"]');
     await act(async () => {
       setNativeValue(outlet, "Cabang Tebet");
-    });
-    await act(async () => {
-      container.querySelector('[data-testid="so-drawer-done"]').click();
-    });
-    expect(container.querySelector('[data-testid="so-extra-drawer"]')).toBeNull();
-    expect(document.activeElement).toBe(opener);
-
-    await act(async () => {
-      opener.click();
+      setNativeValue(container.querySelector('[data-testid="input-notes"]'), "Catatan tetap");
     });
     expect(container.querySelector('[data-testid="input-outlet"]').value).toBe("Cabang Tebet");
-    await act(async () => {
-      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-    });
-    expect(container.querySelector('[data-testid="so-extra-drawer"]')).toBeNull();
-    expect(document.activeElement).toBe(opener);
-
-    await act(async () => {
-      opener.click();
-    });
-    await act(async () => {
-      container.querySelector('[data-testid="so-drawer-backdrop"]').click();
-    });
-    expect(container.querySelector('[data-testid="so-extra-drawer"]')).toBeNull();
+    expect(container.querySelector('[data-testid="input-notes"]').value).toBe("Catatan tetap");
     expect(container.querySelector('[data-testid="input-po-number"]').value).toBe("PO-OPEN");
-    await act(async () => {
-      opener.click();
-    });
-    expect(container.querySelector('[data-testid="input-outlet"]').value).toBe("Cabang Tebet");
+    expect(container.querySelector('[data-testid="so-extra-drawer"]')).toBeNull();
   });
 
-  test("a drawer field error opens the drawer and focuses that field", async () => {
+  test("changing customer clears the previous customer's outlet", async () => {
+    api.salesOrderOptions.mockResolvedValue({
+      suggested_po_number: "PO-OPEN",
+      master_customers: [
+        MASTER,
+        { id: "c2", name: "PT Baru", phone: "08222", address: "Jl. Baru", is_active: true },
+      ],
+      outlets_by_customer: {
+        "PT Maju": [{ id: "o1", outlet: "Pusat", address: "Jl. Master" }],
+        "PT Baru": [
+          { id: "o2", outlet: "Cabang", address: "Jl. Cabang" },
+          { id: "o3", outlet: "Gudang", address: "Jl. Gudang" },
+        ],
+      },
+      sales_options: [],
+    });
+    await openCreate();
+    await act(async () => {
+      setNativeValue(container.querySelector('[data-testid="input-customer"]'), "Maju");
+    });
+    await tick(180);
+    await act(async () => {
+      container.querySelector('[data-testid="input-customer-option-c1"]').click();
+    });
+    expect(container.querySelector('[data-testid="input-outlet"]').value).toBe("Pusat");
+    await act(async () => {
+      setNativeValue(container.querySelector('[data-testid="input-customer"]'), "Baru");
+    });
+    await tick(180);
+    await act(async () => {
+      container.querySelector('[data-testid="input-customer-option-c2"]').click();
+    });
+    expect(container.querySelector('[data-testid="input-outlet"]').value).toBe("");
+    expect(container.querySelector('[data-testid="so-order-summary"]').textContent).not.toContain("Pusat");
+  });
+
+  test("summary keeps different units separate and drops the ui-only outlet id", async () => {
+    await openCreate();
+    await act(async () => {
+      container.querySelector('[data-testid="btn-add-line-item"]').click();
+    });
+    await act(async () => {
+      setNativeValue(container.querySelector('[data-testid="line-qty-0"]'), "3");
+      setNativeValue(container.querySelector('[data-testid="line-unit-0"]'), "pcs");
+      setNativeValue(container.querySelector('[data-testid="line-qty-1"]'), "2");
+      setNativeValue(container.querySelector('[data-testid="line-unit-1"]'), "dus");
+    });
+    const qty = container.querySelector('[data-testid="so-total-qty"]').textContent;
+    expect(qty).toContain("3 pcs");
+    expect(qty).toContain("2 dus");
+    expect(qty).not.toContain("5 pcs");
+    const payload = buildSalesOrderCreatePayload({
+      customer: "PT Maju",
+      outlet: "Pusat",
+      outlet_id: "o1",
+      line_items: [],
+    });
+    expect(payload.outlet).toBe("Pusat");
+    expect(payload.outlet_id).toBeUndefined();
+  });
+
+  test("a zone error focuses the field in detail tambahan", async () => {
     await openCreate();
     await act(async () => {
       setNativeValue(container.querySelector('[data-testid="input-customer"]'), "Pelanggan Baru");
@@ -214,12 +248,12 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
       container.querySelector('[data-testid="btn-submit-sales-order"]').click();
     });
     await tick(0);
-    const drawer = container.querySelector('[data-testid="so-extra-drawer"]');
-    expect(drawer).toBeTruthy();
-    expect(container.querySelector('[data-testid="so-drawer-error-dot"]')).toBeTruthy();
+    const extra = container.querySelector('[data-testid="so-extra-fields"]');
+    expect(extra).toBeTruthy();
     expect(container.querySelector('[data-testid="form-error-banner"]').textContent).toContain("Zona Kirim tidak dikenali");
     expect(document.activeElement).toBe(container.querySelector('[data-testid="input-delivery-zone"]'));
-    expect(drawer.querySelector('[data-testid="input-delivery-zone"]').getAttribute("aria-invalid")).toBe("true");
+    expect(extra.querySelector('[data-testid="input-delivery-zone"]').getAttribute("aria-invalid")).toBe("true");
+    expect(container.querySelector('[data-testid="so-extra-drawer"]')).toBeNull();
   });
 
   test("phone validation stays on the main page and does not open the drawer", async () => {
@@ -299,9 +333,6 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
     expect(container.querySelectorAll('[data-testid^="line-item-row-"]')).toHaveLength(2);
     expect(container.querySelector('[data-testid="so-total-items"]').textContent).toContain("2");
     expect(container.querySelector('[data-testid="so-total-qty"]').textContent).toContain("10");
-    await act(async () => {
-      container.querySelector('[data-testid="btn-detail-tambahan"]').click();
-    });
     expect(container.querySelector('[data-testid="input-outlet"]').value).toBe("Outlet Lama");
     expect(container.querySelector('[data-testid="input-notes"]').value).toBe("Catatan lama");
   });
@@ -329,6 +360,11 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
       option.click();
     });
     expect(container.querySelector('[data-testid="line-code-0"]').value).toBe("BX-01");
+    await tick(0);
+    expect(api.salesOrderItemImages).toHaveBeenCalledWith(
+      { accurate_item_ids: "a1" },
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
 
     await act(async () => {
       container.querySelector('[data-testid="line-mode-manual-0"]').click();
@@ -401,7 +437,7 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
     });
     const bar = container.querySelector('[data-testid="so-create-actionbar"]');
     const submit = bar.querySelector('[data-testid="btn-submit-sales-order"]');
-    expect(submit.textContent).toContain("Simpan Pesanan Penjualan");
+    expect(submit.textContent).toContain("Simpan Pesanan");
     await act(async () => {
       submit.click();
       submit.click();
@@ -409,15 +445,16 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
     expect(api.createSalesOrder).toHaveBeenCalledTimes(1);
     expect(submit.disabled).toBe(true);
     expect(submit.textContent).toContain("Menyimpan...");
-    await act(async () => {
-      container.querySelector('[data-testid="btn-lainnya"]').click();
-    });
     expect(container.querySelector('[data-testid="btn-cancel-form"]').disabled).toBe(true);
     await act(async () => {
       release({ message: "ok", order: { id: "new" } });
     });
     await tick(0);
-    expect(submit.disabled).toBe(false);
+    expect(submit.disabled).toBe(true);
+    await act(async () => {
+      container.querySelector('[data-testid="sales-order-form"]').requestSubmit();
+    });
+    expect(api.createSalesOrder).toHaveBeenCalledTimes(1);
   });
 
   function requiredMarker(field) {
@@ -468,7 +505,7 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
     expect(requiredMarker("address")).toBe(false);
     expect(container.querySelector(".so-col-name").textContent).toContain("*");
     expect(container.querySelector(".so-col-qty").textContent).toContain("*");
-    expect(container.querySelector('[data-testid="so-progress-label"]').textContent).toBe("1/2 wajib");
+    expect(container.querySelector('[data-testid="so-progress-label"]').textContent).toBe("1/2 pelanggan & barang");
 
     await act(async () => {
       container.querySelector('[data-testid="line-mode-manual-0"]').click();
@@ -479,7 +516,7 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
     const screenForm = formFromScreen();
     const validationError = validateSalesOrderCreate(screenForm);
     expect(validationError).toBe("");
-    expect(container.querySelector('[data-testid="so-progress-label"]').textContent).toBe("2/2 wajib");
+    expect(container.querySelector('[data-testid="so-progress-label"]').textContent).toBe("2/2 pelanggan & barang");
     expect(container.querySelector('[data-testid="so-status-chip"]').textContent).toBe(
       validationError === "" ? "Lengkap" : "Belum Lengkap"
     );
@@ -497,7 +534,7 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
     await act(async () => {
       container.querySelector('[data-testid="input-customer-option-c1"]').click();
     });
-    expect(container.querySelector('[data-testid="so-progress-label"]').textContent).toBe("1/2 wajib");
+    expect(container.querySelector('[data-testid="so-progress-label"]').textContent).toBe("1/2 pelanggan & barang");
     expect(container.querySelector('[data-testid="so-status-chip"]').textContent).toBe("Belum Lengkap");
 
     await act(async () => {
@@ -506,7 +543,7 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
     await act(async () => {
       setNativeValue(container.querySelector('[data-testid="line-name-0"]'), "Dus");
     });
-    expect(container.querySelector('[data-testid="so-progress-label"]').textContent).toBe("2/2 wajib");
+    expect(container.querySelector('[data-testid="so-progress-label"]').textContent).toBe("2/2 pelanggan & barang");
     expect(container.querySelector('[data-testid="so-status-chip"]').textContent).toBe("Lengkap");
 
     await act(async () => {
@@ -603,14 +640,8 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
     expect(line.entry_mode).toBeUndefined();
   });
 
-  test("leaving create drops the workspace class and drawer listeners", async () => {
-    const add = jest.spyOn(document, "addEventListener");
-    const remove = jest.spyOn(document, "removeEventListener");
+  test("leaving create returns to the list without a drawer", async () => {
     await openCreate();
-    await act(async () => {
-      container.querySelector('[data-testid="btn-detail-tambahan"]').click();
-    });
-    expect(add.mock.calls.some((call) => call[0] === "keydown")).toBe(true);
     await act(async () => {
       container.querySelector('[data-testid="back-to-list-btn"]').click();
     });
@@ -618,32 +649,12 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
     expect(page.className).toContain("penjualan-page");
     expect(page.className).not.toContain("so-create-workspace");
     expect(container.querySelector('[data-testid="so-extra-drawer"]')).toBeNull();
-    expect(remove.mock.calls.some((call) => call[0] === "keydown")).toBe(true);
     expect(document.body.style.overflow).not.toBe("hidden");
-    add.mockRestore();
-    remove.mockRestore();
+    expect(api.createSalesOrder).not.toHaveBeenCalled();
   });
 
-  test("Lainnya closes without submitting", async () => {
+  test("Batal leaves create without submitting", async () => {
     await openCreate();
-    await act(async () => {
-      container.querySelector('[data-testid="btn-lainnya"]').click();
-    });
-    expect(document.activeElement).toBe(container.querySelector('[data-testid="btn-cancel-form"]'));
-    await act(async () => {
-      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-    });
-    expect(container.querySelector('[data-testid="so-more-menu"]')).toBeNull();
-    await act(async () => {
-      container.querySelector('[data-testid="btn-lainnya"]').click();
-    });
-    await act(async () => {
-      document.body.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
-    });
-    expect(container.querySelector('[data-testid="so-more-menu"]')).toBeNull();
-    await act(async () => {
-      container.querySelector('[data-testid="btn-lainnya"]').click();
-    });
     await act(async () => {
       container.querySelector('[data-testid="btn-cancel-form"]').click();
     });
@@ -651,28 +662,34 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
     expect(api.createSalesOrder).not.toHaveBeenCalled();
   });
 
-  test("workspace CSS lets the page scroll and keeps the action bar in flow", () => {
+  test("create form uses one vertical scroll and the list workspace scroll stays internal", () => {
     const css = fs.readFileSync(path.join(__dirname, "pesananPenjualan.css"), "utf8");
     const page = fs.readFileSync(path.join(__dirname, "PesananPenjualan.jsx"), "utf8");
     const detail = fs.readFileSync(path.join(__dirname, "PODetail.jsx"), "utf8");
     expect(page).toMatch(/hasPerm\("sales_order\.create"\) \|\| hasPerm\("po\.edit"\) \|\| user\?\.role === "admin"/);
     expect(css).not.toMatch(/--so-notif-safe:\s*96px/);
-    expect(css).not.toMatch(/\.app-shell:has\(\.so-create-workspace\)\s*\{[^}]*height:\s*100dvh/);
-    expect(css).not.toMatch(/\.app-shell:has\(\.so-create-workspace\)\s*\{[^}]*overflow:\s*hidden/);
-    expect(css).not.toMatch(/\.so-create-workspace\s*\{[^}]*100vh/);
-    expect(css).toMatch(/\.content:has\(\.so-create-workspace\)\s*\{[^}]*overflow:\s*visible/);
-    expect(css).toMatch(/\.so-create-lines-scroll\s*\{[^}]*overflow-y:\s*visible/);
+    expect(css).toMatch(/\.app-shell:has\(\.so-list-workspace\)[\s\S]*overflow:\s*hidden/);
+    expect(css).toMatch(/\.so-list-table-scroll\s*\{[^}]*overflow:\s*auto/);
+    expect(css).toMatch(/\.so-create-stage\s*\{[^}]*overflow-y:\s*auto/);
+    expect(css).toMatch(/\.so-create-lines-scroll\s*\{[^}]*overflow:\s*visible/);
     expect(css).toMatch(/\.so-create-lines-scroll\s*\{[^}]*max-height:\s*none/);
+    expect(css).not.toMatch(/\.so-create-lines-scroll\s*\{[^}]*overflow-y:\s*auto/);
+    expect(css).toMatch(/\.so-create-workspace \.so-ship-panel,[\s\S]*?max-height:\s*none/);
+    expect(css).toMatch(/\.so-sum-chip\.is-po \.so-sum-text\s*\{[^}]*overflow:\s*visible/);
+    expect(css).toMatch(/\.so-ship-card span\s*\{[^}]*overflow-wrap:\s*anywhere/);
+    expect(css).toMatch(/\.so-create-stage\s*\{[^}]*padding:\s*6px 12px 36px/);
     expect(css).toMatch(/\.so-create-actionbar\s*\{[^}]*position:\s*static/);
     expect(css).not.toMatch(/\.so-create-actionbar\s*\{[^}]*position:\s*fixed/);
     expect(css).not.toMatch(/\.so-create-actionbar\s*\{[^}]*position:\s*sticky/);
-    expect(css).toMatch(/@media \(min-width: 1024px\)\s*\{\s*\.so-create-workspace \.so-create-actionbar\s*\{[^}]*padding-right:\s*72px/);
+    expect(css).toMatch(/@media \(min-width: 1024px\)\s*\{[^}]*\.so-create-workspace \.so-create-actionbar\s*\{[^}]*padding-right:\s*96px/);
     expect(css).not.toMatch(/(^|\n)\s*(input|table|\.card|\.btn)\s*[,{]/);
     expect(css).not.toMatch(/\.po-detail/);
     expect(detail).not.toMatch(/so-create-workspace/);
     expect(page).toMatch(/data-testid="so-create-actionbar"/);
     expect(page).toMatch(/data-testid="btn-submit-sales-order"/);
-    expect(page).toMatch(/data-scroll-owner=\{viewMode === "create" \? "page" : undefined\}/);
+    expect(page).toMatch(/data-scroll-owner="form"/);
+    expect(page).toMatch(/data-scroll-owner=\{viewMode === "create" \? "workspace" : "list"\}/);
+    expect(page).not.toMatch(/data-scroll-owner="line-items"/);
   });
 
   test("first row is visible as number 1 and there is no global item search", async () => {
@@ -681,9 +698,20 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
     expect(container.querySelector('[data-testid="line-item-row-0"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="line-item-number-0"]').textContent).toBe("1");
     expect(container.querySelector('[data-testid="line-item-search-0-input"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="sales-order-page"]').getAttribute("data-scroll-owner")).toBe("page");
+    expect(container.querySelector('[data-testid="sales-order-page"]').getAttribute("data-scroll-owner")).toBe("workspace");
     const table = container.querySelector('[data-testid="line-items-table-container"]');
     expect(table.getAttribute("data-scroll-owner")).toBeNull();
+    expect(container.querySelector('[data-testid="so-create-scroll"]').getAttribute("data-scroll-owner")).toBe("form");
+  });
+
+  test("adding a line focuses the new row search", async () => {
+    await openCreate();
+    await act(async () => {
+      container.querySelector('[data-testid="btn-add-line-item"]').click();
+    });
+    const search = container.querySelector('[data-testid="line-item-search-1-input"]');
+    expect(search).toBeTruthy();
+    expect(document.activeElement).toBe(search);
   });
 
   test("item autocomplete portals to the document and closes on Escape and outside click", async () => {
@@ -715,5 +743,167 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
       document.body.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
     });
     expect(document.body.querySelector('[data-testid="line-item-search-0-list"]')).toBeNull();
+  });
+
+  test("price quote is a real client method, not a test-only guard", () => {
+    const apiSrc = fs.readFileSync(path.join(__dirname, "../lib/api.js"), "utf8");
+    const page = fs.readFileSync(path.join(__dirname, "PesananPenjualan.jsx"), "utf8");
+    expect(apiSrc).toMatch(/salesOrderPriceQuote:\s*\(payload[\s\S]*?\/sales-orders\/price-quote/);
+    expect(page).toMatch(/api\.salesOrderPriceQuote\(/);
+    expect(page).not.toMatch(/typeof api\.salesOrderPriceQuote/);
+  });
+
+  async function chooseFirstMaster(query) {
+    const search = container.querySelector('[data-testid="line-item-search-0-input"]');
+    await act(async () => {
+      search.focus();
+      setNativeValue(search, query);
+    });
+    await tick(350);
+    await act(async () => {
+      document.body.querySelector('[data-testid="line-item-search-0-option-a1"]').click();
+    });
+    await tick(0);
+  }
+
+  test("selecting an item loads the selling price and the saved payload keeps it", async () => {
+    api.masterItemsPicker.mockResolvedValue({
+      items: [{ id: "m-cup", accurate_item_id: "a1", item_name: "Cup PET", item_code: "BRG-CP001", unit: "pcs" }],
+    });
+    api.salesOrderPriceQuote.mockResolvedValue({
+      status: "matched",
+      unit_price: 700,
+      source: "pengaturan_harga",
+    });
+    await openCreate();
+    await act(async () => {
+      setNativeValue(container.querySelector('[data-testid="line-qty-0"]'), "1000");
+    });
+    await chooseFirstMaster("Cup");
+    expect(api.salesOrderPriceQuote).toHaveBeenCalledWith({
+      accurate_item_id: "a1",
+      unit: "pcs",
+      quantity: 1000,
+    });
+    expect(container.querySelector('[data-testid="line-price-0"]').value).toBe("700");
+    expect(container.querySelector('[data-testid="line-price-source-0"]').textContent).toBe("Harga dari Pengaturan Harga");
+    expect(container.querySelector('[data-testid="line-subtotal-0"]').textContent).toContain("700.000");
+    await act(async () => {
+      container.querySelector('[data-testid="so-tab-ship"]').click();
+    });
+    await act(async () => {
+      container.querySelector('[data-testid="so-tab-items"]').click();
+    });
+    expect(container.querySelector('[data-testid="line-price-0"]').value).toBe("700");
+    await act(async () => {
+      setNativeValue(container.querySelector('[data-testid="input-customer"]'), "GOHO COFFEE");
+      setNativeValue(container.querySelector('[data-testid="input-customer-phone"]'), "0812");
+      setNativeValue(container.querySelector('[data-testid="input-address"]'), "Jl. Malioboro");
+    });
+    await act(async () => {
+      container.querySelector('[data-testid="btn-submit-sales-order"]').click();
+    });
+    await tick(0);
+    const line = api.createSalesOrder.mock.calls[0][0].line_items[0];
+    expect(line.unit_price).toBe(700);
+    expect(line.price_source).toBe("pengaturan_harga");
+    expect(line.quantity).toBe(1000);
+    expect(line.unit_price).not.toBe(0);
+    expect(line.price_message).toBeUndefined();
+  });
+
+  test("a failed or missing quote stays blank and explains that manual input is required", async () => {
+    api.masterItemsPicker.mockResolvedValue({
+      items: [{ id: "m-cup", accurate_item_id: "a1", item_name: "Cup PET", item_code: "BRG-CP001", unit: "pcs" }],
+    });
+    api.salesOrderPriceQuote.mockRejectedValue(new Error("quote down"));
+    await openCreate();
+    await chooseFirstMaster("Cup");
+    expect(container.querySelector('[data-testid="line-price-0"]').value).toBe("");
+    expect(container.querySelector('[data-testid="line-price-source-0"]').textContent).toBe("Harga jual tidak dapat diambil. Isi manual.");
+    expect(container.querySelector('[data-testid="line-subtotal-0"]').textContent).not.toContain("Rp0");
+
+    api.salesOrderPriceQuote.mockResolvedValue({ status: "missing", unit_price: 0 });
+    await act(async () => {
+      container.querySelector('[data-testid="btn-add-line-item"]').click();
+    });
+    const search = container.querySelector('[data-testid="line-item-search-1-input"]');
+    await act(async () => {
+      search.focus();
+      setNativeValue(search, "Lid");
+    });
+    await tick(350);
+    await act(async () => {
+      document.body.querySelector('[data-testid="line-item-search-1-option-a1"]').click();
+    });
+    await tick(0);
+    expect(container.querySelector('[data-testid="line-price-1"]').value).toBe("");
+    expect(container.querySelector('[data-testid="line-price-source-1"]').textContent).toBe("Harga jual tidak ditemukan di Pengaturan Harga. Isi manual.");
+
+    await act(async () => {
+      setNativeValue(container.querySelector('[data-testid="line-price-1"]'), "150");
+    });
+    expect(container.querySelector('[data-testid="line-price-source-1"]').textContent).toBe("Input manual");
+    expect(container.querySelector('[data-testid="line-price-1"]').value).toBe("150");
+  });
+
+  test("the same draft keeps customer, lines, prices, and shipping across tabs", async () => {
+    await openCreate();
+    const poBefore = container.querySelector('[data-testid="input-po-number"]').value;
+    await act(async () => {
+      setNativeValue(container.querySelector('[data-testid="input-customer"]'), "GOHO COFFEE");
+      setNativeValue(container.querySelector('[data-testid="line-qty-0"]'), "1000");
+      setNativeValue(container.querySelector('[data-testid="line-price-0"]'), "700");
+      setNativeValue(container.querySelector('[data-testid="line-code-0"]'), "BRG-CP001");
+      setNativeValue(container.querySelector('[data-testid="line-color-0"]'), "Merah");
+      setNativeValue(container.querySelector('[data-testid="line-notes-0"]'), "Sablon depan");
+    });
+    expect(container.querySelector(".so-sum-chip.is-customer .so-sum-text").textContent).toBe("GOHO COFFEE");
+    await act(async () => {
+      container.querySelector('[data-testid="btn-line-detail-0"]').click();
+    });
+    expect(container.querySelector('[data-testid="line-item-detail-0"]').hidden).toBe(true);
+    expect(container.querySelector('[data-testid="line-code-0"]').value).toBe("BRG-CP001");
+    expect(container.querySelector('[data-testid="line-detail-summary-0"]').textContent).toContain("BRG-CP001");
+    expect(container.querySelector('[data-testid="line-detail-summary-0"]').textContent).toContain("Merah");
+
+    await act(async () => {
+      container.querySelector('[data-testid="btn-add-line-item"]').click();
+    });
+    expect(container.querySelector('[data-testid="line-item-detail-0"]').hidden).toBe(true);
+    expect(container.querySelector('[data-testid="line-item-detail-1"]').hidden).toBe(false);
+    expect(container.querySelector('[data-testid="line-color-0"]').value).toBe("Merah");
+    await act(async () => {
+      container.querySelector('[data-testid="btn-line-detail-0"]').click();
+    });
+    expect(container.querySelector('[data-testid="line-item-detail-0"]').hidden).toBe(false);
+    expect(container.querySelector('[data-testid="line-item-detail-1"]').hidden).toBe(true);
+    expect(container.querySelector('[data-testid="line-color-1"]').value).toBe("");
+
+    await act(async () => {
+      container.querySelector('[data-testid="so-tab-ship"]').click();
+    });
+    await act(async () => {
+      setNativeValue(container.querySelector('[data-testid="input-expedition"]'), "Ekspedisi Uji Draf");
+      setNativeValue(container.querySelector('[data-testid="input-address"]'), "Jl. Malioboro 10");
+    });
+    await act(async () => {
+      container.querySelector('[data-testid="so-tab-items"]').click();
+    });
+    expect(container.querySelector('[data-testid="input-po-number"]').value).toBe(poBefore);
+    expect(container.querySelector(".so-ship-card").textContent).toContain("Ekspedisi Uji Draf");
+    expect(container.querySelector(".so-ship-card").textContent).toContain("Jl. Malioboro 10");
+    expect(container.querySelector(".so-sum-chip.is-customer .so-sum-text").textContent).toBe("GOHO COFFEE");
+    expect(container.querySelector('[data-testid="line-qty-0"]').value).toBe("1000");
+    expect(container.querySelector('[data-testid="line-price-0"]').value).toBe("700");
+    expect(container.querySelector('[data-testid="line-notes-0"]').value).toBe("Sablon depan");
+    await act(async () => {
+      container.querySelector('[data-testid="so-tab-ship"]').click();
+    });
+    expect(container.querySelector('[data-testid="input-expedition"]').value).toBe("Ekspedisi Uji Draf");
+    expect(container.querySelector('[data-testid="input-address"]').value).toBe("Jl. Malioboro 10");
+    expect(container.querySelector(".so-ship-card").textContent).toContain("Ekspedisi Uji Draf");
+    expect(container.querySelector(".so-ship-card").textContent).toContain("Jl. Malioboro 10");
+    expect(container.querySelector('[data-testid="input-po-number"]').value).toBe(poBefore);
   });
 });

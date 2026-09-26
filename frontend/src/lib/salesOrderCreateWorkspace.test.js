@@ -151,7 +151,7 @@ describe("sales order create workspace contract", () => {
       customer: "PT A",
       customer_id: "c1",
       line_items: [{ name: "", quantity: 1 }],
-    }).label).toBe("1/2 wajib");
+    }).label).toBe("1/2 pelanggan & barang");
   });
 
   test("registered customer drops phone and address from the blocking set", () => {
@@ -160,7 +160,19 @@ describe("sales order create workspace contract", () => {
       customer_id: "c1",
       line_items: [{ name: "Box", quantity: 2 }],
     });
-    expect(progress).toMatchObject({ completed: 2, total: 2, complete: true, statusLabel: "Lengkap" });
+    expect(progress).toMatchObject({
+      completed: 2,
+      total: 2,
+      complete: true,
+      customerAndGoodsOnly: true,
+      label: "2/2 pelanggan & barang",
+      statusLabel: "Lengkap",
+    });
+    expect(salesOrderProgress({
+      customer: "PT A",
+      customer_id: "c1",
+      line_items: [{ name: "Box", quantity: 2, unit_price: "" }],
+    }).statusLabel).toBe("Lengkap");
     expect(validateSalesOrderCreate({
       customer: "PT A",
       customer_id: "c1",
@@ -269,6 +281,9 @@ describe("sales order create workspace contract", () => {
       notes: "n",
       accurate_item_id: "a1",
       master_item_id: "m1",
+      unit_price: null,
+      price_source: null,
+      price_review: false,
     });
     expect(payload.line_items[1].name).toBe("Box");
     expect(payload.line_items[1].quantity).toBe(3);
@@ -286,6 +301,7 @@ describe("sales order create workspace contract", () => {
     }));
     expect(withUi.line_items[0].rowKey).toBeUndefined();
     expect(withUi.line_items[0].entry_mode).toBeUndefined();
+    expect(withUi.line_items[0].price_lock).toBeUndefined();
     expect(withUi.line_items[0].name).toBe("Box");
   });
 

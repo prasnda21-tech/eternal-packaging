@@ -154,9 +154,12 @@ export default function ProductRequestList() {
             )}
             {rows.map((row) => (
               <tr key={row.id} data-testid={`prq-row-${row.id}`} onClick={() => openDetail(row)}>
-                <td>{row.request_number}</td>
+                <td className="prq-doc">{row.request_number}</td>
                 <td>{(row.submitted_at || row.created_at || "").slice(0, 10)}</td>
-                <td>{row.customer_name}</td>
+                <td className="prq-identity">
+                  <strong className="prq-customer">{row.customer_name || "—"}</strong>
+                  <span className="prq-doc">{row.request_number}</span>
+                </td>
                 <td>{customerSourceLabel(row.customer_source)}</td>
                 <td>{row.product_name}</td>
                 <td>{productSourceLabel(row.product_source)}</td>
@@ -214,9 +217,12 @@ export default function ProductRequestList() {
             )}
             {drafts.map((row) => (
               <tr key={row.id} data-testid={`prq-draft-row-${row.id}`}>
-                <td>{row.request_number}</td>
+                <td className="prq-doc">{row.request_number}</td>
                 <td>{(row.updated_at || row.created_at || "").slice(0, 10)}</td>
-                <td>{row.customer_name}</td>
+                <td className="prq-identity">
+                  <strong className="prq-customer">{row.customer_name || "—"}</strong>
+                  <span className="prq-doc">{row.request_number}</span>
+                </td>
                 <td>{row.product_name}</td>
                 <td className="prq-qty">{row.potential_qty ?? ""}</td>
                 <td data-testid={`prq-draft-complete-${row.id}`}>

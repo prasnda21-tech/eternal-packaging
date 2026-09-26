@@ -85,7 +85,10 @@ describe("Pesanan Penjualan list search debounce", () => {
   test("typing A, AB, ABC inside the debounce window issues one settled search for ABC", async () => {
     await renderPage();
     expect(api.listSalesOrders).toHaveBeenCalledTimes(1);
-    expect(api.listSalesOrders).toHaveBeenLastCalledWith({}, expect.objectContaining({ signal: expect.any(AbortSignal) }));
+    expect(api.listSalesOrders).toHaveBeenLastCalledWith(
+      { status: "aktif", page: 1, page_size: 10 },
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
 
     await typeSearch("A");
     await typeSearch("AB");
@@ -98,7 +101,7 @@ describe("Pesanan Penjualan list search debounce", () => {
     });
     expect(api.listSalesOrders).toHaveBeenCalledTimes(2);
     expect(api.listSalesOrders).toHaveBeenLastCalledWith(
-      { q: "ABC" },
+      { q: "ABC", status: "aktif", page: 1, page_size: 10 },
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
   });
@@ -111,7 +114,7 @@ describe("Pesanan Penjualan list search debounce", () => {
       await Promise.resolve();
     });
     expect(api.listSalesOrders).toHaveBeenLastCalledWith(
-      { q: "ABC" },
+      { q: "ABC", status: "aktif", page: 1, page_size: 10 },
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
 
@@ -127,7 +130,7 @@ describe("Pesanan Penjualan list search debounce", () => {
       return !params.q;
     })).toBe(true);
     expect(api.listSalesOrders).toHaveBeenLastCalledWith(
-      {},
+      { status: "aktif", page: 1, page_size: 10 },
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
   });

@@ -4,6 +4,8 @@ on:
   pull_request:
     branches:
       - main
+      - cursor/hpp-financial-opening-13bd
+      - cursor/sales-order-redesign-b7d7
   workflow_dispatch:
 
 permissions:
@@ -17,7 +19,7 @@ jobs:
   backend-focused:
     name: Backend focused tests
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     services:
       mongodb:
         image: mongo:7
@@ -56,6 +58,7 @@ jobs:
           reportlab==4.1.0
           requests==2.34.2
           openpyxl==3.1.5
+          pdfplumber==0.11.10
       - name: Run compatibility and Sales PWA tests
         working-directory: backend
         run: >-
@@ -64,6 +67,16 @@ jobs:
           tests/test_stock_v2_off_state_compat.py
           tests/test_line_product_replacement_concurrency.py
           tests/test_sales_pwa_scope.py
+          tests/test_financial_inventory_opening.py
+          tests/test_inventory_issue_posting.py
+          tests/test_financial_dashboard.py
+          tests/test_nav_permissions.py
+          tests/test_sales_order_line_prices.py
+          tests/test_sales_order_item_images.py
+          tests/test_sales_order_list_read.py
+          tests/test_customer_tracking.py
+          tests/test_customer_tracking_invoices.py
+          tests/test_tracking_delivery_signature.py
 
   frontend-focused:
     name: Frontend tests and build
@@ -98,10 +111,36 @@ jobs:
           src/mobile/MobileTasksPage.test.js
           src/pages/HoPDashboard.test.js
           src/pages/inventoryPersediaanLiveSearch.contract.test.js
+          src/pages/NilaiPersediaan.test.js
+          src/pages/NilaiPersediaan.interaction.test.js
+          src/pages/BukuBesar.test.js
+          src/pages/NeracaSaldo.test.js
           src/sales/SalesPwaLayout.test.js
           src/sales/SalesPwaOrdersPage.test.js
           src/sales/SalesPwaDashboardPage.test.js
           src/sales/SalesPwaVisitsPage.test.js
+          src/lib/financialDashboard.test.js
+          src/components/AppShell.test.js
+          src/lib/navAccess.test.js
+          src/lib/navAccess.cashBank.test.js
+          src/lib/navAccess.employeeAdmin.test.js
+          src/lib/navAccess.formAccess.test.js
+          src/lib/navAccess.hrPayroll.test.js
+          src/lib/navAccess.ledger.test.js
+          src/lib/globalWorkspace.test.js
+          src/lib/salesOrderCreateWorkspace.test.js
+          src/pages/PesananPenjualan.createWorkspace.test.js
+          src/pages/PesananPenjualan.test.js
+          src/pages/FakturPenjualan.test.js
+          src/components/MasterItemSearchSelect.picker.test.js
+          src/lib/salesOrderListPresentation.test.js
+          src/pages/PesananPenjualan.searchDebounce.test.js
+          src/components/TrackingInvoicePdfViewer.test.js
+          src/components/TrackingInvoices.test.js
+          src/lib/customerTracking.test.js
+          src/lib/liveTracking.test.js
+          src/pages/CustomerTrackingPage.test.js
+          src/pages/CustomerTrackingPage.onescreen.test.js
       - name: Build production frontend
         if: ${{ always() }}
         env:

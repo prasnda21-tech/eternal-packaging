@@ -225,6 +225,7 @@ from services.accounts_payable_http import register_accounts_payable_routes
 from services.purchase_accounting_settings_http import register_purchase_accounting_settings_routes
 from services.trial_balance_http import register_trial_balance_routes
 from services.profit_loss_http import register_profit_loss_routes
+from services.financial_dashboard_http import register_financial_dashboard_routes
 from services.balance_sheet_http import register_balance_sheet_routes
 from services.inventory_reconciliation_http import register_inventory_reconciliation_routes
 from services.chart_of_accounts import COLLECTION as LEDGER_ACCOUNTS_COLLECTION
@@ -9050,6 +9051,7 @@ from services.sales_deliveries import (
 )
 from services.sales_invoices import (
     get_po_invoice_preview as _get_po_invoice_preview,
+    list_charge_account_options as _list_charge_account_options,
     create_sales_invoice as _create_sales_invoice,
     generate_sales_invoice_pdf_bytes,
     list_sales_invoices as _list_sales_invoices,
@@ -9119,6 +9121,15 @@ class SalesOrderLineItemInput(BaseModel):
     notes: Optional[str] = ""
     accurate_item_id: Optional[str] = None
     master_item_id: Optional[str] = None
+    unit_price: Optional[Union[int, float, str]] = None
+    price_source: Optional[str] = None
+    price_review: Optional[bool] = None
+
+
+class SalesOrderPriceQuotePayload(BaseModel):
+    accurate_item_id: Optional[str] = None
+    unit: Optional[str] = None
+    quantity: Optional[Union[int, float, str]] = None
 
 
 class SalesOrderDesignFileInput(BaseModel):
@@ -9189,7 +9200,15 @@ class SalesInvoiceLineItemInput(BaseModel):
     line_id: Optional[str] = None
     quantity: Optional[Union[int, float, str]] = None
     invoice_qty: Optional[Union[int, float, str]] = None
-    unit_price: Union[int, float, str, None] = 0
+    unit_price: Optional[Union[int, float, str]] = None
+
+
+class SalesInvoiceOtherChargeInput(BaseModel):
+    id: Optional[str] = None
+    account_id: Optional[str] = None
+    description: Optional[str] = None
+    keterangan: Optional[str] = None
+    amount: Optional[Union[int, float, str]] = None
 
 
 class SalesInvoiceCreatePayload(BaseModel):
@@ -9202,6 +9221,7 @@ class SalesInvoiceCreatePayload(BaseModel):
     idempotency_key: Optional[str] = None
     lines: Optional[List[SalesInvoiceLineItemInput]] = None
     line_items: Optional[List[SalesInvoiceLineItemInput]] = None
+    other_charges: Optional[List[SalesInvoiceOtherChargeInput]] = None
 
 
 class SalesInvoiceUpdatePayload(BaseModel):
@@ -9212,6 +9232,7 @@ class SalesInvoiceUpdatePayload(BaseModel):
     notes: Optional[str] = ""
     lines: Optional[List[SalesInvoiceLineItemInput]] = None
     line_items: Optional[List[SalesInvoiceLineItemInput]] = None
+    other_charges: Optional[List[SalesInvoiceOtherChargeInput]] = None
 
 
 class SalesInvoiceReverseAccountingPayload(BaseModel):
@@ -9478,6 +9499,7 @@ async def get_sales_order_options(user=Depends(current_user)):
         cname = (o.get("customer_name") or "").strip()
         if cname:
             outlets_by_customer.setdefault(cname, []).append({
+                "id": str(o.get("id") or ""),
                 "outlet": o.get("name") or "",
                 "address": o.get("formatted_address") or "",
                 "recipient": "",
@@ -9563,6 +9585,9 @@ async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(curr
             "notes": (li.notes or "").strip() or None,
             "accurate_item_id": (li.accurate_item_id or "").strip() or None,
             "master_item_id": (li.master_item_id or "").strip() or None,
+            "unit_price": li.unit_price,
+            "price_source": li.price_source,
+            "price_review": bool(li.price_review),
         })
     
     order_date = _parse_order_date_iso(payload.order_date, default_days_ahead=0)
@@ -9604,6 +9629,9 @@ async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(curr
         city=payload.customer_city,
         user_email=user.get("email"),
     )
+
+    from services.sales_order_prices import price_order_lines
+    normalized_lines, selling_total, selling_prices_complete = await price_order_lines(db, normalized_lines)
 
     now = now_iso()
     total_qty = sum(li["quantity"] for li in normalized_lines)
@@ -9675,6 +9703,8 @@ async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(curr
         "line_items": normalized_lines,
         "total_quantity": total_qty,
         "item_count": item_cnt,
+        "selling_total": selling_total,
+        "selling_prices_complete": selling_prices_complete,
         "operator_splits": [],
         "design_files": seeded_design_files,
         "sample_files": [],
@@ -10065,6 +10095,25 @@ async def replace_sales_order_line_product(
     }
 
 
+def _quantity_by_unit(lines) -> List[dict]:
+    """Sum quantity per stored unit. Different units are not folded into pcs."""
+    totals: Dict[str, int] = {}
+    order: List[str] = []
+    for li in lines or []:
+        if not isinstance(li, dict):
+            continue
+        unit = str(li.get("unit") or "").strip() or "pcs"
+        try:
+            qty = int(li.get("quantity") or 0)
+        except (TypeError, ValueError):
+            qty = 0
+        if unit not in totals:
+            order.append(unit)
+            totals[unit] = 0
+        totals[unit] += qty
+    return [{"unit": unit, "quantity": totals[unit]} for unit in order]
+
+
 def _mongo_array_nonempty_expr(field: str) -> dict:
     """True when `field` is a non-empty array, without returning array contents."""
     return {
@@ -10110,41 +10159,152 @@ _SALES_ORDER_LIST_PROJECTION = {
     "delivery_status": 1,
     "_has_design_files": _mongo_array_nonempty_expr("design_files"),
     "_has_payment_files": _mongo_array_nonempty_expr("payment_files"),
+    "line_items": {
+        "$map": {
+            "input": {"$ifNull": ["$line_items", []]},
+            "as": "li",
+            "in": {
+                "quantity": "$$li.quantity",
+                "unit": "$$li.unit",
+            },
+        }
+    },
 }
+
+
+def _sales_order_status_clause(status: Optional[str]) -> dict:
+    """Existing list classifications. `histori` is selesai + batal, not a new state."""
+    st = (status or "all").lower()
+    if st == "cancelled":
+        return {"cancelled": True}
+    if st == "aktif":
+        return {"cancelled": {"$ne": True}, "current_stage": {"$lt": 14}}
+    if st == "selesai":
+        return {"cancelled": {"$ne": True}, "current_stage": {"$gte": 14}}
+    if st == "hold":
+        return {"cancelled": {"$ne": True}}
+    if st == "histori":
+        return {"$or": [
+            {"cancelled": True},
+            {"cancelled": {"$ne": True}, "current_stage": {"$gte": 14}},
+        ]}
+    return {}
+
+
+def _sales_order_date_clause(date_from: Optional[str], date_to: Optional[str]) -> dict:
+    clause = {}
+    start = (date_from or "").strip()[:10]
+    end = (date_to or "").strip()[:10]
+    if start:
+        clause["$gte"] = start
+    if end:
+        clause["$lte"] = f"{end}T23:59:59.999999"
+    return {"order_date": clause} if clause else {}
+
+
+@api_router.post("/sales-orders/price-quote")
+async def quote_sales_order_price(payload: SalesOrderPriceQuotePayload, user=Depends(current_user)):
+    """Published selling price for one exact item, unit, and quantity tier.
+
+    Returns no amount when the match is missing or ambiguous.
+    HPP and the tier matrix are not included.
+    """
+    reject_sales_pwa_bypass(user)
+    await _require_any_perm(user, "sales_order.view", "sales_order.create", "po.view", "po.edit")
+    from services.sales_order_prices import quote_selling_price
+    return await quote_selling_price(
+        db,
+        accurate_item_id=payload.accurate_item_id,
+        unit=payload.unit,
+        quantity=payload.quantity,
+    )
+
+
+@api_router.get("/sales-orders/item-images")
+async def list_sales_order_item_images(
+    accurate_item_ids: Optional[str] = None,
+    master_item_ids: Optional[str] = None,
+    user=Depends(current_user),
+):
+    """Batch product-photo URLs for sales order lines. No price or HPP fields."""
+    reject_sales_pwa_bypass(user)
+    await _require_any_perm(user, "sales_order.view", "sales_order.create", "po.view", "po.edit")
+    from services.sales_order_item_images import (
+        public_image_map,
+        resolve_product_image_refs,
+        split_id_param,
+    )
+    refs = await resolve_product_image_refs(
+        db,
+        accurate_item_ids=split_id_param(accurate_item_ids),
+        master_item_ids=split_id_param(master_item_ids),
+    )
+    return {"images": public_image_map(refs)}
+
+
+@api_router.get("/sales-orders/item-images/{accurate_item_id}")
+async def get_sales_order_item_image(
+    accurate_item_id: str,
+    user=Depends(current_user),
+):
+    """Serve one Customer Pricing product photo. Bytes only."""
+    reject_sales_pwa_bypass(user)
+    await _require_any_perm(user, "sales_order.view", "sales_order.create", "po.view", "po.edit")
+    from fastapi.responses import Response as BinaryResponse
+    from services.customer_pricing_catalog import get_product_image
+    from services.sales_order_item_images import resolve_product_image_refs
+
+    refs = await resolve_product_image_refs(db, accurate_item_ids=[accurate_item_id])
+    ref = refs.get(str(accurate_item_id or "").strip())
+    if not ref or not ref.get("group_id"):
+        raise HTTPException(404, "Foto produk tidak tersedia.")
+    data, content_type, _filename = await get_product_image(
+        db, group_id=ref["group_id"], accurate_item_id=ref["accurate_item_id"]
+    )
+    return BinaryResponse(
+        content=data,
+        media_type=content_type,
+        headers={
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @api_router.get("/sales-orders")
 async def list_sales_orders(
     q: Optional[str] = None,
     status: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    page: Optional[int] = None,
+    page_size: Optional[int] = None,
     user=Depends(current_user),
 ):
     """List sales orders with search and status filtering for Pesanan Penjualan page."""
     reject_sales_pwa_bypass(user)
     await _require_any_perm(user, "sales_order.view", "sales_order.create", "po.view")
-    
-    query: dict = {}
-    query.update(sales_owner_match(user))
+
+    clauses = []
+    owner = sales_owner_match(user)
+    if owner:
+        clauses.append(owner)
     st = (status or "all").lower()
-    if st == "cancelled":
-        query["cancelled"] = True
-    elif st == "aktif":
-        query["cancelled"] = {"$ne": True}
-        query["current_stage"] = {"$lt": 14}
-    elif st == "selesai":
-        query["cancelled"] = {"$ne": True}
-        query["current_stage"] = {"$gte": 14}
-    elif st == "hold":
-        query["cancelled"] = {"$ne": True}
-    
+    status_clause = _sales_order_status_clause(st)
+    if status_clause:
+        clauses.append(status_clause)
     if q and q.strip():
         needle = re.escape(q.strip())
-        query["$or"] = [
+        clauses.append({"$or": [
             {"po_number": {"$regex": needle, "$options": "i"}},
             {"customer": {"$regex": needle, "$options": "i"}},
             {"outlet": {"$regex": needle, "$options": "i"}},
             {"sales": {"$regex": needle, "$options": "i"}},
-        ]
+        ]})
+    date_clause = _sales_order_date_clause(date_from, date_to)
+    if date_clause:
+        clauses.append(date_clause)
+    query: dict = {"$and": clauses} if clauses else {}
     
     orders = await db.orders.aggregate([
         {"$match": query},
@@ -10164,7 +10324,9 @@ async def list_sales_orders(
         ]
         shipped_aggregates = {doc["_id"]: doc async for doc in db.sales_deliveries.aggregate(pipe)}
 
+    fetched_count = len(orders)
     for o in orders:
+        o["quantity_by_unit"] = _quantity_by_unit(o.pop("line_items", None))
         o["design_files"] = [True] if o.pop("_has_design_files", False) else []
         o["payment_files"] = [True] if o.pop("_has_payment_files", False) else []
         _apply_hold_snapshot(o)
@@ -10197,8 +10359,33 @@ async def list_sales_orders(
         orders = [o for o in orders if o.get("hold")]
     elif st == "aktif":
         orders = [o for o in orders if not o.get("hold")]
-    
-    return {"orders": orders, "count": len(orders)}
+
+    paging = page is not None or page_size is not None
+    if not paging:
+        return {"orders": orders, "count": len(orders)}
+
+    size = page_size if page_size is not None else 10
+    try:
+        size = int(size)
+    except (TypeError, ValueError):
+        size = 10
+    size = min(50, max(1, size))
+    try:
+        current = int(page or 1)
+    except (TypeError, ValueError):
+        current = 1
+    current = max(1, current)
+    total = len(orders)
+    start = (current - 1) * size
+    page_rows = orders[start:start + size]
+    return {
+        "orders": page_rows,
+        "count": len(page_rows),
+        "total": total,
+        "page": current,
+        "page_size": size,
+        "capped": fetched_count >= 1000,
+    }
 
 
 # ==================================================
@@ -10284,6 +10471,23 @@ async def list_sales_invoices_endpoint(
         await ensure_owned_po_id(db, user, po_id)
     invoices = await _list_sales_invoices(db, q=q, po_id=po_id)
     return {"invoices": invoices, "count": len(invoices)}
+
+
+@api_router.get("/sales-invoices/charge-accounts")
+async def list_sales_invoice_charge_accounts_endpoint(
+    q: Optional[str] = None,
+    user=Depends(current_user),
+):
+    """Search COA accounts that may be credited as Biaya Lainnya. Does not post or create accounts."""
+    await _require_any_perm(
+        user,
+        "sales.invoice.create",
+        "sales.invoice.edit",
+        "sales_order.create",
+        "po.edit",
+    )
+    items = await _list_charge_account_options(db, q=q)
+    return {"items": items, "total": len(items)}
 
 
 @api_router.get("/sales-invoices/po/{po_id}/preview")
@@ -11248,6 +11452,177 @@ def _stock_xlsx(rows: list, *, v2: bool = True) -> FastAPIResponse:
     )
 
 
+@api_router.get("/inventory-valuation")
+async def inventory_valuation_list(
+    q: str = "",
+    status_filter: str = "all",
+    sort_by: str = "name",
+    sort_dir: str = "asc",
+    page: int = 1,
+    page_size: int = 50,
+    user=Depends(require_perm("inventory_valuation.view")),
+):
+    """Read-only Stock V2 × canonical moving-average HPP view."""
+    from services.inventory_valuation import (
+        build_inventory_valuation_rows,
+        filter_sort_page,
+    )
+
+    view = await build_inventory_valuation_rows(db)
+    payload = filter_sort_page(
+        view["rows"],
+        q=q,
+        status_filter=status_filter,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+        page=page,
+        page_size=page_size,
+    )
+    payload.update({
+        "summary": view["summary"],
+        "method": view["method"],
+        "active_version": view["active_version"],
+        "cutover_id": view["cutover_id"],
+    })
+    return payload
+
+
+@api_router.get("/inventory-valuation/export")
+async def inventory_valuation_export(
+    q: str = "",
+    status_filter: str = "all",
+    sort_by: str = "name",
+    sort_dir: str = "asc",
+    user=Depends(require_perm("inventory_valuation.export")),
+):
+    """Read-only Excel export; no inventory or HPP data is mutated."""
+    from services.inventory_valuation import (
+        build_inventory_valuation_rows,
+        export_xlsx,
+        filter_sort_all,
+    )
+
+    view = await build_inventory_valuation_rows(db)
+    filtered = filter_sort_all(
+        view["rows"],
+        q=q,
+        status_filter=status_filter,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+    )
+    filename = f"nilai-persediaan-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M')}.xlsx"
+    return FastAPIResponse(
+        content=export_xlsx(filtered),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+def _opening_http(exc):
+    from services.financial_inventory_opening import OpeningBlocked
+    if isinstance(exc, OpeningBlocked):
+        raise HTTPException(exc.status_code, exc.as_detail())
+    raise exc
+
+
+@api_router.get("/inventory/financial-opening")
+async def financial_opening_list(user=Depends(require_perm("inventory_valuation.view"))):
+    from services.financial_inventory_opening import list_financial_openings
+    return {"items": await list_financial_openings(db), "writes": 0}
+
+
+@api_router.get("/inventory/financial-opening/reconciliation")
+async def financial_opening_reconciliation(user=Depends(require_perm("inventory_valuation.view"))):
+    from services.financial_inventory_opening import build_financial_book_reconciliation
+    return await build_financial_book_reconciliation(db)
+
+
+@api_router.post("/inventory/financial-opening/preview")
+async def financial_opening_preview(payload: dict, user=Depends(require_perm("inventory_valuation.view"))):
+    from services.financial_inventory_opening import preview_financial_opening
+    try:
+        return await preview_financial_opening(db, payload or {})
+    except Exception as exc:
+        _opening_http(exc)
+
+
+@api_router.post("/inventory/financial-opening")
+async def financial_opening_post(payload: dict, user=Depends(require_perm("inventory_valuation.manage_opening"))):
+    from services.financial_inventory_opening import post_financial_opening
+    try:
+        saved = await post_financial_opening(db, payload or {}, user)
+    except Exception as exc:
+        _opening_http(exc)
+    return {"item": saved}
+
+
+@api_router.post("/inventory/financial-opening/recover")
+async def financial_opening_recover(payload: dict, user=Depends(require_perm("inventory_valuation.manage_opening"))):
+    from services.financial_inventory_opening import recover_financial_opening
+    try:
+        saved = await recover_financial_opening(
+            db,
+            client_request_id=str((payload or {}).get("client_request_id") or ""),
+            user=user,
+        )
+    except Exception as exc:
+        _opening_http(exc)
+    return {"item": saved}
+
+
+@api_router.post("/inventory/financial-opening/{opening_id}/reverse")
+async def financial_opening_reverse(opening_id: str, payload: dict, user=Depends(require_perm("inventory_valuation.manage_opening"))):
+    from services.financial_inventory_opening import reverse_financial_opening
+    try:
+        saved = await reverse_financial_opening(
+            db,
+            opening_id,
+            user,
+            str((payload or {}).get("reason") or ""),
+        )
+    except Exception as exc:
+        _opening_http(exc)
+    return {"item": saved}
+
+
+@api_router.post("/inventory/financial-opening/snapshot")
+async def financial_opening_snapshot(payload: dict, user=Depends(require_perm("inventory_valuation.manage_opening"))):
+    from services.financial_inventory_opening import capture_financial_opening_snapshot
+    try:
+        saved = await capture_financial_opening_snapshot(db, payload or {}, user)
+    except Exception as exc:
+        _opening_http(exc)
+    return {"item": saved}
+
+
+@api_router.get("/inventory/reports/purchases")
+async def inventory_purchase_activity_report(
+    start_date: str = "",
+    end_date: str = "",
+    page: int = 1,
+    page_size: int = 50,
+    user=Depends(require_perm("inventory_valuation.view")),
+):
+    from services.commercial_activity_reports import purchase_activity_report
+    return await purchase_activity_report(
+        db, start_date=start_date, end_date=end_date, page=page, page_size=page_size,
+    )
+
+
+@api_router.get("/inventory/reports/sales")
+async def inventory_sales_activity_report(
+    start_date: str = "",
+    end_date: str = "",
+    page: int = 1,
+    page_size: int = 50,
+    user=Depends(require_perm("inventory_valuation.view")),
+):
+    from services.commercial_activity_reports import sales_activity_report
+    return await sales_activity_report(
+        db, start_date=start_date, end_date=end_date, page=page, page_size=page_size,
+    )
+
+
 @api_router.get("/current-stock")
 async def current_stock_list(
     q: str = "",
@@ -11962,6 +12337,14 @@ register_profit_loss_routes(
     get_db=lambda: db,
     current_user=current_user,
     require_perm=require_perm,
+    Depends=Depends,
+)
+register_financial_dashboard_routes(
+    api_router,
+    get_db=lambda: db,
+    current_user=current_user,
+    require_perm=require_perm,
+    user_permissions=user_permissions,
     Depends=Depends,
 )
 register_balance_sheet_routes(
@@ -13395,6 +13778,7 @@ app.include_router(_ca_router)
 import services.customer_tracking as _ct_mod
 _ct_router = _ct_mod.build_router({
     "db": db,
+    "get_db": lambda: db,
     "current_user": current_user,
     "require_perm": _require_perm,
     "logger": logging.getLogger("customer_tracking"),
@@ -13578,6 +13962,10 @@ async def seed():
     await db.hpp_cost_versions.create_index("status")
     await db.hpp_cost_layers.create_index("calculation_version")
     await db.hpp_cost_layers.create_index([("calculation_version", 1), ("layer_id", 1)], unique=True)
+    from services.hpp_cutover import ensure_indexes as _hpp_cutover_ensure_indexes
+    await _hpp_cutover_ensure_indexes(db)
+    from services.financial_inventory_opening import ensure_indexes as _financial_opening_ensure_indexes
+    await _financial_opening_ensure_indexes(db)
     from services.customer_pricing import ensure_indexes as _customer_pricing_ensure_indexes
     await _customer_pricing_ensure_indexes(db)
     from services.cash_bank_master import ensure_indexes as _cash_bank_master_ensure_indexes

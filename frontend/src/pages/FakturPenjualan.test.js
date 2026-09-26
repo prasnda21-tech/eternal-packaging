@@ -28,7 +28,12 @@ describe("Faktur Penjualan UI & Navigation Suite", () => {
     expect(pageSrc).toMatch(/invoice-ppn-input/);
     expect(pageSrc).toMatch(/qty-input/);
     expect(pageSrc).toMatch(/unit-price-input/);
+    expect(pageSrc).toMatch(/price_from_order/);
+    expect(pageSrc).toMatch(/Harga kosong tidak dijadikan Rp0/);
+    expect(pageSrc).not.toMatch(/initialPrices\[l\.line_idx\] = l\.unit_price \|\| ""/);
     expect(pageSrc).toMatch(/save-invoice-btn/);
+    expect(pageSrc).toMatch(/className="invoice-actions"[\s\S]{0,180}paddingRight:\s*96/);
+    expect(pageSrc.match(/className="invoice-actions"/g)).toHaveLength(2);
   });
 
   test("PODetail -> Faktur Penjualan passes exact po_id and bypasses redundant PO chooser", () => {
@@ -68,10 +73,25 @@ describe("Faktur Penjualan UI & Navigation Suite", () => {
     expect(appSrc).toMatch(/NAV_KEYS\.salesInvoice/);
   });
 
+  test("Biaya Lainnya rows stay in draft state and post through the invoice API", () => {
+    expect(pageSrc).toMatch(/Biaya Lainnya/);
+    expect(pageSrc).toMatch(/idPrefix="create"/);
+    expect(pageSrc).toMatch(/idPrefix="detail"/);
+    expect(pageSrc).toMatch(/\$\{idPrefix\}-add-other-charge/);
+    expect(pageSrc).toMatch(/\$\{idPrefix\}-remove-other-charge-/);
+    expect(pageSrc).toMatch(/salesInvoiceChargeAccounts/);
+    expect(pageSrc).toMatch(/other_charges: otherChargePayload\(otherCharges\)/);
+    expect(pageSrc).toMatch(/other_charges: otherChargePayload\(detailCharges\)/);
+    expect(pageSrc).toMatch(/setDetailCharges\(\(inv\.other_charges \|\| \[\]\)\.map\(otherChargeFromStored\)\)/);
+    expect(pageSrc).toMatch(/chargesIncomplete/);
+    expect(pageSrc).not.toMatch(/700031/);
+  });
+
   test("api.js exposes complete sales invoice methods", () => {
     expect(apiSrc).toMatch(/listSalesInvoices:/);
     expect(apiSrc).toMatch(/getSalesInvoice:/);
     expect(apiSrc).toMatch(/getPoInvoicePreview:/);
+    expect(apiSrc).toMatch(/salesInvoiceChargeAccounts:/);
     expect(apiSrc).toMatch(/createSalesInvoice:/);
     expect(apiSrc).toMatch(/updateSalesInvoice:/);
     expect(apiSrc).toMatch(/finalizeSalesInvoice:/);
@@ -96,7 +116,7 @@ describe("Faktur Penjualan UI & Navigation Suite", () => {
   test("Faktur lifecycle UI has finalize confirmation and status badges", () => {
     expect(pageSrc).toMatch(/btn-finalize-invoice/);
     expect(pageSrc).toMatch(/finalize-confirm-modal/);
-    expect(pageSrc).toMatch(/Finalisasi akan mengunci tanggal, item, harga, diskon, PPN, dan total invoice/);
+    expect(pageSrc).toMatch(/Finalisasi akan mengunci tanggal, item, harga, diskon, PPN, biaya lainnya, dan total invoice/);
     expect(pageSrc).toMatch(/invoice-financial-badge-/);
     expect(pageSrc).toMatch(/btn-cancel-invoice/);
     expect(pageSrc).toMatch(/btn-post-accounting/);
@@ -117,6 +137,10 @@ describe("Faktur Penjualan UI & Navigation Suite", () => {
     expect(pageSrc).not.toMatch(/\binvoiceLines\b/);
     expect(pageSrc).toMatch(/createCalculations\?\.lines/);
     expect(pageSrc).toMatch(/FormProgress/);
+    expect(pageSrc).toMatch(/Barang & Harga/);
+    expect(pageSrc).toMatch(/Tanggal & Ketentuan/);
+    expect(pageSrc).toMatch(/Belum lengkap/);
+    expect(pageSrc).toMatch(/priceMissingAny/);
     expect(pageSrc).toMatch(/FormSection/);
   });
 });

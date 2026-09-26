@@ -168,6 +168,12 @@ export default function BukuBesar() {
         </div>
       </div>
 
+      {data?.completeness_status === "incomplete" && (
+        <div className="form-error" role="status" data-testid="buku-besar-completeness">
+          <AlertCircle size={16} /> Reversal belum lengkap ({data.blocker_code || "REVERSAL_INCOMPLETE"}). Angka pada ringkasan ini belum final.
+        </div>
+      )}
+
       {data && (
         <div className="kb-summary-strip" data-testid="buku-besar-summary">
           <div className="kb-summary-card">

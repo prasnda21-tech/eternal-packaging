@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { Check, Copy, FileText, Image as ImageIcon } from "lucide-react";
 import api, { publicApiUrl } from "../lib/api";
 import BrandMark from "../components/BrandMark";
+import TrackingInvoices from "../components/TrackingInvoices";
 import {
   approvalActionPath,
   compactItemSummary,
@@ -178,6 +179,39 @@ export default function CustomerTrackingPage() {
     openPublicHref(tile.href, { image: tile.image, onPreview: setPreview });
   };
 
+  const renderDocTile = (tile) => {
+    const shared = {
+      className: `tracking-doc-tile${tile.available ? "" : " is-off"}`,
+      "data-testid": `tracking-doc-tile-${tile.key}`,
+      "aria-label": `${tile.label}: ${tile.status}${tile.available ? "" : ", tidak tersedia"}`,
+    };
+    const body = (
+      <>
+        <span className="tracking-doc-ico">
+          {tile.kind === "pdf" ? <FileText size={14} /> : <ImageIcon size={14} />}
+        </span>
+        <strong>{tile.label}</strong>
+        <span className="muted small">{tile.available ? `✓ ${tile.status}` : `○ ${tile.status}`}</span>
+        <span className="tracking-doc-action">Lihat</span>
+      </>
+    );
+    if (tile.available && tile.approval && ctaPath) {
+      return (
+        <a href={ctaPath} {...shared}>{body}</a>
+      );
+    }
+    return (
+      <button
+        type="button"
+        disabled={!tile.available}
+        onClick={() => openTile(tile)}
+        {...shared}
+      >
+        {body}
+      </button>
+    );
+  };
+
   return (
     <main className="tracking-page is-onescreen" data-testid="customer-tracking-page">
       <header className="tracking-hero" data-testid="tracking-header">
@@ -299,39 +333,12 @@ export default function CustomerTrackingPage() {
             <section className="tracking-card tracking-docs" data-testid="tracking-documents">
               <h2>Dokumen Pesanan</h2>
               <div className="tracking-doc-grid">
-                {tiles.map((tile) => {
-                  const shared = {
-                    className: `tracking-doc-tile${tile.available ? "" : " is-off"}`,
-                    "data-testid": `tracking-doc-tile-${tile.key}`,
-                    "aria-label": `${tile.label}: ${tile.status}${tile.available ? "" : ", tidak tersedia"}`,
-                  };
-                  const body = (
-                    <>
-                      <span className="tracking-doc-ico">
-                        {tile.kind === "pdf" ? <FileText size={14} /> : <ImageIcon size={14} />}
-                      </span>
-                      <strong>{tile.label}</strong>
-                      <span className="muted small">{tile.available ? `✓ ${tile.status}` : `○ ${tile.status}`}</span>
-                      <span className="tracking-doc-action">Lihat</span>
-                    </>
-                  );
-                  if (tile.available && tile.approval && ctaPath) {
-                    return (
-                      <a key={tile.key} href={ctaPath} {...shared}>{body}</a>
-                    );
-                  }
-                  return (
-                    <button
-                      key={tile.key}
-                      type="button"
-                      disabled={!tile.available}
-                      onClick={() => openTile(tile)}
-                      {...shared}
-                    >
-                      {body}
-                    </button>
-                  );
-                })}
+                {tiles.map((tile) => (
+                  <Fragment key={tile.key}>
+                    {renderDocTile(tile)}
+                    {tile.key === "payment" ? <TrackingInvoices token={token} /> : null}
+                  </Fragment>
+                ))}
               </div>
               {signedSjDocs.length > 0 && (
                 <div className="tracking-doc-group" data-testid="tracking-surat-jalan">

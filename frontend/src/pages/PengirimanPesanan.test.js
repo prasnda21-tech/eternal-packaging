@@ -30,6 +30,8 @@ describe("Pengiriman Pesanan UI & Data Invariants", () => {
     expect(src).toMatch(/expedition/);
     expect(src).toMatch(/notes/);
     expect(src).toMatch(/SjDeliveryLocationPicker/);
+    expect(src).toMatch(/Nomor SJ/);
+    expect(src).not.toMatch(/Backend-Authoritative/);
     expect(src).toMatch(/sjOverridePayload/);
     expect(src).toMatch(/delivery_location/);
   });
@@ -109,8 +111,8 @@ describe("Pengiriman Pesanan UI & Data Invariants", () => {
   });
 
   test("adds Proses ke Pengiriman Pesanan button and summary to PesananPenjualan", () => {
-    expect(salesOrderSrc).toMatch(/Status Kirim/);
-    expect(salesOrderSrc).toMatch(/Sisa Kirim/);
+    expect(salesOrderSrc).toMatch(/Tgl Kirim/);
+    expect(salesOrderSrc).toMatch(/so-act-ship/);
     expect(salesOrderSrc).toMatch(/\/penjualan\/pengiriman-pesanan\?po_id=/);
   });
 

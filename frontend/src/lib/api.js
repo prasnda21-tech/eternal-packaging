@@ -204,6 +204,8 @@ export const api = {
   salesOrderOptions: () => client.get(`/sales-orders/options`).then((r) => r.data),
   createSalesOrder: (payload) => client.post(`/sales-orders`, payload).then((r) => r.data),
   listSalesOrders: (params = {}, config = {}) => client.get(`/sales-orders`, { params, ...config }).then((r) => r.data),
+  salesOrderItemImages: (params = {}, config = {}) => client.get(`/sales-orders/item-images`, { params, ...config }).then((r) => r.data),
+  salesOrderPriceQuote: (payload, config = {}) => client.post(`/sales-orders/price-quote`, payload, config).then((r) => r.data),
   salesOrderRepeatSource: (customerId, config = {}) =>
     client
       .get(`/sales-orders/repeat-source`, {
@@ -311,6 +313,28 @@ export const api = {
   currentStockUpdate: (itemId, payload) => client.patch(`/current-stock/${itemId}`, payload).then((r) => r.data),
   currentStockExport: (params = {}) =>
     client.get(`/current-stock/export`, { params, responseType: "blob" }).then((r) => r.data),
+  inventoryValuation: (params = {}) =>
+    client.get(`/inventory-valuation`, { params }).then((r) => r.data),
+  inventoryValuationExport: (params = {}) =>
+    client.get(`/inventory-valuation/export`, { params, responseType: "blob" }).then((r) => r.data),
+  financialInventoryOpenings: () => client.get(`/inventory/financial-opening`).then((r) => r.data),
+  previewFinancialInventoryOpening: (payload) =>
+    client.post(`/inventory/financial-opening/preview`, payload).then((r) => r.data),
+  postFinancialInventoryOpening: (payload) =>
+    client.post(`/inventory/financial-opening`, payload).then((r) => r.data),
+  recoverFinancialInventoryOpening: (payload) =>
+    client.post(`/inventory/financial-opening/recover`, payload).then((r) => r.data),
+  financialBookReconciliation: () =>
+    client.get(`/inventory/financial-opening/reconciliation`).then((r) => r.data),
+  captureFinancialOpeningSnapshot: (payload) =>
+    client.post(`/inventory/financial-opening/snapshot`, payload).then((r) => r.data),
+  inventoryIssues: () => client.get(`/ledger/inventory-issues`).then((r) => r.data),
+  postInventoryIssue: (movementId) =>
+    client.post(`/ledger/inventory-issues/${encodeURIComponent(movementId)}/post`).then((r) => r.data),
+  purchaseActivityReport: (params = {}) =>
+    client.get(`/inventory/reports/purchases`, { params }).then((r) => r.data),
+  salesActivityReport: (params = {}) =>
+    client.get(`/inventory/reports/sales`, { params }).then((r) => r.data),
   stockOpnameItems: (params = {}) => client.get(`/stock-opname/items`, { params }).then((r) => r.data),
   stockOpnameExportTemplate: () =>
     client.get(`/stock-opname/export-template`, { responseType: "blob" }).then((r) => r.data),
@@ -518,6 +542,7 @@ export const api = {
   adminAuditLogs: (params = {}) => client.get(`/admin/audit-logs`, { params }).then((r) => r.data),
   // ---- Production dashboard (Req 6) ----
   productionDashboard: (params = {}) => client.get(`/dashboard/production`, { params }).then((r) => r.data),
+  financialDashboard: (params = {}) => client.get(`/dashboard/keuangan`, { params }).then((r) => r.data),
   shipmentStatus: (params = {}) => client.get(`/dashboard/shipment-status`, { params }).then((r) => r.data),
   statusPo: (params = {}) => client.get(`/dashboard/status-po`, { params }).then((r) => r.data),
   productionExport: (payload = { scope: "filtered" }) => client.post(`/dashboard/production/export`, payload, { responseType: "blob" }).then((r) => r.data),
@@ -598,6 +623,12 @@ export const api = {
     if (!r.ok) throw { response: { status: r.status, data: d } };
     return d;
   },
+  publicTrackingInvoices: (token) =>
+    publicJsonRequest(`/public/tracking/${encodeURIComponent(token)}/invoices`),
+  publicTrackingInvoice: (token, invoiceId) =>
+    publicJsonRequest(
+      `/public/tracking/${encodeURIComponent(token)}/invoices/${encodeURIComponent(invoiceId)}`,
+    ),
   // ---- Sales Delivery (Pengiriman Pesanan) ----
   listSalesDeliveries: (params = {}) => client.get(`/sales-deliveries`, { params }).then((r) => r.data),
   getSalesDelivery: (id) => client.get(`/sales-deliveries/${encodeURIComponent(id)}`).then((r) => r.data),
@@ -619,6 +650,7 @@ export const api = {
   listSalesInvoices: (params = {}) => client.get(`/sales-invoices`, { params }).then((r) => r.data),
   getSalesInvoice: (id) => client.get(`/sales-invoices/${encodeURIComponent(id)}`).then((r) => r.data),
   getPoInvoicePreview: (poId) => client.get(`/sales-invoices/po/${encodeURIComponent(poId)}/preview`).then((r) => r.data),
+  salesInvoiceChargeAccounts: (params = {}) => client.get(`/sales-invoices/charge-accounts`, { params }).then((r) => r.data),
   createSalesInvoice: (payload) => client.post(`/sales-invoices`, payload).then((r) => r.data),
   updateSalesInvoice: (id, payload) => client.put(`/sales-invoices/${encodeURIComponent(id)}`, payload).then((r) => r.data),
   finalizeSalesInvoice: (id) => client.post(`/sales-invoices/${encodeURIComponent(id)}/finalize`).then((r) => r.data),

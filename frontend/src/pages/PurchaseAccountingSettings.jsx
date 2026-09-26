@@ -18,6 +18,7 @@ export default function PurchaseAccountingSettings({ notify, canEdit }) {
   const [inventoryId, setInventoryId] = useState("");
   const [cogsId, setCogsId] = useState("");
   const [effectiveDate, setEffectiveDate] = useState("");
+  const [offsetId, setOffsetId] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
@@ -33,6 +34,7 @@ export default function PurchaseAccountingSettings({ notify, canEdit }) {
         setInventoryId(s.inventory_account_id || "");
         setCogsId(s.cogs_account_id || "");
         setEffectiveDate(s.inventory_accounting_effective_date || "");
+        setOffsetId(s.inventory_opening_offset_account_id || "");
         setAccounts(accountsRes.items || accountsRes.accounts || []);
       })
       .catch((e) => setErr(errDetail(e)))
@@ -59,6 +61,10 @@ export default function PurchaseAccountingSettings({ notify, canEdit }) {
     () => (Array.isArray(accounts) ? accounts.filter((a) => a.account_type === "COGS") : []),
     [accounts]
   );
+  const offsetOptions = useMemo(
+    () => (Array.isArray(accounts) ? accounts.filter((a) => ["EQTY", "OCLY", "OASS", "OCAS", "LTLY"].includes(a.account_type)) : []),
+    [accounts]
+  );
 
   const save = async () => {
     setBusy(true);
@@ -73,6 +79,7 @@ export default function PurchaseAccountingSettings({ notify, canEdit }) {
         payload.cogs_account_id = cogsId;
         payload.inventory_accounting_effective_date = effectiveDate;
       }
+      if (offsetId) payload.inventory_opening_offset_account_id = offsetId;
       const res = await api.updatePurchaseAccountingSettings(payload);
       setSettings(res.settings);
       notify?.(res.message || "Pengaturan Akuntansi Pembelian disimpan");
@@ -178,7 +185,26 @@ export default function PurchaseAccountingSettings({ notify, canEdit }) {
               data-testid="purchase-accounting-effective-date"
             />
           </label>
+          <label>
+            Lawan opening persediaan
+            <select
+              value={offsetId}
+              onChange={(e) => setOffsetId(e.target.value)}
+              disabled={!canEdit}
+              data-testid="purchase-accounting-opening-offset"
+            >
+              <option value="">Pilih akun lawan</option>
+              {offsetOptions.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {accountLabel(a)}
+                </option>
+              ))}
+            </select>
+          </label>
         </div>
+        <p className="muted small" data-testid="purchase-accounting-offset-note">
+          Akun lawan opening disimpan sebagai ID COA. Menyimpan pengaturan tidak memposting jurnal dan tidak mengubah opening yang sudah posted.
+        </p>
         <p className="muted small" data-testid="purchase-accounting-effective-date-note">
           Tanggal mulai mencegah jurnal Inventory/COGS mundur sebelum tanggal yang dipilih.
           Tidak mengisi otomatis. Accounting Persediaan diakui dari Penerimaan Barang, bukan dari stok fisik.

@@ -1033,7 +1033,14 @@ async def post_purchase_goods_receipt_accounting(
     """Post one active canonical GR. Idempotent. Mongo claim is the lock."""
     async with _optional_receipt_lock(serialize_in_process):
         receipt = await _load_receipt(db, receipt_id)
+        from services.financial_inventory_opening import receipt_blocked_for_new_acquisition
+        exclusion = await receipt_blocked_for_new_acquisition(db, receipt)
         existing = await find_goods_receipt_source_journal(db, receipt["id"])
+        if exclusion and not existing:
+            raise HTTPException(409, {
+                "code": exclusion,
+                "message": "Penerimaan historis atau bertanggal ambigu tidak diposting lagi sebagai akuisisi baru.",
+            })
         if existing:
             await _heal_posted_metadata(db, receipt, existing, user)
             if is_cancelled(receipt) and accounting_status_from_journal(existing) == ACCOUNTING_POSTED:

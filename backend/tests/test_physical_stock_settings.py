@@ -80,7 +80,7 @@ async def test_get_default_returns_enabled_false():
     res = await get_physical_stock_settings(db)
     assert res["enabled"] is False
     assert res["stock_in_trigger"] == "goods_receipt"
-    assert res["stock_out_trigger"] == "loading_confirmation"
+    assert res["stock_out_trigger"] == "sales_delivery"
     assert res["key"] == SETTINGS_KEY
 
 
@@ -222,18 +222,16 @@ async def test_saving_creates_zero_stock_movements():
 
 
 @pytest.mark.anyio
-async def test_sales_delivery_trigger_rejected_as_unsupported():
-    """10b. sales_delivery trigger is rejected because create endpoint lacks stable client idempotency."""
+async def test_sales_delivery_trigger_is_supported():
+    """10b. sales_delivery is the current safe default and an allowed future trigger."""
     db = MockDb()
     payload = {
         "enabled": False,
         "stock_in_trigger": "goods_receipt",
         "stock_out_trigger": "sales_delivery",
     }
-    with pytest.raises(HTTPException) as exc_info:
-        await update_physical_stock_settings(db, payload)
-    assert exc_info.value.status_code == 400
-    assert "Trigger stock-out tidak valid" in exc_info.value.detail
+    saved = await update_physical_stock_settings(db, payload)
+    assert saved["stock_out_trigger"] == "sales_delivery"
 
 
 @pytest.mark.anyio

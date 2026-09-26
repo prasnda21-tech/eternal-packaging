@@ -8,6 +8,7 @@ import {
   accuratePreviewLineItems,
   wrapAccurateImportPreviewResponse,
 } from "../lib/accurateImportPreview";
+import "./salesSubmenuDensity.css";
 
 const statusMeta = {
   success: { label: "Berhasil", cls: "log-success", icon: CheckCircle2 },

@@ -80,6 +80,25 @@ def derive_invoice_number(po_number: str, invoice_index: int) -> str:
     return f"{base}_{invoice_index}"
 
 
+def stored_order_unit_price(line: Optional[dict]) -> Optional[float]:
+    """A missing order price is None, never an implied zero."""
+    if not isinstance(line, dict) or "unit_price" not in line:
+        return None
+    raw = line.get("unit_price")
+    if raw is None or raw == "":
+        return None
+    return _parse_non_negative_price(raw, "Harga jual pesanan")
+
+
+def _require_explicit_price(raw: Any, field_name: str) -> float:
+    if raw is None or (isinstance(raw, str) and not str(raw).strip()):
+        raise HTTPException(
+            400,
+            f"{field_name} wajib diisi. Harga kosong tidak dijadikan Rp0.",
+        )
+    return _parse_non_negative_price(raw, field_name)
+
+
 def _parse_non_negative_price(raw: Any, field_name: str = "Harga satuan") -> float:
     """Strictly validates and converts numeric input to a non-negative float.
     Rejects malformed strings, None, negative numbers, etc.
@@ -102,6 +121,180 @@ def _money2(raw: Any) -> Decimal:
         return Decimal(str(raw if raw is not None else 0)).quantize(Decimal("0.01"))
     except (InvalidOperation, ValueError, TypeError):
         return Decimal("0.00")
+
+
+# Biaya Lainnya is billed to the customer and credited to the selected account.
+# Existing discount and PPN rules stay on goods only: discount cannot exceed the
+# goods subtotal, and PPN is after_discount × percent. No rule applies either
+# one to these charges, so they are added after that goods total.
+OTHER_CHARGE_ACCOUNT_TYPES = frozenset({"EXPS", "OEXP", "OINC", "REVE"})
+_INACTIVE_ACCOUNT_STATUSES = frozenset({"inactive", "nonaktif", "disabled", "non-aktif"})
+
+
+def other_charges_total(invoice: Optional[dict]) -> Decimal:
+    rows = (invoice or {}).get("other_charges") or []
+    if not isinstance(rows, list):
+        return Decimal("0.00")
+    total = Decimal("0.00")
+    for row in rows:
+        if isinstance(row, dict):
+            total += _money2(row.get("amount"))
+    return total.quantize(Decimal("0.01"))
+
+
+def invoice_sales_label(invoice: Optional[dict]) -> str:
+    """Sales name snapshotted from the order. Never guessed from the actor."""
+    for key in ("sales", "sales_name"):
+        value = str((invoice or {}).get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _account_status_text(account: dict) -> str:
+    return str(account.get("status") or account.get("account_status") or "").strip().lower()
+
+
+def _charge_account_blocked_reason(account: Optional[dict]) -> Optional[str]:
+    if not account:
+        return "tidak ditemukan"
+    if _account_status_text(account) in _INACTIVE_ACCOUNT_STATUSES:
+        return "tidak aktif"
+    if account.get("is_active") is False or account.get("active") is False:
+        return "tidak aktif"
+    if account.get("is_header") is True or account.get("header") is True:
+        return "tidak dapat diposting"
+    if account.get("postable") is False or account.get("can_post") is False:
+        return "tidak dapat diposting"
+    account_type = str(account.get("account_type") or "").strip().upper()
+    if account_type not in OTHER_CHARGE_ACCOUNT_TYPES:
+        return "tidak diizinkan"
+    return None
+
+
+def _charge_account_message(row_no: int, reason: str, account: Optional[dict]) -> str:
+    code = str((account or {}).get("code") or "").strip()
+    name = str((account or {}).get("name") or "").strip()
+    label = " ".join(part for part in (code, name) if part).strip()
+    prefix = f"Baris biaya {row_no}"
+    if reason == "tidak ditemukan":
+        return f"{prefix}: akun perkiraan tidak ditemukan."
+    if reason == "tidak aktif":
+        shown = label or "yang dipilih"
+        return f"{prefix}: akun {shown} tidak aktif."
+    if reason == "tidak dapat diposting":
+        shown = label or "yang dipilih"
+        return f"{prefix}: akun {shown} tidak dapat diposting."
+    shown = label or "yang dipilih"
+    return (
+        f"{prefix}: akun {shown} tidak diizinkan untuk Biaya Lainnya. "
+        "Pilih akun beban, beban lain-lain, pendapatan, atau pendapatan lain-lain yang aktif."
+    )
+
+
+async def _load_ledger_account(db, account_id: str) -> Optional[dict]:
+    from services.chart_of_accounts import COLLECTION
+
+    aid = str(account_id or "").strip()
+    if not aid:
+        return None
+    return await db[COLLECTION].find_one({"id": aid}, {"_id": 0})
+
+
+def _parse_charge_amount(raw: Any, row_no: int) -> float:
+    label = f"Baris biaya {row_no}: nominal"
+    if raw is None or (isinstance(raw, str) and not str(raw).strip()):
+        raise HTTPException(400, f"{label} wajib diisi.")
+    if isinstance(raw, bool):
+        raise HTTPException(400, f"{label} tidak valid. Format harus angka.")
+    try:
+        amount = Decimal(str(raw).strip().replace(",", "."))
+    except (InvalidOperation, ValueError, TypeError):
+        raise HTTPException(400, f"{label} tidak valid. Format harus angka.")
+    if amount < 0:
+        raise HTTPException(400, f"{label} tidak boleh negatif.")
+    if amount == 0:
+        raise HTTPException(400, f"{label} harus lebih besar dari 0.")
+    return float(amount.quantize(Decimal("0.01")))
+
+
+async def normalize_other_charges(db, raw: Any) -> List[dict]:
+    """Validate every submitted charge row. Incomplete rows are rejected, not dropped."""
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise HTTPException(400, "Biaya lainnya harus berupa daftar baris.")
+    normalized: List[dict] = []
+    for index, row in enumerate(raw):
+        row_no = index + 1
+        if not isinstance(row, dict):
+            raise HTTPException(400, f"Baris biaya {row_no} belum lengkap: akun, keterangan, dan nominal wajib diisi.")
+        account_id = str(row.get("account_id") or "").strip()
+        description = str(row.get("description") if row.get("description") is not None else row.get("keterangan") or "").strip()
+        amount_raw = row.get("amount")
+        missing = []
+        if not account_id:
+            missing.append("akun perkiraan")
+        if not description:
+            missing.append("keterangan")
+        amount_blank = amount_raw is None or (isinstance(amount_raw, str) and not str(amount_raw).strip())
+        if amount_blank:
+            missing.append("nominal")
+        if missing:
+            raise HTTPException(
+                400,
+                f"Baris biaya {row_no} belum lengkap: {', '.join(missing)} wajib diisi.",
+            )
+        account = await _load_ledger_account(db, account_id)
+        reason = _charge_account_blocked_reason(account)
+        if reason:
+            raise HTTPException(400, _charge_account_message(row_no, reason, account))
+        amount = _parse_charge_amount(amount_raw, row_no)
+        line_id = str(row.get("id") or "").strip() or str(uuid.uuid4())
+        normalized.append({
+            "id": line_id,
+            "account_id": str(account["id"]),
+            "account_code": str(account.get("code") or ""),
+            "account_name": str(account.get("name") or ""),
+            "account_type": str(account.get("account_type") or "").strip().upper(),
+            "description": description,
+            "amount": amount,
+        })
+    return normalized
+
+
+async def list_charge_account_options(db, q: Optional[str] = None) -> List[dict]:
+    """Active, postable COA accounts allowed on a sales-invoice other charge. Zero-write."""
+    from services.chart_of_accounts import COLLECTION
+
+    query: Dict[str, Any] = {}
+    needle = (q or "").strip()
+    if needle:
+        safe = re.escape(needle)
+        query["$or"] = [
+            {"code": {"$regex": safe, "$options": "i"}},
+            {"name": {"$regex": safe, "$options": "i"}},
+        ]
+    docs = await db[COLLECTION].find(query, {"_id": 0}).sort("code", 1).to_list(5000)
+    items = []
+    for doc in docs:
+        if _charge_account_blocked_reason(doc):
+            continue
+        items.append({
+            "id": doc.get("id"),
+            "code": str(doc.get("code") or ""),
+            "name": str(doc.get("name") or ""),
+            "account_type": str(doc.get("account_type") or "").strip().upper(),
+        })
+    return items
+
+
+def ensure_other_charge_fields(invoice: Dict[str, Any]) -> Dict[str, Any]:
+    rows = invoice.get("other_charges")
+    if not isinstance(rows, list):
+        invoice["other_charges"] = []
+    invoice["other_charges_total"] = float(other_charges_total(invoice))
+    return invoice
 
 
 def _actor_public(user: Optional[dict]) -> Dict[str, str]:
@@ -131,7 +324,13 @@ def monetary_invariant_valid(invoice: Optional[dict]) -> bool:
     grand = _money2(invoice.get("grand_total"))
     after = _money2(invoice.get("after_discount"))
     ppn = _money2(invoice.get("ppn_amount"))
-    return grand == after + ppn
+    charges = other_charges_total(invoice)
+    return grand == (after + ppn + charges).quantize(Decimal("0.01"))
+
+
+TOTAL_INVARIANT_MESSAGE = (
+    "Total faktur tidak valid: grand_total harus sama dengan after_discount + ppn_amount + total biaya lainnya."
+)
 
 
 def apply_invoice_payment_fields(invoice: Dict[str, Any], receipts: Optional[List[dict]]) -> Dict[str, Any]:
@@ -257,6 +456,7 @@ async def attach_invoice_accounting_fields(db, invoices: List[Dict[str, Any]]) -
             and _money2(inv.get("ppn_amount")) >= 0
         )
         inv["can_delete"] = status == FINANCIAL_DRAFT
+        ensure_other_charge_fields(inv)
     return invoices
 
 
@@ -330,6 +530,10 @@ async def get_po_invoice_preview(db, po_id_or_doc: Any, exclude_invoice_id: Opti
 
         total_ordered_qty += ordered_qty
         total_remaining_invoice_qty += remaining_invoice_qty
+        stored_price = stored_order_unit_price(li)
+        stored_subtotal = None
+        if stored_price is not None:
+            stored_subtotal = round(float(Decimal(str(remaining_invoice_qty)) * Decimal(str(stored_price))), 2)
 
         preview_lines.append({
             "line_idx": line_idx,
@@ -342,9 +546,11 @@ async def get_po_invoice_preview(db, po_id_or_doc: Any, exclude_invoice_id: Opti
             "remaining_invoice_qty": remaining_invoice_qty,
             "quantity": remaining_invoice_qty,  # Default suggested qty to invoice
             "unit": unit,
-            "unit_price": 0.0,
-            "line_subtotal": 0.0,
-            "line_total": 0.0,
+            "unit_price": stored_price,
+            "price_from_order": stored_price is not None,
+            "price_source": li.get("price_source") if stored_price is not None else None,
+            "line_subtotal": stored_subtotal,
+            "line_total": stored_subtotal,
         })
 
     return {
@@ -427,8 +633,10 @@ async def create_sales_invoice(db, payload: Dict[str, Any], user: dict) -> Dict[
                 if input_lines:
                     continue
                 invoice_qty = p_line["remaining_invoice_qty"]
-                raw_unit_price = 0
             else:
+                sent_line_id = str(matched_input.get("line_id") or "").strip()
+                if sent_line_id and sent_line_id != str(p_line.get("line_id") or ""):
+                    raise HTTPException(400, f"Identitas baris faktur tidak cocok dengan pesanan untuk '{p_line['item_name']}'.")
                 raw_qty = matched_input.get("quantity")
                 if raw_qty is None or raw_qty == "":
                     raw_qty = matched_input.get("invoice_qty")
@@ -439,7 +647,6 @@ async def create_sales_invoice(db, payload: Dict[str, Any], user: dict) -> Dict[
                         invoice_qty = int(raw_qty)
                     except (ValueError, TypeError):
                         raise HTTPException(400, f"Kuantitas faktur untuk '{p_line['item_name']}' harus berupa bilangan bulat.")
-                raw_unit_price = matched_input.get("unit_price", 0)
 
             if invoice_qty < 0:
                 raise HTTPException(400, f"Kuantitas faktur untuk '{p_line['item_name']}' tidak boleh negatif.")
@@ -455,7 +662,18 @@ async def create_sales_invoice(db, payload: Dict[str, Any], user: dict) -> Dict[
                     f"Kuantitas faktur ({invoice_qty}) untuk '{p_line['item_name']}' melebihi sisa PO ({remaining} {p_line['unit']})."
                 )
 
-            unit_price = _parse_non_negative_price(raw_unit_price, f"Harga satuan '{p_line['item_name']}'")
+            if p_line.get("price_from_order"):
+                unit_price = float(p_line["unit_price"])
+            elif matched_input is None or "unit_price" not in matched_input:
+                raise HTTPException(
+                    400,
+                    f"Harga jual untuk '{p_line['item_name']}' belum ada di pesanan. Lengkapi harga sebelum membuat faktur.",
+                )
+            else:
+                unit_price = _require_explicit_price(
+                    matched_input.get("unit_price"),
+                    f"Harga jual '{p_line['item_name']}'",
+                )
 
             line_subtotal = round(float(Decimal(str(invoice_qty)) * Decimal(str(unit_price))), 2)
             authoritative_subtotal += line_subtotal
@@ -482,18 +700,25 @@ async def create_sales_invoice(db, payload: Dict[str, Any], user: dict) -> Dict[
 
         authoritative_subtotal = round(authoritative_subtotal, 2)
 
-        # Discount validation (nominal)
+        # Discount and PPN stay on goods. Charges are added after that total.
+        # Owner decision for ongkir only: shipping is not reduced by the invoice discount
+        # and is not part of the goods PPN base. The same arithmetic is still used for
+        # other charge rows; that is not a tax decision for those charge types.
         discount_amount = _parse_non_negative_price(payload.get("discount_amount", 0), "Diskon")
         if discount_amount > authoritative_subtotal:
             raise HTTPException(400, f"Diskon (Rp {discount_amount:,.2f}) tidak boleh melebihi subtotal (Rp {authoritative_subtotal:,.2f}).")
 
         after_discount = round(float(Decimal(str(authoritative_subtotal)) - Decimal(str(discount_amount))), 2)
 
-        # PPN validation (%)
         ppn_percent = _parse_non_negative_price(payload.get("ppn_percent", 0), "Persentase PPN")
         ppn_amount = round(float(Decimal(str(after_discount)) * (Decimal(str(ppn_percent)) / Decimal("100"))), 2)
 
-        authoritative_grand_total = round(float(Decimal(str(after_discount)) + Decimal(str(ppn_amount))), 2)
+        other_charges = await normalize_other_charges(db, payload.get("other_charges"))
+        charges_total = float(other_charges_total({"other_charges": other_charges}))
+        authoritative_grand_total = round(
+            float(Decimal(str(after_discount)) + Decimal(str(ppn_amount)) + Decimal(str(charges_total))),
+            2,
+        )
 
         # Termin & Due Date
         raw_term = payload.get("payment_term_days", 0)
@@ -548,6 +773,8 @@ async def create_sales_invoice(db, payload: Dict[str, Any], user: dict) -> Dict[
             "after_discount": after_discount,
             "ppn_percent": ppn_percent,
             "ppn_amount": ppn_amount,
+            "other_charges": other_charges,
+            "other_charges_total": charges_total,
             "grand_total": authoritative_grand_total,
             "paid_total": 0.0,
             "outstanding_amount": authoritative_grand_total,
@@ -657,7 +884,7 @@ async def update_sales_invoice(db, invoice_id: str, payload: Dict[str, Any], use
             line_idx = int(el.get("line_idx", idx))
             qty = int(el.get("quantity") or 0)
 
-            if line_idx in input_by_idx:
+            if line_idx in input_by_idx and input_by_idx[line_idx].get("unit_price") not in (None, ""):
                 raw_price = input_by_idx[line_idx].get("unit_price")
                 unit_price = _parse_non_negative_price(raw_price, f"Harga satuan '{el.get('item_name')}'")
             else:
@@ -675,7 +902,6 @@ async def update_sales_invoice(db, invoice_id: str, payload: Dict[str, Any], use
 
         authoritative_subtotal = round(authoritative_subtotal, 2)
 
-        # Discount
         raw_disc = payload.get("discount_amount") if "discount_amount" in payload else inv.get("discount_amount", 0)
         discount_amount = _parse_non_negative_price(raw_disc, "Diskon")
         if discount_amount > authoritative_subtotal:
@@ -683,12 +909,19 @@ async def update_sales_invoice(db, invoice_id: str, payload: Dict[str, Any], use
 
         after_discount = round(float(Decimal(str(authoritative_subtotal)) - Decimal(str(discount_amount))), 2)
 
-        # PPN
         raw_ppn = payload.get("ppn_percent") if "ppn_percent" in payload else inv.get("ppn_percent", 0)
         ppn_percent = _parse_non_negative_price(raw_ppn, "Persentase PPN")
         ppn_amount = round(float(Decimal(str(after_discount)) * (Decimal(str(ppn_percent)) / Decimal("100"))), 2)
 
-        authoritative_grand_total = round(float(Decimal(str(after_discount)) + Decimal(str(ppn_amount))), 2)
+        if payload.get("other_charges") is None:
+            other_charges = list(inv.get("other_charges") or [])
+        else:
+            other_charges = await normalize_other_charges(db, payload.get("other_charges"))
+        charges_total = float(other_charges_total({"other_charges": other_charges}))
+        authoritative_grand_total = round(
+            float(Decimal(str(after_discount)) + Decimal(str(ppn_amount)) + Decimal(str(charges_total))),
+            2,
+        )
 
         # Termin & Due Date
         raw_term = payload.get("payment_term_days") if "payment_term_days" in payload else inv.get("payment_term_days", 0)
@@ -716,7 +949,10 @@ async def update_sales_invoice(db, invoice_id: str, payload: Dict[str, Any], use
             "after_discount": after_discount,
             "ppn_percent": ppn_percent,
             "ppn_amount": ppn_amount,
+            "other_charges": other_charges,
+            "other_charges_total": charges_total,
             "grand_total": authoritative_grand_total,
+            "outstanding_amount": authoritative_grand_total,
             "payment_term_days": payment_term_days,
             "invoice_date": invoice_date_str,
             "due_date": due_date_str,
@@ -812,10 +1048,7 @@ async def finalize_sales_invoice(db, invoice_id: str, user: dict) -> Dict[str, A
             return await get_sales_invoice_detail(db, inv["id"])
 
         if not monetary_invariant_valid(inv):
-            raise HTTPException(
-                400,
-                "Total faktur tidak valid: grand_total harus sama dengan after_discount + ppn_amount.",
-            )
+            raise HTTPException(400, TOTAL_INVARIANT_MESSAGE)
 
         now = now_iso()
         claimed = await db.sales_invoices.find_one_and_update(
@@ -1051,10 +1284,18 @@ def generate_sales_invoice_pdf_bytes(invoice: dict) -> bytes:
             Paragraph(f": {format_pdf_date(invoice.get('due_date'))}", meta_val_style),
         ],
         [
-            Paragraph("<b>Catatan</b>", meta_label_style),
-            Paragraph(f": {escape(str(invoice.get('notes') or '-'))}", meta_val_style),
+            Paragraph("<b>Sales</b>", meta_label_style),
+            Paragraph(f": {escape(invoice_sales_label(invoice) or '-')}", meta_val_style),
             Paragraph("<b>Status</b>", meta_label_style),
             Paragraph(f": {escape(str(invoice.get('payment_status') or '-'))}", meta_val_style),
+        ],
+        [
+            # Same `notes` field the official invoice PDF already printed as Catatan.
+            # The form label is Catatan Faktur. Account, journal, HPP, and margin stay off the PDF.
+            Paragraph("<b>Catatan</b>", meta_label_style),
+            Paragraph(f": {escape(str(invoice.get('notes') or '-'))}", meta_val_style),
+            Paragraph("", meta_label_style),
+            Paragraph("", meta_val_style),
         ],
     ]
     meta_tbl = Table(meta_data, colWidths=[2.5 * cm, 6.5 * cm, 2.5 * cm, 6.5 * cm])
@@ -1135,6 +1376,15 @@ def generate_sales_invoice_pdf_bytes(invoice: dict) -> bytes:
         summary_data.append([Paragraph("<b>Diskon</b>", tbl_cell_style), Paragraph(f"- {format_money(discount)}", tbl_cell_bold)])
     if float(ppn_pct) > 0:
         summary_data.append([Paragraph(f"<b>PPN ({ppn_pct}%)</b>", tbl_cell_style), Paragraph(format_money(ppn_amt), tbl_cell_bold)])
+    for charge in invoice.get("other_charges") or []:
+        if not isinstance(charge, dict):
+            continue
+        # Customer sees the charge description, not the internal ledger account.
+        label = str(charge.get("description") or "").strip() or "Biaya lainnya"
+        summary_data.append([
+            Paragraph(f"<b>{escape(label)}</b>", tbl_cell_style),
+            Paragraph(format_money(charge.get("amount")), tbl_cell_bold),
+        ])
 
     summary_data.append([Paragraph("<b>GRAND TOTAL</b>", tbl_cell_style), Paragraph(f"<b>{format_money(grand)}</b>", tbl_cell_bold)])
     summary_data.append([Paragraph("<b>Telah Dibayar</b>", tbl_cell_style), Paragraph(format_money(paid), tbl_cell_bold)])

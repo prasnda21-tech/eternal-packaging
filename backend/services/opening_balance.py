@@ -605,41 +605,51 @@ async def reverse_voucher(db, voucher_id: str, *, user: Optional[dict] = None) -
         if not journal_id:
             raise OpeningBalanceValidationError("Saldo Awal posted tanpa journal_core")
 
-        try:
-            rev = await reverse_journal(
-                db,
-                journal_id,
-                source_type=SOURCE_OPENING_BALANCE_REVERSAL,
-                source_id=doc["id"],
-                posted_by=user,
-                description=f"Reversal {doc.get('number')}",
-            )
-        except KeyError:
-            raise KeyError("missing") from None
-        except PeriodLockedError as exc:
-            raise OpeningBalanceConflictError(str(exc)) from exc
-        except JournalValidationError as exc:
-            raise OpeningBalanceValidationError(str(exc)) from exc
-        except JournalConflictError as exc:
-            existing = await get_voucher_raw(db, voucher_id)
-            if existing and existing.get("status") == STATUS_REVERSED:
-                raise OpeningBalanceConflictError("Saldo Awal sudah dibatalkan") from exc
-            raise OpeningBalanceConflictError(str(exc)) from exc
-
-        now = now_iso()
-        result = await db[COLLECTION].update_one(
-            {"id": doc["id"], "status": STATUS_POSTED},
-            {
-                "$set": {
-                    "status": STATUS_REVERSED,
-                    "reversal_journal_id": rev["id"],
-                    "reversed_at": now,
-                    "reversed_by": actor_snapshot(user),
-                    "updated_at": now,
-                    "updated_by": actor_snapshot(user),
-                }
-            },
+        from services.financial_inventory_opening import (
+            begin_voucher_reversal_guard,
+            release_item_locks,
         )
-        if result.matched_count == 0:
-            raise OpeningBalanceConflictError("Saldo Awal sudah dibatalkan")
-        return await get_voucher(db, doc["id"])
+
+        locks = await begin_voucher_reversal_guard(db, doc)
+        try:
+            try:
+                rev = await reverse_journal(
+                    db,
+                    journal_id,
+                    source_type=SOURCE_OPENING_BALANCE_REVERSAL,
+                    source_id=doc["id"],
+                    posted_by=user,
+                    description=f"Reversal {doc.get('number')}",
+                    held_item_locks=locks,
+                )
+            except KeyError:
+                raise KeyError("missing") from None
+            except PeriodLockedError as exc:
+                raise OpeningBalanceConflictError(str(exc)) from exc
+            except JournalValidationError as exc:
+                raise OpeningBalanceValidationError(str(exc)) from exc
+            except JournalConflictError as exc:
+                existing = await get_voucher_raw(db, voucher_id)
+                if existing and existing.get("status") == STATUS_REVERSED:
+                    raise OpeningBalanceConflictError("Saldo Awal sudah dibatalkan") from exc
+                raise OpeningBalanceConflictError(str(exc)) from exc
+
+            now = now_iso()
+            result = await db[COLLECTION].update_one(
+                {"id": doc["id"], "status": STATUS_POSTED},
+                {
+                    "$set": {
+                        "status": STATUS_REVERSED,
+                        "reversal_journal_id": rev["id"],
+                        "reversed_at": now,
+                        "reversed_by": actor_snapshot(user),
+                        "updated_at": now,
+                        "updated_by": actor_snapshot(user),
+                    }
+                },
+            )
+            if result.matched_count == 0:
+                raise OpeningBalanceConflictError("Saldo Awal sudah dibatalkan")
+            return await get_voucher(db, doc["id"])
+        finally:
+            await release_item_locks(db, locks)

@@ -50,12 +50,14 @@ const OptimasiRuteEditor = lazy(() => import("./pages/OptimasiRuteEditor"));
 const Dashboard = lazy(() => import("./pages/Dashboard"));
 const PODetail = lazy(() => import("./pages/PODetail"));
 const HoPDashboard = lazy(() => import("./pages/HoPDashboard"));
+const FinancialDashboard = lazy(() => import("./pages/FinancialDashboard"));
 const ProductionSchedule = lazy(() => import("./pages/ProductionSchedule"));
 const SuratJalan = lazy(() => import("./pages/SuratJalan"));
 const PesananPenjualan = lazy(() => import("./pages/PesananPenjualan"));
 const MasterBarangJasa = lazy(() => import("./pages/MasterBarangJasa"));
 const ProductDetail = lazy(() => import("./pages/ProductDetail"));
 const StockSaatIni = lazy(() => import("./pages/StockSaatIni"));
+const NilaiPersediaan = lazy(() => import("./pages/NilaiPersediaan"));
 const StockOpname = lazy(() => import("./pages/StockOpname"));
 const PenerimaanBarang = lazy(() => import("./pages/PenerimaanBarang"));
 const PermintaanPembelian = lazy(() => import("./pages/PermintaanPembelian"));
@@ -143,6 +145,7 @@ function PersediaanIndex() {
   const inv = inventoryNavVisible(hasPerm);
   if (inv.masterItems) return <Navigate to="/persediaan/master-barang-jasa" replace />;
   if (inv.currentStock) return <Navigate to="/persediaan/stock-saat-ini" replace />;
+  if (inv.inventoryValue) return <Navigate to="/persediaan/nilai-persediaan" replace />;
   return <Navigate to="/" replace />;
 }
 
@@ -269,6 +272,7 @@ export default function App() {
             <Route path="/spk" element={<PermGate anyOf={SPK_ACCESS_KEYS}><SpkDashboard /></PermGate>} />
             <Route path="/chat" element={<PermGate anyOf={[NAV_KEYS.chat, "chat.use"]}><ChatPage /></PermGate>} />
             <Route path="/chat/:roomId" element={<PermGate anyOf={[NAV_KEYS.chat, "chat.use"]}><ChatPage /></PermGate>} />
+            <Route path="/dashboard/keuangan" element={<PermGate anyOf={["dashboard.finance.view", NAV_KEYS.dashboardFinance]}><FinancialDashboard /></PermGate>} />
             <Route path="/dashboard" element={<PermGate anyOf={[NAV_KEYS.dashboard]}><HoPDashboard /></PermGate>} />
             <Route path="/tasks" element={<DivisionTaskIndex />} />
             <Route path="/tasks/designer" element={<PermGate anyOf={[NAV_KEYS.tasksDesigner, "design.upload"]}><DivisionTaskPage /></PermGate>} />
@@ -310,6 +314,7 @@ export default function App() {
             <Route path="/persediaan/master-barang-jasa" element={<PermGate anyOf={[NAV_KEYS.masterItems]} alsoAnyOf={["master_items.view"]}><MasterBarangJasa /></PermGate>} />
             <Route path="/persediaan/master-barang-jasa/:id" element={<PermGate anyOf={[NAV_KEYS.masterItems]} alsoAnyOf={["master_items.view"]}><ProductDetail /></PermGate>} />
             <Route path="/persediaan/stock-saat-ini" element={<PermGate anyOf={[NAV_KEYS.currentStock]} alsoAnyOf={["current_stock.view"]}><StockSaatIni /></PermGate>} />
+            <Route path="/persediaan/nilai-persediaan" element={<PermGate anyOf={[NAV_KEYS.inventoryValue]} alsoAnyOf={["inventory_valuation.view"]}><NilaiPersediaan /></PermGate>} />
             <Route path="/persediaan/stock-opname" element={<PermGate anyOf={[NAV_KEYS.currentStock]} alsoAnyOf={["current_stock.update", "current_stock.view"]}><StockOpname /></PermGate>} />
             <Route path="/persediaan" element={<PersediaanIndex />} />
             <Route path="/buku-besar/akun-perkiraan" element={<PermGate anyOf={[NAV_KEYS.ledgerAccounts, NAV_KEYS.ledger, "ledger.accounts.view", "ledger.accounts.manage"]}><AkunPerkiraan /></PermGate>} />

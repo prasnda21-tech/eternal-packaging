@@ -2,6 +2,7 @@
 
 export const NAV_KEYS = {
   dashboard: "nav.dashboard",
+  dashboardFinance: "nav.dashboard.finance",
   production: "nav.production",
   schedule: "nav.production_schedule",
   deliverySchedule: "nav.delivery_schedule",
@@ -35,6 +36,7 @@ export const NAV_KEYS = {
   inventory: "nav.inventory",
   masterItems: "nav.inventory.master_items",
   currentStock: "nav.inventory.current_stock",
+  inventoryValue: "nav.inventory.inventory_value",
   reports: "nav.reports",
   analytics: "nav.reports.analytics_output",
   shipmentStatus: "nav.reports.shipment_status",
@@ -79,6 +81,7 @@ export const NAV_KEYS = {
 
 export const NAV_MENU_FALLBACK = [
   { key: NAV_KEYS.dashboard, label: "Dashboard", parent: null },
+  { key: NAV_KEYS.dashboardFinance, label: "Dashboard Keuangan", parent: NAV_KEYS.dashboard },
   { key: NAV_KEYS.spk, label: "SPK Antar Divisi", parent: null },
   { key: NAV_KEYS.chat, label: "Chat", parent: null },
   { key: NAV_KEYS.production, label: "Produksi", parent: null },
@@ -115,6 +118,7 @@ export const NAV_MENU_FALLBACK = [
   { key: NAV_KEYS.inventory, label: "Persediaan", parent: null },
   { key: NAV_KEYS.masterItems, label: "Barang/Jasa", parent: NAV_KEYS.inventory },
   { key: NAV_KEYS.currentStock, label: "Stock Saat Ini", parent: NAV_KEYS.inventory },
+  { key: NAV_KEYS.inventoryValue, label: "Nilai Persediaan", parent: NAV_KEYS.inventory },
   { key: NAV_KEYS.reports, label: "Laporan", parent: null },
   { key: NAV_KEYS.analytics, label: "Analitik Output", parent: NAV_KEYS.reports },
   { key: NAV_KEYS.gajiOperator, label: "Gaji Operator", parent: NAV_KEYS.reports },
@@ -154,6 +158,42 @@ export const NAV_MENU_FALLBACK = [
 
 export function canSeeNav(hasPerm, key) {
   return typeof hasPerm === "function" ? !!hasPerm(key) : false;
+}
+
+/** Dashboard parent is hidden when neither production nor finance is visible. */
+export function dashboardNavVisible(hasPerm) {
+  const production = canSeeNav(hasPerm, NAV_KEYS.dashboard);
+  const finance = canSeeNav(hasPerm, NAV_KEYS.dashboardFinance) || canSeeNav(hasPerm, "dashboard.finance.view");
+  return {
+    parent: Boolean(production || finance),
+    production: Boolean(production),
+    finance: Boolean(finance),
+  };
+}
+
+export function dashboardMenuItems(hasPerm) {
+  const visible = dashboardNavVisible(hasPerm);
+  const items = [];
+  if (visible.production) {
+    items.push({
+      key: NAV_KEYS.dashboard,
+      label: "Dashboard Produksi",
+      to: "/dashboard",
+      end: true,
+      tone: "green",
+      testid: "top-nav-dashboard-produksi",
+    });
+  }
+  if (visible.finance) {
+    items.push({
+      key: NAV_KEYS.dashboardFinance,
+      label: "Dashboard Keuangan",
+      to: "/dashboard/keuangan",
+      tone: "emerald",
+      testid: "top-nav-dashboard-keuangan",
+    });
+  }
+  return items;
 }
 
 /** Parent that is not a page itself is hidden when no child is visible. */
@@ -342,21 +382,25 @@ export function purchasingMenuItems(hasPerm) {
 export const INVENTORY_NAV_ROUTES = {
   [NAV_KEYS.masterItems]: "/persediaan/master-barang-jasa",
   [NAV_KEYS.currentStock]: "/persediaan/stock-saat-ini",
+  [NAV_KEYS.inventoryValue]: "/persediaan/nilai-persediaan",
 };
 
 const INVENTORY_VIS_FIELD = {
   [NAV_KEYS.masterItems]: "masterItems",
   [NAV_KEYS.currentStock]: "currentStock",
+  [NAV_KEYS.inventoryValue]: "inventoryValue",
 };
 
 export const INVENTORY_TILE_TONES = {
   [NAV_KEYS.masterItems]: "green",
   [NAV_KEYS.currentStock]: "blue",
+  [NAV_KEYS.inventoryValue]: "amber",
 };
 
 export const INVENTORY_TILE_TESTIDS = {
   [NAV_KEYS.masterItems]: "top-nav-master-barang-jasa",
   [NAV_KEYS.currentStock]: "top-nav-stock-saat-ini",
+  [NAV_KEYS.inventoryValue]: "top-nav-nilai-persediaan",
 };
 
 export function inventoryMenuItems(hasPerm) {
@@ -491,7 +535,16 @@ export function inventoryNavVisible(hasPerm) {
   const parent = canSeeNav(hasPerm, NAV_KEYS.inventory);
   const masterItems = parent && canSeeNav(hasPerm, NAV_KEYS.masterItems);
   const currentStock = parent && canSeeNav(hasPerm, NAV_KEYS.currentStock);
-  return { parent: !!(masterItems || currentStock), masterItems, currentStock };
+  const inventoryValue = parent && (
+    canSeeNav(hasPerm, NAV_KEYS.inventoryValue)
+    || canSeeNav(hasPerm, "inventory_valuation.view")
+  );
+  return {
+    parent: !!(masterItems || currentStock || inventoryValue),
+    masterItems,
+    currentStock,
+    inventoryValue,
+  };
 }
 
 export const TASK_NAV_ORDER = [
