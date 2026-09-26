@@ -248,8 +248,7 @@
 .so-list-workspace .so-list-header-actions,
 .so-list-workspace .so-list-tabs,
 .so-list-workspace .so-list-toolbar,
-.so-list-workspace .so-list-pager,
-.so-list-workspace .so-list-actions {
+.so-list-workspace .so-list-pager {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -639,21 +638,60 @@
   font-weight: 650;
   color: #334155;
 }
-.so-list-workspace .so-list-actions { flex-wrap: nowrap; gap: 4px; }
+.so-list-workspace .so-list-table td:has(.so-list-actions) {
+  vertical-align: middle;
+}
+.so-list-workspace .so-list-actions {
+  display: inline-flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 4px;
+  height: 28px;
+  margin: 0;
+  padding: 0;
+  line-height: 0;
+}
 .so-list-workspace .so-list-actions a,
 .so-list-workspace .so-list-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  align-self: center;
   box-sizing: border-box;
   height: 28px;
+  min-height: 28px;
+  max-height: 28px;
+  width: auto;
+  margin: 0;
+  padding: 0 8px;
   border: 1px solid #d5ddd9;
+  border-radius: 6px;
   background: #fff;
   color: #172126;
-  border-radius: 6px;
-  font: 600 12px/1 "IBM Plex Sans", sans-serif;
-  padding: 0 7px;
+  appearance: none;
+  -webkit-appearance: none;
+  font-family: "IBM Plex Sans", sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  font-style: normal;
+  line-height: 1;
+  letter-spacing: 0;
   text-decoration: none;
-  cursor: pointer;
+  text-transform: none;
   white-space: nowrap;
+  cursor: pointer;
   flex: 0 0 auto;
+  gap: 4px;
+  vertical-align: middle;
+}
+.so-list-workspace .so-act-plus {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  font-size: 12px;
+  font-weight: 600;
 }
 .so-list-workspace .so-act-view {
   background: #dbeafe !important;
