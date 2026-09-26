@@ -58,6 +58,7 @@ jobs:
           reportlab==4.1.0
           requests==2.34.2
           openpyxl==3.1.5
+          pdfplumber==0.11.10
       - name: Run compatibility and Sales PWA tests
         working-directory: backend
         run: >-

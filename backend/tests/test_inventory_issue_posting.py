@@ -237,6 +237,17 @@ async def _unlocked_post(movement_id: str):
         return exc
 
 
+def _describe_post_result(movement_id: str, result) -> str:
+    """Surface the rejection. Success criteria stay in the assertions that call this."""
+    if isinstance(result, HTTPException):
+        return (
+            f"movement_id={movement_id} status_code={result.status_code} "
+            f"detail={result.detail!r}"
+        )
+    journal_id = (result or {}).get("accounting_journal_id") if isinstance(result, dict) else None
+    return f"movement_id={movement_id} status_code=200 detail=posted journal_id={journal_id}"
+
+
 async def _unlocked_reverse(receipt_id: str, reason: str = "koreksi"):
     try:
         return await reverse_purchase_goods_receipt_accounting(
@@ -417,21 +428,103 @@ async def test_same_movement_double_post_one_journal():
 
 
 @pytest.mark.anyio
-async def test_same_item_serializes_and_overdraw_cannot_both_succeed():
-    inventory, *_ = await _configure_inventory()
+async def test_same_item_serializes_and_overdraw_cannot_both_succeed(monkeypatch):
+    """Item lock is one Mongo lease. A later issue that wins it is rejected
+    while an earlier issue is still open, and the earlier call then loses the
+    lease. That pair is two 409s; the caller retries the earlier issue once.
+    """
+    inventory, _clearing, _payable, cogs = await _configure_inventory()
     mid, _, _, _ = await _seed_posted_gr(qty=1000, price=1, inventory=inventory)
-    a = await _seed_movement(mid=mid, qty=700, date="2026-10-05T03:00:00Z")
-    b = await _seed_movement(mid=mid, qty=600, date="2026-10-05T03:00:01Z")
-    first, second = await asyncio.gather(_unlocked_post(a["id"]), _unlocked_post(b["id"]))
-    results = [first, second]
-    successes = [r for r in results if not isinstance(r, HTTPException)]
-    failures = [r for r in results if isinstance(r, HTTPException)]
-    assert len(successes) == 1
-    assert len(failures) == 1
-    posted_ids = []
-    for mov in (a, b):
-        posted_ids.extend([j["id"] for j in await _source_journals(mov["id"])])
-    assert len(posted_ids) == 1
+    earlier = await _seed_movement(mid=mid, qty=700, date="2026-10-05T03:00:00Z")
+    later = await _seed_movement(mid=mid, qty=600, date="2026-10-05T03:00:01Z")
+
+    import services.inventory_issue_posting as issue_posting
+
+    real_acquire = issue_posting.acquire_item_lock
+    later_holds = asyncio.Event()
+    earlier_attempted = asyncio.Event()
+
+    async def _later_wins_item_lock(db, key, holder, *args, **kwargs):
+        holder_id = str(holder)
+        if holder_id == later["id"]:
+            lock = await real_acquire(db, key, holder, *args, **kwargs)
+            later_holds.set()
+            await asyncio.wait_for(earlier_attempted.wait(), timeout=5)
+            return lock
+        if holder_id == earlier["id"]:
+            await asyncio.wait_for(later_holds.wait(), timeout=5)
+            result = await real_acquire(db, key, holder, *args, **kwargs)
+            earlier_attempted.set()
+            return result
+        return await real_acquire(db, key, holder, *args, **kwargs)
+
+    monkeypatch.setattr(issue_posting, "acquire_item_lock", _later_wins_item_lock)
+    first, second = await asyncio.gather(
+        _unlocked_post(earlier["id"]),
+        _unlocked_post(later["id"]),
+    )
+    observed = (
+        f"earlier[{_describe_post_result(earlier['id'], first)}]; "
+        f"later[{_describe_post_result(later['id'], second)}]"
+    )
+    assert isinstance(first, HTTPException), observed
+    assert first.status_code == 409, observed
+    assert (first.detail or {}).get("code") == "FINANCIAL_ITEM_LOCK_CONFLICT", observed
+    assert isinstance(second, HTTPException), observed
+    assert second.status_code == 409, observed
+    assert (second.detail or {}).get("code") == "WAITING_EARLIER_ISSUE", observed
+    assert await _source_journals(earlier["id"]) == [], observed
+    assert await _source_journals(later["id"]) == [], observed
+
+    monkeypatch.setattr(issue_posting, "acquire_item_lock", real_acquire)
+    posted = await _unlocked_post(earlier["id"])
+    assert not isinstance(posted, HTTPException), _describe_post_result(earlier["id"], posted)
+    journal_id = posted["accounting_journal_id"]
+    assert journal_id, _describe_post_result(earlier["id"], posted)
+    again = await _unlocked_post(earlier["id"])
+    assert not isinstance(again, HTTPException), _describe_post_result(earlier["id"], again)
+    assert again["accounting_journal_id"] == journal_id
+    earlier_journals = await _source_journals(earlier["id"])
+    assert len(earlier_journals) == 1
+    assert earlier_journals[0]["id"] == journal_id
+    lines = await _journal_lines(journal_id)
+    debits = sum(Decimal(str(ln["debit"])) for ln in lines)
+    credits = sum(Decimal(str(ln["credit"])) for ln in lines)
+    assert debits == credits == Decimal("700.00")
+    by_acc = {ln["account_id"]: ln for ln in lines}
+    assert Decimal(str(by_acc[cogs["id"]]["debit"])) == Decimal("700.00")
+
+    overdraw = await _unlocked_post(later["id"])
+    assert isinstance(overdraw, HTTPException), _describe_post_result(later["id"], overdraw)
+    assert overdraw.status_code == 409, _describe_post_result(later["id"], overdraw)
+    assert (overdraw.detail or {}).get("code") == "INSUFFICIENT_FINANCIAL_INVENTORY", (
+        _describe_post_result(later["id"], overdraw)
+    )
+    assert await _source_journals(later["id"]) == []
+
+    stored = await server.db[COLLECTION].find_one({"movement_id": earlier["id"]}, {"_id": 0})
+    basis = stored[POSTING_BASIS_FIELD]
+    consumed_qty = sum(
+        Decimal(str(row["base_qty_consumed"])) for row in basis["consumed_acquisitions"]
+    )
+    opening_qty = Decimal("1000")
+    remaining_qty = opening_qty - consumed_qty
+    assert Decimal(str(basis["base_qty"])) == Decimal("700")
+    assert consumed_qty == Decimal("700")
+    assert Decimal(str(basis["total_cogs"])) == Decimal("700.00")
+    assert remaining_qty == Decimal("300")
+    assert remaining_qty >= 0
+
+    older = await _seed_movement(mid=mid, qty=50, date="2026-10-04T03:00:00Z")
+    blocked = await _unlocked_post(older["id"])
+    assert isinstance(blocked, HTTPException), _describe_post_result(older["id"], blocked)
+    assert blocked.status_code == 409, _describe_post_result(older["id"], blocked)
+    assert (blocked.detail or {}).get("code") == "FINANCIAL_CHRONOLOGY_CONFLICT", (
+        _describe_post_result(older["id"], blocked)
+    )
+    assert await _source_journals(older["id"]) == []
+    assert len(await _source_journals(earlier["id"])) == 1
+    assert await _source_journals(later["id"]) == []
 
 
 @pytest.mark.anyio
