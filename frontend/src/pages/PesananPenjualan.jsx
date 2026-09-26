@@ -144,11 +144,16 @@ export function salesOrderProgress(formData) {
   const completed = checks.filter((item) => item.filled).length;
   const total = checks.length;
   const complete = validateSalesOrderCreate(formData) === "";
+  const ids = checks.map((item) => item.id);
+  const customerAndGoodsOnly = ids.length === 2 && ids[0] === "customer" && ids[1] === "line_items";
   return {
     completed,
     total,
     complete,
-    label: `${completed}/${total} wajib`,
+    customerAndGoodsOnly,
+    label: customerAndGoodsOnly
+      ? `${completed}/${total} pelanggan & barang`
+      : `${completed}/${total} wajib`,
     statusLabel: complete ? "Lengkap" : "Belum Lengkap",
   };
 }
@@ -684,7 +689,8 @@ export default function PesananPenjualan() {
     if (index < 0) return;
     const node = document.querySelector(`[data-testid="line-item-search-${index}-input"]`);
     if (!node) return;
-    node.focus();
+    node.focus({ preventScroll: true });
+    node.scrollIntoView({ block: "nearest", inline: "nearest" });
     focusLineKeyRef.current = "";
   }, [formData.line_items, viewMode]);
 
@@ -1939,7 +1945,14 @@ export default function PesananPenjualan() {
                 <p>Input pesanan penjualan baru dari pelanggan.</p>
               </div>
               <div className="so-create-progress" data-testid="so-create-progress">
-                <span data-testid="so-progress-label">{formProgress.label}</span>
+                <span
+                  data-testid="so-progress-label"
+                  title={formProgress.customerAndGoodsOnly
+                    ? "Hitungan ini hanya pelanggan dan barang. Harga kosong tidak masuk hitungan dan tetap diperingatkan."
+                    : "Hitungan wajib: pelanggan, barang, nomor HP, dan alamat. Harga kosong tetap diperingatkan terpisah."}
+                >
+                  {formProgress.label}
+                </span>
                 <span
                   className={`so-create-chip${formProgress.complete ? " is-complete" : " is-incomplete"}`}
                   data-testid="so-status-chip"
@@ -1963,7 +1976,7 @@ export default function PesananPenjualan() {
             </div>
           )}
 
-          <div className="so-create-stage">
+          <div className="so-create-stage" data-scroll-owner="form" data-testid="so-create-scroll">
             <section className="so-create-main" data-so-region="main">
               <div className="so-sum-row" data-testid="so-main-fields">
                 <div className={`so-sum-chip is-customer${editingField === "customer" ? " is-editing" : ""}`}>
@@ -2026,7 +2039,7 @@ export default function PesananPenjualan() {
                   </button>
                 </div>
 
-                <div className={`so-sum-chip${editingField === "po_number" ? " is-editing" : ""}`}>
+                <div className={`so-sum-chip is-po${editingField === "po_number" ? " is-editing" : ""}`}>
                   <SoField field="po_number" label="Nomor PO" className="so-sum-field">
                     {editingField !== "po_number" && <div className="so-sum-text">{formData.po_number || "—"}</div>}
                     <div className={editingField === "po_number" ? "so-sum-editor" : "so-sum-dormant"}>
@@ -2163,7 +2176,7 @@ export default function PesananPenjualan() {
                     </button>
                   </div>
                 </div>
-                <div className="so-create-lines-scroll" data-testid="line-items-table-container" data-scroll-owner="line-items">
+                <div className="so-create-lines-scroll" data-testid="line-items-table-container">
                   <table className="so-create-lines-table">
                     <thead>
                       <tr>
