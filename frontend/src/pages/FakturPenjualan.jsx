@@ -845,6 +845,16 @@ export default function FakturPenjualan() {
             </>
           )}
         </div>
+        {viewMode === "detail" && detailData && Number(detailData.outstanding_amount) > 0 && canCreate && (
+          <button
+            type="button"
+            className="fp-header-action"
+            data-testid="btn-buat-penerimaan"
+            onClick={() => navigate(`/penjualan/penerimaan-penjualan?invoice_id=${detailData.id}`)}
+          >
+            <CreditCard size={15} /> + Buat Penerimaan
+          </button>
+        )}
 
         {viewMode === "list" && (
           <div className="sd-list-header-actions">
@@ -1432,229 +1442,129 @@ export default function FakturPenjualan() {
 
       {/* VIEW: DETAIL / EDIT */}
       {viewMode === "detail" && (
-        <div className="sd-form">
+        <div className="sd-form fp-detail">
           {detailLoading ? (
             <div className="sd-form-stage" style={{ padding: 40, textAlign: "center", color: "#64748b" }}>Memuat detail Faktur Penjualan...</div>
           ) : detailData ? (
             <form className="sd-form-fill" data-form-tab={invoiceFormTab} onSubmit={handleUpdateInvoice}>
               <div className="sd-form-stage">
+              <div className="fp-summary" data-testid="detail-summary">
+                <div>
+                  <span>No. Faktur</span>
+                  <strong data-testid="detail-invoice-number">{detailData.invoice_number || "-"}</strong>
+                </div>
+                <div>
+                  <span>Status Faktur</span>
+                  <div className="fp-detail-badges">
+                    {renderFinancialBadge(detailStatus)}
+                    {(detailStatus !== "draft" || isAccountingPosted || isAccountingReversed) &&
+                      renderAccountingBadge(accountingStatus)}
+                  </div>
+                </div>
+                <div>
+                  <span>No PO</span>
+                  <strong>{detailData.po_number}</strong>
+                </div>
+                <div>
+                  <span>Customer</span>
+                  <strong>{detailData.customer}</strong>
+                </div>
+                <div>
+                  <span>Jatuh Tempo</span>
+                  <strong>{formatDisplayDate(detailData.due_date)}</strong>
+                </div>
+                <div>
+                  <span>Total Tagihan</span>
+                  <strong>{formatRupiah(detailData.grand_total)}</strong>
+                </div>
+                <div>
+                  <span>Sudah Diterima</span>
+                  <strong>{formatRupiah(detailData.paid_total)}</strong>
+                </div>
+                <div>
+                  <span>Sisa Tagihan</span>
+                  <strong className={Number(detailData.outstanding_amount) > 0 ? "is-due" : "is-paid"}>{formatRupiah(detailData.outstanding_amount)}</strong>
+                </div>
+                <div>
+                  <span>Status Pembayaran</span>
+                  <div className="fp-detail-badges">{renderPaymentBadge(detailData.payment_status)}</div>
+                </div>
+              </div>
+              {showAccountingUnconfigured && (
+                <p data-testid="invoice-accounting-unconfigured" className="fp-detail-note">
+                  Accounting belum dikonfigurasi.{" "}
+                  <Link to="/settings?tab=sales-accounting">Buka Pengaturan Akuntansi Penjualan</Link>
+                </p>
+              )}
               <div className="sd-form-tabs" role="tablist" aria-label="Bagian detail faktur">
                 <button type="button" className={invoiceFormTab === "items" ? "is-active" : ""} onClick={() => setInvoiceFormTab("items")}>Barang & Harga</button>
                 <button type="button" className={invoiceFormTab === "terms" ? "is-active" : ""} onClick={() => setInvoiceFormTab("terms")}>Tanggal & Ketentuan</button>
               </div>
-              {/* Payment Summary Bar */}
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
-                  gap: 14,
-                  marginBottom: 20,
-                }}
-              >
-                <div style={{ backgroundColor: "#fff", border: "1px solid #e2e8f0", borderRadius: 8, padding: 14 }}>
-                  <span style={{ fontSize: 12, color: "#64748b" }}>Total Tagihan Faktur</span>
-                  <div style={{ fontSize: 18, fontWeight: 800, color: "#0f172a", marginTop: 4 }}>
-                    {formatRupiah(detailData.grand_total)}
-                  </div>
-                </div>
 
-                <div style={{ backgroundColor: "#fff", border: "1px solid #e2e8f0", borderRadius: 8, padding: 14 }}>
-                  <span style={{ fontSize: 12, color: "#64748b" }}>Sudah Diterima (Terbayar)</span>
-                  <div style={{ fontSize: 18, fontWeight: 800, color: "#059669", marginTop: 4 }}>
-                    {formatRupiah(detailData.paid_total)}
-                  </div>
+              <div className="fp-terms sd-pane-terms">
+                <div>
+                  <label>Tanggal Faktur</label>
+                  <input
+                    type="date"
+                    value={detailDate}
+                    onChange={(e) => setDetailDate(e.target.value)}
+                    disabled={!canEditFinancial}
+                  />
                 </div>
-
-                <div style={{ backgroundColor: "#fff", border: "1px solid #e2e8f0", borderRadius: 8, padding: 14 }}>
-                  <span style={{ fontSize: 12, color: "#64748b" }}>Sisa Tagihan</span>
-                  <div style={{ fontSize: 18, fontWeight: 800, color: detailData.outstanding_amount > 0 ? "#dc2626" : "#059669", marginTop: 4 }}>
-                    {formatRupiah(detailData.outstanding_amount)}
-                  </div>
+                <div>
+                  <label>Diskon (Rp)</label>
+                  <input
+                    type="number"
+                    min="0"
+                    value={detailDiscount}
+                    onChange={(e) => setDetailDiscount(e.target.value)}
+                    disabled={!canEditFinancial}
+                  />
                 </div>
-
-                <div style={{ backgroundColor: "#fff", border: "1px solid #e2e8f0", borderRadius: 8, padding: 14, display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
-                  <span style={{ fontSize: 12, color: "#64748b" }}>Status Pembayaran</span>
-                  <div style={{ marginTop: 4 }}>
-                    {renderPaymentBadge(detailData.payment_status)}
-                  </div>
+                <div>
+                  <label>PPN (%)</label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    step="any"
+                    value={detailPpn}
+                    onChange={(e) => setDetailPpn(e.target.value)}
+                    disabled={!canEditFinancial}
+                  />
+                </div>
+                <div className="fp-terms-wide">
+                  <label>Catatan Faktur</label>
+                  <input
+                    type="text"
+                    value={detailNotes}
+                    onChange={(e) => setDetailNotes(e.target.value)}
+                    disabled={!canEditFinancial}
+                  />
                 </div>
               </div>
 
-              {/* Snapshot Info Card */}
-              <section
-                className="panel"
-                style={{
-                  background: "#fff",
-                  border: "1px solid #e2e8f0",
-                  borderRadius: 10,
-                  padding: 20,
-                  marginBottom: 20,
-                }}
-              >
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid #f1f5f9", paddingBottom: 12, marginBottom: 16 }}>
-                  <div>
-                    <span style={{ fontSize: "0.75rem", color: "#64748b", textTransform: "uppercase" }}>No. Faktur</span>
-                    <h2 style={{ margin: "2px 0 0", fontSize: "1.25rem", fontWeight: 700, color: "#9333ea" }} data-testid="detail-invoice-number">
-                      {detailData.invoice_number || "-"}
-                    </h2>
-                    <div style={{ marginTop: 8 }}>
-                      {renderFinancialBadge(detailStatus)}
-                      {(detailStatus !== "draft" || isAccountingPosted || isAccountingReversed) &&
-                        renderAccountingBadge(accountingStatus)}
-                    </div>
-                    {showAccountingUnconfigured && (
-                      <p data-testid="invoice-accounting-unconfigured" style={{ margin: "8px 0 0", fontSize: "0.85rem", color: "#b45309" }}>
-                        Accounting belum dikonfigurasi.{" "}
-                        <Link to="/settings?tab=sales-accounting" style={{ color: "#7c3aed", fontWeight: 600 }}>
-                          Buka Pengaturan Akuntansi Penjualan
-                        </Link>
-                      </p>
-                    )}
-                  </div>
-                  {detailData.outstanding_amount > 0 && canCreate && (
-                    <button
-                      type="button"
-                      onClick={() => navigate(`/penjualan/penerimaan-penjualan?invoice_id=${detailData.id}`)}
-                      style={{
-                        display: "inline-flex",
-                        alignItems: "center",
-                        gap: 6,
-                        padding: "8px 14px",
-                        backgroundColor: "#059669",
-                        color: "#fff",
-                        border: "none",
-                        borderRadius: 6,
-                        fontWeight: 600,
-                        fontSize: 13,
-                        cursor: "pointer",
-                      }}
-                    >
-                      <CreditCard size={15} /> + Buat Penerimaan
-                    </button>
-                  )}
-                </div>
-
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 16 }}>
-                  <div>
-                    <span style={{ fontSize: "0.75rem", color: "#64748b", textTransform: "uppercase" }}>No PO</span>
-                    <strong style={{ display: "block" }}>{detailData.po_number}</strong>
-                  </div>
-                  <div>
-                    <span style={{ fontSize: "0.75rem", color: "#64748b", textTransform: "uppercase" }}>Customer</span>
-                    <strong style={{ display: "block" }}>{detailData.customer}</strong>
-                  </div>
-                  <div>
-                    <span style={{ fontSize: "0.75rem", color: "#64748b", textTransform: "uppercase" }}>Jatuh Tempo</span>
-                    <span style={{ display: "block", color: "#334155" }}>{formatDisplayDate(detailData.due_date)}</span>
-                  </div>
-                </div>
-
-                {/* Editable fields */}
-                <div
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
-                    gap: 16,
-                    marginTop: 16,
-                    paddingTop: 16,
-                    borderTop: "1px solid #f1f5f9",
-                  }}
-                >
-                  <div>
-                    <label style={{ fontSize: "0.85rem", fontWeight: 600, color: "#334155", display: "block", marginBottom: 6 }}>
-                      Tanggal Faktur
-                    </label>
-                    <input
-                      type="date"
-                      value={detailDate}
-                      onChange={(e) => setDetailDate(e.target.value)}
-                      disabled={!canEditFinancial}
-                      style={{ width: "100%", padding: "8px 12px", border: "1px solid #cbd5e1", borderRadius: 6 }}
-                    />
-                  </div>
-
-                  <div>
-                    <label style={{ fontSize: "0.85rem", fontWeight: 600, color: "#334155", display: "block", marginBottom: 6 }}>
-                      Diskon (Rp)
-                    </label>
-                    <input
-                      type="number"
-                      min="0"
-                      value={detailDiscount}
-                      onChange={(e) => setDetailDiscount(e.target.value)}
-                      disabled={!canEditFinancial}
-                      style={{ width: "100%", padding: "8px 12px", border: "1px solid #cbd5e1", borderRadius: 6 }}
-                    />
-                  </div>
-
-                  <div>
-                    <label style={{ fontSize: "0.85rem", fontWeight: 600, color: "#334155", display: "block", marginBottom: 6 }}>
-                      PPN (%)
-                    </label>
-                    <input
-                      type="number"
-                      min="0"
-                      max="100"
-                      step="any"
-                      value={detailPpn}
-                      onChange={(e) => setDetailPpn(e.target.value)}
-                      disabled={!canEditFinancial}
-                      style={{ width: "100%", padding: "8px 12px", border: "1px solid #cbd5e1", borderRadius: 6 }}
-                    />
-                  </div>
-
-                  <div style={{ gridColumn: "1 / -1" }}>
-                    <label style={{ fontSize: "0.85rem", fontWeight: 600, color: "#334155", display: "block", marginBottom: 6 }}>
-                      Catatan Faktur
-                    </label>
-                    <input
-                      type="text"
-                      value={detailNotes}
-                      onChange={(e) => setDetailNotes(e.target.value)}
-                      disabled={!canEditFinancial}
-                      style={{ width: "100%", padding: "8px 12px", border: "1px solid #cbd5e1", borderRadius: 6 }}
-                    />
-                  </div>
-                </div>
-              </section>
-
-              {/* Items Table */}
-              <section
-                className="panel"
-                style={{
-                  background: "#fff",
-                  border: "1px solid #e2e8f0",
-                  borderRadius: 10,
-                  padding: 20,
-                  marginBottom: 20,
-                }}
-              >
-                <header style={{ borderBottom: "1px solid #f1f5f9", paddingBottom: 12, marginBottom: 16 }}>
-                  <h3 style={{ margin: 0, fontSize: "1.1rem", color: "#1e293b" }}>Rincian Barang &amp; Harga Satuan</h3>
-                </header>
-
-                <div className="sd-lines sd-pane-items">
-                  <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "left", fontSize: "0.9rem" }}>
+              <div className="fp-items sd-pane-items">
+                <div className="sd-lines">
+                  <table className="fp-detail-lines">
                     <thead>
-                      <tr style={{ background: "#f8fafc", borderBottom: "2px solid #e2e8f0", color: "#475569" }}>
-                        <th style={{ padding: "10px 12px", width: 40 }}>#</th>
-                        <th style={{ padding: "10px 12px", minWidth: 200 }}>Barang / Jasa</th>
-                        <th style={{ padding: "10px 12px", width: 120, textAlign: "right" }}>Qty</th>
-                        <th style={{ padding: "10px 12px", width: 80, textAlign: "center" }}>Unit</th>
-                        <th style={{ padding: "10px 12px", width: 180, textAlign: "right" }}>Harga Satuan (Rp)</th>
-                        <th style={{ padding: "10px 12px", width: 180, textAlign: "right" }}>Total Line (Rp)</th>
+                      <tr>
+                        <th>#</th>
+                        <th>Barang / Jasa</th>
+                        <th className="is-num">Qty</th>
+                        <th className="is-center">Unit</th>
+                        <th className="is-num">Harga Satuan (Rp)</th>
+                        <th className="is-num">Total Line (Rp)</th>
                       </tr>
                     </thead>
                     <tbody>
                       {detailCalculations.lines.map((li, index) => (
-                        <tr key={li.line_idx} style={{ borderBottom: "1px solid #f1f5f9" }}>
-                          <td style={{ padding: "10px 12px", color: "#64748b", fontWeight: 600 }}>{index + 1}</td>
-                          <td style={{ padding: "10px 12px", fontWeight: 600, color: "#1e293b" }}>{li.item_name}</td>
-                          <td style={{ padding: "10px 12px", textAlign: "right", fontWeight: 600 }}>
-                            {Number(li.quantity || 0).toLocaleString("id-ID")}
-                          </td>
-                          <td style={{ padding: "10px 12px", textAlign: "center", color: "#64748b" }}>{li.unit || "pcs"}</td>
-                          <td style={{ padding: "8px 12px", textAlign: "right" }}>
+                        <tr key={li.line_idx}>
+                          <td>{index + 1}</td>
+                          <td className="fp-item-name">{li.item_name}</td>
+                          <td className="is-num">{Number(li.quantity || 0).toLocaleString("id-ID")}</td>
+                          <td className="is-center">{li.unit || "pcs"}</td>
+                          <td className="is-num">
                             <input
                               type="number"
                               min="0"
@@ -1665,96 +1575,67 @@ export default function FakturPenjualan() {
                                 setDetailPrices((prev) => ({ ...prev, [li.line_idx]: val }));
                               }}
                               disabled={!canEditFinancial}
-                              style={{ width: "100%", padding: "6px 10px", border: "1px solid #cbd5e1", borderRadius: 6, textAlign: "right", fontWeight: 600 }}
                             />
                           </td>
-                          <td style={{ padding: "10px 12px", textAlign: "right", fontWeight: 700, color: "#0f172a" }}>
-                            {formatRupiah(li.lineTotal)}
-                          </td>
+                          <td className="is-num">{formatRupiah(li.lineTotal)}</td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
                 </div>
-
-                <div style={{ marginTop: 16, display: "flex", justifyContent: "flex-end" }}>
-                  <div style={{ width: 340 }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
-                      <span style={{ color: "#64748b" }}>Subtotal:</span>
-                      <span style={{ fontWeight: 600 }}>{formatRupiah(detailCalculations.subtotal)}</span>
+                <div className="fp-breakdown">
+                  <div>
+                    <span>Subtotal</span>
+                    <strong>{formatRupiah(detailCalculations.subtotal)}</strong>
+                  </div>
+                  {detailCalculations.discount > 0 && (
+                    <div>
+                      <span>Diskon</span>
+                      <strong>- {formatRupiah(detailCalculations.discount)}</strong>
                     </div>
-                    {detailCalculations.discount > 0 && (
-                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
-                        <span style={{ color: "#64748b" }}>Diskon:</span>
-                        <span style={{ fontWeight: 600, color: "#dc2626" }}>- {formatRupiah(detailCalculations.discount)}</span>
-                      </div>
-                    )}
-                    {detailCalculations.ppnPercent > 0 && (
-                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
-                        <span style={{ color: "#64748b" }}>PPN ({detailCalculations.ppnPercent}%):</span>
-                        <span style={{ fontWeight: 600 }}>+ {formatRupiah(detailCalculations.ppn)}</span>
-                      </div>
-                    )}
-                    <div style={{ display: "flex", justifyContent: "space-between", paddingTop: 8, borderTop: "2px solid #cbd5e1", fontWeight: 800 }}>
-                      <span>Total Faktur:</span>
-                      <span style={{ color: "#9333ea", fontSize: "1.15rem" }}>{formatRupiah(detailCalculations.grandTotal)}</span>
+                  )}
+                  {detailCalculations.ppnPercent > 0 && (
+                    <div>
+                      <span>PPN ({detailCalculations.ppnPercent}%)</span>
+                      <strong>+ {formatRupiah(detailCalculations.ppn)}</strong>
                     </div>
+                  )}
+                  <div>
+                    <span>Total Faktur</span>
+                    <strong>{formatRupiah(detailCalculations.grandTotal)}</strong>
                   </div>
                 </div>
-              </section>
+              </div>
 
-              {/* Linked Receipts History */}
-              <section
-                className="panel"
-                style={{
-                  background: "#fff",
-                  border: "1px solid #e2e8f0",
-                  borderRadius: 10,
-                  padding: 20,
-                  marginBottom: 20,
-                }}
-              >
-                <header style={{ borderBottom: "1px solid #f1f5f9", paddingBottom: 12, marginBottom: 16 }}>
-                  <h3 style={{ margin: 0, fontSize: "1.1rem", color: "#1e293b" }}>Riwayat Penerimaan Pembayaran</h3>
-                </header>
-
+              <section className="fp-detail-receipts">
+                <h3>Riwayat Penerimaan Pembayaran</h3>
                 {(detailData.receipts || []).length === 0 ? (
-                  <div style={{ padding: 24, textAlign: "center", color: "#64748b" }}>
-                    Belum ada pembayaran yang diterima untuk faktur ini.
-                  </div>
+                  <div className="fp-detail-empty">Belum ada pembayaran yang diterima untuk faktur ini.</div>
                 ) : (
-                  <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "left", fontSize: "0.85rem" }}>
-                    <thead>
-                      <tr style={{ background: "#f8fafc", borderBottom: "1px solid #e2e8f0", color: "#475569" }}>
-                        <th style={{ padding: "8px 12px" }}>No. Penerimaan</th>
-                        <th style={{ padding: "8px 12px" }}>Tanggal</th>
-                        <th style={{ padding: "8px 12px", textAlign: "right" }}>Jumlah Penerimaan</th>
-                        <th style={{ padding: "8px 12px", textAlign: "center" }}>Status</th>
-                        <th style={{ padding: "8px 12px" }}>Catatan</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {detailData.receipts.map((r, idx) => (
-                        <tr key={r.id || idx} style={{ borderBottom: "1px solid #f1f5f9" }}>
-                          <td style={{ padding: "8px 12px" }}>
-                            <span style={{ fontFamily: "monospace", color: "#059669", fontWeight: 700 }}>
-                              {r.receipt_number || r.id}
-                            </span>
-                          </td>
-                          <td style={{ padding: "8px 12px", fontWeight: 500 }}>{formatDisplayDate(r.receipt_date)}</td>
-                          <td style={{ padding: "8px 12px", textAlign: "right", fontWeight: 700, color: "#059669" }}>
-                            {formatRupiah(r.amount)}
-                          </td>
-                          <td style={{ padding: "8px 12px", textAlign: "center" }}>
-                            <span style={{ fontSize: 11, fontWeight: 700, color: r.payment_state === "LUNAS" ? "#065f46" : "#3730a3" }}>
-                              {r.payment_state}
-                            </span>
-                          </td>
-                          <td style={{ padding: "8px 12px", color: "#64748b" }}>{r.notes || "-"}</td>
+                  <div className="sd-lines">
+                    <table className="fp-detail-lines">
+                      <thead>
+                        <tr>
+                          <th>No. Penerimaan</th>
+                          <th>Tanggal</th>
+                          <th className="is-num">Jumlah Penerimaan</th>
+                          <th className="is-center">Status</th>
+                          <th>Catatan</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                      </thead>
+                      <tbody>
+                        {detailData.receipts.map((r, idx) => (
+                          <tr key={r.id || idx}>
+                            <td className="fp-receipt-no">{r.receipt_number || r.id}</td>
+                            <td>{formatDisplayDate(r.receipt_date)}</td>
+                            <td className="is-num">{formatRupiah(r.amount)}</td>
+                            <td className="is-center">{r.payment_state}</td>
+                            <td>{r.notes || "-"}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 )}
               </section>
 
