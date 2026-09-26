@@ -21,6 +21,7 @@ const railLinkClass = ({ isActive }) => "rail-btn" + (isActive ? " is-active" : 
 
 const TILE_ICONS = {
   [NAV_KEYS.dashboard]: LayoutDashboard,
+  [NAV_KEYS.dashboardSales]: LineChart,
   [NAV_KEYS.dashboardFinance]: Landmark,
   [NAV_KEYS.salesCustomers]: Users,
   [NAV_KEYS.productRequests]: ClipboardList,
@@ -388,7 +389,7 @@ export default function AppShell() {
           <BrandMark compact onDark />
         </Link>
         <nav className="app-sidebar-nav" aria-label="Menu utama">
-          {(dashboardNav.parent && (showDashboard || dashboardNav.finance)) && (
+          {(dashboardNav.parent && (showDashboard || dashboardNav.sales || dashboardNav.finance)) && (
             <div className="nav-group" data-testid="top-nav-dashboard-group">
               <RailButton
                 ref={(el) => { railRefs.current.dashboard = el; }}

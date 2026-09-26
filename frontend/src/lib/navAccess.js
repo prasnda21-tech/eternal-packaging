@@ -2,6 +2,7 @@
 
 export const NAV_KEYS = {
   dashboard: "nav.dashboard",
+  dashboardSales: "nav.dashboard.sales",
   dashboardFinance: "nav.dashboard.finance",
   production: "nav.production",
   schedule: "nav.production_schedule",
@@ -81,6 +82,7 @@ export const NAV_KEYS = {
 
 export const NAV_MENU_FALLBACK = [
   { key: NAV_KEYS.dashboard, label: "Dashboard", parent: null },
+  { key: NAV_KEYS.dashboardSales, label: "Dashboard Penjualan", parent: NAV_KEYS.dashboard },
   { key: NAV_KEYS.dashboardFinance, label: "Dashboard Keuangan", parent: NAV_KEYS.dashboard },
   { key: NAV_KEYS.spk, label: "SPK Antar Divisi", parent: null },
   { key: NAV_KEYS.chat, label: "Chat", parent: null },
@@ -160,13 +162,15 @@ export function canSeeNav(hasPerm, key) {
   return typeof hasPerm === "function" ? !!hasPerm(key) : false;
 }
 
-/** Dashboard parent is hidden when neither production nor finance is visible. */
+/** Dashboard parent is hidden when no dashboard child is visible. */
 export function dashboardNavVisible(hasPerm) {
   const production = canSeeNav(hasPerm, NAV_KEYS.dashboard);
+  const sales = canSeeNav(hasPerm, NAV_KEYS.dashboardSales) || canSeeNav(hasPerm, "dashboard.sales.view");
   const finance = canSeeNav(hasPerm, NAV_KEYS.dashboardFinance) || canSeeNav(hasPerm, "dashboard.finance.view");
   return {
-    parent: Boolean(production || finance),
+    parent: Boolean(production || sales || finance),
     production: Boolean(production),
+    sales: Boolean(sales),
     finance: Boolean(finance),
   };
 }
@@ -182,6 +186,16 @@ export function dashboardMenuItems(hasPerm) {
       end: true,
       tone: "green",
       testid: "top-nav-dashboard-produksi",
+    });
+  }
+  if (visible.sales) {
+    items.push({
+      key: NAV_KEYS.dashboardSales,
+      label: "Dashboard Penjualan",
+      to: "/dashboard/penjualan",
+      end: true,
+      tone: "green",
+      testid: "top-nav-dashboard-penjualan",
     });
   }
   if (visible.finance) {

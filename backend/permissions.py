@@ -170,6 +170,7 @@ PERMISSION_CATALOG = [
     ("Role & Permission", "super_admin.manage", "Kelola Super Admin"),
     ("Dashboard Produksi", "dashboard.production.view", "Lihat Dashboard Produksi"),
     ("Dashboard Keuangan", "dashboard.finance.view", "Lihat Dashboard Keuangan"),
+    ("Dashboard Penjualan", "dashboard.sales.view", "Lihat Dashboard Penjualan"),
     ("Dashboard Produksi", "dashboard.production.input", "Input data dari Dashboard"),
     ("Dashboard Produksi", "dashboard.production.edit", "Edit data dari Dashboard"),
     ("Dashboard Produksi", "dashboard.production.export", "Export Excel Dashboard Jadwal Produksi"),
@@ -236,6 +237,7 @@ PERMISSION_CATALOG = [
     ("Customer Approval", "customer_approval.settings", "Atur Customer Approval"),
     # Sidebar / menu visibility (additional layer; does not replace API RBAC)
     ("Akses Menu", "nav.dashboard", "Menu Dashboard"),
+    ("Akses Menu", "nav.dashboard.sales", "Menu Dashboard Penjualan"),
     ("Akses Menu", "nav.dashboard.finance", "Menu Dashboard Keuangan"),
     ("Akses Menu", "nav.production", "Menu Produksi"),
     ("Akses Menu", "nav.production_schedule", "Menu Jadwal Produksi"),
@@ -368,6 +370,7 @@ NAV_ALWAYS_VISIBLE = (
 
 NAV_MENU_ITEMS = (
     ("nav.dashboard", "Dashboard", None),
+    ("nav.dashboard.sales", "Dashboard Penjualan", "nav.dashboard"),
     ("nav.dashboard.finance", "Dashboard Keuangan", "nav.dashboard"),
     ("nav.spk", "SPK Antar Divisi", None),
     ("nav.production", "Produksi", None),
@@ -450,6 +453,8 @@ def derived_nav_permissions(existing: set) -> set:
     nav = set(NAV_ALWAYS_VISIBLE)
     if "dashboard.production.view" in existing:
         nav.add("nav.dashboard")
+    if "dashboard.sales.view" in existing:
+        nav.add("nav.dashboard.sales")
     if "dashboard.finance.view" in existing:
         nav.add("nav.dashboard.finance")
     if "schedule.view" in existing:

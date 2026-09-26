@@ -560,6 +560,7 @@ export const api = {
   // ---- Production dashboard (Req 6) ----
   productionDashboard: (params = {}) => client.get(`/dashboard/production`, { params }).then((r) => r.data),
   financialDashboard: (params = {}) => client.get(`/dashboard/keuangan`, { params }).then((r) => r.data),
+  salesDashboard: (params = {}) => client.get(`/dashboard/penjualan`, { params }).then((r) => r.data),
   shipmentStatus: (params = {}) => client.get(`/dashboard/shipment-status`, { params }).then((r) => r.data),
   statusPo: (params = {}) => client.get(`/dashboard/status-po`, { params }).then((r) => r.data),
   productionExport: (payload = { scope: "filtered" }) => client.post(`/dashboard/production/export`, payload, { responseType: "blob" }).then((r) => r.data),
