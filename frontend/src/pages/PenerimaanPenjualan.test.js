@@ -24,10 +24,17 @@ describe("Penerimaan Penjualan UI & Navigation Suite", () => {
     expect(pageSrc).toMatch(/btn-submit-receipt/);
   });
 
-  test("PenerimaanPenjualan includes overpayment protection and live status preview", () => {
+  test("PenerimaanPenjualan includes allocation, customer credit, and live status preview", () => {
     expect(pageSrc).toMatch(/previewCalc/);
-    expect(pageSrc).toMatch(/isOverpayment/);
     expect(pageSrc).toMatch(/melebihi sisa tagihan/);
+    expect(pageSrc).toMatch(/Sisa menjadi saldo pelanggan/);
+    expect(pageSrc).toMatch(/btn-gunakan-saldo/);
+    expect(pageSrc).toMatch(/btn-lihat-bukti/);
+    expect(pageSrc).toMatch(/setProofViewerReceipt/);
+    expect(pageSrc).toMatch(/SalesReceiptProofViewer/);
+    const viewerSrc = fs.readFileSync(path.join(__dirname, "SalesReceiptProofViewer.jsx"), "utf8");
+    expect(viewerSrc).not.toMatch(/window\.open/);
+    expect(viewerSrc).toMatch(/pdfjs-dist/);
     expect(pageSrc).toMatch(/LUNAS/);
     expect(pageSrc).toMatch(/DP/);
   });

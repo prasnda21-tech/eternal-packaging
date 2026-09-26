@@ -364,6 +364,22 @@ def _require_receipt_amount(receipt: dict) -> Decimal:
     return amount
 
 
+def receipt_allocated_amount(receipt: Optional[dict]) -> Decimal:
+    """Cash applied to the receipt invoice. Legacy rows without the field use amount."""
+    if not receipt:
+        return Decimal("0.00")
+    if "allocated_amount" in receipt and receipt.get("allocated_amount") is not None:
+        return _money(receipt.get("allocated_amount"), "allocated_amount")
+    return _money(receipt.get("amount"), "amount")
+
+
+def receipt_customer_credit_amount(receipt: Optional[dict]) -> Decimal:
+    """Excess cash held as customer credit. Legacy rows are zero, not a guessed balance."""
+    if not receipt or "customer_credit_amount" not in receipt or receipt.get("customer_credit_amount") is None:
+        return Decimal("0.00")
+    return _money(receipt.get("customer_credit_amount"), "customer_credit_amount")
+
+
 def _journal_description(receipt: dict) -> str:
     receipt_number = str(receipt.get("receipt_number") or receipt.get("id") or "PAY")
     invoice_number = str(receipt.get("invoice_number") or receipt.get("invoice_id") or "INV")
@@ -379,22 +395,40 @@ def _build_journal_lines(
     receivable_account_id: str,
     amount: Decimal,
     receipt_number: str,
+    allocated_amount: Optional[Decimal] = None,
+    customer_credit_amount: Optional[Decimal] = None,
+    deposit_account_id: Optional[str] = None,
 ) -> List[dict]:
     ref = receipt_number or "penerimaan"
-    return [
+    allocated = amount if allocated_amount is None else allocated_amount
+    credit = customer_credit_amount or Decimal("0.00")
+    if allocated < 0 or credit < 0 or (allocated + credit) != amount:
+        raise HTTPException(400, "Alokasi penerimaan dan saldo pelanggan tidak seimbang dengan jumlah diterima.")
+    lines = [
         {
             "account_id": cash_ledger_account_id,
             "debit": amount,
             "credit": Decimal("0.00"),
             "description": f"Kas/Bank {ref}",
         },
-        {
+    ]
+    if allocated > 0:
+        lines.append({
             "account_id": receivable_account_id,
             "debit": Decimal("0.00"),
-            "credit": amount,
+            "credit": allocated,
             "description": f"Piutang {ref}",
-        },
-    ]
+        })
+    if credit > 0:
+        if not deposit_account_id:
+            raise HTTPException(409, "Akun Titipan/Uang Muka Pelanggan belum dipetakan pada Pengaturan Akuntansi Penjualan.")
+        lines.append({
+            "account_id": str(deposit_account_id),
+            "debit": Decimal("0.00"),
+            "credit": credit,
+            "description": f"Titipan pelanggan {ref}",
+        })
+    return lines
 
 
 async def list_cash_bank_options(db) -> List[dict]:
@@ -456,10 +490,21 @@ async def attach_receipt_accounting_fields(db, receipts: List[Dict[str, Any]]) -
             and not posting_claim_is_active(rec)
             and not delete_claim_is_active(rec)
         )
+        from services.sales_customer_credit import CLAIM_AT_FIELD as CREDIT_CLAIM_AT
+        from services.sales_customer_credit import CLAIM_FIELD as CREDIT_CLAIM
+        from services.sales_customer_credit import credit_summary
+
+        rec["customer_credit"] = credit_summary(
+            rec, accounting_posted=accounting_status == ACCOUNTING_POSTED
+        )
+        rec["allocated_amount"] = float(receipt_allocated_amount(rec))
+        rec["customer_credit_amount"] = float(receipt_customer_credit_amount(rec))
         rec.pop(CLAIM_FIELD, None)
         rec.pop(REVERSE_CLAIM_FIELD, None)
         rec.pop(DELETE_CLAIM_FIELD, None)
         rec.pop(DELETE_CLAIM_AT_FIELD, None)
+        rec.pop(CREDIT_CLAIM, None)
+        rec.pop(CREDIT_CLAIM_AT, None)
     return receipts
 
 
@@ -613,12 +658,25 @@ async def _require_invoice_posted(db, invoice_id: str) -> dict:
 
 async def _write_source_journal(db, receipt: dict, user: dict, cash_snap: dict) -> dict:
     amount = _require_receipt_amount(receipt)
+    allocated = receipt_allocated_amount(receipt)
+    credit = receipt_customer_credit_amount(receipt)
+    if allocated + credit != amount:
+        raise HTTPException(400, "Alokasi penerimaan dan saldo pelanggan tidak seimbang dengan jumlah diterima.")
     receivable = await resolve_invoice_receivable_account(db, receipt.get("invoice_id"))
+    deposit_id = None
+    if credit > 0:
+        from services.sales_accounting_settings import require_customer_deposit_account
+
+        deposit = await require_customer_deposit_account(db)
+        deposit_id = str(deposit["id"])
     lines = _build_journal_lines(
         cash_ledger_account_id=str(cash_snap["cash_bank_account_id"]),
         receivable_account_id=str(receivable["id"]),
         amount=amount,
         receipt_number=str(receipt.get("receipt_number") or ""),
+        allocated_amount=allocated,
+        customer_credit_amount=credit,
+        deposit_account_id=deposit_id,
     )
     try:
         journal = await post_balanced_journal(
@@ -726,6 +784,15 @@ async def reverse_sales_receipt_accounting(
         if status != ACCOUNTING_POSTED or not existing:
             raise HTTPException(409, "Hanya penerimaan yang sudah diposting yang dapat di-reverse.")
 
+        from services.sales_customer_credit import (
+            assert_source_receipt_reversible,
+            hold_source_credit_claim,
+            release_source_credit_claim,
+            release_unfenced_credit_reservations,
+        )
+
+        await assert_source_receipt_reversible(db, rec["id"])
+
         claimed = await acquire_reverse_claim(db, rec["id"])
         if claimed is None:
             current = await db.sales_receipts.find_one({"id": rec["id"]}, {"_id": 0})
@@ -747,29 +814,42 @@ async def reverse_sales_receipt_accounting(
             await clear_reverse_claim(db, rec["id"])
             raise HTTPException(409, "Hanya penerimaan yang sudah diposting yang dapat di-reverse.")
 
+        credit_token = str(uuid.uuid4())
+        credit_held = await hold_source_credit_claim(db, rec["id"], credit_token)
+        if not credit_held:
+            await clear_reverse_claim(db, rec["id"])
+            raise HTTPException(409, "Saldo pelanggan sedang dipakai. Ulangi permintaan.")
         try:
-            await reverse_journal(
-                db,
-                existing["id"],
-                source_type=SOURCE_REVERSAL,
-                source_id=str(rec["id"]),
-                posted_by=user,
-                description=f"Reversal {_journal_description(rec)}",
-            )
-        except KeyError as exc:
-            await clear_reverse_claim(db, rec["id"])
-            raise HTTPException(404, "Jurnal penerimaan tidak ditemukan.") from exc
-        except PeriodLockedError as exc:
-            await clear_reverse_claim(db, rec["id"])
-            raise HTTPException(409, str(exc)) from exc
-        except JournalValidationError as exc:
-            await clear_reverse_claim(db, rec["id"])
-            raise HTTPException(400, str(exc)) from exc
-        except JournalConflictError:
-            still = await find_sales_receipt_source_journal(db, rec["id"])
-            if accounting_status_from_journal(still) != ACCOUNTING_REVERSED:
+            try:
+                await release_unfenced_credit_reservations(db, rec["id"], credit_token)
+                await assert_source_receipt_reversible(db, rec["id"])
+                await reverse_journal(
+                    db,
+                    existing["id"],
+                    source_type=SOURCE_REVERSAL,
+                    source_id=str(rec["id"]),
+                    posted_by=user,
+                    description=f"Reversal {_journal_description(rec)}",
+                )
+            except HTTPException:
                 await clear_reverse_claim(db, rec["id"])
-                raise HTTPException(409, "Reversal jurnal untuk penerimaan ini sudah ada.")
+                raise
+            except KeyError as exc:
+                await clear_reverse_claim(db, rec["id"])
+                raise HTTPException(404, "Jurnal penerimaan tidak ditemukan.") from exc
+            except PeriodLockedError as exc:
+                await clear_reverse_claim(db, rec["id"])
+                raise HTTPException(409, str(exc)) from exc
+            except JournalValidationError as exc:
+                await clear_reverse_claim(db, rec["id"])
+                raise HTTPException(400, str(exc)) from exc
+            except JournalConflictError:
+                still = await find_sales_receipt_source_journal(db, rec["id"])
+                if accounting_status_from_journal(still) != ACCOUNTING_REVERSED:
+                    await clear_reverse_claim(db, rec["id"])
+                    raise HTTPException(409, "Reversal jurnal untuk penerimaan ini sudah ada.")
 
-        await _finalize_reversal_operational_state(db, rec, user)
-        return await _public_receipt_detail(db, rec["id"])
+            await _finalize_reversal_operational_state(db, rec, user)
+            return await _public_receipt_detail(db, rec["id"])
+        finally:
+            await release_source_credit_claim(db, rec["id"], credit_token)

@@ -295,7 +295,9 @@ async def load_proof_bytes(db, receipt_id: str) -> Tuple[bytes, str, str]:
     meta = proof_from_receipt(receipt) or {}
     file_id = _safe_str(meta.get("id"))
     rec = await find_proof_file(db, receipt_id=str(receipt_id), file_id=file_id)
-    if not rec:
+    if not rec or str(rec.get("receipt_id") or "") != str(receipt["id"]):
+        raise HTTPException(404, "Bukti Payment tidak ditemukan untuk penerimaan ini.")
+    if str(rec.get("kind") or "") != KIND:
         raise HTTPException(404, "Bukti Payment tidak ditemukan untuk penerimaan ini.")
 
     storage_path = _safe_str(rec.get("storage_path"))
@@ -315,6 +317,8 @@ async def load_proof_bytes(db, receipt_id: str) -> Tuple[bytes, str, str]:
     if not data:
         raise HTTPException(404, "Isi file Bukti Payment tidak tersedia.")
     ct = sniff_content_type(data, filename, fetched_ct or ct)
+    if ct not in ALLOWED_MIME:
+        raise HTTPException(415, "Jenis file tidak dapat ditampilkan sebagai bukti pembayaran.")
     return data, ct, filename
 
 

@@ -20,7 +20,7 @@ from services.general_ledger import SOURCE_LABELS, _journal_is_legitimate
 from services.journal_core import JOURNAL_ENTRIES, JOURNAL_LINES, STATUS_POSTED
 from services.sales_customers import COLLECTION as SALES_CUSTOMERS
 from services.sales_invoices import FINANCIAL_CANCELLED, FINANCIAL_FINALIZED, effective_financial_status
-from services.sales_receipt_posting import receipt_counts_toward_outstanding
+from services.sales_receipt_posting import receipt_allocated_amount, receipt_counts_toward_outstanding
 
 PERM_VIEW = "accounts_receivable.view"
 
@@ -28,12 +28,16 @@ SOURCE_INVOICE = "sales_invoice"
 SOURCE_INVOICE_REVERSAL = "sales_invoice_reversal"
 SOURCE_RECEIPT = "sales_receipt"
 SOURCE_RECEIPT_REVERSAL = "sales_receipt_reversal"
+SOURCE_CUSTOMER_CREDIT = "sales_customer_credit_application"
+SOURCE_CUSTOMER_CREDIT_REVERSAL = "sales_customer_credit_application_reversal"
 
 SALES_AR_SOURCES = frozenset({
     SOURCE_INVOICE,
     SOURCE_INVOICE_REVERSAL,
     SOURCE_RECEIPT,
     SOURCE_RECEIPT_REVERSAL,
+    SOURCE_CUSTOMER_CREDIT,
+    SOURCE_CUSTOMER_CREDIT_REVERSAL,
 })
 
 BUCKET_NOT_DUE = "NOT_DUE"
@@ -596,8 +600,39 @@ async def _load_current_invoices(db, *, aging_reference_date: str) -> List[dict]
                 )
             ))
     receipt_journal_by_source = {str(j.get("source_id")): j for j in receipt_journals if j.get("source_id")}
+    applications = await _find_in(db, "sales_customer_credit_applications", "invoice_id", invoice_ids)
+    applications_by_invoice: Dict[str, List[dict]] = {}
+    application_ids: List[str] = []
+    for app in applications:
+        if str(app.get("status") or "") not in ("posted", "reversed"):
+            continue
+        iid = str(app.get("invoice_id") or "")
+        aid = str(app.get("id") or "")
+        if not iid or not aid:
+            continue
+        applications_by_invoice.setdefault(iid, []).append(app)
+        application_ids.append(aid)
+    application_journals: List[dict] = []
+    if application_ids:
+        for i in range(0, len(application_ids), IN_BATCH):
+            chunk = application_ids[i:i + IN_BATCH]
+            application_journals.extend(await _cursor_all(
+                db[JOURNAL_ENTRIES].find(
+                    {
+                        "source_type": SOURCE_CUSTOMER_CREDIT,
+                        "source_id": {"$in": chunk},
+                        "reversal_of": None,
+                    },
+                    {"_id": 0},
+                )
+            ))
+    application_journal_by_source = {
+        str(j.get("source_id")): j for j in application_journals if j.get("source_id")
+    }
     receipt_lines_by_jid = await _load_lines_by_journal(
-        db, [str(j.get("id")) for j in receipt_journals if j.get("id")]
+        db,
+        [str(j.get("id")) for j in receipt_journals if j.get("id")]
+        + [str(j.get("id")) for j in application_journals if j.get("id")],
     )
 
     account_ids: Set[str] = set()
@@ -652,10 +687,24 @@ async def _load_current_invoices(db, *, aging_reference_date: str) -> List[dict]
                     sales_ar_by_account[aid] = sales_ar_by_account.get(aid, Decimal("0.00")) - amt
                 unmatched_receipt_ar_account_ids.extend(sorted(unmatched_ids))
             if receipt_counts_toward_outstanding(rec):
-                amount = _money(rec.get("amount"))
+                amount = receipt_allocated_amount(rec)
                 operational_paid += amount
                 if rec_status != STATUS_POSTED:
                     pending_receipt += amount
+        for app in applications_by_invoice.get(invoice_id, []):
+            app_journal = application_journal_by_source.get(str(app.get("id") or ""))
+            app_status = str((app_journal or {}).get("status") or "").strip()
+            app_lines = receipt_lines_by_jid.get(str((app_journal or {}).get("id") or ""), [])
+            if app_status == STATUS_POSTED and str(app.get("financial_status") or "") == "active":
+                matched_credit, matched_by, unmatched_ids, app_warnings = _analyze_receipt_ar(
+                    app_lines, accounts, invoice_ar_ids
+                )
+                posted_receipt += matched_credit
+                integrity_warnings.extend(app_warnings)
+                for aid, amt in matched_by.items():
+                    sales_ar_by_account[aid] = sales_ar_by_account.get(aid, Decimal("0.00")) - amt
+                unmatched_receipt_ar_account_ids.extend(sorted(unmatched_ids))
+                operational_paid += _money(app.get("amount"))
 
         raw_outstanding = original_ar - posted_receipt
         accounting_outstanding, outstanding_warnings = _normalize_outstanding(raw_outstanding)

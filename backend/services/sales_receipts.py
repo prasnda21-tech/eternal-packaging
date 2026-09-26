@@ -165,6 +165,9 @@ async def get_sales_receipt_detail(db, receipt_id: str) -> Dict[str, Any]:
     if not r:
         raise HTTPException(404, f"Penerimaan Penjualan '{receipt_id}' tidak ditemukan.")
     attached = await attach_receipt_accounting_fields(db, [_public_receipt(r)])
+    from services.sales_customer_credit import list_applications_for_receipt
+
+    attached[0]["customer_credit_history"] = await list_applications_for_receipt(db, attached[0]["id"])
     return attached[0]
 
 
@@ -241,7 +244,18 @@ async def create_sales_receipt(
         if reverse_claim_is_active(invoice):
             raise HTTPException(409, INVOICE_REVERSE_IN_PROGRESS_RECEIPT_CREATE_MESSAGE)
 
-        amount = _parse_non_negative_amount(payload.get("amount"), "Jumlah penerimaan")
+        from services.financial_statement_common import MONEY_Q, money_float
+        from services.sales_customer_credit import (
+            IDENTITY_BLOCK_REASON,
+            effective_currency,
+            scope_from_invoice,
+            split_receipt_amounts,
+            stable_customer_for_invoice,
+        )
+        from services.sales_receipt_posting import receipt_allocated_amount
+
+        amount_dec = Decimal(str(_parse_non_negative_amount(payload.get("amount"), "Jumlah penerimaan"))).quantize(MONEY_Q)
+        amount = money_float(amount_dec)
         create_claim_token = str(claim_token or uuid.uuid4())
         claimed = await acquire_receipt_create_claim(db, invoice["id"], token=create_claim_token)
         if claimed is None:
@@ -269,20 +283,37 @@ async def create_sales_receipt(
             cash_snap = await resolve_cash_bank_for_create(db, cash_bank_id) if cash_bank_id else {}
 
             existing_receipts = await db.sales_receipts.find({"invoice_id": invoice["id"]}, {"_id": 0}).to_list(500)
-            paid_total_before = round(
-                sum(float(r.get("amount", 0)) for r in existing_receipts if receipt_counts_toward_outstanding(r)),
-                2,
-            )
-            outstanding_before = max(round(grand_total - paid_total_before, 2), 0.0)
-            if amount > outstanding_before:
-                raise HTTPException(
-                    400,
-                    f"Jumlah penerimaan (Rp {amount:,.2f}) melebihi sisa tagihan faktur (Rp {outstanding_before:,.2f})."
-                )
+            from services.sales_customer_credit import invoice_credit_applied_total
 
-            new_paid_total = round(paid_total_before + amount, 2)
-            new_outstanding = max(round(grand_total - new_paid_total, 2), 0.0)
-            payment_state = "LUNAS" if new_paid_total >= grand_total else "DP"
+            paid_total_before = money_float(
+                sum(
+                    (receipt_allocated_amount(r) for r in existing_receipts if receipt_counts_toward_outstanding(r)),
+                    Decimal("0.00"),
+                ).quantize(MONEY_Q)
+                + await invoice_credit_applied_total(db, invoice["id"])
+            )
+            outstanding_before = money_float(
+                max(Decimal(str(grand_total)).quantize(MONEY_Q) - Decimal(str(paid_total_before)).quantize(MONEY_Q), Decimal("0.00"))
+            )
+            allocated_dec, credit_dec = split_receipt_amounts(
+                amount_dec,
+                Decimal(str(outstanding_before)).quantize(MONEY_Q),
+                payload.get("allocated_amount", None) if "allocated_amount" in payload else None,
+            )
+            customer_id = await stable_customer_for_invoice(db, invoice)
+            scope = await scope_from_invoice(db, invoice)
+            if credit_dec > 0 and not customer_id:
+                raise HTTPException(400, IDENTITY_BLOCK_REASON)
+            allocated_amount = money_float(allocated_dec)
+            customer_credit_amount = money_float(credit_dec)
+
+            new_paid_total = money_float(
+                (Decimal(str(paid_total_before)) + allocated_dec).quantize(MONEY_Q)
+            )
+            new_outstanding = money_float(
+                max(Decimal(str(grand_total)).quantize(MONEY_Q) - Decimal(str(new_paid_total)).quantize(MONEY_Q), Decimal("0.00"))
+            )
+            payment_state = "LUNAS" if Decimal(str(new_paid_total)) >= Decimal(str(grand_total)).quantize(MONEY_Q) else "DP"
 
             receipt_id = str(uuid.uuid4())
             receipt_date = str(payload.get("receipt_date") or now_iso()[:10]).strip()
@@ -305,8 +336,15 @@ async def create_sales_receipt(
                 "po_id": invoice["po_id"],
                 "po_number": invoice["po_number"],
                 "customer": invoice["customer"],
+                "customer_id": customer_id,
+                "branch_id": scope.get("branch_id") or None,
+                "currency": effective_currency(scope.get("currency")),
                 "receipt_date": receipt_date,
                 "amount": amount,
+                "allocated_amount": allocated_amount,
+                "customer_credit_amount": customer_credit_amount,
+                "customer_credit_applied": 0,
+                "customer_credit_block_reason": None if customer_id or customer_credit_amount <= 0 else IDENTITY_BLOCK_REASON,
                 "payment_state": payment_state,
                 "notes": str(payload.get("notes") or "").strip(),
                 "financial_status": "active",
@@ -354,6 +392,8 @@ async def create_sales_receipt(
                         "receipt_id": receipt_id,
                         "invoice_id": invoice["id"],
                         "amount": amount,
+                        "allocated_amount": allocated_amount,
+                        "customer_credit_amount": customer_credit_amount,
                         "payment_state": payment_state,
                         "receipt_number": receipt_number,
                         "receipt_date": receipt_date,
@@ -363,6 +403,7 @@ async def create_sales_receipt(
                         "receipt_id": receipt_id,
                         "invoice_id": invoice["id"],
                         "amount": amount,
+                        "allocated_amount": allocated_amount,
                         "payment_state": payment_state,
                         "updated_at": now_iso(),
                     }
@@ -500,13 +541,20 @@ async def _recalc_invoice_payment_from_receipts(db, invoice_id: str) -> None:
     invoice = await db.sales_invoices.find_one({"id": invoice_id}, {"_id": 0})
     if not invoice:
         return
+    from services.financial_statement_common import MONEY_Q, money_float
+    from services.sales_customer_credit import invoice_credit_applied_total
+    from services.sales_receipt_posting import receipt_allocated_amount
+
     remaining = await db.sales_receipts.find({"invoice_id": invoice_id}, {"_id": 0}).to_list(500)
-    paid = round(
-        sum(float(r.get("amount", 0)) for r in remaining if receipt_counts_toward_outstanding(r)),
-        2,
+    paid_dec = sum(
+        (receipt_allocated_amount(r) for r in remaining if receipt_counts_toward_outstanding(r)),
+        Decimal("0.00"),
     )
+    paid_dec += await invoice_credit_applied_total(db, invoice_id)
+    paid_dec = paid_dec.quantize(MONEY_Q)
+    paid = money_float(paid_dec)
     grand = float(invoice.get("grand_total", 0))
-    outstanding = max(round(grand - paid, 2), 0.0)
+    outstanding = money_float(max(Decimal(str(grand)).quantize(MONEY_Q) - paid_dec, Decimal("0.00")))
     if paid <= 0:
         p_status = "BELUM DIBAYAR"
     elif paid < grand:

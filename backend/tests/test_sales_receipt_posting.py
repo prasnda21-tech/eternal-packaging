@@ -590,7 +590,7 @@ async def test_matrix_n_o_proof_and_overpayment_unchanged():
                 "receipt_date": "2026-09-06",
             })
             assert over.status_code == 400
-            assert "melebihi sisa tagihan" in str(over.json()["detail"])
+            assert "Identitas pelanggan tidak dapat dibuktikan" in str(over.json()["detail"])
     finally:
         app.dependency_overrides.pop(current_user, None)
 

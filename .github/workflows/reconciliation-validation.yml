@@ -77,6 +77,10 @@ jobs:
           tests/test_customer_tracking.py
           tests/test_customer_tracking_invoices.py
           tests/test_tracking_delivery_signature.py
+          tests/test_sales_customer_credit.py
+          tests/test_sales_receipt_posting.py
+          tests/test_sales_receipt_payment_proof.py
+          tests/test_sales_invoices_and_receipts.py
 
   frontend-focused:
     name: Frontend tests and build
@@ -141,6 +145,10 @@ jobs:
           src/lib/liveTracking.test.js
           src/pages/CustomerTrackingPage.test.js
           src/pages/CustomerTrackingPage.onescreen.test.js
+          src/pages/PenerimaanPenjualan.test.js
+          src/lib/salesReceipts.test.js
+          src/lib/salesReceiptPaymentProof.test.js
+          src/pages/SalesAccountingSettings.test.js
       - name: Build production frontend
         if: ${{ always() }}
         env:

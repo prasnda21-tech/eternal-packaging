@@ -114,7 +114,12 @@ async def _create_invoice(client, order, unit_price=100000, qty=100):
         },
     )
     assert res.status_code == 200, res.text
-    return res.json()["invoice"]
+    invoice_id = res.json()["invoice"]["id"]
+    finalized = await client.post(f"/api/sales-invoices/{invoice_id}/finalize")
+    assert finalized.status_code == 200, finalized.text
+    invoice = finalized.json()["invoice"]
+    assert str(invoice.get("financial_status") or "").lower() == "finalized"
+    return invoice
 
 
 def _admin():
@@ -204,6 +209,91 @@ async def test_create_receipt_with_valid_payment_proof_stores_bytes_and_relation
             assert detail.json()["receipt"]["has_payment_proof"] is True
             files_after = await server.db.files.count_documents({"kind": KIND})
             assert files_after == files_before
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_draft_invoice_rejects_receipt_without_orphan_proof():
+    order = await _seed_order()
+    app.dependency_overrides[current_user] = _admin
+    stored = []
+
+    def fake_put(path, data, content_type):
+        stored.append(path)
+        return {"path": path, "size": len(data)}
+
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post(
+                "/api/sales-invoices",
+                json={
+                    "po_id": order["id"],
+                    "invoice_date": "2026-09-01",
+                    "lines": [{"line_idx": 0, "quantity": 1, "unit_price": 10000}],
+                },
+            )
+            assert created.status_code == 200, created.text
+            invoice = created.json()["invoice"]
+            assert str(invoice.get("financial_status") or "draft").lower() == "draft"
+            with mock.patch("services.sales_receipt_payment_proof.obj_storage.put_object", side_effect=fake_put):
+                denied = await client.post(
+                    "/api/sales-receipts",
+                    json={
+                        "invoice_id": invoice["id"],
+                        "amount": 1000,
+                        "payment_proof": {
+                            "name": "bukti-draft.png",
+                            "data_url": _data_url(TINY_PNG, "image/png"),
+                        },
+                    },
+                )
+            assert denied.status_code == 409
+            assert "finalized" in denied.json()["detail"]
+            assert stored == []
+            assert await server.db.sales_receipts.count_documents({"invoice_id": invoice["id"]}) == 0
+            assert await server.db.files.count_documents({"invoice_id": invoice["id"], "kind": KIND}) == 0
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_sales_eternal_cannot_read_payment_proof():
+    order = await _seed_order()
+    app.dependency_overrides[current_user] = _admin
+
+    def fake_put(path, data, content_type):
+        return {"path": path, "size": len(data)}
+
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            inv = await _create_invoice(client, order, unit_price=10000, qty=10)
+            with mock.patch("services.sales_receipt_payment_proof.obj_storage.put_object", side_effect=fake_put):
+                with mock.patch("services.sales_receipt_payment_proof.obj_storage.ext_for", return_value="png"):
+                    created = await client.post(
+                        "/api/sales-receipts",
+                        json={
+                            "invoice_id": inv["id"],
+                            "amount": 1500,
+                            "payment_proof": {
+                                "name": "p.png",
+                                "data_url": _data_url(TINY_PNG, "image/png"),
+                            },
+                        },
+                    )
+            assert created.status_code == 200, created.text
+            receipt_id = created.json()["receipt"]["id"]
+            app.dependency_overrides[current_user] = lambda: {
+                "role": "sales_eternal",
+                "name": "Sales",
+                "email": "sales-proof@test.com",
+                "id": "sales-proof-1",
+                "permissions_override": {"payment.view": True, "sales.receipt.view": True},
+            }
+            view = await client.get(f"/api/sales-receipts/{receipt_id}/payment-proof")
+            assert view.status_code == 403
     finally:
         app.dependency_overrides.pop(current_user, None)
 

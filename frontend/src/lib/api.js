@@ -639,13 +639,20 @@ export const api = {
 
   downloadSalesInvoicePdf: (id) => client.get(`/sales-invoices/${encodeURIComponent(id)}/pdf`, { responseType: "blob" }).then((r) => r.data),
   downloadSalesReceiptPdf: (id) => client.get(`/sales-receipts/${encodeURIComponent(id)}/pdf`, { responseType: "blob" }).then((r) => r.data),
-  downloadSalesReceiptPaymentProof: (id, download = false) =>
+  downloadSalesReceiptPaymentProof: (id, download = false, config = {}) =>
     client
       .get(`/sales-receipts/${encodeURIComponent(id)}/payment-proof`, {
+        ...config,
         params: download ? { download: true } : {},
         responseType: "blob",
       })
       .then((r) => r.data),
+  listSalesCustomerCredit: (params = {}) =>
+    client.get(`/sales-receipts/customer-credit`, { params }).then((r) => r.data),
+  applySalesCustomerCredit: (payload) =>
+    client.post(`/sales-receipts/customer-credit/applications`, payload).then((r) => r.data),
+  reverseSalesCustomerCredit: (id) =>
+    client.post(`/sales-receipts/customer-credit/applications/${encodeURIComponent(id)}/reverse`).then((r) => r.data),
 
   listSalesInvoices: (params = {}) => client.get(`/sales-invoices`, { params }).then((r) => r.data),
   getSalesInvoice: (id) => client.get(`/sales-invoices/${encodeURIComponent(id)}`).then((r) => r.data),
