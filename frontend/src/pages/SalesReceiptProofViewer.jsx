@@ -68,7 +68,7 @@ export default function SalesReceiptProofViewer({ receipt, onClose }) {
       active = false;
       controller.abort();
     };
-  }, [receipt.id, attempt]);
+  }, [receipt.id, receipt?.payment_proof?.content_type, attempt]);
 
   useEffect(() => {
     if (!blob || !isPdf(contentType, name)) {
