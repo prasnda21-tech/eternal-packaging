@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams, useNavigate } from "react-router-dom";
 import {
   AlertCircle,
@@ -30,6 +30,7 @@ function formatRupiah(num) {
 }
 
 import { filterEligibleInvoices, resolvePreselectedInvoiceId, computeReceiptPreview } from "../lib/salesReceipts";
+import SalesReceiptProofViewer from "./SalesReceiptProofViewer";
 import {
   RECEIPT_PROOF_ACCEPT,
   buildReceiptProofPayload,
@@ -74,6 +75,8 @@ export default function PenerimaanPenjualan() {
   const [selectedInvoiceId, setSelectedInvoiceId] = useState("");
   const [selectedInvoice, setSelectedInvoice] = useState(null);
   const [receiptAmount, setReceiptAmount] = useState("");
+  const [allocationAmount, setAllocationAmount] = useState("");
+  const [allocationTouched, setAllocationTouched] = useState(false);
   const [receiptDate, setReceiptDate] = useState(getTodayString());
   const [receiptNotes, setReceiptNotes] = useState("");
   const [proofFile, setProofFile] = useState(null);
@@ -84,6 +87,15 @@ export default function PenerimaanPenjualan() {
   const [createBusy, setCreateBusy] = useState(false);
   const [createErr, setCreateErr] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
+  const [creditOffer, setCreditOffer] = useState(null);
+  const [creditOfferErr, setCreditOfferErr] = useState("");
+  const [creditPanelOpen, setCreditPanelOpen] = useState(false);
+  const [creditSourceId, setCreditSourceId] = useState("");
+  const [creditUseAmount, setCreditUseAmount] = useState("");
+  const [creditBusy, setCreditBusy] = useState(false);
+  const [creditMsg, setCreditMsg] = useState("");
+  const [proofViewerReceipt, setProofViewerReceipt] = useState(null);
+  const creditRequestRef = useRef({ key: "", signature: "" });
 
   // Detail Modal State
   const [detailReceipt, setDetailReceipt] = useState(null);
@@ -260,6 +272,8 @@ export default function PenerimaanPenjualan() {
           setSelectedInvoice(inv);
           if (!receiptAmount && inv.outstanding_amount > 0) {
             setReceiptAmount(String(inv.outstanding_amount));
+            setAllocationAmount(String(inv.outstanding_amount));
+            setAllocationTouched(false);
           }
         }
       } catch {
@@ -274,12 +288,42 @@ export default function PenerimaanPenjualan() {
 
   // Live preview calculation for receipt modal
   const previewCalc = useMemo(() => {
-    return computeReceiptPreview(selectedInvoice, receiptAmount);
-  }, [selectedInvoice, receiptAmount]);
+    return computeReceiptPreview(
+      selectedInvoice,
+      receiptAmount,
+      allocationTouched ? allocationAmount : undefined,
+    );
+  }, [selectedInvoice, receiptAmount, allocationAmount, allocationTouched]);
+
+  useEffect(() => {
+    if (!selectedInvoiceId || !canPostAccounting) {
+      setCreditOffer(null);
+      setCreditOfferErr("");
+      return undefined;
+    }
+    let active = true;
+    setCreditOffer(null);
+    setCreditOfferErr("");
+    api.listSalesCustomerCredit({ invoice_id: selectedInvoiceId })
+      .then((res) => {
+        if (active) setCreditOffer(res);
+      })
+      .catch((error) => {
+        if (!active) return;
+        setCreditOffer(null);
+        setCreditOfferErr(error?.response?.data?.detail || "Saldo pelanggan gagal dimuat.");
+      });
+    return () => {
+      active = false;
+    };
+  }, [selectedInvoiceId, canPostAccounting]);
 
   const handleOpenCreateModal = (invId = "") => {
     setSelectedInvoiceId(invId || "");
     setReceiptAmount("");
+    setAllocationAmount("");
+    setAllocationTouched(false);
+    setCreditPanelOpen(false);
     setReceiptDate(getTodayString());
     setReceiptNotes("");
     setProofFile(null);
@@ -294,6 +338,9 @@ export default function PenerimaanPenjualan() {
     setSelectedInvoiceId("");
     setSelectedInvoice(null);
     setReceiptAmount("");
+    setAllocationAmount("");
+    setAllocationTouched(false);
+    setCreditPanelOpen(false);
     setReceiptNotes("");
     setProofFile(null);
     setProofErr("");
@@ -367,6 +414,8 @@ export default function PenerimaanPenjualan() {
   const handlePayFull = () => {
     if (selectedInvoice && selectedInvoice.outstanding_amount > 0) {
       setReceiptAmount(String(selectedInvoice.outstanding_amount));
+      setAllocationAmount(String(selectedInvoice.outstanding_amount));
+      setAllocationTouched(false);
     }
   };
 
@@ -385,8 +434,16 @@ export default function PenerimaanPenjualan() {
       setCreateErr("Silakan pilih Kas/Bank terlebih dahulu.");
       return;
     }
-    if (previewCalc?.isOverpayment) {
-      setCreateErr(`Jumlah penerimaan (${formatRupiah(numAmount)}) melebihi sisa tagihan (${formatRupiah(previewCalc.outstandingBefore)}).`);
+    if (previewCalc?.allocationExceedsOutstanding) {
+      setCreateErr(`Alokasi (${formatRupiah(previewCalc.allocated)}) melebihi sisa tagihan (${formatRupiah(previewCalc.outstandingBefore)}).`);
+      return;
+    }
+    if (previewCalc?.allocationExceedsReceived) {
+      setCreateErr("Total alokasi tidak boleh melebihi jumlah diterima.");
+      return;
+    }
+    if (!previewCalc?.allocated || previewCalc.allocated <= 0) {
+      setCreateErr("Alokasi ke faktur harus lebih besar dari 0.");
       return;
     }
     const proofCheck = validateReceiptProofFile(proofFile);
@@ -407,6 +464,7 @@ export default function PenerimaanPenjualan() {
         invoice_id: selectedInvoiceId,
         receipt_date: receiptDate || getTodayString(),
         amount: numAmount,
+        allocated_amount: previewCalc.allocated,
         notes: receiptNotes.trim(),
         cash_bank_id: cashBankId,
         payment_proof,
@@ -423,6 +481,68 @@ export default function PenerimaanPenjualan() {
       setCreateErr(typeof det === "object" ? det.message : det || err.message || "Gagal menyimpan Penerimaan Penjualan");
     } finally {
       setCreateBusy(false);
+    }
+  };
+
+  const handleApplyCredit = async () => {
+    const source = (creditOffer?.sources || []).find((row) => row.receipt_id === creditSourceId);
+    const useAmount = Number(creditUseAmount);
+    if (!selectedInvoiceId || !source) {
+      setCreditMsg("Pilih sumber saldo dan faktur tujuan.");
+      return;
+    }
+    if (!useAmount || useAmount <= 0) {
+      setCreditMsg("Nominal pemakaian saldo harus lebih besar dari 0.");
+      return;
+    }
+    setCreditBusy(true);
+    setCreditMsg("");
+    try {
+      const signature = `${source.receipt_id}|${selectedInvoiceId}|${useAmount}`;
+      if (creditRequestRef.current.signature !== signature) {
+        creditRequestRef.current = {
+          signature,
+          key: `credit-${typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : signature}`,
+        };
+      }
+      const res = await api.applySalesCustomerCredit({
+        source_receipt_id: source.receipt_id,
+        invoice_id: selectedInvoiceId,
+        amount: useAmount,
+        idempotency_key: creditRequestRef.current.key,
+      });
+      creditRequestRef.current = { key: "", signature: "" };
+      setCreditMsg(res.message || "Saldo pelanggan dipakai.");
+      const refreshed = await api.getSalesInvoice(selectedInvoiceId);
+      setSelectedInvoice(refreshed.invoice || refreshed);
+      const offer = await api.listSalesCustomerCredit({ invoice_id: selectedInvoiceId });
+      setCreditOffer(offer);
+      setCreditOfferErr("");
+      loadReceipts();
+    } catch (error) {
+      const detail = error?.response?.data?.detail;
+      setCreditMsg(typeof detail === "object" ? detail.message : detail || "Pemakaian saldo gagal.");
+    } finally {
+      setCreditBusy(false);
+    }
+  };
+
+  const handleReverseCredit = async (applicationId) => {
+    setCreditBusy(true);
+    setCreditMsg("");
+    try {
+      const res = await api.reverseSalesCustomerCredit(applicationId);
+      setCreditMsg(res.message || "Pemakaian saldo dibalik.");
+      if (detailReceipt?.id) {
+        const fresh = await api.getSalesReceipt(detailReceipt.id);
+        setDetailReceipt(fresh.receipt || fresh);
+      }
+      loadReceipts();
+    } catch (error) {
+      const detail = error?.response?.data?.detail;
+      setCreditMsg(typeof detail === "object" ? detail.message : detail || "Pembalikan pemakaian gagal.");
+    } finally {
+      setCreditBusy(false);
     }
   };
 
@@ -946,6 +1066,10 @@ export default function PenerimaanPenjualan() {
                     >
                       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 12, fontSize: 13 }}>
                         <div>
+                          <span style={{ color: "#64748b" }}>Pelanggan:</span>
+                          <div data-testid="summary-customer" style={{ fontWeight: 600, color: "#1e293b" }}>{selectedInvoice.customer || "-"}</div>
+                        </div>
+                        <div>
                           <span style={{ color: "#64748b" }}>No. Faktur:</span>
                           <div data-testid="summary-invoice-number" style={{ fontWeight: 600, color: "#1e293b" }}>{selectedInvoice.invoice_number || "-"}</div>
                         </div>
@@ -1005,9 +1129,11 @@ export default function PenerimaanPenjualan() {
                     data-testid="input-receipt-amount"
                     placeholder="0"
                     min="1"
-                    max={selectedInvoice?.outstanding_amount || undefined}
                     value={receiptAmount}
-                    onChange={(e) => setReceiptAmount(e.target.value)}
+                    onChange={(e) => {
+                      setReceiptAmount(e.target.value);
+                      if (!allocationTouched) setAllocationAmount("");
+                    }}
                     disabled={createBusy || !selectedInvoice}
                     style={{
                       width: "100%",
@@ -1016,6 +1142,80 @@ export default function PenerimaanPenjualan() {
                     }}
                   />
                 </div>
+
+                <div style={{ marginBottom: 16 }} data-testid="receipt-allocation-field">
+                  <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 6 }}>
+                    Alokasi ke faktur (Rp)
+                  </label>
+                  <input
+                    type="number"
+                    className="form-input"
+                    data-testid="input-receipt-allocation"
+                    min="0"
+                    value={allocationTouched ? allocationAmount : (previewCalc ? String(previewCalc.allocated || "") : allocationAmount)}
+                    onChange={(e) => {
+                      setAllocationTouched(true);
+                      setAllocationAmount(e.target.value);
+                    }}
+                    disabled={createBusy || !selectedInvoice}
+                    style={{ width: "100%", fontSize: 14 }}
+                  />
+                  {previewCalc && previewCalc.amount > 0 && (
+                    <p data-testid="receipt-allocation-total" style={{ margin: "6px 0 0", fontSize: 12, color: "#0f766e" }}>
+                      Total dialokasikan: {formatRupiah(previewCalc.allocationExceedsOutstanding || previewCalc.allocationExceedsReceived ? 0 : previewCalc.allocated)}
+                    </p>
+                  )}
+                  {previewCalc && previewCalc.customerCredit > 0 && (
+                    <p data-testid="receipt-customer-credit-remainder" style={{ margin: "4px 0 0", fontSize: 12, fontWeight: 700, color: "#0f766e" }}>
+                      Sisa menjadi saldo pelanggan: {formatRupiah(previewCalc.customerCredit)}
+                    </p>
+                  )}
+                </div>
+
+                {canPostAccounting && selectedInvoice && (
+                  <div style={{ marginBottom: 16 }} data-testid="receipt-use-credit">
+                    {creditOfferErr && <p data-testid="credit-load-error" style={{ color: "#b91c1c", fontSize: 12 }}>{String(creditOfferErr)}</p>}
+                    {creditOffer?.blocked_reason && (
+                      <p data-testid="credit-blocked-reason" style={{ fontSize: 12, color: "#92400e" }}>{creditOffer.blocked_reason}</p>
+                    )}
+                    {creditOffer?.loaded && Number(creditOffer.available) > 0 && (
+                      <button
+                        type="button"
+                        data-testid="btn-gunakan-saldo"
+                        onClick={() => {
+                          setCreditPanelOpen(true);
+                          const first = creditOffer.sources?.[0];
+                          setCreditSourceId(first?.receipt_id || "");
+                          setCreditUseAmount(String(Math.min(Number(first?.available) || 0, Number(selectedInvoice.outstanding_amount) || 0)));
+                        }}
+                        style={{ border: "none", background: "#047857", color: "#fff", borderRadius: 6, padding: "6px 10px", fontSize: 12 }}
+                      >
+                        Gunakan Saldo
+                      </button>
+                    )}
+                    {creditPanelOpen && creditOffer?.loaded && (
+                      <div data-testid="credit-use-panel" style={{ marginTop: 8, padding: 10, border: "1px solid #99f6e4", borderRadius: 8, background: "#fff" }}>
+                        <div style={{ fontSize: 12, marginBottom: 6 }}>Saldo tersedia: {formatRupiah(creditOffer.available)}</div>
+                        <div style={{ fontSize: 12, marginBottom: 6 }}>Faktur tujuan: {selectedInvoice.invoice_number}</div>
+                        <select data-testid="select-credit-source" value={creditSourceId} onChange={(e) => setCreditSourceId(e.target.value)} style={{ width: "100%", marginBottom: 6 }}>
+                          {(creditOffer.sources || []).map((row) => (
+                            <option key={row.receipt_id} value={row.receipt_id}>
+                              {row.receipt_number} · {formatRupiah(row.available)}
+                            </option>
+                          ))}
+                        </select>
+                        <input data-testid="input-credit-use-amount" type="number" value={creditUseAmount} onChange={(e) => setCreditUseAmount(e.target.value)} style={{ width: "100%", marginBottom: 6 }} />
+                        <div style={{ fontSize: 12, marginBottom: 6 }}>
+                          Sisa faktur: {formatRupiah(Math.max(0, Number(selectedInvoice.outstanding_amount || 0) - Number(creditUseAmount || 0)))}
+                        </div>
+                        <button type="button" data-testid="btn-confirm-gunakan-saldo" disabled={creditBusy} onClick={handleApplyCredit} style={{ border: "none", background: "#047857", color: "#fff", borderRadius: 6, padding: "6px 10px" }}>
+                          {creditBusy ? "Memakai saldo..." : "Konfirmasi pakai saldo"}
+                        </button>
+                        {creditMsg && <p data-testid="credit-use-result" style={{ fontSize: 12 }}>{creditMsg}</p>}
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {/* 3. Tanggal Penerimaan */}
                 <div style={{ marginBottom: 16 }}>
@@ -1137,7 +1337,7 @@ export default function PenerimaanPenjualan() {
                 </div>
 
                 {/* Live Preview Bar */}
-                {previewCalc && previewCalc.amount > 0 && !previewCalc.isOverpayment && (
+                {previewCalc && previewCalc.amount > 0 && !previewCalc.allocationExceedsOutstanding && !previewCalc.allocationExceedsReceived && (
                   <div
                     style={{
                       backgroundColor: "#ecfdf5",
@@ -1200,7 +1400,7 @@ export default function PenerimaanPenjualan() {
                   type="submit"
                   className="btn btn-primary"
                   data-testid="btn-submit-receipt"
-                  disabled={createBusy || !selectedInvoice || previewCalc?.isOverpayment}
+                  disabled={createBusy || !selectedInvoice || previewCalc?.allocationExceedsOutstanding || previewCalc?.allocationExceedsReceived}
                   style={{
                     padding: "8px 18px",
                     borderRadius: 6,
@@ -1265,7 +1465,62 @@ export default function PenerimaanPenjualan() {
               <dd style={{ margin: 0, fontWeight: 700 }}>{formatRupiah(detailReceipt.amount)}</dd>
               <dt>Faktur</dt>
               <dd style={{ margin: 0, fontFamily: "monospace" }}>{detailReceipt.invoice_number || "-"}</dd>
+              <dt>Dialokasikan</dt>
+              <dd style={{ margin: 0 }}>{formatRupiah(detailReceipt.allocated_amount ?? detailReceipt.amount)}</dd>
+              {Number(detailReceipt.customer_credit_amount) > 0 && (
+                <>
+                  <dt>Saldo pelanggan</dt>
+                  <dd data-testid="receipt-detail-credit" style={{ margin: 0 }}>
+                    {detailReceipt.customer_credit?.state === "available"
+                      ? `Tersedia ${formatRupiah(detailReceipt.customer_credit.available)}`
+                      : (detailReceipt.customer_credit?.reason || "Tidak tersedia")}
+                  </dd>
+                </>
+              )}
             </dl>
+            {Array.isArray(detailReceipt.customer_credit_history) && detailReceipt.customer_credit_history.length > 0 && (
+              <div data-testid="receipt-credit-history" style={{ marginBottom: 12, fontSize: 12 }}>
+                <strong>Riwayat saldo</strong>
+                <ul style={{ margin: "6px 0 0", paddingLeft: 16 }}>
+                  {detailReceipt.customer_credit_history.map((row) => (
+                    <li key={row.id} data-testid={`credit-history-${row.id}`}>
+                      {row.invoice_number} · {formatRupiah(row.amount)} · {row.financial_status === "cancelled" ? "dibalik" : "dipakai"}
+                      {canReverseAccounting && row.financial_status === "active" && row.status === "posted" && (
+                        <button type="button" data-testid={`btn-reverse-credit-${row.id}`} disabled={creditBusy} onClick={() => handleReverseCredit(row.id)} style={{ marginLeft: 8 }}>
+                          Balikkan Pemakaian Saldo
+                        </button>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+                {creditMsg && <p>{creditMsg}</p>}
+              </div>
+            )}
+            {detailReceipt.has_payment_proof && (
+              <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+                <button type="button" data-testid="btn-lihat-bukti" onClick={() => setProofViewerReceipt(detailReceipt)} style={{ border: "none", background: "#0f766e", color: "#fff", borderRadius: 6, padding: "6px 10px" }}>
+                  Lihat Bukti
+                </button>
+                <button
+                  type="button"
+                  data-testid="btn-unduh-bukti"
+                  onClick={async () => {
+                    const file = await api.downloadSalesReceiptPaymentProof(detailReceipt.id, true);
+                    const url = URL.createObjectURL(file);
+                    const link = document.createElement("a");
+                    link.href = url;
+                    link.download = detailReceipt.payment_proof?.name || "bukti-pembayaran";
+                    document.body.appendChild(link);
+                    link.click();
+                    link.remove();
+                    URL.revokeObjectURL(url);
+                  }}
+                  style={{ border: "1px solid #cbd5e1", background: "#fff", borderRadius: 6, padding: "6px 10px" }}
+                >
+                  Unduh Bukti
+                </button>
+              </div>
+            )}
             {canPostAccounting && detailReceipt.can_post_accounting && (
               <button
                 type="button"
@@ -1298,6 +1553,13 @@ export default function PenerimaanPenjualan() {
             </button>
           </div>
         </div>
+      )}
+
+      {proofViewerReceipt && (
+        <SalesReceiptProofViewer
+          receipt={proofViewerReceipt}
+          onClose={() => setProofViewerReceipt(null)}
+        />
       )}
 
       {accountingTarget && (

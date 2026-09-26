@@ -20,6 +20,7 @@ export default function SalesAccountingSettings({ notify, canEdit }) {
   const [receivableId, setReceivableId] = useState("");
   const [revenueId, setRevenueId] = useState("");
   const [outputTaxId, setOutputTaxId] = useState("");
+  const [depositId, setDepositId] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
@@ -33,6 +34,7 @@ export default function SalesAccountingSettings({ notify, canEdit }) {
         setReceivableId(s.receivable_account_id || "");
         setRevenueId(s.revenue_account_id || "");
         setOutputTaxId(s.output_tax_account_id || "");
+        setDepositId(s.customer_deposit_account_id || "");
         setAccounts(accountsRes.items || accountsRes.accounts || []);
       })
       .catch((e) => setErr(errDetail(e)))
@@ -55,6 +57,10 @@ export default function SalesAccountingSettings({ notify, canEdit }) {
     () => (Array.isArray(accounts) ? accounts.filter(isOutputTaxEligible) : []),
     [accounts]
   );
+  const depositOptions = useMemo(
+    () => (Array.isArray(accounts) ? accounts.filter((a) => a.account_type === "OCLY") : []),
+    [accounts]
+  );
 
   const save = async () => {
     setBusy(true);
@@ -64,6 +70,7 @@ export default function SalesAccountingSettings({ notify, canEdit }) {
         receivable_account_id: receivableId,
         revenue_account_id: revenueId,
         output_tax_account_id: outputTaxId,
+        customer_deposit_account_id: depositId,
       });
       setSettings(res.settings);
       notify?.(res.message || "Pengaturan Akuntansi Penjualan disimpan");
@@ -136,6 +143,22 @@ export default function SalesAccountingSettings({ notify, canEdit }) {
             ))}
           </select>
         </label>
+        <label>
+          Titipan / Uang Muka Pelanggan
+          <select
+            value={depositId}
+            onChange={(e) => setDepositId(e.target.value)}
+            disabled={!canEdit}
+            data-testid="sales-accounting-customer-deposit"
+          >
+            <option value="">Pilih akun OCLY</option>
+            {depositOptions.map((a) => (
+              <option key={a.id} value={a.id}>
+                {accountLabel(a)}
+              </option>
+            ))}
+          </select>
+        </label>
       </div>
       <dl className="confirm-action-dl" data-testid="sales-accounting-rules">
         <div>
@@ -146,6 +169,7 @@ export default function SalesAccountingSettings({ notify, canEdit }) {
           <dt>Status pemetaan</dt>
           <dd data-testid="sales-accounting-configured">
             {settings?.configured ? "Terkonfigurasi" : "Belum dikonfigurasi"}
+            {settings && !settings.customer_deposit_configured ? " · titipan belum dipetakan" : ""}
           </dd>
         </div>
       </dl>

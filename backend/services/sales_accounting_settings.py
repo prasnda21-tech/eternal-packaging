@@ -29,7 +29,11 @@ ACCOUNT_FIELDS = (
     "receivable_account_id",
     "revenue_account_id",
     "output_tax_account_id",
+    "customer_deposit_account_id",
 )
+
+DEPOSIT_ACCOUNT_TYPE = "OCLY"
+DEPOSIT_LABEL = "Akun Titipan/Uang Muka Pelanggan"
 
 
 def now_iso() -> str:
@@ -60,10 +64,13 @@ def _public_unconfigured(stored: Optional[dict] = None) -> Dict[str, Any]:
         "discount_treatment": DISCOUNT_TREATMENT,
         "future_revenue_basis": FUTURE_REVENUE_BASIS,
         "future_tax_basis": FUTURE_TAX_BASIS,
+        "customer_deposit_account_id": _account_id(stored.get("customer_deposit_account_id")),
+        "customer_deposit_configured": False,
         "accounts": {
             "receivable": None,
             "revenue": None,
             "output_tax": None,
+            "customer_deposit": None,
         },
     }
 
@@ -121,6 +128,50 @@ def _validate_output_tax(account: Optional[dict]) -> dict:
     return account
 
 
+def _reject_unusable_ledger_account(account: dict, label: str) -> None:
+    """Reject header and inactive accounts. Missing flags mean a normal posting account."""
+    if account.get("is_header") is True or account.get("header") is True:
+        raise HTTPException(400, f"{label} tidak boleh akun header.")
+    if account.get("active") is False or account.get("is_active") is False:
+        raise HTTPException(400, f"{label} tidak aktif.")
+    status = str(account.get("status") or "").strip().lower()
+    if status in {"inactive", "nonaktif", "disabled"}:
+        raise HTTPException(400, f"{label} tidak aktif.")
+
+
+def _validate_customer_deposit(account: Optional[dict]) -> dict:
+    """Current-liability COA for customer deposits. No hardcoded account code."""
+    if not account:
+        raise HTTPException(400, f"{DEPOSIT_LABEL} wajib dipilih (COA exact).")
+    _reject_unusable_ledger_account(account, DEPOSIT_LABEL)
+    account_type = str(account.get("account_type") or "").strip().upper()
+    if account_type != DEPOSIT_ACCOUNT_TYPE:
+        raise HTTPException(
+            400,
+            f"{DEPOSIT_LABEL} harus bertipe {DEPOSIT_ACCOUNT_TYPE} (Utang lancar lain-lain).",
+        )
+    meta = reporting_metadata(account_type)
+    if not meta or meta.get("statement") != "BALANCE_SHEET" or meta.get("report_group") != "liability":
+        raise HTTPException(400, f"{DEPOSIT_LABEL} harus akun kewajiban Neraca.")
+    return account
+
+
+async def require_customer_deposit_account(db) -> dict:
+    """Load the mapped deposit account or reject before any journal write."""
+    doc = await db.app_settings.find_one({"key": SETTINGS_KEY}, {"_id": 0})
+    account_id = _account_id((doc or {}).get("customer_deposit_account_id"))
+    if not account_id:
+        raise HTTPException(
+            409,
+            f"{DEPOSIT_LABEL} belum dipetakan pada Pengaturan Akuntansi Penjualan.",
+        )
+    raw = await db.ledger_accounts.find_one({"id": account_id}, {"_id": 0})
+    try:
+        return _validate_customer_deposit(raw)
+    except HTTPException:
+        raise
+
+
 async def mappings_configured(db) -> bool:
     settings = await get_sales_accounting_settings(db)
     return bool(settings.get("configured"))
@@ -149,11 +200,23 @@ async def get_sales_accounting_settings(db) -> Dict[str, Any]:
         # Stored IDs are no longer valid; do not rewrite. Report unconfigured.
         return _public_unconfigured(doc)
 
+    deposit_id = _account_id(doc.get("customer_deposit_account_id"))
+    deposit_raw = await db.ledger_accounts.find_one({"id": deposit_id}, {"_id": 0}) if deposit_id else None
+    deposit_ok = False
+    if deposit_raw:
+        try:
+            _validate_customer_deposit(deposit_raw)
+            deposit_ok = True
+        except HTTPException:
+            deposit_ok = False
+
     return {
         "configured": True,
         "receivable_account_id": receivable_id,
         "revenue_account_id": revenue_id,
         "output_tax_account_id": output_tax_id,
+        "customer_deposit_account_id": deposit_id,
+        "customer_deposit_configured": deposit_ok,
         "discount_treatment": DISCOUNT_TREATMENT,
         "future_revenue_basis": FUTURE_REVENUE_BASIS,
         "future_tax_basis": FUTURE_TAX_BASIS,
@@ -161,6 +224,7 @@ async def get_sales_accounting_settings(db) -> Dict[str, Any]:
             "receivable": _account_display(receivable),
             "revenue": _account_display(revenue),
             "output_tax": _account_display(output_tax),
+            "customer_deposit": _account_display(deposit_raw) if deposit_ok else None,
         },
         "updated_at": doc.get("updated_at"),
         "updated_by": doc.get("updated_by") or None,
@@ -175,16 +239,32 @@ async def update_sales_accounting_settings(db, payload: Dict[str, Any], user: di
     receivable = _validate_receivable(await _load_account(db, receivable_id))
     revenue = _validate_revenue(await _load_account(db, revenue_id))
     output_tax = _validate_output_tax(await _load_account(db, output_tax_id))
+    before = await db.app_settings.find_one({"key": SETTINGS_KEY}, {"_id": 0})
+
+    if "customer_deposit_account_id" in (payload or {}):
+        deposit_id = _account_id(payload.get("customer_deposit_account_id"))
+    else:
+        deposit_id = _account_id((before or {}).get("customer_deposit_account_id"))
+    if deposit_id:
+        raw_deposit = await db.ledger_accounts.find_one({"id": deposit_id}, {"_id": 0})
+        deposit = _validate_customer_deposit(raw_deposit)
+        chosen = {str(receivable["id"]), str(revenue["id"]), str(output_tax["id"])}
+        if str(deposit["id"]) in chosen:
+            raise HTTPException(
+                400,
+                f"{DEPOSIT_LABEL} harus berbeda dari akun piutang, pendapatan, dan PPN keluaran.",
+            )
+        deposit_id = str(deposit["id"])
 
     saved = {
         "key": SETTINGS_KEY,
         "receivable_account_id": str(receivable["id"]),
         "revenue_account_id": str(revenue["id"]),
         "output_tax_account_id": str(output_tax["id"]),
+        "customer_deposit_account_id": deposit_id,
         "updated_at": now_iso(),
         "updated_by": _actor(user),
     }
-    before = await db.app_settings.find_one({"key": SETTINGS_KEY}, {"_id": 0})
     await db.app_settings.update_one({"key": SETTINGS_KEY}, {"$set": saved}, upsert=True)
     await record_accounting_event(
         db,
@@ -196,11 +276,13 @@ async def update_sales_accounting_settings(db, payload: Dict[str, Any], user: di
             "receivable_account_id": (before or {}).get("receivable_account_id"),
             "revenue_account_id": (before or {}).get("revenue_account_id"),
             "output_tax_account_id": (before or {}).get("output_tax_account_id"),
+            "customer_deposit_account_id": (before or {}).get("customer_deposit_account_id"),
         },
         after={
             "receivable_account_id": saved["receivable_account_id"],
             "revenue_account_id": saved["revenue_account_id"],
             "output_tax_account_id": saved["output_tax_account_id"],
+            "customer_deposit_account_id": saved.get("customer_deposit_account_id"),
         },
     )
     return await get_sales_accounting_settings(db)

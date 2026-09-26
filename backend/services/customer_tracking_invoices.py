@@ -233,8 +233,11 @@ async def _attach_receipts(db, invoices: List[dict]) -> None:
     grouped: Dict[str, List[dict]] = {}
     for rec in receipts:
         grouped.setdefault(rec.get("invoice_id"), []).append(rec)
+    from services.sales_customer_credit import invoice_credit_applied_total
+
     for inv in invoices:
-        apply_invoice_payment_fields(inv, grouped.get(inv.get("id"), []))
+        extra = float(await invoice_credit_applied_total(db, inv.get("id"))) if inv.get("id") else 0
+        apply_invoice_payment_fields(inv, grouped.get(inv.get("id"), []), extra)
 
 
 def _sort_key(invoice: dict):

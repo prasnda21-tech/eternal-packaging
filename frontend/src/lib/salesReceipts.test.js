@@ -139,6 +139,9 @@ describe("Sales Receipts Eligibility & Preselection Domain Suite", () => {
       expect(res.isOverpayment).toBe(true);
       expect(res.amount).toBe(900000);
       expect(res.outstandingBefore).toBe(800000);
+      expect(res.allocated).toBe(800000);
+      expect(res.customerCredit).toBe(100000);
+      expect(res.newOutstanding).toBe(0);
     });
 
     test("handles null or undefined invoice gracefully", () => {

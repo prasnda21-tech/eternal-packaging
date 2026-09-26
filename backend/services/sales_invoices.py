@@ -333,9 +333,13 @@ TOTAL_INVARIANT_MESSAGE = (
 )
 
 
-def apply_invoice_payment_fields(invoice: Dict[str, Any], receipts: Optional[List[dict]]) -> Dict[str, Any]:
-    """Authoritative paid/outstanding from active receipts only. Cancelled is not live AR."""
-    from services.sales_receipt_posting import receipt_counts_toward_outstanding
+def apply_invoice_payment_fields(
+    invoice: Dict[str, Any],
+    receipts: Optional[List[dict]],
+    extra_paid: float = 0,
+) -> Dict[str, Any]:
+    """Authoritative paid/outstanding from allocated receipts plus posted credit use."""
+    from services.sales_receipt_posting import receipt_allocated_amount, receipt_counts_toward_outstanding
 
     rows = receipts or []
     active = [r for r in rows if receipt_counts_toward_outstanding(r)]
@@ -347,7 +351,10 @@ def apply_invoice_payment_fields(invoice: Dict[str, Any], receipts: Optional[Lis
         invoice["payment_status"] = "BELUM DIBAYAR"
         return invoice
 
-    paid = round(sum(float(r.get("amount", 0)) for r in active), 2)
+    paid = round(
+        sum(float(receipt_allocated_amount(r)) for r in active) + float(extra_paid or 0),
+        2,
+    )
     grand = float(invoice.get("grand_total", 0))
     outstanding = max(round(grand - paid, 2), 0.0)
     if paid <= 0:
@@ -829,8 +836,17 @@ async def list_sales_invoices(db, q: Optional[str] = None, po_id: Optional[str] 
         for r in receipts:
             receipts_by_inv.setdefault(r.get("invoice_id"), []).append(r)
 
+        from services.sales_customer_credit import invoice_credit_applied_total
+
+        credit_by_invoice = {}
+        for inv_id in inv_ids:
+            credit_by_invoice[inv_id] = float(await invoice_credit_applied_total(db, inv_id))
         for inv in invoices:
-            apply_invoice_payment_fields(inv, receipts_by_inv.get(inv.get("id"), []))
+            apply_invoice_payment_fields(
+                inv,
+                receipts_by_inv.get(inv.get("id"), []),
+                credit_by_invoice.get(inv.get("id"), 0),
+            )
 
     await attach_invoice_accounting_fields(db, invoices)
     return invoices
@@ -846,7 +862,9 @@ async def get_sales_invoice_detail(db, invoice_id: str) -> Dict[str, Any]:
 
     # Fetch live receipts for exact invoice
     receipts = await db.sales_receipts.find({"invoice_id": inv["id"]}, {"_id": 0}).sort("created_at", 1).to_list(500)
-    apply_invoice_payment_fields(inv, receipts)
+    from services.sales_customer_credit import invoice_credit_applied_total
+
+    apply_invoice_payment_fields(inv, receipts, float(await invoice_credit_applied_total(db, inv["id"])))
     inv["receipts"] = receipts
     await attach_invoice_accounting_fields(db, [inv])
     return inv

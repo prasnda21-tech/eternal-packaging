@@ -9088,6 +9088,11 @@ from services.sales_receipt_payment_proof import (
     load_proof_bytes as _load_sales_receipt_payment_proof_bytes,
     content_disposition as _sales_receipt_proof_content_disposition,
 )
+from services.sales_customer_credit import (
+    apply_customer_credit as _apply_customer_credit,
+    list_available_credit as _list_available_credit,
+    reverse_customer_credit_application as _reverse_customer_credit_application,
+)
 from services.sales_customers import (
     COLLECTION as _SALES_CUSTOMERS_COLLECTION,
     list_sales_customers as _list_sales_customers,
@@ -9249,10 +9254,19 @@ class SalesReceiptCreatePayload(BaseModel):
     invoice_id: str
     receipt_date: Optional[str] = None
     amount: Union[int, float, str]
+    allocated_amount: Optional[Union[int, float, str]] = None
     notes: Optional[str] = ""
     cash_bank_id: Optional[str] = None
     idempotency_key: Optional[str] = None
     payment_proof: Optional[SalesReceiptPaymentProofPayload] = None
+
+
+class SalesCustomerCreditApplyPayload(BaseModel):
+    source_receipt_id: str
+    invoice_id: str
+    amount: Union[int, float, str]
+    application_date: Optional[str] = None
+    idempotency_key: Optional[str] = None
 
 
 class SalesReceiptPostAccountingPayload(BaseModel):
@@ -10608,6 +10622,44 @@ async def list_sales_receipt_cash_bank_options_endpoint(user=Depends(current_use
     return {"items": items, "total": len(items)}
 
 
+@api_router.get("/sales-receipts/customer-credit")
+async def list_sales_customer_credit_endpoint(
+    customer_id: Optional[str] = None,
+    invoice_id: Optional[str] = None,
+    user=Depends(current_user),
+):
+    """Available posted customer credit. Does not post and does not treat a load failure as zero."""
+    await _require_any_perm(user, "sales.receipt.view", "sales.receipt.create", "sales.invoice.view")
+    if invoice_id:
+        invoice = await db.sales_invoices.find_one({"id": str(invoice_id)}, {"_id": 0, "po_id": 1})
+        if invoice:
+            await ensure_owned_po_id(db, user, invoice.get("po_id"))
+    return await _list_available_credit(db, customer_id=customer_id or "", invoice_id=invoice_id or "")
+
+
+@api_router.post("/sales-receipts/customer-credit/applications")
+async def apply_sales_customer_credit_endpoint(
+    payload: SalesCustomerCreditApplyPayload,
+    user=Depends(current_user),
+):
+    """Apply posted customer credit to one invoice. Posts Dr deposit / Cr AR. No cash line."""
+    await _require_perm(user, _SALES_RECEIPT_ACCOUNTING_POST_PERM)
+    return {
+        "application": await _apply_customer_credit(db, payload.model_dump(), user),
+        "message": "Saldo pelanggan dipakai untuk faktur.",
+    }
+
+
+@api_router.post("/sales-receipts/customer-credit/applications/{application_id}/reverse")
+async def reverse_sales_customer_credit_endpoint(application_id: str, user=Depends(current_user)):
+    """Reverse one credit application once and restore the source balance."""
+    await _require_perm(user, _SALES_RECEIPT_ACCOUNTING_REVERSE_PERM)
+    return {
+        "application": await _reverse_customer_credit_application(db, application_id, user),
+        "message": "Pemakaian saldo dibalik.",
+    }
+
+
 @api_router.get("/sales-receipts/{id}")
 async def get_sales_receipt_endpoint(id: str, user=Depends(current_user)):
     """Get detail of a single sales receipt."""
@@ -10675,7 +10727,13 @@ async def get_sales_receipt_payment_proof_endpoint(
         "sales.receipt.view",
         "payment.view",
     )
-    data, ct, filename = await _load_sales_receipt_payment_proof_bytes(db, id)
+    receipt_for_scope = await db.sales_receipts.find_one({"id": str(id)}, {"_id": 0, "po_id": 1})
+    if not receipt_for_scope:
+        receipt_for_scope = await db.sales_receipts.find_one({"receipt_number": str(id)}, {"_id": 0, "id": 1, "po_id": 1})
+    if not receipt_for_scope:
+        raise HTTPException(404, "Penerimaan Penjualan tidak ditemukan.")
+    await ensure_owned_po_id(db, user, receipt_for_scope.get("po_id"))
+    data, ct, filename = await _load_sales_receipt_payment_proof_bytes(db, receipt_for_scope.get("id") or id)
     headers = {
         "Content-Disposition": _sales_receipt_proof_content_disposition(filename, download=download),
         "X-Content-Type-Options": "nosniff",
@@ -13900,6 +13958,9 @@ async def seed():
     await _ensure_unique_business_number_index(db.sales_receipts, "receipt_number")
     await db.sales_receipts.create_index("invoice_id")
     await db.sales_receipts.create_index("created_at")
+    await db.sales_receipts.create_index("customer_id")
+    from services.sales_customer_credit import ensure_indexes as _credit_ensure_indexes
+    await _credit_ensure_indexes(db)
     await _ensure_sales_customer_indexes(db)
     # Purchasing documents — additive unique business numbers (not sales PO/SJ/INV/PAY)
     await db.purchase_requests.create_index("id", unique=True)

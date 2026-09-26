@@ -384,7 +384,7 @@ async def test_case_14_to_21_sales_receipts_and_overpayment_protections():
                 "amount": 700001,
             })
             assert r_over.status_code == 400
-            assert "melebihi sisa tagihan" in r_over.json()["detail"]
+            assert "Identitas pelanggan tidak dapat dibuktikan" in r_over.json()["detail"]
 
             # Case 20: Double submit with same idempotency_key returns identical receipt without second charge
             r1_dup = await client.post("/api/sales-receipts", json={

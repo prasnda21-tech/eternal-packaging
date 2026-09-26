@@ -50,6 +50,8 @@ SOURCE_LABELS = {
     "sales_invoice_reversal": "Reversal Faktur Penjualan",
     "sales_receipt": "Penerimaan Penjualan",
     "sales_receipt_reversal": "Reversal Penerimaan Penjualan",
+    "sales_customer_credit_application": "Pemakaian Saldo Pelanggan",
+    "sales_customer_credit_application_reversal": "Reversal Pemakaian Saldo Pelanggan",
     "purchase_invoice": "Faktur Pembelian",
     "purchase_invoice_reversal": "Reversal Faktur Pembelian",
     "purchase_payment": "Pembayaran Pembelian",
