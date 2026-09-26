@@ -101,6 +101,7 @@ describe("Pesanan Penjualan header + column filters", () => {
     expect(container.querySelector('[data-testid="sales-order-title"]').textContent).toBe("Pesanan Penjualan");
     expect(container.textContent).not.toContain("Penjualan · Pesanan Penjualan");
     expect(container.textContent).not.toContain("Daftar PO Penjualan dan pembuatan Sales Order baru");
+    expect(container.textContent).not.toContain("Daftar pesanan penjualan dari pelanggan.");
     expect(container.querySelector('[data-testid="sales-order-refresh-button"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="create-sales-order-btn"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="so-th-filter-po"]')).toBeTruthy();
@@ -133,5 +134,39 @@ describe("Pesanan Penjualan header + column filters", () => {
     expect(container.querySelector('[data-testid="order-row-1"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="order-row-2"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="so-filter-customer"]').value).toBe("");
+  });
+
+  test("zero shipped quantity leaves the progress bar empty", async () => {
+    api.listSalesOrders.mockResolvedValue({
+      orders: [{
+        id: "z",
+        po_number: "SO-0",
+        order_date: "2026-04-01",
+        customer: "Nol Kirim",
+        outlet: "Gudang",
+        sales: "Citra",
+        total_quantity: 80,
+        quantity_by_unit: [{ unit: "pcs", quantity: 80 }],
+        delivery_summary: {
+          total_ordered: 80,
+          total_shipped: 0,
+          total_remaining: 80,
+          status: "BELUM DIKIRIM",
+        },
+        current_stage: 3,
+        status_label: "Design",
+      }],
+      total: 1,
+      capped: false,
+    });
+    await renderPage();
+    const fill = container.querySelector('[data-testid="order-progress-z"] .so-progress-fill');
+    expect(fill).toBeTruthy();
+    expect(fill.style.width).toBe("0%");
+    expect(container.querySelector('[data-testid="order-progress-z"]').textContent)
+      .toContain("0 terkirim / 80 pesanan pcs");
+    expect(container.querySelector('[data-testid="so-th-filter-outlet"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="so-th-filter-sales"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="so-th-filter-delivery"]')).toBeTruthy();
   });
 });
