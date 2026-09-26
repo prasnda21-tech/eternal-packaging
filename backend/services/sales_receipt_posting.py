@@ -784,7 +784,11 @@ async def reverse_sales_receipt_accounting(
         if status != ACCOUNTING_POSTED or not existing:
             raise HTTPException(409, "Hanya penerimaan yang sudah diposting yang dapat di-reverse.")
 
-        from services.sales_customer_credit import assert_source_receipt_reversible
+        from services.sales_customer_credit import (
+            assert_source_receipt_reversible,
+            hold_source_credit_claim,
+            release_source_credit_claim,
+        )
 
         await assert_source_receipt_reversible(db, rec["id"])
 
@@ -809,30 +813,41 @@ async def reverse_sales_receipt_accounting(
             await clear_reverse_claim(db, rec["id"])
             raise HTTPException(409, "Hanya penerimaan yang sudah diposting yang dapat di-reverse.")
 
+        credit_token = str(uuid.uuid4())
+        credit_held = await hold_source_credit_claim(db, rec["id"], credit_token)
+        if not credit_held:
+            await clear_reverse_claim(db, rec["id"])
+            raise HTTPException(409, "Saldo pelanggan sedang dipakai. Ulangi permintaan.")
         try:
-            await assert_source_receipt_reversible(db, rec["id"])
-            await reverse_journal(
-                db,
-                existing["id"],
-                source_type=SOURCE_REVERSAL,
-                source_id=str(rec["id"]),
-                posted_by=user,
-                description=f"Reversal {_journal_description(rec)}",
-            )
-        except KeyError as exc:
-            await clear_reverse_claim(db, rec["id"])
-            raise HTTPException(404, "Jurnal penerimaan tidak ditemukan.") from exc
-        except PeriodLockedError as exc:
-            await clear_reverse_claim(db, rec["id"])
-            raise HTTPException(409, str(exc)) from exc
-        except JournalValidationError as exc:
-            await clear_reverse_claim(db, rec["id"])
-            raise HTTPException(400, str(exc)) from exc
-        except JournalConflictError:
-            still = await find_sales_receipt_source_journal(db, rec["id"])
-            if accounting_status_from_journal(still) != ACCOUNTING_REVERSED:
+            try:
+                await assert_source_receipt_reversible(db, rec["id"])
+                await reverse_journal(
+                    db,
+                    existing["id"],
+                    source_type=SOURCE_REVERSAL,
+                    source_id=str(rec["id"]),
+                    posted_by=user,
+                    description=f"Reversal {_journal_description(rec)}",
+                )
+            except HTTPException:
                 await clear_reverse_claim(db, rec["id"])
-                raise HTTPException(409, "Reversal jurnal untuk penerimaan ini sudah ada.")
+                raise
+            except KeyError as exc:
+                await clear_reverse_claim(db, rec["id"])
+                raise HTTPException(404, "Jurnal penerimaan tidak ditemukan.") from exc
+            except PeriodLockedError as exc:
+                await clear_reverse_claim(db, rec["id"])
+                raise HTTPException(409, str(exc)) from exc
+            except JournalValidationError as exc:
+                await clear_reverse_claim(db, rec["id"])
+                raise HTTPException(400, str(exc)) from exc
+            except JournalConflictError:
+                still = await find_sales_receipt_source_journal(db, rec["id"])
+                if accounting_status_from_journal(still) != ACCOUNTING_REVERSED:
+                    await clear_reverse_claim(db, rec["id"])
+                    raise HTTPException(409, "Reversal jurnal untuk penerimaan ini sudah ada.")
 
-        await _finalize_reversal_operational_state(db, rec, user)
-        return await _public_receipt_detail(db, rec["id"])
+            await _finalize_reversal_operational_state(db, rec, user)
+            return await _public_receipt_detail(db, rec["id"])
+        finally:
+            await release_source_credit_claim(db, rec["id"], credit_token)

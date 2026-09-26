@@ -247,6 +247,7 @@ async def create_sales_receipt(
         from services.financial_statement_common import MONEY_Q, money_float
         from services.sales_customer_credit import (
             IDENTITY_BLOCK_REASON,
+            effective_currency,
             scope_from_invoice,
             split_receipt_amounts,
             stable_customer_for_invoice,
@@ -337,7 +338,7 @@ async def create_sales_receipt(
                 "customer": invoice["customer"],
                 "customer_id": customer_id,
                 "branch_id": scope.get("branch_id") or None,
-                "currency": scope.get("currency") or None,
+                "currency": effective_currency(scope.get("currency")),
                 "receipt_date": receipt_date,
                 "amount": amount,
                 "allocated_amount": allocated_amount,

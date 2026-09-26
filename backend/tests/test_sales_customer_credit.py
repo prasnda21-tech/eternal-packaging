@@ -10,6 +10,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+from fastapi import HTTPException
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -484,3 +485,474 @@ async def test_payment_proof_requires_receipt_link_and_permission(monkeypatch):
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
         res = await client.get(f"/api/sales-receipts/{receipt_id}/payment-proof")
         assert res.status_code == 403
+
+
+def _net(report):
+    return report["total_debit"] - report["total_credit"]
+
+
+async def _posted_pair(client):
+    deposit = await _coa("22", "Titipan Pelanggan", "OCLY")
+    receivable, _, _ = await _settings(deposit)
+    bank = await _bank()
+    po = await _po("CUST-1")
+    invoice_a = await _invoice(client, po["id"], 700_000)
+    invoice_b = await _invoice(client, po["id"], 120_000, date="2026-09-15")
+    created = await _receipt(client, invoice_a["id"], 750_000, bank["id"], receipt_date="2026-09-12")
+    assert created.status_code == 200, created.text
+    receipt = created.json()["receipt"]
+    posted = await client.post(f"/api/sales-receipts/{receipt['id']}/post-accounting")
+    assert posted.status_code == 200, posted.text
+    return deposit, receivable, bank, po, invoice_a, invoice_b, receipt
+
+
+@pytest.mark.anyio
+async def test_credit_and_cash_cannot_drive_outstanding_negative():
+    from services.sales_receipts import create_sales_receipt
+
+    deposit = await _coa("22", "Titipan Pelanggan", "OCLY")
+    await _settings(deposit)
+    bank = await _bank()
+    po = await _po("CUST-1")
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        invoice_a = await _invoice(client, po["id"], 700_000)
+        invoice_b = await _invoice(client, po["id"], 120_000, date="2026-09-15")
+        created = await _receipt(client, invoice_a["id"], 750_000, bank["id"])
+        receipt = created.json()["receipt"]
+        assert (await client.post(f"/api/sales-receipts/{receipt['id']}/post-accounting")).status_code == 200
+
+    async def use_credit():
+        return await apply_customer_credit(server.db, {
+            "source_receipt_id": receipt["id"],
+            "invoice_id": invoice_b["id"],
+            "amount": 50_000,
+            "idempotency_key": "race-credit",
+            "application_date": "2026-09-16",
+        }, ADMIN)
+
+    async def take_cash():
+        return await create_sales_receipt(server.db, {
+            "invoice_id": invoice_b["id"],
+            "amount": 80_000,
+            "cash_bank_id": bank["id"],
+            "receipt_date": "2026-09-16",
+            "idempotency_key": "race-cash",
+        }, ADMIN)
+
+    results = await asyncio.gather(use_credit(), take_cash(), return_exceptions=True)
+    successes = [item for item in results if not isinstance(item, Exception)]
+    assert len(successes) == 1
+    fresh = await server.db.sales_invoices.find_one({"id": invoice_b["id"]}, {"_id": 0})
+    assert fresh["outstanding_amount"] >= 0
+    assert fresh["paid_total"] <= fresh["grand_total"]
+    assert fresh["outstanding_amount"] == fresh["grand_total"] - fresh["paid_total"]
+
+
+@pytest.mark.anyio
+async def test_retry_after_journal_does_not_duplicate_credit_use():
+    from services.journal_core import post_balanced_journal
+
+    deposit = await _coa("22", "Titipan Pelanggan", "OCLY")
+    receivable, _, _ = await _settings(deposit)
+    bank = await _bank()
+    po = await _po("CUST-1")
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        invoice_a = await _invoice(client, po["id"], 700_000)
+        invoice_b = await _invoice(client, po["id"], 120_000, date="2026-09-15")
+        created = await _receipt(client, invoice_a["id"], 750_000, bank["id"])
+        receipt = created.json()["receipt"]
+        assert (await client.post(f"/api/sales-receipts/{receipt['id']}/post-accounting")).status_code == 200
+        await server.db.sales_receipts.update_one(
+            {"id": receipt["id"]}, {"$set": {"customer_credit_applied": 0}},
+        )
+        app_id = str(uuid.uuid4())
+        await server.db[COLLECTION].insert_one({
+            "id": app_id,
+            "idempotency_key": "crash-after-journal",
+            "source_receipt_id": receipt["id"],
+            "customer_id": "CUST-1",
+            "invoice_id": invoice_b["id"],
+            "amount": 50_000,
+            "status": "reserving",
+            "financial_status": "active",
+            "reserved": True,
+            "claim_token": "crashed",
+        })
+        await post_balanced_journal(
+            server.db,
+            date="2026-09-16",
+            source_type=SOURCE_TYPE,
+            source_id=app_id,
+            description="Pemakaian terputus",
+            lines=[
+                {"account_id": deposit["id"], "debit": 50_000, "credit": 0, "description": "Titipan"},
+                {"account_id": receivable["id"], "debit": 0, "credit": 50_000, "description": "Piutang"},
+            ],
+            posted_by=ADMIN,
+        )
+        retried = await client.post("/api/sales-receipts/customer-credit/applications", json={
+            "source_receipt_id": receipt["id"],
+            "invoice_id": invoice_b["id"],
+            "amount": 50_000,
+            "idempotency_key": "crash-after-journal",
+            "application_date": "2026-09-16",
+        })
+        assert retried.status_code == 200, retried.text
+        assert retried.json()["application"]["id"] == app_id
+        assert retried.json()["application"]["status"] == "posted"
+        assert await server.db.journal_entries.count_documents({
+            "source_type": SOURCE_TYPE, "source_id": app_id, "reversal_of": None,
+        }) == 1
+        stored = await server.db.sales_receipts.find_one({"id": receipt["id"]}, {"_id": 0})
+        assert stored["customer_credit_applied"] == 50_000
+        target = await client.get(f"/api/sales-invoices/{invoice_b['id']}")
+        assert target.json()["invoice"]["outstanding_amount"] == 70_000
+
+
+@pytest.mark.anyio
+async def test_expired_claim_cannot_overwrite_newer_credit_use(monkeypatch):
+    import services.sales_customer_credit as credit_mod
+    from services.sales_invoice_posting import RECEIPT_CREATE_CLAIM_AT_FIELD
+
+    deposit = await _coa("22", "Titipan Pelanggan", "OCLY")
+    await _settings(deposit)
+    bank = await _bank()
+    po = await _po("CUST-1")
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        invoice_a = await _invoice(client, po["id"], 700_000)
+        invoice_b = await _invoice(client, po["id"], 120_000, date="2026-09-15")
+        created = await _receipt(client, invoice_a["id"], 750_000, bank["id"])
+        receipt = created.json()["receipt"]
+        assert (await client.post(f"/api/sales-receipts/{receipt['id']}/post-accounting")).status_code == 200
+
+    real_live = credit_mod._claim_is_live
+    state = {"armed": True}
+
+    async def expire_before_post(db, receipt_id, token):
+        if state["armed"]:
+            state["armed"] = False
+            await db.sales_receipts.update_one(
+                {"id": receipt_id},
+                {"$set": {credit_mod.CLAIM_AT_FIELD: "2000-01-01T00:00:00+00:00"}},
+            )
+            await db.sales_invoices.update_one(
+                {"id": invoice_b["id"]},
+                {"$set": {RECEIPT_CREATE_CLAIM_AT_FIELD: "2000-01-01T00:00:00+00:00"}},
+            )
+            monkeypatch.setattr(credit_mod, "_claim_is_live", real_live)
+            await apply_customer_credit(db, {
+                "source_receipt_id": receipt["id"],
+                "invoice_id": invoice_b["id"],
+                "amount": 50_000,
+                "idempotency_key": "newer-worker",
+                "application_date": "2026-09-16",
+            }, ADMIN)
+            return False
+        return await real_live(db, receipt_id, token)
+
+    monkeypatch.setattr(credit_mod, "_claim_is_live", expire_before_post)
+    with pytest.raises(HTTPException) as stale:
+        await apply_customer_credit(server.db, {
+            "source_receipt_id": receipt["id"],
+            "invoice_id": invoice_b["id"],
+            "amount": 50_000,
+            "idempotency_key": "old-worker",
+            "application_date": "2026-09-16",
+        }, ADMIN)
+    assert stale.value.status_code == 409
+    assert "lebih baru" in stale.value.detail
+    posted = await server.db[COLLECTION].find(
+        {"source_receipt_id": receipt["id"], "status": "posted"}, {"_id": 0, "idempotency_key": 1},
+    ).to_list(10)
+    assert [row["idempotency_key"] for row in posted] == ["newer-worker"]
+    assert await server.db.journal_entries.count_documents({
+        "source_type": SOURCE_TYPE, "reversal_of": None, "status": "posted",
+    }) == 1
+    stored = await server.db.sales_receipts.find_one({"id": receipt["id"]}, {"_id": 0})
+    assert stored["customer_credit_applied"] == 50_000
+
+
+@pytest.mark.anyio
+async def test_source_reverse_and_credit_use_cannot_leave_unbacked_credit():
+    from services.sales_receipt_posting import reverse_sales_receipt_accounting
+
+    deposit = await _coa("22", "Titipan Pelanggan", "OCLY")
+    await _settings(deposit)
+    bank = await _bank()
+    po = await _po("CUST-1")
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        invoice_a = await _invoice(client, po["id"], 700_000)
+        invoice_b = await _invoice(client, po["id"], 120_000, date="2026-09-15")
+        created = await _receipt(client, invoice_a["id"], 750_000, bank["id"])
+        receipt = created.json()["receipt"]
+        assert (await client.post(f"/api/sales-receipts/{receipt['id']}/post-accounting")).status_code == 200
+
+    async def use_credit():
+        return await apply_customer_credit(server.db, {
+            "source_receipt_id": receipt["id"],
+            "invoice_id": invoice_b["id"],
+            "amount": 50_000,
+            "idempotency_key": "race-use",
+            "application_date": "2026-09-16",
+        }, ADMIN)
+
+    async def reverse_source():
+        return await reverse_sales_receipt_accounting(server.db, receipt["id"], ADMIN)
+
+    await asyncio.gather(use_credit(), reverse_source(), return_exceptions=True)
+    active = await server.db[COLLECTION].count_documents({
+        "source_receipt_id": receipt["id"], "status": "posted", "financial_status": "active",
+    })
+    fresh = await server.db.sales_receipts.find_one({"id": receipt["id"]}, {"_id": 0})
+    journal = await server.db.journal_entries.find_one({
+        "source_type": RECEIPT_SOURCE, "source_id": receipt["id"], "reversal_of": None,
+    }, {"_id": 0, "status": 1})
+    cancelled = bool(fresh.get("cancelled") or fresh.get("financial_status") == "cancelled")
+    reversed_journal = journal and journal.get("status") == "reversed"
+    assert not (active and (cancelled or reversed_journal))
+    if active:
+        assert fresh["customer_credit_applied"] == 50_000
+        assert journal["status"] == "posted"
+    else:
+        assert fresh.get("customer_credit_applied") in (0, 0.0, None)
+        assert reversed_journal
+
+
+@pytest.mark.anyio
+async def test_reversal_stages_reconcile_general_ledger():
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        deposit, receivable, bank, _po_doc, _invoice_a, invoice_b, receipt = await _posted_pair(client)
+        cash = await _gl(bank["account_id"])
+        dep = await _gl(deposit["id"])
+        assert cash["total_debit"] == 750_000
+        assert cash["total_credit"] == 0
+        assert dep["total_credit"] == 50_000
+        assert dep["total_debit"] == 0
+        detail = await client.get(f"/api/sales-receipts/{receipt['id']}")
+        assert detail.json()["receipt"]["customer_credit"]["available"] == 50_000
+
+        used = await client.post("/api/sales-receipts/customer-credit/applications", json={
+            "source_receipt_id": receipt["id"],
+            "invoice_id": invoice_b["id"],
+            "amount": 50_000,
+            "idempotency_key": "stage-use",
+            "application_date": "2026-09-16",
+        })
+        assert used.status_code == 200, used.text
+        app_id = used.json()["application"]["id"]
+        target = await client.get(f"/api/sales-invoices/{invoice_b['id']}")
+        assert target.json()["invoice"]["outstanding_amount"] == 70_000
+        cash = await _gl(bank["account_id"])
+        dep = await _gl(deposit["id"])
+        assert cash["total_debit"] == 750_000 and cash["total_credit"] == 0
+        assert dep["total_debit"] == 50_000 and dep["total_credit"] == 50_000
+        after_use = await client.get(f"/api/sales-receipts/{receipt['id']}")
+        assert after_use.json()["receipt"]["customer_credit"]["available"] == 0
+
+        journals_before = await server.db.journal_entries.count_documents({})
+        blocked = await client.post(f"/api/sales-receipts/{receipt['id']}/reverse-accounting")
+        assert blocked.status_code == 409
+        assert "Balikkan pemakaian" in blocked.json()["detail"]
+        assert await server.db.journal_entries.count_documents({}) == journals_before
+        still = await client.get(f"/api/sales-invoices/{invoice_b['id']}")
+        assert still.json()["invoice"]["outstanding_amount"] == 70_000
+
+        first = await client.post(f"/api/sales-receipts/customer-credit/applications/{app_id}/reverse")
+        assert first.status_code == 200, first.text
+        again = await client.post(f"/api/sales-receipts/customer-credit/applications/{app_id}/reverse")
+        assert again.status_code == 200, again.text
+        assert again.json()["application"]["id"] == app_id
+        restored = await client.get(f"/api/sales-invoices/{invoice_b['id']}")
+        assert restored.json()["invoice"]["outstanding_amount"] == 120_000
+        available = await client.get(f"/api/sales-receipts/{receipt['id']}")
+        assert available.json()["receipt"]["customer_credit"]["available"] == 50_000
+        assert await server.db.journal_entries.count_documents({
+            "source_type": "sales_customer_credit_application_reversal",
+            "source_id": app_id,
+        }) == 1
+        cash = await _gl(bank["account_id"])
+        dep = await _gl(deposit["id"])
+        assert cash["total_debit"] == 750_000 and cash["total_credit"] == 0
+        assert dep["total_credit"] - dep["total_debit"] == 50_000
+
+        source = await client.post(f"/api/sales-receipts/{receipt['id']}/reverse-accounting")
+        assert source.status_code == 200, source.text
+        source_again = await client.post(f"/api/sales-receipts/{receipt['id']}/reverse-accounting")
+        assert source_again.status_code == 200, source_again.text
+        done = await client.get(f"/api/sales-receipts/{receipt['id']}")
+        assert done.json()["receipt"]["customer_credit"]["state"] == "cancelled"
+        assert done.json()["receipt"]["customer_credit"]["available"] == 0
+        cash = await _gl(bank["account_id"])
+        dep = await _gl(deposit["id"])
+        ar = await _gl(receivable["id"])
+        assert cash["total_debit"] == 750_000 and cash["total_credit"] == 750_000
+        assert dep["total_debit"] == dep["total_credit"]
+        # Both invoices stay posted, so AR returns to 700.000 + 120.000.
+        assert ar["total_debit"] - ar["total_credit"] == 820_000
+        primary = await server.db.journal_entries.find_one({
+            "source_type": RECEIPT_SOURCE, "source_id": receipt["id"], "reversal_of": None,
+        }, {"_id": 0, "id": 1})
+        reversals = await server.db.journal_entries.find(
+            {"reversal_of": primary["id"]}, {"_id": 0, "id": 1},
+        ).to_list(5)
+        assert len(reversals) == 1
+        rev_lines = await server.db.journal_lines.find(
+            {"journal_id": reversals[0]["id"]}, {"_id": 0, "account_id": 1, "debit": 1, "credit": 1},
+        ).to_list(10)
+        by_account = {}
+        for line in rev_lines:
+            bucket = by_account.setdefault(line["account_id"], {"debit": 0.0, "credit": 0.0})
+            bucket["debit"] += float(line.get("debit") or 0)
+            bucket["credit"] += float(line.get("credit") or 0)
+        assert by_account[bank["account_id"]] == {"debit": 0.0, "credit": 750_000.0}
+        assert by_account[receivable["id"]] == {"debit": 700_000.0, "credit": 0.0}
+        assert by_account[deposit["id"]] == {"debit": 50_000.0, "credit": 0.0}
+
+
+@pytest.mark.anyio
+async def test_closed_period_rejects_credit_and_source_reversal():
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        _deposit, _receivable, _bank, _po_doc, _invoice_a, invoice_b, receipt = await _posted_pair(client)
+        used = await client.post("/api/sales-receipts/customer-credit/applications", json={
+            "source_receipt_id": receipt["id"],
+            "invoice_id": invoice_b["id"],
+            "amount": 50_000,
+            "application_date": "2026-09-16",
+        })
+        assert used.status_code == 200, used.text
+        app_id = used.json()["application"]["id"]
+        await close_period(server.db, "2026-09", user=ADMIN, reason="uji tutup")
+        journals = await server.db.journal_entries.count_documents({})
+        outstanding = (await client.get(f"/api/sales-invoices/{invoice_b['id']}")).json()["invoice"]["outstanding_amount"]
+        applied = (await server.db.sales_receipts.find_one({"id": receipt["id"]}, {"_id": 0}))["customer_credit_applied"]
+        denied_use = await client.post(f"/api/sales-receipts/customer-credit/applications/{app_id}/reverse")
+        denied_source = await client.post(f"/api/sales-receipts/{receipt['id']}/reverse-accounting")
+        assert denied_use.status_code == 409
+        assert denied_source.status_code == 409
+        assert await server.db.journal_entries.count_documents({}) == journals
+        assert (await client.get(f"/api/sales-invoices/{invoice_b['id']}")).json()["invoice"]["outstanding_amount"] == outstanding
+        assert (await server.db.sales_receipts.find_one({"id": receipt["id"]}, {"_id": 0}))["customer_credit_applied"] == applied
+
+
+@pytest.mark.anyio
+async def test_currency_mismatch_is_rejected_and_blank_means_idr():
+    deposit = await _coa("22", "Titipan Pelanggan", "OCLY")
+    await _settings(deposit)
+    bank = await _bank()
+    po = await _po("CUST-1")
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        invoice_a = await _invoice(client, po["id"], 700_000)
+        invoice_b = await _invoice(client, po["id"], 120_000, date="2026-09-15")
+        created = await _receipt(client, invoice_a["id"], 750_000, bank["id"])
+        receipt = created.json()["receipt"]
+        assert receipt["currency"] == "IDR"
+        assert (await client.post(f"/api/sales-receipts/{receipt['id']}/post-accounting")).status_code == 200
+        await server.db.sales_receipts.update_one({"id": receipt["id"]}, {"$set": {"currency": "USD"}})
+        denied = await client.post("/api/sales-receipts/customer-credit/applications", json={
+            "source_receipt_id": receipt["id"],
+            "invoice_id": invoice_b["id"],
+            "amount": 10_000,
+            "idempotency_key": "usd-vs-blank",
+        })
+        assert denied.status_code == 409
+        assert "Mata uang" in denied.json()["detail"]
+        assert await server.db[COLLECTION].count_documents({"status": "posted"}) == 0
+        await server.db.orders.update_one({"id": po["id"]}, {"$set": {"currency": "USD"}})
+        allowed = await client.post("/api/sales-receipts/customer-credit/applications", json={
+            "source_receipt_id": receipt["id"],
+            "invoice_id": invoice_b["id"],
+            "amount": 10_000,
+            "idempotency_key": "usd-vs-usd",
+        })
+        assert allowed.status_code == 200, allowed.text
+        await server.db.orders.update_one({"id": po["id"]}, {"$set": {"currency": "EUR"}})
+        different = await client.post("/api/sales-receipts/customer-credit/applications", json={
+            "source_receipt_id": receipt["id"],
+            "invoice_id": invoice_b["id"],
+            "amount": 10_000,
+            "idempotency_key": "usd-vs-eur",
+        })
+        assert different.status_code == 409
+        assert "Mata uang" in different.json()["detail"]
+
+
+@pytest.mark.anyio
+async def test_branch_mismatch_and_one_sided_blank_are_rejected():
+    deposit = await _coa("22", "Titipan Pelanggan", "OCLY")
+    await _settings(deposit)
+    bank = await _bank()
+    po = await _po("CUST-1")
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        invoice_a = await _invoice(client, po["id"], 700_000)
+        invoice_b = await _invoice(client, po["id"], 120_000, date="2026-09-15")
+        created = await _receipt(client, invoice_a["id"], 750_000, bank["id"])
+        receipt = created.json()["receipt"]
+        assert receipt.get("branch_id") in (None, "")
+        assert (await client.post(f"/api/sales-receipts/{receipt['id']}/post-accounting")).status_code == 200
+        await server.db.sales_receipts.update_one({"id": receipt["id"]}, {"$set": {"branch_id": "BR-1"}})
+        one_sided = await client.post("/api/sales-receipts/customer-credit/applications", json={
+            "source_receipt_id": receipt["id"],
+            "invoice_id": invoice_b["id"],
+            "amount": 10_000,
+            "idempotency_key": "branch-one-sided",
+        })
+        assert one_sided.status_code == 409
+        assert "Cabang" in one_sided.json()["detail"]
+        await server.db.orders.update_one({"id": po["id"]}, {"$set": {"branch_id": "BR-2"}})
+        different = await client.post("/api/sales-receipts/customer-credit/applications", json={
+            "source_receipt_id": receipt["id"],
+            "invoice_id": invoice_b["id"],
+            "amount": 10_000,
+            "idempotency_key": "branch-different",
+        })
+        assert different.status_code == 409
+        assert "Cabang" in different.json()["detail"]
+        await server.db.orders.update_one({"id": po["id"]}, {"$set": {"branch_id": "BR-1"}})
+        matched = await client.post("/api/sales-receipts/customer-credit/applications", json={
+            "source_receipt_id": receipt["id"],
+            "invoice_id": invoice_b["id"],
+            "amount": 10_000,
+            "idempotency_key": "branch-same",
+        })
+        assert matched.status_code == 200, matched.text
+        await server.db.sales_receipts.update_one({"id": receipt["id"]}, {"$unset": {"branch_id": ""}})
+        blank_source = await client.post("/api/sales-receipts/customer-credit/applications", json={
+            "source_receipt_id": receipt["id"],
+            "invoice_id": invoice_b["id"],
+            "amount": 10_000,
+            "idempotency_key": "branch-blank-source",
+        })
+        assert blank_source.status_code == 409
+        assert "Cabang" in blank_source.json()["detail"]
+
+
+@pytest.mark.anyio
+async def test_credit_mutations_keep_accounting_permissions():
+    from services.sales_receipt_posting import PERM_POST, PERM_REVERSE
+
+    src = (Path(__file__).resolve().parents[1] / "server.py").read_text(encoding="utf-8")
+    create = src[src.index("async def create_sales_receipt_endpoint"):src.index("async def create_sales_receipt_endpoint") + 500]
+    for perm in ("sales.receipt.create", "sales.invoice.create", "sales_order.create", "po.edit"):
+        assert f'"{perm}"' in create
+    apply_chunk = src[src.index("async def apply_sales_customer_credit_endpoint"):src.index("async def reverse_sales_customer_credit_endpoint")]
+    reverse_chunk = src[src.index("async def reverse_sales_customer_credit_endpoint"):src.index("async def reverse_sales_customer_credit_endpoint") + 700]
+    assert PERM_POST == "sales.receipt.accounting.post"
+    assert PERM_REVERSE == "sales.receipt.accounting.reverse"
+    assert "_SALES_RECEIPT_ACCOUNTING_POST_PERM" in apply_chunk
+    assert "_SALES_RECEIPT_ACCOUNTING_REVERSE_PERM" in reverse_chunk
+    app.dependency_overrides[current_user] = lambda: {
+        "id": "crm-credit",
+        "email": "crm-credit@example.com",
+        "name": "CRM",
+        "role": "crm",
+        "permissions_override": {},
+    }
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        denied_apply = await client.post("/api/sales-receipts/customer-credit/applications", json={
+            "source_receipt_id": "missing",
+            "invoice_id": "missing",
+            "amount": 1,
+        })
+        denied_reverse = await client.post("/api/sales-receipts/customer-credit/applications/missing/reverse")
+        assert denied_apply.status_code == 403
+        assert denied_reverse.status_code == 403

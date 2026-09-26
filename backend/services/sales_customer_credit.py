@@ -44,9 +44,15 @@ CLAIM_FIELD = "customer_credit_claim"
 CLAIM_AT_FIELD = "customer_credit_claim_at"
 CLAIM_TTL_SECONDS = 120
 
+# Sales documents are Rupiah ledgers. An empty currency is this canonical
+# code, not a match for every other currency.
+CANONICAL_CURRENCY = "IDR"
 IDENTITY_BLOCK_REASON = (
     "Identitas pelanggan tidak dapat dibuktikan. "
     "Saldo tidak dapat dipakai lintas faktur."
+)
+STALE_CLAIM_MESSAGE = (
+    "Klaim saldo tidak lagi berlaku. Hasil pemakaian yang lebih baru tetap dipertahankan."
 )
 UNMAPPED_DEPOSIT_MESSAGE = (
     "Akun Titipan/Uang Muka Pelanggan belum dipetakan pada Pengaturan Akuntansi Penjualan."
@@ -97,12 +103,29 @@ def currency_scope(doc: Optional[dict]) -> str:
     return _scope_value(doc, ("currency", "currency_code"))
 
 
+def effective_currency(value: Any) -> str:
+    """Resolve one document or raw code. Blank becomes the canonical Rupiah code."""
+    if isinstance(value, dict):
+        raw = currency_scope(value)
+    else:
+        raw = str(value or "").strip()
+    return raw or CANONICAL_CURRENCY
+
+
 def _scopes_match(left: str, right: str, label: str) -> None:
     if not left and not right:
         return
     if left and right and left == right:
         return
     raise HTTPException(409, f"{label} sumber saldo dan faktur tujuan tidak sama.")
+
+
+def assert_same_currency(source: Any, target: Any) -> str:
+    left = effective_currency(source)
+    right = effective_currency(target)
+    if left != right:
+        raise HTTPException(409, "Mata uang sumber saldo dan faktur tujuan tidak sama.")
+    return left
 
 
 def _actor(user: Optional[dict]) -> Dict[str, str]:
@@ -318,6 +341,81 @@ async def _release_reservation(db, receipt_id: str, amount: Decimal) -> None:
     )
 
 
+async def hold_source_credit_claim(db, receipt_id: str, token: str) -> Optional[dict]:
+    return await _acquire_claim(db, receipt_id, token)
+
+
+async def release_source_credit_claim(db, receipt_id: str, token: str) -> None:
+    await _release_claim(db, receipt_id, token)
+
+
+async def _claim_is_live(db, receipt_id: str, token: str) -> bool:
+    rec = await db.sales_receipts.find_one(
+        {"id": str(receipt_id), CLAIM_FIELD: token},
+        {"_id": 0, CLAIM_FIELD: 1, CLAIM_AT_FIELD: 1},
+    )
+    return bool(rec) and claim_is_active(rec)
+
+
+async def _abort_foreign_reservations(db, receipt_id: str, token: str) -> None:
+    """Drop another worker's unfinished reservation after its claim expired."""
+    docs = await db[COLLECTION].find(
+        {
+            "source_receipt_id": str(receipt_id),
+            "status": "reserving",
+            "claim_token": {"$ne": token},
+        },
+        {"_id": 0},
+    ).to_list(50)
+    for doc in docs:
+        journal = await find_primary_journal_for_source(db, SOURCE_TYPE, str(doc.get("id")))
+        if journal and accounting_status_from_journal(journal) == ACCOUNTING_POSTED:
+            await db[COLLECTION].update_one(
+                {"id": doc["id"], "status": "reserving"},
+                {"$set": {"status": "posted", "financial_status": "active", "updated_at": now_iso()}},
+            )
+            continue
+        if not journal:
+            await db[COLLECTION].delete_one({"id": doc["id"], "status": "reserving"})
+
+
+async def _release_own_reservation(
+    db, receipt_id: str, application_id: str, token: str, amount: Decimal,
+) -> None:
+    """Return this worker's reservation only while it still owns the live claim."""
+    if not await _claim_is_live(db, receipt_id, token):
+        await db[COLLECTION].delete_one(
+            {"id": application_id, "status": "reserving", "claim_token": token},
+        )
+        return
+    changed = await db[COLLECTION].update_one(
+        {"id": application_id, "status": "reserving", "reserved": True, "claim_token": token},
+        {"$set": {"reserved": False, "status": "aborted", "updated_at": now_iso()}},
+    )
+    if not changed.modified_count:
+        return
+    await db.sales_receipts.update_one(
+        {
+            "id": str(receipt_id),
+            CLAIM_FIELD: token,
+            "customer_credit_applied": {"$gte": money_float(amount)},
+        },
+        {"$inc": {"customer_credit_applied": -money_float(amount)}, "$set": {"updated_at": now_iso()}},
+    )
+
+
+async def _sync_posted_counter(db, receipt_id: str) -> None:
+    token = str(uuid.uuid4())
+    claimed = await _acquire_claim(db, receipt_id, token)
+    if not claimed:
+        return
+    try:
+        await _abort_foreign_reservations(db, receipt_id, token)
+        await _sync_applied_counter(db, receipt_id, token)
+    finally:
+        await _release_claim(db, receipt_id, token)
+
+
 def _public_application(doc: dict) -> Dict[str, Any]:
     return {
         "id": doc.get("id"),
@@ -467,16 +565,26 @@ async def apply_customer_credit(db, payload: Dict[str, Any], user: dict) -> Dict
         existing = await db[COLLECTION].find_one({"idempotency_key": idem}, {"_id": 0})
         if existing:
             healed = await _heal_application(db, existing, user)
-            if healed.get("status") == "posted":
+            journal = await find_primary_journal_for_source(db, SOURCE_TYPE, healed["id"])
+            if healed.get("status") == "posted" or (
+                journal and accounting_status_from_journal(journal) == ACCOUNTING_POSTED
+            ):
+                if healed.get("status") != "posted":
+                    await db[COLLECTION].update_one(
+                        {"id": healed["id"]},
+                        {"$set": {"status": "posted", "financial_status": "active", "updated_at": now_iso()}},
+                    )
+                    healed["status"] = "posted"
+                    healed["financial_status"] = "active"
+                await _sync_posted_counter(db, healed["source_receipt_id"])
                 from services.sales_receipts import _recalc_invoice_payment_from_receipts
 
                 await _recalc_invoice_payment_from_receipts(db, healed.get("invoice_id"))
-                return _public_application(healed)
-            journal = await find_primary_journal_for_source(db, SOURCE_TYPE, healed["id"])
-            if not journal and healed.get("reserved"):
-                await _release_reservation(db, healed["source_receipt_id"], parse_positive_money(healed.get("amount"), "Nominal pemakaian saldo"))
+                stored = await db[COLLECTION].find_one({"id": healed["id"]}, {"_id": 0})
+                return _public_application(stored or healed)
             if not journal:
                 await db[COLLECTION].delete_one({"id": healed["id"], "status": {"$ne": "posted"}})
+                await _sync_posted_counter(db, healed["source_receipt_id"])
 
     from services.sales_accounting_settings import require_customer_deposit_account
 
@@ -506,116 +614,143 @@ async def apply_customer_credit(db, payload: Dict[str, Any], user: dict) -> Dict
         raise HTTPException(409, "Pelanggan sumber saldo dan faktur tujuan tidak sama.")
     target_scope = await scope_from_invoice(db, invoice)
     _scopes_match(branch_scope(source), target_scope["branch_id"], "Cabang")
-    _scopes_match(currency_scope(source), target_scope["currency"], "Mata uang")
-    outstanding = await _outstanding_now(db, invoice)
-    if amount > outstanding:
-        raise HTTPException(400, "Pemakaian saldo melebihi sisa tagihan faktur.")
+    assert_same_currency(source, target_scope["currency"])
     receivable = await resolve_invoice_receivable_account(db, invoice["id"])
+    from services.sales_invoice_posting import (
+        RECEIPT_CREATE_CLAIM_CONFLICT_MESSAGE,
+        acquire_receipt_create_claim,
+        clear_receipt_create_claim,
+    )
 
-    app_id = str(uuid.uuid4())
-    doc = {
-        "id": app_id,
-        "idempotency_key": idem or None,
-        "source_receipt_id": source["id"],
-        "source_receipt_number": source.get("receipt_number"),
-        "customer_id": target_customer,
-        "invoice_id": invoice["id"],
-        "invoice_number": invoice.get("invoice_number"),
-        "po_id": invoice.get("po_id"),
-        "amount": money_float(amount),
-        "branch_id": target_scope["branch_id"] or None,
-        "currency": target_scope["currency"] or None,
-        "status": "reserving",
-        "financial_status": "active",
-        "reserved": False,
-        "created_at": now_iso(),
-        "created_by": _actor(user),
-    }
-    try:
-        await db[COLLECTION].insert_one(dict(doc))
-    except DuplicateKeyError:
-        if idem:
-            existing = await db[COLLECTION].find_one({"idempotency_key": idem}, {"_id": 0})
-            if existing:
-                return _public_application(await _heal_application(db, existing, user))
-        raise HTTPException(409, "Pemakaian saldo duplikat terdeteksi.")
+    invoice_claim = str(uuid.uuid4())
+    leased_invoice = await acquire_receipt_create_claim(db, invoice["id"], token=invoice_claim)
+    if not leased_invoice:
+        raise HTTPException(409, RECEIPT_CREATE_CLAIM_CONFLICT_MESSAGE)
 
-    token = str(uuid.uuid4())
-    reserved = False
     try:
-        claimed = await _acquire_claim(db, source["id"], token)
-        if not claimed:
-            raise HTTPException(409, "Saldo pelanggan sedang dipakai. Ulangi permintaan.")
-        await _sync_applied_counter(db, source["id"], token)
-        fresh = await _load_receipt(db, source["id"])
-        available = receipt_customer_credit_amount(fresh) - parse_money(
-            fresh.get("customer_credit_applied") or 0, "Pemakaian saldo"
-        )
-        if amount > available:
-            raise HTTPException(400, "Pemakaian saldo melebihi saldo tersedia.")
-        reserved_doc = await _reserve_credit(db, source["id"], token, amount)
-        if not reserved_doc:
-            raise HTTPException(409, "Pemakaian saldo melebihi saldo tersedia.")
-        reserved = True
-        await db[COLLECTION].update_one({"id": app_id}, {"$set": {"reserved": True}})
+        outstanding = await _outstanding_now(db, invoice)
+        if amount > outstanding:
+            raise HTTPException(400, "Pemakaian saldo melebihi sisa tagihan faktur.")
+        app_id = str(uuid.uuid4())
+        doc = {
+            "id": app_id,
+            "idempotency_key": idem or None,
+            "source_receipt_id": source["id"],
+            "source_receipt_number": source.get("receipt_number"),
+            "customer_id": target_customer,
+            "invoice_id": invoice["id"],
+            "invoice_number": invoice.get("invoice_number"),
+            "po_id": invoice.get("po_id"),
+            "amount": money_float(amount),
+            "branch_id": target_scope["branch_id"] or None,
+            "currency": effective_currency(target_scope["currency"]),
+            "status": "reserving",
+            "financial_status": "active",
+            "reserved": False,
+            "claim_token": "",
+            "created_at": now_iso(),
+            "created_by": _actor(user),
+        }
         try:
-            await post_balanced_journal(
-                db,
-                date=str(payload.get("application_date") or now_iso()[:10])[:10],
-                source_type=SOURCE_TYPE,
-                source_id=app_id,
-                description=(
-                    f"Pemakaian saldo {source.get('receipt_number') or source['id']} "
-                    f"untuk {invoice.get('invoice_number') or invoice['id']}"
-                ),
-                lines=[
-                    {
-                        "account_id": str(deposit["id"]),
-                        "debit": amount,
-                        "credit": Decimal("0.00"),
-                        "description": "Titipan pelanggan",
-                    },
-                    {
-                        "account_id": str(receivable["id"]),
-                        "debit": Decimal("0.00"),
-                        "credit": amount,
-                        "description": "Piutang",
-                    },
-                ],
-                posted_by=user,
+            await db[COLLECTION].insert_one(dict(doc))
+        except DuplicateKeyError:
+            if idem:
+                existing = await db[COLLECTION].find_one({"idempotency_key": idem}, {"_id": 0})
+                if existing:
+                    return _public_application(await _heal_application(db, existing, user))
+            raise HTTPException(409, "Pemakaian saldo duplikat terdeteksi.")
+
+        token = str(uuid.uuid4())
+        try:
+            claimed = await _acquire_claim(db, source["id"], token)
+            if not claimed:
+                raise HTTPException(409, "Saldo pelanggan sedang dipakai. Ulangi permintaan.")
+            await db[COLLECTION].update_one({"id": app_id}, {"$set": {"claim_token": token}})
+            await _abort_foreign_reservations(db, source["id"], token)
+            await _sync_applied_counter(db, source["id"], token)
+            fresh = await _load_receipt(db, source["id"])
+            if receipt_is_cancelled(fresh):
+                raise HTTPException(409, "Penerimaan yang dibatalkan tidak menyediakan saldo.")
+            fresh_journal = await find_sales_receipt_source_journal(db, source["id"])
+            if accounting_status_from_journal(fresh_journal) != ACCOUNTING_POSTED:
+                raise HTTPException(409, DRAFT_CREDIT_REASON)
+            available = receipt_customer_credit_amount(fresh) - parse_money(
+                fresh.get("customer_credit_applied") or 0, "Pemakaian saldo"
             )
-        except PeriodLockedError as exc:
-            raise HTTPException(409, str(exc)) from exc
-        except JournalValidationError as exc:
-            raise HTTPException(400, str(exc)) from exc
-        except JournalConflictError:
-            existing_journal = await find_primary_journal_for_source(db, SOURCE_TYPE, app_id)
-            if not existing_journal:
-                raise HTTPException(409, "Jurnal pemakaian saldo bentrok.")
-        await db[COLLECTION].update_one(
-            {"id": app_id},
-            {"$set": {"status": "posted", "financial_status": "active", "updated_at": now_iso()}},
-        )
-    except Exception:
-        journal = await find_primary_journal_for_source(db, SOURCE_TYPE, app_id)
-        if journal and accounting_status_from_journal(journal) == ACCOUNTING_POSTED:
+            if amount > available:
+                raise HTTPException(400, "Pemakaian saldo melebihi saldo tersedia.")
+            reserved_doc = await _reserve_credit(db, source["id"], token, amount)
+            if not reserved_doc:
+                raise HTTPException(409, "Pemakaian saldo melebihi saldo tersedia.")
+            await db[COLLECTION].update_one(
+                {"id": app_id, "claim_token": token},
+                {"$set": {"reserved": True}},
+            )
+            if not await _claim_is_live(db, source["id"], token):
+                raise HTTPException(409, STALE_CLAIM_MESSAGE)
+            try:
+                await post_balanced_journal(
+                    db,
+                    date=str(payload.get("application_date") or now_iso()[:10])[:10],
+                    source_type=SOURCE_TYPE,
+                    source_id=app_id,
+                    description=(
+                        f"Pemakaian saldo {source.get('receipt_number') or source['id']} "
+                        f"untuk {invoice.get('invoice_number') or invoice['id']}"
+                    ),
+                    lines=[
+                        {
+                            "account_id": str(deposit["id"]),
+                            "debit": amount,
+                            "credit": Decimal("0.00"),
+                            "description": "Titipan pelanggan",
+                        },
+                        {
+                            "account_id": str(receivable["id"]),
+                            "debit": Decimal("0.00"),
+                            "credit": amount,
+                            "description": "Piutang",
+                        },
+                    ],
+                    posted_by=user,
+                )
+            except PeriodLockedError as exc:
+                raise HTTPException(409, str(exc)) from exc
+            except JournalValidationError as exc:
+                raise HTTPException(400, str(exc)) from exc
+            except JournalConflictError:
+                existing_journal = await find_primary_journal_for_source(db, SOURCE_TYPE, app_id)
+                if not existing_journal:
+                    raise HTTPException(409, "Jurnal pemakaian saldo bentrok.")
             await db[COLLECTION].update_one(
                 {"id": app_id},
                 {"$set": {"status": "posted", "financial_status": "active", "updated_at": now_iso()}},
             )
-        else:
-            if reserved:
-                await _release_reservation(db, source["id"], amount)
-            await db[COLLECTION].delete_one({"id": app_id, "status": {"$ne": "posted"}})
-            raise
+        except Exception:
+            journal = await find_primary_journal_for_source(db, SOURCE_TYPE, app_id)
+            if journal and accounting_status_from_journal(journal) == ACCOUNTING_POSTED:
+                await db[COLLECTION].update_one(
+                    {"id": app_id},
+                    {"$set": {"status": "posted", "financial_status": "active", "updated_at": now_iso()}},
+                )
+                if await _claim_is_live(db, source["id"], token):
+                    await _sync_applied_counter(db, source["id"], token)
+            else:
+                await _release_own_reservation(db, source["id"], app_id, token, amount)
+                await db[COLLECTION].delete_one(
+                    {"id": app_id, "status": {"$in": ["reserving", "aborted"]}},
+                )
+                raise
+        finally:
+            await _release_claim(db, source["id"], token)
+
+        from services.sales_receipts import _recalc_invoice_payment_from_receipts
+
+        await _recalc_invoice_payment_from_receipts(db, invoice["id"])
+        stored = await db[COLLECTION].find_one({"id": app_id}, {"_id": 0})
+        return _public_application(stored or doc)
     finally:
-        await _release_claim(db, source["id"], token)
-
-    from services.sales_receipts import _recalc_invoice_payment_from_receipts
-
-    await _recalc_invoice_payment_from_receipts(db, invoice["id"])
-    stored = await db[COLLECTION].find_one({"id": app_id}, {"_id": 0})
-    return _public_application(stored or doc)
+        await clear_receipt_create_claim(db, invoice["id"], token=invoice_claim)
 
 
 async def _mark_application_reversed(db, doc: dict, user: dict) -> None:
