@@ -1,9 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { GlobalWorkerOptions, getDocument } from "pdfjs-dist";
 
 GlobalWorkerOptions.workerSrc = `${process.env.PUBLIC_URL || ""}/pdf.worker.min.mjs`;
 
-const ZOOM_STEPS = [0.5, 0.75, 1, 1.25, 1.5, 2, 2.5, 3];
+const MAX_PAGE_WIDTH = 920;
 
 function emptyView(key, attempt = 0) {
   return {
@@ -14,10 +14,6 @@ function emptyView(key, attempt = 0) {
     blob: null,
     contentType: "",
     pdf: null,
-    page: 1,
-    pageCount: 1,
-    zoom: 1,
-    fitWidth: false,
   };
 }
 
@@ -39,14 +35,66 @@ function isImage(contentType, name, bytes) {
   return type === "image/jpeg" || type === "image/png" || /\.(jpe?g|png)$/i.test(name || "");
 }
 
-function prefersFitWidth() {
-  if (typeof window === "undefined" || !window.matchMedia) return true;
-  return window.matchMedia("(max-width: 768px)").matches;
+function fittedPageWidth(node) {
+  const inner = Math.max(0, (node?.clientWidth || 0) - 16);
+  if (!inner) return 0;
+  return Math.min(MAX_PAGE_WIDTH, inner);
+}
+
+function PdfPage({ pdf, pageNumber, width, testId, onFail }) {
+  const canvasRef = useRef(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    if (!width) return undefined;
+    let active = true;
+    let renderTask = null;
+    let pdfPage = null;
+    setFailed(false);
+    const draw = async () => {
+      try {
+        pdfPage = await pdf.getPage(pageNumber);
+        if (!active || !canvasRef.current) return;
+        const base = pdfPage.getViewport({ scale: 1 });
+        const cssScale = width / base.width;
+        const pixelRatio = Math.min(2, window.devicePixelRatio || 1);
+        const viewport = pdfPage.getViewport({ scale: cssScale * pixelRatio });
+        const canvas = canvasRef.current;
+        const context = canvas.getContext("2d", { alpha: false });
+        canvas.width = Math.ceil(viewport.width);
+        canvas.height = Math.ceil(viewport.height);
+        canvas.style.width = `${Math.ceil(width)}px`;
+        canvas.style.height = `${Math.ceil(base.height * cssScale)}px`;
+        canvas.style.maxWidth = "100%";
+        renderTask = pdfPage.render({ canvasContext: context, viewport });
+        await renderTask.promise;
+      } catch (error) {
+        if (active && error?.name !== "RenderingCancelledException") {
+          setFailed(true);
+          onFail();
+        }
+      }
+    };
+    draw();
+    return () => {
+      active = false;
+      renderTask?.cancel?.();
+      pdfPage?.cleanup?.();
+    };
+  }, [pdf, pageNumber, width, onFail]);
+
+  return (
+    <section className="inapp-doc-sheet" aria-label={`Halaman ${pageNumber}`} data-page={pageNumber}>
+      {failed ? <p className="muted">Halaman gagal ditampilkan.</p> : null}
+      <canvas ref={canvasRef} data-testid={`${testId}-canvas`} data-page={pageNumber} />
+      <span>{pageNumber}</span>
+    </section>
+  );
 }
 
 /**
- * In-app PDF.js / image viewer. Does not open a new tab and does not persist
- * tokens or file bytes. Later PDF features should reuse this component.
+ * In-app PDF.js / image viewer. All PDF pages stack in the scrolling stage.
+ * The header stays outside that scroll. Does not open a new tab.
  */
 export default function InAppDocumentViewer({
   documentKey,
@@ -63,30 +111,16 @@ export default function InAppDocumentViewer({
     setView(emptyView(documentKey));
   }
   const frameRef = useRef(null);
-  const canvasRef = useRef(null);
   const objectUrlRef = useRef("");
   const [objectUrl, setObjectUrl] = useState("");
-
-  useEffect(() => {
-    const media = window.matchMedia ? window.matchMedia("(max-width: 768px)") : null;
-    if (!media) return undefined;
-    const onChange = () => {
-      if (media.matches) {
-        setView((current) => (current.key === documentKey ? { ...current, fitWidth: true } : current));
-      }
-    };
-    media.addEventListener?.("change", onChange);
-    return () => media.removeEventListener?.("change", onChange);
-  }, [documentKey]);
+  const [pageWidth, setPageWidth] = useState(0);
 
   useEffect(() => {
     const controller = new AbortController();
     let active = true;
     let task = null;
     setView((current) => (
-      current.key === documentKey
-        ? { ...emptyView(documentKey, current.attempt), fitWidth: prefersFitWidth() }
-        : current
+      current.key === documentKey ? emptyView(documentKey, current.attempt) : current
     ));
     loadFile({ download: false, signal: controller.signal })
       .then(async (blob) => {
@@ -117,8 +151,6 @@ export default function InAppDocumentViewer({
                 blob,
                 contentType: type || "application/pdf",
                 pdf: doc,
-                page: 1,
-                pageCount: doc.numPages || 1,
               }
               : current
           ));
@@ -127,7 +159,7 @@ export default function InAppDocumentViewer({
         if (isImage(type, fileName, buffer)) {
           setView((current) => (
             current.key === documentKey
-              ? { ...current, status: "ready", blob, contentType: type || "image/jpeg", pdf: null, page: 1, pageCount: 1 }
+              ? { ...current, status: "ready", blob, contentType: type || "image/jpeg", pdf: null }
               : current
           ));
           return;
@@ -172,45 +204,21 @@ export default function InAppDocumentViewer({
     };
   }, [documentKey, contentType, fileName, loadFile, view.attempt]);
 
+  const pdfMode = view.status === "ready" && view.pdf && view.key === documentKey;
+
   useEffect(() => {
-    if (view.status !== "ready" || !view.pdf || view.key !== documentKey || !canvasRef.current) return undefined;
-    let active = true;
-    let renderTask = null;
-    let pdfPage = null;
-    const draw = async () => {
-      try {
-        pdfPage = await view.pdf.getPage(view.page);
-        if (!active || !canvasRef.current) return;
-        const base = pdfPage.getViewport({ scale: 1 });
-        const frameWidth = Math.max(280, (frameRef.current?.clientWidth || 640) - 24);
-        const scale = view.fitWidth ? frameWidth / base.width : view.zoom;
-        const pixelRatio = Math.min(2, window.devicePixelRatio || 1);
-        const viewport = pdfPage.getViewport({ scale: scale * pixelRatio });
-        const canvas = canvasRef.current;
-        const context = canvas.getContext("2d", { alpha: false });
-        canvas.width = Math.ceil(viewport.width);
-        canvas.height = Math.ceil(viewport.height);
-        canvas.style.width = `${Math.ceil(viewport.width / pixelRatio)}px`;
-        canvas.style.height = `${Math.ceil(viewport.height / pixelRatio)}px`;
-        canvas.style.maxWidth = "100%";
-        canvas.dataset.scale = String(Math.round(scale * 1000) / 1000);
-        renderTask = pdfPage.render({ canvasContext: context, viewport });
-        await renderTask.promise;
-      } catch (error) {
-        if (active && error?.name !== "RenderingCancelledException") {
-          setView((current) => (
-            current.key === documentKey ? { ...current, status: "error", message: "Dokumen gagal dimuat.", pdf: null } : current
-          ));
-        }
-      }
-    };
-    draw();
-    return () => {
-      active = false;
-      renderTask?.cancel?.();
-      pdfPage?.cleanup?.();
-    };
-  }, [view.status, view.pdf, view.page, view.zoom, view.fitWidth, view.key, documentKey]);
+    const node = frameRef.current;
+    if (!node || !pdfMode) {
+      setPageWidth(0);
+      return undefined;
+    }
+    const apply = () => setPageWidth(fittedPageWidth(node));
+    apply();
+    if (typeof ResizeObserver === "undefined") return undefined;
+    const observer = new ResizeObserver(apply);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [pdfMode, documentKey]);
 
   useEffect(() => {
     const imageReady = view.status === "ready" && view.blob && isImage(view.contentType, fileName) && view.key === documentKey;
@@ -236,6 +244,16 @@ export default function InAppDocumentViewer({
     if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
   }, [view.pdf]);
 
+  const failRef = useRef(() => {});
+  failRef.current = () => {
+    setView((current) => (
+      current.key === documentKey
+        ? { ...current, status: "error", message: "Dokumen gagal dimuat.", pdf: null, blob: null }
+        : current
+    ));
+  };
+  const failPages = useCallback(() => failRef.current(), []);
+
   const download = async () => {
     try {
       const file = await loadFile({ download: true });
@@ -257,16 +275,16 @@ export default function InAppDocumentViewer({
     }
   };
 
-  const pdfMode = view.status === "ready" && view.pdf && view.key === documentKey;
   const imageMode = view.status === "ready" && objectUrl && view.key === documentKey;
-  const pageCount = view.pageCount || 1;
+  const pageCount = view.pdf?.numPages || 0;
 
   return (
     <div
       className="inapp-doc-overlay"
       data-testid={testId}
       data-document-key={documentKey}
-      data-fit={view.fitWidth ? "width" : "zoom"}
+      data-page-count={pdfMode ? String(pageCount) : "0"}
+      data-page-width={pdfMode ? String(pageWidth) : "0"}
       role="dialog"
       aria-modal="true"
       aria-label={title}
@@ -281,14 +299,6 @@ export default function InAppDocumentViewer({
             <button type="button" data-testid={`${testId}-close`} onClick={onClose}>Tutup</button>
           </div>
         </header>
-        <div className="inapp-doc-tools">
-          <button type="button" data-testid={`${testId}-prev`} disabled={!pdfMode || view.page <= 1} onClick={() => setView((current) => ({ ...current, page: Math.max(1, current.page - 1) }))}>Sebelumnya</button>
-          <span data-testid={`${testId}-page`}>{pdfMode ? `Halaman ${view.page} / ${pageCount}` : "Halaman —"}</span>
-          <button type="button" data-testid={`${testId}-next`} disabled={!pdfMode || view.page >= pageCount} onClick={() => setView((current) => ({ ...current, page: Math.min(pageCount, current.page + 1) }))}>Berikutnya</button>
-          <button type="button" data-testid={`${testId}-zoom-out`} disabled={view.status !== "ready"} onClick={() => setView((current) => ({ ...current, fitWidth: false, zoom: Math.max(ZOOM_STEPS[0], Math.round((current.zoom - 0.25) * 100) / 100) }))}>Zoom -</button>
-          <button type="button" data-testid={`${testId}-zoom-in`} disabled={view.status !== "ready"} onClick={() => setView((current) => ({ ...current, fitWidth: false, zoom: Math.min(ZOOM_STEPS[ZOOM_STEPS.length - 1], Math.round((current.zoom + 0.25) * 100) / 100) }))}>Zoom +</button>
-          <button type="button" data-testid={`${testId}-fit`} disabled={view.status !== "ready"} onClick={() => setView((current) => ({ ...current, fitWidth: true }))}>Sesuaikan Lebar</button>
-        </div>
         <div className="inapp-doc-stage" ref={frameRef} data-testid={`${testId}-stage`}>
           {view.status === "loading" && <p data-testid={`${testId}-loading`}>Memuat dokumen...</p>}
           {view.status === "error" && (
@@ -299,14 +309,22 @@ export default function InAppDocumentViewer({
           )}
           {view.status === "denied" && <p data-testid={`${testId}-denied`}>{view.message}</p>}
           {view.status === "unsupported" && <p data-testid={`${testId}-unsupported`}>{view.message}</p>}
-          {pdfMode && <canvas ref={canvasRef} data-testid={`${testId}-canvas`} />}
+          {pdfMode && (
+            <div className="inapp-doc-pages" data-testid={`${testId}-pages`}>
+              {Array.from({ length: pageCount }, (_, index) => (
+                <PdfPage
+                  key={`${documentKey}:${index + 1}`}
+                  pdf={view.pdf}
+                  pageNumber={index + 1}
+                  width={pageWidth}
+                  testId={testId}
+                  onFail={failPages}
+                />
+              ))}
+            </div>
+          )}
           {imageMode && (
-            <img
-              data-testid={`${testId}-image`}
-              alt={fileName}
-              src={objectUrl}
-              style={{ width: `${Math.round(view.zoom * 100)}%`, maxWidth: view.fitWidth ? "100%" : "none" }}
-            />
+            <img data-testid={`${testId}-image`} alt={fileName} src={objectUrl} />
           )}
         </div>
       </div>

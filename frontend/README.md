@@ -41,7 +41,7 @@ You don't have to ever use `eject`. The curated feature set is suitable for smal
 
 ## Viewer PDF
 
-Preview PDF baru memakai `src/components/InAppDocumentViewer.jsx` dan worker `public/pdf.worker.min.mjs`. Jangan membuka PDF lewat tab baru atau viewer eksternal. Standar lengkap ada di [docs/PDF_VIEWER.md](../docs/PDF_VIEWER.md).
+Preview PDF baru memakai `src/components/InAppDocumentViewer.jsx` dan worker `public/pdf.worker.min.mjs`. Semua halaman PDF ditumpuk ke bawah; header hanya berisi judul, Unduh, dan Tutup. Jangan membuka PDF lewat tab baru atau viewer eksternal. Standar lengkap ada di [docs/PDF_VIEWER.md](../docs/PDF_VIEWER.md).
 
 ## Learn More
 
