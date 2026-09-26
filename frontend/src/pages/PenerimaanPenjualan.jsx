@@ -755,7 +755,15 @@ export default function PenerimaanPenjualan() {
                         type="button"
                         className="sd-doc"
                         data-testid={`receipt-number-${r.id}`}
-                        onClick={() => { setAccountingErr(""); setDetailReceipt(r); }}
+                        onClick={async () => {
+                          setAccountingErr("");
+                          try {
+                            const fresh = await api.getSalesReceipt(r.id);
+                            setDetailReceipt(fresh.receipt || fresh);
+                          } catch {
+                            setDetailReceipt(r);
+                          }
+                        }}
                       >
                         {r.receipt_number || "-"}
                       </button>
