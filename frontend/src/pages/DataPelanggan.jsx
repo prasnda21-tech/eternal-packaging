@@ -19,6 +19,8 @@ import {
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { FormSection } from "../components/form-standard";
+import { loadedRangeLabel, showLoadedDocumentCount } from "../lib/salesSubmenuDensity";
+import "./salesSubmenuDensity.css";
 
 const INITIAL_FORM = {
   name: "",
@@ -310,90 +312,40 @@ export default function DataPelanggan() {
     );
   }, [customers, searchQuery]);
 
-  const actionBtnStyle = {
-    display: "inline-flex",
-    alignItems: "center",
-    justifyContent: "center",
-    width: 32,
-    height: 32,
-    borderRadius: 6,
-    border: "1px solid #cbd5e1",
-    backgroundColor: "#ffffff",
-    color: "#334155",
-    cursor: "pointer",
-    transition: "all 0.1s ease",
-  };
+  const showCustomerCount = showLoadedDocumentCount({
+    loading,
+    error,
+    query: searchQuery,
+  });
 
   return (
-    <div style={{ padding: "24px 32px", maxWidth: 1400, margin: "0 auto" }}>
+    <div className="penjualan-page penjualan-workspace sd-density sd-list-mode" data-testid="data-pelanggan-page">
       {/* Header */}
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "flex-start",
-          marginBottom: 24,
-          flexWrap: "wrap",
-          gap: 16,
-        }}
-      >
-        <div>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <div
-              style={{
-                width: 40,
-                height: 40,
-                borderRadius: 10,
-                backgroundColor: "#e0f2fe",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                color: "#0284c7",
-              }}
-            >
-              <Users size={22} />
-            </div>
-            <div>
-              <h1 style={{ fontSize: "1.5rem", fontWeight: 700, margin: 0, color: "#0f172a" }}>
-                Data Pelanggan
-              </h1>
-              <p style={{ margin: "2px 0 0", fontSize: "0.875rem", color: "#64748b" }}>
-                Master data pelanggan untuk Pesanan Penjualan dan alur distribusi.
-              </p>
-            </div>
-          </div>
+      <header className="sd-list-header">
+        <div className="sd-list-heading">
+              <h1>Data Pelanggan</h1>
+              {showCustomerCount && (
+                <div className="sd-list-summary" data-testid="customer-list-count">
+                  <strong>{customers.length.toLocaleString("id-ID")}</strong>
+                  <span>pelanggan</span>
+                </div>
+              )}
         </div>
 
-        <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+        <div className="sd-list-header-actions">
           {canManage && (
             <button
               type="button"
               onClick={handleOpenCreate}
               data-testid="btn-add-customer"
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 8,
-                backgroundColor: "#0284c7",
-                color: "#ffffff",
-                border: "none",
-                borderRadius: 8,
-                padding: "10px 18px",
-                fontSize: "0.9rem",
-                fontWeight: 600,
-                cursor: "pointer",
-                boxShadow: "0 1px 2px rgba(0,0,0,0.05)",
-                transition: "background 0.15s ease",
-              }}
-              onMouseOver={(e) => (e.currentTarget.style.backgroundColor = "#0369a1")}
-              onMouseOut={(e) => (e.currentTarget.style.backgroundColor = "#0284c7")}
+              className="sd-btn-primary"
             >
               <Plus size={18} />
               Tambah Pelanggan
             </button>
           )}
         </div>
-      </div>
+      </header>
 
       {successMsg && (
         <div
@@ -437,63 +389,20 @@ export default function DataPelanggan() {
         </div>
       )}
 
-      <div
-        style={{
-          backgroundColor: "#ffffff",
-          border: "1px solid #e2e8f0",
-          borderRadius: 12,
-          padding: "14px 18px",
-          marginBottom: 20,
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          flexWrap: "wrap",
-          gap: 12,
-          boxShadow: "0 1px 3px rgba(0,0,0,0.02)",
-        }}
-      >
-        <div style={{ position: "relative", minWidth: 320, flex: 1, maxWidth: 480 }}>
-          <Search
-            size={16}
-            style={{
-              position: "absolute",
-              left: 12,
-              top: "50%",
-              transform: "translateY(-50%)",
-              color: "#94a3b8",
-            }}
-          />
+      <div className="sd-list-toolbar">
+        <div className="sd-list-search">
+          <Search size={16} />
           <input
             type="text"
             data-testid="input-search-customer"
             placeholder="Cari pelanggan (nama, telp, PIC, kota)..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            style={{
-              width: "100%",
-              padding: "8px 12px 8px 36px",
-              borderRadius: 8,
-              border: "1px solid #cbd5e1",
-              fontSize: "0.9rem",
-              boxSizing: "border-box",
-              outline: "none",
-            }}
           />
-        </div>
-        <div style={{ fontSize: "0.85rem", color: "#64748b", fontWeight: 500 }}>
-          Total: <strong>{filteredCustomers.length}</strong> pelanggan
         </div>
       </div>
 
-      <div
-        style={{
-          backgroundColor: "#ffffff",
-          border: "1px solid #e2e8f0",
-          borderRadius: 12,
-          overflow: "hidden",
-          boxShadow: "0 1px 3px rgba(0,0,0,0.03)",
-        }}
-      >
+      <div className="sd-list-panel">
         {loading ? (
           <div style={{ padding: "48px 0", textAlign: "center", color: "#64748b" }}>
             <Loader2 size={32} className="animate-spin" style={{ margin: "0 auto 12px" }} />
@@ -533,8 +442,9 @@ export default function DataPelanggan() {
             )}
           </div>
         ) : (
-          <div style={{ overflowX: "auto" }}>
+          <div className="sd-list-table-scroll">
             <table
+              className="sd-list-table"
               data-testid="customers-table"
               style={{
                 width: "100%",
@@ -691,37 +601,37 @@ export default function DataPelanggan() {
                       </td>
                       <td style={{ padding: "14px 16px", textAlign: "center" }}>
                         <div
-                          style={{ display: "inline-flex", gap: 6, alignItems: "center", justifyContent: "center" }}
+                          className="sd-actions"
                           data-testid={`customer-actions-${key}`}
                         >
                           <button
                             type="button"
+                            className="sd-act sd-act-view"
                             onClick={() => handleOpenView(cust)}
                             data-testid={`btn-view-customer-${key}`}
                             title="Lihat"
-                            style={actionBtnStyle}
                           >
                             <Eye size={14} />
-                            <span className="sr-only">Lihat</span>
+                            Lihat
                           </button>
                           {canEditRow(cust) && (
                             <button
                               type="button"
                               onClick={() => handleOpenEdit(cust)}
+                              className="sd-act sd-act-view"
                               data-testid={`btn-edit-customer-${cust.id || key}`}
                               title="Edit"
-                              style={actionBtnStyle}
                             >
-                              <Edit2 size={14} />
+                              <Edit2 size={14} /> Edit
                             </button>
                           )}
                           {canToggleStatus(cust) && active && (
                             <button
                               type="button"
                               onClick={() => openStatusConfirm(cust, false)}
+                              className="sd-act sd-act-delete"
                               data-testid={`btn-deactivate-customer-${key}`}
                               title="Nonaktifkan"
-                              style={{ ...actionBtnStyle, color: "#b91c1c", borderColor: "#fecaca" }}
                             >
                               <PowerOff size={14} />
                             </button>
@@ -730,9 +640,9 @@ export default function DataPelanggan() {
                             <button
                               type="button"
                               onClick={() => openStatusConfirm(cust, true)}
+                              className="sd-act sd-btn-primary"
                               data-testid={`btn-activate-customer-${key}`}
                               title="Aktifkan Kembali"
-                              style={{ ...actionBtnStyle, color: "#047857", borderColor: "#a7f3d0" }}
                             >
                               <Power size={14} />
                             </button>
@@ -746,6 +656,15 @@ export default function DataPelanggan() {
             </table>
           </div>
         )}
+        <footer className="sd-list-footer" data-testid="customer-list-footer">
+          <span>
+            {loading
+              ? "Memuat daftar pelanggan..."
+              : error
+              ? "Daftar pelanggan belum dapat ditampilkan"
+              : loadedRangeLabel(filteredCustomers.length, "pelanggan")}
+          </span>
+        </footer>
       </div>
 
       {/* View detail modal */}
@@ -953,6 +872,7 @@ export default function DataPelanggan() {
           }}
         >
           <div
+            className="sd-modal-card"
             data-testid="customer-modal"
             style={{
               backgroundColor: "#ffffff",
@@ -1019,7 +939,8 @@ export default function DataPelanggan() {
               </button>
             </div>
 
-            <form onSubmit={handleFormSubmit} style={{ padding: 24 }}>
+            <form className="sd-modal-form" onSubmit={handleFormSubmit}>
+              <div className="sd-modal-body">
               {formError && (
                 <div
                   data-testid="customer-form-error"
@@ -1261,16 +1182,8 @@ export default function DataPelanggan() {
                 </div>
               </FormSection>
 
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "flex-end",
-                  gap: 12,
-                  marginTop: 24,
-                  borderTop: "1px solid #f1f5f9",
-                  paddingTop: 16,
-                }}
-              >
+              </div>
+              <div className="sd-modal-footer">
                 <button
                   type="button"
                   data-testid="btn-cancel-customer"
@@ -1291,6 +1204,7 @@ export default function DataPelanggan() {
                 </button>
                 <button
                   type="submit"
+                  className="sd-btn-primary"
                   data-testid="btn-save-customer"
                   disabled={formBusy}
                   style={{

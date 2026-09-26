@@ -16,6 +16,8 @@ import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDisplayDate } from "../lib/constants";
 import { FormSection, FormField, FormProgress, computeStatus } from "../components/form-standard";
+import { loadedRangeLabel, showLoadedDocumentCount } from "../lib/salesSubmenuDensity";
+import "./salesSubmenuDensity.css";
 
 function getTodayString() {
   const d = new Date();
@@ -424,58 +426,32 @@ export default function PenerimaanPenjualan() {
     }
   };
 
+  const showReceiptCount = showLoadedDocumentCount({
+    loading: listLoading,
+    error: listErr,
+    query: searchQuery,
+  });
+
   return (
     <div
-      className="page-container penjualan-page penjualan-workspace"
+      className="page-container penjualan-page penjualan-workspace sd-density sd-list-mode"
       data-testid="penerimaan-penjualan-page"
-      style={{ padding: 24, maxWidth: 1200, margin: "0 auto" }}
     >
-      {/* HEADER SECTION */}
-      <div
-        className="page-heading"
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          marginBottom: 24,
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <div
-            style={{
-              width: 44,
-              height: 44,
-              borderRadius: 10,
-              backgroundColor: "#d1fae5",
-              color: "#059669",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-            }}
-          >
-            <CreditCard size={24} />
-          </div>
-          <div>
-            <h1
-              style={{
-                fontSize: 22,
-                fontWeight: 700,
-                color: "#111827",
-                margin: 0,
-              }}
-            >
-              Penerimaan Penjualan
-            </h1>
-            <p style={{ fontSize: 13, color: "#6b7280", margin: "2px 0 0" }}>
-              Pencatatan pembayaran tagihan Faktur Penjualan (DP &amp; Pelunasan)
-            </p>
-          </div>
+      <header className="sd-list-header">
+        <div className="sd-list-heading">
+          <h1>Penerimaan Penjualan</h1>
+          {showReceiptCount && (
+            <div className="sd-list-summary" data-testid="receipt-list-count">
+              <strong>{receipts.length.toLocaleString("id-ID")}</strong>
+              <span>penerimaan</span>
+            </div>
+          )}
         </div>
-
-        <div style={{ display: "flex", gap: 10 }}>
+        <div className="sd-list-header-actions">
           {canDelete && selectedIds.size > 0 && (
             <button
               type="button"
+              className="sd-btn-danger"
               data-testid="btn-hapus-terpilih"
               onClick={() => {
                 setDeleteErr("");
@@ -484,93 +460,37 @@ export default function PenerimaanPenjualan() {
                   numbers: receipts.filter((r) => selectedIds.has(r.id)).map((r) => r.receipt_number),
                 });
               }}
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 6,
-                padding: "8px 14px",
-                fontSize: 13,
-                fontWeight: 600,
-                backgroundColor: "#fee2e2",
-                color: "#b91c1c",
-                border: "1px solid #fecaca",
-                borderRadius: 6,
-                cursor: "pointer",
-              }}
             >
               <Trash2 size={15} /> Hapus Terpilih ({selectedIds.size})
             </button>
           )}
           <button
             type="button"
-            className="btn btn-secondary"
+            className="sd-list-refresh"
             onClick={loadReceipts}
             disabled={listLoading}
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 6,
-              padding: "8px 14px",
-              fontSize: 13,
-              borderRadius: 6,
-              cursor: "pointer",
-            }}
+            title="Segarkan"
+            aria-label="Segarkan"
           >
-            <RefreshCw size={15} className={listLoading ? "animate-spin" : ""} />
-            Segarkan
+            <RefreshCw size={16} className={listLoading ? "animate-spin" : ""} />
           </button>
-
           {canCreate && (
             <button
               type="button"
-              className="btn btn-primary"
+              className="sd-btn-primary"
               data-testid="btn-create-receipt"
               onClick={() => handleOpenCreateModal()}
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 6,
-                padding: "8px 16px",
-                fontSize: 13,
-                fontWeight: 600,
-                backgroundColor: "#059669",
-                borderColor: "#059669",
-                color: "#fff",
-                borderRadius: 6,
-                cursor: "pointer",
-              }}
             >
               <Plus size={16} />
-              + Buat Penerimaan
+              Buat Penerimaan
             </button>
           )}
         </div>
-      </div>
+      </header>
 
-      {/* FILTER & SEARCH BAR */}
-      <div
-        style={{
-          display: "flex",
-          gap: 12,
-          marginBottom: 18,
-          backgroundColor: "#fff",
-          padding: 12,
-          borderRadius: 8,
-          border: "1px solid #e5e7eb",
-          alignItems: "center",
-        }}
-      >
-        <div style={{ position: "relative", flex: 1 }}>
-          <Search
-            size={16}
-            style={{
-              position: "absolute",
-              left: 12,
-              top: "50%",
-              transform: "translateY(-50%)",
-              color: "#9ca3af",
-            }}
-          />
+      <div className="sd-list-toolbar">
+        <div className="sd-list-search">
+          <Search size={16} />
           <input
             type="text"
             className="form-input"
@@ -578,14 +498,6 @@ export default function PenerimaanPenjualan() {
             placeholder="Cari nomor penerimaan, no faktur, no PO, customer..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            style={{
-              paddingLeft: 36,
-              width: "100%",
-              height: 38,
-              fontSize: 13,
-              borderRadius: 6,
-              border: "1px solid #d1d5db",
-            }}
           />
         </div>
       </div>
@@ -653,47 +565,45 @@ export default function PenerimaanPenjualan() {
       )}
 
       {/* TABLE DATA */}
-      <div
-        style={{
-          backgroundColor: "#fff",
-          borderRadius: 8,
-          border: "1px solid #e5e7eb",
-          overflow: "hidden",
-          boxShadow: "0 1px 3px rgba(0,0,0,0.05)",
-        }}
-      >
-        <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "left", fontSize: 13 }}>
+      <div className="sd-list-panel">
+        <div className="sd-list-table-scroll">
+          <table className="sd-list-table">
+            <colgroup>
+              {canDelete && <col style={{ width: 36 }} />}
+              <col />
+              <col style={{ width: 108 }} />
+              <col style={{ width: 130 }} />
+              <col style={{ width: 110 }} />
+              <col style={{ width: 110 }} />
+              <col style={{ width: 140 }} />
+              <col style={{ width: 220 }} />
+            </colgroup>
             <thead>
-              <tr style={{ backgroundColor: "#f9fafb", borderBottom: "1px solid #e5e7eb", color: "#4b5563" }}>
+              <tr>
                 {canDelete && (
-                  <th style={{ padding: "12px 8px", width: 36 }}>
+                  <th>
                     <input type="checkbox" data-testid="select-all-receipts" checked={deletableReceipts.length > 0 && selectedIds.size === deletableReceipts.length} onChange={toggleSelectAll} aria-label="Pilih semua baris tampilan" />
                   </th>
                 )}
-                <th style={{ padding: "12px 16px", fontWeight: 600 }}>No. Penerimaan</th>
-                <th style={{ padding: "12px 16px", fontWeight: 600 }}>Tgl Penerimaan</th>
-                <th style={{ padding: "12px 16px", fontWeight: 600 }}>No. Faktur</th>
-                <th style={{ padding: "12px 16px", fontWeight: 600 }}>Customer</th>
-                <th style={{ padding: "12px 16px", fontWeight: 600 }}>No. PO</th>
-                <th style={{ padding: "12px 16px", fontWeight: 600, textAlign: "right" }}>Jumlah Penerimaan</th>
-                <th style={{ padding: "12px 16px", fontWeight: 600, textAlign: "center" }}>Status Faktur</th>
-                <th style={{ padding: "12px 16px", fontWeight: 600, textAlign: "center" }}>Accounting</th>
-                <th style={{ padding: "12px 16px", fontWeight: 600 }}>Kas / Bank</th>
-                <th style={{ padding: "12px 16px", fontWeight: 600 }}>Catatan</th>
-                <th style={{ padding: "12px 16px", fontWeight: 600, textAlign: "center" }}>Aksi</th>
+                <th>Pelanggan / No. Penerimaan</th>
+                <th>Tanggal</th>
+                <th>Jumlah</th>
+                <th>Status Faktur</th>
+                <th>Accounting</th>
+                <th>Kas / Bank</th>
+                <th>Aksi</th>
               </tr>
             </thead>
             <tbody>
               {listLoading ? (
                 <tr>
-                  <td colSpan={canDelete ? 12 : 11} style={{ padding: 40, textAlign: "center", color: "#6b7280" }}>
+                  <td colSpan={canDelete ? 8 : 7} className="sd-list-empty">
                     Memuat data penerimaan penjualan...
                   </td>
                 </tr>
               ) : receipts.length === 0 ? (
                 <tr>
-                  <td colSpan={canDelete ? 12 : 11} style={{ padding: 48, textAlign: "center" }}>
+                  <td colSpan={canDelete ? 8 : 7} className="sd-list-empty">
                     <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
                       <FileText size={36} color="#9ca3af" />
                       <span style={{ fontWeight: 600, color: "#374151" }}>Belum ada Penerimaan Penjualan</span>
@@ -719,44 +629,24 @@ export default function PenerimaanPenjualan() {
                         )}
                       </td>
                     )}
-                    <td style={{ padding: "12px 16px" }}>
+                    <td className="sd-identity">
+                      <div className="sd-customer">{r.customer || "-"}</div>
                       <button
                         type="button"
+                        className="sd-doc"
                         data-testid={`receipt-number-${r.id}`}
                         onClick={() => { setAccountingErr(""); setDetailReceipt(r); }}
-                        style={{
-                          fontFamily: "monospace",
-                          color: "#059669",
-                          fontWeight: 700,
-                          background: "none",
-                          border: "none",
-                          padding: 0,
-                          cursor: "pointer",
-                          textDecoration: "underline",
-                        }}
                       >
                         {r.receipt_number || "-"}
                       </button>
-                    </td>
-                    <td style={{ padding: "12px 16px", fontWeight: 500, color: "#111827" }}>
-                      {formatDisplayDate(r.receipt_date)}
-                    </td>
-                    <td style={{ padding: "12px 16px" }}>
-                      <span style={{ fontFamily: "monospace", color: "#9333ea", fontWeight: 600 }}>
+                      <span className="sd-support">
                         {r.invoice_number || "-"}
+                        {r.po_number ? ` · ${r.po_number}` : ""}
+                        {r.notes ? ` · ${r.notes}` : ""}
                       </span>
                     </td>
-                    <td style={{ padding: "12px 16px", fontWeight: 500, color: "#374151" }}>
-                      {r.customer || "-"}
-                    </td>
-                    <td style={{ padding: "12px 16px" }}>
-                      <span style={{ fontFamily: "monospace", color: "#4b5563" }}>
-                        {r.po_number || "-"}
-                      </span>
-                    </td>
-                    <td style={{ padding: "12px 16px", textAlign: "right", fontWeight: 700, color: "#059669" }}>
-                      {formatRupiah(r.amount)}
-                    </td>
+                    <td>{formatDisplayDate(r.receipt_date)}</td>
+                    <td className="sd-money is-zero">{formatRupiah(r.amount)}</td>
                     <td style={{ padding: "12px 16px", textAlign: "center" }}>
                       <span
                         className="pj-status-badge"
@@ -795,48 +685,27 @@ export default function PenerimaanPenjualan() {
                     <td style={{ padding: "12px 16px", color: "#374151" }} data-testid={`receipt-cash-bank-${r.id}`}>
                       {r.cash_bank_name || "-"}
                     </td>
-                    <td style={{ padding: "12px 16px", color: "#6b7280", maxWidth: 220 }}>
-                      {r.notes || "-"}
-                    </td>
-                    <td style={{ padding: "12px 16px", textAlign: "center" }}>
-                      <div style={{ display: "flex", justifyContent: "center", gap: 6 }}>
+                    <td>
+                      <div className="sd-actions">
                         <button
                           type="button"
+                          className="sd-act sd-act-view"
                           onClick={(e) => handlePrintPdf(e, r.id)}
                           data-testid={`btn-print-pdf-${r.id}`}
                           disabled={pdfLoadingId === r.id}
                           title="Cetak PDF Penerimaan Penjualan"
-                          style={{
-                            padding: "5px 12px",
-                            fontSize: "0.8rem",
-                            borderRadius: 6,
-                            border: "1px solid #cbd5e1",
-                            background: "#f8fafc",
-                            color: "#0284c7",
-                            cursor: pdfLoadingId === r.id ? "wait" : "pointer",
-                            fontWeight: 600,
-                          }}
                         >
                           {pdfLoadingId === r.id ? "Memuat..." : "Cetak PDF"}
                         </button>
                         {canPostAccounting && r.can_post_accounting && (
                           <button
                             type="button"
+                            className="sd-act sd-btn-primary"
                             data-testid={`btn-post-accounting-${r.id}`}
                             onClick={() => {
                               setAccountingErr("");
                               if (!r.cash_bank_id) loadCashBanks();
                               setAccountingTarget({ action: "post", receipt: r, cash_bank_id: r.cash_bank_id || "" });
-                            }}
-                            style={{
-                              padding: "5px 10px",
-                              fontSize: "0.8rem",
-                              borderRadius: 6,
-                              border: "none",
-                              background: "#047857",
-                              color: "#fff",
-                              cursor: "pointer",
-                              fontWeight: 600,
                             }}
                           >
                             Post Accounting
@@ -845,20 +714,11 @@ export default function PenerimaanPenjualan() {
                         {canReverseAccounting && r.can_reverse_accounting && (
                           <button
                             type="button"
+                            className="sd-act sd-act-delete"
                             data-testid={`btn-reverse-accounting-${r.id}`}
                             onClick={() => {
                               setAccountingErr("");
                               setAccountingTarget({ action: "reverse", receipt: r });
-                            }}
-                            style={{
-                              padding: "5px 10px",
-                              fontSize: "0.8rem",
-                              borderRadius: 6,
-                              border: "1px solid #fecaca",
-                              background: "#fff",
-                              color: "#b91c1c",
-                              cursor: "pointer",
-                              fontWeight: 600,
                             }}
                           >
                             Reverse
@@ -867,6 +727,7 @@ export default function PenerimaanPenjualan() {
                         {canDelete && r.can_delete !== false && (
                           <button
                             type="button"
+                            className="sd-act sd-act-delete"
                             data-testid={`btn-delete-receipt-${r.id}`}
                             onClick={() => {
                               setDeleteErr("");
@@ -875,16 +736,6 @@ export default function PenerimaanPenjualan() {
                                 number: r.receipt_number,
                                 numbers: [r.receipt_number],
                               });
-                            }}
-                            style={{
-                              padding: "5px 10px",
-                              fontSize: "0.8rem",
-                              borderRadius: 6,
-                              border: "1px solid #fecaca",
-                              background: "#fef2f2",
-                              color: "#b91c1c",
-                              cursor: "pointer",
-                              fontWeight: 600,
                             }}
                           >
                             Hapus
@@ -898,6 +749,15 @@ export default function PenerimaanPenjualan() {
             </tbody>
           </table>
         </div>
+        <footer className="sd-list-footer" data-testid="receipt-list-footer">
+          <span>
+            {listLoading
+              ? "Memuat daftar penerimaan..."
+              : listErr
+              ? "Daftar penerimaan belum dapat ditampilkan"
+              : loadedRangeLabel(receipts.length, "penerimaan")}
+          </span>
+        </footer>
       </div>
 
       {/* CREATE RECEIPT MODAL */}
@@ -928,6 +788,7 @@ export default function PenerimaanPenjualan() {
           }}
         >
           <div
+            className="sd-modal-card"
             onClick={(e) => e.stopPropagation()}
             style={{
               backgroundColor: "#fff",
@@ -981,8 +842,9 @@ export default function PenerimaanPenjualan() {
             </div>
 
             {/* Modal Body */}
-            <form onSubmit={handleSaveReceipt} style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+            <form className="sd-modal-form" onSubmit={handleSaveReceipt} style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
               <div
+                className="sd-modal-body"
                 data-testid="receipt-modal-body"
                 style={{ padding: "20px 20px 28px", overflowY: "auto", flex: "1 1 auto", minHeight: 0 }}
               >
@@ -1307,6 +1169,7 @@ export default function PenerimaanPenjualan() {
 
               {/* Modal Actions */}
               <div
+                className="sd-modal-footer"
                 data-testid="receipt-modal-footer"
                 style={{
                   display: "flex",
