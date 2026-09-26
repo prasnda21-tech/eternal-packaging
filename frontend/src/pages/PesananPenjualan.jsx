@@ -62,8 +62,8 @@ import {
   SALES_ORDER_PAGE_SIZES,
   canShowAktifSummary,
   formatQuantityByUnit,
+  listDeliveryProgress,
   listPageCount,
-  listProgressText,
   listRangeLabel,
   orderQuantityLabel,
   periodBounds,
@@ -262,7 +262,12 @@ function confirmDiscardSalesOrder() {
   }
 }
 
-function SalesOrderHeaderFilter({ label, testid, active, alignEnd, onClear, children }) {
+function SalesOrderHeaderFilter({ label, testid, active, alignEnd, onClear, children, sections }) {
+  const groups = sections && sections.length
+    ? sections
+    : [{ label, testid, active, onClear, children }];
+  const anyActive = groups.some((group) => group.active);
+  const grouped = groups.length > 1;
   return (
     <div className={"so-th-inner" + (alignEnd ? " is-end" : "")}>
       <span className="so-th-label">{label}</span>
@@ -270,13 +275,13 @@ function SalesOrderHeaderFilter({ label, testid, active, alignEnd, onClear, chil
         <PopoverTrigger asChild>
           <button
             type="button"
-            className={"so-th-filter" + (active ? " is-active" : "")}
+            className={"so-th-filter" + (anyActive ? " is-active" : "")}
             aria-label={`Filter ${label}`}
-            data-testid={testid}
+            data-testid={grouped ? undefined : testid}
             onClick={(e) => e.stopPropagation()}
           >
             <Filter size={11} />
-            {active && <span className="so-th-dot" />}
+            {anyActive && <span className="so-th-dot" />}
           </button>
         </PopoverTrigger>
         <PopoverContent
@@ -284,20 +289,50 @@ function SalesOrderHeaderFilter({ label, testid, active, alignEnd, onClear, chil
           className="so-th-popover sales-order-page-popover"
           onClick={(e) => e.stopPropagation()}
         >
-          <div className="so-th-pop-label">{label}</div>
-          {children}
-          {active && (
-            <button
-              type="button"
-              className="so-th-clear"
-              onClick={onClear}
-              data-testid={`${testid}-clear`}
+          {groups.map((group) => (
+            <div
+              key={group.testid}
+              className="so-th-pop-section"
+              data-testid={grouped ? group.testid : undefined}
             >
-              Hapus filter
-            </button>
-          )}
+              <div className="so-th-pop-label">{group.label}</div>
+              {group.children}
+              {group.active && (
+                <button
+                  type="button"
+                  className="so-th-clear"
+                  onClick={group.onClear}
+                  data-testid={`${group.testid}-clear`}
+                >
+                  Hapus filter
+                </button>
+              )}
+            </div>
+          ))}
         </PopoverContent>
       </Popover>
+    </div>
+  );
+}
+
+function SalesOrderDeliveryProgress({ order }) {
+  const progress = listDeliveryProgress(order);
+  const tone = salesOrderProgressTone(order);
+  return (
+    <div className={`so-progress ${tone}`} data-testid={`order-progress-${order.id}`}>
+      {progress.ratio != null && (
+        <div
+          className="so-progress-track"
+          role="meter"
+          aria-valuemin={0}
+          aria-valuemax={progress.ordered || 0}
+          aria-valuenow={progress.shipped || 0}
+          aria-label={progress.label}
+        >
+          <span className="so-progress-fill" style={{ width: `${progress.ratio * 100}%` }} />
+        </div>
+      )}
+      <span className="so-progress-label">{progress.label}</span>
     </div>
   );
 }
@@ -1444,9 +1479,14 @@ export default function PesananPenjualan() {
       {viewMode === "list" && (
         <div className="so-list" data-testid="sales-order-list">
           <header className="so-list-header">
-            <div>
+            <div className="so-list-heading">
               <h1 data-testid="sales-order-title">Pesanan Penjualan</h1>
-              <p>Daftar pesanan penjualan dari pelanggan.</p>
+              {showAktifCount && (
+                <div className="so-list-summary" data-testid="sales-order-aktif-count">
+                  <strong>{Number(listMeta.total).toLocaleString("id-ID")}</strong>
+                  <span>pesanan aktif</span>
+                </div>
+              )}
             </div>
             <div className="so-list-header-actions">
               {canDelete && selectedIds.size > 0 && (
@@ -1490,13 +1530,6 @@ export default function PesananPenjualan() {
               )}
             </div>
           </header>
-
-          {showAktifCount && (
-            <div className="so-list-summary" data-testid="sales-order-aktif-count">
-              <strong>{Number(listMeta.total).toLocaleString("id-ID")}</strong>
-              <span>Pesanan aktif</span>
-            </div>
-          )}
 
           <div className="so-list-tabs" role="tablist" aria-label="Klasifikasi pesanan">
             <button
@@ -1597,6 +1630,16 @@ export default function PesananPenjualan() {
 
           <div className="so-list-table-scroll" data-testid="sales-order-table-scroll">
             <table className="so-list-table">
+              <colgroup>
+                {canDelete && <col className="so-col-check" />}
+                <col className="so-col-customer" />
+                <col className="so-col-date" />
+                <col className="so-col-date" />
+                <col className="so-col-qty" />
+                <col className="so-col-progress" />
+                <col className="so-col-status" />
+                <col className="so-col-actions" />
+              </colgroup>
               <thead>
                 <tr>
                   {canDelete && (
@@ -1613,50 +1656,58 @@ export default function PesananPenjualan() {
                   <th>
                     <SalesOrderHeaderFilter
                       label="Pelanggan / No. PO"
-                      testid="so-th-filter-customer"
-                      active={salesOrderColumnFilterActive("customer", columnFilters)}
-                      onClear={() => clearColumnKey("customer")}
-                    >
-                      <input
-                        type="text"
-                        placeholder="Cari customer"
-                        value={columnFilters.customer}
-                        onChange={(e) => patchColumnFilter({ customer: e.target.value })}
-                        data-testid="so-filter-customer"
-                      />
-                    </SalesOrderHeaderFilter>
-                    <SalesOrderHeaderFilter
-                      label="No. PO"
-                      testid="so-th-filter-po"
-                      active={salesOrderColumnFilterActive("po", columnFilters)}
-                      onClear={() => clearColumnKey("po")}
-                    >
-                      <input
-                        type="text"
-                        placeholder="Cari No PO"
-                        value={columnFilters.po}
-                        onChange={(e) => patchColumnFilter({ po: e.target.value })}
-                        data-testid="so-filter-po"
-                      />
-                    </SalesOrderHeaderFilter>
-                    <SalesOrderHeaderFilter
-                      label="Outlet"
-                      testid="so-th-filter-outlet"
-                      active={salesOrderColumnFilterActive("outlet", columnFilters)}
-                      onClear={() => clearColumnKey("outlet")}
-                    >
-                      <input
-                        type="text"
-                        placeholder="Cari outlet"
-                        value={columnFilters.outlet}
-                        onChange={(e) => patchColumnFilter({ outlet: e.target.value })}
-                        data-testid="so-filter-outlet"
-                      />
-                    </SalesOrderHeaderFilter>
+                      sections={[
+                        {
+                          label: "Pelanggan",
+                          testid: "so-th-filter-customer",
+                          active: salesOrderColumnFilterActive("customer", columnFilters),
+                          onClear: () => clearColumnKey("customer"),
+                          children: (
+                            <input
+                              type="text"
+                              placeholder="Cari customer"
+                              value={columnFilters.customer}
+                              onChange={(e) => patchColumnFilter({ customer: e.target.value })}
+                              data-testid="so-filter-customer"
+                            />
+                          ),
+                        },
+                        {
+                          label: "No. PO",
+                          testid: "so-th-filter-po",
+                          active: salesOrderColumnFilterActive("po", columnFilters),
+                          onClear: () => clearColumnKey("po"),
+                          children: (
+                            <input
+                              type="text"
+                              placeholder="Cari No PO"
+                              value={columnFilters.po}
+                              onChange={(e) => patchColumnFilter({ po: e.target.value })}
+                              data-testid="so-filter-po"
+                            />
+                          ),
+                        },
+                        {
+                          label: "Outlet",
+                          testid: "so-th-filter-outlet",
+                          active: salesOrderColumnFilterActive("outlet", columnFilters),
+                          onClear: () => clearColumnKey("outlet"),
+                          children: (
+                            <input
+                              type="text"
+                              placeholder="Cari outlet"
+                              value={columnFilters.outlet}
+                              onChange={(e) => patchColumnFilter({ outlet: e.target.value })}
+                              data-testid="so-filter-outlet"
+                            />
+                          ),
+                        },
+                      ]}
+                    />
                   </th>
                   <th>
                     <SalesOrderHeaderFilter
-                      label="Tanggal PO"
+                      label="Tgl PO"
                       testid="so-th-filter-date"
                       active={salesOrderColumnFilterActive("date", columnFilters)}
                       onClear={() => clearColumnKey("date")}
@@ -1665,7 +1716,7 @@ export default function PesananPenjualan() {
                       <label>Sampai <input type="date" value={columnFilters.dateTo} onChange={(e) => patchColumnFilter({ dateTo: e.target.value })} data-testid="so-filter-date-to" /></label>
                     </SalesOrderHeaderFilter>
                   </th>
-                  <th>Tanggal kirim</th>
+                  <th>Tgl Kirim</th>
                   <th>
                     <SalesOrderHeaderFilter
                       label="Qty"
@@ -1679,85 +1730,103 @@ export default function PesananPenjualan() {
                   </th>
                   <th>
                     <SalesOrderHeaderFilter
-                      label="Sisa"
-                      testid="so-th-filter-remain"
-                      active={salesOrderColumnFilterActive("remain", columnFilters)}
-                      onClear={() => clearColumnKey("remain")}
-                    >
-                      <label>Sisa min <input type="number" value={columnFilters.remainMin} onChange={(e) => patchColumnFilter({ remainMin: e.target.value })} data-testid="so-filter-remain-min" /></label>
-                      <label>Sisa max <input type="number" value={columnFilters.remainMax} onChange={(e) => patchColumnFilter({ remainMax: e.target.value })} data-testid="so-filter-remain-max" /></label>
-                    </SalesOrderHeaderFilter>
-                    <SalesOrderHeaderFilter
-                      label="Progress"
-                      testid="so-th-filter-delivery"
-                      active={salesOrderColumnFilterActive("delivery", columnFilters)}
-                      onClear={() => clearColumnKey("delivery")}
-                    >
-                      <div className="so-th-check-list">
-                        {deliveryStatusOptions.map((status) => {
-                          const checked = columnFilters.deliveryStatuses.includes(status);
-                          return (
-                            <label key={status} className="so-th-check">
-                              <input
-                                type="checkbox"
-                                checked={checked}
-                                data-testid={`so-filter-delivery-${status}`}
-                                onChange={() => {
-                                  const next = checked
-                                    ? columnFilters.deliveryStatuses.filter((s) => s !== status)
-                                    : [...columnFilters.deliveryStatuses, status];
-                                  patchColumnFilter({ deliveryStatuses: next });
-                                }}
-                              />
-                              {status}
-                            </label>
-                          );
-                        })}
-                      </div>
-                    </SalesOrderHeaderFilter>
+                      label="Sisa / Progress"
+                      sections={[
+                        {
+                          label: "Sisa",
+                          testid: "so-th-filter-remain",
+                          active: salesOrderColumnFilterActive("remain", columnFilters),
+                          onClear: () => clearColumnKey("remain"),
+                          children: (
+                            <>
+                              <label>Sisa min <input type="number" value={columnFilters.remainMin} onChange={(e) => patchColumnFilter({ remainMin: e.target.value })} data-testid="so-filter-remain-min" /></label>
+                              <label>Sisa max <input type="number" value={columnFilters.remainMax} onChange={(e) => patchColumnFilter({ remainMax: e.target.value })} data-testid="so-filter-remain-max" /></label>
+                            </>
+                          ),
+                        },
+                        {
+                          label: "Progress",
+                          testid: "so-th-filter-delivery",
+                          active: salesOrderColumnFilterActive("delivery", columnFilters),
+                          onClear: () => clearColumnKey("delivery"),
+                          children: (
+                            <div className="so-th-check-list">
+                              {deliveryStatusOptions.map((status) => {
+                                const checked = columnFilters.deliveryStatuses.includes(status);
+                                return (
+                                  <label key={status} className="so-th-check">
+                                    <input
+                                      type="checkbox"
+                                      checked={checked}
+                                      data-testid={`so-filter-delivery-${status}`}
+                                      onChange={() => {
+                                        const next = checked
+                                          ? columnFilters.deliveryStatuses.filter((s) => s !== status)
+                                          : [...columnFilters.deliveryStatuses, status];
+                                        patchColumnFilter({ deliveryStatuses: next });
+                                      }}
+                                    />
+                                    {status}
+                                  </label>
+                                );
+                              })}
+                            </div>
+                          ),
+                        },
+                      ]}
+                    />
                   </th>
                   <th>
                     <SalesOrderHeaderFilter
-                      label="Status"
-                      testid="so-th-filter-stage"
-                      active={salesOrderColumnFilterActive(
-                        "stage",
-                        columnFilters,
-                        statusFilter === tabDefaultStatus ? "all" : statusFilter,
-                      )}
-                      onClear={() => clearColumnKey("stage")}
-                    >
-                      <select
-                        value={statusFilter}
-                        onChange={(e) => onStatusChange(e.target.value)}
-                        data-testid="so-filter-stage-status"
-                      >
-                        {SALES_ORDER_STATUS_FILTERS.map((tab) => (
-                          <option key={tab.id} value={tab.id}>{tab.label}</option>
-                        ))}
-                      </select>
-                      <input
-                        type="text"
-                        placeholder="Cari status / stage"
-                        value={columnFilters.stageText}
-                        onChange={(e) => patchColumnFilter({ stageText: e.target.value })}
-                        data-testid="so-filter-stage-text"
-                      />
-                    </SalesOrderHeaderFilter>
-                    <SalesOrderHeaderFilter
-                      label="Sales"
-                      testid="so-th-filter-sales"
-                      active={salesOrderColumnFilterActive("sales", columnFilters)}
-                      onClear={() => clearColumnKey("sales")}
-                    >
-                      <input
-                        type="text"
-                        placeholder="Cari sales"
-                        value={columnFilters.sales}
-                        onChange={(e) => patchColumnFilter({ sales: e.target.value })}
-                        data-testid="so-filter-sales"
-                      />
-                    </SalesOrderHeaderFilter>
+                      label="Status / Sales"
+                      sections={[
+                        {
+                          label: "Status",
+                          testid: "so-th-filter-stage",
+                          active: salesOrderColumnFilterActive(
+                            "stage",
+                            columnFilters,
+                            statusFilter === tabDefaultStatus ? "all" : statusFilter,
+                          ),
+                          onClear: () => clearColumnKey("stage"),
+                          children: (
+                            <>
+                              <select
+                                value={statusFilter}
+                                onChange={(e) => onStatusChange(e.target.value)}
+                                data-testid="so-filter-stage-status"
+                              >
+                                {SALES_ORDER_STATUS_FILTERS.map((tab) => (
+                                  <option key={tab.id} value={tab.id}>{tab.label}</option>
+                                ))}
+                              </select>
+                              <input
+                                type="text"
+                                placeholder="Cari status / stage"
+                                value={columnFilters.stageText}
+                                onChange={(e) => patchColumnFilter({ stageText: e.target.value })}
+                                data-testid="so-filter-stage-text"
+                              />
+                            </>
+                          ),
+                        },
+                        {
+                          label: "Sales",
+                          testid: "so-th-filter-sales",
+                          active: salesOrderColumnFilterActive("sales", columnFilters),
+                          onClear: () => clearColumnKey("sales"),
+                          children: (
+                            <input
+                              type="text"
+                              placeholder="Cari sales"
+                              value={columnFilters.sales}
+                              onChange={(e) => patchColumnFilter({ sales: e.target.value })}
+                              data-testid="so-filter-sales"
+                            />
+                          ),
+                        },
+                      ]}
+                    />
                   </th>
                   <th>Aksi</th>
                 </tr>
@@ -1790,6 +1859,7 @@ export default function PesananPenjualan() {
                   const isHold = !!o.hold;
                   const stageLabel = salesOrderStageLabel(o) || (o.current_stage == null ? "" : `Tahap ${o.current_stage}`);
                   const remainQty = salesOrderRemainingQty(o);
+                  const salesName = salesOrderSalesName(o).trim();
                   const canProcessDelivery = !isCancelled && remainQty > 0;
                   return (
                     <tr
@@ -1809,8 +1879,8 @@ export default function PesananPenjualan() {
                           />
                         </td>
                       )}
-                      <td>
-                        <div className="so-list-customer">{o.customer || "—"}</div>
+                      <td className="so-list-identity">
+                        <div className="so-list-customer" title={o.customer || ""}>{o.customer || "—"}</div>
                         <Link
                           to={`/po/${o.id}`}
                           state={poListNavState({ po_number: o.po_number, customer: o.customer })}
@@ -1820,25 +1890,29 @@ export default function PesananPenjualan() {
                           }}
                           className="so-list-po"
                           data-testid={`po-link-${o.po_number}`}
+                          title={o.po_number || ""}
                         >
                           {o.po_number}
                         </Link>
-                        {o.outlet ? <div className="so-list-outlet">{o.outlet}</div> : null}
+                        {o.outlet ? <div className="so-list-outlet" title={o.outlet}>{o.outlet}</div> : null}
                       </td>
                       <td>{formatDisplayDate(o.order_date) || "—"}</td>
                       <td>{formatDisplayDate(o.tanggal_pengiriman) || "—"}</td>
                       <td data-testid={`order-qty-${o.id}`}>{orderQuantityLabel(o)}</td>
                       <td>
-                        <span className={`so-progress ${salesOrderProgressTone(o)}`}>{listProgressText(o)}</span>
+                        <SalesOrderDeliveryProgress order={o} />
                       </td>
                       <td>
-                        {isCancelled ? (
-                          <span className="so-list-badge is-cancel">Cancelled</span>
-                        ) : isHold ? (
-                          <span className="so-list-badge is-hold">HOLD</span>
-                        ) : (
-                          <span className={`so-list-badge${o.current_stage >= 14 ? " is-done" : " is-open"}`}>{stageLabel || "—"}</span>
-                        )}
+                        <div className="so-list-status">
+                          {isCancelled ? (
+                            <span className="so-list-badge is-cancel">Cancelled</span>
+                          ) : isHold ? (
+                            <span className="so-list-badge is-hold">HOLD</span>
+                          ) : (
+                            <span className={`so-list-badge${o.current_stage >= 14 ? " is-done" : " is-open"}`}>{stageLabel || "—"}</span>
+                          )}
+                          {salesName ? <span className="so-list-sales" title={salesName}>{salesName}</span> : null}
+                        </div>
                       </td>
                       <td onClick={(e) => e.stopPropagation()}>
                         <div className="so-list-actions">
