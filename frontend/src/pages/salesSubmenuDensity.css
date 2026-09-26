@@ -860,6 +860,8 @@
 @media (max-width:900px){
   .sd-density .fp-summary,
   .sd-density .fp-terms{grid-template-columns:1fr 1fr}
+  .sd-density .fp-charge-row{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+  .sd-density .fp-charge-remove{grid-column:2}
 }
 
 /* Detail Faktur. The receipt action stays in the page header so the
@@ -900,7 +902,74 @@
   color:#b45309;
 }
 .sd-density .fp-detail .fp-detail-note a{color:#166534;font-weight:650}
-.sd-density .fp-terms-wide{grid-column:1 / -1}
+.sd-density .fp-terms-wide,
+.sd-density .fp-charges{grid-column:1 / -1}
+.sd-density .fp-charges-head{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:8px;
+}
+.sd-density .fp-charges-head strong{font-size:13px;color:#172126}
+.sd-density .fp-charges-head button{
+  display:inline-flex;
+  align-items:center;
+  gap:4px;
+  min-height:32px;
+  padding:0 10px;
+  border:1px solid #166534;
+  border-radius:8px;
+  background:#fff;
+  color:#166534;
+  font:700 12px/1 "IBM Plex Sans",sans-serif;
+  cursor:pointer;
+}
+.sd-density .fp-charges-head button:disabled{opacity:.5;cursor:not-allowed}
+.sd-density .fp-charges-note,
+.sd-density .fp-charges-empty{margin:4px 0 0;font-size:12px;color:#64748b}
+.sd-density .fp-charge-row{
+  display:grid;
+  grid-template-columns:minmax(0,1.4fr) minmax(0,1fr) 120px 64px;
+  gap:8px;
+  align-items:end;
+  margin-top:8px;
+}
+.sd-density .fp-charge-row label{min-width:0;font-size:12px}
+.sd-density .fp-charge-remove{
+  min-height:34px;
+  border:1px solid #fecaca;
+  border-radius:8px;
+  background:#fff;
+  color:#b91c1c;
+  font:700 12px/1 "IBM Plex Sans",sans-serif;
+  cursor:pointer;
+}
+.sd-density .fp-charge-remove:disabled{opacity:.5;cursor:not-allowed}
+.sd-density .fp-charge-error{grid-column:1 / -1;color:#b91c1c;font-size:12px}
+.sd-density .fp-account-pick{position:relative}
+.sd-density .fp-account-results{
+  list-style:none;
+  margin:4px 0 0;
+  padding:4px;
+  max-height:160px;
+  overflow:auto;
+  border:1px solid #CBD5E1;
+  border-radius:8px;
+  background:#fff;
+}
+.sd-density .fp-account-results button{
+  width:100%;
+  text-align:left;
+  border:0;
+  background:transparent;
+  padding:6px 8px;
+  border-radius:6px;
+  font:600 12px/1.3 "IBM Plex Sans",sans-serif;
+  color:#172126;
+  cursor:pointer;
+}
+.sd-density .fp-account-results button:hover{background:#f0fdf4}
+.sd-density .fp-account-results .is-empty{padding:6px 8px;color:#64748b;font-size:12px}
 .sd-density .fp-detail-lines{
   width:100%;
   border-collapse:collapse;

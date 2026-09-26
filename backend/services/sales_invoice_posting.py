@@ -531,6 +531,7 @@ def _build_journal_lines(
     grand_total: Decimal,
     after_discount: Decimal,
     ppn_amount: Decimal,
+    other_charges: Optional[List[dict]] = None,
     invoice_number: str,
 ) -> List[dict]:
     ref = invoice_number or "faktur"
@@ -542,6 +543,7 @@ def _build_journal_lines(
             "credit": Decimal("0.00"),
             "description": f"Piutang {ref}",
         })
+    # Goods revenue stays on after_discount. Charges are not folded into it.
     if after_discount > 0:
         lines.append({
             "account_id": revenue_account_id,
@@ -555,6 +557,17 @@ def _build_journal_lines(
             "debit": Decimal("0.00"),
             "credit": ppn_amount,
             "description": f"PPN Keluaran {ref}",
+        })
+    for charge in other_charges or []:
+        amount = _money((charge or {}).get("amount"), "biaya lainnya")
+        if amount <= 0:
+            raise HTTPException(400, "Nominal biaya lainnya harus lebih besar dari 0.")
+        description = str((charge or {}).get("description") or "").strip() or "Biaya lainnya"
+        lines.append({
+            "account_id": str((charge or {}).get("account_id") or "").strip(),
+            "debit": Decimal("0.00"),
+            "credit": amount,
+            "description": f"{description} {ref}",
         })
     return lines
 
@@ -577,7 +590,7 @@ async def _require_posting_settings(db) -> dict:
     }
 
 
-def _require_posting_amounts(invoice: dict) -> tuple[Decimal, Decimal, Decimal]:
+def _require_posting_amounts(invoice: dict) -> tuple[Decimal, Decimal, Decimal, Decimal]:
     from services.sales_invoices import monetary_invariant_valid
 
     grand = _money(invoice.get("grand_total"), "grand_total")
@@ -589,12 +602,12 @@ def _require_posting_amounts(invoice: dict) -> tuple[Decimal, Decimal, Decimal]:
         raise HTTPException(400, "after_discount tidak boleh negatif.")
     if ppn < 0:
         raise HTTPException(400, "ppn_amount tidak boleh negatif.")
+    from services.sales_invoices import TOTAL_INVARIANT_MESSAGE, other_charges_total
+
+    charges = other_charges_total(invoice)
     if not monetary_invariant_valid(invoice):
-        raise HTTPException(
-            400,
-            "Total faktur tidak valid: grand_total harus sama dengan after_discount + ppn_amount.",
-        )
-    return grand, after, ppn
+        raise HTTPException(400, TOTAL_INVARIANT_MESSAGE)
+    return grand, after, ppn, charges
 
 
 async def _load_invoice(db, invoice_id: str) -> dict:
@@ -607,7 +620,10 @@ async def _load_invoice(db, invoice_id: str) -> dict:
 
 
 async def _write_source_journal(db, inv: dict, user: dict) -> None:
-    grand, after, ppn = _require_posting_amounts(inv)
+    from services.sales_invoices import normalize_other_charges
+
+    grand, after, ppn, _charges = _require_posting_amounts(inv)
+    charges = await normalize_other_charges(db, inv.get("other_charges") or [])
     mapped = await _require_posting_settings(db)
     lines = _build_journal_lines(
         receivable_account_id=mapped["receivable_account_id"],
@@ -616,6 +632,7 @@ async def _write_source_journal(db, inv: dict, user: dict) -> None:
         grand_total=grand,
         after_discount=after,
         ppn_amount=ppn,
+        other_charges=charges,
         invoice_number=str(inv.get("invoice_number") or ""),
     )
     if len(lines) < 2:
@@ -650,6 +667,7 @@ async def post_sales_invoice_accounting(
         FINANCIAL_FINALIZED,
         effective_financial_status,
         get_sales_invoice_detail,
+        normalize_other_charges,
     )
 
     async with _optional_invoice_lock(serialize_in_process):
@@ -668,6 +686,7 @@ async def post_sales_invoice_accounting(
 
         # Validate before claim so a failed eligibility check does not hold cancel.
         _require_posting_amounts(inv)
+        await normalize_other_charges(db, inv.get("other_charges") or [])
         await _require_posting_settings(db)
 
         claimed = await acquire_posting_claim(db, inv["id"])
