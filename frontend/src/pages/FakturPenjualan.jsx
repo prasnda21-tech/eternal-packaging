@@ -29,6 +29,239 @@ function formatRupiah(num) {
   return "Rp " + n.toLocaleString("id-ID");
 }
 
+const OTHER_CHARGE_ACCOUNT_TYPES = new Set(["EXPS", "OEXP", "OINC", "REVE"]);
+
+function chargeAccountEligible(account) {
+  if (!account || !account.id) return false;
+  const status = String(account.status || account.account_status || "").trim().toLowerCase();
+  if (["inactive", "nonaktif", "disabled", "non-aktif"].includes(status)) return false;
+  if (account.is_active === false || account.active === false) return false;
+  if (account.is_header === true || account.header === true) return false;
+  if (account.postable === false || account.can_post === false) return false;
+  return OTHER_CHARGE_ACCOUNT_TYPES.has(String(account.account_type || "").trim().toUpperCase());
+}
+
+function chargeAccountLabel(account) {
+  if (!account) return "";
+  return [account.code || account.account_code, account.name || account.account_name].filter(Boolean).join(" · ");
+}
+
+let otherChargeKeySeq = 0;
+function blankOtherCharge() {
+  otherChargeKeySeq += 1;
+  return {
+    key: `other-charge-${otherChargeKeySeq}`,
+    id: "",
+    account_id: "",
+    account_code: "",
+    account_name: "",
+    description: "",
+    amount: "",
+  };
+}
+
+function otherChargeFromStored(row) {
+  otherChargeKeySeq += 1;
+  return {
+    key: row.id || `other-charge-${otherChargeKeySeq}`,
+    id: row.id || "",
+    account_id: row.account_id || "",
+    account_code: row.account_code || "",
+    account_name: row.account_name || "",
+    description: row.description || "",
+    amount: row.amount === 0 || row.amount ? row.amount : "",
+  };
+}
+
+function otherChargeRowMessage(row, index) {
+  const n = index + 1;
+  const missing = [];
+  if (!String(row?.account_id || "").trim()) missing.push("akun perkiraan");
+  if (!String(row?.description || "").trim()) missing.push("keterangan");
+  const raw = row?.amount;
+  const blank = raw === "" || raw === null || raw === undefined;
+  if (blank) missing.push("nominal");
+  if (missing.length) {
+    return `Baris biaya ${n} belum lengkap: ${missing.join(", ")} wajib diisi.`;
+  }
+  const amount = Number(String(raw).replace(",", "."));
+  if (!Number.isFinite(amount)) return `Baris biaya ${n}: nominal tidak valid.`;
+  if (amount < 0) return `Baris biaya ${n}: nominal tidak boleh negatif.`;
+  if (amount === 0) return `Baris biaya ${n}: nominal harus lebih besar dari 0.`;
+  return "";
+}
+
+function summarizeOtherCharges(rows) {
+  let total = 0;
+  let message = "";
+  (rows || []).forEach((row, index) => {
+    const rowMessage = otherChargeRowMessage(row, index);
+    if (rowMessage) {
+      if (!message) message = rowMessage;
+      return;
+    }
+    total += Number(String(row.amount).replace(",", "."));
+  });
+  return {
+    total: Math.round(total * 100) / 100,
+    incomplete: Boolean(message),
+    message,
+  };
+}
+
+function otherChargePayload(rows) {
+  return (rows || []).map((row) => ({
+    id: row.id || undefined,
+    account_id: String(row.account_id || "").trim(),
+    description: String(row.description || "").trim(),
+    amount: row.amount === "" || row.amount === null || row.amount === undefined ? "" : row.amount,
+  }));
+}
+
+function ChargeAccountSearch({ accounts, row, onSelect, disabled, testId }) {
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const selected = (accounts || []).find((account) => account.id === row.account_id);
+  const label = selected
+    ? chargeAccountLabel(selected)
+    : chargeAccountLabel({ code: row.account_code, name: row.account_name });
+  const needle = query.trim().toLowerCase();
+  const matches = (accounts || []).filter((account) => {
+    if (!chargeAccountEligible(account) && account.id !== row.account_id) return false;
+    if (!needle) return true;
+    return `${account.code || ""} ${account.name || ""}`.toLowerCase().includes(needle);
+  }).slice(0, 12);
+
+  return (
+    <div className="fp-account-pick">
+      <input
+        type="text"
+        value={open ? query : label}
+        disabled={disabled}
+        placeholder="Cari kode atau nama akun"
+        data-testid={testId}
+        onFocus={() => {
+          if (disabled) return;
+          setOpen(true);
+          setQuery("");
+        }}
+        onChange={(event) => {
+          setQuery(event.target.value);
+          setOpen(true);
+        }}
+        onBlur={() => {
+          window.setTimeout(() => setOpen(false), 150);
+        }}
+      />
+      {open && !disabled && (
+        <ul className="fp-account-results" data-testid={`${testId}-results`}>
+          {matches.length === 0 ? (
+            <li className="is-empty">Tidak ada akun yang cocok</li>
+          ) : matches.map((account) => (
+            <li key={account.id}>
+              <button
+                type="button"
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  onSelect(account);
+                  setOpen(false);
+                  setQuery("");
+                }}
+              >
+                {chargeAccountLabel(account)}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function OtherChargesEditor({ rows, accounts, disabled, showErrors, onChange, idPrefix }) {
+  return (
+    <div className="fp-charges" data-testid={`${idPrefix}-other-charges`}>
+      <div className="fp-charges-head">
+        <strong>Biaya Lainnya</strong>
+        <button
+          type="button"
+          data-testid={`${idPrefix}-add-other-charge`}
+          disabled={disabled}
+          onClick={() => onChange([...(rows || []), blankOtherCharge()])}
+        >
+          <Plus size={14} /> Tambah Biaya
+        </button>
+      </div>
+      <p className="fp-charges-note">Ditagihkan ke pelanggan. Saat posting, nominal dikredit ke akun yang dipilih.</p>
+      {(rows || []).length === 0 ? (
+        <div className="fp-charges-empty">Belum ada biaya lainnya.</div>
+      ) : (rows || []).map((row, index) => {
+        const message = showErrors ? otherChargeRowMessage(row, index) : "";
+        return (
+          <div key={row.key} className="fp-charge-row" data-testid={`${idPrefix}-other-charge-${index}`}>
+            <label>
+              Akun Perkiraan
+              <ChargeAccountSearch
+                accounts={accounts}
+                row={row}
+                disabled={disabled}
+                testId={`${idPrefix}-charge-account-${index}`}
+                onSelect={(account) => onChange((rows || []).map((item) => (
+                  item.key === row.key
+                    ? {
+                      ...item,
+                      account_id: account.id,
+                      account_code: account.code || "",
+                      account_name: account.name || "",
+                    }
+                    : item
+                )))}
+              />
+            </label>
+            <label>
+              Keterangan biaya
+              <input
+                type="text"
+                value={row.description}
+                disabled={disabled}
+                placeholder="Keterangan untuk pelanggan"
+                data-testid={`${idPrefix}-charge-description-${index}`}
+                onChange={(event) => onChange((rows || []).map((item) => (
+                  item.key === row.key ? { ...item, description: event.target.value } : item
+                )))}
+              />
+            </label>
+            <label>
+              Nominal
+              <input
+                type="number"
+                min="0"
+                step="any"
+                value={row.amount}
+                disabled={disabled}
+                data-testid={`${idPrefix}-charge-amount-${index}`}
+                onChange={(event) => onChange((rows || []).map((item) => (
+                  item.key === row.key ? { ...item, amount: event.target.value } : item
+                )))}
+              />
+            </label>
+            <button
+              type="button"
+              className="fp-charge-remove"
+              data-testid={`${idPrefix}-remove-other-charge-${index}`}
+              disabled={disabled}
+              onClick={() => onChange((rows || []).filter((item) => item.key !== row.key))}
+            >
+              Hapus
+            </button>
+            {message && <div className="fp-charge-error" data-testid={`${idPrefix}-charge-error-${index}`}>{message}</div>}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function invoiceFinancialStatus(inv) {
   const s = String(inv?.financial_status || "draft").toLowerCase();
   if (s === "finalized" || s === "cancelled") return s;
@@ -167,6 +400,9 @@ export default function FakturPenjualan() {
   const [discountAmount, setDiscountAmount] = useState(0);
   const [ppnPercent, setPpnPercent] = useState(0);
   const [invoiceNotes, setInvoiceNotes] = useState("");
+  const [otherCharges, setOtherCharges] = useState([]);
+  const [chargeAccounts, setChargeAccounts] = useState([]);
+  const [showChargeErrors, setShowChargeErrors] = useState(false);
   const [lineQuantities, setLineQuantities] = useState({});
   const [linePrices, setLinePrices] = useState({});
   const [formBusy, setFormBusy] = useState(false);
@@ -184,6 +420,8 @@ export default function FakturPenjualan() {
   const [detailTermDays, setDetailTermDays] = useState(0);
   const [detailDate, setDetailDate] = useState("");
   const [detailNotes, setDetailNotes] = useState("");
+  const [detailCharges, setDetailCharges] = useState([]);
+  const [showDetailChargeErrors, setShowDetailChargeErrors] = useState(false);
   const [detailSaving, setDetailSaving] = useState(false);
   const [finalizeConfirm, setFinalizeConfirm] = useState(false);
   const [cancelConfirm, setCancelConfirm] = useState(false);
@@ -351,10 +589,27 @@ export default function FakturPenjualan() {
     }
   }, [viewMode, loadInvoices, loadAvailablePOs, loadPoPreview, selectedPoId]);
 
+  useEffect(() => {
+    if (viewMode === "list") return undefined;
+    let cancelled = false;
+    api.salesInvoiceChargeAccounts()
+      .then((res) => {
+        if (!cancelled) setChargeAccounts(res.items || []);
+      })
+      .catch(() => {
+        if (!cancelled) setChargeAccounts([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [viewMode]);
+
   // Handle PO selector change
   const handleSelectPo = (e) => {
     const pId = e.target.value;
     setSelectedPoId(pId);
+    setOtherCharges([]);
+    setShowChargeErrors(false);
     if (pId) {
       setSearchParams({ action: "create", po_id: pId });
       loadPoPreview(pId);
@@ -420,7 +675,8 @@ export default function FakturPenjualan() {
     const afterDiscount = Math.max(0, subtotal - disc);
     const ppnPct = Math.max(0, Number(ppnPercent) || 0);
     const ppn = Math.round(afterDiscount * (ppnPct / 100));
-    const grandTotal = afterDiscount + ppn;
+    const chargeSummary = summarizeOtherCharges(otherCharges);
+    const grandTotal = chargeSummary.incomplete ? null : afterDiscount + ppn + chargeSummary.total;
 
     const totalRemaining = previewData.lines.reduce(
       (acc, l) => acc + (Number(l.remaining_invoice_qty != null ? l.remaining_invoice_qty : l.quantity) || 0),
@@ -428,8 +684,24 @@ export default function FakturPenjualan() {
     );
 
     const priceMissingAny = computedLines.some((line) => line.numericQty > 0 && line.priceMissing);
-    return { lines: computedLines, subtotal, discount: disc, afterDiscount, ppn, ppnPercent: ppnPct, grandTotal, totalQty, totalRemaining, hasErrors, isDiscOver, priceMissingAny };
-  }, [previewData, lineQuantities, linePrices, discountAmount, ppnPercent]);
+    return {
+      lines: computedLines,
+      subtotal,
+      discount: disc,
+      afterDiscount,
+      ppn,
+      ppnPercent: ppnPct,
+      chargesTotal: chargeSummary.total,
+      chargesIncomplete: chargeSummary.incomplete,
+      chargesMessage: chargeSummary.message,
+      grandTotal,
+      totalQty,
+      totalRemaining,
+      hasErrors,
+      isDiscOver,
+      priceMissingAny,
+    };
+  }, [previewData, lineQuantities, linePrices, discountAmount, ppnPercent, otherCharges]);
 
   const invoiceCompleteness = useMemo(() => {
     const lines = createCalculations?.lines || [];
@@ -454,6 +726,12 @@ export default function FakturPenjualan() {
     e.preventDefault();
     if (!selectedPoId || !previewData) {
       setFormErr("Silakan pilih Pesanan Penjualan (PO) terlebih dahulu.");
+      return;
+    }
+    if (createCalculations.chargesIncomplete) {
+      setShowChargeErrors(true);
+      setInvoiceFormTab("terms");
+      setFormErr(createCalculations.chargesMessage);
       return;
     }
     if (createCalculations.hasErrors) {
@@ -497,6 +775,7 @@ export default function FakturPenjualan() {
         discount_amount: Number(discountAmount) || 0,
         ppn_percent: Number(ppnPercent) || 0,
         notes: invoiceNotes.trim(),
+        other_charges: otherChargePayload(otherCharges),
         lines: linesPayload,
       };
 
@@ -536,6 +815,8 @@ export default function FakturPenjualan() {
       setDetailDiscount(inv.discount_amount || 0);
       setDetailPpn(inv.ppn_percent || 0);
       setDetailNotes(inv.notes || "");
+      setDetailCharges((inv.other_charges || []).map(otherChargeFromStored));
+      setShowDetailChargeErrors(false);
       const prices = {};
       (inv.lines || []).forEach((l) => {
         prices[l.line_idx] = l.unit_price != null ? l.unit_price : 0;
@@ -579,15 +860,34 @@ export default function FakturPenjualan() {
     const afterDiscount = Math.max(0, subtotal - disc);
     const ppnPct = Math.max(0, Number(detailPpn) || 0);
     const ppn = Math.round(afterDiscount * (ppnPct / 100));
-    const grandTotal = afterDiscount + ppn;
+    const chargeSummary = summarizeOtherCharges(detailCharges);
+    const grandTotal = chargeSummary.incomplete ? null : afterDiscount + ppn + chargeSummary.total;
 
-    return { lines: computedLines, subtotal, discount: disc, afterDiscount, ppn, ppnPercent: ppnPct, grandTotal, totalQty };
-  }, [detailData, detailPrices, detailDiscount, detailPpn]);
+    return {
+      lines: computedLines,
+      subtotal,
+      discount: disc,
+      afterDiscount,
+      ppn,
+      ppnPercent: ppnPct,
+      chargesTotal: chargeSummary.total,
+      chargesIncomplete: chargeSummary.incomplete,
+      chargesMessage: chargeSummary.message,
+      grandTotal,
+      totalQty,
+    };
+  }, [detailData, detailPrices, detailDiscount, detailPpn, detailCharges]);
 
   // Handle Update Invoice
   const handleUpdateInvoice = async (e) => {
     e.preventDefault();
     if (!selectedInvoiceId || !detailData) return;
+    if (detailCalculations.chargesIncomplete) {
+      setShowDetailChargeErrors(true);
+      setInvoiceFormTab("terms");
+      setDetailErr(detailCalculations.chargesMessage);
+      return;
+    }
     setDetailSaving(true);
     setDetailErr("");
     setSuccessMsg("");
@@ -617,12 +917,15 @@ export default function FakturPenjualan() {
         discount_amount: Number(detailDiscount) || 0,
         ppn_percent: Number(detailPpn) || 0,
         notes: detailNotes.trim(),
+        other_charges: otherChargePayload(detailCharges),
         lines: linesPayload,
       };
 
       const res = await api.updateSalesInvoice(selectedInvoiceId, payload);
       const updated = res.invoice || res;
       setDetailData(updated);
+      setDetailCharges((updated.other_charges || []).map(otherChargeFromStored));
+      setShowDetailChargeErrors(false);
       setSuccessMsg("Perubahan Faktur Penjualan berhasil disimpan");
       setTimeout(() => setSuccessMsg(""), 2500);
     } catch (err) {
@@ -1246,6 +1549,14 @@ export default function FakturPenjualan() {
                       style={{ width: "100%", padding: "8px 12px", border: "1px solid #cbd5e1", borderRadius: 6 }}
                     />
                   </div>
+                  <OtherChargesEditor
+                    rows={otherCharges}
+                    accounts={chargeAccounts}
+                    disabled={formBusy}
+                    showErrors={showChargeErrors}
+                    onChange={setOtherCharges}
+                    idPrefix="create"
+                  />
               </div>
 
               <div className="fp-items sd-pane-items">
@@ -1349,6 +1660,12 @@ export default function FakturPenjualan() {
                     <span>PPN ({createCalculations.ppnPercent}%)</span>
                     <strong>{invoiceCompleteness.totalsReady ? formatRupiah(createCalculations.ppn) : "Belum lengkap"}</strong>
                   </div>
+                  <div>
+                    <span>Biaya lainnya</span>
+                    <strong data-testid="invoice-other-charges-total">
+                      {createCalculations.chargesIncomplete ? "Belum lengkap" : formatRupiah(createCalculations.chargesTotal)}
+                    </strong>
+                  </div>
                 </div>
               </div>
 
@@ -1397,7 +1714,7 @@ export default function FakturPenjualan() {
               <div className="invoice-actions" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, paddingRight: 96 }}>
                 <div className="fp-total">
                   <span>Total faktur</span>
-                  <strong data-testid="invoice-grand-total">{invoiceCompleteness.totalsReady ? formatRupiah(createCalculations.grandTotal) : "Belum lengkap"}</strong>
+                  <strong data-testid="invoice-grand-total">{invoiceCompleteness.totalsReady && createCalculations.grandTotal !== null ? formatRupiah(createCalculations.grandTotal) : "Belum lengkap"}</strong>
                 </div>
                 <div className="fp-action-buttons">
                 <button
@@ -1468,6 +1785,10 @@ export default function FakturPenjualan() {
                 <div>
                   <span>Customer</span>
                   <strong>{detailData.customer}</strong>
+                </div>
+                <div>
+                  <span>Sales</span>
+                  <strong data-testid="detail-sales">{detailData.sales || "-"}</strong>
                 </div>
                 <div>
                   <span>Jatuh Tempo</span>
@@ -1542,6 +1863,14 @@ export default function FakturPenjualan() {
                     disabled={!canEditFinancial}
                   />
                 </div>
+                <OtherChargesEditor
+                  rows={detailCharges}
+                  accounts={chargeAccounts}
+                  disabled={!canEditFinancial || detailSaving}
+                  showErrors={showDetailChargeErrors}
+                  onChange={setDetailCharges}
+                  idPrefix="detail"
+                />
               </div>
 
               <div className="fp-items sd-pane-items">
@@ -1601,8 +1930,14 @@ export default function FakturPenjualan() {
                     </div>
                   )}
                   <div>
+                    <span>Biaya lainnya</span>
+                    <strong data-testid="detail-other-charges-total">
+                      {detailCalculations.chargesIncomplete ? "Belum lengkap" : formatRupiah(detailCalculations.chargesTotal || 0)}
+                    </strong>
+                  </div>
+                  <div>
                     <span>Total Faktur</span>
-                    <strong>{formatRupiah(detailCalculations.grandTotal)}</strong>
+                    <strong>{detailCalculations.grandTotal === null ? "Belum lengkap" : formatRupiah(detailCalculations.grandTotal)}</strong>
                   </div>
                 </div>
               </div>
@@ -1821,7 +2156,7 @@ export default function FakturPenjualan() {
           <div style={{ background: "#fff", borderRadius: 12, padding: 24, width: "100%", maxWidth: 480, boxShadow: "0 20px 40px rgba(0,0,0,0.15)" }}>
             <h3 style={{ margin: "0 0 8px", fontSize: "1.1rem" }}>Finalisasi Invoice?</h3>
             <p style={{ margin: "0 0 16px", color: "#334155", fontSize: "0.9rem" }}>
-              Finalisasi akan mengunci tanggal, item, harga, diskon, PPN, dan total invoice untuk kebutuhan accounting.
+              Finalisasi akan mengunci tanggal, item, harga, diskon, PPN, biaya lainnya, dan total invoice untuk kebutuhan accounting.
             </p>
             <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
               <button type="button" onClick={() => setFinalizeConfirm(false)} disabled={lifecycleBusy} style={{ padding: "8px 14px", borderRadius: 8, border: "1px solid #cbd5e1", background: "#fff", cursor: "pointer" }}>
