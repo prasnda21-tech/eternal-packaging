@@ -122,6 +122,10 @@ describe("Faktur Penjualan UI & Navigation Suite", () => {
     expect(pageSrc).not.toMatch(/\binvoiceLines\b/);
     expect(pageSrc).toMatch(/createCalculations\?\.lines/);
     expect(pageSrc).toMatch(/FormProgress/);
+    expect(pageSrc).toMatch(/Barang & Harga/);
+    expect(pageSrc).toMatch(/Tanggal & Ketentuan/);
+    expect(pageSrc).toMatch(/Belum lengkap/);
+    expect(pageSrc).toMatch(/priceMissingAny/);
     expect(pageSrc).toMatch(/FormSection/);
   });
 });

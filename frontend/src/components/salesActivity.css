@@ -533,3 +533,101 @@
     grid-template-columns: 1fr;
   }
 }
+
+.sa-page{
+  max-width:none;
+  height:calc(100vh - 96px);
+  min-height:0;
+  display:flex;
+  flex-direction:column;
+  overflow:hidden;
+  padding-bottom:0;
+}
+.sa-page .sa-page-chrome{margin:0;flex:0 0 auto}
+.sa-page .sa-page-head,
+.sa-page .sa-tab-head{margin:0;align-items:center;gap:8px}
+.sa-page .sa-filters{padding:2px 8px}
+.sa-page .sa-filters .sa-control,
+.sa-page .sa-filters input{height:32px;min-height:32px}
+.sa-page .sa-page-head .eyebrow,
+.sa-page .sa-page-head .muted,
+.sa-page .sa-tab-head .muted,
+.sa-page .sa-tab-head h2{display:none}
+.sa-page .sa-tabs{margin:0}
+.sa-page > div:not(.sa-page-chrome){
+  flex:1 1 auto;
+  min-height:0;
+  display:flex;
+  flex-direction:column;
+  overflow:hidden;
+  gap:2px;
+}
+.sa-page .sa-page-head h1,
+.sa-detail-title h1{
+  font-size:18px;
+  line-height:1.15;
+}
+.sa-page .sa-table-wrap,
+.sa-detail .sa-table-wrap{
+  flex:1 1 auto;
+  min-height:0;
+  max-height:none;
+  overflow:auto;
+  background:#fff;
+  border:1px solid #e2e8e6;
+  border-radius:10px;
+}
+.sa-page table thead th,
+.sa-detail table thead th{
+  position:sticky;
+  top:0;
+  z-index:2;
+  background:#0f766e !important;
+  color:#fff !important;
+  font:700 11px/1.15 "IBM Plex Sans",sans-serif;
+  letter-spacing:.03em;
+  text-transform:uppercase;
+  padding:4px 6px;
+}
+.sa-page table tbody td,
+.sa-detail table tbody td{
+  height:56px;
+  font-size:13px;
+  vertical-align:middle;
+  background:#fff;
+}
+.sa-page table tbody tr:nth-child(even) td,
+.sa-detail table tbody tr:nth-child(even) td{background:#f6f7f8}
+.sa-page table tbody tr:hover td,
+.sa-detail table tbody tr:hover td{background:#d5f5ef}
+.sa-page .sa-table-wrap a,
+.sa-page table button,
+.sa-detail table button{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  min-height:28px;
+  height:28px;
+  padding:0 8px;
+  border-radius:6px;
+  font-size:12px;
+  font-weight:600;
+}
+.sa-page table .primary,
+.sa-page .sa-page-actions .primary{
+  background:#166534;
+  color:#fff;
+  border:0;
+}
+.sa-page .sa-filters,
+.sa-page .sa-form{
+  background:#ffffff;
+  opacity:1;
+  border:1px solid #cbd5e1;
+  border-radius:10px;
+  padding:2px 8px;
+  margin:0;
+  box-shadow:0 4px 14px rgba(15,23,42,.08);
+}
+.sa-page .sa-filters .sa-field{flex-direction:row;align-items:center;gap:8px}
+.sa-page .sa-filters .sa-field-label{margin:0;white-space:nowrap}
