@@ -788,6 +788,7 @@ async def reverse_sales_receipt_accounting(
             assert_source_receipt_reversible,
             hold_source_credit_claim,
             release_source_credit_claim,
+            release_unfenced_credit_reservations,
         )
 
         await assert_source_receipt_reversible(db, rec["id"])
@@ -820,6 +821,7 @@ async def reverse_sales_receipt_accounting(
             raise HTTPException(409, "Saldo pelanggan sedang dipakai. Ulangi permintaan.")
         try:
             try:
+                await release_unfenced_credit_reservations(db, rec["id"], credit_token)
                 await assert_source_receipt_reversible(db, rec["id"])
                 await reverse_journal(
                     db,

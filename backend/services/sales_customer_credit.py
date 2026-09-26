@@ -302,9 +302,35 @@ async def _release_claim(db, receipt_id: str, token: str) -> None:
     )
 
 
+def _committed_credit_clause() -> Dict[str, Any]:
+    """Amounts that can still become, or already are, a credit journal."""
+    return {
+        "$or": [
+            {"status": "posted", "financial_status": "active"},
+            {"status": "posting"},
+            {"status": "reserving", "reserved": True},
+        ]
+    }
+
+
+async def _committed_credit_total(db, receipt_id: str) -> Decimal:
+    docs = await db[COLLECTION].find(
+        {"source_receipt_id": str(receipt_id), **_committed_credit_clause()},
+        {"_id": 0, "amount": 1},
+    ).to_list(500)
+    total = Decimal("0.00")
+    for doc in docs:
+        total += parse_money(doc.get("amount") or 0, "Pemakaian saldo")
+    return total.quantize(MONEY_Q)
+
+
 async def _sync_applied_counter(db, receipt_id: str, token: str) -> Decimal:
-    """While this request holds the claim, align the CAS counter with posted history."""
-    applied = await active_applied_total(db, receipt_id)
+    """While this request holds the claim, align the CAS counter with commitments.
+
+    Posted history alone is not enough: a fenced reservation can still journal
+    after its lease timestamp expires, so the counter keeps that amount too.
+    """
+    applied = await _committed_credit_total(db, receipt_id)
     await db.sales_receipts.update_one(
         {"id": str(receipt_id), CLAIM_FIELD: token},
         {"$set": {"customer_credit_applied": money_float(applied), "updated_at": now_iso()}},
@@ -357,8 +383,31 @@ async def _claim_is_live(db, receipt_id: str, token: str) -> bool:
     return bool(rec) and claim_is_active(rec)
 
 
+async def _begin_journal_fence(db, application_id: str, token: str) -> Optional[dict]:
+    """Atomically grant this reservation the sole right to insert its journal.
+
+    The transition is one document update. A later worker can still drop a
+    plain ``reserving`` row, but it cannot drop ``posting`` and then spend or
+    reverse the same balance out from under the insert.
+    """
+    return await db[COLLECTION].find_one_and_update(
+        {
+            "id": str(application_id),
+            "status": "reserving",
+            "reserved": True,
+            "claim_token": token,
+        },
+        {"$set": {
+            "status": "posting",
+            "journal_fence": token,
+            "updated_at": now_iso(),
+        }},
+        return_document=ReturnDocument.AFTER,
+    )
+
+
 async def _abort_foreign_reservations(db, receipt_id: str, token: str) -> None:
-    """Drop another worker's unfinished reservation after its claim expired."""
+    """Drop another worker's unfenced reservation. A journal fence stays put."""
     docs = await db[COLLECTION].find(
         {
             "source_receipt_id": str(receipt_id),
@@ -377,6 +426,21 @@ async def _abort_foreign_reservations(db, receipt_id: str, token: str) -> None:
             continue
         if not journal:
             await db[COLLECTION].delete_one({"id": doc["id"], "status": "reserving"})
+    fenced = await db[COLLECTION].find(
+        {
+            "source_receipt_id": str(receipt_id),
+            "status": "posting",
+            "claim_token": {"$ne": token},
+        },
+        {"_id": 0},
+    ).to_list(50)
+    for doc in fenced:
+        journal = await find_primary_journal_for_source(db, SOURCE_TYPE, str(doc.get("id")))
+        if journal and accounting_status_from_journal(journal) == ACCOUNTING_POSTED:
+            await db[COLLECTION].update_one(
+                {"id": doc["id"], "status": "posting"},
+                {"$set": {"status": "posted", "financial_status": "active", "updated_at": now_iso()}},
+            )
 
 
 async def _release_own_reservation(
@@ -384,12 +448,22 @@ async def _release_own_reservation(
 ) -> None:
     """Return this worker's reservation only while it still owns the live claim."""
     if not await _claim_is_live(db, receipt_id, token):
-        await db[COLLECTION].delete_one(
-            {"id": application_id, "status": "reserving", "claim_token": token},
+        await db[COLLECTION].update_one(
+            {
+                "id": application_id,
+                "status": {"$in": ["reserving", "posting"]},
+                "claim_token": token,
+            },
+            {"$set": {"reserved": False, "status": "aborted", "updated_at": now_iso()}},
         )
         return
     changed = await db[COLLECTION].update_one(
-        {"id": application_id, "status": "reserving", "reserved": True, "claim_token": token},
+        {
+            "id": application_id,
+            "status": {"$in": ["reserving", "posting"]},
+            "reserved": True,
+            "claim_token": token,
+        },
         {"$set": {"reserved": False, "status": "aborted", "updated_at": now_iso()}},
     )
     if not changed.modified_count:
@@ -449,12 +523,20 @@ async def assert_source_receipt_reversible(db, receipt_id: str) -> None:
     count = await db[COLLECTION].count_documents(
         {
             "source_receipt_id": str(receipt_id),
-            "financial_status": "active",
-            "status": "posted",
+            "$or": [
+                {"financial_status": "active", "status": "posted"},
+                {"status": "posting"},
+            ],
         }
     )
     if count:
         raise HTTPException(409, SOURCE_IN_USE_MESSAGE)
+
+
+async def release_unfenced_credit_reservations(db, receipt_id: str, token: str) -> None:
+    """While holding the source claim, drop reservations that have not fenced a journal."""
+    await _abort_foreign_reservations(db, receipt_id, token)
+    await _sync_applied_counter(db, receipt_id, token)
 
 
 async def _load_receipt(db, receipt_id: str) -> dict:
@@ -553,6 +635,64 @@ async def _outstanding_now(db, invoice: dict) -> Decimal:
     return outstanding
 
 
+async def _complete_posting_application(
+    db, doc: dict, user: dict, application_date: str,
+) -> Dict[str, Any]:
+    """Finish a fenced reservation that already owns its journal slot."""
+    from services.sales_accounting_settings import require_customer_deposit_account
+
+    journal = await find_primary_journal_for_source(db, SOURCE_TYPE, str(doc.get("id")))
+    if not (journal and accounting_status_from_journal(journal) == ACCOUNTING_POSTED):
+        deposit = await require_customer_deposit_account(db)
+        receivable = await resolve_invoice_receivable_account(db, doc.get("invoice_id"))
+        amount = parse_positive_money(doc.get("amount"), "Nominal pemakaian saldo")
+        date = str(application_date or doc.get("created_at") or now_iso())[:10]
+        try:
+            await post_balanced_journal(
+                db,
+                date=date,
+                source_type=SOURCE_TYPE,
+                source_id=str(doc["id"]),
+                description=(
+                    f"Pemakaian saldo {doc.get('source_receipt_number') or doc.get('source_receipt_id')} "
+                    f"untuk {doc.get('invoice_number') or doc.get('invoice_id')}"
+                ),
+                lines=[
+                    {
+                        "account_id": str(deposit["id"]),
+                        "debit": amount,
+                        "credit": Decimal("0.00"),
+                        "description": "Titipan pelanggan",
+                    },
+                    {
+                        "account_id": str(receivable["id"]),
+                        "debit": Decimal("0.00"),
+                        "credit": amount,
+                        "description": "Piutang",
+                    },
+                ],
+                posted_by=user,
+            )
+        except PeriodLockedError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except JournalValidationError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except JournalConflictError:
+            existing_journal = await find_primary_journal_for_source(db, SOURCE_TYPE, str(doc["id"]))
+            if not existing_journal:
+                raise HTTPException(409, "Jurnal pemakaian saldo bentrok.")
+    await db[COLLECTION].update_one(
+        {"id": doc["id"], "status": {"$in": ["posting", "posted"]}},
+        {"$set": {"status": "posted", "financial_status": "active", "updated_at": now_iso()}},
+    )
+    await _sync_posted_counter(db, doc.get("source_receipt_id"))
+    from services.sales_receipts import _recalc_invoice_payment_from_receipts
+
+    await _recalc_invoice_payment_from_receipts(db, doc.get("invoice_id"))
+    stored = await db[COLLECTION].find_one({"id": doc["id"]}, {"_id": 0})
+    return _public_application(stored or doc)
+
+
 async def apply_customer_credit(db, payload: Dict[str, Any], user: dict) -> Dict[str, Any]:
     source_id = str(payload.get("source_receipt_id") or "").strip()
     invoice_id = str(payload.get("invoice_id") or "").strip()
@@ -583,7 +723,11 @@ async def apply_customer_credit(db, payload: Dict[str, Any], user: dict) -> Dict
                 stored = await db[COLLECTION].find_one({"id": healed["id"]}, {"_id": 0})
                 return _public_application(stored or healed)
             if not journal:
-                await db[COLLECTION].delete_one({"id": healed["id"], "status": {"$ne": "posted"}})
+                if healed.get("status") == "posting":
+                    return await _complete_posting_application(
+                        db, healed, user, str(payload.get("application_date") or ""),
+                    )
+                await db[COLLECTION].delete_one({"id": healed["id"], "status": "reserving"})
                 await _sync_posted_counter(db, healed["source_receipt_id"])
 
     from services.sales_accounting_settings import require_customer_deposit_account
@@ -687,6 +831,8 @@ async def apply_customer_credit(db, payload: Dict[str, Any], user: dict) -> Dict
                 {"$set": {"reserved": True}},
             )
             if not await _claim_is_live(db, source["id"], token):
+                raise HTTPException(409, STALE_CLAIM_MESSAGE)
+            if not await _begin_journal_fence(db, app_id, token):
                 raise HTTPException(409, STALE_CLAIM_MESSAGE)
             try:
                 await post_balanced_journal(

@@ -956,3 +956,174 @@ async def test_credit_mutations_keep_accounting_permissions():
         denied_reverse = await client.post("/api/sales-receipts/customer-credit/applications/missing/reverse")
         assert denied_apply.status_code == 403
         assert denied_reverse.status_code == 403
+
+
+async def _posted_credit_journals():
+    journals = await server.db.journal_entries.find(
+        {"source_type": SOURCE_TYPE, "reversal_of": None, "status": "posted"},
+        {"_id": 0},
+    ).to_list(20)
+    total = 0.0
+    for journal in journals:
+        allocation = await server.db[COLLECTION].find_one({"id": journal["source_id"]}, {"_id": 0})
+        assert allocation is not None
+        assert allocation["status"] == "posted"
+        assert allocation["financial_status"] == "active"
+        lines = await server.db.journal_lines.find(
+            {"journal_id": journal["id"]}, {"_id": 0, "debit": 1, "credit": 1},
+        ).to_list(10)
+        debit = sum(float(line.get("debit") or 0) for line in lines)
+        credit = sum(float(line.get("credit") or 0) for line in lines)
+        assert debit == float(allocation["amount"])
+        assert credit == float(allocation["amount"])
+        total += float(allocation["amount"])
+    return journals, total
+
+
+def _pause_before_credit_journal(monkeypatch):
+    import services.sales_customer_credit as credit_mod
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    real = credit_mod.post_balanced_journal
+    seen = {"paused": False}
+
+    async def paused(*args, **kwargs):
+        if kwargs.get("source_type") == SOURCE_TYPE and not seen["paused"]:
+            seen["paused"] = True
+            entered.set()
+            await release.wait()
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(credit_mod, "post_balanced_journal", paused)
+    return entered, release
+
+
+@pytest.mark.anyio
+async def test_expired_claim_cannot_journal_after_other_request_takes_balance(monkeypatch):
+    import services.sales_customer_credit as credit_mod
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        deposit, _receivable, _bank, po, _invoice_a, invoice_b, receipt = await _posted_pair(client)
+        invoice_c = await _invoice(client, po["id"], 120_000, date="2026-09-16")
+
+    entered, release = _pause_before_credit_journal(monkeypatch)
+
+    async def worker_a():
+        return await apply_customer_credit(server.db, {
+            "source_receipt_id": receipt["id"],
+            "invoice_id": invoice_b["id"],
+            "amount": 50_000,
+            "idempotency_key": "fence-a",
+            "application_date": "2026-09-16",
+        }, ADMIN)
+
+    task_a = asyncio.create_task(worker_a())
+    await asyncio.wait_for(entered.wait(), timeout=15)
+    fenced = await server.db[COLLECTION].find_one({"idempotency_key": "fence-a"}, {"_id": 0})
+    assert fenced["status"] == "posting"
+    assert fenced["journal_fence"]
+    assert await server.db.journal_entries.count_documents({
+        "source_type": SOURCE_TYPE, "source_id": fenced["id"],
+    }) == 0
+    await server.db.sales_receipts.update_one(
+        {"id": receipt["id"]},
+        {"$set": {credit_mod.CLAIM_AT_FIELD: "2000-01-01T00:00:00+00:00"}},
+    )
+
+    rival = await asyncio.gather(apply_customer_credit(server.db, {
+        "source_receipt_id": receipt["id"],
+        "invoice_id": invoice_c["id"],
+        "amount": 50_000,
+        "idempotency_key": "fence-b",
+        "application_date": "2026-09-16",
+    }, ADMIN), return_exceptions=True)
+    assert isinstance(rival[0], HTTPException)
+    assert "melebihi saldo" in str(rival[0].detail)
+    release.set()
+    winner = await task_a
+    assert winner["id"] == fenced["id"]
+    assert winner["status"] == "posted"
+
+    journals, used = await _posted_credit_journals()
+    assert len(journals) == 1
+    assert used == 50_000
+    stored = await server.db.sales_receipts.find_one({"id": receipt["id"]}, {"_id": 0})
+    assert stored["customer_credit_applied"] == 50_000
+    deposit_gl = await _gl(deposit["id"])
+    assert deposit_gl["total_debit"] == 50_000
+    assert deposit_gl["total_credit"] == 50_000
+    target_b = await server.db.sales_invoices.find_one({"id": invoice_b["id"]}, {"_id": 0})
+    target_c = await server.db.sales_invoices.find_one({"id": invoice_c["id"]}, {"_id": 0})
+    assert target_b["outstanding_amount"] == 70_000
+    assert target_c["outstanding_amount"] == 120_000
+    assert target_b["outstanding_amount"] >= 0
+    assert target_c["outstanding_amount"] >= 0
+
+
+@pytest.mark.anyio
+async def test_expired_claim_cannot_journal_after_source_reversal_starts(monkeypatch):
+    import services.sales_customer_credit as credit_mod
+    from services.sales_receipt_posting import receipt_is_cancelled, reverse_sales_receipt_accounting
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        deposit, _receivable, _bank, _po_doc, _invoice_a, invoice_b, receipt = await _posted_pair(client)
+
+    entered, release = _pause_before_credit_journal(monkeypatch)
+
+    async def worker_a():
+        return await apply_customer_credit(server.db, {
+            "source_receipt_id": receipt["id"],
+            "invoice_id": invoice_b["id"],
+            "amount": 50_000,
+            "idempotency_key": "fence-reverse-a",
+            "application_date": "2026-09-16",
+        }, ADMIN)
+
+    task_a = asyncio.create_task(worker_a())
+    await asyncio.wait_for(entered.wait(), timeout=15)
+    fenced = await server.db[COLLECTION].find_one({"idempotency_key": "fence-reverse-a"}, {"_id": 0})
+    assert fenced["status"] == "posting"
+    assert await server.db.journal_entries.count_documents({
+        "source_type": SOURCE_TYPE, "source_id": fenced["id"],
+    }) == 0
+    await server.db.sales_receipts.update_one(
+        {"id": receipt["id"]},
+        {"$set": {credit_mod.CLAIM_AT_FIELD: "2000-01-01T00:00:00+00:00"}},
+    )
+    source_before = await server.db.journal_entries.find_one({
+        "source_type": RECEIPT_SOURCE, "source_id": receipt["id"], "reversal_of": None,
+    }, {"_id": 0, "id": 1, "status": 1})
+    denied = await asyncio.gather(
+        reverse_sales_receipt_accounting(server.db, receipt["id"], ADMIN),
+        return_exceptions=True,
+    )
+    assert isinstance(denied[0], HTTPException)
+    assert denied[0].status_code == 409
+    source_mid = await server.db.journal_entries.find_one({"id": source_before["id"]}, {"_id": 0, "status": 1})
+    fresh_mid = await server.db.sales_receipts.find_one({"id": receipt["id"]}, {"_id": 0})
+    assert source_mid["status"] == "posted"
+    assert not receipt_is_cancelled(fresh_mid)
+    assert await server.db.journal_entries.count_documents({"reversal_of": source_before["id"]}) == 0
+    assert await server.db.journal_entries.count_documents({
+        "source_type": SOURCE_TYPE, "source_id": fenced["id"],
+    }) == 0
+
+    release.set()
+    winner = await task_a
+    assert winner["status"] == "posted"
+    assert winner["amount"] == 50_000
+    journals, used = await _posted_credit_journals()
+    assert len(journals) == 1
+    assert used == 50_000
+    source_after = await server.db.journal_entries.find_one({"id": source_before["id"]}, {"_id": 0, "status": 1})
+    fresh = await server.db.sales_receipts.find_one({"id": receipt["id"]}, {"_id": 0})
+    assert source_after["status"] == "posted"
+    assert not receipt_is_cancelled(fresh)
+    assert await server.db.journal_entries.count_documents({"reversal_of": source_before["id"]}) == 0
+    assert fresh["customer_credit_applied"] == 50_000
+    deposit_gl = await _gl(deposit["id"])
+    assert deposit_gl["total_debit"] == 50_000
+    assert deposit_gl["total_credit"] == 50_000
+    target = await server.db.sales_invoices.find_one({"id": invoice_b["id"]}, {"_id": 0})
+    assert target["outstanding_amount"] == 70_000
