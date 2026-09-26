@@ -19,6 +19,23 @@ export const publicApiUrl = (path) => {
   return path.startsWith("/") ? `${origin}${path}` : `${origin}/${path}`;
 };
 
+export async function publicBlobRequest(path, { signal } = {}) {
+  const response = await fetch(publicApiUrl(path), {
+    credentials: "omit",
+    cache: "no-store",
+    signal,
+  });
+  if (!response.ok) {
+    const error = new Error("public file failed");
+    error.status = response.status;
+    error.response = { status: response.status };
+    throw error;
+  }
+  const type = String(response.headers.get("content-type") || "application/octet-stream").split(";")[0].trim();
+  const bytes = await response.arrayBuffer();
+  return new Blob([bytes], { type });
+}
+
 const publicJsonRequest = async (path, options = {}) => {
   const response = await fetch(`${API}${path}`, {
     credentials: "omit",
@@ -67,10 +84,10 @@ export const api = {
   setUrgent: (id, urgent) => client.post(`/orders/${id}/urgent`, { urgent }).then((r) => r.data),
   setBufferStock: (id, buffer_stock) => client.post(`/orders/${id}/buffer-stock`, { buffer_stock }).then((r) => r.data),
   addAttachment: (id, payload) => client.post(`/orders/${id}/attachment`, payload).then((r) => r.data),
-  getOrderAttachment: (id, kind, fileId) =>
+  getOrderAttachment: (id, kind, fileId, config = {}) =>
     client.get(
       `/orders/${encodeURIComponent(id)}/attachments/${encodeURIComponent(kind)}/${encodeURIComponent(fileId)}`,
-      { responseType: "blob" },
+      { ...config, responseType: "blob" },
     ).then((r) => r.data),
   deleteDesignFile: (id, fileId) =>
     client.delete(`/orders/${id}/design/files/${encodeURIComponent(fileId)}`).then((r) => r.data),
@@ -629,6 +646,15 @@ export const api = {
     publicJsonRequest(
       `/public/tracking/${encodeURIComponent(token)}/invoices/${encodeURIComponent(invoiceId)}`,
     ),
+  publicTrackingPaymentProofs: (token) =>
+    publicJsonRequest(`/public/tracking/${encodeURIComponent(token)}/payment-proofs`, { cache: "no-store" }),
+  publicTrackingPaymentProofFile: (token, receiptId, { download = false, signal } = {}) => {
+    const query = download ? "?disposition=attachment" : "";
+    return publicBlobRequest(
+      `/api/public/tracking/${encodeURIComponent(token)}/payment-proofs/${encodeURIComponent(receiptId)}${query}`,
+      { signal },
+    );
+  },
   // ---- Sales Delivery (Pengiriman Pesanan) ----
   listSalesDeliveries: (params = {}) => client.get(`/sales-deliveries`, { params }).then((r) => r.data),
   getSalesDelivery: (id) => client.get(`/sales-deliveries/${encodeURIComponent(id)}`).then((r) => r.data),

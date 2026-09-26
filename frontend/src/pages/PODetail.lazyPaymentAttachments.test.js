@@ -5,6 +5,22 @@ import { createRoot } from "react-dom/client";
 import { PaymentFileRow } from "./PODetail";
 import api from "../lib/api";
 
+jest.mock("pdfjs-dist", () => ({
+  GlobalWorkerOptions: { workerSrc: "" },
+  getDocument: jest.fn(() => ({
+    promise: Promise.resolve({
+      numPages: 1,
+      destroy: jest.fn(),
+      getPage: jest.fn(async () => ({
+        getViewport: ({ scale }) => ({ width: 100 * scale, height: 140 * scale }),
+        render: () => ({ promise: Promise.resolve(), cancel: jest.fn() }),
+        cleanup: jest.fn(),
+      })),
+    }),
+    destroy: jest.fn(),
+  })),
+}));
+
 jest.mock("../lib/auth", () => ({
   useAuth: () => ({
     user: { name: "Admin", email: "admin@x.com", role: "admin", permissions: [] },
@@ -92,7 +108,13 @@ describe("PaymentFileRow lazy fetch", () => {
     expect(api.getOrderAttachment).not.toHaveBeenCalled();
   });
 
-  test("C/D: click open fetches exact payment file once and previews", async () => {
+  const flush = async () => {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  };
+
+  test("C/D: click open fetches exact payment file once and previews in-app", async () => {
     api.getOrderAttachment.mockResolvedValue(new Blob([new Uint8Array([4, 5])], { type: "image/png" }));
     await act(async () => {
       root.render(<PaymentFileRow file={file} index={1} orderId="po-1" />);
@@ -100,9 +122,15 @@ describe("PaymentFileRow lazy fetch", () => {
     await act(async () => {
       container.querySelector('[data-testid="payment-file-open-p1"]').click();
     });
+    await flush();
     expect(api.getOrderAttachment).toHaveBeenCalledTimes(1);
-    expect(api.getOrderAttachment).toHaveBeenCalledWith("po-1", "payment", "p1");
-    const img = container.querySelector('[data-testid="payment-file-preview-p1"] img');
+    expect(api.getOrderAttachment).toHaveBeenCalledWith(
+      "po-1",
+      "payment",
+      "p1",
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    const img = container.querySelector('[data-testid="payment-file-viewer-p1-image"]');
     expect(img).toBeTruthy();
     expect(img.getAttribute("src")).toBe("blob:pay-0");
     expect(window.open).not.toHaveBeenCalled();
@@ -116,71 +144,88 @@ describe("PaymentFileRow lazy fetch", () => {
     await act(async () => {
       container.querySelector('[data-testid="payment-file-open-p1"]').click();
     });
+    await flush();
     await act(async () => {
-      container.querySelector('[data-testid="payment-file-preview-p1"]').click();
+      container.querySelector('[data-testid="payment-file-viewer-p1-close"]').click();
     });
-    expect(container.querySelector('[data-testid="payment-file-preview-p1"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="payment-file-viewer-p1"]')).toBeFalsy();
     expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:pay-0");
     expect(window.open).not.toHaveBeenCalled();
   });
 
-  test("Payment PDF opens placeholder synchronously then assigns blob URL", async () => {
+  test("Payment PDF opens in the page viewer and does not open a tab", async () => {
     const pdf = {
       id: "pdfp",
       name: "bukti.pdf",
       content_type: "application/pdf",
       uploaded_by_name: "Admin",
     };
-    let resolveFetch;
-    api.getOrderAttachment.mockReturnValue(new Promise((resolve) => { resolveFetch = resolve; }));
+    HTMLCanvasElement.prototype.getContext = jest.fn(() => ({}));
+    const pdfjs = require("pdfjs-dist");
+    pdfjs.getDocument.mockImplementation(() => ({
+      promise: Promise.resolve({
+        numPages: 1,
+        destroy: jest.fn(),
+        getPage: async () => ({
+          getViewport: ({ scale }) => ({ width: 100 * scale, height: 140 * scale }),
+          render: () => ({ promise: Promise.resolve(), cancel: jest.fn() }),
+          cleanup: jest.fn(),
+        }),
+      }),
+      destroy: jest.fn(),
+    }));
+    api.getOrderAttachment.mockResolvedValue(new Blob([new Uint8Array([37, 80, 68, 70, 45])], { type: "application/pdf" }));
     await act(async () => {
       root.render(<PaymentFileRow file={pdf} index={1} orderId="po-1" />);
     });
-    act(() => {
+    await act(async () => {
       container.querySelector('[data-testid="payment-file-open-pdfp"]').click();
     });
-    expect(window.open).toHaveBeenCalledTimes(1);
-    expect(window.open).toHaveBeenCalledWith("about:blank", "_blank");
-    expect(opened[0].opener).toBe(null);
-    expect(api.getOrderAttachment).toHaveBeenCalledTimes(1);
-    expect(api.getOrderAttachment).toHaveBeenCalledWith("po-1", "payment", "pdfp");
-    expect(opened[0].location.replace).not.toHaveBeenCalled();
-    await act(async () => {
-      resolveFetch(new Blob([new Uint8Array([37, 80, 68, 70])], { type: "application/pdf" }));
-    });
-    expect(opened[0].location.replace).toHaveBeenCalledWith("blob:pay-0");
-    expect(window.open).toHaveBeenCalledTimes(1);
-    expect(container.querySelector('[data-testid="payment-file-preview-pdfp"]')).toBeFalsy();
+    await flush();
+    expect(window.open).not.toHaveBeenCalled();
+    expect(api.getOrderAttachment).toHaveBeenCalledWith(
+      "po-1",
+      "payment",
+      "pdfp",
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    expect(container.querySelector('[data-testid="payment-file-viewer-pdfp-canvas"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="payment-file-viewer-pdfp-next"]').disabled).toBe(true);
   });
 
-  test("Payment PDF fetch failure closes placeholder and shows local error", async () => {
+  test("Payment PDF fetch failure shows in-app error without a placeholder tab", async () => {
     const pdf = {
       id: "pdfp",
       name: "bukti.pdf",
       content_type: "application/pdf",
       uploaded_by_name: "Admin",
     };
-    api.getOrderAttachment.mockRejectedValue(new Error("boom"));
+    api.getOrderAttachment.mockRejectedValue(Object.assign(new Error("boom"), { response: { status: 500 } }));
     await act(async () => {
       root.render(<PaymentFileRow file={pdf} index={1} orderId="po-1" />);
     });
     await act(async () => {
       container.querySelector('[data-testid="payment-file-open-pdfp"]').click();
     });
-    expect(opened[0].close).toHaveBeenCalled();
-    expect(container.querySelector('[data-testid="payment-file-error-pdfp"]').textContent).toMatch(
-      /Gagal memuat file/,
+    await flush();
+    expect(window.open).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="payment-file-viewer-pdfp-error"]').textContent).toMatch(
+      /Dokumen gagal dimuat/,
     );
+    expect(container.querySelector('[data-testid="payment-file-viewer-pdfp-retry"]')).toBeTruthy();
   });
 });
 
 describe("PODetail payment lazy contract", () => {
   const src = fs.readFileSync(path.join(__dirname, "PODetail.jsx"), "utf8");
+  const viewer = fs.readFileSync(path.join(__dirname, "../components/InAppDocumentViewer.jsx"), "utf8");
 
   test("payment row fetches on demand and does not read data_url for thumbs", () => {
-    expect(src).toMatch(/api\.getOrderAttachment\(orderId,\s*"payment",\s*file\.id\)/);
-    expect(src).toMatch(/URL\.revokeObjectURL/);
-    expect(src).toMatch(/Gagal memuat file\. Coba lagi\./);
+    expect(src).toMatch(/api\.getOrderAttachment\(orderId,\s*"payment",\s*file\.id,\s*\{\s*signal\s*\}\)/);
+    expect(viewer).toMatch(/URL\.revokeObjectURL/);
+    expect(viewer).toMatch(/Dokumen gagal dimuat/);
+    expect(viewer).toMatch(/Coba lagi/);
+    expect(src).not.toMatch(/window\.open/);
     expect(src).not.toMatch(/<img src=\{url\} alt=\{file\.name\} \/>/);
   });
 });

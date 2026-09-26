@@ -11,9 +11,12 @@ describe("PODetail urgent + payment proof wiring", () => {
     expect(src).not.toMatch(/require\("admin", "head_production"\)/);
   });
 
-  test("payment files open through blob helper, not raw data navigation only", () => {
-    expect(src).toMatch(/openPaymentProofSource/);
+  test("payment files open through the in-app viewer", () => {
+    expect(src).toMatch(/InAppDocumentViewer/);
+    expect(src).toMatch(/dataUrlToBlob/);
     expect(src).toMatch(/downloadSalesReceiptPaymentProof/);
     expect(src).toMatch(/payment-files-list/);
+    expect(src).not.toMatch(/window\.open/);
+    expect(src).not.toMatch(/openPaymentProofSource/);
   });
 });

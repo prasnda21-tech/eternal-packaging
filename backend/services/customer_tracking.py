@@ -870,6 +870,30 @@ def build_router(deps: dict) -> APIRouter:
         headers["X-Content-Type-Options"] = "nosniff"
         return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
 
+    @router.get("/public/tracking/{token}/payment-proofs")
+    async def public_tracking_payment_proofs(token: str):
+        order = await _order_for_token(token)
+        from services.customer_tracking_payment_proofs import public_payment_proof_list
+        body = await public_payment_proof_list(get_db(), order)
+        return JSONResponse(body, headers=_INVOICE_HEADERS)
+
+    @router.get("/public/tracking/{token}/payment-proofs/{receipt_id}")
+    async def public_tracking_payment_proof_file(
+        token: str,
+        receipt_id: str,
+        disposition: str = "inline",
+    ):
+        order = await _order_for_token(token)
+        from services.customer_tracking_payment_proofs import public_payment_proof_bytes
+        loaded = await public_payment_proof_bytes(get_db(), order, receipt_id)
+        if not loaded:
+            raise HTTPException(404, PUBLIC_NOT_FOUND)
+        data, media, filename = loaded
+        headers = _disposition_headers(filename, disposition, media)
+        headers["Cache-Control"] = "private, no-store"
+        headers["X-Content-Type-Options"] = "nosniff"
+        return Response(content=data, media_type=media, headers=headers)
+
     @router.post("/orders/{order_id}/tracking-link")
     async def tracking_link(order_id: str, user=Depends(current_user)):
         await require_perm(user, "po.view")

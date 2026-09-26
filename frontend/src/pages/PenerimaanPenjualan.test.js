@@ -33,8 +33,11 @@ describe("Penerimaan Penjualan UI & Navigation Suite", () => {
     expect(pageSrc).toMatch(/setProofViewerReceipt/);
     expect(pageSrc).toMatch(/SalesReceiptProofViewer/);
     const viewerSrc = fs.readFileSync(path.join(__dirname, "SalesReceiptProofViewer.jsx"), "utf8");
+    const inAppSrc = fs.readFileSync(path.join(__dirname, "../components/InAppDocumentViewer.jsx"), "utf8");
+    expect(viewerSrc).toMatch(/InAppDocumentViewer/);
     expect(viewerSrc).not.toMatch(/window\.open/);
-    expect(viewerSrc).toMatch(/pdfjs-dist/);
+    expect(inAppSrc).toMatch(/pdfjs-dist/);
+    expect(inAppSrc).not.toMatch(/window\.open/);
     expect(pageSrc).toMatch(/LUNAS/);
     expect(pageSrc).toMatch(/DP/);
   });

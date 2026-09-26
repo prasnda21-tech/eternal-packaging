@@ -22,7 +22,7 @@ export function paymentProofIsPdf(file, url) {
   return !!(src && (src.startsWith("data:application/pdf") || /\.pdf$/i.test(name)));
 }
 
-export function dataUrlToObjectUrl(dataUrl) {
+export function dataUrlToBlob(dataUrl) {
   const raw = String(dataUrl || "");
   const commaIndex = raw.indexOf(",");
   if (!raw.startsWith("data:") || commaIndex < 0) {
@@ -37,8 +37,11 @@ export function dataUrlToObjectUrl(dataUrl) {
   for (let i = 0; i < binary.length; i += 1) {
     bytes[i] = binary.charCodeAt(i);
   }
-  const blob = new Blob([bytes], { type: mime });
-  return URL.createObjectURL(blob);
+  return new Blob([bytes], { type: mime });
+}
+
+export function dataUrlToObjectUrl(dataUrl) {
+  return URL.createObjectURL(dataUrlToBlob(dataUrl));
 }
 
 export function openPaymentProofSource(url, openWindow = (...args) => window.open(...args)) {

@@ -2,8 +2,10 @@ import {
   validateReceiptProofFile,
   receiptHasPaymentProof,
   receiptPaymentStateFromAmounts,
+  receiptProofStatusLabel,
   buildReceiptProofPayload,
   canViewSalesReceiptPaymentProof,
+  paymentEvidenceBadge,
   SALES_RECEIPT_PROOF_VIEW_PERMS,
 } from "./salesReceiptPaymentProof";
 
@@ -46,6 +48,20 @@ describe("salesReceiptPaymentProof", () => {
     const payload = await buildReceiptProofPayload(file);
     expect(payload.name).toBe("bukti.png");
     expect(payload.data_url.startsWith("data:image/png;base64,")).toBe(true);
+  });
+
+  test("badge counts penerimaan proof and legacy files, and keeps approval text", () => {
+    const proof = [{ has_payment_proof: true }];
+    expect(paymentEvidenceBadge({ payment_status: "Waiting", payment_files: [] }, []).label)
+      .toBe("Belum Ada Bukti Payment");
+    expect(paymentEvidenceBadge({ payment_status: "Waiting", payment_files: [] }, proof).label)
+      .toBe("Bukti Penerimaan Tersimpan");
+    expect(paymentEvidenceBadge({ payment_status: "Waiting", payment_files: [{ id: "a" }] }, []).label)
+      .toBe("Menunggu Approval Payment");
+    expect(paymentEvidenceBadge({ payment_status: "Approved", payment_files: [] }, proof).label)
+      .toBe("Payment Approved");
+    expect(receiptProofStatusLabel({ financial_status: "reversed", payment_state: "LUNAS" })).toBe("Dibatalkan");
+    expect(receiptProofStatusLabel({ payment_state: "DP" })).toBe("DP");
   });
 
   test("view gate uses receipt/payment view only — not po.view", () => {
