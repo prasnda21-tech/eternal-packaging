@@ -226,6 +226,7 @@ from services.purchase_accounting_settings_http import register_purchase_account
 from services.trial_balance_http import register_trial_balance_routes
 from services.profit_loss_http import register_profit_loss_routes
 from services.financial_dashboard_http import register_financial_dashboard_routes
+from services.sales_dashboard_http import register_sales_dashboard_routes
 from services.balance_sheet_http import register_balance_sheet_routes
 from services.inventory_reconciliation_http import register_inventory_reconciliation_routes
 from services.chart_of_accounts import COLLECTION as LEDGER_ACCOUNTS_COLLECTION
@@ -12405,6 +12406,14 @@ register_financial_dashboard_routes(
     user_permissions=user_permissions,
     Depends=Depends,
 )
+register_sales_dashboard_routes(
+    api_router,
+    get_db=lambda: db,
+    current_user=current_user,
+    require_perm=require_perm,
+    user_permissions=user_permissions,
+    Depends=Depends,
+)
 register_balance_sheet_routes(
     api_router,
     get_db=lambda: db,
@@ -13953,6 +13962,8 @@ async def seed():
     await _ensure_unique_business_number_index(db.sales_invoices, "invoice_number")
     await db.sales_invoices.create_index("po_id")
     await db.sales_invoices.create_index("created_at")
+    await db.sales_invoices.create_index("invoice_date")
+    await db.sales_invoices.create_index("financial_status")
     
     await db.sales_receipts.create_index("id", unique=True)
     await _ensure_unique_business_number_index(db.sales_receipts, "receipt_number")

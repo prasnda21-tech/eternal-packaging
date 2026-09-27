@@ -51,6 +51,7 @@ const Dashboard = lazy(() => import("./pages/Dashboard"));
 const PODetail = lazy(() => import("./pages/PODetail"));
 const HoPDashboard = lazy(() => import("./pages/HoPDashboard"));
 const FinancialDashboard = lazy(() => import("./pages/FinancialDashboard"));
+const SalesDashboard = lazy(() => import("./pages/SalesDashboard"));
 const ProductionSchedule = lazy(() => import("./pages/ProductionSchedule"));
 const SuratJalan = lazy(() => import("./pages/SuratJalan"));
 const PesananPenjualan = lazy(() => import("./pages/PesananPenjualan"));
@@ -273,6 +274,7 @@ export default function App() {
             <Route path="/chat" element={<PermGate anyOf={[NAV_KEYS.chat, "chat.use"]}><ChatPage /></PermGate>} />
             <Route path="/chat/:roomId" element={<PermGate anyOf={[NAV_KEYS.chat, "chat.use"]}><ChatPage /></PermGate>} />
             <Route path="/dashboard/keuangan" element={<PermGate anyOf={["dashboard.finance.view", NAV_KEYS.dashboardFinance]}><FinancialDashboard /></PermGate>} />
+            <Route path="/dashboard/penjualan" element={<PermGate anyOf={["dashboard.sales.view", NAV_KEYS.dashboardSales]}><SalesDashboard /></PermGate>} />
             <Route path="/dashboard" element={<PermGate anyOf={[NAV_KEYS.dashboard]}><HoPDashboard /></PermGate>} />
             <Route path="/tasks" element={<DivisionTaskIndex />} />
             <Route path="/tasks/designer" element={<PermGate anyOf={[NAV_KEYS.tasksDesigner, "design.upload"]}><DivisionTaskPage /></PermGate>} />
