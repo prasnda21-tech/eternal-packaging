@@ -25,9 +25,10 @@ Implements:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import HTTPException
@@ -363,6 +364,8 @@ async def claim_durable_stock_event(
     change_metadata: Optional[Dict[str, Any]] = None,
     user: Optional[Dict[str, Any]] = None,
     now: Optional[str] = None,
+    fence_generation: Optional[int] = None,
+    fence_holder_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Atomically claims / reserves inventory on product_stock_state BEFORE source write.
 
@@ -454,8 +457,18 @@ async def claim_durable_stock_event(
     if pending and isinstance(pending, dict):
         if pending.get("event_id") == ev_id:
             logger.info("Resuming existing stock claim %s on product %s", ev_id, mid)
+            if (
+                fence_generation is not None
+                and pending.get("fence_generation") is not None
+                and int(pending.get("fence_generation")) != int(fence_generation)
+            ):
+                raise HTTPException(409, DELIVERY_FENCE_LOST)
             if await is_source_committed(db, pending):
-                mov = await finalize_durable_stock_event(db, event_id=ev_id, master_item_id=mid, user=user)
+                resume_gen = pending.get("fence_generation") if "fence_generation" in pending else None
+                mov = await finalize_durable_stock_event(
+                    db, event_id=ev_id, master_item_id=mid, user=user,
+                    expected_fence_generation=None if resume_gen is None else int(resume_gen),
+                )
                 return {
                     "status": "ALREADY_FINALIZED",
                     "movement": mov,
@@ -545,6 +558,10 @@ async def claim_durable_stock_event(
         "claimed_at": stamp,
         "started_at": stamp,
     }
+    if fence_generation is not None:
+        claim_data["fence_generation"] = int(fence_generation)
+    if fence_holder_id:
+        claim_data["fence_holder_id"] = str(fence_holder_id)
 
     # 4. Atomic conditional reservation: sets pending_event WITHOUT premature balance mutation!
     query = {
@@ -637,6 +654,7 @@ async def finalize_durable_stock_event(
     master_item_id: str,
     user: Optional[Dict[str, Any]] = None,
     now: Optional[str] = None,
+    expected_fence_generation: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Finalizes an active stock claim into stock_movements and unsets pending marker."""
     ev_id = str(event_id or "").strip()
@@ -664,17 +682,33 @@ async def finalize_durable_stock_event(
 
     stamp = now or pending.get("started_at") or now_iso()
     stage = pending.get("stage", "CLAIMED")
+    if expected_fence_generation is not None:
+        if pending.get("fence_generation") is None or int(pending.get("fence_generation")) != int(expected_fence_generation):
+            raise RuntimeError(f"Klaim stok '{ev_id}' tidak lagi dimiliki percobaan ini.")
+        if str(pending.get("reference_type") or "") != "delivery_confirmed":
+            raise RuntimeError(f"Klaim stok '{ev_id}' bukan reservasi Konfirmasi Terkirim.")
+        if not await is_source_committed(db, pending):
+            raise RuntimeError("Konfirmasi Terkirim belum tersimpan untuk operasi ini.")
 
-    if stage == "CLAIMED":
+    apply_stages = ("CLAIMED", _COMMIT_LOCKED) if expected_fence_generation is not None else ("CLAIMED",)
+    if stage in apply_stages:
         d_tot = safe_float(pending.get("delta_total", 0.0))
         d_unp = safe_float(pending.get("delta_unprinted", 0.0))
         d_pri = safe_float(pending.get("delta_printed", 0.0))
         # Transition marker, stored in the same state write as the balance change.
         # It is not a later claim that the database commit happened at this clock.
         applied_marker = now_iso()
+        apply_query = {
+            "$or": [{"_id": mid}, {"master_item_id": mid}],
+            "pending_event.event_id": ev_id,
+            "pending_event.stage": stage,
+        }
+        if expected_fence_generation is not None:
+            apply_query["pending_event.fence_generation"] = int(expected_fence_generation)
+            apply_query["pending_event.reference_type"] = "delivery_confirmed"
 
         await db[STATE_COLLECTION].update_one(
-            {"$or": [{"_id": mid}, {"master_item_id": mid}], "pending_event.event_id": ev_id, "pending_event.stage": "CLAIMED"},
+            apply_query,
             {
                 "$inc": {
                     "total_qty": d_tot,
@@ -2227,6 +2261,7 @@ async def _reserve_delivery_master_group(
                 f"Klaim pengiriman '{group_event_id}' terputus: sebagian movement ada tanpa pending yang cocok."
             )
 
+    fence = await _fence_stamp_for_action(db, order_id, action_id)
     curr = await db[STATE_COLLECTION].find_one({"$or": [{"_id": mid}, {"master_item_id": mid}]})
     pending = (curr or {}).get("pending_event") if curr else None
     if isinstance(pending, dict) and pending.get("event_id"):
@@ -2236,9 +2271,17 @@ async def _reserve_delivery_master_group(
         wanted = [spec["event_id"] for spec in lines]
         if stored and stored != wanted:
             raise HTTPException(400, "Klaim pengiriman untuk action ini sudah tersimpan dengan baris berbeda.")
+        if (
+            fence
+            and pending.get("fence_generation") is not None
+            and int(pending.get("fence_generation")) != int(fence["generation"])
+        ):
+            raise HTTPException(409, DELIVERY_FENCE_LOST)
         if await is_source_committed(db, pending):
+            resume_gen = pending.get("fence_generation") if "fence_generation" in pending else None
             finalized = await finalize_durable_stock_event(
                 db, event_id=group_event_id, master_item_id=mid, user=user,
+                expected_fence_generation=None if resume_gen is None else int(resume_gen),
             )
             movements = finalized.get("line_movements") if isinstance(finalized, dict) else None
             return {
@@ -2328,6 +2371,9 @@ async def _reserve_delivery_master_group(
         "claimed_at": stamp,
         "started_at": stamp,
     }
+    if fence:
+        claim_data["fence_generation"] = int(fence["generation"])
+        claim_data["fence_holder_id"] = fence.get("holder_id")
     query = {
         "$or": [{"_id": mid}, {"master_item_id": mid}],
         "status": STATUS_INITIALIZED,
@@ -2347,6 +2393,8 @@ async def _reserve_delivery_master_group(
     )
     if not res:
         raise HTTPException(400, "Stok fisik tidak mencukupi atau terjadi konflik konkurensi.")
+    if fence and fence.get("holder_id"):
+        await _note_delivery_master(db, fence.get("holder_id"), mid)
     return {
         "status": "CLAIMED",
         "event_id": group_event_id,
@@ -2376,6 +2424,7 @@ async def claim_delivery_confirmed_stock(
             ):
                 continue
             grouped.setdefault(spec["mid"], []).append(spec)
+        fence = await _fence_stamp_for_action(db, order_id, action_id)
         for mid, group in grouped.items():
             enriched = [await _delivery_line_deltas(db, spec) for spec in group]
             if len(enriched) == 1:
@@ -2403,8 +2452,12 @@ async def claim_delivery_confirmed_stock(
                     is_print=spec["is_print"],
                     production_process=spec.get("proc"),
                     user=user,
+                    fence_generation=None if not fence else fence["generation"],
+                    fence_holder_id=None if not fence else fence.get("holder_id"),
                 )
                 claims.append(claim)
+                if fence and fence.get("holder_id") and claim.get("status") == "CLAIMED" and not claim.get("resumed"):
+                    await _note_delivery_master(db, fence.get("holder_id"), mid)
             else:
                 reserved = await _reserve_delivery_master_group(
                     db, order, action_id, enriched, user,
@@ -2424,11 +2477,22 @@ async def release_delivery_confirmed_stock(
     """Release claims this attempt created. A resumed claim still belongs to the earlier attempt."""
     for c in claims:
         if c and c.get("status") == "CLAIMED" and not c.get("resumed"):
-            await release_durable_stock_claim(
-                db,
-                event_id=c["event_id"],
-                master_item_id=c["master_item_id"],
-            )
+            data = c.get("claim_data") if isinstance(c.get("claim_data"), dict) else {}
+            if "fence_generation" in data and str(data.get("reference_type") or "delivery_confirmed") == "delivery_confirmed":
+                await _cas_release_delivery_claim(
+                    db,
+                    c["master_item_id"],
+                    c["event_id"],
+                    action_id=str(data.get("action_id") or ""),
+                    generation=int(data["fence_generation"]),
+                    stage="CLAIMED",
+                )
+            else:
+                await release_durable_stock_claim(
+                    db,
+                    event_id=c["event_id"],
+                    master_item_id=c["master_item_id"],
+                )
 
 
 SJ_ROW_UNCERTAIN = (
@@ -2544,6 +2608,8 @@ async def _ensure_action_binding(db, order_id: str, shipment_id: str, action_id:
             "scope": DELIVERY_CONFIRM_SCOPE,
             "action_id": action_id,
             "holders": 0,
+            "fence_protocol": 1,
+            "claimed_masters": [],
         })
     except DuplicateKeyError:
         existing = await coll.find_one({"_id": doc_id})
@@ -2566,6 +2632,8 @@ async def _acquire_omitted_action(db, order_id: str, shipment_id: str) -> str:
             "scope": DELIVERY_CONFIRM_SCOPE,
             "action_id": minted,
             "holders": 0,
+            "fence_protocol": 1,
+            "claimed_masters": [],
         })
         action_id = minted
     except DuplicateKeyError:
@@ -2591,6 +2659,648 @@ async def _reject_explicit_action_conflict(db, order: Dict[str, Any], action_id:
     )
     if other:
         raise HTTPException(409, ACTION_REUSED)
+
+
+DELIVERY_FENCE_LEASE = timedelta(seconds=30)
+DELIVERY_FENCE_ACTIVE = (
+    "Stok fisik tidak mencukupi atau terjadi konflik konkurensi. "
+    "Konfirmasi Terkirim masih dimiliki percobaan yang aktif."
+)
+DELIVERY_FENCE_LOST = (
+    "Percobaan Konfirmasi Terkirim kehilangan hak sebelum konfirmasi disimpan."
+)
+DELIVERY_FENCE_REVIEW = (
+    "Stok fisik tidak mencukupi atau terjadi konflik konkurensi. "
+    "Pemulihan Konfirmasi Terkirim membutuhkan tinjauan manual: "
+    "kepemilikan operasi tidak dapat dipastikan."
+)
+_COMMIT_LOCKED = "COMMIT_LOCKED"
+
+
+def delivery_fence_now() -> datetime:
+    """Clock for delivery-confirm leases. Tests replace this; expiry is not death."""
+    return datetime.now(timezone.utc)
+
+
+def _fence_slot_key(holder_id: str) -> str:
+    return hashlib.sha256(str(holder_id).encode()).hexdigest()[:24]
+
+
+def _as_utc(value) -> Optional[datetime]:
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    return None
+
+
+def _token_is_live(token: Any, now: datetime) -> bool:
+    if not isinstance(token, dict):
+        return False
+    lease = _as_utc(token.get("lease_until"))
+    current = _as_utc(now) or delivery_fence_now()
+    return bool(lease and lease > current)
+
+
+def _live_tokens(op_fence: Dict[str, Any], now: datetime) -> List[Dict[str, Any]]:
+    return [tok for tok in (op_fence.get("tokens") or []) if _token_is_live(tok, now)]
+
+
+def _fence_path(slot: str) -> str:
+    return f"delivery_confirm_fence.ops.{slot}"
+
+
+async def _operation_is_legacy(db, holder_id: str) -> bool:
+    doc = await _delivery_operation_db(db).find_one({"_id": holder_id}, {"fence_protocol": 1})
+    return bool(doc) and doc.get("fence_protocol") != 1
+
+
+async def _read_fence_slot(db, order_id: str, slot: str) -> Optional[Dict[str, Any]]:
+    doc = await db.orders.find_one({"id": order_id}, {"delivery_confirm_fence": 1})
+    ops = ((doc or {}).get("delivery_confirm_fence") or {}).get("ops") or {}
+    found = ops.get(slot)
+    return found if isinstance(found, dict) else None
+
+
+async def _active_fence_for_action(db, order_id: str, action_id: str):
+    doc = await db.orders.find_one({"id": order_id}, {"delivery_confirm_fence": 1})
+    ops = ((doc or {}).get("delivery_confirm_fence") or {}).get("ops") or {}
+    for slot, op in ops.items():
+        if isinstance(op, dict) and str(op.get("action_id") or "") == str(action_id or "") and op.get("status") == "active":
+            return slot, op
+    return None, None
+
+
+async def _acquire_delivery_attempt(db, order_id: str, holder_id: str, action_id: str, shipment_id: str) -> Dict[str, Any]:
+    """One attempt token on this operation. Same-action callers join; they do not steal."""
+    if await _operation_is_legacy(db, holder_id):
+        return {"fence_protocol": 0, "attempt_token": None, "generation": None, "fence_slot": None}
+    slot = _fence_slot_key(holder_id)
+    path = _fence_path(slot)
+    now = delivery_fence_now()
+    token = str(uuid.uuid4())
+    entry = {"token": token, "lease_until": now + DELIVERY_FENCE_LEASE}
+    created = await db.orders.find_one_and_update(
+        {"id": order_id, path: {"$exists": False}},
+        {"$set": {
+            "delivery_confirm_fence.protocol": 1,
+            path: {
+                "holder_id": holder_id,
+                "action_id": action_id,
+                "shipment_id": shipment_id,
+                "order_id": order_id,
+                "generation": 1,
+                "status": "active",
+                "tokens": [entry],
+            },
+        }},
+        return_document=ReturnDocument.AFTER,
+    )
+    created_ops = ((created or {}).get("delivery_confirm_fence") or {}).get("ops") or {}
+    created_slot = created_ops.get(slot) if isinstance(created_ops, dict) else None
+    if any(isinstance(tok, dict) and tok.get("token") == token for tok in (created_slot or {}).get("tokens") or []):
+        return {
+            "fence_protocol": 1,
+            "attempt_token": token,
+            "generation": 1,
+            "fence_slot": slot,
+        }
+    current = await _read_fence_slot(db, order_id, slot)
+    if not current or str(current.get("action_id") or "") != action_id:
+        raise HTTPException(409, DELIVERY_FENCE_REVIEW)
+    if current.get("status") == "recovering" and not _live_tokens(current, delivery_fence_now()):
+        await _resume_interrupted_delivery_recovery(db, order_id, holder_id)
+        current = await _read_fence_slot(db, order_id, slot)
+        if not current or str(current.get("action_id") or "") != action_id:
+            raise HTTPException(409, DELIVERY_FENCE_REVIEW)
+    if current.get("status") != "active":
+        raise HTTPException(409, DELIVERY_FENCE_ACTIVE)
+    generation = int(current.get("generation") or 0)
+    joined = await db.orders.find_one_and_update(
+        {
+            "id": order_id,
+            f"{path}.status": "active",
+            f"{path}.generation": generation,
+            f"{path}.action_id": action_id,
+        },
+        {"$push": {f"{path}.tokens": entry}},
+        return_document=ReturnDocument.AFTER,
+    )
+    joined_ops = ((joined or {}).get("delivery_confirm_fence") or {}).get("ops") or {}
+    joined_slot = joined_ops.get(slot) if isinstance(joined_ops, dict) else None
+    if not any(isinstance(tok, dict) and tok.get("token") == token for tok in (joined_slot or {}).get("tokens") or []):
+        raise HTTPException(409, DELIVERY_FENCE_ACTIVE)
+    return {
+        "fence_protocol": 1,
+        "attempt_token": token,
+        "generation": generation,
+        "fence_slot": slot,
+    }
+
+
+async def _renew_delivery_attempt(db, op: Dict[str, Any]) -> bool:
+    if not op or op.get("fence_protocol") != 1:
+        return True
+    slot = op.get("fence_slot")
+    token = op.get("attempt_token")
+    order_id = op.get("order_id")
+    generation = op.get("generation")
+    if not slot or not token or not order_id or generation is None:
+        return False
+    path = _fence_path(slot)
+    res = await db.orders.update_one(
+        {
+            "id": order_id,
+            f"{path}.status": "active",
+            f"{path}.generation": int(generation),
+            f"{path}.action_id": op.get("action_id"),
+            f"{path}.tokens.token": token,
+        },
+        {"$set": {f"{path}.tokens.$.lease_until": delivery_fence_now() + DELIVERY_FENCE_LEASE}},
+    )
+    return res.matched_count == 1
+
+
+async def _pull_attempt_token(db, op: Optional[Dict[str, Any]]) -> None:
+    if not op or op.get("fence_protocol") != 1:
+        return
+    slot = op.get("fence_slot")
+    token = op.get("attempt_token")
+    order_id = op.get("order_id")
+    if not slot or not token or not order_id:
+        return
+    path = _fence_path(slot)
+    await db.orders.update_one(
+        {"id": order_id},
+        {"$pull": {f"{path}.tokens": {"token": token}}},
+    )
+
+
+def delivery_persist_filter(op: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Predicates that must succeed in the same update as the confirmation write."""
+    if not op or op.get("fence_protocol") != 1:
+        return None
+    slot = op.get("fence_slot")
+    token = op.get("attempt_token")
+    if not slot or not token or op.get("generation") is None:
+        return None
+    path = _fence_path(slot)
+    return {
+        f"{path}.status": "active",
+        f"{path}.generation": int(op["generation"]),
+        f"{path}.action_id": op.get("action_id"),
+        f"{path}.tokens.token": token,
+    }
+
+
+async def _seal_delivery_claim(db, claim: Dict[str, Any], generation: int) -> bool:
+    mid = str(claim.get("master_item_id") or "").strip()
+    ev_id = str(claim.get("event_id") or "").strip()
+    if not mid or not ev_id:
+        return False
+    res = await db[STATE_COLLECTION].update_one(
+        {
+            "$or": [{"_id": mid}, {"master_item_id": mid}],
+            "pending_event.event_id": ev_id,
+            "pending_event.reference_type": "delivery_confirmed",
+            "pending_event.stage": "CLAIMED",
+            "pending_event.fence_generation": int(generation),
+        },
+        {"$set": {"pending_event.stage": _COMMIT_LOCKED}},
+    )
+    if res.matched_count:
+        return True
+    curr = await db[STATE_COLLECTION].find_one({"$or": [{"_id": mid}, {"master_item_id": mid}]})
+    pending = (curr or {}).get("pending_event") if curr else None
+    if not isinstance(pending, dict):
+        return True
+    if str(pending.get("event_id") or "") != ev_id:
+        return False
+    if "fence_generation" not in pending:
+        return True
+    if int(pending.get("fence_generation") or -1) != int(generation):
+        return False
+    return pending.get("stage") in (_COMMIT_LOCKED, "STATE_APPLIED")
+
+
+async def prepare_delivery_commit(db, op: Optional[Dict[str, Any]], claims: Optional[List[Dict[str, Any]]]) -> None:
+    """Renew and seal before the confirmation write. A failed seal does not persist."""
+    if not op or op.get("fence_protocol") != 1:
+        return
+    if not await _renew_delivery_attempt(db, op):
+        raise HTTPException(409, DELIVERY_FENCE_LOST)
+    generation = int(op["generation"])
+    for claim in claims or []:
+        if not claim or claim.get("status") != "CLAIMED":
+            continue
+        if not await _seal_delivery_claim(db, claim, generation):
+            raise HTTPException(409, DELIVERY_FENCE_LOST)
+
+
+async def _note_delivery_master(db, holder_id: Optional[str], master_item_id: str) -> None:
+    if not holder_id or not master_item_id:
+        return
+    await _delivery_operation_db(db).update_one(
+        {"_id": holder_id, "fence_protocol": 1},
+        {"$addToSet": {"claimed_masters": str(master_item_id)}},
+    )
+
+
+async def _fence_stamp_for_action(db, order_id: str, action_id: str):
+    slot, op = await _active_fence_for_action(db, order_id, action_id)
+    if not op:
+        return None
+    try:
+        generation = int(op.get("generation"))
+    except (TypeError, ValueError):
+        return None
+    return {
+        "generation": generation,
+        "holder_id": op.get("holder_id"),
+        "slot": slot,
+    }
+
+
+async def _cas_release_delivery_claim(
+    db,
+    master_item_id: str,
+    event_id: str,
+    *,
+    action_id: str,
+    generation: int,
+    stage: str,
+) -> int:
+    """Drop a delivery reservation only while stage and generation still match.
+
+    The update never changes bucket balances. A stale CLAIMED read cannot reverse
+    a reservation that has already become STATE_APPLIED.
+    """
+    res = await db[STATE_COLLECTION].update_one(
+        {
+            "$or": [{"_id": master_item_id}, {"master_item_id": master_item_id}],
+            "pending_event.event_id": event_id,
+            "pending_event.reference_type": "delivery_confirmed",
+            "pending_event.action_id": action_id,
+            "pending_event.stage": stage,
+            "pending_event.fence_generation": int(generation),
+        },
+        {"$unset": {"pending_event": ""}},
+    )
+    return int(res.matched_count or 0)
+
+
+async def _cas_fence_takeover(db, order_id: str, slot: str, generation: int, now: datetime) -> Optional[str]:
+    path = _fence_path(slot)
+    recovery_token = str(uuid.uuid4())
+    res = await db.orders.update_one(
+        {
+            "id": order_id,
+            f"{path}.generation": int(generation),
+            f"{path}.status": {"$in": ["active", "recovering"]},
+            f"{path}.tokens": {"$not": {"$elemMatch": {"lease_until": {"$gt": now}}}},
+        },
+        {"$set": {
+            f"{path}.generation": int(generation) + 1,
+            f"{path}.status": "recovering",
+            f"{path}.fenced_generation": int(generation),
+            f"{path}.tokens": [{
+                "token": recovery_token,
+                "lease_until": now + DELIVERY_FENCE_LEASE,
+                "role": "recovery",
+            }],
+        }},
+    )
+    if res.modified_count != 1:
+        return None
+    return recovery_token
+
+
+async def _finish_fence_recovery(db, order_id: str, slot: str, generation: int, recovery_token: str) -> None:
+    path = _fence_path(slot)
+    await db.orders.update_one(
+        {
+            "id": order_id,
+            f"{path}.generation": int(generation),
+            f"{path}.status": "recovering",
+            f"{path}.tokens.token": recovery_token,
+        },
+        {"$set": {
+            f"{path}.status": "active",
+            f"{path}.tokens": [],
+        }},
+    )
+
+
+async def _drop_recovery_lease(db, order_id: str, slot: str, generation: int, recovery_token: str) -> None:
+    """End this recovery's lease without opening the slot or touching reservations."""
+    path = _fence_path(slot)
+    await db.orders.update_one(
+        {
+            "id": order_id,
+            f"{path}.generation": int(generation),
+            f"{path}.status": "recovering",
+            f"{path}.tokens.token": recovery_token,
+        },
+        {"$set": {f"{path}.tokens.$.lease_until": delivery_fence_now()}},
+    )
+
+
+async def _close_idle_recovery_slot(db, order_id: str, holder_id: str) -> None:
+    """Mark a recovering slot active only when it has no live token and nothing left to settle."""
+    slot = _fence_slot_key(holder_id)
+    op_fence = await _read_fence_slot(db, order_id, slot)
+    if not op_fence or op_fence.get("status") != "recovering":
+        return
+    now = delivery_fence_now()
+    if _live_tokens(op_fence, now):
+        return
+    try:
+        generation = int(op_fence.get("generation"))
+    except (TypeError, ValueError):
+        return
+    path = _fence_path(slot)
+    await db.orders.update_one(
+        {
+            "id": order_id,
+            f"{path}.status": "recovering",
+            f"{path}.generation": generation,
+            f"{path}.tokens": {"$not": {"$elemMatch": {"lease_until": {"$gt": now}}}},
+        },
+        {"$set": {f"{path}.status": "active", f"{path}.tokens": []}},
+    )
+
+
+async def _bump_pending_fence(db, master_item_id: str, event_id: str, action_id: str, old_gen: int, new_gen: int) -> bool:
+    res = await db[STATE_COLLECTION].update_one(
+        {
+            "$or": [{"_id": master_item_id}, {"master_item_id": master_item_id}],
+            "pending_event.event_id": event_id,
+            "pending_event.reference_type": "delivery_confirmed",
+            "pending_event.action_id": action_id,
+            "pending_event.fence_generation": int(old_gen),
+        },
+        {"$set": {"pending_event.fence_generation": int(new_gen)}},
+    )
+    return res.matched_count == 1
+
+
+def _pending_fence_generation(pending: Dict[str, Any]) -> Optional[int]:
+    if "fence_generation" not in pending:
+        return None
+    try:
+        return int(pending.get("fence_generation"))
+    except (TypeError, ValueError):
+        return None
+
+
+async def _finalize_fenced_delivery_pending(db, pending: Dict[str, Any], generation: int, user=None):
+    return await finalize_durable_stock_event(
+        db,
+        event_id=str(pending.get("event_id") or ""),
+        master_item_id=str(pending.get("master_item_id") or ""),
+        user=user,
+        expected_fence_generation=int(generation),
+    )
+
+
+async def _read_delivery_pending(db, master_item_id: str):
+    curr = await db[STATE_COLLECTION].find_one(
+        {"$or": [{"_id": master_item_id}, {"master_item_id": master_item_id}]}
+    )
+    pending = (curr or {}).get("pending_event") if curr else None
+    return pending if isinstance(pending, dict) else None
+
+
+async def _adopt_pending_generation(db, master_item_id: str, pending: Dict[str, Any], action_id: str, new_gen: int):
+    """CAS this reservation onto the recovery generation.
+
+    Returns ('owned', pending), ('gone', None) when the reservation disappeared,
+    or ('review', None) when ownership cannot be proved.
+    Generations older than new_gen are the crash window after order takeover.
+    """
+    observed = _pending_fence_generation(pending)
+    if observed is None or observed > int(new_gen):
+        return "review", None
+    event_id = str(pending.get("event_id") or "")
+    if observed != int(new_gen):
+        await _bump_pending_fence(db, master_item_id, event_id, action_id, observed, new_gen)
+    fresh = await _read_delivery_pending(db, master_item_id)
+    if not fresh or str(fresh.get("event_id") or "") != event_id:
+        return "gone", None
+    if str(fresh.get("action_id") or "") != action_id:
+        return "review", None
+    if _pending_fence_generation(fresh) != int(new_gen):
+        return "review", None
+    return "owned", fresh
+
+
+async def _settle_owned_pending(db, master_item_id: str, pending: Dict[str, Any], action_id: str, new_gen: int, user=None) -> str:
+    """Finalize a committed or applied reservation, or CAS-release an uncommitted one.
+
+    Source is read after the order takeover, and again immediately before release.
+    A commit that won before takeover is visible. A commit cannot land afterwards
+    while the slot stays recovering. The release filter still requires the stage
+    that was observed, so a stale CLAIMED snapshot cannot unset STATE_APPLIED.
+    """
+    stage = pending.get("stage") or "CLAIMED"
+    committed = await is_source_committed(db, pending)
+    if stage == "STATE_APPLIED":
+        if not committed:
+            return "review"
+        await _finalize_fenced_delivery_pending(db, pending, new_gen, user)
+        return "done"
+    if committed:
+        await _finalize_fenced_delivery_pending(db, pending, new_gen, user)
+        return "done"
+    if stage not in ("CLAIMED", _COMMIT_LOCKED):
+        return "review"
+    if await is_source_committed(db, pending):
+        await _finalize_fenced_delivery_pending(db, pending, new_gen, user)
+        return "done"
+    matched = await _cas_release_delivery_claim(
+        db, master_item_id, str(pending.get("event_id") or ""),
+        action_id=action_id, generation=new_gen, stage=stage,
+    )
+    if matched:
+        return "done"
+    fresh = await _read_delivery_pending(db, master_item_id)
+    if not fresh or str(fresh.get("event_id") or "") != str(pending.get("event_id") or ""):
+        return "done"
+    if str(fresh.get("action_id") or "") != action_id or _pending_fence_generation(fresh) != int(new_gen):
+        return "done"
+    if fresh.get("stage") == "STATE_APPLIED":
+        if await is_source_committed(db, fresh):
+            await _finalize_fenced_delivery_pending(db, fresh, new_gen, user)
+            return "done"
+        return "review"
+    if await is_source_committed(db, fresh):
+        await _finalize_fenced_delivery_pending(db, fresh, new_gen, user)
+        return "done"
+    return "review"
+
+
+async def _recover_operation_masters(db, holder: Dict[str, Any], origin_mid: str, old_gen: int, new_gen: int, user=None) -> str:
+    """Fence and settle every master this operation recorded. Other operations stay put."""
+    order_id = str(holder.get("order_id") or "")
+    action_id = str(holder.get("action_id") or "")
+    masters = [str(mid) for mid in (holder.get("claimed_masters") or []) if str(mid or "").strip()]
+    if origin_mid not in masters:
+        masters.append(origin_mid)
+    # old_gen is the generation this takeover superseded. Pending rows may still
+    # sit on that generation or on an older one if a previous takeover crashed.
+    if int(old_gen) >= int(new_gen):
+        return "MANUAL_REVIEW"
+    for mid in masters:
+        pending = await _read_delivery_pending(db, mid)
+        if not pending:
+            continue
+        if str(pending.get("reference_type") or "") != "delivery_confirmed":
+            continue
+        if str(pending.get("action_id") or "") != action_id:
+            continue
+        if str(pending.get("order_id") or "") != order_id:
+            continue
+        adopted, owned = await _adopt_pending_generation(db, mid, pending, action_id, new_gen)
+        if adopted == "gone":
+            continue
+        if adopted != "owned" or not owned:
+            return "MANUAL_REVIEW"
+        if await _settle_owned_pending(db, mid, owned, action_id, new_gen, user) != "done":
+            return "MANUAL_REVIEW"
+    return "RECOVERED"
+
+
+async def _continue_delivery_recovery(db, master_item_id: str, observed: Dict[str, Any], user=None) -> Dict[str, Any]:
+    """Resume recovery after the initial read. Mutations re-check stage and lease."""
+    mid = str(master_item_id or "").strip()
+    curr = await db[STATE_COLLECTION].find_one({"$or": [{"_id": mid}, {"master_item_id": mid}]})
+    pending = (curr or {}).get("pending_event") if curr else None
+    if not isinstance(pending, dict) or not pending.get("event_id"):
+        return {"status": "CLEAR"}
+    if str(pending.get("reference_type") or "") != "delivery_confirmed":
+        return {"status": "FOREIGN", "reference_type": pending.get("reference_type")}
+    if str(pending.get("event_id") or "") != str(observed.get("event_id") or ""):
+        return {"status": "CHANGED"}
+    if _pending_fence_generation(pending) is None:
+        return {"status": "MANUAL_REVIEW", "reason": DELIVERY_FENCE_REVIEW}
+    action_id = str(pending.get("action_id") or "").strip()
+    order_id = str(pending.get("order_id") or "").strip()
+    holder_id = str(pending.get("fence_holder_id") or "").strip()
+    if not action_id or not order_id:
+        return {"status": "MANUAL_REVIEW", "reason": DELIVERY_FENCE_REVIEW}
+    docs = await _delivery_operation_db(db).find(
+        {"action_id": action_id, "order_id": order_id, "scope": DELIVERY_CONFIRM_SCOPE},
+    ).to_list(length=5)
+    if holder_id:
+        direct = await _delivery_operation_db(db).find_one({"_id": holder_id})
+        if direct and all(str(doc.get("_id")) != holder_id for doc in docs):
+            docs.append(direct)
+    protocol = [doc for doc in docs if doc.get("fence_protocol") == 1]
+    if not protocol:
+        return {"status": "MANUAL_REVIEW", "reason": DELIVERY_FENCE_REVIEW}
+    holder = next((doc for doc in protocol if str(doc.get("_id")) == holder_id), protocol[0])
+    claimed = []
+    for doc in protocol:
+        for item in doc.get("claimed_masters") or []:
+            if str(item) not in claimed:
+                claimed.append(str(item))
+    holder = dict(holder)
+    holder["claimed_masters"] = claimed
+    holder_id = str(holder.get("_id") or holder_id)
+    slot = _fence_slot_key(holder_id)
+    op_fence = await _read_fence_slot(db, order_id, slot)
+    if not op_fence or str(op_fence.get("action_id") or "") != action_id:
+        return {"status": "MANUAL_REVIEW", "reason": DELIVERY_FENCE_REVIEW}
+    now = delivery_fence_now()
+    if _live_tokens(op_fence, now):
+        return {"status": "ACTIVE"}
+    try:
+        generation = int(op_fence.get("generation"))
+    except (TypeError, ValueError):
+        return {"status": "MANUAL_REVIEW", "reason": DELIVERY_FENCE_REVIEW}
+    pending_gen = _pending_fence_generation(pending)
+    if pending_gen is None or pending_gen > int(generation):
+        return {"status": "MANUAL_REVIEW", "reason": DELIVERY_FENCE_REVIEW}
+    recovery_token = await _cas_fence_takeover(db, order_id, slot, generation, now)
+    if not recovery_token:
+        again = await _read_fence_slot(db, order_id, slot)
+        if again and _live_tokens(again, delivery_fence_now()):
+            return {"status": "ACTIVE"}
+        return {"status": "LOST_RACE"}
+    try:
+        outcome = await _recover_operation_masters(
+            db, holder, mid, generation, generation + 1, user,
+        )
+    except Exception:
+        await _drop_recovery_lease(db, order_id, slot, generation + 1, recovery_token)
+        raise
+    if outcome != "RECOVERED":
+        await _drop_recovery_lease(db, order_id, slot, generation + 1, recovery_token)
+        return {"status": "MANUAL_REVIEW", "reason": DELIVERY_FENCE_REVIEW}
+    await _finish_fence_recovery(db, order_id, slot, generation + 1, recovery_token)
+    return {"status": outcome}
+
+
+async def recover_abandoned_delivery_pending(db, master_item_id: str, user=None) -> Dict[str, Any]:
+    """On-demand recovery for one master. A read is not permission to delete."""
+    mid = str(master_item_id or "").strip()
+    curr = await db[STATE_COLLECTION].find_one({"$or": [{"_id": mid}, {"master_item_id": mid}]})
+    pending = (curr or {}).get("pending_event") if curr else None
+    if not isinstance(pending, dict) or not pending.get("event_id"):
+        return {"status": "CLEAR"}
+    if str(pending.get("reference_type") or "") != "delivery_confirmed":
+        return {"status": "FOREIGN", "reference_type": pending.get("reference_type")}
+    return await _continue_delivery_recovery(db, mid, pending, user)
+
+
+async def _resume_interrupted_delivery_recovery(db, order_id: str, holder_id: str) -> None:
+    """Continue a recovering slot whose lease is already eligible. A live lease is not resumed here."""
+    holder = await _delivery_operation_db(db).find_one({"_id": holder_id}, {"claimed_masters": 1})
+    masters = [str(mid) for mid in (holder or {}).get("claimed_masters") or [] if str(mid or "").strip()]
+    if not masters:
+        raise HTTPException(409, DELIVERY_FENCE_REVIEW)
+    outcome = await recover_abandoned_delivery_pending(db, masters[0])
+    status = str((outcome or {}).get("status") or "")
+    if status in {"ACTIVE", "LOST_RACE"}:
+        raise HTTPException(409, DELIVERY_FENCE_ACTIVE)
+    if status == "MANUAL_REVIEW":
+        raise HTTPException(409, (outcome or {}).get("reason") or DELIVERY_FENCE_REVIEW)
+    if status == "FOREIGN":
+        raise HTTPException(409, DELIVERY_FENCE_REVIEW)
+    if status == "CLEAR":
+        await _close_idle_recovery_slot(db, order_id, holder_id)
+
+
+async def _recover_needed_delivery_masters(db, order: Dict[str, Any], lines: List[Dict[str, Any]], action_id: str) -> None:
+    seen = set()
+    order_id = str(order.get("id") or "")
+    for spec in _delivery_claim_specs(order, lines, action_id):
+        mid = spec["mid"]
+        if mid in seen:
+            continue
+        seen.add(mid)
+        curr = await db[STATE_COLLECTION].find_one({"$or": [{"_id": mid}, {"master_item_id": mid}]})
+        pending = (curr or {}).get("pending_event") if curr else None
+        if not isinstance(pending, dict):
+            continue
+        if str(pending.get("reference_type") or "") != "delivery_confirmed":
+            continue
+        same_action = str(pending.get("action_id") or "") == str(action_id or "")
+        same_order = str(pending.get("order_id") or "") == order_id
+        if same_action and same_order:
+            continue
+        result = await recover_abandoned_delivery_pending(db, mid)
+        status = result.get("status")
+        if status == "ACTIVE":
+            raise HTTPException(409, DELIVERY_FENCE_ACTIVE)
+        if status == "MANUAL_REVIEW":
+            raise HTTPException(409, result.get("reason") or DELIVERY_FENCE_REVIEW)
+        if status == "LOST_RACE":
+            raise HTTPException(409, DELIVERY_FENCE_ACTIVE)
 
 
 async def prepare_confirm_delivered_action(db, order, selected_shipment_id, client_action_id) -> Dict[str, Any]:
@@ -2624,6 +3334,7 @@ async def prepare_confirm_delivered_action(db, order, selected_shipment_id, clie
             raise HTTPException(400, OMITTED_ACTION_REQUIRES_SHIPMENT)
         action_id = await _acquire_omitted_action(db, order_id, sid)
         holder_id = _omit_operation_id(order_id, sid)
+    attempt = await _acquire_delivery_attempt(db, order_id, holder_id, action_id, sid)
     await _delivery_operation_db(db).update_one({"_id": holder_id}, {"$inc": {"holders": 1}})
     fresh = await db.orders.find_one({"id": order_id}, {"_id": 0})
     return {
@@ -2632,6 +3343,11 @@ async def prepare_confirm_delivered_action(db, order, selected_shipment_id, clie
         "holder_id": holder_id,
         "ready": True,
         "order": fresh or order,
+        "order_id": order_id,
+        "attempt_token": attempt.get("attempt_token"),
+        "generation": attempt.get("generation"),
+        "fence_protocol": attempt.get("fence_protocol") or 0,
+        "fence_slot": attempt.get("fence_slot"),
     }
 
 
@@ -2655,6 +3371,7 @@ async def release_uncommitted_delivery_claim(
     action_id: Optional[str],
     holders_remaining: int,
     holder_id: Optional[str] = None,
+    expected_generation: Optional[int] = None,
 ) -> None:
     """Release this action's uncommitted claim when no sibling still holds it.
 
@@ -2691,6 +3408,24 @@ async def release_uncommitted_delivery_claim(
             continue
         if token and str(pending.get("action_id") or "") != token:
             continue
+        if "fence_generation" in pending:
+            try:
+                pending_gen = int(pending.get("fence_generation"))
+            except (TypeError, ValueError):
+                continue
+            if expected_generation is not None and pending_gen != int(expected_generation):
+                continue
+            if pending.get("stage") == "CLAIMED":
+                await _cas_release_delivery_claim(
+                    db, mid, ev_id, action_id=token or str(pending.get("action_id") or ""),
+                    generation=pending_gen, stage="CLAIMED",
+                )
+            elif pending.get("stage") == _COMMIT_LOCKED:
+                await _cas_release_delivery_claim(
+                    db, mid, ev_id, action_id=token or str(pending.get("action_id") or ""),
+                    generation=pending_gen, stage=_COMMIT_LOCKED,
+                )
+            continue
         if pending.get("stage") != "CLAIMED":
             continue
         await release_durable_stock_claim(db, event_id=ev_id, master_item_id=mid)
@@ -2706,10 +3441,12 @@ async def finish_confirm_delivered_action(
     release: bool,
 ) -> None:
     holder_id = (op or {}).get("holder_id")
+    await _pull_attempt_token(db, op)
     remaining = await end_delivery_operation(db, holder_id)
     if release:
         await release_uncommitted_delivery_claim(
             db, claims, order_id, action_id, remaining, holder_id=holder_id,
+            expected_generation=(op or {}).get("generation"),
         )
 
 
@@ -2908,6 +3645,7 @@ async def claim_selected_delivery_stock(
     if plan.get("error"):
         raise HTTPException(400, plan["error"])
     lines = plan["lines"]
+    await _recover_needed_delivery_masters(db, order, lines, action_id)
     if not replay:
         for line in lines:
             reason = await _delivery_line_block_reason(db, line)
@@ -2939,6 +3677,99 @@ async def claim_selected_delivery_stock(
     return claims
 
 
+def _delivery_expected_lines(claim: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Line rows this claim must already have as movements once pending is gone."""
+    data = claim.get("claim_data") if isinstance(claim.get("claim_data"), dict) else {}
+    rows = data.get("line_claims") if isinstance(data.get("line_claims"), list) else None
+    if rows:
+        return [row for row in rows if isinstance(row, dict) and str(row.get("event_id") or "").strip()]
+    event_id = str(claim.get("event_id") or data.get("event_id") or "").strip()
+    if not event_id:
+        return []
+    return [{
+        "event_id": event_id,
+        "line_id": data.get("line_id"),
+        "line_idx": data.get("line_idx"),
+        "transaction_qty": data.get("transaction_qty"),
+        "delta_printed": data.get("delta_printed"),
+        "delta_unprinted": data.get("delta_unprinted"),
+        "delta_total": data.get("delta_total"),
+    }]
+
+
+def _delivery_movement_matches_line(mov: Dict[str, Any], spec: Dict[str, Any], *, order_id: str, action_id: str, master_item_id: str) -> bool:
+    event_id = str(spec.get("event_id") or "")
+    if not event_id or action_id not in event_id or order_id not in event_id:
+        return False
+    ident = str(mov.get("id") or mov.get("event_key") or "")
+    if ident != event_id and str(mov.get("event_key") or "") != event_id:
+        return False
+    if str(mov.get("order_id") or "") != order_id:
+        return False
+    if str(mov.get("master_item_id") or "") != master_item_id:
+        return False
+    if str(mov.get("reference_type") or "") != "delivery_confirmed":
+        return False
+    if str(mov.get("line_id") or "") != str(spec.get("line_id") or ""):
+        return False
+    if abs(safe_float(mov.get("transaction_qty")) - safe_float(spec.get("transaction_qty"))) > 0.0001:
+        return False
+    if abs(safe_float(mov.get("delta_printed")) - safe_float(spec.get("delta_printed"))) > 0.0001:
+        return False
+    if abs(safe_float(mov.get("delta_unprinted")) - safe_float(spec.get("delta_unprinted"))) > 0.0001:
+        return False
+    expected_base = abs(safe_float(spec.get("delta_printed"))) + abs(safe_float(spec.get("delta_unprinted")))
+    actual_base = abs(safe_float(mov.get("delta_printed"))) + abs(safe_float(mov.get("delta_unprinted")))
+    if abs(actual_base - expected_base) > 0.0001:
+        return False
+    return True
+
+
+async def _classify_finished_delivery_claim(db, claim: Dict[str, Any]) -> tuple:
+    """Prove a vanished pending from the same confirmation and every expected line.
+
+    Returns (kind, movements). kind is complete only when source and all lines match.
+    This function does not write stock or movements.
+    """
+    data = claim.get("claim_data") if isinstance(claim.get("claim_data"), dict) else {}
+    if str(data.get("reference_type") or "delivery_confirmed") != "delivery_confirmed":
+        return "other", []
+    order_id = str(data.get("order_id") or "").strip()
+    action_id = str(data.get("action_id") or "").strip()
+    master_item_id = str(claim.get("master_item_id") or data.get("master_item_id") or "").strip()
+    if not order_id or not action_id or not master_item_id:
+        return "incomplete", []
+    if not await is_source_committed(db, {
+        "reference_type": "delivery_confirmed",
+        "order_id": order_id,
+        "action_id": action_id,
+    }):
+        return "not_committed", []
+    lines = _delivery_expected_lines(claim)
+    if not lines:
+        return "incomplete", []
+    found = []
+    for spec in lines:
+        mov = await _movement_by_event(db, str(spec.get("event_id") or ""))
+        if not mov:
+            return "incomplete", found
+        if not _delivery_movement_matches_line(
+            mov, spec, order_id=order_id, action_id=action_id, master_item_id=master_item_id,
+        ):
+            return "mismatch", []
+        found.append(mov)
+    if len(found) != len(lines):
+        return "incomplete", found
+    return "complete", found
+
+
+_DELIVERY_FINISH_ERRORS = {
+    "not_committed": "Konfirmasi Terkirim belum tersimpan untuk operasi ini.",
+    "incomplete": "Movement Konfirmasi Terkirim belum lengkap untuk operasi ini.",
+    "mismatch": "Movement tidak sesuai operasi Konfirmasi Terkirim ini.",
+}
+
+
 async def finalize_delivery_confirmed_stock(
     db,
     claims: List[Dict[str, Any]],
@@ -2955,11 +3786,23 @@ async def finalize_delivery_confirmed_stock(
             elif c.get("movement"):
                 movements.append(c.get("movement"))
             continue
+        data = c.get("claim_data") if isinstance(c.get("claim_data"), dict) else {}
+        pending = await _read_delivery_pending(db, str(c.get("master_item_id") or ""))
+        pending_here = isinstance(pending, dict) and pending.get("event_id") == c.get("event_id")
+        if not pending_here and str(data.get("reference_type") or "delivery_confirmed") == "delivery_confirmed":
+            kind, rows = await _classify_finished_delivery_claim(db, c)
+            if kind == "complete":
+                movements.extend(rows)
+                continue
+            if kind in _DELIVERY_FINISH_ERRORS:
+                raise RuntimeError(_DELIVERY_FINISH_ERRORS[kind])
+        fence_gen = data.get("fence_generation") if "fence_generation" in data else None
         mov = await finalize_durable_stock_event(
             db,
             event_id=c["event_id"],
             master_item_id=c["master_item_id"],
             user=user,
+            expected_fence_generation=None if fence_gen is None else int(fence_gen),
         )
         if isinstance(mov, dict) and mov.get("line_movements"):
             movements.extend(mov["line_movements"])
