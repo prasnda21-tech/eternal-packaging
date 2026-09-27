@@ -33,7 +33,8 @@ describe("dashboard submenu access", () => {
     const visible = dashboardNavVisible(has("dashboard.finance.view"));
     expect(visible.production).toBe(false);
     expect(visible.finance).toBe(true);
-    expect(dashboardMenuItems(has("dashboard.finance.view")).map((item) => item.to)).toEqual(["/dashboard/keuangan"]);
+    expect(dashboardMenuItems(has("dashboard.finance.view")).map((item) => item.to)).toEqual(["/dashboard/penjualan"]);
+    expect(dashboardMenuItems(has("dashboard.finance.view")).map((item) => item.label)).toEqual(["Dashboard Penjualan"]);
   });
 });
 

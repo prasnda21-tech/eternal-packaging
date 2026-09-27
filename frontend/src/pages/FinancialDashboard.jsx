@@ -168,7 +168,7 @@ function OutstandingTable({ title, data, testid }) {
   );
 }
 
-export default function FinancialDashboard() {
+export default function FinancialDashboard({ embedded = false }) {
   const [preset, setPreset] = useState("month");
   const [custom, setCustom] = useState({ start: "", end: "" });
   const [payload, setPayload] = useState(null);
@@ -251,9 +251,9 @@ export default function FinancialDashboard() {
   ]);
 
   return (
-    <div className="finance-dashboard-page" data-testid="finance-dashboard-page">
+    <div className={`finance-dashboard-page${embedded ? " is-embedded" : ""}`} data-testid="finance-dashboard-page">
       <header className="fd-head">
-        <h1>Dashboard Keuangan</h1>
+        {embedded ? <h2>Keuangan</h2> : <h1>Dashboard Keuangan</h1>}
         <div className="fd-presets" role="group" aria-label="Rentang tanggal">
           {PRESETS.map((item) => (
             <button key={item.id} type="button" className={preset === item.id ? "is-active" : ""} onClick={() => setPreset(item.id)} data-testid={`finance-preset-${item.id}`}>

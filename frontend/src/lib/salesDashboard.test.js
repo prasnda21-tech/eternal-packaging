@@ -17,10 +17,20 @@ describe("sales dashboard access", () => {
     ]);
   });
 
-  test("production and finance stay unchanged when sales is absent", () => {
+  test("production and finance stay on their own entries when sales is absent", () => {
     expect(dashboardMenuItems(has(NAV_KEYS.dashboard, "dashboard.finance.view")).map((item) => item.to)).toEqual([
       "/dashboard",
-      "/dashboard/keuangan",
+      "/dashboard/penjualan",
+    ]);
+    expect(dashboardMenuItems(has(NAV_KEYS.dashboard, "dashboard.finance.view")).map((item) => item.label)).toEqual([
+      "Dashboard Produksi",
+      "Dashboard Penjualan",
+    ]);
+  });
+
+  test("sales and finance share one menu entry", () => {
+    expect(dashboardMenuItems(has("dashboard.sales.view", "dashboard.finance.view")).map((item) => item.to)).toEqual([
+      "/dashboard/penjualan",
     ]);
   });
 });

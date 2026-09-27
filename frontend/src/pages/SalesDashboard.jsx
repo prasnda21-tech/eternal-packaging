@@ -131,7 +131,7 @@ function Stat({ label, value, testid }) {
   );
 }
 
-export default function SalesDashboard() {
+export default function SalesDashboard({ embedded = false }) {
   const [preset, setPreset] = useState("month");
   const [custom, setCustom] = useState({ start: "", end: "" });
   const [payload, setPayload] = useState(null);
@@ -214,9 +214,9 @@ export default function SalesDashboard() {
     : [];
 
   return (
-    <div className="sales-dashboard-page" data-testid="sales-dashboard-page" data-preset={preset} data-start={range.start} data-end={range.end}>
+    <div className={`sales-dashboard-page${embedded ? " is-embedded" : ""}`} data-testid="sales-dashboard-page" data-preset={preset} data-start={range.start} data-end={range.end}>
       <header className="sd-head">
-        <h1>Dashboard Penjualan</h1>
+        {embedded ? <h2>Penjualan</h2> : <h1>Dashboard Penjualan</h1>}
         <div className="sd-presets" role="group" aria-label="Rentang tanggal">
           {PRESETS.map((item) => (
             <button

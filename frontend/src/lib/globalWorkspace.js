@@ -59,11 +59,12 @@ export function visibleGlobalWorkspaceCatalog(hasPerm) {
   if (canSeeNav(hasPerm, NAV_KEYS.dashboard)) {
     tabs.push({ id: "dashboard", path: "/dashboard", label: "Dashboard Produksi" });
   }
-  if (canSeeNav(hasPerm, NAV_KEYS.dashboardSales) || (typeof hasPerm === "function" && hasPerm("dashboard.sales.view"))) {
+  if (
+    canSeeNav(hasPerm, NAV_KEYS.dashboardSales)
+    || canSeeNav(hasPerm, NAV_KEYS.dashboardFinance)
+    || (typeof hasPerm === "function" && (hasPerm("dashboard.sales.view") || hasPerm("dashboard.finance.view")))
+  ) {
     tabs.push({ id: "dashboard-penjualan", path: "/dashboard/penjualan", label: "Dashboard Penjualan" });
-  }
-  if (canSeeNav(hasPerm, NAV_KEYS.dashboardFinance) || (typeof hasPerm === "function" && hasPerm("dashboard.finance.view"))) {
-    tabs.push({ id: "dashboard-keuangan", path: "/dashboard/keuangan", label: "Dashboard Keuangan" });
   }
 
   if (canSeeNav(hasPerm, NAV_KEYS.chat) || (typeof hasPerm === "function" && hasPerm("chat.use"))) {

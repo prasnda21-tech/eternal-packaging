@@ -6188,3 +6188,160 @@ button.ghost.sm.icon{padding:4px 6px}
   .sd-grid{grid-template-columns:1fr}
   .sd-card-span{grid-column:auto}
 }
+
+.app-shell:has(.sales-finance-page){
+  height:100dvh;
+  max-height:100dvh;
+  overflow:hidden;
+}
+.app-main:has(.sales-finance-page){
+  min-width:0;
+  min-height:0;
+  height:100%;
+  max-height:100%;
+  overflow:hidden;
+}
+.app-main:has(.sales-finance-page) .topbar{flex-shrink:0}
+.content:has(.sales-finance-page),
+.content.content-workspace:has(.sales-finance-page){
+  flex:1 1 auto;
+  min-height:0;
+  max-width:none;
+  width:100%;
+  margin:0;
+  padding:0;
+  overflow:hidden;
+  display:flex;
+  flex-direction:column;
+}
+.content:has(.sales-finance-page) > .kb-workspace-tabs{
+  position:relative;
+  top:0;
+  flex:0 0 auto;
+}
+.sales-finance-page{
+  display:flex;
+  flex-direction:column;
+  flex:1 1 auto;
+  min-height:0;
+  min-width:0;
+  overflow:hidden;
+  padding:8px 12px 10px;
+  gap:8px;
+  box-sizing:border-box;
+  color:var(--ink);
+  background:var(--paper);
+}
+.sales-finance-page > .sf-head h1{
+  margin:0;
+  font-size:18px;
+  line-height:1.2;
+  color:var(--ep-dark);
+  white-space:normal;
+}
+.sales-finance-scroll{
+  flex:1 1 auto;
+  min-height:0;
+  min-width:0;
+  overflow-x:hidden;
+  overflow-y:auto;
+  display:flex;
+  flex-direction:column;
+  gap:12px;
+  padding-bottom:28px;
+  scrollbar-gutter:stable;
+}
+.sf-distinction{
+  margin:0;
+  padding:8px 10px;
+  border:1px solid var(--line);
+  border-radius:8px;
+  background:#fff;
+  color:var(--ink);
+  font-size:13px;
+  line-height:1.45;
+}
+.sales-finance-page .sales-dashboard-page,
+.sales-finance-page .finance-dashboard-page{
+  flex:none;
+  height:auto;
+  min-height:0;
+  overflow:visible;
+  padding:10px;
+  gap:8px;
+  border:1px solid var(--line);
+  border-radius:10px;
+  background:#f7faf8;
+}
+.sales-finance-page .sd-head h2,
+.sales-finance-page .fd-head h2{
+  margin:0;
+  font-size:16px;
+  line-height:1.3;
+  color:var(--ep-dark);
+}
+.sales-finance-page .sd-scroll{
+  flex:none;
+  height:auto;
+  min-height:0;
+  overflow:visible;
+  padding-bottom:0;
+}
+.sales-finance-page .fd-stage{
+  flex:none;
+  height:auto;
+  min-height:0;
+  display:flex;
+  flex-direction:column;
+  gap:8px;
+}
+.sales-finance-page .fd-visual,
+.sales-finance-page .fd-side,
+.sales-finance-page .fd-bottom,
+.sales-finance-page .fd-chart,
+.sales-finance-page .fd-position{
+  min-height:0;
+  height:auto;
+}
+.sales-finance-page .fd-side{grid-template-rows:auto auto}
+.sales-finance-page .fd-plot{
+  flex:0 0 220px;
+  height:220px;
+  min-height:220px;
+}
+.sales-finance-page #penjualan,
+.sales-finance-page #keuangan{scroll-margin-top:8px}
+@media (max-width:1100px){
+  .sales-finance-page .fd-visual,
+  .sales-finance-page .fd-bottom{grid-template-columns:1fr}
+}
+@media (max-width:720px){
+  .sales-finance-page{padding:8px}
+  .sales-finance-page .sd-head,
+  .sales-finance-page .fd-head{align-items:flex-start}
+  .sales-finance-page .sd-presets,
+  .sales-finance-page .fd-presets{flex-wrap:wrap}
+  .sales-finance-page .sd-custom,
+  .sales-finance-page .fd-custom{flex-wrap:wrap;width:100%}
+  .sales-finance-page .sd-custom input,
+  .sales-finance-page .fd-custom input{min-width:0;max-width:100%}
+  .sales-finance-page .sd-loaded,
+  .sales-finance-page .fd-loaded,
+  .sales-finance-page .fd-range,
+  .sales-finance-page .sd-range{margin-left:0;white-space:normal}
+  .sales-finance-page .fd-kpis,
+  .sales-finance-page .fd-position ul{grid-template-columns:1fr}
+  .sales-finance-page .sd-order-link,
+  .sales-finance-page .sd-order-link.is-static{grid-template-columns:minmax(0,1fr) auto}
+  .sales-finance-page .sd-order-link em{grid-column:1 / -1}
+  .sales-finance-page .sd-products li{grid-template-columns:18px minmax(0,1fr)}
+  .sales-finance-page .sd-products em,
+  .sales-finance-page .sd-products b{grid-column:2}
+  .sales-finance-page .fd-controls li{grid-template-columns:minmax(0,1fr)}
+  .sales-finance-page .fd-controls li b,
+  .sales-finance-page .fd-controls li a{justify-self:start}
+  .sales-finance-page .fd-drawer{
+    top:8px;right:8px;bottom:8px;left:8px;width:auto;max-width:none;
+  }
+  .sales-finance-page .fd-drawer-scrim{left:0}
+}
