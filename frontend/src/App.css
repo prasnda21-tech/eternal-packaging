@@ -4585,6 +4585,9 @@ html:has(.ship-status-page) #root{
 .sj-preview-list li{max-width:100%;min-width:0}
 .sj-preview-list button{max-width:100%;white-space:normal;overflow-wrap:anywhere;text-align:left}
 .sj-preview-footer{flex-shrink:0;position:static;background:#fafaf7;border-top:1px solid var(--line)}
+.modal.sj-preview-modal.is-failed .sj-preview-inner{height:auto;flex:0 0 auto}
+.modal.sj-preview-modal.is-failed .sj-preview-body{flex:0 0 auto;overflow:visible}
+.modal.sj-preview-modal.is-failed .sj-preview-frame{display:none;min-height:0;height:0;flex:0 0 auto;border:0;background:transparent}
 .sj-preview-modal .confirm-action-dl > div,
 .sj-preview-modal .confirm-action-dl dd,
 .sj-preview-filename{min-width:0;overflow-wrap:anywhere;word-break:break-word}

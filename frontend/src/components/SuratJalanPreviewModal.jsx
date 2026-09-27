@@ -132,10 +132,13 @@ export default function SuratJalanPreviewModal({
 
   if (!open) return null;
 
-  const showPreviewFrame = busy
+  const loadFailed = Boolean(err) && !busy && !pdfBlob && !blobUrl;
+  const showPreviewFrame = !loadFailed && (
+    busy
     || (previewKind === "pdf" && pdfBlob)
     || (previewKind === "image" && blobUrl)
-    || (!err && !previewKind);
+    || (!err && !previewKind)
+  );
 
   const onDownload = async () => {
     if (!canDownload || !active) return;
@@ -147,7 +150,7 @@ export default function SuratJalanPreviewModal({
   };
 
   return (
-    <div className="modal sj-preview-modal" role="dialog" aria-modal="true" data-testid="sj-preview-modal" onClick={onClose}>
+    <div className={`modal sj-preview-modal${loadFailed ? " is-failed" : ""}`} role="dialog" aria-modal="true" data-testid="sj-preview-modal" onClick={onClose}>
       <div className="modal-inner modal-wide sj-preview-inner" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
           <h3>SURAT JALAN</h3>

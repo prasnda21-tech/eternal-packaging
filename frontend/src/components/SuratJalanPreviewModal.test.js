@@ -138,6 +138,9 @@ describe("Surat Jalan preview modal", () => {
     expect(frame).not.toMatch(/70vh/);
     expect(frame).not.toMatch(/min-height:420px/);
     expect(css).toMatch(/\.sj-preview-frame \.spwa-pdf\{/);
+    expect(rule(css, ".modal.sj-preview-modal.is-failed .sj-preview-body")).toMatch(/flex:0 0 auto/);
+    expect(rule(css, ".modal.sj-preview-modal.is-failed .sj-preview-frame")).toMatch(/display:none/);
+    expect(rule(css, ".modal.sj-preview-modal.is-failed .sj-preview-frame")).toMatch(/min-height:0/);
     expect(css).not.toMatch(/\.sj-preview-frame iframe/);
     expect(css).not.toMatch(/\.sj-preview-frame\{[^}]*min-height:420px/);
     expect(rule(css, ".sj-preview-filename")).toMatch(/overflow-wrap:anywhere/);
@@ -191,6 +194,7 @@ describe("Surat Jalan preview modal", () => {
     const pdf = document.querySelector('[data-testid="sj-preview-pdf"]');
     expect(pdf.querySelector("iframe")).toBeNull();
     expect(pdf.querySelector('[data-testid="sales-pdf-viewer"]').getAttribute("data-label")).toBe(longName);
+    expect(document.querySelector(".sj-preview-modal").className).not.toContain("is-failed");
     expect(document.querySelector("iframe")).toBeNull();
     expect(document.querySelector('[data-testid="sj-preview-filename"]').textContent).toBe(longName);
     expect(fetchSuratJalanBlob).toHaveBeenCalledWith("po-1", "sj-a", expect.objectContaining({ download: false, filename: longName }));
@@ -280,6 +284,7 @@ describe("Surat Jalan preview modal", () => {
     });
     await flush();
     expect(document.querySelector('[data-testid="sj-preview-error"]').textContent).toMatch(/Izin ditolak/);
+    expect(document.querySelector(".sj-preview-modal").className).toContain("is-failed");
     expect(document.querySelector('[data-testid="sj-preview-frame"]')).toBeNull();
     expect(document.querySelector('[data-testid="sj-preview-close"]')).toBeTruthy();
     expect(document.querySelector('[data-testid="sj-preview-download"]')).toBeTruthy();
@@ -299,6 +304,7 @@ describe("Surat Jalan preview modal", () => {
     });
     await flush();
     expect(document.querySelector('[data-testid="sj-preview-error"]').textContent).toMatch(/tidak ditemukan/);
+    expect(document.querySelector(".sj-preview-modal").className).toContain("is-failed");
     expect(document.querySelector('[data-testid="sj-preview-frame"]')).toBeNull();
     expect(document.querySelector('[data-testid="sj-preview-download"]')).toBeNull();
     expect(document.querySelector("iframe")).toBeNull();
