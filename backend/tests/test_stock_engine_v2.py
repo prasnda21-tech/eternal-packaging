@@ -9,6 +9,7 @@ from services.stock_engine_v2 import (
     STOCK_INSUFFICIENT_MSG,
     aggregate_outstanding_so,
     apply_stock_opname,
+    build_current_stock_rows,
     build_stock_rows_v2,
     confirmed_delivery_evidence_from_orders,
     compute_available,
@@ -512,6 +513,37 @@ async def test_validate_so_releases_only_confirmed_delivery_reservation():
         [{"master_item_id": "m1", "accurate_item_id": "a1", "quantity": 20}],
     )
     assert warnings == []
+
+
+@pytest.mark.anyio
+async def test_current_stock_runtime_reads_confirmations_not_sales_deliveries():
+    db = _FakeDB()
+    db.orders.docs = [{
+        "id": "o1",
+        "line_items": [{
+            "master_item_id": "m1",
+            "accurate_item_id": "a1",
+            "quantity": 30,
+        }],
+        "delivery_confirmations": [{
+            "items": [{"line_idx": 0, "qty": 10}],
+        }],
+    }]
+    # A completed Surat Jalan must not release more than confirmation evidence.
+    db.sales_deliveries.docs = [{
+        "po_id": "o1",
+        "line_items": [{
+            "master_item_id": "m1",
+            "accurate_item_id": "a1",
+            "qty": 30,
+        }],
+    }]
+
+    rows = await build_current_stock_rows(db)
+
+    assert rows[0]["physical_qty"] == 100
+    assert rows[0]["outstanding_so_qty"] == 20
+    assert rows[0]["stock_current"] == 80
 
 
 @pytest.mark.anyio
