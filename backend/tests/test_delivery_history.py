@@ -7,6 +7,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from services.delivery_history import (
     append_confirmation,
     delivery_history_rows,
+    prospective_confirmation_items,
     public_delivery_history,
     terkirim_qty_summary,
 )
@@ -80,6 +81,20 @@ def test_zero_increment_does_not_append():
     o = _po()
     assert append_confirmation(o, _user(), qty_increment=0, now="2026-08-27T14:30:00+07:00") is None
     assert o.get("delivery_confirmations") in (None, [])
+
+
+def test_prospective_items_match_selected_shipment_delta():
+    o = _po()
+    shipment = {
+        "id": "s-partial",
+        "lines": [{"line_idx": 1, "line_id": "line-b", "qty": 600}],
+    }
+    items = prospective_confirmation_items(
+        o,
+        qty_increment=600,
+        shipment=shipment,
+    )
+    assert items == [{"line_idx": 1, "name": "Item B", "qty": 600, "line_id": "line-b"}]
 
 
 def test_terkirim_summary_partial_and_over():

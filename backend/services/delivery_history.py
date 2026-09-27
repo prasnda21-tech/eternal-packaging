@@ -149,13 +149,41 @@ def _items_for_shipment(order: dict, shipment: Optional[dict], qty_increment: in
             if qty <= 0:
                 continue
             name = _text(ln.get("name")) or _text(_line_name(order, idx))
-            rows.append({"line_idx": idx, "name": name, "qty": qty})
+            rows.append({
+                "line_idx": idx,
+                "line_id": _text(ln.get("line_id")),
+                "name": name,
+                "qty": qty,
+            })
         if rows:
             return rows
     items = _item_deltas(order)
     if items:
         return items
     return [{"line_idx": 0, "name": _text(_line_name(order, 0)), "qty": qty_increment}]
+
+
+def prospective_confirmation_items(
+    order: dict,
+    *,
+    qty_increment: int,
+    shipment: Optional[dict] = None,
+) -> List[dict]:
+    """Return the exact per-line rows that append_confirmation will persist."""
+    remaining = max(0, int(qty_increment or 0))
+    if remaining <= 0:
+        return []
+    rows = _items_for_shipment(order, shipment, remaining)
+    exact: List[dict] = []
+    for row in rows:
+        if remaining <= 0:
+            break
+        qty = min(remaining, max(0, int(row.get("qty") or 0)))
+        if qty <= 0:
+            continue
+        exact.append({**row, "qty": qty})
+        remaining -= qty
+    return exact
 
 
 def append_confirmation(
@@ -180,7 +208,11 @@ def append_confirmation(
     role = _text((user or {}).get("role"))
     display_driver = _text(lc.get("driver_name")) or _text((user or {}).get("name"))
     driver_id = actor_id if role == "driver" else None
-    items = _items_for_shipment(order, shipment, qty_increment)
+    items = prospective_confirmation_items(
+        order,
+        qty_increment=qty_increment,
+        shipment=shipment,
+    )
     sh = shipment if isinstance(shipment, dict) else None
     sid = _text(shipment_id) or _text((sh or {}).get("id")) or _latest_shipment_id(order)
     rec_sig = order.get("delivery_recipient_signature") or {}

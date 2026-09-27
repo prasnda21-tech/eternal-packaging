@@ -267,8 +267,8 @@ async def is_source_committed(db, pending_event: Dict[str, Any]) -> bool:
         ids = list(order.get("delivery_confirm_action_ids") or [])
         if action_id and action_id in ids:
             return True
-        for c in order.get("delivery_confirmations") or []:
-            if action_id and str(c.get("action_id") or "").strip() == action_id:
+        for confirmation in order.get("delivery_confirmations") or []:
+            if action_id and str(confirmation.get("action_id") or "").strip() == action_id:
                 return True
         return False
 
@@ -360,6 +360,12 @@ async def claim_durable_stock_event(
     is_print: Optional[bool] = None,
     production_process: Optional[str] = None,
     change_metadata: Optional[Dict[str, Any]] = None,
+    delta_total_override: Optional[float] = None,
+    delta_unprinted_override: Optional[float] = None,
+    delta_printed_override: Optional[float] = None,
+    expected_total_qty: Optional[float] = None,
+    expected_unprinted_qty: Optional[float] = None,
+    expected_printed_qty: Optional[float] = None,
     user: Optional[Dict[str, Any]] = None,
     now: Optional[str] = None,
 ) -> Dict[str, Any]:
@@ -439,6 +445,12 @@ async def claim_durable_stock_event(
         delta_printed = 0.0
     else:
         raise ValueError(f"Tipe mutasi '{movement_type}' tidak didukung di engine")
+    if delta_total_override is not None:
+        delta_total = safe_float(delta_total_override)
+    if delta_unprinted_override is not None:
+        delta_unprinted = safe_float(delta_unprinted_override)
+    if delta_printed_override is not None:
+        delta_printed = safe_float(delta_printed_override)
 
     stamp = now or now_iso()
 
@@ -551,11 +563,17 @@ async def claim_durable_stock_event(
         "initialized": True,
         "pending_event": None,
     }
-    if delta_unprinted < 0:
+    if expected_total_qty is not None:
+        query["total_qty"] = safe_float(expected_total_qty)
+    if expected_unprinted_qty is not None:
+        query["unprinted_qty"] = safe_float(expected_unprinted_qty)
+    if expected_printed_qty is not None:
+        query["printed_qty"] = safe_float(expected_printed_qty)
+    if delta_unprinted < 0 and expected_unprinted_qty is None:
         query["unprinted_qty"] = {"$gte": abs(delta_unprinted)}
-    if delta_printed < 0:
+    if delta_printed < 0 and expected_printed_qty is None:
         query["printed_qty"] = {"$gte": abs(delta_printed)}
-    if delta_total < 0:
+    if delta_total < 0 and expected_total_qty is None:
         query["total_qty"] = {"$gte": abs(delta_total)}
 
     update = {
@@ -776,6 +794,12 @@ async def execute_durable_stock_event(
     is_print: Optional[bool] = None,
     production_process: Optional[str] = None,
     change_metadata: Optional[Dict[str, Any]] = None,
+    delta_total_override: Optional[float] = None,
+    delta_unprinted_override: Optional[float] = None,
+    delta_printed_override: Optional[float] = None,
+    expected_total_qty: Optional[float] = None,
+    expected_unprinted_qty: Optional[float] = None,
+    expected_printed_qty: Optional[float] = None,
     user: Optional[Dict[str, Any]] = None,
     now: Optional[str] = None,
 ) -> Dict[str, Any]:
@@ -800,6 +824,12 @@ async def execute_durable_stock_event(
         is_print=is_print,
         production_process=production_process,
         change_metadata=change_metadata,
+        delta_total_override=delta_total_override,
+        delta_unprinted_override=delta_unprinted_override,
+        delta_printed_override=delta_printed_override,
+        expected_total_qty=expected_total_qty,
+        expected_unprinted_qty=expected_unprinted_qty,
+        expected_printed_qty=expected_printed_qty,
         user=user,
         now=now,
     )
@@ -1290,21 +1320,21 @@ async def handle_delivery_confirmed(
     lis = order.get("line_items") or []
 
     movements = []
-    # If confirmation contains specific line deltas, use them; otherwise use order lines
-    lines = confirmation.get("lines") or lis
-    for idx, line in enumerate(lines):
+    # Confirmation items are the authoritative newly-confirmed per-line deltas.
+    lines = confirmation.get("lines") or confirmation.get("items") or lis
+    for position, line in enumerate(lines):
         qty = safe_float(line.get("qty", line.get("quantity", 0)))
         if qty <= 0:
             continue
-        mid = line.get("master_item_id")
-        if not mid and idx < len(lis):
-            mid = lis[idx].get("master_item_id")
+        idx = int(line.get("line_idx", position))
+        target_line = lis[idx] if 0 <= idx < len(lis) else line
+        mid = line.get("master_item_id") or target_line.get("master_item_id")
         if not mid:
             continue
-        proc = str(line.get("production_process") or "").strip().lower()
+        proc = str(line.get("production_process") or target_line.get("production_process") or "").strip().lower()
         is_p = proc != "non_print"
         if not await _production_flow_stock_can_mutate(
-            db, mid, qty, line.get("unit"),
+            db, mid, qty, line.get("unit") or target_line.get("unit"),
             movement_type=MOVEMENT_PENGIRIMAN, is_print=is_p,
         ):
             continue
@@ -1317,7 +1347,7 @@ async def handle_delivery_confirmed(
             master_item_id=mid,
             movement_type=MOVEMENT_PENGIRIMAN,
             transaction_qty=qty,
-            transaction_uom=line.get("unit"),
+            transaction_uom=line.get("unit") or target_line.get("unit"),
             source_entity="SUDAH_DICETAK" if is_p else "BELUM_DICETAK",
             destination_entity="CUSTOMER",
             reference_number=po_num,
@@ -1326,7 +1356,7 @@ async def handle_delivery_confirmed(
             description=f"Pengurangan Stok - Pengiriman Dikonfirmasi ({po_num})",
             order_id=order_id,
             line_idx=idx,
-            line_id=line.get("line_id"),
+            line_id=line.get("line_id") or target_line.get("line_id"),
             is_print=is_p,
             production_process=proc,
             user=user,
@@ -1543,25 +1573,25 @@ async def precheck_delivery_confirmed(
         return
 
     lis = order.get("line_items") or []
-    for idx, line in enumerate(lines):
+    for position, line in enumerate(lines):
         qty = safe_float(line.get("qty", line.get("quantity", 0)))
         if qty <= 0:
             continue
-        mid = line.get("master_item_id")
-        if not mid and idx < len(lis):
-            mid = lis[idx].get("master_item_id")
+        idx = int(line.get("line_idx", position))
+        target_line = lis[idx] if 0 <= idx < len(lis) else line
+        mid = line.get("master_item_id") or target_line.get("master_item_id")
         if not mid:
             continue
-        proc = str(line.get("production_process") or "").strip().lower()
+        proc = str(line.get("production_process") or target_line.get("production_process") or "").strip().lower()
         is_p = proc != "non_print"
         if not await _production_flow_stock_can_mutate(
-            db, mid, qty, line.get("unit"),
+            db, mid, qty, line.get("unit") or target_line.get("unit"),
             movement_type=MOVEMENT_PENGIRIMAN, is_print=is_p,
         ):
             continue
         bucket = "printed" if is_p else "unprinted"
         base_qty, _, _, _ = await resolve_transaction_conversion(
-            db, mid, qty, line.get("unit")
+            db, mid, qty, line.get("unit") or target_line.get("unit")
         )
         await check_stock_availability(
             db, mid, base_qty, bucket=bucket, context_label="konfirmasi pengiriman"
@@ -1994,30 +2024,43 @@ async def claim_delivery_confirmed_stock(
     claims = []
     lis = order.get("line_items") or []
     try:
-        for idx, line in enumerate(lines):
+        for position, line in enumerate(lines):
             qty = safe_float(line.get("qty", line.get("quantity", 0)))
             if qty <= 0:
                 continue
-            mid = line.get("master_item_id")
-            if not mid and idx < len(lis):
-                mid = lis[idx].get("master_item_id")
+            idx = int(line.get("line_idx", position))
+            target_line = lis[idx] if 0 <= idx < len(lis) else line
+            mid = line.get("master_item_id") or target_line.get("master_item_id")
             if not mid:
                 continue
-            proc = str(line.get("production_process") or "").strip().lower()
+            proc = str(line.get("production_process") or target_line.get("production_process") or "").strip().lower()
             is_p = proc != "non_print"
-            if not await _production_flow_stock_can_mutate(
-                db, mid, qty, line.get("unit"),
+            event_id = f"stock_out:delivery:{order['id']}:{action_id}:{idx}"
+            existing_movement = await db.stock_movements.find_one(
+                {"$or": [{"_id": event_id}, {"id": event_id}, {"event_key": event_id}]},
+                {"_id": 1},
+            )
+            state = await get_product_stock_state(db, mid)
+            pending = (state or {}).get("pending_event")
+            resumable = bool(
+                existing_movement
+                or (
+                    isinstance(pending, dict)
+                    and pending.get("event_id") == event_id
+                )
+            )
+            if not resumable and not await _production_flow_stock_can_mutate(
+                db, mid, qty, line.get("unit") or target_line.get("unit"),
                 movement_type=MOVEMENT_PENGIRIMAN, is_print=is_p,
             ):
                 continue
-            event_id = f"stock_out:delivery:{order['id']}:{action_id}:{idx}"
             claim = await claim_durable_stock_event(
                 db,
                 event_id=event_id,
                 master_item_id=mid,
                 movement_type=MOVEMENT_PENGIRIMAN,
                 transaction_qty=qty,
-                transaction_uom=line.get("unit"),
+                transaction_uom=line.get("unit") or target_line.get("unit"),
                 source_entity="SUDAH_DICETAK" if is_p else "BELUM_DICETAK",
                 destination_entity="CUSTOMER",
                 reference_number=str(order.get("po_number") or order.get("id")),
@@ -2026,7 +2069,7 @@ async def claim_delivery_confirmed_stock(
                 description=f"Pengurangan Stok Fisik Konfirmasi Diterima ({'Cetak' if is_p else 'Polos'})",
                 order_id=order.get("id"),
                 line_idx=idx,
-                line_id=line.get("line_id"),
+                line_id=line.get("line_id") or target_line.get("line_id"),
                 action_id=action_id,
                 is_print=is_p,
                 production_process=proc,

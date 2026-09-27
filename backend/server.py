@@ -57,6 +57,7 @@ from services.workflow_stage_status import role_status_from_order as _role_statu
 from services.delivery_history import (
     append_confirmation as _append_delivery_confirmation,
     attach_delivery_history,
+    prospective_confirmation_items as _prospective_delivery_confirmation_items,
 )
 from services.operator_schedule import (
     apply_operator_assignments as _apply_operator_assignments,
@@ -5741,11 +5742,45 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
         selected_shipment_id = str(selected_shipment_id).strip() or None
 
     existing_order = await db.orders.find_one({"id": order_id}, {"_id": 0})
-    if existing_order:
-        from services.physical_stock_engine import precheck_delivery_confirmed
-        await precheck_delivery_confirmed(db, existing_order, existing_order.get("line_items") or [])
-
     act_id = action_id or str(uuid.uuid4())
+    stock_lines = []
+    if existing_order:
+        committed_confirmation = next((
+            row for row in existing_order.get("delivery_confirmations") or []
+            if str(row.get("action_id") or "").strip() == act_id
+        ), None)
+        if committed_confirmation:
+            stock_lines = [
+                dict(row)
+                for row in committed_confirmation.get("items") or []
+                if isinstance(row, dict)
+            ]
+        else:
+            preview_shipment, preview_error = _qr_resolve_delivery_shipment(
+                existing_order,
+                selected_shipment_id,
+            )
+            if preview_error:
+                raise HTTPException(400, preview_error)
+            preview_evidence = _qr_apply_delivery_from_proof_evidence(
+                existing_order,
+                preview_shipment,
+            )
+            if preview_evidence:
+                preview_current = _qr_qty_delivered(existing_order)
+                preview_increment = int(
+                    preview_evidence.get("increment")
+                    if preview_evidence.get("increment") is not None
+                    else int(preview_evidence["qty_delivered"]) - int(preview_current or 0)
+                )
+                stock_lines = _prospective_delivery_confirmation_items(
+                    existing_order,
+                    qty_increment=preview_increment,
+                    shipment=preview_shipment,
+                )
+        from services.physical_stock_engine import precheck_delivery_confirmed
+        await precheck_delivery_confirmed(db, existing_order, stock_lines)
+
     claimed_stock = None
     if existing_order:
         from services.physical_stock_engine import (
@@ -5754,7 +5789,7 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
         )
         if await should_claim_delivery_confirmed_stock(db, existing_order):
             claimed_stock = await claim_delivery_confirmed_stock(
-                db, existing_order, existing_order.get("line_items") or [], act_id, user
+                db, existing_order, stock_lines, act_id, user
             )
 
     frozen_sig_holder = {"sig": None, "driver_sig": None}
@@ -5763,7 +5798,7 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
 
     def mutate(order: dict):
         ids = list(order.get("delivery_confirm_action_ids") or [])
-        if action_id and action_id in ids:
+        if act_id in ids:
             return
         selected_sh, resolve_err = _qr_resolve_delivery_shipment(order, selected_shipment_id)
         if resolve_err:
@@ -5802,7 +5837,7 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
         # Packing and Loading quantities are not mutated. Idempotent on retry.
         reconcile_holder["result"] = _qr_reconcile_sj_quantities_to_loaded_delivery(order)
         conf = _append_delivery_confirmation(
-            order, user, qty_increment=increment, now=now, action_id=action_id,
+            order, user, qty_increment=increment, now=now, action_id=act_id,
             shipment_id=_qr_delivery_batch_identity(selected_sh) if selected_sh else None,
             shipment=selected_sh,
         )
@@ -5844,9 +5879,8 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
                 order.pop("delivery_recipient_signature", None)
             if frozen_sig_holder["driver_sig"]:
                 order.pop("delivery_driver_signature", None)
-        if action_id:
-            ids.append(action_id)
-            order["delivery_confirm_action_ids"] = ids[-20:]
+        ids.append(act_id)
+        order["delivery_confirm_action_ids"] = ids[-20:]
 
     try:
         order = await _with_quantity_lock(order_id, mutate)
@@ -11811,7 +11845,7 @@ async def current_stock_update(
 
 class StockOpnamePayload(BaseModel):
     master_item_id: str
-    target_stock_current_qty: Any
+    stock_physical_counted: Any
     note: Optional[str] = ""
     client_request_id: Optional[str] = None
 
@@ -11831,7 +11865,7 @@ async def stock_opname_apply(
     result = await apply_stock_opname(
         db,
         master_item_id=payload.master_item_id,
-        target_stock_current_qty=payload.target_stock_current_qty,
+        stock_physical_counted=payload.stock_physical_counted,
         outstanding_so_qty=stock_row.get("outstanding_so_qty"),
         note=payload.note or "",
         user=user,
@@ -11841,11 +11875,20 @@ async def stock_opname_apply(
         "stock_opname.apply",
         user,
         target_email=f"item:{payload.master_item_id}",
-        before=None,
+        before={
+            "stock_physical": result.get("stock_physical_before"),
+        },
         after={
             "master_item_id": payload.master_item_id,
-            "target_stock_current_qty": payload.target_stock_current_qty,
+            "stock_physical_counted": payload.stock_physical_counted,
+            "stock_physical_before": result.get("stock_physical_before"),
+            "difference_qty": result.get("difference_qty"),
             "delta_total": result.get("delta_total"),
+            "effective_hpp_snapshot": result.get("effective_hpp_snapshot"),
+            "hpp_source": result.get("hpp_source"),
+            "estimated_difference_value": result.get("estimated_difference_value"),
+            "estimated_value_is_informational": True,
+            "valuation_adjustment_required": result.get("valuation_adjustment_required"),
         },
         note=payload.note or "Stock Opname",
     )
