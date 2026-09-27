@@ -1,7 +1,7 @@
 """Stock Opname Excel import/export for Stock Engine V2.
 
 Template columns:
-  KODE | NAMA BARANG | STOCK FISIK SISTEM | STOCK FISIK HASIL OPNAME
+  KODE | NAMA BARANG | STOCK FISIK SISTEM | STOCK FISIK HASIL HITUNG
 
 Matching: KODE/SKU only (nama/stock sistem = reference).
 Does not create master items. Does not create a third stock engine —
@@ -28,7 +28,7 @@ TEMPLATE_HEADERS = [
     "KODE",
     "NAMA BARANG",
     "STOCK FISIK SISTEM",
-    "STOCK FISIK HASIL OPNAME",
+    "STOCK FISIK HASIL HITUNG",
 ]
 
 _HEADER_ALIASES = {
@@ -219,7 +219,7 @@ def build_opname_import_preview(
     if "item_code" not in mapped:
         raise HTTPException(400, "Kolom KODE wajib ada di file")
     if "stock_physical_counted" not in mapped:
-        raise HTTPException(400, "Kolom STOCK FISIK HASIL OPNAME wajib ada di file")
+        raise HTTPException(400, "Kolom STOCK FISIK HASIL HITUNG wajib ada di file")
 
     code_idx = mapped.index("item_code")
     name_idx = mapped.index("item_name") if "item_name" in mapped else None
@@ -254,6 +254,7 @@ def build_opname_import_preview(
             "printed_qty": None,
             "outstanding_so_qty": None,
             "target_physical_qty": None,
+            "stock_sellable_after": None,
             "initialized": False,
             "opname_action": None,
             "status": "OK",
@@ -324,6 +325,7 @@ def build_opname_import_preview(
             "stock_physical_counted": qty,
             "difference_qty": difference_qty,
             "target_physical_qty": target_physical,
+            "stock_sellable_after": target_physical - outstanding,
             "client_request_id": f"{batch_request_id}:{key}",
         })
         if initialized and qty + 1e-9 < printed:
@@ -484,6 +486,7 @@ async def apply_opname_import_batch(
                 "stock_physical_before": result.get("stock_physical_before"),
                 "difference_qty": result.get("difference_qty"),
                 "target_physical_qty": row.get("target_physical_qty"),
+                "stock_sellable_after": row.get("stock_sellable_after"),
                 "effective_hpp_snapshot": result.get("effective_hpp_snapshot"),
                 "hpp_source": result.get("hpp_source"),
                 "hpp_status_snapshot": result.get("hpp_status_snapshot"),

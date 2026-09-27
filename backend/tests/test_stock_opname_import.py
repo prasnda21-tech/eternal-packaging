@@ -87,7 +87,7 @@ def test_export_template_columns_only():
     wb = load_workbook(BytesIO(content))
     ws = wb.active
     headers = [c.value for c in ws[1]]
-    assert headers == ["KODE", "NAMA BARANG", "STOCK FISIK SISTEM", "STOCK FISIK HASIL OPNAME"]
+    assert headers == ["KODE", "NAMA BARANG", "STOCK FISIK SISTEM", "STOCK FISIK HASIL HITUNG"]
     assert ws.max_row == 1 + len(rows)
     # Counted column empty for user fill
     assert ws.cell(row=2, column=4).value is None
@@ -249,6 +249,7 @@ def test_preview_outstanding_so_and_partial_delivery_style():
     assert row["stock_physical_counted"] == 90
     assert row["target_physical_qty"] == 90
     assert row["difference_qty"] == -10
+    assert row["stock_sellable_after"] == 65
 
 
 def test_preview_unchanged_when_same_physical():
@@ -439,7 +440,7 @@ def test_export_includes_stock_saat_ini_system_and_empty_target():
     wb = load_workbook(BytesIO(content))
     ws = wb.active
     assert [c.value for c in ws[1]] == [
-        "KODE", "NAMA BARANG", "STOCK FISIK SISTEM", "STOCK FISIK HASIL OPNAME",
+        "KODE", "NAMA BARANG", "STOCK FISIK SISTEM", "STOCK FISIK HASIL HITUNG",
     ]
     assert ws.cell(row=2, column=3).value == rows[0]["physical_qty"]
     assert ws.cell(row=2, column=4).value is None
