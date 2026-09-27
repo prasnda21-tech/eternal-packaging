@@ -6154,6 +6154,7 @@ button.ghost.sm.icon{padding:4px 6px}
 .sd-plot-short{height:92px;min-height:0;flex:0 0 92px}
 .sd-plot .recharts-responsive-container,.sd-donut .recharts-responsive-container{overflow:hidden}
 .sd-state{margin:0;min-height:48px;display:flex;align-items:center;font-size:13px;color:var(--soft)}
+.sd-empty{margin:0;font-size:13px;line-height:1.35;font-weight:450;color:var(--soft)}
 .sd-state.is-error{color:#991b1b}
 .sd-delta{margin:0;display:flex;align-items:baseline;gap:6px;font:650 13px/1.3 'IBM Plex Mono',monospace;color:var(--soft)}
 .sd-delta.is-up{color:#176B4D}
@@ -6248,7 +6249,7 @@ button.ghost.sm.icon{padding:4px 6px}
   display:flex;
   flex-direction:column;
   gap:12px;
-  padding-bottom:28px;
+  padding-bottom:84px;
   scrollbar-gutter:stable;
 }
 .sf-distinction{
@@ -6273,6 +6274,8 @@ button.ghost.sm.icon{padding:4px 6px}
   border-radius:10px;
   background:#f7faf8;
 }
+.sales-finance-page .sd-head,
+.sales-finance-page .fd-head{padding-right:76px}
 .sales-finance-page .sd-head h2,
 .sales-finance-page .fd-head h2{
   margin:0;
@@ -6304,10 +6307,20 @@ button.ghost.sm.icon{padding:4px 6px}
   height:auto;
 }
 .sales-finance-page .fd-side{grid-template-rows:auto auto}
-.sales-finance-page .fd-plot{
+.sales-finance-page .fd-plot.is-series{
   flex:0 0 220px;
   height:220px;
   min-height:220px;
+}
+.sales-finance-page .fd-plot.is-message{
+  flex:0 0 auto;
+  height:auto;
+  min-height:0;
+}
+.sales-finance-page .fd-plot.is-message .fd-chart-state{
+  height:auto;
+  min-height:0;
+  align-items:flex-start;
 }
 .sales-finance-page #penjualan,
 .sales-finance-page #keuangan{scroll-margin-top:8px}

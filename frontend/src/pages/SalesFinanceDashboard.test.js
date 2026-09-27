@@ -146,6 +146,8 @@ describe("merged dashboard permissions", () => {
     expect(api.financialDashboard).toHaveBeenCalled();
     expect(api.salesDashboard).not.toHaveBeenCalled();
     expect(container.querySelector('[data-testid="finance-revenue-value"]').textContent).toMatch(/9\.000|9,000/);
+    expect(container.querySelector('[data-testid="finance-chart-trend"] .fd-plot').classList.contains("is-series")).toBe(true);
+    expect(container.querySelector('[data-testid="finance-chart-expense"] .fd-plot').classList.contains("is-message")).toBe(true);
   });
 
   test("both permissions keep independent sections when one source fails", async () => {

@@ -93,7 +93,7 @@ function ChartFrame({ title, note, status, detail, testid, children }) {
         {status === "zero" ? <span className="is-zero">Nol tercatat</span> : null}
         {status === "incomplete" ? <span className="fd-flag" title="Ada catatan kelengkapan" /> : null}
       </header>
-      <div className="fd-plot">
+      <div className={`fd-plot${plot ? " is-series" : " is-message"}`}>
         {plot ? children : <p className={`fd-chart-state is-${status || "empty"}`}>{chartStateCopy(status, detail)}</p>}
       </div>
     </section>

@@ -251,7 +251,11 @@ export default function SalesDashboard({ embedded = false }) {
           <section className="sd-card" data-testid="sales-omzet">
             <p className="sd-kicker">Selama periode · tanggal faktur</p>
             <h2>Omzet penjualan</h2>
-            <strong className="sd-hero" data-testid="sales-omzet-value">{displayAmount(omzetStatus, omzet?.amount, omzet?.detail)}</strong>
+            {omzetStatus === "complete" || omzetStatus === "zero" ? (
+              <strong className="sd-hero" data-testid="sales-omzet-value">{displayAmount(omzetStatus, omzet?.amount, omzet?.detail)}</strong>
+            ) : (
+              <p className="sd-empty" data-testid="sales-omzet-value">{displayAmount(omzetStatus, omzet?.amount, omzet?.detail)}</p>
+            )}
             <p className={`sd-delta is-${delta.arrow || "none"}`} data-testid="sales-omzet-delta">
               {delta.arrow === "up" ? "↑ " : null}
               {delta.arrow === "down" ? "↓ " : null}

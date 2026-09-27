@@ -243,6 +243,7 @@ describe("Dashboard Penjualan runtime", () => {
 
     expect(container.querySelector('[data-testid="sales-line"]').getAttribute("data-points")).toBe("1");
     expect(container.querySelector('[data-testid="sales-omzet-value"]').textContent).toMatch(/4\.000|4,000/);
+    expect(container.querySelector('[data-testid="sales-omzet-value"]').classList.contains("sd-hero")).toBe(true);
     expect(container.querySelector('[data-testid="sales-products"]').textContent).toMatch(/Gagal muat/);
     expect(container.querySelector('[data-testid="sales-products"]').textContent).not.toMatch(/Rp\s*0/);
     expect(container.querySelector('[data-testid="sales-order-aktif"]').getAttribute("href")).toBe("/penjualan/pesanan-penjualan?status=aktif");
@@ -262,7 +263,10 @@ describe("Dashboard Penjualan runtime", () => {
       products: { status: "empty", items: [], detail: "Belum ada faktur pada periode ini" },
     }));
     await click("sales-reload");
-    expect(container.querySelector('[data-testid="sales-omzet-value"]').textContent).toBe("Belum ada faktur pada periode ini");
+    const emptyOmzet = container.querySelector('[data-testid="sales-omzet-value"]');
+    expect(emptyOmzet.textContent).toBe("Belum ada faktur pada periode ini");
+    expect(emptyOmzet.classList.contains("sd-empty")).toBe(true);
+    expect(emptyOmzet.classList.contains("sd-hero")).toBe(false);
     expect(container.querySelector('[data-testid="sales-trend"]').textContent).toMatch(/Belum ada faktur pada periode ini/);
     expect(container.textContent).not.toMatch(/125\.430|98\.250|27\.180|Budi Santoso|Contoh visual/);
     expect(container.querySelector('[data-testid="sales-omzet-delta"]').textContent).toContain("—");
