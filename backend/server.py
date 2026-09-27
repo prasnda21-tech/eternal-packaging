@@ -3,7 +3,7 @@ from fastapi.responses import Response as FastAPIResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
-import os, logging, uuid, base64, re, secrets, hashlib, copy, inspect, asyncio, json
+import os, logging, uuid, base64, re, secrets, hashlib, copy, inspect, asyncio
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict
 from typing import List, Optional, Any, Dict, Tuple, Union
@@ -5743,10 +5743,6 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
 
     existing_order = await db.orders.find_one({"id": order_id}, {"_id": 0})
     act_id = action_id or str(uuid.uuid4())
-    # region agent log
-    with open("/opt/cursor/logs/debug.log", "a") as _log:
-        _log.write(json.dumps({"hypothesisId": "A", "location": "server.py:confirm_delivered", "message": "delivery confirm source loaded", "data": {"order_id": order_id, "action_id": action_id, "shipment_id": selected_shipment_id, "line_quantities": [{"line_idx": i, "qty": line.get("qty", line.get("quantity"))} for i, line in enumerate((existing_order or {}).get("line_items") or [])]}, "timestamp": datetime.now(timezone.utc).timestamp() * 1000}) + "\n")
-    # endregion
     stock_lines = []
     if existing_order:
         committed_confirmation = next((
@@ -5821,10 +5817,6 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
         evidence = _qr_apply_delivery_from_proof_evidence(order, selected_sh)
         if not evidence:
             raise HTTPException(400, "Belum ada qty packing/Surat Jalan yang eligible untuk dikonfirmasi terkirim.")
-        # region agent log
-        with open("/opt/cursor/logs/debug.log", "a") as _log:
-            _log.write(json.dumps({"hypothesisId": "A,D", "location": "server.py:confirm_delivered.mutate", "message": "proof evidence resolved", "data": {"order_id": order_id, "action_id": action_id, "evidence": evidence, "shipment_lines": (selected_sh or {}).get("lines") or []}, "timestamp": datetime.now(timezone.utc).timestamp() * 1000}, default=str) + "\n")
-        # endregion
         now = now_iso()
         current_delivered = _qr_qty_delivered(order)
         increment = int(evidence.get("increment") if evidence.get("increment") is not None else (
@@ -5850,10 +5842,6 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
             shipment=selected_sh,
         )
         conf_holder["conf"] = conf
-        # region agent log
-        with open("/opt/cursor/logs/debug.log", "a") as _log:
-            _log.write(json.dumps({"hypothesisId": "B,D", "location": "server.py:confirm_delivered.mutate", "message": "delivery confirmation appended", "data": {"order_id": order_id, "action_id": action_id, "confirmation_qty": (conf or {}).get("qty"), "confirmation_items": (conf or {}).get("items"), "confirmation_lines": (conf or {}).get("lines")}, "timestamp": datetime.now(timezone.utc).timestamp() * 1000}, default=str) + "\n")
-        # endregion
         try:
             from services.delivery_pod_signature import (
                 freeze_active_signature,

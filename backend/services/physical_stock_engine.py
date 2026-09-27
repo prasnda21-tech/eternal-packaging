@@ -25,7 +25,6 @@ Implements:
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -266,16 +265,12 @@ async def is_source_committed(db, pending_event: Dict[str, Any]) -> bool:
         if not order:
             return False
         ids = list(order.get("delivery_confirm_action_ids") or [])
-        confirmation_match = next((
-            c for c in order.get("delivery_confirmations") or []
-            if action_id and str(c.get("action_id") or "").strip() == action_id
-        ), None)
-        committed = bool(action_id and (action_id in ids or confirmation_match))
-        # region agent log
-        with open("/opt/cursor/logs/debug.log", "a") as _log:
-            _log.write(json.dumps({"hypothesisId": "C", "location": "physical_stock_engine.py:is_source_committed", "message": "delivery source commitment checked", "data": {"order_id": order_id, "action_id": action_id, "action_id_present": action_id in ids, "confirmation_present": confirmation_match is not None, "confirmation_items": (confirmation_match or {}).get("items"), "committed": committed}, "timestamp": datetime.now(timezone.utc).timestamp() * 1000}, default=str) + "\n")
-        # endregion
-        return committed
+        if action_id and action_id in ids:
+            return True
+        for confirmation in order.get("delivery_confirmations") or []:
+            if action_id and str(confirmation.get("action_id") or "").strip() == action_id:
+                return True
+        return False
 
     elif ref_type == "goods_receipt":
         ref_id = pending_event.get("reference_id") or pending_event.get("receipt_id")
@@ -560,11 +555,6 @@ async def claim_durable_stock_event(
         "claimed_at": stamp,
         "started_at": stamp,
     }
-    if str(reference_type or "").strip().lower() == "delivery_confirmed":
-        # region agent log
-        with open("/opt/cursor/logs/debug.log", "a") as _log:
-            _log.write(json.dumps({"hypothesisId": "A,C,D", "location": "physical_stock_engine.py:claim_durable_stock_event", "message": "delivery stock claim constructed", "data": {"event_id": ev_id, "order_id": order_id, "action_id": action_id, "line_idx": line_idx, "line_id": line_id, "transaction_qty": transaction_qty, "base_qty": base_qty, "delta_total": delta_total}, "timestamp": datetime.now(timezone.utc).timestamp() * 1000}, default=str) + "\n")
-        # endregion
 
     # 4. Atomic conditional reservation: sets pending_event WITHOUT premature balance mutation!
     query = {
@@ -689,11 +679,6 @@ async def finalize_durable_stock_event(
 
     stamp = now or pending.get("started_at") or now_iso()
     stage = pending.get("stage", "CLAIMED")
-    if str(pending.get("reference_type") or "").strip().lower() == "delivery_confirmed":
-        # region agent log
-        with open("/opt/cursor/logs/debug.log", "a") as _log:
-            _log.write(json.dumps({"hypothesisId": "C", "location": "physical_stock_engine.py:finalize_durable_stock_event", "message": "delivery stock claim finalizing", "data": {"event_id": ev_id, "stage": stage, "action_id": pending.get("action_id"), "line_idx": pending.get("line_idx"), "transaction_qty": pending.get("transaction_qty"), "delta_total": pending.get("delta_total")}, "timestamp": datetime.now(timezone.utc).timestamp() * 1000}, default=str) + "\n")
-        # endregion
 
     if stage == "CLAIMED":
         d_tot = safe_float(pending.get("delta_total", 0.0))
@@ -2038,10 +2023,6 @@ async def claim_delivery_confirmed_stock(
 ) -> List[Dict[str, Any]]:
     claims = []
     lis = order.get("line_items") or []
-    # region agent log
-    with open("/opt/cursor/logs/debug.log", "a") as _log:
-        _log.write(json.dumps({"hypothesisId": "A,B,D", "location": "physical_stock_engine.py:claim_delivery_confirmed_stock", "message": "delivery stock claim input", "data": {"order_id": order.get("id"), "action_id": action_id, "lines": [{"enumerated_idx": i, "line_idx": line.get("line_idx"), "line_id": line.get("line_id"), "qty": line.get("qty", line.get("quantity"))} for i, line in enumerate(lines or [])]}, "timestamp": datetime.now(timezone.utc).timestamp() * 1000}, default=str) + "\n")
-    # endregion
     try:
         for position, line in enumerate(lines):
             qty = safe_float(line.get("qty", line.get("quantity", 0)))
