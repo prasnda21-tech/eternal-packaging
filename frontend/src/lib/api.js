@@ -345,6 +345,12 @@ export const api = {
     client.post(`/inventory/financial-opening/recover`, payload).then((r) => r.data),
   financialBookReconciliation: () =>
     client.get(`/inventory/financial-opening/reconciliation`).then((r) => r.data),
+  ledgerInventoryReconciliationSummary: () =>
+    client.get(`/ledger/inventory-reconciliation/summary`).then((r) => r.data),
+  ledgerInventoryReconciliationAccounts: (params = {}) =>
+    client.get(`/ledger/inventory-reconciliation/accounts`, { params }).then((r) => r.data),
+  ledgerInventoryReconciliationItems: (params = {}) =>
+    client.get(`/ledger/inventory-reconciliation/items`, { params }).then((r) => r.data),
   captureFinancialOpeningSnapshot: (payload) =>
     client.post(`/inventory/financial-opening/snapshot`, payload).then((r) => r.data),
   inventoryIssues: () => client.get(`/ledger/inventory-issues`).then((r) => r.data),

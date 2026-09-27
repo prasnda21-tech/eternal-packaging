@@ -6,7 +6,7 @@ export const INVENTORY_VALUE_LINK_LABEL = "Lihat nilai persediaan";
 export const CURRENT_STOCK_LINK_LABEL = "Lihat di Stok Saat Ini";
 export const BOOK_VALUE_NOTE = "Tidak ditampilkan per barang. Rekonsiliasi hanya menyediakan total.";
 
-const VALUE_TABS = new Set(["daftar", "opening", "hpp", "recon"]);
+const VALUE_TABS = new Set(["daftar", "opening", "hpp", "recon", "ledger-recon"]);
 
 export function stableMasterItemId(value) {
   return String(value ?? "").trim();
@@ -53,9 +53,17 @@ export function reconciliationControlHref(item) {
   if (item.key !== "inventory_reconciliation") return item.href;
   const [path, query = ""] = String(item.href).split("?");
   const params = new URLSearchParams(query);
-  params.set("tab", "recon");
+  params.set("tab", "ledger-recon");
   const next = params.toString();
   return next ? `${path}?${next}` : path;
+}
+
+/** Valuation keeps the existing nav pair. Ledger view is a separate read grant. */
+export function inventoryValueRouteAllowed(hasPerm) {
+  if (typeof hasPerm !== "function") return false;
+  const valuation = Boolean(hasPerm(NAV_KEYS.inventoryValue) && hasPerm("inventory_valuation.view"));
+  const ledger = Boolean(hasPerm("inventory_reconciliation.view"));
+  return valuation || ledger;
 }
 
 export function inventoryEstimateText(item, formatMoney) {

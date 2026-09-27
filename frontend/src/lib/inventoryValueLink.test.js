@@ -8,6 +8,7 @@ import {
   inventoryValueLinkVisible,
   inventoryValueMasterItemIdFromSearch,
   inventoryValueReconPath,
+  inventoryValueRouteAllowed,
   inventoryValueTabFromSearch,
   reconciliationControlHref,
 } from "./inventoryValueLink";
@@ -51,6 +52,7 @@ describe("inventory value navigation", () => {
     expect(inventoryValueItemPath("mid-target")).not.toMatch(/accurate_item_id|item_code|item_name/);
     expect(inventoryValueReconPath()).toBe("/persediaan/nilai-persediaan?tab=recon");
     expect(inventoryValueTabFromSearch("?tab=recon")).toBe("recon");
+    expect(inventoryValueTabFromSearch("?tab=ledger-recon")).toBe("ledger-recon");
     expect(inventoryValueTabFromSearch("?tab=hpp")).toBe("hpp");
     expect(inventoryValueTabFromSearch("?tab=unknown")).toBe("daftar");
     expect(inventoryValueMasterItemIdFromSearch("?master_item_id=mid-target&tab=recon")).toBe("mid-target");
@@ -58,7 +60,12 @@ describe("inventory value navigation", () => {
       key: "inventory_reconciliation",
       href: "/persediaan/nilai-persediaan",
       status: "incomplete",
-    })).toBe("/persediaan/nilai-persediaan?tab=recon");
+    })).toBe("/persediaan/nilai-persediaan?tab=ledger-recon");
+    expect(reconciliationControlHref({
+      key: "inventory_reconciliation",
+      href: "/persediaan/nilai-persediaan?tab=ledger-recon",
+      status: "incomplete",
+    })).toBe("/persediaan/nilai-persediaan?tab=ledger-recon");
     expect(reconciliationControlHref({
       key: "cogs_unposted",
       href: "/persediaan/nilai-persediaan",
@@ -95,5 +102,14 @@ describe("inventory value navigation", () => {
     }, "mid-target");
     expect(swapped.covered).toBe(false);
     expect(swapped.inventory_value).toBeNull();
+  });
+
+  test("route allows valuation and ledger reads separately", () => {
+    const allow = (keys) => (key) => keys.includes(key);
+    expect(inventoryValueRouteAllowed(allow(["nav.inventory.inventory_value", "inventory_valuation.view"]))).toBe(true);
+    expect(inventoryValueRouteAllowed(allow(["inventory_reconciliation.view"]))).toBe(true);
+    expect(inventoryValueRouteAllowed(allow(["inventory_valuation.view"]))).toBe(false);
+    expect(inventoryValueRouteAllowed(allow(["nav.inventory.inventory_value"]))).toBe(false);
+    expect(inventoryValueRouteAllowed(allow([]))).toBe(false);
   });
 });

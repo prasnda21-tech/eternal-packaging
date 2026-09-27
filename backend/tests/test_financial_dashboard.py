@@ -275,6 +275,8 @@ async def test_unposted_draft_and_invoice_do_not_enter_books_and_pre_effective_i
     controls = {row["key"]: row for row in body["controls"]["items"]}
     assert controls["sales_invoices_unposted"]["count"] == 1
     assert controls["purchase_invoices_unposted"]["count"] == 1
+    assert controls["inventory_reconciliation"]["href"] == "/persediaan/nilai-persediaan?tab=ledger-recon"
+    assert controls["cogs_unposted"]["href"] == "/persediaan/nilai-persediaan"
     assert controls["pre_effective"]["count"] >= 1
     assert controls["pre_effective"]["kind"] == "historical"
 
@@ -359,6 +361,47 @@ async def test_failed_section_does_not_zero_the_rest(monkeypatch):
     assert body["performance"].get("revenue") is None
     assert body["position"]["cash_and_bank"]["amount"] == 65000.0
     assert body["position"]["inventory_book"]["amount"] == 144000.0
+
+
+async def test_inventory_reconciliation_href_follows_report_permission_only():
+    params = {"start_date": "2026-10-01", "end_date": "2026-10-31"}
+
+    async def controls_for(perms):
+        async with await client_for(_user(role="helper", perms=perms)) as client:
+            response = await client.get(PATH, params=params)
+        assert response.status_code == 200, response.text
+        body = response.json()
+        rows = {row["key"]: row for row in body["controls"]["items"]}
+        assert "inventory_reconciliation" in rows
+        assert rows["inventory_reconciliation"]["status"] in {"complete", "incomplete"}
+        return rows
+
+    recon_only = await controls_for(["dashboard.finance.view", "inventory_reconciliation.view"])
+    assert recon_only["inventory_reconciliation"]["href"] == "/persediaan/nilai-persediaan?tab=ledger-recon"
+    assert recon_only["cogs_unposted"]["href"] is None
+
+    valuation_only = await controls_for(["dashboard.finance.view", "inventory_valuation.view"])
+    assert valuation_only["inventory_reconciliation"]["href"] is None
+    assert valuation_only["cogs_unposted"]["href"] == "/persediaan/nilai-persediaan"
+
+    nav_only = await controls_for(["dashboard.finance.view", "nav.inventory.inventory_value"])
+    assert nav_only["inventory_reconciliation"]["href"] is None
+    assert nav_only["cogs_unposted"]["href"] == "/persediaan/nilai-persediaan"
+
+    both = await controls_for([
+        "dashboard.finance.view",
+        "inventory_reconciliation.view",
+        "inventory_valuation.view",
+    ])
+    assert both["inventory_reconciliation"]["href"] == "/persediaan/nilai-persediaan?tab=ledger-recon"
+    assert both["cogs_unposted"]["href"] == "/persediaan/nilai-persediaan"
+    assert both["sales_invoices_unposted"]["href"] == "/penjualan/faktur-penjualan"
+    assert both["goods_receipts_unposted"]["href"] is None
+    assert both["purchase_invoices_unposted"]["href"] is None
+
+    async with await client_for(_user(role="helper", perms=["inventory_reconciliation.view"])) as client:
+        denied = await client.get(PATH, params=params)
+    assert denied.status_code == 403
 
 
 async def test_permission_gates_api_and_finance_view_does_not_open_production_dashboard():

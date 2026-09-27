@@ -741,7 +741,7 @@ async def _controls(db, perms: set, book: Optional[dict], book_error: Optional[s
             "Rekonsiliasi persediaan blocked atau berbeda",
             blocked_count + (1 if recon_status in {"DIFFERENCE", "BLOCKED"} else 0),
             kind="action",
-            href=_href(perms, "/persediaan/nilai-persediaan", "inventory_valuation.view", "nav.inventory.inventory_value"),
+            href=_href(perms, "/persediaan/nilai-persediaan?tab=ledger-recon", "inventory_reconciliation.view"),
             status="incomplete" if differ else "complete",
             detail=f"Status rekonsiliasi: {recon_status or 'tidak diketahui'}.",
         ))

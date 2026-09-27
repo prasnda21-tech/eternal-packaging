@@ -55,7 +55,8 @@ describe("Nilai Persediaan read-only page", () => {
     expect(source).toMatch(/Daftar Barang/);
     expect(source).toMatch(/Saldo Awal/);
     expect(source).toMatch(/HPP Penjualan/);
-    expect(source).toMatch(/Rekonsiliasi & Laporan/);
+    expect(source).toMatch(/Rekonsiliasi Buku Opening/);
+    expect(source).toMatch(/Rekonsiliasi Persediaan & HPP/);
     expect(source).toMatch(/MasterItemSearchSelect/);
     expect(source).toMatch(/exactMasterItemId/);
     expect(source).toMatch(/Ambil snapshot saldo sekarang/);
