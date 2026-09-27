@@ -6,7 +6,7 @@ import { useAuth } from "../lib/auth";
 import { formatDate } from "../lib/constants";
 import { fmtQty } from "../components/qtyUi";
 import { useDebouncedLiveSearch, liveSearchTableView } from "../hooks/useDebouncedLiveSearch";
-import { inventoryValueItemPath, inventoryValueLinkVisible } from "../lib/inventoryValueLink";
+import { INVENTORY_VALUE_LINK_LABEL, inventoryValueItemPath, inventoryValueLinkVisible } from "../lib/inventoryValueLink";
 
 export default function StockSaatIni() {
   const { hasPerm } = useAuth();
@@ -288,7 +288,7 @@ export default function StockSaatIni() {
                   {valueHref ? (
                     <div>
                       <Link className="stock-value-link" to={valueHref} data-testid={`stock-value-link-${it.master_item_id}`}>
-                        Lihat nilai & rekonsiliasi
+                        {INVENTORY_VALUE_LINK_LABEL}
                       </Link>
                     </div>
                   ) : null}

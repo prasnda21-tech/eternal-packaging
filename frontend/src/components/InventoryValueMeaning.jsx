@@ -1,8 +1,9 @@
 import { Link } from "react-router-dom";
 import { formatRupiah } from "../lib/purchaseUi";
 import {
-  AVAILABLE_FOR_ORDER_NOTE,
   BOOK_VALUE_NOTE,
+  CURRENT_STOCK_LINK_LABEL,
+  CURRENT_STOCK_PATH,
   inventoryEstimateText,
   inventoryValueReconPath,
 } from "../lib/inventoryValueLink";
@@ -22,8 +23,7 @@ export default function InventoryValueMeaning({
   return (
     <div data-testid={`${testIdPrefix}-meanings`}>
       <p>
-        <span>Tersedia untuk pesanan: </span>
-        <span data-testid={`${testIdPrefix}-available`}>{AVAILABLE_FOR_ORDER_NOTE}</span>
+        <Link to={CURRENT_STOCK_PATH} data-testid={`${testIdPrefix}-available`}>{CURRENT_STOCK_LINK_LABEL}</Link>
       </p>
       <p>
         <span>Stok fisik: </span>

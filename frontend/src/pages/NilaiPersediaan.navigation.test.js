@@ -127,7 +127,10 @@ describe("Nilai Persediaan deep link", () => {
     expect(container.querySelector('[data-testid="inventory-focus-estimate"]').textContent).toBe("Belum ada dasar");
     expect(container.querySelector('[data-testid="inventory-focus-estimate"]').textContent).not.toMatch(/Rp/);
     expect(container.querySelector('[data-testid="inventory-focus-physical"]').textContent).toBe("4");
-    expect(container.querySelector('[data-testid="inventory-focus-available"]').textContent).toMatch(/Bukan stok fisik/);
+    const available = container.querySelector('[data-testid="inventory-focus-available"]');
+    expect(available.textContent).toBe("Lihat di Stok Saat Ini");
+    expect(available.getAttribute("href")).toBe("/persediaan/stock-saat-ini");
+    expect(container.querySelector('[data-testid="inventory-focus-meanings"]').textContent).not.toMatch(/Tersedia untuk pesanan/);
     expect(container.querySelector('[data-testid="inventory-focus-book"]').textContent).toMatch(/Tidak ditampilkan per barang/);
     expect(container.querySelector('[data-testid="inventory-focus-book"] a').getAttribute("href")).toBe(
       "/persediaan/nilai-persediaan?tab=recon&master_item_id=mid-target",

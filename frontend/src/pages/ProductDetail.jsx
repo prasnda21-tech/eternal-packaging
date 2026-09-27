@@ -18,7 +18,7 @@ import { useAuth } from "../lib/auth";
 import { formatDate } from "../lib/constants";
 import { fmtQty } from "../components/qtyUi";
 import InventoryValueMeaning from "../components/InventoryValueMeaning";
-import { acceptValuationFocus, inventoryValueItemPath, inventoryValueLinkVisible } from "../lib/inventoryValueLink";
+import { acceptValuationFocus, INVENTORY_VALUE_LINK_LABEL, inventoryValueItemPath, inventoryValueLinkVisible } from "../lib/inventoryValueLink";
 import "./productDetail.css";
 
 const TYPE_LABEL = {
@@ -323,7 +323,7 @@ export default function ProductDetail() {
             to={inventoryValueItemPath(masterItemId)}
             data-testid="product-value-link"
           >
-            Lihat nilai & rekonsiliasi
+            {INVENTORY_VALUE_LINK_LABEL}
           </Link>
         )}
       </div>

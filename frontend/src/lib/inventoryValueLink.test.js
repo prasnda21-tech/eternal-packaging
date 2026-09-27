@@ -1,5 +1,8 @@
 import {
   acceptValuationFocus,
+  CURRENT_STOCK_LINK_LABEL,
+  CURRENT_STOCK_PATH,
+  INVENTORY_VALUE_LINK_LABEL,
   inventoryEstimateText,
   inventoryValueItemPath,
   inventoryValueLinkVisible,
@@ -33,6 +36,12 @@ describe("inventory value navigation", () => {
     expect(visible({ master_item_id: "mid-off", item_type: "INVENTORY", is_active: false })).toBe(false);
     expect(visible({ master_item_id: "mid-1", item_type: "INVENTORY", is_active: true }, noView)).toBe(false);
     expect(visible({ master_item_id: "mid-1", item_type: "INVENTORY", is_active: true }, noNav)).toBe(false);
+  });
+
+  test("labels point to valuation and current stock without inventing a quantity", () => {
+    expect(INVENTORY_VALUE_LINK_LABEL).toBe("Lihat nilai persediaan");
+    expect(CURRENT_STOCK_LINK_LABEL).toBe("Lihat di Stok Saat Ini");
+    expect(CURRENT_STOCK_PATH).toBe("/persediaan/stock-saat-ini");
   });
 
   test("link carries the exact master id and the recon tab is selectable", () => {

@@ -1,7 +1,9 @@
 import { NAV_KEYS } from "./navAccess";
 
 export const INVENTORY_VALUE_PATH = "/persediaan/nilai-persediaan";
-export const AVAILABLE_FOR_ORDER_NOTE = "Bukan stok fisik. Angka pemesanan ada di Stok Saat Ini.";
+export const CURRENT_STOCK_PATH = "/persediaan/stock-saat-ini";
+export const INVENTORY_VALUE_LINK_LABEL = "Lihat nilai persediaan";
+export const CURRENT_STOCK_LINK_LABEL = "Lihat di Stok Saat Ini";
 export const BOOK_VALUE_NOTE = "Tidak ditampilkan per barang. Rekonsiliasi hanya menyediakan total.";
 
 const VALUE_TABS = new Set(["daftar", "opening", "hpp", "recon"]);
