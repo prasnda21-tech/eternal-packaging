@@ -108,6 +108,44 @@ async def test_retry_same_opname_request_is_idempotent_without_second_movement(d
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("hpp_source", "expected_adjustment_required"),
+    [
+        ("PURCHASING_MOVING_AVERAGE", True),
+        ("PUBLISHED_FALLBACK", False),
+    ],
+)
+async def test_hpp_snapshot_is_informational_and_source_explicit(
+    db,
+    hpp_source,
+    expected_adjustment_required,
+):
+    await _seed(db)
+    result = await apply_stock_opname(
+        db,
+        master_item_id="opname-item",
+        stock_physical_counted=120,
+        outstanding_so_qty=30,
+        client_request_id=f"hpp-{hpp_source}",
+        valuation_context={
+            "hpp_status": "QTY_MISMATCH",
+            "current_hpp": Decimal("205"),
+            "hpp_source": hpp_source,
+        },
+    )
+
+    assert result["effective_hpp_snapshot"] == Decimal("205.00")
+    assert result["hpp_source"] == hpp_source
+    assert result["hpp_status_snapshot"] == "QTY_MISMATCH"
+    assert result["estimated_difference_value"] == Decimal("4100.00")
+    assert result["estimated_value_is_informational"] is True
+    assert result["valuation_adjustment_required"] is expected_adjustment_required
+    assert result["movement"]["estimated_value_is_informational"] is True
+    assert result["movement"]["valuation_adjustment_required"] is expected_adjustment_required
+    assert not hasattr(db, "journal_entries")
+
+
+@pytest.mark.anyio
 async def test_concurrent_distinct_opname_requests_have_one_clean_winner(db):
     await _seed(db)
     barrier = asyncio.Barrier(2)
