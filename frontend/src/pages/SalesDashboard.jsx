@@ -6,7 +6,6 @@ import {
   BarChart,
   CartesianGrid,
   Cell,
-  Legend,
   Line,
   LineChart,
   Pie,
@@ -89,7 +88,21 @@ function MoneyTip({ active, payload, label, coordinate, boxRef }) {
   return style ? createPortal(node, document.body) : node;
 }
 
-function ChartFrame({ title, note, scope, status, detail, testid, plotRef, className, children }) {
+function SeriesLegend({ items, testid, stacked }) {
+  return (
+    <ul className={`sd-legend${stacked ? " sd-legend-stack" : ""}`} data-testid={testid}>
+      {items.map((item) => (
+        <li key={item.label}>
+          <i style={{ background: item.color }} aria-hidden="true" />
+          <span>{item.label}</span>
+          {item.value ? <b>{item.value}</b> : null}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function ChartFrame({ title, note, scope, status, detail, testid, plotRef, className, legend, footer, children }) {
   const plot = chartPlotsSeries(status);
   return (
     <section className={`sd-card sd-chart${className ? ` ${className}` : ""}`} data-testid={testid}>
@@ -100,9 +113,11 @@ function ChartFrame({ title, note, scope, status, detail, testid, plotRef, class
         </div>
         {note ? <span>{note}</span> : null}
       </header>
+      {legend}
       <div className="sd-plot" ref={plotRef}>
         {plot ? children : <p className={`sd-state is-${status || "empty"}`}>{status === "loading" ? "Memuat…" : (detail || "Belum tersedia")}</p>}
       </div>
+      {footer}
     </section>
   );
 }
@@ -236,7 +251,7 @@ export default function SalesDashboard() {
           <section className="sd-card" data-testid="sales-omzet">
             <p className="sd-kicker">Selama periode · tanggal faktur</p>
             <h2>Omzet penjualan</h2>
-            <strong data-testid="sales-omzet-value">{displayAmount(omzetStatus, omzet?.amount, omzet?.detail)}</strong>
+            <strong className="sd-hero" data-testid="sales-omzet-value">{displayAmount(omzetStatus, omzet?.amount, omzet?.detail)}</strong>
             <p className={`sd-delta is-${delta.arrow || "none"}`} data-testid="sales-omzet-delta">
               {delta.arrow === "up" ? "↑ " : null}
               {delta.arrow === "down" ? "↓ " : null}
@@ -252,7 +267,6 @@ export default function SalesDashboard() {
                 <Stat testid="sales-bill" label="Total tagihan" value={displayAmount(omzetStatus, omzet?.grand_total, omzet?.detail)} />
               </ul>
             ) : null}
-            {settlement?.detail && (settlementStatus === "complete" || settlementStatus === "incomplete") ? <p className="sd-note">{settlement.detail}</p> : null}
           </section>
 
           <ChartFrame
@@ -263,17 +277,22 @@ export default function SalesDashboard() {
             detail={trend?.detail || (error ? "Gagal muat" : "")}
             testid="sales-trend"
             plotRef={trendRef}
+            legend={chartPlotsSeries(trendStatus) ? (
+              <SeriesLegend items={[
+                { label: "Omzet penjualan", color: COLOR.omzet },
+                { label: "Jumlah faktur", color: COLOR.count },
+              ]} />
+            ) : null}
           >
             <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={trendPoints} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+              <LineChart data={trendPoints} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
                 <CartesianGrid stroke="#E2E8F0" />
-                <XAxis dataKey="label" tick={{ fontSize: 11, fill: "#3d4f48" }} padding={{ left: 12, right: 12 }} />
-                <YAxis yAxisId="omzet" tickFormatter={formatAxisMoney} tick={{ fontSize: 11, fill: "#3d4f48" }} width={52} />
-                <YAxis yAxisId="count" orientation="right" allowDecimals={false} tick={{ fontSize: 11, fill: "#3d4f48" }} width={32} />
+                <XAxis dataKey="label" minTickGap={28} tick={{ fontSize: 11, fill: "#3d4f48" }} padding={{ left: 8, right: 8 }} />
+                <YAxis yAxisId="omzet" tickFormatter={formatAxisMoney} tick={{ fontSize: 11, fill: "#3d4f48" }} width={48} />
+                <YAxis yAxisId="count" orientation="right" allowDecimals={false} tick={{ fontSize: 11, fill: "#3d4f48" }} width={28} />
                 <Tooltip content={(props) => <MoneyTip {...props} boxRef={trendRef} />} />
-                <Legend />
-                <Line yAxisId="omzet" dataKey="omzet" name="Omzet penjualan" stroke={COLOR.omzet} strokeWidth={2} dot={trendShowsDot(trendPoints.length) ? { r: 5 } : false} activeDot={{ r: 5 }} isAnimationActive={false} />
-                <Line yAxisId="count" dataKey="invoice_count" name="Jumlah faktur" stroke={COLOR.count} strokeWidth={2} dot={trendShowsDot(trendPoints.length) ? { r: 5 } : false} activeDot={{ r: 5 }} isAnimationActive={false} />
+                <Line yAxisId="omzet" dataKey="omzet" name="Omzet penjualan" stroke={COLOR.omzet} strokeWidth={2} dot={trendShowsDot(trendPoints.length) ? { r: 4 } : false} activeDot={{ r: 5 }} isAnimationActive={false} />
+                <Line yAxisId="count" dataKey="invoice_count" name="Jumlah faktur" stroke={COLOR.count} strokeWidth={2} dot={trendShowsDot(trendPoints.length) ? { r: 4 } : false} activeDot={{ r: 5 }} isAnimationActive={false} />
               </LineChart>
             </ResponsiveContainer>
           </ChartFrame>
@@ -292,7 +311,7 @@ export default function SalesDashboard() {
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={receivables?.aging || []} margin={{ top: 8, right: 4, left: 0, bottom: 0 }}>
                     <CartesianGrid stroke="#E2E8F0" />
-                    <XAxis dataKey="label" interval={0} tick={{ fontSize: 10, fill: "#172126" }} tickFormatter={(value) => String(value).replace(" hari", "").replace("Belum jatuh tempo", "Belum")} />
+                    <XAxis dataKey="label" interval={0} minTickGap={8} tick={{ fontSize: 11, fill: "#172126" }} tickFormatter={(value) => String(value).replace(" hari", "").replace("Belum jatuh tempo", "Belum")} />
                     <YAxis tickFormatter={formatAxisMoney} tick={{ fontSize: 11, fill: "#3d4f48" }} width={48} />
                     <Tooltip content={(props) => <MoneyTip {...props} boxRef={agingRef} />} />
                     <Bar dataKey="amount" name="Saldo piutang" isAnimationActive={false}>
@@ -351,6 +370,12 @@ export default function SalesDashboard() {
             detail={sales?.detail || (error ? "Gagal muat" : "")}
             testid="sales-by-sales"
             plotRef={salesRef}
+            legend={chartPlotsSeries(salesStatus === "incomplete" ? "complete" : salesStatus) ? (
+              <SeriesLegend items={[
+                { label: "Omzet penjualan", color: COLOR.omzet },
+                ...(salesGroups.some((row) => row.key === "unassigned") ? [{ label: "Belum ditetapkan", color: COLOR.muted }] : []),
+              ]} />
+            ) : null}
           >
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={salesGroups} layout="vertical" margin={{ top: 4, right: 8, left: 4, bottom: 0 }}>
@@ -378,10 +403,10 @@ export default function SalesDashboard() {
                 </ul>
                 {customers?.percents_available ? (
                   <div className="sd-customer-chart">
-                    <div className="sd-plot sd-plot-short">
+                    <div className="sd-donut">
                       <ResponsiveContainer width="100%" height="100%">
                         <PieChart>
-                          <Pie data={customerSlices} dataKey="value" nameKey="name" innerRadius={36} outerRadius={54} isAnimationActive={false}>
+                          <Pie data={customerSlices} dataKey="value" nameKey="name" innerRadius={22} outerRadius={34} stroke="#fff" strokeWidth={2} isAnimationActive={false}>
                             {customerSlices.map((row) => <Cell key={row.name} fill={row.fill} />)}
                           </Pie>
                           <Tooltip content={({ active, payload }) => (active && payload?.length ? (
@@ -389,11 +414,17 @@ export default function SalesDashboard() {
                               {payload.map((item) => <p key={item.name}>{item.name}: {Number(item.value).toLocaleString("id-ID")}</p>)}
                             </div>
                           ) : null)} />
-                          <Legend />
                         </PieChart>
                       </ResponsiveContainer>
                     </div>
-                    <p className="sd-note" data-testid="sales-customer-percent">Baru {formatRatio(customers.new_percent)} · Repeat {formatRatio(customers.repeat_percent)}</p>
+                    <SeriesLegend
+                      stacked
+                      testid="sales-customer-percent"
+                      items={[
+                        { label: "Baru", color: COLOR.omzet, value: formatRatio(customers.new_percent) },
+                        { label: "Repeat", color: COLOR.count, value: formatRatio(customers.repeat_percent) },
+                      ]}
+                    />
                   </div>
                 ) : (
                   <p className="sd-note" data-testid="sales-customer-coverage">Persentase belum ditampilkan. {customers?.detail}</p>
@@ -413,17 +444,24 @@ export default function SalesDashboard() {
             testid="sales-settlement"
             plotRef={settlementRef}
             className="sd-card-span"
+            legend={chartPlotsSeries(settlementStatus) ? (
+              <SeriesLegend items={[
+                { label: "Total tagihan", color: COLOR.bill },
+                { label: "Tagihan lunas", color: COLOR.settled },
+                { label: "Nilai belum lunas", color: COLOR.open },
+              ]} />
+            ) : null}
+            footer={settlement?.detail && (settlementStatus === "complete" || settlementStatus === "incomplete") ? <p className="sd-note">{settlement.detail}</p> : null}
           >
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={settlementPoints} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+              <BarChart data={settlementPoints} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
                 <CartesianGrid stroke="#E2E8F0" />
-                <XAxis dataKey="label" tick={{ fontSize: 11, fill: "#3d4f48" }} />
-                <YAxis tickFormatter={formatAxisMoney} tick={{ fontSize: 11, fill: "#3d4f48" }} width={52} />
+                <XAxis dataKey="label" minTickGap={28} tick={{ fontSize: 11, fill: "#3d4f48" }} />
+                <YAxis tickFormatter={formatAxisMoney} tick={{ fontSize: 11, fill: "#3d4f48" }} width={48} />
                 <Tooltip content={(props) => <MoneyTip {...props} boxRef={settlementRef} />} />
-                <Legend />
-                <Bar dataKey="grand_total" name="Total tagihan" fill={COLOR.bill} barSize={10} isAnimationActive={false} />
-                <Bar dataKey="settled_grand" name="Tagihan lunas" fill={COLOR.settled} barSize={10} isAnimationActive={false} />
-                <Bar dataKey="outstanding" name="Nilai belum lunas" fill={COLOR.open} barSize={10} isAnimationActive={false} />
+                <Bar dataKey="grand_total" name="Total tagihan" fill={COLOR.bill} barSize={8} isAnimationActive={false} />
+                <Bar dataKey="settled_grand" name="Tagihan lunas" fill={COLOR.settled} barSize={8} isAnimationActive={false} />
+                <Bar dataKey="outstanding" name="Nilai belum lunas" fill={COLOR.open} barSize={8} isAnimationActive={false} />
               </BarChart>
             </ResponsiveContainer>
           </ChartFrame>
