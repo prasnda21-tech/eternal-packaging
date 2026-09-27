@@ -32,6 +32,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import HTTPException
 from pymongo import ReturnDocument
+from pymongo.errors import DuplicateKeyError
 
 from services.physical_stock_settings import (
     get_physical_stock_settings,
@@ -467,6 +468,7 @@ async def claim_durable_stock_event(
                 "master_item_id": mid,
                 "accurate_item_id": aid,
                 "claim_data": pending,
+                "resumed": True,
             }
         else:
             # Different event exists on this product -> BLOCK!
@@ -580,6 +582,7 @@ async def claim_durable_stock_event(
         "master_item_id": mid,
         "accurate_item_id": aid,
         "claim_data": claim_data,
+        "resumed": False,
     }
 
 
@@ -703,6 +706,73 @@ async def finalize_durable_stock_event(
 
     stored_applied = str((pending or {}).get("stock_applied_at") or "").strip()
     applied_at = stored_applied or None
+
+    line_claims = pending.get("line_claims") if isinstance(pending.get("line_claims"), list) else None
+    if line_claims:
+        movements = []
+        run_total = safe_float(pending.get("total_before"))
+        run_unprinted = safe_float(pending.get("unprinted_before"))
+        run_printed = safe_float(pending.get("printed_before"))
+        for spec in line_claims:
+            ev = str(spec.get("event_id") or "").strip()
+            d_tot = safe_float(spec.get("delta_total"))
+            d_unp = safe_float(spec.get("delta_unprinted"))
+            d_pri = safe_float(spec.get("delta_printed"))
+            before_total, before_unprinted, before_printed = run_total, run_unprinted, run_printed
+            after_total = safe_float(before_total + d_tot)
+            after_unprinted = safe_float(before_unprinted + d_unp)
+            after_printed = safe_float(before_printed + d_pri)
+            existing = await _movement_by_event(db, ev)
+            if existing:
+                mov = existing
+            else:
+                mov = await record_stock_movement(
+                    db,
+                    movement_type=pending.get("movement_type") or MOVEMENT_PENGIRIMAN,
+                    master_item_id=mid,
+                    accurate_item_id=pending.get("accurate_item_id"),
+                    transaction_qty=float(spec.get("transaction_qty") or 0.0),
+                    transaction_uom=spec.get("transaction_uom") or pending.get("transaction_uom"),
+                    source_entity="SUDAH_DICETAK" if spec.get("is_print") else "BELUM_DICETAK",
+                    destination_entity=pending.get("destination_entity", ""),
+                    reference_number=pending.get("reference_number", ""),
+                    reference_id=pending.get("reference_id"),
+                    reference_type=pending.get("reference_type", ""),
+                    description=spec.get("description") or pending.get("description", ""),
+                    order_id=pending.get("order_id"),
+                    line_idx=spec.get("line_idx"),
+                    line_id=spec.get("line_id"),
+                    is_print=spec.get("is_print"),
+                    production_process=spec.get("production_process"),
+                    delta_unprinted=d_unp,
+                    delta_printed=d_pri,
+                    event_key=ev,
+                    user=user,
+                    now=stamp,
+                    movement_id=ev,
+                    balance_before=before_total,
+                    balance_after=after_total,
+                    claimed_at=pending.get("claimed_at") or pending.get("started_at"),
+                    stock_applied_at=applied_at,
+                    unprinted_before=before_unprinted,
+                    unprinted_after=after_unprinted,
+                    printed_before=before_printed,
+                    printed_after=after_printed,
+                    source_event_type=pending.get("reference_type", ""),
+                    source_event_id=ev,
+                    change_metadata=None,
+                )
+            movements.append(mov)
+            run_total, run_unprinted, run_printed = after_total, after_unprinted, after_printed
+        await db[STATE_COLLECTION].update_one(
+            {"$or": [{"_id": mid}, {"master_item_id": mid}], "pending_event.event_id": ev_id},
+            {"$unset": {"pending_event": ""}},
+        )
+        return {
+            "line_movements": movements,
+            "movement": movements[-1] if movements else None,
+            "stock_applied_at": applied_at,
+        }
 
     m_type = pending.get("movement_type") or MOVEMENT_PENERIMAAN
     t_qty = pending.get("transaction_qty")
@@ -1532,6 +1602,135 @@ async def precheck_sales_delivery(
         )
 
 
+def _delivery_claim_specs(
+    order: Dict[str, Any],
+    lines: List[Dict[str, Any]],
+    action_id: str,
+) -> List[Dict[str, Any]]:
+    lis = order.get("line_items") or []
+    order_id = str(order.get("id") or "").strip()
+    specs: List[Dict[str, Any]] = []
+    for row_i, line in enumerate(lines or []):
+        if not isinstance(line, dict):
+            continue
+        qty = safe_float(line.get("qty", line.get("quantity", 0)))
+        if qty <= 0:
+            continue
+        canonical = row_i
+        raw_idx = line.get("line_idx")
+        if raw_idx is not None and str(raw_idx).strip() != "":
+            try:
+                canonical = int(raw_idx)
+            except (TypeError, ValueError):
+                canonical = row_i
+        mid = str(line.get("master_item_id") or "").strip()
+        if not mid and 0 <= canonical < len(lis) and isinstance(lis[canonical], dict):
+            mid = str(lis[canonical].get("master_item_id") or "").strip()
+        if not mid:
+            continue
+        proc = str(line.get("production_process") or "").strip().lower()
+        specs.append({
+            "idx": canonical,
+            "qty": qty,
+            "mid": mid,
+            "is_print": proc != "non_print",
+            "proc": proc,
+            "line_id": line.get("line_id"),
+            "unit": line.get("unit"),
+            "event_id": f"stock_out:delivery:{order_id}:{action_id}:{row_i}",
+        })
+    return specs
+
+
+async def _delivery_line_deltas(db, spec: Dict[str, Any]) -> Dict[str, Any]:
+    base_qty, factor, base_uom, tx_uom = await resolve_transaction_conversion(
+        db, spec["mid"], spec["qty"], spec.get("unit")
+    )
+    required = abs(safe_float(base_qty))
+    if spec["is_print"]:
+        delta_unprinted, delta_printed = 0.0, -required
+    else:
+        delta_unprinted, delta_printed = -required, 0.0
+    enriched = dict(spec)
+    enriched.update({
+        "base_qty": safe_float(base_qty),
+        "factor": factor,
+        "base_uom": base_uom,
+        "tx_uom": tx_uom,
+        "delta_total": -required,
+        "delta_unprinted": delta_unprinted,
+        "delta_printed": delta_printed,
+    })
+    return enriched
+
+
+async def _movement_by_event(db, event_id: str) -> Optional[Dict[str, Any]]:
+    ev_id = str(event_id or "").strip()
+    if not ev_id:
+        return None
+    return await db.stock_movements.find_one(
+        {"$or": [{"_id": ev_id}, {"id": ev_id}, {"event_key": ev_id}]},
+        {"_id": 0},
+    )
+
+
+def _delivery_group_event_id(order_id: str, action_id: str, master_item_id: str) -> str:
+    return f"stock_out:delivery:{order_id}:{action_id}:master:{master_item_id}"
+
+
+async def _pending_covers_delivery_spec(db, order_id: str, action_id: str, spec: Dict[str, Any]) -> bool:
+    """True when this line is already inside the same action's durable reservation.
+
+    Current bucket qty is irrelevant: the reservation may already have been applied.
+    """
+    state = await get_product_stock_state(db, spec["mid"])
+    pending = (state or {}).get("pending_event") if state else None
+    if not isinstance(pending, dict):
+        return False
+    if str(pending.get("action_id") or "") != str(action_id or ""):
+        return False
+    if str(pending.get("order_id") or "") != str(order_id or ""):
+        return False
+    ev = str(pending.get("event_id") or "")
+    line_ev = str(spec.get("event_id") or "")
+    group_ev = _delivery_group_event_id(order_id, action_id, spec["mid"])
+    rows = pending.get("line_claims") if isinstance(pending.get("line_claims"), list) else []
+    stored = {str(row.get("event_id") or "") for row in rows if isinstance(row, dict)}
+    if ev == group_ev and stored:
+        return line_ev in stored
+    return ev == line_ev
+
+
+async def _delivery_spec_is_claimable(
+    db,
+    spec: Dict[str, Any],
+    *,
+    order_id: str,
+    action_id: str,
+    replay: bool = False,
+) -> bool:
+    """A new reservation needs initialized stock. Recovery does not.
+
+    An existing movement or the same action's pending keeps the line in the
+    group even after the bucket has already been reduced to zero. A recorded
+    confirmation does not open a new reservation for a line that was skipped.
+    """
+    if await _movement_by_event(db, spec.get("event_id")):
+        return True
+    if await _pending_covers_delivery_spec(db, order_id, action_id, spec):
+        return True
+    if replay:
+        return False
+    return await _production_flow_stock_can_mutate(
+        db,
+        spec["mid"],
+        spec["qty"],
+        spec.get("unit"),
+        movement_type=MOVEMENT_PENGIRIMAN,
+        is_print=spec["is_print"],
+    )
+
+
 async def precheck_delivery_confirmed(
     db,
     order: Dict[str, Any],
@@ -1984,55 +2183,234 @@ async def should_claim_delivery_confirmed_stock(
     return bool(snap.get("enabled") and snap.get("stock_out_trigger") == "delivery_confirmed")
 
 
+async def _reserve_delivery_master_group(
+    db,
+    order: Dict[str, Any],
+    action_id: str,
+    lines: List[Dict[str, Any]],
+    user: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """One pending_event for every line of the same master from the same claim source.
+
+    Line identity stays on line_claims and becomes one movement per line at
+    finalize. A different pending_event is left untouched.
+    """
+    mid = lines[0]["mid"]
+    order_id = str(order.get("id") or "").strip()
+    group_event_id = _delivery_group_event_id(order_id, action_id, mid)
+    found = []
+    missing = False
+    for spec in lines:
+        existing = await _movement_by_event(db, spec["event_id"])
+        if existing:
+            found.append(existing)
+        else:
+            missing = True
+    if found and not missing:
+        await db[STATE_COLLECTION].update_one(
+            {"$or": [{"_id": mid}, {"master_item_id": mid}], "pending_event.event_id": group_event_id},
+            {"$unset": {"pending_event": ""}},
+        )
+        return {
+            "status": "ALREADY_FINALIZED",
+            "event_id": group_event_id,
+            "master_item_id": mid,
+            "grouped": True,
+            "movement": found[-1],
+            "line_movements": found,
+        }
+    if found and missing:
+        curr = await db[STATE_COLLECTION].find_one({"$or": [{"_id": mid}, {"master_item_id": mid}]})
+        pending = (curr or {}).get("pending_event") if curr else None
+        if not (isinstance(pending, dict) and pending.get("event_id") == group_event_id):
+            raise RuntimeError(
+                f"Klaim pengiriman '{group_event_id}' terputus: sebagian movement ada tanpa pending yang cocok."
+            )
+
+    curr = await db[STATE_COLLECTION].find_one({"$or": [{"_id": mid}, {"master_item_id": mid}]})
+    pending = (curr or {}).get("pending_event") if curr else None
+    if isinstance(pending, dict) and pending.get("event_id"):
+        if pending.get("event_id") != group_event_id:
+            raise HTTPException(400, "Stok fisik tidak mencukupi atau terjadi konflik konkurensi.")
+        stored = [str(row.get("event_id") or "") for row in (pending.get("line_claims") or [])]
+        wanted = [spec["event_id"] for spec in lines]
+        if stored and stored != wanted:
+            raise HTTPException(400, "Klaim pengiriman untuk action ini sudah tersimpan dengan baris berbeda.")
+        if await is_source_committed(db, pending):
+            finalized = await finalize_durable_stock_event(
+                db, event_id=group_event_id, master_item_id=mid, user=user,
+            )
+            movements = finalized.get("line_movements") if isinstance(finalized, dict) else None
+            return {
+                "status": "ALREADY_FINALIZED",
+                "event_id": group_event_id,
+                "master_item_id": mid,
+                "grouped": True,
+                "movement": (finalized or {}).get("movement") if isinstance(finalized, dict) else finalized,
+                "line_movements": movements or ([finalized] if finalized else []),
+            }
+        return {
+            "status": "CLAIMED",
+            "event_id": group_event_id,
+            "master_item_id": mid,
+            "grouped": True,
+            "claim_data": pending,
+            "resumed": True,
+        }
+
+    curr = await db[STATE_COLLECTION].find_one({"$or": [{"_id": mid}, {"master_item_id": mid}]})
+    if not curr or not curr.get("initialized") or curr.get("status") != STATUS_INITIALIZED:
+        raise HTTPException(400, f"Saldo awal stok fisik produk belum ditetapkan (ID: '{mid}').")
+
+    master = await db.master_items.find_one({"id": mid}, {"_id": 0})
+    aid = (master or {}).get("accurate_item_id")
+    delta_total = sum(safe_float(line.get("delta_total")) for line in lines)
+    delta_unprinted = sum(safe_float(line.get("delta_unprinted")) for line in lines)
+    delta_printed = sum(safe_float(line.get("delta_printed")) for line in lines)
+    tot_before = safe_float(curr.get("total_qty", 0))
+    unp_before = safe_float(curr.get("unprinted_qty", 0))
+    pri_before = safe_float(curr.get("printed_qty", 0))
+    stamp = now_iso()
+    ref_number = str(order.get("po_number") or order.get("id"))
+    line_claims = []
+    for spec in lines:
+        line_claims.append({
+            "event_id": spec["event_id"],
+            "line_idx": spec["idx"],
+            "line_id": spec.get("line_id"),
+            "transaction_qty": spec["qty"],
+            "transaction_uom": spec.get("tx_uom"),
+            "base_qty": spec.get("base_qty"),
+            "delta_total": spec.get("delta_total"),
+            "delta_unprinted": spec.get("delta_unprinted"),
+            "delta_printed": spec.get("delta_printed"),
+            "is_print": spec["is_print"],
+            "production_process": spec.get("proc"),
+            "description": (
+                "Pengurangan Stok Fisik Konfirmasi Diterima "
+                f"({'Cetak' if spec['is_print'] else 'Polos'})"
+            ),
+        })
+    claim_data = {
+        "event_id": group_event_id,
+        "master_item_id": mid,
+        "stage": "CLAIMED",
+        "movement_type": MOVEMENT_PENGIRIMAN,
+        "transaction_qty": sum(safe_float(line.get("qty")) for line in lines),
+        "transaction_uom": lines[0].get("tx_uom"),
+        "conversion_factor": lines[0].get("factor"),
+        "base_qty": sum(abs(safe_float(line.get("delta_total"))) for line in lines),
+        "base_uom": lines[0].get("base_uom"),
+        "total_before": tot_before,
+        "total_after": safe_float(tot_before + delta_total),
+        "unprinted_before": unp_before,
+        "unprinted_after": safe_float(unp_before + delta_unprinted),
+        "printed_before": pri_before,
+        "printed_after": safe_float(pri_before + delta_printed),
+        "delta_total": delta_total,
+        "delta_unprinted": delta_unprinted,
+        "delta_printed": delta_printed,
+        "source_entity": "CAMPURAN" if any(line["is_print"] != lines[0]["is_print"] for line in lines) else (
+            "SUDAH_DICETAK" if lines[0]["is_print"] else "BELUM_DICETAK"
+        ),
+        "destination_entity": "CUSTOMER",
+        "reference_number": ref_number,
+        "reference_type": "delivery_confirmed",
+        "reference_id": order_id,
+        "description": f"Pengurangan Stok Fisik Konfirmasi Diterima ({ref_number})",
+        "order_id": order_id,
+        "line_idx": lines[0]["idx"],
+        "line_id": lines[0].get("line_id"),
+        "action_id": action_id or "",
+        "is_print": all(line["is_print"] for line in lines),
+        "accurate_item_id": aid,
+        "line_claims": line_claims,
+        "claimed_at": stamp,
+        "started_at": stamp,
+    }
+    query = {
+        "$or": [{"_id": mid}, {"master_item_id": mid}],
+        "status": STATUS_INITIALIZED,
+        "initialized": True,
+        "pending_event": None,
+    }
+    if delta_unprinted < 0:
+        query["unprinted_qty"] = {"$gte": abs(delta_unprinted)}
+    if delta_printed < 0:
+        query["printed_qty"] = {"$gte": abs(delta_printed)}
+    if delta_total < 0:
+        query["total_qty"] = {"$gte": abs(delta_total)}
+    res = await db[STATE_COLLECTION].find_one_and_update(
+        query,
+        {"$set": {"pending_event": claim_data, "updated_at": stamp}},
+        return_document=ReturnDocument.AFTER,
+    )
+    if not res:
+        raise HTTPException(400, "Stok fisik tidak mencukupi atau terjadi konflik konkurensi.")
+    return {
+        "status": "CLAIMED",
+        "event_id": group_event_id,
+        "master_item_id": mid,
+        "grouped": True,
+        "claim_data": claim_data,
+        "resumed": False,
+    }
+
+
 async def claim_delivery_confirmed_stock(
     db,
     order: Dict[str, Any],
     lines: List[Dict[str, Any]],
     action_id: str,
     user: Optional[Dict[str, Any]] = None,
+    *,
+    replay: bool = False,
 ) -> List[Dict[str, Any]]:
     claims = []
-    lis = order.get("line_items") or []
     try:
-        for idx, line in enumerate(lines):
-            qty = safe_float(line.get("qty", line.get("quantity", 0)))
-            if qty <= 0:
-                continue
-            mid = line.get("master_item_id")
-            if not mid and idx < len(lis):
-                mid = lis[idx].get("master_item_id")
-            if not mid:
-                continue
-            proc = str(line.get("production_process") or "").strip().lower()
-            is_p = proc != "non_print"
-            if not await _production_flow_stock_can_mutate(
-                db, mid, qty, line.get("unit"),
-                movement_type=MOVEMENT_PENGIRIMAN, is_print=is_p,
+        grouped: Dict[str, List[Dict[str, Any]]] = {}
+        order_id = str(order.get("id") or "")
+        for spec in _delivery_claim_specs(order, lines, action_id):
+            if not await _delivery_spec_is_claimable(
+                db, spec, order_id=order_id, action_id=action_id, replay=replay,
             ):
                 continue
-            event_id = f"stock_out:delivery:{order['id']}:{action_id}:{idx}"
-            claim = await claim_durable_stock_event(
-                db,
-                event_id=event_id,
-                master_item_id=mid,
-                movement_type=MOVEMENT_PENGIRIMAN,
-                transaction_qty=qty,
-                transaction_uom=line.get("unit"),
-                source_entity="SUDAH_DICETAK" if is_p else "BELUM_DICETAK",
-                destination_entity="CUSTOMER",
-                reference_number=str(order.get("po_number") or order.get("id")),
-                reference_type="delivery_confirmed",
-                reference_id=order.get("id"),
-                description=f"Pengurangan Stok Fisik Konfirmasi Diterima ({'Cetak' if is_p else 'Polos'})",
-                order_id=order.get("id"),
-                line_idx=idx,
-                line_id=line.get("line_id"),
-                action_id=action_id,
-                is_print=is_p,
-                production_process=proc,
-                user=user,
-            )
-            claims.append(claim)
+            grouped.setdefault(spec["mid"], []).append(spec)
+        for mid, group in grouped.items():
+            enriched = [await _delivery_line_deltas(db, spec) for spec in group]
+            if len(enriched) == 1:
+                spec = enriched[0]
+                claim = await claim_durable_stock_event(
+                    db,
+                    event_id=spec["event_id"],
+                    master_item_id=mid,
+                    movement_type=MOVEMENT_PENGIRIMAN,
+                    transaction_qty=spec["qty"],
+                    transaction_uom=spec.get("unit"),
+                    source_entity="SUDAH_DICETAK" if spec["is_print"] else "BELUM_DICETAK",
+                    destination_entity="CUSTOMER",
+                    reference_number=str(order.get("po_number") or order.get("id")),
+                    reference_type="delivery_confirmed",
+                    reference_id=order.get("id"),
+                    description=(
+                        "Pengurangan Stok Fisik Konfirmasi Diterima "
+                        f"({'Cetak' if spec['is_print'] else 'Polos'})"
+                    ),
+                    order_id=order.get("id"),
+                    line_idx=spec["idx"],
+                    line_id=spec.get("line_id"),
+                    action_id=action_id,
+                    is_print=spec["is_print"],
+                    production_process=spec.get("proc"),
+                    user=user,
+                )
+                claims.append(claim)
+            else:
+                reserved = await _reserve_delivery_master_group(
+                    db, order, action_id, enriched, user,
+                )
+                if reserved:
+                    claims.append(reserved)
         return claims
     except Exception:
         await release_delivery_confirmed_stock(db, claims)
@@ -2043,13 +2421,522 @@ async def release_delivery_confirmed_stock(
     db,
     claims: List[Dict[str, Any]],
 ) -> None:
+    """Release claims this attempt created. A resumed claim still belongs to the earlier attempt."""
     for c in claims:
-        if c and c.get("status") == "CLAIMED":
+        if c and c.get("status") == "CLAIMED" and not c.get("resumed"):
             await release_durable_stock_claim(
                 db,
                 event_id=c["event_id"],
                 master_item_id=c["master_item_id"],
             )
+
+
+SJ_ROW_UNCERTAIN = (
+    "Surat Jalan tidak memiliki rincian baris yang cukup untuk menentukan master dan qty. "
+    "Konfirmasi Terkirim tidak mengurangi stok dengan qty penuh PO."
+)
+SJ_INACTIVE = "Surat Jalan batal atau tidak aktif tidak mengurangi stok."
+SJ_QTY_DRIFT = (
+    "Qty Surat Jalan berubah sebelum konfirmasi disimpan. "
+    "Konfirmasi dan pengurangan stok dibatalkan."
+)
+SJ_STOCK_SHORT = (
+    "Stok fisik tidak mencukupi untuk qty Surat Jalan yang dikonfirmasi. "
+    "Konfirmasi tidak disimpan."
+)
+def _delivery_action_recorded(order: Dict[str, Any], action_id: Optional[str]) -> bool:
+    token = str(action_id or "").strip()
+    if not token:
+        return False
+    if token in list(order.get("delivery_confirm_action_ids") or []):
+        return True
+    for rec in order.get("delivery_confirmations") or []:
+        if isinstance(rec, dict) and str(rec.get("action_id") or "").strip() == token:
+            return True
+    return False
+
+
+DELIVERY_CONFIRM_SCOPE = "delivery_confirmed"
+DELIVERY_OPERATION_COLLECTION = "delivery_confirm_operations"
+ACTION_REUSED = "action_id sudah dipakai untuk Konfirmasi Terkirim yang berbeda."
+OMITTED_ACTION_REQUIRES_SHIPMENT = (
+    "Konfirmasi tanpa action_id membutuhkan identitas Surat Jalan yang stabil."
+)
+
+
+def _delivery_operation_db(db):
+    return db[DELIVERY_OPERATION_COLLECTION]
+
+
+def _omit_operation_id(order_id: str, shipment_id: str) -> str:
+    return f"omit:{order_id}:{shipment_id}:{DELIVERY_CONFIRM_SCOPE}"
+
+
+def _explicit_operation_id(action_id: str) -> str:
+    return f"act:{action_id}:{DELIVERY_CONFIRM_SCOPE}"
+
+
+def _line_qty_key(rows) -> tuple:
+    found = []
+    for ln in rows or []:
+        if not isinstance(ln, dict):
+            continue
+        try:
+            idx = int(ln.get("line_idx"))
+        except (TypeError, ValueError):
+            continue
+        raw = ln.get("qty") if ln.get("qty") is not None else ln.get("quantity")
+        try:
+            qty = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if qty <= 0:
+            continue
+        found.append((idx, qty))
+    return tuple(sorted(found))
+
+
+def reject_reused_delivery_action(order: Dict[str, Any], action_id: Optional[str], canonical_sid: Optional[str]) -> None:
+    """Refuse to treat an action_id already stored for another SJ or payload as success."""
+    token = str(action_id or "").strip()
+    if not token or not isinstance(order, dict):
+        return
+    sid = str(canonical_sid or "").strip()
+    from quantity_rules import find_shipment
+
+    for rec in order.get("delivery_confirmations") or []:
+        if not isinstance(rec, dict) or str(rec.get("action_id") or "").strip() != token:
+            continue
+        bound = str(rec.get("shipment_id") or "").strip()
+        if sid and bound and bound != sid:
+            raise HTTPException(409, ACTION_REUSED)
+        if not sid or not bound or bound != sid:
+            continue
+        current = find_shipment(order, sid)
+        current_lines = (current or {}).get("lines") if isinstance(current, dict) else None
+        stored = _line_qty_key(rec.get("items"))
+        live = _line_qty_key(current_lines)
+        if stored and live and stored != live:
+            raise HTTPException(409, ACTION_REUSED)
+
+
+def _binding_conflicts(existing: Optional[Dict[str, Any]], order_id: str, shipment_id: str) -> bool:
+    if not existing:
+        return False
+    bound_order = str(existing.get("order_id") or "")
+    bound_shipment = str(existing.get("shipment_id") or "")
+    if bound_order and bound_order != order_id:
+        return True
+    if shipment_id and bound_shipment and bound_shipment != shipment_id:
+        return True
+    return False
+
+
+async def _ensure_action_binding(db, order_id: str, shipment_id: str, action_id: str) -> str:
+    doc_id = _explicit_operation_id(action_id)
+    coll = _delivery_operation_db(db)
+    try:
+        await coll.insert_one({
+            "_id": doc_id,
+            "kind": "act",
+            "order_id": order_id,
+            "shipment_id": shipment_id,
+            "scope": DELIVERY_CONFIRM_SCOPE,
+            "action_id": action_id,
+            "holders": 0,
+        })
+    except DuplicateKeyError:
+        existing = await coll.find_one({"_id": doc_id})
+        if _binding_conflicts(existing, order_id, shipment_id):
+            raise HTTPException(409, ACTION_REUSED)
+    return doc_id
+
+
+async def _acquire_omitted_action(db, order_id: str, shipment_id: str) -> str:
+    """One persistent action id per order and canonical shipment. Concurrent callers share it."""
+    coll = _delivery_operation_db(db)
+    doc_id = _omit_operation_id(order_id, shipment_id)
+    minted = str(uuid.uuid4())
+    try:
+        await coll.insert_one({
+            "_id": doc_id,
+            "kind": "omit",
+            "order_id": order_id,
+            "shipment_id": shipment_id,
+            "scope": DELIVERY_CONFIRM_SCOPE,
+            "action_id": minted,
+            "holders": 0,
+        })
+        action_id = minted
+    except DuplicateKeyError:
+        existing = await coll.find_one({"_id": doc_id})
+        action_id = str((existing or {}).get("action_id") or "").strip()
+        if not action_id:
+            raise HTTPException(409, "Identitas operasi Konfirmasi Terkirim tidak dapat dipulihkan.")
+    await _ensure_action_binding(db, order_id, shipment_id, action_id)
+    return action_id
+
+
+async def _reject_explicit_action_conflict(db, order: Dict[str, Any], action_id: str, shipment_id: str) -> None:
+    reject_reused_delivery_action(order, action_id, shipment_id)
+    other = await db.orders.find_one(
+        {
+            "id": {"$ne": order.get("id")},
+            "$or": [
+                {"delivery_confirmations.action_id": action_id},
+                {"delivery_confirm_action_ids": action_id},
+            ],
+        },
+        {"_id": 1},
+    )
+    if other:
+        raise HTTPException(409, ACTION_REUSED)
+
+
+async def prepare_confirm_delivered_action(db, order, selected_shipment_id, client_action_id) -> Dict[str, Any]:
+    """Resolve the operation id before any stock mutation and hold it for this request.
+
+    The id lives outside the order document. Confirm persists the order with a
+    full replacement, which would drop an id stored only on that document.
+    """
+    if not order:
+        return {
+            "action_id": client_action_id,
+            "shipment_id": None,
+            "holder_id": None,
+            "ready": False,
+            "order": None,
+        }
+    from quantity_rules import canonical_shipment_id, resolve_delivery_shipment
+
+    shipment, err = resolve_delivery_shipment(order, selected_shipment_id)
+    if err:
+        raise HTTPException(400, err)
+    sid = canonical_shipment_id(shipment) if isinstance(shipment, dict) else ""
+    order_id = str(order.get("id") or "")
+    client_token = str(client_action_id or "").strip()
+    if client_token:
+        await _reject_explicit_action_conflict(db, order, client_token, sid)
+        holder_id = await _ensure_action_binding(db, order_id, sid, client_token)
+        action_id = client_token
+    else:
+        if not sid:
+            raise HTTPException(400, OMITTED_ACTION_REQUIRES_SHIPMENT)
+        action_id = await _acquire_omitted_action(db, order_id, sid)
+        holder_id = _omit_operation_id(order_id, sid)
+    await _delivery_operation_db(db).update_one({"_id": holder_id}, {"$inc": {"holders": 1}})
+    fresh = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    return {
+        "action_id": action_id,
+        "shipment_id": sid,
+        "holder_id": holder_id,
+        "ready": True,
+        "order": fresh or order,
+    }
+
+
+async def end_delivery_operation(db, holder_id: Optional[str]) -> int:
+    if not holder_id:
+        return 0
+    updated = await _delivery_operation_db(db).find_one_and_update(
+        {"_id": holder_id, "holders": {"$gt": 0}},
+        {"$inc": {"holders": -1}},
+        return_document=ReturnDocument.AFTER,
+    )
+    if not updated:
+        return 0
+    return int(updated.get("holders") or 0)
+
+
+async def release_uncommitted_delivery_claim(
+    db,
+    claims: Optional[List[Dict[str, Any]]],
+    order_id: str,
+    action_id: Optional[str],
+    holders_remaining: int,
+    holder_id: Optional[str] = None,
+) -> None:
+    """Release this action's uncommitted claim when no sibling still holds it.
+
+    A claim this request only resumed is still releasable here. The holder
+    count, a stored confirmation, and a pending stage other than CLAIMED keep
+    a live or applied reservation. Claim-time release does not see that holder
+    count, so it releases only a claim this attempt created.
+    """
+    if holders_remaining > 0:
+        return
+    if holder_id:
+        current = await _delivery_operation_db(db).find_one({"_id": holder_id}, {"holders": 1})
+        if current and int(current.get("holders") or 0) > 0:
+            return
+    fresh = await db.orders.find_one(
+        {"id": order_id},
+        {"_id": 0, "delivery_confirm_action_ids": 1, "delivery_confirmations": 1},
+    )
+    if _delivery_action_recorded(fresh or {}, action_id):
+        return
+    token = str(action_id or "").strip()
+    for claim in claims or []:
+        if not claim or claim.get("status") != "CLAIMED":
+            continue
+        mid = str(claim.get("master_item_id") or "").strip()
+        ev_id = str(claim.get("event_id") or "").strip()
+        if not mid or not ev_id:
+            continue
+        curr = await db[STATE_COLLECTION].find_one({"$or": [{"_id": mid}, {"master_item_id": mid}]})
+        pending = (curr or {}).get("pending_event") if curr else None
+        if not isinstance(pending, dict):
+            continue
+        if str(pending.get("event_id") or "") != ev_id:
+            continue
+        if token and str(pending.get("action_id") or "") != token:
+            continue
+        if pending.get("stage") != "CLAIMED":
+            continue
+        await release_durable_stock_claim(db, event_id=ev_id, master_item_id=mid)
+
+
+async def finish_confirm_delivered_action(
+    db,
+    op: Optional[Dict[str, Any]],
+    claims: Optional[List[Dict[str, Any]]],
+    order_id: str,
+    action_id: Optional[str],
+    *,
+    release: bool,
+) -> None:
+    holder_id = (op or {}).get("holder_id")
+    remaining = await end_delivery_operation(db, holder_id)
+    if release:
+        await release_uncommitted_delivery_claim(
+            db, claims, order_id, action_id, remaining, holder_id=holder_id,
+        )
+
+
+def _sj_stock_fingerprint(lines: List[Dict[str, Any]]) -> tuple:
+    rows = []
+    for ln in lines or []:
+        rows.append((
+            int(ln.get("line_idx")),
+            str(ln.get("line_id") or ""),
+            str(ln.get("master_item_id") or ""),
+            str(ln.get("accurate_item_id") or ""),
+            float(ln.get("qty") or 0),
+            str(ln.get("production_process") or ""),
+            str(ln.get("unit") or ""),
+        ))
+    return tuple(rows)
+
+
+def plan_confirmed_sj_stock(
+    order: Dict[str, Any],
+    shipment: Optional[Dict[str, Any]],
+    *,
+    allow_delivered: bool = False,
+) -> Dict[str, Any]:
+    """Map confirmed SJ rows to canonical PO lines. Qty stays on the SJ row.
+
+    Reconciliation is applied on a copy first. The current reconciler does not
+    rewrite SJ lines. Identity fields come only from the matched PO line.
+    """
+    from copy import deepcopy
+
+    from quantity_rules import (
+        delivery_batch_identity,
+        delivery_batch_qty,
+        find_shipment,
+        match_po_line_idx,
+        reconcile_sj_quantities_to_loaded_delivery,
+        shipment_is_active,
+        shipment_is_delivered,
+    )
+
+    if not isinstance(shipment, dict):
+        return {"lines": [], "error": SJ_ROW_UNCERTAIN, "skip": False}
+    probe = deepcopy(order)
+    reconcile_sj_quantities_to_loaded_delivery(probe)
+    ident = delivery_batch_identity(shipment)
+    sh = find_shipment(probe, ident) if ident else None
+    if not isinstance(sh, dict):
+        sh = shipment if shipment in (probe.get("shipments") or []) else None
+    if not isinstance(sh, dict):
+        return {"lines": [], "error": SJ_ROW_UNCERTAIN, "skip": False}
+    if not shipment_is_active(sh):
+        return {"lines": [], "error": SJ_INACTIVE, "skip": False}
+    if shipment_is_delivered(probe, sh) and not allow_delivered:
+        return {"lines": [], "error": None, "skip": True}
+    raw = [ln for ln in (sh.get("lines") or []) if isinstance(ln, dict)]
+    if not raw:
+        return {"lines": [], "error": SJ_ROW_UNCERTAIN, "skip": False}
+    lis = list(probe.get("line_items") or [])
+    lines: List[Dict[str, Any]] = []
+    accounted = 0
+    for ln in raw:
+        qty_raw = ln.get("qty") if ln.get("qty") is not None else ln.get("quantity")
+        try:
+            qty = int(qty_raw)
+        except (TypeError, ValueError):
+            return {"lines": [], "error": SJ_ROW_UNCERTAIN, "skip": False}
+        if qty <= 0:
+            continue
+        idx, err = match_po_line_idx(probe, ln)
+        if err or idx is None or not (0 <= int(idx) < len(lis)):
+            return {"lines": [], "error": SJ_ROW_UNCERTAIN, "skip": False}
+        po = lis[int(idx)]
+        if not isinstance(po, dict):
+            return {"lines": [], "error": SJ_ROW_UNCERTAIN, "skip": False}
+        mid = str(po.get("master_item_id") or "").strip()
+        if not mid:
+            return {"lines": [], "error": SJ_ROW_UNCERTAIN, "skip": False}
+        lines.append({
+            "line_idx": int(idx),
+            "qty": qty,
+            "quantity": qty,
+            "master_item_id": mid,
+            "accurate_item_id": po.get("accurate_item_id"),
+            "production_process": str(po.get("production_process") or "").strip().lower(),
+            "unit": po.get("unit") or "PCS",
+            "line_id": po.get("line_id"),
+        })
+        accounted += qty
+    if not lines:
+        return {"lines": [], "error": SJ_ROW_UNCERTAIN, "skip": False}
+    if delivery_batch_qty(sh) != accounted:
+        return {"lines": [], "error": SJ_ROW_UNCERTAIN, "skip": False}
+    return {"lines": lines, "error": None, "skip": False, "sj_qty": accounted}
+
+
+def reject_sj_stock_qty_drift(order, shipment, holder, confirmation_qty) -> None:
+    """Refuse to store a confirmation whose qty is not the reserved SJ qty."""
+    if not isinstance(holder, dict) or not holder.get("active"):
+        return
+    plan = plan_confirmed_sj_stock(order, shipment, allow_delivered=True)
+    if plan.get("error") or plan.get("skip"):
+        raise HTTPException(400, plan.get("error") or SJ_QTY_DRIFT)
+    if _sj_stock_fingerprint(plan.get("lines") or []) != holder.get("fingerprint"):
+        raise HTTPException(400, SJ_QTY_DRIFT)
+    planned = sum(int(ln.get("qty") or 0) for ln in plan.get("lines") or [])
+    try:
+        confirmed = int(confirmation_qty)
+    except (TypeError, ValueError):
+        confirmed = -1
+    if confirmed != planned:
+        raise HTTPException(400, SJ_QTY_DRIFT)
+
+
+def _covered_delivery_event_ids(claims: List[Dict[str, Any]]) -> set:
+    covered = set()
+    for claim in claims or []:
+        if not isinstance(claim, dict):
+            continue
+        covered.add(str(claim.get("event_id") or ""))
+        data = claim.get("claim_data") if isinstance(claim.get("claim_data"), dict) else {}
+        for row in data.get("line_claims") or []:
+            if isinstance(row, dict):
+                covered.add(str(row.get("event_id") or ""))
+        movements = list(claim.get("line_movements") or [])
+        if isinstance(claim.get("movement"), dict):
+            movements.append(claim["movement"])
+        for mov in movements:
+            if not isinstance(mov, dict):
+                continue
+            covered.add(str(mov.get("event_key") or ""))
+            covered.add(str(mov.get("id") or ""))
+            covered.add(str(mov.get("source_event_id") or ""))
+    covered.discard("")
+    return covered
+
+
+def _reserved_transaction_qty(claims: List[Dict[str, Any]]) -> float:
+    total = 0.0
+    for claim in claims or []:
+        data = claim.get("claim_data") or {}
+        rows = data.get("line_claims")
+        if isinstance(rows, list) and rows:
+            total += sum(safe_float(row.get("transaction_qty")) for row in rows)
+        else:
+            total += safe_float(data.get("transaction_qty"))
+    return total
+
+
+async def _delivery_line_block_reason(db, line: Dict[str, Any]) -> Optional[str]:
+    """Reject a new confirmation only when initialized stock cannot cover the line.
+
+    Missing opening stock matches the baseline: the line is skipped, not rejected.
+    """
+    mid = str(line.get("master_item_id") or "").strip()
+    if not await _product_stock_is_initialized(db, mid):
+        return None
+    proc = str(line.get("production_process") or "").strip().lower()
+    if not await _production_flow_stock_can_mutate(
+        db,
+        mid,
+        line.get("qty"),
+        line.get("unit"),
+        movement_type=MOVEMENT_PENGIRIMAN,
+        is_print=proc != "non_print",
+    ):
+        return SJ_STOCK_SHORT
+    return None
+
+
+async def claim_selected_delivery_stock(
+    db,
+    order: Dict[str, Any],
+    shipment_id: Optional[str],
+    action_id: str,
+    user: Optional[Dict[str, Any]],
+    holder: Dict[str, Any],
+) -> Optional[List[Dict[str, Any]]]:
+    """Claim only the selected SJ rows, identified by their canonical PO lines."""
+    holder.clear()
+    if not await should_claim_delivery_confirmed_stock(db, order):
+        return None
+    from quantity_rules import resolve_delivery_shipment, shipment_is_delivered
+
+    shipment, err = resolve_delivery_shipment(order, shipment_id)
+    if err:
+        raise HTTPException(400, err)
+    replay = _delivery_action_recorded(order, action_id)
+    if isinstance(shipment, dict) and shipment_is_delivered(order, shipment) and not replay:
+        holder["skip"] = True
+        return None
+    plan = plan_confirmed_sj_stock(order, shipment, allow_delivered=replay)
+    if plan.get("skip"):
+        holder["skip"] = True
+        return None
+    if plan.get("error"):
+        raise HTTPException(400, plan["error"])
+    lines = plan["lines"]
+    if not replay:
+        for line in lines:
+            reason = await _delivery_line_block_reason(db, line)
+            if reason:
+                raise HTTPException(400, reason)
+    order_id = str(order.get("id") or "")
+    specs = _delivery_claim_specs(order, lines, action_id)
+    responsible = []
+    for spec in specs:
+        if await _delivery_spec_is_claimable(
+            db, spec, order_id=order_id, action_id=action_id, replay=replay,
+        ):
+            responsible.append(spec)
+    claims = await claim_delivery_confirmed_stock(
+        db, order, lines, action_id, user, replay=replay,
+    )
+    covered = _covered_delivery_event_ids(claims)
+    if any(spec["event_id"] not in covered for spec in responsible):
+        await release_delivery_confirmed_stock(db, claims)
+        raise HTTPException(400, SJ_QTY_DRIFT)
+    finalized = bool(claims) and all(c.get("status") == "ALREADY_FINALIZED" for c in claims)
+    planned_qty = sum(safe_float(spec.get("qty")) for spec in responsible)
+    if not finalized and abs(_reserved_transaction_qty(claims) - planned_qty) > 0.0001:
+        await release_delivery_confirmed_stock(db, claims)
+        raise HTTPException(400, SJ_QTY_DRIFT)
+    holder["active"] = True
+    holder["lines"] = lines
+    holder["fingerprint"] = _sj_stock_fingerprint(lines)
+    return claims
 
 
 async def finalize_delivery_confirmed_stock(
@@ -2062,7 +2949,11 @@ async def finalize_delivery_confirmed_stock(
         if not c:
             continue
         if c.get("status") == "ALREADY_FINALIZED":
-            movements.append(c.get("movement"))
+            extra = c.get("line_movements")
+            if extra:
+                movements.extend(extra)
+            elif c.get("movement"):
+                movements.append(c.get("movement"))
             continue
         mov = await finalize_durable_stock_event(
             db,
@@ -2070,6 +2961,9 @@ async def finalize_delivery_confirmed_stock(
             master_item_id=c["master_item_id"],
             user=user,
         )
-        movements.append(mov)
+        if isinstance(mov, dict) and mov.get("line_movements"):
+            movements.extend(mov["line_movements"])
+        else:
+            movements.append(mov)
     return movements
 

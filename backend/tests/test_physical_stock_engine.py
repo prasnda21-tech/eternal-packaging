@@ -185,6 +185,9 @@ def doc_matches(d, query):
                 if op == "$gte":
                     if safe_float(field_val, -1e9) < safe_float(target):
                         return False
+                elif op == "$gt":
+                    if safe_float(field_val, -1e9) <= safe_float(target):
+                        return False
                 elif op == "$lte":
                     if safe_float(field_val, 1e9) > safe_float(target):
                         return False
@@ -2724,3 +2727,742 @@ async def test_65_recovery_does_not_mint_applied_timestamp_for_historical_crash(
     rows = await list_product_mutations(mock_db, "prod-hist")
     assert rows["total"] == 2
 
+
+NAMOY_MASTER = "958bb5e9-1090-4676-9999-eff93ff0bd5b"
+
+
+def _namoy_order():
+    return {
+        "id": "ord-namoy",
+        "po_number": "PO/2026/09/22/000011",
+        "physical_stock_snapshot": {"enabled": True, "stock_out_trigger": "delivery_confirmed"},
+        "line_items": [
+            {
+                "master_item_id": NAMOY_MASTER,
+                "production_process": "print",
+                "qty": 1000,
+                "quantity": 1000,
+                "line_id": "L0",
+                "unit": "PCS",
+            },
+            {
+                "master_item_id": NAMOY_MASTER,
+                "production_process": "print",
+                "qty": 1000,
+                "quantity": 1000,
+                "line_id": "L1",
+                "unit": "PCS",
+            },
+        ],
+        "delivery_confirm_action_ids": [],
+        "delivery_confirmations": [],
+    }
+
+
+def _pengiriman(db):
+    return [d for d in db.stock_movements._docs if d.get("movement_type") == MOVEMENT_PENGIRIMAN]
+
+
+def test_confirm_delivered_stock_claim_uses_selected_sj_rows():
+    """Stock claim resolves SJ rows; it does not pass the full PO line list."""
+    from pathlib import Path
+
+    server = Path(__file__).resolve().parents[1].joinpath("server.py").read_text()
+    start = server.index("async def confirm_delivered")
+    window = server[start:start + 4500]
+    assert "claim_selected_delivery_stock(" in window
+    assert 'claim_delivery_confirmed_stock(' not in window
+    assert 'existing_order.get("line_items")' not in window
+    assert "reject_sj_stock_qty_drift" in window
+    reconcile_at = window.index("_qr_reconcile_sj_quantities_to_loaded_delivery")
+    drift_at = window.index("reject_sj_stock_qty_drift")
+    append_at = window.index("_append_delivery_confirmation")
+    assert reconcile_at < drift_at < append_at
+    engine = Path(__file__).resolve().parents[1].joinpath("services", "physical_stock_engine.py").read_text()
+    assert "prepare_delivery_confirmed_stock" not in engine
+    assert "build_delivery_confirm_stock_lines" not in engine
+
+
+@pytest.mark.anyio
+async def test_same_master_two_po_lines_one_reservation(mock_db):
+    """Two lines from order.line_items share one master. Qty is those line qtys.
+
+    One pending_event covers both lines. Finalize writes one movement per line.
+    """
+    await setup_initialized_product(mock_db, NAMOY_MASTER, unprinted=4700.0, printed=2000.0)
+    order = _namoy_order()
+    lines = order["line_items"]
+    await precheck_delivery_confirmed(mock_db, order, lines)
+    claims = await claim_delivery_confirmed_stock(mock_db, order, lines, "act-namoy")
+    assert len(claims) == 1
+    assert claims[0]["status"] == "CLAIMED"
+    assert claims[0]["event_id"].endswith(f":master:{NAMOY_MASTER}")
+    state = await get_product_stock_state(mock_db, NAMOY_MASTER)
+    assert state["pending_event"]["reference_number"] == "PO/2026/09/22/000011"
+    assert state["printed_qty"] == 2000.0
+    movs = await finalize_delivery_confirmed_stock(mock_db, claims)
+    assert len(movs) == 2
+    assert {m.get("line_id") for m in movs} == {"L0", "L1"}
+    assert {m.get("line_idx") for m in movs} == {0, 1}
+    assert {m.get("reference_number") for m in movs} == {"PO/2026/09/22/000011"}
+    state = await get_product_stock_state(mock_db, NAMOY_MASTER)
+    assert state["printed_qty"] == 0.0
+    assert state["unprinted_qty"] == 4700.0
+    assert state["total_qty"] == 4700.0
+    assert not state.get("pending_event")
+    assert len(_pengiriman(mock_db)) == 2
+
+
+@pytest.mark.anyio
+async def test_same_master_print_and_unprinted_lines_one_reservation(mock_db):
+    """Print and non_print lines of one master, claimed from the same line list."""
+    await setup_initialized_product(mock_db, "mix-1", unprinted=200.0, printed=200.0)
+    order = {
+        "id": "ord-mix",
+        "po_number": "PO-MIX",
+        "physical_stock_snapshot": {"enabled": True, "stock_out_trigger": "delivery_confirmed"},
+        "line_items": [
+            {"master_item_id": "mix-1", "production_process": "print", "qty": 100, "line_id": "P", "unit": "PCS"},
+            {"master_item_id": "mix-1", "production_process": "non_print", "qty": 50, "line_id": "U", "unit": "PCS"},
+        ],
+    }
+    lines = order["line_items"]
+    claims = await claim_delivery_confirmed_stock(mock_db, order, lines, "act-mix")
+    assert len(claims) == 1
+    assert claims[0]["status"] == "CLAIMED"
+    state = await get_product_stock_state(mock_db, "mix-1")
+    assert state["printed_qty"] == 200.0
+    assert state["pending_event"]["event_id"].endswith(":master:mix-1")
+    movs = await finalize_delivery_confirmed_stock(mock_db, claims)
+    assert {m.get("line_id") for m in movs} == {"P", "U"}
+    assert {m.get("reference_number") for m in movs} == {"PO-MIX"}
+    state = await get_product_stock_state(mock_db, "mix-1")
+    assert state["printed_qty"] == 100.0
+    assert state["unprinted_qty"] == 150.0
+    assert state["total_qty"] == 250.0
+    assert not state.get("pending_event")
+    assert len(_pengiriman(mock_db)) == 2
+
+
+@pytest.mark.anyio
+async def test_same_master_sum_exceeds_bucket_reserves_nothing(mock_db):
+    """Each line fits alone, the sum does not. One atomic reservation fails closed.
+
+    The per-line shortage skip is unchanged. This case still must not leave the
+    first line's pending_event behind.
+    """
+    await setup_initialized_product(mock_db, NAMOY_MASTER, unprinted=4700.0, printed=1500.0)
+    order = _namoy_order()
+    lines = order["line_items"]
+    await precheck_delivery_confirmed(mock_db, order, lines)
+    with pytest.raises(HTTPException) as claim_exc:
+        await claim_delivery_confirmed_stock(mock_db, order, lines, "act-short")
+    assert "konflik konkurensi" in str(claim_exc.value.detail)
+    state = await get_product_stock_state(mock_db, NAMOY_MASTER)
+    assert state["printed_qty"] == 1500.0
+    assert state["total_qty"] == 6200.0
+    assert not state.get("pending_event")
+    assert _pengiriman(mock_db) == []
+
+
+@pytest.mark.anyio
+async def test_second_action_does_not_release_other_claim(mock_db):
+    await setup_initialized_product(mock_db, NAMOY_MASTER, unprinted=4700.0, printed=2000.0)
+    order = _namoy_order()
+    lines = order["line_items"]
+    first = await claim_delivery_confirmed_stock(mock_db, order, lines, "act-a")
+    with pytest.raises(HTTPException) as exc:
+        await claim_delivery_confirmed_stock(mock_db, order, lines, "act-b")
+    assert "konflik konkurensi" in str(exc.value.detail)
+    state = await get_product_stock_state(mock_db, NAMOY_MASTER)
+    assert state["pending_event"]["action_id"] == "act-a"
+    assert state["printed_qty"] == 2000.0
+    await release_delivery_confirmed_stock(mock_db, [{
+        "status": "CLAIMED",
+        "event_id": "stock_out:delivery:ord-namoy:act-b:master:" + NAMOY_MASTER,
+        "master_item_id": NAMOY_MASTER,
+    }])
+    state = await get_product_stock_state(mock_db, NAMOY_MASTER)
+    assert state["pending_event"]["action_id"] == "act-a"
+    await release_delivery_confirmed_stock(mock_db, first)
+    state = await get_product_stock_state(mock_db, NAMOY_MASTER)
+    assert not state.get("pending_event")
+    assert state["printed_qty"] == 2000.0
+    assert _pengiriman(mock_db) == []
+
+
+@pytest.mark.anyio
+async def test_retry_same_action_id_is_idempotent(mock_db):
+    await setup_initialized_product(mock_db, NAMOY_MASTER, unprinted=4700.0, printed=2000.0)
+    order = _namoy_order()
+    lines = order["line_items"]
+    first = await claim_delivery_confirmed_stock(mock_db, order, lines, "act-retry")
+    second = await claim_delivery_confirmed_stock(mock_db, order, lines, "act-retry")
+    assert second[0]["status"] == "CLAIMED"
+    assert second[0]["event_id"] == first[0]["event_id"]
+    state = await get_product_stock_state(mock_db, NAMOY_MASTER)
+    assert state["pending_event"]["delta_printed"] == -2000.0
+    assert state["printed_qty"] == 2000.0
+    movs = await finalize_delivery_confirmed_stock(mock_db, second)
+    assert len(movs) == 2
+    again = await claim_delivery_confirmed_stock(mock_db, order, lines, "act-retry")
+    assert again[0]["status"] == "ALREADY_FINALIZED"
+    finalized = await finalize_delivery_confirmed_stock(mock_db, again)
+    assert len(finalized) == 2
+    state = await get_product_stock_state(mock_db, NAMOY_MASTER)
+    assert state["printed_qty"] == 0.0
+    assert state["total_qty"] == 4700.0
+    assert len(_pengiriman(mock_db)) == 2
+
+
+@pytest.mark.anyio
+async def test_release_between_claim_and_finalize_restores_nothing_because_qty_unchanged(mock_db):
+    await setup_initialized_product(mock_db, NAMOY_MASTER, unprinted=4700.0, printed=2000.0)
+    order = _namoy_order()
+    lines = order["line_items"]
+    claims = await claim_delivery_confirmed_stock(mock_db, order, lines, "act-fail")
+    await release_delivery_confirmed_stock(mock_db, claims)
+    state = await get_product_stock_state(mock_db, NAMOY_MASTER)
+    assert not state.get("pending_event")
+    assert state["printed_qty"] == 2000.0
+    assert state["total_qty"] == 6700.0
+    assert _pengiriman(mock_db) == []
+
+
+@pytest.mark.anyio
+async def test_finalize_retries_after_movement_write_failure(mock_db, monkeypatch):
+    await setup_initialized_product(mock_db, NAMOY_MASTER, unprinted=4700.0, printed=2000.0)
+    order = _namoy_order()
+    import services.physical_stock_engine as engine
+
+    lines = order["line_items"]
+    claims = await claim_delivery_confirmed_stock(mock_db, order, lines, "act-crash")
+    real = engine.record_stock_movement
+    calls = {"n": 0}
+
+    async def flaky(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("movement write failed")
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(engine, "record_stock_movement", flaky)
+    with pytest.raises(RuntimeError):
+        await finalize_delivery_confirmed_stock(mock_db, claims)
+    state = await get_product_stock_state(mock_db, NAMOY_MASTER)
+    assert state["printed_qty"] == 0.0
+    assert state["pending_event"]["stage"] == "STATE_APPLIED"
+    assert len(_pengiriman(mock_db)) == 1
+    monkeypatch.setattr(engine, "record_stock_movement", real)
+    movs = await finalize_delivery_confirmed_stock(mock_db, claims)
+    assert len(movs) == 2
+    state = await get_product_stock_state(mock_db, NAMOY_MASTER)
+    assert state["printed_qty"] == 0.0
+    assert state["total_qty"] == 4700.0
+    assert not state.get("pending_event")
+    assert len(_pengiriman(mock_db)) == 2
+
+
+@pytest.mark.anyio
+async def test_source_committed_retry_finalizes_once(mock_db):
+    await setup_initialized_product(mock_db, NAMOY_MASTER, unprinted=4700.0, printed=2000.0)
+    order = _namoy_order()
+    await mock_db.orders.insert_one(dict(order))
+    lines = order["line_items"]
+    await claim_delivery_confirmed_stock(mock_db, order, lines, "act-src")
+    await mock_db.orders.update_one(
+        {"id": order["id"]},
+        {"$set": {"delivery_confirm_action_ids": ["act-src"]}},
+    )
+    resumed = await claim_delivery_confirmed_stock(mock_db, order, lines, "act-src")
+    assert resumed[0]["status"] == "ALREADY_FINALIZED"
+    state = await get_product_stock_state(mock_db, NAMOY_MASTER)
+    assert state["printed_qty"] == 0.0
+    assert not state.get("pending_event")
+    assert len(_pengiriman(mock_db)) == 2
+    again = await claim_delivery_confirmed_stock(mock_db, order, lines, "act-src")
+    await finalize_delivery_confirmed_stock(mock_db, again)
+    state = await get_product_stock_state(mock_db, NAMOY_MASTER)
+    assert state["printed_qty"] == 0.0
+    assert len(_pengiriman(mock_db)) == 2
+
+
+@pytest.mark.anyio
+async def test_snapshot_off_does_not_claim(mock_db):
+    await setup_initialized_product(mock_db, NAMOY_MASTER, unprinted=4700.0, printed=2000.0)
+    from services.physical_stock_engine import should_claim_delivery_confirmed_stock
+
+    order = _namoy_order()
+    legacy = dict(order)
+    legacy["physical_stock_snapshot"] = {"enabled": False, "stock_out_trigger": "delivery_confirmed"}
+    assert await should_claim_delivery_confirmed_stock(mock_db, legacy) is False
+    movs = await handle_delivery_confirmed(mock_db, legacy, {"id": "conf-off"})
+    assert movs == []
+    state = await get_product_stock_state(mock_db, NAMOY_MASTER)
+    assert state["printed_qty"] == 2000.0
+    assert _pengiriman(mock_db) == []
+
+
+@pytest.mark.anyio
+async def test_legacy_sequential_same_master_claims_conflict_and_release_first(mock_db):
+    """Pre-fix loop: claim line 0, then line 1, on one master.
+
+    Line 2 sees line 1's pending_event, raises the generic conflict, and the
+    caller releases only the claim it already appended. Balances stay put.
+    """
+    await setup_initialized_product(mock_db, NAMOY_MASTER, unprinted=4700.0, printed=2000.0)
+    order = _namoy_order()
+    claims = []
+    with pytest.raises(HTTPException) as exc:
+        for idx, line in enumerate(order["line_items"]):
+            claim = await claim_durable_stock_event(
+                mock_db,
+                event_id=f"stock_out:delivery:{order['id']}:act-old:{idx}",
+                master_item_id=line["master_item_id"],
+                movement_type=MOVEMENT_PENGIRIMAN,
+                transaction_qty=line["qty"],
+                transaction_uom="PCS",
+                source_entity="SUDAH_DICETAK",
+                destination_entity="CUSTOMER",
+                reference_number=order["po_number"],
+                reference_type="delivery_confirmed",
+                reference_id=order["id"],
+                order_id=order["id"],
+                line_idx=idx,
+                line_id=line["line_id"],
+                action_id="act-old",
+                is_print=True,
+            )
+            claims.append(claim)
+    assert "konflik konkurensi" in str(exc.value.detail)
+    assert len(claims) == 1
+    assert claims[0]["event_id"].endswith(":0")
+    await release_delivery_confirmed_stock(mock_db, claims)
+    state = await get_product_stock_state(mock_db, NAMOY_MASTER)
+    assert not state.get("pending_event")
+    assert state["printed_qty"] == 2000.0
+    assert state["total_qty"] == 6700.0
+    assert _pengiriman(mock_db) == []
+
+
+@pytest.mark.anyio
+async def test_single_line_full_depletion_retry_stays_idempotent(mock_db):
+    await setup_initialized_product(mock_db, "prod-1", unprinted=0.0, printed=1000.0)
+    order = {
+        "id": "ord-one",
+        "po_number": "PO-ONE",
+        "physical_stock_snapshot": {"enabled": True, "stock_out_trigger": "delivery_confirmed"},
+        "line_items": [{"master_item_id": "prod-1", "production_process": "print", "qty": 1000, "line_id": "L", "unit": "PCS"}],
+    }
+    lines = order["line_items"]
+    claims = await claim_delivery_confirmed_stock(mock_db, order, lines, "act-one")
+    await finalize_delivery_confirmed_stock(mock_db, claims)
+    again = await claim_delivery_confirmed_stock(mock_db, order, lines, "act-one")
+    assert again[0]["status"] == "ALREADY_FINALIZED"
+    await finalize_delivery_confirmed_stock(mock_db, again)
+    state = await get_product_stock_state(mock_db, "prod-1")
+    assert state["printed_qty"] == 0.0
+    assert len(_pengiriman(mock_db)) == 1
+    assert _pengiriman(mock_db)[0].get("reference_number") == "PO-ONE"
+
+
+@pytest.mark.anyio
+async def test_two_concurrent_confirms_one_claim_wins(mock_db):
+    await setup_initialized_product(mock_db, NAMOY_MASTER, unprinted=4700.0, printed=2000.0)
+    order = _namoy_order()
+    lines = order["line_items"]
+    results = await asyncio.gather(
+        claim_delivery_confirmed_stock(mock_db, order, lines, "act-1"),
+        claim_delivery_confirmed_stock(mock_db, order, lines, "act-2"),
+        return_exceptions=True,
+    )
+    successes = [r for r in results if not isinstance(r, Exception)]
+    failures = [r for r in results if isinstance(r, HTTPException)]
+    assert len(successes) == 1
+    assert len(failures) == 1
+    assert "konflik konkurensi" in str(failures[0].detail)
+    state = await get_product_stock_state(mock_db, NAMOY_MASTER)
+    assert state["pending_event"]["action_id"] in ("act-1", "act-2")
+    assert state["printed_qty"] == 2000.0
+    assert _pengiriman(mock_db) == []
+    movs = await finalize_delivery_confirmed_stock(mock_db, successes[0])
+    assert len(movs) == 2
+    state = await get_product_stock_state(mock_db, NAMOY_MASTER)
+    assert state["printed_qty"] == 0.0
+    assert len(_pengiriman(mock_db)) == 2
+
+
+def _sj_partial_order():
+    """PO 1000+1000, two SJ rows per shipment, one shared master."""
+    order = _namoy_order()
+    order["line_items"][0]["accurate_item_id"] = "ACC-NAMOY"
+    order["line_items"][1]["accurate_item_id"] = "ACC-NAMOY"
+    order["shipments"] = [
+        {
+            "id": "sj-1",
+            "number": "SJ/2026/09/26/000011",
+            "lines": [
+                {"line_idx": 0, "line_id": "L0", "qty": 400},
+                {"line_idx": 1, "line_id": "L1", "qty": 400},
+            ],
+        },
+        {
+            "id": "sj-2",
+            "number": "SJ/2026/09/27/000012",
+            "lines": [
+                {"line_idx": 0, "line_id": "L0", "qty": 600},
+                {"line_idx": 1, "line_id": "L1", "qty": 600},
+            ],
+        },
+    ]
+    return order
+
+
+@pytest.mark.anyio
+async def test_selected_sj_rows_reserve_confirmed_qty_not_full_po(mock_db):
+    """400+400 then 600+600. Identity is the PO line. Qty is the SJ row."""
+    from services.physical_stock_engine import claim_selected_delivery_stock, plan_confirmed_sj_stock
+
+    await setup_initialized_product(mock_db, NAMOY_MASTER, unprinted=4700.0, printed=2000.0)
+    order = _sj_partial_order()
+    first = plan_confirmed_sj_stock(order, order["shipments"][0])
+    assert first["error"] is None
+    assert [(ln["line_id"], ln["qty"], ln["master_item_id"]) for ln in first["lines"]] == [
+        ("L0", 400, NAMOY_MASTER),
+        ("L1", 400, NAMOY_MASTER),
+    ]
+    assert all(ln["accurate_item_id"] == "ACC-NAMOY" for ln in first["lines"])
+    holder = {}
+    claims = await claim_selected_delivery_stock(mock_db, order, "sj-1", "act-sj-1", None, holder)
+    assert len(claims) == 1
+    assert claims[0]["event_id"].endswith(f":master:{NAMOY_MASTER}")
+    state = await get_product_stock_state(mock_db, NAMOY_MASTER)
+    assert state["pending_event"]["delta_printed"] == -800.0
+    assert state["printed_qty"] == 2000.0
+    movs = await finalize_delivery_confirmed_stock(mock_db, claims)
+    assert sorted(m.get("transaction_qty") for m in movs) == [400.0, 400.0]
+    assert {m.get("line_id") for m in movs} == {"L0", "L1"}
+    assert {m.get("line_idx") for m in movs} == {0, 1}
+    state = await get_product_stock_state(mock_db, NAMOY_MASTER)
+    assert state["printed_qty"] == 1200.0
+    assert state["total_qty"] == 5900.0
+    assert len(_pengiriman(mock_db)) == 2
+
+    order["shipments"][0]["delivery_status"] = "Terkirim"
+    order["shipments"][0]["delivered_at"] = "2026-09-26T00:00:00+00:00"
+    order["delivery_confirmations"] = [{"shipment_id": "sj-1", "qty": 800, "items": [
+        {"line_idx": 0, "qty": 400}, {"line_idx": 1, "qty": 400},
+    ]}]
+    second = plan_confirmed_sj_stock(order, order["shipments"][1])
+    assert [ln["qty"] for ln in second["lines"]] == [600, 600]
+    holder = {}
+    claims = await claim_selected_delivery_stock(mock_db, order, "sj-2", "act-sj-2", None, holder)
+    movs = await finalize_delivery_confirmed_stock(mock_db, claims)
+    assert sorted(m.get("transaction_qty") for m in movs) == [600.0, 600.0]
+    state = await get_product_stock_state(mock_db, NAMOY_MASTER)
+    assert state["printed_qty"] == 0.0
+    assert state["unprinted_qty"] == 4700.0
+    assert state["total_qty"] == 4700.0
+    assert len(_pengiriman(mock_db)) == 4
+    assert not state.get("pending_event")
+
+
+@pytest.mark.anyio
+async def test_same_master_print_and_plain_sj_rows_one_reservation(mock_db):
+    from services.physical_stock_engine import claim_selected_delivery_stock
+
+    await setup_initialized_product(mock_db, "mix-1", unprinted=200.0, printed=200.0)
+    order = {
+        "id": "ord-mix-sj",
+        "po_number": "PO-MIX",
+        "physical_stock_snapshot": {"enabled": True, "stock_out_trigger": "delivery_confirmed"},
+        "line_items": [
+            {"master_item_id": "mix-1", "accurate_item_id": "ACC-P", "production_process": "print", "qty": 1000, "line_id": "P", "unit": "PCS"},
+            {"master_item_id": "mix-1", "accurate_item_id": "ACC-U", "production_process": "non_print", "qty": 1000, "line_id": "U", "unit": "PCS"},
+        ],
+        "shipments": [{
+            "id": "sj-mix",
+            "lines": [
+                {"line_idx": 0, "line_id": "P", "qty": 100},
+                {"line_idx": 1, "line_id": "U", "qty": 50},
+            ],
+        }],
+    }
+    holder = {}
+    claims = await claim_selected_delivery_stock(mock_db, order, "sj-mix", "act-mix-sj", None, holder)
+    assert len(claims) == 1
+    state = await get_product_stock_state(mock_db, "mix-1")
+    assert state["pending_event"]["delta_printed"] == -100.0
+    assert state["pending_event"]["delta_unprinted"] == -50.0
+    assert state["printed_qty"] == 200.0
+    movs = await finalize_delivery_confirmed_stock(mock_db, claims)
+    assert {m.get("line_id") for m in movs} == {"P", "U"}
+    assert sum(m.get("transaction_qty") or 0 for m in movs) == 150
+    state = await get_product_stock_state(mock_db, "mix-1")
+    assert state["printed_qty"] == 100.0
+    assert state["unprinted_qty"] == 150.0
+    assert not state.get("pending_event")
+
+
+@pytest.mark.anyio
+async def test_sj_without_rows_does_not_claim_full_po(mock_db):
+    from services.physical_stock_engine import claim_selected_delivery_stock
+
+    await setup_initialized_product(mock_db, NAMOY_MASTER, unprinted=4700.0, printed=2000.0)
+    order = _sj_partial_order()
+    order["shipments"] = [{"id": "sj-bare", "number": "SJ-BARE", "total_qty": 2000}]
+    holder = {}
+    with pytest.raises(HTTPException) as exc:
+        await claim_selected_delivery_stock(mock_db, order, "sj-bare", "act-bare", None, holder)
+    assert "tidak mengurangi stok dengan qty penuh PO" in str(exc.value.detail)
+    state = await get_product_stock_state(mock_db, NAMOY_MASTER)
+    assert state["printed_qty"] == 2000.0
+    assert not state.get("pending_event")
+    assert _pengiriman(mock_db) == []
+
+
+@pytest.mark.anyio
+async def test_cancelled_and_delivered_sj_are_not_claimed(mock_db):
+    from services.physical_stock_engine import claim_selected_delivery_stock
+
+    await setup_initialized_product(mock_db, NAMOY_MASTER, unprinted=4700.0, printed=2000.0)
+    order = _sj_partial_order()
+    order["shipments"][1]["cancelled"] = True
+    holder = {}
+    with pytest.raises(HTTPException) as exc:
+        await claim_selected_delivery_stock(mock_db, order, "sj-2", "act-cancel", None, holder)
+    assert "batal" in str(exc.value.detail).lower()
+    order["shipments"][0]["delivery_status"] = "Terkirim"
+    holder = {}
+    claimed = await claim_selected_delivery_stock(mock_db, order, "sj-1", "act-done", None, holder)
+    assert claimed is None
+    assert holder.get("skip") is True
+    state = await get_product_stock_state(mock_db, NAMOY_MASTER)
+    assert state["printed_qty"] == 2000.0
+    assert _pengiriman(mock_db) == []
+
+
+@pytest.mark.anyio
+async def test_selected_sj_retry_does_not_double_reservation(mock_db):
+    from services.physical_stock_engine import claim_selected_delivery_stock
+
+    await setup_initialized_product(mock_db, NAMOY_MASTER, unprinted=4700.0, printed=2000.0)
+    order = _sj_partial_order()
+    first = await claim_selected_delivery_stock(mock_db, order, "sj-1", "act-sj-retry", None, {})
+    second = await claim_selected_delivery_stock(mock_db, order, "sj-1", "act-sj-retry", None, {})
+    assert second[0]["event_id"] == first[0]["event_id"]
+    state = await get_product_stock_state(mock_db, NAMOY_MASTER)
+    assert state["pending_event"]["delta_printed"] == -800.0
+    assert state["printed_qty"] == 2000.0
+    movs = await finalize_delivery_confirmed_stock(mock_db, second)
+    assert len(movs) == 2
+    again = await claim_selected_delivery_stock(mock_db, order, "sj-1", "act-sj-retry", None, {})
+    assert again[0]["status"] == "ALREADY_FINALIZED"
+    await finalize_delivery_confirmed_stock(mock_db, again)
+    state = await get_product_stock_state(mock_db, NAMOY_MASTER)
+    assert state["printed_qty"] == 1200.0
+    assert len(_pengiriman(mock_db)) == 2
+
+
+@pytest.mark.anyio
+async def test_qty_drift_after_claim_does_not_keep_a_different_reservation(mock_db):
+    from services.physical_stock_engine import claim_selected_delivery_stock, reject_sj_stock_qty_drift
+
+    await setup_initialized_product(mock_db, NAMOY_MASTER, unprinted=4700.0, printed=2000.0)
+    order = _sj_partial_order()
+    holder = {}
+    claims = await claim_selected_delivery_stock(mock_db, order, "sj-1", "act-drift", None, holder)
+    order["shipments"][0]["lines"][0]["qty"] = 100
+    with pytest.raises(HTTPException) as exc:
+        reject_sj_stock_qty_drift(order, order["shipments"][0], holder, 800)
+    assert "berubah" in str(exc.value.detail)
+    await release_delivery_confirmed_stock(mock_db, claims)
+    state = await get_product_stock_state(mock_db, NAMOY_MASTER)
+    assert not state.get("pending_event")
+    assert state["printed_qty"] == 2000.0
+    assert _pengiriman(mock_db) == []
+
+
+@pytest.mark.anyio
+async def test_other_sj_claim_does_not_release_the_first(mock_db):
+    from services.physical_stock_engine import claim_selected_delivery_stock
+
+    await setup_initialized_product(mock_db, NAMOY_MASTER, unprinted=4700.0, printed=2000.0)
+    order = _sj_partial_order()
+    first = await claim_selected_delivery_stock(mock_db, order, "sj-1", "act-a", None, {})
+    with pytest.raises(HTTPException) as exc:
+        await claim_selected_delivery_stock(mock_db, order, "sj-2", "act-b", None, {})
+    assert "konflik konkurensi" in str(exc.value.detail)
+    state = await get_product_stock_state(mock_db, NAMOY_MASTER)
+    assert state["pending_event"]["action_id"] == "act-a"
+    assert state["pending_event"]["delta_printed"] == -800.0
+    await release_delivery_confirmed_stock(mock_db, [{
+        "status": "CLAIMED",
+        "event_id": "stock_out:delivery:ord-namoy:act-b:master:" + NAMOY_MASTER,
+        "master_item_id": NAMOY_MASTER,
+    }])
+    state = await get_product_stock_state(mock_db, NAMOY_MASTER)
+    assert state["pending_event"]["action_id"] == "act-a"
+    await release_delivery_confirmed_stock(mock_db, first)
+    state = await get_product_stock_state(mock_db, NAMOY_MASTER)
+    assert not state.get("pending_event")
+    assert state["printed_qty"] == 2000.0
+
+
+@pytest.mark.anyio
+async def test_retry_after_delivered_mark_finalizes_the_same_claim_once(mock_db):
+    """Crash after the SJ is marked delivered and before stock finalize.
+
+    The same action_id resumes the reservation. It does not open a second one.
+    """
+    from services.physical_stock_engine import claim_selected_delivery_stock
+
+    await setup_initialized_product(mock_db, NAMOY_MASTER, unprinted=4700.0, printed=2000.0)
+    order = _sj_partial_order()
+    await mock_db.orders.insert_one(dict(order))
+    claims = await claim_selected_delivery_stock(mock_db, order, "sj-1", "act-crash-sj", None, {})
+    assert claims[0]["status"] == "CLAIMED"
+    order["shipments"][0]["delivery_status"] = "Terkirim"
+    order["delivery_confirm_action_ids"] = ["act-crash-sj"]
+    order["delivery_confirmations"] = [{"action_id": "act-crash-sj", "shipment_id": "sj-1", "qty": 800}]
+    await mock_db.orders.update_one({"id": order["id"]}, {"$set": {
+        "shipments": order["shipments"],
+        "delivery_confirm_action_ids": ["act-crash-sj"],
+        "delivery_confirmations": order["delivery_confirmations"],
+    }})
+    resumed = await claim_selected_delivery_stock(mock_db, order, "sj-1", "act-crash-sj", None, {})
+    assert resumed[0]["status"] == "ALREADY_FINALIZED"
+    await finalize_delivery_confirmed_stock(mock_db, resumed)
+    state = await get_product_stock_state(mock_db, NAMOY_MASTER)
+    assert state["printed_qty"] == 1200.0
+    assert not state.get("pending_event")
+    assert len(_pengiriman(mock_db)) == 2
+    again = await claim_selected_delivery_stock(mock_db, order, "sj-1", "act-crash-sj", None, {})
+    await finalize_delivery_confirmed_stock(mock_db, again)
+    state = await get_product_stock_state(mock_db, NAMOY_MASTER)
+    assert state["printed_qty"] == 1200.0
+    assert len(_pengiriman(mock_db)) == 2
+
+
+@pytest.mark.anyio
+async def test_omitted_delivery_action_is_stable_per_shipment(mock_db):
+    from services.physical_stock_engine import _acquire_omitted_action
+
+    first = await _acquire_omitted_action(mock_db, "ord-omit", "sj-1")
+    second = await _acquire_omitted_action(mock_db, "ord-omit", "sj-1")
+    other = await _acquire_omitted_action(mock_db, "ord-omit", "sj-2")
+    assert first == second
+    assert other != first
+
+
+@pytest.mark.anyio
+async def test_explicit_action_rejects_a_different_shipment_or_payload(mock_db):
+    from fastapi import HTTPException
+
+    from services.physical_stock_engine import prepare_confirm_delivered_action
+
+    order = _sj_partial_order()
+    order["delivery_confirmations"] = [{
+        "action_id": "act-1",
+        "shipment_id": "sj-1",
+        "qty": 800,
+        "items": [{"line_idx": 0, "qty": 400}, {"line_idx": 1, "qty": 400}],
+    }]
+    order["delivery_confirm_action_ids"] = ["act-1"]
+    await mock_db.orders.insert_one(dict(order))
+    same = await prepare_confirm_delivered_action(mock_db, order, "sj-1", "act-1")
+    assert same["action_id"] == "act-1"
+    with pytest.raises(HTTPException) as other_sj:
+        await prepare_confirm_delivered_action(mock_db, order, "sj-2", "act-1")
+    assert other_sj.value.status_code == 409
+    changed = dict(order)
+    changed["delivery_confirmations"] = [{
+        "action_id": "act-1",
+        "shipment_id": "sj-1",
+        "qty": 800,
+        "items": [{"line_idx": 0, "qty": 100}, {"line_idx": 1, "qty": 400}],
+    }]
+    with pytest.raises(HTTPException) as other_payload:
+        await prepare_confirm_delivered_action(mock_db, changed, "sj-1", "act-1")
+    assert other_payload.value.status_code == 409
+
+
+@pytest.mark.anyio
+async def test_release_keeps_live_recorded_and_applied_delivery_claims(mock_db):
+    from services.physical_stock_engine import (
+        claim_selected_delivery_stock,
+        release_uncommitted_delivery_claim,
+    )
+
+    await setup_initialized_product(mock_db, NAMOY_MASTER, unprinted=4700.0, printed=2000.0)
+    order = _sj_partial_order()
+    await mock_db.orders.insert_one(dict(order))
+    claims = await claim_selected_delivery_stock(mock_db, order, "sj-1", "act-hold", None, {})
+    await release_uncommitted_delivery_claim(mock_db, claims, order["id"], "act-hold", 1)
+    state = await get_product_stock_state(mock_db, NAMOY_MASTER)
+    assert state["pending_event"]["action_id"] == "act-hold"
+    assert state["printed_qty"] == 2000.0
+
+    order["delivery_confirm_action_ids"] = ["act-hold"]
+    order["delivery_confirmations"] = [{"action_id": "act-hold", "shipment_id": "sj-1", "qty": 800}]
+    await mock_db.orders.update_one({"id": order["id"]}, {"$set": {
+        "delivery_confirm_action_ids": order["delivery_confirm_action_ids"],
+        "delivery_confirmations": order["delivery_confirmations"],
+    }})
+    await release_uncommitted_delivery_claim(mock_db, claims, order["id"], "act-hold", 0)
+    state = await get_product_stock_state(mock_db, NAMOY_MASTER)
+    assert state["pending_event"]["action_id"] == "act-hold"
+
+    await mock_db.orders.update_one({"id": order["id"]}, {"$set": {
+        "delivery_confirm_action_ids": [],
+        "delivery_confirmations": [],
+    }})
+    await mock_db[STATE_COLLECTION].update_one(
+        {"pending_event.event_id": claims[0]["event_id"]},
+        {"$set": {"pending_event.stage": "STATE_APPLIED"}, "$inc": {"printed_qty": -800.0, "total_qty": -800.0}},
+    )
+    await release_uncommitted_delivery_claim(mock_db, claims, order["id"], "act-hold", 0)
+    state = await get_product_stock_state(mock_db, NAMOY_MASTER)
+    assert state["pending_event"]["stage"] == "STATE_APPLIED"
+    assert state["printed_qty"] == 1200.0
+
+    await mock_db[STATE_COLLECTION].update_one(
+        {"pending_event.event_id": claims[0]["event_id"]},
+        {"$set": {"pending_event.stage": "CLAIMED"}, "$inc": {"printed_qty": 800.0, "total_qty": 800.0}},
+    )
+    await release_uncommitted_delivery_claim(mock_db, claims, order["id"], "act-hold", 0)
+    state = await get_product_stock_state(mock_db, NAMOY_MASTER)
+    assert not state.get("pending_event")
+    assert state["printed_qty"] == 2000.0
+    assert _pengiriman(mock_db) == []
+
+
+@pytest.mark.anyio
+async def test_resumed_claim_stays_until_the_last_holder_releases_it(mock_db):
+    """Claim-time release skips a resumed claim. The last holder may still clear it."""
+    from services.physical_stock_engine import (
+        claim_selected_delivery_stock,
+        release_uncommitted_delivery_claim,
+    )
+
+    await setup_initialized_product(mock_db, NAMOY_MASTER, unprinted=4700.0, printed=2000.0)
+    order = _sj_partial_order()
+    await mock_db.orders.insert_one(dict(order))
+    created = await claim_selected_delivery_stock(mock_db, order, "sj-1", "act-resume", None, {})
+    resumed = await claim_selected_delivery_stock(mock_db, order, "sj-1", "act-resume", None, {})
+    assert created[0]["resumed"] is False
+    assert resumed[0]["resumed"] is True
+    assert resumed[0]["status"] == "CLAIMED"
+    await release_delivery_confirmed_stock(mock_db, resumed)
+    state = await get_product_stock_state(mock_db, NAMOY_MASTER)
+    assert state["pending_event"]["action_id"] == "act-resume"
+    assert state["pending_event"]["stage"] == "CLAIMED"
+    assert state["printed_qty"] == 2000.0
+    await release_uncommitted_delivery_claim(mock_db, resumed, order["id"], "act-resume", 1)
+    state = await get_product_stock_state(mock_db, NAMOY_MASTER)
+    assert state["pending_event"]["action_id"] == "act-resume"
+    await release_uncommitted_delivery_claim(mock_db, resumed, order["id"], "act-resume", 0)
+    state = await get_product_stock_state(mock_db, NAMOY_MASTER)
+    assert not state.get("pending_event")
+    assert state["printed_qty"] == 2000.0
+    assert _pengiriman(mock_db) == []
