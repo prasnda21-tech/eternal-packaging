@@ -1,14 +1,15 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
-import { CheckCircle2, XCircle, AlertTriangle, Clock, FileText, Download, ExternalLink, Eye, EyeOff } from "lucide-react";
+import { CheckCircle2, XCircle, AlertTriangle, Clock, Download, Eye } from "lucide-react";
 import api from "../lib/api";
 import { formatApiError } from "../lib/errors";
+import { isCrossOriginDocumentUrl } from "../lib/pdfDocument";
 import SignaturePad from "../components/SignaturePad";
+import InAppDocumentViewer from "../components/InAppDocumentViewer";
 import {
   canOpenPublicApprovalDesign,
   isPublicApprovalImage,
   isPublicApprovalPdf,
-  preferCompactPdfPreview,
   resolvePublicApprovalDesignDownloadUrl,
   resolvePublicApprovalDesignUrl,
 } from "../lib/publicApprovalDesign";
@@ -59,11 +60,7 @@ export default function PublicCustomerApproval() {
   const [signerName, setSignerName] = useState("");
   const [note, setNote] = useState("");
   const [signature, setSignature] = useState(null);
-  const [compactPdf, setCompactPdf] = useState(preferCompactPdfPreview);
-  const [showInline, setShowInline] = useState(true);
-  const [pdfBlobUrl, setPdfBlobUrl] = useState("");
-  const [pdfLoading, setPdfLoading] = useState(false);
-  const [pdfLoadErr, setPdfLoadErr] = useState(false);
+  const [pdfOpen, setPdfOpen] = useState(false);
 
   const load = () => {
     setLoading(true);
@@ -76,23 +73,9 @@ export default function PublicCustomerApproval() {
 
   useEffect(load, [token]);
 
-  useEffect(() => {
-    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return undefined;
-    const mq = window.matchMedia("(max-width: 768px)");
-    const sync = () => setCompactPdf(preferCompactPdfPreview());
-    sync();
-    if (mq.addEventListener) mq.addEventListener("change", sync);
-    else mq.addListener(sync);
-    return () => {
-      if (mq.removeEventListener) mq.removeEventListener("change", sync);
-      else mq.removeListener(sync);
-    };
-  }, []);
-
   const countdown = useCountdown(view?.expires_at);
   const designFile = view?.design_file;
   const isPdf = isPublicApprovalPdf(designFile);
-  const canOpen = canOpenPublicApprovalDesign(view?.status);
   const designUrl = useMemo(
     () => resolvePublicApprovalDesignUrl(token, designFile, {
       status: view?.status,
@@ -107,53 +90,19 @@ export default function PublicCustomerApproval() {
     }),
     [token, designFile, view?.status],
   );
-
-  useEffect(() => {
-    if (compactPdf || !canOpen || !designUrl || !isPdf || !showInline) {
-      setPdfBlobUrl((prev) => {
-        if (prev) URL.revokeObjectURL(prev);
-        return "";
-      });
-      setPdfLoading(false);
-      return undefined;
+  const externalPdf = isPdf && isCrossOriginDocumentUrl(designUrl);
+  const loadPublicPdf = useCallback(async ({ download = false, signal } = {}) => {
+    const url = download ? downloadUrl : designUrl;
+    const response = await fetch(url, { credentials: "omit", cache: "no-store", signal });
+    if (!response.ok) {
+      const error = new Error("design pdf");
+      error.status = response.status;
+      error.response = { status: response.status };
+      throw error;
     }
-
-    let cancelled = false;
-    let createdUrl = "";
-    setPdfLoading(true);
-    setPdfLoadErr(false);
-
-    fetch(designUrl, { credentials: "omit" })
-      .then((res) => {
-        if (!res.ok) throw new Error("HTTP " + res.status);
-        const ct = res.headers.get("content-type") || "";
-        if (!ct.includes("pdf") && !ct.includes("octet-stream")) {
-          throw new Error("Invalid content-type: " + ct);
-        }
-        return res.blob();
-      })
-      .then((blob) => {
-        if (cancelled) return;
-        if (!blob || blob.size === 0) throw new Error("Empty blob");
-        const safeBlob = blob.type === "application/pdf" ? blob : new Blob([blob], { type: "application/pdf" });
-        createdUrl = URL.createObjectURL(safeBlob);
-        setPdfBlobUrl(createdUrl);
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setPdfLoadErr(true);
-          setPdfBlobUrl("");
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setPdfLoading(false);
-      });
-
-    return () => {
-      cancelled = true;
-      if (createdUrl) URL.revokeObjectURL(createdUrl);
-    };
-  }, [compactPdf, canOpen, designUrl, isPdf, showInline]);
+    const type = String(response.headers.get("content-type") || "application/pdf").split(";")[0].trim();
+    return new Blob([await response.arrayBuffer()], { type });
+  }, [designUrl, downloadUrl]);
 
   const settings = view?.settings || {};
   const canInteract = view?.status === "active";
@@ -283,91 +232,28 @@ export default function PublicCustomerApproval() {
               }
               if (isPdf) {
                 const canOpenPdf = canOpenPublicApprovalDesign(view.status);
-                const effectivePdfSrc = pdfBlobUrl || designUrl;
-                const showInlineViewer = !compactPdf && canOpenPdf && showInline && !pdfLoadErr;
                 return (
                   <div data-testid="public-approval-design-pdf">
-                    {pdfLoading && (
-                      <div className="design-pdf-loading" data-testid="public-approval-design-pdf-loading">
-                        <FileText size={16} />
-                        <span>Memuat preview PDF…</span>
-                      </div>
+                    <div className="pdf-meta">
+                      <div className="pdf-name">{file.name}</div>
+                    </div>
+                    {externalPdf && (
+                      <p className="muted small" data-testid="public-approval-design-pdf-external">
+                        Preview PDF dari origin lain tidak dapat dimuat di aplikasi.
+                      </p>
                     )}
-
-                    {!compactPdf && canOpenPdf && showInlineViewer && !pdfLoading && (
-                      <object
-                        data={effectivePdfSrc}
-                        type="application/pdf"
-                        className="design-pdf-object"
-                        data-testid="public-approval-design-pdf-inline"
-                      >
-                        <iframe
-                          src={`${effectivePdfSrc}#toolbar=1`}
-                          type="application/pdf"
-                          title={file.name || "Design PDF"}
-                          className="design-pdf-frame"
-                          data-testid="public-approval-design-pdf-frame"
-                        >
-                          <div className="design-pdf-fallback" data-testid="public-approval-design-pdf-fallback">
-                            <span className="pdf-icon" aria-hidden="true"><FileText size={18} /></span>
-                            <div className="pdf-meta">
-                              <div className="pdf-name">{file.name}</div>
-                              <p className="muted small">Preview PDF tidak tersedia di browser ini.</p>
-                            </div>
-                          </div>
-                        </iframe>
-                      </object>
-                    )}
-
-                    {compactPdf && (
-                      <div className="design-pdf-fallback" data-testid="public-approval-design-pdf-fallback">
-                        <span className="pdf-icon" aria-hidden="true"><FileText size={18} /></span>
-                        <div className="pdf-meta">
-                          <div className="pdf-name">{file.name}</div>
-                          <p className="muted small">Preview PDF tidak tersedia di browser ini.</p>
-                        </div>
-                      </div>
-                    )}
-
-                    {!compactPdf && (!showInlineViewer || pdfLoadErr) && !pdfLoading && (
-                      <div className="design-pdf-fallback" data-testid="public-approval-design-pdf-fallback">
-                        <span className="pdf-icon" aria-hidden="true"><FileText size={18} /></span>
-                        <div className="pdf-meta">
-                          <div className="pdf-name">{file.name}</div>
-                          <p className="muted small">PDF tidak dapat ditampilkan langsung di browser ini. Buka di tab baru atau download PDF.</p>
-                        </div>
-                      </div>
-                    )}
-
                     {canOpenPdf && (
                       <div className="design-pdf-actions" data-testid="public-approval-design-pdf-actions">
                         <button
                           type="button"
                           className="ghost sm design-pdf-toggle"
-                          onClick={() => {
-                            if (showInlineViewer) {
-                              setShowInline(false);
-                            } else {
-                              setShowInline(true);
-                              setPdfLoadErr(false);
-                              setCompactPdf(false);
-                            }
-                          }}
+                          disabled={externalPdf || !designUrl}
+                          onClick={() => setPdfOpen(true)}
                           data-testid="public-approval-design-pdf-toggle"
                         >
-                          {showInlineViewer ? <EyeOff size={14} /> : <Eye size={14} />}
-                          <span>{showInlineViewer ? "Tutup Preview" : "Lihat PDF"}</span>
+                          <Eye size={14} />
+                          <span>Lihat PDF</span>
                         </button>
-                        <a
-                          href={designUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="ghost sm design-pdf-open"
-                          data-testid="public-approval-design-pdf-open"
-                        >
-                          <ExternalLink size={14} />
-                          <span>Buka di Tab Baru</span>
-                        </a>
                         <a
                           href={downloadUrl}
                           download={file.name || "design.pdf"}
@@ -378,6 +264,18 @@ export default function PublicCustomerApproval() {
                           <span>Download PDF</span>
                         </a>
                       </div>
+                    )}
+                    {pdfOpen && canOpenPdf && !externalPdf && (
+                      <InAppDocumentViewer
+                        documentKey={file.id || designUrl}
+                        title={file.name || "Design PDF"}
+                        fileName={file.name || "design.pdf"}
+                        contentType="application/pdf"
+                        allowDownload
+                        loadFile={loadPublicPdf}
+                        onClose={() => setPdfOpen(false)}
+                        testId="public-approval-design-pdf-viewer"
+                      />
                     )}
                   </div>
                 );

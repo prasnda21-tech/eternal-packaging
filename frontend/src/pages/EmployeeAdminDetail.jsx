@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { AlertCircle, FileText } from "lucide-react";
 import api from "../lib/api";
@@ -6,6 +6,13 @@ import { useAuth } from "../lib/auth";
 import { currentStepLabel, displayValue, statusLabel } from "../lib/employeeAdmin";
 import { formatDisplayDateTime } from "../lib/constants";
 import { FormSection, FormField } from "../components/form-standard";
+import InAppDocumentViewer from "../components/InAppDocumentViewer";
+
+function fileIsPdf(value) {
+  const type = String(value?.content_type || "").toLowerCase();
+  const name = String(value?.name || "").toLowerCase();
+  return type.includes("pdf") || name.endsWith(".pdf");
+}
 
 function errDetail(ex) {
   return ex?.response?.data?.detail || ex?.message || "Gagal memuat";
@@ -18,6 +25,7 @@ export default function EmployeeAdminDetail() {
   const [err, setErr] = useState("");
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
+  const [pdfFile, setPdfFile] = useState(null);
 
   const load = async () => {
     setErr("");
@@ -30,6 +38,15 @@ export default function EmployeeAdminDetail() {
   };
 
   useEffect(() => { load(); }, [id]);
+
+  const loadPdfFile = useCallback(({ signal } = {}) => {
+    if (!row?.id || !pdfFile?.id) {
+      const error = new Error("missing");
+      error.status = 404;
+      return Promise.reject(error);
+    }
+    return api.employeeAdminFileBlob(row.id, pdfFile.id, { signal });
+  }, [row?.id, pdfFile?.id]);
 
   const decide = async (action) => {
     setBusy(true);
@@ -78,7 +95,18 @@ export default function EmployeeAdminDetail() {
                 <dt>{field.label}</dt>
                 <dd>
                   {field.type === "file" && row.values?.[field.key]?.id ? (
-                    <a href={api.employeeAdminFileUrl(row.id, row.values[field.key].id)} target="_blank" rel="noreferrer">{displayValue(field, row.values[field.key])}</a>
+                    fileIsPdf(row.values[field.key]) ? (
+                      <button
+                        type="button"
+                        className="linkish"
+                        data-testid={`ea-file-open-${row.values[field.key].id}`}
+                        onClick={() => setPdfFile(row.values[field.key])}
+                      >
+                        {displayValue(field, row.values[field.key])}
+                      </button>
+                    ) : (
+                      <a href={api.employeeAdminFileUrl(row.id, row.values[field.key].id)} target="_blank" rel="noreferrer">{displayValue(field, row.values[field.key])}</a>
+                    )
                   ) : displayValue(field, row.values?.[field.key])}
                 </dd>
               </div>
@@ -121,6 +149,18 @@ export default function EmployeeAdminDetail() {
         <a className="primary" href={api.employeeAdminDocumentUrl(row.id)} target="_blank" rel="noreferrer" data-testid="ea-pdf-link">
           <FileText size={14} /> Unduh dokumen resmi {row.document?.document_number || ""}
         </a>
+      )}
+      {pdfFile && (
+        <InAppDocumentViewer
+          documentKey={pdfFile.id}
+          title={pdfFile.name || "Lampiran"}
+          fileName={pdfFile.name || "lampiran.pdf"}
+          contentType={pdfFile.content_type || "application/pdf"}
+          allowDownload={false}
+          loadFile={loadPdfFile}
+          onClose={() => setPdfFile(null)}
+          testId="ea-file-viewer"
+        />
       )}
     </div>
   );

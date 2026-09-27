@@ -3,11 +3,21 @@ import { GlobalWorkerOptions, getDocument } from "pdfjs-dist";
 
 GlobalWorkerOptions.workerSrc = `${process.env.PUBLIC_URL || ""}/pdf.worker.min.mjs`;
 
-function PdfPage({ pdf, pageNumber }) {
+const MAX_PAGE_WIDTH = 920;
+
+function fittedWidth(node) {
+  const measured = Math.max(0, (node?.clientWidth || 0) - 8);
+  if (measured >= 120) return Math.min(MAX_PAGE_WIDTH, measured);
+  const viewport = typeof window !== "undefined" ? window.innerWidth : 390;
+  return Math.max(280, Math.min(MAX_PAGE_WIDTH, viewport - 24));
+}
+
+function PdfPage({ pdf, pageNumber, width }) {
   const canvasRef = useRef(null);
   const [error, setError] = useState("");
 
   useEffect(() => {
+    if (!width) return undefined;
     let active = true;
     let renderTask = null;
     let page = null;
@@ -17,7 +27,7 @@ function PdfPage({ pdf, pageNumber }) {
         page = await pdf.getPage(pageNumber);
         if (!active || !canvasRef.current) return;
         const base = page.getViewport({ scale: 1 });
-        const availableWidth = Math.max(280, Math.min(920, window.innerWidth - 24));
+        const availableWidth = Math.max(280, Math.min(MAX_PAGE_WIDTH, width));
         const cssScale = Math.min(2, availableWidth / base.width);
         const pixelRatio = Math.min(2, window.devicePixelRatio || 1);
         const viewport = page.getViewport({ scale: cssScale * pixelRatio });
@@ -43,7 +53,7 @@ function PdfPage({ pdf, pageNumber }) {
       renderTask?.cancel?.();
       page?.cleanup?.();
     };
-  }, [pdf, pageNumber]);
+  }, [pdf, pageNumber, width]);
 
   return (
     <section className="spwa-pdf-page" aria-label={`Halaman ${pageNumber}`}>
@@ -55,11 +65,14 @@ function PdfPage({ pdf, pageNumber }) {
 }
 
 export default function SalesPwaPdfViewer({ blob, label }) {
+  const frameRef = useRef(null);
+  const [pageWidth, setPageWidth] = useState(() => fittedWidth(null));
   const [state, setState] = useState({ loading: true, pdf: null, error: "" });
 
   useEffect(() => {
     let active = true;
     let loadingTask = null;
+    let pdfDoc = null;
     setState({ loading: true, pdf: null, error: "" });
 
     blob.arrayBuffer()
@@ -73,7 +86,12 @@ export default function SalesPwaPdfViewer({ blob, label }) {
         return loadingTask.promise;
       })
       .then((pdf) => {
-        if (active && pdf) setState({ loading: false, pdf, error: "" });
+        pdfDoc = pdf || null;
+        if (!active) {
+          pdf?.destroy?.();
+          return;
+        }
+        if (pdf) setState({ loading: false, pdf, error: "" });
       })
       .catch(() => {
         if (active) setState({ loading: false, pdf: null, error: "PDF gagal ditampilkan." });
@@ -81,17 +99,37 @@ export default function SalesPwaPdfViewer({ blob, label }) {
 
     return () => {
       active = false;
-      loadingTask?.destroy?.();
+      const task = loadingTask;
+      const doc = pdfDoc;
+      loadingTask = null;
+      pdfDoc = null;
+      try {
+        if (doc) doc.destroy?.();
+        else task?.destroy?.();
+      } catch {
+        /* render already cancelled */
+      }
     };
   }, [blob]);
+
+  useEffect(() => {
+    const node = frameRef.current;
+    if (!node || !state.pdf) return undefined;
+    const apply = () => setPageWidth(fittedWidth(node));
+    apply();
+    if (typeof ResizeObserver === "undefined") return undefined;
+    const observer = new ResizeObserver(apply);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [state.pdf]);
 
   if (state.loading) return <div className="spwa-viewer-state">Menyiapkan PDF...</div>;
   if (state.error) return <div className="spwa-viewer-state is-error">{state.error}</div>;
 
   return (
-    <div className="spwa-pdf" role="document" aria-label={label} data-testid="sales-pdf-viewer">
+    <div className="spwa-pdf" ref={frameRef} role="document" aria-label={label} data-testid="sales-pdf-viewer">
       {Array.from({ length: state.pdf.numPages }, (_, index) => (
-        <PdfPage key={index + 1} pdf={state.pdf} pageNumber={index + 1} />
+        <PdfPage key={`${index + 1}`} pdf={state.pdf} pageNumber={index + 1} width={pageWidth} />
       ))}
     </div>
   );

@@ -3,6 +3,22 @@ import { createRoot } from "react-dom/client";
 import AttachmentsPanel from "./AttachmentsPanel";
 import api from "../lib/api";
 
+jest.mock("./InAppDocumentViewer", () => {
+  const React = require("react");
+  return function MockInAppDocumentViewer(props) {
+    global.__attachmentPdfViewer = props;
+    return React.createElement(
+      "div",
+      { "data-testid": props.testId },
+      React.createElement("button", {
+        type: "button",
+        "data-testid": `${props.testId}-close`,
+        onClick: props.onClose,
+      }, "Tutup"),
+    );
+  };
+});
+
 jest.mock("../lib/auth", () => ({
   useAuth: () => ({
     user: { name: "Admin", email: "admin@x.com" },
@@ -135,7 +151,7 @@ describe("AttachmentsPanel lazy design fetch", () => {
     expect(window.open).not.toHaveBeenCalled();
   });
 
-  test("PDF Lihat opens placeholder synchronously then assigns blob URL", async () => {
+  test("PDF Lihat stays in the app viewer and does not open a tab", async () => {
     const pdfOrder = {
       ...order,
       design_files: [{
@@ -145,29 +161,31 @@ describe("AttachmentsPanel lazy design fetch", () => {
         uploaded_at: "2026-09-19T08:00:00.000Z",
       }],
     };
-    let resolveFetch;
-    api.getOrderAttachment.mockReturnValue(new Promise((resolve) => { resolveFetch = resolve; }));
+    api.getOrderAttachment.mockResolvedValue(new Blob([new Uint8Array([37, 80, 68, 70])], { type: "application/pdf" }));
     await act(async () => {
       root.render(<AttachmentsPanel order={pdfOrder} user={{ permissions: [] }} section="design" />);
     });
-    act(() => {
+    await act(async () => {
       container.querySelector('[data-testid="view-design-file-pdf1"]').click();
     });
-    expect(window.open).toHaveBeenCalledTimes(1);
-    expect(window.open).toHaveBeenCalledWith("about:blank", "_blank");
-    expect(opened[0].opener).toBe(null);
-    expect(api.getOrderAttachment).toHaveBeenCalledTimes(1);
-    expect(api.getOrderAttachment).toHaveBeenCalledWith("po-heavy", "design", "pdf1");
-    expect(opened[0].location.replace).not.toHaveBeenCalled();
+    expect(window.open).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="attachment-pdf-pdf1"]')).toBeTruthy();
+    expect(container.querySelector("iframe")).toBeNull();
+    const blob = await global.__attachmentPdfViewer.loadFile({ signal: new AbortController().signal });
+    expect(api.getOrderAttachment).toHaveBeenCalledWith(
+      "po-heavy",
+      "design",
+      "pdf1",
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    expect(blob).toBeInstanceOf(Blob);
     await act(async () => {
-      resolveFetch(new Blob([new Uint8Array([37, 80, 68, 70])], { type: "application/pdf" }));
+      container.querySelector('[data-testid="attachment-pdf-pdf1-close"]').click();
     });
-    expect(opened[0].location.replace).toHaveBeenCalledWith("blob:design-0");
-    expect(window.open).toHaveBeenCalledTimes(1);
-    expect(container.querySelector('[data-testid="attachment-preview"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="attachment-pdf-pdf1"]')).toBeNull();
   });
 
-  test("PDF fetch failure closes placeholder and shows local error", async () => {
+  test("PDF fetch failure is left to the in-app viewer", async () => {
     const pdfOrder = {
       ...order,
       design_files: [{
@@ -177,17 +195,17 @@ describe("AttachmentsPanel lazy design fetch", () => {
         uploaded_at: "2026-09-19T08:00:00.000Z",
       }],
     };
-    api.getOrderAttachment.mockRejectedValue(new Error("boom"));
+    const denied = Object.assign(new Error("denied"), { response: { status: 403 } });
+    api.getOrderAttachment.mockRejectedValue(denied);
     await act(async () => {
       root.render(<AttachmentsPanel order={pdfOrder} user={{ permissions: [] }} section="design" />);
     });
     await act(async () => {
       container.querySelector('[data-testid="view-design-file-pdf1"]').click();
     });
-    expect(opened[0].close).toHaveBeenCalled();
-    expect(container.querySelector('[data-testid="attachment-preview-error"]').textContent).toMatch(
-      /Gagal memuat file/,
-    );
+    expect(window.open).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="attachment-pdf-pdf1"]')).toBeTruthy();
+    await expect(global.__attachmentPdfViewer.loadFile()).rejects.toBe(denied);
     expect(container.querySelector('[data-testid="design-files-panel"]')).toBeTruthy();
   });
 });

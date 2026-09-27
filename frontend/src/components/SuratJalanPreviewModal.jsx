@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { formatDate } from "../lib/constants";
+import SalesPwaPdfViewer from "../sales/SalesPwaPdfViewer";
 import {
   downloadSuratJalanFile,
   fetchSuratJalanBlob,
@@ -24,6 +25,7 @@ export default function SuratJalanPreviewModal({
   const list = Array.isArray(entries) ? entries.filter((e) => e && (e.file_id || e.id)) : [];
   const [activeId, setActiveId] = useState(null);
   const [blobUrl, setBlobUrl] = useState("");
+  const [pdfBlob, setPdfBlob] = useState(null);
   const [previewKind, setPreviewKind] = useState(null);
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
@@ -79,6 +81,7 @@ export default function SuratJalanPreviewModal({
       setBusy(true);
       setErr("");
       setFileAvailable(false);
+      setPdfBlob(null);
       setPreviewKind(kindHint);
       try {
         const blob = await fetchSuratJalanBlob(order.id, fileId, {
@@ -88,20 +91,29 @@ export default function SuratJalanPreviewModal({
         if (cancelled) return;
         if (!blob || blob.size === 0) {
           setBlobUrl("");
+          setPdfBlob(null);
           setErr("File Surat Jalan tidak dapat ditampilkan. File tidak ditemukan.");
           return;
         }
-        created = URL.createObjectURL(blob);
-        setBlobUrl(created);
         setFileAvailable(true);
         const kind = isPreviewableSj({ ...active, content_type: blob.type || active?.content_type, name: active?.name });
         setPreviewKind(kind);
-        if (!kind) {
+        if (kind === "pdf") {
+          setPdfBlob(blob);
+          setBlobUrl("");
+        } else if (kind === "image") {
+          created = URL.createObjectURL(blob);
+          setBlobUrl(created);
+          setPdfBlob(null);
+        } else {
+          setPdfBlob(null);
+          setBlobUrl("");
           setErr("File Surat Jalan tidak dapat ditampilkan. Format tidak didukung.");
         }
       } catch (e) {
         if (!cancelled) {
           setBlobUrl("");
+          setPdfBlob(null);
           setFileAvailable(e?.status !== 404 && e?.status !== 502);
           setErr(previewFailMessage(e));
         }
@@ -113,6 +125,7 @@ export default function SuratJalanPreviewModal({
       cancelled = true;
       if (created) URL.revokeObjectURL(created);
       setBlobUrl("");
+      setPdfBlob(null);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, order?.id, activeId]);
@@ -167,14 +180,14 @@ export default function SuratJalanPreviewModal({
 
           <div className="sj-preview-frame" data-testid="sj-preview-frame">
             {busy && <p className="muted small">Memuat preview…</p>}
-            {!busy && previewKind === "pdf" && blobUrl && !err && (
-              <iframe
-                title="Preview Surat Jalan"
-                src={`${blobUrl}#toolbar=1&navpanes=0`}
-                type="application/pdf"
-                data-testid="sj-preview-pdf"
-                onError={() => setErr("File Surat Jalan tidak dapat ditampilkan.")}
-              />
+            {!busy && previewKind === "pdf" && pdfBlob && !err && (
+              <div className="sj-preview-pdf" data-testid="sj-preview-pdf" data-content-type="application/pdf">
+                <SalesPwaPdfViewer
+                  key={active?.file_id || active?.id}
+                  blob={pdfBlob}
+                  label={active?.name || "Surat Jalan"}
+                />
+              </div>
             )}
             {!busy && previewKind === "image" && blobUrl && !err && (
               <img

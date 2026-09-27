@@ -448,11 +448,19 @@ export const api = {
       .post(`/purchase-documents`, form, { headers: { "Content-Type": "multipart/form-data" } })
       .then((r) => r.data);
   },
-  fetchPurchaseDocumentBlob: (id, { download = false } = {}) =>
+  fetchPurchaseDocumentBlob: (id, { download = false, signal } = {}) =>
     client
       .get(`/purchase-documents/${encodeURIComponent(id)}/content`, {
         params: { download: download ? true : false },
         responseType: "blob",
+        signal,
+      })
+      .then((r) => r.data),
+  fetchStoredFileBlob: (storagePath, { signal } = {}) =>
+    client
+      .get(`/files/${String(storagePath || "").replace(/^\/+/, "")}`, {
+        responseType: "blob",
+        signal,
       })
       .then((r) => r.data),
   deletePurchaseDocument: (id) =>
@@ -727,6 +735,13 @@ export const api = {
     return client.post(`/employee-admin/uploads`, form).then((r) => r.data);
   },
   employeeAdminFileUrl: (requestId, fileId) => `${API}/employee-admin/requests/${encodeURIComponent(requestId)}/files/${encodeURIComponent(fileId)}`,
+  employeeAdminFileBlob: (requestId, fileId, { signal } = {}) =>
+    client
+      .get(`/employee-admin/requests/${encodeURIComponent(requestId)}/files/${encodeURIComponent(fileId)}`, {
+        responseType: "blob",
+        signal,
+      })
+      .then((r) => r.data),
   employeeAdminDocumentUrl: (requestId) => `${API}/employee-admin/requests/${encodeURIComponent(requestId)}/document`,
   hrPayrollMeta: () => client.get(`/hr-payroll/meta`).then((r) => r.data),
   hrPayrollEmployees: (params = {}) => client.get(`/hr-payroll/employees`, { params }).then((r) => r.data),

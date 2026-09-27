@@ -5,6 +5,13 @@ import { createRoot } from "react-dom/client";
 import SuratJalanPreviewModal from "./SuratJalanPreviewModal";
 import { fetchSuratJalanBlob, downloadSuratJalanFile } from "../lib/suratJalan";
 
+jest.mock("../sales/SalesPwaPdfViewer", () => ({
+  __esModule: true,
+  default: function MockSalesPwaPdfViewer({ label }) {
+    return <div data-testid="sales-pdf-viewer" data-label={label} />;
+  },
+}));
+
 global.IS_REACT_ACT_ENVIRONMENT = true;
 
 jest.mock("../lib/suratJalan", () => {
@@ -126,10 +133,12 @@ describe("Surat Jalan preview modal", () => {
     expect(footer).toMatch(/background:#fafaf7/);
     expect(footer).toMatch(/border-top:1px solid var\(--line\)/);
 
-    const frame = rule(css, ".sj-preview-frame iframe,.sj-preview-frame img,.sj-preview-frame object");
+    const frame = rule(css, ".sj-preview-frame img");
     expect(frame).toMatch(/height:min\(640px,calc\(100dvh - 360px\)\)/);
     expect(frame).not.toMatch(/70vh/);
     expect(frame).not.toMatch(/min-height:420px/);
+    expect(css).toMatch(/\.sj-preview-frame \.spwa-pdf\{/);
+    expect(css).not.toMatch(/\.sj-preview-frame iframe/);
     expect(css).not.toMatch(/\.sj-preview-frame\{[^}]*min-height:420px/);
     expect(rule(css, ".sj-preview-filename")).toMatch(/overflow-wrap:anywhere/);
     expect(rule(css, ".sj-preview-list button")).toMatch(/overflow-wrap:anywhere/);
@@ -180,8 +189,9 @@ describe("Surat Jalan preview modal", () => {
     expect(document.querySelector(".modal-head").textContent).toMatch(/SURAT JALAN/);
     expect(document.querySelector('[data-testid="sj-preview-footer"]').className).toContain("sj-preview-footer");
     const pdf = document.querySelector('[data-testid="sj-preview-pdf"]');
-    expect(pdf.tagName).toBe("IFRAME");
-    expect(pdf.getAttribute("src")).toContain("toolbar=1");
+    expect(pdf.querySelector("iframe")).toBeNull();
+    expect(pdf.querySelector('[data-testid="sales-pdf-viewer"]').getAttribute("data-label")).toBe(longName);
+    expect(document.querySelector("iframe")).toBeNull();
     expect(document.querySelector('[data-testid="sj-preview-filename"]').textContent).toBe(longName);
     expect(fetchSuratJalanBlob).toHaveBeenCalledWith("po-1", "sj-a", expect.objectContaining({ download: false, filename: longName }));
 
@@ -190,6 +200,8 @@ describe("Surat Jalan preview modal", () => {
     });
     await flush();
     expect(document.querySelector('[data-testid="sj-preview-filename"]').textContent).toBe("sj-kedua.pdf");
+    expect(document.querySelectorAll('[data-testid="sales-pdf-viewer"]')).toHaveLength(1);
+    expect(document.querySelector('[data-testid="sales-pdf-viewer"]').getAttribute("data-label")).toBe("sj-kedua.pdf");
     expect(fetchSuratJalanBlob).toHaveBeenCalledWith("po-1", "sj-b", expect.objectContaining({ filename: "sj-kedua.pdf" }));
 
     await act(async () => {
@@ -253,6 +265,40 @@ describe("Surat Jalan preview modal", () => {
     view.unmount();
     expect(document.body.style.overflow).toBe("auto");
     expect(document.documentElement.style.overflow).toBe("");
+  });
+
+  test("403 and 404 stay inside the dialog without a new tab", async () => {
+    window.open = jest.fn();
+    fetchSuratJalanBlob.mockReset();
+    fetchSuratJalanBlob.mockRejectedValue(Object.assign(new Error("denied"), { status: 403 }));
+    const denied = renderModal({
+      open: true,
+      order,
+      entries: [entry("sj-a", "a.pdf")],
+      canDownload: true,
+      onClose: jest.fn(),
+    });
+    await flush();
+    expect(document.querySelector('[data-testid="sj-preview-error"]').textContent).toMatch(/Izin ditolak/);
+    expect(document.querySelector("iframe")).toBeNull();
+    expect(document.querySelector('[data-testid="sales-pdf-viewer"]')).toBeNull();
+    expect(window.open).not.toHaveBeenCalled();
+    denied.unmount();
+
+    fetchSuratJalanBlob.mockReset();
+    fetchSuratJalanBlob.mockRejectedValue(Object.assign(new Error("missing"), { status: 404 }));
+    const missing = renderModal({
+      open: true,
+      order,
+      entries: [entry("sj-a", "a.pdf")],
+      canDownload: false,
+      onClose: jest.fn(),
+    });
+    await flush();
+    expect(document.querySelector('[data-testid="sj-preview-error"]').textContent).toMatch(/tidak ditemukan/);
+    expect(document.querySelector("iframe")).toBeNull();
+    expect(window.open).not.toHaveBeenCalled();
+    missing.unmount();
   });
 
   test("does not change the surat jalan file API", () => {
