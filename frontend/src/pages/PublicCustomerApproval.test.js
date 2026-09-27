@@ -12,50 +12,54 @@ describe("Customer approval public wording", () => {
     expect(src).not.toMatch(/Ditolak/);
   });
 
-  test("open PDF is a native link to the token-scoped design URL", () => {
+  test("Lihat PDF uses the in-app viewer and the token-scoped design URL", () => {
     expect(src).toMatch(/publicCustomerApprovalDesignUrl/);
     expect(src).toMatch(/resolvePublicApprovalDesignUrl/);
-    expect(src).toMatch(/href=\{designUrl\}/);
-    expect(src).toMatch(/target="_blank"/);
-    expect(src).toMatch(/Buka di Tab Baru/);
+    expect(src).toMatch(/InAppDocumentViewer/);
+    expect(src).toMatch(/credentials: "omit"/);
+    expect(src).not.toMatch(/target="_blank"/);
+    expect(src).not.toMatch(/<iframe/);
+    expect(src).not.toMatch(/<object/);
+    expect(src).not.toMatch(/localStorage/);
     expect(src).not.toMatch(/download=\{view\.design_file\.name\}/);
     expect(src).not.toMatch(/href=\{url\}/);
   });
 
-  test("mobile fallback is compact and not tied to iframe support", () => {
-    expect(src).toMatch(/preferCompactPdfPreview/);
-    expect(src).toMatch(/design-pdf-fallback/);
-    expect(src).toMatch(/Preview PDF tidak tersedia di browser ini/);
-    expect(src).toMatch(/compactPdf && \(/);
-    expect(src).toMatch(/!compactPdf && canOpen/);
+  test("narrow screens use the same in-app PDF viewer", () => {
+    expect(src).toMatch(/public-approval-design-pdf-viewer/);
+    expect(src).not.toMatch(/preferCompactPdfPreview/);
+    expect(src).not.toMatch(/<iframe/);
     expect(src).not.toMatch(/height:\s*480/);
   });
 
-  test("desktop viewer provides Lihat PDF toggle and download PDF fallback", () => {
+  test("Lihat PDF opens the viewer and Download PDF stays a download", () => {
     expect(src).toMatch(/public-approval-design-pdf-toggle/);
     expect(src).toMatch(/public-approval-design-pdf-download/);
     expect(src).toMatch(/resolvePublicApprovalDesignDownloadUrl/);
     expect(src).toMatch(/download=\{file\.name \|\| "design\.pdf"\}/);
     expect(src).toMatch(/Download PDF/);
     expect(src).toMatch(/Lihat PDF/);
-    expect(src).toMatch(/Tutup Preview/);
+    expect(src).toMatch(/allowDownload/);
   });
 
-  test("all 3 PDF action buttons (Lihat PDF, Buka di Tab Baru, Download PDF) are present together in actions row", () => {
+  test("PDF actions are Lihat PDF and Download PDF in the same row", () => {
     expect(src).toMatch(/data-testid="public-approval-design-pdf-actions"/);
     expect(src).toMatch(/data-testid="public-approval-design-pdf-toggle"/);
-    expect(src).toMatch(/data-testid="public-approval-design-pdf-open"/);
     expect(src).toMatch(/data-testid="public-approval-design-pdf-download"/);
-    expect(src).toMatch(/Buka di Tab Baru/);
+    expect(src).not.toMatch(/Buka di Tab Baru/);
+    expect(src).not.toMatch(/public-approval-design-pdf-open/);
   });
 
-  test("desktop fallback message informs user clearly when inline rendering fails", () => {
-    expect(src).toMatch(/PDF tidak dapat ditampilkan langsung di browser ini\. Buka di tab baru atau download PDF\./);
+  test("external origin PDFs are recorded and not proxied", () => {
+    expect(src).toMatch(/isCrossOriginDocumentUrl/);
+    expect(src).toMatch(/Preview PDF dari origin lain tidak dapat dimuat di aplikasi/);
+    expect(src).not.toMatch(/target="_blank"/);
   });
 
-  test("lifecycle manages blob URL with revokeObjectURL", () => {
-    expect(src).toMatch(/URL\.createObjectURL/);
-    expect(src).toMatch(/URL\.revokeObjectURL/);
+  test("preview bytes are requested on open and are not stored in localStorage", () => {
+    expect(src).toMatch(/cache: "no-store"/);
+    expect(src).not.toMatch(/localStorage/);
+    expect(src).not.toMatch(/URL\.createObjectURL/);
   });
 
   test("approval submit path is unchanged", () => {

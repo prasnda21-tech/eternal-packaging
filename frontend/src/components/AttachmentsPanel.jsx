@@ -1,6 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Upload, Image as ImageIcon } from "lucide-react";
 import api from "../lib/api";
+import { dataUrlToBlob } from "../lib/paymentProofOpen";
+import { isCrossOriginDocumentUrl } from "../lib/pdfDocument";
+import InAppDocumentViewer from "./InAppDocumentViewer";
 import { formatDate, formatDisplayDateTime, ROLES } from "../lib/constants";
 import { getWorkflowReady } from "../lib/stageState";
 import { useAuth } from "../lib/auth";
@@ -17,6 +20,7 @@ export default function AttachmentsPanel({ order, user, onUpdated, designSlot = 
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [preview, setPreview] = useState(null);
+  const [pdfPreview, setPdfPreview] = useState(null);
   const [previewErr, setPreviewErr] = useState("");
   const previewObjectUrl = useRef(null);
   const [pendingSample, setPendingSample] = useState(null);
@@ -150,46 +154,53 @@ export default function AttachmentsPanel({ order, user, onUpdated, designSlot = 
     setPreview({ ...file, objectUrl });
   };
 
-  const assignPdfPlaceholder = (placeholder, blob) => {
-    const objectUrl = URL.createObjectURL(blob);
-    placeholder.location.replace(objectUrl);
-    setTimeout(() => URL.revokeObjectURL(objectUrl), 60000);
-  };
-
   const openInlineSource = (file, url) => {
     if (fileLooksImage(file, url)) {
       setPreview(file);
       return;
     }
-    if (fileLooksPdf(file, url) && url.startsWith("data:application/pdf")) {
-      try {
-        const commaIndex = url.indexOf(",");
-        if (commaIndex < 0) throw new Error("Invalid PDF data URL");
-        const encoded = url.slice(commaIndex + 1);
-        const binary = atob(encoded);
-        const bytes = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i += 1) {
-          bytes[i] = binary.charCodeAt(i);
-        }
-        const blob = new Blob([bytes], { type: "application/pdf" });
-        const blobUrl = URL.createObjectURL(blob);
-        const opened = window.open(blobUrl, "_blank");
-        if (!opened) {
-          setErr("Browser memblokir tab PDF. Izinkan pop-up untuk situs ini.");
-        }
-        setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
-      } catch (e) {
-        console.error("Gagal membuka PDF attachment:", e);
-        setErr("PDF gagal dibuka. Silakan coba kembali.");
-      }
-      return;
-    }
     window.open(url, "_blank", "noopener,noreferrer");
   };
+
+  const loadPdfPreview = useCallback(async ({ signal } = {}) => {
+    const file = pdfPreview?.file;
+    const kind = pdfPreview?.kind;
+    const url = file?.data_url || file?.url || "";
+    if (url.startsWith("data:")) return dataUrlToBlob(url);
+    if (url && !isCrossOriginDocumentUrl(url)) {
+      const response = await fetch(url, { credentials: "include", cache: "no-store", signal });
+      if (!response.ok) {
+        const error = new Error("attachment");
+        error.status = response.status;
+        error.response = { status: response.status };
+        throw error;
+      }
+      const type = String(response.headers.get("content-type") || file?.content_type || "application/pdf").split(";")[0].trim();
+      return new Blob([await response.arrayBuffer()], { type });
+    }
+    if (!order?.id || !file?.id || (kind !== "design" && kind !== "payment")) {
+      const error = new Error("missing");
+      error.status = 404;
+      throw error;
+    }
+    return api.getOrderAttachment(order.id, kind, file.id, { signal });
+  }, [pdfPreview, order?.id]);
 
   const openAttachment = async (file, kind) => {
     const url = file?.data_url || file?.url;
     setPreviewErr("");
+    if (fileLooksPdf(file, url)) {
+      if (url && isCrossOriginDocumentUrl(url)) {
+        window.open(url, "_blank", "noopener,noreferrer");
+        return;
+      }
+      if (!url && kind !== "design" && kind !== "payment") {
+        setErr("File tidak memiliki data yang dapat dibuka.");
+        return;
+      }
+      setPdfPreview({ file, kind });
+      return;
+    }
     if (url) {
       openInlineSource(file, url);
       return;
@@ -198,27 +209,10 @@ export default function AttachmentsPanel({ order, user, onUpdated, designSlot = 
       setErr("File tidak memiliki data yang dapat dibuka.");
       return;
     }
-    const isPdf = fileLooksPdf(file);
-    let placeholder = null;
-    if (isPdf) {
-      placeholder = window.open("about:blank", "_blank");
-      if (placeholder) placeholder.opener = null;
-    }
     try {
       const blob = await api.getOrderAttachment(order.id, kind, file.id);
-      if (isPdf) {
-        if (!placeholder) {
-          setPreviewErr("Gagal memuat file. Coba lagi.");
-          return;
-        }
-        assignPdfPlaceholder(placeholder, blob);
-        return;
-      }
       openFetchedImage(file, blob);
     } catch (e) {
-      if (placeholder) {
-        try { placeholder.close(); } catch { /* ignore */ }
-      }
       setPreviewErr("Gagal memuat file. Coba lagi.");
     }
   };
@@ -359,6 +353,18 @@ export default function AttachmentsPanel({ order, user, onUpdated, designSlot = 
         <div className="lightbox" onClick={closePreview} data-testid="attachment-preview">
           <img src={preview.objectUrl || preview.data_url || preview.url} alt={preview.name} />
         </div>
+      )}
+      {pdfPreview && (
+        <InAppDocumentViewer
+          documentKey={`${pdfPreview.kind}:${pdfPreview.file?.id || pdfPreview.file?.name || "pdf"}`}
+          title={pdfPreview.file?.name || "PDF"}
+          fileName={pdfPreview.file?.name || "dokumen.pdf"}
+          contentType={pdfPreview.file?.content_type || "application/pdf"}
+          allowDownload={false}
+          loadFile={loadPdfPreview}
+          onClose={() => setPdfPreview(null)}
+          testId={`attachment-pdf-${pdfPreview.file?.id || "file"}`}
+        />
       )}
       <ConfirmActionModal
         open={!!pendingSample}

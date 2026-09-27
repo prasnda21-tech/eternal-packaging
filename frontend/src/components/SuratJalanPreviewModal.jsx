@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { formatDate } from "../lib/constants";
+import SalesPwaPdfViewer from "../sales/SalesPwaPdfViewer";
 import {
   downloadSuratJalanFile,
   fetchSuratJalanBlob,
@@ -24,6 +25,7 @@ export default function SuratJalanPreviewModal({
   const list = Array.isArray(entries) ? entries.filter((e) => e && (e.file_id || e.id)) : [];
   const [activeId, setActiveId] = useState(null);
   const [blobUrl, setBlobUrl] = useState("");
+  const [pdfBlob, setPdfBlob] = useState(null);
   const [previewKind, setPreviewKind] = useState(null);
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
@@ -79,6 +81,7 @@ export default function SuratJalanPreviewModal({
       setBusy(true);
       setErr("");
       setFileAvailable(false);
+      setPdfBlob(null);
       setPreviewKind(kindHint);
       try {
         const blob = await fetchSuratJalanBlob(order.id, fileId, {
@@ -88,20 +91,29 @@ export default function SuratJalanPreviewModal({
         if (cancelled) return;
         if (!blob || blob.size === 0) {
           setBlobUrl("");
+          setPdfBlob(null);
           setErr("File Surat Jalan tidak dapat ditampilkan. File tidak ditemukan.");
           return;
         }
-        created = URL.createObjectURL(blob);
-        setBlobUrl(created);
         setFileAvailable(true);
         const kind = isPreviewableSj({ ...active, content_type: blob.type || active?.content_type, name: active?.name });
         setPreviewKind(kind);
-        if (!kind) {
+        if (kind === "pdf") {
+          setPdfBlob(blob);
+          setBlobUrl("");
+        } else if (kind === "image") {
+          created = URL.createObjectURL(blob);
+          setBlobUrl(created);
+          setPdfBlob(null);
+        } else {
+          setPdfBlob(null);
+          setBlobUrl("");
           setErr("File Surat Jalan tidak dapat ditampilkan. Format tidak didukung.");
         }
       } catch (e) {
         if (!cancelled) {
           setBlobUrl("");
+          setPdfBlob(null);
           setFileAvailable(e?.status !== 404 && e?.status !== 502);
           setErr(previewFailMessage(e));
         }
@@ -113,11 +125,20 @@ export default function SuratJalanPreviewModal({
       cancelled = true;
       if (created) URL.revokeObjectURL(created);
       setBlobUrl("");
+      setPdfBlob(null);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, order?.id, activeId]);
 
   if (!open) return null;
+
+  const loadFailed = Boolean(err) && !busy && !pdfBlob && !blobUrl;
+  const showPreviewFrame = !loadFailed && (
+    busy
+    || (previewKind === "pdf" && pdfBlob)
+    || (previewKind === "image" && blobUrl)
+    || (!err && !previewKind)
+  );
 
   const onDownload = async () => {
     if (!canDownload || !active) return;
@@ -129,7 +150,7 @@ export default function SuratJalanPreviewModal({
   };
 
   return (
-    <div className="modal sj-preview-modal" role="dialog" aria-modal="true" data-testid="sj-preview-modal" onClick={onClose}>
+    <div className={`modal sj-preview-modal${loadFailed ? " is-failed" : ""}`} role="dialog" aria-modal="true" data-testid="sj-preview-modal" onClick={onClose}>
       <div className="modal-inner modal-wide sj-preview-inner" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
           <h3>SURAT JALAN</h3>
@@ -165,29 +186,31 @@ export default function SuratJalanPreviewModal({
 
           {err && <div className="error" data-testid="sj-preview-error">{err}</div>}
 
-          <div className="sj-preview-frame" data-testid="sj-preview-frame">
-            {busy && <p className="muted small">Memuat preview…</p>}
-            {!busy && previewKind === "pdf" && blobUrl && !err && (
-              <iframe
-                title="Preview Surat Jalan"
-                src={`${blobUrl}#toolbar=1&navpanes=0`}
-                type="application/pdf"
-                data-testid="sj-preview-pdf"
-                onError={() => setErr("File Surat Jalan tidak dapat ditampilkan.")}
-              />
-            )}
-            {!busy && previewKind === "image" && blobUrl && !err && (
-              <img
-                src={blobUrl}
-                alt={active?.name || "Surat Jalan"}
-                data-testid="sj-preview-image"
-                onError={() => setErr("File Surat Jalan tidak dapat ditampilkan. Format tidak didukung.")}
-              />
-            )}
-            {!busy && !previewKind && !err && (
-              <p className="muted" data-testid="sj-preview-unavailable">File Surat Jalan tidak dapat ditampilkan. Format tidak didukung.</p>
-            )}
-          </div>
+          {showPreviewFrame && (
+            <div className="sj-preview-frame" data-testid="sj-preview-frame">
+              {busy && <p className="muted small">Memuat preview…</p>}
+              {!busy && previewKind === "pdf" && pdfBlob && !err && (
+                <div className="sj-preview-pdf" data-testid="sj-preview-pdf" data-content-type="application/pdf">
+                  <SalesPwaPdfViewer
+                    key={active?.file_id || active?.id}
+                    blob={pdfBlob}
+                    label={active?.name || "Surat Jalan"}
+                  />
+                </div>
+              )}
+              {!busy && previewKind === "image" && blobUrl && !err && (
+                <img
+                  src={blobUrl}
+                  alt={active?.name || "Surat Jalan"}
+                  data-testid="sj-preview-image"
+                  onError={() => setErr("File Surat Jalan tidak dapat ditampilkan. Format tidak didukung.")}
+                />
+              )}
+              {!busy && !previewKind && !err && (
+                <p className="muted" data-testid="sj-preview-unavailable">File Surat Jalan tidak dapat ditampilkan. Format tidak didukung.</p>
+              )}
+            </div>
+          )}
         </div>
         <div className="delete-modal-actions sj-preview-footer" data-testid="sj-preview-footer">
           <button type="button" className="ghost" onClick={onClose} data-testid="sj-preview-close">Tutup</button>

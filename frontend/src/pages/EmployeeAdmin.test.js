@@ -34,6 +34,14 @@ describe("Administrasi Karyawan UI", () => {
     expect(page).toMatch(/ea-type-select/);
   });
 
+  test("PDF lampiran opens in the app and the official document stays a download", () => {
+    expect(detail).toMatch(/InAppDocumentViewer/);
+    expect(detail).toMatch(/employeeAdminFileBlob/);
+    expect(detail).toMatch(/fileIsPdf/);
+    expect(detail).toMatch(/Unduh dokumen resmi/);
+    expect(detail).toMatch(/employeeAdminDocumentUrl/);
+  });
+
   test("approval inbox actions and timeline", () => {
     expect(detail).toMatch(/ea-approval-timeline/);
     expect(detail).toMatch(/ea-approve/);

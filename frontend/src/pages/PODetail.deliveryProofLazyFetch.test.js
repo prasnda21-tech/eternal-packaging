@@ -154,7 +154,8 @@ describe("PODetail delivery proof lazy blob fetch", () => {
     expect(slot).not.toMatch(/\{open\s*&&\s*<DeliveryProofPanel/);
     expect(proofSrc).toMatch(/isOpen = true/);
     expect(proofSrc).toMatch(/if \(!isOpen\) return;/);
-    expect(proofSrc).toMatch(/\[isOpen, proofs\.length, selectionKey\]/);
+    // Identity key, not proof count: a same-length file replacement must refetch.
+    expect(proofSrc).toMatch(/\[isOpen, proofLoadKey, selectionKey\]/);
     expect(proofSrc).toMatch(/fetch\(fileUrl\(p\.storage_path\), \{ credentials: "include" \}\)/);
     expect(proofSrc).toMatch(/api\.uploadDeliveryProof/);
     expect(proofSrc).toMatch(/canConfirmDelivered\(proofs\)/);
@@ -228,6 +229,26 @@ describe("PODetail delivery proof lazy blob fetch", () => {
     rerender(accordionUi(next));
     await waitForFetchCount(3);
     expect(fileFetchUrls()[2]).toBe("/api/files/delivery/p3.jpg");
+    unmount();
+  });
+
+  test("same proof count with a replaced file still fetches the new blob", async () => {
+    const order = baseOrder();
+    const { container, rerender, unmount } = mount(accordionUi(order));
+    act(() => {
+      container.querySelector('[data-testid="po-stage-toggle-14"]')
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await waitForFetchCount(2);
+    const next = baseOrder({
+      delivery_proofs: [
+        proof("p1", "delivery/p1.jpg"),
+        proof("p2b", "delivery/p2b.jpg"),
+      ],
+    });
+    rerender(accordionUi(next));
+    await waitForFetchCount(3);
+    expect(fileFetchUrls()[2]).toBe("/api/files/delivery/p2b.jpg");
     unmount();
   });
 

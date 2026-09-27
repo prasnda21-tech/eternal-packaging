@@ -2,6 +2,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Download, Eye, FileText, Trash2, Upload } from "lucide-react";
 import api from "../lib/api";
 import { errDetail, formatPurchaseDateTime } from "../lib/purchaseUi";
+import InAppDocumentViewer from "../components/InAppDocumentViewer";
+
+function looksPdf(doc) {
+  const type = String(doc?.content_type || "").toLowerCase();
+  const name = `${doc?.original_filename || ""} ${doc?.document_name || ""}`.toLowerCase();
+  return type.includes("pdf") || /\.pdf\b/.test(name);
+}
 
 /**
  * Reusable Dokumen section for purchasing transactions.
@@ -20,6 +27,7 @@ export default function PurchaseDocuments({
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [ok, setOk] = useState("");
+  const [previewDoc, setPreviewDoc] = useState(null);
   const fileRef = useRef(null);
 
   const load = useCallback(async () => {
@@ -67,7 +75,20 @@ export default function PurchaseDocuments({
     }
   };
 
+  const loadPreview = useCallback(({ download = false, signal } = {}) => {
+    if (!previewDoc?.id) {
+      const error = new Error("missing");
+      error.status = 404;
+      return Promise.reject(error);
+    }
+    return api.fetchPurchaseDocumentBlob(previewDoc.id, { download, signal });
+  }, [previewDoc?.id]);
+
   const openDoc = async (doc, { download = false } = {}) => {
+    if (!download && looksPdf(doc)) {
+      setPreviewDoc(doc);
+      return;
+    }
     try {
       const blob = await api.fetchPurchaseDocumentBlob(doc.id, { download });
       const url = URL.createObjectURL(blob);
@@ -193,6 +214,18 @@ export default function PurchaseDocuments({
           </div>
         ))}
       </div>
+      {previewDoc && (
+        <InAppDocumentViewer
+          documentKey={previewDoc.id}
+          title={previewDoc.document_name || "Dokumen"}
+          fileName={previewDoc.original_filename || previewDoc.document_name || "dokumen.pdf"}
+          contentType={previewDoc.content_type || "application/pdf"}
+          allowDownload
+          loadFile={loadPreview}
+          onClose={() => setPreviewDoc(null)}
+          testId="purchase-doc-viewer"
+        />
+      )}
     </section>
   );
 }

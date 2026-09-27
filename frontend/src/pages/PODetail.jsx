@@ -90,6 +90,7 @@ export default function PODetail() {
   const [salesReceiptsLoading, setSalesReceiptsLoading] = useState(false);
   const [salesReceiptsErr, setSalesReceiptsErr] = useState("");
   const [proofViewerReceipt, setProofViewerReceipt] = useState(null);
+  const [sourcePdfOpen, setSourcePdfOpen] = useState(false);
   const [receiptRefreshTick, setReceiptRefreshTick] = useState(0);
   const [screenerDraft, setScreenerDraft] = useState("");
   const [screenerNotes, setScreenerNotes] = useState("");
@@ -257,6 +258,16 @@ export default function PODetail() {
     () => api.getOrder(id),
     { intervalMs: 30_000, enabled: !!order, onData: (d) => { if (d?.order) commitOrder(d.order); } }
   );
+
+  const loadSourcePdf = useCallback(({ signal } = {}) => {
+    const storagePath = order?.source_pdf?.storage_path;
+    if (!storagePath) {
+      const error = new Error("missing");
+      error.status = 404;
+      return Promise.reject(error);
+    }
+    return api.fetchStoredFileBlob(storagePath, { signal });
+  }, [order?.source_pdf?.storage_path]);
 
   const loadReceiptProof = useCallback(({ download = false, signal } = {}) => {
     const receiptId = proofViewerReceipt?.id;
@@ -967,14 +978,14 @@ export default function PODetail() {
           <div>
             <span className="lbl">PDF asli import</span>
             <strong>
-              <a
-                href={`${process.env.REACT_APP_BACKEND_URL}/api/files/${order.source_pdf.storage_path}`}
-                target="_blank" rel="noopener noreferrer"
-                data-testid="detail-source-pdf"
+              <button
+                type="button"
                 className="link-inline"
+                data-testid="detail-source-pdf"
+                onClick={() => setSourcePdfOpen(true)}
               >
                 <FileText size={13}/> {order.source_pdf.original_filename || "Lihat PDF"}
-              </a>
+              </button>
             </strong>
           </div>
         )}
@@ -1764,6 +1775,18 @@ export default function PODetail() {
           showToast("Informasi PO diperbarui");
         }}
       />
+      {sourcePdfOpen && order?.source_pdf?.storage_path && (
+        <InAppDocumentViewer
+          documentKey={order.source_pdf.storage_path}
+          title={order.source_pdf.original_filename || "PDF asli import"}
+          fileName={order.source_pdf.original_filename || "source.pdf"}
+          contentType="application/pdf"
+          allowDownload={false}
+          loadFile={loadSourcePdf}
+          onClose={() => setSourcePdfOpen(false)}
+          testId="po-source-pdf-viewer"
+        />
+      )}
       {proofViewerReceipt && (
         <InAppDocumentViewer
           documentKey={proofViewerReceipt.id}
