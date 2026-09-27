@@ -5741,13 +5741,21 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
         selected_shipment_id = str(selected_shipment_id).strip() or None
 
     existing_order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if existing_order:
+        from services.physical_stock_engine import precheck_delivery_confirmed
+        await precheck_delivery_confirmed(db, existing_order, existing_order.get("line_items") or [])
+
     act_id = action_id or str(uuid.uuid4())
     claimed_stock = None
     if existing_order:
-        from services.physical_stock_engine import prepare_delivery_confirmed_stock
-        claimed_stock = await prepare_delivery_confirmed_stock(
-            db, existing_order, selected_shipment_id, act_id, user,
+        from services.physical_stock_engine import (
+            should_claim_delivery_confirmed_stock,
+            claim_delivery_confirmed_stock,
         )
+        if await should_claim_delivery_confirmed_stock(db, existing_order):
+            claimed_stock = await claim_delivery_confirmed_stock(
+                db, existing_order, existing_order.get("line_items") or [], act_id, user
+            )
 
     frozen_sig_holder = {"sig": None, "driver_sig": None}
     conf_holder = {}

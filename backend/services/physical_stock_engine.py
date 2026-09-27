@@ -723,11 +723,6 @@ async def finalize_durable_stock_event(
             if existing:
                 mov = existing
             else:
-                meta = {}
-                if spec.get("sj_id"):
-                    meta["sj_id"] = spec.get("sj_id")
-                if spec.get("sj_number"):
-                    meta["sj_number"] = spec.get("sj_number")
                 mov = await record_stock_movement(
                     db,
                     movement_type=pending.get("movement_type") or MOVEMENT_PENGIRIMAN,
@@ -737,7 +732,7 @@ async def finalize_durable_stock_event(
                     transaction_uom=spec.get("transaction_uom") or pending.get("transaction_uom"),
                     source_entity="SUDAH_DICETAK" if spec.get("is_print") else "BELUM_DICETAK",
                     destination_entity=pending.get("destination_entity", ""),
-                    reference_number=spec.get("sj_number") or pending.get("reference_number", ""),
+                    reference_number=pending.get("reference_number", ""),
                     reference_id=pending.get("reference_id"),
                     reference_type=pending.get("reference_type", ""),
                     description=spec.get("description") or pending.get("description", ""),
@@ -762,7 +757,7 @@ async def finalize_durable_stock_event(
                     printed_after=after_printed,
                     source_event_type=pending.get("reference_type", ""),
                     source_event_id=ev,
-                    change_metadata=meta,
+                    change_metadata=None,
                 )
             movements.append(mov)
             run_total, run_unprinted, run_printed = after_total, after_unprinted, after_printed
@@ -1604,78 +1599,6 @@ async def precheck_sales_delivery(
         )
 
 
-def _delivery_claim_index(line: Dict[str, Any], pos: int) -> int:
-    raw = line.get("line_idx", pos)
-    try:
-        return int(raw)
-    except (TypeError, ValueError):
-        return pos
-
-
-def build_delivery_confirm_stock_lines(
-    order: Dict[str, Any],
-    shipment: Optional[Dict[str, Any]] = None,
-) -> List[Dict[str, Any]]:
-    """Qty Konfirmasi Terkirim claims: selected SJ lines, else full PO lines.
-
-    An already delivered shipment claims nothing. SJ lines that cannot be
-    mapped to a PO line raise HTTP 400 instead of guessing a master item.
-    """
-    from quantity_rules import delivery_batch_identity, match_po_line_idx, shipment_is_delivered
-
-    if isinstance(shipment, dict) and shipment_is_delivered(order, shipment):
-        return []
-
-    sj_id = delivery_batch_identity(shipment) if isinstance(shipment, dict) else ""
-    sj_number = ""
-    if isinstance(shipment, dict):
-        sj_number = str(shipment.get("sj_number") or shipment.get("number") or "").strip()
-        raw_lines = shipment.get("lines") if isinstance(shipment.get("lines"), list) else []
-        if raw_lines:
-            out: List[Dict[str, Any]] = []
-            po_lines = order.get("line_items") or []
-            for raw in raw_lines:
-                if not isinstance(raw, dict):
-                    continue
-                idx, err = match_po_line_idx(order, raw)
-                if err or idx is None:
-                    raise HTTPException(400, err or "Line Surat Jalan tidak dapat dipetakan ke baris PO.")
-                po = po_lines[idx] if 0 <= idx < len(po_lines) and isinstance(po_lines[idx], dict) else {}
-                qty = safe_float(raw.get("qty", raw.get("quantity", 0)))
-                if qty <= 0:
-                    continue
-                out.append({
-                    "line_idx": idx,
-                    "line_id": raw.get("line_id") or po.get("line_id"),
-                    "master_item_id": po.get("master_item_id") or raw.get("master_item_id"),
-                    "qty": qty,
-                    "unit": raw.get("unit") or po.get("unit"),
-                    "production_process": po.get("production_process") or raw.get("production_process"),
-                    "sj_id": sj_id,
-                    "sj_number": sj_number,
-                })
-            return out
-
-    out = []
-    for idx, po in enumerate(order.get("line_items") or []):
-        if not isinstance(po, dict):
-            continue
-        qty = safe_float(po.get("qty", po.get("quantity", 0)))
-        if qty <= 0:
-            continue
-        out.append({
-            "line_idx": idx,
-            "line_id": po.get("line_id"),
-            "master_item_id": po.get("master_item_id"),
-            "qty": qty,
-            "unit": po.get("unit"),
-            "production_process": po.get("production_process"),
-            "sj_id": sj_id,
-            "sj_number": sj_number,
-        })
-    return out
-
-
 def _delivery_claim_specs(
     order: Dict[str, Any],
     lines: List[Dict[str, Any]],
@@ -1684,32 +1607,26 @@ def _delivery_claim_specs(
     lis = order.get("line_items") or []
     order_id = str(order.get("id") or "").strip()
     specs: List[Dict[str, Any]] = []
-    seen = set()
-    for pos, line in enumerate(lines or []):
+    for idx, line in enumerate(lines or []):
         if not isinstance(line, dict):
             continue
-        idx = _delivery_claim_index(line, pos)
         qty = safe_float(line.get("qty", line.get("quantity", 0)))
         if qty <= 0:
             continue
-        po = lis[idx] if 0 <= idx < len(lis) and isinstance(lis[idx], dict) else {}
-        mid = str(line.get("master_item_id") or po.get("master_item_id") or "").strip()
+        mid = str(line.get("master_item_id") or "").strip()
+        if not mid and idx < len(lis) and isinstance(lis[idx], dict):
+            mid = str(lis[idx].get("master_item_id") or "").strip()
         if not mid:
             continue
-        if idx in seen:
-            raise HTTPException(400, "Baris konfirmasi bentrok pada line_idx yang sama.")
-        seen.add(idx)
-        proc = str(line.get("production_process") or po.get("production_process") or "").strip().lower()
+        proc = str(line.get("production_process") or "").strip().lower()
         specs.append({
             "idx": idx,
             "qty": qty,
             "mid": mid,
             "is_print": proc != "non_print",
             "proc": proc,
-            "line_id": line.get("line_id") or po.get("line_id"),
-            "unit": line.get("unit") or po.get("unit"),
-            "sj_id": str(line.get("sj_id") or "").strip(),
-            "sj_number": str(line.get("sj_number") or "").strip(),
+            "line_id": line.get("line_id"),
+            "unit": line.get("unit"),
             "event_id": f"stock_out:delivery:{order_id}:{action_id}:{idx}",
         })
     return specs
@@ -2216,23 +2133,6 @@ async def should_claim_delivery_confirmed_stock(
     return bool(snap.get("enabled") and snap.get("stock_out_trigger") == "delivery_confirmed")
 
 
-def _delivery_reference_number(order: Dict[str, Any], lines: List[Dict[str, Any]]) -> str:
-    numbers = {str(line.get("sj_number") or "").strip() for line in lines}
-    numbers.discard("")
-    if len(numbers) == 1:
-        return next(iter(numbers))
-    return str(order.get("po_number") or order.get("id") or "")
-
-
-def _delivery_line_metadata(spec: Dict[str, Any]) -> Dict[str, Any]:
-    meta = {}
-    if spec.get("sj_id"):
-        meta["sj_id"] = spec["sj_id"]
-    if spec.get("sj_number"):
-        meta["sj_number"] = spec["sj_number"]
-    return meta
-
-
 async def _reserve_delivery_master_group(
     db,
     order: Dict[str, Any],
@@ -2240,7 +2140,7 @@ async def _reserve_delivery_master_group(
     lines: List[Dict[str, Any]],
     user: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """One pending_event for every selected SJ line of the same master.
+    """One pending_event for every line of the same master from the same claim source.
 
     Line identity stays on line_claims and becomes one movement per line at
     finalize. A different pending_event is left untouched.
@@ -2320,7 +2220,7 @@ async def _reserve_delivery_master_group(
     unp_before = safe_float(curr.get("unprinted_qty", 0))
     pri_before = safe_float(curr.get("printed_qty", 0))
     stamp = now_iso()
-    ref_number = _delivery_reference_number(order, lines)
+    ref_number = str(order.get("po_number") or order.get("id"))
     line_claims = []
     for spec in lines:
         line_claims.append({
@@ -2335,8 +2235,6 @@ async def _reserve_delivery_master_group(
             "delta_printed": spec.get("delta_printed"),
             "is_print": spec["is_print"],
             "production_process": spec.get("proc"),
-            "sj_id": spec.get("sj_id") or "",
-            "sj_number": spec.get("sj_number") or "",
             "description": (
                 "Pengurangan Stok Fisik Konfirmasi Diterima "
                 f"({'Cetak' if spec['is_print'] else 'Polos'})"
@@ -2434,7 +2332,7 @@ async def claim_delivery_confirmed_stock(
                     transaction_uom=spec.get("unit"),
                     source_entity="SUDAH_DICETAK" if spec["is_print"] else "BELUM_DICETAK",
                     destination_entity="CUSTOMER",
-                    reference_number=_delivery_reference_number(order, enriched),
+                    reference_number=str(order.get("po_number") or order.get("id")),
                     reference_type="delivery_confirmed",
                     reference_id=order.get("id"),
                     description=(
@@ -2447,7 +2345,6 @@ async def claim_delivery_confirmed_stock(
                     action_id=action_id,
                     is_print=spec["is_print"],
                     production_process=spec.get("proc"),
-                    change_metadata=_delivery_line_metadata(spec),
                     user=user,
                 )
                 claims.append(claim)
@@ -2461,28 +2358,6 @@ async def claim_delivery_confirmed_stock(
     except Exception:
         await release_delivery_confirmed_stock(db, claims)
         raise
-
-
-async def prepare_delivery_confirmed_stock(
-    db,
-    order: Dict[str, Any],
-    shipment_id: Optional[str],
-    action_id: str,
-    user: Optional[Dict[str, Any]] = None,
-) -> Optional[List[Dict[str, Any]]]:
-    """Resolve the selected SJ, then precheck and claim only that qty."""
-    if not await should_claim_delivery_confirmed_stock(db, order):
-        return None
-    from quantity_rules import resolve_delivery_shipment
-
-    shipment, err = resolve_delivery_shipment(order, shipment_id)
-    if err:
-        raise HTTPException(400, err)
-    stock_lines = build_delivery_confirm_stock_lines(order, shipment)
-    await precheck_delivery_confirmed(db, order, stock_lines)
-    if not stock_lines:
-        return None
-    return await claim_delivery_confirmed_stock(db, order, stock_lines, action_id, user)
 
 
 async def release_delivery_confirmed_stock(
