@@ -188,23 +188,14 @@ export function dashboardMenuItems(hasPerm) {
       testid: "top-nav-dashboard-produksi",
     });
   }
-  if (visible.sales) {
+  if (visible.sales || visible.finance) {
     items.push({
-      key: NAV_KEYS.dashboardSales,
+      key: visible.sales ? NAV_KEYS.dashboardSales : NAV_KEYS.dashboardFinance,
       label: "Dashboard Penjualan",
       to: "/dashboard/penjualan",
       end: true,
       tone: "green",
       testid: "top-nav-dashboard-penjualan",
-    });
-  }
-  if (visible.finance) {
-    items.push({
-      key: NAV_KEYS.dashboardFinance,
-      label: "Dashboard Keuangan",
-      to: "/dashboard/keuangan",
-      tone: "emerald",
-      testid: "top-nav-dashboard-keuangan",
     });
   }
   return items;
