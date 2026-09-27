@@ -1133,4 +1133,338 @@ async def test_crash_before_finish_successful_retry_completes_once(mongo):
     assert await _holder_count(mongo, action_id) == 1
     assert (await get_product_stock_state(mongo, MASTER_A))["printed_qty"] == 750
     assert (await get_product_stock_state(mongo, MASTER_B))["printed_qty"] == 920
+
+
+async def _seed_full_sj(mongo, order_id):
+    await mongo.master_items.insert_one({"id": MASTER, "item_name": "Namoy", "unit": "PCS"})
+    await initialize_opening_balance(
+        mongo, MASTER,
+        {"unprinted_qty": 4700, "printed_qty": 2000, "base_uom": "PCS"},
+        user={"email": "admin@test.local"},
+    )
+    order = _full_same_master_sj(_order(order_id))
+    await mongo.orders.insert_one(dict(order))
+    return order
+
+
+async def _fail_movement_write(monkeypatch, fail_on_call):
+    import services.physical_stock_engine as engine
+
+    real = engine.record_stock_movement
+    calls = {"n": 0}
+
+    async def flaky(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == fail_on_call:
+            raise RuntimeError("movement write stopped")
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(engine, "record_stock_movement", flaky)
+    return real
+
+
+def _assert_full_stock_recovered(state, movs, stored):
+    assert state["printed_qty"] == 0
+    assert state["unprinted_qty"] == 4700
+    assert state["total_qty"] == 4700
+    assert not state.get("pending_event")
+    assert sorted(m["transaction_qty"] for m in movs) == [1000, 1000]
+    assert {m.get("line_id") for m in movs} == {"L0", "L1"}
+    assert sum(float(m.get("delta_printed") or 0) for m in movs) == -2000
+    assert len(stored["delivery_confirmations"]) == 1
+    assert stored["delivery_confirmations"][0]["qty"] == 2000
+
+
+@pytest.mark.anyio
+async def test_retry_after_applied_zero_balance_before_any_movement(mongo, monkeypatch):
+    order = await _seed_full_sj(mongo, "ord-r1")
+    real = await _fail_movement_write(monkeypatch, 1)
+    with pytest.raises(RuntimeError, match="movement write stopped"):
+        await _confirm(order["id"], "sj-1", "act-r1")
+    state = await get_product_stock_state(mongo, MASTER)
+    assert state["printed_qty"] == 0
+    assert state["pending_event"]["stage"] == "STATE_APPLIED"
+    assert await _movements(mongo) == []
+    stored = await mongo.orders.find_one({"id": order["id"]}, {"_id": 0, "delivery_confirmations": 1})
+    assert len(stored["delivery_confirmations"]) == 1
+    import services.physical_stock_engine as engine
+    monkeypatch.setattr(engine, "record_stock_movement", real)
+    recovered = await _confirm(order["id"], "sj-1", "act-r1")
+    assert recovered.status_code == 200, recovered.text
+    state = await get_product_stock_state(mongo, MASTER)
+    movs = await _movements(mongo)
+    stored = await mongo.orders.find_one({"id": order["id"]}, {"_id": 0, "delivery_confirmations": 1})
+    _assert_full_stock_recovered(state, movs, stored)
+    again = await _confirm(order["id"], "sj-1", "act-r1")
+    assert again.status_code == 200, again.text
+    assert (await get_product_stock_state(mongo, MASTER))["printed_qty"] == 0
+    assert len(await _movements(mongo)) == 2
+
+
+@pytest.mark.anyio
+async def test_retry_after_applied_zero_balance_before_second_movement(mongo, monkeypatch):
+    order = await _seed_full_sj(mongo, "ord-r2")
+    real = await _fail_movement_write(monkeypatch, 2)
+    with pytest.raises(RuntimeError, match="movement write stopped"):
+        await _confirm(order["id"], "sj-1", "act-r2")
+    state = await get_product_stock_state(mongo, MASTER)
+    assert state["printed_qty"] == 0
+    assert state["pending_event"]["stage"] == "STATE_APPLIED"
+    movs = await _movements(mongo)
+    assert len(movs) == 1
+    assert movs[0]["line_id"] == "L0"
+    import services.physical_stock_engine as engine
+    monkeypatch.setattr(engine, "record_stock_movement", real)
+    recovered = await _confirm(order["id"], "sj-1", "act-r2")
+    assert recovered.status_code == 200, recovered.text
+    state = await get_product_stock_state(mongo, MASTER)
+    movs = await _movements(mongo)
+    stored = await mongo.orders.find_one({"id": order["id"]}, {"_id": 0, "delivery_confirmations": 1})
+    _assert_full_stock_recovered(state, movs, stored)
+    again = await _confirm(order["id"], "sj-1", "act-r2")
+    assert again.status_code == 200, again.text
+    assert len(await _movements(mongo)) == 2
+    assert (await get_product_stock_state(mongo, MASTER))["total_qty"] == 4700
+
+
+@pytest.mark.anyio
+async def test_retry_finishes_applied_master_without_redebiting_the_finalized_one(mongo, monkeypatch):
+    import services.physical_stock_engine as engine
+
+    for mid, name in ((MASTER_A, "Master A"), (MASTER_B, "Master B")):
+        await mongo.master_items.insert_one({"id": mid, "item_name": name, "unit": "PCS"})
+        await initialize_opening_balance(
+            mongo, mid,
+            {"unprinted_qty": 0, "printed_qty": 1000, "base_uom": "PCS"},
+            user={"email": "admin@test.local"},
+        )
+    order = _two_master_order("ord-partial-applied")
+    await mongo.orders.insert_one(dict(order))
+    real = engine.record_stock_movement
+
+    async def fail_master_b(*args, **kwargs):
+        if kwargs.get("master_item_id") == MASTER_B:
+            raise RuntimeError("movement write stopped")
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(engine, "record_stock_movement", fail_master_b)
+    with pytest.raises(RuntimeError, match="movement write stopped"):
+        await _confirm(order["id"], "sj-share", "act-partial-applied")
+    monkeypatch.setattr(engine, "record_stock_movement", real)
+    state_a = await get_product_stock_state(mongo, MASTER_A)
+    state_b = await get_product_stock_state(mongo, MASTER_B)
+    assert state_a["printed_qty"] == 750
+    assert not state_a.get("pending_event")
+    assert state_b["printed_qty"] == 920
+    assert state_b["pending_event"]["stage"] == "STATE_APPLIED"
+    recovered = await _confirm(order["id"], "sj-share", "act-partial-applied")
+    assert recovered.status_code == 200, recovered.text
+    state_a = await get_product_stock_state(mongo, MASTER_A)
+    state_b = await get_product_stock_state(mongo, MASTER_B)
+    assert state_a["printed_qty"] == 750
+    assert state_b["printed_qty"] == 920
+    assert not state_a.get("pending_event")
+    assert not state_b.get("pending_event")
+    movs = await mongo.stock_movements.find({"movement_type": "PENGIRIMAN"}).to_list(length=20)
+    assert sorted(m["transaction_qty"] for m in movs) == [80, 100, 150]
+    assert {m.get("line_id") for m in movs} == {"LA", "LB", "LC"}
+    stored = await mongo.orders.find_one({"id": order["id"]}, {"_id": 0, "delivery_confirmations": 1})
+    assert len(stored["delivery_confirmations"]) == 1
+    again = await _confirm(order["id"], "sj-share", "act-partial-applied")
+    assert again.status_code == 200, again.text
+    assert (await get_product_stock_state(mongo, MASTER_A))["printed_qty"] == 750
+    assert (await get_product_stock_state(mongo, MASTER_B))["printed_qty"] == 920
     assert await mongo.stock_movements.count_documents({"movement_type": "PENGIRIMAN"}) == 3
+
+
+def _one_line_order(order_id, master_id, qty, line_id="L0"):
+    order = _order(order_id)
+    order["line_items"] = [{
+        "master_item_id": master_id,
+        "accurate_item_id": "ACC-X",
+        "production_process": "print",
+        "quantity": qty,
+        "qty": qty,
+        "line_id": line_id,
+        "unit": "PCS",
+        "name": "Barang Uji",
+    }]
+    order["shipments"] = [{
+        "id": "sj-1",
+        "number": "SJ-ONE",
+        "lines": [{"line_idx": 0, "line_id": line_id, "qty": qty, "name": "Barang Uji"}],
+    }]
+    order["loading_confirmations"] = [{
+        "id": "ld-one",
+        "shipment_id": "sj-1",
+        "surat_jalan_id": "sj-1",
+        "lines": [{"line_idx": 0, "qty": qty}],
+    }]
+    order["delivery_proofs"] = [
+        {"id": "p1", "shipment_id": "sj-1"},
+        {"id": "p2", "shipment_id": "sj-1"},
+    ]
+    return order
+
+
+@pytest.mark.anyio
+async def test_uninitialized_product_confirms_without_stock_mutation(mongo):
+    master_id = "master-no-opening"
+    await mongo.master_items.insert_one({"id": master_id, "item_name": "Tanpa Saldo", "unit": "PCS"})
+    order = _one_line_order("ord-no-opening", master_id, 100)
+    await mongo.orders.insert_one(dict(order))
+    result = await _confirm(order["id"], "sj-1", "act-no-opening")
+    assert result.status_code == 200, result.text
+    assert result.json()["order"]["delivery_confirmations"][0]["qty"] == 100
+    assert await mongo.product_stock_state.count_documents({"master_item_id": master_id}) == 0
+    assert await mongo.stock_movements.count_documents({"master_item_id": master_id}) == 0
+    again = await _confirm(order["id"], "sj-1", "act-no-opening")
+    assert again.status_code == 200, again.text
+    stored = await mongo.orders.find_one({"id": order["id"]}, {"_id": 0, "delivery_confirmations": 1})
+    assert len(stored["delivery_confirmations"]) == 1
+    assert await mongo.stock_movements.count_documents({"master_item_id": master_id}) == 0
+
+
+@pytest.mark.anyio
+async def test_mixed_initialized_sj_reserves_only_the_eligible_line(mongo):
+    ready = "master-ready-mix"
+    missing = "master-missing-mix"
+    await mongo.master_items.insert_one({"id": ready, "item_name": "Siap", "unit": "PCS"})
+    await mongo.master_items.insert_one({"id": missing, "item_name": "Kosong", "unit": "PCS"})
+    await initialize_opening_balance(
+        mongo, ready,
+        {"unprinted_qty": 0, "printed_qty": 1000, "base_uom": "PCS"},
+        user={"email": "admin@test.local"},
+    )
+    order = _order("ord-mix-opening")
+    order["line_items"] = [
+        {
+            "master_item_id": ready,
+            "production_process": "print",
+            "quantity": 1000,
+            "qty": 1000,
+            "line_id": "LA",
+            "unit": "PCS",
+            "name": "Siap",
+        },
+        {
+            "master_item_id": missing,
+            "production_process": "print",
+            "quantity": 1000,
+            "qty": 1000,
+            "line_id": "LB",
+            "unit": "PCS",
+            "name": "Kosong",
+        },
+    ]
+    order["shipments"] = [{
+        "id": "sj-1",
+        "number": "SJ-MIX",
+        "lines": [
+            {"line_idx": 0, "line_id": "LA", "qty": 100, "name": "Siap"},
+            {"line_idx": 1, "line_id": "LB", "qty": 50, "name": "Kosong"},
+        ],
+    }]
+    order["loading_confirmations"] = [{
+        "id": "ld-mix",
+        "shipment_id": "sj-1",
+        "surat_jalan_id": "sj-1",
+        "lines": [{"line_idx": 0, "qty": 100}, {"line_idx": 1, "qty": 50}],
+    }]
+    order["delivery_proofs"] = [
+        {"id": "p1", "shipment_id": "sj-1"},
+        {"id": "p2", "shipment_id": "sj-1"},
+    ]
+    await mongo.orders.insert_one(dict(order))
+    result = await _confirm(order["id"], "sj-1", "act-mix-opening")
+    assert result.status_code == 200, result.text
+    assert result.json()["order"]["delivery_confirmations"][0]["qty"] == 150
+    state = await get_product_stock_state(mongo, ready)
+    assert state["printed_qty"] == 900
+    assert state["total_qty"] == 900
+    assert not state.get("pending_event")
+    assert await mongo.product_stock_state.count_documents({"master_item_id": missing}) == 0
+    movs = await mongo.stock_movements.find({"movement_type": "PENGIRIMAN"}).to_list(length=10)
+    assert len(movs) == 1
+    assert movs[0]["line_id"] == "LA"
+    assert movs[0]["transaction_qty"] == 100
+    assert movs[0]["master_item_id"] == ready
+    again = await _confirm(order["id"], "sj-1", "act-mix-opening")
+    assert again.status_code == 200, again.text
+    assert (await get_product_stock_state(mongo, ready))["printed_qty"] == 900
+    assert await mongo.stock_movements.count_documents({"movement_type": "PENGIRIMAN"}) == 1
+    assert await mongo.product_stock_state.count_documents({"master_item_id": missing}) == 0
+
+
+@pytest.mark.anyio
+async def test_opening_predicate_variants_do_not_block_confirmation(mongo):
+    cases = [
+        ("ord-absent", "master-absent", None),
+        ("ord-flag", "master-flag", {"initialized": False, "status": "INITIALIZED", "printed_qty": 40, "unprinted_qty": 10, "total_qty": 50}),
+        ("ord-status", "master-status", {"initialized": True, "status": "DRAFT", "printed_qty": 40, "unprinted_qty": 10, "total_qty": 50}),
+    ]
+    for order_id, master_id, state in cases:
+        await mongo.master_items.insert_one({"id": master_id, "item_name": master_id, "unit": "PCS"})
+        if state is not None:
+            await mongo.product_stock_state.insert_one({
+                "_id": master_id,
+                "master_item_id": master_id,
+                **state,
+            })
+        order = _one_line_order(order_id, master_id, 25)
+        await mongo.orders.insert_one(dict(order))
+        result = await _confirm(order_id, "sj-1", f"act-{order_id}")
+        assert result.status_code == 200, result.text
+        assert result.json()["order"]["delivery_confirmations"][0]["qty"] == 25
+        assert await mongo.stock_movements.count_documents({"master_item_id": master_id}) == 0
+        if state is None:
+            assert await mongo.product_stock_state.count_documents({"master_item_id": master_id}) == 0
+        else:
+            stored = await mongo.product_stock_state.find_one({"master_item_id": master_id})
+            assert stored["printed_qty"] == 40
+            assert stored["unprinted_qty"] == 10
+            assert stored["total_qty"] == 50
+            assert not stored.get("pending_event")
+
+
+@pytest.mark.anyio
+async def test_uninitialized_product_still_requires_delivery_proof(mongo):
+    master_id = "master-no-proof"
+    await mongo.master_items.insert_one({"id": master_id, "item_name": "Tanpa Bukti", "unit": "PCS"})
+    order = _one_line_order("ord-no-proof", master_id, 80)
+    order["delivery_proofs"] = [{"id": "only", "shipment_id": "sj-1"}]
+    await mongo.orders.insert_one(dict(order))
+    rejected = await _confirm(order["id"], "sj-1", "act-no-proof")
+    assert rejected.status_code == 400, rejected.text
+    stored = await mongo.orders.find_one({"id": order["id"]}, {"_id": 0, "delivery_confirmations": 1})
+    assert stored["delivery_confirmations"] == []
+    assert await mongo.product_stock_state.count_documents({"master_item_id": master_id}) == 0
+    assert await mongo.stock_movements.count_documents({"master_item_id": master_id}) == 0
+
+
+@pytest.mark.anyio
+async def test_retry_after_opening_balance_does_not_backfill_stock(mongo):
+    master_id = "master-later-opening"
+    await mongo.master_items.insert_one({"id": master_id, "item_name": "Nanti", "unit": "PCS"})
+    order = _one_line_order("ord-later-opening", master_id, 60)
+    await mongo.orders.insert_one(dict(order))
+    first = await _confirm(order["id"], "sj-1", "act-later")
+    assert first.status_code == 200, first.text
+    assert await mongo.stock_movements.count_documents({"master_item_id": master_id}) == 0
+    await initialize_opening_balance(
+        mongo, master_id,
+        {"unprinted_qty": 0, "printed_qty": 500, "base_uom": "PCS"},
+        user={"email": "admin@test.local"},
+    )
+    retry = await _confirm(order["id"], "sj-1", "act-later")
+    assert retry.status_code == 200, retry.text
+    state = await get_product_stock_state(mongo, master_id)
+    assert state["printed_qty"] == 500
+    assert state["total_qty"] == 500
+    assert not state.get("pending_event")
+    movements = await mongo.stock_movements.find(
+        {"master_item_id": master_id}, {"_id": 0, "movement_type": 1},
+    ).to_list(length=10)
+    assert [row["movement_type"] for row in movements] == ["SALDO_AWAL"]
+    stored = await mongo.orders.find_one({"id": order["id"]}, {"_id": 0, "delivery_confirmations": 1})
+    assert len(stored["delivery_confirmations"]) == 1

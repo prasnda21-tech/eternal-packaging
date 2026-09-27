@@ -1674,13 +1674,53 @@ async def _movement_by_event(db, event_id: str) -> Optional[Dict[str, Any]]:
     )
 
 
-async def _delivery_spec_is_claimable(db, spec: Dict[str, Any]) -> bool:
-    """Same skip as the previous per-line claim: uninitialized or short stock is not reserved.
+def _delivery_group_event_id(order_id: str, action_id: str, master_item_id: str) -> str:
+    return f"stock_out:delivery:{order_id}:{action_id}:master:{master_item_id}"
 
-    A movement already written for this event stays claimable so retry can resume.
+
+async def _pending_covers_delivery_spec(db, order_id: str, action_id: str, spec: Dict[str, Any]) -> bool:
+    """True when this line is already inside the same action's durable reservation.
+
+    Current bucket qty is irrelevant: the reservation may already have been applied.
+    """
+    state = await get_product_stock_state(db, spec["mid"])
+    pending = (state or {}).get("pending_event") if state else None
+    if not isinstance(pending, dict):
+        return False
+    if str(pending.get("action_id") or "") != str(action_id or ""):
+        return False
+    if str(pending.get("order_id") or "") != str(order_id or ""):
+        return False
+    ev = str(pending.get("event_id") or "")
+    line_ev = str(spec.get("event_id") or "")
+    group_ev = _delivery_group_event_id(order_id, action_id, spec["mid"])
+    rows = pending.get("line_claims") if isinstance(pending.get("line_claims"), list) else []
+    stored = {str(row.get("event_id") or "") for row in rows if isinstance(row, dict)}
+    if ev == group_ev and stored:
+        return line_ev in stored
+    return ev == line_ev
+
+
+async def _delivery_spec_is_claimable(
+    db,
+    spec: Dict[str, Any],
+    *,
+    order_id: str,
+    action_id: str,
+    replay: bool = False,
+) -> bool:
+    """A new reservation needs initialized stock. Recovery does not.
+
+    An existing movement or the same action's pending keeps the line in the
+    group even after the bucket has already been reduced to zero. A recorded
+    confirmation does not open a new reservation for a line that was skipped.
     """
     if await _movement_by_event(db, spec.get("event_id")):
         return True
+    if await _pending_covers_delivery_spec(db, order_id, action_id, spec):
+        return True
+    if replay:
+        return False
     return await _production_flow_stock_can_mutate(
         db,
         spec["mid"],
@@ -2157,7 +2197,7 @@ async def _reserve_delivery_master_group(
     """
     mid = lines[0]["mid"]
     order_id = str(order.get("id") or "").strip()
-    group_event_id = f"stock_out:delivery:{order_id}:{action_id}:master:{mid}"
+    group_event_id = _delivery_group_event_id(order_id, action_id, mid)
     found = []
     missing = False
     for spec in lines:
@@ -2323,12 +2363,17 @@ async def claim_delivery_confirmed_stock(
     lines: List[Dict[str, Any]],
     action_id: str,
     user: Optional[Dict[str, Any]] = None,
+    *,
+    replay: bool = False,
 ) -> List[Dict[str, Any]]:
     claims = []
     try:
         grouped: Dict[str, List[Dict[str, Any]]] = {}
+        order_id = str(order.get("id") or "")
         for spec in _delivery_claim_specs(order, lines, action_id):
-            if not await _delivery_spec_is_claimable(db, spec):
+            if not await _delivery_spec_is_claimable(
+                db, spec, order_id=order_id, action_id=action_id, replay=replay,
+            ):
                 continue
             grouped.setdefault(spec["mid"], []).append(spec)
         for mid, group in grouped.items():
@@ -2399,12 +2444,6 @@ SJ_STOCK_SHORT = (
     "Stok fisik tidak mencukupi untuk qty Surat Jalan yang dikonfirmasi. "
     "Konfirmasi tidak disimpan."
 )
-SJ_OPENING_MISSING = (
-    "Saldo awal stok fisik belum ditetapkan untuk barang pada Surat Jalan ini. "
-    "Konfirmasi tidak disimpan."
-)
-
-
 def _delivery_action_recorded(order: Dict[str, Any], action_id: Optional[str]) -> bool:
     token = str(action_id or "").strip()
     if not token:
@@ -2785,6 +2824,29 @@ def reject_sj_stock_qty_drift(order, shipment, holder, confirmation_qty) -> None
         raise HTTPException(400, SJ_QTY_DRIFT)
 
 
+def _covered_delivery_event_ids(claims: List[Dict[str, Any]]) -> set:
+    covered = set()
+    for claim in claims or []:
+        if not isinstance(claim, dict):
+            continue
+        covered.add(str(claim.get("event_id") or ""))
+        data = claim.get("claim_data") if isinstance(claim.get("claim_data"), dict) else {}
+        for row in data.get("line_claims") or []:
+            if isinstance(row, dict):
+                covered.add(str(row.get("event_id") or ""))
+        movements = list(claim.get("line_movements") or [])
+        if isinstance(claim.get("movement"), dict):
+            movements.append(claim["movement"])
+        for mov in movements:
+            if not isinstance(mov, dict):
+                continue
+            covered.add(str(mov.get("event_key") or ""))
+            covered.add(str(mov.get("id") or ""))
+            covered.add(str(mov.get("source_event_id") or ""))
+    covered.discard("")
+    return covered
+
+
 def _reserved_transaction_qty(claims: List[Dict[str, Any]]) -> float:
     total = 0.0
     for claim in claims or []:
@@ -2798,10 +2860,13 @@ def _reserved_transaction_qty(claims: List[Dict[str, Any]]) -> float:
 
 
 async def _delivery_line_block_reason(db, line: Dict[str, Any]) -> Optional[str]:
+    """Reject a new confirmation only when initialized stock cannot cover the line.
+
+    Missing opening stock matches the baseline: the line is skipped, not rejected.
+    """
     mid = str(line.get("master_item_id") or "").strip()
-    state = await get_product_stock_state(db, mid)
-    if not state or not state.get("initialized") or state.get("status") != STATUS_INITIALIZED:
-        return SJ_OPENING_MISSING
+    if not await _product_stock_is_initialized(db, mid):
+        return None
     proc = str(line.get("production_process") or "").strip().lower()
     if not await _production_flow_stock_can_mutate(
         db,
@@ -2848,9 +2913,23 @@ async def claim_selected_delivery_stock(
             reason = await _delivery_line_block_reason(db, line)
             if reason:
                 raise HTTPException(400, reason)
-    claims = await claim_delivery_confirmed_stock(db, order, lines, action_id, user)
+    order_id = str(order.get("id") or "")
+    specs = _delivery_claim_specs(order, lines, action_id)
+    responsible = []
+    for spec in specs:
+        if await _delivery_spec_is_claimable(
+            db, spec, order_id=order_id, action_id=action_id, replay=replay,
+        ):
+            responsible.append(spec)
+    claims = await claim_delivery_confirmed_stock(
+        db, order, lines, action_id, user, replay=replay,
+    )
+    covered = _covered_delivery_event_ids(claims)
+    if any(spec["event_id"] not in covered for spec in responsible):
+        await release_delivery_confirmed_stock(db, claims)
+        raise HTTPException(400, SJ_QTY_DRIFT)
     finalized = bool(claims) and all(c.get("status") == "ALREADY_FINALIZED" for c in claims)
-    planned_qty = sum(safe_float(ln.get("qty")) for ln in lines)
+    planned_qty = sum(safe_float(spec.get("qty")) for spec in responsible)
     if not finalized and abs(_reserved_transaction_qty(claims) - planned_qty) > 0.0001:
         await release_delivery_confirmed_stock(db, claims)
         raise HTTPException(400, SJ_QTY_DRIFT)
