@@ -1410,6 +1410,64 @@ async def test_delivery_confirmed_initialized_sufficient_decrements(mock_db):
 
 
 @pytest.mark.anyio
+async def test_delivery_confirmed_claims_exact_delta_and_recovers_committed_action(mock_db):
+    await setup_initialized_product(mock_db, "prod-partial", unprinted=0.0, printed=1000.0)
+    order = {
+        "id": "ord-partial",
+        "po_number": "PO-PARTIAL",
+        "physical_stock_snapshot": {"enabled": True, "stock_out_trigger": "delivery_confirmed"},
+        "line_items": [
+            {"line_idx": 0, "line_id": "line-other", "quantity": 1000},
+            {
+                "line_idx": 1,
+                "line_id": "line-partial",
+                "master_item_id": "prod-partial",
+                "production_process": "print",
+                "quantity": 1000,
+                "unit": "PCS",
+            },
+        ],
+        "delivery_confirm_action_ids": [],
+        "delivery_confirmations": [],
+    }
+    await mock_db.orders.insert_one(order)
+    action_id = "partial-delivery-600"
+    items = [{"line_idx": 1, "line_id": "line-partial", "qty": 600}]
+
+    first = await claim_delivery_confirmed_stock(mock_db, order, items, action_id)
+    assert len(first) == 1
+    assert first[0]["event_id"] == f"stock_out:delivery:{order['id']}:{action_id}:1"
+    assert first[0]["claim_data"]["transaction_qty"] == 600
+    assert first[0]["claim_data"]["delta_total"] == -600
+
+    await mock_db.orders.update_one(
+        {"id": order["id"]},
+        {"$set": {
+            "delivery_confirm_action_ids": [action_id],
+            "delivery_confirmations": [{
+                "id": "conf-partial",
+                "action_id": action_id,
+                "qty": 600,
+                "items": items,
+            }],
+        }},
+    )
+
+    resumed = await claim_delivery_confirmed_stock(mock_db, order, items, action_id)
+    assert resumed[0]["status"] == "ALREADY_FINALIZED"
+    state = await get_product_stock_state(mock_db, "prod-partial")
+    assert state["total_qty"] == 400
+    assert state["printed_qty"] == 400
+    assert not state.get("pending_event")
+    delivery_movements = [
+        row for row in mock_db.stock_movements._docs
+        if row.get("event_key") == first[0]["event_id"]
+    ]
+    assert len(delivery_movements) == 1
+    assert delivery_movements[0]["transaction_qty"] == 600
+
+
+@pytest.mark.anyio
 async def test_delivery_confirmed_uninitialized_is_safe_noop(mock_db):
     """CASE B: missing opening stock does not block delivery_confirmed stock helpers."""
     await seed_master_product(mock_db, "prod-uninit")

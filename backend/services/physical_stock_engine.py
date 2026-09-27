@@ -25,6 +25,7 @@ Implements:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -265,12 +266,16 @@ async def is_source_committed(db, pending_event: Dict[str, Any]) -> bool:
         if not order:
             return False
         ids = list(order.get("delivery_confirm_action_ids") or [])
-        if action_id and action_id in ids:
-            return True
-        for c in order.get("delivery_confirmations") or []:
-            if action_id and str(c.get("action_id") or "").strip() == action_id:
-                return True
-        return False
+        confirmation_match = next((
+            c for c in order.get("delivery_confirmations") or []
+            if action_id and str(c.get("action_id") or "").strip() == action_id
+        ), None)
+        committed = bool(action_id and (action_id in ids or confirmation_match))
+        # region agent log
+        with open("/opt/cursor/logs/debug.log", "a") as _log:
+            _log.write(json.dumps({"hypothesisId": "C", "location": "physical_stock_engine.py:is_source_committed", "message": "delivery source commitment checked", "data": {"order_id": order_id, "action_id": action_id, "action_id_present": action_id in ids, "confirmation_present": confirmation_match is not None, "confirmation_items": (confirmation_match or {}).get("items"), "committed": committed}, "timestamp": datetime.now(timezone.utc).timestamp() * 1000}, default=str) + "\n")
+        # endregion
+        return committed
 
     elif ref_type == "goods_receipt":
         ref_id = pending_event.get("reference_id") or pending_event.get("receipt_id")
@@ -555,6 +560,11 @@ async def claim_durable_stock_event(
         "claimed_at": stamp,
         "started_at": stamp,
     }
+    if str(reference_type or "").strip().lower() == "delivery_confirmed":
+        # region agent log
+        with open("/opt/cursor/logs/debug.log", "a") as _log:
+            _log.write(json.dumps({"hypothesisId": "A,C,D", "location": "physical_stock_engine.py:claim_durable_stock_event", "message": "delivery stock claim constructed", "data": {"event_id": ev_id, "order_id": order_id, "action_id": action_id, "line_idx": line_idx, "line_id": line_id, "transaction_qty": transaction_qty, "base_qty": base_qty, "delta_total": delta_total}, "timestamp": datetime.now(timezone.utc).timestamp() * 1000}, default=str) + "\n")
+        # endregion
 
     # 4. Atomic conditional reservation: sets pending_event WITHOUT premature balance mutation!
     query = {
@@ -679,6 +689,11 @@ async def finalize_durable_stock_event(
 
     stamp = now or pending.get("started_at") or now_iso()
     stage = pending.get("stage", "CLAIMED")
+    if str(pending.get("reference_type") or "").strip().lower() == "delivery_confirmed":
+        # region agent log
+        with open("/opt/cursor/logs/debug.log", "a") as _log:
+            _log.write(json.dumps({"hypothesisId": "C", "location": "physical_stock_engine.py:finalize_durable_stock_event", "message": "delivery stock claim finalizing", "data": {"event_id": ev_id, "stage": stage, "action_id": pending.get("action_id"), "line_idx": pending.get("line_idx"), "transaction_qty": pending.get("transaction_qty"), "delta_total": pending.get("delta_total")}, "timestamp": datetime.now(timezone.utc).timestamp() * 1000}, default=str) + "\n")
+        # endregion
 
     if stage == "CLAIMED":
         d_tot = safe_float(pending.get("delta_total", 0.0))
@@ -1320,21 +1335,21 @@ async def handle_delivery_confirmed(
     lis = order.get("line_items") or []
 
     movements = []
-    # If confirmation contains specific line deltas, use them; otherwise use order lines
-    lines = confirmation.get("lines") or lis
-    for idx, line in enumerate(lines):
+    # Confirmation items are the authoritative newly-confirmed per-line deltas.
+    lines = confirmation.get("lines") or confirmation.get("items") or lis
+    for position, line in enumerate(lines):
         qty = safe_float(line.get("qty", line.get("quantity", 0)))
         if qty <= 0:
             continue
-        mid = line.get("master_item_id")
-        if not mid and idx < len(lis):
-            mid = lis[idx].get("master_item_id")
+        idx = int(line.get("line_idx", position))
+        target_line = lis[idx] if 0 <= idx < len(lis) else line
+        mid = line.get("master_item_id") or target_line.get("master_item_id")
         if not mid:
             continue
-        proc = str(line.get("production_process") or "").strip().lower()
+        proc = str(line.get("production_process") or target_line.get("production_process") or "").strip().lower()
         is_p = proc != "non_print"
         if not await _production_flow_stock_can_mutate(
-            db, mid, qty, line.get("unit"),
+            db, mid, qty, line.get("unit") or target_line.get("unit"),
             movement_type=MOVEMENT_PENGIRIMAN, is_print=is_p,
         ):
             continue
@@ -1347,7 +1362,7 @@ async def handle_delivery_confirmed(
             master_item_id=mid,
             movement_type=MOVEMENT_PENGIRIMAN,
             transaction_qty=qty,
-            transaction_uom=line.get("unit"),
+            transaction_uom=line.get("unit") or target_line.get("unit"),
             source_entity="SUDAH_DICETAK" if is_p else "BELUM_DICETAK",
             destination_entity="CUSTOMER",
             reference_number=po_num,
@@ -1356,7 +1371,7 @@ async def handle_delivery_confirmed(
             description=f"Pengurangan Stok - Pengiriman Dikonfirmasi ({po_num})",
             order_id=order_id,
             line_idx=idx,
-            line_id=line.get("line_id"),
+            line_id=line.get("line_id") or target_line.get("line_id"),
             is_print=is_p,
             production_process=proc,
             user=user,
@@ -1573,25 +1588,25 @@ async def precheck_delivery_confirmed(
         return
 
     lis = order.get("line_items") or []
-    for idx, line in enumerate(lines):
+    for position, line in enumerate(lines):
         qty = safe_float(line.get("qty", line.get("quantity", 0)))
         if qty <= 0:
             continue
-        mid = line.get("master_item_id")
-        if not mid and idx < len(lis):
-            mid = lis[idx].get("master_item_id")
+        idx = int(line.get("line_idx", position))
+        target_line = lis[idx] if 0 <= idx < len(lis) else line
+        mid = line.get("master_item_id") or target_line.get("master_item_id")
         if not mid:
             continue
-        proc = str(line.get("production_process") or "").strip().lower()
+        proc = str(line.get("production_process") or target_line.get("production_process") or "").strip().lower()
         is_p = proc != "non_print"
         if not await _production_flow_stock_can_mutate(
-            db, mid, qty, line.get("unit"),
+            db, mid, qty, line.get("unit") or target_line.get("unit"),
             movement_type=MOVEMENT_PENGIRIMAN, is_print=is_p,
         ):
             continue
         bucket = "printed" if is_p else "unprinted"
         base_qty, _, _, _ = await resolve_transaction_conversion(
-            db, mid, qty, line.get("unit")
+            db, mid, qty, line.get("unit") or target_line.get("unit")
         )
         await check_stock_availability(
             db, mid, base_qty, bucket=bucket, context_label="konfirmasi pengiriman"
@@ -2023,20 +2038,24 @@ async def claim_delivery_confirmed_stock(
 ) -> List[Dict[str, Any]]:
     claims = []
     lis = order.get("line_items") or []
+    # region agent log
+    with open("/opt/cursor/logs/debug.log", "a") as _log:
+        _log.write(json.dumps({"hypothesisId": "A,B,D", "location": "physical_stock_engine.py:claim_delivery_confirmed_stock", "message": "delivery stock claim input", "data": {"order_id": order.get("id"), "action_id": action_id, "lines": [{"enumerated_idx": i, "line_idx": line.get("line_idx"), "line_id": line.get("line_id"), "qty": line.get("qty", line.get("quantity"))} for i, line in enumerate(lines or [])]}, "timestamp": datetime.now(timezone.utc).timestamp() * 1000}, default=str) + "\n")
+    # endregion
     try:
-        for idx, line in enumerate(lines):
+        for position, line in enumerate(lines):
             qty = safe_float(line.get("qty", line.get("quantity", 0)))
             if qty <= 0:
                 continue
-            mid = line.get("master_item_id")
-            if not mid and idx < len(lis):
-                mid = lis[idx].get("master_item_id")
+            idx = int(line.get("line_idx", position))
+            target_line = lis[idx] if 0 <= idx < len(lis) else line
+            mid = line.get("master_item_id") or target_line.get("master_item_id")
             if not mid:
                 continue
-            proc = str(line.get("production_process") or "").strip().lower()
+            proc = str(line.get("production_process") or target_line.get("production_process") or "").strip().lower()
             is_p = proc != "non_print"
             if not await _production_flow_stock_can_mutate(
-                db, mid, qty, line.get("unit"),
+                db, mid, qty, line.get("unit") or target_line.get("unit"),
                 movement_type=MOVEMENT_PENGIRIMAN, is_print=is_p,
             ):
                 continue
@@ -2047,7 +2066,7 @@ async def claim_delivery_confirmed_stock(
                 master_item_id=mid,
                 movement_type=MOVEMENT_PENGIRIMAN,
                 transaction_qty=qty,
-                transaction_uom=line.get("unit"),
+                transaction_uom=line.get("unit") or target_line.get("unit"),
                 source_entity="SUDAH_DICETAK" if is_p else "BELUM_DICETAK",
                 destination_entity="CUSTOMER",
                 reference_number=str(order.get("po_number") or order.get("id")),
@@ -2056,7 +2075,7 @@ async def claim_delivery_confirmed_stock(
                 description=f"Pengurangan Stok Fisik Konfirmasi Diterima ({'Cetak' if is_p else 'Polos'})",
                 order_id=order.get("id"),
                 line_idx=idx,
-                line_id=line.get("line_id"),
+                line_id=line.get("line_id") or target_line.get("line_id"),
                 action_id=action_id,
                 is_print=is_p,
                 production_process=proc,
