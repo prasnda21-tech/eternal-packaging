@@ -102,10 +102,10 @@ function SeriesLegend({ items, testid, stacked }) {
   );
 }
 
-function ChartFrame({ title, note, scope, status, detail, testid, plotRef, className, legend, footer, children }) {
+function ChartFrame({ title, note, scope, status, detail, testid, plotRef, className, legend, footer, order, children }) {
   const plot = chartPlotsSeries(status);
   return (
-    <section className={`sd-card sd-chart${className ? ` ${className}` : ""}`} data-testid={testid}>
+    <section className={`sd-card sd-chart${className ? ` ${className}` : ""}`} data-testid={testid} style={{ "--sd-order": order }}>
       <header>
         <div>
           <p className="sd-kicker">{scope}</p>
@@ -114,7 +114,7 @@ function ChartFrame({ title, note, scope, status, detail, testid, plotRef, class
         {note ? <span>{note}</span> : null}
       </header>
       {legend}
-      <div className="sd-plot" ref={plotRef}>
+      <div className={`sd-plot${plot ? " is-series" : " is-message"}`} ref={plotRef}>
         {plot ? children : <p className={`sd-state is-${status || "empty"}`}>{status === "loading" ? "Memuat…" : (detail || "Belum tersedia")}</p>}
       </div>
       {footer}
@@ -247,8 +247,10 @@ export default function SalesDashboard({ embedded = false }) {
       {error ? <p className="sd-banner is-error" role="alert" data-testid="sales-error">Gagal muat. {error}</p> : null}
 
       <div className="sd-scroll">
-        <div className="sd-grid">
-          <section className="sd-card" data-testid="sales-omzet">
+        <div className="sd-pack">
+          <div className="sd-grid">
+            <div className="sd-col">
+          <section className="sd-card" data-testid="sales-omzet" style={{ "--sd-order": 1 }}>
             <p className="sd-kicker">Selama periode · tanggal faktur</p>
             <h2>Omzet penjualan</h2>
             {omzetStatus === "complete" || omzetStatus === "zero" ? (
@@ -273,65 +275,7 @@ export default function SalesDashboard({ embedded = false }) {
             ) : null}
           </section>
 
-          <ChartFrame
-            title="Tren penjualan"
-            scope="Selama periode"
-            note={trend?.grain_label ? `Resolusi ${trend.grain_label.toLowerCase()}` : null}
-            status={trendStatus}
-            detail={trend?.detail || (error ? "Gagal muat" : "")}
-            testid="sales-trend"
-            plotRef={trendRef}
-            legend={chartPlotsSeries(trendStatus) ? (
-              <SeriesLegend items={[
-                { label: "Omzet penjualan", color: COLOR.omzet },
-                { label: "Jumlah faktur", color: COLOR.count },
-              ]} />
-            ) : null}
-          >
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={trendPoints} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
-                <CartesianGrid stroke="#E2E8F0" />
-                <XAxis dataKey="label" minTickGap={28} tick={{ fontSize: 11, fill: "#3d4f48" }} padding={{ left: 8, right: 8 }} />
-                <YAxis yAxisId="omzet" tickFormatter={formatAxisMoney} tick={{ fontSize: 11, fill: "#3d4f48" }} width={48} />
-                <YAxis yAxisId="count" orientation="right" allowDecimals={false} tick={{ fontSize: 11, fill: "#3d4f48" }} width={28} />
-                <Tooltip content={(props) => <MoneyTip {...props} boxRef={trendRef} />} />
-                <Line yAxisId="omzet" dataKey="omzet" name="Omzet penjualan" stroke={COLOR.omzet} strokeWidth={2} dot={trendShowsDot(trendPoints.length) ? { r: 4 } : false} activeDot={{ r: 5 }} isAnimationActive={false} />
-                <Line yAxisId="count" dataKey="invoice_count" name="Jumlah faktur" stroke={COLOR.count} strokeWidth={2} dot={trendShowsDot(trendPoints.length) ? { r: 4 } : false} activeDot={{ r: 5 }} isAnimationActive={false} />
-              </LineChart>
-            </ResponsiveContainer>
-          </ChartFrame>
-
-          <section className="sd-card" data-testid="sales-receivables">
-            <p className="sd-kicker" data-testid="sales-receivables-scope">Umur piutang · Saat ini</p>
-            <h2>Piutang pelanggan</h2>
-            <ul className="sd-split">
-              <Stat testid="sales-ar-outstanding" label="Saldo piutang" value={displayAmount(receivableStatus, receivables?.outstanding, receivables?.detail)} />
-              <Stat testid="sales-ar-count" label="Jumlah faktur belum lunas" value={displayCount(receivableStatus, receivables?.open_invoice_count, receivables?.detail)} />
-              <Stat testid="sales-ar-customers" label="Pelanggan berpiutang" value={displayCount(receivableStatus, receivables?.customer_count, receivables?.coverage_note || receivables?.detail)} />
-            </ul>
-            {receivables?.coverage_note ? <p className="sd-note">{receivables.coverage_note}</p> : null}
-            <div className="sd-plot sd-plot-short" ref={agingRef}>
-              {chartPlotsSeries(receivableStatus) && receivableStatus !== "zero" ? (
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={receivables?.aging || []} margin={{ top: 8, right: 4, left: 0, bottom: 0 }}>
-                    <CartesianGrid stroke="#E2E8F0" />
-                    <XAxis dataKey="label" interval={0} minTickGap={8} tick={{ fontSize: 11, fill: "#172126" }} tickFormatter={(value) => String(value).replace(" hari", "").replace("Belum jatuh tempo", "Belum")} />
-                    <YAxis tickFormatter={formatAxisMoney} tick={{ fontSize: 11, fill: "#3d4f48" }} width={48} />
-                    <Tooltip content={(props) => <MoneyTip {...props} boxRef={agingRef} />} />
-                    <Bar dataKey="amount" name="Saldo piutang" isAnimationActive={false}>
-                      {(receivables?.aging || []).map((row) => (
-                        <Cell key={row.key} fill={AGING_COLOR[row.key] || COLOR.omzet} />
-                      ))}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
-              ) : (
-                <p className={`sd-state is-${receivableStatus}`}>{receivableStatus === "loading" ? "Memuat…" : (receivables?.detail || (error ? "Gagal muat" : "Belum tersedia"))}</p>
-              )}
-            </div>
-          </section>
-
-          <section className="sd-card" data-testid="sales-orders">
+          <section className="sd-card" data-testid="sales-orders" style={{ "--sd-order": 4 }}>
             <p className="sd-kicker" data-testid="sales-orders-scope">Saat ini</p>
             <h2>Pesanan penjualan</h2>
             {orderStatus === "complete" || orderStatus === "zero" ? (
@@ -365,8 +309,39 @@ export default function SalesDashboard({ embedded = false }) {
               <p className={`sd-state is-${orderStatus}`}>{orderStatus === "loading" ? "Memuat…" : orderStatus === "error" ? `Gagal muat. ${orders?.detail || error || ""}`.trim() : (orders?.detail || "Belum tersedia")}</p>
             )}
           </section>
+            </div>
+            <div className="sd-col">
+          <ChartFrame
+            order={2}
+            title="Tren penjualan"
+            scope="Selama periode"
+            note={trend?.grain_label ? `Resolusi ${trend.grain_label.toLowerCase()}` : null}
+            status={trendStatus}
+            detail={trend?.detail || (error ? "Gagal muat" : "")}
+            testid="sales-trend"
+            plotRef={trendRef}
+            legend={chartPlotsSeries(trendStatus) ? (
+              <SeriesLegend items={[
+                { label: "Omzet penjualan", color: COLOR.omzet },
+                { label: "Jumlah faktur", color: COLOR.count },
+              ]} />
+            ) : null}
+          >
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={trendPoints} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
+                <CartesianGrid stroke="#E2E8F0" />
+                <XAxis dataKey="label" minTickGap={28} tick={{ fontSize: 11, fill: "#3d4f48" }} padding={{ left: 8, right: 8 }} />
+                <YAxis yAxisId="omzet" tickFormatter={formatAxisMoney} tick={{ fontSize: 11, fill: "#3d4f48" }} width={48} />
+                <YAxis yAxisId="count" orientation="right" allowDecimals={false} tick={{ fontSize: 11, fill: "#3d4f48" }} width={28} />
+                <Tooltip content={(props) => <MoneyTip {...props} boxRef={trendRef} />} />
+                <Line yAxisId="omzet" dataKey="omzet" name="Omzet penjualan" stroke={COLOR.omzet} strokeWidth={2} dot={trendShowsDot(trendPoints.length) ? { r: 4 } : false} activeDot={{ r: 5 }} isAnimationActive={false} />
+                <Line yAxisId="count" dataKey="invoice_count" name="Jumlah faktur" stroke={COLOR.count} strokeWidth={2} dot={trendShowsDot(trendPoints.length) ? { r: 4 } : false} activeDot={{ r: 5 }} isAnimationActive={false} />
+              </LineChart>
+            </ResponsiveContainer>
+          </ChartFrame>
 
           <ChartFrame
+            order={5}
             title="Penjualan per sales"
             scope="Selama periode"
             note={salesStatus === "complete" || salesStatus === "incomplete" ? sales?.detail : null}
@@ -396,7 +371,39 @@ export default function SalesDashboard({ embedded = false }) {
             </ResponsiveContainer>
           </ChartFrame>
 
-          <section className="sd-card" data-testid="sales-customers">
+            </div>
+            <div className="sd-col">
+          <section className="sd-card" data-testid="sales-receivables" style={{ "--sd-order": 3 }}>
+            <p className="sd-kicker" data-testid="sales-receivables-scope">Umur piutang · Saat ini</p>
+            <h2>Piutang pelanggan</h2>
+            <ul className="sd-split">
+              <Stat testid="sales-ar-outstanding" label="Saldo piutang" value={displayAmount(receivableStatus, receivables?.outstanding, receivables?.detail)} />
+              <Stat testid="sales-ar-count" label="Jumlah faktur belum lunas" value={displayCount(receivableStatus, receivables?.open_invoice_count, receivables?.detail)} />
+              <Stat testid="sales-ar-customers" label="Pelanggan berpiutang" value={displayCount(receivableStatus, receivables?.customer_count, receivables?.coverage_note || receivables?.detail)} />
+            </ul>
+            {receivables?.coverage_note ? <p className="sd-note">{receivables.coverage_note}</p> : null}
+            <div className={`sd-plot sd-plot-short${chartPlotsSeries(receivableStatus) && receivableStatus !== "zero" ? " is-series" : " is-message"}`} ref={agingRef}>
+              {chartPlotsSeries(receivableStatus) && receivableStatus !== "zero" ? (
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={receivables?.aging || []} margin={{ top: 8, right: 4, left: 0, bottom: 0 }}>
+                    <CartesianGrid stroke="#E2E8F0" />
+                    <XAxis dataKey="label" interval={0} minTickGap={8} tick={{ fontSize: 11, fill: "#172126" }} tickFormatter={(value) => String(value).replace(" hari", "").replace("Belum jatuh tempo", "Belum")} />
+                    <YAxis tickFormatter={formatAxisMoney} tick={{ fontSize: 11, fill: "#3d4f48" }} width={48} />
+                    <Tooltip content={(props) => <MoneyTip {...props} boxRef={agingRef} />} />
+                    <Bar dataKey="amount" name="Saldo piutang" isAnimationActive={false}>
+                      {(receivables?.aging || []).map((row) => (
+                        <Cell key={row.key} fill={AGING_COLOR[row.key] || COLOR.omzet} />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              ) : (
+                <p className={`sd-state is-${receivableStatus}`}>{receivableStatus === "loading" ? "Memuat…" : (receivables?.detail || (error ? "Gagal muat" : "Belum tersedia"))}</p>
+              )}
+            </div>
+          </section>
+
+          <section className="sd-card" data-testid="sales-customers" style={{ "--sd-order": 6 }}>
             <p className="sd-kicker">Selama periode · customer_id</p>
             <h2>Pelanggan</h2>
             {customerStatus === "complete" || customerStatus === "incomplete" || customerStatus === "zero" ? (
@@ -439,7 +446,11 @@ export default function SalesDashboard({ embedded = false }) {
             )}
           </section>
 
+            </div>
+          </div>
+          <div className="sd-bottom">
           <ChartFrame
+            order={7}
             title="Faktur dan pembayaran"
             scope={settlement?.scope || "Status pelunasan saat ini"}
             note={settlement?.grain_label ? `Faktur terbit · ${settlement.grain_label.toLowerCase()}` : "Bukan arus kas periode"}
@@ -470,7 +481,7 @@ export default function SalesDashboard({ embedded = false }) {
             </ResponsiveContainer>
           </ChartFrame>
 
-          <section className="sd-card" data-testid="sales-products">
+          <section className="sd-card" data-testid="sales-products" style={{ "--sd-order": 8 }}>
             <p className="sd-kicker">Selama periode · nilai barang</p>
             <h2>Produk terlaris</h2>
             {productStatus === "complete" || productStatus === "incomplete" ? (
@@ -491,6 +502,7 @@ export default function SalesDashboard({ embedded = false }) {
               <p className={`sd-state is-${productStatus}`}>{productStatus === "loading" ? "Memuat…" : productStatus === "error" ? `Gagal muat. ${products?.detail || error || ""}`.trim() : (products?.detail || "Belum tersedia")}</p>
             )}
           </section>
+          </div>
         </div>
       </div>
     </div>

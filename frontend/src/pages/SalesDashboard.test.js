@@ -242,6 +242,7 @@ describe("Dashboard Penjualan runtime", () => {
     await flush();
 
     expect(container.querySelector('[data-testid="sales-line"]').getAttribute("data-points")).toBe("1");
+    expect(container.querySelector('[data-testid="sales-trend"] .sd-plot').classList.contains("is-series")).toBe(true);
     expect(container.querySelector('[data-testid="sales-omzet-value"]').textContent).toMatch(/4\.000|4,000/);
     expect(container.querySelector('[data-testid="sales-omzet-value"]').classList.contains("sd-hero")).toBe(true);
     expect(container.querySelector('[data-testid="sales-products"]').textContent).toMatch(/Gagal muat/);
@@ -268,6 +269,9 @@ describe("Dashboard Penjualan runtime", () => {
     expect(emptyOmzet.classList.contains("sd-empty")).toBe(true);
     expect(emptyOmzet.classList.contains("sd-hero")).toBe(false);
     expect(container.querySelector('[data-testid="sales-trend"]').textContent).toMatch(/Belum ada faktur pada periode ini/);
+    expect(container.querySelector('[data-testid="sales-trend"] .sd-plot').classList.contains("is-message")).toBe(true);
+    expect(container.querySelector('[data-testid="sales-by-sales"] .sd-plot').classList.contains("is-message")).toBe(true);
+    expect(container.querySelector('[data-testid="sales-settlement"] .sd-plot').classList.contains("is-message")).toBe(true);
     expect(container.textContent).not.toMatch(/125\.430|98\.250|27\.180|Budi Santoso|Contoh visual/);
     expect(container.querySelector('[data-testid="sales-omzet-delta"]').textContent).toContain("—");
     expect(container.querySelector('[data-testid="sales-omzet-delta"]').textContent).not.toMatch(/↑|↓/);
