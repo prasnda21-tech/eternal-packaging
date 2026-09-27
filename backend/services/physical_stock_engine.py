@@ -1607,27 +1607,34 @@ def _delivery_claim_specs(
     lis = order.get("line_items") or []
     order_id = str(order.get("id") or "").strip()
     specs: List[Dict[str, Any]] = []
-    for idx, line in enumerate(lines or []):
+    for row_i, line in enumerate(lines or []):
         if not isinstance(line, dict):
             continue
         qty = safe_float(line.get("qty", line.get("quantity", 0)))
         if qty <= 0:
             continue
+        canonical = row_i
+        raw_idx = line.get("line_idx")
+        if raw_idx is not None and str(raw_idx).strip() != "":
+            try:
+                canonical = int(raw_idx)
+            except (TypeError, ValueError):
+                canonical = row_i
         mid = str(line.get("master_item_id") or "").strip()
-        if not mid and idx < len(lis) and isinstance(lis[idx], dict):
-            mid = str(lis[idx].get("master_item_id") or "").strip()
+        if not mid and 0 <= canonical < len(lis) and isinstance(lis[canonical], dict):
+            mid = str(lis[canonical].get("master_item_id") or "").strip()
         if not mid:
             continue
         proc = str(line.get("production_process") or "").strip().lower()
         specs.append({
-            "idx": idx,
+            "idx": canonical,
             "qty": qty,
             "mid": mid,
             "is_print": proc != "non_print",
             "proc": proc,
             "line_id": line.get("line_id"),
             "unit": line.get("unit"),
-            "event_id": f"stock_out:delivery:{order_id}:{action_id}:{idx}",
+            "event_id": f"stock_out:delivery:{order_id}:{action_id}:{row_i}",
         })
     return specs
 
@@ -2371,6 +2378,223 @@ async def release_delivery_confirmed_stock(
                 event_id=c["event_id"],
                 master_item_id=c["master_item_id"],
             )
+
+
+SJ_ROW_UNCERTAIN = (
+    "Surat Jalan tidak memiliki rincian baris yang cukup untuk menentukan master dan qty. "
+    "Konfirmasi Terkirim tidak mengurangi stok dengan qty penuh PO."
+)
+SJ_INACTIVE = "Surat Jalan batal atau tidak aktif tidak mengurangi stok."
+SJ_QTY_DRIFT = (
+    "Qty Surat Jalan berubah sebelum konfirmasi disimpan. "
+    "Konfirmasi dan pengurangan stok dibatalkan."
+)
+SJ_STOCK_SHORT = (
+    "Stok fisik tidak mencukupi untuk qty Surat Jalan yang dikonfirmasi. "
+    "Konfirmasi tidak disimpan."
+)
+SJ_OPENING_MISSING = (
+    "Saldo awal stok fisik belum ditetapkan untuk barang pada Surat Jalan ini. "
+    "Konfirmasi tidak disimpan."
+)
+
+
+def _delivery_action_recorded(order: Dict[str, Any], action_id: Optional[str]) -> bool:
+    token = str(action_id or "").strip()
+    if not token:
+        return False
+    if token in list(order.get("delivery_confirm_action_ids") or []):
+        return True
+    for rec in order.get("delivery_confirmations") or []:
+        if isinstance(rec, dict) and str(rec.get("action_id") or "").strip() == token:
+            return True
+    return False
+
+
+def _sj_stock_fingerprint(lines: List[Dict[str, Any]]) -> tuple:
+    rows = []
+    for ln in lines or []:
+        rows.append((
+            int(ln.get("line_idx")),
+            str(ln.get("line_id") or ""),
+            str(ln.get("master_item_id") or ""),
+            str(ln.get("accurate_item_id") or ""),
+            float(ln.get("qty") or 0),
+            str(ln.get("production_process") or ""),
+            str(ln.get("unit") or ""),
+        ))
+    return tuple(rows)
+
+
+def plan_confirmed_sj_stock(
+    order: Dict[str, Any],
+    shipment: Optional[Dict[str, Any]],
+    *,
+    allow_delivered: bool = False,
+) -> Dict[str, Any]:
+    """Map confirmed SJ rows to canonical PO lines. Qty stays on the SJ row.
+
+    Reconciliation is applied on a copy first. The current reconciler does not
+    rewrite SJ lines. Identity fields come only from the matched PO line.
+    """
+    from copy import deepcopy
+
+    from quantity_rules import (
+        delivery_batch_identity,
+        delivery_batch_qty,
+        find_shipment,
+        match_po_line_idx,
+        reconcile_sj_quantities_to_loaded_delivery,
+        shipment_is_active,
+        shipment_is_delivered,
+    )
+
+    if not isinstance(shipment, dict):
+        return {"lines": [], "error": SJ_ROW_UNCERTAIN, "skip": False}
+    probe = deepcopy(order)
+    reconcile_sj_quantities_to_loaded_delivery(probe)
+    ident = delivery_batch_identity(shipment)
+    sh = find_shipment(probe, ident) if ident else None
+    if not isinstance(sh, dict):
+        sh = shipment if shipment in (probe.get("shipments") or []) else None
+    if not isinstance(sh, dict):
+        return {"lines": [], "error": SJ_ROW_UNCERTAIN, "skip": False}
+    if not shipment_is_active(sh):
+        return {"lines": [], "error": SJ_INACTIVE, "skip": False}
+    if shipment_is_delivered(probe, sh) and not allow_delivered:
+        return {"lines": [], "error": None, "skip": True}
+    raw = [ln for ln in (sh.get("lines") or []) if isinstance(ln, dict)]
+    if not raw:
+        return {"lines": [], "error": SJ_ROW_UNCERTAIN, "skip": False}
+    lis = list(probe.get("line_items") or [])
+    lines: List[Dict[str, Any]] = []
+    accounted = 0
+    for ln in raw:
+        qty_raw = ln.get("qty") if ln.get("qty") is not None else ln.get("quantity")
+        try:
+            qty = int(qty_raw)
+        except (TypeError, ValueError):
+            return {"lines": [], "error": SJ_ROW_UNCERTAIN, "skip": False}
+        if qty <= 0:
+            continue
+        idx, err = match_po_line_idx(probe, ln)
+        if err or idx is None or not (0 <= int(idx) < len(lis)):
+            return {"lines": [], "error": SJ_ROW_UNCERTAIN, "skip": False}
+        po = lis[int(idx)]
+        if not isinstance(po, dict):
+            return {"lines": [], "error": SJ_ROW_UNCERTAIN, "skip": False}
+        mid = str(po.get("master_item_id") or "").strip()
+        if not mid:
+            return {"lines": [], "error": SJ_ROW_UNCERTAIN, "skip": False}
+        lines.append({
+            "line_idx": int(idx),
+            "qty": qty,
+            "quantity": qty,
+            "master_item_id": mid,
+            "accurate_item_id": po.get("accurate_item_id"),
+            "production_process": str(po.get("production_process") or "").strip().lower(),
+            "unit": po.get("unit") or "PCS",
+            "line_id": po.get("line_id"),
+        })
+        accounted += qty
+    if not lines:
+        return {"lines": [], "error": SJ_ROW_UNCERTAIN, "skip": False}
+    if delivery_batch_qty(sh) != accounted:
+        return {"lines": [], "error": SJ_ROW_UNCERTAIN, "skip": False}
+    return {"lines": lines, "error": None, "skip": False, "sj_qty": accounted}
+
+
+def reject_sj_stock_qty_drift(order, shipment, holder, confirmation_qty) -> None:
+    """Refuse to store a confirmation whose qty is not the reserved SJ qty."""
+    if not isinstance(holder, dict) or not holder.get("active"):
+        return
+    plan = plan_confirmed_sj_stock(order, shipment, allow_delivered=True)
+    if plan.get("error") or plan.get("skip"):
+        raise HTTPException(400, plan.get("error") or SJ_QTY_DRIFT)
+    if _sj_stock_fingerprint(plan.get("lines") or []) != holder.get("fingerprint"):
+        raise HTTPException(400, SJ_QTY_DRIFT)
+    planned = sum(int(ln.get("qty") or 0) for ln in plan.get("lines") or [])
+    try:
+        confirmed = int(confirmation_qty)
+    except (TypeError, ValueError):
+        confirmed = -1
+    if confirmed != planned:
+        raise HTTPException(400, SJ_QTY_DRIFT)
+
+
+def _reserved_transaction_qty(claims: List[Dict[str, Any]]) -> float:
+    total = 0.0
+    for claim in claims or []:
+        data = claim.get("claim_data") or {}
+        rows = data.get("line_claims")
+        if isinstance(rows, list) and rows:
+            total += sum(safe_float(row.get("transaction_qty")) for row in rows)
+        else:
+            total += safe_float(data.get("transaction_qty"))
+    return total
+
+
+async def _delivery_line_block_reason(db, line: Dict[str, Any]) -> Optional[str]:
+    mid = str(line.get("master_item_id") or "").strip()
+    state = await get_product_stock_state(db, mid)
+    if not state or not state.get("initialized") or state.get("status") != STATUS_INITIALIZED:
+        return SJ_OPENING_MISSING
+    proc = str(line.get("production_process") or "").strip().lower()
+    if not await _production_flow_stock_can_mutate(
+        db,
+        mid,
+        line.get("qty"),
+        line.get("unit"),
+        movement_type=MOVEMENT_PENGIRIMAN,
+        is_print=proc != "non_print",
+    ):
+        return SJ_STOCK_SHORT
+    return None
+
+
+async def claim_selected_delivery_stock(
+    db,
+    order: Dict[str, Any],
+    shipment_id: Optional[str],
+    action_id: str,
+    user: Optional[Dict[str, Any]],
+    holder: Dict[str, Any],
+) -> Optional[List[Dict[str, Any]]]:
+    """Claim only the selected SJ rows, identified by their canonical PO lines."""
+    holder.clear()
+    if not await should_claim_delivery_confirmed_stock(db, order):
+        return None
+    from quantity_rules import resolve_delivery_shipment, shipment_is_delivered
+
+    shipment, err = resolve_delivery_shipment(order, shipment_id)
+    if err:
+        raise HTTPException(400, err)
+    replay = _delivery_action_recorded(order, action_id)
+    if isinstance(shipment, dict) and shipment_is_delivered(order, shipment) and not replay:
+        holder["skip"] = True
+        return None
+    plan = plan_confirmed_sj_stock(order, shipment, allow_delivered=replay)
+    if plan.get("skip"):
+        holder["skip"] = True
+        return None
+    if plan.get("error"):
+        raise HTTPException(400, plan["error"])
+    lines = plan["lines"]
+    if not replay:
+        for line in lines:
+            reason = await _delivery_line_block_reason(db, line)
+            if reason:
+                raise HTTPException(400, reason)
+    claims = await claim_delivery_confirmed_stock(db, order, lines, action_id, user)
+    finalized = bool(claims) and all(c.get("status") == "ALREADY_FINALIZED" for c in claims)
+    planned_qty = sum(safe_float(ln.get("qty")) for ln in lines)
+    if not finalized and abs(_reserved_transaction_qty(claims) - planned_qty) > 0.0001:
+        await release_delivery_confirmed_stock(db, claims)
+        raise HTTPException(400, SJ_QTY_DRIFT)
+    holder["active"] = True
+    holder["lines"] = lines
+    holder["fingerprint"] = _sj_stock_fingerprint(lines)
+    return claims
 
 
 async def finalize_delivery_confirmed_stock(

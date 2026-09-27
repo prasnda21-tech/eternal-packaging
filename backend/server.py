@@ -5741,21 +5741,14 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
         selected_shipment_id = str(selected_shipment_id).strip() or None
 
     existing_order = await db.orders.find_one({"id": order_id}, {"_id": 0})
-    if existing_order:
-        from services.physical_stock_engine import precheck_delivery_confirmed
-        await precheck_delivery_confirmed(db, existing_order, existing_order.get("line_items") or [])
-
     act_id = action_id or str(uuid.uuid4())
     claimed_stock = None
+    claim_plan_holder = {}
     if existing_order:
-        from services.physical_stock_engine import (
-            should_claim_delivery_confirmed_stock,
-            claim_delivery_confirmed_stock,
+        from services.physical_stock_engine import claim_selected_delivery_stock
+        claimed_stock = await claim_selected_delivery_stock(
+            db, existing_order, selected_shipment_id, act_id, user, claim_plan_holder,
         )
-        if await should_claim_delivery_confirmed_stock(db, existing_order):
-            claimed_stock = await claim_delivery_confirmed_stock(
-                db, existing_order, existing_order.get("line_items") or [], act_id, user
-            )
 
     frozen_sig_holder = {"sig": None, "driver_sig": None}
     conf_holder = {}
@@ -5801,6 +5794,8 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
         # Reconcile operational SJ qty down to loaded/actual for this confirmation.
         # Packing and Loading quantities are not mutated. Idempotent on retry.
         reconcile_holder["result"] = _qr_reconcile_sj_quantities_to_loaded_delivery(order)
+        from services.physical_stock_engine import reject_sj_stock_qty_drift
+        reject_sj_stock_qty_drift(order, selected_sh, claim_plan_holder, increment)
         conf = _append_delivery_confirmation(
             order, user, qty_increment=increment, now=now, action_id=action_id,
             shipment_id=_qr_delivery_batch_identity(selected_sh) if selected_sh else None,
@@ -5907,9 +5902,13 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
     except Exception:
         logging.getLogger(__name__).warning("sales_delivery SJ reconcile sync failed", exc_info=True)
 
-    if claimed_stock:
+    recorded = bool(action_id and action_id in list((order or {}).get("delivery_confirm_action_ids") or []))
+    if claimed_stock and (conf_holder.get("conf") or recorded):
         from services.physical_stock_engine import finalize_delivery_confirmed_stock
         await finalize_delivery_confirmed_stock(db, claimed_stock, user)
+    elif claimed_stock:
+        from services.physical_stock_engine import release_delivery_confirmed_stock
+        await release_delivery_confirmed_stock(db, claimed_stock)
     elif conf_holder.get("conf"):
         from services.physical_stock_engine import handle_delivery_confirmed
         await handle_delivery_confirmed(db, order, conf_holder["conf"], user)
