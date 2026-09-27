@@ -1737,32 +1737,6 @@ async def _delivery_line_deltas(db, spec: Dict[str, Any]) -> Dict[str, Any]:
     return enriched
 
 
-async def _ensure_delivery_group_available(db, master_item_id: str, lines: List[Dict[str, Any]]) -> bool:
-    """True when the summed SJ qty fits. False when opening stock was never set.
-
-    Initialized shortage raises the specific bucket message. It does not use
-    the generic concurrency sentence and does not reserve a pending_event.
-    """
-    if not await _product_stock_is_initialized(db, master_item_id):
-        return False
-    printed = sum(abs(safe_float(line.get("delta_printed"))) for line in lines)
-    unprinted = sum(abs(safe_float(line.get("delta_unprinted"))) for line in lines)
-    total = sum(abs(safe_float(line.get("delta_total"))) for line in lines)
-    if printed:
-        await check_stock_availability(
-            db, master_item_id, printed, bucket="printed", context_label="konfirmasi pengiriman"
-        )
-    if unprinted:
-        await check_stock_availability(
-            db, master_item_id, unprinted, bucket="unprinted", context_label="konfirmasi pengiriman"
-        )
-    if total:
-        await check_stock_availability(
-            db, master_item_id, total, bucket="total", context_label="konfirmasi pengiriman"
-        )
-    return True
-
-
 async def _movement_by_event(db, event_id: str) -> Optional[Dict[str, Any]]:
     ev_id = str(event_id or "").strip()
     if not ev_id:
@@ -1773,56 +1747,57 @@ async def _movement_by_event(db, event_id: str) -> Optional[Dict[str, Any]]:
     )
 
 
-async def _delivery_same_action_owns_stock(
-    db,
-    order: Dict[str, Any],
-    action_id: str,
-    specs: List[Dict[str, Any]],
-) -> bool:
-    """True when this action already holds the pending slot or wrote its movements.
+async def _delivery_spec_is_claimable(db, spec: Dict[str, Any]) -> bool:
+    """Same skip as the previous per-line claim: uninitialized or short stock is not reserved.
 
-    A retry must not be reported as a fresh shortage after the balance moved.
+    A movement already written for this event stays claimable so retry can resume.
     """
-    if not action_id or not specs:
-        return False
-    for spec in specs:
-        if await _movement_by_event(db, spec["event_id"]):
-            return True
-    mid = specs[0]["mid"]
-    order_id = str(order.get("id") or "").strip()
-    curr = await db[STATE_COLLECTION].find_one({"$or": [{"_id": mid}, {"master_item_id": mid}]})
-    pending = (curr or {}).get("pending_event") if curr else None
-    if not isinstance(pending, dict) or not pending.get("event_id"):
-        return False
-    if len(specs) == 1:
-        return pending.get("event_id") == specs[0]["event_id"]
-    group_event_id = f"stock_out:delivery:{order_id}:{action_id}:master:{mid}"
-    return pending.get("event_id") == group_event_id
+    if await _movement_by_event(db, spec.get("event_id")):
+        return True
+    return await _production_flow_stock_can_mutate(
+        db,
+        spec["mid"],
+        spec["qty"],
+        spec.get("unit"),
+        movement_type=MOVEMENT_PENGIRIMAN,
+        is_print=spec["is_print"],
+    )
 
 
 async def precheck_delivery_confirmed(
     db,
     order: Dict[str, Any],
     lines: List[Dict[str, Any]],
-    action_id: Optional[str] = None,
 ) -> None:
-    """Pre-checks summed SJ qty per master before delivery confirmation is persisted.
-
-    The same action_id skips the availability check when its claim or movements
-    already exist, so a retry is not turned into a false shortage.
-    """
+    """Pre-checks stock availability before delivery confirmation is persisted."""
     snap = order.get("physical_stock_snapshot") or {}
     if not snap.get("enabled") or snap.get("stock_out_trigger") != "delivery_confirmed":
         return
 
-    grouped: Dict[str, List[Dict[str, Any]]] = {}
-    for spec in _delivery_claim_specs(order, lines, action_id or "precheck"):
-        grouped.setdefault(spec["mid"], []).append(spec)
-    for mid, group in grouped.items():
-        if action_id and await _delivery_same_action_owns_stock(db, order, action_id, group):
+    lis = order.get("line_items") or []
+    for idx, line in enumerate(lines):
+        qty = safe_float(line.get("qty", line.get("quantity", 0)))
+        if qty <= 0:
             continue
-        enriched = [await _delivery_line_deltas(db, spec) for spec in group]
-        await _ensure_delivery_group_available(db, mid, enriched)
+        mid = line.get("master_item_id")
+        if not mid and idx < len(lis):
+            mid = lis[idx].get("master_item_id")
+        if not mid:
+            continue
+        proc = str(line.get("production_process") or "").strip().lower()
+        is_p = proc != "non_print"
+        if not await _production_flow_stock_can_mutate(
+            db, mid, qty, line.get("unit"),
+            movement_type=MOVEMENT_PENGIRIMAN, is_print=is_p,
+        ):
+            continue
+        bucket = "printed" if is_p else "unprinted"
+        base_qty, _, _, _ = await resolve_transaction_conversion(
+            db, mid, qty, line.get("unit")
+        )
+        await check_stock_availability(
+            db, mid, base_qty, bucket=bucket, context_label="konfirmasi pengiriman"
+        )
 
 
 # ==============================================================================
@@ -2332,8 +2307,6 @@ async def _reserve_delivery_master_group(
             "claim_data": pending,
         }
 
-    if not await _ensure_delivery_group_available(db, mid, lines):
-        return None
     curr = await db[STATE_COLLECTION].find_one({"$or": [{"_id": mid}, {"master_item_id": mid}]})
     if not curr or not curr.get("initialized") or curr.get("status") != STATUS_INITIALIZED:
         raise HTTPException(400, f"Saldo awal stok fisik produk belum ditetapkan (ID: '{mid}').")
@@ -2445,14 +2418,13 @@ async def claim_delivery_confirmed_stock(
     try:
         grouped: Dict[str, List[Dict[str, Any]]] = {}
         for spec in _delivery_claim_specs(order, lines, action_id):
+            if not await _delivery_spec_is_claimable(db, spec):
+                continue
             grouped.setdefault(spec["mid"], []).append(spec)
         for mid, group in grouped.items():
             enriched = [await _delivery_line_deltas(db, spec) for spec in group]
             if len(enriched) == 1:
                 spec = enriched[0]
-                already_moved = await _movement_by_event(db, spec["event_id"])
-                if not already_moved and not await _ensure_delivery_group_available(db, mid, enriched):
-                    continue
                 claim = await claim_durable_stock_event(
                     db,
                     event_id=spec["event_id"],
@@ -2507,7 +2479,7 @@ async def prepare_delivery_confirmed_stock(
     if err:
         raise HTTPException(400, err)
     stock_lines = build_delivery_confirm_stock_lines(order, shipment)
-    await precheck_delivery_confirmed(db, order, stock_lines, action_id)
+    await precheck_delivery_confirmed(db, order, stock_lines)
     if not stock_lines:
         return None
     return await claim_delivery_confirmed_stock(db, order, stock_lines, action_id, user)

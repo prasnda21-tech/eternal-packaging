@@ -1371,20 +1371,18 @@ async def test_41_stock_out_delivery_confirmed_non_cetak_deducts_unprinted(mock_
 
 @pytest.mark.anyio
 async def test_42_stock_out_delivery_confirmed_insufficient_skipped(mock_db):
-    """42. Initialized shortage blocks Konfirmasi Terkirim; balances unchanged."""
+    """42. Delivery confirmed skips insufficient stock; balances unchanged."""
     await setup_initialized_product(mock_db, "prod-1", unprinted=0.0, printed=50.0)
     order = {"id": "ord-805", "physical_stock_snapshot": {"enabled": True, "stock_out_trigger": "delivery_confirmed"}}
     lines = [{"master_item_id": "prod-1", "production_process": "print", "qty": 100}]
-    with pytest.raises(HTTPException) as exc:
-        await precheck_delivery_confirmed(mock_db, order, lines)
-    assert exc.value.status_code == 400
-    assert "sudah dicetak tidak mencukupi" in str(exc.value.detail)
-    with pytest.raises(HTTPException):
-        await claim_delivery_confirmed_stock(mock_db, order, lines, "act-805")
+    await precheck_delivery_confirmed(mock_db, order, lines)
+    claims = await claim_delivery_confirmed_stock(mock_db, order, lines, "act-805")
+    assert claims == []
+    movs = await handle_delivery_confirmed(mock_db, order, {"id": "conf-805", "lines": lines})
+    assert movs == []
     state = await get_product_stock_state(mock_db, "prod-1")
     assert state["printed_qty"] == 50.0
     assert not state.get("pending_event")
-    assert not any(doc.get("movement_type") == MOVEMENT_PENGIRIMAN for doc in mock_db.stock_movements._docs)
 
 
 @pytest.mark.anyio
@@ -2880,7 +2878,12 @@ async def test_same_master_print_and_unprinted_lines_one_reservation(mock_db):
 
 
 @pytest.mark.anyio
-async def test_same_master_sum_shortage_is_specific_and_claims_nothing(mock_db):
+async def test_same_master_sum_exceeds_bucket_reserves_nothing(mock_db):
+    """Each line fits alone, the sum does not. One atomic reservation fails closed.
+
+    The per-line shortage skip is unchanged. This case still must not leave the
+    first line's pending_event behind.
+    """
     await setup_initialized_product(mock_db, NAMOY_MASTER, unprinted=4700.0, printed=1500.0)
     order = _namoy_order()
     from services.physical_stock_engine import build_delivery_confirm_stock_lines
@@ -2889,14 +2892,10 @@ async def test_same_master_sum_shortage_is_specific_and_claims_nothing(mock_db):
         {"line_idx": 0, "line_id": "L0", "qty": 1000},
         {"line_idx": 1, "line_id": "L1", "qty": 1000},
     ]))
-    with pytest.raises(HTTPException) as exc:
-        await precheck_delivery_confirmed(mock_db, order, lines)
-    assert "sudah dicetak tidak mencukupi" in str(exc.value.detail)
-    assert "konflik konkurensi" not in str(exc.value.detail)
+    await precheck_delivery_confirmed(mock_db, order, lines)
     with pytest.raises(HTTPException) as claim_exc:
         await claim_delivery_confirmed_stock(mock_db, order, lines, "act-short")
-    assert "sudah dicetak tidak mencukupi" in str(claim_exc.value.detail)
-    assert "konflik konkurensi" not in str(claim_exc.value.detail)
+    assert "konflik konkurensi" in str(claim_exc.value.detail)
     state = await get_product_stock_state(mock_db, NAMOY_MASTER)
     assert state["printed_qty"] == 1500.0
     assert state["total_qty"] == 6200.0
