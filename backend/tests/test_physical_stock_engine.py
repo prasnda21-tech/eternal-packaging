@@ -185,6 +185,9 @@ def doc_matches(d, query):
                 if op == "$gte":
                     if safe_float(field_val, -1e9) < safe_float(target):
                         return False
+                elif op == "$gt":
+                    if safe_float(field_val, -1e9) <= safe_float(target):
+                        return False
                 elif op == "$lte":
                     if safe_float(field_val, 1e9) > safe_float(target):
                         return False
@@ -3339,3 +3342,96 @@ async def test_retry_after_delivered_mark_finalizes_the_same_claim_once(mock_db)
     state = await get_product_stock_state(mock_db, NAMOY_MASTER)
     assert state["printed_qty"] == 1200.0
     assert len(_pengiriman(mock_db)) == 2
+
+
+@pytest.mark.anyio
+async def test_omitted_delivery_action_is_stable_per_shipment(mock_db):
+    from services.physical_stock_engine import _acquire_omitted_action
+
+    first = await _acquire_omitted_action(mock_db, "ord-omit", "sj-1")
+    second = await _acquire_omitted_action(mock_db, "ord-omit", "sj-1")
+    other = await _acquire_omitted_action(mock_db, "ord-omit", "sj-2")
+    assert first == second
+    assert other != first
+
+
+@pytest.mark.anyio
+async def test_explicit_action_rejects_a_different_shipment_or_payload(mock_db):
+    from fastapi import HTTPException
+
+    from services.physical_stock_engine import prepare_confirm_delivered_action
+
+    order = _sj_partial_order()
+    order["delivery_confirmations"] = [{
+        "action_id": "act-1",
+        "shipment_id": "sj-1",
+        "qty": 800,
+        "items": [{"line_idx": 0, "qty": 400}, {"line_idx": 1, "qty": 400}],
+    }]
+    order["delivery_confirm_action_ids"] = ["act-1"]
+    await mock_db.orders.insert_one(dict(order))
+    same = await prepare_confirm_delivered_action(mock_db, order, "sj-1", "act-1")
+    assert same["action_id"] == "act-1"
+    with pytest.raises(HTTPException) as other_sj:
+        await prepare_confirm_delivered_action(mock_db, order, "sj-2", "act-1")
+    assert other_sj.value.status_code == 409
+    changed = dict(order)
+    changed["delivery_confirmations"] = [{
+        "action_id": "act-1",
+        "shipment_id": "sj-1",
+        "qty": 800,
+        "items": [{"line_idx": 0, "qty": 100}, {"line_idx": 1, "qty": 400}],
+    }]
+    with pytest.raises(HTTPException) as other_payload:
+        await prepare_confirm_delivered_action(mock_db, changed, "sj-1", "act-1")
+    assert other_payload.value.status_code == 409
+
+
+@pytest.mark.anyio
+async def test_release_keeps_live_recorded_and_applied_delivery_claims(mock_db):
+    from services.physical_stock_engine import (
+        claim_selected_delivery_stock,
+        release_uncommitted_delivery_claim,
+    )
+
+    await setup_initialized_product(mock_db, NAMOY_MASTER, unprinted=4700.0, printed=2000.0)
+    order = _sj_partial_order()
+    await mock_db.orders.insert_one(dict(order))
+    claims = await claim_selected_delivery_stock(mock_db, order, "sj-1", "act-hold", None, {})
+    await release_uncommitted_delivery_claim(mock_db, claims, order["id"], "act-hold", 1)
+    state = await get_product_stock_state(mock_db, NAMOY_MASTER)
+    assert state["pending_event"]["action_id"] == "act-hold"
+    assert state["printed_qty"] == 2000.0
+
+    order["delivery_confirm_action_ids"] = ["act-hold"]
+    order["delivery_confirmations"] = [{"action_id": "act-hold", "shipment_id": "sj-1", "qty": 800}]
+    await mock_db.orders.update_one({"id": order["id"]}, {"$set": {
+        "delivery_confirm_action_ids": order["delivery_confirm_action_ids"],
+        "delivery_confirmations": order["delivery_confirmations"],
+    }})
+    await release_uncommitted_delivery_claim(mock_db, claims, order["id"], "act-hold", 0)
+    state = await get_product_stock_state(mock_db, NAMOY_MASTER)
+    assert state["pending_event"]["action_id"] == "act-hold"
+
+    await mock_db.orders.update_one({"id": order["id"]}, {"$set": {
+        "delivery_confirm_action_ids": [],
+        "delivery_confirmations": [],
+    }})
+    await mock_db[STATE_COLLECTION].update_one(
+        {"pending_event.event_id": claims[0]["event_id"]},
+        {"$set": {"pending_event.stage": "STATE_APPLIED"}, "$inc": {"printed_qty": -800.0, "total_qty": -800.0}},
+    )
+    await release_uncommitted_delivery_claim(mock_db, claims, order["id"], "act-hold", 0)
+    state = await get_product_stock_state(mock_db, NAMOY_MASTER)
+    assert state["pending_event"]["stage"] == "STATE_APPLIED"
+    assert state["printed_qty"] == 1200.0
+
+    await mock_db[STATE_COLLECTION].update_one(
+        {"pending_event.event_id": claims[0]["event_id"]},
+        {"$set": {"pending_event.stage": "CLAIMED"}, "$inc": {"printed_qty": 800.0, "total_qty": 800.0}},
+    )
+    await release_uncommitted_delivery_claim(mock_db, claims, order["id"], "act-hold", 0)
+    state = await get_product_stock_state(mock_db, NAMOY_MASTER)
+    assert not state.get("pending_event")
+    assert state["printed_qty"] == 2000.0
+    assert _pengiriman(mock_db) == []

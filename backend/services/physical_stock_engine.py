@@ -32,6 +32,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import HTTPException
 from pymongo import ReturnDocument
+from pymongo.errors import DuplicateKeyError
 
 from services.physical_stock_settings import (
     get_physical_stock_settings,
@@ -2409,6 +2410,261 @@ def _delivery_action_recorded(order: Dict[str, Any], action_id: Optional[str]) -
         if isinstance(rec, dict) and str(rec.get("action_id") or "").strip() == token:
             return True
     return False
+
+
+DELIVERY_CONFIRM_SCOPE = "delivery_confirmed"
+DELIVERY_OPERATION_COLLECTION = "delivery_confirm_operations"
+ACTION_REUSED = "action_id sudah dipakai untuk Konfirmasi Terkirim yang berbeda."
+OMITTED_ACTION_REQUIRES_SHIPMENT = (
+    "Konfirmasi tanpa action_id membutuhkan identitas Surat Jalan yang stabil."
+)
+
+
+def _delivery_operation_db(db):
+    return db[DELIVERY_OPERATION_COLLECTION]
+
+
+def _omit_operation_id(order_id: str, shipment_id: str) -> str:
+    return f"omit:{order_id}:{shipment_id}:{DELIVERY_CONFIRM_SCOPE}"
+
+
+def _explicit_operation_id(action_id: str) -> str:
+    return f"act:{action_id}:{DELIVERY_CONFIRM_SCOPE}"
+
+
+def _line_qty_key(rows) -> tuple:
+    found = []
+    for ln in rows or []:
+        if not isinstance(ln, dict):
+            continue
+        try:
+            idx = int(ln.get("line_idx"))
+        except (TypeError, ValueError):
+            continue
+        raw = ln.get("qty") if ln.get("qty") is not None else ln.get("quantity")
+        try:
+            qty = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if qty <= 0:
+            continue
+        found.append((idx, qty))
+    return tuple(sorted(found))
+
+
+def reject_reused_delivery_action(order: Dict[str, Any], action_id: Optional[str], canonical_sid: Optional[str]) -> None:
+    """Refuse to treat an action_id already stored for another SJ or payload as success."""
+    token = str(action_id or "").strip()
+    if not token or not isinstance(order, dict):
+        return
+    sid = str(canonical_sid or "").strip()
+    from quantity_rules import find_shipment
+
+    for rec in order.get("delivery_confirmations") or []:
+        if not isinstance(rec, dict) or str(rec.get("action_id") or "").strip() != token:
+            continue
+        bound = str(rec.get("shipment_id") or "").strip()
+        if sid and bound and bound != sid:
+            raise HTTPException(409, ACTION_REUSED)
+        if not sid or not bound or bound != sid:
+            continue
+        current = find_shipment(order, sid)
+        current_lines = (current or {}).get("lines") if isinstance(current, dict) else None
+        stored = _line_qty_key(rec.get("items"))
+        live = _line_qty_key(current_lines)
+        if stored and live and stored != live:
+            raise HTTPException(409, ACTION_REUSED)
+
+
+def _binding_conflicts(existing: Optional[Dict[str, Any]], order_id: str, shipment_id: str) -> bool:
+    if not existing:
+        return False
+    bound_order = str(existing.get("order_id") or "")
+    bound_shipment = str(existing.get("shipment_id") or "")
+    if bound_order and bound_order != order_id:
+        return True
+    if shipment_id and bound_shipment and bound_shipment != shipment_id:
+        return True
+    return False
+
+
+async def _ensure_action_binding(db, order_id: str, shipment_id: str, action_id: str) -> str:
+    doc_id = _explicit_operation_id(action_id)
+    coll = _delivery_operation_db(db)
+    try:
+        await coll.insert_one({
+            "_id": doc_id,
+            "kind": "act",
+            "order_id": order_id,
+            "shipment_id": shipment_id,
+            "scope": DELIVERY_CONFIRM_SCOPE,
+            "action_id": action_id,
+            "holders": 0,
+        })
+    except DuplicateKeyError:
+        existing = await coll.find_one({"_id": doc_id})
+        if _binding_conflicts(existing, order_id, shipment_id):
+            raise HTTPException(409, ACTION_REUSED)
+    return doc_id
+
+
+async def _acquire_omitted_action(db, order_id: str, shipment_id: str) -> str:
+    """One persistent action id per order and canonical shipment. Concurrent callers share it."""
+    coll = _delivery_operation_db(db)
+    doc_id = _omit_operation_id(order_id, shipment_id)
+    minted = str(uuid.uuid4())
+    try:
+        await coll.insert_one({
+            "_id": doc_id,
+            "kind": "omit",
+            "order_id": order_id,
+            "shipment_id": shipment_id,
+            "scope": DELIVERY_CONFIRM_SCOPE,
+            "action_id": minted,
+            "holders": 0,
+        })
+        action_id = minted
+    except DuplicateKeyError:
+        existing = await coll.find_one({"_id": doc_id})
+        action_id = str((existing or {}).get("action_id") or "").strip()
+        if not action_id:
+            raise HTTPException(409, "Identitas operasi Konfirmasi Terkirim tidak dapat dipulihkan.")
+    await _ensure_action_binding(db, order_id, shipment_id, action_id)
+    return action_id
+
+
+async def _reject_explicit_action_conflict(db, order: Dict[str, Any], action_id: str, shipment_id: str) -> None:
+    reject_reused_delivery_action(order, action_id, shipment_id)
+    other = await db.orders.find_one(
+        {
+            "id": {"$ne": order.get("id")},
+            "$or": [
+                {"delivery_confirmations.action_id": action_id},
+                {"delivery_confirm_action_ids": action_id},
+            ],
+        },
+        {"_id": 1},
+    )
+    if other:
+        raise HTTPException(409, ACTION_REUSED)
+
+
+async def prepare_confirm_delivered_action(db, order, selected_shipment_id, client_action_id) -> Dict[str, Any]:
+    """Resolve the operation id before any stock mutation and hold it for this request.
+
+    The id lives outside the order document. Confirm persists the order with a
+    full replacement, which would drop an id stored only on that document.
+    """
+    if not order:
+        return {
+            "action_id": client_action_id,
+            "shipment_id": None,
+            "holder_id": None,
+            "ready": False,
+            "order": None,
+        }
+    from quantity_rules import canonical_shipment_id, resolve_delivery_shipment
+
+    shipment, err = resolve_delivery_shipment(order, selected_shipment_id)
+    if err:
+        raise HTTPException(400, err)
+    sid = canonical_shipment_id(shipment) if isinstance(shipment, dict) else ""
+    order_id = str(order.get("id") or "")
+    client_token = str(client_action_id or "").strip()
+    if client_token:
+        await _reject_explicit_action_conflict(db, order, client_token, sid)
+        holder_id = await _ensure_action_binding(db, order_id, sid, client_token)
+        action_id = client_token
+    else:
+        if not sid:
+            raise HTTPException(400, OMITTED_ACTION_REQUIRES_SHIPMENT)
+        action_id = await _acquire_omitted_action(db, order_id, sid)
+        holder_id = _omit_operation_id(order_id, sid)
+    await _delivery_operation_db(db).update_one({"_id": holder_id}, {"$inc": {"holders": 1}})
+    fresh = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    return {
+        "action_id": action_id,
+        "shipment_id": sid,
+        "holder_id": holder_id,
+        "ready": True,
+        "order": fresh or order,
+    }
+
+
+async def end_delivery_operation(db, holder_id: Optional[str]) -> int:
+    if not holder_id:
+        return 0
+    updated = await _delivery_operation_db(db).find_one_and_update(
+        {"_id": holder_id, "holders": {"$gt": 0}},
+        {"$inc": {"holders": -1}},
+        return_document=ReturnDocument.AFTER,
+    )
+    if not updated:
+        return 0
+    return int(updated.get("holders") or 0)
+
+
+async def release_uncommitted_delivery_claim(
+    db,
+    claims: Optional[List[Dict[str, Any]]],
+    order_id: str,
+    action_id: Optional[str],
+    holders_remaining: int,
+    holder_id: Optional[str] = None,
+) -> None:
+    """Release only this request's uncommitted claim.
+
+    A sibling request that still holds the operation, a stored confirmation,
+    or a balance that was already applied keeps the reservation.
+    """
+    if holders_remaining > 0:
+        return
+    if holder_id:
+        current = await _delivery_operation_db(db).find_one({"_id": holder_id}, {"holders": 1})
+        if current and int(current.get("holders") or 0) > 0:
+            return
+    fresh = await db.orders.find_one(
+        {"id": order_id},
+        {"_id": 0, "delivery_confirm_action_ids": 1, "delivery_confirmations": 1},
+    )
+    if _delivery_action_recorded(fresh or {}, action_id):
+        return
+    token = str(action_id or "").strip()
+    for claim in claims or []:
+        if not claim or claim.get("status") != "CLAIMED":
+            continue
+        mid = str(claim.get("master_item_id") or "").strip()
+        ev_id = str(claim.get("event_id") or "").strip()
+        if not mid or not ev_id:
+            continue
+        curr = await db[STATE_COLLECTION].find_one({"$or": [{"_id": mid}, {"master_item_id": mid}]})
+        pending = (curr or {}).get("pending_event") if curr else None
+        if not isinstance(pending, dict):
+            continue
+        if str(pending.get("event_id") or "") != ev_id:
+            continue
+        if token and str(pending.get("action_id") or "") != token:
+            continue
+        if pending.get("stage") != "CLAIMED":
+            continue
+        await release_durable_stock_claim(db, event_id=ev_id, master_item_id=mid)
+
+
+async def finish_confirm_delivered_action(
+    db,
+    op: Optional[Dict[str, Any]],
+    claims: Optional[List[Dict[str, Any]]],
+    order_id: str,
+    action_id: Optional[str],
+    *,
+    release: bool,
+) -> None:
+    holder_id = (op or {}).get("holder_id")
+    remaining = await end_delivery_operation(db, holder_id)
+    if release:
+        await release_uncommitted_delivery_claim(
+            db, claims, order_id, action_id, remaining, holder_id=holder_id,
+        )
 
 
 def _sj_stock_fingerprint(lines: List[Dict[str, Any]]) -> tuple:

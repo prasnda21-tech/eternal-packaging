@@ -5741,115 +5741,137 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
         selected_shipment_id = str(selected_shipment_id).strip() or None
 
     existing_order = await db.orders.find_one({"id": order_id}, {"_id": 0})
-    act_id = action_id or str(uuid.uuid4())
+    from services.physical_stock_engine import (
+        claim_selected_delivery_stock,
+        finish_confirm_delivered_action,
+        prepare_confirm_delivered_action,
+        reject_reused_delivery_action,
+    )
+    op = await prepare_confirm_delivered_action(
+        db, existing_order, selected_shipment_id, action_id,
+    )
+    action_id = op["action_id"]
+    if op.get("order") is not None:
+        existing_order = op["order"]
     claimed_stock = None
     claim_plan_holder = {}
-    if existing_order:
-        from services.physical_stock_engine import claim_selected_delivery_stock
-        claimed_stock = await claim_selected_delivery_stock(
-            db, existing_order, selected_shipment_id, act_id, user, claim_plan_holder,
-        )
-
+    release_claim = False
     frozen_sig_holder = {"sig": None, "driver_sig": None}
     conf_holder = {}
     reconcile_holder = {"result": None}
 
-    def mutate(order: dict):
-        ids = list(order.get("delivery_confirm_action_ids") or [])
-        if action_id and action_id in ids:
-            return
-        selected_sh, resolve_err = _qr_resolve_delivery_shipment(order, selected_shipment_id)
-        if resolve_err:
-            raise HTTPException(400, resolve_err)
-        if selected_sh and _qr_shipment_is_delivered(order, selected_sh):
-            return
-        incoming_name = payload.recipient_name if payload else None
-        if incoming_name is not None:
-            from services.delivery_pod_signature import apply_recipient_name_to_active_signature
-            name_err = apply_recipient_name_to_active_signature(order, incoming_name)
-            if name_err:
-                raise HTTPException(400, name_err)
-        blocked = _qr_confirm_delivery_block_reason(order, selected_sh)
-        if blocked:
-            raise HTTPException(400, blocked)
-        evidence = _qr_apply_delivery_from_proof_evidence(order, selected_sh)
-        if not evidence:
-            raise HTTPException(400, "Belum ada qty packing/Surat Jalan yang eligible untuk dikonfirmasi terkirim.")
-        now = now_iso()
-        current_delivered = _qr_qty_delivered(order)
-        increment = int(evidence.get("increment") if evidence.get("increment") is not None else (
-            int(evidence["qty_delivered"]) - int(current_delivered or 0)
-        ))
-        if increment <= 0:
-            return
-        order["qty_delivered"] = evidence["qty_delivered"]
-        order["delivery_status"] = evidence["delivery_status"]
-        order["delivered_at"] = now
-        order["delivered_by"] = user.get("email")
-        order["delivered_by_name"] = user.get("name")
-        if selected_sh:
-            _qr_mark_shipment_delivered(
-                selected_sh, now=now, qty=increment,
-            )
-        # Reconcile operational SJ qty down to loaded/actual for this confirmation.
-        # Packing and Loading quantities are not mutated. Idempotent on retry.
-        reconcile_holder["result"] = _qr_reconcile_sj_quantities_to_loaded_delivery(order)
-        from services.physical_stock_engine import reject_sj_stock_qty_drift
-        reject_sj_stock_qty_drift(order, selected_sh, claim_plan_holder, increment)
-        conf = _append_delivery_confirmation(
-            order, user, qty_increment=increment, now=now, action_id=action_id,
-            shipment_id=_qr_delivery_batch_identity(selected_sh) if selected_sh else None,
-            shipment=selected_sh,
-        )
-        conf_holder["conf"] = conf
-        try:
-            from services.delivery_pod_signature import (
-                freeze_active_signature,
-                freeze_active_driver_signature,
-            )
-            frozen = freeze_active_signature(order, confirmation_id=(conf or {}).get("id"))
-            frozen_driver = freeze_active_driver_signature(order, confirmation_id=(conf or {}).get("id"))
-            frozen_sig_holder["sig"] = frozen
-            frozen_sig_holder["driver_sig"] = frozen_driver
-            if conf and frozen:
-                conf["recipient_name"] = frozen.get("recipient_name")
-                conf["recipient_signature_id"] = frozen.get("id")
-                conf["recipient_signed_at"] = frozen.get("recipient_signed_at")
-                conf["sj_file_id"] = frozen.get("sj_file_id")
-            if conf and frozen_driver:
-                conf["driver_signature_id"] = frozen_driver.get("id")
-                conf["driver_signed_at"] = frozen_driver.get("driver_signed_at")
-                conf["driver_name"] = frozen_driver.get("driver_name") or conf.get("driver_name")
-        except Exception:
-            logging.getLogger(__name__).warning("freeze POD signatures failed", exc_info=True)
-        _sync_dispatch_stage(order)
-        required = evidence["required"] or evidence["qty_delivered"]
-        if evidence["full"]:
-            add_timeline(
-                order, 14, user,
-                note=f"Terkirim penuh: {evidence['qty_delivered']}/{required} pcs",
-            )
-        else:
-            add_timeline(
-                order, order.get("current_stage") or 13, user,
-                note=f"Terkirim sebagian: {evidence['qty_delivered']}/{required} pcs",
-            )
-            # Keep frozen copies in history; clear active slots for next partial POD
-            if frozen_sig_holder["sig"]:
-                order.pop("delivery_recipient_signature", None)
-            if frozen_sig_holder["driver_sig"]:
-                order.pop("delivery_driver_signature", None)
-        if action_id:
-            ids.append(action_id)
-            order["delivery_confirm_action_ids"] = ids[-20:]
-
     try:
-        order = await _with_quantity_lock(order_id, mutate)
-    except Exception:
-        if claimed_stock:
-            from services.physical_stock_engine import release_delivery_confirmed_stock
-            await release_delivery_confirmed_stock(db, claimed_stock)
-        raise
+        if existing_order and op.get("ready"):
+            claimed_stock = await claim_selected_delivery_stock(
+                db, existing_order, selected_shipment_id, action_id, user, claim_plan_holder,
+            )
+
+        def mutate(order: dict):
+            conf_holder.pop("conf", None)
+            reject_reused_delivery_action(order, action_id, op.get("shipment_id"))
+            ids = list(order.get("delivery_confirm_action_ids") or [])
+            if action_id and action_id in ids:
+                return
+            selected_sh, resolve_err = _qr_resolve_delivery_shipment(order, selected_shipment_id)
+            if resolve_err:
+                raise HTTPException(400, resolve_err)
+            if selected_sh and _qr_shipment_is_delivered(order, selected_sh):
+                return
+            incoming_name = payload.recipient_name if payload else None
+            if incoming_name is not None:
+                from services.delivery_pod_signature import apply_recipient_name_to_active_signature
+                name_err = apply_recipient_name_to_active_signature(order, incoming_name)
+                if name_err:
+                    raise HTTPException(400, name_err)
+            blocked = _qr_confirm_delivery_block_reason(order, selected_sh)
+            if blocked:
+                raise HTTPException(400, blocked)
+            evidence = _qr_apply_delivery_from_proof_evidence(order, selected_sh)
+            if not evidence:
+                raise HTTPException(400, "Belum ada qty packing/Surat Jalan yang eligible untuk dikonfirmasi terkirim.")
+            now = now_iso()
+            current_delivered = _qr_qty_delivered(order)
+            increment = int(evidence.get("increment") if evidence.get("increment") is not None else (
+                int(evidence["qty_delivered"]) - int(current_delivered or 0)
+            ))
+            if increment <= 0:
+                return
+            order["qty_delivered"] = evidence["qty_delivered"]
+            order["delivery_status"] = evidence["delivery_status"]
+            order["delivered_at"] = now
+            order["delivered_by"] = user.get("email")
+            order["delivered_by_name"] = user.get("name")
+            if selected_sh:
+                _qr_mark_shipment_delivered(
+                    selected_sh, now=now, qty=increment,
+                )
+            # Reconcile operational SJ qty down to loaded/actual for this confirmation.
+            # Packing and Loading quantities are not mutated. Idempotent on retry.
+            reconcile_holder["result"] = _qr_reconcile_sj_quantities_to_loaded_delivery(order)
+            from services.physical_stock_engine import reject_sj_stock_qty_drift
+            reject_sj_stock_qty_drift(order, selected_sh, claim_plan_holder, increment)
+            conf = _append_delivery_confirmation(
+                order, user, qty_increment=increment, now=now, action_id=action_id,
+                shipment_id=_qr_delivery_batch_identity(selected_sh) if selected_sh else None,
+                shipment=selected_sh,
+            )
+            conf_holder["conf"] = conf
+            try:
+                from services.delivery_pod_signature import (
+                    freeze_active_signature,
+                    freeze_active_driver_signature,
+                )
+                frozen = freeze_active_signature(order, confirmation_id=(conf or {}).get("id"))
+                frozen_driver = freeze_active_driver_signature(order, confirmation_id=(conf or {}).get("id"))
+                frozen_sig_holder["sig"] = frozen
+                frozen_sig_holder["driver_sig"] = frozen_driver
+                if conf and frozen:
+                    conf["recipient_name"] = frozen.get("recipient_name")
+                    conf["recipient_signature_id"] = frozen.get("id")
+                    conf["recipient_signed_at"] = frozen.get("recipient_signed_at")
+                    conf["sj_file_id"] = frozen.get("sj_file_id")
+                if conf and frozen_driver:
+                    conf["driver_signature_id"] = frozen_driver.get("id")
+                    conf["driver_signed_at"] = frozen_driver.get("driver_signed_at")
+                    conf["driver_name"] = frozen_driver.get("driver_name") or conf.get("driver_name")
+            except Exception:
+                logging.getLogger(__name__).warning("freeze POD signatures failed", exc_info=True)
+            _sync_dispatch_stage(order)
+            required = evidence["required"] or evidence["qty_delivered"]
+            if evidence["full"]:
+                add_timeline(
+                    order, 14, user,
+                    note=f"Terkirim penuh: {evidence['qty_delivered']}/{required} pcs",
+                )
+            else:
+                add_timeline(
+                    order, order.get("current_stage") or 13, user,
+                    note=f"Terkirim sebagian: {evidence['qty_delivered']}/{required} pcs",
+                )
+                # Keep frozen copies in history; clear active slots for next partial POD
+                if frozen_sig_holder["sig"]:
+                    order.pop("delivery_recipient_signature", None)
+                if frozen_sig_holder["driver_sig"]:
+                    order.pop("delivery_driver_signature", None)
+            if action_id:
+                ids.append(action_id)
+                order["delivery_confirm_action_ids"] = ids[-20:]
+
+        try:
+            order = await _with_quantity_lock(order_id, mutate)
+        except Exception:
+            release_claim = True
+            raise
+        saved = bool(conf_holder.get("conf"))
+        saved = saved or bool(
+            action_id and action_id in list((order or {}).get("delivery_confirm_action_ids") or [])
+        )
+        if claimed_stock and not saved:
+            release_claim = True
+    finally:
+        await finish_confirm_delivered_action(
+            db, op, claimed_stock, order_id, action_id, release=release_claim,
+        )
 
     # Keep sales_deliveries operational qty in sync with reconciled order.shipments
     # so canonical remain (ordered − Σ sales_deliveries qty) reflects returned shortfall.
@@ -5906,9 +5928,6 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
     if claimed_stock and (conf_holder.get("conf") or recorded):
         from services.physical_stock_engine import finalize_delivery_confirmed_stock
         await finalize_delivery_confirmed_stock(db, claimed_stock, user)
-    elif claimed_stock:
-        from services.physical_stock_engine import release_delivery_confirmed_stock
-        await release_delivery_confirmed_stock(db, claimed_stock)
     elif conf_holder.get("conf"):
         from services.physical_stock_engine import handle_delivery_confirmed
         await handle_delivery_confirmed(db, order, conf_holder["conf"], user)
