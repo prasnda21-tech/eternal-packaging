@@ -5,6 +5,7 @@ import pytest
 
 from services.physical_stock_engine import handle_operator_progress
 from services.product_stock_state import get_product_stock_state
+from quantity_rules import validate_print_completed_total
 from services.stock_engine_v2 import (
     aggregate_outstanding_so,
     build_stock_rows_v2,
@@ -77,9 +78,12 @@ def _stock_row(order, physical, *, unprinted=None, printed=0):
     ],
 )
 def test_color_count_does_not_multiply_reservation(colors):
-    row = _stock_row(_order(colors), physical=1000)
+    order = _order(colors)
+    row = _stock_row(order, physical=1000)
     assert row["outstanding_so_qty"] == 1000
     assert row["stock_current"] == 0
+    assert validate_print_completed_total(1000, order) is None
+    assert validate_print_completed_total(2000, order) is not None
 
 
 @pytest.mark.anyio
