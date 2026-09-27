@@ -1879,6 +1879,7 @@ _DERIVED_ORDER_KEYS = (
     "delivery_history", "terkirim_total_po_qty", "terkirim_remaining_qty",
     "sj_integrity",
     "sales_ownership_admin_label",
+    "delivery_confirm_fence",
 )
 
 
@@ -1974,11 +1975,12 @@ async def _load_order_for_mutation(order_id: str) -> dict:
     return order
 
 
-async def _with_quantity_lock(order_id: str, mutate):
+async def _with_quantity_lock(order_id: str, mutate, extra_query=None):
     """Atomic optimistic lock + retry untuk mutasi qty kritis.
 
     `mutate(order)` memvalidasi & memodifikasi order in-place.
     Setiap attempt: baca fresh → validasi → update dengan filter updated_at.
+    `extra_query` is optional and unused by every caller except Konfirmasi Terkirim.
     """
     last_token = None
     for attempt in range(_QUANTITY_LOCK_RETRIES):
@@ -1988,15 +1990,20 @@ async def _with_quantity_lock(order_id: str, mutate):
         mutate(order)
         order["_expected_updated_at"] = lock_token
         try:
-            return await _persist_order(order, require_lock=True)
+            return await _persist_order(order, require_lock=True, extra_query=extra_query)
         except HTTPException as exc:
-            if exc.status_code == 409 and attempt < _QUANTITY_LOCK_RETRIES - 1:
+            from services.physical_stock_engine import DELIVERY_FENCE_LOST
+            if (
+                exc.status_code == 409
+                and exc.detail != DELIVERY_FENCE_LOST
+                and attempt < _QUANTITY_LOCK_RETRIES - 1
+            ):
                 continue
             raise
     raise HTTPException(409, _CONFLICT_MSG)
 
 
-async def _persist_order(order, *, require_lock: bool = False, persist_keys: Optional[tuple] = None):
+async def _persist_order(order, *, require_lock: bool = False, persist_keys: Optional[tuple] = None, extra_query=None):
     expected_updated = order.pop("_expected_updated_at", None)
     if require_lock and not expected_updated:
         raise HTTPException(409, _CONFLICT_MSG)
@@ -2039,12 +2046,19 @@ async def _persist_order(order, *, require_lock: bool = False, persist_keys: Opt
         query["updated_at"] = expected_updated
     elif require_lock:
         raise HTTPException(409, _CONFLICT_MSG)
+    if extra_query:
+        query.update(extra_query)
     result = await db.orders.update_one(
         query,
         {"$set": to_write},
         upsert=not bool(expected_updated or require_lock),
     )
     if expected_updated and result.matched_count == 0:
+        if extra_query:
+            from services.physical_stock_engine import DELIVERY_FENCE_LOST
+            owner = await db.orders.find_one({"id": order["id"], **extra_query}, {"_id": 1})
+            if not owner:
+                raise HTTPException(409, DELIVERY_FENCE_LOST)
         raise HTTPException(409, _CONFLICT_MSG)
     if require_lock and result.modified_count == 0 and result.matched_count == 0:
         raise HTTPException(409, _CONFLICT_MSG)
@@ -5742,9 +5756,12 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
 
     existing_order = await db.orders.find_one({"id": order_id}, {"_id": 0})
     from services.physical_stock_engine import (
+        DELIVERY_FENCE_LOST,
         claim_selected_delivery_stock,
+        delivery_persist_filter,
         finish_confirm_delivered_action,
         prepare_confirm_delivered_action,
+        prepare_delivery_commit,
         reject_reused_delivery_action,
     )
     op = await prepare_confirm_delivered_action(
@@ -5858,9 +5875,12 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
                 order["delivery_confirm_action_ids"] = ids[-20:]
 
         try:
-            order = await _with_quantity_lock(order_id, mutate)
-        except Exception:
-            release_claim = True
+            await prepare_delivery_commit(db, op, claimed_stock)
+            order = await _with_quantity_lock(
+                order_id, mutate, extra_query=delivery_persist_filter(op),
+            )
+        except Exception as exc:
+            release_claim = getattr(exc, "detail", None) != DELIVERY_FENCE_LOST
             raise
         saved = bool(conf_holder.get("conf"))
         saved = saved or bool(
@@ -5974,6 +5994,8 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
             await on_confirmed(order)
         except Exception:
             logging.getLogger(__name__).warning("route stop progress update failed", exc_info=True)
+    if isinstance(order, dict):
+        order.pop("delivery_confirm_fence", None)
     return {"order": order}
 
 
