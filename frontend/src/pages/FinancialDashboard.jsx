@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import api from "../lib/api";
+import { reconciliationControlHref } from "../lib/inventoryValueLink";
 import {
   agingChartStatus,
   chartPlotsSeries,
@@ -424,16 +425,19 @@ export default function FinancialDashboard({ embedded = false }) {
                 <h3>Kontrol pembukuan</h3>
                 <p className="fd-hint">Dashboard hanya membaca. Tidak ada posting dari halaman ini.</p>
                 <ul className="fd-controls">
-                  {(payload?.controls?.items || []).map((item) => (
+                  {(payload?.controls?.items || []).map((item) => {
+                    const href = reconciliationControlHref(item);
+                    return (
                     <li key={item.key} className={`is-${item.kind} is-${item.status}`} data-testid={`finance-control-${item.key}`}>
                       <div>
                         <strong>{item.label}</strong>
                         <p>{item.detail || (item.kind === "historical" ? "Bukan antrean kesalahan." : "")}</p>
                       </div>
                       <b>{item.status === "error" ? "Gagal muat" : item.count}</b>
-                      {item.href && item.status !== "error" ? <Link to={item.href}>Buka</Link> : null}
+                      {href ? <Link to={href} data-testid={`finance-control-open-${item.key}`}>Buka</Link> : null}
                     </li>
-                  ))}
+                    );
+                  })}
                 </ul>
               </section>
             </div>

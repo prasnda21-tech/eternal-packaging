@@ -302,6 +302,8 @@ def build_stock_rows_v2(
             "accurate_item_id": aid or None,
             "item_code": it.get("item_code") or "",
             "item_name": it.get("item_name") or "",
+            "item_type": it.get("item_type") or "",
+            "is_active": it.get("is_active"),
             "unit": it.get("unit") or "",
             "initialized": initialized,
             # V2 columns

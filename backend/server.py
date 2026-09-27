@@ -11511,6 +11511,17 @@ def _stock_xlsx(rows: list, *, v2: bool = True) -> FastAPIResponse:
     )
 
 
+@api_router.get("/inventory-valuation/item")
+async def inventory_valuation_item(
+    master_item_id: str = "",
+    user=Depends(require_perm("inventory_valuation.view")),
+):
+    """Read one Nilai Persediaan row by exact master_item_id. Does not write."""
+    from services.inventory_valuation import lookup_inventory_valuation_item
+
+    return await lookup_inventory_valuation_item(db, master_item_id)
+
+
 @api_router.get("/inventory-valuation")
 async def inventory_valuation_list(
     q: str = "",

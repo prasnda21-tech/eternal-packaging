@@ -332,6 +332,8 @@ export const api = {
     client.get(`/current-stock/export`, { params, responseType: "blob" }).then((r) => r.data),
   inventoryValuation: (params = {}) =>
     client.get(`/inventory-valuation`, { params }).then((r) => r.data),
+  inventoryValuationItem: (masterItemId) =>
+    client.get(`/inventory-valuation/item`, { params: { master_item_id: masterItemId } }).then((r) => r.data),
   inventoryValuationExport: (params = {}) =>
     client.get(`/inventory-valuation/export`, { params, responseType: "blob" }).then((r) => r.data),
   financialInventoryOpenings: () => client.get(`/inventory/financial-opening`).then((r) => r.data),

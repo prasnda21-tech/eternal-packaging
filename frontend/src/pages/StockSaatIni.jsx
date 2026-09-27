@@ -6,6 +6,7 @@ import { useAuth } from "../lib/auth";
 import { formatDate } from "../lib/constants";
 import { fmtQty } from "../components/qtyUi";
 import { useDebouncedLiveSearch, liveSearchTableView } from "../hooks/useDebouncedLiveSearch";
+import { inventoryValueItemPath, inventoryValueLinkVisible } from "../lib/inventoryValueLink";
 
 export default function StockSaatIni() {
   const { hasPerm } = useAuth();
@@ -268,14 +269,30 @@ export default function StockSaatIni() {
                 <td colSpan={9} className="muted small" data-testid="stock-empty">Tidak ada item.</td>
               </tr>
             )}
-            {tableView === "results" && items.map((it) => (
+            {tableView === "results" && items.map((it) => {
+              const valueHref = inventoryValueLinkVisible({
+                masterItemId: it.master_item_id,
+                itemType: it.item_type,
+                isActive: it.is_active,
+                hasPerm,
+              }) ? inventoryValueItemPath(it.master_item_id) : "";
+              return (
               <tr
                 key={it.accurate_item_id || it.master_item_id}
                 data-testid={`stock-row-${it.accurate_item_id || it.master_item_id}`}
                 className={Number(it.stock_current) < 0 ? "stock-neg" : ""}
               >
                 <td className="col-fit mono">{it.item_code || "—"}</td>
-                <td className="col-text">{it.item_name || "—"}</td>
+                <td className="col-text">
+                  {it.item_name || "—"}
+                  {valueHref ? (
+                    <div>
+                      <Link className="stock-value-link" to={valueHref} data-testid={`stock-value-link-${it.master_item_id}`}>
+                        Lihat nilai & rekonsiliasi
+                      </Link>
+                    </div>
+                  ) : null}
+                </td>
                 <td className="col-fit">{it.unit || "—"}</td>
                 {data?.stock_engine === "v2" ? (
                   <>
@@ -337,7 +354,8 @@ export default function StockSaatIni() {
                   ) : "—"}
                 </td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
       </div>
