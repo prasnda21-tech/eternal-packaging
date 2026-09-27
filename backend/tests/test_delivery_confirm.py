@@ -340,5 +340,5 @@ def test_confirm_delivered_old_client_payload_skips_name_apply():
     delivered_at = confirm.index("if selected_sh and _qr_shipment_is_delivered")
     apply_at = confirm.index("apply_recipient_name_to_active_signature")
     blocked_at = confirm.index("blocked = _qr_confirm_delivery_block_reason")
-    action_at = confirm.index("if action_id and action_id in ids:")
+    action_at = confirm.index("if act_id in ids:")
     assert action_at < delivered_at < apply_at < blocked_at
