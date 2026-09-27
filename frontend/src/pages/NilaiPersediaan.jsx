@@ -1,11 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { AlertCircle, Download, Search, X } from "lucide-react";
+import InventoryValueMeaning from "../components/InventoryValueMeaning";
 import MasterItemSearchSelect from "../components/MasterItemSearchSelect";
 import { fmtQty } from "../components/qtyUi";
 import { useDebouncedLiveSearch, liveSearchTableView } from "../hooks/useDebouncedLiveSearch";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDate } from "../lib/constants";
+import {
+  acceptValuationFocus,
+  inventoryValueMasterItemIdFromSearch,
+  inventoryValueReconPath,
+  inventoryValueTabFromSearch,
+} from "../lib/inventoryValueLink";
 import { formatRupiah } from "../lib/purchaseUi";
 
 const TABS = [
@@ -219,7 +227,19 @@ export default function NilaiPersediaan() {
   const canPostOpening = hasPerm("inventory_valuation.manage_opening");
   const canViewIssues = hasPerm("inventory_issue.view");
   const canPostIssues = hasPerm("inventory_issue.post");
-  const [tab, setTab] = useState("daftar");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tab = inventoryValueTabFromSearch(searchParams.toString());
+  const focusId = inventoryValueMasterItemIdFromSearch(searchParams.toString());
+  const [focus, setFocus] = useState(null);
+  const [focusLoading, setFocusLoading] = useState(false);
+  const [focusError, setFocusError] = useState("");
+
+  const selectTab = (nextTab) => {
+    const next = new URLSearchParams(searchParams);
+    if (nextTab === "daftar") next.delete("tab");
+    else next.set("tab", nextTab);
+    setSearchParams(next, { replace: true });
+  };
   const [openingForm, setOpeningForm] = useState({
     effective_date: "",
     master_item_id: "",
@@ -310,6 +330,31 @@ export default function NilaiPersediaan() {
   }, [q, statusFilter, sortBy, sortDir, page, pageSize]);
 
   useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    if (!focusId) {
+      setFocus(null);
+      setFocusError("");
+      setFocusLoading(false);
+      return undefined;
+    }
+    let cancelled = false;
+    setFocusLoading(true);
+    setFocusError("");
+    api.inventoryValuationItem(focusId)
+      .then((payload) => {
+        if (!cancelled) setFocus(acceptValuationFocus(payload, focusId));
+      })
+      .catch((exception) => {
+        if (cancelled) return;
+        setFocus(null);
+        setFocusError(detailMessage(exception, "Item nilai persediaan gagal dimuat"));
+      })
+      .finally(() => {
+        if (!cancelled) setFocusLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [focusId]);
 
   const loadBook = useCallback(async () => {
     if (!canViewOpening && !canPostOpening) return;
@@ -625,12 +670,30 @@ export default function NilaiPersediaan() {
             aria-selected={tab === entry.id}
             className={tab === entry.id ? "is-active" : ""}
             data-testid={`inventory-tab-${entry.id}`}
-            onClick={() => setTab(entry.id)}
+            onClick={() => selectTab(entry.id)}
           >
             {entry.label}
           </button>
         ))}
       </div>
+
+      {focusId && (
+        <section className="inventory-value-panel inventory-value-focus" data-testid="inventory-value-focus" data-master-item-id={focusId}>
+          <p data-testid="inventory-value-focus-id">ID master {focusId}</p>
+          {focus?.item ? (
+            <p data-testid="inventory-value-focus-match">{focus.item.item_code || "—"} · {focus.item.item_name || "—"}</p>
+          ) : null}
+          <InventoryValueMeaning
+            physicalText={focus?.item ? stockLabel(focus.item) : "Tidak tersedia"}
+            item={focus?.item}
+            covered={Boolean(focus?.covered)}
+            loading={focusLoading}
+            reason={focusError || (!focus?.covered ? focus?.reason : "")}
+            testIdPrefix="inventory-focus"
+            reconTo={inventoryValueReconPath(focusId)}
+          />
+        </section>
+      )}
 
       {error && (
         <div className="signal-strip" data-testid="inventory-value-error" role="alert">
@@ -761,7 +824,11 @@ export default function NilaiPersediaan() {
                     <tr
                       key={key}
                       data-testid={`inventory-value-row-${key}`}
-                      className={item.hpp_status === "QTY_MISMATCH" ? "stock-neg" : ""}
+                      data-master-item-id={item.master_item_id || ""}
+                      className={[
+                        item.hpp_status === "QTY_MISMATCH" ? "stock-neg" : "",
+                        item.master_item_id && item.master_item_id === focusId ? "is-focused" : "",
+                      ].filter(Boolean).join(" ")}
                     >
                       <td className="col-fit mono" style={CENTER_CELL}>{item.item_code || "—"}</td>
                       <td className="col-text">{item.item_name || "—"}</td>
@@ -1292,6 +1359,13 @@ export default function NilaiPersediaan() {
               Status jurnal: {POSTING_LABELS[drawer.item.financial_posting_status] || drawer.item.financial_posting_status || "Belum diposting"}.
               {drawer.item.financial_journal_id ? ` Jurnal ${drawer.item.financial_journal_id}.` : ""}
             </p>
+            <InventoryValueMeaning
+              physicalText={stockLabel(drawer.item)}
+              item={drawer.item}
+              covered
+              testIdPrefix="inventory-drawer"
+              reconTo={inventoryValueReconPath(drawer.item.master_item_id)}
+            />
             <p>Selisih: {drawer.item.reconciliation_difference == null && drawer.item.difference == null ? "Tidak tersedia" : fmtQty(drawer.item.reconciliation_difference ?? drawer.item.difference)}.</p>
             <p>Opening disetujui: {drawer.item.financial_opening_total != null ? formatRupiah(drawer.item.financial_opening_total) : "—"}.</p>
             <p>Terakhir update: {drawer.item.updated_at ? formatDate(drawer.item.updated_at) : "—"}.</p>

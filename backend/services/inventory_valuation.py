@@ -301,6 +301,86 @@ async def build_inventory_valuation_rows(db) -> dict:
     }
 
 
+def _lookup_payload(
+    master_item_id: str,
+    *,
+    item: Optional[dict] = None,
+    reason_code: Optional[str] = None,
+    reason: Optional[str] = None,
+    item_type: Optional[str] = None,
+) -> dict:
+    """Explain a miss without inventing a zero valuation."""
+    covered = item is not None and not reason_code
+    return {
+        "found": item is not None,
+        "covered": covered,
+        "master_item_id": master_item_id,
+        "matched_by": "master_item_id" if covered else None,
+        "item_type": item_type,
+        "reason_code": reason_code,
+        "reason": reason,
+        "item": item,
+        "inventory_value": None if item is None else item.get("inventory_value"),
+        "book_value_per_item": None,
+        "writes": 0,
+    }
+
+
+def _uncovered_master(master: Optional[dict]) -> tuple:
+    if not master:
+        return "NOT_FOUND", "Item tidak ditemukan.", None
+    item_type = master.get("item_type")
+    if master.get("is_active") is False:
+        return (
+            "INACTIVE",
+            "Item tidak aktif dan tidak masuk daftar Nilai Persediaan.",
+            item_type,
+        )
+    normalized = str(item_type or "").strip().upper()
+    if normalized == ITEM_TYPE_SERVICE:
+        return (
+            "NOT_COVERED",
+            "Item berjenis Jasa tidak tercakup dalam daftar Nilai Persediaan.",
+            item_type,
+        )
+    if not str(master.get("id") or "").strip():
+        return "MISSING_MASTER_ITEM_ID", "Item tidak punya ID master yang stabil.", item_type
+    return "NOT_COVERED", "Item tidak tercakup dalam daftar Nilai Persediaan.", item_type
+
+
+async def lookup_inventory_valuation_item(db, master_item_id: str) -> dict:
+    """Read one builder row by exact master_item_id.
+
+    The row is the object produced by build_inventory_valuation_rows. This
+    helper does not reprice stock, HPP, or book value, and it does not match
+    name, code, or accurate_item_id. The catalog filter stays unchanged:
+    active non-SERVICE rows, including NON_INVENTORY, are still returned.
+    """
+    mid = str(master_item_id or "").strip()
+    if not mid:
+        return _lookup_payload(
+            "",
+            reason_code="MISSING_MASTER_ITEM_ID",
+            reason="Item tidak punya ID master yang stabil.",
+        )
+    view = await build_inventory_valuation_rows(db)
+    matches = [
+        row for row in view["rows"]
+        if str(row.get("master_item_id") or "") == mid
+    ]
+    if len(matches) > 1:
+        return _lookup_payload(
+            mid,
+            reason_code="NOT_FOUND",
+            reason="Lebih dari satu baris memakai ID master yang sama.",
+        )
+    if len(matches) == 1:
+        return _lookup_payload(mid, item=matches[0])
+    master = await db.master_items.find_one({"id": mid}, {"_id": 0, "id": 1, "item_type": 1, "is_active": 1})
+    code, reason, item_type = _uncovered_master(master)
+    return _lookup_payload(mid, reason_code=code, reason=reason, item_type=item_type)
+
+
 def _matches_filter(row: dict, status_filter: str) -> bool:
     selected = str(status_filter or "all").strip().lower()
     if selected == "ok":

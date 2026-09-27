@@ -1,5 +1,10 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
+
+globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+
+jest.mock("react-router-dom", () => require("../test/reactRouterMock"), { virtual: true });
+
 import NilaiPersediaan from "./NilaiPersediaan";
 
 const mockHasPerm = jest.fn();
@@ -16,6 +21,7 @@ jest.mock("../lib/api", () => ({
   __esModule: true,
   default: {
     inventoryValuation: jest.fn(),
+    inventoryValuationItem: jest.fn(),
     inventoryValuationExport: jest.fn(),
     financialBookReconciliation: jest.fn(),
     financialInventoryOpenings: jest.fn(),
@@ -244,6 +250,7 @@ describe("Nilai Persediaan financial actions", () => {
   });
 
   async function renderPage() {
+    require("../test/reactRouterMock").__reset("");
     await act(async () => { root.render(<NilaiPersediaan />); });
     await act(async () => { await Promise.resolve(); });
   }

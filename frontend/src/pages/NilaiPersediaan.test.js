@@ -1,6 +1,9 @@
 import fs from "fs";
 import path from "path";
 import { formatRupiah } from "../lib/purchaseUi";
+
+jest.mock("react-router-dom", () => require("../test/reactRouterMock"), { virtual: true });
+
 import { estimateCoverage, openingHistoryCells } from "./NilaiPersediaan";
 
 const source = fs.readFileSync(path.join(__dirname, "NilaiPersediaan.jsx"), "utf8");

@@ -199,3 +199,28 @@ async def test_export_ignores_ui_pagination_and_keeps_filter_search_semantics():
     assert row["current_hpp"] == 500
     assert row["inventory_value"] == 0
     assert row["hpp_status"] == "OK"
+
+
+@pytest.mark.anyio
+async def test_item_lookup_requires_view_and_does_not_write():
+    await server.db.master_items.insert_one({
+        "id": "mid-nav",
+        "accurate_item_id": "aid-nav",
+        "item_code": "NAV",
+        "item_name": "Navigasi",
+        "item_type": "INVENTORY",
+        "unit": "PCS",
+        "is_active": True,
+    })
+    before = await server.db.master_items.count_documents({})
+    denied = await _get_as("operator", "/api/inventory-valuation/item?master_item_id=mid-nav")
+    assert denied.status_code == 403
+    allowed = await _get_as("admin", "/api/inventory-valuation/item?master_item_id=mid-nav")
+    assert allowed.status_code == 200, allowed.text
+    body = allowed.json()
+    assert body["master_item_id"] == "mid-nav"
+    assert body["matched_by"] == "master_item_id"
+    assert body["writes"] == 0
+    assert body["book_value_per_item"] is None
+    assert body["item"]["item_code"] == "NAV"
+    assert await server.db.master_items.count_documents({}) == before

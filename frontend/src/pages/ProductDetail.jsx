@@ -17,6 +17,8 @@ import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDate } from "../lib/constants";
 import { fmtQty } from "../components/qtyUi";
+import InventoryValueMeaning from "../components/InventoryValueMeaning";
+import { acceptValuationFocus, INVENTORY_VALUE_LINK_LABEL, inventoryValueItemPath, inventoryValueLinkVisible } from "../lib/inventoryValueLink";
 import "./productDetail.css";
 
 const TYPE_LABEL = {
@@ -83,6 +85,43 @@ export default function ProductDetail() {
 
   // Selected mutation for drawer
   const [selectedMutation, setSelectedMutation] = useState(null);
+  const [valueFocus, setValueFocus] = useState(null);
+  const [valueFocusLoading, setValueFocusLoading] = useState(false);
+  const [valueFocusError, setValueFocusError] = useState("");
+
+  const masterItemId = String(productData?.item?.id || "").trim();
+  const canOpenInventoryValue = inventoryValueLinkVisible({
+    masterItemId,
+    itemType: productData?.item?.item_type,
+    isActive: productData?.item?.is_active,
+    hasPerm,
+  });
+
+  useEffect(() => {
+    if (!canOpenInventoryValue) {
+      setValueFocus(null);
+      setValueFocusError("");
+      setValueFocusLoading(false);
+      return undefined;
+    }
+    let cancelled = false;
+    setValueFocusLoading(true);
+    setValueFocusError("");
+    api.inventoryValuationItem(masterItemId)
+      .then((payload) => {
+        if (!cancelled) setValueFocus(acceptValuationFocus(payload, masterItemId));
+      })
+      .catch((ex) => {
+        if (cancelled) return;
+        const det = ex.response?.data?.detail;
+        setValueFocus(null);
+        setValueFocusError(typeof det === "object" ? (det.message || det.code) : (det || "Nilai persediaan gagal dimuat"));
+      })
+      .finally(() => {
+        if (!cancelled) setValueFocusLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [canOpenInventoryValue, masterItemId]);
 
   // Load product detail & stock summary
   const loadProduct = useCallback(async () => {
@@ -278,6 +317,15 @@ export default function ProductDetail() {
             )}
           </div>
         </div>
+        {canOpenInventoryValue && (
+          <Link
+            className="ghost"
+            to={inventoryValueItemPath(masterItemId)}
+            data-testid="product-value-link"
+          >
+            {INVENTORY_VALUE_LINK_LABEL}
+          </Link>
+        )}
       </div>
 
       {/* STOCK SUMMARY CARDS */}
@@ -316,6 +364,22 @@ export default function ProductDetail() {
           <div className="kpi-sub">Kanonikal persediaan</div>
         </div>
       </div>
+
+      {canOpenInventoryValue && (
+        <div className="product-tab-card" data-testid="product-value-labels">
+          <h3 className="card-section-title">Nilai dan rekonsiliasi</h3>
+          <InventoryValueMeaning
+            physicalText={stockSummary.stock_total != null
+              ? `${fmtQty(stockSummary.stock_total)} ${normalizedBaseUom}`
+              : "Belum tersedia"}
+            item={valueFocus?.item}
+            covered={Boolean(valueFocus?.covered)}
+            loading={valueFocusLoading}
+            reason={valueFocusError || (!valueFocus?.covered ? valueFocus?.reason : "")}
+            testIdPrefix="product-value"
+          />
+        </div>
+      )}
 
       {/* TABS */}
       <div className="product-tabs-bar" data-testid="product-tabs">

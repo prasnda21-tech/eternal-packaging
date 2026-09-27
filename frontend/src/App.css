@@ -3649,6 +3649,7 @@ html:has(.prod-schedule-page) #root{
 .stock-src{display:block;font-size:10px;font-weight:400;text-transform:none;letter-spacing:0;line-height:1.2}
 .stock-purchase-cell{display:inline-flex;flex-direction:column;align-items:flex-end;gap:1px}
 .stock-heading-actions{display:flex;gap:8px;align-items:flex-start;flex-wrap:wrap}
+.stock-value-link{display:inline-block;margin-top:4px;font-size:12px}
 .stock-inline-value{display:inline-block;cursor:text;border-bottom:1px dashed currentColor}
 .stock-inline-value:focus-visible{outline:2px solid var(--green);outline-offset:2px}
 .stock-inline-input{width:6.5rem;padding:3px 6px;border:1px solid var(--green);border-radius:3px;background:#fff;text-align:right;font:inherit;color:inherit}
@@ -3767,6 +3768,15 @@ html:has(.prod-schedule-page) #root{
   gap:8px;
   overflow:hidden;
 }
+.inventory-value-focus{
+  flex:0 0 auto;
+  border:1px solid var(--line,#e2e8f0);
+  border-radius:8px;
+  padding:12px 14px;
+  background:#fff;
+}
+.inventory-value-focus p{margin:0 0 6px}
+tr.is-focused{outline:2px solid var(--ep-dark,#143d32);outline-offset:-2px}
 .inventory-value-page .inventory-panel-scroll{
   flex:1 1 auto;
   min-height:0;
