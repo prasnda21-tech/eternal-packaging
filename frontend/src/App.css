@@ -6309,10 +6309,17 @@ button.ghost.sm.icon{padding:4px 6px}
 .sales-finance-page .fd-visual,
 .sales-finance-page .fd-side,
 .sales-finance-page .fd-bottom,
+.sales-finance-page .fd-kpis,
 .sales-finance-page .fd-chart,
 .sales-finance-page .fd-position{
   min-height:0;
   height:auto;
+}
+.sales-finance-page .fd-visual,
+.sales-finance-page .fd-side,
+.sales-finance-page .fd-bottom,
+.sales-finance-page .fd-kpis{
+  align-items:start;
 }
 .sales-finance-page .fd-side{grid-template-rows:auto auto}
 .sales-finance-page .fd-plot.is-series{

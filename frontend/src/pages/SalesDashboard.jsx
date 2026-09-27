@@ -309,6 +309,37 @@ export default function SalesDashboard({ embedded = false }) {
               <p className={`sd-state is-${orderStatus}`}>{orderStatus === "loading" ? "Memuat…" : orderStatus === "error" ? `Gagal muat. ${orders?.detail || error || ""}`.trim() : (orders?.detail || "Belum tersedia")}</p>
             )}
           </section>
+          <ChartFrame
+            order={7}
+            title="Faktur dan pembayaran"
+            scope={settlement?.scope || "Status pelunasan saat ini"}
+            note={settlement?.grain_label ? `Faktur terbit · ${settlement.grain_label.toLowerCase()}` : "Bukan arus kas periode"}
+            status={settlementStatus}
+            detail={settlement?.detail || (error ? "Gagal muat" : "")}
+            testid="sales-settlement"
+            plotRef={settlementRef}
+            legend={chartPlotsSeries(settlementStatus) ? (
+              <SeriesLegend items={[
+                { label: "Total tagihan", color: COLOR.bill },
+                { label: "Tagihan lunas", color: COLOR.settled },
+                { label: "Nilai belum lunas", color: COLOR.open },
+              ]} />
+            ) : null}
+            footer={settlement?.detail && (settlementStatus === "complete" || settlementStatus === "incomplete") ? <p className="sd-note">{settlement.detail}</p> : null}
+          >
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={settlementPoints} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
+                <CartesianGrid stroke="#E2E8F0" />
+                <XAxis dataKey="label" minTickGap={28} tick={{ fontSize: 11, fill: "#3d4f48" }} />
+                <YAxis tickFormatter={formatAxisMoney} tick={{ fontSize: 11, fill: "#3d4f48" }} width={48} />
+                <Tooltip content={(props) => <MoneyTip {...props} boxRef={settlementRef} />} />
+                <Bar dataKey="grand_total" name="Total tagihan" fill={COLOR.bill} barSize={8} isAnimationActive={false} />
+                <Bar dataKey="settled_grand" name="Tagihan lunas" fill={COLOR.settled} barSize={8} isAnimationActive={false} />
+                <Bar dataKey="outstanding" name="Nilai belum lunas" fill={COLOR.open} barSize={8} isAnimationActive={false} />
+              </BarChart>
+            </ResponsiveContainer>
+          </ChartFrame>
+
             </div>
             <div className="sd-col">
           <ChartFrame
@@ -370,7 +401,27 @@ export default function SalesDashboard({ embedded = false }) {
               </BarChart>
             </ResponsiveContainer>
           </ChartFrame>
-
+          <section className="sd-card" data-testid="sales-products" style={{ "--sd-order": 8 }}>
+            <p className="sd-kicker">Selama periode · nilai barang</p>
+            <h2>Produk terlaris</h2>
+            {productStatus === "complete" || productStatus === "incomplete" ? (
+              <>
+                <ol className="sd-products">
+                  {(products?.items || []).map((item, index) => (
+                    <li key={item.key}>
+                      <span>{index + 1}</span>
+                      <strong>{item.label}</strong>
+                      <em>{item.quantity == null ? "—" : `${Number(item.quantity).toLocaleString("id-ID")} ${item.unit || ""}`.trim()}</em>
+                      <b>{formatMoney(item.amount)}</b>
+                    </li>
+                  ))}
+                </ol>
+                {products?.detail ? <p className="sd-note">{products.detail}</p> : null}
+              </>
+            ) : (
+              <p className={`sd-state is-${productStatus}`}>{productStatus === "loading" ? "Memuat…" : productStatus === "error" ? `Gagal muat. ${products?.detail || error || ""}`.trim() : (products?.detail || "Belum tersedia")}</p>
+            )}
+          </section>
             </div>
             <div className="sd-col">
           <section className="sd-card" data-testid="sales-receivables" style={{ "--sd-order": 3 }}>
@@ -447,61 +498,6 @@ export default function SalesDashboard({ embedded = false }) {
           </section>
 
             </div>
-          </div>
-          <div className="sd-bottom">
-          <ChartFrame
-            order={7}
-            title="Faktur dan pembayaran"
-            scope={settlement?.scope || "Status pelunasan saat ini"}
-            note={settlement?.grain_label ? `Faktur terbit · ${settlement.grain_label.toLowerCase()}` : "Bukan arus kas periode"}
-            status={settlementStatus}
-            detail={settlement?.detail || (error ? "Gagal muat" : "")}
-            testid="sales-settlement"
-            plotRef={settlementRef}
-            className="sd-card-span"
-            legend={chartPlotsSeries(settlementStatus) ? (
-              <SeriesLegend items={[
-                { label: "Total tagihan", color: COLOR.bill },
-                { label: "Tagihan lunas", color: COLOR.settled },
-                { label: "Nilai belum lunas", color: COLOR.open },
-              ]} />
-            ) : null}
-            footer={settlement?.detail && (settlementStatus === "complete" || settlementStatus === "incomplete") ? <p className="sd-note">{settlement.detail}</p> : null}
-          >
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={settlementPoints} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
-                <CartesianGrid stroke="#E2E8F0" />
-                <XAxis dataKey="label" minTickGap={28} tick={{ fontSize: 11, fill: "#3d4f48" }} />
-                <YAxis tickFormatter={formatAxisMoney} tick={{ fontSize: 11, fill: "#3d4f48" }} width={48} />
-                <Tooltip content={(props) => <MoneyTip {...props} boxRef={settlementRef} />} />
-                <Bar dataKey="grand_total" name="Total tagihan" fill={COLOR.bill} barSize={8} isAnimationActive={false} />
-                <Bar dataKey="settled_grand" name="Tagihan lunas" fill={COLOR.settled} barSize={8} isAnimationActive={false} />
-                <Bar dataKey="outstanding" name="Nilai belum lunas" fill={COLOR.open} barSize={8} isAnimationActive={false} />
-              </BarChart>
-            </ResponsiveContainer>
-          </ChartFrame>
-
-          <section className="sd-card" data-testid="sales-products" style={{ "--sd-order": 8 }}>
-            <p className="sd-kicker">Selama periode · nilai barang</p>
-            <h2>Produk terlaris</h2>
-            {productStatus === "complete" || productStatus === "incomplete" ? (
-              <>
-                <ol className="sd-products">
-                  {(products?.items || []).map((item, index) => (
-                    <li key={item.key}>
-                      <span>{index + 1}</span>
-                      <strong>{item.label}</strong>
-                      <em>{item.quantity == null ? "—" : `${Number(item.quantity).toLocaleString("id-ID")} ${item.unit || ""}`.trim()}</em>
-                      <b>{formatMoney(item.amount)}</b>
-                    </li>
-                  ))}
-                </ol>
-                {products?.detail ? <p className="sd-note">{products.detail}</p> : null}
-              </>
-            ) : (
-              <p className={`sd-state is-${productStatus}`}>{productStatus === "loading" ? "Memuat…" : productStatus === "error" ? `Gagal muat. ${products?.detail || error || ""}`.trim() : (products?.detail || "Belum tersedia")}</p>
-            )}
-          </section>
           </div>
         </div>
       </div>
