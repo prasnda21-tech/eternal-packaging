@@ -468,6 +468,7 @@ async def claim_durable_stock_event(
                 "master_item_id": mid,
                 "accurate_item_id": aid,
                 "claim_data": pending,
+                "resumed": True,
             }
         else:
             # Different event exists on this product -> BLOCK!
@@ -581,6 +582,7 @@ async def claim_durable_stock_event(
         "master_item_id": mid,
         "accurate_item_id": aid,
         "claim_data": claim_data,
+        "resumed": False,
     }
 
 
@@ -2213,6 +2215,7 @@ async def _reserve_delivery_master_group(
             "master_item_id": mid,
             "grouped": True,
             "claim_data": pending,
+            "resumed": True,
         }
 
     curr = await db[STATE_COLLECTION].find_one({"$or": [{"_id": mid}, {"master_item_id": mid}]})
@@ -2310,6 +2313,7 @@ async def _reserve_delivery_master_group(
         "master_item_id": mid,
         "grouped": True,
         "claim_data": claim_data,
+        "resumed": False,
     }
 
 
@@ -2372,8 +2376,9 @@ async def release_delivery_confirmed_stock(
     db,
     claims: List[Dict[str, Any]],
 ) -> None:
+    """Release claims this attempt created. A resumed claim still belongs to the earlier attempt."""
     for c in claims:
-        if c and c.get("status") == "CLAIMED":
+        if c and c.get("status") == "CLAIMED" and not c.get("resumed"):
             await release_durable_stock_claim(
                 db,
                 event_id=c["event_id"],
@@ -2612,10 +2617,12 @@ async def release_uncommitted_delivery_claim(
     holders_remaining: int,
     holder_id: Optional[str] = None,
 ) -> None:
-    """Release only this request's uncommitted claim.
+    """Release this action's uncommitted claim when no sibling still holds it.
 
-    A sibling request that still holds the operation, a stored confirmation,
-    or a balance that was already applied keeps the reservation.
+    A claim this request only resumed is still releasable here. The holder
+    count, a stored confirmation, and a pending stage other than CLAIMED keep
+    a live or applied reservation. Claim-time release does not see that holder
+    count, so it releases only a claim this attempt created.
     """
     if holders_remaining > 0:
         return

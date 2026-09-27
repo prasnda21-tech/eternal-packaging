@@ -286,6 +286,78 @@ async def test_endpoint_confirms_each_sj_qty_and_retries_without_doubling(mongo)
     assert table[1]["confirmation_qty"] == table[1]["claim_qty"] == 1200
 
 
+def _full_same_master_sj(order):
+    order["shipments"] = [{
+        "id": "sj-1",
+        "number": "SJ-FULL",
+        "lines": [
+            {"line_idx": 0, "line_id": "L0", "qty": 1000, "name": "Namoy"},
+            {"line_idx": 1, "line_id": "L1", "qty": 1000, "name": "Namoy"},
+        ],
+    }]
+    order["loading_confirmations"] = [{
+        "id": "ld-full",
+        "shipment_id": "sj-1",
+        "surat_jalan_id": "sj-1",
+        "lines": [{"line_idx": 0, "qty": 1000}, {"line_idx": 1, "qty": 1000}],
+    }]
+    order["delivery_proofs"] = [
+        {"id": "p1", "shipment_id": "sj-1"},
+        {"id": "p2", "shipment_id": "sj-1"},
+    ]
+    return order
+
+
+@pytest.mark.anyio
+async def test_endpoint_full_same_master_sj_cuts_once(mongo):
+    await mongo.master_items.insert_one({"id": MASTER, "item_name": "Namoy", "unit": "PCS"})
+    await initialize_opening_balance(
+        mongo, MASTER, {"unprinted_qty": 4700, "printed_qty": 2000, "base_uom": "PCS"}, user={"email": "admin@test.local"},
+    )
+    order = _full_same_master_sj(_order("ord-full-sj"))
+    await mongo.orders.insert_one(dict(order))
+    first = await _confirm(order["id"], "sj-1", "act-full")
+    assert first.status_code == 200, first.text
+    body = first.json()["order"]
+    assert body["delivery_confirmations"][0]["qty"] == 2000
+    state = await get_product_stock_state(mongo, MASTER)
+    assert state["printed_qty"] == 0
+    assert state["unprinted_qty"] == 4700
+    assert state["total_qty"] == 4700
+    assert not state.get("pending_event")
+    movs = await _movements(mongo)
+    assert sorted(m["transaction_qty"] for m in movs) == [1000, 1000]
+    assert {m.get("line_id") for m in movs} == {"L0", "L1"}
+    replay = await _confirm(order["id"], "sj-1", "act-full")
+    assert replay.status_code == 200, replay.text
+    state = await get_product_stock_state(mongo, MASTER)
+    assert state["printed_qty"] == 0
+    assert state["total_qty"] == 4700
+    assert len(await _movements(mongo)) == 2
+    stored = await mongo.orders.find_one({"id": order["id"]}, {"_id": 0, "delivery_confirmations": 1})
+    assert len(stored["delivery_confirmations"]) == 1
+
+
+@pytest.mark.anyio
+async def test_endpoint_combined_same_master_qty_reserves_nothing(mongo):
+    await mongo.master_items.insert_one({"id": MASTER, "item_name": "Namoy", "unit": "PCS"})
+    await initialize_opening_balance(
+        mongo, MASTER, {"unprinted_qty": 4700, "printed_qty": 1500, "base_uom": "PCS"}, user={"email": "admin@test.local"},
+    )
+    order = _full_same_master_sj(_order("ord-combined-short"))
+    await mongo.orders.insert_one(dict(order))
+    rejected = await _confirm(order["id"], "sj-1", "act-combined-short")
+    assert rejected.status_code == 400, rejected.text
+    state = await get_product_stock_state(mongo, MASTER)
+    assert state["printed_qty"] == 1500
+    assert state["unprinted_qty"] == 4700
+    assert state["total_qty"] == 6200
+    assert not state.get("pending_event")
+    assert await _movements(mongo) == []
+    stored = await mongo.orders.find_one({"id": order["id"]}, {"_id": 0, "delivery_confirmations": 1})
+    assert stored["delivery_confirmations"] == []
+
+
 @pytest.mark.anyio
 async def test_endpoint_finalize_crash_then_same_action_recovers_once(mongo, monkeypatch):
     import services.physical_stock_engine as engine
@@ -730,3 +802,335 @@ async def test_concurrent_omitted_action_inserts_one_persistent_id(mongo):
         {"kind": "omit", "order_id": "ord-atomic", "shipment_id": "sj-atomic"},
     )
     assert count == 1
+
+
+MASTER_A = "master-a-shared-claim"
+MASTER_B = "master-b-shared-claim"
+
+
+def _two_master_order(order_id="ord-two-master"):
+    return {
+        "id": order_id,
+        "po_number": "PO-TWO-MASTER",
+        "current_stage": 13,
+        "updated_at": "2026-09-27T00:00:00+00:00",
+        "qty_delivered": 0,
+        "delivery_status": "Belum Terkirim",
+        "physical_stock_snapshot": {"enabled": True, "stock_out_trigger": "delivery_confirmed"},
+        "line_items": [
+            {
+                "master_item_id": MASTER_A,
+                "accurate_item_id": "ACC-A",
+                "production_process": "print",
+                "quantity": 1000,
+                "qty": 1000,
+                "line_id": "LA",
+                "unit": "PCS",
+                "name": "Master A",
+            },
+            {
+                "master_item_id": MASTER_A,
+                "accurate_item_id": "ACC-A",
+                "production_process": "print",
+                "quantity": 1000,
+                "qty": 1000,
+                "line_id": "LB",
+                "unit": "PCS",
+                "name": "Master A",
+            },
+            {
+                "master_item_id": MASTER_B,
+                "accurate_item_id": "ACC-B",
+                "production_process": "print",
+                "quantity": 1000,
+                "qty": 1000,
+                "line_id": "LC",
+                "unit": "PCS",
+                "name": "Master B",
+            },
+        ],
+        "shipments": [{
+            "id": "sj-share",
+            "number": "SJ-TWO-MASTER",
+            "lines": [
+                {"line_idx": 0, "line_id": "LA", "qty": 100, "name": "Master A"},
+                {"line_idx": 1, "line_id": "LB", "qty": 150, "name": "Master A"},
+                {"line_idx": 2, "line_id": "LC", "qty": 80, "name": "Master B"},
+            ],
+        }],
+        "loading_confirmations": [{
+            "id": "ld-share",
+            "shipment_id": "sj-share",
+            "surat_jalan_id": "sj-share",
+            "lines": [
+                {"line_idx": 0, "qty": 100},
+                {"line_idx": 1, "qty": 150},
+                {"line_idx": 2, "qty": 80},
+            ],
+        }],
+        "delivery_proofs": [
+            {"id": "p1", "shipment_id": "sj-share"},
+            {"id": "p2", "shipment_id": "sj-share"},
+        ],
+        "delivery_recipient_signature": _signature("sj-share", "recipient"),
+        "delivery_driver_signature": _signature("sj-share", "driver"),
+        "delivery_confirmations": [],
+        "delivery_confirm_action_ids": [],
+    }
+
+
+@pytest.mark.anyio
+async def test_failing_request_does_not_release_the_other_masters_shared_claim(mongo, monkeypatch):
+    """Two masters, one shared action. B must not drop A's first-master claim."""
+    import asyncio
+
+    from fastapi import HTTPException
+
+    import services.physical_stock_engine as engine
+
+    for mid, name in ((MASTER_A, "Master A"), (MASTER_B, "Master B")):
+        await mongo.master_items.insert_one({"id": mid, "item_name": name, "unit": "PCS"})
+        await initialize_opening_balance(
+            mongo, mid,
+            {"unprinted_qty": 0, "printed_qty": 1000, "base_uom": "PCS"},
+            user={"email": "admin@test.local"},
+        )
+    order = _two_master_order()
+    await mongo.orders.insert_one(dict(order))
+
+    a_paused = asyncio.Event()
+    b_finished = asyncio.Event()
+    reserve_calls = {"n": 0}
+    durable_calls = {"n": 0}
+    real_reserve = engine._reserve_delivery_master_group
+    real_durable = engine.claim_durable_stock_event
+
+    async def reserve_wrapper(*args, **kwargs):
+        result = await real_reserve(*args, **kwargs)
+        reserve_calls["n"] += 1
+        if reserve_calls["n"] == 1:
+            a_paused.set()
+            await b_finished.wait()
+        return result
+
+    async def durable_wrapper(*args, **kwargs):
+        durable_calls["n"] += 1
+        if durable_calls["n"] == 1:
+            raise HTTPException(400, "forced second master failure")
+        return await real_durable(*args, **kwargs)
+
+    monkeypatch.setattr(engine, "_reserve_delivery_master_group", reserve_wrapper)
+    monkeypatch.setattr(engine, "claim_durable_stock_event", durable_wrapper)
+
+    task_a = asyncio.create_task(_confirm(order["id"], "sj-share", "act-share"))
+    await a_paused.wait()
+    result_b = await _confirm(order["id"], "sj-share", "act-share")
+    state_a = await get_product_stock_state(mongo, MASTER_A)
+    state_b = await get_product_stock_state(mongo, MASTER_B)
+    pending_a = (state_a or {}).get("pending_event")
+    assert result_b.status_code == 400, result_b.text
+    assert pending_a and pending_a.get("stage") == "CLAIMED", pending_a
+    assert pending_a.get("action_id") == "act-share"
+    assert pending_a.get("master_item_id") == MASTER_A
+    assert float(pending_a.get("delta_printed") or 0) == -250.0
+    assert not (state_b or {}).get("pending_event")
+    assert state_a["printed_qty"] == 1000
+    b_finished.set()
+
+    result_a = await task_a
+    assert result_a.status_code == 200, result_a.text
+    state_a = await get_product_stock_state(mongo, MASTER_A)
+    state_b = await get_product_stock_state(mongo, MASTER_B)
+    assert state_a["printed_qty"] == 750
+    assert state_b["printed_qty"] == 920
+    assert not state_a.get("pending_event")
+    assert not state_b.get("pending_event")
+    movs = await mongo.stock_movements.find({"movement_type": "PENGIRIMAN"}).to_list(length=20)
+    assert sorted(m["transaction_qty"] for m in movs) == [80, 100, 150]
+    assert {m.get("line_id") for m in movs} == {"LA", "LB", "LC"}
+    stored = await mongo.orders.find_one({"id": order["id"]}, {"_id": 0, "delivery_confirmations": 1})
+    assert len(stored["delivery_confirmations"]) == 1
+    assert stored["delivery_confirmations"][0]["qty"] == 330
+    assert stored["delivery_confirmations"][0]["action_id"] == "act-share"
+
+
+@pytest.mark.anyio
+async def test_failed_request_releases_only_the_claim_it_created(mongo, monkeypatch):
+    """One request creates master A, then fails on master B. Only A's new claim is cleared."""
+    from fastapi import HTTPException
+
+    import services.physical_stock_engine as engine
+
+    for mid, name in ((MASTER_A, "Master A"), (MASTER_B, "Master B")):
+        await mongo.master_items.insert_one({"id": mid, "item_name": name, "unit": "PCS"})
+        await initialize_opening_balance(
+            mongo, mid,
+            {"unprinted_qty": 0, "printed_qty": 1000, "base_uom": "PCS"},
+            user={"email": "admin@test.local"},
+        )
+    order = _two_master_order("ord-own-release")
+    await mongo.orders.insert_one(dict(order))
+
+    async def durable_wrapper(*args, **kwargs):
+        raise HTTPException(400, "forced second master failure")
+
+    monkeypatch.setattr(engine, "claim_durable_stock_event", durable_wrapper)
+    result = await _confirm(order["id"], "sj-share", "act-own-fail")
+    assert result.status_code == 400, result.text
+    state_a = await get_product_stock_state(mongo, MASTER_A)
+    state_b = await get_product_stock_state(mongo, MASTER_B)
+    assert not state_a.get("pending_event")
+    assert not state_b.get("pending_event")
+    assert state_a["printed_qty"] == 1000
+    assert state_b["printed_qty"] == 1000
+    movs = await mongo.stock_movements.find({"movement_type": "PENGIRIMAN"}).to_list(length=20)
+    assert movs == []
+    stored = await mongo.orders.find_one({"id": order["id"]}, {"_id": 0, "delivery_confirmations": 1})
+    assert stored["delivery_confirmations"] == []
+
+
+def _explicit_holder_id(action_id):
+    return f"act:{action_id}:delivery_confirmed"
+
+
+async def _seed_two_masters(mongo, order):
+    for mid, name in ((MASTER_A, "Master A"), (MASTER_B, "Master B")):
+        await mongo.master_items.insert_one({"id": mid, "item_name": name, "unit": "PCS"})
+        await initialize_opening_balance(
+            mongo, mid,
+            {"unprinted_qty": 0, "printed_qty": 1000, "base_uom": "PCS"},
+            user={"email": "admin@test.local"},
+        )
+    await mongo.orders.insert_one(dict(order))
+
+
+async def _holder_count(mongo, action_id):
+    doc = await mongo.delivery_confirm_operations.find_one({"_id": _explicit_holder_id(action_id)})
+    return int((doc or {}).get("holders") or 0)
+
+
+async def _crash_after_master_a_claim(mongo, order, action_id):
+    """Persist the holder and master A claim, then stop before finish.
+
+    This is the process-death boundary. No exception is raised inside
+    confirm_delivered, so its finally block does not run.
+    """
+    from services.physical_stock_engine import (
+        _delivery_claim_specs,
+        _delivery_line_deltas,
+        _reserve_delivery_master_group,
+        plan_confirmed_sj_stock,
+        prepare_confirm_delivered_action,
+    )
+
+    loaded = await mongo.orders.find_one({"id": order["id"]}, {"_id": 0})
+    op = await prepare_confirm_delivered_action(mongo, loaded, "sj-share", action_id)
+    plan = plan_confirmed_sj_stock(loaded, loaded["shipments"][0])
+    assert plan.get("error") is None and not plan.get("skip"), plan
+    specs = [spec for spec in _delivery_claim_specs(loaded, plan["lines"], op["action_id"]) if spec["mid"] == MASTER_A]
+    assert len(specs) == 2
+    enriched = [await _delivery_line_deltas(mongo, spec) for spec in specs]
+    claim = await _reserve_delivery_master_group(mongo, loaded, op["action_id"], enriched, None)
+    assert claim["status"] == "CLAIMED"
+    assert claim["resumed"] is False
+    return op["action_id"]
+
+
+@pytest.mark.anyio
+async def test_crash_before_finish_then_failed_retry_still_recovers(mongo, monkeypatch):
+    """Dead process leaves holder and master A. A failed retry must not strand the SJ."""
+    from fastapi import HTTPException
+
+    import services.physical_stock_engine as engine
+
+    action_id = "act-crash-hold"
+    order = _two_master_order("ord-crash-hold")
+    await _seed_two_masters(mongo, order)
+    effective = await _crash_after_master_a_claim(mongo, order, action_id)
+    assert effective == action_id
+    assert await _holder_count(mongo, action_id) == 1
+    state_a = await get_product_stock_state(mongo, MASTER_A)
+    pending_a = state_a.get("pending_event")
+    assert pending_a["stage"] == "CLAIMED"
+    assert pending_a["action_id"] == action_id
+    assert pending_a["event_id"] == f"stock_out:delivery:{order['id']}:{action_id}:master:{MASTER_A}"
+    assert float(pending_a["delta_printed"]) == -250.0
+    assert not (await get_product_stock_state(mongo, MASTER_B)).get("pending_event")
+
+    real_durable = engine.claim_durable_stock_event
+
+    async def fail_master_b(*args, **kwargs):
+        raise HTTPException(400, "forced second master failure")
+
+    monkeypatch.setattr(engine, "claim_durable_stock_event", fail_master_b)
+    failed = await _confirm(order["id"], "sj-share", action_id)
+    monkeypatch.setattr(engine, "claim_durable_stock_event", real_durable)
+
+    assert failed.status_code == 400, failed.text
+    assert await _holder_count(mongo, action_id) == 1
+    state_a = await get_product_stock_state(mongo, MASTER_A)
+    state_b = await get_product_stock_state(mongo, MASTER_B)
+    pending_a = state_a.get("pending_event")
+    assert pending_a["stage"] == "CLAIMED"
+    assert pending_a["event_id"] == f"stock_out:delivery:{order['id']}:{action_id}:master:{MASTER_A}"
+    assert not state_b.get("pending_event")
+    assert state_a["printed_qty"] == 1000
+    assert state_b["printed_qty"] == 1000
+    stored = await mongo.orders.find_one({"id": order["id"]}, {"_id": 0, "delivery_confirmations": 1})
+    assert stored["delivery_confirmations"] == []
+    assert await mongo.stock_movements.count_documents({"movement_type": "PENGIRIMAN"}) == 0
+
+    recovered = await _confirm(order["id"], "sj-share", action_id)
+    assert recovered.status_code == 200, recovered.text
+    state_a = await get_product_stock_state(mongo, MASTER_A)
+    state_b = await get_product_stock_state(mongo, MASTER_B)
+    assert state_a["printed_qty"] == 750
+    assert state_b["printed_qty"] == 920
+    assert not state_a.get("pending_event")
+    assert not state_b.get("pending_event")
+    movs = await mongo.stock_movements.find({"movement_type": "PENGIRIMAN"}).to_list(length=20)
+    assert sorted(m["transaction_qty"] for m in movs) == [80, 100, 150]
+    assert {m.get("line_id") for m in movs} == {"LA", "LB", "LC"}
+    stored = await mongo.orders.find_one({"id": order["id"]}, {"_id": 0, "delivery_confirmations": 1})
+    assert len(stored["delivery_confirmations"]) == 1
+    assert stored["delivery_confirmations"][0]["qty"] == 330
+    assert stored["delivery_confirmations"][0]["action_id"] == action_id
+    assert await _holder_count(mongo, action_id) == 1
+    again = await _confirm(order["id"], "sj-share", action_id)
+    assert again.status_code == 200, again.text
+    state_a = await get_product_stock_state(mongo, MASTER_A)
+    state_b = await get_product_stock_state(mongo, MASTER_B)
+    assert state_a["printed_qty"] == 750
+    assert state_b["printed_qty"] == 920
+    assert await mongo.stock_movements.count_documents({"movement_type": "PENGIRIMAN"}) == 3
+
+
+@pytest.mark.anyio
+async def test_crash_before_finish_successful_retry_completes_once(mongo):
+    action_id = "act-crash-ok"
+    order = _two_master_order("ord-crash-ok")
+    await _seed_two_masters(mongo, order)
+    await _crash_after_master_a_claim(mongo, order, action_id)
+    assert await _holder_count(mongo, action_id) == 1
+
+    recovered = await _confirm(order["id"], "sj-share", action_id)
+    assert recovered.status_code == 200, recovered.text
+    state_a = await get_product_stock_state(mongo, MASTER_A)
+    state_b = await get_product_stock_state(mongo, MASTER_B)
+    assert state_a["printed_qty"] == 750
+    assert state_b["printed_qty"] == 920
+    assert not state_a.get("pending_event")
+    assert not state_b.get("pending_event")
+    movs = await mongo.stock_movements.find({"movement_type": "PENGIRIMAN"}).to_list(length=20)
+    assert sorted(m["transaction_qty"] for m in movs) == [80, 100, 150]
+    assert {m.get("line_id") for m in movs} == {"LA", "LB", "LC"}
+    stored = await mongo.orders.find_one({"id": order["id"]}, {"_id": 0, "delivery_confirmations": 1})
+    assert len(stored["delivery_confirmations"]) == 1
+    assert stored["delivery_confirmations"][0]["qty"] == 330
+    assert await _holder_count(mongo, action_id) == 1
+    again = await _confirm(order["id"], "sj-share", action_id)
+    assert again.status_code == 200, again.text
+    assert await _holder_count(mongo, action_id) == 1
+    assert (await get_product_stock_state(mongo, MASTER_A))["printed_qty"] == 750
+    assert (await get_product_stock_state(mongo, MASTER_B))["printed_qty"] == 920
+    assert await mongo.stock_movements.count_documents({"movement_type": "PENGIRIMAN"}) == 3

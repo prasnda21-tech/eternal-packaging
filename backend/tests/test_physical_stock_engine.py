@@ -3435,3 +3435,34 @@ async def test_release_keeps_live_recorded_and_applied_delivery_claims(mock_db):
     assert not state.get("pending_event")
     assert state["printed_qty"] == 2000.0
     assert _pengiriman(mock_db) == []
+
+
+@pytest.mark.anyio
+async def test_resumed_claim_stays_until_the_last_holder_releases_it(mock_db):
+    """Claim-time release skips a resumed claim. The last holder may still clear it."""
+    from services.physical_stock_engine import (
+        claim_selected_delivery_stock,
+        release_uncommitted_delivery_claim,
+    )
+
+    await setup_initialized_product(mock_db, NAMOY_MASTER, unprinted=4700.0, printed=2000.0)
+    order = _sj_partial_order()
+    await mock_db.orders.insert_one(dict(order))
+    created = await claim_selected_delivery_stock(mock_db, order, "sj-1", "act-resume", None, {})
+    resumed = await claim_selected_delivery_stock(mock_db, order, "sj-1", "act-resume", None, {})
+    assert created[0]["resumed"] is False
+    assert resumed[0]["resumed"] is True
+    assert resumed[0]["status"] == "CLAIMED"
+    await release_delivery_confirmed_stock(mock_db, resumed)
+    state = await get_product_stock_state(mock_db, NAMOY_MASTER)
+    assert state["pending_event"]["action_id"] == "act-resume"
+    assert state["pending_event"]["stage"] == "CLAIMED"
+    assert state["printed_qty"] == 2000.0
+    await release_uncommitted_delivery_claim(mock_db, resumed, order["id"], "act-resume", 1)
+    state = await get_product_stock_state(mock_db, NAMOY_MASTER)
+    assert state["pending_event"]["action_id"] == "act-resume"
+    await release_uncommitted_delivery_claim(mock_db, resumed, order["id"], "act-resume", 0)
+    state = await get_product_stock_state(mock_db, NAMOY_MASTER)
+    assert not state.get("pending_event")
+    assert state["printed_qty"] == 2000.0
+    assert _pengiriman(mock_db) == []
