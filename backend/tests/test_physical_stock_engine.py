@@ -1468,6 +1468,73 @@ async def test_delivery_confirmed_claims_exact_delta_and_recovers_committed_acti
 
 
 @pytest.mark.anyio
+async def test_delivery_confirmed_retry_finalizes_state_applied_without_second_decrement(mock_db):
+    await setup_initialized_product(mock_db, "prod-state-applied", unprinted=0.0, printed=1000.0)
+    action_id = "partial-delivery-state-applied"
+    order = {
+        "id": "ord-state-applied",
+        "po_number": "PO-STATE-APPLIED",
+        "physical_stock_snapshot": {"enabled": True, "stock_out_trigger": "delivery_confirmed"},
+        "line_items": [{
+            "line_idx": 0,
+            "line_id": "line-state-applied",
+            "master_item_id": "prod-state-applied",
+            "production_process": "print",
+            "quantity": 1000,
+            "unit": "PCS",
+        }],
+        "delivery_confirm_action_ids": [],
+        "delivery_confirmations": [],
+    }
+    await mock_db.orders.insert_one(order)
+    items = [{"line_idx": 0, "line_id": "line-state-applied", "qty": 600}]
+
+    first = await claim_delivery_confirmed_stock(mock_db, order, items, action_id)
+    event_id = first[0]["event_id"]
+    await mock_db.product_stock_state.update_one(
+        {"_id": "prod-state-applied"},
+        {
+            "$inc": {"total_qty": -600.0, "printed_qty": -600.0},
+            "$set": {
+                "pending_event.stage": "STATE_APPLIED",
+                "pending_event.stock_applied_at": "2026-09-27T00:00:00+00:00",
+            },
+        },
+    )
+    await mock_db.orders.update_one(
+        {"id": order["id"]},
+        {"$set": {
+            "delivery_confirm_action_ids": [action_id],
+            "delivery_confirmations": [{
+                "id": "conf-state-applied",
+                "action_id": action_id,
+                "qty": 600,
+                "items": items,
+            }],
+        }},
+    )
+
+    before_retry = await get_product_stock_state(mock_db, "prod-state-applied")
+    assert before_retry["total_qty"] == 400
+    assert before_retry["printed_qty"] == 400
+    assert before_retry["pending_event"]["stage"] == "STATE_APPLIED"
+    assert await mock_db.stock_movements.find_one({"event_key": event_id}) is None
+
+    resumed = await claim_delivery_confirmed_stock(mock_db, order, items, action_id)
+    assert resumed[0]["status"] == "ALREADY_FINALIZED"
+    after_retry = await get_product_stock_state(mock_db, "prod-state-applied")
+    assert after_retry["total_qty"] == 400
+    assert after_retry["printed_qty"] == 400
+    assert not after_retry.get("pending_event")
+    finalized = [
+        row for row in mock_db.stock_movements._docs
+        if row.get("event_key") == event_id
+    ]
+    assert len(finalized) == 1
+    assert finalized[0]["transaction_qty"] == 600
+
+
+@pytest.mark.anyio
 async def test_delivery_confirmed_uninitialized_is_safe_noop(mock_db):
     """CASE B: missing opening stock does not block delivery_confirmed stock helpers."""
     await seed_master_product(mock_db, "prod-uninit")

@@ -2054,12 +2054,25 @@ async def claim_delivery_confirmed_stock(
                 continue
             proc = str(line.get("production_process") or target_line.get("production_process") or "").strip().lower()
             is_p = proc != "non_print"
-            if not await _production_flow_stock_can_mutate(
+            event_id = f"stock_out:delivery:{order['id']}:{action_id}:{idx}"
+            existing_movement = await db.stock_movements.find_one(
+                {"$or": [{"_id": event_id}, {"id": event_id}, {"event_key": event_id}]},
+                {"_id": 1},
+            )
+            state = await get_product_stock_state(db, mid)
+            pending = (state or {}).get("pending_event")
+            resumable = bool(
+                existing_movement
+                or (
+                    isinstance(pending, dict)
+                    and pending.get("event_id") == event_id
+                )
+            )
+            if not resumable and not await _production_flow_stock_can_mutate(
                 db, mid, qty, line.get("unit") or target_line.get("unit"),
                 movement_type=MOVEMENT_PENGIRIMAN, is_print=is_p,
             ):
                 continue
-            event_id = f"stock_out:delivery:{order['id']}:{action_id}:{idx}"
             claim = await claim_durable_stock_event(
                 db,
                 event_id=event_id,
