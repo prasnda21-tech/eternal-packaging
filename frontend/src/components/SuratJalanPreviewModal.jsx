@@ -132,6 +132,11 @@ export default function SuratJalanPreviewModal({
 
   if (!open) return null;
 
+  const showPreviewFrame = busy
+    || (previewKind === "pdf" && pdfBlob)
+    || (previewKind === "image" && blobUrl)
+    || (!err && !previewKind);
+
   const onDownload = async () => {
     if (!canDownload || !active) return;
     try {
@@ -178,29 +183,31 @@ export default function SuratJalanPreviewModal({
 
           {err && <div className="error" data-testid="sj-preview-error">{err}</div>}
 
-          <div className="sj-preview-frame" data-testid="sj-preview-frame">
-            {busy && <p className="muted small">Memuat preview…</p>}
-            {!busy && previewKind === "pdf" && pdfBlob && !err && (
-              <div className="sj-preview-pdf" data-testid="sj-preview-pdf" data-content-type="application/pdf">
-                <SalesPwaPdfViewer
-                  key={active?.file_id || active?.id}
-                  blob={pdfBlob}
-                  label={active?.name || "Surat Jalan"}
+          {showPreviewFrame && (
+            <div className="sj-preview-frame" data-testid="sj-preview-frame">
+              {busy && <p className="muted small">Memuat preview…</p>}
+              {!busy && previewKind === "pdf" && pdfBlob && !err && (
+                <div className="sj-preview-pdf" data-testid="sj-preview-pdf" data-content-type="application/pdf">
+                  <SalesPwaPdfViewer
+                    key={active?.file_id || active?.id}
+                    blob={pdfBlob}
+                    label={active?.name || "Surat Jalan"}
+                  />
+                </div>
+              )}
+              {!busy && previewKind === "image" && blobUrl && !err && (
+                <img
+                  src={blobUrl}
+                  alt={active?.name || "Surat Jalan"}
+                  data-testid="sj-preview-image"
+                  onError={() => setErr("File Surat Jalan tidak dapat ditampilkan. Format tidak didukung.")}
                 />
-              </div>
-            )}
-            {!busy && previewKind === "image" && blobUrl && !err && (
-              <img
-                src={blobUrl}
-                alt={active?.name || "Surat Jalan"}
-                data-testid="sj-preview-image"
-                onError={() => setErr("File Surat Jalan tidak dapat ditampilkan. Format tidak didukung.")}
-              />
-            )}
-            {!busy && !previewKind && !err && (
-              <p className="muted" data-testid="sj-preview-unavailable">File Surat Jalan tidak dapat ditampilkan. Format tidak didukung.</p>
-            )}
-          </div>
+              )}
+              {!busy && !previewKind && !err && (
+                <p className="muted" data-testid="sj-preview-unavailable">File Surat Jalan tidak dapat ditampilkan. Format tidak didukung.</p>
+              )}
+            </div>
+          )}
         </div>
         <div className="delete-modal-actions sj-preview-footer" data-testid="sj-preview-footer">
           <button type="button" className="ghost" onClick={onClose} data-testid="sj-preview-close">Tutup</button>

@@ -280,6 +280,9 @@ describe("Surat Jalan preview modal", () => {
     });
     await flush();
     expect(document.querySelector('[data-testid="sj-preview-error"]').textContent).toMatch(/Izin ditolak/);
+    expect(document.querySelector('[data-testid="sj-preview-frame"]')).toBeNull();
+    expect(document.querySelector('[data-testid="sj-preview-close"]')).toBeTruthy();
+    expect(document.querySelector('[data-testid="sj-preview-download"]')).toBeTruthy();
     expect(document.querySelector("iframe")).toBeNull();
     expect(document.querySelector('[data-testid="sales-pdf-viewer"]')).toBeNull();
     expect(window.open).not.toHaveBeenCalled();
@@ -296,6 +299,8 @@ describe("Surat Jalan preview modal", () => {
     });
     await flush();
     expect(document.querySelector('[data-testid="sj-preview-error"]').textContent).toMatch(/tidak ditemukan/);
+    expect(document.querySelector('[data-testid="sj-preview-frame"]')).toBeNull();
+    expect(document.querySelector('[data-testid="sj-preview-download"]')).toBeNull();
     expect(document.querySelector("iframe")).toBeNull();
     expect(window.open).not.toHaveBeenCalled();
     missing.unmount();
