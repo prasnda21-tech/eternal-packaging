@@ -252,6 +252,29 @@ def test_preview_outstanding_so_and_partial_delivery_style():
     assert row["stock_sellable_after"] == 65
 
 
+def test_preview_preserves_negative_sellable_after_opname():
+    catalog = [
+        _stock_row(
+            code="SKU-NEG",
+            name="Negative Sellable",
+            mid="mneg",
+            physical=20,
+            unprinted=20,
+            printed=0,
+            outstanding=50,
+        )
+    ]
+    raw = _xlsx_bytes(
+        ["KODE", "NAMA BARANG", "STOCK FISIK HASIL HITUNG"],
+        [["SKU-NEG", "Negative Sellable", 10]],
+    )
+    row = build_opname_import_preview(raw, "negative.xlsx", stock_rows=catalog)["rows"][0]
+
+    assert row["stock_physical_counted"] == 10
+    assert row["outstanding_so_qty"] == 50
+    assert row["stock_sellable_after"] == -40
+
+
 def test_preview_unchanged_when_same_physical():
     catalog = [
         _stock_row(
