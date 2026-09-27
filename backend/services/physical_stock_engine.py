@@ -360,6 +360,12 @@ async def claim_durable_stock_event(
     is_print: Optional[bool] = None,
     production_process: Optional[str] = None,
     change_metadata: Optional[Dict[str, Any]] = None,
+    delta_total_override: Optional[float] = None,
+    delta_unprinted_override: Optional[float] = None,
+    delta_printed_override: Optional[float] = None,
+    expected_total_qty: Optional[float] = None,
+    expected_unprinted_qty: Optional[float] = None,
+    expected_printed_qty: Optional[float] = None,
     user: Optional[Dict[str, Any]] = None,
     now: Optional[str] = None,
 ) -> Dict[str, Any]:
@@ -439,6 +445,12 @@ async def claim_durable_stock_event(
         delta_printed = 0.0
     else:
         raise ValueError(f"Tipe mutasi '{movement_type}' tidak didukung di engine")
+    if delta_total_override is not None:
+        delta_total = safe_float(delta_total_override)
+    if delta_unprinted_override is not None:
+        delta_unprinted = safe_float(delta_unprinted_override)
+    if delta_printed_override is not None:
+        delta_printed = safe_float(delta_printed_override)
 
     stamp = now or now_iso()
 
@@ -551,11 +563,17 @@ async def claim_durable_stock_event(
         "initialized": True,
         "pending_event": None,
     }
-    if delta_unprinted < 0:
+    if expected_total_qty is not None:
+        query["total_qty"] = safe_float(expected_total_qty)
+    if expected_unprinted_qty is not None:
+        query["unprinted_qty"] = safe_float(expected_unprinted_qty)
+    if expected_printed_qty is not None:
+        query["printed_qty"] = safe_float(expected_printed_qty)
+    if delta_unprinted < 0 and expected_unprinted_qty is None:
         query["unprinted_qty"] = {"$gte": abs(delta_unprinted)}
-    if delta_printed < 0:
+    if delta_printed < 0 and expected_printed_qty is None:
         query["printed_qty"] = {"$gte": abs(delta_printed)}
-    if delta_total < 0:
+    if delta_total < 0 and expected_total_qty is None:
         query["total_qty"] = {"$gte": abs(delta_total)}
 
     update = {
@@ -776,6 +794,12 @@ async def execute_durable_stock_event(
     is_print: Optional[bool] = None,
     production_process: Optional[str] = None,
     change_metadata: Optional[Dict[str, Any]] = None,
+    delta_total_override: Optional[float] = None,
+    delta_unprinted_override: Optional[float] = None,
+    delta_printed_override: Optional[float] = None,
+    expected_total_qty: Optional[float] = None,
+    expected_unprinted_qty: Optional[float] = None,
+    expected_printed_qty: Optional[float] = None,
     user: Optional[Dict[str, Any]] = None,
     now: Optional[str] = None,
 ) -> Dict[str, Any]:
@@ -800,6 +824,12 @@ async def execute_durable_stock_event(
         is_print=is_print,
         production_process=production_process,
         change_metadata=change_metadata,
+        delta_total_override=delta_total_override,
+        delta_unprinted_override=delta_unprinted_override,
+        delta_printed_override=delta_printed_override,
+        expected_total_qty=expected_total_qty,
+        expected_unprinted_qty=expected_unprinted_qty,
+        expected_printed_qty=expected_printed_qty,
         user=user,
         now=now,
     )

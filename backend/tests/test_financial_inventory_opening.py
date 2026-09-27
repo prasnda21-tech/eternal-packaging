@@ -1504,8 +1504,8 @@ async def _assert_opname_opening_blocked(mid, request_id):
     assert await server.db.financial_inventory_openings.count_documents({"status": "POSTED"}) == 0
 
 
-async def test_apply_stock_opname_across_cutoff_blocks_without_using_created_at(monkeypatch):
-    """Real apply_stock_opname has no stock_applied_at. created_at must not place it."""
+async def test_apply_stock_opname_across_cutoff_uses_durable_apply_marker(monkeypatch):
+    """Durable opname records stock_applied_at; business cutoff still requires opening policy."""
     await _configure()
     clocks = (
         "2026-09-15T02:00:00+00:00",
@@ -1517,7 +1517,7 @@ async def test_apply_stock_opname_across_cutoff_blocks_without_using_created_at(
         result = await apply_stock_opname(
             server.db,
             master_item_id=mid,
-            target_stock_current_qty=80,
+            stock_physical_counted=80,
             outstanding_so_qty=0,
             note="opname cutoff",
             user=USER,
@@ -1525,9 +1525,8 @@ async def test_apply_stock_opname_across_cutoff_blocks_without_using_created_at(
         )
         assert result["opname_action"] == "KOREKSI"
         assert result["movement"]["created_at"] == clock
-        assert not str(result["movement"].get("stock_applied_at") or "").strip()
+        assert str(result["movement"].get("stock_applied_at") or "").strip()
         assert result["stock_state"]["total_qty"] == 80
-        await _assert_opname_opening_blocked(mid, f"opname-cutoff-{index}")
         stored = await server.db.stock_movements.find_one({"master_item_id": mid, "source": "STOCK_OPNAME"})
         assert stored["balance_before"] == 100
         assert stored["balance_after"] == 80
@@ -1545,7 +1544,7 @@ async def test_apply_stock_opname_across_cutoff_blocks_without_using_created_at(
     opening_opname = await apply_stock_opname(
         server.db,
         master_item_id=raw,
-        target_stock_current_qty=100,
+        stock_physical_counted=100,
         outstanding_so_qty=0,
         note="opname saldo awal",
         user=USER,
@@ -3931,51 +3930,52 @@ async def test_barrier_opening_correction_before_state_apply_blocks_capture():
 
 
 async def test_barrier_opname_after_movement_before_state_blocks_capture():
-    """Seam: stock_engine_v2.record_stock_movement, before the opname state update. Version stays put."""
+    """Durable opname applies state before writing the movement."""
     import services.financial_inventory_opening as fio
+    import services.physical_stock_engine as physical_engine
 
     await _configure()
     mid = await _bare_master()
     await _physical_opening(mid, request_id="barrier-opname-open")
     before = await server.db.product_stock_state.find_one({"_id": mid})
-    real_record = stock_engine_v2.record_stock_movement
+    real_record = physical_engine.record_stock_movement
     seen = {}
 
     async def after_opname_movement(db, *args, **kwargs):
-        movement = await real_record(db, *args, **kwargs)
         state = await server.db.product_stock_state.find_one({"_id": mid})
-        assert int(state.get("version") or 0) == int(before.get("version") or 0)
-        assert state["total_qty"] == 100
-        assert not state.get("pending_event")
+        assert int(state.get("version") or 0) == int(before.get("version") or 0) + 1
+        assert state["total_qty"] == 80
+        assert (state.get("pending_event") or {}).get("stage") == "STATE_APPLIED"
+        movement = await real_record(db, *args, **kwargs)
         assert movement["balance_before"] == 100
         assert movement["balance_after"] == 80
         with pytest.raises(OpeningBlocked) as exc:
             await fio.capture_financial_opening_snapshot(server.db, _snap_lines(mid), USER)
-        assert exc.value.code == "STOCK_STATE_MOVEMENT_MISMATCH"
+        assert exc.value.code == "STOCK_PENDING"
         seen["code"] = exc.value.code
         assert await server.db.financial_inventory_opening_snapshots.count_documents({}) == 0
         return movement
 
-    stock_engine_v2.record_stock_movement = after_opname_movement
+    physical_engine.record_stock_movement = after_opname_movement
     try:
         result = await apply_stock_opname(
             server.db,
             master_item_id=mid,
-            target_stock_current_qty=80,
+            stock_physical_counted=80,
             outstanding_so_qty=0,
             note="opname barrier",
             user=USER,
             client_request_id="barrier-opname",
         )
     finally:
-        stock_engine_v2.record_stock_movement = real_record
-    assert seen["code"] == "STOCK_STATE_MOVEMENT_MISMATCH"
+        physical_engine.record_stock_movement = real_record
+    assert seen["code"] == "STOCK_PENDING"
     assert result["stock_state"]["total_qty"] == 80
     state = await server.db.product_stock_state.find_one({"_id": mid})
-    assert int(state.get("version") or 0) == int(before.get("version") or 0)
+    assert int(state.get("version") or 0) == int(before.get("version") or 0) + 1
     captured = await fio.capture_financial_opening_snapshot(server.db, _snap_lines(mid), USER)
     assert captured["lines"][0]["qty"] == 80
-    assert captured["lines"][0]["revision"] == int(before.get("version") or 0)
+    assert captured["lines"][0]["revision"] == int(before.get("version") or 0) + 1
 
 
 async def test_barrier_goods_receipt_after_capture_before_post_is_stale():
