@@ -152,3 +152,60 @@
 
 .so-create-workspace .so-create-repeat { background: white !important; color: #344c43 !important; border-color: #aebfb8 !important; }
 .so-create-workspace .so-price-note:has([data-testid="so-price-incomplete"]) { display: flex; }
+
+/* Dense sales views: reserve the viewport for 7–10 data rows. */
+.so-list-workspace .so-list { padding: 8px 12px 6px; }
+.so-list-workspace .so-list-header { min-height: 34px; margin-bottom: 4px; }
+.so-list-workspace .so-list-header h1 { font-size: 20px; }
+.so-list-workspace .so-list-summary { padding: 4px 8px; }
+.so-list-workspace .so-list-create,
+.so-list-workspace .so-list-refresh { height: 32px; }
+.so-list-workspace .so-list-tabs { margin-bottom: 4px; }
+.so-list-workspace .so-list-tabs button { padding: 5px 12px; }
+.so-list-workspace .so-list-toolbar { padding: 6px 10px; gap: 8px; }
+.so-list-workspace .so-list-toolbar :is(input,select,button) { height: 30px; min-height: 30px; }
+.so-list-workspace .so-list-table thead th { padding: 4px 8px; font-size: 11px; }
+.so-list-workspace .so-list-row,
+.so-list-workspace .so-list-table tbody td { height: 36px; padding: 2px 8px; font-size: 12px; }
+.so-list-workspace .so-list-customer { display: block; font-size: 13px; line-height: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.so-list-workspace .so-list-reference { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.so-list-workspace .so-list-po { flex: 0 1 auto; font-size: 10px; line-height: 13px; }
+.so-list-workspace .so-list-outlet { min-width: 0; font-size: 10px; line-height: 13px; }
+.so-list-workspace .so-list-outlet::before { content: "· "; }
+.so-list-workspace .so-list-status { gap: 0; }
+.so-list-workspace .so-list-badge { min-height: 16px; height: 16px; padding: 0 5px; font-size: 10px; line-height: 14px; }
+.so-list-workspace .so-list-sales { font-size: 10px; line-height: 13px; }
+.so-list-workspace .so-progress-track { height: 4px; }
+.so-list-workspace .so-progress-label { font-size: 10px; line-height: 12px; }
+.so-list-workspace .so-act-view,
+.so-list-workspace .so-act-more { height: 26px; min-height: 26px; font-size: 11px; gap: 4px; padding: 0 7px; }
+.so-list-workspace .so-act-more { width: 26px; }
+.so-list-workspace .so-list-pager { padding: 5px 10px; font-size: 11px; }
+.so-list-workspace .so-list-pager :is(button,select) { height: 28px; min-height: 28px; font-size: 11px; padding: 3px 7px; }
+.so-create-workspace .so-create-header { padding: 7px 12px; }
+.so-create-workspace .so-create-heading h1 { font-size: 20px; }
+.so-create-workspace .so-create-progress { padding: 4px 8px; }
+.so-create-workspace .so-create-stage { padding: 0 12px 6px; gap: 4px; }
+.so-create-workspace .so-sum-row { padding: 6px 10px; gap: 5px 12px; }
+.so-create-workspace .so-sum-field label { font-size: 11px; margin-bottom: 2px; }
+.so-create-workspace .so-sum-text { min-height: 26px; font-size: 12px; }
+.so-create-workspace .so-sum-pencil,
+.so-create-workspace .so-sum-chip .so-create-auto { height: 26px; }
+.so-create-workspace .so-form-tabs button { padding: 5px 10px; }
+.so-create-workspace .so-create-line-toolbar { padding: 4px 10px; }
+.so-create-workspace .so-create-line-toolbar :is(button) { height: 28px; min-height: 28px; font-size: 12px; }
+.so-create-workspace .so-create-lines-table thead th { padding: 4px 6px; }
+.so-create-workspace .so-create-lines-table tbody td { padding: 3px 6px; }
+.so-create-workspace .so-line-product { gap: 5px; align-items: center; }
+.so-create-workspace .so-line-product-body { grid-template-columns: minmax(0,1fr) auto; gap: 0 5px; align-items: center; }
+.so-create-workspace .so-line-product-body > :is(.mis-root,input) { grid-column: 1; grid-row: 1; }
+.so-create-workspace .so-line-detail-toggle { grid-column: 2; grid-row: 1; padding: 4px 6px; font-size: 10px; }
+.so-create-workspace .so-line-code,
+.so-create-workspace .so-line-detail-summary { display: none; }
+.so-create-workspace .so-create-lines .so-line-input,
+.so-create-workspace .so-create-lines .mis-input { height: 26px; min-height: 26px !important; font-size: 12px; }
+.so-create-workspace .so-col-action button { min-height: 26px; font-size: 11px; padding: 3px 6px; }
+.so-create-workspace .so-create-actionbar { min-height: 48px; padding: 6px 12px; }
+.so-create-workspace .so-create-actionbar button { height: 32px; min-height: 32px; }
+.so-create-workspace .so-footer-totals strong { font-size: 16px; }
+.so-create-workspace .so-line-product .so-thumb { width: 26px; height: 26px; flex-basis: 26px; }
