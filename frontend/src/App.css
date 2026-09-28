@@ -3741,9 +3741,27 @@ html:has(.prod-schedule-page) #root{
 .inventory-value-tabs{
   display:flex;
   flex:0 0 auto;
+  flex-wrap:wrap;
   gap:6px;
   min-width:0;
 }
+.inventory-ledger-toolbar{
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+  align-items:center;
+  min-width:0;
+}
+.inventory-ledger-toolbar input{
+  height:34px;
+  min-width:0;
+  flex:1 1 140px;
+}
+.inventory-ledger-note{margin:0;font-size:13px;line-height:1.4}
+.inventory-ledger-status{font-weight:700}
+.inventory-ledger-status.is-alert{color:#991B1B}
+.inventory-ledger-status.is-ok{color:#166534}
+.inventory-value-page .inventory-ledger-table{min-width:720px}
 .inventory-value-tabs button{
   height:34px;
   padding:0 12px;

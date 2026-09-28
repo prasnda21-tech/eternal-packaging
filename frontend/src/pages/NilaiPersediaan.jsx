@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { AlertCircle, Download, Search, X } from "lucide-react";
+import InventoryLedgerReconciliation from "../components/InventoryLedgerReconciliation";
 import InventoryValueMeaning from "../components/InventoryValueMeaning";
 import MasterItemSearchSelect from "../components/MasterItemSearchSelect";
 import { fmtQty } from "../components/qtyUi";
@@ -20,8 +21,9 @@ const TABS = [
   { id: "daftar", label: "Daftar Barang" },
   { id: "opening", label: "Saldo Awal" },
   { id: "hpp", label: "HPP Penjualan" },
-  { id: "recon", label: "Rekonsiliasi & Laporan" },
+  { id: "recon", label: "Rekonsiliasi Buku Opening" },
 ];
+const LEDGER_TAB = { id: "ledger-recon", label: "Rekonsiliasi Persediaan & HPP" };
 
 const STATUS_LABELS = {
   OK: "Ada harga pokok",
@@ -224,12 +226,18 @@ export default function NilaiPersediaan() {
   const { hasPerm } = useAuth();
   const canExport = hasPerm("inventory_valuation.export");
   const canViewOpening = hasPerm("inventory_valuation.view");
+  const canViewLedger = hasPerm("inventory_reconciliation.view");
   const canPostOpening = hasPerm("inventory_valuation.manage_opening");
   const canViewIssues = hasPerm("inventory_issue.view");
   const canPostIssues = hasPerm("inventory_issue.post");
   const [searchParams, setSearchParams] = useSearchParams();
-  const tab = inventoryValueTabFromSearch(searchParams.toString());
+  const requestedTab = inventoryValueTabFromSearch(searchParams.toString());
+  const tab = (!canViewOpening && canViewLedger) ? "ledger-recon" : requestedTab;
   const focusId = inventoryValueMasterItemIdFromSearch(searchParams.toString());
+  const visibleTabs = [
+    ...(canViewOpening ? TABS : []),
+    ...(canViewLedger ? [LEDGER_TAB] : []),
+  ];
   const [focus, setFocus] = useState(null);
   const [focusLoading, setFocusLoading] = useState(false);
   const [focusError, setFocusError] = useState("");
@@ -301,6 +309,10 @@ export default function NilaiPersediaan() {
   }, [searchPending]);
 
   const load = useCallback(async () => {
+    if (!canViewOpening) {
+      setLoading(false);
+      return;
+    }
     const seq = ++loadSeq.current;
     setLoading(true);
     setError("");
@@ -327,12 +339,21 @@ export default function NilaiPersediaan() {
     } finally {
       if (seq === loadSeq.current) setLoading(false);
     }
-  }, [q, statusFilter, sortBy, sortDir, page, pageSize]);
+  }, [q, statusFilter, sortBy, sortDir, page, pageSize, canViewOpening]);
 
   useEffect(() => { load(); }, [load]);
 
   useEffect(() => {
-    if (!focusId) {
+    if (canViewOpening || !canViewLedger) return undefined;
+    if (requestedTab === "ledger-recon") return undefined;
+    const next = new URLSearchParams(searchParams);
+    next.set("tab", "ledger-recon");
+    setSearchParams(next, { replace: true });
+    return undefined;
+  }, [canViewOpening, canViewLedger, requestedTab, searchParams, setSearchParams]);
+
+  useEffect(() => {
+    if (!focusId || !canViewOpening) {
       setFocus(null);
       setFocusError("");
       setFocusLoading(false);
@@ -354,7 +375,7 @@ export default function NilaiPersediaan() {
         if (!cancelled) setFocusLoading(false);
       });
     return () => { cancelled = true; };
-  }, [focusId]);
+  }, [focusId, canViewOpening]);
 
   const loadBook = useCallback(async () => {
     if (!canViewOpening && !canPostOpening) return;
@@ -656,13 +677,15 @@ export default function NilaiPersediaan() {
           <p className="eyebrow">Persediaan</p>
           <h1 data-testid="inventory-value-title">Nilai Persediaan</h1>
           <p className="subhead" data-testid="inventory-value-formula">
-            Nilai estimasi stok, bukan saldo buku posted.
+            {tab === "ledger-recon"
+              ? "Rekonsiliasi persediaan dan HPP dari catatan saat ini."
+              : "Nilai estimasi stok, bukan saldo buku posted."}
           </p>
         </div>
       </div>
 
       <div className="inventory-value-tabs" role="tablist" aria-label="Nilai Persediaan" data-testid="inventory-value-tabs">
-        {TABS.map((entry) => (
+        {visibleTabs.map((entry) => (
           <button
             key={entry.id}
             type="button"
@@ -677,7 +700,7 @@ export default function NilaiPersediaan() {
         ))}
       </div>
 
-      {focusId && (
+      {focusId && canViewOpening && (
         <section className="inventory-value-panel inventory-value-focus" data-testid="inventory-value-focus" data-master-item-id={focusId}>
           <p data-testid="inventory-value-focus-id">ID master {focusId}</p>
           {focus?.item ? (
@@ -1175,6 +1198,7 @@ export default function NilaiPersediaan() {
         <section className="inventory-value-panel" data-testid="inventory-panel-recon">
           {(canViewOpening || canPostOpening) ? (
             <div className="inventory-panel-scroll">
+              <h2>Rekonsiliasi Buku Opening</h2>
               {bookError && (
                 <p data-testid="financial-book-error" role="alert">{bookError}. Gagal dimuat.</p>
               )}
@@ -1310,6 +1334,13 @@ export default function NilaiPersediaan() {
             <p className="muted small">Anda tidak memiliki akses rekonsiliasi.</p>
           )}
         </section>
+      )}
+
+      {tab === "ledger-recon" && (
+        <InventoryLedgerReconciliation
+          enabled={canViewLedger}
+          initialItemId={requestedTab === "ledger-recon" ? focusId : ""}
+        />
       )}
 
       {drawer?.kind === "opening" && (
