@@ -72,6 +72,21 @@ describe("inventory value navigation", () => {
       status: "incomplete",
     })).toBe("/persediaan/nilai-persediaan");
     expect(reconciliationControlHref({
+      key: "inventory_recovery",
+      href: "/pembelian/penerimaan-barang",
+      status: "incomplete",
+    })).toBe("/pembelian/penerimaan-barang");
+    expect(reconciliationControlHref({
+      key: "opening_incomplete",
+      href: "/persediaan/nilai-persediaan?tab=opening",
+      status: "incomplete",
+    })).toBe("/persediaan/nilai-persediaan?tab=opening");
+    expect(reconciliationControlHref({
+      key: "opening_incomplete",
+      href: "/persediaan/nilai-persediaan?tab=recon",
+      status: "incomplete",
+    })).toBe("/persediaan/nilai-persediaan?tab=recon");
+    expect(reconciliationControlHref({
       key: "inventory_reconciliation",
       href: "/persediaan/nilai-persediaan",
       status: "error",
