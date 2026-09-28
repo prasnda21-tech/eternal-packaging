@@ -32,6 +32,7 @@ Do not conflate “snapshot OOM” with “reboot initiator”. Both matter; onl
 7. Failure after cutover → **CODE + frontend rollback only** (never Mongo restore).
 8. No full regression suite on production.
 9. No full-collection hashing / `to_list(None)` in preflight.
+10. Production frontend builds must print `FRONTEND API TARGET` and **fail** if that target is `localhost`, `127.0.0.1`, or `0.0.0.0`. A Cloud Agent `REACT_APP_BACKEND_URL=http://localhost:8000` must not be inherited. The proven production origin is `https://produksi.eternalpackaging.id`. Local/dev mode (`SAFE_DEPLOY_MODE=local`) may use loopback. Built bundles that contain `http://localhost:8000` or `http://127.0.0.1:8000` are rejected before publish.
 
 ## Production layout (current)
 

@@ -6,6 +6,9 @@
 # Production /var/www is root-owned. Privileged file ops use sudo -n.
 # Dry-run stays unprivileged. Business logic is not involved.
 
+# shellcheck source=frontend_api_guard.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/frontend_api_guard.sh"
+
 _priv() {
   if [[ "${DRY_RUN:-0}" == "1" ]]; then
     "$@"
@@ -53,6 +56,9 @@ build_frontend_from_sha() {
   if [[ -n "${FRONTEND_ARTIFACT_DIR:-}" ]]; then
     info "using external frontend artifact: $FRONTEND_ARTIFACT_DIR"
     verify_frontend_build_dir "$FRONTEND_ARTIFACT_DIR"
+    if [[ "${SAFE_DEPLOY_MODE:-production}" != "local" && "${SAFE_DEPLOY_MODE:-production}" != "dev" ]]; then
+      reject_loopback_frontend_artifact "$FRONTEND_ARTIFACT_DIR"
+    fi
     dest="$(prepare_frontend_release_dir "$sha")"
     if [[ "${DRY_RUN:-0}" == "1" ]]; then
       cp -a "$FRONTEND_ARTIFACT_DIR/." "$dest/"
@@ -98,10 +104,14 @@ build_frontend_from_sha() {
   info "building frontend in worktree (timeout=${FRONTEND_BUILD_TIMEOUT}s)"
   (
     cd "$worktree/frontend"
+    export_frontend_api_target
+    # Node 18 production builds need global WebCrypto for css minimizer.
+    export NODE_OPTIONS="${NODE_OPTIONS:---experimental-global-webcrypto}"
+    printf 'REACT_APP_BACKEND_URL=%s\n' "$REACT_APP_BACKEND_URL" > .env.production.local
     if [[ -f package-lock.json ]]; then
-      run_timeout 300 npm ci --prefer-offline --no-audit --no-fund
+      run_timeout 300 npm ci --legacy-peer-deps --prefer-offline --no-audit --no-fund
     else
-      run_timeout 300 npm install --no-audit --no-fund
+      run_timeout 300 npm install --legacy-peer-deps --no-audit --no-fund
     fi
     run_timeout "${FRONTEND_BUILD_TIMEOUT}" npm run build
   ) || {
@@ -111,6 +121,9 @@ build_frontend_from_sha() {
 
   local build_dir="$worktree/frontend/build"
   verify_frontend_build_dir "$build_dir"
+  if [[ "${SAFE_DEPLOY_MODE:-production}" != "local" && "${SAFE_DEPLOY_MODE:-production}" != "dev" ]]; then
+    reject_loopback_frontend_artifact "$build_dir"
+  fi
   dest="$(prepare_frontend_release_dir "$sha")"
   run_timeout "${CUTOVER_STEP_TIMEOUT:-60}" sudo -n cp -a "$build_dir/." "$dest/"
   verify_frontend_build_dir "$dest"

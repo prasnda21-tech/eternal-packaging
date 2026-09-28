@@ -207,6 +207,35 @@ fi
 # Quarantined legacy refuses execution
 assert_fail "legacy heavy snapshot refuses exec" python3 "${SCRIPT_DIR}/legacy/due_edit_pre_snapshot.DO_NOT_USE.py"
 
+echo "==== L. FRONTEND API TARGET GUARD ===="
+GUARD="${SCRIPT_DIR}/lib/frontend_api_guard.sh"
+# shellcheck source=../lib/frontend_api_guard.sh
+source "$GUARD"
+
+assert_fail "production build + localhost API target" \
+  env SAFE_DEPLOY_MODE=production REACT_APP_BACKEND_URL=http://localhost:8000 PRODUCTION_FRONTEND_API_TARGET= \
+  bash -c "source '$GUARD'; resolve_frontend_api_target >/dev/null"
+assert_fail "production build + 127.0.0.1 API target" \
+  env SAFE_DEPLOY_MODE=production REACT_APP_BACKEND_URL=http://127.0.0.1:8000 PRODUCTION_FRONTEND_API_TARGET= \
+  bash -c "source '$GUARD'; resolve_frontend_api_target >/dev/null"
+assert_ok "local preview + localhost API" \
+  env SAFE_DEPLOY_MODE=local REACT_APP_BACKEND_URL=http://localhost:8000 PRODUCTION_FRONTEND_API_TARGET= \
+  bash -c "source '$GUARD'; resolve_frontend_api_target >/dev/null"
+resolved="$(SAFE_DEPLOY_MODE=production PRODUCTION_FRONTEND_API_TARGET=https://produksi.eternalpackaging.id REACT_APP_BACKEND_URL=http://localhost:8000 bash -c "source '$GUARD'; resolve_frontend_api_target" | tail -n 1)"
+assert_eq "production build + proven production API target" "$resolved" "https://produksi.eternalpackaging.id"
+
+bad_art="$(mktemp -d)"
+mkdir -p "$bad_art/static/js"
+echo '<!doctype html><title>bad</title>' > "$bad_art/index.html"
+echo 'fetch("http://localhost:8000/api/auth/login")' > "$bad_art/static/js/main.js"
+assert_fail "artifact with localhost API is rejected" reject_loopback_frontend_artifact "$bad_art"
+good_art="$(mktemp -d)"
+mkdir -p "$good_art/static/js"
+echo '<!doctype html><title>good</title>' > "$good_art/index.html"
+echo 'fetch("https://produksi.eternalpackaging.id/api/auth/login")' > "$good_art/static/js/main.js"
+assert_ok "artifact with production API is accepted" reject_loopback_frontend_artifact "$good_art"
+rm -rf "$bad_art" "$good_art"
+
 echo
 echo "RESULT: PASS=$PASS FAIL=$FAIL ROOT=$ROOT"
 if [[ "$FAIL" -ne 0 ]]; then

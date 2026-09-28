@@ -41,6 +41,11 @@
 : "${CRITICAL_SKU:=100442}"
 : "${CRITICAL_SKU_MATERIAL_ID:=cf11da27-f4e8-484b-9fd0-b18aac58e5e8}"
 
+# Proven production browser origin. Nginx proxies /api to the local backend.
+# Production frontend builds must embed this (or another explicit non-loopback
+# origin). Never inherit a Cloud Agent preview URL such as http://localhost:8000.
+: "${PRODUCTION_FRONTEND_API_ORIGIN:=https://produksi.eternalpackaging.id}"
+
 # Behavior flags
 : "${DRY_RUN:=0}"
 : "${SKIP_FRONTEND_BUILD:=0}"         # 1 if FRONTEND_ARTIFACT_DIR provided
