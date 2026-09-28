@@ -22,7 +22,12 @@ from server import app, current_user
 from services.cash_bank_master import COLLECTION as CB_COLLECTION, ensure_indexes as ensure_cb
 from services.cash_bank_vouchers import PAYMENTS, RECEIPTS, TRANSFERS, ensure_indexes as ensure_vouchers
 from services.chart_of_accounts import COLLECTION as COA_COLLECTION, create_account, ensure_indexes as ensure_coa
-from services.financial_dashboard import get_financial_dashboard, wib_business_date
+from services.financial_dashboard import (
+    _completeness,
+    _inventory_reconciliation_control,
+    get_financial_dashboard,
+    wib_business_date,
+)
 from services.financial_inventory_opening import wib_business_date as opening_wib
 from services.general_journal import COLLECTION as GJ_COLLECTION, ensure_indexes as ensure_gj
 from services.journal_core import JOURNAL_ENTRIES, JOURNAL_LINES, REVERSAL_INCOMPLETE, ensure_indexes as ensure_journal
@@ -514,6 +519,168 @@ async def test_permission_gates_api_and_finance_view_does_not_open_production_da
     async with await client_for(_user()) as client:
         bad = await client.get(PATH, params={"start_date": "2026-13-01", "end_date": "2026-10-31"})
     assert bad.status_code == 400
+
+
+def _recon_payload(**overrides):
+    payload = {
+        "reconciliation_status": "RECONCILED",
+        "read_stability": "STABLE",
+        "basis_coverage_complete": True,
+    }
+    payload.update(overrides)
+    return payload
+
+
+@pytest.mark.parametrize(
+    ("payload", "blocked", "status", "count", "detail_has", "detail_lacks"),
+    [
+        (_recon_payload(), 0, "complete", 0, "rekonsiliasi cocok", "belum lengkap"),
+        (_recon_payload(reconciliation_status="INCOMPLETE"), 0, "incomplete", 0, "data rekonsiliasi belum lengkap", "selisih ditemukan"),
+        (_recon_payload(read_stability="IN_PROGRESS"), 0, "incomplete", 0, "sedang berubah", "rekonsiliasi cocok"),
+        (_recon_payload(reconciliation_status="INCOMPLETE", read_stability="RETRY_REQUIRED"), 0, "incomplete", 0, "perlu diulang", "rekonsiliasi cocok"),
+        (_recon_payload(basis_coverage_complete=False), 0, "incomplete", 0, "cakupan dasar rekonsiliasi belum lengkap", "rekonsiliasi cocok"),
+        (_recon_payload(reconciliation_status="DIFFERENCE"), 0, "incomplete", 1, "selisih ditemukan", "rekonsiliasi cocok"),
+        (_recon_payload(reconciliation_status="DIFFERENCE"), 2, "incomplete", 3, "hpp terblokir: 2", None),
+        (_recon_payload(reconciliation_status="BLOCKED"), 0, "incomplete", 1, "rekonsiliasi terblokir", "rekonsiliasi cocok"),
+        (
+            _recon_payload(reconciliation_status="EXPLAINED_DIFFERENCE"),
+            0,
+            "complete",
+            0,
+            "selisih terjelaskan",
+            "tidak ada selisih",
+        ),
+        (
+            _recon_payload(reconciliation_status="EXPLAINED_DIFFERENCE", basis_coverage_complete=False),
+            0,
+            "incomplete",
+            0,
+            "selisih terjelaskan",
+            "rekonsiliasi cocok",
+        ),
+        (
+            _recon_payload(reconciliation_status="EXPLAINED_DIFFERENCE", read_stability="IN_PROGRESS"),
+            0,
+            "incomplete",
+            0,
+            "sedang berubah",
+            "rekonsiliasi cocok",
+        ),
+        (
+            _recon_payload(reconciliation_status="EXPLAINED_DIFFERENCE", read_stability="RETRY_REQUIRED"),
+            0,
+            "incomplete",
+            0,
+            "perlu diulang",
+            "rekonsiliasi cocok",
+        ),
+        (
+            _recon_payload(reconciliation_status="EXPLAINED_DIFFERENCE"),
+            2,
+            "incomplete",
+            2,
+            "hpp terblokir: 2",
+            "rekonsiliasi cocok",
+        ),
+        ({}, 0, "incomplete", 0, "tidak dapat ditentukan", "rekonsiliasi cocok"),
+        (None, 0, "incomplete", 0, "tidak dapat ditentukan", "rekonsiliasi cocok"),
+        (_recon_payload(reconciliation_status="UNKNOWN"), 0, "incomplete", 0, "tidak dapat ditentukan", "rekonsiliasi cocok"),
+        (_recon_payload(read_stability=""), 0, "incomplete", 0, "kestabilan pembacaan tidak tersedia", "rekonsiliasi cocok"),
+        (_recon_payload(), 4, "incomplete", 4, "hpp terblokir: 4", "rekonsiliasi cocok"),
+    ],
+)
+async def test_inventory_reconciliation_control_does_not_report_false_complete(
+    payload, blocked, status, count, detail_has, detail_lacks,
+):
+    got_status, got_count, detail = _inventory_reconciliation_control(payload, blocked)
+    assert got_status == status
+    assert got_count == count
+    assert detail_has in detail.lower()
+    if detail_lacks:
+        assert detail_lacks not in detail.lower()
+    if payload and payload.get("reconciliation_status") == "EXPLAINED_DIFFERENCE":
+        assert "selisih terjelaskan" in detail.lower()
+        assert "tidak ada selisih" not in detail.lower()
+        assert "dianggap nol" not in detail.lower()
+
+
+async def test_other_sections_complete_do_not_hide_incomplete_reconciliation():
+    rolled = _completeness(
+        {"status": "complete"},
+        {"status": "complete", "inventory_book": {"status": "complete"}},
+        {"status": "complete"},
+        {"status": "incomplete", "items": []},
+    )
+    assert rolled["status"] == "incomplete"
+
+
+async def test_incomplete_reconciliation_with_zero_count_blocks_dashboard_and_keeps_links(monkeypatch):
+    async def fake_summary(_db):
+        return {
+            "reconciliation_status": "INCOMPLETE",
+            "read_stability": "STABLE",
+            "basis_coverage_complete": True,
+            "pending": {
+                "active_gr_candidates_without_journal": {"count": 0},
+                "pre_effective_legacy": {"count": 0},
+                "pending_cogs": {"count": 0},
+                "waiting_earlier_issue": {"count": 0},
+                "blocked_cogs": {"count": 0},
+                "accounting_recovery_required": {"count": 0},
+            },
+        }
+
+    monkeypatch.setattr("services.financial_dashboard.get_inventory_reconciliation_summary", fake_summary)
+    async with await client_for(_user()) as client:
+        await _seed(client)
+        before = {
+            "journals": await server.db[JOURNAL_ENTRIES].count_documents({}),
+            "lines": await server.db[JOURNAL_LINES].count_documents({}),
+            "settings": await server.db.app_settings.count_documents({}),
+        }
+        body = await _dashboard(client)
+        after = {
+            "journals": await server.db[JOURNAL_ENTRIES].count_documents({}),
+            "lines": await server.db[JOURNAL_LINES].count_documents({}),
+            "settings": await server.db.app_settings.count_documents({}),
+        }
+    assert before == after
+    assert body["writes"] == 0
+    assert body["performance"]["revenue"] == 30000.0
+    assert body["position"]["cash_and_bank"]["amount"] == 65000.0
+    rows = {row["key"]: row for row in body["controls"]["items"]}
+    recon = rows["inventory_reconciliation"]
+    assert recon["status"] == "incomplete"
+    assert recon["count"] == 0
+    assert "data rekonsiliasi belum lengkap" in recon["detail"].lower()
+    assert body["controls"]["status"] == "incomplete"
+    assert body["completeness"]["status"] == "incomplete"
+    assert recon["href"] == "/persediaan/nilai-persediaan?tab=ledger-recon"
+    assert rows["cogs_unposted"]["href"] == "/persediaan/nilai-persediaan"
+    assert rows["inventory_recovery"]["href"] == "/pembelian/penerimaan-barang"
+    assert rows["cogs_unposted"]["count"] == 0
+    assert rows["cogs_unposted"]["status"] == "complete"
+
+
+async def test_reconciliation_source_error_is_not_a_clean_zero(monkeypatch):
+    async def boom(_db):
+        raise RuntimeError("rekonsiliasi gagal dimuat")
+
+    monkeypatch.setattr("services.financial_dashboard.get_inventory_reconciliation_summary", boom)
+    async with await client_for(_user()) as client:
+        await _seed(client)
+        before = await server.db[JOURNAL_ENTRIES].count_documents({})
+        body = await _dashboard(client)
+        after = await server.db[JOURNAL_ENTRIES].count_documents({})
+    assert before == after
+    rows = {row["key"]: row for row in body["controls"]["items"]}
+    recon = rows["inventory_reconciliation"]
+    assert recon["status"] == "error"
+    assert recon["count"] == 0
+    assert "gagal" in recon["detail"].lower()
+    assert body["controls"]["status"] == "incomplete"
+    assert body["completeness"]["status"] == "incomplete"
+    assert body["performance"]["revenue"] == 30000.0
 
 
 async def test_zero_revenue_margin_is_null_not_a_percent():
