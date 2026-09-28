@@ -384,10 +384,10 @@ export default function PesananPenjualan() {
     searchParams.get(REPEAT_ORDER_QUERY_PARAM) ? "create" : "list"
   ); // 'list' | 'create'
   const [createTab, setCreateTab] = useState("items");
-  const [detailRowKey, setDetailRowKey] = useState(undefined);
+  const [detailRowKey, setDetailRowKey] = useState("");
   const [editingField, setEditingField] = useState("");
   const [itemPage, setItemPage] = useState(1);
-  const itemsPerPage = 2;
+  const itemsPerPage = 10;
   
   // List state
   const [orders, setOrders] = useState([]);
@@ -1083,7 +1083,7 @@ export default function PesananPenjualan() {
     setItemPage(Math.floor(formData.line_items.length / itemsPerPage) + 1);
     const line = createSalesOrderLineItem();
     focusLineKeyRef.current = line.rowKey;
-    setDetailRowKey(line.rowKey);
+    setDetailRowKey("");
     dirtyRef.current = true;
     setFormData((prev) => ({
       ...prev,
@@ -1906,6 +1906,7 @@ export default function PesananPenjualan() {
                       )}
                       <td className="so-list-identity">
                         <div className="so-list-customer" title={o.customer || ""}>{o.customer || "—"}</div>
+                        <div className="so-list-reference">
                         <Link
                           to={`/po/${o.id}`}
                           state={poListNavState({ po_number: o.po_number, customer: o.customer })}
@@ -1919,7 +1920,8 @@ export default function PesananPenjualan() {
                         >
                           {o.po_number}
                         </Link>
-                        {o.outlet ? <div className="so-list-outlet" title={o.outlet}>{o.outlet}</div> : null}
+                        {o.outlet ? <span className="so-list-outlet" title={o.outlet}>{o.outlet}</span> : null}
+                        </div>
                       </td>
                       <td>{formatDisplayDate(o.order_date) || "—"}</td>
                       <td>{formatDisplayDate(o.tanggal_pengiriman) || "—"}</td>
@@ -2329,21 +2331,17 @@ export default function PesananPenjualan() {
                           <Fragment key={line.rowKey}>
                             <tr
                               data-testid={`line-item-row-${originalIndex}`}
-                              onFocusCapture={() => setDetailRowKey(line.rowKey)}
                             >
                               <td className="so-col-no" data-testid={`line-item-number-${originalIndex}`}>{originalIndex + 1}</td>
                               <td className="so-col-name">
                                 <div className="so-line-product">
                                   <SalesOrderThumb src={imagePath ? publicApiUrl(imagePath) : ""} />
                                   <div className="so-line-product-body">
-                                    <div className="so-line-mode" role="group" aria-label={`Mode barang baris ${originalIndex + 1}`}>
-                                      <button type="button" aria-pressed={mode === "master"} data-testid={`line-mode-master-${originalIndex}`} onClick={() => changeLineMode(originalIndex, "master")}>
-                                        Pilih Master
+                                    {mode === "manual" && (
+                                      <button type="button" className="so-line-mode" data-testid={`line-mode-master-${originalIndex}`} onClick={() => changeLineMode(originalIndex, "master")}>
+                                        Pilih dari master
                                       </button>
-                                      <button type="button" aria-pressed={mode === "manual"} data-testid={`line-mode-manual-${originalIndex}`} onClick={() => changeLineMode(originalIndex, "manual")}>
-                                        Input Manual
-                                      </button>
-                                    </div>
+                                    )}
                                     {mode === "master" ? (
                                       <MasterItemSearchSelect
                                         testId={`line-item-search-${originalIndex}`}
@@ -2420,9 +2418,9 @@ export default function PesananPenjualan() {
                                   placeholder="Harga"
                                   data-testid={`line-price-${originalIndex}`}
                                 />
-                                <div className={`so-price-source${line.price_review || line.price_message ? " is-review" : ""}`} data-testid={`line-price-source-${originalIndex}`}>
+                                {priceSourceLabel(line) !== "Isi harga jual" && <div className={`so-price-source${line.price_review || line.price_message ? " is-review" : ""}`} data-testid={`line-price-source-${originalIndex}`}>
                                   {priceSourceLabel(line)}
-                                </div>
+                                </div>}
                                 {line.price_review && (
                                   <button type="button" className="so-price-review" data-testid={`btn-review-price-${originalIndex}`} onClick={() => reviewLinePrice(originalIndex)}>
                                     Pakai harga Pengaturan Harga
@@ -2449,7 +2447,6 @@ export default function PesananPenjualan() {
                               hidden={!detailOpen}
                               data-open={detailOpen ? "true" : "false"}
                               data-testid={`line-item-detail-${originalIndex}`}
-                              onFocusCapture={() => setDetailRowKey(line.rowKey)}
                             >
                               <td />
                               <td colSpan={6}>
