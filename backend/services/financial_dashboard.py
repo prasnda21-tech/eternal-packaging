@@ -702,6 +702,13 @@ def _href(perms: set, path: str, *keys: str) -> Optional[str]:
     return None
 
 
+def _href_all(perms: set, path: str, *keys: str) -> Optional[str]:
+    """Link only when every gate of the destination page is present."""
+    if keys and all(key in perms for key in keys):
+        return path
+    return None
+
+
 async def _controls(db, perms: set, book: Optional[dict], book_error: Optional[str], recon: Optional[dict], recon_error: Optional[str]) -> dict:
     settings = await get_purchase_accounting_settings(db)
     effective = str(settings.get("inventory_accounting_effective_date") or "").strip() or None
@@ -750,7 +757,12 @@ async def _controls(db, perms: set, book: Optional[dict], book_error: Optional[s
             "Opening atau penerimaan membutuhkan recovery",
             recovery_count,
             kind="action",
-            href=_href(perms, "/buku-besar/saldo-awal", "opening_balance.view", "nav.ledger.opening_balance"),
+            href=_href_all(
+                perms,
+                "/pembelian/penerimaan-barang",
+                "nav.purchasing.receipts",
+                "purchase_receipts.view",
+            ),
             status="incomplete" if recovery_count else "complete",
         ))
     except Exception as exc:
@@ -789,12 +801,14 @@ async def _controls(db, perms: set, book: Optional[dict], book_error: Optional[s
             items.append(_control(key, label, 0, kind="action", href=None, status="error", detail=str(exc) or "Gagal memuat"))
 
     opening_count = 0
+    opening_documents = 0
     opening_status = "unavailable"
     opening_detail = "Belum ada saldo awal finansial."
     try:
-        opening_count = await db.financial_inventory_openings.count_documents({
+        opening_documents = await db.financial_inventory_openings.count_documents({
             "status": {"$in": ["NEEDS_RECOVERY", "BLOCKED", "BUILDING"]},
         })
+        opening_count = opening_documents
         if book_error:
             opening_status = "error"
             opening_detail = book_error
@@ -812,12 +826,21 @@ async def _controls(db, perms: set, book: Optional[dict], book_error: Optional[s
     except Exception as exc:
         opening_status = "error"
         opening_detail = str(exc) or "Gagal memuat opening"
+    if opening_documents:
+        opening_tab = "opening"
+    else:
+        opening_tab = "recon"
     items.append(_control(
         "opening_incomplete",
         "Opening belum lengkap atau membutuhkan recovery",
         opening_count,
         kind="action",
-        href=_href(perms, "/buku-besar/saldo-awal", "opening_balance.view", "nav.ledger.opening_balance"),
+        href=_href_all(
+            perms,
+            f"/persediaan/nilai-persediaan?tab={opening_tab}",
+            "nav.inventory.inventory_value",
+            "inventory_valuation.view",
+        ),
         status=opening_status,
         detail=opening_detail,
     ))

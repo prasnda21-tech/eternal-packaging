@@ -404,6 +404,103 @@ async def test_inventory_reconciliation_href_follows_report_permission_only():
     assert denied.status_code == 403
 
 
+async def test_recovery_controls_open_source_documents_not_gl_opening():
+    params = {"start_date": "2026-10-01", "end_date": "2026-10-31"}
+
+    async def rows_for(perms):
+        async with await client_for(_user(role="helper", perms=["dashboard.finance.view", *perms])) as client:
+            response = await client.get(PATH, params=params)
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["writes"] == 0
+        assert body["read_only"] is True
+        return {row["key"]: row for row in body["controls"]["items"]}
+
+    gl_only = await rows_for(["opening_balance.view", "nav.ledger.opening_balance"])
+    assert gl_only["inventory_recovery"]["href"] is None
+    assert gl_only["opening_incomplete"]["href"] is None
+    assert gl_only["inventory_recovery"]["label"] == "Opening atau penerimaan membutuhkan recovery"
+    assert gl_only["inventory_recovery"]["detail"] is None
+
+    assert (await rows_for(["purchase_receipts.view"]))["inventory_recovery"]["href"] is None
+    assert (await rows_for(["nav.purchasing.receipts"]))["inventory_recovery"]["href"] is None
+    assert (await rows_for(["inventory_valuation.view"]))["opening_incomplete"]["href"] is None
+    assert (await rows_for(["nav.inventory.inventory_value"]))["opening_incomplete"]["href"] is None
+
+    ready = [
+        "purchase_receipts.view",
+        "nav.purchasing.receipts",
+        "inventory_valuation.view",
+        "nav.inventory.inventory_value",
+        "inventory_reconciliation.view",
+    ]
+    assert "purchase.receipt.accounting.reverse" not in ready
+    assert "inventory_valuation.manage_opening" not in ready
+    book_detail = "Opening atau identitas buku persediaan belum lengkap. Dashboard tidak menjalankan recovery."
+    empty = await rows_for(ready)
+    assert empty["inventory_recovery"]["href"] == "/pembelian/penerimaan-barang"
+    assert empty["inventory_recovery"]["count"] == 0
+    assert empty["inventory_recovery"]["status"] == "complete"
+    assert empty["opening_incomplete"]["href"] == "/persediaan/nilai-persediaan?tab=recon"
+    assert empty["inventory_reconciliation"]["href"] == "/persediaan/nilai-persediaan?tab=ledger-recon"
+    assert empty["cogs_unposted"]["href"] == "/persediaan/nilai-persediaan"
+    assert empty["goods_receipts_unposted"]["href"] == "/pembelian/penerimaan-barang"
+
+    before = {
+        "journals": await server.db[JOURNAL_ENTRIES].count_documents({}),
+        "lines": await server.db[JOURNAL_LINES].count_documents({}),
+        "receipts": await server.db.purchase_goods_receipts.count_documents({}),
+        "openings": await server.db.financial_inventory_openings.count_documents({}),
+    }
+    await server.db.purchase_goods_receipts.insert_one({
+        "id": "gr-recovery-dashboard",
+        "receipt_number": "GR-UJI-RECOVERY",
+        "accounting_recovery_required": True,
+        "cancelled": False,
+    })
+    await server.db.financial_inventory_openings.insert_one({
+        "id": "fio-book-blocker",
+        "status": "POSTED",
+        "posted_journal_id": "",
+        "client_request_id": "fio-book-blocker",
+    })
+    blockers_only = await rows_for(ready)
+    assert blockers_only["inventory_recovery"]["count"] == 1
+    assert blockers_only["inventory_recovery"]["status"] == "incomplete"
+    assert blockers_only["inventory_recovery"]["href"] == "/pembelian/penerimaan-barang"
+    assert blockers_only["opening_incomplete"]["count"] == 1
+    assert blockers_only["opening_incomplete"]["status"] == "incomplete"
+    assert blockers_only["opening_incomplete"]["detail"] == book_detail
+    assert blockers_only["opening_incomplete"]["href"] == "/persediaan/nilai-persediaan?tab=recon"
+
+    await server.db.financial_inventory_openings.insert_one({
+        "id": "fio-recovery-dashboard",
+        "status": "NEEDS_RECOVERY",
+        "client_request_id": "fio-uji-dashboard",
+    })
+    both = await rows_for(ready)
+    after = {
+        "journals": await server.db[JOURNAL_ENTRIES].count_documents({}),
+        "lines": await server.db[JOURNAL_LINES].count_documents({}),
+        "receipts": await server.db.purchase_goods_receipts.count_documents({}),
+        "openings": await server.db.financial_inventory_openings.count_documents({}),
+    }
+    assert after == {
+        **before,
+        "receipts": before["receipts"] + 1,
+        "openings": before["openings"] + 2,
+    }
+    assert both["inventory_recovery"]["count"] == 1
+    assert both["inventory_recovery"]["status"] == "incomplete"
+    assert both["opening_incomplete"]["count"] == 1
+    assert both["opening_incomplete"]["status"] == "incomplete"
+    assert both["opening_incomplete"]["detail"] == book_detail
+    assert both["opening_incomplete"]["href"] == "/persediaan/nilai-persediaan?tab=opening"
+    assert both["inventory_reconciliation"]["href"] == "/persediaan/nilai-persediaan?tab=ledger-recon"
+    assert both["cogs_unposted"]["href"] == "/persediaan/nilai-persediaan"
+    assert both["goods_receipts_unposted"]["href"] == "/pembelian/penerimaan-barang"
+
+
 async def test_permission_gates_api_and_finance_view_does_not_open_production_dashboard():
     async with await client_for(_user(role="helper")) as client:
         denied = await client.get(PATH, params={"start_date": "2026-10-01", "end_date": "2026-10-31"})

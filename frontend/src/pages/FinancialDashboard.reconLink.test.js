@@ -9,6 +9,7 @@ const router = require("../test/clickRouterMock");
 
 import SalesFinanceDashboard from "./SalesFinanceDashboard";
 import NilaiPersediaan from "./NilaiPersediaan";
+import PenerimaanBarang from "./PenerimaanBarang";
 import { inventoryValueRouteAllowed } from "../lib/inventoryValueLink";
 
 const mockHasPerm = jest.fn();
@@ -42,9 +43,19 @@ jest.mock("../lib/api", () => ({
     ledgerInventoryReconciliationSummary: jest.fn(),
     ledgerInventoryReconciliationAccounts: jest.fn(),
     ledgerInventoryReconciliationItems: jest.fn(),
+    listPurchaseGoodsReceipts: jest.fn(),
+    listPurchaseOrders: jest.fn(),
+    purchaseReceipts: jest.fn(),
+    listPurchaseDocuments: jest.fn(),
+    postPurchaseGoodsReceiptAccounting: jest.fn(),
+    reversePurchaseGoodsReceiptAccounting: jest.fn(),
   },
 }));
 
+jest.mock("./PurchaseDocuments", () => () => <div data-testid="purchase-documents-stub" />);
+jest.mock("./PurchaseActivityHistory", () => () => null);
+jest.mock("./PurchasingFlowNav", () => () => null);
+jest.mock("./PurchaseCancelModal", () => () => null);
 jest.mock("../components/MasterItemSearchSelect", () => () => <div data-testid="master-item-search" />);
 
 jest.mock("recharts", () => {
@@ -104,6 +115,7 @@ function Harness() {
   const [, bump] = useState(0);
   useEffect(() => router.__subscribe(() => bump((value) => value + 1)), []);
   if (router.__path().startsWith("/persediaan/nilai-persediaan")) return <NilaiPersediaan />;
+  if (router.__path().startsWith("/pembelian/penerimaan-barang")) return <PenerimaanBarang />;
   return <SalesFinanceDashboard />;
 }
 
@@ -172,6 +184,10 @@ describe("dashboard inventory reconciliation link", () => {
         identity_holds: true,
       },
     });
+    mockApi.listPurchaseGoodsReceipts.mockResolvedValue({ receipts: [] });
+    mockApi.listPurchaseOrders.mockResolvedValue({ orders: [] });
+    mockApi.purchaseReceipts.mockResolvedValue({ items: [], page_count: 1 });
+    mockApi.listPurchaseDocuments.mockResolvedValue({ documents: [] });
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -306,6 +322,134 @@ describe("dashboard inventory reconciliation link", () => {
     expect(container.querySelector('[data-testid="inventory-panel-recon"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="inventory-panel-ledger"]')).toBeNull();
     expect(mockApi.financialBookReconciliation).toHaveBeenCalled();
+  });
+
+  test("Buka on receipt recovery lands on Penerimaan Barang without a reversal right", async () => {
+    const perms = [
+      "dashboard.finance.view",
+      "nav.purchasing.receipts",
+      "purchase_receipts.view",
+    ];
+    mockHasPerm.mockImplementation((key) => perms.includes(key));
+    mockApi.listPurchaseGoodsReceipts.mockResolvedValue({
+      receipts: [{
+        id: "gr-recovery-dashboard",
+        receipt_number: "GR-UJI-RECOVERY",
+        receipt_date: "2026-10-02",
+        supplier: "Supplier uji",
+        po_number: "PO-UJI",
+        lines: [],
+        status: "ACTIVE",
+        cancelled: false,
+        accounting_status: "posted",
+        accounting_recovery_required: true,
+      }],
+    });
+    mockApi.financialDashboard.mockResolvedValue(financePayload([
+      control("inventory_recovery", "/pembelian/penerimaan-barang", { count: 1 }),
+      control("cogs_unposted", "/persediaan/nilai-persediaan"),
+      control("inventory_reconciliation", "/persediaan/nilai-persediaan?tab=ledger-recon"),
+    ]));
+    await act(async () => { root.render(<Harness />); });
+    await flush();
+    await openDetail(container);
+    const open = container.querySelector('[data-testid="finance-control-open-inventory_recovery"]');
+    expect(open.getAttribute("href")).toBe("/pembelian/penerimaan-barang");
+    expect(container.querySelector('[data-testid="finance-control-open-cogs_unposted"]').getAttribute("href")).toBe("/persediaan/nilai-persediaan");
+    expect(container.querySelector('[data-testid="finance-control-open-inventory_reconciliation"]').getAttribute("href")).toBe("/persediaan/nilai-persediaan?tab=ledger-recon");
+    await act(async () => {
+      open.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+    await flush();
+    expect(container.querySelector('[data-testid="penerimaan-title"]').textContent).toBe("Penerimaan Barang");
+    await act(async () => {
+      container.querySelector('[data-testid="tab-riwayat-penerimaan"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+    const row = container.querySelector('[data-testid="po-history-row-gr-recovery-dashboard"]');
+    expect(row.textContent).toMatch(/GR-UJI-RECOVERY/);
+    await act(async () => {
+      row.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="po-history-accounting-recovery-gr-recovery-dashboard"]').textContent)
+      .toMatch(/Diperlukan pemulihan/);
+    expect(container.querySelector('[data-testid="btn-retry-reverse-gr-accounting-gr-recovery-dashboard"]')).toBeNull();
+    expect(container.querySelector('[data-testid="btn-post-gr-accounting-gr-recovery-dashboard"]')).toBeNull();
+    expect(mockApi.postPurchaseGoodsReceiptAccounting).not.toHaveBeenCalled();
+    expect(mockApi.reversePurchaseGoodsReceiptAccounting).not.toHaveBeenCalled();
+    expect(mockApi.recoverFinancialInventoryOpening).not.toHaveBeenCalled();
+  });
+
+  test("opening recovery opens the opening tab and a book blocker opens the book tab", async () => {
+    const perms = [
+      "dashboard.finance.view",
+      "inventory_valuation.view",
+      "nav.inventory.inventory_value",
+    ];
+    mockHasPerm.mockImplementation((key) => perms.includes(key));
+    mockApi.financialInventoryOpenings.mockResolvedValue({
+      items: [{
+        id: "fio-recovery-dashboard",
+        status: "NEEDS_RECOVERY",
+        client_request_id: "fio-uji-dashboard",
+        effective_date: "2026-10-01",
+        lines: [{ item_code: "CUP", item_name: "Cup uji", qty: 2, base_uom: "PCS", total: 1000 }],
+      }],
+    });
+    mockApi.financialDashboard.mockResolvedValue(financePayload([
+      control("opening_incomplete", "/persediaan/nilai-persediaan?tab=opening", {
+        count: 1,
+        detail: "Opening atau identitas buku persediaan belum lengkap. Dashboard tidak menjalankan recovery.",
+      }),
+      control("cogs_unposted", "/persediaan/nilai-persediaan"),
+    ]));
+    await act(async () => { root.render(<Harness />); });
+    await flush();
+    await openDetail(container);
+    const open = container.querySelector('[data-testid="finance-control-open-opening_incomplete"]');
+    expect(open.getAttribute("href")).toBe("/persediaan/nilai-persediaan?tab=opening");
+    await act(async () => {
+      open.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="inventory-panel-opening"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="inventory-panel-recon"]')).toBeNull();
+    expect(container.querySelector('[data-testid="financial-opening-row-fio-recovery-dashboard"]').textContent).toMatch(/Cup uji/);
+    expect(container.querySelector('[data-testid="financial-opening-recover"]')).toBeNull();
+    expect(mockApi.recoverFinancialInventoryOpening).not.toHaveBeenCalled();
+    expect(mockApi.postFinancialInventoryOpening).not.toHaveBeenCalled();
+  });
+
+  test("a book blocker opens the opening book and keeps the master item deep link", async () => {
+    const perms = [
+      "dashboard.finance.view",
+      "inventory_valuation.view",
+      "nav.inventory.inventory_value",
+    ];
+    mockHasPerm.mockImplementation((key) => perms.includes(key));
+    mockApi.financialDashboard.mockResolvedValue(financePayload([
+      control("opening_incomplete", "/persediaan/nilai-persediaan?tab=recon&master_item_id=mid-target", { count: 1 }),
+      control("cogs_unposted", "/persediaan/nilai-persediaan"),
+    ]));
+    await act(async () => { root.render(<Harness />); });
+    await flush();
+    await openDetail(container);
+    const book = container.querySelector('[data-testid="finance-control-open-opening_incomplete"]');
+    expect(book.getAttribute("href")).toBe("/persediaan/nilai-persediaan?tab=recon&master_item_id=mid-target");
+    expect(container.querySelector('[data-testid="finance-control-open-cogs_unposted"]').getAttribute("href")).toBe("/persediaan/nilai-persediaan");
+    await act(async () => {
+      book.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="inventory-panel-recon"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="inventory-panel-opening"]')).toBeNull();
+    expect(container.querySelector('[data-testid="inventory-panel-ledger"]')).toBeNull();
+    expect(mockApi.financialBookReconciliation).toHaveBeenCalled();
+    expect(mockApi.inventoryValuationItem).toHaveBeenCalledWith("mid-target");
+    expect(mockApi.ledgerInventoryReconciliationSummary).not.toHaveBeenCalled();
+    expect(mockApi.recoverFinancialInventoryOpening).not.toHaveBeenCalled();
   });
 
   test("reconciliation view does not grant the dashboard", async () => {
