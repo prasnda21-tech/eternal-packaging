@@ -3,6 +3,16 @@
 # Fits current nginx: root /var/www/eternal-packaging; (directory today).
 # If WEBROOT is already a symlink → atomic ln -sfn + mv -T swap.
 # If WEBROOT is a directory → near-atomic sibling rename (no nginx change).
+# Production /var/www is root-owned. Privileged file ops use sudo -n.
+# Dry-run stays unprivileged. Business logic is not involved.
+
+_priv() {
+  if [[ "${DRY_RUN:-0}" == "1" ]]; then
+    "$@"
+  else
+    sudo -n "$@"
+  fi
+}
 
 verify_frontend_build_dir() {
   local dir="$1"
@@ -21,11 +31,11 @@ prepare_frontend_release_dir() {
   if [[ "${DRY_RUN:-0}" == "1" ]]; then
     dest="${SAFE_DEPLOY_TEST_ROOT}/releases/${sha}"
   fi
-  mkdir -p "$(dirname "$dest")"
+  _priv mkdir -p "$(dirname "$dest")"
   if [[ -e "$dest" ]]; then
-    rm -rf "$dest"
+    _priv rm -rf "$dest"
   fi
-  mkdir -p "$dest"
+  _priv mkdir -p "$dest"
   printf '%s\n' "$dest"
 }
 
@@ -47,7 +57,7 @@ build_frontend_from_sha() {
     if [[ "${DRY_RUN:-0}" == "1" ]]; then
       cp -a "$FRONTEND_ARTIFACT_DIR/." "$dest/"
     else
-      run_timeout "${CUTOVER_STEP_TIMEOUT:-60}" cp -a "$FRONTEND_ARTIFACT_DIR/." "$dest/"
+      run_timeout "${CUTOVER_STEP_TIMEOUT:-60}" sudo -n cp -a "$FRONTEND_ARTIFACT_DIR/." "$dest/"
     fi
     verify_frontend_build_dir "$dest"
     printf '%s\n' "$dest"
@@ -102,7 +112,7 @@ build_frontend_from_sha() {
   local build_dir="$worktree/frontend/build"
   verify_frontend_build_dir "$build_dir"
   dest="$(prepare_frontend_release_dir "$sha")"
-  run_timeout "${CUTOVER_STEP_TIMEOUT:-60}" cp -a "$build_dir/." "$dest/"
+  run_timeout "${CUTOVER_STEP_TIMEOUT:-60}" sudo -n cp -a "$build_dir/." "$dest/"
   verify_frontend_build_dir "$dest"
 
   # Cleanup worktree after artifact copied (keeps disk sane)
@@ -126,13 +136,13 @@ publish_frontend_atomic() {
     die "simulated frontend publish failure — previous release preserved"
   fi
 
-  mkdir -p "$(dirname "$live")"
+  _priv mkdir -p "$(dirname "$live")"
 
   if [[ -L "$live" ]]; then
     info "WEBROOT is symlink — atomic symlink swap"
     local tmp_link="${live}.next.$$"
-    ln -sfn "$new_release" "$tmp_link"
-    mv -Tf "$tmp_link" "$live"
+    _priv ln -sfn "$new_release" "$tmp_link"
+    _priv mv -Tf "$tmp_link" "$live"
     # Keep previous target path recorded
     readlink -f "$new_release" > "${DEPLOY_HISTORY_DIR:-/tmp}/last-frontend-release.path" 2>/dev/null || true
     info "frontend published via symlink → $new_release"
@@ -148,21 +158,20 @@ publish_frontend_atomic() {
       rm -rf "${prev}.old" 2>/dev/null || true
       mv "$prev" "${prev}.old" 2>/dev/null || rm -rf "$prev"
     else
-      rm -rf "${prev}.${stamp}" 2>/dev/null || true
-      mv "$prev" "${prev}.${stamp}" 2>/dev/null || rm -rf "$prev"
+      _priv rm -rf "${prev}.${stamp}" 2>/dev/null || true
+      _priv mv "$prev" "${prev}.${stamp}" 2>/dev/null || _priv rm -rf "$prev"
       # Keep only one stamped previous to limit disk
-      find "$(dirname "$prev")" -maxdepth 1 -type d -name "$(basename "$prev").*" 2>/dev/null \
-        | sort | head -n -2 | xargs -r rm -rf
+      _priv bash -c 'find "$1" -maxdepth 1 -type d -name "$2.*" 2>/dev/null | sort | head -n -2 | xargs -r rm -rf' _ "$(dirname "$prev")" "$(basename "$prev")"
     fi
   fi
 
   if [[ -e "$live" ]]; then
-    mv "$live" "$prev"
+    _priv mv "$live" "$prev"
   fi
-  mv "$new_release" "$live"
+  _priv mv "$new_release" "$live"
   # Ensure ownership if possible (non-fatal)
   if [[ "${DRY_RUN:-0}" != "1" ]]; then
-    chown -R www-data:www-data "$live" 2>/dev/null || true
+    sudo -n chown -R www-data:www-data "$live" 2>/dev/null || true
   fi
   info "frontend published: live=$live previous=$prev"
 }
@@ -177,9 +186,9 @@ rollback_frontend_previous() {
   [[ -e "$prev" ]] || die "no previous frontend release at $prev"
   local failed="${live}.failed.$$"
   if [[ -e "$live" ]]; then
-    mv "$live" "$failed"
+    _priv mv "$live" "$failed"
   fi
-  mv "$prev" "$live"
-  rm -rf "$failed" 2>/dev/null || true
+  _priv mv "$prev" "$live"
+  _priv rm -rf "$failed" 2>/dev/null || true
   info "frontend rolled back to previous release at $live"
 }
