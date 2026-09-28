@@ -16,8 +16,10 @@ import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDisplayDate } from "../lib/constants";
 import { FormSection, FormField, FormProgress, computeStatus } from "../components/form-standard";
-import { loadedRangeLabel, showLoadedDocumentCount } from "../lib/salesSubmenuDensity";
+import { showLoadedDocumentCount } from "../lib/salesSubmenuDensity";
 import "./salesSubmenuDensity.css";
+import { useDocumentList, DocumentFilters, DocumentSummary, DocumentPager, ColumnFilter, DocumentActions, useDetailDrawer } from "./SalesDocumentControls";
+import { moneyText } from "./salesDocumentsView";
 
 function getTodayString() {
   const d = new Date();
@@ -461,6 +463,9 @@ export default function FakturPenjualan() {
     }
   }, [searchQuery]);
 
+  const documentList = useDocumentList(invoices, "invoice", searchQuery);
+  const visibleKey = documentList.visible.map(row => row.id).join('|');
+  useEffect(() => setSelectedIds(new Set()), [visibleKey]);
   // Checkbox helpers
   const toggleSelect = (id) => {
     setSelectedIds((prev) => {
@@ -470,7 +475,7 @@ export default function FakturPenjualan() {
       return next;
     });
   };
-  const draftInvoiceIds = invoices
+  const draftInvoiceIds = documentList.visible
     .filter((inv) => invoiceFinancialStatus(inv) === "draft" && !inv.issue_state)
     .map((inv) => inv.id);
   const toggleSelectAll = () => {
@@ -1127,6 +1132,7 @@ export default function FakturPenjualan() {
     detailData?.accounting_ready === false;
   const canEditFinancial = canEdit && !financialLocked && !detailData?.issue_state;
 
+  const drawerRef = useDetailDrawer(viewMode === "detail", () => { setSearchParams({}); setViewMode("list"); }, finalizeConfirm || cancelConfirm || postAccountingConfirm || reverseConfirm || detailSaving || lifecycleBusy || deleteLoading);
   const showInvoiceCount = showLoadedDocumentCount({
     loading: listLoading,
     error: listErr,
@@ -1135,7 +1141,12 @@ export default function FakturPenjualan() {
 
   return (
     <div
-      className={"page-container penjualan-page penjualan-workspace sd-density " + (viewMode === "list" ? "sd-list-mode" : "sd-form-mode")}
+      ref={drawerRef}
+      role={viewMode === "detail" ? "dialog" : undefined}
+      aria-modal={viewMode === "detail" ? true : undefined}
+      aria-label={viewMode === "detail" ? "Detail Faktur Penjualan" : undefined}
+      tabIndex={viewMode === "detail" ? -1 : undefined}
+      className={"page-container penjualan-page penjualan-workspace sd-density doc-premium " + (viewMode === "detail" ? "doc-invoice-drawer " : "") + (viewMode === "list" ? "sd-list-mode" : "sd-form-mode")}
       data-testid="faktur-penjualan-page"
     >
       <header className={viewMode === "list" ? "sd-list-header" : "sd-form-header"}>
@@ -1286,6 +1297,7 @@ export default function FakturPenjualan() {
             </div>
           )}
 
+          <DocumentSummary list={documentList} loading={listLoading} error={listErr} />
           <div className="sd-list-toolbar">
             <div className="sd-list-search">
               <Search size={16} />
@@ -1300,6 +1312,7 @@ export default function FakturPenjualan() {
                 data-testid="search-invoice-input"
               />
             </div>
+            <DocumentFilters list={documentList} />
           </div>
 
           <div className="sd-list-table-scroll">
@@ -1313,7 +1326,7 @@ export default function FakturPenjualan() {
                 <col style={{ width: 118 }} />
                 <col style={{ width: 108 }} />
                 <col style={{ width: 108 }} />
-                <col style={{ width: 248 }} />
+                <col style={{ width: 108 }} />
               </colgroup>
               <thead>
                 <tr>
@@ -1328,13 +1341,13 @@ export default function FakturPenjualan() {
                       />
                     </th>
                   )}
-                  <th>Pelanggan / No. Faktur</th>
-                  <th>No. PO</th>
-                  <th>Tanggal</th>
-                  <th>Total Faktur</th>
-                  <th>Sisa Tagihan</th>
-                  <th>Status Faktur</th>
-                  <th>Pembayaran</th>
+                  <th><ColumnFilter list={documentList} field="identity">Pelanggan / No. Faktur</ColumnFilter></th>
+                  <th><ColumnFilter list={documentList} field="due_date">Jatuh tempo</ColumnFilter></th>
+                  <th><ColumnFilter list={documentList} field="invoice_date">Tanggal</ColumnFilter></th>
+                  <th><ColumnFilter list={documentList} field="grand_total">Total Faktur</ColumnFilter></th>
+                  <th><ColumnFilter list={documentList} field="outstanding_amount">Sisa Tagihan</ColumnFilter></th>
+                  <th><ColumnFilter list={documentList} field="financial_status">Status Faktur</ColumnFilter></th>
+                  <th><ColumnFilter list={documentList} field="payment_status">Pembayaran</ColumnFilter></th>
                   <th>Aksi</th>
                 </tr>
               </thead>
@@ -1345,17 +1358,17 @@ export default function FakturPenjualan() {
                       Memuat daftar Faktur Penjualan...
                     </td>
                   </tr>
-                ) : invoices.length === 0 ? (
+                ) : documentList.filtered.length === 0 ? (
                   <tr>
                     <td colSpan={canDeleteDraft ? 9 : 8} className="sd-list-empty" data-testid="empty-invoices">
                       <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
                         <FileText size={32} color="#94a3b8" />
-                        <div style={{ fontWeight: 600, color: "#1e293b", marginTop: 8 }}>Belum ada Faktur Penjualan</div>
+                        <div style={{ fontWeight: 600, color: "#1e293b", marginTop: 8 }}>Tidak ada faktur pada hasil ini</div>
                       </div>
                     </td>
                   </tr>
                 ) : (
-                  invoices.map((inv) => (
+                  documentList.visible.map((inv) => (
                     <tr key={inv.id} data-testid={`invoice-row-${inv.id}`}>
                       {canDeleteDraft && (
                         <td>
@@ -1375,20 +1388,16 @@ export default function FakturPenjualan() {
                         <span className="sd-doc is-static" data-testid={`invoice-number-${inv.id}`}>
                           {inv.invoice_number || "-"}
                         </span>
-                        {inv.outlet ? <span className="sd-support">{inv.outlet}</span> : null}
+                        <Link to={`/po/${inv.po_id}`} className="sd-support" title="Buka PO">{inv.po_number || "—"}{inv.outlet ? ` · ${inv.outlet}` : ""}</Link>
                       </td>
-                      <td>
-                        <Link to={`/po/${inv.po_id}`} className="sd-doc" title="Buka PO">
-                          {inv.po_number || "-"}
-                        </Link>
-                      </td>
+                      <td>{inv.due_date ? formatDisplayDate(inv.due_date) : "—"}</td>
                       <td>{formatDisplayDate(inv.invoice_date || inv.created_at)}</td>
-                      <td className="sd-money">{formatRupiah(inv.grand_total)}</td>
+                      <td className="sd-money">{moneyText(inv.grand_total)}</td>
                       <td className={"sd-money " + (Number(inv.outstanding_amount) > 0 ? "is-due" : "is-zero")}>
-                        {formatRupiah(inv.outstanding_amount)}
+                        {moneyText(inv.outstanding_amount)}
                       </td>
                       <td>
-                        {renderFinancialBadge(inv.financial_status)}
+                        {inv.issue_state ? <span className={"doc-process " + (inv.issue_state === "issued" ? "doc-issued" : "")}>{inv.issue_state === "issued" ? "Terbit" : "Sedang diproses"}</span> : renderFinancialBadge(inv.financial_status)}
                         {(invoiceFinancialStatus(inv) !== "draft" || accountingStatusOf(inv) !== "not_posted") &&
                           renderAccountingBadge(accountingStatusOf(inv))}
                       </td>
@@ -1401,8 +1410,9 @@ export default function FakturPenjualan() {
                           onClick={() => handleOpenDetail(inv.id)}
                           data-testid={`view-invoice-btn-${inv.id}`}
                         >
-                          {invoiceFinancialStatus(inv) === "draft" ? "Lihat / Edit" : "Lihat"}
+                          Detail
                         </button>
+                        <DocumentActions>
                         <button
                           type="button"
                           className="sd-act sd-act-view"
@@ -1427,6 +1437,7 @@ export default function FakturPenjualan() {
                             {deleteLoading ? "Menghapus..." : "Hapus"}
                           </button>
                         )}
+                        </DocumentActions>
                         </div>
                       </td>
                     </tr>
@@ -1436,13 +1447,7 @@ export default function FakturPenjualan() {
             </table>
           </div>
           <footer className="sd-list-footer" data-testid="invoice-list-footer">
-            <span>
-              {listLoading
-                ? "Memuat daftar faktur..."
-                : listErr
-                ? "Daftar faktur belum dapat ditampilkan"
-                : loadedRangeLabel(invoices.length, "faktur")}
-            </span>
+            <DocumentPager list={documentList} loading={listLoading} error={listErr} />
           </footer>
         </section>
       )}
@@ -2341,3 +2346,4 @@ export default function FakturPenjualan() {
     </div>
   );
 }
+
