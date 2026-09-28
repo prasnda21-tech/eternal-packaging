@@ -14104,6 +14104,7 @@ async def seed():
     from services.cash_bank_vouchers import ensure_indexes as _cash_bank_voucher_ensure_indexes
     from services.journal_core import ensure_indexes as _journal_core_ensure_indexes
     from services.cash_bank_reconciliation import ensure_indexes as _cash_bank_recon_ensure_indexes
+    from services.cash_bank_statement import ensure_indexes as _cash_bank_statement_ensure_indexes
     from services.general_journal import ensure_indexes as _general_journal_ensure_indexes
     from services.opening_balance import ensure_indexes as _opening_balance_ensure_indexes
     from services.accounting_periods import ensure_indexes as _accounting_periods_ensure_indexes
@@ -14115,6 +14116,12 @@ async def seed():
     await _cash_bank_voucher_ensure_indexes(db)
     await _journal_core_ensure_indexes(db)
     await _cash_bank_recon_ensure_indexes(db)
+    try:
+        await _cash_bank_statement_ensure_indexes(db)
+    except Exception:
+        logger.exception(
+            "Index mutasi rekening koran belum siap. Impor dan pencocokan baris tetap tertutup."
+        )
     await _general_journal_ensure_indexes(db)
     await _opening_balance_ensure_indexes(db)
     await _accounting_periods_ensure_indexes(db)

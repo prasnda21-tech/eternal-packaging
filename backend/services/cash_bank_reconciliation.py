@@ -5,6 +5,7 @@ Finalizing only freezes matched movements.
 """
 from __future__ import annotations
 
+import logging
 import uuid
 from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional, Sequence, Set
@@ -37,6 +38,55 @@ PERM_RECONCILE = "cash_bank.reconcile"
 
 class ReconValidationError(ValueError):
     pass
+
+
+class ClaimFeatureNotReady(Exception):
+    """New pair/import mutations stay closed until claim indexes are ready."""
+
+
+logger = logging.getLogger(__name__)
+
+MATCH_INDEX_SPECS = (
+    {
+        "name": "uniq_journal_line_claim",
+        "keys": [("journal_line_id", 1)],
+        "partial": {"journal_line_id": {"$type": "string"}},
+    },
+    {
+        "name": "uniq_statement_line_claim",
+        "keys": [("statement_line_id", 1)],
+        "partial": {"statement_line_id": {"$type": "string"}},
+    },
+    {
+        "name": "uniq_pair_idempotency",
+        "keys": [("cash_bank_id", 1), ("idempotency_key", 1)],
+        "partial": {"idempotency_key": {"$type": "string"}},
+    },
+    {
+        "name": "uniq_pair_cancel_idempotency",
+        "keys": [("cash_bank_id", 1), ("cancel_idempotency_key", 1)],
+        "partial": {"cancel_idempotency_key": {"$type": "string"}},
+    },
+)
+
+
+def _index_pairs(spec: dict) -> List[tuple]:
+    key = spec.get("key") or []
+    if isinstance(key, dict):
+        return [(str(k), int(v)) for k, v in key.items()]
+    return [(str(k), int(v)) for k, v in list(key)]
+
+
+def legacy_journal_unique_name(info: dict) -> Optional[str]:
+    """Non-partial unique index on journal_line_id, if one exists."""
+    for name, spec in (info or {}).items():
+        if (
+            _index_pairs(spec) == [("journal_line_id", 1)]
+            and spec.get("unique")
+            and not spec.get("partialFilterExpression")
+        ):
+            return name
+    return None
 
 
 class ReconConflictError(Exception):
@@ -76,8 +126,73 @@ async def ensure_indexes(db) -> None:
     await matches.create_index("id", unique=True)
     await matches.create_index("reconciliation_id")
     await matches.create_index("journal_id")
-    # One movement actively matched in at most one reconciliation.
-    await matches.create_index("journal_line_id", unique=True)
+    await ensure_claim_indexes(db)
+
+
+async def create_target_match_indexes(db) -> None:
+    """Create partial claim indexes. Raises if Mongo rejects them."""
+    matches = db[RECON_MATCHES]
+    for spec in MATCH_INDEX_SPECS:
+        await matches.create_index(
+            spec["keys"],
+            unique=True,
+            partialFilterExpression=spec["partial"],
+            name=spec["name"],
+        )
+
+
+async def ensure_claim_indexes(db) -> None:
+    """Startup path. Never drops or replaces an existing unique index.
+
+    A fresh database receives the partial indexes. A database that still has
+    the legacy non-partial unique index is left untouched and the new feature
+    stays closed until the explicit migration finishes.
+    """
+    matches = db[RECON_MATCHES]
+    info = await matches.index_information()
+    if legacy_journal_unique_name(info):
+        return
+    missing = [spec["name"] for spec in MATCH_INDEX_SPECS if spec["name"] not in info]
+    if not missing:
+        return
+    try:
+        await create_target_match_indexes(db)
+    except Exception:
+        logger.exception(
+            "Index klaim pencocokan baris gagal dibuat. Mutasi fitur baru tetap ditolak."
+        )
+
+
+async def claim_feature_status(db) -> dict:
+    from services.cash_bank_statement import AUTHORITATIVE_TXN_INDEX, LINES
+
+    info = await db[RECON_MATCHES].index_information()
+    line_info = await db[LINES].index_information()
+    missing = [spec["name"] for spec in MATCH_INDEX_SPECS if spec["name"] not in info]
+    if AUTHORITATIVE_TXN_INDEX not in line_info:
+        missing.append(AUTHORITATIVE_TXN_INDEX)
+    legacy_name = legacy_journal_unique_name(info)
+    ready = not missing and not legacy_name
+    message = ""
+    if not ready:
+        message = (
+            "Fitur pencocokan baris belum siap karena index klaim belum selesai dimigrasikan. "
+            "Impor, cocokkan, dan batal ditolak."
+        )
+        if legacy_name:
+            message += " Index unik lama journal_line_id tidak dihapus pada startup."
+    return {
+        "ready": ready,
+        "missing_indexes": missing,
+        "legacy_unique_index": legacy_name,
+        "message": message,
+    }
+
+
+async def require_claim_feature(db) -> None:
+    status = await claim_feature_status(db)
+    if not status["ready"]:
+        raise ClaimFeatureNotReady(status["message"])
 
 
 def public_recon(doc: Optional[dict], *, matches: Optional[List[dict]] = None) -> Optional[dict]:
