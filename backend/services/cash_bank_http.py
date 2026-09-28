@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from fastapi import HTTPException, Query
+from fastapi import File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import Response as FastAPIResponse
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -57,6 +57,28 @@ from services.cash_bank_reconciliation import (
     set_matches,
     update_draft_reconciliation,
 )
+from services.cash_bank_statement import (
+    StatementConflictError,
+    StatementValidationError,
+    commit_import,
+    create_preview,
+    ensure_indexes as ensure_statement_indexes,
+    list_imports,
+    resolve_duplicate,
+    set_manual_balance,
+    validate_preview,
+)
+from services.cash_bank_pair_match import (
+    PairConflictError,
+    PairValidationError,
+    cancel_pair,
+    create_pair,
+    get_pair,
+    list_legacy_reconciliations,
+    pair_workspace,
+    suggest_pairs,
+)
+from services.general_ledger import GeneralLedgerValidationError
 
 
 class CashBankCreatePayload(BaseModel):
@@ -65,6 +87,7 @@ class CashBankCreatePayload(BaseModel):
     account_id: str = Field(..., min_length=1)
     description: Optional[str] = ""
     active: bool = True
+    currency_code: Optional[str] = None
 
 
 class CashBankUpdatePayload(BaseModel):
@@ -73,6 +96,7 @@ class CashBankUpdatePayload(BaseModel):
     description: Optional[str] = None
     active: Optional[bool] = None
     account_id: Optional[str] = None
+    currency_code: Optional[str] = None
 
 
 class ReceiptPayload(BaseModel):
@@ -138,6 +162,42 @@ class ReconciliationMatchPayload(BaseModel):
     journal_line_ids: list = Field(default_factory=list)
 
 
+class StatementCommitPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    preview_id: str = Field(..., min_length=1)
+    mapping: dict
+
+
+class StatementResolvePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    action: str = Field(..., min_length=1)
+    reason: str = Field(..., min_length=1)
+    idempotency_key: str = Field(..., min_length=1)
+
+
+class ManualStatementBalancePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    cash_bank_id: str = Field(..., min_length=1)
+    as_of: str = Field(..., min_length=1)
+    amount: Any
+
+
+class PairMatchPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    cash_bank_id: str = Field(..., min_length=1)
+    statement_line_id: str = Field(..., min_length=1)
+    journal_line_id: str = Field(..., min_length=1)
+    idempotency_key: str = Field(..., min_length=1)
+    start_date: str = Field(..., min_length=1)
+    end_date: str = Field(..., min_length=1)
+
+
+class PairCancelPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    idempotency_key: str = Field(..., min_length=1)
+    reason: str = Field(..., min_length=1)
+
+
 def _dump(payload) -> dict:
     if hasattr(payload, "model_dump"):
         return payload.model_dump(exclude_unset=True)
@@ -149,6 +209,7 @@ async def _ensure_all(db) -> None:
     await ensure_voucher_indexes(db)
     await ensure_journal_indexes(db)
     await ensure_recon_indexes(db)
+    await ensure_statement_indexes(db)
 
 
 async def _maybe_attach(db, kind: str, voucher: dict, raw: dict, user) -> dict:
@@ -661,6 +722,226 @@ def register_cash_bank_routes(
             )
         except ReconValidationError as exc:
             raise HTTPException(400, str(exc)) from exc
+
+    @api_router.post("/cash-bank/statements/preview", status_code=201)
+    async def post_statement_preview(
+        cash_bank_id: str = Form(...),
+        file: UploadFile = File(...),
+        user=Depends(require_perm(PERM_RECONCILE)),
+    ):
+        db = get_db()
+        await _ensure_all(db)
+        data = await file.read()
+        try:
+            return await create_preview(
+                db,
+                cash_bank_id=cash_bank_id,
+                filename=file.filename or "mutasi.csv",
+                data=data,
+                user=user,
+            )
+        except StatementValidationError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @api_router.post("/cash-bank/statements/preview/{preview_id}/validate")
+    async def post_statement_validate(
+        preview_id: str,
+        payload: StatementCommitPayload,
+        user=Depends(require_perm(PERM_RECONCILE)),
+    ):
+        db = get_db()
+        if payload.preview_id != preview_id:
+            raise HTTPException(400, "Pratinjau tidak sesuai")
+        try:
+            return await validate_preview(db, preview_id, payload.mapping)
+        except StatementValidationError as exc:
+            raise HTTPException(400, {"message": str(exc), "errors": exc.errors}) from exc
+        except StatementConflictError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except CashBankValidationError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @api_router.post("/cash-bank/statements/imports", status_code=201)
+    async def post_statement_import(
+        payload: StatementCommitPayload,
+        user=Depends(require_perm(PERM_RECONCILE)),
+    ):
+        db = get_db()
+        await _ensure_all(db)
+        try:
+            return await commit_import(
+                db, preview_id=payload.preview_id, mapping_raw=payload.mapping, user=user
+            )
+        except StatementValidationError as exc:
+            raise HTTPException(400, {"message": str(exc), "errors": exc.errors}) from exc
+        except StatementConflictError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except CashBankValidationError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @api_router.get("/cash-bank/statements/imports")
+    async def get_statement_imports(
+        cash_bank_id: str = Query(..., min_length=1),
+        user=Depends(require_perm(PERM_VIEW)),
+    ):
+        db = get_db()
+        items = await list_imports(db, cash_bank_id=cash_bank_id)
+        return {"items": items, "total": len(items)}
+
+    @api_router.post("/cash-bank/statements/lines/{line_id}/duplicate-resolution")
+    async def post_statement_duplicate_resolution(
+        line_id: str,
+        payload: StatementResolvePayload,
+        user=Depends(require_perm(PERM_RECONCILE)),
+    ):
+        db = get_db()
+        try:
+            row = await resolve_duplicate(
+                db,
+                line_id,
+                action=payload.action,
+                reason=payload.reason,
+                idempotency_key=payload.idempotency_key,
+                user=user,
+            )
+        except KeyError:
+            raise HTTPException(404, "Baris rekening koran tidak ditemukan") from None
+        except StatementValidationError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except StatementConflictError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        return {
+            "id": row.get("id"),
+            "duplicate_status": row.get("duplicate_status"),
+            "resolutions": row.get("resolutions") or [],
+        }
+
+    @api_router.put("/cash-bank/statements/manual-balance")
+    async def put_manual_statement_balance(
+        payload: ManualStatementBalancePayload,
+        user=Depends(require_perm(PERM_RECONCILE)),
+    ):
+        db = get_db()
+        await _ensure_all(db)
+        try:
+            return await set_manual_balance(
+                db,
+                cash_bank_id=payload.cash_bank_id,
+                as_of=payload.as_of,
+                amount=payload.amount,
+                user=user,
+            )
+        except StatementValidationError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @api_router.get("/cash-bank/reconciliations/pairs/workspace")
+    async def get_pair_workspace(
+        cash_bank_id: str = Query(..., min_length=1),
+        start_date: str = Query(..., min_length=1),
+        end_date: str = Query(..., min_length=1),
+        q: Optional[str] = Query(None),
+        page: int = Query(1, ge=1),
+        page_size: int = Query(50, ge=1, le=100),
+        user=Depends(require_perm(PERM_VIEW)),
+    ):
+        db = get_db()
+        try:
+            return await pair_workspace(
+                db,
+                cash_bank_id=cash_bank_id,
+                start=start_date,
+                end=end_date,
+                q=q,
+                page=page,
+                page_size=page_size,
+            )
+        except PairValidationError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except GeneralLedgerValidationError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @api_router.get("/cash-bank/reconciliations/pairs/suggestions")
+    async def get_pair_suggestions(
+        statement_line_id: str = Query(..., min_length=1),
+        start_date: str = Query(..., min_length=1),
+        end_date: str = Query(..., min_length=1),
+        user=Depends(require_perm(PERM_VIEW)),
+    ):
+        db = get_db()
+        try:
+            return await suggest_pairs(
+                db,
+                statement_line_id=statement_line_id,
+                start=start_date,
+                end=end_date,
+            )
+        except PairValidationError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @api_router.get("/cash-bank/reconciliations/legacy")
+    async def get_legacy_reconciliations(
+        cash_bank_id: str = Query(..., min_length=1),
+        user=Depends(require_perm(PERM_VIEW)),
+    ):
+        db = get_db()
+        items = await list_legacy_reconciliations(db, cash_bank_id)
+        return {"items": items, "total": len(items)}
+
+    @api_router.get("/cash-bank/reconciliations/pairs/{match_id}")
+    async def get_pair_match(
+        match_id: str,
+        user=Depends(require_perm(PERM_VIEW)),
+    ):
+        db = get_db()
+        try:
+            return await get_pair(db, match_id)
+        except KeyError:
+            raise HTTPException(404, "Pencocokan tidak ditemukan") from None
+
+    @api_router.post("/cash-bank/reconciliations/pairs", status_code=201)
+    async def post_pair_match(
+        payload: PairMatchPayload,
+        user=Depends(require_perm(PERM_RECONCILE)),
+    ):
+        db = get_db()
+        await _ensure_all(db)
+        try:
+            return await create_pair(
+                db,
+                cash_bank_id=payload.cash_bank_id,
+                statement_line_id=payload.statement_line_id,
+                journal_line_id=payload.journal_line_id,
+                idempotency_key=payload.idempotency_key,
+                start=payload.start_date,
+                end=payload.end_date,
+                user=user,
+            )
+        except PairValidationError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except PairConflictError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @api_router.post("/cash-bank/reconciliations/pairs/{match_id}/cancel")
+    async def post_pair_cancel(
+        match_id: str,
+        payload: PairCancelPayload,
+        user=Depends(require_perm(PERM_RECONCILE)),
+    ):
+        db = get_db()
+        try:
+            return await cancel_pair(
+                db,
+                match_id,
+                idempotency_key=payload.idempotency_key,
+                reason=payload.reason,
+                user=user,
+            )
+        except KeyError:
+            raise HTTPException(404, "Pencocokan tidak ditemukan") from None
+        except PairValidationError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except PairConflictError as exc:
+            raise HTTPException(409, str(exc)) from exc
 
     @api_router.get("/cash-bank/reconciliations/{recon_id}")
     async def get_reconciliation_detail(

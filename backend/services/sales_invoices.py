@@ -35,6 +35,14 @@ def _get_invoice_lock() -> asyncio.Lock:
     return _invoice_locks[loop]
 
 
+class _NoLock:
+    async def __aenter__(self):
+        return None
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -498,12 +506,14 @@ async def get_po_invoice_preview(db, po_id_or_doc: Any, exclude_invoice_id: Opti
         invoice_filter["id"] = {"$ne": str(exclude_invoice_id)}
 
     existing_invoices = await db.sales_invoices.find(
-        invoice_filter, {"_id": 0, "lines": 1, "financial_status": 1}
+        invoice_filter, {"_id": 0, "lines": 1, "financial_status": 1, "removed_from_active": 1}
     ).to_list(500)
 
     # Cumulative invoiced per exact line_idx (cancelled invoices do not consume qty)
     cumulative_by_line_idx: Dict[int, int] = {}
     for inv in existing_invoices:
+        if inv.get("removed_from_active"):
+            continue
         if effective_financial_status(inv) == FINANCIAL_CANCELLED:
             continue
         for l in inv.get("lines", []):
@@ -584,7 +594,15 @@ async def get_po_invoice_preview(db, po_id_or_doc: Any, exclude_invoice_id: Opti
     }
 
 
-async def create_sales_invoice(db, payload: Dict[str, Any], user: dict) -> Dict[str, Any]:
+async def create_sales_invoice(
+    db,
+    payload: Dict[str, Any],
+    user: dict,
+    *,
+    payload_hash: Optional[str] = None,
+    on_document=None,
+    serialize_in_process: bool = True,
+) -> Dict[str, Any]:
     """Creates a new Sales Invoice (Faktur Penjualan) backend-authoritatively.
 
     Guarantees:
@@ -601,11 +619,27 @@ async def create_sales_invoice(db, payload: Dict[str, Any], user: dict) -> Dict[
     if not po_id:
         raise HTTPException(400, "ID Pesanan Penjualan (po_id) wajib diisi.")
 
-    async with _get_invoice_lock():
+    lock = _get_invoice_lock() if serialize_in_process else _NoLock()
+    async with lock:
         idempotency_key = str(payload.get("idempotency_key") or "").strip()
         if idempotency_key:
             existing_by_key = await db.sales_invoices.find_one({"idempotency_key": idempotency_key}, {"_id": 0})
             if existing_by_key:
+                stored_hash = str(existing_by_key.get("issue_payload_hash") or "")
+                if payload_hash and stored_hash and stored_hash != payload_hash:
+                    raise HTTPException(409, {
+                        "message": "Kunci faktur yang sama dipakai untuk isi yang berbeda.",
+                        "operation_id": idempotency_key,
+                        "continuable": False,
+                        "code": "idempotency_conflict",
+                    })
+                if payload_hash and not stored_hash:
+                    raise HTTPException(409, {
+                        "message": "Kunci faktur yang sama sudah dipakai dokumen lain.",
+                        "operation_id": idempotency_key,
+                        "continuable": False,
+                        "code": "idempotency_conflict",
+                    })
                 return existing_by_key
 
         order = await db.orders.find_one({"id": po_id}, {"_id": 0})
@@ -795,6 +829,30 @@ async def create_sales_invoice(db, payload: Dict[str, Any], user: dict) -> Dict[
                 "role": str(user.get("role") or ""),
             },
         }
+        if on_document:
+            extra = on_document(invoice_doc)
+            if extra:
+                invoice_doc.update(extra)
+
+        from services.sales_invoice_issue import attach_qty_hold, claim_invoice_qty, release_invoice_qty
+
+        hold_id = idempotency_key or str(uuid.uuid4())
+        invoice_doc["qty_hold_id"] = hold_id
+        await claim_invoice_qty(
+            db,
+            hold_id,
+            preview["po_id"],
+            [
+                {
+                    "line_idx": line["line_idx"],
+                    "qty": line["quantity"],
+                    "cap": line["ordered_qty"],
+                    "item_name": line["item_name"],
+                }
+                for line in calculated_lines
+            ],
+            payload_hash or invoice_doc.get("issue_payload_hash"),
+        )
 
         try:
             await db.sales_invoices.insert_one(invoice_doc)
@@ -803,7 +861,12 @@ async def create_sales_invoice(db, payload: Dict[str, Any], user: dict) -> Dict[
                 existing = await db.sales_invoices.find_one({"idempotency_key": idempotency_key}, {"_id": 0})
                 if existing:
                     return existing
+            await release_invoice_qty(db, hold_id)
             raise HTTPException(409, "Faktur Penjualan duplikat terdeteksi.")
+        except Exception:
+            await release_invoice_qty(db, hold_id)
+            raise
+        await attach_qty_hold(db, hold_id, invoice_id)
 
         invoice_doc.pop("_id", None)
         await attach_invoice_accounting_fields(db, [invoice_doc])
@@ -812,7 +875,7 @@ async def create_sales_invoice(db, payload: Dict[str, Any], user: dict) -> Dict[
 
 async def list_sales_invoices(db, q: Optional[str] = None, po_id: Optional[str] = None) -> List[Dict[str, Any]]:
     """List all sales invoices with payment derived fields."""
-    filters: Dict[str, Any] = {}
+    filters: Dict[str, Any] = {"removed_from_active": {"$ne": True}}
     if po_id:
         filters["po_id"] = str(po_id)
     if q and str(q).strip():
@@ -882,6 +945,9 @@ async def update_sales_invoice(db, invoice_id: str, payload: Dict[str, Any], use
             inv = await db.sales_invoices.find_one({"invoice_number": str(invoice_id)}, {"_id": 0})
         if not inv:
             raise HTTPException(404, f"Faktur Penjualan '{invoice_id}' tidak ditemukan.")
+
+        if inv.get("issue_state") or inv.get("removed_from_active"):
+            raise HTTPException(409, "Faktur yang sedang atau sudah diterbitkan tidak dapat diubah.")
 
         status = effective_financial_status(inv)
         if status != FINANCIAL_DRAFT:
@@ -1006,6 +1072,8 @@ async def delete_sales_invoice(db, invoice_id: str, user: dict) -> dict:
         raise HTTPException(400, "Hapus Penerimaan Penjualan terlebih dahulu.")
 
     inv_number = inv.get("invoice_number", inv["id"])
+    from services.sales_invoice_issue import release_invoice_qty
+    await release_invoice_qty(db, inv.get("qty_hold_id"))
     await db.sales_invoices.delete_one({"id": inv["id"]})
     return {"deleted": True, "invoice_number": inv_number, "id": inv["id"]}
 
@@ -1024,6 +1092,13 @@ async def bulk_delete_sales_invoices(db, ids: list, user: dict) -> dict:
         if not inv:
             blockers.append({"id": iid, "number": iid, "reason": "Faktur tidak ditemukan."})
             continue
+        if inv.get("issue_state"):
+            blockers.append({
+                "id": inv["id"],
+                "number": inv.get("invoice_number", inv["id"]),
+                "reason": "Faktur terbit dihapus lewat Hapus Faktur, bukan hapus massal draf.",
+            })
+            continue
         if effective_financial_status(inv) != FINANCIAL_DRAFT:
             blockers.append({
                 "id": inv["id"],
@@ -1041,6 +1116,9 @@ async def bulk_delete_sales_invoices(db, ids: list, user: dict) -> dict:
         raise HTTPException(400, {"message": "Tidak dapat menghapus. Beberapa faktur memiliki dependensi.", "blockers": blockers})
 
     if to_delete:
+        from services.sales_invoice_issue import release_invoice_qty
+        for inv in to_delete:
+            await release_invoice_qty(db, inv.get("qty_hold_id"))
         delete_ids = [inv["id"] for inv in to_delete]
         await db.sales_invoices.delete_many({"id": {"$in": delete_ids}})
 
@@ -1170,6 +1248,8 @@ async def cancel_sales_invoice(
                 409,
                 "Faktur tidak dapat dibatalkan karena sudah memiliki Penerimaan Penjualan.",
             )
+        from services.sales_invoice_issue import release_invoice_qty
+        await release_invoice_qty(db, inv.get("qty_hold_id"))
         return await get_sales_invoice_detail(db, inv["id"])
 
 
