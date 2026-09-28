@@ -3,7 +3,11 @@ import { createRoot } from 'react-dom/client';
 import { TextEncoder, TextDecoder } from 'util';
 global.TextEncoder = global.TextEncoder || TextEncoder;
 global.TextDecoder = global.TextDecoder || TextDecoder;
-const { MemoryRouter } = require('react-router-dom');
+// Match the repository's Jest 27 router adapter; production uses the real router.
+jest.mock('react-router-dom', () => {
+  const React = require('react');
+  return { Link: ({ to, children, ...props }) => React.createElement('a', { ...props, href: to }, children) };
+}, { virtual: true });
 
 jest.mock('../lib/api', () => ({ __esModule: true, default: {
   cashBankAccounts: jest.fn(), cashBankPairWorkspace: jest.fn(), cashBankStatementImports: jest.fn(),
@@ -35,7 +39,7 @@ const flush = () => act(async () => { await Promise.resolve(); });
 const click = async (element) => { expect(element).toBeTruthy(); await act(async () => element.click()); };
 const byText = (text) => [...container.querySelectorAll('button')].find((el) => el.textContent === text);
 const change = async (selector, value) => { const el = container.querySelector(selector); await act(async () => { const proto = el.tagName === 'SELECT' ? HTMLSelectElement.prototype : HTMLInputElement.prototype; Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, value); el.dispatchEvent(new Event('change', { bubbles:true })); }); };
-async function renderPage() { await act(async () => root.render(<MemoryRouter><RekonsiliasiKasBank /></MemoryRouter>)); await flush(); }
+async function renderPage() { await act(async () => root.render(<RekonsiliasiKasBank />)); await flush(); }
 async function upload() { const input = container.querySelector('[type=file]'); await act(async () => { Object.defineProperty(input, 'files', { configurable:true, value:[new File(['tanggal,uraian,masuk,keluar\n2026-09-26,Transfer,750000,0'], 'mutasi.csv', {type:'text/csv'})] }); input.dispatchEvent(new Event('change', { bubbles:true })); }); }
 
 beforeEach(() => {
