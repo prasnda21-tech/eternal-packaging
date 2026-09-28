@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import { AlertCircle, CheckSquare, Eye, Plus, Trash2, X } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
+import { newOperationKey, reconViewState, shouldApplyResponse } from "../lib/cashBankReconView";
 import { useDebouncedLiveSearch, liveSearchTableView } from "../hooks/useDebouncedLiveSearch";
 import { KbField, KbSection, KbSearchField } from "../components/CashBankFormPrimitives";
 
@@ -24,7 +26,7 @@ const STATUS_META = {
   finalized: { className: "kb-status-posted", label: "Finalized" },
 };
 
-export default function RekonsiliasiKasBank() {
+export function LegacyRekonsiliasiKasBank() {
   const { hasPerm } = useAuth();
   const canReconcile = hasPerm("cash_bank.reconcile");
   const [banks, setBanks] = useState([]);
@@ -315,7 +317,10 @@ export default function RekonsiliasiKasBank() {
                 {tableView === "loading" && (
                   <tr><td colSpan={8} className="empty-state">Memuat…</td></tr>
                 )}
-                {tableView === "empty" && (
+                {loadError && (
+                  <tr><td colSpan={8} className="empty-state">Daftar dokumen lama tidak dimuat.</td></tr>
+                )}
+                {tableView === "empty" && !loadError && (
                   <tr><td colSpan={8} className="empty-state">Belum ada rekonsiliasi.</td></tr>
                 )}
                 {tableView === "results" && filtered.map((row) => {
@@ -510,6 +515,545 @@ export default function RekonsiliasiKasBank() {
           </form>
         </div>
       )}
+    </div>
+  );
+}
+
+const monthStart = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-01`;
+};
+
+function errPayload(ex) {
+  const det = ex?.response?.data?.detail;
+  if (typeof det === "string") return { message: det, errors: [], status: ex?.response?.status };
+  if (det && typeof det === "object") {
+    return { message: det.message || errText(ex), errors: det.errors || [], status: ex?.response?.status };
+  }
+  return { message: errText(ex), errors: [], status: ex?.response?.status };
+}
+
+export default function RekonsiliasiKasBank() {
+  const { hasPerm } = useAuth();
+  const canReconcile = hasPerm("cash_bank.reconcile");
+  const canManage = hasPerm("cash_bank.manage");
+  const canOpenPayment = hasPerm("cash_bank.view") || hasPerm("cash_bank.manage");
+  const [mode, setMode] = useState("pairs");
+  const [banks, setBanks] = useState([]);
+  const [cashBankId, setCashBankId] = useState("");
+  const [startDate, setStartDate] = useState(monthStart);
+  const [endDate, setEndDate] = useState(todayIso);
+  const [qInput, setQInput] = useState("");
+  const [q, setQ] = useState("");
+  const [tab, setTab] = useState("unmatched");
+  const [pane, setPane] = useState("bank");
+  const [workspace, setWorkspace] = useState(null);
+  const [imports, setImports] = useState([]);
+  const [phase, setPhase] = useState("loading");
+  const [message, setMessage] = useState("");
+  const [rowErrors, setRowErrors] = useState([]);
+  const [selectedBank, setSelectedBank] = useState("");
+  const [selectedBook, setSelectedBook] = useState("");
+  const [suggestions, setSuggestions] = useState(null);
+  const [preview, setPreview] = useState(null);
+  const [mapping, setMapping] = useState({
+    header_row: 0,
+    date_column: 0,
+    date_format: "YYYY-MM-DD",
+    description_column: 1,
+    reference_column: "",
+    bank_txn_id_column: "",
+    amount_mode: "in_out",
+    in_column: 2,
+    out_column: 3,
+    balance_column: "",
+    currency_column: "",
+    file_currency: "",
+    decimal_mode: "comma_decimal",
+    sign_convention: "",
+    amount_column: "",
+    operator_coverage_confirmed: false,
+  });
+  const [currencyDraft, setCurrencyDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const requestRef = useRef(0);
+  const matchKey = useRef("");
+  const cancelKeys = useRef({});
+
+  const loadBanks = useCallback(async () => {
+    const res = await api.cashBankAccounts({ active_only: true });
+    const items = Array.isArray(res?.items) ? res.items : [];
+    setBanks(items);
+    setCashBankId((current) => current || items[0]?.id || "");
+  }, []);
+
+  useEffect(() => { loadBanks().catch((ex) => { setPhase("error"); setMessage(errPayload(ex).message); }); }, [loadBanks]);
+
+  const loadWorkspace = useCallback(async (bankId, start, end, query) => {
+    if (!bankId) return;
+    const token = ++requestRef.current;
+    setPhase("loading");
+    setMessage("");
+    setRowErrors([]);
+    try {
+      const [ws, history] = await Promise.all([
+        api.cashBankPairWorkspace({
+          cash_bank_id: bankId,
+          start_date: start,
+          end_date: end,
+          q: query || undefined,
+          page: 1,
+          page_size: 50,
+        }),
+        api.cashBankStatementImports({ cash_bank_id: bankId }),
+      ]);
+      if (!shouldApplyResponse(token, requestRef.current)) return;
+      setWorkspace(ws);
+      setImports(Array.isArray(history?.items) ? history.items : []);
+      setPhase("ready");
+    } catch (ex) {
+      if (!shouldApplyResponse(token, requestRef.current)) return;
+      const parsed = errPayload(ex);
+      setWorkspace(null);
+      setImports([]);
+      if (parsed.status === 403) setPhase("forbidden");
+      else if (parsed.status === 409) setPhase("conflict");
+      else setPhase("error");
+      setMessage(parsed.message);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (mode === "pairs" && cashBankId) loadWorkspace(cashBankId, startDate, endDate, q);
+  }, [mode, cashBankId, startDate, endDate, q, loadWorkspace]);
+
+  const chooseBank = (id) => {
+    setCashBankId(id);
+    setSelectedBank("");
+    setSelectedBook("");
+    setSuggestions(null);
+    setPreview(null);
+    matchKey.current = "";
+  };
+
+  const bankRows = workspace?.bank_lines || [];
+  const bookRows = workspace?.book_lines || [];
+  const bankView = reconViewState({
+    loading: phase === "loading",
+    error: phase === "error" ? message : "",
+    forbidden: phase === "forbidden",
+    conflict: phase === "conflict",
+    count: phase === "ready" ? (workspace?.visible_bank_count || 0) : 0,
+  });
+  const bookView = reconViewState({
+    loading: phase === "loading",
+    error: phase === "error" ? message : "",
+    forbidden: phase === "forbidden",
+    conflict: phase === "conflict",
+    count: phase === "ready" ? (workspace?.visible_book_count || 0) : 0,
+  });
+
+  const pickBank = async (row) => {
+    setSelectedBank(row.id);
+    matchKey.current = newOperationKey();
+    if (!row.matchable) {
+      setSuggestions(null);
+      return;
+    }
+    try {
+      const res = await api.cashBankPairSuggestions({
+        statement_line_id: row.id,
+        start_date: startDate,
+        end_date: endDate,
+      });
+      setSuggestions(res);
+    } catch (ex) {
+      setSuggestions(null);
+      setMessage(errPayload(ex).message);
+    }
+  };
+
+  const mappingPayload = () => {
+    const num = (value) => (value === "" || value == null ? null : Number(value));
+    return {
+      header_row: Number(mapping.header_row || 0),
+      date_column: Number(mapping.date_column),
+      date_format: mapping.date_format,
+      description_column: Number(mapping.description_column),
+      reference_column: num(mapping.reference_column),
+      bank_txn_id_column: num(mapping.bank_txn_id_column),
+      amount_mode: mapping.amount_mode,
+      amount_column: mapping.amount_mode === "signed" ? num(mapping.amount_column) : null,
+      sign_convention: mapping.amount_mode === "signed" ? (mapping.sign_convention || null) : null,
+      in_column: num(mapping.in_column),
+      out_column: num(mapping.out_column),
+      balance_column: num(mapping.balance_column),
+      currency_column: num(mapping.currency_column),
+      file_currency: mapping.file_currency || null,
+      decimal_mode: mapping.decimal_mode,
+      operator_coverage_confirmed: Boolean(mapping.operator_coverage_confirmed),
+    };
+  };
+
+  const onUpload = async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file || !cashBankId || !canReconcile) return;
+    setBusy(true);
+    setRowErrors([]);
+    setMessage("");
+    try {
+      const body = new FormData();
+      body.append("cash_bank_id", cashBankId);
+      body.append("file", file);
+      const res = await api.previewCashBankStatement(body);
+      setPreview(res);
+      setTab("import");
+    } catch (ex) {
+      setMessage(errPayload(ex).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onValidate = async () => {
+    if (!preview?.id) return;
+    setBusy(true);
+    try {
+      const res = await api.validateCashBankStatement(preview.id, {
+        preview_id: preview.id,
+        mapping: mappingPayload(),
+      });
+      setPreview((current) => ({ ...current, validation: res }));
+      setRowErrors(res.errors || []);
+      setMessage(res.ok ? "Validasi pratinjau selesai. Belum ada baris mutasi yang disimpan." : "Ada baris yang tidak valid.");
+    } catch (ex) {
+      const parsed = errPayload(ex);
+      setRowErrors(parsed.errors);
+      setMessage(parsed.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onCommit = async () => {
+    if (!preview?.id || !canReconcile) return;
+    setBusy(true);
+    try {
+      await api.commitCashBankStatement({ preview_id: preview.id, mapping: mappingPayload() });
+      setPreview(null);
+      setMessage("Impor selesai. Jurnal tidak dibuat.");
+      await loadWorkspace(cashBankId, startDate, endDate, q);
+      setTab("unmatched");
+    } catch (ex) {
+      const parsed = errPayload(ex);
+      setRowErrors(parsed.errors);
+      setMessage(parsed.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onMatch = async () => {
+    if (!canReconcile || !selectedBank || !selectedBook) return;
+    if (!matchKey.current) matchKey.current = newOperationKey();
+    setBusy(true);
+    setMessage("");
+    try {
+      const saved = await api.createCashBankPair({
+        cash_bank_id: cashBankId,
+        statement_line_id: selectedBank,
+        journal_line_id: selectedBook,
+        idempotency_key: matchKey.current,
+        start_date: startDate,
+        end_date: endDate,
+      });
+      if (saved.status !== "active" || saved.review_state === "perlu_tinjauan") {
+        setMessage(saved.review_state === "perlu_tinjauan"
+          ? "Pencocokan tersimpan tetapi sumber perlu tinjauan."
+          : "Operasi sebelumnya tidak diaktifkan kembali.");
+      }
+      setSelectedBank("");
+      setSelectedBook("");
+      setSuggestions(null);
+      matchKey.current = "";
+      await loadWorkspace(cashBankId, startDate, endDate, q);
+    } catch (ex) {
+      const parsed = errPayload(ex);
+      if (parsed.status === 409) setMessage(parsed.message);
+      else setMessage(parsed.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onCancel = async (matchId) => {
+    if (!canReconcile) return;
+    if (!cancelKeys.current[matchId]) cancelKeys.current[matchId] = newOperationKey();
+    setBusy(true);
+    try {
+      await api.cancelCashBankPair(matchId, {
+        idempotency_key: cancelKeys.current[matchId],
+        reason: "Batalkan pencocokan",
+      });
+      await loadWorkspace(cashBankId, startDate, endDate, q);
+    } catch (ex) {
+      setMessage(errPayload(ex).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const saveCurrency = async () => {
+    if (!canManage || !cashBankId) return;
+    setBusy(true);
+    try {
+      await api.updateCashBankAccount(cashBankId, { currency_code: currencyDraft });
+      await loadBanks();
+      await loadWorkspace(cashBankId, startDate, endDate, q);
+      setMessage("Mata uang rekening disimpan. Tidak ada pengisian massal.");
+    } catch (ex) {
+      setMessage(errPayload(ex).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const closing = workspace?.statement_closing;
+  const selectedBankRow = bankRows.find((row) => row.id === selectedBank);
+  const selectedBookRow = bookRows.find((row) => row.journal_line_id === selectedBook);
+  const selectedBankTotal = selectedBankRow ? Number(selectedBankRow.amount || 0) : 0;
+  const selectedBookTotal = selectedBookRow ? Number(selectedBookRow.absolute_amount || 0) : 0;
+  const selectionDiff = selectedBank && selectedBook ? selectedBankTotal - selectedBookTotal : null;
+
+  if (mode === "legacy") {
+    return (
+      <div>
+        <div className="kb-pair-toolbar">
+          <button type="button" className="ghost sm" onClick={() => setMode("pairs")}>Kembali ke pencocokan baris</button>
+        </div>
+        <LegacyRekonsiliasiKasBank />
+      </div>
+    );
+  }
+
+  return (
+    <div className="prod-page kas-bank-page kas-bank-workspace kb-pair-shell" data-testid="kas-bank-rekonsiliasi-page">
+      <div className="kb-pair-toolbar kb-recon-toolbar" data-testid="kas-bank-recon-toolbar">
+        <select aria-label="Rekening" value={cashBankId} onChange={(e) => chooseBank(e.target.value)} data-testid="kas-bank-pair-bank">
+          <option value="">— Rekening —</option>
+          {banks.map((bank) => (
+            <option key={bank.id} value={bank.id}>{bank.name}{bank.currency_code ? ` · ${bank.currency_code}` : " · mata uang belum ditetapkan"}</option>
+          ))}
+        </select>
+        <input aria-label="Tanggal awal" type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
+        <input aria-label="Tanggal akhir" type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
+        <KbSearchField
+          value={qInput}
+          onChange={(e) => setQInput(e.target.value)}
+          onSubmit={() => setQ(qInput.trim())}
+          onClear={() => { setQInput(""); setQ(""); }}
+          placeholder="Cari uraian / referensi…"
+          testid="kas-bank-recon-search"
+        />
+        {canReconcile && (
+          <label className="ghost sm kb-import-label">
+            Impor Mutasi
+            <input type="file" accept=".csv,.txt,.xlsx" onChange={onUpload} data-testid="kas-bank-pair-import" />
+          </label>
+        )}
+        <button type="button" className="ghost sm" onClick={() => loadWorkspace(cashBankId, startDate, endDate, q)}>Muat ulang</button>
+        <button type="button" className="ghost sm" onClick={() => setMode("legacy")}>Dokumen saldo lama</button>
+      </div>
+
+      {!workspace?.currency_code && (
+        <div className="kb-pair-note" role="status">
+          Mata uang rekening belum ditetapkan. Impor dapat dipratinjau. Pencocokan ditolak sampai kode mata uang disimpan eksplisit. Penetapan ini konfigurasi operator, bukan bukti independen bank.
+          {canManage && (
+            <span className="kb-currency-set">
+              <input aria-label="Kode mata uang" value={currencyDraft} onChange={(e) => setCurrencyDraft(e.target.value.toUpperCase())} placeholder="IDR" maxLength={3} />
+              <button type="button" className="ghost sm" onClick={saveCurrency} disabled={busy}>Simpan mata uang</button>
+            </span>
+          )}
+        </div>
+      )}
+
+      <div className="kb-pair-summary" data-testid="kas-bank-pair-summary">
+        <span>Saldo buku {workspace ? formatRp(workspace.book_ending_balance) : "—"} <small>Buku Besar, termasuk saldo awal {workspace ? formatRp(workspace.book_opening_balance) : "—"}</small></span>
+        <span>Saldo koran {closing?.label || "Belum tersedia"} {closing?.amount == null ? "" : formatRp(closing.amount)} <small>{closing?.as_of || ""}</small></span>
+        <span>Selisih {workspace?.difference == null ? "Belum tersedia" : formatRp(workspace.difference)}</span>
+        <span>Belum cocok bank {workspace?.unmatched_bank_count ?? "—"} · buku {workspace?.unmatched_book_count ?? "—"}</span>
+        <span>Pasangan tersimpan bukan rekonsiliasi saldo selesai. Penutupan periode rekonsiliasi belum disediakan.</span>
+      </div>
+
+      {closing?.manual && (
+        <p className="kb-pair-note">Saldo manual {formatRp(closing.manual.amount)} pada {closing.manual.as_of}. Input manual, bukan hasil verifikasi bank.</p>
+      )}
+      {workspace?.feature_ready === false && (
+        <div className="form-error" role="alert"><AlertCircle size={16} /> {workspace.feature_message}</div>
+      )}
+      {message && <div className="form-error" role="alert"><AlertCircle size={16} /> {message}</div>}
+
+      <div className="kb-pair-tabs" role="tablist">
+        <button type="button" className={tab === "unmatched" ? "primary sm" : "ghost sm"} onClick={() => setTab("unmatched")}>Belum Cocok</button>
+        <button type="button" className={tab === "matched" ? "primary sm" : "ghost sm"} onClick={() => setTab("matched")}>Sudah Cocok</button>
+        <button type="button" className={tab === "import" ? "primary sm" : "ghost sm"} onClick={() => setTab("import")}>Riwayat Impor</button>
+      </div>
+
+      {tab === "import" && (
+        <div className="kb-pair-import" data-testid="kas-bank-pair-import-panel">
+          {preview && (
+            <div>
+              <p>Pratinjau {preview.filename} berlaku sampai {preview.expires_at}. Belum menyimpan mutasi. Kolom referensi bukan ID unik. Identitas bank tidak dijamin kecuali mapping menyatakan ID transaksi bank.</p>
+              <div className="kb-pair-mapping">
+                <label>Kolom tanggal<input type="number" min="0" value={mapping.date_column} onChange={(e) => setMapping({ ...mapping, date_column: e.target.value })} /></label>
+                <label>Kolom uraian<input type="number" min="0" value={mapping.description_column} onChange={(e) => setMapping({ ...mapping, description_column: e.target.value })} /></label>
+                <label>Kolom masuk<input type="number" min="0" value={mapping.in_column} onChange={(e) => setMapping({ ...mapping, in_column: e.target.value })} /></label>
+                <label>Kolom keluar<input type="number" min="0" value={mapping.out_column} onChange={(e) => setMapping({ ...mapping, out_column: e.target.value })} /></label>
+                <label>Kolom referensi<input type="number" min="0" value={mapping.reference_column} onChange={(e) => setMapping({ ...mapping, reference_column: e.target.value })} /></label>
+                <label>Kolom ID bank<input type="number" min="0" value={mapping.bank_txn_id_column} onChange={(e) => setMapping({ ...mapping, bank_txn_id_column: e.target.value })} /></label>
+                <label>Kolom saldo<input type="number" min="0" value={mapping.balance_column} onChange={(e) => setMapping({ ...mapping, balance_column: e.target.value })} /></label>
+                <label>Format tanggal<select value={mapping.date_format} onChange={(e) => setMapping({ ...mapping, date_format: e.target.value })}><option>YYYY-MM-DD</option><option>DD/MM/YYYY</option><option>MM/DD/YYYY</option><option>DD-MM-YYYY</option></select></label>
+                <label>Desimal<select value={mapping.decimal_mode} onChange={(e) => setMapping({ ...mapping, decimal_mode: e.target.value })}><option value="comma_decimal">Koma desimal</option><option value="dot_decimal">Titik desimal</option></select></label>
+                <label>Mode nominal<select value={mapping.amount_mode} onChange={(e) => setMapping({ ...mapping, amount_mode: e.target.value })}><option value="in_out">Kolom masuk dan keluar</option><option value="signed">Nominal bertanda</option></select></label>
+                {mapping.amount_mode === "signed" && (
+                  <>
+                    <label>Kolom nominal<input type="number" min="0" value={mapping.amount_column} onChange={(e) => setMapping({ ...mapping, amount_column: e.target.value })} /></label>
+                    <label>Tanda negatif<select value={mapping.sign_convention} onChange={(e) => setMapping({ ...mapping, sign_convention: e.target.value })}><option value="">Pilih</option><option value="negative_out">Negatif = keluar</option><option value="negative_in">Negatif = masuk</option></select></label>
+                  </>
+                )}
+                <label>Mata uang berkas<input value={mapping.file_currency} onChange={(e) => setMapping({ ...mapping, file_currency: e.target.value.toUpperCase() })} placeholder="Kosongkan jika tidak ada" maxLength={3} /></label>
+                <label><input type="checkbox" checked={mapping.operator_coverage_confirmed} onChange={(e) => setMapping({ ...mapping, operator_coverage_confirmed: e.target.checked })} /> Cakupan periode ini dikonfirmasi operator, bukan verifikasi bank</label>
+              </div>
+              <div className="table-wrap">
+                <table className="prod-table kas-bank-table">
+                  <tbody>
+                    {(preview.sample_rows || []).map((row, index) => (
+                      <tr key={index}>{row.map((cell, cellIndex) => <td key={cellIndex}>{cell}</td>)}</tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {!!rowErrors.length && (
+                <ul>{rowErrors.map((err) => <li key={`${err.row}-${err.message}`}>Baris {err.row}: {err.message}</li>)}</ul>
+              )}
+              {preview.validation && <p>Diterima {preview.validation.accepted_count}. Masuk {formatRp(preview.validation.total_in)}. Keluar {formatRp(preview.validation.total_out)}.</p>}
+              <button type="button" className="ghost sm" onClick={onValidate} disabled={busy}>Validasi</button>
+              <button type="button" className="primary sm" onClick={onCommit} disabled={busy || !canReconcile}>Konfirmasi impor</button>
+            </div>
+          )}
+          <table className="prod-table kas-bank-table">
+            <thead><tr><th>Berkas</th><th>Status</th><th>Baris</th><th>Cakupan</th></tr></thead>
+            <tbody>
+              {!imports.length && phase === "ready" && <tr><td colSpan={4}>Belum ada impor.</td></tr>}
+              {imports.map((row) => (
+                <tr key={row.id}><td>{row.filename}</td><td>{row.status}</td><td>{row.stored_count}</td><td>{row.coverage_note}</td></tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {tab !== "import" && (
+        <>
+          <div className="kb-pane-switch" role="tablist" aria-label="Panel">
+            <button type="button" className={pane === "bank" ? "primary sm" : "ghost sm"} onClick={() => setPane("bank")}>Bank</button>
+            <button type="button" className={pane === "book" ? "primary sm" : "ghost sm"} onClick={() => setPane("book")}>Buku</button>
+          </div>
+          <div className="kb-pair-columns">
+            <section className={`kb-pane ${pane === "bank" ? "is-shown" : ""}`}>
+              <h2>Mutasi bank</h2>
+              {bankView === "loading" && <p>Memuat mutasi bank…</p>}
+              {bankView === "forbidden" && <p role="alert">Tidak berizin melihat rekonsiliasi.</p>}
+              {bankView === "error" && <p role="alert">Gagal memuat mutasi bank.</p>}
+              {bankView === "conflict" && <p role="alert">Konflik data rekonsiliasi.</p>}
+              {bankView === "empty" && <p>Belum ada mutasi bank pada periode ini.</p>}
+              {bankView === "results" && tab === "unmatched" && (
+                <div className="kb-pair-scroll">
+                  <table className="prod-table kas-bank-table" data-testid="kas-bank-pair-bank-table">
+                    <thead><tr><th></th><th>Tanggal</th><th>Uraian</th><th>Arah</th><th className="num">Nominal</th><th>Status</th></tr></thead>
+                    <tbody>
+                      {bankRows.filter((row) => !row.claim_id).map((row) => (
+                        <tr key={row.id} className={selectedBank === row.id ? "kb-row-matched" : ""}>
+                          <td><input type="radio" name="bank-line" checked={selectedBank === row.id} onChange={() => pickBank(row)} disabled={!row.matchable} aria-label={`Pilih bank ${row.description}`} /></td>
+                          <td>{row.date}</td>
+                          <td>{row.description}</td>
+                          <td>{row.direction === "in" ? "Masuk" : "Keluar"}</td>
+                          <td className="num kb-money">{formatRp(row.amount)}</td>
+                          <td>{row.block_reason || "Belum cocok"}{row.identity_guarantee === "tidak_dijamin" ? " Identitas bank tidak dijamin." : ""}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </section>
+            <section className={`kb-pane ${pane === "book" ? "is-shown" : ""}`}>
+              <h2>Pembukuan Eternal</h2>
+              {bookView === "loading" && <p>Memuat pembukuan…</p>}
+              {bookView === "error" && <p role="alert">Gagal memuat pembukuan.</p>}
+              {bookView === "forbidden" && <p role="alert">Tidak berizin melihat pembukuan.</p>}
+              {bookView === "empty" && <p>Belum ada mutasi buku pada periode ini.</p>}
+              {bookView === "results" && tab === "unmatched" && (
+                <div className="kb-pair-scroll">
+                  <table className="prod-table kas-bank-table" data-testid="kas-bank-pair-book-table">
+                    <thead><tr><th></th><th>Tanggal</th><th>Nomor</th><th>Uraian</th><th className="num">Nominal</th><th>Status</th></tr></thead>
+                    <tbody>
+                      {bookRows.filter((row) => !row.claim_id).map((row) => (
+                        <tr key={row.journal_line_id}>
+                          <td><input type="radio" name="book-line" checked={selectedBook === row.journal_line_id} onChange={() => { setSelectedBook(row.journal_line_id); matchKey.current = newOperationKey(); }} disabled={!row.matchable} aria-label={`Pilih buku ${row.journal_number}`} /></td>
+                          <td>{row.date}</td>
+                          <td>{row.source_path && row.source_id ? <Link to={`${row.source_path}?id=${encodeURIComponent(row.source_id)}`}>{row.journal_number}</Link> : row.journal_number}</td>
+                          <td>{row.description || "—"}</td>
+                          <td className="num kb-money">{formatRp(row.absolute_amount)}</td>
+                          <td>{row.block_reason || row.status}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </section>
+          </div>
+          {tab === "matched" && (
+            <div className="kb-pair-scroll">
+              <table className="prod-table kas-bank-table" data-testid="kas-bank-pair-matched">
+                <thead><tr><th>Status</th><th>Tinjauan</th><th className="num">Nominal</th><th>Snapshot</th><th></th></tr></thead>
+                <tbody>
+                  {(workspace?.matched_pairs || []).map((row) => (
+                    <tr key={row.id}>
+                      <td>{row.status}</td>
+                      <td>{row.review_state === "perlu_tinjauan" ? "Perlu tinjauan" : "Sumber sah"}</td>
+                      <td className="num">{formatRp(row.amount)}</td>
+                      <td>{row.book_snapshot?.label} {row.book_snapshot?.journal_number}</td>
+                      <td>{canReconcile && row.status === "active" && <button type="button" className="ghost sm" onClick={() => onCancel(row.id)}>Batalkan pencocokan</button>}</td>
+                    </tr>
+                  ))}
+                  {phase === "ready" && !(workspace?.matched_pairs || []).length && <tr><td colSpan={5}>Belum ada pencocokan baris.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {suggestions?.suggestions?.length > 0 && (
+            <div className="kb-pair-note" data-testid="kas-bank-pair-suggestions">
+              Saran tidak disimpan. {suggestions.ambiguous ? "Beberapa kandidat bernominal sama, pilih sendiri." : "Satu kandidat."}
+              <ul>
+                {suggestions.suggestions.map((item) => (
+                  <li key={item.journal_line_id}>{item.journal_number} · {item.reasons.join(", ")}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </>
+      )}
+
+      <footer className="kb-pair-footer">
+        <span>Pilihan bank {selectedBank ? formatRp(selectedBankTotal) : "—"}</span>
+        <span>Pilihan buku {selectedBook ? formatRp(selectedBookTotal) : "—"}</span>
+        <span>Selisih pilihan {selectionDiff == null ? "—" : formatRp(selectionDiff)}</span>
+        {canReconcile && <button type="button" className="primary sm" disabled={busy || !selectedBank || !selectedBook} onClick={onMatch} data-testid="kas-bank-pair-match">Cocokkan</button>}
+        {canOpenPayment && <Link to="/kas-bank/pembayaran">Buka Pembayaran</Link>}
+      </footer>
     </div>
   );
 }

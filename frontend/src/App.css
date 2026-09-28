@@ -6420,3 +6420,26 @@ button.ghost.sm.icon{padding:4px 6px}
   }
   .sales-finance-page .fd-drawer-scrim{left:0}
 }
+
+.kas-bank-page .kb-pair-shell{display:flex;flex-direction:column;gap:8px;min-height:calc(100vh - 96px)}
+.kas-bank-page .kb-pair-toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;position:sticky;top:0;z-index:3;background:var(--bg,#fff);padding:4px 0}
+.kas-bank-page .kb-pair-summary{display:flex;flex-wrap:wrap;gap:10px 16px;font-size:13px}
+.kas-bank-page .kb-pair-summary small{display:block;color:var(--muted,#667)}
+.kas-bank-page .kb-pair-note{font-size:12px;margin:0}
+.kas-bank-page .kb-pair-tabs,.kas-bank-page .kb-pane-switch{display:flex;gap:6px}
+.kas-bank-page .kb-pair-columns{display:grid;grid-template-columns:1fr 1fr;gap:8px;min-height:0}
+.kas-bank-page .kb-pair-scroll{overflow:auto;max-height:calc(100vh - 280px)}
+.kas-bank-page .kb-pair-footer{position:sticky;bottom:0;display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:var(--bg,#fff);border-top:1px solid var(--line,#ddd);padding:8px 0;z-index:3}
+.kas-bank-page .kb-pair-mapping{display:flex;flex-wrap:wrap;gap:8px;align-items:end}
+.kas-bank-page .kb-pair-mapping label{display:flex;flex-direction:column;font-size:12px;gap:2px}
+.kas-bank-page .kb-import-label input{display:block;max-width:180px}
+.kas-bank-page .kb-currency-set{display:inline-flex;gap:6px;margin-left:8px}
+@media (max-width:720px){
+  .kas-bank-page .kb-pair-columns{grid-template-columns:1fr}
+  .kas-bank-page .kb-pane{display:none}
+  .kas-bank-page .kb-pane.is-shown{display:block}
+  .kas-bank-page .kb-pair-scroll{max-height:46vh}
+}
+@media (min-width:721px){
+  .kas-bank-page .kb-pane-switch{display:none}
+}
