@@ -25,7 +25,7 @@ jest.mock("recharts", () => {
     PieChart: Pass,
     Pie: () => null,
     Cell: () => null,
-    Line: () => null,
+    Line: ({ dataKey }) => <span data-testid="trend-series" data-key={dataKey} />,
     Bar: () => null,
     XAxis: () => null,
     YAxis: () => null,
@@ -276,4 +276,66 @@ describe("Dashboard Penjualan runtime", () => {
     expect(container.querySelector('[data-testid="sales-omzet-delta"]').textContent).toContain("—");
     expect(container.querySelector('[data-testid="sales-omzet-delta"]').textContent).not.toMatch(/↑|↓/);
   });
+  test("late requests cannot populate an invalid custom range", async () => {
+    let resolve;
+    api.salesDashboard.mockReturnValue(new Promise((done) => { resolve = done; }));
+    await act(async () => root.render(<SalesDashboard />));
+    await click('sales-preset-custom');
+    await act(async () => resolve(payload()));
+    await flush();
+    expect(container.querySelector('[data-testid="sales-omzet-value"]').textContent).not.toMatch(/4[.,]000/);
+    expect(container.querySelector('[data-testid="sales-reload"]').disabled).toBe(true);
+  });
+  test("operational tabs expose one panel and retain genuine zero values", async () => {
+    api.salesDashboard.mockResolvedValue(payload({
+      omzet: {status:'zero',amount:0,invoice_count:0,comparison:{available:false}},
+      receivables: {status:'zero',outstanding:0,open_invoice_count:0,customer_count:0,aging:[]},
+    }));
+    await act(async () => root.render(<SalesDashboard />));
+    await flush();
+    expect(container.querySelector('[data-testid="sales-invoice-count"]').textContent).toBe('0');
+    expect(container.querySelector('#sales-detail-panel-orders').hidden).toBe(false);
+    expect(container.querySelector('#sales-detail-panel-receivables').hidden).toBe(true);
+    await act(async () => container.querySelector('#sales-detail-tab-receivables').click());
+    expect(container.querySelector('#sales-detail-panel-orders').hidden).toBe(true);
+    expect(container.querySelector('#sales-detail-panel-receivables').hidden).toBe(false);
+    expect(container.querySelector('#sales-detail-panel-receivables').textContent).toContain('Tidak ada saldo piutang saat ini.');
+  });
+  test("invoice details remain accessible in a labelled native dialog", async () => {
+    const showModal = jest.fn(function () { this.setAttribute('open', ''); });
+    const close = jest.fn(function () { this.removeAttribute('open'); });
+    HTMLDialogElement.prototype.showModal = showModal;
+    HTMLDialogElement.prototype.close = close;
+    await act(async () => root.render(<SalesDashboard />));
+    await flush();
+    const dialog = container.querySelector('dialog');
+    expect(dialog.hasAttribute('open')).toBe(false);
+    await act(async () => container.querySelector('.sd-foot button').click());
+    expect(showModal).toHaveBeenCalledTimes(1);
+    expect(dialog.getAttribute('aria-labelledby')).toBe('sales-invoice-title');
+    expect(dialog.querySelector('[data-testid="sales-bill"]').textContent).toMatch(/4[.,]400/);
+    await act(async () => dialog.querySelector('button').click());
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(dialog.hasAttribute('open')).toBe(false);
+  });
+
+  test("trend switches metrics without changing filters or refetching", async () => {
+    await act(async () => root.render(<SalesDashboard />));
+    await flush();
+    expect(container.querySelector('[data-testid="trend-series"]').dataset.key).toBe('omzet');
+    const calls = api.salesDashboard.mock.calls.length;
+    await act(async () => container.querySelectorAll('.sd-metric-switch button')[1].click());
+    expect(container.querySelector('[data-testid="trend-series"]').dataset.key).toBe('invoice_count');
+    expect(api.salesDashboard.mock.calls.length).toBe(calls);
+  });
+
+  test("unbucketed receivables remain visible without reducing the authoritative balance", async () => {
+    api.salesDashboard.mockResolvedValue(payload({receivables:{status:'incomplete',outstanding:1500,open_invoice_count:2,customer_count:1,aging:[{key:'NOT_DUE',label:'Belum',amount:1000}],unbucketed_outstanding:500}}));
+    await act(async () => root.render(<SalesDashboard />));
+    await flush();
+    expect(container.querySelector('[data-testid="sales-ar-unbucketed"]').textContent).toMatch(/500/);
+    expect(container.querySelector('[data-testid="sales-ar-outstanding"]').textContent).toMatch(/1[.,]500/);
+  });
+
 });
+
