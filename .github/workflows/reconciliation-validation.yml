@@ -160,6 +160,8 @@ jobs:
           src/lib/salesReceiptPaymentProof.test.js
           src/pages/SalesAccountingSettings.test.js
           src/lib/cashBankReconView.test.js
+          src/pages/RekonsiliasiKasBank.workspace.test.js
+          src/pages/KasBankPhase2.test.js
       - name: Build production frontend
         if: ${{ always() }}
         env:
@@ -167,3 +169,4 @@ jobs:
           DISABLE_ESLINT_PLUGIN: "true"
           NODE_OPTIONS: --max-old-space-size=4096
         run: npm run build
+
