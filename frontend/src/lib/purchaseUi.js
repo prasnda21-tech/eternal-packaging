@@ -192,6 +192,138 @@ export function formatPurchaseDateTime(value) {
   });
 }
 
+/** Local calendar YYYY-MM-DD (browser local), for due-status display. */
+export function localTodayYmd() {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+/** Format YYYY-MM-DD for purchasing UI. */
+export function formatPurchaseDate(value) {
+  if (!value) return "—";
+  const raw = String(value).trim().slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) return String(value);
+  const [y, m, d] = raw.split("-");
+  return `${Number(d)} ${["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"][Number(m) - 1] || m} ${y}`;
+}
+
+/**
+ * Derived invoice due display status.
+ * paymentStatus LUNAS wins; missing due_date → BELUM ADA JATUH TEMPO.
+ */
+export function invoiceDueDisplayStatus(invoice, today = localTodayYmd()) {
+  const pay = String(invoice?.payment_status || "").toUpperCase();
+  if (pay.includes("LUNAS") || pay === "DIBAYAR") return "LUNAS";
+  if (pay.includes("BATAL")) return "DIBATALKAN";
+  const due = String(invoice?.due_date || "").trim().slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(due)) return "BELUM ADA JATUH TEMPO";
+  const day = String(today || localTodayYmd()).slice(0, 10);
+  if (day < due) return "BELUM JATUH TEMPO";
+  if (day === due) return "JATUH TEMPO HARI INI";
+  return "TERLAMBAT";
+}
+
+export function dueStatusPillClass(status) {
+  const s = String(status || "").toUpperCase();
+  if (s === "LUNAS") return "pill xs pill-ok";
+  if (s === "TERLAMBAT") return "pill xs pill-cancel";
+  if (s === "JATUH TEMPO HARI INI") return "pill xs";
+  if (s === "BELUM JATUH TEMPO") return "pill xs pill-muted";
+  return "pill xs pill-muted";
+}
+
+/** Short label for missing due date. */
+export function dueDateLabel(dueDate) {
+  if (!dueDate) return "Belum ditentukan";
+  return formatPurchaseDate(dueDate);
+}
+
+/** Build lifecycle stages from purchasing documents (display only). */
+export function buildPurchaseLifecycle({
+  order,
+  receipt,
+  invoice,
+  payment,
+} = {}) {
+  const stages = [];
+  if (order) {
+    const qty = Number(
+      order?.receiving_progress?.ordered_qty
+      ?? order?.lines?.reduce((s, l) => s + Number(l.ordered_qty || 0), 0)
+      ?? 0,
+    );
+    stages.push({
+      key: "pesanan",
+      label: "Pesanan",
+      done: Boolean(order?.id || order?.po_number),
+      primary: order?.po_number || "—",
+      secondary: qty ? `${qty} PCS` : formatPurchaseDate(order?.order_date),
+      date: order?.order_date || order?.created_at,
+      href: order?.id ? `/pembelian/pesanan-pembelian?id=${encodeURIComponent(order.id)}` : null,
+    });
+  }
+  if (receipt || order) {
+    const received = Number(
+      order?.receiving_progress?.received_qty
+      ?? receipt?.lines?.reduce((s, l) => s + Number(l.received_qty || 0), 0)
+      ?? 0,
+    );
+    const ordered = Number(order?.receiving_progress?.ordered_qty || 0);
+    const done = Boolean(receipt?.id) || received > 0;
+    stages.push({
+      key: "penerimaan",
+      label: "Penerimaan",
+      done,
+      primary: receipt?.receipt_number || (done ? shortReceivingStatus(order?.receiving_status) : "Belum"),
+      secondary: ordered ? `${received} / ${ordered}` : (received ? String(received) : "—"),
+      date: receipt?.receipt_date || receipt?.created_at,
+      href: receipt?.id
+        ? `/pembelian/penerimaan-barang?id=${encodeURIComponent(receipt.id)}`
+        : (order?.id ? `/pembelian/penerimaan-barang?purchase_order_id=${encodeURIComponent(order.id)}` : null),
+    });
+  }
+  if (invoice || order) {
+    const done = Boolean(invoice?.id) || String(order?.invoice_status || "").includes("DIFAKTUR");
+    stages.push({
+      key: "faktur",
+      label: "Faktur",
+      done,
+      primary: invoice?.invoice_number || (done ? (order?.invoice_status || "Difaktur") : "Belum"),
+      secondary: invoice ? formatRupiah(invoice.grand_total) : "—",
+      date: invoice?.invoice_date || invoice?.created_at,
+      href: invoice?.id
+        ? `/pembelian/faktur-pembelian?invoice_id=${encodeURIComponent(invoice.id)}`
+        : null,
+    });
+  }
+  if (payment || invoice) {
+    const done = Boolean(payment?.id) || Number(invoice?.paid_total || 0) > 0
+      || String(invoice?.payment_status || "").toUpperCase() === "LUNAS"
+      || String(payment?.workflow_status || "").includes("DIAJUKAN");
+    const payLabel = payment?.payment_number
+      || (String(invoice?.payment_status || "").toUpperCase() === "LUNAS"
+        ? "Lunas"
+        : (payment?.workflow_status || invoice?.payment_status || "Belum"));
+    stages.push({
+      key: "pembayaran",
+      label: "Pembayaran",
+      done,
+      primary: payLabel,
+      secondary: payment
+        ? formatRupiah(payment.amount)
+        : (invoice ? formatRupiah(invoice.paid_total || 0) : "—"),
+      date: payment?.paid_at || payment?.submitted_at || payment?.created_at,
+      href: payment?.id
+        ? `/pembelian/pembayaran-pembelian?payment_id=${encodeURIComponent(payment.id)}`
+        : null,
+    });
+  }
+  return stages;
+}
+
 /** Frontend-only payment amount check. Backend remains authoritative. */
 export function validatePurchasePaymentAmount(amount, outstanding) {
   const raw = String(amount ?? "").trim();

@@ -3,13 +3,28 @@ import { Link, useSearchParams } from "react-router-dom";
 import { AlertCircle, Plus, Search } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
-import { errDetail, formatRupiah, friendlyLoadError, newIdempotencyKey, purchaseStatusPillClass, invoiceSourceLabel, todayYmd, purchaseRowInteractionProps, formatPurchaseDateTime} from "../lib/purchaseUi";
+import {
+  buildPurchaseLifecycle,
+  dueDateLabel,
+  dueStatusPillClass,
+  errDetail,
+  formatPurchaseDate,
+  formatPurchaseDateTime,
+  formatRupiah,
+  friendlyLoadError,
+  invoiceDueDisplayStatus,
+  newIdempotencyKey,
+  purchaseRowInteractionProps,
+  purchaseStatusPillClass,
+  todayYmd,
+} from "../lib/purchaseUi";
 import { fmtQty } from "../components/qtyUi";
 import { FormSection, FormField, FormProgress, computeStatus } from "../components/form-standard";
 import PurchasingFlowNav from "./PurchasingFlowNav";
 import PurchaseCancelModal from "./PurchaseCancelModal";
 import PurchaseActivityHistory from "./PurchaseActivityHistory";
 import PurchaseDocuments from "./PurchaseDocuments";
+import PurchaseLifecycleStrip from "./PurchaseLifecycleStrip";
 import PurchasePaymentAjukanModal from "./PurchasePaymentAjukanModal";
 import "./purchasePages.css";
 
@@ -55,6 +70,7 @@ export default function FakturPembelian() {
   const [receiptId, setReceiptId] = useState(canCreate ? queryReceiptId : "");
   const [preview, setPreview] = useState(null);
   const [invoiceDate, setInvoiceDate] = useState(todayYmd());
+  const [dueDate, setDueDate] = useState("");
   const [qty, setQty] = useState({});
   const [precedesGoodsReceipt, setPrecedesGoodsReceipt] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -155,6 +171,7 @@ export default function FakturPembelian() {
         receipt_id: invoiceSource === "receipt" ? (preview.receipt_id || receiptId) : undefined,
         precedes_goods_receipt: invoiceSource === "purchase_order" ? precedesGoodsReceipt : false,
         invoice_date: invoiceDate,
+        due_date: dueDate || null,
         lines,
         idempotency_key: newIdempotencyKey(),
       });
@@ -270,40 +287,31 @@ export default function FakturPembelian() {
           </div>
           <div className="purchase-table-wrap">
             <table className="prod-table purchase-table purchase-table-inv" data-testid="invoices-table">
-              <colgroup>
-                <col className="col-inv" />
-                <col className="col-source" />
-                <col className="col-ref" />
-                <col className="col-supplier" />
-                <col className="col-date" />
-                <col className="col-money" />
-                <col className="col-money" />
-                <col className="col-money" />
-                <col className="col-status" />
-              </colgroup>
               <thead>
                 <tr>
                   <th>No Faktur</th>
-                  <th>Sumber</th>
-                  <th>Referensi</th>
                   <th>Supplier</th>
-                  <th>Tanggal</th>
+                  <th>Tanggal Faktur</th>
+                  <th>Jatuh Tempo</th>
                   <th className="num">Grand Total</th>
                   <th className="num">Dibayar</th>
                   <th className="num">Sisa</th>
-                  <th className="cell-status">Status</th>
+                  <th className="cell-status">Status Pembayaran</th>
+                  <th className="cell-status">Due status</th>
+                  <th>Referensi</th>
                 </tr>
               </thead>
               <tbody>
-                {loading && <tr className="purchase-empty-row"><td colSpan={9} className="muted small">Memuat…</td></tr>}
+                {loading && <tr className="purchase-empty-row"><td colSpan={10} className="muted small">Memuat…</td></tr>}
                 {!loading && rows.length === 0 && (
                   <tr className="purchase-empty-row">
-                    <td colSpan={9} className="muted">Belum ada faktur.</td>
+                    <td colSpan={10} className="muted">Belum ada faktur.</td>
                   </tr>
                 )}
                 {rows.map((r) => {
                   const refParts = [r.po_number, r.receipt_number].filter(Boolean);
                   const refLabel = refParts.length ? refParts.join(" / ") : "—";
+                  const dueStatus = invoiceDueDisplayStatus(r);
                   return (
                     <tr
                       key={r.id}
@@ -313,10 +321,9 @@ export default function FakturPembelian() {
                         {r.invoice_number}
                         {r.precedes_goods_receipt && <span className="purchase-badge-early">Faktur mendahului barang</span>}
                       </td>
-                      <td className="cell-clip">{invoiceSourceLabel(r.invoice_source)}</td>
-                      <td className="mono cell-clip" title={refLabel}>{refLabel}</td>
                       <td className="cell-clip" title={r.supplier}>{r.supplier}</td>
-                      <td className="nowrap">{r.invoice_date || "—"}</td>
+                      <td className="nowrap">{formatPurchaseDate(r.invoice_date)}</td>
+                      <td className="nowrap">{dueDateLabel(r.due_date)}</td>
                       <td className="num">{formatRupiah(r.grand_total)}</td>
                       <td className="num">{formatRupiah(r.paid_total)}</td>
                       <td className="num">{formatRupiah(r.outstanding_amount)}</td>
@@ -325,6 +332,12 @@ export default function FakturPembelian() {
                           {r.payment_status}
                         </span>
                       </td>
+                      <td className="cell-status">
+                        <span className={`purchase-status-badge ${dueStatusPillClass(dueStatus)}`}>
+                          {dueStatus}
+                        </span>
+                      </td>
+                      <td className="mono cell-clip" title={refLabel}>{refLabel}</td>
                     </tr>
                   );
                 })}
@@ -399,9 +412,14 @@ export default function FakturPembelian() {
                 total={2}
               />
               <FormSection id="invoice-header" title="Informasi Faktur" status={computeStatus([{ value: invoiceDate, isRequired: true }])}>
-                <FormField id="invoice-date" label="Tanggal faktur" isRequired value={invoiceDate}>
-                  <input type="date" value={invoiceDate} onChange={(e) => setInvoiceDate(e.target.value)} data-testid="invoice-date-input" />
-                </FormField>
+                <div className="purchase-form-grid">
+                  <FormField id="invoice-date" label="Tanggal Faktur" isRequired value={invoiceDate}>
+                    <input type="date" value={invoiceDate} onChange={(e) => setInvoiceDate(e.target.value)} data-testid="invoice-date-input" />
+                  </FormField>
+                  <FormField id="invoice-due-date" label="Tanggal Jatuh Tempo (opsional)" value={dueDate}>
+                    <input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} data-testid="invoice-due-date-input" />
+                  </FormField>
+                </div>
               </FormSection>
               <FormSection id="invoice-lines" title="Detail Item" status={Object.values(qty).some(v => Number(v) > 0) ? "complete" : "incomplete"}>
                 <div className="purchase-table-wrap">
@@ -469,6 +487,16 @@ export default function FakturPembelian() {
 
       {view === "detail" && detail && (
         <div className="card purchase-detail-card" data-testid="invoice-detail">
+          <PurchaseLifecycleStrip
+            stages={buildPurchaseLifecycle({
+              order: { id: detail.purchase_order_id, po_number: detail.po_number },
+              receipt: detail.receipt_id
+                ? { id: detail.receipt_id, receipt_number: detail.receipt_number }
+                : null,
+              invoice: detail,
+              payment: (detail.payments || [])[0],
+            })}
+          />
           <div className="purchase-detail-meta" data-testid="invoice-detail-header">
             <div>
               <span className="label">No Faktur</span>
@@ -478,24 +506,61 @@ export default function FakturPembelian() {
               </span>
             </div>
             <div>
-              <span className="label">No PO</span>
-              <span className="value mono" data-testid="detail-po-number">{detail.po_number}</span>
-            </div>
-            <div>
-              <span className="label">Sumber</span>
-              <span className="value">{detail.invoice_source === "receipt" ? "Penerimaan" : "Pesanan Pembelian"}</span>
-            </div>
-            <div>
               <span className="label">Supplier</span>
               <span className="value" data-testid="detail-supplier">{detail.supplier || "—"}</span>
             </div>
             <div>
-              <span className="label">Tanggal</span>
-              <span className="value" data-testid="detail-invoice-date">{detail.invoice_date || "—"}</span>
+              <span className="label">Tanggal Faktur</span>
+              <span className="value" data-testid="detail-invoice-date">{formatPurchaseDate(detail.invoice_date)}</span>
             </div>
             <div>
-              <span className="label">Status</span>
+              <span className="label">Jatuh Tempo</span>
+              <span className="value" data-testid="detail-due-date">{dueDateLabel(detail.due_date)}</span>
+            </div>
+            <div>
+              <span className="label">Grand Total</span>
+              <span className="value" data-testid="detail-grand-total">{formatRupiah(detail.grand_total)}</span>
+            </div>
+            <div>
+              <span className="label">Sudah Dibayar</span>
+              <span className="value">{formatRupiah(detail.paid_total)}</span>
+            </div>
+            <div>
+              <span className="label">Sisa Tagihan</span>
+              <span className="value" data-testid="detail-outstanding">{formatRupiah(detail.outstanding_amount)}</span>
+            </div>
+            <div>
+              <span className="label">Payment Status</span>
               <span className={purchaseStatusPillClass(detail.payment_status)} data-testid="detail-payment-status">{detail.payment_status}</span>
+            </div>
+            <div>
+              <span className="label">Accounting Status</span>
+              <span className="value" data-testid="invoice-detail-accounting-status">{accountingLabel(detail.accounting_status)}</span>
+            </div>
+            <div>
+              <span className="label">Due status</span>
+              <span className={dueStatusPillClass(invoiceDueDisplayStatus(detail))} data-testid="detail-due-status">
+                {invoiceDueDisplayStatus(detail)}
+              </span>
+            </div>
+          </div>
+
+          <div className="purchase-detail-meta" data-testid="invoice-cross-document-links">
+            <div>
+              <span className="label">Pesanan Pembelian</span>
+              {detail.purchase_order_id ? (
+                <Link className="value mono purchase-doc-link" data-testid="detail-po-number" to={`/pembelian/pesanan-pembelian?id=${encodeURIComponent(detail.purchase_order_id)}`}>
+                  {detail.po_number || detail.purchase_order_id}
+                </Link>
+              ) : <span className="value">—</span>}
+            </div>
+            <div>
+              <span className="label">Penerimaan Barang</span>
+              {detail.receipt_id ? (
+                <Link className="value mono purchase-doc-link" to={`/pembelian/penerimaan-barang?id=${encodeURIComponent(detail.receipt_id)}`}>
+                  {detail.receipt_number || detail.receipt_id}
+                </Link>
+              ) : <span className="value">—</span>}
             </div>
           </div>
 
@@ -525,26 +590,7 @@ export default function FakturPembelian() {
             </table>
           </div>
 
-          <div className="purchase-detail-meta" style={{ marginTop: 12 }} data-testid="invoice-detail-summary">
-            <div>
-              <span className="label">Grand Total</span>
-              <span className="value" data-testid="detail-grand-total">{formatRupiah(detail.grand_total)}</span>
-            </div>
-            <div>
-              <span className="label">Dibayar</span>
-              <span className="value">{formatRupiah(detail.paid_total)}</span>
-            </div>
-            <div>
-              <span className="label">Sisa</span>
-              <span className="value" data-testid="detail-outstanding">{formatRupiah(detail.outstanding_amount)}</span>
-            </div>
-          </div>
-
           <div className="purchase-detail-meta" style={{ marginTop: 12 }} data-testid="invoice-accounting-section">
-            <div>
-              <span className="label">Accounting Status</span>
-              <span className="value" data-testid="invoice-detail-accounting-status">{accountingLabel(detail.accounting_status)}</span>
-            </div>
             {detail.accounting_journal_id ? (
               <div>
                 <span className="label">Journal</span>
@@ -601,7 +647,11 @@ export default function FakturPembelian() {
                 <tbody>
                   {(detail.payments || []).map((p) => (
                     <tr key={p.id}>
-                      <td className="mono">{p.payment_number}</td>
+                      <td className="mono">
+                        <Link className="purchase-doc-link" to={`/pembelian/pembayaran-pembelian?id=${encodeURIComponent(p.id)}`}>
+                          {p.payment_number}
+                        </Link>
+                      </td>
                       <td>{p.submitted_at ? formatPurchaseDateTime(p.submitted_at) : (p.payment_date || "—")}</td>
                       <td>{p.submission_status_label || p.list_status || p.workflow_status || "—"}</td>
                       <td className="num">{formatRupiah(p.amount)}</td>
