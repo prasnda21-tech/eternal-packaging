@@ -276,7 +276,7 @@ export default function SalesDashboard({ embedded = false }) {
           <section className="sd-card sd-kpi" aria-label="Pelanggan baru">
             <p className="sd-kicker">Selama periode</p><h2>Pelanggan baru</h2>
             <strong className="sd-kpi-value">{displayCount(customerStatus, customers?.new_count, customers?.detail)}</strong>
-            <p className="sd-note">{customerStatus === "incomplete" ? customers?.detail || "Data pelanggan belum lengkap" : "Berdasarkan identitas pelanggan"}</p>
+            <p className="sd-note">{customerStatus === "incomplete" ? customers?.detail || "Data pelanggan belum lengkap" : "Pelanggan dengan faktur finalized pertama pada periode ini"}</p>
           </section>
           <section className="sd-card sd-kpi" aria-label="Saldo piutang saat ini">
             <p className="sd-kicker">Saat ini</p><h2>Saldo piutang</h2>
@@ -397,6 +397,7 @@ export default function SalesDashboard({ embedded = false }) {
               <Stat testid="sales-ar-customers" label="Pelanggan berpiutang" value={displayCount(receivableStatus, receivables?.customer_count, receivables?.coverage_note || receivables?.detail)} />
             </ul>
             {receivables?.coverage_note ? <p className="sd-note">{receivables.coverage_note}</p> : null}
+            {receivables?.unbucketed_outstanding > 0 ? <p className="sd-note" data-testid="sales-ar-unbucketed">Belum masuk kelompok umur: {formatMoney(receivables.unbucketed_outstanding)}. Saldo ini tetap termasuk dalam total piutang.</p> : null}
             <div className={`sd-plot sd-plot-short${chartPlotsSeries(receivableStatus) && receivableStatus !== "zero" ? " is-series" : " is-message"}`} ref={agingRef}>
               {chartPlotsSeries(receivableStatus) && receivableStatus !== "zero" ? (
                 <ResponsiveContainer width="100%" height="100%">
