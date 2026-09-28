@@ -43,7 +43,7 @@ export default function PurchasePaymentAjukanModal({
     setError("");
     setUsers([]);
     idempotencyKeyRef.current = newIdempotencyKey();
-  }, [open, invoice?.id, outstanding]);
+  }, [open, invoice, outstanding]);
 
   useEffect(() => {
     if (!open) return undefined;
