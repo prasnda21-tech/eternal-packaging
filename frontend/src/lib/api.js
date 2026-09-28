@@ -326,6 +326,18 @@ export const api = {
   setCashBankReconciliationMatches: (id, journal_line_ids) => client.put(`/cash-bank/reconciliations/${encodeURIComponent(id)}/matches`, { journal_line_ids }).then((r) => r.data),
   deleteCashBankReconciliation: (id) => client.delete(`/cash-bank/reconciliations/${encodeURIComponent(id)}`).then((r) => r.data),
   finalizeCashBankReconciliation: (id) => client.post(`/cash-bank/reconciliations/${encodeURIComponent(id)}/finalize`).then((r) => r.data),
+  cashBankPairWorkspace: (params = {}) => client.get(`/cash-bank/reconciliations/pairs/workspace`, { params }).then((r) => r.data),
+  cashBankPairSuggestions: (params = {}) => client.get(`/cash-bank/reconciliations/pairs/suggestions`, { params }).then((r) => r.data),
+  createCashBankPair: (payload) => client.post(`/cash-bank/reconciliations/pairs`, payload).then((r) => r.data),
+  getCashBankPair: (id) => client.get(`/cash-bank/reconciliations/pairs/${encodeURIComponent(id)}`).then((r) => r.data),
+  cancelCashBankPair: (id, payload) => client.post(`/cash-bank/reconciliations/pairs/${encodeURIComponent(id)}/cancel`, payload).then((r) => r.data),
+  cashBankLegacyReconciliations: (params = {}) => client.get(`/cash-bank/reconciliations/legacy`, { params }).then((r) => r.data),
+  previewCashBankStatement: (formData) => client.post(`/cash-bank/statements/preview`, formData).then((r) => r.data),
+  validateCashBankStatement: (previewId, payload) => client.post(`/cash-bank/statements/preview/${encodeURIComponent(previewId)}/validate`, payload).then((r) => r.data),
+  commitCashBankStatement: (payload) => client.post(`/cash-bank/statements/imports`, payload).then((r) => r.data),
+  cashBankStatementImports: (params = {}) => client.get(`/cash-bank/statements/imports`, { params }).then((r) => r.data),
+  resolveCashBankStatementDuplicate: (lineId, payload) => client.post(`/cash-bank/statements/lines/${encodeURIComponent(lineId)}/duplicate-resolution`, payload).then((r) => r.data),
+  setCashBankManualStatementBalance: (payload) => client.put(`/cash-bank/statements/manual-balance`, payload).then((r) => r.data),
   currentStock: (params = {}) => client.get(`/current-stock`, { params }).then((r) => r.data),
   currentStockUpdate: (itemId, payload) => client.patch(`/current-stock/${itemId}`, payload).then((r) => r.data),
   currentStockExport: (params = {}) =>
@@ -940,3 +952,4 @@ function spkKeyHeader(payload) {
 }
 
 export default api;
+
