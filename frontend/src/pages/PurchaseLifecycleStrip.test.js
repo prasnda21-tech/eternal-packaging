@@ -1,9 +1,9 @@
-import { render, screen } from "@testing-library/react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 import PurchaseLifecycleStrip from "./PurchaseLifecycleStrip";
 
 test("renders lifecycle stages with done markers", () => {
-  render(
+  const html = renderToStaticMarkup(
     <MemoryRouter>
       <PurchaseLifecycleStrip
         stages={[
@@ -15,7 +15,8 @@ test("renders lifecycle stages with done markers", () => {
       />
     </MemoryRouter>,
   );
-  expect(screen.getByTestId("purchase-lifecycle")).toBeInTheDocument();
-  expect(screen.getByTestId("lifecycle-pesanan")).toHaveTextContent("Pesanan");
-  expect(screen.getByTestId("lifecycle-faktur").getAttribute("href")).toContain("faktur-pembelian");
+  expect(html).toContain('data-testid="purchase-lifecycle"');
+  expect(html).toContain('data-testid="lifecycle-pesanan"');
+  expect(html).toContain("Pesanan");
+  expect(html).toContain("/pembelian/faktur-pembelian?invoice_id=x");
 });

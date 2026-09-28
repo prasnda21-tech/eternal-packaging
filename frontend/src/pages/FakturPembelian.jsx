@@ -497,7 +497,11 @@ export default function FakturPembelian() {
               payment: (detail.payments || [])[0],
             })}
           />
-          <div className="purchase-detail-meta" data-testid="invoice-detail-header">
+          <div
+            className="purchase-detail-meta"
+            data-testid="invoice-detail-header"
+            data-section="invoice-detail-summary"
+          >
             <div>
               <span className="label">No Faktur</span>
               <span className="value mono" data-testid="detail-invoice-number">
