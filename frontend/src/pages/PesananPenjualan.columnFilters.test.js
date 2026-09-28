@@ -98,7 +98,7 @@ describe("Pesanan Penjualan header + column filters", () => {
 
   test("renders compact title without overline or list description", async () => {
     await renderPage();
-    expect(container.querySelector('[data-testid="sales-order-title"]').textContent).toBe("Pesanan Penjualan");
+    expect(container.querySelector('[data-testid="sales-order-title"]').textContent).toBe("Seluruh Pesanan Penjualan");
     expect(container.textContent).not.toContain("Penjualan · Pesanan Penjualan");
     expect(container.textContent).not.toContain("Daftar PO Penjualan dan pembuatan Sales Order baru");
     expect(container.textContent).not.toContain("Daftar pesanan penjualan dari pelanggan.");
@@ -170,3 +170,4 @@ describe("Pesanan Penjualan header + column filters", () => {
     expect(container.querySelector('[data-testid="so-th-filter-delivery"]')).toBeTruthy();
   });
 });
+
