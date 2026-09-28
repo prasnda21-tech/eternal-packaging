@@ -19,6 +19,7 @@ from services.purchase_common import (
     PREFIX_PURCHASE_INVOICE,
     actor_snapshot,
     stamp_create,
+    stamp_update,
     cancellation_fields,
     derive_child_number,
     get_named_lock,
@@ -441,6 +442,39 @@ async def get_purchase_invoice(db, invoice_id: str) -> dict:
     await attach_invoice_accounting_fields(db, [inv])
     await attach_payment_accounting_fields(db, inv["payments"])
     return inv
+
+
+async def update_purchase_invoice_due_date(
+    db, invoice_id: str, payload: Optional[dict], user: dict
+) -> dict:
+    """Update only purchase_invoices.due_date (+ audit stamps).
+
+    Does not touch invoice_date, amounts, lines, PO/GR links, HPP, stock,
+    payment status, or accounting status.
+    """
+    data = dict(payload or {})
+    due_date = parse_optional_ymd(data.get("due_date"))
+
+    async with get_named_lock("purchase_invoice"):
+        doc = await db[COLLECTION].find_one({"id": str(invoice_id)}, {"_id": 0})
+        if not doc:
+            doc = await db[COLLECTION].find_one({"invoice_number": str(invoice_id)}, {"_id": 0})
+        if not doc:
+            raise HTTPException(404, f"Faktur Pembelian '{invoice_id}' tidak ditemukan.")
+        if is_cancelled(doc):
+            raise HTTPException(409, "Faktur yang dibatalkan tidak dapat diubah jatuh temponya.")
+
+        updated = await db[COLLECTION].find_one_and_update(
+            {"id": doc["id"], "cancelled": {"$ne": True}},
+            {"$set": {"due_date": due_date, **stamp_update(user)}},
+            return_document=ReturnDocument.AFTER,
+        )
+        if updated is None:
+            current = await db[COLLECTION].find_one({"id": doc["id"]}, {"_id": 0})
+            if current and is_cancelled(current):
+                raise HTTPException(409, "Faktur yang dibatalkan tidak dapat diubah jatuh temponya.")
+            raise HTTPException(409, "Gagal mengubah jatuh tempo karena perubahan bersamaan.")
+        return await get_purchase_invoice(db, updated["id"])
 
 
 async def cancel_purchase_invoice(

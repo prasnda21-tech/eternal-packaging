@@ -41,6 +41,7 @@ def register_purchase_routes(api_router, *, get_db, current_user, require_perm, 
         get_purchase_invoice,
         get_receipt_invoice_preview,
         list_purchase_invoices,
+        update_purchase_invoice_due_date,
     )
     from services.purchase_payments import (
         cancel_purchase_payment,
@@ -275,6 +276,18 @@ def register_purchase_routes(api_router, *, get_db, current_user, require_perm, 
         await require_any_perm(user, "purchase_invoices.create")
         doc = await create_purchase_invoice(get_db(), _dump(payload), user)
         return {"invoice": doc, "message": "Faktur Pembelian berhasil dibuat"}
+
+    @api_router.patch("/purchase-invoices/{invoice_id}/due-date")
+    async def update_purchase_invoice_due_date_endpoint(
+        invoice_id: str,
+        payload: Optional[LoosePayload] = None,
+        user=Depends(current_user),
+    ):
+        # Reuse existing invoice-create capability — do not broaden permissions.
+        await require_any_perm(user, "purchase_invoices.create")
+        data = _dump(payload) if payload is not None else {}
+        doc = await update_purchase_invoice_due_date(get_db(), invoice_id, data, user)
+        return {"invoice": doc, "message": "Jatuh tempo faktur diperbarui"}
 
     @api_router.post("/purchase-invoices/{invoice_id}/cancel")
     async def cancel_purchase_invoice_endpoint(

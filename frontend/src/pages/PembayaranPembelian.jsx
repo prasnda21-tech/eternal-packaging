@@ -5,6 +5,7 @@ import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import {
   buildPurchaseLifecycle,
+  dueDateLabel,
   errDetail,
   formatPurchaseDate,
   formatRupiah,
@@ -306,7 +307,7 @@ export default function PembayaranPembelian() {
                 <td className="nowrap" data-testid={`payment-submitted-at-cell-${r.id}`}>
                   {formatPurchaseDateTime(r.submitted_at)}
                 </td>
-                <td className="nowrap">{formatPurchaseDate(r.invoice_due_date)}</td>
+                <td className="nowrap">{dueDateLabel(r.invoice_due_date)}</td>
                 <td className="nowrap">{formatPurchaseDate(r.requested_payment_date)}</td>
                 <td className="num">{formatRupiah(r.amount)}</td>
                 <td className="nowrap">{formatPurchaseDateTime(r.paid_at)}</td>
@@ -404,11 +405,11 @@ export default function PembayaranPembelian() {
                 </div>
                 <div>
                   <span className="label">Jatuh Tempo</span>
-                  <span className="value">{formatPurchaseDate(detail.invoice_due_date)}</span>
+                  <span className="value" data-testid="payment-detail-invoice-due-date">{dueDateLabel(detail.invoice_due_date)}</span>
                 </div>
                 <div>
                   <span className="label">Target Pembayaran</span>
-                  <span className="value">{formatPurchaseDate(detail.requested_payment_date)}</span>
+                  <span className="value" data-testid="payment-detail-requested-payment-date">{formatPurchaseDate(detail.requested_payment_date)}</span>
                 </div>
                 <div data-testid="payment-submitted-by">
                   <span className="label">Diajukan oleh</span>

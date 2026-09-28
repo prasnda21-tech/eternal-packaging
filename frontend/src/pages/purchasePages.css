@@ -945,6 +945,25 @@
   align-items: center;
 }
 
+.purchase-page .purchase-due-date-row,
+.purchase-page .purchase-due-date-edit {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.purchase-page .purchase-due-date-edit input[type="date"] {
+  min-width: 10.5rem;
+}
+
+.purchase-page .purchase-form-grid .hint {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--muted, #6b7c85);
+}
+
 .purchase-page .purchase-receipt-list {
   margin-top: 16px;
   padding-top: 14px;
