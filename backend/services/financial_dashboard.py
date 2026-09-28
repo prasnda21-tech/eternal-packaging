@@ -709,6 +709,86 @@ def _href_all(perms: set, path: str, *keys: str) -> Optional[str]:
     return None
 
 
+_RECON_KNOWN_STATUSES = frozenset({
+    "RECONCILED",
+    "EXPLAINED_DIFFERENCE",
+    "DIFFERENCE",
+    "INCOMPLETE",
+    "BLOCKED",
+})
+
+
+def _inventory_reconciliation_control(recon: Optional[dict], blocked_count: int) -> Tuple[str, int, str]:
+    """Present the reconciliation read model without treating an unread result as done.
+
+    Count follows the existing document contract: blocked COGS rows, plus one
+    only when the source status itself is DIFFERENCE or BLOCKED. Rupiah is not
+    added into that count. A zero count can still be incomplete.
+    """
+    blocked = int(blocked_count or 0)
+    payload = recon if isinstance(recon, dict) else None
+    raw_status = ""
+    stability = ""
+    coverage_known = False
+    coverage_complete = False
+    if payload is not None:
+        raw_status = str(payload.get("reconciliation_status") or "").strip()
+        stability = str(payload.get("read_stability") or "").strip()
+        if "basis_coverage_complete" in payload:
+            coverage_known = True
+            coverage_complete = payload.get("basis_coverage_complete") is True
+    count = blocked + (1 if raw_status in {"DIFFERENCE", "BLOCKED"} else 0)
+    ready = (
+        payload is not None
+        and raw_status in {"RECONCILED", "EXPLAINED_DIFFERENCE"}
+        and stability == "STABLE"
+        and coverage_known
+        and coverage_complete
+        and blocked == 0
+    )
+    if ready and raw_status == "EXPLAINED_DIFFERENCE":
+        return (
+            "complete",
+            count,
+            "Selisih terjelaskan. Pemeriksaan rekonsiliasi ini lengkap. "
+            "Nilai selisih tetap mengikuti sumber. Ini bukan pernyataan bahwa seluruh keuangan siap.",
+        )
+    if ready:
+        return (
+            "complete",
+            count,
+            "Rekonsiliasi cocok. Pembacaan stabil dan cakupan dasar lengkap.",
+        )
+
+    notes: List[str] = []
+    if payload is None or not raw_status or raw_status not in _RECON_KNOWN_STATUSES:
+        notes.append("Status rekonsiliasi tidak dapat ditentukan.")
+    elif raw_status == "INCOMPLETE":
+        notes.append("Data rekonsiliasi belum lengkap.")
+    elif raw_status == "DIFFERENCE":
+        notes.append("Selisih ditemukan.")
+    elif raw_status == "BLOCKED":
+        notes.append("Rekonsiliasi terblokir.")
+    elif raw_status == "EXPLAINED_DIFFERENCE":
+        notes.append("Selisih terjelaskan. Nilai selisih tetap mengikuti sumber.")
+    if payload is None or not stability:
+        notes.append("Kestabilan pembacaan tidak tersedia.")
+    elif stability == "IN_PROGRESS":
+        notes.append("Pembacaan rekonsiliasi sedang berubah.")
+    elif stability == "RETRY_REQUIRED":
+        notes.append("Pembacaan rekonsiliasi perlu diulang.")
+    elif stability != "STABLE":
+        notes.append("Kestabilan pembacaan tidak dapat ditentukan.")
+    if not coverage_known:
+        notes.append("Cakupan dasar rekonsiliasi tidak tersedia pada hasil baca.")
+    elif not coverage_complete:
+        notes.append("Cakupan dasar rekonsiliasi belum lengkap.")
+    if blocked:
+        notes.append(f"HPP terblokir: {blocked}.")
+    notes.append("Hasil ini belum dapat dinyatakan lengkap.")
+    return "incomplete", count, " ".join(notes)
+
+
 async def _controls(db, perms: set, book: Optional[dict], book_error: Optional[str], recon: Optional[dict], recon_error: Optional[str]) -> dict:
     settings = await get_purchase_accounting_settings(db)
     effective = str(settings.get("inventory_accounting_effective_date") or "").strip() or None
@@ -741,16 +821,15 @@ async def _controls(db, perms: set, book: Optional[dict], book_error: Optional[s
             href=_href(perms, "/persediaan/nilai-persediaan", "inventory_valuation.view", "nav.inventory.inventory_value"),
             status="incomplete" if cogs_count else "complete",
         ))
-        recon_status = str((recon or {}).get("reconciliation_status") or "")
-        differ = recon_status in {"DIFFERENCE", "BLOCKED"} or blocked_count > 0
+        recon_state, recon_count, recon_detail = _inventory_reconciliation_control(recon, blocked_count)
         items.append(_control(
             "inventory_reconciliation",
             "Rekonsiliasi persediaan blocked atau berbeda",
-            blocked_count + (1 if recon_status in {"DIFFERENCE", "BLOCKED"} else 0),
+            recon_count,
             kind="action",
             href=_href(perms, "/persediaan/nilai-persediaan?tab=ledger-recon", "inventory_reconciliation.view"),
-            status="incomplete" if differ else "complete",
-            detail=f"Status rekonsiliasi: {recon_status or 'tidak diketahui'}.",
+            status=recon_state,
+            detail=recon_detail,
         ))
         items.append(_control(
             "inventory_recovery",
