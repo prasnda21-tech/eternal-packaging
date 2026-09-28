@@ -329,5 +329,13 @@ describe("Dashboard Penjualan runtime", () => {
     expect(api.salesDashboard.mock.calls.length).toBe(calls);
   });
 
+  test("unbucketed receivables remain visible without reducing the authoritative balance", async () => {
+    api.salesDashboard.mockResolvedValue(payload({receivables:{status:'incomplete',outstanding:1500,open_invoice_count:2,customer_count:1,aging:[{key:'NOT_DUE',label:'Belum',amount:1000}],unbucketed_outstanding:500}}));
+    await act(async () => root.render(<SalesDashboard />));
+    await flush();
+    expect(container.querySelector('[data-testid="sales-ar-unbucketed"]').textContent).toMatch(/500/);
+    expect(container.querySelector('[data-testid="sales-ar-outstanding"]').textContent).toMatch(/1[.,]500/);
+  });
+
 });
 
