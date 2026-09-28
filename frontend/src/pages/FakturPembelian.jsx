@@ -74,6 +74,10 @@ export default function FakturPembelian() {
   const [qty, setQty] = useState({});
   const [precedesGoodsReceipt, setPrecedesGoodsReceipt] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [editingDueDate, setEditingDueDate] = useState(false);
+  const [dueDateDraft, setDueDateDraft] = useState("");
+  const [dueDateBusy, setDueDateBusy] = useState(false);
+  const [dueDateErr, setDueDateErr] = useState("");
 
   const load = useCallback(async () => {
     setLoading(true); setErr("");
@@ -183,10 +187,43 @@ export default function FakturPembelian() {
 
   const openDetail = async (id) => {
     setErr("");
+    setEditingDueDate(false);
+    setDueDateErr("");
     try {
       setDetail((await api.getPurchaseInvoice(id)).invoice);
       setView("detail");
     } catch (ex) { setErr(errDetail(ex)); }
+  };
+
+  const startEditDueDate = () => {
+    if (!detail || !canCreate || detail.cancelled) return;
+    setDueDateDraft(String(detail.due_date || "").slice(0, 10));
+    setDueDateErr("");
+    setEditingDueDate(true);
+  };
+
+  const cancelEditDueDate = () => {
+    if (dueDateBusy) return;
+    setEditingDueDate(false);
+    setDueDateErr("");
+  };
+
+  const saveDueDate = async () => {
+    if (!detail || dueDateBusy || !canCreate) return;
+    setDueDateBusy(true);
+    setDueDateErr("");
+    setOk("");
+    try {
+      const res = await api.updatePurchaseInvoiceDueDate(detail.id, dueDateDraft || null);
+      setDetail(res.invoice);
+      setEditingDueDate(false);
+      setOk("Jatuh tempo faktur diperbarui.");
+      await load();
+    } catch (ex) {
+      setDueDateErr(errDetail(ex));
+    } finally {
+      setDueDateBusy(false);
+    }
   };
 
   const openCancel = (row) => {
@@ -416,7 +453,12 @@ export default function FakturPembelian() {
                   <FormField id="invoice-date" label="Tanggal Faktur" isRequired value={invoiceDate}>
                     <input type="date" value={invoiceDate} onChange={(e) => setInvoiceDate(e.target.value)} data-testid="invoice-date-input" />
                   </FormField>
-                  <FormField id="invoice-due-date" label="Tanggal Jatuh Tempo (opsional)" value={dueDate}>
+                  <FormField
+                    id="invoice-due-date"
+                    label="Tanggal Jatuh Tempo"
+                    value={dueDate}
+                    helpText="Opsional. Kosong = Belum ditentukan. Tidak mengisi otomatis Net 7/14/30."
+                  >
                     <input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} data-testid="invoice-due-date-input" />
                   </FormField>
                 </div>
@@ -517,9 +559,62 @@ export default function FakturPembelian() {
               <span className="label">Tanggal Faktur</span>
               <span className="value" data-testid="detail-invoice-date">{formatPurchaseDate(detail.invoice_date)}</span>
             </div>
-            <div>
+            <div data-testid="detail-due-date-block">
               <span className="label">Jatuh Tempo</span>
-              <span className="value" data-testid="detail-due-date">{dueDateLabel(detail.due_date)}</span>
+              {!editingDueDate ? (
+                <span className="value purchase-due-date-row">
+                  <span data-testid="detail-due-date">{dueDateLabel(detail.due_date)}</span>
+                  {canCreate && !detail.cancelled ? (
+                    <button
+                      type="button"
+                      className="ghost sm"
+                      data-testid="btn-ubah-jatuh-tempo"
+                      onClick={startEditDueDate}
+                    >
+                      Ubah Jatuh Tempo
+                    </button>
+                  ) : null}
+                </span>
+              ) : (
+                <span className="value purchase-due-date-edit" data-testid="detail-due-date-edit">
+                  <input
+                    type="date"
+                    value={dueDateDraft}
+                    onChange={(e) => setDueDateDraft(e.target.value)}
+                    disabled={dueDateBusy}
+                    data-testid="detail-due-date-input"
+                  />
+                  <button
+                    type="button"
+                    className="primary sm"
+                    disabled={dueDateBusy}
+                    onClick={saveDueDate}
+                    data-testid="btn-simpan-jatuh-tempo"
+                  >
+                    {dueDateBusy ? "Menyimpan…" : "Simpan"}
+                  </button>
+                  <button
+                    type="button"
+                    className="ghost sm"
+                    disabled={dueDateBusy}
+                    onClick={cancelEditDueDate}
+                    data-testid="btn-batal-jatuh-tempo"
+                  >
+                    Batal
+                  </button>
+                  <button
+                    type="button"
+                    className="ghost sm"
+                    disabled={dueDateBusy}
+                    onClick={() => setDueDateDraft("")}
+                    data-testid="btn-clear-jatuh-tempo"
+                    title="Kosongkan menjadi Belum ditentukan"
+                  >
+                    Kosongkan
+                  </button>
+                </span>
+              )}
+              {dueDateErr ? <p className="error" data-testid="due-date-edit-error">{dueDateErr}</p> : null}
             </div>
             <div>
               <span className="label">Grand Total</span>

@@ -130,7 +130,7 @@ export default function PurchasePaymentAjukanModal({
             </div>
             <div>
               <span className="label">Jatuh Tempo</span>
-              <span className="value">{dueDateLabel(invoice.due_date)}</span>
+              <span className="value" data-testid="payment-ajukan-invoice-due-date">{dueDateLabel(invoice.due_date)}</span>
             </div>
             <div>
               <span className="label">Total Faktur</span>
