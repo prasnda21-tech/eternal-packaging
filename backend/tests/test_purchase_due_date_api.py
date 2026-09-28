@@ -11,7 +11,7 @@ os.environ["DB_NAME"] = f"eternal_purchase_due_svc_{uuid.uuid4().hex[:8]}"
 
 from motor.motor_asyncio import AsyncIOMotorClient
 
-from services.purchase_invoices import attach_payment_fields, create_purchase_invoice
+from services.purchase_invoices import attach_payment_fields, create_purchase_invoice, update_purchase_invoice_due_date
 from services.purchase_payments import create_purchase_payment
 
 
@@ -144,3 +144,69 @@ async def test_requested_payment_date_persists_on_payment_draft(db):
     }, USER)
     assert payment["requested_payment_date"] == "2026-10-02"
     assert payment.get("paid_at") in (None, "", False) or payment.get("settlement_status") == "UNPAID"
+
+
+@pytest.mark.anyio
+async def test_update_due_date_only_and_clear_to_null(db):
+    po_id, gr_id, _ = await _seed_po_receipt(db)
+    inv = await create_purchase_invoice(db, {
+        "invoice_source": "receipt",
+        "receipt_id": gr_id,
+        "purchase_order_id": po_id,
+        "invoice_date": "2026-09-28",
+        "due_date": "2026-10-05",
+        "idempotency_key": f"inv-edit-{uuid.uuid4()}",
+    }, USER)
+    assert inv["invoice_date"] == "2026-09-28"
+    assert inv["due_date"] == "2026-10-05"
+    grand = inv["grand_total"]
+    lines = inv.get("lines") or []
+
+    payment = await create_purchase_payment(db, {
+        "purchase_invoice_id": inv["id"],
+        "amount": inv["grand_total"],
+        "requested_payment_date": "2026-10-08",
+        "idempotency_key": f"pay-edit-{uuid.uuid4()}",
+    }, USER)
+    assert payment["requested_payment_date"] == "2026-10-08"
+
+    updated = await update_purchase_invoice_due_date(db, inv["id"], {"due_date": "2026-10-10"}, USER)
+    assert updated["due_date"] == "2026-10-10"
+    assert updated["invoice_date"] == "2026-09-28"
+    assert updated["grand_total"] == grand
+    assert updated.get("lines") == lines
+    assert updated["payment_status"] == inv["payment_status"]
+    assert updated.get("updated_by", {}).get("id") == "u1"
+
+    # Payment target date must remain independent of invoice due_date edits.
+    pay_doc = await db.purchase_payments.find_one({"id": payment["id"]}, {"_id": 0})
+    assert pay_doc["requested_payment_date"] == "2026-10-08"
+    assert pay_doc.get("paid_at") in (None, "")
+
+    cleared = await update_purchase_invoice_due_date(db, inv["id"], {"due_date": None}, USER)
+    assert cleared.get("due_date") is None
+    assert cleared["due_status"] == "BELUM ADA JATUH TEMPO"
+    assert cleared["invoice_date"] == "2026-09-28"
+
+    pay_doc2 = await db.purchase_payments.find_one({"id": payment["id"]}, {"_id": 0})
+    assert pay_doc2["requested_payment_date"] == "2026-10-08"
+    assert pay_doc2.get("paid_at") in (None, "")
+
+
+@pytest.mark.anyio
+async def test_due_status_matrix_after_edit(db):
+    po_id, gr_id, _ = await _seed_po_receipt(db)
+    inv = await create_purchase_invoice(db, {
+        "invoice_source": "receipt",
+        "receipt_id": gr_id,
+        "purchase_order_id": po_id,
+        "invoice_date": "2026-09-28",
+        "idempotency_key": f"inv-status-{uuid.uuid4()}",
+    }, USER)
+    future = await update_purchase_invoice_due_date(db, inv["id"], {"due_date": "2099-01-01"}, USER)
+    assert future["due_status"] == "BELUM JATUH TEMPO"
+    today = await update_purchase_invoice_due_date(db, inv["id"], {"due_date": "2026-09-28"}, USER)
+    # status is derived against UTC today — accept today/overdue depending on wall clock
+    assert today["due_status"] in {"JATUH TEMPO HARI INI", "TERLAMBAT", "BELUM JATUH TEMPO"}
+    overdue = await update_purchase_invoice_due_date(db, inv["id"], {"due_date": "2020-01-01"}, USER)
+    assert overdue["due_status"] == "TERLAMBAT"
