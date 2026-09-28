@@ -5,6 +5,7 @@ Not wired to Sales / Purchasing / Payroll / HPP / Stock / Invoice modules.
 from __future__ import annotations
 
 import uuid
+from collections import Counter
 from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -525,6 +526,12 @@ async def ensure_indexes(db) -> None:
     await lines.create_index("id", unique=True)
     await lines.create_index("journal_id")
     await lines.create_index("account_id")
+    await lines.create_index(
+        [("journal_id", 1), ("plan_slot", 1)],
+        unique=True,
+        partialFilterExpression={"plan_slot": {"$type": "string"}},
+        name="uniq_journal_plan_slot",
+    )
 
 
 def _present_journal(doc: Optional[dict], lines: Optional[List[dict]] = None) -> Optional[dict]:
@@ -607,6 +614,113 @@ async def find_primary_journal_for_source(
         {"journal_id": doc["id"]}, {"_id": 0}
     ).to_list(100)
     return public_journal(doc, lines)
+
+
+def _plan_line_key(row: dict) -> tuple:
+    return (
+        str((row or {}).get("account_id") or "").strip(),
+        str(_money((row or {}).get("debit") or 0)),
+        str(_money((row or {}).get("credit") or 0)),
+    )
+
+
+def primary_lines_match_plan(stored: Sequence[dict], plan_lines: Sequence[dict]) -> bool:
+    """Account, debit, and credit must match, including duplicate plan rows."""
+    got = Counter(_plan_line_key(row) for row in (stored or []))
+    expected = Counter(_plan_line_key(row) for row in (plan_lines or []))
+    return bool(expected) and got == expected
+
+
+def _missing_plan_slots(stored: Sequence[dict], plan_lines: Sequence[dict]) -> List[tuple]:
+    """Slots whose plan key is not covered by stored lines. Extra stored keys are a conflict."""
+    expected = list(plan_lines or [])
+    pool = Counter(_plan_line_key(row) for row in (stored or []))
+    wanted = Counter(_plan_line_key(row) for row in expected)
+    for key, count in pool.items():
+        if count > wanted.get(key, 0):
+            raise JournalConflictError("Jurnal sumber tidak sesuai rencana")
+    missing: List[tuple] = []
+    consumed = Counter()
+    for index, row in enumerate(expected):
+        key = _plan_line_key(row)
+        if consumed[key] < pool.get(key, 0):
+            consumed[key] += 1
+            continue
+        missing.append((index, row))
+    return missing
+
+
+async def complete_primary_source_lines(
+    db,
+    source_type: str,
+    source_id: str,
+    lines: Sequence[dict],
+    *,
+    writer_claim_token: Optional[str] = None,
+) -> Optional[dict]:
+    """Fill missing primary lines from an exact plan. Does not delete or post a second journal.
+
+    A closed period blocks new lines. A stored line outside the plan is left untouched
+    and reported as a conflict. Header status is not changed.
+    """
+    existing = await find_primary_journal_for_source(db, source_type, source_id)
+    if not existing:
+        return None
+    if str(existing.get("status") or "") != STATUS_POSTED:
+        raise JournalConflictError("Jurnal sumber tidak dapat dilengkapi")
+    stored = list(existing.get("lines") or [])
+    if primary_lines_match_plan(stored, lines):
+        return existing
+    missing = _missing_plan_slots(stored, lines)
+    if not missing:
+        if primary_lines_match_plan(stored, lines):
+            return existing
+        raise JournalConflictError("Jurnal sumber tidak sesuai rencana")
+
+    async with get_named_lock(f"journal_complete:{source_type}:{source_id}"):
+        existing = await find_primary_journal_for_source(db, source_type, source_id)
+        if not existing:
+            return None
+        if str(existing.get("status") or "") != STATUS_POSTED:
+            raise JournalConflictError("Jurnal sumber tidak dapat dilengkapi")
+        stored = list(existing.get("lines") or [])
+        if primary_lines_match_plan(stored, lines):
+            return existing
+        missing = _missing_plan_slots(stored, lines)
+        if not missing:
+            raise JournalConflictError("Jurnal sumber tidak sesuai rencana")
+        try:
+            async with _period_writer_guard(db, str(existing.get("date") or ""), writer_claim_token):
+                now = now_iso()
+                docs = []
+                for index, raw in missing:
+                    account_id = str((raw or {}).get("account_id") or "").strip()
+                    debit = _money((raw or {}).get("debit") or 0)
+                    credit = _money((raw or {}).get("credit") or 0)
+                    if not account_id or debit < 0 or credit < 0 or (debit > 0 and credit > 0) or (debit == 0 and credit == 0):
+                        raise JournalValidationError("Baris rencana jurnal tidak valid")
+                    docs.append({
+                        "id": str(uuid.uuid4()),
+                        "journal_id": existing["id"],
+                        "account_id": account_id,
+                        "debit": _money_float(debit),
+                        "credit": _money_float(credit),
+                        "description": str((raw or {}).get("description") or "").strip() or None,
+                        "plan_slot": f"{existing['id']}:{index}",
+                        "created_at": now,
+                    })
+                if docs:
+                    try:
+                        await db[JOURNAL_LINES].insert_many(docs, ordered=False)
+                    except Exception as exc:
+                        if "E11000" not in str(exc) and "duplicate" not in str(exc).lower():
+                            raise
+        except PeriodLockedError:
+            raise
+        refreshed = await find_primary_journal_for_source(db, source_type, source_id)
+        if refreshed and primary_lines_match_plan(refreshed.get("lines") or [], lines):
+            return refreshed
+        return refreshed
 
 
 async def _insert_journal_atomic(

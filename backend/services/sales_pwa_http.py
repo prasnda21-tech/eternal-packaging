@@ -164,9 +164,17 @@ def register_sales_pwa_routes(
         db = get_db()
         order = await spwa.require_owned_order(db, user, order_id)
         inv = await db.sales_invoices.find_one(
-            {"id": invoice_id, "po_id": order.get("id"), "is_cancelled": {"$ne": True}},
+            {
+                "id": invoice_id,
+                "po_id": order.get("id"),
+                "is_cancelled": {"$ne": True},
+                "removed_from_active": {"$ne": True},
+                "issue_state": {"$ne": "issuing"},
+            },
             {"_id": 0},
         )
+        if inv and (inv.get("removed_from_active") or str(inv.get("issue_state") or "") not in {"", "issued"}):
+            inv = None
         if not inv:
             raise HTTPException(404, "Invoice tidak ditemukan")
         pdf_bytes = generate_sales_invoice_pdf_bytes(inv)
