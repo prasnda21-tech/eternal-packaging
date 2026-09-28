@@ -1058,6 +1058,111 @@ def stock_commit_instant(movement: dict):
     return stock_writer_instant(row)
 
 
+def strict_zero_opening_from_durable_gr(
+    movements: List[dict],
+    *,
+    receipt_id: str,
+    participant_ids: Optional[set] = None,
+    base_uom: str = "",
+) -> dict:
+    """Prove opening qty is zero from the durable official GR boundary itself.
+
+    Used only when the full historical balance chain is ambiguous. This does not
+    invent cost for earlier positive stock. It requires:
+    - exact goods_receipt reference for this receipt
+    - proven stock_applied_at
+    - balance_before == 0 for the target boundary movement
+    - positive consistent delta
+    - no earlier applied participant GR for the same item
+    """
+    rid = str(receipt_id or "").strip()
+    if not rid:
+        return {"ok": False, "reason": "STOCK_SNAPSHOT_UNPROVEN", "chain": []}
+    wanted_uom = str(base_uom or "").strip().upper()
+    allowed_receipts = {
+        str(value or "").strip()
+        for value in (participant_ids or {rid})
+        if str(value or "").strip()
+    }
+    if rid not in allowed_receipts:
+        return {"ok": False, "reason": "STOCK_SNAPSHOT_UNPROVEN", "chain": []}
+
+    target_rows = []
+    earlier_participant = []
+    for movement in movements or []:
+        if not _movement_is_live(movement):
+            continue
+        if str(movement.get("reference_type") or "") != "goods_receipt":
+            continue
+        pref = str(movement.get("reference_id") or "").strip()
+        if pref not in allowed_receipts:
+            continue
+        gap = applied_marker_gap(movement)
+        instant = None if gap else applied_marker_instant(movement)
+        if instant is None:
+            if pref == rid:
+                return {
+                    "ok": False,
+                    "reason": "STOCK_COMMIT_UNPROVEN",
+                    "movement_id": movement_evidence_id(movement),
+                    "evidence_reason": gap or "Waktu penerapan stok tidak terbukti.",
+                    "chain": [],
+                }
+            continue
+        before = movement.get("balance_before")
+        after = movement.get("balance_after")
+        delta = _dec(movement.get("delta") or 0)
+        if before is None or after is None:
+            return {"ok": False, "reason": "STOCK_SNAPSHOT_UNPROVEN", "chain": []}
+        movement_uom = str(movement.get("base_uom") or "").strip().upper()
+        if wanted_uom and movement_uom and movement_uom != wanted_uom:
+            return {"ok": False, "reason": "STOCK_UOM_AMBIGUOUS", "chain": []}
+        if _dec(after) != _dec(before) + delta:
+            return {"ok": False, "reason": "STOCK_SNAPSHOT_UNPROVEN", "chain": []}
+        row = {
+            "receipt_id": pref,
+            "movement_id": movement_evidence_id(movement),
+            "balance_before": qty_round(before),
+            "balance_after": qty_round(after),
+            "delta": qty_round(delta),
+            "stock_applied_at": movement.get("stock_applied_at"),
+            "applied_at": instant.isoformat(),
+            "base_uom": movement.get("base_uom") or base_uom,
+        }
+        if pref == rid:
+            target_rows.append((instant, row, movement))
+        else:
+            earlier_participant.append((instant, row))
+
+    if not target_rows:
+        return {"ok": False, "reason": "STOCK_SNAPSHOT_UNPROVEN", "chain": []}
+    target_rows.sort(key=lambda item: (item[0], item[1]["movement_id"]))
+    boundary_instant, boundary, _movement = target_rows[0]
+    if _dec(boundary["balance_before"]) != 0:
+        return {"ok": False, "reason": "STOCK_SNAPSHOT_UNPROVEN", "chain": []}
+    if _dec(boundary["delta"]) <= 0:
+        return {"ok": False, "reason": "STOCK_SNAPSHOT_UNPROVEN", "chain": []}
+    if any(instant < boundary_instant for instant, _row in earlier_participant):
+        return {"ok": False, "reason": "STOCK_SNAPSHOT_UNPROVEN", "chain": []}
+    if len(target_rows) > 1:
+        # Same receipt may write multiple line movements; every target boundary
+        # for this bootstrap path must also open from zero.
+        for _instant, row, _movement in target_rows[1:]:
+            if _dec(row["balance_before"]) != 0 or _dec(row["delta"]) <= 0:
+                return {"ok": False, "reason": "STOCK_SNAPSHOT_UNPROVEN", "chain": []}
+    return {
+        "ok": True,
+        "qty": 0.0,
+        "reason": None,
+        "proof_kind": "STRICT_ZERO_DURABLE_GR",
+        "proofs": [boundary] + [row for _instant, row, _movement in target_rows[1:]],
+        "boundary_receipt_id": rid,
+        "events_inside_snapshot": [],
+        "events_after_boundary": [],
+        "chain": [movement for _instant, _row, movement in target_rows],
+    }
+
+
 def order_stock_application_chain(
     movements: List[dict],
     *,
@@ -1347,6 +1452,31 @@ async def proven_opening_physical_qty(db, master_item_id: str, receipt_id: str) 
                 base_uom=str(state.get("base_uom") or ""),
             )
             if not proof.get("ok"):
+                if proof.get("reason") == "STOCK_CHAIN_AMBIGUOUS":
+                    zero_proof = strict_zero_opening_from_durable_gr(
+                        await db.stock_movements.find({"master_item_id": mid}, {"_id": 0}).to_list(20000),
+                        receipt_id=rid,
+                        participant_ids=participant_ids,
+                        base_uom=str(state.get("base_uom") or ""),
+                    )
+                    if zero_proof.get("ok"):
+                        again = await db.product_stock_state.find_one(
+                            {"$or": [{"_id": mid}, {"master_item_id": mid}]},
+                            {"_id": 0, "version": 1, "pending_event": 1, "total_qty": 1},
+                        )
+                        if not again or again.get("pending_event") or again.get("version") != version:
+                            continue
+                        return {
+                            "ok": True,
+                            "qty": 0.0,
+                            "proofs": zero_proof.get("proofs") or [],
+                            "boundary_receipt_id": rid,
+                            "events_inside_snapshot": [],
+                            "events_after_boundary": [],
+                            "state": state,
+                            "base_uom": state.get("base_uom"),
+                            "proof_kind": zero_proof.get("proof_kind"),
+                        }
                 return {"ok": False, "reason": proof.get("reason") or "STOCK_SNAPSHOT_UNPROVEN"}
             chain = proof.get("chain") or []
             boundary = None
@@ -1393,6 +1523,7 @@ async def proven_opening_physical_qty(db, master_item_id: str, receipt_id: str) 
                 "events_after_boundary": after,
                 "state": state,
                 "base_uom": state.get("base_uom"),
+                "proof_kind": "BALANCE_CHAIN",
             }
         return {"ok": False, "reason": "STOCK_BASELINE_UNAVAILABLE"}
     finally:
@@ -1441,7 +1572,8 @@ async def _bootstrap_product_if_needed(
         accurate_item_id=canonical.get("accurate_item_id"),
         master_item_id=mid,
     )
-    if not candidate:
+    zero_opening = _dec(stock_before) == 0
+    if not candidate and not zero_opening:
         return {
             **canonical,
             "status": STATUS_NEEDS_COST,
@@ -1453,8 +1585,41 @@ async def _bootstrap_product_if_needed(
             "financial_ineligibility_reason": STATUS_NEEDS_COST,
             "financial_ineligibility_reasons": [STATUS_NEEDS_COST],
         }
-    opening_cost = candidate["hpp"]
-    provenance = SOURCE_PUBLISHED_FALLBACK
+    if candidate:
+        opening_cost = candidate["hpp"]
+        provenance = SOURCE_PUBLISHED_FALLBACK
+        published_meta = {
+            "published_pricing_group_id": candidate.get("pricing_group_id"),
+            "published_pricing_version_id": candidate.get("version_id"),
+            "published_version_number": candidate.get("version_number"),
+            "published_revision": candidate.get("revision"),
+            "published_hpp_snapshot": candidate.get("hpp"),
+        }
+    else:
+        # Proven zero opening: the official GR purchase cost becomes the first
+        # canonical valuation through the recognition event. The opening baseline
+        # remains qty 0 and does not invent historical inventory cost.
+        opening_cost = canonical.get("unit_cost")
+        if opening_cost in (None, "") or _dec(opening_cost) <= 0:
+            return {
+                **canonical,
+                "status": STATUS_NEEDS_COST,
+                "reason": STATUS_NEEDS_COST,
+                "qty": None,
+                "unit_cost": None,
+                "total_cost": None,
+                "financial_inventory_eligible": False,
+                "financial_ineligibility_reason": STATUS_NEEDS_COST,
+                "financial_ineligibility_reasons": [STATUS_NEEDS_COST],
+            }
+        provenance = SOURCE_GOODS_RECEIPT
+        published_meta = {
+            "published_pricing_group_id": None,
+            "published_pricing_version_id": None,
+            "published_version_number": None,
+            "published_revision": None,
+            "published_hpp_snapshot": None,
+        }
     raw = {
         "master_item_id": mid,
         "accurate_item_id": canonical.get("accurate_item_id"),
@@ -1463,11 +1628,7 @@ async def _bootstrap_product_if_needed(
         "opening_unit_cost": opening_cost,
         "base_uom": canonical.get("base_uom"),
         "provenance_source": provenance,
-        "published_pricing_group_id": candidate.get("pricing_group_id"),
-        "published_pricing_version_id": candidate.get("version_id"),
-        "published_version_number": candidate.get("version_number"),
-        "published_revision": candidate.get("revision"),
-        "published_hpp_snapshot": candidate.get("hpp"),
+        **published_meta,
     }
     baseline = _baseline_from_stock(
         cutover["cutover_id"],
@@ -1478,6 +1639,7 @@ async def _bootstrap_product_if_needed(
     baseline["stock_snapshot_proofs"] = proof.get("proofs") or []
     baseline["stock_snapshot_boundary_receipt_id"] = proof.get("boundary_receipt_id")
     baseline["stock_events_after_boundary"] = proof.get("events_after_boundary") or []
+    baseline["stock_snapshot_proof_kind"] = proof.get("proof_kind")
     try:
         await db[BASELINES].insert_one(baseline)
     except DuplicateKeyError:
@@ -1673,8 +1835,10 @@ async def recognize_posted_goods_receipt(
 ) -> List[dict]:
     """Bootstrap products lazily, then recognize only this future GR.
 
-    Existing stock is frozen from Published HPP immediately before the first
-    future GR for that product. Historical receipts are never loaded.
+    Existing positive stock is frozen from Published HPP immediately before the
+    first future GR for that product. Proven zero opening stock may bootstrap
+    from the official GR purchase cost without Published HPP. Historical
+    receipts are never loaded.
     """
     receipt_id = str(receipt.get("id") or "").strip()
     if not receipt_id:
@@ -1712,7 +1876,7 @@ async def recognize_posted_goods_receipt(
                 accurate_item_id=canonical.get("accurate_item_id"),
                 master_item_id=mid,
             )
-            if proof.get("ok") and candidate:
+            if proof.get("ok") and (candidate or _dec(proof.get("qty")) == 0):
                 can_bootstrap = True
                 break
         if can_bootstrap:
