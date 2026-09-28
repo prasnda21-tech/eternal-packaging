@@ -702,6 +702,7 @@ export const api = {
   getPoInvoicePreview: (poId) => client.get(`/sales-invoices/po/${encodeURIComponent(poId)}/preview`).then((r) => r.data),
   salesInvoiceChargeAccounts: (params = {}) => client.get(`/sales-invoices/charge-accounts`, { params }).then((r) => r.data),
   createSalesInvoice: (payload) => client.post(`/sales-invoices`, payload).then((r) => r.data),
+  issueSalesInvoice: (payload) => client.post(`/sales-invoices/issue`, payload).then((r) => r.data),
   updateSalesInvoice: (id, payload) => client.put(`/sales-invoices/${encodeURIComponent(id)}`, payload).then((r) => r.data),
   finalizeSalesInvoice: (id) => client.post(`/sales-invoices/${encodeURIComponent(id)}/finalize`).then((r) => r.data),
   cancelSalesInvoice: (id) => client.post(`/sales-invoices/${encodeURIComponent(id)}/cancel`).then((r) => r.data),
@@ -722,7 +723,9 @@ export const api = {
   // ---- Delete (Safe) ----
   deleteSalesDelivery: (id) => client.delete(`/sales-deliveries/${encodeURIComponent(id)}`).then((r) => r.data),
   bulkDeleteSalesDeliveries: (ids, reason = "bulk") => client.post(`/sales-deliveries-bulk/delete`, { ids, reason }).then((r) => r.data),
-  deleteSalesInvoice: (id) => client.delete(`/sales-invoices/${encodeURIComponent(id)}`).then((r) => r.data),
+  deleteSalesInvoice: (id, operationKey) => client.delete(`/sales-invoices/${encodeURIComponent(id)}`, {
+    params: operationKey ? { operation_key: operationKey } : {},
+  }).then((r) => r.data),
   bulkDeleteSalesInvoices: (ids, reason = "bulk") => client.post(`/sales-invoices-bulk/delete`, { ids, reason }).then((r) => r.data),
   deleteSalesReceipt: (id) => client.delete(`/sales-receipts/${encodeURIComponent(id)}`).then((r) => r.data),
   bulkDeleteSalesReceipts: (ids, reason = "bulk") => client.post(`/sales-receipts-bulk/delete`, { ids, reason }).then((r) => r.data),

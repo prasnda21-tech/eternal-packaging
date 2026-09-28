@@ -237,6 +237,10 @@ async def create_sales_receipt(
         from services.sales_invoices import FINANCIAL_CANCELLED, FINANCIAL_FINALIZED, effective_financial_status
 
         invoice_status = effective_financial_status(invoice)
+        if invoice.get("removed_from_active") or str(invoice.get("removal_state") or "") in {"pending", "deleted"}:
+            raise HTTPException(409, "Faktur yang sudah dihapus tidak dapat menerima Penerimaan Penjualan.")
+        if str(invoice.get("issue_state") or "") == "issuing":
+            raise HTTPException(409, "Faktur sedang diterbitkan dan belum dapat menerima Penerimaan Penjualan.")
         if invoice_status == FINANCIAL_CANCELLED:
             raise HTTPException(409, "Faktur yang dibatalkan tidak dapat menerima Penerimaan Penjualan.")
         if invoice_status != FINANCIAL_FINALIZED:
@@ -272,6 +276,10 @@ async def create_sales_receipt(
 
         invoice = claimed
         try:
+            if invoice.get("removed_from_active") or str(invoice.get("removal_state") or "") in {"pending", "deleted"}:
+                raise HTTPException(409, "Faktur yang sudah dihapus tidak dapat menerima Penerimaan Penjualan.")
+            if str(invoice.get("issue_state") or "") == "issuing":
+                raise HTTPException(409, "Faktur sedang diterbitkan dan belum dapat menerima Penerimaan Penjualan.")
             invoice_status = effective_financial_status(invoice)
             if invoice_status != FINANCIAL_FINALIZED:
                 raise HTTPException(409, "Hanya faktur finalized yang dapat menerima Penerimaan Penjualan.")

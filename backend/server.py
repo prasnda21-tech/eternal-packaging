@@ -9109,6 +9109,11 @@ from services.sales_invoice_posting import (
     post_sales_invoice_accounting as _post_sales_invoice_accounting,
     reverse_sales_invoice_accounting as _reverse_sales_invoice_accounting,
 )
+from services.sales_invoice_issue import (
+    ensure_indexes as _ensure_sales_invoice_issue_indexes,
+    issue_sales_invoice as _issue_sales_invoice,
+    remove_issued_sales_invoice as _remove_issued_sales_invoice,
+)
 from services.sales_receipt_posting import (
     PERM_POST as _SALES_RECEIPT_ACCOUNTING_POST_PERM,
     PERM_REVERSE as _SALES_RECEIPT_ACCOUNTING_REVERSE_PERM,
@@ -10562,6 +10567,20 @@ async def create_sales_invoice_endpoint(payload: SalesInvoiceCreatePayload, user
     return {"invoice": inv, "message": "Faktur Penjualan berhasil dibuat"}
 
 
+@api_router.post("/sales-invoices/issue")
+async def issue_sales_invoice_endpoint(payload: SalesInvoiceCreatePayload, user=Depends(current_user)):
+    """Save and issue one invoice. Journal posting is internal and is not a separate permission."""
+    await _require_any_perm(user, "sales.invoice.create", "sales_order.create", "po.edit")
+    body = payload.model_dump()
+    await ensure_owned_po_id(db, user, body.get("po_id"))
+    result = await _issue_sales_invoice(db, body, user)
+    return {
+        "invoice": result["invoice"],
+        "operation_id": result.get("operation_id"),
+        "message": "Faktur berhasil diterbitkan",
+    }
+
+
 @api_router.get("/sales-invoices/{id}")
 async def get_sales_invoice_endpoint(id: str, user=Depends(current_user)):
     """Get detail of a single sales invoice."""
@@ -10924,8 +10943,24 @@ async def bulk_delete_sales_receipts_endpoint(payload: BulkPayload, user=Depends
 
 
 @api_router.delete("/sales-invoices/{id}")
-async def delete_sales_invoice_endpoint(id: str, user=Depends(current_user)):
-    """Delete a single sales invoice (Faktur Penjualan) with dependency safety."""
+async def delete_sales_invoice_endpoint(
+    id: str,
+    operation_key: Optional[str] = None,
+    user=Depends(current_user),
+):
+    """Delete one invoice. Issued invoices reverse internally and require sales.invoice.delete.
+
+    Administrator short-circuit stays inside _require_any_perm. Create and po.edit
+    do not authorize this unified delete. The manual reverse route keeps its own permission.
+    """
+    stored = await db.sales_invoices.find_one({"id": str(id)}, {"_id": 0, "po_id": 1, "issue_state": 1, "invoice_number": 1})
+    if not stored:
+        stored = await db.sales_invoices.find_one({"invoice_number": str(id)}, {"_id": 0, "po_id": 1, "issue_state": 1, "id": 1})
+    if stored:
+        await ensure_owned_po_id(db, user, stored.get("po_id"))
+    if stored and stored.get("issue_state"):
+        await _require_any_perm(user, "sales.invoice.delete")
+        return await _remove_issued_sales_invoice(db, stored.get("id") or id, user, operation_key=operation_key)
     await _require_any_perm(user, "sales.invoice.delete", "sales.invoice.create", "po.edit")
     result = await _delete_sales_invoice(db, id, user)
     await _write_audit(action="sales.invoice.delete", actor=user, target_email=f"invoice:{result.get('invoice_number')}",
@@ -14024,6 +14059,7 @@ async def seed():
     await db.sales_invoices.create_index("created_at")
     await db.sales_invoices.create_index("invoice_date")
     await db.sales_invoices.create_index("financial_status")
+    await _ensure_sales_invoice_issue_indexes(db)
     
     await db.sales_receipts.create_index("id", unique=True)
     await _ensure_unique_business_number_index(db.sales_receipts, "receipt_number")

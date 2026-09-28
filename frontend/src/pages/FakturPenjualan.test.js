@@ -93,6 +93,7 @@ describe("Faktur Penjualan UI & Navigation Suite", () => {
     expect(apiSrc).toMatch(/getPoInvoicePreview:/);
     expect(apiSrc).toMatch(/salesInvoiceChargeAccounts:/);
     expect(apiSrc).toMatch(/createSalesInvoice:/);
+    expect(apiSrc).toMatch(/issueSalesInvoice:/);
     expect(apiSrc).toMatch(/updateSalesInvoice:/);
     expect(apiSrc).toMatch(/finalizeSalesInvoice:/);
     expect(apiSrc).toMatch(/cancelSalesInvoice:/);
@@ -107,8 +108,15 @@ describe("Faktur Penjualan UI & Navigation Suite", () => {
     expect(pageSrc).toMatch(/invoice-checkbox-/);
     expect(pageSrc).toMatch(/btn-hapus-terpilih/);
     expect(pageSrc).toMatch(/Hapus Terpilih/);
-    expect(pageSrc).toMatch(/delete-confirm-modal/);
-    expect(pageSrc).toMatch(/delete-confirm-numbers/);
+    expect(pageSrc).not.toMatch(/delete-confirm-modal/);
+    expect(pageSrc).toMatch(/handleDelete\(inv\.id\)/);
+    expect(pageSrc).toMatch(/btn-delete-issued-invoice/);
+    expect(pageSrc).toMatch(/canDeleteIssued/);
+    expect(pageSrc).toMatch(/inv\.issue_state && canDeleteIssued/);
+    expect(pageSrc).toMatch(/hasPerm\("sales\.invoice\.delete"\)/);
+    expect(pageSrc).toMatch(/issueSalesInvoice/);
+    expect(pageSrc).toMatch(/btn-retry-issue/);
+    expect(pageSrc).toMatch(/idempotency_key/);
     expect(pageSrc).toMatch(/invoice_number/);
     expect(pageSrc).toMatch(/selectedIds\.size === draftInvoiceIds\.length/);
   });
