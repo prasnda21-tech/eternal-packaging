@@ -104,7 +104,8 @@ export default function PrintTemplateDesigner() {
   }, []);
 
   const selected = design && selectedId ? findElement(design, selectedId) : null;
-  const scale = paperPixelSize(design || { paper: {} }, zoom).scale;
+  const paperSize = paperPixelSize(design || { paper: {} }, zoom);
+  const scale = paperSize.scale;
   const inner = design ? innerWidthMm(design) : 180;
 
   const localErrors = useMemo(() => {
@@ -386,7 +387,7 @@ export default function PrintTemplateDesigner() {
           <p className="pt-note">Kolom barang diatur pada tabel di band Detail. DATA CONTOH hanya untuk kanvas.</p>
         </aside>
         <div className="pt-canvas-scroll" ref={canvasRef} data-testid="print-canvas" onPointerMove={onPointerMove} onPointerUp={onPointerUp}>
-          <div className="pt-paper" style={paperPixelSize(design, zoom)} data-zoom={zoom}>
+          <div className="pt-paper" style={{ width: paperSize.width, height: paperSize.height }} data-zoom={zoom}>
             {BANDS.map(([band, label]) => {
               const height = Number(design.bands[band].height_mm) * scale;
               return (
