@@ -850,14 +850,9 @@ async def create_sales_delivery(db, payload: Dict[str, Any], user: dict) -> Dict
             if sj_location:
                 delivery_doc["delivery_location"] = sj_location
 
-            # Pre-check physical stock availability before persisting delivery
-            await precheck_sales_delivery(db, order, validated_lines)
-
+            from services.operational_stock_outbox import attach_sales_delivery_intent
+            attach_sales_delivery_intent(order, delivery_doc, user)
             claimed_stock = None
-            if await should_claim_sales_delivery_stock(db, order):
-                claimed_stock = await claim_sales_delivery_stock(
-                    db, order, validated_lines, delivery_id, user
-                )
 
             try:
                 await db.sales_deliveries.insert_one(delivery_doc)
@@ -935,10 +930,6 @@ async def create_sales_delivery(db, payload: Dict[str, Any], user: dict) -> Dict
                         pdf_err,
                     )
 
-                if claimed_stock:
-                    await finalize_sales_delivery_stock(db, claimed_stock, user)
-                else:
-                    await handle_sales_delivery_created(db, order, delivery_doc, user)
                 try:
                     from services.notifications import emit_surat_jalan_created_notifications
                     await emit_surat_jalan_created_notifications(
@@ -1717,3 +1708,4 @@ async def generate_signed_sj_pdf_for_order(
             upsert=False,
         )
     return signed_path, None
+
