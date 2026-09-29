@@ -46,7 +46,14 @@ CANONICAL_SALES_PROFILES = (
         "role": SALES_PWA_ROLE,
     },
 )
-MAPPING_TARGET_ROLES = frozenset({SALES_PWA_ROLE})
+# Who may be the sales owner of a transaction. This is attribution only.
+# It does not grant PWA, dashboard, PO, or invoice permissions.
+SALES_RESPONSIBLE_ROLES = frozenset({
+    SALES_PWA_ROLE,
+    "holding_team",
+    "direktur_utama",
+})
+MAPPING_TARGET_ROLES = SALES_RESPONSIBLE_ROLES
 
 
 def now_iso() -> str:
@@ -76,6 +83,86 @@ def sales_owner_match(user: Optional[dict]) -> dict:
     if not uid:
         return {"sales_user_id": {"$in": []}}
     return {"sales_user_id": uid}
+
+
+def account_is_active(user: Optional[dict]) -> bool:
+    """Same active-account rule as the sales-order user list: status != inactive."""
+    return str((user or {}).get("status") or "") != "inactive"
+
+
+def responsible_role_allowed(user: Optional[dict]) -> bool:
+    return exact_sales_label((user or {}).get("role")) in SALES_RESPONSIBLE_ROLES
+
+
+def document_sales_label(doc: Optional[dict]) -> str:
+    """Invoice/PO display label. sales, then sales_name. Not a person lookup."""
+    for key in ("sales", "sales_name"):
+        value = exact_sales_label((doc or {}).get(key))
+        if value:
+            return value
+    return ""
+
+
+def dashboard_sales_owner(invoice: Optional[dict], mapping: Dict[str, str]) -> Tuple[Optional[str], str]:
+    """Stable owner for one invoice. Returns (users.id or None, reason).
+
+    Snapshot id on the invoice wins. The Accurate-label map is only a fallback
+    when the invoice has no id. A stored id is not dropped because the account
+    is inactive or no longer a sales role. Conflicting stored ids, or an
+    explicit conflict flag, stay unassigned. Current PO, creator, and poster
+    are not read here.
+    """
+    invoice = invoice or {}
+    if invoice.get("sales_attribution_conflict") is True:
+        return None, "conflict"
+    stored = exact_sales_label(invoice.get("sales_user_id"))
+    alternate = exact_sales_label(invoice.get("sales_id"))
+    if stored and alternate and stored != alternate:
+        return None, "conflict"
+    if stored or alternate:
+        return stored or alternate, "snapshot"
+    label = document_sales_label(invoice)
+    mapped, status = resolve_from_map(mapping, label)
+    if status == STATUS_MATCHED and mapped:
+        return mapped, "mapping"
+    if not label:
+        return None, "empty"
+    return None, "unmatched"
+
+
+def snapshot_invoice_sales(order: Optional[dict], mapping: Dict[str, str], *, label: Any = None) -> dict:
+    """Identity copied onto a new invoice from the PO at issue time.
+
+    A single stored users.id on the PO is the snapshot. The label map is used
+    only when that id is empty. Two different id fields on the PO are a
+    conflict and are not resolved by the label or by the current map.
+    A later change to the label map does not discard the stored id.
+    """
+    order = order or {}
+    shown = exact_sales_label(label) if label is not None else document_sales_label(order)
+    if label is None and not shown:
+        shown = exact_sales_label(order.get("seller") or order.get("sales_rep"))
+    stored = exact_sales_label(order.get("sales_user_id"))
+    alternate = exact_sales_label(order.get("sales_id"))
+    if stored and alternate and stored != alternate:
+        return {
+            "sales": shown,
+            "sales_user_id": None,
+            "sales_attribution_conflict": True,
+        }
+    chosen = stored or alternate
+    if chosen:
+        return {
+            "sales": shown,
+            "sales_user_id": chosen,
+            "sales_attribution_conflict": False,
+        }
+    mapped, status = resolve_from_map(mapping, shown)
+    return {
+        "sales": shown,
+        "sales_user_id": mapped if status == STATUS_MATCHED and mapped else None,
+        "sales_attribution_conflict": False,
+    }
 
 
 def resolve_from_map(mapping: Dict[str, str], sales_label: Any) -> Tuple[Optional[str], str]:
@@ -251,6 +338,42 @@ async def attach_sales_ownership(
     return uid, status
 
 
+async def assign_sales_responsible(
+    db,
+    doc: dict,
+    *,
+    label: Any,
+    explicit_user_id: Any = None,
+    explicit_sent: bool = False,
+) -> Tuple[Optional[str], str]:
+    """Store the sales label and, when an account was chosen, its users.id.
+
+    A typed label alone still resolves only through the exact mapping.
+    An explicit id is accepted only for an active sales, holding, or director
+    account. That id is kept even when the label map currently points elsewhere.
+    The chosen user's role and permissions are not modified.
+    """
+    doc["sales"] = exact_sales_label(label) or None
+    uid = exact_sales_label(explicit_user_id)
+    if not explicit_sent or not uid:
+        return await attach_sales_ownership(db, doc)
+    user = await db.users.find_one(
+        {"id": uid},
+        {"_id": 0, "id": 1, "role": 1, "status": 1, "name": 1},
+    )
+    if not user or exact_sales_label(user.get("id")) != uid:
+        raise HTTPException(400, "Penanggung jawab penjualan tidak ditemukan")
+    if not account_is_active(user) or not responsible_role_allowed(user):
+        raise HTTPException(
+            400,
+            "Penanggung jawab penjualan harus akun aktif dengan role sales, holding, atau direktur",
+        )
+    apply_sales_user_id(doc, uid)
+    doc["sales_ownership_status"] = STATUS_MATCHED
+    attach_sales_ownership_admin_fields(doc)
+    return uid, STATUS_MATCHED
+
+
 def sales_eternal_path_allowed(path: str) -> bool:
     raw = str(path or "").split("?", 1)[0]
     for prefix in SALES_ETERNAL_ALLOWED_PREFIXES:
@@ -316,6 +439,14 @@ def _sanitize_entries(raw_entries: Any) -> List[dict]:
 
 async def save_mapping(db, payload: dict, user: dict) -> dict:
     entries = _sanitize_entries(payload.get("entries"))
+    previous = await load_mapping_doc(db)
+    previous_pairs = {
+        (exact_sales_label(row.get("label")), str(row.get("user_id") or "").strip())
+        for row in (previous or {}).get("entries") or []
+        if isinstance(row, dict)
+        and exact_sales_label(row.get("label"))
+        and str(row.get("user_id") or "").strip()
+    }
     user_ids = sorted({e["user_id"] for e in entries})
     if user_ids:
         found = await db.users.find(
@@ -327,16 +458,30 @@ async def save_mapping(db, payload: dict, user: dict) -> dict:
         if missing:
             raise HTTPException(400, f"users.id tidak ditemukan: {', '.join(missing)}")
         bad_role = []
-        for uid in user_ids:
-            role = exact_sales_label(found_by_id[uid].get("role"))
+        bad_inactive = []
+        for row in entries:
+            pair = (row["label"], row["user_id"])
+            # Only an unchanged (label, user_id) pair may stay after the
+            # account is deactivated or its role changes. A new label for
+            # that same user is a new assignment.
+            if pair in previous_pairs:
+                continue
+            target = found_by_id[row["user_id"]]
+            role = exact_sales_label(target.get("role"))
             if role not in MAPPING_TARGET_ROLES:
-                bad_role.append(uid)
+                bad_role.append(row["user_id"])
+            elif not account_is_active(target):
+                bad_inactive.append(row["user_id"])
         if bad_role:
             raise HTTPException(
                 400,
-                f"users.id bukan role {SALES_PWA_ROLE}: {', '.join(bad_role)}",
+                f"users.id bukan role sales, holding, atau direktur: {', '.join(bad_role)}",
             )
-    previous = await load_mapping_doc(db)
+        if bad_inactive:
+            raise HTTPException(
+                400,
+                f"users.id bukan akun aktif: {', '.join(bad_inactive)}",
+            )
     actor = {
         "id": session_user_id(user),
         "email": user.get("email"),

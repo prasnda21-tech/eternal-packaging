@@ -499,6 +499,12 @@ async def get_po_invoice_preview(db, po_id_or_doc: Any, exclude_invoice_id: Opti
     address = (order.get("address") or order.get("shipping_address") or order.get("delivery_address") or "").strip()
     delivery_zone = (order.get("delivery_zone") or order.get("zona_kirim") or order.get("zona") or order.get("shipping_zone") or "").strip()
     sales = (order.get("sales") or order.get("seller") or order.get("sales_rep") or order.get("sales_name") or "").strip()
+    from services.sales_user_mapping import load_mapping_dict, snapshot_invoice_sales
+    sales_snapshot = snapshot_invoice_sales(
+        order,
+        await load_mapping_dict(db),
+        label=sales,
+    )
 
     # Query all existing invoices for this PO to compute cumulative invoiced quantity per exact line
     invoice_filter: Dict[str, Any] = {"po_id": po_id}
@@ -579,7 +585,9 @@ async def get_po_invoice_preview(db, po_id_or_doc: Any, exclude_invoice_id: Opti
         "recipient": recipient,
         "address": address,
         "delivery_zone": delivery_zone,
-        "sales": sales,
+        "sales": sales_snapshot["sales"],
+        "sales_user_id": sales_snapshot["sales_user_id"],
+        "sales_attribution_conflict": sales_snapshot["sales_attribution_conflict"],
         "total_ordered_qty": total_ordered_qty,
         "total_remaining_invoice_qty": total_remaining_invoice_qty,
         "total_qty": total_remaining_invoice_qty,
@@ -806,6 +814,8 @@ async def create_sales_invoice(
             "address": preview["address"],
             "delivery_zone": preview["delivery_zone"],
             "sales": preview["sales"],
+            "sales_user_id": preview.get("sales_user_id"),
+            "sales_attribution_conflict": bool(preview.get("sales_attribution_conflict")),
             "notes": str(payload.get("notes") or "").strip(),
             "lines": calculated_lines,
             "total_qty": total_invoice_qty,
