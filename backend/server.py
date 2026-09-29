@@ -10338,6 +10338,7 @@ async def list_sales_orders(
     status: Optional[str] = None,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
+    invoice_status: Optional[str] = None,
     page: Optional[int] = None,
     page_size: Optional[int] = None,
     user=Depends(current_user),
@@ -10423,6 +10424,11 @@ async def list_sales_orders(
         orders = [o for o in orders if o.get("hold")]
     elif st == "aktif":
         orders = [o for o in orders if not o.get("hold")]
+
+    from services.sales_order_invoice_status import filter_invoice_coverage
+    if invoice_status not in (None, "all", "none", "partial", "full", "processing"):
+        raise HTTPException(400, "Filter status faktur tidak valid")
+    orders = filter_invoice_coverage(orders, invoice_status)
 
     paging = page is not None or page_size is not None
     if not paging:

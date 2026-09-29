@@ -49,3 +49,12 @@ def test_batch_only_queries_authorized_po_ids():
     orders=[dict(ORDER)]
     asyncio.run(attach_invoice_coverage(DB(),orders))
     assert orders[0]['invoice_summary']['status']=='full'
+
+
+def test_filter_applies_across_pages_and_keeps_unknown_out_of_unbilled():
+    from services.sales_order_invoice_status import filter_invoice_coverage
+    rows=[{'id':i,'invoice_summary':{'status':'full' if i < 10 else 'none'}} for i in range(13)]
+    rows.append({'id':99,'invoice_summary':{'status':'unknown'}})
+    assert [o['id'] for o in filter_invoice_coverage(rows,'none')]==[10,11,12]
+    assert len(filter_invoice_coverage(rows,'full'))==10
+    assert filter_invoice_coverage(rows,'all')==rows

@@ -71,3 +71,11 @@ async def attach_invoice_coverage(db, orders):
             grouped[invoice['po_id']].append(invoice)
     for order in orders:
         order['invoice_summary'] = invoice_coverage(order, grouped[order.get('id')])
+
+
+def filter_invoice_coverage(orders, status):
+    if not status or status == 'all':
+        return orders
+    if status == 'processing':
+        return [o for o in orders if o.get('invoice_summary', {}).get('processing')]
+    return [o for o in orders if o.get('invoice_summary', {}).get('status') == status]
