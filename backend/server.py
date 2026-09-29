@@ -10688,40 +10688,15 @@ async def get_sales_receipt_pdf_endpoint(id: str, user=Depends(current_user)):
 
 async def _sales_delivery_delete_blocker(delivery: dict) -> Optional[str]:
     """Return a human-friendly reject reason, or None if the business SJ may be deleted."""
+    from services.sales_delivery_delete_guard import deletion_blocker
     po_id = delivery.get("po_id")
     sj_number = delivery.get("sj_number")
-    delivery_id = delivery.get("id")
-    if po_id:
-        pay_count = await db.sales_receipts.count_documents({"po_id": po_id})
-        if pay_count > 0:
-            return "Hapus Penerimaan Penjualan terlebih dahulu."
     order = await db.orders.find_one({"id": po_id}, {"_id": 0}) if po_id else None
     if not order:
         return None
-
-    for lc in (order.get("loading_confirmations") or []):
-        if lc.get("sj_number") == sj_number or lc.get("sales_delivery_id") == delivery_id:
-            return "Surat Jalan tidak dapat dihapus karena sudah memiliki proses Loading."
-
-    for sh in (order.get("shipments") or []):
-        same = (
-            sh.get("sj_number") == sj_number
-            or sh.get("number") == sj_number
-            or sh.get("sales_delivery_id") == delivery_id
-            or sh.get("id") == delivery_id
-        )
-        if not same:
-            continue
-        if (sh.get("loaded_qty") or 0) > 0:
-            return "Surat Jalan tidak dapat dihapus karena sudah memiliki proses Loading."
-        if (sh.get("delivered_qty") or 0) > 0 or sh.get("delivered") or sh.get("status") in ("Terkirim", "DELIVERED"):
-            return "Surat Jalan tidak dapat dihapus karena sudah memiliki proses Pengiriman."
-
-    proofs = [p for p in (order.get("delivery_proofs") or []) if not p.get("is_deleted")]
-    if proofs:
-        return "Surat Jalan tidak dapat dihapus karena sudah memiliki proses Pengiriman."
-    if (order.get("delivery_status") or "") == "Terkirim":
-        return "Surat Jalan tidak dapat dihapus karena sudah memiliki proses Pengiriman."
+    reason = deletion_blocker(order, delivery)
+    if reason:
+        return reason
 
     for f in (order.get("surat_jalan_files") or []):
         if f.get("is_deleted"):
