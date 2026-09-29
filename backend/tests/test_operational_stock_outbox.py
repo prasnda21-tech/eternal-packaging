@@ -346,3 +346,26 @@ async def test_same_action_old_claim_is_not_replayed_or_released(mongo):
     assert result['status']=='review_required',result
     state=await get_product_stock_state(mongo,MASTER)
     assert state['pending_event']['event_id']=='legacy-event' and state['printed_qty']==2000
+
+@pytest.mark.anyio
+async def test_worker_retries_failed_write_without_losing_stock_obligation(mongo, monkeypatch):
+    from services import physical_stock_engine as engine
+    order = _order('worker-retry')
+    await _seed(mongo,order)
+    assert (await _confirm(order['id'],'sj-1','worker-retry')).status_code == 200
+    saved = await mongo.orders.find_one({'id':order['id']})
+    token = next(iter(saved[FIELD]))
+    real = engine.finalize_durable_stock_event
+    async def fail(*args, **kwargs):
+        raise RuntimeError('storage temporarily unavailable')
+    monkeypatch.setattr(engine,'finalize_durable_stock_event',fail)
+    with pytest.raises(RuntimeError):
+        await process_intent(mongo,order['id'],token)
+    saved = await mongo.orders.find_one({'id':order['id']})
+    assert len(saved['delivery_confirmations']) == 1
+    assert token in saved['operational_stock_pending']
+    monkeypatch.setattr(engine,'finalize_durable_stock_event',real)
+    assert (await process_intent(mongo,order['id'],token))['status']=='applied'
+    assert (await process_intent(mongo,order['id'],token))['status']=='applied'
+    assert (await get_product_stock_state(mongo,MASTER))['printed_qty']==1200
+    assert len(await _movements(mongo))==2

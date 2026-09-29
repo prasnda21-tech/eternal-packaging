@@ -210,6 +210,14 @@ async def test_endpoint_confirms_each_sj_qty_and_retries_without_doubling(mongo)
     thin_doc = await mongo.orders.find_one({"id": "ord-thin"}, {"_id": 0, "delivery_confirmations": 1})
     assert thin_doc["delivery_confirmations"] == []
 
+    from services.operational_stock_outbox import FIELD, process_intent
+
+    async def drain_persisted_stock():
+        saved = await mongo.orders.find_one({"id": order["id"]})
+        for token in saved.get(FIELD, {}):
+            result = await process_intent(mongo, order["id"], token)
+            assert result["status"] == "applied", result
+
     first = await _confirm(order["id"], "sj-1", "act-sj-1")
     assert first.status_code == 200, first.text
     body = first.json()["order"]
@@ -218,6 +226,7 @@ async def test_endpoint_confirms_each_sj_qty_and_retries_without_doubling(mongo)
     assert len(confs) == 1
     assert confs[0]["qty"] == 800
     assert sorted(item["qty"] for item in confs[0]["items"]) == [400, 400]
+    await drain_persisted_stock()
     state = await get_product_stock_state(mongo, MASTER)
     assert state["printed_qty"] == 1200
     assert state["total_qty"] == 5900
@@ -227,6 +236,7 @@ async def test_endpoint_confirms_each_sj_qty_and_retries_without_doubling(mongo)
 
     replay = await _confirm(order["id"], "sj-1", "act-sj-1")
     assert replay.status_code == 200, replay.text
+    await drain_persisted_stock()
     state = await get_product_stock_state(mongo, MASTER)
     assert state["printed_qty"] == 1200
     assert len(await _movements(mongo)) == 2
@@ -242,6 +252,7 @@ async def test_endpoint_confirms_each_sj_qty_and_retries_without_doubling(mongo)
     body = second.json()["order"]
     assert body["qty_delivered"] == 2000
     assert [c["qty"] for c in body["delivery_confirmations"]] == [800, 1200]
+    await drain_persisted_stock()
     state = await get_product_stock_state(mongo, MASTER)
     assert state["printed_qty"] == 0
     assert state["unprinted_qty"] == 4700
@@ -2646,3 +2657,4 @@ async def test_p2d_fence_lost_is_not_retried_with_a_newer_generation(mongo, monk
     assert pending["pending_event"]["action_id"] == "act-winner"
     assert pending["pending_event"]["stage"] == "CLAIMED"
     assert pending["printed_qty"] == 1000
+

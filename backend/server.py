@@ -5681,6 +5681,13 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
             raise HTTPException(400, resolve_err)
         if selected_sh and _qr_shipment_is_delivered(order, selected_sh):
             return
+        # Validate SJ quantities before photo/signature checks, independently of
+        # stock setup. Missing master mapping becomes deferred stock work, but
+        # missing/ambiguous SJ rows must never fall back to the full PO quantity.
+        from services.physical_stock_engine import plan_confirmed_sj_stock
+        operational_plan = plan_confirmed_sj_stock(order, selected_sh, require_master=False)
+        if operational_plan.get("error"):
+            raise HTTPException(400, operational_plan["error"])
         incoming_name = payload.recipient_name if payload else None
         if incoming_name is not None:
             from services.delivery_pod_signature import apply_recipient_name_to_active_signature
@@ -5713,8 +5720,8 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
         # Packing and Loading quantities are not mutated. Idempotent on retry.
         reconcile_holder["result"] = _qr_reconcile_sj_quantities_to_loaded_delivery(order)
         from services.physical_stock_engine import plan_confirmed_sj_stock
-        plan = plan_confirmed_sj_stock(order, selected_sh, allow_delivered=True)
-        if not plan.get("error") and plan.get("sj_qty") != increment:
+        plan = plan_confirmed_sj_stock(order, selected_sh, allow_delivered=True, require_master=False)
+        if plan.get("error") or plan.get("sj_qty") != increment:
             raise HTTPException(400, "Qty Surat Jalan berubah sebelum konfirmasi disimpan.")
         conf = _append_delivery_confirmation(
             order, user, qty_increment=increment, now=now, action_id=action_id,

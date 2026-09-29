@@ -3516,6 +3516,7 @@ def plan_confirmed_sj_stock(
     shipment: Optional[Dict[str, Any]],
     *,
     allow_delivered: bool = False,
+    require_master: bool = True,
 ) -> Dict[str, Any]:
     """Map confirmed SJ rows to canonical PO lines. Qty stays on the SJ row.
 
@@ -3569,7 +3570,7 @@ def plan_confirmed_sj_stock(
         if not isinstance(po, dict):
             return {"lines": [], "error": SJ_ROW_UNCERTAIN, "skip": False}
         mid = str(po.get("master_item_id") or "").strip()
-        if not mid:
+        if require_master and not mid:
             return {"lines": [], "error": SJ_ROW_UNCERTAIN, "skip": False}
         lines.append({
             "line_idx": int(idx),
