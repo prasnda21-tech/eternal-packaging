@@ -49,6 +49,8 @@ PERMISSION_CATALOG = [
     ("Pengaturan", "settings.sales_activity.manage", "Ubah pengaturan Sales Activity & Ownership"),
     ("Pengaturan", "settings.sales_user_mapping.view", "Lihat mapping Sales Accurate"),
     ("Pengaturan", "settings.sales_user_mapping.manage", "Kelola mapping Sales Accurate"),
+    ("Pengaturan", "print_template.view", "Lihat Desain Cetakan"),
+    ("Pengaturan", "print_template.manage", "Kelola Desain Cetakan"),
     ("Penjualan", "sales.pwa.view", "Buka PWA Sales terisolasi"),
     ("Penjualan", "sales.pwa.visit.create", "Catat visit milik sendiri dari PWA Sales"),
     ("Optimasi Rute", "route_optimizer.view", "Lihat Optimasi Rute"),

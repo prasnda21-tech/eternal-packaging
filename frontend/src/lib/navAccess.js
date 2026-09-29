@@ -1050,6 +1050,7 @@ export const SETTINGS_TAB_IDS = [
   "route-optimizer",
   "accurate-creators",
   "sales-user-mapping",
+  "desain-cetakan",
   "audit",
 ];
 
@@ -1081,6 +1082,7 @@ export const SETTINGS_TILE_TONES = {
   "route-optimizer": "blue",
   "accurate-creators": "purple",
   "sales-user-mapping": "teal",
+  "desain-cetakan": "blue",
   audit: "orange",
 };
 
@@ -1110,6 +1112,7 @@ export const SETTINGS_TILE_LABELS = {
   "route-optimizer": "Optimasi Rute",
   "accurate-creators": "Pembuat PO Accurate",
   "sales-user-mapping": "Mapping Sales Accurate",
+  "desain-cetakan": "Desain Cetakan",
   audit: "Audit Log",
 };
 
@@ -1177,6 +1180,7 @@ export function settingsNavVisible(hasPerm) {
     || canSeeNav(hasPerm, "settings.sales_user_mapping.manage")
     || canSeeNav(hasPerm, "permissions.manage");
   const audit = canSeeNav(hasPerm, "audit.view");
+  const desainCetakan = canSeeNav(hasPerm, "print_template.view") || canSeeNav(hasPerm, "print_template.manage");
   const children = {
     employees: Boolean(parentGranted && employees),
     roles: Boolean(parentGranted && roles),
@@ -1199,6 +1203,7 @@ export function settingsNavVisible(hasPerm) {
     "route-optimizer": Boolean(parentGranted && routeOptimizer),
     "accurate-creators": Boolean(parentGranted && accurateCreators),
     "sales-user-mapping": Boolean(parentGranted && salesUserMapping),
+    "desain-cetakan": Boolean(parentGranted && desainCetakan),
     audit: Boolean(parentGranted && audit),
   };
   return {

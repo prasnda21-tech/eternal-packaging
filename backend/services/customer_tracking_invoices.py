@@ -308,4 +308,5 @@ async def public_invoice_pdf_bytes(db, order: dict, invoice_id: str) -> Optional
     inv = await visible_invoice_for_order(db, order, invoice_id)
     if not inv:
         return None
-    return render_customer_invoice_pdf(inv, order)
+    from services.print_templates import render_public_invoice_pdf
+    return await render_public_invoice_pdf(db, inv, order)

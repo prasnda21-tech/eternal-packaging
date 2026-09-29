@@ -857,13 +857,15 @@ def build_router(deps: dict) -> APIRouter:
         return JSONResponse(body, headers=_INVOICE_HEADERS)
 
     @router.get("/public/tracking/{token}/invoices/{invoice_id}/pdf")
-    async def public_tracking_invoice_pdf(token: str, invoice_id: str, disposition: str = "attachment"):
+    async def public_tracking_invoice_pdf(token: str, invoice_id: str, disposition: str = "attachment", template_id: str = ""):
         order = await _order_for_token(token)
-        from services.customer_tracking_invoices import render_customer_invoice_pdf, visible_invoice_for_order
+        from services.customer_tracking_invoices import visible_invoice_for_order
+        from services.print_templates import render_public_invoice_pdf
         inv = await visible_invoice_for_order(get_db(), order, invoice_id)
         if not inv:
             raise HTTPException(404, PUBLIC_NOT_FOUND)
-        pdf_bytes = render_customer_invoice_pdf(inv, order)
+        # template_id is accepted only so it can be discarded. Internal designs cannot be selected here.
+        pdf_bytes = await render_public_invoice_pdf(get_db(), inv, order, requested_template_id=template_id or None)
         number = str(inv.get("invoice_number") or "faktur").replace("/", "_").replace("\\", "_")
         headers = _disposition_headers(f"Faktur_{number}.pdf", disposition, "application/pdf")
         headers["Cache-Control"] = "private, no-store"

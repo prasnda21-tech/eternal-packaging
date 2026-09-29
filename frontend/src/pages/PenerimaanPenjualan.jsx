@@ -16,8 +16,10 @@ import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDisplayDate } from "../lib/constants";
 import { FormSection, FormField, FormProgress, computeStatus } from "../components/form-standard";
-import { loadedRangeLabel, showLoadedDocumentCount } from "../lib/salesSubmenuDensity";
+import { showLoadedDocumentCount } from "../lib/salesSubmenuDensity";
 import "./salesSubmenuDensity.css";
+import { useDocumentList, DocumentFilters, DocumentSummary, DocumentPager, ColumnFilter, DocumentActions, useDetailDrawer } from "./SalesDocumentControls";
+import { moneyText } from "./salesDocumentsView";
 
 function getTodayString() {
   const d = new Date();
@@ -121,9 +123,12 @@ export default function PenerimaanPenjualan() {
     }
   }, [searchQuery]);
 
+  const documentList = useDocumentList(receipts, "receipt", searchQuery);
+  const visibleKey = documentList.visible.map(row => row.id).join('|');
+  useEffect(() => setSelectedIds(new Set()), [visibleKey]);
   const deletableReceipts = useMemo(
-    () => receipts.filter((r) => r.can_delete !== false),
-    [receipts]
+    () => documentList.visible.filter((r) => r.can_delete !== false),
+    [documentList.visible]
   );
   const toggleSelect = (id) => {
     setSelectedIds((prev) => {
@@ -547,6 +552,7 @@ export default function PenerimaanPenjualan() {
     }
   };
 
+  const drawerRef = useDetailDrawer(Boolean(detailReceipt), () => setDetailReceipt(null), Boolean(proofViewerReceipt || accountingTarget) || creditBusy);
   const showReceiptCount = showLoadedDocumentCount({
     loading: listLoading,
     error: listErr,
@@ -555,7 +561,7 @@ export default function PenerimaanPenjualan() {
 
   return (
     <div
-      className="page-container penjualan-page penjualan-workspace sd-density sd-list-mode"
+      className="page-container penjualan-page penjualan-workspace sd-density sd-list-mode doc-premium"
       data-testid="penerimaan-penjualan-page"
     >
       <header className="sd-list-header">
@@ -609,6 +615,7 @@ export default function PenerimaanPenjualan() {
         </div>
       </header>
 
+      <DocumentSummary list={documentList} loading={listLoading} error={listErr} />
       <div className="sd-list-toolbar">
         <div className="sd-list-search">
           <Search size={16} />
@@ -621,6 +628,7 @@ export default function PenerimaanPenjualan() {
             onChange={(e) => setSearchQuery(e.target.value)}
           />
         </div>
+        <DocumentFilters list={documentList} />
       </div>
 
       {listErr && (
@@ -697,7 +705,7 @@ export default function PenerimaanPenjualan() {
               <col style={{ width: 110 }} />
               <col style={{ width: 110 }} />
               <col style={{ width: 140 }} />
-              <col style={{ width: 220 }} />
+              <col style={{ width: 108 }} />
             </colgroup>
             <thead>
               <tr>
@@ -706,12 +714,12 @@ export default function PenerimaanPenjualan() {
                     <input type="checkbox" data-testid="select-all-receipts" checked={deletableReceipts.length > 0 && selectedIds.size === deletableReceipts.length} onChange={toggleSelectAll} aria-label="Pilih semua baris tampilan" />
                   </th>
                 )}
-                <th>Pelanggan / No. Penerimaan</th>
-                <th>Tanggal</th>
-                <th>Jumlah</th>
-                <th>Status Faktur</th>
-                <th>Accounting</th>
-                <th>Kas / Bank</th>
+                <th><ColumnFilter list={documentList} field="identity">Pelanggan / No. Penerimaan</ColumnFilter></th>
+                <th><ColumnFilter list={documentList} field="receipt_date">Tanggal</ColumnFilter></th>
+                <th><ColumnFilter list={documentList} field="amount">Diterima / dialokasikan</ColumnFilter></th>
+                <th><ColumnFilter list={documentList} field="payment_state">Status Faktur</ColumnFilter></th>
+                <th><ColumnFilter list={documentList} field="accounting_status">Accounting</ColumnFilter></th>
+                <th><ColumnFilter list={documentList} field="cash_bank_name">Kas / Bank</ColumnFilter></th>
                 <th>Aksi</th>
               </tr>
             </thead>
@@ -722,12 +730,12 @@ export default function PenerimaanPenjualan() {
                     Memuat data penerimaan penjualan...
                   </td>
                 </tr>
-              ) : receipts.length === 0 ? (
+              ) : documentList.filtered.length === 0 ? (
                 <tr>
                   <td colSpan={canDelete ? 8 : 7} className="sd-list-empty">
                     <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
                       <FileText size={36} color="#9ca3af" />
-                      <span style={{ fontWeight: 600, color: "#374151" }}>Belum ada Penerimaan Penjualan</span>
+                      <span style={{ fontWeight: 600, color: "#374151" }}>Tidak ada penerimaan pada hasil ini</span>
                       <span style={{ fontSize: 12, color: "#6b7280" }}>
                         Penerimaan pembayaran dari Faktur Penjualan akan tercatat di sini.
                       </span>
@@ -735,7 +743,7 @@ export default function PenerimaanPenjualan() {
                   </td>
                 </tr>
               ) : (
-                receipts.map((r, idx) => (
+                documentList.visible.map((r, idx) => (
                   <tr
                     key={r.id || idx}
                     style={{
@@ -775,7 +783,7 @@ export default function PenerimaanPenjualan() {
                       </span>
                     </td>
                     <td>{formatDisplayDate(r.receipt_date)}</td>
-                    <td className="sd-money is-zero">{formatRupiah(r.amount)}</td>
+                    <td className="sd-money is-zero">{moneyText(r.amount)}<span className="sd-support">Alokasi awal {moneyText(r.allocated_amount ?? r.amount)}</span></td>
                     <td style={{ padding: "12px 16px", textAlign: "center" }}>
                       <span
                         className="pj-status-badge"
@@ -816,6 +824,8 @@ export default function PenerimaanPenjualan() {
                     </td>
                     <td>
                       <div className="sd-actions">
+                        <button type="button" className="sd-act sd-act-view" onClick={async () => { setAccountingErr(""); try { const fresh = await api.getSalesReceipt(r.id); setDetailReceipt(fresh.receipt || fresh); } catch { setDetailReceipt(r); } }}>Detail</button>
+                        <DocumentActions>
                         <button
                           type="button"
                           className="sd-act sd-act-view"
@@ -870,6 +880,7 @@ export default function PenerimaanPenjualan() {
                             Hapus
                           </button>
                         )}
+                        </DocumentActions>
                       </div>
                     </td>
                   </tr>
@@ -879,14 +890,8 @@ export default function PenerimaanPenjualan() {
           </table>
         </div>
         <footer className="sd-list-footer" data-testid="receipt-list-footer">
-          <span>
-            {listLoading
-              ? "Memuat daftar penerimaan..."
-              : listErr
-              ? "Daftar penerimaan belum dapat ditampilkan"
-              : loadedRangeLabel(receipts.length, "penerimaan")}
-          </span>
-        </footer>
+            <DocumentPager list={documentList} loading={listLoading} error={listErr} />
+          </footer>
       </div>
 
       {/* CREATE RECEIPT MODAL */}
@@ -1458,6 +1463,7 @@ export default function PenerimaanPenjualan() {
         <div
           className="modal-overlay"
           data-testid="receipt-detail-modal"
+          ref={drawerRef} role="dialog" aria-modal="true" aria-label="Detail Penerimaan Penjualan" tabIndex={-1}
           style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 80 }}
         >
           <div style={{ background: "#fff", borderRadius: 12, padding: 24, width: "100%", maxWidth: 480 }}>
@@ -1652,3 +1658,4 @@ export default function PenerimaanPenjualan() {
     </div>
   );
 }
+

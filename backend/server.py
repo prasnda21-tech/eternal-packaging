@@ -196,6 +196,8 @@ from services.sales_accounting_settings_http import register_sales_accounting_se
 from services.sales_user_mapping_http import register_sales_user_mapping_routes
 from services.sales_pwa_http import register_sales_pwa_routes
 from services.sales_user_mapping import (
+    SALES_RESPONSIBLE_ROLES,
+    assign_sales_responsible,
     attach_sales_ownership,
     attach_sales_ownership_admin_fields,
     ensure_owned_po_id,
@@ -8976,13 +8978,11 @@ from services.sales_deliveries import (
     create_sales_delivery as _create_sales_delivery,
     list_sales_deliveries as _list_sales_deliveries,
     get_sales_delivery_detail as _get_sales_delivery_detail,
-    generate_sales_delivery_pdf_bytes as _generate_sales_delivery_pdf_bytes,
 )
 from services.sales_invoices import (
     get_po_invoice_preview as _get_po_invoice_preview,
     list_charge_account_options as _list_charge_account_options,
     create_sales_invoice as _create_sales_invoice,
-    generate_sales_invoice_pdf_bytes,
     list_sales_invoices as _list_sales_invoices,
     get_sales_invoice_detail as _get_sales_invoice_detail,
     update_sales_invoice as _update_sales_invoice,
@@ -9094,6 +9094,7 @@ class SalesOrderCreatePayload(BaseModel):
     delivery_zone: Optional[str] = None
     payment_terms: Optional[str] = None
     sales: Optional[str] = None
+    sales_user_id: Optional[str] = None
     created_by_user: Optional[str] = None
     expedition: Optional[str] = None
     estimated_delivery: Optional[str] = None
@@ -9473,7 +9474,28 @@ async def get_sales_order_options(user=Depends(current_user)):
         {"role": {"$in": ["admin", "crm", "head_production", "head_operations"]}, "status": {"$ne": "inactive"}},
         {"_id": 0, "name": 1, "email": 1}
     ).to_list(200)
-    all_sales = sorted({s.strip() for s in sales_from_orders if s and str(s).strip()} | {u["name"] for u in sales_users if u.get("name")})
+    responsible_users = await db.users.find(
+        {"role": {"$in": sorted(SALES_RESPONSIBLE_ROLES)}, "status": {"$ne": "inactive"}},
+        {"_id": 0, "id": 1, "name": 1, "email": 1, "role": 1},
+    ).to_list(500)
+    sales_accounts = []
+    for person in responsible_users:
+        uid = str(person.get("id") or "").strip()
+        name = str(person.get("name") or "").strip()
+        if not uid or not name:
+            continue
+        sales_accounts.append({
+            "id": uid,
+            "name": name,
+            "email": str(person.get("email") or "").strip(),
+            "role": str(person.get("role") or "").strip(),
+        })
+    sales_accounts.sort(key=lambda row: (row["name"], row["id"]))
+    all_sales = sorted(
+        {s.strip() for s in sales_from_orders if s and str(s).strip()}
+        | {u["name"] for u in sales_users if u.get("name")}
+        | {row["name"] for row in sales_accounts}
+    )
 
     master_items = await db.master_items.find(
         {"is_active": True},
@@ -9486,6 +9508,7 @@ async def get_sales_order_options(user=Depends(current_user)):
         "master_customers": master_customers,
         "outlets_by_customer": outlets_by_customer,
         "sales_options": all_sales,
+        "sales_accounts": sales_accounts,
         "master_items": master_items,
         "suggested_po_number": suggested_po,
     }
@@ -9640,7 +9663,7 @@ async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(curr
         "payment_terms": (payload.payment_terms or "").strip() or None,
         "payment_status": "Waiting",
         "design_status": "Waiting",
-        "sales": (payload.sales or "").strip() or None,
+        "sales": None,
         "created_by_user": (payload.created_by_user or "").strip() or user.get("name") or user.get("email"),
         "imported_by": user.get("email"),
         "imported_by_name": user.get("name"),
@@ -9680,7 +9703,15 @@ async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(curr
     from services.physical_stock_engine import attach_order_stock_snapshot
     stock_warnings = await validate_sales_order_availability(db, new_order.get("line_items") or [])
     await attach_order_stock_snapshot(db, new_order)
-    await attach_sales_ownership(db, new_order)
+    explicit_sales_id = str(payload.sales_user_id or "").strip()
+    await assign_sales_responsible(
+        db,
+        new_order,
+        label=payload.sales,
+        explicit_user_id=explicit_sales_id,
+        explicit_sent=bool(explicit_sales_id),
+    )
+    new_order["seller"] = new_order.get("sales")
 
     try:
         await db.orders.insert_one(new_order)
@@ -9839,8 +9870,9 @@ async def update_order_info(order_id: str, payload: OrderInfoUpdatePayload, user
 
 
 class OrderSalesUpdatePayload(BaseModel):
-    """Reassignment of Accurate sales label. Does not guess users.id."""
+    """Reassignment of the sales label and, when sent, an explicit users.id."""
     sales: Optional[str] = None
+    sales_user_id: Optional[str] = None
 
 
 @api_router.patch("/orders/{order_id}/sales")
@@ -9859,9 +9891,15 @@ async def update_order_sales(order_id: str, payload: OrderSalesUpdatePayload, us
         "sales": order.get("sales"),
         "sales_user_id": order.get("sales_user_id"),
     }
-    new_label = (payload.sales or "").strip() or None
-    order["sales"] = new_label
-    await attach_sales_ownership(db, order)
+    sent = payload.model_dump(exclude_unset=True)
+    explicit_sales_id = str(sent.get("sales_user_id") or "").strip()
+    await assign_sales_responsible(
+        db,
+        order,
+        label=payload.sales,
+        explicit_user_id=explicit_sales_id,
+        explicit_sent="sales_user_id" in sent and bool(explicit_sales_id),
+    )
     add_timeline(order, order.get("current_stage") or 0, user, note="Edit Sales")
     await _persist_order(order, persist_keys=("sales", "sales_user_id", "sales_ownership_status", "sales_needs_verification", "timeline"))
     after = {
@@ -10112,6 +10150,7 @@ _SALES_ORDER_LIST_PROJECTION = {
             "input": {"$ifNull": ["$line_items", []]},
             "as": "li",
             "in": {
+                "line_idx": "$$li.line_idx",
                 "quantity": "$$li.quantity",
                 "unit": "$$li.unit",
             },
@@ -10225,6 +10264,7 @@ async def list_sales_orders(
     status: Optional[str] = None,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
+    invoice_status: Optional[str] = None,
     page: Optional[int] = None,
     page_size: Optional[int] = None,
     user=Depends(current_user),
@@ -10272,6 +10312,9 @@ async def list_sales_orders(
         ]
         shipped_aggregates = {doc["_id"]: doc async for doc in db.sales_deliveries.aggregate(pipe)}
 
+    from services.sales_order_invoice_status import attach_invoice_coverage
+    await attach_invoice_coverage(db, orders)
+
     fetched_count = len(orders)
     for o in orders:
         o["quantity_by_unit"] = _quantity_by_unit(o.pop("line_items", None))
@@ -10307,6 +10350,11 @@ async def list_sales_orders(
         orders = [o for o in orders if o.get("hold")]
     elif st == "aktif":
         orders = [o for o in orders if not o.get("hold")]
+
+    from services.sales_order_invoice_status import filter_invoice_coverage
+    if invoice_status not in (None, "all", "none", "partial", "full", "processing"):
+        raise HTTPException(400, "Filter status faktur tidak valid")
+    orders = filter_invoice_coverage(orders, invoice_status)
 
     paging = page is not None or page_size is not None
     if not paging:
@@ -10388,12 +10436,13 @@ async def get_sales_delivery_endpoint(id: str, user=Depends(current_user)):
 
 
 @api_router.get("/sales-deliveries/{id}/pdf")
-async def get_sales_delivery_pdf_endpoint(id: str, user=Depends(current_user)):
+async def get_sales_delivery_pdf_endpoint(id: str, template_id: Optional[str] = None, user=Depends(current_user)):
     """Generate and return official PDF for Sales Delivery / Surat Jalan."""
     await _require_any_perm(user, "sales.delivery.print", "sales.delivery.view", "sales_order.view", "po.view")
     detail = await _get_sales_delivery_detail(db, id)
     await ensure_owned_po_id(db, user, ((detail or {}).get("delivery") or {}).get("po_id"))
-    pdf_bytes = _generate_sales_delivery_pdf_bytes(detail["delivery"], detail.get("po_summary"))
+    from services.print_templates import render_delivery_pdf
+    pdf_bytes = await render_delivery_pdf(db, detail["delivery"], audience="customer", template_id=template_id or None)
     sj_num = str(detail["delivery"].get("sj_number", "SJ")).replace("/", "_").replace("\\", "_")
     filename = f"Pengiriman_Pesanan_{sj_num}.pdf"
     return FastAPIResponse(
@@ -10480,12 +10529,13 @@ async def get_sales_invoice_endpoint(id: str, user=Depends(current_user)):
 
 
 @api_router.get("/sales-invoices/{id}/pdf")
-async def get_sales_invoice_pdf_endpoint(id: str, user=Depends(current_user)):
+async def get_sales_invoice_pdf_endpoint(id: str, template_id: Optional[str] = None, user=Depends(current_user)):
     """Generate and return official PDF for Sales Invoice (Faktur Penjualan)."""
     await _require_any_perm(user, "sales.invoice.view", "sales_order.view", "po.view", "sales.delivery.view")
     detail = await _get_sales_invoice_detail(db, id)
     await ensure_owned_po_id(db, user, (detail or {}).get("po_id"))
-    pdf_bytes = generate_sales_invoice_pdf_bytes(detail)
+    from services.print_templates import render_invoice_pdf
+    pdf_bytes = await render_invoice_pdf(db, detail, audience="customer", template_id=template_id or None)
     inv_num = str(detail.get("invoice_number", "INV")).replace("/", "_").replace("\\", "_")
     filename = f"Faktur_Penjualan_{inv_num}.pdf"
     return FastAPIResponse(
@@ -13828,6 +13878,8 @@ _delivery_route_api.register(api_router, {
     "Depends": Depends,
 })
 
+from services.print_template_routes import register as _register_print_templates
+_register_print_templates(api_router, get_db=lambda: db, current_user=current_user, user_permissions=user_permissions, obj_storage=obj_storage)
 app.include_router(api_router)
 
 # ---- Customer Design Approval router (registered before CORS/middleware) ----
@@ -14268,6 +14320,8 @@ async def seed():
             # Batch 3: Production routing (Cetak/Non-Cetak)
             "production.route.edit",
             "buffer_stock.manage",
+            "print_template.view",
+            "print_template.manage",
         ],
         "designer": [
             "customer_approval.view", "customer_approval.manage",

@@ -4,10 +4,12 @@ on:
   pull_request:
     branches:
       - main
+      - review/production-bdd247f
       - cursor/hpp-financial-opening-13bd
       - cursor/sales-order-redesign-b7d7
       - release/finance-recon-on-live-stock-367
       - release/invoice-bank-preserve-d27deff
+      - release/stock-386-preserve-2d0fa057
   workflow_dispatch:
 
 permissions:
@@ -58,6 +60,8 @@ jobs:
           python-multipart==0.0.32
           boto3==1.43.74
           reportlab==4.1.0
+          qrcode==8.2
+          pillow==12.3.0
           requests==2.34.2
           openpyxl==3.1.5
           pdfplumber==0.11.10
@@ -76,6 +80,11 @@ jobs:
           tests/test_sales_order_line_prices.py
           tests/test_sales_order_item_images.py
           tests/test_sales_order_list_read.py
+          tests/test_sales_order_invoice_status.py
+          tests/test_sales_attribution_dashboard.py
+          tests/test_sales_dashboard.py
+          tests/test_sales_user_mapping.py
+          tests/test_sales_invoice_issue_delete.py
           tests/test_customer_tracking.py
           tests/test_customer_tracking_invoices.py
           tests/test_tracking_delivery_signature.py
@@ -95,6 +104,8 @@ jobs:
           tests/test_cash_bank_recon_revision.py
           tests/test_cash_bank_recon_closure.py
           tests/test_cash_bank_import_owner.py
+          tests/test_print_templates.py
+          tests/test_print_template_mongo.py
 
   frontend-focused:
     name: Frontend tests and build
@@ -148,8 +159,13 @@ jobs:
           src/lib/globalWorkspace.test.js
           src/lib/salesOrderCreateWorkspace.test.js
           src/pages/PesananPenjualan.createWorkspace.test.js
+          src/pages/PesananPenjualan.repeat.test.js
+          src/components/SalesUserMappingSettings.test.js
           src/pages/PesananPenjualan.test.js
           src/pages/FakturPenjualan.test.js
+          src/lib/printTemplateGeometry.test.js
+          src/pages/Settings.cardNav.test.js
+          src/pages/salesDocumentsPremium.test.js
           src/components/MasterItemSearchSelect.picker.test.js
           src/lib/salesOrderListPresentation.test.js
           src/pages/PesananPenjualan.searchDebounce.test.js
@@ -214,6 +230,8 @@ jobs:
           python-multipart==0.0.32
           boto3==1.43.74
           reportlab==4.1.0
+          qrcode==8.2
+          pillow==12.3.0
           requests==2.34.2
           openpyxl==3.1.5
           pdfplumber==0.11.10
