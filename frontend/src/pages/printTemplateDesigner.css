@@ -12,6 +12,7 @@ html:has(.print-designer-page) #root {
 }
 .app-main:has(.print-designer-page) {
   height: 100%;
+  min-width: 0;
   min-height: 0;
   overflow: hidden;
 }
@@ -25,10 +26,18 @@ html:has(.print-designer-page) #root {
   padding: 0;
   overflow: hidden;
   display: flex;
+  flex-direction: column;
+}
+/* The tab strip is already below the topbar in this bounded workspace. */
+.content:has(.print-designer-page) > .kb-workspace-tabs {
+  position: relative;
+  top: 0;
+  flex: 0 0 auto;
 }
 
 .print-designer-page {
   flex: 1;
+  min-width: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -40,12 +49,15 @@ html:has(.print-designer-page) #root {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   padding: 8px 12px;
   background: #fff;
   border-bottom: 1px solid #dbe3ee;
-  overflow-x: auto;
+  min-width: 0;
 }
+.pt-toolbar > button, .pt-toolbar > label, .pt-toolbar .pt-zoom { flex: 0 0 auto; }
+.pt-toolbar > label { display: inline-flex; align-items: center; gap: 4px; }
 .pt-toolbar button, .pt-btn {
   border: 1px solid #cbd5e1;
   background: #fff;
@@ -63,10 +75,12 @@ html:has(.print-designer-page) #root {
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: 280px minmax(0, 1fr) 300px;
+  grid-template-columns: minmax(0, 240px) minmax(0, 1fr) minmax(0, 280px);
   overflow: hidden;
 }
 .pt-side, .pt-props {
+  min-width: 0;
+  box-sizing: border-box;
   min-height: 0;
   overflow: auto;
   background: #fff;
@@ -153,7 +167,9 @@ html:has(.print-designer-page) #root {
   border-radius: 8px;
   padding: 6px 8px;
 }
-.pt-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.pt-side input[type="file"] { width: 100%; min-width: 0; max-width: 100%; box-sizing: border-box; }
+.pt-grid-2 > * { min-width: 0; }
+.pt-grid-2 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }
 .pt-list-page { padding: 8px 0 24px; }
 .pt-filters { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
 .pt-table { width: 100%; border-collapse: collapse; background: #fff; }
