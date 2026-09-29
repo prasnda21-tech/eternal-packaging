@@ -233,6 +233,16 @@ async def is_source_committed(db, pending_event: Dict[str, Any]) -> bool:
     if not order_id:
         return False
 
+    if ref_type == "operational_stock_intent":
+        # Source evidence and its obligation are committed in one Mongo write.
+        from services.operational_stock_outbox import FIELD
+        for collection in (db.orders, db.sales_deliveries):
+            source = await collection.find_one({"id": pending_event.get("reference_id") or order_id}, {FIELD: 1})
+            task = ((source or {}).get(FIELD) or {}).get(action_id)
+            if task and task.get("id") == action_id:
+                return True
+        return False
+
     if ref_type in ("operator", "operator_progress", "operator_print", "status_cetak"):
         order = await db.orders.find_one({"id": order_id}, {"_id": 0, "operator_splits": 1})
         if not order:
@@ -372,6 +382,7 @@ async def claim_durable_stock_event(
     now: Optional[str] = None,
     fence_generation: Optional[int] = None,
     fence_holder_id: Optional[str] = None,
+    conversion_snapshot: Optional[Tuple[float, float, str, str]] = None,
 ) -> Dict[str, Any]:
     """Atomically claims / reserves inventory on product_stock_state BEFORE source write.
 
@@ -414,9 +425,14 @@ async def claim_durable_stock_event(
     aid = master.get("accurate_item_id")
     await require_product_stock_initialized(db, mid)
 
-    base_qty, factor, base_uom, tx_uom = await resolve_transaction_conversion(
-        db, mid, transaction_qty, transaction_uom
-    )
+    if conversion_snapshot is None:
+        base_qty, factor, base_uom, tx_uom = await resolve_transaction_conversion(
+            db, mid, transaction_qty, transaction_uom
+        )
+    else:
+        base_qty, factor, base_uom, tx_uom = conversion_snapshot
+        if base_qty <= 0 or factor <= 0:
+            raise ValueError("Invalid captured stock conversion")
 
     m_type = str(movement_type or "").strip().upper()
     is_p = bool(is_print) if is_print is not None else (
@@ -3839,4 +3855,5 @@ async def finalize_delivery_confirmed_stock(
         else:
             movements.append(mov)
     return movements
+
 

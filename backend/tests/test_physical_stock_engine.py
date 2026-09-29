@@ -2763,24 +2763,17 @@ def _pengiriman(db):
     return [d for d in db.stock_movements._docs if d.get("movement_type") == MOVEMENT_PENGIRIMAN]
 
 
-def test_confirm_delivered_stock_claim_uses_selected_sj_rows():
-    """Stock claim resolves SJ rows; it does not pass the full PO line list."""
-    from pathlib import Path
-
-    server = Path(__file__).resolve().parents[1].joinpath("server.py").read_text()
-    start = server.index("async def confirm_delivered")
-    window = server[start:start + 4500]
-    assert "claim_selected_delivery_stock(" in window
-    assert 'claim_delivery_confirmed_stock(' not in window
-    assert 'existing_order.get("line_items")' not in window
-    assert "reject_sj_stock_qty_drift" in window
-    reconcile_at = window.index("_qr_reconcile_sj_quantities_to_loaded_delivery")
-    drift_at = window.index("reject_sj_stock_qty_drift")
-    append_at = window.index("_append_delivery_confirmation")
-    assert reconcile_at < drift_at < append_at
-    engine = Path(__file__).resolve().parents[1].joinpath("services", "physical_stock_engine.py").read_text()
-    assert "prepare_delivery_confirmed_stock" not in engine
-    assert "build_delivery_confirm_stock_lines" not in engine
+def test_stock_plan_uses_selected_sj_rows():
+    """A partial SJ must never be expanded to the full PO quantity."""
+    from services.physical_stock_engine import plan_confirmed_sj_stock
+    order = {"id": "partial", "line_items": [
+        {"line_id": "L0", "master_item_id": "m", "quantity": 1000, "unit": "PCS"},
+        {"line_id": "L1", "master_item_id": "m", "quantity": 1000, "unit": "PCS"}],
+        "shipments": [{"id": "sj", "lines": [{"line_idx": 0, "qty": 100}, {"line_idx": 1, "qty": 200}]}]}
+    plan = plan_confirmed_sj_stock(order, order["shipments"][0])
+    assert plan["error"] is None
+    assert plan["sj_qty"] == 300
+    assert [row["qty"] for row in plan["lines"]] == [100, 200]
 
 
 @pytest.mark.anyio
@@ -3466,3 +3459,4 @@ async def test_resumed_claim_stays_until_the_last_holder_releases_it(mock_db):
     assert not state.get("pending_event")
     assert state["printed_qty"] == 2000.0
     assert _pengiriman(mock_db) == []
+
