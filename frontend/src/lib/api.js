@@ -333,6 +333,7 @@ export const api = {
   cancelCashBankPair: (id, payload) => client.post(`/cash-bank/reconciliations/pairs/${encodeURIComponent(id)}/cancel`, payload).then((r) => r.data),
   cashBankLegacyReconciliations: (params = {}) => client.get(`/cash-bank/reconciliations/legacy`, { params }).then((r) => r.data),
   previewCashBankStatement: (formData) => client.post(`/cash-bank/statements/preview`, formData).then((r) => r.data),
+  previewCashBankBcaStatement: (formData) => client.post(`/cash-bank/statements/bca/preview`, formData).then((r) => r.data),
   validateCashBankStatement: (formData) => client.post(`/cash-bank/statements/preview/validate`, formData).then((r) => r.data),
   commitCashBankStatement: (formData) => client.post(`/cash-bank/statements/imports`, formData).then((r) => r.data),
   cashBankStatementImports: (params = {}) => client.get(`/cash-bank/statements/imports`, { params }).then((r) => r.data),

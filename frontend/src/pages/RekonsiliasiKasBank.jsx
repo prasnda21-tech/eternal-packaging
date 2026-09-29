@@ -571,9 +571,15 @@ export default function RekonsiliasiKasBank() {
   const [suggestions, setSuggestions] = useState(null);
   const [preview, setPreview] = useState(null);
   const [importOpen, setImportOpen] = useState(false);
+  const [bcaOpen, setBcaOpen] = useState(false);
+  const [bcaPreview, setBcaPreview] = useState(null);
+  const [bcaFilename, setBcaFilename] = useState("");
+  const [bcaMessage, setBcaMessage] = useState("");
   const importDialog = useRef(null);
+  const bcaDialog = useRef(null);
   const importFile = useRef(null);
   const uploadInput = useRef(null);
+  const bcaInput = useRef(null);
   const importButton = useRef(null);
   const [mapping, setMapping] = useState({
     header_row: 0,
@@ -603,6 +609,11 @@ export default function RekonsiliasiKasBank() {
     if (importOpen && importDialog.current && !importDialog.current.open) importDialog.current.showModal();
     if (!importOpen && importDialog.current?.open) importDialog.current.close();
   }, [importOpen]);
+
+  useEffect(() => {
+    if (bcaOpen && bcaDialog.current && !bcaDialog.current.open) bcaDialog.current.showModal();
+    if (!bcaOpen && bcaDialog.current?.open) bcaDialog.current.close();
+  }, [bcaOpen]);
 
   useEffect(() => {
     setSelectedBank("");
@@ -738,6 +749,28 @@ export default function RekonsiliasiKasBank() {
     body.append("account_binding", preview.account_binding);
     if (includeFingerprint) body.append("fingerprint", preview.fingerprint);
     return body;
+  };
+
+  const onBcaUpload = async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file || !canReconcile) return;
+    setBusy(true);
+    setBcaMessage("");
+    setBcaFilename(file.name);
+    try {
+      const body = new FormData();
+      body.append("file", file, file.name);
+      const res = await api.previewCashBankBcaStatement(body);
+      setBcaPreview(res);
+      setBcaOpen(true);
+    } catch (ex) {
+      setBcaPreview(null);
+      setBcaMessage(errPayload(ex).message);
+      setBcaOpen(true);
+    } finally {
+      setBusy(false);
+    }
   };
 
   const onUpload = async (event) => {
@@ -939,6 +972,8 @@ export default function RekonsiliasiKasBank() {
         {canReconcile && <>
           <input ref={uploadInput} className="recon-file-input" aria-label="Berkas mutasi" type="file" accept=".csv,.txt,.xlsx" onChange={onUpload} data-testid="kas-bank-pair-import" disabled={busy || !cashBankId} />
           <button ref={importButton} type="button" className="ghost sm recon-upload" onClick={() => preview ? setImportOpen(true) : uploadInput.current?.click()} disabled={busy || !cashBankId}><Upload size={16} />{preview ? "Lanjutkan impor" : "Impor Mutasi"}</button>
+          <input ref={bcaInput} className="recon-file-input" aria-label="Berkas CSV BCA" type="file" accept=".csv,text/csv" onChange={onBcaUpload} data-testid="kas-bank-bca-file" disabled={busy} />
+          <button type="button" className="ghost sm recon-upload" onClick={() => bcaInput.current?.click()} disabled={busy} data-testid="kas-bank-bca-open"><Upload size={16} />Pratinjau CSV BCA</button>
         </>}
       </div>
 
@@ -1045,6 +1080,23 @@ export default function RekonsiliasiKasBank() {
           </div>
           <footer className="recon-drawer-footer"><span>Validasi dan penyimpanan tetap diperiksa server.</span><button type="button" className="ghost sm" onClick={onValidate} disabled={busy}>Validasi</button><button type="button" className="primary sm" onClick={onCommit} disabled={busy || !canReconcile}>Konfirmasi impor</button></footer>
         </>}
+      </dialog>
+
+      <dialog ref={bcaDialog} className="recon-import-dialog recon-bca-dialog" aria-labelledby="recon-bca-title" data-testid="kas-bank-bca-preview" onCancel={(event) => { if (busy) event.preventDefault(); else setBcaOpen(false); }} onClose={() => setBcaOpen(false)}>
+        <div className="recon-drawer-heading"><div><p>CSV BCA · Pratinjau parser</p><h2 id="recon-bca-title">Pratinjau CSV BCA</h2></div><button type="button" className="ghost sm" aria-label="Tutup pratinjau CSV BCA" onClick={() => setBcaOpen(false)} disabled={busy}><X size={20} /></button></div>
+        <div className="recon-drawer-content">
+          <div className="recon-file-info"><strong>{bcaFilename || "CSV BCA"}</strong><span>Pratinjau hasil pembacaan. Belum menyimpan mutasi dan belum membuat jurnal.</span></div>
+          {bcaMessage && <p className="recon-notice" role="alert">{bcaMessage}</p>}
+          {bcaPreview && <>
+            <p className="recon-context">Bank {bcaPreview.bank || "BCA"}. Debit ditampilkan sebagai keluar dan kredit sebagai masuk.</p>
+            <div className="recon-bca-table-wrap"><table className="prod-table kas-bank-table"><thead><tr><th>Tanggal transaksi</th><th>Keterangan</th><th className="num">Debit</th><th className="num">Kredit</th><th className="num">Saldo</th></tr></thead><tbody>
+              {(bcaPreview.rows || []).map((row) => <tr key={`${row.source_row}-${row.tanggal}-${row.keterangan}`}><td className="recon-date">{reconDate(row.tanggal)}</td><td>{row.keterangan}</td><td className="num kb-money">{row.debit == null ? "—" : formatMoney(row.debit)}</td><td className="num kb-money">{row.kredit == null ? "—" : formatMoney(row.kredit)}</td><td className="num kb-money">{row.saldo == null ? "—" : formatMoney(row.saldo)}</td></tr>)}
+              {!(bcaPreview.rows || []).length && <tr><td colSpan={5}>Tidak ada baris valid.</td></tr>}
+            </tbody></table></div>
+            {!!(bcaPreview.errors || []).length && <ul className="recon-validation-errors" role="alert">{bcaPreview.errors.map((err) => <li key={`${err.row}-${err.message}`}>Baris {err.row}: {err.message}</li>)}</ul>}
+          </>}
+        </div>
+        <footer className="recon-drawer-footer"><span>Impor belum tersedia pada pratinjau ini.</span></footer>
       </dialog>
     </div>
   );

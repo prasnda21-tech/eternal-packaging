@@ -69,6 +69,7 @@ from services.cash_bank_statement import (
     set_manual_balance,
     validate_preview,
 )
+from services.cash_bank_statement_bca import parse_bca_statement
 from services.cash_bank_pair_match import (
     PairConflictError,
     PairValidationError,
@@ -755,6 +756,19 @@ def register_cash_bank_routes(
                 data=data,
                 user=user,
             )
+        except StatementValidationError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @api_router.post("/cash-bank/statements/bca/preview")
+    async def post_bca_statement_preview(
+        file: UploadFile = File(...),
+        user=Depends(require_perm(PERM_RECONCILE)),
+    ):
+        """Parse a BCA CSV for preview. Does not write a batch, line, or journal."""
+        del user
+        data = await file.read()
+        try:
+            return parse_bca_statement(file.filename or "", data)
         except StatementValidationError as exc:
             raise HTTPException(400, str(exc)) from exc
 
