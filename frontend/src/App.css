@@ -5599,6 +5599,98 @@ button.ghost.sm.icon{padding:4px 6px}
 .po-detail-industrial .attachments-grid{display:flex!important;flex-wrap:wrap;gap:6px;min-height:0!important;height:auto!important;grid-template-columns:unset!important}
 .po-detail-industrial .attachment-card img,
 .po-detail-industrial .file-thumb{height:52px!important}
+
+/* Design Workspace + Customer Approval — visual only */
+.po-detail .design-ws-head,
+.po-detail-industrial .design-ws-head{
+  display:flex!important;flex-direction:row;flex-wrap:nowrap;align-items:center;
+  justify-content:space-between;gap:12px;
+}
+.po-detail .design-ws-heading{min-width:0;flex:1 1 auto}
+.po-detail .design-ws-heading h3{margin:0;flex:0 1 auto!important}
+.po-detail .design-ws-heading p{margin:2px 0 0}
+.po-detail .design-ws-head > .pill{flex:0 0 auto;margin-left:auto}
+.po-detail [data-testid="upload-design-button"].design-upload-btn{
+  background:#0f5f63;color:#fff;border:1px solid #0b4c4f;font-weight:700;
+  min-height:34px;padding:4px 12px;border-radius:4px;
+}
+.po-detail .ca-signature-audit{margin:8px 0 0;display:grid;gap:4px}
+.po-detail .ca-signature-audit div{display:grid;grid-template-columns:120px minmax(0,1fr);gap:8px}
+.po-detail .ca-signature-audit dt{margin:0;font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:#64748b}
+.po-detail .ca-signature-audit dd{margin:0;font-size:13px;color:#0b1f33}
+@media (max-width:820px){
+  .po-detail .po-phase-design .po-pair-col{padding:8px 10px}
+  .po-detail .po-phase-design .design-proof-preview{min-height:0;padding:8px}
+  .po-detail-industrial .po-phase-design .design-proof-preview img,
+  .po-detail-industrial .po-phase-design .design-proof-preview .file-thumb{
+    height:140px!important;min-height:140px;
+  }
+  .po-detail .design-ws-head,
+  .po-detail-industrial .design-ws-head{flex-wrap:wrap;align-items:flex-start}
+  .po-detail .ca-timeline li{padding-bottom:6px}
+  .po-detail .ca-signature-preview{max-height:110px}
+}
+.po-detail .po-phase-design .pill-warn{background:#FFFBEB;color:#B45309;border:1px solid #FCD34D}
+.po-detail .po-phase-design .pill-ok{background:#ECFDF5;color:#047857;border:1px solid #A7F3D0}
+.po-detail [data-testid="design-files-panel"] .attachments-grid,
+.po-detail-industrial [data-testid="design-files-panel"] .attachments-grid{
+  display:grid!important;grid-template-columns:minmax(0,1fr)!important;width:100%;gap:10px;
+}
+.po-detail-industrial [data-testid="design-files-panel"] .design-proof-card{
+  width:100%;flex:1 1 auto;padding:12px;gap:10px;background:#fff;
+}
+.po-detail [data-testid="design-files-panel"] .design-proof-preview{
+  background:#e8eef1;border:1px solid #d5dee3;min-height:200px;padding:16px;
+  display:flex;align-items:center;justify-content:center;
+}
+.po-detail-industrial [data-testid="design-files-panel"] .design-proof-preview img,
+.po-detail-industrial [data-testid="design-files-panel"] .design-proof-preview .file-thumb{
+  height:210px!important;width:100%;max-width:100%;object-fit:contain;min-height:210px;
+  background:#fff;border:1px solid #c9d2d8;box-shadow:0 8px 18px rgba(15,23,42,.08);
+}
+.po-detail [data-testid="design-files-panel"] .design-proof-meta{
+  margin:0;padding:10px;background:#f8fafc;border:1px solid #e2e8f0;
+}
+.po-detail [data-testid="design-files-panel"] .design-proof-meta strong{
+  display:block;font-size:14px;white-space:normal;line-height:1.3;margin-bottom:8px;
+}
+.po-detail .design-proof-facts{margin:0;display:grid;gap:6px}
+.po-detail .design-proof-facts div{display:grid;grid-template-columns:88px minmax(0,1fr);gap:8px;align-items:center}
+.po-detail .design-proof-facts dt{margin:0;font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:#64748b}
+.po-detail .design-proof-facts dd{margin:0;font-size:13px;color:#0b1f33}
+.po-detail [data-testid="design-files-panel"] .design-proof-actions{
+  margin-top:0!important;padding-top:2px;gap:8px;
+}
+.po-detail [data-testid="approval-design-actions"]{
+  display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:0 0 12px;
+}
+.po-detail [data-testid="approval-design-actions"] .primary{font-weight:700}
+.po-detail [data-testid="approval-design-actions"] .ghost{background:#fff}
+.po-detail .ca-approval-head{
+  display:flex;align-items:flex-start;justify-content:space-between;gap:10px;flex-wrap:wrap;
+}
+.po-detail .ca-panel .ca-status-lg{
+  font-size:14px;font-weight:700;padding:8px 12px;border-radius:4px;
+}
+.po-detail .ca-panel .status-chip.status-none,
+.po-detail .ca-panel .status-chip.status-active{background:#FFFBEB;color:#B45309}
+.po-detail .ca-panel .status-chip.status-approved{background:#ECFDF5;color:#047857}
+.po-detail .ca-panel .status-chip.status-rejected{background:#FEF2F2;color:#B91C1C}
+.po-detail .ca-info-label{
+  margin:12px 0 0;font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#64748b;
+}
+.po-detail .ca-timeline{list-style:none;margin:8px 0 0;padding:0 0 0 16px;border-left:2px solid #d5dee3}
+.po-detail .ca-timeline li{position:relative;display:flex;flex-wrap:wrap;gap:4px 10px;padding:0 0 10px 12px}
+.po-detail .ca-timeline li::before{
+  content:"";position:absolute;left:-21px;top:4px;width:8px;height:8px;border-radius:50%;
+  background:#fff;border:2px solid #0f5f63;
+}
+.po-detail .ca-timeline .lbl{min-width:110px;color:#64748b;font-size:11px;letter-spacing:.04em;text-transform:uppercase}
+.po-detail .ca-signature-block{margin-top:8px}
+.po-detail .ca-signature-preview{
+  display:block;margin-top:6px;max-height:160px;max-width:100%;
+  background:#fff;border:1px solid var(--line);border-radius:6px;padding:4px;
+}
 .po-detail-industrial .panel{margin:0!important}
 .po-detail-industrial .workflow-group{/* spacing owned by group header block */}
 

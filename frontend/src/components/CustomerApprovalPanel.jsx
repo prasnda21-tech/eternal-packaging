@@ -99,43 +99,50 @@ export default function CustomerApprovalPanel({ order, canManage, canView, onOrd
     }
   };
 
-  // Header status chip
-  const chipStyle = ({
-    active: { background: "#fef4d6", color: "#a16d1f" },
-    approved: { background: "#e5f5e5", color: "#2b7a2b" },
-    rejected: { background: "#fce6e6", color: "#a12b2b" },
-    expired: { background: "#efe6d3", color: "#7a6f52" },
-    revoked: { background: "#efe6d3", color: "#7a6f52" },
-    invalidated: { background: "#efe6d3", color: "#7a6f52" },
-    none: { background: "#f2eee7", color: "#7a6a4a" },
-  })[status] || { background: "#f2eee7", color: "#7a6a4a" };
-
   const StatusIcon = ({ st }) => {
-    if (st === "active") return <Clock size={13} />;
-    if (st === "approved") return <CheckCircle2 size={13} />;
-    if (st === "rejected") return <XCircle size={13} />;
-    return <AlertTriangle size={13} />;
+    if (st === "active") return <Clock size={16} />;
+    if (st === "approved") return <CheckCircle2 size={16} />;
+    if (st === "rejected") return <XCircle size={16} />;
+    return <AlertTriangle size={16} />;
   };
 
   if (!canView) return null;
 
   return (
-    <section className="ca-panel" data-testid="customer-approval-panel">
-      <header style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+    <section className="ca-panel ca-approval-card" data-testid="customer-approval-panel">
+      <header className="ca-approval-head">
         <div>
-          <h3>Customer Approval Design</h3>
+          <h3>Customer Approval</h3>
           <p className="muted small" style={{ margin: 0 }}>Link approval untuk dikirim ke customer melalui WhatsApp secara manual.</p>
         </div>
-        <span className="status-chip" style={chipStyle} data-testid="ca-status-chip">
+        <span className={`status-chip ca-status-lg status-${status}`} data-testid="ca-status-chip">
           <StatusIcon st={status} />
           <span>{STATUS_LABEL[status]}</span>
         </span>
       </header>
 
-      {ca && (
+      <p className="ca-info-label">Approval Information</p>
+      <ol className="ca-timeline" data-testid="ca-response">
+        <li>
+          <span className="lbl">Created</span>
+          <span>{fmt(ca?.generated_at)}</span>
+        </li>
+        <li>
+          <span className="lbl">Valid Until</span>
+          <span>{fmt(ca?.expires_at)}</span>
+        </li>
+        <li>
+          <span className="lbl">Signer</span>
+          <span>{ca?.signer_name || "-"}</span>
+        </li>
+        <li>
+          <span className="lbl">Approval Time</span>
+          <span>{(status === "approved" || status === "rejected") ? fmt(ca?.responded_at) : "-"}</span>
+        </li>
+      </ol>
+
+      {ca && ((status === "active" && ca.expires_at) || ca.expiry_hours) && (
         <div className="row" data-testid="ca-meta">
-          {ca.generated_at && <div><span className="lbl">Dibuat</span>{fmt(ca.generated_at)}</div>}
-          {ca.expires_at && <div><span className="lbl">Berlaku sampai</span>{fmt(ca.expires_at)}</div>}
           {status === "active" && ca.expires_at && (
             <div data-testid="ca-time-remaining"><span className="lbl">Sisa waktu</span>{remaining(ca.expires_at)}</div>
           )}
@@ -143,25 +150,32 @@ export default function CustomerApprovalPanel({ order, canManage, canView, onOrd
         </div>
       )}
 
-      {(status === "approved" || status === "rejected") && (
-        <div className="row" data-testid="ca-response">
-          <div><span className="lbl">Signer</span>{ca?.signer_name || "-"}</div>
-          <div><span className="lbl">Waktu Respons</span>{fmt(ca?.responded_at)}</div>
-          {status === "rejected" && ca?.reject_reason && <div><span className="lbl">Alasan Reject</span>{ca.reject_reason}</div>}
-          {status === "approved" && ca?.customer_note && <div><span className="lbl">Catatan Customer</span>{ca.customer_note}</div>}
-          {ca?.signature_storage_path && (
-            <div style={{ flexBasis: "100%" }}>
-              <span className="lbl">Signature</span>
-              <div style={{ marginTop: 6 }}>
-                <img
-                  src={`${process.env.REACT_APP_BACKEND_URL}/api/files/${ca.signature_storage_path}`}
-                  alt="Tanda tangan customer"
-                  style={{ maxHeight: 110, background: "#fff", border: "1px solid var(--line)", borderRadius: 6, padding: 4 }}
-                  data-testid="ca-signature-preview"
-                />
-              </div>
+      {status === "rejected" && ca?.reject_reason && (
+        <p className="muted small"><span className="lbl">Alasan Reject</span> {ca.reject_reason}</p>
+      )}
+      {status === "approved" && ca?.customer_note && (
+        <p className="muted small"><span className="lbl">Catatan Customer</span> {ca.customer_note}</p>
+      )}
+
+      {ca?.signature_storage_path && (
+        <div className="ca-signature-block">
+          <span className="lbl">Signature</span>
+          <img
+            src={`${process.env.REACT_APP_BACKEND_URL}/api/files/${ca.signature_storage_path}`}
+            alt="Tanda tangan customer"
+            className="ca-signature-preview"
+            data-testid="ca-signature-preview"
+          />
+          <dl className="ca-signature-audit">
+            <div>
+              <dt>Signer</dt>
+              <dd>{ca?.signer_name || "-"}</dd>
             </div>
-          )}
+            <div>
+              <dt>Approval Time</dt>
+              <dd>{(status === "approved" || status === "rejected") ? fmt(ca?.responded_at) : "-"}</dd>
+            </div>
+          </dl>
         </div>
       )}
 
