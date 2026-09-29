@@ -105,10 +105,36 @@ async def summary(db, order):
         tokens.update(delivery.get(FIELD) or {})
     if not tokens:
         return {"pending": 0, "status": "not_applicable"}
-    completed = await db[RECEIPTS].count_documents({"_id": {"$in": list(tokens)}, "status": "applied"})
+    completed = await db[RECEIPTS].count_documents({"_id": {"$in": list(tokens)}, "status": {"$in": ["applied", "cancelled"]}})
     pending = max(0, len(tokens) - completed)
     return {"pending": pending, "status": "pending" if pending else "applied",
             "message": "Progres tersimpan · pencatatan stok tertunda" if pending else "Pencatatan stok selesai"}
+
+
+async def resolve_missing_master(db, source, document, task, index, item):
+    """Resolve only a corrected mapping on the same immutable PO line identity."""
+    po = document if source == "orders" else await db.orders.find_one({"id": task["order_id"]})
+    rows = (po or {}).get("line_items") or []
+    matches = [row for row in rows if item.get("line_id") and row.get("line_id") == item["line_id"]]
+    if len(matches) != 1:
+        raise HTTPException(409, "Identitas baris asal ambigu; mapping memerlukan pemeriksaan")
+    line = matches[0]
+    if line.get("accurate_item_id") != item.get("accurate_item_id") or (line.get("unit") or "PCS") != item["unit"]:
+        raise HTTPException(409, "Identitas atau satuan barang berubah; mapping tidak diterapkan otomatis")
+    mid = line.get("master_item_id")
+    if not mid or not await db.master_items.find_one({"id": mid}):
+        raise HTTPException(409, "Identitas master belum pasti; perlu tinjauan")
+    path = f"{FIELD}.{task['id']}.items.{index}"
+    await db[source].update_one(
+        {"id": document["id"], "stock_deletion_requested": {"$ne": True}, path + ".master_item_id": None},
+        {"$set": {path + ".master_item_id": mid, path + ".mapping_resolution": {
+            "from": None, "to": mid, "line_id": item["line_id"],
+            "resolved_at": stamp(), "resolver": "verified_current_po_mapping"}}})
+    current = await db[source].find_one({"id": document["id"], "stock_deletion_requested": {"$ne": True}})
+    resolved = (((current or {}).get(FIELD) or {}).get(task["id"]) or {}).get("items") or []
+    if index >= len(resolved) or not resolved[index].get("master_item_id"):
+        raise HTTPException(409, "Mapping tidak dapat diterapkan; sumber berubah atau sedang dihapus")
+    return resolved[index]["master_item_id"]
 
 
 async def process_intent(db, order_id, intent_id, source="orders"):
@@ -168,7 +194,7 @@ async def process_intent(db, order_id, intent_id, source="orders"):
         for i, item in enumerate(task["items"]):
             mid = item.get("master_item_id")
             if not mid:
-                raise HTTPException(409, "Identitas master belum pasti; perlu tinjauan")
+                mid = await resolve_missing_master(db, source, order, task, i, item)
             event_id = f"operational:{intent_id}:{i}"
             existing = await engine._movement_by_event(db, event_id)
             if existing:
@@ -258,7 +284,7 @@ async def pending_rows(db, limit=100):
         async for order in db[source].find({FIELD: {"$exists": True}}, {"_id": 0, "id": 1, "po_number": 1, FIELD: 1}):
             for token, task in (order.get(FIELD) or {}).items():
                 receipt = await db[RECEIPTS].find_one({"_id": token}, {"_id": 0}) or {}
-                if receipt.get("status") == "applied":
+                if receipt.get("status") in {"applied", "cancelled"}:
                     continue
                 result.append({"source": source, "order_id": order["id"], "po_number": task.get("po_number") or order.get("po_number"),
                                "intent_id": token, "stage": task["stage"], "items": task["items"],
@@ -267,12 +293,12 @@ async def pending_rows(db, limit=100):
                 if len(result) >= limit:
                     return result
     seen = {row["intent_id"] for row in result}
-    async for receipt in db[RECEIPTS].find({"source_deletion_requested": True}).limit(limit):
+    async for receipt in db[RECEIPTS].find({"source_deletion_requested": True, "status": {"$ne": "cancelled"}}).limit(limit):
         if receipt["_id"] not in seen:
             task = receipt["task"]
             result.append({"source": receipt["source"], "order_id": receipt["order_id"],
                            "intent_id": receipt["_id"], "stage": task["stage"], "items": task["items"],
-                           "po_number": task.get("po_number"), "status": "review_required", "reason": receipt["reason"]})
+                           "po_number": task.get("po_number"), "status": receipt["status"], "reason": receipt["reason"]})
             if len(result) >= limit:
                 break
     return result
@@ -298,20 +324,97 @@ def attach_sales_delivery_intent(order, delivery, user):
     delivery[PENDING] = list(intents)
 
 
-async def archive_before_delete(db, document, source):
-    """Preserve stock audit evidence when an existing business delete is allowed.
+async def reverse_deleted_intent(db, receipt):
+    """Fence original stock writes, then compensate only proven applied debits.
 
-    Deletion never silently erases a delayed obligation or reverses stock. A
-    concurrent worker may already have applied it: either result needs review.
-    No automatic replay is allowed after deletion has been requested.
+    Cancellation marker and forward apply live on the same stock document.
+    Whichever Mongo write wins determines whether compensation is necessary.
+    Reversal uses its own durable event and can resume after a hard crash.
     """
-    for token, task in (document.get(FIELD) or {}).items():
+    from services import physical_stock_engine as engine
+    task = receipt["task"]
+    for i, item in enumerate(task["items"]):
+        mid = item.get("master_item_id")
+        if not mid:
+            continue  # No forward event can claim stock without a master.
+        event = item.get("original_event_id") or f"operational:{task['id']}:{i}"
+        marker = "cancelled_operational_events." + hashlib.sha256(event.encode()).hexdigest()
+        await db[engine.STATE_COLLECTION].update_one(
+            {"master_item_id": mid}, {"$set": {marker: True}})
+        # If apply won, this does not match. Never release an applied balance.
+        await db[engine.STATE_COLLECTION].update_one(
+            {"master_item_id": mid, "pending_event.event_id": event,
+             "pending_event.stage": "CLAIMED", marker: True},
+            {"$unset": {"pending_event": ""}})
+        state = await db[engine.STATE_COLLECTION].find_one({"master_item_id": mid})
+        pending = (state or {}).get("pending_event") or {}
+        if pending.get("event_id") == event and pending.get("stage") == "STATE_APPLIED":
+            await engine.finalize_durable_stock_event(db, event_id=event, master_item_id=mid, user=task["actor"])
+        movement = await engine._movement_by_event(db, event)
+        if not movement:
+            continue
+        unprinted = -float(movement.get("delta_unprinted") or 0)
+        printed = -float(movement.get("delta_printed") or 0)
+        if unprinted < 0 or printed < 0:
+            raise RuntimeError("SJ deletion cannot reverse a production conversion")
+        qty = unprinted + printed
+        if qty <= 0:
+            continue
+        reversal = "sj-delete:" + event
+        base = (state or {}).get("base_uom") or "PCS"
+        await engine.claim_durable_stock_event(
+            db, event_id=reversal, master_item_id=mid, movement_type=engine.MOVEMENT_KOREKSI,
+            transaction_qty=qty, transaction_uom=base, source_entity="CUSTOMER",
+            destination_entity="SUDAH_DICETAK" if printed else "BELUM_DICETAK",
+            reference_type="sales_delivery_delete", reference_id=receipt["order_id"],
+            reference_number=task.get("po_number") or receipt["order_id"],
+            order_id=task["order_id"], action_id=task["id"],
+            delta_total_override=qty, delta_unprinted_override=unprinted,
+            delta_printed_override=printed, conversion_snapshot=(qty, 1.0, base, base),
+            change_metadata={"reverses_event_id": event}, user=task["actor"])
+        await engine.finalize_durable_stock_event(db, event_id=reversal, master_item_id=mid, user=task["actor"])
+    await db[RECEIPTS].update_one({"_id": receipt["_id"], "source_deletion_requested": True},
+        {"$set": {"status": "cancelled", "reason": "SJ dihapus; mutasi tertunda dibatalkan dan stok terpotong dikembalikan", "updated_at": stamp()}})
+
+
+async def archive_before_delete(db, document, source):
+    await db[source].update_one({"id": document["id"]}, {"$set": {"stock_deletion_requested": True}})
+    document = await db[source].find_one({"id": document["id"]}) or document
+    tasks = dict(document.get(FIELD) or {})
+    if source == "sales_deliveries":
+        # Legacy SJ debit records have an exact reference_id, never just a PO id.
+        from services.physical_stock_engine import STATE_COLLECTION
+        entries = {}
+        po = await db.orders.find_one({"id": document.get("po_id")}) or {}
+        for line in document.get("line_items") or []:
+            idx = line.get("line_idx")
+            mid = line.get("master_item_id")
+            if not mid and isinstance(idx, int) and 0 <= idx < len(po.get("line_items") or []):
+                mid = po["line_items"][idx].get("master_item_id")
+            if mid:
+                line_id = str(line.get("line_id") or line.get("line_idx", 0))
+                event = f"stock_out:sales_delivery:{document['id']}:{line_id}"
+                entries[event] = {"original_event_id": event, "master_item_id": mid}
+        async for movement in db.stock_movements.find({"reference_type": "sales_delivery", "reference_id": document["id"]}):
+            event = movement.get("event_key") or movement.get("id")
+            if event and movement.get("master_item_id"):
+                entries[event] = {"original_event_id": event, "master_item_id": movement["master_item_id"]}
+        async for state in db[STATE_COLLECTION].find({"pending_event.reference_type": "sales_delivery", "pending_event.reference_id": document["id"]}):
+            pending = state["pending_event"]
+            entries[pending["event_id"]] = {"original_event_id": pending["event_id"], "master_item_id": state["master_item_id"]}
+        if entries:
+            token = hashlib.sha256(("legacy-sj-delete:" + document["id"]).encode()).hexdigest()
+            tasks[token] = {"id": token, "order_id": document.get("po_id"), "stage": "sales_delivery",
+                            "items": list(entries.values()), "actor": {}, "created_at": stamp()}
+    for token, task in tasks.items():
         await db[RECEIPTS].update_one({"_id": token}, {
             "$setOnInsert": {"created_at": stamp()},
             "$set": {"source": source, "order_id": document["id"], "intent_id": token,
-                     "task": task, "source_deletion_requested": True, "status": "review_required",
-                     "reason": "Sumber dihapus; periksa mutasi yang sudah atau belum diterapkan", "updated_at": stamp()},
+                     "task": task, "source_deletion_requested": True,
+                     "status": "cancellation_pending", "reason": "Pengembalian stok SJ sedang diproses", "updated_at": stamp()},
         }, upsert=True)
+        receipt = await db[RECEIPTS].find_one({"_id": token})
+        await reverse_deleted_intent(db, receipt)
 
 
 async def worker(db):
@@ -319,6 +422,11 @@ async def worker(db):
     import asyncio
     while True:
         try:
+            async for receipt in db[RECEIPTS].find({"source_deletion_requested": True, "status": "cancellation_pending"}):
+                try:
+                    await reverse_deleted_intent(db, receipt)
+                except Exception:
+                    log.exception("SJ stock return remains pending: %s", receipt["_id"])
             for source in ("orders", "sales_deliveries"):
                 cursor = db[source].find({PENDING + ".0": {"$exists": True}},
                                          {"_id": 0, "id": 1, FIELD: 1, PENDING: 1}).batch_size(25)

@@ -87,6 +87,7 @@ jobs:
           tests/test_confirm_delivered_sj_stock.py
           tests/test_operational_stock_outbox.py
           tests/test_sales_delivery_delete_scope.py
+          tests/test_sj_stock_return.py
           tests/test_cash_bank_phase1.py
           tests/test_cash_bank_phase2.py
           tests/test_cash_bank_bank_only.py

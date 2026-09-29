@@ -226,10 +226,10 @@ async def test_deleted_sj_obligation_remains_visible_without_auto_debit(mongo):
     await mongo.sales_deliveries.insert_one(delivery)
     token=next(iter(delivery[FIELD]))
     await archive_before_delete(mongo,delivery,'sales_deliveries')
-    assert (await process_intent(mongo,delivery['id'],token,'sales_deliveries'))['status']=='review_required'
+    assert (await process_intent(mongo,delivery['id'],token,'sales_deliveries'))['status']=='cancelled'
     await mongo.sales_deliveries.delete_one({'id':delivery['id']})
     rows=await pending_rows(mongo)
-    assert len(rows)==1 and rows[0]['intent_id']==token and rows[0]['status']=='review_required'
+    assert rows == []
     assert (await get_product_stock_state(mongo,MASTER))['printed_qty']==2000
     assert not await _movements(mongo)
 

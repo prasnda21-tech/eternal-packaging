@@ -598,6 +598,7 @@ async def claim_durable_stock_event(
         "initialized": True,
         "pending_event": None,
     }
+    query["cancelled_operational_events." + hashlib.sha256(ev_id.encode()).hexdigest()] = {"$exists": False}
     if expected_total_qty is not None:
         query["total_qty"] = safe_float(expected_total_qty)
     if expected_unprinted_qty is not None:
@@ -737,6 +738,7 @@ async def finalize_durable_stock_event(
             "pending_event.event_id": ev_id,
             "pending_event.stage": stage,
         }
+        apply_query["cancelled_operational_events." + hashlib.sha256(ev_id.encode()).hexdigest()] = {"$exists": False}
         if expected_fence_generation is not None:
             apply_query["pending_event.fence_generation"] = int(expected_fence_generation)
             apply_query["pending_event.reference_type"] = "delivery_confirmed"
