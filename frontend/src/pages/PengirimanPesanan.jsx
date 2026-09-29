@@ -20,6 +20,7 @@ import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDisplayDate } from "../lib/constants";
 import SjDeliveryLocationPicker, { sjOverridePayload } from "../components/SjDeliveryLocationPicker";
+import PrintTemplateMenu from "../components/PrintTemplateMenu";
 import { loadedRangeLabel, showLoadedDocumentCount } from "../lib/salesSubmenuDensity";
 import "./salesSubmenuDensity.css";
 
@@ -356,8 +357,8 @@ export default function PengirimanPesanan() {
   };
 
   // Open PDF directly
-  const handlePrintPdf = (deliveryId) => {
-    const url = api.salesDeliveryPdfUrl(deliveryId);
+  const handlePrintPdf = (deliveryId, templateId) => {
+    const url = api.salesDeliveryPdfUrl(deliveryId, templateId);
     window.open(url, "_blank");
   };
 
@@ -1072,6 +1073,9 @@ export default function PengirimanPesanan() {
                               <Printer size={14} /> PDF
                             </button>
                           )}
+                          {canPrint && (
+                            <PrintTemplateMenu documentType="sales_delivery" testId={`print-menu-${d.id}`} onSelect={(templateId) => handlePrintPdf(d.id, templateId)} />
+                          )}
                           {canDelete && (
                             <button
                               type="button"
@@ -1347,6 +1351,9 @@ export default function PengirimanPesanan() {
                 >
                   <Printer size={16} /> Cetak PDF Surat Jalan
                 </button>
+              )}
+              {canPrint && (
+                <PrintTemplateMenu documentType="sales_delivery" testId="print-menu-modal" onSelect={(templateId) => handlePrintPdf(detailData.delivery?.id, templateId)} />
               )}
               <button
                 type="button"

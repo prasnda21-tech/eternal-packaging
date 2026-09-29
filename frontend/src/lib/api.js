@@ -691,10 +691,51 @@ export const api = {
   getSalesDelivery: (id) => client.get(`/sales-deliveries/${encodeURIComponent(id)}`).then((r) => r.data),
   getPoDeliverySummary: (poId) => client.get(`/sales-deliveries/po/${encodeURIComponent(poId)}/summary`).then((r) => r.data),
   createSalesDelivery: (payload) => client.post(`/sales-deliveries`, payload).then((r) => r.data),
-  salesDeliveryPdfUrl: (id) => `${API}/sales-deliveries/${encodeURIComponent(id)}/pdf`,
+  salesDeliveryPdfUrl: (id, templateId) => {
+    const base = `${API}/sales-deliveries/${encodeURIComponent(id)}/pdf`;
+    return templateId ? `${base}?template_id=${encodeURIComponent(templateId)}` : base;
+  },
   // ---- Sales Invoice (Faktur Penjualan) ----
 
-  downloadSalesInvoicePdf: (id) => client.get(`/sales-invoices/${encodeURIComponent(id)}/pdf`, { responseType: "blob" }).then((r) => r.data),
+  downloadSalesInvoicePdf: (id, templateId) => client.get(`/sales-invoices/${encodeURIComponent(id)}/pdf`, {
+    params: templateId ? { template_id: templateId } : {},
+    responseType: "blob",
+  }).then((r) => r.data),
+  listPrintTemplates: (params = {}) => client.get("/print-templates", { params }).then((r) => r.data),
+  getPrintTemplate: (id) => client.get(`/print-templates/${encodeURIComponent(id)}`).then((r) => r.data),
+  createPrintTemplate: (payload) => client.post("/print-templates", payload).then((r) => r.data),
+  savePrintTemplateDraft: (id, design, expectedRevision) => client.put(`/print-templates/${encodeURIComponent(id)}/draft`, { design, expected_revision: expectedRevision }).then((r) => r.data),
+  activatePrintTemplate: (id, expectedRevision) => client.post(`/print-templates/${encodeURIComponent(id)}/activate`, { expected_revision: expectedRevision }).then((r) => r.data),
+  copyPrintTemplate: (id, name = "") => client.post(`/print-templates/${encodeURIComponent(id)}/copy`, { name }).then((r) => r.data),
+  setDefaultPrintTemplate: (id, expectedRevision) => client.post(`/print-templates/${encodeURIComponent(id)}/default`, { expected_revision: expectedRevision }).then((r) => r.data),
+  archivePrintTemplate: (id, expectedRevision) => client.post(`/print-templates/${encodeURIComponent(id)}/archive`, { expected_revision: expectedRevision }).then((r) => r.data),
+  printTemplateVersions: (id) => client.get(`/print-templates/${encodeURIComponent(id)}/versions`).then((r) => r.data),
+  restorePrintTemplateVersion: (id, versionId, expectedRevision) => client.post(`/print-templates/${encodeURIComponent(id)}/versions/${encodeURIComponent(versionId)}/restore`, { expected_revision: expectedRevision }).then((r) => r.data),
+  printTemplateCatalog: (documentType) => client.get("/print-templates/catalog", { params: { document_type: documentType } }).then((r) => r.data),
+  validatePrintTemplate: (documentType, design) => client.post("/print-templates/validate", { document_type: documentType, design }).then((r) => r.data),
+  listActivePrintTemplates: (documentType) => client.get("/print-templates/active", { params: { document_type: documentType } }).then((r) => r.data),
+  uploadPrintTemplateAsset: (file) => {
+    const body = new FormData();
+    body.append("file", file);
+    return client.post("/print-templates/assets", body).then((r) => r.data);
+  },
+  previewPrintTemplate: async (id, design) => {
+    const res = await client.post(`/print-templates/${encodeURIComponent(id)}/preview`, { design }, {
+      responseType: "blob",
+      validateStatus: () => true,
+    });
+    const type = String(res.headers?.["content-type"] || "");
+    if (res.status >= 400 || type.includes("json")) {
+      let detail = "Pratinjau gagal.";
+      try {
+        detail = JSON.parse(await res.data.text()).detail;
+      } catch (err) { /* keep fallback */ }
+      const error = new Error("preview");
+      error.detail = detail;
+      throw error;
+    }
+    return res.data;
+  },
   downloadSalesReceiptPdf: (id) => client.get(`/sales-receipts/${encodeURIComponent(id)}/pdf`, { responseType: "blob" }).then((r) => r.data),
   downloadSalesReceiptPaymentProof: (id, download = false, config = {}) =>
     client

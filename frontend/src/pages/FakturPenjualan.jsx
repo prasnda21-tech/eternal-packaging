@@ -16,6 +16,7 @@ import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDisplayDate } from "../lib/constants";
 import { FormSection, FormField, FormProgress, computeStatus } from "../components/form-standard";
+import PrintTemplateMenu from "../components/PrintTemplateMenu";
 import { showLoadedDocumentCount } from "../lib/salesSubmenuDensity";
 import "./salesSubmenuDensity.css";
 import { useDocumentList, DocumentFilters, DocumentSummary, DocumentPager, ColumnFilter, DocumentActions, useDetailDrawer } from "./SalesDocumentControls";
@@ -521,12 +522,12 @@ export default function FakturPenjualan() {
 
   const [pdfLoadingId, setPdfLoadingId] = useState(null);
 
-  const handlePrintPdf = async (e, invoiceId) => {
+  const handlePrintPdf = async (e, invoiceId, templateId) => {
     if (e) e.stopPropagation();
     if (!invoiceId) return;
     setPdfLoadingId(invoiceId);
     try {
-      const blob = await api.downloadSalesInvoicePdf(invoiceId);
+      const blob = await api.downloadSalesInvoicePdf(invoiceId, templateId);
       const url = URL.createObjectURL(blob);
       window.open(url, "_blank");
       setTimeout(() => URL.revokeObjectURL(url), 5000);
@@ -1423,6 +1424,7 @@ export default function FakturPenjualan() {
                         >
                           {pdfLoadingId === inv.id ? "Memuat..." : "Cetak PDF"}
                         </button>
+                        <PrintTemplateMenu documentType="sales_invoice" testId={`print-menu-${inv.id}`} onSelect={(templateId) => handlePrintPdf(null, inv.id, templateId)} />
                         {((!inv.issue_state && invoiceFinancialStatus(inv) === "draft" && canDeleteDraft) || (inv.issue_state && canDeleteIssued)) && (
                           <button
                             type="button"
@@ -2074,6 +2076,7 @@ export default function FakturPenjualan() {
                   <FileText size={16} />
                   {pdfLoadingId === selectedInvoiceId ? "Memuat PDF..." : "Cetak PDF"}
                 </button>
+                <PrintTemplateMenu documentType="sales_invoice" testId="print-menu-detail" onSelect={(templateId) => handlePrintPdf(null, selectedInvoiceId, templateId)} />
                 {canEdit && detailStatus === "draft" && !detailData?.issue_state && (
                   <button
                     type="button"

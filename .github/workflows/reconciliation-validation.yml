@@ -60,6 +60,8 @@ jobs:
           python-multipart==0.0.32
           boto3==1.43.74
           reportlab==4.1.0
+          qrcode==8.2
+          pillow==12.3.0
           requests==2.34.2
           openpyxl==3.1.5
           pdfplumber==0.11.10
@@ -102,6 +104,8 @@ jobs:
           tests/test_cash_bank_recon_revision.py
           tests/test_cash_bank_recon_closure.py
           tests/test_cash_bank_import_owner.py
+          tests/test_print_templates.py
+          tests/test_print_template_mongo.py
 
   frontend-focused:
     name: Frontend tests and build
@@ -159,6 +163,8 @@ jobs:
           src/components/SalesUserMappingSettings.test.js
           src/pages/PesananPenjualan.test.js
           src/pages/FakturPenjualan.test.js
+          src/lib/printTemplateGeometry.test.js
+          src/pages/Settings.cardNav.test.js
           src/pages/salesDocumentsPremium.test.js
           src/components/MasterItemSearchSelect.picker.test.js
           src/lib/salesOrderListPresentation.test.js
@@ -224,6 +230,8 @@ jobs:
           python-multipart==0.0.32
           boto3==1.43.74
           reportlab==4.1.0
+          qrcode==8.2
+          pillow==12.3.0
           requests==2.34.2
           openpyxl==3.1.5
           pdfplumber==0.11.10
