@@ -785,9 +785,11 @@ def register_cash_bank_routes(
         fingerprint: str = Form(...),
         account_binding: str = Form(...),
         file: UploadFile = File(...),
+        confirmations: Optional[str] = Form(None),
         user=Depends(require_perm(PERM_RECONCILE)),
     ):
         """Re-parse the BCA file inside the generic import. Browser rows are not accepted."""
+        from services.cash_bank_statement_bca import parse_bca_confirmation_form
         db = get_db()
         await _ensure_all(db)
         data = await file.read()
@@ -801,6 +803,7 @@ def register_cash_bank_routes(
                 mapping_raw={"layout": "bca"},
                 user=user,
                 account_binding_value=account_binding,
+                date_confirmations=parse_bca_confirmation_form(confirmations),
             )
         except StatementValidationError as exc:
             raise HTTPException(400, {"message": str(exc), "errors": exc.errors}) from exc

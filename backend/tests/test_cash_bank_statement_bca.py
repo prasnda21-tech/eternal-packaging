@@ -6,6 +6,8 @@ import sys
 import uuid
 from pathlib import Path
 
+import json
+
 import httpx
 import pytest
 
@@ -186,15 +188,59 @@ def test_row_with_both_or_neither_amount_is_not_a_valid_transaction():
     ]
 
 
-def test_pend_and_short_date_stay_invalid_without_inference():
+PEND_CSV = (
+    "Periode,01/09/2026 - 30/09/2026\n"
+    "Tanggal,Keterangan,Debit,Kredit,Saldo\n"
+    "PEND,Uraian menyebut 01/09/2026,1500,,9000\n"
+    "02/09/2026,Transfer valid,,500,9500\n"
+)
+
+
+def test_pend_stays_pending_and_short_date_is_not_inferred():
     parsed = _parse(
         "Periode,01/09/2026 - 30/09/2026\n"
         "Tanggal,Keterangan,Debit,Kredit,Saldo\n"
         "PEND,Uraian menyebut 01/09/2026,1500,,9000\n"
         "01/09,Tahun tidak diambil dari baris lain,1500,,9000\n"
     )
-    assert parsed["rows"] == []
-    assert [err["message"] for err in parsed["errors"]] == ["Tanggal tidak valid", "Tanggal tidak valid"]
+    assert [row["keterangan"] for row in parsed["rows"]] == ["Uraian menyebut 01/09/2026"]
+    pend = parsed["rows"][0]
+    assert pend["tanggal"] is None
+    assert pend["original_date"] == "PEND"
+    assert pend["date_status"] == "pending_confirmation"
+    assert "2026-09-01" not in json.dumps(pend)
+    assert [err["message"] for err in parsed["errors"]] == ["Tanggal tidak valid"]
+
+
+def test_pend_confirmation_requires_calendar_date_and_reason():
+    payload = PEND_CSV.encode("utf-8")
+    pending = statement_rows_from_bca("bca-pend.csv", payload, "IDR")
+    assert pending["pending"][0]["tanggal"] is None
+    assert pending["accepted"][0]["description"] == "Transfer valid"
+    assert pending["errors"][0]["message"] == "Baris PEND belum dikonfirmasi"
+    with pytest.raises(StatementValidationError, match="Alasan konfirmasi wajib"):
+        statement_rows_from_bca("bca-pend.csv", payload, "IDR", confirmations=[{
+            "source_row": 3, "tanggal": "2026-09-30", "alasan": "   ",
+        }])
+    with pytest.raises(StatementValidationError, match="Tanggal tidak valid"):
+        statement_rows_from_bca("bca-pend.csv", payload, "IDR", confirmations=[{
+            "source_row": 3, "tanggal": "2026-02-31", "alasan": "Konfirmasi dari rekening koran BCA",
+        }])
+    with pytest.raises(StatementValidationError, match="Konfirmasi tidak sesuai baris PEND"):
+        statement_rows_from_bca("bca-pend.csv", payload, "IDR", confirmations=[{
+            "source_row": 4, "tanggal": "2026-09-30", "alasan": "Bukan baris PEND",
+        }])
+    confirmed = statement_rows_from_bca("bca-pend.csv", payload, "IDR", confirmations=[{
+        "source_row": 3, "tanggal": "2026-09-30", "alasan": "Konfirmasi dari rekening koran BCA",
+    }], actor={"id": "operator-1"}, confirmed_at="2026-09-29T00:00:00Z")
+    assert confirmed["errors"] == []
+    assert confirmed["pending"] == []
+    pend = next(row for row in confirmed["accepted"] if row["original_date"] == "PEND")
+    assert pend["date"] == "2026-09-30"
+    assert pend["date"] != "2026-09-01"
+    assert pend["date_status"] == "confirmed"
+    assert pend["date_confirmation"]["reason"] == "Konfirmasi dari rekening koran BCA"
+    assert pend["date_confirmation"]["confirmed_by"] == {"id": "operator-1"}
 
 
 def test_parser_source_does_not_import_or_post():
@@ -254,13 +300,16 @@ def _preview_form(bank_id, payload, filename="bca-sintetis.csv"):
     }
 
 
-def _import_form(bank_id, preview, payload, *, fingerprint=None, filename="bca-sintetis.csv"):
+def _import_form(bank_id, preview, payload, *, fingerprint=None, filename="bca-sintetis.csv", confirmations=None):
+    data = {
+        "cash_bank_id": bank_id,
+        "fingerprint": preview["fingerprint"] if fingerprint is None else fingerprint,
+        "account_binding": preview["account_binding"],
+    }
+    if confirmations is not None:
+        data["confirmations"] = json.dumps(confirmations)
     return {
-        "data": {
-            "cash_bank_id": bank_id,
-            "fingerprint": preview["fingerprint"] if fingerprint is None else fingerprint,
-            "account_binding": preview["account_binding"],
-        },
+        "data": data,
         "files": {"file": (filename, payload, "text/csv")},
     }
 
@@ -380,3 +429,49 @@ async def test_bca_preview_binding_rejects_other_account_file_and_currency(mongo
             {"_id": 0, "date": 1, "direction": 1, "amount": 1, "currency_code": 1},
         )
         assert stored == {"date": "2026-09-01", "direction": "out", "amount": 1500000, "currency_code": "USD"}
+
+
+async def test_unconfirmed_pend_rejects_the_whole_bca_import(mongo_db):
+    del mongo_db
+    payload = PEND_CSV.encode("utf-8")
+    async with await _client(_user()) as client:
+        bank = await _account(client)
+        preview = await client.post("/api/cash-bank/statements/bca/preview", **_preview_form(bank["id"], payload, filename="bca-pend.csv"))
+        assert preview.status_code == 200, preview.text
+        shown = preview.json()
+        pend = next(row for row in shown["rows"] if row["date_status"] == "pending_confirmation")
+        assert pend["tanggal"] is None
+        assert pend["original_date"] == "PEND"
+        blocked = await client.post(
+            "/api/cash-bank/statements/bca/imports",
+            **_import_form(bank["id"], shown, payload, filename="bca-pend.csv"),
+        )
+        assert blocked.status_code == 400
+        assert "belum dikonfirmasi" in blocked.text
+        assert await server.db[LINES].count_documents({}) == 0
+        assert await server.db[IMPORTS].count_documents({}) == 0
+        assert await server.db[JOURNAL_ENTRIES].count_documents({}) == 0
+        assert await server.db[RECON_MATCHES].count_documents({}) == 0
+        imported = await client.post(
+            "/api/cash-bank/statements/bca/imports",
+            **_import_form(bank["id"], shown, payload, filename="bca-pend.csv", confirmations=[{
+                "source_row": pend["source_row"],
+                "tanggal": "2026-09-30",
+                "alasan": "Konfirmasi dari rekening koran BCA",
+            }]),
+        )
+        assert imported.status_code == 201, imported.text
+        assert await server.db[LINES].count_documents({"cash_bank_id": bank["id"]}) == 2
+        assert await server.db[JOURNAL_ENTRIES].count_documents({}) == 0
+        assert await server.db[RECON_MATCHES].count_documents({}) == 0
+        stored = await server.db[LINES].find_one(
+            {"cash_bank_id": bank["id"], "original_date": "PEND"},
+            {"_id": 0, "date": 1, "original_date": 1, "date_status": 1, "date_confirmation": 1, "description": 1},
+        )
+        assert stored["date"] == "2026-09-30"
+        assert stored["date"] != "2026-09-01"
+        assert stored["description"] == "Uraian menyebut 01/09/2026"
+        assert stored["date_status"] == "confirmed"
+        assert stored["date_confirmation"]["reason"] == "Konfirmasi dari rekening koran BCA"
+        assert stored["date_confirmation"]["confirmed_at"]
+        assert stored["date_confirmation"]["confirmed_by"]["id"]

@@ -12,7 +12,7 @@ jest.mock('react-router-dom', () => {
 jest.mock('../lib/api', () => ({ __esModule: true, default: {
   cashBankAccounts: jest.fn(), cashBankPairWorkspace: jest.fn(), cashBankStatementImports: jest.fn(),
   cashBankPairSuggestions: jest.fn(), createCashBankPair: jest.fn(), cancelCashBankPair: jest.fn(),
-  previewCashBankStatement: jest.fn(), previewCashBankBcaStatement: jest.fn(), validateCashBankStatement: jest.fn(), commitCashBankStatement: jest.fn(),
+  previewCashBankStatement: jest.fn(), previewCashBankBcaStatement: jest.fn(), commitCashBankBcaStatement: jest.fn(), validateCashBankStatement: jest.fn(), commitCashBankStatement: jest.fn(),
 } }));
 jest.mock('../lib/auth', () => ({ useAuth: () => ({ hasPerm: (perm) => mockPermissions.includes(perm) }) }));
 const api = require('../lib/api').default;
@@ -56,6 +56,7 @@ beforeEach(() => {
   api.previewCashBankBcaStatement.mockResolvedValue({bank:'BCA',header_detected:true,rows:[{tanggal:'2026-09-01',keterangan:'Setoran uji',debit:1500000,kredit:null,saldo:10000000,direction:'out',source_row:3}],errors:[{row:4,message:'Tanggal tidak valid'}],persisted_statement_lines:false,stored:false});
   api.validateCashBankStatement.mockResolvedValue({ok:true,accepted_count:1,total_in:750000,total_out:0,errors:[]});
   api.commitCashBankStatement.mockResolvedValue({status:'complete'});
+  api.commitCashBankBcaStatement.mockResolvedValue({status:'complete'});
 });
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); });
 
@@ -131,6 +132,28 @@ test('bca preview dialog shows parsed rows without confirming import', async () 
   expect(generic.open).toBe(true);
   expect(generic.textContent).toContain('Konfirmasi impor');
   expect(generic.textContent).not.toContain('Setoran uji');
+});
+test('bca pending date stays unconfirmed until the operator supplies a date and reason', async () => {
+  api.previewCashBankBcaStatement.mockResolvedValue({bank:'BCA',header_detected:true,fingerprint:'fp-pend',account_binding:'bind-pend',rows:[{tanggal:null,original_date:'PEND',date_status:'pending_confirmation',keterangan:'Uraian menyebut 01/09/2026',debit:1500,kredit:null,saldo:9000,direction:'out',source_row:3}],errors:[],persisted_statement_lines:false,stored:false});
+  await renderPage();
+  const bcaInput = container.querySelector('[data-testid=kas-bank-bca-file]');
+  await act(async () => { Object.defineProperty(bcaInput, 'files', { configurable:true, value:[new File(['PEND'], 'bca-pend.csv', {type:'text/csv'})] }); bcaInput.dispatchEvent(new Event('change', { bubbles:true })); });
+  const dialog = container.querySelector('[data-testid=kas-bank-bca-preview]');
+  expect(dialog.textContent).toContain('Tanggal belum pasti');
+  expect(dialog.textContent).not.toContain('01 Sep 2026');
+  const importButton = dialog.querySelector('[data-testid=kas-bank-bca-import]');
+  expect(importButton.disabled).toBe(true);
+  const date = dialog.querySelector('[aria-label="Tanggal konfirmasi baris 3"]');
+  const reason = dialog.querySelector('[aria-label="Alasan konfirmasi baris 3"]');
+  await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(date, '2026-09-30'); date.dispatchEvent(new Event('change', { bubbles:true })); });
+  expect(importButton.disabled).toBe(true);
+  await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(reason, 'Konfirmasi dari rekening koran BCA'); reason.dispatchEvent(new Event('change', { bubbles:true })); });
+  expect(importButton.disabled).toBe(false);
+  await click(importButton);
+  const sent = api.commitCashBankBcaStatement.mock.calls[0][0];
+  expect(JSON.parse(sent.get('confirmations'))).toEqual([{source_row:3,tanggal:'2026-09-30',alasan:'Konfirmasi dari rekening koran BCA'}]);
+  expect(sent.get('account_binding')).toBe('bind-pend');
+  expect(api.commitCashBankStatement).not.toHaveBeenCalled();
 });
 test('read-only permissions hide mutation actions', async () => {
   mockPermissions=['cash_bank.view']; workspace.matched_pairs=[pair]; await renderPage();
