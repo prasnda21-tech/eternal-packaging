@@ -84,6 +84,7 @@ def test_alias_dictionary_covers_required_labels():
     assert HEADER_ALIASES["debit"] == ("debit", "debet")
     assert HEADER_ALIASES["kredit"] == ("kredit", "credit")
     assert HEADER_ALIASES["saldo"] == ("saldo", "saldo akhir")
+    assert HEADER_ALIASES["jumlah"] == ("jumlah",)
     assert ROLES == ("tanggal", "keterangan", "debit", "kredit", "saldo")
 
 
@@ -323,6 +324,148 @@ def test_normalized_bca_rows_use_statement_direction():
     assert parsed["accepted"][0]["amount"] == 1500000
     assert parsed["accepted"][0]["currency_code"] == "IDR"
     assert parsed["accepted"][1]["direction"] == "in"
+
+
+KLIKBCA_CSV = """No. Rekening,=,4491150000,,,
+Nama,=,Contoh Sintetis,,,
+Periode,=,01/09/2026 - 30/09/2026,,,
+Mata Uang,=,IDR,,,
+,,,,,
+Tanggal,Keterangan,Cabang,Jumlah,,Saldo
+'04/09,TRSF E-BANKING DB 0409/FTSCY/WS95011 akomodasi,'0449,"500,000",DB,"56,392,000"
+'05/09,TRSF E-BANKING CR 0509/FTSCY/WS95011 jasa,'0008,"76,000,000",CR,"131,590,170"
+PEND,BI-FAST DB menunggu,'0000,"100,000",DB,"131,490,170"
+04-09,Transfer singkat,0000,"1.500",DB,"131,488,670"
+Saldo Awal,=,"56,892,000",,,
+Kredit,=,"91,062,154",,,
+Debet,=,"59,319,861",,,
+Saldo Akhir,=,"88,634,293",,,
+"""
+
+
+def test_klikbca_jumlah_layout_reads_rows_and_skips_footer():
+    parsed = _parse(KLIKBCA_CSV, "klikbca.csv")
+    assert parsed["header_row"] == 6
+    assert parsed["errors"] == []
+    assert [row["keterangan"] for row in parsed["rows"]] == [
+        "TRSF E-BANKING DB 0409/FTSCY/WS95011 akomodasi",
+        "TRSF E-BANKING CR 0509/FTSCY/WS95011 jasa",
+        "BI-FAST DB menunggu",
+        "Transfer singkat",
+    ]
+    assert "0449" not in json.dumps(parsed["rows"])
+    assert [row["saldo"] for row in parsed["rows"]] == [56392000, 131590170, 131490170, 131488670]
+
+
+def test_klikbca_db_is_outgoing_and_cr_is_incoming():
+    parsed = _parse(KLIKBCA_CSV, "klikbca.csv")
+    outgoing = parsed["rows"][0]
+    incoming = parsed["rows"][1]
+    assert outgoing["debit"] == 500000
+    assert outgoing["kredit"] is None
+    assert outgoing["direction"] == "out"
+    assert incoming["debit"] is None
+    assert incoming["kredit"] == 76000000
+    assert incoming["direction"] == "in"
+    described = _parse(
+        "Periode,01/09/2026 - 30/09/2026\n"
+        "Tanggal,Keterangan,Cabang,Jumlah,,Saldo\n"
+        "04/09,Keterangan menyebut CR bukan DB,0000,\"500,000\",DB,\"1,000\"\n"
+        "05/09,Keterangan menyebut DB bukan CR,0000,\"-1\",CR,\"1,000\"\n"
+    )
+    assert described["rows"][0]["direction"] == "out"
+    assert described["rows"][0]["debit"] == 500000
+    assert [err["message"] for err in described["errors"]] == ["Nominal tidak valid"]
+
+
+def test_klikbca_short_date_uses_only_the_periode_year():
+    parsed = _parse(KLIKBCA_CSV, "klikbca.csv")
+    assert parsed["rows"][0]["tanggal"] == "2026-09-04"
+    assert parsed["rows"][0]["original_date"] == "'04/09"
+    assert parsed["rows"][3]["tanggal"] == "2026-09-04"
+    assert parsed["rows"][3]["original_date"] == "04-09"
+    crossed = _parse(
+        "Periode,=,01/12/2025 - 05/01/2026,,,\n"
+        "Tanggal,Keterangan,Cabang,Jumlah,,Saldo\n"
+        "15/12,Desember,0000,1000,DB,2000\n"
+        "04/01,Januari,0000,500,CR,2500\n"
+        "20/01,Di luar periode,0000,100,DB,2600\n"
+    )
+    assert [(row["keterangan"], row["tanggal"]) for row in crossed["rows"]] == [
+        ("Desember", "2025-12-15"),
+        ("Januari", "2026-01-04"),
+    ]
+    assert [err["message"] for err in crossed["errors"]] == ["Tanggal tidak valid"]
+    legacy = _parse(
+        "Periode,01/09/2026 - 30/09/2026\n"
+        "Tanggal Transaksi,Keterangan,Debit,Kredit,Saldo\n"
+        "04/09,Tahun tidak diambil untuk layout lama,1500,,9000\n"
+    )
+    assert legacy["rows"] == []
+    assert legacy["errors"] == [{"row": 3, "message": "Tanggal tidak valid"}]
+    missing_periode = _parse(
+        "Tanggal,Keterangan,Cabang,Jumlah,,Saldo\n"
+        "04/09,Tanpa periode,0000,\"500,000\",DB,\"1,000\"\n"
+    )
+    assert missing_periode["rows"] == []
+    assert missing_periode["errors"] == [{"row": 2, "message": "Tanggal tidak valid"}]
+
+
+def test_klikbca_pend_does_not_take_the_periode_year():
+    parsed = _parse(KLIKBCA_CSV, "klikbca.csv")
+    pend = parsed["rows"][2]
+    assert pend["tanggal"] is None
+    assert pend["original_date"] == "PEND"
+    assert pend["date_status"] == "pending_confirmation"
+    assert "2026-09-01" not in json.dumps(pend)
+    payload = KLIKBCA_CSV.encode("utf-8")
+    pending = statement_rows_from_bca("klikbca.csv", payload, "IDR")
+    assert pending["pending"][0]["tanggal"] is None
+    assert pending["pending"][0]["original_date"] == "PEND"
+    assert [row["description"] for row in pending["accepted"]] == [
+        "TRSF E-BANKING DB 0409/FTSCY/WS95011 akomodasi",
+        "TRSF E-BANKING CR 0509/FTSCY/WS95011 jasa",
+        "Transfer singkat",
+    ]
+    assert pending["accepted"][0]["direction"] == "out"
+    assert pending["accepted"][0]["amount"] == 500000
+    assert pending["accepted"][0]["date"] == "2026-09-04"
+    assert pending["accepted"][0]["reference"] is None
+    assert pending["errors"][0]["message"] == "Baris PEND belum dikonfirmasi"
+    confirmed = statement_rows_from_bca("klikbca.csv", payload, "IDR", confirmations=[{
+        "source_row": pend["source_row"],
+        "tanggal": "2026-09-30",
+        "alasan": "Konfirmasi dari rekening koran BCA",
+    }])
+    stored = next(row for row in confirmed["accepted"] if row.get("original_date") == "PEND")
+    assert stored["date"] == "2026-09-30"
+    assert stored["date_status"] == "confirmed"
+    assert stored["direction"] == "out"
+    assert stored["amount"] == 100000
+
+
+def test_klikbca_marker_and_missing_jumlah_are_rejected():
+    empty_marker = _parse(
+        "Periode,01/09/2026 - 30/09/2026\n"
+        "Tanggal,Keterangan,Cabang,Jumlah,,Saldo\n"
+        "04/09,Penanda kosong,0000,\"500,000\",,\"1,000\"\n"
+        "05/09,Penanda asing,0000,\"500,000\",XX,\"1,000\"\n"
+        "06/09,Jumlah kosong,0000,,DB,\"1,000\"\n"
+    )
+    assert empty_marker["rows"] == []
+    assert [err["message"] for err in empty_marker["errors"]] == [
+        "Penanda DB/CR kosong",
+        "Penanda DB/CR tidak dikenal",
+        "Nominal kosong",
+    ]
+    with pytest.raises(StatementValidationError) as missing_jumlah:
+        _parse("Tanggal,Keterangan,Cabang,Saldo\n04/09/2026,Tanpa jumlah,0000,1000\n")
+    message = str(missing_jumlah.value)
+    assert message.startswith("Format CSV BCA tidak dikenali:")
+    assert "kolom debit tidak ditemukan" in message
+    assert "kolom kredit tidak ditemukan" in message
+    with pytest.raises(StatementValidationError, match="penanda DB/CR tidak ditemukan"):
+        _parse("Tanggal,Keterangan,Cabang,Jumlah,Saldo\n04/09/2026,Tanpa kolom penanda,0000,500,1000\n")
 
 
 async def test_preview_endpoint_does_not_write_or_create_journal(mongo_db):
