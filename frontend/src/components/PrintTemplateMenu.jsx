@@ -5,8 +5,12 @@ export default function PrintTemplateMenu({ documentType, onSelect, testId = "pr
   const [items, setItems] = useState([]);
   useEffect(() => {
     let active = true;
-    api.listActivePrintTemplates(documentType)
-      .then((res) => { if (active) setItems(res.templates || []); })
+    const load = api.listActivePrintTemplates;
+    if (typeof load !== "function") return undefined;
+    const pending = load(documentType);
+    if (!pending || typeof pending.then !== "function") return undefined;
+    pending
+      .then((res) => { if (active) setItems((res && res.templates) || []); })
       .catch(() => { if (active) setItems([]); });
     return () => { active = false; };
   }, [documentType]);

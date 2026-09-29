@@ -13,12 +13,11 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-os.environ["MONGO_URL"] = os.environ.get("MONGO_URL") or "mongodb://127.0.0.1:27018"
-_worker = os.environ.get("PYTEST_XDIST_WORKER") or "main"
-os.environ["DB_NAME"] = f"print_design_isolated_{_worker}"
+os.environ.setdefault("MONGO_URL", "mongodb://127.0.0.1:27018")
 os.environ.setdefault("JWT_SECRET", "test-secret-key-12345678901234567890")
 os.environ.setdefault("CORS_ORIGINS", "*")
-assert os.environ["DB_NAME"] != "eternal_packaging"
+_DB_NAME = f"print_design_isolated_{os.environ.get('PYTEST_XDIST_WORKER') or 'main'}"
+assert _DB_NAME != "eternal_packaging"
 
 import server
 from server import app, current_user
@@ -39,8 +38,8 @@ async def bind_and_clean():
     from motor.motor_asyncio import AsyncIOMotorClient
 
     server.client = AsyncIOMotorClient(os.environ["MONGO_URL"])
-    server.db = server.client[os.environ["DB_NAME"]]
-    assert server.db.name.startswith("print_design_isolated_")
+    server.db = server.client[_DB_NAME]
+    assert server.db.name == _DB_NAME
     for name in (
         "orders", "sales_invoices", "sales_receipts", "sales_deliveries",
         "print_templates", "print_template_versions", "print_template_assets",         "audit_logs", "chart_of_accounts", "app_settings",

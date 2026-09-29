@@ -13839,7 +13839,7 @@ _delivery_route_api.register(api_router, {
 })
 
 from services.print_template_routes import register as _register_print_templates
-_register_print_templates(api_router, db=db, current_user=current_user, user_permissions=user_permissions, obj_storage=obj_storage)
+_register_print_templates(api_router, get_db=lambda: db, current_user=current_user, user_permissions=user_permissions, obj_storage=obj_storage)
 app.include_router(api_router)
 
 # ---- Customer Design Approval router (registered before CORS/middleware) ----

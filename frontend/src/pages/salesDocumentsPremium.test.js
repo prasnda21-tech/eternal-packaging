@@ -7,7 +7,7 @@ import {filterDocuments,documentStatus,summarizeDocuments,moneyText} from './sal
 const mockSearch = new URLSearchParams();
 jest.mock('react-router-dom',()=>({Link:({children,to,...props})=><a href={to} {...props}>{children}</a>,useNavigate:()=>jest.fn(),useSearchParams:()=>[mockSearch,jest.fn()]}),{virtual:true});
 jest.mock('../lib/auth',()=>({useAuth:()=>({user:{role:'staff'},hasPerm:p=>(global.__docPerms||[]).includes(p)})}),{virtual:true});
-jest.mock('../lib/api',()=>({__esModule:true,default:{listSalesInvoices:jest.fn(),listSalesReceipts:jest.fn(),getSalesInvoice:jest.fn(),getSalesReceipt:jest.fn(),salesInvoiceChargeAccounts:jest.fn(),deleteSalesInvoice:jest.fn(),bulkDeleteSalesInvoices:jest.fn()}}),{virtual:true});
+jest.mock('../lib/api',()=>({__esModule:true,default:{listSalesInvoices:jest.fn(),listSalesReceipts:jest.fn(),getSalesInvoice:jest.fn(),getSalesReceipt:jest.fn(),salesInvoiceChargeAccounts:jest.fn(),deleteSalesInvoice:jest.fn(),bulkDeleteSalesInvoices:jest.fn(),listActivePrintTemplates:jest.fn().mockResolvedValue({templates:[]})}}),{virtual:true});
 jest.mock('../lib/constants',()=>({formatDisplayDate:v=>v||'—'}),{virtual:true});
 jest.mock('../components/form-standard',()=>({FormSection:({children})=><section>{children}</section>,FormField:({children})=><div>{children}</div>,FormProgress:()=>null,computeStatus:()=>''}),{virtual:true});
 jest.mock('../lib/salesReceipts',()=>({filterEligibleInvoices:rows=>rows,resolvePreselectedInvoiceId:()=>'',computeReceiptPreview:()=>null}),{virtual:true});
@@ -15,7 +15,7 @@ jest.mock('../lib/salesReceiptPaymentProof',()=>({RECEIPT_PROOF_ACCEPT:'.pdf',bu
 jest.mock('./SalesReceiptProofViewer',()=>()=>null,{virtual:true});
 let container,root;
 const invoices=Array.from({length:12},(_,i)=>({id:`i${i}`,customer:`Pelanggan ${i}`,invoice_number:`INV-${i}`,po_id:`po${i}`,po_number:`PO-${i}`,financial_status:'draft',invoice_date:'2026-09-01',grand_total:100,outstanding_amount:100,paid_total:0,line_items:[]}));
-beforeEach(()=>{global.IS_REACT_ACT_ENVIRONMENT=true;global.__docPerms=['sales.invoice.create'];container=document.createElement('div');document.body.append(container);root=createRoot(container);jest.clearAllMocks();api.listSalesInvoices.mockResolvedValue({invoices});api.listSalesReceipts.mockResolvedValue({receipts:[]});api.salesInvoiceChargeAccounts.mockResolvedValue({items:[]});api.deleteSalesInvoice.mockResolvedValue({});});
+beforeEach(()=>{global.IS_REACT_ACT_ENVIRONMENT=true;global.__docPerms=['sales.invoice.create'];container=document.createElement('div');document.body.append(container);root=createRoot(container);jest.clearAllMocks();api.listSalesInvoices.mockResolvedValue({invoices});api.listSalesReceipts.mockResolvedValue({receipts:[]});api.salesInvoiceChargeAccounts.mockResolvedValue({items:[]});api.deleteSalesInvoice.mockResolvedValue({});api.listActivePrintTemplates.mockResolvedValue({templates:[]});});
 afterEach(async()=>{await act(async()=>root.unmount());container.remove();});
 const click=async selector=>act(async()=>container.querySelector(selector).click());
 const change=async(selector,value)=>act(async()=>{const el=container.querySelector(selector);Object.getOwnPropertyDescriptor(el instanceof HTMLSelectElement?HTMLSelectElement.prototype:HTMLInputElement.prototype,'value').set.call(el,value);el.dispatchEvent(new Event(el instanceof HTMLSelectElement?'change':'input',{bubbles:true}));});

@@ -47,7 +47,11 @@ class TemplateValidateBody(BaseModel):
     design: dict
 
 
-def register(api_router: APIRouter, *, db, current_user, user_permissions, obj_storage):
+def register(api_router: APIRouter, *, db=None, get_db=None, current_user, user_permissions, obj_storage):
+    def database():
+        if get_db is not None:
+            return get_db()
+        return db
     async def _perms(user):
         if user.get("role") == "admin" or user.get("is_super_admin"):
             return {"print_template.view", "print_template.manage"}
@@ -96,51 +100,51 @@ def register(api_router: APIRouter, *, db, current_user, user_permissions, obj_s
         allowed = svc.user_can(user, perms, "print_template.view", "print_template.manage") or svc.can_print_document(user, perms, document_type)
         if not allowed:
             raise HTTPException(403, "Anda tidak dapat melihat pilihan cetakan.")
-        return {"templates": await svc.active_print_options(db, document_type)}
+        return {"templates": await svc.active_print_options(database(), document_type)}
 
     @api_router.get("/print-templates")
     async def print_template_list(document_type: str = "", status: str = "", user=Depends(can_view)):
-        return {"templates": await svc.list_templates(db, document_type=document_type, status=status)}
+        return {"templates": await svc.list_templates(database(), document_type=document_type, status=status)}
 
     @api_router.post("/print-templates")
     async def print_template_create(payload: TemplateCreate, user=Depends(can_manage)):
-        return {"template": await svc.create_template(db, payload.model_dump(), user)}
+        return {"template": await svc.create_template(database(), payload.model_dump(), user)}
 
     @api_router.get("/print-templates/{template_id}")
     async def print_template_detail(template_id: str, user=Depends(can_view)):
-        return {"template": await svc.get_template(db, template_id)}
+        return {"template": await svc.get_template(database(), template_id)}
 
     @api_router.put("/print-templates/{template_id}/draft")
     async def print_template_save_draft(template_id: str, payload: TemplateDesignBody, user=Depends(can_manage)):
-        return {"template": await svc.save_draft(db, template_id, payload.design, payload.expected_revision, user)}
+        return {"template": await svc.save_draft(database(), template_id, payload.design, payload.expected_revision, user)}
 
     @api_router.post("/print-templates/{template_id}/activate")
     async def print_template_activate(template_id: str, payload: TemplateRevisionBody, user=Depends(can_manage)):
-        return {"template": await svc.activate_template(db, template_id, payload.expected_revision, user)}
+        return {"template": await svc.activate_template(database(), template_id, payload.expected_revision, user)}
 
     @api_router.post("/print-templates/{template_id}/copy")
     async def print_template_copy(template_id: str, payload: TemplateCopyBody, user=Depends(can_manage)):
-        return {"template": await svc.copy_template(db, template_id, user, payload.name)}
+        return {"template": await svc.copy_template(database(), template_id, user, payload.name)}
 
     @api_router.post("/print-templates/{template_id}/default")
     async def print_template_default(template_id: str, payload: TemplateRevisionBody, user=Depends(can_manage)):
-        return {"template": await svc.set_default(db, template_id, payload.expected_revision, user)}
+        return {"template": await svc.set_default(database(), template_id, payload.expected_revision, user)}
 
     @api_router.post("/print-templates/{template_id}/archive")
     async def print_template_archive(template_id: str, payload: TemplateRevisionBody, user=Depends(can_manage)):
-        return {"template": await svc.archive_template(db, template_id, payload.expected_revision, user)}
+        return {"template": await svc.archive_template(database(), template_id, payload.expected_revision, user)}
 
     @api_router.get("/print-templates/{template_id}/versions")
     async def print_template_versions(template_id: str, user=Depends(can_view)):
-        return {"versions": await svc.list_versions(db, template_id)}
+        return {"versions": await svc.list_versions(database(), template_id)}
 
     @api_router.post("/print-templates/{template_id}/versions/{version_id}/restore")
     async def print_template_restore(template_id: str, version_id: str, payload: TemplateRevisionBody, user=Depends(can_manage)):
-        return {"template": await svc.restore_version(db, template_id, version_id, payload.expected_revision, user)}
+        return {"template": await svc.restore_version(database(), template_id, version_id, payload.expected_revision, user)}
 
     @api_router.post("/print-templates/{template_id}/preview")
     async def print_template_preview(template_id: str, payload: TemplatePreviewBody, user=Depends(can_view)):
-        pdf = await svc.preview_template(db, template_id, payload.design)
+        pdf = await svc.preview_template(database(), template_id, payload.design)
         return Response(content=pdf, media_type="application/pdf", headers={
             "Content-Disposition": 'inline; filename="pratinjau-desain.pdf"',
             "Cache-Control": "private, no-store",
@@ -157,10 +161,10 @@ def register(api_router: APIRouter, *, db, current_user, user_permissions, obj_s
                 content_type = "image/png"
             elif name.endswith(".jpg") or name.endswith(".jpeg"):
                 content_type = "image/jpeg"
-        asset = await svc.store_asset(db, obj_storage, data, content_type, user)
+        asset = await svc.store_asset(database(), obj_storage, data, content_type, user)
         return {"asset": asset}
 
     @api_router.get("/print-templates/assets/{asset_id}")
     async def print_template_asset(asset_id: str, user=Depends(can_view)):
-        data, content_type = await svc.load_asset(db, obj_storage, asset_id)
+        data, content_type = await svc.load_asset(database(), obj_storage, asset_id)
         return Response(content=data, media_type=content_type, headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
