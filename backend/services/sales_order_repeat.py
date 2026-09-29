@@ -65,6 +65,7 @@ REPEAT_SOURCE_PROJECTION = {
     "delivery_zone": 1,
     "payment_terms": 1,
     "sales": 1,
+    "sales_user_id": 1,
     "expedition": 1,
     "estimated_delivery": 1,
     "deadline": 1,
@@ -156,6 +157,7 @@ def build_repeat_source_dto(order: dict) -> Dict[str, Any]:
             header[key] = str(val).strip() if val is not None else ""
 
     return {
+        "sales_user_id": _clean_str(order.get("sales_user_id")) or "",
         "source_po_number": _clean_str(order.get("po_number")) or "",
         "source_created_at": _clean_str(order.get("created_at")) or "",
         "source_order_date": _clean_str(order.get("order_date")) or "",

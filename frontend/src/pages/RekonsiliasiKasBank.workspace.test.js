@@ -1,0 +1,168 @@
+import React, { act } from 'react';
+import { createRoot } from 'react-dom/client';
+import { TextEncoder, TextDecoder } from 'util';
+global.TextEncoder = global.TextEncoder || TextEncoder;
+global.TextDecoder = global.TextDecoder || TextDecoder;
+// Match the repository's Jest 27 router adapter; production uses the real router.
+jest.mock('react-router-dom', () => {
+  const React = require('react');
+  return { Link: ({ to, children, ...props }) => React.createElement('a', { ...props, href: to }, children) };
+}, { virtual: true });
+
+jest.mock('../lib/api', () => ({ __esModule: true, default: {
+  cashBankAccounts: jest.fn(), cashBankPairWorkspace: jest.fn(), cashBankStatementImports: jest.fn(),
+  cashBankPairSuggestions: jest.fn(), createCashBankPair: jest.fn(), cancelCashBankPair: jest.fn(),
+  previewCashBankStatement: jest.fn(), validateCashBankStatement: jest.fn(), commitCashBankStatement: jest.fn(),
+  confirmCashBankStatementDate: jest.fn(),
+} }));
+jest.mock('../lib/auth', () => ({ useAuth: () => ({ hasPerm: (perm) => mockPermissions.includes(perm) }) }));
+const api = require('../lib/api').default;
+const RekonsiliasiKasBank = require('./RekonsiliasiKasBank').default;
+const originalShowModal = HTMLDialogElement.prototype.showModal;
+const originalClose = HTMLDialogElement.prototype.close;
+const originalActEnvironment = global.IS_REACT_ACT_ENVIRONMENT;
+beforeAll(() => {
+  global.IS_REACT_ACT_ENVIRONMENT = true;
+  HTMLDialogElement.prototype.showModal = function () { this.setAttribute('open', ''); };
+  HTMLDialogElement.prototype.close = function () { this.removeAttribute('open'); this.dispatchEvent(new Event('close')); };
+});
+afterAll(() => {
+  HTMLDialogElement.prototype.showModal = originalShowModal;
+  HTMLDialogElement.prototype.close = originalClose;
+  global.IS_REACT_ACT_ENVIRONMENT = originalActEnvironment;
+});
+let mockPermissions;
+let container, root, workspace;
+const bank = { id:'bank-1', date:'2026-09-26', description:'Transfer pelanggan', reference:'TRF-18', direction:'in', amount:750000, currency_code:'IDR', matchable:true };
+const book = { journal_line_id:'book-1', date:'2026-09-26', description:'Penerimaan pelanggan', journal_number:'JE-18', direction:'in', absolute_amount:750000, currency_code:'IDR', status:'posted', matchable:true };
+const pair = { id:'pair-1', status:'active', review_state:'valid', statement_line_id:'bank-1', amount:750000, currency_code:'IDR', book_snapshot:{date:'2026-09-26', journal_number:'JE-18', description:'Penerimaan pelanggan'} };
+const flush = () => act(async () => { await Promise.resolve(); });
+const click = async (element) => { expect(element).toBeTruthy(); await act(async () => element.click()); };
+const byText = (text) => [...container.querySelectorAll('button')].find((el) => el.textContent === text);
+const change = async (selector, value) => { const el = container.querySelector(selector); await act(async () => { const proto = el.tagName === 'SELECT' ? HTMLSelectElement.prototype : HTMLInputElement.prototype; Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, value); el.dispatchEvent(new Event('change', { bubbles:true })); }); };
+async function renderPage() { await act(async () => root.render(<RekonsiliasiKasBank />)); await flush(); }
+async function upload() { const input = container.querySelector('[type=file]'); await act(async () => { Object.defineProperty(input, 'files', { configurable:true, value:[new File(['tanggal,uraian,masuk,keluar\n2026-09-26,Transfer,750000,0'], 'mutasi.csv', {type:'text/csv'})] }); input.dispatchEvent(new Event('change', { bubbles:true })); }); }
+
+beforeEach(() => {
+  jest.clearAllMocks();
+  mockPermissions = ['cash_bank.view','cash_bank.reconcile'];
+  container = document.createElement('div'); document.body.appendChild(container); root = createRoot(container);
+  workspace = {currency_code:'IDR',feature_ready:true,book_opening_balance:1000000,book_ending_balance:1750000,difference:null,statement_closing:null,unmatched_bank_count:1,unmatched_book_count:1,visible_bank_count:1,visible_book_count:1,bank_lines:[bank],book_lines:[book],matched_pairs:[]};
+  api.cashBankAccounts.mockResolvedValue({items:[{id:'account-1',name:'Rekening uji',currency_code:'IDR'}]});
+  api.cashBankPairWorkspace.mockImplementation(async () => workspace);
+  api.cashBankStatementImports.mockResolvedValue({items:[]});
+  api.cashBankPairSuggestions.mockResolvedValue({ambiguous:true,suggestions:[{journal_line_id:'book-1',journal_number:'JE-18',reasons:['Nominal sama']}]});
+  api.createCashBankPair.mockResolvedValue(pair); api.cancelCashBankPair.mockResolvedValue({status:'cancelled'});
+  api.previewCashBankStatement.mockResolvedValue({id:'preview-1',filename:'mutasi.csv',currency_code:'IDR',expires_at:'2026-09-28T21:00:00Z',sample_rows:[['tanggal','uraian','masuk','keluar','referensi'],['2026-09-26','Transfer',750000,0,'REF-18']]});
+  api.validateCashBankStatement.mockResolvedValue({ok:true,accepted_count:1,total_in:750000,total_out:0,errors:[]});
+  api.commitCashBankStatement.mockResolvedValue({status:'complete'});
+});
+afterEach(async () => { await act(async () => root.unmount()); container.remove(); });
+
+test('single selection preserves match endpoint payload and highlights both rows', async () => {
+  await renderPage();
+  await click(container.querySelector('[name=bank-line]')); await click(container.querySelector('[name=book-line]'));
+  expect(container.querySelectorAll('tr.kb-row-matched')).toHaveLength(2);
+  expect(container.querySelectorAll('thead input')).toHaveLength(0);
+  await click(byText('Cocokkan'));
+  expect(api.createCashBankPair).toHaveBeenCalledTimes(1);
+  expect(api.createCashBankPair.mock.calls[0][0]).toEqual(expect.objectContaining({cash_bank_id:'account-1',statement_line_id:'bank-1',journal_line_id:'book-1',idempotency_key:expect.any(String),start_date:expect.any(String),end_date:expect.any(String)}));
+});
+test('matched and import tabs never render a matching footer or empty bank/book panels', async () => {
+  workspace.matched_pairs=[pair]; await renderPage();
+  await click(byText('Sudah Cocok'));
+  expect(container.querySelector('.kb-pair-footer')).toBeNull(); expect(container.querySelector('.kb-pair-columns')).toBeNull();
+  expect(container.querySelector('[data-testid=kas-bank-pair-matched]').textContent).toContain('JE-18');
+  await click(byText('Batalkan pencocokan'));
+  expect(api.cancelCashBankPair.mock.calls[0]).toEqual(['pair-1', expect.objectContaining({reason:'Batalkan pencocokan',idempotency_key:expect.any(String)})]);
+  await click(byText('Riwayat Impor'));
+  expect(container.querySelector('.kb-pair-footer')).toBeNull(); expect(container.querySelector('.kb-pair-columns')).toBeNull();
+});
+test('mapping uses named columns with sample values and sends unchanged numeric column indices', async () => {
+  await renderPage(); await upload();
+  const dialog=container.querySelector('dialog'); expect(dialog.open).toBe(true);
+  expect(dialog.textContent).toContain('1. tanggal · 2026-09-26'); expect(dialog.textContent).toContain('WIB');
+  expect(dialog.querySelector('input[type=number]')).toBeNull();
+  await click(byText('Validasi'));
+  expect(api.validateCashBankStatement).toHaveBeenCalledWith('preview-1',{preview_id:'preview-1',mapping:expect.objectContaining({date_column:0,description_column:1,in_column:2,out_column:3,reference_column:null,bank_txn_id_column:null,amount_mode:'in_out'})});
+  await click(byText('Konfirmasi impor'));
+  expect(api.commitCashBankStatement.mock.calls[0][0]).toEqual({preview_id:'preview-1',mapping:api.validateCashBankStatement.mock.calls[0][1].mapping});
+  expect(dialog.open).toBe(false);
+});
+test('recognized statement header fills mapping and does not mark a reference as the bank id', async () => {
+  api.previewCashBankStatement.mockResolvedValue({
+    id:'preview-bca', filename:'mutasi.csv', currency_code:'IDR', expires_at:'2026-09-28T21:00:00Z',
+    suggested_mapping:{header_row:4,date_column:0,date_format:'DD/MM/YYYY',description_column:1,reference_column:null,bank_txn_id_column:null,bank_txn_id_authoritative:false,amount_mode:'indicator',amount_column:3,indicator_column:4,in_column:null,out_column:null,balance_column:5,file_currency:'IDR',decimal_mode:'dot_decimal'},
+    sample_rows:[['Account No.','=','1000000001'],[],[],[],['Date','Description','Branch','Amount','','Balance'],["'28/09/2026",'SETORAN','0000','10000.00','CR','110000.00']],
+  });
+  await renderPage(); await upload();
+  const dialog=container.querySelector('dialog');
+  expect(dialog.textContent).toContain('Struktur berkas dikenali');
+  expect(dialog.textContent).toContain('Referensi tidak dijadikan ID transaksi bank');
+  await click(byText('Validasi'));
+  expect(api.validateCashBankStatement).toHaveBeenCalledWith('preview-bca',{preview_id:'preview-bca',mapping:expect.objectContaining({
+    header_row:4, date_format:'DD/MM/YYYY', amount_mode:'indicator', amount_column:3, indicator_column:4,
+    in_column:null, out_column:null, balance_column:5, decimal_mode:'dot_decimal', file_currency:'IDR',
+    reference_column:null, bank_txn_id_column:null,
+  })});
+  expect(api.validateCashBankStatement.mock.calls[0][1].mapping.bank_txn_id_authoritative).toBeUndefined();
+});
+test('validation separates file totals from rows ready to match', async () => {
+  api.validateCashBankStatement.mockResolvedValue({
+    ok:true, errors:[], accepted_count:2, file_count:2, file_total_in:150, file_total_out:0,
+    ready_count:1, ready_total_in:100, ready_total_out:0, unconfirmed_count:1,
+    balance_equation_ok:true, opening_balance:1000, footer_ending_balance:1150,
+    unconfirmed:[{source_row:9, raw_date:'PEND', date:null, suggested_date:null, description:'TRANSFER KODE 2909'}],
+  });
+  await renderPage(); await upload(); await click(byText('Validasi'));
+  const dialog = container.querySelector('dialog');
+  expect(dialog.textContent).toContain('Seluruh baris berkas 2');
+  expect(dialog.textContent).toContain('Siap diimpor dan dicocokkan 1');
+  expect(dialog.textContent).toContain('Tanggal belum pasti 1');
+  expect(dialog.textContent).toContain('Baris 9: tanggal belum pasti (PEND)');
+  expect(dialog.textContent).toContain('Tidak ada tanggal usulan');
+  expect(dialog.textContent).toContain('tidak membuat baris bertanggal belum pasti siap dicocokkan');
+});
+test('unconfirmed bank row stays visible and cannot be selected for matching', async () => {
+  workspace.bank_lines=[{...bank, date:null, raw_date:'PEND', date_status:'unconfirmed', matchable:false, block_reason:'Tanggal belum pasti. Konfirmasi tanggal sebelum pencocokan.'}];
+  await renderPage();
+  expect(container.textContent).toContain('Tanggal belum pasti');
+  expect(container.textContent).toContain('PEND');
+  expect(container.querySelector('[name=bank-line]').disabled).toBe(true);
+  expect(container.querySelector('[aria-label="Tanggal konfirmasi Transfer pelanggan"]').value).toBe('');
+  expect(api.confirmCashBankStatementDate).not.toHaveBeenCalled();
+});
+test('close/reopen preview preserves mapping and never confirms import', async () => {
+  await renderPage(); await upload();
+  const dateSelect=[...container.querySelectorAll('dialog label')].find(el=>el.textContent.startsWith('Tanggal')).querySelector('select');
+  await act(async () => { dateSelect.value='4'; dateSelect.dispatchEvent(new Event('change',{bubbles:true})); });
+  await click(container.querySelector('[aria-label="Tutup pratinjau impor"]'));
+  await click(byText('Lanjutkan impor'));
+  expect(dateSelect.value).toBe('4'); expect(api.commitCashBankStatement).not.toHaveBeenCalled();
+});
+test('read-only permissions hide mutation actions', async () => {
+  mockPermissions=['cash_bank.view']; workspace.matched_pairs=[pair]; await renderPage();
+  expect(byText('Impor Mutasi')).toBeUndefined(); expect(byText('Cocokkan')).toBeUndefined();
+  expect(container.querySelector('[name=bank-line]').disabled).toBe(true);
+  await click(byText('Sudah Cocok')); expect(byText('Batalkan pencocokan')).toBeUndefined();
+});
+test('missing balance stays unavailable and USD is never presented as rupiah', async () => {
+  workspace.currency_code='USD'; workspace.bank_lines=[{...bank,currency_code:'USD'}]; workspace.book_lines=[{...book,currency_code:'USD'}]; await renderPage();
+  const summary=container.querySelector('.kb-pair-summary').textContent;
+  expect(summary).toContain('USD'); expect(summary).not.toContain('Rp'); expect(summary).toContain('Belum tersedia');
+  expect(container.querySelector('.recon-metric-diff strong').textContent).toBe('Belum tersedia');
+});
+test('server block reasons and source review state remain visible', async () => {
+  workspace.bank_lines=[{...bank,matchable:false,block_reason:'Duplikat perlu tinjauan'}]; workspace.matched_pairs=[{...pair,review_state:'perlu_tinjauan'}]; await renderPage();
+  expect(container.textContent).toContain('Duplikat perlu tinjauan'); expect(container.querySelector('[name=bank-line]').disabled).toBe(true);
+  await click(byText('Sudah Cocok')); expect(container.textContent).toContain('Perlu tinjauan');
+});
+test('changing period clears selections before another match can be submitted', async () => {
+  await renderPage(); await click(container.querySelector('[name=bank-line]')); await click(container.querySelector('[name=book-line]'));
+  await change('[aria-label="Tanggal awal"]', container.querySelector('[aria-label="Tanggal awal"]').value === '2026-09-02' ? '2026-09-03' : '2026-09-02');
+  expect(container.querySelector('[name=bank-line]').checked).toBe(false); expect(byText('Cocokkan').disabled).toBe(true);
+});
+test('validation errors remain in the drawer with row identity', async () => {
+  api.validateCashBankStatement.mockResolvedValue({ok:false,errors:[{row:3,message:'Tanggal ambigu'}]}); await renderPage(); await upload(); await click(byText('Validasi'));
+  expect(container.querySelector('dialog').textContent).toContain('Baris 3: Tanggal ambigu'); expect(api.commitCashBankStatement).not.toHaveBeenCalled();
+});

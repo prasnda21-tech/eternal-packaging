@@ -1,3 +1,4 @@
+import OperationalStockPending from "../components/OperationalStockPending";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertCircle, Download, Search, X } from "lucide-react";
 import { Link } from "react-router-dom";
@@ -146,6 +147,8 @@ export default function StockSaatIni() {
   const items = data?.items || [];
   const pageCount = data?.page_count || 1;
   const tableBusy = searchPending || loading;
+  const tableColumnCount = data?.stock_engine === "v2" ? 7 : 9;
+
   const tableView = liveSearchTableView({
     pending: searchPending,
     loading,
@@ -154,13 +157,14 @@ export default function StockSaatIni() {
 
   return (
     <div className="prod-page master-items-page stock-page" data-testid="stock-saat-ini-page">
+      <OperationalStockPending canRetry={canUpdate} onApplied={load} />
       <div className="page-heading prod-heading">
         <div className="prod-heading-copy">
           <p className="eyebrow">Persediaan</p>
           <h1 data-testid="stock-title">Stock Saat Ini</h1>
           <p className="subhead" data-testid="stock-formula">
             {data?.stock_engine === "v2"
-              ? "Stock Saat Ini = Stock Fisik − Qty Pesanan. Nilai negatif menunjukkan kekurangan stock. Belum Dicetak = MAX(Qty Pesanan − Sudah Dicetak, 0). Sudah Dicetak hanya informasi dan tidak memotong stock dua kali."
+              ? "Stock Dapat Dijual = Stock Fisik − Belum Terkirim. Belum Terkirim hanya berkurang saat Delivery Confirmed; proses produksi dan jumlah warna tidak mengubah reservasi. Nilai negatif tetap ditampilkan."
               : "(Qty Saat Ini + Pembelian Barang) − Qty PO − Qty Cetak Operator"}
           </p>
         </div>
@@ -239,10 +243,8 @@ export default function StockSaatIni() {
                     <button type="button" className="prod-th-label is-sort" onClick={() => cycleSort("physical_qty")}>Stock Fisik</button>
                   </th>
                   <th className="col-fit num">
-                    <button type="button" className="prod-th-label is-sort" onClick={() => cycleSort("outstanding_so_qty")}>Qty Pesanan</button>
+                    <button type="button" className="prod-th-label is-sort" onClick={() => cycleSort("outstanding_so_qty")}>Belum Terkirim</button>
                   </th>
-                  <th className="col-fit num">Belum Dicetak</th>
-                  <th className="col-fit num">Sudah Dicetak</th>
                 </>
               ) : (
                 <>
@@ -255,18 +257,18 @@ export default function StockSaatIni() {
                 </>
               )}
               <th className="col-fit num">
-                <button type="button" className="prod-th-label is-sort" onClick={() => cycleSort("stock_current")}>Stock Saat Ini</button>
+                <button type="button" className="prod-th-label is-sort" onClick={() => cycleSort("stock_current")}>Stock Dapat Dijual</button>
               </th>
               <th className="col-fit">Terakhir Update</th>
             </tr>
           </thead>
           <tbody data-testid="stock-tbody" data-search-state={tableView}>
             {tableView === "loading" && (
-              <tr data-testid="stock-loading"><td colSpan={9} className="muted small">Memuat…</td></tr>
+              <tr data-testid="stock-loading"><td colSpan={tableColumnCount} className="muted small">Memuat…</td></tr>
             )}
             {tableView === "empty" && (
               <tr>
-                <td colSpan={9} className="muted small" data-testid="stock-empty">Tidak ada item.</td>
+                <td colSpan={tableColumnCount} className="muted small" data-testid="stock-empty">Tidak ada item.</td>
               </tr>
             )}
             {tableView === "results" && items.map((it) => {
@@ -329,8 +331,6 @@ export default function StockSaatIni() {
                       ) : fmtQty(it.physical_qty)}
                     </td>
                     <td className="col-fit num mono" data-testid={`stock-outstanding-${it.accurate_item_id || it.master_item_id}`}>{fmtQty(it.outstanding_so_qty)}</td>
-                    <td className="col-fit num mono" data-testid={`stock-unprinted-${it.accurate_item_id || it.master_item_id}`}>{fmtQty(it.unprinted_qty)}</td>
-                    <td className="col-fit num mono" data-testid={`stock-printed-${it.accurate_item_id || it.master_item_id}`}>{fmtQty(it.printed_qty)}</td>
                   </>
                 ) : (
                   <>
@@ -371,3 +371,4 @@ export default function StockSaatIni() {
     </div>
   );
 }
+

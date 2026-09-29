@@ -53,7 +53,19 @@ def invoice_id_usable(invoice_id: Optional[str]) -> bool:
 
 
 def customer_may_view_invoice(invoice: Optional[dict]) -> bool:
-    """Issued financial documents only. Posting a journal is not publication."""
+    """Issued financial documents only. Posting a journal is not publication.
+
+    A new issue stays hidden until issue_state is issued. A delete from the
+    unified Hapus action sets removed_from_active and stays hidden. Legacy
+    invoices without those fields keep the finalized/cancelled rule.
+    """
+    if not invoice or invoice.get("removed_from_active"):
+        return False
+    if str(invoice.get("removal_state") or "") in {"pending", "deleted"}:
+        return False
+    issue_state = str(invoice.get("issue_state") or "").strip()
+    if issue_state and issue_state != "issued":
+        return False
     return effective_financial_status(invoice) in PUBLIC_INVOICE_STATUSES
 
 

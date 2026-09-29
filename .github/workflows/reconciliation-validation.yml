@@ -4,8 +4,12 @@ on:
   pull_request:
     branches:
       - main
+      - review/production-bdd247f
       - cursor/hpp-financial-opening-13bd
       - cursor/sales-order-redesign-b7d7
+      - release/finance-recon-on-live-stock-367
+      - release/invoice-bank-preserve-d27deff
+      - release/stock-386-preserve-2d0fa057
   workflow_dispatch:
 
 permissions:
@@ -74,6 +78,11 @@ jobs:
           tests/test_sales_order_line_prices.py
           tests/test_sales_order_item_images.py
           tests/test_sales_order_list_read.py
+          tests/test_sales_order_invoice_status.py
+          tests/test_sales_attribution_dashboard.py
+          tests/test_sales_dashboard.py
+          tests/test_sales_user_mapping.py
+          tests/test_sales_invoice_issue_delete.py
           tests/test_customer_tracking.py
           tests/test_customer_tracking_invoices.py
           tests/test_tracking_delivery_signature.py
@@ -83,6 +92,16 @@ jobs:
           tests/test_sales_invoices_and_receipts.py
           tests/test_physical_stock_engine.py
           tests/test_confirm_delivered_sj_stock.py
+          tests/test_operational_stock_outbox.py
+          tests/test_sales_delivery_delete_scope.py
+          tests/test_sj_stock_return.py
+          tests/test_cash_bank_phase1.py
+          tests/test_cash_bank_phase2.py
+          tests/test_cash_bank_bank_only.py
+          tests/test_cash_bank_statement_match.py
+          tests/test_cash_bank_recon_revision.py
+          tests/test_cash_bank_recon_closure.py
+          tests/test_cash_bank_import_owner.py
 
   frontend-focused:
     name: Frontend tests and build
@@ -136,8 +155,11 @@ jobs:
           src/lib/globalWorkspace.test.js
           src/lib/salesOrderCreateWorkspace.test.js
           src/pages/PesananPenjualan.createWorkspace.test.js
+          src/pages/PesananPenjualan.repeat.test.js
+          src/components/SalesUserMappingSettings.test.js
           src/pages/PesananPenjualan.test.js
           src/pages/FakturPenjualan.test.js
+          src/pages/salesDocumentsPremium.test.js
           src/components/MasterItemSearchSelect.picker.test.js
           src/lib/salesOrderListPresentation.test.js
           src/pages/PesananPenjualan.searchDebounce.test.js
@@ -151,6 +173,9 @@ jobs:
           src/lib/salesReceipts.test.js
           src/lib/salesReceiptPaymentProof.test.js
           src/pages/SalesAccountingSettings.test.js
+          src/lib/cashBankReconView.test.js
+          src/pages/RekonsiliasiKasBank.workspace.test.js
+          src/pages/KasBankPhase2.test.js
       - name: Build production frontend
         if: ${{ always() }}
         env:
@@ -158,3 +183,54 @@ jobs:
           DISABLE_ESLINT_PLUGIN: "true"
           NODE_OPTIONS: --max-old-space-size=4096
         run: npm run build
+
+  invoice-save-delete:
+    name: Sales invoice save and delete
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      mongodb:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.runCommand({ ping: 1 }).ok'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      MONGO_URL: mongodb://127.0.0.1:27017
+      DB_NAME: eternal_packaging_ci
+      JWT_SECRET: ci-only-secret
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install invoice-test dependencies
+        run: >-
+          python -m pip install
+          pytest==9.1.1
+          pytest-xdist==3.8.0
+          anyio==4.14.2
+          fastapi==0.110.1
+          httpx==0.28.1
+          pymongo==4.6.3
+          python-dotenv==1.2.2
+          motor==3.3.1
+          bcrypt==4.1.3
+          PyJWT==2.13.0
+          python-multipart==0.0.32
+          boto3==1.43.74
+          reportlab==4.1.0
+          requests==2.34.2
+          openpyxl==3.1.5
+          pdfplumber==0.11.10
+      - name: Run sales invoice save and delete tests
+        working-directory: backend
+        run: |
+          python -m pytest -q tests/test_sales_invoice_issue_delete.py
+          python -m pytest -q tests/test_sales_invoice_lifecycle.py
+          python -m pytest -q tests/test_sales_invoice_posting.py
+          python -m pytest -q tests/test_sales_invoice_reversal.py

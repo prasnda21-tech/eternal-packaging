@@ -47,14 +47,19 @@ describe("Persediaan live search inventory scope", () => {
 
   test("Stock Saat Ini formula copy follows stock_engine toggle", () => {
     expect(stock).toMatch(/stock_engine === "v2"/);
-    expect(stock).toMatch(/Stock Saat Ini = Stock Fisik − Qty Pesanan/);
-    expect(stock).toMatch(/Nilai negatif menunjukkan kekurangan stock/);
-    expect(stock).toMatch(/Qty Pesanan/);
+    expect(stock).toMatch(/Stock Dapat Dijual = Stock Fisik − Belum Terkirim/);
+    expect(stock).toMatch(/Nilai negatif tetap ditampilkan/);
+    expect(stock).toMatch(/Belum Terkirim/);
     expect(stock).not.toMatch(/Outstanding/);
+    expect(stock).not.toMatch(/Belum Dicetak|Sudah Dicetak/);
     expect(stock).toMatch(/Qty Saat Ini \+ Pembelian Barang/);
     expect(stock).toMatch(/data-testid="stock-formula"/);
     expect(stock).toMatch(/stock-manual-/);
     expect(stock).toMatch(/stock-physical-/);
+    expect(stock).toMatch(/fmtQty\(it\.physical_qty\)/);
+    expect(stock).toMatch(/fmtQty\(it\.outstanding_so_qty\)/);
+    expect(stock).toMatch(/fmtQty\(it\.stock_current\)/);
+    expect(stock).not.toMatch(/fmtQty\(it\.unprinted_qty\)|fmtQty\(it\.printed_qty\)/);
   });
 
   test("Stock Saat Ini clears rows while query pending and gates physical edit to holding team", () => {

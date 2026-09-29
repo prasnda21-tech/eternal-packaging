@@ -43,6 +43,7 @@ import {
   REPEAT_NO_PREVIOUS_MESSAGE,
   REPEAT_ORDER_QUERY_PARAM,
   clearRepeatDerivedFormFields,
+  REPEAT_SALES_RESELECT_MESSAGE,
   mapRepeatSourceToFormPatch,
   resolveRepeatMasterCustomer,
 } from "../lib/salesOrderRepeat";
@@ -187,6 +188,7 @@ export function buildSalesOrderCreatePayload(formData) {
     }),
   };
   delete payload.outlet_id;
+  if (!String(payload.sales_user_id || "").trim()) delete payload.sales_user_id;
   return payload;
 }
 
@@ -427,6 +429,7 @@ export default function PesananPenjualan() {
   });
   const [listMeta, setListMeta] = useState({ total: null, capped: false });
   const [itemImages, setItemImages] = useState({});
+  const [invoiceFilter, setInvoiceFilter] = useState(() => searchParams.get("invoice_status") || "all");
   const [columnFilters, setColumnFilters] = useState(EMPTY_SALES_ORDER_COLUMN_FILTERS);
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [deleteConfirm, setDeleteConfirm] = useState(null);
@@ -438,6 +441,7 @@ export default function PesananPenjualan() {
     customers: [],
     outlets_by_customer: {},
     sales_options: [],
+    sales_accounts: [],
     master_items: [],
     suggested_po_number: "",
   });
@@ -460,6 +464,7 @@ export default function PesananPenjualan() {
     delivery_zone: "",
     payment_terms: "",
     sales: "",
+    sales_user_id: "",
     created_by_user: user?.name || user?.email || "",
     expedition: "Internal fleet",
     estimated_delivery: getThreeDaysLaterString(),
@@ -579,6 +584,7 @@ export default function PesananPenjualan() {
         page,
         pageSize,
       });
+      if (invoiceFilter !== "all") params.invoice_status = invoiceFilter;
       const res = await api.listSalesOrders(params, { signal: ac.signal });
       if (ac.signal.aborted) return;
       setOrders(res.orders || []);
@@ -598,7 +604,7 @@ export default function PesananPenjualan() {
         setListLoading(false);
       }
     }
-  }, [searchQuery, statusFilter, period, page, pageSize]);
+  }, [searchQuery, statusFilter, invoiceFilter, period, page, pageSize]);
 
   const filteredOrders = useMemo(
     () => applySalesOrderColumnFilters(orders, columnFilters),
@@ -613,7 +619,7 @@ export default function PesananPenjualan() {
   const listTotal = serverPaged ? Number(listMeta.total) : filteredOrders.length;
   const pageCount = listPageCount(listTotal, pageSize);
   const tabDefaultStatus = listTab === "histori" ? "histori" : "aktif";
-  const columnFiltersActive = salesOrderColumnFiltersAreActive(
+  const columnFiltersActive = invoiceFilter !== "all" || salesOrderColumnFiltersAreActive(
     columnFilters,
     statusFilter === tabDefaultStatus ? "all" : statusFilter,
   );
@@ -637,6 +643,7 @@ export default function PesananPenjualan() {
     }
   };
   const clearAllColumnFilters = () => {
+    setInvoiceFilter("all");
     setColumnFilters(EMPTY_SALES_ORDER_COLUMN_FILTERS);
     setStatusFilter("all");
   };
@@ -659,6 +666,7 @@ export default function PesananPenjualan() {
     if (searchQuery.trim()) next.set("q", searchQuery.trim());
     const tabDefault = listTab === "histori" ? "histori" : "aktif";
     if (statusFilter && statusFilter !== tabDefault) next.set("status", statusFilter);
+    if (invoiceFilter !== "all") next.set("invoice_status", invoiceFilter);
     if (listTab === "histori") next.set("tab", "histori");
     if (period !== "all") next.set("period", period);
     if (page > 1) next.set("page", String(page));
@@ -667,7 +675,7 @@ export default function PesananPenjualan() {
     const curStr = searchParams.toString();
     if (nextStr === curStr) return;
     setSearchParams(next, { replace: true });
-  }, [searchQuery, statusFilter, listTab, period, page, pageSize, viewMode, searchParams, setSearchParams]);
+  }, [searchQuery, statusFilter, invoiceFilter, listTab, period, page, pageSize, viewMode, searchParams, setSearchParams]);
 
   useEffect(() => {
     if (skipPageResetRef.current) {
@@ -675,7 +683,7 @@ export default function PesananPenjualan() {
       return;
     }
     setPage(1);
-  }, [searchQuery, statusFilter, period, pageSize, listTab]);
+  }, [searchQuery, statusFilter, invoiceFilter, period, pageSize, listTab]);
 
   useEffect(() => {
     if (page > pageCount) setPage(pageCount);
@@ -780,6 +788,7 @@ export default function PesananPenjualan() {
         recipient: o.recipient || patch.recipient || "",
         delivery_zone: o.delivery_zone || "",
         sales: o.sales || "",
+        sales_user_id: "",
         payment_terms: o.payment_terms || "",
       };
     } else {
@@ -891,6 +900,7 @@ export default function PesananPenjualan() {
         recipient: match.recipient || prev.recipient,
         delivery_zone: match.delivery_zone || prev.delivery_zone,
         sales: match.sales || prev.sales,
+        sales_user_id: match.sales ? "" : prev.sales_user_id,
         payment_terms: match.payment_terms || prev.payment_terms,
       }));
     } else {
@@ -1348,7 +1358,11 @@ export default function PesananPenjualan() {
       selected.customer_id = customerId;
       selected.customer = formData.customer;
     }
-    const { formPatch, sourcePoNumber } = mapRepeatSourceToFormPatch(source, selected);
+    const { formPatch, sourcePoNumber, salesReselect } = mapRepeatSourceToFormPatch(
+      source,
+      selected,
+      options.sales_accounts || [],
+    );
     if (!formPatch) {
       setRepeatConfirm(null);
       setRepeatMsg(REPEAT_NO_PREVIOUS_MESSAGE);
@@ -1388,7 +1402,7 @@ export default function PesananPenjualan() {
     setItemPage(1);
     setRepeatSourceIndicator(sourcePoNumber || "");
     setRepeatConfirm(null);
-    setRepeatMsg("");
+    setRepeatMsg(salesReselect ? REPEAT_SALES_RESELECT_MESSAGE : "");
     dirtyRef.current = true;
   };
 
@@ -1663,6 +1677,7 @@ export default function PesananPenjualan() {
                 <col className="so-col-qty" />
                 <col className="so-col-progress" />
                 <col className="so-col-status" />
+                <col style={{width:135}} />
                 <col className="so-col-actions" />
               </colgroup>
               <thead>
@@ -1853,17 +1868,30 @@ export default function PesananPenjualan() {
                       ]}
                     />
                   </th>
+                  <th>
+                    <SalesOrderHeaderFilter label="Status Faktur" testid="so-th-filter-invoice" active={invoiceFilter !== "all"} onClear={() => setInvoiceFilter("all")}>
+                      <label>Status Faktur
+                        <select aria-label="Filter Status Faktur" value={invoiceFilter} onChange={(e) => { setInvoiceFilter(e.target.value); setPage(1); }}>
+                          <option value="all">Semua</option>
+                          <option value="none">Belum difaktur</option>
+                          <option value="partial">Sebagian difaktur</option>
+                          <option value="full">Sudah difaktur</option>
+                          <option value="processing">Sedang diproses</option>
+                        </select>
+                      </label>
+                    </SalesOrderHeaderFilter>
+                  </th>
                   <th>Aksi</th>
                 </tr>
               </thead>
               <tbody>
                 {listLoading ? (
                   <tr>
-                    <td colSpan={canDelete ? 8 : 7} className="so-list-empty">Memuat daftar Pesanan Penjualan...</td>
+                    <td colSpan={canDelete ? 9 : 8} className="so-list-empty">Memuat daftar Pesanan Penjualan...</td>
                   </tr>
                 ) : displayedOrders.length === 0 ? (
                   <tr>
-                    <td colSpan={canDelete ? 8 : 7} className="so-list-empty" data-testid="empty-sales-orders">
+                    <td colSpan={canDelete ? 9 : 8} className="so-list-empty" data-testid="empty-sales-orders">
                       <FileText size={28} />
                       <p>Belum ada Pesanan Penjualan yang sesuai filter.</p>
                       {canCreate && (
@@ -1880,6 +1908,9 @@ export default function PesananPenjualan() {
                     </td>
                   </tr>
                 ) : displayedOrders.map((o) => {
+                  const invoiceStatus = o.invoice_summary?.status || "unknown";
+                  const invoiceLabel = ({none: "Belum difaktur", partial: "Sebagian difaktur", full: "Sudah difaktur"})[invoiceStatus] || "Status faktur belum tersedia";
+                  const invoiceColor = ({none: "#64748b", partial: "#92400e", full: "#166534"})[invoiceStatus] || "#64748b";
                   const isCancelled = !!o.cancelled;
                   const isHold = !!o.hold;
                   const stageLabel = salesOrderStageLabel(o) || (o.current_stage == null ? "" : `Tahap ${o.current_stage}`);
@@ -1921,6 +1952,7 @@ export default function PesananPenjualan() {
                           {o.po_number}
                         </Link>
                         {o.outlet ? <span className="so-list-outlet" title={o.outlet}>{o.outlet}</span> : null}
+
                         </div>
                       </td>
                       <td>{formatDisplayDate(o.order_date) || "—"}</td>
@@ -1941,6 +1973,9 @@ export default function PesananPenjualan() {
                           {salesName ? <span className="so-list-sales" title={salesName}>{salesName}</span> : null}
                         </div>
                       </td>
+                      <td>                        <span data-testid={`order-invoice-status-${o.id}`} style={{fontSize:10,lineHeight:1.3,fontWeight:600,color:invoiceColor,whiteSpace:"normal"}} title="Cakupan kuantitas PO pada faktur terbit aktif; bukan status pembayaran">
+                          {invoiceLabel}{o.invoice_summary?.processing ? " · Sedang diproses" : ""}
+                        </span></td>
                       <td onClick={(e) => e.stopPropagation()}>
                         <div className="so-list-actions">
                           <Link
@@ -2535,13 +2570,46 @@ export default function PesananPenjualan() {
               <h3>Pengiriman & Detail</h3>
               {extraFields.map((item) => (
                 <SoField key={item.field} field={item.field} label={item.label} error={fieldHasError(item.field)}>
+                  {item.field === "sales" && (
+                    <select
+                      id="so-sales-account"
+                      className="so-line-input"
+                      value={formData.sales_user_id || ""}
+                      aria-label="Akun penanggung jawab penjualan"
+                      data-testid="input-sales-account"
+                      onChange={(e) => {
+                        const id = e.target.value;
+                        const account = (options.sales_accounts || []).find((row) => row.id === id);
+                        setFormData((p) => ({
+                          ...p,
+                          sales_user_id: id,
+                          sales: account ? account.name : p.sales,
+                        }));
+                      }}
+                    >
+                      <option value="">— pilih akun penanggung jawab —</option>
+                      {(options.sales_accounts || []).map((account) => {
+                        const sameName = (options.sales_accounts || []).filter((row) => row.name === account.name).length > 1;
+                        const label = sameName
+                          ? [account.name, account.email, account.role].filter(Boolean).join(" · ")
+                          : account.name;
+                        return <option key={account.id} value={account.id}>{label}</option>;
+                      })}
+                    </select>
+                  )}
                   <input
                     id={`so-${item.field}`}
                     type={item.type || "text"}
                     className="so-line-input"
                     list={item.list}
                     value={formData[item.field]}
-                    onChange={(e) => setFormData((p) => ({ ...p, [item.field]: e.target.value }))}
+                    onChange={(e) => setFormData((p) => {
+                      const value = e.target.value;
+                      if (item.field !== "sales") return { ...p, [item.field]: value };
+                      const selected = (options.sales_accounts || []).find((row) => row.id === p.sales_user_id);
+                      const keepId = selected && value === selected.name;
+                      return { ...p, sales: value, sales_user_id: keepId ? p.sales_user_id : "" };
+                    })}
                     placeholder={item.placeholder}
                     data-testid={item.testId}
                     aria-invalid={fieldHasError(item.field) || undefined}
@@ -2655,3 +2723,4 @@ export default function PesananPenjualan() {
     </div>
   );
 }
+

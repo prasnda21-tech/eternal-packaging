@@ -48,6 +48,8 @@ const publicJsonRequest = async (path, options = {}) => {
 };
 
 export const api = {
+  operationalStockPending: () => client.get("/operational-stock/pending").then((r) => r.data),
+  retryOperationalStock: (orderId, intentId, source) => client.post(`/operational-stock/${encodeURIComponent(orderId)}/${encodeURIComponent(intentId)}/retry`, {}, { params: { source } }).then((r) => r.data),
   login: (email, password) => client.post("/auth/login", { email, password }).then((r) => r.data),
   logout: () => client.post("/auth/logout", {}).then((r) => r.data),
   me: dedupeInflight(() => client.get("/auth/me").then((r) => r.data)),
@@ -326,6 +328,19 @@ export const api = {
   setCashBankReconciliationMatches: (id, journal_line_ids) => client.put(`/cash-bank/reconciliations/${encodeURIComponent(id)}/matches`, { journal_line_ids }).then((r) => r.data),
   deleteCashBankReconciliation: (id) => client.delete(`/cash-bank/reconciliations/${encodeURIComponent(id)}`).then((r) => r.data),
   finalizeCashBankReconciliation: (id) => client.post(`/cash-bank/reconciliations/${encodeURIComponent(id)}/finalize`).then((r) => r.data),
+  cashBankPairWorkspace: (params = {}) => client.get(`/cash-bank/reconciliations/pairs/workspace`, { params }).then((r) => r.data),
+  cashBankPairSuggestions: (params = {}) => client.get(`/cash-bank/reconciliations/pairs/suggestions`, { params }).then((r) => r.data),
+  createCashBankPair: (payload) => client.post(`/cash-bank/reconciliations/pairs`, payload).then((r) => r.data),
+  getCashBankPair: (id) => client.get(`/cash-bank/reconciliations/pairs/${encodeURIComponent(id)}`).then((r) => r.data),
+  cancelCashBankPair: (id, payload) => client.post(`/cash-bank/reconciliations/pairs/${encodeURIComponent(id)}/cancel`, payload).then((r) => r.data),
+  cashBankLegacyReconciliations: (params = {}) => client.get(`/cash-bank/reconciliations/legacy`, { params }).then((r) => r.data),
+  previewCashBankStatement: (formData) => client.post(`/cash-bank/statements/preview`, formData).then((r) => r.data),
+  validateCashBankStatement: (previewId, payload) => client.post(`/cash-bank/statements/preview/${encodeURIComponent(previewId)}/validate`, payload).then((r) => r.data),
+  commitCashBankStatement: (payload) => client.post(`/cash-bank/statements/imports`, payload).then((r) => r.data),
+  confirmCashBankStatementDate: (lineId, payload) => client.post(`/cash-bank/statements/lines/${encodeURIComponent(lineId)}/date-confirmation`, payload).then((r) => r.data),
+  cashBankStatementImports: (params = {}) => client.get(`/cash-bank/statements/imports`, { params }).then((r) => r.data),
+  resolveCashBankStatementDuplicate: (lineId, payload) => client.post(`/cash-bank/statements/lines/${encodeURIComponent(lineId)}/duplicate-resolution`, payload).then((r) => r.data),
+  setCashBankManualStatementBalance: (payload) => client.put(`/cash-bank/statements/manual-balance`, payload).then((r) => r.data),
   currentStock: (params = {}) => client.get(`/current-stock`, { params }).then((r) => r.data),
   currentStockUpdate: (itemId, payload) => client.patch(`/current-stock/${itemId}`, payload).then((r) => r.data),
   currentStockExport: (params = {}) =>
@@ -702,6 +717,7 @@ export const api = {
   getPoInvoicePreview: (poId) => client.get(`/sales-invoices/po/${encodeURIComponent(poId)}/preview`).then((r) => r.data),
   salesInvoiceChargeAccounts: (params = {}) => client.get(`/sales-invoices/charge-accounts`, { params }).then((r) => r.data),
   createSalesInvoice: (payload) => client.post(`/sales-invoices`, payload).then((r) => r.data),
+  issueSalesInvoice: (payload) => client.post(`/sales-invoices/issue`, payload).then((r) => r.data),
   updateSalesInvoice: (id, payload) => client.put(`/sales-invoices/${encodeURIComponent(id)}`, payload).then((r) => r.data),
   finalizeSalesInvoice: (id) => client.post(`/sales-invoices/${encodeURIComponent(id)}/finalize`).then((r) => r.data),
   cancelSalesInvoice: (id) => client.post(`/sales-invoices/${encodeURIComponent(id)}/cancel`).then((r) => r.data),
@@ -722,7 +738,9 @@ export const api = {
   // ---- Delete (Safe) ----
   deleteSalesDelivery: (id) => client.delete(`/sales-deliveries/${encodeURIComponent(id)}`).then((r) => r.data),
   bulkDeleteSalesDeliveries: (ids, reason = "bulk") => client.post(`/sales-deliveries-bulk/delete`, { ids, reason }).then((r) => r.data),
-  deleteSalesInvoice: (id) => client.delete(`/sales-invoices/${encodeURIComponent(id)}`).then((r) => r.data),
+  deleteSalesInvoice: (id, operationKey) => client.delete(`/sales-invoices/${encodeURIComponent(id)}`, {
+    params: operationKey ? { operation_key: operationKey } : {},
+  }).then((r) => r.data),
   bulkDeleteSalesInvoices: (ids, reason = "bulk") => client.post(`/sales-invoices-bulk/delete`, { ids, reason }).then((r) => r.data),
   deleteSalesReceipt: (id) => client.delete(`/sales-receipts/${encodeURIComponent(id)}`).then((r) => r.data),
   bulkDeleteSalesReceipts: (ids, reason = "bulk") => client.post(`/sales-receipts-bulk/delete`, { ids, reason }).then((r) => r.data),
@@ -937,3 +955,4 @@ function spkKeyHeader(payload) {
 }
 
 export default api;
+

@@ -378,6 +378,9 @@ async def acquire_receipt_create_claim(db, invoice_id: str, *, token: Optional[s
         {
             "id": str(invoice_id),
             "financial_status": FINANCIAL_FINALIZED,
+            "removed_from_active": {"$ne": True},
+            "removal_state": {"$nin": ["pending", "deleted"]},
+            "issue_state": {"$ne": "issuing"},
             "$and": [
                 reverse_claim_absent_or_stale_clause(),
                 create_claim_ok,
@@ -470,6 +473,15 @@ async def _finalize_invoice_reversal_state(
         rev_id = stored.get("accounting_reversal_journal_id")
     if rev_id:
         patch["accounting_reversal_journal_id"] = rev_id
+    from services.sales_invoice_issue import DELETE_REASON, release_invoice_qty
+    if str(reason or "").strip() == DELETE_REASON:
+        patch["removed_from_active"] = True
+        patch["removal_state"] = "deleted"
+        patch["delete_reason"] = DELETE_REASON
+        if not stored.get("removed_at"):
+            patch["removed_at"] = now
+            patch["removed_by"] = _actor_public(user)
+    await release_invoice_qty(db, stored.get("qty_hold_id"))
     await db.sales_invoices.update_one(
         {"id": invoice["id"]},
         {

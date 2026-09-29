@@ -196,6 +196,8 @@ from services.sales_accounting_settings_http import register_sales_accounting_se
 from services.sales_user_mapping_http import register_sales_user_mapping_routes
 from services.sales_pwa_http import register_sales_pwa_routes
 from services.sales_user_mapping import (
+    SALES_RESPONSIBLE_ROLES,
+    assign_sales_responsible,
     attach_sales_ownership,
     attach_sales_ownership_admin_fields,
     ensure_owned_po_id,
@@ -1737,6 +1739,8 @@ async def get_order(order_id: str, user=Depends(current_user)):
         ))
         if not view_ok:
             raise HTTPException(403, "Anda tidak punya permission untuk melihat PO ini")
+    from services.operational_stock_outbox import summary
+    order["stock_sync"] = await summary(db, order)
     _apply_hold_snapshot(order)
     # Workflow 06-12 targeted bugfix: expose prereq status untuk UI gating.
     order["packing_prereq_reasons"] = _prereq_reasons_for_packing(order)
@@ -1852,6 +1856,8 @@ def _attach_deadline_snapshot(order: dict, lead_time_days: int):
 
 
 _DERIVED_ORDER_KEYS = (
+    "sj_deletion_generation", "sj_deletion_ids",
+    "operational_stock_intents", "operational_stock_pending", "stock_sync", "_new_operational_stock_intents",
     "packing_prereq_reasons", "packing_ready", "packing_status_semantic",
     "surat_jalan_created", "loading_prereq_reasons", "loading_ready",
     "loading_completed", "terkirim_prereq_reasons", "terkirim_ready",
@@ -1975,7 +1981,7 @@ async def _load_order_for_mutation(order_id: str) -> dict:
     return order
 
 
-async def _with_quantity_lock(order_id: str, mutate, extra_query=None):
+async def _with_quantity_lock(order_id: str, mutate, extra_query=None, *, stock_stage=None, stock_user=None):
     """Atomic optimistic lock + retry untuk mutasi qty kritis.
 
     `mutate(order)` memvalidasi & memodifikasi order in-place.
@@ -1987,7 +1993,17 @@ async def _with_quantity_lock(order_id: str, mutate, extra_query=None):
         order = await _load_order_for_mutation(order_id)
         lock_token = order.get("updated_at")
         last_token = lock_token
+        before_stock = copy.deepcopy(order) if stock_stage else None
         mutate(order)
+        if stock_stage:
+            from services.operational_stock_outbox import with_intents
+            if stock_stage == "operator":
+                from services.physical_stock_settings import get_physical_stock_settings
+                live_stock = bool((await get_physical_stock_settings(db)).get("enabled"))
+            else:
+                live_stock = True
+            if live_stock:
+                with_intents(before_stock, order, stock_stage, stock_user or {})
         order["_expected_updated_at"] = lock_token
         try:
             return await _persist_order(order, require_lock=True, extra_query=extra_query)
@@ -2004,6 +2020,7 @@ async def _with_quantity_lock(order_id: str, mutate, extra_query=None):
 
 
 async def _persist_order(order, *, require_lock: bool = False, persist_keys: Optional[tuple] = None, extra_query=None):
+    sj_generation = order.get("sj_deletion_generation", 0)
     expected_updated = order.pop("_expected_updated_at", None)
     if require_lock and not expected_updated:
         raise HTTPException(409, _CONFLICT_MSG)
@@ -2037,7 +2054,10 @@ async def _persist_order(order, *, require_lock: bool = False, persist_keys: Opt
                 merged.append(f)
             order["surat_jalan_files"] = merged
     # DB write pakai field yang persistable (skip yang derived).
+    from services.operational_stock_outbox import persist_fields
+    intent_fields = persist_fields(order)
     to_write = {k: v for k, v in order.items() if k not in _DERIVED_ORDER_KEYS}
+    to_write.update(intent_fields)
     if persist_keys is not None:
         allowed = set(persist_keys) | {"updated_at"}
         to_write = {k: v for k, v in to_write.items() if k in allowed}
@@ -2048,11 +2068,26 @@ async def _persist_order(order, *, require_lock: bool = False, persist_keys: Opt
         raise HTTPException(409, _CONFLICT_MSG)
     if extra_query:
         query.update(extra_query)
+    sj_fields = {"shipments", "surat_jalan_files", "loading_confirmations", "delivery_confirmations",
+                 "delivery_proofs", "delivery_recipient_signature", "delivery_driver_signature",
+                 "delivery_recipient_signatures", "delivery_driver_signatures"}
+    protect_sj = persist_keys is None or bool(sj_fields.intersection(persist_keys))
+    existing_sj_source = None
+    if protect_sj:
+        existing_sj_source = await db.orders.find_one({"id": order["id"]}, {"_id": 1})
+        query["sj_deletion_generation"] = sj_generation if sj_generation else {"$in": [None, 0]}
+    update = {"$set": to_write}
+    if intent_fields:
+        if persist_keys is not None:
+            raise ValueError("Stock obligations require the full operational write")
+        update["$addToSet"] = {"operational_stock_pending": {"$each": [k.split(".", 1)[1] for k in intent_fields]}}
     result = await db.orders.update_one(
-        query,
-        {"$set": to_write},
-        upsert=not bool(expected_updated or require_lock),
+        query, update, upsert=not bool(expected_updated or require_lock or existing_sj_source),
     )
+    if protect_sj and existing_sj_source and result.matched_count == 0:
+        latest = await db.orders.find_one({"id": order["id"]}, {"sj_deletion_generation": 1})
+        if (latest or {}).get("sj_deletion_generation", 0) != sj_generation:
+            raise HTTPException(409, _CONFLICT_MSG)
     if expected_updated and result.matched_count == 0:
         if extra_query:
             from services.physical_stock_engine import DELIVERY_FENCE_LOST
@@ -2062,6 +2097,8 @@ async def _persist_order(order, *, require_lock: bool = False, persist_keys: Opt
         raise HTTPException(409, _CONFLICT_MSG)
     if require_lock and result.modified_count == 0 and result.matched_count == 0:
         raise HTTPException(409, _CONFLICT_MSG)
+    if intent_fields:
+        order["stock_sync"] = {"status": "pending", "message": "Progres tersimpan · pencatatan stok tertunda"}
     # Attach derived fields untuk response (workflow 06-12 bugfix).
     order["packing_prereq_reasons"] = _prereq_reasons_for_packing(order)
     order["packing_ready"] = len(order["packing_prereq_reasons"]) == 0
@@ -4155,47 +4192,9 @@ async def update_operator_progress(order_id: str, payload: OperatorProgressPaylo
     existing_order = await db.orders.find_one({"id": order_id}, {"_id": 0})
     if not existing_order:
         raise HTTPException(404, "Order tidak ditemukan")
-    splits_pre = existing_order.get("operator_splits", [])
-    found_split_pre = next((s for s in splits_pre if s["id"] == payload.operator_id), None)
 
-    # Resolve live physical-stock enablement once per request for Cetak helpers.
-    # Skip the settings read when the order snapshot is already inactive.
-    snap_enabled = bool((existing_order.get("physical_stock_snapshot") or {}).get("enabled"))
-    live_enabled = False
-    if snap_enabled:
-        from services.physical_stock_settings import get_physical_stock_settings
-        live_enabled = bool((await get_physical_stock_settings(db)).get("enabled"))
+    payload.action_id = (payload.action_id or "").strip() or str(uuid.uuid4())
 
-    if found_split_pre:
-        inc_check = payload.qty
-        if inc_check is None and payload.qty_completed is not None and not found_split_pre.get("progress_entries"):
-            inc_check = int(payload.qty_completed)
-        if inc_check and int(inc_check) > 0:
-            from services.physical_stock_engine import precheck_operator_progress
-            await precheck_operator_progress(
-                db, existing_order, found_split_pre, int(inc_check), live_enabled=live_enabled
-            )
-
-    act_id = (payload.action_id or "").strip() or str(uuid.uuid4())
-    payload.action_id = act_id
-    claimed_stock = None
-    if found_split_pre:
-        inc_val = payload.qty
-        if inc_val is None and payload.qty_completed is not None and not found_split_pre.get("progress_entries"):
-            inc_val = int(payload.qty_completed)
-        if inc_val and int(inc_val) > 0:
-            from services.physical_stock_engine import (
-                should_claim_operator_stock,
-                claim_operator_stock,
-            )
-            if await should_claim_operator_stock(
-                db, existing_order, found_split_pre, live_enabled=live_enabled
-            ):
-                claimed_stock = await claim_operator_stock(
-                    db, existing_order, found_split_pre, int(inc_val), act_id, user
-                )
-
-    op_applied = {}
 
     def mutate(order: dict):
         splits = order.get("operator_splits", [])
@@ -4271,34 +4270,25 @@ async def update_operator_progress(order_id: str, payload: OperatorProgressPaylo
         found["progress_entries"] = entries
         found["qty_completed"] = sum_entry_qty(entries)
         found["updated_at"] = now_iso()
-        op_applied["split"] = found
-        op_applied["increment"] = increment
-        op_applied["created"] = created
         add_timeline(order, order["current_stage"], user, note=f"Qty {found['operator_name']}: +{increment} (total {found['qty_completed']}/{found['quantity']})")
 
-    try:
-        order = await _with_quantity_lock(order_id, mutate)
-    except Exception:
-        if claimed_stock:
-            from services.physical_stock_engine import release_operator_stock
-            await release_operator_stock(db, claimed_stock)
-        raise
+    order = await _with_quantity_lock(order_id, mutate, stock_stage="operator", stock_user=user)
 
-    if claimed_stock:
-        from services.physical_stock_engine import finalize_operator_stock
-        await finalize_operator_stock(db, claimed_stock, user)
-    elif op_applied.get("created") and op_applied.get("increment", 0) > 0 and payload.action_id:
-        from services.physical_stock_engine import handle_operator_progress
-        await handle_operator_progress(
-            db,
-            order,
-            op_applied["split"],
-            op_applied["increment"],
-            payload.action_id,
-            user,
-            live_enabled=live_enabled,
-        )
     return {"order": order}
+
+
+@api_router.get("/operational-stock/pending")
+async def operational_stock_pending(user=Depends(current_user)):
+    await _require_perm(user, "current_stock.view")
+    from services.operational_stock_outbox import pending_rows
+    return {"items": await pending_rows(db)}
+
+
+@api_router.post("/operational-stock/{order_id}/{intent_id}/retry")
+async def operational_stock_retry(order_id: str, intent_id: str, source: str = "orders", user=Depends(current_user)):
+    await _require_perm(user, "current_stock.update")
+    from services.operational_stock_outbox import process_intent
+    return await process_intent(db, order_id, intent_id, source)
 
 
 @api_router.post("/orders/{order_id}/urgent")
@@ -4822,7 +4812,11 @@ async def delete_surat_jalan_file(
     )
 
     if linked_delivery:
+        from services.operational_stock_outbox import archive_before_delete, settle_deleted_source
+        await _reserve_sales_delivery_deletion(linked_delivery)
+        await archive_before_delete(db, linked_delivery, "sales_deliveries")
         await db.sales_deliveries.delete_one({"id": linked_delivery["id"]})
+        await settle_deleted_source(db, "sales_deliveries", linked_delivery["id"])
         await _remove_matching_business_sj_shipment(order.get("id"), linked_delivery)
         # Reload order after shipment / stamp cleanup so response is current.
         fresh = await db.orders.find_one({"id": order_id}, {"_id": 0})
@@ -4878,22 +4872,9 @@ async def confirm_loading(order_id: str, payload: LoadingConfirmPayload, user=De
     await _require_perm(user, "loading.update")
 
     existing_order = await db.orders.find_one({"id": order_id}, {"_id": 0})
-    if existing_order and payload.lines:
-        from services.physical_stock_engine import precheck_loading_confirmed
-        await precheck_loading_confirmed(db, existing_order, [ln.model_dump() for ln in payload.lines])
 
     act_id = (payload.action_id or "").strip() or str(uuid.uuid4())
     payload.action_id = act_id
-    claimed_stock = None
-    if existing_order and payload.lines:
-        from services.physical_stock_engine import (
-            should_claim_loading_stock,
-            claim_loading_stock,
-        )
-        if await should_claim_loading_stock(db, existing_order):
-            claimed_stock = await claim_loading_stock(
-                db, existing_order, [ln.model_dump() for ln in payload.lines], act_id, user
-            )
 
     record_holder = {}
 
@@ -4929,20 +4910,8 @@ async def confirm_loading(order_id: str, payload: LoadingConfirmPayload, user=De
         add_timeline(order, 13, user, note=f"Konfirmasi Loading ({record.get('surat_jalan_name')}): {names}")
         _sync_workflow_stage(order)
 
-    try:
-        order = await _with_quantity_lock(order_id, _mutate)
-    except Exception:
-        if claimed_stock:
-            from services.physical_stock_engine import release_loading_stock
-            await release_loading_stock(db, claimed_stock)
-        raise
+    order = await _with_quantity_lock(order_id, _mutate, stock_stage="loading", stock_user=user)
 
-    if claimed_stock:
-        from services.physical_stock_engine import finalize_loading_stock
-        await finalize_loading_stock(db, claimed_stock, user)
-    elif record_holder.get("record"):
-        from services.physical_stock_engine import handle_loading_confirmed
-        await handle_loading_confirmed(db, order, record_holder["record"], user)
     await _audit_po(order, "loading.confirm", user, note=payload.surat_jalan_id)
     return {"order": _strip_sj_bytes(order)}
 
@@ -4959,18 +4928,8 @@ async def confirm_loading_match(order_id: str, payload: LoadingMatchConfirmPaylo
     if not existing_order:
         raise HTTPException(404, "PO tidak ditemukan")
 
-    # Preview generated lines for stock precheck (authoritative SJ, not client qty)
-    preview_lines = _qr_build_sj_loading_lines(existing_order, payload.surat_jalan_id)
-    if preview_lines:
-        from services.physical_stock_engine import precheck_loading_confirmed
-        await precheck_loading_confirmed(db, existing_order, preview_lines)
 
     act_id = (payload.action_id or "").strip() or str(uuid.uuid4())
-    claimed_stock = None
-    if preview_lines:
-        from services.physical_stock_engine import should_claim_loading_stock, claim_loading_stock
-        if await should_claim_loading_stock(db, existing_order):
-            claimed_stock = await claim_loading_stock(db, existing_order, preview_lines, act_id, user)
 
     record_holder = {}
 
@@ -5017,20 +4976,8 @@ async def confirm_loading_match(order_id: str, payload: LoadingMatchConfirmPaylo
         add_timeline(order, 13, user, note=f"Loading sesuai SJ ({record.get('surat_jalan_name') or payload.surat_jalan_id}): {names}")
         _sync_workflow_stage(order)
 
-    try:
-        order = await _with_quantity_lock(order_id, _mutate)
-    except Exception:
-        if claimed_stock:
-            from services.physical_stock_engine import release_loading_stock
-            await release_loading_stock(db, claimed_stock)
-        raise
+    order = await _with_quantity_lock(order_id, _mutate, stock_stage="loading", stock_user=user)
 
-    if claimed_stock and not record_holder.get("idempotent"):
-        from services.physical_stock_engine import finalize_loading_stock
-        await finalize_loading_stock(db, claimed_stock, user)
-    elif record_holder.get("record") and not record_holder.get("idempotent"):
-        from services.physical_stock_engine import handle_loading_confirmed
-        await handle_loading_confirmed(db, order, record_holder["record"], user)
     await _audit_po(order, "loading.confirm_match", user, note=payload.surat_jalan_id)
     return {"order": _strip_sj_bytes(order), "confirmation": record_holder.get("record"), "idempotent": bool(record_holder.get("idempotent"))}
 
@@ -5220,18 +5167,6 @@ async def save_packing_info(order_id: str, payload: PackingInfoPayload, user=Dep
     await _require_perm(user, "packing.update")
     existing_order = await db.orders.find_one({"id": order_id}, {"_id": 0})
     line_incs = [{"line_idx": x.line_idx, "qty": x.qty, "action_id": x.action_id} for x in (payload.lines or []) if x.qty is not None]
-    if existing_order and line_incs:
-        from services.physical_stock_engine import precheck_packing_completed
-        await precheck_packing_completed(db, existing_order, line_incs)
-
-    claimed_stock = None
-    if existing_order and line_incs:
-        from services.physical_stock_engine import (
-            should_claim_packing_stock,
-            claim_packing_stock,
-        )
-        if await should_claim_packing_stock(db, existing_order):
-            claimed_stock = await claim_packing_stock(db, existing_order, line_incs, user)
 
     before_holder = {}
     incs_holder = []
@@ -5346,20 +5281,8 @@ async def save_packing_info(order_id: str, payload: PackingInfoPayload, user=Dep
         add_timeline(order, 11, user, note=f"Qty Packing: {total} pcs ({detail or 'per line'})")
         _qr_apply_confirmed_packing_progress(order)
 
-    try:
-        order = await _with_quantity_lock(order_id, mutate)
-    except Exception:
-        if claimed_stock:
-            from services.physical_stock_engine import release_packing_stock
-            await release_packing_stock(db, claimed_stock)
-        raise
+    order = await _with_quantity_lock(order_id, mutate, stock_stage="packing", stock_user=user)
 
-    if claimed_stock:
-        from services.physical_stock_engine import finalize_packing_stock
-        await finalize_packing_stock(db, claimed_stock, user)
-    elif incs_holder:
-        from services.physical_stock_engine import handle_packing_completed
-        await handle_packing_completed(db, order, incs_holder, user)
     await _audit_po(order, "packing.update", user,
                     before={"qty_packed": before_holder.get("qty_packed"), "lines": before_holder.get("lines")},
                     after={"qty_packed": (order.get("packing_info") or {}).get("qty_packed"),
@@ -5755,143 +5678,117 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
         selected_shipment_id = str(selected_shipment_id).strip() or None
 
     existing_order = await db.orders.find_one({"id": order_id}, {"_id": 0})
-    from services.physical_stock_engine import (
-        DELIVERY_FENCE_LOST,
-        claim_selected_delivery_stock,
-        delivery_persist_filter,
-        finish_confirm_delivered_action,
-        prepare_confirm_delivered_action,
-        prepare_delivery_commit,
-        reject_reused_delivery_action,
-    )
-    op = await prepare_confirm_delivered_action(
-        db, existing_order, selected_shipment_id, action_id,
-    )
+    from services.physical_stock_engine import reject_reused_delivery_action
+    from services.operational_stock_outbox import prepare_delivery
+    op = await prepare_delivery(db, existing_order, selected_shipment_id, action_id)
     action_id = op["action_id"]
     if op.get("order") is not None:
         existing_order = op["order"]
-    claimed_stock = None
-    claim_plan_holder = {}
-    release_claim = False
     frozen_sig_holder = {"sig": None, "driver_sig": None}
     conf_holder = {}
     reconcile_holder = {"result": None}
 
-    try:
-        if existing_order and op.get("ready"):
-            claimed_stock = await claim_selected_delivery_stock(
-                db, existing_order, selected_shipment_id, action_id, user, claim_plan_holder,
+    def mutate(order: dict):
+        conf_holder.pop("conf", None)
+        reject_reused_delivery_action(order, action_id, op.get("shipment_id"))
+        ids = list(order.get("delivery_confirm_action_ids") or [])
+        if action_id and action_id in ids:
+            return
+        selected_sh, resolve_err = _qr_resolve_delivery_shipment(order, selected_shipment_id)
+        if resolve_err:
+            raise HTTPException(400, resolve_err)
+        if selected_sh and _qr_shipment_is_delivered(order, selected_sh):
+            return
+        # Validate SJ quantities before photo/signature checks, independently of
+        # stock setup. Missing master mapping becomes deferred stock work, but
+        # missing/ambiguous SJ rows must never fall back to the full PO quantity.
+        from services.physical_stock_engine import plan_confirmed_sj_stock
+        operational_plan = plan_confirmed_sj_stock(order, selected_sh, require_master=False)
+        if operational_plan.get("error"):
+            raise HTTPException(400, operational_plan["error"])
+        incoming_name = payload.recipient_name if payload else None
+        if incoming_name is not None:
+            from services.delivery_pod_signature import apply_recipient_name_to_active_signature
+            name_err = apply_recipient_name_to_active_signature(order, incoming_name)
+            if name_err:
+                raise HTTPException(400, name_err)
+        blocked = _qr_confirm_delivery_block_reason(order, selected_sh)
+        if blocked:
+            raise HTTPException(400, blocked)
+        evidence = _qr_apply_delivery_from_proof_evidence(order, selected_sh)
+        if not evidence:
+            raise HTTPException(400, "Belum ada qty packing/Surat Jalan yang eligible untuk dikonfirmasi terkirim.")
+        now = now_iso()
+        current_delivered = _qr_qty_delivered(order)
+        increment = int(evidence.get("increment") if evidence.get("increment") is not None else (
+            int(evidence["qty_delivered"]) - int(current_delivered or 0)
+        ))
+        if increment <= 0:
+            return
+        order["qty_delivered"] = evidence["qty_delivered"]
+        order["delivery_status"] = evidence["delivery_status"]
+        order["delivered_at"] = now
+        order["delivered_by"] = user.get("email")
+        order["delivered_by_name"] = user.get("name")
+        if selected_sh:
+            _qr_mark_shipment_delivered(
+                selected_sh, now=now, qty=increment,
             )
-
-        def mutate(order: dict):
-            conf_holder.pop("conf", None)
-            reject_reused_delivery_action(order, action_id, op.get("shipment_id"))
-            ids = list(order.get("delivery_confirm_action_ids") or [])
-            if action_id and action_id in ids:
-                return
-            selected_sh, resolve_err = _qr_resolve_delivery_shipment(order, selected_shipment_id)
-            if resolve_err:
-                raise HTTPException(400, resolve_err)
-            if selected_sh and _qr_shipment_is_delivered(order, selected_sh):
-                return
-            incoming_name = payload.recipient_name if payload else None
-            if incoming_name is not None:
-                from services.delivery_pod_signature import apply_recipient_name_to_active_signature
-                name_err = apply_recipient_name_to_active_signature(order, incoming_name)
-                if name_err:
-                    raise HTTPException(400, name_err)
-            blocked = _qr_confirm_delivery_block_reason(order, selected_sh)
-            if blocked:
-                raise HTTPException(400, blocked)
-            evidence = _qr_apply_delivery_from_proof_evidence(order, selected_sh)
-            if not evidence:
-                raise HTTPException(400, "Belum ada qty packing/Surat Jalan yang eligible untuk dikonfirmasi terkirim.")
-            now = now_iso()
-            current_delivered = _qr_qty_delivered(order)
-            increment = int(evidence.get("increment") if evidence.get("increment") is not None else (
-                int(evidence["qty_delivered"]) - int(current_delivered or 0)
-            ))
-            if increment <= 0:
-                return
-            order["qty_delivered"] = evidence["qty_delivered"]
-            order["delivery_status"] = evidence["delivery_status"]
-            order["delivered_at"] = now
-            order["delivered_by"] = user.get("email")
-            order["delivered_by_name"] = user.get("name")
-            if selected_sh:
-                _qr_mark_shipment_delivered(
-                    selected_sh, now=now, qty=increment,
-                )
-            # Reconcile operational SJ qty down to loaded/actual for this confirmation.
-            # Packing and Loading quantities are not mutated. Idempotent on retry.
-            reconcile_holder["result"] = _qr_reconcile_sj_quantities_to_loaded_delivery(order)
-            from services.physical_stock_engine import reject_sj_stock_qty_drift
-            reject_sj_stock_qty_drift(order, selected_sh, claim_plan_holder, increment)
-            conf = _append_delivery_confirmation(
-                order, user, qty_increment=increment, now=now, action_id=action_id,
-                shipment_id=_qr_delivery_batch_identity(selected_sh) if selected_sh else None,
-                shipment=selected_sh,
-            )
-            conf_holder["conf"] = conf
-            try:
-                from services.delivery_pod_signature import (
-                    freeze_active_signature,
-                    freeze_active_driver_signature,
-                )
-                frozen = freeze_active_signature(order, confirmation_id=(conf or {}).get("id"))
-                frozen_driver = freeze_active_driver_signature(order, confirmation_id=(conf or {}).get("id"))
-                frozen_sig_holder["sig"] = frozen
-                frozen_sig_holder["driver_sig"] = frozen_driver
-                if conf and frozen:
-                    conf["recipient_name"] = frozen.get("recipient_name")
-                    conf["recipient_signature_id"] = frozen.get("id")
-                    conf["recipient_signed_at"] = frozen.get("recipient_signed_at")
-                    conf["sj_file_id"] = frozen.get("sj_file_id")
-                if conf and frozen_driver:
-                    conf["driver_signature_id"] = frozen_driver.get("id")
-                    conf["driver_signed_at"] = frozen_driver.get("driver_signed_at")
-                    conf["driver_name"] = frozen_driver.get("driver_name") or conf.get("driver_name")
-            except Exception:
-                logging.getLogger(__name__).warning("freeze POD signatures failed", exc_info=True)
-            _sync_dispatch_stage(order)
-            required = evidence["required"] or evidence["qty_delivered"]
-            if evidence["full"]:
-                add_timeline(
-                    order, 14, user,
-                    note=f"Terkirim penuh: {evidence['qty_delivered']}/{required} pcs",
-                )
-            else:
-                add_timeline(
-                    order, order.get("current_stage") or 13, user,
-                    note=f"Terkirim sebagian: {evidence['qty_delivered']}/{required} pcs",
-                )
-                # Keep frozen copies in history; clear active slots for next partial POD
-                if frozen_sig_holder["sig"]:
-                    order.pop("delivery_recipient_signature", None)
-                if frozen_sig_holder["driver_sig"]:
-                    order.pop("delivery_driver_signature", None)
-            if action_id:
-                ids.append(action_id)
-                order["delivery_confirm_action_ids"] = ids[-20:]
-
+        # Reconcile operational SJ qty down to loaded/actual for this confirmation.
+        # Packing and Loading quantities are not mutated. Idempotent on retry.
+        reconcile_holder["result"] = _qr_reconcile_sj_quantities_to_loaded_delivery(order)
+        from services.physical_stock_engine import plan_confirmed_sj_stock
+        plan = plan_confirmed_sj_stock(order, selected_sh, allow_delivered=True, require_master=False)
+        if plan.get("error") or plan.get("sj_qty") != increment:
+            raise HTTPException(400, "Qty Surat Jalan berubah sebelum konfirmasi disimpan.")
+        conf = _append_delivery_confirmation(
+            order, user, qty_increment=increment, now=now, action_id=action_id,
+            shipment_id=_qr_delivery_batch_identity(selected_sh) if selected_sh else None,
+            shipment=selected_sh,
+        )
+        conf_holder["conf"] = conf
         try:
-            await prepare_delivery_commit(db, op, claimed_stock)
-            order = await _with_quantity_lock(
-                order_id, mutate, extra_query=delivery_persist_filter(op),
+            from services.delivery_pod_signature import (
+                freeze_active_signature,
+                freeze_active_driver_signature,
             )
-        except Exception as exc:
-            release_claim = getattr(exc, "detail", None) != DELIVERY_FENCE_LOST
-            raise
-        saved = bool(conf_holder.get("conf"))
-        saved = saved or bool(
-            action_id and action_id in list((order or {}).get("delivery_confirm_action_ids") or [])
-        )
-        if claimed_stock and not saved:
-            release_claim = True
-    finally:
-        await finish_confirm_delivered_action(
-            db, op, claimed_stock, order_id, action_id, release=release_claim,
-        )
+            frozen = freeze_active_signature(order, confirmation_id=(conf or {}).get("id"))
+            frozen_driver = freeze_active_driver_signature(order, confirmation_id=(conf or {}).get("id"))
+            frozen_sig_holder["sig"] = frozen
+            frozen_sig_holder["driver_sig"] = frozen_driver
+            if conf and frozen:
+                conf["recipient_name"] = frozen.get("recipient_name")
+                conf["recipient_signature_id"] = frozen.get("id")
+                conf["recipient_signed_at"] = frozen.get("recipient_signed_at")
+                conf["sj_file_id"] = frozen.get("sj_file_id")
+            if conf and frozen_driver:
+                conf["driver_signature_id"] = frozen_driver.get("id")
+                conf["driver_signed_at"] = frozen_driver.get("driver_signed_at")
+                conf["driver_name"] = frozen_driver.get("driver_name") or conf.get("driver_name")
+        except Exception:
+            logging.getLogger(__name__).warning("freeze POD signatures failed", exc_info=True)
+        _sync_dispatch_stage(order)
+        required = evidence["required"] or evidence["qty_delivered"]
+        if evidence["full"]:
+            add_timeline(
+                order, 14, user,
+                note=f"Terkirim penuh: {evidence['qty_delivered']}/{required} pcs",
+            )
+        else:
+            add_timeline(
+                order, order.get("current_stage") or 13, user,
+                note=f"Terkirim sebagian: {evidence['qty_delivered']}/{required} pcs",
+            )
+            # Keep frozen copies in history; clear active slots for next partial POD
+            if frozen_sig_holder["sig"]:
+                order.pop("delivery_recipient_signature", None)
+            if frozen_sig_holder["driver_sig"]:
+                order.pop("delivery_driver_signature", None)
+        if action_id:
+            ids.append(action_id)
+            order["delivery_confirm_action_ids"] = ids[-20:]
+
+    order = await _with_quantity_lock(order_id, mutate, stock_stage="delivery", stock_user=user)
 
     # Keep sales_deliveries operational qty in sync with reconciled order.shipments
     # so canonical remain (ordered − Σ sales_deliveries qty) reflects returned shortfall.
@@ -5944,13 +5841,6 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
     except Exception:
         logging.getLogger(__name__).warning("sales_delivery SJ reconcile sync failed", exc_info=True)
 
-    recorded = bool(action_id and action_id in list((order or {}).get("delivery_confirm_action_ids") or []))
-    if claimed_stock and (conf_holder.get("conf") or recorded):
-        from services.physical_stock_engine import finalize_delivery_confirmed_stock
-        await finalize_delivery_confirmed_stock(db, claimed_stock, user)
-    elif conf_holder.get("conf"):
-        from services.physical_stock_engine import handle_delivery_confirmed
-        await handle_delivery_confirmed(db, order, conf_holder["conf"], user)
     # Generate signed SJ after persist — document rendering only (no qty mutation)
     sig = frozen_sig_holder.get("sig")
     driver_sig = frozen_sig_holder.get("driver_sig")
@@ -9109,6 +8999,11 @@ from services.sales_invoice_posting import (
     post_sales_invoice_accounting as _post_sales_invoice_accounting,
     reverse_sales_invoice_accounting as _reverse_sales_invoice_accounting,
 )
+from services.sales_invoice_issue import (
+    ensure_indexes as _ensure_sales_invoice_issue_indexes,
+    issue_sales_invoice as _issue_sales_invoice,
+    remove_issued_sales_invoice as _remove_issued_sales_invoice,
+)
 from services.sales_receipt_posting import (
     PERM_POST as _SALES_RECEIPT_ACCOUNTING_POST_PERM,
     PERM_REVERSE as _SALES_RECEIPT_ACCOUNTING_REVERSE_PERM,
@@ -9201,6 +9096,7 @@ class SalesOrderCreatePayload(BaseModel):
     delivery_zone: Optional[str] = None
     payment_terms: Optional[str] = None
     sales: Optional[str] = None
+    sales_user_id: Optional[str] = None
     created_by_user: Optional[str] = None
     expedition: Optional[str] = None
     estimated_delivery: Optional[str] = None
@@ -9580,7 +9476,28 @@ async def get_sales_order_options(user=Depends(current_user)):
         {"role": {"$in": ["admin", "crm", "head_production", "head_operations"]}, "status": {"$ne": "inactive"}},
         {"_id": 0, "name": 1, "email": 1}
     ).to_list(200)
-    all_sales = sorted({s.strip() for s in sales_from_orders if s and str(s).strip()} | {u["name"] for u in sales_users if u.get("name")})
+    responsible_users = await db.users.find(
+        {"role": {"$in": sorted(SALES_RESPONSIBLE_ROLES)}, "status": {"$ne": "inactive"}},
+        {"_id": 0, "id": 1, "name": 1, "email": 1, "role": 1},
+    ).to_list(500)
+    sales_accounts = []
+    for person in responsible_users:
+        uid = str(person.get("id") or "").strip()
+        name = str(person.get("name") or "").strip()
+        if not uid or not name:
+            continue
+        sales_accounts.append({
+            "id": uid,
+            "name": name,
+            "email": str(person.get("email") or "").strip(),
+            "role": str(person.get("role") or "").strip(),
+        })
+    sales_accounts.sort(key=lambda row: (row["name"], row["id"]))
+    all_sales = sorted(
+        {s.strip() for s in sales_from_orders if s and str(s).strip()}
+        | {u["name"] for u in sales_users if u.get("name")}
+        | {row["name"] for row in sales_accounts}
+    )
 
     master_items = await db.master_items.find(
         {"is_active": True},
@@ -9593,6 +9510,7 @@ async def get_sales_order_options(user=Depends(current_user)):
         "master_customers": master_customers,
         "outlets_by_customer": outlets_by_customer,
         "sales_options": all_sales,
+        "sales_accounts": sales_accounts,
         "master_items": master_items,
         "suggested_po_number": suggested_po,
     }
@@ -9747,7 +9665,7 @@ async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(curr
         "payment_terms": (payload.payment_terms or "").strip() or None,
         "payment_status": "Waiting",
         "design_status": "Waiting",
-        "sales": (payload.sales or "").strip() or None,
+        "sales": None,
         "created_by_user": (payload.created_by_user or "").strip() or user.get("name") or user.get("email"),
         "imported_by": user.get("email"),
         "imported_by_name": user.get("name"),
@@ -9787,7 +9705,15 @@ async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(curr
     from services.physical_stock_engine import attach_order_stock_snapshot
     stock_warnings = await validate_sales_order_availability(db, new_order.get("line_items") or [])
     await attach_order_stock_snapshot(db, new_order)
-    await attach_sales_ownership(db, new_order)
+    explicit_sales_id = str(payload.sales_user_id or "").strip()
+    await assign_sales_responsible(
+        db,
+        new_order,
+        label=payload.sales,
+        explicit_user_id=explicit_sales_id,
+        explicit_sent=bool(explicit_sales_id),
+    )
+    new_order["seller"] = new_order.get("sales")
 
     try:
         await db.orders.insert_one(new_order)
@@ -9946,8 +9872,9 @@ async def update_order_info(order_id: str, payload: OrderInfoUpdatePayload, user
 
 
 class OrderSalesUpdatePayload(BaseModel):
-    """Reassignment of Accurate sales label. Does not guess users.id."""
+    """Reassignment of the sales label and, when sent, an explicit users.id."""
     sales: Optional[str] = None
+    sales_user_id: Optional[str] = None
 
 
 @api_router.patch("/orders/{order_id}/sales")
@@ -9966,9 +9893,15 @@ async def update_order_sales(order_id: str, payload: OrderSalesUpdatePayload, us
         "sales": order.get("sales"),
         "sales_user_id": order.get("sales_user_id"),
     }
-    new_label = (payload.sales or "").strip() or None
-    order["sales"] = new_label
-    await attach_sales_ownership(db, order)
+    sent = payload.model_dump(exclude_unset=True)
+    explicit_sales_id = str(sent.get("sales_user_id") or "").strip()
+    await assign_sales_responsible(
+        db,
+        order,
+        label=payload.sales,
+        explicit_user_id=explicit_sales_id,
+        explicit_sent="sales_user_id" in sent and bool(explicit_sales_id),
+    )
     add_timeline(order, order.get("current_stage") or 0, user, note="Edit Sales")
     await _persist_order(order, persist_keys=("sales", "sales_user_id", "sales_ownership_status", "sales_needs_verification", "timeline"))
     after = {
@@ -10219,6 +10152,7 @@ _SALES_ORDER_LIST_PROJECTION = {
             "input": {"$ifNull": ["$line_items", []]},
             "as": "li",
             "in": {
+                "line_idx": "$$li.line_idx",
                 "quantity": "$$li.quantity",
                 "unit": "$$li.unit",
             },
@@ -10332,6 +10266,7 @@ async def list_sales_orders(
     status: Optional[str] = None,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
+    invoice_status: Optional[str] = None,
     page: Optional[int] = None,
     page_size: Optional[int] = None,
     user=Depends(current_user),
@@ -10379,6 +10314,9 @@ async def list_sales_orders(
         ]
         shipped_aggregates = {doc["_id"]: doc async for doc in db.sales_deliveries.aggregate(pipe)}
 
+    from services.sales_order_invoice_status import attach_invoice_coverage
+    await attach_invoice_coverage(db, orders)
+
     fetched_count = len(orders)
     for o in orders:
         o["quantity_by_unit"] = _quantity_by_unit(o.pop("line_items", None))
@@ -10414,6 +10352,11 @@ async def list_sales_orders(
         orders = [o for o in orders if o.get("hold")]
     elif st == "aktif":
         orders = [o for o in orders if not o.get("hold")]
+
+    from services.sales_order_invoice_status import filter_invoice_coverage
+    if invoice_status not in (None, "all", "none", "partial", "full", "processing"):
+        raise HTTPException(400, "Filter status faktur tidak valid")
+    orders = filter_invoice_coverage(orders, invoice_status)
 
     paging = page is not None or page_size is not None
     if not paging:
@@ -10560,6 +10503,20 @@ async def create_sales_invoice_endpoint(payload: SalesInvoiceCreatePayload, user
     await _require_any_perm(user, "sales.invoice.create", "sales_order.create", "po.edit")
     inv = await _create_sales_invoice(db, payload.model_dump(), user)
     return {"invoice": inv, "message": "Faktur Penjualan berhasil dibuat"}
+
+
+@api_router.post("/sales-invoices/issue")
+async def issue_sales_invoice_endpoint(payload: SalesInvoiceCreatePayload, user=Depends(current_user)):
+    """Save and issue one invoice. Journal posting is internal and is not a separate permission."""
+    await _require_any_perm(user, "sales.invoice.create", "sales_order.create", "po.edit")
+    body = payload.model_dump()
+    await ensure_owned_po_id(db, user, body.get("po_id"))
+    result = await _issue_sales_invoice(db, body, user)
+    return {
+        "invoice": result["invoice"],
+        "operation_id": result.get("operation_id"),
+        "message": "Faktur berhasil diterbitkan",
+    }
 
 
 @api_router.get("/sales-invoices/{id}")
@@ -10804,40 +10761,15 @@ async def get_sales_receipt_pdf_endpoint(id: str, user=Depends(current_user)):
 
 async def _sales_delivery_delete_blocker(delivery: dict) -> Optional[str]:
     """Return a human-friendly reject reason, or None if the business SJ may be deleted."""
+    from services.sales_delivery_delete_guard import deletion_blocker
     po_id = delivery.get("po_id")
     sj_number = delivery.get("sj_number")
-    delivery_id = delivery.get("id")
-    if po_id:
-        pay_count = await db.sales_receipts.count_documents({"po_id": po_id})
-        if pay_count > 0:
-            return "Hapus Penerimaan Penjualan terlebih dahulu."
     order = await db.orders.find_one({"id": po_id}, {"_id": 0}) if po_id else None
     if not order:
         return None
-
-    for lc in (order.get("loading_confirmations") or []):
-        if lc.get("sj_number") == sj_number or lc.get("sales_delivery_id") == delivery_id:
-            return "Surat Jalan tidak dapat dihapus karena sudah memiliki proses Loading."
-
-    for sh in (order.get("shipments") or []):
-        same = (
-            sh.get("sj_number") == sj_number
-            or sh.get("number") == sj_number
-            or sh.get("sales_delivery_id") == delivery_id
-            or sh.get("id") == delivery_id
-        )
-        if not same:
-            continue
-        if (sh.get("loaded_qty") or 0) > 0:
-            return "Surat Jalan tidak dapat dihapus karena sudah memiliki proses Loading."
-        if (sh.get("delivered_qty") or 0) > 0 or sh.get("delivered") or sh.get("status") in ("Terkirim", "DELIVERED"):
-            return "Surat Jalan tidak dapat dihapus karena sudah memiliki proses Pengiriman."
-
-    proofs = [p for p in (order.get("delivery_proofs") or []) if not p.get("is_deleted")]
-    if proofs:
-        return "Surat Jalan tidak dapat dihapus karena sudah memiliki proses Pengiriman."
-    if (order.get("delivery_status") or "") == "Terkirim":
-        return "Surat Jalan tidak dapat dihapus karena sudah memiliki proses Pengiriman."
+    reason = deletion_blocker(order, delivery)
+    if reason:
+        return reason
 
     for f in (order.get("surat_jalan_files") or []):
         if f.get("is_deleted"):
@@ -10901,6 +10833,42 @@ async def _remove_matching_business_sj_shipment(po_id: str, delivery: dict) -> N
     )
 
 
+async def _reserve_sales_delivery_deletion(delivery):
+    """Win against evidence writes on the PO before removing its selected SJ.
+
+    A stale whole-order persist cannot restore the removed SJ or attach evidence
+    after this CAS. An interrupted deletion can be retried using the same SJ id.
+    """
+    from services.sales_delivery_delete_guard import deletion_blocker
+    po_id, did = delivery.get("po_id"), delivery["id"]
+    if not po_id:
+        return
+    for _ in range(_QUANTITY_LOCK_RETRIES):
+        order = await db.orders.find_one({"id": po_id}, {"_id": 0})
+        if not order or did in (order.get("sj_deletion_ids") or []):
+            return
+        reason = deletion_blocker(order, delivery)
+        if reason:
+            raise HTTPException(400, reason)
+        ships = order.get("shipments") or []
+        selected = [sh for sh in ships if did in {str(sh.get("id") or ""), str(sh.get("sales_delivery_id") or "")}]
+        if not selected and delivery.get("sj_number"):
+            selected = [sh for sh in ships if delivery["sj_number"] in {sh.get("number"), sh.get("sj_number")}]
+        selected_ids = {did} | {str(sh["id"]) for sh in selected if sh.get("id")}
+        files = [f for f in order.get("surat_jalan_files") or []
+                 if not (f.get("source") == _SJ_SOURCE_GENERATED
+                         and ({str(f.get("id") or ""), str(f.get("shipment_id") or "")} & selected_ids))]
+        result = await db.orders.update_one(
+            {"id": po_id, "updated_at": order.get("updated_at"),
+             "sj_deletion_generation": order.get("sj_deletion_generation", 0) or {"$in": [None, 0]}},
+            {"$inc": {"sj_deletion_generation": 1}, "$addToSet": {"sj_deletion_ids": did},
+             "$set": {"updated_at": now_iso(), "shipments": [sh for sh in ships if sh not in selected],
+                      "surat_jalan_files": files}})
+        if result.matched_count:
+            return
+    raise HTTPException(409, _CONFLICT_MSG)
+
+
 @api_router.delete("/sales-receipts/{id}")
 async def delete_sales_receipt_endpoint(id: str, user=Depends(current_user)):
     """Delete a single sales receipt (Penerimaan Penjualan) with dependency safety."""
@@ -10924,8 +10892,24 @@ async def bulk_delete_sales_receipts_endpoint(payload: BulkPayload, user=Depends
 
 
 @api_router.delete("/sales-invoices/{id}")
-async def delete_sales_invoice_endpoint(id: str, user=Depends(current_user)):
-    """Delete a single sales invoice (Faktur Penjualan) with dependency safety."""
+async def delete_sales_invoice_endpoint(
+    id: str,
+    operation_key: Optional[str] = None,
+    user=Depends(current_user),
+):
+    """Delete one invoice. Issued invoices reverse internally and require sales.invoice.delete.
+
+    Administrator short-circuit stays inside _require_any_perm. Create and po.edit
+    do not authorize this unified delete. The manual reverse route keeps its own permission.
+    """
+    stored = await db.sales_invoices.find_one({"id": str(id)}, {"_id": 0, "po_id": 1, "issue_state": 1, "invoice_number": 1})
+    if not stored:
+        stored = await db.sales_invoices.find_one({"invoice_number": str(id)}, {"_id": 0, "po_id": 1, "issue_state": 1, "id": 1})
+    if stored:
+        await ensure_owned_po_id(db, user, stored.get("po_id"))
+    if stored and stored.get("issue_state"):
+        await _require_any_perm(user, "sales.invoice.delete")
+        return await _remove_issued_sales_invoice(db, stored.get("id") or id, user, operation_key=operation_key)
     await _require_any_perm(user, "sales.invoice.delete", "sales.invoice.create", "po.edit")
     result = await _delete_sales_invoice(db, id, user)
     await _write_audit(action="sales.invoice.delete", actor=user, target_email=f"invoice:{result.get('invoice_number')}",
@@ -10956,7 +10940,11 @@ async def delete_sales_delivery_endpoint(id: str, user=Depends(current_user)):
     if blocker:
         raise HTTPException(400, blocker)
     sj_number = delivery.get("sj_number", delivery["id"])
+    from services.operational_stock_outbox import archive_before_delete, settle_deleted_source
+    await _reserve_sales_delivery_deletion(delivery)
+    await archive_before_delete(db, delivery, "sales_deliveries")
     await db.sales_deliveries.delete_one({"id": delivery["id"]})
+    await settle_deleted_source(db, "sales_deliveries", delivery["id"])
     await _remove_matching_business_sj_shipment(delivery.get("po_id"), delivery)
     await _write_audit(action="sales.delivery.delete", actor=user, target_email=f"delivery:{sj_number}",
                        before={"sj_number": sj_number, "id": delivery["id"]}, after={"deleted": True})
@@ -10988,8 +10976,13 @@ async def bulk_delete_sales_deliveries_endpoint(payload: BulkPayload, user=Depen
         raise HTTPException(400, {"message": "Tidak dapat menghapus. Beberapa pengiriman memiliki dependensi.", "blockers": blockers})
     if to_delete:
         delete_ids = [d["id"] for d in to_delete]
+        from services.operational_stock_outbox import archive_before_delete, settle_deleted_source
+        for document in to_delete:
+            await _reserve_sales_delivery_deletion(document)
+            await archive_before_delete(db, document, "sales_deliveries")
         await db.sales_deliveries.delete_many({"id": {"$in": delete_ids}})
         for d in to_delete:
+            await settle_deleted_source(db, "sales_deliveries", d["id"])
             await _remove_matching_business_sj_shipment(d.get("po_id"), d)
     await _write_audit(action="sales.delivery.bulk_delete", actor=user, target_email=f"deliveries:{len(to_delete)}",
                        before={"ids": payload.ids}, after={"deleted_count": len(to_delete)})
@@ -11862,7 +11855,7 @@ async def current_stock_update(
 
 class StockOpnamePayload(BaseModel):
     master_item_id: str
-    target_stock_current_qty: Any
+    stock_physical_counted: Any
     note: Optional[str] = ""
     client_request_id: Optional[str] = None
 
@@ -11882,7 +11875,7 @@ async def stock_opname_apply(
     result = await apply_stock_opname(
         db,
         master_item_id=payload.master_item_id,
-        target_stock_current_qty=payload.target_stock_current_qty,
+        stock_physical_counted=payload.stock_physical_counted,
         outstanding_so_qty=stock_row.get("outstanding_so_qty"),
         note=payload.note or "",
         user=user,
@@ -11892,11 +11885,20 @@ async def stock_opname_apply(
         "stock_opname.apply",
         user,
         target_email=f"item:{payload.master_item_id}",
-        before=None,
+        before={
+            "stock_physical": result.get("stock_physical_before"),
+        },
         after={
             "master_item_id": payload.master_item_id,
-            "target_stock_current_qty": payload.target_stock_current_qty,
+            "stock_physical_counted": payload.stock_physical_counted,
+            "stock_physical_before": result.get("stock_physical_before"),
+            "difference_qty": result.get("difference_qty"),
             "delta_total": result.get("delta_total"),
+            "effective_hpp_snapshot": result.get("effective_hpp_snapshot"),
+            "hpp_source": result.get("hpp_source"),
+            "estimated_difference_value": result.get("estimated_difference_value"),
+            "estimated_value_is_informational": True,
+            "valuation_adjustment_required": result.get("valuation_adjustment_required"),
         },
         note=payload.note or "Stock Opname",
     )
@@ -13949,6 +13951,13 @@ async def _ensure_unique_business_number_index(collection, field: str) -> None:
 async def shutdown_db_client():
     from services.sales_activity.evaluator import stop_evaluator_loop
     stop_evaluator_loop()
+    task = getattr(app.state, "operational_stock_worker", None)
+    if task:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
     client.close()
 
 
@@ -14015,6 +14024,7 @@ async def seed():
     await db.sales_invoices.create_index("created_at")
     await db.sales_invoices.create_index("invoice_date")
     await db.sales_invoices.create_index("financial_status")
+    await _ensure_sales_invoice_issue_indexes(db)
     
     await db.sales_receipts.create_index("id", unique=True)
     await _ensure_unique_business_number_index(db.sales_receipts, "receipt_number")
@@ -14095,6 +14105,7 @@ async def seed():
     from services.cash_bank_vouchers import ensure_indexes as _cash_bank_voucher_ensure_indexes
     from services.journal_core import ensure_indexes as _journal_core_ensure_indexes
     from services.cash_bank_reconciliation import ensure_indexes as _cash_bank_recon_ensure_indexes
+    from services.cash_bank_statement import ensure_indexes as _cash_bank_statement_ensure_indexes
     from services.general_journal import ensure_indexes as _general_journal_ensure_indexes
     from services.opening_balance import ensure_indexes as _opening_balance_ensure_indexes
     from services.accounting_periods import ensure_indexes as _accounting_periods_ensure_indexes
@@ -14106,6 +14117,12 @@ async def seed():
     await _cash_bank_voucher_ensure_indexes(db)
     await _journal_core_ensure_indexes(db)
     await _cash_bank_recon_ensure_indexes(db)
+    try:
+        await _cash_bank_statement_ensure_indexes(db)
+    except Exception:
+        logger.exception(
+            "Index mutasi rekening koran belum siap. Impor dan pencocokan baris tetap tertutup."
+        )
     await _general_journal_ensure_indexes(db)
     await _opening_balance_ensure_indexes(db)
     await _accounting_periods_ensure_indexes(db)
@@ -14348,3 +14365,10 @@ async def seed():
     admin_seed = await db.users.find_one({"email": "admin@eternalpackaging.com"})
     if admin_seed and (admin_seed.get("role") != "admin" or admin_seed.get("name") != "Admin"):
         await db.users.update_one({"id": admin_seed["id"]}, {"$set": {"role": "admin", "name": "Admin", "updated_at": now_iso()}})
+
+
+
+@app.on_event("startup")
+async def start_operational_stock_worker():
+    from services.operational_stock_outbox import worker
+    app.state.operational_stock_worker = asyncio.create_task(worker(db))

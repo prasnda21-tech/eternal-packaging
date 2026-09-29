@@ -3,7 +3,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import { AlertCircle, Plus, Search } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
-import { errDetail, formatRupiah, friendlyLoadError, newIdempotencyKey, purchaseStatusPillClass, shortReceivingStatus, todayYmd, purchaseRowInteractionProps } from "../lib/purchaseUi";
+import { buildPurchaseLifecycle, errDetail, formatPurchaseDate, formatRupiah, friendlyLoadError, newIdempotencyKey, purchaseStatusPillClass, shortReceivingStatus, todayYmd, purchaseRowInteractionProps } from "../lib/purchaseUi";
 import { fmtQty } from "../components/qtyUi";
 import { FormSection, FormField, FormProgress, computeStatus } from "../components/form-standard";
 import MasterItemSearchSelect from "../components/MasterItemSearchSelect";
@@ -11,6 +11,7 @@ import PurchasingFlowNav from "./PurchasingFlowNav";
 import PurchaseCancelModal from "./PurchaseCancelModal";
 import PurchaseActivityHistory from "./PurchaseActivityHistory";
 import PurchaseDocuments from "./PurchaseDocuments";
+import PurchaseLifecycleStrip from "./PurchaseLifecycleStrip";
 import "./purchasePages.css";
 
 function emptyPoLine() {
@@ -33,6 +34,7 @@ export default function PesananPembelian() {
   const { hasPerm } = useAuth();
   const canCreate = hasPerm("purchase_orders.create");
   const queryRequestId = searchParams.get("request_id") || "";
+  const queryPoId = searchParams.get("id") || searchParams.get("po_id") || "";
   const wantCreate = searchParams.get("action") === "create" || Boolean(queryRequestId);
   const [view, setView] = useState(wantCreate && canCreate ? "create" : "list");
   const [rows, setRows] = useState([]);
@@ -41,6 +43,7 @@ export default function PesananPembelian() {
   const [err, setErr] = useState("");
   const [ok, setOk] = useState("");
   const [detail, setDetail] = useState(null);
+  const [relatedInvoice, setRelatedInvoice] = useState(null);
   const [cancelTarget, setCancelTarget] = useState(null);
   const [cancelBusy, setCancelBusy] = useState(false);
   const [cancelErr, setCancelErr] = useState("");
@@ -64,6 +67,12 @@ export default function PesananPembelian() {
   }, [q]);
 
   useEffect(() => { if (view === "list") load(); }, [load, view]);
+
+  useEffect(() => {
+    if (!queryPoId || wantCreate) return;
+    openDetail(queryPoId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [queryPoId]);
 
   const loadEligible = useCallback(async () => {
     try {
@@ -185,10 +194,15 @@ export default function PesananPembelian() {
   };
 
   const openDetail = async (id) => {
+    setErr("");
+    setRelatedInvoice(null);
     try {
       const res = await api.getPurchaseOrder(id);
       setDetail(res.order);
       setView("detail");
+      api.listPurchaseInvoices({ purchase_order_id: id })
+        .then((invoiceRes) => setRelatedInvoice((invoiceRes.invoices || [])[0] || null))
+        .catch(() => setRelatedInvoice(null));
     } catch (ex) { setErr(errDetail(ex)); }
   };
 
@@ -462,6 +476,9 @@ export default function PesananPembelian() {
 
       {view === "detail" && detail && (
         <div className="card purchase-detail-card" data-testid="po-detail">
+          <PurchaseLifecycleStrip
+            stages={buildPurchaseLifecycle({ order: detail, invoice: relatedInvoice })}
+          />
           <div className="purchase-detail-meta">
             <div>
               <span className="label">No PO</span>
@@ -479,16 +496,36 @@ export default function PesananPembelian() {
               <span className="value">{detail.supplier}</span>
             </div>
             <div>
-              <span className="label">Total</span>
+              <span className="label">Tanggal PO</span>
+              <span className="value">{formatPurchaseDate(detail.order_date)}</span>
+            </div>
+          </div>
+          <div className="purchase-summary-strip" data-testid="po-detail-summary">
+            <div className="purchase-summary-item">
+              <span className="label">Total PO</span>
               <span className="value">{formatRupiah(detail.grand_total)}</span>
             </div>
-            <div>
-              <span className="label">Status Penerimaan</span>
-              <span className={purchaseStatusPillClass(detail.receiving_status)}>{shortReceivingStatus(detail.receiving_status)}</span>
+            <div className="purchase-summary-item">
+              <span className="label">Qty Diterima</span>
+              <span className="value">{fmtQty(detail.receiving_progress?.received_qty)}</span>
             </div>
-            <div>
+            <div className="purchase-summary-item">
+              <span className="label">Qty Sisa</span>
+              <span className="value">{fmtQty(detail.receiving_progress?.remaining_qty)}</span>
+            </div>
+            <div className="purchase-summary-item">
+              <span className="label">Total Difaktur</span>
+              <span className="value">
+                {fmtQty(detail.invoice_progress?.invoiced_qty)} / {fmtQty(detail.invoice_progress?.ordered_qty)}
+              </span>
+            </div>
+            <div className="purchase-summary-item">
               <span className="label">Status Faktur</span>
               <span className={purchaseStatusPillClass(detail.invoice_status)}>{detail.invoice_status}</span>
+            </div>
+            <div className="purchase-summary-item">
+              <span className="label">Status Penerimaan</span>
+              <span className={purchaseStatusPillClass(detail.receiving_status)}>{shortReceivingStatus(detail.receiving_status)}</span>
             </div>
           </div>
           <div className="purchase-table-wrap">
@@ -530,11 +567,11 @@ export default function PesananPembelian() {
                 Hapus
               </button>
             )}
-            {Number(detail.invoice_progress?.remaining_qty) > 0 && hasPerm("purchase_invoices.create") && (
-              <Link className="primary" data-testid="btn-buat-faktur" to={`/pembelian/faktur-pembelian?purchase_order_id=${detail.id}&action=create`}>Buat Faktur</Link>
-            )}
             {Number(detail.receiving_progress?.remaining_qty) > 0 && (
-              <Link className="ghost" to={`/pembelian/penerimaan-barang?purchase_order_id=${detail.id}&action=receive`}>Terima Barang</Link>
+              <Link className="primary" to={`/pembelian/penerimaan-barang?purchase_order_id=${detail.id}&action=receive`}>Terima Barang</Link>
+            )}
+            {Number(detail.invoice_progress?.remaining_qty) > 0 && hasPerm("purchase_invoices.create") && (
+              <Link className="ghost" data-testid="btn-buat-faktur" to={`/pembelian/faktur-pembelian?purchase_order_id=${detail.id}&action=create`}>Buat Faktur</Link>
             )}
           </div>
         </div>

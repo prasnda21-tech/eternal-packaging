@@ -573,6 +573,11 @@ export default function PODetail() {
       data-actual-stage={actualStage}
       data-viewed-stage={viewedStage}
     >
+      {order?.stock_sync?.status === "pending" && (
+        <div role="status" className="stock-sync-notice" style={{padding: "10px 14px", background: "#fff7ed", color: "#7c2d12", borderRadius: 8, marginBottom: 12}}>
+          Progres operasional tersimpan. Pencatatan stok tertunda; operasional dapat dilanjutkan sesuai aturan tahap.
+        </div>
+      )}
       <div className="detail-header po-stage-ws-header">
         <div className="po-hero-title-row">
           <div className="po-hero-identity">
@@ -1905,4 +1910,5 @@ export function PaymentFileRow({ file, index, orderId }) {
     </li>
   );
 }
+
 

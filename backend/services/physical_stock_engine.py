@@ -233,6 +233,16 @@ async def is_source_committed(db, pending_event: Dict[str, Any]) -> bool:
     if not order_id:
         return False
 
+    if ref_type == "operational_stock_intent":
+        # Source evidence and its obligation are committed in one Mongo write.
+        from services.operational_stock_outbox import FIELD
+        for collection in (db.orders, db.sales_deliveries):
+            source = await collection.find_one({"id": pending_event.get("reference_id") or order_id}, {FIELD: 1})
+            task = ((source or {}).get(FIELD) or {}).get(action_id)
+            if task and task.get("id") == action_id:
+                return True
+        return False
+
     if ref_type in ("operator", "operator_progress", "operator_print", "status_cetak"):
         order = await db.orders.find_one({"id": order_id}, {"_id": 0, "operator_splits": 1})
         if not order:
@@ -362,10 +372,17 @@ async def claim_durable_stock_event(
     is_print: Optional[bool] = None,
     production_process: Optional[str] = None,
     change_metadata: Optional[Dict[str, Any]] = None,
+    delta_total_override: Optional[float] = None,
+    delta_unprinted_override: Optional[float] = None,
+    delta_printed_override: Optional[float] = None,
+    expected_total_qty: Optional[float] = None,
+    expected_unprinted_qty: Optional[float] = None,
+    expected_printed_qty: Optional[float] = None,
     user: Optional[Dict[str, Any]] = None,
     now: Optional[str] = None,
     fence_generation: Optional[int] = None,
     fence_holder_id: Optional[str] = None,
+    conversion_snapshot: Optional[Tuple[float, float, str, str]] = None,
 ) -> Dict[str, Any]:
     """Atomically claims / reserves inventory on product_stock_state BEFORE source write.
 
@@ -408,9 +425,14 @@ async def claim_durable_stock_event(
     aid = master.get("accurate_item_id")
     await require_product_stock_initialized(db, mid)
 
-    base_qty, factor, base_uom, tx_uom = await resolve_transaction_conversion(
-        db, mid, transaction_qty, transaction_uom
-    )
+    if conversion_snapshot is None:
+        base_qty, factor, base_uom, tx_uom = await resolve_transaction_conversion(
+            db, mid, transaction_qty, transaction_uom
+        )
+    else:
+        base_qty, factor, base_uom, tx_uom = conversion_snapshot
+        if base_qty <= 0 or factor <= 0:
+            raise ValueError("Invalid captured stock conversion")
 
     m_type = str(movement_type or "").strip().upper()
     is_p = bool(is_print) if is_print is not None else (
@@ -443,6 +465,12 @@ async def claim_durable_stock_event(
         delta_printed = 0.0
     else:
         raise ValueError(f"Tipe mutasi '{movement_type}' tidak didukung di engine")
+    if delta_total_override is not None:
+        delta_total = safe_float(delta_total_override)
+    if delta_unprinted_override is not None:
+        delta_unprinted = safe_float(delta_unprinted_override)
+    if delta_printed_override is not None:
+        delta_printed = safe_float(delta_printed_override)
 
     stamp = now or now_iso()
 
@@ -570,11 +598,18 @@ async def claim_durable_stock_event(
         "initialized": True,
         "pending_event": None,
     }
-    if delta_unprinted < 0:
+    query["cancelled_operational_events." + hashlib.sha256(ev_id.encode()).hexdigest()] = {"$exists": False}
+    if expected_total_qty is not None:
+        query["total_qty"] = safe_float(expected_total_qty)
+    if expected_unprinted_qty is not None:
+        query["unprinted_qty"] = safe_float(expected_unprinted_qty)
+    if expected_printed_qty is not None:
+        query["printed_qty"] = safe_float(expected_printed_qty)
+    if delta_unprinted < 0 and expected_unprinted_qty is None:
         query["unprinted_qty"] = {"$gte": abs(delta_unprinted)}
-    if delta_printed < 0:
+    if delta_printed < 0 and expected_printed_qty is None:
         query["printed_qty"] = {"$gte": abs(delta_printed)}
-    if delta_total < 0:
+    if delta_total < 0 and expected_total_qty is None:
         query["total_qty"] = {"$gte": abs(delta_total)}
 
     update = {
@@ -703,6 +738,7 @@ async def finalize_durable_stock_event(
             "pending_event.event_id": ev_id,
             "pending_event.stage": stage,
         }
+        apply_query["cancelled_operational_events." + hashlib.sha256(ev_id.encode()).hexdigest()] = {"$exists": False}
         if expected_fence_generation is not None:
             apply_query["pending_event.fence_generation"] = int(expected_fence_generation)
             apply_query["pending_event.reference_type"] = "delivery_confirmed"
@@ -880,6 +916,12 @@ async def execute_durable_stock_event(
     is_print: Optional[bool] = None,
     production_process: Optional[str] = None,
     change_metadata: Optional[Dict[str, Any]] = None,
+    delta_total_override: Optional[float] = None,
+    delta_unprinted_override: Optional[float] = None,
+    delta_printed_override: Optional[float] = None,
+    expected_total_qty: Optional[float] = None,
+    expected_unprinted_qty: Optional[float] = None,
+    expected_printed_qty: Optional[float] = None,
     user: Optional[Dict[str, Any]] = None,
     now: Optional[str] = None,
 ) -> Dict[str, Any]:
@@ -904,6 +946,12 @@ async def execute_durable_stock_event(
         is_print=is_print,
         production_process=production_process,
         change_metadata=change_metadata,
+        delta_total_override=delta_total_override,
+        delta_unprinted_override=delta_unprinted_override,
+        delta_printed_override=delta_printed_override,
+        expected_total_qty=expected_total_qty,
+        expected_unprinted_qty=expected_unprinted_qty,
+        expected_printed_qty=expected_printed_qty,
         user=user,
         now=now,
     )
@@ -3470,6 +3518,7 @@ def plan_confirmed_sj_stock(
     shipment: Optional[Dict[str, Any]],
     *,
     allow_delivered: bool = False,
+    require_master: bool = True,
 ) -> Dict[str, Any]:
     """Map confirmed SJ rows to canonical PO lines. Qty stays on the SJ row.
 
@@ -3523,7 +3572,7 @@ def plan_confirmed_sj_stock(
         if not isinstance(po, dict):
             return {"lines": [], "error": SJ_ROW_UNCERTAIN, "skip": False}
         mid = str(po.get("master_item_id") or "").strip()
-        if not mid:
+        if require_master and not mid:
             return {"lines": [], "error": SJ_ROW_UNCERTAIN, "skip": False}
         lines.append({
             "line_idx": int(idx),
@@ -3809,4 +3858,5 @@ async def finalize_delivery_confirmed_stock(
         else:
             movements.append(mov)
     return movements
+
 

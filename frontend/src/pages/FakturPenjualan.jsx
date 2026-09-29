@@ -16,8 +16,10 @@ import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDisplayDate } from "../lib/constants";
 import { FormSection, FormField, FormProgress, computeStatus } from "../components/form-standard";
-import { loadedRangeLabel, showLoadedDocumentCount } from "../lib/salesSubmenuDensity";
+import { showLoadedDocumentCount } from "../lib/salesSubmenuDensity";
 import "./salesSubmenuDensity.css";
+import { useDocumentList, DocumentFilters, DocumentSummary, DocumentPager, ColumnFilter, DocumentActions, useDetailDrawer } from "./SalesDocumentControls";
+import { moneyText } from "./salesDocumentsView";
 
 function getTodayString() {
   const d = new Date();
@@ -340,7 +342,11 @@ function formatDeleteError(det) {
   if (typeof det === "object" && det) {
     const blockers = det.blockers || [];
     if (blockers.length) {
-      const lines = blockers.map((b) => `${b.number || b.po_number || b.id}: ${b.reason}`).join(" ");
+      const lines = blockers.map((b) => {
+        const label = b.number || b.po_number || b.id || "dokumen terkait";
+        const detail = b.reason || (b.amount != null ? `nominal ${b.amount}` : "");
+        return detail ? `${label} (${detail})` : label;
+      }).join("; ");
       return `${det.message || "Tidak dapat menghapus."} ${lines}`.trim();
     }
     return det.message || JSON.stringify(det);
@@ -364,10 +370,13 @@ export default function FakturPenjualan() {
     hasPerm("sales_order.create") ||
     hasPerm("po.edit") ||
     user?.role === "admin";
-  const canDelete =
+  const canDeleteDraft =
     hasPerm("sales.invoice.delete") ||
     hasPerm("sales.invoice.create") ||
     hasPerm("po.edit") ||
+    user?.role === "admin";
+  const canDeleteIssued =
+    hasPerm("sales.invoice.delete") ||
     user?.role === "admin";
 
   const queryPoId = searchParams.get("po_id") || "";
@@ -383,9 +392,9 @@ export default function FakturPenjualan() {
 
   // Checkbox selection
   const [selectedIds, setSelectedIds] = useState(new Set());
-  const [deleteConfirm, setDeleteConfirm] = useState(null); // {id, number} or {ids: [...], numbers: [...]}
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [deleteErr, setDeleteErr] = useState("");
+  const [issueRetry, setIssueRetry] = useState(false);
 
   // Create state
   const [availablePOs, setAvailablePOs] = useState([]);
@@ -454,6 +463,9 @@ export default function FakturPenjualan() {
     }
   }, [searchQuery]);
 
+  const documentList = useDocumentList(invoices, "invoice", searchQuery);
+  const visibleKey = documentList.visible.map(row => row.id).join('|');
+  useEffect(() => setSelectedIds(new Set()), [visibleKey]);
   // Checkbox helpers
   const toggleSelect = (id) => {
     setSelectedIds((prev) => {
@@ -463,8 +475,8 @@ export default function FakturPenjualan() {
       return next;
     });
   };
-  const draftInvoiceIds = invoices
-    .filter((inv) => invoiceFinancialStatus(inv) === "draft")
+  const draftInvoiceIds = documentList.visible
+    .filter((inv) => invoiceFinancialStatus(inv) === "draft" && !inv.issue_state)
     .map((inv) => inv.id);
   const toggleSelectAll = () => {
     if (selectedIds.size === draftInvoiceIds.length && draftInvoiceIds.length > 0) {
@@ -478,12 +490,26 @@ export default function FakturPenjualan() {
   const handleDelete = async (id) => {
     setDeleteLoading(true);
     setDeleteErr("");
+    const storageKey = `faktur-delete:${id}`;
+    let operationKey = "";
+    try { operationKey = window.sessionStorage.getItem(storageKey) || ""; } catch (err) { operationKey = ""; }
+    if (!operationKey) {
+      operationKey = window.crypto?.randomUUID?.() || `del-${Date.now()}`;
+      try { window.sessionStorage.setItem(storageKey, operationKey); } catch (err) { /* ignore */ }
+    }
     try {
-      await api.deleteSalesInvoice(id);
-      setDeleteConfirm(null);
+      await api.deleteSalesInvoice(id, operationKey);
+      try { window.sessionStorage.removeItem(storageKey); } catch (err) { /* ignore */ }
+      if (selectedInvoiceId === id) {
+        setViewMode("list");
+        setDetailData(null);
+      }
       loadInvoices();
     } catch (e) {
       const det = e.response?.data?.detail;
+      if (typeof det === "object" && det?.operation_id) {
+        try { window.sessionStorage.setItem(storageKey, det.operation_id); } catch (err) { /* ignore */ }
+      }
       const msg = formatDeleteError(det) || "Gagal menghapus faktur.";
       setDeleteErr(msg);
     } finally {
@@ -520,7 +546,6 @@ export default function FakturPenjualan() {
     try {
       const ids = Array.from(selectedIds);
       await api.bulkDeleteSalesInvoices(ids);
-      setDeleteConfirm(null);
       setSelectedIds(new Set());
       loadInvoices();
     } catch (e) {
@@ -768,6 +793,17 @@ export default function FakturPenjualan() {
         };
       });
 
+      const storageKey = `faktur-issue:${selectedPoId}`;
+      let operationId = "";
+      try {
+        operationId = window.sessionStorage.getItem(storageKey) || "";
+      } catch (err) {
+        operationId = "";
+      }
+      if (!operationId) {
+        operationId = window.crypto?.randomUUID?.() || `op-${Date.now()}`;
+        try { window.sessionStorage.setItem(storageKey, operationId); } catch (err) { /* ignore */ }
+      }
       const payload = {
         po_id: selectedPoId,
         invoice_date: invoiceDate || getTodayString(),
@@ -777,10 +813,13 @@ export default function FakturPenjualan() {
         notes: invoiceNotes.trim(),
         other_charges: otherChargePayload(otherCharges),
         lines: linesPayload,
+        idempotency_key: operationId,
       };
 
-      const res = await api.createSalesInvoice(payload);
-      setSuccessMsg(res.message || "Faktur Penjualan berhasil dibuat");
+      const res = await api.issueSalesInvoice(payload);
+      try { window.sessionStorage.removeItem(storageKey); } catch (err) { /* ignore */ }
+      setIssueRetry(false);
+      setSuccessMsg(res.message || "Faktur berhasil diterbitkan");
       setTimeout(() => {
         setSearchParams({});
         setViewMode("list");
@@ -788,11 +827,14 @@ export default function FakturPenjualan() {
       }, 900);
     } catch (err) {
       const det = err.response?.data?.detail;
-      setFormErr(
-        typeof det === "object"
-          ? det.message
-          : det || err.message || "Gagal menyimpan Faktur Penjualan"
-      );
+      const message = typeof det === "object"
+        ? det.message
+        : det || err.message || "Gagal menyimpan Faktur Penjualan";
+      if (typeof det === "object" && det?.operation_id) {
+        try { window.sessionStorage.setItem(`faktur-issue:${selectedPoId}`, det.operation_id); } catch (storeErr) { /* ignore */ }
+      }
+      setIssueRetry(true);
+      setFormErr(message);
     } finally {
       setFormBusy(false);
     }
@@ -1063,13 +1105,16 @@ export default function FakturPenjualan() {
   const accountingStatus = accountingStatusOf(detailData);
   const isAccountingPosted = accountingStatus === "posted" || detailData?.accounting_posted === true;
   const isAccountingReversed = accountingStatus === "reversed";
+  const legacyManualAccounting = Boolean(detailData) && !detailData.issue_state;
   const showPostAccounting =
+    legacyManualAccounting &&
     canPostAccounting &&
     detailStatus === "finalized" &&
     !isAccountingPosted &&
     !isAccountingReversed &&
     detailData?.can_post_accounting === true;
   const showReverseAccounting =
+    legacyManualAccounting &&
     canReverseAccountingPerm &&
     detailStatus === "finalized" &&
     isAccountingPosted &&
@@ -1085,8 +1130,9 @@ export default function FakturPenjualan() {
     detailStatus === "finalized" &&
     !isAccountingPosted &&
     detailData?.accounting_ready === false;
-  const canEditFinancial = canEdit && !financialLocked;
+  const canEditFinancial = canEdit && !financialLocked && !detailData?.issue_state;
 
+  const drawerRef = useDetailDrawer(viewMode === "detail", () => { setSearchParams({}); setViewMode("list"); }, finalizeConfirm || cancelConfirm || postAccountingConfirm || reverseConfirm || detailSaving || lifecycleBusy || deleteLoading);
   const showInvoiceCount = showLoadedDocumentCount({
     loading: listLoading,
     error: listErr,
@@ -1095,7 +1141,12 @@ export default function FakturPenjualan() {
 
   return (
     <div
-      className={"page-container penjualan-page penjualan-workspace sd-density " + (viewMode === "list" ? "sd-list-mode" : "sd-form-mode")}
+      ref={drawerRef}
+      role={viewMode === "detail" ? "dialog" : undefined}
+      aria-modal={viewMode === "detail" ? true : undefined}
+      aria-label={viewMode === "detail" ? "Detail Faktur Penjualan" : undefined}
+      tabIndex={viewMode === "detail" ? -1 : undefined}
+      className={"page-container penjualan-page penjualan-workspace sd-density doc-premium " + (viewMode === "detail" ? "doc-invoice-drawer " : "") + (viewMode === "list" ? "sd-list-mode" : "sd-form-mode")}
       data-testid="faktur-penjualan-page"
     >
       <header className={viewMode === "list" ? "sd-list-header" : "sd-form-header"}>
@@ -1161,16 +1212,15 @@ export default function FakturPenjualan() {
 
         {viewMode === "list" && (
           <div className="sd-list-header-actions">
-            {canDelete && selectedIds.size > 0 && (
+            {canDeleteDraft && selectedIds.size > 0 && (
               <button
                 type="button"
                 className="sd-btn-danger"
                 data-testid="btn-hapus-terpilih"
+                disabled={deleteLoading}
                 onClick={() => {
-                  const ids = Array.from(selectedIds);
-                  const numbers = invoices.filter((inv) => selectedIds.has(inv.id)).map((inv) => inv.invoice_number || inv.id);
                   setDeleteErr("");
-                  setDeleteConfirm({ ids, numbers });
+                  handleBulkDelete();
                 }}
               >
                 <Trash2 size={16} /> Hapus Terpilih ({selectedIds.size})
@@ -1247,6 +1297,7 @@ export default function FakturPenjualan() {
             </div>
           )}
 
+          <DocumentSummary list={documentList} loading={listLoading} error={listErr} />
           <div className="sd-list-toolbar">
             <div className="sd-list-search">
               <Search size={16} />
@@ -1261,12 +1312,13 @@ export default function FakturPenjualan() {
                 data-testid="search-invoice-input"
               />
             </div>
+            <DocumentFilters list={documentList} />
           </div>
 
           <div className="sd-list-table-scroll">
             <table className="sd-list-table" data-testid="invoices-table">
               <colgroup>
-                {canDelete && <col style={{ width: 36 }} />}
+                {canDeleteDraft && <col style={{ width: 36 }} />}
                 <col />
                 <col style={{ width: 148 }} />
                 <col style={{ width: 92 }} />
@@ -1274,11 +1326,11 @@ export default function FakturPenjualan() {
                 <col style={{ width: 118 }} />
                 <col style={{ width: 108 }} />
                 <col style={{ width: 108 }} />
-                <col style={{ width: 248 }} />
+                <col style={{ width: 108 }} />
               </colgroup>
               <thead>
                 <tr>
-                  {canDelete && (
+                  {canDeleteDraft && (
                     <th>
                       <input
                         type="checkbox"
@@ -1289,44 +1341,46 @@ export default function FakturPenjualan() {
                       />
                     </th>
                   )}
-                  <th>Pelanggan / No. Faktur</th>
-                  <th>No. PO</th>
-                  <th>Tanggal</th>
-                  <th>Total Faktur</th>
-                  <th>Sisa Tagihan</th>
-                  <th>Status Faktur</th>
-                  <th>Pembayaran</th>
+                  <th><ColumnFilter list={documentList} field="identity">Pelanggan / No. Faktur</ColumnFilter></th>
+                  <th><ColumnFilter list={documentList} field="due_date">Jatuh tempo</ColumnFilter></th>
+                  <th><ColumnFilter list={documentList} field="invoice_date">Tanggal</ColumnFilter></th>
+                  <th><ColumnFilter list={documentList} field="grand_total">Total Faktur</ColumnFilter></th>
+                  <th><ColumnFilter list={documentList} field="outstanding_amount">Sisa Tagihan</ColumnFilter></th>
+                  <th><ColumnFilter list={documentList} field="financial_status">Status Faktur</ColumnFilter></th>
+                  <th><ColumnFilter list={documentList} field="payment_status">Pembayaran</ColumnFilter></th>
                   <th>Aksi</th>
                 </tr>
               </thead>
               <tbody>
                 {listLoading ? (
                   <tr>
-                    <td colSpan={canDelete ? 9 : 8} className="sd-list-empty">
+                    <td colSpan={canDeleteDraft ? 9 : 8} className="sd-list-empty">
                       Memuat daftar Faktur Penjualan...
                     </td>
                   </tr>
-                ) : invoices.length === 0 ? (
+                ) : documentList.filtered.length === 0 ? (
                   <tr>
-                    <td colSpan={canDelete ? 9 : 8} className="sd-list-empty" data-testid="empty-invoices">
+                    <td colSpan={canDeleteDraft ? 9 : 8} className="sd-list-empty" data-testid="empty-invoices">
                       <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
                         <FileText size={32} color="#94a3b8" />
-                        <div style={{ fontWeight: 600, color: "#1e293b", marginTop: 8 }}>Belum ada Faktur Penjualan</div>
+                        <div style={{ fontWeight: 600, color: "#1e293b", marginTop: 8 }}>Tidak ada faktur pada hasil ini</div>
                       </div>
                     </td>
                   </tr>
                 ) : (
-                  invoices.map((inv) => (
+                  documentList.visible.map((inv) => (
                     <tr key={inv.id} data-testid={`invoice-row-${inv.id}`}>
-                      {canDelete && (
+                      {canDeleteDraft && (
                         <td>
-                          <input
-                            type="checkbox"
-                            data-testid={`invoice-checkbox-${inv.id}`}
-                            checked={selectedIds.has(inv.id)}
-                            onChange={() => toggleSelect(inv.id)}
-                            aria-label={`Pilih ${inv.invoice_number}`}
-                          />
+                          {!inv.issue_state && invoiceFinancialStatus(inv) === "draft" ? (
+                            <input
+                              type="checkbox"
+                              data-testid={`invoice-checkbox-${inv.id}`}
+                              checked={selectedIds.has(inv.id)}
+                              onChange={() => toggleSelect(inv.id)}
+                              aria-label={`Pilih ${inv.invoice_number}`}
+                            />
+                          ) : null}
                         </td>
                       )}
                       <td className="sd-identity">
@@ -1334,20 +1388,16 @@ export default function FakturPenjualan() {
                         <span className="sd-doc is-static" data-testid={`invoice-number-${inv.id}`}>
                           {inv.invoice_number || "-"}
                         </span>
-                        {inv.outlet ? <span className="sd-support">{inv.outlet}</span> : null}
+                        <Link to={`/po/${inv.po_id}`} className="sd-support" title="Buka PO">{inv.po_number || "—"}{inv.outlet ? ` · ${inv.outlet}` : ""}</Link>
                       </td>
-                      <td>
-                        <Link to={`/po/${inv.po_id}`} className="sd-doc" title="Buka PO">
-                          {inv.po_number || "-"}
-                        </Link>
-                      </td>
+                      <td>{inv.due_date ? formatDisplayDate(inv.due_date) : "—"}</td>
                       <td>{formatDisplayDate(inv.invoice_date || inv.created_at)}</td>
-                      <td className="sd-money">{formatRupiah(inv.grand_total)}</td>
+                      <td className="sd-money">{moneyText(inv.grand_total)}</td>
                       <td className={"sd-money " + (Number(inv.outstanding_amount) > 0 ? "is-due" : "is-zero")}>
-                        {formatRupiah(inv.outstanding_amount)}
+                        {moneyText(inv.outstanding_amount)}
                       </td>
                       <td>
-                        {renderFinancialBadge(inv.financial_status)}
+                        {inv.financial_status === "cancelled" ? renderFinancialBadge(inv.financial_status) : inv.issue_state ? <span className={"doc-process " + (inv.issue_state === "issued" ? "doc-issued" : "")}>{inv.issue_state === "issued" ? "Terbit" : "Sedang diproses"}</span> : renderFinancialBadge(inv.financial_status)}
                         {(invoiceFinancialStatus(inv) !== "draft" || accountingStatusOf(inv) !== "not_posted") &&
                           renderAccountingBadge(accountingStatusOf(inv))}
                       </td>
@@ -1360,8 +1410,9 @@ export default function FakturPenjualan() {
                           onClick={() => handleOpenDetail(inv.id)}
                           data-testid={`view-invoice-btn-${inv.id}`}
                         >
-                          {invoiceFinancialStatus(inv) === "draft" ? "Lihat / Edit" : "Lihat"}
+                          Detail
                         </button>
+                        <DocumentActions>
                         <button
                           type="button"
                           className="sd-act sd-act-view"
@@ -1372,19 +1423,21 @@ export default function FakturPenjualan() {
                         >
                           {pdfLoadingId === inv.id ? "Memuat..." : "Cetak PDF"}
                         </button>
-                        {canDelete && invoiceFinancialStatus(inv) === "draft" && (
+                        {((!inv.issue_state && invoiceFinancialStatus(inv) === "draft" && canDeleteDraft) || (inv.issue_state && canDeleteIssued)) && (
                           <button
                             type="button"
                             className="sd-act sd-act-delete"
                             data-testid={`btn-delete-invoice-${inv.id}`}
+                            disabled={deleteLoading}
                             onClick={() => {
                               setDeleteErr("");
-                              setDeleteConfirm({ id: inv.id, number: inv.invoice_number, numbers: [inv.invoice_number] });
+                              handleDelete(inv.id);
                             }}
                           >
-                            Hapus
+                            {deleteLoading ? "Menghapus..." : "Hapus"}
                           </button>
                         )}
+                        </DocumentActions>
                         </div>
                       </td>
                     </tr>
@@ -1394,13 +1447,7 @@ export default function FakturPenjualan() {
             </table>
           </div>
           <footer className="sd-list-footer" data-testid="invoice-list-footer">
-            <span>
-              {listLoading
-                ? "Memuat daftar faktur..."
-                : listErr
-                ? "Daftar faktur belum dapat ditampilkan"
-                : loadedRangeLabel(invoices.length, "faktur")}
-            </span>
+            <DocumentPager list={documentList} loading={listLoading} error={listErr} />
           </footer>
         </section>
       )}
@@ -1729,6 +1776,17 @@ export default function FakturPenjualan() {
                 >
                   Batal
                 </button>
+                {issueRetry && (
+                  <button
+                    type="button"
+                    data-testid="btn-retry-issue"
+                    disabled={formBusy}
+                    onClick={handleSaveInvoice}
+                    style={{ padding: "10px 16px", borderRadius: 8, border: "1px solid #166534", background: "#fff", color: "#166534", fontWeight: 600, cursor: "pointer" }}
+                  >
+                    Coba lagi
+                  </button>
+                )}
                 <button
                   type="submit"
                   className="primary"
@@ -2016,7 +2074,7 @@ export default function FakturPenjualan() {
                   <FileText size={16} />
                   {pdfLoadingId === selectedInvoiceId ? "Memuat PDF..." : "Cetak PDF"}
                 </button>
-                {canEdit && detailStatus === "draft" && (
+                {canEdit && detailStatus === "draft" && !detailData?.issue_state && (
                   <button
                     type="button"
                     data-testid="btn-finalize-invoice"
@@ -2027,7 +2085,7 @@ export default function FakturPenjualan() {
                     Finalisasi Invoice
                   </button>
                 )}
-                {canEdit && detailStatus === "finalized" && detailData.can_cancel !== false && (
+                {canEdit && detailStatus === "finalized" && !detailData?.issue_state && detailData.can_cancel !== false && (
                   <button
                     type="button"
                     data-testid="btn-cancel-invoice"
@@ -2076,6 +2134,17 @@ export default function FakturPenjualan() {
                     </ul>
                   </div>
                 )}
+                {canDeleteIssued && detailData?.issue_state && (
+                  <button
+                    type="button"
+                    data-testid="btn-delete-issued-invoice"
+                    disabled={deleteLoading}
+                    onClick={() => handleDelete(detailData.id)}
+                    style={{ padding: "10px 24px", borderRadius: 8, background: deleteLoading ? "#94a3b8" : "#b91c1c", color: "#fff", border: "none", cursor: deleteLoading ? "not-allowed" : "pointer", fontWeight: 600 }}
+                  >
+                    {deleteLoading ? "Menghapus..." : "Hapus"}
+                  </button>
+                )}
                 {canEditFinancial && (
                   <button
                     type="submit"
@@ -2094,48 +2163,9 @@ export default function FakturPenjualan() {
         </div>
       )}
 
-      {deleteConfirm && (
-        <div
-          className="modal-overlay"
-          data-testid="delete-confirm-modal"
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(15,23,42,0.45)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            zIndex: 80,
-          }}
-        >
-          <div style={{ background: "#fff", borderRadius: 12, padding: 24, width: "100%", maxWidth: 460, boxShadow: "0 20px 40px rgba(0,0,0,0.15)" }}>
-            <h3 style={{ margin: "0 0 8px", fontSize: "1.1rem" }}>Hapus Faktur Penjualan?</h3>
-            <p style={{ margin: "0 0 12px", color: "#64748b", fontSize: "0.9rem" }}>Dokumen berikut akan dihapus:</p>
-            <ul data-testid="delete-confirm-numbers" style={{ margin: "0 0 16px", paddingLeft: 18, fontWeight: 700, color: "#9333ea" }}>
-              {(deleteConfirm.numbers || [deleteConfirm.number]).filter(Boolean).map((n) => (
-                <li key={n}>{n}</li>
-              ))}
-            </ul>
-            {deleteErr && (
-              <div data-testid="delete-error" style={{ background: "#fef2f2", color: "#b91c1c", padding: "8px 12px", borderRadius: 8, marginBottom: 12, fontSize: "0.85rem" }}>
-                {deleteErr}
-              </div>
-            )}
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
-              <button type="button" onClick={() => { setDeleteConfirm(null); setDeleteErr(""); }} disabled={deleteLoading} style={{ padding: "8px 14px", borderRadius: 8, border: "1px solid #cbd5e1", background: "#fff", cursor: "pointer" }}>
-                Batal
-              </button>
-              <button
-                type="button"
-                data-testid="btn-confirm-delete"
-                onClick={() => (deleteConfirm.ids ? handleBulkDelete() : handleDelete(deleteConfirm.id))}
-                disabled={deleteLoading}
-                style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: "#dc2626", color: "#fff", fontWeight: 600, cursor: "pointer" }}
-              >
-                {deleteLoading ? "Menghapus..." : "Hapus"}
-              </button>
-            </div>
-          </div>
+      {deleteErr && (
+        <div data-testid="delete-error" style={{ background: "#fef2f2", color: "#b91c1c", padding: "8px 12px", borderRadius: 8, margin: "12px 0", fontSize: "0.85rem" }}>
+          {deleteErr}
         </div>
       )}
 
@@ -2316,3 +2346,4 @@ export default function FakturPenjualan() {
     </div>
   );
 }
+

@@ -374,7 +374,12 @@ async def _load_docs_for_pos(db, po_ids: List[str]) -> tuple:
     ):
         deliveries.setdefault(d.get("po_id"), []).append(d)
     async for inv in db.sales_invoices.find(
-        {"po_id": {"$in": po_ids}, "is_cancelled": {"$ne": True}},
+        {
+            "po_id": {"$in": po_ids},
+            "is_cancelled": {"$ne": True},
+            "removed_from_active": {"$ne": True},
+            "issue_state": {"$ne": "issuing"},
+        },
         {
             "_id": 0,
             "id": 1,
@@ -600,6 +605,8 @@ async def _sales_financial_summary(db, user: dict, month: str) -> dict:
             "po_id": {"$in": po_ids},
             "financial_status": FINANCIAL_FINALIZED,
             "is_cancelled": {"$ne": True},
+            "removed_from_active": {"$ne": True},
+            "issue_state": {"$ne": "issuing"},
         },
         {
             "_id": 0,
