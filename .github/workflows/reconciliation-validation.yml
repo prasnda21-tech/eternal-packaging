@@ -4,6 +4,7 @@ on:
   pull_request:
     branches:
       - main
+      - review/production-bdd247f
       - cursor/hpp-financial-opening-13bd
       - cursor/sales-order-redesign-b7d7
       - release/finance-recon-on-live-stock-367
@@ -75,6 +76,7 @@ jobs:
           tests/test_sales_order_line_prices.py
           tests/test_sales_order_item_images.py
           tests/test_sales_order_list_read.py
+          tests/test_sales_order_invoice_status.py
           tests/test_customer_tracking.py
           tests/test_customer_tracking_invoices.py
           tests/test_tracking_delivery_signature.py
