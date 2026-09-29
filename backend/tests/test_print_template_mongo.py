@@ -50,6 +50,11 @@ async def bind_and_clean():
     ):
         await server.db[name].delete_many({})
     await ensure_coa(server.db)
+    svc._before_revision_write = None
+    svc._before_builtin_insert = None
+    svc._before_pointer_write = None
+    svc._before_archive_rollback = None
+    svc._indexed_databases.clear()
     app.dependency_overrides[current_user] = lambda: {
         "id": "admin-print",
         "email": "admin-print@example.com",
@@ -57,6 +62,10 @@ async def bind_and_clean():
         "role": "admin",
     }
     yield
+    svc._before_revision_write = None
+    svc._before_builtin_insert = None
+    svc._before_pointer_write = None
+    svc._before_archive_rollback = None
     app.dependency_overrides.pop(current_user, None)
 
 
@@ -506,6 +515,11 @@ async def test_archive_racing_a_default_switch_keeps_a_usable_default():
         "template_id": activated["id"],
         "action": "archive",
     }) == 0
+    fresh = await svc.get_template(server.db, activated["id"])
+    with pytest.raises(HTTPException) as retry:
+        await svc.archive_template(server.db, activated["id"], fresh["revision"], actor)
+    assert retry.value.status_code == 400
+    assert (await svc.resolve_template(server.db, "sales_invoice", "customer"))["id"] == activated["id"]
 
 
 def _image_count(data: bytes) -> int:
@@ -632,3 +646,164 @@ async def test_uploaded_logo_is_embedded_and_a_missing_asset_is_rejected():
         still_printed = await client.get(f"/api/sales-invoices/{issued.json()['invoice']['id']}/pdf")
         assert still_printed.status_code == 200
         assert _image_count(still_printed.content) >= 1
+
+
+def _hold_same_id(expected_id: str):
+    state = {"count": 0, "release": asyncio.Event()}
+
+    async def hold(template_id, *_args):
+        if template_id != expected_id:
+            return
+        state["count"] += 1
+        if state["count"] >= 2:
+            state["release"].set()
+        await state["release"].wait()
+
+    return hold
+
+
+async def test_two_first_requests_keep_one_builtin_and_one_default():
+    svc._before_builtin_insert = _hold_same_id("builtin-sales-invoice-customer")
+    try:
+        await asyncio.gather(
+            svc.list_templates(server.db),
+            svc.resolve_template(server.db, "sales_invoice", "customer"),
+        )
+    finally:
+        svc._before_builtin_insert = None
+    for template_id in svc.BUILTIN_IDS.values():
+        assert await server.db.print_templates.count_documents({"id": template_id}) == 1
+        stored = await server.db.print_templates.find_one({"id": template_id})
+        assert stored["_id"] == template_id
+    for document_type, audience in svc.BUILTIN_IDS:
+        pointer_id = f"default:{document_type}:{audience}"
+        assert await server.db.print_template_defaults.count_documents({"id": pointer_id}) == 1
+        pointer = await server.db.print_template_defaults.find_one({"id": pointer_id})
+        assert pointer["_id"] == pointer_id
+        assert pointer["template_id"] == svc.BUILTIN_IDS[(document_type, audience)]
+    template_indexes = await server.db.print_templates.index_information()
+    default_indexes = await server.db.print_template_defaults.index_information()
+    assert template_indexes["print_template_id_unique"]["unique"] is True
+    assert default_indexes["print_template_default_id_unique"]["unique"] is True
+    resolved = await svc.resolve_template(server.db, "sales_invoice", "customer")
+    assert resolved["id"] == "builtin-sales-invoice-customer"
+    assert resolved["status"] == "active"
+
+
+async def test_pointer_after_archive_does_not_keep_an_archived_default():
+    actor = {"id": "admin-print", "email": "admin-print@example.com", "name": "Admin", "role": "admin"}
+    created = await svc.create_template(server.db, {
+        "name": "Nanti arsip",
+        "document_type": "sales_invoice",
+        "audience": "customer",
+    }, actor)
+    activated = await svc.activate_template(server.db, created["id"], created["revision"], actor)
+
+    async def archive_before_pointer(template_id):
+        svc._before_pointer_write = None
+        fresh = await svc.get_template(server.db, template_id)
+        await svc.archive_template(server.db, template_id, fresh["revision"], actor)
+
+    svc._before_pointer_write = archive_before_pointer
+    try:
+        with pytest.raises(HTTPException) as lost:
+            await svc.set_default(server.db, activated["id"], activated["revision"], actor)
+        assert lost.value.status_code == 409
+    finally:
+        svc._before_pointer_write = None
+    stored = await server.db.print_templates.find_one({"id": activated["id"]}, {"_id": 0, "status": 1})
+    assert stored["status"] == "archived"
+    pointer = await server.db.print_template_defaults.find_one({"id": "default:sales_invoice:customer"})
+    assert pointer["template_id"] != activated["id"]
+    assert await server.db.print_template_versions.count_documents({
+        "template_id": activated["id"], "action": "set_default",
+    }) == 0
+    assert await server.db.print_template_versions.count_documents({
+        "template_id": activated["id"], "action": "archive",
+    }) == 1
+    resolved = await svc.resolve_template(server.db, "sales_invoice", "customer")
+    assert resolved["status"] == "active"
+    assert resolved["id"] != activated["id"]
+    fresh = await svc.get_template(server.db, activated["id"])
+    with pytest.raises(HTTPException) as retry:
+        await svc.set_default(server.db, activated["id"], fresh["revision"], actor)
+    assert retry.value.status_code == 400
+    again = await server.db.print_template_defaults.find_one({"id": "default:sales_invoice:customer"})
+    assert again["template_id"] == pointer["template_id"]
+
+
+async def test_default_winner_rejects_archive_and_retry():
+    actor = {"id": "admin-print", "email": "admin-print@example.com", "name": "Admin", "role": "admin"}
+    created = await svc.create_template(server.db, {
+        "name": "Pemenang default",
+        "document_type": "sales_delivery",
+        "audience": "customer",
+    }, actor)
+    activated = await svc.activate_template(server.db, created["id"], created["revision"], actor)
+    chosen = await svc.set_default(server.db, activated["id"], activated["revision"], actor)
+    fresh = await svc.get_template(server.db, chosen["id"])
+    with pytest.raises(HTTPException) as blocked:
+        await svc.archive_template(server.db, chosen["id"], fresh["revision"], actor)
+    assert blocked.value.status_code == 400
+    again = await svc.get_template(server.db, chosen["id"])
+    with pytest.raises(HTTPException) as retry:
+        await svc.archive_template(server.db, chosen["id"], again["revision"], actor)
+    assert retry.value.status_code == 400
+    stored = await server.db.print_templates.find_one({"id": chosen["id"]}, {"_id": 0, "status": 1})
+    assert stored["status"] == "active"
+    pointer = await server.db.print_template_defaults.find_one({"id": "default:sales_delivery:customer"})
+    assert pointer["template_id"] == chosen["id"]
+    assert await server.db.print_template_versions.count_documents({
+        "template_id": chosen["id"], "action": "archive",
+    }) == 0
+    resolved = await svc.resolve_template(server.db, "sales_delivery", "customer")
+    assert resolved["id"] == chosen["id"]
+    assert resolved["status"] == "active"
+
+
+async def test_archive_rollback_requires_revision_ownership():
+    actor = {"id": "admin-print", "email": "admin-print@example.com", "name": "Admin", "role": "admin"}
+    created = await svc.create_template(server.db, {
+        "name": "Pagar revisi",
+        "document_type": "sales_invoice",
+        "audience": "internal",
+    }, actor)
+    activated = await svc.activate_template(server.db, created["id"], created["revision"], actor)
+    owned = activated["revision"] + 1
+
+    async def point_during_archive(template_id):
+        svc._before_revision_write = None
+        await svc._write_pointer(server.db, {
+            "id": template_id,
+            "document_type": "sales_invoice",
+            "audience": "internal",
+        })
+
+    async def steal_revision(template_id, revision):
+        assert revision == owned
+        result = await server.db.print_templates.update_one(
+            {"id": template_id, "revision": revision, "status": "archived"},
+            {"$set": {"revision": revision + 7}},
+        )
+        assert result.matched_count == 1
+
+    svc._before_revision_write = point_during_archive
+    svc._before_archive_rollback = steal_revision
+    try:
+        with pytest.raises(HTTPException) as failure:
+            await svc.archive_template(server.db, activated["id"], activated["revision"], actor)
+        assert failure.value.status_code == 409
+    finally:
+        svc._before_revision_write = None
+        svc._before_archive_rollback = None
+    stored = await server.db.print_templates.find_one({"id": activated["id"]}, {"_id": 0, "status": 1, "revision": 1})
+    assert stored["status"] == "archived"
+    assert stored["revision"] == owned + 7
+    pointer = await server.db.print_template_defaults.find_one({"id": "default:sales_invoice:internal"})
+    assert pointer["template_id"] != activated["id"]
+    assert await server.db.print_template_versions.count_documents({
+        "template_id": activated["id"], "action": "archive",
+    }) == 0
+    resolved = await svc.resolve_template(server.db, "sales_invoice", "internal")
+    assert resolved["status"] == "active"
+    assert resolved["id"] != activated["id"]

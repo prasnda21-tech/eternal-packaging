@@ -62,6 +62,9 @@ class _Col:
     async def insert_one(self, doc):
         self.docs.append(copy.deepcopy(doc))
 
+    async def create_index(self, key, unique=False, name=None):
+        return name
+
     async def update_one(self, query, update, upsert=False):
         for doc in self.docs:
             if self._match(doc, query):

@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException
+from pymongo.errors import DuplicateKeyError
 
 from services.print_template_model import (
     AUDIENCES,
@@ -29,8 +30,12 @@ VERSIONS = "print_template_versions"
 ASSETS = "print_template_assets"
 DEFAULTS = "print_template_defaults"
 
-# Test hook. Awaited after the read-side revision check and before the filtered write.
+# Test hooks. They sit inside the real write path so two requests can pass the same check.
 _before_revision_write = None
+_before_builtin_insert = None
+_before_pointer_write = None
+_before_archive_rollback = None
+_indexed_databases = set()
 
 BUILTIN_IDS = {
     (DOCUMENT_INVOICE, "customer"): "builtin-sales-invoice-customer",
@@ -118,8 +123,10 @@ async def _insert_version(db, template_id: str, action: str, user: dict, design:
 def _builtin_record(document_type: str, audience: str) -> dict:
     stamp = now_iso()
     design = builtin_design(document_type)
+    template_id = BUILTIN_IDS[(document_type, audience)]
     return {
-        "id": BUILTIN_IDS[(document_type, audience)],
+        "_id": template_id,
+        "id": template_id,
         "name": f"Bawaan {DOCUMENT_LABELS[document_type]} ({AUDIENCE_LABELS[audience]})",
         "document_type": document_type,
         "audience": audience,
@@ -139,11 +146,27 @@ def _builtin_record(document_type: str, audience: str) -> dict:
     }
 
 
+async def _ensure_unique_indexes(db) -> None:
+    """Unique id indexes exist before the first insert. _id is also the logical id."""
+    key = id(db)
+    if key in _indexed_databases:
+        return
+    await db[TEMPLATES].create_index("id", unique=True, name="print_template_id_unique")
+    await db[DEFAULTS].create_index("id", unique=True, name="print_template_default_id_unique")
+    _indexed_databases.add(key)
+
+
 async def ensure_builtins(db) -> None:
+    await _ensure_unique_indexes(db)
     for key, template_id in BUILTIN_IDS.items():
         existing = await db[TEMPLATES].find_one({"id": template_id}, {"_id": 0, "id": 1})
         if not existing:
-            await db[TEMPLATES].insert_one(_builtin_record(*key))
+            if _before_builtin_insert is not None:
+                await _before_builtin_insert(template_id)
+            try:
+                await db[TEMPLATES].insert_one(_builtin_record(*key))
+            except DuplicateKeyError:
+                pass
         await _ensure_pointer(db, key[0], key[1])
 
 
@@ -222,16 +245,19 @@ def _pointer_id(document_type: str, audience: str) -> str:
 async def _ensure_pointer(db, document_type: str, audience: str) -> dict:
     pointer_id = _pointer_id(document_type, audience)
     builtin_id = BUILTIN_IDS[(document_type, audience)]
-    await db[DEFAULTS].update_one(
-        {"id": pointer_id},
-        {"$setOnInsert": {
-            "id": pointer_id,
-            "document_type": document_type,
-            "audience": audience,
-            "template_id": builtin_id,
-        }},
-        upsert=True,
-    )
+    try:
+        await db[DEFAULTS].update_one(
+            {"_id": pointer_id},
+            {"$setOnInsert": {
+                "id": pointer_id,
+                "document_type": document_type,
+                "audience": audience,
+                "template_id": builtin_id,
+            }},
+            upsert=True,
+        )
+    except DuplicateKeyError:
+        pass
     return await db[DEFAULTS].find_one({"id": pointer_id}, {"_id": 0})
 
 
@@ -378,12 +404,13 @@ async def set_default(db, template_id: str, expected_revision: int, user: dict) 
     _check_revision(doc, expected_revision)
     if doc.get("status") != "active":
         raise HTTPException(400, "Hanya template aktif yang dapat dijadikan default.")
+    owned_revision = int(expected_revision) + 1
     await _commit_if_revision(db, doc["id"], expected_revision, {
         "updated_at": now_iso(),
         "updated_by": actor_of(user),
     })
     try:
-        await _write_pointer(db, doc)
+        await _publish_default(db, doc, owned_revision)
     except HTTPException:
         raise
     except Exception as exc:
@@ -397,18 +424,27 @@ async def archive_template(db, template_id: str, expected_revision: int, user: d
     _check_revision(doc, expected_revision)
     if doc.get("is_builtin"):
         raise HTTPException(400, "Desain bawaan tidak dapat diarsipkan.")
+    if doc.get("status") != "active":
+        raise HTTPException(400, "Hanya template aktif yang dapat diarsipkan.")
     if await _is_authoritative_default(db, doc):
         raise HTTPException(400, "Template default tidak dapat diarsipkan sebelum pengganti ditentukan.")
+    owned_revision = int(expected_revision) + 1
     await _commit_if_revision(db, doc["id"], expected_revision, {
         "status": "archived",
         "updated_at": now_iso(),
         "updated_by": actor_of(user),
     })
     if await _is_authoritative_default(db, doc):
-        await db[TEMPLATES].update_one(
-            {"id": doc["id"], "status": "archived"},
+        if _before_archive_rollback is not None:
+            await _before_archive_rollback(doc["id"], owned_revision)
+        reverted = await db[TEMPLATES].update_one(
+            {"id": doc["id"], "revision": owned_revision, "status": "archived"},
             {"$set": {"status": "active"}},
         )
+        if _matched_count(reverted) != 1:
+            fresh = await db[TEMPLATES].find_one({"id": doc["id"]}, {"_id": 0, "status": 1})
+            if not fresh or fresh.get("status") != "active":
+                await _move_pointer_off_archived(db, doc)
         raise HTTPException(409, "Template menjadi default saat diarsipkan. Arsip dibatalkan.")
     await _insert_version(db, doc["id"], "archive", user, None, int(doc.get("active_version") or 0), "Arsipkan")
     return _public_template(await _require(db, doc["id"]), default_ids=await _default_ids(db))
@@ -523,7 +559,7 @@ async def _is_authoritative_default(db, doc: dict) -> bool:
 async def _write_pointer(db, doc: dict) -> None:
     pointer_id = _pointer_id(doc["document_type"], doc["audience"])
     await db[DEFAULTS].update_one(
-        {"id": pointer_id},
+        {"_id": pointer_id},
         {"$set": {
             "id": pointer_id,
             "document_type": doc["document_type"],
@@ -533,6 +569,44 @@ async def _write_pointer(db, doc: dict) -> None:
         }},
         upsert=True,
     )
+
+
+async def _fallback_template_id(db, doc: dict, previous_id: str) -> str:
+    if previous_id and previous_id != str(doc.get("id") or ""):
+        previous = await db[TEMPLATES].find_one({"id": previous_id}, {"_id": 0, "status": 1})
+        if previous and previous.get("status") == "active":
+            return previous_id
+    return BUILTIN_IDS[(doc["document_type"], doc["audience"])]
+
+
+async def _move_pointer_off_archived(db, doc: dict, previous_id: str = "") -> None:
+    """Move the pointer only while it still names this archived template."""
+    pointer_id = _pointer_id(doc["document_type"], doc["audience"])
+    fallback = await _fallback_template_id(db, doc, previous_id)
+    await db[DEFAULTS].update_one(
+        {"_id": pointer_id, "template_id": doc["id"]},
+        {"$set": {
+            "id": pointer_id,
+            "document_type": doc["document_type"],
+            "audience": doc["audience"],
+            "template_id": fallback,
+            "updated_at": now_iso(),
+        }},
+    )
+
+
+async def _publish_default(db, doc: dict, owned_revision: int) -> None:
+    """Publish the pointer, then drop it if this template is no longer an active default."""
+    previous = await _ensure_pointer(db, doc["document_type"], doc["audience"])
+    previous_id = str((previous or {}).get("template_id") or "")
+    if _before_pointer_write is not None:
+        await _before_pointer_write(doc["id"])
+    await _write_pointer(db, doc)
+    after = await db[TEMPLATES].find_one({"id": doc["id"]}, {"_id": 0, "status": 1, "revision": 1})
+    if after and after.get("status") == "active":
+        return
+    await _move_pointer_off_archived(db, doc, previous_id)
+    raise _conflict((after or {}).get("revision") or owned_revision)
 
 
 async def preview_template(db, template_id: str, design: Optional[dict]) -> bytes:
