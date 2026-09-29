@@ -34,6 +34,47 @@ _DASH_DATE = re.compile(r"^\d{2}-\d{2}-\d{4}$")
 _FRACTION = re.compile(r"^\d{1,2}$")
 
 
+def statement_rows_from_bca(filename: str, data: bytes, currency: Optional[str]) -> dict:
+    """Normalize a BCA CSV into the generic statement-row shape. Does not write."""
+    parsed = parse_bca_statement(filename, data)
+    accepted: List[dict] = []
+    total_in = Decimal("0.00")
+    total_out = Decimal("0.00")
+    closing = None
+    closing_date = None
+    for offset, row in enumerate(parsed["rows"], start=1):
+        amount = row["debit"] if row["direction"] == "out" else row["kredit"]
+        if row.get("saldo") is not None:
+            closing = row["saldo"]
+            closing_date = row["tanggal"]
+        if row["direction"] == "in":
+            total_in += Decimal(str(amount))
+        else:
+            total_out += Decimal(str(amount))
+        accepted.append({
+            "source_row": row["source_row"],
+            "row_number": offset,
+            "date": row["tanggal"],
+            "description": row["keterangan"],
+            "reference": None,
+            "bank_txn_id": None,
+            "direction": row["direction"],
+            "amount": amount,
+            "running_balance": row.get("saldo"),
+            "currency_code": currency,
+        })
+    return {
+        "errors": list(parsed["errors"]),
+        "accepted": accepted,
+        "accepted_count": len(accepted),
+        "total_in": float(total_in.quantize(MONEY)),
+        "total_out": float(total_out.quantize(MONEY)),
+        "closing_balance": closing,
+        "closing_date": closing_date,
+        "headers": [],
+    }
+
+
 def parse_bca_statement(filename: str, data: bytes) -> dict:
     """Parse one BCA CSV. The return value is a preview and is not stored."""
     if not str(filename or "").lower().endswith(".csv"):

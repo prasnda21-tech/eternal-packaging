@@ -123,6 +123,7 @@ test('bca preview dialog shows parsed rows without confirming import', async () 
   expect(dialog.textContent).toContain('Baris 4: Tanggal tidak valid');
   expect(dialog.textContent).not.toContain('Konfirmasi impor');
   expect(api.previewCashBankBcaStatement).toHaveBeenCalledTimes(1);
+  expect(api.previewCashBankBcaStatement.mock.calls[0][0].get('cash_bank_id')).toBe('account-1');
   expect(api.previewCashBankStatement).not.toHaveBeenCalled();
   expect(api.commitCashBankStatement).not.toHaveBeenCalled();
   await upload();

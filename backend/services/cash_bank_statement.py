@@ -538,6 +538,41 @@ def _require_same_account(cash_bank_id: str, currency: Optional[str], file_sha25
         )
 
 
+def _bca_layout(mapping_raw: dict) -> bool:
+    if not isinstance(mapping_raw, dict) or mapping_raw.get("layout") != "bca":
+        return False
+    if set(mapping_raw) != {"layout"}:
+        raise StatementValidationError("Mapping BCA tidak valid")
+    return True
+
+
+async def create_bca_preview(db, *, cash_bank_id: str, filename: str, data: bytes, user: Optional[dict]) -> dict:
+    """Parse a BCA CSV and bind it to the server account. This function does not write."""
+    del user
+    cb_id = str(cash_bank_id or "").strip()
+    if not cb_id:
+        raise StatementValidationError("Kas/Bank wajib dipilih")
+    account = await get_cash_bank_raw(db, cb_id)
+    if not account:
+        raise StatementValidationError("Kas/Bank tidak ditemukan")
+    from services.cash_bank_statement_bca import parse_bca_statement
+    parsed = parse_bca_statement(filename, data)
+    currency = account.get("currency_code") or None
+    file_sha256 = _sha256(data)
+    parsed.update({
+        "fingerprint": file_sha256,
+        "account_binding": account_binding(cb_id, currency, file_sha256),
+        "cash_bank_id": cb_id,
+        "filename": str(filename or "mutasi.csv"),
+        "currency_code": currency,
+        "account_currency_code": currency,
+        "currency_context_note": _currency_note(),
+        "persisted_statement_lines": False,
+        "stored": False,
+    })
+    return parsed
+
+
 async def create_preview(db, *, cash_bank_id: str, filename: str, data: bytes, user: Optional[dict]) -> dict:
     """Read the account and parse the upload. This function does not write."""
     del user
@@ -1449,13 +1484,22 @@ async def commit_import(
 async def _commit_import_pinned(
     db, *, preview: dict, account: dict, mapping_raw: dict, user: Optional[dict], attempt_id: str,
 ) -> dict:
-    mapping = normalize_mapping(mapping_raw)
     data = bytes(preview.get("file_bytes") or b"")
     file_hash = _sha256(data)
     if file_hash != preview.get("file_sha256"):
         raise StatementConflictError("Hash berkas pratinjau tidak sesuai")
-    matrix = read_matrix(preview.get("filename") or "", data)
-    parsed = interpret_rows(matrix, mapping)
+    if _bca_layout(mapping_raw):
+        from services.cash_bank_statement_bca import statement_rows_from_bca
+        mapping = {"layout": "bca"}
+        parsed = statement_rows_from_bca(
+            preview.get("filename") or "",
+            data,
+            preview.get("account_currency_code") or None,
+        )
+    else:
+        mapping = normalize_mapping(mapping_raw)
+        matrix = read_matrix(preview.get("filename") or "", data)
+        parsed = interpret_rows(matrix, mapping)
     if parsed["errors"]:
         raise StatementValidationError(
             "Impor ditolak karena ada baris tidak valid",

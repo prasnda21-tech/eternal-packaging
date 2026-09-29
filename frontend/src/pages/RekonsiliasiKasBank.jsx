@@ -677,6 +677,9 @@ export default function RekonsiliasiKasBank() {
     setSuggestions(null);
     setPreview(null);
     importFile.current = null;
+    setBcaPreview(null);
+    setBcaMessage("");
+    setBcaOpen(false);
     matchKey.current = "";
   };
 
@@ -754,12 +757,13 @@ export default function RekonsiliasiKasBank() {
   const onBcaUpload = async (event) => {
     const file = event.target.files?.[0];
     event.target.value = "";
-    if (!file || !canReconcile) return;
+    if (!file || !canReconcile || !cashBankId) return;
     setBusy(true);
     setBcaMessage("");
     setBcaFilename(file.name);
     try {
       const body = new FormData();
+      body.append("cash_bank_id", cashBankId);
       body.append("file", file, file.name);
       const res = await api.previewCashBankBcaStatement(body);
       setBcaPreview(res);
@@ -972,8 +976,8 @@ export default function RekonsiliasiKasBank() {
         {canReconcile && <>
           <input ref={uploadInput} className="recon-file-input" aria-label="Berkas mutasi" type="file" accept=".csv,.txt,.xlsx" onChange={onUpload} data-testid="kas-bank-pair-import" disabled={busy || !cashBankId} />
           <button ref={importButton} type="button" className="ghost sm recon-upload" onClick={() => preview ? setImportOpen(true) : uploadInput.current?.click()} disabled={busy || !cashBankId}><Upload size={16} />{preview ? "Lanjutkan impor" : "Impor Mutasi"}</button>
-          <input ref={bcaInput} className="recon-file-input" aria-label="Berkas CSV BCA" type="file" accept=".csv,text/csv" onChange={onBcaUpload} data-testid="kas-bank-bca-file" disabled={busy} />
-          <button type="button" className="ghost sm recon-upload" onClick={() => bcaInput.current?.click()} disabled={busy} data-testid="kas-bank-bca-open"><Upload size={16} />Pratinjau CSV BCA</button>
+          <input ref={bcaInput} className="recon-file-input" aria-label="Berkas CSV BCA" type="file" accept=".csv,text/csv" onChange={onBcaUpload} data-testid="kas-bank-bca-file" disabled={busy || !cashBankId} />
+          <button type="button" className="ghost sm recon-upload" onClick={() => bcaInput.current?.click()} disabled={busy || !cashBankId} data-testid="kas-bank-bca-open"><Upload size={16} />Pratinjau CSV BCA</button>
         </>}
       </div>
 

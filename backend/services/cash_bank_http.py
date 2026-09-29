@@ -62,6 +62,7 @@ from services.cash_bank_statement import (
     StatementConflictError,
     StatementValidationError,
     commit_import,
+    create_bca_preview,
     create_preview,
     ensure_indexes as ensure_statement_indexes,
     list_imports,
@@ -69,7 +70,6 @@ from services.cash_bank_statement import (
     set_manual_balance,
     validate_preview,
 )
-from services.cash_bank_statement_bca import parse_bca_statement
 from services.cash_bank_pair_match import (
     PairConflictError,
     PairValidationError,
@@ -761,15 +761,52 @@ def register_cash_bank_routes(
 
     @api_router.post("/cash-bank/statements/bca/preview")
     async def post_bca_statement_preview(
+        cash_bank_id: str = Form(...),
         file: UploadFile = File(...),
         user=Depends(require_perm(PERM_RECONCILE)),
     ):
-        """Parse a BCA CSV for preview. Does not write a batch, line, or journal."""
-        del user
+        """Parse a BCA CSV and bind it to the server account. Does not write."""
+        db = get_db()
         data = await file.read()
         try:
-            return parse_bca_statement(file.filename or "", data)
+            return await create_bca_preview(
+                db,
+                cash_bank_id=cash_bank_id,
+                filename=file.filename or "mutasi.csv",
+                data=data,
+                user=user,
+            )
         except StatementValidationError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @api_router.post("/cash-bank/statements/bca/imports", status_code=201)
+    async def post_bca_statement_import(
+        cash_bank_id: str = Form(...),
+        fingerprint: str = Form(...),
+        account_binding: str = Form(...),
+        file: UploadFile = File(...),
+        user=Depends(require_perm(PERM_RECONCILE)),
+    ):
+        """Re-parse the BCA file inside the generic import. Browser rows are not accepted."""
+        db = get_db()
+        await _ensure_all(db)
+        data = await file.read()
+        try:
+            return await commit_import(
+                db,
+                cash_bank_id=cash_bank_id,
+                filename=file.filename or "mutasi.csv",
+                data=data,
+                fingerprint=fingerprint,
+                mapping_raw={"layout": "bca"},
+                user=user,
+                account_binding_value=account_binding,
+            )
+        except StatementValidationError as exc:
+            raise HTTPException(400, {"message": str(exc), "errors": exc.errors}) from exc
+        except StatementConflictError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except CashBankValidationError as exc:
             raise HTTPException(400, str(exc)) from exc
 
     @api_router.post("/cash-bank/statements/preview/validate")
