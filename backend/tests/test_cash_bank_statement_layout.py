@@ -51,15 +51,25 @@ def test_fixture_preserves_rows_dates_amounts_and_balance_equation():
     assert mapping["reference_column"] is None
     assert mapping["file_currency"] == "IDR"
     assert parsed["errors"] == []
-    assert parsed["accepted_count"] == 4
+    assert parsed["file_count"] == 4
+    assert parsed["ready_count"] == 3
+    assert parsed["unconfirmed_count"] == 1
+    assert parsed["match_ready"] is False
     assert parsed["opening_balance"] == 100000.00
     assert parsed["footer_ending_balance"] == 120000.00
-    assert parsed["total_in"] == 25000.00
-    assert parsed["total_out"] == 5000.00
+    assert parsed["file_total_in"] == 25000.00
+    assert parsed["file_total_out"] == 5000.00
+    assert parsed["ready_total_in"] == 20000.00
+    assert parsed["ready_total_out"] == 5000.00
     assert parsed["balance_equation_ok"] is True
-    assert [row["date"] for row in parsed["accepted"]] == [
-        "2026-06-05", "2026-09-28", "2026-09-28", "2026-09-29",
-    ]
+    assert parsed["closing_date"] is None
+    ready = [row for row in parsed["accepted"] if row["date_status"] == "certain"]
+    pending = [row for row in parsed["accepted"] if row["date_status"] == "unconfirmed"]
+    assert [row["date"] for row in ready] == ["2026-06-05", "2026-09-28", "2026-09-28"]
+    assert pending[0]["date"] is None
+    assert pending[0]["raw_date"] == "PEND"
+    assert pending[0]["suggested_date"] is None
+    assert "2026-09-29" not in [row["date"] for row in parsed["accepted"]]
     assert [row["direction"] for row in parsed["accepted"]] == ["out", "in", "in", "in"]
     assert [row["amount"] for row in parsed["accepted"]] == [5000.00, 10000.00, 10000.00, 5000.00]
     assert [row["running_balance"] for row in parsed["accepted"]] == [
@@ -127,52 +137,58 @@ Ending Balance,=,1200.00
     assert parsed["balance_equation_ok"] is not True
 
 
-def test_pending_without_day_month_is_not_guessed():
+def test_pending_keeps_raw_date_and_description():
     text = FIXTURE.replace(
         "'PEND,TRANSFER CR 2909/REF/BBBB        5000.00LANJUTAN,'0000,5000.00,CR,120000.00",
-        "'PEND,TRANSFER TANPA TANGGAL,'0000,5000.00,CR,120000.00",
+        "'PEND,TRANSFER TANPA TANGGAL KODE 2909,'0000,5000.00,CR,120000.00",
     )
     parsed, _mapping = _recognized(text)
-    pend = [item for item in parsed["errors"] if "PEND" in item["message"]]
-    assert pend and pend[0]["row"] == 10
-    assert all(row["date"] != "2026-09-29" for row in parsed["accepted"])
+    pending = [row for row in parsed["accepted"] if row["raw_date"] == "PEND"]
+    assert len(pending) == 1
+    assert pending[0]["date"] is None
+    assert pending[0]["suggested_date"] is None
+    assert pending[0]["description"] == "TRANSFER TANPA TANGGAL KODE 2909"
+    assert parsed["errors"] == []
+    assert parsed["ready_count"] == 3
+    assert parsed["file_count"] == 4
+    assert parsed["balance_equation_ok"] is True
+    assert parsed["match_ready"] is False
 
 
-def test_pending_year_is_not_taken_from_a_different_year_or_filename():
+def test_year_change_and_four_digit_text_do_not_become_dates():
     text = """Account No.,=,1000000001
 Name,=,NAMA CONTOH
 Currency,=,IDR
 
 Date,Description,Branch,Amount,,Balance
-'28/12/2026,SETORAN AKHIR,'0000,100.00,CR,1100.00
-'PEND,TRANSFER CR 0101/REF/CC        100.00LANJUTAN,'0000,100.00,CR,1200.00
-Starting Balance,=,1000.00
-Credit,=,200.00
-Debet,=,0.00
-Ending Balance,=,1200.00
-"""
-    parsed, _mapping = _recognized(text)
-    assert all(row["date"] != "2027-01-01" for row in parsed["accepted"])
-    assert any("Tahun tidak ditebak" in item["message"] for item in parsed["errors"])
-
-
-def test_two_explicit_years_leave_pending_undated():
-    text = """Account No.,=,1000000001
-Name,=,NAMA CONTOH
-Currency,=,IDR
-
-Date,Description,Branch,Amount,,Balance
-'31/12/2025,SETORAN LAMA,'0000,100.00,CR,1100.00
-'02/01/2026,SETORAN BARU,'0000,100.00,CR,1200.00
-'PEND,TRANSFER CR 0301/REF/CC        100.00LANJUTAN,'0000,100.00,CR,1300.00
+'31/12/2025,SETORAN LAMA KODE 2909,'0000,100.00,CR,1100.00
+'02/01/2026,SETORAN BARU KODE 1234,'0000,100.00,CR,1200.00
+'PEND,TRANSFER CR 0101/REF/CC KODE 4567,'0000,100.00,CR,1300.00
 Starting Balance,=,1000.00
 Credit,=,300.00
 Debet,=,0.00
 Ending Balance,=,1300.00
 """
     parsed, _mapping = _recognized(text)
-    assert [row["date"] for row in parsed["accepted"]] == ["2025-12-31", "2026-01-02"]
-    assert any("tidak tunggal" in item["message"] for item in parsed["errors"])
+    assert parsed["errors"] == []
+    assert parsed["file_count"] == 3
+    assert parsed["ready_count"] == 2
+    assert parsed["unconfirmed_count"] == 1
+    assert parsed["file_total_in"] == 300.00
+    assert parsed["ready_total_in"] == 200.00
+    assert parsed["balance_equation_ok"] is True
+    assert parsed["match_ready"] is False
+    dated = [row for row in parsed["accepted"] if row["date_status"] == "certain"]
+    pending = parsed["unconfirmed"][0]
+    assert [row["date"] for row in dated] == ["2025-12-31", "2026-01-02"]
+    assert pending["raw_date"] == "PEND"
+    assert pending["date"] is None
+    assert pending["suggested_date"] is None
+    assert pending["description"] == "TRANSFER CR 0101/REF/CC KODE 4567"
+    assert "KODE 2909" in dated[0]["description"]
+    assert "KODE 1234" in dated[1]["description"]
+    forbidden = {"2026-09-29", "2027-01-01", "2026-01-01", "2025-01-01"}
+    assert forbidden.isdisjoint({row["date"] for row in parsed["accepted"]})
 
 
 def test_missing_currency_is_not_filled_with_idr():

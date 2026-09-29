@@ -670,6 +670,15 @@ async def validate_preview(db, preview_id: str, mapping_raw: dict) -> dict:
         "closing_date": parsed["closing_date"],
         "headers": parsed["headers"],
         "sample_accepted": parsed["accepted"][:8],
+        "file_count": parsed.get("file_count", parsed["accepted_count"]),
+        "file_total_in": parsed.get("file_total_in", parsed["total_in"]),
+        "file_total_out": parsed.get("file_total_out", parsed["total_out"]),
+        "ready_count": parsed.get("ready_count", parsed["accepted_count"]),
+        "ready_total_in": parsed.get("ready_total_in", parsed["total_in"]),
+        "ready_total_out": parsed.get("ready_total_out", parsed["total_out"]),
+        "unconfirmed_count": parsed.get("unconfirmed_count") or 0,
+        "unconfirmed": parsed.get("unconfirmed") or [],
+        "match_ready": parsed.get("match_ready", not parsed["errors"]),
         "opening_balance": parsed.get("opening_balance"),
         "footer_ending_balance": parsed.get("footer_ending_balance"),
         "balance_equation_ok": parsed.get("balance_equation_ok"),
@@ -827,7 +836,7 @@ async def _flag_duplicates(
             row["identity_guarantee"] = "tidak_dijamin"
             row["duplicate_of_bank_txn_id"] = None
             weak = "|".join([
-                row["date"], row["direction"], str(row["amount"]),
+                str(row.get("date") or ""), row["direction"], str(row["amount"]),
                 " ".join(str(row["description"]).lower().split()),
             ])
             if weak in seen_weak:
@@ -926,6 +935,13 @@ def public_import(doc: Optional[dict]) -> Optional[dict]:
         "status": doc.get("status"),
         "accepted_count": doc.get("accepted_count"),
         "stored_count": doc.get("stored_count"),
+        "file_count": doc.get("file_count"),
+        "file_total_in": doc.get("file_total_in"),
+        "file_total_out": doc.get("file_total_out"),
+        "ready_count": doc.get("ready_count"),
+        "ready_total_in": doc.get("ready_total_in"),
+        "ready_total_out": doc.get("ready_total_out"),
+        "unconfirmed_count": doc.get("unconfirmed_count"),
         "total_in": doc.get("total_in"),
         "total_out": doc.get("total_out"),
         "closing_balance": doc.get("closing_balance"),
@@ -1049,7 +1065,10 @@ def _line_doc(batch: dict, row: dict, line_id: str, actor: dict, now: str) -> di
         "cash_bank_id": batch["cash_bank_id"],
         "source_row": row["source_row"],
         "row_number": row["row_number"],
-        "date": row["date"],
+        "date": row.get("date"),
+        "raw_date": row.get("raw_date"),
+        "date_status": row.get("date_status") or "certain",
+        "suggested_date": None,
         "description": row["description"],
         "reference": row.get("reference"),
         "bank_txn_id": row.get("bank_txn_id"),
@@ -1737,6 +1756,13 @@ async def _store_pinned_import(
         "stored_count": 0,
         "total_in": parsed["total_in"],
         "total_out": parsed["total_out"],
+        "file_count": parsed.get("file_count", parsed["accepted_count"]),
+        "file_total_in": parsed.get("file_total_in", parsed["total_in"]),
+        "file_total_out": parsed.get("file_total_out", parsed["total_out"]),
+        "ready_count": parsed.get("ready_count", parsed["accepted_count"]),
+        "ready_total_in": parsed.get("ready_total_in", parsed["total_in"]),
+        "ready_total_out": parsed.get("ready_total_out", parsed["total_out"]),
+        "unconfirmed_count": parsed.get("unconfirmed_count") or 0,
         "closing_balance": parsed["closing_balance"],
         "closing_date": parsed["closing_date"],
         "operator_coverage_confirmed": bool(mapping.get("operator_coverage_confirmed")),
@@ -1792,9 +1818,15 @@ async def list_ready_lines(db, *, cash_bank_id: str, start: str, end: str) -> Li
     rows = await db[LINES].find(
         {
             "import_id": {"$in": ids},
-            "date": {"$gte": start, "$lte": end},
             "duplicate_status": {"$ne": DUP_EXCLUDED},
             "sealed": {"$ne": False},
+            "$or": [
+                {
+                    "date": {"$gte": start, "$lte": end},
+                    "date_status": {"$ne": "unconfirmed"},
+                },
+                {"date_status": "unconfirmed"},
+            ],
         },
         {"_id": 0},
     ).to_list(MAX_ROWS * 5)
@@ -1803,6 +1835,8 @@ async def list_ready_lines(db, *, cash_bank_id: str, start: str, end: str) -> Li
 
 
 def line_matchable(row: dict, account_currency: Optional[str]) -> Tuple[bool, str]:
+    if row.get("date_status") == "unconfirmed" or not str(row.get("date") or "").strip():
+        return False, "Tanggal belum pasti. Konfirmasi tanggal sebelum pencocokan."
     if row.get("duplicate_status") == DUP_DEFINITE:
         return False, "Duplikat pasti transaksi bank yang sama tidak dapat dicocokkan"
     if row.get("duplicate_status") == DUP_PENDING:
@@ -1821,6 +1855,98 @@ def line_matchable(row: dict, account_currency: Optional[str]) -> Tuple[bool, st
     if currency != account_currency:
         return False, "Mata uang baris bank berbeda dari rekening"
     return True, ""
+
+
+async def _publish_closing_if_dates_complete(db, import_id: str) -> None:
+    """Publish a dated closing only after every stored row has a confirmed date."""
+    remaining = await db[LINES].count_documents({"import_id": import_id, "date_status": "unconfirmed"})
+    if remaining:
+        return
+    rows = await db[LINES].find(
+        {"import_id": import_id, "sealed": {"$ne": False}},
+        {"_id": 0, "date": 1, "running_balance": 1, "source_row": 1},
+    ).to_list(MAX_ROWS + 5)
+    if not rows or any(not row.get("date") for row in rows):
+        return
+    last = max(rows, key=lambda row: int(row.get("source_row") or 0))
+    await db[IMPORTS].update_one(
+        {"id": import_id},
+        {"$set": {
+            "closing_date": max(str(row["date"]) for row in rows),
+            "closing_balance": last.get("running_balance"),
+            "unconfirmed_count": 0,
+            "ready_count": len(rows),
+        }},
+    )
+
+
+async def confirm_statement_date(
+    db, line_id: str, *, statement_date: str, reason: str, idempotency_key: str, user: Optional[dict],
+) -> dict:
+    """Store a user-supplied date. Never reads the description or other rows for the year."""
+    date_text = str(statement_date or "").strip()
+    try:
+        parsed = datetime.strptime(date_text, "%Y-%m-%d").date().isoformat()
+    except ValueError as exc:
+        raise StatementValidationError(
+            "Tanggal konfirmasi harus YYYY-MM-DD dari pengguna. Tanggal tidak diambil dari uraian."
+        ) from exc
+    why = str(reason or "").strip()
+    if len(why) < 3:
+        raise StatementValidationError("Alasan konfirmasi tanggal wajib diisi")
+    key = str(idempotency_key or "").strip()
+    if not key:
+        raise StatementValidationError("Idempotency key wajib")
+    line = await db[LINES].find_one({"id": str(line_id)}, {"_id": 0})
+    if not line:
+        raise KeyError("missing")
+    prior = next(
+        (item for item in (line.get("date_confirmations") or []) if item.get("idempotency_key") == key),
+        None,
+    )
+    if prior:
+        if prior.get("date") != parsed or prior.get("reason") != why:
+            raise StatementConflictError("Kunci yang sama tidak dapat mengubah tanggal konfirmasi")
+        return line
+    if line.get("date_status") != "unconfirmed":
+        raise StatementConflictError("Tanggal baris ini sudah pasti dan tidak diubah lewat konfirmasi PEND")
+    if line.get("active_claim"):
+        raise StatementConflictError("Baris sedang diklaim pencocokan")
+    event = {
+        "date": parsed,
+        "reason": why,
+        "idempotency_key": key,
+        "at": now_iso(),
+        "actor": actor_snapshot(user),
+        "source": "konfirmasi_pengguna",
+    }
+    updated = dict(line)
+    updated["date"] = parsed
+    identity = _line_identity(updated)
+    result = await db[LINES].update_one(
+        {"id": line["id"], "date_status": "unconfirmed", "active_claim": None},
+        {
+            "$set": {
+                "date": parsed,
+                "date_status": "certain",
+                "suggested_date": None,
+                "identity": identity,
+                "updated_at": event["at"],
+            },
+            "$push": {"date_confirmations": event},
+        },
+    )
+    if result.matched_count != 1:
+        current = await db[LINES].find_one({"id": line["id"]}, {"_id": 0})
+        same = next(
+            (item for item in ((current or {}).get("date_confirmations") or []) if item.get("idempotency_key") == key),
+            None,
+        )
+        if current and same and same.get("date") == parsed:
+            return current
+        raise StatementConflictError("Konfirmasi tanggal bentrok. Muat ulang baris.")
+    await _publish_closing_if_dates_complete(db, line.get("import_id") or "")
+    return await db[LINES].find_one({"id": line["id"]}, {"_id": 0})
 
 
 async def resolve_duplicate(

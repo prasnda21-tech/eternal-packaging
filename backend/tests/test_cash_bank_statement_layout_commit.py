@@ -12,9 +12,10 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ.setdefault("MONGO_URL", "mongodb://127.0.0.1:27017")
-os.environ["DB_NAME"] = (
+LAYOUT_DB = (
     f"recon_layout_isolated_{os.environ.get('PYTEST_XDIST_WORKER') or 'main'}_{uuid.uuid4().hex[:6]}"
 )
+os.environ["DB_NAME"] = LAYOUT_DB
 os.environ.setdefault("JWT_SECRET", "test-secret-key-12345678901234567890")
 os.environ.setdefault("CORS_ORIGINS", "*")
 os.environ.setdefault("STORAGE_PROVIDER", "local")
@@ -32,8 +33,10 @@ from services.cash_bank_statement import (  # noqa: E402
     LINES,
     PREVIEWS,
     commit_import,
+    confirm_statement_date,
     create_preview,
     ensure_indexes as ensure_statement,
+    line_matchable,
 )
 from services.chart_of_accounts import COLLECTION as COA_COLLECTION, create_account, ensure_indexes as ensure_coa  # noqa: E402
 from services.journal_core import JOURNAL_ENTRIES, ensure_indexes as ensure_journal  # noqa: E402
@@ -55,14 +58,15 @@ def anyio_backend():
 @pytest.fixture(autouse=True)
 def bind_motor():
     from motor.motor_asyncio import AsyncIOMotorClient
+    os.environ["DB_NAME"] = LAYOUT_DB
     server.client = AsyncIOMotorClient(os.environ["MONGO_URL"])
-    server.db = server.client[os.environ["DB_NAME"]]
+    server.db = server.client[LAYOUT_DB]
 
 
 @pytest.fixture(autouse=True)
 async def clean_db(bind_motor):
     db = server.db
-    assert db.name.startswith("recon_layout_isolated_")
+    assert db.name == LAYOUT_DB
     for name in (CB_COLLECTION, COA_COLLECTION, IMPORTS, LINES, PREVIEWS, RECON_MATCHES, JOURNAL_ENTRIES):
         await db[name].drop()
     await ensure_coa(db)
@@ -109,10 +113,14 @@ async def test_commit_keeps_similar_rows_and_reimport_does_not_duplicate_the_bat
     )
     assert first["status"] == "complete"
     assert first["stored_count"] == 4
+    assert first["file_count"] == 4
+    assert first["ready_count"] == 3
+    assert first["unconfirmed_count"] == 1
+    assert first["closing_date"] is None
     assert await server.db[LINES].count_documents({"import_id": first["id"]}) == 4
     rows = await server.db[LINES].find(
         {"import_id": first["id"]},
-        {"_id": 0, "description": 1, "duplicate_status": 1, "bank_txn_id": 1, "authoritative_txn_id": 1, "date": 1, "direction": 1, "amount": 1},
+        {"_id": 0, "id": 1, "description": 1, "duplicate_status": 1, "bank_txn_id": 1, "authoritative_txn_id": 1, "date": 1, "raw_date": 1, "date_status": 1, "direction": 1, "amount": 1, "currency_code": 1},
     ).to_list(10)
     twins = [row for row in rows if row["description"] == "SETORAN TUNAI SAMA"]
     assert len(twins) == 2
@@ -120,6 +128,21 @@ async def test_commit_keeps_similar_rows_and_reimport_does_not_duplicate_the_bat
     assert all(row["bank_txn_id"] in (None, "") for row in rows)
     assert all(row.get("authoritative_txn_id") in (None, "") for row in rows)
     assert any("BIAYA ADMIN, CABANG\nLANJUTAN URAIAN" == row["description"] for row in rows)
+    pending = next(row for row in rows if row["raw_date"] == "PEND")
+    assert pending["date"] is None
+    assert pending["date_status"] == "unconfirmed"
+    assert "2909" in pending["description"]
+    assert line_matchable(pending, "IDR") == (False, "Tanggal belum pasti. Konfirmasi tanggal sebelum pencocokan.")
+    confirmed = await confirm_statement_date(
+        server.db, pending["id"], statement_date="2026-10-02", reason="Tanggal diisi operator",
+        idempotency_key="pend-date-1", user=user,
+    )
+    assert confirmed["date"] == "2026-10-02"
+    assert confirmed["date_status"] == "certain"
+    assert confirmed["description"] == pending["description"]
+    assert confirmed["suggested_date"] is None
+    assert line_matchable(confirmed, "IDR")[0] is True
+    assert await server.db[RECON_MATCHES].count_documents({}) == 0
     assert await server.db[JOURNAL_ENTRIES].count_documents({}) == journals_before
     assert await server.db[RECON_MATCHES].count_documents({}) == 0
 

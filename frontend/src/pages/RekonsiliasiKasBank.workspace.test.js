@@ -13,6 +13,7 @@ jest.mock('../lib/api', () => ({ __esModule: true, default: {
   cashBankAccounts: jest.fn(), cashBankPairWorkspace: jest.fn(), cashBankStatementImports: jest.fn(),
   cashBankPairSuggestions: jest.fn(), createCashBankPair: jest.fn(), cancelCashBankPair: jest.fn(),
   previewCashBankStatement: jest.fn(), validateCashBankStatement: jest.fn(), commitCashBankStatement: jest.fn(),
+  confirmCashBankStatementDate: jest.fn(),
 } }));
 jest.mock('../lib/auth', () => ({ useAuth: () => ({ hasPerm: (perm) => mockPermissions.includes(perm) }) }));
 const api = require('../lib/api').default;
@@ -105,6 +106,31 @@ test('recognized statement header fills mapping and does not mark a reference as
     reference_column:null, bank_txn_id_column:null,
   })});
   expect(api.validateCashBankStatement.mock.calls[0][1].mapping.bank_txn_id_authoritative).toBeUndefined();
+});
+test('validation separates file totals from rows ready to match', async () => {
+  api.validateCashBankStatement.mockResolvedValue({
+    ok:true, errors:[], accepted_count:2, file_count:2, file_total_in:150, file_total_out:0,
+    ready_count:1, ready_total_in:100, ready_total_out:0, unconfirmed_count:1,
+    balance_equation_ok:true, opening_balance:1000, footer_ending_balance:1150,
+    unconfirmed:[{source_row:9, raw_date:'PEND', date:null, suggested_date:null, description:'TRANSFER KODE 2909'}],
+  });
+  await renderPage(); await upload(); await click(byText('Validasi'));
+  const dialog = container.querySelector('dialog');
+  expect(dialog.textContent).toContain('Seluruh baris berkas 2');
+  expect(dialog.textContent).toContain('Siap diimpor dan dicocokkan 1');
+  expect(dialog.textContent).toContain('Tanggal belum pasti 1');
+  expect(dialog.textContent).toContain('Baris 9: tanggal belum pasti (PEND)');
+  expect(dialog.textContent).toContain('Tidak ada tanggal usulan');
+  expect(dialog.textContent).toContain('tidak membuat baris bertanggal belum pasti siap dicocokkan');
+});
+test('unconfirmed bank row stays visible and cannot be selected for matching', async () => {
+  workspace.bank_lines=[{...bank, date:null, raw_date:'PEND', date_status:'unconfirmed', matchable:false, block_reason:'Tanggal belum pasti. Konfirmasi tanggal sebelum pencocokan.'}];
+  await renderPage();
+  expect(container.textContent).toContain('Tanggal belum pasti');
+  expect(container.textContent).toContain('PEND');
+  expect(container.querySelector('[name=bank-line]').disabled).toBe(true);
+  expect(container.querySelector('[aria-label="Tanggal konfirmasi Transfer pelanggan"]').value).toBe('');
+  expect(api.confirmCashBankStatementDate).not.toHaveBeenCalled();
 });
 test('close/reopen preview preserves mapping and never confirms import', async () => {
   await renderPage(); await upload();

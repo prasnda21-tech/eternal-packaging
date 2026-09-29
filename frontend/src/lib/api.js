@@ -337,6 +337,7 @@ export const api = {
   previewCashBankStatement: (formData) => client.post(`/cash-bank/statements/preview`, formData).then((r) => r.data),
   validateCashBankStatement: (previewId, payload) => client.post(`/cash-bank/statements/preview/${encodeURIComponent(previewId)}/validate`, payload).then((r) => r.data),
   commitCashBankStatement: (payload) => client.post(`/cash-bank/statements/imports`, payload).then((r) => r.data),
+  confirmCashBankStatementDate: (lineId, payload) => client.post(`/cash-bank/statements/lines/${encodeURIComponent(lineId)}/date-confirmation`, payload).then((r) => r.data),
   cashBankStatementImports: (params = {}) => client.get(`/cash-bank/statements/imports`, { params }).then((r) => r.data),
   resolveCashBankStatementDuplicate: (lineId, payload) => client.post(`/cash-bank/statements/lines/${encodeURIComponent(lineId)}/duplicate-resolution`, payload).then((r) => r.data),
   setCashBankManualStatementBalance: (payload) => client.put(`/cash-bank/statements/manual-balance`, payload).then((r) => r.data),

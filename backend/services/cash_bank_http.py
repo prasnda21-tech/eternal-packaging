@@ -61,6 +61,7 @@ from services.cash_bank_statement import (
     StatementConflictError,
     StatementValidationError,
     commit_import,
+    confirm_statement_date,
     create_preview,
     ensure_indexes as ensure_statement_indexes,
     list_imports,
@@ -166,6 +167,13 @@ class StatementCommitPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     preview_id: str = Field(..., min_length=1)
     mapping: dict
+
+
+class StatementDatePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    date: str = Field(..., min_length=10, max_length=10)
+    reason: str = Field(..., min_length=1)
+    idempotency_key: str = Field(..., min_length=1)
 
 
 class StatementResolvePayload(BaseModel):
@@ -789,6 +797,37 @@ def register_cash_bank_routes(
         db = get_db()
         items = await list_imports(db, cash_bank_id=cash_bank_id)
         return {"items": items, "total": len(items)}
+
+    @api_router.post("/cash-bank/statements/lines/{line_id}/date-confirmation")
+    async def post_statement_date_confirmation(
+        line_id: str,
+        payload: StatementDatePayload,
+        user=Depends(require_perm(PERM_RECONCILE)),
+    ):
+        db = get_db()
+        try:
+            row = await confirm_statement_date(
+                db,
+                line_id,
+                statement_date=payload.date,
+                reason=payload.reason,
+                idempotency_key=payload.idempotency_key,
+                user=user,
+            )
+        except KeyError:
+            raise HTTPException(404, "Baris rekening koran tidak ditemukan") from None
+        except StatementValidationError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except StatementConflictError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        return {
+            "id": row.get("id"),
+            "date": row.get("date"),
+            "raw_date": row.get("raw_date"),
+            "date_status": row.get("date_status"),
+            "description": row.get("description"),
+            "suggested_date": None,
+        }
 
     @api_router.post("/cash-bank/statements/lines/{line_id}/duplicate-resolution")
     async def post_statement_duplicate_resolution(

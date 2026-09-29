@@ -599,6 +599,7 @@ export default function RekonsiliasiKasBank() {
     operator_coverage_confirmed: false,
   });
   const [currencyDraft, setCurrencyDraft] = useState("");
+  const [dateDrafts, setDateDrafts] = useState({});
   const [busy, setBusy] = useState(false);
   const requestRef = useRef(0);
   const matchKey = useRef("");
@@ -792,7 +793,12 @@ export default function RekonsiliasiKasBank() {
       });
       setPreview((current) => ({ ...current, validation: res }));
       setRowErrors(res.errors || []);
-      setMessage(res.ok ? "Validasi pratinjau selesai. Belum ada baris mutasi yang disimpan." : "Ada baris yang tidak valid.");
+      const pending = Number(res.unconfirmed_count || 0);
+      setMessage(res.ok
+        ? (pending
+          ? `Validasi pratinjau selesai. ${pending} baris tanggal belum pasti dan tidak siap dicocokkan. Belum ada baris mutasi yang disimpan.`
+          : "Validasi pratinjau selesai. Belum ada baris mutasi yang disimpan.")
+        : "Ada baris yang tidak valid.");
     } catch (ex) {
       const parsed = errPayload(ex);
       setRowErrors(parsed.errors);
@@ -816,6 +822,26 @@ export default function RekonsiliasiKasBank() {
       const parsed = errPayload(ex);
       setRowErrors(parsed.errors);
       setMessage(parsed.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const confirmDate = async (row) => {
+    const draft = dateDrafts[row.id] || {};
+    if (!draft.date || !canReconcile) return;
+    setBusy(true);
+    try {
+      await api.confirmCashBankStatementDate(row.id, {
+        date: draft.date,
+        reason: draft.reason || "",
+        idempotency_key: draft.key || newOperationKey(),
+      });
+      setDateDrafts((current) => ({ ...current, [row.id]: { date: "", reason: "", key: newOperationKey() } }));
+      setMessage("Tanggal dikonfirmasi pengguna. Pencocokan tidak dibuat.");
+      await loadWorkspace(cashBankId, startDate, endDate, q);
+    } catch (ex) {
+      setMessage(errPayload(ex).message);
     } finally {
       setBusy(false);
     }
@@ -983,7 +1009,7 @@ export default function RekonsiliasiKasBank() {
               <thead><tr><th aria-label="Pilih satu baris" /><th>Tanggal</th><th>Uraian / Referensi</th><th className="num">Masuk</th><th className="num">Keluar</th></tr></thead><tbody>
                 {visibleBank.map((row) => <tr key={row.id} className={selectedBank === row.id ? "kb-row-matched" : ""}>
                   <td><input type="radio" name="bank-line" checked={selectedBank === row.id} onChange={() => pickBank(row)} disabled={!row.matchable || busy || !canReconcile} aria-label={`Pilih bank ${row.description}`} /></td>
-                  <td className="recon-date">{reconDate(row.date)}</td><td><span className="recon-description">{row.description || "—"}</span><small>{row.reference || "—"}</small>{row.block_reason && <span className="recon-row-warning">{row.block_reason}</span>}{row.identity_guarantee === "tidak_dijamin" && <small>Identitas bank tidak dijamin</small>}</td>
+                  <td className="recon-date">{row.date_status === "unconfirmed" ? "Tanggal belum pasti" : reconDate(row.date)}{row.raw_date ? <small>{row.raw_date}</small> : null}</td><td><span className="recon-description">{row.description || "—"}</span><small>{row.reference || "—"}</small>{row.block_reason && <span className="recon-row-warning">{row.block_reason}</span>}{row.identity_guarantee === "tidak_dijamin" && <small>Identitas bank tidak dijamin</small>}{row.date_status === "unconfirmed" && canReconcile && <form className="recon-date-confirm" onSubmit={(event) => { event.preventDefault(); confirmDate(row); }}><input aria-label={`Tanggal konfirmasi ${row.description}`} type="date" value={dateDrafts[row.id]?.date || ""} onChange={(event) => setDateDrafts((current) => ({ ...current, [row.id]: { ...(current[row.id] || {}), date: event.target.value, key: current[row.id]?.key || newOperationKey() } }))} /><input aria-label={`Alasan tanggal ${row.description}`} value={dateDrafts[row.id]?.reason || ""} placeholder="Alasan konfirmasi" onChange={(event) => setDateDrafts((current) => ({ ...current, [row.id]: { ...(current[row.id] || {}), reason: event.target.value, key: current[row.id]?.key || newOperationKey() } }))} /><button type="submit" className="ghost sm" disabled={busy || !dateDrafts[row.id]?.date}>Konfirmasi tanggal</button></form>}</td>
                   <td className="num kb-money">{amountCell(row, "in", row.amount)}</td><td className="num kb-money">{amountCell(row, "out", row.amount)}</td>
                 </tr>)}
               </tbody></table></div>}
@@ -1054,8 +1080,10 @@ export default function RekonsiliasiKasBank() {
             <h3>Contoh isi berkas</h3><div className="recon-sample-scroll"><table className="prod-table kas-bank-table"><tbody>{sample.map((row, index) => <tr key={index}>{row.map((cell, cellIndex) => <td key={cellIndex}>{cell}</td>)}</tr>)}</tbody></table></div>
             {message && <p className="recon-notice" role="status">{message}</p>}
             {!!rowErrors.length && <ul className="recon-validation-errors" role="alert">{rowErrors.map((err) => <li key={`${err.row}-${err.message}`}>Baris {err.row}: {err.message}</li>)}</ul>}
-            {preview.validation && <p>Diterima {preview.validation.accepted_count}. Masuk {money(preview.validation.total_in, preview.validation.file_currency || mapping.file_currency || preview.currency_code)}. Keluar {money(preview.validation.total_out, preview.validation.file_currency || mapping.file_currency || preview.currency_code)}.</p>}
-            {preview.validation && preview.validation.opening_balance != null && <p>Saldo awal {money(preview.validation.opening_balance, mapping.file_currency || preview.currency_code)} + masuk − keluar {preview.validation.balance_equation_ok ? "sama dengan saldo akhir pada berkas." : preview.validation.balance_equation_ok === false ? "tidak sama dengan saldo akhir pada berkas. Nominal tidak disesuaikan." : "belum dapat diperiksa karena ada baris yang tidak terbaca."}</p>}
+            {preview.validation && <p>Seluruh baris berkas {preview.validation.file_count ?? preview.validation.accepted_count}. Masuk {money(preview.validation.file_total_in ?? preview.validation.total_in, mapping.file_currency || preview.currency_code)}. Keluar {money(preview.validation.file_total_out ?? preview.validation.total_out, mapping.file_currency || preview.currency_code)}.</p>}
+            {preview.validation && <p>Siap diimpor dan dicocokkan {preview.validation.ready_count ?? preview.validation.accepted_count}. Masuk {money(preview.validation.ready_total_in ?? preview.validation.total_in, mapping.file_currency || preview.currency_code)}. Keluar {money(preview.validation.ready_total_out ?? preview.validation.total_out, mapping.file_currency || preview.currency_code)}. Tanggal belum pasti {preview.validation.unconfirmed_count || 0}.</p>}
+            {!!preview.validation?.unconfirmed?.length && <ul>{preview.validation.unconfirmed.map((row) => <li key={row.source_row}>Baris {row.source_row}: tanggal belum pasti ({row.raw_date || "PEND"}). Uraian asli dipertahankan. Tidak ada tanggal usulan.</li>)}</ul>}
+            {preview.validation && preview.validation.opening_balance != null && <p>Saldo awal {money(preview.validation.opening_balance, mapping.file_currency || preview.currency_code)} + masuk − keluar seluruh baris {preview.validation.balance_equation_ok ? "sama dengan saldo akhir pada berkas. Kecocokan saldo tidak membuat baris bertanggal belum pasti siap dicocokkan." : preview.validation.balance_equation_ok === false ? "tidak sama dengan saldo akhir pada berkas. Nominal tidak disesuaikan." : "belum dapat diperiksa karena ada baris yang tidak terbaca."}</p>}
           </div>
           <footer className="recon-drawer-footer"><span>Validasi dan penyimpanan tetap diperiksa server.</span><button type="button" className="ghost sm" onClick={onValidate} disabled={busy}>Validasi</button><button type="button" className="primary sm" onClick={onCommit} disabled={busy || !canReconcile}>Konfirmasi impor</button></footer>
         </>}

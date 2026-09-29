@@ -13,7 +13,7 @@ Direction is taken from the running-balance change in the same file.
 from __future__ import annotations
 
 import re
-from datetime import datetime, timedelta
+from datetime import datetime
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -23,9 +23,9 @@ HEADER = ["Date", "Description", "Branch", "Amount", "", "Balance"]
 FOOTER_LABELS = ("Starting Balance", "Credit", "Debet", "Ending Balance")
 AMOUNT_TEXT = re.compile(r"^\d+\.\d{2}$")
 EXPLICIT_DATE = re.compile(r"^\d{2}/\d{2}/\d{4}$")
-PEND_PARTS = re.compile(r"(?<!\d)(\d{2})(\d{2})/")
-DAY_WINDOW = 31
 INDICATORS = ("DB", "CR")
+DATE_CERTAIN = "certain"
+DATE_UNCONFIRMED = "unconfirmed"
 
 
 class LayoutRejected(ValueError):
@@ -199,7 +199,7 @@ def _date_kind(value: Any) -> Tuple[str, Optional[str]]:
     if text.startswith("'"):
         text = text[1:]
     if text == "PEND":
-        return "pend", None
+        return "pend", "PEND"
     if not EXPLICIT_DATE.fullmatch(text):
         return "invalid", f"Tanggal '{_text(value)}' tidak sesuai DD/MM/YYYY"
     try:
@@ -207,38 +207,6 @@ def _date_kind(value: Any) -> Tuple[str, Optional[str]]:
     except ValueError:
         return "invalid", f"Tanggal '{text}' tidak valid"
     return "explicit", parsed.date().isoformat()
-
-
-def _pend_date(description: str, explicit_dates: List[datetime.date]) -> Tuple[Optional[str], Optional[str]]:
-    found: List[Tuple[int, int]] = []
-    for day_text, month_text in PEND_PARTS.findall(description):
-        day = int(day_text)
-        month = int(month_text)
-        try:
-            datetime(2000, month, day)
-        except ValueError:
-            continue
-        found.append((day, month))
-    unique = set(found)
-    if len(unique) != 1:
-        return None, "Tanggal PEND tidak memuat hari dan bulan yang tunggal. Tanggal tidak ditebak."
-    years = {item.year for item in explicit_dates}
-    if len(years) != 1:
-        return None, "Tahun tanggal PEND tidak tertulis dan tidak tunggal pada berkas. Tahun tidak ditebak."
-    year = next(iter(years))
-    day, month = next(iter(unique))
-    try:
-        built = datetime(year, month, day).date()
-    except ValueError:
-        return None, "Tanggal PEND tidak valid untuk tahun yang tertulis pada berkas."
-    earliest = min(explicit_dates)
-    latest = max(explicit_dates)
-    if not (earliest - timedelta(days=DAY_WINDOW) <= built <= latest + timedelta(days=DAY_WINDOW)):
-        return None, (
-            "Tanggal PEND berada di luar rentang tanggal yang tertulis pada berkas. "
-            "Tahun tidak ditebak."
-        )
-    return built.isoformat(), None
 
 
 def _cell(row: Sequence[Any], index: Optional[int]) -> Any:
@@ -321,7 +289,6 @@ def interpret_recognized(matrix: Sequence[Sequence[Any]], mapping: dict) -> dict
     footer_at, footer, errors = _footer(matrix, classified["header_row"])
     end = footer_at if footer_at is not None else len(matrix)
     drafts: List[dict] = []
-    explicit_dates: List[datetime.date] = []
     for index in range(classified["header_row"] + 1, end):
         row = matrix[index]
         if not any(_text(cell) for cell in row):
@@ -360,6 +327,8 @@ def interpret_recognized(matrix: Sequence[Sequence[Any]], mapping: dict) -> dict
             "line": line,
             "kind": kind,
             "date": date_value if kind == "explicit" else None,
+            "raw_date": "PEND" if kind == "pend" else None,
+            "date_status": DATE_UNCONFIRMED if kind == "pend" else DATE_CERTAIN,
             "description": description,
             "amount": amount,
             "indicator": indicator,
@@ -369,22 +338,11 @@ def interpret_recognized(matrix: Sequence[Sequence[Any]], mapping: dict) -> dict
             "row_errors": row_errors,
         }
         drafts.append(draft)
-        if kind == "explicit" and date_value:
-            explicit_dates.append(datetime.strptime(date_value, "%Y-%m-%d").date())
     if not drafts and not errors:
         errors.append({
             "row": line_number(matrix, classified["header_row"]),
             "message": "Tidak ada baris transaksi di bawah header",
         })
-
-    for draft in drafts:
-        if draft["kind"] != "pend" or draft["row_errors"]:
-            continue
-        iso_date, pend_error = _pend_date(draft["description"], explicit_dates)
-        if pend_error:
-            draft["row_errors"].append(pend_error)
-        else:
-            draft["date"] = iso_date
 
     opening = (footer.get("Starting Balance") or {}).get("amount")
     previous = opening
@@ -457,11 +415,15 @@ def interpret_recognized(matrix: Sequence[Sequence[Any]], mapping: dict) -> dict
                 total_out += amount
             if draft["balance"] is not None:
                 closing = draft["balance"]
-                closing_date = draft["date"]
+                if draft.get("date"):
+                    closing_date = draft["date"]
             accepted.append({
                 "source_row": draft["line"],
                 "row_number": offset,
                 "date": draft["date"],
+                "raw_date": draft.get("raw_date"),
+                "date_status": draft.get("date_status") or DATE_CERTAIN,
+                "suggested_date": None,
                 "description": draft["description"],
                 "reference": draft["reference"],
                 "bank_txn_id": draft["bank_txn_id"],
@@ -525,6 +487,12 @@ def interpret_recognized(matrix: Sequence[Sequence[Any]], mapping: dict) -> dict
             })
             equation_ok = False
 
+    ready = [row for row in accepted if row.get("date_status") != DATE_UNCONFIRMED]
+    unconfirmed = [row for row in accepted if row.get("date_status") == DATE_UNCONFIRMED]
+    ready_in = sum((Decimal(str(row["amount"])) for row in ready if row["direction"] == "in"), Decimal("0.00"))
+    ready_out = sum((Decimal(str(row["amount"])) for row in ready if row["direction"] == "out"), Decimal("0.00"))
+    if unconfirmed:
+        closing_date = None
     header = matrix[classified["header_row"]]
     return {
         "errors": errors,
@@ -532,7 +500,16 @@ def interpret_recognized(matrix: Sequence[Sequence[Any]], mapping: dict) -> dict
         "accepted_count": len(accepted),
         "total_in": _money_float(total_in),
         "total_out": _money_float(total_out),
-        "closing_balance": None if closing is None else _money_float(closing),
+        "file_count": len(accepted),
+        "file_total_in": _money_float(total_in),
+        "file_total_out": _money_float(total_out),
+        "ready_count": len(ready),
+        "ready_total_in": _money_float(ready_in),
+        "ready_total_out": _money_float(ready_out),
+        "unconfirmed_count": len(unconfirmed),
+        "unconfirmed": unconfirmed,
+        "match_ready": not errors and not unconfirmed,
+        "closing_balance": None if closing is None or unconfirmed else _money_float(closing),
         "closing_date": closing_date,
         "headers": [_text(cell) for cell in header],
         "opening_balance": None if opening is None else _money_float(opening),

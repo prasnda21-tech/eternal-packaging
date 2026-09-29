@@ -398,6 +398,8 @@ async def pair_workspace(
             "id": row.get("id"),
             "import_id": row.get("import_id"),
             "date": row.get("date"),
+            "raw_date": row.get("raw_date"),
+            "date_status": row.get("date_status") or "certain",
             "description": row.get("description"),
             "reference": row.get("reference"),
             "bank_txn_id": row.get("bank_txn_id"),
@@ -526,6 +528,14 @@ async def suggest_pairs(db, *, statement_line_id: str, start: str, end: str) -> 
     cb = await get_cash_bank_raw(db, line.get("cash_bank_id"))
     if not cb:
         raise PairValidationError("Kas/Bank tidak ditemukan")
+    eligible, _reason = line_matchable(line, cb.get("currency_code") or None)
+    if not eligible:
+        return {
+            "statement_line_id": line.get("id"),
+            "ambiguous": False,
+            "applied": False,
+            "suggestions": [],
+        }
     gl = await get_general_ledger(
         db, account_id=str(cb.get("account_id")), start_date=start, end_date=end
     )
