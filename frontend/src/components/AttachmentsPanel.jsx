@@ -217,34 +217,73 @@ export default function AttachmentsPanel({ order, user, onUpdated, designSlot = 
     }
   };
 
-  const renderList = (files, kind) => (
+  const designProofStatus = () => {
+    if (order?.design_bypassed) return { tone: "pill-bypass", label: "Design Bypass" };
+    const uploaded = order?.design_files || [];
+    const customerApproved = String(order?.customer_approval?.status || "").trim().toLowerCase() === "approved";
+    if (order?.design_status === "Approved" || customerApproved) return { tone: "pill-ok", label: "Design Approved" };
+    if (uploaded.length === 0) return { tone: "pill-warn", label: "Belum Ada File Design" };
+    return { tone: "pill-warn", label: "Menunggu Approval Design" };
+  };
+
+  const renderList = (files, kind) => {
+    const proofStatus = kind === "design" ? designProofStatus() : null;
+    return (
     <div className="attachments-grid" data-testid={`${kind}-files`}>
       {(files || []).length === 0 && <p className="empty">Belum ada file.</p>}
-      {(files || []).map((f) => (
+      {(files || []).map((f) => {
+        const uploader = f.uploaded_by_name || f.uploaded_by || ROLES[f.uploaded_by_role] || f.uploaded_by_role || "—";
+        const preview = (
+          <>
+            {f.data_url?.startsWith("data:image") ? (
+              <img src={f.data_url} alt={f.name} />
+            ) : (
+              <div className="file-thumb"><ImageIcon size={kind === "design" ? 36 : 22} /><span>{f.name.split(".").pop().toUpperCase()}</span></div>
+            )}
+          </>
+        );
+        return (
         <div
           key={f.id}
-          className="attachment-card"
+          className={"attachment-card" + (kind === "design" ? " design-proof-card" : "")}
           data-testid={`${kind}-file-${f.id}`}
         >
           <div
+            className={kind === "design" ? "design-proof-preview" : undefined}
             role="button"
             tabIndex={0}
             onClick={() => openAttachment(f, kind)}
             onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") openAttachment(f, kind); }}
             style={{ cursor: "pointer" }}
           >
-            {f.data_url?.startsWith("data:image") ? (
-              <img src={f.data_url} alt={f.name} />
-            ) : (
-              <div className="file-thumb"><ImageIcon size={22} /><span>{f.name.split(".").pop().toUpperCase()}</span></div>
-            )}
+            {preview}
+          </div>
+          {kind === "design" ? (
+            <div className="attachment-meta design-proof-meta">
+              <strong>{f.name}</strong>
+              <dl className="design-proof-facts">
+                <div>
+                  <dt>Uploader</dt>
+                  <dd data-testid={`design-file-uploader-${f.id}`}>{uploader}</dd>
+                </div>
+                <div>
+                  <dt>Tanggal</dt>
+                  <dd data-testid={`design-file-uploaded-at-${f.id}`}>{formatDate(f.uploaded_at)}</dd>
+                </div>
+                <div>
+                  <dt>Status</dt>
+                  <dd><span className={`pill sm ${proofStatus.tone}`} data-testid={`design-file-status-${f.id}`}>{proofStatus.label}</span></dd>
+                </div>
+              </dl>
+            </div>
+          ) : (
             <div className="attachment-meta" style={{ marginTop: 6 }}>
               <strong>{f.name}</strong>
               <span>{formatDate(f.uploaded_at)}</span>
               <span className="role-tag">{ROLES[f.uploaded_by_role] || f.uploaded_by_role}</span>
             </div>
-          </div>
-          <div className="attachment-actions" style={{ display: "flex", gap: 6, marginTop: 6, flexWrap: "wrap" }}>
+          )}
+          <div className={"attachment-actions" + (kind === "design" ? " design-proof-actions" : "")} style={{ display: "flex", gap: 6, marginTop: 6, flexWrap: "wrap" }}>
             <button
               type="button"
               className="ghost sm"
@@ -269,9 +308,11 @@ export default function AttachmentsPanel({ order, user, onUpdated, designSlot = 
             )}
           </div>
         </div>
-      ))}
+        );
+      })}
     </div>
-  );
+    );
+  };
 
 
   const showDesign = section === "all" || section === "design";
@@ -298,14 +339,14 @@ export default function AttachmentsPanel({ order, user, onUpdated, designSlot = 
                 onChange={(e) => handleFile(e.target.files?.[0], "design")}
                 data-testid="design-file-input"
               />
-              <button className="ghost sm" onClick={() => designInput.current?.click()} disabled={busy} data-testid="upload-design-button">
-                <Upload size={14} /> Upload desain
+              <button className="primary sm design-upload-btn" onClick={() => designInput.current?.click()} disabled={busy} data-testid="upload-design-button">
+                + Upload desain
               </button>
             </>
           )}
         </header>
         <p className="muted small" style={{ marginTop: 0 }}>
-          File design. Upload di sini; approval berada di card Approval Design.
+          File design. Upload di sini; approval berada di Approval Design.
         </p>
         {renderList(order.design_files, "design")}
         {designSlot}

@@ -1176,43 +1176,40 @@ export default function PODetail() {
         hidden={!deskPanelOwnsStage("design", viewedStage)}
       >
       <PoStageSection stageIndex={1} order={order} title="Design" hasError={!!err}>
-        <header className="panel-head">
-          <h3>DESIGN — 2&amp;3</h3>
+        <header className="panel-head design-ws-head">
+          <div className="design-ws-heading">
+            <h3>Design Workspace</h3>
+            <p className="muted small">Kelola file desain dan proses approval customer.</p>
+          </div>
           <DesignStatusBadge order={order} />
         </header>
         <div className="po-pair-grid">
           <div className="po-pair-col" data-testid="workflow-slot-1" data-workflow-stage="1">
-            <h4 className="po-pair-col-title">Data / Input Design</h4>
+            <h4 className="po-pair-col-title">Design File</h4>
             <AttachmentsPanel
               order={order}
               user={user}
               onUpdated={setOrder}
               section="design"
-              designSlot={(
-                <div className="design-actions" data-testid="design-actions" style={{display:"flex",flexWrap:"wrap",gap:8,marginTop:10,alignItems:"center"}}>
-                  <DesignStatusBadge order={order} />
-                </div>
-              )}
             />
           </div>
           <div className="po-pair-col" data-testid="workflow-slot-2" data-workflow-stage="2">
             <div data-testid="approval-design-panel">
-              <h4 className="po-pair-col-title">Design / Approval</h4>
-              <h4 className="po-pair-col-title">Internal Approval</h4>
-              <div className="workflow-stage-actions" data-testid="approval-design-actions">
+              <h4 className="po-pair-col-title">Approval Design</h4>
+              <div className="workflow-stage-actions design-approval-actions" data-testid="approval-design-actions">
                 {canApproveDesign && (order.design_files?.length || 0) > 0 && !isApprovalDesignComplete(order) && (
                   <button className="primary" onClick={approveDesign} disabled={busy} data-testid="approve-design-button">
                     <FileCheck2 size={16} /> Approve Design
                   </button>
                 )}
-                {canApproveDesign && order.design_status === "Approved" && (order.current_stage || 0) < 12 && (
-                  <button className="ghost" onClick={rejectDesign} disabled={busy} data-testid="revoke-design-button">
-                    Batalkan approve design
-                  </button>
-                )}
                 {canBypassDesign && !isApprovalDesignComplete(order) && (
                   <button className="ghost" onClick={doBypassDesign} disabled={busy} data-testid="bypass-design-button" title="Butuh permission design.bypass_approval">
                     <ShieldOff size={14}/> Bypass Design
+                  </button>
+                )}
+                {canApproveDesign && order.design_status === "Approved" && (order.current_stage || 0) < 12 && (
+                  <button className="ghost" onClick={rejectDesign} disabled={busy} data-testid="revoke-design-button">
+                    Batalkan approve design
                   </button>
                 )}
                 {!canApproveDesign && !canBypassDesign && !isApprovalDesignComplete(order) && (
