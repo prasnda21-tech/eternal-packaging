@@ -58,3 +58,15 @@ def test_filter_applies_across_pages_and_keeps_unknown_out_of_unbilled():
     assert [o['id'] for o in filter_invoice_coverage(rows,'none')]==[10,11,12]
     assert len(filter_invoice_coverage(rows,'full'))==10
     assert filter_invoice_coverage(rows,'all')==rows
+
+
+def test_order_projection_preserves_mongo_line_variables():
+    import ast
+    from pathlib import Path
+    tree = ast.parse((Path(__file__).parents[1] / 'server.py').read_text())
+    assignment = next(n for n in tree.body if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == '_SALES_ORDER_LIST_PROJECTION' for t in n.targets))
+    projection = assignment.value
+    lines = next(v for k,v in zip(projection.keys, projection.values) if isinstance(k, ast.Constant) and k.value == 'line_items')
+    mapping = ast.literal_eval(lines)['$map']
+    assert mapping['as'] == 'li'
+    assert mapping['in'] == {'line_idx': '$$li.line_idx', 'quantity': '$$li.quantity', 'unit': '$$li.unit'}
