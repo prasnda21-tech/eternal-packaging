@@ -1,5 +1,7 @@
-"""Generic CSV/XLSX bank-statement import. No bank-specific column layout.
+"""Generic CSV/XLSX bank-statement import.
 
+One header layout is recognized from its columns, not from the file name or
+account number. Every other CSV/XLSX file stays on the generic mapping.
 Preview stores the file and expires. Commit re-parses those bytes and
 recomputes totals. Statement rows are not journals.
 """
@@ -9,6 +11,7 @@ import asyncio
 import csv
 import hashlib
 import io
+import re
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -29,6 +32,13 @@ from services.cash_bank_master import (
     coordination_deadline,
     get_cash_bank_raw,
     normalize_currency_code,
+)
+from services.cash_bank_statement_layout import (
+    LayoutRejected,
+    classify_matrix,
+    interpret_recognized,
+    line_number,
+    suggested_mapping,
 )
 from services.purchase_common import actor_snapshot, now_iso
 
@@ -162,8 +172,25 @@ async def ensure_indexes(db) -> None:
     await db[IMPORT_FENCES].create_index("cash_bank_id", unique=True, name="uniq_import_fence_account")
 
 
-def _matrix_from_csv(data: bytes) -> List[List[Any]]:
-    text = data.decode("utf-8-sig")
+class ParsedMatrix(list):
+    """Rows plus the 1-based file line where each record starts."""
+
+    def __init__(self, rows: Sequence[Sequence[Any]], line_numbers: Sequence[int]):
+        super().__init__(rows)
+        self.line_numbers = list(line_numbers)
+
+
+def _decode_csv_text(data: bytes) -> str:
+    if data.startswith(b"\xff\xfe") or data.startswith(b"\xfe\xff"):
+        raise StatementValidationError("Encoding UTF-16 tidak dibaca. Encoding tidak ditebak.")
+    try:
+        return data.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise StatementValidationError("Berkas CSV bukan UTF-8. Encoding tidak ditebak.") from exc
+
+
+def _matrix_from_csv(data: bytes) -> ParsedMatrix:
+    text = _decode_csv_text(data)
     sample = text[:4096]
     delimiter = ","
     if sample:
@@ -171,13 +198,29 @@ def _matrix_from_csv(data: bytes) -> List[List[Any]]:
         delimiter = max(counts, key=counts.get)
         if counts[delimiter] == 0:
             delimiter = ","
-    reader = csv.reader(io.StringIO(text), delimiter=delimiter)
-    rows = []
-    for row in reader:
+    physical = text.splitlines(keepends=True)
+    consumed = {"n": 0}
+
+    def _lines():
+        while consumed["n"] < len(physical):
+            item = physical[consumed["n"]]
+            consumed["n"] += 1
+            yield item
+
+    reader = csv.reader(_lines(), delimiter=delimiter)
+    rows: List[List[Any]] = []
+    line_numbers: List[int] = []
+    while True:
+        start = consumed["n"] + 1
+        try:
+            row = next(reader)
+        except StopIteration:
+            break
         if len(rows) >= MAX_ROWS:
             raise StatementValidationError(f"Berkas melebihi {MAX_ROWS} baris")
         rows.append(list(row[:MAX_COLS]))
-    return rows
+        line_numbers.append(start)
+    return ParsedMatrix(rows, line_numbers)
 
 
 def _matrix_from_xlsx(data: bytes) -> List[List[Any]]:
@@ -208,7 +251,7 @@ def _matrix_from_xlsx(data: bytes) -> List[List[Any]]:
                     )
                 values.append(cell.value)
             rows.append(values)
-        return rows
+        return ParsedMatrix(rows, list(range(1, len(rows) + 1)))
     finally:
         wb.close()
 
@@ -291,13 +334,27 @@ def parse_amount(value: Any, decimal_mode: str) -> Optional[Decimal]:
             raise StatementValidationError("Pemisah desimal tidak sesuai mode koma")
         if text.count(",") > 1:
             raise StatementValidationError("Koma desimal ganda")
-        body = text.replace(".", "").replace(",", ".")
+        if last_dot != -1 and last_comma == -1:
+            if not re.fullmatch(r"\d{1,3}(\.\d{3})+", text):
+                raise StatementValidationError(
+                    "Titik pada nominal ambigu untuk mode koma dan tidak diubah menjadi pemisah ribuan"
+                )
+            body = text.replace(".", "")
+        else:
+            body = text.replace(".", "").replace(",", ".")
     elif decimal_mode == "dot_decimal":
         if last_comma != -1 and last_dot != -1 and last_comma > last_dot:
             raise StatementValidationError("Pemisah desimal tidak sesuai mode titik")
         if text.count(".") > 1:
             raise StatementValidationError("Titik desimal ganda atau ribuan ambigu")
-        body = text.replace(",", "")
+        if last_comma != -1 and last_dot == -1:
+            if not re.fullmatch(r"\d{1,3}(,\d{3})+", text):
+                raise StatementValidationError(
+                    "Koma pada nominal ambigu untuk mode titik dan tidak dihapus"
+                )
+            body = text.replace(",", "")
+        else:
+            body = text.replace(",", "")
     else:
         raise StatementValidationError("Mode desimal tidak didukung")
     try:
@@ -314,7 +371,7 @@ def normalize_mapping(raw: dict) -> dict:
     allowed = {
         "header_row", "date_column", "date_format", "description_column",
         "reference_column", "bank_txn_id_column", "bank_txn_id_authoritative",
-        "amount_mode", "amount_column",
+        "amount_mode", "amount_column", "indicator_column",
         "sign_convention", "in_column", "out_column", "balance_column",
         "currency_column", "file_currency", "decimal_mode",
         "operator_coverage_confirmed",
@@ -335,8 +392,8 @@ def normalize_mapping(raw: dict) -> dict:
     if decimal_mode not in ("comma_decimal", "dot_decimal"):
         raise StatementValidationError("Mode desimal wajib dipilih")
     amount_mode = str(data.get("amount_mode") or "")
-    if amount_mode not in ("signed", "in_out"):
-        raise StatementValidationError("Mode nominal wajib: signed atau in_out")
+    if amount_mode not in ("signed", "in_out", "indicator"):
+        raise StatementValidationError("Mode nominal wajib: signed, in_out, atau indicator")
 
     def opt_int(key: str) -> Optional[int]:
         if key not in data or data.get(key) in (None, ""):
@@ -375,6 +432,18 @@ def normalize_mapping(raw: dict) -> dict:
             raise StatementValidationError(
                 "Konvensi tanda wajib dipilih. Label debit/kredit tidak menentukan arah."
             )
+    elif amount_mode == "indicator":
+        mapping["indicator_column"] = opt_int("indicator_column")
+        if mapping["amount_column"] is None or mapping["indicator_column"] is None:
+            raise StatementValidationError("Kolom nominal dan penanda arah wajib")
+        if mapping["decimal_mode"] != "dot_decimal":
+            raise StatementValidationError(
+                "Layout ini memakai nominal titik dua digit. Mode koma tidak dipakai agar nominal tidak berubah."
+            )
+        if mapping["in_column"] is not None or mapping["out_column"] is not None:
+            raise StatementValidationError("Mode penanda arah tidak memakai kolom masuk dan keluar")
+        if mapping["sign_convention"]:
+            raise StatementValidationError("Arah tidak diambil dari konvensi tanda")
     else:
         if mapping["in_column"] is None or mapping["out_column"] is None:
             raise StatementValidationError("Kolom masuk dan keluar wajib")
@@ -383,7 +452,7 @@ def normalize_mapping(raw: dict) -> dict:
     used = [
         mapping["date_column"], mapping["description_column"],
         mapping["reference_column"], mapping["bank_txn_id_column"],
-        mapping["amount_column"], mapping["in_column"], mapping["out_column"],
+        mapping["amount_column"], mapping.get("indicator_column"), mapping["in_column"], mapping["out_column"],
         mapping["balance_column"], mapping["currency_column"],
     ]
     concrete = [n for n in used if n is not None]
@@ -406,6 +475,11 @@ def _direction_from_signed(amount: Decimal, convention: str) -> Tuple[str, Decim
 
 def interpret_rows(matrix: List[List[Any]], mapping: dict) -> dict:
     """Return accepted rows plus per-row errors. Does not write."""
+    if mapping.get("amount_mode") == "indicator":
+        try:
+            return interpret_recognized(matrix, mapping)
+        except LayoutRejected as exc:
+            raise StatementValidationError(str(exc), errors=exc.errors) from exc
     header_row = mapping["header_row"]
     if header_row < 0 or header_row >= len(matrix):
         raise StatementValidationError("Baris header di luar berkas")
@@ -419,7 +493,7 @@ def interpret_rows(matrix: List[List[Any]], mapping: dict) -> dict:
     closing = None
     closing_date = None
     for offset, row in enumerate(data_rows, start=1):
-        source_row = header_row + 1 + offset
+        source_row = line_number(matrix, header_row + offset)
         if not any(_as_text(c) for c in row):
             continue
         try:
@@ -494,9 +568,13 @@ def interpret_rows(matrix: List[List[Any]], mapping: dict) -> dict:
     }
 
 
-def _sample(matrix: List[List[Any]], limit: int = 8) -> List[List[str]]:
+def _sample(matrix: List[List[Any]], limit: int = 8, include_through: Optional[int] = None) -> List[List[str]]:
+    end = limit
+    if include_through is not None:
+        end = max(end, include_through + 1)
+    end = min(end, len(matrix), 30)
     out = []
-    for row in matrix[:limit]:
+    for row in matrix[:end]:
         out.append([_as_text(c) for c in row])
     return out
 
@@ -515,6 +593,10 @@ async def create_preview(db, *, cash_bank_id: str, filename: str, data: bytes, u
     matrix = read_matrix(filename, data)
     if not matrix:
         raise StatementValidationError("Berkas tidak berisi baris")
+    classified = classify_matrix(matrix)
+    if classified.get("status") == "ambiguous":
+        raise StatementValidationError(classified["message"], errors=classified.get("errors") or [])
+    suggestion = suggested_mapping(classified)
     now = datetime.now(timezone.utc)
     doc = {
         "id": str(uuid.uuid4()),
@@ -524,7 +606,11 @@ async def create_preview(db, *, cash_bank_id: str, filename: str, data: bytes, u
         "file_sha256": _sha256(data),
         "file_bytes": Binary(data),
         "row_count": len(matrix),
-        "sample_rows": _sample(matrix),
+        "sample_rows": _sample(
+            matrix,
+            include_through=None if suggestion is None else suggestion["header_row"] + 1,
+        ),
+        "suggested_mapping": suggestion,
         "created_at": now.isoformat(),
         "expires_at": (now + PREVIEW_TTL).isoformat(),
         "created_by": actor_snapshot(user),
@@ -584,6 +670,11 @@ async def validate_preview(db, preview_id: str, mapping_raw: dict) -> dict:
         "closing_date": parsed["closing_date"],
         "headers": parsed["headers"],
         "sample_accepted": parsed["accepted"][:8],
+        "opening_balance": parsed.get("opening_balance"),
+        "footer_ending_balance": parsed.get("footer_ending_balance"),
+        "balance_equation_ok": parsed.get("balance_equation_ok"),
+        "balance_checks": parsed.get("balance_checks") or [],
+        "inconsistencies": parsed.get("inconsistencies") or [],
         "persisted_statement_lines": False,
         "mapping_hash": _mapping_hash(mapping),
     }

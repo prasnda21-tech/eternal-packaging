@@ -589,12 +589,13 @@ export default function RekonsiliasiKasBank() {
     amount_mode: "in_out",
     in_column: 2,
     out_column: 3,
+    amount_column: "",
+    indicator_column: "",
     balance_column: "",
     currency_column: "",
     file_currency: "",
     decimal_mode: "comma_decimal",
     sign_convention: "",
-    amount_column: "",
     operator_coverage_confirmed: false,
   });
   const [currencyDraft, setCurrencyDraft] = useState("");
@@ -719,16 +720,41 @@ export default function RekonsiliasiKasBank() {
       reference_column: num(mapping.reference_column),
       bank_txn_id_column: num(mapping.bank_txn_id_column),
       amount_mode: mapping.amount_mode,
-      amount_column: mapping.amount_mode === "signed" ? num(mapping.amount_column) : null,
+      amount_column: mapping.amount_mode === "in_out" ? null : num(mapping.amount_column),
+      indicator_column: mapping.amount_mode === "indicator" ? num(mapping.indicator_column) : null,
       sign_convention: mapping.amount_mode === "signed" ? (mapping.sign_convention || null) : null,
-      in_column: num(mapping.in_column),
-      out_column: num(mapping.out_column),
+      in_column: mapping.amount_mode === "in_out" ? num(mapping.in_column) : null,
+      out_column: mapping.amount_mode === "in_out" ? num(mapping.out_column) : null,
       balance_column: num(mapping.balance_column),
       currency_column: num(mapping.currency_column),
       file_currency: mapping.file_currency || null,
       decimal_mode: mapping.decimal_mode,
       operator_coverage_confirmed: Boolean(mapping.operator_coverage_confirmed),
     };
+  };
+
+  const applySuggestedMapping = (suggestion) => {
+    if (!suggestion) return;
+    const opt = (value) => (value == null ? "" : value);
+    setMapping({
+      header_row: suggestion.header_row ?? 0,
+      date_column: suggestion.date_column ?? 0,
+      date_format: suggestion.date_format || "DD/MM/YYYY",
+      description_column: suggestion.description_column ?? 1,
+      reference_column: opt(suggestion.reference_column),
+      bank_txn_id_column: opt(suggestion.bank_txn_id_column),
+      amount_mode: suggestion.amount_mode || "in_out",
+      in_column: suggestion.in_column == null ? 2 : suggestion.in_column,
+      out_column: suggestion.out_column == null ? 3 : suggestion.out_column,
+      amount_column: opt(suggestion.amount_column),
+      indicator_column: opt(suggestion.indicator_column),
+      balance_column: opt(suggestion.balance_column),
+      currency_column: opt(suggestion.currency_column),
+      file_currency: suggestion.file_currency || "",
+      decimal_mode: suggestion.decimal_mode || "dot_decimal",
+      sign_convention: suggestion.sign_convention || "",
+      operator_coverage_confirmed: false,
+    });
   };
 
   const onUpload = async (event) => {
@@ -743,11 +769,14 @@ export default function RekonsiliasiKasBank() {
       body.append("cash_bank_id", cashBankId);
       body.append("file", file);
       const res = await api.previewCashBankStatement(body);
+      applySuggestedMapping(res?.suggested_mapping);
       setPreview(res);
       setImportOpen(true);
       setTab("import");
     } catch (ex) {
-      setMessage(errPayload(ex).message);
+      const parsed = errPayload(ex);
+      setRowErrors(parsed.errors);
+      setMessage(parsed.message);
     } finally {
       setBusy(false);
     }
@@ -1010,13 +1039,14 @@ export default function RekonsiliasiKasBank() {
           <div className="recon-drawer-content">
             <div className="recon-file-info"><strong>{preview.filename}</strong><span>Pratinjau berlaku sampai {reconExpiry(preview.expires_at)}. Belum menyimpan mutasi.</span></div>
             <p className="recon-context">Pilih kolom berdasarkan nama dan contoh isinya. Referensi bukan ID transaksi bank yang terjamin unik.</p>
+            {preview.suggested_mapping && <p className="recon-context">Struktur berkas dikenali dari headernya. Pemetaan diisi otomatis dan pratinjau tetap ditampilkan. Arah masuk atau keluar mengikuti perubahan saldo pada berkas. Referensi tidak dijadikan ID transaksi bank.</p>}
             <fieldset className="kb-pair-mapping" disabled={busy}><legend>Pemetaan kolom</legend>
               {columnSelect("Tanggal", "date_column")}{columnSelect("Uraian", "description_column")}{columnSelect("Referensi", "reference_column", true)}
-              {mapping.amount_mode === "in_out" ? <>{columnSelect("Uang masuk", "in_column", true)}{columnSelect("Uang keluar", "out_column", true)}</> : columnSelect("Nominal bertanda", "amount_column")}
+              {mapping.amount_mode === "in_out" ? <>{columnSelect("Uang masuk", "in_column", true)}{columnSelect("Uang keluar", "out_column", true)}</> : mapping.amount_mode === "indicator" ? <>{columnSelect("Nominal", "amount_column")}{columnSelect("Penanda arah", "indicator_column")}</> : columnSelect("Nominal bertanda", "amount_column")}
               {columnSelect("Saldo", "balance_column", true)}{columnSelect("ID transaksi bank", "bank_txn_id_column", true)}
               <label>Format tanggal<select value={mapping.date_format} onChange={(e) => setMapping({ ...mapping, date_format: e.target.value })}><option>YYYY-MM-DD</option><option>DD/MM/YYYY</option><option>MM/DD/YYYY</option><option>DD-MM-YYYY</option></select></label>
               <label>Desimal<select value={mapping.decimal_mode} onChange={(e) => setMapping({ ...mapping, decimal_mode: e.target.value })}><option value="comma_decimal">Koma desimal</option><option value="dot_decimal">Titik desimal</option></select></label>
-              <label>Mode nominal<select value={mapping.amount_mode} onChange={(e) => setMapping({ ...mapping, amount_mode: e.target.value })}><option value="in_out">Kolom masuk dan keluar</option><option value="signed">Nominal bertanda</option></select></label>
+              <label>Mode nominal<select value={mapping.amount_mode} onChange={(e) => setMapping({ ...mapping, amount_mode: e.target.value })}><option value="in_out">Kolom masuk dan keluar</option><option value="signed">Nominal bertanda</option><option value="indicator">Nominal dan penanda arah</option></select></label>
               {mapping.amount_mode === "signed" && <label>Tanda negatif<select value={mapping.sign_convention} onChange={(e) => setMapping({ ...mapping, sign_convention: e.target.value })}><option value="">Pilih</option><option value="negative_out">Negatif = keluar</option><option value="negative_in">Negatif = masuk</option></select></label>}
               <label>Mata uang berkas<input value={mapping.file_currency} onChange={(e) => setMapping({ ...mapping, file_currency: e.target.value.toUpperCase() })} placeholder="Kosong jika tidak ada" maxLength={3} /></label>
               <label className="recon-coverage"><input type="checkbox" checked={mapping.operator_coverage_confirmed} onChange={(e) => setMapping({ ...mapping, operator_coverage_confirmed: e.target.checked })} />Cakupan periode dikonfirmasi operator, bukan verifikasi bank</label>
@@ -1024,7 +1054,8 @@ export default function RekonsiliasiKasBank() {
             <h3>Contoh isi berkas</h3><div className="recon-sample-scroll"><table className="prod-table kas-bank-table"><tbody>{sample.map((row, index) => <tr key={index}>{row.map((cell, cellIndex) => <td key={cellIndex}>{cell}</td>)}</tr>)}</tbody></table></div>
             {message && <p className="recon-notice" role="status">{message}</p>}
             {!!rowErrors.length && <ul className="recon-validation-errors" role="alert">{rowErrors.map((err) => <li key={`${err.row}-${err.message}`}>Baris {err.row}: {err.message}</li>)}</ul>}
-            {preview.validation && <p>Diterima {preview.validation.accepted_count}. Masuk {money(preview.validation.total_in, preview.currency_code)}. Keluar {money(preview.validation.total_out, preview.currency_code)}.</p>}
+            {preview.validation && <p>Diterima {preview.validation.accepted_count}. Masuk {money(preview.validation.total_in, preview.validation.file_currency || mapping.file_currency || preview.currency_code)}. Keluar {money(preview.validation.total_out, preview.validation.file_currency || mapping.file_currency || preview.currency_code)}.</p>}
+            {preview.validation && preview.validation.opening_balance != null && <p>Saldo awal {money(preview.validation.opening_balance, mapping.file_currency || preview.currency_code)} + masuk − keluar {preview.validation.balance_equation_ok ? "sama dengan saldo akhir pada berkas." : preview.validation.balance_equation_ok === false ? "tidak sama dengan saldo akhir pada berkas. Nominal tidak disesuaikan." : "belum dapat diperiksa karena ada baris yang tidak terbaca."}</p>}
           </div>
           <footer className="recon-drawer-footer"><span>Validasi dan penyimpanan tetap diperiksa server.</span><button type="button" className="ghost sm" onClick={onValidate} disabled={busy}>Validasi</button><button type="button" className="primary sm" onClick={onCommit} disabled={busy || !canReconcile}>Konfirmasi impor</button></footer>
         </>}

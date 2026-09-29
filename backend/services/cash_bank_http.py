@@ -741,6 +741,8 @@ def register_cash_bank_routes(
                 user=user,
             )
         except StatementValidationError as exc:
+            if exc.errors:
+                raise HTTPException(400, {"message": str(exc), "errors": exc.errors}) from exc
             raise HTTPException(400, str(exc)) from exc
 
     @api_router.post("/cash-bank/statements/preview/{preview_id}/validate")

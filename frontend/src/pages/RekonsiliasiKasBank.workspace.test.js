@@ -88,6 +88,24 @@ test('mapping uses named columns with sample values and sends unchanged numeric 
   expect(api.commitCashBankStatement.mock.calls[0][0]).toEqual({preview_id:'preview-1',mapping:api.validateCashBankStatement.mock.calls[0][1].mapping});
   expect(dialog.open).toBe(false);
 });
+test('recognized statement header fills mapping and does not mark a reference as the bank id', async () => {
+  api.previewCashBankStatement.mockResolvedValue({
+    id:'preview-bca', filename:'mutasi.csv', currency_code:'IDR', expires_at:'2026-09-28T21:00:00Z',
+    suggested_mapping:{header_row:4,date_column:0,date_format:'DD/MM/YYYY',description_column:1,reference_column:null,bank_txn_id_column:null,bank_txn_id_authoritative:false,amount_mode:'indicator',amount_column:3,indicator_column:4,in_column:null,out_column:null,balance_column:5,file_currency:'IDR',decimal_mode:'dot_decimal'},
+    sample_rows:[['Account No.','=','1000000001'],[],[],[],['Date','Description','Branch','Amount','','Balance'],["'28/09/2026",'SETORAN','0000','10000.00','CR','110000.00']],
+  });
+  await renderPage(); await upload();
+  const dialog=container.querySelector('dialog');
+  expect(dialog.textContent).toContain('Struktur berkas dikenali');
+  expect(dialog.textContent).toContain('Referensi tidak dijadikan ID transaksi bank');
+  await click(byText('Validasi'));
+  expect(api.validateCashBankStatement).toHaveBeenCalledWith('preview-bca',{preview_id:'preview-bca',mapping:expect.objectContaining({
+    header_row:4, date_format:'DD/MM/YYYY', amount_mode:'indicator', amount_column:3, indicator_column:4,
+    in_column:null, out_column:null, balance_column:5, decimal_mode:'dot_decimal', file_currency:'IDR',
+    reference_column:null, bank_txn_id_column:null,
+  })});
+  expect(api.validateCashBankStatement.mock.calls[0][1].mapping.bank_txn_id_authoritative).toBeUndefined();
+});
 test('close/reopen preview preserves mapping and never confirms import', async () => {
   await renderPage(); await upload();
   const dateSelect=[...container.querySelectorAll('dialog label')].find(el=>el.textContent.startsWith('Tanggal')).querySelector('select');
