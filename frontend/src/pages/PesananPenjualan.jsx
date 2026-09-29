@@ -43,6 +43,7 @@ import {
   REPEAT_NO_PREVIOUS_MESSAGE,
   REPEAT_ORDER_QUERY_PARAM,
   clearRepeatDerivedFormFields,
+  REPEAT_SALES_RESELECT_MESSAGE,
   mapRepeatSourceToFormPatch,
   resolveRepeatMasterCustomer,
 } from "../lib/salesOrderRepeat";
@@ -1357,7 +1358,11 @@ export default function PesananPenjualan() {
       selected.customer_id = customerId;
       selected.customer = formData.customer;
     }
-    const { formPatch, sourcePoNumber } = mapRepeatSourceToFormPatch(source, selected);
+    const { formPatch, sourcePoNumber, salesReselect } = mapRepeatSourceToFormPatch(
+      source,
+      selected,
+      options.sales_accounts || [],
+    );
     if (!formPatch) {
       setRepeatConfirm(null);
       setRepeatMsg(REPEAT_NO_PREVIOUS_MESSAGE);
@@ -1397,7 +1402,7 @@ export default function PesananPenjualan() {
     setItemPage(1);
     setRepeatSourceIndicator(sourcePoNumber || "");
     setRepeatConfirm(null);
-    setRepeatMsg("");
+    setRepeatMsg(salesReselect ? REPEAT_SALES_RESELECT_MESSAGE : "");
     dirtyRef.current = true;
   };
 

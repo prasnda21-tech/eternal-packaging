@@ -1,6 +1,7 @@
 import {
   REPEAT_NO_PREVIOUS_MESSAGE,
   REPEAT_ORDER_QUERY_PARAM,
+  REPEAT_SALES_RESELECT_MESSAGE,
   clearRepeatDerivedFormFields,
   mapRepeatSourceToFormPatch,
   resolveRepeatMasterCustomer,
@@ -185,6 +186,37 @@ describe("salesOrderRepeat mapping", () => {
   });
 });
 
+describe("repeat sales owner", () => {
+  const sariAccounts = [
+    { id: "sari-1", name: "Sari", email: "sari.a@example.com", role: "sales_eternal" },
+    { id: "sari-2", name: "Sari", email: "sari.b@example.com", role: "holding_team" },
+  ];
+
+  test("keeps the source id when that account can still be chosen", () => {
+    const { formPatch, salesReselect } = mapRepeatSourceToFormPatch(
+      sampleSource({ sales: "Sari", sales_user_id: "sari-2" }),
+      { customer_id: "cust-1", customer: "PT Repeat" },
+      sariAccounts,
+    );
+    expect(salesReselect).toBe(false);
+    expect(formPatch.sales_user_id).toBe("sari-2");
+    expect(formPatch.sales).toBe("Sari");
+  });
+
+  test("asks for a new choice instead of mapping the shared name", () => {
+    const { formPatch, salesReselect } = mapRepeatSourceToFormPatch(
+      sampleSource({ sales: "Sari", sales_user_id: "old-1" }),
+      { customer_id: "cust-1", customer: "PT Repeat" },
+      sariAccounts,
+    );
+    expect(salesReselect).toBe(true);
+    expect(formPatch.sales_user_id).toBe("");
+    expect(formPatch.sales).toBe("");
+    expect(REPEAT_SALES_RESELECT_MESSAGE).toMatch(/Pilih ulang/);
+    expect(REPEAT_SALES_RESELECT_MESSAGE).toMatch(/tidak dialihkan dari nama/);
+  });
+});
+
 describe("PesananPenjualan Repeat Order UI contracts", () => {
   const src = fs.readFileSync(path.join(__dirname, "PesananPenjualan.jsx"), "utf8");
   const apiSrc = fs.readFileSync(path.join(__dirname, "../lib/api.js"), "utf8");
@@ -242,6 +274,8 @@ describe("PesananPenjualan Repeat Order UI contracts", () => {
     expect(src).not.toMatch(/surat_jalan/);
     expect(src).not.toMatch(/delivery_proofs/);
     expect(src).toMatch(/mapRepeatSourceToFormPatch\(/);
+    expect(src).toMatch(/options\.sales_accounts/);
+    expect(src).toMatch(/REPEAT_SALES_RESELECT_MESSAGE/);
     expect(src).toMatch(/po_number: prev\.po_number/);
     expect(src).toMatch(/order_date: prev\.order_date/);
     expect(src).toMatch(/estimated_delivery: prev\.estimated_delivery/);

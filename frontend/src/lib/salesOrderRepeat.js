@@ -7,6 +7,24 @@
 export const REPEAT_NO_PREVIOUS_MESSAGE =
   "Tidak ada pesanan sebelumnya untuk customer ini.";
 
+export const REPEAT_SALES_RESELECT_MESSAGE =
+  "Penanggung jawab sebelumnya tidak lagi dapat dipilih. Pilih ulang akun sales, holding, atau direktur. Identitas tidak dialihkan dari nama.";
+
+export function repeatSalesOwnerDecision(source, accounts) {
+  const uid = String(source?.sales_user_id || "").trim();
+  const sales = source?.sales == null ? "" : String(source.sales);
+  if (!uid) {
+    return { sales_user_id: "", sales, reselect: false };
+  }
+  const match = (Array.isArray(accounts) ? accounts : []).find(
+    (row) => String(row?.id || "").trim() === uid && row?.status !== "inactive"
+  );
+  if (!match) {
+    return { sales_user_id: "", sales: "", reselect: true };
+  }
+  return { sales_user_id: uid, sales, reselect: false };
+}
+
 export const REPEAT_ORDER_QUERY_PARAM = "repeat_order_id";
 
 const HEADER_FIELDS = [
@@ -74,7 +92,7 @@ function mapLineItem(raw) {
  * Selected customer (id + display name) remains authoritative when provided.
  * Artwork is never mapped.
  */
-export function mapRepeatSourceToFormPatch(source, selectedCustomer) {
+export function mapRepeatSourceToFormPatch(source, selectedCustomer, accounts) {
   const customerId = selectedCustomer?.customer_id || null;
   const customerName = String(selectedCustomer?.customer || "").trim();
   if (!source || typeof source !== "object") {
@@ -99,7 +117,9 @@ export function mapRepeatSourceToFormPatch(source, selectedCustomer) {
     if (source[key] == null) continue;
     formPatch[key] = source[key];
   }
-  formPatch.sales_user_id = "";
+  const salesDecision = repeatSalesOwnerDecision(source, accounts);
+  formPatch.sales = salesDecision.sales;
+  formPatch.sales_user_id = salesDecision.sales_user_id;
 
   if (lineItems.length) {
     formPatch.line_items = lineItems;
@@ -109,6 +129,7 @@ export function mapRepeatSourceToFormPatch(source, selectedCustomer) {
     formPatch,
     designFiles: [],
     sourcePoNumber: String(source.source_po_number || "").trim(),
+    salesReselect: salesDecision.reselect,
   };
 }
 

@@ -103,8 +103,14 @@ def test_snapshot_and_conflict_rules_do_not_read_names():
     )
     assert snap["sales_user_id"] == "hold-1"
     assert snap["sales_attribution_conflict"] is False
-    conflicted = snapshot_invoice_sales(
+    remapped = snapshot_invoice_sales(
         {"sales": "Ayu", "sales_user_id": "hold-1"},
+        mapping,
+    )
+    assert remapped["sales_user_id"] == "hold-1"
+    assert remapped["sales_attribution_conflict"] is False
+    conflicted = snapshot_invoice_sales(
+        {"sales": "Ayu", "sales_user_id": "hold-1", "sales_id": "sales-1"},
         mapping,
     )
     assert conflicted["sales_user_id"] is None
@@ -397,6 +403,32 @@ async def test_mapping_accepts_holding_and_director_without_role_edits(clean_db)
         {"label": "Lama", "user_id": "old-1"},
     ]}, admin)
     assert {row["user_id"] for row in kept["entries"]} == {"hold-1", "old-1"}
+    with pytest.raises(Exception) as new_label:
+        await save_mapping(db, {"entries": [
+            {"label": "Lama", "user_id": "old-1"},
+            {"label": "Label baru", "user_id": "old-1"},
+        ]}, admin)
+    assert getattr(new_label.value, "status_code", None) == 400
+    stored_pairs = await db.app_settings.find_one({"key": SETTINGS_KEY}, {"_id": 0, "entries": 1})
+    assert {(row["label"], row["user_id"]) for row in stored_pairs["entries"]} == {
+        ("Holding Satu", "hold-1"),
+        ("Lama", "old-1"),
+    }
+    await db.users.insert_one({"id": "moved-1", "name": "Sari", "role": "designer", "status": "active"})
+    await db.app_settings.update_one(
+        {"key": SETTINGS_KEY},
+        {"$set": {"entries": [
+            {"label": "Sari lama", "user_id": "moved-1"},
+            {"label": "Lama", "user_id": "old-1"},
+        ]}},
+    )
+    with pytest.raises(Exception) as moved_label:
+        await save_mapping(db, {"entries": [
+            {"label": "Sari lama", "user_id": "moved-1"},
+            {"label": "Sari baru", "user_id": "moved-1"},
+            {"label": "Lama", "user_id": "old-1"},
+        ]}, admin)
+    assert getattr(moved_label.value, "status_code", None) == 400
     with pytest.raises(Exception) as admin_target:
         await save_mapping(db, {"entries": [{"label": "Admin", "user_id": "admin-1"}]}, admin)
     assert getattr(admin_target.value, "status_code", None) == 400
@@ -560,3 +592,97 @@ async def test_issue_endpoint_keeps_snapshot_through_journal_tracking_and_retry(
     assert labels == {"Holding Satu": 25000.0}
     assert report["omzet"]["amount"] == 25000.0
     assert round(sum(row["omzet"] for row in report["sales"]["groups"]), 2) == report["omzet"]["amount"]
+
+
+@pytest.mark.anyio
+async def test_issue_keeps_po_id_after_label_map_points_at_the_other_same_name(clean_db):
+    from services.chart_of_accounts import create_account, ensure_indexes as ensure_coa
+    from services.journal_core import JOURNAL_ENTRIES, ensure_indexes as ensure_journal
+    from services.sales_accounting_settings import SETTINGS_KEY as ACCOUNTING_SETTINGS
+    from services.sales_order_repeat import build_repeat_source_dto
+
+    db = clean_db
+    await ensure_coa(db)
+    await ensure_journal(db)
+    for name in (JOURNAL_ENTRIES, "chart_of_accounts", "accounting_periods"):
+        await db[name].delete_many({})
+    await db.users.insert_many([
+        {"id": "sari-1", "name": "Sari", "role": "sales_eternal", "status": "active", "email": "sari.a@example.com"},
+        {"id": "sari-2", "name": "Sari", "role": "holding_team", "status": "active", "email": "sari.b@example.com"},
+        {"id": "admin-1", "name": "Admin Pembuat", "role": "admin", "status": "active"},
+    ])
+    await db.app_settings.insert_one({
+        "key": SETTINGS_KEY,
+        "entries": [{"label": "Sari", "user_id": "sari-2"}],
+    })
+    po_id = str(uuid.uuid4())
+    po = {
+        "id": po_id,
+        "po_number": f"PO/SARI/{uuid.uuid4().hex[:6].upper()}",
+        "customer": "PT Dua Sari",
+        "customer_id": "cust-sari",
+        "sales": "Sari",
+        "sales_user_id": "sari-1",
+        "line_items": [{"line_idx": 0, "line_id": "l0", "name": "Cup", "quantity": 2, "unit": "pcs"}],
+        "current_stage": 5,
+        "cancelled": False,
+    }
+    await db.orders.insert_one(dict(po))
+    repeat = build_repeat_source_dto(po)
+    assert repeat["sales_user_id"] == "sari-1"
+    assert repeat["sales"] == "Sari"
+
+    async def _account(prefix, name, account_type):
+        return await create_account(
+            db,
+            {"code": f"{prefix}{uuid.uuid4().hex[:6]}", "name": name, "account_type": account_type},
+            user={"id": "admin-1", "name": "Admin", "role": "admin"},
+        )
+
+    receivable = await _account("11", "Piutang Sari", "AREC")
+    revenue = await _account("41", "Pendapatan Sari", "REVE")
+    tax = await _account("21", "PPN Sari", "OCLY")
+    await db.app_settings.update_one(
+        {"key": ACCOUNTING_SETTINGS},
+        {"$set": {
+            "key": ACCOUNTING_SETTINGS,
+            "receivable_account_id": receivable["id"],
+            "revenue_account_id": revenue["id"],
+            "output_tax_account_id": tax["id"],
+        }},
+        upsert=True,
+    )
+    app.dependency_overrides[current_user] = lambda: _admin()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        issued = await client.post("/api/sales-invoices/issue", json={
+            "po_id": po_id,
+            "invoice_date": "2026-03-19",
+            "payment_term_days": 0,
+            "discount_amount": 0,
+            "ppn_percent": 0,
+            "idempotency_key": "sari-issue-1",
+            "lines": [{"line_idx": 0, "line_id": "l0", "quantity": 1, "unit_price": 8000}],
+            "other_charges": [],
+        })
+        assert issued.status_code == 200, issued.text
+        invoice = issued.json()["invoice"]
+        assert invoice["sales_user_id"] == "sari-1"
+        assert invoice["sales_attribution_conflict"] is False
+        await db.app_settings.update_one(
+            {"key": SETTINGS_KEY},
+            {"$set": {"entries": [{"label": "Sari", "user_id": "sari-1"}]}},
+        )
+        report = await get_sales_dashboard(
+            db,
+            start_date="2026-03-01",
+            end_date="2026-03-31",
+            preset="custom",
+            user=_admin(),
+            permissions=["sales_order.view"],
+            now=datetime(2026, 3, 20, tzinfo=timezone.utc),
+        )
+        groups = {row["key"]: row for row in report["sales"]["groups"]}
+        assert groups["user:sari-1"]["omzet"] == 8000
+        assert "user:sari-2" not in groups
+        assert report["omzet"]["amount"] == 8000
+        assert round(sum(row["omzet"] for row in report["sales"]["groups"]), 2) == 8000
