@@ -1880,6 +1880,9 @@ export default function PesananPenjualan() {
                     </td>
                   </tr>
                 ) : displayedOrders.map((o) => {
+                  const invoiceStatus = o.invoice_summary?.status || "unknown";
+                  const invoiceLabel = ({none: "Belum difaktur", partial: "Sebagian difaktur", full: "Sudah difaktur"})[invoiceStatus] || "Status faktur belum tersedia";
+                  const invoiceColor = ({none: "#64748b", partial: "#92400e", full: "#166534"})[invoiceStatus] || "#64748b";
                   const isCancelled = !!o.cancelled;
                   const isHold = !!o.hold;
                   const stageLabel = salesOrderStageLabel(o) || (o.current_stage == null ? "" : `Tahap ${o.current_stage}`);
@@ -1921,6 +1924,9 @@ export default function PesananPenjualan() {
                           {o.po_number}
                         </Link>
                         {o.outlet ? <span className="so-list-outlet" title={o.outlet}>{o.outlet}</span> : null}
+                        <span data-testid={`order-invoice-status-${o.id}`} style={{fontSize:10,lineHeight:1.3,fontWeight:600,color:invoiceColor,whiteSpace:"nowrap"}} title="Cakupan kuantitas PO pada faktur terbit aktif; bukan status pembayaran">
+                          {invoiceLabel}{o.invoice_summary?.processing ? " · Sedang diproses" : ""}
+                        </span>
                         </div>
                       </td>
                       <td>{formatDisplayDate(o.order_date) || "—"}</td>
@@ -2655,3 +2661,4 @@ export default function PesananPenjualan() {
     </div>
   );
 }
+

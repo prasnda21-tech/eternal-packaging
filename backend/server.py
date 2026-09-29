@@ -10224,7 +10224,8 @@ _SALES_ORDER_LIST_PROJECTION = {
             "input": {"$ifNull": ["$line_items", []]},
             "as": "li",
             "in": {
-                "quantity": "$$li.quantity",
+                "line_idx": "$li.line_idx",
+                "quantity": "$li.quantity",
                 "unit": "$$li.unit",
             },
         }
@@ -10383,6 +10384,9 @@ async def list_sales_orders(
             {"$group": {"_id": "$po_id", "total_shipped": {"$sum": "$total_qty"}, "count": {"$sum": 1}}}
         ]
         shipped_aggregates = {doc["_id"]: doc async for doc in db.sales_deliveries.aggregate(pipe)}
+
+    from services.sales_order_invoice_status import attach_invoice_coverage
+    await attach_invoice_coverage(db, orders)
 
     fetched_count = len(orders)
     for o in orders:
