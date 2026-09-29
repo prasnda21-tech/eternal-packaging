@@ -24,7 +24,8 @@ export function filterDocuments(rows, kind, {status='', start='', end='', column
     const date = String(row[dateKey] || '').slice(0,10);
     if ((status && documentStatus(row,kind) !== status) || (start && (!date || date < start)) || (end && (!date || date > end))) return false;
     return Object.entries(columns).every(([key,query]) => {
-      const text = key === 'identity' ? [row.customer,row.invoice_number,row.receipt_number,row.po_number].join(' ') : String(row[key] ?? '');
+      const statusLabel = key === 'financial_status' ? ({cancelled:'Dibatalkan',processing:'Sedang diproses',draft:'Draft lama'})[documentStatus(row,kind)] || (kind === 'invoice' ? 'Terbit Final' : 'Aktif') : '';
+      const text = key === 'financial_status' ? `${row[key] || ''} ${statusLabel}` : key === 'identity' ? [row.customer,row.invoice_number,row.receipt_number,row.po_number].join(' ') : String(row[key] ?? '');
       return text.toLocaleLowerCase('id-ID').includes(query.trim().toLocaleLowerCase('id-ID'));
     });
   });

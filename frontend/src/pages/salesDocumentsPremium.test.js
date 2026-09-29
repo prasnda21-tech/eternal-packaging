@@ -76,3 +76,12 @@ test('processing invoices never appear in unpaid tabs; inclusive date range excl
  expect(documentStatus({issue_state:'issuing',payment_status:'LUNAS'},'invoice')).toBe('processing');
  expect(filterDocuments([{id:1,invoice_date:'2026-09-01'},{id:2,invoice_date:'2026-09-29'},{id:3}], 'invoice',{start:'2026-09-01',end:'2026-09-29'}).map(r=>r.id)).toEqual([1,2]);
 });
+
+test('cancelled issued invoices retain cancellation label and localized status filter',async()=>{
+ const row={...invoices[0],issue_state:'issued',financial_status:'cancelled'};
+ api.listSalesInvoices.mockResolvedValue({invoices:[row]});
+ await act(async()=>root.render(<FakturPenjualan/>));
+ expect(container.querySelector('[data-testid="invoice-row-i0"]').textContent).not.toContain('Terbit');
+ expect(filterDocuments([row],'invoice',{columns:{financial_status:'Dibatalkan'}})).toHaveLength(1);
+ expect(filterDocuments([{...row,financial_status:'finalized'}],'invoice',{columns:{financial_status:'Terbit'}})).toHaveLength(1);
+});

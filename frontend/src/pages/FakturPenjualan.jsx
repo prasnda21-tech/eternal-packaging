@@ -1397,7 +1397,7 @@ export default function FakturPenjualan() {
                         {moneyText(inv.outstanding_amount)}
                       </td>
                       <td>
-                        {inv.issue_state ? <span className={"doc-process " + (inv.issue_state === "issued" ? "doc-issued" : "")}>{inv.issue_state === "issued" ? "Terbit" : "Sedang diproses"}</span> : renderFinancialBadge(inv.financial_status)}
+                        {inv.financial_status === "cancelled" ? renderFinancialBadge(inv.financial_status) : inv.issue_state ? <span className={"doc-process " + (inv.issue_state === "issued" ? "doc-issued" : "")}>{inv.issue_state === "issued" ? "Terbit" : "Sedang diproses"}</span> : renderFinancialBadge(inv.financial_status)}
                         {(invoiceFinancialStatus(inv) !== "draft" || accountingStatusOf(inv) !== "not_posted") &&
                           renderAccountingBadge(accountingStatusOf(inv))}
                       </td>
