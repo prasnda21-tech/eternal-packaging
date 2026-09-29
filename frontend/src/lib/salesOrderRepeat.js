@@ -99,6 +99,7 @@ export function mapRepeatSourceToFormPatch(source, selectedCustomer) {
     if (source[key] == null) continue;
     formPatch[key] = source[key];
   }
+  formPatch.sales_user_id = "";
 
   if (lineItems.length) {
     formPatch.line_items = lineItems;
@@ -128,6 +129,7 @@ export function clearRepeatDerivedFormFields(prev, { keepCustomer = true } = {})
   next.delivery_zone = "";
   next.payment_terms = "";
   next.sales = "";
+  next.sales_user_id = "";
   next.expedition = "Internal fleet";
   next.notes = "";
   next.line_items = [

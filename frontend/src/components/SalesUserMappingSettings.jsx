@@ -1,6 +1,16 @@
 import { useEffect, useState } from "react";
 import api from "../lib/api";
 
+const SALES_RESPONSIBLE_ROLES = new Set(["sales_eternal", "holding_team", "direktur_utama"]);
+
+function mappingTargetVisible(user, selectedId) {
+  if (!user?.id || !SALES_RESPONSIBLE_ROLES.has(user.role)) {
+    return user?.id && user.id === selectedId;
+  }
+  if (user.status === "inactive" && user.id !== selectedId) return false;
+  return true;
+}
+
 export default function SalesUserMappingSettings({ notify, canEdit }) {
   const [entries, setEntries] = useState([]);
   const [users, setUsers] = useState([]);
@@ -36,6 +46,7 @@ export default function SalesUserMappingSettings({ notify, canEdit }) {
     <div data-testid="sales-user-mapping-tab" style={{ display: "grid", gap: 12, maxWidth: 820 }}>
       <p className="muted small">
         Mapping eksplisit label Accurate <code>orders.sales</code> → <code>users.id</code>.
+        Target baru: akun aktif sales, holding, atau direktur. Ini tidak mengubah role atau hak akses.
         Tanpa baris yang sama persis, <code>sales_user_id</code> dikosongkan. Tidak ada fuzzy match.
       </p>
       {err && <p style={{ color: "#8f1f1f" }}>{err}</p>}
@@ -66,7 +77,7 @@ export default function SalesUserMappingSettings({ notify, canEdit }) {
                   data-testid={`sales-map-user-${i}`}
                 >
                   <option value="">— pilih user —</option>
-                  {(Array.isArray(users) ? users : []).filter((u) => u.role === "sales_eternal").map((u) => (
+                  {(Array.isArray(users) ? users : []).filter((u) => mappingTargetVisible(u, row.user_id)).map((u) => (
                     <option key={u.id} value={u.id}>{u.name} · {u.email}{u.employee_id ? ` · ${u.employee_id}` : ""}</option>
                   ))}
                 </select>

@@ -28,12 +28,11 @@ from services.sales_invoices import (
 from services.sales_receipt_posting import receipt_allocated_amount, receipt_counts_toward_outstanding
 from services.sales_user_mapping import (
     SETTINGS_KEY as SALES_MAPPING_KEY,
-    exact_sales_label,
+    dashboard_sales_owner,
+    document_sales_label,
     mapping_dict_from_entries,
-    resolve_from_map,
     sales_owner_match,
 )
-from services.sales_user_mapping import STATUS_MATCHED
 from workflow_gates import design_ok
 
 PERM_VIEW = "dashboard.sales.view"
@@ -64,6 +63,7 @@ AGING_LABELS = (
 ORDER_LINK_PERMS = ("sales_order.view", "sales_order.create", "po.view")
 UNASSIGNED_KEY = "unassigned"
 UNASSIGNED_LABEL = "Belum ditetapkan"
+MISSING_IDENTITY_MARKER = "identitas tidak ditemukan"
 OMITTED = (
     {
         "metric": "Target tercapai",
@@ -785,10 +785,10 @@ async def _build_sales(db, invoices: Sequence[dict], mapping: Dict[str, str]) ->
     unassigned_count = 0
     user_ids = set()
     for inv in invoices:
-        label = exact_sales_label(inv.get("sales"))
-        uid, status = resolve_from_map(mapping, label)
+        label = document_sales_label(inv)
+        uid, _reason = dashboard_sales_owner(inv, mapping)
         amount = _money(inv.get("after_discount")) or Decimal("0.00")
-        if status == STATUS_MATCHED and uid:
+        if uid:
             key = f"user:{uid}"
             user_ids.add(uid)
             row = groups.setdefault(key, {
@@ -813,6 +813,8 @@ async def _build_sales(db, invoices: Sequence[dict], mapping: Dict[str, str]) ->
             row["invoice_count"] += 1
     names: Dict[str, str] = {}
     if user_ids:
+        # Stored users.id stays readable after deactivation or a role change.
+        # A missing user document keeps that id; it is never replaced by the label map.
         users = await _find_in(db, "users", "id", list(user_ids), {"id": 1, "name": 1})
         for user in users:
             name = str(user.get("name") or "").strip()
@@ -824,6 +826,12 @@ async def _build_sales(db, invoices: Sequence[dict], mapping: Dict[str, str]) ->
             uid = key.split(":", 1)[1]
             if names.get(uid):
                 row["label"] = names[uid]
+                row["identity_status"] = "known"
+            else:
+                row["label"] = f"{uid} ({MISSING_IDENTITY_MARKER})"
+                row["identity_status"] = "missing"
+        else:
+            row["identity_status"] = "unassigned"
         public.append(row)
     by_label: Dict[str, List[dict]] = {}
     for row in public:
@@ -831,9 +839,14 @@ async def _build_sales(db, invoices: Sequence[dict], mapping: Dict[str, str]) ->
     for label, rows in by_label.items():
         if len(rows) < 2 or label == UNASSIGNED_LABEL:
             continue
+        source_labels = [str(row.get("source_label") or "") for row in rows]
+        sources_distinguish = len(set(source_labels)) == len(rows) and all(source_labels)
         for row in rows:
-            extra = row.get("source_label") or row["key"]
-            row["label"] = f"{label} ({extra})"
+            source = str(row.get("source_label") or "")
+            if sources_distinguish and source != label:
+                row["label"] = f"{label} ({source})"
+            else:
+                row["label"] = f"{label} ({row['key'].split(':', 1)[1]})"
     public.sort(key=lambda row: (-row["omzet"], row["label"]))
     if count == 0:
         return {
@@ -852,6 +865,7 @@ async def _build_sales(db, invoices: Sequence[dict], mapping: Dict[str, str]) ->
             {
                 "key": row["key"],
                 "label": row["label"],
+                "identity_status": row.get("identity_status") or "known",
                 "omzet": _num(row["omzet"].quantize(MONEY_Q)),
                 "invoice_count": row["invoice_count"],
             }
@@ -1162,6 +1176,10 @@ INVOICE_FIELDS = {
     "financial_status": 1,
     "is_cancelled": 1,
     "sales": 1,
+    "sales_name": 1,
+    "sales_user_id": 1,
+    "sales_id": 1,
+    "sales_attribution_conflict": 1,
     "after_discount": 1,
     "grand_total": 1,
     "lines": 1,

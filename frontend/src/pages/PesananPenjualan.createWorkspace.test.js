@@ -135,6 +135,31 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
     await act(async () => document.body.querySelector(`[data-testid="line-item-search-${index}-option-a${index}"]`).click());
   }
 
+  test("same sales names stay separate in the responsible account list", async () => {
+    api.salesOrderOptions.mockResolvedValue({
+      suggested_po_number: "PO-OPEN",
+      master_customers: [MASTER],
+      outlets_by_customer: {},
+      sales_options: ["Sari"],
+      sales_accounts: [
+        { id: "sari-1", name: "Sari", email: "sari.a@example.com", role: "sales_eternal" },
+        { id: "sari-2", name: "Sari", email: "sari.b@example.com", role: "holding_team" },
+      ],
+    });
+    await openCreate();
+    const select = container.querySelector('[data-testid="input-sales-account"]');
+    const labels = Array.from(select.querySelectorAll("option")).map((option) => option.textContent);
+    expect(select.querySelector('option[value="sari-1"]').textContent).toContain("sari.a@example.com");
+    expect(select.querySelector('option[value="sari-2"]').textContent).toContain("sari.b@example.com");
+    expect(new Set(labels).size).toBe(labels.length);
+    await act(async () => {
+      const proto = window.HTMLSelectElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, "value").set.call(select, "sari-2");
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(container.querySelector('[data-testid="input-sales"]').value).toBe("Sari");
+  });
+
   test("list page is unchanged and create workspace is isolated", async () => {
     await renderPage();
     const page = container.querySelector('[data-testid="sales-order-page"]');

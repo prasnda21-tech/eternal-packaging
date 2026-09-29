@@ -9,6 +9,7 @@ on:
       - cursor/sales-order-redesign-b7d7
       - release/finance-recon-on-live-stock-367
       - release/invoice-bank-preserve-d27deff
+      - release/stock-386-preserve-2d0fa057
   workflow_dispatch:
 
 permissions:
@@ -78,6 +79,10 @@ jobs:
           tests/test_sales_order_item_images.py
           tests/test_sales_order_list_read.py
           tests/test_sales_order_invoice_status.py
+          tests/test_sales_attribution_dashboard.py
+          tests/test_sales_dashboard.py
+          tests/test_sales_user_mapping.py
+          tests/test_sales_invoice_issue_delete.py
           tests/test_customer_tracking.py
           tests/test_customer_tracking_invoices.py
           tests/test_tracking_delivery_signature.py
@@ -150,6 +155,8 @@ jobs:
           src/lib/globalWorkspace.test.js
           src/lib/salesOrderCreateWorkspace.test.js
           src/pages/PesananPenjualan.createWorkspace.test.js
+          src/pages/PesananPenjualan.repeat.test.js
+          src/components/SalesUserMappingSettings.test.js
           src/pages/PesananPenjualan.test.js
           src/pages/FakturPenjualan.test.js
           src/pages/salesDocumentsPremium.test.js
