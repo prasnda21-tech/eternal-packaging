@@ -53,6 +53,7 @@ async def bind_and_clean():
     svc._before_revision_write = None
     svc._before_builtin_insert = None
     svc._before_pointer_write = None
+    svc._before_pointer_revert = None
     svc._before_archive_rollback = None
     svc._indexed_databases.clear()
     app.dependency_overrides[current_user] = lambda: {
@@ -65,6 +66,7 @@ async def bind_and_clean():
     svc._before_revision_write = None
     svc._before_builtin_insert = None
     svc._before_pointer_write = None
+    svc._before_pointer_revert = None
     svc._before_archive_rollback = None
     app.dependency_overrides.pop(current_user, None)
 
@@ -444,12 +446,18 @@ async def test_default_pointer_stays_singular_under_races():
 
     left = await active_template("Kiri")
     right = await active_template("Kanan")
-    await asyncio.gather(
+    raced = await asyncio.gather(
         svc.set_default(server.db, left["id"], left["revision"], actor),
         svc.set_default(server.db, right["id"], right["revision"], actor),
+        return_exceptions=True,
     )
+    wins = [row for row in raced if not isinstance(row, Exception)]
+    losses = [row for row in raced if isinstance(row, HTTPException)]
+    assert len(wins) + len(losses) == 2
+    assert wins
+    assert all(row.status_code == 409 for row in losses)
     pointer = await server.db.print_template_defaults.find_one({"id": "default:sales_invoice:customer"}, {"_id": 0})
-    assert pointer["template_id"] in {left["id"], right["id"]}
+    assert pointer["template_id"] in {row["id"] for row in wins}
     resolved = await svc.resolve_template(server.db, "sales_invoice", "customer")
     assert resolved["id"] == pointer["template_id"]
     listed = await svc.list_templates(server.db, document_type="sales_invoice")
@@ -459,7 +467,7 @@ async def test_default_pointer_stays_singular_under_races():
     menu_defaults = [row["id"] for row in options if row["audience"] == "customer" and row["is_default"]]
     assert menu_defaults == [pointer["template_id"]]
 
-    async def fail_pointer(_db, _doc):
+    async def fail_pointer(_db, _doc, expected_generation=None):
         raise RuntimeError("pointer write failed")
 
     previous = pointer["template_id"]
@@ -807,3 +815,98 @@ async def test_archive_rollback_requires_revision_ownership():
     resolved = await svc.resolve_template(server.db, "sales_invoice", "internal")
     assert resolved["status"] == "active"
     assert resolved["id"] != activated["id"]
+
+
+async def _active_named(actor, name, audience="customer"):
+    created = await svc.create_template(server.db, {
+        "name": name,
+        "document_type": "sales_invoice",
+        "audience": audience,
+    }, actor)
+    return await svc.activate_template(server.db, created["id"], created["revision"], actor)
+
+
+async def test_stale_pointer_snapshot_does_not_replace_a_later_default():
+    actor = {"id": "admin-print", "email": "admin-print@example.com", "name": "Admin", "role": "admin"}
+    initial = await _active_named(actor, "X")
+    initial = await svc.set_default(server.db, initial["id"], initial["revision"], actor)
+    waiting = await _active_named(actor, "A")
+    other = await _active_named(actor, "Y")
+
+    async def archive_then_choose_other(template_id):
+        svc._before_pointer_write = None
+        fresh = await svc.get_template(server.db, template_id)
+        await svc.archive_template(server.db, template_id, fresh["revision"], actor)
+        current = await svc.get_template(server.db, other["id"])
+        await svc.set_default(server.db, other["id"], current["revision"], actor)
+
+    svc._before_pointer_write = archive_then_choose_other
+    try:
+        with pytest.raises(HTTPException) as lost:
+            await svc.set_default(server.db, waiting["id"], waiting["revision"], actor)
+        assert lost.value.status_code == 409
+    finally:
+        svc._before_pointer_write = None
+    pointer = await server.db.print_template_defaults.find_one({"id": "default:sales_invoice:customer"})
+    assert pointer["template_id"] == other["id"]
+    assert pointer["template_id"] != initial["id"]
+    assert await server.db.print_template_versions.count_documents({
+        "template_id": other["id"], "action": "set_default",
+    }) == 1
+    assert await server.db.print_template_versions.count_documents({
+        "template_id": waiting["id"], "action": "set_default",
+    }) == 0
+    assert await server.db.print_template_versions.count_documents({
+        "template_id": initial["id"], "action": "set_default",
+    }) == 1
+    fresh = await svc.get_template(server.db, waiting["id"])
+    with pytest.raises(HTTPException) as retry:
+        await svc.set_default(server.db, waiting["id"], fresh["revision"], actor)
+    assert retry.value.status_code == 400
+    again = await server.db.print_template_defaults.find_one({"id": "default:sales_invoice:customer"})
+    assert again["template_id"] == other["id"]
+    assert await server.db.print_template_versions.count_documents({
+        "template_id": other["id"], "action": "set_default",
+    }) == 1
+    resolved = await svc.resolve_template(server.db, "sales_invoice", "customer")
+    assert resolved["id"] == other["id"]
+    assert resolved["status"] == "active"
+
+
+async def test_pointer_revert_does_not_restore_a_stale_snapshot():
+    actor = {"id": "admin-print", "email": "admin-print@example.com", "name": "Admin", "role": "admin"}
+    initial = await _active_named(actor, "X-lama")
+    await svc.set_default(server.db, initial["id"], initial["revision"], actor)
+    waiting = await _active_named(actor, "A-tertulis")
+    other = await _active_named(actor, "Y-baru")
+
+    async def archive_before_write(template_id):
+        svc._before_pointer_write = None
+        fresh = await svc.get_template(server.db, template_id)
+        await svc.archive_template(server.db, template_id, fresh["revision"], actor)
+
+    async def choose_other_before_revert(_template_id, _generation):
+        svc._before_pointer_revert = None
+        current = await svc.get_template(server.db, other["id"])
+        await svc.set_default(server.db, other["id"], current["revision"], actor)
+
+    svc._before_pointer_write = archive_before_write
+    svc._before_pointer_revert = choose_other_before_revert
+    try:
+        with pytest.raises(HTTPException) as lost:
+            await svc.set_default(server.db, waiting["id"], waiting["revision"], actor)
+        assert lost.value.status_code == 409
+    finally:
+        svc._before_pointer_write = None
+        svc._before_pointer_revert = None
+    pointer = await server.db.print_template_defaults.find_one({"id": "default:sales_invoice:customer"})
+    assert pointer["template_id"] == other["id"]
+    assert await server.db.print_template_versions.count_documents({
+        "template_id": other["id"], "action": "set_default",
+    }) == 1
+    assert await server.db.print_template_versions.count_documents({
+        "template_id": waiting["id"], "action": "set_default",
+    }) == 0
+    assert await server.db.print_template_versions.count_documents({
+        "template_id": initial["id"], "action": "set_default",
+    }) == 1

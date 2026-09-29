@@ -34,6 +34,7 @@ DEFAULTS = "print_template_defaults"
 _before_revision_write = None
 _before_builtin_insert = None
 _before_pointer_write = None
+_before_pointer_revert = None
 _before_archive_rollback = None
 _indexed_databases = set()
 
@@ -253,11 +254,16 @@ async def _ensure_pointer(db, document_type: str, audience: str) -> dict:
                 "document_type": document_type,
                 "audience": audience,
                 "template_id": builtin_id,
+                "generation": 0,
             }},
             upsert=True,
         )
     except DuplicateKeyError:
         pass
+    await db[DEFAULTS].update_one(
+        {"_id": pointer_id, "generation": {"$exists": False}},
+        {"$set": {"generation": 0}},
+    )
     return await db[DEFAULTS].find_one({"id": pointer_id}, {"_id": 0})
 
 
@@ -556,19 +562,24 @@ async def _is_authoritative_default(db, doc: dict) -> bool:
     return str((pointer or {}).get("template_id") or "") == str(doc.get("id") or "")
 
 
-async def _write_pointer(db, doc: dict) -> None:
+async def _write_pointer(db, doc: dict, expected_generation: Optional[int] = None) -> bool:
+    """Publish template_id only when the pointer generation still matches."""
     pointer_id = _pointer_id(doc["document_type"], doc["audience"])
-    await db[DEFAULTS].update_one(
-        {"_id": pointer_id},
+    if expected_generation is None:
+        current = await db[DEFAULTS].find_one({"_id": pointer_id}, {"_id": 0, "generation": 1})
+        expected_generation = int((current or {}).get("generation") or 0)
+    result = await db[DEFAULTS].update_one(
+        {"_id": pointer_id, "generation": int(expected_generation)},
         {"$set": {
             "id": pointer_id,
             "document_type": doc["document_type"],
             "audience": doc["audience"],
             "template_id": doc["id"],
+            "generation": int(expected_generation) + 1,
             "updated_at": now_iso(),
         }},
-        upsert=True,
     )
+    return _matched_count(result) == 1
 
 
 async def _fallback_template_id(db, doc: dict, previous_id: str) -> str:
@@ -579,34 +590,62 @@ async def _fallback_template_id(db, doc: dict, previous_id: str) -> str:
     return BUILTIN_IDS[(doc["document_type"], doc["audience"])]
 
 
-async def _move_pointer_off_archived(db, doc: dict, previous_id: str = "") -> None:
-    """Move the pointer only while it still names this archived template."""
+async def _move_pointer_off_archived(db, doc: dict) -> None:
+    """If the pointer still names this archived template, send it to the builtin."""
+    pointer_id = _pointer_id(doc["document_type"], doc["audience"])
+    current = await db[DEFAULTS].find_one({"_id": pointer_id}, {"_id": 0, "generation": 1, "template_id": 1})
+    if str((current or {}).get("template_id") or "") != str(doc.get("id") or ""):
+        return
+    generation = int((current or {}).get("generation") or 0)
+    await db[DEFAULTS].update_one(
+        {"_id": pointer_id, "generation": generation, "template_id": doc["id"]},
+        {"$set": {
+            "id": pointer_id,
+            "document_type": doc["document_type"],
+            "audience": doc["audience"],
+            "template_id": BUILTIN_IDS[(doc["document_type"], doc["audience"])],
+            "generation": generation + 1,
+            "updated_at": now_iso(),
+        }},
+    )
+
+
+async def _revert_own_pointer(db, doc: dict, owned_generation: int, previous_id: str) -> None:
+    """Undo only the pointer generation this operation wrote."""
     pointer_id = _pointer_id(doc["document_type"], doc["audience"])
     fallback = await _fallback_template_id(db, doc, previous_id)
     await db[DEFAULTS].update_one(
-        {"_id": pointer_id, "template_id": doc["id"]},
+        {"_id": pointer_id, "generation": int(owned_generation), "template_id": doc["id"]},
         {"$set": {
             "id": pointer_id,
             "document_type": doc["document_type"],
             "audience": doc["audience"],
             "template_id": fallback,
+            "generation": int(owned_generation) + 1,
             "updated_at": now_iso(),
         }},
     )
 
 
 async def _publish_default(db, doc: dict, owned_revision: int) -> None:
-    """Publish the pointer, then drop it if this template is no longer an active default."""
+    """Publish the pointer with the generation read before the write."""
     previous = await _ensure_pointer(db, doc["document_type"], doc["audience"])
     previous_id = str((previous or {}).get("template_id") or "")
+    seen_generation = int((previous or {}).get("generation") or 0)
     if _before_pointer_write is not None:
         await _before_pointer_write(doc["id"])
-    await _write_pointer(db, doc)
+    wrote = await _write_pointer(db, doc, expected_generation=seen_generation)
     after = await db[TEMPLATES].find_one({"id": doc["id"]}, {"_id": 0, "status": 1, "revision": 1})
+    if not wrote:
+        raise _conflict((after or {}).get("revision") or owned_revision)
     if after and after.get("status") == "active":
         return
-    await _move_pointer_off_archived(db, doc, previous_id)
-    raise _conflict((after or {}).get("revision") or owned_revision)
+    owned_generation = seen_generation + 1
+    if _before_pointer_revert is not None:
+        await _before_pointer_revert(doc["id"], owned_generation)
+    await _revert_own_pointer(db, doc, owned_generation, previous_id)
+    fresh = await db[TEMPLATES].find_one({"id": doc["id"]}, {"_id": 0, "revision": 1})
+    raise _conflict((fresh or after or {}).get("revision") or owned_revision)
 
 
 async def preview_template(db, template_id: str, design: Optional[dict]) -> bytes:
