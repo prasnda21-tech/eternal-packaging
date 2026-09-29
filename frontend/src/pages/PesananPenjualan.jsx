@@ -427,6 +427,7 @@ export default function PesananPenjualan() {
   });
   const [listMeta, setListMeta] = useState({ total: null, capped: false });
   const [itemImages, setItemImages] = useState({});
+  const [invoiceFilter, setInvoiceFilter] = useState(() => searchParams.get("invoice_status") || "all");
   const [columnFilters, setColumnFilters] = useState(EMPTY_SALES_ORDER_COLUMN_FILTERS);
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [deleteConfirm, setDeleteConfirm] = useState(null);
@@ -579,6 +580,7 @@ export default function PesananPenjualan() {
         page,
         pageSize,
       });
+      if (invoiceFilter !== "all") params.invoice_status = invoiceFilter;
       const res = await api.listSalesOrders(params, { signal: ac.signal });
       if (ac.signal.aborted) return;
       setOrders(res.orders || []);
@@ -598,7 +600,7 @@ export default function PesananPenjualan() {
         setListLoading(false);
       }
     }
-  }, [searchQuery, statusFilter, period, page, pageSize]);
+  }, [searchQuery, statusFilter, invoiceFilter, period, page, pageSize]);
 
   const filteredOrders = useMemo(
     () => applySalesOrderColumnFilters(orders, columnFilters),
@@ -613,7 +615,7 @@ export default function PesananPenjualan() {
   const listTotal = serverPaged ? Number(listMeta.total) : filteredOrders.length;
   const pageCount = listPageCount(listTotal, pageSize);
   const tabDefaultStatus = listTab === "histori" ? "histori" : "aktif";
-  const columnFiltersActive = salesOrderColumnFiltersAreActive(
+  const columnFiltersActive = invoiceFilter !== "all" || salesOrderColumnFiltersAreActive(
     columnFilters,
     statusFilter === tabDefaultStatus ? "all" : statusFilter,
   );
@@ -637,6 +639,7 @@ export default function PesananPenjualan() {
     }
   };
   const clearAllColumnFilters = () => {
+    setInvoiceFilter("all");
     setColumnFilters(EMPTY_SALES_ORDER_COLUMN_FILTERS);
     setStatusFilter("all");
   };
@@ -659,6 +662,7 @@ export default function PesananPenjualan() {
     if (searchQuery.trim()) next.set("q", searchQuery.trim());
     const tabDefault = listTab === "histori" ? "histori" : "aktif";
     if (statusFilter && statusFilter !== tabDefault) next.set("status", statusFilter);
+    if (invoiceFilter !== "all") next.set("invoice_status", invoiceFilter);
     if (listTab === "histori") next.set("tab", "histori");
     if (period !== "all") next.set("period", period);
     if (page > 1) next.set("page", String(page));
@@ -667,7 +671,7 @@ export default function PesananPenjualan() {
     const curStr = searchParams.toString();
     if (nextStr === curStr) return;
     setSearchParams(next, { replace: true });
-  }, [searchQuery, statusFilter, listTab, period, page, pageSize, viewMode, searchParams, setSearchParams]);
+  }, [searchQuery, statusFilter, invoiceFilter, listTab, period, page, pageSize, viewMode, searchParams, setSearchParams]);
 
   useEffect(() => {
     if (skipPageResetRef.current) {
@@ -675,7 +679,7 @@ export default function PesananPenjualan() {
       return;
     }
     setPage(1);
-  }, [searchQuery, statusFilter, period, pageSize, listTab]);
+  }, [searchQuery, statusFilter, invoiceFilter, period, pageSize, listTab]);
 
   useEffect(() => {
     if (page > pageCount) setPage(pageCount);
@@ -1663,6 +1667,7 @@ export default function PesananPenjualan() {
                 <col className="so-col-qty" />
                 <col className="so-col-progress" />
                 <col className="so-col-status" />
+                <col style={{width:135}} />
                 <col className="so-col-actions" />
               </colgroup>
               <thead>
@@ -1853,17 +1858,30 @@ export default function PesananPenjualan() {
                       ]}
                     />
                   </th>
+                  <th>
+                    <SalesOrderHeaderFilter label="Status Faktur" testid="so-th-filter-invoice" active={invoiceFilter !== "all"} onClear={() => setInvoiceFilter("all")}>
+                      <label>Status Faktur
+                        <select aria-label="Filter Status Faktur" value={invoiceFilter} onChange={(e) => { setInvoiceFilter(e.target.value); setPage(1); }}>
+                          <option value="all">Semua</option>
+                          <option value="none">Belum difaktur</option>
+                          <option value="partial">Sebagian difaktur</option>
+                          <option value="full">Sudah difaktur</option>
+                          <option value="processing">Sedang diproses</option>
+                        </select>
+                      </label>
+                    </SalesOrderHeaderFilter>
+                  </th>
                   <th>Aksi</th>
                 </tr>
               </thead>
               <tbody>
                 {listLoading ? (
                   <tr>
-                    <td colSpan={canDelete ? 8 : 7} className="so-list-empty">Memuat daftar Pesanan Penjualan...</td>
+                    <td colSpan={canDelete ? 9 : 8} className="so-list-empty">Memuat daftar Pesanan Penjualan...</td>
                   </tr>
                 ) : displayedOrders.length === 0 ? (
                   <tr>
-                    <td colSpan={canDelete ? 8 : 7} className="so-list-empty" data-testid="empty-sales-orders">
+                    <td colSpan={canDelete ? 9 : 8} className="so-list-empty" data-testid="empty-sales-orders">
                       <FileText size={28} />
                       <p>Belum ada Pesanan Penjualan yang sesuai filter.</p>
                       {canCreate && (
@@ -1880,6 +1898,9 @@ export default function PesananPenjualan() {
                     </td>
                   </tr>
                 ) : displayedOrders.map((o) => {
+                  const invoiceStatus = o.invoice_summary?.status || "unknown";
+                  const invoiceLabel = ({none: "Belum difaktur", partial: "Sebagian difaktur", full: "Sudah difaktur"})[invoiceStatus] || "Status faktur belum tersedia";
+                  const invoiceColor = ({none: "#64748b", partial: "#92400e", full: "#166534"})[invoiceStatus] || "#64748b";
                   const isCancelled = !!o.cancelled;
                   const isHold = !!o.hold;
                   const stageLabel = salesOrderStageLabel(o) || (o.current_stage == null ? "" : `Tahap ${o.current_stage}`);
@@ -1921,6 +1942,7 @@ export default function PesananPenjualan() {
                           {o.po_number}
                         </Link>
                         {o.outlet ? <span className="so-list-outlet" title={o.outlet}>{o.outlet}</span> : null}
+
                         </div>
                       </td>
                       <td>{formatDisplayDate(o.order_date) || "—"}</td>
@@ -1941,6 +1963,9 @@ export default function PesananPenjualan() {
                           {salesName ? <span className="so-list-sales" title={salesName}>{salesName}</span> : null}
                         </div>
                       </td>
+                      <td>                        <span data-testid={`order-invoice-status-${o.id}`} style={{fontSize:10,lineHeight:1.3,fontWeight:600,color:invoiceColor,whiteSpace:"normal"}} title="Cakupan kuantitas PO pada faktur terbit aktif; bukan status pembayaran">
+                          {invoiceLabel}{o.invoice_summary?.processing ? " · Sedang diproses" : ""}
+                        </span></td>
                       <td onClick={(e) => e.stopPropagation()}>
                         <div className="so-list-actions">
                           <Link
@@ -2655,3 +2680,4 @@ export default function PesananPenjualan() {
     </div>
   );
 }
+
