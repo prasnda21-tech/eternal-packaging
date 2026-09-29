@@ -104,3 +104,17 @@ async def test_evidence_wins_before_delete_cas(mongo,monkeypatch):
  saved=await mongo.orders.find_one({'id':o['id']})
  assert saved['delivery_proofs']==[{'id':'won','shipment_id':'sj-b'}]
  assert len(saved['shipments'])==2 and not saved.get('sj_deletion_ids')
+
+@pytest.mark.anyio
+async def test_delete_removes_unique_legacy_number_alias_only(mongo):
+ import server
+ o=_order('legacy-alias');o.update(doc());o['id']='legacy-alias'
+ o['shipments'][1]['id']='legacy-row-b'
+ o['surat_jalan_files']=[{'id':'legacy-file-b','shipment_id':'legacy-row-b','source':server._SJ_SOURCE_GENERATED}]
+ for f in ('loading_confirmations','delivery_confirmations','delivery_proofs'):o[f]=[]
+ o.pop('delivery_recipient_signature',None);o.pop('delivery_driver_signature',None)
+ await mongo.orders.insert_one(deepcopy(o))
+ await server._reserve_sales_delivery_deletion({**D,'po_id':o['id']})
+ saved=await mongo.orders.find_one({'id':o['id']})
+ assert [s['id'] for s in saved['shipments']]==['sj-a']
+ assert saved['surat_jalan_files']==[]

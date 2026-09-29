@@ -10800,13 +10800,20 @@ async def _reserve_sales_delivery_deletion(delivery):
         reason = deletion_blocker(order, delivery)
         if reason:
             raise HTTPException(400, reason)
+        ships = order.get("shipments") or []
+        selected = [sh for sh in ships if did in {str(sh.get("id") or ""), str(sh.get("sales_delivery_id") or "")}]
+        if not selected and delivery.get("sj_number"):
+            selected = [sh for sh in ships if delivery["sj_number"] in {sh.get("number"), sh.get("sj_number")}]
+        selected_ids = {did} | {str(sh["id"]) for sh in selected if sh.get("id")}
+        files = [f for f in order.get("surat_jalan_files") or []
+                 if not (f.get("source") == _SJ_SOURCE_GENERATED
+                         and ({str(f.get("id") or ""), str(f.get("shipment_id") or "")} & selected_ids))]
         result = await db.orders.update_one(
             {"id": po_id, "updated_at": order.get("updated_at"),
              "sj_deletion_generation": order.get("sj_deletion_generation", 0) or {"$in": [None, 0]}},
             {"$inc": {"sj_deletion_generation": 1}, "$addToSet": {"sj_deletion_ids": did},
-             "$set": {"updated_at": now_iso()},
-             "$pull": {"shipments": {"$or": [{"id": did}, {"sales_delivery_id": did}]},
-                       "surat_jalan_files": {"id": did, "source": _SJ_SOURCE_GENERATED}}})
+             "$set": {"updated_at": now_iso(), "shipments": [sh for sh in ships if sh not in selected],
+                      "surat_jalan_files": files}})
         if result.matched_count:
             return
     raise HTTPException(409, _CONFLICT_MSG)
