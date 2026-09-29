@@ -1037,6 +1037,10 @@ def _line_doc(batch: dict, row: dict, line_id: str, actor: dict, now: str) -> di
     }
     if row.get("authoritative_txn_id"):
         doc["authoritative_txn_id"] = row["authoritative_txn_id"]
+    if row.get("date_status") == "confirmed" and row.get("original_date") == "PEND":
+        doc["original_date"] = "PEND"
+        doc["date_status"] = "confirmed"
+        doc["date_confirmation"] = row.get("date_confirmation")
     return doc
 
 
@@ -1428,6 +1432,7 @@ async def commit_import(
     user: Optional[dict],
     account_binding_value: Optional[str] = None,
     client_rows: Any = None,
+    date_confirmations: Optional[list] = None,
 ) -> dict:
     """Re-read the uploaded file. Client-parsed rows are ignored."""
     del client_rows
@@ -1474,7 +1479,7 @@ async def commit_import(
         account = await get_cash_bank_raw(db, account["id"]) or account
         return await _commit_import_pinned(
             db, preview=source, account=account, mapping_raw=mapping_raw, user=user,
-            attempt_id=attempt_id,
+            attempt_id=attempt_id, date_confirmations=date_confirmations,
         )
     finally:
         if pinned:
@@ -1483,6 +1488,7 @@ async def commit_import(
 
 async def _commit_import_pinned(
     db, *, preview: dict, account: dict, mapping_raw: dict, user: Optional[dict], attempt_id: str,
+    date_confirmations: Optional[list] = None,
 ) -> dict:
     data = bytes(preview.get("file_bytes") or b"")
     file_hash = _sha256(data)
@@ -1495,6 +1501,9 @@ async def _commit_import_pinned(
             preview.get("filename") or "",
             data,
             preview.get("account_currency_code") or None,
+            confirmations=date_confirmations,
+            actor=actor_snapshot(user),
+            confirmed_at=now_iso(),
         )
     else:
         mapping = normalize_mapping(mapping_raw)
