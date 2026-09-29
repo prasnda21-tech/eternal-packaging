@@ -7,6 +7,7 @@ import { formatDate } from "../lib/constants";
 import { fmtQty } from "../components/qtyUi";
 import {
   errDetail,
+  buildPurchaseLifecycle,
   friendlyLoadError,
   newIdempotencyKey,
   purchaseStatusPillClass,
@@ -30,6 +31,7 @@ import PurchasingFlowNav from "./PurchasingFlowNav";
 import PurchaseActivityHistory from "./PurchaseActivityHistory";
 import PurchaseDocuments from "./PurchaseDocuments";
 import PurchaseCancelModal from "./PurchaseCancelModal";
+import PurchaseLifecycleStrip from "./PurchaseLifecycleStrip";
 import "./purchasePages.css";
 
 function emptyLine() {
@@ -63,6 +65,7 @@ export default function PenerimaanBarang() {
   const [acctErr, setAcctErr] = useState("");
   const [reverseReason, setReverseReason] = useState("");
   const queryPoId = searchParams.get("purchase_order_id") || "";
+  const queryReceiptId = searchParams.get("id") || "";
   const openCreateFromQuery = searchParams.get("action") === "create";
   const openReceiveFromQuery = searchParams.get("action") === "receive" || Boolean(queryPoId);
 
@@ -205,6 +208,22 @@ export default function PenerimaanBarang() {
     setReceiveOpen(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (!queryReceiptId) return;
+    setMainTab("history");
+    setView("list");
+    api.getPurchaseGoodsReceipt(queryReceiptId)
+      .then((res) => {
+        const receipt = res.receipt;
+        setPoReceipts((current) => [
+          ...current.filter((item) => String(item.id) !== String(receipt.id)),
+          receipt,
+        ]);
+        setOpenId(`po-${receipt.id}`);
+      })
+      .catch((ex) => setErr(errDetail(ex)));
+  }, [queryReceiptId]);
 
   const clearSearch = () => {
     clearQuery();
@@ -823,10 +842,18 @@ export default function PenerimaanBarang() {
               <h2 className="sr-only" data-testid="po-receipts-heading">Penerimaan terhadap Pesanan Pembelian</h2>
               {poDetail ? (
                 <div className="card purchase-detail-card" data-testid="penerimaan-po-detail">
+                  <PurchaseLifecycleStrip
+                    stages={buildPurchaseLifecycle({
+                      order: poDetail,
+                      receipt: poDetailReceipts[0] || null,
+                    })}
+                  />
                   <div className="purchase-detail-meta">
                     <div>
                       <span className="label">No PO</span>
-                      <span className="value mono">{poDetail.po_number}</span>
+                      <Link className="value mono purchase-doc-link" to={`/pembelian/pesanan-pembelian?id=${encodeURIComponent(poDetail.id)}`}>
+                        {poDetail.po_number}
+                      </Link>
                     </div>
                     <div>
                       <span className="label">Supplier</span>
@@ -1521,6 +1548,16 @@ function PoHistoryRow({
       {open && (
         <tr className="penerimaan-detail-row" data-testid={`po-history-detail-${row.raw.id}`}>
           <td colSpan={6}>
+            <PurchaseLifecycleStrip
+              stages={buildPurchaseLifecycle({
+                order: {
+                  id: row.raw.purchase_order_id,
+                  po_number: row.raw.po_number,
+                },
+                receipt: row.raw,
+              })}
+              testId={`receipt-lifecycle-${row.raw.id}`}
+            />
             <table className="prod-table purchase-table penerimaan-lines">
               <thead>
                 <tr>

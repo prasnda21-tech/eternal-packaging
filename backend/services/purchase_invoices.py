@@ -23,10 +23,12 @@ from services.purchase_common import (
     derive_child_number,
     get_named_lock,
     insert_with_unique_number,
+    invoice_due_display_status,
     is_cancelled,
     line_subtotal,
     money_round,
     now_iso,
+    parse_optional_ymd,
     parse_qty,
     qty_le,
     with_active_filter,
@@ -78,6 +80,9 @@ async def attach_payment_fields(db, inv: dict) -> dict:
     grand = float(out.get("grand_total") or 0)
     out["paid_total"] = paid
     out["outstanding_amount"] = max(money_round(grand - paid), 0.0)
+    # Explicit nullable contract for older invoices that omit due_date.
+    if "due_date" not in out or out.get("due_date") in ("",):
+        out["due_date"] = out.get("due_date") or None
     active_pays = await _active_payment_count(db, out["id"])
     if is_cancelled(out):
         out["payment_status"] = "DIBATALKAN"
@@ -91,6 +96,10 @@ async def attach_payment_fields(db, inv: dict) -> dict:
             if out["can_cancel"]
             else "Faktur tidak dapat dihapus karena sudah memiliki pembayaran. Batalkan pembayaran terlebih dahulu."
         )
+    out["due_status"] = invoice_due_display_status(
+        due_date=out.get("due_date"),
+        payment_status=out.get("payment_status"),
+    )
     return out
 
 
@@ -344,6 +353,7 @@ async def create_purchase_invoice(db, payload: Dict[str, Any], user: dict) -> di
 
         ts = now_iso()
         total = money_round(total)
+        due_date = parse_optional_ymd(payload.get("due_date"))
         existing_count = await db[COLLECTION].count_documents({"purchase_order_id": preview["purchase_order_id"]})
         doc = {
             "id": str(uuid.uuid4()),
@@ -357,6 +367,7 @@ async def create_purchase_invoice(db, payload: Dict[str, Any], user: dict) -> di
             "receipt_number": (receipt_doc or {}).get("receipt_number") if invoice_source == "receipt" else None,
             "precedes_goods_receipt": bool(precedes_goods_receipt),
             "invoice_date": str(payload.get("invoice_date") or ts[:10]).strip()[:10],
+            "due_date": due_date,
             "notes": str(payload.get("notes") or "").strip(),
             "lines": calculated,
             "subtotal": total,

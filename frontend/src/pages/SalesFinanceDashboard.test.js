@@ -8,6 +8,7 @@ import SalesFinanceDashboard from "./SalesFinanceDashboard";
 jest.mock("react-router-dom", () => ({
   Link: ({ to, children, ...props }) => <a href={typeof to === "string" ? to : "#"} {...props}>{children}</a>,
   Navigate: ({ to }) => <div data-testid="access-denied" data-to={to} />,
+  useNavigate: () => (to) => { global.__dashboardHash = to.hash; },
   useLocation: () => ({ hash: global.__dashboardHash || "", pathname: "/dashboard/penjualan" }),
 }), { virtual: true });
 
@@ -174,11 +175,40 @@ describe("merged dashboard permissions", () => {
   test("finance bookmark hash targets the finance section", async () => {
     global.__dashboardPerms = ["dashboard.finance.view"];
     global.__dashboardHash = "#keuangan";
-    const scroll = jest.fn();
-    Element.prototype.scrollIntoView = scroll;
     await act(async () => { root.render(<SalesFinanceDashboard />); });
     await flush();
-    expect(container.querySelector("#keuangan")).toBeTruthy();
-    expect(scroll).toHaveBeenCalled();
+    expect(container.querySelector("#dashboard-panel-keuangan").hidden).toBe(false);
+    expect(container.querySelector("#dashboard-tab-keuangan").getAttribute("aria-selected")).toBe("true");
   });
+  test("tab changes preserve the period, endpoint results and keyboard focus", async () => {
+    global.__dashboardPerms = ["dashboard.sales.view", "dashboard.finance.view"];
+    await act(async () => root.render(<SalesFinanceDashboard />));
+    await flush();
+    await act(async () => container.querySelector('[data-testid="sales-preset-year"]').click());
+    await flush();
+    const calls = api.salesDashboard.mock.calls.length;
+    const salesTab = container.querySelector('#dashboard-tab-penjualan');
+    salesTab.focus();
+    await act(async () => salesTab.dispatchEvent(new KeyboardEvent('keydown', {key:'ArrowRight',bubbles:true})));
+    await act(async () => root.render(<SalesFinanceDashboard />));
+    expect(global.__dashboardHash).toBe('#keuangan');
+    expect(container.querySelector('[data-testid="section-penjualan"]').hidden).toBe(true);
+    expect(container.querySelector('[data-testid="section-keuangan"]').hidden).toBe(false);
+    expect(document.activeElement.id).toBe('dashboard-tab-keuangan');
+    await act(async () => salesTab.click());
+    await act(async () => root.render(<SalesFinanceDashboard />));
+    expect(container.querySelector('[data-testid="sales-dashboard-page"]').dataset.preset).toBe('year');
+    expect(api.salesDashboard.mock.calls.length).toBe(calls);
+  });
+  test("unauthorized finance bookmark falls back to sales", async () => {
+    global.__dashboardPerms = ["dashboard.sales.view"];
+    global.__dashboardHash = '#keuangan';
+    await act(async () => root.render(<SalesFinanceDashboard />));
+    await flush();
+    expect(container.querySelector('[data-testid="section-penjualan"]').hidden).toBe(false);
+    expect(container.querySelector('#dashboard-tab-keuangan')).toBeNull();
+    expect(api.financialDashboard).not.toHaveBeenCalled();
+  });
+
 });
+

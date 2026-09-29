@@ -124,12 +124,23 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
     return container.querySelector('[data-so-region="main"]');
   }
 
+  async function chooseMaster(index, name) {
+    api.masterItemsPicker.mockResolvedValue({ items: [{ id: `m${index}`, accurate_item_id: `a${index}`, item_name: name, item_code: `SKU-${index}`, unit: "pcs" }] });
+    await act(async () => {
+      const input = container.querySelector(`[data-testid="line-item-search-${index}-input"]`);
+      input.focus();
+      setNativeValue(input, name);
+    });
+    await tick(350);
+    await act(async () => document.body.querySelector(`[data-testid="line-item-search-${index}-option-a${index}"]`).click());
+  }
+
   test("list page is unchanged and create workspace is isolated", async () => {
     await renderPage();
     const page = container.querySelector('[data-testid="sales-order-page"]');
     expect(page.className).toContain("penjualan-page");
     expect(page.className).not.toContain("so-create-workspace");
-    expect(container.querySelector('[data-testid="sales-order-title"]').textContent).toBe("Pesanan Penjualan");
+    expect(container.querySelector('[data-testid="sales-order-title"]').textContent).toBe("Seluruh Pesanan Penjualan");
     expect(container.querySelector('[data-testid="so-create-actionbar"]')).toBeNull();
     expect(container.querySelector('[data-testid="btn-detail-tambahan"]')).toBeNull();
   });
@@ -235,12 +246,8 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
       setNativeValue(container.querySelector('[data-testid="input-customer-phone"]'), "0812");
       setNativeValue(container.querySelector('[data-testid="input-address"]'), "Jl. Baru");
     });
-    await act(async () => {
-      container.querySelector('[data-testid="line-mode-manual-0"]').click();
-    });
-    await act(async () => {
-      setNativeValue(container.querySelector('[data-testid="line-name-0"]'), "Dus Manual");
-    });
+
+    await chooseMaster(0, "Dus Manual");
     api.createSalesOrder.mockRejectedValue({
       response: { data: { detail: { message: "Zona Kirim tidak dikenali" } } },
     });
@@ -261,12 +268,8 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
     await act(async () => {
       setNativeValue(container.querySelector('[data-testid="input-customer"]'), "Pelanggan Baru");
     });
-    await act(async () => {
-      container.querySelector('[data-testid="line-mode-manual-0"]').click();
-    });
-    await act(async () => {
-      setNativeValue(container.querySelector('[data-testid="line-name-0"]'), "Dus");
-    });
+
+    await chooseMaster(0, "Dus");
     await act(async () => {
       container.querySelector('[data-testid="sales-order-form"]').requestSubmit();
     });
@@ -337,74 +340,21 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
     expect(container.querySelector('[data-testid="input-notes"]').value).toBe("Catatan lama");
   });
 
-  test("master search and manual entry do not mix identity, and rows are not merged", async () => {
-    api.masterItemsPicker.mockResolvedValue({
-      items: [{
-        id: "m1",
-        accurate_item_id: "a1",
-        item_name: "Box Karton",
-        item_code: "BX-01",
-        unit: "pcs",
-      }],
-    });
+  test("master selection preserves identity and does not merge separate rows", async () => {
     await openCreate();
-    const search = container.querySelector('[data-testid="line-item-search-0-input"]');
+    await chooseMaster(0, "Box Karton");
+    await act(async () => container.querySelector('[data-testid="btn-add-line-item"]').click());
+    await chooseMaster(1, "Box Karton");
     await act(async () => {
-      search.focus();
-      setNativeValue(search, "box");
-    });
-    await tick(350);
-    const option = document.body.querySelector('[data-testid="line-item-search-0-option-a1"]');
-    expect(option).toBeTruthy();
-    await act(async () => {
-      option.click();
-    });
-    expect(container.querySelector('[data-testid="line-code-0"]').value).toBe("BX-01");
-    await tick(0);
-    expect(api.salesOrderItemImages).toHaveBeenCalledWith(
-      { accurate_item_ids: "a1" },
-      expect.objectContaining({ signal: expect.any(AbortSignal) }),
-    );
-
-    await act(async () => {
-      container.querySelector('[data-testid="line-mode-manual-0"]').click();
-    });
-    const manual = container.querySelector('[data-testid="line-name-0"]');
-    expect(manual.value).toBe("Box Karton");
-    await act(async () => {
-      setNativeValue(manual, "Nama Manual");
-      container.querySelector('[data-testid="btn-add-line-item"]').click();
-    });
-    await act(async () => {
-      container.querySelector('[data-testid="line-mode-manual-1"]').click();
-    });
-    await act(async () => {
-      setNativeValue(container.querySelector('[data-testid="line-name-1"]'), "Nama Manual");
       setNativeValue(container.querySelector('[data-testid="line-qty-0"]'), "2");
       setNativeValue(container.querySelector('[data-testid="line-qty-1"]'), "3");
       setNativeValue(container.querySelector('[data-testid="input-customer"]'), "Pelanggan Baru");
       setNativeValue(container.querySelector('[data-testid="input-customer-phone"]'), "08123");
       setNativeValue(container.querySelector('[data-testid="input-address"]'), "Jl. Baru");
     });
-    expect(container.querySelector('[data-testid="so-total-qty"]').textContent).toContain("5");
-    await act(async () => {
-      container.querySelector('[data-testid="btn-submit-sales-order"]').click();
-    });
-    await tick(0);
-    expect(api.createSalesOrder).toHaveBeenCalledTimes(1);
-    const payload = api.createSalesOrder.mock.calls[0][0];
-    expect(payload.line_items).toHaveLength(2);
-    expect(payload.line_items[0].name).toBe("Nama Manual");
-    expect(payload.line_items[0].accurate_item_id).toBeNull();
-    expect(payload.line_items[0].master_item_id).toBeNull();
-    expect(payload.line_items[0].item_code).toBe("BX-01");
-    expect(payload.line_items[0].quantity).toBe(2);
-    expect(payload.line_items[1].name).toBe("Nama Manual");
-    expect(payload.line_items[1].quantity).toBe(3);
-    expect(payload.customer).toBe("Pelanggan Baru");
-    expect(payload.customer_phone).toBe("08123");
-    expect(payload.address).toBe("Jl. Baru");
-    expect(payload.entry_mode).toBeUndefined();
+    await act(async () => container.querySelector('[data-testid="btn-submit-sales-order"]').click());
+    const lines = api.createSalesOrder.mock.calls[0][0].line_items;
+    expect(lines.map(x => [x.name, x.quantity, x.master_item_id])).toEqual([["Box Karton", 2, "m0"], ["Box Karton", 3, "m1"]]);
   });
 
   test("remove line keeps the remaining row and the last row cannot be removed", async () => {
@@ -426,11 +376,9 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
       release = resolve;
     }));
     await openCreate();
+
+    await chooseMaster(0, "Dus");
     await act(async () => {
-      container.querySelector('[data-testid="line-mode-manual-0"]').click();
-    });
-    await act(async () => {
-      setNativeValue(container.querySelector('[data-testid="line-name-0"]'), "Dus");
       setNativeValue(container.querySelector('[data-testid="input-customer"]'), "Pelanggan Baru");
       setNativeValue(container.querySelector('[data-testid="input-customer-phone"]'), "0812");
       setNativeValue(container.querySelector('[data-testid="input-address"]'), "Jl");
@@ -507,12 +455,8 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
     expect(container.querySelector(".so-col-qty").textContent).toContain("*");
     expect(container.querySelector('[data-testid="so-progress-label"]').textContent).toBe("1/2 pelanggan & barang");
 
-    await act(async () => {
-      container.querySelector('[data-testid="line-mode-manual-0"]').click();
-    });
-    await act(async () => {
-      setNativeValue(container.querySelector('[data-testid="line-name-0"]'), "Dus");
-    });
+
+    await chooseMaster(0, "Dus");
     const screenForm = formFromScreen();
     const validationError = validateSalesOrderCreate(screenForm);
     expect(validationError).toBe("");
@@ -537,12 +481,8 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
     expect(container.querySelector('[data-testid="so-progress-label"]').textContent).toBe("1/2 pelanggan & barang");
     expect(container.querySelector('[data-testid="so-status-chip"]').textContent).toBe("Belum Lengkap");
 
-    await act(async () => {
-      container.querySelector('[data-testid="line-mode-manual-0"]').click();
-    });
-    await act(async () => {
-      setNativeValue(container.querySelector('[data-testid="line-name-0"]'), "Dus");
-    });
+
+    await chooseMaster(0, "Dus");
     expect(container.querySelector('[data-testid="so-progress-label"]').textContent).toBe("2/2 pelanggan & barang");
     expect(container.querySelector('[data-testid="so-status-chip"]').textContent).toBe("Lengkap");
 
@@ -561,83 +501,62 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
     expect(container.querySelector('[data-testid="so-status-chip"]').textContent).toBe("Lengkap");
   });
 
-  test("removing the first row keeps later modes and line data", async () => {
+  test("ten rows share one page and removal preserves the following line", async () => {
     await openCreate();
-    await act(async () => {
-      container.querySelector('[data-testid="btn-add-line-item"]').click();
-    });
-    await act(async () => {
-      container.querySelector('[data-testid="btn-add-line-item"]').click();
-    });
-    await act(async () => {
-      container.querySelector('[data-testid="line-mode-manual-1"]').click();
-    });
-    await act(async () => {
-      setNativeValue(container.querySelector('[data-testid="line-name-1"]'), "MANUAL-2");
-      setNativeValue(container.querySelector('[data-testid="line-code-1"]'), "KODE-2");
-      setNativeValue(container.querySelector('[data-testid="line-code-2"]'), "KODE-3");
-      setNativeValue(container.querySelector('[data-testid="line-qty-2"]'), "7");
-    });
-    expect(container.querySelector('[data-testid="line-mode-master-0"]').getAttribute("aria-pressed")).toBe("true");
-    expect(container.querySelector('[data-testid="line-mode-manual-1"]').getAttribute("aria-pressed")).toBe("true");
-    expect(container.querySelector('[data-testid="line-mode-master-2"]').getAttribute("aria-pressed")).toBe("true");
-    await act(async () => {
-      container.querySelector('[data-testid="btn-remove-line-0"]').click();
-    });
-    expect(container.querySelector('[data-testid="line-name-0"]').value).toBe("MANUAL-2");
-    expect(container.querySelector('[data-testid="line-code-0"]').value).toBe("KODE-2");
-    expect(container.querySelector('[data-testid="line-mode-manual-0"]').getAttribute("aria-pressed")).toBe("true");
-    expect(container.querySelector('[data-testid="line-name-1"]')).toBeNull();
-    expect(container.querySelector('[data-testid="line-item-search-1-input"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="line-code-1"]').value).toBe("KODE-3");
-    expect(container.querySelector('[data-testid="line-qty-1"]').value).toBe("7");
+    for (let i = 1; i < 10; i++) await act(async () => container.querySelector('[data-testid="btn-add-line-item"]').click());
+    expect(container.querySelectorAll('[data-testid^="line-item-row-"]')).toHaveLength(10);
+    expect(container.querySelector('[data-testid="so-item-next"]')).toBeNull();
+    await act(async () => setNativeValue(container.querySelector('[data-testid="line-code-1"]'), "KEEP-ROW-2"));
+    await act(async () => container.querySelector('[data-testid="btn-add-line-item"]').click());
+    expect(container.querySelector('[data-testid="line-qty-0"]')).toBeNull();
+    expect(container.querySelector('[data-testid="line-qty-10"]')).toBeTruthy();
+    await act(async () => setNativeValue(container.querySelector('[data-testid="line-qty-10"]'), "7"));
+    await act(async () => container.querySelector('[data-testid="so-item-prev"]').click());
+    await act(async () => container.querySelector('[data-testid="btn-remove-line-0"]').click());
+    expect(container.querySelector('[data-testid="line-code-0"]').value).toBe("KEEP-ROW-2");
+    expect(container.querySelector('[data-testid="line-qty-9"]').value).toBe("7");
   });
 
-  test("repeated mode changes do not keep stale master ids or manual names", async () => {
-    api.masterItemsPicker.mockResolvedValue({
-      items: [{ id: "m1", accurate_item_id: "a1", item_name: "Box Karton", item_code: "BX-01", unit: "pcs" }],
-    });
+  test("saving validates hidden pages and submits every item with its stored values", async () => {
     await openCreate();
-    const search = container.querySelector('[data-testid="line-item-search-0-input"]');
     await act(async () => {
-      search.focus();
-      setNativeValue(search, "box");
+      setNativeValue(container.querySelector('[data-testid="input-customer"]'), "Pelanggan Uji");
+      setNativeValue(container.querySelector('[data-testid="input-customer-phone"]'), "0800000000");
+      setNativeValue(container.querySelector('[data-testid="input-address"]'), "Alamat uji");
     });
-    await tick(350);
-    await act(async () => {
-      document.body.querySelector('[data-testid="line-item-search-0-option-a1"]').click();
-    });
-    await act(async () => {
-      container.querySelector('[data-testid="line-mode-manual-0"]').click();
-    });
-    expect(container.querySelector('[data-testid="line-name-0"]').value).toBe("Box Karton");
-    await act(async () => {
-      setNativeValue(container.querySelector('[data-testid="line-name-0"]'), "Nama Lama");
-    });
-    await act(async () => {
-      container.querySelector('[data-testid="line-mode-master-0"]').click();
-    });
-    expect(container.querySelector('[data-testid="line-name-0"]')).toBeNull();
-    await act(async () => {
-      container.querySelector('[data-testid="line-mode-manual-0"]').click();
-    });
-    expect(container.querySelector('[data-testid="line-name-0"]').value).toBe("");
-    await act(async () => {
-      setNativeValue(container.querySelector('[data-testid="line-name-0"]'), "Nama Baru");
-      setNativeValue(container.querySelector('[data-testid="input-customer"]'), "Pelanggan Baru");
-      setNativeValue(container.querySelector('[data-testid="input-customer-phone"]'), "0812");
-      setNativeValue(container.querySelector('[data-testid="input-address"]'), "Jl");
-    });
-    await act(async () => {
-      container.querySelector('[data-testid="btn-submit-sales-order"]').click();
-    });
-    await tick(0);
-    const line = api.createSalesOrder.mock.calls[0][0].line_items[0];
-    expect(line.name).toBe("Nama Baru");
-    expect(line.accurate_item_id).toBeNull();
-    expect(line.master_item_id).toBeNull();
-    expect(line.rowKey).toBeUndefined();
-    expect(line.entry_mode).toBeUndefined();
+    for (let i = 0; i < 11; i += 1) {
+      if (i) await act(async () => container.querySelector('[data-testid="btn-add-line-item"]').click());
+
+      await chooseMaster(i, `Barang ${i}`);
+      await act(async () => {
+        setNativeValue(container.querySelector(`[data-testid="line-qty-${i}"]`), String(i + 1));
+        setNativeValue(container.querySelector(`[data-testid="line-price-${i}"]`), "100");
+      });
+    }
+    await act(async () => setNativeValue(container.querySelector('[data-testid="line-qty-10"]'), "0"));
+    await act(async () => container.querySelector('[data-testid="so-item-prev"]').click());
+    await act(async () => container.querySelector('[data-testid="sales-order-form"]').requestSubmit());
+    expect(api.createSalesOrder).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="line-qty-10"]')).toBeTruthy();
+    expect(document.activeElement).toBe(container.querySelector('[data-testid="line-qty-10"]'));
+    await act(async () => setNativeValue(container.querySelector('[data-testid="line-qty-10"]'), "11"));
+    await act(async () => container.querySelector('[data-testid="so-item-prev"]').click());
+    await act(async () => container.querySelector('[data-testid="sales-order-form"]').requestSubmit());
+    const payload = api.createSalesOrder.mock.calls[0][0];
+    expect(payload.line_items.map(line => [line.name, line.quantity, line.unit_price])).toEqual([
+      ...Array.from({ length: 11 }, (_, i) => [`Barang ${i}`, i + 1, 100]),
+    ]);
+  }, 15000);
+
+  test("new rows expose master selection without manual entry or empty price hint", async () => {
+    await openCreate();
+    expect(container.querySelector('[data-testid="line-mode-manual-0"]')).toBeNull();
+    expect(container.textContent).not.toContain("Isi harga jual");
+    expect(container.querySelector('[data-testid="line-item-detail-0"]').hidden).toBe(true);
+    await chooseMaster(0, "Cup PET");
+    expect(container.querySelector('[data-testid="line-item-detail-0"]').hidden).toBe(true);
+    await act(async () => container.querySelector('[data-testid="btn-line-detail-0"]').click());
+    expect(container.querySelector('[data-testid="line-item-detail-0"]').hidden).toBe(false);
   });
 
   test("leaving create returns to the list without a drawer", async () => {
@@ -859,9 +778,6 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
       setNativeValue(container.querySelector('[data-testid="line-notes-0"]'), "Sablon depan");
     });
     expect(container.querySelector(".so-sum-chip.is-customer .so-sum-text").textContent).toBe("GOHO COFFEE");
-    await act(async () => {
-      container.querySelector('[data-testid="btn-line-detail-0"]').click();
-    });
     expect(container.querySelector('[data-testid="line-item-detail-0"]').hidden).toBe(true);
     expect(container.querySelector('[data-testid="line-code-0"]').value).toBe("BRG-CP001");
     expect(container.querySelector('[data-testid="line-detail-summary-0"]').textContent).toContain("BRG-CP001");
@@ -871,7 +787,7 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
       container.querySelector('[data-testid="btn-add-line-item"]').click();
     });
     expect(container.querySelector('[data-testid="line-item-detail-0"]').hidden).toBe(true);
-    expect(container.querySelector('[data-testid="line-item-detail-1"]').hidden).toBe(false);
+    expect(container.querySelector('[data-testid="line-item-detail-1"]').hidden).toBe(true);
     expect(container.querySelector('[data-testid="line-color-0"]').value).toBe("Merah");
     await act(async () => {
       container.querySelector('[data-testid="btn-line-detail-0"]').click();
@@ -907,3 +823,4 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
     expect(container.querySelector('[data-testid="input-po-number"]').value).toBe(poBefore);
   });
 });
+

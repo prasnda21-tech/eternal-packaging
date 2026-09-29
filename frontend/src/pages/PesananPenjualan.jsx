@@ -3,6 +3,9 @@ import { Link, useLocation, useNavigate, useSearchParams } from "react-router-do
 import {
   AlertCircle,
   ArrowLeft,
+  ArrowRight,
+  ChevronDown,
+  MoreHorizontal,
   CheckCircle2,
   FileText,
   Filter,
@@ -35,6 +38,7 @@ import {
   uniqueDeliveryStatuses,
 } from "../lib/pesananPenjualanColumnFilters";
 import "./pesananPenjualan.css";
+import "./pesananPenjualanPremium.css";
 import {
   REPEAT_NO_PREVIOUS_MESSAGE,
   REPEAT_ORDER_QUERY_PARAM,
@@ -380,8 +384,10 @@ export default function PesananPenjualan() {
     searchParams.get(REPEAT_ORDER_QUERY_PARAM) ? "create" : "list"
   ); // 'list' | 'create'
   const [createTab, setCreateTab] = useState("items");
-  const [detailRowKey, setDetailRowKey] = useState(undefined);
+  const [detailRowKey, setDetailRowKey] = useState("");
   const [editingField, setEditingField] = useState("");
+  const [itemPage, setItemPage] = useState(1);
+  const itemsPerPage = 10;
   
   // List state
   const [orders, setOrders] = useState([]);
@@ -501,12 +507,22 @@ export default function PesananPenjualan() {
     if (issue.field === "customer" || issue.field === "outlet" || issue.field === "po_number" || issue.field === "order_date" || issue.field === "estimated_delivery") {
       setEditingField(issue.field);
     }
-    const field = document.querySelector(
-      `[data-so-field="${issue.field}"] input, [data-so-field="${issue.field}"] textarea, [data-so-field="${issue.field}"] select`
-    );
-    field?.focus();
-    return undefined;
+    const invalidRow = String(formErr || "").match(/Baris #(\d+)/);
+    if (invalidRow) setItemPage(Math.ceil(Number(invalidRow[1]) / itemsPerPage));
   }, [formErr]);
+
+  useEffect(() => {
+    const issue = salesOrderIssuePlacement(formErr);
+    if (!issue?.field) return;
+    const invalidRow = String(formErr || "").match(/Baris #(\d+)/);
+      const rowIndex = invalidRow ? Number(invalidRow[1]) - 1 : null;
+      const selector = rowIndex == null
+        ? `[data-so-field="${issue.field}"] input, [data-so-field="${issue.field}"] textarea, [data-so-field="${issue.field}"] select`
+        : (/Quantity/i.test(formErr)
+          ? `[data-testid="line-qty-${rowIndex}"]`
+          : `[data-testid="line-name-${rowIndex}"], [data-testid="line-item-search-${rowIndex}-input"]`);
+      document.querySelector(selector)?.focus();
+  }, [formErr, itemPage, createTab, editingField]);
 
   useEffect(() => {
     if (viewMode !== "create") return undefined;
@@ -1064,9 +1080,10 @@ export default function PesananPenjualan() {
   };
 
   const addLineItem = () => {
+    setItemPage(Math.floor(formData.line_items.length / itemsPerPage) + 1);
     const line = createSalesOrderLineItem();
     focusLineKeyRef.current = line.rowKey;
-    setDetailRowKey(line.rowKey);
+    setDetailRowKey("");
     dirtyRef.current = true;
     setFormData((prev) => ({
       ...prev,
@@ -1120,6 +1137,10 @@ export default function PesananPenjualan() {
       // Ignore
     }
   };
+
+  const itemPageCount = Math.max(1, Math.ceil(formData.line_items.length / itemsPerPage));
+  const visibleItemPage = Math.min(itemPage, itemPageCount);
+  const itemOffset = (visibleItemPage - 1) * itemsPerPage;
 
   const quantityParts = useMemo(
     () => quantityByUnitFromLines(formData.line_items),
@@ -1210,6 +1231,7 @@ export default function PesananPenjualan() {
     setLineModes({});
     setItemImages({});
     setCreateTab("items");
+    setItemPage(1);
     setEditingField("");
     dirtyRef.current = false;
     focusLineKeyRef.current = "";
@@ -1363,6 +1385,7 @@ export default function PesananPenjualan() {
       estimated_delivery: prev.estimated_delivery,
       deadline: prev.deadline,
     }));
+    setItemPage(1);
     setRepeatSourceIndicator(sourcePoNumber || "");
     setRepeatConfirm(null);
     setRepeatMsg("");
@@ -1482,7 +1505,7 @@ export default function PesananPenjualan() {
         <div className="so-list" data-testid="sales-order-list">
           <header className="so-list-header">
             <div className="so-list-heading">
-              <h1 data-testid="sales-order-title">Pesanan Penjualan</h1>
+              <h1 data-testid="sales-order-title">Seluruh Pesanan Penjualan</h1>
               {showAktifCount && (
                 <div className="so-list-summary" data-testid="sales-order-aktif-count">
                   <strong>{Number(listMeta.total).toLocaleString("id-ID")}</strong>
@@ -1709,7 +1732,7 @@ export default function PesananPenjualan() {
                   </th>
                   <th>
                     <SalesOrderHeaderFilter
-                      label="Tgl PO"
+                      label="Tanggal PO"
                       testid="so-th-filter-date"
                       active={salesOrderColumnFilterActive("date", columnFilters)}
                       onClear={() => clearColumnKey("date")}
@@ -1718,7 +1741,7 @@ export default function PesananPenjualan() {
                       <label>Sampai <input type="date" value={columnFilters.dateTo} onChange={(e) => patchColumnFilter({ dateTo: e.target.value })} data-testid="so-filter-date-to" /></label>
                     </SalesOrderHeaderFilter>
                   </th>
-                  <th>Tgl Kirim</th>
+                  <th>Tanggal Kirim</th>
                   <th>
                     <SalesOrderHeaderFilter
                       label="Qty"
@@ -1732,7 +1755,7 @@ export default function PesananPenjualan() {
                   </th>
                   <th>
                     <SalesOrderHeaderFilter
-                      label="Sisa / Progress"
+                      label="Pengiriman"
                       sections={[
                         {
                           label: "Sisa",
@@ -1780,7 +1803,7 @@ export default function PesananPenjualan() {
                   </th>
                   <th className="so-th-status">
                     <SalesOrderHeaderFilter
-                      label="Status / Sales"
+                      label="Proses / Sales"
                       sections={[
                         {
                           label: "Status",
@@ -1883,6 +1906,7 @@ export default function PesananPenjualan() {
                       )}
                       <td className="so-list-identity">
                         <div className="so-list-customer" title={o.customer || ""}>{o.customer || "—"}</div>
+                        <div className="so-list-reference">
                         <Link
                           to={`/po/${o.id}`}
                           state={poListNavState({ po_number: o.po_number, customer: o.customer })}
@@ -1896,7 +1920,8 @@ export default function PesananPenjualan() {
                         >
                           {o.po_number}
                         </Link>
-                        {o.outlet ? <div className="so-list-outlet" title={o.outlet}>{o.outlet}</div> : null}
+                        {o.outlet ? <span className="so-list-outlet" title={o.outlet}>{o.outlet}</span> : null}
+                        </div>
                       </td>
                       <td>{formatDisplayDate(o.order_date) || "—"}</td>
                       <td>{formatDisplayDate(o.tanggal_pengiriman) || "—"}</td>
@@ -1923,33 +1948,45 @@ export default function PesananPenjualan() {
                             state={poListNavState({ po_number: o.po_number, customer: o.customer })}
                             onClick={() => onOpenPo(o.id)}
                             className="so-act-view"
+                            aria-label={`Lihat PO ${o.po_number}`}
                             data-testid={`btn-view-po-${o.id}`}
                           >
-                            Lihat PO
+                            Detail <ArrowRight size={14} aria-hidden="true" />
                           </Link>
-                          {canCreate && !isCancelled && (
-                            <button
-                              type="button"
-                              className="so-act-repeat"
-                              data-testid={`btn-repeat-order-${o.id}`}
-                              onClick={() => {
-                                resetForm();
-                                setViewMode("create");
-                                void handleRepeatSpecificPo(o.id);
-                              }}
-                            >
-                              Repeat Order
-                            </button>
-                          )}
-                          {canProcessDelivery && (
-                            <Link
-                              to={`/penjualan/pengiriman-pesanan?po_id=${o.id}&action=create`}
-                              className="so-act-ship"
-                              data-testid={`btn-process-delivery-${o.id}`}
-                              aria-label="+ Kirim"
-                            >
-                              <span className="so-act-plus" aria-hidden="true">+</span><span>Kirim</span>
-                            </Link>
+                          {((canCreate && !isCancelled) || canProcessDelivery) && (
+                            <Popover>
+                              <PopoverTrigger asChild>
+                                <button type="button" className="so-act-more" aria-label={`Aksi pesanan ${o.po_number}`} data-testid={`btn-more-order-${o.id}`}>
+                                  <MoreHorizontal size={18} />
+                                </button>
+                              </PopoverTrigger>
+                              <PopoverContent align="end" className="so-order-actions-popover" sideOffset={6}>
+                                {canCreate && !isCancelled && (
+                                  <button
+                                    type="button"
+                                    className="so-act-repeat"
+                                    data-testid={`btn-repeat-order-${o.id}`}
+                                    onClick={() => {
+                                      resetForm();
+                                      setViewMode("create");
+                                      void handleRepeatSpecificPo(o.id);
+                                    }}
+                                  >
+                                    Repeat Order
+                                  </button>
+                                )}
+                                {canProcessDelivery && (
+                                  <Link
+                                    to={`/penjualan/pengiriman-pesanan?po_id=${o.id}&action=create`}
+                                    className="so-act-ship"
+                                    data-testid={`btn-process-delivery-${o.id}`}
+                                    aria-label="+ Kirim"
+                                  >
+                                    <span className="so-act-plus" aria-hidden="true">+</span><span>Kirim</span>
+                                  </Link>
+                                )}
+                              </PopoverContent>
+                            </Popover>
                           )}
                         </div>
                       </td>
@@ -2002,6 +2039,7 @@ export default function PesananPenjualan() {
       {viewMode === "create" && (
         <form
           className="so-create-form"
+          noValidate
           data-create-tab={createTab}
           onSubmit={handleFormSubmit}
           onChange={() => { dirtyRef.current = true; }}
@@ -2246,7 +2284,7 @@ export default function PesananPenjualan() {
                       disabled={!formData.customer_id || repeatBusy || formBusy}
                       title={formData.customer_id ? "Salin detail dari PO valid terakhir customer ini" : "Pilih customer terdaftar terlebih dahulu"}
                     >
-                      {repeatBusy ? "Mencari…" : "Repeat Order"}
+                      <RefreshCw size={15} aria-hidden="true" /> {repeatBusy ? "Mencari…" : "Repeat Order"}
                     </button>
                     <button type="button" className="so-create-add" onClick={addLineItem} data-testid="btn-add-line-item">
                       <Plus size={14} /> Tambah barang
@@ -2273,14 +2311,15 @@ export default function PesananPenjualan() {
                             Tidak ada barang/jasa yang cocok.
                           </td>
                         </tr>
-                      ) : formData.line_items.map((line, originalIndex) => {
+                      ) : formData.line_items.slice(itemOffset, itemOffset + itemsPerPage).map((line, pageIndex) => {
+                        const originalIndex = itemOffset + pageIndex;
                         const mode = lineModes[line.rowKey] || "master";
                         const imagePath = itemImages[String(line.accurate_item_id || "").trim()]?.url;
                         const subtotal = lineSellingSubtotal(line.quantity, line.unit_price);
                         const detailStillPresent = formData.line_items.some((item) => item.rowKey === detailRowKey);
                         const activeDetailKey = detailRowKey === ""
                           ? ""
-                          : (detailStillPresent ? detailRowKey : formData.line_items[0]?.rowKey);
+                          : (detailStillPresent ? detailRowKey : formData.line_items[itemOffset]?.rowKey);
                         const detailOpen = activeDetailKey === line.rowKey;
                         const detailSummary = [
                           line.item_code,
@@ -2292,21 +2331,17 @@ export default function PesananPenjualan() {
                           <Fragment key={line.rowKey}>
                             <tr
                               data-testid={`line-item-row-${originalIndex}`}
-                              onFocusCapture={() => setDetailRowKey(line.rowKey)}
                             >
                               <td className="so-col-no" data-testid={`line-item-number-${originalIndex}`}>{originalIndex + 1}</td>
                               <td className="so-col-name">
                                 <div className="so-line-product">
                                   <SalesOrderThumb src={imagePath ? publicApiUrl(imagePath) : ""} />
                                   <div className="so-line-product-body">
-                                    <div className="so-line-mode" role="group" aria-label={`Mode barang baris ${originalIndex + 1}`}>
-                                      <button type="button" aria-pressed={mode === "master"} data-testid={`line-mode-master-${originalIndex}`} onClick={() => changeLineMode(originalIndex, "master")}>
-                                        Pilih Master
+                                    {mode === "manual" && (
+                                      <button type="button" className="so-line-mode" data-testid={`line-mode-master-${originalIndex}`} onClick={() => changeLineMode(originalIndex, "master")}>
+                                        Pilih dari master
                                       </button>
-                                      <button type="button" aria-pressed={mode === "manual"} data-testid={`line-mode-manual-${originalIndex}`} onClick={() => changeLineMode(originalIndex, "manual")}>
-                                        Input Manual
-                                      </button>
-                                    </div>
+                                    )}
                                     {mode === "master" ? (
                                       <MasterItemSearchSelect
                                         testId={`line-item-search-${originalIndex}`}
@@ -2343,7 +2378,7 @@ export default function PesananPenjualan() {
                                       data-testid={`btn-line-detail-${originalIndex}`}
                                       onClick={() => setDetailRowKey(detailOpen ? "" : line.rowKey)}
                                     >
-                                      {detailOpen ? "Tutup detail" : "Detail"}
+                                      {detailOpen ? "Tutup detail" : "Detail"} <ChevronDown size={12} aria-hidden="true" />
                                     </button>
                                     {!detailOpen && (
                                       <div className="so-line-detail-summary" data-testid={`line-detail-summary-${originalIndex}`}>
@@ -2383,9 +2418,9 @@ export default function PesananPenjualan() {
                                   placeholder="Harga"
                                   data-testid={`line-price-${originalIndex}`}
                                 />
-                                <div className={`so-price-source${line.price_review || line.price_message ? " is-review" : ""}`} data-testid={`line-price-source-${originalIndex}`}>
+                                {priceSourceLabel(line) !== "Isi harga jual" && <div className={`so-price-source${line.price_review || line.price_message ? " is-review" : ""}`} data-testid={`line-price-source-${originalIndex}`}>
                                   {priceSourceLabel(line)}
-                                </div>
+                                </div>}
                                 {line.price_review && (
                                   <button type="button" className="so-price-review" data-testid={`btn-review-price-${originalIndex}`} onClick={() => reviewLinePrice(originalIndex)}>
                                     Pakai harga Pengaturan Harga
@@ -2412,7 +2447,6 @@ export default function PesananPenjualan() {
                               hidden={!detailOpen}
                               data-open={detailOpen ? "true" : "false"}
                               data-testid={`line-item-detail-${originalIndex}`}
-                              onFocusCapture={() => setDetailRowKey(line.rowKey)}
                             >
                               <td />
                               <td colSpan={6}>
@@ -2445,6 +2479,14 @@ export default function PesananPenjualan() {
                     </tbody>
                   </table>
                 </div>
+                {itemPageCount > 1 && (
+                  <nav className="so-item-pager" aria-label="Halaman barang">
+                    <span>Barang {itemOffset + 1}–{Math.min(itemOffset + itemsPerPage, formData.line_items.length)} dari {formData.line_items.length}</span>
+                    <button type="button" data-testid="so-item-prev" disabled={visibleItemPage <= 1} onClick={() => setItemPage(visibleItemPage - 1)}>Sebelumnya</button>
+                    <strong>{visibleItemPage} / {itemPageCount}</strong>
+                    <button type="button" data-testid="so-item-next" disabled={visibleItemPage >= itemPageCount} onClick={() => setItemPage(visibleItemPage + 1)}>Berikutnya</button>
+                  </nav>
+                )}
               </div>
 
               <div className="so-ship-panel so-ship-only">

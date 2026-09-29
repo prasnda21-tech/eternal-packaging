@@ -4,7 +4,9 @@ import { AlertCircle, Search } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import {
+  buildPurchaseLifecycle,
   errDetail,
+  formatPurchaseDate,
   formatRupiah,
   friendlyLoadError,
   purchaseStatusPillClass,
@@ -15,6 +17,7 @@ import PurchasingFlowNav from "./PurchasingFlowNav";
 import PurchaseCancelModal from "./PurchaseCancelModal";
 import PurchaseActivityHistory from "./PurchaseActivityHistory";
 import PurchaseDocuments from "./PurchaseDocuments";
+import PurchaseLifecycleStrip from "./PurchaseLifecycleStrip";
 import "./purchasePages.css";
 
 const FILTERS = [
@@ -207,9 +210,6 @@ export default function PembayaranPembelian() {
 
   const submitted = detail?.submission_status === "SUBMITTED";
   const settled = detail?.settlement_status === "PAID";
-  const listStatus = (row) =>
-    row.list_status
-    || (row.settlement_status === "PAID" ? "SELESAI" : (row.submission_status_label || row.workflow_status));
 
   return (
     <div className="prod-page purchase-page" data-testid="pembayaran-pembelian-page">
@@ -261,23 +261,27 @@ export default function PembayaranPembelian() {
         <table className="prod-table purchase-table purchase-table-pay" data-testid="payments-table">
           <thead>
             <tr>
-              <th>No Pembayaran</th>
+              <th>No Pengajuan</th>
               <th>No Faktur</th>
               <th>Supplier</th>
-              <th>Tgl Pengajuan</th>
+              <th>Tanggal Pengajuan</th>
+              <th>Jatuh Tempo</th>
+              <th>Target Pembayaran</th>
               <th className="num">Nominal</th>
-              <th className="cell-status">Status</th>
+              <th>Tanggal Dibayar</th>
+              <th className="cell-status">Status<span> Pengajuan</span></th>
+              <th className="cell-status">Status Pembayaran</th>
             </tr>
           </thead>
           <tbody>
             {loading && (
               <tr className="purchase-empty-row">
-                <td colSpan={6} className="muted small">Memuat…</td>
+                <td colSpan={10} className="muted small">Memuat…</td>
               </tr>
             )}
             {!loading && rows.length === 0 && (
               <tr className="purchase-empty-row">
-                <td colSpan={6} className="muted">
+                <td colSpan={10} className="muted">
                   Belum ada pengajuan pembayaran. Ajukan dari halaman Faktur Pembelian.
                 </td>
               </tr>
@@ -291,15 +295,29 @@ export default function PembayaranPembelian() {
                 })}
               >
                 <td className="mono cell-clip">{r.payment_number}</td>
-                <td className="mono cell-clip">{r.invoice_number}</td>
+                <td className="mono cell-clip">
+                  {r.purchase_invoice_id ? (
+                    <Link className="purchase-doc-link" to={`/pembelian/faktur-pembelian?id=${encodeURIComponent(r.purchase_invoice_id)}`}>
+                      {r.invoice_number}
+                    </Link>
+                  ) : (r.invoice_number || "—")}
+                </td>
                 <td className="cell-clip" title={r.supplier}>{r.supplier}</td>
                 <td className="nowrap" data-testid={`payment-submitted-at-cell-${r.id}`}>
-                  {formatPurchaseDateTime(r.submitted_at) || "—"}
+                  {formatPurchaseDateTime(r.submitted_at)}
                 </td>
+                <td className="nowrap">{formatPurchaseDate(r.invoice_due_date)}</td>
+                <td className="nowrap">{formatPurchaseDate(r.requested_payment_date)}</td>
                 <td className="num">{formatRupiah(r.amount)}</td>
+                <td className="nowrap">{formatPurchaseDateTime(r.paid_at)}</td>
                 <td className="cell-status">
-                  <span className={`purchase-status-badge ${purchaseStatusPillClass(listStatus(r))}`}>
-                    {listStatus(r)}
+                  <span className={`purchase-status-badge ${purchaseStatusPillClass(r.submission_status_label)}`}>
+                    {r.submission_status_label || (r.submission_status === "SUBMITTED" ? "DIAJUKAN" : "BELUM DIAJUKAN")}
+                  </span>
+                </td>
+                <td className="cell-status">
+                  <span className={`purchase-status-badge ${purchaseStatusPillClass(r.settlement_status_label)}`}>
+                    {r.settlement_status_label || (r.settlement_status === "PAID" ? "DIBAYAR" : "BELUM DIBAYAR")}
                   </span>
                 </td>
               </tr>
@@ -333,6 +351,20 @@ export default function PembayaranPembelian() {
                   <span>{err}</span>
                 </div>
               ) : null}
+              <PurchaseLifecycleStrip
+                stages={buildPurchaseLifecycle({
+                  invoice: {
+                    id: detail.purchase_invoice_id,
+                    invoice_number: detail.invoice_number,
+                    invoice_date: detail.invoice_date,
+                    due_date: detail.invoice_due_date,
+                    grand_total: detail.invoice_grand_total,
+                    paid_total: detail.invoice_paid_total,
+                    payment_status: detail.invoice_payment_status,
+                  },
+                  payment: detail,
+                })}
+              />
               <div className="purchase-detail-meta" data-testid="payment-detail">
                 <div>
                   <span className="label">No Pembayaran</span>
@@ -340,7 +372,11 @@ export default function PembayaranPembelian() {
                 </div>
                 <div>
                   <span className="label">No Faktur</span>
-                  <span className="value mono">{detail.invoice_number}</span>
+                  {detail.purchase_invoice_id ? (
+                    <Link className="value mono purchase-doc-link" to={`/pembelian/faktur-pembelian?id=${encodeURIComponent(detail.purchase_invoice_id)}`}>
+                      {detail.invoice_number}
+                    </Link>
+                  ) : <span className="value mono">{detail.invoice_number || "—"}</span>}
                 </div>
                 <div>
                   <span className="label">Supplier</span>
@@ -364,7 +400,15 @@ export default function PembayaranPembelian() {
                 </div>
                 <div data-testid="payment-submitted-at">
                   <span className="label">Tanggal Pengajuan</span>
-                  <span className="value">{formatPurchaseDateTime(detail.submitted_at) || "—"}</span>
+                  <span className="value">{formatPurchaseDateTime(detail.submitted_at)}</span>
+                </div>
+                <div>
+                  <span className="label">Jatuh Tempo</span>
+                  <span className="value">{formatPurchaseDate(detail.invoice_due_date)}</span>
+                </div>
+                <div>
+                  <span className="label">Target Pembayaran</span>
+                  <span className="value">{formatPurchaseDate(detail.requested_payment_date)}</span>
                 </div>
                 <div data-testid="payment-submitted-by">
                   <span className="label">Diajukan oleh</span>
@@ -403,6 +447,27 @@ export default function PembayaranPembelian() {
                   </div>
                 ) : null}
               </div>
+
+              <section aria-label="Kronologi pembayaran" data-testid="payment-chronology">
+                <h4 className="purchase-form-title">Kronologi</h4>
+                <div className="purchase-payment-chrono">
+                  <div className="purchase-payment-chrono-row">
+                    <span aria-hidden>1</span>
+                    <span>Invoice Created</span>
+                    <span>{formatPurchaseDate(detail.invoice_date)}</span>
+                  </div>
+                  <div className="purchase-payment-chrono-row">
+                    <span aria-hidden>2</span>
+                    <span>Payment Requested</span>
+                    <span>{formatPurchaseDateTime(detail.submitted_at)}</span>
+                  </div>
+                  <div className="purchase-payment-chrono-row">
+                    <span aria-hidden>3</span>
+                    <span>Paid</span>
+                    <span>{formatPurchaseDateTime(detail.paid_at)}</span>
+                  </div>
+                </div>
+              </section>
 
               <PurchaseDocuments
                 entityType="purchase_payment"

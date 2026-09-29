@@ -1302,3 +1302,156 @@
   max-height: 90vh;
   overflow: auto;
 }
+
+/* ---- Lifecycle strip (compact, informative only) ---- */
+.purchase-page .purchase-lifecycle {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0 0 12px;
+}
+.purchase-page .purchase-lifecycle-stage {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.purchase-page .purchase-lifecycle-arrow {
+  display: none;
+}
+.purchase-page .purchase-lifecycle-card {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  min-height: 64px;
+  padding: 8px 10px;
+  border: 1px solid var(--line, #d7e0e4);
+  border-radius: 8px;
+  background: #fff;
+  text-decoration: none;
+  color: inherit;
+}
+.purchase-page .purchase-lifecycle-card.is-link:hover {
+  border-color: var(--ep-teal, #0d9488);
+}
+.purchase-page .purchase-lifecycle-mark {
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  background: #e8eef1;
+  color: #5b6b73;
+  flex-shrink: 0;
+}
+.purchase-page .purchase-lifecycle-mark.is-done {
+  background: rgba(13, 148, 136, 0.15);
+  color: #0b2d22;
+}
+.purchase-page .purchase-lifecycle-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.purchase-page .purchase-lifecycle-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #5b6b73;
+}
+.purchase-page .purchase-lifecycle-primary {
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.purchase-page .purchase-lifecycle-secondary,
+.purchase-page .purchase-lifecycle-date {
+  font-size: 12px;
+  color: #5b6b73;
+  line-height: 1.25;
+}
+.purchase-page .purchase-detail-card {
+  padding: 12px 14px 14px;
+  margin-bottom: 16px;
+}
+.purchase-page .purchase-detail-meta {
+  gap: 6px 14px;
+  margin-bottom: 10px;
+}
+.purchase-page .purchase-detail-meta .label {
+  font-size: 10px;
+}
+.purchase-page .purchase-detail-meta .value {
+  font-size: 13px;
+}
+.purchase-page .purchase-summary-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 8px;
+  margin: 0 0 12px;
+}
+.purchase-page .purchase-summary-strip .purchase-summary-item {
+  border: 1px solid var(--line, #d7e0e4);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: #f8fafb;
+}
+.purchase-page .purchase-summary-strip .label {
+  display: block;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: #5b6b73;
+  margin-bottom: 2px;
+}
+.purchase-page .purchase-summary-strip .value {
+  font-size: 13px;
+  font-weight: 650;
+}
+.purchase-page .purchase-payment-chrono {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--line, #d7e0e4);
+  border-radius: 8px;
+}
+.purchase-page .purchase-payment-chrono-row {
+  display: grid;
+  grid-template-columns: 18px 1fr auto;
+  gap: 8px;
+  align-items: start;
+  font-size: 12px;
+}
+.purchase-page .purchase-doc-link {
+  color: var(--ep-dark, #0b2d22);
+  font-weight: 650;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+@media (max-width: 900px) {
+  .purchase-page .purchase-lifecycle {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+@media (max-width: 560px) {
+  .purchase-page .purchase-lifecycle {
+    grid-template-columns: 1fr;
+  }
+  .purchase-page .purchase-lifecycle-arrow {
+    display: block;
+    text-align: center;
+    color: #94a3b8;
+    font-size: 12px;
+  }
+}
