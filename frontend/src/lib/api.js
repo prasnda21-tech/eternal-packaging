@@ -48,6 +48,8 @@ const publicJsonRequest = async (path, options = {}) => {
 };
 
 export const api = {
+  operationalStockPending: () => client.get("/operational-stock/pending").then((r) => r.data),
+  retryOperationalStock: (orderId, intentId, source) => client.post(`/operational-stock/${encodeURIComponent(orderId)}/${encodeURIComponent(intentId)}/retry`, {}, { params: { source } }).then((r) => r.data),
   login: (email, password) => client.post("/auth/login", { email, password }).then((r) => r.data),
   logout: () => client.post("/auth/logout", {}).then((r) => r.data),
   me: dedupeInflight(() => client.get("/auth/me").then((r) => r.data)),
@@ -952,3 +954,4 @@ function spkKeyHeader(payload) {
 }
 
 export default api;
+

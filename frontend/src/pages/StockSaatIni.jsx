@@ -1,3 +1,4 @@
+import OperationalStockPending from "../components/OperationalStockPending";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertCircle, Download, Search, X } from "lucide-react";
 import { Link } from "react-router-dom";
@@ -156,6 +157,7 @@ export default function StockSaatIni() {
 
   return (
     <div className="prod-page master-items-page stock-page" data-testid="stock-saat-ini-page">
+      <OperationalStockPending canRetry={canUpdate} onApplied={load} />
       <div className="page-heading prod-heading">
         <div className="prod-heading-copy">
           <p className="eyebrow">Persediaan</p>
@@ -369,3 +371,4 @@ export default function StockSaatIni() {
     </div>
   );
 }
+

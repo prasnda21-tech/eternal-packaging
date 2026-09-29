@@ -7,6 +7,7 @@ on:
       - cursor/hpp-financial-opening-13bd
       - cursor/sales-order-redesign-b7d7
       - release/finance-recon-on-live-stock-367
+      - release/invoice-bank-preserve-d27deff
   workflow_dispatch:
 
 permissions:
@@ -84,6 +85,9 @@ jobs:
           tests/test_sales_invoices_and_receipts.py
           tests/test_physical_stock_engine.py
           tests/test_confirm_delivered_sj_stock.py
+          tests/test_operational_stock_outbox.py
+          tests/test_sales_delivery_delete_scope.py
+          tests/test_sj_stock_return.py
           tests/test_cash_bank_phase1.py
           tests/test_cash_bank_phase2.py
           tests/test_cash_bank_bank_only.py
