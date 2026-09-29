@@ -1854,6 +1854,7 @@ def _attach_deadline_snapshot(order: dict, lead_time_days: int):
 
 
 _DERIVED_ORDER_KEYS = (
+    "sj_deletion_generation", "sj_deletion_ids",
     "operational_stock_intents", "operational_stock_pending", "stock_sync", "_new_operational_stock_intents",
     "packing_prereq_reasons", "packing_ready", "packing_status_semantic",
     "surat_jalan_created", "loading_prereq_reasons", "loading_ready",
@@ -2017,6 +2018,7 @@ async def _with_quantity_lock(order_id: str, mutate, extra_query=None, *, stock_
 
 
 async def _persist_order(order, *, require_lock: bool = False, persist_keys: Optional[tuple] = None, extra_query=None):
+    sj_generation = order.get("sj_deletion_generation", 0)
     expected_updated = order.pop("_expected_updated_at", None)
     if require_lock and not expected_updated:
         raise HTTPException(409, _CONFLICT_MSG)
@@ -2064,14 +2066,26 @@ async def _persist_order(order, *, require_lock: bool = False, persist_keys: Opt
         raise HTTPException(409, _CONFLICT_MSG)
     if extra_query:
         query.update(extra_query)
+    sj_fields = {"shipments", "surat_jalan_files", "loading_confirmations", "delivery_confirmations",
+                 "delivery_proofs", "delivery_recipient_signature", "delivery_driver_signature",
+                 "delivery_recipient_signatures", "delivery_driver_signatures"}
+    protect_sj = persist_keys is None or bool(sj_fields.intersection(persist_keys))
+    existing_sj_source = None
+    if protect_sj:
+        existing_sj_source = await db.orders.find_one({"id": order["id"]}, {"_id": 1})
+        query["sj_deletion_generation"] = sj_generation if sj_generation else {"$in": [None, 0]}
     update = {"$set": to_write}
     if intent_fields:
         if persist_keys is not None:
             raise ValueError("Stock obligations require the full operational write")
         update["$addToSet"] = {"operational_stock_pending": {"$each": [k.split(".", 1)[1] for k in intent_fields]}}
     result = await db.orders.update_one(
-        query, update, upsert=not bool(expected_updated or require_lock),
+        query, update, upsert=not bool(expected_updated or require_lock or existing_sj_source),
     )
+    if protect_sj and existing_sj_source and result.matched_count == 0:
+        latest = await db.orders.find_one({"id": order["id"]}, {"sj_deletion_generation": 1})
+        if (latest or {}).get("sj_deletion_generation", 0) != sj_generation:
+            raise HTTPException(409, _CONFLICT_MSG)
     if expected_updated and result.matched_count == 0:
         if extra_query:
             from services.physical_stock_engine import DELIVERY_FENCE_LOST
@@ -4796,9 +4810,11 @@ async def delete_surat_jalan_file(
     )
 
     if linked_delivery:
-        from services.operational_stock_outbox import archive_before_delete
+        from services.operational_stock_outbox import archive_before_delete, settle_deleted_source
+        await _reserve_sales_delivery_deletion(linked_delivery)
         await archive_before_delete(db, linked_delivery, "sales_deliveries")
         await db.sales_deliveries.delete_one({"id": linked_delivery["id"]})
+        await settle_deleted_source(db, "sales_deliveries", linked_delivery["id"])
         await _remove_matching_business_sj_shipment(order.get("id"), linked_delivery)
         # Reload order after shipment / stamp cleanup so response is current.
         fresh = await db.orders.find_one({"id": order_id}, {"_id": 0})
@@ -10767,6 +10783,35 @@ async def _remove_matching_business_sj_shipment(po_id: str, delivery: dict) -> N
     )
 
 
+async def _reserve_sales_delivery_deletion(delivery):
+    """Win against evidence writes on the PO before removing its selected SJ.
+
+    A stale whole-order persist cannot restore the removed SJ or attach evidence
+    after this CAS. An interrupted deletion can be retried using the same SJ id.
+    """
+    from services.sales_delivery_delete_guard import deletion_blocker
+    po_id, did = delivery.get("po_id"), delivery["id"]
+    if not po_id:
+        return
+    for _ in range(_QUANTITY_LOCK_RETRIES):
+        order = await db.orders.find_one({"id": po_id}, {"_id": 0})
+        if not order or did in (order.get("sj_deletion_ids") or []):
+            return
+        reason = deletion_blocker(order, delivery)
+        if reason:
+            raise HTTPException(400, reason)
+        result = await db.orders.update_one(
+            {"id": po_id, "updated_at": order.get("updated_at"),
+             "sj_deletion_generation": order.get("sj_deletion_generation", 0) or {"$in": [None, 0]}},
+            {"$inc": {"sj_deletion_generation": 1}, "$addToSet": {"sj_deletion_ids": did},
+             "$set": {"updated_at": now_iso()},
+             "$pull": {"shipments": {"$or": [{"id": did}, {"sales_delivery_id": did}]},
+                       "surat_jalan_files": {"id": did, "source": _SJ_SOURCE_GENERATED}}})
+        if result.matched_count:
+            return
+    raise HTTPException(409, _CONFLICT_MSG)
+
+
 @api_router.delete("/sales-receipts/{id}")
 async def delete_sales_receipt_endpoint(id: str, user=Depends(current_user)):
     """Delete a single sales receipt (Penerimaan Penjualan) with dependency safety."""
@@ -10838,9 +10883,11 @@ async def delete_sales_delivery_endpoint(id: str, user=Depends(current_user)):
     if blocker:
         raise HTTPException(400, blocker)
     sj_number = delivery.get("sj_number", delivery["id"])
-    from services.operational_stock_outbox import archive_before_delete
+    from services.operational_stock_outbox import archive_before_delete, settle_deleted_source
+    await _reserve_sales_delivery_deletion(delivery)
     await archive_before_delete(db, delivery, "sales_deliveries")
     await db.sales_deliveries.delete_one({"id": delivery["id"]})
+    await settle_deleted_source(db, "sales_deliveries", delivery["id"])
     await _remove_matching_business_sj_shipment(delivery.get("po_id"), delivery)
     await _write_audit(action="sales.delivery.delete", actor=user, target_email=f"delivery:{sj_number}",
                        before={"sj_number": sj_number, "id": delivery["id"]}, after={"deleted": True})
@@ -10872,11 +10919,13 @@ async def bulk_delete_sales_deliveries_endpoint(payload: BulkPayload, user=Depen
         raise HTTPException(400, {"message": "Tidak dapat menghapus. Beberapa pengiriman memiliki dependensi.", "blockers": blockers})
     if to_delete:
         delete_ids = [d["id"] for d in to_delete]
-        from services.operational_stock_outbox import archive_before_delete
+        from services.operational_stock_outbox import archive_before_delete, settle_deleted_source
         for document in to_delete:
+            await _reserve_sales_delivery_deletion(document)
             await archive_before_delete(db, document, "sales_deliveries")
         await db.sales_deliveries.delete_many({"id": {"$in": delete_ids}})
         for d in to_delete:
+            await settle_deleted_source(db, "sales_deliveries", d["id"])
             await _remove_matching_business_sj_shipment(d.get("po_id"), d)
     await _write_audit(action="sales.delivery.bulk_delete", actor=user, target_email=f"deliveries:{len(to_delete)}",
                        before={"ids": payload.ids}, after={"deleted_count": len(to_delete)})

@@ -101,6 +101,85 @@ async def test_foreign_claim_is_not_released_or_operational_blocker(mongo):
     state=await get_product_stock_state(mongo,MASTER)
     assert state['pending_event']['event_id']=='foreign' and state['printed_qty']==2000
 
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('expired,unfenced', [(False, False), (True, False), (True, True)])
+async def test_worker_recovers_only_eligible_legacy_delivery_owner(mongo, monkeypatch, expired, unfenced):
+    from test_confirm_delivered_sj_stock import (
+        _install_fence_clock, _two_master_order, _seed_two_masters,
+        _crash_after_master_a_claim, MASTER_A, MASTER_B,
+    )
+    advance = _install_fence_clock(monkeypatch)
+    abandoned = _two_master_order('abandoned-before-outbox')
+    await _seed_two_masters(mongo, abandoned)
+    await _crash_after_master_a_claim(mongo, abandoned, 'old-owner')
+    if unfenced:
+        await mongo.product_stock_state.update_one(
+            {'master_item_id': MASTER_A}, {'$unset': {'pending_event.fence_generation': ''}})
+    if expired:
+        advance(31)
+    before = await get_product_stock_state(mongo, MASTER_A)
+    order = _two_master_order('new-outbox-after-abandoned')
+    await mongo.orders.insert_one(order)
+    response = await _confirm(order['id'], 'sj-share', 'new-owner')
+    assert response.status_code == 200, response.text
+    stored = await mongo.orders.find_one({'id': order['id']})
+    token = next(iter(stored[FIELD]))
+    result = await process_intent(mongo, order['id'], token)
+    state = await get_product_stock_state(mongo, MASTER_A)
+    if expired and not unfenced:
+        assert result['status'] == 'applied', result
+        assert state['printed_qty'] == 750
+        assert not state.get('pending_event')
+        assert (await get_product_stock_state(mongo, MASTER_B))['printed_qty'] == 920
+        assert (await process_intent(mongo, order['id'], token))['status'] == 'applied'
+        assert (await get_product_stock_state(mongo, MASTER_A))['printed_qty'] == 750
+    else:
+        assert result['status'] == 'pending', result
+        assert state['printed_qty'] == 1000
+        assert state['pending_event'] == before['pending_event']
+    old = await mongo.orders.find_one({'id': abandoned['id']})
+    assert not old['delivery_confirmations']
+    assert await mongo.stock_movements.count_documents({'order_id': abandoned['id']}) == 0
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('altered', [False, True])
+async def test_same_action_legacy_claim_is_finished_without_outbox_redebit(mongo, monkeypatch, altered):
+    from services import physical_stock_engine as engine
+    from test_confirm_delivered_sj_stock import _install_fence_clock
+    advance = _install_fence_clock(monkeypatch)
+    order = _order('legacy-same-action')
+    await _seed(mongo, order)
+    await engine.prepare_confirm_delivered_action(mongo, order, 'sj-1', 'legacy-action')
+    await engine.claim_selected_delivery_stock(mongo, order, 'sj-1', 'legacy-action', {}, {})
+    response = await _confirm(order['id'], 'sj-1', 'legacy-action')
+    assert response.status_code == 200, response.text
+    stored = await mongo.orders.find_one({'id': order['id']})
+    token = next(iter(stored[FIELD]))
+    # A live old worker keeps its claim. Business confirmation has succeeded.
+    assert (await process_intent(mongo, order['id'], token))['status'] == 'pending'
+    assert (await get_product_stock_state(mongo, MASTER))['printed_qty'] == 2000
+    if altered:
+        await mongo.product_stock_state.update_one({'master_item_id': MASTER},
+            {'$set': {'pending_event.line_claims.0.transaction_qty': 401}})
+    advance(31)
+    result = await process_intent(mongo, order['id'], token)
+    if altered:
+        assert result['status'] == 'review_required', result
+        assert (await get_product_stock_state(mongo, MASTER))['printed_qty'] == 2000
+        assert await mongo.stock_movements.count_documents({'movement_type': 'PENGIRIMAN'}) == 0
+        return
+    assert result['status'] == 'applied', result
+    assert (await get_product_stock_state(mongo, MASTER))['printed_qty'] == 1200
+    assert len(await _movements(mongo)) == 2
+    assert await mongo.stock_movements.count_documents({'reference_type': 'operational_stock_intent'}) == 0
+    # Even receipt loss cannot create a new debit for the completed legacy event.
+    await mongo.operational_stock_receipts.delete_one({'_id': token})
+    assert (await process_intent(mongo, order['id'], token))['status'] == 'applied'
+    assert (await get_product_stock_state(mongo, MASTER))['printed_qty'] == 1200
+    assert len(await _movements(mongo)) == 2
+
 @pytest.mark.anyio
 async def test_crash_after_apply_before_movement_resumes_without_second_debit(mongo,monkeypatch):
     from services import physical_stock_engine as engine
@@ -218,7 +297,7 @@ async def test_applied_pending_id_cleanup_does_not_erase_new_task(mongo):
 
 @pytest.mark.anyio
 async def test_deleted_sj_obligation_remains_visible_without_auto_debit(mongo):
-    from services.operational_stock_outbox import attach_sales_delivery_intent, archive_before_delete, pending_rows
+    from services.operational_stock_outbox import attach_sales_delivery_intent, archive_before_delete, pending_rows, settle_deleted_source
     order=_order('deleted-sj');await _seed(mongo,order)
     order['physical_stock_snapshot']['stock_out_trigger']='sales_delivery'
     delivery={'id':'new-sj','po_id':order['id'],'line_items':[{'line_idx':0,'qty':100}]}
@@ -226,8 +305,10 @@ async def test_deleted_sj_obligation_remains_visible_without_auto_debit(mongo):
     await mongo.sales_deliveries.insert_one(delivery)
     token=next(iter(delivery[FIELD]))
     await archive_before_delete(mongo,delivery,'sales_deliveries')
-    assert (await process_intent(mongo,delivery['id'],token,'sales_deliveries'))['status']=='cancelled'
+    assert (await process_intent(mongo,delivery['id'],token,'sales_deliveries'))['status']=='cancellation_pending'
     await mongo.sales_deliveries.delete_one({'id':delivery['id']})
+    assert (await pending_rows(mongo))[0]['status']=='cancellation_pending'
+    await settle_deleted_source(mongo,'sales_deliveries',delivery['id'])
     rows=await pending_rows(mongo)
     assert rows == []
     assert (await get_product_stock_state(mongo,MASTER))['printed_qty']==2000

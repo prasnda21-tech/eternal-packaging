@@ -43,7 +43,9 @@ export default function OperationalStockPending({canRetry, onApplied}) {
       <div style={{overflowX: "auto"}}><table style={{width: "100%"}}>
         <thead><tr><th>PO</th><th>Tahap</th><th>Catatan stok</th>{canRetry && <th>Aksi</th>}</tr></thead>
         <tbody>{items.map(row => <tr key={row.intent_id}>
-          <td>{row.po_number || row.order_id}</td><td>{stages[row.stage] || row.stage}</td><td>{row.reason}</td>
+          <td>{row.po_number || row.order_id}</td><td>{stages[row.stage] || row.stage}</td><td>{row.reason}
+            {row.next_action && <small style={{display: "block", marginTop: 4}}>{row.next_action}</small>}
+          </td>
           {canRetry && <td>{row.status !== "review_required" && <button type="button" className="ghost" disabled={busy} onClick={() => retry(row)}>Coba catat ulang</button>}</td>}
         </tr>)}</tbody>
       </table></div>

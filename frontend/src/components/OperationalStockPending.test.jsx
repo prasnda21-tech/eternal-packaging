@@ -35,9 +35,10 @@ test("403 is not displayed as an empty successful queue", async () => {
   expect(screen.queryByText("Tidak ada pekerjaan tertunda pada antrean ini.")).not.toBeInTheDocument();
 });
 test("deleted source review cannot be retried from the panel", async () => {
-  api.operationalStockPending.mockResolvedValue({items: [{...row, status: "review_required"}]});
+  api.operationalStockPending.mockResolvedValue({items: [{...row, status: "review_required", next_action: "Cocokkan bukti mutasi SJ sebelum koreksi saldo."}]});
   render(<OperationalStockPending canRetry />);
   fireEvent.click(screen.getByRole("button", {name: "Pencatatan stok tertunda"}));
   await screen.findByText("PO UJI");
+  expect(screen.getByText("Cocokkan bukti mutasi SJ sebelum koreksi saldo.")).toBeInTheDocument();
   expect(screen.queryByRole("button", {name: "Coba catat ulang"})).not.toBeInTheDocument();
 });

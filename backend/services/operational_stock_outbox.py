@@ -137,6 +137,78 @@ async def resolve_missing_master(db, source, document, task, index, item):
     return resolved[index]["master_item_id"]
 
 
+async def recover_legacy_delivery(db, order, task):
+    """Settle a fenced legacy operation and prove every original line.
+
+    Never replace a legacy debit with a new outbox event. Partial or ambiguous
+    history stays visible for review instead of being debited a second time.
+    The caller has already verified the persisted operational source.
+    """
+    from services import physical_stock_engine as engine
+    action = task.get("action_id")
+    slots = (order.get("delivery_confirm_fence") or {}).get("ops") or {}
+    fenced = any(v.get("action_id") == action for v in slots.values() if isinstance(v, dict))
+    operation = await db.delivery_confirm_operations.find_one({
+        "order_id": task["order_id"], "action_id": action,
+        "$or": [{"fence_protocol": {"$ne": 1}}, {"holders": {"$gt": 0}},
+                {"claimed_masters.0": {"$exists": True}}],
+    })
+    if not fenced and not operation:
+        return False
+
+    def review():
+        return HTTPException(409, {"review_required": True, "message":
+            "Bukti mutasi operasi lama belum lengkap atau tidak cocok; tidak membuat debit baru"})
+
+    rows = [{"line_idx": item["line_idx"], "line_id": item.get("line_id"),
+             "master_item_id": item.get("master_item_id"), "qty": item["quantity"],
+             "unit": item["unit"], "production_process": "print" if item["is_print"] else "non_print"}
+            for item in task["items"]]
+    specs = engine._delivery_claim_specs(order, rows, action)
+    if len(specs) != len(rows):
+        raise review()
+    expected = {}
+    for spec in specs:
+        enriched = await engine._delivery_line_deltas(db, spec)
+        expected[spec["event_id"]] = dict(enriched, transaction_qty=spec["qty"])
+    masters = {spec["mid"] for spec in specs}
+    recover = []
+    # Check all pending rows before recovery is allowed to mutate any master.
+    async for state in db[engine.STATE_COLLECTION].find({
+            "pending_event.order_id": task["order_id"], "pending_event.action_id": action}):
+        mid = state.get("master_item_id")
+        if mid not in masters:
+            raise review()
+        pending = (state or {}).get("pending_event") or {}
+        if pending.get("reference_type") != "delivery_confirmed":
+            raise review()
+        pending_rows = engine._delivery_expected_lines({"claim_data": pending})
+        if not pending_rows:
+            raise review()
+        for row in pending_rows:
+            spec = expected.get(row.get("event_id"))
+            if not spec or spec["mid"] != mid:
+                raise review()
+            if str(row.get("line_id") or "") != str(spec.get("line_id") or ""):
+                raise review()
+            for field in ("transaction_qty", "delta_printed", "delta_unprinted"):
+                if abs(float(row.get(field) or 0) - float(spec[field])) > 0.0001:
+                    raise review()
+        recover.append(mid)
+    for mid in recover:
+        result = await engine.recover_abandoned_delivery_pending(db, mid, user=task["actor"])
+        if result.get("status") == "MANUAL_REVIEW":
+            raise review()
+        if result.get("status") not in {"RECOVERED", "CLEAR"}:
+            raise HTTPException(409, "Menunggu pemilik klaim stok lama; operasi pengiriman sudah tersimpan")
+    for event, spec in expected.items():
+        movement = await engine._movement_by_event(db, event)
+        if not movement or not engine._delivery_movement_matches_line(
+                movement, spec, order_id=task["order_id"], action_id=action, master_item_id=spec["mid"]):
+            raise review()
+    return True
+
+
 async def process_intent(db, order_id, intent_id, source="orders"):
     """Apply only persisted obligations through the durable stock engine.
 
@@ -159,17 +231,10 @@ async def process_intent(db, order_id, intent_id, source="orders"):
         return receipt
     outcome = {"order_id": order_id, "source": source, "intent_id": intent_id, "updated_at": stamp(), "status": "pending"}
     try:
+        if order.get("stock_deletion_requested"):
+            raise HTTPException(409, "Penghapusan SJ sedang diselesaikan; pencatatan keluar ditahan")
         if order.get("cancelled") or order.get("is_cancelled"):
             raise HTTPException(409, "Sumber dibatalkan; perlu tinjauan stok")
-        if task["stage"] == "delivery":
-            slots = (order.get("delivery_confirm_fence") or {}).get("ops") or {}
-            legacy_fence = any(v.get("action_id") == task.get("action_id") for v in slots.values() if isinstance(v, dict))
-            legacy_op = await db.delivery_confirm_operations.find_one({
-                "order_id": task["order_id"], "action_id": task.get("action_id"),
-                "$or": [{"fence_protocol": {"$ne": 1}}, {"holders": {"$gt": 0}}, {"claimed_masters.0": {"$exists": True}}],
-            })
-            if legacy_fence or legacy_op:
-                raise HTTPException(409, {"review_required": True, "message": "Operasi memakai klaim stok lama; tinjau sebelum pencatatan agar tidak terpotong dua kali"})
         if source == "orders":
             sources = {identity(scope, rec): json.dumps(rec, sort_keys=True, default=str)
                        for scope, rec, _ in event_rows(order, task["stage"])}
@@ -182,6 +247,8 @@ async def process_intent(db, order_id, intent_id, source="orders"):
         dependency_order = order if source == "orders" else await db.orders.find_one({"id": task["order_id"]})
         if not dependency_order or dependency_order.get("cancelled"):
             raise HTTPException(409, "PO sumber tidak aktif; perlu tinjauan stok")
+        legacy_complete = (task["stage"] == "delivery"
+                           and await recover_legacy_delivery(db, order, task))
         # Respect earlier conversion obligations on this order before stock-out.
         if task["stage"] != "operator":
             mids = {x.get("master_item_id") for x in task["items"]}
@@ -191,7 +258,7 @@ async def process_intent(db, order_id, intent_id, source="orders"):
                     done = await db[RECEIPTS].find_one({"_id": other_id, "status": "applied"})
                     if not done:
                         raise HTTPException(409, "Menunggu pencatatan hasil cetak")
-        for i, item in enumerate(task["items"]):
+        for i, item in enumerate([] if legacy_complete else task["items"]):
             mid = item.get("master_item_id")
             if not mid:
                 mid = await resolve_missing_master(db, source, order, task, i, item)
@@ -206,6 +273,16 @@ async def process_intent(db, order_id, intent_id, source="orders"):
             if opened and opened > task["created_at"]:
                 raise HTTPException(409, "Saldo awal dibuat sesudah pekerjaan; perlu tinjauan agar tidak terhitung ganda")
             pending = state.get("pending_event") or {}
+            if (pending.get("reference_type") == "delivery_confirmed"
+                    and (pending.get("action_id"), pending.get("order_id"))
+                    != (task.get("action_id"), task.get("order_id"))):
+                # The legacy recovery protocol, not the age of a holder, decides
+                # whether its source must be finalized or its claim released.
+                # A live or unfenced owner remains untouched.
+                recovery = await engine.recover_abandoned_delivery_pending(db, mid, user=task["actor"])
+                if recovery.get("status") in {"RECOVERED", "CLEAR"}:
+                    state = await get_product_stock_state(db, mid)
+                    pending = (state or {}).get("pending_event") or {}
             if pending and pending.get("event_id") != event_id:
                 if pending.get("reference_type") != "operational_stock_intent" and pending.get("action_id") == task.get("action_id") and task.get("action_id"):
                     raise HTTPException(409, {"review_required": True, "message": "Klaim lama untuk pekerjaan yang sama perlu tinjauan; tidak membuat debit baru"})
@@ -289,7 +366,11 @@ async def pending_rows(db, limit=100):
                 result.append({"source": source, "order_id": order["id"], "po_number": task.get("po_number") or order.get("po_number"),
                                "intent_id": token, "stage": task["stage"], "items": task["items"],
                                "created_at": task["created_at"], "status": receipt.get("status", "pending"),
-                               "reason": receipt.get("reason", "Menunggu pencatatan stok")})
+                               "reason": receipt.get("reason", "Menunggu pencatatan stok"),
+                               "next_action": (
+                                   "PIC stok: cocokkan riwayat PO/SJ, baris barang, qty dan mutasi asal. Jangan koreksi saldo tanpa bukti."
+                                   if receipt.get("status") == "review_required" else
+                                   "Periksa saldo awal, mapping barang atau mutasi yang masih berjalan; antrean mencoba kembali otomatis.")})
                 if len(result) >= limit:
                     return result
     seen = {row["intent_id"] for row in result}
@@ -298,7 +379,8 @@ async def pending_rows(db, limit=100):
             task = receipt["task"]
             result.append({"source": receipt["source"], "order_id": receipt["order_id"],
                            "intent_id": receipt["_id"], "stage": task["stage"], "items": task["items"],
-                           "po_number": task.get("po_number"), "status": receipt["status"], "reason": receipt["reason"]})
+                           "po_number": task.get("po_number"), "status": receipt["status"], "reason": receipt["reason"],
+                           "next_action": "Jika SJ masih terlihat, ulangi Hapus. Jika sudah terhapus, pengembalian stok dicoba kembali otomatis."})
             if len(result) >= limit:
                 break
     return result
@@ -332,6 +414,11 @@ async def reverse_deleted_intent(db, receipt):
     Reversal uses its own durable event and can resume after a hard crash.
     """
     from services import physical_stock_engine as engine
+    # Archiving is not proof of deletion: a failed delete must not return stock.
+    if await db[receipt["source"]].find_one({"id": receipt["order_id"]}, {"_id": 1}):
+        await db[RECEIPTS].update_one({"_id": receipt["_id"], "status": "cancellation_pending"},
+            {"$set": {"reason": "SJ belum terhapus; ulangi Hapus pada SJ ini. Saldo belum dikembalikan"}})
+        return
     task = receipt["task"]
     for i, item in enumerate(task["items"]):
         mid = item.get("master_item_id")
@@ -414,7 +501,28 @@ async def archive_before_delete(db, document, source):
                      "status": "cancellation_pending", "reason": "Pengembalian stok SJ sedang diproses", "updated_at": stamp()},
         }, upsert=True)
         receipt = await db[RECEIPTS].find_one({"_id": token})
-        await reverse_deleted_intent(db, receipt)
+        # Fence before deleting the source, but never credit before deletion.
+        # A worker that already read the source loses at the stock-document CAS.
+        from services.physical_stock_engine import STATE_COLLECTION
+        for i, item in enumerate(task["items"]):
+            if item.get("master_item_id"):
+                event = item.get("original_event_id") or f"operational:{token}:{i}"
+                marker = "cancelled_operational_events." + hashlib.sha256(event.encode()).hexdigest()
+                await db[STATE_COLLECTION].update_one({"master_item_id": item["master_item_id"]},
+                                                       {"$set": {marker: True}})
+
+
+async def settle_deleted_source(db, source, source_id):
+    """Best effort after business deletion; durable receipts survive stock errors."""
+    async for receipt in db[RECEIPTS].find({"source": source, "order_id": source_id,
+                                           "source_deletion_requested": True, "status": "cancellation_pending"}):
+        try:
+            await reverse_deleted_intent(db, receipt)
+        except Exception:
+            log.exception("SJ deleted; stock return remains queued: %s", receipt["_id"])
+            # Keep the receipt's durable task. The regular worker will retry.
+            await db[RECEIPTS].update_one({"_id": receipt["_id"], "status": "cancellation_pending"},
+                {"$set": {"reason": "SJ terhapus; pengembalian stok menunggu mutasi lain atau pemulihan pencatatan"}})
 
 
 async def worker(db):

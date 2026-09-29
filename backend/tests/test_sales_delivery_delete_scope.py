@@ -52,3 +52,55 @@ async def test_delete_with_payment_keeps_sibling(mongo,bulk):
   for f in ('delivery_proofs','loading_confirmations','delivery_confirmations'):assert saved[f]==o[f]
   assert await mongo.sales_receipts.find_one({'id':'paid'},{'_id':0})==payment
  finally:server.app.dependency_overrides.clear()
+
+@pytest.mark.anyio
+async def test_delete_fence_rejects_stale_evidence_and_keeps_other_sj(mongo):
+ import server
+ from fastapi import HTTPException
+ o=_order('delete-race');o.update(doc());o['id']='delete-race'
+ for field in ('loading_confirmations','delivery_confirmations','delivery_proofs'):
+  o[field]=[]
+ o.pop('delivery_recipient_signature',None);o.pop('delivery_driver_signature',None)
+ await mongo.orders.insert_one(deepcopy(o))
+ d={**D,'po_id':o['id']}
+ stale=await mongo.orders.find_one({'id':o['id']},{'_id':0})
+ await server._reserve_sales_delivery_deletion(d)
+ stale['delivery_proofs']=[{'id':'late-proof','shipment_id':'sj-b'}]
+ with pytest.raises(HTTPException) as exc:
+  await server._persist_order(stale)
+ assert exc.value.status_code==409
+ current=await mongo.orders.find_one({'id':o['id']})
+ assert [x['id'] for x in current['shipments']]==['sj-a']
+ assert current['delivery_proofs']==[]
+ assert current['sj_deletion_ids']==['sj-b']
+ # Fresh ordinary changes to the remaining PO still work.
+ current.pop('_id')
+ current['notes']='remaining order continues'
+ await server._persist_order(current)
+ assert (await mongo.orders.find_one({'id':o['id']}))['notes']=='remaining order continues'
+
+@pytest.mark.anyio
+async def test_evidence_wins_before_delete_cas(mongo,monkeypatch):
+ import server
+ from fastapi import HTTPException
+ o=_order('evidence-wins');o.update(doc());o['id']='evidence-wins'
+ for field in ('loading_confirmations','delivery_confirmations','delivery_proofs'):o[field]=[]
+ o.pop('delivery_recipient_signature',None);o.pop('delivery_driver_signature',None)
+ await mongo.orders.insert_one(deepcopy(o))
+ d={**D,'po_id':o['id']}
+ collection=mongo.orders
+ cls=type(collection);real=cls.update_one;once=False
+ async def race(self,query,update,*args,**kwargs):
+  nonlocal once
+  if self.name=='orders' and '$inc' in update and 'sj_deletion_generation' in update['$inc'] and not once:
+   once=True
+   fresh=await mongo.orders.find_one({'id':o['id']},{'_id':0})
+   fresh['delivery_proofs']=[{'id':'won','shipment_id':'sj-b'}]
+   await server._persist_order(fresh)
+  return await real(self,query,update,*args,**kwargs)
+ monkeypatch.setattr(cls,'update_one',race)
+ with pytest.raises(HTTPException) as exc:await server._reserve_sales_delivery_deletion(d)
+ assert exc.value.status_code==400
+ saved=await mongo.orders.find_one({'id':o['id']})
+ assert saved['delivery_proofs']==[{'id':'won','shipment_id':'sj-b'}]
+ assert len(saved['shipments'])==2 and not saved.get('sj_deletion_ids')
