@@ -135,6 +135,117 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
     await act(async () => document.body.querySelector(`[data-testid="line-item-search-${index}-option-a${index}"]`).click());
   }
 
+  test("same sales names stay separate in the responsible account list", async () => {
+    api.salesOrderOptions.mockResolvedValue({
+      suggested_po_number: "PO-OPEN",
+      master_customers: [MASTER],
+      outlets_by_customer: {},
+      sales_options: ["Sari"],
+      sales_accounts: [
+        { id: "sari-1", name: "Sari", email: "sari.a@example.com", role: "sales_eternal" },
+        { id: "sari-2", name: "Sari", email: "sari.b@example.com", role: "holding_team" },
+      ],
+    });
+    await openCreate();
+    const select = container.querySelector('[data-testid="input-sales-account"]');
+    const labels = Array.from(select.querySelectorAll("option")).map((option) => option.textContent);
+    expect(select.querySelector('option[value="sari-1"]').textContent).toContain("sari.a@example.com");
+    expect(select.querySelector('option[value="sari-2"]').textContent).toContain("sari.b@example.com");
+    expect(new Set(labels).size).toBe(labels.length);
+    await act(async () => {
+      const proto = window.HTMLSelectElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, "value").set.call(select, "sari-2");
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(container.querySelector('[data-testid="input-sales"]').value).toBe("Sari");
+  });
+
+  async function chooseRegisteredCustomer() {
+    await act(async () => {
+      setNativeValue(container.querySelector('[data-testid="input-customer"]'), "Maju");
+    });
+    await tick(180);
+    await act(async () => {
+      container.querySelector('[data-testid="input-customer-option-c1"]').click();
+    });
+    await tick(0);
+  }
+
+  test("repeat keeps the eligible source id when two accounts share a name", async () => {
+    api.salesOrderOptions.mockResolvedValue({
+      suggested_po_number: "PO-OPEN",
+      master_customers: [MASTER],
+      outlets_by_customer: { "PT Maju": [{ outlet: "Pusat", address: "Jl. Master", recipient: "Rina" }] },
+      sales_options: ["Sari"],
+      sales_accounts: [
+        { id: "sari-1", name: "Sari", email: "sari.a@example.com", role: "sales_eternal" },
+        { id: "sari-2", name: "Sari", email: "sari.b@example.com", role: "holding_team" },
+      ],
+    });
+    api.salesOrderRepeatSource.mockResolvedValue({
+      found: true,
+      source: {
+        source_po_number: "PO/SARI/1",
+        customer_id: "c1",
+        customer: "PT Maju",
+        sales: "Sari",
+        sales_user_id: "sari-2",
+        line_items: [{ name: "Cup", quantity: 2, unit: "pcs", production_process: "print" }],
+        line_count: 1,
+      },
+    });
+    await openCreate();
+    await chooseRegisteredCustomer();
+    await act(async () => {
+      container.querySelector('[data-testid="btn-repeat-order"]').click();
+    });
+    await tick(0);
+    await act(async () => {
+      container.querySelector('[data-testid="btn-repeat-confirm"]').click();
+    });
+    expect(container.querySelector('[data-testid="input-sales-account"]').value).toBe("sari-2");
+    expect(container.querySelector('[data-testid="input-sales"]').value).toBe("Sari");
+    expect(container.querySelector('[data-testid="repeat-empty-message"]')).toBeNull();
+  });
+
+  test("repeat asks to choose again when the source account is no longer eligible", async () => {
+    api.salesOrderOptions.mockResolvedValue({
+      suggested_po_number: "PO-OPEN",
+      master_customers: [MASTER],
+      outlets_by_customer: { "PT Maju": [{ outlet: "Pusat", address: "Jl. Master", recipient: "Rina", sales: "Sari" }] },
+      sales_options: ["Sari"],
+      sales_accounts: [
+        { id: "sari-1", name: "Sari", email: "sari.a@example.com", role: "sales_eternal" },
+      ],
+    });
+    api.salesOrderRepeatSource.mockResolvedValue({
+      found: true,
+      source: {
+        source_po_number: "PO/SARI/OLD",
+        customer_id: "c1",
+        customer: "PT Maju",
+        sales: "Sari",
+        sales_user_id: "old-1",
+        line_items: [{ name: "Cup", quantity: 1, unit: "pcs", production_process: "print" }],
+        line_count: 1,
+      },
+    });
+    await openCreate();
+    await chooseRegisteredCustomer();
+    await act(async () => {
+      container.querySelector('[data-testid="btn-repeat-order"]').click();
+    });
+    await tick(0);
+    await act(async () => {
+      container.querySelector('[data-testid="btn-repeat-confirm"]').click();
+    });
+    const message = container.querySelector('[data-testid="repeat-empty-message"]').textContent;
+    expect(message).toMatch(/Pilih ulang/);
+    expect(message).toMatch(/tidak dialihkan dari nama/);
+    expect(container.querySelector('[data-testid="input-sales-account"]').value).toBe("");
+    expect(container.querySelector('[data-testid="input-sales"]').value).toBe("");
+  });
+
   test("list page is unchanged and create workspace is isolated", async () => {
     await renderPage();
     const page = container.querySelector('[data-testid="sales-order-page"]');
