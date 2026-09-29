@@ -85,3 +85,19 @@ test('cancelled issued invoices retain cancellation label and localized status f
  expect(filterDocuments([row],'invoice',{columns:{financial_status:'Dibatalkan'}})).toHaveLength(1);
  expect(filterDocuments([{...row,financial_status:'finalized'}],'invoice',{columns:{financial_status:'Terbit'}})).toHaveLength(1);
 });
+
+
+test.each(['invoice','receipt'])('five/ten row selection resets %s pagination and keeps remaining rows reachable',async kind=>{
+ const receipts=Array.from({length:12},(_,i)=>({id:`r${i}`,receipt_number:`RCV-${i}`,customer:'Kopi',amount:100,receipt_date:'2026-09-01'}));
+ api.listSalesReceipts.mockResolvedValue({receipts});
+ await act(async()=>root.render(kind==='invoice'?<FakturPenjualan/>:<PenerimaanPenjualan/>));
+ await click('[aria-label="Halaman berikutnya"]');
+ await change('[aria-label="Jumlah baris per halaman"]','5');
+ expect(container.querySelectorAll('tbody tr')).toHaveLength(5);
+ expect(container.querySelector('.doc-pager').textContent).toContain('1–5 dari 12');
+ await click('[aria-label="Halaman berikutnya"]');
+ expect(container.querySelector('.doc-pager').textContent).toContain('6–10 dari 12');
+ await change('[aria-label="Jumlah baris per halaman"]','10');
+ expect(container.querySelectorAll('tbody tr')).toHaveLength(10);
+ expect(container.querySelector('.doc-pager').textContent).toContain('1–10 dari 12');
+});
