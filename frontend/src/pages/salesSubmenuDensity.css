@@ -545,92 +545,414 @@
   .sd-density .sd-list-footer{padding-right:84px}
 }
 
-/* Import PO stays on its own page, compacted so the SO table can show eight rows. */
-.import-page{
-  display:grid;
-  grid-template-columns:minmax(0,1fr) auto;
-  grid-template-rows:auto auto auto minmax(0,1fr) auto;
-  align-items:center;
-  height:calc(100vh - 104px);
-  min-height:0;
-  overflow:hidden;
-  gap:4px;
-  box-sizing:border-box;
-}
-.import-page .page-heading{
-  margin:0 !important;
-  padding:2px 10px !important;
-  align-items:center;
-  min-height:0 !important;
-}
-.import-page .page-heading::before{display:none}
-.import-page .page-heading .eyebrow{display:none}
-.import-page .page-heading > div{display:flex;align-items:baseline;gap:10px;min-width:0}
-.import-page .page-heading .subhead{margin:0;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.import-page .page-heading h1{font-size:18px;line-height:1.15;margin:0}
-.import-page .accurate-banner{grid-column:1;margin:0;padding:2px 8px;max-height:32px;overflow:hidden}
-.import-page .accurate-banner p{display:inline;margin:0 0 0 8px}
-.import-page .accurate-banner > div{align-items:center}
-.import-page .import-search .search-row{padding:2px 8px}
-.import-page [data-testid="recent-so-panel"] > header p{display:inline;margin:0 0 0 8px}
-.import-page .import-tabs{grid-column:2;margin:0;max-height:32px;overflow:hidden}
-.import-page .page-heading,
-.import-page [data-testid="search-panel"],
-.import-page [data-testid="recent-so-panel"],
-.import-page [data-testid="import-logs-panel"]{grid-column:1 / -1}
-.import-page .panel{margin:0;padding:4px 8px}
-.import-page [data-testid="search-panel"]{padding:0 !important;max-height:36px;overflow:hidden}
-.import-page [data-testid="search-panel"] .panel-head{display:none}
-.import-page .panel-head{margin:0;padding:0}
-.import-page .panel-head h3{margin:0;font-size:14px}
-.import-page [data-testid="recent-so-panel"]{
-  align-self:stretch;
-  min-height:0;
+/* Import PO workspace. Scrolls vertically; must not widen the page. */
+.import-page.penjualan-page{
   display:flex;
   flex-direction:column;
+  gap:10px;
+  width:100%;
+  max-width:100%;
+  min-width:0;
+  height:auto;
+  overflow-x:hidden;
+  box-sizing:border-box;
+}
+.import-page.penjualan-page .page-heading.import-workspace-head{
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:12px 16px;
+  flex-wrap:wrap;
+  margin:0 !important;
+  padding:10px 12px !important;
+  min-height:0 !important;
+  border:1px solid var(--line) !important;
+  border-radius:8px;
+  background:#fff;
+  box-shadow:0 1px 2px rgba(15,23,42,.06);
+}
+.import-page.penjualan-page .page-heading::before{display:none}
+.import-page.penjualan-page .import-workspace-title{min-width:0;flex:1 1 240px}
+.import-page.penjualan-page .page-heading h1{font-size:20px;line-height:1.15;margin:0}
+.import-page.penjualan-page .page-heading .subhead{
+  margin:4px 0 0;
+  font-size:12.5px;
+  line-height:1.35;
+  color:var(--soft);
+  white-space:normal;
+}
+.import-page.penjualan-page .import-workspace-meta{
+  display:flex;
+  align-items:flex-start;
+  justify-content:flex-end;
+  gap:14px;
+  flex:1 1 420px;
+  min-width:0;
+  flex-wrap:wrap;
+}
+.import-page.penjualan-page .import-meta-item{display:flex;flex-direction:column;gap:2px;min-width:0;max-width:100%}
+.import-page.penjualan-page .import-meta-item .lbl{
+  font:700 10px/1.2 "IBM Plex Sans",sans-serif;
+  letter-spacing:.06em;
+  text-transform:uppercase;
+  color:var(--soft);
+}
+.import-page.penjualan-page .import-meta-item strong{font-size:13px;font-weight:700;line-height:1.3}
+.import-page.penjualan-page .import-mode-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.import-page.penjualan-page .import-readonly{display:inline-flex;align-items:center;gap:4px}
+.import-page.penjualan-page .import-mode-line{display:inline-flex;align-items:center;gap:6px}
+.import-page.penjualan-page .import-mode-dot{width:8px;height:8px;border-radius:50%;background:var(--soft);flex:0 0 auto}
+.import-page.penjualan-page .import-mode-line.is-live .import-mode-dot{background:var(--green)}
+.import-page.penjualan-page .import-mode-line.is-mock .import-mode-dot{background:var(--amber)}
+.import-page.penjualan-page .import-status-note{
+  margin:2px 0 0;
+  max-width:280px;
+  font-size:11px;
+  line-height:1.3;
+  color:var(--soft);
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+.import-page.penjualan-page .import-refresh{white-space:nowrap;height:34px}
+.import-page.penjualan-page .import-steps{
+  display:flex;
+  gap:0;
+  list-style:none;
+  margin:0;
+  padding:6px 10px;
+  background:#fff;
+  border:1px solid var(--line);
+  border-radius:8px;
+  box-shadow:0 1px 2px rgba(15,23,42,.06);
+  min-width:0;
+}
+.import-page.penjualan-page .import-steps li{
+  position:relative;
+  flex:1 1 0;
+  min-width:0;
+  display:flex;
+  align-items:center;
+  gap:6px;
+  padding-right:10px;
+  color:var(--soft);
+  font-size:12px;
+  font-weight:600;
+}
+.import-page.penjualan-page .import-step-index{
+  position:relative;
+  z-index:1;
+  width:22px;
+  height:22px;
+  border-radius:50%;
+  display:grid;
+  place-items:center;
+  border:1px solid var(--line);
+  background:var(--muted);
+  color:var(--soft);
+  font-size:11px;
+  font-weight:700;
+  flex:0 0 auto;
+}
+.import-page.penjualan-page .import-step-bar{
+  position:absolute;
+  z-index:0;
+  left:22px;
+  right:0;
+  top:11px;
+  height:2px;
+  background:var(--line);
+}
+.import-page.penjualan-page .import-steps li.is-done .import-step-bar{background:#0f766e}
+.import-page.penjualan-page .import-steps li.is-done,
+.import-page.penjualan-page .import-steps li.is-current{color:#134e4a;font-weight:700}
+.import-page.penjualan-page .import-steps li.is-done .import-step-index,
+.import-page.penjualan-page .import-steps li.is-current .import-step-index{
+  background:#0f766e;
+  border-color:#0f766e;
+  color:#fff;
+}
+.import-page.penjualan-page .import-steps li.is-upcoming{color:var(--soft);font-weight:600}
+.import-page.penjualan-page .import-steps li.is-upcoming .import-step-index{
+  background:#fff;
+  color:var(--soft);
+  border-color:var(--line);
+}
+.import-page.penjualan-page .import-step-label{
+  position:relative;
+  z-index:1;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  background:#fff;
+  padding-right:4px;
+}
+.import-page.penjualan-page .import-source-grid{
+  display:grid;
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:8px;
+  min-width:0;
+}
+.import-page.penjualan-page .import-source-card{
+  min-width:0;
+  min-height:0;
+  background:#fff;
+  border:1px solid var(--line);
+  border-radius:8px;
+  padding:8px 10px;
+  display:grid;
+  grid-template-columns:auto minmax(0,1fr) auto;
+  grid-template-rows:auto auto;
+  column-gap:8px;
+  row-gap:0;
+  align-items:center;
+  box-shadow:0 1px 2px rgba(15,23,42,.06);
+}
+.import-page.penjualan-page .import-source-card.is-active{
+  border-color:#0f766e;
+  box-shadow:inset 0 0 0 1px #0f766e;
+}
+.import-page.penjualan-page .import-source-icon{grid-row:1 / span 2;color:#0f766e;margin:0}
+.import-page.penjualan-page .import-source-card h2{grid-column:2;margin:0;font-size:13px;line-height:1.2}
+.import-page.penjualan-page .import-source-card p{grid-column:2;margin:0;color:var(--soft);font-size:11.5px;line-height:1.2}
+.import-page.penjualan-page .import-source-card button{
+  grid-column:3;
+  grid-row:1 / span 2;
+  min-width:92px;
+  height:28px;
+  padding:0 10px;
+  justify-content:center;
+  font-size:12px;
+}
+.import-page.penjualan-page .panel{
+  margin:0;
+  padding:0;
+  min-width:0;
+  max-width:100%;
+  background:#fff;
+  border:1px solid var(--line) !important;
+  border-radius:8px;
+  box-shadow:0 1px 2px rgba(15,23,42,.06) !important;
   overflow:hidden;
 }
-.import-page [data-testid="recent-so-panel"] > header{
-  flex-wrap:nowrap !important;
-  gap:8px !important;
-  min-height:32px;
+.import-page.penjualan-page .panel-head{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  gap:8px;
+  margin:0;
+  padding:8px 12px;
+  flex-wrap:wrap;
 }
-.import-page [data-testid="recent-so-panel"] > header form{min-width:0 !important;flex:1 1 auto}
-.import-page .recent-so-table-wrap{
+.import-page.penjualan-page .panel-head h3{margin:0;font-size:14px}
+.import-page.penjualan-page [data-testid="search-panel"]{padding:0 !important;max-height:none;overflow:visible}
+.import-page.penjualan-page [data-testid="search-panel"] .panel-head{display:flex}
+.import-page.penjualan-page .import-search{border:0 !important;background:#fff !important;border-radius:0;box-shadow:none}
+.import-page.penjualan-page .import-search .search-row{margin:0 12px 12px;padding:2px 8px}
+.import-page.penjualan-page .import-search-compact{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  min-width:0;
+  padding:6px 12px 0;
+}
+.import-page.penjualan-page .import-search-compact h3{
+  margin:0;
+  flex:0 0 auto;
+  font-size:11px;
+  line-height:1.2;
+  letter-spacing:.04em;
+  text-transform:uppercase;
+  white-space:nowrap;
+}
+.import-page.penjualan-page .import-search-compact .search-row{
   flex:1 1 auto;
-  min-height:0;
-  overflow:auto;
+  min-width:0;
+  margin:0;
+  height:32px;
+  padding:0 6px 0 8px;
 }
-.import-page [data-testid="import-logs-panel"]{max-height:28px;overflow:hidden}
-.import-page table thead th{
+.import-page.penjualan-page .import-search-compact .search-row input{height:30px;padding:0;font-size:13px}
+.import-page.penjualan-page .import-search-compact .primary{height:28px;padding:0 10px;font-size:12px}
+.import-page.penjualan-page .import-so-head{align-items:flex-start}
+.import-page.penjualan-page .import-so-title{min-width:0}
+.import-page.penjualan-page .import-so-title p{margin:2px 0 0}
+.import-page.penjualan-page .import-toolbar{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  flex:1 1 360px;
+  justify-content:flex-end;
+  min-width:0;
+  flex-wrap:wrap;
+}
+.import-page.penjualan-page .import-toolbar-search{
+  display:flex;
+  align-items:center;
+  gap:6px;
+  flex:1 1 220px;
+  max-width:420px;
+  min-width:0;
+  margin:0;
+  height:34px;
+  padding:0 8px;
+  border:1px solid var(--line);
+  border-radius:6px;
+  background:#fff;
+}
+.import-page.penjualan-page .import-toolbar-search input{
+  border:0 !important;
+  background:transparent;
+  box-shadow:none;
+  min-width:0;
+  width:100%;
+  height:32px;
+  padding:0;
+}
+.import-page.penjualan-page .import-toolbar select{
+  height:34px;
+  border:1px solid var(--line);
+  border-radius:6px;
+  background:#fff;
+  padding:0 8px;
+}
+.import-page.penjualan-page .import-so-body{padding:0 12px 10px;min-width:0}
+.import-page.penjualan-page .recent-so-table-wrap{
+  max-width:100%;
+  max-height:220px;
+  overflow:auto;
+  border:1px solid var(--line);
+  border-radius:6px;
+}
+.import-page.penjualan-page .recent-so-table{
+  min-width:0;
+  width:100%;
+  table-layout:fixed;
+  border-collapse:separate;
+  border-spacing:0;
+}
+.import-page.penjualan-page .recent-so-table thead th{
+  position:sticky;
+  top:0;
+  z-index:3;
+  background:#0f766e !important;
+  color:#fff !important;
+  box-shadow:0 1px 0 #0f766e;
+}
+.import-page.penjualan-page table thead th{
   position:sticky;
   top:0;
   z-index:2;
   background:#0f766e !important;
   color:#fff !important;
-  font:700 11px/1.15 "IBM Plex Sans",sans-serif !important;
+  font:700 11px/1.2 "IBM Plex Sans",sans-serif !important;
   letter-spacing:.03em;
   text-transform:uppercase;
+  padding:8px;
 }
-.import-page table tbody td{
-  height:56px;
-  padding-top:0;
-  padding-bottom:0;
+.import-page.penjualan-page table tbody td{
+  height:auto;
+  padding:10px 8px;
   font-size:13px;
   vertical-align:middle;
   background:#fff;
   box-sizing:border-box;
 }
-.import-page table tbody tr:nth-child(even) td{background:#f6f7f8}
-.import-page table tbody tr:hover td{background:#d5f5ef !important}
-.import-page .pagination{
-  min-height:32px;
-  padding-right:84px;
+.import-page.penjualan-page .recent-so-table th,
+.import-page.penjualan-page .recent-so-table td{
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
 }
-.import-page .import-search,
-.import-page .panel{
-  background:#ffffff;
-  opacity:1;
+.import-page.penjualan-page .recent-so-table td.import-actions,
+.import-page.penjualan-page .recent-so-table th.import-actions{overflow:visible;text-align:right}
+.import-page.penjualan-page table tbody tr:nth-child(even) td{background:#f6f7f8}
+.import-page.penjualan-page table tbody tr:hover td{background:#d5f5ef !important}
+.import-page.penjualan-page .recent-so-table tbody tr.is-selected td,
+.import-page.penjualan-page .recent-so-table tbody tr.is-selected:hover td{
+  background:#d5f5ef !important;
+}
+.import-page.penjualan-page .recent-so-table tbody tr.is-selected td:first-child{
+  box-shadow:inset 3px 0 0 #0f766e;
+}
+.import-page.penjualan-page .import-badge{
+  display:inline-flex;
+  align-items:center;
+  gap:4px;
+  max-width:100%;
+  border-radius:999px;
+  border:1px solid transparent;
+  padding:2px 8px;
+  font-size:11px;
+  font-weight:700;
+  line-height:1.3;
+  white-space:nowrap;
+}
+.import-page.penjualan-page .import-badge.is-imported{background:#d1fae5;color:#065f46;border-color:#065f46}
+.import-page.penjualan-page .import-badge.is-open{background:#f3f4f6;color:#6b7280;border-color:#6b7280}
+.import-page.penjualan-page .import-badge.is-duplicate{background:#fef3c7;color:#92400e;border-color:#92400e}
+.import-page.penjualan-page .import-badge.is-failed{background:#f8e9e4;color:var(--red);border-color:var(--red)}
+.import-page.penjualan-page .import-log-table .import-badge{font-size:11px}
+.import-page.penjualan-page .import-row-action{white-space:nowrap}
+.import-page.penjualan-page .import-pagination{
+  display:flex;
+  justify-content:center;
+  align-items:center;
+  gap:12px;
+  min-height:32px;
+  margin-top:10px;
+  padding-right:0;
+}
+.import-page.penjualan-page .import-bulk-footer{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  gap:10px;
+  flex-wrap:wrap;
+  padding:8px 12px;
+  border-top:1px solid var(--line);
+  background:#f8fafc;
+}
+.import-page.penjualan-page .import-bulk-actions{display:flex;gap:8px;flex-wrap:wrap}
+.import-page.penjualan-page [data-testid="import-logs-panel"]{max-height:none;overflow:hidden}
+.import-page.penjualan-page .import-log-wrap{max-width:100%;overflow:auto}
+.import-page.penjualan-page .import-log-table{width:100%;border-collapse:collapse;table-layout:fixed;min-width:0}
+.import-page.penjualan-page .import-log-note{white-space:normal}
+.import-page.penjualan-page .import-log-empty{text-align:left;color:var(--soft);white-space:normal}
+.import-page.penjualan-page .file-dropzone{margin:0 12px 12px}
+.import-page.penjualan-page .mock-suggestions{
+  display:flex;
+  align-items:center;
+  gap:6px;
+  margin:4px 12px 8px;
+  min-width:0;
+  min-height:0;
+}
+.import-page.penjualan-page .suggestion-chips{
+  display:flex;
+  flex-wrap:nowrap;
+  align-items:center;
+  gap:0;
+  margin:0;
+  min-width:0;
+  overflow-x:auto;
+}
+.import-page.penjualan-page .import-example-item{display:inline-flex;align-items:center;flex:0 0 auto}
+.import-page.penjualan-page .import-example-dot{color:var(--soft);padding:0 4px;font-size:12px}
+.import-page.penjualan-page .import-example-link{
+  border:0;
+  background:transparent;
+  color:#0f766e;
+  padding:0;
+  height:auto;
+  font-size:12px;
+  font-weight:650;
+  white-space:nowrap;
+}
+@media (max-width:1100px){
+  .import-page.penjualan-page .import-source-grid{grid-template-columns:1fr}
+  .import-page.penjualan-page .import-steps{overflow-x:auto}
+  .import-page.penjualan-page .import-steps li{flex:0 0 auto}
 }
 
 /* Buat Faktur — compact create form. Scoped to the invoice page opt-in. */

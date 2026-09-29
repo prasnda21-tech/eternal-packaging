@@ -16,6 +16,25 @@ const statusMeta = {
   failed: { label: "Gagal", cls: "log-failed", icon: AlertCircle },
 };
 
+const IMPORT_STEPS = ["Pilih Sumber", "Pilih PO", "Preview Data", "Validasi", "Import"];
+
+function displayText(value) {
+  if (value == null || value === "") return "";
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return String(value);
+  if (typeof value === "object" && value.name != null && typeof value.name !== "object") return String(value.name);
+  return "";
+}
+
+function formatFetchedAt(value) {
+  if (value == null || value === "") return "";
+  const n = Number(value);
+  if (!Number.isFinite(n)) return formatDate(value);
+  const ms = n > 1e12 ? n : n * 1000;
+  const d = new Date(ms);
+  if (Number.isNaN(d.getTime())) return "";
+  return formatDate(d.toISOString());
+}
+
 function bulkPreviewSummary(items) {
   const list = items || [];
   const ready = list.filter((i) => i.ok && !i.duplicate);
@@ -220,6 +239,7 @@ export default function ImportPO() {
       setBulkBusy(false);
     }
   };
+  const doImportAllSelected = () => doPreviewSelected();
   const doConfirmSelected = async () => {
     if (!bulkPreview) return;
     const numbers = bulkPreview.items.filter((i) => i.ok && !i.duplicate).map((i) => i.so_number);
@@ -376,51 +396,103 @@ export default function ImportPO() {
   const removeItem = (i) => setEditable((p) => ({ ...p, line_items: p.line_items.filter((_, idx) => idx !== i) }));
 
   const isDup = !!preview?.duplicate;
+  let visualStep = 1;
+  if (mode === "accurate" || file || pdfFile) visualStep = 2;
+  if (preview || bulkPreview) visualStep = 3;
+  if ((preview && !isDup) || (bulkPreview && Number(bulkPreview.summary?.ready || 0) > 0)) visualStep = 4;
+  if (importedMsg || bulkResult) visualStep = 5;
+  const lastSyncLabel = (() => {
+    if (!recentList) return "—";
+    const when = formatFetchedAt(recentList.fetched_at);
+    if (recentList.stale) return `${when || "—"} · data cache (Accurate sementara tidak tersedia)`;
+    if (recentList.cached) return `${when || "—"} · cache`;
+    return when || "—";
+  })();
+  const accurateModeLabel = !status ? "—" : status.mode === "live" ? "LIVE" : "MOCK";
 
   return (
     <div className="import-page penjualan-page penjualan-workspace" data-testid="import-page">
-      <div className="page-heading">
-        <div>
-          <p className="eyebrow">Admin · Integrasi &amp; Import PO</p>
+      <div className="page-heading import-workspace-head">
+        <div className="import-workspace-title">
           <h1 data-testid="import-title">Import PO</h1>
-          <p className="subhead">Dari Accurate Online (read-only) atau dari file XLSX / CSV</p>
+          <p className="subhead">Import Purchase Order dari Accurate Online, XLSX/CSV, atau PDF</p>
         </div>
-        <button className="icon-button" onClick={() => { loadStatus(); loadAvailable(); loadLogs(); }} data-testid="import-refresh-button" aria-label="Muat ulang">
-          <RefreshCw size={19} className={busy ? "spin" : ""} />
-        </button>
+        <div className="import-workspace-meta">
+          <div className="import-meta-item" data-testid="import-status-banner">
+            <span className="lbl">Status</span>
+            <div className="import-mode-row">
+              <strong className={"import-mode-line" + (status?.mode === "live" ? " is-live" : status ? " is-mock" : "")}>
+                <span className="import-mode-dot" aria-hidden="true" />
+                Accurate Mode: {accurateModeLabel}
+              </strong>
+              {status?.read_only && (
+                <span className="pill sm import-readonly" data-testid="import-readonly-badge"><Shield size={12} /> READ-ONLY</span>
+              )}
+            </div>
+            {status?.message && <p className="import-status-note" title={status.message}>{status.message}</p>}
+          </div>
+          <div className="import-meta-item">
+            <span className="lbl">Last Sync</span>
+            <strong data-testid="import-last-sync">{lastSyncLabel}</strong>
+          </div>
+          <button className="primary import-refresh" onClick={() => { loadStatus(); loadAvailable(); loadLogs(); }} data-testid="import-refresh-button" aria-label="Muat ulang">
+            <RefreshCw size={14} className={busy ? "spin" : ""} /> Refresh Data
+          </button>
+        </div>
       </div>
 
-      {status && (
-        <section className="accurate-banner" data-testid="import-status-banner">
-          <div>
-            <Cloud size={16} />
-            <div>
-              <strong>Accurate mode: {status.mode === "live" ? "LIVE" : "MOCK"}</strong>
-              <p>{status.message}</p>
-            </div>
-          </div>
-          <span className="pill" data-testid="import-readonly-badge"><Shield size={12} /> READ-ONLY</span>
-        </section>
-      )}
+      <ol className="import-steps" data-testid="import-steps" aria-label="Alur import">
+        {IMPORT_STEPS.map((label, index) => {
+          const n = index + 1;
+          const state = n < visualStep ? "is-done" : n === visualStep ? "is-current" : "is-upcoming";
+          return (
+            <li key={label} className={state} aria-current={n === visualStep ? "step" : undefined}>
+              <span className="import-step-index">{n}</span>
+              <span className="import-step-label">{label}</span>
+              {n < IMPORT_STEPS.length && <span className="import-step-bar" aria-hidden="true" />}
+            </li>
+          );
+        })}
+      </ol>
 
-      {/* Mode tabs — only show tabs the user has permission for */}
-      <div className="import-tabs" role="tablist">
+      <div className="import-source-grid" role="tablist" aria-label="Sumber data">
         {canAccurate && (
-          <button role="tab" className={mode === "accurate" ? "active" : ""} onClick={() => { setMode("accurate"); resetPreview(); }} data-testid="import-mode-accurate">
-            <Cloud size={14}/> Accurate Online
-          </button>
+          <article className={"import-source-card" + (mode === "accurate" ? " is-active" : "")}>
+            <div className="import-source-icon"><Cloud size={18} /></div>
+            <h2>Accurate Online</h2>
+            <p>Read Only</p>
+            <button role="tab" aria-selected={mode === "accurate"} className={mode === "accurate" ? "primary active" : "ghost"} onClick={() => { setMode("accurate"); resetPreview(); }} data-testid="import-mode-accurate">
+              Pilih
+            </button>
+          </article>
         )}
         {canSpreadsheet && (
-          <button role="tab" className={mode === "file" ? "active" : ""} onClick={() => { setMode("file"); resetPreview(); }} data-testid="import-mode-file">
-            <FileSpreadsheet size={14}/> File XLSX / CSV
-          </button>
+          <article className={"import-source-card" + (mode === "file" ? " is-active" : "")}>
+            <div className="import-source-icon"><FileSpreadsheet size={18} /></div>
+            <h2>Upload Excel</h2>
+            <p>XLSX / CSV</p>
+            <button role="tab" aria-selected={mode === "file"} className={mode === "file" ? "primary active" : "ghost"} onClick={() => { setMode("file"); resetPreview(); fileRef.current?.click(); }} data-testid="import-mode-file">
+              Upload File
+            </button>
+          </article>
         )}
         {canPdf && (
-          <button role="tab" className={mode === "pdf" ? "active" : ""} onClick={() => { setMode("pdf"); resetPreview(); }} data-testid="import-mode-pdf">
-            <FileText size={14}/> PDF PO
-          </button>
+          <article className={"import-source-card" + (mode === "pdf" ? " is-active" : "")}>
+            <div className="import-source-icon"><FileText size={18} /></div>
+            <h2>PDF PO</h2>
+            <p>Upload PDF</p>
+            <button role="tab" aria-selected={mode === "pdf"} className={mode === "pdf" ? "primary active" : "ghost"} onClick={() => { setMode("pdf"); resetPreview(); pdfRef.current?.click(); }} data-testid="import-mode-pdf">
+              Upload File
+            </button>
+          </article>
         )}
       </div>
+      {canSpreadsheet && (
+        <input ref={fileRef} type="file" accept=".xlsx,.csv,.txt" onChange={onFileChange} hidden data-testid="file-input" />
+      )}
+      {canPdf && (
+        <input ref={pdfRef} type="file" accept=".pdf,application/pdf" onChange={onPdfChange} hidden data-testid="pdf-input" />
+      )}
 
       {!canAccurate && !canSpreadsheet && !canPdf && (
         <div className="analytics-note" data-testid="import-no-source-perm" style={{marginTop:12,padding:"12px 14px",background:"#fef3c7",borderRadius:8,color:"#92400e"}}>
@@ -430,26 +502,29 @@ export default function ImportPO() {
 
       {mode === "accurate" && canAccurate && (
         <section className="panel" data-testid="search-panel">
-          <header className="panel-head"><h3>Cari Sales Order Accurate</h3></header>
-          <form className="import-search" onSubmit={doAccuratePreview}>
+          <form className="import-search import-search-compact" onSubmit={doAccuratePreview}>
+            <h3>Cari Sales Order Accurate</h3>
             <div className="search-row">
-              <Search size={16} />
+              <Search size={14} />
               <input type="text" value={soNumber} onChange={(e) => setSoNumber(e.target.value)}
-                placeholder="Ketik nomor Sales Order / PO Accurate (mis. PO-2001)"
+                placeholder="Cari nomor PO / Customer"
                 data-testid="so-number-input" disabled={busy} autoFocus />
               <button type="submit" className="primary" disabled={busy || !soNumber.trim()} data-testid="preview-button">
-                Preview <ArrowRight size={14} />
+                Preview Data <ArrowRight size={14} />
               </button>
             </div>
           </form>
           {status?.mode === "mock" && available.length > 0 && (
             <div className="mock-suggestions" data-testid="mock-suggestions">
-              <p className="muted small">Contoh SO tersedia di mode mock:</p>
+              <span className="muted small">Contoh:</span>
               <div className="suggestion-chips">
-                {available.map((s) => (
-                  <button key={s.accurate_id} type="button" className="ghost sm"
-                    onClick={() => setSoNumber(s.po_number)} data-testid={`suggest-${s.po_number}`}
-                  >{s.po_number} · {s.customer}</button>
+                {available.filter((s) => displayText(s.po_number)).map((s, index) => (
+                  <span key={s.accurate_id || displayText(s.po_number)} className="import-example-item">
+                    {index > 0 && <span className="import-example-dot" aria-hidden="true">•</span>}
+                    <button type="button" className="import-example-link"
+                      onClick={() => setSoNumber(displayText(s.po_number))} data-testid={`suggest-${s.po_number}`}
+                    >{displayText(s.po_number)}</button>
+                  </span>
                 ))}
               </div>
             </div>
@@ -460,24 +535,24 @@ export default function ImportPO() {
       {/* Recent SO list (auto-loaded on tab open) */}
       {mode === "accurate" && canAccurate && (
         <section className="panel" data-testid="recent-so-panel">
-          <header className="panel-head" style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap"}}>
-            <div>
-              <h3 style={{margin:0}}>Sales Order dari Accurate</h3>
+          <header className="panel-head import-so-head">
+            <div className="import-so-title">
+              <h3>Sales Order dari Accurate</h3>
               {recentList && !recentList.error && (
-                <p className="muted small" data-testid="recent-so-total" style={{margin:"3px 0 0"}}>
+                <p className="muted small" data-testid="recent-so-total">
                   {recentList.total ? `${recentList.total} Sales Order` : "0 Sales Order"} · halaman {recentList.page || 1} dari {recentList.pageCount || 1}
                   {recentList.cached && recentList.stale ? " · data cache (Accurate sementara tidak tersedia)" : recentList.cached ? " · cache" : ""}
                 </p>
               )}
             </div>
-            <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
-              <form onSubmit={submitSearch} className="search-row" style={{margin:0,minWidth:260}}>
+            <div className="import-toolbar">
+              <form onSubmit={submitSearch} className="search-row import-toolbar-search">
                 <Search size={14} />
                 <input
                   type="text"
                   value={keywordInput}
                   onChange={(e) => setKeywordInput(e.target.value)}
-                  placeholder="Cari nomor SO / Customer"
+                  placeholder="Ketik nomor SO / Customer"
                   data-testid="recent-so-search-input"
                   disabled={recentLoading}
                 />
@@ -499,19 +574,7 @@ export default function ImportPO() {
             </div>
           </header>
 
-          {selected.size > 0 && canAccurateBulk && (
-            <div className="bulk-bar" data-testid="recent-so-bulk-bar" style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,padding:"10px 18px",borderBottom:"1px solid var(--border, #e5e7eb)",background:"var(--surface-2, #f9fafb)"}}>
-              <span data-testid="recent-so-selected-count"><strong>{selected.size}</strong> Sales Order dipilih</span>
-              <div style={{display:"flex",gap:8}}>
-                <button className="ghost sm" onClick={clearSelection} data-testid="recent-so-clear-selection">Batalkan</button>
-                <button className="primary" onClick={doPreviewSelected} disabled={bulkBusy} data-testid="recent-so-preview-selected">
-                  Preview {selected.size} Terpilih <ArrowRight size={13}/>
-                </button>
-              </div>
-            </div>
-          )}
-
-          <div style={{padding:"12px 18px"}}>
+          <div className="import-so-body">
             {recentErr && (
               <div className="error" data-testid="recent-so-error" style={{marginBottom:10}}>
                 {recentErr} <span className="muted small">— Anda tetap bisa mencari nomor SO tertentu di atas.</span>
@@ -543,7 +606,7 @@ export default function ImportPO() {
                       <th className="num">Total</th>
                       <th>Status</th>
                       <th>Status Import</th>
-                      <th className="num">Aksi</th>
+                      <th className="num import-actions">Aksi</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -552,7 +615,7 @@ export default function ImportPO() {
                       return (
                       <tr key={r.accurate_id || r.number}
                           data-testid={`recent-so-row-${r.number}`}
-                          className={imported ? "" : "clickable-row"}
+                          className={(imported ? "" : "clickable-row") + (selected.has(r.number) ? " is-selected" : "")}
                           onClick={() => { if (!imported) doPreviewByNumber(r.number); }}>
                         {canAccurateBulk && (
                           <td onClick={(e) => e.stopPropagation()}>
@@ -568,26 +631,30 @@ export default function ImportPO() {
                         )}
                         <td className="mono"><strong>{r.number}</strong></td>
                         <td className="mono small">{r.transDate || "-"}</td>
-                        <td>{r.customer || "-"}</td>
+                        <td className="import-customer" title={displayText(r.customer) || undefined}>{displayText(r.customer) || "-"}</td>
                         <td className="num">{r.totalAmount != null ? `Rp ${Number(r.totalAmount).toLocaleString("id-ID")}` : "-"}</td>
-                        <td>{r.statusName ? <span className="pill sm">{r.statusName}</span> : <span className="muted small">-</span>}</td>
+                        <td>{r.statusName ? <span className="pill sm import-badge">{displayText(r.statusName)}</span> : <span className="muted small">-</span>}</td>
                         <td>
                           {imported ? (
-                            <span className="pill sm" data-testid={`recent-so-imported-${r.number}`} style={{background:"#d1fae5",color:"#065f46"}}>
+                            <span className="pill sm import-badge is-imported" data-testid={`recent-so-imported-${r.number}`}>
                               <CheckCircle2 size={11}/> Sudah Diimport
                             </span>
+                          ) : r.import_status === "failed" ? (
+                            <span className="pill sm import-badge is-failed" data-testid={`recent-so-failed-${r.number}`}>
+                              <AlertCircle size={11}/> Gagal
+                            </span>
                           ) : (
-                            <span className="pill sm" data-testid={`recent-so-notimported-${r.number}`} style={{background:"#f3f4f6",color:"#6b7280"}}>Belum Diimport</span>
+                            <span className="pill sm import-badge is-open" data-testid={`recent-so-notimported-${r.number}`}>Belum Diimport</span>
                           )}
                         </td>
-                        <td className="num" onClick={(e) => e.stopPropagation()}>
+                        <td className="num import-actions" onClick={(e) => e.stopPropagation()}>
                           {imported ? (
-                            <Link to={`/po/${r.existing_po_id}`} className="ghost sm" data-testid={`recent-so-view-${r.number}`}>
+                            <Link to={`/po/${r.existing_po_id}`} className="ghost sm import-row-action" data-testid={`recent-so-view-${r.number}`}>
                               Lihat PO <ArrowRight size={12}/>
                             </Link>
                           ) : (
-                            <button className="ghost sm" onClick={() => doPreviewByNumber(r.number)} data-testid={`recent-so-preview-${r.number}`} disabled={busy}>
-                              Preview <ArrowRight size={12}/>
+                            <button className="ghost sm import-row-action" onClick={() => doPreviewByNumber(r.number)} data-testid={`recent-so-preview-${r.number}`} disabled={busy}>
+                              Preview Data <ArrowRight size={12}/>
                             </button>
                           )}
                         </td>
@@ -602,7 +669,7 @@ export default function ImportPO() {
             )}
 
             {recentList && recentList.pageCount > 1 && (
-              <div className="pagination" data-testid="recent-so-pagination" style={{display:"flex",justifyContent:"center",alignItems:"center",gap:12,marginTop:14}}>
+              <div className="pagination import-pagination" data-testid="recent-so-pagination">
                 <button className="ghost sm" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={recentLoading || (recentList.page || 1) <= 1} data-testid="recent-so-prev">
                   ← Sebelumnya
                 </button>
@@ -615,6 +682,21 @@ export default function ImportPO() {
               </div>
             )}
           </div>
+
+          {selected.size > 0 && canAccurateBulk && (
+            <footer className="import-bulk-footer" data-testid="recent-so-bulk-bar">
+              <span data-testid="recent-so-selected-count"><strong>{selected.size}</strong> PO dipilih</span>
+              <div className="import-bulk-actions">
+                <button className="ghost sm" onClick={clearSelection} data-testid="recent-so-clear-selection">Batalkan</button>
+                <button className="ghost sm" onClick={doPreviewSelected} disabled={bulkBusy} data-testid="recent-so-preview-selected">
+                  Preview Data <ArrowRight size={13}/>
+                </button>
+                <button className="primary" onClick={doImportAllSelected} disabled={bulkBusy || selected.size === 0} data-testid="recent-so-import-selected" title="Membuka preview. Konfirmasi import tetap di dialog yang sama.">
+                  Import PO
+                </button>
+              </div>
+            </footer>
+          )}
         </section>
       )}
 
@@ -647,7 +729,6 @@ export default function ImportPO() {
                 <button className="ghost" onClick={() => fileRef.current?.click()} data-testid="file-pick-button">Pilih file</button>
               </>
             )}
-            <input ref={fileRef} type="file" accept=".xlsx,.csv,.txt" onChange={onFileChange} style={{ display: "none" }} data-testid="file-input"/>
           </div>
           <p className="muted small">Kolom wajib: <b>po_number</b>, <b>customer</b>, <b>item_name</b> (atau item_code), <b>quantity</b>. File hanya boleh berisi <b>satu</b> PO (baris ganda dipakai untuk multi line item).</p>
         </section>
@@ -680,7 +761,6 @@ export default function ImportPO() {
                 <button className="ghost" onClick={() => pdfRef.current?.click()} data-testid="pdf-pick-button">Pilih file PDF</button>
               </>
             )}
-            <input ref={pdfRef} type="file" accept=".pdf,application/pdf" onChange={onPdfChange} style={{ display: "none" }} data-testid="pdf-input"/>
           </div>
           <p className="muted small">PDF scan/image tanpa text layer akan ditolak. Field yang tidak terbaca akan ditandai <em>Perlu verifikasi</em> — Anda dapat mengoreksinya sebelum import.</p>
         </section>
@@ -897,29 +977,40 @@ export default function ImportPO() {
           <h3>Riwayat Import</h3>
           <span className="muted small">{logs.length} entri</span>
         </header>
-        {logs.length === 0 ? (
-          <p className="empty">Belum ada import.</p>
-        ) : (
-          <div className="log-table">
-            <div className="log-head">
-              <span>Waktu</span><span>SO / PO</span><span>Sumber</span><span>Admin</span><span>Status</span><span>Pesan</span>
-            </div>
-            {logs.map((l) => {
-              const meta = statusMeta[l.status] || statusMeta.failed;
-              const Icon = meta.icon;
-              return (
-                <div key={l.id} className={`log-row ${meta.cls}`} data-testid={`log-row-${l.id}`}>
-                  <span className="mono">{formatDate(l.imported_at)}</span>
-                  <span className="mono">{l.po_number || l.so_number}</span>
-                  <span className="mono">{l.mode || "accurate"}</span>
-                  <span>{l.imported_by_name || l.imported_by}</span>
-                  <span><Icon size={12} /> {meta.label}</span>
-                  <span className="muted">{l.message}</span>
-                </div>
-              );
-            })}
+        <div className="import-log-wrap">
+            <table className="import-log-table">
+              <thead>
+                <tr>
+                  <th>Nomor PO</th>
+                  <th>Waktu</th>
+                  <th>User</th>
+                  <th>Status</th>
+                  <th>Pesan</th>
+                </tr>
+              </thead>
+              <tbody>
+                {logs.length === 0 ? (
+                  <tr>
+                    <td className="import-log-empty" colSpan={5}>Belum ada import.</td>
+                  </tr>
+                ) : logs.map((l) => {
+                  const meta = statusMeta[l.status] || statusMeta.failed;
+                  const Icon = meta.icon;
+                  const badge = l.status === "success" ? "is-imported" : l.status === "duplicate" ? "is-duplicate" : "is-failed";
+                  const note = displayText(l.message);
+                  return (
+                    <tr key={l.id} className={meta.cls} data-testid={`log-row-${l.id}`}>
+                      <td className="mono">{displayText(l.po_number || l.so_number) || "-"}</td>
+                      <td className="mono">{formatDate(l.imported_at)}</td>
+                      <td>{displayText(l.imported_by_name || l.imported_by) || "-"}</td>
+                      <td><span className={`pill sm import-badge ${badge}`}><Icon size={12} /> {meta.label}</span></td>
+                      <td className="import-log-note" title={note || undefined}>{note || "-"}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
-        )}
       </section>
 
       {/* Bulk preview modal */}
