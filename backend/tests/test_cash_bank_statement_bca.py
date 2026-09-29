@@ -18,9 +18,12 @@ os.environ["DB_NAME"] = f"bca_preview_{uuid.uuid4().hex[:8]}"
 
 import server
 from server import app, current_user
-from services.cash_bank_statement import IMPORTS, LINES, PREVIEWS, StatementValidationError
-from services.cash_bank_statement_bca import HEADER_ALIASES, ROLES, parse_bca_statement
-from services.journal_core import JOURNAL_ENTRIES, JOURNAL_LINES
+from services.cash_bank_master import ensure_indexes as ensure_cash_bank_indexes
+from services.cash_bank_reconciliation import RECON_MATCHES, ensure_indexes as ensure_recon_indexes
+from services.cash_bank_statement import IMPORTS, LINES, PREVIEWS, StatementValidationError, ensure_indexes as ensure_statement_indexes
+from services.cash_bank_statement_bca import HEADER_ALIASES, ROLES, parse_bca_statement, statement_rows_from_bca
+from services.chart_of_accounts import create_account, ensure_indexes as ensure_coa_indexes
+from services.journal_core import JOURNAL_ENTRIES, JOURNAL_LINES, ensure_indexes as ensure_journal_indexes
 
 pytestmark = pytest.mark.anyio
 
@@ -212,39 +215,102 @@ async def mongo_db():
     server.client.close()
 
 
+async def _ready(db):
+    await ensure_coa_indexes(db)
+    await ensure_cash_bank_indexes(db)
+    await ensure_journal_indexes(db)
+    await ensure_recon_indexes(db)
+    await ensure_statement_indexes(db)
+
+
+async def _account(client, *, currency="IDR"):
+    await _ready(server.db)
+    cash = await create_account(server.db, {
+        "code": f"B{uuid.uuid4().hex[:6]}",
+        "name": "Bank uji",
+        "account_type": "BANK",
+    }, user=_user())
+    created = await client.post("/api/cash-bank/accounts", json={
+        "name": f"Rekening {uuid.uuid4().hex[:4]}",
+        "account_id": cash["id"],
+        "active": True,
+    })
+    assert created.status_code == 201, created.text
+    body = created.json()
+    if currency:
+        patched = await client.patch(
+            f"/api/cash-bank/accounts/{body['id']}",
+            json={"currency_code": currency},
+        )
+        assert patched.status_code == 200, patched.text
+        body = patched.json()
+    return body
+
+
+def _preview_form(bank_id, payload, filename="bca-sintetis.csv"):
+    return {
+        "data": {"cash_bank_id": bank_id},
+        "files": {"file": (filename, payload, "text/csv")},
+    }
+
+
+def _import_form(bank_id, preview, payload, *, fingerprint=None, filename="bca-sintetis.csv"):
+    return {
+        "data": {
+            "cash_bank_id": bank_id,
+            "fingerprint": preview["fingerprint"] if fingerprint is None else fingerprint,
+            "account_binding": preview["account_binding"],
+        },
+        "files": {"file": (filename, payload, "text/csv")},
+    }
+
+
+def test_normalized_bca_rows_use_statement_direction():
+    parsed = statement_rows_from_bca("bca-sintetis.csv", PREAMBLE.encode("utf-8"), "IDR")
+    assert parsed["errors"] == []
+    assert parsed["accepted"][0]["direction"] == "out"
+    assert parsed["accepted"][0]["date"] == "2026-09-01"
+    assert parsed["accepted"][0]["description"] == "Setoran modal"
+    assert parsed["accepted"][0]["amount"] == 1500000
+    assert parsed["accepted"][0]["currency_code"] == "IDR"
+    assert parsed["accepted"][1]["direction"] == "in"
+
+
 async def test_preview_endpoint_does_not_write_or_create_journal(mongo_db):
     del mongo_db
-    before_names, before_counts = await _snapshot()
+    payload = PREAMBLE.encode("utf-8")
     async with await _client(_user()) as client:
-        response = await client.post(
-            "/api/cash-bank/statements/bca/preview",
-            files={"file": ("bca-sintetis.csv", PREAMBLE.encode("utf-8"), "text/csv")},
-        )
+        bank = await _account(client)
+        before_names, before_counts = await _snapshot()
+        response = await client.post("/api/cash-bank/statements/bca/preview", **_preview_form(bank["id"], payload))
         assert response.status_code == 200, response.text
         body = response.json()
         assert body["bank"] == "BCA"
         assert body["header_detected"] is True
+        assert body["cash_bank_id"] == bank["id"]
+        assert body["account_currency_code"] == "IDR"
+        assert body["fingerprint"]
+        assert body["account_binding"]
+        assert body["account_binding"] != body["fingerprint"]
+        assert "IDR" not in body["account_binding"]
         assert body["persisted_statement_lines"] is False
         assert body["stored"] is False
         assert body["rows"][0]["direction"] == "out"
         assert "id" not in body
         assert "preview_id" not in body
+        rejected = await client.post(
+            "/api/cash-bank/statements/bca/preview",
+            **_preview_form(bank["id"], b"01/09/2026,Setoran,1500,,9000\n", filename="tanpa-header.csv"),
+        )
+    assert rejected.status_code == 400
+    assert "kolom debit tidak ditemukan" in rejected.text
     app.dependency_overrides[current_user] = lambda: _user(override={"cash_bank.reconcile": False})
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
         denied = await client.post(
             "/api/cash-bank/statements/bca/preview",
-            files={"file": ("bca-sintetis.csv", PREAMBLE.encode("utf-8"), "text/csv")},
+            **_preview_form(bank["id"], payload),
         )
     assert denied.status_code == 403
-    rejected = None
-    app.dependency_overrides[current_user] = lambda: _user()
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
-        rejected = await client.post(
-            "/api/cash-bank/statements/bca/preview",
-            files={"file": ("tanpa-header.csv", b"01/09/2026,Setoran,1500,,9000\n", "text/csv")},
-        )
-    assert rejected.status_code == 400
-    assert "kolom debit tidak ditemukan" in rejected.text
     after_names, after_counts = await _snapshot()
     assert after_names == before_names
     assert after_counts == before_counts
@@ -252,3 +318,65 @@ async def test_preview_endpoint_does_not_write_or_create_journal(mongo_db):
     assert after_counts.get(JOURNAL_LINES, 0) == 0
     assert after_counts.get(LINES, 0) == 0
     assert after_counts.get(IMPORTS, 0) == 0
+    assert after_counts.get(RECON_MATCHES, 0) == 0
+
+
+async def test_bca_preview_binding_rejects_other_account_file_and_currency(mongo_db):
+    del mongo_db
+    payload = PREAMBLE.encode("utf-8")
+    async with await _client(_user()) as client:
+        first = await _account(client, currency="IDR")
+        second = await _account(client, currency="IDR")
+        preview = await client.post("/api/cash-bank/statements/bca/preview", **_preview_form(first["id"], payload))
+        assert preview.status_code == 200, preview.text
+        shown = preview.json()
+        other = await client.post(
+            "/api/cash-bank/statements/bca/imports",
+            **_import_form(second["id"], shown, payload),
+        )
+        assert other.status_code == 409
+        assert "Rekening tidak boleh diganti" in other.text
+        changed = payload.replace(b"Setoran modal", b"Setoran lain")
+        fingerprint = await client.post(
+            "/api/cash-bank/statements/bca/imports",
+            **_import_form(first["id"], shown, changed),
+        )
+        assert fingerprint.status_code == 409
+        assert "Sidik jari" in fingerprint.text
+        patched = await client.patch(
+            f"/api/cash-bank/accounts/{first['id']}",
+            json={"currency_code": "USD"},
+        )
+        assert patched.status_code == 200, patched.text
+        currency = await client.post(
+            "/api/cash-bank/statements/bca/imports",
+            **_import_form(first["id"], shown, payload),
+        )
+        assert currency.status_code == 409
+        assert "Mata uang" in currency.text
+        assert await server.db[LINES].count_documents({}) == 0
+        assert await server.db[IMPORTS].count_documents({}) == 0
+        assert await server.db[JOURNAL_ENTRIES].count_documents({}) == 0
+        assert await server.db[JOURNAL_LINES].count_documents({}) == 0
+        assert await server.db[RECON_MATCHES].count_documents({}) == 0
+    async with await _client(_user()) as client:
+        current = await client.get(f"/api/cash-bank/accounts/{first['id']}")
+        assert current.status_code == 200
+        assert current.json()["currency_code"] == "USD"
+        rebound = await client.post("/api/cash-bank/statements/bca/preview", **_preview_form(first["id"], payload))
+        assert rebound.status_code == 200, rebound.text
+        body = rebound.json()
+        assert body["account_binding"] != shown["account_binding"]
+        imported = await client.post(
+            "/api/cash-bank/statements/bca/imports",
+            **_import_form(first["id"], body, payload),
+        )
+        assert imported.status_code == 201, imported.text
+        assert await server.db[LINES].count_documents({"cash_bank_id": first["id"]}) == 4
+        assert await server.db[JOURNAL_ENTRIES].count_documents({}) == 0
+        assert await server.db[RECON_MATCHES].count_documents({}) == 0
+        stored = await server.db[LINES].find_one(
+            {"cash_bank_id": first["id"], "description": "Setoran modal"},
+            {"_id": 0, "date": 1, "direction": 1, "amount": 1, "currency_code": 1},
+        )
+        assert stored == {"date": "2026-09-01", "direction": "out", "amount": 1500000, "currency_code": "USD"}
