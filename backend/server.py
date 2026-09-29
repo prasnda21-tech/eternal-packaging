@@ -10224,8 +10224,8 @@ _SALES_ORDER_LIST_PROJECTION = {
             "input": {"$ifNull": ["$line_items", []]},
             "as": "li",
             "in": {
-                "line_idx": "$li.line_idx",
-                "quantity": "$li.quantity",
+                "line_idx": "$$li.line_idx",
+                "quantity": "$$li.quantity",
                 "unit": "$$li.unit",
             },
         }
