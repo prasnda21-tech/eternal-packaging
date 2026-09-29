@@ -27,13 +27,18 @@ HEADER_ALIASES = {
     "debit": ("debit", "debet"),
     "kredit": ("kredit", "credit"),
     "saldo": ("saldo", "saldo akhir"),
+    "jumlah": ("jumlah",),
 }
 
 _EMPTY_AMOUNT = {"", "-", "—", "–"}
 _SLASH_DATE = re.compile(r"^\d{2}/\d{2}/\d{4}$")
 _DASH_DATE = re.compile(r"^\d{2}-\d{2}-\d{4}$")
+_SHORT_SLASH_DATE = re.compile(r"^\d{2}/\d{2}$")
+_SHORT_DASH_DATE = re.compile(r"^\d{2}-\d{2}$")
+_PERIODE_RANGE = re.compile(r"^(\d{2}/\d{2}/\d{4})\s*-\s*(\d{2}/\d{2}/\d{4})$")
 _ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _FRACTION = re.compile(r"^\d{1,2}$")
+_SUMMARY_LABELS = ("saldo awal", "kredit", "debet", "saldo akhir")
 PEND_STATUS = "pending_confirmation"
 CONFIRMED_STATUS = "confirmed"
 
@@ -155,17 +160,18 @@ def parse_bca_statement(filename: str, data: bytes) -> dict:
         raise StatementValidationError("Berkas CSV tidak dapat dibaca") from exc
     if not matrix:
         raise StatementValidationError("Berkas tidak berisi baris")
-    header_index, columns = _locate_header(matrix)
+    header_index, columns, layout = _locate_header(matrix)
+    periode = _read_periode(matrix[:header_index]) if layout == "jumlah" else None
     rows: List[dict] = []
     errors: List[dict] = []
     for index, raw in enumerate(matrix[header_index + 1 :], start=header_index + 1):
-        if _blank(raw):
+        if _blank(raw) or _is_summary_row(raw):
             continue
         source_row = index + 1
         try:
             if any(isinstance(cell, str) and cell.strip().startswith("=") for cell in raw):
                 raise StatementValidationError("Teks formula tidak diimpor")
-            parsed = _parse_row(raw, columns)
+            parsed = _parse_row(raw, columns, layout=layout, periode=periode)
         except StatementValidationError as exc:
             errors.append({"row": source_row, "message": str(exc)})
             continue
@@ -185,14 +191,27 @@ def parse_bca_statement(filename: str, data: bytes) -> dict:
 def _locate_header(matrix: Sequence[Sequence[Any]]) -> tuple:
     best = None
     best_score = -1
+    jumlah_hit = None
+    missing_indicator = False
     for index, row in enumerate(matrix):
+        if _is_summary_row(row):
+            continue
         found = _match_header(row)
         if all(len(found[role]) == 1 for role in ROLES):
-            return index, {role: found[role][0] for role in ROLES}
+            return index, {role: found[role][0] for role in ROLES}, "split"
         score = sum(1 for role in ROLES if len(found[role]) == 1)
         if score > best_score:
             best = found
             best_score = score
+        candidate = _jumlah_columns(row, found)
+        if candidate == "missing-indicator":
+            missing_indicator = True
+        elif candidate is not None and jumlah_hit is None:
+            jumlah_hit = (index, candidate)
+    if jumlah_hit is not None:
+        return jumlah_hit[0], jumlah_hit[1], "jumlah"
+    if missing_indicator:
+        raise StatementValidationError("Format CSV BCA tidak dikenali: penanda DB/CR tidak ditemukan")
     missing = [role for role in ROLES if best is None or len(best[role]) == 0]
     duplicated = [role for role in ROLES if best is not None and len(best[role]) > 1]
     parts = [f"kolom {role} tidak ditemukan" for role in missing]
@@ -213,32 +232,40 @@ def _match_header(row: Sequence[Any]) -> Dict[str, List[int]]:
     return found
 
 
-def _parse_row(row: Sequence[Any], columns: Dict[str, int]) -> dict:
+def _parse_row(row: Sequence[Any], columns: Dict[str, int], *, layout: str = "split", periode=None) -> dict:
     raw_date = _text(_cell(row, columns["tanggal"]))
     keterangan = _text(_cell(row, columns["keterangan"]))
     if not keterangan:
         raise StatementValidationError("Keterangan kosong")
-    debit = _parse_amount(_cell(row, columns["debit"]))
-    kredit = _parse_amount(_cell(row, columns["kredit"]))
-    saldo = _parse_amount(_cell(row, columns["saldo"]), allow_negative=True)
-    debit_filled = debit is not None and debit > 0
-    kredit_filled = kredit is not None and kredit > 0
-    if debit_filled and kredit_filled:
-        raise StatementValidationError("Baris tidak boleh berisi debit dan kredit sekaligus")
-    if not debit_filled and not kredit_filled:
-        raise StatementValidationError("Debit dan kredit kosong")
-    if debit_filled:
-        direction = "out"
-        debit_value = _number(debit)
-        kredit_value = None
+    if layout == "jumlah":
+        debit_value, kredit_value, direction = _jumlah_direction(row, columns)
+        saldo = _parse_amount(_cell(row, columns["saldo"]), allow_negative=True)
     else:
-        direction = "in"
-        debit_value = None
-        kredit_value = _number(kredit)
+        debit = _parse_amount(_cell(row, columns["debit"]))
+        kredit = _parse_amount(_cell(row, columns["kredit"]))
+        saldo = _parse_amount(_cell(row, columns["saldo"]), allow_negative=True)
+        debit_filled = debit is not None and debit > 0
+        kredit_filled = kredit is not None and kredit > 0
+        if debit_filled and kredit_filled:
+            raise StatementValidationError("Baris tidak boleh berisi debit dan kredit sekaligus")
+        if not debit_filled and not kredit_filled:
+            raise StatementValidationError("Debit dan kredit kosong")
+        if debit_filled:
+            direction = "out"
+            debit_value = _number(debit)
+            kredit_value = None
+        else:
+            direction = "in"
+            debit_value = None
+            kredit_value = _number(kredit)
     if raw_date.upper() == "PEND":
         tanggal = None
         original_date = "PEND"
         date_status = PEND_STATUS
+    elif layout == "jumlah":
+        tanggal = _parse_klikbca_date(raw_date, periode)
+        original_date = raw_date
+        date_status = "valid"
     else:
         tanggal = _parse_date(raw_date)
         original_date = raw_date
@@ -253,6 +280,115 @@ def _parse_row(row: Sequence[Any], columns: Dict[str, int]) -> dict:
         "saldo": None if saldo is None else _number(saldo),
         "direction": direction,
     }
+
+
+def _jumlah_columns(row: Sequence[Any], found: Dict[str, List[int]]):
+    if found["debit"] or found["kredit"]:
+        return None
+    if len(found["tanggal"]) != 1 or len(found["keterangan"]) != 1 or len(found["saldo"]) != 1:
+        return None
+    jumlahs = [index for index, cell in enumerate(row) if _normalize_header(cell) in HEADER_ALIASES["jumlah"]]
+    if len(jumlahs) != 1:
+        return None
+    jumlah_at = jumlahs[0]
+    saldo_at = found["saldo"][0]
+    if saldo_at != jumlah_at + 2 or _normalize_header(_cell(row, jumlah_at + 1)):
+        return "missing-indicator"
+    return {
+        "tanggal": found["tanggal"][0],
+        "keterangan": found["keterangan"][0],
+        "jumlah": jumlah_at,
+        "indicator": jumlah_at + 1,
+        "saldo": saldo_at,
+    }
+
+
+def _jumlah_direction(row: Sequence[Any], columns: Dict[str, int]):
+    jumlah = _parse_amount(_cell(row, columns["jumlah"]))
+    if jumlah is None:
+        raise StatementValidationError("Nominal kosong")
+    if jumlah <= 0:
+        raise StatementValidationError("Nominal tidak valid")
+    marker = _text(_cell(row, columns["indicator"])).upper()
+    if not marker:
+        raise StatementValidationError("Penanda DB/CR kosong")
+    if marker == "DB":
+        return _number(jumlah), None, "out"
+    if marker == "CR":
+        return None, _number(jumlah), "in"
+    raise StatementValidationError("Penanda DB/CR tidak dikenal")
+
+
+def _read_periode(rows: Sequence[Sequence[Any]]):
+    found = []
+    for row in rows:
+        if not any(_normalize_header(cell) == "periode" for cell in row):
+            continue
+        for cell in row:
+            match = _PERIODE_RANGE.fullmatch(_text(cell))
+            if match is None:
+                continue
+            start = _calendar_date(match.group(1))
+            end = _calendar_date(match.group(2))
+            if start is None or end is None or start > end:
+                raise StatementValidationError("Periode tidak valid")
+            found.append((start, end))
+    if not found:
+        return None
+    if any(item != found[0] for item in found):
+        raise StatementValidationError("Periode tidak valid")
+    return found[0]
+
+
+def _parse_klikbca_date(raw_date: str, periode) -> str:
+    text = raw_date[1:].strip() if raw_date.startswith("'") else raw_date
+    if _SLASH_DATE.fullmatch(text) or _DASH_DATE.fullmatch(text):
+        iso = _parse_date(text)
+        if periode is not None and not _inside_periode(iso, periode):
+            raise StatementValidationError("Tanggal tidak valid")
+        return iso
+    if _SHORT_SLASH_DATE.fullmatch(text) or _SHORT_DASH_DATE.fullmatch(text):
+        if periode is None:
+            raise StatementValidationError("Tanggal tidak valid")
+        return _complete_short_date(text, periode)
+    raise StatementValidationError("Tanggal tidak valid")
+
+
+def _complete_short_date(text: str, periode) -> str:
+    separator = "/" if "/" in text else "-"
+    day_text, month_text = text.split(separator)
+    start, end = periode
+    matches = []
+    for year in range(start.year, end.year + 1):
+        try:
+            parsed = datetime(year, int(month_text), int(day_text)).date()
+        except ValueError:
+            continue
+        if start <= parsed <= end:
+            matches.append(parsed)
+    if len(matches) != 1:
+        raise StatementValidationError("Tanggal tidak valid")
+    return matches[0].isoformat()
+
+
+def _inside_periode(iso: str, periode) -> bool:
+    parsed = datetime.strptime(iso, "%Y-%m-%d").date()
+    start, end = periode
+    return start <= parsed <= end
+
+
+def _calendar_date(text: str):
+    try:
+        parsed = datetime.strptime(text, "%d/%m/%Y")
+    except ValueError:
+        return None
+    if parsed.strftime("%d/%m/%Y") != text:
+        return None
+    return parsed.date()
+
+
+def _is_summary_row(row: Sequence[Any]) -> bool:
+    return _normalize_header(_cell(row, 0)) in _SUMMARY_LABELS and _text(_cell(row, 1)) == "="
 
 
 def _confirmation_index(items: Optional[list]) -> Dict[int, dict]:
