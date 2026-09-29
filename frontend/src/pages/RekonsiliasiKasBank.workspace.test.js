@@ -12,7 +12,7 @@ jest.mock('react-router-dom', () => {
 jest.mock('../lib/api', () => ({ __esModule: true, default: {
   cashBankAccounts: jest.fn(), cashBankPairWorkspace: jest.fn(), cashBankStatementImports: jest.fn(),
   cashBankPairSuggestions: jest.fn(), createCashBankPair: jest.fn(), cancelCashBankPair: jest.fn(),
-  previewCashBankStatement: jest.fn(), validateCashBankStatement: jest.fn(), commitCashBankStatement: jest.fn(),
+  previewCashBankStatement: jest.fn(), previewCashBankBcaStatement: jest.fn(), validateCashBankStatement: jest.fn(), commitCashBankStatement: jest.fn(),
 } }));
 jest.mock('../lib/auth', () => ({ useAuth: () => ({ hasPerm: (perm) => mockPermissions.includes(perm) }) }));
 const api = require('../lib/api').default;
@@ -53,6 +53,7 @@ beforeEach(() => {
   api.cashBankPairSuggestions.mockResolvedValue({ambiguous:true,suggestions:[{journal_line_id:'book-1',journal_number:'JE-18',reasons:['Nominal sama']}]});
   api.createCashBankPair.mockResolvedValue(pair); api.cancelCashBankPair.mockResolvedValue({status:'cancelled'});
   api.previewCashBankStatement.mockResolvedValue({fingerprint:'fp-1',account_binding:'bind-1',filename:'mutasi.csv',currency_code:'IDR',account_currency_code:'IDR',sample_rows:[['tanggal','uraian','masuk','keluar','referensi'],['2026-09-26','Transfer',750000,0,'REF-18']],persisted_statement_lines:false,stored:false});
+  api.previewCashBankBcaStatement.mockResolvedValue({bank:'BCA',header_detected:true,rows:[{tanggal:'2026-09-01',keterangan:'Setoran uji',debit:1500000,kredit:null,saldo:10000000,direction:'out',source_row:3}],errors:[{row:4,message:'Tanggal tidak valid'}],persisted_statement_lines:false,stored:false});
   api.validateCashBankStatement.mockResolvedValue({ok:true,accepted_count:1,total_in:750000,total_out:0,errors:[]});
   api.commitCashBankStatement.mockResolvedValue({status:'complete'});
 });
@@ -109,9 +110,30 @@ test('close/reopen preview preserves mapping and never confirms import', async (
   await click(byText('Lanjutkan impor'));
   expect(dateSelect.value).toBe('4'); expect(api.commitCashBankStatement).not.toHaveBeenCalled();
 });
+test('bca preview dialog shows parsed rows without confirming import', async () => {
+  await renderPage();
+  expect(container.querySelectorAll('[type=file]')[0].getAttribute('data-testid')).toBe('kas-bank-pair-import');
+  const bcaInput = container.querySelector('[data-testid=kas-bank-bca-file]');
+  await act(async () => { Object.defineProperty(bcaInput, 'files', { configurable:true, value:[new File(['tanggal,keterangan,debit,kredit,saldo'], 'bca-uji.csv', {type:'text/csv'})] }); bcaInput.dispatchEvent(new Event('change', { bubbles:true })); });
+  const dialog = container.querySelector('[data-testid=kas-bank-bca-preview]');
+  expect(dialog.open).toBe(true);
+  expect(dialog.textContent).toContain('Setoran uji');
+  expect(dialog.textContent).toContain('1.500.000');
+  expect(dialog.textContent).toContain('10.000.000');
+  expect(dialog.textContent).toContain('Baris 4: Tanggal tidak valid');
+  expect(dialog.textContent).not.toContain('Konfirmasi impor');
+  expect(api.previewCashBankBcaStatement).toHaveBeenCalledTimes(1);
+  expect(api.previewCashBankStatement).not.toHaveBeenCalled();
+  expect(api.commitCashBankStatement).not.toHaveBeenCalled();
+  await upload();
+  const generic = container.querySelector('dialog.recon-import-dialog:not(.recon-bca-dialog)');
+  expect(generic.open).toBe(true);
+  expect(generic.textContent).toContain('Konfirmasi impor');
+  expect(generic.textContent).not.toContain('Setoran uji');
+});
 test('read-only permissions hide mutation actions', async () => {
   mockPermissions=['cash_bank.view']; workspace.matched_pairs=[pair]; await renderPage();
-  expect(byText('Impor Mutasi')).toBeUndefined(); expect(byText('Cocokkan')).toBeUndefined();
+  expect(byText('Impor Mutasi')).toBeUndefined(); expect(byText('Pratinjau CSV BCA')).toBeUndefined(); expect(byText('Cocokkan')).toBeUndefined();
   expect(container.querySelector('[name=bank-line]').disabled).toBe(true);
   await click(byText('Sudah Cocok')); expect(byText('Batalkan pencocokan')).toBeUndefined();
 });

@@ -76,7 +76,9 @@
 .kas-bank-page.recon-workspace .recon-import-resume { display:flex; align-items:center; gap:12px; justify-content:space-between; padding:10px 12px; background:#fff8e8; }
 .kas-bank-page.recon-workspace .recon-notice { padding:9px 12px; background:#fff7e6; color:#80500a; border:1px solid #efdbaf; border-radius:6px; }
 .kas-bank-page.recon-workspace .recon-message { margin:0; font-size:12px; }
-.kas-bank-page.recon-workspace .recon-import-dialog { position:fixed; inset:0 0 0 auto; margin:0; width:min(920px,96vw); max-width:96vw; height:100dvh; max-height:100dvh; padding:0; border:0; border-left:1px solid var(--recon-border); background:#fff; color:#18332a; box-shadow:-10px 0 50px #133b252b; }
+.kas-bank-page.recon-workspace .recon-import-dialog, .kas-bank-page.recon-workspace .recon-bca-dialog { position:fixed; inset:0 0 0 auto; margin:0; width:min(920px,96vw); max-width:96vw; height:100dvh; max-height:100dvh; padding:0; border:0; border-left:1px solid var(--recon-border); background:#fff; color:#18332a; box-shadow:-10px 0 50px #133b252b; }
+.kas-bank-page.recon-workspace .recon-bca-dialog[open] { display:flex; flex-direction:column; }
+.kas-bank-page.recon-workspace .recon-bca-table-wrap { overflow:auto; border:1px solid var(--recon-border); border-radius:6px; max-height:calc(100dvh - 220px); }
 .kas-bank-page.recon-workspace .recon-import-dialog[open] { display:flex; flex-direction:column; }
 .recon-import-dialog::backdrop { background:#17352655; }
 .kas-bank-page.recon-workspace .recon-drawer-heading { display:flex; justify-content:space-between; align-items:center; padding:18px 22px; background:#f3f8f5; border-bottom:1px solid var(--recon-border); flex-shrink:0; }
@@ -124,7 +126,7 @@
   .kas-bank-page.recon-workspace .kb-pair-footer > div:not(:last-child) { flex:1; padding-right:6px; }
   .kas-bank-page.recon-workspace .kb-pair-footer strong { font-size:12px; }
   .kas-bank-page.recon-workspace .recon-footer-action { width:100%; justify-content:space-between; }
-  .kas-bank-page.recon-workspace .recon-import-dialog { width:100vw; max-width:100vw; }
+  .kas-bank-page.recon-workspace .recon-import-dialog, .kas-bank-page.recon-workspace .recon-bca-dialog { width:100vw; max-width:100vw; }
   .kas-bank-page.recon-workspace .recon-drawer-content { padding:14px; }
   .kas-bank-page.recon-workspace .kb-pair-mapping { grid-template-columns:repeat(2,minmax(0,1fr)); }
   .kas-bank-page.recon-workspace .recon-drawer-heading, .kas-bank-page.recon-workspace .recon-drawer-footer { padding:12px 14px; }
