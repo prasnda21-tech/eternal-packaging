@@ -1,6 +1,7 @@
 """Desain Cetakan against an isolated Mongo database. Never uses eternal_packaging."""
 from __future__ import annotations
 
+import asyncio
 import io
 import os
 import sys
@@ -10,6 +11,7 @@ from pathlib import Path
 import httpx
 import pdfplumber
 import pytest
+from fastapi import HTTPException
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -23,6 +25,7 @@ import server
 from server import app, current_user
 from services.chart_of_accounts import create_account, ensure_indexes as ensure_coa
 from services.sales_accounting_settings import SETTINGS_KEY
+from services import print_templates as svc
 from services.sales_invoices import generate_sales_invoice_pdf_bytes
 
 pytestmark = pytest.mark.anyio
@@ -42,7 +45,8 @@ async def bind_and_clean():
     assert server.db.name == _DB_NAME
     for name in (
         "orders", "sales_invoices", "sales_receipts", "sales_deliveries",
-        "print_templates", "print_template_versions", "print_template_assets",         "audit_logs", "chart_of_accounts", "app_settings",
+        "print_templates", "print_template_versions", "print_template_assets", "print_template_defaults",
+        "audit_logs", "chart_of_accounts", "app_settings",
     ):
         await server.db[name].delete_many({})
     await ensure_coa(server.db)
@@ -280,3 +284,351 @@ async def test_manage_permission_is_enforced():
         assert denied.status_code == 403
         listed = await client.get("/api/print-templates")
         assert listed.status_code == 403
+
+
+async def _hold_two_writers():
+    state = {"count": 0, "release": asyncio.Event()}
+
+    async def hold(_template_id):
+        state["count"] += 1
+        if state["count"] >= 2:
+            state["release"].set()
+        await state["release"].wait()
+
+    return hold
+
+
+def _title_text(design: dict) -> str:
+    return design["bands"]["title"]["elements"][0]["props"]["text"]
+
+
+async def test_two_saves_that_passed_the_read_check_do_not_both_commit():
+    created = await svc.create_template(server.db, {
+        "name": "Balapan",
+        "document_type": "sales_invoice",
+        "audience": "customer",
+    }, {"id": "admin-print", "email": "admin-print@example.com", "name": "Admin", "role": "admin"})
+    revision = created["revision"]
+    first = created["design"]
+    left = dict(first)
+    right = dict(first)
+    left = __import__("copy").deepcopy(first)
+    right = __import__("copy").deepcopy(first)
+    left["bands"]["title"]["elements"][0]["props"]["text"] = "PEMENANG-KIRI"
+    right["bands"]["title"]["elements"][0]["props"]["text"] = "PEMENANG-KANAN"
+    svc._before_revision_write = await _hold_two_writers()
+    try:
+        results = await asyncio.gather(
+            svc.save_draft(server.db, created["id"], left, revision, {"name": "Admin", "role": "admin"}),
+            svc.save_draft(server.db, created["id"], right, revision, {"name": "Admin", "role": "admin"}),
+            return_exceptions=True,
+        )
+    finally:
+        svc._before_revision_write = None
+    wins = [row for row in results if not isinstance(row, Exception)]
+    losses = [row for row in results if isinstance(row, HTTPException)]
+    assert len(wins) == 1 and len(losses) == 1
+    assert losses[0].status_code == 409
+    stored = await server.db.print_templates.find_one({"id": created["id"]}, {"_id": 0})
+    assert _title_text(stored["design"]) == _title_text(wins[0]["design"])
+    assert _title_text(stored["design"]) in {"PEMENANG-KIRI", "PEMENANG-KANAN"}
+    assert await server.db.print_template_versions.count_documents({
+        "template_id": created["id"],
+        "action": "save_draft",
+    }) == 1
+
+
+async def test_activate_archive_and_restore_also_reject_the_losing_write():
+    actor = {"id": "admin-print", "email": "admin-print@example.com", "name": "Admin", "role": "admin"}
+    created = await svc.create_template(server.db, {
+        "name": "Tulis",
+        "document_type": "sales_delivery",
+        "audience": "customer",
+    }, actor)
+    saved = await svc.save_draft(server.db, created["id"], created["design"], created["revision"], actor)
+    svc._before_revision_write = await _hold_two_writers()
+    try:
+        activated = await asyncio.gather(
+            svc.activate_template(server.db, created["id"], saved["revision"], actor),
+            svc.activate_template(server.db, created["id"], saved["revision"], actor),
+            return_exceptions=True,
+        )
+    finally:
+        svc._before_revision_write = None
+    assert sum(isinstance(row, HTTPException) and row.status_code == 409 for row in activated) == 1
+    assert await server.db.print_template_versions.count_documents({
+        "template_id": created["id"],
+        "action": "activate",
+    }) == 1
+    current = await svc.get_template(server.db, created["id"])
+    version = (await svc.list_versions(server.db, created["id"]))
+    saved_version = next(row for row in version if row["action"] == "activate")
+    svc._before_revision_write = await _hold_two_writers()
+    try:
+        restored = await asyncio.gather(
+            svc.restore_version(server.db, created["id"], saved_version["id"], current["revision"], actor),
+            svc.restore_version(server.db, created["id"], saved_version["id"], current["revision"], actor),
+            return_exceptions=True,
+        )
+    finally:
+        svc._before_revision_write = None
+    assert sum(isinstance(row, HTTPException) and row.status_code == 409 for row in restored) == 1
+    assert await server.db.print_template_versions.count_documents({
+        "template_id": created["id"],
+        "action": "restore",
+    }) == 1
+    current = await svc.get_template(server.db, created["id"])
+    svc._before_revision_write = await _hold_two_writers()
+    try:
+        archived = await asyncio.gather(
+            svc.archive_template(server.db, created["id"], current["revision"], actor),
+            svc.archive_template(server.db, created["id"], current["revision"], actor),
+            return_exceptions=True,
+        )
+    finally:
+        svc._before_revision_write = None
+    assert sum(isinstance(row, HTTPException) and row.status_code == 409 for row in archived) == 1
+    assert await server.db.print_template_versions.count_documents({
+        "template_id": created["id"],
+        "action": "archive",
+    }) == 1
+    stored = await server.db.print_templates.find_one({"id": created["id"]}, {"_id": 0, "status": 1})
+    assert stored["status"] == "archived"
+
+
+async def test_set_default_losing_write_does_not_record_history():
+    actor = {"id": "admin-print", "email": "admin-print@example.com", "name": "Admin", "role": "admin"}
+    created = await svc.create_template(server.db, {
+        "name": "Default balapan",
+        "document_type": "sales_invoice",
+        "audience": "internal",
+    }, actor)
+    activated = await svc.activate_template(server.db, created["id"], created["revision"], actor)
+    svc._before_revision_write = await _hold_two_writers()
+    try:
+        results = await asyncio.gather(
+            svc.set_default(server.db, created["id"], activated["revision"], actor),
+            svc.set_default(server.db, created["id"], activated["revision"], actor),
+            return_exceptions=True,
+        )
+    finally:
+        svc._before_revision_write = None
+    assert sum(isinstance(row, HTTPException) and row.status_code == 409 for row in results) == 1
+    assert await server.db.print_template_versions.count_documents({
+        "template_id": created["id"],
+        "action": "set_default",
+    }) == 1
+    pointer = await server.db.print_template_defaults.find_one({"id": "default:sales_invoice:internal"}, {"_id": 0})
+    assert pointer["template_id"] == created["id"]
+
+
+async def test_default_pointer_stays_singular_under_races():
+    actor = {"id": "admin-print", "email": "admin-print@example.com", "name": "Admin", "role": "admin"}
+
+    async def active_template(name: str):
+        created = await svc.create_template(server.db, {
+            "name": name,
+            "document_type": "sales_invoice",
+            "audience": "customer",
+        }, actor)
+        return await svc.activate_template(server.db, created["id"], created["revision"], actor)
+
+    left = await active_template("Kiri")
+    right = await active_template("Kanan")
+    await asyncio.gather(
+        svc.set_default(server.db, left["id"], left["revision"], actor),
+        svc.set_default(server.db, right["id"], right["revision"], actor),
+    )
+    pointer = await server.db.print_template_defaults.find_one({"id": "default:sales_invoice:customer"}, {"_id": 0})
+    assert pointer["template_id"] in {left["id"], right["id"]}
+    resolved = await svc.resolve_template(server.db, "sales_invoice", "customer")
+    assert resolved["id"] == pointer["template_id"]
+    listed = await svc.list_templates(server.db, document_type="sales_invoice")
+    defaults = [row["id"] for row in listed if row["audience"] == "customer" and row["is_default"]]
+    assert defaults == [pointer["template_id"]]
+    options = await svc.active_print_options(server.db, "sales_invoice")
+    menu_defaults = [row["id"] for row in options if row["audience"] == "customer" and row["is_default"]]
+    assert menu_defaults == [pointer["template_id"]]
+
+    async def fail_pointer(_db, _doc):
+        raise RuntimeError("pointer write failed")
+
+    previous = pointer["template_id"]
+    other = right if previous == left["id"] else left
+    fresh = await svc.get_template(server.db, other["id"])
+    before_failures = await server.db.print_template_versions.count_documents({
+        "template_id": fresh["id"],
+        "action": "set_default",
+    })
+    original_writer = svc._write_pointer
+    svc._write_pointer = fail_pointer
+    try:
+        with pytest.raises(HTTPException) as failure:
+            await svc.set_default(server.db, fresh["id"], fresh["revision"], actor)
+        assert failure.value.status_code == 500
+    finally:
+        svc._write_pointer = original_writer
+    still = await server.db.print_template_defaults.find_one({"id": "default:sales_invoice:customer"}, {"_id": 0})
+    assert still["template_id"] == previous
+    assert (await svc.resolve_template(server.db, "sales_invoice", "customer"))["id"] == previous
+    assert await server.db.print_template_versions.count_documents({
+        "template_id": fresh["id"],
+        "action": "set_default",
+    }) == before_failures
+
+
+async def test_archive_racing_a_default_switch_keeps_a_usable_default():
+    actor = {"id": "admin-print", "email": "admin-print@example.com", "name": "Admin", "role": "admin"}
+    created = await svc.create_template(server.db, {
+        "name": "Hampir default",
+        "document_type": "sales_invoice",
+        "audience": "customer",
+    }, actor)
+    activated = await svc.activate_template(server.db, created["id"], created["revision"], actor)
+
+    async def switch_during_archive(template_id):
+        svc._before_revision_write = None
+        await svc.set_default(server.db, template_id, activated["revision"], actor)
+
+    svc._before_revision_write = switch_during_archive
+    try:
+        with pytest.raises(HTTPException) as raced:
+            await svc.archive_template(server.db, activated["id"], activated["revision"], actor)
+        assert raced.value.status_code == 409
+    finally:
+        svc._before_revision_write = None
+    stored = await server.db.print_templates.find_one({"id": activated["id"]}, {"_id": 0, "status": 1})
+    assert stored["status"] == "active"
+    resolved = await svc.resolve_template(server.db, "sales_invoice", "customer")
+    assert resolved["id"] == activated["id"]
+    assert resolved["status"] == "active"
+    assert await server.db.print_template_versions.count_documents({
+        "template_id": activated["id"],
+        "action": "archive",
+    }) == 0
+
+
+def _image_count(data: bytes) -> int:
+    with pdfplumber.open(io.BytesIO(data)) as pdf:
+        return sum(len(page.images or []) for page in pdf.pages)
+
+
+def _png() -> bytes:
+    from PIL import Image
+    buffer = io.BytesIO()
+    Image.new("RGB", (16, 16), (220, 20, 20)).save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+async def test_uploaded_logo_is_embedded_and_a_missing_asset_is_rejected():
+    png = _png()
+    async with _client() as client:
+        uploaded = await client.post(
+            "/api/print-templates/assets",
+            files={"file": ("logo.png", png, "image/png")},
+        )
+        assert uploaded.status_code == 200, uploaded.text
+        asset_id = uploaded.json()["asset"]["id"]
+        created = await client.post("/api/print-templates", json={
+            "name": "Dengan logo",
+            "document_type": "sales_invoice",
+            "audience": "customer",
+        })
+        template = created.json()["template"]
+        design = template["design"]
+        design["bands"]["title"]["elements"].append({
+            "id": "logo",
+            "type": "image",
+            "band": "title",
+            "x_mm": 0,
+            "y_mm": 8,
+            "w_mm": 12,
+            "h_mm": 8,
+            "z": 3,
+            "required": False,
+            "props": {"role": "logo", "asset_id": asset_id},
+        })
+        saved = await client.put(
+            f"/api/print-templates/{template['id']}/draft",
+            json={"design": design, "expected_revision": template["revision"]},
+        )
+        assert saved.status_code == 200, saved.text
+        preview = await client.post(f"/api/print-templates/{template['id']}/preview", json={"design": design})
+        assert preview.status_code == 200, preview.text
+        assert b"/Subtype /Image" in preview.content
+        assert _image_count(preview.content) >= 1
+        activated = await client.post(
+            f"/api/print-templates/{template['id']}/activate",
+            json={"expected_revision": saved.json()["template"]["revision"]},
+        )
+        assert activated.status_code == 200, activated.text
+        made_default = await client.post(
+            f"/api/print-templates/{template['id']}/default",
+            json={"expected_revision": activated.json()["template"]["revision"]},
+        )
+        assert made_default.status_code == 200, made_default.text
+        order = await _order()
+        await _configure_accounts()
+        issued = await client.post("/api/sales-invoices/issue", json={
+            "po_id": order["id"],
+            "invoice_date": "2026-09-04",
+            "payment_term_days": 0,
+            "discount_amount": 0,
+            "ppn_percent": 0,
+            "notes": "",
+            "lines": [{"line_idx": 0, "line_id": "l0", "quantity": 1, "unit_price": 1000}],
+            "other_charges": [],
+        })
+        assert issued.status_code == 200, issued.text
+        printed = await client.get(f"/api/sales-invoices/{issued.json()['invoice']['id']}/pdf")
+        assert printed.status_code == 200, printed.text
+        assert b"/Subtype /Image" in printed.content
+        assert _image_count(printed.content) >= 1
+        from services.customer_tracking import ensure_tracking_token
+        token = await ensure_tracking_token(server.db, order)
+        public = await client.get(f"/api/public/tracking/{token}/invoices/{issued.json()['invoice']['id']}/pdf")
+        assert public.status_code == 200, public.text
+        assert b"/Subtype /Image" in public.content
+        assert _image_count(public.content) >= 1
+
+        linked = await client.post(f"/api/print-templates/{template['id']}/preview", json={"design": {
+            **design,
+            "bands": {
+                **design["bands"],
+                "title": {
+                    **design["bands"]["title"],
+                    "elements": [
+                        *design["bands"]["title"]["elements"][:-1],
+                        {
+                            **design["bands"]["title"]["elements"][-1],
+                            "props": {"role": "logo", "asset_id": "", "url": "https://example.invalid/logo.png"},
+                        },
+                    ],
+                },
+            },
+        }})
+        assert linked.status_code == 400
+        assert "URL" in linked.text or "tidak diizinkan" in linked.text
+
+        missing = design
+        missing["bands"]["title"]["elements"][-1]["props"]["asset_id"] = "aset-hilang"
+        rejected = await client.post(f"/api/print-templates/{template['id']}/preview", json={"design": missing})
+        assert rejected.status_code == 400
+        assert "tidak ditemukan" in rejected.text
+        blocked = await client.put(
+            f"/api/print-templates/{template['id']}/draft",
+            json={"design": missing, "expected_revision": made_default.json()["template"]["revision"]},
+        )
+        assert blocked.status_code == 200
+        not_active = await client.post(
+            f"/api/print-templates/{template['id']}/activate",
+            json={"expected_revision": blocked.json()["template"]["revision"]},
+        )
+        assert not_active.status_code == 400
+        assert "tidak ditemukan" in not_active.text
+        stored = await server.db.print_templates.find_one({"id": template["id"]}, {"_id": 0, "status": 1, "active_design": 1})
+        assert stored["status"] == "active"
+        assert stored["active_design"]["bands"]["title"]["elements"][-1]["props"]["asset_id"] == asset_id
+        still_printed = await client.get(f"/api/sales-invoices/{issued.json()['invoice']['id']}/pdf")
+        assert still_printed.status_code == 200
+        assert _image_count(still_printed.content) >= 1

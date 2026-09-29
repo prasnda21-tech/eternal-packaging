@@ -19,7 +19,7 @@ from services.print_template_model import (
     terbilang_rupiah,
     validate_design,
 )
-from services.print_template_render import render_design_pdf
+from services.print_template_render import DesignRenderError, render_design_pdf
 from services.print_template_model import build_delivery_context, build_invoice_context
 from services import print_templates as svc
 from services.print_template_routes import register
@@ -33,6 +33,11 @@ class _Cursor:
 
     async def to_list(self, limit):
         return self.docs[:limit]
+
+
+class _WriteResult:
+    def __init__(self, matched_count):
+        self.matched_count = matched_count
 
 
 class _Col:
@@ -57,11 +62,18 @@ class _Col:
     async def insert_one(self, doc):
         self.docs.append(copy.deepcopy(doc))
 
-    async def update_one(self, query, update):
+    async def update_one(self, query, update, upsert=False):
         for doc in self.docs:
             if self._match(doc, query):
-                doc.update(copy.deepcopy(update.get("$set") or {}))
-                return
+                doc.update(copy.deepcopy((update or {}).get("$set") or {}))
+                return _WriteResult(1)
+        if upsert:
+            created = {key: value for key, value in (query or {}).items() if not str(key).startswith("$")}
+            created.update(copy.deepcopy((update or {}).get("$setOnInsert") or {}))
+            created.update(copy.deepcopy((update or {}).get("$set") or {}))
+            self.docs.append(created)
+            return _WriteResult(1)
+        return _WriteResult(0)
 
 
 class MemoryDB:
@@ -421,3 +433,21 @@ def test_empty_logo_still_renders():
     pdf = render_design_pdf(design, build_invoice_context(sample_invoice(), preview=True))
     assert pdf.startswith(b"%PDF")
     assert "INV/CONTOH/001" in _pdf_text(pdf)
+
+
+def test_missing_asset_bytes_fail_before_a_blank_image():
+    design = builtin_invoice_design()
+    design["bands"]["title"]["elements"].append({
+        "id": "logo",
+        "type": "image",
+        "band": "title",
+        "x_mm": 0,
+        "y_mm": 8,
+        "w_mm": 16,
+        "h_mm": 8,
+        "z": 1,
+        "required": False,
+        "props": {"role": "logo", "asset_id": "aset-hilang"},
+    })
+    with pytest.raises(DesignRenderError, match="tidak ditemukan"):
+        render_design_pdf(design, build_invoice_context(sample_invoice(), preview=True), assets={})

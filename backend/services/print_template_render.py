@@ -358,14 +358,20 @@ def _draw_elements(c, elements, origin_x, origin_y, page_h):
 
 
 def _draw_image(c, props, x, y, w, h, page_h):
+    props = props or {}
+    asset_id = str(props.get("asset_id") or "").strip()
     blob = props.get("_bytes")
     if not blob:
+        if asset_id:
+            raise DesignRenderError("Aset gambar pada desain tidak ditemukan.")
         return
     try:
         image = ImageReader(io.BytesIO(blob))
         c.drawImage(image, _mm(x), _mm(page_h - (y + h)), width=_mm(w), height=_mm(h), preserveAspectRatio=True, mask="auto", anchor="c")
-    except Exception:
-        return
+    except DesignRenderError:
+        raise
+    except Exception as exc:
+        raise DesignRenderError("Aset gambar pada desain tidak dapat digambar.") from exc
 
 
 def _draw_qr(c, props, x, y, w, h, page_h, url: str):
@@ -394,7 +400,7 @@ def _draw_signature(c, el, x, y, w, h, page_h):
     c.setStrokeColor(_color("#cbd5e1"))
     c.rect(_mm(x), _mm(page_h - (y + h)), _mm(w), _mm(h), stroke=1, fill=0)
     _draw_paragraph(c, str(props.get("label") or "Tanda tangan"), {"font": "Helvetica", "font_size": 8, "bold": True, "align": "center"}, x, y + 1, w, 5, page_h)
-    if props.get("_bytes"):
+    if str(props.get("asset_id") or "").strip() or props.get("_bytes"):
         _draw_image(c, props, x + 4, y + 6, w - 8, max(h - 16, 8), page_h)
     _draw_paragraph(c, str(props.get("name") or ""), {"font": "Helvetica", "font_size": 8, "align": "center", "bold": True}, x, y + h - 10, w, 4.5, page_h)
     _draw_paragraph(c, str(props.get("title") or ""), {"font": "Helvetica", "font_size": 7, "align": "center", "color": "#64748b"}, x, y + h - 5.5, w, 4, page_h)

@@ -27,6 +27,10 @@ from services.print_template_render import DesignRenderError, render_design_pdf
 TEMPLATES = "print_templates"
 VERSIONS = "print_template_versions"
 ASSETS = "print_template_assets"
+DEFAULTS = "print_template_defaults"
+
+# Test hook. Awaited after the read-side revision check and before the filtered write.
+_before_revision_write = None
 
 BUILTIN_IDS = {
     (DOCUMENT_INVOICE, "customer"): "builtin-sales-invoice-customer",
@@ -68,7 +72,11 @@ def actor_of(user: Optional[dict]) -> dict:
     }
 
 
-def _public_template(doc: dict, *, include_design: bool = False) -> dict:
+def _public_template(doc: dict, *, include_design: bool = False, default_ids: Optional[set] = None) -> dict:
+    if default_ids is None:
+        is_default = bool(doc.get("is_default"))
+    else:
+        is_default = doc.get("id") in default_ids
     row = {
         "id": doc.get("id"),
         "name": doc.get("name"),
@@ -78,7 +86,7 @@ def _public_template(doc: dict, *, include_design: bool = False) -> dict:
         "audience_label": AUDIENCE_LABELS.get(doc.get("audience"), ""),
         "status": doc.get("status"),
         "status_label": STATUS_LABELS.get(doc.get("status"), ""),
-        "is_default": bool(doc.get("is_default")),
+        "is_default": is_default,
         "is_builtin": bool(doc.get("is_builtin")),
         "legacy_renderer": bool(doc.get("legacy_renderer")),
         "has_draft": bool(doc.get("has_draft")),
@@ -134,9 +142,9 @@ def _builtin_record(document_type: str, audience: str) -> dict:
 async def ensure_builtins(db) -> None:
     for key, template_id in BUILTIN_IDS.items():
         existing = await db[TEMPLATES].find_one({"id": template_id}, {"_id": 0, "id": 1})
-        if existing:
-            continue
-        await db[TEMPLATES].insert_one(_builtin_record(*key))
+        if not existing:
+            await db[TEMPLATES].insert_one(_builtin_record(*key))
+        await _ensure_pointer(db, key[0], key[1])
 
 
 async def list_templates(db, *, document_type: str = "", status: str = "") -> List[dict]:
@@ -152,7 +160,8 @@ async def list_templates(db, *, document_type: str = "", status: str = "") -> Li
         query["status"] = status
     rows = await db[TEMPLATES].find(query, {"_id": 0}).to_list(500)
     rows.sort(key=lambda row: (row.get("document_type") or "", row.get("audience") or "", row.get("name") or ""))
-    return [_public_template(row) for row in rows]
+    defaults = await _default_ids(db)
+    return [_public_template(row, default_ids=defaults) for row in rows]
 
 
 async def get_template(db, template_id: str, *, include_design: bool = True) -> dict:
@@ -160,7 +169,7 @@ async def get_template(db, template_id: str, *, include_design: bool = True) -> 
     doc = await db[TEMPLATES].find_one({"id": str(template_id)}, {"_id": 0})
     if not doc:
         raise HTTPException(404, "Template tidak ditemukan.")
-    return _public_template(doc, include_design=include_design)
+    return _public_template(doc, include_design=include_design, default_ids=await _default_ids(db))
 
 
 async def _require(db, template_id: str) -> dict:
@@ -171,12 +180,78 @@ async def _require(db, template_id: str) -> dict:
     return doc
 
 
+def _conflict(current_revision: int) -> HTTPException:
+    return HTTPException(409, {
+        "message": "Desain ini sudah diubah di tempat lain. Isi editor Anda tetap dipertahankan.",
+        "revision": int(current_revision or 0),
+    })
+
+
 def _check_revision(doc: dict, expected: int):
     if int(expected) != int(doc.get("revision") or 0):
-        raise HTTPException(409, {
-            "message": "Desain ini sudah diubah di tempat lain. Isi editor Anda tetap dipertahankan.",
-            "revision": int(doc.get("revision") or 0),
-        })
+        raise _conflict(doc.get("revision") or 0)
+
+
+def _matched_count(result) -> int:
+    if result is None:
+        return 0
+    value = getattr(result, "matched_count", None)
+    if value is None and isinstance(result, dict):
+        value = result.get("matched_count")
+    return int(value or 0)
+
+
+async def _commit_if_revision(db, template_id: str, expected_revision: int, changes: dict) -> None:
+    """Write only when revision still matches. A loser records nothing."""
+    if _before_revision_write is not None:
+        await _before_revision_write(template_id)
+    result = await db[TEMPLATES].update_one(
+        {"id": str(template_id), "revision": int(expected_revision)},
+        {"$set": {**changes, "revision": int(expected_revision) + 1}},
+    )
+    if _matched_count(result) == 1:
+        return
+    current = await db[TEMPLATES].find_one({"id": str(template_id)}, {"_id": 0, "revision": 1})
+    raise _conflict((current or {}).get("revision") or 0)
+
+
+def _pointer_id(document_type: str, audience: str) -> str:
+    return f"default:{document_type}:{audience}"
+
+
+async def _ensure_pointer(db, document_type: str, audience: str) -> dict:
+    pointer_id = _pointer_id(document_type, audience)
+    builtin_id = BUILTIN_IDS[(document_type, audience)]
+    await db[DEFAULTS].update_one(
+        {"id": pointer_id},
+        {"$setOnInsert": {
+            "id": pointer_id,
+            "document_type": document_type,
+            "audience": audience,
+            "template_id": builtin_id,
+        }},
+        upsert=True,
+    )
+    return await db[DEFAULTS].find_one({"id": pointer_id}, {"_id": 0})
+
+
+async def _default_ids(db) -> set:
+    rows = await db[DEFAULTS].find({}, {"_id": 0, "template_id": 1}).to_list(20)
+    return {row.get("template_id") for row in rows if row.get("template_id")}
+
+
+async def _resolve_authoritative(db, document_type: str, audience: str) -> Optional[dict]:
+    """One pointer document decides the default. An unusable target falls back to the builtin."""
+    pointer = await _ensure_pointer(db, document_type, audience)
+    target_id = str((pointer or {}).get("template_id") or "")
+    doc = await db[TEMPLATES].find_one({"id": target_id}, {"_id": 0}) if target_id else None
+    if doc and doc.get("status") == "active" and doc.get("document_type") == document_type and doc.get("audience") == audience:
+        return doc
+    builtin_id = BUILTIN_IDS[(document_type, audience)]
+    builtin = await db[TEMPLATES].find_one({"id": builtin_id}, {"_id": 0})
+    if builtin and builtin.get("status") == "active":
+        return builtin
+    return None
 
 
 async def create_template(db, payload: dict, user: dict) -> dict:
@@ -228,17 +303,15 @@ async def save_draft(db, template_id: str, design: dict, expected_revision: int,
     design["document_type"] = doc["document_type"]
     design["schema_version"] = 1
     stamp = now_iso()
-    revision = int(doc.get("revision") or 0) + 1
-    await db[TEMPLATES].update_one({"id": doc["id"]}, {"$set": {
+    await _commit_if_revision(db, doc["id"], expected_revision, {
         "design": design,
         "has_draft": True,
-        "revision": revision,
         "updated_at": stamp,
         "updated_by": actor_of(user),
-    }})
+    })
     await _insert_version(db, doc["id"], "save_draft", user, design, int(doc.get("active_version") or 0), "Simpan draf")
     updated = await _require(db, doc["id"])
-    row = _public_template(updated, include_design=True)
+    row = _public_template(updated, include_design=True, default_ids=await _default_ids(db))
     row["errors"] = validate_design(design, doc["document_type"])
     return row
 
@@ -253,26 +326,23 @@ async def activate_template(db, template_id: str, expected_revision: int, user: 
     if errors:
         raise HTTPException(400, {"message": errors[0]["message"], "errors": errors})
     try:
-        rendered = render_for_design(design, doc["document_type"], preview=True)
+        rendered = await _render_with_assets(db, design, doc["document_type"], preview=True)
     except DesignRenderError as exc:
         raise HTTPException(400, {"message": str(exc), "errors": exc.errors})
     if not rendered.startswith(b"%PDF"):
         raise HTTPException(400, "Aktivasi dibatalkan karena preview PDF gagal.")
-    stamp = now_iso()
     version = int(doc.get("active_version") or 0) + 1
-    revision = int(doc.get("revision") or 0) + 1
-    await db[TEMPLATES].update_one({"id": doc["id"]}, {"$set": {
+    await _commit_if_revision(db, doc["id"], expected_revision, {
         "status": "active",
         "active_design": clone_design(design),
         "active_version": version,
         "has_draft": False,
         "legacy_renderer": False,
-        "revision": revision,
-        "updated_at": stamp,
+        "updated_at": now_iso(),
         "updated_by": actor_of(user),
-    }})
+    })
     await _insert_version(db, doc["id"], "activate", user, design, version, "Aktifkan")
-    return _public_template(await _require(db, doc["id"]), include_design=True)
+    return _public_template(await _require(db, doc["id"]), include_design=True, default_ids=await _default_ids(db))
 
 
 async def copy_template(db, template_id: str, user: dict, name: str = "") -> dict:
@@ -308,23 +378,18 @@ async def set_default(db, template_id: str, expected_revision: int, user: dict) 
     _check_revision(doc, expected_revision)
     if doc.get("status") != "active":
         raise HTTPException(400, "Hanya template aktif yang dapat dijadikan default.")
-    rows = await db[TEMPLATES].find({
-        "document_type": doc["document_type"],
-        "audience": doc["audience"],
-        "is_default": True,
-    }, {"_id": 0}).to_list(50)
-    for row in rows:
-        if row.get("id") != doc["id"]:
-            await db[TEMPLATES].update_one({"id": row["id"]}, {"$set": {"is_default": False}})
-    revision = int(doc.get("revision") or 0) + 1
-    await db[TEMPLATES].update_one({"id": doc["id"]}, {"$set": {
-        "is_default": True,
-        "revision": revision,
+    await _commit_if_revision(db, doc["id"], expected_revision, {
         "updated_at": now_iso(),
         "updated_by": actor_of(user),
-    }})
+    })
+    try:
+        await _write_pointer(db, doc)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(500, "Default cetakan tidak berubah.") from exc
     await _insert_version(db, doc["id"], "set_default", user, None, int(doc.get("active_version") or 0), "Jadikan default")
-    return _public_template(await _require(db, doc["id"]))
+    return _public_template(await _require(db, doc["id"]), default_ids=await _default_ids(db))
 
 
 async def archive_template(db, template_id: str, expected_revision: int, user: dict) -> dict:
@@ -332,17 +397,21 @@ async def archive_template(db, template_id: str, expected_revision: int, user: d
     _check_revision(doc, expected_revision)
     if doc.get("is_builtin"):
         raise HTTPException(400, "Desain bawaan tidak dapat diarsipkan.")
-    if doc.get("is_default"):
+    if await _is_authoritative_default(db, doc):
         raise HTTPException(400, "Template default tidak dapat diarsipkan sebelum pengganti ditentukan.")
-    revision = int(doc.get("revision") or 0) + 1
-    await db[TEMPLATES].update_one({"id": doc["id"]}, {"$set": {
+    await _commit_if_revision(db, doc["id"], expected_revision, {
         "status": "archived",
-        "revision": revision,
         "updated_at": now_iso(),
         "updated_by": actor_of(user),
-    }})
+    })
+    if await _is_authoritative_default(db, doc):
+        await db[TEMPLATES].update_one(
+            {"id": doc["id"], "status": "archived"},
+            {"$set": {"status": "active"}},
+        )
+        raise HTTPException(409, "Template menjadi default saat diarsipkan. Arsip dibatalkan.")
     await _insert_version(db, doc["id"], "archive", user, None, int(doc.get("active_version") or 0), "Arsipkan")
-    return _public_template(await _require(db, doc["id"]))
+    return _public_template(await _require(db, doc["id"]), default_ids=await _default_ids(db))
 
 
 async def list_versions(db, template_id: str) -> List[dict]:
@@ -365,36 +434,105 @@ async def restore_version(db, template_id: str, version_id: str, expected_revisi
     if errors:
         raise HTTPException(400, {"message": errors[0]["message"], "errors": errors})
     try:
-        rendered = render_for_design(design, doc["document_type"], preview=True)
+        rendered = await _render_with_assets(db, design, doc["document_type"], preview=True)
     except DesignRenderError as exc:
         raise HTTPException(400, {"message": str(exc), "errors": exc.errors})
     if not rendered.startswith(b"%PDF"):
         raise HTTPException(400, "Pemulihan dibatalkan karena desain tidak dapat dirender.")
     new_version = int(doc.get("active_version") or 0) + 1
-    revision = int(doc.get("revision") or 0) + 1
-    await db[TEMPLATES].update_one({"id": doc["id"]}, {"$set": {
+    await _commit_if_revision(db, doc["id"], expected_revision, {
         "design": design,
         "active_design": clone_design(design),
         "status": "active",
         "active_version": new_version,
         "has_draft": False,
         "legacy_renderer": False,
-        "revision": revision,
         "updated_at": now_iso(),
         "updated_by": actor_of(user),
-    }})
+    })
     await _insert_version(db, doc["id"], "restore", user, design, new_version, f"Pulihkan versi {version.get('version')}")
-    return _public_template(await _require(db, doc["id"]), include_design=True)
+    return _public_template(await _require(db, doc["id"]), include_design=True, default_ids=await _default_ids(db))
 
 
-def render_for_design(design: dict, document_type: str, *, preview: bool = False, record: Optional[dict] = None, public: bool = False, tracking_token: str = "") -> bytes:
+def _asset_ids(design: dict) -> List[str]:
+    found: List[str] = []
+    for band in ((design or {}).get("bands") or {}).values():
+        if not isinstance(band, dict):
+            continue
+        for element in band.get("elements") or []:
+            if not isinstance(element, dict) or element.get("type") not in ("image", "signature"):
+                continue
+            props = element.get("props") or {}
+            if props.get("url") or props.get("path") or props.get("src"):
+                raise HTTPException(400, "Gambar dari URL atau path bebas tidak diizinkan.")
+            asset_id = str(props.get("asset_id") or "").strip()
+            if asset_id and asset_id not in found:
+                found.append(asset_id)
+    return found
+
+
+async def _load_assets(db, design: dict) -> Dict[str, bytes]:
+    from services import storage as obj_storage
+
+    assets: Dict[str, bytes] = {}
+    missing: List[str] = []
+    for asset_id in _asset_ids(design):
+        stored = await db[ASSETS].find_one({"id": asset_id}, {"_id": 0})
+        path = str((stored or {}).get("storage_path") or "")
+        data = b""
+        if path:
+            try:
+                data, _content_type = obj_storage.get_object(path)
+            except Exception:
+                data = b""
+        if not data:
+            missing.append(asset_id)
+            continue
+        assets[asset_id] = data
+    if missing:
+        raise HTTPException(400, {
+            "message": "Aset gambar pada desain tidak ditemukan.",
+            "asset_ids": missing,
+        })
+    return assets
+
+
+def render_for_design(design: dict, document_type: str, *, preview: bool = False, record: Optional[dict] = None, public: bool = False, tracking_token: str = "", assets: Optional[dict] = None) -> bytes:
     if document_type == DOCUMENT_DELIVERY:
         source = record or sample_delivery()
         context = build_delivery_context(source, tracking_token="" if preview else tracking_token, preview=preview)
     else:
         source = record or sample_invoice()
         context = build_invoice_context(source, public=public, tracking_token="" if preview else tracking_token, preview=preview)
-    return render_design_pdf(design, context)
+    return render_design_pdf(design, context, assets=assets)
+
+
+async def _render_with_assets(db, design: dict, document_type: str, **kwargs) -> bytes:
+    assets = await _load_assets(db, design)
+    try:
+        return render_for_design(design, document_type, assets=assets, **kwargs)
+    except DesignRenderError as exc:
+        raise HTTPException(400, {"message": str(exc), "errors": exc.errors}) from exc
+
+
+async def _is_authoritative_default(db, doc: dict) -> bool:
+    pointer = await _ensure_pointer(db, doc["document_type"], doc["audience"])
+    return str((pointer or {}).get("template_id") or "") == str(doc.get("id") or "")
+
+
+async def _write_pointer(db, doc: dict) -> None:
+    pointer_id = _pointer_id(doc["document_type"], doc["audience"])
+    await db[DEFAULTS].update_one(
+        {"id": pointer_id},
+        {"$set": {
+            "id": pointer_id,
+            "document_type": doc["document_type"],
+            "audience": doc["audience"],
+            "template_id": doc["id"],
+            "updated_at": now_iso(),
+        }},
+        upsert=True,
+    )
 
 
 async def preview_template(db, template_id: str, design: Optional[dict]) -> bytes:
@@ -402,10 +540,7 @@ async def preview_template(db, template_id: str, design: Optional[dict]) -> byte
     chosen = design if isinstance(design, dict) else doc.get("design")
     chosen = clone_design(chosen)
     chosen["document_type"] = doc["document_type"]
-    try:
-        return render_for_design(chosen, doc["document_type"], preview=True)
-    except DesignRenderError as exc:
-        raise HTTPException(400, {"message": str(exc), "errors": exc.errors})
+    return await _render_with_assets(db, chosen, doc["document_type"], preview=True)
 
 
 async def resolve_template(db, document_type: str, audience: str = "customer", template_id: Optional[str] = None) -> Optional[dict]:
@@ -419,18 +554,7 @@ async def resolve_template(db, document_type: str, audience: str = "customer", t
         if doc.get("status") != "active":
             raise HTTPException(400, "Template draf atau arsip tidak dapat dipakai untuk cetak.")
         return doc
-    rows = await db[TEMPLATES].find({
-        "document_type": document_type,
-        "audience": audience,
-        "status": "active",
-        "is_default": True,
-    }, {"_id": 0}).to_list(10)
-    if rows:
-        return rows[0]
-    fallback_id = BUILTIN_IDS.get((document_type, audience))
-    if not fallback_id:
-        return None
-    return await db[TEMPLATES].find_one({"id": fallback_id}, {"_id": 0})
+    return await _resolve_authoritative(db, document_type, audience)
 
 
 def _legacy_invoice(invoice: dict) -> bytes:
@@ -455,20 +579,15 @@ async def render_invoice_pdf(db, invoice: dict, *, audience: str = "customer", t
             return _legacy_invoice(invoice)
         return _legacy_invoice(invoice)
     design = template.get("active_design") or template.get("design")
-    try:
-        pdf = render_for_design(
-            design,
-            DOCUMENT_INVOICE,
-            preview=False,
-            record=invoice,
-            public=public,
-            tracking_token=tracking_token,
-        )
-    except DesignRenderError:
-        if template.get("is_builtin"):
-            return _legacy_invoice(invoice)
-        raise HTTPException(500, "Template aktif gagal dirender. Pilih desain bawaan.")
-    return pdf
+    return await _render_with_assets(
+        db,
+        design,
+        DOCUMENT_INVOICE,
+        preview=False,
+        record=invoice,
+        public=public,
+        tracking_token=tracking_token,
+    )
 
 
 async def render_delivery_pdf(db, delivery: dict, *, audience: str = "customer", template_id: Optional[str] = None, tracking_token: str = "") -> bytes:
@@ -476,18 +595,14 @@ async def render_delivery_pdf(db, delivery: dict, *, audience: str = "customer",
     if not template or template.get("legacy_renderer"):
         return _legacy_delivery(delivery)
     design = template.get("active_design") or template.get("design")
-    try:
-        return render_for_design(
-            design,
-            DOCUMENT_DELIVERY,
-            preview=False,
-            record=delivery,
-            tracking_token=tracking_token,
-        )
-    except DesignRenderError:
-        if template.get("is_builtin"):
-            return _legacy_delivery(delivery)
-        raise HTTPException(500, "Template aktif gagal dirender. Pilih desain bawaan.")
+    return await _render_with_assets(
+        db,
+        design,
+        DOCUMENT_DELIVERY,
+        preview=False,
+        record=delivery,
+        tracking_token=tracking_token,
+    )
 
 
 async def render_public_invoice_pdf(db, invoice: dict, order: dict, requested_template_id: Optional[str] = None) -> bytes:
@@ -505,14 +620,15 @@ async def active_print_options(db, document_type: str) -> List[dict]:
     if document_type not in DOCUMENT_TYPES:
         raise HTTPException(400, "Jenis dokumen tidak didukung.")
     rows = await db[TEMPLATES].find({"document_type": document_type, "status": "active"}, {"_id": 0}).to_list(200)
-    rows.sort(key=lambda row: (0 if row.get("is_default") else 1, row.get("audience") or "", row.get("name") or ""))
+    defaults = await _default_ids(db)
+    rows.sort(key=lambda row: (0 if row.get("id") in defaults else 1, row.get("audience") or "", row.get("name") or ""))
     return [
         {
             "id": row.get("id"),
             "name": row.get("name"),
             "audience": row.get("audience"),
             "audience_label": AUDIENCE_LABELS.get(row.get("audience"), ""),
-            "is_default": bool(row.get("is_default")),
+            "is_default": row.get("id") in defaults,
             "is_builtin": bool(row.get("is_builtin")),
         }
         for row in rows
