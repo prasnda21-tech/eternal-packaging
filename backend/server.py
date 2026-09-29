@@ -8976,13 +8976,11 @@ from services.sales_deliveries import (
     create_sales_delivery as _create_sales_delivery,
     list_sales_deliveries as _list_sales_deliveries,
     get_sales_delivery_detail as _get_sales_delivery_detail,
-    generate_sales_delivery_pdf_bytes as _generate_sales_delivery_pdf_bytes,
 )
 from services.sales_invoices import (
     get_po_invoice_preview as _get_po_invoice_preview,
     list_charge_account_options as _list_charge_account_options,
     create_sales_invoice as _create_sales_invoice,
-    generate_sales_invoice_pdf_bytes,
     list_sales_invoices as _list_sales_invoices,
     get_sales_invoice_detail as _get_sales_invoice_detail,
     update_sales_invoice as _update_sales_invoice,
@@ -10398,12 +10396,13 @@ async def get_sales_delivery_endpoint(id: str, user=Depends(current_user)):
 
 
 @api_router.get("/sales-deliveries/{id}/pdf")
-async def get_sales_delivery_pdf_endpoint(id: str, user=Depends(current_user)):
+async def get_sales_delivery_pdf_endpoint(id: str, template_id: Optional[str] = None, user=Depends(current_user)):
     """Generate and return official PDF for Sales Delivery / Surat Jalan."""
     await _require_any_perm(user, "sales.delivery.print", "sales.delivery.view", "sales_order.view", "po.view")
     detail = await _get_sales_delivery_detail(db, id)
     await ensure_owned_po_id(db, user, ((detail or {}).get("delivery") or {}).get("po_id"))
-    pdf_bytes = _generate_sales_delivery_pdf_bytes(detail["delivery"], detail.get("po_summary"))
+    from services.print_templates import render_delivery_pdf
+    pdf_bytes = await render_delivery_pdf(db, detail["delivery"], audience="customer", template_id=template_id or None)
     sj_num = str(detail["delivery"].get("sj_number", "SJ")).replace("/", "_").replace("\\", "_")
     filename = f"Pengiriman_Pesanan_{sj_num}.pdf"
     return FastAPIResponse(
@@ -10490,12 +10489,13 @@ async def get_sales_invoice_endpoint(id: str, user=Depends(current_user)):
 
 
 @api_router.get("/sales-invoices/{id}/pdf")
-async def get_sales_invoice_pdf_endpoint(id: str, user=Depends(current_user)):
+async def get_sales_invoice_pdf_endpoint(id: str, template_id: Optional[str] = None, user=Depends(current_user)):
     """Generate and return official PDF for Sales Invoice (Faktur Penjualan)."""
     await _require_any_perm(user, "sales.invoice.view", "sales_order.view", "po.view", "sales.delivery.view")
     detail = await _get_sales_invoice_detail(db, id)
     await ensure_owned_po_id(db, user, (detail or {}).get("po_id"))
-    pdf_bytes = generate_sales_invoice_pdf_bytes(detail)
+    from services.print_templates import render_invoice_pdf
+    pdf_bytes = await render_invoice_pdf(db, detail, audience="customer", template_id=template_id or None)
     inv_num = str(detail.get("invoice_number", "INV")).replace("/", "_").replace("\\", "_")
     filename = f"Faktur_Penjualan_{inv_num}.pdf"
     return FastAPIResponse(
@@ -13838,6 +13838,8 @@ _delivery_route_api.register(api_router, {
     "Depends": Depends,
 })
 
+from services.print_template_routes import register as _register_print_templates
+_register_print_templates(api_router, db=db, current_user=current_user, user_permissions=user_permissions, obj_storage=obj_storage)
 app.include_router(api_router)
 
 # ---- Customer Design Approval router (registered before CORS/middleware) ----
@@ -14278,6 +14280,8 @@ async def seed():
             # Batch 3: Production routing (Cetak/Non-Cetak)
             "production.route.edit",
             "buffer_stock.manage",
+            "print_template.view",
+            "print_template.manage",
         ],
         "designer": [
             "customer_approval.view", "customer_approval.manage",

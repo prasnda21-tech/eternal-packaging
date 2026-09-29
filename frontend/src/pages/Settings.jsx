@@ -7,6 +7,7 @@ import {
   BookOpen,
   CreditCard,
   Package,
+  Printer,
   Settings as SettingsIcon,
 } from "lucide-react";
 import api from "../lib/api";
@@ -28,6 +29,7 @@ import HrPayrollSettings from "../components/HrPayrollSettings";
 import SalesActivitySettings from "../components/SalesActivitySettings";
 import RouteOptimizerSettings from "../components/RouteOptimizerSettings";
 import SalesUserMappingSettings from "../components/SalesUserMappingSettings";
+import PrintTemplateList from "./PrintTemplateList";
 import { FormSection, FormField, FormProgress, computeStatus } from "../components/form-standard";
 
 const ROLE_LABELS = {
@@ -2157,6 +2159,7 @@ const SETTINGS_NAV_ITEMS = [
   { id: "route-optimizer", label: "Optimasi Rute", description: "Pengaturan rute", Icon: Route, tone: "blue", testid: "settings-tab-route-optimizer" },
   { id: "accurate-creators", label: "Pembuat PO Accurate", description: "Mapping createdBy", Icon: Users, tone: "sky", testid: "settings-tab-accurate-creators" },
   { id: "sales-user-mapping", label: "Mapping Sales Accurate", description: "Label Accurate → users.id", Icon: Users, tone: "teal", testid: "settings-tab-sales-user-mapping" },
+  { id: "desain-cetakan", label: "Desain Cetakan", description: "Susun tampilan PDF faktur dan surat jalan", Icon: Printer, tone: "blue", testid: "settings-tab-desain-cetakan" },
   { id: "audit", label: "Audit Log", description: "Riwayat perubahan", Icon: ScrollText, tone: "slate", testid: "settings-tab-audit" },
 ];
 
@@ -2244,6 +2247,7 @@ export default function Settings() {
   const canViewHrPayroll = hasPerm("payroll.settings");
   const canViewSalesActivity = hasPerm("settings.sales_activity.view") || hasPerm("settings.sales_activity.manage") || hasPerm("permissions.manage");
   const canEditSalesActivity = hasPerm("settings.sales_activity.manage");
+  const canViewPrintTemplates = hasPerm("print_template.view") || hasPerm("print_template.manage");
   const canViewRouteOptimizer = hasPerm("settings.route_optimizer.view") || hasPerm("settings.route_optimizer.manage") || hasPerm("permissions.manage");
   const canEditRouteOptimizer = hasPerm("settings.route_optimizer.manage");
 
@@ -2269,6 +2273,7 @@ export default function Settings() {
     "route-optimizer": canViewRouteOptimizer,
     "accurate-creators": canViewAccurateCreators,
     "sales-user-mapping": canViewSalesUserMapping,
+    "desain-cetakan": canViewPrintTemplates,
     audit: canViewAudit,
   };
 
@@ -2409,6 +2414,7 @@ export default function Settings() {
       {tab === "sales-user-mapping" && canViewSalesUserMapping && (
         <SalesUserMappingSettings notify={notify} canEdit={canEditSalesUserMapping}/>
       )}
+      {tab === "desain-cetakan" && canViewPrintTemplates && <PrintTemplateList />}
       {tab === "audit" && canViewAudit && <AuditTab/>}
       </div>
 

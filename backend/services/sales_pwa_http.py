@@ -30,7 +30,6 @@ def register_sales_pwa_routes(
     user_permissions=None,
 ):
     from services import sales_pwa as spwa
-    from services.sales_invoices import generate_sales_invoice_pdf_bytes
     from services.sales_user_mapping import SALES_PWA_PERM
 
     async def _pwa_user(user=Depends(current_user)):
@@ -177,7 +176,8 @@ def register_sales_pwa_routes(
             inv = None
         if not inv:
             raise HTTPException(404, "Invoice tidak ditemukan")
-        pdf_bytes = generate_sales_invoice_pdf_bytes(inv)
+        from services.print_templates import render_invoice_pdf
+        pdf_bytes = await render_invoice_pdf(db, inv, audience="customer", template_id=None)
         headers = {
             "X-Content-Type-Options": "nosniff",
             "Cache-Control": "private, no-store",

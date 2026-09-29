@@ -334,7 +334,8 @@ async def ensure_generated_sj_pdf(db, order: dict, delivery: dict, user: dict, *
             return existing, None
 
     try:
-        pdf_bytes = generate_sales_delivery_pdf_bytes(delivery, None)
+        from services.print_templates import render_delivery_pdf
+        pdf_bytes = await render_delivery_pdf(db, delivery, audience="customer")
     except Exception:
         logger.exception("Failed to generate Surat Jalan PDF for shipment %s", shipment_id)
         return None, "pdf_generate_failed"
