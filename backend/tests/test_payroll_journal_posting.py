@@ -229,6 +229,29 @@ async def test_post_ready_period_creates_one_journal():
 
 
 @pytest.mark.anyio
+async def test_reload_reads_journal_number_from_stored_id():
+    accounts = await _setup_accounts()
+    _admin()
+    async with _client() as c:
+        _emp, period = await _finalize(c, year=2091, month=9, map_accounts=accounts)
+        empty = await c.get(f"/api/hr-payroll/periods/{period['id']}/accounting-journal")
+        assert empty.status_code == 200, empty.text
+        assert empty.json()["journal_number"] is None
+        posted = await c.post(f"/api/hr-payroll/periods/{period['id']}/post-accounting")
+        assert posted.status_code == 200, posted.text
+        second = await c.post(f"/api/hr-payroll/periods/{period['id']}/post-accounting")
+        assert second.status_code == 200, second.text
+        assert second.json()["journal_id"] == posted.json()["journal_id"]
+        reloaded = await c.get(f"/api/hr-payroll/periods/{period['id']}/accounting-journal")
+        assert reloaded.status_code == 200, reloaded.text
+    body = reloaded.json()
+    assert body["journal_id"] == posted.json()["journal_id"]
+    assert body["journal_number"] == posted.json()["journal_number"]
+    assert body["journal_number"]
+    assert await server.db.journal_entries.count_documents({"source_type": SOURCE_TYPE, "source_id": period["id"]}) == 1
+
+
+@pytest.mark.anyio
 async def test_second_post_returns_the_same_journal():
     accounts = await _setup_accounts()
     _admin()

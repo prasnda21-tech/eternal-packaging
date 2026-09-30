@@ -21,6 +21,7 @@ from services.journal_core import (
     JournalConflictError,
     JournalValidationError,
     find_primary_journal_for_source,
+    get_journal,
     post_balanced_journal,
 )
 from services.payroll_accounting_readiness import (
@@ -176,6 +177,23 @@ async def _stamp_period_metadata(db, period_id: str, journal: dict, user: dict) 
     if not patch:
         return
     await db[PERIODS].update_one({"id": str(period_id)}, {"$set": patch})
+
+
+async def read_period_journal_reference(db, period_id: str) -> Dict[str, Any]:
+    """Read the posted journal number from accounting_journal_id. Does not post."""
+    period = await get_period(db, period_id)
+    journal_id = str(period.get("accounting_journal_id") or "").strip()
+    if not journal_id:
+        return {"journal_id": None, "journal_number": None}
+    journal = await get_journal(db, journal_id, with_lines=False)
+    same_source = (
+        journal
+        and str(journal.get("source_type") or "") == SOURCE_TYPE
+        and str(journal.get("source_id") or "") == str(period["id"])
+    )
+    if not same_source:
+        return {"journal_id": journal_id, "journal_number": None}
+    return {"journal_id": str(journal.get("id") or journal_id), "journal_number": journal.get("number")}
 
 
 async def post_payroll_journal(db, period_id: str, user: dict) -> Dict[str, Any]:

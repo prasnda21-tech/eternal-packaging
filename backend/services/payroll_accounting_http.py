@@ -18,7 +18,7 @@ def register_payroll_accounting_routes(
 ):
     from services import payroll_accounting_settings as pas
     from services.payroll_accounting_readiness import evaluate_payroll_accounting_readiness
-    from services.payroll_journal_posting import PERM_POST, post_payroll_journal
+    from services.payroll_journal_posting import PERM_POST, post_payroll_journal, read_period_journal_reference
     from services.payroll_payment import (
         PERM_APPROVE as PAYMENT_APPROVE,
         PERM_CREATE as PAYMENT_CREATE,
@@ -66,6 +66,11 @@ def register_payroll_accounting_routes(
         await require_any_perm(user, PERM_POST)
         result = await post_payroll_journal(get_db(), period_id, user)
         return result
+
+    @api_router.get("/hr-payroll/periods/{period_id}/accounting-journal")
+    async def get_payroll_period_journal_endpoint(period_id: str, user=Depends(current_user)):
+        await require_any_perm(user, pas.PERM_VIEW, pas.PERM_MANAGE, PERM_POST, PERM_PAY_VIEW)
+        return await read_period_journal_reference(get_db(), period_id)
 
     @api_router.post("/hr-payroll/periods/{period_id}/payments")
     async def create_payroll_payment_endpoint(

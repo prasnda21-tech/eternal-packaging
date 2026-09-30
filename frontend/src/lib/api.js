@@ -504,6 +504,7 @@ export const api = {
   updatePayrollAccountingSettings: (payload) => client.put(`/settings/payroll-accounting`, payload).then((r) => r.data),
   hrPayrollAccountingReadiness: (id) => client.get(`/hr-payroll/periods/${encodeURIComponent(id)}/accounting-readiness`).then((r) => r.data),
   hrPayrollPostAccounting: (id) => client.post(`/hr-payroll/periods/${encodeURIComponent(id)}/post-accounting`).then((r) => r.data),
+  hrPayrollPeriodJournal: (id) => client.get(`/hr-payroll/periods/${encodeURIComponent(id)}/accounting-journal`).then((r) => r.data),
   hrPayrollPeriodPayment: (id) => client.get(`/hr-payroll/periods/${encodeURIComponent(id)}/payments`).then((r) => r.data),
   hrPayrollCreatePayment: (id, payload) => client.post(`/hr-payroll/periods/${encodeURIComponent(id)}/payments`, payload).then((r) => r.data),
   hrPayrollApprovePayment: (id) => client.post(`/hr-payroll/payments/${encodeURIComponent(id)}/approve`).then((r) => r.data),

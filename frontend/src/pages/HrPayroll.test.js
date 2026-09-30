@@ -30,6 +30,8 @@ describe("HR & Payroll UI source", () => {
     expect(page).toMatch(/hr-payroll-post-accounting/);
     expect(page).toMatch(/Post Accounting Payroll\?/);
     expect(page).toMatch(/hr-payroll-open-journal/);
+    expect(page).toMatch(/Journal:/);
+    expect(page).toMatch(/hrPayrollPeriodJournal/);
     expect(page).toMatch(/accounting_ready === true/);
     expect(page).toMatch(/Accounting: \{selected\.accounting_journal_id \? "Posted"/);
     expect(page).toMatch(/payroll_payment\.create/);

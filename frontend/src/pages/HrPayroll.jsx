@@ -737,11 +737,16 @@ function Payroll() {
     if (!period?.id) return;
     const [p, l, a, e, k] = await Promise.all([api.hrPayrollPeriod(period.id), api.hrPayrollLines(period.id), api.hrPayrollAttendance(period.id), api.hrPayrollEmployees({ hr_profile_only: true }), api.hrPayrollKasbonSchedules({ active_only: true })]);
     setSelected(p.period); setLines(l.lines || []); setAttendance(a.attendance || []); setEmployees((e.employees || []).filter((emp) => emp?.id && emp?.has_hr_profile !== false)); setKasbon(k.schedules || []);
-    setPostedJournal((cur) => (
-      p.period?.accounting_journal_id && cur.id === p.period.accounting_journal_id
-        ? cur
-        : { id: p.period?.accounting_journal_id || "", number: "" }
-    ));
+    let journalNumber = "";
+    if (p.period?.accounting_journal_id) {
+      try {
+        const ref = await api.hrPayrollPeriodJournal(period.id);
+        journalNumber = ref.journal_number || "";
+      } catch {
+        journalNumber = "";
+      }
+    }
+    setPostedJournal({ id: p.period?.accounting_journal_id || "", number: journalNumber });
     try {
       const ready = await api.hrPayrollAccountingReadiness(period.id);
       setReadiness(ready.readiness || null);
@@ -800,16 +805,20 @@ function Payroll() {
       <div className="hr-payroll-detail">{!selected ? <div className="settings-card"><p className="muted">Pilih periode payroll.</p></div> : <>
         <div className="settings-card"><div className="hr-card-head"><div><h3>{payrollTitle(selected)}</h3><span className={`hr-status hr-status-${String(selected.status).toLowerCase()}`}>{statusLabel(selected.status)}</span>
           {(selected.accounting_journal_id || readiness) && <span className="muted small" data-testid="hr-payroll-accounting-ready">Accounting: {selected.accounting_journal_id ? "Posted" : readiness.accounting_ready ? "Siap" : "Belum Siap"}</span>}
-          {selected.accounting_journal_id && postedJournal.number && <span className="muted small" data-testid="hr-payroll-journal-number">{postedJournal.number}</span>}
           {selected.period_number && <span className="muted small">{selected.period_number}</span>}
         </div><div className="hr-actions">
           {selected.status === "DRAFT" && hasPerm("payroll.calculate") && <button className="primary" onClick={calculate} data-testid="hr-calc-btn">Hitung Payroll</button>}
           {transitionButtons.map(([target, perm, testid, label]) => canTransition(selected.status, target) && hasPerm(perm) ? <button key={target} className="primary" onClick={() => transition(target)} data-testid={testid}>{label}</button> : null)}
           {selected.status === "FINAL" && hasPerm("payroll.reopen") && <button className="ghost" onClick={reopen} disabled={Boolean(selected.accounting_journal_id)} title={selected.accounting_journal_id ? "Jurnal akuntansi masih aktif" : undefined} data-testid="hr-reopen-btn">Buka Ulang</button>}
           {canPostAccounting && <button type="button" className="primary" onClick={() => { setErr(""); setPostOpen(true); }} data-testid="hr-payroll-post-accounting">Post Accounting</button>}
-          {selected.accounting_journal_id && <a className="ghost" href={ledgerHref(selected, readiness)} data-testid="hr-payroll-open-journal">Buka Jurnal</a>}
           {readiness && <button type="button" className="ghost" onClick={() => setShowPreview((open) => !open)} data-testid="hr-payroll-accounting-preview-btn">Lihat Preview Accounting</button>}
         </div></div>
+        {selected.accounting_journal_id && (
+          <>
+            <p className="hr-pay-facts" data-testid="hr-payroll-journal-number">Journal:<br />{postedJournal.number || "—"}</p>
+            <a className="ghost" href={ledgerHref(selected, readiness)} data-testid="hr-payroll-open-journal">Buka Jurnal</a>
+          </>
+        )}
         {selected.status === "FINAL" && (
           <PayrollFinanceFlow
             key={selected.id}
