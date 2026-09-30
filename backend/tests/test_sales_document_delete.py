@@ -198,23 +198,60 @@ async def test_delete_inv_with_pay_rejected():
 
 @pytest.mark.anyio
 async def test_delete_sj_safe_and_locks():
+    """Finance does not lock SJ. Loading and completed delivery still do."""
     order = await _seed_order("DELDOC-SJ")
     _admin()
     try:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             sj = await _create_sj(client, order["id"], qty=20)
-            sj_id = sj["id"]
-            ok = await client.delete(f"/api/sales-deliveries/{sj_id}")
+            ok = await client.delete(f"/api/sales-deliveries/{sj['id']}")
             assert ok.status_code == 200
 
-            sj2 = await _create_sj(client, order["id"], qty=20)
+            sj_finance = await _create_sj(client, order["id"], qty=20)
             inv = await _create_invoice(client, order["id"], qty=50)
             assert (await client.post(f"/api/sales-invoices/{inv['id']}/finalize")).status_code == 200
-            await _create_receipt(client, inv["id"], 5000)
-            blocked_pay = await client.delete(f"/api/sales-deliveries/{sj2['id']}")
-            assert blocked_pay.status_code == 400
-            assert "Hapus Penerimaan Penjualan terlebih dahulu." in str(blocked_pay.json()["detail"])
+            receipt = await _create_receipt(client, inv["id"], 5000)
+            freed = await client.delete(f"/api/sales-deliveries/{sj_finance['id']}")
+            assert freed.status_code == 200, freed.text
+            assert "Penerimaan" not in str(freed.json())
+            assert "Faktur" not in str(freed.json())
+            assert await server.db.sales_deliveries.find_one({"id": sj_finance["id"]}) is None
+            assert await server.db.sales_invoices.find_one({"id": inv["id"]}) is not None
+            assert await server.db.sales_receipts.find_one({"id": receipt["id"]}) is not None
+
+            sj_loading = await _create_sj(client, order["id"], qty=10)
+            await server.db.orders.update_one(
+                {"id": order["id"]},
+                {"$set": {"loading_confirmations": [{
+                    "surat_jalan_id": sj_loading["id"],
+                    "shipment_id": sj_loading["id"],
+                    "sj_number": sj_loading["sj_number"],
+                    "lines": [{"line_idx": 0, "qty": 10}],
+                }]}},
+            )
+            blocked_load = await client.delete(f"/api/sales-deliveries/{sj_loading['id']}")
+            assert blocked_load.status_code == 400
+            assert "Loading" in str(blocked_load.json()["detail"])
+            assert await server.db.sales_deliveries.find_one({"id": sj_loading["id"]}) is not None
+
+            sj_sent = await _create_sj(client, order["id"], qty=10)
+            fresh = await server.db.orders.find_one({"id": order["id"]})
+            shipments = fresh.get("shipments") or []
+            for sh in shipments:
+                if sh.get("id") == sj_sent["id"] or sh.get("sales_delivery_id") == sj_sent["id"]:
+                    sh["delivered_at"] = "2026-08-31T10:00:00+00:00"
+                    sh["qty_delivered"] = 10
+                    sh["delivery_status"] = "Terkirim"
+            await server.db.orders.update_one(
+                {"id": order["id"]},
+                {"$set": {"shipments": shipments, "loading_confirmations": []}},
+            )
+            blocked_sent = await client.delete(f"/api/sales-deliveries/{sj_sent['id']}")
+            assert blocked_sent.status_code == 400
+            assert "Pengiriman" in str(blocked_sent.json()["detail"])
+            assert "Penerimaan" not in str(blocked_sent.json()["detail"])
+            assert await server.db.sales_deliveries.find_one({"id": sj_sent["id"]}) is not None
     finally:
         app.dependency_overrides.clear()
 
@@ -227,37 +264,59 @@ async def test_delete_sj_with_loading_rejected():
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             sj = await _create_sj(client, order["id"], qty=20)
+            by_number = await _create_sj(client, order["id"], qty=10)
+            by_shipment = await _create_sj(client, order["id"], qty=10)
             await server.db.orders.update_one(
                 {"id": order["id"]},
-                {"$set": {"loading_confirmations": [{"sj_number": sj["sj_number"], "qty": 10}]}},
+                {"$set": {"loading_confirmations": [
+                    {"surat_jalan_id": sj["id"], "lines": [{"line_idx": 0, "qty": 10}]},
+                    {"sj_number": by_number["sj_number"], "qty": 10},
+                    {"shipment_id": by_shipment["id"], "lines": [{"line_idx": 0, "qty": 10}]},
+                ]}},
             )
-            res = await client.delete(f"/api/sales-deliveries/{sj['id']}")
-            assert res.status_code == 400
-            assert "Loading" in str(res.json()["detail"])
+            for locked in (sj, by_number, by_shipment):
+                res = await client.delete(f"/api/sales-deliveries/{locked['id']}")
+                assert res.status_code == 400
+                assert "Loading" in str(res.json()["detail"])
+                assert await server.db.sales_deliveries.find_one({"id": locked["id"]}) is not None
     finally:
         app.dependency_overrides.clear()
 
 
 @pytest.mark.anyio
 async def test_delete_sj_with_delivery_proof_rejected():
+    """PO status and untagged proofs do not lock a sibling. Linked evidence does."""
     order = await _seed_order("DELDOC-SJ-PROOF")
     _admin()
     try:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             sj = await _create_sj(client, order["id"], qty=20)
+            sibling = await _create_sj(client, order["id"], qty=20)
             await server.db.orders.update_one(
                 {"id": order["id"]},
                 {"$set": {
-                    "delivery_proofs": [{"id": "p1", "note": "foto"}],
                     "delivery_status": "Terkirim",
+                    "delivery_proofs": [
+                        {"id": "untagged", "note": "foto po"},
+                        {"id": "linked", "shipment_id": sj["id"], "sj_number": sj["sj_number"], "note": "foto sj"},
+                    ],
+                    "delivery_confirmations": [{
+                        "id": "conf-1",
+                        "shipment_id": sj["id"],
+                        "sj_number": sj["sj_number"],
+                        "qty": 20,
+                    }],
                 }},
             )
             refreshed = await server.db.orders.find_one({"id": order["id"]})
             assert refreshed.get("delivery_status") == "Terkirim"
+            sibling_res = await client.delete(f"/api/sales-deliveries/{sibling['id']}")
+            assert sibling_res.status_code == 200, sibling_res.text
             res = await client.delete(f"/api/sales-deliveries/{sj['id']}")
             assert res.status_code == 400
             assert "Pengiriman" in str(res.json()["detail"])
+            assert await server.db.sales_deliveries.find_one({"id": sj["id"]}) is not None
     finally:
         app.dependency_overrides.clear()
 
