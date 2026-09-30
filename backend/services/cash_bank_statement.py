@@ -555,8 +555,10 @@ async def create_bca_preview(db, *, cash_bank_id: str, filename: str, data: byte
     account = await get_cash_bank_raw(db, cb_id)
     if not account:
         raise StatementValidationError("Kas/Bank tidak ditemukan")
-    from services.cash_bank_statement_bca import parse_bca_statement
+    from services.cash_bank_statement_bca import apply_pend_import_date, jakarta_import_date, parse_bca_statement
     parsed = parse_bca_statement(filename, data)
+    when = jakarta_import_date()
+    parsed["rows"] = [apply_pend_import_date(row, when) for row in parsed["rows"]]
     currency = account.get("currency_code") or None
     file_sha256 = _sha256(data)
     parsed.update({
@@ -1037,10 +1039,13 @@ def _line_doc(batch: dict, row: dict, line_id: str, actor: dict, now: str) -> di
     }
     if row.get("authoritative_txn_id"):
         doc["authoritative_txn_id"] = row["authoritative_txn_id"]
-    if row.get("date_status") == "confirmed" and row.get("original_date") == "PEND":
+    if row.get("original_date") == "PEND" and row.get("date_status") in ("temporary", "confirmed"):
         doc["original_date"] = "PEND"
-        doc["date_status"] = "confirmed"
-        doc["date_confirmation"] = row.get("date_confirmation")
+        doc["date_status"] = row["date_status"]
+        if row.get("date_source"):
+            doc["date_source"] = row["date_source"]
+        if row.get("date_confirmation"):
+            doc["date_confirmation"] = row["date_confirmation"]
     return doc
 
 

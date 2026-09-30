@@ -6,9 +6,10 @@ This module does not write, import, pair, post, or change a balance.
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional, Sequence
+from zoneinfo import ZoneInfo
 
 from services.cash_bank_statement import (
     MAX_BYTES,
@@ -36,7 +37,6 @@ _DASH_DATE = re.compile(r"^\d{2}-\d{2}-\d{4}$")
 _SHORT_SLASH_DATE = re.compile(r"^\d{2}/\d{2}$")
 _SHORT_DASH_DATE = re.compile(r"^\d{2}-\d{2}$")
 _PERIODE_RANGE = re.compile(r"^(\d{2}/\d{2}/\d{4})\s*-\s*(\d{2}/\d{2}/\d{4})$")
-_ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _FRACTION = re.compile(r"^\d{1,2}$")
 _SUMMARY_LABELS = (
     "saldo awal",
@@ -47,12 +47,13 @@ _SUMMARY_LABELS = (
     "credit",
     "ending balance",
 )
-PEND_STATUS = "pending_confirmation"
-CONFIRMED_STATUS = "confirmed"
+JAKARTA = ZoneInfo("Asia/Jakarta")
+TEMPORARY_STATUS = "temporary"
+DATE_SOURCE_IMPORT = "import_date"
 
 
 def parse_bca_confirmation_form(raw: Optional[str]) -> list:
-    """Decode the confirmation form. Row matching still happens against the CSV."""
+    """Decode a legacy confirmation payload. Import no longer uses it to date PEND rows."""
     if raw is None or raw == "":
         return []
     try:
@@ -65,6 +66,24 @@ def parse_bca_confirmation_form(raw: Optional[str]) -> list:
     return parsed
 
 
+def jakarta_import_date(now: Optional[datetime] = None) -> str:
+    """Calendar date in Asia/Jakarta. UTC after 17:00 WIB must not move the date."""
+    moment = now or datetime.now(timezone.utc)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=JAKARTA)
+    return moment.astimezone(JAKARTA).strftime("%Y-%m-%d")
+
+
+def apply_pend_import_date(row: dict, when: str) -> dict:
+    """Give a PEND row the import calendar date. Description text is not read."""
+    if row.get("original_date") != "PEND" or row.get("date_status") != TEMPORARY_STATUS:
+        return row
+    stamped = dict(row)
+    stamped["tanggal"] = when
+    stamped["date_source"] = DATE_SOURCE_IMPORT
+    return stamped
+
+
 def statement_rows_from_bca(
     filename: str,
     data: bytes,
@@ -72,38 +91,25 @@ def statement_rows_from_bca(
     confirmations: Optional[list] = None,
     actor: Optional[dict] = None,
     confirmed_at: Optional[str] = None,
+    import_date: Optional[str] = None,
 ) -> dict:
     """Normalize a BCA CSV into the generic statement-row shape. Does not write.
 
-    PEND rows stay out of the accepted list until this call checks the original
-    cell again and applies a server-validated confirmation.
+    PEND rows are accepted with the Jakarta import date. Operator confirmation
+    is not required and cannot replace that date.
     """
+    del confirmations, actor, confirmed_at
     parsed = parse_bca_statement(filename, data)
-    confirmed = _confirmation_index(confirmations)
+    when = import_date or jakarta_import_date()
     accepted: List[dict] = []
-    pending: List[dict] = []
     errors = list(parsed["errors"])
     total_in = Decimal("0.00")
     total_out = Decimal("0.00")
     closing = None
     closing_date = None
     offset = 0
-    for row in parsed["rows"]:
-        if row.get("date_status") == PEND_STATUS:
-            match = confirmed.pop(row["source_row"], None)
-            if match is None:
-                pending.append(row)
-                errors.append({"row": row["source_row"], "message": "Baris PEND belum dikonfirmasi"})
-                continue
-            stored = dict(row)
-            stored["tanggal"] = match["tanggal"]
-            stored["date_status"] = CONFIRMED_STATUS
-            stored["date_confirmation"] = {
-                "reason": match["alasan"],
-                "confirmed_by": actor,
-                "confirmed_at": confirmed_at,
-            }
-            row = stored
+    for raw in parsed["rows"]:
+        row = apply_pend_import_date(raw, when)
         offset += 1
         amount = row["debit"] if row["direction"] == "out" else row["kredit"]
         if row.get("saldo") is not None:
@@ -114,14 +120,9 @@ def statement_rows_from_bca(
         else:
             total_out += Decimal(str(amount))
         accepted.append(_statement_row(row, offset, amount, currency))
-    if confirmed:
-        raise StatementValidationError(
-            "Konfirmasi tidak sesuai baris PEND",
-            errors=[{"row": source_row, "message": "Konfirmasi tidak sesuai baris PEND"} for source_row in sorted(confirmed)],
-        )
     return {
         "errors": errors,
-        "pending": pending,
+        "pending": [],
         "accepted": accepted,
         "accepted_count": len(accepted),
         "total_in": float(total_in.quantize(MONEY)),
@@ -145,10 +146,10 @@ def _statement_row(row: dict, offset: int, amount: float, currency: Optional[str
         "running_balance": row.get("saldo"),
         "currency_code": currency,
     }
-    if row.get("date_status") == CONFIRMED_STATUS and row.get("original_date") == "PEND":
+    if row.get("original_date") == "PEND" and row.get("date_status") == TEMPORARY_STATUS:
         doc["original_date"] = "PEND"
-        doc["date_status"] = CONFIRMED_STATUS
-        doc["date_confirmation"] = row.get("date_confirmation")
+        doc["date_source"] = DATE_SOURCE_IMPORT
+        doc["date_status"] = TEMPORARY_STATUS
     return doc
 
 
@@ -270,7 +271,7 @@ def _parse_row(row: Sequence[Any], columns: Dict[str, int], *, layout: str = "sp
     if pend_text.upper() == "PEND":
         tanggal = None
         original_date = "PEND"
-        date_status = PEND_STATUS
+        date_status = TEMPORARY_STATUS
     elif layout == "jumlah":
         tanggal = _parse_klikbca_date(raw_date, periode)
         original_date = raw_date
@@ -398,40 +399,6 @@ def _calendar_date(text: str):
 
 def _is_summary_row(row: Sequence[Any]) -> bool:
     return _normalize_header(_cell(row, 0)) in _SUMMARY_LABELS and _text(_cell(row, 1)) == "="
-
-
-def _confirmation_index(items: Optional[list]) -> Dict[int, dict]:
-    if items is None:
-        items = []
-    if not isinstance(items, list):
-        raise StatementValidationError("Konfirmasi tanggal tidak dapat dibaca")
-    found: Dict[int, dict] = {}
-    for item in items:
-        if not isinstance(item, dict):
-            raise StatementValidationError("Konfirmasi tanggal tidak dapat dibaca")
-        source_row = item.get("source_row")
-        if isinstance(source_row, bool) or not isinstance(source_row, int):
-            raise StatementValidationError("Baris konfirmasi tidak valid")
-        if source_row in found:
-            raise StatementValidationError("Konfirmasi tanggal dobel untuk baris yang sama")
-        alasan = _text(item.get("alasan"))
-        if not alasan:
-            raise StatementValidationError("Alasan konfirmasi wajib")
-        found[source_row] = {"tanggal": _confirmed_iso_date(item.get("tanggal")), "alasan": alasan}
-    return found
-
-
-def _confirmed_iso_date(value: Any) -> str:
-    text = _text(value)
-    if not _ISO_DATE.fullmatch(text):
-        raise StatementValidationError("Tanggal tidak valid")
-    try:
-        parsed = datetime.strptime(text, "%Y-%m-%d")
-    except ValueError as exc:
-        raise StatementValidationError("Tanggal tidak valid") from exc
-    if parsed.strftime("%Y-%m-%d") != text:
-        raise StatementValidationError("Tanggal tidak valid")
-    return text
 
 
 def _parse_date(value: Any) -> str:

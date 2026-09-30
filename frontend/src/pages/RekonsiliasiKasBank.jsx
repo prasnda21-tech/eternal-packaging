@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { AlertCircle, CheckSquare, Eye, Plus, Trash2, X, RefreshCw, Upload, Landmark, BookOpen, ArrowLeftRight, Link2 } from "lucide-react";
 import api from "../lib/api";
@@ -575,7 +575,6 @@ export default function RekonsiliasiKasBank() {
   const [bcaPreview, setBcaPreview] = useState(null);
   const [bcaFilename, setBcaFilename] = useState("");
   const [bcaMessage, setBcaMessage] = useState("");
-  const [bcaDates, setBcaDates] = useState({});
   const importDialog = useRef(null);
   const bcaDialog = useRef(null);
   const importFile = useRef(null);
@@ -681,7 +680,6 @@ export default function RekonsiliasiKasBank() {
     importFile.current = null;
     setBcaPreview(null);
     setBcaMessage("");
-    setBcaDates({});
     bcaFile.current = null;
     setBcaOpen(false);
     matchKey.current = "";
@@ -765,7 +763,6 @@ export default function RekonsiliasiKasBank() {
     setBusy(true);
     setBcaMessage("");
     setBcaFilename(file.name);
-    setBcaDates({});
     try {
       const body = new FormData();
       body.append("cash_bank_id", cashBankId);
@@ -784,18 +781,11 @@ export default function RekonsiliasiKasBank() {
     }
   };
 
-  const pendingBca = (bcaPreview?.rows || []).filter((row) => row.date_status === "pending_confirmation");
-  const bcaImportReady = pendingBca.every((row) => {
-    const draft = bcaDates[row.source_row] || {};
-    return /^\d{4}-\d{2}-\d{2}$/.test(draft.tanggal || "") && String(draft.alasan || "").trim();
-  });
-  const setBcaDraft = (sourceRow, patch) => {
-    setBcaDates((current) => ({ ...current, [sourceRow]: { ...(current[sourceRow] || {}), ...patch } }));
-  };
+  const bcaImportReady = Boolean(bcaPreview?.fingerprint && bcaPreview?.account_binding);
   const onBcaImport = async () => {
     const file = bcaFile.current;
-    if (!file || !canReconcile || !bcaImportReady || !bcaPreview?.fingerprint || !bcaPreview?.account_binding) {
-      setBcaMessage("Berkas asli atau konfirmasi PEND belum lengkap.");
+    if (!file || !canReconcile || !bcaImportReady) {
+      setBcaMessage("Berkas asli belum siap diimpor.");
       return;
     }
     setBusy(true);
@@ -806,15 +796,9 @@ export default function RekonsiliasiKasBank() {
       body.append("file", file, file.name);
       body.append("fingerprint", bcaPreview.fingerprint);
       body.append("account_binding", bcaPreview.account_binding);
-      body.append("confirmations", JSON.stringify(pendingBca.map((row) => ({
-        source_row: row.source_row,
-        tanggal: bcaDates[row.source_row].tanggal,
-        alasan: String(bcaDates[row.source_row].alasan || "").trim(),
-      }))));
       await api.commitCashBankBcaStatement(body);
       bcaFile.current = null;
       setBcaPreview(null);
-      setBcaDates({});
       setBcaOpen(false);
       setMessage("Impor BCA selesai. Jurnal tidak dibuat.");
       await loadWorkspace(cashBankId, startDate, endDate, q);
@@ -1059,7 +1043,7 @@ export default function RekonsiliasiKasBank() {
               <thead><tr><th aria-label="Pilih satu baris" /><th>Tanggal</th><th>Uraian / Referensi</th><th className="num">Masuk</th><th className="num">Keluar</th></tr></thead><tbody>
                 {visibleBank.map((row) => <tr key={row.id} className={selectedBank === row.id ? "kb-row-matched" : ""}>
                   <td><input type="radio" name="bank-line" checked={selectedBank === row.id} onChange={() => pickBank(row)} disabled={!row.matchable || busy || !canReconcile} aria-label={`Pilih bank ${row.description}`} /></td>
-                  <td className="recon-date">{reconDate(row.date)}</td><td><span className="recon-description">{row.description || "—"}</span><small>{row.reference || "—"}</small>{row.block_reason && <span className="recon-row-warning">{row.block_reason}</span>}{row.identity_guarantee === "tidak_dijamin" && <small>Identitas bank tidak dijamin</small>}</td>
+                  <td className="recon-date">{reconDate(row.date)}</td><td><span className="recon-description">{row.description || "—"}</span><small>{row.reference || "—"}</small>{row.original_date === "PEND" && row.date_status === "temporary" && <small>PEND - tanggal sementara</small>}{row.block_reason && <span className="recon-row-warning">{row.block_reason}</span>}{row.identity_guarantee === "tidak_dijamin" && <small>Identitas bank tidak dijamin</small>}</td>
                   <td className="num kb-money">{amountCell(row, "in", row.amount)}</td><td className="num kb-money">{amountCell(row, "out", row.amount)}</td>
                 </tr>)}
               </tbody></table></div>}
@@ -1086,7 +1070,8 @@ export default function RekonsiliasiKasBank() {
         {ready && <div className="kb-pair-scroll"><table className="prod-table kas-bank-table" data-testid="kas-bank-pair-matched"><thead><tr><th>Tanggal buku</th><th>Baris bank</th><th>Dokumen buku</th><th className="num">Nominal</th><th>Status / Tinjauan</th><th>Aksi</th></tr></thead><tbody>
           {matched.map((row) => {
             const sourceBank = bankRows.find((bank) => bank.id === (row.statement_line_id || row.history_statement_line_id));
-            return <tr key={row.id}><td>{reconDate(row.book_snapshot?.date)}</td><td>{sourceBank?.description || "Detail bank tidak tersedia"}<small>{sourceBank?.reference || row.statement_line_id || row.history_statement_line_id || "—"}</small></td><td>{row.book_snapshot?.journal_number || "—"}<small>{row.book_snapshot?.description || "—"}</small></td><td className="num kb-money">{money(row.amount, row.currency_code || currency)}</td><td><span className={`recon-badge ${row.review_state === "perlu_tinjauan" ? "is-warning" : ""}`}>{row.review_state === "perlu_tinjauan" ? "Perlu tinjauan" : reconStatus(row.status)}</span></td><td>{canReconcile && row.status === "active" && <button type="button" className="ghost sm" disabled={busy} onClick={() => onCancel(row.id)}>Batalkan pencocokan</button>}</td></tr>;
+            const reconciled = row.status === "active" && row.review_state !== "perlu_tinjauan";
+            return <tr key={row.id} className={reconciled ? "kb-row-reconciled" : ""}><td>{reconDate(row.book_snapshot?.date)}</td><td>{sourceBank?.description || "Detail bank tidak tersedia"}<small>{sourceBank?.reference || row.statement_line_id || row.history_statement_line_id || "—"}</small></td><td>{row.book_snapshot?.journal_number || "—"}<small>{row.book_snapshot?.description || "—"}</small></td><td className="num kb-money">{money(row.amount, row.currency_code || currency)}</td><td><span className={`recon-badge ${row.review_state === "perlu_tinjauan" ? "is-warning" : reconciled ? "is-matched" : ""}`}>{row.review_state === "perlu_tinjauan" ? "Perlu tinjauan" : reconciled ? "✓ Cocok" : reconStatus(row.status)}</span></td><td>{canReconcile && row.status === "active" && <button type="button" className="ghost sm" disabled={busy} onClick={() => onCancel(row.id)}>Batalkan pencocokan</button>}</td></tr>;
           })}
           {!matched.length && <tr><td colSpan={6}>Belum ada pencocokan baris pada tampilan ini.</td></tr>}
         </tbody></table></div>}
@@ -1143,14 +1128,13 @@ export default function RekonsiliasiKasBank() {
           {bcaPreview && <>
             <p className="recon-context">Bank {bcaPreview.bank || "BCA"}. Debit ditampilkan sebagai keluar dan kredit sebagai masuk.</p>
             <div className="recon-bca-table-wrap"><table className="prod-table kas-bank-table"><thead><tr><th>Tanggal transaksi</th><th>Keterangan</th><th className="num">Debit</th><th className="num">Kredit</th><th className="num">Saldo</th></tr></thead><tbody>
-              {(bcaPreview.rows || []).map((row) => <tr key={`${row.source_row}-${row.tanggal}-${row.keterangan}`}><td className="recon-date">{row.date_status === "pending_confirmation" ? "Tanggal belum pasti" : reconDate(row.tanggal)}</td><td>{row.keterangan}{row.date_status === "pending_confirmation" && <small>PEND</small>}</td><td className="num kb-money">{row.debit == null ? "—" : formatMoney(row.debit)}</td><td className="num kb-money">{row.kredit == null ? "—" : formatMoney(row.kredit)}</td><td className="num kb-money">{row.saldo == null ? "—" : formatMoney(row.saldo)}</td></tr>)}
+              {(bcaPreview.rows || []).map((row) => <tr key={`${row.source_row}-${row.tanggal}-${row.keterangan}`}><td className="recon-date">{reconDate(row.tanggal)}</td><td>{row.keterangan}{row.original_date === "PEND" && <small>PEND - tanggal sementara</small>}</td><td className="num kb-money">{row.debit == null ? "—" : formatMoney(row.debit)}</td><td className="num kb-money">{row.kredit == null ? "—" : formatMoney(row.kredit)}</td><td className="num kb-money">{row.saldo == null ? "—" : formatMoney(row.saldo)}</td></tr>)}
               {!(bcaPreview.rows || []).length && <tr><td colSpan={5}>Tidak ada baris valid.</td></tr>}
             </tbody></table></div>
-            {!!pendingBca.length && <fieldset className="kb-pair-mapping"><legend>Konfirmasi PEND</legend>{pendingBca.map((row) => <Fragment key={row.source_row}><label>Tanggal baris {row.source_row}<input type="date" aria-label={`Tanggal konfirmasi baris ${row.source_row}`} value={bcaDates[row.source_row]?.tanggal || ""} onChange={(event) => setBcaDraft(row.source_row, { tanggal: event.target.value })} /></label><label>Alasan baris {row.source_row}<input aria-label={`Alasan konfirmasi baris ${row.source_row}`} value={bcaDates[row.source_row]?.alasan || ""} onChange={(event) => setBcaDraft(row.source_row, { alasan: event.target.value })} /></label></Fragment>)}</fieldset>}
             {!!(bcaPreview.errors || []).length && <ul className="recon-validation-errors" role="alert">{bcaPreview.errors.map((err) => <li key={`${err.row}-${err.message}`}>Baris {err.row}: {err.message}</li>)}</ul>}
           </>}
         </div>
-        <footer className="recon-drawer-footer"><span>Impor ditolak jika masih ada PEND yang belum dikonfirmasi.</span>{canReconcile && <button type="button" className="primary sm" data-testid="kas-bank-bca-import" disabled={busy || !bcaImportReady} onClick={onBcaImport}>Impor mutasi BCA</button>}</footer>
+        <footer className="recon-drawer-footer"><span>Baris PEND memakai tanggal impor WIB dan tetap masuk rekonsiliasi.</span>{canReconcile && <button type="button" className="primary sm" data-testid="kas-bank-bca-import" disabled={busy || !bcaImportReady} onClick={onBcaImport}>Impor mutasi BCA</button>}</footer>
       </dialog>
     </div>
   );

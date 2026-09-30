@@ -74,6 +74,9 @@ test('matched and import tabs never render a matching footer or empty bank/book 
   await click(byText('Sudah Cocok'));
   expect(container.querySelector('.kb-pair-footer')).toBeNull(); expect(container.querySelector('.kb-pair-columns')).toBeNull();
   expect(container.querySelector('[data-testid=kas-bank-pair-matched]').textContent).toContain('JE-18');
+  const matchedBadge = container.querySelector('.recon-badge.is-matched');
+  expect(matchedBadge.textContent).toBe('✓ Cocok');
+  expect(container.querySelector('tr.kb-row-reconciled')).toBeTruthy();
   await click(byText('Batalkan pencocokan'));
   expect(api.cancelCashBankPair.mock.calls[0]).toEqual(['pair-1', expect.objectContaining({reason:'Batalkan pencocokan',idempotency_key:expect.any(String)})]);
   await click(byText('Riwayat Impor'));
@@ -133,25 +136,23 @@ test('bca preview dialog shows parsed rows without confirming import', async () 
   expect(generic.textContent).toContain('Konfirmasi impor');
   expect(generic.textContent).not.toContain('Setoran uji');
 });
-test('bca pending date stays unconfirmed until the operator supplies a date and reason', async () => {
-  api.previewCashBankBcaStatement.mockResolvedValue({bank:'BCA',header_detected:true,fingerprint:'fp-pend',account_binding:'bind-pend',rows:[{tanggal:null,original_date:'PEND',date_status:'pending_confirmation',keterangan:'Uraian menyebut 01/09/2026',debit:1500,kredit:null,saldo:9000,direction:'out',source_row:3}],errors:[],persisted_statement_lines:false,stored:false});
+test('bca pend imports without a confirmation form and shows the temporary date', async () => {
+  api.previewCashBankBcaStatement.mockResolvedValue({bank:'BCA',header_detected:true,fingerprint:'fp-pend',account_binding:'bind-pend',rows:[{tanggal:'2026-09-30',original_date:'PEND',date_source:'import_date',date_status:'temporary',keterangan:'TRSF E-BANKING CR 2909/FTSCY',debit:null,kredit:1500,saldo:9000,direction:'in',source_row:3}],errors:[],persisted_statement_lines:false,stored:false});
+  workspace.bank_lines=[{...bank,original_date:'PEND',date_source:'import_date',date_status:'temporary',description:'TRSF E-BANKING CR 2909/FTSCY',date:'2026-09-30'}];
   await renderPage();
+  expect(container.textContent).toContain('PEND - tanggal sementara');
   const bcaInput = container.querySelector('[data-testid=kas-bank-bca-file]');
   await act(async () => { Object.defineProperty(bcaInput, 'files', { configurable:true, value:[new File(['PEND'], 'bca-pend.csv', {type:'text/csv'})] }); bcaInput.dispatchEvent(new Event('change', { bubbles:true })); });
   const dialog = container.querySelector('[data-testid=kas-bank-bca-preview]');
-  expect(dialog.textContent).toContain('Tanggal belum pasti');
-  expect(dialog.textContent).not.toContain('01 Sep 2026');
+  expect(dialog.textContent).toContain('PEND - tanggal sementara');
+  expect(dialog.textContent).toContain('30 Sep 2026');
+  expect(dialog.textContent).not.toContain('Konfirmasi PEND');
+  expect(dialog.textContent).not.toContain('Tanggal belum pasti');
   const importButton = dialog.querySelector('[data-testid=kas-bank-bca-import]');
-  expect(importButton.disabled).toBe(true);
-  const date = dialog.querySelector('[aria-label="Tanggal konfirmasi baris 3"]');
-  const reason = dialog.querySelector('[aria-label="Alasan konfirmasi baris 3"]');
-  await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(date, '2026-09-30'); date.dispatchEvent(new Event('change', { bubbles:true })); });
-  expect(importButton.disabled).toBe(true);
-  await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(reason, 'Konfirmasi dari rekening koran BCA'); reason.dispatchEvent(new Event('change', { bubbles:true })); });
   expect(importButton.disabled).toBe(false);
   await click(importButton);
   const sent = api.commitCashBankBcaStatement.mock.calls[0][0];
-  expect(JSON.parse(sent.get('confirmations'))).toEqual([{source_row:3,tanggal:'2026-09-30',alasan:'Konfirmasi dari rekening koran BCA'}]);
+  expect(sent.get('confirmations')).toBeNull();
   expect(sent.get('account_binding')).toBe('bind-pend');
   expect(api.commitCashBankStatement).not.toHaveBeenCalled();
 });
