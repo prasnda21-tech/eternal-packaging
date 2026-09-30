@@ -309,7 +309,9 @@ test('duplicate review tab shows candidates and posts keep then refreshes', asyn
   const afterKeep = duplicateGroup({lines:[keptLine(openPair.lines[0]), openPair.lines[1]]});
   api.cashBankDuplicateGroups.mockResolvedValueOnce({groups:[openPair]}).mockResolvedValue({groups:[afterKeep]});
   await renderPage();
-  await click(byText('Review Duplikat'));
+  expect(container.querySelector('#recon-tab-duplicates').textContent).toBe('Review Duplikat (2)');
+  expect(api.createCashBankPair).not.toHaveBeenCalled();
+  await click(container.querySelector('#recon-tab-duplicates'));
   const panel = container.querySelector('[data-testid=kas-bank-duplicate-review]');
   expect(panel.textContent).toContain('PEMINDAHAN DANA RAKHA EDY SYAH');
   expect(panel.textContent).toContain('Rp 70.000.000');
@@ -318,8 +320,13 @@ test('duplicate review tab shows candidates and posts keep then refreshes', asyn
   expect(panel.textContent).toContain('mutasi-2809.csv');
   expect(panel.textContent).toContain('Line B');
   expect(panel.textContent).toContain('mutasi-2809-ulang.csv');
-  expect(panel.textContent).toContain('pending_review');
+  expect(panel.textContent).toContain('Menunggu Keputusan');
+  expect(panel.textContent).toContain('Keluar');
+  expect(panel.textContent).toContain('↕');
+  expect(panel.textContent).not.toContain('pending_review');
   expect(panel.textContent).toContain('belum dicocokkan');
+  expect(container.querySelector('[data-testid=duplicate-keep-line-a]').textContent).toBe('Pertahankan transaksi ini');
+  expect(container.querySelector('[data-testid=duplicate-exclude-line-a]').textContent).toBe('Kecualikan sebagai duplikat');
   expect(panel.querySelector('input[type=radio]')).toBeNull();
   expect(panel.textContent).not.toContain('Hapus');
   expect(panel.textContent).not.toContain('Gabungkan');
@@ -328,6 +335,7 @@ test('duplicate review tab shows candidates and posts keep then refreshes', asyn
   await fillReason('line-a', 'transaksi asli');
   await click(container.querySelector('[data-testid=duplicate-keep-line-a]'));
   expect(api.resolveCashBankStatementDuplicate).toHaveBeenCalledWith('line-a', {action:'keep', reason:'transaksi asli', idempotency_key:expect.any(String)});
+  expect(api.createCashBankPair).not.toHaveBeenCalled();
   expect(api.cashBankDuplicateGroups.mock.calls.length).toBeGreaterThan(1);
   expect(api.cashBankPairWorkspace.mock.calls.length).toBeGreaterThan(1);
   const stayed = container.querySelector('[data-testid=kas-bank-duplicate-review]');
@@ -343,7 +351,7 @@ test('exclude leaves the other candidate visible and a finished group leaves the
   const afterExclude = duplicateGroup({lines:[openPair.lines[0], excludedLine(openPair.lines[1])]});
   api.cashBankDuplicateGroups.mockResolvedValueOnce({groups:[openPair]}).mockResolvedValueOnce({groups:[afterExclude]}).mockResolvedValue({groups:[]});
   await renderPage();
-  await click(byText('Review Duplikat'));
+  await click(container.querySelector('#recon-tab-duplicates'));
   await fillReason('line-b', 'salinan impor ulang');
   await click(container.querySelector('[data-testid=duplicate-exclude-line-b]'));
   expect(api.resolveCashBankStatementDuplicate).toHaveBeenCalledWith('line-b', {action:'exclude', reason:'salinan impor ulang', idempotency_key:expect.any(String)});
@@ -360,8 +368,11 @@ test('refresh after the first decision still shows the remaining candidate', asy
   const openPair = duplicateGroup();
   api.cashBankDuplicateGroups.mockResolvedValue({groups:[duplicateGroup({lines:[keptLine(openPair.lines[0]), openPair.lines[1]]})]});
   await renderPage();
-  await click(byText('Review Duplikat'));
-  expect(container.querySelector('[data-testid=duplicate-line-line-b]').textContent).toContain('pending_review');
+  await click(container.querySelector('#recon-tab-duplicates'));
+  expect(container.querySelector('#recon-tab-duplicates').textContent).toBe('Review Duplikat (1)');
+  expect(container.querySelector('[data-testid=duplicate-line-line-b]').textContent).toContain('Menunggu Keputusan');
+  expect(container.querySelector('[data-testid=duplicate-line-line-b]').textContent).not.toContain('pending_review');
+  expect(api.createCashBankPair).not.toHaveBeenCalled();
   expect(container.querySelector('[data-testid=duplicate-keep-line-b]')).toBeTruthy();
   expect(container.querySelector('[data-testid=duplicate-resolution-line-a]').textContent).toContain('transaksi asli');
 });
@@ -369,7 +380,7 @@ test('a failed decision retries with the same idempotency key', async () => {
   api.cashBankDuplicateGroups.mockResolvedValue({groups:[duplicateGroup()]});
   api.resolveCashBankStatementDuplicate.mockRejectedValueOnce(new Error('jaringan putus')).mockResolvedValue({duplicate_status:'kept'});
   await renderPage();
-  await click(byText('Review Duplikat'));
+  await click(container.querySelector('#recon-tab-duplicates'));
   await fillReason('line-a', 'transaksi asli');
   await click(container.querySelector('[data-testid=duplicate-keep-line-a]'));
   expect(container.textContent).toContain('jaringan putus');
@@ -381,10 +392,11 @@ test('a failed decision retries with the same idempotency key', async () => {
 test('exclude posts the existing resolution endpoint and unsafe groups keep the button disabled', async () => {
   api.cashBankDuplicateGroups.mockResolvedValue({groups:[duplicateGroup()]});
   await renderPage();
-  await click(byText('Review Duplikat'));
+  await click(container.querySelector('#recon-tab-duplicates'));
   await fillReason('line-b', 'salinan impor ulang');
   await click(container.querySelector('[data-testid=duplicate-exclude-line-b]'));
   expect(api.resolveCashBankStatementDuplicate).toHaveBeenCalledWith('line-b', {action:'exclude', reason:'salinan impor ulang', idempotency_key:expect.any(String)});
+  expect(api.createCashBankPair).not.toHaveBeenCalled();
   expect(api.cashBankDuplicateGroups.mock.calls.length).toBeGreaterThan(1);
 });
 test('exclude stays disabled for same file, three candidates, a claim, or an active match', async () => {
@@ -392,7 +404,7 @@ test('exclude stays disabled for same file, three candidates, a claim, or an act
   sameFile.lines[1] = {...sameFile.lines[1], import_id:'imp-a'};
   api.cashBankDuplicateGroups.mockResolvedValueOnce({groups:[sameFile]});
   await renderPage();
-  await click(byText('Review Duplikat'));
+  await click(container.querySelector('#recon-tab-duplicates'));
   await fillReason('line-a', 'dua baris satu berkas');
   expect(container.querySelector('[data-testid=duplicate-exclude-line-a]').disabled).toBe(true);
   expect(container.querySelector('[data-testid=duplicate-keep-line-a]').disabled).toBe(false);
@@ -404,7 +416,7 @@ test('exclude stays disabled for same file, three candidates, a claim, or an act
   container.remove();
   container = document.createElement('div'); document.body.appendChild(container); root = createRoot(container);
   await renderPage();
-  await click(byText('Review Duplikat'));
+  await click(container.querySelector('#recon-tab-duplicates'));
   await fillReason('line-a', 'tiga kandidat');
   expect(container.querySelector('[data-testid=duplicate-exclude-line-a]').disabled).toBe(true);
   expect(container.textContent).toContain('Kandidat lebih dari dua.');
@@ -416,7 +428,7 @@ test('exclude stays disabled for same file, three candidates, a claim, or an act
   container.remove();
   container = document.createElement('div'); document.body.appendChild(container); root = createRoot(container);
   await renderPage();
-  await click(byText('Review Duplikat'));
+  await click(container.querySelector('#recon-tab-duplicates'));
   await fillReason('line-a', 'sedang diklaim');
   await fillReason('line-b', 'saudara belum diklaim');
   expect(container.querySelector('[data-testid=duplicate-keep-line-a]').disabled).toBe(true);
@@ -431,7 +443,7 @@ test('exclude stays disabled for same file, three candidates, a claim, or an act
   container.remove();
   container = document.createElement('div'); document.body.appendChild(container); root = createRoot(container);
   await renderPage();
-  await click(byText('Review Duplikat'));
+  await click(container.querySelector('#recon-tab-duplicates'));
   await fillReason('line-b', 'masih ada pasangan');
   expect(container.querySelector('[data-testid=duplicate-exclude-line-b]').disabled).toBe(true);
   expect(container.querySelector('[data-testid=duplicate-keep-line-b]').disabled).toBe(false);
@@ -442,7 +454,7 @@ test('safety rules still use the whole group after the first decision', async ()
   const sameFile = duplicateGroup({lines:[keptLine({...openPair.lines[0], import_id:'imp-a'}), {...openPair.lines[1], import_id:'imp-a'}]});
   api.cashBankDuplicateGroups.mockResolvedValueOnce({groups:[sameFile]});
   await renderPage();
-  await click(byText('Review Duplikat'));
+  await click(container.querySelector('#recon-tab-duplicates'));
   await fillReason('line-b', 'masih satu berkas');
   expect(container.querySelector('[data-testid=duplicate-exclude-line-b]').disabled).toBe(true);
   expect(container.querySelector('[data-testid=duplicate-keep-line-b]').disabled).toBe(false);
@@ -452,7 +464,7 @@ test('safety rules still use the whole group after the first decision', async ()
   const crowded = duplicateGroup({candidate_count:3, lines:[keptLine(openPair.lines[0]), openPair.lines[1], third]});
   api.cashBankDuplicateGroups.mockResolvedValueOnce({groups:[crowded]});
   await remount();
-  await click(byText('Review Duplikat'));
+  await click(container.querySelector('#recon-tab-duplicates'));
   await fillReason('line-b', 'masih tiga kandidat');
   expect(container.querySelector('[data-testid=duplicate-exclude-line-b]').disabled).toBe(true);
   expect(container.textContent).toContain('Kandidat lebih dari dua.');
@@ -460,7 +472,7 @@ test('safety rules still use the whole group after the first decision', async ()
   const claimed = duplicateGroup({lines:[keptLine({...openPair.lines[0], active_claim:'claim-1'}), openPair.lines[1]]});
   api.cashBankDuplicateGroups.mockResolvedValueOnce({groups:[claimed]});
   await remount();
-  await click(byText('Review Duplikat'));
+  await click(container.querySelector('#recon-tab-duplicates'));
   await fillReason('line-b', 'saudara masih diklaim');
   expect(container.querySelector('[data-testid=duplicate-exclude-line-b]').disabled).toBe(true);
   expect(container.querySelector('[data-testid=duplicate-keep-line-b]').disabled).toBe(false);
@@ -468,7 +480,7 @@ test('safety rules still use the whole group after the first decision', async ()
   const matched = duplicateGroup({lines:[keptLine({...openPair.lines[0], reconciliation_status:'active'}), openPair.lines[1]]});
   api.cashBankDuplicateGroups.mockResolvedValueOnce({groups:[matched]});
   await remount();
-  await click(byText('Review Duplikat'));
+  await click(container.querySelector('#recon-tab-duplicates'));
   await fillReason('line-b', 'masih ada pasangan');
   expect(container.querySelector('[data-testid=duplicate-exclude-line-b]').disabled).toBe(true);
   expect(container.querySelector('[data-testid=duplicate-keep-line-b]').disabled).toBe(false);
@@ -478,10 +490,12 @@ test('read-only duplicate review hides keep and exclude', async () => {
   mockPermissions = ['cash_bank.view'];
   api.cashBankDuplicateGroups.mockResolvedValue({groups:[duplicateGroup()]});
   await renderPage();
-  await click(byText('Review Duplikat'));
+  await click(container.querySelector('#recon-tab-duplicates'));
   expect(container.querySelector('[data-testid=kas-bank-duplicate-review]').textContent).toContain('Line A');
-  expect(byText('Pertahankan')).toBeUndefined();
-  expect(byText('Kecualikan')).toBeUndefined();
+  expect(byText('Pertahankan transaksi ini')).toBeUndefined();
+  expect(byText('Kecualikan sebagai duplikat')).toBeUndefined();
+  expect(api.createCashBankPair).not.toHaveBeenCalled();
+  expect(api.resolveCashBankStatementDuplicate).not.toHaveBeenCalled();
 });
 test('validation errors remain in the drawer with row identity', async () => {
   api.validateCashBankStatement.mockResolvedValue({ok:false,errors:[{row:3,message:'Tanggal ambigu'}]}); await renderPage(); await upload(); await click(byText('Validasi'));
