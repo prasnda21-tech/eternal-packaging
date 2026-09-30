@@ -7276,6 +7276,8 @@ def _production_row(o: dict) -> dict:
             "quantity": s.get("quantity", 0),
             # Preserve missing qty so the schedule can tell "not entered" from an explicit 0.
             "qty_completed": s.get("qty_completed") if "qty_completed" in s else None,
+            # Derived only. Assignment stores qty_completed 0 before any operator input.
+            "qty_reported": bool(s.get("progress_entries")),
             "line_idx": s.get("line_idx"),
             **_split_line_identity(s),
             "line_printable": _split_printable(s),
@@ -7391,6 +7393,8 @@ _PRODUCTION_DASHBOARD_SUMMARY_PROJECTION = {
     "operator_splits.operator_id": 1,
     "operator_splits.quantity": 1,
     "operator_splits.qty_completed": 1,
+    # Presence marker only. Do not project entry photos or other payload bytes.
+    "operator_splits.progress_entries.action_id": 1,
     "operator_splits.line_idx": 1,
     "operator_splits.stage": 1,
     "operator_splits.work_date": 1,

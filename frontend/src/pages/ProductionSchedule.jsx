@@ -26,7 +26,7 @@ import {
 } from "../lib/productionScheduleFilters";
 import { isProductionScheduleHariIniPreviewHost, mergeHariIniPreviewDummyRows } from "../lib/productionScheduleHariIniPreviewDummy";
 import { buildProductionScheduleDisplayRows } from "../lib/productionScheduleDisplayRows";
-import { operatorQtyCetakProgress, poTotalQtyDisplay } from "../lib/productionScheduleQty";
+import { desktopPrintQtyDisplay, operatorQtyCetakProgress } from "../lib/productionScheduleQty";
 import { buildProductionScheduleSummary } from "../lib/productionScheduleSummary";
 import { isProductionScheduleUrgent } from "../lib/productionSchedulePriority";
 import {
@@ -529,7 +529,7 @@ export default function ProductionSchedule() {
             </thead>
             <tbody>
               {displayRows.map((r) => {
-                const qtyProg = poTotalQtyDisplay(r);
+                const qtyProg = desktopPrintQtyDisplay(r);
                 const cetakProg = operatorQtyCetakProgress(r, r.displayOperator?.splits);
                 const isToday = isScheduledToday(r);
                 const rowClass = [

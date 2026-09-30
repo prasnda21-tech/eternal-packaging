@@ -130,7 +130,11 @@ describe("buildProductionScheduleDisplayRows", () => {
   test("Total Qty stays PO-level; Qty Cetak is operator completed / PO total", () => {
     const display = buildProductionScheduleDisplayRows([{
       ...poThree,
-      operators: poThree.operators.map((op, i) => ({ ...op, qty_completed: i === 0 ? 800 : i === 1 ? 1000 : 1200 })),
+      operators: poThree.operators.map((op, i) => ({
+        ...op,
+        qty_completed: i === 0 ? 800 : i === 1 ? 1000 : 1200,
+        qty_reported: true,
+      })),
     }]);
     display.forEach((row) => {
       expect(poTotalQtyDisplay(row).text).toBe("3.000");

@@ -225,17 +225,23 @@ function formatProgressPercent(pct) {
 
 export const OPERATOR_WORK_QTY_UNAVAILABLE = "Data pengerjaan belum tersedia.";
 
-/** Qty Pengerjaan Operator — operators[].qty_completed only. Null/missing is not 0. */
+/** Qty Pengerjaan Operator — reported qty_completed only.
+
+qty_reported is derived from progress_entries. A stored 0 without that flag
+is the assignment default, not an operator input.
+*/
 export function operatorWorkQtyCell(row) {
-  const value = readStoredQty(singleDisplaySplit(row)?.qty_completed);
-  if (value == null) {
+  const split = singleDisplaySplit(row);
+  if (!split || split.qty_reported !== true) {
     return { text: "-", available: false, value: null, title: OPERATOR_WORK_QTY_UNAVAILABLE };
   }
+  const value = readStoredQty(split.qty_completed);
+  const reported = value == null ? 0 : value;
   return {
-    text: formatIdQty(value),
+    text: formatIdQty(reported),
     available: true,
-    value,
-    title: `Qty pengerjaan operator: ${formatIdQty(value)}`,
+    value: reported,
+    title: `Qty pengerjaan operator: ${formatIdQty(reported)}`,
   };
 }
 
@@ -275,6 +281,17 @@ export function poTotalQtyDisplay(row) {
     text: formatIdQty(poTotal),
     poTotal,
     title: `Total Qty PO: ${formatIdQty(poTotal)}`,
+  };
+}
+
+/** Desktop Total Qty — print line quantity already summed by print_qty_total. */
+export function desktopPrintQtyDisplay(row) {
+  const raw = row?.print_qty_total;
+  const printQty = raw == null || raw === "" ? 0 : qtyInt(raw);
+  return {
+    text: formatIdQty(printQty),
+    printQty,
+    title: `Total Qty Cetak: ${formatIdQty(printQty)}`,
   };
 }
 
