@@ -1364,6 +1364,12 @@ async def reopen_period(db, period_id: str, reason: str, user: dict) -> dict:
                 409,
                 "Periode yang sudah memiliki jurnal accounting aktif tidak dapat dibuka ulang.",
             )
+        from services.payroll_payment import period_has_posted_payroll_payment
+        if await period_has_posted_payroll_payment(db, old["id"]):
+            raise HTTPException(
+                409,
+                "Periode yang sudah memiliki pembayaran payroll posted tidak dapat dibuka ulang.",
+            )
         revision = int(old.get("revision") or 1) + 1
         if await db[PERIODS].find_one({"group_id": old["group_id"], "revision": revision}):
             raise HTTPException(409, "Revisi lanjutan periode ini sudah ada.")

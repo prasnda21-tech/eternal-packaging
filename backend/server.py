@@ -14103,6 +14103,8 @@ async def seed():
     await db.employee_requests.create_index("submitted_at")
     from services.hr_payroll import ensure_indexes as _hr_payroll_ensure_indexes
     await _hr_payroll_ensure_indexes(db)
+    from services.payroll_payment import ensure_indexes as _payroll_payment_ensure_indexes
+    await _payroll_payment_ensure_indexes(db)
     from services.sales_activity.indexes import ensure_indexes as _sales_activity_ensure_indexes
     await _sales_activity_ensure_indexes(db)
     from services.independent_route.store import ensure_indexes as _independent_route_ensure_indexes

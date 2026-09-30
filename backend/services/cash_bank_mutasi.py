@@ -27,6 +27,8 @@ SOURCE_LABELS = {
     SOURCE_REVERSAL: "Reversal",
     "purchase_payment": "Pembayaran Pembelian",
     "purchase_payment_reversal": "Reversal Pembayaran Pembelian",
+    "payroll_payment": "Pembayaran Payroll",
+    "payroll_payment_reversal": "Reversal Pembayaran Payroll",
 }
 
 SOURCE_ROUTES = {
@@ -86,6 +88,15 @@ async def _resolve_voucher_meta(db, source_type: str, source_id: str) -> Dict[st
                     "source_path": SOURCE_ROUTES.get(k),
                 }
         return {"voucher_number": None, "voucher_kind": None, "source_path": None}
+    elif st == "payroll_payment":
+        doc = await db["hr_payroll_payments"].find_one(
+            {"id": sid}, {"_id": 0, "payment_number": 1}
+        )
+        return {
+            "voucher_number": (doc or {}).get("payment_number"),
+            "voucher_kind": None,
+            "source_path": None,
+        }
     else:
         return {"voucher_number": None, "voucher_kind": None, "source_path": None}
 
