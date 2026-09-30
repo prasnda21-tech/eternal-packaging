@@ -220,10 +220,13 @@ async def test_settings_permissions_not_auto_granted():
     keys = {k for _m, k, _l in PERMISSION_CATALOG}
     assert "payroll_accounting.view" in keys
     assert "payroll_accounting.manage" in keys
-    assert "payroll_accounting.post" not in keys
+    assert "payroll_accounting.post" in keys
     assert "payroll_accounting.view" in ALL_PERMISSIONS
+    assert "payroll_accounting.post" in ALL_PERMISSIONS
+    assert "payroll_accounting.post" in ROLE_DEFAULT_PERMISSIONS["admin"]
     for role, perms in ROLE_DEFAULT_PERMISSIONS.items():
         if role == "admin":
             continue
         assert "payroll_accounting.view" not in perms
         assert "payroll_accounting.manage" not in perms
+        assert "payroll_accounting.post" not in perms

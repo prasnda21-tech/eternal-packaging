@@ -1,4 +1,4 @@
-"""HTTP routes for Payroll Accounting Readiness Phase 0."""
+"""HTTP routes for Payroll Accounting Readiness and accrual posting."""
 from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict
@@ -18,6 +18,7 @@ def register_payroll_accounting_routes(
 ):
     from services import payroll_accounting_settings as pas
     from services.payroll_accounting_readiness import evaluate_payroll_accounting_readiness
+    from services.payroll_journal_posting import PERM_POST, post_payroll_journal
     from services.hr_payroll import PERM_PAY_VIEW
 
     def dump(payload) -> dict:
@@ -47,3 +48,9 @@ def register_payroll_accounting_routes(
         await require_any_perm(user, pas.PERM_VIEW, pas.PERM_MANAGE, PERM_PAY_VIEW)
         readiness = await evaluate_payroll_accounting_readiness(get_db(), period_id)
         return {"readiness": readiness}
+
+    @api_router.post("/hr-payroll/periods/{period_id}/post-accounting")
+    async def post_payroll_period_accounting_endpoint(period_id: str, user=Depends(current_user)):
+        await require_any_perm(user, PERM_POST)
+        result = await post_payroll_journal(get_db(), period_id, user)
+        return result
