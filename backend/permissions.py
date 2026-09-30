@@ -105,6 +105,7 @@ PERMISSION_CATALOG = [
     ("Buku Besar", "inventory_reconciliation.view", "Lihat Rekonsiliasi Persediaan / HPP"),
     ("Pengaturan", "payroll_accounting.view", "Lihat kesiapan akuntansi payroll"),
     ("Pengaturan", "payroll_accounting.manage", "Kelola pemetaan akuntansi payroll"),
+    ("Pengaturan", "payroll_accounting.post", "Post Jurnal Akrual Payroll ke Accounting"),
     ("Pengaturan", "settings.customer_pricing.view", "Lihat Harga Customer"),
     ("Pengaturan", "settings.customer_pricing.manage", "Kelola Draft Harga Customer"),
     ("Pengaturan", "settings.customer_pricing.publish", "Publish Harga Customer"),
