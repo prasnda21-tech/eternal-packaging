@@ -44,7 +44,15 @@
 .kas-bank-page.recon-workspace .kb-dup-group h3 { margin:0; font-size:15px; }
 .kas-bank-page.recon-workspace .kb-dup-group p { margin:2px 0 0; color:var(--recon-muted); font-size:12px; }
 .kas-bank-page.recon-workspace .kb-dup-group ol { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:8px; }
-.kas-bank-page.recon-workspace .kb-dup-group li { display:flex; flex-direction:column; gap:2px; padding-top:8px; border-top:1px solid var(--recon-border); font-size:12px; }
+.kas-bank-page.recon-workspace .kb-dup-pair { display:grid; grid-template-columns:minmax(0, 1fr) auto minmax(0, 1fr); gap:8px; align-items:stretch; }
+.kas-bank-page.recon-workspace .kb-dup-sep { display:flex; align-items:center; justify-content:center; color:var(--recon-muted); font-size:18px; }
+.kas-bank-page.recon-workspace .kb-dup-line { display:flex; flex-direction:column; gap:6px; padding:8px; border:1px solid var(--recon-border); border-radius:8px; font-size:12px; background:#fbfcfe; }
+.kas-bank-page.recon-workspace .kb-dup-line dl { display:grid; grid-template-columns:88px minmax(0, 1fr); gap:2px 8px; margin:0; }
+.kas-bank-page.recon-workspace .kb-dup-line dt { margin:0; color:var(--recon-muted); }
+.kas-bank-page.recon-workspace .kb-dup-line dd { margin:0; }
+@media (max-width: 760px) {
+  .kas-bank-page.recon-workspace .kb-dup-pair { grid-template-columns:1fr; }
+}
 .kas-bank-page.recon-workspace .kb-dup-actions { display:flex; flex-wrap:wrap; gap:8px; align-items:end; margin-top:6px; }
 .kas-bank-page.recon-workspace .kb-dup-actions label { display:flex; flex-direction:column; gap:2px; font-size:11px; color:var(--recon-muted); }
 .kas-bank-page.recon-workspace .kb-dup-actions input { min-width:220px; }
