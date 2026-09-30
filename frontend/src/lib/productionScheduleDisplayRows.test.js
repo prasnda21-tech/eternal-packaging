@@ -1,5 +1,5 @@
-import { FILTER_DEFAULTS, applyProductionFilters } from "./productionScheduleFilters";
-import { operatorQtyCetakProgress, poTotalQtyDisplay } from "./productionScheduleQty";
+import { FILTER_DEFAULTS, applyProductionFilters, sortScheduleDisplayRows } from "./productionScheduleFilters";
+import { operatorQtyCetakProgress, operatorScheduleProgressCell, operatorWorkQtyCell, poTotalQtyDisplay, scheduledPrintQtyCell } from "./productionScheduleQty";
 import {
   buildProductionScheduleDisplayRows,
   productionScheduleAssignmentKey,
@@ -138,6 +138,22 @@ describe("buildProductionScheduleDisplayRows", () => {
     expect(operatorQtyCetakProgress(display[0], display[0].displayOperator.splits).text).toBe("1.000 / 3.000");
     expect(operatorQtyCetakProgress(display[1], display[1].displayOperator.splits).text).toBe("1.200 / 3.000");
     expect(operatorQtyCetakProgress(display[2], display[2].displayOperator.splits).text).toBe("800 / 3.000");
+    display.forEach((row) => {
+      expect(scheduledPrintQtyCell(row).value).toBe(row.displayOperator.quantity);
+      expect(operatorWorkQtyCell(row).value).toBe(row.displayOperator.splits[0].qty_completed);
+    });
+    expect(operatorScheduleProgressCell(display[0]).text).toBe("100%");
+  });
+
+  test("desktop work_date order is newest first and undated rows stay last", () => {
+    const rows = [
+      { po_number: "old", work_date: "2026-01-01", displayWorkDate: "2026-01-01" },
+      { po_number: "none", work_date: null, displayWorkDate: null },
+      { po_number: "new", work_date: "2026-09-09", displayWorkDate: "2026-09-09" },
+    ];
+    expect(sortScheduleDisplayRows(rows, "work_date").map((r) => r.po_number)).toEqual(["new", "old", "none"]);
+    expect(sortScheduleDisplayRows(rows, "work_date_asc").map((r) => r.po_number)).toEqual(["old", "new", "none"]);
+    expect(sortScheduleDisplayRows(rows, "deadline").map((r) => r.po_number)).toEqual(["old", "none", "new"]);
   });
 
   test("search/filter runs on canonical rows before expansion", () => {

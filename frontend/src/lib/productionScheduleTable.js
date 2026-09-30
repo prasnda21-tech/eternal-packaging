@@ -14,6 +14,8 @@ export const PRODUCTION_SCHEDULE_REQUIRED_COLUMN_IDS = [
   "outlet",
   "qty",
   "qty_cetak",
+  "qty_operator",
+  "progress",
   "item",
   "operator",
   "design",
@@ -30,7 +32,8 @@ export const PRODUCTION_SCHEDULE_REQUIRED_COLUMN_IDS = [
 
 /**
  * Spreadsheet column order shared by /produksi and /m/schedule.
- * Item sits after Operator; Total Qty sits after Qty Cetak.
+ * Item, then operator actual qty, scheduled print qty, and progress.
+ * Total Qty stays in the inventory after Progress.
  */
 export const PRODUCTION_SCHEDULE_TABLE_COLS = [
   { key: "po", id: "po", label: "No PO", group: "identity", align: "left", type: "id", baseWidth: 112, minWidth: 76, filter: "po" },
@@ -38,7 +41,9 @@ export const PRODUCTION_SCHEDULE_TABLE_COLS = [
   { key: "work_date", id: "work_date", label: "Tgl Pengerjaan", group: "planning", align: "left", type: "date", baseWidth: 118, minWidth: 88, testid: "prod-th-work-date", filter: "work_date", sort: "work_date", wrap: true },
   { key: "operator", id: "operator", label: "Operator", group: "assignment", align: "left", type: "text", baseWidth: 168, minWidth: 96, filter: "operator", wrap: true },
   { key: "item", id: "item", label: "Item", group: "identity", align: "left", type: "text", baseWidth: 168, minWidth: 96, wrap: true },
-  { key: "qty_cetak", id: "qty_cetak", label: "Qty Cetak", group: "quantity", align: "right", type: "qty", baseWidth: 128, minWidth: 88, num: true },
+  { key: "qty_operator", id: "qty_operator", label: "Qty Pengerjaan Operator", group: "quantity", align: "right", type: "qty", baseWidth: 168, minWidth: 120, num: true },
+  { key: "qty_cetak", id: "qty_cetak", label: "Qty Cetak (Scheduled)", group: "quantity", align: "right", type: "qty", baseWidth: 156, minWidth: 120, num: true },
+  { key: "progress", id: "progress", label: "Progress", group: "quantity", align: "right", type: "qty", baseWidth: 96, minWidth: 72, num: true },
   { key: "qty", id: "qty", label: "Total Qty", group: "quantity", align: "right", type: "qty", baseWidth: 104, minWidth: 72, num: true },
   { key: "prio", id: "prio", label: "Prio", group: "planning", align: "left", type: "status", baseWidth: 78, minWidth: 56, filter: "prio" },
   { key: "buffer", id: "buffer", label: "Buffer", group: "planning", align: "left", type: "status", baseWidth: 72, minWidth: 52, testid: "prod-th-buffer", filter: "buffer" },
@@ -65,7 +70,7 @@ export const DESKTOP_PRODUCTION_SCHEDULE_HIDDEN_KEYS = ["sj", "driver"];
 export const DESKTOP_PRODUCTION_SCHEDULE_GROUPS = [
   { id: "identity", label: "Identitas PO", keys: ["po", "customer"] },
   { id: "planning", label: "Penjadwalan", keys: ["work_date", "operator"] },
-  { id: "production", label: "Produksi", keys: ["item", "qty_cetak", "qty", "prio", "buffer", "deadline", "deadline_ship", "outlet", "screen_size"] },
+  { id: "production", label: "Produksi", keys: ["item", "qty_operator", "qty_cetak", "progress", "qty", "prio", "buffer", "deadline", "deadline_ship", "outlet", "screen_size"] },
   { id: "progress", label: "Progress Produksi", keys: ["screen", "design", "payment", "hold", "helper", "packing"] },
   { id: "status", label: "Status", keys: ["status"] },
 ];

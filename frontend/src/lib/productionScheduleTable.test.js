@@ -16,7 +16,9 @@ const UNIFIED_ORDER = [
   "work_date",
   "operator",
   "item",
+  "qty_operator",
   "qty_cetak",
+  "progress",
   "qty",
   "prio",
   "buffer",
@@ -41,7 +43,9 @@ const UNIFIED_LABELS = [
   "Tgl Pengerjaan",
   "Operator",
   "Item",
-  "Qty Cetak",
+  "Qty Pengerjaan Operator",
+  "Qty Cetak (Scheduled)",
+  "Progress",
   "Total Qty",
   "Prio",
   "Buffer",
@@ -90,26 +94,28 @@ describe("productionScheduleTable canonical columns", () => {
   test("keeps every previously legitimate column id plus Item", () => {
     expect(PRODUCTION_SCHEDULE_TABLE_COLS).toHaveLength(PRODUCTION_SCHEDULE_REQUIRED_COLUMN_IDS.length);
     expect(new Set(PRODUCTION_SCHEDULE_COLUMN_IDS)).toEqual(new Set(PRODUCTION_SCHEDULE_REQUIRED_COLUMN_IDS));
-    expect(PRODUCTION_SCHEDULE_COLUMN_IDS).toHaveLength(22);
+    expect(PRODUCTION_SCHEDULE_COLUMN_IDS).toHaveLength(24);
   });
 
   test("uses one workflow-oriented order for desktop and PWA", () => {
     expect(PRODUCTION_SCHEDULE_COLUMN_IDS).toEqual(UNIFIED_ORDER);
     expect(PRODUCTION_SCHEDULE_TABLE_COLS.map((c) => c.id)).toEqual(UNIFIED_ORDER);
     expect(PRODUCTION_SCHEDULE_TABLE_COLS.map((c) => c.label)).toEqual(UNIFIED_LABELS);
-    expect(PRODUCTION_SCHEDULE_TABLE_COLS.map((c) => c.label).slice(0, 10)).toEqual([
+    expect(PRODUCTION_SCHEDULE_TABLE_COLS.map((c) => c.label).slice(0, 12)).toEqual([
       "No PO",
       "Customer",
       "Tgl Pengerjaan",
       "Operator",
       "Item",
-      "Qty Cetak",
+      "Qty Pengerjaan Operator",
+      "Qty Cetak (Scheduled)",
+      "Progress",
       "Total Qty",
       "Prio",
       "Buffer",
       "Tanggal Pengiriman",
     ]);
-    expect(new Set(PRODUCTION_SCHEDULE_TABLE_COLS.map((c) => c.label)).size).toBe(22);
+    expect(new Set(PRODUCTION_SCHEDULE_TABLE_COLS.map((c) => c.label)).size).toBe(24);
   });
 
   test("desktop jadwal hides Driver and Surat Jalan without deleting them", () => {
@@ -132,7 +138,7 @@ describe("productionScheduleTable canonical columns", () => {
     expect(desktopProductionScheduleGroupSpans().map((g) => ({ label: g.label, span: g.span, keys: g.keys }))).toEqual([
       { label: "Identitas PO", span: 2, keys: ["po", "customer"] },
       { label: "Penjadwalan", span: 2, keys: ["work_date", "operator"] },
-      { label: "Produksi", span: 9, keys: ["item", "qty_cetak", "qty", "prio", "buffer", "deadline", "deadline_ship", "outlet", "screen_size"] },
+      { label: "Produksi", span: 11, keys: ["item", "qty_operator", "qty_cetak", "progress", "qty", "prio", "buffer", "deadline", "deadline_ship", "outlet", "screen_size"] },
       { label: "Progress Produksi", span: 6, keys: ["screen", "design", "payment", "hold", "helper", "packing"] },
       { label: "Status", span: 1, keys: ["status"] },
     ]);
@@ -142,7 +148,9 @@ describe("productionScheduleTable canonical columns", () => {
       "Tgl Pengerjaan",
       "Operator",
       "Item",
-      "Qty Cetak",
+      "Qty Pengerjaan Operator",
+      "Qty Cetak (Scheduled)",
+      "Progress",
       "Total Qty",
       "Prio",
       "Buffer",
@@ -161,8 +169,8 @@ describe("productionScheduleTable canonical columns", () => {
   });
 
   test("qty columns are numeric/right-aligned", () => {
-    const qty = PRODUCTION_SCHEDULE_TABLE_COLS.filter((c) => ["qty", "screen", "qty_cetak"].includes(c.key));
-    expect(qty).toHaveLength(3);
+    const qty = PRODUCTION_SCHEDULE_TABLE_COLS.filter((c) => ["qty", "screen", "qty_cetak", "qty_operator", "progress"].includes(c.key));
+    expect(qty).toHaveLength(5);
     qty.forEach((col) => {
       expect(col.align).toBe("right");
       expect(col.type).toBe("qty");

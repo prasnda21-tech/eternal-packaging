@@ -202,6 +202,13 @@ describe("ProductionSchedule spreadsheet", () => {
     expect(container.querySelector('[data-testid="prod-work-date-PO-C"]').textContent).toContain("31/12/25");
     expect(container.querySelector('[data-testid="prod-work-date-PO-D"]').textContent).toContain("09/09/26");
     expect(container.querySelector('[data-testid="prod-work-date-PO-E"]').textContent).toContain("Belum Dijadwalkan");
+    expect([...container.querySelectorAll('[data-testid^="prod-row-"]')].map((row) => row.getAttribute("data-testid"))).toEqual([
+      "prod-row-PO-A",
+      "prod-row-PO-D",
+      "prod-row-PO-B",
+      "prod-row-PO-C",
+      "prod-row-PO-E",
+    ]);
     expect(container.textContent).not.toContain("2026-09-09");
     expect(container.textContent).not.toContain("2026-01-05");
     expect(container.textContent).not.toContain("2025-12-31");
@@ -237,7 +244,9 @@ describe("ProductionSchedule spreadsheet", () => {
       total: 1,
     });
     await renderPage();
-    expect(container.querySelector('[data-testid="prod-qty-cetak-PO-1001"]').textContent).toBe("3.000 / 25.000");
+    expect(container.querySelector('[data-testid="prod-qty-operator-PO-1001"]').textContent).toBe("3.000");
+    expect(container.querySelector('[data-testid="prod-qty-cetak-PO-1001"]').textContent).toBe("10.000");
+    expect(container.querySelector('[data-testid="prod-progress-PO-1001"]').textContent).toBe("30%");
     expect(container.querySelector('[data-testid="prod-qty-PO-1001"]').textContent).toBe("25.000");
     expect(container.querySelector('[data-testid="prod-item-PO-1001"]').textContent).toContain("Cup 16oz Extra Long Name");
     expect(container.querySelector('[data-testid="prod-qty-PO-1001"]').textContent).not.toContain("Cup");
@@ -316,7 +325,7 @@ describe("ProductionSchedule spreadsheet", () => {
     const rows = [...container.querySelectorAll('[data-testid="prod-row-PO-1001"]')];
     expect(rows).toHaveLength(3);
     expect(container.querySelector('[data-testid="prod-total-visible"]').textContent).toBe("1 / 1 entri");
-    expect(rows.map((row) => row.querySelector(".prod-op-name")?.textContent)).toEqual(["Budi", "Andi", "Cici"]);
+    expect(rows.map((row) => row.querySelector(".prod-op-name")?.textContent)).toEqual(["Cici", "Andi", "Budi"]);
     expect(container.querySelectorAll('[data-testid="prod-po-link-PO-1001"]')).toHaveLength(3);
     expect(container.querySelector('[href*="po-1"]')).toBeTruthy();
   });

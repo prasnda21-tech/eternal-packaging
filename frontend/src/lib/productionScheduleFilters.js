@@ -32,6 +32,9 @@ export const FILTER_DEFAULTS = {
   includeCompleted: true,
 };
 
+/** Desktop /produksi default. Newest work_date first. Mobile queue does not use this. */
+export const DESKTOP_PRODUCTION_SCHEDULE_SORT_DEFAULT = "work_date";
+
 export function statusOfRow(r) {
   if (r.cancelled) return "cancelled";
   if ((r.current_stage || 0) >= 14) return "selesai";
@@ -434,19 +437,43 @@ export function applyProductionFilters(rows, filters = {}) {
   });
 }
 
+function compareOptionalDateKeys(aKey, bKey, ascending) {
+  if (!aKey && !bKey) return 0;
+  if (!aKey) return 1;
+  if (!bKey) return -1;
+  return ascending ? aKey.localeCompare(bKey) : bKey.localeCompare(aKey);
+}
+
 export function sortProductionRows(rows, sortBy = "deadline") {
   const arr = [...(rows || [])];
   arr.sort((a, b) => {
     if (sortBy === "work_date" || sortBy === "work_date_asc") {
-      const aw = toDateKey(a.work_date) || workDateKeys(a)[0] || "9999-12-31";
-      const bw = toDateKey(b.work_date) || workDateKeys(b)[0] || "9999-12-31";
-      return sortBy === "work_date_asc" ? aw.localeCompare(bw) : bw.localeCompare(aw);
+      const aw = toDateKey(a.work_date) || workDateKeys(a)[0] || null;
+      const bw = toDateKey(b.work_date) || workDateKeys(b)[0] || null;
+      return compareOptionalDateKeys(aw, bw, sortBy === "work_date_asc");
     }
     const ad = toDateKey(a.deadline) || "9999-12-31";
     const bd = toDateKey(b.deadline) || "9999-12-31";
     return ad.localeCompare(bd);
   });
   return arr;
+}
+
+/** Visible Tgl Pengerjaan on an expanded schedule row. */
+export function scheduleDisplayWorkDateKey(row) {
+  return toDateKey(row?.displayWorkDate) || toDateKey(row?.work_date) || null;
+}
+
+/** Desktop sheet order after operator/item expansion. Undated rows stay last. */
+export function sortScheduleDisplayRows(rows, sortBy = "deadline") {
+  if (sortBy !== "work_date" && sortBy !== "work_date_asc") return rows || [];
+  return [...(rows || [])].sort((a, b) => (
+    compareOptionalDateKeys(
+      scheduleDisplayWorkDateKey(a),
+      scheduleDisplayWorkDateKey(b),
+      sortBy === "work_date_asc",
+    )
+  ));
 }
 
 export function productionFiltersAreActive(filters = {}) {

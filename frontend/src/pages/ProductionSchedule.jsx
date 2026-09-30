@@ -19,8 +19,10 @@ import {
   applyWorkDateTodayShortcut,
   buildHariIniDisplayRows,
   isScheduledToday,
+  DESKTOP_PRODUCTION_SCHEDULE_SORT_DEFAULT,
   productionFiltersAreActive,
   sortProductionRows,
+  sortScheduleDisplayRows,
 } from "../lib/productionScheduleFilters";
 import { isProductionScheduleHariIniPreviewHost, mergeHariIniPreviewDummyRows } from "../lib/productionScheduleHariIniPreviewDummy";
 import { buildProductionScheduleDisplayRows } from "../lib/productionScheduleDisplayRows";
@@ -143,7 +145,7 @@ export default function ProductionSchedule() {
   const [workDateFilter, setWorkDateFilter] = useState(FILTER_DEFAULTS.workDateFilter);
   const [workDateFrom, setWorkDateFrom] = useState(FILTER_DEFAULTS.workDateFrom);
   const [workDateTo, setWorkDateTo] = useState(FILTER_DEFAULTS.workDateTo);
-  const [sortBy, setSortBy] = useState(FILTER_DEFAULTS.sortBy);
+  const [sortBy, setSortBy] = useState(DESKTOP_PRODUCTION_SCHEDULE_SORT_DEFAULT);
   const [includeCancelled, setIncludeCancelled] = useState(FILTER_DEFAULTS.includeCancelled);
   const [includeCompleted, setIncludeCompleted] = useState(FILTER_DEFAULTS.includeCompleted);
   const [exporting, setExporting] = useState(false);
@@ -205,7 +207,7 @@ export default function ProductionSchedule() {
     setWorkDateFilter(FILTER_DEFAULTS.workDateFilter);
     setWorkDateFrom(FILTER_DEFAULTS.workDateFrom);
     setWorkDateTo(FILTER_DEFAULTS.workDateTo);
-    setSortBy(FILTER_DEFAULTS.sortBy);
+    setSortBy(DESKTOP_PRODUCTION_SCHEDULE_SORT_DEFAULT);
     setIncludeCancelled(FILTER_DEFAULTS.includeCancelled);
     setIncludeCompleted(FILTER_DEFAULTS.includeCompleted);
   };
@@ -228,11 +230,11 @@ export default function ProductionSchedule() {
 
   const sorted = useMemo(() => sortProductionRows(filtered, sortBy), [filtered, sortBy]);
   const displayRows = useMemo(() => {
-    if (workDateFilter === "hari_ini") {
-      return buildHariIniDisplayRows(sorted, undefined, includeCompleted);
-    }
-    return buildProductionScheduleDisplayRows(sorted);
-  }, [sorted, workDateFilter, includeCompleted]);
+    const expanded = workDateFilter === "hari_ini"
+      ? buildHariIniDisplayRows(sorted, undefined, includeCompleted)
+      : buildProductionScheduleDisplayRows(sorted);
+    return sortScheduleDisplayRows(expanded, sortBy);
+  }, [sorted, workDateFilter, includeCompleted, sortBy]);
   const summaryMetrics = useMemo(() => buildProductionScheduleSummary(filtered), [filtered]);
   const filtersActive = productionFiltersAreActive(filterState);
 
@@ -441,7 +443,7 @@ export default function ProductionSchedule() {
           <span className="muted small" data-testid="prod-total-visible">{filtered.length} / {rows.length} entri</span>
           <label className="prod-check"><input type="checkbox" checked={includeCompleted} onChange={(e) => setIncludeCompleted(e.target.checked)} data-testid="prod-include-completed"/> Selesai</label>
           <label className="prod-check"><input type="checkbox" checked={includeCancelled} onChange={(e) => setIncludeCancelled(e.target.checked)} data-testid="prod-include-cancelled"/> Cancelled</label>
-          <button className="ghost sm prod-filter-reset" onClick={resetFilters} data-testid="prod-filter-reset" disabled={!filtersActive && sortBy === FILTER_DEFAULTS.sortBy}>
+          <button className="ghost sm prod-filter-reset" onClick={resetFilters} data-testid="prod-filter-reset" disabled={!filtersActive && sortBy === DESKTOP_PRODUCTION_SCHEDULE_SORT_DEFAULT}>
             Reset Filter
           </button>
           {canExport && (

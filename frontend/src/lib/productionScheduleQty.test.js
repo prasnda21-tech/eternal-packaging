@@ -1,4 +1,4 @@
-import { formatIdQty, formatOperatorAssignedQty, OPERATOR_UNASSIGNED_LABEL, printQtyProgress, scheduledPrintQtyProgress, totalQtyScheduledCell, operatorQtyCetakProgress, operatorPrintableItems, poTotalQtyDisplay } from "./productionScheduleQty";
+import { formatIdQty, formatOperatorAssignedQty, OPERATOR_UNASSIGNED_LABEL, OPERATOR_WORK_QTY_UNAVAILABLE, printQtyProgress, scheduledPrintQtyProgress, totalQtyScheduledCell, operatorQtyCetakProgress, operatorPrintableItems, poTotalQtyDisplay, operatorWorkQtyCell, scheduledPrintQtyCell, operatorScheduleProgressCell } from "./productionScheduleQty";
 
 describe("Jadwal Produksi Total Qty print progress", () => {
   test("TEST 1: 5.000 / 10.000 not PO 15.000", () => {
@@ -316,6 +316,56 @@ describe("operator Qty Cetak display", () => {
     const cell = poTotalQtyDisplay({ total_quantity: 20000 });
     expect(cell.text).toBe("20.000");
     expect(cell.text).not.toMatch(/Cup|Item/);
+  });
+
+  test("desktop cells use split quantity and qty_completed, not PO aggregates", () => {
+    const row = {
+      total_quantity: 25000,
+      print_qty_total: 20000,
+      operator_assigned_qty: 8000,
+      print_completed_qty: 100,
+      displayOperator: {
+        splits: [{ quantity: 10000, qty_completed: 3000, line_printable: true }],
+      },
+    };
+    expect(scheduledPrintQtyCell(row).text).toBe("10.000");
+    expect(operatorWorkQtyCell(row).text).toBe("3.000");
+    expect(operatorScheduleProgressCell(row).text).toBe("30%");
+    expect(scheduledPrintQtyCell(row).text).not.toBe("20.000");
+    expect(scheduledPrintQtyCell(row).text).not.toBe("8.000");
+    expect(operatorWorkQtyCell(row).text).not.toBe("100");
+  });
+
+  test("missing operator qty is a dash and explicit zero stays zero", () => {
+    const missing = {
+      displayOperator: { splits: [{ quantity: 10000, qty_completed: null }] },
+    };
+    expect(operatorWorkQtyCell(missing).text).toBe("-");
+    expect(operatorWorkQtyCell(missing).title).toBe(OPERATOR_WORK_QTY_UNAVAILABLE);
+    expect(operatorScheduleProgressCell(missing).text).toBe("-");
+    const absent = {
+      displayOperator: { splits: [{ quantity: 10000 }] },
+    };
+    expect(operatorWorkQtyCell(absent).text).toBe("-");
+    const zero = {
+      displayOperator: { splits: [{ quantity: 10000, qty_completed: 0 }] },
+    };
+    expect(operatorWorkQtyCell(zero).text).toBe("0");
+    expect(operatorScheduleProgressCell(zero).text).toBe("0%");
+  });
+
+  test("progress is hidden when scheduled qty is missing or zero", () => {
+    expect(scheduledPrintQtyCell({
+      displayOperator: { splits: [{ qty_completed: 10 }] },
+    }).text).toBe("-");
+    expect(operatorScheduleProgressCell({
+      displayOperator: { splits: [{ quantity: 0, qty_completed: 0 }] },
+    }).text).toBe("-");
+    expect(operatorScheduleProgressCell({
+      total_quantity: 5000,
+      print_qty_total: 5000,
+      displayOperator: null,
+    }).text).toBe("-");
   });
 
   test("operator assigned qty is formatted separately from PO total", () => {

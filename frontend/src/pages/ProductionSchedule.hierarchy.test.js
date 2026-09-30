@@ -107,7 +107,7 @@ describe("ProductionSchedule visual hierarchy", () => {
     expect(container.querySelector('[data-testid="prod-col-group-status"]').textContent).toContain("Status");
     expect(container.querySelector('[data-testid="prod-col-group-identity"]').getAttribute("colspan")).toBe("2");
     expect(container.querySelector('[data-testid="prod-col-group-planning"]').getAttribute("colspan")).toBe("2");
-    expect(container.querySelector('[data-testid="prod-col-group-production"]').getAttribute("colspan")).toBe("9");
+    expect(container.querySelector('[data-testid="prod-col-group-production"]').getAttribute("colspan")).toBe("11");
     expect(container.querySelector('[data-testid="prod-col-group-progress"]').getAttribute("colspan")).toBe("6");
     expect(container.querySelector('[data-testid="prod-col-group-status"]').getAttribute("colspan")).toBe("1");
     expect(container.querySelector("th.prod-sticky-po")).toBeTruthy();
