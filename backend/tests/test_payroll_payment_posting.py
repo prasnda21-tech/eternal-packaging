@@ -25,6 +25,7 @@ os.environ.setdefault("STORAGE_PROVIDER", "local")
 import server
 from permissions import ALL_PERMISSIONS, PERMISSION_CATALOG, ROLE_DEFAULT_PERMISSIONS
 from server import app, current_user
+from services.accounting_periods import close_period
 from services.cash_bank_master import create_cash_bank, ensure_indexes as ensure_cash_bank
 from services.cash_bank_mutasi import get_mutasi
 from services.chart_of_accounts import create_account, ensure_indexes as ensure_coa
@@ -498,6 +499,173 @@ async def test_payment_unique_index_is_created_without_insert():
     ]
     assert unique_period
     assert await server.db[PAYMENTS].count_documents({}) == 0
+
+
+async def _posted_payment(c, *, year: int, month: int, accounts: dict, bank: dict, day: str = "18"):
+    _emp, period = await _finalize(c, year=year, month=month, map_accounts=accounts)
+    await _post_accrual(c, period["id"])
+    payment_date = f"{year}-{month:02d}-{day}"
+    created = await c.post(
+        f"/api/hr-payroll/periods/{period['id']}/payments",
+        json={"cash_bank_account_id": bank["id"], "payment_date": payment_date},
+    )
+    assert created.status_code == 200, created.text
+    payment = created.json()["payment"]
+    approved = await c.post(f"/api/hr-payroll/payments/{payment['id']}/approve")
+    assert approved.status_code == 200, approved.text
+    posted = await c.post(f"/api/hr-payroll/payments/{payment['id']}/post-accounting")
+    assert posted.status_code == 200, posted.text
+    return period, payment
+
+
+@pytest.mark.anyio
+async def test_reverse_paid_payment_succeeds():
+    accounts = await _setup_accounts()
+    bank = await _bank(accounts["bank"])
+    _admin()
+    async with _client() as c:
+        period, payment = await _posted_payment(c, year=2093, month=10, accounts=accounts, bank=bank)
+        before = await server.db[PAYMENTS].count_documents({"payroll_period_id": period["id"]})
+        reversed_res = await c.post(
+            f"/api/hr-payroll/payments/{payment['id']}/reverse-accounting",
+            json={"reason": "koreksi pembayaran"},
+        )
+        assert reversed_res.status_code == 200, reversed_res.text
+        body = reversed_res.json()
+    assert body["payment_status"] == "REVERSED"
+    assert body["payment"]["reversal_reason"] == "koreksi pembayaran"
+    assert body["payment"]["reversed_by"]["id"] == "admin-pyp"
+    assert body["payment"]["reversed_at"]
+    assert body["reversal_journal_id"]
+    assert await server.db[PAYMENTS].count_documents({"payroll_period_id": period["id"]}) == before == 1
+    original = (await _payment_journals(payment["id"]))[0]
+    assert original["status"] == "reversed"
+    reversals = await server.db.journal_entries.find(
+        {"source_type": "payroll_payment_reversal", "source_id": payment["id"]},
+        {"_id": 0},
+    ).to_list(10)
+    assert len(reversals) == 1
+    assert reversals[0]["id"] == body["journal_id"]
+    assert reversals[0]["reversal_of"] == original["id"]
+    assert reversals[0]["date"] == "2093-10-18"
+    lines = await server.db.journal_lines.find({"journal_id": reversals[0]["id"]}, {"_id": 0}).to_list(10)
+    debit = sum(line["debit"] for line in lines)
+    credit = sum(line["credit"] for line in lines)
+    assert debit == credit == 1_000_000
+    by_account = {line["account_id"]: line for line in lines}
+    assert by_account[accounts["bank"]["id"]]["debit"] == 1_000_000
+    assert by_account[accounts["payable"]["id"]]["credit"] == 1_000_000
+    stored = await server.db[PAYMENTS].find_one({"id": payment["id"]}, {"_id": 0})
+    assert stored["status"] == "REVERSED"
+    assert stored["reversal_journal_id"] == reversals[0]["id"]
+    assert await server.db.cash_bank_payments.count_documents({}) == 0
+
+
+@pytest.mark.anyio
+async def test_reverse_retry_returns_the_same_journal():
+    accounts = await _setup_accounts()
+    bank = await _bank(accounts["bank"])
+    _admin()
+    async with _client() as c:
+        _period, payment = await _posted_payment(c, year=2093, month=11, accounts=accounts, bank=bank)
+        first = await c.post(
+            f"/api/hr-payroll/payments/{payment['id']}/reverse-accounting",
+            json={"reason": "koreksi pertama"},
+        )
+        assert first.status_code == 200, first.text
+        stamped = await server.db[PAYMENTS].find_one({"id": payment["id"]}, {"_id": 0, "reversed_at": 1})
+        second = await c.post(
+            f"/api/hr-payroll/payments/{payment['id']}/reverse-accounting",
+            json={"reason": "koreksi ulang"},
+        )
+        assert second.status_code == 200, second.text
+    assert first.json()["journal_id"] == second.json()["journal_id"]
+    assert "sudah ada" in second.json()["message"]
+    assert await server.db.journal_entries.count_documents({"source_type": "payroll_payment_reversal"}) == 1
+    again = await server.db[PAYMENTS].find_one({"id": payment["id"]}, {"_id": 0})
+    assert again["status"] == "REVERSED"
+    assert again["reversed_at"] == stamped["reversed_at"]
+    assert again["reversal_reason"] == "koreksi pertama"
+    assert await server.db[PAYMENTS].count_documents({}) == 1
+
+
+@pytest.mark.anyio
+async def test_reverse_draft_payment_is_rejected():
+    accounts = await _setup_accounts()
+    bank = await _bank(accounts["bank"])
+    _admin()
+    async with _client() as c:
+        _emp, period = await _finalize(c, year=2093, month=12, map_accounts=accounts)
+        await _post_accrual(c, period["id"])
+        created = await c.post(
+            f"/api/hr-payroll/periods/{period['id']}/payments",
+            json={"cash_bank_account_id": bank["id"], "payment_date": "2093-12-18"},
+        )
+        assert created.status_code == 200, created.text
+        payment_id = created.json()["payment"]["id"]
+        rejected = await c.post(
+            f"/api/hr-payroll/payments/{payment_id}/reverse-accounting",
+            json={"reason": "belum dibayar"},
+        )
+        assert rejected.status_code == 409, rejected.text
+        assert "PAID" in rejected.text
+    stored = await server.db[PAYMENTS].find_one({"id": payment_id}, {"_id": 0, "status": 1, "reversal_journal_id": 1})
+    assert stored["status"] == "DRAFT"
+    assert stored.get("reversal_journal_id") in (None, "")
+    assert await server.db.journal_entries.count_documents({"source_type": "payroll_payment_reversal"}) == 0
+
+
+@pytest.mark.anyio
+async def test_reverse_closed_period_is_rejected():
+    accounts = await _setup_accounts()
+    bank = await _bank(accounts["bank"])
+    _admin()
+    async with _client() as c:
+        _period, payment = await _posted_payment(c, year=2094, month=1, accounts=accounts, bank=bank)
+        await close_period(
+            server.db,
+            "2094-01",
+            user={"id": "admin-pyp", "name": "Admin", "role": "admin"},
+            reason="tutup uji",
+        )
+        rejected = await c.post(
+            f"/api/hr-payroll/payments/{payment['id']}/reverse-accounting",
+            json={"reason": "periode tertutup"},
+        )
+        assert rejected.status_code == 409, rejected.text
+    stored = await server.db[PAYMENTS].find_one({"id": payment["id"]}, {"_id": 0, "status": 1})
+    assert stored["status"] == "PAID"
+    assert await server.db.journal_entries.count_documents({"source_type": "payroll_payment_reversal"}) == 0
+    original = (await _payment_journals(payment["id"]))[0]
+    assert original["status"] == "posted"
+
+
+@pytest.mark.anyio
+async def test_cash_bank_mutasi_reads_payroll_payment_reversal():
+    accounts = await _setup_accounts()
+    bank = await _bank(accounts["bank"])
+    _admin()
+    async with _client() as c:
+        _period, payment = await _posted_payment(c, year=2094, month=2, accounts=accounts, bank=bank, day="12")
+        reversed_res = await c.post(
+            f"/api/hr-payroll/payments/{payment['id']}/reverse-accounting",
+            json={"reason": "saldo bank kembali"},
+        )
+        assert reversed_res.status_code == 200, reversed_res.text
+    mutasi = await get_mutasi(
+        server.db, cash_bank_id=bank["id"], start_date="2094-02-01", end_date="2094-02-28"
+    )
+    by_type = {row["source_type"]: row for row in mutasi["items"]}
+    assert by_type["payroll_payment"]["source_label"] == "Pembayaran Payroll"
+    assert by_type["payroll_payment"]["credit"] == 1_000_000
+    reversal = by_type["payroll_payment_reversal"]
+    assert reversal["source_label"] == "Reversal Pembayaran Payroll"
+    assert reversal["source_id"] == payment["id"]
+    assert reversal["transaction_number"] == payment["payment_number"]
+    assert reversal["debit"] == 1_000_000
+    assert reversal["credit"] == 0
+    assert mutasi["ending_balance"] == 0
+    assert await server.db.cash_bank_payments.count_documents({}) == 0
 
 
 @pytest.mark.anyio

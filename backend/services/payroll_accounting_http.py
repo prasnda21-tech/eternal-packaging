@@ -23,12 +23,13 @@ def register_payroll_accounting_routes(
         PERM_APPROVE as PAYMENT_APPROVE,
         PERM_CREATE as PAYMENT_CREATE,
         PERM_POST as PAYMENT_POST,
+        PERM_REVERSE as PAYMENT_REVERSE,
         PERM_VIEW as PAYMENT_VIEW,
         approve_payroll_payment,
         create_payroll_payment,
         get_payment,
     )
-    from services.payroll_payment_posting import post_payroll_payment
+    from services.payroll_payment_posting import post_payroll_payment, reverse_payroll_payment
     from services.hr_payroll import PERM_PAY_VIEW
 
     def dump(payload) -> dict:
@@ -90,3 +91,11 @@ def register_payroll_accounting_routes(
         await require_any_perm(user, PAYMENT_POST)
         result = await post_payroll_payment(get_db(), payment_id, user)
         return result
+
+    @api_router.post("/hr-payroll/payments/{payment_id}/reverse-accounting")
+    async def reverse_payroll_payment_endpoint(
+        payment_id: str, payload: LoosePayload, user=Depends(current_user)
+    ):
+        await require_any_perm(user, PAYMENT_REVERSE)
+        data = dump(payload)
+        return await reverse_payroll_payment(get_db(), payment_id, user, data.get("reason"))

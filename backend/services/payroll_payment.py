@@ -36,6 +36,7 @@ from services.purchase_common import (
 PAYMENTS = "hr_payroll_payments"
 PAYMENT_LINES = "hr_payroll_payment_lines"
 SOURCE_TYPE = "payroll_payment"
+SOURCE_REVERSAL = "payroll_payment_reversal"
 NUMBER_PREFIX = "PYB"
 
 PERM_VIEW = "payroll_payment.view"
@@ -47,6 +48,7 @@ PERM_REVERSE = "payroll_payment.reverse"
 STATUS_DRAFT = "DRAFT"
 STATUS_APPROVED = "APPROVED"
 STATUS_PAID = "PAID"
+STATUS_REVERSED = "REVERSED"
 
 PAYABLE_MARKER = "Utang Gaji"
 
@@ -58,6 +60,8 @@ DATE_MESSAGE = "Tanggal pembayaran tidak valid."
 EXISTS_MESSAGE = "Pembayaran untuk periode payroll ini sudah ada."
 NOT_DRAFT_MESSAGE = "Hanya pembayaran DRAFT yang dapat disetujui."
 NOT_APPROVED_MESSAGE = "Pembayaran harus disetujui sebelum diposting ke accounting."
+NOT_PAID_MESSAGE = "Hanya pembayaran PAID yang dapat di-reverse."
+REASON_MESSAGE = "Alasan reversal wajib diisi minimal 3 karakter."
 
 
 async def ensure_indexes(db) -> None:
@@ -162,6 +166,10 @@ def public_payment(doc: Optional[dict], lines: Optional[List[dict]] = None) -> O
         "paid_by": doc.get("paid_by"),
         "paid_at": doc.get("paid_at"),
         "accounting_journal_id": doc.get("accounting_journal_id"),
+        "reversal_reason": doc.get("reversal_reason"),
+        "reversed_by": doc.get("reversed_by"),
+        "reversed_at": doc.get("reversed_at"),
+        "reversal_journal_id": doc.get("reversal_journal_id"),
     }
     if lines is not None:
         out["lines"] = [
@@ -292,6 +300,28 @@ async def mark_payment_paid(db, payment: dict, journal: dict, user: dict) -> dic
     journal_id = str(journal.get("id") or "")
     if journal_id and payment.get("accounting_journal_id") != journal_id:
         patch["accounting_journal_id"] = journal_id
+    if patch:
+        await db[PAYMENTS].update_one({"id": payment["id"]}, {"$set": patch})
+    fresh = await db[PAYMENTS].find_one({"id": payment["id"]}, {"_id": 0})
+    lines = await db[PAYMENT_LINES].find({"payment_id": payment["id"]}, {"_id": 0}).to_list(5000)
+    return public_payment(fresh, lines)
+
+
+async def mark_payment_reversed(db, payment: dict, journal: dict, user: dict, reason: str) -> dict:
+    """Stamp reversal metadata on the same payment. Does not insert a new payment."""
+    now = now_iso()
+    patch: Dict[str, Any] = {}
+    if payment.get("status") != STATUS_REVERSED:
+        patch["status"] = STATUS_REVERSED
+    if not payment.get("reversed_at"):
+        patch["reversed_at"] = (journal or {}).get("posted_at") or now
+    if not payment.get("reversed_by"):
+        patch["reversed_by"] = actor_snapshot(user)
+    if reason and not str(payment.get("reversal_reason") or "").strip():
+        patch["reversal_reason"] = reason
+    journal_id = str((journal or {}).get("id") or "")
+    if journal_id and payment.get("reversal_journal_id") != journal_id:
+        patch["reversal_journal_id"] = journal_id
     if patch:
         await db[PAYMENTS].update_one({"id": payment["id"]}, {"$set": patch})
     fresh = await db[PAYMENTS].find_one({"id": payment["id"]}, {"_id": 0})
