@@ -676,12 +676,39 @@ def _number(value: Any) -> float:
         return 0.0
 
 
-async def _sales_financial_summary(db, user: dict, month: str) -> dict:
-    """Invoice-authoritative metrics for POs owned by the authenticated sales user.
+def _dashboard_paid_and_outstanding(grand: float, paid_raw: float) -> tuple:
+    """Same cap used by the dashboard card. Receipt amount only, never allocated_amount."""
+    inv_paid = min(max(paid_raw, 0.0), grand)
+    outstanding = max(grand - inv_paid, 0.0)
+    return inv_paid, outstanding
 
-    Revenue uses finalized invoice_date in the requested month. Receivables use
-    finalized invoices minus live sales_receipts. Draft/cancelled invoices never
-    contribute.
+
+def _dashboard_payment_status(grand: float, paid: float) -> str:
+    if paid <= 0:
+        return "BELUM DIBAYAR"
+    if paid < grand:
+        return "DP"
+    return "LUNAS"
+
+
+def _finance_customer_name(inv: dict) -> str:
+    customer = inv.get("customer")
+    if isinstance(customer, dict):
+        return str(customer.get("name") or customer.get("customer_name") or "").strip()
+    if customer not in (None, ""):
+        return str(customer).strip()
+    return str(inv.get("customer_name") or "").strip()
+
+
+def _finance_day(value: Any) -> str:
+    return parse_calendar_date(value) or str(value or "")[:10]
+
+
+async def _load_owned_finalized_finance(db, user: dict) -> tuple:
+    """Finalized invoices on non-cancelled POs owned by the session sales user.
+
+    Read only. Ownership is orders.sales_user_id. Receipt rows that are cancelled
+    or reversed do not reduce outstanding. This is the dashboard invoice set.
     """
     owned = await _cursor_rows(db.orders.find(
         {"cancelled": {"$ne": True}, **sales_owner_match(user)},
@@ -689,14 +716,7 @@ async def _sales_financial_summary(db, user: dict, month: str) -> dict:
     ))
     po_ids = [str(row.get("id")) for row in owned if row.get("id")]
     if not po_ids:
-        return {
-            "month": month,
-            "revenue": 0.0,
-            "receivables": 0.0,
-            "paid": 0.0,
-            "invoice_count": 0,
-            "receivable_invoice_count": 0,
-        }
+        return [], {}
     invoices = await _cursor_rows(db.sales_invoices.find(
         {
             "po_id": {"$in": po_ids},
@@ -707,7 +727,11 @@ async def _sales_financial_summary(db, user: dict, month: str) -> dict:
             "_id": 0,
             "id": 1,
             "po_id": 1,
+            "invoice_number": 1,
             "invoice_date": 1,
+            "due_date": 1,
+            "customer": 1,
+            "customer_name": 1,
             "grand_total": 1,
         },
     ))
@@ -726,6 +750,10 @@ async def _sales_financial_summary(db, user: dict, month: str) -> dict:
             continue
         iid = str(receipt.get("invoice_id") or "")
         paid_by_invoice[iid] = paid_by_invoice.get(iid, 0.0) + _number(receipt.get("amount"))
+    return invoices, paid_by_invoice
+
+
+def _summarize_owned_finance(invoices: List[dict], paid_by_invoice: Dict[str, float], month: str) -> dict:
     revenue = 0.0
     receivables = 0.0
     paid = 0.0
@@ -737,9 +765,11 @@ async def _sales_financial_summary(db, user: dict, month: str) -> dict:
         if invoice_day.startswith(f"{month}-"):
             revenue += grand
             month_count += 1
-        inv_paid = min(max(paid_by_invoice.get(str(inv.get("id") or ""), 0.0), 0.0), grand)
+        inv_paid, outstanding = _dashboard_paid_and_outstanding(
+            grand,
+            paid_by_invoice.get(str(inv.get("id") or ""), 0.0),
+        )
         paid += inv_paid
-        outstanding = max(grand - inv_paid, 0.0)
         receivables += outstanding
         if outstanding > 0:
             receivable_count += 1
@@ -750,6 +780,103 @@ async def _sales_financial_summary(db, user: dict, month: str) -> dict:
         "paid": round(paid, 2),
         "invoice_count": month_count,
         "receivable_invoice_count": receivable_count,
+    }
+
+
+async def _sales_financial_summary(db, user: dict, month: str) -> dict:
+    """Invoice-authoritative metrics for POs owned by the authenticated sales user.
+
+    Revenue uses finalized invoice_date in the requested month. Receivables use
+    finalized invoices minus live sales_receipts. Draft/cancelled invoices never
+    contribute.
+    """
+    invoices, paid_by_invoice = await _load_owned_finalized_finance(db, user)
+    return _summarize_owned_finance(invoices, paid_by_invoice, month)
+
+
+def _public_finance_invoice(inv: dict, grand: float, inv_paid: float) -> dict:
+    invoice_day = _finance_day(inv.get("invoice_date"))
+    return {
+        "id": inv.get("id"),
+        "invoice_number": inv.get("invoice_number") or "",
+        "customer_name": _finance_customer_name(inv),
+        "invoice_date": invoice_day or None,
+        "grand_total": round(grand, 2),
+        "payment_status": _dashboard_payment_status(grand, inv_paid),
+    }
+
+
+def _public_finance_receivable(inv: dict, grand: float, inv_paid: float, outstanding: float) -> dict:
+    invoice_day = _finance_day(inv.get("invoice_date"))
+    due_day = _finance_day(inv.get("due_date"))
+    return {
+        "id": inv.get("id"),
+        "invoice_number": inv.get("invoice_number") or "",
+        "customer_name": _finance_customer_name(inv),
+        "invoice_date": invoice_day or None,
+        "due_date": due_day or None,
+        "grand_total": round(grand, 2),
+        "paid_amount": round(inv_paid, 2),
+        "outstanding_amount": round(outstanding, 2),
+    }
+
+
+async def list_sales_pwa_invoices(db, user: dict, *, month: str = "") -> dict:
+    """Finalized invoices whose invoice_date is in the requested month.
+
+    summary.total_amount is metrics.revenue for the same session and month.
+    """
+    require_sales_pwa(user)
+    month = _month_key(month)
+    invoices, paid_by_invoice = await _load_owned_finalized_finance(db, user)
+    summary = _summarize_owned_finance(invoices, paid_by_invoice, month)
+    rows = []
+    for inv in invoices:
+        grand = _number(inv.get("grand_total"))
+        invoice_day = parse_calendar_date(inv.get("invoice_date")) or str(inv.get("invoice_date") or "")[:10]
+        if not invoice_day.startswith(f"{month}-"):
+            continue
+        inv_paid, _outstanding = _dashboard_paid_and_outstanding(
+            grand,
+            paid_by_invoice.get(str(inv.get("id") or ""), 0.0),
+        )
+        rows.append(_public_finance_invoice(inv, grand, inv_paid))
+    rows.sort(key=lambda row: (row.get("invoice_date") or "", row.get("invoice_number") or ""), reverse=True)
+    return {
+        "month": month,
+        "invoices": rows,
+        "summary": {
+            "total_amount": summary["revenue"],
+            "invoice_count": summary["invoice_count"],
+        },
+    }
+
+
+async def list_sales_pwa_receivables(db, user: dict) -> dict:
+    """Outstanding finalized invoices for this session, every invoice_date.
+
+    summary.outstanding_total is metrics.receivables. Month does not apply.
+    """
+    require_sales_pwa(user)
+    invoices, paid_by_invoice = await _load_owned_finalized_finance(db, user)
+    summary = _summarize_owned_finance(invoices, paid_by_invoice, _month_key(""))
+    rows = []
+    for inv in invoices:
+        grand = _number(inv.get("grand_total"))
+        inv_paid, outstanding = _dashboard_paid_and_outstanding(
+            grand,
+            paid_by_invoice.get(str(inv.get("id") or ""), 0.0),
+        )
+        if outstanding <= 0:
+            continue
+        rows.append(_public_finance_receivable(inv, grand, inv_paid, outstanding))
+    rows.sort(key=lambda row: (row.get("due_date") or "9999-99-99", row.get("invoice_date") or "", row.get("invoice_number") or ""))
+    return {
+        "receivables": rows,
+        "summary": {
+            "outstanding_total": summary["receivables"],
+            "invoice_count": summary["receivable_invoice_count"],
+        },
     }
 
 

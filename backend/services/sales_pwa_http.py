@@ -234,6 +234,25 @@ def register_sales_pwa_routes(
         _ignore_spoofed_sales_id(sales_user_id, sales_id)
         return await spwa.sales_pwa_dashboard(get_db(), user, month=month or "")
 
+    @api_router.get("/sales-pwa/invoices")
+    async def sales_pwa_invoices(
+        month: Optional[str] = None,
+        sales_user_id: Optional[str] = None,
+        sales_id: Optional[str] = None,
+        user=Depends(_pwa_user),
+    ):
+        _ignore_spoofed_sales_id(sales_user_id, sales_id)
+        return await spwa.list_sales_pwa_invoices(get_db(), user, month=month or "")
+
+    @api_router.get("/sales-pwa/receivables")
+    async def sales_pwa_receivables(
+        sales_user_id: Optional[str] = None,
+        sales_id: Optional[str] = None,
+        user=Depends(_pwa_user),
+    ):
+        _ignore_spoofed_sales_id(sales_user_id, sales_id)
+        return await spwa.list_sales_pwa_receivables(get_db(), user)
+
     @api_router.get("/sales-pwa/visits")
     async def sales_pwa_visits(
         month: Optional[str] = None,
