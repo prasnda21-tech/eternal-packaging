@@ -9,6 +9,8 @@ export const SALES_PWA_NAV = [
 ];
 
 export const SALES_PWA_MORE_NAV = [
+  { id: "invoices", label: "Invoice", to: "/sales/invoices" },
+  { id: "receivables", label: "Piutang", to: "/sales/receivables" },
   { id: "customers", label: "Pelanggan", to: "/sales/pelanggan" },
   { id: "predictions", label: "Prediksi Order", to: "/sales/prediksi" },
   { id: "profile", label: "Profil", to: "/sales/profil" },
@@ -30,6 +32,8 @@ export function activeSalesPwaNav(pathname) {
   if (path === "/sales") return "dashboard";
   if (path.startsWith("/sales/visit")) return "visits";
   if (path === "/sales/po" || path.startsWith("/sales/po/")) return "orders";
+  if (path.startsWith("/sales/invoices")) return "invoices";
+  if (path.startsWith("/sales/receivables")) return "receivables";
   if (path.startsWith("/sales/pelanggan")) return "customers";
   if (path.startsWith("/sales/prediksi")) return "predictions";
   if (path.startsWith("/sales/profil")) return "profile";
