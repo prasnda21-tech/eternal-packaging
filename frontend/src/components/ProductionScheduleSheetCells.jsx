@@ -131,7 +131,7 @@ function ItemCell({ row, variant }) {
           : `mobile-schedule-item-line-${row.po_number}-${item.key}`}
       >
         <span className="mop-ops-item-name">{item.name}</span>
-        {qtyText ? <span className="mop-ops-item-qty">{qtyText}</span> : null}
+        {variant !== "desktop" && qtyText ? <span className="mop-ops-item-qty">{qtyText}</span> : null}
       </div>
     );
   });

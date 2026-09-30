@@ -138,7 +138,7 @@ describe("productionScheduleTable canonical columns", () => {
     expect(desktopProductionScheduleGroupSpans().map((g) => ({ label: g.label, span: g.span, keys: g.keys }))).toEqual([
       { label: "Identitas PO", span: 2, keys: ["po", "customer"] },
       { label: "Penjadwalan", span: 2, keys: ["work_date", "operator"] },
-      { label: "Produksi", span: 11, keys: ["item", "qty_operator", "qty_cetak", "progress", "qty", "prio", "buffer", "deadline", "deadline_ship", "outlet", "screen_size"] },
+      { label: "Produksi", span: 11, keys: ["item", "qty_cetak", "qty_operator", "progress", "qty", "prio", "buffer", "deadline", "deadline_ship", "outlet", "screen_size"] },
       { label: "Progress Produksi", span: 6, keys: ["screen", "design", "payment", "hold", "helper", "packing"] },
       { label: "Status", span: 1, keys: ["status"] },
     ]);
@@ -148,8 +148,8 @@ describe("productionScheduleTable canonical columns", () => {
       "Tgl Pengerjaan",
       "Operator",
       "Item",
-      "Qty Pengerjaan Operator",
       "Qty Cetak (Scheduled)",
+      "Qty Pengerjaan Operator",
       "Progress",
       "Total Qty",
       "Prio",
