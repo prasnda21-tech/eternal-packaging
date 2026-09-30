@@ -85,6 +85,8 @@ test("hides the previous month figures until the selected month returns", async 
   });
   expect(node.textContent).toContain("Rp5.000");
   expect(node.textContent).not.toContain("Rp12.500.000");
+  expect(node.querySelector('[data-testid="sales-dashboard-revenue"]').getAttribute("href")).toBe(`/sales/invoices?month=${nextMonth}`);
+  expect(node.querySelector('[data-testid="sales-dashboard-receivables"]').getAttribute("href")).toBe("/sales/receivables");
   act(() => root.unmount());
 });
 
@@ -205,19 +207,25 @@ test("explains running receivables and links only the cards that already have a 
     cursor = at;
   });
 
+  const month = node.querySelector('input[type="month"]').value;
   const receivables = node.querySelector('[data-testid="sales-dashboard-receivables"]');
-  expect(receivables.tagName).toBe("ARTICLE");
+  expect(receivables.tagName).toBe("A");
+  expect(receivables.getAttribute("href")).toBe("/sales/receivables");
+  expect(receivables.className).toContain("spwa-metric-link");
   expect(receivables.textContent).toContain("Piutang berjalan");
   expect(receivables.textContent).toContain("Rp4.945.000");
   expect(receivables.textContent).toContain("4 invoice belum lunas");
   expect(receivables.textContent).toContain("Semua periode");
   expect(receivables.textContent).toContain("Saldo invoice yang masih belum lunas, termasuk periode sebelumnya.");
   expect(receivables.getAttribute("title")).toContain("periode sebelumnya");
-  expect(node.querySelector('[data-testid="sales-dashboard-revenue"]').tagName).toBe("ARTICLE");
+  const revenue = node.querySelector('[data-testid="sales-dashboard-revenue"]');
+  expect(revenue.tagName).toBe("A");
+  expect(revenue.getAttribute("href")).toBe(`/sales/invoices?month=${month}`);
+  expect(revenue.textContent).toContain("Rp0");
+  expect(revenue.textContent).toContain("0 faktur final");
   expect(node.innerHTML).not.toContain("/buku-besar/piutang-usaha");
-  expect(node.innerHTML).not.toContain("sales-invoice");
+  expect(node.innerHTML).not.toContain("/penjualan/faktur-penjualan");
 
-  const month = node.querySelector('input[type="month"]').value;
   const active = node.querySelector('[data-testid="sales-dashboard-active"]');
   const done = node.querySelector('[data-testid="sales-dashboard-done-card"]');
   const visits = node.querySelector('[data-testid="sales-dashboard-visits"]');
@@ -253,19 +261,32 @@ test("shows an empty visit history without breaking the dashboard", async () => 
   act(() => root.unmount());
 });
 
-test("keeps omzet and receivables as information cards and marks the existing links as pressable", async () => {
+test("links omzet and receivables with the existing pressable card treatment", async () => {
   api.salesPwaDashboard.mockResolvedValue({
-    metrics: { revenue: 0, receivables: 0, invoice_count: 0, receivable_invoice_count: 0, active_po: 1, buffer_po: 0, visit_month: 1, visit_overdue: 0 },
+    metrics: { revenue: 12500000, receivables: 3200000, invoice_count: 3, receivable_invoice_count: 1, active_po: 1, buffer_po: 0, visit_month: 1, visit_overdue: 0 },
     upcoming_visits: [],
   });
   const node = document.createElement("div");
   const root = createRoot(node);
   await act(async () => { root.render(<SalesPwaDashboardPage />); await Promise.resolve(); });
   await act(async () => { await Promise.resolve(); });
-  expect(node.querySelector('[data-testid="sales-dashboard-revenue"]').tagName).toBe("ARTICLE");
-  expect(node.querySelector('[data-testid="sales-dashboard-receivables"]').tagName).toBe("ARTICLE");
+  const month = node.querySelector('input[type="month"]').value;
+  const revenue = node.querySelector('[data-testid="sales-dashboard-revenue"]');
+  const receivables = node.querySelector('[data-testid="sales-dashboard-receivables"]');
+  expect(revenue.tagName).toBe("A");
+  expect(revenue.className).toContain("spwa-metric-link");
+  expect(revenue.getAttribute("href")).toBe(`/sales/invoices?month=${month}`);
+  expect(revenue.textContent).toContain("Rp12.500.000");
+  expect(revenue.textContent).toContain("3 faktur final");
+  expect(receivables.tagName).toBe("A");
+  expect(receivables.className).toContain("spwa-metric-link");
+  expect(receivables.getAttribute("href")).toBe("/sales/receivables");
+  expect(receivables.textContent).toContain("Rp3.200.000");
+  expect(receivables.textContent).toContain("1 invoice belum lunas");
   expect(node.querySelector('[data-testid="sales-dashboard-active"]').className).toContain("spwa-metric-link");
+  expect(node.querySelector('[data-testid="sales-dashboard-active"]').getAttribute("href")).toBe("/sales/po");
   expect(node.querySelector('[data-testid="sales-dashboard-done-card"]').className).toContain("spwa-metric-link");
+  expect(node.querySelector('[data-testid="sales-dashboard-done-card"]').getAttribute("href")).toBe("/sales/po");
   expect(node.querySelector('[data-testid="sales-dashboard-visits"]').getAttribute("href")).toBe("/sales/visit");
   const css = readFileSync(path.join(__dirname, "salesPwa.css"), "utf8");
   expect(css).toMatch(/a\.spwa-metric-link\s*\{[^}]*cursor:\s*pointer/);
