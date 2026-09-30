@@ -325,7 +325,11 @@ describe("SalesPwaOrdersPage", () => {
     expect(card).toBeTruthy();
     expect(card.textContent).toContain("Pelanggan 1");
     expect(card.textContent).toContain("PO-A001");
+    expect(card.querySelector(".spwa-po-card-status").className).toContain("is-running");
     expect(card.textContent).toContain("Packing");
+    const held = container.querySelector('[data-testid="sales-po-card-PO-A002"] .spwa-po-card-status');
+    expect(held.className).toContain("is-hold");
+    expect(held.className).not.toContain("is-running");
     expect(card.textContent).toContain("18/09/26");
     expect(card.textContent).toContain("Progress 40%");
     expect(card.textContent).toContain("Buffer Stock");
@@ -336,8 +340,50 @@ describe("SalesPwaOrdersPage", () => {
       container.querySelector('[data-testid="sales-filter-open"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     expect(container.querySelector('[data-testid="sales-filter-sheet"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="sales-filter-sheet"] input[aria-label="Filter tahap"]')).toBeNull();
     expect(container.querySelectorAll('[aria-label="Filter tahap"]').length).toBe(1);
+    await act(async () => {
+      container.querySelector('[data-testid="sales-stage-open"]').dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
+    const sheet = container.querySelector('[data-testid="sales-stage-sheet"]');
+    const stageLabels = Array.from(sheet.querySelectorAll("label"));
+    expect(stageLabels[0].textContent).toContain("Semua Tahap");
+    expect(sheet.textContent).toContain("Approval");
+    expect(sheet.textContent).toContain("Produksi");
+    expect(sheet.textContent).toContain("Packing");
+    expect(sheet.textContent).toContain("Delivery");
+    expect(sheet.textContent).not.toContain("Prioritas");
+    const choice = Array.from(sheet.querySelectorAll("label")).find((label) => label.textContent.includes("Approval Design"));
+    await act(async () => {
+      choice.querySelector("input").dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      choice.querySelector("input").dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await act(async () => {
+      container.querySelector('[data-testid="sales-stage-apply"]').dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
+    await flush();
+    expect(api.salesPwaOrders.mock.calls.at(-1)[0].stage).toBe("Approval Design");
+    expect(storedFilters().stage).toBe("Approval Design");
     expect(readFileSync(path.join(__dirname, "salesPwa.css"), "utf8")).toMatch(/\.spwa-filters\s*\{[^}]*flex-wrap:\s*nowrap/);
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  test("colors partial and selesai cards from existing row fields", async () => {
+    mockNarrow(true);
+    api.salesPwaOrders.mockResolvedValue({
+      orders: [
+        { id: "p1", po_number: "PO-P", customer: "Parsial", status: "Parsial Terkirim", partial_delivery: true, progress_percent: 80, hold: false, order_date: "2026-09-01", buffer_stock: false, documents: { total: 0 } },
+        { id: "d1", po_number: "PO-D", customer: "Selesai", status: "Terkirim", partial_delivery: false, progress_percent: 100, hold: false, order_date: "2026-09-01", buffer_stock: false, documents: { total: 0 } },
+      ],
+      counts: { semua: 2, berjalan: 0, hold: 0, parsial: 1, selesai: 1 },
+      total: 2,
+    });
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = await mount(container);
+    expect(container.querySelector('[data-testid="sales-po-card-PO-P"] .spwa-po-card-status').className).toContain("is-partial");
+    expect(container.querySelector('[data-testid="sales-po-card-PO-D"] .spwa-po-card-status').className).toContain("is-done");
     act(() => root.unmount());
     container.remove();
   });
