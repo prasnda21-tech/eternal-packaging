@@ -65,8 +65,10 @@ afterEach(async () => { await act(async () => root.unmount()); container.remove(
 
 test('single selection preserves match endpoint payload and highlights both rows', async () => {
   await renderPage();
+  expect(container.querySelector('[data-testid=kas-bank-match-hint]').textContent).toBe('Belum memilih transaksi bank');
   await click(container.querySelector('[name=bank-line]')); await click(container.querySelector('[name=book-line]'));
-  expect(container.querySelectorAll('tr.kb-row-matched')).toHaveLength(2);
+  expect(container.querySelectorAll('tr.kb-row-selected')).toHaveLength(2);
+  expect(container.querySelector('[data-testid=kas-bank-match-hint]').textContent).toBe('Satu transaksi di setiap sisi');
   expect(container.querySelectorAll('thead input')).toHaveLength(0);
   await click(byText('Cocokkan'));
   expect(api.createCashBankPair).toHaveBeenCalledTimes(1);
@@ -76,7 +78,7 @@ test('selecting a bank row highlights book candidates without saving a pair', as
   const other = {...book, journal_line_id:'book-2', journal_number:'JE-19', description:'Biaya lain', absolute_amount:1000};
   workspace.book_lines=[book, other];
   workspace.visible_book_count=2;
-  api.cashBankPairSuggestions.mockResolvedValue({ambiguous:false, applied:false, suggestions:[{journal_line_id:'book-1', journal_number:'JE-18', reasons:['Nominal sama','Arah sama']}]});
+  api.cashBankPairSuggestions.mockResolvedValue({ambiguous:false, applied:false, suggestions:[{journal_line_id:'book-1', journal_number:'JE-18', date:'2026-09-24', amount:750000, direction:'in', description:'Penerimaan pelanggan', reasons:['Nominal sama','Arah sama','Referensi muncul di buku','Beda tanggal 2 hari']}]});
   await renderPage();
   expect(container.querySelector('.kb-candidate-badge')).toBeNull();
   await click(container.querySelector('[name=bank-line]'));
@@ -85,37 +87,91 @@ test('selecting a bank row highlights book candidates without saving a pair', as
   const candidate = container.querySelector('[data-testid=kas-bank-pair-book-table] tr.kb-row-candidate');
   expect(candidate).toBeTruthy();
   expect(candidate.textContent).toContain('JE-18');
-  expect(candidate.textContent).toContain('Kandidat Cocok');
-  expect(candidate.textContent).toContain('✓ Nominal sama');
-  expect(candidate.textContent).toContain('✓ Arah sesuai');
-  expect(candidate.textContent).toContain('✓ Rekening sama');
-  const bankCandidate = container.querySelector('[data-testid=kas-bank-pair-bank-table] tr.kb-row-candidate');
-  expect(bankCandidate).toBeTruthy();
-  expect(bankCandidate.textContent).toContain('Kandidat Cocok');
-  expect(bankCandidate.textContent).toContain('✓ Nominal sama');
+  expect(candidate.textContent).toContain('Kandidat');
+  expect(candidate.textContent).not.toContain('Kandidat Cocok');
+  expect(candidate.textContent).toContain('Beda tanggal 2 hari');
+  expect(candidate.textContent).toContain('Referensi muncul di buku');
+  expect(candidate.textContent).not.toContain('Rekening sama');
+  expect(candidate.querySelector('.kb-candidate-badge').textContent).toBe('Kandidat');
+  expect(candidate.querySelector('.recon-badge.is-matched')).toBeNull();
+  const selectedBank = container.querySelector('[data-testid=kas-bank-pair-bank-table] tr.kb-row-selected');
+  expect(selectedBank).toBeTruthy();
+  expect(selectedBank.querySelector('.kb-selected-badge').textContent).toBe('Terpilih');
+  expect(selectedBank.textContent).not.toContain('Kandidat');
+  expect(container.querySelector('[data-testid=kas-bank-match-hint]').textContent).toBe('Belum memilih transaksi pembukuan');
+  expect(byText('Cocokkan').disabled).toBe(true);
   expect(container.querySelector('[data-testid=kas-bank-pair-link]').textContent).toContain('↔');
   const bookRows = [...container.querySelectorAll('[data-testid=kas-bank-pair-book-table] tbody tr')];
   expect(bookRows[1].classList.contains('kb-row-candidate')).toBe(false);
-  expect(bookRows[1].textContent).not.toContain('Kandidat Cocok');
+  expect(bookRows[1].textContent).not.toContain('Kandidat');
   expect(container.querySelector('[name=book-line]').checked).toBe(false);
   expect(api.createCashBankPair).not.toHaveBeenCalled();
   expect(container.querySelector('.recon-badge.is-matched')).toBeNull();
 });
-test('off-page suggestions stay announced and duplicate rows stay unmarked', async () => {
+test('candidate rows are ordered for display without matching or auto-selecting', async () => {
+  const far = {...book, journal_line_id:'book-far', journal_number:'JE-FAR', date:'2026-09-01', description:'Jauh'};
+  const mid = {...book, journal_line_id:'book-mid', journal_number:'JE-MID', date:'2026-09-20', description:'Tengah'};
+  const weak = {...book, journal_line_id:'book-weak', journal_number:'JE-WEAK', date:'2026-09-25', description:'Dekat lemah'};
+  const gap = {...book, journal_line_id:'book-gap', journal_number:'JE-GAP', date:'2026-09-25', description:'Nominal jauh'};
+  const exact = {...book, journal_line_id:'book-exact', journal_number:'JE-EXACT', date:'2026-09-25', description:'Paling dekat'};
+  const other = {...book, journal_line_id:'book-other', journal_number:'JE-OTHER', description:'Bukan kandidat', absolute_amount:1000};
+  workspace.book_lines=[far, other, mid, weak, gap, exact];
+  workspace.visible_book_count=6;
+  api.cashBankPairSuggestions.mockResolvedValue({ambiguous:true, applied:false, suggestions:[
+    {journal_line_id:'book-far', journal_number:'JE-FAR', date:'2026-09-01', amount:750000, direction:'in', reasons:['Nominal sama','Referensi muncul di buku']},
+    {journal_line_id:'book-weak', journal_number:'JE-WEAK', date:'2026-09-25', amount:750000, direction:'in', reasons:['Nominal sama','Referensi tidak sama']},
+    {journal_line_id:'book-gap', journal_number:'JE-GAP', date:'2026-09-25', amount:100, direction:'in', reasons:['Nominal sama','Referensi muncul di buku']},
+    {journal_line_id:'book-mid', journal_number:'JE-MID', date:'2026-09-20', amount:750000, direction:'in', reasons:['Nominal sama','Referensi muncul di buku']},
+    {journal_line_id:'book-exact', journal_number:'JE-EXACT', date:'2026-09-25', amount:750000, direction:'in', reasons:['Nominal sama','Referensi muncul di buku']},
+  ]});
+  await renderPage();
+  await click(container.querySelector('[name=bank-line]'));
+  await flush();
+  await flush();
+  const labels = [...container.querySelectorAll('[data-testid=kas-bank-pair-book-table] tbody tr')].map((row) => row.textContent);
+  const order = ['JE-EXACT','JE-GAP','JE-WEAK','JE-MID','JE-FAR','JE-OTHER'].map((token) => labels.findIndex((text) => text.includes(token)));
+  expect(order).toEqual([0,1,2,3,4,5]);
+  expect(container.querySelector('[name=book-line]').checked).toBe(false);
+  expect(api.createCashBankPair).not.toHaveBeenCalled();
+});
+test('off-page suggestions stay visible without clearing the selected bank line', async () => {
   workspace.bank_lines=[{...bank, id:'bank-dup', matchable:false, block_reason:'Dugaan duplikat belum diputuskan'}, bank];
   workspace.book_lines=[book];
-  api.cashBankPairSuggestions.mockResolvedValue({ambiguous:true, applied:false, suggestions:[{journal_line_id:'book-1', journal_number:'JE-18', reasons:['Nominal sama']},{journal_line_id:'book-off', journal_number:'JE-99', reasons:['Nominal sama']}]});
+  api.cashBankPairSuggestions.mockResolvedValue({ambiguous:true, applied:false, suggestions:[
+    {journal_line_id:'book-1', journal_number:'JE-18', date:'2026-09-26', amount:750000, direction:'in', reasons:['Nominal sama','Referensi muncul di buku']},
+    {journal_line_id:'book-off', journal_number:'JE-99', date:'2026-09-20', amount:750000, direction:'in', description:'Transfer di luar halaman', reasons:['Nominal sama','Referensi muncul di buku']},
+  ]});
   await renderPage();
   const dupRow = container.querySelector('[data-testid=kas-bank-pair-bank-table] tbody tr');
   expect(dupRow.textContent).toContain('Dugaan duplikat belum diputuskan');
   expect(dupRow.classList.contains('kb-row-candidate')).toBe(false);
-  await click(container.querySelectorAll('[name=bank-line]')[1]);
+  await click(dupRow);
+  expect(container.querySelector('[data-testid=kas-bank-match-hint]').textContent).toBe('Transaksi menunggu keputusan duplikat');
+  expect(byText('Cocokkan').disabled).toBe(true);
+  expect(api.createCashBankPair).not.toHaveBeenCalled();
+  const bankRadio = container.querySelectorAll('[name=bank-line]')[1];
+  await click(bankRadio);
   await flush();
   await flush();
-  expect(container.querySelector('[data-testid=kas-bank-offpage-candidates]').textContent).toBe('1 kandidat tersedia pada halaman lain');
+  const offPage = container.querySelector('[data-testid=kas-bank-offpage-candidates]');
+  expect(offPage.textContent).toContain('1 kandidat di luar 50 baris ini');
+  expect(offPage.textContent).toContain('JE-99');
+  expect(offPage.textContent).toContain('Beda tanggal 6 hari');
+  expect(offPage.textContent).toContain('Referensi muncul di buku');
+  expect(offPage.textContent).not.toContain('halaman lain');
+  expect(bankRadio.checked).toBe(true);
   expect(container.querySelector('[data-testid=kas-bank-pair-book-table] tr.kb-row-candidate')).toBeTruthy();
   expect(container.querySelector('[name=book-line]').checked).toBe(false);
+  const workspaceCalls = api.cashBankPairWorkspace.mock.calls.length;
+  await click(offPage.querySelector('[name=book-line]'));
+  expect(api.cashBankPairWorkspace.mock.calls.length).toBe(workspaceCalls);
+  expect(bankRadio.checked).toBe(true);
+  expect(offPage.querySelector('[name=book-line]').checked).toBe(true);
   expect(api.createCashBankPair).not.toHaveBeenCalled();
+  expect(byText('Cocokkan').disabled).toBe(false);
+  await click(byText('Cocokkan'));
+  expect(api.createCashBankPair).toHaveBeenCalledTimes(1);
+  expect(api.createCashBankPair.mock.calls[0][0]).toEqual(expect.objectContaining({statement_line_id:'bank-1', journal_line_id:'book-off'}));
 });
 test('matched and import tabs never render a matching footer or empty bank/book panels', async () => {
   workspace.matched_pairs=[pair]; await renderPage();

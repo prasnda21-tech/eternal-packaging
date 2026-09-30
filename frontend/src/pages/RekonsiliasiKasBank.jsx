@@ -546,6 +546,42 @@ const reconDate = (value) => {
   return Number.isNaN(date.getTime()) ? String(value) : new Intl.DateTimeFormat("id-ID", { day: "2-digit", month: "short", year: "numeric", timeZone: "Asia/Jakarta" }).format(date);
 };
 const reconStatus = (value) => ({ active: "Aktif", cancelled: "Dibatalkan", complete: "Selesai diimpor", importing: "Sedang diimpor", failed: "Impor gagal", posted: "Diposting" }[value] || value || "—");
+const isoDay = (value) => {
+  const text = String(value || "").slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : "";
+};
+const dateDeltaDays = (left, right) => {
+  const a = isoDay(left);
+  const b = isoDay(right);
+  if (!a || !b) return null;
+  return Math.abs(Math.round((Date.parse(`${a}T00:00:00Z`) - Date.parse(`${b}T00:00:00Z`)) / 86400000));
+};
+const referenceRank = (reasons) => {
+  const text = (reasons || []).join(" ").toLowerCase();
+  if (text.includes("referensi muncul")) return 0;
+  if (text.includes("referensi tidak sama")) return 1;
+  return 2;
+};
+const sortCandidateSuggestions = (items, bankRow) => [...(items || [])].sort((left, right) => {
+  const leftDelta = dateDeltaDays(bankRow?.date, left?.date);
+  const rightDelta = dateDeltaDays(bankRow?.date, right?.date);
+  const deltaScore = (leftDelta == null ? Number.MAX_SAFE_INTEGER : leftDelta) - (rightDelta == null ? Number.MAX_SAFE_INTEGER : rightDelta);
+  if (deltaScore) return deltaScore;
+  const referenceScore = referenceRank(left?.reasons) - referenceRank(right?.reasons);
+  if (referenceScore) return referenceScore;
+  const bankAmount = Number(bankRow?.amount || 0);
+  return Math.abs(Number(left?.amount || 0) - bankAmount) - Math.abs(Number(right?.amount || 0) - bankAmount);
+});
+const candidateNotes = (item, bankRow) => {
+  const notes = [];
+  const delta = dateDeltaDays(bankRow?.date, item?.date);
+  if (delta === 0) notes.push("Tanggal sama");
+  else if (delta != null) notes.push(`Beda tanggal ${delta} hari`);
+  const reference = (item?.reasons || []).find((reason) => String(reason).toLowerCase().includes("referensi"));
+  if (reference) notes.push(reference);
+  else if (bankRow?.reference) notes.push(`Referensi ${bankRow.reference}`);
+  return notes;
+};
 const reconDateTime = (value) => {
   if (!value) return "—";
   const date = new Date(value);
@@ -1002,10 +1038,7 @@ export default function RekonsiliasiKasBank() {
 
   const closing = workspace?.statement_closing;
   const selectedBankRow = bankRows.find((row) => row.id === selectedBank);
-  const selectedBookRow = bookRows.find((row) => row.journal_line_id === selectedBook);
-  const selectedBankTotal = selectedBankRow ? Number(selectedBankRow.amount || 0) : 0;
-  const selectedBookTotal = selectedBookRow ? Number(selectedBookRow.absolute_amount || 0) : 0;
-  const selectionDiff = selectedBank && selectedBook ? selectedBankTotal - selectedBookTotal : null;
+  const pageBookRow = bookRows.find((row) => row.journal_line_id === selectedBook);
 
   if (mode === "legacy") {
     return (
@@ -1023,12 +1056,47 @@ export default function RekonsiliasiKasBank() {
   const visibleBank = bankRows.filter((row) => !row.claim_id);
   const visibleBook = bookRows.filter((row) => !row.claim_id);
   const suggestionList = suggestions?.suggestions || [];
-  const candidateIds = new Set(suggestionList.map((item) => item.journal_line_id));
+  const sortedSuggestions = sortCandidateSuggestions(suggestionList, selectedBankRow);
+  const suggestionById = new Map(sortedSuggestions.map((item) => [item.journal_line_id, item]));
+  const candidateIds = new Set(suggestionById.keys());
   const visibleBookIds = new Set(visibleBook.map((row) => row.journal_line_id));
-  const offPageCandidateCount = suggestionList.filter((item) => !visibleBookIds.has(item.journal_line_id)).length;
-  const bankHasCandidate = suggestionList.length > 0;
+  const offPageSuggestions = sortedSuggestions.filter((item) => !visibleBookIds.has(item.journal_line_id));
+  const suggestionBookRow = (item) => ({
+    journal_line_id: item.journal_line_id,
+    journal_number: item.journal_number || "—",
+    date: item.date,
+    description: item.description || item.journal_number || "Kandidat pembukuan",
+    direction: item.direction || selectedBankRow?.direction,
+    absolute_amount: item.amount,
+    currency_code: item.currency_code || selectedBankRow?.currency_code || currency,
+    matchable: true,
+    status: "posted",
+  });
+  const selectedBookRow = pageBookRow || sortedSuggestions.map(suggestionBookRow).find((row) => row.journal_line_id === selectedBook);
+  const orderedBook = (() => {
+    const candidates = [];
+    const rest = [];
+    visibleBook.forEach((row) => (candidateIds.has(row.journal_line_id) ? candidates : rest).push(row));
+    candidates.sort((left, right) => sortedSuggestions.findIndex((item) => item.journal_line_id === left.journal_line_id) - sortedSuggestions.findIndex((item) => item.journal_line_id === right.journal_line_id));
+    return [...candidates, ...rest];
+  })();
+  const selectedBankTotal = selectedBankRow ? Number(selectedBankRow.amount || 0) : 0;
+  const selectedBookTotal = selectedBookRow ? Number(selectedBookRow.absolute_amount || 0) : 0;
+  const selectionDiff = selectedBank && selectedBook ? selectedBankTotal - selectedBookTotal : null;
+  const bankHasCandidate = sortedSuggestions.length > 0;
   const ready = phase === "ready";
   const canMatch = ready && !busy && workspace?.feature_ready !== false && selectedBankRow?.matchable && selectedBookRow?.matchable;
+  const matchHint = (() => {
+    if (!canReconcile) return "Tidak berizin mencocokkan";
+    if (busy) return "Sedang memproses";
+    if (!ready) return "Data rekonsiliasi belum siap";
+    if (workspace?.feature_ready === false) return workspace.feature_message || "Pencocokan belum tersedia";
+    if (!selectedBankRow) return "Belum memilih transaksi bank";
+    if (!selectedBankRow.matchable) return /duplikat/i.test(selectedBankRow.block_reason || "") ? "Transaksi menunggu keputusan duplikat" : (selectedBankRow.block_reason || "Transaksi bank tidak dapat dicocokkan");
+    if (!selectedBookRow) return "Belum memilih transaksi pembukuan";
+    if (!selectedBookRow.matchable) return selectedBookRow.block_reason || "Transaksi pembukuan tidak dapat dicocokkan";
+    return "Satu transaksi di setiap sisi";
+  })();
   const matched = workspace?.matched_pairs || [];
   const sample = preview?.sample_rows || [];
   const headers = sample[Number(mapping.header_row) || 0] || [];
@@ -1096,7 +1164,6 @@ export default function RekonsiliasiKasBank() {
 
       {tab === "unmatched" && <div className="recon-tab-body" role="tabpanel" id="recon-panel-unmatched" aria-labelledby="recon-tab-unmatched">
         <div className="kb-pane-switch" aria-label="Panel"><button type="button" aria-pressed={pane === "bank"} className={pane === "bank" ? "primary sm" : "ghost sm"} onClick={() => setPane("bank")}>Bank</button><button type="button" aria-pressed={pane === "book"} className={pane === "book" ? "primary sm" : "ghost sm"} onClick={() => setPane("book")}>Buku</button></div>
-        {offPageCandidateCount > 0 && <p className="kb-offpage-candidates" data-testid="kas-bank-offpage-candidates">{offPageCandidateCount} kandidat tersedia pada halaman lain</p>}
         <div className={`kb-pair-columns${bankHasCandidate ? " has-link" : ""}`}>
           <section className={`kb-pane ${pane === "bank" ? "is-shown" : ""}`} aria-label="Mutasi bank">
             <div className="recon-pane-title"><h2>Mutasi Bank</h2><span>{ready ? `${visibleBank.length} baris ditampilkan` : ""}</span></div>
@@ -1104,11 +1171,10 @@ export default function RekonsiliasiKasBank() {
             {bankView === "results" && visibleBank.length > 0 && <div className="kb-pair-scroll"><table className="prod-table kas-bank-table" data-testid="kas-bank-pair-bank-table">
               <thead><tr><th aria-label="Pilih satu baris" /><th>Tanggal</th><th>Uraian / Referensi</th><th className="num">Masuk</th><th className="num">Keluar</th></tr></thead><tbody>
                 {visibleBank.map((row) => {
-                  const showCandidate = bankHasCandidate && selectedBank === row.id;
-                  const bankClass = [selectedBank === row.id ? "kb-row-matched" : "", showCandidate ? "kb-row-candidate" : ""].filter(Boolean).join(" ");
-                  return <tr key={row.id} className={bankClass}>
-                  <td><input type="radio" name="bank-line" checked={selectedBank === row.id} onChange={() => pickBank(row)} disabled={!row.matchable || busy || !canReconcile} aria-label={`Pilih bank ${row.description}`} /></td>
-                  <td className="recon-date">{reconDate(row.date)}</td><td><span className="recon-description">{row.description || "—"}</span><small>{row.reference || "—"}</small>{showCandidate && <span className="recon-badge kb-candidate-badge">Kandidat Cocok</span>}{showCandidate && <small className="kb-candidate-reason">✓ Nominal sama</small>}{showCandidate && <small className="kb-candidate-reason">✓ Arah sesuai</small>}{showCandidate && <small className="kb-candidate-reason">✓ Rekening sama</small>}{row.original_date === "PEND" && row.date_status === "temporary" && <small>PEND - tanggal sementara</small>}{row.block_reason && <span className="recon-row-warning">{row.block_reason}</span>}{row.identity_guarantee === "tidak_dijamin" && <small>Identitas bank tidak dijamin</small>}</td>
+                  const bankSelected = selectedBank === row.id;
+                  return <tr key={row.id} className={bankSelected ? "kb-row-selected" : ""} onClick={() => { if (!busy && canReconcile) pickBank(row); }}>
+                  <td><input type="radio" name="bank-line" checked={bankSelected} onChange={() => pickBank(row)} disabled={!row.matchable || busy || !canReconcile} aria-label={`Pilih bank ${row.description}`} /></td>
+                  <td className="recon-date">{reconDate(row.date)}</td><td><span className="recon-description">{row.description || "—"}</span><small>{row.reference || "—"}</small>{bankSelected && <span className="recon-badge kb-selected-badge">Terpilih</span>}{row.original_date === "PEND" && row.date_status === "temporary" && <small>PEND - tanggal sementara</small>}{row.block_reason && <span className="recon-row-warning">{row.block_reason}</span>}{row.identity_guarantee === "tidak_dijamin" && <small>Identitas bank tidak dijamin</small>}</td>
                   <td className="num kb-money">{amountCell(row, "in", row.amount)}</td><td className="num kb-money">{amountCell(row, "out", row.amount)}</td>
                 </tr>;
                 })}
@@ -1117,15 +1183,35 @@ export default function RekonsiliasiKasBank() {
           {bankHasCandidate && <div className="kb-pair-link" data-testid="kas-bank-pair-link" aria-hidden="true"><span /><strong>↔</strong><span /></div>}
           <section className={`kb-pane ${pane === "book" ? "is-shown" : ""}`} aria-label="Pembukuan Eternal">
             <div className="recon-pane-title"><h2>Pembukuan Eternal</h2><span>{ready ? `${visibleBook.length} baris ditampilkan` : ""}</span></div>
+            {offPageSuggestions.length > 0 && <div className="kb-offpage-candidates" data-testid="kas-bank-offpage-candidates">
+              <p>{offPageSuggestions.length} kandidat di luar 50 baris ini. Pilihan bank tetap aktif.</p>
+              <table className="prod-table kas-bank-table" data-testid="kas-bank-offpage-table">
+                <tbody>
+                  {offPageSuggestions.map((item) => {
+                    const row = suggestionBookRow(item);
+                    const notes = candidateNotes(item, selectedBankRow);
+                    const bookSelected = selectedBook === row.journal_line_id;
+                    return <tr key={row.journal_line_id} className={bookSelected ? "kb-row-selected" : "kb-row-candidate"}>
+                      <td><input type="radio" name="book-line" checked={bookSelected} onChange={() => { setSelectedBook(row.journal_line_id); matchKey.current = newOperationKey(); }} disabled={busy || !canReconcile} aria-label={`Pilih buku ${row.journal_number}`} /></td>
+                      <td className="recon-date">{reconDate(row.date)}</td>
+                      <td><span className="recon-description">{row.description}</span><small>{row.journal_number}</small>{bookSelected ? <span className="recon-badge kb-selected-badge">Terpilih</span> : <span className="recon-badge kb-candidate-badge">Kandidat</span>}{notes.map((note) => <small key={note} className="kb-candidate-reason">{note}</small>)}</td>
+                      <td className="num kb-money">{amountCell(row, "in", row.absolute_amount)}</td><td className="num kb-money">{amountCell(row, "out", row.absolute_amount)}</td>
+                    </tr>;
+                  })}
+                </tbody>
+              </table>
+            </div>}
             {stateMessage(bookView, "pembukuan", visibleBook.length)}
             {bookView === "results" && visibleBook.length > 0 && <div className="kb-pair-scroll"><table className="prod-table kas-bank-table" data-testid="kas-bank-pair-book-table">
               <thead><tr><th aria-label="Pilih satu baris" /><th>Tanggal</th><th>Uraian / Dokumen</th><th className="num">Masuk</th><th className="num">Keluar</th></tr></thead><tbody>
-                {visibleBook.map((row) => {
-                  const isCandidate = candidateIds.has(row.journal_line_id);
-                  const bookClass = [selectedBook === row.journal_line_id ? "kb-row-matched" : "", isCandidate ? "kb-row-candidate" : ""].filter(Boolean).join(" ");
-                  return <tr key={row.journal_line_id} className={bookClass}>
-                  <td><input type="radio" name="book-line" checked={selectedBook === row.journal_line_id} onChange={() => { setSelectedBook(row.journal_line_id); matchKey.current = newOperationKey(); }} disabled={!row.matchable || busy || !canReconcile} aria-label={`Pilih buku ${row.journal_number}`} /></td>
-                  <td className="recon-date">{reconDate(row.date)}</td><td><span className="recon-description">{row.description || "—"}</span><small>{row.source_path && row.source_id ? <Link to={`${row.source_path}?id=${encodeURIComponent(row.source_id)}`}>{row.journal_number}</Link> : row.journal_number}</small>{isCandidate && <span className="recon-badge kb-candidate-badge">Kandidat Cocok</span>}{isCandidate && <small className="kb-candidate-reason">✓ Nominal sama</small>}{isCandidate && <small className="kb-candidate-reason">✓ Arah sesuai</small>}{isCandidate && <small className="kb-candidate-reason">✓ Rekening sama</small>}{row.block_reason && <span className="recon-row-warning">{row.block_reason}</span>}<small>{reconStatus(row.status)}</small></td>
+                {orderedBook.map((row) => {
+                  const suggestion = suggestionById.get(row.journal_line_id);
+                  const isCandidate = Boolean(suggestion);
+                  const bookSelected = selectedBook === row.journal_line_id;
+                  const notes = isCandidate ? candidateNotes(suggestion, selectedBankRow) : [];
+                  return <tr key={row.journal_line_id} className={bookSelected ? "kb-row-selected" : isCandidate ? "kb-row-candidate" : ""}>
+                  <td><input type="radio" name="book-line" checked={bookSelected} onChange={() => { setSelectedBook(row.journal_line_id); matchKey.current = newOperationKey(); }} disabled={!row.matchable || busy || !canReconcile} aria-label={`Pilih buku ${row.journal_number}`} /></td>
+                  <td className="recon-date">{reconDate(row.date)}</td><td><span className="recon-description">{row.description || "—"}</span><small>{row.source_path && row.source_id ? <Link to={`${row.source_path}?id=${encodeURIComponent(row.source_id)}`}>{row.journal_number}</Link> : row.journal_number}</small>{bookSelected && <span className="recon-badge kb-selected-badge">Terpilih</span>}{isCandidate && !bookSelected && <span className="recon-badge kb-candidate-badge">Kandidat</span>}{notes.map((note) => <small key={note} className="kb-candidate-reason">{note}</small>)}{row.block_reason && <span className="recon-row-warning">{row.block_reason}</span>}<small>{reconStatus(row.status)}</small></td>
                   <td className="num kb-money">{amountCell(row, "in", row.absolute_amount)}</td><td className="num kb-money">{amountCell(row, "out", row.absolute_amount)}</td>
                 </tr>;
                 })}
@@ -1203,7 +1289,7 @@ export default function RekonsiliasiKasBank() {
         <div><span>Pilihan bank</span><strong>{selectedBankRow ? money(selectedBankTotal, selectedBankRow.currency_code || currency) : "—"}</strong></div>
         <div><span>Pilihan buku</span><strong>{selectedBookRow ? money(selectedBookTotal, selectedBookRow.currency_code || currency) : "—"}</strong></div>
         <div><span>Selisih pilihan</span><strong>{selectionDiff == null ? "—" : money(selectionDiff)}</strong></div>
-        <div className="recon-footer-action"><small>Satu transaksi di setiap sisi</small>{canReconcile && <button type="button" className="primary" disabled={!canMatch} onClick={onMatch} data-testid="kas-bank-pair-match"><Link2 size={17} />{busy ? "Memproses…" : "Cocokkan"}</button>}{canOpenPayment && <Link to="/kas-bank/pembayaran">Buka Pembayaran</Link>}</div>
+        <div className="recon-footer-action"><span className="kb-match-hint" data-testid="kas-bank-match-hint">{matchHint}</span>{canReconcile && <button type="button" className="primary" disabled={!canMatch} onClick={onMatch} data-testid="kas-bank-pair-match"><Link2 size={17} />{busy ? "Memproses…" : "Cocokkan"}</button>}{canOpenPayment && <Link to="/kas-bank/pembayaran">Buka Pembayaran</Link>}</div>
       </footer>}
 
       <dialog ref={importDialog} className="recon-import-dialog" aria-labelledby="recon-import-title" onCancel={(event) => { if (busy) event.preventDefault(); else setImportOpen(false); }} onClose={() => { setImportOpen(false); importButton.current?.focus(); }}>
