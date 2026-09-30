@@ -73,6 +73,9 @@
 .kas-bank-page.recon-workspace .recon-footer-action > small, .kas-bank-page.recon-workspace .recon-footer-action > a { font-size:11px; }
 .kas-bank-page.recon-workspace .recon-badge { display:inline-block; border-radius:4px; padding:3px 7px; background:#edf6f0; color:#236043; font-size:11px; }
 .kas-bank-page.recon-workspace .recon-badge.is-warning { background:#fff1d7; color:#87550b; }
+.kas-bank-page.recon-workspace .recon-badge.is-matched { background:#146344; color:#fff; font-weight:650; }
+.kas-bank-page.recon-workspace .kas-bank-table tr.kb-row-reconciled td { background:#e1f3e8; }
+.kas-bank-page.recon-workspace .kas-bank-table tr.kb-row-reconciled:hover td { background:#d5ecdf; }
 .kas-bank-page.recon-workspace .recon-import-resume { display:flex; align-items:center; gap:12px; justify-content:space-between; padding:10px 12px; background:#fff8e8; }
 .kas-bank-page.recon-workspace .recon-notice { padding:9px 12px; background:#fff7e6; color:#80500a; border:1px solid #efdbaf; border-radius:6px; }
 .kas-bank-page.recon-workspace .recon-message { margin:0; font-size:12px; }

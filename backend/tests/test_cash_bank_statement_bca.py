@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import sys
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 import json
@@ -23,7 +24,13 @@ from server import app, current_user
 from services.cash_bank_master import ensure_indexes as ensure_cash_bank_indexes
 from services.cash_bank_reconciliation import RECON_MATCHES, ensure_indexes as ensure_recon_indexes
 from services.cash_bank_statement import IMPORTS, LINES, PREVIEWS, StatementValidationError, ensure_indexes as ensure_statement_indexes
-from services.cash_bank_statement_bca import HEADER_ALIASES, ROLES, parse_bca_statement, statement_rows_from_bca
+from services.cash_bank_statement_bca import (
+    HEADER_ALIASES,
+    ROLES,
+    jakarta_import_date,
+    parse_bca_statement,
+    statement_rows_from_bca,
+)
 from services.chart_of_accounts import create_account, ensure_indexes as ensure_coa_indexes
 from services.journal_core import JOURNAL_ENTRIES, JOURNAL_LINES, ensure_indexes as ensure_journal_indexes
 
@@ -208,40 +215,38 @@ def test_pend_stays_pending_and_short_date_is_not_inferred():
     pend = parsed["rows"][0]
     assert pend["tanggal"] is None
     assert pend["original_date"] == "PEND"
-    assert pend["date_status"] == "pending_confirmation"
+    assert pend["date_status"] == "temporary"
     assert "2026-09-01" not in json.dumps(pend)
     assert [err["message"] for err in parsed["errors"]] == ["Tanggal tidak valid"]
 
 
-def test_pend_confirmation_requires_calendar_date_and_reason():
+def test_jakarta_import_date_stays_on_the_indonesia_calendar():
+    same_day = datetime(2026, 9, 30, 16, 30, tzinfo=timezone.utc)
+    next_day = datetime(2026, 9, 30, 17, 30, tzinfo=timezone.utc)
+    assert jakarta_import_date(same_day) == "2026-09-30"
+    assert jakarta_import_date(next_day) == "2026-10-01"
+
+
+def test_pend_uses_import_date_not_description_or_operator_date(monkeypatch):
+    monkeypatch.setattr(
+        "services.cash_bank_statement_bca.jakarta_import_date",
+        lambda now=None: "2026-09-30",
+    )
     payload = PEND_CSV.encode("utf-8")
-    pending = statement_rows_from_bca("bca-pend.csv", payload, "IDR")
-    assert pending["pending"][0]["tanggal"] is None
-    assert pending["accepted"][0]["description"] == "Transfer valid"
-    assert pending["errors"][0]["message"] == "Baris PEND belum dikonfirmasi"
-    with pytest.raises(StatementValidationError, match="Alasan konfirmasi wajib"):
-        statement_rows_from_bca("bca-pend.csv", payload, "IDR", confirmations=[{
-            "source_row": 3, "tanggal": "2026-09-30", "alasan": "   ",
-        }])
-    with pytest.raises(StatementValidationError, match="Tanggal tidak valid"):
-        statement_rows_from_bca("bca-pend.csv", payload, "IDR", confirmations=[{
-            "source_row": 3, "tanggal": "2026-02-31", "alasan": "Konfirmasi dari rekening koran BCA",
-        }])
-    with pytest.raises(StatementValidationError, match="Konfirmasi tidak sesuai baris PEND"):
-        statement_rows_from_bca("bca-pend.csv", payload, "IDR", confirmations=[{
-            "source_row": 4, "tanggal": "2026-09-30", "alasan": "Bukan baris PEND",
-        }])
-    confirmed = statement_rows_from_bca("bca-pend.csv", payload, "IDR", confirmations=[{
-        "source_row": 3, "tanggal": "2026-09-30", "alasan": "Konfirmasi dari rekening koran BCA",
-    }], actor={"id": "operator-1"}, confirmed_at="2026-09-29T00:00:00Z")
-    assert confirmed["errors"] == []
-    assert confirmed["pending"] == []
-    pend = next(row for row in confirmed["accepted"] if row["original_date"] == "PEND")
+    imported = statement_rows_from_bca("bca-pend.csv", payload, "IDR", confirmations=[{
+        "source_row": 3, "tanggal": "2026-09-01", "alasan": "Tanggal operator diabaikan",
+    }])
+    assert imported["errors"] == []
+    assert imported["pending"] == []
+    assert imported["accepted"][1]["description"] == "Transfer valid"
+    assert imported["accepted"][1]["date"] == "2026-09-02"
+    pend = next(row for row in imported["accepted"] if row["original_date"] == "PEND")
     assert pend["date"] == "2026-09-30"
     assert pend["date"] != "2026-09-01"
-    assert pend["date_status"] == "confirmed"
-    assert pend["date_confirmation"]["reason"] == "Konfirmasi dari rekening koran BCA"
-    assert pend["date_confirmation"]["confirmed_by"] == {"id": "operator-1"}
+    assert pend["date_source"] == "import_date"
+    assert pend["date_status"] == "temporary"
+    assert "date_confirmation" not in pend
+    assert "2909" not in pend["date"]
 
 
 def test_parser_source_does_not_import_or_post():
@@ -416,32 +421,29 @@ def test_klikbca_pend_does_not_take_the_periode_year():
     pend = parsed["rows"][2]
     assert pend["tanggal"] is None
     assert pend["original_date"] == "PEND"
-    assert pend["date_status"] == "pending_confirmation"
+    assert pend["date_status"] == "temporary"
     assert "2026-09-01" not in json.dumps(pend)
     payload = KLIKBCA_CSV.encode("utf-8")
-    pending = statement_rows_from_bca("klikbca.csv", payload, "IDR")
-    assert pending["pending"][0]["tanggal"] is None
-    assert pending["pending"][0]["original_date"] == "PEND"
-    assert [row["description"] for row in pending["accepted"]] == [
+    imported = statement_rows_from_bca("klikbca.csv", payload, "IDR", import_date="2026-09-30")
+    assert imported["errors"] == []
+    assert imported["pending"] == []
+    stored = next(row for row in imported["accepted"] if row.get("original_date") == "PEND")
+    assert stored["date"] == "2026-09-30"
+    assert stored["date_source"] == "import_date"
+    assert stored["date_status"] == "temporary"
+    assert stored["direction"] == "out"
+    assert stored["amount"] == 100000
+    assert "0409" not in stored["description"]
+    dated = [row for row in imported["accepted"] if row.get("original_date") != "PEND"]
+    assert [row["description"] for row in dated] == [
         "TRSF E-BANKING DB 0409/FTSCY/WS95011 akomodasi",
         "TRSF E-BANKING CR 0509/FTSCY/WS95011 jasa",
         "Transfer singkat",
     ]
-    assert pending["accepted"][0]["direction"] == "out"
-    assert pending["accepted"][0]["amount"] == 500000
-    assert pending["accepted"][0]["date"] == "2026-09-04"
-    assert pending["accepted"][0]["reference"] is None
-    assert pending["errors"][0]["message"] == "Baris PEND belum dikonfirmasi"
-    confirmed = statement_rows_from_bca("klikbca.csv", payload, "IDR", confirmations=[{
-        "source_row": pend["source_row"],
-        "tanggal": "2026-09-30",
-        "alasan": "Konfirmasi dari rekening koran BCA",
-    }])
-    stored = next(row for row in confirmed["accepted"] if row.get("original_date") == "PEND")
-    assert stored["date"] == "2026-09-30"
-    assert stored["date_status"] == "confirmed"
-    assert stored["direction"] == "out"
-    assert stored["amount"] == 100000
+    assert dated[0]["direction"] == "out"
+    assert dated[0]["amount"] == 500000
+    assert dated[0]["date"] == "2026-09-04"
+    assert dated[0]["reference"] is None
 
 
 def test_klikbca_marker_and_missing_jumlah_are_rejected():
@@ -505,16 +507,18 @@ def test_klikbca_english_header_reads_amount_layout():
     pend = parsed["rows"][2]
     assert pend["tanggal"] is None
     assert pend["original_date"] == "PEND"
-    assert pend["date_status"] == "pending_confirmation"
+    assert pend["date_status"] == "temporary"
     assert "2026-09-01" not in json.dumps(pend)
     payload = KLIKBCA_ENGLISH_CSV.encode("utf-8")
-    pending = statement_rows_from_bca("klikbca-english.csv", payload, "IDR")
-    assert pending["pending"][0]["original_date"] == "PEND"
-    assert pending["pending"][0]["tanggal"] is None
-    assert pending["errors"][0]["message"] == "Baris PEND belum dikonfirmasi"
-    assert [(row["description"], row["direction"], row["amount"]) for row in pending["accepted"]] == [
-        ("TRSF E-BANKING DB", "out", 70000000),
-        ("BI-FAST CR", "in", 1000000),
+    imported = statement_rows_from_bca("klikbca-english.csv", payload, "IDR", import_date="2026-09-30")
+    assert imported["errors"] == []
+    stored = next(row for row in imported["accepted"] if row.get("original_date") == "PEND")
+    assert stored["date"] == "2026-09-30"
+    assert stored["date_source"] == "import_date"
+    assert [(row["description"], row["direction"], row["amount"], row["date"]) for row in imported["accepted"]] == [
+        ("TRSF E-BANKING DB", "out", 70000000, "2026-09-28"),
+        ("BI-FAST CR", "in", 1000000, "2026-09-29"),
+        ("BI-FAST CR menunggu", "in", 500000, "2026-09-30"),
     ]
 
 
@@ -526,7 +530,7 @@ PEND,TRSF E-BANKING CR polos,0000,500000.00,CR,7969980.85
 """
 
 
-def test_klikbca_apostrophe_pend_matches_plain_pend_and_needs_confirmation():
+def test_klikbca_apostrophe_pend_imports_with_the_same_jakarta_date():
     parsed = _parse(KLIKBCA_PEND_CSV, "klikbca-pend-apostrof.csv")
     assert parsed["errors"] == []
     apostrophe, plain, dated = parsed["rows"]
@@ -535,27 +539,25 @@ def test_klikbca_apostrophe_pend_matches_plain_pend_and_needs_confirmation():
     for pend in (apostrophe, plain):
         assert pend["tanggal"] is None
         assert pend["original_date"] == "PEND"
-        assert pend["date_status"] == "pending_confirmation"
-        assert "2026-09" not in json.dumps(pend["tanggal"])
+        assert pend["date_status"] == "temporary"
+        assert pend["keterangan"] not in ("2909", "2809")
     assert dated["tanggal"] == "2026-09-28"
     payload = KLIKBCA_PEND_CSV.encode("utf-8")
-    blocked = statement_rows_from_bca("klikbca-pend-apostrof.csv", payload, "IDR")
-    assert [row["original_date"] for row in blocked["pending"]] == ["PEND", "PEND"]
-    assert [row["tanggal"] for row in blocked["pending"]] == [None, None]
-    assert [err["message"] for err in blocked["errors"]] == [
-        "Baris PEND belum dikonfirmasi",
-        "Baris PEND belum dikonfirmasi",
-    ]
-    assert [row["description"] for row in blocked["accepted"]] == ["TRSF E-BANKING DB"]
-    confirmed = statement_rows_from_bca("klikbca-pend-apostrof.csv", payload, "IDR", confirmations=[
-        {"source_row": 3, "tanggal": "2026-09-29", "alasan": "Konfirmasi apostrof PEND"},
-        {"source_row": 4, "tanggal": "2026-09-30", "alasan": "Konfirmasi PEND"},
-    ])
-    assert confirmed["errors"] == []
-    assert confirmed["pending"] == []
-    stored = [row for row in confirmed["accepted"] if row.get("original_date") == "PEND"]
-    assert [row["date"] for row in stored] == ["2026-09-29", "2026-09-30"]
-    assert [row["date_status"] for row in stored] == ["confirmed", "confirmed"]
+    imported = statement_rows_from_bca(
+        "klikbca-pend-apostrof.csv", payload, "IDR", import_date="2026-09-30",
+        confirmations=[
+            {"source_row": 3, "tanggal": "2026-09-29", "alasan": "Diabaikan"},
+            {"source_row": 4, "tanggal": "2026-09-15", "alasan": "Diabaikan"},
+        ],
+    )
+    assert imported["errors"] == []
+    assert imported["pending"] == []
+    stored = [row for row in imported["accepted"] if row.get("original_date") == "PEND"]
+    assert [row["date"] for row in stored] == ["2026-09-30", "2026-09-30"]
+    assert [row["date_source"] for row in stored] == ["import_date", "import_date"]
+    assert [row["date_status"] for row in stored] == ["temporary", "temporary"]
+    assert imported["accepted"][2]["date"] == "2026-09-28"
+    assert imported["accepted"][2]["description"] == "TRSF E-BANKING DB"
 
 
 async def test_preview_endpoint_does_not_write_or_create_journal(mongo_db):
@@ -664,34 +666,26 @@ async def test_bca_preview_binding_rejects_other_account_file_and_currency(mongo
         assert stored == {"date": "2026-09-01", "direction": "out", "amount": 1500000, "currency_code": "USD"}
 
 
-async def test_unconfirmed_pend_rejects_the_whole_bca_import(mongo_db):
+async def test_pend_imports_without_confirmation_and_stores_jakarta_metadata(mongo_db, monkeypatch):
     del mongo_db
+    monkeypatch.setattr(
+        "services.cash_bank_statement_bca.jakarta_import_date",
+        lambda now=None: "2026-09-30",
+    )
     payload = PEND_CSV.encode("utf-8")
     async with await _client(_user()) as client:
         bank = await _account(client)
         preview = await client.post("/api/cash-bank/statements/bca/preview", **_preview_form(bank["id"], payload, filename="bca-pend.csv"))
         assert preview.status_code == 200, preview.text
         shown = preview.json()
-        pend = next(row for row in shown["rows"] if row["date_status"] == "pending_confirmation")
-        assert pend["tanggal"] is None
-        assert pend["original_date"] == "PEND"
-        blocked = await client.post(
-            "/api/cash-bank/statements/bca/imports",
-            **_import_form(bank["id"], shown, payload, filename="bca-pend.csv"),
-        )
-        assert blocked.status_code == 400
-        assert "belum dikonfirmasi" in blocked.text
-        assert await server.db[LINES].count_documents({}) == 0
-        assert await server.db[IMPORTS].count_documents({}) == 0
-        assert await server.db[JOURNAL_ENTRIES].count_documents({}) == 0
-        assert await server.db[RECON_MATCHES].count_documents({}) == 0
+        pend = next(row for row in shown["rows"] if row["original_date"] == "PEND")
+        assert pend["tanggal"] == "2026-09-30"
+        assert pend["date_source"] == "import_date"
+        assert pend["date_status"] == "temporary"
+        assert pend["tanggal"] != "2026-09-01"
         imported = await client.post(
             "/api/cash-bank/statements/bca/imports",
-            **_import_form(bank["id"], shown, payload, filename="bca-pend.csv", confirmations=[{
-                "source_row": pend["source_row"],
-                "tanggal": "2026-09-30",
-                "alasan": "Konfirmasi dari rekening koran BCA",
-            }]),
+            **_import_form(bank["id"], shown, payload, filename="bca-pend.csv"),
         )
         assert imported.status_code == 201, imported.text
         assert await server.db[LINES].count_documents({"cash_bank_id": bank["id"]}) == 2
@@ -699,12 +693,11 @@ async def test_unconfirmed_pend_rejects_the_whole_bca_import(mongo_db):
         assert await server.db[RECON_MATCHES].count_documents({}) == 0
         stored = await server.db[LINES].find_one(
             {"cash_bank_id": bank["id"], "original_date": "PEND"},
-            {"_id": 0, "date": 1, "original_date": 1, "date_status": 1, "date_confirmation": 1, "description": 1},
+            {"_id": 0, "date": 1, "original_date": 1, "date_source": 1, "date_status": 1, "date_confirmation": 1, "description": 1},
         )
         assert stored["date"] == "2026-09-30"
         assert stored["date"] != "2026-09-01"
         assert stored["description"] == "Uraian menyebut 01/09/2026"
-        assert stored["date_status"] == "confirmed"
-        assert stored["date_confirmation"]["reason"] == "Konfirmasi dari rekening koran BCA"
-        assert stored["date_confirmation"]["confirmed_at"]
-        assert stored["date_confirmation"]["confirmed_by"]["id"]
+        assert stored["date_source"] == "import_date"
+        assert stored["date_status"] == "temporary"
+        assert "date_confirmation" not in stored
