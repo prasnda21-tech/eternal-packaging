@@ -27,6 +27,13 @@ describe("HR & Payroll UI source", () => {
     expect(page).toMatch(/Status jurnal/);
     expect(page).toMatch(/hr-payroll-reverse-summary/);
     expect(page).toMatch(/payroll_accounting\.post/);
+    expect(page).toMatch(/hr-payroll-post-accounting/);
+    expect(page).toMatch(/Post Accounting Payroll\?/);
+    expect(page).toMatch(/hr-payroll-open-journal/);
+    expect(page).toMatch(/Journal:/);
+    expect(page).toMatch(/hrPayrollPeriodJournal/);
+    expect(page).toMatch(/accounting_ready === true/);
+    expect(page).toMatch(/Accounting: \{selected\.accounting_journal_id \? "Posted"/);
     expect(page).toMatch(/payroll_payment\.create/);
     expect(page).toMatch(/payroll_payment\.approve/);
     expect(page).toMatch(/payroll_payment\.post/);

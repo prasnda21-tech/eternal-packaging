@@ -490,11 +490,29 @@ function AttendanceEditor({ period, employees, attendance, onSaved }) {
 
 const PAYROLL_MONTHS = ["Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus", "September", "Oktober", "November", "Desember"];
 
-function payrollTitle(period) {
+function payrollMonthLabel(period) {
   const month = Number(period?.month);
   const year = period?.year;
-  if (month >= 1 && month <= 12 && year) return `Payroll ${PAYROLL_MONTHS[month - 1]} ${year}`;
+  if (month >= 1 && month <= 12 && year) return `${PAYROLL_MONTHS[month - 1]} ${year}`;
   return period?.period_number || "Payroll";
+}
+
+function payrollTitle(period) {
+  const label = payrollMonthLabel(period);
+  return label === (period?.period_number || "Payroll") ? label : `Payroll ${label}`;
+}
+
+function ledgerHref(period, readiness) {
+  const payable = (readiness?.planned_lines || []).find((row) => previewIsPayable(row));
+  const params = new URLSearchParams();
+  if (period?.end_date) {
+    const date = String(period.end_date).slice(0, 10);
+    params.set("start_date", date);
+    params.set("end_date", date);
+  }
+  if (payable?.account_id) params.set("account_id", payable.account_id);
+  const query = params.toString();
+  return query ? `/buku-besar/buku-besar?${query}` : "/buku-besar/buku-besar";
 }
 
 function actorName(actor) {
@@ -532,11 +550,10 @@ function financeSteps(period, payment) {
 function financeAction(period, payment, readiness, hasPerm) {
   if (period?.status !== "FINAL") return null;
   if (!period.accounting_journal_id) {
-    if (!hasPerm("payroll_accounting.post")) return null;
     if (readiness && readiness.accounting_ready === false) {
       return { kind: "blocked", text: (readiness.reasons || []).join(" · ") || "Akuntansi belum siap." };
     }
-    return { kind: "post-accrual", label: "Post Accounting" };
+    return null;
   }
   if (!payment) {
     if (!hasPerm("payroll_payment.create")) return null;
@@ -658,7 +675,6 @@ function PayrollFinanceFlow({ period, lines, readiness, payment, banks, onChange
               <button type="button" className="ghost sm" disabled={Boolean(busy)} onClick={() => setDialog("")}>×</button>
             </div>
             <div className="emp-form">
-              {dialog === "post-accrual" && <p>Jurnal akrual memakai tanggal akhir periode. Debit beban, kredit Utang Gaji.</p>}
               {dialog === "create" && <p>Membuat satu payment DRAFT untuk periode ini. Nominal mengikuti kredit Utang Gaji.</p>}
               {dialog === "approve" && <p>Menyetujui {payment?.payment_number}. Belum memotong bank.</p>}
               {dialog === "post-pay" && <p>Jurnal pembayaran: debit Utang Gaji, kredit bank. Tanggal jurnal = tanggal pembayaran.</p>}
@@ -681,7 +697,6 @@ function PayrollFinanceFlow({ period, lines, readiness, payment, banks, onChange
                   disabled={Boolean(busy) || (dialog === "reverse" && reason.trim().length < 3)}
                   data-testid="hr-payroll-finance-confirm"
                   onClick={() => {
-                    if (dialog === "post-accrual") run(() => api.hrPayrollPostAccounting(period.id));
                     if (dialog === "create") run(() => api.hrPayrollCreatePayment(period.id, { payment_date: payDate, cash_bank_account_id: bankId }));
                     if (dialog === "approve") run(() => api.hrPayrollApprovePayment(payment.id));
                     if (dialog === "post-pay") run(() => api.hrPayrollPostPayment(payment.id));
@@ -711,6 +726,10 @@ function Payroll() {
   const [payment, setPayment] = useState(null);
   const [banks, setBanks] = useState([]);
   const [showPreview, setShowPreview] = useState(false);
+  const [postOpen, setPostOpen] = useState(false);
+  const [postBusy, setPostBusy] = useState(false);
+  const [notice, setNotice] = useState("");
+  const [postedJournal, setPostedJournal] = useState({ id: "", number: "" });
   const [form, setForm] = useState({ year: new Date().getFullYear(), month: new Date().getMonth() + 1, start_date: "", end_date: "" });
   const [err, setErr] = useState("");
   const loadPeriods = useCallback(async () => { const data = await api.hrPayrollPeriods(); setPeriods(data.periods || []); }, []);
@@ -718,6 +737,16 @@ function Payroll() {
     if (!period?.id) return;
     const [p, l, a, e, k] = await Promise.all([api.hrPayrollPeriod(period.id), api.hrPayrollLines(period.id), api.hrPayrollAttendance(period.id), api.hrPayrollEmployees({ hr_profile_only: true }), api.hrPayrollKasbonSchedules({ active_only: true })]);
     setSelected(p.period); setLines(l.lines || []); setAttendance(a.attendance || []); setEmployees((e.employees || []).filter((emp) => emp?.id && emp?.has_hr_profile !== false)); setKasbon(k.schedules || []);
+    let journalNumber = "";
+    if (p.period?.accounting_journal_id) {
+      try {
+        const ref = await api.hrPayrollPeriodJournal(period.id);
+        journalNumber = ref.journal_number || "";
+      } catch {
+        journalNumber = "";
+      }
+    }
+    setPostedJournal({ id: p.period?.accounting_journal_id || "", number: journalNumber });
     try {
       const ready = await api.hrPayrollAccountingReadiness(period.id);
       setReadiness(ready.readiness || null);
@@ -747,25 +776,49 @@ function Payroll() {
   const calculate = async () => { try { await api.hrPayrollCalculate(selected.id); await loadDetail(selected); } catch (ex) { setErr(errorText(ex)); } };
   const transition = async (target) => { try { await api.hrPayrollTransition(selected.id, target); await loadPeriods(); await loadDetail(selected); } catch (ex) { setErr(errorText(ex)); } };
   const reopen = async () => { const reason = window.prompt("Alasan buka ulang payroll:"); if (!reason) return; try { const res = await api.hrPayrollReopen(selected.id, reason); await loadPeriods(); await loadDetail(res.period); } catch (ex) { setErr(errorText(ex)); } };
+  const canPostAccounting = selected?.status === "FINAL" && !selected.accounting_journal_id && hasPerm("payroll_accounting.post") && readiness?.accounting_ready === true;
+  const postAccounting = async () => {
+    setPostBusy(true);
+    setErr("");
+    try {
+      const res = await api.hrPayrollPostAccounting(selected.id);
+      setPostedJournal({ id: res.journal_id || "", number: res.journal_number || "" });
+      setPostOpen(false);
+      await loadPeriods();
+      await loadDetail(selected);
+      setNotice(res.message || "Jurnal akrual payroll diposting.");
+    } catch (ex) {
+      setErr(errorText(ex));
+    } finally {
+      setPostBusy(false);
+    }
+  };
   const transitionButtons = [
     ["DRAFT", "payroll.review", "hr-transition-draft", "Kembalikan ke Draft"],
     ["REVIEW", "payroll.review", "hr-transition-review", "Kirim Review"],
     ["APPROVAL", "payroll.approve", "hr-transition-approval", "Kirim Persetujuan"],
     ["FINAL", "payroll.finalize", "hr-transition-final", "Finalkan"],
   ];
-  return <div data-testid="hr-payroll-page"><PageHead title="Penggajian" />{err && <div className="error"><AlertCircle size={14} /> {err}</div>}
+  return <div data-testid="hr-payroll-page"><PageHead title="Penggajian" />{err && <div className="error"><AlertCircle size={14} /> {err}</div>}{notice && <p className="muted" data-testid="hr-payroll-post-notice">{notice}</p>}
     {hasPerm("payroll.calculate") && <form className="settings-card hr-period-form" onSubmit={create}><h3>Buat Periode</h3>{[["year", "Tahun", "number"], ["month", "Bulan", "number"], ["start_date", "Tanggal mulai", "date"], ["end_date", "Tanggal akhir", "date"]].map(([key, label, type]) => <label key={key}>{label}<input type={type} value={form[key]} onChange={(e) => setForm({ ...form, [key]: e.target.value })} required /></label>)}<button className="primary"><Plus size={14} /> Buat</button></form>}
     <div className="hr-master-detail"><div className="settings-card"><h3>Periode</h3>{periods.map((p) => <button type="button" className={`hr-list-button ${selected?.id === p.id ? "active" : ""}`} key={p.id} onClick={() => loadDetail(p).catch((ex) => setErr(errorText(ex)))}><span>{p.period_number || `${p.month}/${p.year}`}</span><span className={`hr-status hr-status-${String(p.status).toLowerCase()}`}>{statusLabel(p.status)}</span></button>)}</div>
       <div className="hr-payroll-detail">{!selected ? <div className="settings-card"><p className="muted">Pilih periode payroll.</p></div> : <>
         <div className="settings-card"><div className="hr-card-head"><div><h3>{payrollTitle(selected)}</h3><span className={`hr-status hr-status-${String(selected.status).toLowerCase()}`}>{statusLabel(selected.status)}</span>
-          {readiness && <span className="muted small" data-testid="hr-payroll-accounting-ready">Accounting: {readiness.accounting_ready ? "Siap" : "Belum Siap"}</span>}
+          {(selected.accounting_journal_id || readiness) && <span className="muted small" data-testid="hr-payroll-accounting-ready">Accounting: {selected.accounting_journal_id ? "Posted" : readiness.accounting_ready ? "Siap" : "Belum Siap"}</span>}
           {selected.period_number && <span className="muted small">{selected.period_number}</span>}
         </div><div className="hr-actions">
           {selected.status === "DRAFT" && hasPerm("payroll.calculate") && <button className="primary" onClick={calculate} data-testid="hr-calc-btn">Hitung Payroll</button>}
           {transitionButtons.map(([target, perm, testid, label]) => canTransition(selected.status, target) && hasPerm(perm) ? <button key={target} className="primary" onClick={() => transition(target)} data-testid={testid}>{label}</button> : null)}
           {selected.status === "FINAL" && hasPerm("payroll.reopen") && <button className="ghost" onClick={reopen} disabled={Boolean(selected.accounting_journal_id)} title={selected.accounting_journal_id ? "Jurnal akuntansi masih aktif" : undefined} data-testid="hr-reopen-btn">Buka Ulang</button>}
+          {canPostAccounting && <button type="button" className="primary" onClick={() => { setErr(""); setPostOpen(true); }} data-testid="hr-payroll-post-accounting">Post Accounting</button>}
           {readiness && <button type="button" className="ghost" onClick={() => setShowPreview((open) => !open)} data-testid="hr-payroll-accounting-preview-btn">Lihat Preview Accounting</button>}
         </div></div>
+        {selected.accounting_journal_id && (
+          <>
+            <p className="hr-pay-facts" data-testid="hr-payroll-journal-number">Journal:<br />{postedJournal.number || "—"}</p>
+            <a className="ghost" href={ledgerHref(selected, readiness)} data-testid="hr-payroll-open-journal">Buka Jurnal</a>
+          </>
+        )}
         {selected.status === "FINAL" && (
           <PayrollFinanceFlow
             key={selected.id}
@@ -778,6 +831,28 @@ function Payroll() {
             onError={setErr}
             onChanged={() => loadDetail(selected)}
           />
+        )}
+        {postOpen && (
+          <div className="modal" role="dialog" aria-modal="true" data-testid="hr-payroll-post-modal">
+            <div className="modal-inner">
+              <div className="modal-head">
+                <h3>Post Accounting Payroll?</h3>
+                <button type="button" className="ghost sm" disabled={postBusy} onClick={() => setPostOpen(false)}>×</button>
+              </div>
+              <div className="emp-form">
+                <dl className="hr-pay-meta">
+                  <dt>Periode</dt><dd>{payrollMonthLabel(selected)}</dd>
+                  <dt>Gross Payroll</dt><dd>{moneyFormat(readiness?.summary?.gross)}</dd>
+                  <dt>Net Payroll</dt><dd>{moneyFormat(readiness?.summary?.net)}</dd>
+                </dl>
+                <p>Setelah posting, jurnal accounting akan dibuat dan periode payroll tidak dapat diposting ulang.</p>
+                <div className="emp-actions">
+                  <button type="button" className="ghost" disabled={postBusy} onClick={() => setPostOpen(false)} data-testid="hr-payroll-post-cancel">Batalkan</button>
+                  <button type="button" className="primary" disabled={postBusy} onClick={postAccounting} data-testid="hr-payroll-post-confirm">{postBusy ? "Memproses…" : "Post Accounting"}</button>
+                </div>
+              </div>
+            </div>
+          </div>
         )}
         </div>
         {showPreview && readiness && (
