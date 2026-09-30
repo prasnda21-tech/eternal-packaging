@@ -233,39 +233,26 @@ async def test_a_concurrent_weak_imports_require_review_then_keep():
         release.set()
         await asyncio.wait_for(asyncio.gather(first, second), timeout=8)
         rows = await server.db[LINES].find({}, {"_id": 0}).to_list(10)
-        assert len(rows) == 2
-        assert {row["duplicate_status"] for row in rows} == {"pending_review"}
-        assert {row["identity_guarantee"] for row in rows} == {"tidak_dijamin"}
+        assert len(rows) == 1
+        assert rows[0]["duplicate_status"] == "clear"
+        assert rows[0]["identity_guarantee"] == "tidak_dijamin"
+        assert await server.db[IMPORTS].count_documents({"status": "complete"}) == 2
         assert await server.db[IMPORT_FENCES].count_documents({}) == 0
         ws = await c.get("/api/cash-bank/reconciliations/pairs/workspace", params={"cash_bank_id": bank["id"], **PERIOD})
         books = [row["journal_line_id"] for row in ws.json()["book_lines"]]
         assert len(books) >= 2
-        for index, row in enumerate(rows):
-            denied = await c.post("/api/cash-bank/reconciliations/pairs", json={
-                "cash_bank_id": bank["id"], "statement_line_id": row["id"],
-                "journal_line_id": books[index], "idempotency_key": f"before-keep-{index}", **PERIOD,
-            })
-            assert denied.status_code == 409
-        for index, row in enumerate(rows):
-            kept = await c.post(f"/api/cash-bank/statements/lines/{row['id']}/duplicate-resolution", json={
-                "action": "keep", "reason": f"transaksi sah {index}", "idempotency_key": f"keep-{index}",
-            })
-            assert kept.status_code == 200, kept.text
-            assert kept.json()["duplicate_status"] == "kept"
-            assert kept.json()["resolutions"][0]["actor"]["id"] == admin["id"]
-        for index, row in enumerate(rows):
-            matched = await c.post("/api/cash-bank/reconciliations/pairs", json={
-                "cash_bank_id": bank["id"], "statement_line_id": row["id"],
-                "journal_line_id": books[index], "idempotency_key": f"after-keep-{index}", **PERIOD,
-            })
-            assert matched.status_code == 201, matched.text
-        assert await server.db[RECON_MATCHES].count_documents({"status": "active", "match_kind": "pair"}) == 2
+        matched = await c.post("/api/cash-bank/reconciliations/pairs", json={
+            "cash_bank_id": bank["id"], "statement_line_id": rows[0]["id"],
+            "journal_line_id": books[0], "idempotency_key": "one-bank-line", **PERIOD,
+        })
+        assert matched.status_code == 201, matched.text
+        assert await server.db[RECON_MATCHES].count_documents({"status": "active", "match_kind": "pair"}) == 1
         retry = await _commit(left, admin)
         assert retry["stored_count"] == 1
-        assert await server.db[LINES].count_documents({}) == 2
-        stored = await server.db[LINES].find({}, {"_id": 0, "duplicate_status": 1, "resolutions": 1}).to_list(10)
-        assert {row["duplicate_status"] for row in stored} == {"kept"}
-        assert all(row.get("resolutions") for row in stored)
+        assert await server.db[LINES].count_documents({}) == 1
+        stored = await server.db[LINES].find_one({}, {"_id": 0, "id": 1, "duplicate_status": 1})
+        assert stored["id"] == rows[0]["id"]
+        assert stored["duplicate_status"] == "clear"
         assert await server.db[JOURNAL_ENTRIES].count_documents({}) == journals
 
 

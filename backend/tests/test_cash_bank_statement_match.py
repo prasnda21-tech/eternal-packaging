@@ -450,7 +450,7 @@ async def test_i_partial_import_retry_completes_without_duplicates():
         assert await server.db[LINES].count_documents({"import_id": done.json()["id"]}) == 2
 
 
-async def test_j_overlap_without_bank_id_needs_review():
+async def test_j_repeat_reuses_the_line_and_keeps_the_new_transaction():
     admin = _user()
     async with await client_for(admin) as c:
         bank, income = await _setup(c, currency="IDR")
@@ -465,25 +465,156 @@ async def test_j_overlap_without_bank_id_needs_review():
             "2026-09-07,Beda,10,,REF,TX-UNIK,\n"
         )
         assert (await _import(c, bank["id"], first))[1].status_code == 201
+        original = await server.db[LINES].find_one({}, {"_id": 0, "id": 1, "duplicate_status": 1})
         imported = (await _import(c, bank["id"], second))[1]
         assert imported.status_code == 201, imported.text
-        pending = await server.db[LINES].find_one({"duplicate_status": "pending_review"}, {"_id": 0})
-        assert pending
+        rows = await server.db[LINES].find({}, {"_id": 0, "id": 1, "description": 1, "duplicate_status": 1}).to_list(10)
+        assert len(rows) == 2
+        assert await server.db[LINES].count_documents({"duplicate_status": "pending_review"}) == 0
+        kept = next(row for row in rows if row["id"] == original["id"])
+        added = next(row for row in rows if row["id"] != original["id"])
+        assert kept["duplicate_status"] == "clear"
+        assert added["description"] == "Beda"
+        assert added["duplicate_status"] == "clear"
+        assert imported.json()["reused_count"] == 1
+        assert imported.json()["stored_count"] == 1
+        assert await server.db[IMPORTS].count_documents({"cash_bank_id": bank["id"], "status": "complete"}) == 2
+
+
+async def test_same_file_five_times_stays_one_transaction():
+    admin = _user()
+    async with await client_for(admin) as c:
+        bank, _income = await _setup(c, currency="IDR")
+        text = (
+            "tanggal,uraian,masuk,keluar,referensi,id,saldo\n"
+            "2026-09-05,Transfer masuk,750000,,REF,,\n"
+        )
+        batch_ids = []
+        for _ in range(5):
+            _preview, imported = await _import(c, bank["id"], text)
+            assert imported.status_code == 201, imported.text
+            batch_ids.append(imported.json()["id"])
+        assert len(set(batch_ids)) == 1
+        assert await server.db[LINES].count_documents({"cash_bank_id": bank["id"]}) == 1
+        assert await server.db[IMPORTS].count_documents({"cash_bank_id": bank["id"]}) == 1
+
+
+async def test_different_file_same_transaction_keeps_history_without_a_second_line():
+    admin = _user()
+    async with await client_for(admin) as c:
+        bank, _income = await _setup(c, currency="IDR")
+        first = (
+            "tanggal,uraian,masuk,keluar,referensi,id,saldo\n"
+            "2026-09-05,Transfer masuk,750000,,REF,,100\n"
+        )
+        second = (
+            "tanggal,uraian,masuk,keluar,referensi,id,saldo\n"
+            "2026-09-05,Transfer masuk,750000,,REF,,200\n"
+        )
+        _preview, imported = await _import(c, bank["id"], first)
+        assert imported.status_code == 201, imported.text
+        original = await server.db[LINES].find_one({}, {"_id": 0})
+        again = (await _import(c, bank["id"], second))[1]
+        assert again.status_code == 201, again.text
+        assert again.json()["id"] != imported.json()["id"]
+        assert again.json()["stored_count"] == 0
+        assert again.json()["reused_count"] == 1
+        assert again.json()["status"] == "complete"
+        rows = await server.db[LINES].find({}, {"_id": 0}).to_list(5)
+        assert len(rows) == 1
+        assert rows[0]["id"] == original["id"]
+        assert rows[0]["description"] == original["description"]
+        assert rows[0]["amount"] == original["amount"]
+        assert rows[0]["date"] == original["date"]
+        assert rows[0]["duplicate_status"] == "clear"
+        assert await server.db[IMPORTS].count_documents({"cash_bank_id": bank["id"], "status": "complete"}) == 2
+
+
+async def test_extra_similar_row_without_bank_id_stays_pending_review():
+    admin = _user()
+    async with await client_for(admin) as c:
+        bank, _income = await _setup(c, currency="IDR")
+        first = (
+            "tanggal,uraian,masuk,keluar,referensi,id,saldo\n"
+            "2026-09-05,Transfer masuk,750000,,REF,,\n"
+        )
+        second = (
+            "tanggal,uraian,masuk,keluar,referensi,id,saldo\n"
+            "2026-09-05,Transfer masuk,750000,,REF,,\n"
+            "2026-09-05,Transfer masuk,750000,,LAIN,,\n"
+        )
+        assert (await _import(c, bank["id"], first))[1].status_code == 201
+        original = await server.db[LINES].find_one({}, {"_id": 0, "id": 1, "duplicate_status": 1})
+        imported = (await _import(c, bank["id"], second))[1]
+        assert imported.status_code == 201, imported.text
+        rows = await server.db[LINES].find({}, {"_id": 0, "id": 1, "duplicate_status": 1}).to_list(5)
+        assert len(rows) == 2
+        kept = next(row for row in rows if row["id"] == original["id"])
+        extra = next(row for row in rows if row["id"] != original["id"])
+        assert kept["duplicate_status"] == "clear"
+        assert extra["duplicate_status"] == "pending_review"
         ws = await c.get("/api/cash-bank/reconciliations/pairs/workspace", params={"cash_bank_id": bank["id"], **PERIOD})
-        blocked = next(row for row in ws.json()["bank_lines"] if row["id"] == pending["id"])
-        assert blocked["matchable"] is False
+        visible = {row["id"]: row for row in ws.json()["bank_lines"]}
+        assert extra["id"] in visible
+        assert visible[extra["id"]]["matchable"] is False
+        assert visible[kept["id"]]["matchable"] is True
+
+
+async def test_different_authoritative_ids_are_not_swallowed():
+    admin = _user()
+    async with await client_for(admin) as c:
+        bank, _income = await _setup(c, currency="IDR")
+        text = (
+            "tanggal,uraian,masuk,keluar,referensi,id,saldo\n"
+            "2026-09-05,Transfer masuk,750000,,REF,TX-1,\n"
+            "2026-09-05,Transfer masuk,750000,,REF,TX-2,\n"
+        )
+        _preview, imported = await _import(c, bank["id"], text, _mapping(bank_txn_id_authoritative=True))
+        assert imported.status_code == 201, imported.text
+        rows = await server.db[LINES].find({}, {"_id": 0, "authoritative_txn_id": 1, "duplicate_status": 1}).to_list(5)
+        assert sorted(row["authoritative_txn_id"] for row in rows) == ["TX-1", "TX-2"]
+        assert {row["duplicate_status"] for row in rows} == {"clear"}
+
+
+async def test_matched_line_is_unchanged_after_reimport():
+    admin = _user()
+    async with await client_for(admin) as c:
+        bank, income = await _setup(c, currency="IDR")
+        await _receipt(c, bank["id"], income["id"], 750000)
+        first = (
+            "tanggal,uraian,masuk,keluar,referensi,id,saldo\n"
+            "2026-09-05,Transfer masuk,750000,,REF,TX-M,100\n"
+        )
+        second = (
+            "tanggal,uraian,masuk,keluar,referensi,id,saldo\n"
+            "2026-09-05,Transfer masuk,750000,,REF,TX-M,200\n"
+        )
+        _preview, imported = await _import(c, bank["id"], first)
+        assert imported.status_code == 201, imported.text
+        before = await server.db[LINES].find_one({}, {"_id": 0})
+        ws = await c.get("/api/cash-bank/reconciliations/pairs/workspace", params={"cash_bank_id": bank["id"], **PERIOD})
         book_line = ws.json()["book_lines"][0]["journal_line_id"]
-        denied = await c.post("/api/cash-bank/reconciliations/pairs", json={
-            "cash_bank_id": bank["id"], "statement_line_id": pending["id"],
-            "journal_line_id": book_line, "idempotency_key": "j-1", **PERIOD,
+        matched = await c.post("/api/cash-bank/reconciliations/pairs", json={
+            "cash_bank_id": bank["id"], "statement_line_id": before["id"],
+            "journal_line_id": book_line, "idempotency_key": "keep-match", **PERIOD,
         })
-        assert denied.status_code == 409
-        kept = await c.post(f"/api/cash-bank/statements/lines/{pending['id']}/duplicate-resolution", json={
-            "action": "keep", "reason": "dua transaksi sah", "idempotency_key": "keep-j",
-        })
-        assert kept.status_code == 200, kept.text
-        assert kept.json()["duplicate_status"] == "kept"
-        assert len(kept.json()["resolutions"]) == 1
+        assert matched.status_code == 201, matched.text
+        pair_id = matched.json()["id"]
+        claimed = await server.db[LINES].find_one({"id": before["id"]}, {"_id": 0})
+        again = (await _import(c, bank["id"], second))[1]
+        assert again.status_code == 201, again.text
+        after = await server.db[LINES].find_one({"id": before["id"]}, {"_id": 0})
+        assert await server.db[LINES].count_documents({}) == 1
+        assert after["id"] == claimed["id"]
+        assert after["date"] == claimed["date"]
+        assert after["description"] == claimed["description"]
+        assert after["amount"] == claimed["amount"]
+        assert after["direction"] == claimed["direction"]
+        assert after["duplicate_status"] == claimed["duplicate_status"]
+        assert after.get("active_claim") == claimed.get("active_claim")
+        active = await server.db[RECON_MATCHES].find_one({"id": pair_id}, {"_id": 0, "status": 1, "statement_line_id": 1})
+        assert active["status"] == "active"
+        assert active["statement_line_id"] == before["id"]
 
 
 async def test_k_l_incomplete_journal_follows_general_ledger():

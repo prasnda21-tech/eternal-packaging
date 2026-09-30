@@ -338,28 +338,27 @@ async def test_6_and_7_concurrent_authoritative_imports_have_one_eligible_line()
             commit(right.json(), "b.csv", right_bytes),
         ), timeout=8)
         rows = await server.db[LINES].find({}, {"_id": 0}).to_list(10)
-        assert len(rows) == 2
-        eligible = [row for row in rows if row.get("authoritative_txn_id") == "TX-SAME"]
-        definite = [row for row in rows if row.get("duplicate_status") == "definite_duplicate"]
-        assert len(eligible) == 1
-        assert len(definite) == 1
-        assert definite[0].get("duplicate_of_line_id") == eligible[0]["id"]
-        kept = await c.post(
-            f"/api/cash-bank/statements/lines/{definite[0]['id']}/duplicate-resolution",
-            json={"action": "keep", "reason": "bukan dua transaksi", "idempotency_key": "keep-definite"},
-        )
-        assert kept.status_code == 409
+        assert len(rows) == 1
+        assert rows[0].get("authoritative_txn_id") == "TX-SAME"
+        assert rows[0]["duplicate_status"] == "clear"
+        line_id = rows[0]["id"]
+        description = rows[0]["description"]
+        batches = await server.db[IMPORTS].find({}, {"_id": 0, "status": 1, "stored_count": 1}).to_list(5)
+        assert len(batches) == 2
+        assert {batch["status"] for batch in batches} == {"complete"}
+        assert sum(batch["stored_count"] for batch in batches) == 1
         ws = await c.get("/api/cash-bank/reconciliations/pairs/workspace", params={"cash_bank_id": bank["id"], **PERIOD})
         book = ws.json()["book_lines"][0]["journal_line_id"]
-        results = []
-        for row in rows:
-            results.append(await c.post("/api/cash-bank/reconciliations/pairs", json={
-                "cash_bank_id": bank["id"], "statement_line_id": row["id"],
-                "journal_line_id": book, "idempotency_key": f"m-{row['id']}", **PERIOD,
-            }))
-        assert sorted(item.status_code for item in results) == [201, 409]
+        matched = await c.post("/api/cash-bank/reconciliations/pairs", json={
+            "cash_bank_id": bank["id"], "statement_line_id": line_id,
+            "journal_line_id": book, "idempotency_key": f"m-{line_id}", **PERIOD,
+        })
+        assert matched.status_code == 201, matched.text
         assert await server.db[RECON_MATCHES].count_documents({"status": "active", "match_kind": "pair"}) == 1
         assert await server.db[JOURNAL_ENTRIES].count_documents({}) == journals + 1
+        stored = await server.db[LINES].find_one({"id": line_id}, {"_id": 0, "description": 1, "authoritative_txn_id": 1})
+        assert stored["description"] == description
+        assert stored["authoritative_txn_id"] == "TX-SAME"
 
 
 async def test_8_identical_rows_without_id_are_not_deleted():
