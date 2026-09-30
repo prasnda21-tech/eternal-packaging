@@ -845,6 +845,14 @@ a.spwa-metric-link {
   flex-direction: column;
   color: inherit;
   text-decoration: none;
+  cursor: pointer;
+}
+a.spwa-metric-link:hover {
+  border-color: #8bd6bd;
+}
+a.spwa-metric-link:active {
+  border-color: #08785d;
+  box-shadow: inset 0 0 0 1px #08785d;
 }
 a.spwa-metric-link:focus-visible {
   outline: 2px solid #08785d;
