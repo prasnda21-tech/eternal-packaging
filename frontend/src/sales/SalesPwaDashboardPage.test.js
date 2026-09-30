@@ -1,3 +1,5 @@
+import { readFileSync } from "fs";
+import path from "path";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import api from "../lib/api";
@@ -248,5 +250,26 @@ test("shows an empty visit history without breaking the dashboard", async () => 
   expect(node.querySelector('[data-testid="sales-last-visit-empty"]').textContent).toBe("Tidak ada riwayat visit");
   expect(node.querySelector('[data-testid="sales-dashboard-done"]').textContent).toBe("0 PO");
   expect(node.querySelector('[data-testid="sales-dashboard-receivables"]').textContent).toContain("0 invoice belum lunas");
+  act(() => root.unmount());
+});
+
+test("keeps omzet and receivables as information cards and marks the existing links as pressable", async () => {
+  api.salesPwaDashboard.mockResolvedValue({
+    metrics: { revenue: 0, receivables: 0, invoice_count: 0, receivable_invoice_count: 0, active_po: 1, buffer_po: 0, visit_month: 1, visit_overdue: 0 },
+    upcoming_visits: [],
+  });
+  const node = document.createElement("div");
+  const root = createRoot(node);
+  await act(async () => { root.render(<SalesPwaDashboardPage />); await Promise.resolve(); });
+  await act(async () => { await Promise.resolve(); });
+  expect(node.querySelector('[data-testid="sales-dashboard-revenue"]').tagName).toBe("ARTICLE");
+  expect(node.querySelector('[data-testid="sales-dashboard-receivables"]').tagName).toBe("ARTICLE");
+  expect(node.querySelector('[data-testid="sales-dashboard-active"]').className).toContain("spwa-metric-link");
+  expect(node.querySelector('[data-testid="sales-dashboard-done-card"]').className).toContain("spwa-metric-link");
+  expect(node.querySelector('[data-testid="sales-dashboard-visits"]').getAttribute("href")).toBe("/sales/visit");
+  const css = readFileSync(path.join(__dirname, "salesPwa.css"), "utf8");
+  expect(css).toMatch(/a\.spwa-metric-link\s*\{[^}]*cursor:\s*pointer/);
+  expect(css).toMatch(/a\.spwa-metric-link:hover\s*\{[^}]*border-color:\s*#8bd6bd/);
+  expect(css).toMatch(/a\.spwa-metric-link:active\s*\{[^}]*border-color:\s*#08785d/);
   act(() => root.unmount());
 });
