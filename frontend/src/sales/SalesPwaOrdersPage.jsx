@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { FileText, Search, SlidersHorizontal, X } from "lucide-react";
+import { ChevronRight, FileText, Search, SlidersHorizontal, X } from "lucide-react";
 import api from "../lib/api";
 import { documentTotal, formatSalesDate } from "../lib/salesPwa";
 import { readSalesPwaPoListState, writeSalesPwaPoListState } from "../lib/salesPwaPoListState";
@@ -17,6 +17,44 @@ const FILTERS = [
 
 const SEARCH_DEBOUNCE_MS = 300;
 const NARROW_QUERY = "(max-width: 767px)";
+const STAGE_GROUPS = [
+  { id: "semua", label: "", options: [{ value: "", label: "Semua Tahap" }] },
+  {
+    id: "approval",
+    label: "Approval",
+    options: [
+      { value: "Approval Design", label: "Approval Design" },
+      { value: "Approval Payment", label: "Approval Payment" },
+    ],
+  },
+  {
+    id: "produksi",
+    label: "Produksi",
+    options: [
+      { value: "Design", label: "Design" },
+      { value: "Produksi", label: "Produksi" },
+      { value: "Packing", label: "Packing" },
+    ],
+  },
+  {
+    id: "delivery",
+    label: "Delivery",
+    options: [
+      { value: "Pengiriman", label: "Pengiriman" },
+      { value: "Selesai", label: "Selesai" },
+    ],
+  },
+];
+const STAGE_OPTIONS = STAGE_GROUPS.flatMap((group) => group.options);
+
+function poCardStatusTone(order) {
+  const status = String(order?.status || "");
+  if (order?.hold || status === "HOLD") return "is-hold";
+  if (order?.partial_delivery || /parsial/i.test(status)) return "is-partial";
+  const progress = Number(order?.progress_percent);
+  if (status === "Terkirim" || (Number.isFinite(progress) && progress >= 100)) return "is-done";
+  return "is-running";
+}
 
 function useNarrowScreen() {
   const [narrow, setNarrow] = useState(() => {
@@ -66,6 +104,8 @@ export default function SalesPwaOrdersPage() {
     buffer: initial.filters.buffer,
   });
   const [filterOpen, setFilterOpen] = useState(false);
+  const [stageOpen, setStageOpen] = useState(false);
+  const [stageDraft, setStageDraft] = useState(initial.filters.stage);
   const [data, setData] = useState(null);
   const [dataKey, setDataKey] = useState("");
   const [err, setErr] = useState("");
@@ -261,15 +301,18 @@ export default function SalesPwaOrdersPage() {
               <li key={o.id} className="spwa-po-card" data-testid={`sales-po-card-${o.po_number}`}>
                 <div className="spwa-po-card-customer">{o.customer}</div>
                 <div className="spwa-po-card-number">{o.po_number}</div>
-                <div className="spwa-po-card-meta">
-                  <span className={`spwa-stage${o.hold ? " is-hold" : ""}`}>{o.status}</span>
-                  <span className="spwa-date">{formatSalesDate(o.order_date)}</span>
-                  <span className="spwa-pct">Progress {o.progress_percent ?? 0}%</span>
+                {String(o.priority || "").trim() ? <div className="spwa-po-card-urgency">{String(o.priority).trim()}</div> : null}
+                <div className={`spwa-po-card-status ${poCardStatusTone(o)}`}>{o.status}</div>
+                {o.partial_delivery && !/parsial/i.test(String(o.status || "")) ? <div className="spwa-po-card-line"><span>Partial terkirim</span></div> : null}
+                {o.tanggal_kirim_overdue ? <div className="spwa-po-card-urgency">Kirim terlambat</div> : null}
+                <div className="spwa-po-card-line"><span>Tanggal</span><strong>{formatSalesDate(o.order_date)}</strong></div>
+                <div className="spwa-po-card-line"><span>Progress {o.progress_percent ?? 0}%</span></div>
+                <SalesPwaProgress order={o} />
+                <div className="spwa-po-card-line">
                   {o.buffer_stock
                     ? <span className="spwa-buffer-badge">Buffer Stock</span>
                     : <span className="spwa-buffer-plain">Bukan buffer stock</span>}
                 </div>
-                <SalesPwaProgress order={o} />
                 <div className="spwa-po-card-actions">
                   <button
                     type="button"
@@ -284,7 +327,7 @@ export default function SalesPwaOrdersPage() {
                     className="spwa-detail-btn"
                     data-testid={`sales-po-detail-${o.id}`}
                   >
-                    Detail
+                    Detail <ChevronRight size={14} />
                   </Link>
                 </div>
               </li>
@@ -370,10 +413,18 @@ export default function SalesPwaOrdersPage() {
           <aside className="spwa-sheet spwa-filter-sheet" role="dialog" aria-label="Filter PO" data-testid="sales-filter-sheet">
             <h2>Filter</h2>
             <div className="spwa-filter-fields">
-              <label>
-                Tahap
-                <input aria-label="Filter tahap" value={columns.stage} onChange={(e) => setColumn("stage", e.target.value)} placeholder="Tahap" />
-              </label>
+              <div className="spwa-stage-picker">
+                <span>Tahap</span>
+                <button
+                  type="button"
+                  className="spwa-stage-picker-btn"
+                  aria-label="Filter tahap"
+                  data-testid="sales-stage-open"
+                  onClick={() => { setStageDraft(columns.stage); setStageOpen(true); }}
+                >
+                  {STAGE_OPTIONS.find((option) => option.value === columns.stage)?.label || columns.stage || "Semua Tahap"}
+                </button>
+              </div>
               <div className="spwa-filter-dates">
                 <span>Tanggal PO</span>
                 <div className="spwa-filter-date-row">
@@ -409,6 +460,43 @@ export default function SalesPwaOrdersPage() {
             <div className="spwa-filter-actions">
               <button type="button" className="spwa-filter-reset" onClick={resetDetailFilters}>Reset filter</button>
               <button type="button" className="spwa-filter-apply" data-testid="sales-filter-apply" onClick={() => setFilterOpen(false)}>Terapkan</button>
+            </div>
+          </aside>
+        </>
+      )}
+      {narrow && stageOpen && (
+        <>
+          <button type="button" className="spwa-sheet-backdrop spwa-stage-backdrop" aria-label="Tutup tahap" onClick={() => setStageOpen(false)} />
+          <aside className="spwa-sheet spwa-stage-sheet" role="dialog" aria-label="Pilih tahap" data-testid="sales-stage-sheet">
+            <h2>Filter tahap</h2>
+            <div className="spwa-stage-options">
+              {STAGE_GROUPS.map((group) => (
+                <div key={group.id} className="spwa-stage-group">
+                  {group.label ? <h3>{group.label}</h3> : null}
+                  {group.options.map((option) => (
+                    <label key={option.label}>
+                      <input
+                        type="radio"
+                        name="sales-pwa-stage"
+                        checked={stageDraft === option.value}
+                        onChange={() => setStageDraft(option.value)}
+                      />
+                      {option.label}
+                    </label>
+                  ))}
+                </div>
+              ))}
+            </div>
+            <div className="spwa-filter-actions">
+              <button type="button" className="spwa-filter-reset" onClick={() => setStageDraft("")}>Reset</button>
+              <button
+                type="button"
+                className="spwa-filter-apply"
+                data-testid="sales-stage-apply"
+                onClick={() => { setColumn("stage", stageDraft); setStageOpen(false); }}
+              >
+                Terapkan
+              </button>
             </div>
           </aside>
         </>

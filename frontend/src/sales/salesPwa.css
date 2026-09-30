@@ -25,6 +25,11 @@
   font-weight: 650;
   line-height: 1.2;
 }
+.spwa-detail-top { padding-bottom: 8px; }
+.spwa-detail-top .spwa-back { margin-bottom: 2px; }
+.spwa-detail-identity { display: grid; gap: 0; }
+.spwa-top-customer { font-size: 20px; font-weight: 700; line-height: 1.15; }
+.spwa-top-meta { margin: 0; color: #d7e8f0; font-size: 12px; line-height: 1.25; }
 .spwa-back {
   display: inline-flex;
   align-items: center;
@@ -237,6 +242,58 @@
   padding: 10px 12px;
 }
 .spwa-card h2 { margin: 0 0 6px; font-size: 15px; }
+.spwa-status-card h2 { margin: 2px 0 0; font-size: 20px; }
+.spwa-status-progress { margin: 4px 0 0; color: #102936; font-size: 20px; font-weight: 700; line-height: 1.1; }
+.spwa-status-field { margin: 8px 0 0; color: #17313e; font-size: 14px; font-weight: 650; }
+.spwa-status-field span { display: block; margin-bottom: 1px; color: #647781; font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
+.spwa-status-meta { margin: 4px 0 0; color: #5b6b73; font-size: 13px; }
+.spwa-status-card .spwa-kicker { color: #647781; opacity: 1; }
+.spwa-status-card .spwa-buffer-badge.spwa-buffer-status {
+  margin-top: 10px;
+  padding: 6px 10px;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+}
+.spwa-item-card { padding: 8px 0; border-bottom: 1px solid #eef2f4; }
+.spwa-item-card:last-child { border-bottom: 0; padding-bottom: 0; }
+.spwa-item-card strong { display: block; color: #132026; font-size: 15px; }
+.spwa-item-qty { margin: 2px 0 0; color: #102936; font-size: 18px; font-weight: 700; line-height: 1.1; }
+.spwa-item-detail { margin-top: 6px; }
+.spwa-item-detail > span { display: block; color: #647781; font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
+.spwa-item-detail small { display: block; margin-top: 2px; color: #5b6b73; font-size: 13px; }
+.spwa-doc-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 0;
+  border-bottom: 1px solid #eef2f4;
+}
+.spwa-doc-line:last-child { border-bottom: 0; padding-bottom: 0; }
+.spwa-doc-line strong { display: block; color: #132026; font-size: 14px; }
+.spwa-doc-line .is-ready { display: block; margin-top: 2px; color: #08785d; font-size: 12px; font-weight: 650; }
+.spwa-doc-line .spwa-detail-btn.spwa-doc-action {
+  min-height: 44px;
+  min-width: 132px;
+  padding: 0 14px;
+  border: 0;
+  font-size: 13px;
+}
+.spwa-doc-empty { margin: 8px 0 0; color: #5b6b73; font-size: 13px; }
+.spwa-doc-row a,
+.spwa-doc-open {
+  border: 0;
+  background: transparent;
+  color: #08785d;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  text-decoration: none;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+}
+.spwa-doc-missing { color: #5b6b73; font-size: 13px; }
 .spwa-kv { display: grid; grid-template-columns: 110px 1fr; gap: 4px 8px; font-size: 13px; }
 .spwa-kv dt { color: #5b6b73; }
 .spwa-list-btn {
@@ -312,6 +369,68 @@
   color: #6a7a82;
   font-size: 12px;
   font-weight: 500;
+}
+.spwa-po-card-status {
+  margin-top: 8px;
+  color: #17313e;
+  font-size: 13px;
+  font-weight: 700;
+}
+.spwa-po-card-status.is-hold { color: #c0392b; }
+.spwa-po-card-status.is-partial { color: #d89a00; }
+.spwa-po-card-status.is-running { color: #2f80ed; }
+.spwa-po-card-status.is-done { color: #26a65b; }
+.spwa-po-card-urgency {
+  margin-top: 6px;
+  color: #9a3412;
+  font-size: 12px;
+  font-weight: 700;
+}
+.spwa-po-card-line {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 4px;
+  color: #5b6b73;
+  font-size: 12px;
+}
+.spwa-po-card-line strong { color: #17313e; font-weight: 650; }
+.spwa-stage-picker { display: grid; gap: 3px; margin: 6px 0; color: #5b6b73; font-size: 12px; }
+.spwa-stage-picker-btn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  min-height: 38px;
+  padding: 6px 10px;
+  border: 1px solid #c5d2d9;
+  border-radius: 8px;
+  background: #fff;
+  color: #132026;
+  font-size: 16px;
+  text-align: left;
+}
+.spwa-stage-picker-btn::after { content: "▾"; color: #5b6b73; font-size: 12px; }
+.spwa-stage-backdrop { z-index: 50; }
+.spwa-stage-sheet { z-index: 51; }
+.spwa-stage-sheet-label { margin: 0 0 6px; color: #5b6b73; font-size: 12px; }
+.spwa-stage-options { display: grid; gap: 8px; }
+.spwa-stage-group h3 {
+  margin: 4px 0 2px;
+  color: #5b6b73;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.spwa-stage-options label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 36px;
+  margin: 0;
+  color: #17313e;
+  font-size: 14px;
 }
 .spwa-po-card-meta {
   display: flex;
@@ -683,10 +802,30 @@
   text-decoration: none;
 }
 .spwa-drawer-links a.is-on { border-color: #08785d; background: #e9f7f2; }
+.spwa-metric-stack { display: grid; gap: 8px; margin: 10px 10px 0; }
 .spwa-metric-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
+  align-items: stretch;
+}
+.spwa-metric-grid .spwa-metric {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+.spwa-metric-grid .spwa-metric span {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.spwa-metric-grid .spwa-metric strong { margin-top: 8px; font-size: clamp(20px, 5.4vw, 24px); }
+.spwa-metric-grid .spwa-metric small { margin-top: auto; padding-top: 6px; font-size: 11px; }
+.spwa-metric-note {
+  margin: 0;
+  color: #5b6b73;
+  font-size: 12px;
 }
 .spwa-metric {
   min-width: 0;
@@ -706,10 +845,52 @@
   line-height: 1;
   overflow-wrap: anywhere;
 }
+.spwa-metric.is-primary { padding: 14px; }
+.spwa-metric.is-primary span {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.spwa-metric.is-primary strong { margin-top: 8px; font-size: clamp(28px, 8vw, 36px); }
+.spwa-metric.is-primary small { margin-top: 4px; font-size: 12px; }
 .spwa-metric.is-revenue { border-color: #8bd6bd; background: #f1fbf7; }
 .spwa-metric.is-debt { border-color: #f0c99e; background: #fff8ee; }
+.spwa-metric.is-done { border-color: #b7d7c6; background: #f4fbf7; }
+.spwa-action-card {
+  display: grid;
+  gap: 1px;
+  margin-top: 6px;
+  padding: 8px 10px;
+  border: 1px solid #d7e2e7;
+  border-left: 3px solid #8B5CF6;
+  border-radius: 10px;
+  background: #fff;
+  line-height: 1.25;
+}
+.spwa-action-card.is-payment { border-left-color: #d89a00; }
+.spwa-action-card p { margin: 0; color: #647781; font-size: 10px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
+.spwa-action-card strong { color: #102936; font-size: 14px; }
+.spwa-action-card span,
+.spwa-action-card small { color: #5b6b73; font-size: 12px; }
+.spwa-action-card small.is-urgent { color: #9a3412; font-weight: 700; }
+.spwa-action-count { margin: 2px 0 0; color: #5b6b73; font-size: 12px; font-weight: 650; }
+.spwa-action-empty { display: grid; gap: 2px; padding: 2px 2px 4px; }
+.spwa-action-empty p { margin: 0; color: #5b6b73; font-size: 13px; }
+.spwa-action-empty p + p { color: #08785d; font-size: 12px; }
+.spwa-action-card a {
+  justify-self: start;
+  margin-top: 4px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: #0b1f2a;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  text-decoration: none;
+}
 .spwa-panel {
-  margin-top: 10px;
+  margin: 10px 10px 0;
   padding: 10px;
   border: 1px solid #d7e2e7;
   border-radius: 11px;
@@ -722,29 +903,43 @@
   gap: 10px;
   margin-bottom: 8px;
 }
-.spwa-section-head h2 { margin: 0; font-size: 14px; }
+.spwa-section-head h2 { margin: 0; font-size: 16px; letter-spacing: 0.02em; }
 .spwa-section-head a { display: flex; align-items: center; color: #08785d; font-size: 10px; font-weight: 700; text-decoration: none; }
 .spwa-agenda { display: grid; gap: 5px; }
 .spwa-agenda a {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 7px;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px;
   border-radius: 8px;
   color: #17313e;
   background: #f3f7f9;
   text-decoration: none;
 }
 .spwa-agenda a.is-overdue { color: #8a2e1f; background: #fff0ec; }
+.spwa-agenda-time {
+  min-width: 52px;
+  color: #0b1f2a;
+  font-size: 18px;
+  font-style: normal;
+  font-weight: 700;
+  line-height: 1.1;
+}
 .spwa-agenda span { min-width: 0; }
 .spwa-agenda strong,
 .spwa-agenda small { display: block; }
-.spwa-agenda strong { font-size: 11px; }
-.spwa-agenda small { color: #71838c; font-size: 9px; }
+.spwa-agenda strong { font-size: 15px; }
+.spwa-agenda small { color: #71838c; font-size: 12px; }
+.spwa-agenda-place {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 2px;
+}
 .spwa-source-note {
   display: grid;
   gap: 2px;
-  margin-top: 9px;
+  margin: 9px 10px 0;
   padding: 8px;
   border-radius: 8px;
   color: #5d7079;
