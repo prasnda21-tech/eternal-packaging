@@ -225,6 +225,30 @@ async def test_create_payroll_payment_succeeds():
 
 
 @pytest.mark.anyio
+async def test_get_period_payment_is_read_only():
+    accounts = await _setup_accounts()
+    bank = await _bank(accounts["bank"])
+    _admin()
+    async with _client() as c:
+        _emp, period = await _finalize(c, year=2093, month=9, map_accounts=accounts)
+        empty = await c.get(f"/api/hr-payroll/periods/{period['id']}/payments")
+        assert empty.status_code == 200, empty.text
+        assert empty.json()["payment"] is None
+        assert await server.db[PAYMENTS].count_documents({}) == 0
+        await _post_accrual(c, period["id"])
+        created = await c.post(
+            f"/api/hr-payroll/periods/{period['id']}/payments",
+            json={"cash_bank_account_id": bank["id"], "payment_date": "2093-09-20"},
+        )
+        assert created.status_code == 200, created.text
+        listed = await c.get(f"/api/hr-payroll/periods/{period['id']}/payments")
+        assert listed.status_code == 200, listed.text
+        assert listed.json()["payment"]["id"] == created.json()["payment"]["id"]
+        assert listed.json()["payment"]["status"] == "DRAFT"
+    assert await server.db[PAYMENTS].count_documents({"payroll_period_id": period["id"]}) == 1
+
+
+@pytest.mark.anyio
 async def test_payment_without_accrual_journal_fails():
     accounts = await _setup_accounts()
     bank = await _bank(accounts["bank"])

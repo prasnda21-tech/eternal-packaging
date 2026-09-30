@@ -195,6 +195,16 @@ async def get_payment(db, payment_id: str, *, with_lines: bool = False) -> dict:
     return public_payment(doc, lines)
 
 
+async def get_payment_for_period(db, period_id: str) -> Optional[dict]:
+    """Read the single payment for a period. Does not create or post anything."""
+    period = await get_period(db, period_id)
+    doc = await db[PAYMENTS].find_one({"payroll_period_id": period["id"]}, {"_id": 0})
+    if not doc:
+        return None
+    lines = await db[PAYMENT_LINES].find({"payment_id": doc["id"]}, {"_id": 0}).sort("employee_name", 1).to_list(5000)
+    return public_payment(doc, lines)
+
+
 async def create_payroll_payment(db, period_id: str, payload: dict, user: dict) -> dict:
     await ensure_indexes(db)
     period = await get_period(db, period_id)

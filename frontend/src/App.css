@@ -4830,6 +4830,20 @@ button.ghost.sm.icon{padding:4px 6px}
 .hr-payroll-detail{display:grid;gap:14px}
 .hr-list-button{width:100%;display:flex;align-items:center;justify-content:space-between;gap:8px;text-align:left;border:1px solid transparent;background:#f7f8f6;padding:9px 10px;margin-bottom:5px}
 .hr-list-button.active{border-color:var(--blue);background:#fff}
+.hr-pay-facts{margin:8px 0 0;color:var(--ink);font-size:14px}
+.hr-pay-steps{display:flex;flex-wrap:wrap;align-items:center;list-style:none;margin:14px 0;padding:0}
+.hr-pay-steps li{display:inline-flex;align-items:center;color:var(--soft);font-size:13px}
+.hr-pay-step-line{width:18px;height:1px;margin:0 8px;background:var(--line);flex:0 0 18px}
+.hr-pay-step-line.done{background:var(--ink)}
+.hr-pay-steps li.done{color:var(--ink);font-weight:600}
+.hr-pay-steps li.current{color:var(--ink);font-weight:700}
+.hr-payroll-detail .ghost.danger{border-color:#eccec8;color:#a53f2b;background:var(--surface)}
+.hr-pay-meta{display:grid;grid-template-columns:minmax(140px,180px) minmax(0,1fr);gap:4px 12px;margin:0 0 12px;font-size:14px}
+.hr-pay-meta dt{color:var(--soft);margin:0}
+.hr-pay-meta dd{margin:0}
+.hr-pay-create{display:flex;flex-wrap:wrap;gap:12px;margin:0 0 12px}
+.hr-pay-create label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--soft)}
+.hr-pay-create input,.hr-pay-create select{min-height:40px;border:1px solid var(--line);background:var(--surface);color:var(--ink);padding:8px 10px;font:inherit}
 .hr-card-head,.hr-actions{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}
 .hr-card-head h3,.hr-card-head h4{margin:0}
 .hr-detail-list{display:grid;grid-template-columns:140px 1fr;gap:8px 12px}

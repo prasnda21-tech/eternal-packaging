@@ -21,6 +21,16 @@ describe("HR & Payroll UI source", () => {
   test("payroll workflow controls and breakdown are present", () => {
     ["hr-calc-btn", "hr-transition-review", "hr-transition-approval", "hr-transition-final", "hr-reopen-btn", "hr-breakdown", "hr-kasbon-row", "hr-payroll-accounting-ready", "hr-payroll-accounting-preview"].forEach((id) => expect(page).toMatch(new RegExp(id)));
     expect(page).toMatch(/hasPerm\("payroll\.reopen"\)/);
+    expect(page).toMatch(/hr-payroll-finance-steps/);
+    expect(page).toMatch(/hr-pay-step-line/);
+    expect(page).toMatch(/hr-payroll-finance-action/);
+    expect(page).toMatch(/Status jurnal/);
+    expect(page).toMatch(/hr-payroll-reverse-summary/);
+    expect(page).toMatch(/payroll_accounting\.post/);
+    expect(page).toMatch(/payroll_payment\.create/);
+    expect(page).toMatch(/payroll_payment\.approve/);
+    expect(page).toMatch(/payroll_payment\.post/);
+    expect(page).toMatch(/payroll_payment\.reverse/);
     expect(page).toMatch(/canTransition\(selected\.status, target\)/);
   });
 

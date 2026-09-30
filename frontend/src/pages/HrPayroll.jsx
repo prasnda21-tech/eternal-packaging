@@ -488,6 +488,217 @@ function AttendanceEditor({ period, employees, attendance, onSaved }) {
   })}</tbody></table></div></div>;
 }
 
+const PAYROLL_MONTHS = ["Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus", "September", "Oktober", "November", "Desember"];
+
+function payrollTitle(period) {
+  const month = Number(period?.month);
+  const year = period?.year;
+  if (month >= 1 && month <= 12 && year) return `Payroll ${PAYROLL_MONTHS[month - 1]} ${year}`;
+  return period?.period_number || "Payroll";
+}
+
+function actorName(actor) {
+  return actor?.name || actor?.email || actor?.id || "—";
+}
+
+function hasActor(actor) {
+  return Boolean(actor?.name || actor?.email || actor?.id);
+}
+
+function postedOn(value) {
+  return value ? String(value).slice(0, 10) : "";
+}
+
+function payrollNet(lines, readiness) {
+  if (readiness?.summary && readiness.summary.net != null) return readiness.summary.net;
+  return (lines || []).reduce((sum, line) => sum + Number(line.net || 0), 0);
+}
+
+function financeSteps(period, payment) {
+  const status = payment?.status || "";
+  const accrual = Boolean(period?.accounting_journal_id);
+  const steps = [
+    { key: "final", label: "FINAL", done: period?.status === "FINAL" },
+    { key: "journal", label: "Jurnal akrual", done: accrual },
+    { key: "payment", label: "Payment", done: Boolean(payment) },
+    { key: "approval", label: "Persetujuan", done: ["APPROVED", "PAID", "REVERSED"].includes(status) },
+    { key: "posting", label: "Posting bank", done: ["PAID", "REVERSED"].includes(status) },
+    { key: "reverse", label: "Reverse", done: status === "REVERSED" },
+  ];
+  const current = steps.findIndex((step) => !step.done);
+  return steps.map((step, index) => ({ ...step, current: current === index }));
+}
+
+function financeAction(period, payment, readiness, hasPerm) {
+  if (period?.status !== "FINAL") return null;
+  if (!period.accounting_journal_id) {
+    if (!hasPerm("payroll_accounting.post")) return null;
+    if (readiness && readiness.accounting_ready === false) {
+      return { kind: "blocked", text: (readiness.reasons || []).join(" · ") || "Akuntansi belum siap." };
+    }
+    return { kind: "post-accrual", label: "Post Accounting" };
+  }
+  if (!payment) {
+    if (!hasPerm("payroll_payment.create")) return null;
+    return { kind: "create", label: "Buat Payment" };
+  }
+  if (payment.status === "DRAFT" && hasPerm("payroll_payment.approve")) return { kind: "approve", label: "Setujui" };
+  if (payment.status === "APPROVED" && hasPerm("payroll_payment.post")) return { kind: "post-pay", label: "Post Payment" };
+  if (payment.status === "PAID" && hasPerm("payroll_payment.reverse")) return { kind: "reverse", label: "Reverse" };
+  return null;
+}
+
+function PayrollFinanceFlow({ period, lines, readiness, payment, banks, onChanged, onError, hasPerm }) {
+  const [busy, setBusy] = useState("");
+  const [dialog, setDialog] = useState("");
+  const [reason, setReason] = useState("");
+  const [payDate, setPayDate] = useState(period?.end_date || "");
+  const [bankId, setBankId] = useState("");
+  const action = financeAction(period, payment, readiness, hasPerm);
+  const steps = financeSteps(period, payment);
+  const bankName = (banks || []).find((row) => row.id === payment?.cash_bank_account_id)?.name || payment?.cash_bank_account_id || "—";
+  const run = async (work) => {
+    setBusy(action?.kind || "save");
+    try {
+      await work();
+      setDialog("");
+      setReason("");
+      await onChanged();
+    } catch (ex) {
+      onError(errorText(ex));
+    } finally {
+      setBusy("");
+    }
+  };
+  return (
+    <>
+      <p className="hr-pay-facts">
+        {period.start_date} – {period.end_date}
+        {" · "}
+        {(lines || []).length} karyawan
+        {" · "}
+        Total gaji bersih {moneyFormat(payrollNet(lines, readiness))}
+      </p>
+      <dl className="hr-pay-meta" data-testid="hr-payroll-accounting-state">
+        <dt>Status jurnal</dt>
+        <dd>{period.accounting_journal_id ? "Diposting" : "Belum diposting"}</dd>
+        <dt>Tanggal posting</dt>
+        <dd>{postedOn(period.accounting_posted_at) || "—"}</dd>
+        {hasActor(period.accounting_posted_by) && (
+          <>
+            <dt>Diposting oleh</dt>
+            <dd>{actorName(period.accounting_posted_by)}</dd>
+          </>
+        )}
+      </dl>
+      <ol className="hr-pay-steps" data-testid="hr-payroll-finance-steps">
+        {steps.map((step, index) => (
+          <li key={step.key} className={step.done ? "done" : step.current ? "current" : ""} data-testid={`hr-pay-step-${step.key}`}>
+            {index > 0 && <span className={`hr-pay-step-line${steps[index - 1].done ? " done" : ""}`} aria-hidden="true" />}
+            <span>{step.done ? "✓" : "○"} {step.label}</span>
+          </li>
+        ))}
+      </ol>
+      {payment && (
+        <dl className="hr-pay-meta" data-testid="hr-payroll-payment-facts">
+          <dt>Nomor payment</dt><dd>{payment.payment_number || "—"}</dd>
+          <dt>Bank</dt><dd>{bankName}</dd>
+          <dt>Nominal</dt><dd>{moneyFormat(payment.total_amount)}</dd>
+          <dt>Status</dt><dd>{payment.status}</dd>
+          <dt>Jurnal payment</dt><dd className="mono">{payment.accounting_journal_id || "—"}</dd>
+          <dt>Disetujui</dt><dd>{payment.approved_at ? `${actorName(payment.approved_by)}, ${String(payment.approved_at).slice(0, 10)}` : "—"}</dd>
+          <dt>Dibayar</dt><dd>{payment.paid_at ? `${actorName(payment.paid_by)}, ${String(payment.paid_at).slice(0, 10)}` : "—"}</dd>
+          {payment.status === "REVERSED" && (
+            <>
+              <dt>Alasan reversal</dt><dd>{payment.reversal_reason || "—"}</dd>
+              <dt>Direverse</dt><dd>{payment.reversed_at ? `${actorName(payment.reversed_by)}, ${String(payment.reversed_at).slice(0, 10)}` : "—"}</dd>
+              <dt>Jurnal reversal</dt><dd className="mono">{payment.reversal_journal_id || "—"}</dd>
+            </>
+          )}
+        </dl>
+      )}
+      {action?.kind === "blocked" && <p className="muted small" data-testid="hr-payroll-accounting-blocked">{action.text}</p>}
+      {action?.kind === "create" && (
+        <div className="hr-pay-create">
+          <label>Tanggal pembayaran
+            <input type="date" value={payDate} onChange={(e) => setPayDate(e.target.value)} data-testid="hr-payment-date" />
+          </label>
+          <label>Bank
+            {(banks || []).length ? (
+              <select value={bankId} onChange={(e) => setBankId(e.target.value)} data-testid="hr-payment-bank">
+                <option value="">Pilih bank</option>
+                {banks.filter((row) => row.active !== false).map((row) => (
+                  <option key={row.id} value={row.id}>{row.name}</option>
+                ))}
+              </select>
+            ) : (
+              <input value={bankId} onChange={(e) => setBankId(e.target.value)} placeholder="ID kas/bank" data-testid="hr-payment-bank" />
+            )}
+          </label>
+        </div>
+      )}
+      <div className="hr-actions">
+        {action && action.kind !== "blocked" && (
+          <button
+            type="button"
+            className={action.kind === "reverse" ? "ghost danger" : "primary"}
+            disabled={Boolean(busy) || (action.kind === "create" && (!payDate || !bankId))}
+            onClick={() => setDialog(action.kind)}
+            data-testid="hr-payroll-finance-action"
+          >
+            {action.label}
+          </button>
+        )}
+      </div>
+      {dialog && (
+        <div className="modal" role="dialog" aria-modal="true" data-testid="hr-payroll-finance-modal">
+          <div className="modal-inner">
+            <div className="modal-head">
+              <h3>{action?.label}</h3>
+              <button type="button" className="ghost sm" disabled={Boolean(busy)} onClick={() => setDialog("")}>×</button>
+            </div>
+            <div className="emp-form">
+              {dialog === "post-accrual" && <p>Jurnal akrual memakai tanggal akhir periode. Debit beban, kredit Utang Gaji.</p>}
+              {dialog === "create" && <p>Membuat satu payment DRAFT untuk periode ini. Nominal mengikuti kredit Utang Gaji.</p>}
+              {dialog === "approve" && <p>Menyetujui {payment?.payment_number}. Belum memotong bank.</p>}
+              {dialog === "post-pay" && <p>Jurnal pembayaran: debit Utang Gaji, kredit bank. Tanggal jurnal = tanggal pembayaran.</p>}
+              {dialog === "reverse" && (
+                <>
+                  <dl className="hr-pay-meta" data-testid="hr-payroll-reverse-summary">
+                    <dt>Nomor payment</dt><dd>{payment?.payment_number || payment?.id || "—"}</dd>
+                    <dt>Nominal</dt><dd>{moneyFormat(payment?.total_amount)}</dd>
+                  </dl>
+                  <label>Alasan
+                    <textarea value={reason} onChange={(e) => setReason(e.target.value)} rows={3} data-testid="hr-payment-reverse-reason" />
+                  </label>
+                </>
+              )}
+              <div className="emp-actions">
+                <button type="button" className="ghost" disabled={Boolean(busy)} onClick={() => setDialog("")}>Batal</button>
+                <button
+                  type="button"
+                  className={dialog === "reverse" ? "ghost danger" : "primary"}
+                  disabled={Boolean(busy) || (dialog === "reverse" && reason.trim().length < 3)}
+                  data-testid="hr-payroll-finance-confirm"
+                  onClick={() => {
+                    if (dialog === "post-accrual") run(() => api.hrPayrollPostAccounting(period.id));
+                    if (dialog === "create") run(() => api.hrPayrollCreatePayment(period.id, { payment_date: payDate, cash_bank_account_id: bankId }));
+                    if (dialog === "approve") run(() => api.hrPayrollApprovePayment(payment.id));
+                    if (dialog === "post-pay") run(() => api.hrPayrollPostPayment(payment.id));
+                    if (dialog === "reverse") run(() => api.hrPayrollReversePayment(payment.id, reason.trim()));
+                  }}
+                >
+                  {busy ? "Memproses…" : dialog === "reverse" ? "Reverse" : "Lanjutkan"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 function Payroll() {
   const { hasPerm } = useAuth();
   const [periods, setPeriods] = useState([]);
@@ -497,6 +708,8 @@ function Payroll() {
   const [attendance, setAttendance] = useState([]);
   const [kasbon, setKasbon] = useState([]);
   const [readiness, setReadiness] = useState(null);
+  const [payment, setPayment] = useState(null);
+  const [banks, setBanks] = useState([]);
   const [showPreview, setShowPreview] = useState(false);
   const [form, setForm] = useState({ year: new Date().getFullYear(), month: new Date().getMonth() + 1, start_date: "", end_date: "" });
   const [err, setErr] = useState("");
@@ -511,8 +724,25 @@ function Payroll() {
     } catch {
       setReadiness(null);
     }
+    try {
+      const pay = await api.hrPayrollPeriodPayment(period.id);
+      setPayment(pay.payment || null);
+    } catch {
+      setPayment(null);
+    }
   }, []);
+  const canCreatePayment = hasPerm("payroll_payment.create");
   useEffect(() => { loadPeriods().catch((ex) => setErr(errorText(ex))); }, [loadPeriods]);
+  useEffect(() => {
+    if (selected?.status !== "FINAL" || !selected.accounting_journal_id || payment || !canCreatePayment) return undefined;
+    let active = true;
+    api.cashBankAccounts({ active_only: true }).then((data) => {
+      if (active) setBanks(data.items || []);
+    }).catch(() => {
+      if (active) setBanks([]);
+    });
+    return () => { active = false; };
+  }, [selected?.id, selected?.status, selected?.accounting_journal_id, payment, canCreatePayment]);
   const create = async (e) => { e.preventDefault(); try { const res = await api.hrPayrollCreatePeriod({ ...form, year: Number(form.year), month: Number(form.month) }); await loadPeriods(); await loadDetail(res.period); } catch (ex) { setErr(errorText(ex)); } };
   const calculate = async () => { try { await api.hrPayrollCalculate(selected.id); await loadDetail(selected); } catch (ex) { setErr(errorText(ex)); } };
   const transition = async (target) => { try { await api.hrPayrollTransition(selected.id, target); await loadPeriods(); await loadDetail(selected); } catch (ex) { setErr(errorText(ex)); } };
@@ -527,14 +757,29 @@ function Payroll() {
     {hasPerm("payroll.calculate") && <form className="settings-card hr-period-form" onSubmit={create}><h3>Buat Periode</h3>{[["year", "Tahun", "number"], ["month", "Bulan", "number"], ["start_date", "Tanggal mulai", "date"], ["end_date", "Tanggal akhir", "date"]].map(([key, label, type]) => <label key={key}>{label}<input type={type} value={form[key]} onChange={(e) => setForm({ ...form, [key]: e.target.value })} required /></label>)}<button className="primary"><Plus size={14} /> Buat</button></form>}
     <div className="hr-master-detail"><div className="settings-card"><h3>Periode</h3>{periods.map((p) => <button type="button" className={`hr-list-button ${selected?.id === p.id ? "active" : ""}`} key={p.id} onClick={() => loadDetail(p).catch((ex) => setErr(errorText(ex)))}><span>{p.period_number || `${p.month}/${p.year}`}</span><span className={`hr-status hr-status-${String(p.status).toLowerCase()}`}>{statusLabel(p.status)}</span></button>)}</div>
       <div className="hr-payroll-detail">{!selected ? <div className="settings-card"><p className="muted">Pilih periode payroll.</p></div> : <>
-        <div className="settings-card"><div className="hr-card-head"><div><h3>{selected.period_number || `${selected.month}/${selected.year}`}</h3><span className={`hr-status hr-status-${String(selected.status).toLowerCase()}`}>{statusLabel(selected.status)}</span>
+        <div className="settings-card"><div className="hr-card-head"><div><h3>{payrollTitle(selected)}</h3><span className={`hr-status hr-status-${String(selected.status).toLowerCase()}`}>{statusLabel(selected.status)}</span>
           {readiness && <span className="muted small" data-testid="hr-payroll-accounting-ready">Accounting: {readiness.accounting_ready ? "Siap" : "Belum Siap"}</span>}
+          {selected.period_number && <span className="muted small">{selected.period_number}</span>}
         </div><div className="hr-actions">
           {selected.status === "DRAFT" && hasPerm("payroll.calculate") && <button className="primary" onClick={calculate} data-testid="hr-calc-btn">Hitung Payroll</button>}
           {transitionButtons.map(([target, perm, testid, label]) => canTransition(selected.status, target) && hasPerm(perm) ? <button key={target} className="primary" onClick={() => transition(target)} data-testid={testid}>{label}</button> : null)}
-          {selected.status === "FINAL" && hasPerm("payroll.reopen") && <button className="ghost" onClick={reopen} data-testid="hr-reopen-btn">Buka Ulang</button>}
-          {readiness && <button type="button" className="ghost" onClick={() => setShowPreview(true)} data-testid="hr-payroll-accounting-preview-btn">Lihat Preview Accounting</button>}
-        </div></div></div>
+          {selected.status === "FINAL" && hasPerm("payroll.reopen") && <button className="ghost" onClick={reopen} disabled={Boolean(selected.accounting_journal_id)} title={selected.accounting_journal_id ? "Jurnal akuntansi masih aktif" : undefined} data-testid="hr-reopen-btn">Buka Ulang</button>}
+          {readiness && <button type="button" className="ghost" onClick={() => setShowPreview((open) => !open)} data-testid="hr-payroll-accounting-preview-btn">Lihat Preview Accounting</button>}
+        </div></div>
+        {selected.status === "FINAL" && (
+          <PayrollFinanceFlow
+            key={selected.id}
+            period={selected}
+            lines={lines}
+            readiness={readiness}
+            payment={payment}
+            banks={banks}
+            hasPerm={hasPerm}
+            onError={setErr}
+            onChanged={() => loadDetail(selected)}
+          />
+        )}
+        </div>
         {showPreview && readiness && (
           <div className="settings-card hr-payroll-accounting-preview" data-testid="hr-payroll-accounting-preview">
             <h3>Preview Accounting</h3>
