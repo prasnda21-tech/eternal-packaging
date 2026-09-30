@@ -5,6 +5,7 @@ import {
   SALES_PWA_PO_SCROLL_KEY,
   clearSalesPwaPoListState,
   readSalesPwaPoListState,
+  salesPwaPoFiltersFromContext,
   writeSalesPwaPoListState,
 } from "./salesPwaPoListState";
 
@@ -60,5 +61,22 @@ describe("sales PWA PO list session state", () => {
 
     const auth = readFileSync(path.join(__dirname, "auth.jsx"), "utf8");
     expect(auth).toMatch(/clearSalesPwaPoListState\(\)/);
+  });
+
+  test("maps dashboard card context onto the existing PO filters", () => {
+    expect(salesPwaPoFiltersFromContext({ active: true })).toMatchObject({
+      status: "berjalan",
+      q: "",
+      stage: "",
+      date_from: "",
+      date_to: "",
+    });
+    expect(salesPwaPoFiltersFromContext({ status: "selesai", periode: "2026-02" })).toMatchObject({
+      status: "selesai",
+      date_from: "2026-02-01",
+      date_to: "2026-02-28",
+    });
+    expect(salesPwaPoFiltersFromContext({ status: "selesai" })).toBeNull();
+    expect(salesPwaPoFiltersFromContext(null)).toBeNull();
   });
 });

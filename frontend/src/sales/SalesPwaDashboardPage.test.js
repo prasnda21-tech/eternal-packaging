@@ -3,16 +3,22 @@ import { createRoot } from "react-dom/client";
 import api from "../lib/api";
 import SalesPwaDashboardPage from "./SalesPwaDashboardPage";
 
-jest.mock("react-router-dom", () => ({ Link: ({ children, to }) => <a href={to}>{children}</a> }), { virtual: true });
+jest.mock("react-router-dom", () => ({
+  Link: ({ children, to, state, ...props }) => (
+    <a href={typeof to === "string" ? to : ""} data-state={state ? JSON.stringify(state) : undefined} {...props}>{children}</a>
+  ),
+}), { virtual: true });
 jest.mock("../lib/api", () => ({
   __esModule: true,
-  default: { salesPwaDashboard: jest.fn(), salesPwaOrders: jest.fn() },
+  default: { salesPwaDashboard: jest.fn(), salesPwaOrders: jest.fn(), salesPwaVisits: jest.fn() },
 }));
 global.IS_REACT_ACT_ENVIRONMENT = true;
 
 beforeEach(() => {
   api.salesPwaOrders.mockReset();
   api.salesPwaOrders.mockResolvedValue({ orders: [], counts: { selesai: 0 }, total: 0 });
+  api.salesPwaVisits.mockReset();
+  api.salesPwaVisits.mockResolvedValue({ visits: [] });
 });
 
 test("shows invoice-authoritative revenue and receivables", async () => {
@@ -169,5 +175,78 @@ test("uses the existing list totals for the action count without another request
   expect(node.textContent).toContain("5 buffer stock");
   expect(node.textContent).not.toContain("Partial");
   expect(node.querySelector('[data-testid="sales-actions-empty"]')).toBeNull();
+  act(() => root.unmount());
+});
+
+test("explains running receivables and links only the cards that already have a destination", async () => {
+  api.salesPwaDashboard.mockResolvedValue({
+    metrics: { revenue: 0, receivables: 4945000, invoice_count: 0, receivable_invoice_count: 4, active_po: 3, buffer_po: 1, visit_month: 2, visit_overdue: 1 },
+    upcoming_visits: [],
+  });
+  api.salesPwaVisits.mockResolvedValue({
+    visits: [
+      { id: "old", outlet: "Lama", activity_at: "2026-09-01T08:00:00", result: "Lama" },
+      { id: "new", outlet: "ABC", activity_at: "2026-10-01T09:00:00", result: "Follow up desain" },
+    ],
+  });
+  const node = document.createElement("div");
+  const root = createRoot(node);
+  await act(async () => { root.render(<SalesPwaDashboardPage />); await Promise.resolve(); });
+  await act(async () => { await Promise.resolve(); });
+
+  const main = node.querySelector('[data-testid="sales-pwa-dashboard"]').innerHTML;
+  const order = ["sales-dashboard-actions", "sales-dashboard-agenda", "sales-dashboard-last-visit", "sales-dashboard-performance", "sales-dashboard-followup"];
+  let cursor = -1;
+  order.forEach((id) => {
+    const at = main.indexOf(id);
+    expect(at).toBeGreaterThan(cursor);
+    cursor = at;
+  });
+
+  const receivables = node.querySelector('[data-testid="sales-dashboard-receivables"]');
+  expect(receivables.tagName).toBe("ARTICLE");
+  expect(receivables.textContent).toContain("Piutang berjalan");
+  expect(receivables.textContent).toContain("Rp4.945.000");
+  expect(receivables.textContent).toContain("4 invoice belum lunas");
+  expect(receivables.textContent).toContain("Semua periode");
+  expect(receivables.textContent).toContain("Saldo invoice yang masih belum lunas, termasuk periode sebelumnya.");
+  expect(receivables.getAttribute("title")).toContain("periode sebelumnya");
+  expect(node.querySelector('[data-testid="sales-dashboard-revenue"]').tagName).toBe("ARTICLE");
+  expect(node.innerHTML).not.toContain("/buku-besar/piutang-usaha");
+  expect(node.innerHTML).not.toContain("sales-invoice");
+
+  const month = node.querySelector('input[type="month"]').value;
+  const active = node.querySelector('[data-testid="sales-dashboard-active"]');
+  const done = node.querySelector('[data-testid="sales-dashboard-done-card"]');
+  const visits = node.querySelector('[data-testid="sales-dashboard-visits"]');
+  expect(active.getAttribute("href")).toBe("/sales/po");
+  expect(JSON.parse(active.getAttribute("data-state"))).toEqual({ salesPwaPoContext: { active: true } });
+  expect(done.getAttribute("href")).toBe("/sales/po");
+  expect(JSON.parse(done.getAttribute("data-state"))).toEqual({ salesPwaPoContext: { status: "selesai", periode: month } });
+  expect(visits.getAttribute("href")).toBe("/sales/visit");
+  expect(visits.textContent).toContain("Visit bulan ini");
+  expect(visits.textContent).toContain("2");
+
+  const last = node.querySelector('[data-testid="sales-last-visit"]');
+  expect(last.textContent).toContain("ABC");
+  expect(last.textContent).toContain("01 Oktober 2026");
+  expect(last.textContent).toContain("Follow up desain");
+  expect(node.querySelector('[data-testid="sales-last-visit-empty"]')).toBeNull();
+  expect(api.salesPwaVisits).toHaveBeenCalledWith({ month });
+  act(() => root.unmount());
+});
+
+test("shows an empty visit history without breaking the dashboard", async () => {
+  api.salesPwaDashboard.mockResolvedValue({
+    metrics: { revenue: 0, receivables: 0, invoice_count: 0, receivable_invoice_count: 0, active_po: 0, buffer_po: 0, visit_month: 0, visit_overdue: 0 },
+    upcoming_visits: [],
+  });
+  const node = document.createElement("div");
+  const root = createRoot(node);
+  await act(async () => { root.render(<SalesPwaDashboardPage />); await Promise.resolve(); });
+  await act(async () => { await Promise.resolve(); });
+  expect(node.querySelector('[data-testid="sales-last-visit-empty"]').textContent).toBe("Tidak ada riwayat visit");
+  expect(node.querySelector('[data-testid="sales-dashboard-done"]').textContent).toBe("0 PO");
+  expect(node.querySelector('[data-testid="sales-dashboard-receivables"]').textContent).toContain("0 invoice belum lunas");
   act(() => root.unmount());
 });

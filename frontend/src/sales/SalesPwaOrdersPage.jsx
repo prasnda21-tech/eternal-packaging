@@ -1,9 +1,9 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { ChevronRight, FileText, Search, SlidersHorizontal, X } from "lucide-react";
 import api from "../lib/api";
 import { documentTotal, formatSalesDate } from "../lib/salesPwa";
-import { readSalesPwaPoListState, writeSalesPwaPoListState } from "../lib/salesPwaPoListState";
+import { readSalesPwaPoListState, salesPwaPoFiltersFromContext, writeSalesPwaPoListState } from "../lib/salesPwaPoListState";
 import SalesPwaDocumentSheet from "./SalesPwaDocumentSheet";
 import SalesPwaProgress from "./SalesPwaProgress";
 
@@ -90,7 +90,10 @@ function searchKeyword(qValue, customerQ) {
 }
 
 export default function SalesPwaOrdersPage() {
-  const initial = readSalesPwaPoListState();
+  const location = useLocation();
+  const stored = readSalesPwaPoListState();
+  const contextFilters = salesPwaPoFiltersFromContext(location.state?.salesPwaPoContext);
+  const initial = contextFilters ? { filters: contextFilters, scrollY: 0 } : stored;
   const narrow = useNarrowScreen();
   const [q, setQ] = useState(initial.filters.q);
   const [debouncedQ, setDebouncedQ] = useState(initial.filters.q.trim());

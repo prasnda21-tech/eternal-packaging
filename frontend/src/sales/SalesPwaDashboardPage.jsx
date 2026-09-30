@@ -2,17 +2,10 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { CalendarDays, ChevronRight, ClipboardList, MapPin, TrendingUp, WalletCards } from "lucide-react";
 import api from "../lib/api";
-import { currentSalesMonth, formatSalesDate, formatSalesMoney } from "../lib/salesPwa";
+import { currentSalesMonth, formatSalesDate, formatSalesMoney, salesMonthBounds } from "../lib/salesPwa";
 
-function monthBounds(month) {
-  const [year, monthNumber] = String(month || "").split("-").map(Number);
-  if (!year || !monthNumber) return { date_from: "", date_to: "" };
-  const last = new Date(year, monthNumber, 0).getDate();
-  return {
-    date_from: `${month}-01`,
-    date_to: `${month}-${String(last).padStart(2, "0")}`,
-  };
-}
+const VISIT_MONTHS = ["Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus", "September", "Oktober", "November", "Desember"];
+const RECEIVABLE_INFO = "Saldo invoice yang masih belum lunas, termasuk periode sebelumnya.";
 
 function localDay(date = new Date()) {
   const monthNumber = String(date.getMonth() + 1).padStart(2, "0");
@@ -42,6 +35,22 @@ function listedTotal(payload) {
   return Array.isArray(payload?.orders) ? payload.orders.length : 0;
 }
 
+function visitDateLabel(value) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(value || ""));
+  if (!match) return "";
+  const monthName = VISIT_MONTHS[Number(match[2]) - 1];
+  if (!monthName) return "";
+  return `${match[3]} ${monthName} ${match[1]}`;
+}
+
+function latestVisit(rows) {
+  if (!Array.isArray(rows) || !rows.length) return null;
+  return rows.reduce((best, row) => {
+    if (!best) return row;
+    return String(row?.activity_at || "") > String(best.activity_at || "") ? row : best;
+  }, null);
+}
+
 export default function SalesPwaDashboardPage() {
   const [month, setMonth] = useState(currentSalesMonth());
   const [data, setData] = useState(null);
@@ -49,6 +58,9 @@ export default function SalesPwaDashboardPage() {
   const [error, setError] = useState("");
   const [actions, setActions] = useState(null);
   const [actionMonth, setActionMonth] = useState("");
+  const [visits, setVisits] = useState(null);
+  const [visitsMonth, setVisitsMonth] = useState("");
+  const [visitsError, setVisitsError] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -67,7 +79,7 @@ export default function SalesPwaDashboardPage() {
   useEffect(() => {
     if (typeof api.salesPwaOrders !== "function") return undefined;
     let cancelled = false;
-    const bounds = monthBounds(month);
+    const bounds = salesMonthBounds(month);
     const list = {
       status: "semua",
       sort: "order_date",
@@ -98,6 +110,33 @@ export default function SalesPwaDashboardPage() {
     return () => { cancelled = true; };
   }, [month]);
 
+  useEffect(() => {
+    if (typeof api.salesPwaVisits !== "function") {
+      setVisits([]);
+      setVisitsError(false);
+      setVisitsMonth(month);
+      return undefined;
+    }
+    let cancelled = false;
+    setVisitsError(false);
+    api.salesPwaVisits({ month })
+      .then((result) => {
+        if (!cancelled) {
+          setVisits(Array.isArray(result?.visits) ? result.visits : []);
+          setVisitsError(false);
+          setVisitsMonth(month);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setVisits([]);
+          setVisitsError(true);
+          setVisitsMonth(month);
+        }
+      });
+    return () => { cancelled = true; };
+  }, [month]);
+
   const visible = data && dataMonth === month && (!data.month || data.month === month) ? data : null;
   const metrics = visible?.metrics || {};
   const actionVisible = actions && actionMonth === month ? actions : null;
@@ -108,6 +147,8 @@ export default function SalesPwaDashboardPage() {
   const reminders = visible?.upcoming_visits || [];
   const agendaToday = reminders.filter((item) => String(item.date || "").slice(0, 10) === today);
   const followUps = reminders.filter((item) => String(item.date || "").slice(0, 10) !== today);
+  const visitHistory = visits && visitsMonth === month ? visits : null;
+  const lastVisit = latestVisit(visitHistory);
   return (
     <>
       <header className="spwa-top spwa-top-inline">
@@ -162,37 +203,7 @@ export default function SalesPwaDashboardPage() {
               </section>
             )}
 
-            <section className="spwa-metric-stack" aria-label="Ringkasan penjualan">
-              <article className="spwa-metric is-primary">
-                <ClipboardList size={17} />
-                <span>PO aktif</span>
-                <strong>{metrics.active_po || 0} PO</strong>
-                <small>{metrics.buffer_po || 0} buffer stock</small>
-              </article>
-              <article className="spwa-metric is-primary is-revenue">
-                <TrendingUp size={17} />
-                <span>Omzet bulan ini</span>
-                <strong>{formatSalesMoney(metrics.revenue)}</strong>
-                <small>{metrics.invoice_count || 0} faktur final</small>
-              </article>
-              <div className="spwa-metric-grid">
-                <article className="spwa-metric is-debt">
-                  <WalletCards size={17} />
-                  <span>Piutang</span>
-                  <strong>{formatSalesMoney(metrics.receivables)}</strong>
-                  <small>{metrics.receivable_invoice_count || 0} faktur belum lunas</small>
-                </article>
-                <article className="spwa-metric is-done">
-                  <ClipboardList size={17} />
-                  <span>PO selesai</span>
-                  <strong data-testid="sales-dashboard-done">{actionVisible ? (actionVisible.selesai == null ? "—" : `${actionVisible.selesai} PO`) : "…"}</strong>
-                  <small>bulan ini</small>
-                </article>
-              </div>
-              <p className="spwa-metric-note">Visit bulan ini {metrics.visit_month || 0} · {metrics.visit_overdue || 0} reminder terlambat</p>
-            </section>
-
-            <section className="spwa-panel">
+            <section className="spwa-panel" data-testid="sales-dashboard-agenda">
               <div className="spwa-section-head">
                 <div><p className="spwa-kicker">AGENDA</p><h2>{agendaToday.length ? `Agenda hari ini (${agendaToday.length})` : "Agenda hari ini"}</h2></div>
                 <Link to="/sales/visit">Kalender <ChevronRight size={15} /></Link>
@@ -217,7 +228,79 @@ export default function SalesPwaDashboardPage() {
               </div>
             </section>
 
-            <section className="spwa-panel">
+            <section className="spwa-panel" data-testid="sales-dashboard-last-visit">
+              <div className="spwa-section-head">
+                <div><p className="spwa-kicker">RIWAYAT</p><h2>Visit terakhir</h2></div>
+                <Link to="/sales/visit">Visit <ChevronRight size={15} /></Link>
+              </div>
+              {visitHistory == null && <p className="spwa-empty compact">Memuat riwayat visit...</p>}
+              {visitHistory && visitsError && <p className="spwa-empty compact">Riwayat visit belum dapat dimuat.</p>}
+              {visitHistory && !visitsError && !lastVisit && <p className="spwa-empty compact" data-testid="sales-last-visit-empty">Tidak ada riwayat visit</p>}
+              {visitHistory && !visitsError && lastVisit && (
+                <div className="spwa-last-visit" data-testid="sales-last-visit">
+                  <span>Customer</span>
+                  <strong>{lastVisit.outlet || "Outlet"}</strong>
+                  <span>Tanggal</span>
+                  <strong>{visitDateLabel(lastVisit.activity_at) || formatSalesDate(lastVisit.activity_at)}</strong>
+                  <span>Hasil</span>
+                  <strong>{String(lastVisit.result || "").trim() || "—"}</strong>
+                </div>
+              )}
+            </section>
+
+            <section className="spwa-panel spwa-performance" data-testid="sales-dashboard-performance" aria-label="Performance">
+              <div className="spwa-section-head">
+                <div><p className="spwa-kicker">PERFORMANCE</p><h2>Performance</h2></div>
+              </div>
+              <div className="spwa-metric-stack">
+                <article className="spwa-metric is-primary is-revenue" data-testid="sales-dashboard-revenue">
+                  <TrendingUp size={17} />
+                  <span>Omzet bulan ini</span>
+                  <strong>{formatSalesMoney(metrics.revenue)}</strong>
+                  <small>{metrics.invoice_count || 0} faktur final</small>
+                </article>
+                <article className="spwa-metric is-debt" data-testid="sales-dashboard-receivables" title={RECEIVABLE_INFO}>
+                  <WalletCards size={17} />
+                  <span>Piutang berjalan</span>
+                  <strong>{formatSalesMoney(metrics.receivables)}</strong>
+                  <small>{metrics.receivable_invoice_count || 0} invoice belum lunas</small>
+                  <small>Semua periode</small>
+                  <small className="spwa-metric-info">{RECEIVABLE_INFO}</small>
+                </article>
+                <div className="spwa-metric-grid">
+                  <Link
+                    to="/sales/po"
+                    state={{ salesPwaPoContext: { active: true } }}
+                    className="spwa-metric spwa-metric-link"
+                    data-testid="sales-dashboard-active"
+                  >
+                    <ClipboardList size={17} />
+                    <span>PO aktif <ChevronRight size={14} /></span>
+                    <strong>{metrics.active_po || 0} PO</strong>
+                    <small>{metrics.buffer_po || 0} buffer stock</small>
+                  </Link>
+                  <Link
+                    to="/sales/po"
+                    state={{ salesPwaPoContext: { status: "selesai", periode: month } }}
+                    className="spwa-metric is-done spwa-metric-link"
+                    data-testid="sales-dashboard-done-card"
+                  >
+                    <ClipboardList size={17} />
+                    <span>PO selesai <ChevronRight size={14} /></span>
+                    <strong data-testid="sales-dashboard-done">{actionVisible ? (actionVisible.selesai == null ? "—" : `${actionVisible.selesai} PO`) : "…"}</strong>
+                    <small>bulan ini</small>
+                  </Link>
+                </div>
+                <Link to="/sales/visit" className="spwa-metric spwa-metric-link" data-testid="sales-dashboard-visits">
+                  <MapPin size={17} />
+                  <span>Visit bulan ini <ChevronRight size={14} /></span>
+                  <strong>{metrics.visit_month || 0}</strong>
+                  <small>{metrics.visit_overdue || 0} reminder terlambat</small>
+                </Link>
+              </div>
+            </section>
+
+            <section className="spwa-panel" data-testid="sales-dashboard-followup">
               <div className="spwa-section-head">
                 <div><p className="spwa-kicker">FOLLOW UP</p><h2>Follow up customer</h2></div>
                 <Link to="/sales/visit">Visit <ChevronRight size={15} /></Link>
@@ -241,7 +324,7 @@ export default function SalesPwaDashboardPage() {
 
             <section className="spwa-source-note">
               <strong>Sumber angka</strong>
-              <span>Omzet: faktur final berdasarkan tanggal faktur. Piutang: faktur final dikurangi penerimaan tercatat. Semua data dibatasi oleh sales_user_id akun ini.</span>
+              <span>Omzet: faktur final berdasarkan tanggal faktur. Piutang berjalan: faktur final dikurangi penerimaan tercatat, semua periode. Semua data dibatasi oleh sales_user_id akun ini.</span>
             </section>
           </>
         )}

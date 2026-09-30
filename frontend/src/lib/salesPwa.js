@@ -79,3 +79,14 @@ export function currentSalesMonth(now = new Date()) {
   const month = String(now.getMonth() + 1).padStart(2, "0");
   return `${year}-${month}`;
 }
+
+export function salesMonthBounds(month) {
+  const [year, monthNumber] = String(month || "").split("-").map(Number);
+  if (!year || !monthNumber || monthNumber < 1 || monthNumber > 12) return { date_from: "", date_to: "" };
+  const last = new Date(year, monthNumber, 0).getDate();
+  const key = `${year}-${String(monthNumber).padStart(2, "0")}`;
+  return {
+    date_from: `${key}-01`,
+    date_to: `${key}-${String(last).padStart(2, "0")}`,
+  };
+}
