@@ -338,6 +338,7 @@ export const api = {
   validateCashBankStatement: (formData) => client.post(`/cash-bank/statements/preview/validate`, formData).then((r) => r.data),
   commitCashBankStatement: (formData) => client.post(`/cash-bank/statements/imports`, formData).then((r) => r.data),
   cashBankStatementImports: (params = {}) => client.get(`/cash-bank/statements/imports`, { params }).then((r) => r.data),
+  cashBankDuplicateGroups: (params = {}) => client.get(`/cash-bank/statements/duplicate-groups`, { params }).then((r) => r.data),
   resolveCashBankStatementDuplicate: (lineId, payload) => client.post(`/cash-bank/statements/lines/${encodeURIComponent(lineId)}/duplicate-resolution`, payload).then((r) => r.data),
   setCashBankManualStatementBalance: (payload) => client.put(`/cash-bank/statements/manual-balance`, payload).then((r) => r.data),
   currentStock: (params = {}) => client.get(`/current-stock`, { params }).then((r) => r.data),

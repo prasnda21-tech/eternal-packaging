@@ -1083,3 +1083,198 @@ async def test_closed_period_rejects_receipt_post_without_journal():
         assert posted.status_code == 409
         assert "sudah ditutup" in posted.text
         assert await server.db[JOURNAL_ENTRIES].count_documents({}) == journals
+
+
+def _snapshot(docs):
+    return sorted(docs, key=lambda doc: str(doc.get("id") or ""))
+
+
+async def test_duplicate_groups_are_read_only_and_resolution_uses_existing_endpoint():
+    admin = _user()
+    async with await client_for(admin) as c:
+        bank, _income = await _setup(c, currency="IDR")
+        account = bank["id"]
+        await server.db[IMPORTS].insert_many([
+            {"id": "imp-a", "cash_bank_id": account, "filename": "mutasi-2809.csv", "status": "complete", "created_at": "2026-09-28T02:14:00+00:00", "file_sha256": "a" * 64},
+            {"id": "imp-b", "cash_bank_id": account, "filename": "mutasi-2809-ulang.csv", "status": "complete", "created_at": "2026-09-29T01:02:00+00:00", "file_sha256": "b" * 64},
+        ])
+        description = "PEMINDAHAN DANA RAKHA EDY SYAH"
+        shared = {
+            "cash_bank_id": account, "date": "2026-09-28", "description": description,
+            "direction": "out", "amount": 70000000, "duplicate_status": "pending_review",
+            "identity_guarantee": "tidak_dijamin", "sealed": True, "resolutions": [], "active_claim": None,
+        }
+        await server.db[LINES].insert_many([
+            {**shared, "id": "line-a", "import_id": "imp-a", "created_at": "2026-09-28T02:14:00+00:00"},
+            {**shared, "id": "line-b", "import_id": "imp-b", "created_at": "2026-09-29T01:02:00+00:00"},
+            {**shared, "id": "line-alone", "import_id": "imp-a", "description": "TRANSFER LAIN", "amount": 1000, "created_at": "2026-09-28T03:00:00+00:00"},
+            {**shared, "id": "line-excluded", "import_id": "imp-b", "description": "TRANSFER LAIN DIKECUALIKAN", "duplicate_status": "excluded", "created_at": "2026-09-28T04:00:00+00:00"},
+            {**shared, "id": "line-clear", "import_id": "imp-a", "duplicate_status": "clear", "created_at": "2026-09-28T05:00:00+00:00"},
+        ])
+        before = {
+            "lines": _snapshot(await server.db[LINES].find({}, {"_id": 0}).to_list(20)),
+            "imports": _snapshot(await server.db[IMPORTS].find({}, {"_id": 0}).to_list(20)),
+            "matches": await server.db[RECON_MATCHES].count_documents({}),
+            "journals": await server.db[JOURNAL_ENTRIES].count_documents({}),
+        }
+        listed = await c.get("/api/cash-bank/statements/duplicate-groups", params={"cash_bank_id": account, **PERIOD})
+        assert listed.status_code == 200, listed.text
+        after = {
+            "lines": _snapshot(await server.db[LINES].find({}, {"_id": 0}).to_list(20)),
+            "imports": _snapshot(await server.db[IMPORTS].find({}, {"_id": 0}).to_list(20)),
+            "matches": await server.db[RECON_MATCHES].count_documents({}),
+            "journals": await server.db[JOURNAL_ENTRIES].count_documents({}),
+        }
+        assert after == before
+        body = listed.json()
+        assert len(body["groups"]) == 1
+        group = body["groups"][0]
+        assert group["candidate_count"] == 2
+        assert group["amount"] == 70000000
+        assert group["direction"] == "out"
+        assert group["business_date"] == "2026-09-28"
+        assert group["normalized_description"] == "pemindahan dana rakha edy syah"
+        assert [line["statement_line_id"] for line in group["lines"]] == ["line-a", "line-b"]
+        assert group["lines"][0]["filename"] == "mutasi-2809.csv"
+        assert group["lines"][0]["imported_at"] == "2026-09-28T02:14:00+00:00"
+        assert group["lines"][0]["duplicate_status"] == "pending_review"
+        assert group["lines"][0]["active_claim"] is None
+        assert group["lines"][0]["reconciliation_status"] == "unmatched"
+        assert "line-excluded" not in str(body)
+        assert "line-clear" not in str(body)
+        assert "line-alone" not in str(body)
+
+        kept = await c.post("/api/cash-bank/statements/lines/line-a/duplicate-resolution", json={
+            "action": "keep", "reason": "transaksi asli", "idempotency_key": "keep-line-a",
+        })
+        assert kept.status_code == 200, kept.text
+        stored_a = await server.db[LINES].find_one({"id": "line-a"}, {"_id": 0})
+        assert stored_a["duplicate_status"] == "kept"
+        assert stored_a["amount"] == 70000000
+        assert stored_a["date"] == "2026-09-28"
+        assert stored_a["description"] == description
+        assert len(stored_a["resolutions"]) == 1
+        assert stored_a["resolutions"][0]["action"] == "keep"
+        assert stored_a["resolutions"][0]["reason"] == "transaksi asli"
+        replay = await c.post("/api/cash-bank/statements/lines/line-a/duplicate-resolution", json={
+            "action": "keep", "reason": "transaksi asli", "idempotency_key": "keep-line-a",
+        })
+        assert replay.status_code == 200, replay.text
+        assert len((await server.db[LINES].find_one({"id": "line-a"}, {"_id": 0, "resolutions": 1}))["resolutions"]) == 1
+        conflict = await c.post("/api/cash-bank/statements/lines/line-a/duplicate-resolution", json={
+            "action": "exclude", "reason": "alasan berbeda", "idempotency_key": "keep-line-a",
+        })
+        assert conflict.status_code == 409
+        stayed = await c.get("/api/cash-bank/statements/duplicate-groups", params={"cash_bank_id": account, **PERIOD})
+        assert stayed.status_code == 200, stayed.text
+        stayed_lines = {line["statement_line_id"]: line for line in stayed.json()["groups"][0]["lines"]}
+        assert stayed_lines["line-a"]["duplicate_status"] == "kept"
+        assert stayed_lines["line-a"]["resolution"]["reason"] == "transaksi asli"
+        assert stayed_lines["line-a"]["resolution"]["actor"]["name"] == "admin"
+        assert stayed_lines["line-a"]["resolution"]["at"]
+        assert stayed_lines["line-b"]["duplicate_status"] == "pending_review"
+        assert stayed_lines["line-b"]["resolution"] is None
+        assert "line-clear" not in stayed.text
+        assert "line-alone" not in stayed.text
+
+        excluded = await c.post("/api/cash-bank/statements/lines/line-b/duplicate-resolution", json={
+            "action": "exclude", "reason": "salinan impor ulang", "idempotency_key": "exclude-line-b",
+        })
+        assert excluded.status_code == 200, excluded.text
+        stored_b = await server.db[LINES].find_one({"id": "line-b"}, {"_id": 0})
+        assert stored_b["duplicate_status"] == "excluded"
+        assert stored_b["amount"] == 70000000
+        assert await server.db[LINES].count_documents({"id": "line-b"}) == 1
+        closed = await c.get("/api/cash-bank/statements/duplicate-groups", params={"cash_bank_id": account, **PERIOD})
+        assert closed.status_code == 200, closed.text
+        assert closed.json()["groups"] == []
+
+        await server.db[LINES].insert_one({
+            **shared, "id": "line-matched", "import_id": "imp-a", "created_at": "2026-09-28T06:00:00+00:00",
+        })
+        await server.db[RECON_MATCHES].insert_one({
+            "id": "match-1", "statement_line_id": "line-matched", "status": "active",
+            "cash_bank_id": account, "journal_line_id": "journal-line-1",
+        })
+        denied = await c.post("/api/cash-bank/statements/lines/line-matched/duplicate-resolution", json={
+            "action": "exclude", "reason": "masih cocok", "idempotency_key": "exclude-matched",
+        })
+        assert denied.status_code == 409
+        assert "Batalkan pencocokan" in denied.text
+        matched_line = await server.db[LINES].find_one({"id": "line-matched"}, {"_id": 0, "duplicate_status": 1, "amount": 1})
+        assert matched_line["duplicate_status"] == "pending_review"
+        assert matched_line["amount"] == 70000000
+        assert await server.db[RECON_MATCHES].count_documents({"id": "match-1", "status": "active"}) == 1
+        assert await server.db[JOURNAL_ENTRIES].count_documents({}) == before["journals"]
+
+
+async def test_duplicate_group_remains_until_no_pending_candidate_is_left():
+    admin = _user()
+    async with await client_for(admin) as c:
+        bank, _income = await _setup(c, currency="IDR")
+        account = bank["id"]
+        await server.db[IMPORTS].insert_many([
+            {"id": "imp-c", "cash_bank_id": account, "filename": "mutasi-c.csv", "status": "complete", "created_at": "2026-09-28T02:00:00+00:00", "file_sha256": "c" * 64},
+            {"id": "imp-d", "cash_bank_id": account, "filename": "mutasi-d.csv", "status": "complete", "created_at": "2026-09-29T02:00:00+00:00", "file_sha256": "d" * 64},
+            {"id": "imp-e", "cash_bank_id": account, "filename": "mutasi-e.csv", "status": "complete", "created_at": "2026-09-30T02:00:00+00:00", "file_sha256": "e" * 64},
+        ])
+        pair = {
+            "cash_bank_id": account, "date": "2026-09-28", "description": "SETORAN KEDUA",
+            "direction": "in", "amount": 1500000, "duplicate_status": "pending_review",
+            "sealed": True, "resolutions": [], "active_claim": None, "identity_guarantee": "tidak_dijamin",
+        }
+        await server.db[LINES].insert_many([
+            {**pair, "id": "keep-a", "import_id": "imp-c", "created_at": "2026-09-28T02:00:00+00:00"},
+            {**pair, "id": "keep-b", "import_id": "imp-d", "created_at": "2026-09-29T02:00:00+00:00"},
+            {**pair, "id": "clear-sibling", "import_id": "imp-c", "description": "TRANSFER BIASA", "duplicate_status": "clear", "created_at": "2026-09-28T02:10:00+00:00"},
+            {**pair, "id": "pending-only", "import_id": "imp-d", "description": "TRANSFER BIASA", "created_at": "2026-09-28T02:11:00+00:00"},
+            {**pair, "id": "crowd-a", "import_id": "imp-c", "description": "TIGA KANDIDAT", "created_at": "2026-09-28T03:00:00+00:00"},
+            {**pair, "id": "crowd-b", "import_id": "imp-d", "description": "TIGA KANDIDAT", "created_at": "2026-09-28T03:01:00+00:00"},
+            {**pair, "id": "crowd-c", "import_id": "imp-e", "description": "TIGA KANDIDAT", "created_at": "2026-09-28T03:02:00+00:00"},
+            {**pair, "id": "same-a", "import_id": "imp-c", "description": "SATU BERKAS", "created_at": "2026-09-28T04:00:00+00:00"},
+            {**pair, "id": "same-b", "import_id": "imp-c", "description": "SATU BERKAS", "created_at": "2026-09-28T04:01:00+00:00"},
+        ])
+        excluded = await c.post("/api/cash-bank/statements/lines/keep-b/duplicate-resolution", json={
+            "action": "exclude", "reason": "salinan berkas kedua", "idempotency_key": "exclude-keep-b",
+        })
+        assert excluded.status_code == 200, excluded.text
+        replay = await c.post("/api/cash-bank/statements/lines/keep-b/duplicate-resolution", json={
+            "action": "exclude", "reason": "salinan berkas kedua", "idempotency_key": "exclude-keep-b",
+        })
+        assert replay.status_code == 200, replay.text
+        assert len((await server.db[LINES].find_one({"id": "keep-b"}, {"_id": 0, "resolutions": 1}))["resolutions"]) == 1
+        refreshed = await c.get("/api/cash-bank/statements/duplicate-groups", params={"cash_bank_id": account, **PERIOD})
+        assert refreshed.status_code == 200, refreshed.text
+        groups = {group["description"]: group for group in refreshed.json()["groups"]}
+        assert "TRANSFER BIASA" not in groups
+        assert "pending-only" not in refreshed.text
+        pair_lines = {line["statement_line_id"]: line for line in groups["SETORAN KEDUA"]["lines"]}
+        assert pair_lines["keep-a"]["duplicate_status"] == "pending_review"
+        assert pair_lines["keep-b"]["duplicate_status"] == "excluded"
+        assert pair_lines["keep-b"]["resolution"]["reason"] == "salinan berkas kedua"
+        assert pair_lines["keep-b"]["resolution"]["actor"]["name"] == "admin"
+        kept = await c.post("/api/cash-bank/statements/lines/keep-a/duplicate-resolution", json={
+            "action": "keep", "reason": "baris yang dipakai", "idempotency_key": "keep-keep-a",
+        })
+        assert kept.status_code == 200, kept.text
+        finished = await c.get("/api/cash-bank/statements/duplicate-groups", params={"cash_bank_id": account, **PERIOD})
+        finished_names = {group["description"] for group in finished.json()["groups"]}
+        assert "SETORAN KEDUA" not in finished_names
+        crowd = next(group for group in finished.json()["groups"] if group["description"] == "TIGA KANDIDAT")
+        assert crowd["candidate_count"] == 3
+        await c.post("/api/cash-bank/statements/lines/crowd-a/duplicate-resolution", json={
+            "action": "keep", "reason": "pertama dari tiga", "idempotency_key": "keep-crowd-a",
+        })
+        await c.post("/api/cash-bank/statements/lines/same-a/duplicate-resolution", json={
+            "action": "keep", "reason": "baris berkas sama", "idempotency_key": "keep-same-a",
+        })
+        again = await c.get("/api/cash-bank/statements/duplicate-groups", params={"cash_bank_id": account, **PERIOD})
+        by_name = {group["description"]: group for group in again.json()["groups"]}
+        assert by_name["TIGA KANDIDAT"]["candidate_count"] == 3
+        assert {line["duplicate_status"] for line in by_name["TIGA KANDIDAT"]["lines"]} == {"kept", "pending_review"}
+        assert {line["statement_line_id"] for line in by_name["TIGA KANDIDAT"]["lines"] if line["duplicate_status"] == "pending_review"} == {"crowd-b", "crowd-c"}
+        same = by_name["SATU BERKAS"]
+        assert same["candidate_count"] == 2
+        assert {line["import_id"] for line in same["lines"]} == {"imp-c"}
+        assert {line["duplicate_status"] for line in same["lines"]} == {"kept", "pending_review"}
+        assert await server.db[LINES].count_documents({"id": "keep-b"}) == 1

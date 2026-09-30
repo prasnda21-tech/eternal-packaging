@@ -1781,6 +1781,114 @@ async def list_ready_lines(db, *, cash_bank_id: str, start: str, end: str) -> Li
     return rows
 
 
+def _duplicate_period(start: str, end: str) -> Tuple[str, str]:
+    begin = str(start or "").strip()
+    finish = str(end or "").strip()
+    if len(begin) != 10 or len(finish) != 10 or begin > finish:
+        raise StatementValidationError("Periode tidak valid")
+    return begin, finish
+
+
+def _public_resolution(row: dict) -> Optional[dict]:
+    events = [event for event in (row.get("resolutions") or []) if isinstance(event, dict)]
+    if not events:
+        return None
+    latest = events[-1]
+    actor = latest.get("actor") or {}
+    return {
+        "action": latest.get("action"),
+        "reason": latest.get("reason"),
+        "at": latest.get("at"),
+        "actor": {"id": actor.get("id"), "name": actor.get("name")},
+    }
+
+
+async def list_duplicate_groups(db, *, cash_bank_id: str, start: str, end: str) -> dict:
+    """Read duplicate clusters that still need a decision. This function does not write."""
+    account = str(cash_bank_id or "").strip()
+    if not account:
+        raise StatementValidationError("Rekening wajib")
+    begin, finish = _duplicate_period(start, end)
+    rows = await db[LINES].find(
+        {
+            "cash_bank_id": account,
+            "date": {"$gte": begin, "$lte": finish},
+            "duplicate_status": {"$in": [DUP_PENDING, DUP_KEPT, DUP_EXCLUDED]},
+            "sealed": {"$ne": False},
+        },
+        {"_id": 0},
+    ).to_list(MAX_ROWS * 5)
+    import_ids = list({row.get("import_id") for row in rows if row.get("import_id")})
+    batches = []
+    if import_ids:
+        batches = await db[IMPORTS].find(
+            {"id": {"$in": import_ids}},
+            {"_id": 0, "id": 1, "filename": 1, "created_at": 1},
+        ).to_list(len(import_ids))
+    by_import = {doc.get("id"): doc for doc in batches}
+    line_ids = [row.get("id") for row in rows if row.get("id")]
+    matches = []
+    if line_ids:
+        from services.cash_bank_reconciliation import RECON_MATCHES
+        matches = await db[RECON_MATCHES].find(
+            {"statement_line_id": {"$in": line_ids}, "status": "active"},
+            {"_id": 0, "id": 1, "statement_line_id": 1, "status": 1},
+        ).to_list(len(line_ids))
+    match_by_line = {doc.get("statement_line_id"): doc for doc in matches if doc.get("statement_line_id")}
+    buckets: Dict[Tuple[str, str, str, str], List[dict]] = {}
+    for row in rows:
+        direction, amount_key, description, business_date = _level2_key(row)
+        buckets.setdefault((direction, amount_key, description, business_date), []).append(row)
+    groups = []
+    for (direction, _amount_key_value, description, business_date), members in buckets.items():
+        pending_count = sum(1 for row in members if row.get("duplicate_status") == DUP_PENDING)
+        if pending_count < 1 or len(members) < 2:
+            continue
+        members.sort(key=lambda row: (str(row.get("created_at") or ""), str(row.get("id") or "")))
+        public_lines = []
+        for row in members:
+            batch = by_import.get(row.get("import_id")) or {}
+            match = match_by_line.get(row.get("id"))
+            public_lines.append({
+                "statement_line_id": row.get("id"),
+                "import_id": row.get("import_id"),
+                "filename": batch.get("filename"),
+                "imported_at": batch.get("created_at"),
+                "date": row.get("date"),
+                "business_date": _business_date(row),
+                "amount": row.get("amount"),
+                "direction": row.get("direction"),
+                "description": row.get("description"),
+                "duplicate_status": row.get("duplicate_status"),
+                "resolution": _public_resolution(row),
+                "active_claim": row.get("active_claim"),
+                "reconciliation_status": "active" if match else "unmatched",
+                "reconciliation_match_id": (match or {}).get("id"),
+            })
+        groups.append({
+            "cash_bank_id": account,
+            "business_date": business_date,
+            "direction": direction,
+            "amount": members[0].get("amount"),
+            "normalized_description": description,
+            "description": members[0].get("description"),
+            "candidate_count": len(members),
+            "lines": public_lines,
+        })
+    groups.sort(key=lambda group: (
+        str(group.get("business_date") or ""),
+        str(group.get("direction") or ""),
+        _amount_key(group.get("amount")),
+        str(group.get("normalized_description") or ""),
+    ))
+    return {
+        "cash_bank_id": account,
+        "start_date": begin,
+        "end_date": finish,
+        "groups": groups,
+    }
+
+
 def line_matchable(row: dict, account_currency: Optional[str]) -> Tuple[bool, str]:
     if row.get("duplicate_status") == DUP_DEFINITE:
         return False, "Duplikat pasti transaksi bank yang sama tidak dapat dicocokkan"

@@ -546,6 +546,22 @@ const reconDate = (value) => {
   return Number.isNaN(date.getTime()) ? String(value) : new Intl.DateTimeFormat("id-ID", { day: "2-digit", month: "short", year: "numeric", timeZone: "Asia/Jakarta" }).format(date);
 };
 const reconStatus = (value) => ({ active: "Aktif", cancelled: "Dibatalkan", complete: "Selesai diimpor", importing: "Sedang diimpor", failed: "Impor gagal", posted: "Diposting" }[value] || value || "—");
+const reconDateTime = (value) => {
+  if (!value) return "—";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? String(value) : new Intl.DateTimeFormat("id-ID", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", timeZone: "Asia/Jakarta" }).format(date);
+};
+const duplicateLineLabel = (index) => `Line ${index < 26 ? String.fromCharCode(65 + index) : index + 1}`;
+const duplicateDirection = (value) => ({ in: "Masuk", out: "Keluar" }[value] || value || "—");
+const duplicateExcludeReason = (group, line) => {
+  const lines = group?.lines || [];
+  if (line?.active_claim || lines.some((item) => item.active_claim)) return "Ada klaim pencocokan aktif.";
+  if (line?.reconciliation_status === "active" || lines.some((item) => item.reconciliation_status === "active")) return "Ada pencocokan aktif.";
+  const files = new Set(lines.map((item) => item.import_id || ""));
+  if (files.size <= 1) return "Kandidat berasal dari berkas impor yang sama.";
+  if (lines.length > 2) return "Kandidat lebih dari dua.";
+  return "";
+};
 
 export default function RekonsiliasiKasBank() {
   const { hasPerm } = useAuth();
@@ -563,6 +579,9 @@ export default function RekonsiliasiKasBank() {
   const [pane, setPane] = useState("bank");
   const [workspace, setWorkspace] = useState(null);
   const [imports, setImports] = useState([]);
+  const [duplicateGroups, setDuplicateGroups] = useState([]);
+  const [duplicateMessage, setDuplicateMessage] = useState("");
+  const [decisionReasons, setDecisionReasons] = useState({});
   const [phase, setPhase] = useState("loading");
   const [message, setMessage] = useState("");
   const [rowErrors, setRowErrors] = useState([]);
@@ -603,6 +622,7 @@ export default function RekonsiliasiKasBank() {
   const [currencyDraft, setCurrencyDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const requestRef = useRef(0);
+  const decisionKeys = useRef({});
   const matchKey = useRef("");
   const cancelKeys = useRef({});
 
@@ -640,7 +660,7 @@ export default function RekonsiliasiKasBank() {
     setMessage("");
     setRowErrors([]);
     try {
-      const [ws, history] = await Promise.all([
+      const [ws, history, review] = await Promise.all([
         api.cashBankPairWorkspace({
           cash_bank_id: bankId,
           start_date: start,
@@ -650,16 +670,25 @@ export default function RekonsiliasiKasBank() {
           page_size: 50,
         }),
         api.cashBankStatementImports({ cash_bank_id: bankId }),
+        api.cashBankDuplicateGroups({
+          cash_bank_id: bankId,
+          start_date: start,
+          end_date: end,
+        }).then((body) => ({ ok: true, body })).catch((ex) => ({ ok: false, message: errPayload(ex).message })),
       ]);
       if (!shouldApplyResponse(token, requestRef.current)) return;
       setWorkspace(ws);
       setImports(Array.isArray(history?.items) ? history.items : []);
+      setDuplicateGroups(review.ok && Array.isArray(review.body?.groups) ? review.body.groups : []);
+      setDuplicateMessage(review.ok ? "" : review.message);
       setPhase("ready");
     } catch (ex) {
       if (!shouldApplyResponse(token, requestRef.current)) return;
       const parsed = errPayload(ex);
       setWorkspace(null);
       setImports([]);
+      setDuplicateGroups([]);
+      setDuplicateMessage("");
       if (parsed.status === 403) setPhase("forbidden");
       else if (parsed.status === 409) setPhase("conflict");
       else setPhase("error");
@@ -929,6 +958,33 @@ export default function RekonsiliasiKasBank() {
     }
   };
 
+  const decideDuplicate = async (group, line, action) => {
+    if (!canReconcile || busy || !line?.statement_line_id) return;
+    const reason = (decisionReasons[line.statement_line_id] || "").trim();
+    if (reason.length < 3) return;
+    if (line.duplicate_status !== "pending_review") return;
+    if (action === "keep" && line.active_claim) return;
+    if (action === "exclude" && duplicateExcludeReason(group, line)) return;
+    const slot = `${line.statement_line_id}|${action}|${reason}`;
+    if (!decisionKeys.current[slot]) decisionKeys.current[slot] = newOperationKey();
+    setBusy(true);
+    setMessage("");
+    try {
+      await api.resolveCashBankStatementDuplicate(line.statement_line_id, {
+        action,
+        reason,
+        idempotency_key: decisionKeys.current[slot],
+      });
+      delete decisionKeys.current[slot];
+      setDecisionReasons((current) => ({ ...current, [line.statement_line_id]: "" }));
+      await loadWorkspace(cashBankId, startDate, endDate, q);
+    } catch (ex) {
+      setMessage(errPayload(ex).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const saveCurrency = async () => {
     if (!canManage || !cashBankId) return;
     setBusy(true);
@@ -1030,7 +1086,7 @@ export default function RekonsiliasiKasBank() {
       {message && !importOpen && <div className="form-error recon-message" role="alert"><AlertCircle size={16} /> {message}</div>}
 
       <div className="kb-pair-tabs" role="tablist" aria-label="Tampilan rekonsiliasi">
-        {[["unmatched", "Belum Cocok"], ["matched", "Sudah Cocok"], ["import", "Riwayat Impor"]].map(([id, label]) => <button key={id} id={`recon-tab-${id}`} role="tab" aria-selected={tab === id} aria-controls={`recon-panel-${id}`} type="button" className={tab === id ? "is-active" : ""} onClick={() => setTab(id)}>{label}</button>)}
+        {[["unmatched", "Belum Cocok"], ["matched", "Sudah Cocok"], ["import", "Riwayat Impor"], ["duplicates", "Review Duplikat"]].map(([id, label]) => <button key={id} id={`recon-tab-${id}`} role="tab" aria-selected={tab === id} aria-controls={`recon-panel-${id}`} type="button" className={tab === id ? "is-active" : ""} onClick={() => setTab(id)}>{label}</button>)}
       </div>
 
       {tab === "unmatched" && <div className="recon-tab-body" role="tabpanel" id="recon-panel-unmatched" aria-labelledby="recon-tab-unmatched">
@@ -1085,6 +1141,47 @@ export default function RekonsiliasiKasBank() {
           {!imports.length && <tr><td colSpan={4}>Belum ada impor.</td></tr>}
           {imports.map((row) => <tr key={row.id}><td>{row.filename}</td><td><span className="recon-badge">{reconStatus(row.status)}</span></td><td className="num">{row.stored_count ?? "—"}</td><td>{row.coverage_note || "Cakupan belum tersedia"}</td></tr>)}
         </tbody></table></div>}
+      </section>}
+
+      {tab === "duplicates" && <section className="recon-tab-body recon-history" role="tabpanel" id="recon-panel-duplicates" aria-labelledby="recon-tab-duplicates" data-testid="kas-bank-duplicate-review">
+        <div className="recon-pane-title"><h2>Review Duplikat</h2><span>Keputusan manual. Baris yang dikecualikan tetap tersimpan.</span></div>
+        {!ready && <p className="recon-empty" role="status">{phase === "loading" ? "Memuat kelompok duplikat…" : "Kelompok duplikat tidak dapat dimuat."}</p>}
+        {ready && duplicateMessage && <p className="recon-notice" role="status">{duplicateMessage}</p>}
+        {ready && !duplicateMessage && !duplicateGroups.length && <p className="recon-empty" role="status">Tidak ada kelompok duplikat pada periode ini.</p>}
+        {ready && duplicateGroups.map((group) => (
+          <article key={`${group.business_date}|${group.direction}|${group.amount}|${group.normalized_description}`} className="kb-dup-group" data-testid="kas-bank-duplicate-group">
+            <header>
+              <h3>{group.description || "—"}</h3>
+              <p>{money(group.amount)} · {group.business_date === "PEND" ? "PEND" : reconDate(group.business_date)} · {duplicateDirection(group.direction)} · {group.candidate_count} kandidat</p>
+            </header>
+            <ol>
+              {(group.lines || []).map((line, index) => {
+                const pending = line.duplicate_status === "pending_review";
+                const excludeReason = duplicateExcludeReason(group, line);
+                const keepBlocked = Boolean(line.active_claim);
+                const reasonTooShort = (decisionReasons[line.statement_line_id] || "").trim().length < 3;
+                const decided = line.resolution;
+                return (
+                  <li key={line.statement_line_id} data-testid={`duplicate-line-${line.statement_line_id}`}>
+                    <strong>{duplicateLineLabel(index)}</strong>
+                    <span>{line.filename || "Berkas tidak tersedia"}</span>
+                    <span>{reconDateTime(line.imported_at)}</span>
+                    <span>{money(line.amount)} · {duplicateDirection(line.direction)} · {reconDate(line.date)}</span>
+                    <span>{line.duplicate_status} · {line.reconciliation_status === "active" ? "sudah dicocokkan" : "belum dicocokkan"}</span>
+                    {decided && <span data-testid={`duplicate-resolution-${line.statement_line_id}`}>{line.duplicate_status === "excluded" ? "Riwayat pengecualian" : "Sudah dipertahankan"} · {decided.reason} · {decided.actor?.name || "—"} · {reconDateTime(decided.at)}</span>}
+                    {canReconcile && pending && <div className="kb-dup-actions">
+                      <label>Alasan<input data-testid={`duplicate-reason-${line.statement_line_id}`} value={decisionReasons[line.statement_line_id] || ""} onChange={(e) => setDecisionReasons((current) => ({ ...current, [line.statement_line_id]: e.target.value }))} disabled={busy} /></label>
+                      <button type="button" className="ghost sm" data-testid={`duplicate-keep-${line.statement_line_id}`} disabled={busy || keepBlocked || reasonTooShort} onClick={() => decideDuplicate(group, line, "keep")}>Pertahankan</button>
+                      <button type="button" className="ghost sm" data-testid={`duplicate-exclude-${line.statement_line_id}`} disabled={busy || Boolean(excludeReason) || reasonTooShort} onClick={() => decideDuplicate(group, line, "exclude")}>Kecualikan</button>
+                      {keepBlocked && <small>Baris sedang diklaim pencocokan.</small>}
+                      {excludeReason && <small>{excludeReason}</small>}
+                    </div>}
+                  </li>
+                );
+              })}
+            </ol>
+          </article>
+        ))}
       </section>}
 
       {tab === "unmatched" && <footer className="kb-pair-footer">
