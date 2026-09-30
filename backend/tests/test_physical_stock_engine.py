@@ -2846,18 +2846,17 @@ async def test_same_master_print_and_unprinted_lines_one_reservation(mock_db):
 
 @pytest.mark.anyio
 async def test_same_master_sum_exceeds_bucket_reserves_nothing(mock_db):
-    """Each line fits alone, the sum does not. One atomic reservation fails closed.
+    """Each line fits alone, the sum does not. The group is skipped, not claimed.
 
-    The per-line shortage skip is unchanged. This case still must not leave the
-    first line's pending_event behind.
+    Confirmation stock must not go negative and must not leave a pending_event
+    for the first line.
     """
     await setup_initialized_product(mock_db, NAMOY_MASTER, unprinted=4700.0, printed=1500.0)
     order = _namoy_order()
     lines = order["line_items"]
     await precheck_delivery_confirmed(mock_db, order, lines)
-    with pytest.raises(HTTPException) as claim_exc:
-        await claim_delivery_confirmed_stock(mock_db, order, lines, "act-short")
-    assert "konflik konkurensi" in str(claim_exc.value.detail)
+    claims = await claim_delivery_confirmed_stock(mock_db, order, lines, "act-short")
+    assert claims == []
     state = await get_product_stock_state(mock_db, NAMOY_MASTER)
     assert state["printed_qty"] == 1500.0
     assert state["total_qty"] == 6200.0
