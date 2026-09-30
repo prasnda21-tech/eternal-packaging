@@ -1,3 +1,5 @@
+import { salesMonthBounds } from "./salesPwa";
+
 export const SALES_PWA_PO_FILTER_KEY = "sales_pwa_po_filter";
 export const SALES_PWA_PO_SCROLL_KEY = "sales_pwa_po_scroll";
 
@@ -59,6 +61,24 @@ export function writeSalesPwaPoListState(filters, scrollY, storage = globalThis.
   } catch {
     /* sessionStorage can reject in private mode. */
   }
+}
+
+export function salesPwaPoFiltersFromContext(context) {
+  if (!context || typeof context !== "object") return null;
+  if (context.active === true) {
+    return { ...EMPTY_SALES_PWA_PO_FILTERS, status: "berjalan" };
+  }
+  if (context.status === "selesai") {
+    const bounds = salesMonthBounds(context.periode || context.month);
+    if (!bounds.date_from) return null;
+    return {
+      ...EMPTY_SALES_PWA_PO_FILTERS,
+      status: "selesai",
+      date_from: bounds.date_from,
+      date_to: bounds.date_to,
+    };
+  }
+  return null;
 }
 
 export function clearSalesPwaPoListState(storage = globalThis.sessionStorage) {

@@ -3,13 +3,16 @@ import path from "path";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import api from "../lib/api";
-import { SALES_PWA_PO_FILTER_KEY, SALES_PWA_PO_SCROLL_KEY, clearSalesPwaPoListState } from "../lib/salesPwaPoListState";
+import { SALES_PWA_PO_FILTER_KEY, SALES_PWA_PO_SCROLL_KEY, clearSalesPwaPoListState, writeSalesPwaPoListState } from "../lib/salesPwaPoListState";
 import SalesPwaOrdersPage from "./SalesPwaOrdersPage";
 
+const mockRouter = { state: null };
+
 jest.mock("react-router-dom", () => ({
+  useLocation: () => ({ pathname: "/sales/po", search: "", hash: "", key: "test", state: mockRouter.state }),
   Link: ({ to, children, onClick, ...props }) => (
     <a
-      href={to}
+      href={typeof to === "string" ? to : ""}
       {...props}
       onClick={(event) => {
         event.preventDefault();
@@ -94,6 +97,7 @@ async function mount(container) {
 describe("SalesPwaOrdersPage", () => {
   beforeEach(() => {
     sessionStorage.clear();
+    mockRouter.state = null;
     delete window.matchMedia;
     api.salesPwaOrders.mockReset();
     api.salesPwaDocuments.mockReset();
@@ -384,6 +388,47 @@ describe("SalesPwaOrdersPage", () => {
     const root = await mount(container);
     expect(container.querySelector('[data-testid="sales-po-card-PO-P"] .spwa-po-card-status').className).toContain("is-partial");
     expect(container.querySelector('[data-testid="sales-po-card-PO-D"] .spwa-po-card-status').className).toContain("is-done");
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  test("reads an active dashboard context as the existing berjalan filter", async () => {
+    writeSalesPwaPoListState({
+      q: "lama",
+      status: "hold",
+      stage: "Packing",
+      date_from: "2026-01-01",
+      date_to: "2026-01-31",
+      buffer: "ya",
+    }, 480);
+    mockRouter.state = { salesPwaPoContext: { active: true } };
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = await mount(container);
+    const params = api.salesPwaOrders.mock.calls.at(-1)[0];
+    expect(params.status).toBe("berjalan");
+    expect(params.stage).toBe("");
+    expect(params.date_from).toBe("");
+    expect(params.date_to).toBe("");
+    expect(params.buffer).toBe("");
+    expect(container.querySelector('[data-testid="sales-filter-berjalan"]').className).toContain("is-on");
+    expect(storedFilters()).toMatchObject({ status: "berjalan", q: "", stage: "", date_from: "", date_to: "" });
+    expect(sessionStorage.getItem(SALES_PWA_PO_SCROLL_KEY)).toBe("0");
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  test("reads a selesai dashboard context for the selected month", async () => {
+    mockRouter.state = { salesPwaPoContext: { status: "selesai", periode: "2026-09" } };
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = await mount(container);
+    const params = api.salesPwaOrders.mock.calls.at(-1)[0];
+    expect(params.status).toBe("selesai");
+    expect(params.date_from).toBe("2026-09-01");
+    expect(params.date_to).toBe("2026-09-30");
+    expect(container.querySelector('[data-testid="sales-filter-selesai"]').className).toContain("is-on");
+    expect(storedFilters()).toMatchObject({ status: "selesai", date_from: "2026-09-01", date_to: "2026-09-30" });
     act(() => root.unmount());
     container.remove();
   });

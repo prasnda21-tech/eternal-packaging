@@ -827,6 +827,39 @@
   color: #5b6b73;
   font-size: 12px;
 }
+.spwa-performance .spwa-metric-stack { margin: 0; }
+.spwa-metric small.spwa-metric-info {
+  margin-top: 6px;
+  color: #8a5a24;
+  font-size: 11px;
+  line-height: 1.35;
+}
+.spwa-performance .spwa-metric > span {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+a.spwa-metric-link {
+  display: flex;
+  flex-direction: column;
+  color: inherit;
+  text-decoration: none;
+}
+a.spwa-metric-link:focus-visible {
+  outline: 2px solid #08785d;
+  outline-offset: 2px;
+}
+.spwa-last-visit {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 3px 8px;
+  padding: 8px;
+  border-radius: 8px;
+  background: #f3f7f9;
+}
+.spwa-last-visit span { color: #71838c; font-size: 11px; }
+.spwa-last-visit strong { color: #102936; font-size: 14px; overflow-wrap: anywhere; }
 .spwa-metric {
   min-width: 0;
   padding: 10px;
