@@ -675,6 +675,11 @@ def _normalized_description(value: Any) -> str:
     return " ".join(str(value or "").lower().split())
 
 
+def _normalized_reference(value: Any) -> str:
+    """Blank reference stays blank. A present reference is part of the identity."""
+    return " ".join(str(value or "").lower().split())
+
+
 def _business_date(row: dict) -> str:
     """PEND stays the literal token. A dated row uses its business date."""
     if str(row.get("original_date") or "") == "PEND":
@@ -682,12 +687,13 @@ def _business_date(row: dict) -> str:
     return str(row.get("date") or "")
 
 
-def _level2_key(row: dict) -> Tuple[str, str, str, str]:
+def _level2_key(row: dict) -> Tuple[str, str, str, str, str]:
     return (
         str(row.get("direction") or ""),
         _amount_key(row.get("amount")),
         _normalized_description(row.get("description")),
         _business_date(row),
+        _normalized_reference(row.get("reference")),
     )
 
 
@@ -813,13 +819,15 @@ async def _flag_duplicates(
     ignore_import_id: Optional[str] = None,
     attempt: Optional[dict] = None,
 ) -> None:
-    """Classify duplicates. Never delete a stored row for date, amount, and text.
+    """Classify duplicates. Never delete or rewrite a stored row.
 
     An ID is authoritative only when the mapping says that column is the
-    bank transaction id. A reference column is not unique. The same
-    authoritative id is one transaction and is not inserted again. Without
-    that id, a repeated row is reused only when the stored lines already
-    cover every copy in this file. Extra copies stay pending_review.
+    bank transaction id. A reference is not that id, but it is part of the
+    level-2 identity when it is present: a different reference is a
+    different transaction. The same authoritative id is one transaction and
+    is not inserted again. Without that id, a repeated identity is reused
+    when stored lines already cover every copy. Extra copies, and copies
+    that share no distinguisher, stay pending_review.
     """
     seen_txn: Dict[str, int] = {}
     seen_weak: Dict[tuple, int] = {}
@@ -901,16 +909,18 @@ async def _level2_candidates(
         query,
         {
             "_id": 0, "id": 1, "description": 1, "amount": 1,
-            "direction": 1, "date": 1, "original_date": 1,
+            "direction": 1, "date": 1, "original_date": 1, "reference": 1,
         },
     ).to_list(MAX_ROWS + 5)
     wanted_amount = _amount_key(sample.get("amount"))
     wanted_text = _normalized_description(sample.get("description"))
+    wanted_reference = _normalized_reference(sample.get("reference"))
     matched = [
         doc for doc in found
         if _amount_key(doc.get("amount")) == wanted_amount
         and _normalized_description(doc.get("description")) == wanted_text
         and _business_date(doc) == business_date
+        and _normalized_reference(doc.get("reference")) == wanted_reference
     ]
     matched.sort(key=lambda doc: str(doc.get("id") or ""))
     return matched
@@ -924,7 +934,7 @@ async def _plan_level2_reuse(
     A file that contains more copies than the account already has keeps the
     extra copies as pending_review. Stored lines are not rewritten.
     """
-    groups: Dict[Tuple[str, str, str, str], List[dict]] = {}
+    groups: Dict[Tuple[str, str, str, str, str], List[dict]] = {}
     for row in rows:
         if row.get("identity_guarantee") == "authoritative":
             continue
@@ -1835,12 +1845,11 @@ async def list_duplicate_groups(db, *, cash_bank_id: str, start: str, end: str) 
             {"_id": 0, "id": 1, "statement_line_id": 1, "status": 1},
         ).to_list(len(line_ids))
     match_by_line = {doc.get("statement_line_id"): doc for doc in matches if doc.get("statement_line_id")}
-    buckets: Dict[Tuple[str, str, str, str], List[dict]] = {}
+    buckets: Dict[Tuple[str, str, str, str, str], List[dict]] = {}
     for row in rows:
-        direction, amount_key, description, business_date = _level2_key(row)
-        buckets.setdefault((direction, amount_key, description, business_date), []).append(row)
+        buckets.setdefault(_level2_key(row), []).append(row)
     groups = []
-    for (direction, _amount_key_value, description, business_date), members in buckets.items():
+    for (direction, _amount_key_value, description, business_date, _reference), members in buckets.items():
         pending_count = sum(1 for row in members if row.get("duplicate_status") == DUP_PENDING)
         if pending_count < 1 or len(members) < 2:
             continue
