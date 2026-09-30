@@ -518,6 +518,46 @@ def test_klikbca_english_header_reads_amount_layout():
     ]
 
 
+KLIKBCA_PEND_CSV = """Periode,=,01/09/2026 - 30/09/2026,,,
+Date,Description,Branch,Amount,,Balance
+'PEND,TRSF E-BANKING CR apostrof,0000,1000000.00,CR,7469980.85
+PEND,TRSF E-BANKING CR polos,0000,500000.00,CR,7969980.85
+'28/09,TRSF E-BANKING DB,0000,10.00,DB,90.00
+"""
+
+
+def test_klikbca_apostrophe_pend_matches_plain_pend_and_needs_confirmation():
+    parsed = _parse(KLIKBCA_PEND_CSV, "klikbca-pend-apostrof.csv")
+    assert parsed["errors"] == []
+    apostrophe, plain, dated = parsed["rows"]
+    assert apostrophe["source_row"] == 3
+    assert plain["source_row"] == 4
+    for pend in (apostrophe, plain):
+        assert pend["tanggal"] is None
+        assert pend["original_date"] == "PEND"
+        assert pend["date_status"] == "pending_confirmation"
+        assert "2026-09" not in json.dumps(pend["tanggal"])
+    assert dated["tanggal"] == "2026-09-28"
+    payload = KLIKBCA_PEND_CSV.encode("utf-8")
+    blocked = statement_rows_from_bca("klikbca-pend-apostrof.csv", payload, "IDR")
+    assert [row["original_date"] for row in blocked["pending"]] == ["PEND", "PEND"]
+    assert [row["tanggal"] for row in blocked["pending"]] == [None, None]
+    assert [err["message"] for err in blocked["errors"]] == [
+        "Baris PEND belum dikonfirmasi",
+        "Baris PEND belum dikonfirmasi",
+    ]
+    assert [row["description"] for row in blocked["accepted"]] == ["TRSF E-BANKING DB"]
+    confirmed = statement_rows_from_bca("klikbca-pend-apostrof.csv", payload, "IDR", confirmations=[
+        {"source_row": 3, "tanggal": "2026-09-29", "alasan": "Konfirmasi apostrof PEND"},
+        {"source_row": 4, "tanggal": "2026-09-30", "alasan": "Konfirmasi PEND"},
+    ])
+    assert confirmed["errors"] == []
+    assert confirmed["pending"] == []
+    stored = [row for row in confirmed["accepted"] if row.get("original_date") == "PEND"]
+    assert [row["date"] for row in stored] == ["2026-09-29", "2026-09-30"]
+    assert [row["date_status"] for row in stored] == ["confirmed", "confirmed"]
+
+
 async def test_preview_endpoint_does_not_write_or_create_journal(mongo_db):
     del mongo_db
     payload = PREAMBLE.encode("utf-8")

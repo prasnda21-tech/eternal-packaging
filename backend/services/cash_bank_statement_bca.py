@@ -266,7 +266,8 @@ def _parse_row(row: Sequence[Any], columns: Dict[str, int], *, layout: str = "sp
             direction = "in"
             debit_value = None
             kredit_value = _number(kredit)
-    if raw_date.upper() == "PEND":
+    pend_text = raw_date[1:].strip() if raw_date.startswith("'") else raw_date
+    if pend_text.upper() == "PEND":
         tanggal = None
         original_date = "PEND"
         date_status = PEND_STATUS
