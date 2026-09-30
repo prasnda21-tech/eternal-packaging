@@ -22,12 +22,12 @@ ROLES = ("tanggal", "keterangan", "debit", "kredit", "saldo")
 
 # Exact labels after lowercase and whitespace folding. Extend by adding aliases.
 HEADER_ALIASES = {
-    "tanggal": ("tanggal transaksi", "tanggal", "tgl transaksi"),
-    "keterangan": ("keterangan", "berita", "deskripsi"),
+    "tanggal": ("tanggal transaksi", "tanggal", "tgl transaksi", "date"),
+    "keterangan": ("keterangan", "berita", "deskripsi", "description"),
     "debit": ("debit", "debet"),
     "kredit": ("kredit", "credit"),
-    "saldo": ("saldo", "saldo akhir"),
-    "jumlah": ("jumlah",),
+    "saldo": ("saldo", "saldo akhir", "balance"),
+    "jumlah": ("jumlah", "amount"),
 }
 
 _EMPTY_AMOUNT = {"", "-", "—", "–"}
@@ -38,7 +38,15 @@ _SHORT_DASH_DATE = re.compile(r"^\d{2}-\d{2}$")
 _PERIODE_RANGE = re.compile(r"^(\d{2}/\d{2}/\d{4})\s*-\s*(\d{2}/\d{2}/\d{4})$")
 _ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _FRACTION = re.compile(r"^\d{1,2}$")
-_SUMMARY_LABELS = ("saldo awal", "kredit", "debet", "saldo akhir")
+_SUMMARY_LABELS = (
+    "saldo awal",
+    "kredit",
+    "debet",
+    "saldo akhir",
+    "starting balance",
+    "credit",
+    "ending balance",
+)
 PEND_STATUS = "pending_confirmation"
 CONFIRMED_STATUS = "confirmed"
 
