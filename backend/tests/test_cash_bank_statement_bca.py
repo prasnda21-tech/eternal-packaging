@@ -761,3 +761,61 @@ async def test_pend_reimport_on_the_next_day_reuses_the_same_line(mongo_db, monk
         assert rows[0]["amount"] == 70000000
         assert await server.db[IMPORTS].count_documents({"cash_bank_id": bank["id"], "status": "complete"}) == 2
         assert await server.db[JOURNAL_ENTRIES].count_documents({}) == 0
+
+
+async def test_same_bca_transaction_imported_twice_reuses_one_clear_line(mongo_db):
+    del mongo_db
+    first = (
+        "Tanggal Transaksi,Keterangan,Debit,Kredit,Saldo\n"
+        "05/09/2026,TRSF E-BANKING DB 0509/FTSCY/WS95271,\"70.000.000\",,\"10.000.000\"\n"
+    ).encode("utf-8")
+    second = (
+        "Tanggal Transaksi,Keterangan,Debit,Kredit,Saldo\n"
+        "05/09/2026,TRSF E-BANKING DB 0509/FTSCY/WS95271,\"70.000.000\",,\"9.000.000\"\n"
+    ).encode("utf-8")
+    async with await _client(_user()) as client:
+        bank = await _account(client)
+        preview = await client.post(
+            "/api/cash-bank/statements/bca/preview",
+            **_preview_form(bank["id"], first, filename="bca-ws95271.csv"),
+        )
+        assert preview.status_code == 200, preview.text
+        imported = await client.post(
+            "/api/cash-bank/statements/bca/imports",
+            **_import_form(bank["id"], preview.json(), first, filename="bca-ws95271.csv"),
+        )
+        assert imported.status_code == 201, imported.text
+        original = await server.db[LINES].find_one({"cash_bank_id": bank["id"]}, {"_id": 0})
+        assert original["duplicate_status"] == "clear"
+        assert original["description"] == "TRSF E-BANKING DB 0509/FTSCY/WS95271"
+        assert original["amount"] == 70000000
+        assert original["date"] == "2026-09-05"
+        again_preview = await client.post(
+            "/api/cash-bank/statements/bca/preview",
+            **_preview_form(bank["id"], second, filename="bca-ws95271-ulang.csv"),
+        )
+        assert again_preview.status_code == 200, again_preview.text
+        again = await client.post(
+            "/api/cash-bank/statements/bca/imports",
+            **_import_form(bank["id"], again_preview.json(), second, filename="bca-ws95271-ulang.csv"),
+        )
+        assert again.status_code == 201, again.text
+        assert again.json()["id"] != imported.json()["id"]
+        assert again.json()["stored_count"] == 0
+        assert again.json()["reused_count"] == 1
+        rows = await server.db[LINES].find({"cash_bank_id": bank["id"]}, {"_id": 0}).to_list(5)
+        assert len(rows) == 1
+        assert rows[0]["id"] == original["id"]
+        assert rows[0]["date"] == original["date"]
+        assert rows[0]["amount"] == original["amount"]
+        assert rows[0]["description"] == original["description"]
+        assert rows[0]["duplicate_status"] == "clear"
+        assert rows[0].get("running_balance") == original.get("running_balance")
+        batch = await server.db[IMPORTS].find_one(
+            {"id": again.json()["id"]}, {"_id": 0, "reused_line_ids": 1, "reused_count": 1},
+        )
+        assert batch["reused_count"] == 1
+        assert batch["reused_line_ids"] == [original["id"]]
+        assert await server.db[LINES].count_documents({"duplicate_status": "pending_review"}) == 0
+        assert await server.db[JOURNAL_ENTRIES].count_documents({}) == 0
+        assert await server.db[RECON_MATCHES].count_documents({}) == 0

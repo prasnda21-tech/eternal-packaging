@@ -129,10 +129,10 @@ def _mapping():
     }
 
 
-def _csv(reference, description="Transfer masuk", amount="750000"):
+def _csv(reference, description="Transfer masuk", amount="750000", balance=""):
     return (
         "tanggal,uraian,masuk,keluar,referensi,id,saldo\n"
-        f"2026-09-05,{description},{amount},,{reference},,\n"
+        f"2026-09-05,{description},{amount},,{reference},,{balance}\n"
     ).encode()
 
 
@@ -206,7 +206,7 @@ async def test_same_preview_cleanup_does_not_release_the_live_attempt():
     user = _user()
     bank = await _bank()
     preview_p = await _stage(bank["id"], "p.csv", _csv("REF-P"), user)
-    preview_q = await _stage(bank["id"], "q.csv", _csv("REF-Q"), user)
+    preview_q = await _stage(bank["id"], "q.csv", _csv("REF-P", balance="200"), user)
     entered = asyncio.Event()
     release = asyncio.Event()
     busy = asyncio.Event()
@@ -616,7 +616,7 @@ async def test_stale_twin_update_does_not_reclassify_or_drop_keep():
         server.db, kept["id"], action="keep", reason="dipertahankan operator",
         idempotency_key="keep-stale", user=user,
     )
-    preview_a = await _stage(bank["id"], "twin.csv", _csv("REF-TWIN"), user)
+    preview_a = await _stage(bank["id"], "twin.csv", _csv("REF-BASIS", balance="100"), user)
     preview_b = await _stage(bank["id"], "other.csv", _csv("REF-OTHER", description="Setoran tunai", amount="22000"), user)
     entered = asyncio.Event()
     release = asyncio.Event()
@@ -954,7 +954,7 @@ async def test_stale_classification_misses_after_fence_moves_before_writer_adopt
         server.db, kept["id"], action="keep", reason="dipertahankan operator",
         idempotency_key="keep-partial", user=user,
     )
-    preview_a = await _stage(bank["id"], "twin.csv", _csv("REF-A"), user)
+    preview_a = await _stage(bank["id"], "twin.csv", _csv("REF-B", balance="100"), user)
     preview_b = await _stage(bank["id"], "other.csv", _csv("REF-O", description="Setoran tunai", amount="22000"), user)
     a_entered = asyncio.Event()
     a_release = asyncio.Event()
@@ -1030,7 +1030,7 @@ async def test_finish_before_writer_adopt_stays_a_real_complete_batch():
     user = _user()
     bank = await _bank()
     preview_a = await _stage(bank["id"], "fin-a.csv", _csv("REF-A"), user)
-    preview_b = await _stage(bank["id"], "fin-b.csv", _csv("REF-B"), user)
+    preview_b = await _stage(bank["id"], "fin-b.csv", _csv("REF-A", balance="200"), user)
     a_entered = asyncio.Event()
     a_release = asyncio.Event()
     statement_svc._before_fenced_write = _pause_first("finish", a_entered, a_release, {"paused": False})

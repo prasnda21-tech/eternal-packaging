@@ -143,10 +143,10 @@ def _mapping(**overrides):
     return mapping
 
 
-def _csv(reference, description="Transfer masuk", txn=""):
+def _csv(reference, description="Transfer masuk", txn="", balance=""):
     return (
         "tanggal,uraian,masuk,keluar,referensi,id,saldo\n"
-        f"2026-09-05,{description},750000,,{reference},{txn},\n"
+        f"2026-09-05,{description},750000,,{reference},{txn},{balance}\n"
     )
 
 
@@ -212,7 +212,7 @@ async def test_a_concurrent_weak_imports_require_review_then_keep():
         await _receipt(c, bank["id"], income["id"], 750000, desc="dua")
         journals = await server.db[JOURNAL_ENTRIES].count_documents({})
         left = await _preview(c, bank["id"], "a.csv", _csv("REF-A"))
-        right = await _preview(c, bank["id"], "b.csv", _csv("REF-B"))
+        right = await _preview(c, bank["id"], "b.csv", _csv("REF-A", balance="200"))
         entered = asyncio.Event()
         release = asyncio.Event()
         busy = asyncio.Event()
