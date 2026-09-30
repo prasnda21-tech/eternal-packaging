@@ -64,6 +64,51 @@ describe("SalesPwaOrdersPage", () => {
     expect(container.querySelector('[aria-label="Filter tahap"]')).toBeTruthy();
     expect(container.querySelector('[aria-label="Filter buffer stock"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="sales-pwa-nav"]')).toBeNull();
+    expect(container.querySelector('[data-testid="sales-po-remainder"]')).toBeNull();
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  test("clears the previous list while a new filter loads and reports rows left out by the limit", async () => {
+    let resolveNext;
+    api.salesPwaOrders.mockReset();
+    api.salesPwaOrders
+      .mockResolvedValueOnce({ ...sample, total: 8 })
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveNext = resolve; }));
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<SalesPwaOrdersPage />);
+    });
+    await flush();
+    expect(container.textContent).toContain("Semua 8");
+
+    const input = container.querySelector('[aria-label="Filter pelanggan atau PO"]');
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    await act(async () => {
+      setter.call(input, "PO-A001");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(container.textContent).not.toContain("Semua 8");
+    expect(container.textContent).toContain("Memuat...");
+    const params = api.salesPwaOrders.mock.calls.at(-1)[0];
+    expect(params.q).toBe("PO-A001");
+    expect(params.customer_q).toBeUndefined();
+    expect(params.po_q).toBeUndefined();
+    expect(params.limit).toBe(120);
+
+    await act(async () => {
+      resolveNext({
+        ...sample,
+        orders: sample.orders.slice(0, 1),
+        total: 4,
+        counts: { semua: 1, berjalan: 1, hold: 0, parsial: 0, selesai: 0 },
+      });
+    });
+    expect(container.textContent).toContain("Semua 1");
+    expect(container.querySelector('[data-testid="sales-po-remainder"]').textContent).toContain("Menampilkan 1 dari 4 PO");
     act(() => root.unmount());
     container.remove();
   });
