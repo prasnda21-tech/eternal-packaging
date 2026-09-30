@@ -79,12 +79,12 @@ async def _snapshot():
 
 
 def test_alias_dictionary_covers_required_labels():
-    assert HEADER_ALIASES["tanggal"] == ("tanggal transaksi", "tanggal", "tgl transaksi")
-    assert HEADER_ALIASES["keterangan"] == ("keterangan", "berita", "deskripsi")
+    assert HEADER_ALIASES["tanggal"] == ("tanggal transaksi", "tanggal", "tgl transaksi", "date")
+    assert HEADER_ALIASES["keterangan"] == ("keterangan", "berita", "deskripsi", "description")
     assert HEADER_ALIASES["debit"] == ("debit", "debet")
     assert HEADER_ALIASES["kredit"] == ("kredit", "credit")
-    assert HEADER_ALIASES["saldo"] == ("saldo", "saldo akhir")
-    assert HEADER_ALIASES["jumlah"] == ("jumlah",)
+    assert HEADER_ALIASES["saldo"] == ("saldo", "saldo akhir", "balance")
+    assert HEADER_ALIASES["jumlah"] == ("jumlah", "amount")
     assert ROLES == ("tanggal", "keterangan", "debit", "kredit", "saldo")
 
 
@@ -466,6 +466,56 @@ def test_klikbca_marker_and_missing_jumlah_are_rejected():
     assert "kolom kredit tidak ditemukan" in message
     with pytest.raises(StatementValidationError, match="penanda DB/CR tidak ditemukan"):
         _parse("Tanggal,Keterangan,Cabang,Jumlah,Saldo\n04/09/2026,Tanpa kolom penanda,0000,500,1000\n")
+
+
+KLIKBCA_ENGLISH_CSV = """No. Rekening,=,4491150000,,,
+Periode,=,01/09/2026 - 30/09/2026,,,
+Date,Description,Branch,Amount,,Balance
+'28/09,TRSF E-BANKING DB,0000,70000000.00,DB,6469980.85
+29/09,BI-FAST CR,0000,1000000.00,CR,7469980.85
+PEND,BI-FAST CR menunggu,0000,500000.00,CR,7969980.85
+Starting Balance,=,5469980.85,,,
+Credit,=,1000000.00,,,
+Debet,=,70000000.00,,,
+Ending Balance,=,6469980.85,,,
+"""
+
+
+def test_klikbca_english_header_reads_amount_layout():
+    parsed = _parse(KLIKBCA_ENGLISH_CSV, "klikbca-english.csv")
+    assert parsed["header_row"] == 3
+    assert parsed["errors"] == []
+    assert [row["keterangan"] for row in parsed["rows"]] == [
+        "TRSF E-BANKING DB",
+        "BI-FAST CR",
+        "BI-FAST CR menunggu",
+    ]
+    outgoing = parsed["rows"][0]
+    assert outgoing["tanggal"] == "2026-09-28"
+    assert outgoing["original_date"] == "'28/09"
+    assert outgoing["debit"] == 70000000
+    assert outgoing["kredit"] is None
+    assert outgoing["direction"] == "out"
+    assert outgoing["saldo"] == 6469980.85
+    incoming = parsed["rows"][1]
+    assert incoming["tanggal"] == "2026-09-29"
+    assert incoming["debit"] is None
+    assert incoming["kredit"] == 1000000
+    assert incoming["direction"] == "in"
+    pend = parsed["rows"][2]
+    assert pend["tanggal"] is None
+    assert pend["original_date"] == "PEND"
+    assert pend["date_status"] == "pending_confirmation"
+    assert "2026-09-01" not in json.dumps(pend)
+    payload = KLIKBCA_ENGLISH_CSV.encode("utf-8")
+    pending = statement_rows_from_bca("klikbca-english.csv", payload, "IDR")
+    assert pending["pending"][0]["original_date"] == "PEND"
+    assert pending["pending"][0]["tanggal"] is None
+    assert pending["errors"][0]["message"] == "Baris PEND belum dikonfirmasi"
+    assert [(row["description"], row["direction"], row["amount"]) for row in pending["accepted"]] == [
+        ("TRSF E-BANKING DB", "out", 70000000),
+        ("BI-FAST CR", "in", 1000000),
+    ]
 
 
 async def test_preview_endpoint_does_not_write_or_create_journal(mongo_db):
