@@ -50,6 +50,12 @@
 .kas-bank-page.recon-workspace .kb-dup-actions input { min-width:220px; }
 .kas-bank-page.recon-workspace .kb-dup-actions small { flex-basis:100%; color:#94600b; }
 .kas-bank-page.recon-workspace .kb-pair-columns { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; flex:1; min-height:0; }
+.kas-bank-page.recon-workspace .kb-pair-columns.has-link { grid-template-columns:minmax(0,1fr) 36px minmax(0,1fr); }
+.kas-bank-page.recon-workspace .kb-pair-link { display:flex; flex-direction:column; align-items:center; justify-content:center; color:#146344; min-height:72px; }
+.kas-bank-page.recon-workspace .kb-pair-link span { width:2px; flex:1; background:#146344; min-height:18px; }
+.kas-bank-page.recon-workspace .kb-pair-link strong { font-size:16px; line-height:1; padding:4px 0; }
+.kas-bank-page.recon-workspace .kb-offpage-candidates { margin:0; font-size:12px; color:#146344; }
+.kas-bank-page.recon-workspace .kb-candidate-reason { color:#146344; }
 .kas-bank-page.recon-workspace .kb-pane, .kas-bank-page.recon-workspace .recon-history { display:flex; flex-direction:column; min-width:0; min-height:0; background:#fff; border:1px solid var(--recon-border); border-radius:8px; overflow:hidden; }
 .kas-bank-page.recon-workspace .recon-pane-title { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:11px 12px; border-bottom:1px solid var(--recon-border); flex-shrink:0; }
 .kas-bank-page.recon-workspace .recon-pane-title h2 { margin:0; font-size:15px; line-height:1.3; font-weight:700; }
@@ -63,6 +69,11 @@
 .kas-bank-page.recon-workspace .kas-bank-table .kb-money { font-size:11px; font-weight:600; }
 .kas-bank-page.recon-workspace .kas-bank-table td:first-child { width:28px; }
 .kas-bank-page.recon-workspace .kas-bank-table .kb-row-matched td { background:#e1f3e8; }
+.kas-bank-page.recon-workspace .kas-bank-table tr.kb-row-candidate td { background:#eef8f2; border-top:1px solid #146344; border-bottom:1px solid #146344; }
+.kas-bank-page.recon-workspace .kas-bank-table tr.kb-row-candidate td:first-child { border-left:2px solid #146344; }
+.kas-bank-page.recon-workspace .kas-bank-table tr.kb-row-candidate td:last-child { border-right:2px solid #146344; }
+.kas-bank-page.recon-workspace .kas-bank-table tr.kb-row-candidate:hover td { background:#e1f3e8; }
+.kas-bank-page.recon-workspace .recon-badge.kb-candidate-badge { background:#eef8f2; color:#146344; border:1px solid #146344; font-weight:650; }
 .kas-bank-page.recon-workspace .kas-bank-table tr:hover td { background:#f2f8f4; }
 .kas-bank-page.recon-workspace .kas-bank-table .kb-row-matched:hover td { background:#d5ecdf; }
 .kas-bank-page.recon-workspace input[type=radio], .kas-bank-page.recon-workspace input[type=checkbox] { accent-color:var(--recon-green); width:16px; height:16px; margin:0; }
@@ -130,7 +141,8 @@
   .kas-bank-page.recon-workspace .kb-pair-toolbar > select { flex-basis:100%; }
   .kas-bank-page.recon-workspace .kb-pair-tabs { gap:14px; }
   .kas-bank-page.recon-workspace .kb-pair-tabs button { font-size:12px; }
-  .kas-bank-page.recon-workspace .kb-pair-columns { grid-template-columns:minmax(0,1fr); min-height:180px; }
+  .kas-bank-page.recon-workspace .kb-pair-columns, .kas-bank-page.recon-workspace .kb-pair-columns.has-link { grid-template-columns:minmax(0,1fr); min-height:180px; }
+  .kas-bank-page.recon-workspace .kb-pair-link { display:none; }
   .kas-bank-page.recon-workspace .kb-pane { display:none; }
   .kas-bank-page.recon-workspace .kb-pane.is-shown { display:flex; }
   .kas-bank-page.recon-workspace .kb-pane-switch { display:flex; gap:6px; }
