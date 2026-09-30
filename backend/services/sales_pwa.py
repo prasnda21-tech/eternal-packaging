@@ -66,6 +66,7 @@ LIST_PROJECTION = {
     "customer": 1,
     "customer_name": 1,
     "customer_id": 1,
+    "customer_code": 1,
     "outlet": 1,
     "sales": 1,
     "sales_user_id": 1,
@@ -208,14 +209,40 @@ def _active_stage_key(workflow: dict) -> Optional[str]:
     return found
 
 
+def _customer_code(order: dict) -> str:
+    """Stable customer code already stored on the PO. No schema write."""
+    explicit = str(order.get("customer_code") or order.get("kode_pelanggan") or "").strip()
+    stable = extract_stable_customer_id(order) or ""
+    return " ".join(part for part in (explicit, stable) if part)
+
+
 def _search_blob(order: dict) -> str:
     names = item_line_names(order)
     return _norm(" ".join([
         str(order.get("po_number") or ""),
         display_customer_name(order),
+        _customer_code(order),
         str(order.get("outlet") or ""),
         " ".join(names),
     ]))
+
+
+def _global_keywords(q: str) -> List[str]:
+    """Each search box is one keyword. A keyword is not split into customer_q and po_q."""
+    needles: List[str] = []
+    for line in str(q or "").splitlines():
+        needle = _norm(line)
+        if needle and needle not in needles:
+            needles.append(needle)
+    return needles
+
+
+def _matches_global_keywords(order: dict, q: str) -> bool:
+    needles = _global_keywords(q)
+    if not needles:
+        return True
+    blob = _search_blob(order)
+    return all(needle in blob for needle in needles)
 
 
 def _matches_filter(order: dict, status: str, workflow: dict) -> bool:
@@ -245,6 +272,124 @@ def _date_in_range(day: Optional[str], date_from: str, date_to: str) -> bool:
     if date_to and (not day or day > date_to):
         return False
     return True
+
+
+def _matches_customer_po_filter(order: dict, customer_needle: str, po_needle: str) -> bool:
+    """Specific filters stay independent. Both set means AND, including when the text is the same."""
+    if customer_needle:
+        customer_blob = _norm(" ".join([
+            display_customer_name(order),
+            str(order.get("outlet") or ""),
+        ]))
+        if customer_needle not in customer_blob:
+            return False
+    if po_needle and po_needle not in _norm(order.get("po_number")):
+        return False
+    return True
+
+
+def _matches_list_constraints(
+    order: dict,
+    workflow: dict,
+    *,
+    q: str,
+    customer_needle: str,
+    po_needle: str,
+    stage_needle: str,
+    buffer_key: str,
+    date_from: str,
+    date_to: str,
+    progress_min: Optional[int],
+    progress_max: Optional[int],
+) -> bool:
+    if not _matches_global_keywords(order, q):
+        return False
+    if not _matches_customer_po_filter(order, customer_needle, po_needle):
+        return False
+    stage_label = _current_stage_label(order, workflow)
+    if stage_needle and stage_needle not in _norm(stage_label):
+        return False
+    if buffer_key in ("ya", "true", "1", "buffer") and not order.get("buffer_stock"):
+        return False
+    if buffer_key in ("tidak", "false", "0", "non-buffer") and order.get("buffer_stock"):
+        return False
+    order_day = parse_calendar_date(order.get("order_date")) or str(order.get("order_date") or "")[:10]
+    if not _date_in_range(order_day, date_from, date_to):
+        return False
+    progress = _workflow_progress(workflow)
+    if progress_min is not None and progress < max(0, min(int(progress_min), 100)):
+        return False
+    if progress_max is not None and progress > max(0, min(int(progress_max), 100)):
+        return False
+    return True
+
+
+def _empty_status_counts() -> dict:
+    return {
+        "semua": 0,
+        "berjalan": 0,
+        "hold": 0,
+        "parsial": 0,
+        "selesai": 0,
+    }
+
+
+def select_sales_pwa_order_rows(
+    raw: List[dict],
+    *,
+    q: str = "",
+    customer_q: str = "",
+    po_q: str = "",
+    stage: str = "",
+    buffer: str = "",
+    progress_min: Optional[int] = None,
+    progress_max: Optional[int] = None,
+    status: str = "",
+    date_from: str = "",
+    date_to: str = "",
+) -> tuple:
+    """Return rows for the selected status, and chip totals for the same other filters.
+
+    Search, stage, date, buffer, and progress narrow the set first. Chip totals
+    are the status breakdown of that set, not of every owned PO. The selected
+    status then picks the rows. Status membership rules are unchanged.
+    """
+    customer_needle = _norm(customer_q)
+    po_needle = _norm(po_q)
+    stage_needle = _norm(stage)
+    buffer_key = _norm(buffer)
+    date_from = parse_calendar_date(date_from) or ""
+    date_to = parse_calendar_date(date_to) or ""
+    filtered: List[dict] = []
+    counts = _empty_status_counts()
+    for order in raw:
+        workflow = status_po_workflow(order)
+        if not _matches_list_constraints(
+            order,
+            workflow,
+            q=q,
+            customer_needle=customer_needle,
+            po_needle=po_needle,
+            stage_needle=stage_needle,
+            buffer_key=buffer_key,
+            date_from=date_from,
+            date_to=date_to,
+            progress_min=progress_min,
+            progress_max=progress_max,
+        ):
+            continue
+        counts["semua"] += 1
+        if _matches_filter(order, FILTER_RUNNING, workflow):
+            counts["berjalan"] += 1
+        if _matches_filter(order, FILTER_HOLD, workflow):
+            counts["hold"] += 1
+        if _matches_filter(order, FILTER_PARTIAL, workflow):
+            counts["parsial"] += 1
+        if _matches_filter(order, FILTER_DONE, workflow):
+            counts["selesai"] += 1
+        if _matches_filter(order, status, workflow):
+            filtered.append(order)
+    return filtered, counts
 
 
 async def _cursor_rows(cursor) -> List[dict]:
@@ -465,43 +610,19 @@ async def list_sales_pwa_orders(
     for o in raw:
         attach_tanggal_pengiriman_snapshot(o, lead)
 
-    needle = _norm(q)
-    customer_needle = _norm(customer_q)
-    po_needle = _norm(po_q)
-    stage_needle = _norm(stage)
-    buffer_key = _norm(buffer)
-    date_from = parse_calendar_date(date_from) or ""
-    date_to = parse_calendar_date(date_to) or ""
-    filtered = []
-    for o in raw:
-        wf = status_po_workflow(o)
-        if needle and needle not in _search_blob(o):
-            continue
-        if customer_needle and customer_needle not in _norm(" ".join([
-            display_customer_name(o),
-            str(o.get("outlet") or ""),
-        ])):
-            continue
-        if po_needle and po_needle not in _norm(o.get("po_number")):
-            continue
-        if not _matches_filter(o, status, wf):
-            continue
-        stage_label = _current_stage_label(o, wf)
-        if stage_needle and stage_needle not in _norm(stage_label):
-            continue
-        if buffer_key in ("ya", "true", "1", "buffer") and not o.get("buffer_stock"):
-            continue
-        if buffer_key in ("tidak", "false", "0", "non-buffer") and o.get("buffer_stock"):
-            continue
-        order_day = parse_calendar_date(o.get("order_date")) or str(o.get("order_date") or "")[:10]
-        if not _date_in_range(order_day, date_from, date_to):
-            continue
-        progress = _workflow_progress(wf)
-        if progress_min is not None and progress < max(0, min(int(progress_min), 100)):
-            continue
-        if progress_max is not None and progress > max(0, min(int(progress_max), 100)):
-            continue
-        filtered.append(o)
+    filtered, counts = select_sales_pwa_order_rows(
+        raw,
+        q=q,
+        customer_q=customer_q,
+        po_q=po_q,
+        stage=stage,
+        buffer=buffer,
+        progress_min=progress_min,
+        progress_max=progress_max,
+        status=status,
+        date_from=date_from,
+        date_to=date_to,
+    )
 
     po_ids = [o.get("id") for o in filtered if o.get("id")]
     deliveries_map, invoices_map = await _load_docs_for_pos(db, po_ids)
@@ -516,25 +637,6 @@ async def list_sales_pwa_orders(
     skip = max(0, int(skip or 0))
     limit = max(1, min(int(limit or 50), 200))
     page = rows[skip:skip + limit]
-
-    counts = {
-        "semua": 0,
-        "berjalan": 0,
-        "hold": 0,
-        "parsial": 0,
-        "selesai": 0,
-    }
-    for o in raw:
-        wf = status_po_workflow(o)
-        counts["semua"] += 1
-        if _matches_filter(o, FILTER_RUNNING, wf):
-            counts["berjalan"] += 1
-        if _matches_filter(o, FILTER_HOLD, wf):
-            counts["hold"] += 1
-        if _matches_filter(o, FILTER_PARTIAL, wf):
-            counts["parsial"] += 1
-        if _matches_filter(o, FILTER_DONE, wf):
-            counts["selesai"] += 1
 
     return {
         "orders": page,

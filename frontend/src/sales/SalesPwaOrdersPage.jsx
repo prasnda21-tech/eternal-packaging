@@ -26,17 +26,26 @@ export default function SalesPwaOrdersPage() {
     buffer: "",
   });
   const [data, setData] = useState(null);
+  const [dataKey, setDataKey] = useState("");
   const [err, setErr] = useState("");
   const [sheet, setSheet] = useState(null);
+  const keyword = [q, columns.customer_q].map((value) => String(value || "").trim()).filter((value, index, all) => value && all.indexOf(value) === index).join("\n");
+  const requestKey = JSON.stringify({
+    keyword,
+    status,
+    stage: columns.stage,
+    date_from: columns.date_from,
+    date_to: columns.date_to,
+    progress_min: columns.progress_min,
+    buffer: columns.buffer,
+  });
 
   useEffect(() => {
     let cancelled = false;
     setErr("");
     api.salesPwaOrders({
-        q,
+        q: keyword,
         status,
-        customer_q: columns.customer_q,
-        po_q: columns.customer_q,
         stage: columns.stage,
         date_from: columns.date_from,
         date_to: columns.date_to,
@@ -46,10 +55,15 @@ export default function SalesPwaOrdersPage() {
         direction: "desc",
         limit: 120,
       })
-      .then((res) => { if (!cancelled) setData(res); })
+      .then((res) => {
+        if (!cancelled) {
+          setData(res);
+          setDataKey(requestKey);
+        }
+      })
       .catch((e) => { if (!cancelled) setErr(e.response?.data?.detail || e.message || "Gagal memuat PO"); });
     return () => { cancelled = true; };
-  }, [q, status, columns]);
+  }, [keyword, status, columns, requestKey]);
 
   const setColumn = (key, value) => setColumns((current) => ({ ...current, [key]: value }));
 
@@ -64,7 +78,8 @@ export default function SalesPwaOrdersPage() {
     }
   };
 
-  const orders = data?.orders || [];
+  const visible = dataKey === requestKey ? data : null;
+  const orders = visible?.orders || [];
 
   return (
     <>
@@ -83,7 +98,7 @@ export default function SalesPwaOrdersPage() {
               data-testid={`sales-filter-${f.id}`}
             >
               {f.label}
-              {data?.counts?.[f.id] != null ? ` ${data.counts[f.id]}` : ""}
+              {visible?.counts?.[f.id] != null ? ` ${visible.counts[f.id]}` : ""}
             </button>
           ))}
         </div>
@@ -98,9 +113,14 @@ export default function SalesPwaOrdersPage() {
         </label>
         <p className="spwa-filter-hint"><SlidersHorizontal size={13} /> Filter rinci tersedia langsung pada header tabel.</p>
         {err && <div className="spwa-err">{err}</div>}
-        {!data && !err && <div className="spwa-muted">Memuat...</div>}
-        {data && !orders.length && <div className="spwa-empty">Tidak ada PO pada filter ini.</div>}
-        {data?.source_truncated && <div className="spwa-err">Sebagian sumber data belum termuat. Muat ulang sebelum mengambil keputusan.</div>}
+        {!visible && !err && <div className="spwa-muted">Memuat...</div>}
+        {visible && !orders.length && <div className="spwa-empty">Tidak ada PO pada filter ini.</div>}
+        {visible?.source_truncated && <div className="spwa-err">Sebagian sumber data belum termuat. Muat ulang sebelum mengambil keputusan.</div>}
+        {visible && Number(visible.total) > orders.length && (
+          <p className="spwa-muted" data-testid="sales-po-remainder">
+            Menampilkan {orders.length} dari {visible.total} PO. {visible.total - orders.length} PO belum ditampilkan.
+          </p>
+        )}
         {orders.length > 0 && (
           <div className="spwa-table-wrap">
             <table className="spwa-table" data-testid="sales-po-table">

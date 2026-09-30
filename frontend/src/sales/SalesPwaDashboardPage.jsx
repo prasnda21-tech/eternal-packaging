@@ -7,28 +7,35 @@ import { currentSalesMonth, formatSalesDate, formatSalesMoney } from "../lib/sal
 export default function SalesPwaDashboardPage() {
   const [month, setMonth] = useState(currentSalesMonth());
   const [data, setData] = useState(null);
+  const [dataMonth, setDataMonth] = useState("");
   const [error, setError] = useState("");
 
   useEffect(() => {
     let cancelled = false;
     setError("");
     api.salesPwaDashboard({ month })
-      .then((result) => { if (!cancelled) setData(result); })
+      .then((result) => {
+        if (!cancelled) {
+          setData(result);
+          setDataMonth(month);
+        }
+      })
       .catch((err) => { if (!cancelled) setError(err.response?.data?.detail || "Dashboard gagal dimuat"); });
     return () => { cancelled = true; };
   }, [month]);
 
-  const metrics = data?.metrics || {};
+  const visible = data && dataMonth === month && (!data.month || data.month === month) ? data : null;
+  const metrics = visible?.metrics || {};
   return (
     <>
       <header className="spwa-top spwa-top-inline">
         <div><p className="spwa-kicker">PWA SALES</p><h1>Dashboard Saya</h1></div>
-        <input aria-label="Bulan dashboard" type="month" value={month} onChange={(event) => setMonth(event.target.value)} />
+        <input aria-label="Bulan dashboard" type="month" value={month} onChange={(event) => { setMonth(event.target.value); setError(""); }} />
       </header>
       <main className="spwa-main" data-testid="sales-pwa-dashboard">
         {error && <div className="spwa-err">{error}</div>}
-        {!data && !error && <div className="spwa-muted">Memuat data penjualan...</div>}
-        {data && (
+        {!visible && !error && <div className="spwa-muted">Memuat data penjualan...</div>}
+        {visible && (
           <>
             <section className="spwa-metric-grid" aria-label="Ringkasan penjualan">
               <article className="spwa-metric is-revenue">
@@ -62,9 +69,9 @@ export default function SalesPwaDashboardPage() {
                 <div><p className="spwa-kicker">AGENDA</p><h2>Jadwal visit</h2></div>
                 <Link to="/sales/visit">Kalender <ChevronRight size={15} /></Link>
               </div>
-              {(data.upcoming_visits || []).length === 0 && <p className="spwa-empty compact">Belum ada reminder visit bulan ini.</p>}
+              {(visible.upcoming_visits || []).length === 0 && <p className="spwa-empty compact">Belum ada reminder visit bulan ini.</p>}
               <div className="spwa-agenda">
-                {(data.upcoming_visits || []).map((item) => (
+                {(visible.upcoming_visits || []).map((item) => (
                   <Link key={item.id} to="/sales/visit" className={item.overdue ? "is-overdue" : ""}>
                     <CalendarDays size={16} />
                     <span><strong>{item.outlet}</strong><small>{formatSalesDate(item.date)} · {item.overdue ? "Terlambat" : "Terjadwal"}</small></span>
