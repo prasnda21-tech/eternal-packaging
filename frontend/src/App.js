@@ -101,6 +101,9 @@ const SalesPwaVisitsPage = lazy(() => import("./sales/SalesPwaVisitsPage"));
 const SalesPwaOrderDetailPage = lazy(() => import("./sales/SalesPwaOrderDetailPage"));
 const SalesPwaDocumentViewerPage = lazy(() => import("./sales/SalesPwaDocumentViewerPage"));
 const SalesPwaCustomersPage = lazy(() => import("./sales/SalesPwaCustomersPage"));
+const SalesPwaInvoicesPage = lazy(() => import("./sales/SalesPwaInvoicesPage"));
+const SalesPwaInvoiceDetailPage = lazy(() => import("./sales/SalesPwaInvoiceDetailPage"));
+const SalesPwaReceivablesPage = lazy(() => import("./sales/SalesPwaReceivablesPage"));
 const SalesPwaPredictionsPage = lazy(() => import("./sales/SalesPwaPredictionsPage"));
 const SalesPwaProfilePage = lazy(() => import("./sales/SalesPwaProfilePage"));
 
@@ -260,6 +263,9 @@ export default function App() {
             <Route path="/sales/po/:id" element={<SalesPwaOrderDetailPage />} />
             <Route path="/sales/po/:id/dokumen/:kind/:documentId" element={<SalesPwaDocumentViewerPage />} />
             <Route path="/sales/pelanggan" element={<SalesPwaCustomersPage />} />
+            <Route path="/sales/invoices" element={<SalesPwaInvoicesPage />} />
+            <Route path="/sales/invoices/:id" element={<SalesPwaInvoiceDetailPage />} />
+            <Route path="/sales/receivables" element={<SalesPwaReceivablesPage />} />
             <Route path="/sales/visit" element={<SalesPwaVisitsPage />} />
             <Route path="/sales/prediksi" element={<SalesPwaPredictionsPage />} />
             <Route path="/sales/prediksi/:customerKey" element={<SalesPwaPredictionsPage />} />

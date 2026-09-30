@@ -858,6 +858,11 @@ a.spwa-metric-link:focus-visible {
   outline: 2px solid #08785d;
   outline-offset: 2px;
 }
+a.spwa-po-card {
+  display: block;
+  color: inherit;
+  text-decoration: none;
+}
 .spwa-last-visit {
   display: grid;
   grid-template-columns: 72px minmax(0, 1fr);

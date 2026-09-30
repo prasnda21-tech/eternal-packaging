@@ -900,6 +900,8 @@ export const api = {
   updateSalesUserMapping: (payload) => client.put("/settings/sales-user-mapping", payload).then((r) => r.data),
   salesPwaMe: () => client.get("/sales-pwa/me").then((r) => r.data),
   salesPwaDashboard: (params = {}) => client.get("/sales-pwa/dashboard", { params }).then((r) => r.data),
+  salesPwaInvoices: (params = {}) => client.get("/sales-pwa/invoices", { params }).then((r) => r.data),
+  salesPwaReceivables: () => client.get("/sales-pwa/receivables").then((r) => r.data),
   salesPwaOrders: (params = {}) => client.get("/sales-pwa/orders", { params }).then((r) => r.data),
   salesPwaOrder: (id) => client.get(`/sales-pwa/orders/${encodeURIComponent(id)}`).then((r) => r.data),
   salesPwaDocuments: (id) => client.get(`/sales-pwa/orders/${encodeURIComponent(id)}/documents`).then((r) => r.data),

@@ -16,6 +16,9 @@ describe("sales PWA wiring", () => {
     expect(app).toMatch(/path="\/sales\/prediksi"/);
     expect(app).toMatch(/path="\/sales\/prediksi\/:customerKey"/);
     expect(app).toMatch(/path="\/sales\/profil"/);
+    expect(app).toMatch(/path="\/sales\/invoices"/);
+    expect(app).toMatch(/path="\/sales\/invoices\/:id"/);
+    expect(app).toMatch(/path="\/sales\/receivables"/);
     expect(app).toMatch(/SalesPwaGate/);
     expect(app).toMatch(/SalesEternalRedirect/);
     const salesIdx = app.indexOf("SalesPwaLayout");

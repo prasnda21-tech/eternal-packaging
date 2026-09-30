@@ -1,0 +1,59 @@
+import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
+import api from "../lib/api";
+import { formatSalesDate, formatSalesMoney } from "../lib/salesPwa";
+import { salesApiError, salesInvoiceHref } from "./salesPwaFinance";
+
+export default function SalesPwaReceivablesPage() {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    setData(null);
+    setError("");
+    api.salesPwaReceivables()
+      .then((result) => { if (!cancelled) setData(result || { receivables: [], summary: {} }); })
+      .catch((err) => { if (!cancelled) setError(salesApiError(err, "Piutang gagal dimuat")); });
+    return () => { cancelled = true; };
+  }, []);
+
+  const rows = data?.receivables || [];
+  const summary = data?.summary || {};
+
+  return (
+    <>
+      <header className="spwa-top">
+        <p className="spwa-kicker">PWA SALES</p>
+        <h1>Piutang berjalan</h1>
+      </header>
+      <main className="spwa-main" data-testid="sales-pwa-receivables">
+        {error && <div className="spwa-err">{error}</div>}
+        {!data && !error && <div className="spwa-muted">Memuat piutang...</div>}
+        {data && (
+          <>
+            <p className="spwa-filter-hint" data-testid="sales-receivable-summary">
+              {summary.invoice_count || 0} invoice belum lunas · {formatSalesMoney(summary.outstanding_total)}
+            </p>
+            <ul className="spwa-po-cards">
+              {rows.map((row) => (
+                <li key={row.id}>
+                  <Link className="spwa-po-card" to={salesInvoiceHref(row, "receivables")} data-testid={`sales-receivable-${row.id}`}>
+                    <div className="spwa-po-card-customer">{row.customer_name || "—"}</div>
+                    <div className="spwa-po-card-number">{row.invoice_number || "—"}</div>
+                    <div className="spwa-po-card-line"><span>Tanggal</span><strong>{formatSalesDate(row.invoice_date)}</strong></div>
+                    <div className="spwa-po-card-line"><span>Jatuh tempo</span><strong>{formatSalesDate(row.due_date)}</strong></div>
+                    <div className="spwa-po-card-line"><span>Total</span><strong>{formatSalesMoney(row.grand_total)}</strong></div>
+                    <div className="spwa-po-card-line"><span>Sudah dibayar</span><strong>{formatSalesMoney(row.paid_amount)}</strong></div>
+                    <div className="spwa-po-card-line"><span>Sisa piutang</span><strong>{formatSalesMoney(row.outstanding_amount)}</strong></div>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+            {!rows.length && <div className="spwa-empty">Tidak ada invoice yang masih memiliki sisa piutang.</div>}
+          </>
+        )}
+      </main>
+    </>
+  );
+}
