@@ -5832,6 +5832,8 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
                 shipment_id=_qr_delivery_batch_identity(selected_sh) if selected_sh else None,
                 shipment=selected_sh,
             )
+            if conf and claim_plan_holder.get("stock_warning"):
+                conf["stock_warning"] = True
             conf_holder["conf"] = conf
             try:
                 from services.delivery_pod_signature import (
@@ -5945,9 +5947,10 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
         logging.getLogger(__name__).warning("sales_delivery SJ reconcile sync failed", exc_info=True)
 
     recorded = bool(action_id and action_id in list((order or {}).get("delivery_confirm_action_ids") or []))
-    if claimed_stock and (conf_holder.get("conf") or recorded):
-        from services.physical_stock_engine import finalize_delivery_confirmed_stock
-        await finalize_delivery_confirmed_stock(db, claimed_stock, user)
+    if claim_plan_holder.get("active"):
+        if claimed_stock and (conf_holder.get("conf") or recorded):
+            from services.physical_stock_engine import finalize_delivery_confirmed_stock
+            await finalize_delivery_confirmed_stock(db, claimed_stock, user)
     elif conf_holder.get("conf"):
         from services.physical_stock_engine import handle_delivery_confirmed
         await handle_delivery_confirmed(db, order, conf_holder["conf"], user)

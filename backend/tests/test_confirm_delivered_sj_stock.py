@@ -346,8 +346,8 @@ async def test_endpoint_combined_same_master_qty_reserves_nothing(mongo):
     )
     order = _full_same_master_sj(_order("ord-combined-short"))
     await mongo.orders.insert_one(dict(order))
-    rejected = await _confirm(order["id"], "sj-1", "act-combined-short")
-    assert rejected.status_code == 400, rejected.text
+    accepted = await _confirm(order["id"], "sj-1", "act-combined-short")
+    assert accepted.status_code == 200, accepted.text
     state = await get_product_stock_state(mongo, MASTER)
     assert state["printed_qty"] == 1500
     assert state["unprinted_qty"] == 4700
@@ -355,7 +355,100 @@ async def test_endpoint_combined_same_master_qty_reserves_nothing(mongo):
     assert not state.get("pending_event")
     assert await _movements(mongo) == []
     stored = await mongo.orders.find_one({"id": order["id"]}, {"_id": 0, "delivery_confirmations": 1})
+    assert len(stored["delivery_confirmations"]) == 1
+    assert stored["delivery_confirmations"][0]["qty"] == 2000
+    assert stored["delivery_confirmations"][0]["stock_warning"] is True
+
+
+@pytest.mark.anyio
+async def test_initialized_short_stock_still_confirms_without_movement(mongo):
+    """Saldo 500, Surat Jalan 1000. Konfirmasi tersimpan, stok tidak negatif."""
+    master_id = "master-short-500"
+    await mongo.master_items.insert_one({"id": master_id, "item_name": "Kurang", "unit": "PCS"})
+    await initialize_opening_balance(
+        mongo, master_id,
+        {"unprinted_qty": 0, "printed_qty": 500, "base_uom": "PCS"},
+        user={"email": "admin@test.local"},
+    )
+    order = _one_line_order("ord-short-500", master_id, 1000)
+    await mongo.orders.insert_one(dict(order))
+    result = await _confirm(order["id"], "sj-1", "act-short-500")
+    assert result.status_code == 200, result.text
+    body = result.json()["order"]
+    assert body["delivery_confirmations"][0]["qty"] == 1000
+    assert body["delivery_confirmations"][0]["stock_warning"] is True
+    state = await get_product_stock_state(mongo, master_id)
+    assert state["printed_qty"] == 500
+    assert state["total_qty"] == 500
+    assert not state.get("pending_event")
+    assert await mongo.stock_movements.count_documents({
+        "master_item_id": master_id, "movement_type": "PENGIRIMAN",
+    }) == 0
+    again = await _confirm(order["id"], "sj-1", "act-short-500")
+    assert again.status_code == 200, again.text
+    stored = await mongo.orders.find_one({"id": order["id"]}, {"_id": 0, "delivery_confirmations": 1})
+    assert len(stored["delivery_confirmations"]) == 1
+    assert (await get_product_stock_state(mongo, master_id))["printed_qty"] == 500
+
+
+@pytest.mark.anyio
+async def test_sufficient_stock_still_writes_delivery_movement(mongo):
+    master_id = "master-enough"
+    await mongo.master_items.insert_one({"id": master_id, "item_name": "Cukup", "unit": "PCS"})
+    await initialize_opening_balance(
+        mongo, master_id,
+        {"unprinted_qty": 0, "printed_qty": 800, "base_uom": "PCS"},
+        user={"email": "admin@test.local"},
+    )
+    order = _one_line_order("ord-enough", master_id, 300)
+    await mongo.orders.insert_one(dict(order))
+    result = await _confirm(order["id"], "sj-1", "act-enough")
+    assert result.status_code == 200, result.text
+    body = result.json()["order"]
+    assert body["delivery_confirmations"][0]["qty"] == 300
+    assert body["delivery_confirmations"][0].get("stock_warning") is not True
+    state = await get_product_stock_state(mongo, master_id)
+    assert state["printed_qty"] == 500
+    assert state["total_qty"] == 500
+    assert not state.get("pending_event")
+    movs = await mongo.stock_movements.find({"master_item_id": master_id, "movement_type": "PENGIRIMAN"}).to_list(length=5)
+    assert len(movs) == 1
+    assert movs[0]["transaction_qty"] == 300
+
+
+@pytest.mark.anyio
+async def test_foreign_reservation_still_blocks_confirm(mongo):
+    """Konflik reservasi aktif tetap menolak. Saldo cukup, jadi ini bukan stok kurang."""
+    master_id = "master-foreign-pending"
+    await mongo.master_items.insert_one({"id": master_id, "item_name": "Konflik", "unit": "PCS"})
+    await initialize_opening_balance(
+        mongo, master_id,
+        {"unprinted_qty": 0, "printed_qty": 1000, "base_uom": "PCS"},
+        user={"email": "admin@test.local"},
+    )
+    order = _one_line_order("ord-foreign-pending", master_id, 100)
+    await mongo.orders.insert_one(dict(order))
+    await mongo.product_stock_state.update_one(
+        {"master_item_id": master_id},
+        {"$set": {"pending_event": {
+            "event_id": "other-claim",
+            "action_id": "other-action",
+            "stage": "CLAIMED",
+            "reference_type": "delivery_confirmed",
+            "order_id": "someone-else",
+        }}},
+    )
+    rejected = await _confirm(order["id"], "sj-1", "act-foreign")
+    assert rejected.status_code == 409, rejected.text
+    assert "konflik konkurensi" in rejected.text
+    stored = await mongo.orders.find_one({"id": order["id"]}, {"_id": 0, "delivery_confirmations": 1})
     assert stored["delivery_confirmations"] == []
+    state = await get_product_stock_state(mongo, master_id)
+    assert state["printed_qty"] == 1000
+    assert state["pending_event"]["event_id"] == "other-claim"
+    assert await mongo.stock_movements.count_documents({
+        "master_item_id": master_id, "movement_type": "PENGIRIMAN",
+    }) == 0
 
 
 @pytest.mark.anyio
@@ -758,13 +851,15 @@ async def test_blank_action_id_and_failed_validation_leave_no_active_reservation
         {"master_item_id": MASTER},
         {"$set": {"printed_qty": 100, "total_qty": 4800}},
     )
-    rejected = await _confirm(short["id"], "sj-1")
-    assert rejected.status_code == 400, rejected.text
+    accepted = await _confirm(short["id"], "sj-1")
+    assert accepted.status_code == 200, accepted.text
     state = await get_product_stock_state(mongo, MASTER)
     assert state["printed_qty"] == 100
     assert not state.get("pending_event")
     stored = await mongo.orders.find_one({"id": short["id"]}, {"_id": 0, "delivery_confirmations": 1})
-    assert stored["delivery_confirmations"] == []
+    assert len(stored["delivery_confirmations"]) == 1
+    assert stored["delivery_confirmations"][0]["stock_warning"] is True
+    assert await _movements(mongo) == []
     await mongo.product_stock_state.update_one(
         {"master_item_id": MASTER},
         {"$set": {"printed_qty": 2000, "total_qty": 6700}},

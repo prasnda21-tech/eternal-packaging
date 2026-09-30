@@ -2846,20 +2846,48 @@ async def test_same_master_print_and_unprinted_lines_one_reservation(mock_db):
 
 @pytest.mark.anyio
 async def test_same_master_sum_exceeds_bucket_reserves_nothing(mock_db):
-    """Each line fits alone, the sum does not. One atomic reservation fails closed.
+    """Each line fits alone, the sum does not. The group is skipped, not claimed.
 
-    The per-line shortage skip is unchanged. This case still must not leave the
-    first line's pending_event behind.
+    Confirmation continues without a partial movement, without negative stock,
+    and with stock_warning on the selected-SJ claim.
     """
+    from services.physical_stock_engine import claim_selected_delivery_stock
+
     await setup_initialized_product(mock_db, NAMOY_MASTER, unprinted=4700.0, printed=1500.0)
     order = _namoy_order()
     lines = order["line_items"]
     await precheck_delivery_confirmed(mock_db, order, lines)
-    with pytest.raises(HTTPException) as claim_exc:
-        await claim_delivery_confirmed_stock(mock_db, order, lines, "act-short")
-    assert "konflik konkurensi" in str(claim_exc.value.detail)
+    claims = await claim_delivery_confirmed_stock(mock_db, order, lines, "act-short")
+    assert claims == []
     state = await get_product_stock_state(mock_db, NAMOY_MASTER)
     assert state["printed_qty"] == 1500.0
+    assert state["unprinted_qty"] == 4700.0
+    assert state["total_qty"] == 6200.0
+    assert state["printed_qty"] >= 0
+    assert state["unprinted_qty"] >= 0
+    assert state["total_qty"] >= 0
+    assert not state.get("pending_event")
+    assert _pengiriman(mock_db) == []
+
+    order["line_items"][0]["accurate_item_id"] = "ACC-NAMOY"
+    order["line_items"][1]["accurate_item_id"] = "ACC-NAMOY"
+    order["shipments"] = [{
+        "id": "sj-short",
+        "number": "SJ-SHORT",
+        "lines": [
+            {"line_idx": 0, "line_id": "L0", "qty": 1000},
+            {"line_idx": 1, "line_id": "L1", "qty": 1000},
+        ],
+    }]
+    holder = {}
+    selected = await claim_selected_delivery_stock(
+        mock_db, order, "sj-short", "act-short-sj", None, holder,
+    )
+    assert selected == []
+    assert holder.get("stock_warning") is True
+    state = await get_product_stock_state(mock_db, NAMOY_MASTER)
+    assert state["printed_qty"] == 1500.0
+    assert state["unprinted_qty"] == 4700.0
     assert state["total_qty"] == 6200.0
     assert not state.get("pending_event")
     assert _pengiriman(mock_db) == []
