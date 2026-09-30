@@ -1022,7 +1022,11 @@ export default function RekonsiliasiKasBank() {
   const money = (value, code = currency) => reconMoney(value, code);
   const visibleBank = bankRows.filter((row) => !row.claim_id);
   const visibleBook = bookRows.filter((row) => !row.claim_id);
-  const candidateIds = new Set((suggestions?.suggestions || []).map((item) => item.journal_line_id));
+  const suggestionList = suggestions?.suggestions || [];
+  const candidateIds = new Set(suggestionList.map((item) => item.journal_line_id));
+  const visibleBookIds = new Set(visibleBook.map((row) => row.journal_line_id));
+  const offPageCandidateCount = suggestionList.filter((item) => !visibleBookIds.has(item.journal_line_id)).length;
+  const bankHasCandidate = suggestionList.length > 0;
   const ready = phase === "ready";
   const canMatch = ready && !busy && workspace?.feature_ready !== false && selectedBankRow?.matchable && selectedBookRow?.matchable;
   const matched = workspace?.matched_pairs || [];
@@ -1092,19 +1096,25 @@ export default function RekonsiliasiKasBank() {
 
       {tab === "unmatched" && <div className="recon-tab-body" role="tabpanel" id="recon-panel-unmatched" aria-labelledby="recon-tab-unmatched">
         <div className="kb-pane-switch" aria-label="Panel"><button type="button" aria-pressed={pane === "bank"} className={pane === "bank" ? "primary sm" : "ghost sm"} onClick={() => setPane("bank")}>Bank</button><button type="button" aria-pressed={pane === "book"} className={pane === "book" ? "primary sm" : "ghost sm"} onClick={() => setPane("book")}>Buku</button></div>
-        <div className="kb-pair-columns">
+        {offPageCandidateCount > 0 && <p className="kb-offpage-candidates" data-testid="kas-bank-offpage-candidates">{offPageCandidateCount} kandidat tersedia pada halaman lain</p>}
+        <div className={`kb-pair-columns${bankHasCandidate ? " has-link" : ""}`}>
           <section className={`kb-pane ${pane === "bank" ? "is-shown" : ""}`} aria-label="Mutasi bank">
             <div className="recon-pane-title"><h2>Mutasi Bank</h2><span>{ready ? `${visibleBank.length} baris ditampilkan` : ""}</span></div>
             {stateMessage(bankView, "mutasi bank", visibleBank.length)}
             {bankView === "results" && visibleBank.length > 0 && <div className="kb-pair-scroll"><table className="prod-table kas-bank-table" data-testid="kas-bank-pair-bank-table">
               <thead><tr><th aria-label="Pilih satu baris" /><th>Tanggal</th><th>Uraian / Referensi</th><th className="num">Masuk</th><th className="num">Keluar</th></tr></thead><tbody>
-                {visibleBank.map((row) => <tr key={row.id} className={selectedBank === row.id ? "kb-row-matched" : ""}>
+                {visibleBank.map((row) => {
+                  const showCandidate = bankHasCandidate && selectedBank === row.id;
+                  const bankClass = [selectedBank === row.id ? "kb-row-matched" : "", showCandidate ? "kb-row-candidate" : ""].filter(Boolean).join(" ");
+                  return <tr key={row.id} className={bankClass}>
                   <td><input type="radio" name="bank-line" checked={selectedBank === row.id} onChange={() => pickBank(row)} disabled={!row.matchable || busy || !canReconcile} aria-label={`Pilih bank ${row.description}`} /></td>
-                  <td className="recon-date">{reconDate(row.date)}</td><td><span className="recon-description">{row.description || "—"}</span><small>{row.reference || "—"}</small>{row.original_date === "PEND" && row.date_status === "temporary" && <small>PEND - tanggal sementara</small>}{row.block_reason && <span className="recon-row-warning">{row.block_reason}</span>}{row.identity_guarantee === "tidak_dijamin" && <small>Identitas bank tidak dijamin</small>}</td>
+                  <td className="recon-date">{reconDate(row.date)}</td><td><span className="recon-description">{row.description || "—"}</span><small>{row.reference || "—"}</small>{showCandidate && <span className="recon-badge kb-candidate-badge">Kandidat Cocok</span>}{showCandidate && <small className="kb-candidate-reason">✓ Nominal sama</small>}{showCandidate && <small className="kb-candidate-reason">✓ Arah sesuai</small>}{showCandidate && <small className="kb-candidate-reason">✓ Rekening sama</small>}{row.original_date === "PEND" && row.date_status === "temporary" && <small>PEND - tanggal sementara</small>}{row.block_reason && <span className="recon-row-warning">{row.block_reason}</span>}{row.identity_guarantee === "tidak_dijamin" && <small>Identitas bank tidak dijamin</small>}</td>
                   <td className="num kb-money">{amountCell(row, "in", row.amount)}</td><td className="num kb-money">{amountCell(row, "out", row.amount)}</td>
-                </tr>)}
+                </tr>;
+                })}
               </tbody></table></div>}
           </section>
+          {bankHasCandidate && <div className="kb-pair-link" data-testid="kas-bank-pair-link" aria-hidden="true"><span /><strong>↔</strong><span /></div>}
           <section className={`kb-pane ${pane === "book" ? "is-shown" : ""}`} aria-label="Pembukuan Eternal">
             <div className="recon-pane-title"><h2>Pembukuan Eternal</h2><span>{ready ? `${visibleBook.length} baris ditampilkan` : ""}</span></div>
             {stateMessage(bookView, "pembukuan", visibleBook.length)}
@@ -1115,7 +1125,7 @@ export default function RekonsiliasiKasBank() {
                   const bookClass = [selectedBook === row.journal_line_id ? "kb-row-matched" : "", isCandidate ? "kb-row-candidate" : ""].filter(Boolean).join(" ");
                   return <tr key={row.journal_line_id} className={bookClass}>
                   <td><input type="radio" name="book-line" checked={selectedBook === row.journal_line_id} onChange={() => { setSelectedBook(row.journal_line_id); matchKey.current = newOperationKey(); }} disabled={!row.matchable || busy || !canReconcile} aria-label={`Pilih buku ${row.journal_number}`} /></td>
-                  <td className="recon-date">{reconDate(row.date)}</td><td><span className="recon-description">{row.description || "—"}</span><small>{row.source_path && row.source_id ? <Link to={`${row.source_path}?id=${encodeURIComponent(row.source_id)}`}>{row.journal_number}</Link> : row.journal_number}</small>{isCandidate && <span className="recon-badge kb-candidate-badge">Kandidat Cocok</span>}{isCandidate && <small>Nominal sama · Arah sesuai · Rekening sama</small>}{row.block_reason && <span className="recon-row-warning">{row.block_reason}</span>}<small>{reconStatus(row.status)}</small></td>
+                  <td className="recon-date">{reconDate(row.date)}</td><td><span className="recon-description">{row.description || "—"}</span><small>{row.source_path && row.source_id ? <Link to={`${row.source_path}?id=${encodeURIComponent(row.source_id)}`}>{row.journal_number}</Link> : row.journal_number}</small>{isCandidate && <span className="recon-badge kb-candidate-badge">Kandidat Cocok</span>}{isCandidate && <small className="kb-candidate-reason">✓ Nominal sama</small>}{isCandidate && <small className="kb-candidate-reason">✓ Arah sesuai</small>}{isCandidate && <small className="kb-candidate-reason">✓ Rekening sama</small>}{row.block_reason && <span className="recon-row-warning">{row.block_reason}</span>}<small>{reconStatus(row.status)}</small></td>
                   <td className="num kb-money">{amountCell(row, "in", row.absolute_amount)}</td><td className="num kb-money">{amountCell(row, "out", row.absolute_amount)}</td>
                 </tr>;
                 })}
