@@ -72,6 +72,27 @@ test('single selection preserves match endpoint payload and highlights both rows
   expect(api.createCashBankPair).toHaveBeenCalledTimes(1);
   expect(api.createCashBankPair.mock.calls[0][0]).toEqual(expect.objectContaining({cash_bank_id:'account-1',statement_line_id:'bank-1',journal_line_id:'book-1',idempotency_key:expect.any(String),start_date:expect.any(String),end_date:expect.any(String)}));
 });
+test('selecting a bank row highlights book candidates without saving a pair', async () => {
+  const other = {...book, journal_line_id:'book-2', journal_number:'JE-19', description:'Biaya lain', absolute_amount:1000};
+  workspace.book_lines=[book, other];
+  workspace.visible_book_count=2;
+  api.cashBankPairSuggestions.mockResolvedValue({ambiguous:false, applied:false, suggestions:[{journal_line_id:'book-1', journal_number:'JE-18', reasons:['Nominal sama','Arah sama']}]});
+  await renderPage();
+  expect(container.querySelector('.kb-candidate-badge')).toBeNull();
+  await click(container.querySelector('[name=bank-line]'));
+  await flush();
+  await flush();
+  const candidate = container.querySelector('tr.kb-row-candidate');
+  expect(candidate).toBeTruthy();
+  expect(candidate.textContent).toContain('JE-18');
+  expect(candidate.textContent).toContain('Kandidat Cocok');
+  expect(candidate.textContent).toContain('Nominal sama · Arah sesuai · Rekening sama');
+  const bookRows = [...container.querySelectorAll('[data-testid=kas-bank-pair-book-table] tbody tr')];
+  expect(bookRows[1].classList.contains('kb-row-candidate')).toBe(false);
+  expect(container.querySelector('[name=book-line]').checked).toBe(false);
+  expect(api.createCashBankPair).not.toHaveBeenCalled();
+  expect(container.querySelector('.recon-badge.is-matched')).toBeNull();
+});
 test('matched and import tabs never render a matching footer or empty bank/book panels', async () => {
   workspace.matched_pairs=[pair]; await renderPage();
   await click(byText('Sudah Cocok'));

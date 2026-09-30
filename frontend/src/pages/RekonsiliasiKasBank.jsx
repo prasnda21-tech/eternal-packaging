@@ -1022,6 +1022,7 @@ export default function RekonsiliasiKasBank() {
   const money = (value, code = currency) => reconMoney(value, code);
   const visibleBank = bankRows.filter((row) => !row.claim_id);
   const visibleBook = bookRows.filter((row) => !row.claim_id);
+  const candidateIds = new Set((suggestions?.suggestions || []).map((item) => item.journal_line_id));
   const ready = phase === "ready";
   const canMatch = ready && !busy && workspace?.feature_ready !== false && selectedBankRow?.matchable && selectedBookRow?.matchable;
   const matched = workspace?.matched_pairs || [];
@@ -1109,11 +1110,15 @@ export default function RekonsiliasiKasBank() {
             {stateMessage(bookView, "pembukuan", visibleBook.length)}
             {bookView === "results" && visibleBook.length > 0 && <div className="kb-pair-scroll"><table className="prod-table kas-bank-table" data-testid="kas-bank-pair-book-table">
               <thead><tr><th aria-label="Pilih satu baris" /><th>Tanggal</th><th>Uraian / Dokumen</th><th className="num">Masuk</th><th className="num">Keluar</th></tr></thead><tbody>
-                {visibleBook.map((row) => <tr key={row.journal_line_id} className={selectedBook === row.journal_line_id ? "kb-row-matched" : ""}>
+                {visibleBook.map((row) => {
+                  const isCandidate = candidateIds.has(row.journal_line_id);
+                  const bookClass = [selectedBook === row.journal_line_id ? "kb-row-matched" : "", isCandidate ? "kb-row-candidate" : ""].filter(Boolean).join(" ");
+                  return <tr key={row.journal_line_id} className={bookClass}>
                   <td><input type="radio" name="book-line" checked={selectedBook === row.journal_line_id} onChange={() => { setSelectedBook(row.journal_line_id); matchKey.current = newOperationKey(); }} disabled={!row.matchable || busy || !canReconcile} aria-label={`Pilih buku ${row.journal_number}`} /></td>
-                  <td className="recon-date">{reconDate(row.date)}</td><td><span className="recon-description">{row.description || "—"}</span><small>{row.source_path && row.source_id ? <Link to={`${row.source_path}?id=${encodeURIComponent(row.source_id)}`}>{row.journal_number}</Link> : row.journal_number}</small>{row.block_reason && <span className="recon-row-warning">{row.block_reason}</span>}<small>{reconStatus(row.status)}</small></td>
+                  <td className="recon-date">{reconDate(row.date)}</td><td><span className="recon-description">{row.description || "—"}</span><small>{row.source_path && row.source_id ? <Link to={`${row.source_path}?id=${encodeURIComponent(row.source_id)}`}>{row.journal_number}</Link> : row.journal_number}</small>{isCandidate && <span className="recon-badge kb-candidate-badge">Kandidat Cocok</span>}{isCandidate && <small>Nominal sama · Arah sesuai · Rekening sama</small>}{row.block_reason && <span className="recon-row-warning">{row.block_reason}</span>}<small>{reconStatus(row.status)}</small></td>
                   <td className="num kb-money">{amountCell(row, "in", row.absolute_amount)}</td><td className="num kb-money">{amountCell(row, "out", row.absolute_amount)}</td>
-                </tr>)}
+                </tr>;
+                })}
               </tbody></table></div>}
           </section>
         </div>
