@@ -40,6 +40,7 @@ from services.journal_core import (
 from services.purchase_common import actor_snapshot, now_iso
 
 MONEY = Decimal("0.01")
+MATCH_DATE_TOLERANCE_DAYS = 7
 
 
 class PairValidationError(ValueError):
@@ -81,6 +82,30 @@ def _money(raw: Any) -> Decimal:
 
 def _hash(*parts: str) -> str:
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
+
+
+def _calendar_day(value: Any) -> Optional[date_cls]:
+    try:
+        return date_cls.fromisoformat(str(value or "")[:10])
+    except ValueError:
+        return None
+
+
+def _calendar_delta_days(bank_date: Any, journal_date: Any) -> Optional[int]:
+    bank_day = _calendar_day(bank_date)
+    journal_day = _calendar_day(journal_date)
+    if bank_day is None or journal_day is None:
+        return None
+    return abs((bank_day - journal_day).days)
+
+
+def _reference_relevance(reasons: List[str]) -> int:
+    text = " ".join(reasons).lower()
+    if "referensi muncul" in text:
+        return 0
+    if "referensi tidak sama" in text:
+        return 1
+    return 2
 
 
 def book_direction(debit: Any, credit: Any) -> Tuple[str, Decimal]:
@@ -555,6 +580,9 @@ async def suggest_pairs(db, *, statement_line_id: str, start: str, end: str) -> 
             continue
         if direction != bank_direction or amount != bank_amount:
             continue
+        delta = _calendar_delta_days(line.get("date"), row.get("date"))
+        if delta is None or delta > MATCH_DATE_TOLERANCE_DAYS:
+            continue
         blob = " ".join([
             str(row.get("description") or ""),
             str(row.get("line_description") or ""),
@@ -565,14 +593,7 @@ async def suggest_pairs(db, *, statement_line_id: str, start: str, end: str) -> 
             reasons.append("Referensi muncul di buku")
         elif ref:
             reasons.append("Referensi tidak sama")
-        try:
-            delta = abs((
-                date_cls.fromisoformat(str(row.get("date")))
-                - date_cls.fromisoformat(str(line.get("date")))
-            ).days)
-            reasons.append(f"Beda tanggal {delta} hari")
-        except Exception:
-            reasons.append("Tanggal tidak dibandingkan")
+        reasons.append(f"Beda tanggal {delta} hari")
         suggestions.append({
             "journal_line_id": row.get("journal_line_id"),
             "journal_number": row.get("journal_number"),
@@ -582,6 +603,11 @@ async def suggest_pairs(db, *, statement_line_id: str, start: str, end: str) -> 
             "direction": direction,
             "reasons": reasons,
         })
+    suggestions.sort(key=lambda item: (
+        _calendar_delta_days(line.get("date"), item.get("date")),
+        _reference_relevance(item.get("reasons") or []),
+        abs(Decimal(str(item.get("amount") or 0)) - bank_amount),
+    ))
     return {
         "statement_line_id": line.get("id"),
         "ambiguous": len(suggestions) > 1,

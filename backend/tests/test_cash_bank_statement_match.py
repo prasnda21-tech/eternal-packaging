@@ -1419,3 +1419,42 @@ async def test_ambiguous_duplicate_stays_pending_review():
         ambiguous = await server.db[LINES].find({"description": "Tanpa pembeda"}, {"_id": 0, "duplicate_status": 1}).to_list(5)
         assert len(ambiguous) == 2
         assert {row["duplicate_status"] for row in ambiguous} == {"pending_review"}
+
+
+async def test_suggestions_stay_within_seven_days_and_do_not_match():
+    admin = _user()
+    async with await client_for(admin) as c:
+        bank, income = await _setup(c, currency="IDR")
+        books = (
+            ("2026-09-30", "Masuk WS95271"),
+            ("2026-09-30", "Masuk lain"),
+            ("2026-09-29", "Beda satu"),
+            ("2026-09-25", "Beda lima"),
+            ("2026-09-23", "Beda tujuh"),
+            ("2026-09-22", "Beda delapan"),
+        )
+        for book_date, desc in books:
+            await _receipt(c, bank["id"], income["id"], 880000, date=book_date, desc=desc)
+        journals = await server.db[JOURNAL_ENTRIES].count_documents({})
+        journal_lines = await server.db[JOURNAL_LINES].count_documents({})
+        _preview, imported = await _import(c, bank["id"], (
+            "tanggal,uraian,masuk,keluar,referensi,id,saldo\n"
+            "2026-09-30,Transfer 880,880000,,WS95271,,\n"
+        ))
+        assert imported.status_code == 201, imported.text
+        line_id = (await server.db[LINES].find_one({}, {"_id": 0, "id": 1}))["id"]
+        before = await server.db[RECON_MATCHES].count_documents({})
+        suggestions = await c.get("/api/cash-bank/reconciliations/pairs/suggestions", params={
+            "statement_line_id": line_id, **PERIOD,
+        })
+        assert suggestions.status_code == 200, suggestions.text
+        body = suggestions.json()
+        assert body["applied"] is False
+        assert body["ambiguous"] is True
+        found = [item["description"] for item in body["suggestions"]]
+        assert found == ["Masuk WS95271", "Masuk lain", "Beda satu", "Beda lima", "Beda tujuh"]
+        assert "Beda delapan" not in found
+        assert found.index("Beda satu") < found.index("Beda lima")
+        assert await server.db[RECON_MATCHES].count_documents({}) == before
+        assert await server.db[JOURNAL_ENTRIES].count_documents({}) == journals
+        assert await server.db[JOURNAL_LINES].count_documents({}) == journal_lines
