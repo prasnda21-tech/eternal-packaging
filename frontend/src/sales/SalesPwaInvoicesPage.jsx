@@ -80,11 +80,13 @@ export default function SalesPwaInvoicesPage() {
                   <li key={invoice.id}>
                     <Link className="spwa-po-card" to={salesInvoiceHref(invoice, "", month)} data-testid={`sales-invoice-${invoice.id}`}>
                       <div className="spwa-po-card-customer">{invoice.customer_name || "—"}</div>
-                      <div className="spwa-po-card-number">{invoice.invoice_number || "—"}</div>
-                      <div className={`spwa-po-card-status ${paymentStatusTone(invoice.payment_status)}`}>{paymentStatusLabel(invoice.payment_status)}</div>
-                      <div className="spwa-po-card-line"><span>Tanggal</span><strong>{formatSalesDate(invoice.invoice_date)}</strong></div>
+                      <div className={`spwa-po-card-status ${paymentStatusTone(invoice.payment_status)}`}>
+                        {paymentStatusLabel(invoice.payment_status)}
+                        <span className="spwa-po-card-number">{invoice.invoice_number || "—"}</span>
+                      </div>
                       <div className="spwa-po-card-line"><span>Total</span><strong>{formatSalesMoney(invoice.grand_total)}</strong></div>
                       <div className="spwa-po-card-line"><span>Sisa</span><strong>{outstanding == null ? "—" : formatSalesMoney(outstanding)}</strong></div>
+                      <div className="spwa-po-card-line"><span>Tanggal</span><strong>{formatSalesDate(invoice.invoice_date)}</strong></div>
                     </Link>
                   </li>
                 );

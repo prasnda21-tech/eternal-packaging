@@ -40,12 +40,11 @@ export default function SalesPwaReceivablesPage() {
                 <li key={row.id}>
                   <Link className="spwa-po-card" to={salesInvoiceHref(row, "receivables")} data-testid={`sales-receivable-${row.id}`}>
                     <div className="spwa-po-card-customer">{row.customer_name || "—"}</div>
-                    <div className="spwa-po-card-number">{row.invoice_number || "—"}</div>
-                    <div className="spwa-po-card-line"><span>Tanggal</span><strong>{formatSalesDate(row.invoice_date)}</strong></div>
+                    <div className="spwa-finance-balance">{formatSalesMoney(row.outstanding_amount)}</div>
                     <div className="spwa-po-card-line"><span>Jatuh tempo</span><strong>{formatSalesDate(row.due_date)}</strong></div>
+                    <div className="spwa-po-card-number">{row.invoice_number || "—"} · {formatSalesDate(row.invoice_date)}</div>
                     <div className="spwa-po-card-line"><span>Total</span><strong>{formatSalesMoney(row.grand_total)}</strong></div>
                     <div className="spwa-po-card-line"><span>Sudah dibayar</span><strong>{formatSalesMoney(row.paid_amount)}</strong></div>
-                    <div className="spwa-po-card-line"><span>Sisa piutang</span><strong>{formatSalesMoney(row.outstanding_amount)}</strong></div>
                   </Link>
                 </li>
               ))}

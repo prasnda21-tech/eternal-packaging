@@ -49,6 +49,7 @@ export default function SalesPwaInvoiceDetailPage() {
         <Link to={backTo} className="spwa-back" data-testid="sales-invoice-back"><ChevronLeft size={14} /> {fromReceivables ? "Piutang" : "Invoice"}</Link>
         {invoice ? (
           <div className="spwa-detail-identity">
+            <p className="spwa-kicker">Customer</p>
             <h1 className="spwa-top-customer">{invoice.customer_name || "—"}</h1>
             <p className="spwa-top-meta">{invoice.invoice_number || "—"}</p>
             <p className="spwa-top-meta">{formatSalesDate(invoice.invoice_date)}</p>
