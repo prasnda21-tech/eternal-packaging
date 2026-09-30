@@ -2427,6 +2427,12 @@ async def claim_delivery_confirmed_stock(
         fence = await _fence_stamp_for_action(db, order_id, action_id)
         for mid, group in grouped.items():
             enriched = [await _delivery_line_deltas(db, spec) for spec in group]
+            if (
+                len(enriched) > 1
+                and not replay
+                and await _group_should_skip_for_short_stock(db, order_id, action_id, enriched)
+            ):
+                continue
             if len(enriched) == 1:
                 spec = enriched[0]
                 claim = await claim_durable_stock_event(
@@ -2506,7 +2512,7 @@ SJ_QTY_DRIFT = (
 )
 SJ_STOCK_SHORT = (
     "Stok fisik tidak mencukupi untuk qty Surat Jalan yang dikonfirmasi. "
-    "Konfirmasi tidak disimpan."
+    "Konfirmasi disimpan tanpa pengurangan stok pada baris yang kurang."
 )
 def _delivery_action_recorded(order: Dict[str, Any], action_id: Optional[str]) -> bool:
     token = str(action_id or "").strip()
@@ -3596,25 +3602,74 @@ def _reserved_transaction_qty(claims: List[Dict[str, Any]]) -> float:
     return total
 
 
-async def _delivery_line_block_reason(db, line: Dict[str, Any]) -> Optional[str]:
-    """Reject a new confirmation only when initialized stock cannot cover the line.
+async def _delivery_line_stock_short(db, line: Dict[str, Any]) -> bool:
+    """True when initialized stock cannot cover this SJ line.
 
-    Missing opening stock matches the baseline: the line is skipped, not rejected.
+    Missing opening stock is not a shortage. Shortage does not reject confirmation.
     """
     mid = str(line.get("master_item_id") or "").strip()
     if not await _product_stock_is_initialized(db, mid):
-        return None
+        return False
     proc = str(line.get("production_process") or "").strip().lower()
-    if not await _production_flow_stock_can_mutate(
+    return not await _production_flow_stock_can_mutate(
         db,
         mid,
         line.get("qty"),
         line.get("unit"),
         movement_type=MOVEMENT_PENGIRIMAN,
         is_print=proc != "non_print",
-    ):
-        return SJ_STOCK_SHORT
-    return None
+    )
+
+
+async def _delivery_group_exceeds_stock(db, enriched: List[Dict[str, Any]]) -> bool:
+    """True when the summed PENGIRIMAN deltas of one master exceed initialized buckets."""
+    if not enriched:
+        return False
+    mid = str(enriched[0].get("mid") or "").strip()
+    if not await _product_stock_is_initialized(db, mid):
+        return False
+    state = await get_product_stock_state(db, mid)
+    if not state:
+        return False
+    need_printed = sum(abs(safe_float(line.get("delta_printed"))) for line in enriched)
+    need_unprinted = sum(abs(safe_float(line.get("delta_unprinted"))) for line in enriched)
+    need_total = sum(abs(safe_float(line.get("delta_total"))) for line in enriched)
+    if need_printed > safe_float(state.get("printed_qty", 0)) + 0.0001:
+        return True
+    if need_unprinted > safe_float(state.get("unprinted_qty", 0)) + 0.0001:
+        return True
+    if need_total > safe_float(state.get("total_qty", 0)) + 0.0001:
+        return True
+    return False
+
+
+async def _group_should_skip_for_short_stock(
+    db,
+    order_id: str,
+    action_id: str,
+    group: List[Dict[str, Any]],
+) -> bool:
+    """Skip a new grouped reservation when the sum exceeds stock.
+
+    Existing movements and this action's pending stay on the claim path so a
+    retry can resume. Another action's pending also stays on the claim path so
+    the concurrency conflict is still raised.
+    """
+    if not group:
+        return False
+    for spec in group:
+        if await _movement_by_event(db, spec.get("event_id")):
+            return False
+        if await _pending_covers_delivery_spec(db, order_id, action_id, spec):
+            return False
+    state = await get_product_stock_state(db, group[0].get("mid"))
+    pending = (state or {}).get("pending_event") if state else None
+    if isinstance(pending, dict) and pending.get("event_id"):
+        return False
+    enriched = group if "delta_total" in group[0] else [
+        await _delivery_line_deltas(db, spec) for spec in group
+    ]
+    return await _delivery_group_exceeds_stock(db, enriched)
 
 
 async def claim_selected_delivery_stock(
@@ -3646,12 +3701,12 @@ async def claim_selected_delivery_stock(
         raise HTTPException(400, plan["error"])
     lines = plan["lines"]
     await _recover_needed_delivery_masters(db, order, lines, action_id)
+    order_id = str(order.get("id") or "")
     if not replay:
         for line in lines:
-            reason = await _delivery_line_block_reason(db, line)
-            if reason:
-                raise HTTPException(400, reason)
-    order_id = str(order.get("id") or "")
+            if await _delivery_line_stock_short(db, line):
+                holder["stock_warning"] = True
+                break
     specs = _delivery_claim_specs(order, lines, action_id)
     responsible = []
     for spec in specs:
@@ -3659,6 +3714,24 @@ async def claim_selected_delivery_stock(
             db, spec, order_id=order_id, action_id=action_id, replay=replay,
         ):
             responsible.append(spec)
+    if not replay and responsible:
+        grouped_specs: Dict[str, List[Dict[str, Any]]] = {}
+        for spec in responsible:
+            grouped_specs.setdefault(spec["mid"], []).append(spec)
+        kept = []
+        for group in grouped_specs.values():
+            if len(group) > 1 and await _group_should_skip_for_short_stock(
+                db, order_id, action_id, group,
+            ):
+                holder["stock_warning"] = True
+                continue
+            kept.extend(group)
+        responsible = kept
+    if holder.get("stock_warning"):
+        logger.warning(
+            "%s order=%s action=%s shipment=%s",
+            SJ_STOCK_SHORT, order_id, action_id, shipment_id,
+        )
     claims = await claim_delivery_confirmed_stock(
         db, order, lines, action_id, user, replay=replay,
     )
