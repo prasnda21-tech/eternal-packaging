@@ -253,20 +253,29 @@ export default function SalesPwaDashboardPage() {
                 <div><p className="spwa-kicker">PERFORMANCE</p><h2>Performance</h2></div>
               </div>
               <div className="spwa-metric-stack">
-                <article className="spwa-metric is-primary is-revenue" data-testid="sales-dashboard-revenue">
+                <Link
+                  to={`/sales/invoices?month=${encodeURIComponent(month)}`}
+                  className="spwa-metric is-primary is-revenue spwa-metric-link"
+                  data-testid="sales-dashboard-revenue"
+                >
                   <TrendingUp size={17} />
-                  <span>Omzet bulan ini</span>
+                  <span>Omzet bulan ini <ChevronRight size={14} /></span>
                   <strong>{formatSalesMoney(metrics.revenue)}</strong>
                   <small>{metrics.invoice_count || 0} faktur final</small>
-                </article>
-                <article className="spwa-metric is-debt" data-testid="sales-dashboard-receivables" title={RECEIVABLE_INFO}>
+                </Link>
+                <Link
+                  to="/sales/receivables"
+                  className="spwa-metric is-debt spwa-metric-link"
+                  data-testid="sales-dashboard-receivables"
+                  title={RECEIVABLE_INFO}
+                >
                   <WalletCards size={17} />
-                  <span>Piutang berjalan</span>
+                  <span>Piutang berjalan <ChevronRight size={14} /></span>
                   <strong>{formatSalesMoney(metrics.receivables)}</strong>
                   <small>{metrics.receivable_invoice_count || 0} invoice belum lunas</small>
                   <small>Semua periode</small>
                   <small className="spwa-metric-info">{RECEIVABLE_INFO}</small>
-                </article>
+                </Link>
                 <div className="spwa-metric-grid">
                   <Link
                     to="/sales/po"
