@@ -402,6 +402,7 @@ export default function AttachmentsPanel({ order, user, onUpdated, designSlot = 
           fileName={pdfPreview.file?.name || "dokumen.pdf"}
           contentType={pdfPreview.file?.content_type || "application/pdf"}
           allowDownload={false}
+          pdfDownload={pdfPreview.kind === "design"}
           loadFile={loadPdfPreview}
           onClose={() => setPdfPreview(null)}
           testId={`attachment-pdf-${pdfPreview.file?.id || "file"}`}

@@ -110,7 +110,7 @@ describe("InAppDocumentViewer", () => {
     expect(Number(canvases[0].style.width.replace("px", ""))).toBeLessThanOrEqual(920);
     expect(host.querySelector('[data-testid="doc-stage"]').contains(sheets[0])).toBe(true);
     expect(host.querySelector(".inapp-doc-head").textContent).toMatch(/Bukti/);
-    expect(host.querySelector('[data-testid="doc-download"]')).toBeTruthy();
+    expect(host.querySelector('[data-testid="doc-download"]').textContent).toBe("Unduh");
     expect(host.querySelector('[data-testid="doc-close"]')).toBeTruthy();
     expect(host.querySelector(".inapp-doc-head").compareDocumentPosition(host.querySelector('[data-testid="doc-stage"]')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     ["prev", "next", "page", "zoom-in", "zoom-out", "fit"].forEach((name) => {
@@ -248,11 +248,66 @@ describe("InAppDocumentViewer", () => {
     await act(async () => { bad.root.unmount(); });
   });
 
+  test("design PDF download saves the previewed file under its original name", async () => {
+    const { pdf } = mockPdf(1);
+    getDocument.mockReturnValue({ promise: Promise.resolve(pdf), destroy: jest.fn() });
+    const blob = pdfBlob();
+    const loadFile = jest.fn(async () => blob);
+    const clicks = [];
+    const realCreate = document.createElement.bind(document);
+    const { host, root } = await renderViewer({
+      documentKey: "design-pdf",
+      title: "Desain Final.pdf",
+      fileName: "Desain Final.pdf",
+      contentType: "application/pdf",
+      allowDownload: false,
+      pdfDownload: true,
+      loadFile,
+      onClose: jest.fn(),
+    });
+    const actions = host.querySelector(".inapp-doc-head-actions");
+    const downloadBtn = host.querySelector('[data-testid="doc-download"]');
+    const closeBtn = host.querySelector('[data-testid="doc-close"]');
+    expect(actions.firstElementChild).toBe(downloadBtn);
+    expect(downloadBtn.textContent).toMatch(/Unduh PDF/);
+    expect(downloadBtn.querySelector("svg")).toBeTruthy();
+    expect(downloadBtn.compareDocumentPosition(closeBtn) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(downloadBtn.disabled).toBe(false);
+    expect(host.querySelector('[data-testid="doc-canvas"]')).toBeTruthy();
+    const callsBefore = loadFile.mock.calls.length;
+    jest.spyOn(document, "createElement").mockImplementation((tag, options) => {
+      const el = realCreate(tag, options);
+      if (tag === "a") {
+        el.click = () => {
+          clicks.push({ href: el.href, download: el.download, target: el.target });
+        };
+      }
+      return el;
+    });
+    await act(async () => {
+      downloadBtn.click();
+    });
+    expect(loadFile).toHaveBeenCalledTimes(callsBefore);
+    expect(URL.createObjectURL).toHaveBeenCalledWith(blob);
+    expect(clicks).toEqual([
+      expect.objectContaining({ download: "Desain Final.pdf", target: "" }),
+    ]);
+    expect(String(clicks[0].href || "")).not.toBe("");
+    expect(window.open).not.toHaveBeenCalled();
+    expect(host.querySelector('[data-testid="doc-canvas"]')).toBeTruthy();
+    await act(async () => {
+      closeBtn.click();
+    });
+    await act(async () => { root.unmount(); });
+  });
+
   test("source keeps tokens out of localStorage and uses pdf.js", () => {
     const src = fs.readFileSync(path.join(__dirname, "InAppDocumentViewer.jsx"), "utf8");
     expect(src).toMatch(/pdfjs-dist/);
     expect(src).toMatch(/pdf\.worker\.min\.mjs/);
     expect(src).not.toMatch(/localStorage/);
+    expect(src).toMatch(/const downloadPdf = async/);
+    expect(src).toMatch(/Unduh PDF/);
     expect(src).not.toMatch(/window\.open/);
     expect(src).not.toMatch(/target=_blank/);
     expect(src).toMatch(/MAX_PAGE_WIDTH = 920/);

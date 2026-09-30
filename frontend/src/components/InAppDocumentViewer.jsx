@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Download } from "lucide-react";
 import { GlobalWorkerOptions, getDocument } from "pdfjs-dist";
 
 GlobalWorkerOptions.workerSrc = `${process.env.PUBLIC_URL || ""}/pdf.worker.min.mjs`;
@@ -102,6 +103,7 @@ export default function InAppDocumentViewer({
   fileName = "dokumen",
   contentType = "",
   allowDownload = true,
+  pdfDownload = false,
   loadFile,
   onClose,
   testId = "inapp-doc-viewer",
@@ -254,24 +256,42 @@ export default function InAppDocumentViewer({
   };
   const failPages = useCallback(() => failRef.current(), []);
 
+  const saveBlob = (file, name) => {
+    const url = URL.createObjectURL(file);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = name || "dokumen";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const failDownload = () => {
+    setView((current) => (
+      current.key === documentKey
+        ? { ...current, status: "error", message: "Dokumen gagal dimuat.", pdf: null, blob: null }
+        : current
+    ));
+  };
+
   const download = async () => {
     try {
-      const file = await loadFile({ download: true });
-      const url = URL.createObjectURL(file);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = fileName || "dokumen";
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      URL.revokeObjectURL(url);
+      saveBlob(await loadFile({ download: true }), fileName || "dokumen");
     } catch (error) {
       if (error?.name === "AbortError" || error?.name === "CanceledError") return;
-      setView((current) => (
-        current.key === documentKey
-          ? { ...current, status: "error", message: "Dokumen gagal dimuat.", pdf: null, blob: null }
-          : current
-      ));
+      failDownload();
+    }
+  };
+
+  const downloadPdf = async () => {
+    try {
+      const previewed = view.blob && view.key === documentKey ? view.blob : null;
+      const file = previewed || await loadFile({ download: true });
+      saveBlob(file, fileName || "dokumen.pdf");
+    } catch (error) {
+      if (error?.name === "AbortError" || error?.name === "CanceledError") return;
+      failDownload();
     }
   };
 
@@ -293,7 +313,18 @@ export default function InAppDocumentViewer({
         <header className="inapp-doc-head">
           <strong>{title}</strong>
           <div className="inapp-doc-head-actions">
-            {allowDownload && (
+            {pdfDownload && (
+              <button
+                type="button"
+                data-testid={`${testId}-download`}
+                onClick={downloadPdf}
+                disabled={view.status !== "ready" || view.key !== documentKey}
+              >
+                <Download size={14} aria-hidden="true" />
+                Unduh PDF
+              </button>
+            )}
+            {allowDownload && !pdfDownload && (
               <button type="button" data-testid={`${testId}-download`} onClick={download} disabled={view.status !== "ready"}>Unduh</button>
             )}
             <button type="button" data-testid={`${testId}-close`} onClick={onClose}>Tutup</button>
