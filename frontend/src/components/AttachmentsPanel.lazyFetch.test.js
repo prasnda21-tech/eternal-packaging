@@ -171,6 +171,9 @@ describe("AttachmentsPanel lazy design fetch", () => {
     expect(window.open).not.toHaveBeenCalled();
     expect(container.querySelector('[data-testid="attachment-pdf-pdf1"]')).toBeTruthy();
     expect(container.querySelector("iframe")).toBeNull();
+    expect(global.__attachmentPdfViewer.pdfDownload).toBe(true);
+    expect(global.__attachmentPdfViewer.allowDownload).toBe(false);
+    expect(global.__attachmentPdfViewer.fileName).toBe("art.pdf");
     const blob = await global.__attachmentPdfViewer.loadFile({ signal: new AbortController().signal });
     expect(api.getOrderAttachment).toHaveBeenCalledWith(
       "po-heavy",
@@ -207,5 +210,28 @@ describe("AttachmentsPanel lazy design fetch", () => {
     expect(container.querySelector('[data-testid="attachment-pdf-pdf1"]')).toBeTruthy();
     await expect(global.__attachmentPdfViewer.loadFile()).rejects.toBe(denied);
     expect(container.querySelector('[data-testid="design-files-panel"]')).toBeTruthy();
+  });
+
+  test("sample PDF preview stays close-only", async () => {
+    const pdfOrder = {
+      ...order,
+      design_files: [],
+      sample_files: [{
+        id: "s1",
+        name: "sample.pdf",
+        content_type: "application/pdf",
+        data_url: "data:application/pdf;base64,JVBERg==",
+        uploaded_at: "2026-09-19T08:00:00.000Z",
+      }],
+    };
+    await act(async () => {
+      root.render(<AttachmentsPanel order={pdfOrder} user={{ permissions: [] }} section="sample" />);
+    });
+    await act(async () => {
+      container.querySelector('[data-testid="view-sample-file-s1"]').click();
+    });
+    expect(global.__attachmentPdfViewer.pdfDownload).toBe(false);
+    expect(global.__attachmentPdfViewer.allowDownload).toBe(false);
+    expect(global.__attachmentPdfViewer.fileName).toBe("sample.pdf");
   });
 });
