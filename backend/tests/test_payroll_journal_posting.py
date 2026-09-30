@@ -163,6 +163,33 @@ async def test_final_without_post_creates_no_journal():
 
 
 @pytest.mark.anyio
+async def test_readiness_is_true_before_post_and_clerk_cannot_post():
+    accounts = await _setup_accounts()
+    _admin()
+    async with _client() as c:
+        _emp, period = await _finalize(c, year=2091, month=8, map_accounts=accounts)
+        ready = await c.get(f"/api/hr-payroll/periods/{period['id']}/accounting-readiness")
+        assert ready.status_code == 200, ready.text
+        assert ready.json()["readiness"]["accounting_ready"] is True
+        before = await server.db[PERIODS].find_one({"id": period["id"]}, {"_id": 0, "accounting_journal_id": 1})
+        assert before.get("accounting_journal_id") in (None, "")
+        app.dependency_overrides[current_user] = lambda: {
+            "id": "clerk-pjp",
+            "email": "clerk-pjp@eternalpackaging.com",
+            "name": "Clerk PJP",
+            "role": "payroll_clerk",
+            "permissions_override": {"payroll.view": True},
+        }
+        denied = await c.post(f"/api/hr-payroll/periods/{period['id']}/post-accounting")
+        assert denied.status_code == 403, denied.text
+        assert "payroll_accounting.post" in denied.text
+    assert await server.db.journal_entries.count_documents({"source_type": SOURCE_TYPE}) == 0
+    stored = await server.db[PERIODS].find_one({"id": period["id"]}, {"_id": 0, "status": 1, "accounting_journal_id": 1})
+    assert stored["status"] == STATUS_FINAL
+    assert stored.get("accounting_journal_id") in (None, "")
+
+
+@pytest.mark.anyio
 async def test_post_ready_period_creates_one_journal():
     accounts = await _setup_accounts()
     _admin()
