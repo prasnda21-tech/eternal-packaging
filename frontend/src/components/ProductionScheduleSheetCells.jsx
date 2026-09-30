@@ -6,6 +6,9 @@ import {
   formatOperatorAssignedQty,
   OPERATOR_UNASSIGNED_LABEL,
   operatorPrintableItems,
+  operatorScheduleProgressCell,
+  operatorWorkQtyCell,
+  scheduledPrintQtyCell,
 } from "../lib/productionScheduleQty";
 import { screenSizeLabel } from "../lib/screenSize";
 import {
@@ -302,6 +305,11 @@ function cellContent(col, ctx) {
         </span>
       );
     }
+    case "qty_operator": {
+      const cell = operatorWorkQtyCell(row);
+      if (!cell.available) return <span className="muted" title={cell.title}>{cell.text}</span>;
+      return cell.text;
+    }
     case "qty_cetak":
       if (variant === "mobile") {
         return (
@@ -312,7 +320,12 @@ function cellContent(col, ctx) {
           />
         );
       }
-      return cetakProg.text;
+      return scheduledPrintQtyCell(row).text;
+    case "progress": {
+      const cell = operatorScheduleProgressCell(row);
+      if (cell.text === "-") return <span className="muted" title={cell.title}>{cell.text}</span>;
+      return cell.text;
+    }
     case "operator":
       return <OperatorCell row={row} qtyProg={qtyProg} variant={variant} />;
     case "design":
@@ -443,9 +456,15 @@ function cellExtras(col, { row, variant, cetakProg, isToday }) {
     extras.push("prod-qty-cell");
     if (variant === "desktop") testids["data-testid"] = `prod-qty-${row.po_number}`;
   }
+  if (col.key === "qty_operator" && variant === "desktop") {
+    testids["data-testid"] = `prod-qty-operator-${row.po_number}`;
+  }
   if (col.key === "qty_cetak") {
-    extras.push(cetakProg.over ? "prod-qty-over" : "");
+    if (variant === "mobile") extras.push(cetakProg?.over ? "prod-qty-over" : "");
     if (variant === "desktop") testids["data-testid"] = `prod-qty-cetak-${row.po_number}`;
+  }
+  if (col.key === "progress" && variant === "desktop") {
+    testids["data-testid"] = `prod-progress-${row.po_number}`;
   }
   if (col.key === "operator") {
     extras.push("prod-ops");
@@ -488,7 +507,18 @@ export default function ProductionScheduleSheetCells({
     const itemTitle = col.key === "item"
       ? operatorPrintableItems(row.displayOperator?.splits || []).map((item) => item.name).filter(Boolean).join(" · ")
       : undefined;
-    const title = col.key === "qty" ? qtyProg.title : col.key === "qty_cetak" ? cetakProg.title : itemTitle || undefined;
+    const operatorCell = col.key === "qty_operator" ? operatorWorkQtyCell(row) : null;
+    const scheduledCell = col.key === "qty_cetak" && variant !== "mobile" ? scheduledPrintQtyCell(row) : null;
+    const progressCell = col.key === "progress" ? operatorScheduleProgressCell(row) : null;
+    const title = col.key === "qty"
+      ? qtyProg.title
+      : col.key === "qty_cetak"
+        ? (variant === "mobile" ? cetakProg.title : scheduledCell?.title)
+        : col.key === "qty_operator"
+          ? operatorCell?.title
+          : col.key === "progress"
+            ? progressCell?.title
+            : itemTitle || undefined;
     return (
       <td
         key={col.key}

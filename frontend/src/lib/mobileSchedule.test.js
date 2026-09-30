@@ -56,7 +56,9 @@ describe("mobile production schedule canonical helpers", () => {
       "Tgl Pengerjaan",
       "Operator",
       "Item",
-      "Qty Cetak",
+      "Qty Pengerjaan Operator",
+      "Qty Cetak (Scheduled)",
+      "Progress",
       "Total Qty",
       "Prio",
       "Buffer",
@@ -74,7 +76,7 @@ describe("mobile production schedule canonical helpers", () => {
       "Driver",
       "Status Akhir",
     ]);
-    expect(PRODUCTION_SCHEDULE_TABLE_COLS).toHaveLength(22);
+    expect(PRODUCTION_SCHEDULE_TABLE_COLS).toHaveLength(24);
   });
 
   test("one dashboard PO stays one filtered row even with same-name lines", () => {

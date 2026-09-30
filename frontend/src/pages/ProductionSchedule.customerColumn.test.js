@@ -14,10 +14,10 @@ describe("ProductionSchedule: customer column, today highlight, and sheet order"
     expect(scheduleSrc).toMatch(/PRODUCTION_SCHEDULE_TABLE_COLS as TABLE_COLS/);
     expect(mobileSrc).toMatch(/MOBILE_PRODUCTION_SCHEDULE_TABLE_COLS/);
     expect(cellsSrc).toMatch(/PRODUCTION_SCHEDULE_TABLE_COLS\)\.map/);
-    expect(PRODUCTION_SCHEDULE_TABLE_COLS).toHaveLength(22);
+    expect(PRODUCTION_SCHEDULE_TABLE_COLS).toHaveLength(24);
     expect(PRODUCTION_SCHEDULE_COLUMN_IDS).toEqual(PRODUCTION_SCHEDULE_TABLE_COLS.map((c) => c.key));
     expect(PRODUCTION_SCHEDULE_COLUMN_IDS[0]).toBe("po");
-    expect(PRODUCTION_SCHEDULE_COLUMN_IDS.slice(1, 7)).toEqual(["customer", "work_date", "operator", "item", "qty_cetak", "qty"]);
+    expect(PRODUCTION_SCHEDULE_COLUMN_IDS.slice(1, 9)).toEqual(["customer", "work_date", "operator", "item", "qty_operator", "qty_cetak", "progress", "qty"]);
     expect(PRODUCTION_SCHEDULE_COLUMN_IDS).toContain("customer");
   });
 

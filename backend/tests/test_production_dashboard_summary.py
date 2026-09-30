@@ -186,6 +186,32 @@ def test_production_row_keeps_same_name_line_identity():
     assert [op["screen_size"] for op in row["operators"]] == ["large", "small"]
     assert row["print_qty_total"] == 1500
     assert row["total_quantity"] == 1600
+    assert [op["qty_completed"] for op in row["operators"]] == [0, 0]
+
+
+def test_production_row_preserves_missing_qty_completed():
+    import sys
+    sys.path.insert(0, str(ROOT))
+    from server import _production_row
+
+    order = {
+        "id": "po-null-qty",
+        "po_number": "PO-N",
+        "total_quantity": 1000,
+        "line_items": [
+            {"id": "lid-a", "name": "Cup", "quantity": 1000, "production_process": "print"},
+        ],
+        "operator_splits": [
+            {"id": "s-missing", "line_idx": 0, "operator_name": "Budi", "quantity": 1000},
+            {"id": "s-zero", "line_idx": 0, "operator_name": "Sari", "quantity": 400, "qty_completed": 0},
+            {"id": "s-done", "line_idx": 0, "operator_name": "Andi", "quantity": 600, "qty_completed": 250},
+        ],
+    }
+    row = _production_row(order)
+    by_id = {op["split_id"]: op["qty_completed"] for op in row["operators"]}
+    assert by_id["s-missing"] is None
+    assert by_id["s-zero"] == 0
+    assert by_id["s-done"] == 250
 
 
 def _row_visible(row: dict) -> dict:

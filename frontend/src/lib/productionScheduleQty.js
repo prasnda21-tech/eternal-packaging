@@ -203,6 +203,72 @@ export function operatorQtyCetakProgress(row, splits) {
   };
 }
 
+function readStoredQty(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  return n;
+}
+
+/** One operator + item row. Do not sum splits or fall back to PO aggregates. */
+function singleDisplaySplit(row) {
+  const splits = row?.displayOperator?.splits;
+  if (!Array.isArray(splits) || splits.length !== 1) return null;
+  return splits[0];
+}
+
+function formatProgressPercent(pct) {
+  const rounded = Math.round(pct * 10) / 10;
+  if (Number.isInteger(rounded)) return `${rounded.toLocaleString("id-ID")}%`;
+  return `${rounded.toLocaleString("id-ID", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%`;
+}
+
+export const OPERATOR_WORK_QTY_UNAVAILABLE = "Data pengerjaan belum tersedia.";
+
+/** Qty Pengerjaan Operator — operators[].qty_completed only. Null/missing is not 0. */
+export function operatorWorkQtyCell(row) {
+  const value = readStoredQty(singleDisplaySplit(row)?.qty_completed);
+  if (value == null) {
+    return { text: "-", available: false, value: null, title: OPERATOR_WORK_QTY_UNAVAILABLE };
+  }
+  return {
+    text: formatIdQty(value),
+    available: true,
+    value,
+    title: `Qty pengerjaan operator: ${formatIdQty(value)}`,
+  };
+}
+
+/** Qty Cetak (Scheduled) — operators[].quantity only. */
+export function scheduledPrintQtyCell(row) {
+  const value = readStoredQty(singleDisplaySplit(row)?.quantity);
+  if (value == null) {
+    return { text: "-", available: false, value: null, title: undefined };
+  }
+  return {
+    text: formatIdQty(value),
+    available: true,
+    value,
+    title: `Qty cetak dijadwalkan: ${formatIdQty(value)}`,
+  };
+}
+
+/** Progress = qty_completed / quantity * 100. Missing either side, or quantity <= 0, is "-". */
+export function operatorScheduleProgressCell(row) {
+  const done = operatorWorkQtyCell(row);
+  const scheduled = scheduledPrintQtyCell(row);
+  if (!done.available || !scheduled.available || !(scheduled.value > 0)) {
+    return {
+      text: "-",
+      title: done.available ? undefined : OPERATOR_WORK_QTY_UNAVAILABLE,
+    };
+  }
+  return {
+    text: formatProgressPercent((done.value / scheduled.value) * 100),
+    title: `${done.text} / ${scheduled.text}`,
+  };
+}
+
 export function poTotalQtyDisplay(row) {
   const poTotal = qtyInt(row?.total_quantity);
   return {
