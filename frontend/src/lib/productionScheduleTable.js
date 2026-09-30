@@ -32,8 +32,8 @@ export const PRODUCTION_SCHEDULE_REQUIRED_COLUMN_IDS = [
 
 /**
  * Spreadsheet column order shared by /produksi and /m/schedule.
- * Item, then operator actual qty, scheduled print qty, and progress.
- * Total Qty stays in the inventory after Progress.
+ * Canonical inventory keeps operator qty before scheduled qty.
+ * Desktop Produksi shows Item, scheduled qty, operator qty, progress, then Total Qty.
  */
 export const PRODUCTION_SCHEDULE_TABLE_COLS = [
   { key: "po", id: "po", label: "No PO", group: "identity", align: "left", type: "id", baseWidth: 112, minWidth: 76, filter: "po" },
@@ -70,7 +70,7 @@ export const DESKTOP_PRODUCTION_SCHEDULE_HIDDEN_KEYS = ["sj", "driver"];
 export const DESKTOP_PRODUCTION_SCHEDULE_GROUPS = [
   { id: "identity", label: "Identitas PO", keys: ["po", "customer"] },
   { id: "planning", label: "Penjadwalan", keys: ["work_date", "operator"] },
-  { id: "production", label: "Produksi", keys: ["item", "qty_operator", "qty_cetak", "progress", "qty", "prio", "buffer", "deadline", "deadline_ship", "outlet", "screen_size"] },
+  { id: "production", label: "Produksi", keys: ["item", "qty_cetak", "qty_operator", "progress", "qty", "prio", "buffer", "deadline", "deadline_ship", "outlet", "screen_size"] },
   { id: "progress", label: "Progress Produksi", keys: ["screen", "design", "payment", "hold", "helper", "packing"] },
   { id: "status", label: "Status", keys: ["status"] },
 ];
