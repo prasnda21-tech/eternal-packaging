@@ -88,7 +88,7 @@ async def _resolve_voucher_meta(db, source_type: str, source_id: str) -> Dict[st
                     "source_path": SOURCE_ROUTES.get(k),
                 }
         return {"voucher_number": None, "voucher_kind": None, "source_path": None}
-    elif st == "payroll_payment":
+    elif st in ("payroll_payment", "payroll_payment_reversal"):
         doc = await db["hr_payroll_payments"].find_one(
             {"id": sid}, {"_id": 0, "payment_number": 1}
         )
