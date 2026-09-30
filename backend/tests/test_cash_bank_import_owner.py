@@ -257,12 +257,15 @@ async def test_same_preview_cleanup_does_not_release_the_live_attempt():
     assert imported["file_sha256"] == preview_p["fingerprint"]
     other = await _commit(preview_q, user)
     assert other["status"] == "complete"
+    assert other["id"] != imported["id"]
+    assert other["reused_count"] == 1
+    assert other["stored_count"] == 0
     rows = await server.db[LINES].find({"cash_bank_id": bank["id"]}, {"_id": 0, "duplicate_status": 1}).to_list(10)
-    assert len(rows) == 2
-    assert {row["duplicate_status"] for row in rows} == {"pending_review"}
+    assert len(rows) == 1
+    assert rows[0]["duplicate_status"] == "clear"
     replay = await _commit(preview_p, user)
     assert replay["id"] == imported["id"]
-    assert await server.db[LINES].count_documents({"cash_bank_id": bank["id"]}) == 2
+    assert await server.db[LINES].count_documents({"cash_bank_id": bank["id"]}) == 1
     assert await server.db[IMPORT_FENCES].count_documents({"cash_bank_id": bank["id"]}) == 0
     assert await server.db[JOURNAL_ENTRIES].count_documents({}) == journals
     assert (await _account(bank["id"]))["currency_code"] == "IDR"
@@ -617,7 +620,7 @@ async def test_stale_twin_update_does_not_reclassify_or_drop_keep():
     preview_b = await _stage(bank["id"], "other.csv", _csv("REF-OTHER", description="Setoran tunai", amount="22000"), user)
     entered = asyncio.Event()
     release = asyncio.Event()
-    statement_svc._before_fenced_write = _pause_first("twin", entered, release, {"paused": False})
+    statement_svc._before_fenced_write = _pause_first("reuse", entered, release, {"paused": False})
     from motor.motor_asyncio import AsyncIOMotorCollection
     original = AsyncIOMotorCollection.update_many
     seen = []
@@ -644,11 +647,7 @@ async def test_stale_twin_update_does_not_reclassify_or_drop_keep():
     finally:
         AsyncIOMotorCollection.update_many = original
         release.set()
-    assert len(seen) == 1
-    assert seen[0]["matched"] == 0
-    assert seen[0]["filter"]["duplicate_status"] == "clear"
-    assert seen[0]["filter"]["active_claim"] is None
-    assert set(seen[0]["set"]) == {"duplicate_status", "duplicate_reason"}
+    assert seen == []
     victim_after = await server.db[LINES].find_one({"id": victim["id"]}, {"_id": 0})
     kept_after = await server.db[LINES].find_one({"id": kept["id"]}, {"_id": 0})
     assert victim_after["duplicate_status"] == "clear"
@@ -959,7 +958,7 @@ async def test_stale_classification_misses_after_fence_moves_before_writer_adopt
     preview_b = await _stage(bank["id"], "other.csv", _csv("REF-O", description="Setoran tunai", amount="22000"), user)
     a_entered = asyncio.Event()
     a_release = asyncio.Event()
-    statement_svc._before_fenced_write = _pause_first("twin", a_entered, a_release, {"paused": False})
+    statement_svc._before_fenced_write = _pause_first("reuse", a_entered, a_release, {"paused": False})
     b_entered = asyncio.Event()
     b_release = asyncio.Event()
     original = _pause_reassign_once(b_entered, b_release, {"paused": False})
@@ -992,7 +991,7 @@ async def test_stale_classification_misses_after_fence_moves_before_writer_adopt
         a_release.set()
         with pytest.raises(StatementConflictError, match="tidak lagi dimiliki"):
             await task_a
-        assert seen == [0]
+        assert seen == []
         b_release.set()
         statement_svc._reassign_stale_import_writers = original
         winner = await task_b
@@ -1014,11 +1013,12 @@ async def test_stale_classification_misses_after_fence_moves_before_writer_adopt
     retried = await _commit(preview_a, user)
     assert retried["status"] == "complete"
     twins = await server.db[LINES].find(
-        {"cash_bank_id": bank["id"], "description": "Transfer masuk"}, {"_id": 0, "duplicate_status": 1, "amount": 1},
+        {"cash_bank_id": bank["id"], "description": "Transfer masuk"}, {"_id": 0, "id": 1, "duplicate_status": 1, "amount": 1},
     ).to_list(5)
-    assert len(twins) == 2
-    assert {row["duplicate_status"] for row in twins} == {"pending_review"}
-    assert {row["amount"] for row in twins} == {750000.0}
+    assert len(twins) == 1
+    assert twins[0]["id"] == victim["id"]
+    assert twins[0]["duplicate_status"] == "clear"
+    assert twins[0]["amount"] == 750000.0
     kept_final = await server.db[LINES].find_one({"id": kept["id"]}, {"_id": 0, "duplicate_status": 1, "resolutions": 1})
     assert kept_final["duplicate_status"] == "kept"
     assert len(kept_final.get("resolutions") or []) == 1
@@ -1061,18 +1061,18 @@ async def test_finish_before_writer_adopt_stays_a_real_complete_batch():
     rows = await server.db[LINES].find(
         {"cash_bank_id": bank["id"]}, {"_id": 0, "amount": 1, "duplicate_status": 1, "import_id": 1},
     ).to_list(5)
-    assert len(rows) == 2
-    assert {row["amount"] for row in rows} == {750000.0}
-    assert {row["duplicate_status"] for row in rows} == {"pending_review"}
+    assert len(rows) == 1
+    assert rows[0]["amount"] == 750000.0
+    assert rows[0]["duplicate_status"] == "clear"
     batches = await server.db[IMPORTS].find(
-        {"cash_bank_id": bank["id"]}, {"_id": 0, "status": 1, "stored_count": 1},
+        {"cash_bank_id": bank["id"]}, {"_id": 0, "status": 1, "stored_count": 1, "reused_count": 1},
     ).to_list(5)
     assert len(batches) == 2
     assert {batch["status"] for batch in batches} == {"complete"}
-    assert {batch["stored_count"] for batch in batches} == {1}
+    assert {batch["stored_count"] for batch in batches} == {0, 1}
     assert await server.db[JOURNAL_ENTRIES].count_documents({}) == journals
     ready = await list_ready_lines(server.db, cash_bank_id=bank["id"], start="2026-09-01", end="2026-09-30")
-    assert len(ready) == 2
+    assert len(ready) == 1
     assert batch_id in {row["import_id"] for row in ready}
 
 

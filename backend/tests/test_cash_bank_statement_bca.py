@@ -701,3 +701,63 @@ async def test_pend_imports_without_confirmation_and_stores_jakarta_metadata(mon
         assert stored["date_source"] == "import_date"
         assert stored["date_status"] == "temporary"
         assert "date_confirmation" not in stored
+
+
+async def test_pend_reimport_on_the_next_day_reuses_the_same_line(mongo_db, monkeypatch):
+    del mongo_db
+    current = {"day": "2026-09-30"}
+    monkeypatch.setattr(
+        "services.cash_bank_statement_bca.jakarta_import_date",
+        lambda now=None: current["day"],
+    )
+    first = (
+        "Periode,01/09/2026 - 30/09/2026\n"
+        "Tanggal,Keterangan,Debit,Kredit,Saldo\n"
+        "PEND,Transfer 70 juta,70000000,,70000000\n"
+    ).encode("utf-8")
+    second = (
+        "Periode,01/09/2026 - 30/09/2026\n"
+        "Tanggal,Keterangan,Debit,Kredit,Saldo\n"
+        "PEND,Transfer 70 juta,70000000,,70000001\n"
+    ).encode("utf-8")
+    async with await _client(_user()) as client:
+        bank = await _account(client)
+        preview = await client.post(
+            "/api/cash-bank/statements/bca/preview",
+            **_preview_form(bank["id"], first, filename="pend-hari-ini.csv"),
+        )
+        assert preview.status_code == 200, preview.text
+        imported = await client.post(
+            "/api/cash-bank/statements/bca/imports",
+            **_import_form(bank["id"], preview.json(), first, filename="pend-hari-ini.csv"),
+        )
+        assert imported.status_code == 201, imported.text
+        original = await server.db[LINES].find_one(
+            {"cash_bank_id": bank["id"], "original_date": "PEND"},
+            {"_id": 0, "id": 1, "date": 1, "amount": 1, "description": 1, "original_date": 1},
+        )
+        assert original["date"] == "2026-09-30"
+        assert original["amount"] == 70000000
+        current["day"] = "2026-10-01"
+        again_preview = await client.post(
+            "/api/cash-bank/statements/bca/preview",
+            **_preview_form(bank["id"], second, filename="pend-besok.csv"),
+        )
+        assert again_preview.status_code == 200, again_preview.text
+        again = await client.post(
+            "/api/cash-bank/statements/bca/imports",
+            **_import_form(bank["id"], again_preview.json(), second, filename="pend-besok.csv"),
+        )
+        assert again.status_code == 201, again.text
+        assert again.json()["id"] != imported.json()["id"]
+        assert again.json()["reused_count"] == 1
+        assert again.json()["stored_count"] == 0
+        rows = await server.db[LINES].find({"cash_bank_id": bank["id"]}, {"_id": 0}).to_list(5)
+        assert len(rows) == 1
+        assert rows[0]["id"] == original["id"]
+        assert rows[0]["date"] == "2026-09-30"
+        assert rows[0]["original_date"] == "PEND"
+        assert rows[0]["description"] == "Transfer 70 juta"
+        assert rows[0]["amount"] == 70000000
+        assert await server.db[IMPORTS].count_documents({"cash_bank_id": bank["id"], "status": "complete"}) == 2
+        assert await server.db[JOURNAL_ENTRIES].count_documents({}) == 0
