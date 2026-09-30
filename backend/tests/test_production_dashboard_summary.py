@@ -79,6 +79,8 @@ def test_summary_projection_excludes_file_bytes():
     assert "payment_files.id" in body
     assert "line_items.screen_size" in body
     assert "operator_splits.screen_size" in body
+    assert "operator_splits.progress_entries.action_id" in body
+    assert "progress_entries.photo" not in body
     assert "data_url" not in body
     assert "sample_files" not in body
     assert "timeline" not in body
@@ -209,9 +211,12 @@ def test_production_row_preserves_missing_qty_completed():
     }
     row = _production_row(order)
     by_id = {op["split_id"]: op["qty_completed"] for op in row["operators"]}
+    reported = {op["split_id"]: op["qty_reported"] for op in row["operators"]}
     assert by_id["s-missing"] is None
     assert by_id["s-zero"] == 0
     assert by_id["s-done"] == 250
+    assert reported == {"s-missing": False, "s-zero": False, "s-done": False}
+    assert "progress_entries" not in row["operators"][2]
 
 
 def _row_visible(row: dict) -> dict:
@@ -318,6 +323,31 @@ def test_live_summary_matches_default_visible_columns():
         assert all(d.get("cancelled") is not True for d in slim)
 
 
+def _project_included_fields(item, children):
+    """Apply dotted inclusion paths. Nested arrays keep only the named leaf."""
+    if not isinstance(item, dict):
+        return item
+    direct = []
+    nested = {}
+    for child in children:
+        if "." in child:
+            head, tail = child.split(".", 1)
+            nested.setdefault(head, set()).add(tail)
+        else:
+            direct.append(child)
+    out = {k: item[k] for k in direct if k in item}
+    for head, tails in nested.items():
+        raw = item.get(head)
+        if isinstance(raw, list):
+            out[head] = [
+                _project_included_fields(el, tails) if isinstance(el, dict) else el
+                for el in raw
+            ]
+        elif isinstance(raw, dict):
+            out[head] = _project_included_fields(raw, tails)
+    return out
+
+
 def _apply_mongo_inclusion(doc, projection):
     """Approximate Mongo inclusion projection used by view=summary."""
     import copy
@@ -345,7 +375,7 @@ def _apply_mongo_inclusion(doc, projection):
             if not isinstance(item, dict):
                 slim.append(item)
                 continue
-            slim.append({k: item[k] for k in children if k in item})
+            slim.append(_project_included_fields(item, children))
         out[parent] = slim
     return out
 
@@ -368,6 +398,61 @@ def _import_production_row():
     from server import _PRODUCTION_DASHBOARD_SUMMARY_PROJECTION, _production_row
 
     return _PRODUCTION_DASHBOARD_SUMMARY_PROJECTION, _production_row
+
+
+def test_summary_qty_reported_uses_entry_presence_without_photos():
+    import copy
+    import json
+
+    projection, production_row = _import_production_row()
+    full = {
+        "id": "po-report",
+        "po_number": "PO-R",
+        "customer": "Cust",
+        "total_quantity": 20000,
+        "current_stage": 8,
+        "line_items": [
+            {"id": "lid-a", "name": "Item A", "quantity": 10000, "production_process": "print"},
+            {"id": "lid-b", "name": "Item B", "quantity": 10000, "production_process": "non_print"},
+        ],
+        "operator_splits": [
+            {"id": "s-open", "line_idx": 0, "operator_name": "A", "quantity": 500, "qty_completed": 0, "stage": 8},
+            {
+                "id": "s-zero",
+                "line_idx": 0,
+                "operator_name": "B",
+                "quantity": 500,
+                "qty_completed": 0,
+                "stage": 8,
+                "progress_entries": [{"action_id": "act-0", "qty": 0, "photo": "data:image/png;base64,AAAA"}],
+            },
+            {
+                "id": "s-done",
+                "line_idx": 0,
+                "operator_name": "C",
+                "quantity": 500,
+                "qty_completed": 200,
+                "stage": 8,
+                "progress_entries": [{"action_id": "act-200", "qty": 200, "photo": "data:image/png;base64,BBBB"}],
+            },
+        ],
+    }
+    slim = _apply_mongo_inclusion(copy.deepcopy(full), projection)
+    assert slim["operator_splits"][1]["progress_entries"] == [{"action_id": "act-0"}]
+    assert "photo" not in json.dumps(slim["operator_splits"])
+    full_row = production_row(copy.deepcopy(full))
+    slim_row = production_row(slim)
+    assert full_row["print_qty_total"] == 10000
+    assert full_row["total_quantity"] == 20000
+    for row in (full_row, slim_row):
+        by_id = {op["split_id"]: op for op in row["operators"]}
+        assert by_id["s-open"]["qty_reported"] is False
+        assert by_id["s-open"]["qty_completed"] == 0
+        assert by_id["s-zero"]["qty_reported"] is True
+        assert by_id["s-zero"]["qty_completed"] == 0
+        assert by_id["s-done"]["qty_reported"] is True
+        assert by_id["s-done"]["qty_completed"] == 200
+        assert "progress_entries" not in by_id["s-done"]
 
 
 def test_summary_projection_keeps_line_item_screen_size_primary():

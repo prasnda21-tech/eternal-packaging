@@ -234,6 +234,7 @@ describe("ProductionSchedule spreadsheet", () => {
           operator_name: "Budi",
           quantity: 10000,
           qty_completed: 3000,
+          qty_reported: true,
           line_idx: 0,
           line_id: "lid-a",
           line_name: "Cup 16oz Extra Long Name",
@@ -247,7 +248,7 @@ describe("ProductionSchedule spreadsheet", () => {
     expect(container.querySelector('[data-testid="prod-qty-operator-PO-1001"]').textContent).toBe("3.000");
     expect(container.querySelector('[data-testid="prod-qty-cetak-PO-1001"]').textContent).toBe("10.000");
     expect(container.querySelector('[data-testid="prod-progress-PO-1001"]').textContent).toBe("30%");
-    expect(container.querySelector('[data-testid="prod-qty-PO-1001"]').textContent).toBe("25.000");
+    expect(container.querySelector('[data-testid="prod-qty-PO-1001"]').textContent).toBe("20.000");
     expect(container.querySelector('[data-testid="prod-item-PO-1001"]').textContent).toContain("Cup 16oz Extra Long Name");
     expect(container.querySelector('[data-testid="prod-qty-PO-1001"]').textContent).not.toContain("Cup");
     await act(async () => {
@@ -258,6 +259,109 @@ describe("ProductionSchedule spreadsheet", () => {
     expect(container.querySelector('[data-testid="prod-ringkasan-qty"]').textContent).toContain("25.000");
     expect(container.querySelector('[data-testid="prod-ringkasan-printed"]').textContent).toContain("3.000");
     expect(container.querySelector('[data-testid="prod-ringkasan-remain"]').textContent).toContain("22.000");
+    const source = container.querySelector('[data-testid="prod-deadline-effective-PO-1001"]');
+    expect(source.textContent).toContain("Otomatis");
+    expect(source.textContent).toContain("OVERDUE");
+    expect(source.textContent).not.toMatch(/\d{2}\/\d{2}\/\d{2}/);
+    expect(container.textContent).toMatch(/\d{2}\/\d{2}\/\d{2}/);
+  });
+
+  test("desktop print qty, reported operator qty, and work date order", async () => {
+    api.productionDashboard.mockResolvedValue({
+      rows: [
+        {
+          id: "old",
+          po_number: "PO-OLD",
+          customer: "Lama",
+          total_quantity: 20000,
+          print_qty_total: 10000,
+          work_date: "2026-01-02",
+          delivery_deadline_effective: "2026-02-01T00:00:00+07:00",
+          delivery_deadline_source: "manual",
+          delivery_deadline_status: "h1",
+          operators: [{
+            split_id: "old",
+            operator_name: "Lama",
+            quantity: 500,
+            qty_completed: 200,
+            qty_reported: true,
+            line_name: "Cup 16oz",
+            line_printable: true,
+            work_date: "2026-01-02",
+          }],
+        },
+        {
+          id: "zero",
+          po_number: "PO-ZERO",
+          customer: "Nol",
+          total_quantity: 9000,
+          print_qty_total: 1000,
+          work_date: "2026-05-05",
+          operators: [{
+            split_id: "zero",
+            operator_name: "Nol",
+            quantity: 500,
+            qty_completed: 0,
+            qty_reported: true,
+            line_name: "Cup 16oz",
+            line_printable: true,
+            work_date: "2026-05-05",
+          }],
+        },
+        {
+          id: "new",
+          po_number: "PO-NEW",
+          customer: "Baru",
+          total_quantity: 8000,
+          print_qty_total: 4000,
+          work_date: "2026-09-10",
+          operators: [{
+            split_id: "new",
+            operator_name: "Baru",
+            quantity: 500,
+            qty_completed: 0,
+            line_name: "Cup 16oz",
+            line_printable: true,
+            work_date: "2026-09-10",
+          }],
+        },
+        {
+          id: "none",
+          po_number: "PO-NONE",
+          customer: "Kosong",
+          total_quantity: 3000,
+          print_qty_total: 1500,
+          work_date: null,
+          operators: [],
+        },
+      ],
+      total: 4,
+    });
+    await renderPage();
+    const order = [...container.querySelectorAll("tbody tr")].map((row) => row.getAttribute("data-testid"));
+    expect(order).toEqual([
+      "prod-row-PO-NEW",
+      "prod-row-PO-ZERO",
+      "prod-row-PO-OLD",
+      "prod-row-PO-NONE",
+    ]);
+    expect(container.querySelector('[data-testid="prod-item-PO-OLD"]').textContent).toContain("Cup 16oz");
+    expect(container.querySelector('[data-testid="prod-item-PO-OLD"]').textContent).not.toContain("pcs");
+    expect(container.querySelector('[data-testid="prod-item-PO-OLD"]').textContent).not.toContain("500");
+    expect(container.querySelector('[data-testid="prod-qty-cetak-PO-OLD"]').textContent).toBe("500");
+    expect(container.querySelector('[data-testid="prod-qty-operator-PO-OLD"]').textContent).toBe("200");
+    expect(container.querySelector('[data-testid="prod-progress-PO-OLD"]').textContent).toBe("40%");
+    expect(container.querySelector('[data-testid="prod-qty-PO-OLD"]').textContent).toBe("10.000");
+    expect(container.querySelector('[data-testid="prod-qty-operator-PO-ZERO"]').textContent).toBe("0");
+    expect(container.querySelector('[data-testid="prod-progress-PO-ZERO"]').textContent).toBe("0%");
+    expect(container.querySelector('[data-testid="prod-qty-operator-PO-NEW"]').textContent).toBe("-");
+    expect(container.querySelector('[data-testid="prod-progress-PO-NEW"]').textContent).toBe("-");
+    expect(container.querySelector('[data-testid="prod-qty-PO-NEW"]').textContent).toBe("4.000");
+    const manual = container.querySelector('[data-testid="prod-deadline-effective-PO-OLD"]');
+    expect(manual.textContent).toContain("Manual");
+    expect(manual.textContent).toContain("H-1");
+    expect(manual.textContent).not.toMatch(/\d{2}\/\d{2}\/\d{2}/);
+    expect(container.querySelector('[data-testid="prod-deadline-effective-PO-NONE"]').textContent).toContain("Menunggu approval");
   });
 
   test("Ctrl + wheel zooms the desktop sheet via CSS variable", async () => {
