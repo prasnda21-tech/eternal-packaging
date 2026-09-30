@@ -40,6 +40,15 @@
 .kas-bank-page.recon-workspace .kb-pair-tabs button { background:transparent; color:var(--recon-muted); padding:8px 2px; border:0; border-bottom:3px solid transparent; border-radius:0; font-weight:600; }
 .kas-bank-page.recon-workspace .kb-pair-tabs .is-active { color:var(--recon-green); border-bottom-color:var(--recon-green); }
 .kas-bank-page.recon-workspace .recon-tab-body { display:flex; flex-direction:column; gap:8px; flex:1; min-height:150px; min-width:0; }
+.kas-bank-page.recon-workspace .kb-dup-group { background:#fff; border:1px solid var(--recon-border); border-radius:8px; padding:12px; display:flex; flex-direction:column; gap:8px; }
+.kas-bank-page.recon-workspace .kb-dup-group h3 { margin:0; font-size:15px; }
+.kas-bank-page.recon-workspace .kb-dup-group p { margin:2px 0 0; color:var(--recon-muted); font-size:12px; }
+.kas-bank-page.recon-workspace .kb-dup-group ol { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:8px; }
+.kas-bank-page.recon-workspace .kb-dup-group li { display:flex; flex-direction:column; gap:2px; padding-top:8px; border-top:1px solid var(--recon-border); font-size:12px; }
+.kas-bank-page.recon-workspace .kb-dup-actions { display:flex; flex-wrap:wrap; gap:8px; align-items:end; margin-top:6px; }
+.kas-bank-page.recon-workspace .kb-dup-actions label { display:flex; flex-direction:column; gap:2px; font-size:11px; color:var(--recon-muted); }
+.kas-bank-page.recon-workspace .kb-dup-actions input { min-width:220px; }
+.kas-bank-page.recon-workspace .kb-dup-actions small { flex-basis:100%; color:#94600b; }
 .kas-bank-page.recon-workspace .kb-pair-columns { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; flex:1; min-height:0; }
 .kas-bank-page.recon-workspace .kb-pane, .kas-bank-page.recon-workspace .recon-history { display:flex; flex-direction:column; min-width:0; min-height:0; background:#fff; border:1px solid var(--recon-border); border-radius:8px; overflow:hidden; }
 .kas-bank-page.recon-workspace .recon-pane-title { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:11px 12px; border-bottom:1px solid var(--recon-border); flex-shrink:0; }

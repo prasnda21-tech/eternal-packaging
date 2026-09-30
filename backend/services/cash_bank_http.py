@@ -65,6 +65,7 @@ from services.cash_bank_statement import (
     create_bca_preview,
     create_preview,
     ensure_indexes as ensure_statement_indexes,
+    list_duplicate_groups,
     list_imports,
     resolve_duplicate,
     set_manual_balance,
@@ -879,6 +880,21 @@ def register_cash_bank_routes(
         db = get_db()
         items = await list_imports(db, cash_bank_id=cash_bank_id)
         return {"items": items, "total": len(items)}
+
+    @api_router.get("/cash-bank/statements/duplicate-groups")
+    async def get_statement_duplicate_groups(
+        cash_bank_id: str = Query(..., min_length=1),
+        start_date: str = Query(..., min_length=10, max_length=10),
+        end_date: str = Query(..., min_length=10, max_length=10),
+        user=Depends(require_perm(PERM_VIEW)),
+    ):
+        db = get_db()
+        try:
+            return await list_duplicate_groups(
+                db, cash_bank_id=cash_bank_id, start=start_date, end=end_date,
+            )
+        except StatementValidationError as exc:
+            raise HTTPException(400, str(exc)) from exc
 
     @api_router.post("/cash-bank/statements/lines/{line_id}/duplicate-resolution")
     async def post_statement_duplicate_resolution(
