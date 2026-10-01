@@ -810,7 +810,12 @@ async def test_same_bca_transaction_imported_twice_reuses_one_clear_line(mongo_d
         assert rows[0]["amount"] == original["amount"]
         assert rows[0]["description"] == original["description"]
         assert rows[0]["duplicate_status"] == "clear"
-        assert rows[0].get("running_balance") == original.get("running_balance")
+        assert rows[0].get("running_balance") == 9000000
+        assert original.get("running_balance") == 10000000
+        assert len(rows[0].get("import_updates") or []) == 1
+        assert again.json()["updated_count"] == 1
+        assert again.json()["new_count"] == 0
+        assert again.json()["fully_accepted"] is True
         batch = await server.db[IMPORTS].find_one(
             {"id": again.json()["id"]}, {"_id": 0, "reused_line_ids": 1, "reused_count": 1},
         )
@@ -819,3 +824,44 @@ async def test_same_bca_transaction_imported_twice_reuses_one_clear_line(mongo_d
         assert await server.db[LINES].count_documents({"duplicate_status": "pending_review"}) == 0
         assert await server.db[JOURNAL_ENTRIES].count_documents({}) == 0
         assert await server.db[RECON_MATCHES].count_documents({}) == 0
+
+
+async def test_bca_descriptions_that_differ_by_code_stay_two_clear_lines(mongo_db):
+    del mongo_db
+    payload = (
+        "Tanggal Transaksi,Keterangan,Debit,Kredit,Saldo\n"
+        "04/09/2026,TRSF E-BANKING DB 0409/FTSCY/WS95011 akomodasi,\"500.000\",,\"10.000.000\"\n"
+        "05/09/2026,TRSF E-BANKING CR 0509/FTSCY/WS95011 jasa,,\"76.000.000\",\"86.000.000\"\n"
+        "05/09/2026,TRSF E-BANKING DB 0509/FTSCY/WS95271,\"70.000.000\",,\"16.000.000\"\n"
+        "05/09/2026,TRSF E-BANKING DB 0509/FTSCY/WS95300,\"70.000.000\",,\"9.000.000\"\n"
+    ).encode("utf-8")
+    async with await _client(_user()) as client:
+        bank = await _account(client)
+        preview = await client.post(
+            "/api/cash-bank/statements/bca/preview",
+            **_preview_form(bank["id"], payload, filename="bca-kode-berbeda.csv"),
+        )
+        assert preview.status_code == 200, preview.text
+        imported = await client.post(
+            "/api/cash-bank/statements/bca/imports",
+            **_import_form(bank["id"], preview.json(), payload, filename="bca-kode-berbeda.csv"),
+        )
+        assert imported.status_code == 201, imported.text
+        assert imported.json()["new_count"] == 4
+        assert imported.json()["conflict_count"] == 0
+        assert imported.json()["fully_accepted"] is True
+        rows = await server.db[LINES].find({"cash_bank_id": bank["id"]}, {"_id": 0}).sort("description", 1).to_list(10)
+        assert len(rows) == 4
+        assert {row["duplicate_status"] for row in rows} == {"clear"}
+        assert {row.get("reference") for row in rows} == {None}
+        assert {row.get("bank_txn_id") for row in rows} == {None}
+        assert {row.get("authoritative_txn_id") for row in rows} == {None}
+        descriptions = [row["description"] for row in rows]
+        assert "TRSF E-BANKING DB 0509/FTSCY/WS95271" in descriptions
+        assert "TRSF E-BANKING DB 0509/FTSCY/WS95300" in descriptions
+        same_amount = [row for row in rows if row["amount"] == 70000000]
+        assert len(same_amount) == 2
+        assert {row["description"] for row in same_amount} == {
+            "TRSF E-BANKING DB 0509/FTSCY/WS95271",
+            "TRSF E-BANKING DB 0509/FTSCY/WS95300",
+        }

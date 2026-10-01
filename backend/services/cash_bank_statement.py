@@ -672,12 +672,36 @@ def _amount_key(value: Any) -> str:
 
 
 def _normalized_description(value: Any) -> str:
+    """Collapse whitespace and case only. Tokens inside the text stay in place."""
     return " ".join(str(value or "").lower().split())
 
 
 def _normalized_reference(value: Any) -> str:
-    """Blank reference stays blank. A present reference is part of the identity."""
+    """Blank reference stays blank. A present reference is part of the recognition tuple, not a unique bank id."""
     return " ".join(str(value or "").lower().split())
+
+
+def _balance_key(value: Any):
+    if value is None or value == "":
+        return None
+    return _amount_key(value)
+
+
+def _supporting_same(row: dict, stored: dict) -> bool:
+    """Date, direction, and amount. Used only for an authoritative bank transaction id."""
+    return (
+        str(row.get("direction") or "") == str(stored.get("direction") or "")
+        and _amount_key(row.get("amount")) == _amount_key(stored.get("amount"))
+        and _business_date(row) == _business_date(stored)
+    )
+
+
+def _display_same(row: dict, stored: dict) -> bool:
+    return (
+        (row.get("description") or "") == (stored.get("description") or "")
+        and (row.get("reference") or None) == (stored.get("reference") or None)
+        and _balance_key(row.get("running_balance")) == _balance_key(stored.get("running_balance"))
+    )
 
 
 def _business_date(row: dict) -> str:
@@ -688,6 +712,11 @@ def _business_date(row: dict) -> str:
 
 
 def _level2_key(row: dict) -> Tuple[str, str, str, str, str]:
+    """Reimport recognition inside one account. This is not a bank uniqueness guarantee.
+
+    A repeated exact tuple is paired by occurrence. A different reference, or a
+    different token left inside the full description, is a different tuple.
+    """
     return (
         str(row.get("direction") or ""),
         _amount_key(row.get("amount")),
@@ -710,7 +739,7 @@ def _direction_totals(rows: Sequence[dict]) -> Tuple[Decimal, Decimal]:
 
 
 def _rows_to_insert(rows: Sequence[dict]) -> List[dict]:
-    return [row for row in rows if row.get("import_disposition") != "reuse"]
+    return [row for row in rows if row.get("import_disposition") == "insert"]
 
 
 async def _account_import_epoch(db, cash_bank_id: str) -> int:
@@ -810,6 +839,14 @@ async def _displace_attempt_writes(
     )
 
 
+def _mark_conflict(row: dict, reason: str) -> None:
+    row["import_disposition"] = "conflict"
+    row["import_outcome"] = "conflict"
+    row["conflict_reason"] = reason
+    row["authoritative_txn_id"] = None
+    row["authoritative_refresh"] = False
+
+
 async def _flag_duplicates(
     db,
     cash_bank_id: str,
@@ -819,48 +856,39 @@ async def _flag_duplicates(
     ignore_import_id: Optional[str] = None,
     attempt: Optional[dict] = None,
 ) -> None:
-    """Classify duplicates. Never delete or rewrite a stored row.
+    """Classify each incoming row. This pass does not write stored lines.
 
-    An ID is authoritative only when the mapping says that column is the
-    bank transaction id. A reference is not that id, but it is part of the
-    level-2 identity when it is present: a different reference is a
-    different transaction. The same authoritative id is one transaction and
-    is not inserted again. Without that id, a repeated identity is reused
-    when stored lines already cover every copy. Extra copies, and copies
-    that share no distinguisher, stay pending_review.
+    An authoritative bank transaction id is the only code that can conflict.
+    A mapped reference is only one field of the recognition tuple. Identical
+    tuples stay as separate occurrences and are not marked pending_review.
     """
+    del attempt
     seen_txn: Dict[str, int] = {}
-    seen_weak: Dict[tuple, int] = {}
     for idx, row in enumerate(rows):
         row["duplicate_status"] = DUP_CLEAR
         row["duplicate_reason"] = None
         row["duplicate_of_line_id"] = None
         row["authoritative_txn_id"] = None
         row["import_disposition"] = "insert"
+        row["import_outcome"] = "insert"
         row["reused_line_id"] = None
+        row["conflict_reason"] = None
+        row["authoritative_refresh"] = False
         txn = str(row.get("bank_txn_id") or "").strip()
         if authoritative and txn:
             row["identity_guarantee"] = "authoritative"
             if txn in seen_txn:
-                row["duplicate_status"] = DUP_DEFINITE
-                row["duplicate_reason"] = "id_transaksi_bank_sama_dalam_berkas"
-                row["duplicate_of_bank_txn_id"] = txn
-                row["import_disposition"] = "reuse"
+                first = rows[seen_txn[txn]]
+                same = _supporting_same(row, first)
+                _mark_conflict(row, "id_otoritatif_berulang" if same else "id_otoritatif_bertentangan")
+                if not same:
+                    _mark_conflict(first, "id_otoritatif_bertentangan")
             else:
                 seen_txn[txn] = idx
                 row["authoritative_txn_id"] = txn
         else:
             row["identity_guarantee"] = "tidak_dijamin"
             row["duplicate_of_bank_txn_id"] = None
-            weak = _level2_key(row)
-            if weak in seen_weak:
-                row["duplicate_status"] = DUP_PENDING
-                row["duplicate_reason"] = "tanggal_nominal_uraian_sama_tanpa_id"
-                rows[seen_weak[weak]]["duplicate_status"] = DUP_PENDING
-                rows[seen_weak[weak]]["duplicate_reason"] = "tanggal_nominal_uraian_sama_tanpa_id"
-                rows[seen_weak[weak]]["identity_guarantee"] = "tidak_dijamin"
-            else:
-                seen_weak[weak] = idx
 
     if authoritative and seen_txn:
         query: Dict[str, Any] = {
@@ -870,18 +898,35 @@ async def _flag_duplicates(
         if ignore_import_id:
             query["import_id"] = {"$ne": ignore_import_id}
         existing = await db[LINES].find(
-            query, {"_id": 0, "authoritative_txn_id": 1, "id": 1}
+            query,
+            {
+                "_id": 0, "authoritative_txn_id": 1, "id": 1, "date": 1,
+                "original_date": 1, "direction": 1, "amount": 1, "duplicate_status": 1,
+            },
         ).to_list(len(seen_txn) + 5)
-        known = {d.get("authoritative_txn_id"): d.get("id") for d in existing}
+        known = {doc.get("authoritative_txn_id"): doc for doc in existing}
         for row in rows:
+            if row.get("import_outcome") == "conflict":
+                continue
             txn = row.get("authoritative_txn_id")
-            if txn and txn in known:
-                row["duplicate_status"] = DUP_DEFINITE
-                row["duplicate_reason"] = "id_transaksi_bank_sama_dengan_impor_lain"
-                row["duplicate_of_line_id"] = known[txn]
-                row["reused_line_id"] = known[txn]
-                row["authoritative_txn_id"] = None
-                row["import_disposition"] = "reuse"
+            stored = known.get(txn) if txn else None
+            if not stored:
+                continue
+            row["reused_line_id"] = stored.get("id")
+            status = stored.get("duplicate_status")
+            if status == DUP_EXCLUDED:
+                _mark_conflict(row, "id_otoritatif_pada_baris_dikecualikan")
+                continue
+            if not _supporting_same(row, stored):
+                _mark_conflict(row, "id_otoritatif_bertentangan")
+                continue
+            row["import_disposition"] = "reuse"
+            row["authoritative_txn_id"] = None
+            if status == DUP_PENDING:
+                row["import_outcome"] = "unchanged"
+            else:
+                row["import_outcome"] = "refresh"
+                row["authoritative_refresh"] = True
     await _plan_level2_reuse(db, cash_bank_id, rows, ignore_import_id)
 
 
@@ -910,6 +955,7 @@ async def _level2_candidates(
         {
             "_id": 0, "id": 1, "description": 1, "amount": 1,
             "direction": 1, "date": 1, "original_date": 1, "reference": 1,
+            "duplicate_status": 1, "active_claim": 1,
         },
     ).to_list(MAX_ROWS + 5)
     wanted_amount = _amount_key(sample.get("amount"))
@@ -929,44 +975,282 @@ async def _level2_candidates(
 async def _plan_level2_reuse(
     db, cash_bank_id: str, rows: List[dict], ignore_import_id: Optional[str],
 ) -> None:
-    """Reuse a non-authoritative row only when stored lines already cover it.
+    """Pair exact recognition tuples by occurrence. Excluded lines are not candidates.
 
-    A file that contains more copies than the account already has keeps the
-    extra copies as pending_review. Stored lines are not rewritten.
+    Pending historical lines can occupy a slot so a reimport does not add
+    another copy, but this function never rewrites them.
     """
     groups: Dict[Tuple[str, str, str, str, str], List[dict]] = {}
     for row in rows:
         if row.get("identity_guarantee") == "authoritative":
             continue
-        if row.get("import_disposition") == "reuse":
+        if row.get("import_disposition") in ("reuse", "conflict"):
             continue
         groups.setdefault(_level2_key(row), []).append(row)
     for group in groups.values():
         existing = await _level2_candidates(
             db, cash_bank_id, group[0], ignore_import_id, excluded=False,
         )
-        if not existing:
-            excluded = await _level2_candidates(
-                db, cash_bank_id, group[0], ignore_import_id, excluded=True,
-            )
-            for row in group:
-                row["import_disposition"] = "insert"
-                if excluded and row.get("duplicate_status") == DUP_CLEAR:
-                    row["duplicate_status"] = DUP_PENDING
-                    row["duplicate_reason"] = "tumpang_tindih_tanpa_id_bank"
-                    row["duplicate_of_line_id"] = excluded[0].get("id")
-            continue
-        reuse_n = min(len(existing), len(group))
+        existing.sort(key=lambda doc: (
+            1 if doc.get("duplicate_status") == DUP_PENDING else 0,
+            str(doc.get("id") or ""),
+        ))
+        matched_ids = await _active_match_ids(db, [doc.get("id") for doc in existing])
         for index, row in enumerate(group):
-            if index < reuse_n:
-                row["import_disposition"] = "reuse"
-                row["reused_line_id"] = existing[index].get("id")
+            if index >= len(existing):
+                row["import_disposition"] = "insert"
+                row["import_outcome"] = "insert"
+                row["duplicate_status"] = DUP_CLEAR
                 continue
+            target = existing[index]
+            row["import_disposition"] = "reuse"
+            row["reused_line_id"] = target.get("id")
+            if target.get("duplicate_status") == DUP_PENDING:
+                row["import_outcome"] = "unchanged"
+                continue
+            if target.get("active_claim") or target.get("id") in matched_ids:
+                row["import_outcome"] = "protected"
+                continue
+            row["import_outcome"] = "refresh"
+
+
+async def _active_match_ids(db, line_ids: Sequence[Any]) -> set:
+    ids = [str(line_id) for line_id in line_ids if line_id]
+    if not ids:
+        return set()
+    from services.cash_bank_reconciliation import RECON_MATCHES
+    found = await db[RECON_MATCHES].find(
+        {"statement_line_id": {"$in": ids}, "status": "active"},
+        {"_id": 0, "statement_line_id": 1},
+    ).to_list(len(ids) + 5)
+    return {doc.get("statement_line_id") for doc in found if doc.get("statement_line_id")}
+
+
+async def _before_reimport_write(line_id: str) -> None:
+    """Test seam before the statement line claim is taken for an overwrite."""
+    del line_id
+    return None
+
+
+async def _while_reimport_hold(line_id: str) -> None:
+    """Test seam after this import holds the line and before fields are written."""
+    del line_id
+    return None
+
+
+def _audit_id(batch_id: str, line_id: str, after: dict) -> str:
+    raw = "|".join([
+        str(batch_id),
+        str(line_id),
+        str(after.get("description") or ""),
+        str(after.get("reference") or ""),
+        str(_balance_key(after.get("running_balance"))),
+    ])
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+CONFLICT_TEXT = {
+    "id_otoritatif_bertentangan": "ID transaksi bank sama, tetapi tanggal, arah, atau nominal berbeda",
+    "id_otoritatif_berulang": "ID transaksi bank otoritatif muncul lebih dari sekali dalam berkas",
+    "id_otoritatif_pada_baris_dikecualikan": "ID transaksi bank milik baris yang dikecualikan dan tidak diubah",
+    "id_otoritatif_sudah_tersimpan": "ID transaksi bank otoritatif sudah tersimpan. Baris ini tidak ditambahkan dan tidak menimpa.",
+}
+
+
+def _public_conflict(row: dict) -> dict:
+    reason = row.get("conflict_reason") or "konflik_identitas"
+    return {
+        "source_row": row.get("source_row"),
+        "reason": reason,
+        "message": CONFLICT_TEXT.get(reason, "Identitas impor bertentangan dan tidak ditimpa"),
+        "bank_txn_id": row.get("bank_txn_id") or row.get("duplicate_of_bank_txn_id"),
+        "statement_line_id": row.get("reused_line_id"),
+    }
+
+
+def _outcome_counts(rows: Sequence[dict]) -> dict:
+    new_count = updated_count = protected_count = unchanged_count = conflict_count = 0
+    conflicts = []
+    for row in rows:
+        outcome = row.get("import_outcome")
+        if outcome == "conflict" or row.get("import_disposition") == "conflict":
+            conflict_count += 1
+            conflicts.append(_public_conflict(row))
+        elif outcome == "updated":
+            updated_count += 1
+        elif outcome == "protected":
+            protected_count += 1
+        elif outcome == "insert" or row.get("import_disposition") == "insert":
+            new_count += 1
+        else:
+            unchanged_count += 1
+    fully = conflict_count == 0
+    return {
+        "new_count": new_count,
+        "updated_count": updated_count,
+        "protected_count": protected_count,
+        "unchanged_count": unchanged_count,
+        "conflict_count": conflict_count,
+        "conflicts": conflicts,
+        "fully_accepted": fully,
+        "result_note": (
+            "Semua baris impor diterima. Jurnal tidak dibuat."
+            if fully else
+            "Impor belum menerima semua transaksi. Jurnal tidak dibuat."
+        ),
+        "reused_count": updated_count + unchanged_count + protected_count,
+    }
+
+
+def _stamp_outcome(batch: dict, rows: Sequence[dict]) -> dict:
+    summary = _outcome_counts(rows)
+    batch.update(summary)
+    batch["outcome_ready"] = True
+    batch["reused_line_ids"] = [
+        row.get("reused_line_id")
+        for row in rows
+        if row.get("import_disposition") == "reuse" and row.get("reused_line_id")
+    ]
+    return summary
+
+
+def _idempotent_file_result(existing: dict, accepted_count: int) -> dict:
+    body = public_import(existing) or {}
+    body.update({
+        "new_count": 0,
+        "updated_count": 0,
+        "protected_count": 0,
+        "unchanged_count": accepted_count,
+        "conflict_count": 0,
+        "conflicts": [],
+        "fully_accepted": True,
+        "result_note": "Berkas yang sama sudah diimpor. Tidak ada transaksi baru.",
+    })
+    return body
+
+
+async def _apply_reimport_updates(db, batch: dict, rows: Sequence[dict], actor: dict, attempt: dict) -> None:
+    """Overwrite only while this import holds a claim the matcher also uses.
+
+    A prior read of active_claim is not the guard. The compare-and-swap is.
+    """
+    from services.cash_bank_reconciliation import RECON_MATCHES
+    for row in rows:
+        if row.get("import_disposition") != "reuse" or row.get("import_outcome") != "refresh":
+            continue
+        line_id = str(row.get("reused_line_id") or "")
+        if not line_id:
             row["import_disposition"] = "insert"
-            row["duplicate_status"] = DUP_PENDING
-            row["duplicate_reason"] = "tumpang_tindih_tanpa_id_bank"
-            row["duplicate_of_line_id"] = existing[0].get("id")
-            row["identity_guarantee"] = "tidak_dijamin"
+            row["import_outcome"] = "insert"
+            continue
+        hold = f"import-hold:{batch['id']}:{line_id}"
+        await _assert_import_attempt(db, attempt)
+        await _before_reimport_write(line_id)
+        active = await db[RECON_MATCHES].find_one(
+            {"statement_line_id": line_id, "status": "active"},
+            {"_id": 0, "id": 1},
+        )
+        if active:
+            row["import_outcome"] = "protected"
+            row["protected_reason"] = "match_aktif"
+            continue
+        claimed = await db[LINES].update_one(
+            {
+                "id": line_id,
+                "duplicate_status": {"$in": [DUP_CLEAR, DUP_KEPT]},
+                "active_claim": None,
+            },
+            {"$set": {"active_claim": hold}},
+        )
+        if claimed.matched_count != 1:
+            row["import_outcome"] = "protected"
+            row["protected_reason"] = "klaim_aktif"
+            continue
+        try:
+            await _assert_import_attempt(db, attempt)
+            await _while_reimport_hold(line_id)
+            active = await db[RECON_MATCHES].find_one(
+                {"statement_line_id": line_id, "status": "active"},
+                {"_id": 0, "id": 1},
+            )
+            if active:
+                row["import_outcome"] = "protected"
+                row["protected_reason"] = "match_aktif"
+                continue
+            current = await db[LINES].find_one(
+                {"id": line_id, "active_claim": hold},
+                {"_id": 0},
+            )
+            if not current or current.get("duplicate_status") not in (DUP_CLEAR, DUP_KEPT):
+                row["import_outcome"] = "protected"
+                row["protected_reason"] = "status_baris"
+                continue
+            after = {
+                "description": row.get("description"),
+                "reference": row.get("reference"),
+                "running_balance": row.get("running_balance"),
+            }
+            if _display_same(row, current):
+                row["import_outcome"] = "unchanged"
+                continue
+            if not row.get("authoritative_refresh"):
+                after["description"] = current.get("description")
+                after["reference"] = current.get("reference")
+                if _balance_key(after["running_balance"]) == _balance_key(current.get("running_balance")):
+                    row["import_outcome"] = "unchanged"
+                    continue
+            audit = {
+                "id": _audit_id(batch["id"], line_id, after),
+                "before": {
+                    "description": current.get("description"),
+                    "reference": current.get("reference"),
+                    "running_balance": current.get("running_balance"),
+                },
+                "after": after,
+                "actor": actor,
+                "at": now_iso(),
+                "source_batch_id": batch["id"],
+                "source_row": row.get("source_row"),
+            }
+            refreshed = dict(current)
+            refreshed["description"] = after["description"]
+            refreshed["reference"] = after["reference"]
+            written = await db[LINES].update_one(
+                {
+                    "id": line_id,
+                    "active_claim": hold,
+                    "duplicate_status": current.get("duplicate_status"),
+                    "import_updates.id": {"$ne": audit["id"]},
+                },
+                {"$set": {
+                    "description": after["description"],
+                    "reference": after["reference"],
+                    "running_balance": after["running_balance"],
+                    "source_row": row.get("source_row"),
+                    "last_import_id": batch["id"],
+                    "identity": _line_identity(refreshed),
+                }, "$push": {"import_updates": audit}},
+            )
+            if written.matched_count == 1:
+                row["import_outcome"] = "updated"
+                continue
+            still = await db[LINES].find_one(
+                {"id": line_id},
+                {"_id": 0, "import_updates": 1, "active_claim": 1},
+            )
+            events = (still or {}).get("import_updates") or []
+            if any(event.get("id") == audit["id"] for event in events):
+                row["import_outcome"] = "unchanged"
+            elif still and still.get("active_claim") != hold:
+                row["import_outcome"] = "protected"
+                row["protected_reason"] = "klaim_aktif"
+            else:
+                row["import_outcome"] = "unchanged"
+        finally:
+            await db[LINES].update_one(
+                {"id": line_id, "active_claim": hold},
+                {"$unset": {"active_claim": ""}},
+            )
 
 
 async def _acknowledge_reused_rows(db, rows: Sequence[dict], attempt: Optional[dict]) -> None:
@@ -980,9 +1264,21 @@ async def _acknowledge_reused_rows(db, rows: Sequence[dict], attempt: Optional[d
         await _assert_import_attempt(db, attempt)
 
 
+def _outcome_recorded(doc: dict) -> bool:
+    """Batches stored before outcome counts existed must not look fully accepted."""
+    return any(key in doc for key in ("outcome_ready", "new_count", "fully_accepted"))
+
+
+def _outcome_count(doc: dict, key: str):
+    if not _outcome_recorded(doc):
+        return None
+    return int(doc.get(key) or 0)
+
+
 def public_import(doc: Optional[dict]) -> Optional[dict]:
     if not doc:
         return None
+    recorded = _outcome_recorded(doc)
     return {
         "id": doc.get("id"),
         "cash_bank_id": doc.get("cash_bank_id"),
@@ -1007,6 +1303,14 @@ def public_import(doc: Optional[dict]) -> Optional[dict]:
         "created_by": doc.get("created_by"),
         "completed_at": doc.get("completed_at"),
         "reused_count": int(doc.get("reused_count") or 0),
+        "new_count": _outcome_count(doc, "new_count"),
+        "updated_count": _outcome_count(doc, "updated_count"),
+        "protected_count": _outcome_count(doc, "protected_count"),
+        "unchanged_count": _outcome_count(doc, "unchanged_count"),
+        "conflict_count": _outcome_count(doc, "conflict_count"),
+        "conflicts": (doc.get("conflicts") or []) if recorded else None,
+        "fully_accepted": bool(doc.get("fully_accepted")) if recorded else None,
+        "result_note": (doc.get("result_note") or "") if recorded else "",
     }
 
 
@@ -1098,6 +1402,7 @@ async def _insert_prepared_lines(db, batch: dict, rows: List[dict], actor: dict,
                     raise StatementConflictError(
                         "Baris impor bentrok dengan data yang sudah tersimpan"
                     ) from exc
+                _mark_conflict(row, "id_otoritatif_sudah_tersimpan")
                 continue
             raise StatementConflictError(
                 "Baris impor bentrok dengan data yang sudah tersimpan"
@@ -1166,16 +1471,25 @@ async def _finish_if_complete(db, batch: dict, attempt: dict, inserted_rows: Seq
     expected_in, expected_out = _direction_totals(inserted_rows)
     same = count == len(inserted_rows) and total_in == expected_in and total_out == expected_out
     status = STATUS_COMPLETE if same else STATUS_FAILED
-    reused_count = (
-        max(int(batch.get("accepted_count") or 0) - count, 0)
-        if same else int(batch.get("reused_count") or 0)
-    )
+    if batch.get("outcome_ready"):
+        reused_count = int(batch.get("reused_count") or 0)
+    else:
+        reused_count = (
+            max(int(batch.get("accepted_count") or 0) - count, 0)
+            if same else int(batch.get("reused_count") or 0)
+        )
     write: Dict[str, Any] = {"$set": {
         "status": status,
         "stored_count": count,
         "reused_count": reused_count,
         "completed_at": now_iso() if same else None,
     }}
+    if batch.get("outcome_ready"):
+        for key in (
+            "new_count", "updated_count", "protected_count", "unchanged_count",
+            "conflict_count", "conflicts", "fully_accepted", "result_note",
+        ):
+            write["$set"][key] = batch.get(key)
     if same:
         write["$unset"] = {"file_bytes": ""}
     await _assert_import_attempt(db, attempt)
@@ -1656,9 +1970,11 @@ async def _continue_importing_batch(db, existing: dict, parsed: dict, actor: dic
             {"id": existing["id"], "status": STATUS_IMPORTING, "file_bytes": {"$exists": False}},
             {"$set": {"file_bytes": Binary(attempt["source_bytes"])}},
         )
+    await _apply_reimport_updates(db, existing, parsed["accepted"], actor, attempt)
     to_insert = _rows_to_insert(parsed["accepted"])
     stored_rows = await _insert_prepared_lines(db, existing, to_insert, actor, attempt) if to_insert else []
     await _assert_import_attempt(db, attempt)
+    _stamp_outcome(existing, parsed["accepted"])
     finished = await _finish_if_complete(db, existing, attempt, stored_rows)
     if finished.get("status") != STATUS_COMPLETE:
         raise StatementConflictError("Impor belum lengkap dan total tersimpan tidak sesuai")
@@ -1701,7 +2017,7 @@ async def _store_pinned_import(
                 "Batch lama tidak diubah."
             )
         if existing.get("status") == STATUS_COMPLETE:
-            return public_import(existing)
+            return _idempotent_file_result(existing, len(parsed["accepted"]))
         if existing.get("status") == STATUS_IMPORTING:
             return await _continue_importing_batch(db, existing, parsed, actor, attempt, cash_bank_id)
         raise StatementConflictError("Batch impor sebelumnya gagal dan tidak diubah diam-diam")
@@ -1745,7 +2061,7 @@ async def _store_pinned_import(
         if existing and existing.get("mapping_hash") == mapping_hash:
             existing.pop("_id", None)
             if existing.get("status") == STATUS_COMPLETE:
-                return public_import(existing)
+                return _idempotent_file_result(existing, len(parsed["accepted"]))
             if existing.get("status") == STATUS_IMPORTING:
                 return await _continue_importing_batch(db, existing, parsed, actor, attempt, cash_bank_id)
         raise StatementConflictError(
@@ -1754,8 +2070,11 @@ async def _store_pinned_import(
     batch.pop("_id", None)
     if attempt.get("fenced"):
         await _bind_import_fence(db, cash_bank_id, attempt["attempt_id"], batch["id"])
+    await _apply_reimport_updates(db, batch, parsed["accepted"], actor, attempt)
+    inserting = _rows_to_insert(parsed["accepted"])
     stored_rows = await _insert_prepared_lines(db, batch, inserting, actor, attempt) if inserting else []
     await _assert_import_attempt(db, attempt)
+    _stamp_outcome(batch, parsed["accepted"])
     finished = await _finish_if_complete(db, batch, attempt, stored_rows)
     if finished.get("status") != STATUS_COMPLETE:
         raise StatementConflictError("Impor belum lengkap dan total tersimpan tidak sesuai")

@@ -501,3 +501,69 @@ test('validation errors remain in the drawer with row identity', async () => {
   api.validateCashBankStatement.mockResolvedValue({ok:false,errors:[{row:3,message:'Tanggal ambigu'}]}); await renderPage(); await upload(); await click(byText('Validasi'));
   expect(container.querySelector('dialog').textContent).toContain('Baris 3: Tanggal ambigu'); expect(api.commitCashBankStatement).not.toHaveBeenCalled();
 });
+test('import result lists counts and conflict rows without claiming every transaction was accepted', async () => {
+  api.commitCashBankStatement.mockResolvedValue({
+    status:'complete', fully_accepted:false, new_count:1, updated_count:2, protected_count:3, unchanged_count:4, conflict_count:1,
+    conflicts:[{source_row:4, reason:'id_otoritatif_bertentangan', message:'ID transaksi bank sama, tetapi tanggal, arah, atau nominal berbeda', bank_txn_id:'TX-1'}],
+  });
+  await renderPage(); await upload(); await click(byText('Konfirmasi impor'));
+  const panel = container.querySelector('[data-testid=kas-bank-import-result]');
+  expect(panel.getAttribute('role')).toBe('alert');
+  expect(panel.textContent).toContain('Impor belum menerima semua transaksi.');
+  expect(panel.textContent).toContain('Jurnal tidak dibuat.');
+  expect(panel.textContent).toContain('Baru 1');
+  expect(panel.textContent).toContain('Diperbarui 2');
+  expect(panel.textContent).toContain('Terlindungi 3');
+  expect(panel.textContent).toContain('Tidak berubah 4');
+  expect(panel.textContent).toContain('Konflik 1');
+  expect(panel.textContent).toContain('Baris 4: ID transaksi bank sama, tetapi tanggal, arah, atau nominal berbeda (TX-1)');
+  expect(panel.textContent).not.toContain('Impor selesai.');
+  expect(container.textContent).toContain('Review Duplikat');
+});
+test('accepted import result shows the updated count', async () => {
+  api.commitCashBankStatement.mockResolvedValue({
+    status:'complete', fully_accepted:true, new_count:0, updated_count:1, protected_count:0, unchanged_count:0, conflict_count:0, conflicts:[],
+  });
+  await renderPage(); await upload(); await click(byText('Konfirmasi impor'));
+  const panel = container.querySelector('[data-testid=kas-bank-import-result]');
+  expect(panel.getAttribute('role')).toBe('status');
+  expect(panel.textContent).toContain('Impor selesai.');
+  expect(panel.textContent).toContain('Jurnal tidak dibuat.');
+  expect(panel.textContent).toContain('Diperbarui 1');
+  expect(panel.textContent).toContain('Konflik 0');
+});
+test('bca import result uses the same counts when a row conflicts', async () => {
+  api.previewCashBankBcaStatement.mockResolvedValue({bank:'BCA',header_detected:true,fingerprint:'fp-bca',account_binding:'bind-bca',rows:[{tanggal:'2026-09-01',keterangan:'Setoran uji',debit:1500000,kredit:null,saldo:10000000,direction:'out',source_row:3}],errors:[],persisted_statement_lines:false,stored:false});
+  api.commitCashBankBcaStatement.mockResolvedValue({
+    status:'complete', fully_accepted:false, new_count:0, updated_count:0, protected_count:1, unchanged_count:0, conflict_count:1,
+    conflicts:[{source_row:6, message:'ID transaksi bank milik baris yang dikecualikan dan tidak diubah', bank_txn_id:'TX-EX'}],
+  });
+  await renderPage();
+  const bcaInput = container.querySelector('[data-testid=kas-bank-bca-file]');
+  await act(async () => { Object.defineProperty(bcaInput, 'files', { configurable:true, value:[new File(['tanggal'], 'bca-uji.csv', {type:'text/csv'})] }); bcaInput.dispatchEvent(new Event('change', { bubbles:true })); });
+  await click(container.querySelector('[data-testid=kas-bank-bca-import]'));
+  const panel = container.querySelector('[data-testid=kas-bank-import-result]');
+  expect(panel.getAttribute('role')).toBe('alert');
+  expect(panel.textContent).toContain('Impor belum menerima semua transaksi.');
+  expect(panel.textContent).toContain('Terlindungi 1');
+  expect(panel.textContent).toContain('Baris 6: ID transaksi bank milik baris yang dikecualikan dan tidak diubah (TX-EX)');
+  expect(container.querySelector('#recon-tab-duplicates')).toBeTruthy();
+});
+test('old complete import history shows a dash instead of invented success counts', async () => {
+  api.cashBankStatementImports.mockResolvedValue({items:[
+    {id:'batch-lama', filename:'lama.csv', status:'complete', stored_count:2, fully_accepted:null, new_count:null, updated_count:null, protected_count:null, unchanged_count:null, conflict_count:null, conflicts:null, result_note:''},
+    {id:'batch-baru', filename:'baru.csv', status:'complete', stored_count:0, fully_accepted:false, new_count:0, updated_count:0, protected_count:0, unchanged_count:1, conflict_count:1, conflicts:[], result_note:'Impor belum menerima semua transaksi. Jurnal tidak dibuat.'},
+  ]});
+  await renderPage();
+  await click(byText('Riwayat Impor'));
+  const oldCell = container.querySelector('[data-testid=kas-bank-import-outcome-batch-lama]');
+  const newCell = container.querySelector('[data-testid=kas-bank-import-outcome-batch-baru]');
+  const panel = container.querySelector('[data-testid=kas-bank-pair-import-panel]');
+  expect(oldCell.textContent).toBe('—');
+  expect(newCell.textContent).toContain('Belum semua diterima');
+  expect(newCell.textContent).toContain('Konflik 1');
+  expect(panel.textContent).not.toContain('undefined');
+  expect(panel.textContent).not.toContain('Semua baris diterima');
+  expect(panel.textContent).not.toContain('Impor selesai');
+  expect(panel.textContent).toContain('Selesai diimpor');
+});

@@ -374,7 +374,7 @@ async def test_8_identical_rows_without_id_are_not_deleted():
         assert imported.status_code == 201, imported.text
         rows = await server.db[LINES].find({}, {"_id": 0}).to_list(10)
         assert len(rows) == 2
-        assert {row["duplicate_status"] for row in rows} == {"pending_review"}
+        assert {row["duplicate_status"] for row in rows} == {"clear"}
         assert {row["identity_guarantee"] for row in rows} == {"tidak_dijamin"}
 
 
