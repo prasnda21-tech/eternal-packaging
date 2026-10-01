@@ -149,18 +149,18 @@ describe("OperatorSplitPanel screen size", () => {
     });
     await flush();
     expect(container.querySelector('[data-testid="split-screen-size-0"]').value).toBe("small");
-    expect(container.querySelector('[data-testid="split-screen-size-1"]').value).toBe("small");
+    expect(container.querySelector('[data-testid="split-screen-size-1"]').value).toBe("large");
     expect(container.querySelector('[data-testid="split-screen-size-2"]').value).toBe("large");
   });
 
-  test("CASE 6: two operator rows on the same line stay synchronized", async () => {
+  test("CASE 6: two operator rows on the same line stay independent", async () => {
     await renderPanel();
     await act(async () => {
-      change(container.querySelector('[data-testid="split-screen-size-1"]'), "");
+      change(container.querySelector('[data-testid="split-screen-size-1"]'), "small");
     });
     await flush();
-    expect(container.querySelector('[data-testid="split-screen-size-0"]').value).toBe("");
-    expect(container.querySelector('[data-testid="split-screen-size-1"]').value).toBe("");
+    expect(container.querySelector('[data-testid="split-screen-size-0"]').value).toBe("large");
+    expect(container.querySelector('[data-testid="split-screen-size-1"]').value).toBe("small");
     expect(container.querySelector('[data-testid="split-screen-size-2"]').value).toBe("small");
   });
 
@@ -201,6 +201,108 @@ describe("OperatorSplitPanel screen size", () => {
     };
     await renderPanel({ order: legacy });
     expect(container.querySelector('[data-testid="split-screen-size-0"]').value).toBe("");
+  });
+
+  test("Deni and Djoko keep independent screens through edit, add/remove, save, and reopen", async () => {
+    const deniOrder = {
+      ...order,
+      print_qty_total: 7000,
+      operator_assignment_cap: 7000,
+      line_items: [
+        { id: "L1", name: "Cup 16oz", quantity: 7000, production_process: "print", screen_size: "large" },
+      ],
+      operator_splits: [
+        { id: "deni", operator_email: "deni@x.com", operator_name: "Deni", quantity: 4000, qty_completed: 0, line_idx: 0, work_date: "2026-10-02", screen_size: "large" },
+        { id: "djoko", operator_email: "djoko@x.com", operator_name: "Djoko", quantity: 3000, qty_completed: 0, line_idx: 0, work_date: "2026-10-03", screen_size: "small" },
+      ],
+    };
+    api.listOperators.mockResolvedValue({
+      operators: [
+        { email: "deni@x.com", name: "Deni" },
+        { email: "djoko@x.com", name: "Djoko" },
+      ],
+    });
+    await renderPanel({ order: deniOrder });
+
+    const screen = (i) => container.querySelector(`[data-testid="split-screen-size-${i}"]`);
+    const field = (id) => container.querySelector(`[data-testid="${id}"]`).value;
+    expect(screen(0).value).toBe("large");
+    expect(screen(1).value).toBe("small");
+
+    await act(async () => { change(screen(0), "small"); });
+    await flush();
+    expect(screen(0).value).toBe("small");
+    expect(screen(1).value).toBe("small");
+    expect(field("split-operator-select-1")).toBe("djoko@x.com");
+    expect(field("split-quantity-input-1")).toBe("3000");
+    expect(field("split-work-date-input-1")).toBe("2026-10-03");
+
+    await act(async () => { change(screen(0), "large"); });
+    await flush();
+    expect(screen(0).value).toBe("large");
+    expect(screen(1).value).toBe("small");
+
+    await act(async () => { change(screen(1), "large"); });
+    await flush();
+    expect(screen(0).value).toBe("large");
+    expect(screen(1).value).toBe("large");
+    expect(field("split-operator-select-0")).toBe("deni@x.com");
+    expect(field("split-quantity-input-0")).toBe("4000");
+    expect(field("split-work-date-input-0")).toBe("2026-10-02");
+
+    await act(async () => { change(screen(1), "small"); });
+    await flush();
+    expect(screen(0).value).toBe("large");
+    expect(screen(1).value).toBe("small");
+
+    await act(async () => {
+      container.querySelector('[data-testid="split-add-row"]').click();
+    });
+    await flush();
+    expect(screen(0).value).toBe("large");
+    expect(screen(1).value).toBe("small");
+    expect(screen(2).value).toBe("");
+    expect(field("split-operator-select-0")).toBe("deni@x.com");
+    expect(field("split-operator-select-1")).toBe("djoko@x.com");
+
+    await act(async () => {
+      container.querySelector('[data-testid="split-remove-2"]').click();
+    });
+    await flush();
+    expect(screen(0).value).toBe("large");
+    expect(screen(1).value).toBe("small");
+    expect(screen(2)).toBeNull();
+    expect(field("split-quantity-input-0")).toBe("4000");
+    expect(field("split-quantity-input-1")).toBe("3000");
+    expect(field("split-work-date-input-0")).toBe("2026-10-02");
+    expect(field("split-work-date-input-1")).toBe("2026-10-03");
+
+    await act(async () => {
+      container.querySelector('[data-testid="split-save"]').click();
+    });
+    await flush();
+    const payload = api.assignOperators.mock.calls.at(-1)[1];
+    expect(payload.map((row) => row.screen_size)).toEqual(["large", "small"]);
+    expect(payload.map((row) => row.quantity)).toEqual([4000, 3000]);
+    expect(payload.map((row) => row.work_date)).toEqual(["2026-10-02", "2026-10-03"]);
+    expect(payload.map((row) => row.operator_email)).toEqual(["deni@x.com", "djoko@x.com"]);
+
+    const reopened = {
+      ...deniOrder,
+      line_items: [
+        { id: "L1", name: "Cup 16oz", quantity: 7000, production_process: "print", screen_size: "large" },
+      ],
+      operator_splits: payload.map((row) => ({ ...row, qty_completed: 0 })),
+    };
+    await renderPanel({ order: reopened });
+    expect(container.querySelector('[data-testid="split-screen-size-0"]').value).toBe("large");
+    expect(container.querySelector('[data-testid="split-screen-size-1"]').value).toBe("small");
+    expect(container.querySelector('[data-testid="split-quantity-input-0"]').value).toBe("4000");
+    expect(container.querySelector('[data-testid="split-quantity-input-1"]').value).toBe("3000");
+    expect(container.querySelector('[data-testid="split-operator-select-0"]').value).toBe("deni@x.com");
+    expect(container.querySelector('[data-testid="split-operator-select-1"]').value).toBe("djoko@x.com");
+    expect(container.querySelector('[data-testid="split-work-date-input-0"]').value).toBe("2026-10-02");
+    expect(container.querySelector('[data-testid="split-work-date-input-1"]').value).toBe("2026-10-03");
   });
 
   test("Simpan pembagian sends screen_size on each split", async () => {

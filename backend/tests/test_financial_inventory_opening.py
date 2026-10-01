@@ -2624,7 +2624,13 @@ async def test_recovery_loses_the_write_when_its_lease_expires():
 
     await _configure()
     mid = await _master()
+    # Stamp the crashed post on the test clock. Setting the clock only after
+    # the crash leaves a wall-clock write expiry in the future, so recovery
+    # is rejected before it reaches the posted-mark hook.
+    clock = {"now": datetime(2026, 10, 1, 4, 0, tzinfo=timezone.utc)}
+    original_now = fio._utc_now
     original_step = fio._after_step
+    fio._utc_now = lambda: clock["now"]
 
     async def crash(step):
         if step == "journal":
@@ -2634,38 +2640,36 @@ async def test_recovery_loses_the_write_when_its_lease_expires():
     try:
         with pytest.raises(OpeningBlocked):
             await post_financial_opening(server.db, _opening_payload(mid, 40, 1000, "recover-barrier"), USER)
+        fio._after_step = original_step
+        stored = await server.db.financial_inventory_openings.find_one(
+            {"client_request_id": "recover-barrier"}, {"_id": 0},
+        )
+        assert stored["status"] != "POSTED"
+        assert stored.get("posted_journal_id")
+        entered, release, original_mark = _pause_before_posted_mark(fio)
+        task = asyncio.create_task(
+            recover_financial_opening(server.db, client_request_id="recover-barrier", user=USER)
+        )
+        try:
+            await asyncio.wait_for(entered.wait(), timeout=10)
+            clock["now"] = clock["now"] + timedelta(seconds=fio.LEASE_SECONDS + 5)
+            saved = await recover_financial_opening(server.db, client_request_id="recover-barrier", user=USER)
+            assert saved["status"] == "POSTED"
+            owner = await _opening_owner_snapshot(saved["id"])
+            release.set()
+            try:
+                await task
+            except OpeningBlocked as exc:
+                assert exc.code == "OPENING_LEASE_LOST"
+            assert await _opening_owner_snapshot(saved["id"]) == owner
+        finally:
+            release.set()
+            fio._mark = original_mark
+            if not task.done():
+                task.cancel()
     finally:
         fio._after_step = original_step
-    stored = await server.db.financial_inventory_openings.find_one(
-        {"client_request_id": "recover-barrier"}, {"_id": 0},
-    )
-    assert stored["status"] != "POSTED"
-    assert stored.get("posted_journal_id")
-    clock = {"now": datetime(2026, 10, 1, 4, 0, tzinfo=timezone.utc)}
-    original_now = fio._utc_now
-    fio._utc_now = lambda: clock["now"]
-    entered, release, original_mark = _pause_before_posted_mark(fio)
-    task = asyncio.create_task(
-        recover_financial_opening(server.db, client_request_id="recover-barrier", user=USER)
-    )
-    try:
-        await asyncio.wait_for(entered.wait(), timeout=10)
-        clock["now"] = clock["now"] + timedelta(seconds=fio.LEASE_SECONDS + 5)
-        saved = await recover_financial_opening(server.db, client_request_id="recover-barrier", user=USER)
-        assert saved["status"] == "POSTED"
-        owner = await _opening_owner_snapshot(saved["id"])
-        release.set()
-        try:
-            await task
-        except OpeningBlocked as exc:
-            assert exc.code == "OPENING_LEASE_LOST"
-        assert await _opening_owner_snapshot(saved["id"]) == owner
-    finally:
-        release.set()
-        fio._mark = original_mark
         fio._utc_now = original_now
-        if not task.done():
-            task.cancel()
 
 
 async def test_direct_reverse_cannot_commit_after_cogs_posts_in_the_gap():

@@ -510,6 +510,7 @@ export const api = {
   hrPayrollApprovePayment: (id) => client.post(`/hr-payroll/payments/${encodeURIComponent(id)}/approve`).then((r) => r.data),
   hrPayrollPostPayment: (id) => client.post(`/hr-payroll/payments/${encodeURIComponent(id)}/post-accounting`).then((r) => r.data),
   hrPayrollReversePayment: (id, reason) => client.post(`/hr-payroll/payments/${encodeURIComponent(id)}/reverse-accounting`, { reason }).then((r) => r.data),
+  hrPayrollCancelPayment: (id, reason) => client.post(`/hr-payroll/payments/${encodeURIComponent(id)}/cancel`, { reason }).then((r) => r.data),
   recalculateHpp: (payload = {}) => client.post(`/settings/hpp/recalculate`, payload).then((r) => r.data),
   hppCostQuery: (params = {}) => client.get(`/hpp/cost-query`, { params }).then((r) => r.data),
   customerPricingSettings: () => client.get(`/settings/customer-pricing`).then((r) => r.data),

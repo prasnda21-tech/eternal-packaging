@@ -63,7 +63,7 @@ from services.operator_schedule import (
     cancel_split_remaining as _cancel_split_remaining,
     pending_splits_for_user as _pending_splits_for_user,
 )
-from services.screen_size import line_screen_size as _line_screen_size
+from services.screen_size import allocation_screen_size as _allocation_screen_size
 from services.operator_payroll import (
     PAYROLL_EXPORT_COLUMNS,
     PAYROLL_REKAP_COLUMNS,
@@ -624,7 +624,7 @@ class OperatorSplitInput(BaseModel):
     # Fix: tanggal pengerjaan per assignment. Optional; ISO date "YYYY-MM-DD"
     # atau None untuk membiarkan kosong. Additive & tidak mengubah stage.
     work_date: Optional[str] = None
-    # Planning metadata only (Screen Besar / Screen Kecil). Omit preserves existing.
+    # Planning metadata (Screen Besar / Screen Kecil) for this allocation. Omit preserves it.
     screen_size: Optional[str] = None
 
 
@@ -7287,7 +7287,7 @@ def _production_row(o: dict) -> dict:
             "stage": s.get("stage"),
             "stage_label": STAGES[min(s.get("stage", 8), len(STAGES) - 1)],
             "work_date": s.get("work_date"),
-            "screen_size": _line_screen_size(o, s.get("line_idx")) or s.get("screen_size") or None,
+            "screen_size": _allocation_screen_size(s, o),
         } for s in splits],
         "design_status": o.get("design_status"),
         "design_bypassed": bool(o.get("design_bypassed")),
