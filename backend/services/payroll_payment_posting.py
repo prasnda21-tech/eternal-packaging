@@ -32,6 +32,7 @@ from services.payroll_payment import (
     get_payment,
     mark_payment_paid,
     mark_payment_reversed,
+    require_complete_payment,
     resolve_cash_bank,
 )
 from services.purchase_common import get_named_lock
@@ -86,6 +87,7 @@ async def post_payroll_payment(db, payment_id: str, user: dict) -> Dict[str, Any
 
         if payment.get("status") != STATUS_APPROVED:
             raise HTTPException(409, NOT_APPROVED_MESSAGE)
+        await require_complete_payment(db, payment)
 
         bank = await resolve_cash_bank(db, payment.get("cash_bank_account_id"))
         lines = _payment_lines(payment, bank["bank_coa_id"])
