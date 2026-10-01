@@ -324,20 +324,93 @@ def test_screen_size_legacy_missing_is_valid():
     assert "screen_size" not in o["operator_splits"][0]
 
 
-def test_screen_size_conflict_on_same_line_rejected():
+def test_screen_size_same_line_operators_stay_independent():
     o = _order()
-    try:
-        apply_operator_assignments(
-            o,
-            [
-                {"operator_email": "a@x.com", "operator_name": "A", "quantity": 1000, "line_idx": 0, "screen_size": "large"},
-                {"operator_email": "b@x.com", "operator_name": "B", "quantity": 1000, "line_idx": 0, "screen_size": "small"},
-            ],
-            {"email": "s"},
-            "t",
-            new_id_fn=_ids(),
-        )
-        assert False, "should reject mixed screen_size on one line"
-    except ValueError as e:
-        assert "Screen Besar/Kecil" in str(e)
-        assert o["helper_prep"]["qty_prepared"] == 10000
+    o["line_items"][0]["screen_size"] = "large"
+    o["operator_splits"] = [
+        {
+            "id": "deni", "operator_email": "deni@x.com", "operator_name": "Deni",
+            "quantity": 4000, "qty_completed": 0, "line_idx": 0,
+            "work_date": "2026-10-02", "screen_size": "large",
+        },
+        {
+            "id": "djoko", "operator_email": "djoko@x.com", "operator_name": "Djoko",
+            "quantity": 3000, "qty_completed": 0, "line_idx": 0,
+            "work_date": "2026-10-03", "screen_size": "small",
+        },
+    ]
+    apply_operator_assignments(
+        o,
+        [
+            {
+                "id": "deni", "operator_email": "deni@x.com", "operator_name": "Deni",
+                "quantity": 4000, "line_idx": 0, "work_date": "2026-10-02", "screen_size": "large",
+            },
+            {
+                "id": "djoko", "operator_email": "djoko@x.com", "operator_name": "Djoko",
+                "quantity": 3000, "line_idx": 0, "work_date": "2026-10-03", "screen_size": "small",
+            },
+        ],
+        {"email": "s"},
+        "t",
+        new_id_fn=_ids(),
+    )
+    by_id = {s["id"]: s for s in o["operator_splits"]}
+    assert by_id["deni"]["screen_size"] == "large"
+    assert by_id["djoko"]["screen_size"] == "small"
+    assert by_id["deni"]["quantity"] == 4000
+    assert by_id["djoko"]["quantity"] == 3000
+    assert by_id["deni"]["work_date"] == "2026-10-02"
+    assert by_id["djoko"]["work_date"] == "2026-10-03"
+    assert by_id["deni"]["operator_email"] == "deni@x.com"
+    assert by_id["djoko"]["operator_name"] == "Djoko"
+    assert "screen_size" not in o["line_items"][0]
+    assert o["helper_prep"]["qty_prepared"] == 10000
+
+    apply_operator_assignments(
+        o,
+        [
+            {
+                "id": "deni", "operator_email": "deni@x.com", "operator_name": "Deni",
+                "quantity": 4000, "line_idx": 0, "work_date": "2026-10-02", "screen_size": "small",
+            },
+            {
+                "id": "djoko", "operator_email": "djoko@x.com", "operator_name": "Djoko",
+                "quantity": 3000, "line_idx": 0, "work_date": "2026-10-03", "screen_size": "small",
+            },
+        ],
+        {"email": "s"},
+        "t",
+        new_id_fn=_ids(),
+    )
+    by_id = {s["id"]: s for s in o["operator_splits"]}
+    assert by_id["deni"]["screen_size"] == "small"
+    assert by_id["djoko"]["screen_size"] == "small"
+    assert by_id["deni"]["quantity"] == 4000
+    assert by_id["djoko"]["quantity"] == 3000
+    assert by_id["djoko"]["work_date"] == "2026-10-03"
+    assert by_id["djoko"]["operator_email"] == "djoko@x.com"
+    assert o["line_items"][0]["screen_size"] == "small"
+
+    apply_operator_assignments(
+        o,
+        [
+            {
+                "id": "deni", "operator_email": "deni@x.com", "operator_name": "Deni",
+                "quantity": 4000, "line_idx": 0, "work_date": "2026-10-02", "screen_size": "large",
+            },
+            {
+                "id": "djoko", "operator_email": "djoko@x.com", "operator_name": "Djoko",
+                "quantity": 3000, "line_idx": 0, "work_date": "2026-10-03", "screen_size": "small",
+            },
+        ],
+        {"email": "s"},
+        "t",
+        new_id_fn=_ids(),
+    )
+    by_id = {s["id"]: s for s in o["operator_splits"]}
+    assert by_id["deni"]["screen_size"] == "large"
+    assert by_id["djoko"]["screen_size"] == "small"
+    assert by_id["deni"]["operator_name"] == "Deni"
+    assert by_id["djoko"]["quantity"] == 3000
+    assert by_id["djoko"]["work_date"] == "2026-10-03"

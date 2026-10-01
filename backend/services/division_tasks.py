@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, Iterable, List, Optional
 
-from services.screen_size import line_screen_size
+from services.screen_size import allocation_screen_size, line_screen_size
 from services.current_stock import identity_keys
 from quantity_rules import (
     can_confirm_delivery,
@@ -646,6 +646,7 @@ def build_operator_tasks(order: dict, user: dict, *, mine_only: bool) -> List[di
             continue
         done = max(0, _safe_int(s.get("qty_completed")))
         row = _base_row(order, "operator", line_idx=idx, split_id=s.get("id"), split=s)
+        row["screen_size"] = allocation_screen_size(s, order)
         row["assigned_user_id"] = s.get("operator_user_id") or s.get("operator_id")
         row["assigned_user_email"] = s.get("operator_email")
         row["assigned_user_name"] = s.get("operator_name")

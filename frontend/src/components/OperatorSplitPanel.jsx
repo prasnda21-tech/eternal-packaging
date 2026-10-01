@@ -5,7 +5,7 @@ import { useAuth } from "../lib/auth";
 import { formatDisplayDateTime } from "../lib/constants";
 import { newActionId } from "../lib/workflowEntries";
 import { getWorkflowReady } from "../lib/stageState";
-import { lineItemScreenSize, SCREEN_SIZE_OPTIONS } from "../lib/screenSize";
+import { lineItemScreenSize, normalizeScreenSize, SCREEN_SIZE_OPTIONS } from "../lib/screenSize";
 import { MetricCell, MetricRow, QuantityInput, QtyOpsHead, statusClassFor } from "./qtyUi";
 import AppendQtyEntries from "./AppendQtyEntries";
 import ConfirmActionModal from "./ConfirmActionModal";
@@ -23,7 +23,10 @@ const scheduleDraftFromOrder = (order) => (
     work_date: s.work_date || "",
     qty_completed: Number(s.qty_completed || 0),
     qty_cancelled: Number(s.qty_cancelled || 0),
-    screen_size: lineItemScreenSize({ line_items: order?.line_items || [] }, s.line_idx) || s.screen_size || "",
+    // Allocation screen wins. Line screen is only a legacy fallback.
+    screen_size: normalizeScreenSize(s.screen_size)
+      || lineItemScreenSize({ line_items: order?.line_items || [] }, s.line_idx)
+      || "",
   }))
 );
 
@@ -126,38 +129,19 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
   const addRow = () => {
     scheduleDraftDirtyRef.current = true;
     const defaultLine = focusedIdx != null ? focusedIdx : (visiblePrintLines[0]?.idx ?? printLines[0]?.idx ?? "");
-    const inherited = defaultLine === "" || defaultLine == null
-      ? ""
-      : (splits.find((s) => Number(s.line_idx) === Number(defaultLine) && s.screen_size)?.screen_size
-        || lineItemScreenSize({ line_items: lineItems }, defaultLine)
-        || "");
-    setSplits([...splits, { operator_email: "", operator_name: "", quantity: 0, line_idx: defaultLine, work_date: "", screen_size: inherited }]);
+    setSplits([...splits, {
+      operator_email: "",
+      operator_name: "",
+      quantity: 0,
+      line_idx: defaultLine,
+      work_date: "",
+      screen_size: "",
+    }]);
   };
 
   const updateRow = (i, patch) => {
     scheduleDraftDirtyRef.current = true;
-    const next = [...splits];
-    const merged = { ...next[i], ...patch };
-    if (Object.prototype.hasOwnProperty.call(patch, "line_idx")) {
-      const idx = merged.line_idx;
-      merged.screen_size = idx === "" || idx == null
-        ? ""
-        : (next.find((s, j) => j !== i && Number(s.line_idx) === Number(idx) && s.screen_size)?.screen_size
-          || lineItemScreenSize({ line_items: lineItems }, idx)
-          || "");
-    }
-    next[i] = merged;
-    if (Object.prototype.hasOwnProperty.call(patch, "screen_size")) {
-      const idx = merged.line_idx;
-      if (idx !== "" && idx != null) {
-        for (let j = 0; j < next.length; j += 1) {
-          if (Number(next[j].line_idx) === Number(idx)) {
-            next[j] = { ...next[j], screen_size: patch.screen_size };
-          }
-        }
-      }
-    }
-    setSplits(next);
+    setSplits(splits.map((row, idx) => (idx === i ? { ...row, ...patch } : row)));
   };
 
   const removeRow = (i) => {
