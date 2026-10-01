@@ -587,6 +587,29 @@ const reconDateTime = (value) => {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? String(value) : new Intl.DateTimeFormat("id-ID", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", timeZone: "Asia/Jakarta" }).format(date);
 };
+const importOutcomeText = (row) => {
+  if (!row || row.fully_accepted == null || row.new_count == null) return "—";
+  const count = (value) => (value == null ? "—" : String(value));
+  const lead = row.fully_accepted === false ? "Belum semua diterima" : "Semua baris diterima";
+  return `${lead}. Baru ${count(row.new_count)} · Diperbarui ${count(row.updated_count)} · Terlindungi ${count(row.protected_count)} · Tidak berubah ${count(row.unchanged_count)} · Konflik ${count(row.conflict_count)}`;
+};
+const importResultView = (result) => {
+  if (!result || typeof result !== "object") return null;
+  if (result.fully_accepted == null || result.new_count == null) return null;
+  const fully = result.fully_accepted === true && Number(result.conflict_count || 0) === 0;
+  return {
+    fully,
+    lead: fully ? "Impor selesai." : "Impor belum menerima semua transaksi.",
+    counts: [
+      ["Baru", Number(result.new_count || 0)],
+      ["Diperbarui", Number(result.updated_count || 0)],
+      ["Terlindungi", Number(result.protected_count || 0)],
+      ["Tidak berubah", Number(result.unchanged_count || 0)],
+      ["Konflik", Number(result.conflict_count || 0)],
+    ],
+    conflicts: Array.isArray(result.conflicts) ? result.conflicts : [],
+  };
+};
 const duplicateLineLabel = (index) => `Line ${index < 26 ? String.fromCharCode(65 + index) : index + 1}`;
 const duplicateDirection = (value) => ({ in: "Masuk", out: "Keluar" }[value] || value || "—");
 const duplicateStatusLabel = (value) => ({
@@ -627,6 +650,7 @@ export default function RekonsiliasiKasBank() {
   const [decisionReasons, setDecisionReasons] = useState({});
   const [phase, setPhase] = useState("loading");
   const [message, setMessage] = useState("");
+  const [importResult, setImportResult] = useState(null);
   const [rowErrors, setRowErrors] = useState([]);
   const [selectedBank, setSelectedBank] = useState("");
   const [selectedBook, setSelectedBook] = useState("");
@@ -862,17 +886,20 @@ export default function RekonsiliasiKasBank() {
     }
     setBusy(true);
     setBcaMessage("");
+    setImportResult(null);
     try {
       const body = new FormData();
       body.append("cash_bank_id", cashBankId);
       body.append("file", file, file.name);
       body.append("fingerprint", bcaPreview.fingerprint);
       body.append("account_binding", bcaPreview.account_binding);
-      await api.commitCashBankBcaStatement(body);
+      const saved = await api.commitCashBankBcaStatement(body);
       bcaFile.current = null;
       setBcaPreview(null);
       setBcaOpen(false);
-      setMessage("Impor BCA selesai. Jurnal tidak dibuat.");
+      const summary = importResultView(saved);
+      setImportResult(summary);
+      setMessage(summary ? "" : "Impor BCA selesai. Jurnal tidak dibuat.");
       await loadWorkspace(cashBankId, startDate, endDate, q);
     } catch (ex) {
       const parsed = errPayload(ex);
@@ -889,6 +916,7 @@ export default function RekonsiliasiKasBank() {
     setBusy(true);
     setRowErrors([]);
     setMessage("");
+    setImportResult(null);
     try {
       const body = new FormData();
       body.append("cash_bank_id", cashBankId);
@@ -934,12 +962,15 @@ export default function RekonsiliasiKasBank() {
       return;
     }
     setBusy(true);
+    setImportResult(null);
     try {
-      await api.commitCashBankStatement(body);
+      const saved = await api.commitCashBankStatement(body);
       importFile.current = null;
       setPreview(null);
       setImportOpen(false);
-      setMessage("Impor selesai. Jurnal tidak dibuat.");
+      const summary = importResultView(saved);
+      setImportResult(summary);
+      setMessage(summary ? "" : "Impor selesai. Jurnal tidak dibuat.");
       await loadWorkspace(cashBankId, startDate, endDate, q);
       setTab("unmatched");
     } catch (ex) {
@@ -1196,6 +1227,11 @@ export default function RekonsiliasiKasBank() {
       {closing?.manual && <p className="kb-pair-note">Saldo manual {money(closing.manual.amount)} pada {reconDate(closing.manual.as_of)}. Input manual, bukan verifikasi bank.</p>}
       {workspace?.feature_ready === false && <div className="form-error" role="alert"><AlertCircle size={16} /> {workspace.feature_message}</div>}
       {message && !importOpen && <div className="form-error recon-message" role="alert"><AlertCircle size={16} /> {message}</div>}
+      {importResult && !importOpen && <div className="kb-pair-note" data-testid="kas-bank-import-result" role={importResult.fully ? "status" : "alert"}>
+        <p>{importResult.lead} Jurnal tidak dibuat.</p>
+        <p>{importResult.counts.map(([label, count]) => `${label} ${count}`).join(" · ")}</p>
+        {importResult.conflicts.map((row, index) => <p key={`${row.source_row || "baris"}-${row.bank_txn_id || index}`}>Baris {row.source_row}: {row.message}{row.bank_txn_id ? ` (${row.bank_txn_id})` : ""}</p>)}
+      </div>}
 
       <div className="kb-pair-tabs" role="tablist" aria-label="Tampilan rekonsiliasi">
         {[["unmatched", "Belum Cocok"], ["matched", "Sudah Cocok"], ["import", "Riwayat Impor"], ["duplicates", `Review Duplikat (${pendingDuplicateCount})`]].map(([id, label]) => <button key={id} id={`recon-tab-${id}`} role="tab" aria-selected={tab === id} aria-controls={`recon-panel-${id}`} type="button" className={tab === id ? "is-active" : ""} onClick={() => setTab(id)}>{label}</button>)}
@@ -1315,9 +1351,9 @@ export default function RekonsiliasiKasBank() {
         <div className="recon-pane-title"><h2>Riwayat Impor</h2><span>Impor mutasi tidak membuat jurnal</span></div>
         {preview && <div className="recon-import-resume"><span>Pratinjau <strong>{preview.filename}</strong> belum dikonfirmasi.</span><button type="button" className="ghost sm" onClick={() => setImportOpen(true)}>Lanjutkan pratinjau</button></div>}
         {!ready && <p className="recon-empty" role="status">{phase === "loading" ? "Memuat riwayat…" : "Riwayat tidak dapat dimuat."}</p>}
-        {ready && <div className="kb-pair-scroll"><table className="prod-table kas-bank-table"><thead><tr><th>Berkas</th><th>Status</th><th className="num">Baris tersimpan</th><th>Cakupan</th></tr></thead><tbody>
-          {!imports.length && <tr><td colSpan={4}>Belum ada impor.</td></tr>}
-          {imports.map((row) => <tr key={row.id}><td>{row.filename}</td><td><span className="recon-badge">{reconStatus(row.status)}</span></td><td className="num">{row.stored_count ?? "—"}</td><td>{row.coverage_note || "Cakupan belum tersedia"}</td></tr>)}
+        {ready && <div className="kb-pair-scroll"><table className="prod-table kas-bank-table"><thead><tr><th>Berkas</th><th>Status</th><th className="num">Baris tersimpan</th><th>Hasil</th><th>Cakupan</th></tr></thead><tbody>
+          {!imports.length && <tr><td colSpan={5}>Belum ada impor.</td></tr>}
+          {imports.map((row) => <tr key={row.id}><td>{row.filename}</td><td><span className="recon-badge">{reconStatus(row.status)}</span></td><td className="num">{row.stored_count ?? "—"}</td><td data-testid={`kas-bank-import-outcome-${row.id}`}>{importOutcomeText(row)}</td><td>{row.coverage_note || "Cakupan belum tersedia"}</td></tr>)}
         </tbody></table></div>}
       </section>}
 

@@ -688,6 +688,31 @@ async def create_pair(
     if claim == "busy":
         raise PairConflictError("Baris bank sudah diklaim atau tidak siap dicocokkan")
     created_claim = claim == "created"
+    fresh = await db[LINES].find_one(
+        {"id": str(statement_line_id), "active_claim": key},
+        {"_id": 0},
+    )
+    visible = dict(fresh or {})
+    visible["active_claim"] = None
+    fresh_ok, fresh_reason = line_matchable(visible, account_currency) if fresh else (False, "")
+    fresh_direction_ok = bool(fresh) and fresh.get("direction") == direction
+    fresh_amount_ok = bool(fresh) and _money(fresh.get("amount")) == amount
+    fresh_currency_ok = bool(fresh) and (fresh.get("currency_code") or None) == account_currency
+    fresh_in_period = bool(fresh) and start <= str(fresh.get("date") or "") <= end
+    if not fresh or fresh.get("cash_bank_id") != str(cash_bank_id) or not (
+        fresh_ok and fresh_direction_ok and fresh_amount_ok and fresh_currency_ok and fresh_in_period
+    ):
+        await _release_statement_claim(db, str(statement_line_id), key)
+        if fresh and not fresh_in_period:
+            raise PairValidationError("Baris bank di luar periode yang dipilih")
+        if fresh and not fresh_direction_ok:
+            raise PairConflictError("Arah uang bank dan buku berbeda")
+        if fresh and not fresh_amount_ok:
+            raise PairConflictError("Nominal bank dan buku berbeda")
+        if fresh and not fresh_currency_ok:
+            raise PairConflictError("Mata uang baris bank berbeda dari rekening")
+        raise PairConflictError(fresh_reason or "Baris bank sudah diklaim atau tidak siap dicocokkan")
+    statement = fresh
     await _after_statement_claim()
 
     doc = {
