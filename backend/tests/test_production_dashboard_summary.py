@@ -1,5 +1,8 @@
 """Additive GET /dashboard/production?view=summary stays lean and canonical."""
+import os
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SERVER = (ROOT / "server.py").read_text(encoding="utf-8")
@@ -237,10 +240,42 @@ def _row_visible(row: dict) -> dict:
     return out
 
 
+# Read-only. This check does not seed or write orders. Required CI collects it
+# and skips it. Set LIVE_ORDERS_SUMMARY=1 only against a database that already
+# has the rows described below (see the workflow_dispatch job).
+_LIVE_ORDERS_PREREQUISITES = (
+    "test_live_summary_matches_default_visible_columns reads an existing orders "
+    "collection and writes nothing. Opt in with LIVE_ORDERS_SUMMARY=1. "
+    "Prerequisites: MONGO_URL, LIVE_ORDERS_DB_NAME (or DB_NAME when pytest is not "
+    "suffixing it per xdist worker), and at least one non-cancelled order whose "
+    "current_stage is >= 14. Do not point this at the empty CI database."
+)
+
+
+def _live_orders_db_name() -> str:
+    explicit = os.environ.get("LIVE_ORDERS_DB_NAME", "").strip()
+    if explicit:
+        return explicit
+    return os.environ.get("DB_NAME", "").strip()
+
+
+def test_live_summary_skips_unless_live_orders_opt_in(monkeypatch):
+    monkeypatch.delenv("LIVE_ORDERS_SUMMARY", raising=False)
+    with pytest.raises(pytest.skip.Exception) as skipped:
+        test_live_summary_matches_default_visible_columns()
+    message = str(skipped.value)
+    assert "LIVE_ORDERS_SUMMARY=1" in message
+    assert "current_stage is >= 14" in message
+    assert "writes nothing" in message
+
+
+@pytest.mark.live_orders
 def test_live_summary_matches_default_visible_columns():
-    """Same filters: same count and 20-column canonical values. No writes."""
+    """Same filters on an existing orders database. No writes."""
+    if os.environ.get("LIVE_ORDERS_SUMMARY") != "1":
+        pytest.skip(_LIVE_ORDERS_PREREQUISITES)
+
     import copy
-    import os
     import sys
 
     sys.path.insert(0, str(ROOT))
@@ -251,8 +286,22 @@ def test_live_summary_matches_default_visible_columns():
         load_dotenv(env_path)
     elif alt.exists():
         load_dotenv(alt)
-    if not os.environ.get("MONGO_URL"):
-        return
+
+    mongo_url = os.environ.get("MONGO_URL", "").strip()
+    db_name = _live_orders_db_name()
+    missing = []
+    if not mongo_url:
+        missing.append("MONGO_URL")
+    if not db_name:
+        missing.append("LIVE_ORDERS_DB_NAME or DB_NAME")
+    if missing:
+        pytest.fail(
+            "LIVE_ORDERS_SUMMARY=1 but missing "
+            + ", ".join(missing)
+            + ". "
+            + _LIVE_ORDERS_PREREQUISITES
+        )
+
     from pymongo import MongoClient
     from server import (
         _PRODUCTION_DASHBOARD_LIMIT,
@@ -262,13 +311,15 @@ def test_live_summary_matches_default_visible_columns():
         _production_row,
     )
 
-    coll = MongoClient(os.environ["MONGO_URL"])[os.environ["DB_NAME"]].orders
+    coll = MongoClient(mongo_url)[db_name].orders
     q = {"cancelled": {"$ne": True}}
     full = list(coll.find(q, {"_id": 0}).sort("deadline", 1).limit(_PRODUCTION_DASHBOARD_LIMIT))
     slim = list(coll.find(q, _PRODUCTION_DASHBOARD_SUMMARY_PROJECTION).sort("deadline", 1).limit(_PRODUCTION_DASHBOARD_LIMIT))
     assert len(full) == len(slim)
     if not full:
-        return
+        pytest.fail(
+            f"Database {db_name} has no non-cancelled orders. " + _LIVE_ORDERS_PREREQUISITES
+        )
 
     blob_hits = 0
     for doc in slim:
@@ -300,7 +351,11 @@ def test_live_summary_matches_default_visible_columns():
     default_rows = build(full, True)
     summary_rows = build(slim, True)
     assert len(default_rows) == len(summary_rows)
-    assert any((r.get("current_stage") or 0) >= 14 for r in default_rows)
+    if not any((r.get("current_stage") or 0) >= 14 for r in default_rows):
+        pytest.fail(
+            f"Database {db_name} has non-cancelled orders, but none with "
+            "current_stage >= 14. " + _LIVE_ORDERS_PREREQUISITES
+        )
 
     for a, b in zip(default_rows, summary_rows):
         assert _row_visible(a) == _row_visible(b)
