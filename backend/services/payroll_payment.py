@@ -11,6 +11,7 @@ from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException
+from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
 from services.cash_bank_master import (
@@ -22,8 +23,10 @@ from services.cash_bank_master import (
 from services.chart_of_accounts import get_account
 from services.hr_payroll import LINES, STATUS_FINAL, get_period, money_float, to_money
 from services.journal_core import (
+    JOURNAL_ENTRIES,
     STATUS_POSTED,
     find_primary_journal_for_source,
+    get_journal,
 )
 from services.payroll_journal_posting import SOURCE_TYPE as ACCRUAL_SOURCE_TYPE
 from services.purchase_common import (
@@ -44,11 +47,15 @@ PERM_CREATE = "payroll_payment.create"
 PERM_APPROVE = "payroll_payment.approve"
 PERM_POST = "payroll_payment.post"
 PERM_REVERSE = "payroll_payment.reverse"
+PERM_CANCEL = "payroll_payment.cancel"
 
 STATUS_DRAFT = "DRAFT"
 STATUS_APPROVED = "APPROVED"
 STATUS_PAID = "PAID"
 STATUS_REVERSED = "REVERSED"
+STATUS_CANCELLED = "CANCELLED"
+ACTIVE_STATUSES = (STATUS_DRAFT, STATUS_APPROVED, STATUS_PAID)
+ACTIVE_PERIOD_INDEX = "uniq_active_payroll_period_payment"
 
 PAYABLE_MARKER = "Utang Gaji"
 
@@ -62,14 +69,102 @@ NOT_DRAFT_MESSAGE = "Hanya pembayaran DRAFT yang dapat disetujui."
 NOT_APPROVED_MESSAGE = "Pembayaran harus disetujui sebelum diposting ke accounting."
 NOT_PAID_MESSAGE = "Hanya pembayaran PAID yang dapat di-reverse."
 REASON_MESSAGE = "Alasan reversal wajib diisi minimal 3 karakter."
+CANCEL_MESSAGE = "Hanya pembayaran DRAFT atau APPROVED tanpa jurnal yang dapat dibatalkan."
+CANCEL_REASON_MESSAGE = "Alasan pembatalan wajib diisi minimal 3 karakter."
+INCOMPLETE_MESSAGE = "Pembayaran tidak lengkap. Batalkan pembayaran ini, lalu buat pembayaran baru."
+CREATE_FAILED_MESSAGE = "Detail pembayaran gagal disimpan. Pembayaran ditandai batal dan dapat dibuat ulang."
+CREATE_FAILED_REASON = "Detail pembayaran gagal disimpan."
+INDEX_CONFLICT_MESSAGE = "Migrasi index dihentikan karena ada lebih dari satu pembayaran aktif untuk periode yang sama."
+INDEX_MISSING_MESSAGE = "Index pembayaran aktif belum siap. Pembayaran tidak disimpan."
+
+
+def _index_keys(spec: dict) -> list:
+    return [(str(field), int(direction)) for field, direction in (spec.get("key") or [])]
+
+
+def _active_status_filter(spec: Optional[dict]) -> set:
+    partial = (spec or {}).get("partialFilterExpression") or {}
+    values = ((partial.get("status") or {}).get("$in")) or []
+    return {str(value) for value in values}
+
+
+def _is_active_period_index(spec: Optional[dict]) -> bool:
+    return bool(
+        spec
+        and spec.get("unique")
+        and _active_status_filter(spec) == set(ACTIVE_STATUSES)
+    )
+
+
+def _is_legacy_period_unique(name: str, spec: dict) -> bool:
+    if name == ACTIVE_PERIOD_INDEX:
+        return False
+    return (
+        _index_keys(spec) == [("payroll_period_id", 1)]
+        and bool(spec.get("unique"))
+        and not spec.get("partialFilterExpression")
+    )
+
+
+async def _active_period_conflicts(payments) -> List[dict]:
+    return await payments.aggregate([
+        {"$match": {"status": {"$in": list(ACTIVE_STATUSES)}}},
+        {"$group": {"_id": "$payroll_period_id", "n": {"$sum": 1}}},
+        {"$match": {"n": {"$gt": 1}}},
+    ]).to_list(20)
+
+
+async def _create_active_period_index(payments) -> None:
+    await payments.create_index(
+        [("payroll_period_id", 1)],
+        unique=True,
+        name=ACTIVE_PERIOD_INDEX,
+        partialFilterExpression={"status": {"$in": list(ACTIVE_STATUSES)}},
+    )
+
+
+async def _migrate_active_payment_index(payments) -> None:
+    """Install the active-payment index before removing the old unique index.
+
+    Documents are never deleted. A failed new index leaves the old unique
+    index in place, so inserts stay constrained.
+    """
+    conflicts = await _active_period_conflicts(payments)
+    if conflicts:
+        raise HTTPException(409, INDEX_CONFLICT_MESSAGE)
+    info = await payments.index_information()
+    if not _is_active_period_index(info.get(ACTIVE_PERIOD_INDEX)):
+        await _create_active_period_index(payments)
+        info = await payments.index_information()
+    if not _is_active_period_index(info.get(ACTIVE_PERIOD_INDEX)):
+        raise HTTPException(503, INDEX_MISSING_MESSAGE)
+    if not any(
+        name == "payroll_period_id_lookup" or (
+            _index_keys(spec) == [("payroll_period_id", 1)] and not spec.get("unique")
+        )
+        for name, spec in info.items()
+    ):
+        await payments.create_index([("payroll_period_id", 1)], name="payroll_period_id_lookup")
+        info = await payments.index_information()
+    if not _is_active_period_index(info.get(ACTIVE_PERIOD_INDEX)):
+        raise HTTPException(503, INDEX_MISSING_MESSAGE)
+    for name, spec in list(info.items()):
+        if _is_legacy_period_unique(name, spec):
+            await payments.drop_index(name)
+
+
+async def require_active_payment_index(db) -> None:
+    info = await db[PAYMENTS].index_information()
+    if not _is_active_period_index(info.get(ACTIVE_PERIOD_INDEX)):
+        raise HTTPException(503, INDEX_MISSING_MESSAGE)
 
 
 async def ensure_indexes(db) -> None:
     payments = db[PAYMENTS]
     await payments.create_index("id", unique=True)
     await payments.create_index("payment_number", unique=True)
-    await payments.create_index("payroll_period_id", unique=True)
     await payments.create_index("status")
+    await _migrate_active_payment_index(payments)
     lines = db[PAYMENT_LINES]
     await lines.create_index("id", unique=True)
     await lines.create_index("payment_id")
@@ -170,6 +265,10 @@ def public_payment(doc: Optional[dict], lines: Optional[List[dict]] = None) -> O
         "reversed_by": doc.get("reversed_by"),
         "reversed_at": doc.get("reversed_at"),
         "reversal_journal_id": doc.get("reversal_journal_id"),
+        "cancellation_reason": doc.get("cancellation_reason"),
+        "cancelled_by": doc.get("cancelled_by"),
+        "cancelled_at": doc.get("cancelled_at"),
+        "journal_number": doc.get("journal_number"),
     }
     if lines is not None:
         out["lines"] = [
@@ -191,18 +290,115 @@ async def get_payment(db, payment_id: str, *, with_lines: bool = False) -> dict:
         raise HTTPException(404, "Pembayaran payroll tidak ditemukan.")
     if not with_lines:
         return doc
-    lines = await db[PAYMENT_LINES].find({"payment_id": doc["id"]}, {"_id": 0}).sort("employee_name", 1).to_list(5000)
-    return public_payment(doc, lines)
+    lines = await payment_lines(db, doc["id"])
+    return await _present(db, doc, lines)
+
+
+def payment_is_complete(doc: dict, lines: List[dict]) -> bool:
+    """Detail rows must be complete and their nets must equal the header total."""
+    if not lines:
+        return False
+    total = to_money(doc.get("total_amount"))
+    if total <= 0:
+        return False
+    if not str(doc.get("payable_account_id") or "").strip():
+        return False
+    if not str(doc.get("cash_bank_account_id") or "").strip():
+        return False
+    if not str(doc.get("payment_date") or "").strip():
+        return False
+    seen = set()
+    summed = to_money(0)
+    for line in lines:
+        if not isinstance(line, dict):
+            return False
+        employee_id = str(line.get("employee_id") or "").strip()
+        if not employee_id or employee_id in seen:
+            return False
+        if "net_salary" not in line or line.get("net_salary") is None or str(line.get("net_salary")).strip() == "":
+            return False
+        seen.add(employee_id)
+        summed += to_money(line.get("net_salary"))
+    return summed == total
+
+
+async def payment_lines(db, payment_id: str) -> List[dict]:
+    return await db[PAYMENT_LINES].find({"payment_id": str(payment_id)}, {"_id": 0}).sort("employee_name", 1).to_list(5000)
+
+
+async def require_complete_payment(db, payment: dict) -> List[dict]:
+    lines = await payment_lines(db, payment["id"])
+    if not payment_is_complete(payment, lines):
+        raise HTTPException(409, INCOMPLETE_MESSAGE)
+    return lines
+
+
+async def read_payment_journal_reference(db, payment_id: str) -> Dict[str, Any]:
+    """Read the payment journal number from accounting_journal_id. Does not post."""
+    payment = await get_payment(db, payment_id)
+    journal_id = str(payment.get("accounting_journal_id") or "").strip()
+    if not journal_id:
+        return {"journal_id": None, "journal_number": None}
+    journal = await get_journal(db, journal_id, with_lines=False)
+    same_source = (
+        journal
+        and str(journal.get("source_type") or "") == SOURCE_TYPE
+        and str(journal.get("source_id") or "") == str(payment["id"])
+    )
+    if not same_source:
+        return {"journal_id": journal_id, "journal_number": None}
+    return {"journal_id": str(journal.get("id") or journal_id), "journal_number": journal.get("number")}
+
+
+async def _present(db, doc: Optional[dict], lines: Optional[List[dict]] = None) -> Optional[dict]:
+    public = public_payment(doc, lines)
+    if not public:
+        return None
+    ref = await read_payment_journal_reference(db, public["id"])
+    public["journal_number"] = ref.get("journal_number")
+    return public
 
 
 async def get_payment_for_period(db, period_id: str) -> Optional[dict]:
-    """Read the single payment for a period. Does not create or post anything."""
+    """Read the active payment for a period. Does not create or post anything."""
+    active, _history = await list_payments_for_period(db, period_id)
+    return active
+
+
+async def list_payments_for_period(db, period_id: str):
+    """Active payment plus every stored payment for the period, oldest first."""
     period = await get_period(db, period_id)
-    doc = await db[PAYMENTS].find_one({"payroll_period_id": period["id"]}, {"_id": 0})
-    if not doc:
-        return None
-    lines = await db[PAYMENT_LINES].find({"payment_id": doc["id"]}, {"_id": 0}).sort("employee_name", 1).to_list(5000)
-    return public_payment(doc, lines)
+    docs = await db[PAYMENTS].find(
+        {"payroll_period_id": period["id"]},
+        {"_id": 0},
+    ).sort("created_at", 1).to_list(50)
+    history = []
+    active = None
+    for doc in docs:
+        lines = await payment_lines(db, doc["id"])
+        presented = await _present(db, doc, lines)
+        history.append(presented)
+        if presented.get("status") in ACTIVE_STATUSES:
+            active = presented
+    return active, history
+
+
+async def _insert_payment_lines(db, detail: List[dict]) -> None:
+    if detail:
+        await db[PAYMENT_LINES].insert_many(detail)
+
+
+async def _mark_create_failed(db, payment_id: str, user: dict) -> None:
+    """Leave the header as cancelled history. Does not delete it or post a journal."""
+    await db[PAYMENTS].update_one(
+        {"id": payment_id, "status": STATUS_DRAFT},
+        {"$set": {
+            "status": STATUS_CANCELLED,
+            "cancelled_at": now_iso(),
+            "cancelled_by": actor_snapshot(user),
+            "cancellation_reason": CREATE_FAILED_REASON,
+        }},
+    )
 
 
 async def create_payroll_payment(db, period_id: str, payload: dict, user: dict) -> dict:
@@ -218,8 +414,12 @@ async def create_payroll_payment(db, period_id: str, payload: dict, user: dict) 
     if amount <= 0:
         raise HTTPException(409, PAYABLE_MISSING_MESSAGE)
 
+    await require_active_payment_index(db)
     async with get_named_lock(f"payroll_payment_create:{period['id']}"):
-        existing = await db[PAYMENTS].find_one({"payroll_period_id": period["id"]}, {"_id": 0, "id": 1})
+        existing = await db[PAYMENTS].find_one(
+            {"payroll_period_id": period["id"], "status": {"$in": list(ACTIVE_STATUSES)}},
+            {"_id": 0, "id": 1},
+        )
         if existing:
             raise HTTPException(409, EXISTS_MESSAGE)
         payment_id = str(uuid.uuid4())
@@ -256,7 +456,7 @@ async def create_payroll_payment(db, period_id: str, payload: dict, user: dict) 
             except DuplicateKeyError as exc:
                 last_err = exc
                 message = str(exc)
-                if "payroll_period_id" in message:
+                if "payroll_period_id" in message or ACTIVE_PERIOD_INDEX in message:
                     raise HTTPException(409, EXISTS_MESSAGE) from exc
                 if "payment_number" in message or "E11000" in message:
                     continue
@@ -264,13 +464,12 @@ async def create_payroll_payment(db, period_id: str, payload: dict, user: dict) 
         if not saved:
             raise HTTPException(409, f"Gagal mengalokasikan nomor pembayaran. {last_err}")
         try:
-            if detail:
-                await db[PAYMENT_LINES].insert_many(detail)
-        except Exception:
-            await db[PAYMENT_LINES].delete_many({"payment_id": payment_id})
-            await db[PAYMENTS].delete_one({"id": payment_id})
-            raise
-        return public_payment(saved, detail)
+            await _insert_payment_lines(db, detail)
+        except Exception as exc:
+            await _mark_create_failed(db, payment_id, user)
+            raise HTTPException(409, CREATE_FAILED_MESSAGE) from exc
+        fresh = await db[PAYMENTS].find_one({"id": payment_id}, {"_id": 0})
+        return await _present(db, fresh, detail)
 
 
 async def approve_payroll_payment(db, payment_id: str, user: dict) -> dict:
@@ -279,12 +478,13 @@ async def approve_payroll_payment(db, payment_id: str, user: dict) -> dict:
         if not doc:
             raise HTTPException(404, "Pembayaran payroll tidak ditemukan.")
         if doc.get("status") == STATUS_APPROVED:
-            lines = await db[PAYMENT_LINES].find({"payment_id": doc["id"]}, {"_id": 0}).to_list(5000)
-            return public_payment(doc, lines)
+            lines = await require_complete_payment(db, doc)
+            return await _present(db, doc, lines)
         if doc.get("status") != STATUS_DRAFT:
             raise HTTPException(409, NOT_DRAFT_MESSAGE)
+        lines = await require_complete_payment(db, doc)
         now = now_iso()
-        await db[PAYMENTS].update_one(
+        result = await db[PAYMENTS].update_one(
             {"id": doc["id"], "status": STATUS_DRAFT},
             {"$set": {
                 "status": STATUS_APPROVED,
@@ -293,8 +493,11 @@ async def approve_payroll_payment(db, payment_id: str, user: dict) -> dict:
             }},
         )
         fresh = await db[PAYMENTS].find_one({"id": doc["id"]}, {"_id": 0})
-        lines = await db[PAYMENT_LINES].find({"payment_id": doc["id"]}, {"_id": 0}).to_list(5000)
-        return public_payment(fresh, lines)
+        if result.modified_count != 1 or fresh.get("status") != STATUS_APPROVED:
+            if fresh.get("status") == STATUS_APPROVED:
+                return await _present(db, fresh, lines)
+            raise HTTPException(409, NOT_DRAFT_MESSAGE)
+        return await _present(db, fresh, lines)
 
 
 async def mark_payment_paid(db, payment: dict, journal: dict, user: dict) -> dict:
@@ -310,11 +513,27 @@ async def mark_payment_paid(db, payment: dict, journal: dict, user: dict) -> dic
     journal_id = str(journal.get("id") or "")
     if journal_id and payment.get("accounting_journal_id") != journal_id:
         patch["accounting_journal_id"] = journal_id
+    statuses = [STATUS_APPROVED, STATUS_PAID]
+    unset = {"post_claim": ""}
+    if payment.get("status") == STATUS_CANCELLED and str((journal or {}).get("id") or "").strip():
+        statuses.append(STATUS_CANCELLED)
+        patch["status"] = STATUS_PAID
+        unset.update({
+            "cancelled_at": "",
+            "cancelled_by": "",
+            "cancellation_reason": "",
+        })
+    update: Dict[str, Any] = {"$unset": unset}
     if patch:
-        await db[PAYMENTS].update_one({"id": payment["id"]}, {"$set": patch})
+        update["$set"] = patch
+    if patch or payment.get("post_claim") or payment.get("status") == STATUS_CANCELLED:
+        await db[PAYMENTS].update_one(
+            {"id": payment["id"], "status": {"$in": statuses}},
+            update,
+        )
     fresh = await db[PAYMENTS].find_one({"id": payment["id"]}, {"_id": 0})
-    lines = await db[PAYMENT_LINES].find({"payment_id": payment["id"]}, {"_id": 0}).to_list(5000)
-    return public_payment(fresh, lines)
+    lines = await payment_lines(db, payment["id"])
+    return await _present(db, fresh, lines)
 
 
 async def mark_payment_reversed(db, payment: dict, journal: dict, user: dict, reason: str) -> dict:
@@ -335,8 +554,134 @@ async def mark_payment_reversed(db, payment: dict, journal: dict, user: dict, re
     if patch:
         await db[PAYMENTS].update_one({"id": payment["id"]}, {"$set": patch})
     fresh = await db[PAYMENTS].find_one({"id": payment["id"]}, {"_id": 0})
-    lines = await db[PAYMENT_LINES].find({"payment_id": payment["id"]}, {"_id": 0}).to_list(5000)
-    return public_payment(fresh, lines)
+    lines = await payment_lines(db, payment["id"])
+    return await _present(db, fresh, lines)
+
+
+def _cancel_reason(raw: Any) -> str:
+    reason = str(raw or "").strip()
+    if len(reason) < 3:
+        raise HTTPException(400, CANCEL_REASON_MESSAGE)
+    return reason
+
+
+def _blank_field_clause(field: str) -> Dict[str, Any]:
+    return {"$or": [
+        {field: None},
+        {field: ""},
+        {field: {"$exists": False}},
+    ]}
+
+
+async def posted_payment_journal(db, payment_id: str) -> Optional[dict]:
+    return await db[JOURNAL_ENTRIES].find_one(
+        {
+            "source_type": SOURCE_TYPE,
+            "source_id": str(payment_id),
+            "reversal_of": None,
+            "status": STATUS_POSTED,
+        },
+        {"_id": 0, "id": 1, "status": 1},
+    )
+
+
+async def _payment_journal_reference(db, payment: dict) -> Optional[dict]:
+    referenced = str(payment.get("accounting_journal_id") or "").strip()
+    if referenced:
+        return {"id": referenced}
+    return await db[JOURNAL_ENTRIES].find_one(
+        {"source_type": SOURCE_TYPE, "source_id": str(payment["id"]), "reversal_of": None},
+        {"_id": 0, "id": 1},
+    )
+
+
+async def claim_payment_for_post(db, payment_id: str) -> dict:
+    """Atomically reserve an APPROVED payment. Works across processes."""
+    token = str(uuid.uuid4())
+    claimed = await db[PAYMENTS].find_one_and_update(
+        {
+            "id": str(payment_id),
+            "status": STATUS_APPROVED,
+            **_blank_field_clause("post_claim"),
+        },
+        {"$set": {"post_claim": token}},
+        return_document=ReturnDocument.AFTER,
+    )
+    if claimed:
+        return claimed
+    current = await get_payment(db, payment_id)
+    if await posted_payment_journal(db, payment_id):
+        return current
+    existing_claim = str(current.get("post_claim") or "")
+    if current.get("status") == STATUS_APPROVED and existing_claim and not await posted_payment_journal(db, payment_id):
+        stolen = await db[PAYMENTS].find_one_and_update(
+            {"id": current["id"], "status": STATUS_APPROVED, "post_claim": existing_claim},
+            {"$set": {"post_claim": token}},
+            return_document=ReturnDocument.AFTER,
+        )
+        if stolen:
+            return stolen
+    raise HTTPException(409, NOT_APPROVED_MESSAGE)
+
+
+async def release_post_claim(db, payment_id: str, token: str) -> None:
+    if not token:
+        return
+    await db[PAYMENTS].update_one(
+        {"id": str(payment_id), "status": STATUS_APPROVED, "post_claim": token},
+        {"$unset": {"post_claim": ""}},
+    )
+
+
+async def cancel_payroll_payment(db, payment_id: str, user: dict, reason: Any) -> dict:
+    """Cancel a draft or approved payment that has no journal. Keeps the document."""
+    text = _cancel_reason(reason)
+    doc = await db[PAYMENTS].find_one({"id": str(payment_id)}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Pembayaran payroll tidak ditemukan.")
+    lines = await payment_lines(db, doc["id"])
+    if doc.get("status") == STATUS_CANCELLED:
+        if await posted_payment_journal(db, doc["id"]):
+            raise HTTPException(409, CANCEL_MESSAGE)
+        return await _present(db, doc, lines)
+    if doc.get("status") not in (STATUS_DRAFT, STATUS_APPROVED):
+        raise HTTPException(409, CANCEL_MESSAGE)
+    if await _payment_journal_reference(db, doc):
+        raise HTTPException(409, CANCEL_MESSAGE)
+    fresh = await db[PAYMENTS].find_one_and_update(
+        {
+            "id": doc["id"],
+            "status": {"$in": [STATUS_DRAFT, STATUS_APPROVED]},
+            "$and": [
+                _blank_field_clause("accounting_journal_id"),
+                _blank_field_clause("post_claim"),
+            ],
+        },
+        {"$set": {
+            "status": STATUS_CANCELLED,
+            "cancelled_at": now_iso(),
+            "cancelled_by": actor_snapshot(user),
+            "cancellation_reason": text,
+        }},
+        return_document=ReturnDocument.AFTER,
+    )
+    if not fresh:
+        current = await db[PAYMENTS].find_one({"id": doc["id"]}, {"_id": 0})
+        if current and current.get("status") == STATUS_CANCELLED and not await posted_payment_journal(db, doc["id"]):
+            return await _present(db, current, lines)
+        raise HTTPException(409, CANCEL_MESSAGE)
+    if await posted_payment_journal(db, fresh["id"]) or str(fresh.get("accounting_journal_id") or "").strip():
+        restored = STATUS_APPROVED if fresh.get("approved_at") else STATUS_DRAFT
+        await db[PAYMENTS].find_one_and_update(
+            {"id": fresh["id"], "status": STATUS_CANCELLED},
+            {"$set": {"status": restored}, "$unset": {
+                "cancelled_at": "",
+                "cancelled_by": "",
+                "cancellation_reason": "",
+            }},
+        )
+        raise HTTPException(409, CANCEL_MESSAGE)
+    return await _present(db, fresh, lines)
 
 
 async def period_has_posted_payroll_payment(db, period_id: str) -> bool:

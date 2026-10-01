@@ -59,9 +59,11 @@
 .kas-bank-page.recon-workspace .kb-dup-actions small { flex-basis:100%; color:#94600b; }
 .kas-bank-page.recon-workspace .kb-pair-columns { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; flex:1; min-height:0; }
 .kas-bank-page.recon-workspace .kb-pair-columns.has-link { grid-template-columns:minmax(0,1fr) 36px minmax(0,1fr); }
-.kas-bank-page.recon-workspace .kb-pair-link { display:flex; flex-direction:column; align-items:center; justify-content:center; color:#146344; min-height:72px; }
-.kas-bank-page.recon-workspace .kb-pair-link span { width:2px; flex:1; background:#146344; min-height:18px; }
-.kas-bank-page.recon-workspace .kb-pair-link strong { font-size:16px; line-height:1; padding:4px 0; }
+.kas-bank-page.recon-workspace .kb-pair-link { display:flex; align-items:center; justify-content:center; color:#1d4e89; min-height:0; }
+.kas-bank-page.recon-workspace .kb-pair-link strong { position:relative; font-size:20px; line-height:1; color:#1d4e89; font-weight:750; }
+.kas-bank-page.recon-workspace .kb-pair-link.is-paired strong { font-size:24px; }
+.kas-bank-page.recon-workspace .kb-link-visible { display:block; }
+.kas-bank-page.recon-workspace .kb-sr-keep { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
 .kas-bank-page.recon-workspace .kb-offpage-candidates { margin:0; padding:8px 12px 10px; border-bottom:1px solid var(--recon-border); background:#f7fbf8; font-size:12px; color:#146344; }
 .kas-bank-page.recon-workspace .kb-offpage-candidates p { margin:0 0 6px; }
 .kas-bank-page.recon-workspace .kb-candidate-reason { color:#146344; }
@@ -100,8 +102,38 @@
 .kas-bank-page.recon-workspace .recon-suggestions summary { cursor:pointer; color:#80500a; }
 .kas-bank-page.recon-workspace .recon-suggestions summary svg { vertical-align:middle; margin-right:6px; }
 .kas-bank-page.recon-workspace .recon-suggestions p, .kas-bank-page.recon-workspace .recon-suggestions ul { margin:6px 0; }
-.kas-bank-page.recon-workspace .kb-pair-footer { position:sticky; bottom:0; display:flex; flex-wrap:nowrap; align-items:center; gap:18px; padding:10px 12px; background:white; border:1px solid var(--recon-border); border-radius:8px; flex-shrink:0; z-index:2; }
-.kas-bank-page.recon-workspace .kb-pair-footer > div:not(:last-child) { padding-right:18px; border-right:1px solid var(--recon-border); }
+.kas-bank-page.recon-workspace .kb-pair-columns .kb-pane { background:#f7fafc; }
+.kas-bank-page.recon-workspace .kb-pair-columns .kas-bank-table { border-collapse:separate; border-spacing:0 8px; background:transparent; }
+.kas-bank-page.recon-workspace .kb-pair-columns .kas-bank-table thead th { background:transparent; border:0; padding:0 8px 2px; }
+.kas-bank-page.recon-workspace .kb-pair-columns .kas-bank-table tbody td { background:#fff; border-top:1px solid #d5e2ee; border-bottom:1px solid #d5e2ee; }
+.kas-bank-page.recon-workspace .kb-pair-columns .kas-bank-table tbody td:first-child { border-left:1px solid #d5e2ee; border-radius:8px 0 0 8px; }
+.kas-bank-page.recon-workspace .kb-pair-columns .kas-bank-table tbody td:last-child { border-right:1px solid #d5e2ee; border-radius:0 8px 8px 0; }
+.kas-bank-page.recon-workspace .kb-pair-columns .kas-bank-table tr.kb-row-candidate td { background:#eef8f2; border-top-color:#b7d7c4; border-bottom-color:#b7d7c4; }
+.kas-bank-page.recon-workspace .kb-pair-columns .kas-bank-table tr.kb-row-candidate td:first-child { border-left:2px solid #8fbfa4; }
+.kas-bank-page.recon-workspace .kb-pair-columns .kas-bank-table tr.kb-row-candidate td:last-child { border-right:2px solid #8fbfa4; }
+.kas-bank-page.recon-workspace .kb-pair-columns .kas-bank-table tr.kb-row-selected td { background:#e7f0fb; border-top-color:#2f6fad; border-bottom-color:#2f6fad; }
+.kas-bank-page.recon-workspace .kb-pair-columns .kas-bank-table tr.kb-row-selected td:first-child { border-left:3px solid #2f6fad; }
+.kas-bank-page.recon-workspace .kb-pair-columns .kas-bank-table tr.kb-row-selected td:last-child { border-right:3px solid #2f6fad; }
+.kas-bank-page.recon-workspace .kb-single-amount { display:inline-flex; flex-direction:column; align-items:flex-end; gap:1px; }
+.kas-bank-page.recon-workspace .kb-single-amount strong { color:#1d4e89; font-size:13px; font-weight:750; font-variant-numeric:tabular-nums; }
+.kas-bank-page.recon-workspace .kb-dc { color:#1d4e89; font-weight:750; font-size:12px; }
+.kas-bank-page.recon-workspace .kb-running-balance { color:#365345; font-weight:650; }
+.kas-bank-page.recon-workspace .kb-pane-balance { display:block; margin-top:2px; font-size:12px; font-weight:650; color:#18332a; }
+.kas-bank-page.recon-workspace .recon-pane-title > span.kb-unmatched-flag { color:#94600b; font-weight:650; }
+.kas-bank-page.recon-workspace .kb-matched-table td:first-child { width:auto; }
+.kas-bank-page.recon-workspace .kb-saved-pairs { display:flex; flex-direction:column; gap:8px; }
+.kas-bank-page.recon-workspace .kb-matched-pair { display:grid; grid-template-columns:minmax(0,1fr) 28px minmax(0,1fr); gap:8px; align-items:center; }
+.kas-bank-page.recon-workspace .kb-live-book { display:flex; align-items:center; justify-content:space-between; gap:10px; }
+.kas-bank-page.recon-workspace .kb-live-book > div { min-width:0; }
+.kas-bank-page.recon-workspace .kb-live-action { display:flex; align-items:center; gap:8px; margin-left:auto; }
+.kas-bank-page.recon-workspace .kb-row-match { padding:7px 12px; }
+.kas-bank-page.recon-workspace .kb-matched-side { min-width:0; padding:8px 10px; border:1px solid #d5e2ee; border-radius:8px; background:#fff; }
+.kas-bank-page.recon-workspace tr.kb-row-reconciled .kb-matched-side { background:#f3faf6; border-color:#b7d7c4; }
+.kas-bank-page.recon-workspace .kb-inline-arrow, .kas-bank-page.recon-workspace .kb-foot-arrow { color:#1d4e89; font-weight:750; text-align:center; font-size:18px; line-height:1; }
+.kas-bank-page.recon-workspace .kb-foot-side { min-width:140px; }
+.kas-bank-page.recon-workspace .kb-foot-side small, .kas-bank-page.recon-workspace .kb-matched-side small { display:block; color:var(--recon-muted); font-size:11px; overflow-wrap:anywhere; }
+.kas-bank-page.recon-workspace .kb-pair-footer { position:sticky; bottom:0; display:flex; flex-wrap:nowrap; align-items:center; gap:12px; padding:10px 12px; background:white; border:1px solid var(--recon-border); border-radius:8px; flex-shrink:0; z-index:2; }
+.kas-bank-page.recon-workspace .kb-pair-footer > div:not(:last-child):not(.kb-foot-arrow) { padding-right:12px; border-right:1px solid var(--recon-border); }
 .kas-bank-page.recon-workspace .kb-pair-footer span { display:block; font-size:11px; color:var(--recon-muted); }
 .kas-bank-page.recon-workspace .kb-pair-footer strong { display:block; font-size:17px; font-variant-numeric:tabular-nums; }
 .kas-bank-page.recon-workspace .recon-footer-action { margin-left:auto; display:flex; align-items:center; gap:12px; }
@@ -162,7 +194,9 @@
   .kas-bank-page.recon-workspace .kb-pane.is-shown { display:flex; }
   .kas-bank-page.recon-workspace .kb-pane-switch { display:flex; gap:6px; }
   .kas-bank-page.recon-workspace .kb-pair-footer { flex-wrap:wrap; gap:8px; padding:8px; }
-  .kas-bank-page.recon-workspace .kb-pair-footer > div:not(:last-child) { flex:1; padding-right:6px; }
+  .kas-bank-page.recon-workspace .kb-pair-footer > div:not(:last-child):not(.kb-foot-arrow) { flex:1; padding-right:6px; }
+  .kas-bank-page.recon-workspace .kb-matched-pair { grid-template-columns:1fr; }
+  .kas-bank-page.recon-workspace .kb-inline-arrow { transform:rotate(-90deg); }
   .kas-bank-page.recon-workspace .kb-pair-footer strong { font-size:12px; }
   .kas-bank-page.recon-workspace .recon-footer-action { width:100%; justify-content:space-between; }
   .kas-bank-page.recon-workspace .recon-import-dialog, .kas-bank-page.recon-workspace .recon-bca-dialog { width:100vw; max-width:100vw; }

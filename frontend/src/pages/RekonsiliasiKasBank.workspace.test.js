@@ -173,6 +173,48 @@ test('off-page suggestions stay visible without clearing the selected bank line'
   expect(api.createCashBankPair).toHaveBeenCalledTimes(1);
   expect(api.createCashBankPair.mock.calls[0][0]).toEqual(expect.objectContaining({statement_line_id:'bank-1', journal_line_id:'book-off'}));
 });
+test('a rejected match keeps the selection and does not show a confirmed pair', async () => {
+  api.createCashBankPair.mockRejectedValue({ response: { status: 409, data: { detail: 'Nominal bank dan buku berbeda' } } });
+  await renderPage();
+  await click(container.querySelector('[name=bank-line]'));
+  await click(container.querySelector('[name=book-line]'));
+  const live = container.querySelector('[data-testid=kas-bank-live-pair]');
+  expect(live.textContent).toContain('←');
+  expect(live.querySelector('[data-testid=kas-bank-pair-match]')).toBe(byText('Cocokkan'));
+  expect(container.querySelectorAll('[data-testid=kas-bank-pair-match]')).toHaveLength(1);
+  expect(live.textContent).not.toContain('(Dr)');
+  expect(live.textContent).not.toContain('(Cr)');
+  await click(byText('Cocokkan'));
+  expect(container.querySelector('.recon-badge.is-matched')).toBeNull();
+  expect(container.querySelector('[data-testid=kas-bank-workspace-pairs]')).toBeNull();
+  expect(container.textContent).toContain('Nominal bank dan buku berbeda');
+  expect(container.querySelector('[name=bank-line]').checked).toBe(true);
+  expect(container.querySelector('[name=book-line]').checked).toBe(true);
+});
+test('saved pairs stay aligned in the workspace and keep a zero running balance', async () => {
+  workspace.bank_lines = [
+    { ...bank, claim_id: 'pair-1', matchable: false, block_reason: 'Sudah dicocokkan', running_balance: 0 },
+    { ...bank, id: 'bank-open', description: 'Tanpa saldo berjalan', amount: 1000, running_balance: null },
+  ];
+  workspace.book_lines = [{ ...book, claim_id: 'pair-1', debit: 750000, credit: 0 }];
+  workspace.matched_pairs = [{ ...pair, direction: 'in', book_snapshot: { ...pair.book_snapshot, debit: 750000, credit: 0 } }];
+  workspace.visible_bank_count = 2;
+  await renderPage();
+  const saved = container.querySelector('[data-testid=kas-bank-workspace-pairs]');
+  expect(saved.textContent).toContain('✓ Cocok');
+  expect(saved.textContent).toContain('JE-18');
+  expect(saved.textContent).toContain('←');
+  expect(saved.textContent).toContain('SALDO');
+  expect(saved.textContent).toContain('Rp 0');
+  expect(saved.textContent).toContain('(Dr)');
+  expect(saved.textContent).not.toContain('(Cr)');
+  const openTable = container.querySelector('[data-testid=kas-bank-pair-bank-table]');
+  expect(openTable.textContent).toContain('Tanpa saldo berjalan');
+  expect(openTable.textContent).not.toContain('Transfer pelanggan');
+  expect(openTable.textContent).not.toContain('SALDO');
+  expect(openTable.textContent).not.toContain('(Dr)');
+  expect(openTable.textContent).not.toContain('(Cr)');
+});
 test('matched and import tabs never render a matching footer or empty bank/book panels', async () => {
   workspace.matched_pairs=[pair]; await renderPage();
   await click(byText('Sudah Cocok'));
@@ -276,6 +318,86 @@ test('server block reasons and source review state remain visible', async () => 
   workspace.bank_lines=[{...bank,matchable:false,block_reason:'Duplikat perlu tinjauan'}]; workspace.matched_pairs=[{...pair,review_state:'perlu_tinjauan'}]; await renderPage();
   expect(container.textContent).toContain('Duplikat perlu tinjauan'); expect(container.querySelector('[name=bank-line]').disabled).toBe(true);
   await click(byText('Sudah Cocok')); expect(container.textContent).toContain('Perlu tinjauan');
+});
+test('a pair outside the bank page stays visible without invented bank detail or balance', async () => {
+  workspace.bank_lines=[{...bank, id:'bank-open', description:'Masih di halaman'}];
+  workspace.book_lines=[];
+  workspace.visible_bank_count=1;
+  workspace.visible_book_count=0;
+  workspace.matched_pairs=[{...pair, statement_line_id:'bank-offpage', direction:'in', amount:250000, book_snapshot:{date:'2026-09-29', journal_number:'JE-OFF', description:'Setoran di snapshot', debit:250000, credit:0}}];
+  await renderPage();
+  const saved=container.querySelector('[data-testid=kas-bank-workspace-pairs]');
+  expect(saved.textContent).toContain('Detail bank tidak tersedia');
+  expect(saved.textContent).toContain('bank-offpage');
+  expect(saved.textContent).toContain('JE-OFF');
+  expect(saved.textContent).toContain('Setoran di snapshot');
+  expect(saved.textContent).toContain('✓ Cocok');
+  expect(saved.textContent).toContain('(Dr)');
+  expect(saved.textContent).toContain('Masuk');
+  expect(saved.textContent).not.toContain('SALDO');
+  expect(saved.textContent).not.toContain('Masih di halaman');
+  expect(saved.textContent).not.toContain('(Cr)');
+});
+test('changing account or period hides the previous pairs and selection', async () => {
+  workspace.cash_bank_id='account-1';
+  workspace.search='';
+  workspace.matched_pairs=[{...pair, book_snapshot:{...pair.book_snapshot, journal_number:'JE-LAMA', description:'Pasangan lama'}}];
+  await renderPage();
+  const requested=api.cashBankPairWorkspace.mock.calls[0][0];
+  workspace.start_date=requested.start_date;
+  workspace.end_date=requested.end_date;
+  await click(container.querySelector('[aria-label="Muat ulang"]'));
+  await flush();
+  expect(container.textContent).toContain('Pasangan lama');
+  await click(container.querySelector('[name=bank-line]'));
+  await click(container.querySelector('[name=book-line]'));
+  let resolveNext;
+  api.cashBankPairWorkspace.mockImplementation(() => new Promise((resolve) => { resolveNext=resolve; }));
+  const nextEnd=requested.end_date==='2026-09-02' ? '2026-09-03' : '2026-09-02';
+  await change('[aria-label="Tanggal akhir"]', nextEnd);
+  expect(container.textContent).not.toContain('Pasangan lama');
+  expect(container.querySelector('[data-testid=kas-bank-live-pair]')).toBeNull();
+  expect(container.querySelector('[name=bank-line]:checked')).toBeNull();
+  expect(byText('Cocokkan').disabled).toBe(true);
+  await act(async () => {
+    resolveNext({...workspace, cash_bank_id:'account-1', start_date:requested.start_date, end_date:nextEnd, search:'', bank_lines:[], book_lines:[], matched_pairs:[{...pair, book_snapshot:{date:'2026-09-02', journal_number:'JE-BARU', description:'Pasangan baru'}}], visible_bank_count:0, visible_book_count:0});
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  await flush();
+  expect(container.textContent).toContain('Pasangan baru');
+  expect(container.textContent).not.toContain('Pasangan lama');
+});
+test('changing the account hides the previous pairs and selection', async () => {
+  api.cashBankAccounts.mockResolvedValue({items:[{id:'account-1',name:'Rekening uji',currency_code:'IDR'},{id:'account-2',name:'Rekening lain',currency_code:'IDR'}]});
+  workspace.cash_bank_id='account-1';
+  workspace.search='';
+  workspace.matched_pairs=[{...pair, book_snapshot:{...pair.book_snapshot, journal_number:'JE-LAMA', description:'Pasangan lama'}}];
+  await renderPage();
+  const requested=api.cashBankPairWorkspace.mock.calls[0][0];
+  workspace.start_date=requested.start_date;
+  workspace.end_date=requested.end_date;
+  await click(container.querySelector('[aria-label="Muat ulang"]'));
+  await flush();
+  expect(container.textContent).toContain('Pasangan lama');
+  await click(container.querySelector('[name=bank-line]'));
+  await click(container.querySelector('[name=book-line]'));
+  let resolveNext;
+  api.cashBankPairWorkspace.mockImplementation(() => new Promise((resolve) => { resolveNext=resolve; }));
+  await change('[aria-label="Rekening"]', 'account-2');
+  expect(container.textContent).not.toContain('Pasangan lama');
+  expect(container.querySelector('[data-testid=kas-bank-live-pair]')).toBeNull();
+  expect(container.querySelector('[name=bank-line]:checked')).toBeNull();
+  expect(byText('Cocokkan').disabled).toBe(true);
+  await act(async () => {
+    resolveNext({...workspace, cash_bank_id:'account-2', start_date:requested.start_date, end_date:requested.end_date, search:'', bank_lines:[{...bank, id:'bank-2', description:'Mutasi rekening lain'}], book_lines:[book], matched_pairs:[{...pair, id:'pair-2', statement_line_id:'bank-2', book_snapshot:{date:'2026-09-02', journal_number:'JE-BARU', description:'Pasangan rekening baru'}}], visible_bank_count:1, visible_book_count:1});
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  await flush();
+  expect(container.textContent).toContain('Pasangan rekening baru');
+  expect(container.textContent).not.toContain('Pasangan lama');
+  expect(container.textContent).toContain('Mutasi rekening lain');
 });
 test('changing period clears selections before another match can be submitted', async () => {
   await renderPage(); await click(container.querySelector('[name=bank-line]')); await click(container.querySelector('[name=book-line]'));

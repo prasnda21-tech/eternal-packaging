@@ -21,14 +21,16 @@ def register_payroll_accounting_routes(
     from services.payroll_journal_posting import PERM_POST, post_payroll_journal, read_period_journal_reference
     from services.payroll_payment import (
         PERM_APPROVE as PAYMENT_APPROVE,
+        PERM_CANCEL as PAYMENT_CANCEL,
         PERM_CREATE as PAYMENT_CREATE,
         PERM_POST as PAYMENT_POST,
         PERM_REVERSE as PAYMENT_REVERSE,
         PERM_VIEW as PAYMENT_VIEW,
         approve_payroll_payment,
+        cancel_payroll_payment,
         create_payroll_payment,
         get_payment,
-        get_payment_for_period,
+        list_payments_for_period,
     )
     from services.payroll_payment_posting import post_payroll_payment, reverse_payroll_payment
     from services.hr_payroll import PERM_PAY_VIEW
@@ -89,15 +91,26 @@ def register_payroll_accounting_routes(
             PAYMENT_APPROVE,
             PAYMENT_POST,
             PAYMENT_REVERSE,
+            PAYMENT_CANCEL,
             PERM_PAY_VIEW,
         )
-        payment = await get_payment_for_period(get_db(), period_id)
-        return {"payment": payment}
+        active, history = await list_payments_for_period(get_db(), period_id)
+        return {"payment": active, "payments": history}
 
     @api_router.get("/hr-payroll/payments/{payment_id}")
     async def get_payroll_payment_endpoint(payment_id: str, user=Depends(current_user)):
-        await require_any_perm(user, PAYMENT_VIEW, PAYMENT_CREATE, PAYMENT_POST)
+        await require_any_perm(
+            user, PAYMENT_VIEW, PAYMENT_CREATE, PAYMENT_APPROVE, PAYMENT_POST, PAYMENT_REVERSE, PAYMENT_CANCEL
+        )
         payment = await get_payment(get_db(), payment_id, with_lines=True)
+        return {"payment": payment}
+
+    @api_router.post("/hr-payroll/payments/{payment_id}/cancel")
+    async def cancel_payroll_payment_endpoint(
+        payment_id: str, payload: LoosePayload, user=Depends(current_user)
+    ):
+        await require_any_perm(user, PAYMENT_CANCEL)
+        payment = await cancel_payroll_payment(get_db(), payment_id, user, dump(payload).get("reason"))
         return {"payment": payment}
 
     @api_router.post("/hr-payroll/payments/{payment_id}/approve")

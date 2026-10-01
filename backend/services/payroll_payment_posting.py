@@ -29,9 +29,13 @@ from services.payroll_payment import (
     NOT_APPROVED_MESSAGE,
     NOT_PAID_MESSAGE,
     REASON_MESSAGE,
+    claim_payment_for_post,
     get_payment,
     mark_payment_paid,
     mark_payment_reversed,
+    posted_payment_journal,
+    release_post_claim,
+    require_complete_payment,
     resolve_cash_bank,
 )
 from services.purchase_common import get_named_lock
@@ -86,6 +90,13 @@ async def post_payroll_payment(db, payment_id: str, user: dict) -> Dict[str, Any
 
         if payment.get("status") != STATUS_APPROVED:
             raise HTTPException(409, NOT_APPROVED_MESSAGE)
+        await require_complete_payment(db, payment)
+        payment = await claim_payment_for_post(db, source_id)
+        if await posted_payment_journal(db, source_id):
+            existing = await find_primary_journal_for_source(db, SOURCE_TYPE, source_id)
+            stamped = await mark_payment_paid(db, payment, existing, user)
+            return _public_result(existing, stamped, already=True)
+        token = str(payment.get("post_claim") or "")
 
         bank = await resolve_cash_bank(db, payment.get("cash_bank_account_id"))
         lines = _payment_lines(payment, bank["bank_coa_id"])
@@ -100,14 +111,17 @@ async def post_payroll_payment(db, payment_id: str, user: dict) -> Dict[str, Any
                 posted_by=user,
             )
         except PeriodLockedError as exc:
+            await release_post_claim(db, source_id, token)
             raise HTTPException(409, str(exc)) from exc
         except JournalValidationError as exc:
+            await release_post_claim(db, source_id, token)
             raise HTTPException(409, str(exc)) from exc
         except JournalConflictError:
             existing = await find_primary_journal_for_source(db, SOURCE_TYPE, source_id)
             if existing and existing.get("status") == STATUS_POSTED:
                 stamped = await mark_payment_paid(db, payment, existing, user)
                 return _public_result(existing, stamped, already=True)
+            await release_post_claim(db, source_id, token)
             raise HTTPException(409, ALREADY_MESSAGE)
 
         if str(journal.get("source_type") or "") != SOURCE_TYPE or str(journal.get("source_id") or "") != source_id:

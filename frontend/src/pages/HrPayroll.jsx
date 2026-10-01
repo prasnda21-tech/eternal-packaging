@@ -565,13 +565,14 @@ function financeAction(period, payment, readiness, hasPerm) {
   return null;
 }
 
-function PayrollFinanceFlow({ period, lines, readiness, payment, banks, onChanged, onError, hasPerm }) {
+function PayrollFinanceFlow({ period, lines, readiness, payment, payments, banks, onChanged, onError, hasPerm }) {
   const [busy, setBusy] = useState("");
   const [dialog, setDialog] = useState("");
   const [reason, setReason] = useState("");
   const [payDate, setPayDate] = useState(period?.end_date || "");
   const [bankId, setBankId] = useState("");
   const action = financeAction(period, payment, readiness, hasPerm);
+  const canCancel = Boolean(payment && ["DRAFT", "APPROVED"].includes(payment.status) && hasPerm("payroll_payment.cancel"));
   const steps = financeSteps(period, payment);
   const bankName = (banks || []).find((row) => row.id === payment?.cash_bank_account_id)?.name || payment?.cash_bank_account_id || "—";
   const run = async (work) => {
@@ -622,7 +623,7 @@ function PayrollFinanceFlow({ period, lines, readiness, payment, banks, onChange
           <dt>Bank</dt><dd>{bankName}</dd>
           <dt>Nominal</dt><dd>{moneyFormat(payment.total_amount)}</dd>
           <dt>Status</dt><dd>{payment.status}</dd>
-          <dt>Jurnal payment</dt><dd className="mono">{payment.accounting_journal_id || "—"}</dd>
+          <dt>Jurnal payment</dt><dd data-testid="hr-payroll-payment-journal-number">{payment.journal_number || "—"}</dd>
           <dt>Disetujui</dt><dd>{payment.approved_at ? `${actorName(payment.approved_by)}, ${String(payment.approved_at).slice(0, 10)}` : "—"}</dd>
           <dt>Dibayar</dt><dd>{payment.paid_at ? `${actorName(payment.paid_by)}, ${String(payment.paid_at).slice(0, 10)}` : "—"}</dd>
           {payment.status === "REVERSED" && (
@@ -633,6 +634,13 @@ function PayrollFinanceFlow({ period, lines, readiness, payment, banks, onChange
             </>
           )}
         </dl>
+      )}
+      {(payments || []).length > 0 && (
+        <ul className="hr-pay-facts" data-testid="hr-payroll-payment-history">
+          {(payments || []).map((row) => (
+            <li key={row.id} data-testid="hr-payroll-payment-history-row">{row.payment_number || row.id} · {row.status} · {moneyFormat(row.total_amount)} · {row.journal_number || "—"}</li>
+          ))}
+        </ul>
       )}
       {action?.kind === "blocked" && <p className="muted small" data-testid="hr-payroll-accounting-blocked">{action.text}</p>}
       {action?.kind === "create" && (
@@ -666,18 +674,26 @@ function PayrollFinanceFlow({ period, lines, readiness, payment, banks, onChange
             {action.label}
           </button>
         )}
+        {canCancel && (
+          <button type="button" className="ghost danger" disabled={Boolean(busy)} onClick={() => setDialog("cancel")} data-testid="hr-payroll-cancel-payment">Batalkan</button>
+        )}
       </div>
       {dialog && (
         <div className="modal" role="dialog" aria-modal="true" data-testid="hr-payroll-finance-modal">
           <div className="modal-inner">
             <div className="modal-head">
-              <h3>{action?.label}</h3>
+              <h3>{dialog === "cancel" ? "Batalkan Payment" : action?.label}</h3>
               <button type="button" className="ghost sm" disabled={Boolean(busy)} onClick={() => setDialog("")}>×</button>
             </div>
             <div className="emp-form">
               {dialog === "create" && <p>Membuat satu payment DRAFT untuk periode ini. Nominal mengikuti kredit Utang Gaji.</p>}
               {dialog === "approve" && <p>Menyetujui {payment?.payment_number}. Belum memotong bank.</p>}
               {dialog === "post-pay" && <p>Jurnal pembayaran: debit Utang Gaji, kredit bank. Tanggal jurnal = tanggal pembayaran.</p>}
+              {dialog === "cancel" && (
+                <label>Alasan
+                  <textarea value={reason} onChange={(e) => setReason(e.target.value)} rows={3} data-testid="hr-payment-cancel-reason" />
+                </label>
+              )}
               {dialog === "reverse" && (
                 <>
                   <dl className="hr-pay-meta" data-testid="hr-payroll-reverse-summary">
@@ -693,17 +709,18 @@ function PayrollFinanceFlow({ period, lines, readiness, payment, banks, onChange
                 <button type="button" className="ghost" disabled={Boolean(busy)} onClick={() => setDialog("")}>Batal</button>
                 <button
                   type="button"
-                  className={dialog === "reverse" ? "ghost danger" : "primary"}
-                  disabled={Boolean(busy) || (dialog === "reverse" && reason.trim().length < 3)}
+                  className={dialog === "reverse" || dialog === "cancel" ? "ghost danger" : "primary"}
+                  disabled={Boolean(busy) || ((dialog === "reverse" || dialog === "cancel") && reason.trim().length < 3)}
                   data-testid="hr-payroll-finance-confirm"
                   onClick={() => {
                     if (dialog === "create") run(() => api.hrPayrollCreatePayment(period.id, { payment_date: payDate, cash_bank_account_id: bankId }));
                     if (dialog === "approve") run(() => api.hrPayrollApprovePayment(payment.id));
                     if (dialog === "post-pay") run(() => api.hrPayrollPostPayment(payment.id));
                     if (dialog === "reverse") run(() => api.hrPayrollReversePayment(payment.id, reason.trim()));
+                    if (dialog === "cancel") run(() => api.hrPayrollCancelPayment(payment.id, reason.trim()));
                   }}
                 >
-                  {busy ? "Memproses…" : dialog === "reverse" ? "Reverse" : "Lanjutkan"}
+                  {busy ? "Memproses…" : dialog === "reverse" ? "Reverse" : dialog === "cancel" ? "Batalkan" : "Lanjutkan"}
                 </button>
               </div>
             </div>
@@ -724,6 +741,7 @@ function Payroll() {
   const [kasbon, setKasbon] = useState([]);
   const [readiness, setReadiness] = useState(null);
   const [payment, setPayment] = useState(null);
+  const [payments, setPayments] = useState([]);
   const [banks, setBanks] = useState([]);
   const [showPreview, setShowPreview] = useState(false);
   const [postOpen, setPostOpen] = useState(false);
@@ -756,8 +774,10 @@ function Payroll() {
     try {
       const pay = await api.hrPayrollPeriodPayment(period.id);
       setPayment(pay.payment || null);
+      setPayments(pay.payments || []);
     } catch {
       setPayment(null);
+      setPayments([]);
     }
   }, []);
   const canCreatePayment = hasPerm("payroll_payment.create");
@@ -826,6 +846,7 @@ function Payroll() {
             lines={lines}
             readiness={readiness}
             payment={payment}
+            payments={payments}
             banks={banks}
             hasPerm={hasPerm}
             onError={setErr}
