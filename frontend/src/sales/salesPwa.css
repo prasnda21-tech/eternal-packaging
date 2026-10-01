@@ -1129,3 +1129,107 @@ a.spwa-po-card {
   background: #eff9f5;
 }
 .spwa-camera input { margin-top: 4px; padding: 0; border: 0; }
+.spwa-pred-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 10px 8px;
+}
+.spwa-pred-filters button {
+  min-height: 44px;
+  padding: 8px 12px;
+  border: 1px solid #d5e0e4;
+  border-radius: 8px;
+  background: #fff;
+  color: #17313e;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+}
+.spwa-pred-filters button.is-on { border-color: #08785d; color: #08785d; }
+.spwa-pred-row,
+.spwa-pred-detail {
+  display: block;
+  box-sizing: border-box;
+  width: calc(100% - 20px);
+  margin: 6px 10px;
+  padding: 12px;
+  background: #fff;
+  border: 1px solid #dce3e7;
+  border-radius: 10px;
+  color: inherit;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+.spwa-pred-row strong,
+.spwa-pred-detail h2 {
+  display: block;
+  margin: 0;
+  color: #142e3b;
+  font-size: 16px;
+  line-height: 1.3;
+}
+.spwa-pred-row p,
+.spwa-pred-detail p {
+  margin: 4px 0 0;
+  color: #334852;
+  font-size: 14px;
+  line-height: 1.35;
+}
+.spwa-pred-row .spwa-pred-status,
+.spwa-pred-detail .spwa-pred-status {
+  font-size: 14px;
+  font-weight: 650;
+}
+.spwa-pred-detail h3 {
+  margin: 16px 0 6px;
+  color: #142e3b;
+  font-size: 15px;
+}
+.spwa-pred-agenda,
+.spwa-pred-agenda fieldset {
+  display: grid;
+  gap: 8px;
+  margin: 8px 0 0;
+  padding: 0;
+  border: 0;
+}
+.spwa-pred-agenda legend {
+  margin: 0;
+  color: #142e3b;
+  font-size: 14px;
+  font-weight: 700;
+}
+.spwa-pred-agenda label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  color: #556a74;
+  font-size: 14px;
+  font-weight: 700;
+}
+.spwa-pred-agenda label:has(input[type="datetime-local"]) {
+  display: grid;
+  gap: 4px;
+  align-items: stretch;
+}
+.spwa-pred-agenda input[type="radio"],
+.spwa-pred-agenda input[type="checkbox"] {
+  width: 22px;
+  height: 22px;
+  margin: 0;
+  flex: 0 0 auto;
+}
+.spwa-pred-agenda input[type="datetime-local"] {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 44px;
+  padding: 10px;
+  border: 1px solid #c9d6dc;
+  border-radius: 8px;
+  font: inherit;
+  font-size: 16px;
+}
+.spwa-pred-agenda .spwa-primary { width: 100%; }
+.spwa-pred-notice { margin: 8px 10px; color: #08785d; font-size: 14px; font-weight: 700; }

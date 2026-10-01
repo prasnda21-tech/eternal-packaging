@@ -3,12 +3,17 @@ from __future__ import annotations
 
 import re
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, Iterable, List, Optional
 from urllib.parse import unquote
 
 from fastapi import HTTPException
 
-from services.customer_identity import display_customer_name, extract_stable_customer_id
+from services.customer_identity import (
+    build_identity_context,
+    display_customer_name,
+    extract_stable_customer_id,
+)
 from services.order_prediction import (
     MIN_ORDERS,
     ORDER_PREDICTION_PROJECTION,
@@ -21,7 +26,10 @@ from services.order_prediction import (
     STATUS_WAKTU_FOLLOW_UP,
     build_order_prediction,
     build_order_prediction_detail,
+    customer_group_key,
     decode_customer_key,
+    is_valid_business_order,
+    order_date_of,
     wib_today,
 )
 from services.status_po import (
@@ -1429,15 +1437,22 @@ async def list_sales_pwa_customers(db, user: dict, *, q: str = "") -> dict:
             g["active_status"] = effective_workflow_status(o)
             g["customer"] = display_customer_name(o) or g["customer"]
 
-    pred = await build_sales_pwa_predictions(db, user, orders=orders)
+    pred = await build_sales_pwa_predictions(db, user, orders=orders, include_membership=True)
+    membership = pred.pop("membership", {}) or {}
     pred_by_key = {r.get("customer_key"): r for r in pred.get("rows") or []}
     needle = _norm(q)
     rows = []
     for g in groups.values():
         outlets = sorted(g["outlets"])
-        pred_row = pred_by_key.get(g["customer_key"]) or pred_by_key.get(f"id:{g['customer_key']}")
+        mapped = {
+            membership.get(str(order_id))
+            for order_id in (g.get("order_ids") or [])
+            if membership.get(str(order_id))
+        }
+        pred_row = pred_by_key.get(next(iter(mapped))) if len(mapped) == 1 else None
         rows.append({
             "customer_key": g["customer_key"],
+            "prediction_key": _prediction_link_key(g["customer_key"], pred_row),
             "customer": g["customer"],
             "outlets": outlets,
             "outlet": ", ".join(outlets) if outlets else None,
@@ -1529,6 +1544,346 @@ async def _attach_linked_visit_history(db, user: dict, rows: List[dict]) -> None
         row["visit_history"] = history
 
 
+# Presentation order for the sales list. Does not change analyze_group status rules.
+PWA_PREDICTION_STATUS_ORDER = (
+    STATUS_RISIKO,
+    STATUS_TERLAMBAT,
+    STATUS_JATUH_TEMPO,
+    STATUS_WAKTU_FOLLOW_UP,
+    STATUS_TIDAK_AKTIF,
+    STATUS_BELUM_WAKTUNYA,
+    STATUS_DATA_BELUM_CUKUP,
+)
+IMPORT_HISTORY_SOURCE = "IMPORT HISTORIS"
+
+
+def _prediction_link_key(customer_key: str, pred_row: Optional[dict]) -> str:
+    """Route key only when the prediction engine returned one. Never invent a key."""
+    del customer_key
+    return str((pred_row or {}).get("customer_key") or "").strip()
+
+
+def _prediction_identity(customer_key: str) -> str:
+    key = decode_customer_key(str(customer_key or ""))
+    if key.startswith("id:"):
+        return "stable"
+    if key.startswith("ambiguous:"):
+        return "ambiguous"
+    return "name"
+
+
+def _confirmed_stable_customer_id(customer_key: str, orders: List[dict]) -> Optional[str]:
+    """Agenda id only when every order in the group carries that same stable id."""
+    key = decode_customer_key(str(customer_key or ""))
+    if not key.startswith("id:"):
+        return None
+    expected = key[3:].strip()
+    if not expected or "|" in expected or not orders:
+        return None
+    for order in orders:
+        if extract_stable_customer_id(order) != expected:
+            return None
+    return expected
+
+
+def _prediction_status_rank(status: str) -> int:
+    try:
+        return PWA_PREDICTION_STATUS_ORDER.index(status)
+    except ValueError:
+        return 99
+
+
+def _iso_day(value: Any) -> Optional[date]:
+    text = parse_calendar_date(value) or str(value or "")[:10]
+    if len(text) != 10:
+        return None
+    try:
+        return date.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def _shape_prediction_row(row: dict, today: date) -> dict:
+    """Expose the existing engine fields under the sales-list names. No second formula."""
+    status = str(row.get("followup_status") or "")
+    end = _iso_day(row.get("prediction_end"))
+    days_late = (today - end).days if end and today > end else None
+    reason = str(row.get("recommendation") or "").strip()
+    if days_late:
+        late = f"Lewat {days_late} hari dari akhir perkiraan."
+        reason = f"{reason} {late}".strip()
+    shaped = dict(row)
+    shaped.update({
+        "customer_name": row.get("customer") or "",
+        "status": status,
+        "prediction_center": row.get("prediction_mid"),
+        "history_count": row.get("total_orders") or 0,
+        "reason": reason,
+        "days_late": days_late,
+        "evidence": _evidence_text(row),
+        "min_orders": MIN_ORDERS,
+        "bucket": _prediction_bucket(row, today),
+    })
+    if not str(row.get("customer_key") or "").startswith("id:"):
+        shaped["customer_id"] = None
+    return shaped
+
+
+def _prediction_sort_key(row: dict):
+    return (
+        _prediction_status_rank(str(row.get("status") or "")),
+        row.get("followup_start") or row.get("prediction_center") or row.get("last_order_date") or "9999-99-99",
+        _norm(row.get("customer_name")),
+    )
+
+
+def _decimal_or_none(raw: Any) -> Optional[Decimal]:
+    if raw is None or isinstance(raw, bool):
+        return None
+    if isinstance(raw, str) and not raw.strip():
+        return None
+    try:
+        return Decimal(str(raw).strip().replace(",", "."))
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+
+
+def _non_negative_decimal(raw: Any) -> Optional[Decimal]:
+    number = _decimal_or_none(raw)
+    if number is None or number < 0:
+        return None
+    return number
+
+
+def _money(amount: Decimal) -> float:
+    return float(amount.quantize(Decimal("0.01")))
+
+
+def _product_key(line: dict) -> Optional[str]:
+    accurate = str(line.get("accurate_item_id") or "").strip()
+    if accurate:
+        return f"a:{accurate}"
+    master = str(line.get("master_item_id") or "").strip()
+    if master:
+        return f"m:{master}"
+    name = _norm(line.get("name") or line.get("item_name") or line.get("product_name"))
+    if not name:
+        return None
+    return f"name:{name}"
+
+
+def _product_name(line: dict) -> str:
+    return str(line.get("name") or line.get("item_name") or line.get("product_name") or "").strip()
+
+
+def _live_prediction_order(order: dict) -> bool:
+    source = str(order.get("history_source") or order.get("source") or "ORDER MASUK").strip()
+    return source != IMPORT_HISTORY_SOURCE
+
+
+def _order_line_value(order: dict) -> dict:
+    """Line value only when quantity and unit_price are both valid. Missing stays null."""
+    if not _live_prediction_order(order):
+        return {"value_status": "unknown", "order_value": None, "known_value": None}
+    lines = [line for line in (order.get("line_items") or []) if isinstance(line, dict)]
+    if not lines:
+        return {"value_status": "unknown", "order_value": None, "known_value": None}
+    known: List[Decimal] = []
+    missing = 0
+    for line in lines:
+        qty = _non_negative_decimal(line.get("quantity"))
+        price = _non_negative_decimal(line.get("unit_price"))
+        if qty is None or price is None:
+            missing += 1
+            continue
+        known.append(qty * price)
+    if not known:
+        return {"value_status": "unknown", "order_value": None, "known_value": None}
+    total = _money(sum(known, Decimal("0")))
+    if missing:
+        return {"value_status": "partial", "order_value": None, "known_value": total}
+    return {"value_status": "complete", "order_value": total, "known_value": total}
+
+
+def _customer_order_value(orders: List[dict]) -> dict:
+    live = [order for order in orders if _live_prediction_order(order)]
+    valued = [_order_line_value(order) for order in live]
+    complete = [row["order_value"] for row in valued if row["value_status"] == "complete"]
+    if not valued or all(row["value_status"] == "unknown" for row in valued):
+        return {
+            "value_status": "unknown",
+            "historical_order_value": None,
+            "average_order_value": None,
+            "known_value": None,
+        }
+    known_parts = [Decimal(str(row["known_value"])) for row in valued if row.get("known_value") is not None]
+    known = _money(sum(known_parts, Decimal("0"))) if known_parts else None
+    if len(complete) == len(valued):
+        exact = sum((Decimal(str(amount)) for amount in complete), Decimal("0"))
+        total = _money(exact)
+        average = _money(exact / Decimal(len(complete)))
+        return {
+            "value_status": "complete",
+            "historical_order_value": total,
+            "average_order_value": average,
+            "known_value": total,
+        }
+    return {
+        "value_status": "partial",
+        "historical_order_value": None,
+        "average_order_value": None,
+        "known_value": known,
+    }
+
+
+def _prediction_products(orders: List[dict]) -> List[dict]:
+    grouped: Dict[str, dict] = {}
+    dated = []
+    for order in orders:
+        if not _live_prediction_order(order):
+            continue
+        day = order_date_of(order)
+        dated.append((day.isoformat() if day else "", order))
+    for day, order in dated:
+        seen = set()
+        qty_by_key: Dict[str, Decimal] = {}
+        qty_missing = set()
+        names: Dict[str, str] = {}
+        units: Dict[str, str] = {}
+        for line in order.get("line_items") or []:
+            if not isinstance(line, dict):
+                continue
+            key = _product_key(line)
+            if not key:
+                continue
+            seen.add(key)
+            names[key] = _product_name(line) or names.get(key) or key
+            unit = str(line.get("unit") or "").strip()
+            if unit:
+                units[key] = unit
+            qty = _non_negative_decimal(line.get("quantity"))
+            if qty is None:
+                qty_missing.add(key)
+            else:
+                qty_by_key[key] = qty_by_key.get(key, Decimal("0")) + qty
+        for key in seen:
+            row = grouped.setdefault(key, {
+                "product_key": key,
+                "name": names.get(key) or "",
+                "unit": units.get(key) or "",
+                "purchase_count": 0,
+                "total_quantity": Decimal("0"),
+                "quantity_complete": True,
+                "last_purchase_date": None,
+                "last_quantity": None,
+            })
+            row["purchase_count"] += 1
+            if names.get(key):
+                row["name"] = names[key]
+            if units.get(key):
+                row["unit"] = units[key]
+            if key in qty_missing:
+                row["quantity_complete"] = False
+            else:
+                row["total_quantity"] += qty_by_key.get(key, Decimal("0"))
+            if day and (not row["last_purchase_date"] or day > row["last_purchase_date"]):
+                row["last_purchase_date"] = day
+                last_qty = None if key in qty_missing else qty_by_key.get(key)
+                row["last_quantity"] = float(last_qty) if last_qty is not None else None
+                if names.get(key):
+                    row["name"] = names[key]
+                if units.get(key):
+                    row["unit"] = units[key]
+    rows = []
+    for row in grouped.values():
+        qty = row["total_quantity"]
+        rows.append({
+            "product_key": row["product_key"],
+            "name": row["name"],
+            "unit": row["unit"] or None,
+            "purchase_count": row["purchase_count"],
+            "total_quantity": None if (not row["quantity_complete"] and qty == 0) else float(qty),
+            "quantity_complete": row["quantity_complete"],
+            "last_purchase_date": row["last_purchase_date"],
+            "last_quantity": row["last_quantity"],
+        })
+    rows.sort(key=lambda row: row.get("last_purchase_date") or "", reverse=True)
+    rows.sort(key=lambda row: -int(row["purchase_count"]))
+    return rows
+
+
+def _valid_owned_prediction_orders(orders: List[dict], supplemental: List[dict]) -> List[dict]:
+    from services.order_prediction_import import merge_prediction_orders
+
+    combined = merge_prediction_orders(orders, supplemental or [])
+    return [order for order in combined if is_valid_business_order(order)]
+
+
+def _orders_for_prediction_key(orders: List[dict], masters: List[dict], customer_key: str) -> List[dict]:
+    context = build_identity_context(masters, orders, [])
+    key = decode_customer_key(customer_key)
+    return [
+        order for order in orders
+        if customer_group_key(order, context, allow_name_fallback=False) == key
+    ]
+
+
+def _history_with_value(history: List[dict], orders: List[dict]) -> List[dict]:
+    by_id = {}
+    for order in orders:
+        if order.get("id"):
+            by_id[str(order.get("id"))] = _order_line_value(order)
+    rows = []
+    for item in history or []:
+        info = by_id.get(str(item.get("id") or ""), {
+            "value_status": "unknown",
+            "order_value": None,
+            "known_value": None,
+        })
+        row = dict(item)
+        row["order_value"] = info["order_value"]
+        row["known_value"] = info["known_value"]
+        row["value_status"] = info["value_status"]
+        rows.append(row)
+    rows.sort(key=lambda row: (row.get("order_date") or "", row.get("po_number") or ""), reverse=True)
+    return rows
+
+
+async def _prediction_agenda(db, user: dict, customer_id: Optional[str]) -> dict:
+    """Exact linked_customer_id outlets owned by this session. No name match."""
+    link = _stable_customer_link(customer_id)
+    if not link:
+        return {"linked": False, "customer_id": None, "outlets": []}
+    uid = session_user_id(user)
+    outlets = await db[COL_OUTLETS].find(
+        {"linked_customer_id": link},
+        {"_id": 0, "id": 1, "name": 1, "linked_customer_id": 1},
+    ).to_list(100)
+    ids = [str(outlet.get("id") or "") for outlet in outlets if outlet.get("id")]
+    owned = []
+    if ids:
+        owned = await db[COL_OWNERSHIP].find(
+            {"outlet_id": {"$in": ids}, "current_owner_id": uid, "in_pool": {"$ne": True}},
+            {"_id": 0, "outlet_id": 1, "next_follow_up_at": 1},
+        ).to_list(100)
+    by_outlet = {str(row.get("outlet_id") or ""): row for row in owned}
+    visible = []
+    for outlet in outlets:
+        outlet_id = str(outlet.get("id") or "")
+        slot = by_outlet.get(outlet_id)
+        if not slot:
+            continue
+        follow = slot.get("next_follow_up_at")
+        visible.append({
+            "outlet_id": outlet_id,
+            "name": outlet.get("name") or "Outlet",
+            "next_follow_up_at": follow or None,
+            "has_active_agenda": bool(str(follow or "").strip()),
+        })
+    visible.sort(key=lambda row: _norm(row.get("name")))
+    return {"linked": bool(visible), "customer_id": link, "outlets": visible}
+
+
 def _prediction_bucket(row: dict, today: date) -> str:
     status = str(row.get("followup_status") or "")
     if status == STATUS_DATA_BELUM_CUKUP:
@@ -1563,11 +1918,19 @@ def _evidence_text(row: dict) -> str:
     return f"Berdasarkan {total} order terakhir • {med_txt}"
 
 
-async def build_sales_pwa_predictions(db, user: dict, *, orders: Optional[List[dict]] = None, customer_key: Optional[str] = None) -> dict:
+async def build_sales_pwa_predictions(
+    db,
+    user: dict,
+    *,
+    orders: Optional[List[dict]] = None,
+    customer_key: Optional[str] = None,
+    include_membership: bool = False,
+) -> dict:
     require_sales_pwa(user)
     if orders is None:
         proj = dict(ORDER_PREDICTION_PROJECTION)
         proj["sales_user_id"] = 1
+        proj["line_items"] = 1
         orders = await db.orders.find(sales_owner_match(user), proj).to_list(5000)
     else:
         uid = session_user_id(user)
@@ -1578,19 +1941,39 @@ async def build_sales_pwa_predictions(db, user: dict, *, orders: Optional[List[d
         {"cancelled": {"$ne": True}, "sales_user_id": session_user_id(user)},
         {"_id": 0},
     ).to_list(10000)
+    today = wib_today()
     if customer_key:
         detail = build_order_prediction_detail(
             orders,
             customer_key,
             supplemental=supplemental,
             masters=masters,
+            allow_name_fallback=False,
         )
         if not detail:
             raise HTTPException(404, "Prediksi tidak ditemukan")
-        analysis = detail.get("analysis") or {}
-        analysis["evidence"] = _evidence_text(analysis)
-        analysis["bucket"] = _prediction_bucket(analysis, wib_today())
-        analysis["min_orders"] = MIN_ORDERS
+        valid = _valid_owned_prediction_orders(orders, supplemental)
+        grouped = _orders_for_prediction_key(valid, masters, customer_key)
+        analysis = _shape_prediction_row(detail.get("analysis") or {}, today)
+        history = _history_with_value(detail.get("history") or [], grouped)
+        stable_id = _confirmed_stable_customer_id(analysis.get("customer_key"), grouped)
+        identity = _prediction_identity(analysis.get("customer_key"))
+        analysis["customer_id"] = stable_id
+        detail["analysis"] = analysis
+        detail["history"] = history
+        detail["products"] = _prediction_products(grouped)
+        detail["value"] = _customer_order_value(grouped)
+        if stable_id:
+            agenda = await _prediction_agenda(db, user, stable_id)
+            agenda["identity"] = "stable"
+        else:
+            agenda = {
+                "linked": False,
+                "customer_id": None,
+                "outlets": [],
+                "identity": identity,
+            }
+        detail["agenda"] = agenda
         return detail
     data = build_order_prediction(
         orders,
@@ -1599,20 +1982,20 @@ async def build_sales_pwa_predictions(db, user: dict, *, orders: Optional[List[d
         sales="",
         skip=0,
         limit=2000,
+        allow_name_fallback=False,
+        include_membership=include_membership,
     )
-    today = wib_today()
     buckets = {
         "follow_up": [],
         "tujuh_hari": [],
         "berikutnya": [],
         "belum_cukup": [],
     }
-    for row in data.get("rows") or []:
-        row["evidence"] = _evidence_text(row)
-        row["min_orders"] = MIN_ORDERS
-        bucket = _prediction_bucket(row, today)
-        row["bucket"] = bucket
-        buckets.setdefault(bucket, []).append(row)
+    shaped = [_shape_prediction_row(row, today) for row in (data.get("rows") or [])]
+    shaped.sort(key=_prediction_sort_key)
+    for row in shaped:
+        buckets.setdefault(row.get("bucket") or "berikutnya", []).append(row)
+    data["rows"] = shaped
     data["buckets"] = buckets
     data["min_orders"] = MIN_ORDERS
     data["loaded_at"] = datetime.now(timezone.utc).isoformat()

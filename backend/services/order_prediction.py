@@ -223,9 +223,18 @@ def _sales_name(order: dict) -> str:
     return str(order.get("sales") or order.get("sales_user") or order.get("seller") or "").strip()
 
 
-def customer_group_key(order: dict, context: Optional[CustomerIdentityContext] = None) -> str:
+def customer_group_key(
+    order: dict,
+    context: Optional[CustomerIdentityContext] = None,
+    *,
+    allow_name_fallback: bool = True,
+) -> str:
     """Logical customer identity only. Outlet is never part of the key."""
-    return resolve_customer_identity(order, context).key
+    return resolve_customer_identity(
+        order,
+        context,
+        allow_name_fallback=allow_name_fallback,
+    ).key
 
 
 def encode_customer_key(key: str) -> str:
@@ -409,6 +418,7 @@ def analyze_group(
     *,
     context: Optional[CustomerIdentityContext] = None,
     customer_key: str = "",
+    allow_name_fallback: bool = True,
 ) -> dict:
     dated = []
     for o in orders:
@@ -434,7 +444,11 @@ def analyze_group(
     orders_90 = sum(1 for d in dates if d >= lookback)
 
     sample = src[-1] if src else {}
-    resolved = resolve_customer_identity(sample, context) if sample else None
+    resolved = resolve_customer_identity(
+        sample,
+        context,
+        allow_name_fallback=allow_name_fallback,
+    ) if sample else None
     key = customer_key or (resolved.key if resolved else "")
     customer = (resolved.display_name if resolved else "") or _customer_name(sample)
     outlets = collect_outlet_names(src)
@@ -649,6 +663,8 @@ def build_order_prediction(
     supplemental: Optional[Sequence[dict]] = None,
     masters: Optional[Sequence[dict]] = None,
     identity_context: Optional[CustomerIdentityContext] = None,
+    allow_name_fallback: bool = True,
+    include_membership: bool = False,
 ) -> dict:
     today = wib_today(now)
     from services.order_prediction_import import merge_prediction_orders
@@ -664,14 +680,23 @@ def build_order_prediction(
     valid = [o for o in combined if is_valid_business_order(o)]
     context = identity_context or build_identity_context(masters, valid, [])
     groups: Dict[str, List[dict]] = {}
+    membership: Dict[str, str] = {}
     for o in valid:
-        key = customer_group_key(o, context)
+        key = customer_group_key(o, context, allow_name_fallback=allow_name_fallback)
         if not key:
             continue
         groups.setdefault(key, []).append(o)
+        if o.get("id"):
+            membership[str(o.get("id"))] = key
 
     analyzed = [
-        analyze_group(items, today, context=context, customer_key=key)
+        analyze_group(
+            items,
+            today,
+            context=context,
+            customer_key=key,
+            allow_name_fallback=allow_name_fallback,
+        )
         for key, items in groups.items()
     ]
     analyzed = sort_rows(analyzed)
@@ -698,7 +723,7 @@ def build_order_prediction(
             ]).lower()
         ]
 
-    return {
+    result = {
         "as_of": today.isoformat(),
         "parameters": report_parameters(),
         "summary": summary,
@@ -711,6 +736,9 @@ def build_order_prediction(
         "order_total": len(order_rows),
         "source": "orders+import" if supplemental is not None else "orders",
     }
+    if include_membership:
+        result["membership"] = membership
+    return result
 
 
 def build_order_prediction_detail(
@@ -721,6 +749,7 @@ def build_order_prediction_detail(
     supplemental: Optional[Sequence[dict]] = None,
     masters: Optional[Sequence[dict]] = None,
     identity_context: Optional[CustomerIdentityContext] = None,
+    allow_name_fallback: bool = True,
 ) -> Optional[dict]:
     today = wib_today(now)
     from services.order_prediction_import import merge_prediction_orders
@@ -738,11 +767,17 @@ def build_order_prediction_detail(
     key = decode_customer_key(customer_key)
     grouped: List[dict] = []
     for o in valid:
-        if customer_group_key(o, context) == key:
+        if customer_group_key(o, context, allow_name_fallback=allow_name_fallback) == key:
             grouped.append(o)
     if not grouped:
         return None
-    row = analyze_group(grouped, today, context=context, customer_key=key)
+    row = analyze_group(
+        grouped,
+        today,
+        context=context,
+        customer_key=key,
+        allow_name_fallback=allow_name_fallback,
+    )
     return {
         "as_of": today.isoformat(),
         "parameters": report_parameters(),

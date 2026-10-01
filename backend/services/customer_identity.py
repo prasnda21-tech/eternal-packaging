@@ -123,6 +123,7 @@ def resolve_customer_identity(
     context: Optional[CustomerIdentityContext] = None,
     *,
     kind: str = "order",
+    allow_name_fallback: bool = True,
 ) -> ResolvedCustomer:
     display = display_customer_name(record, kind=kind)
     normalized = normalize_customer_name(display)
@@ -154,7 +155,10 @@ def resolve_customer_identity(
         )
 
     known = set((context.name_to_stable_ids.get(normalized) if context else None) or ())
-    if len(known) == 1:
+    # Office reports may attach a nameless histori row to the one stable id
+    # that shares its name. PWA prediction passes allow_name_fallback=False so
+    # a name is never promoted to customer_id.
+    if len(known) == 1 and allow_name_fallback:
         sid = next(iter(known))
         preferred = context.id_to_display.get(sid) if context else ""
         return ResolvedCustomer(
