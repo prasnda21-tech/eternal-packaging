@@ -577,6 +577,32 @@ def test_operator_task_keeps_each_allocation_screen():
     assert ops["djoko@x.com"]["screen_size"] == "small"
 
 
+def test_operator_task_keeps_screen_when_line_mirror_empty():
+    o = _print_po()
+    o["line_items"][0].pop("screen_size", None)
+    o["operator_splits"] = [
+        {
+            "id": "deni", "line_idx": 0, "quantity": 4000, "qty_completed": 0,
+            "operator_email": "deni@x.com", "operator_name": "Deni", "screen_size": "large",
+        },
+        {
+            "id": "djoko", "line_idx": 0, "quantity": 1000, "qty_completed": 0,
+            "operator_email": "djoko@x.com", "operator_name": "Djoko", "screen_size": "small",
+        },
+    ]
+    ops = {
+        r["assigned_user_email"]: r
+        for r in build_operator_tasks(o, {"email": "deni@x.com"}, mine_only=False)
+    }
+    assert ops["deni@x.com"]["screen_size"] == "large"
+    assert ops["deni@x.com"]["target_qty"] == 4000
+    assert ops["djoko@x.com"]["screen_size"] == "small"
+    assert ops["djoko@x.com"]["target_qty"] == 1000
+    helpers = build_helper_tasks(o)
+    assert helpers[0]["line_idx"] == 0
+    assert helpers[0]["screen_size"] is None
+
+
 def test_missing_line_screen_size_is_null():
     o = _print_po()
     helper = build_helper_tasks(o)[0]

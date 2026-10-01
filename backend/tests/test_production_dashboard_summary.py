@@ -547,6 +547,65 @@ def test_summary_projection_prefers_each_operator_screen_over_line():
     assert [op["quantity"] for op in full_row["operators"]] == [4000, 3000]
 
 
+def test_cleared_line_mirror_keeps_schedule_screen_per_operator():
+    """An empty line mirror must not blank Screen Besar/Kecil on the schedule."""
+    import copy
+
+    projection, production_row = _import_production_row()
+    full = {
+        "id": "po-screen-cleared-mirror",
+        "po_number": "PO-SCR-5",
+        "customer": "Cust",
+        "total_quantity": 7000,
+        "current_stage": 8,
+        "design_status": "Approved",
+        "payment_status": "Approved",
+        "line_items": [
+            {
+                "id": "lid-a",
+                "name": "Cup 16oz",
+                "quantity": 7000,
+                "production_process": "print",
+            },
+        ],
+        "operator_splits": [
+            {
+                "id": "deni",
+                "line_idx": 0,
+                "operator_name": "Deni",
+                "operator_email": "deni@x.com",
+                "quantity": 4000,
+                "qty_completed": 0,
+                "stage": 8,
+                "work_date": "2026-10-02",
+                "screen_size": "large",
+            },
+            {
+                "id": "djoko",
+                "line_idx": 0,
+                "operator_name": "Djoko",
+                "operator_email": "djoko@x.com",
+                "quantity": 3000,
+                "qty_completed": 0,
+                "stage": 8,
+                "work_date": "2026-10-03",
+                "screen_size": "small",
+            },
+        ],
+    }
+    assert "screen_size" not in full["line_items"][0]
+    slim = _apply_mongo_inclusion(copy.deepcopy(full), projection)
+    assert "screen_size" not in slim["line_items"][0]
+    assert [s["screen_size"] for s in slim["operator_splits"]] == ["large", "small"]
+    for source in (full, slim):
+        row = production_row(copy.deepcopy(source))
+        ops = row["operators"]
+        assert [op["screen_size"] for op in ops] == ["large", "small"]
+        assert [op["quantity"] for op in ops] == [4000, 3000]
+        assert [op["operator_name"] for op in ops] == ["Deni", "Djoko"]
+        assert [op["work_date"] for op in ops] == ["2026-10-02", "2026-10-03"]
+
+
 def test_summary_projection_keeps_operator_split_screen_size_fallback():
     import copy
 

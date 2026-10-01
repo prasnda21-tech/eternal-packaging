@@ -83,6 +83,11 @@ jobs:
           tests/test_sales_invoices_and_receipts.py
           tests/test_physical_stock_engine.py
           tests/test_confirm_delivered_sj_stock.py
+          tests/test_operator_schedule.py
+          tests/test_division_tasks.py::test_line_tasks_copy_exact_line_screen_size
+          tests/test_division_tasks.py::test_operator_task_keeps_each_allocation_screen
+          tests/test_division_tasks.py::test_operator_task_keeps_screen_when_line_mirror_empty
+          tests/test_production_dashboard_summary.py
 
   frontend-focused:
     name: Frontend tests and build
@@ -151,6 +156,7 @@ jobs:
           src/lib/salesReceipts.test.js
           src/lib/salesReceiptPaymentProof.test.js
           src/pages/SalesAccountingSettings.test.js
+          src/components/OperatorSplitPanel.screenSize.test.js
       - name: Build production frontend
         if: ${{ always() }}
         env:
