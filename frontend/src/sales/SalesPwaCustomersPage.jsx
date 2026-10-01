@@ -29,19 +29,28 @@ export default function SalesPwaCustomersPage() {
           <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Cari pelanggan / PO" data-testid="sales-customers-search" />
         </label>
         {err && <div className="spwa-err">{err}</div>}
-        {(data?.customers || []).map((c) => (
-          <article key={c.customer_key} className="spwa-customer-block" data-testid={`sales-customer-block-${c.customer_key}`}>
-            <Link
-              className="spwa-list-btn"
-              to={(c.prediction_key || c.customer_key) ? `/sales/prediksi/${encodeURIComponent(c.prediction_key || c.customer_key)}` : "/sales/prediksi"}
-              data-testid={`sales-customer-${c.customer_key}`}
-            >
+        {(data?.customers || []).map((c) => {
+          const predictionTo = c.prediction_key ? `/sales/prediksi/${encodeURIComponent(c.prediction_key)}` : "";
+          const summary = (
+            <>
               <strong>{c.customer}</strong>
               <div className="spwa-po">{c.outlet || "—"} · {c.po_count} PO · terakhir {formatSalesDate(c.last_order_date)}</div>
               {c.prediction?.followup_status ? (
                 <div className="spwa-pred-status">{c.prediction.followup_status}</div>
               ) : null}
-            </Link>
+            </>
+          );
+          return (
+          <article key={c.customer_key} className="spwa-customer-block" data-testid={`sales-customer-block-${c.customer_key}`}>
+            {predictionTo ? (
+              <Link className="spwa-list-btn" to={predictionTo} data-testid={`sales-customer-${c.customer_key}`}>
+                {summary}
+              </Link>
+            ) : (
+              <div className="spwa-list-btn" data-testid={`sales-customer-${c.customer_key}`}>
+                {summary}
+              </div>
+            )}
             {c.visit_link === "linked" && (
               <div className="spwa-visit-history" data-testid={`sales-customer-visits-${c.customer_key}`}>
                 {(c.visit_history || []).length === 0 && <p className="spwa-empty compact">Belum ada riwayat visit.</p>}
@@ -58,7 +67,8 @@ export default function SalesPwaCustomersPage() {
               </div>
             )}
           </article>
-        ))}
+          );
+        })}
         {data && !(data.customers || []).length && <div className="spwa-empty">Tidak ada pelanggan pada PO Anda.</div>}
       </main>
     </>

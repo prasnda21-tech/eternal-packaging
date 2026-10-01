@@ -1437,13 +1437,19 @@ async def list_sales_pwa_customers(db, user: dict, *, q: str = "") -> dict:
             g["active_status"] = effective_workflow_status(o)
             g["customer"] = display_customer_name(o) or g["customer"]
 
-    pred = await build_sales_pwa_predictions(db, user, orders=orders)
+    pred = await build_sales_pwa_predictions(db, user, orders=orders, include_membership=True)
+    membership = pred.pop("membership", {}) or {}
     pred_by_key = {r.get("customer_key"): r for r in pred.get("rows") or []}
     needle = _norm(q)
     rows = []
     for g in groups.values():
         outlets = sorted(g["outlets"])
-        pred_row = pred_by_key.get(g["customer_key"]) or pred_by_key.get(f"id:{g['customer_key']}")
+        mapped = {
+            membership.get(str(order_id))
+            for order_id in (g.get("order_ids") or [])
+            if membership.get(str(order_id))
+        }
+        pred_row = pred_by_key.get(next(iter(mapped))) if len(mapped) == 1 else None
         rows.append({
             "customer_key": g["customer_key"],
             "prediction_key": _prediction_link_key(g["customer_key"], pred_row),
@@ -1552,14 +1558,32 @@ IMPORT_HISTORY_SOURCE = "IMPORT HISTORIS"
 
 
 def _prediction_link_key(customer_key: str, pred_row: Optional[dict]) -> str:
-    """Canonical prediction key. Stable ids use id:{customer_id}. Name keys stay as-is."""
-    linked = str((pred_row or {}).get("customer_key") or "").strip()
-    if linked:
-        return linked
-    raw = str(customer_key or "").strip()
-    if not raw or raw.startswith("name:") or raw.startswith("ambiguous:") or raw.startswith("id:"):
-        return raw
-    return f"id:{raw}"
+    """Route key only when the prediction engine returned one. Never invent a key."""
+    del customer_key
+    return str((pred_row or {}).get("customer_key") or "").strip()
+
+
+def _prediction_identity(customer_key: str) -> str:
+    key = decode_customer_key(str(customer_key or ""))
+    if key.startswith("id:"):
+        return "stable"
+    if key.startswith("ambiguous:"):
+        return "ambiguous"
+    return "name"
+
+
+def _confirmed_stable_customer_id(customer_key: str, orders: List[dict]) -> Optional[str]:
+    """Agenda id only when every order in the group carries that same stable id."""
+    key = decode_customer_key(str(customer_key or ""))
+    if not key.startswith("id:"):
+        return None
+    expected = key[3:].strip()
+    if not expected or "|" in expected or not orders:
+        return None
+    for order in orders:
+        if extract_stable_customer_id(order) != expected:
+            return None
+    return expected
 
 
 def _prediction_status_rank(status: str) -> int:
@@ -1600,6 +1624,8 @@ def _shape_prediction_row(row: dict, today: date) -> dict:
         "min_orders": MIN_ORDERS,
         "bucket": _prediction_bucket(row, today),
     })
+    if not str(row.get("customer_key") or "").startswith("id:"):
+        shaped["customer_id"] = None
     return shaped
 
 
@@ -1796,7 +1822,10 @@ def _valid_owned_prediction_orders(orders: List[dict], supplemental: List[dict])
 def _orders_for_prediction_key(orders: List[dict], masters: List[dict], customer_key: str) -> List[dict]:
     context = build_identity_context(masters, orders, [])
     key = decode_customer_key(customer_key)
-    return [order for order in orders if customer_group_key(order, context) == key]
+    return [
+        order for order in orders
+        if customer_group_key(order, context, allow_name_fallback=False) == key
+    ]
 
 
 def _history_with_value(history: List[dict], orders: List[dict]) -> List[dict]:
@@ -1889,7 +1918,14 @@ def _evidence_text(row: dict) -> str:
     return f"Berdasarkan {total} order terakhir • {med_txt}"
 
 
-async def build_sales_pwa_predictions(db, user: dict, *, orders: Optional[List[dict]] = None, customer_key: Optional[str] = None) -> dict:
+async def build_sales_pwa_predictions(
+    db,
+    user: dict,
+    *,
+    orders: Optional[List[dict]] = None,
+    customer_key: Optional[str] = None,
+    include_membership: bool = False,
+) -> dict:
     require_sales_pwa(user)
     if orders is None:
         proj = dict(ORDER_PREDICTION_PROJECTION)
@@ -1912,6 +1948,7 @@ async def build_sales_pwa_predictions(db, user: dict, *, orders: Optional[List[d
             customer_key,
             supplemental=supplemental,
             masters=masters,
+            allow_name_fallback=False,
         )
         if not detail:
             raise HTTPException(404, "Prediksi tidak ditemukan")
@@ -1919,11 +1956,24 @@ async def build_sales_pwa_predictions(db, user: dict, *, orders: Optional[List[d
         grouped = _orders_for_prediction_key(valid, masters, customer_key)
         analysis = _shape_prediction_row(detail.get("analysis") or {}, today)
         history = _history_with_value(detail.get("history") or [], grouped)
+        stable_id = _confirmed_stable_customer_id(analysis.get("customer_key"), grouped)
+        identity = _prediction_identity(analysis.get("customer_key"))
+        analysis["customer_id"] = stable_id
         detail["analysis"] = analysis
         detail["history"] = history
         detail["products"] = _prediction_products(grouped)
         detail["value"] = _customer_order_value(grouped)
-        detail["agenda"] = await _prediction_agenda(db, user, analysis.get("customer_id"))
+        if stable_id:
+            agenda = await _prediction_agenda(db, user, stable_id)
+            agenda["identity"] = "stable"
+        else:
+            agenda = {
+                "linked": False,
+                "customer_id": None,
+                "outlets": [],
+                "identity": identity,
+            }
+        detail["agenda"] = agenda
         return detail
     data = build_order_prediction(
         orders,
@@ -1932,6 +1982,8 @@ async def build_sales_pwa_predictions(db, user: dict, *, orders: Optional[List[d
         sales="",
         skip=0,
         limit=2000,
+        allow_name_fallback=False,
+        include_membership=include_membership,
     )
     buckets = {
         "follow_up": [],

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ChevronLeft } from "lucide-react";
 import api from "../lib/api";
@@ -15,14 +15,22 @@ const STATUS_FILTERS = [
   "DATA BELUM CUKUP",
 ];
 
+function gapNumber(value) {
+  const number = Number(value);
+  return Number.isInteger(number) ? String(number) : number.toLocaleString("id-ID");
+}
+
 function gapLabel(row) {
   if (row?.median_gap === null || row?.median_gap === undefined) return "Pola order belum cukup";
   const median = Number(row.median_gap);
   const average = row.average_gap === null || row.average_gap === undefined ? null : Number(row.average_gap);
+  const status = row?.status || row?.followup_status;
+  const count = row?.history_count ?? row?.total_orders;
+  const provisional = status === "DATA BELUM CUKUP" || (count !== null && count !== undefined && Number(count) < 3);
+  const averageText = average === null ? "" : ` · rata-rata ${gapNumber(average)} hari`;
+  if (provisional) return `Jarak order sementara: ${gapNumber(median)} hari${averageText}`;
   const pattern = row.pattern && row.pattern !== "DATA BELUM CUKUP" ? row.pattern : "";
-  const medianText = `Biasanya setiap ${Number.isInteger(median) ? median : median.toLocaleString("id-ID")} hari`;
-  const averageText = average === null ? "" : ` · rata-rata ${Number.isInteger(average) ? average : average.toLocaleString("id-ID")} hari`;
-  return `${medianText}${averageText}${pattern ? ` · ${pattern}` : ""}`;
+  return `Biasanya setiap ${gapNumber(median)} hari${averageText}${pattern ? ` · ${pattern}` : ""}`;
 }
 
 function nextLabel(row) {
@@ -65,6 +73,7 @@ export default function SalesPwaPredictionsPage() {
   const [confirmReplace, setConfirmReplace] = useState(false);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
+  const savingRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -107,14 +116,26 @@ export default function SalesPwaPredictionsPage() {
 
   const saveAgenda = async (event) => {
     event.preventDefault();
-    if (!selected?.outlet_id || !scheduleAt || busy) return;
+    if (!selected?.outlet_id || !scheduleAt || busy || savingRef.current) return;
     if (needsConfirm && !confirmReplace) return;
+    const outletIdSaved = selected.outlet_id;
+    savingRef.current = true;
     setBusy(true);
     setErr("");
     try {
-      await api.scheduleSalesPwaVisit({
-        outlet_id: selected.outlet_id,
+      const saved = await api.scheduleSalesPwaVisit({
+        outlet_id: outletIdSaved,
         next_follow_up_at: scheduleAt,
+      });
+      const storedAt = saved?.next_follow_up_at || saved?.at || scheduleAt;
+      setData((current) => {
+        if (!current?.agenda) return current;
+        const outlets = (current.agenda.outlets || []).map((outlet) => (
+          outlet.outlet_id === outletIdSaved
+            ? { ...outlet, has_active_agenda: true, next_follow_up_at: storedAt }
+            : outlet
+        ));
+        return { ...current, agenda: { ...current.agenda, linked: true, identity: "stable", outlets } };
       });
       setNotice("Ditambahkan ke Agenda");
       setScheduleAt("");
@@ -122,6 +143,7 @@ export default function SalesPwaPredictionsPage() {
     } catch (e) {
       setErr(e.response?.data?.detail || e.message || "Agenda gagal disimpan");
     } finally {
+      savingRef.current = false;
       setBusy(false);
     }
   };
@@ -214,7 +236,12 @@ export default function SalesPwaPredictionsPage() {
             </div>
 
             <h3>Agenda</h3>
-            {!agenda?.linked && <p data-testid="sales-pred-unlinked">Customer belum terhubung ke outlet.</p>}
+            {!agenda?.linked && (agenda?.identity === "name" || agenda?.identity === "ambiguous") && (
+              <p data-testid="sales-pred-identity">Customer belum memiliki identitas yang cukup untuk dihubungkan ke agenda.</p>
+            )}
+            {!agenda?.linked && agenda?.identity !== "name" && agenda?.identity !== "ambiguous" && (
+              <p data-testid="sales-pred-unlinked">Customer belum terhubung ke outlet.</p>
+            )}
             {agenda?.linked && (
               <form className="spwa-pred-agenda" data-testid="sales-pred-agenda" onSubmit={saveAgenda}>
                 {outlets.length > 1 && (

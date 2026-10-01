@@ -196,6 +196,88 @@ test("asks for an outlet when several exact links exist and schedules only the s
   node.remove();
 });
 
+test("uses a provisional interval until three orders exist", async () => {
+  api.salesPwaPredictions.mockResolvedValue({
+    rows: [{
+      customer_key: "id:TWO",
+      customer_name: "Toko Dua",
+      status: "DATA BELUM CUKUP",
+      history_count: 2,
+      reason: "Tambah histori sampai minimal 3 order.",
+      last_order_date: "2026-09-22",
+      median_gap: 10,
+      average_gap: 10,
+      pattern: "DATA BELUM CUKUP",
+    }],
+  });
+  const { node, root } = await renderPage();
+  expect(node.textContent).toContain("Jarak order sementara: 10 hari");
+  expect(node.textContent).not.toContain("Biasanya setiap");
+  act(() => root.unmount());
+  node.remove();
+});
+
+test("hides agenda when the customer identity is only a name", async () => {
+  mockRouter.params = { customerKey: "name:toko nama" };
+  api.salesPwaPredictionDetail.mockResolvedValue({
+    analysis: { customer_key: "name:toko nama", customer_name: "Toko Nama", status: "DATA BELUM CUKUP", last_order_date: "2026-09-22", median_gap: null },
+    value: { value_status: "unknown" },
+    products: [],
+    history: [],
+    agenda: { linked: false, identity: "name", customer_id: null, outlets: [] },
+  });
+  const { node, root } = await renderPage();
+  expect(node.querySelector('[data-testid="sales-pred-identity"]').textContent).toBe("Customer belum memiliki identitas yang cukup untuk dihubungkan ke agenda.");
+  expect(node.querySelector('[data-testid="sales-pred-agenda-submit"]')).toBeNull();
+  expect(node.querySelector('[data-testid="sales-pred-unlinked"]')).toBeNull();
+  act(() => root.unmount());
+  node.remove();
+});
+
+test("requires confirmation again after the first agenda save", async () => {
+  mockRouter.params = { customerKey: "id:DUE" };
+  api.salesPwaPredictionDetail.mockResolvedValue({
+    analysis: rows[2],
+    value: { value_status: "unknown", historical_order_value: null, average_order_value: null },
+    products: [],
+    history: [],
+    agenda: {
+      linked: true,
+      identity: "stable",
+      outlets: [{ outlet_id: "out-satu", name: "Outlet Satu", has_active_agenda: false, next_follow_up_at: null }],
+    },
+  });
+  let resolveSave;
+  api.scheduleSalesPwaVisit.mockImplementation(() => new Promise((resolve) => { resolveSave = resolve; }));
+  const { node, root } = await renderPage();
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+  const fillTime = async (value) => {
+    const input = node.querySelector('input[type="datetime-local"]');
+    await act(async () => {
+      setter.call(input, value);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+  };
+  await fillTime("2026-10-06T09:00");
+  const button = node.querySelector('[data-testid="sales-pred-agenda-submit"]');
+  await act(async () => { button.click(); button.click(); });
+  expect(api.scheduleSalesPwaVisit).toHaveBeenCalledTimes(1);
+  await act(async () => { resolveSave({ next_follow_up_at: "2026-10-06T02:00:00+00:00" }); });
+  expect(node.querySelector('[data-testid="sales-pred-agenda-existing"]').textContent).toContain("06/10/26 09:00");
+  expect(node.querySelector('[data-testid="sales-pred-agenda-submit"]').disabled).toBe(true);
+  await fillTime("2026-10-09T11:30");
+  await act(async () => { node.querySelector('[data-testid="sales-pred-agenda-submit"]').click(); });
+  expect(api.scheduleSalesPwaVisit).toHaveBeenCalledTimes(1);
+  await act(async () => { node.querySelector('[data-testid="sales-pred-agenda-confirm"]').click(); });
+  api.scheduleSalesPwaVisit.mockResolvedValue({ next_follow_up_at: "2026-10-09T04:30:00+00:00" });
+  await act(async () => { node.querySelector('[data-testid="sales-pred-agenda-submit"]').click(); });
+  expect(api.scheduleSalesPwaVisit).toHaveBeenCalledTimes(2);
+  expect(api.scheduleSalesPwaVisit).toHaveBeenLastCalledWith({ outlet_id: "out-satu", next_follow_up_at: "2026-10-09T11:30" });
+  act(() => root.unmount());
+  node.remove();
+});
+
 test("requires confirmation before replacing an active agenda", async () => {
   mockRouter.params = { customerKey: "id:DUE" };
   api.salesPwaPredictionDetail.mockResolvedValue({

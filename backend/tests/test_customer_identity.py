@@ -37,6 +37,21 @@ def test_unique_name_fallback_uses_single_stable_id():
     assert resolve_customer_identity(live, ctx).key == "id:uuid-1"
 
 
+def test_pwa_strict_identity_does_not_promote_a_unique_name():
+    live = {"customer": "KEDAI TUMAN", "customer_id": "uuid-1", "outlet": "Yogyakarta"}
+    hist = {"customer": "KEDAI TUMAN", "customer_id": "KEDAI TUMAN|Yogyakarta", "outlet": "Yogyakarta"}
+    ctx = build_identity_context(
+        [{"id": "uuid-1", "name": "KEDAI TUMAN"}],
+        [live],
+        [hist],
+    )
+    strict = resolve_customer_identity(hist, ctx, allow_name_fallback=False)
+    assert strict.key == "name:kedai tuman"
+    assert strict.stable_id is None
+    assert strict.kind == "name"
+    assert resolve_customer_identity(live, ctx, allow_name_fallback=False).key == "id:uuid-1"
+
+
 def test_ambiguous_name_does_not_collapse():
     a = {"customer": "TOKO MAKMUR", "customer_id": "CUSTOMER-A"}
     b = {"customer": "TOKO MAKMUR", "customer_id": "CUSTOMER-B"}
