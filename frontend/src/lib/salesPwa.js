@@ -56,6 +56,13 @@ export function salesHomeForUser(user, nextPath) {
   return isSafeSalesNextPath(nextPath) ? nextPath : SALES_PWA_HOME;
 }
 
+export function formatSalesRupiah(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) return null;
+  return `Rp${amount.toLocaleString("id-ID")}`;
+}
+
 export function formatSalesDate(iso) {
   const text = String(iso || "").trim();
   if (!text) return "—";

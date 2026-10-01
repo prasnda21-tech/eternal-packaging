@@ -1096,3 +1096,558 @@ async def test_agenda_limit_applies_after_classification():
         await db.users.delete_many({"id": sales_a})
         await db.sales_outlets.delete_many({"id": {"$in": outlet_ids}})
         await db.sales_ownership.delete_many({"outlet_id": {"$in": outlet_ids}})
+
+
+def test_prediction_value_never_turns_unknown_into_zero():
+    from services.sales_pwa import _customer_order_value, _order_line_value
+
+    complete = _order_line_value({"line_items": [{"quantity": 2, "unit_price": 5000}]})
+    assert complete == {"value_status": "complete", "order_value": 10000.0, "known_value": 10000.0}
+
+    missing_price = _order_line_value({"line_items": [{"quantity": 2, "name": "Cup"}]})
+    assert missing_price == {"value_status": "unknown", "order_value": None, "known_value": None}
+
+    missing_qty = _order_line_value({"line_items": [{"unit_price": 5000, "name": "Cup"}]})
+    assert missing_qty["order_value"] is None
+    assert missing_qty["known_value"] is None
+    assert missing_qty["value_status"] == "unknown"
+
+    blank = _order_line_value({"line_items": [{"quantity": "  ", "unit_price": 1000}]})
+    assert blank["order_value"] is None
+    assert blank["known_value"] is None
+
+    negative = _order_line_value({"line_items": [{"quantity": 1, "unit_price": -5}]})
+    assert negative["order_value"] is None
+
+    mixed = _order_line_value({"line_items": [
+        {"quantity": 2, "unit_price": 1000},
+        {"quantity": 1, "name": "Tanpa harga"},
+    ]})
+    assert mixed["value_status"] == "partial"
+    assert mixed["order_value"] is None
+    assert mixed["known_value"] == 2000.0
+
+    explicit_zero = _order_line_value({"line_items": [{"quantity": 2, "unit_price": 0}]})
+    assert explicit_zero["value_status"] == "complete"
+    assert explicit_zero["order_value"] == 0.0
+
+    imported = _order_line_value({
+        "history_source": "IMPORT HISTORIS",
+        "line_items": [{"quantity": 1, "unit_price": 9}],
+    })
+    assert imported["order_value"] is None
+    assert imported["known_value"] is None
+
+    partial_customer = _customer_order_value([
+        {"line_items": [{"quantity": 2, "unit_price": 1000}]},
+        {"line_items": [{"quantity": 4}]},
+        {},
+    ])
+    assert partial_customer["value_status"] == "partial"
+    assert partial_customer["historical_order_value"] is None
+    assert partial_customer["average_order_value"] is None
+    assert partial_customer["known_value"] == 2000.0
+
+    unknown_customer = _customer_order_value([{}, {"line_items": []}])
+    assert unknown_customer == {
+        "value_status": "unknown",
+        "historical_order_value": None,
+        "average_order_value": None,
+        "known_value": None,
+    }
+
+    full_customer = _customer_order_value([
+        {"line_items": [{"quantity": 10, "unit_price": 1000}]},
+        {"line_items": [{"quantity": 5, "unit_price": 2000}]},
+        {"line_items": [{"quantity": 2, "unit_price": 5000}]},
+    ])
+    assert full_customer["value_status"] == "complete"
+    assert full_customer["historical_order_value"] == 30000.0
+    assert full_customer["average_order_value"] == 10000.0
+
+
+def test_prediction_products_use_stable_ids_and_skip_invalid_sources():
+    from services.sales_pwa import _prediction_link_key, _prediction_products
+
+    assert _prediction_link_key("CUST-1", {"customer_key": "id:CUST-1"}) == "id:CUST-1"
+    assert _prediction_link_key("CUST-1", None) == ""
+    assert _prediction_link_key("name:toko sama", None) == ""
+    assert _prediction_link_key("ambiguous:toko sama", {"customer_key": "ambiguous:toko sama"}) == "ambiguous:toko sama"
+
+    rows = _prediction_products([
+        {
+            "history_source": "ORDER MASUK",
+            "order_date": "2026-09-01",
+            "line_items": [
+                {"accurate_item_id": "CUP", "name": "Paper Cup", "unit": "pcs", "quantity": 10},
+                {"accurate_item_id": "CUP", "name": "Paper Cup lain", "unit": "pcs", "quantity": 5},
+            ],
+        },
+        {
+            "history_source": "ORDER MASUK",
+            "order_date": "2026-09-10",
+            "line_items": [
+                {"accurate_item_id": "CUP", "name": "Paper Cup", "unit": "pcs", "quantity": 2},
+                {"name": "Gelas", "unit": "pcs"},
+            ],
+        },
+        {
+            "history_source": "ORDER MASUK",
+            "order_date": "2026-08-01",
+            "line_items": [{"name": "Gelas", "unit": "pcs", "quantity": 4}],
+        },
+        {
+            "history_source": "ORDER MASUK",
+            "order_date": "2026-07-01",
+            "line_items": [{"name": "Tanpa Qty", "unit": "dus"}],
+        },
+        {
+            "history_source": "IMPORT HISTORIS",
+            "order_date": "2026-09-20",
+            "line_items": [
+                {"accurate_item_id": "CUP", "name": "Paper Cup", "quantity": 999},
+                {"name": "Barang Import", "quantity": 3},
+            ],
+        },
+        {"history_source": "ORDER MASUK", "order_date": "2026-09-11", "line_items": []},
+    ])
+    by_name = {row["name"]: row for row in rows}
+    assert "Barang Import" not in by_name
+    cup = by_name["Paper Cup"]
+    assert cup["product_key"] == "a:CUP"
+    assert cup["purchase_count"] == 2
+    assert cup["total_quantity"] == 17
+    assert cup["quantity_complete"] is True
+    assert cup["last_purchase_date"] == "2026-09-10"
+    assert cup["last_quantity"] == 2
+    gelas = by_name["Gelas"]
+    assert gelas["purchase_count"] == 2
+    assert gelas["quantity_complete"] is False
+    assert gelas["total_quantity"] == 4
+    assert by_name["Tanpa Qty"]["total_quantity"] is None
+    assert by_name["Tanpa Qty"]["quantity_complete"] is False
+    assert [row["name"] for row in rows[:2]] == ["Paper Cup", "Gelas"]
+
+
+@pytest.mark.anyio
+async def test_sales_pwa_prediction_workflow_scope_and_agenda():
+    import server
+    from services.order_prediction import wib_today
+
+    db = server.db
+    sales_a = str(uuid.uuid4())
+    sales_b = str(uuid.uuid4())
+    email_a = f"pred-{sales_a[:8]}@eternal.com"
+    email_b = f"pred-{sales_b[:8]}@eternal.com"
+    suffix = uuid.uuid4().hex[:8]
+    cust = f"CUST-{suffix}"
+    thin = f"THIN-{suffix}"
+    bare = f"BARE-{suffix}"
+    partial = f"PART-{suffix}"
+    other_only = f"OTHER-{suffix}"
+    today = wib_today()
+    outlet_one = str(uuid.uuid4())
+    outlet_two = str(uuid.uuid4())
+    outlet_pool = str(uuid.uuid4())
+    outlet_other = str(uuid.uuid4())
+    outlet_name = str(uuid.uuid4())
+    outlet_ids = [outlet_one, outlet_two, outlet_pool, outlet_other, outlet_name]
+    order_ids = []
+    finance_names = ["invoices", "sales_invoices", "receipts", "journal_entries", "customer_credits"]
+    existing_names = set(await db.list_collection_names())
+    finance_before = {}
+    for name in finance_names:
+        finance_before[name] = await db[name].count_documents({}) if name in existing_names else 0
+
+    def on_day(offset):
+        return (today + timedelta(days=offset)).isoformat()
+
+    def lined(po, customer_id, customer, order_date, items, **flags):
+        doc = _order(po, "Sales A", sales_a, customer, customer_id=customer_id, order_date=order_date)
+        doc["outlet"] = "Gudang Utara"
+        doc["line_items"] = items
+        doc.update(flags)
+        order_ids.append(doc["id"])
+        return doc
+
+    cup = lambda qty, price: {"accurate_item_id": "CUP", "name": "Paper Cup", "unit": "pcs", "quantity": qty, "unit_price": price}
+    orders = [
+        lined(f"PO-OLD-{suffix}", cust, f"Toko Prediksi {suffix}", on_day(-27), [cup(10, 1000), {"accurate_item_id": "DUS", "name": "Dus", "unit": "pcs", "quantity": 1, "unit_price": 0}]),
+        lined(f"PO-MID-{suffix}", cust, f"Toko Prediksi {suffix}", on_day(-18), [cup(5, 2000)]),
+        lined(f"PO-NEW-{suffix}", cust, f"Toko Prediksi {suffix}", on_day(-9), [cup(2, 5000)], notes="Catatan follow up"),
+        lined(f"PO-CANCEL-{suffix}", cust, f"Toko Prediksi {suffix}", on_day(-1), [cup(9, 9000)], cancelled=True),
+        lined(f"PO-TEST-{suffix}", cust, f"Toko Prediksi {suffix}", on_day(-1), [cup(8, 8000)], is_test=True),
+        lined(f"PO-DEMO-{suffix}", cust, f"Toko Prediksi {suffix}", on_day(-1), [cup(7, 7000)], is_demo=True),
+        lined(f"PO-RISK-{suffix}", f"RISK-{suffix}", f"Toko Risiko {suffix}", on_day(-43), [cup(1, 1000)]),
+        lined(f"PO-RISK2-{suffix}", f"RISK-{suffix}", f"Toko Risiko {suffix}", on_day(-34), [cup(1, 1000)]),
+        lined(f"PO-RISK3-{suffix}", f"RISK-{suffix}", f"Toko Risiko {suffix}", on_day(-25), [cup(1, 1000)]),
+        lined(f"PO-LATE-{suffix}", f"LATE-{suffix}", f"Toko Telat {suffix}", on_day(-32), [cup(1, 1000)]),
+        lined(f"PO-LATE2-{suffix}", f"LATE-{suffix}", f"Toko Telat {suffix}", on_day(-23), [cup(1, 1000)]),
+        lined(f"PO-LATE3-{suffix}", f"LATE-{suffix}", f"Toko Telat {suffix}", on_day(-14), [cup(1, 1000)]),
+        lined(f"PO-SOON-{suffix}", f"SOON-{suffix}", f"Toko Follow {suffix}", on_day(-24), [cup(1, 1000)]),
+        lined(f"PO-SOON2-{suffix}", f"SOON-{suffix}", f"Toko Follow {suffix}", on_day(-15), [cup(1, 1000)]),
+        lined(f"PO-SOON3-{suffix}", f"SOON-{suffix}", f"Toko Follow {suffix}", on_day(-6), [cup(1, 1000)]),
+        lined(f"PO-IDLE-{suffix}", f"IDLE-{suffix}", f"Toko Diam {suffix}", on_day(-68), [cup(1, 1000)]),
+        lined(f"PO-IDLE2-{suffix}", f"IDLE-{suffix}", f"Toko Diam {suffix}", on_day(-59), [cup(1, 1000)]),
+        lined(f"PO-IDLE3-{suffix}", f"IDLE-{suffix}", f"Toko Diam {suffix}", on_day(-50), [cup(1, 1000)]),
+        lined(f"PO-WAIT-{suffix}", f"WAIT-{suffix}", f"Toko Tunggu {suffix}", on_day(-20), [cup(1, 1000)]),
+        lined(f"PO-WAIT2-{suffix}", f"WAIT-{suffix}", f"Toko Tunggu {suffix}", on_day(-11), [cup(1, 1000)]),
+        lined(f"PO-WAIT3-{suffix}", f"WAIT-{suffix}", f"Toko Tunggu {suffix}", on_day(-2), [cup(1, 1000)]),
+        lined(f"PO-THIN-{suffix}", thin, f"Toko Tipis {suffix}", on_day(-1), [cup(1, 1000)]),
+        lined(f"PO-BARE-{suffix}", bare, f"Toko Kosong {suffix}", on_day(-27), []),
+        lined(f"PO-BARE2-{suffix}", bare, f"Toko Kosong {suffix}", on_day(-18), []),
+        lined(f"PO-BARE3-{suffix}", bare, f"Toko Kosong {suffix}", on_day(-9), []),
+        lined(f"PO-PART-{suffix}", partial, f"Toko Sebagian {suffix}", on_day(-27), [{"name": "Gelas", "quantity": 2, "unit_price": 1000}]),
+        lined(f"PO-PART2-{suffix}", partial, f"Toko Sebagian {suffix}", on_day(-18), [{"name": "Gelas", "quantity": 2}]),
+        lined(f"PO-PART3-{suffix}", partial, f"Toko Sebagian {suffix}", on_day(-9), [{"name": "Gelas", "unit_price": 1000}]),
+        lined(f"PO-NAME-{suffix}", "", f"Toko Nama {suffix}", on_day(-3), [cup(1, 1000)]),
+    ]
+    foreign = _order(f"PO-FOREIGN-{suffix}", "Sales B", sales_b, f"Toko Prediksi {suffix}", customer_id=cust, order_date=on_day(-1), outlet="Gudang Rahasia")
+    foreign["line_items"] = [cup(4, 4000)]
+    order_ids.append(foreign["id"])
+    hidden = _order(f"PO-HIDDEN-{suffix}", "Sales B", sales_b, f"Toko Rahasia {suffix}", customer_id=other_only, order_date=on_day(-1))
+    order_ids.append(hidden["id"])
+    name_order = next(doc for doc in orders if doc["po_number"] == f"PO-NAME-{suffix}")
+    name_order["customer_id"] = ""
+
+    await db.users.insert_many([
+        {"id": sales_a, "email": email_a, "name": "Sales A", "role": "sales_eternal"},
+        {"id": sales_b, "email": email_b, "name": "Sales B", "role": "sales_eternal"},
+    ])
+    await db.orders.insert_many(orders + [foreign, hidden])
+    await db.sales_outlets.insert_many([
+        {"id": outlet_one, "name": "Outlet Satu", "linked_customer_id": cust},
+        {"id": outlet_two, "name": "Outlet Dua", "linked_customer_id": cust},
+        {"id": outlet_pool, "name": "Outlet Pool", "linked_customer_id": cust},
+        {"id": outlet_other, "name": "Outlet Orang", "linked_customer_id": cust},
+        {"id": outlet_name, "name": "Outlet Nama", "linked_customer_id": f"Toko Nama {suffix}"},
+    ])
+    await db.sales_ownership.insert_many([
+        {"id": str(uuid.uuid4()), "outlet_id": outlet_one, "current_owner_id": sales_a, "in_pool": False, "next_follow_up_at": "2026-10-02T02:00:00+00:00"},
+        {"id": str(uuid.uuid4()), "outlet_id": outlet_two, "current_owner_id": sales_a, "in_pool": False},
+        {"id": str(uuid.uuid4()), "outlet_id": outlet_pool, "current_owner_id": sales_a, "in_pool": True},
+        {"id": str(uuid.uuid4()), "outlet_id": outlet_other, "current_owner_id": sales_b, "in_pool": False},
+        {"id": str(uuid.uuid4()), "outlet_id": outlet_name, "current_owner_id": sales_a, "in_pool": False},
+    ])
+    app.dependency_overrides[current_user] = lambda: _sales_user(sales_a, email_a, "Sales A")
+    transport = ASGITransport(app=app)
+    try:
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            listed = await client.get("/api/sales-pwa/predictions", params={"sales_user_id": sales_b, "sales_id": sales_b})
+            assert listed.status_code == 200, listed.text
+            body = listed.json()
+            own = [row for row in body["rows"] if suffix in str(row.get("customer_name") or "")]
+            ranks = [row["status"] for row in own]
+            assert ranks == [
+                "RISIKO",
+                "TERLAMBAT",
+                "JATUH TEMPO",
+                "JATUH TEMPO",
+                "JATUH TEMPO",
+                "WAKTU FOLLOW-UP",
+                "TIDAK AKTIF",
+                "BELUM WAKTUNYA",
+                "DATA BELUM CUKUP",
+                "DATA BELUM CUKUP",
+            ]
+            assert all(row.get("customer_id") != other_only for row in body["rows"])
+            main = next(row for row in own if row.get("customer_id") == cust)
+            assert main["customer_key"] == f"id:{cust}"
+            assert main["customer_name"] == f"Toko Prediksi {suffix}"
+            assert main["median_gap"] == 9
+            assert main["average_gap"] == 9
+            assert main["prediction_center"] == today.isoformat()
+            assert main["prediction_start"] == on_day(-3)
+            assert main["prediction_end"] == on_day(3)
+            assert main["followup_start"] == on_day(-5)
+            assert main["last_order_date"] == on_day(-9)
+            assert main["history_count"] == 3
+            assert main["status"] == "JATUH TEMPO"
+            assert main.get("confidence")
+            late = next(row for row in own if row["status"] == "TERLAMBAT")
+            assert late["days_late"] == 2
+            assert "Lewat 2 hari" in late["reason"]
+
+            customers = await client.get("/api/sales-pwa/customers", params={"sales_user_id": sales_b})
+            assert customers.status_code == 200, customers.text
+            customer_row = next(row for row in customers.json()["customers"] if row["customer_key"] == cust)
+            assert customer_row["prediction_key"] == f"id:{cust}"
+            assert customer_row["customer_key"] == cust
+
+            raw = await client.get(f"/api/sales-pwa/predictions/{cust}", params={"sales_user_id": sales_b})
+            assert raw.status_code == 404
+            detail = await client.get(f"/api/sales-pwa/predictions/id:{cust}", params={"sales_id": sales_b})
+            assert detail.status_code == 200, detail.text
+            payload = detail.json()
+            history = payload["history"]
+            assert [row["po_number"] for row in history] == [f"PO-NEW-{suffix}", f"PO-MID-{suffix}", f"PO-OLD-{suffix}"]
+            assert history[0]["gap_days"] == 9
+            assert history[0]["outlet"] == "Gudang Utara"
+            assert history[0]["notes"] == "Catatan follow up"
+            assert history[0]["order_value"] == 10000.0
+            assert history[0]["value_status"] == "complete"
+            assert f"PO-CANCEL-{suffix}" not in detail.text
+            assert f"PO-TEST-{suffix}" not in detail.text
+            assert f"PO-DEMO-{suffix}" not in detail.text
+            assert f"PO-FOREIGN-{suffix}" not in detail.text
+            assert f"PO-HIDDEN-{suffix}" not in detail.text
+            products = payload["products"]
+            assert products[0]["name"] == "Paper Cup"
+            assert products[0]["purchase_count"] == 3
+            assert products[0]["total_quantity"] == 17
+            assert products[0]["last_quantity"] == 2
+            assert products[1]["name"] == "Dus"
+            assert products[1]["purchase_count"] == 1
+            assert products[1]["total_quantity"] == 1
+            assert payload["value"]["value_status"] == "complete"
+            assert payload["value"]["historical_order_value"] == 30000.0
+            assert payload["value"]["average_order_value"] == 10000.0
+            agenda = payload["agenda"]
+            assert agenda["linked"] is True
+            assert agenda["customer_id"] == cust
+            assert [row["name"] for row in agenda["outlets"]] == ["Outlet Dua", "Outlet Satu"]
+            assert agenda["outlets"][1]["has_active_agenda"] is True
+            assert agenda["outlets"][1]["next_follow_up_at"] == "2026-10-02T02:00:00+00:00"
+            assert agenda["outlets"][0]["has_active_agenda"] is False
+            stored_before = await db.sales_ownership.find_one({"outlet_id": outlet_one})
+            assert stored_before["next_follow_up_at"] == "2026-10-02T02:00:00+00:00"
+
+            bare_row = next(row for row in own if row.get("customer_id") == bare)
+            bare_detail = await client.get(f"/api/sales-pwa/predictions/{bare_row['customer_key']}")
+            assert bare_detail.status_code == 200, bare_detail.text
+            bare_body = bare_detail.json()
+            assert bare_body["products"] == []
+            assert bare_body["value"]["historical_order_value"] is None
+            assert bare_body["value"]["value_status"] == "unknown"
+            assert len(bare_body["history"]) == 3
+
+            part_row = next(row for row in own if row.get("customer_id") == partial)
+            part_detail = await client.get(f"/api/sales-pwa/predictions/{part_row['customer_key']}")
+            assert part_detail.status_code == 200, part_detail.text
+            part_body = part_detail.json()
+            assert part_body["value"]["value_status"] == "partial"
+            assert part_body["value"]["historical_order_value"] is None
+            assert part_body["value"]["average_order_value"] is None
+            assert part_body["value"]["known_value"] == 2000.0
+            assert [row.get("order_value") for row in part_body["history"]] == [None, None, 2000.0]
+
+            thin_row = next(row for row in own if row.get("customer_id") == thin)
+            thin_detail = await client.get(f"/api/sales-pwa/predictions/{thin_row['customer_key']}")
+            assert thin_detail.status_code == 200, thin_detail.text
+            assert thin_detail.json()["agenda"]["linked"] is False
+            assert thin_detail.json()["agenda"]["outlets"] == []
+
+            name_row = next(row for row in own if str(row.get("customer_name") or "").startswith("Toko Nama"))
+            assert str(name_row["customer_key"]).startswith("name:")
+            name_detail = await client.get(f"/api/sales-pwa/predictions/{name_row['customer_key']}")
+            assert name_detail.status_code == 200, name_detail.text
+            assert name_detail.json()["agenda"]["linked"] is False
+
+            app.dependency_overrides[current_user] = lambda: _sales_user(sales_b, email_b, "Sales B")
+            shared = await client.get(f"/api/sales-pwa/predictions/id:{cust}")
+            assert shared.status_code == 200, shared.text
+            assert f"PO-FOREIGN-{suffix}" in shared.text
+            assert f"PO-NEW-{suffix}" not in shared.text
+            assert f"PO-OLD-{suffix}" not in shared.text
+            hidden_detail = await client.get(f"/api/sales-pwa/predictions/id:RISK-{suffix}")
+            assert hidden_detail.status_code == 404
+            stolen = await client.post("/api/sales-pwa/visits/schedule", json={"outlet_id": outlet_one, "next_follow_up_at": "2026-10-08T09:00"})
+            assert stolen.status_code == 404
+            assert (await db.sales_ownership.find_one({"outlet_id": outlet_one}))["next_follow_up_at"] == "2026-10-02T02:00:00+00:00"
+
+            app.dependency_overrides[current_user] = lambda: _sales_user(sales_a, email_a, "Sales A")
+            pool = await client.post("/api/sales-pwa/visits/schedule", json={"outlet_id": outlet_pool, "next_follow_up_at": "2026-10-08T09:00"})
+            assert pool.status_code == 404
+            spoof = await client.post("/api/sales-pwa/visits/schedule", json={"outlet_id": outlet_other, "next_follow_up_at": "2026-10-08T09:00"})
+            assert spoof.status_code == 404
+            missing = await client.post("/api/sales-pwa/visits/schedule", json={"outlet_id": str(uuid.uuid4()), "next_follow_up_at": "2026-10-08T09:00"})
+            assert missing.status_code == 404
+            scheduled = await client.post("/api/sales-pwa/visits/schedule", json={"outlet_id": outlet_two, "next_follow_up_at": "2026-10-06T09:00"})
+            assert scheduled.status_code == 200, scheduled.text
+            assert scheduled.json()["next_follow_up_at"] == "2026-10-06T02:00:00+00:00"
+            assert (await db.sales_ownership.find_one({"outlet_id": outlet_two}))["next_follow_up_at"] == "2026-10-06T02:00:00+00:00"
+            assert (await db.sales_ownership.find_one({"outlet_id": outlet_one}))["next_follow_up_at"] == "2026-10-02T02:00:00+00:00"
+            assert await db.sales_activities.count_documents({"outlet_id": {"$in": outlet_ids}}) == 0
+            names_after = set(await db.list_collection_names())
+            assert "sales_prediction_followups" not in names_after
+            assert "sales_prediction_reminders" not in names_after
+            for name in finance_names:
+                after = await db[name].count_documents({}) if name in names_after else 0
+                assert after == finance_before[name]
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+        await db.users.delete_many({"id": {"$in": [sales_a, sales_b]}})
+        await db.orders.delete_many({"id": {"$in": order_ids}})
+        await db.sales_outlets.delete_many({"id": {"$in": outlet_ids}})
+        await db.sales_ownership.delete_many({"outlet_id": {"$in": outlet_ids}})
+
+
+@pytest.mark.anyio
+async def test_prediction_identity_does_not_promote_name_and_keeps_one_agenda_slot():
+    import server
+    from services.order_prediction import wib_today
+
+    db = server.db
+    sales_a = str(uuid.uuid4())
+    sales_b = str(uuid.uuid4())
+    email_a = f"ident-{sales_a[:8]}@eternal.com"
+    email_b = f"ident-{sales_b[:8]}@eternal.com"
+    suffix = uuid.uuid4().hex[:8]
+    twin = f"Toko Kembar {suffix}"
+    cust_a = f"TWIN-A-{suffix}"
+    cust_b = f"TWIN-B-{suffix}"
+    known = f"KNOWN-{suffix}"
+    known_name = f"Toko Dikenal {suffix}"
+    today = wib_today()
+    outlet_a = str(uuid.uuid4())
+    order_ids = []
+
+    def on_day(offset):
+        return (today + timedelta(days=offset)).isoformat()
+
+    def lined(po, sales_id, customer_id, customer, order_date):
+        doc = _order(po, "Sales A", sales_id, customer, customer_id=customer_id, order_date=order_date)
+        doc["line_items"] = [{"accurate_item_id": "CUP", "name": "Paper Cup", "unit": "pcs", "quantity": 1, "unit_price": 1000}]
+        order_ids.append(doc["id"])
+        return doc
+
+    orders = [
+        lined(f"PO-A1-{suffix}", sales_a, cust_a, twin, on_day(-20)),
+        lined(f"PO-A2-{suffix}", sales_a, cust_a, twin, on_day(-10)),
+        lined(f"PO-B1-{suffix}", sales_a, cust_b, twin, on_day(-18)),
+        lined(f"PO-B2-{suffix}", sales_a, cust_b, twin, on_day(-9)),
+        lined(f"PO-NAME-{suffix}", sales_a, "", twin, on_day(-3)),
+        lined(f"PO-K1-{suffix}", sales_a, known, known_name, on_day(-27)),
+        lined(f"PO-K2-{suffix}", sales_a, known, known_name, on_day(-18)),
+        lined(f"PO-K3-{suffix}", sales_a, known, known_name, on_day(-9)),
+        lined(f"PO-BARE-{suffix}", sales_a, "", known_name, on_day(-2)),
+        lined(f"PO-FOREIGN-{suffix}", sales_b, cust_a, twin, on_day(-1)),
+    ]
+    bare = next(doc for doc in orders if doc["po_number"] == f"PO-NAME-{suffix}")
+    bare["customer_id"] = ""
+    bare_known = next(doc for doc in orders if doc["po_number"] == f"PO-BARE-{suffix}")
+    bare_known["customer_id"] = ""
+
+    await db.users.insert_many([
+        {"id": sales_a, "email": email_a, "name": "Sales A", "role": "sales_eternal"},
+        {"id": sales_b, "email": email_b, "name": "Sales B", "role": "sales_eternal"},
+    ])
+    await db.orders.insert_many(orders)
+    await db.sales_customers.insert_one({"id": known, "name": known_name})
+    await db.sales_outlets.insert_one({"id": outlet_a, "name": "Outlet Stabil", "linked_customer_id": known})
+    await db.sales_ownership.insert_one({
+        "id": str(uuid.uuid4()),
+        "outlet_id": outlet_a,
+        "current_owner_id": sales_a,
+        "in_pool": False,
+    })
+    app.dependency_overrides[current_user] = lambda: _sales_user(sales_a, email_a, "Sales A")
+    transport = ASGITransport(app=app)
+    try:
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            listed = await client.get("/api/sales-pwa/predictions", params={"sales_user_id": sales_b})
+            assert listed.status_code == 200, listed.text
+            rows = [row for row in listed.json()["rows"] if suffix in str(row.get("customer_name") or "")]
+            by_key = {row["customer_key"]: row for row in rows}
+            assert f"id:{cust_a}" in by_key
+            assert f"id:{cust_b}" in by_key
+            assert by_key[f"id:{cust_a}"]["customer_id"] == cust_a
+            assert by_key[f"id:{cust_b}"]["customer_id"] == cust_b
+            assert by_key[f"id:{cust_a}"]["history_count"] == 2
+            assert by_key[f"id:{cust_b}"]["history_count"] == 2
+            ambiguous_key = f"ambiguous:{twin.lower()}"
+            assert ambiguous_key in by_key
+            assert by_key[ambiguous_key]["customer_id"] in (None, "")
+            assert f"PO-A1-{suffix}" not in str(by_key[ambiguous_key])
+            name_key = f"name:{known_name.lower()}"
+            assert name_key in by_key
+            assert by_key[name_key]["customer_id"] in (None, "")
+            assert by_key[f"id:{known}"]["history_count"] == 3
+            assert by_key[f"id:{known}"]["customer_id"] == known
+
+            detail_a = await client.get(f"/api/sales-pwa/predictions/id:{cust_a}")
+            assert detail_a.status_code == 200, detail_a.text
+            assert [row["po_number"] for row in detail_a.json()["history"]] == [f"PO-A2-{suffix}", f"PO-A1-{suffix}"]
+            assert f"PO-B1-{suffix}" not in detail_a.text
+            assert f"PO-NAME-{suffix}" not in detail_a.text
+            assert f"PO-FOREIGN-{suffix}" not in detail_a.text
+
+            ambiguous = await client.get(f"/api/sales-pwa/predictions/{ambiguous_key}")
+            assert ambiguous.status_code == 200, ambiguous.text
+            ambiguous_body = ambiguous.json()
+            assert ambiguous_body["agenda"]["linked"] is False
+            assert ambiguous_body["agenda"]["identity"] == "ambiguous"
+            assert ambiguous_body["agenda"]["outlets"] == []
+            assert ambiguous_body["analysis"]["customer_id"] in (None, "")
+            assert [row["po_number"] for row in ambiguous_body["history"]] == [f"PO-NAME-{suffix}"]
+
+            bare_detail = await client.get(f"/api/sales-pwa/predictions/{name_key}")
+            assert bare_detail.status_code == 200, bare_detail.text
+            bare_body = bare_detail.json()
+            assert bare_body["agenda"]["linked"] is False
+            assert bare_body["agenda"]["identity"] == "name"
+            assert bare_body["agenda"]["customer_id"] is None
+            assert bare_body["analysis"]["customer_id"] in (None, "")
+            assert [row["po_number"] for row in bare_body["history"]] == [f"PO-BARE-{suffix}"]
+
+            stable = await client.get(f"/api/sales-pwa/predictions/id:{known}")
+            assert stable.status_code == 200, stable.text
+            stable_body = stable.json()
+            assert stable_body["agenda"]["linked"] is True
+            assert stable_body["agenda"]["identity"] == "stable"
+            assert stable_body["agenda"]["customer_id"] == known
+            assert f"PO-BARE-{suffix}" not in stable.text
+            assert [row["po_number"] for row in stable_body["history"]] == [
+                f"PO-K3-{suffix}", f"PO-K2-{suffix}", f"PO-K1-{suffix}",
+            ]
+
+            customers = await client.get("/api/sales-pwa/customers")
+            assert customers.status_code == 200, customers.text
+            customer_rows = [row for row in customers.json()["customers"] if suffix in str(row.get("customer") or "")]
+            stable_customer = next(row for row in customer_rows if row["customer_key"] == known)
+            assert stable_customer["prediction_key"] == f"id:{known}"
+            bare_customer = next(row for row in customer_rows if row["customer_key"] == f"name:{known_name.lower()}")
+            assert bare_customer["prediction_key"] == name_key
+            ambiguous_customer = next(row for row in customer_rows if row["customer_key"] == f"name:{twin.lower()}")
+            assert ambiguous_customer["prediction_key"] == ambiguous_key
+
+            missing = await client.get(f"/api/sales-pwa/predictions/id:MISSING-{suffix}")
+            assert missing.status_code == 404
+
+            app.dependency_overrides[current_user] = lambda: _sales_user(sales_b, email_b, "Sales B")
+            foreign = await client.get(f"/api/sales-pwa/predictions/id:{cust_a}", params={"sales_user_id": sales_a})
+            assert foreign.status_code == 200, foreign.text
+            assert [row["po_number"] for row in foreign.json()["history"]] == [f"PO-FOREIGN-{suffix}"]
+            assert f"PO-A1-{suffix}" not in foreign.text
+            stolen = await client.post("/api/sales-pwa/visits/schedule", json={
+                "outlet_id": outlet_a,
+                "next_follow_up_at": "2026-10-08T09:00",
+            })
+            assert stolen.status_code == 404
+
+            app.dependency_overrides[current_user] = lambda: _sales_user(sales_a, email_a, "Sales A")
+            first = await client.post("/api/sales-pwa/visits/schedule", json={
+                "outlet_id": outlet_a,
+                "next_follow_up_at": "2026-10-06T09:00",
+            })
+            assert first.status_code == 200, first.text
+            assert first.json()["next_follow_up_at"] == "2026-10-06T02:00:00+00:00"
+            second = await client.post("/api/sales-pwa/visits/schedule", json={
+                "outlet_id": outlet_a,
+                "next_follow_up_at": "2026-10-09T11:30",
+            })
+            assert second.status_code == 200, second.text
+            stored = await db.sales_ownership.find({"outlet_id": outlet_a}).to_list(10)
+            assert len(stored) == 1
+            assert stored[0]["next_follow_up_at"] == "2026-10-09T04:30:00+00:00"
+            assert await db.sales_activities.count_documents({"outlet_id": outlet_a}) == 0
+            names_after = set(await db.list_collection_names())
+            assert "sales_prediction_followups" not in names_after
+            assert "sales_prediction_reminders" not in names_after
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+        await db.users.delete_many({"id": {"$in": [sales_a, sales_b]}})
+        await db.orders.delete_many({"id": {"$in": order_ids}})
+        await db.sales_outlets.delete_many({"id": outlet_a})
+        await db.sales_ownership.delete_many({"outlet_id": outlet_a})
+        await db.sales_customers.delete_many({"id": known})
