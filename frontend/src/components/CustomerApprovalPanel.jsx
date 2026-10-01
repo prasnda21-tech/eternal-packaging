@@ -4,13 +4,13 @@ import api from "../lib/api";
 import { formatApiError } from "../lib/errors";
 
 const STATUS_LABEL = {
-  none: "Belum Dibuat",
-  active: "Aktif · Menunggu Customer",
-  approved: "Approved oleh Customer",
-  rejected: "Rejected oleh Customer",
-  expired: "Expired",
-  revoked: "Revoked",
-  invalidated: "Design Diperbarui (Tidak Berlaku)",
+  none: "Belum dibuat",
+  active: "Aktif · Menunggu customer",
+  approved: "Disetujui oleh customer",
+  rejected: "Ditolak oleh customer",
+  expired: "Kedaluwarsa",
+  revoked: "Dicabut",
+  invalidated: "Design diperbarui (tidak berlaku)",
 };
 
 function fmt(d) {
@@ -121,25 +121,24 @@ export default function CustomerApprovalPanel({ order, canManage, canView, onOrd
         </span>
       </header>
 
-      <p className="ca-info-label">Approval Information</p>
-      <ol className="ca-timeline" data-testid="ca-response">
-        <li>
-          <span className="lbl">Created</span>
-          <span>{fmt(ca?.generated_at)}</span>
-        </li>
-        <li>
-          <span className="lbl">Valid Until</span>
-          <span>{fmt(ca?.expires_at)}</span>
-        </li>
-        <li>
-          <span className="lbl">Signer</span>
-          <span>{ca?.signer_name || "-"}</span>
-        </li>
-        <li>
-          <span className="lbl">Approval Time</span>
-          <span>{(status === "approved" || status === "rejected") ? fmt(ca?.responded_at) : "-"}</span>
-        </li>
-      </ol>
+      <div className="ca-info-pairs" data-testid="ca-response">
+        <div className="po-info-pair">
+          <span className="lbl">Dibuat</span>
+          <strong>{fmt(ca?.generated_at)}</strong>
+        </div>
+        <div className="po-info-pair">
+          <span className="lbl">Berlaku sampai</span>
+          <strong>{fmt(ca?.expires_at)}</strong>
+        </div>
+        <div className="po-info-pair">
+          <span className="lbl">Penanda tangan</span>
+          <strong>{ca?.signer_name || "—"}</strong>
+        </div>
+        <div className="po-info-pair">
+          <span className="lbl">Waktu approval</span>
+          <strong>{(status === "approved" || status === "rejected") ? fmt(ca?.responded_at) : "—"}</strong>
+        </div>
+      </div>
 
       {ca && ((status === "active" && ca.expires_at) || ca.expiry_hours) && (
         <div className="row" data-testid="ca-meta">
@@ -151,7 +150,7 @@ export default function CustomerApprovalPanel({ order, canManage, canView, onOrd
       )}
 
       {status === "rejected" && ca?.reject_reason && (
-        <p className="muted small"><span className="lbl">Alasan Reject</span> {ca.reject_reason}</p>
+        <p className="muted small"><span className="lbl">Alasan penolakan</span> {ca.reject_reason}</p>
       )}
       {status === "approved" && ca?.customer_note && (
         <p className="muted small"><span className="lbl">Catatan Customer</span> {ca.customer_note}</p>
@@ -159,7 +158,7 @@ export default function CustomerApprovalPanel({ order, canManage, canView, onOrd
 
       {ca?.signature_storage_path && (
         <div className="ca-signature-block">
-          <span className="lbl">Signature</span>
+          <span className="lbl">Tanda tangan</span>
           <img
             src={`${process.env.REACT_APP_BACKEND_URL}/api/files/${ca.signature_storage_path}`}
             alt="Tanda tangan customer"
@@ -168,11 +167,11 @@ export default function CustomerApprovalPanel({ order, canManage, canView, onOrd
           />
           <dl className="ca-signature-audit">
             <div>
-              <dt>Signer</dt>
-              <dd>{ca?.signer_name || "-"}</dd>
+              <dt>Penanda tangan</dt>
+              <dd>{ca?.signer_name || "—"}</dd>
             </div>
             <div>
-              <dt>Approval Time</dt>
+              <dt>Waktu approval</dt>
               <dd>{(status === "approved" || status === "rejected") ? fmt(ca?.responded_at) : "-"}</dd>
             </div>
           </dl>

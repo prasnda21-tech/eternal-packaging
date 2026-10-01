@@ -95,6 +95,11 @@ export default function PackingPanel({ order, canManage, busy, onSaveQty, footer
   };
 
   const packingStatus = fullyPacked ? "DONE" : hasQty ? "IN PROGRESS" : "READY";
+  const packingStatusLabel = packingStatus === "DONE"
+    ? "Selesai"
+    : packingStatus === "IN PROGRESS"
+      ? "Berjalan"
+      : "Siap";
 
   // Full / all-line non-cetak: jangan tampilkan Packing sama sekali.
   if ((order.line_items || []).length > 0 && packingLines.length === 0) {
@@ -105,7 +110,7 @@ export default function PackingPanel({ order, canManage, busy, onSaveQty, footer
     <section className="panel packing-panel" data-testid="packing-panel">
       <QtyOpsHead icon={Package} title="Packing">
         <span className={`qty-status ${statusClassFor(packingStatus)}`} data-testid="packing-semantic-badge">
-          {packingStatus}
+          {packingStatusLabel}
         </span>
       </QtyOpsHead>
 
@@ -141,14 +146,14 @@ export default function PackingPanel({ order, canManage, busy, onSaveQty, footer
             <thead>
               <tr>
                 <th>Item</th>
-                <th>Process</th>
+                <th>Proses</th>
                 <th className="num">Target</th>
-                <th className="num">Prepared</th>
-                <th className="num">Printed</th>
-                <th className="num">Unprinted</th>
-                <th className="num">Available</th>
-                <th className="num">Packed</th>
-                <th className="num">Remain</th>
+                <th className="num">Disiapkan</th>
+                <th className="num">Tercetak</th>
+                <th className="num">Belum tercetak</th>
+                <th className="num">Tersedia</th>
+                <th className="num">Dipacking</th>
+                <th className="num">Sisa</th>
                 <th className="num">Input</th>
               </tr>
             </thead>

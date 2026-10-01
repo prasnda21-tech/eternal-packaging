@@ -64,15 +64,27 @@ export function LineRouteEditor({ order, lineIdx, canEdit, onUpdated }) {
     }
   };
 
+  const processValue = String(li.production_process || "").toLowerCase();
+  const selectValue = processValue === "print" || processValue === "non_print" ? processValue : "";
+
   return (
     <div className="li-route-editor">
-      <LineRouteControls
-        productionProcess={li.production_process}
-        idx={lineIdx}
-        canEdit={canEdit}
-        busy={busy}
-        onSelect={handleSelectRoute}
-      />
+      <select
+        className="li-process-select"
+        aria-label={`Proses ${li.name || ""}`.trim()}
+        value={selectValue}
+        disabled={!canEdit || busy}
+        data-testid={`line-route-select-${lineIdx}`}
+        onChange={(e) => {
+          const next = e.target.value;
+          if (next !== "print" && next !== "non_print") return;
+          handleSelectRoute(lineIdx, next);
+        }}
+      >
+        {selectValue === "" ? <option value="">Belum diklasifikasi</option> : null}
+        <option value="print">Cetak</option>
+        <option value="non_print">Tidak Cetak</option>
+      </select>
       {err ? (
         <span className="li-route-err" data-testid={`route-error-${lineIdx}`}>
           <X size={11} /> {err}
@@ -117,27 +129,16 @@ export default function ProductionRoutePanel({ order, canEdit, onUpdated, compac
 
   if (compact) {
     return (
-      <section className="panel production-route-panel is-compact" data-testid="production-route-panel">
-        <header className="panel-head">
-          <h3><Printer size={14}/> Proses Produksi Per Line Item</h3>
-          <span
-            className="pill sm"
-            data-testid="requires-printing-badge"
-            style={{
-              background: order.requires_printing ? "#e6ecf3" : "#efe6d3",
-              color: order.requires_printing ? "#3a4b60" : "#7a6f52",
-            }}
-          >
-            {order.requires_printing ? "Perlu Cetak" : "Semua Non-Cetak"}
-          </span>
-        </header>
-        <p className="muted small production-route-compact-hint" data-testid="production-route-compact-hint">
-          Atur <b>Cetak / Tidak Cetak</b> per baris di tabel Line Item.
-          Line Cetak wajib Upload Sampel · Approval Sampel · Qty Cetak; Non-Cetak dapat lewati tahap tersebut.
-        </p>
-        {err && <p style={{ color: "#8f1f1f", marginTop: 4 }} data-testid="route-error"><X size={12}/> {err}</p>}
-        {!canEdit && <p className="muted small" style={{ marginTop: 4 }}>Butuh permission <code>production.route.edit</code>.</p>}
-      </section>
+      <p className="po-route-hint production-route-panel is-compact" data-testid="production-route-panel">
+        <span className="po-route-hint-badge" data-testid="requires-printing-badge">
+          {order.requires_printing ? "Perlu Cetak" : "Semua Non-Cetak"}
+        </span>
+        <span className="production-route-compact-hint" data-testid="production-route-compact-hint">
+          Pilih Cetak atau Tidak Cetak di tiap baris. Tombol berwarna adalah pilihan aktif. Cetak melewati sampel dan qty cetak; Tidak Cetak dapat melewati tahap itu.
+        </span>
+        {err ? <span className="error" data-testid="route-error"><X size={12}/> {err}</span> : null}
+        {!canEdit ? <span className="muted small">Butuh permission production.route.edit.</span> : null}
+      </p>
     );
   }
 
@@ -178,26 +179,13 @@ export default function ProductionRoutePanel({ order, canEdit, onUpdated, compac
                 </td>
                 <td className="num mono" style={{ padding: "8px", textAlign: "right" }}>{Number(li.quantity || 0).toLocaleString("id-ID")}</td>
                 <td style={{ padding: "8px" }}>
-                  <div style={{ display: "flex", gap: 6 }}>
-                    <button
-                      type="button"
-                      className={getRouteButtonClass(li.production_process, "print")}
-                      onClick={() => handleSelectRoute(idx, "print")}
-                      disabled={!canEdit || busy}
-                      data-testid={`route-print-${idx}`}
-                    >
-                      Cetak
-                    </button>
-                    <button
-                      type="button"
-                      className={getRouteButtonClass(li.production_process, "non_print")}
-                      onClick={() => handleSelectRoute(idx, "non_print")}
-                      disabled={!canEdit || busy}
-                      data-testid={`route-nonprint-${idx}`}
-                    >
-                      Tidak Cetak
-                    </button>
-                  </div>
+                  <LineRouteControls
+                    productionProcess={li.production_process}
+                    idx={idx}
+                    canEdit={canEdit}
+                    busy={busy}
+                    onSelect={handleSelectRoute}
+                  />
                 </td>
               </tr>
             );

@@ -339,7 +339,7 @@ export function helperWorkModel(order) {
     headerDone,
     headerRemain,
     overPrepared: Math.max(0, headerDone - headerTarget),
-    metricLabels: { target: "Target Persiapan", done: "Sudah Disiapkan", remain: "Sisa" },
+    metricLabels: { target: "Target", done: "Disiapkan", remain: "Sisa" },
     status: operatorStatusLabel(headerDone, headerTarget),
     itemLabel: lines.length === 1 ? lines[0].name : `${lines.length} item`,
     gateLocked: ready.helper !== true,

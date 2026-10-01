@@ -42,7 +42,7 @@ export default function AppendQtyEntries({
                 <td className="mono">{fmtQty(e.qty)}</td>
                 <td className="mono small">{e.created_at ? formatDisplayDateTime(e.created_at) : "—"}</td>
                 <td>{e.created_by_name || e.created_by || "—"}</td>
-                <td className="muted small">LOCKED</td>
+                <td className="muted small">Terkunci</td>
               </tr>
             ))}
           </tbody>

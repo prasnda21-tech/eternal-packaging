@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Link, Navigate, useLocation, useNavigate, useParams } from "react-router-dom";
-import { AlertCircle, AlertTriangle, ArrowLeft, CalendarClock, Check, ChevronDown, Copy, Eye, FileCheck2, FileText, List, MapPin, MessageSquare, RefreshCw, RotateCcw, ScanLine, ShieldOff, Trash2, Truck, X, XCircle, Zap } from "lucide-react";
+import { AlertCircle, AlertTriangle, ArrowLeft, CalendarClock, Check, ChevronDown, Copy, Ellipsis, Eye, FileCheck2, FileText, List, MessageSquare, Pencil, RefreshCw, RotateCcw, ScanLine, ShieldOff, Trash2, Truck, X, XCircle, Zap } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { STAGES, canAdvance, formatDate, formatDisplayDate, formatDisplayDateTime } from "../lib/constants";
@@ -15,7 +15,7 @@ import DeliveryProofPanel from "../components/DeliveryProofPanel";
 import SuratJalanViewButton from "../components/SuratJalanViewButton";
 import CustomerApprovalPanel from "../components/CustomerApprovalPanel";
 import HelperPrepPanel from "../components/HelperPrepPanel";
-import ProductionRoutePanel, { LineRouteEditor } from "../components/ProductionRoutePanel";
+import { LineRouteEditor } from "../components/ProductionRoutePanel";
 import LoadingPanel from "../components/LoadingPanel";
 import OutletLocationModal from "../components/OutletLocationModal";
 import EditPoInfoModal from "../components/EditPoInfoModal";
@@ -37,6 +37,7 @@ import {
   visualStepForInternalIndex,
 } from "../lib/poDetailStageNav";
 import { salesOrderLineColor } from "../lib/salesOrderLineColor";
+import { mapsSearchUrl } from "../lib/mobileWorkspaces";
 import { enrichWorkspaceTab } from "../lib/workspaceTabEnrichment";
 import AppendQtyEntries from "../components/AppendQtyEntries";
 import ConfirmActionModal from "../components/ConfirmActionModal";
@@ -56,6 +57,8 @@ import PoStageSection from "../components/poDetail/PoStageSection";
 import PoSummaryDrawer from "../components/poDetail/PoSummaryDrawer";
 import PoStagePickerSheet from "../components/poDetail/PoStagePickerSheet";
 import { PoStageAccordionProvider, usePoStageAccordion } from "../components/poDetail/PoStageAccordionContext";
+import { getStagePresentation } from "../lib/poDetailPresentation";
+import { sjHistory } from "../lib/suratJalan";
 
 function PengirimanDeliveryProofPanel({ order, onUpdated }) {
   const { open } = usePoStageAccordion(14);
@@ -103,7 +106,12 @@ export default function PODetail() {
   const [selectedWorkflowStage, setSelectedWorkflowStage] = useState(null);
   const [summaryOpen, setSummaryOpen] = useState(false);
   const [stageSheetOpen, setStageSheetOpen] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [docTab, setDocTab] = useState("dokumen");
+  const [noteOpen, setNoteOpen] = useState(false);
+  const [noteSaveErr, setNoteSaveErr] = useState("");
   const selectedForOrderRef = useRef(null);
+  const screenerServerNotesRef = useRef("");
 
   const commitOrder = (nextOrder) => {
     setOrder(nextOrder);
@@ -175,9 +183,12 @@ export default function PODetail() {
     });
   }, [id, order?.id, order?.customer, order?.po_number]);
 
+  // Draft resets only when the server timestamp changes. The notes string is read
+  // from a ref so a poll that echoes the same timestamp does not wipe an unsaved draft.
+  screenerServerNotesRef.current = order?.screener_info?.notes || "";
   useEffect(() => {
     setScreenerDraft("");
-    setScreenerNotes(order?.screener_info?.notes || "");
+    setScreenerNotes(screenerServerNotesRef.current);
   }, [order?.id, order?.screener_info?.updated_at]);
 
   // Display-only stage workspace. Refresh must not reset the viewed stage.
@@ -193,6 +204,32 @@ export default function PODetail() {
       return clampWorkflowStageIndex(resolveOperationalStage(order, order.current_stage), 0);
     });
   }, [order, location.search]);
+
+  useEffect(() => {
+    if (!note.trim()) return undefined;
+    const onLeave = (e) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onLeave);
+    return () => window.removeEventListener("beforeunload", onLeave);
+  }, [note]);
+
+  useEffect(() => {
+    if (!moreOpen) return undefined;
+    const onDown = (e) => {
+      if (!e.target.closest?.(".po-more-menu")) setMoreOpen(false);
+    };
+    const onKey = (e) => {
+      if (e.key === "Escape") setMoreOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [moreOpen]);
 
   useEffect(() => {
     const onPop = () => {
@@ -225,6 +262,7 @@ export default function PODetail() {
 
   // Start with route id (parallel to getOrder) — do not wait for order payload.
   // Payment stamps and a saved penerimaan refresh this list without a manual reload.
+  const receiptProofStamp = orderReceiptProofStamp(order);
   useEffect(() => {
     if (!id) {
       setSalesReceipts([]);
@@ -247,7 +285,7 @@ export default function PODetail() {
         if (!cancelled) setSalesReceiptsLoading(false);
       });
     return () => { cancelled = true; };
-  }, [id, order?.payment_fact?.updated_at, order?.payment_approved_at, orderReceiptProofStamp(order), receiptRefreshTick]);
+  }, [id, order?.payment_fact?.updated_at, order?.payment_approved_at, receiptProofStamp, receiptRefreshTick]);
 
   // Batch 2: auto refresh 30s untuk PODetail — hanya update server-backed state
   // (order), tidak menyentuh state form lokal panel-panel (Helper draft,
@@ -377,9 +415,31 @@ export default function PODetail() {
     order.buffer_stock ? "Buffer Stock dibatalkan" : "Ditandai Buffer Stock"
   );
   const saveNote = async () => {
-    if (!note.trim()) return;
-    await run(() => api.addNote(order.id, note.trim()), "Catatan disimpan");
-    setNote("");
+    const text = note.trim();
+    if (!text) {
+      setNoteSaveErr("Catatan tidak boleh kosong.");
+      return;
+    }
+    setNoteSaveErr("");
+    setBusy(true);
+    try {
+      const res = await api.addNote(order.id, text);
+      if (res?.order) commitOrder(res.order);
+      setNote("");
+      setNoteOpen(false);
+      showToast("Catatan disimpan");
+    } catch (e) {
+      setNoteSaveErr(formatApiError(e, "Gagal menyimpan catatan"));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const toggleNoteComposer = () => {
+    if (noteOpen && note.trim()) {
+      if (!window.confirm("Catatan belum disimpan. Tutup kotak catatan?")) return;
+    }
+    setNoteSaveErr("");
+    setNoteOpen((open) => !open);
   };
 
   const executeActionConfirm = async () => {
@@ -450,6 +510,25 @@ export default function PODetail() {
   const viewedStage = selectedWorkflowStage == null ? actualStage : clampWorkflowStageIndex(selectedWorkflowStage, actualStage);
   const viewedVisualStep = visualStepForInternalIndex(viewedStage);
   const viewingOtherStage = visualCanonicalIndex(viewedStage) !== visualCanonicalIndex(actualStage);
+  const viewedPres = getStagePresentation(viewedStage, order, actualStage);
+  const actualPres = getStagePresentation(actualStage, order, actualStage);
+  const ledgerSteps = PO_DETAIL_VISUAL_STEPS.map((step) => ({
+    ...step,
+    displayNumber: String(step.displayNumber).replace("&", "–"),
+  }));
+  const railIndexes = new Set([
+    0,
+    1,
+    3,
+    5,
+    visualCanonicalIndex(viewedStage),
+    visualCanonicalIndex(actualStage),
+  ]);
+  const compactSteps = ledgerSteps.filter((step) => railIndexes.has(step.canonicalIndex));
+  const designDocCount = (order.design_files || []).length;
+  const paymentDocCount = (order.payment_files || []).length;
+  const sampleDocCount = (order.sample_files || []).length;
+  const sjDocs = sjHistory(order);
   const accordionOpenIndex = accordionIndexForFocus(viewedStage);
   const selectWorkflowStage = (idx) => {
     const next = clampWorkflowStageIndex(idx, actualStage);
@@ -574,6 +653,13 @@ export default function PODetail() {
       data-viewed-stage={viewedStage}
     >
       <div className="detail-header po-stage-ws-header">
+        <nav className="po-doc-breadcrumb" aria-label="Jejak dokumen" data-testid="po-doc-breadcrumb">
+          <span>Penjualan</span>
+          <span aria-hidden="true">/</span>
+          <span>Pesanan</span>
+          <span aria-hidden="true">/</span>
+          <span>{STAGES[viewedStage]}</span>
+        </nav>
         <div className="po-hero-title-row">
           <div className="po-hero-identity">
             <h1 className="po-hero-customer" data-testid="detail-customer-name">
@@ -610,6 +696,46 @@ export default function PODetail() {
             >
               <List size={14} /> Ringkasan PO
             </button>
+            <div className="po-more-menu">
+              <button
+                type="button"
+                className="ghost sm po-more-trigger"
+                data-testid="po-more-actions"
+                aria-expanded={moreOpen}
+                aria-haspopup="menu"
+                aria-label="Aksi lain"
+                onClick={() => setMoreOpen((v) => !v)}
+              >
+                <Ellipsis size={16} />
+              </button>
+              <div className="po-more-menu-panel" role="menu" hidden={!moreOpen} data-testid="po-more-actions-menu">
+                {canRepeatOrder && !order.cancelled && (
+                  <Link
+                    to={`/penjualan/pesanan-penjualan?repeat_order_id=${encodeURIComponent(order.id)}`}
+                    className="ghost sm"
+                    role="menuitem"
+                    data-testid="btn-repeat-order-detail"
+                    title="Buat pesanan baru dari PO ini"
+                    onClick={() => setMoreOpen(false)}
+                  >
+                    Repeat Order
+                  </Link>
+                )}
+                {canManageUrgent && (
+                  <button type="button" className="ghost sm" role="menuitem" onClick={toggleUrgent} disabled={busy} data-testid="toggle-urgent-button">
+                    <Zap size={14} /> {order.priority === "urgent" ? "Set normal" : "Set urgent"}
+                  </button>
+                )}
+                {canManageBufferStock && (
+                  <button type="button" className="ghost sm" role="menuitem" onClick={toggleBufferStock} disabled={busy} data-testid="toggle-buffer-stock-button">
+                    {order.buffer_stock ? "Unset Buffer Stock" : "Set Buffer Stock"}
+                  </button>
+                )}
+                {!canRepeatOrder && !canManageUrgent && !canManageBufferStock && (
+                  <p className="muted small" data-testid="po-more-actions-empty">Tidak ada aksi lain untuk peran ini.</p>
+                )}
+              </div>
+            </div>
             <button
               type="button"
               className="ghost sm po-hero-back"
@@ -636,57 +762,11 @@ export default function PODetail() {
           <span className="pill sm" data-testid="header-order-kind">
             {order.requires_printing === false ? "Non-Cetak" : "Cetak"}
           </span>
-          {canRepeatOrder && !order.cancelled && (
-            <Link
-              to={`/penjualan/pesanan-penjualan?repeat_order_id=${encodeURIComponent(order.id)}`}
-              className="ghost sm"
-              data-testid="btn-repeat-order-detail"
-              title="Buat pesanan baru dari PO ini"
-            >
-              Repeat Order
-            </Link>
-          )}
-          {canManageUrgent && (
-            <button type="button" className="ghost sm" onClick={toggleUrgent} disabled={busy} data-testid="toggle-urgent-button">
-              <Zap size={14} /> {order.priority === "urgent" ? "Set normal" : "Set urgent"}
-            </button>
-          )}
           {order.buffer_stock && (
             <span className="pill sm" data-testid="buffer-stock-badge">
               BUFFER STOCK
             </span>
           )}
-          {canManageBufferStock && (
-            <button type="button" className="ghost sm" onClick={toggleBufferStock} disabled={busy} data-testid="toggle-buffer-stock-button">
-              {order.buffer_stock ? "Unset Buffer Stock" : "Set Buffer Stock"}
-            </button>
-          )}
-          <span className="po-hero-sedang" data-testid="po-actual-stage-label">
-            Tahap aktif saat ini: <strong data-testid="detail-stage">{actualStage + 1}. {STAGES[actualStage]}</strong>
-          </span>
-          <span className="po-hero-qty" data-testid="po-header-total-qty">
-            Qty: <strong>{(order.total_quantity ?? 0).toLocaleString("id-ID")}</strong>
-          </span>
-          <span className="po-hero-lines" data-testid="po-header-line-count">
-            Line: <strong>{lineItemCount}</strong>
-          </span>
-          <span className="po-hero-ship-date" data-testid="header-tanggal-pengiriman">
-            Tanggal Pengiriman:{" "}
-            <strong data-testid="detail-tanggal-pengiriman-header">
-              {formatDate(
-                order.tanggal_pengiriman
-                || order.effective_delivery_date
-                || order.delivery_deadline_effective
-                || order.scheduled_delivery_date
-                || order.delivery_deadline_manual
-              )}
-            </strong>
-            {order.tanggal_pengiriman_source === "manual" || order.delivery_deadline_source === "manual" ? (
-              <span className="muted small"> Manual</span>
-            ) : (order.tanggal_pengiriman || order.delivery_deadline_effective) ? (
-              <span className="muted small"> Otomatis</span>
-            ) : null}
-          </span>
           <span data-testid="po-last-updated" className="po-hero-updated">
             Update: {poLastUpdated ? new Date(poLastUpdated).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" }) : "-"}
           </span>
@@ -715,30 +795,45 @@ export default function PODetail() {
             order={order}
             showLabels
             viewedStage={viewedStage}
-            steps={PO_DETAIL_VISUAL_STEPS}
+            steps={compactSteps}
             onStageClick={selectWorkflowStage}
           />
         </div>
+        <button
+          type="button"
+          className="ghost sm po-lihat-semua"
+          data-testid="btn-lihat-semua-tahap"
+          onClick={() => setStageSheetOpen(true)}
+        >
+          Lihat Semua Tahap <ChevronDown size={14} />
+        </button>
       </div>
 
       <section className="po-stage-ws-chrome" data-testid="po-stage-panel">
-        <header className="po-stage-ws-chrome-head">
-          <div>
-            <span className="po-stage-ws-kicker">Workspace tahap</span>
-            <h2 data-testid="po-viewed-stage-title">{poDetailStagePanelTitle(viewedStage)}</h2>
-          </div>
-          {viewingOtherStage && (
-            <button
-              type="button"
-              className="ghost sm"
-              data-testid="btn-back-to-active-stage"
-              onClick={() => selectWorkflowStage(actualStage)}
-            >
-              Kembali ke Tahap Aktif
-            </button>
-          )}
+        <header className="po-stage-ws-chrome-head po-view-context" data-testid="po-view-context">
+          <p className="po-view-context-item">
+            <span className="po-stage-ws-kicker">Anda melihat</span>
+            <strong data-testid="po-viewed-stage-title" title={poDetailStagePanelTitle(viewedStage)}>
+              {STAGES[viewedStage]} · {viewedPres.summary || viewedPres.label || "—"}
+            </strong>
+          </p>
+          <p className="po-view-context-item po-hero-sedang" data-testid="po-actual-stage-label">
+            <span className="po-stage-ws-kicker">Tahap aktif:</span>
+            <strong data-testid="detail-stage">
+              {STAGES[actualStage]} · {actualPres.summary || actualPres.label || "—"}
+            </strong>
+          </p>
+          <button
+            type="button"
+            className="primary sm"
+            data-testid="btn-back-to-active-stage"
+            hidden={!viewingOtherStage}
+            onClick={() => selectWorkflowStage(actualStage)}
+          >
+            Buka {STAGES[actualStage]}
+          </button>
         </header>
-      <section className="po-kpi-strip" data-testid="po-kpi-strip" hidden={viewedStage !== 0}>
+      <section className="po-kpi-strip po-order-masuk-kpi" data-testid="po-kpi-strip" hidden={viewedStage !== 0}>
         <MetricRow columns={5}>
           <MetricCell label="Total PO" value={order.total_quantity} testid="kpi-total-po" />
           <MetricCell className="kpi-accent-target" label="Target Cetak" value={order.print_qty_target ?? order.print_qty_total} testid="kpi-print-target" />
@@ -762,32 +857,23 @@ export default function PODetail() {
         </div>
       </section>
 
-      {shouldShowPoActiveStagePanel(viewedStage) ? (
+      {shouldShowPoActiveStagePanel(viewedStage) && !order.hold ? (
       <PoDetailFocusPanel
         order={order}
         viewedStage={viewedStage}
         actualStage={actualStage}
         onGotoStage={selectWorkflowStage}
-        primaryAction={
-          canProcessSalesDelivery ? (
-            <Link
-              to={`/penjualan/pengiriman-pesanan?po_id=${order.id}&action=create`}
-              className="po-action-primary"
-              data-testid="btn-proses-pengiriman-pesanan-focus"
-            >
-              <Truck size={14} /> Proses ke Pengiriman Pesanan
-            </Link>
-          ) : null
-        }
+        primaryAction={null}
       />
       ) : null}
 
-      {/* HOLD banner (Req 2) */}
+      {/* Satu pemberitahuan HOLD dari snapshot backend. Bukan kesimpulan dari field kosong. */}
       {order.hold && (
-        <div className="hold-banner" data-testid="hold-banner">
+        <div className="hold-banner po-hold-single" data-testid="hold-banner">
           <AlertCircle size={18}/>
           <div>
-            <strong>PO HOLD — belum bisa masuk Penjadwalan</strong>
+            <strong>HOLD — Penjadwalan belum bisa dimulai</strong>
+            <p className="po-hold-process">Proses yang tertahan: masuk ke tahap Penjadwalan.</p>
             <ul>{(order.hold_reasons || []).map((r, i) => <li key={i} data-testid={`hold-reason-${i}`}>{r}</li>)}</ul>
           </div>
         </div>
@@ -825,7 +911,7 @@ export default function PODetail() {
       {/* Order Info */}
       <section className="panel po-info-panel" data-testid="detail-info">
         <header className="panel-head">
-          <h3>Informasi PO</h3>
+          <h3>Informasi Order</h3>
           {canEditPoInfo && !order.cancelled && (
             <button
               type="button"
@@ -833,275 +919,151 @@ export default function PODetail() {
               data-testid="po-edit-info"
               onClick={() => setEditInfoOpen(true)}
             >
-              Edit Informasi
+              <Pencil size={14} /> Edit Informasi
             </button>
           )}
         </header>
-        <div className="po-info-grid">
-        <div>
-          <span className="lbl">PO / Sales Order</span>
-          <strong className="mono">{order.po_number || <span className="po-info-empty">—</span>}</strong>
+        <div className="po-info-columns">
+          <div className="po-info-col">
+            <div className="po-info-pair">
+              <span className="lbl">Pelanggan</span>
+              <strong>{order.customer || <span className="po-info-empty">—</span>}</strong>
+            </div>
+            <div className="po-info-pair">
+              <span className="lbl">Tanggal PO</span>
+              <strong>{order.order_date ? formatDate(order.order_date) : "—"}</strong>
+            </div>
+            <div className="po-info-pair">
+              <span className="lbl">Penerima</span>
+              <strong>{order.recipient || <span className="po-info-empty">—</span>}</strong>
+            </div>
+          </div>
+          <div className="po-info-col">
+            <div className="po-info-pair">
+              <span className="lbl">Outlet</span>
+              <strong>
+                {order.outlet || <span className="po-info-empty">—</span>}
+                {canSetLocation && (
+                  <button
+                    type="button"
+                    className="ghost sm po-info-edit"
+                    data-testid="po-atur-lokasi"
+                    onClick={async () => {
+                      const row = {
+                        order_id: order.id,
+                        customer: order.customer || order.customer_name || "",
+                        outlet: order.outlet || "",
+                        outlet_name: order.outlet || "",
+                      };
+                      try {
+                        const d = await api.listDeliveryOutlets(row.customer);
+                        const o = (d.outlets || [])[0];
+                        if (o) {
+                          row.outlet_id = o.id;
+                          row.outlet_name = o.name || order.outlet || "";
+                          row.lat = o.lat;
+                          row.lng = o.lng;
+                          row.place_id = o.place_id || o.google_place_id;
+                          row.formatted_address = o.formatted_address;
+                        }
+                      } catch {
+                        /* modal still opens */
+                      }
+                      setLocRow(row);
+                    }}
+                  >
+                    {order.outlet ? "Edit Lokasi" : "Atur Lokasi"}
+                  </button>
+                )}
+              </strong>
+            </div>
+            <div className="po-info-pair" data-testid="header-tanggal-pengiriman">
+              <span className="lbl">Tanggal Pengiriman</span>
+              <strong data-testid="detail-tanggal-pengiriman">
+                {(
+                  order.tanggal_pengiriman
+                  || order.effective_delivery_date
+                  || order.delivery_deadline_effective
+                  || order.scheduled_delivery_date
+                  || order.delivery_deadline_manual
+                ) ? formatDate(
+                  order.tanggal_pengiriman
+                  || order.effective_delivery_date
+                  || order.delivery_deadline_effective
+                  || order.scheduled_delivery_date
+                  || order.delivery_deadline_manual
+                ) : "—"}
+                {order.tanggal_pengiriman_source === "manual" || order.delivery_deadline_source === "manual" ? (
+                  <span className="muted small"> Manual</span>
+                ) : (order.tanggal_pengiriman || order.delivery_deadline_effective) ? (
+                  <span className="muted small"> Otomatis</span>
+                ) : null}
+              </strong>
+            </div>
+            <div className="po-info-pair">
+              <span className="lbl">Ekspedisi</span>
+              <strong>{order.expedition || <span className="po-info-empty">—</span>}</strong>
+            </div>
+          </div>
+          <div className="po-info-col">
+            <div className="po-info-pair">
+              <span className="lbl">Sales</span>
+              <strong data-testid="detail-sales">
+                {order.sales || order.sales_user || <em className="muted">Perlu verifikasi</em>}
+              </strong>
+            </div>
+            <div className="po-info-pair">
+              <span className="lbl">Estimasi Kirim</span>
+              <strong data-testid="detail-estimated-delivery">{order.estimated_delivery ? formatDate(order.estimated_delivery) : "—"}</strong>
+            </div>
+            <div className="po-info-pair">
+              <span className="lbl">Zona Kirim</span>
+              <strong>{order.delivery_zone || <span className="po-info-empty">—</span>}</strong>
+            </div>
+          </div>
         </div>
-        <div>
-          <span className="lbl">Customer</span>
-          <strong>{order.customer || <span className="po-info-empty">—</span>}</strong>
-        </div>
-        <div>
-          <span className="lbl">Outlet</span>
-          <strong>{order.outlet || <span className="po-info-empty">—</span>}</strong>
-          {canSetLocation && (
-            <button
-              type="button"
-              className="ghost sm po-info-edit"
-              data-testid="po-atur-lokasi"
-              onClick={async () => {
-                const row = {
-                  order_id: order.id,
-                  customer: order.customer || order.customer_name || "",
-                  outlet: order.outlet || "",
-                  outlet_name: order.outlet || "",
-                };
-                try {
-                  const d = await api.listDeliveryOutlets(row.customer);
-                  const o = (d.outlets || [])[0];
-                  if (o) {
-                    row.outlet_id = o.id;
-                    row.outlet_name = o.name || order.outlet || "";
-                    row.lat = o.lat;
-                    row.lng = o.lng;
-                    row.place_id = o.place_id || o.google_place_id;
-                    row.formatted_address = o.formatted_address;
-                  }
-                } catch {
-                  /* modal still opens */
-                }
-                setLocRow(row);
-              }}
-            >
-              {order.outlet ? "Edit Lokasi" : "Atur Lokasi"}
-            </button>
-          )}
-        </div>
-        <div>
-          <span className="lbl">Tanggal PO</span>
-          <strong>{formatDate(order.order_date)}</strong>
-        </div>
-        <div>
-          <span className="lbl">Tanggal Pengiriman</span>
-          <strong data-testid="detail-tanggal-pengiriman">
-            {formatDate(
-              order.tanggal_pengiriman
-              || order.effective_delivery_date
-              || order.delivery_deadline_effective
-              || order.scheduled_delivery_date
-              || order.delivery_deadline_manual
-            )}
-            {order.tanggal_pengiriman_source === "manual" || order.delivery_deadline_source === "manual" ? (
-              <span className="muted small" style={{ marginLeft: 6 }}>Manual</span>
-            ) : (order.tanggal_pengiriman || order.delivery_deadline_effective) ? (
-              <span className="muted small" style={{ marginLeft: 6 }}>Otomatis</span>
+        <div className="po-info-address po-info-pair">
+          <span className="lbl">Alamat Pengiriman</span>
+          <strong data-testid="detail-address">
+            {order.address || <span className="po-info-empty">—</span>}
+            {mapsSearchUrl(order.address) ? (
+              <a className="po-maps-link" href={mapsSearchUrl(order.address)} target="_blank" rel="noreferrer" data-testid="po-buka-maps">Buka Maps</a>
             ) : null}
           </strong>
         </div>
-        <div>
-          <span className="lbl">Estimasi kirim</span>
-          <strong data-testid="detail-estimated-delivery">{formatDate(order.estimated_delivery)}</strong>
-        </div>
-        <div>
-          <span className="lbl">Penerima</span>
-          <strong>{order.recipient || <span className="po-info-empty">—</span>}</strong>
-        </div>
-        <div>
-          <span className="lbl">Sales</span>
-          <strong data-testid="detail-sales">
-            {order.sales || order.sales_user || <em className="muted">Perlu verifikasi</em>}
-          </strong>
-        </div>
-        <div className="po-info-address">
-          <span className="lbl"><MapPin size={12} /> Alamat</span>
-          <strong data-testid="detail-address">{order.address || <span className="po-info-empty">—</span>}</strong>
-        </div>
-        <div>
-          <span className="lbl">Ekspedisi</span>
-          <strong>{order.expedition || <span className="po-info-empty">—</span>}</strong>
-        </div>
-        <div>
-          <span className="lbl">Zona kirim</span>
-          <strong>{order.delivery_zone || <span className="po-info-empty">—</span>}</strong>
-        </div>
-        <div>
-          <span className="lbl">User / Pembuat PO</span>
-          <strong data-testid="detail-created-by-user">
-            {order.created_by_user || <em className="muted">Perlu verifikasi</em>}
-          </strong>
-        </div>
-        <div>
-          <span className="lbl">Termin bayar</span>
-          <strong>{order.payment_terms || <span className="po-info-empty">—</span>}</strong>
-        </div>
-        <div>
-          <span className="lbl">Status Payment</span>
-          <strong className={order.payment_status === "Approved" ? "status-ok" : "status-wait"} data-testid="payment-status">
-            {order.payment_status === "Approved" ? "Approved" : "Menunggu approval"}
-          </strong>
-        </div>
-        <div>
-          <span className="lbl">Status Design</span>
-          <strong className={(order.design_status === "Approved" || isCustomerDesignApproved(order)) ? "status-ok" : "status-wait"} data-testid="design-status">
-            {(order.design_status === "Approved" || isCustomerDesignApproved(order))
-              ? "Approved"
-              : (order.design_files?.length ? "Menunggu approval" : "Belum ada design")}
-          </strong>
-        </div>
-        {order.imported_by && (
-          <div>
-            <span className="lbl">Diimport oleh (Admin)</span>
-            <strong data-testid="detail-imported-by">
-              {order.imported_by_name || order.imported_by}
-              {order.imported_at && <span className="muted small"> · {formatDate(order.imported_at)}</span>}
+        <footer className="po-info-statusline">
+          <span>
+            Pembayaran:{" "}
+            <strong className={order.payment_status === "Approved" ? "status-ok" : "status-wait"} data-testid="payment-status">
+              {order.payment_status === "Approved" ? "Approved" : "Menunggu approval"}
             </strong>
-          </div>
-        )}
-        {order.accurate_id && (
-          <div>
-            <span className="lbl">Accurate ID</span>
-            <strong className="mono" data-testid="detail-accurate-id">{order.accurate_id}</strong>
-          </div>
-        )}
-        {order.notes && (
-          <div className="po-info-address" data-testid="detail-keterangan">
-            <span className="lbl">Keterangan</span>
-            <strong style={{whiteSpace:"pre-wrap"}}>{order.notes}</strong>
-          </div>
-        )}
-        {order.source_pdf?.storage_path && (
-          <div>
-            <span className="lbl">PDF asli import</span>
-            <strong>
-              <button
-                type="button"
-                className="link-inline"
-                data-testid="detail-source-pdf"
-                onClick={() => setSourcePdfOpen(true)}
-              >
-                <FileText size={13}/> {order.source_pdf.original_filename || "Lihat PDF"}
-              </button>
+          </span>
+          <span>
+            Desain:{" "}
+            <strong className={(order.design_status === "Approved" || isCustomerDesignApproved(order)) ? "status-ok" : "status-wait"} data-testid="design-status">
+              {(order.design_status === "Approved" || isCustomerDesignApproved(order))
+                ? "Approved"
+                : (order.design_files?.length ? "Menunggu approval" : "Belum ada design")}
             </strong>
-          </div>
-        )}
-        {order.urgency_approved_by && (
-          <div>
-            <span className="lbl">Urgent disetujui oleh</span>
-            <strong>{order.urgency_approved_by}</strong>
-          </div>
-        )}
-        </div>
-      </section>
-
-      <section className="panel po-actions-panel" data-testid="po-actions-panel">
-        <header className="panel-head">
-          <h3>Aksi PO</h3>
-          <span className="muted small">Operasional · dokumen · pengecualian</span>
-        </header>
-        <div className="po-actions-ops" data-testid="po-actions-ops">
-          {canCopyTrackingLink && (
-            <div className="po-tracking-actions" data-testid="tracking-customer-panel">
-              <button
-                className="ghost sm"
-                onClick={copyTrackingLink}
-                disabled={trackingBusy || order.cancelled}
-                data-testid="copy-tracking-link"
-              >
-                <Copy size={14} /> Live Tracking
-              </button>
-              {trackingCopyMsg && <span className="muted small" data-testid="tracking-copy-msg">{trackingCopyMsg}</span>}
-            </div>
-          )}
-          {canProcessSalesDelivery ? (
-            <Link
-              to={`/penjualan/pengiriman-pesanan?po_id=${order.id}&action=create`}
-              className="po-action-primary"
-              data-testid="btn-proses-pengiriman-pesanan"
-            >
-              <Truck size={16} /> PROSES KE PENGIRIMAN PESANAN
-            </Link>
-          ) : salesDeliveryAllQtyDone ? (
-            <span className="po-action-done" data-testid="badge-pengiriman-selesai">
-              <Check size={14} /> Seluruh Qty Selesai Dibuatkan SJ
-            </span>
-          ) : null}
-        </div>
-        <div className="po-actions-admin-docs" data-testid="po-actions-admin-docs">
-          <span className="po-actions-group-label">Dokumen</span>
-          <Link
-            to={`/penjualan/faktur-penjualan?po_id=${order.id}&action=create`}
-            className="po-action-doc"
-            data-testid="btn-buat-faktur-penjualan"
-          >
-            <FileText size={16} /> BUAT FAKTUR
-          </Link>
-        </div>
-        {(canRollback || canCancel || canDelete) && (
-          <div className="po-actions-admin">
-            <button
-              type="button"
-              className="po-actions-danger-toggle"
-              aria-expanded={dangerActionsOpen}
-              data-testid="po-actions-danger-toggle"
-              onClick={() => setDangerActionsOpen((v) => !v)}
-            >
-              Aksi berbahaya / pengecualian
-              <ChevronDown size={14} className={`po-stage-chevron${dangerActionsOpen ? " is-open" : ""}`} aria-hidden="true" />
-            </button>
-            <div className="po-actions-danger-body" hidden={!dangerActionsOpen} data-testid="po-actions-danger-body">
-              <div className="po-actions-row">
-                {canRollback && order.current_stage > 0 && (
-                  <button className="ghost" onClick={doRollback} disabled={busy} data-testid="rollback-button" title="Butuh permission workflow.rollback">
-                    <RotateCcw size={14}/> Rollback
-                  </button>
-                )}
-                {canCancel && !order.cancelled && (
-                  <button className="ghost" onClick={doCancelPO} disabled={busy} data-testid="cancel-po-button" title="Butuh permission po.cancel">
-                    <XCircle size={16}/> Batalkan PO
-                  </button>
-                )}
-                {canDelete && (
-                  <button className="ghost danger" onClick={openDeleteModal} disabled={busy || deleting} data-testid="delete-po-button" title="Butuh permission po.delete">
-                    <Trash2 size={16}/> Hapus Permanen PO
-                  </button>
-                )}
-              </div>
-              <p className="muted small po-actions-hint">
-                <b>Batalkan PO</b> menyimpan histori &amp; audit (tab <em>Cancelled</em>).
-                {" "}<b>Hapus Permanen</b> hanya untuk PO test/duplicate.
-              </p>
-            </div>
-          </div>
-        )}
+          </span>
+          <span>Termin: <strong>{order.payment_terms || "—"}</strong></span>
+        </footer>
       </section>
       </div>
 
       <section className="panel po-line-items-panel" data-testid="line-items-panel">
         <header className="panel-head">
-          <h3>Line Item ({order.item_count ?? 0})</h3>
-          <span className="pill" data-testid="scope-total-po">Total PO: {(order.total_quantity ?? 0).toLocaleString("id-ID")} pcs</span>
-          <span className="pill sm" data-testid="scope-print-qty">
-            Cetak: {Number(order.print_qty_total ?? 0).toLocaleString("id-ID")}
-          </span>
-          <span className="pill sm" data-testid="scope-nonprint-qty">
-            Non-Cetak: {Math.max(Number(order.total_quantity ?? 0) - Number(order.print_qty_total ?? 0), 0).toLocaleString("id-ID")}
-          </span>
+          <h3>Barang Pesanan ({order.item_count ?? (order.line_items || []).length})</h3>
         </header>
         <div className="line-items-table-wrap">
           <table className="line-items-table" data-testid="line-items-table">
             <thead>
               <tr>
-                <th>Item</th>
-                <th>Kode</th>
+                <th>Barang / Kode</th>
                 <th className="num">Qty</th>
                 <th>Warna</th>
-                <th>Cetak / Non-Cetak</th>
-                <th>Status</th>
+                <th>Proses</th>
+                <th className="po-sr-only">Status</th>
                 <th>Aksi</th>
               </tr>
             </thead>
@@ -1124,14 +1086,14 @@ export default function PODetail() {
                   <tr key={i} className="line-item-row" data-testid={`line-item-${i}`}>
                     <td className="li-name">
                       <strong>{li.name}</strong>
+                      <span className="mono li-code" data-testid={`line-item-code-${i}`}>{li.item_code}</span>
                       {li.notes ? <span className="li-notes">Catatan sablon: {li.notes}</span> : null}
                     </td>
-                    <td className="mono" data-testid={`line-item-code-${i}`}>{li.item_code}</td>
                     <td className="num" data-testid={`line-item-qty-${i}`}>
                       {(li.quantity ?? 0).toLocaleString("id-ID")}
                       <span className="muted small"> {li.unit}</span>
                     </td>
-                    <td data-testid={`line-item-color-${i}`}>{salesOrderLineColor(li) || "-"}</td>
+                    <td className="li-color" data-testid={`line-item-color-${i}`}>{salesOrderLineColor(li) || "-"}</td>
                     <td className="li-route-cell">
                       <LineRouteEditor
                         order={order}
@@ -1140,7 +1102,7 @@ export default function PODetail() {
                         onUpdated={setOrder}
                       />
                     </td>
-                    <td>
+                    <td className="po-sr-only">
                       <span
                         className={`li-process ${statusTone}`}
                         data-testid={`line-item-process-${i}`}
@@ -1160,10 +1122,21 @@ export default function PODetail() {
                 );
               })}
             </tbody>
+            <tfoot>
+              <tr>
+                <td colSpan={6} className="li-total-cell">
+                  <span data-testid="scope-total-po">Total {(order.total_quantity ?? 0).toLocaleString("id-ID")} pcs</span>
+                  {" · "}
+                  <span data-testid="scope-print-qty">Cetak {Number(order.print_qty_total ?? 0).toLocaleString("id-ID")} pcs</span>
+                  {" · "}
+                  <span data-testid="scope-nonprint-qty">Tidak Cetak {Math.max(Number(order.total_quantity ?? 0) - Number(order.print_qty_total ?? 0), 0).toLocaleString("id-ID")} pcs</span>
+                </td>
+              </tr>
+            </tfoot>
           </table>
         </div>
       </section>
-      <ProductionRoutePanel order={order} canEdit={canEditRoute} onUpdated={setOrder} compact />
+
       </div>
 
       <div className="workflow-group" data-testid="workflow-group-2">
@@ -1178,8 +1151,8 @@ export default function PODetail() {
       <PoStageSection stageIndex={1} order={order} title="Design" hasError={!!err}>
         <header className="panel-head design-ws-head">
           <div className="design-ws-heading">
-            <h3>Design Workspace</h3>
-            <p className="muted small">Kelola file desain dan proses approval customer.</p>
+            <h3>Design</h3>
+            <p className="muted small">File desain di bagian ini. Keputusan approval ada di bagian berikutnya.</p>
           </div>
           <DesignStatusBadge order={order} />
         </header>
@@ -1232,7 +1205,7 @@ export default function PODetail() {
       <section id="po-stage-payment" className={"panel payment-panel po-pair-card po-phase-payment" + (deskPanelOwnsStage("payment", viewedStage) ? " is-desk-viewed" : "")} data-testid="payment-approval-pair" hidden={!deskPanelOwnsStage("payment", viewedStage)}>
         <PoStageSection stageIndex={3} order={order} title="Payment &amp; Approval" hasError={!!payUploadErr || !!salesReceiptsErr}>
         <header className="panel-head">
-          <h3>PAYMENT — 4&amp;5</h3>
+          <h3>Payment</h3>
           <span className="muted small" data-testid="payment-proof-count">
             Bukti Payment {paymentProofCount(order.payment_files)} / {MAX_PAYMENT_PROOFS} file
           </span>
@@ -1381,13 +1354,12 @@ export default function PODetail() {
         </QtyOpsHead>
         <div className="po-pair-grid po-pair-grid-schedule">
           <div className="po-pair-col">
-            <h4 className="po-pair-col-title">Penjadwalan</h4>
+            <OperatorSplitPanel order={order} canEdit={canEditSchedule} onUpdated={setOrder} mode="schedule" />
+          </div>
+          <div className="po-pair-col">
             <p className="qty-ops-note">
               Simpan pembagian operator. Screener dan Persiapan Helper terbuka otomatis setelah save berhasil.
             </p>
-          </div>
-          <div className="po-pair-col">
-            <OperatorSplitPanel order={order} canEdit={canEditSchedule} onUpdated={setOrder} mode="schedule" />
           </div>
         </div>
       </section>
@@ -1462,7 +1434,7 @@ export default function PODetail() {
       <section className="panel po-pair-card po-phase-sample" data-testid="cetak-sample-pair">
         <header className="panel-head qty-ops-head">
           <div className="qty-ops-title">
-            <h3>Cetak Sample</h3>
+            {viewedStage === 8 ? null : <h3>Cetak Sample</h3>}
           </div>
           <div className="qty-ops-head-meta">
             {order.sample_approved ? (
@@ -1517,6 +1489,16 @@ export default function PODetail() {
           )}
           {!canApproveSample && (order.sample_files?.length || 0) > 0 && !order.sample_approved && (
             <p className="muted small" data-testid="sample-readonly-note">Butuh permission Penjadwalan untuk approval sampel cetak.</p>
+          )}
+          {(order.sample_files?.length || 0) === 0 && !order.sample_approved && (
+            <p className="muted small" data-testid="sample-empty-note">
+              {order.screener_gate_reason
+                || ((order.hold_reasons || []).length
+                  ? `Keputusan sample menunggu data yang masih tertahan: ${(order.hold_reasons || []).join("; ")}.`
+                  : (!ready.sample_upload
+                    ? "Upload sample belum tersedia karena persiapan produksi pada PO ini belum selesai."
+                    : "Belum ada file sample. Upload dilakukan di tahap Operator."))}
+            </p>
           )}
         </div>
         </div>
@@ -1620,29 +1602,209 @@ export default function PODetail() {
       </section>
 
       {/* Notes — Order Masuk workspace */}
-      <div hidden={!deskPanelOwnsStage("0", viewedStage)}>
-      <section className={`panel po-notes-panel${!order.notes && !note ? " is-empty" : ""}`} data-testid="notes-panel">
-        <header className="panel-head"><h3>Catatan Produksi</h3></header>
-        {order.notes && <pre className="notes-view">{order.notes}</pre>}
-        {!order.notes && !note && <p className="muted small po-notes-empty">Belum ada catatan produksi.</p>}
-        {!isCrm && (
+      <div className="po-order-masuk-tail" hidden={!deskPanelOwnsStage("0", viewedStage)}>
+      <section className={`panel po-notes-panel${!order.notes && !noteOpen ? " is-empty" : ""}`} data-testid="notes-panel">
+        <header className="panel-head">
+          <h3>Catatan Produksi</h3>
+          {!isCrm && (
+            <button
+              type="button"
+              className="ghost sm"
+              data-testid="toggle-note-composer"
+              aria-expanded={noteOpen}
+              onClick={toggleNoteComposer}
+            >
+              Tambah Catatan
+            </button>
+          )}
+        </header>
+        {order.notes ? <pre className="notes-view" data-testid="notes-saved">{order.notes}</pre> : (
+          <p className="muted small po-notes-empty">Belum ada catatan produksi.</p>
+        )}
+        {!isCrm && noteOpen && (
           <div className="note-add">
             <textarea
               value={note}
-              onChange={(e) => setNote(e.target.value)}
+              onChange={(e) => { setNote(e.target.value); if (noteSaveErr) setNoteSaveErr(""); }}
               placeholder="Tambahkan catatan..."
               rows={2}
               data-testid="note-input"
               className="manual-input"
             />
+            {noteSaveErr && <p className="error" data-testid="note-save-error">{noteSaveErr}</p>}
             <button className="ghost sm" onClick={saveNote} disabled={busy || !note.trim()} data-testid="save-note-button">
               <MessageSquare size={14} /> Simpan catatan
             </button>
           </div>
         )}
       </section>
+      <section className="panel po-doc-tabs" data-testid="po-doc-tabs">
+        <div className="po-doc-tablist" role="tablist" aria-label="Dokumen dan riwayat">
+          <button
+            type="button"
+            role="tab"
+            id="po-doc-tab-dokumen"
+            aria-selected={docTab === "dokumen"}
+            aria-controls="po-doc-panel-dokumen"
+            className={docTab === "dokumen" ? "is-active" : ""}
+            data-testid="po-doc-tab-dokumen"
+            onClick={() => setDocTab("dokumen")}
+          >
+            Dokumen
+          </button>
+          <button
+            type="button"
+            role="tab"
+            id="po-doc-tab-riwayat"
+            aria-selected={docTab === "riwayat"}
+            aria-controls="po-doc-panel-riwayat"
+            className={docTab === "riwayat" ? "is-active" : ""}
+            data-testid="po-doc-tab-riwayat"
+            onClick={() => setDocTab("riwayat")}
+          >
+            Riwayat Workflow
+          </button>
+        </div>
+        <div
+          role="tabpanel"
+          id="po-doc-panel-dokumen"
+          aria-labelledby="po-doc-tab-dokumen"
+          hidden={docTab !== "dokumen"}
+          data-testid="po-doc-panel-dokumen"
+        >
+          <ul className="po-doc-list">
+            <li>
+              <span>Design</span>
+              <strong>{designDocCount} file</strong>
+              <button type="button" className="ghost sm" onClick={() => selectWorkflowStage(1)}>Buka Design</button>
+            </li>
+            <li>
+              <span>Payment</span>
+              <strong>{paymentDocCount} file</strong>
+              <button type="button" className="ghost sm" onClick={() => selectWorkflowStage(3)}>Buka Payment</button>
+            </li>
+            <li>
+              <span>Sampel</span>
+              <strong>{sampleDocCount} file</strong>
+              <button type="button" className="ghost sm" onClick={() => selectWorkflowStage(8)}>Buka Operator</button>
+            </li>
+            <li>
+              <span>Surat Jalan</span>
+              <strong>{sjDocs.length} file</strong>
+              <button type="button" className="ghost sm" onClick={() => selectWorkflowStage(12)}>Buka Surat Jalan</button>
+            </li>
+            {order.source_pdf?.storage_path ? (
+              <li>
+                <span>PDF asli import</span>
+                <strong>{order.source_pdf.original_filename || "PDF"}</strong>
+                <button type="button" className="ghost sm" data-testid="po-doc-source-pdf" onClick={() => setSourcePdfOpen(true)}>
+                  Lihat PDF
+                </button>
+              </li>
+            ) : null}
+          </ul>
+          <div className="po-doc-actionbar" data-testid="po-actions-admin-docs">
+            {canCopyTrackingLink && (
+              <button
+                type="button"
+                className="ghost sm"
+                onClick={copyTrackingLink}
+                disabled={trackingBusy || order.cancelled}
+                data-testid="copy-tracking-link"
+              >
+                <Copy size={14} /> Live Tracking
+              </button>
+            )}
+            {canProcessSalesDelivery ? (
+              <Link
+                to={`/penjualan/pengiriman-pesanan?po_id=${order.id}&action=create`}
+                className="po-action-primary"
+                data-testid="btn-proses-pengiriman-pesanan"
+              >
+                <Truck size={16} /> Proses ke Pengiriman Pesanan
+              </Link>
+            ) : salesDeliveryAllQtyDone ? (
+              <span className="po-action-done" data-testid="badge-pengiriman-selesai">
+                <Check size={14} /> Seluruh Qty Selesai Dibuatkan SJ
+              </span>
+            ) : null}
+            <Link
+              to={`/penjualan/faktur-penjualan?po_id=${order.id}&action=create`}
+              className="po-action-primary"
+              data-testid="btn-buat-faktur-penjualan"
+            >
+              <FileText size={14} /> Buat Faktur
+            </Link>
+            {trackingCopyMsg && <span className="muted small" data-testid="tracking-copy-msg">{trackingCopyMsg}</span>}
+            <p className="muted small po-doc-note">Dokumen mengikuti izin akses dan status order.</p>
+          </div>
+        </div>
+        <div
+          role="tabpanel"
+          id="po-doc-panel-riwayat"
+          aria-labelledby="po-doc-tab-riwayat"
+          hidden={docTab !== "riwayat"}
+          data-testid="po-doc-panel-riwayat"
+        >
+          <Timeline timeline={order.timeline} currentStage={order.current_stage} order={order} defaultOpen={false} />
+        </div>
+      </section>
 
-      <Timeline timeline={order.timeline} currentStage={order.current_stage} order={order} defaultOpen={false} />
+      <footer className="po-page-meta" data-testid="po-page-meta">
+        <span data-testid="detail-created-by-user">Dibuat oleh {order.created_by_user || "Perlu verifikasi"}</span>
+        {order.imported_by ? (
+          <span data-testid="detail-imported-by">
+            {" · "}Diimpor oleh {order.imported_by_name || order.imported_by}
+            {order.imported_at ? ` · ${formatDate(order.imported_at)}` : ""}
+          </span>
+        ) : null}
+        {order.accurate_id ? (
+          <span className="mono" data-testid="detail-accurate-id">{" · "}Accurate ID {order.accurate_id}</span>
+        ) : null}
+        {order.source_pdf?.storage_path ? (
+          <button type="button" className="link-inline" data-testid="detail-source-pdf" onClick={() => setSourcePdfOpen(true)}>
+            {" · "}{order.source_pdf.original_filename || "Lihat PDF"}
+          </button>
+        ) : null}
+        {order.urgency_approved_by ? <span>{" · "}Urgent disetujui oleh {order.urgency_approved_by}</span> : null}
+      </footer>
+      {(canRollback || canCancel || canDelete) && (
+        <div className="po-actions-admin po-danger-foot">
+          <button
+            type="button"
+            className="po-actions-danger-toggle"
+            aria-expanded={dangerActionsOpen}
+            data-testid="po-actions-danger-toggle"
+            onClick={() => setDangerActionsOpen((v) => !v)}
+          >
+            Aksi berbahaya / pengecualian
+            <ChevronDown size={14} className={`po-stage-chevron${dangerActionsOpen ? " is-open" : ""}`} aria-hidden="true" />
+          </button>
+          <div className="po-actions-danger-body" hidden={!dangerActionsOpen} data-testid="po-actions-danger-body">
+            <div className="po-actions-row">
+              {canRollback && order.current_stage > 0 && (
+                <button className="ghost" onClick={doRollback} disabled={busy} data-testid="rollback-button" title="Butuh permission workflow.rollback">
+                  <RotateCcw size={14}/> Rollback
+                </button>
+              )}
+              {canCancel && !order.cancelled && (
+                <button className="ghost" onClick={doCancelPO} disabled={busy} data-testid="cancel-po-button" title="Butuh permission po.cancel">
+                  <XCircle size={16}/> Batalkan PO
+                </button>
+              )}
+              {canDelete && (
+                <button className="ghost danger" onClick={openDeleteModal} disabled={busy || deleting} data-testid="delete-po-button" title="Butuh permission po.delete">
+                  <Trash2 size={16}/> Hapus Permanen PO
+                </button>
+              )}
+            </div>
+            <p className="muted small po-actions-hint">
+              <b>Batalkan PO</b> menyimpan histori &amp; audit (tab <em>Cancelled</em>).
+              {" "}<b>Hapus Permanen</b> hanya untuk PO test/duplicate.
+            </p>
+          </div>
+        </div>
+      )}
       </div>
 
       <PoSummaryDrawer
