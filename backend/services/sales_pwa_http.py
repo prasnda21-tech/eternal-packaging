@@ -211,6 +211,18 @@ def register_sales_pwa_routes(
         _ignore_spoofed_sales_id(sales_user_id, sales_id)
         return await spwa.list_sales_pwa_customers(get_db(), user, q=q or "")
 
+    @api_router.get("/sales-pwa/intelligence")
+    async def sales_pwa_intelligence(
+        sales_user_id: Optional[str] = None,
+        sales_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        user=Depends(_pwa_user),
+    ):
+        _ignore_spoofed_sales_id(sales_user_id, sales_id)
+        del user_id
+        from services.sales_pwa_intelligence import build_sales_pwa_intelligence
+        return await build_sales_pwa_intelligence(get_db(), user)
+
     @api_router.get("/sales-pwa/predictions")
     async def sales_pwa_predictions(
         sales_user_id: Optional[str] = None,

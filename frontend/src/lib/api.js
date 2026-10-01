@@ -926,6 +926,7 @@ export const api = {
   },
   salesPwaCustomers: (params = {}) => client.get("/sales-pwa/customers", { params }).then((r) => r.data),
   salesPwaPredictions: () => client.get("/sales-pwa/predictions").then((r) => r.data),
+  salesPwaIntelligence: () => client.get("/sales-pwa/intelligence").then((r) => r.data),
   salesPwaPredictionDetail: (customerKey) => client.get(`/sales-pwa/predictions/${encodeURIComponent(customerKey)}`).then((r) => r.data),
   salesPwaVisits: (params = {}) => client.get("/sales-pwa/visits", { params }).then((r) => r.data),
   createSalesPwaVisit: (payload) => client.post("/sales-pwa/visits", payload).then((r) => r.data),

@@ -12,7 +12,12 @@ jest.mock("react-router-dom", () => ({
 }), { virtual: true });
 jest.mock("../lib/api", () => ({
   __esModule: true,
-  default: { salesPwaDashboard: jest.fn(), salesPwaOrders: jest.fn(), salesPwaVisits: jest.fn() },
+  default: {
+    salesPwaDashboard: jest.fn(),
+    salesPwaOrders: jest.fn(),
+    salesPwaVisits: jest.fn(),
+    salesPwaIntelligence: jest.fn(),
+  },
 }));
 global.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -21,6 +26,14 @@ beforeEach(() => {
   api.salesPwaOrders.mockResolvedValue({ orders: [], counts: { selesai: 0 }, total: 0 });
   api.salesPwaVisits.mockReset();
   api.salesPwaVisits.mockResolvedValue({ visits: [] });
+  api.salesPwaIntelligence.mockReset();
+  api.salesPwaIntelligence.mockResolvedValue({
+    as_of: "2026-06-01",
+    counts: { need_contact: 0, inactive: 0, overdue_follow_up: 0 },
+    items: [],
+    incomplete: false,
+    incomplete_reasons: [],
+  });
 });
 
 test("shows invoice-authoritative revenue and receivables", async () => {
@@ -353,4 +366,88 @@ test("agenda count stays complete when the visible list is capped", async () => 
   expect(Array.from(agenda.querySelectorAll("a")).filter((item) => item.textContent.includes("Hari Ini Outlet"))).toHaveLength(1);
   expect(node.querySelector('[data-testid="sales-dashboard-visits"]').textContent).toContain("31");
   act(() => root.unmount());
+});
+
+function dashboardReady() {
+  api.salesPwaDashboard.mockResolvedValue({
+    metrics: {
+      revenue: 12500000,
+      receivables: 3200000,
+      invoice_count: 3,
+      receivable_invoice_count: 1,
+      active_po: 8,
+      buffer_po: 2,
+      visit_month: 6,
+      visit_overdue: 1,
+    },
+    agenda_today: [],
+    follow_up_overdue: [],
+    follow_up_upcoming: [],
+  });
+}
+
+test("priority section keeps order, reasons, and existing performance cards", async () => {
+  dashboardReady();
+  api.salesPwaIntelligence.mockResolvedValue({
+    counts: { need_contact: 1, inactive: 1, overdue_follow_up: 1, declining: 0 },
+    incomplete: false,
+    items: [
+      { type: "overdue_follow_up", group: "Follow-up terlambat", customer_key: "", customer_name: "Outlet Telat", reason: "Follow-up terlambat 4 hari", action: { kind: "visit", href: "/sales/visit" } },
+      { type: "risiko", group: "Perlu dihubungi", customer_key: "id:risk", customer_name: "Toko Risiko", reason: "7 hari melewati perkiraan order · Customer rutin", action: { kind: "prediction", href: "/sales/prediksi/id%3Arisk" } },
+      { type: "inactive", group: "Mulai tidak aktif", customer_key: "id:old", customer_name: "Toko Diam", reason: "131 hari sejak order terakhir, melewati batas tidak aktif", action: { kind: "prediction", href: "/sales/prediksi/id%3Aold" } },
+    ],
+  });
+  const node = document.createElement("div");
+  const root = createRoot(node);
+  await act(async () => { root.render(<SalesPwaDashboardPage />); await Promise.resolve(); });
+  await act(async () => { await Promise.resolve(); });
+  const section = node.querySelector('[data-testid="sales-intelligence"]');
+  const text = section.textContent;
+  expect(text.indexOf("Outlet Telat")).toBeLessThan(text.indexOf("Toko Risiko"));
+  expect(text.indexOf("Toko Risiko")).toBeLessThan(text.indexOf("Toko Diam"));
+  expect(text).toContain("Follow-up terlambat 4 hari");
+  expect(text).toContain("7 hari melewati perkiraan order");
+  expect(text).toContain("1 perlu dihubungi");
+  expect(text).toContain("1 tidak aktif");
+  expect(text).toContain("1 follow-up terlambat");
+  expect(section.querySelector('a[href="/sales/visit"]').textContent).toBe("Buka visit");
+  expect(section.querySelector('a[href="/sales/prediksi/id%3Arisk"]').textContent).toBe("Buka prediksi");
+  expect(text).not.toContain("Tambahkan ke Agenda");
+  expect(node.querySelector('[data-testid="sales-dashboard-revenue"]').textContent).toContain("Rp12.500.000");
+  expect(node.querySelector('[data-testid="sales-dashboard-active"]')).not.toBeNull();
+  act(() => root.unmount());
+});
+
+async function renderDashboard() {
+  const node = document.createElement("div");
+  const root = createRoot(node);
+  await act(async () => { root.render(<SalesPwaDashboardPage />); await Promise.resolve(); });
+  await act(async () => { await Promise.resolve(); });
+  return { node, root };
+}
+
+test("priority empty, loading, error, and incomplete states stay inside the section", async () => {
+  dashboardReady();
+  const empty = await renderDashboard();
+  expect(empty.node.querySelector('[data-testid="sales-intelligence-empty"]').textContent).toBe("Tidak ada customer yang perlu dihubungi hari ini.");
+  expect(empty.node.querySelector('[data-testid="sales-intelligence-group-Order menurun"]')).toBeNull();
+  act(() => empty.root.unmount());
+
+  let resolveIntel;
+  api.salesPwaIntelligence.mockReset();
+  api.salesPwaIntelligence.mockImplementation(() => new Promise((resolve) => { resolveIntel = resolve; }));
+  const loadingNode = document.createElement("div");
+  const loadingRoot = createRoot(loadingNode);
+  await act(async () => { loadingRoot.render(<SalesPwaDashboardPage />); });
+  expect(loadingNode.querySelector('[data-testid="sales-intelligence-loading"]').textContent).toBe("Memuat prioritas...");
+  await act(async () => { resolveIntel({ counts: {}, items: [], incomplete: true }); await Promise.resolve(); });
+  expect(loadingNode.querySelector('[data-testid="sales-intelligence-incomplete"]').textContent).toContain("Sebagian data tidak dimuat");
+  act(() => loadingRoot.unmount());
+
+  api.salesPwaIntelligence.mockReset();
+  api.salesPwaIntelligence.mockRejectedValue(new Error("offline"));
+  const failed = await renderDashboard();
+  expect(failed.node.querySelector('[data-testid="sales-intelligence-error"]').textContent).toBe("Prioritas belum dapat dimuat.");
+  expect(failed.node.querySelector('[data-testid="sales-dashboard-revenue"]').textContent).toContain("Rp12.500.000");
+  act(() => failed.root.unmount());
 });

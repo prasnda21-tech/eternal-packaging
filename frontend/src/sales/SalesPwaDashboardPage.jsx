@@ -173,6 +173,27 @@ export default function SalesPwaDashboardPage() {
   const upcomingFollowUps = Array.isArray(visible?.follow_up_upcoming) ? visible.follow_up_upcoming.slice(0, AGENDA_SECTION_LIMIT) : classified.upcoming;
   const visitHistory = visits && visitsMonth === month ? visits : null;
   const lastVisit = latestVisit(visitHistory);
+  const [priority, setPriority] = useState(null);
+  const [priorityError, setPriorityError] = useState(false);
+
+  useEffect(() => {
+    if (typeof api.salesPwaIntelligence !== "function") {
+      setPriority({ items: [], counts: {}, incomplete: false });
+      setPriorityError(false);
+      return undefined;
+    }
+    let cancelled = false;
+    setPriority(null);
+    setPriorityError(false);
+    api.salesPwaIntelligence()
+      .then((result) => {
+        if (!cancelled) setPriority(result || { items: [], counts: {}, incomplete: false });
+      })
+      .catch(() => {
+        if (!cancelled) setPriorityError(true);
+      });
+    return () => { cancelled = true; };
+  }, []);
   return (
     <>
       <header className="spwa-top spwa-top-inline">
@@ -226,6 +247,8 @@ export default function SalesPwaDashboardPage() {
                 ))}
               </section>
             )}
+
+            <PriorityToday data={priority} failed={priorityError} />
 
             <section className="spwa-panel" data-testid="sales-dashboard-agenda">
               <div className="spwa-section-head">
@@ -391,5 +414,65 @@ export default function SalesPwaDashboardPage() {
         )}
       </main>
     </>
+  );
+}
+
+function priorityGroups(items) {
+  const groups = [];
+  for (const item of items || []) {
+    const label = item.group || "Perlu dihubungi";
+    const last = groups[groups.length - 1];
+    if (!last || last.label !== label) groups.push({ label, items: [item] });
+    else last.items.push(item);
+  }
+  return groups;
+}
+
+function PriorityToday({ data, failed }) {
+  const counts = data?.counts || {};
+  const items = Array.isArray(data?.items) ? data.items : [];
+  return (
+    <section className="spwa-panel" data-testid="sales-intelligence">
+      <div className="spwa-section-head">
+        <div><p className="spwa-kicker">HARI INI</p><h2>Prioritas hari ini</h2></div>
+      </div>
+      {failed && <p className="spwa-empty compact" data-testid="sales-intelligence-error">Prioritas belum dapat dimuat.</p>}
+      {!failed && !data && <p className="spwa-muted" data-testid="sales-intelligence-loading">Memuat prioritas...</p>}
+      {!failed && data && (
+        <>
+          <p className="spwa-priority-summary" data-testid="sales-intelligence-summary">
+            {Number(counts.need_contact) || 0} perlu dihubungi
+            {" · "}
+            {Number(counts.inactive) || 0} tidak aktif
+            {" · "}
+            {Number(counts.overdue_follow_up) || 0} follow-up terlambat
+          </p>
+          {data.incomplete && (
+            <p className="spwa-priority-note" data-testid="sales-intelligence-incomplete">
+              Sebagian data tidak dimuat. Prioritas mungkin belum lengkap.
+            </p>
+          )}
+          {items.length === 0 && (
+            <p className="spwa-empty compact" data-testid="sales-intelligence-empty">Tidak ada customer yang perlu dihubungi hari ini.</p>
+          )}
+          {priorityGroups(items).map((group) => (
+            <div key={group.label} className="spwa-priority-group" data-testid={`sales-intelligence-group-${group.label}`}>
+              <h3>{group.label}</h3>
+              {group.items.map((item) => {
+                const href = item.action?.href || (item.action?.kind === "visit" ? "/sales/visit" : "");
+                const label = item.action?.kind === "visit" ? "Buka visit" : "Buka prediksi";
+                return (
+                  <article key={`${item.type}-${item.customer_key || item.customer_name}`} className="spwa-priority-row" data-testid={`sales-priority-${item.type}`}>
+                    <strong>{item.customer_name}</strong>
+                    <p>{item.reason}</p>
+                    {href ? <Link to={href}>{label}</Link> : null}
+                  </article>
+                );
+              })}
+            </div>
+          ))}
+        </>
+      )}
+    </section>
   );
 }
