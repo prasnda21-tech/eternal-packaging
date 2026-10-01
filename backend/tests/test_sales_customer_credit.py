@@ -230,11 +230,14 @@ async def test_overpayment_credit_apply_partial_other_customer_and_ledger():
         assert paid_a.json()["invoice"]["outstanding_amount"] == 0
 
         invoice_b = await _invoice(client, po["id"], 120_000, date="2026-09-15")
+        # Pin the journal date inside the September ledger window. Omitting it
+        # dates the application today, so the reversal debits fall outside _gl.
         partial = await client.post("/api/sales-receipts/customer-credit/applications", json={
             "source_receipt_id": receipt["id"],
             "invoice_id": invoice_b["id"],
             "amount": 20_000,
             "idempotency_key": "partial-20",
+            "application_date": "2026-09-20",
         })
         assert partial.status_code == 200, partial.text
         again = await client.post("/api/sales-receipts/customer-credit/applications", json={
@@ -242,6 +245,7 @@ async def test_overpayment_credit_apply_partial_other_customer_and_ledger():
             "invoice_id": invoice_b["id"],
             "amount": 20_000,
             "idempotency_key": "partial-20",
+            "application_date": "2026-09-20",
         })
         assert again.status_code == 200
         assert again.json()["application"]["id"] == partial.json()["application"]["id"]
@@ -256,6 +260,7 @@ async def test_overpayment_credit_apply_partial_other_customer_and_ledger():
             "invoice_id": invoice_b["id"],
             "amount": 30_000,
             "idempotency_key": "rest-30",
+            "application_date": "2026-09-20",
         })
         assert rest.status_code == 200, rest.text
         done = await client.get(f"/api/sales-invoices/{invoice_b['id']}")
@@ -287,6 +292,7 @@ async def test_overpayment_credit_apply_partial_other_customer_and_ledger():
             "invoice_id": invoice_b["id"],
             "amount": 50_000,
             "idempotency_key": "use-50",
+            "application_date": "2026-09-20",
         })
         assert used.status_code == 200, used.text
         final_b = await client.get(f"/api/sales-invoices/{invoice_b['id']}")
