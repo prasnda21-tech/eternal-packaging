@@ -633,7 +633,30 @@ const duplicateExcludeReason = (group, line) => {
   if (lines.length > 2) return "Kandidat lebih dari dua.";
   return "";
 };
-const emptyPendingAccess = { solo_lines: [], outside_period: [], unreachable: [], other_accounts: [], truncated: false };
+const emptyPendingAccess = { solo_lines: [], outside_period: [], unreachable: [], other_accounts: [], truncated: false, page: 1, page_size: 100, total: 0 };
+const appendPendingLines = (current, incoming) => {
+  const append = (key) => {
+    const seen = new Set((current[key] || []).map((line) => line.statement_line_id));
+    const rows = [...(current[key] || [])];
+    (incoming[key] || []).forEach((line) => {
+      const id = line?.statement_line_id;
+      if (!id || seen.has(id)) return;
+      seen.add(id);
+      rows.push(line);
+    });
+    return rows;
+  };
+  return {
+    ...emptyPendingAccess,
+    ...incoming,
+    solo_lines: append("solo_lines"),
+    outside_period: append("outside_period"),
+    unreachable: append("unreachable"),
+    other_accounts: Array.isArray(incoming?.other_accounts) ? incoming.other_accounts : (current.other_accounts || []),
+    page: Number(incoming?.page) || Number(current.page || 1) + 1,
+    truncated: Boolean(incoming?.truncated),
+  };
+};
 
 export default function RekonsiliasiKasBank() {
   const { hasPerm } = useAuth();
@@ -782,6 +805,28 @@ export default function RekonsiliasiKasBank() {
       setMessage(parsed.message);
     }
   }, []);
+
+  const loadMorePending = async () => {
+    if (!cashBankId || busy || !pendingAccess.truncated) return;
+    const token = requestRef.current;
+    const nextPage = Number(pendingAccess.page || 1) + 1;
+    setBusy(true);
+    try {
+      const body = await api.cashBankPendingReview({
+        cash_bank_id: cashBankId,
+        start_date: startDate,
+        end_date: endDate,
+        page: nextPage,
+      });
+      if (token !== requestRef.current) return;
+      setPendingAccess((current) => appendPendingLines(current, body || {}));
+    } catch (ex) {
+      if (token !== requestRef.current) return;
+      setDuplicateMessage(errPayload(ex).message);
+    } finally {
+      setBusy(false);
+    }
+  };
 
   useEffect(() => {
     if (mode === "pairs" && cashBankId) loadWorkspace(cashBankId, startDate, endDate, q);
@@ -1310,7 +1355,7 @@ export default function RekonsiliasiKasBank() {
       <p className="recon-context">Buku Besar sampai {reconDate(endDate)}. Pencocokan transaksi tidak menyatakan saldo selesai direkonsiliasi.</p>
       {ready && <p className="recon-context" data-testid="kas-bank-period-close">{workspace?.period_close_note || "Penutupan periode rekonsiliasi belum disediakan."} {workspace?.pair_saved_note || "Pasangan tersimpan bukan rekonsiliasi saldo selesai."}</p>}
       {ready && (pendingAccess.other_accounts || []).length > 0 && <p className="recon-notice" data-testid="kas-bank-pending-other-accounts" role="status">Rekening lain masih memiliki baris menunggu keputusan: {pendingAccess.other_accounts.map((item) => `${item.name || "Rekening tidak diketahui"} (${item.pending_count})`).join(", ")}. Badge periode ini tidak menghitung rekening lain.</p>}
-      {ready && pendingAccess.truncated && <p className="recon-notice" role="status">Daftar baris menunggu keputusan terpotong. Jangan anggap daftar ini seluruh pending_review.</p>}
+      {ready && pendingAccess.truncated && <p className="recon-notice" role="status">Daftar baris menunggu keputusan terpotong. Jangan anggap daftar ini seluruh pending_review. <button type="button" className="ghost sm" data-testid="kas-bank-pending-more" onClick={loadMorePending} disabled={busy}>Muat baris berikutnya</button></p>}
       {ready && cashBankId && !currency && <div className="kb-pair-note recon-notice" role="status">
         Mata uang rekening belum ditetapkan. Impor dapat dipratinjau; pencocokan belum tersedia.
         {canManage && <span className="kb-currency-set"><input aria-label="Kode mata uang" value={currencyDraft} onChange={(e) => setCurrencyDraft(e.target.value.toUpperCase())} placeholder="Contoh: IDR" maxLength={3} /><button type="button" className="ghost sm" onClick={saveCurrency} disabled={busy}>Simpan mata uang</button></span>}

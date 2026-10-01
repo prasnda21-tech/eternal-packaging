@@ -43,6 +43,8 @@ IMPORT_FENCES = "cash_bank_import_fences"
 
 MAX_BYTES = 2_000_000
 MAX_ROWS = 2000
+PENDING_REVIEW_PAGE_DEFAULT = 100
+PENDING_REVIEW_PAGE_MAX = 200
 MAX_COLS = 40
 MONEY = Decimal("0.01")
 
@@ -2231,8 +2233,13 @@ def _valid_statement_day(value: Any) -> str:
     return text if len(text) == 10 and text[4] == "-" and text[7] == "-" else ""
 
 
-async def list_pending_review_access(db, *, cash_bank_id: str, start: str, end: str) -> dict:
-    """Read pending_review rows the group screen does not list. This function does not write."""
+async def list_pending_review_access(
+    db, *, cash_bank_id: str, start: str, end: str, page: int = 1, page_size: int = PENDING_REVIEW_PAGE_DEFAULT,
+) -> dict:
+    """Read pending_review rows the group screen does not list. This function does not write.
+
+    Pages walk every pending row of this account that is not already inside a duplicate group.
+    """
     account = str(cash_bank_id or "").strip()
     if not account:
         raise StatementValidationError("Rekening wajib")
@@ -2244,12 +2251,15 @@ async def list_pending_review_access(db, *, cash_bank_id: str, start: str, end: 
         for line in group.get("lines") or []
         if line.get("duplicate_status") == DUP_PENDING and line.get("statement_line_id")
     }
-    limit = MAX_ROWS * 5
-    rows = await db[LINES].find(
-        {"cash_bank_id": account, "duplicate_status": DUP_PENDING},
-        {"_id": 0},
-    ).to_list(limit)
-    truncated = len(rows) >= limit
+    current_page = max(1, int(page or 1))
+    current_size = min(PENDING_REVIEW_PAGE_MAX, max(1, int(page_size or PENDING_REVIEW_PAGE_DEFAULT)))
+    skip = (current_page - 1) * current_size
+    query: Dict[str, Any] = {"cash_bank_id": account, "duplicate_status": DUP_PENDING}
+    if grouped_ids:
+        query["id"] = {"$nin": list(grouped_ids)}
+    total = await db[LINES].count_documents(query)
+    rows = await db[LINES].find(query, {"_id": 0}).sort([("date", 1), ("id", 1)]).skip(skip).limit(current_size).to_list(current_size)
+    truncated = skip + len(rows) < total
     by_import, match_by_line = await _duplicate_context(db, rows)
     solo_lines = []
     outside_period = []
@@ -2305,6 +2315,9 @@ async def list_pending_review_access(db, *, cash_bank_id: str, start: str, end: 
         "cash_bank_id": account,
         "start_date": begin,
         "end_date": finish,
+        "page": current_page,
+        "page_size": current_size,
+        "total": total,
         "truncated": truncated,
         "solo_lines": solo_lines,
         "outside_period": outside_period,
