@@ -556,6 +556,27 @@ def test_po_level_task_does_not_guess_screen_size():
         assert designer[0]["screen_size"] is None
 
 
+def test_operator_task_keeps_each_allocation_screen():
+    o = _print_po()
+    o["line_items"][0]["screen_size"] = "large"
+    o["operator_splits"] = [
+        {
+            "id": "deni", "line_idx": 0, "quantity": 4000, "qty_completed": 0,
+            "operator_email": "deni@x.com", "operator_name": "Deni", "screen_size": "large",
+        },
+        {
+            "id": "djoko", "line_idx": 0, "quantity": 1000, "qty_completed": 0,
+            "operator_email": "djoko@x.com", "operator_name": "Djoko", "screen_size": "small",
+        },
+    ]
+    ops = {
+        r["assigned_user_email"]: r
+        for r in build_operator_tasks(o, {"email": "deni@x.com"}, mine_only=False)
+    }
+    assert ops["deni@x.com"]["screen_size"] == "large"
+    assert ops["djoko@x.com"]["screen_size"] == "small"
+
+
 def test_missing_line_screen_size_is_null():
     o = _print_po()
     helper = build_helper_tasks(o)[0]

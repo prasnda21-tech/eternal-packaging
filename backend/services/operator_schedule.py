@@ -7,7 +7,7 @@ from quantity_rules import (
     print_qty_total,
     validate_operator_assignment_total,
 )
-from services.screen_size import line_screen_size, normalize_screen_size
+from services.screen_size import normalize_screen_size
 
 
 def _safe_int(v, default: int = 0) -> int:
@@ -134,42 +134,57 @@ def _payload_screen_token(raw: dict):
     return normalize_screen_size(raw.get("screen_size"))
 
 
-def apply_line_screen_sizes(order: dict, payload_splits: List[dict]) -> None:
-    """Canonical screen_size lives on the exact line_item. Optional; omit preserves."""
+def _stored_screen(split: Optional[dict]):
+    if not isinstance(split, dict):
+        return None
+    try:
+        return normalize_screen_size(split.get("screen_size"))
+    except ValueError:
+        return None
+
+
+def write_allocation_screen(row: dict, raw: dict, prev: Optional[dict]) -> None:
+    """Keep screen on this allocation only. Omit preserves the previous value."""
+    token = _payload_screen_token(raw)
+    if token is _SCREEN_UNSET:
+        kept = _stored_screen(prev)
+        if kept:
+            row["screen_size"] = kept
+        return
+    if token:
+        row["screen_size"] = token
+    else:
+        row.pop("screen_size", None)
+
+
+def mirror_line_screen_sizes(order: dict, payload_splits: List[dict], assigned_rows: List[dict]) -> None:
+    """Mirror line_items.screen_size only when every saved allocation on that line agrees.
+
+    Mixed screens stay on each operator row. Omitting screen_size leaves the line alone.
+    """
     line_items = order.get("line_items") or []
-    by_line: Dict[int, List[Any]] = {}
+    touched = set()
     for raw in payload_splits or []:
+        if _payload_screen_token(raw) is _SCREEN_UNSET:
+            continue
         if raw.get("line_idx") is None or raw.get("line_idx") == "":
             continue
-        idx = int(raw["line_idx"])
-        by_line.setdefault(idx, []).append(_payload_screen_token(raw))
-    for idx, tokens in by_line.items():
+        touched.add(int(raw["line_idx"]))
+    for idx in touched:
         if idx < 0 or idx >= len(line_items):
             continue
-        explicit = [t for t in tokens if t is not _SCREEN_UNSET]
-        if not explicit:
-            continue
-        chosen = {t for t in explicit if t is not None}
-        if len(chosen) > 1:
-            name = (line_items[idx] or {}).get("name") or f"line {idx}"
-            raise ValueError(
-                f"Screen Besar/Kecil harus sama untuk satu line item ('{name}')."
-            )
+        screens = [
+            _stored_screen(row)
+            for row in assigned_rows
+            if row.get("line_idx") is not None and int(row.get("line_idx")) == idx
+        ]
+        present = {value for value in screens if value}
         li = line_items[idx] if isinstance(line_items[idx], dict) else {}
-        if chosen:
-            li["screen_size"] = next(iter(chosen))
+        if len(present) == 1 and screens and all(value == next(iter(present)) for value in screens):
+            li["screen_size"] = next(iter(present))
         else:
             li.pop("screen_size", None)
         line_items[idx] = li
-
-
-def stamp_split_screen_size(order: dict, split: dict) -> dict:
-    val = line_screen_size(order, split.get("line_idx"))
-    if val:
-        split["screen_size"] = val
-    else:
-        split.pop("screen_size", None)
-    return split
 
 
 def apply_operator_assignments(
@@ -249,11 +264,10 @@ def apply_operator_assignments(
             "line_idx": line_idx,
             "work_date": work_date,
         }
+        write_allocation_screen(row, raw, prev)
         new_splits.append(row)
 
-    apply_line_screen_sizes(order, payload_splits)
-    for row in new_splits:
-        stamp_split_screen_size(order, row)
+    mirror_line_screen_sizes(order, payload_splits, new_splits)
 
     for prev in existing:
         if prev.get("id") in used_ids:
@@ -270,7 +284,6 @@ def apply_operator_assignments(
             prev = {**prev, "quantity": completed, "qty_cancelled": _safe_int(prev.get("qty_cancelled")) + remaining, "cancel_events": events, "updated_at": now}
             if not prev.get("original_quantity"):
                 prev["original_quantity"] = completed + _safe_int(prev.get("qty_cancelled"))
-        stamp_split_screen_size(order, prev)
         new_splits.append(prev)
         used_ids.add(prev.get("id"))
 

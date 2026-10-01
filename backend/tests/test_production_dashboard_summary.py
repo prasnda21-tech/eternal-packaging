@@ -497,6 +497,56 @@ def test_summary_projection_keeps_line_item_screen_size_primary():
     assert _row_visible(full_row)["operators"][0]["screen_size"] == _row_visible(slim_row)["operators"][0]["screen_size"]
 
 
+def test_summary_projection_prefers_each_operator_screen_over_line():
+    import copy
+
+    projection, production_row = _import_production_row()
+    full = {
+        "id": "po-screen-per-operator",
+        "po_number": "PO-SCR-4",
+        "customer": "Cust",
+        "total_quantity": 7000,
+        "current_stage": 8,
+        "design_status": "Approved",
+        "payment_status": "Approved",
+        "line_items": [
+            {
+                "id": "lid-a",
+                "name": "Cup 16oz",
+                "quantity": 7000,
+                "production_process": "print",
+                "screen_size": "large",
+            },
+        ],
+        "operator_splits": [
+            {
+                "id": "deni",
+                "line_idx": 0,
+                "operator_name": "Deni",
+                "quantity": 4000,
+                "qty_completed": 0,
+                "stage": 8,
+                "screen_size": "large",
+            },
+            {
+                "id": "djoko",
+                "line_idx": 0,
+                "operator_name": "Djoko",
+                "quantity": 3000,
+                "qty_completed": 0,
+                "stage": 8,
+                "screen_size": "small",
+            },
+        ],
+    }
+    slim = _apply_mongo_inclusion(copy.deepcopy(full), projection)
+    full_row = production_row(copy.deepcopy(full))
+    slim_row = production_row(copy.deepcopy(slim))
+    assert [op["screen_size"] for op in full_row["operators"]] == ["large", "small"]
+    assert [op["screen_size"] for op in slim_row["operators"]] == ["large", "small"]
+    assert [op["quantity"] for op in full_row["operators"]] == [4000, 3000]
+
+
 def test_summary_projection_keeps_operator_split_screen_size_fallback():
     import copy
 

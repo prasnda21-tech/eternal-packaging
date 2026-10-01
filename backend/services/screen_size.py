@@ -1,6 +1,8 @@
-"""Planning metadata: Screen Besar / Screen Kecil on a print line item.
+"""Planning metadata: Screen Besar / Screen Kecil.
 
-Not a workflow stage. Not Qty Screen. Not derived from product name.
+Operator allocations store their own screen. A print line item keeps a
+screen only as a legacy/shared mirror when every allocation on that line
+agrees. Not a workflow stage. Not Qty Screen. Not derived from product name.
 """
 
 SCREEN_SIZE_LARGE = "large"
@@ -36,3 +38,18 @@ def line_screen_size(order, line_idx):
         return normalize_screen_size((items[idx] or {}).get("screen_size"))
     except ValueError:
         return None
+
+
+def allocation_screen_size(split, order=None):
+    """Screen stored on one operator allocation, else the legacy line mirror."""
+    own = None
+    if isinstance(split, dict):
+        try:
+            own = normalize_screen_size(split.get("screen_size"))
+        except ValueError:
+            own = None
+    if own:
+        return own
+    if order is None:
+        return None
+    return line_screen_size(order, split.get("line_idx") if isinstance(split, dict) else None)
