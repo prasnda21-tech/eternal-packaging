@@ -43,6 +43,8 @@ IMPORT_FENCES = "cash_bank_import_fences"
 
 MAX_BYTES = 2_000_000
 MAX_ROWS = 2000
+PENDING_REVIEW_PAGE_DEFAULT = 100
+PENDING_REVIEW_PAGE_MAX = 200
 MAX_COLS = 40
 MONEY = Decimal("0.01")
 
@@ -2132,21 +2134,27 @@ def _public_resolution(row: dict) -> Optional[dict]:
     }
 
 
-async def list_duplicate_groups(db, *, cash_bank_id: str, start: str, end: str) -> dict:
-    """Read duplicate clusters that still need a decision. This function does not write."""
-    account = str(cash_bank_id or "").strip()
-    if not account:
-        raise StatementValidationError("Rekening wajib")
-    begin, finish = _duplicate_period(start, end)
-    rows = await db[LINES].find(
-        {
-            "cash_bank_id": account,
-            "date": {"$gte": begin, "$lte": finish},
-            "duplicate_status": {"$in": [DUP_PENDING, DUP_KEPT, DUP_EXCLUDED]},
-            "sealed": {"$ne": False},
-        },
-        {"_id": 0},
-    ).to_list(MAX_ROWS * 5)
+def _duplicate_line_public(row: dict, batch: Optional[dict], match: Optional[dict]) -> dict:
+    batch = batch or {}
+    return {
+        "statement_line_id": row.get("id"),
+        "import_id": row.get("import_id"),
+        "filename": batch.get("filename"),
+        "imported_at": batch.get("created_at"),
+        "date": row.get("date"),
+        "business_date": _business_date(row),
+        "amount": row.get("amount"),
+        "direction": row.get("direction"),
+        "description": row.get("description"),
+        "duplicate_status": row.get("duplicate_status"),
+        "resolution": _public_resolution(row),
+        "active_claim": row.get("active_claim"),
+        "reconciliation_status": "active" if match else "unmatched",
+        "reconciliation_match_id": (match or {}).get("id"),
+    }
+
+
+async def _duplicate_context(db, rows: Sequence[dict]) -> Tuple[Dict[str, dict], Dict[str, dict]]:
     import_ids = list({row.get("import_id") for row in rows if row.get("import_id")})
     batches = []
     if import_ids:
@@ -2164,6 +2172,25 @@ async def list_duplicate_groups(db, *, cash_bank_id: str, start: str, end: str) 
             {"_id": 0, "id": 1, "statement_line_id": 1, "status": 1},
         ).to_list(len(line_ids))
     match_by_line = {doc.get("statement_line_id"): doc for doc in matches if doc.get("statement_line_id")}
+    return by_import, match_by_line
+
+
+async def list_duplicate_groups(db, *, cash_bank_id: str, start: str, end: str) -> dict:
+    """Read duplicate clusters that still need a decision. This function does not write."""
+    account = str(cash_bank_id or "").strip()
+    if not account:
+        raise StatementValidationError("Rekening wajib")
+    begin, finish = _duplicate_period(start, end)
+    rows = await db[LINES].find(
+        {
+            "cash_bank_id": account,
+            "date": {"$gte": begin, "$lte": finish},
+            "duplicate_status": {"$in": [DUP_PENDING, DUP_KEPT, DUP_EXCLUDED]},
+            "sealed": {"$ne": False},
+        },
+        {"_id": 0},
+    ).to_list(MAX_ROWS * 5)
+    by_import, match_by_line = await _duplicate_context(db, rows)
     buckets: Dict[Tuple[str, str, str, str, str], List[dict]] = {}
     for row in rows:
         buckets.setdefault(_level2_key(row), []).append(row)
@@ -2173,26 +2200,10 @@ async def list_duplicate_groups(db, *, cash_bank_id: str, start: str, end: str) 
         if pending_count < 1 or len(members) < 2:
             continue
         members.sort(key=lambda row: (str(row.get("created_at") or ""), str(row.get("id") or "")))
-        public_lines = []
-        for row in members:
-            batch = by_import.get(row.get("import_id")) or {}
-            match = match_by_line.get(row.get("id"))
-            public_lines.append({
-                "statement_line_id": row.get("id"),
-                "import_id": row.get("import_id"),
-                "filename": batch.get("filename"),
-                "imported_at": batch.get("created_at"),
-                "date": row.get("date"),
-                "business_date": _business_date(row),
-                "amount": row.get("amount"),
-                "direction": row.get("direction"),
-                "description": row.get("description"),
-                "duplicate_status": row.get("duplicate_status"),
-                "resolution": _public_resolution(row),
-                "active_claim": row.get("active_claim"),
-                "reconciliation_status": "active" if match else "unmatched",
-                "reconciliation_match_id": (match or {}).get("id"),
-            })
+        public_lines = [
+            _duplicate_line_public(row, by_import.get(row.get("import_id")), match_by_line.get(row.get("id")))
+            for row in members
+        ]
         groups.append({
             "cash_bank_id": account,
             "business_date": business_date,
@@ -2214,6 +2225,104 @@ async def list_duplicate_groups(db, *, cash_bank_id: str, start: str, end: str) 
         "start_date": begin,
         "end_date": finish,
         "groups": groups,
+    }
+
+
+def _valid_statement_day(value: Any) -> str:
+    text = str(value or "").strip()
+    return text if len(text) == 10 and text[4] == "-" and text[7] == "-" else ""
+
+
+async def list_pending_review_access(
+    db, *, cash_bank_id: str, start: str, end: str, page: int = 1, page_size: int = PENDING_REVIEW_PAGE_DEFAULT,
+) -> dict:
+    """Read pending_review rows the group screen does not list. This function does not write.
+
+    Pages walk every pending row of this account that is not already inside a duplicate group.
+    """
+    account = str(cash_bank_id or "").strip()
+    if not account:
+        raise StatementValidationError("Rekening wajib")
+    begin, finish = _duplicate_period(start, end)
+    grouped = await list_duplicate_groups(db, cash_bank_id=account, start=begin, end=finish)
+    grouped_ids = {
+        line.get("statement_line_id")
+        for group in grouped.get("groups") or []
+        for line in group.get("lines") or []
+        if line.get("duplicate_status") == DUP_PENDING and line.get("statement_line_id")
+    }
+    current_page = max(1, int(page or 1))
+    current_size = min(PENDING_REVIEW_PAGE_MAX, max(1, int(page_size or PENDING_REVIEW_PAGE_DEFAULT)))
+    skip = (current_page - 1) * current_size
+    query: Dict[str, Any] = {"cash_bank_id": account, "duplicate_status": DUP_PENDING}
+    if grouped_ids:
+        query["id"] = {"$nin": list(grouped_ids)}
+    total = await db[LINES].count_documents(query)
+    rows = await db[LINES].find(query, {"_id": 0}).sort([("date", 1), ("id", 1)]).skip(skip).limit(current_size).to_list(current_size)
+    truncated = skip + len(rows) < total
+    by_import, match_by_line = await _duplicate_context(db, rows)
+    solo_lines = []
+    outside_period = []
+    unreachable = []
+    for row in rows:
+        if row.get("id") in grouped_ids:
+            continue
+        public = _duplicate_line_public(row, by_import.get(row.get("import_id")), match_by_line.get(row.get("id")))
+        day = _valid_statement_day(row.get("date"))
+        if row.get("sealed") is False:
+            public["screen_reason"] = "Baris belum tersegel, sehingga kelompok periode tidak menampilkannya."
+            unreachable.append(public)
+            continue
+        if not day:
+            public["screen_reason"] = "Tanggal baris tidak ada, sehingga kelompok periode tidak menampilkannya."
+            unreachable.append(public)
+            continue
+        if day < begin or day > finish:
+            public["screen_reason"] = "Di luar periode yang sedang dibuka."
+            outside_period.append(public)
+            continue
+        public["screen_reason"] = "Baris tunggal. Kelompok duplikat hanya menampilkan dua kandidat atau lebih."
+        solo_lines.append(public)
+    sort_key = lambda item: (str(item.get("date") or ""), str(item.get("statement_line_id") or ""))
+    solo_lines.sort(key=sort_key)
+    outside_period.sort(key=sort_key)
+    unreachable.sort(key=sort_key)
+    counts = await db[LINES].aggregate([
+        {"$match": {"duplicate_status": DUP_PENDING, "cash_bank_id": {"$ne": account}}},
+        {"$group": {"_id": "$cash_bank_id", "pending_count": {"$sum": 1}}},
+    ]).to_list(500)
+    account_ids = [doc.get("_id") for doc in counts if doc.get("_id")]
+    names = {}
+    if account_ids:
+        accounts = await db[CASH_BANK_ACCOUNTS].find(
+            {"id": {"$in": account_ids}},
+            {"_id": 0, "id": 1, "name": 1},
+        ).to_list(len(account_ids))
+        names = {doc.get("id"): doc.get("name") for doc in accounts}
+    other_accounts = sorted(
+        (
+            {
+                "cash_bank_id": doc.get("_id"),
+                "name": names.get(doc.get("_id")) or "Rekening tidak diketahui",
+                "pending_count": int(doc.get("pending_count") or 0),
+            }
+            for doc in counts
+            if doc.get("_id") and int(doc.get("pending_count") or 0) > 0
+        ),
+        key=lambda item: (str(item.get("name") or ""), str(item.get("cash_bank_id") or "")),
+    )
+    return {
+        "cash_bank_id": account,
+        "start_date": begin,
+        "end_date": finish,
+        "page": current_page,
+        "page_size": current_size,
+        "total": total,
+        "truncated": truncated,
+        "solo_lines": solo_lines,
+        "outside_period": outside_period,
+        "unreachable": unreachable,
+        "other_accounts": other_accounts,
     }
 
 

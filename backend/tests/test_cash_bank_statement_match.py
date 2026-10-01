@@ -2095,3 +2095,283 @@ async def test_old_complete_batch_has_no_false_success_counts():
     assert recorded["fully_accepted"] is False
     assert recorded["conflict_count"] == 1
     assert "belum menerima" in recorded["result_note"]
+
+
+@pytest.mark.anyio
+async def test_running_balance_is_not_the_period_statement_balance():
+    admin = _user()
+    async with await client_for(admin) as c:
+        bank, income = await _setup(c, currency="IDR")
+        await _receipt(c, bank["id"], income["id"], 750000)
+        _preview, imported = await _import(c, bank["id"], (
+            "tanggal,uraian,masuk,keluar,referensi,id,saldo\n"
+            "2026-09-05,Transfer masuk,750000,,REF,TX-RUN,750000\n"
+            "2026-09-20,Biaya admin,,1000,ADM,TX-FEE,740000\n"
+        ))
+        assert imported.status_code == 201, imported.text
+        wide = await c.get("/api/cash-bank/reconciliations/pairs/workspace", params={"cash_bank_id": bank["id"], **PERIOD})
+        assert wide.status_code == 200, wide.text
+        body = wide.json()
+        balances = {row["description"]: row["running_balance"] for row in body["bank_lines"]}
+        assert balances["Transfer masuk"] == 750000
+        assert balances["Biaya admin"] == 740000
+        assert body["statement_closing"]["amount"] is None
+        assert body["statement_closing"]["label"] == "Belum tersedia"
+        assert body["difference"] is None
+        assert body["book_ending_balance"] == 750000
+        assert body["balance_match_declared"] is False
+        assert body["completion_status"] == "tidak_dinilai"
+        assert "belum disediakan" in body["period_close_note"]
+        on_line_date = await c.get("/api/cash-bank/reconciliations/pairs/workspace", params={
+            "cash_bank_id": bank["id"], "start_date": "2026-09-01", "end_date": "2026-09-20",
+        })
+        viewed = on_line_date.json()
+        assert viewed["statement_closing"]["amount"] == 740000
+        assert viewed["statement_closing"]["status"] == "dari_kolom_saldo_impor"
+        assert viewed["book_ending_balance"] == 750000
+        assert viewed["difference"] == -10000
+        assert viewed["completion_status"] == "tidak_dinilai"
+        zero_bank, zero_income = await _setup(c, currency="IDR")
+        _preview, zero_import = await _import(c, zero_bank["id"], (
+            "tanggal,uraian,masuk,keluar,referensi,id,saldo\n"
+            "2026-09-30,Saldo nol,,1000,REF,TX-ZERO,0\n"
+        ))
+        assert zero_import.status_code == 201, zero_import.text
+        zero = await c.get("/api/cash-bank/reconciliations/pairs/workspace", params={"cash_bank_id": zero_bank["id"], **PERIOD})
+        zero_body = zero.json()
+        assert zero_body["statement_closing"]["amount"] == 0
+        assert zero_body["book_ending_balance"] == 0
+        assert zero_body["difference"] == 0
+        assert zero_body["bank_lines"][0]["running_balance"] == 0
+        assert zero_income["id"]
+
+
+@pytest.mark.anyio
+async def test_pending_review_access_lists_hidden_lines_without_writing():
+    admin = _user()
+    async with await client_for(admin) as c:
+        bank, _income = await _setup(c, currency="IDR")
+        other, _other_income = await _setup(c, currency="IDR")
+        account = bank["id"]
+        await server.db[IMPORTS].insert_many([
+            {"id": "imp-access-a", "cash_bank_id": account, "filename": "mutasi-a.csv", "status": "complete", "created_at": "2026-09-02T01:00:00+00:00", "file_sha256": "c" * 64},
+            {"id": "imp-access-b", "cash_bank_id": account, "filename": "mutasi-b.csv", "status": "complete", "created_at": "2026-09-03T01:00:00+00:00", "file_sha256": "d" * 64},
+        ])
+        shared = {
+            "cash_bank_id": account, "date": "2026-09-28", "description": "PEMINDAHAN DANA",
+            "direction": "out", "amount": 70000000, "duplicate_status": "pending_review",
+            "identity_guarantee": "tidak_dijamin", "sealed": True, "resolutions": [], "active_claim": None,
+        }
+        await server.db[LINES].insert_many([
+            {**shared, "id": "access-a", "import_id": "imp-access-a", "created_at": "2026-09-28T02:00:00+00:00"},
+            {**shared, "id": "access-b", "import_id": "imp-access-b", "created_at": "2026-09-28T03:00:00+00:00"},
+            {**shared, "id": "access-solo", "import_id": "imp-access-a", "description": "TRANSFER TUNGGAL", "amount": 1000, "created_at": "2026-09-28T04:00:00+00:00"},
+            {**shared, "id": "access-outside", "import_id": "imp-access-a", "description": "DI LUAR PERIODE", "date": "2026-08-15", "amount": 2000},
+            {**shared, "id": "access-unsealed", "import_id": "imp-access-a", "description": "BELUM TERSEGEL", "sealed": False, "amount": 3000},
+            {**shared, "id": "access-nodate", "import_id": "imp-access-a", "description": "TANPA TANGGAL", "date": "", "amount": 4000},
+            {**shared, "id": "access-other", "cash_bank_id": other["id"], "import_id": "imp-access-a", "description": "REKENING LAIN", "amount": 5000},
+        ])
+        before = _snapshot(await server.db[LINES].find({}, {"_id": 0}).to_list(20))
+        groups = await c.get("/api/cash-bank/statements/duplicate-groups", params={"cash_bank_id": account, **PERIOD})
+        assert groups.status_code == 200, groups.text
+        assert [line["statement_line_id"] for line in groups.json()["groups"][0]["lines"]] == ["access-a", "access-b"]
+        assert "access-solo" not in groups.text
+        access = await c.get("/api/cash-bank/statements/pending-review", params={"cash_bank_id": account, **PERIOD})
+        assert access.status_code == 200, access.text
+        after = _snapshot(await server.db[LINES].find({}, {"_id": 0}).to_list(20))
+        assert after == before
+        body = access.json()
+        assert body["truncated"] is False
+        assert [line["statement_line_id"] for line in body["solo_lines"]] == ["access-solo"]
+        assert body["solo_lines"][0]["filename"] == "mutasi-a.csv"
+        assert body["solo_lines"][0]["active_claim"] is None
+        assert body["solo_lines"][0]["reconciliation_status"] == "unmatched"
+        assert "tunggal" in body["solo_lines"][0]["screen_reason"]
+        assert [line["statement_line_id"] for line in body["outside_period"]] == ["access-outside"]
+        assert "Di luar periode" in body["outside_period"][0]["screen_reason"]
+        unreachable = {line["statement_line_id"]: line["screen_reason"] for line in body["unreachable"]}
+        assert "tersegel" in unreachable["access-unsealed"]
+        assert "Tanggal" in unreachable["access-nodate"]
+        assert body["other_accounts"] == [{
+            "cash_bank_id": other["id"],
+            "name": other["name"],
+            "pending_count": 1,
+        }]
+        assert "access-a" not in [line["statement_line_id"] for line in body["solo_lines"]]
+        kept = await c.post("/api/cash-bank/statements/lines/access-solo/duplicate-resolution", json={
+            "action": "keep", "reason": "baris asli", "idempotency_key": "keep-access-solo",
+        })
+        assert kept.status_code == 200, kept.text
+        again = await c.get("/api/cash-bank/statements/pending-review", params={"cash_bank_id": account, **PERIOD})
+        assert [line["statement_line_id"] for line in again.json()["solo_lines"]] == []
+        stored = await server.db[LINES].find_one({"id": "access-solo"}, {"_id": 0, "duplicate_status": 1, "amount": 1})
+        assert stored["duplicate_status"] == "kept"
+        assert stored["amount"] == 1000
+
+
+def _pending_ids(body):
+    return [
+        line["statement_line_id"]
+        for key in ("solo_lines", "outside_period", "unreachable")
+        for line in body[key]
+    ]
+
+
+@pytest.mark.anyio
+async def test_pending_review_pages_reach_every_hidden_line_without_writing_or_reopening():
+    admin = _user()
+    viewer = _user("viewer", perms=["cash_bank.view"])
+    stranger = _user("viewer", perms=[])
+    async with await client_for(admin) as c:
+        bank, _income = await _setup(c, currency="IDR")
+        other, _other_income = await _setup(c, currency="IDR")
+        account = bank["id"]
+        excluded_resolutions = [{
+            "action": "exclude", "reason": "bukan transaksi ini",
+            "idempotency_key": "exclude-lama", "at": "2026-09-04T00:00:00+00:00",
+        }]
+        claimed_resolutions = [{"action": "note", "reason": "klaim lama", "at": "2026-09-06T00:00:00+00:00"}]
+        shared = {
+            "cash_bank_id": account, "direction": "out", "amount": 1000,
+            "duplicate_status": "pending_review", "identity_guarantee": "tidak_dijamin",
+            "sealed": True, "resolutions": [], "active_claim": None, "reference": "",
+        }
+        await server.db[LINES].insert_many([
+            {**shared, "id": "page-group-a", "date": "2026-09-28", "description": "KELOMPOK", "amount": 70000000},
+            {**shared, "id": "page-group-b", "date": "2026-09-28", "description": "KELOMPOK", "amount": 70000000},
+            {**shared, "id": "page-nodate", "date": "", "description": "TANPA TANGGAL", "amount": 4000},
+            {**shared, "id": "page-outside", "date": "2026-08-01", "description": "DI LUAR PERIODE", "amount": 2000},
+            {**shared, "id": "page-solo-1", "date": "2026-09-01", "description": "TUNGGAL SATU", "amount": 1100},
+            {**shared, "id": "page-solo-2", "date": "2026-09-02", "description": "TUNGGAL DUA", "amount": 1200},
+            {**shared, "id": "page-unsealed", "date": "2026-09-03", "description": "BELUM TERSEGEL", "amount": 3000, "sealed": False},
+            {**shared, "id": "page-claimed", "date": "2026-09-06", "description": "SEDANG DIKLAIM", "amount": 6000, "active_claim": "claim-live", "resolutions": claimed_resolutions},
+            {**shared, "id": "page-excluded", "date": "2026-09-04", "description": "SUDAH DIKECUALIKAN", "amount": 7000, "duplicate_status": "excluded", "resolutions": excluded_resolutions},
+            {**shared, "id": "page-other", "cash_bank_id": other["id"], "date": "2026-09-05", "description": "REKENING LAIN", "amount": 5000},
+        ])
+        before = _snapshot(await server.db[LINES].find({}, {"_id": 0}).to_list(20))
+        journals = await server.db[JOURNAL_ENTRIES].count_documents({})
+        matches = await server.db[RECON_MATCHES].count_documents({})
+        groups = await c.get("/api/cash-bank/statements/duplicate-groups", params={"cash_bank_id": account, **PERIOD})
+        assert groups.status_code == 200, groups.text
+        assert [line["statement_line_id"] for line in groups.json()["groups"][0]["lines"]] == ["page-group-a", "page-group-b"]
+        seen = []
+        expected_pages = [
+            {"unreachable": ["page-nodate"], "outside_period": ["page-outside"], "solo_lines": []},
+            {"unreachable": [], "outside_period": [], "solo_lines": ["page-solo-1", "page-solo-2"]},
+            {"unreachable": ["page-unsealed"], "outside_period": [], "solo_lines": ["page-claimed"]},
+        ]
+        for page, expected in enumerate(expected_pages, start=1):
+            listed = await c.get("/api/cash-bank/statements/pending-review", params={
+                "cash_bank_id": account, **PERIOD, "page": page, "page_size": 2,
+            })
+            assert listed.status_code == 200, listed.text
+            body = listed.json()
+            assert body["cash_bank_id"] == account
+            assert body["page"] == page
+            assert body["page_size"] == 2
+            assert body["total"] == 6
+            assert body["truncated"] is (page < 3)
+            for key, ids in expected.items():
+                assert [line["statement_line_id"] for line in body[key]] == ids
+            assert set(_pending_ids(body)).isdisjoint(seen)
+            seen.extend(_pending_ids(body))
+            assert "page-group-a" not in _pending_ids(body)
+            assert "page-excluded" not in _pending_ids(body)
+            assert "page-other" not in _pending_ids(body)
+            assert body["other_accounts"] == [{
+                "cash_bank_id": other["id"], "name": other["name"], "pending_count": 1,
+            }]
+        assert seen == ["page-outside", "page-nodate", "page-solo-1", "page-solo-2", "page-claimed", "page-unsealed"]
+        empty = await c.get("/api/cash-bank/statements/pending-review", params={
+            "cash_bank_id": account, **PERIOD, "page": 4, "page_size": 2,
+        })
+        assert empty.status_code == 200, empty.text
+        assert _pending_ids(empty.json()) == []
+        assert empty.json()["truncated"] is False
+        assert empty.json()["total"] == 6
+        other_page = await c.get("/api/cash-bank/statements/pending-review", params={
+            "cash_bank_id": other["id"], **PERIOD, "page": 1, "page_size": 50,
+        })
+        assert other_page.status_code == 200, other_page.text
+        assert _pending_ids(other_page.json()) == ["page-other"]
+        assert other_page.json()["other_accounts"][0]["cash_bank_id"] == account
+        assert other_page.json()["other_accounts"][0]["pending_count"] == 8
+        after = _snapshot(await server.db[LINES].find({}, {"_id": 0}).to_list(20))
+        assert after == before
+        assert await server.db[JOURNAL_ENTRIES].count_documents({}) == journals
+        assert await server.db[RECON_MATCHES].count_documents({}) == matches
+
+        for action, key in (("keep", "keep-excluded"), ("exclude", "exclude-excluded-baru")):
+            denied = await c.post("/api/cash-bank/statements/lines/page-excluded/duplicate-resolution", json={
+                "action": action, "reason": "coba ubah", "idempotency_key": key,
+            })
+            assert denied.status_code == 409, denied.text
+            assert "dikecualikan" in denied.text
+        stored_excluded = await server.db[LINES].find_one({"id": "page-excluded"}, {"_id": 0})
+        assert stored_excluded["duplicate_status"] == "excluded"
+        assert stored_excluded["resolutions"] == excluded_resolutions
+        assert stored_excluded["amount"] == 7000
+        for action, key in (("keep", "keep-claimed"), ("exclude", "exclude-claimed")):
+            denied = await c.post("/api/cash-bank/statements/lines/page-claimed/duplicate-resolution", json={
+                "action": action, "reason": "masih diklaim", "idempotency_key": key,
+            })
+            assert denied.status_code == 409, denied.text
+        stored_claimed = await server.db[LINES].find_one({"id": "page-claimed"}, {"_id": 0})
+        assert stored_claimed["duplicate_status"] == "pending_review"
+        assert stored_claimed["active_claim"] == "claim-live"
+        assert stored_claimed["resolutions"] == claimed_resolutions
+        assert stored_claimed["amount"] == 6000
+
+    async with await client_for(viewer) as c:
+        allowed_groups = await c.get("/api/cash-bank/statements/duplicate-groups", params={"cash_bank_id": account, **PERIOD})
+        allowed_pending = await c.get("/api/cash-bank/statements/pending-review", params={"cash_bank_id": account, **PERIOD})
+        assert allowed_groups.status_code == 200, allowed_groups.text
+        assert allowed_pending.status_code == 200, allowed_pending.text
+        assert allowed_pending.json()["cash_bank_id"] == account
+        forbidden_decision = await c.post("/api/cash-bank/statements/lines/page-claimed/duplicate-resolution", json={
+            "action": "keep", "reason": "tanpa izin", "idempotency_key": "viewer-keep",
+        })
+        assert forbidden_decision.status_code == 403
+    async with await client_for(stranger) as c:
+        denied_groups = await c.get("/api/cash-bank/statements/duplicate-groups", params={"cash_bank_id": account, **PERIOD})
+        denied_pending = await c.get("/api/cash-bank/statements/pending-review", params={"cash_bank_id": account, **PERIOD})
+        assert denied_groups.status_code == 403
+        assert denied_pending.status_code == 403
+    still_claimed = await server.db[LINES].find_one({"id": "page-claimed"}, {"_id": 0})
+    assert still_claimed["duplicate_status"] == "pending_review"
+    assert still_claimed["resolutions"] == claimed_resolutions
+    assert still_claimed["active_claim"] == "claim-live"
+
+    async with await client_for(admin) as c:
+        kept = await c.post("/api/cash-bank/statements/lines/page-unsealed/duplicate-resolution", json={
+            "action": "keep", "reason": "baris asli", "idempotency_key": "keep-unsealed",
+        })
+        assert kept.status_code == 200, kept.text
+        stored_unsealed = await server.db[LINES].find_one({"id": "page-unsealed"}, {"_id": 0})
+        assert stored_unsealed["duplicate_status"] == "kept"
+        assert stored_unsealed["amount"] == 3000
+        assert stored_unsealed["sealed"] is False
+        assert len(stored_unsealed["resolutions"]) == 1
+        nodate_kept = await c.post("/api/cash-bank/statements/lines/page-nodate/duplicate-resolution", json={
+            "action": "exclude", "reason": "bukan baris ini", "idempotency_key": "exclude-nodate",
+        })
+        assert nodate_kept.status_code == 200, nodate_kept.text
+        stored_nodate = await server.db[LINES].find_one({"id": "page-nodate"}, {"_id": 0})
+        assert stored_nodate["duplicate_status"] == "excluded"
+        assert stored_nodate["date"] == ""
+        assert stored_nodate["amount"] == 4000
+        remaining = await c.get("/api/cash-bank/statements/pending-review", params={
+            "cash_bank_id": account, **PERIOD, "page_size": 50,
+        })
+        assert "page-unsealed" not in _pending_ids(remaining.json())
+        assert "page-nodate" not in _pending_ids(remaining.json())
+        replay = await c.post("/api/cash-bank/statements/lines/page-nodate/duplicate-resolution", json={
+            "action": "keep", "reason": "aktifkan lagi", "idempotency_key": "reopen-nodate",
+        })
+        assert replay.status_code == 409
+        assert "dikecualikan" in replay.text
+        reopened = await server.db[LINES].find_one({"id": "page-nodate"}, {"_id": 0})
+        assert reopened["duplicate_status"] == "excluded"
+        assert len(reopened["resolutions"]) == 1
+        assert reopened["resolutions"][0]["action"] == "exclude"
+        assert await server.db[JOURNAL_ENTRIES].count_documents({}) == journals

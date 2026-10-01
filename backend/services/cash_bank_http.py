@@ -59,6 +59,8 @@ from services.cash_bank_reconciliation import (
     update_draft_reconciliation,
 )
 from services.cash_bank_statement import (
+    PENDING_REVIEW_PAGE_DEFAULT,
+    PENDING_REVIEW_PAGE_MAX,
     StatementConflictError,
     StatementValidationError,
     commit_import,
@@ -67,6 +69,7 @@ from services.cash_bank_statement import (
     ensure_indexes as ensure_statement_indexes,
     list_duplicate_groups,
     list_imports,
+    list_pending_review_access,
     resolve_duplicate,
     set_manual_balance,
     validate_preview,
@@ -892,6 +895,28 @@ def register_cash_bank_routes(
         try:
             return await list_duplicate_groups(
                 db, cash_bank_id=cash_bank_id, start=start_date, end=end_date,
+            )
+        except StatementValidationError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @api_router.get("/cash-bank/statements/pending-review")
+    async def get_statement_pending_review(
+        cash_bank_id: str = Query(..., min_length=1),
+        start_date: str = Query(..., min_length=10, max_length=10),
+        end_date: str = Query(..., min_length=10, max_length=10),
+        page: int = Query(1, ge=1),
+        page_size: int = Query(PENDING_REVIEW_PAGE_DEFAULT, ge=1, le=PENDING_REVIEW_PAGE_MAX),
+        user=Depends(require_perm(PERM_VIEW)),
+    ):
+        db = get_db()
+        try:
+            return await list_pending_review_access(
+                db,
+                cash_bank_id=cash_bank_id,
+                start=start_date,
+                end=end_date,
+                page=page,
+                page_size=page_size,
             )
         except StatementValidationError as exc:
             raise HTTPException(400, str(exc)) from exc
