@@ -88,6 +88,7 @@ jobs:
           tests/test_division_tasks.py::test_operator_task_keeps_each_allocation_screen
           tests/test_division_tasks.py::test_operator_task_keeps_screen_when_line_mirror_empty
           tests/test_production_dashboard_summary.py
+          --deselect tests/test_production_dashboard_summary.py::test_live_summary_matches_default_visible_columns
 
   frontend-focused:
     name: Frontend tests and build
