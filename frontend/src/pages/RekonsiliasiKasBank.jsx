@@ -688,10 +688,13 @@ export default function RekonsiliasiKasBank() {
   });
   const [currencyDraft, setCurrencyDraft] = useState("");
   const [busy, setBusy] = useState(false);
+  const [recommendationRows, setRecommendationRows] = useState([]);
   const requestRef = useRef(0);
   const decisionKeys = useRef({});
   const matchKey = useRef("");
   const cancelKeys = useRef({});
+  const matchingRef = useRef(false);
+  const suggestionGen = useRef(0);
 
   useEffect(() => {
     if (importOpen && importDialog.current && !importDialog.current.open) importDialog.current.showModal();
@@ -707,7 +710,9 @@ export default function RekonsiliasiKasBank() {
     setSelectedBank("");
     setSelectedBook("");
     setSuggestions(null);
+    setRecommendationRows([]);
     matchKey.current = "";
+    suggestionGen.current += 1;
   }, [cashBankId, startDate, endDate, q]);
 
 
@@ -767,11 +772,49 @@ export default function RekonsiliasiKasBank() {
     if (mode === "pairs" && cashBankId) loadWorkspace(cashBankId, startDate, endDate, q);
   }, [mode, cashBankId, startDate, endDate, q, loadWorkspace]);
 
+  useEffect(() => {
+    const generation = ++suggestionGen.current;
+    const inScope = phase === "ready" && workspace && (
+      (workspace.cash_bank_id == null || workspace.cash_bank_id === cashBankId)
+      && (workspace.start_date == null || workspace.start_date === startDate)
+      && (workspace.end_date == null || workspace.end_date === endDate)
+      && (workspace.search == null || String(workspace.search) === String(q || ""))
+    );
+    if (!inScope) {
+      setRecommendationRows([]);
+      return undefined;
+    }
+    const lines = (workspace.bank_lines || []).filter((row) => !row.claim_id && row.matchable);
+    if (!lines.length) {
+      setRecommendationRows([]);
+      return undefined;
+    }
+    let cancelled = false;
+    Promise.all(lines.map(async (row) => {
+      try {
+        const response = await api.cashBankPairSuggestions({
+          statement_line_id: row.id,
+          start_date: startDate,
+          end_date: endDate,
+        });
+        const suggestionsForLine = Array.isArray(response?.suggestions) ? response.suggestions : [];
+        return suggestionsForLine.length ? { statement_line_id: row.id, suggestions: suggestionsForLine, response } : null;
+      } catch {
+        return null;
+      }
+    })).then((entries) => {
+      if (cancelled || generation !== suggestionGen.current) return;
+      setRecommendationRows(entries.filter(Boolean));
+    });
+    return () => { cancelled = true; };
+  }, [phase, workspace, cashBankId, startDate, endDate, q]);
+
   const chooseBank = (id) => {
     setCashBankId(id);
     setSelectedBank("");
     setSelectedBook("");
     setSuggestions(null);
+    setRecommendationRows([]);
     setPreview(null);
     importFile.current = null;
     setBcaPreview(null);
@@ -800,6 +843,7 @@ export default function RekonsiliasiKasBank() {
 
   const pickBank = async (row) => {
     setSelectedBank(row.id);
+    setSelectedBook("");
     matchKey.current = newOperationKey();
     if (!row.matchable) {
       setSuggestions(null);
@@ -816,6 +860,19 @@ export default function RekonsiliasiKasBank() {
       setSuggestions(null);
       setMessage(errPayload(ex).message);
     }
+  };
+
+  const selectRecommendation = (bankRow, item, response) => {
+    if (!canReconcile || busy || matchingRef.current) return;
+    setSelectedBank(bankRow.id);
+    setSelectedBook(item.journal_line_id);
+    matchKey.current = newOperationKey();
+    setSuggestions(response || {
+      statement_line_id: bankRow.id,
+      ambiguous: false,
+      applied: false,
+      suggestions: [item],
+    });
   };
 
   const mappingPayload = () => {
@@ -983,8 +1040,10 @@ export default function RekonsiliasiKasBank() {
   };
 
   const onMatch = async () => {
-    if (!canReconcile || !selectedBank || !selectedBook) return;
+    if (!canReconcile || !selectedBank || !selectedBook || matchingRef.current) return;
     if (!matchKey.current) matchKey.current = newOperationKey();
+    const idempotencyKey = matchKey.current;
+    matchingRef.current = true;
     setBusy(true);
     setMessage("");
     try {
@@ -992,7 +1051,7 @@ export default function RekonsiliasiKasBank() {
         cash_bank_id: cashBankId,
         statement_line_id: selectedBank,
         journal_line_id: selectedBook,
-        idempotency_key: matchKey.current,
+        idempotency_key: idempotencyKey,
         start_date: startDate,
         end_date: endDate,
       });
@@ -1004,13 +1063,14 @@ export default function RekonsiliasiKasBank() {
       setSelectedBank("");
       setSelectedBook("");
       setSuggestions(null);
+      setRecommendationRows([]);
       matchKey.current = "";
+      suggestionGen.current += 1;
       await loadWorkspace(cashBankId, startDate, endDate, q);
     } catch (ex) {
-      const parsed = errPayload(ex);
-      if (parsed.status === 409) setMessage(parsed.message);
-      else setMessage(parsed.message);
+      setMessage(errPayload(ex).message);
     } finally {
+      matchingRef.current = false;
       setBusy(false);
     }
   };
@@ -1024,6 +1084,8 @@ export default function RekonsiliasiKasBank() {
         idempotency_key: cancelKeys.current[matchId],
         reason: "Batalkan pencocokan",
       });
+      setRecommendationRows([]);
+      suggestionGen.current += 1;
       await loadWorkspace(cashBankId, startDate, endDate, q);
     } catch (ex) {
       setMessage(errPayload(ex).message);
@@ -1143,6 +1205,14 @@ export default function RekonsiliasiKasBank() {
     return "Satu transaksi di setiap sisi";
   })();
   const matched = workspaceInScope ? (workspace?.matched_pairs || []) : [];
+  const recommendationViews = (ready && workspaceInScope ? recommendationRows : []).flatMap((entry) => {
+    const bankRow = visibleBank.find((row) => row.id === entry.statement_line_id && row.matchable);
+    if (!bankRow) return [];
+    return sortCandidateSuggestions(entry.suggestions, bankRow)
+      .filter((item) => item?.journal_line_id)
+      .map((item) => ({ bank: bankRow, item, response: entry.response }));
+  });
+  const selectionIsRecommendation = recommendationViews.some((row) => row.bank.id === selectedBank && row.item.journal_line_id === selectedBook);
   const sample = preview?.sample_rows || [];
   const headers = sample[Number(mapping.header_row) || 0] || [];
   const columnCount = Math.max(0, ...sample.map((row) => row.length));
@@ -1202,8 +1272,8 @@ export default function RekonsiliasiKasBank() {
           <option value="">— Rekening —</option>
           {banks.map((bank) => <option key={bank.id} value={bank.id}>{bank.name}{bank.currency_code ? ` · ${bank.currency_code}` : " · mata uang belum ditetapkan"}</option>)}
         </select>
-        <div className="recon-period"><input aria-label="Tanggal awal" type="date" value={startDate} onChange={(e) => { setStartDate(e.target.value); setSelectedBank(""); setSelectedBook(""); setSuggestions(null); matchKey.current = ""; }} disabled={busy} /><span>–</span><input aria-label="Tanggal akhir" type="date" value={endDate} onChange={(e) => { setEndDate(e.target.value); setSelectedBank(""); setSelectedBook(""); setSuggestions(null); matchKey.current = ""; }} disabled={busy} /></div>
-        <KbSearchField value={qInput} onChange={(e) => setQInput(e.target.value)} onSubmit={() => { setQ(qInput.trim()); setSelectedBank(""); setSelectedBook(""); setSuggestions(null); matchKey.current = ""; }} onClear={() => { setQInput(""); setQ(""); setSelectedBank(""); setSelectedBook(""); setSuggestions(null); matchKey.current = ""; }} placeholder="Cari uraian / referensi…" testid="kas-bank-recon-search" />
+        <div className="recon-period"><input aria-label="Tanggal awal" type="date" value={startDate} onChange={(e) => { setStartDate(e.target.value); setSelectedBank(""); setSelectedBook(""); setSuggestions(null); setRecommendationRows([]); matchKey.current = ""; }} disabled={busy} /><span>–</span><input aria-label="Tanggal akhir" type="date" value={endDate} onChange={(e) => { setEndDate(e.target.value); setSelectedBank(""); setSelectedBook(""); setSuggestions(null); setRecommendationRows([]); matchKey.current = ""; }} disabled={busy} /></div>
+        <KbSearchField value={qInput} onChange={(e) => setQInput(e.target.value)} onSubmit={() => { setQ(qInput.trim()); setSelectedBank(""); setSelectedBook(""); setSuggestions(null); setRecommendationRows([]); matchKey.current = ""; }} onClear={() => { setQInput(""); setQ(""); setSelectedBank(""); setSelectedBook(""); setSuggestions(null); setRecommendationRows([]); matchKey.current = ""; }} placeholder="Cari uraian / referensi…" testid="kas-bank-recon-search" />
         <button type="button" className="ghost sm recon-refresh" aria-label="Muat ulang" title="Muat ulang" onClick={() => loadWorkspace(cashBankId, startDate, endDate, q)} disabled={busy || !cashBankId}><RefreshCw size={17} /></button>
         {canReconcile && <>
           <input ref={uploadInput} className="recon-file-input" aria-label="Berkas mutasi" type="file" accept=".csv,.txt,.xlsx" onChange={onUpload} data-testid="kas-bank-pair-import" disabled={busy || !cashBankId} />
@@ -1239,25 +1309,38 @@ export default function RekonsiliasiKasBank() {
 
       {tab === "unmatched" && <div className="recon-tab-body" role="tabpanel" id="recon-panel-unmatched" aria-labelledby="recon-tab-unmatched">
         <div className="kb-pane-switch" aria-label="Panel"><button type="button" aria-pressed={pane === "bank"} className={pane === "bank" ? "primary sm" : "ghost sm"} onClick={() => setPane("bank")}>Bank</button><button type="button" aria-pressed={pane === "book"} className={pane === "book" ? "primary sm" : "ghost sm"} onClick={() => setPane("book")}>Buku</button></div>
-        {ready && matched.length > 0 && <div className="kb-saved-pairs" data-testid="kas-bank-workspace-pairs">
-          {matched.map((row) => {
-            const sourceBank = bankRows.find((bank) => bank.id === (row.statement_line_id || row.history_statement_line_id));
-            const sourceBook = bookRows.find((book) => book.journal_line_id === (row.journal_line_id || row.history_journal_line_id));
-            const reconciled = row.status === "active" && row.review_state !== "perlu_tinjauan";
-            const bankViewRow = sourceBank || { direction: row.direction, currency_code: row.currency_code, amount: row.amount };
-            const bookViewRow = sourceBook || { ...(row.book_snapshot || {}), direction: row.direction, currency_code: row.currency_code };
-            const saldo = runningLabel(sourceBank);
-            return <div key={row.id} className="kb-matched-pair kb-saved-pair">
-              <div className="kb-matched-side"><span className="recon-date">{reconDate(sourceBank?.date)}</span><span className="recon-description">{sourceBank?.description || "Detail bank tidak tersedia"}</span><small>{sourceBank?.reference || row.statement_line_id || row.history_statement_line_id || "—"}</small>{amountBits(bankViewRow, sourceBank?.amount ?? row.amount, false)}{saldo && <small className="kb-running-balance">{saldo}</small>}</div>
+        {recommendationViews.length > 0 && <section className="kb-recommendations" data-testid="kas-bank-recommendations">
+          <h2>Rekomendasi pasangan</h2>
+          <p>Nominal sama bukan persetujuan. Pilih satu pasangan secara eksplisit sebelum mencocokkan.</p>
+          {recommendationViews.map(({ bank: bankRow, item, response }) => {
+            const pageBook = bookRows.find((row) => row.journal_line_id === item.journal_line_id);
+            const bookAmount = item.amount != null && item.amount !== "" ? item.amount : pageBook?.absolute_amount;
+            const bookDisplay = pageBook || {
+              journal_number: item.journal_number || "—",
+              date: item.date,
+              description: item.description || item.journal_number || "Kandidat pembukuan",
+              direction: item.direction || bankRow.direction,
+              currency_code: item.currency_code || bankRow.currency_code || currency,
+            };
+            const selected = selectedBank === bankRow.id && selectedBook === item.journal_line_id;
+            const notes = candidateNotes(item, bankRow);
+            return <div key={`${bankRow.id}:${item.journal_line_id}`} className={`kb-matched-pair kb-recommendation${selected ? " is-selected" : ""}`} data-testid="kas-bank-recommendation">
+              <div className="kb-matched-side kb-rec-bank">
+                <input type="radio" name="recommendation-pair" checked={selected} onChange={() => selectRecommendation(bankRow, item, response)} disabled={!canReconcile || busy || !bankRow.matchable} aria-label={`Pilih rekomendasi ${bankRow.description || bankRow.id} ${item.journal_number || item.journal_line_id}`} />
+                <div><span className="recon-date">{reconDate(bankRow.date)}</span><span className="recon-description">{bankRow.description || "—"}</span><small>{bankRow.reference || "—"}</small>{amountBits(bankRow, bankRow.amount, false)}{runningLabel(bankRow) && <small className="kb-running-balance">{runningLabel(bankRow)}</small>}</div>
+              </div>
               <span className="kb-inline-arrow" aria-hidden="true">←</span>
-              <div className="kb-matched-side kb-live-book"><div><span className="recon-date">{reconDate(row.book_snapshot?.date || sourceBook?.date)}</span><span className="recon-description">{row.book_snapshot?.description || sourceBook?.description || "—"}</span><small>{row.book_snapshot?.journal_number || sourceBook?.journal_number || "—"}</small>{amountBits(bookViewRow, row.amount, true)}</div><span className={`recon-badge ${row.review_state === "perlu_tinjauan" ? "is-warning" : reconciled ? "is-matched" : ""}`}>{row.review_state === "perlu_tinjauan" ? "Perlu tinjauan" : reconciled ? "✓ Cocok" : reconStatus(row.status)}</span></div>
+              <div className="kb-matched-side kb-live-book">
+                <div><span className="recon-date">{reconDate(bookDisplay.date)}</span><span className="recon-description">{bookDisplay.description || "—"}</span><small>{bookDisplay.journal_number || item.journal_number || "—"}</small>{amountBits(bookDisplay, bookAmount, true)}{notes.map((note) => <small key={note}>{note}</small>)}</div>
+                {selected ? <div className="kb-live-action">{hintNode}{matchControl}</div> : null}
+              </div>
             </div>;
           })}
-        </div>}
+        </section>}
         {selectedBankRow && <div className="kb-matched-pair kb-live-pair" data-testid="kas-bank-live-pair">
           <div className="kb-matched-side"><span className="recon-date">{reconDate(selectedBankRow.date)}</span><span className="recon-description">{selectedBankRow.description || "—"}</span><small>{selectedBankRow.reference || "—"}</small>{amountBits(selectedBankRow, selectedBankRow.amount, false)}{runningLabel(selectedBankRow) && <small className="kb-running-balance">{runningLabel(selectedBankRow)}</small>}</div>
           <span className="kb-inline-arrow" aria-hidden="true">←</span>
-          <div className="kb-matched-side kb-live-book">{selectedBookRow ? <div><span className="recon-date">{reconDate(selectedBookRow.date)}</span><span className="recon-description">{selectedBookRow.description || "—"}</span><small>{selectedBookRow.journal_number || "—"}</small>{amountBits(selectedBookRow, selectedBookRow.absolute_amount, true)}</div> : <span className="recon-description">Belum memilih transaksi pembukuan</span>}<div className="kb-live-action">{hintNode}{matchControl}</div></div>
+          <div className="kb-matched-side kb-live-book">{selectedBookRow ? <div><span className="recon-date">{reconDate(selectedBookRow.date)}</span><span className="recon-description">{selectedBookRow.description || "—"}</span><small>{selectedBookRow.journal_number || "—"}</small>{amountBits(selectedBookRow, selectedBookRow.absolute_amount, true)}</div> : <span className="recon-description">Belum memilih transaksi pembukuan</span>}{selectionIsRecommendation ? null : <div className="kb-live-action">{hintNode}{matchControl}</div>}</div>
         </div>}
         <div className={`kb-pair-columns${bankHasCandidate ? " has-link" : ""}`}>
           <section className={`kb-pane ${pane === "bank" ? "is-shown" : ""}`} aria-label="Mutasi bank">
@@ -1341,7 +1424,8 @@ export default function RekonsiliasiKasBank() {
             const sourceBook = bookRows.find((book) => book.journal_line_id === (row.journal_line_id || row.history_journal_line_id));
             const bankViewRow = sourceBank || { direction: row.direction, currency_code: row.currency_code };
             const bookViewRow = sourceBook || { ...(row.book_snapshot || {}), direction: row.direction, currency_code: row.currency_code };
-            return <tr key={row.id} className={reconciled ? "kb-row-reconciled" : ""}><td><div className="kb-matched-pair"><div className="kb-matched-side"><span className="recon-date">{reconDate(sourceBank?.date)}</span><span className="recon-description">{sourceBank?.description || "Detail bank tidak tersedia"}</span><small>{sourceBank?.reference || row.statement_line_id || row.history_statement_line_id || "—"}</small>{amountBits(bankViewRow, row.amount, false)}</div><span className="kb-inline-arrow" aria-hidden="true">←</span><div className="kb-matched-side"><span className="recon-date">{reconDate(row.book_snapshot?.date)}</span><span className="recon-description">{row.book_snapshot?.description || "—"}</span><small>{row.book_snapshot?.journal_number || "—"}</small>{amountBits(bookViewRow, row.amount, true)}</div></div></td><td><span className={`recon-badge ${row.review_state === "perlu_tinjauan" ? "is-warning" : reconciled ? "is-matched" : ""}`}>{row.review_state === "perlu_tinjauan" ? "Perlu tinjauan" : reconciled ? "✓ Cocok" : reconStatus(row.status)}</span></td><td>{canReconcile && row.status === "active" && <button type="button" className="ghost sm" disabled={busy} onClick={() => onCancel(row.id)}>Batalkan pencocokan</button>}</td></tr>;
+            const saldo = runningLabel(sourceBank);
+            return <tr key={row.id} className={reconciled ? "kb-row-reconciled" : ""}><td><div className="kb-matched-pair"><div className="kb-matched-side"><span className="recon-date">{reconDate(sourceBank?.date)}</span><span className="recon-description">{sourceBank?.description || "Detail bank tidak tersedia"}</span><small>{sourceBank?.reference || row.statement_line_id || row.history_statement_line_id || "—"}</small>{amountBits(bankViewRow, row.amount, false)}{saldo && <small className="kb-running-balance">{saldo}</small>}</div><span className="kb-inline-arrow" aria-hidden="true">←</span><div className="kb-matched-side"><span className="recon-date">{reconDate(row.book_snapshot?.date)}</span><span className="recon-description">{row.book_snapshot?.description || "—"}</span><small>{row.book_snapshot?.journal_number || "—"}</small>{amountBits(bookViewRow, row.amount, true)}</div></div></td><td><span className={`recon-badge ${row.review_state === "perlu_tinjauan" ? "is-warning" : reconciled ? "is-matched" : ""}`}>{row.review_state === "perlu_tinjauan" ? "Perlu tinjauan" : reconciled ? "✓ Cocok" : reconStatus(row.status)}</span></td><td>{canReconcile && row.status === "active" && <button type="button" className="ghost sm" disabled={busy} onClick={() => onCancel(row.id)}>Batalkan pencocokan</button>}</td></tr>;
           })}
           {!matched.length && <tr><td colSpan={3}>Belum ada pencocokan baris pada tampilan ini.</td></tr>}
         </tbody></table></div>}

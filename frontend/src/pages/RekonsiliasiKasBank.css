@@ -122,6 +122,12 @@
 .kas-bank-page.recon-workspace .recon-pane-title > span.kb-unmatched-flag { color:#94600b; font-weight:650; }
 .kas-bank-page.recon-workspace .kb-matched-table td:first-child { width:auto; }
 .kas-bank-page.recon-workspace .kb-saved-pairs { display:flex; flex-direction:column; gap:8px; }
+.kas-bank-page.recon-workspace .kb-recommendations { display:flex; flex-direction:column; gap:8px; padding:10px 12px; border:1px solid #2f6fad; border-radius:8px; background:#e7f0fb; }
+.kas-bank-page.recon-workspace .kb-recommendations h2 { margin:0; font-size:14px; color:#1d4e89; }
+.kas-bank-page.recon-workspace .kb-recommendations > p { margin:0; font-size:11px; color:#1d4e89; }
+.kas-bank-page.recon-workspace .kb-recommendation .kb-matched-side { background:#fff; }
+.kas-bank-page.recon-workspace .kb-recommendation.is-selected .kb-matched-side { border-color:#2f6fad; }
+.kas-bank-page.recon-workspace .kb-rec-bank { display:flex; align-items:flex-start; gap:8px; }
 .kas-bank-page.recon-workspace .kb-matched-pair { display:grid; grid-template-columns:minmax(0,1fr) 28px minmax(0,1fr); gap:8px; align-items:center; }
 .kas-bank-page.recon-workspace .kb-live-book { display:flex; align-items:center; justify-content:space-between; gap:10px; }
 .kas-bank-page.recon-workspace .kb-live-book > div { min-width:0; }
