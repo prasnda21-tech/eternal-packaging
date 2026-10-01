@@ -6,6 +6,7 @@ document: create, approve, then post Dr Utang Gaji / Cr BANK.
 from __future__ import annotations
 
 import asyncio
+import multiprocessing
 import os
 import sys
 import uuid
@@ -906,6 +907,22 @@ async def test_incomplete_payment_is_rejected_and_can_be_cancelled():
         })
         denied = await c.post(f"/api/hr-payroll/payments/{broken_id}/approve")
         assert denied.status_code == 409, denied.text
+        await server.db[PAYMENT_LINES].insert_one({
+            "id": str(uuid.uuid4()),
+            "payment_id": broken_id,
+            "employee_id": "emp-partial",
+            "employee_name": "Sebagian",
+            "net_salary": 1,
+        })
+        mismatched = await c.post(f"/api/hr-payroll/payments/{broken_id}/approve")
+        assert mismatched.status_code == 409, mismatched.text
+        await server.db[PAYMENT_LINES].update_one(
+            {"payment_id": broken_id},
+            {"$set": {"net_salary": 1_000_000, "employee_id": ""}},
+        )
+        nameless = await c.post(f"/api/hr-payroll/payments/{broken_id}/approve")
+        assert nameless.status_code == 409, nameless.text
+        await server.db[PAYMENT_LINES].delete_many({"payment_id": broken_id})
         await server.db[PAYMENTS].update_one({"id": broken_id}, {"$set": {"status": "APPROVED"}})
         denied_post = await c.post(f"/api/hr-payroll/payments/{broken_id}/post-accounting")
         assert denied_post.status_code == 409, denied_post.text
@@ -1022,3 +1039,179 @@ async def test_old_unique_index_migrates_without_deleting_payments():
     })
     assert await server.db[PAYMENTS].count_documents({"payroll_period_id": period_id}) == 3
     assert await server.db[PAYMENTS].count_documents({"id": first_id}) == 1
+
+
+def _cross_process_payment_call(action, mongo_url, db_name, payment_id):
+    """Run one payment action in a fresh process and event loop."""
+    import asyncio
+    from motor.motor_asyncio import AsyncIOMotorClient
+
+    async def go():
+        from services.payroll_payment import approve_payroll_payment, cancel_payroll_payment
+        from services.payroll_payment_posting import post_payroll_payment
+
+        client = AsyncIOMotorClient(mongo_url)
+        db = client[db_name]
+        user = {"id": "racer", "name": "Racer", "role": "admin", "email": "racer@example.com"}
+        try:
+            if action == "cancel":
+                await cancel_payroll_payment(db, payment_id, user, "race batal")
+                return "cancel-ok"
+            if action == "approve":
+                await approve_payroll_payment(db, payment_id, user)
+                return "approve-ok"
+            await post_payroll_payment(db, payment_id, user)
+            return "post-ok"
+        except Exception as exc:
+            return f"err:{exc}"
+        finally:
+            client.close()
+
+    return asyncio.run(go())
+
+
+def _run_cross_process(actions, payment_id):
+    ctx = multiprocessing.get_context("spawn")
+    with ctx.Pool(len(actions)) as pool:
+        return pool.starmap(
+            _cross_process_payment_call,
+            [(action, os.environ["MONGO_URL"], os.environ["DB_NAME"], payment_id) for action in actions],
+        )
+
+
+@pytest.mark.anyio
+async def test_index_create_failure_keeps_the_old_constraint():
+    from services.payroll_payment import ensure_indexes
+
+    await server.db[PAYMENTS].drop()
+    await server.db[PAYMENTS].create_index("payroll_period_id", unique=True)
+    first_id = str(uuid.uuid4())
+    await server.db[PAYMENTS].insert_one({
+        "id": first_id,
+        "payment_number": "PYB-KEEP-1",
+        "payroll_period_id": "period-keep",
+        "status": "DRAFT",
+    })
+    with patch("services.payroll_payment._create_active_period_index", side_effect=RuntimeError("index failed")):
+        with pytest.raises(RuntimeError, match="index failed"):
+            await ensure_indexes(server.db)
+    info = await server.db[PAYMENTS].index_information()
+    legacy = [
+        name for name, spec in info.items()
+        if list(spec.get("key") or []) == [("payroll_period_id", 1)]
+        and spec.get("unique")
+        and not spec.get("partialFilterExpression")
+    ]
+    assert legacy
+    assert "uniq_active_payroll_period_payment" not in info
+    assert await server.db[PAYMENTS].count_documents({"id": first_id}) == 1
+    with pytest.raises(DuplicateKeyError):
+        await server.db[PAYMENTS].insert_one({
+            "id": str(uuid.uuid4()),
+            "payment_number": "PYB-KEEP-2",
+            "payroll_period_id": "period-keep",
+            "status": "PAID",
+        })
+    assert await server.db[PAYMENTS].count_documents({"payroll_period_id": "period-keep"}) == 1
+
+
+@pytest.mark.anyio
+async def test_index_migration_stops_when_active_payments_conflict():
+    from fastapi import HTTPException
+    from services.payroll_payment import ensure_indexes, require_active_payment_index
+
+    await server.db[PAYMENTS].drop()
+    period_id = "period-conflict"
+    for suffix in ("a", "b"):
+        await server.db[PAYMENTS].insert_one({
+            "id": str(uuid.uuid4()),
+            "payment_number": f"PYB-CONFLICT-{suffix}",
+            "payroll_period_id": period_id,
+            "status": "DRAFT",
+        })
+    with pytest.raises(HTTPException) as raised:
+        await ensure_indexes(server.db)
+    assert raised.value.status_code == 409
+    assert await server.db[PAYMENTS].count_documents({"payroll_period_id": period_id}) == 2
+    with pytest.raises(HTTPException) as missing:
+        await require_active_payment_index(server.db)
+    assert missing.value.status_code == 503
+    with pytest.raises(HTTPException):
+        await ensure_indexes(server.db)
+    assert await server.db[PAYMENTS].count_documents({"payroll_period_id": period_id}) == 2
+
+
+@pytest.mark.anyio
+async def test_cancel_and_post_race_across_processes():
+    accounts = await _setup_accounts()
+    bank = await _bank(accounts["bank"])
+    _admin()
+    async with _client() as c:
+        _emp, period = await _finalize(c, year=2096, month=1, map_accounts=accounts)
+        await _post_accrual(c, period["id"])
+        created = await c.post(
+            f"/api/hr-payroll/periods/{period['id']}/payments",
+            json={"cash_bank_account_id": bank["id"], "payment_date": "2096-01-18"},
+        )
+        payment_id = created.json()["payment"]["id"]
+        approved = await c.post(f"/api/hr-payroll/payments/{payment_id}/approve")
+        assert approved.status_code == 200, approved.text
+    results = _run_cross_process(["cancel", "post"], payment_id)
+    stored = await server.db[PAYMENTS].find_one({"id": payment_id}, {"_id": 0})
+    journals = await _payment_journals(payment_id)
+    posted = [row for row in journals if row["status"] == "posted"]
+    assert stored["status"] in {"PAID", "CANCELLED"}
+    if stored["status"] == "CANCELLED":
+        assert posted == []
+        assert not str(stored.get("accounting_journal_id") or "").strip()
+    if posted:
+        assert stored["status"] == "PAID"
+        assert len(posted) == 1
+    assert all(result.startswith(("cancel-ok", "post-ok", "err:")) for result in results)
+    assert not any("Traceback" in result for result in results)
+    await _assert_final(period["id"])
+
+
+@pytest.mark.anyio
+async def test_approve_and_cancel_race_across_processes():
+    accounts = await _setup_accounts()
+    bank = await _bank(accounts["bank"])
+    _admin()
+    async with _client() as c:
+        _emp, period = await _finalize(c, year=2096, month=2, map_accounts=accounts)
+        await _post_accrual(c, period["id"])
+        created = await c.post(
+            f"/api/hr-payroll/periods/{period['id']}/payments",
+            json={"cash_bank_account_id": bank["id"], "payment_date": "2096-02-18"},
+        )
+        payment_id = created.json()["payment"]["id"]
+    results = _run_cross_process(["approve", "cancel"], payment_id)
+    stored = await server.db[PAYMENTS].find_one({"id": payment_id}, {"_id": 0})
+    assert stored["status"] in {"APPROVED", "CANCELLED"}
+    assert await _payment_journals(payment_id) == []
+    assert not str(stored.get("accounting_journal_id") or "").strip()
+    assert all(result.startswith(("approve-ok", "cancel-ok", "err:")) for result in results)
+    await _assert_final(period["id"])
+
+
+@pytest.mark.anyio
+async def test_approved_payment_with_journal_cannot_be_cancelled():
+    accounts = await _setup_accounts()
+    bank = await _bank(accounts["bank"])
+    _admin()
+    async with _client() as c:
+        _period, payment = await _posted_payment(c, year=2096, month=3, accounts=accounts, bank=bank)
+        await server.db[PAYMENTS].update_one(
+            {"id": payment["id"]},
+            {"$set": {"status": "APPROVED"}, "$unset": {"paid_at": "", "paid_by": ""}},
+        )
+        rejected = await c.post(
+            f"/api/hr-payroll/payments/{payment['id']}/cancel",
+            json={"reason": "sudah ada jurnal"},
+        )
+        assert rejected.status_code == 409, rejected.text
+        repaired = await c.post(f"/api/hr-payroll/payments/{payment['id']}/post-accounting")
+        assert repaired.status_code == 200, repaired.text
+    stored = await server.db[PAYMENTS].find_one({"id": payment["id"]}, {"_id": 0})
+    assert stored["status"] == "PAID"
+    assert len(await _payment_journals(payment["id"])) == 1
