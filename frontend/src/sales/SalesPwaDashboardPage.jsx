@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { CalendarDays, ChevronRight, ClipboardList, MapPin, TrendingUp, WalletCards } from "lucide-react";
 import api from "../lib/api";
-import { currentSalesMonth, formatSalesDate, formatSalesMoney, salesMonthBounds } from "../lib/salesPwa";
+import { currentSalesMonth, formatSalesDate, formatSalesMoney, salesMonthBounds, salesWibParts } from "../lib/salesPwa";
 
 const VISIT_MONTHS = ["Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus", "September", "Oktober", "November", "Desember"];
 const RECEIVABLE_INFO = "Saldo invoice yang masih belum lunas, termasuk periode sebelumnya.";
@@ -21,6 +21,7 @@ function clockLabel(value) {
 
 function reminderKind(item) {
   if (item?.kind === "follow_up") return "Follow up";
+  if (item?.kind === "schedule") return "Jadwal";
   const kind = String(item?.kind || "").trim();
   return kind;
 }
@@ -36,11 +37,31 @@ function listedTotal(payload) {
 }
 
 function visitDateLabel(value) {
-  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(value || ""));
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(salesWibParts(value)?.day || "");
   if (!match) return "";
   const monthName = VISIT_MONTHS[Number(match[2]) - 1];
   if (!monthName) return "";
   return `${match[3]} ${monthName} ${match[1]}`;
+}
+
+const AGENDA_SECTION_LIMIT = 30;
+
+function classifyReminders(rows, today) {
+  const agenda = [];
+  const overdue = [];
+  const upcoming = [];
+  for (const item of rows || []) {
+    const day = String(item?.date || "").slice(0, 10);
+    if (!day) continue;
+    if (day === today) agenda.push(item);
+    else if (day < today || item?.overdue) overdue.push(item);
+    else upcoming.push(item);
+  }
+  return {
+    agenda: agenda.slice(0, AGENDA_SECTION_LIMIT),
+    overdue: overdue.slice(0, AGENDA_SECTION_LIMIT),
+    upcoming: upcoming.slice(0, AGENDA_SECTION_LIMIT),
+  };
 }
 
 function latestVisit(rows) {
@@ -144,9 +165,12 @@ export default function SalesPwaDashboardPage() {
     ? Number(actionVisible.designTotal || 0) + Number(actionVisible.paymentTotal || 0)
     : 0;
   const today = localDay();
-  const reminders = visible?.upcoming_visits || [];
-  const agendaToday = reminders.filter((item) => String(item.date || "").slice(0, 10) === today);
-  const followUps = reminders.filter((item) => String(item.date || "").slice(0, 10) !== today);
+  const classified = classifyReminders(visible?.upcoming_visits, today);
+  const agendaToday = Array.isArray(visible?.agenda_today) ? visible.agenda_today.slice(0, AGENDA_SECTION_LIMIT) : classified.agenda;
+  const agendaTotal = Number(visible?.agenda_today_total);
+  const agendaCount = Number.isFinite(agendaTotal) ? agendaTotal : agendaToday.length;
+  const overdueFollowUps = Array.isArray(visible?.follow_up_overdue) ? visible.follow_up_overdue.slice(0, AGENDA_SECTION_LIMIT) : classified.overdue;
+  const upcomingFollowUps = Array.isArray(visible?.follow_up_upcoming) ? visible.follow_up_upcoming.slice(0, AGENDA_SECTION_LIMIT) : classified.upcoming;
   const visitHistory = visits && visitsMonth === month ? visits : null;
   const lastVisit = latestVisit(visitHistory);
   return (
@@ -205,7 +229,7 @@ export default function SalesPwaDashboardPage() {
 
             <section className="spwa-panel" data-testid="sales-dashboard-agenda">
               <div className="spwa-section-head">
-                <div><p className="spwa-kicker">AGENDA</p><h2>{agendaToday.length ? `Agenda hari ini (${agendaToday.length})` : "Agenda hari ini"}</h2></div>
+                <div><p className="spwa-kicker">AGENDA</p><h2>{agendaCount ? `Agenda hari ini (${agendaCount})` : "Agenda hari ini"}</h2></div>
                 <Link to="/sales/visit">Kalender <ChevronRight size={15} /></Link>
               </div>
               {agendaToday.length === 0 && <p className="spwa-empty compact">Belum ada agenda</p>}
@@ -214,6 +238,7 @@ export default function SalesPwaDashboardPage() {
                   const clock = clockLabel(item.at);
                   const kind = reminderKind(item);
                   const address = String(item.address || "").trim();
+                  const note = reminderNote(item);
                   return (
                     <Link key={item.id} to="/sales/visit" className={item.overdue ? "is-overdue" : ""}>
                       {clock ? <em className="spwa-agenda-time">{clock}</em> : <CalendarDays size={16} />}
@@ -221,10 +246,59 @@ export default function SalesPwaDashboardPage() {
                         <strong>{item.outlet}</strong>
                         <small>{[kind, item.overdue ? "Terlambat" : ""].filter(Boolean).join(" · ") || formatSalesDate(item.date)}</small>
                         {address ? <small className="spwa-agenda-place"><MapPin size={12} /> {address}</small> : null}
+                        {note ? <small>{note}</small> : null}
                       </span>
                     </Link>
                   );
                 })}
+              </div>
+            </section>
+
+            <section className="spwa-panel" data-testid="sales-dashboard-followup">
+              <div className="spwa-section-head">
+                <div><p className="spwa-kicker">FOLLOW UP</p><h2>Follow up customer</h2></div>
+                <Link to="/sales/visit">Visit <ChevronRight size={15} /></Link>
+              </div>
+              <div data-testid="sales-dashboard-overdue">
+                <h3 className="spwa-subhead">Follow-up terlambat</h3>
+                {overdueFollowUps.length === 0 && <p className="spwa-empty compact">Tidak ada follow-up terlambat.</p>}
+                <div className="spwa-agenda">
+                  {overdueFollowUps.map((item) => {
+                    const note = reminderNote(item);
+                    const address = String(item.address || "").trim();
+                    return (
+                      <Link key={item.id} to="/sales/visit" className="is-overdue">
+                        <span>
+                          <strong>{item.outlet}</strong>
+                          <small>Terlambat: {formatSalesDate(item.date)}</small>
+                          {address ? <small className="spwa-agenda-place"><MapPin size={12} /> {address}</small> : null}
+                          {note ? <small>{note}</small> : null}
+                        </span>
+                      </Link>
+                    );
+                  })}
+                </div>
+              </div>
+              <div data-testid="sales-dashboard-upcoming">
+                <h3 className="spwa-subhead">Follow-up mendatang</h3>
+                {upcomingFollowUps.length === 0 && <p className="spwa-empty compact">Tidak ada follow-up mendatang.</p>}
+                <div className="spwa-agenda">
+                  {upcomingFollowUps.map((item) => {
+                    const note = reminderNote(item);
+                    const address = String(item.address || "").trim();
+                    const clock = clockLabel(item.at);
+                    return (
+                      <Link key={item.id} to="/sales/visit">
+                        <span>
+                          <strong>{item.outlet}</strong>
+                          <small>Follow up: {formatSalesDate(item.date)}{clock ? ` ${clock}` : ""}</small>
+                          {address ? <small className="spwa-agenda-place"><MapPin size={12} /> {address}</small> : null}
+                          {note ? <small>{note}</small> : null}
+                        </span>
+                      </Link>
+                    );
+                  })}
+                </div>
               </div>
             </section>
 
@@ -306,28 +380,6 @@ export default function SalesPwaDashboardPage() {
                   <strong>{metrics.visit_month || 0}</strong>
                   <small>{metrics.visit_overdue || 0} reminder terlambat</small>
                 </Link>
-              </div>
-            </section>
-
-            <section className="spwa-panel" data-testid="sales-dashboard-followup">
-              <div className="spwa-section-head">
-                <div><p className="spwa-kicker">FOLLOW UP</p><h2>Follow up customer</h2></div>
-                <Link to="/sales/visit">Visit <ChevronRight size={15} /></Link>
-              </div>
-              {followUps.length === 0 && <p className="spwa-empty compact">Belum ada follow up pada bulan ini.</p>}
-              <div className="spwa-agenda">
-                {followUps.map((item) => {
-                  const note = reminderNote(item);
-                  return (
-                    <Link key={item.id} to="/sales/visit" className={item.overdue ? "is-overdue" : ""}>
-                      <span>
-                        <strong>{item.outlet}</strong>
-                        <small>Follow up: {formatSalesDate(item.date)}{item.overdue ? " · Terlambat" : ""}</small>
-                        {note ? <small>{note}</small> : null}
-                      </span>
-                    </Link>
-                  );
-                })}
               </div>
             </section>
 
