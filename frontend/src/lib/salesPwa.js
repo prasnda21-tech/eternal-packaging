@@ -65,6 +65,42 @@ export function formatSalesDate(iso) {
   return `${m[3]}/${m[2]}/${m[1].slice(-2)}`;
 }
 
+export function salesWibParts(iso) {
+  const text = String(iso || "").trim();
+  if (!text) return null;
+  const zoned = /(?:Z|[+-]\d{2}:\d{2})$/i.test(text);
+  if (!zoned) {
+    const day = text.slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return null;
+    const clock = /T(\d{2}):(\d{2})/.exec(text);
+    return { day, clock: clock ? `${clock[1]}:${clock[2]}` : "" };
+  }
+  const date = new Date(text);
+  if (Number.isNaN(date.getTime())) return null;
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Jakarta",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(date);
+  const pick = (type) => parts.find((part) => part.type === type)?.value || "";
+  const hour = pick("hour") === "24" ? "00" : pick("hour");
+  return { day: `${pick("year")}-${pick("month")}-${pick("day")}`, clock: `${hour}:${pick("minute")}` };
+}
+
+export function formatSalesWibInstant(iso) {
+  const parts = salesWibParts(iso);
+  if (!parts) {
+    const fallback = formatSalesDate(iso);
+    return fallback === "—" ? "" : fallback;
+  }
+  const label = formatSalesDate(parts.day);
+  return parts.clock ? `${label} ${parts.clock}` : label;
+}
+
 export function documentTotal(order) {
   const docs = order?.documents || {};
   const n = Number(docs.total);

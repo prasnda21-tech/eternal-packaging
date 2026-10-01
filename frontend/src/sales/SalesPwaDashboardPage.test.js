@@ -199,7 +199,7 @@ test("explains running receivables and links only the cards that already have a 
   await act(async () => { await Promise.resolve(); });
 
   const main = node.querySelector('[data-testid="sales-pwa-dashboard"]').innerHTML;
-  const order = ["sales-dashboard-actions", "sales-dashboard-agenda", "sales-dashboard-last-visit", "sales-dashboard-performance", "sales-dashboard-followup"];
+  const order = ["sales-dashboard-actions", "sales-dashboard-agenda", "sales-dashboard-followup", "sales-dashboard-last-visit", "sales-dashboard-performance"];
   let cursor = -1;
   order.forEach((id) => {
     const at = main.indexOf(id);
@@ -292,5 +292,65 @@ test("links omzet and receivables with the existing pressable card treatment", a
   expect(css).toMatch(/a\.spwa-metric-link\s*\{[^}]*cursor:\s*pointer/);
   expect(css).toMatch(/a\.spwa-metric-link:hover\s*\{[^}]*border-color:\s*#8bd6bd/);
   expect(css).toMatch(/a\.spwa-metric-link:active\s*\{[^}]*border-color:\s*#08785d/);
+  act(() => root.unmount());
+});
+
+test("keeps today's agenda after classifying more than eight earlier reminders", async () => {
+  const now = new Date();
+  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  const overdue = Array.from({ length: 9 }, (_, index) => ({
+    id: `old-${index}`,
+    outlet: `Lama ${index}`,
+    date: `2020-01-${String(index + 1).padStart(2, "0")}`,
+    overdue: true,
+  }));
+  api.salesPwaDashboard.mockResolvedValue({
+    metrics: { revenue: 1000, receivables: 0, invoice_count: 1, receivable_invoice_count: 0, active_po: 2, buffer_po: 0, visit_month: 4, visit_overdue: 9 },
+    upcoming_visits: [
+      ...overdue,
+      { id: "today-1", outlet: "Hari Ini Outlet", date: today, at: `${today}T09:15:00`, address: "Jl. Malioboro", next_action: "Bawa sampel" },
+      { id: "next-1", outlet: "Besok Outlet", date: "2099-12-01", at: "2099-12-01T11:00:00", next_action: "Kirim harga" },
+    ],
+  });
+  const node = document.createElement("div");
+  const root = createRoot(node);
+  await act(async () => { root.render(<SalesPwaDashboardPage />); await Promise.resolve(); });
+  await act(async () => { await Promise.resolve(); });
+  const agenda = node.querySelector('[data-testid="sales-dashboard-agenda"]');
+  const late = node.querySelector('[data-testid="sales-dashboard-overdue"]');
+  const upcoming = node.querySelector('[data-testid="sales-dashboard-upcoming"]');
+  expect(agenda.textContent).toContain("Hari Ini Outlet");
+  expect(agenda.textContent).toContain("Jl. Malioboro");
+  expect(agenda.textContent).toContain("Bawa sampel");
+  expect(agenda.textContent).not.toContain("Lama 0");
+  expect(late.textContent).toContain("Lama 0");
+  expect(late.textContent).toContain("Lama 8");
+  expect(late.textContent).not.toContain("Hari Ini Outlet");
+  expect(upcoming.textContent).toContain("Besok Outlet");
+  expect(upcoming.textContent).toContain("Kirim harga");
+  expect(node.querySelector('[data-testid="sales-dashboard-revenue"]').textContent).toContain("Rp1.000");
+  expect(node.querySelector('[data-testid="sales-dashboard-visits"]').textContent).toContain("4");
+  act(() => root.unmount());
+});
+
+test("agenda count stays complete when the visible list is capped", async () => {
+  api.salesPwaDashboard.mockResolvedValue({
+    metrics: { revenue: 1000, receivables: 0, invoice_count: 1, receivable_invoice_count: 0, active_po: 0, buffer_po: 0, visit_month: 0, visit_overdue: 31 },
+    agenda_today: [{ id: "today-1", outlet: "Hari Ini Outlet", date: "2026-10-01", at: "2026-10-01T09:00:00+07:00" }],
+    agenda_today_total: 31,
+    follow_up_overdue: [],
+    follow_up_overdue_total: 31,
+    follow_up_upcoming: [],
+    follow_up_upcoming_total: 0,
+  });
+  api.salesPwaVisits.mockResolvedValue({ visits: [] });
+  const node = document.createElement("div");
+  const root = createRoot(node);
+  await act(async () => { root.render(<SalesPwaDashboardPage />); await Promise.resolve(); });
+  await act(async () => { await Promise.resolve(); });
+  const agenda = node.querySelector('[data-testid="sales-dashboard-agenda"]');
+  expect(agenda.textContent).toContain("Agenda hari ini (31)");
+  expect(Array.from(agenda.querySelectorAll("a")).filter((item) => item.textContent.includes("Hari Ini Outlet"))).toHaveLength(1);
+  expect(node.querySelector('[data-testid="sales-dashboard-visits"]').textContent).toContain("31");
   act(() => root.unmount());
 });

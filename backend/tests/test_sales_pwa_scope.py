@@ -2,7 +2,7 @@
 import os
 import sys
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -572,3 +572,527 @@ async def test_sales_pwa_finance_lists_match_dashboard_and_ignore_other_sales():
         await db.sales_invoices.delete_many({"id": {"$in": invoice_ids}})
         await db.sales_receipts.delete_many({"invoice_id": {"$in": invoice_ids}})
         await db.users.delete_many({"id": {"$in": [sales_a, sales_b]}})
+
+
+@pytest.mark.anyio
+async def test_sales_pwa_agenda_keeps_today_and_cross_month_overdue():
+    import server
+    from services.order_prediction import wib_today
+
+    db = server.db
+    sales_a = str(uuid.uuid4())
+    sales_b = str(uuid.uuid4())
+    today = wib_today()
+    previous = today.replace(day=1) - timedelta(days=1)
+    future = today + timedelta(days=10)
+    month = today.strftime("%Y-%m")
+    outlet_today = str(uuid.uuid4())
+    outlet_overdue = str(uuid.uuid4())
+    outlet_future = str(uuid.uuid4())
+    outlet_other = str(uuid.uuid4())
+    outlet_ids = [outlet_today, outlet_overdue, outlet_future, outlet_other]
+    activity_ids = [str(uuid.uuid4()), str(uuid.uuid4())]
+    await db.users.insert_many([
+        {"id": sales_a, "email": f"agenda-{sales_a[:8]}@eternal.com", "name": "Agenda A", "role": "sales_eternal"},
+        {"id": sales_b, "email": f"agenda-{sales_b[:8]}@eternal.com", "name": "Agenda B", "role": "sales_eternal"},
+    ])
+    await db.sales_outlets.insert_many([
+        {"id": outlet_today, "name": "Outlet Hari Ini", "address": "Jl. Agenda 1"},
+        {"id": outlet_overdue, "name": "Outlet Terlambat", "address": "Jl. Lama"},
+        {"id": outlet_future, "name": "Outlet Mendatang", "address": "Jl. Besok"},
+        {"id": outlet_other, "name": "Outlet Sales Lain", "address": "Jl. Orang"},
+    ])
+    await db.sales_ownership.insert_many([
+        {"id": str(uuid.uuid4()), "outlet_id": outlet_today, "current_owner_id": sales_a, "next_follow_up_at": f"{today.isoformat()}T09:00:00+07:00"},
+        {"id": str(uuid.uuid4()), "outlet_id": outlet_overdue, "current_owner_id": sales_a, "next_follow_up_at": f"{previous.isoformat()}T08:00:00+07:00"},
+        {"id": str(uuid.uuid4()), "outlet_id": outlet_future, "current_owner_id": sales_a, "next_follow_up_at": f"{future.isoformat()}T11:30:00+07:00"},
+        {"id": str(uuid.uuid4()), "outlet_id": outlet_other, "current_owner_id": sales_b, "next_follow_up_at": f"{today.isoformat()}T09:00:00+07:00"},
+    ])
+    await db.sales_activities.insert_many([
+        {
+            "id": activity_ids[0],
+            "outlet_id": outlet_today,
+            "sales_user_id": sales_a,
+            "activity_type": "visit",
+            "activity_at": f"{today.isoformat()}T01:00:00+00:00",
+            "result": "Sudah datang",
+            "next_action": "Bawa sampel",
+        },
+        {
+            "id": activity_ids[1],
+            "outlet_id": outlet_today,
+            "sales_user_id": sales_a,
+            "activity_type": "visit",
+            "activity_at": "2020-01-02T01:00:00+00:00",
+            "result": "Lama",
+        },
+    ])
+    app.dependency_overrides[current_user] = lambda: _sales_user(sales_a, f"agenda-{sales_a[:8]}@eternal.com", "Agenda A")
+    transport = ASGITransport(app=app)
+    try:
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            dashboard = await client.get("/api/sales-pwa/dashboard", params={"month": month, "sales_user_id": sales_b})
+            assert dashboard.status_code == 200, dashboard.text
+            body = dashboard.json()
+            assert body["metrics"]["visit_month"] == 1
+            assert body["metrics"]["revenue"] == 0
+            assert body["metrics"]["receivables"] == 0
+            assert body["metrics"]["active_po"] == 0
+            today_names = [row["outlet"] for row in body["agenda_today"]]
+            overdue_names = [row["outlet"] for row in body["follow_up_overdue"]]
+            upcoming_names = [row["outlet"] for row in body["follow_up_upcoming"]]
+            assert today_names == ["Outlet Hari Ini"]
+            assert "Outlet Terlambat" in overdue_names
+            assert "Outlet Mendatang" in upcoming_names
+            assert "Outlet Sales Lain" not in today_names + overdue_names + upcoming_names
+            today_row = body["agenda_today"][0]
+            assert today_row["address"] == "Jl. Agenda 1"
+            assert today_row["next_action"] == "Bawa sampel"
+            assert today_row["date"] == today.isoformat()
+            assert len(body["upcoming_visits"]) == len(today_names) + len(overdue_names) + len(upcoming_names)
+            assert body["metrics"]["visit_overdue"] == len(overdue_names)
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+        await db.users.delete_many({"id": {"$in": [sales_a, sales_b]}})
+        await db.sales_outlets.delete_many({"id": {"$in": outlet_ids}})
+        await db.sales_ownership.delete_many({"outlet_id": {"$in": outlet_ids}})
+        await db.sales_activities.delete_many({"id": {"$in": activity_ids}})
+
+
+@pytest.mark.anyio
+async def test_sales_pwa_follow_up_read_model_and_wib_wall_clock():
+    import server
+    from services.sales_pwa import normalize_pwa_local_datetime
+
+    assert normalize_pwa_local_datetime("2099-06-15T09:00") == "2099-06-15T02:00:00+00:00"
+    assert normalize_pwa_local_datetime("2099-06-15T09:00:00+07:00") == "2099-06-15T02:00:00+00:00"
+    assert normalize_pwa_local_datetime("") is None
+
+    db = server.db
+    sales_a = str(uuid.uuid4())
+    sales_b = str(uuid.uuid4())
+    outlet_id = str(uuid.uuid4())
+    other_outlet = str(uuid.uuid4())
+    email_a = f"follow-{sales_a[:8]}@eternal.com"
+    await db.users.insert_many([
+        {"id": sales_a, "email": email_a, "name": "Follow A", "role": "sales_eternal"},
+        {"id": sales_b, "email": f"follow-{sales_b[:8]}@eternal.com", "name": "Follow B", "role": "sales_eternal"},
+    ])
+    await db.sales_outlets.insert_many([
+        {"id": outlet_id, "name": "Outlet Follow A", "address": "Jl. Follow"},
+        {"id": other_outlet, "name": "Outlet Follow B", "address": "Jl. Lain"},
+    ])
+    await db.sales_ownership.insert_many([
+        {
+            "id": str(uuid.uuid4()),
+            "outlet_id": outlet_id,
+            "current_owner_id": sales_a,
+            "automation_status": "PAUSED_MANUAL",
+            "in_pool": False,
+            "next_follow_up_at": None,
+            "updated_at": "2020-01-01T00:00:00+00:00",
+            "version": 1,
+        },
+        {
+            "id": str(uuid.uuid4()),
+            "outlet_id": other_outlet,
+            "current_owner_id": sales_b,
+            "automation_status": "PAUSED_MANUAL",
+            "in_pool": False,
+            "next_follow_up_at": "2099-06-15T09:00:00+07:00",
+            "version": 1,
+        },
+    ])
+    app.dependency_overrides[current_user] = lambda: _sales_user(sales_a, email_a, "Follow A")
+    transport = ASGITransport(app=app)
+    try:
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post("/api/sales-pwa/visits", json={
+                "outlet_id": outlet_id,
+                "result": "Ketemu pemilik",
+                "next_action": "Kirim sampel",
+                "next_follow_up_at": "2099-06-15T09:00",
+                "notes": "Pagi",
+                "sales_user_id": sales_b,
+                "sales_id": sales_b,
+            })
+            assert created.status_code == 200, created.text
+            activity = created.json()["activity"]
+            assert activity["sales_user_id"] == sales_a
+            assert activity["next_follow_up_at"] == "2099-06-15T02:00:00+00:00"
+            listed = await client.get("/api/sales-pwa/visits", params={"sales_user_id": sales_b})
+            assert listed.status_code == 200, listed.text
+            body = listed.json()
+            assert [row["outlet"] for row in body["follow_up_upcoming"] if row["outlet"] == "Outlet Follow A"]
+            match = next(row for row in body["reminders"] if row["outlet_id"] == outlet_id)
+            assert match["date"] == "2099-06-15"
+            assert str(match["at"]).startswith("2099-06-15T09:00")
+            assert match["kind"] == "follow_up"
+            assert match["next_action"] == "Kirim sampel"
+            assert all(row["outlet_id"] != other_outlet for row in body["reminders"])
+            assert sum(1 for row in body["reminders"] if row["outlet_id"] == outlet_id) == 1
+
+            own = await db.sales_ownership.find_one({"outlet_id": outlet_id})
+            assert own.get("next_follow_up_at") == "2099-06-15T02:00:00+00:00"
+
+            updated = await db.sales_ownership.update_one(
+                {"outlet_id": outlet_id},
+                {"$set": {"next_follow_up_at": "2099-08-01T10:00:00+07:00", "updated_at": "2099-07-01T00:00:00+00:00"}},
+            )
+            assert updated.modified_count == 1
+            stored = await db.sales_ownership.find_one({"outlet_id": outlet_id})
+            assert stored["next_follow_up_at"] == "2099-08-01T10:00:00+07:00"
+            assert stored["updated_at"] == "2099-07-01T00:00:00+00:00"
+            refreshed = await client.get("/api/sales-pwa/dashboard", params={"month": "2099-07"})
+            assert refreshed.status_code == 200, refreshed.text
+            dash = refreshed.json()
+            rows = [row for row in dash["follow_up_upcoming"] if row["outlet_id"] == outlet_id]
+            assert len(rows) == 1
+            assert rows[0]["date"] == "2099-08-01"
+            assert rows[0]["source"] == "ownership"
+            assert rows[0]["kind"] == "schedule"
+            assert dash["metrics"]["visit_month"] == 0
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+        await db.users.delete_many({"id": {"$in": [sales_a, sales_b]}})
+        await db.sales_outlets.delete_many({"id": {"$in": [outlet_id, other_outlet]}})
+        await db.sales_ownership.delete_many({"outlet_id": {"$in": [outlet_id, other_outlet]}})
+        await db.sales_activities.delete_many({"outlet_id": outlet_id, "sales_user_id": sales_a})
+
+
+@pytest.mark.anyio
+async def test_sales_pwa_schedule_does_not_create_completed_visit():
+    import server
+    from services.order_prediction import wib_today
+
+    db = server.db
+    sales_a = str(uuid.uuid4())
+    sales_b = str(uuid.uuid4())
+    outlet_id = str(uuid.uuid4())
+    other_id = str(uuid.uuid4())
+    future = wib_today() + timedelta(days=4)
+    email_a = f"plan-{sales_a[:8]}@eternal.com"
+    await db.users.insert_many([
+        {"id": sales_a, "email": email_a, "name": "Plan A", "role": "sales_eternal"},
+        {"id": sales_b, "email": f"plan-{sales_b[:8]}@eternal.com", "name": "Plan B", "role": "sales_eternal"},
+    ])
+    await db.sales_outlets.insert_many([
+        {"id": outlet_id, "name": "Outlet Jadwal", "address": "Jl. Jadwal"},
+        {"id": other_id, "name": "Outlet Orang Lain", "address": "Jl. Lain"},
+    ])
+    await db.sales_ownership.insert_many([
+        {
+            "id": str(uuid.uuid4()),
+            "outlet_id": outlet_id,
+            "current_owner_id": sales_a,
+            "in_pool": False,
+            "version": 3,
+            "updated_at": "2020-01-01T00:00:00+00:00",
+            "next_follow_up_at": "2020-01-02T09:00:00+07:00",
+            "eligible_at": "2030-01-01T00:00:00+00:00",
+            "warning_at": "2029-12-01T00:00:00+00:00",
+        },
+        {
+            "id": str(uuid.uuid4()),
+            "outlet_id": other_id,
+            "current_owner_id": sales_b,
+            "in_pool": False,
+            "version": 1,
+            "next_follow_up_at": f"{future.isoformat()}T09:00:00+07:00",
+        },
+    ])
+    await db.sales_activities.insert_one({
+        "id": str(uuid.uuid4()),
+        "outlet_id": outlet_id,
+        "sales_user_id": sales_a,
+        "activity_type": "visit",
+        "activity_at": "2020-01-02T02:00:00+00:00",
+        "result": "Lama",
+        "next_follow_up_at": "2020-01-03T02:00:00+00:00",
+    })
+    before = await db.sales_activities.count_documents({"outlet_id": outlet_id, "sales_user_id": sales_a})
+    app.dependency_overrides[current_user] = lambda: _sales_user(sales_a, email_a, "Plan A")
+    transport = ASGITransport(app=app)
+    try:
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            denied = await client.post("/api/sales-pwa/visits/schedule", json={
+                "outlet_id": other_id,
+                "next_follow_up_at": f"{future.isoformat()}T09:00",
+                "sales_user_id": sales_b,
+            })
+            assert denied.status_code == 404, denied.text
+            scheduled = await client.post("/api/sales-pwa/visits/schedule", json={
+                "outlet_id": outlet_id,
+                "next_follow_up_at": f"{future.isoformat()}T09:00",
+                "sales_user_id": sales_b,
+                "user_id": sales_b,
+            })
+            assert scheduled.status_code == 200, scheduled.text
+            assert scheduled.json()["scheduled"] is True
+            assert scheduled.json()["date"] == future.isoformat()
+            after = await db.sales_activities.count_documents({"outlet_id": outlet_id, "sales_user_id": sales_a})
+            assert after == before
+            stored = await db.sales_ownership.find_one({"outlet_id": outlet_id})
+            assert stored["eligible_at"] == "2030-01-01T00:00:00+00:00"
+            assert stored["warning_at"] == "2029-12-01T00:00:00+00:00"
+            assert stored["current_owner_id"] == sales_a
+            assert stored["version"] == 4
+            listed = await client.get("/api/sales-pwa/visits")
+            rows = [row for row in listed.json()["reminders"] if row["outlet_id"] == outlet_id]
+            assert len(rows) == 1
+            assert rows[0]["date"] == future.isoformat()
+            assert rows[0]["kind"] == "schedule"
+            assert rows[0]["source"] == "ownership"
+            assert all(row["outlet_id"] != other_id for row in listed.json()["reminders"])
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+        await db.users.delete_many({"id": {"$in": [sales_a, sales_b]}})
+        await db.sales_outlets.delete_many({"id": {"$in": [outlet_id, other_id]}})
+        await db.sales_ownership.delete_many({"outlet_id": {"$in": [outlet_id, other_id]}})
+        await db.sales_activities.delete_many({"outlet_id": outlet_id})
+
+
+@pytest.mark.anyio
+async def test_customer_visit_history_uses_only_linked_customer_id():
+    import server
+    from services.sales_pwa import _stable_customer_link
+
+    assert _stable_customer_link("CUST-1") == "CUST-1"
+    assert _stable_customer_link("name:kedai") is None
+    assert _stable_customer_link("Kedai|Yogyakarta") is None
+    assert _stable_customer_link("") is None
+
+    db = server.db
+    sales_a = str(uuid.uuid4())
+    sales_b = str(uuid.uuid4())
+    email_a = f"custvis-{sales_a[:8]}@eternal.com"
+    po_linked = _order("PO-LINK", "Label A", sales_a, "Pelanggan Aman", customer_id="CUST-AMAN", order_date="2026-09-01")
+    po_named = _order("PO-NAME", "Label A", sales_a, "Pelanggan Nama", order_date="2026-09-02")
+    po_named.pop("customer_id", None)
+    outlet_linked = str(uuid.uuid4())
+    outlet_named = str(uuid.uuid4())
+    outlet_other = str(uuid.uuid4())
+    await db.users.insert_many([
+        {"id": sales_a, "email": email_a, "name": "Cust A", "role": "sales_eternal"},
+        {"id": sales_b, "email": f"custvis-{sales_b[:8]}@eternal.com", "name": "Cust B", "role": "sales_eternal"},
+    ])
+    await db.orders.insert_many([po_linked, po_named])
+    await db.sales_outlets.insert_many([
+        {"id": outlet_linked, "name": "Outlet Beda Nama", "linked_customer_id": "CUST-AMAN"},
+        {"id": outlet_named, "name": "Pelanggan Nama", "linked_customer_id": None},
+        {"id": outlet_other, "name": "Outlet Sales Lain", "linked_customer_id": "CUST-AMAN"},
+    ])
+    await db.sales_ownership.insert_many([
+        {"id": str(uuid.uuid4()), "outlet_id": outlet_linked, "current_owner_id": sales_a, "in_pool": False},
+        {"id": str(uuid.uuid4()), "outlet_id": outlet_named, "current_owner_id": sales_a, "in_pool": False},
+        {"id": str(uuid.uuid4()), "outlet_id": outlet_other, "current_owner_id": sales_b, "in_pool": False},
+    ])
+    await db.sales_activities.insert_many([
+        {
+            "id": str(uuid.uuid4()),
+            "outlet_id": outlet_linked,
+            "sales_user_id": sales_a,
+            "activity_type": "visit",
+            "activity_at": "2026-09-10T02:00:00+00:00",
+            "result": "Hasil aman",
+            "next_action": "Kirim harga",
+            "notes": "Catatan aman",
+            "next_follow_up_at": "2026-09-20T02:00:00+00:00",
+        },
+        {
+            "id": str(uuid.uuid4()),
+            "outlet_id": outlet_named,
+            "sales_user_id": sales_a,
+            "activity_type": "visit",
+            "activity_at": "2026-09-11T02:00:00+00:00",
+            "result": "Jangan ikut nama",
+        },
+        {
+            "id": str(uuid.uuid4()),
+            "outlet_id": outlet_other,
+            "sales_user_id": sales_b,
+            "activity_type": "visit",
+            "activity_at": "2026-09-12T02:00:00+00:00",
+            "result": "Visit sales lain",
+        },
+    ])
+    app.dependency_overrides[current_user] = lambda: _sales_user(sales_a, email_a, "Cust A")
+    transport = ASGITransport(app=app)
+    try:
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            listed = await client.get("/api/sales-pwa/customers", params={"sales_user_id": sales_b})
+            assert listed.status_code == 200, listed.text
+            customers = {row["customer"]: row for row in listed.json()["customers"]}
+            linked = customers["Pelanggan Aman"]
+            assert linked["visit_link"] == "linked"
+            assert [row["result"] for row in linked["visit_history"]] == ["Hasil aman"]
+            assert linked["visit_history"][0]["next_action"] == "Kirim harga"
+            assert linked["visit_history"][0]["notes"] == "Catatan aman"
+            assert "Visit sales lain" not in listed.text
+            named = customers["Pelanggan Nama"]
+            assert named["customer_key"].startswith("name:")
+            assert named["visit_link"] == "unlinked"
+            assert named["visit_history"] == []
+            assert "Jangan ikut nama" not in listed.text
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+        await db.users.delete_many({"id": {"$in": [sales_a, sales_b]}})
+        await db.orders.delete_many({"id": {"$in": [po_linked["id"], po_named["id"]]}})
+        await db.sales_outlets.delete_many({"id": {"$in": [outlet_linked, outlet_named, outlet_other]}})
+        await db.sales_ownership.delete_many({"outlet_id": {"$in": [outlet_linked, outlet_named, outlet_other]}})
+        await db.sales_activities.delete_many({"outlet_id": {"$in": [outlet_linked, outlet_named, outlet_other]}})
+
+
+@pytest.mark.anyio
+async def test_schedule_then_visit_follow_up_keeps_one_intent():
+    import server
+
+    db = server.db
+    sales_a = str(uuid.uuid4())
+    sales_b = str(uuid.uuid4())
+    outlet_id = str(uuid.uuid4())
+    email_a = f"slot-{sales_a[:8]}@eternal.com"
+    await db.users.insert_one({"id": sales_a, "email": email_a, "name": "Slot A", "role": "sales_eternal"})
+    await db.sales_outlets.insert_one({"id": outlet_id, "name": "Outlet Slot"})
+    await db.sales_ownership.insert_one({
+        "id": str(uuid.uuid4()),
+        "outlet_id": outlet_id,
+        "current_owner_id": sales_a,
+        "automation_status": "PAUSED_MANUAL",
+        "in_pool": False,
+        "version": 2,
+        "updated_at": "2020-01-01T00:00:00+00:00",
+        "next_follow_up_at": None,
+        "eligible_at": "2031-01-01T00:00:00+00:00",
+        "warning_at": "2030-12-01T00:00:00+00:00",
+    })
+    app.dependency_overrides[current_user] = lambda: _sales_user(sales_a, email_a, "Slot A")
+    transport = ASGITransport(app=app)
+    try:
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            scheduled = await client.post("/api/sales-pwa/visits/schedule", json={
+                "outlet_id": outlet_id,
+                "next_follow_up_at": "2099-04-02T09:00",
+                "sales_user_id": sales_b,
+                "sales_id": sales_b,
+                "user_id": sales_b,
+            })
+            assert scheduled.status_code == 200, scheduled.text
+            assert scheduled.json()["date"] == "2099-04-02"
+            listed = await client.get("/api/sales-pwa/visits", params={"sales_user_id": sales_b, "user_id": sales_b})
+            assert listed.status_code == 200, listed.text
+            planned = [row for row in listed.json()["reminders"] if row["outlet_id"] == outlet_id]
+            assert len(planned) == 1
+            assert planned[0]["kind"] == "schedule"
+            assert planned[0]["date"] == "2099-04-02"
+            assert await db.sales_activities.count_documents({"outlet_id": outlet_id, "activity_type": "visit"}) == 0
+
+            completed = await client.post("/api/sales-pwa/visits", json={
+                "outlet_id": outlet_id,
+                "result": "Sudah datang",
+                "next_action": "Kirim harga",
+                "next_follow_up_at": "2099-06-15T10:30",
+                "sales_user_id": sales_b,
+                "sales_id": sales_b,
+                "user_id": sales_b,
+            })
+            assert completed.status_code == 200, completed.text
+            activity = completed.json()["activity"]
+            assert activity["sales_user_id"] == sales_a
+            assert activity["activity_type"] == "visit"
+            assert activity["next_follow_up_at"] == "2099-06-15T03:30:00+00:00"
+            assert await db.sales_activities.count_documents({"outlet_id": outlet_id, "activity_type": "visit"}) == 1
+
+            refreshed = await client.get("/api/sales-pwa/visits")
+            body = refreshed.json()
+            rows = [row for row in body["reminders"] if row["outlet_id"] == outlet_id]
+            assert len(rows) == 1
+            assert rows[0]["date"] == "2099-06-15"
+            assert str(rows[0]["at"]).startswith("2099-06-15T10:30")
+            assert rows[0]["kind"] == "follow_up"
+            assert "2099-04-02" not in refreshed.text
+            stored = await db.sales_ownership.find_one({"outlet_id": outlet_id})
+            assert stored["next_follow_up_at"] == "2099-06-15T03:30:00+00:00"
+            assert stored["eligible_at"] == "2031-01-01T00:00:00+00:00"
+            assert stored["warning_at"] == "2030-12-01T00:00:00+00:00"
+            assert stored["current_owner_id"] == sales_a
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+        await db.users.delete_many({"id": sales_a})
+        await db.sales_outlets.delete_many({"id": outlet_id})
+        await db.sales_ownership.delete_many({"outlet_id": outlet_id})
+        await db.sales_activities.delete_many({"outlet_id": outlet_id})
+
+
+@pytest.mark.anyio
+async def test_wib_midnight_crossing_stays_on_jakarta_date():
+    from services.sales_pwa import _classify_reminders, _reminder_for_outlet, _wib_follow_fields, _written_after, normalize_pwa_local_datetime
+
+    assert normalize_pwa_local_datetime("2026-10-01T09:00") == "2026-10-01T02:00:00+00:00"
+    assert normalize_pwa_local_datetime("2026-10-01T00:30") == "2026-09-30T17:30:00+00:00"
+    day, at = _wib_follow_fields("2026-09-30T17:30:00+00:00")
+    assert day == "2026-10-01"
+    assert str(at).startswith("2026-10-01T00:30")
+    assert _written_after("2026-10-01T09:00:00+07:00", "2026-10-01T03:00:00+00:00") is False
+    assert _written_after("2026-10-01T03:00:00+00:00", "2026-10-01T09:00:00+07:00") is True
+    reminder = _reminder_for_outlet(
+        "outlet-midnight",
+        {"next_follow_up_at": "2026-09-30T17:30:00+00:00", "updated_at": "2026-10-01T00:00:00+00:00"},
+        {"name": "Outlet Tengah Malam"},
+        {},
+        "2026-10-01",
+    )
+    assert reminder["date"] == "2026-10-01"
+    assert str(reminder["at"]).startswith("2026-10-01T00:30")
+    buckets = _classify_reminders([reminder], "2026-10-01")
+    assert [row["outlet"] for row in buckets["agenda_today"]] == ["Outlet Tengah Malam"]
+    assert buckets["follow_up_overdue"] == []
+
+
+@pytest.mark.anyio
+async def test_agenda_limit_applies_after_classification():
+    import server
+    from services.order_prediction import wib_today
+
+    db = server.db
+    sales_a = str(uuid.uuid4())
+    email_a = f"cap-{sales_a[:8]}@eternal.com"
+    today = wib_today().isoformat()
+    outlet_ids = [str(uuid.uuid4()) for _ in range(32)]
+    today_outlet = outlet_ids[0]
+    await db.users.insert_one({"id": sales_a, "email": email_a, "name": "Cap A", "role": "sales_eternal"})
+    await db.sales_outlets.insert_many([
+        {"id": outlet_id, "name": "Hari Ini" if outlet_id == today_outlet else f"Telat {index}"}
+        for index, outlet_id in enumerate(outlet_ids)
+    ])
+    await db.sales_ownership.insert_many([
+        {
+            "id": str(uuid.uuid4()),
+            "outlet_id": outlet_id,
+            "current_owner_id": sales_a,
+            "in_pool": False,
+            "next_follow_up_at": f"{today}T09:00:00+07:00" if outlet_id == today_outlet else f"2020-01-{(index % 28) + 1:02d}T08:00:00+07:00",
+        }
+        for index, outlet_id in enumerate(outlet_ids)
+    ])
+    app.dependency_overrides[current_user] = lambda: _sales_user(sales_a, email_a, "Cap A")
+    transport = ASGITransport(app=app)
+    try:
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            dashboard = await client.get("/api/sales-pwa/dashboard", params={"sales_user_id": "someone-else"})
+            assert dashboard.status_code == 200, dashboard.text
+            body = dashboard.json()
+            assert body["metrics"]["visit_overdue"] == 31
+            assert body["follow_up_overdue_total"] == 31
+            assert len(body["follow_up_overdue"]) == 30
+            assert body["agenda_today_total"] == 1
+            assert [row["outlet"] for row in body["agenda_today"]] == ["Hari Ini"]
+            assert body["metrics"]["revenue"] == 0
+            assert body["metrics"]["receivables"] == 0
+            assert body["metrics"]["active_po"] == 0
+            assert "Hari Ini" not in [row["outlet"] for row in body["follow_up_overdue"]]
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+        await db.users.delete_many({"id": sales_a})
+        await db.sales_outlets.delete_many({"id": {"$in": outlet_ids}})
+        await db.sales_ownership.delete_many({"outlet_id": {"$in": outlet_ids}})

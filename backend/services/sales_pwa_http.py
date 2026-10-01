@@ -20,6 +20,12 @@ class SalesPwaVisitPayload(BaseModel):
     visit_photo_ids: list[str] = Field(default_factory=list)
 
 
+class SalesPwaSchedulePayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    outlet_id: str
+    next_follow_up_at: str
+
+
 def register_sales_pwa_routes(
     api_router,
     *,
@@ -274,6 +280,17 @@ def register_sales_pwa_routes(
             if "sales.pwa.visit.create" not in perms:
                 raise HTTPException(403, "Tidak memiliki izin mencatat visit")
         return await spwa.create_sales_pwa_visit(get_db(), user, payload.model_dump())
+
+    @api_router.post("/sales-pwa/visits/schedule")
+    async def schedule_sales_pwa_visit(
+        payload: SalesPwaSchedulePayload,
+        user=Depends(_pwa_user),
+    ):
+        if user_permissions is not None:
+            perms = await user_permissions(user)
+            if "sales.pwa.visit.create" not in perms:
+                raise HTTPException(403, "Tidak memiliki izin mencatat visit")
+        return await spwa.schedule_sales_pwa_visit(get_db(), user, payload.model_dump())
 
     @api_router.post("/sales-pwa/visits/photos")
     async def upload_sales_pwa_visit_photo(

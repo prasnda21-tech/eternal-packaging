@@ -963,6 +963,7 @@ a.spwa-po-card {
 }
 .spwa-section-head h2 { margin: 0; font-size: 16px; letter-spacing: 0.02em; }
 .spwa-section-head a { display: flex; align-items: center; color: #08785d; font-size: 10px; font-weight: 700; text-decoration: none; }
+.spwa-subhead { margin: 8px 12px 4px; color: #1c3946; font-size: 13px; font-weight: 700; }
 .spwa-agenda { display: grid; gap: 5px; }
 .spwa-agenda a {
   display: flex;
@@ -1017,7 +1018,7 @@ a.spwa-po-card {
   border-radius: 8px;
   background: #eef4f6;
   color: #60737d;
-  font-size: 9px;
+  font-size: 13px;
   text-align: center;
 }
 .spwa-visit-summary strong { display: block; color: #14303d; font-size: 16px; }
@@ -1030,16 +1031,17 @@ a.spwa-po-card {
 }
 .spwa-weekdays,
 .spwa-calendar-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; }
-.spwa-weekdays span { padding: 3px; color: #71838c; font-size: 8px; text-align: center; }
+.spwa-weekdays span { padding: 3px; color: #71838c; font-size: 11px; text-align: center; }
 .spwa-calendar-grid button {
   position: relative;
-  min-height: 34px;
+  min-height: 44px;
   border: 0;
   border-radius: 7px;
   color: #344f5c;
   background: #f3f7f9;
-  font-size: 10px;
+  font-size: 14px;
 }
+.spwa-calendar-grid button.is-selected { outline: 2px solid #08785d; }
 .spwa-calendar-grid button:disabled { background: transparent; }
 .spwa-calendar-grid button.has-event { color: #05654e; background: #daf4e9; font-weight: 800; }
 .spwa-calendar-grid button.is-overdue { color: #962d1d; background: #ffe7df; }
@@ -1054,6 +1056,24 @@ a.spwa-po-card {
   background: currentColor;
   font-size: 7px;
 }
+.spwa-customer-block { margin: 0 10px 8px; }
+.spwa-customer-block .spwa-list-btn { width: 100%; margin: 0; }
+.spwa-customer-block .spwa-visit-history { margin-top: 4px; }
+.spwa-visit-history { display: grid; gap: 6px; }
+.spwa-visit-history article {
+  display: grid;
+  gap: 2px;
+  padding: 8px;
+  border: 1px solid #e0e8ec;
+  border-radius: 9px;
+  background: #fff;
+}
+.spwa-visit-history strong,
+.spwa-visit-history span,
+.spwa-visit-history small { display: block; min-width: 0; }
+.spwa-visit-history strong { color: #142e3b; font-size: 14px; }
+.spwa-visit-history span,
+.spwa-visit-history small { color: #4d616b; font-size: 13px; overflow-wrap: anywhere; }
 .spwa-outlet-list { display: grid; gap: 6px; }
 .spwa-outlet-list article {
   display: flex;
@@ -1068,34 +1088,39 @@ a.spwa-po-card {
 .spwa-outlet-list strong,
 .spwa-outlet-list span,
 .spwa-outlet-list small { display: block; }
-.spwa-outlet-list strong { color: #142e3b; font-size: 11px; }
-.spwa-outlet-list span { color: #647781; font-size: 9px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.spwa-outlet-list small { display: flex; align-items: center; gap: 3px; margin-top: 3px; color: #08785d; font-size: 9px; }
+.spwa-outlet-list strong { color: #142e3b; font-size: 16px; line-height: 1.25; }
+.spwa-outlet-list span { color: #4d616b; font-size: 13px; line-height: 1.3; overflow-wrap: anywhere; }
+.spwa-outlet-list small { display: flex; align-items: center; gap: 3px; margin-top: 3px; color: #08785d; font-size: 13px; }
+.spwa-visit-actions { display: flex; flex-shrink: 0; gap: 6px; }
 .spwa-outlet-list button,
 .spwa-primary {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 4px;
-  padding: 8px 10px;
+  min-height: 44px;
+  padding: 10px 12px;
   border: 0;
   border-radius: 8px;
   color: #fff;
   background: #08785d;
   font: inherit;
-  font-size: 10px;
+  font-size: 14px;
   font-weight: 800;
 }
 .spwa-visit-drawer { display: grid; gap: 9px; }
-.spwa-visit-drawer label { display: grid; gap: 4px; color: #556a74; font-size: 10px; font-weight: 700; }
+.spwa-visit-drawer .spwa-drawer-head button { width: 44px; height: 44px; }
+.spwa-visit-drawer label { display: grid; gap: 4px; color: #556a74; font-size: 13px; font-weight: 700; }
 .spwa-visit-drawer input,
 .spwa-visit-drawer textarea {
   width: 100%;
-  padding: 9px;
+  box-sizing: border-box;
+  min-height: 44px;
+  padding: 10px;
   border: 1px solid #c9d6dc;
   border-radius: 8px;
   font: inherit;
-  font-size: 12px;
+  font-size: 16px;
 }
 .spwa-camera {
   padding: 10px;

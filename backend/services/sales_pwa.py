@@ -47,6 +47,9 @@ from services.sales_activity.constants import (
     COL_OUTLETS,
     COL_OWNERSHIP,
 )
+
+# One card per outlet. A section cap is applied only after today/overdue/upcoming split.
+AGENDA_SECTION_LIMIT = 30
 from services.sales_invoices import FINANCIAL_FINALIZED
 
 WIB = timezone(timedelta(hours=7))
@@ -892,6 +895,7 @@ async def _owned_visit_context(db, user: dict) -> tuple:
             "automation_status": 1,
             "last_activity_at": 1,
             "next_follow_up_at": 1,
+            "updated_at": 1,
             "eligible_at": 1,
             "warning_at": 1,
         },
@@ -910,9 +914,156 @@ async def _owned_visit_context(db, user: dict) -> tuple:
                 "whatsapp": 1,
                 "maps_url": 1,
                 "customer_kind": 1,
+                "linked_customer_id": 1,
             },
         ))
     return ownerships, outlets
+
+
+def _parse_follow_instant(value: Any) -> Optional[datetime]:
+    """Absolute instant. Naive values match the historical activity writer (UTC)."""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def normalize_pwa_local_datetime(value: Any) -> Optional[str]:
+    """PWA datetime-local has no offset. Treat that wall clock as Asia/Jakarta.
+
+    Aware values stay absolute. Returns a UTC ISO string for storage.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=WIB)
+    return parsed.astimezone(timezone.utc).isoformat()
+
+
+def _wib_follow_fields(value: Any) -> tuple:
+    instant = _parse_follow_instant(value)
+    if instant is None:
+        day = str(value or "")[:10]
+        if len(day) == 10 and day[4] == "-" and day[7] == "-":
+            return day, str(value)
+        return None, None
+    local = instant.astimezone(WIB)
+    return local.date().isoformat(), local.isoformat()
+
+
+def _stable_customer_link(value: Any) -> Optional[str]:
+    """Exact customer id only. Name keys and legacy Name|Outlet composites are not links."""
+    text = str(value or "").strip()
+    if not text or text.startswith("name:") or "|" in text:
+        return None
+    return text
+
+
+def _latest_visit_by_outlet(activities: List[dict]) -> Dict[str, dict]:
+    latest: Dict[str, dict] = {}
+    for activity in activities:
+        outlet_id = str(activity.get("outlet_id") or "")
+        if not outlet_id or outlet_id in latest:
+            continue
+        latest[outlet_id] = activity
+    return latest
+
+
+def _classify_reminders(reminders: List[dict], today: str) -> dict:
+    return {
+        "agenda_today": [row for row in reminders if row.get("date") == today],
+        "follow_up_overdue": [row for row in reminders if str(row.get("date") or "") < today],
+        "follow_up_upcoming": [row for row in reminders if str(row.get("date") or "") > today],
+    }
+
+
+def _cap_agenda(rows: List[dict]) -> List[dict]:
+    return rows[:AGENDA_SECTION_LIMIT]
+
+
+def _same_follow_instant(left: Any, right: Any) -> bool:
+    a = _parse_follow_instant(left)
+    b = _parse_follow_instant(right)
+    if a is not None and b is not None:
+        return a == b
+    return False
+
+
+def _written_after(left: Any, right: Any) -> bool:
+    """True when left is a strictly later absolute instant than right.
+
+    Parsed instants win over raw string order so `Z`, `+00:00`, and fractional
+    seconds cannot invert the newest intent.
+    """
+    a = _parse_follow_instant(left)
+    b = _parse_follow_instant(right)
+    if a is not None and b is not None:
+        return a > b
+    return str(left or "") > str(right or "")
+
+
+def _reminder_for_outlet(outlet_id: str, ownership: dict, outlet: dict, latest_activity: dict, today: str) -> Optional[dict]:
+    """One reminder per owned outlet.
+
+    Precedence, one active intent, newest write wins:
+    - latest visit follow-up when ownership has none, or activity_at is strictly after ownership.updated_at
+    - otherwise ownership.next_follow_up_at
+    Equal write times keep the ownership slot. A later schedule or a visit follow-up
+    copied onto that slot replaces the previous instant. There is still one card.
+    Kind is "schedule" only when the shown instant is not the latest visit follow-up.
+    """
+    latest_activity = latest_activity or {}
+    own_raw = ownership.get("next_follow_up_at")
+    act_raw = latest_activity.get("next_follow_up_at")
+    own_day, own_at = _wib_follow_fields(own_raw)
+    act_day, act_at = _wib_follow_fields(act_raw)
+    act_when = str(latest_activity.get("activity_at") or "")
+    own_when = str(ownership.get("updated_at") or "")
+    use_activity = False
+    if act_day and not own_day:
+        use_activity = True
+    elif act_day and own_day:
+        if act_when and own_when:
+            use_activity = _written_after(act_when, own_when)
+        elif act_when and not own_when:
+            use_activity = True
+    if use_activity:
+        day, at, source = act_day, act_at, "activity"
+    elif own_day:
+        day, at, source = own_day, own_at, "ownership"
+    else:
+        return None
+    shown_raw = act_raw if use_activity else own_raw
+    kind = "follow_up" if _same_follow_instant(shown_raw, act_raw) else "schedule"
+    action = str(latest_activity.get("next_action") or "").strip()
+    address = str((outlet or {}).get("address") or "").strip()
+    return {
+        "id": f"followup:{outlet_id}:{day}",
+        "outlet_id": outlet_id,
+        "outlet": (outlet or {}).get("name") or "Outlet",
+        "address": address or None,
+        "date": day,
+        "at": at,
+        "kind": kind,
+        "next_action": action or None,
+        "overdue": day < today,
+        "source": source,
+    }
 
 
 async def list_sales_pwa_visits(db, user: dict, *, month: str = "", q: str = "") -> dict:
@@ -951,19 +1102,17 @@ async def list_sales_pwa_visits(db, user: dict, *, month: str = "", q: str = "")
     })
     reminders = []
     today = wib_today().isoformat()
+    latest_by_outlet = _latest_visit_by_outlet(activities)
     for outlet_id, ownership in own_by_outlet.items():
-        outlet = outlet_by_id.get(outlet_id) or {}
-        follow = str(ownership.get("next_follow_up_at") or "")[:10] or None
-        if follow and follow.startswith(f"{month}-"):
-            reminders.append({
-                "id": f"followup:{outlet_id}:{follow}",
-                "outlet_id": outlet_id,
-                "outlet": outlet.get("name") or "Outlet",
-                "date": follow,
-                "at": ownership.get("next_follow_up_at"),
-                "kind": "follow_up",
-                "overdue": follow < today,
-            })
+        reminder = _reminder_for_outlet(
+            outlet_id,
+            ownership,
+            outlet_by_id.get(outlet_id) or {},
+            latest_by_outlet.get(outlet_id) or {},
+            today,
+        )
+        if reminder:
+            reminders.append(reminder)
     rows = []
     for activity in activities:
         outlet = outlet_by_id.get(str(activity.get("outlet_id"))) or {}
@@ -1000,16 +1149,25 @@ async def list_sales_pwa_visits(db, user: dict, *, month: str = "", q: str = "")
         _norm(row.get("name")),
     ))
     reminders.sort(key=lambda row: (row.get("date") or "", _norm(row.get("outlet"))))
+    buckets = _classify_reminders(reminders, today)
+    agenda_today = buckets["agenda_today"]
+    follow_up_overdue = buckets["follow_up_overdue"]
+    follow_up_upcoming = buckets["follow_up_upcoming"]
     return {
         "month": month,
         "outlets": outlet_rows,
         "visits": rows,
         "reminders": reminders,
+        "agenda_today": _cap_agenda(agenda_today),
+        "follow_up_overdue": _cap_agenda(follow_up_overdue),
+        "follow_up_upcoming": _cap_agenda(follow_up_upcoming),
         "counts": {
             "owned_outlets": len(ownerships),
             "visit_month": visit_month_count,
             "reminder_month": len(reminders),
-            "overdue": sum(1 for row in reminders if row.get("overdue")),
+            "agenda_today": len(agenda_today),
+            "overdue": len(follow_up_overdue),
+            "upcoming": len(follow_up_upcoming),
         },
         "visit_config": {
             "photo_required": bool(visit_cfg.get("visit_photo_required") or visit_cfg.get("evidence_required")),
@@ -1044,7 +1202,15 @@ async def sales_pwa_dashboard(db, user: dict, *, month: str = "") -> dict:
             "visit_reminders": visits["counts"]["reminder_month"],
             "visit_overdue": visits["counts"]["overdue"],
         },
-        "upcoming_visits": visits["reminders"][:8],
+        "agenda_today": visits["agenda_today"],
+        "agenda_today_total": visits["counts"]["agenda_today"],
+        "follow_up_overdue": visits["follow_up_overdue"],
+        "follow_up_overdue_total": visits["counts"]["overdue"],
+        "follow_up_upcoming": visits["follow_up_upcoming"],
+        "follow_up_upcoming_total": visits["counts"]["upcoming"],
+        "upcoming_visits": (
+            visits["agenda_today"] + visits["follow_up_overdue"] + visits["follow_up_upcoming"]
+        ),
         "sources": {
             "revenue": "sales_invoices.finalized / invoice_date",
             "receivables": "sales_invoices.finalized - sales_receipts",
@@ -1061,12 +1227,16 @@ async def create_sales_pwa_visit(db, user: dict, payload: dict) -> dict:
     from services.sales_activity import activities as activity_svc
     from services.sales_activity.constants import PERM_ACTIVITY_CREATE
 
+    raw_follow = payload.get("next_follow_up_at")
+    normalized_follow = normalize_pwa_local_datetime(raw_follow)
+    if str(raw_follow or "").strip() and normalized_follow is None:
+        raise HTTPException(400, "Waktu follow-up tidak valid")
     clean = {
         "outlet_id": str(payload.get("outlet_id") or "").strip(),
         "activity_type": "visit",
         "result": str(payload.get("result") or "").strip(),
         "next_action": str(payload.get("next_action") or "").strip(),
-        "next_follow_up_at": payload.get("next_follow_up_at"),
+        "next_follow_up_at": normalized_follow,
         "notes": str(payload.get("notes") or "").strip(),
         "visit_photo_ids": [
             str(value).strip()
@@ -1076,12 +1246,63 @@ async def create_sales_pwa_visit(db, user: dict, payload: dict) -> dict:
     }
     # create_native_activity validates current_owner_id, in_pool, activity
     # settings, required photo/location, and always writes session users.id.
-    return await activity_svc.create_native_activity(
+    created = await activity_svc.create_native_activity(
         db,
         clean,
         user,
         {PERM_ACTIVITY_CREATE},
     )
+    if normalized_follow:
+        # The ownership slot is the single active intent. A new visit follow-up
+        # replaces a previous schedule. An empty follow-up does not clear it.
+        # Automation timers stay untouched. A missed write does not fail the visit.
+        await _set_active_follow_slot(db, user, clean["outlet_id"], normalized_follow, required=False)
+    return created
+
+
+async def _set_active_follow_slot(db, user: dict, outlet_id: str, normalized: str, *, required: bool) -> bool:
+    """Write the one ownership.next_follow_up_at slot for this session's outlet."""
+    uid = session_user_id(user)
+    snap = await db[COL_OWNERSHIP].find_one({"outlet_id": outlet_id}, {"_id": 0})
+    if not snap or str(snap.get("current_owner_id") or "") != uid or snap.get("in_pool"):
+        if required:
+            raise HTTPException(404, "Outlet tidak ditemukan")
+        return False
+    if _same_follow_instant(snap.get("next_follow_up_at"), normalized):
+        return True
+    now = datetime.now(timezone.utc).isoformat()
+    query = {"outlet_id": outlet_id, "current_owner_id": uid, "in_pool": {"$ne": True}}
+    update: Dict[str, Any] = {"$set": {"next_follow_up_at": normalized, "updated_at": now}}
+    if snap.get("version") is not None:
+        query["version"] = int(snap["version"])
+        update["$inc"] = {"version": 1}
+    result = await db[COL_OWNERSHIP].update_one(query, update)
+    if result.matched_count != 1:
+        if required:
+            raise HTTPException(409, "Jadwal tidak tersimpan. Muat ulang lalu coba lagi.")
+        return False
+    return True
+
+
+async def schedule_sales_pwa_visit(db, user: dict, payload: dict) -> dict:
+    """Plan a visit on ownership.next_follow_up_at. Does not insert a completed activity."""
+    require_sales_pwa(user)
+    outlet_id = str(payload.get("outlet_id") or "").strip()
+    raw_follow = payload.get("next_follow_up_at")
+    normalized = normalize_pwa_local_datetime(raw_follow)
+    if not outlet_id:
+        raise HTTPException(400, "outlet_id wajib")
+    if not normalized:
+        raise HTTPException(400, "Jadwal visit wajib")
+    await _set_active_follow_slot(db, user, outlet_id, normalized, required=True)
+    day, at = _wib_follow_fields(normalized)
+    return {
+        "scheduled": True,
+        "outlet_id": outlet_id,
+        "next_follow_up_at": normalized,
+        "date": day,
+        "at": at,
+    }
 
 
 def _line_public(li: dict, idx: int) -> dict:
@@ -1247,7 +1468,65 @@ async def list_sales_pwa_customers(db, user: dict, *, q: str = "") -> dict:
                 kept.append(r)
         rows = kept
     rows.sort(key=lambda r: _norm(r.get("customer")))
+    await _attach_linked_visit_history(db, user, rows)
     return {"customers": rows, "total": len(rows), "loaded_at": datetime.now(timezone.utc).isoformat()}
+
+
+async def _attach_linked_visit_history(db, user: dict, rows: List[dict]) -> None:
+    """Attach visit history only through sales_outlets.linked_customer_id == customer id."""
+    uid = session_user_id(user)
+    ownerships, outlets = await _owned_visit_context(db, user)
+    del ownerships
+    linked_outlets: Dict[str, List[str]] = {}
+    outlet_name: Dict[str, str] = {}
+    outlet_ids: List[str] = []
+    for outlet in outlets:
+        link = _stable_customer_link(outlet.get("linked_customer_id"))
+        outlet_id = str(outlet.get("id") or "")
+        if not link or not outlet_id:
+            continue
+        linked_outlets.setdefault(link, []).append(outlet_id)
+        outlet_name[outlet_id] = outlet.get("name") or "Outlet"
+        outlet_ids.append(outlet_id)
+    activities: List[dict] = []
+    if outlet_ids:
+        activities = await db[COL_ACTIVITIES].find(
+            {"sales_user_id": uid, "activity_type": "visit", "outlet_id": {"$in": outlet_ids}},
+            {
+                "_id": 0,
+                "id": 1,
+                "outlet_id": 1,
+                "activity_at": 1,
+                "result": 1,
+                "next_action": 1,
+                "next_follow_up_at": 1,
+                "notes": 1,
+            },
+        ).sort("activity_at", -1).to_list(1000)
+    for row in rows:
+        link = _stable_customer_link(row.get("customer_key"))
+        ids = linked_outlets.get(link or "") or []
+        if not link or not ids:
+            row["visit_link"] = "unlinked"
+            row["visit_history"] = []
+            continue
+        id_set = set(ids)
+        history = []
+        for activity in activities:
+            if str(activity.get("outlet_id") or "") not in id_set:
+                continue
+            history.append({
+                "id": activity.get("id"),
+                "outlet_id": activity.get("outlet_id"),
+                "outlet": outlet_name.get(str(activity.get("outlet_id")), "Outlet"),
+                "activity_at": activity.get("activity_at"),
+                "result": activity.get("result") or "",
+                "next_action": activity.get("next_action") or "",
+                "next_follow_up_at": activity.get("next_follow_up_at"),
+                "notes": activity.get("notes") or "",
+            })
+        row["visit_link"] = "linked"
+        row["visit_history"] = history
 
 
 def _prediction_bucket(row: dict, today: date) -> str:

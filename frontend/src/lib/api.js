@@ -927,6 +927,7 @@ export const api = {
   salesPwaPredictionDetail: (customerKey) => client.get(`/sales-pwa/predictions/${encodeURIComponent(customerKey)}`).then((r) => r.data),
   salesPwaVisits: (params = {}) => client.get("/sales-pwa/visits", { params }).then((r) => r.data),
   createSalesPwaVisit: (payload) => client.post("/sales-pwa/visits", payload).then((r) => r.data),
+  scheduleSalesPwaVisit: (payload) => client.post("/sales-pwa/visits/schedule", payload).then((r) => r.data),
   uploadSalesPwaVisitPhoto: (form) => client.post("/sales-pwa/visits/photos", form, { timeout: 60000 }).then((r) => r.data),
   salesPwaVisitPhotoUrl: (photoId) => `${API}/sales-pwa/visits/photos/${encodeURIComponent(photoId)}/file`,
 
