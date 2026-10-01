@@ -2573,3 +2573,130 @@ async def test_pending_total_ignores_kept_lines_and_revision_resets_a_changed_pa
         assert "solo-a" not in _pending_ids(after.json())
         assert "kept-row" not in _pending_ids(after.json())
         assert "excluded-row" not in _pending_ids(after.json())
+
+
+@pytest.mark.anyio
+async def test_duplicate_group_key_matches_existing_level2_identity():
+    admin = _user()
+    async with await client_for(admin) as c:
+        bank, _income = await _setup(c, currency="IDR")
+        account = bank["id"]
+        same = {"direction": "out", "description": "pasangan batas", "reference": "ws 1"}
+        members = [
+            _review_line(account, "id-a", direction="out", amount=1000, description="PASANGAN   BATAS", reference="WS 1"),
+            _review_line(account, "id-b", direction="out", amount=1000.0, description="pasangan\tbatas", reference="ws   1"),
+            _review_line(account, "id-c", direction="out", amount="1000", description="Pasangan\u00a0batas", reference="WS\u00a01"),
+            _review_line(account, "id-d", direction="out", amount="1000.00", description="pasangan\u0085batas", reference="  ws   1  "),
+            _review_line(account, "id-e", direction="out", amount=1000, description="pasangan" + (" " * 80) + "\x1cbatas", reference="WS\x1c1"),
+            _review_line(account, "id-kept", direction="out", duplicate_status="kept", description="pasangan batas", reference="ws 1"),
+        ]
+        solos = [
+            _review_line(account, "id-ref", **{**same, "reference": "WS 2"}),
+            _review_line(account, "id-dir", **{**same, "direction": "in"}),
+            _review_line(account, "id-pend", **same, original_date="PEND"),
+            _review_line(account, "id-amt", **{**same, "amount": 1001}),
+        ]
+        await server.db[LINES].insert_many([*members, *solos])
+        indexes_before = set((await server.db[LINES].index_information()).keys())
+        lines_before = await server.db[LINES].count_documents({})
+        journals_before = await server.db[JOURNAL_ENTRIES].count_documents({})
+        listed = await c.get("/api/cash-bank/statements/duplicate-groups", params={
+            "cash_bank_id": account, **PERIOD, "page": 1, "page_size": 1,
+        })
+        assert listed.status_code == 200, listed.text
+        body = listed.json()
+        assert body["group_total"] == 1
+        assert body["pending_total"] == 9
+        assert len(body["groups"]) == 1
+        group = body["groups"][0]
+        found = [(line["statement_line_id"], line["duplicate_status"]) for line in group["lines"]]
+        assert group["candidate_count"] == len(group["lines"]) == 6, found
+        assert {line["statement_line_id"] for line in group["lines"]} == {row["id"] for row in members}
+        assert group["normalized_description"] == "pasangan batas"
+        assert group["normalized_reference"] == "ws 1"
+        assert group["direction"] == "out"
+        assert group["business_date"] == "2026-09-15"
+        hidden = await c.get("/api/cash-bank/statements/pending-review", params={
+            "cash_bank_id": account, **PERIOD,
+        })
+        assert hidden.status_code == 200, hidden.text
+        hidden_body = hidden.json()
+        hidden_ids = set(_pending_ids(hidden_body))
+        grouped_pending = {
+            line["statement_line_id"]
+            for line in group["lines"]
+            if line["duplicate_status"] == "pending_review"
+        }
+        assert hidden_ids == {"id-ref", "id-dir", "id-pend", "id-amt"}
+        assert hidden_ids.isdisjoint(grouped_pending)
+        assert len(grouped_pending) + hidden_body["total"] == hidden_body["pending_total"] == 9
+        assert "id-kept" not in hidden_ids
+        assert set((await server.db[LINES].index_information()).keys()) == indexes_before
+        assert await server.db[LINES].count_documents({}) == lines_before
+        assert await server.db[JOURNAL_ENTRIES].count_documents({}) == journals_before
+
+
+@pytest.mark.anyio
+async def test_review_revision_sees_claim_match_and_import_refresh():
+    admin = _user()
+    async with await client_for(admin) as c:
+        bank, _income = await _setup(c, currency="IDR")
+        account = bank["id"]
+        await server.db[LINES].insert_many([
+            _review_line(account, "rev-a", date="2026-09-01", description="REVISI A"),
+            _review_line(account, "rev-b", date="2026-09-02", description="REVISI B"),
+            _review_line(account, "rev-kept", duplicate_status="kept", description="REVISI TERSIMPAN"),
+        ])
+
+        async def page(number, revision=""):
+            params = {"cash_bank_id": account, **PERIOD, "page": number, "page_size": 1}
+            if revision:
+                params["review_revision"] = revision
+            response = await c.get("/api/cash-bank/statements/pending-review", params=params)
+            assert response.status_code == 200, response.text
+            return response.json()
+
+        first = await page(1)
+        assert first["pending_total"] == 2
+        assert first["stale"] is False
+        revision = first["review_revision"]
+        await server.db[LINES].update_one({"id": "rev-b"}, {"$set": {"active_claim": "claim-baru"}})
+        claimed = await page(2, revision)
+        assert claimed["stale"] is True
+        assert claimed["message"] == "Daftar berubah. Muat ulang dari awal."
+        assert _pending_ids(claimed) == []
+        assert claimed["pending_total"] == 2
+        await server.db[LINES].update_one({"id": "rev-b"}, {"$set": {"active_claim": None}})
+        released = await page(1)
+        assert released["stale"] is False
+        await server.db[RECON_MATCHES].insert_one({
+            "id": "match-rev",
+            "match_kind": "pair",
+            "status": "active",
+            "cash_bank_id": account,
+            "statement_line_id": "rev-kept",
+            "created_at": "2026-10-01T12:00:00+00:00",
+        })
+        matched = await page(2, released["review_revision"])
+        assert matched["stale"] is True
+        assert matched["pending_total"] == 2
+        after_match = await page(1)
+        await server.db[RECON_MATCHES].update_one(
+            {"id": "match-rev"},
+            {"$set": {"status": "cancelled", "cancelled_at": "2026-10-01T12:05:00+00:00"}},
+        )
+        cancelled = await page(2, after_match["review_revision"])
+        assert cancelled["stale"] is True
+        after_cancel = await page(1)
+        await server.db[LINES].update_one(
+            {"id": "rev-kept"},
+            {
+                "$set": {"description": "REVISI SESUDAH IMPOR", "reference": "baru"},
+                "$push": {"import_updates": {"id": "audit-rev", "at": "2026-10-01T12:06:00+00:00"}},
+            },
+        )
+        refreshed = await page(2, after_cancel["review_revision"])
+        assert refreshed["stale"] is True
+        assert refreshed["pending_total"] == 2
+        assert await server.db[LINES].count_documents({"id": "rev-kept", "duplicate_status": "kept"}) == 1
+        assert await server.db[JOURNAL_ENTRIES].count_documents({}) == 0

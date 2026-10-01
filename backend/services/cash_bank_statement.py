@@ -49,8 +49,10 @@ DUPLICATE_GROUP_PAGE_DEFAULT = 20
 DUPLICATE_GROUP_PAGE_MAX = 50
 STALE_REVIEW_MESSAGE = "Daftar berubah. Muat ulang dari awal."
 _GROUP_KEY_SEPARATOR = "\x1f"
+# The same separators str.split() uses. A regular space is the splitter below.
 _WHITESPACE_CHARS = (
-    "\t", "\n", "\r", "\f", "\v", "\u00a0", "\u1680",
+    "\t", "\n", "\r", "\f", "\v", "\x1c", "\x1d", "\x1e", "\x1f", "\u0085",
+    "\u00a0", "\u1680",
     "\u2000", "\u2001", "\u2002", "\u2003", "\u2004", "\u2005", "\u2006",
     "\u2007", "\u2008", "\u2009", "\u200a", "\u2028", "\u2029", "\u202f",
     "\u205f", "\u3000",
@@ -2192,23 +2194,45 @@ def _collapsed_text_expr(field: str) -> dict:
     }
     for character in _WHITESPACE_CHARS:
         expr = {"$replaceAll": {"input": expr, "find": character, "replacement": " "}}
-    expr = {
+    return {
         "$reduce": {
-            "input": {"$range": [0, 12]},
-            "initialValue": expr,
-            "in": {"$replaceAll": {"input": "$$value", "find": "  ", "replacement": " "}},
+            "input": {
+                "$filter": {
+                    "input": {"$split": [expr, " "]},
+                    "as": "part",
+                    "cond": {"$gt": [{"$strLenCP": "$$part"}, 0]},
+                }
+            },
+            "initialValue": "",
+            "in": {
+                "$cond": [
+                    {"$eq": ["$$value", ""]},
+                    "$$this",
+                    {"$concat": ["$$value", " ", "$$this"]},
+                ]
+            },
         }
     }
-    return {"$trim": {"input": expr}}
 
 
 def _amount_key_expr() -> dict:
+    """Match _amount_key, including a numeric string and a missing amount."""
+    parsed = {"$convert": {"input": "$amount", "to": "decimal", "onError": None, "onNull": None}}
     return {
-        "$cond": [
-            {"$in": [{"$type": "$amount"}, ["int", "long", "double", "decimal"]]},
-            {"$toString": {"$round": [{"$toDecimal": "$amount"}, 2]}},
-            {"$convert": {"input": "$amount", "to": "string", "onError": "", "onNull": ""}},
-        ]
+        "$let": {
+            "vars": {"parsed": parsed},
+            "in": {
+                "$cond": [
+                    {"$in": [{"$type": "$amount"}, ["missing", "null"]]},
+                    "None",
+                    {"$cond": [
+                        {"$ne": ["$$parsed", None]},
+                        {"$toString": {"$round": ["$$parsed", 2]}},
+                        {"$convert": {"input": "$amount", "to": "string", "onError": "", "onNull": ""}},
+                    ]},
+                ]
+            },
+        }
     }
 
 
@@ -2294,7 +2318,13 @@ async def _account_pending_total(db, account: str) -> int:
 
 
 async def _duplicate_review_revision(db, account: str, pending_total: int) -> str:
-    """A read of counts and the latest stamp. Opening the next page does not change it."""
+    """A read-only stamp. Opening the next page does not change it.
+
+    Keep and exclude move updated_at and pending_total. A new pending row moves
+    the line count. A claim, an import refresh, and a match do not have to change
+    pending_total; those are counted here so the next page resets instead of skipping.
+    """
+    from services.cash_bank_reconciliation import RECON_MATCHES
     rows = await _collect(db[LINES].aggregate([
         {"$match": {
             "cash_bank_id": account,
@@ -2304,15 +2334,50 @@ async def _duplicate_review_revision(db, account: str, pending_total: int) -> st
             "_id": None,
             "n": {"$sum": 1},
             "stamp": {"$max": {"$ifNull": ["$updated_at", {"$ifNull": ["$created_at", ""]}]}},
+            "claims": {"$sum": {"$cond": [
+                {"$and": [
+                    {"$not": [{"$in": [{"$type": "$active_claim"}, ["missing", "null"]]}]},
+                    {"$ne": ["$active_claim", ""]},
+                ]},
+                1,
+                0,
+            ]}},
+            "imports": {"$sum": {"$size": {"$ifNull": ["$import_updates", []]}}},
         }},
     ], allowDiskUse=True))
-    count = int(rows[0].get("n") or 0) if rows else 0
-    stamp = rows[0].get("stamp") if rows else ""
-    return f"{int(pending_total)}:{count}:{stamp or ''}"
+    matches = await _collect(db[RECON_MATCHES].aggregate([
+        {"$match": {"cash_bank_id": account}},
+        {"$group": {
+            "_id": None,
+            "n": {"$sum": 1},
+            "active": {"$sum": {"$cond": [{"$eq": ["$status", "active"]}, 1, 0]}},
+            "stamp": {"$max": {"$ifNull": [
+                "$updated_at",
+                {"$ifNull": ["$cancelled_at", {"$ifNull": ["$created_at", ""]}]},
+            ]}},
+        }},
+    ], allowDiskUse=True))
+    line = rows[0] if rows else {}
+    match = matches[0] if matches else {}
+    return ":".join((
+        str(int(pending_total)),
+        str(int(line.get("n") or 0)),
+        str(line.get("stamp") or ""),
+        str(int(line.get("claims") or 0)),
+        str(int(line.get("imports") or 0)),
+        str(int(match.get("n") or 0)),
+        str(int(match.get("active") or 0)),
+        str(match.get("stamp") or ""),
+    ))
 
 
 async def _duplicate_group_index(db, account: str, begin: str, finish: str) -> List[dict]:
-    """One summary per duplicate group. Line documents stay in the database."""
+    """One aggregation summary per duplicate group. This is not a MongoDB index.
+
+    Line documents stay in the database. The query can use the existing
+    cash_bank_id + date index when the server already created it at startup.
+    This read does not create an index.
+    """
     return await _collect(db[LINES].aggregate([
         {"$match": _duplicate_screen_filter(account, begin, finish)},
         {"$addFields": {
@@ -2402,7 +2467,9 @@ async def list_duplicate_groups(
 
     Each page contains whole groups. A group is never split across pages, and the
     grouping key is computed for every sealed line in the period rather than for
-    the first 10,000 documents.
+    the first 10,000 documents. The summary and the member read are separate
+    queries. If membership changes between them, the response is stale and contains
+    no partial group.
     """
     account = str(cash_bank_id or "").strip()
     if not account:
