@@ -33,7 +33,7 @@ export default function SalesPwaCustomersPage() {
           <article key={c.customer_key} className="spwa-customer-block" data-testid={`sales-customer-block-${c.customer_key}`}>
             <Link
               className="spwa-list-btn"
-              to={c.customer_key ? `/sales/prediksi/${encodeURIComponent(c.customer_key)}` : "/sales/prediksi"}
+              to={(c.prediction_key || c.customer_key) ? `/sales/prediksi/${encodeURIComponent(c.prediction_key || c.customer_key)}` : "/sales/prediksi"}
               data-testid={`sales-customer-${c.customer_key}`}
             >
               <strong>{c.customer}</strong>
