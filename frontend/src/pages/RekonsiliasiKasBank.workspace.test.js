@@ -11,7 +11,7 @@ jest.mock('react-router-dom', () => {
 
 jest.mock('../lib/api', () => ({ __esModule: true, default: {
   cashBankAccounts: jest.fn(), cashBankPairWorkspace: jest.fn(), cashBankStatementImports: jest.fn(),
-  cashBankDuplicateGroups: jest.fn(), resolveCashBankStatementDuplicate: jest.fn(),
+  cashBankDuplicateGroups: jest.fn(), cashBankPendingReview: jest.fn(), resolveCashBankStatementDuplicate: jest.fn(),
   cashBankPairSuggestions: jest.fn(), createCashBankPair: jest.fn(), cancelCashBankPair: jest.fn(),
   previewCashBankStatement: jest.fn(), previewCashBankBcaStatement: jest.fn(), commitCashBankBcaStatement: jest.fn(), validateCashBankStatement: jest.fn(), commitCashBankStatement: jest.fn(),
 } }));
@@ -57,6 +57,7 @@ beforeEach(() => {
   api.cashBankPairWorkspace.mockImplementation(async () => workspace);
   api.cashBankStatementImports.mockResolvedValue({items:[]});
   api.cashBankDuplicateGroups.mockResolvedValue({groups:[]});
+  api.cashBankPendingReview.mockResolvedValue({solo_lines:[], outside_period:[], unreachable:[], other_accounts:[], truncated:false});
   api.resolveCashBankStatementDuplicate.mockResolvedValue({duplicate_status:'kept'});
   api.cashBankPairSuggestions.mockResolvedValue({ambiguous:true,suggestions:[{journal_line_id:'book-1',journal_number:'JE-18',reasons:['Nominal sama']}]});
   api.createCashBankPair.mockResolvedValue(pair); api.cancelCashBankPair.mockResolvedValue({status:'cancelled'});
@@ -788,6 +789,59 @@ test('safety rules still use the whole group after the first decision', async ()
   expect(container.querySelector('[data-testid=duplicate-exclude-line-b]').disabled).toBe(true);
   expect(container.querySelector('[data-testid=duplicate-keep-line-b]').disabled).toBe(false);
   expect(container.textContent).toContain('Ada pencocokan aktif.');
+});
+test('zero statement and book balances stay zero while period close stays unavailable', async () => {
+  workspace.book_opening_balance = 0;
+  workspace.book_ending_balance = 0;
+  workspace.difference = 0;
+  workspace.statement_closing = {amount:0, as_of:'2026-09-30', label:'Dari kolom saldo impor', status:'dari_kolom_saldo_impor'};
+  workspace.period_close_note = 'Penutupan periode rekonsiliasi belum disediakan.';
+  workspace.pair_saved_note = 'Pasangan tersimpan bukan rekonsiliasi saldo selesai.';
+  workspace.unmatched_bank_count = 0;
+  workspace.unmatched_book_count = 0;
+  workspace.bank_lines = [];
+  workspace.book_lines = [];
+  workspace.matched_pairs = [pair];
+  await renderPage();
+  expect(container.querySelector('.recon-metric-book strong').textContent).toBe('Rp 0');
+  expect(container.querySelector('.recon-metric-bank strong').textContent).toBe('Rp 0');
+  expect(container.querySelector('.recon-metric-bank').textContent).toContain('Dari kolom saldo impor');
+  expect(container.querySelector('.recon-metric-bank').textContent).not.toContain('Belum tersedia');
+  expect(container.querySelector('.recon-metric-diff strong').textContent).toBe('Rp 0');
+  const note = container.querySelector('[data-testid=kas-bank-period-close]').textContent;
+  expect(note).toContain('Penutupan periode rekonsiliasi belum disediakan.');
+  expect(note).toContain('Pasangan tersimpan bukan rekonsiliasi saldo selesai.');
+  expect(container.textContent).not.toContain('periode selesai direkonsiliasi');
+});
+test('a solo pending line stays reachable without an automatic decision', async () => {
+  api.cashBankPendingReview.mockResolvedValue({
+    solo_lines:[{statement_line_id:'solo-1', import_id:'imp-s', filename:'mutasi-tunggal.csv', imported_at:'2026-09-02T00:00:00Z', date:'2026-09-02', amount:1000, direction:'in', description:'Transfer tunggal', duplicate_status:'pending_review', active_claim:null, reconciliation_status:'unmatched', screen_reason:'Baris tunggal. Kelompok duplikat hanya menampilkan dua kandidat atau lebih.'}],
+    outside_period:[{statement_line_id:'out-1', import_id:'imp-s', filename:'mutasi-lama.csv', imported_at:'2026-08-02T00:00:00Z', date:'2026-08-15', amount:2000, direction:'out', description:'Mutasi lama', duplicate_status:'pending_review', active_claim:null, reconciliation_status:'unmatched', screen_reason:'Di luar periode yang sedang dibuka.'}],
+    unreachable:[{statement_line_id:'seal-1', import_id:'imp-s', filename:'mutasi-tersegel.csv', imported_at:'2026-09-04T00:00:00Z', date:'2026-09-04', amount:3000, direction:'in', description:'Belum tersegel', duplicate_status:'pending_review', active_claim:'claim-1', reconciliation_status:'unmatched', screen_reason:'Baris belum tersegel, sehingga kelompok periode tidak menampilkannya.'}],
+    other_accounts:[{cash_bank_id:'other-1', name:'Rekening Lain', pending_count:2}],
+    truncated:false,
+  });
+  await renderPage();
+  expect(container.querySelector('#recon-tab-duplicates').textContent).toBe('Review Duplikat (3)');
+  expect(container.querySelector('[data-testid=kas-bank-pending-other-accounts]').textContent).toContain('Rekening Lain (2)');
+  await click(container.querySelector('#recon-tab-duplicates'));
+  const solo = container.querySelector('[data-testid=kas-bank-pending-solo]');
+  expect(solo.textContent).toContain('Transfer tunggal');
+  expect(solo.textContent).toContain('mutasi-tunggal.csv');
+  expect(solo.textContent).toContain('Baris tunggal');
+  expect(container.querySelector('[data-testid=kas-bank-pending-outside]').textContent).toContain('Mutasi lama');
+  expect(container.querySelector('[data-testid=kas-bank-pending-unreachable]').textContent).toContain('Ada klaim pencocokan aktif.');
+  expect(container.querySelector('[data-testid=duplicate-exclude-seal-1]').disabled).toBe(true);
+  expect(container.querySelector('[data-testid=duplicate-keep-seal-1]').disabled).toBe(true);
+  const reason = container.querySelector('[data-testid=duplicate-reason-solo-1]');
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(reason, 'baris asli');
+    reason.dispatchEvent(new Event('change', { bubbles:true }));
+  });
+  expect(container.querySelector('[data-testid=duplicate-exclude-solo-1]').disabled).toBe(false);
+  expect(api.resolveCashBankStatementDuplicate).not.toHaveBeenCalled();
+  await click(container.querySelector('[data-testid=duplicate-keep-solo-1]'));
+  expect(api.resolveCashBankStatementDuplicate).toHaveBeenCalledWith('solo-1', expect.objectContaining({action:'keep', reason:'baris asli'}));
 });
 test('read-only duplicate review hides keep and exclude', async () => {
   mockPermissions = ['cash_bank.view'];
