@@ -67,16 +67,22 @@ describe("Customer tracking public page", () => {
     expect(fn).not.toMatch(/credentials:\s*['"]include['"]/);
   });
 
-  test("internal detail keeps document actions in Aksi PO not Pengiriman header", () => {
+  test("internal detail keeps Live Tracking in Aksi PO and Buat Faktur in Dokumen", () => {
     expect(detail).toMatch(/Live Tracking/);
     expect(detail).toMatch(/copy-tracking-link/);
     expect(detail).toMatch(/orderTrackingLink/);
     expect(detail).not.toMatch(/live-tracking-workflow/);
     expect(detail).not.toMatch(/liveTrackingRows/);
-    const actions = detail.slice(detail.indexOf("po-actions-panel"), detail.indexOf("line-items-panel"));
-    expect(actions).toMatch(/copy-tracking-link/);
-    expect(actions).toMatch(/btn-proses-pengiriman-pesanan/);
-    expect(actions).toMatch(/btn-buat-faktur-penjualan/);
+    const docs = detail.slice(
+      detail.indexOf('data-testid="po-doc-panel-dokumen"'),
+      detail.indexOf('data-testid="po-doc-panel-riwayat"'),
+    );
+    expect(docs).toMatch(/copy-tracking-link/);
+    expect(docs).toMatch(/btn-proses-pengiriman-pesanan/);
+    expect(docs).toMatch(/btn-buat-faktur-penjualan/);
+    const info = detail.slice(detail.indexOf('data-testid="detail-info"'), detail.indexOf('data-testid="line-items-panel"'));
+    expect(info).not.toMatch(/btn-buat-faktur-penjualan/);
+    expect(info).not.toMatch(/btn-proses-pengiriman-pesanan/);
     expect(detail).not.toMatch(/sales-delivery-summary-panel/);
     expect(detail).not.toMatch(/Pengiriman Pesanan \(Surat Jalan Penjualan\)/);
   });

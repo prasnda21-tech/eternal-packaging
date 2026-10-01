@@ -143,8 +143,8 @@ export default function HelperPrepPanel({ order, canEdit, onUpdated, footerActio
         </QtyOpsHead>
 
       <MetricRow columns={3}>
-        <MetricCell label="Target Persiapan" value={totalRequired} testid="helper-total-required" />
-        <MetricCell label="Sudah Disiapkan" value={totalPrepared} testid="helper-total-prepared" />
+        <MetricCell label="Target" value={totalRequired} testid="helper-total-required" />
+        <MetricCell label="Disiapkan" value={totalPrepared} testid="helper-total-prepared" />
         <div className="ind-metric" data-testid="helper-total-shortage">
           <span className="ind-metric-label">Sisa</span>
           <strong>
@@ -164,8 +164,8 @@ export default function HelperPrepPanel({ order, canEdit, onUpdated, footerActio
           <tr>
             <th>Item</th>
             <th className="num">Target</th>
-            <th className="num">Prepared</th>
-            <th className="num">Remain</th>
+            <th className="num">Disiapkan</th>
+            <th className="num">Sisa</th>
             <th>Qty Persiapan</th>
           </tr>
         </thead>

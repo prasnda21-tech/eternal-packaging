@@ -135,8 +135,9 @@ describe("ProductionRoutePanel - Strict Binary Classification & Neutral Initial 
       expect(panelSrc).toMatch(/data-testid=\{`route-print-\$\{idx\}`\}/);
       expect(panelSrc).toMatch(/data-testid=\{`route-nonprint-\$\{idx\}`\}/);
       expect(panelSrc).toMatch(/disabled=\{!canEdit \|\| busy\}/);
-      expect(panelSrc).toMatch(/handleSelectRoute\(idx,\s*["']print["']\)/);
-      expect(panelSrc).toMatch(/handleSelectRoute\(idx,\s*["']non_print["']\)/);
+      expect(panelSrc).toMatch(/onSelect=\{handleSelectRoute\}/);
+      expect(panelSrc).toMatch(/onSelect\(idx, "print"\)/);
+      expect(panelSrc).toMatch(/onSelect\(idx, "non_print"\)/);
     });
   });
 });

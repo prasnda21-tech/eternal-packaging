@@ -23,10 +23,18 @@ describe("PO Detail line color display", () => {
     expect(route).not.toMatch(/order\.color/);
   });
 
-  test("Informasi PO shows order-level Keterangan from order.notes", () => {
-    expect(detail).toMatch(/data-testid="detail-keterangan"/);
-    expect(detail).toMatch(/\{order\.notes\}/);
-    expect(detail).toMatch(/Keterangan/);
+  test("order.notes is saved once and is not duplicated as Keterangan", () => {
+    const info = detail.slice(
+      detail.indexOf('data-testid="detail-info"'),
+      detail.indexOf('data-testid="line-items-panel"'),
+    );
+    expect(info).not.toMatch(/data-testid="detail-keterangan"/);
+    expect(info).not.toMatch(/\{order\.notes\}/);
+    expect(info).not.toMatch(/Keterangan/);
+    const notes = detail.slice(detail.indexOf('data-testid="notes-panel"'));
+    expect(notes).toMatch(/data-testid="notes-saved"/);
+    expect(notes).toMatch(/\{order\.notes\}/);
+    expect(detail.match(/\{order\.notes\}/g)).toEqual(["{order.notes}"]);
   });
 
   test("Pesanan Penjualan binds Warna input to exact line.color", () => {

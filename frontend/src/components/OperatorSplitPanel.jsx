@@ -321,16 +321,16 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
 
       {showSchedule && focusedIdx != null && (
         <MetricRow columns={3} testid="schedule-line-metrics">
-          <MetricCell label="Qty Cetak" value={focusLineQty} testid="schedule-qty-cetak" />
-          <MetricCell label="Sudah Dijadwalkan" value={focusAssigned} testid="schedule-qty-assigned" />
+          <MetricCell label="Target" value={focusLineQty} testid="schedule-qty-cetak" />
+          <MetricCell label="Dialokasikan" value={focusAssigned} testid="schedule-qty-assigned" />
           <MetricCell label="Sisa" value={focusRemain} testid="schedule-qty-remain" />
         </MetricRow>
       )}
       {showSchedule && focusedIdx == null && (
         <MetricRow columns={3}>
           <MetricCell label="Target" value={printQtyTotal} />
-          <MetricCell label="Allocated" value={totalAssigned} />
-          <MetricCell label="Remain" value={remaining} />
+          <MetricCell label="Dialokasikan" value={totalAssigned} />
+          <MetricCell label="Sisa" value={remaining} />
         </MetricRow>
       )}
 
@@ -340,7 +340,7 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
           Barang Cetak: {printLines.map(({ li, idx }) => (
             <span key={idx}>
               {li.name} {Number(li.quantity || 0).toLocaleString("id-ID")}
-              {perLineAssigned[idx] ? ` / assigned ${perLineAssigned[idx].toLocaleString("id-ID")}` : ""}
+              {perLineAssigned[idx] ? ` / dialokasikan ${perLineAssigned[idx].toLocaleString("id-ID")}` : ""}
               {idx < printLines.length - 1 ? " · " : ""}
             </span>
           ))}
@@ -364,9 +364,9 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
         {persistedSplits.length > 0 && (
           <div className="ind-op-head">
             <span>Operator</span>
-            <span className="num">Allocated</span>
-            <span className="num">Completed</span>
-            <span className="num">Remain</span>
+            <span className="num">Dialokasikan</span>
+            <span className="num">Selesai</span>
+            <span className="num">Sisa</span>
             <span>Qty selesai</span>
             <span></span>
           </div>

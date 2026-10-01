@@ -200,7 +200,7 @@ export default function LoadingPanel({ order, canManage = false, onUpdated }) {
 
   return (
     <section className="panel packing-panel" data-testid="loading-panel">
-      <QtyOpsHead icon={Truck} title="LOADING">
+      <QtyOpsHead icon={Truck} title="Loading">
         <span
           className={`qty-status ${statusClassFor(isComplete ? "DONE" : "READY")}`}
           data-testid="loading-status-badge"
@@ -274,7 +274,7 @@ export default function LoadingPanel({ order, canManage = false, onUpdated }) {
               <strong style={{ color: "#0284c7" }} data-testid="loading-cumulative-loaded-qty">{fmt(totalLoaded)} pcs</strong>
             </div>
             <div>
-              <span style={{ color: "#64748b", fontSize: "0.75rem", display: "block" }}>AVAILABLE / SISA</span>
+              <span style={{ color: "#64748b", fontSize: "0.75rem", display: "block" }}>TERSEDIA / SISA</span>
               <strong style={{ color: remaining === 0 ? "#16a34a" : "#ea580c" }} data-testid="loading-available-qty">
                 {fmt(remaining)} pcs
               </strong>

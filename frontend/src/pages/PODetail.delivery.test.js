@@ -125,10 +125,18 @@ describe("PO Detail delivery cards", () => {
     expect(stageState).toMatch(/Menunggu bukti pengiriman/);
   });
 
-  test("Aksi PO sits above Line Item and shipping summary is gone", () => {
-    expect(detail.indexOf("detail-info")).toBeLessThan(detail.indexOf("po-actions-panel"));
-    expect(detail.indexOf("po-actions-panel")).toBeLessThan(detail.indexOf("line-items-panel"));
-    expect(detail.split("data-testid=\"po-actions-panel\"").length - 1).toBe(1);
+  test("document actions sit in Dokumen and shipping summary is gone", () => {
+    expect(detail.indexOf("detail-info")).toBeLessThan(detail.indexOf("line-items-panel"));
+    expect(detail.indexOf("line-items-panel")).toBeLessThan(detail.indexOf("notes-panel"));
+    expect(detail.indexOf("notes-panel")).toBeLessThan(detail.indexOf("po-doc-panel-dokumen"));
+    const docs = detail.slice(
+      detail.indexOf('data-testid="po-doc-panel-dokumen"'),
+      detail.indexOf('data-testid="po-doc-panel-riwayat"'),
+    );
+    expect(docs).toMatch(/copy-tracking-link/);
+    expect(docs).toMatch(/btn-proses-pengiriman-pesanan/);
+    expect(docs).toMatch(/btn-buat-faktur-penjualan/);
+    expect((docs.match(/btn-proses-pengiriman-pesanan/g) || []).length).toBe(1);
     expect(detail).not.toMatch(/sales-delivery-summary-panel/);
     expect(detail).not.toMatch(/Pengiriman Pesanan \(Surat Jalan Penjualan\)/);
     expect(detail).not.toMatch(/kpi-delivery-total-order/);
@@ -136,9 +144,6 @@ describe("PO Detail delivery cards", () => {
     expect(detail.indexOf("workflow-slot-11")).toBeLessThan(detail.indexOf("workflow-slot-12"));
     expect(detail.indexOf("workflow-slot-12")).toBeLessThan(detail.indexOf("workflow-slot-13"));
     expect(detail.indexOf("workflow-slot-13")).toBeLessThan(detail.indexOf("workflow-slot-14"));
-    expect(detail).toMatch(/copy-tracking-link/);
-    expect(detail).toMatch(/btn-proses-pengiriman-pesanan/);
-    expect(detail).toMatch(/btn-buat-faktur-penjualan/);
   });
 
   test("hero puts customer above No PO", () => {
@@ -169,7 +174,7 @@ describe("PO Detail delivery cards", () => {
 
   test("pairs payment evidence with Approval Payment in one outer card", () => {
     expect(detail).toMatch(/payment-approval-pair/);
-    expect(detail).toMatch(/PAYMENT — 4&amp;5/);
+    expect(detail).toMatch(/<h3>Payment<\/h3>/);
     expect(detail).toMatch(/upload-payment-label/);
     expect(detail).toMatch(/Tambah Bukti/);
     expect(detail).toMatch(/approve-payment-button/);
