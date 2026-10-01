@@ -40,7 +40,12 @@ const flush = () => act(async () => { await Promise.resolve(); });
 const click = async (element) => { expect(element).toBeTruthy(); await act(async () => element.click()); };
 const byText = (text) => [...container.querySelectorAll('button')].find((el) => el.textContent === text);
 const change = async (selector, value) => { const el = container.querySelector(selector); await act(async () => { const proto = el.tagName === 'SELECT' ? HTMLSelectElement.prototype : HTMLInputElement.prototype; Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, value); el.dispatchEvent(new Event('change', { bubbles:true })); }); };
-async function renderPage() { await act(async () => root.render(<RekonsiliasiKasBank />)); await flush(); }
+async function renderPage() {
+  await act(async () => root.render(<RekonsiliasiKasBank />));
+  await flush();
+  await flush();
+  await flush();
+}
 async function upload() { const input = container.querySelector('[type=file]'); await act(async () => { Object.defineProperty(input, 'files', { configurable:true, value:[new File(['tanggal,uraian,masuk,keluar\n2026-09-26,Transfer,750000,0'], 'mutasi.csv', {type:'text/csv'})] }); input.dispatchEvent(new Event('change', { bubbles:true })); }); }
 
 beforeEach(() => {
@@ -179,19 +184,166 @@ test('a rejected match keeps the selection and does not show a confirmed pair', 
   await click(container.querySelector('[name=bank-line]'));
   await click(container.querySelector('[name=book-line]'));
   const live = container.querySelector('[data-testid=kas-bank-live-pair]');
+  const recommendations = container.querySelector('[data-testid=kas-bank-recommendations]');
   expect(live.textContent).toContain('←');
-  expect(live.querySelector('[data-testid=kas-bank-pair-match]')).toBe(byText('Cocokkan'));
+  expect(recommendations.contains(byText('Cocokkan'))).toBe(true);
   expect(container.querySelectorAll('[data-testid=kas-bank-pair-match]')).toHaveLength(1);
   expect(live.textContent).not.toContain('(Dr)');
   expect(live.textContent).not.toContain('(Cr)');
   await click(byText('Cocokkan'));
   expect(container.querySelector('.recon-badge.is-matched')).toBeNull();
   expect(container.querySelector('[data-testid=kas-bank-workspace-pairs]')).toBeNull();
+  expect(container.querySelector('#recon-panel-unmatched').textContent).not.toContain('✓ Cocok');
   expect(container.textContent).toContain('Nominal bank dan buku berbeda');
   expect(container.querySelector('[name=bank-line]').checked).toBe(true);
   expect(container.querySelector('[name=book-line]').checked).toBe(true);
+  expect(container.querySelector('[name=recommendation-pair]').checked).toBe(true);
+  expect(container.querySelector('[data-testid=kas-bank-recommendations]')).toBeTruthy();
+  expect(container.querySelector('#recon-tab-unmatched').getAttribute('aria-selected')).toBe('true');
 });
-test('saved pairs stay aligned in the workspace and keep a zero running balance', async () => {
+test('same-amount recommendations stay unselected until the user chooses one pair', async () => {
+  const second = { ...book, journal_line_id: 'book-2', journal_number: 'JE-19', description: 'Penerimaan lain' };
+  workspace.book_lines = [book, second];
+  workspace.visible_book_count = 2;
+  api.cashBankPairSuggestions.mockResolvedValue({
+    ambiguous: true,
+    applied: true,
+    suggestions: [
+      { journal_line_id: 'book-1', journal_number: 'JE-18', amount: 750000, direction: 'in', date: '2026-09-26', description: 'Penerimaan pelanggan', reasons: ['Nominal sama', 'Arah sama'] },
+      { journal_line_id: 'book-2', journal_number: 'JE-19', amount: 750000, direction: 'in', date: '2026-09-26', description: 'Penerimaan lain', reasons: ['Nominal sama', 'Arah sama'] },
+    ],
+  });
+  await renderPage();
+  const block = container.querySelector('[data-testid=kas-bank-recommendations]');
+  const rows = [...block.querySelectorAll('[data-testid=kas-bank-recommendation]')];
+  expect(rows).toHaveLength(2);
+  expect(block.querySelector('input:checked')).toBeNull();
+  expect(block.textContent).not.toContain('✓ Cocok');
+  expect(container.querySelector('.recon-badge.is-matched')).toBeNull();
+  expect(rows[0].querySelectorAll('.kb-matched-side')[0].textContent).toContain('Transfer pelanggan');
+  expect(rows[0].querySelectorAll('.kb-matched-side')[1].textContent).toContain('JE-18');
+  expect(rows[1].querySelectorAll('.kb-matched-side')[1].textContent).toContain('JE-19');
+  expect(rows[0].textContent).toContain('←');
+  expect(byText('Cocokkan').disabled).toBe(true);
+  expect(api.createCashBankPair).not.toHaveBeenCalled();
+  await click(rows[1].querySelector('input'));
+  expect(rows[1].querySelector('input').checked).toBe(true);
+  expect(rows[0].querySelector('input').checked).toBe(false);
+  expect(rows[1].querySelector('[data-testid=kas-bank-pair-match]')).toBe(byText('Cocokkan'));
+  expect(rows[0].querySelector('[data-testid=kas-bank-pair-match]')).toBeNull();
+  expect(container.querySelectorAll('[data-testid=kas-bank-pair-match]')).toHaveLength(1);
+  expect(api.createCashBankPair).not.toHaveBeenCalled();
+});
+test('a confirmed match leaves unmatched recommendations and appears only on the matched tab', async () => {
+  const bankB = { ...bank, id: 'bank-b', description: 'Transfer kedua', reference: 'TRF-19' };
+  const bookB = { ...book, journal_line_id: 'book-2', journal_number: 'JE-19', description: 'Penerimaan lain' };
+  workspace.bank_lines = [bank, bankB];
+  workspace.book_lines = [book, bookB];
+  workspace.unmatched_bank_count = 2;
+  workspace.unmatched_book_count = 2;
+  workspace.visible_bank_count = 2;
+  workspace.visible_book_count = 2;
+  const suggestionFor = (lineId) => ({
+    ambiguous: lineId === 'bank-1',
+    applied: false,
+    suggestions: lineId === 'bank-1'
+      ? [
+        { journal_line_id: 'book-1', journal_number: 'JE-18', amount: 750000, direction: 'in', reasons: ['Nominal sama'] },
+        { journal_line_id: 'book-2', journal_number: 'JE-19', amount: 750000, direction: 'in', reasons: ['Nominal sama'] },
+      ]
+      : [{ journal_line_id: 'book-1', journal_number: 'JE-18', amount: 750000, direction: 'in', reasons: ['Nominal sama'] }],
+  });
+  api.cashBankPairSuggestions.mockImplementation(async ({ statement_line_id }) => suggestionFor(statement_line_id));
+  await renderPage();
+  expect(container.querySelectorAll('[data-testid=kas-bank-recommendation]')).toHaveLength(3);
+  expect(container.querySelector('.recon-badge.is-matched')).toBeNull();
+  const chosen = [...container.querySelectorAll('[data-testid=kas-bank-recommendation]')].find((row) => row.textContent.includes('Transfer pelanggan') && row.textContent.includes('JE-18'));
+  await click(chosen.querySelector('input'));
+  const savedPair = { ...pair, statement_line_id: 'bank-1', journal_line_id: 'book-1' };
+  api.cashBankPairWorkspace.mockImplementation(async () => ({
+    ...workspace,
+    bank_lines: [bankB],
+    book_lines: [bookB],
+    matched_pairs: [savedPair],
+    unmatched_bank_count: 1,
+    unmatched_book_count: 1,
+    visible_bank_count: 1,
+    visible_book_count: 1,
+  }));
+  api.cashBankPairSuggestions.mockResolvedValue({ ambiguous: false, applied: false, suggestions: [] });
+  await click(byText('Cocokkan'));
+  await flush();
+  await flush();
+  const unmatched = container.querySelector('#recon-panel-unmatched');
+  expect(container.querySelector('#recon-tab-unmatched').getAttribute('aria-selected')).toBe('true');
+  expect(unmatched.textContent).not.toContain('Transfer pelanggan');
+  expect(unmatched.textContent).not.toContain('JE-18');
+  expect(unmatched.textContent).not.toContain('✓ Cocok');
+  expect(unmatched.querySelector('[data-testid=kas-bank-recommendation]')).toBeNull();
+  expect(container.querySelector('[name=bank-line]:checked')).toBeNull();
+  expect(api.createCashBankPair).toHaveBeenCalledTimes(1);
+  await click(byText('Sudah Cocok'));
+  const matched = container.querySelector('[data-testid=kas-bank-pair-matched]');
+  expect(matched.textContent).toContain('JE-18');
+  expect(matched.textContent).toContain('←');
+  expect(matched.querySelector('.recon-badge.is-matched').textContent).toBe('✓ Cocok');
+});
+test('double-clicking Cocokkan submits one pair', async () => {
+  let release;
+  api.createCashBankPair.mockImplementation(() => new Promise((resolve) => { release = resolve; }));
+  await renderPage();
+  await click(container.querySelector('[data-testid=kas-bank-recommendation] input'));
+  const button = byText('Cocokkan');
+  await act(async () => {
+    button.click();
+    button.click();
+  });
+  expect(api.createCashBankPair).toHaveBeenCalledTimes(1);
+  await act(async () => { release(pair); await Promise.resolve(); });
+  await flush();
+  expect(api.createCashBankPair).toHaveBeenCalledTimes(1);
+});
+test('cancelling a stored pair reloads both tabs from server eligibility', async () => {
+  workspace.bank_lines = [{ ...bank, claim_id: 'pair-1', matchable: false }];
+  workspace.book_lines = [{ ...book, claim_id: 'pair-1', matchable: false }];
+  workspace.matched_pairs = [pair];
+  await renderPage();
+  expect(container.querySelector('[data-testid=kas-bank-recommendations]')).toBeNull();
+  await click(byText('Sudah Cocok'));
+  expect(container.querySelector('.recon-badge.is-matched').textContent).toBe('✓ Cocok');
+  api.cashBankPairWorkspace.mockImplementation(async () => ({
+    ...workspace,
+    bank_lines: [bank],
+    book_lines: [book],
+    matched_pairs: [],
+    unmatched_bank_count: 1,
+    unmatched_book_count: 1,
+  }));
+  api.cashBankPairSuggestions.mockResolvedValue({ ambiguous: false, applied: false, suggestions: [{ journal_line_id: 'book-1', journal_number: 'JE-18', amount: 750000, direction: 'in', reasons: ['Nominal sama'] }] });
+  await click(byText('Batalkan pencocokan'));
+  await flush();
+  await flush();
+  expect(container.querySelector('[data-testid=kas-bank-pair-matched]').textContent).toContain('Belum ada pencocokan');
+  expect(container.querySelector('.recon-badge.is-matched')).toBeNull();
+  await click(byText('Belum Cocok'));
+  expect(container.querySelector('[data-testid=kas-bank-recommendations]').textContent).toContain('JE-18');
+  expect(container.querySelector('#recon-panel-unmatched').textContent).not.toContain('✓ Cocok');
+  expect(container.querySelector('[data-testid=kas-bank-recommendations] input:checked')).toBeNull();
+});
+test('lines without a recommendation can still be matched manually', async () => {
+  api.cashBankPairSuggestions.mockResolvedValue({ ambiguous: false, applied: false, suggestions: [] });
+  await renderPage();
+  expect(container.querySelector('[data-testid=kas-bank-recommendations]')).toBeNull();
+  await click(container.querySelector('[name=bank-line]'));
+  await click(container.querySelector('[name=book-line]'));
+  const live = container.querySelector('[data-testid=kas-bank-live-pair]');
+  expect(live.querySelector('[data-testid=kas-bank-pair-match]')).toBe(byText('Cocokkan'));
+  expect(byText('Cocokkan').disabled).toBe(false);
+  await click(byText('Cocokkan'));
+  expect(api.createCashBankPair).toHaveBeenCalledTimes(1);
+  expect(api.createCashBankPair.mock.calls[0][0]).toEqual(expect.objectContaining({ statement_line_id: 'bank-1', journal_line_id: 'book-1' }));
+});
+test('saved pairs stay aligned on the matched tab and keep a zero running balance', async () => {
   workspace.bank_lines = [
     { ...bank, claim_id: 'pair-1', matchable: false, block_reason: 'Sudah dicocokkan', running_balance: 0 },
     { ...bank, id: 'bank-open', description: 'Tanpa saldo berjalan', amount: 1000, running_balance: null },
@@ -200,7 +352,17 @@ test('saved pairs stay aligned in the workspace and keep a zero running balance'
   workspace.matched_pairs = [{ ...pair, direction: 'in', book_snapshot: { ...pair.book_snapshot, debit: 750000, credit: 0 } }];
   workspace.visible_bank_count = 2;
   await renderPage();
-  const saved = container.querySelector('[data-testid=kas-bank-workspace-pairs]');
+  const unmatched = container.querySelector('#recon-panel-unmatched');
+  expect(container.querySelector('[data-testid=kas-bank-workspace-pairs]')).toBeNull();
+  expect(unmatched.textContent).not.toContain('✓ Cocok');
+  const openTable = container.querySelector('[data-testid=kas-bank-pair-bank-table]');
+  expect(openTable.textContent).toContain('Tanpa saldo berjalan');
+  expect(openTable.textContent).not.toContain('Transfer pelanggan');
+  expect(openTable.textContent).not.toContain('SALDO');
+  expect(openTable.textContent).not.toContain('(Dr)');
+  expect(openTable.textContent).not.toContain('(Cr)');
+  await click(byText('Sudah Cocok'));
+  const saved = container.querySelector('[data-testid=kas-bank-pair-matched]');
   expect(saved.textContent).toContain('✓ Cocok');
   expect(saved.textContent).toContain('JE-18');
   expect(saved.textContent).toContain('←');
@@ -208,12 +370,6 @@ test('saved pairs stay aligned in the workspace and keep a zero running balance'
   expect(saved.textContent).toContain('Rp 0');
   expect(saved.textContent).toContain('(Dr)');
   expect(saved.textContent).not.toContain('(Cr)');
-  const openTable = container.querySelector('[data-testid=kas-bank-pair-bank-table]');
-  expect(openTable.textContent).toContain('Tanpa saldo berjalan');
-  expect(openTable.textContent).not.toContain('Transfer pelanggan');
-  expect(openTable.textContent).not.toContain('SALDO');
-  expect(openTable.textContent).not.toContain('(Dr)');
-  expect(openTable.textContent).not.toContain('(Cr)');
 });
 test('matched and import tabs never render a matching footer or empty bank/book panels', async () => {
   workspace.matched_pairs=[pair]; await renderPage();
@@ -326,7 +482,11 @@ test('a pair outside the bank page stays visible without invented bank detail or
   workspace.visible_book_count=0;
   workspace.matched_pairs=[{...pair, statement_line_id:'bank-offpage', direction:'in', amount:250000, book_snapshot:{date:'2026-09-29', journal_number:'JE-OFF', description:'Setoran di snapshot', debit:250000, credit:0}}];
   await renderPage();
-  const saved=container.querySelector('[data-testid=kas-bank-workspace-pairs]');
+  expect(container.querySelector('[data-testid=kas-bank-workspace-pairs]')).toBeNull();
+  expect(container.querySelector('#recon-panel-unmatched').textContent).not.toContain('✓ Cocok');
+  expect(container.querySelector('#recon-panel-unmatched').textContent).toContain('Masih di halaman');
+  await click(byText('Sudah Cocok'));
+  const saved=container.querySelector('[data-testid=kas-bank-pair-matched]');
   expect(saved.textContent).toContain('Detail bank tidak tersedia');
   expect(saved.textContent).toContain('bank-offpage');
   expect(saved.textContent).toContain('JE-OFF');
@@ -348,16 +508,23 @@ test('changing account or period hides the previous pairs and selection', async 
   workspace.end_date=requested.end_date;
   await click(container.querySelector('[aria-label="Muat ulang"]'));
   await flush();
+  expect(container.querySelector('#recon-panel-unmatched').textContent).not.toContain('Pasangan lama');
+  expect(container.querySelector('#recon-panel-unmatched').textContent).not.toContain('✓ Cocok');
+  await click(byText('Sudah Cocok'));
   expect(container.textContent).toContain('Pasangan lama');
+  await click(byText('Belum Cocok'));
   await click(container.querySelector('[name=bank-line]'));
   await click(container.querySelector('[name=book-line]'));
+  expect(container.querySelector('[data-testid=kas-bank-recommendations]')).toBeTruthy();
   let resolveNext;
   api.cashBankPairWorkspace.mockImplementation(() => new Promise((resolve) => { resolveNext=resolve; }));
   const nextEnd=requested.end_date==='2026-09-02' ? '2026-09-03' : '2026-09-02';
   await change('[aria-label="Tanggal akhir"]', nextEnd);
   expect(container.textContent).not.toContain('Pasangan lama');
+  expect(container.querySelector('[data-testid=kas-bank-recommendations]')).toBeNull();
   expect(container.querySelector('[data-testid=kas-bank-live-pair]')).toBeNull();
   expect(container.querySelector('[name=bank-line]:checked')).toBeNull();
+  expect(container.querySelector('[name=recommendation-pair]:checked')).toBeNull();
   expect(byText('Cocokkan').disabled).toBe(true);
   await act(async () => {
     resolveNext({...workspace, cash_bank_id:'account-1', start_date:requested.start_date, end_date:nextEnd, search:'', bank_lines:[], book_lines:[], matched_pairs:[{...pair, book_snapshot:{date:'2026-09-02', journal_number:'JE-BARU', description:'Pasangan baru'}}], visible_bank_count:0, visible_book_count:0});
@@ -365,6 +532,10 @@ test('changing account or period hides the previous pairs and selection', async 
     await Promise.resolve();
   });
   await flush();
+  await flush();
+  expect(container.querySelector('#recon-panel-unmatched').textContent).not.toContain('Pasangan baru');
+  expect(container.querySelector('#recon-panel-unmatched').textContent).not.toContain('Pasangan lama');
+  await click(byText('Sudah Cocok'));
   expect(container.textContent).toContain('Pasangan baru');
   expect(container.textContent).not.toContain('Pasangan lama');
 });
@@ -379,15 +550,21 @@ test('changing the account hides the previous pairs and selection', async () => 
   workspace.end_date=requested.end_date;
   await click(container.querySelector('[aria-label="Muat ulang"]'));
   await flush();
+  expect(container.querySelector('#recon-panel-unmatched').textContent).not.toContain('Pasangan lama');
+  await click(byText('Sudah Cocok'));
   expect(container.textContent).toContain('Pasangan lama');
+  await click(byText('Belum Cocok'));
   await click(container.querySelector('[name=bank-line]'));
   await click(container.querySelector('[name=book-line]'));
+  expect(container.querySelector('[data-testid=kas-bank-recommendations]')).toBeTruthy();
   let resolveNext;
   api.cashBankPairWorkspace.mockImplementation(() => new Promise((resolve) => { resolveNext=resolve; }));
   await change('[aria-label="Rekening"]', 'account-2');
   expect(container.textContent).not.toContain('Pasangan lama');
+  expect(container.querySelector('[data-testid=kas-bank-recommendations]')).toBeNull();
   expect(container.querySelector('[data-testid=kas-bank-live-pair]')).toBeNull();
   expect(container.querySelector('[name=bank-line]:checked')).toBeNull();
+  expect(container.querySelector('[name=recommendation-pair]:checked')).toBeNull();
   expect(byText('Cocokkan').disabled).toBe(true);
   await act(async () => {
     resolveNext({...workspace, cash_bank_id:'account-2', start_date:requested.start_date, end_date:requested.end_date, search:'', bank_lines:[{...bank, id:'bank-2', description:'Mutasi rekening lain'}], book_lines:[book], matched_pairs:[{...pair, id:'pair-2', statement_line_id:'bank-2', book_snapshot:{date:'2026-09-02', journal_number:'JE-BARU', description:'Pasangan rekening baru'}}], visible_bank_count:1, visible_book_count:1});
@@ -395,9 +572,13 @@ test('changing the account hides the previous pairs and selection', async () => 
     await Promise.resolve();
   });
   await flush();
+  await flush();
+  expect(container.querySelector('#recon-panel-unmatched').textContent).not.toContain('Pasangan lama');
+  expect(container.querySelector('#recon-panel-unmatched').textContent).not.toContain('Pasangan rekening baru');
+  expect(container.textContent).toContain('Mutasi rekening lain');
+  await click(byText('Sudah Cocok'));
   expect(container.textContent).toContain('Pasangan rekening baru');
   expect(container.textContent).not.toContain('Pasangan lama');
-  expect(container.textContent).toContain('Mutasi rekening lain');
 });
 test('changing period clears selections before another match can be submitted', async () => {
   await renderPage(); await click(container.querySelector('[name=bank-line]')); await click(container.querySelector('[name=book-line]'));
