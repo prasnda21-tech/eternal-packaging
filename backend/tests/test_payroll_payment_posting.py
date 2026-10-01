@@ -5,13 +5,17 @@ document: create, approve, then post Dr Utang Gaji / Cr BANK.
 """
 from __future__ import annotations
 
+import asyncio
+import multiprocessing
 import os
 import sys
 import uuid
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
+from pymongo.errors import DuplicateKeyError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -512,16 +516,21 @@ async def test_approve_uses_its_own_permission():
 
 @pytest.mark.anyio
 async def test_payment_unique_index_is_created_without_insert():
-    from services.payroll_payment import ensure_indexes
+    from services.payroll_payment import ACTIVE_PERIOD_INDEX, ensure_indexes
 
     await server.db[PAYMENTS].drop()
     await ensure_indexes(server.db)
     info = await server.db[PAYMENTS].index_information()
-    unique_period = [
+    full_unique = [
         spec for spec in info.values()
-        if list(spec.get("key") or []) == [("payroll_period_id", 1)] and spec.get("unique")
+        if list(spec.get("key") or []) == [("payroll_period_id", 1)]
+        and spec.get("unique")
+        and not spec.get("partialFilterExpression")
     ]
-    assert unique_period
+    partial = info.get(ACTIVE_PERIOD_INDEX)
+    assert not full_unique
+    assert partial["unique"] is True
+    assert partial["partialFilterExpression"]["status"]["$in"] == ["DRAFT", "APPROVED", "PAID"]
     assert await server.db[PAYMENTS].count_documents({}) == 0
 
 
@@ -701,6 +710,7 @@ async def test_permissions_are_catalog_only():
         "payroll_payment.approve",
         "payroll_payment.post",
         "payroll_payment.reverse",
+        "payroll_payment.cancel",
     ):
         assert perm in keys
         assert perm in ALL_PERMISSIONS
@@ -709,3 +719,499 @@ async def test_permissions_are_catalog_only():
             if role == "admin":
                 continue
             assert perm not in perms
+
+
+async def _assert_final(period_id: str):
+    stored = await server.db[PERIODS].find_one({"id": period_id}, {"_id": 0, "status": 1})
+    assert stored["status"] == STATUS_FINAL
+
+
+@pytest.mark.anyio
+async def test_cancel_draft_and_approved_then_create_again():
+    accounts = await _setup_accounts()
+    bank = await _bank(accounts["bank"])
+    _admin()
+    async with _client() as c:
+        _emp, period = await _finalize(c, year=2095, month=5, map_accounts=accounts)
+        await _post_accrual(c, period["id"])
+        payload = {"cash_bank_account_id": bank["id"], "payment_date": "2095-05-18"}
+        draft = await c.post(f"/api/hr-payroll/periods/{period['id']}/payments", json=payload)
+        assert draft.status_code == 200, draft.text
+        draft_id = draft.json()["payment"]["id"]
+        cancelled = await c.post(
+            f"/api/hr-payroll/payments/{draft_id}/cancel",
+            json={"reason": "bank salah"},
+        )
+        assert cancelled.status_code == 200, cancelled.text
+        approved = await c.post(f"/api/hr-payroll/periods/{period['id']}/payments", json=payload)
+        assert approved.status_code == 200, approved.text
+        approved_id = approved.json()["payment"]["id"]
+        await c.post(f"/api/hr-payroll/payments/{approved_id}/approve")
+        cancelled_approved = await c.post(
+            f"/api/hr-payroll/payments/{approved_id}/cancel",
+            json={"reason": "tanggal salah"},
+        )
+        assert cancelled_approved.status_code == 200, cancelled_approved.text
+        again = await c.post(f"/api/hr-payroll/periods/{period['id']}/payments", json=payload)
+        assert again.status_code == 200, again.text
+        listed = await c.get(f"/api/hr-payroll/periods/{period['id']}/payments")
+    assert cancelled.json()["payment"]["status"] == "CANCELLED"
+    assert cancelled.json()["payment"]["cancellation_reason"] == "bank salah"
+    assert cancelled.json()["payment"]["cancelled_by"]["id"] == "admin-pyp"
+    assert cancelled.json()["payment"]["cancelled_at"]
+    assert cancelled_approved.json()["payment"]["status"] == "CANCELLED"
+    body = listed.json()
+    assert body["payment"]["id"] == again.json()["payment"]["id"]
+    assert body["payment"]["status"] == "DRAFT"
+    statuses = {row["status"] for row in body["payments"]}
+    assert statuses == {"CANCELLED", "DRAFT"}
+    assert len(body["payments"]) == 3
+    assert await server.db[PAYMENTS].count_documents({"id": draft_id}) == 1
+    assert await server.db.journal_entries.count_documents({"source_type": SOURCE_TYPE}) == 0
+    await _assert_final(period["id"])
+
+
+@pytest.mark.anyio
+async def test_cancel_paid_payment_is_rejected():
+    accounts = await _setup_accounts()
+    bank = await _bank(accounts["bank"])
+    _admin()
+    async with _client() as c:
+        period, payment = await _posted_payment(c, year=2095, month=6, accounts=accounts, bank=bank)
+        rejected = await c.post(
+            f"/api/hr-payroll/payments/{payment['id']}/cancel",
+            json={"reason": "sudah dibayar"},
+        )
+        assert rejected.status_code == 409, rejected.text
+    stored = await server.db[PAYMENTS].find_one({"id": payment["id"]}, {"_id": 0})
+    assert stored["status"] == "PAID"
+    assert not stored.get("cancelled_at")
+    assert len(await _payment_journals(payment["id"])) == 1
+    await _assert_final(period["id"])
+
+
+@pytest.mark.anyio
+async def test_reverse_then_repay_creates_a_new_journal():
+    accounts = await _setup_accounts()
+    bank = await _bank(accounts["bank"])
+    _admin()
+    async with _client() as c:
+        period, payment = await _posted_payment(c, year=2095, month=7, accounts=accounts, bank=bank)
+        first_post = payment
+        posted = await c.post(f"/api/hr-payroll/payments/{payment['id']}/post-accounting")
+        reversed_res = await c.post(
+            f"/api/hr-payroll/payments/{payment['id']}/reverse-accounting",
+            json={"reason": "koreksi bank"},
+        )
+        assert reversed_res.status_code == 200, reversed_res.text
+        assert await server.db[PAYMENTS].count_documents({"payroll_period_id": period["id"]}) == 1
+        created = await c.post(
+            f"/api/hr-payroll/periods/{period['id']}/payments",
+            json={"cash_bank_account_id": bank["id"], "payment_date": "2095-07-20"},
+        )
+        assert created.status_code == 200, created.text
+        replacement = created.json()["payment"]
+        await c.post(f"/api/hr-payroll/payments/{replacement['id']}/approve")
+        reposted = await c.post(f"/api/hr-payroll/payments/{replacement['id']}/post-accounting")
+        assert reposted.status_code == 200, reposted.text
+        retry = await c.post(f"/api/hr-payroll/payments/{replacement['id']}/post-accounting")
+        listed = await c.get(f"/api/hr-payroll/periods/{period['id']}/payments")
+    assert replacement["id"] != first_post["id"]
+    assert reposted.json()["journal_id"] != posted.json()["journal_id"]
+    assert retry.json()["journal_id"] == reposted.json()["journal_id"]
+    assert len(await _payment_journals(replacement["id"])) == 1
+    assert (await _payment_journals(replacement["id"]))[0]["status"] == "posted"
+    assert (await _payment_journals(first_post["id"]))[0]["status"] == "reversed"
+    history = listed.json()
+    assert history["payment"]["id"] == replacement["id"]
+    assert history["payment"]["journal_number"] == reposted.json()["journal_number"]
+    assert history["payment"]["journal_number"]
+    assert {row["status"] for row in history["payments"]} == {"REVERSED", "PAID"}
+    reloaded = await server.db[PAYMENTS].find_one({"id": first_post["id"]}, {"_id": 0, "status": 1})
+    assert reloaded["status"] == "REVERSED"
+    await _assert_final(period["id"])
+
+
+@pytest.mark.anyio
+async def test_concurrent_create_keeps_one_active_payment():
+    accounts = await _setup_accounts()
+    bank = await _bank(accounts["bank"])
+    _admin()
+    async with _client() as c:
+        _emp, period = await _finalize(c, year=2095, month=8, map_accounts=accounts)
+        await _post_accrual(c, period["id"])
+        payload = {"cash_bank_account_id": bank["id"], "payment_date": "2095-08-18"}
+        url = f"/api/hr-payroll/periods/{period['id']}/payments"
+        first, second = await asyncio.gather(c.post(url, json=payload), c.post(url, json=payload))
+    codes = sorted([first.status_code, second.status_code])
+    assert codes == [200, 409], (first.text, second.text)
+    active = await server.db[PAYMENTS].count_documents({
+        "payroll_period_id": period["id"],
+        "status": {"$in": ["DRAFT", "APPROVED", "PAID"]},
+    })
+    assert active == 1
+    await _assert_final(period["id"])
+
+
+@pytest.mark.anyio
+async def test_line_insert_failure_cancels_without_deleting():
+    accounts = await _setup_accounts()
+    bank = await _bank(accounts["bank"])
+    _admin()
+    async with _client() as c:
+        _emp, period = await _finalize(c, year=2095, month=9, map_accounts=accounts)
+        await _post_accrual(c, period["id"])
+        with patch(
+            "services.payroll_payment._insert_payment_lines",
+            new=AsyncMock(side_effect=RuntimeError("disk")),
+        ):
+            failed = await c.post(
+                f"/api/hr-payroll/periods/{period['id']}/payments",
+                json={"cash_bank_account_id": bank["id"], "payment_date": "2095-09-18"},
+            )
+        assert failed.status_code == 409, failed.text
+        stored = await server.db[PAYMENTS].find_one({"payroll_period_id": period["id"]}, {"_id": 0})
+        assert stored["status"] == "CANCELLED"
+        assert stored["cancellation_reason"] == "Detail pembayaran gagal disimpan."
+        assert await server.db[PAYMENT_LINES].count_documents({"payment_id": stored["id"]}) == 0
+        assert await server.db.journal_entries.count_documents({"source_type": SOURCE_TYPE, "source_id": stored["id"]}) == 0
+        created = await c.post(
+            f"/api/hr-payroll/periods/{period['id']}/payments",
+            json={"cash_bank_account_id": bank["id"], "payment_date": "2095-09-19"},
+        )
+        assert created.status_code == 200, created.text
+    assert await server.db[PAYMENTS].count_documents({"payroll_period_id": period["id"]}) == 2
+    await _assert_final(period["id"])
+
+
+@pytest.mark.anyio
+async def test_incomplete_payment_is_rejected_and_can_be_cancelled():
+    accounts = await _setup_accounts()
+    bank = await _bank(accounts["bank"])
+    _admin()
+    broken_id = str(uuid.uuid4())
+    async with _client() as c:
+        _emp, period = await _finalize(c, year=2095, month=10, map_accounts=accounts)
+        await _post_accrual(c, period["id"])
+        await server.db[PAYMENTS].insert_one({
+            "id": broken_id,
+            "payment_number": f"PYB-BROKEN-{uuid.uuid4().hex[:6]}",
+            "payroll_period_id": period["id"],
+            "payment_date": "2095-10-18",
+            "cash_bank_account_id": bank["id"],
+            "payable_account_id": accounts["payable"]["id"],
+            "total_amount": 1_000_000,
+            "status": "DRAFT",
+            "accounting_journal_id": None,
+            "created_at": "2095-10-18T00:00:00+00:00",
+        })
+        denied = await c.post(f"/api/hr-payroll/payments/{broken_id}/approve")
+        assert denied.status_code == 409, denied.text
+        await server.db[PAYMENT_LINES].insert_one({
+            "id": str(uuid.uuid4()),
+            "payment_id": broken_id,
+            "employee_id": "emp-partial",
+            "employee_name": "Sebagian",
+            "net_salary": 1,
+        })
+        mismatched = await c.post(f"/api/hr-payroll/payments/{broken_id}/approve")
+        assert mismatched.status_code == 409, mismatched.text
+        await server.db[PAYMENT_LINES].update_one(
+            {"payment_id": broken_id},
+            {"$set": {"net_salary": 1_000_000, "employee_id": ""}},
+        )
+        nameless = await c.post(f"/api/hr-payroll/payments/{broken_id}/approve")
+        assert nameless.status_code == 409, nameless.text
+        await server.db[PAYMENT_LINES].delete_many({"payment_id": broken_id})
+        await server.db[PAYMENTS].update_one({"id": broken_id}, {"$set": {"status": "APPROVED"}})
+        denied_post = await c.post(f"/api/hr-payroll/payments/{broken_id}/post-accounting")
+        assert denied_post.status_code == 409, denied_post.text
+        recovered = await c.post(
+            f"/api/hr-payroll/payments/{broken_id}/cancel",
+            json={"reason": "detail hilang"},
+        )
+        assert recovered.status_code == 200, recovered.text
+        created = await c.post(
+            f"/api/hr-payroll/periods/{period['id']}/payments",
+            json={"cash_bank_account_id": bank["id"], "payment_date": "2095-10-21"},
+        )
+        assert created.status_code == 200, created.text
+    stored = await server.db[PAYMENTS].find_one({"id": broken_id}, {"_id": 0})
+    assert stored["status"] == "CANCELLED"
+    assert await server.db.journal_entries.count_documents({"source_type": SOURCE_TYPE, "source_id": broken_id}) == 0
+    assert await server.db[PAYMENTS].count_documents({"id": broken_id}) == 1
+    await _assert_final(period["id"])
+
+
+@pytest.mark.anyio
+async def test_post_closed_period_stays_approved():
+    accounts = await _setup_accounts()
+    bank = await _bank(accounts["bank"])
+    _admin()
+    async with _client() as c:
+        _emp, period = await _finalize(c, year=2095, month=11, map_accounts=accounts)
+        await _post_accrual(c, period["id"])
+        created = await c.post(
+            f"/api/hr-payroll/periods/{period['id']}/payments",
+            json={"cash_bank_account_id": bank["id"], "payment_date": "2095-11-18"},
+        )
+        payment_id = created.json()["payment"]["id"]
+        await c.post(f"/api/hr-payroll/payments/{payment_id}/approve")
+        await close_period(
+            server.db,
+            "2095-11",
+            user={"id": "admin-pyp", "name": "Admin", "role": "admin"},
+            reason="tutup uji",
+        )
+        rejected = await c.post(f"/api/hr-payroll/payments/{payment_id}/post-accounting")
+        assert rejected.status_code == 409, rejected.text
+    stored = await server.db[PAYMENTS].find_one({"id": payment_id}, {"_id": 0, "status": 1})
+    assert stored["status"] == "APPROVED"
+    assert await _payment_journals(payment_id) == []
+    await _assert_final(period["id"])
+
+
+@pytest.mark.anyio
+async def test_reload_returns_payment_journal_number():
+    accounts = await _setup_accounts()
+    bank = await _bank(accounts["bank"])
+    _admin()
+    async with _client() as c:
+        period, payment = await _posted_payment(c, year=2095, month=12, accounts=accounts, bank=bank)
+        posted = await c.post(f"/api/hr-payroll/payments/{payment['id']}/post-accounting")
+        assert posted.status_code == 200, posted.text
+        listed = await c.get(f"/api/hr-payroll/periods/{period['id']}/payments")
+        single = await c.get(f"/api/hr-payroll/payments/{payment['id']}")
+    assert listed.json()["payment"]["journal_number"] == posted.json()["journal_number"]
+    assert listed.json()["payment"]["journal_number"]
+    assert single.json()["payment"]["journal_number"] == posted.json()["journal_number"]
+    await _assert_final(period["id"])
+
+
+@pytest.mark.anyio
+async def test_old_unique_index_migrates_without_deleting_payments():
+    from services.payroll_payment import ACTIVE_PERIOD_INDEX, ensure_indexes
+
+    await server.db[PAYMENTS].drop()
+    await server.db[PAYMENTS].create_index("payroll_period_id", unique=True)
+    period_id = "period-migrate"
+    first_id = str(uuid.uuid4())
+    await server.db[PAYMENTS].insert_one({
+        "id": first_id,
+        "payment_number": "PYB-MIG-1",
+        "payroll_period_id": period_id,
+        "status": "DRAFT",
+    })
+    before = await server.db[PAYMENTS].count_documents({})
+    await ensure_indexes(server.db)
+    await ensure_indexes(server.db)
+    info = await server.db[PAYMENTS].index_information()
+    full_unique = [
+        name for name, spec in info.items()
+        if list(spec.get("key") or []) == [("payroll_period_id", 1)]
+        and spec.get("unique")
+        and not spec.get("partialFilterExpression")
+    ]
+    assert not full_unique
+    assert info[ACTIVE_PERIOD_INDEX]["unique"] is True
+    assert await server.db[PAYMENTS].count_documents({}) == before
+    stored = await server.db[PAYMENTS].find_one({"id": first_id}, {"_id": 0})
+    assert stored["status"] == "DRAFT"
+    assert stored["payroll_period_id"] == period_id
+    with pytest.raises(DuplicateKeyError):
+        await server.db[PAYMENTS].insert_one({
+            "id": str(uuid.uuid4()),
+            "payment_number": "PYB-MIG-2",
+            "payroll_period_id": period_id,
+            "status": "APPROVED",
+        })
+    await server.db[PAYMENTS].insert_one({
+        "id": str(uuid.uuid4()),
+        "payment_number": "PYB-MIG-3",
+        "payroll_period_id": period_id,
+        "status": "CANCELLED",
+    })
+    await server.db[PAYMENTS].insert_one({
+        "id": str(uuid.uuid4()),
+        "payment_number": "PYB-MIG-4",
+        "payroll_period_id": period_id,
+        "status": "REVERSED",
+    })
+    assert await server.db[PAYMENTS].count_documents({"payroll_period_id": period_id}) == 3
+    assert await server.db[PAYMENTS].count_documents({"id": first_id}) == 1
+
+
+def _cross_process_payment_call(action, mongo_url, db_name, payment_id):
+    """Run one payment action in a fresh process and event loop."""
+    import asyncio
+    from motor.motor_asyncio import AsyncIOMotorClient
+
+    async def go():
+        from services.payroll_payment import approve_payroll_payment, cancel_payroll_payment
+        from services.payroll_payment_posting import post_payroll_payment
+
+        client = AsyncIOMotorClient(mongo_url)
+        db = client[db_name]
+        user = {"id": "racer", "name": "Racer", "role": "admin", "email": "racer@example.com"}
+        try:
+            if action == "cancel":
+                await cancel_payroll_payment(db, payment_id, user, "race batal")
+                return "cancel-ok"
+            if action == "approve":
+                await approve_payroll_payment(db, payment_id, user)
+                return "approve-ok"
+            await post_payroll_payment(db, payment_id, user)
+            return "post-ok"
+        except Exception as exc:
+            return f"err:{exc}"
+        finally:
+            client.close()
+
+    return asyncio.run(go())
+
+
+def _run_cross_process(actions, payment_id):
+    ctx = multiprocessing.get_context("spawn")
+    with ctx.Pool(len(actions)) as pool:
+        return pool.starmap(
+            _cross_process_payment_call,
+            [(action, os.environ["MONGO_URL"], os.environ["DB_NAME"], payment_id) for action in actions],
+        )
+
+
+@pytest.mark.anyio
+async def test_index_create_failure_keeps_the_old_constraint():
+    from services.payroll_payment import ensure_indexes
+
+    await server.db[PAYMENTS].drop()
+    await server.db[PAYMENTS].create_index("payroll_period_id", unique=True)
+    first_id = str(uuid.uuid4())
+    await server.db[PAYMENTS].insert_one({
+        "id": first_id,
+        "payment_number": "PYB-KEEP-1",
+        "payroll_period_id": "period-keep",
+        "status": "DRAFT",
+    })
+    with patch("services.payroll_payment._create_active_period_index", side_effect=RuntimeError("index failed")):
+        with pytest.raises(RuntimeError, match="index failed"):
+            await ensure_indexes(server.db)
+    info = await server.db[PAYMENTS].index_information()
+    legacy = [
+        name for name, spec in info.items()
+        if list(spec.get("key") or []) == [("payroll_period_id", 1)]
+        and spec.get("unique")
+        and not spec.get("partialFilterExpression")
+    ]
+    assert legacy
+    assert "uniq_active_payroll_period_payment" not in info
+    assert await server.db[PAYMENTS].count_documents({"id": first_id}) == 1
+    with pytest.raises(DuplicateKeyError):
+        await server.db[PAYMENTS].insert_one({
+            "id": str(uuid.uuid4()),
+            "payment_number": "PYB-KEEP-2",
+            "payroll_period_id": "period-keep",
+            "status": "PAID",
+        })
+    assert await server.db[PAYMENTS].count_documents({"payroll_period_id": "period-keep"}) == 1
+
+
+@pytest.mark.anyio
+async def test_index_migration_stops_when_active_payments_conflict():
+    from fastapi import HTTPException
+    from services.payroll_payment import ensure_indexes, require_active_payment_index
+
+    await server.db[PAYMENTS].drop()
+    period_id = "period-conflict"
+    for suffix in ("a", "b"):
+        await server.db[PAYMENTS].insert_one({
+            "id": str(uuid.uuid4()),
+            "payment_number": f"PYB-CONFLICT-{suffix}",
+            "payroll_period_id": period_id,
+            "status": "DRAFT",
+        })
+    with pytest.raises(HTTPException) as raised:
+        await ensure_indexes(server.db)
+    assert raised.value.status_code == 409
+    assert await server.db[PAYMENTS].count_documents({"payroll_period_id": period_id}) == 2
+    with pytest.raises(HTTPException) as missing:
+        await require_active_payment_index(server.db)
+    assert missing.value.status_code == 503
+    with pytest.raises(HTTPException):
+        await ensure_indexes(server.db)
+    assert await server.db[PAYMENTS].count_documents({"payroll_period_id": period_id}) == 2
+
+
+@pytest.mark.anyio
+async def test_cancel_and_post_race_across_processes():
+    accounts = await _setup_accounts()
+    bank = await _bank(accounts["bank"])
+    _admin()
+    async with _client() as c:
+        _emp, period = await _finalize(c, year=2096, month=1, map_accounts=accounts)
+        await _post_accrual(c, period["id"])
+        created = await c.post(
+            f"/api/hr-payroll/periods/{period['id']}/payments",
+            json={"cash_bank_account_id": bank["id"], "payment_date": "2096-01-18"},
+        )
+        payment_id = created.json()["payment"]["id"]
+        approved = await c.post(f"/api/hr-payroll/payments/{payment_id}/approve")
+        assert approved.status_code == 200, approved.text
+    results = _run_cross_process(["cancel", "post"], payment_id)
+    stored = await server.db[PAYMENTS].find_one({"id": payment_id}, {"_id": 0})
+    journals = await _payment_journals(payment_id)
+    posted = [row for row in journals if row["status"] == "posted"]
+    assert stored["status"] in {"PAID", "CANCELLED"}
+    if stored["status"] == "CANCELLED":
+        assert posted == []
+        assert not str(stored.get("accounting_journal_id") or "").strip()
+    if posted:
+        assert stored["status"] == "PAID"
+        assert len(posted) == 1
+    assert all(result.startswith(("cancel-ok", "post-ok", "err:")) for result in results)
+    assert not any("Traceback" in result for result in results)
+    await _assert_final(period["id"])
+
+
+@pytest.mark.anyio
+async def test_approve_and_cancel_race_across_processes():
+    accounts = await _setup_accounts()
+    bank = await _bank(accounts["bank"])
+    _admin()
+    async with _client() as c:
+        _emp, period = await _finalize(c, year=2096, month=2, map_accounts=accounts)
+        await _post_accrual(c, period["id"])
+        created = await c.post(
+            f"/api/hr-payroll/periods/{period['id']}/payments",
+            json={"cash_bank_account_id": bank["id"], "payment_date": "2096-02-18"},
+        )
+        payment_id = created.json()["payment"]["id"]
+    results = _run_cross_process(["approve", "cancel"], payment_id)
+    stored = await server.db[PAYMENTS].find_one({"id": payment_id}, {"_id": 0})
+    assert stored["status"] in {"APPROVED", "CANCELLED"}
+    assert await _payment_journals(payment_id) == []
+    assert not str(stored.get("accounting_journal_id") or "").strip()
+    assert all(result.startswith(("approve-ok", "cancel-ok", "err:")) for result in results)
+    await _assert_final(period["id"])
+
+
+@pytest.mark.anyio
+async def test_approved_payment_with_journal_cannot_be_cancelled():
+    accounts = await _setup_accounts()
+    bank = await _bank(accounts["bank"])
+    _admin()
+    async with _client() as c:
+        _period, payment = await _posted_payment(c, year=2096, month=3, accounts=accounts, bank=bank)
+        await server.db[PAYMENTS].update_one(
+            {"id": payment["id"]},
+            {"$set": {"status": "APPROVED"}, "$unset": {"paid_at": "", "paid_by": ""}},
+        )
+        rejected = await c.post(
+            f"/api/hr-payroll/payments/{payment['id']}/cancel",
+            json={"reason": "sudah ada jurnal"},
+        )
+        assert rejected.status_code == 409, rejected.text
+        repaired = await c.post(f"/api/hr-payroll/payments/{payment['id']}/post-accounting")
+        assert repaired.status_code == 200, repaired.text
+    stored = await server.db[PAYMENTS].find_one({"id": payment["id"]}, {"_id": 0})
+    assert stored["status"] == "PAID"
+    assert len(await _payment_journals(payment["id"])) == 1

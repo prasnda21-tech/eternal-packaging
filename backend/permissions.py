@@ -199,6 +199,7 @@ PERMISSION_CATALOG = [
     ("HR & Payroll", "payroll_payment.approve", "Setujui Pembayaran Payroll"),
     ("HR & Payroll", "payroll_payment.post", "Post Pembayaran Payroll ke Accounting"),
     ("HR & Payroll", "payroll_payment.reverse", "Reversal Pembayaran Payroll dari Accounting"),
+    ("HR & Payroll", "payroll_payment.cancel", "Batalkan Pembayaran Payroll"),
     ("Buku Besar", "ledger.accounts.view", "Lihat Akun Perkiraan"),
     ("Buku Besar", "ledger.accounts.manage", "Kelola Akun Perkiraan"),
     ("Buku Besar", "general_journal.view", "Lihat Jurnal Umum"),

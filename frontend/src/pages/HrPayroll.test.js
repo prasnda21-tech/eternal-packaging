@@ -38,6 +38,10 @@ describe("HR & Payroll UI source", () => {
     expect(page).toMatch(/payroll_payment\.approve/);
     expect(page).toMatch(/payroll_payment\.post/);
     expect(page).toMatch(/payroll_payment\.reverse/);
+    expect(page).toMatch(/payroll_payment\.cancel/);
+    expect(page).toMatch(/hr-payroll-payment-history/);
+    expect(page).toMatch(/hr-payroll-payment-journal-number/);
+    expect(page).toMatch(/journal_number/);
     expect(page).toMatch(/canTransition\(selected\.status, target\)/);
   });
 
