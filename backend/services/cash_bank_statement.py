@@ -45,6 +45,16 @@ MAX_BYTES = 2_000_000
 MAX_ROWS = 2000
 PENDING_REVIEW_PAGE_DEFAULT = 100
 PENDING_REVIEW_PAGE_MAX = 200
+DUPLICATE_GROUP_PAGE_DEFAULT = 20
+DUPLICATE_GROUP_PAGE_MAX = 50
+STALE_REVIEW_MESSAGE = "Daftar berubah. Muat ulang dari awal."
+_GROUP_KEY_SEPARATOR = "\x1f"
+_WHITESPACE_CHARS = (
+    "\t", "\n", "\r", "\f", "\v", "\u00a0", "\u1680",
+    "\u2000", "\u2001", "\u2002", "\u2003", "\u2004", "\u2005", "\u2006",
+    "\u2007", "\u2008", "\u2009", "\u200a", "\u2028", "\u2029", "\u202f",
+    "\u205f", "\u3000",
+)
 MAX_COLS = 40
 MONEY = Decimal("0.01")
 
@@ -2175,55 +2185,280 @@ async def _duplicate_context(db, rows: Sequence[dict]) -> Tuple[Dict[str, dict],
     return by_import, match_by_line
 
 
-async def list_duplicate_groups(db, *, cash_bank_id: str, start: str, end: str) -> dict:
-    """Read duplicate clusters that still need a decision. This function does not write."""
+def _collapsed_text_expr(field: str) -> dict:
+    """Match _normalized_description inside an aggregation. This does not load the rows."""
+    expr: Dict[str, Any] = {
+        "$toLower": {"$convert": {"input": f"${field}", "to": "string", "onError": "", "onNull": ""}},
+    }
+    for character in _WHITESPACE_CHARS:
+        expr = {"$replaceAll": {"input": expr, "find": character, "replacement": " "}}
+    expr = {
+        "$reduce": {
+            "input": {"$range": [0, 12]},
+            "initialValue": expr,
+            "in": {"$replaceAll": {"input": "$$value", "find": "  ", "replacement": " "}},
+        }
+    }
+    return {"$trim": {"input": expr}}
+
+
+def _amount_key_expr() -> dict:
+    return {
+        "$cond": [
+            {"$in": [{"$type": "$amount"}, ["int", "long", "double", "decimal"]]},
+            {"$toString": {"$round": [{"$toDecimal": "$amount"}, 2]}},
+            {"$convert": {"input": "$amount", "to": "string", "onError": "", "onNull": ""}},
+        ]
+    }
+
+
+def _business_date_expr() -> dict:
+    return {
+        "$cond": [
+            {"$eq": ["$original_date", "PEND"]},
+            "PEND",
+            {"$convert": {"input": "$date", "to": "string", "onError": "", "onNull": ""}},
+        ]
+    }
+
+
+def _duplicate_group_key_expr() -> dict:
+    """Same tuple as _level2_key, joined so a page can request whole groups."""
+    return {
+        "$concat": [
+            {"$convert": {"input": "$direction", "to": "string", "onError": "", "onNull": ""}},
+            _GROUP_KEY_SEPARATOR,
+            _amount_key_expr(),
+            _GROUP_KEY_SEPARATOR,
+            _collapsed_text_expr("description"),
+            _GROUP_KEY_SEPARATOR,
+            _business_date_expr(),
+            _GROUP_KEY_SEPARATOR,
+            _collapsed_text_expr("reference"),
+        ]
+    }
+
+
+def _duplicate_group_sort_expr() -> dict:
+    return {
+        "$concat": [
+            _business_date_expr(),
+            _GROUP_KEY_SEPARATOR,
+            {"$convert": {"input": "$direction", "to": "string", "onError": "", "onNull": ""}},
+            _GROUP_KEY_SEPARATOR,
+            _amount_key_expr(),
+            _GROUP_KEY_SEPARATOR,
+            _collapsed_text_expr("description"),
+            _GROUP_KEY_SEPARATOR,
+            _collapsed_text_expr("reference"),
+        ]
+    }
+
+
+def _duplicate_group_key(row: dict) -> str:
+    direction, amount, description, business_date, reference = _level2_key(row)
+    return _GROUP_KEY_SEPARATOR.join((direction, amount, description, business_date, reference))
+
+
+def _duplicate_screen_filter(account: str, begin: str, finish: str) -> dict:
+    return {
+        "cash_bank_id": account,
+        "date": {"$gte": begin, "$lte": finish},
+        "duplicate_status": {"$in": [DUP_PENDING, DUP_KEPT, DUP_EXCLUDED]},
+        "sealed": {"$ne": False},
+    }
+
+
+def _page_bounds(page: int, page_size: int, default: int, maximum: int) -> Tuple[int, int, int]:
+    current_page = max(1, int(page or 1))
+    current_size = min(maximum, max(1, int(page_size or default)))
+    return current_page, current_size, (current_page - 1) * current_size
+
+
+def _review_changed(page: int, supplied: str, current: str) -> bool:
+    return int(page or 1) > 1 and bool(str(supplied or "").strip()) and str(supplied).strip() != current
+
+
+async def _collect(cursor) -> List[dict]:
+    rows: List[dict] = []
+    async for doc in cursor:
+        rows.append(doc)
+    return rows
+
+
+async def _account_pending_total(db, account: str) -> int:
+    return int(await db[LINES].count_documents({
+        "cash_bank_id": account,
+        "duplicate_status": DUP_PENDING,
+    }))
+
+
+async def _duplicate_review_revision(db, account: str, pending_total: int) -> str:
+    """A read of counts and the latest stamp. Opening the next page does not change it."""
+    rows = await _collect(db[LINES].aggregate([
+        {"$match": {
+            "cash_bank_id": account,
+            "duplicate_status": {"$in": [DUP_PENDING, DUP_KEPT, DUP_EXCLUDED]},
+        }},
+        {"$group": {
+            "_id": None,
+            "n": {"$sum": 1},
+            "stamp": {"$max": {"$ifNull": ["$updated_at", {"$ifNull": ["$created_at", ""]}]}},
+        }},
+    ], allowDiskUse=True))
+    count = int(rows[0].get("n") or 0) if rows else 0
+    stamp = rows[0].get("stamp") if rows else ""
+    return f"{int(pending_total)}:{count}:{stamp or ''}"
+
+
+async def _duplicate_group_index(db, account: str, begin: str, finish: str) -> List[dict]:
+    """One summary per duplicate group. Line documents stay in the database."""
+    return await _collect(db[LINES].aggregate([
+        {"$match": _duplicate_screen_filter(account, begin, finish)},
+        {"$addFields": {
+            "group_key": _duplicate_group_key_expr(),
+            "sort_key": _duplicate_group_sort_expr(),
+        }},
+        {"$group": {
+            "_id": "$group_key",
+            "sort_key": {"$first": "$sort_key"},
+            "member_count": {"$sum": 1},
+            "pending_count": {"$sum": {"$cond": [{"$eq": ["$duplicate_status", DUP_PENDING]}, 1, 0]}},
+        }},
+        {"$match": {"member_count": {"$gte": 2}, "pending_count": {"$gte": 1}}},
+        {"$sort": {"sort_key": 1, "_id": 1}},
+    ], allowDiskUse=True))
+
+
+def _group_membership_expr(begin: str, finish: str, keys: Sequence[str]) -> dict:
+    return {"$and": [
+        {"$ne": ["$sealed", False]},
+        {"$gte": [{"$ifNull": ["$date", ""]}, begin]},
+        {"$lte": [{"$ifNull": ["$date", ""]}, finish]},
+        {"$in": [_duplicate_group_key_expr(), list(keys)]},
+    ]}
+
+
+def _row_is_group_member(row: dict, begin: str, finish: str, keys: set) -> bool:
+    if row.get("sealed") is False or not keys:
+        return False
+    day = str(row.get("date") or "")
+    if day < begin or day > finish:
+        return False
+    return _duplicate_group_key(row) in keys
+
+
+def _public_duplicate_group(account: str, members: Sequence[dict], by_import: dict, match_by_line: dict) -> dict:
+    ordered = sorted(members, key=lambda row: (str(row.get("created_at") or ""), str(row.get("id") or "")))
+    direction, _amount, description, business_date, reference = _level2_key(ordered[0])
+    return {
+        "cash_bank_id": account,
+        "group_key": _duplicate_group_key(ordered[0]),
+        "business_date": business_date,
+        "direction": direction,
+        "amount": ordered[0].get("amount"),
+        "normalized_description": description,
+        "normalized_reference": reference,
+        "description": ordered[0].get("description"),
+        "candidate_count": len(ordered),
+        "lines": [
+            _duplicate_line_public(row, by_import.get(row.get("import_id")), match_by_line.get(row.get("id")))
+            for row in ordered
+        ],
+    }
+
+
+def _stale_review(account: str, begin: str, finish: str, *, page: int, page_size: int, pending_total: int, revision: str, groups: bool) -> dict:
+    body = {
+        "cash_bank_id": account,
+        "start_date": begin,
+        "end_date": finish,
+        "page": page,
+        "page_size": page_size,
+        "pending_total": pending_total,
+        "review_revision": revision,
+        "stale": True,
+        "truncated": False,
+        "message": STALE_REVIEW_MESSAGE,
+    }
+    if groups:
+        body.update({"group_total": 0, "groups": []})
+    else:
+        body.update({
+            "total": 0,
+            "solo_lines": [],
+            "outside_period": [],
+            "unreachable": [],
+            "other_accounts": [],
+        })
+    return body
+
+
+async def list_duplicate_groups(
+    db, *, cash_bank_id: str, start: str, end: str,
+    page: int = 1, page_size: int = DUPLICATE_GROUP_PAGE_DEFAULT, review_revision: str = "",
+) -> dict:
+    """Read duplicate clusters that still need a decision. This function does not write.
+
+    Each page contains whole groups. A group is never split across pages, and the
+    grouping key is computed for every sealed line in the period rather than for
+    the first 10,000 documents.
+    """
     account = str(cash_bank_id or "").strip()
     if not account:
         raise StatementValidationError("Rekening wajib")
     begin, finish = _duplicate_period(start, end)
-    rows = await db[LINES].find(
-        {
-            "cash_bank_id": account,
-            "date": {"$gte": begin, "$lte": finish},
-            "duplicate_status": {"$in": [DUP_PENDING, DUP_KEPT, DUP_EXCLUDED]},
-            "sealed": {"$ne": False},
-        },
-        {"_id": 0},
-    ).to_list(MAX_ROWS * 5)
-    by_import, match_by_line = await _duplicate_context(db, rows)
-    buckets: Dict[Tuple[str, str, str, str, str], List[dict]] = {}
-    for row in rows:
-        buckets.setdefault(_level2_key(row), []).append(row)
-    groups = []
-    for (direction, _amount_key_value, description, business_date, _reference), members in buckets.items():
-        pending_count = sum(1 for row in members if row.get("duplicate_status") == DUP_PENDING)
-        if pending_count < 1 or len(members) < 2:
-            continue
-        members.sort(key=lambda row: (str(row.get("created_at") or ""), str(row.get("id") or "")))
-        public_lines = [
-            _duplicate_line_public(row, by_import.get(row.get("import_id")), match_by_line.get(row.get("id")))
-            for row in members
-        ]
-        groups.append({
-            "cash_bank_id": account,
-            "business_date": business_date,
-            "direction": direction,
-            "amount": members[0].get("amount"),
-            "normalized_description": description,
-            "description": members[0].get("description"),
-            "candidate_count": len(members),
-            "lines": public_lines,
-        })
-    groups.sort(key=lambda group: (
-        str(group.get("business_date") or ""),
-        str(group.get("direction") or ""),
-        _amount_key(group.get("amount")),
-        str(group.get("normalized_description") or ""),
-    ))
+    current_page, current_size, skip = _page_bounds(
+        page, page_size, DUPLICATE_GROUP_PAGE_DEFAULT, DUPLICATE_GROUP_PAGE_MAX,
+    )
+    pending_total = await _account_pending_total(db, account)
+    revision = await _duplicate_review_revision(db, account, pending_total)
+    if _review_changed(current_page, review_revision, revision):
+        return _stale_review(
+            account, begin, finish, page=current_page, page_size=current_size,
+            pending_total=pending_total, revision=revision, groups=True,
+        )
+    index = await _duplicate_group_index(db, account, begin, finish)
+    page_rows = index[skip:skip + current_size]
+    expected = {row.get("_id"): int(row.get("member_count") or 0) for row in page_rows if row.get("_id")}
+    members: List[dict] = []
+    if expected:
+        members = await _collect(db[LINES].aggregate([
+            {"$match": _duplicate_screen_filter(account, begin, finish)},
+            {"$addFields": {"group_key": _duplicate_group_key_expr()}},
+            {"$match": {"group_key": {"$in": list(expected)}}},
+            {"$project": {"_id": 0}},
+        ], allowDiskUse=True))
+    buckets: Dict[str, List[dict]] = {}
+    for row in members:
+        buckets.setdefault(str(row.get("group_key") or ""), []).append(row)
+    if expected and (
+        set(buckets) != set(expected)
+        or any(len(buckets.get(key) or []) != count for key, count in expected.items())
+    ):
+        pending_total = await _account_pending_total(db, account)
+        revision = await _duplicate_review_revision(db, account, pending_total)
+        return _stale_review(
+            account, begin, finish, page=current_page, page_size=current_size,
+            pending_total=pending_total, revision=revision, groups=True,
+        )
+    by_import, match_by_line = await _duplicate_context(db, members)
+    groups = [
+        _public_duplicate_group(account, buckets[key], by_import, match_by_line)
+        for key in expected
+        if buckets.get(key)
+    ]
     return {
         "cash_bank_id": account,
         "start_date": begin,
         "end_date": finish,
+        "page": current_page,
+        "page_size": current_size,
+        "group_total": len(index),
+        "pending_total": pending_total,
+        "truncated": skip + len(groups) < len(index),
+        "review_revision": revision,
+        "stale": False,
         "groups": groups,
     }
 
@@ -2235,37 +2470,51 @@ def _valid_statement_day(value: Any) -> str:
 
 async def list_pending_review_access(
     db, *, cash_bank_id: str, start: str, end: str, page: int = 1, page_size: int = PENDING_REVIEW_PAGE_DEFAULT,
+    review_revision: str = "",
 ) -> dict:
     """Read pending_review rows the group screen does not list. This function does not write.
 
-    Pages walk every pending row of this account that is not already inside a duplicate group.
+    A row is a single line only when the same identity used for groups has no second
+    candidate. pending_total counts every pending_review row on this account.
     """
     account = str(cash_bank_id or "").strip()
     if not account:
         raise StatementValidationError("Rekening wajib")
     begin, finish = _duplicate_period(start, end)
-    grouped = await list_duplicate_groups(db, cash_bank_id=account, start=begin, end=finish)
-    grouped_ids = {
-        line.get("statement_line_id")
-        for group in grouped.get("groups") or []
-        for line in group.get("lines") or []
-        if line.get("duplicate_status") == DUP_PENDING and line.get("statement_line_id")
-    }
-    current_page = max(1, int(page or 1))
-    current_size = min(PENDING_REVIEW_PAGE_MAX, max(1, int(page_size or PENDING_REVIEW_PAGE_DEFAULT)))
-    skip = (current_page - 1) * current_size
-    query: Dict[str, Any] = {"cash_bank_id": account, "duplicate_status": DUP_PENDING}
-    if grouped_ids:
-        query["id"] = {"$nin": list(grouped_ids)}
-    total = await db[LINES].count_documents(query)
-    rows = await db[LINES].find(query, {"_id": 0}).sort([("date", 1), ("id", 1)]).skip(skip).limit(current_size).to_list(current_size)
+    current_page, current_size, skip = _page_bounds(
+        page, page_size, PENDING_REVIEW_PAGE_DEFAULT, PENDING_REVIEW_PAGE_MAX,
+    )
+    pending_total = await _account_pending_total(db, account)
+    revision = await _duplicate_review_revision(db, account, pending_total)
+    if _review_changed(current_page, review_revision, revision):
+        return _stale_review(
+            account, begin, finish, page=current_page, page_size=current_size,
+            pending_total=pending_total, revision=revision, groups=False,
+        )
+    index = await _duplicate_group_index(db, account, begin, finish)
+    group_keys = [row.get("_id") for row in index if row.get("_id")]
+    key_set = set(group_keys)
+    hidden_match: Dict[str, Any] = {"cash_bank_id": account, "duplicate_status": DUP_PENDING}
+    if group_keys:
+        hidden_match["$expr"] = {"$not": [_group_membership_expr(begin, finish, group_keys)]}
+    total = int((await _collect(db[LINES].aggregate([
+        {"$match": hidden_match},
+        {"$count": "n"},
+    ], allowDiskUse=True)) or [{"n": 0}])[0].get("n") or 0)
+    rows = await _collect(db[LINES].aggregate([
+        {"$match": hidden_match},
+        {"$sort": {"date": 1, "id": 1}},
+        {"$skip": skip},
+        {"$limit": current_size},
+        {"$project": {"_id": 0}},
+    ], allowDiskUse=True))
     truncated = skip + len(rows) < total
     by_import, match_by_line = await _duplicate_context(db, rows)
     solo_lines = []
     outside_period = []
     unreachable = []
     for row in rows:
-        if row.get("id") in grouped_ids:
+        if _row_is_group_member(row, begin, finish, key_set):
             continue
         public = _duplicate_line_public(row, by_import.get(row.get("import_id")), match_by_line.get(row.get("id")))
         day = _valid_statement_day(row.get("date"))
@@ -2318,7 +2567,10 @@ async def list_pending_review_access(
         "page": current_page,
         "page_size": current_size,
         "total": total,
+        "pending_total": pending_total,
         "truncated": truncated,
+        "review_revision": revision,
+        "stale": False,
         "solo_lines": solo_lines,
         "outside_period": outside_period,
         "unreachable": unreachable,

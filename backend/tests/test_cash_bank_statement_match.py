@@ -2375,3 +2375,201 @@ async def test_pending_review_pages_reach_every_hidden_line_without_writing_or_r
         assert len(reopened["resolutions"]) == 1
         assert reopened["resolutions"][0]["action"] == "exclude"
         assert await server.db[JOURNAL_ENTRIES].count_documents({}) == journals
+
+
+def _review_line(account, line_id, **overrides):
+    row = {
+        "id": line_id,
+        "cash_bank_id": account,
+        "import_id": "imp-review",
+        "date": "2026-09-15",
+        "direction": "in",
+        "amount": 1000,
+        "description": line_id,
+        "reference": "",
+        "duplicate_status": "pending_review",
+        "sealed": True,
+        "resolutions": [],
+        "active_claim": None,
+        "created_at": "2026-09-15T00:00:00+00:00",
+    }
+    row.update(overrides)
+    return row
+
+
+@pytest.mark.anyio
+async def test_duplicate_groups_page_past_the_old_ten_thousand_line_cap():
+    admin = _user()
+    async with await client_for(admin) as c:
+        bank, _income = await _setup(c, currency="IDR")
+        other, _other_income = await _setup(c, currency="IDR")
+        account = bank["id"]
+        early_group = [
+            _review_line(account, "early-a", date="2026-09-10", direction="out", amount=1500, description="KELOMPOK KEDUA", created_at="2026-09-10T00:00:01+00:00"),
+            _review_line(account, "early-b", date="2026-09-10", direction="out", amount=1500, description="kelompok   kedua", created_at="2026-09-10T00:00:02+00:00"),
+        ]
+        boundary = [
+            _review_line(account, "pair-early", date="2026-09-20", direction="out", amount=88000, description="PASANGAN   BATAS", reference="WS 1", created_at="2026-09-20T00:00:01+00:00"),
+            _review_line(account, "pair-late", date="2026-09-20", direction="out", amount=88000, description="pasangan\tbatas", reference="ws   1", created_at="2026-09-20T00:00:02+00:00"),
+        ]
+        fillers = [
+            _review_line(account, f"fill-{index:05d}", amount=1000 + (index % 50), description=f"UNIK {index}")
+            for index in range(10000)
+        ]
+        ignored = [
+            _review_line(account, "kept-cap", duplicate_status="kept", description="SUDAH DIPERTAHANKAN"),
+            _review_line(account, "excluded-cap", duplicate_status="excluded", description="SUDAH DIKECUALIKAN"),
+            _review_line(other["id"], "other-cap", description="REKENING LAIN"),
+        ]
+        batch = [boundary[0], *early_group]
+        batch.extend(fillers)
+        batch.append(boundary[1])
+        batch.extend(ignored)
+        for start in range(0, len(batch), 2000):
+            await server.db[LINES].insert_many(batch[start:start + 2000])
+        before = await server.db[LINES].count_documents({})
+        journals = await server.db[JOURNAL_ENTRIES].count_documents({})
+        first_groups = await c.get("/api/cash-bank/statements/duplicate-groups", params={
+            "cash_bank_id": account, **PERIOD, "page": 1, "page_size": 1,
+        })
+        assert first_groups.status_code == 200, first_groups.text
+        first_body = first_groups.json()
+        assert first_body["stale"] is False
+        assert first_body["group_total"] == 2
+        assert first_body["pending_total"] == 10004
+        assert first_body["truncated"] is True
+        opened = first_body["groups"][0]
+        assert opened["candidate_count"] == len(opened["lines"]) == 2
+        assert {line["statement_line_id"] for line in opened["lines"]} == {"early-a", "early-b"}
+        second_groups = await c.get("/api/cash-bank/statements/duplicate-groups", params={
+            "cash_bank_id": account, **PERIOD, "page": 2, "page_size": 1,
+            "review_revision": first_body["review_revision"],
+        })
+        assert second_groups.status_code == 200, second_groups.text
+        second_body = second_groups.json()
+        assert second_body["stale"] is False
+        assert second_body["pending_total"] == first_body["pending_total"]
+        assert second_body["truncated"] is False
+        paired = second_body["groups"][0]
+        assert paired["candidate_count"] == len(paired["lines"]) == 2
+        assert [line["statement_line_id"] for line in paired["lines"]] == ["pair-early", "pair-late"]
+        assert paired["normalized_description"] == "pasangan batas"
+        seen = []
+        revision = None
+        page = 1
+        while True:
+            listed = await c.get("/api/cash-bank/statements/pending-review", params={
+                "cash_bank_id": account, **PERIOD, "page": page, "page_size": 200,
+                **({"review_revision": revision} if revision else {}),
+            })
+            assert listed.status_code == 200, listed.text
+            body = listed.json()
+            assert body["stale"] is False
+            assert body["pending_total"] == 10004
+            assert body["cash_bank_id"] == account
+            ids = _pending_ids(body)
+            assert len(ids) == len(set(ids))
+            assert set(ids).isdisjoint(seen)
+            assert set(ids).isdisjoint({"pair-early", "pair-late", "early-a", "early-b", "kept-cap", "excluded-cap", "other-cap"})
+            seen.extend(ids)
+            revision = body["review_revision"]
+            if not body["truncated"]:
+                break
+            page += 1
+        assert len(seen) == 10000
+        assert set(seen) == {f"fill-{index:05d}" for index in range(10000)}
+        assert body["other_accounts"][0]["cash_bank_id"] == other["id"]
+        assert body["other_accounts"][0]["pending_count"] == 1
+        changed = await c.get("/api/cash-bank/statements/pending-review", params={
+            "cash_bank_id": account, **PERIOD, "page": page + 1, "page_size": 200,
+            "review_revision": "0:0:bukan-revisi",
+        })
+        assert changed.status_code == 200, changed.text
+        assert changed.json()["stale"] is True
+        assert changed.json()["message"] == "Daftar berubah. Muat ulang dari awal."
+        assert _pending_ids(changed.json()) == []
+        assert changed.json()["pending_total"] == 10004
+        assert await server.db[LINES].count_documents({}) == before
+        assert await server.db[JOURNAL_ENTRIES].count_documents({}) == journals
+
+
+@pytest.mark.anyio
+async def test_pending_total_ignores_kept_lines_and_revision_resets_a_changed_page():
+    admin = _user()
+    async with await client_for(admin) as c:
+        bank, _income = await _setup(c, currency="IDR")
+        account = bank["id"]
+        await server.db[LINES].insert_many([
+            _review_line(account, "solo-a", date="2026-09-01", description="TUNGGAL A"),
+            _review_line(account, "solo-b", date="2026-09-02", description="TUNGGAL B"),
+            _review_line(account, "kept-row", duplicate_status="kept", description="DIPERTAHANKAN"),
+            _review_line(account, "excluded-row", duplicate_status="excluded", description="DIKECUALIKAN", resolutions=[{
+                "action": "exclude", "reason": "bukan baris ini", "idempotency_key": "exclude-lama", "at": "2026-09-04T00:00:00+00:00",
+            }]),
+            _review_line(account, "claimed-row", date="2026-09-03", description="DIKLAIM", active_claim="claim-live"),
+        ])
+        await server.db[RECON_MATCHES].insert_one({
+            "id": "match-claimed", "statement_line_id": "claimed-row", "status": "active",
+            "cash_bank_id": account, "journal_line_id": "journal-line-claimed",
+        })
+        first = await c.get("/api/cash-bank/statements/pending-review", params={
+            "cash_bank_id": account, **PERIOD, "page": 1, "page_size": 1,
+        })
+        assert first.status_code == 200, first.text
+        assert first.json()["pending_total"] == 3
+        assert first.json()["total"] == 3
+        assert _pending_ids(first.json()) == ["solo-a"]
+        second = await c.get("/api/cash-bank/statements/pending-review", params={
+            "cash_bank_id": account, **PERIOD, "page": 2, "page_size": 1,
+            "review_revision": first.json()["review_revision"],
+        })
+        assert second.json()["stale"] is False
+        assert second.json()["pending_total"] == 3
+        await server.db[LINES].insert_one(_review_line(account, "aaa-new", date="2026-09-01", description="BARIS BARU"))
+        stale = await c.get("/api/cash-bank/statements/pending-review", params={
+            "cash_bank_id": account, **PERIOD, "page": 3, "page_size": 1,
+            "review_revision": first.json()["review_revision"],
+        })
+        assert stale.status_code == 200, stale.text
+        assert stale.json()["stale"] is True
+        assert _pending_ids(stale.json()) == []
+        assert stale.json()["pending_total"] == 4
+        fresh = await c.get("/api/cash-bank/statements/pending-review", params={
+            "cash_bank_id": account, **PERIOD, "page": 1, "page_size": 1,
+        })
+        assert fresh.json()["stale"] is False
+        assert _pending_ids(fresh.json()) == ["aaa-new"]
+        assert fresh.json()["pending_total"] == 4
+        denied_keep = await c.post("/api/cash-bank/statements/lines/claimed-row/duplicate-resolution", json={
+            "action": "keep", "reason": "masih diklaim", "idempotency_key": "keep-claimed-row",
+        })
+        denied_exclude = await c.post("/api/cash-bank/statements/lines/claimed-row/duplicate-resolution", json={
+            "action": "exclude", "reason": "masih diklaim", "idempotency_key": "exclude-claimed-row",
+        })
+        assert denied_keep.status_code == 409
+        assert denied_exclude.status_code == 409
+        claimed = await server.db[LINES].find_one({"id": "claimed-row"}, {"_id": 0})
+        assert claimed["duplicate_status"] == "pending_review"
+        assert claimed["active_claim"] == "claim-live"
+        assert await server.db[RECON_MATCHES].count_documents({"id": "match-claimed", "status": "active"}) == 1
+        denied_excluded = await c.post("/api/cash-bank/statements/lines/excluded-row/duplicate-resolution", json={
+            "action": "keep", "reason": "aktifkan lagi", "idempotency_key": "reopen-excluded-row",
+        })
+        assert denied_excluded.status_code == 409
+        assert "dikecualikan" in denied_excluded.text
+        kept = await c.post("/api/cash-bank/statements/lines/solo-a/duplicate-resolution", json={
+            "action": "keep", "reason": "baris asli", "idempotency_key": "keep-solo-a",
+        })
+        assert kept.status_code == 200, kept.text
+        replay = await c.post("/api/cash-bank/statements/lines/solo-a/duplicate-resolution", json={
+            "action": "keep", "reason": "baris asli", "idempotency_key": "keep-solo-a",
+        })
+        assert replay.status_code == 200, replay.text
+        stored = await server.db[LINES].find_one({"id": "solo-a"}, {"_id": 0})
+        assert stored["duplicate_status"] == "kept"
+        assert len(stored["resolutions"]) == 1
+        after = await c.get("/api/cash-bank/statements/pending-review", params={"cash_bank_id": account, **PERIOD})
+        assert after.json()["pending_total"] == 3
+        assert "solo-a" not in _pending_ids(after.json())
+        assert "kept-row" not in _pending_ids(after.json())
+        assert "excluded-row" not in _pending_ids(after.json())
