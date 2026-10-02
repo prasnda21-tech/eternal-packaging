@@ -372,6 +372,8 @@ async def test_detail_subtotal_bpp_and_missing_cost_is_blank():
         "accounting_posting_basis": {
             "order_id": "po-kursi",
             "line_id": "L-kursi",
+            "base_qty": "1",
+            "base_uom": "Set",
             "total_cogs": "280000.00",
         },
     })
@@ -408,7 +410,13 @@ async def test_detail_subtotal_bpp_and_missing_cost_is_blank():
     assert kursi_total["values"]["kuantitas"] == "1"
 
 
-async def test_cogs_is_split_across_finalized_invoices_not_last_purchase_price():
+async def test_unknown_posted_quantity_leaves_bpp_and_laba_blank():
+    await server.db.master_items.insert_one({
+        "id": "master-share",
+        "item_code": "BG",
+        "item_name": "Barang Bagi",
+        "last_purchase_price": "999.00",
+    })
     await _invoice(
         number="SI-A",
         date="2026-03-01",
@@ -433,12 +441,103 @@ async def test_cogs_is_split_across_finalized_invoices_not_last_purchase_price()
     async with await client_for(_user()) as client:
         march = await _show(client, "rincian-penjualan-per-barang", layout=layout, date_from="01/03/2026", date_to="31/03/2026")
         april = await _show(client, "rincian-penjualan-per-barang", layout=layout, date_from="01/04/2026", date_to="30/04/2026")
+        both = await _show(
+            client,
+            "rincian-penjualan-per-barang",
+            layout=layout,
+            date_from="01/03/2026",
+            date_to="30/04/2026",
+        )
     assert march.status_code == 200
     march_line = next(row for row in march.json()["rows"] if row["kind"] == "line")
     april_line = next(row for row in april.json()["rows"] if row["kind"] == "line")
-    assert march_line["values"]["bpp"] == "10.00"
-    assert april_line["values"]["bpp"] == "30.00"
-    assert march_line["values"]["laba"] == "90.00"
+    assert march_line["values"]["bpp"] is None
+    assert march_line["values"]["laba"] is None
+    assert april_line["values"]["bpp"] is None
+    assert april_line["values"]["laba"] is None
+    assert march.json()["totals"]["bpp"] is None
+    assert both.json()["totals"]["laba"] is None
+    assert all(row["values"]["bpp"] is None for row in both.json()["rows"] if row["kind"] == "line")
+
+
+async def test_partial_bpp_keeps_uninvoiced_cost_and_ignores_view_filters():
+    """1.000 PCS posted at 100.000; 200 then 300 invoiced; 50.000 stays unallocated."""
+    later = _line("Barang Parsial", 300, 500, code="BP", unit="Pcs", line_id="L-part")
+    earlier = _line("Barang Parsial", 200, 500, code="BP", unit="PCS", line_id="L-part")
+    await _invoice(
+        number="SI-300",
+        date="2026-03-20",
+        lines=[later],
+        outlet="Semarang",
+        po_id="po-part",
+    )
+    await _invoice(
+        number="SI-200",
+        date="2026-03-10",
+        lines=[earlier],
+        outlet="Cabang Jogja",
+        po_id="po-part",
+    )
+    await server.db.inventory_issue_accounting.insert_one({
+        "status": "posted",
+        "movement_id": "mov-part-1000",
+        "accounting_posting_basis": {
+            "order_id": "po-part",
+            "line_id": "L-part",
+            "base_qty": "1000",
+            "base_uom": "PCS",
+            "transaction_uom": "PCS",
+            "total_cogs": "100000.00",
+        },
+    })
+    layout = {"columns": ["nomor", "kuantitas", "satuan", "penjualan", "bpp", "laba"]}
+    summary_layout = {"columns": ["nama_barang", "satuan", "kuantitas", "penjualan"]}
+    async with await client_for(_user()) as client:
+        first_open = await _show(client, "daftar-faktur-penjualan")
+        march_early = await _show(
+            client, "rincian-penjualan-per-barang", layout=layout,
+            date_from="01/03/2026", date_to="15/03/2026",
+        )
+        march_late = await _show(
+            client, "rincian-penjualan-per-barang", layout=layout,
+            date_from="16/03/2026", date_to="31/03/2026", branch="semarang",
+        )
+        jogja = await _show(client, "rincian-penjualan-per-barang", layout=layout, branch="jogja")
+        pages = [
+            await _show(client, "rincian-penjualan-per-barang", layout=layout, branch="semua", page_size=1, page=page)
+            for page in (1, 2, 3, 4)
+        ]
+        full = await _show(client, "rincian-penjualan-per-barang", layout=layout, page_size=25)
+        summary = await _show(client, "penjualan-per-barang", layout=summary_layout)
+    assert first_open.status_code == 200
+
+    def line_map(payload):
+        return {row["values"]["nomor"]: row["values"] for row in payload["rows"] if row["kind"] == "line"}
+
+    early = line_map(march_early.json())
+    late = line_map(march_late.json())
+    jogja_rows = line_map(jogja.json())
+    page_rows = {}
+    for page in pages:
+        page_rows.update(line_map(page.json()))
+    full_rows = line_map(full.json())
+    assert early["SI-200"]["bpp"] == "20000.00"
+    assert early["SI-200"]["laba"] == "80000.00"
+    assert "SI-300" not in early
+    assert late["SI-300"]["bpp"] == "30000.00"
+    assert late["SI-300"]["laba"] == "120000.00"
+    assert jogja_rows["SI-200"]["bpp"] == "20000.00"
+    assert "SI-300" not in jogja_rows
+    assert page_rows["SI-200"]["bpp"] == "20000.00"
+    assert page_rows["SI-300"]["bpp"] == "30000.00"
+    assert full_rows["SI-200"]["bpp"] == "20000.00"
+    assert full_rows["SI-300"]["bpp"] == "30000.00"
+    assert full.json()["totals"]["bpp"] == "50000.00"
+    assert full.json()["totals"]["laba"] == "200000.00"
+    assert Decimal(full.json()["totals"]["bpp"]) != Decimal("100000.00")
+    summary_lines = [row["values"] for row in summary.json()["rows"] if row["kind"] == "line"]
+    assert {row["kuantitas"] for row in summary_lines} == {"200", "300"}
+    assert sum(Decimal(row["penjualan"]) for row in summary_lines) == Decimal("250000.00")
 
 
 async def test_category_analysis_groups_verified_column():
@@ -458,18 +557,43 @@ async def test_category_analysis_groups_verified_column():
             "penjualan-per-barang",
             layout={"analysis_row": "nama_kategori_barang", "columns": ["nama_kategori", "kuantitas", "penjualan"]},
         )
+        exported = await client.post("/api/laporan/penjualan/ekspor", json={
+            "report_id": "penjualan-per-barang",
+            "date_from": "01/03/2026",
+            "date_to": "31/03/2026",
+            "branch": "semua",
+            "layout": {"analysis_row": "nama_kategori_barang", "columns": ["nama_kategori", "kuantitas", "penjualan"]},
+        })
     assert shown.status_code == 200, shown.text
     body = shown.json()
     assert [col["label"] for col in body["columns"]] == [
         "Nama Kategori Barang Barang & Jasa",
+        "Satuan",
         "Kuantitas",
         "Penjualan",
     ]
-    rows = {row["values"]["nama_kategori"]: row["values"] for row in body["rows"] if row["kind"] == "line"}
-    assert rows["Snack"]["kuantitas"] == "5"
-    assert rows["Snack"]["penjualan"] == "20000.00"
-    assert rows["Minuman"]["penjualan"] == "6000.00"
+    rows = {
+        (row["values"]["nama_kategori"], row["values"]["satuan"]): row["values"]
+        for row in body["rows"] if row["kind"] == "line"
+    }
+    assert rows[("Snack", "Pcs")]["kuantitas"] == "4"
+    assert rows[("Snack", "Pcs")]["penjualan"] == "10000.00"
+    assert rows[("Snack", "Box")]["kuantitas"] == "1"
+    assert rows[("Snack", "Box")]["penjualan"] == "10000.00"
+    assert rows[("Minuman", "Cup")]["kuantitas"] == "2"
+    assert rows[("Minuman", "Cup")]["penjualan"] == "6000.00"
+    assert "5" not in {row["kuantitas"] for row in rows.values()}
     assert body["totals"]["penjualan"] == "26000.00"
+    assert body["totals"]["kuantitas"] is None
+    assert exported.status_code == 200, exported.text
+    book = load_workbook(BytesIO(exported.content))
+    sheet = book.active
+    assert [sheet.cell(7, col).value for col in range(1, 5)] == ["Snack", "Pcs", "4", "10.000,00"]
+    assert [sheet.cell(8, col).value for col in range(1, 5)] == ["Snack", "Box", "1", "10.000,00"]
+    assert [sheet.cell(9, col).value for col in range(1, 5)] == ["Minuman", "Cup", "2", "6.000,00"]
+    assert sheet.cell(10, 1).value == "Total"
+    assert sheet.cell(10, 3).value in (None, "")
+    assert sheet.cell(10, 4).value == "26.000,00"
 
 
 async def test_export_follows_filter_and_permission():
@@ -586,8 +710,8 @@ async def test_partial_invoice_cogs_uses_base_qty_once():
     carton["conversion_factor"] = 1000
     pieces = _line("Karton", 500, 1, code="KT", unit="Pcs", line_id="L-part")
     pieces["conversion_factor"] = 1
-    await _invoice(number="SI-DUS", date="2026-03-04", lines=[carton], po_id="po-part")
     await _invoice(number="SI-PCS", date="2026-03-18", lines=[pieces], po_id="po-part")
+    await _invoice(number="SI-DUS", date="2026-03-04", lines=[carton], po_id="po-part")
     await server.db.inventory_issue_accounting.insert_one({
         "status": "posted",
         "movement_id": "mov-part",
@@ -628,6 +752,25 @@ async def test_partial_invoice_cogs_uses_base_qty_once():
     assert rows["SI-PCS"]["laba"] is None
     assert shown.json()["totals"]["bpp"] is None
     assert shown.json()["totals"]["laba"] is None
+    async with await client_for(_user()) as client:
+        only_pieces = await _show(
+            client,
+            "rincian-penjualan-per-barang",
+            layout=layout,
+            date_from="18/03/2026",
+            date_to="18/03/2026",
+        )
+        only_carton = await _show(
+            client,
+            "rincian-penjualan-per-barang",
+            layout=layout,
+            date_from="04/03/2026",
+            date_to="04/03/2026",
+        )
+    piece_only = next(row["values"] for row in only_pieces.json()["rows"] if row["kind"] == "line")
+    carton_only = next(row["values"] for row in only_carton.json()["rows"] if row["kind"] == "line")
+    assert piece_only["bpp"] is None
+    assert carton_only["bpp"] == "100.00"
 
 
 async def test_mixed_units_without_conversion_do_not_invent_bpp():
@@ -710,10 +853,15 @@ async def test_missing_category_is_named_and_export_matches_screen_total():
     assert shown.status_code == 200
     row = shown.json()["rows"][0]["values"]
     assert row["nama_kategori"] == "Tanpa Kategori"
+    assert row["satuan"] == "Pcs"
+    assert row["kuantitas"] == "2"
     assert row["penjualan"] == "2900.00"
+    assert shown.json()["totals"]["kuantitas"] == "2"
     assert shown.json()["totals"]["penjualan"] == "2900.00"
     book = load_workbook(BytesIO(exported.content))
     sheet = book.active
     assert sheet.cell(7, 1).value == "Tanpa Kategori"
-    assert sheet.cell(7, 3).value == "2.900,00"
-    assert sheet.cell(8, 3).value == "2.900,00"
+    assert sheet.cell(7, 2).value == "Pcs"
+    assert sheet.cell(7, 4).value == "2.900,00"
+    assert sheet.cell(8, 4).value == "2.900,00"
+    assert sheet.cell(8, 3).value == "2"

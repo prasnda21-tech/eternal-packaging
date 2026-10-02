@@ -22,15 +22,19 @@ BPP / laba kotor
   field ``accounting_posting_basis.total_cogs``. Dokumen yang ``movement_id``-nya
   sama dihitung sekali. Status pending diabaikan. Harga beli terakhir tidak dipakai.
 - Dicocokkan ke baris sumber (order_id + line_id, atau line_idx bila line_id kosong).
-- Bila posting menyimpan ``base_qty`` / ``issue_base_qty``, bagian faktur memakai
-  kuantitas dasar (``base_qty`` baris atau kuantitas × ``conversion_factor``).
-  BPP tidak diberikan utuh ke setiap faktur parsial, dan tidak melebihi HPP posted.
-  Baris yang kuantitas dasarnya melebihi sisa HPP posted dikosongkan.
-- Bila posting tidak menyimpan kuantitas dasar, HPP dibagi ke faktur finalized
-  baris itu hanya jika satuannya sama. Satuan yang berbeda tanpa faktor konversi
-  tidak dibagi.
-- Bila BPP sebuah baris belum lengkap, laba baris itu dikosongkan. Total BPP
-  dan laba dikosongkan bila ada baris dalam cakupan yang belum lengkap.
+- Alokasi hanya dilakukan bila kuantitas sumber (``base_qty`` / ``issue_base_qty``)
+  positif, satuan atau faktor konversi pada baris faktur sama dengan dasar
+  posting, dan bagian yang diberikan tidak melebihi sisa kuantitas posting.
+- Bagian faktur = total BPP × kuantitas baris / kuantitas posting.
+  Barang yang belum difaktur tetap memegang sisa biaya; sisa itu tidak
+  dibebankan ke faktur finalized yang sudah terlihat. Sisa pembulatan juga
+  tidak ditambahkan ke faktur terakhir.
+- Bila kuantitas posting tidak diketahui, satuan posting tidak konsisten, atau
+  satuan baris tidak dapat dibuktikan, BPP dan laba baris itu dikosongkan.
+  Total BPP dan laba dikosongkan bila ada baris dalam cakupan yang belum lengkap.
+- Hasil alokasi dihitung dari seluruh faktur finalized baris itu, sebelum
+  filter tanggal, cabang, dan halaman. Urutannya tanggal dan nomor faktur,
+  bukan urutan dokumen dibaca.
 
 Cabang
 - Identitas terstruktur ``branch_id`` / ``cabang_id`` / ``_branch_id`` dipakai
@@ -44,6 +48,10 @@ Cabang
 Kategori
 - Dari kategori baris atau master item yang sudah tersimpan. Kosong menjadi
   Tanpa Kategori. Laporan tidak mengarang kategori.
+- Analisa kategori menjumlahkan kuantitas per satuan dan menampilkan satuan itu.
+  Dus dan Pcs tidak dijumlahkan menjadi satu kuantitas, dan tidak dikonversi
+  ke satu satuan kategori. Total kuantitas dikosongkan bila hasil memuat lebih
+  dari satu satuan. Nilai Penjualan tetap dijumlahkan.
 
 Total
 - Dihitung dari seluruh baris yang lolos filter, sebelum potongan halaman.
@@ -374,12 +382,15 @@ def _selected_columns(report_id: str, layout: Optional[dict]) -> List[dict]:
         chosen = [dict(col) for col in source if col["default"]]
     analysis = _text((layout or {}).get("analysis_row"))
     if report_id == "penjualan-per-barang" and analysis == "nama_kategori_barang":
-        chosen = [col for col in chosen if col["key"] not in {"nama_barang", "satuan", "kode"}]
+        chosen = [col for col in chosen if col["key"] not in {"nama_barang", "kode"}]
         if not any(col["key"] == "nama_kategori" for col in chosen):
             chosen.insert(0, dict(next(col for col in SUMMARY_COLUMNS if col["key"] == "nama_kategori")))
         else:
             cat = next(col for col in chosen if col["key"] == "nama_kategori")
             chosen = [cat] + [col for col in chosen if col["key"] != "nama_kategori"]
+        if not any(col["key"] == "satuan" for col in chosen):
+            satuan = dict(next(col for col in SUMMARY_COLUMNS if col["key"] == "satuan"))
+            chosen.insert(1, satuan)
     return chosen
 
 
@@ -425,26 +436,6 @@ def allocate_header_discount(subtotals: Sequence[Decimal], discount: Decimal) ->
             share = _money(discount * amount / subtotal)
             used += share
         shares.append(share)
-    return shares
-
-
-def split_cogs(total: Optional[Decimal], qtys: Sequence[Decimal]) -> List[Optional[Decimal]]:
-    if total is None:
-        return [None for _ in qtys]
-    weights = [_dec(qty) for qty in qtys]
-    base = sum(weights, Decimal("0"))
-    if base <= 0:
-        return [None for _ in qtys]
-    amount = _money(total)
-    shares: List[Optional[Decimal]] = []
-    used = Decimal("0.00")
-    for index, qty in enumerate(weights):
-        if index == len(weights) - 1:
-            shares.append(_money(amount - used))
-        else:
-            share = _money(amount * qty / base)
-            used += share
-            shares.append(share)
     return shares
 
 
@@ -644,6 +635,7 @@ async def _sales_context(db) -> dict:
             "total": Decimal("0.00"),
             "base_qty": Decimal("0"),
             "base_complete": True,
+            "uoms": set(),
         })
         slot["total"] = _money(slot["total"] + _dec(basis.get("total_cogs")))
         raw_base = basis.get("base_qty")
@@ -653,6 +645,7 @@ async def _sales_context(db) -> dict:
             slot["base_complete"] = False
         else:
             slot["base_qty"] = slot["base_qty"] + _dec(raw_base)
+            slot["uoms"].add(_posting_uom(basis, doc))
     return {
         "invoices": invoices,
         "orders": orders,
@@ -681,53 +674,103 @@ def _line_key(invoice: dict, line: dict) -> Tuple[str, str]:
     return order_id, f"idx:{line.get('line_idx')}"
 
 
-def _line_weight(line: dict, master: Optional[dict]) -> Tuple[Optional[Decimal], str]:
-    """Weight for COGS allocation. Base quantity is used whenever a factor is known."""
+def _normalize_uom(value: Any) -> str:
+    return _text(value).casefold()
+
+
+def _posting_uom(basis: dict, doc: dict) -> str:
+    for source in (basis, doc):
+        if not isinstance(source, dict):
+            continue
+        for key in ("base_uom", "transaction_uom"):
+            token = _normalize_uom(source.get(key))
+            if token:
+                return token
+    return ""
+
+
+def _line_weight(line: dict) -> Tuple[Decimal, str]:
+    """Quantity of this invoice line in the posting's base unit, when the line itself proves it."""
     qty = _dec(line.get("quantity"))
     if line.get("base_qty") not in (None, ""):
         return _dec(line.get("base_qty")), "base"
-    factor = None
-    for source in (line, master or {}):
-        if not isinstance(source, dict) or source.get("conversion_factor") in (None, ""):
-            continue
-        parsed = _dec(source.get("conversion_factor"))
-        if parsed > 0:
-            factor = parsed
-            break
-    if factor is not None:
-        return qty * factor, "base"
-    unit = _text(line.get("unit")).lower()
-    return qty, f"tx:{unit}"
+    if line.get("conversion_factor") not in (None, ""):
+        factor = _dec(line.get("conversion_factor"))
+        if factor > 0:
+            return qty * factor, "base"
+    return qty, "tx"
 
 
-def _bpp_shares(posting: dict, weights: Sequence[Decimal], modes: Sequence[str]) -> List[Optional[Decimal]]:
-    """Allocate one posted COGS total without giving it in full to every partial invoice."""
-    if any(weight is None for weight in weights) or len(set(modes)) != 1:
-        return [None for _ in weights]
-    total = _money(_dec(posting.get("total")))
-    if posting.get("base_complete") and modes and modes[0] == "base":
-        posted_base = _dec(posting.get("base_qty"))
-        if posted_base <= 0:
-            return [None for _ in weights]
-        remaining = posted_base
-        covered: List[int] = []
-        for index, weight in enumerate(weights):
-            if weight < 0 or weight > remaining:
-                continue
-            covered.append(index)
-            remaining -= weight
-        result: List[Optional[Decimal]] = [None for _ in weights]
-        if not covered:
-            return result
-        covered_qty = sum((weights[index] for index in covered), Decimal("0"))
-        covered_cost = total if covered_qty == posted_base else _money(total * covered_qty / posted_base)
-        parts = split_cogs(covered_cost, [weights[index] for index in covered])
-        for index, share in zip(covered, parts):
-            result[index] = share
+def _allocation_basis(posting: Optional[dict]) -> Optional[Tuple[Decimal, str]]:
+    """Posted quantity and its unit. Missing or mixed units cannot carry a share."""
+    if not posting or not posting.get("base_complete"):
+        return None
+    uoms = posting.get("uoms") or set()
+    if len(uoms) != 1:
+        return None
+    posted_qty = _dec(posting.get("base_qty"))
+    if posted_qty <= 0:
+        return None
+    return posted_qty, next(iter(uoms))
+
+
+def _claim_weight(row: dict, posted_uom: str) -> Optional[Decimal]:
+    mode = row.get("weight_mode")
+    if row.get("weight") is None or mode not in {"base", "tx"}:
+        return None
+    weight = _dec(row.get("weight"))
+    if weight < 0:
+        return None
+    if mode == "base":
+        return weight
+    if not posted_uom or _normalize_uom(row.get("unit")) != posted_uom:
+        return None
+    return weight
+
+
+def _allocate_posted_cogs(posting: dict, rows: Sequence[dict]) -> List[Optional[Decimal]]:
+    """Give each invoice total_cogs × line qty / posted qty.
+
+    The denominator is the posted quantity, not the invoices currently on screen.
+    Quantity that is not yet invoiced keeps its cost. A line is left blank when
+    its unit cannot be proven or when accepting it would count the same cost twice.
+    """
+    result: List[Optional[Decimal]] = [None for _ in rows]
+    basis = _allocation_basis(posting)
+    if basis is None:
         return result
-    if posting.get("base_complete"):
-        return [None for _ in weights]
-    return split_cogs(total, list(weights))
+    posted_qty, posted_uom = basis
+    total = _money(_dec(posting.get("total")))
+    claims: List[Tuple[int, Decimal]] = []
+    for index, row in enumerate(rows):
+        weight = _claim_weight(row, posted_uom)
+        if weight is None:
+            continue
+        claims.append((index, weight))
+    claims.sort(key=lambda item: (
+        rows[item[0]].get("invoice_date") or "",
+        rows[item[0]].get("invoice_number") or "",
+        item[0],
+    ))
+    claimed = sum((weight for _, weight in claims), Decimal("0"))
+    if claimed <= posted_qty:
+        accepted = claims
+    else:
+        accepted = []
+        remaining = posted_qty
+        for index, weight in claims:
+            if weight > remaining:
+                continue
+            accepted.append((index, weight))
+            remaining -= weight
+    used = Decimal("0.00")
+    for index, weight in accepted:
+        share = Decimal("0.00") if weight == 0 else _money(total * weight / posted_qty)
+        if used + share > total:
+            share = _money(total - used)
+        used += share
+        result[index] = share
+    return result
 
 
 def _prepared_lines(ctx: dict, start: str, end: str, branch: str) -> Tuple[List[dict], dict]:
@@ -742,7 +785,7 @@ def _prepared_lines(ctx: dict, start: str, end: str, branch: str) -> Tuple[List[
         for index, line in enumerate(lines):
             qty = _dec(line.get("quantity"))
             master = _master_for(line, ctx)
-            weight, weight_mode = _line_weight(line, master)
+            weight, weight_mode = _line_weight(line)
             finalized.append({
                 "invoice_id": invoice.get("id"),
                 "invoice_number": _text(invoice.get("invoice_number")),
@@ -775,11 +818,7 @@ def _prepared_lines(ctx: dict, start: str, end: str, branch: str) -> Tuple[List[
         posting = ctx["cogs_by_line"].get(key)
         if not posting:
             continue
-        shares = _bpp_shares(
-            posting,
-            [finalized[index]["weight"] for index in indexes],
-            [finalized[index]["weight_mode"] for index in indexes],
-        )
+        shares = _allocate_posted_cogs(posting, [finalized[index] for index in indexes])
         for index, share in zip(indexes, shares):
             finalized[index]["bpp"] = share
     for row in finalized:
@@ -822,17 +861,21 @@ def _cell(column: dict, value: Any) -> Any:
     if column.get("money"):
         return _money_str(value) if value is not None else None
     if column.get("numeric") and column["key"] == "kuantitas":
+        if value is None:
+            return None
         return _qty_str(_dec(value))
     return value
 
 
-def _totals_payload(rows: Sequence[dict], columns: Sequence[dict]) -> dict:
+def _totals_payload(rows: Sequence[dict], columns: Sequence[dict], *, quantity_by_unit: bool = False) -> dict:
     totals = {}
     bpp_complete = all(row.get("bpp") is not None for row in rows) if rows else True
+    units = {_text(row.get("unit")) for row in rows}
+    blank_quantity = quantity_by_unit and len(units) > 1
     for column in columns:
         key = column["key"]
         if key == "kuantitas":
-            totals[key] = _qty_str(sum((_dec(row.get("quantity")) for row in rows), Decimal("0")))
+            totals[key] = None if blank_quantity else _qty_str(sum((_dec(row.get("quantity")) for row in rows), Decimal("0")))
         elif key == "penjualan":
             totals[key] = _money_str(sum((row["penjualan"] for row in rows), Decimal("0.00")))
         elif key == "diskon":
@@ -854,7 +897,7 @@ def _summary_rows(lines: Sequence[dict], analysis: str) -> List[dict]:
     order: List[Tuple] = []
     for line in lines:
         if analysis == "nama_kategori_barang":
-            key = (line.get("category") or "",)
+            key = (line.get("category") or "", line.get("unit") or "")
         else:
             key = (line["item_code"], line["item_name"], line["unit"])
         if key not in buckets:
@@ -1048,9 +1091,9 @@ def _methodology(branch: str, report_id: str) -> dict:
         "penjualan": "nilai bersih sebelum PPN dan biaya lainnya",
         "invoice_total": "kolom Total pada Daftar Faktur Penjualan adalah grand_total faktur dan boleh berbeda dari Penjualan",
         "tax": "PPN tidak diaktifkan di pekerjaan ini; angka pajak yang sudah tersimpan tidak diubah",
-        "bpp": "HPP posted dibagi menurut kuantitas dasar bila tersedia, tanpa dihitung ulang pada faktur lain",
-        "bpp_missing": "BPP dan laba dikosongkan bila posting HPP belum lengkap untuk baris itu",
-        "category": "kategori master atau baris; kosong ditampilkan sebagai Tanpa Kategori",
+        "bpp": "BPP = total HPP posted × kuantitas baris / kuantitas posting; sisa yang belum difaktur tidak dialokasikan",
+        "bpp_missing": "BPP dan laba dikosongkan bila kuantitas posting atau satuan alokasi tidak dapat dibuktikan",
+        "category": "kategori master atau baris; kosong ditampilkan sebagai Tanpa Kategori; kuantitas dijumlahkan per satuan",
         "branch_identity": "branch_id terstruktur didahulukan; teks hanya lewat peta eksplisit",
         "branch": branch,
         "orders_are_not_revenue": True,
@@ -1094,7 +1137,7 @@ async def run_report(
     if report_id == "penjualan-per-barang":
         full = _summary_rows(lines, analysis)
         display_rows = [_project_summary(row, columns) for row in full]
-        totals = _totals_payload(full, columns)
+        totals = _totals_payload(full, columns, quantity_by_unit=(analysis == "nama_kategori_barang"))
         grouped = False
     elif report_id == "rincian-penjualan-per-barang":
         grouped_rows = _detail_groups(lines, show_currency)
