@@ -252,6 +252,21 @@ def register_sales_pwa_routes(
         _ignore_spoofed_sales_id(sales_user_id, sales_id)
         return await spwa.sales_pwa_dashboard(get_db(), user, month=month or "")
 
+    @api_router.get("/sales-pwa/deliveries/today")
+    async def sales_pwa_deliveries_today(
+        sales_user_id: Optional[str] = None,
+        sales_id: Optional[str] = None,
+        schedule_date: Optional[str] = Query(default=None, alias="date"),
+        order_id: Optional[str] = None,
+        po_id: Optional[str] = None,
+        user=Depends(_pwa_user),
+    ):
+        """Read-only. Date and sales identity from the query are ignored."""
+        _ignore_spoofed_sales_id(sales_user_id, sales_id)
+        del schedule_date, order_id, po_id
+        from services.sales_pwa_deliveries import list_sales_today_deliveries
+        return await list_sales_today_deliveries(get_db(), user)
+
     @api_router.get("/sales-pwa/invoices")
     async def sales_pwa_invoices(
         month: Optional[str] = None,

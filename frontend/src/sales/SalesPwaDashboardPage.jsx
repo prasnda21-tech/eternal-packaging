@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { CalendarDays, ChevronRight, ClipboardList, MapPin, TrendingUp, WalletCards } from "lucide-react";
+import { CalendarDays, ChevronRight, ClipboardList, MapPin, TrendingUp, Truck, WalletCards } from "lucide-react";
 import api from "../lib/api";
-import { currentSalesMonth, formatSalesDate, formatSalesMoney, salesMonthBounds, salesWibParts } from "../lib/salesPwa";
+import { useAuth } from "../lib/auth";
+import { currentSalesMonth, formatSalesDate, formatSalesMoney, salesJakartaDay, salesMonthBounds, salesWibParts } from "../lib/salesPwa";
 import SalesPwaDesignApproval, { salesDesignApprovalPath } from "./SalesPwaDesignApproval";
 
 const VISIT_MONTHS = ["Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus", "September", "Oktober", "November", "Desember"];
@@ -250,6 +251,7 @@ export default function SalesPwaDashboardPage() {
         <input aria-label="Bulan dashboard" type="month" value={month} onChange={(event) => { setMonth(event.target.value); setError(""); }} />
       </header>
       <main className="spwa-main" data-testid="sales-pwa-dashboard">
+        <TodayDeliveries />
         {error && <div className="spwa-err">{error}</div>}
         {!visible && !error && <div className="spwa-muted">Memuat data penjualan...</div>}
         {visible && (
@@ -459,6 +461,162 @@ export default function SalesPwaDashboardPage() {
         )}
       </main>
     </>
+  );
+}
+
+function deliveryRowKey(row) {
+  return String(row?.row_id || row?.id || "");
+}
+
+function scheduleWhen(row) {
+  const date = formatSalesDate(row?.schedule_date);
+  const clock = String(row?.schedule_time || "").trim();
+  if (date === "—") return clock;
+  return clock ? `${date} ${clock}` : date;
+}
+
+function TodayDeliveries() {
+  const auth = useAuth();
+  const userId = String(auth?.user?.id || auth?.user?.user_id || "");
+  const liveDay = salesJakartaDay();
+  const [boundUser, setBoundUser] = useState(userId);
+  const [boundDay, setBoundDay] = useState(liveDay);
+  const [payload, setPayload] = useState(null);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [reload, setReload] = useState(0);
+  const [openId, setOpenId] = useState("");
+
+  if (boundUser !== userId || boundDay !== liveDay || (payload && payload.date !== liveDay)) {
+    setBoundUser(userId);
+    setBoundDay(liveDay);
+    setPayload(null);
+    setError("");
+    setLoading(true);
+    setOpenId("");
+  }
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const next = salesJakartaDay();
+      setBoundDay((current) => (current === next ? current : next));
+    }, 30000);
+    const onVisible = () => setBoundDay(salesJakartaDay());
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof api.salesPwaDeliveriesToday !== "function") {
+      setPayload({ date: boundDay, timezone: "Asia/Jakarta", total: 0, qty: 0, rows: [], sales_user_id: userId });
+      setError("");
+      setLoading(false);
+      return undefined;
+    }
+    let cancelled = false;
+    setLoading(true);
+    setError("");
+    setPayload(null);
+    const requestedDay = boundDay;
+    const requestedUser = userId;
+    api.salesPwaDeliveriesToday()
+      .then((result) => {
+        if (cancelled) return;
+        const date = String(result?.date || "");
+        const owner = String(result?.sales_user_id || "");
+        if (date !== requestedDay || (requestedUser && owner && owner !== requestedUser)) {
+          setPayload(null);
+          setError("Jadwal pengiriman gagal dimuat.");
+          setLoading(false);
+          return;
+        }
+        setPayload({
+          date,
+          timezone: result?.timezone || "Asia/Jakarta",
+          total: Number(result?.total) || 0,
+          po_count: Number(result?.po_count) || 0,
+          qty: Number(result?.qty) || 0,
+          sales_user_id: owner,
+          rows: Array.isArray(result?.rows) ? result.rows : [],
+        });
+        setError("");
+        setLoading(false);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setPayload(null);
+        setError("Jadwal pengiriman gagal dimuat.");
+        setLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [userId, boundDay, reload]);
+
+  const fresh = payload && payload.date === liveDay && (!userId || !payload.sales_user_id || payload.sales_user_id === userId);
+  const rows = fresh && Array.isArray(payload.rows) ? payload.rows : [];
+  return (
+    <section className="spwa-panel spwa-panel-first" data-testid="sales-today-deliveries">
+      <div className="spwa-section-head">
+        <div>
+          <p className="spwa-kicker">PENGIRIMAN</p>
+          <h2>Pengiriman Hari Ini</h2>
+        </div>
+        <Truck size={16} aria-hidden="true" />
+      </div>
+      <p className="spwa-ship-note">Jadwal pengiriman hari ini. Tidak mengikuti filter bulan omzet.</p>
+      {loading && <p className="spwa-muted" data-testid="sales-today-loading">Memuat jadwal pengiriman...</p>}
+      {!loading && error && (
+        <div className="spwa-err" data-testid="sales-today-error">
+          <p>{error}</p>
+          <button type="button" className="spwa-retry" data-testid="sales-today-retry" onClick={() => setReload((value) => value + 1)}>Coba Lagi</button>
+        </div>
+      )}
+      {!loading && !error && rows.length === 0 && (
+        <p className="spwa-empty compact" data-testid="sales-today-empty">Belum ada jadwal pengiriman untuk PO Anda hari ini</p>
+      )}
+      {!loading && !error && rows.length > 0 && (
+        <>
+          <p className="spwa-ship-count" data-testid="sales-today-count">{payload.total} pengiriman · {payload.qty} pcs</p>
+          <div className="spwa-ship-list">
+            {rows.map((row) => {
+              const key = deliveryRowKey(row);
+              const open = openId === key;
+              return (
+                <article key={key} className="spwa-ship-card" data-testid={`sales-today-row-${key}`}>
+                  <div className="spwa-ship-top">
+                    <div>
+                      <Link className="spwa-ship-po" to={`/sales/po/${encodeURIComponent(row.id)}`} data-testid={`sales-today-po-${key}`}>{row.po_number}</Link>
+                      <strong>{row.customer}</strong>
+                    </div>
+                    <span className="spwa-ship-status" data-testid={`sales-today-status-${key}`}>{row.status_label}</span>
+                  </div>
+                  <p className="spwa-ship-meta">{scheduleWhen(row)} · Qty kirim {row.qty}</p>
+                  {row.destination ? <p className="spwa-ship-meta">{row.destination}</p> : null}
+                  <button
+                    type="button"
+                    className="spwa-ship-toggle"
+                    aria-expanded={open}
+                    data-testid={`sales-today-items-toggle-${key}`}
+                    onClick={() => setOpenId(open ? "" : key)}
+                  >
+                    {open ? "Tutup item" : "Detail item"}
+                  </button>
+                  {open && (
+                    <ul className="spwa-ship-items" data-testid={`sales-today-items-${key}`}>
+                      {(row.items || []).map((item, index) => (
+                        <li key={`${item.name}-${index}`}>{item.name} · {item.qty}</li>
+                      ))}
+                    </ul>
+                  )}
+                </article>
+              );
+            })}
+          </div>
+        </>
+      )}
+    </section>
   );
 }
 

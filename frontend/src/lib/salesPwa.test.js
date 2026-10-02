@@ -1,6 +1,6 @@
 import fs from "fs";
 import path from "path";
-import { activeSalesPwaNav, documentTotal, formatSalesDate, isSafeSalesNextPath, isSalesPwaRole, isValidSalesManifest, SALES_PWA_MORE_NAV, SALES_PWA_NAV } from "./salesPwa";
+import { activeSalesPwaNav, documentTotal, formatSalesDate, isSafeSalesNextPath, isSalesPwaRole, isValidSalesManifest, salesJakartaDay, SALES_PWA_MORE_NAV, SALES_PWA_NAV } from "./salesPwa";
 
 describe("sales PWA helpers", () => {
   test("role gate is sales_eternal only", () => {
@@ -32,6 +32,11 @@ describe("sales PWA helpers", () => {
   test("manifest is a separate sales PWA", () => {
     const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "../../public/sales-manifest.json"), "utf8"));
     expect(isValidSalesManifest(manifest)).toBe(true);
+  });
+
+  test("delivery day follows the Asia/Jakarta calendar", () => {
+    expect(salesJakartaDay(new Date("2026-10-02T16:30:00Z"))).toBe("2026-10-02");
+    expect(salesJakartaDay(new Date("2026-10-02T17:30:00Z"))).toBe("2026-10-03");
   });
 
   test("display date and document count stay local", () => {
