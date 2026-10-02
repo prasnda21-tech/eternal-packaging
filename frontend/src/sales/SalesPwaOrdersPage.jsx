@@ -3,7 +3,8 @@ import { Link, useLocation } from "react-router-dom";
 import { ChevronRight, FileText, Search, SlidersHorizontal, X } from "lucide-react";
 import api from "../lib/api";
 import { documentTotal, formatSalesDate } from "../lib/salesPwa";
-import { readSalesPwaPoListState, salesPwaPoFiltersFromContext, writeSalesPwaPoListState } from "../lib/salesPwaPoListState";
+import { SALES_PWA_PO_PAGE_SIZE, readSalesPwaPoListState, salesPwaPoFiltersFromContext, writeSalesPwaPoListState } from "../lib/salesPwaPoListState";
+import SalesPwaDesignApproval, { orderExpectsDesignLink } from "./SalesPwaDesignApproval";
 import SalesPwaDocumentSheet from "./SalesPwaDocumentSheet";
 import SalesPwaProgress from "./SalesPwaProgress";
 
@@ -112,10 +113,15 @@ export default function SalesPwaOrdersPage() {
   const [data, setData] = useState(null);
   const [dataKey, setDataKey] = useState("");
   const [err, setErr] = useState("");
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [moreFailed, setMoreFailed] = useState(false);
   const [sheet, setSheet] = useState(null);
   const filtersRef = useRef(initial.filters);
   const scrollYRef = useRef(initial.scrollY);
   const restoredRef = useRef(false);
+  const requestGen = useRef(0);
+  const offsetRef = useRef(0);
+  const loadingMoreRef = useRef(false);
   const keyword = searchKeyword(debouncedQ, columns.customer_q);
   const requestKey = JSON.stringify({
     keyword,
@@ -164,34 +170,85 @@ export default function SalesPwaOrdersPage() {
     return () => window.removeEventListener("scroll", onScroll);
   }, []);
 
+  const listParamsRef = useRef((skip) => ({ skip, limit: SALES_PWA_PO_PAGE_SIZE }));
+  listParamsRef.current = (skip) => ({
+    q: keyword,
+    status,
+    stage: columns.stage,
+    date_from: columns.date_from,
+    date_to: columns.date_to,
+    progress_min: columns.progress_min === "" ? undefined : Number(columns.progress_min),
+    buffer: columns.buffer,
+    sort: "order_date",
+    direction: "desc",
+    skip,
+    limit: SALES_PWA_PO_PAGE_SIZE,
+  });
+
   useEffect(() => {
-    let cancelled = false;
+    const generation = requestGen.current + 1;
+    requestGen.current = generation;
+    offsetRef.current = 0;
+    loadingMoreRef.current = false;
+    setLoadingMore(false);
+    setMoreFailed(false);
     setErr("");
-    api.salesPwaOrders({
-      q: keyword,
-      status,
-      stage: columns.stage,
-      date_from: columns.date_from,
-      date_to: columns.date_to,
-      progress_min: columns.progress_min === "" ? undefined : Number(columns.progress_min),
-      buffer: columns.buffer,
-      sort: "order_date",
-      direction: "desc",
-      limit: 120,
-    })
+    let cancelled = false;
+    api.salesPwaOrders(listParamsRef.current(0))
       .then((res) => {
-        if (!cancelled) {
-          setData(res);
-          setDataKey(requestKey);
-        }
+        if (cancelled || generation !== requestGen.current) return;
+        const rows = Array.isArray(res?.orders) ? res.orders : [];
+        offsetRef.current = rows.length;
+        setData({ ...res, orders: rows });
+        setDataKey(requestKey);
       })
-      .catch((e) => { if (!cancelled) setErr(e.response?.data?.detail || e.message || "Gagal memuat PO"); });
+      .catch((e) => { if (!cancelled && generation === requestGen.current) setErr(e.response?.data?.detail || e.message || "Gagal memuat PO"); });
     return () => { cancelled = true; };
   }, [keyword, status, columns, requestKey]);
 
   const visible = !searchPending && dataKey === requestKey ? data : null;
   const orders = visible?.orders || [];
-  const detailCount = [columns.stage, columns.date_from, columns.date_to, columns.progress_min, columns.buffer].filter(Boolean).length;
+  const extraFilterCount = [columns.date_from, columns.date_to, columns.progress_min, columns.buffer].filter(Boolean).length;
+  const listedTotal = Number(visible?.total);
+  const remaining = visible && Number.isFinite(listedTotal) ? Math.max(0, listedTotal - orders.length) : 0;
+
+  const loadMore = () => {
+    if (loadingMoreRef.current || !visible || remaining <= 0) return;
+    const generation = requestGen.current;
+    const skip = offsetRef.current;
+    loadingMoreRef.current = true;
+    setLoadingMore(true);
+    setMoreFailed(false);
+    api.salesPwaOrders(listParamsRef.current(skip))
+      .then((res) => {
+        if (generation !== requestGen.current) return;
+        const incoming = Array.isArray(res?.orders) ? res.orders : [];
+        setData((current) => {
+          const prev = Array.isArray(current?.orders) ? current.orders : [];
+          const seen = new Set(prev.map((row) => row?.id).filter(Boolean));
+          const merged = prev.slice();
+          incoming.forEach((row) => {
+            if (row?.id && seen.has(row.id)) return;
+            if (row?.id) seen.add(row.id);
+            merged.push(row);
+          });
+          return { ...(current || {}), ...res, orders: merged };
+        });
+        offsetRef.current = incoming.length === 0 ? Math.max(skip, Number(res?.total) || skip) : skip + incoming.length;
+        setMoreFailed(false);
+        setErr("");
+      })
+      .catch((e) => {
+        if (generation !== requestGen.current) return;
+        setMoreFailed(true);
+        setErr(e.response?.data?.detail || e.message || "Gagal memuat PO");
+      })
+      .finally(() => {
+        if (generation !== requestGen.current) return;
+        loadingMoreRef.current = false;
+        setLoadingMore(false);
+      });
+  };
 
   useLayoutEffect(() => {
     if (!visible || restoredRef.current) return;
@@ -267,6 +324,19 @@ export default function SalesPwaOrdersPage() {
             </button>
           ) : null}
         </label>
+        {columns.stage ? (
+          <div className="spwa-active-stage" data-testid="sales-active-stage">
+            <span>Tahap: {columns.stage}</span>
+            <button
+              type="button"
+              aria-label="Hapus filter tahap"
+              data-testid="sales-stage-clear"
+              onClick={() => setColumn("stage", "")}
+            >
+              <X size={14} />
+            </button>
+          </div>
+        ) : null}
         {!narrow && (
           <p className="spwa-filter-hint"><SlidersHorizontal size={13} /> Filter rinci tersedia langsung pada header tabel.</p>
         )}
@@ -278,7 +348,7 @@ export default function SalesPwaOrdersPage() {
               data-testid="sales-filter-open"
               onClick={() => setFilterOpen(true)}
             >
-              <SlidersHorizontal size={14} /> Filter{detailCount ? ` ${detailCount}` : ""}
+              <SlidersHorizontal size={14} /> Filter{extraFilterCount ? ` ${extraFilterCount}` : ""}
             </button>
           </div>
         )}
@@ -293,11 +363,6 @@ export default function SalesPwaOrdersPage() {
         )}
         {visible && !orders.length && <div className="spwa-empty">Tidak ada PO pada filter ini.</div>}
         {visible?.source_truncated && <div className="spwa-err">Sebagian sumber data belum termuat. Muat ulang sebelum mengambil keputusan.</div>}
-        {visible && Number(visible.total) > orders.length && (
-          <p className="spwa-muted" data-testid="sales-po-remainder">
-            Menampilkan {orders.length} dari {visible.total} PO. {visible.total - orders.length} PO belum ditampilkan.
-          </p>
-        )}
         {orders.length > 0 && narrow && (
           <ul className="spwa-po-cards" data-testid="sales-po-cards">
             {orders.map((o) => (
@@ -316,6 +381,7 @@ export default function SalesPwaOrdersPage() {
                     ? <span className="spwa-buffer-badge">Buffer Stock</span>
                     : <span className="spwa-buffer-plain">Bukan buffer stock</span>}
                 </div>
+                <SalesPwaDesignApproval order={o} expectMissing={orderExpectsDesignLink(o)} />
                 <div className="spwa-po-card-actions">
                   <button
                     type="button"
@@ -402,11 +468,32 @@ export default function SalesPwaOrdersPage() {
                           </button>
                         </span>
                       </Link>
+                      <div className="spwa-row-approval">
+                        <SalesPwaDesignApproval order={o} expectMissing={orderExpectsDesignLink(o)} />
+                      </div>
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
+          </div>
+        )}
+        {visible && orders.length > 0 && Number.isFinite(listedTotal) && (
+          <div className="spwa-page-more">
+            <p className="spwa-muted" data-testid="sales-po-remainder">
+              {orders.length} dari {listedTotal} PO
+            </p>
+            {remaining > 0 && (
+              <button
+                type="button"
+                className="spwa-load-more"
+                data-testid="sales-po-load-more"
+                onClick={loadMore}
+                disabled={loadingMore}
+              >
+                {loadingMore ? "Memuat..." : moreFailed ? "Coba lagi" : "Muat lagi"}
+              </button>
+            )}
           </div>
         )}
       </main>

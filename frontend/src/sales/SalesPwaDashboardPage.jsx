@@ -3,7 +3,8 @@ import { Link } from "react-router-dom";
 import { CalendarDays, ChevronRight, ClipboardList, MapPin, TrendingUp, Truck, WalletCards } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
-import { currentSalesMonth, formatSalesDate, formatSalesMoney, salesJakartaDay, salesMonthBounds, salesWibParts } from "../lib/salesPwa";
+import { currentSalesMonth, formatSalesDate, formatSalesMoney, salesJakartaDay, salesWibParts } from "../lib/salesPwa";
+import SalesPwaDesignApproval, { salesDesignApprovalPath } from "./SalesPwaDesignApproval";
 
 const VISIT_MONTHS = ["Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus", "September", "Oktober", "November", "Desember"];
 const RECEIVABLE_INFO = "Saldo invoice yang masih belum lunas, termasuk periode sebelumnya.";
@@ -73,6 +74,54 @@ function latestVisit(rows) {
   }, null);
 }
 
+function sameStageLabel(status, title) {
+  return String(status || "").trim().toLowerCase() === String(title || "").trim().toLowerCase();
+}
+
+function FieldStagePreview({ testKey, title, orders, total, stage, payment, showApproval }) {
+  const rows = Array.isArray(orders) ? orders : [];
+  const count = Number(total);
+  const shownTotal = Number.isFinite(count) ? count : rows.length;
+  if (shownTotal <= 0 && rows.length === 0) return null;
+  return (
+    <div className="spwa-stage-block" data-testid={`sales-action-${testKey}-block`}>
+      <p className="spwa-stage-total" data-testid={`sales-action-${testKey}-total`}>{shownTotal} PO {title}</p>
+      {rows.map((order) => {
+        const hasApprovalPath = (order.design_approvals || []).some((row) => salesDesignApprovalPath(row));
+        return (
+          <article
+            key={`${testKey}-${order.id}`}
+            className={`spwa-action-card${payment ? " is-payment" : ""}`}
+            data-testid={`sales-action-${testKey}-${order.id}`}
+          >
+            <strong>{order.customer}</strong>
+            <span>{order.po_number}</span>
+            {!sameStageLabel(order.status, title) && order.status ? <small>Status: {order.status}</small> : null}
+            {order.tanggal_kirim_overdue ? <small className="is-urgent">Kirim terlambat</small> : null}
+            {showApproval ? <SalesPwaDesignApproval order={order} expectMissing /> : null}
+            <Link
+              className={hasApprovalPath ? "spwa-action-secondary" : undefined}
+              to={`/sales/po/${encodeURIComponent(order.id)}`}
+            >
+              Lihat PO
+            </Link>
+          </article>
+        );
+      })}
+      {shownTotal > rows.length && (
+        <Link
+          className="spwa-stage-all"
+          to="/sales/po"
+          state={{ salesPwaPoContext: { stage } }}
+          data-testid={`sales-action-${testKey}-all`}
+        >
+          Lihat semua
+        </Link>
+      )}
+    </div>
+  );
+}
+
 export default function SalesPwaDashboardPage() {
   const [month, setMonth] = useState(currentSalesMonth());
   const [data, setData] = useState(null);
@@ -99,36 +148,29 @@ export default function SalesPwaDashboardPage() {
   }, [month]);
 
   useEffect(() => {
-    if (typeof api.salesPwaOrders !== "function") return undefined;
+    if (typeof api.salesPwaFieldActions !== "function") return undefined;
     let cancelled = false;
-    const bounds = salesMonthBounds(month);
-    const list = {
-      status: "semua",
-      sort: "order_date",
-      direction: "desc",
-      limit: 4,
-    };
-    Promise.all([
-      api.salesPwaOrders({ ...list, stage: "Approval Design" }),
-      api.salesPwaOrders({ ...list, stage: "Approval Payment" }),
-      api.salesPwaOrders({ ...list, status: "selesai", stage: "", date_from: bounds.date_from, date_to: bounds.date_to, limit: 1 }),
-    ]).then(([design, payment, done]) => {
-      if (cancelled) return;
-      setActions({
-        design: design?.orders || [],
-        payment: payment?.orders || [],
-        designTotal: listedTotal(design),
-        paymentTotal: listedTotal(payment),
-        selesai: done?.counts?.selesai ?? done?.total ?? 0,
-        ready: true,
-      });
-      setActionMonth(month);
-    }).catch(() => {
-      if (!cancelled) {
-        setActions({ design: [], payment: [], designTotal: 0, paymentTotal: 0, selesai: null, ready: false });
+    api.salesPwaFieldActions({ month })
+      .then((result) => {
+        if (cancelled) return;
+        const design = result?.design || {};
+        const payment = result?.payment || {};
+        setActions({
+          design: design.orders || [],
+          payment: payment.orders || [],
+          designTotal: listedTotal(design),
+          paymentTotal: listedTotal(payment),
+          selesai: Number.isFinite(Number(result?.selesai)) ? Number(result.selesai) : 0,
+          ready: true,
+        });
         setActionMonth(month);
-      }
-    });
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setActions({ design: [], payment: [], designTotal: 0, paymentTotal: 0, selesai: null, ready: false });
+          setActionMonth(month);
+        }
+      });
     return () => { cancelled = true; };
   }, [month]);
 
@@ -227,26 +269,22 @@ export default function SalesPwaDashboardPage() {
                 {actionVisible.ready === false && (
                   <p className="spwa-empty compact">Tindakan belum dapat dimuat.</p>
                 )}
-                {(actionVisible.design || []).map((order) => (
-                  <article key={`design-${order.id}`} className="spwa-action-card" data-testid={`sales-action-design-${order.id}`}>
-                    <p>Approval Design</p>
-                    <strong>{order.customer}</strong>
-                    <span>{order.po_number}</span>
-                    <small>Status: {order.status}</small>
-                    {order.tanggal_kirim_overdue ? <small className="is-urgent">Kirim terlambat</small> : null}
-                    <Link to={`/sales/po/${encodeURIComponent(order.id)}`}>Lihat PO Approval Design</Link>
-                  </article>
-                ))}
-                {(actionVisible.payment || []).map((order) => (
-                  <article key={`payment-${order.id}`} className="spwa-action-card is-payment" data-testid={`sales-action-payment-${order.id}`}>
-                    <p>Approval Payment</p>
-                    <strong>{order.customer}</strong>
-                    <span>{order.po_number}</span>
-                    <small>Status: {order.status}</small>
-                    {order.tanggal_kirim_overdue ? <small className="is-urgent">Kirim terlambat</small> : null}
-                    <Link to={`/sales/po/${encodeURIComponent(order.id)}`}>Lihat PO Approval Payment</Link>
-                  </article>
-                ))}
+                <FieldStagePreview
+                  testKey="design"
+                  title="Approval Design"
+                  orders={actionVisible.design}
+                  total={actionVisible.designTotal}
+                  stage="Approval Design"
+                  showApproval
+                />
+                <FieldStagePreview
+                  testKey="payment"
+                  title="Approval Payment"
+                  orders={actionVisible.payment}
+                  total={actionVisible.paymentTotal}
+                  stage="Approval Payment"
+                  payment
+                />
               </section>
             )}
 

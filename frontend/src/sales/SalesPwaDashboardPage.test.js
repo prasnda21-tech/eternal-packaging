@@ -30,6 +30,7 @@ jest.mock("../lib/api", () => ({
     salesPwaDashboard: jest.fn(),
     salesPwaDeliveriesToday: jest.fn(),
     salesPwaOrders: jest.fn(),
+    salesPwaFieldActions: jest.fn(),
     salesPwaVisits: jest.fn(),
     salesPwaIntelligence: jest.fn(),
   },
@@ -56,6 +57,12 @@ beforeEach(() => {
   api.salesPwaDeliveriesToday.mockResolvedValue(emptyDeliveries());
   api.salesPwaOrders.mockReset();
   api.salesPwaOrders.mockResolvedValue({ orders: [], counts: { selesai: 0 }, total: 0 });
+  api.salesPwaFieldActions.mockReset();
+  api.salesPwaFieldActions.mockResolvedValue({
+    design: { orders: [], total: 0 },
+    payment: { orders: [], total: 0 },
+    selesai: 0,
+  });
   api.salesPwaVisits.mockReset();
   api.salesPwaVisits.mockResolvedValue({ visits: [] });
   api.salesPwaIntelligence.mockReset();
@@ -140,14 +147,10 @@ test("shows owned action cards and the existing selesai count without an approva
     metrics: { revenue: 1000, receivables: 0, invoice_count: 1, receivable_invoice_count: 0, active_po: 2, buffer_po: 1, visit_month: 1, visit_overdue: 0 },
     upcoming_visits: [{ id: "v1", outlet: "Tala Bumi Coffee", date: "2026-09-30", at: "2026-09-30T10:00:00", overdue: false }],
   });
-  api.salesPwaOrders.mockImplementation((params) => {
-    if (params.stage === "Approval Design") {
-      return Promise.resolve({ orders: [{ id: "po-design", customer: "Tala Bumi Coffee", po_number: "PO/2026/09/23/000023", status: "Approval Design" }] });
-    }
-    if (params.stage === "Approval Payment") {
-      return Promise.resolve({ orders: [{ id: "po-pay", customer: "CV Maju Jaya", po_number: "PO/2026/09/21/000017", status: "Approval Payment" }] });
-    }
-    return Promise.resolve({ orders: [], counts: { selesai: 12 }, total: 12 });
+  api.salesPwaFieldActions.mockResolvedValue({
+    design: { orders: [{ id: "po-design", customer: "Tala Bumi Coffee", po_number: "PO/2026/09/23/000023", status: "Approval Design" }], total: 1 },
+    payment: { orders: [{ id: "po-pay", customer: "CV Maju Jaya", po_number: "PO/2026/09/21/000017", status: "Approval Payment" }], total: 1 },
+    selesai: 12,
   });
   const node = document.createElement("div");
   const root = createRoot(node);
@@ -161,15 +164,81 @@ test("shows owned action cards and the existing selesai count without an approva
   const design = node.querySelector('[data-testid="sales-action-design-po-design"] a');
   const payment = node.querySelector('[data-testid="sales-action-payment-po-pay"] a');
   expect(design.getAttribute("href")).toBe("/sales/po/po-design");
-  expect(design.textContent).toBe("Lihat PO Approval Design");
+  expect(design.textContent).toBe("Lihat PO");
+  expect(design.className).not.toContain("spwa-action-secondary");
   expect(payment.getAttribute("href")).toBe("/sales/po/po-pay");
-  expect(payment.textContent).toBe("Lihat PO Approval Payment");
+  expect(payment.textContent).toBe("Lihat PO");
+  expect(node.querySelector('[data-testid="sales-action-design-po-design"]').textContent).not.toContain("Status: Approval Design");
   expect(node.querySelector('[data-testid="sales-actions-count"]').textContent).toBe("2 PO perlu tindakan");
   expect(node.querySelector('[data-testid="sales-actions-empty"]')).toBeNull();
+  expect(node.querySelector('[data-testid="sales-approval-missing-po-design"]').textContent).toBe("Link approval belum tersedia");
+  expect(node.querySelector('[data-testid="sales-approval-open-po-design"]')).toBeNull();
+  expect(node.querySelector('[data-testid="sales-action-payment-po-pay"]').textContent).not.toContain("Link approval belum tersedia");
+  expect(node.querySelector('[data-testid="sales-action-payment-po-pay"] .spwa-approval-open')).toBeNull();
   expect(node.textContent).not.toContain("Buka Approval Design");
   expect(node.textContent).not.toContain("Menunggu:");
   expect(node.innerHTML).not.toContain("customer-approval");
   expect(node.innerHTML).not.toContain("token");
+  act(() => root.unmount());
+});
+
+test("opens the stored design approval from the lapangan card without mixing designs", async () => {
+  api.salesPwaDashboard.mockResolvedValue({
+    metrics: { revenue: 0, receivables: 0, invoice_count: 0, receivable_invoice_count: 0, active_po: 1, buffer_po: 0, visit_month: 0, visit_overdue: 0 },
+    upcoming_visits: [],
+  });
+  api.salesPwaFieldActions.mockResolvedValue({
+    design: {
+      orders: [{
+        id: "po-design",
+        customer: "Tala Bumi Coffee",
+        po_number: "PO/2026/09/23/000023",
+        status: "Approval Design",
+        design_approvals: [
+          {
+            id: "old-design",
+            status: "revoked",
+            status_label: "Dicabut",
+            design_name: "cup-lama.pdf",
+          },
+          {
+            id: "new-design",
+            status: "active",
+            status_label: "Aktif · Menunggu customer",
+            design_name: "cup-baru.pdf",
+            items: [{ idx: 0, label: "Cup 8oz · Merah" }],
+            path: "/customer/design-approval/tracking-cup-baru",
+          },
+        ],
+      }],
+      total: 1,
+    },
+    payment: { orders: [], total: 0 },
+    selesai: 0,
+  });
+  const node = document.createElement("div");
+  const root = createRoot(node);
+  await act(async () => { root.render(<SalesPwaDashboardPage />); await Promise.resolve(); });
+  await act(async () => { await Promise.resolve(); });
+  const card = node.querySelector('[data-testid="sales-action-design-po-design"]');
+  const open = card.querySelector('[data-testid="sales-approval-open-new-design"]');
+  const stale = card.querySelector('[data-testid="sales-approval-row-old-design"]');
+  expect(open.textContent).toBe("Buka Approval Desain");
+  expect(open.getAttribute("href")).toBe("/customer/design-approval/tracking-cup-baru");
+  expect(open.getAttribute("target")).toBe("_blank");
+  expect(open.parentElement.textContent).toContain("cup-baru.pdf");
+  expect(open.parentElement.textContent).toContain("Cup 8oz · Merah");
+  expect(open.parentElement.textContent).toContain("Aktif · Menunggu customer");
+  expect(stale.querySelector("a")).toBeNull();
+  expect(stale.textContent).toContain("cup-lama.pdf");
+  expect(stale.textContent).toContain("Dicabut");
+  expect(stale.textContent).toContain("Link approval belum tersedia");
+  expect(stale.textContent).not.toContain("cup-baru.pdf");
+  const poLink = card.querySelector('a[href="/sales/po/po-design"]');
+  expect(poLink.textContent).toBe("Lihat PO");
+  expect(poLink.className).toContain("spwa-action-secondary");
+  expect(card.textContent).not.toContain("Status: Approval Design");
+  expect(open.compareDocumentPosition(poLink) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   act(() => root.unmount());
 });
 
@@ -191,7 +260,8 @@ test("shows the action empty state without an approval link when nothing needs a
   expect(node.querySelector('[data-testid="sales-actions-count"]')).toBeNull();
   expect(node.querySelector('[data-testid="sales-dashboard-actions"] a')).toBeNull();
   expect(node.innerHTML).not.toContain("customer-approval");
-  expect(api.salesPwaOrders.mock.calls.every((call) => call[0].stage === "Approval Design" || call[0].stage === "Approval Payment" || call[0].status === "selesai")).toBe(true);
+  expect(api.salesPwaFieldActions).toHaveBeenCalledTimes(1);
+  expect(api.salesPwaOrders).not.toHaveBeenCalled();
   act(() => root.unmount());
 });
 
@@ -200,27 +270,33 @@ test("uses the existing list totals for the action count without another request
     metrics: { revenue: 0, receivables: 0, invoice_count: 0, receivable_invoice_count: 0, active_po: 27, buffer_po: 5, visit_month: 0, visit_overdue: 0 },
     upcoming_visits: [],
   });
-  api.salesPwaOrders.mockImplementation((params) => {
-    if (params.stage === "Approval Design") {
-      return Promise.resolve({
-        orders: [{ id: "po-design", customer: "Tala Bumi Coffee", po_number: "PO/1", status: "Approval Design" }],
-        total: 5,
-      });
-    }
-    if (params.stage === "Approval Payment") {
-      return Promise.resolve({
-        orders: [{ id: "po-pay", customer: "CV Maju Jaya", po_number: "PO/2", status: "Approval Payment" }],
-        total: 3,
-      });
-    }
-    return Promise.resolve({ orders: [], counts: { selesai: 0 }, total: 12 });
+  api.salesPwaFieldActions.mockResolvedValue({
+    design: {
+      orders: [{ id: "po-design", customer: "Tala Bumi Coffee", po_number: "PO/1", status: "Approval Design" }],
+      total: 5,
+    },
+    payment: {
+      orders: [{ id: "po-pay", customer: "CV Maju Jaya", po_number: "PO/2", status: "Approval Payment" }],
+      total: 3,
+    },
+    selesai: 0,
   });
   const node = document.createElement("div");
   const root = createRoot(node);
   await act(async () => { root.render(<SalesPwaDashboardPage />); await Promise.resolve(); });
   await act(async () => { await Promise.resolve(); });
-  expect(api.salesPwaOrders).toHaveBeenCalledTimes(3);
+  expect(api.salesPwaFieldActions).toHaveBeenCalledTimes(1);
+  expect(api.salesPwaOrders).not.toHaveBeenCalled();
   expect(node.querySelector('[data-testid="sales-actions-count"]').textContent).toBe("8 PO perlu tindakan");
+  expect(node.querySelector('[data-testid="sales-action-design-total"]').textContent).toBe("5 PO Approval Design");
+  expect(node.querySelector('[data-testid="sales-action-payment-total"]').textContent).toBe("3 PO Approval Payment");
+  const designAll = node.querySelector('[data-testid="sales-action-design-all"]');
+  const paymentAll = node.querySelector('[data-testid="sales-action-payment-all"]');
+  expect(designAll.textContent).toBe("Lihat semua");
+  expect(designAll.getAttribute("href")).toBe("/sales/po");
+  expect(JSON.parse(designAll.getAttribute("data-state"))).toEqual({ salesPwaPoContext: { stage: "Approval Design" } });
+  expect(JSON.parse(paymentAll.getAttribute("data-state"))).toEqual({ salesPwaPoContext: { stage: "Approval Payment" } });
+  expect(node.querySelectorAll('[data-testid="sales-action-design-po-design"]').length).toBe(1);
   expect(node.textContent).toContain("5 buffer stock");
   expect(node.textContent).not.toContain("Partial");
   expect(node.querySelector('[data-testid="sales-actions-empty"]')).toBeNull();

@@ -491,6 +491,11 @@ def build_router(deps):
             "design_version": current_version,
             "expiry_hours": expiry_hours,
         })
+        # Authorized write (customer_approval.manage). Keep an existing tracking
+        # token. Create one only when this active approval has none, so the
+        # public opener can be shown later without a sales read writing orders.
+        from services.customer_tracking import ensure_tracking_token
+        await ensure_tracking_token(db, order)
         await persist_order(order)
         await audit_po(order, f"customer_approval.{prior_action}", user,
                        after={"approval_id": rec["id"], "expiry_hours": expiry_hours, "design_version": current_version},

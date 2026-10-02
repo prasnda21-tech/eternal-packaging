@@ -2,6 +2,8 @@ import { salesMonthBounds } from "./salesPwa";
 
 export const SALES_PWA_PO_FILTER_KEY = "sales_pwa_po_filter";
 export const SALES_PWA_PO_SCROLL_KEY = "sales_pwa_po_scroll";
+export const SALES_PWA_PO_PAGE_SIZE = 40;
+export const SALES_PWA_FIELD_STAGES = ["Approval Design", "Approval Payment"];
 
 export const SALES_PWA_PO_STATUSES = ["semua", "berjalan", "hold", "parsial", "selesai"];
 
@@ -77,6 +79,10 @@ export function salesPwaPoFiltersFromContext(context) {
       date_from: bounds.date_from,
       date_to: bounds.date_to,
     };
+  }
+  const stage = text(context.stage);
+  if (SALES_PWA_FIELD_STAGES.includes(stage)) {
+    return { ...EMPTY_SALES_PWA_PO_FILTERS, status: "semua", stage };
   }
   return null;
 }

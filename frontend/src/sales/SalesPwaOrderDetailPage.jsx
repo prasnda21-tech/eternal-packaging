@@ -4,6 +4,7 @@ import { ChevronLeft } from "lucide-react";
 import api from "../lib/api";
 import { formatSalesDate } from "../lib/salesPwa";
 import { STATUS_PO_WORKFLOW_STAGES } from "../lib/statusPoWorkflow";
+import SalesPwaDesignApproval, { orderExpectsDesignLink } from "./SalesPwaDesignApproval";
 import SalesPwaDocumentSheet from "./SalesPwaDocumentSheet";
 
 const DOCUMENTS = [
@@ -127,6 +128,7 @@ export default function SalesPwaOrderDetailPage() {
               {order.tanggal_kirim ? <p className="spwa-status-field"><span>Pengiriman</span>{formatSalesDate(order.tanggal_kirim)}</p> : null}
               {order.tanggal_kirim_overdue ? <p className="spwa-po-card-urgency">Kirim terlambat</p> : null}
               {order.buffer_stock ? <span className="spwa-buffer-badge spwa-buffer-status">Buffer Stock</span> : null}
+              <SalesPwaDesignApproval order={order} expectMissing={orderExpectsDesignLink(order)} />
             </section>
             {address ? (
               <section className="spwa-card" data-testid="sales-detail-customer">
