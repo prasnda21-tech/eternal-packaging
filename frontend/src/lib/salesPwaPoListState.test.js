@@ -55,6 +55,7 @@ describe("sales PWA PO list session state", () => {
         date_to: "",
         progress_min: "",
         buffer: "",
+        design_queue: false,
       },
       scrollY: 0,
     });
@@ -91,5 +92,12 @@ describe("sales PWA PO list session state", () => {
     });
     expect(salesPwaPoFiltersFromContext({ stage: "Approval Design", active: true }).status).toBe("berjalan");
     expect(salesPwaPoFiltersFromContext({ stage: "Packing" })).toBeNull();
+    expect(salesPwaPoFiltersFromContext({ designQueue: true })).toMatchObject({
+      status: "semua",
+      stage: "",
+      date_from: "",
+      date_to: "",
+      design_queue: true,
+    });
   });
 });

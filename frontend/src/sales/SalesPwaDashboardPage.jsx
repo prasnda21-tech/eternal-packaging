@@ -122,6 +122,72 @@ function FieldStagePreview({ testKey, title, orders, total, stage, payment, show
   );
 }
 
+function DesignApprovalQueue({ queue, onRetry }) {
+  if (!queue) {
+    return (
+      <section className="spwa-panel spwa-panel-first" data-testid="sales-design-approval">
+        <div className="spwa-section-head">
+          <div><p className="spwa-kicker">APPROVAL</p><h2>Butuh Approval Desain</h2></div>
+        </div>
+        <p className="spwa-muted" data-testid="sales-design-approval-loading">Memuat approval desain...</p>
+      </section>
+    );
+  }
+  if (queue.failed) {
+    return (
+      <section className="spwa-panel spwa-panel-first" data-testid="sales-design-approval">
+        <div className="spwa-section-head">
+          <div><p className="spwa-kicker">APPROVAL</p><h2>Butuh Approval Desain</h2></div>
+        </div>
+        <p className="spwa-empty compact" data-testid="sales-design-approval-error">Gagal memuat approval desain</p>
+        <button type="button" className="spwa-approval-copy" data-testid="sales-design-approval-retry" onClick={onRetry}>
+          Coba lagi
+        </button>
+      </section>
+    );
+  }
+  const rows = Array.isArray(queue.orders) ? queue.orders.slice(0, 4) : [];
+  const total = Number(queue.total);
+  const shownTotal = Number.isFinite(total) ? total : rows.length;
+  return (
+    <section className="spwa-panel spwa-panel-first" data-testid="sales-design-approval">
+      <div className="spwa-section-head">
+        <div>
+          <p className="spwa-kicker">APPROVAL</p>
+          <h2>Butuh Approval Desain</h2>
+          <p className="spwa-stage-total" data-testid="sales-design-approval-total">{shownTotal} PO</p>
+        </div>
+      </div>
+      {shownTotal === 0 && (
+        <p className="spwa-empty compact" data-testid="sales-design-approval-empty">Tidak ada PO yang membutuhkan approval desain.</p>
+      )}
+      {rows.map((order) => {
+        const hasApprovalPath = (order.design_approvals || []).some((row) => salesDesignApprovalPath(row));
+        return (
+          <article key={order.id} className="spwa-action-card" data-testid={`sales-design-approval-${order.id}`}>
+            <strong>{order.customer}</strong>
+            <span>{order.po_number}</span>
+            {order.design_need?.design_name ? <small>{order.design_need.design_name}</small> : null}
+            {order.design_need?.label ? <small data-testid={`sales-design-need-${order.id}`}>{order.design_need.label}</small> : null}
+            <SalesPwaDesignApproval order={order} expectMissing />
+            <Link className={hasApprovalPath ? "spwa-action-secondary" : undefined} to={`/sales/po/${encodeURIComponent(order.id)}`}>Lihat PO</Link>
+          </article>
+        );
+      })}
+      {shownTotal > 0 && (
+        <Link
+          className="spwa-stage-all"
+          to="/sales/po"
+          state={{ salesPwaPoContext: { designQueue: true } }}
+          data-testid="sales-design-approval-all"
+        >
+          Lihat semua
+        </Link>
+      )}
+    </section>
+  );
+}
+
 export default function SalesPwaDashboardPage() {
   const [month, setMonth] = useState(currentSalesMonth());
   const [data, setData] = useState(null);
@@ -129,6 +195,8 @@ export default function SalesPwaDashboardPage() {
   const [error, setError] = useState("");
   const [actions, setActions] = useState(null);
   const [actionMonth, setActionMonth] = useState("");
+  const [designQueue, setDesignQueue] = useState(null);
+  const [designAttempt, setDesignAttempt] = useState(0);
   const [visits, setVisits] = useState(null);
   const [visitsMonth, setVisitsMonth] = useState("");
   const [visitsError, setVisitsError] = useState(false);
@@ -155,6 +223,7 @@ export default function SalesPwaDashboardPage() {
         if (cancelled) return;
         const design = result?.design || {};
         const payment = result?.payment || {};
+        const queue = result?.design_queue || {};
         setActions({
           design: design.orders || [],
           payment: payment.orders || [],
@@ -164,15 +233,20 @@ export default function SalesPwaDashboardPage() {
           ready: true,
         });
         setActionMonth(month);
+        setDesignQueue({
+          orders: Array.isArray(queue.orders) ? queue.orders : [],
+          total: listedTotal(queue),
+          failed: false,
+        });
       })
       .catch(() => {
-        if (!cancelled) {
-          setActions({ design: [], payment: [], designTotal: 0, paymentTotal: 0, selesai: null, ready: false });
-          setActionMonth(month);
-        }
+        if (cancelled) return;
+        setActions({ design: [], payment: [], designTotal: 0, paymentTotal: 0, selesai: null, ready: false });
+        setActionMonth(month);
+        setDesignQueue((current) => (current && current.failed === false ? current : { orders: [], total: 0, failed: true }));
       });
     return () => { cancelled = true; };
-  }, [month]);
+  }, [month, designAttempt]);
 
   useEffect(() => {
     if (typeof api.salesPwaVisits !== "function") {
@@ -204,9 +278,8 @@ export default function SalesPwaDashboardPage() {
   const visible = data && dataMonth === month && (!data.month || data.month === month) ? data : null;
   const metrics = visible?.metrics || {};
   const actionVisible = actions && actionMonth === month ? actions : null;
-  const actionCount = actionVisible?.ready
-    ? Number(actionVisible.designTotal || 0) + Number(actionVisible.paymentTotal || 0)
-    : 0;
+  const paymentTotal = actionVisible?.ready ? Number(actionVisible.paymentTotal || 0) : 0;
+  const designQuiet = Boolean(designQueue && designQueue.failed === false && Number(designQueue.total) === 0);
   const today = localDay();
   const classified = classifyReminders(visible?.upcoming_visits, today);
   const agendaToday = Array.isArray(visible?.agenda_today) ? visible.agenda_today.slice(0, AGENDA_SECTION_LIMIT) : classified.agenda;
@@ -245,22 +318,29 @@ export default function SalesPwaDashboardPage() {
       </header>
       <main className="spwa-main" data-testid="sales-pwa-dashboard">
         <TodayDeliveries />
+        <DesignApprovalQueue
+          queue={designQueue}
+          onRetry={() => {
+            setDesignQueue(null);
+            setDesignAttempt((attempt) => attempt + 1);
+          }}
+        />
         {error && <div className="spwa-err">{error}</div>}
         {!visible && !error && <div className="spwa-muted">Memuat data penjualan...</div>}
         {visible && (
           <>
-            {actionVisible && (
-              <section className="spwa-panel spwa-panel-first" data-testid="sales-dashboard-actions">
+            {actionVisible && (actionVisible.ready === false || paymentTotal > 0 || designQuiet) && (
+              <section className="spwa-panel" data-testid="sales-dashboard-actions">
                 <div className="spwa-section-head">
                   <div>
                     <p className="spwa-kicker">LAPANGAN</p>
                     <h2>Butuh aksi</h2>
-                    {actionVisible.ready && actionCount > 0 && (
-                      <p className="spwa-action-count" data-testid="sales-actions-count">{actionCount} PO perlu tindakan</p>
+                    {actionVisible.ready && paymentTotal > 0 && (
+                      <p className="spwa-action-count" data-testid="sales-actions-count">{paymentTotal} PO perlu tindakan</p>
                     )}
                   </div>
                 </div>
-                {actionVisible.ready && actionCount === 0 && (
+                {actionVisible.ready && paymentTotal === 0 && designQuiet && (
                   <div className="spwa-action-empty" data-testid="sales-actions-empty">
                     <p>Tidak ada PO yang membutuhkan tindakan</p>
                     <p>Semua PO berjalan normal</p>
@@ -269,14 +349,6 @@ export default function SalesPwaDashboardPage() {
                 {actionVisible.ready === false && (
                   <p className="spwa-empty compact">Tindakan belum dapat dimuat.</p>
                 )}
-                <FieldStagePreview
-                  testKey="design"
-                  title="Approval Design"
-                  orders={actionVisible.design}
-                  total={actionVisible.designTotal}
-                  stage="Approval Design"
-                  showApproval
-                />
                 <FieldStagePreview
                   testKey="payment"
                   title="Approval Payment"

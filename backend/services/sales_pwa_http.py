@@ -86,6 +86,7 @@ def register_sales_pwa_routes(
         direction: Optional[str] = None,
         skip: int = 0,
         limit: int = 50,
+        design_queue: Optional[str] = None,
         sales_user_id: Optional[str] = None,
         sales_id: Optional[str] = None,
         user=Depends(_pwa_user),
@@ -108,6 +109,7 @@ def register_sales_pwa_routes(
             direction=direction or "desc",
             skip=skip,
             limit=limit,
+            design_queue=str(design_queue or "").strip().lower() in {"1", "true", "ya", "yes"},
         )
 
     @api_router.get("/sales-pwa/field-actions")

@@ -669,9 +669,9 @@ describe("SalesPwaOrdersPage", () => {
     const other = linked.querySelector('[data-testid="sales-approval-row-des-a"]');
     expect(open.getAttribute("href")).toBe("/customer/design-approval/tok-b");
     expect(open.textContent).toBe("Buka Approval Desain");
-    expect(open.parentElement.textContent).toContain("desain-b.pdf");
-    expect(open.parentElement.textContent).toContain("Gelas · Biru");
-    expect(open.parentElement.textContent).toContain("Gelas · Hijau");
+    expect(open.closest(".spwa-approval-row").textContent).toContain("desain-b.pdf");
+    expect(open.closest(".spwa-approval-row").textContent).toContain("Gelas · Biru");
+    expect(open.closest(".spwa-approval-row").textContent).toContain("Gelas · Hijau");
     expect(other.querySelector("a, button")).toBeNull();
     expect(other.textContent).toContain("desain-a.pdf");
     expect(other.textContent).toContain("Link approval belum tersedia");
@@ -679,6 +679,42 @@ describe("SalesPwaOrdersPage", () => {
     const empty = container.querySelector('[data-testid="sales-po-card-PO-NONE"]');
     expect(empty.querySelector('[data-testid="sales-approval-missing-po-none"]').textContent).toBe("Link approval belum tersedia");
     expect(empty.querySelector("a.spwa-approval-open, button.spwa-approval-open")).toBeNull();
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  test("lihat semua design approval uses the same queue and can be cleared", async () => {
+    writeSalesPwaPoListState({
+      q: "lama",
+      status: "hold",
+      stage: "Packing",
+      date_from: "2026-01-01",
+      date_to: "2026-01-31",
+    }, 20);
+    mockRouter.state = { salesPwaPoContext: { designQueue: true } };
+    api.salesPwaOrders.mockImplementation((params) => Promise.resolve(params.design_queue
+      ? { ...sample, orders: sample.orders.slice(0, 1), total: 4, counts: { semua: 4, berjalan: 4, hold: 0, parsial: 0, selesai: 0 } }
+      : { ...sample, total: 8, counts: sample.counts }));
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = await mount(container);
+    const params = api.salesPwaOrders.mock.calls.at(-1)[0];
+    expect(params.design_queue).toBe("1");
+    expect(params.status).toBe("semua");
+    expect(params.stage).toBe("");
+    expect(params.date_from).toBe("");
+    expect(params.q).toBe("");
+    expect(container.querySelector('[data-testid="sales-design-queue"]').textContent).toContain("Butuh Approval Desain");
+    expect(container.textContent).toContain("Semua 4");
+    await act(async () => {
+      click(container.querySelector('[data-testid="sales-design-queue-clear"]'));
+    });
+    await flush();
+    const cleared = api.salesPwaOrders.mock.calls.at(-1)[0];
+    expect(cleared.design_queue).toBeUndefined();
+    expect(cleared.skip).toBe(0);
+    expect(container.querySelector('[data-testid="sales-design-queue"]')).toBeNull();
+    expect(container.textContent).toContain("Semua 8");
     act(() => root.unmount());
     container.remove();
   });

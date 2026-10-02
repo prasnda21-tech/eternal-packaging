@@ -16,6 +16,7 @@ export const EMPTY_SALES_PWA_PO_FILTERS = {
   date_to: "",
   progress_min: "",
   buffer: "",
+  design_queue: false,
 };
 
 function text(value) {
@@ -35,6 +36,7 @@ export function normalizeSalesPwaPoFilters(raw) {
     date_to: text(source.date_to),
     progress_min: text(source.progress_min),
     buffer: buffer === "ya" || buffer === "tidak" ? buffer : "",
+    design_queue: source.design_queue === true || source.design_queue === 1 || source.design_queue === "1",
   };
 }
 
@@ -79,6 +81,9 @@ export function salesPwaPoFiltersFromContext(context) {
       date_from: bounds.date_from,
       date_to: bounds.date_to,
     };
+  }
+  if (context.designQueue === true) {
+    return { ...EMPTY_SALES_PWA_PO_FILTERS, status: "semua", design_queue: true };
   }
   const stage = text(context.stage);
   if (SALES_PWA_FIELD_STAGES.includes(stage)) {

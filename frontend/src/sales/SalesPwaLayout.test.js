@@ -21,6 +21,7 @@ describe("sales PWA wiring", () => {
     expect(app).toMatch(/path="\/sales\/receivables"/);
     expect(app).toMatch(/SalesPwaGate/);
     expect(app).toMatch(/SalesEternalRedirect/);
+    expect(app).toMatch(/isCustomerDesignApprovalPath\(location\.pathname\)/);
     const salesIdx = app.indexOf("SalesPwaLayout");
     const shellIdx = app.indexOf("<AppShell");
     expect(salesIdx).toBeGreaterThan(0);

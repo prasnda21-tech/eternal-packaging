@@ -166,8 +166,8 @@ test("shows the approval link from the latest detail response", async () => {
   const link = first.container.querySelector('[data-testid="sales-approval-open-appr-1"]');
   expect(link.getAttribute("href")).toBe("/customer/design-approval/track-cup");
   expect(link.textContent).toBe("Buka Approval Desain");
-  expect(link.parentElement.textContent).toContain("Cup 16oz.pdf");
-  expect(link.parentElement.textContent).toContain("Sedotan");
+  expect(link.closest(".spwa-approval-row").textContent).toContain("Cup 16oz.pdf");
+  expect(link.closest(".spwa-approval-row").textContent).toContain("Sedotan");
   act(() => first.root.unmount());
 
   api.salesPwaOrder.mockResolvedValue({

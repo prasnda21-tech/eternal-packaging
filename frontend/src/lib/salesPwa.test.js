@@ -1,9 +1,18 @@
 import fs from "fs";
 import path from "path";
-import { activeSalesPwaNav, documentTotal, formatSalesDate, isSafeSalesNextPath, isSalesPwaRole, isValidSalesManifest, salesJakartaDay, SALES_PWA_MORE_NAV, SALES_PWA_NAV } from "./salesPwa";
+import { activeSalesPwaNav, documentTotal, formatSalesDate, isCustomerDesignApprovalPath, isSafeSalesNextPath, isSalesPwaRole, isValidSalesManifest, salesJakartaDay, SALES_PWA_MORE_NAV, SALES_PWA_NAV } from "./salesPwa";
 
 describe("sales PWA helpers", () => {
   test("role gate is sales_eternal only", () => {
+    expect(isCustomerDesignApprovalPath("/customer/design-approval/track-cup")).toBe(true);
+    expect(isCustomerDesignApprovalPath("/customer/design-approval/track-cup/")).toBe(true);
+    expect(isCustomerDesignApprovalPath("/customer/design-approval/")).toBe(false);
+    expect(isCustomerDesignApprovalPath("/customer/design-approval")).toBe(false);
+    expect(isCustomerDesignApprovalPath("/customer/design-approval/track-cup/submit")).toBe(false);
+    expect(isCustomerDesignApprovalPath("/customer/tracking/track-cup")).toBe(false);
+    expect(isCustomerDesignApprovalPath("/orders")).toBe(false);
+    expect(isCustomerDesignApprovalPath("/")).toBe(false);
+    expect(isCustomerDesignApprovalPath("/sales")).toBe(false);
     expect(isSalesPwaRole({ role: "sales_eternal" })).toBe(true);
     expect(isSalesPwaRole({ role: "sales" })).toBe(false);
     expect(isSalesPwaRole({ role: "admin" })).toBe(false);
