@@ -906,6 +906,7 @@ export const api = {
   salesPwaInvoices: (params = {}) => client.get("/sales-pwa/invoices", { params }).then((r) => r.data),
   salesPwaReceivables: () => client.get("/sales-pwa/receivables").then((r) => r.data),
   salesPwaOrders: (params = {}) => client.get("/sales-pwa/orders", { params }).then((r) => r.data),
+  salesPwaFieldActions: (params = {}) => client.get("/sales-pwa/field-actions", { params }).then((r) => r.data),
   salesPwaOrder: (id) => client.get(`/sales-pwa/orders/${encodeURIComponent(id)}`).then((r) => r.data),
   salesPwaDocuments: (id) => client.get(`/sales-pwa/orders/${encodeURIComponent(id)}/documents`).then((r) => r.data),
   salesPwaDocumentFile: (id, kind, documentId) => {

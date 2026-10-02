@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from pymongo import monitoring
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -199,6 +200,14 @@ async def test_generated_link_appears_for_the_owner_and_opens_the_bound_design()
             {"name": "Gelas", "color": "Hijau", "quantity": 4, "unit": "pcs"},
         ],
     )
+    kept_token = f"track-keep-{suffix}-0123456789"
+    kept = _order(
+        f"PO-KEEP-{suffix}",
+        AYUB_ID,
+        "Pelanggan Token Lama",
+        design_files=[_pdf(f"file-keep-{suffix}", "tetap.pdf")],
+        tracking_token=kept_token,
+    )
     bare = _order(f"PO-BARE-{suffix}", AYUB_ID, "Pelanggan Kosong", design_files=[])
     other = _order(f"PO-OTHER-{suffix}", EUIS_ID, "Pelanggan Euis", sales="Euis Risnawati")
     past = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat()
@@ -214,10 +223,10 @@ async def test_generated_link_appears_for_the_owner_and_opens_the_bound_design()
             "expires_at": past,
         },
     )
-    ids = [multi["id"], single["id"], bare["id"], other["id"], expired["id"]]
+    ids = [multi["id"], single["id"], bare["id"], other["id"], expired["id"], kept["id"]]
     await db.orders.delete_many({"id": {"$in": ids}})
     await db.customer_approvals.delete_many({"order_id": {"$in": ids}})
-    await db.orders.insert_many([multi, single, bare, other, expired])
+    await db.orders.insert_many([multi, single, bare, other, expired, kept])
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -225,6 +234,8 @@ async def test_generated_link_appears_for_the_owner_and_opens_the_bound_design()
         first = await client.post(f"/api/orders/{multi['id']}/customer-approval/generate", json={})
         assert first.status_code == 200, first.text
         first_token = first.json()["token"]
+        tracking_after_first = (await db.orders.find_one({"id": multi["id"]}, {"tracking_token": 1})).get("tracking_token")
+        assert str(tracking_after_first or "").strip()
         await db.orders.update_one(
             {"id": multi["id"]},
             {"$set": {"design_files": [_pdf(old_id, "desain-lama.pdf"), _pdf(new_id, "desain-baru.pdf")]}},
@@ -232,10 +243,15 @@ async def test_generated_link_appears_for_the_owner_and_opens_the_bound_design()
         second = await client.post(f"/api/orders/{multi['id']}/customer-approval/generate", json={})
         assert second.status_code == 200, second.text
         second_token = second.json()["token"]
+        tracking_after_second = (await db.orders.find_one({"id": multi["id"]}, {"tracking_token": 1})).get("tracking_token")
+        assert tracking_after_second == tracking_after_first
         assert second.json()["approval"]["design_version"] == new_id
         one = await client.post(f"/api/orders/{single['id']}/customer-approval/generate", json={})
         assert one.status_code == 200, one.text
         one_token = one.json()["token"]
+        kept_res = await client.post(f"/api/orders/{kept['id']}/customer-approval/generate", json={})
+        assert kept_res.status_code == 200, kept_res.text
+        assert (await db.orders.find_one({"id": kept["id"]}, {"tracking_token": 1})).get("tracking_token") == kept_token
 
         app.dependency_overrides[current_user] = lambda: _sales(AYUB_ID, "ayub.approval@eternal.com", "Ayub")
         listed = await client.get("/api/sales-pwa/orders", params={"q": suffix, "limit": 20})
@@ -310,8 +326,98 @@ async def test_generated_link_appears_for_the_owner_and_opens_the_bound_design()
         assert "desain-baru.pdf" not in denied.text
 
     stored = await db.orders.find_one({"id": multi["id"]}, {"tracking_token": 1})
-    assert str(stored.get("tracking_token") or "")
+    assert stored.get("tracking_token") == tracking_after_first
     expired_stored = await db.orders.find_one({"id": expired["id"]}, {"tracking_token": 1})
     assert not str((expired_stored or {}).get("tracking_token") or "").strip()
     await db.customer_approvals.delete_many({"order_id": {"$in": ids}})
     await db.orders.delete_many({"id": {"$in": ids}})
+
+
+class _WriteSpy(monitoring.CommandListener):
+    """Records Mongo write commands seen by one client."""
+
+    def __init__(self):
+        self.writes = []
+
+    def started(self, event):
+        if event.command_name in {"insert", "update", "delete", "findAndModify"}:
+            command = event.command if isinstance(event.command, dict) else {}
+            collection = str(command.get(event.command_name) or "")
+            self.writes.append(f"{event.command_name}:{collection}")
+
+    def succeeded(self, event):
+        return None
+
+    def failed(self, event):
+        return None
+
+
+@pytest.mark.anyio
+async def test_sales_read_does_not_write_when_active_approval_has_no_tracking_token():
+    import server
+    from motor.motor_asyncio import AsyncIOMotorClient
+
+    spy = _WriteSpy()
+    client_db = AsyncIOMotorClient(os.environ["MONGO_URL"], event_listeners=[spy])
+    server.client = client_db
+    server.db = client_db[os.environ["DB_NAME"]]
+    db = server.db
+    suffix = uuid.uuid4().hex[:8]
+    file_id = f"file-open-{suffix}"
+    approval_id = f"appr-open-{suffix}"
+    future = (datetime.now(timezone.utc) + timedelta(hours=4)).isoformat()
+    order = _order(
+        f"PO-NOTOKEN-{suffix}",
+        AYUB_ID,
+        "Pelanggan Tanpa Token",
+        design_files=[_pdf(file_id, "tanpa-token.pdf")],
+        customer_approval={
+            "approval_id": approval_id,
+            "status": "active",
+            "design_version": file_id,
+            "expires_at": future,
+        },
+    )
+    assert "tracking_token" not in order
+    record = {
+        "id": approval_id,
+        "order_id": order["id"],
+        "status": "active",
+        "design_version": file_id,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "expires_at": future,
+        "token_hash": "hash-must-stay-in-db",
+    }
+    await db.orders.delete_many({"id": order["id"]})
+    await db.customer_approvals.delete_many({"order_id": order["id"]})
+    await db.orders.insert_one(order)
+    await db.customer_approvals.insert_one(record)
+    before = await db.orders.find_one({"id": order["id"]}, {"_id": 0})
+    sales = _sales(AYUB_ID, "ayub.approval@eternal.com", "Ayub")
+    assert "po.view" not in sales["permissions"]
+    assert "customer_approval.manage" not in sales["permissions"]
+    spy.writes.clear()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        app.dependency_overrides[current_user] = lambda: sales
+        listed = await client.get("/api/sales-pwa/orders", params={"q": suffix, "limit": 20})
+        assert listed.status_code == 200, listed.text
+        detail = await client.get(f"/api/sales-pwa/orders/{order['id']}")
+        assert detail.status_code == 200, detail.text
+    assert spy.writes == []
+    after = await db.orders.find_one({"id": order["id"]}, {"_id": 0})
+    assert after == before
+    assert not str((after or {}).get("tracking_token") or "").strip()
+    listed_row = next(row for row in listed.json()["orders"] if row["id"] == order["id"])
+    approval = listed_row["design_approvals"][0]
+    assert approval["status"] == "active"
+    assert approval["design_name"] == "tanpa-token.pdf"
+    assert approval["status_label"] == "Aktif · Menunggu customer"
+    assert "path" not in approval
+    detail_approval = detail.json()["order"]["design_approvals"][0]
+    assert "path" not in detail_approval
+    assert detail_approval["status_label"] == "Aktif · Menunggu customer"
+    assert "hash-must-stay-in-db" not in listed.text
+    await db.customer_approvals.delete_many({"order_id": order["id"]})
+    await db.orders.delete_many({"id": order["id"]})
+    client_db.close()

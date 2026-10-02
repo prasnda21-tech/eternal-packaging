@@ -115,3 +115,17 @@ Bukan audit ulang. Hanya catatan pada daftar PO, kartu lapangan, dan navigasi.
 - Kartu lapangan memakai "Lihat PO". Status yang sama dengan judul tahap tidak diulang di dalam kartu. Bila path approval ada, "Buka Approval Desain" menjadi aksi utama dan "Lihat PO" menjadi aksi sekunder.
 - `src/lib/salesPwa.test.js` mengharapkan bar lama (PO Saya, Pelanggan, Prediksi Order, Profil) dan menganggap `/sales` sebagai daftar PO. Bar yang berlaku, dan yang sudah diuji `SalesPwaLayout.test.js`, adalah Dashboard, PO Saya, Visit, dan Lainnya. Prediksi Order ada di menu Lainnya. Ekspektasi tes disesuaikan. Isi `SALES_PWA_NAV` tidak diubah.
 - "Muat lagi" dikunci selama permintaan berjalan. Gagal memuat mempertahankan baris yang sudah ada dan mengganti tombol menjadi "Coba lagi". Setelah semua baris termuat, teksnya `{jumlah} dari {total} PO` dan tombol disembunyikan. Pergantian filter menaikkan generasi permintaan sehingga respons halaman lama diabaikan.
+
+## Lanjutan: baca tidak menulis token (2026-10-02)
+
+Bukan audit ulang. GET daftar dan detail PWA Sales sebelumnya memanggil `ensure_tracking_token` bila snapshot approval aktif tidak punya `tracking_token`. Fungsi itu menulis `orders.tracking_token`. Role `sales_eternal` hanya punya `sales.pwa.view` dan `sales.pwa.visit.create`, bukan `po.view` atau `customer_approval.manage`.
+
+Jalur baca tidak lagi membuat token. Path tetap dibentuk dari token yang sudah tersimpan. Bila token belum ada, baris approval tetap menampilkan status dan teks "Link approval belum tersedia", tanpa tombol.
+
+Token tracking baru hanya dibuat di `POST /api/orders/{id}/customer-approval/generate`, yang sudah mensyaratkan `customer_approval.manage`. Token yang sudah ada tidak diganti. Tidak ada backfill.
+
+Pengukuran Mongo lokal `eternal_packaging_pwa_perf` (bukan mock, database dihapus sesudahnya). Setiap order berisi 2 line item, 2 shipment, dan 12 event timeline. Dokumen tersimpan sekitar 4,3 KB; proyeksi scan sesudah penyusutan sekitar 1,7 KB.
+
+Sebelum penyusutan, satu halaman daftar 5.000 order memuat 5.000 dokumen order (sekitar 21,6 MB, 0,66–0,74 detik). Tiga permintaan dashboard memuat 15.000 dokumen (sekitar 65 MB, 1,12–1,23 detik). `sales_deliveries`, `sales_invoices`, dan `customer_approvals` hanya di-query untuk id halaman.
+
+Sesudahnya, scan daftar 5.000 order memuat sekitar 8,3 MB dalam 0,50–0,60 detik. Dashboard memakai `GET /sales-pwa/field-actions`: satu scan, sekitar 8,3 MB, 0,32 detik. Tiga panggilan daftar terpisah pada kode yang sama masih sekitar 0,67 detik dan 25 MB. Halaman berikutnya tetap membaca seluruh order milik sales karena tahap dihitung di Python. Angka ini dari Mongo lokal, bukan production, dan tidak menyatakan beban production aman.

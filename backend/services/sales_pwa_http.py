@@ -110,6 +110,17 @@ def register_sales_pwa_routes(
             limit=limit,
         )
 
+    @api_router.get("/sales-pwa/field-actions")
+    async def sales_pwa_field_actions(
+        month: Optional[str] = None,
+        sales_user_id: Optional[str] = None,
+        sales_id: Optional[str] = None,
+        user=Depends(_pwa_user),
+    ):
+        """One owned-order read for both lapangan previews and the month selesai count."""
+        _ignore_spoofed_sales_id(sales_user_id, sales_id)
+        return await spwa.sales_pwa_field_actions(get_db(), user, month=month or "")
+
     @api_router.get("/sales-pwa/orders/{order_id}")
     async def sales_pwa_order_detail(
         order_id: str,

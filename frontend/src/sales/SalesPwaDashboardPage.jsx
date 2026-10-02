@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { CalendarDays, ChevronRight, ClipboardList, MapPin, TrendingUp, Truck, WalletCards } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
-import { currentSalesMonth, formatSalesDate, formatSalesMoney, salesJakartaDay, salesMonthBounds, salesWibParts } from "../lib/salesPwa";
+import { currentSalesMonth, formatSalesDate, formatSalesMoney, salesJakartaDay, salesWibParts } from "../lib/salesPwa";
 import SalesPwaDesignApproval, { salesDesignApprovalPath } from "./SalesPwaDesignApproval";
 
 const VISIT_MONTHS = ["Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus", "September", "Oktober", "November", "Desember"];
@@ -148,36 +148,29 @@ export default function SalesPwaDashboardPage() {
   }, [month]);
 
   useEffect(() => {
-    if (typeof api.salesPwaOrders !== "function") return undefined;
+    if (typeof api.salesPwaFieldActions !== "function") return undefined;
     let cancelled = false;
-    const bounds = salesMonthBounds(month);
-    const list = {
-      status: "semua",
-      sort: "order_date",
-      direction: "desc",
-      limit: 4,
-    };
-    Promise.all([
-      api.salesPwaOrders({ ...list, stage: "Approval Design" }),
-      api.salesPwaOrders({ ...list, stage: "Approval Payment" }),
-      api.salesPwaOrders({ ...list, status: "selesai", stage: "", date_from: bounds.date_from, date_to: bounds.date_to, limit: 1 }),
-    ]).then(([design, payment, done]) => {
-      if (cancelled) return;
-      setActions({
-        design: design?.orders || [],
-        payment: payment?.orders || [],
-        designTotal: listedTotal(design),
-        paymentTotal: listedTotal(payment),
-        selesai: done?.counts?.selesai ?? done?.total ?? 0,
-        ready: true,
-      });
-      setActionMonth(month);
-    }).catch(() => {
-      if (!cancelled) {
-        setActions({ design: [], payment: [], designTotal: 0, paymentTotal: 0, selesai: null, ready: false });
+    api.salesPwaFieldActions({ month })
+      .then((result) => {
+        if (cancelled) return;
+        const design = result?.design || {};
+        const payment = result?.payment || {};
+        setActions({
+          design: design.orders || [],
+          payment: payment.orders || [],
+          designTotal: listedTotal(design),
+          paymentTotal: listedTotal(payment),
+          selesai: Number.isFinite(Number(result?.selesai)) ? Number(result.selesai) : 0,
+          ready: true,
+        });
         setActionMonth(month);
-      }
-    });
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setActions({ design: [], payment: [], designTotal: 0, paymentTotal: 0, selesai: null, ready: false });
+          setActionMonth(month);
+        }
+      });
     return () => { cancelled = true; };
   }, [month]);
 

@@ -185,3 +185,116 @@ async def test_stage_pages_cover_every_owned_po_and_hide_other_sales(monkeypatch
             assert denied.status_code == 404
     finally:
         await db.orders.delete_many({"id": {"$in": ids}})
+
+
+@pytest.mark.anyio
+async def test_field_actions_match_the_list_and_scan_orders_once():
+    import server
+    db = server.db
+    suffix = uuid.uuid4().hex[:8]
+    owner = f"field-owner-{suffix}"
+    other = f"field-other-{suffix}"
+    days = ["2026-09-18", "2026-09-17", "2026-09-16", "2026-09-15", "2026-09-14", "2026-09-13"]
+    design = [
+        _order(f"PO-FD{index}-{suffix}", owner, f"Pelanggan {index}", day)
+        for index, day in enumerate(days, start=1)
+    ]
+    design[0]["source_pdf"] = {"storage_path": f"po/{suffix}.pdf"}
+    design[0]["delivery_proofs"] = [{"id": f"proof-{suffix}", "storage_path": f"proof/{suffix}.jpg"}]
+    design[0]["timeline"] = [{"note": f"timeline-rahasia-{suffix}", "stage": 2}]
+    payment = _order(
+        f"PO-FPAY-{suffix}",
+        owner,
+        "Pelanggan Bayar",
+        "2026-09-20",
+        payment_status="Approved",
+        current_stage=4,
+    )
+    done = _order(
+        f"PO-FDONE-{suffix}",
+        owner,
+        "Pelanggan Selesai",
+        "2026-10-02",
+        current_stage=14,
+        delivery_status="Terkirim",
+        qty_delivered=10,
+        line_items=[{"name": "Gelas", "quantity": 10, "unit": "pcs"}],
+    )
+    foreign = _order(f"PO-FFOREIGN-{suffix}", other, "Pelanggan Lain", "2026-09-18")
+    docs = design + [payment, done, foreign]
+    ids = [doc["id"] for doc in docs]
+
+    class _Orders:
+        def __init__(self, inner):
+            self._inner = inner
+            self.scans = 0
+            self.pages = 0
+
+        def find(self, filt=None, *args, **kwargs):
+            query = filt or {}
+            ident = query.get("id")
+            if isinstance(ident, dict) and "$in" in ident:
+                self.pages += 1
+            else:
+                self.scans += 1
+            return self._inner.find(query, *args, **kwargs)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    proxy = _Orders(db.orders)
+    db.orders = proxy
+    await db.orders.delete_many({"id": {"$in": ids}})
+    await db.orders.insert_many(docs)
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            app.dependency_overrides[current_user] = lambda: _sales(owner)
+            proxy.scans = 0
+            proxy.pages = 0
+            actions = await client.get("/api/sales-pwa/field-actions", params={"month": "2026-10", "sales_user_id": other})
+            assert actions.status_code == 200, actions.text
+            body = actions.json()
+            assert proxy.scans == 1
+            assert proxy.pages == 1
+            listed = await client.get("/api/sales-pwa/orders", params={
+                "stage": "Approval Design",
+                "status": "semua",
+                "sort": "order_date",
+                "direction": "desc",
+                "limit": 4,
+            })
+            paid = await client.get("/api/sales-pwa/orders", params={
+                "stage": "Approval Payment",
+                "status": "semua",
+                "sort": "order_date",
+                "direction": "desc",
+                "limit": 4,
+            })
+            finished = await client.get("/api/sales-pwa/orders", params={
+                "status": "selesai",
+                "date_from": "2026-10-01",
+                "date_to": "2026-10-31",
+                "limit": 1,
+            })
+            assert listed.status_code == 200, listed.text
+            assert [row["id"] for row in body["design"]["orders"]] == [row["id"] for row in listed.json()["orders"]]
+            assert body["design"]["total"] == listed.json()["total"]
+            assert [row["id"] for row in body["payment"]["orders"]] == [row["id"] for row in paid.json()["orders"]]
+            assert body["payment"]["total"] == paid.json()["total"]
+            assert body["selesai"] == finished.json()["counts"]["selesai"]
+            assert body["design"]["total"] == 6
+            assert body["payment"]["total"] == 1
+            first = body["design"]["orders"][0]
+            assert first["documents"]["po"] == 1
+            assert first["documents"]["bukti_kirim"] == 1
+            assert f"timeline-rahasia-{suffix}" not in actions.text
+            assert foreign["po_number"] not in actions.text
+            app.dependency_overrides[current_user] = lambda: _sales(other)
+            hidden = await client.get("/api/sales-pwa/field-actions", params={"month": "2026-10"})
+            assert hidden.status_code == 200, hidden.text
+            assert design[0]["po_number"] not in hidden.text
+            assert hidden.json()["design"]["total"] == 1
+    finally:
+        db.orders = proxy._inner
+        await db.orders.delete_many({"id": {"$in": ids}})

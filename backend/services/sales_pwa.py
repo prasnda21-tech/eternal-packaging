@@ -1,11 +1,12 @@
 """PWA Sales payloads. Scoped by orders.sales_user_id == session users.id.
 
-Read-only, except one case: an active customer approval on an order that does
-not yet have a live-tracking token gets that existing opener persisted.
-That does not create or replace a customer-approval token.
+List and detail reads do not write orders. A design-approval path is returned
+only when the order already has a tracking token. Creating that token belongs
+to the authorized approval-generate path, which leaves an existing token as-is.
 """
 from __future__ import annotations
 
+import calendar
 import re
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
@@ -49,7 +50,7 @@ from services.tanggal_pengiriman import (
     attach_tanggal_pengiriman_snapshot,
     parse_calendar_date,
 )
-from services.customer_tracking import ensure_tracking_token, public_design_approval
+from services.customer_tracking import public_design_approval
 from services.sales_user_mapping import (
     SALES_PWA_ROLE,
     is_sales_pwa_role,
@@ -139,14 +140,15 @@ LIST_PROJECTION = {
     "terkirim_confirmed": 1,
     "print_status": 1,
     "print_completed_qty": 1,
+}
+
+# Document bytes are counted only for the page being returned.
+_PAGE_FILE_PROJECTION = {
+    "_id": 0,
+    "id": 1,
     "source_pdf": 1,
     "delivery_proofs": 1,
     "surat_jalan_files": 1,
-    "timeline": 1,
-    "address": 1,
-    "recipient": 1,
-    "notes": 1,
-    "estimated_delivery": 1,
 }
 
 DETAIL_STRIP_KEYS = (
@@ -515,6 +517,35 @@ def _document_counts(order: dict, deliveries: List[dict], invoices: List[dict]) 
     }
 
 
+async def _merge_page_document_fields(db, orders: List[dict]) -> None:
+    """Load file pointers for the page only. The stage scan does not read them."""
+    ids = [order.get("id") for order in orders if order.get("id")]
+    if not ids:
+        return
+    found = await _cursor_rows(db.orders.find({"id": {"$in": ids}}, _PAGE_FILE_PROJECTION))
+    by_id = {row.get("id"): row for row in found if row.get("id")}
+    for order in orders:
+        extra = by_id.get(order.get("id"))
+        if not extra:
+            continue
+        for key in ("source_pdf", "delivery_proofs", "surat_jalan_files"):
+            if key in extra:
+                order[key] = extra[key]
+
+
+async def _serialize_owned_page(db, page_orders: List[dict]) -> List[dict]:
+    await _merge_page_document_fields(db, page_orders)
+    po_ids = [order.get("id") for order in page_orders if order.get("id")]
+    deliveries_map, invoices_map = await _load_docs_for_pos(db, po_ids)
+    page = [
+        serialize_list_row(order, deliveries_map.get(order.get("id"), []), invoices_map.get(order.get("id"), []))
+        for order in page_orders
+    ]
+    raw_by_id = {order.get("id"): order for order in page_orders if order.get("id")}
+    await attach_page_design_approvals(db, page, raw_by_id)
+    return page
+
+
 async def _load_docs_for_pos(db, po_ids: List[str]) -> tuple:
     if not po_ids:
         return {}, {}
@@ -664,13 +695,6 @@ def _approval_snapshot(order: dict) -> Optional[dict]:
     return snap if isinstance(snap, dict) else None
 
 
-def approval_needs_tracking_opener(order: dict) -> bool:
-    snap = _approval_snapshot(order)
-    if not snap or not _approval_record_id(snap):
-        return False
-    return effective_customer_approval_status(snap) == "active"
-
-
 def design_approval_rows(order: dict, records: Optional[List[dict]] = None) -> List[dict]:
     """Approval rows for one owned order.
 
@@ -739,14 +763,8 @@ async def _load_approval_records(db, order_ids: List[str]) -> Dict[str, List[dic
 
 
 async def attach_page_design_approvals(db, page: List[dict], raw_by_id: Dict[str, dict]) -> None:
-    """Fill design_approvals on an already scoped page. Does not mint an approval token."""
+    """Fill design_approvals on an already scoped page. Reads approval rows only."""
     orders = [raw_by_id[row["id"]] for row in page if row.get("id") in raw_by_id]
-    for order in orders:
-        if approval_needs_tracking_opener(order) and not str(order.get("tracking_token") or "").strip():
-            try:
-                await ensure_tracking_token(db, order)
-            except HTTPException:
-                pass
     grouped = await _load_approval_records(db, [order.get("id") for order in orders])
     for row in page:
         order = raw_by_id.get(row.get("id"))
@@ -841,14 +859,7 @@ async def list_sales_pwa_orders(
     skip = max(0, int(skip or 0))
     limit = max(1, min(int(limit or 50), 200))
     page_orders = filtered[skip:skip + limit]
-    po_ids = [order.get("id") for order in page_orders if order.get("id")]
-    deliveries_map, invoices_map = await _load_docs_for_pos(db, po_ids)
-    page = [
-        serialize_list_row(order, deliveries_map.get(order.get("id"), []), invoices_map.get(order.get("id"), []))
-        for order in page_orders
-    ]
-    raw_by_id = {order.get("id"): order for order in page_orders if order.get("id")}
-    await attach_page_design_approvals(db, page, raw_by_id)
+    page = await _serialize_owned_page(db, page_orders)
 
     return {
         "orders": page,
@@ -860,6 +871,84 @@ async def list_sales_pwa_orders(
         "min_orders_prediction": MIN_ORDERS,
         "source_count": len(raw),
         "source_truncated": False,
+    }
+
+
+def _sales_month_bounds(month: str) -> tuple:
+    """Same calendar bounds as the dashboard month input. Invalid month uses today."""
+    key = _month_key(month)
+    year, value = [int(part) for part in key.split("-")]
+    last = calendar.monthrange(year, value)[1]
+    return f"{key}-01", f"{key}-{last:02d}"
+
+
+def _field_action_buckets(raw: List[dict], date_from: str, date_to: str) -> tuple:
+    """One workflow pass for the two lapangan stages and the month's selesai count."""
+    design: List[dict] = []
+    payment: List[dict] = []
+    selesai = 0
+    design_needle = _norm("Approval Design")
+    payment_needle = _norm("Approval Payment")
+    empty = dict(
+        q="",
+        customer_needle="",
+        po_needle="",
+        buffer_key="",
+        progress_min=None,
+        progress_max=None,
+    )
+    for order in raw:
+        workflow = status_po_workflow(order)
+        if _matches_list_constraints(
+            order, workflow, stage_needle=design_needle, date_from="", date_to="", **empty,
+        ):
+            design.append(order)
+        if _matches_list_constraints(
+            order, workflow, stage_needle=payment_needle, date_from="", date_to="", **empty,
+        ):
+            payment.append(order)
+        if _matches_list_constraints(
+            order, workflow, stage_needle="", date_from=date_from, date_to=date_to, **empty,
+        ) and _matches_filter(order, FILTER_DONE, workflow):
+            selesai += 1
+    return design, payment, selesai
+
+
+async def sales_pwa_field_actions(db, user: dict, *, month: str = "") -> dict:
+    """Lapangan previews from one owned-order read. Same stage rules as the list."""
+    require_sales_pwa(user)
+    match = {"cancelled": {"$ne": True}, **sales_owner_match(user)}
+    raw = await _cursor_rows(db.orders.find(match, LIST_PROJECTION))
+    lead = await _lead_time_days(db)
+    for order in raw:
+        attach_tanggal_pengiriman_snapshot(order, lead)
+    date_from, date_to = _sales_month_bounds(month)
+    design, payment, selesai = _field_action_buckets(raw, date_from, date_to)
+    design.sort(key=lambda order: _list_sort_pair(order, "order_date"), reverse=True)
+    payment.sort(key=lambda order: _list_sort_pair(order, "order_date"), reverse=True)
+    design_page = design[:4]
+    payment_page = payment[:4]
+    combined: List[dict] = []
+    seen = set()
+    for order in design_page + payment_page:
+        oid = order.get("id")
+        if not oid or oid in seen:
+            continue
+        seen.add(oid)
+        combined.append(order)
+    rows = await _serialize_owned_page(db, combined)
+    by_id = {row.get("id"): row for row in rows if row.get("id")}
+    return {
+        "design": {
+            "orders": [by_id[order["id"]] for order in design_page if order.get("id") in by_id],
+            "total": len(design),
+        },
+        "payment": {
+            "orders": [by_id[order["id"]] for order in payment_page if order.get("id") in by_id],
+            "total": len(payment),
+        },
+        "selesai": selesai,
+        "month": _month_key(month),
     }
 
 
