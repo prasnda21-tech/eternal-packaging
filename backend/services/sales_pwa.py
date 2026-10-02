@@ -565,6 +565,28 @@ def _sort_value(row: dict, key: str) -> Any:
     return str(row.get("updated_at") or row.get("order_date") or "")
 
 
+def _list_sort_pair(order: dict, sort_key: str) -> tuple:
+    """Same order as sorting serialize_list_row, without delivery or invoice loads.
+
+    serialize_list_row does not expose updated_at, so an unknown key falls back
+    to the calendar order date, matching _sort_value on that row.
+    """
+    order_day = parse_calendar_date(order.get("order_date")) or str(order.get("order_date") or "")[:10] or ""
+    po_number = str(order.get("po_number") or "")
+    key = (sort_key or "order_date").strip()
+    if key in ("order_date", "tanggal_po"):
+        primary = order_day
+    elif key == "customer":
+        primary = _norm(display_customer_name(order))
+    elif key == "progress":
+        primary = _workflow_progress(status_po_workflow(order)) or 0
+    elif key == "po":
+        primary = po_number
+    else:
+        primary = order_day
+    return (primary, po_number)
+
+
 # Same labels as the internal Customer Approval panel. Status itself comes
 # from the approval record, with the same expiry derivation as the public link.
 _APPROVAL_STATUS_LABEL = {
@@ -812,25 +834,25 @@ async def list_sales_pwa_orders(
         date_to=date_to,
     )
 
-    po_ids = [o.get("id") for o in filtered if o.get("id")]
-    deliveries_map, invoices_map = await _load_docs_for_pos(db, po_ids)
-    rows = [
-        serialize_list_row(o, deliveries_map.get(o.get("id"), []), invoices_map.get(o.get("id"), []))
-        for o in filtered
-    ]
     reverse = str(direction or "asc").lower() == "desc"
     sort_key = (sort or "order_date").strip()
-    rows.sort(key=lambda r: (_sort_value(r, sort_key), r.get("po_number") or ""), reverse=reverse)
+    filtered.sort(key=lambda order: _list_sort_pair(order, sort_key), reverse=reverse)
 
     skip = max(0, int(skip or 0))
     limit = max(1, min(int(limit or 50), 200))
-    page = rows[skip:skip + limit]
-    raw_by_id = {order.get("id"): order for order in filtered if order.get("id")}
+    page_orders = filtered[skip:skip + limit]
+    po_ids = [order.get("id") for order in page_orders if order.get("id")]
+    deliveries_map, invoices_map = await _load_docs_for_pos(db, po_ids)
+    page = [
+        serialize_list_row(order, deliveries_map.get(order.get("id"), []), invoices_map.get(order.get("id"), []))
+        for order in page_orders
+    ]
+    raw_by_id = {order.get("id"): order for order in page_orders if order.get("id")}
     await attach_page_design_approvals(db, page, raw_by_id)
 
     return {
         "orders": page,
-        "total": len(rows),
+        "total": len(filtered),
         "skip": skip,
         "limit": limit,
         "counts": counts,

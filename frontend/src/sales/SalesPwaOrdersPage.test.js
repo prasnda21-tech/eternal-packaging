@@ -3,7 +3,7 @@ import path from "path";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import api from "../lib/api";
-import { SALES_PWA_PO_FILTER_KEY, SALES_PWA_PO_SCROLL_KEY, clearSalesPwaPoListState, writeSalesPwaPoListState } from "../lib/salesPwaPoListState";
+import { SALES_PWA_PO_FILTER_KEY, SALES_PWA_PO_PAGE_SIZE, SALES_PWA_PO_SCROLL_KEY, clearSalesPwaPoListState, writeSalesPwaPoListState } from "../lib/salesPwaPoListState";
 import SalesPwaOrdersPage from "./SalesPwaOrdersPage";
 
 const mockRouter = { state: null };
@@ -113,7 +113,8 @@ describe("SalesPwaOrdersPage", () => {
     expect(params.sales_user_id).toBeUndefined();
     expect(params.customer_q).toBeUndefined();
     expect(params.po_q).toBeUndefined();
-    expect(params.limit).toBe(120);
+    expect(params.limit).toBe(SALES_PWA_PO_PAGE_SIZE);
+    expect(params.skip).toBe(0);
     expect(container.querySelector('[data-testid="sales-po-table"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="sales-po-cards"]')).toBeNull();
     expect(container.querySelector('[data-testid="sales-filter-open"]')).toBeNull();
@@ -150,7 +151,8 @@ describe("SalesPwaOrdersPage", () => {
     expect(params.q).toBe("PO-A001");
     expect(params.customer_q).toBeUndefined();
     expect(params.po_q).toBeUndefined();
-    expect(params.limit).toBe(120);
+    expect(params.limit).toBe(SALES_PWA_PO_PAGE_SIZE);
+    expect(params.skip).toBe(0);
 
     await act(async () => {
       resolveNext({
@@ -429,6 +431,97 @@ describe("SalesPwaOrdersPage", () => {
     expect(params.date_to).toBe("2026-09-30");
     expect(container.querySelector('[data-testid="sales-filter-selesai"]').className).toContain("is-on");
     expect(storedFilters()).toMatchObject({ status: "selesai", date_from: "2026-09-01", date_to: "2026-09-30" });
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  test("appends the next page without duplicating or skipping ids", async () => {
+    api.salesPwaOrders.mockReset();
+    api.salesPwaOrders
+      .mockResolvedValueOnce({ ...sample, orders: sample.orders.slice(0, 4), total: 6 })
+      .mockResolvedValueOnce({ ...sample, orders: sample.orders.slice(3, 6), total: 6 });
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = await mount(container);
+    expect(api.salesPwaOrders.mock.calls[0][0]).toMatchObject({ skip: 0, limit: SALES_PWA_PO_PAGE_SIZE, q: "" });
+    expect(container.querySelectorAll("tbody tr").length).toBe(4);
+    expect(container.querySelector('[data-testid="sales-po-remainder"]').textContent).toContain("Menampilkan 4 dari 6 PO");
+    await act(async () => {
+      click(container.querySelector('[data-testid="sales-po-load-more"]'));
+    });
+    await flush();
+    expect(api.salesPwaOrders.mock.calls[1][0]).toMatchObject({
+      skip: 4,
+      limit: SALES_PWA_PO_PAGE_SIZE,
+      status: "semua",
+      stage: "",
+      q: "",
+    });
+    const ids = Array.from(container.querySelectorAll("tbody tr")).map((row) => row.getAttribute("data-testid"));
+    expect(ids).toEqual([
+      "sales-po-row-PO-A001",
+      "sales-po-row-PO-A002",
+      "sales-po-row-PO-A003",
+      "sales-po-row-PO-A004",
+      "sales-po-row-PO-A005",
+      "sales-po-row-PO-A006",
+    ]);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(container.querySelector('[data-testid="sales-po-load-more"]')).toBeNull();
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  test("keeps search and stage on later pages", async () => {
+    writeSalesPwaPoListState({
+      q: "Kopi",
+      status: "berjalan",
+      stage: "Approval Design",
+      date_from: "",
+      date_to: "",
+      buffer: "",
+    }, 0);
+    api.salesPwaOrders.mockReset();
+    api.salesPwaOrders
+      .mockResolvedValueOnce({ ...sample, orders: sample.orders.slice(0, 2), total: 3, counts: { semua: 3, berjalan: 3, hold: 0, parsial: 0, selesai: 0 } })
+      .mockResolvedValueOnce({ ...sample, orders: sample.orders.slice(2, 3), total: 3, counts: { semua: 3, berjalan: 3, hold: 0, parsial: 0, selesai: 0 } });
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = await mount(container);
+    await act(async () => {
+      click(container.querySelector('[data-testid="sales-po-load-more"]'));
+    });
+    await flush();
+    expect(api.salesPwaOrders.mock.calls[1][0]).toMatchObject({
+      q: "Kopi",
+      status: "berjalan",
+      stage: "Approval Design",
+      skip: 2,
+    });
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  test("reads a lapangan stage context instead of the stored filters", async () => {
+    writeSalesPwaPoListState({
+      q: "lama",
+      status: "hold",
+      stage: "Packing",
+      date_from: "2026-01-01",
+      date_to: "2026-01-31",
+      buffer: "ya",
+    }, 480);
+    mockRouter.state = { salesPwaPoContext: { stage: "Approval Design" } };
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = await mount(container);
+    const params = api.salesPwaOrders.mock.calls.at(-1)[0];
+    expect(params.stage).toBe("Approval Design");
+    expect(params.status).toBe("semua");
+    expect(params.q).toBe("");
+    expect(params.date_from).toBe("");
+    expect(params.buffer).toBe("");
+    expect(storedFilters()).toMatchObject({ status: "semua", stage: "Approval Design", q: "" });
     act(() => root.unmount());
     container.remove();
   });

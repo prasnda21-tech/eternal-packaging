@@ -249,7 +249,18 @@ test("uses the existing list totals for the action count without another request
   await act(async () => { root.render(<SalesPwaDashboardPage />); await Promise.resolve(); });
   await act(async () => { await Promise.resolve(); });
   expect(api.salesPwaOrders).toHaveBeenCalledTimes(3);
+  expect(api.salesPwaOrders.mock.calls.find((call) => call[0].stage === "Approval Design")[0].limit).toBe(4);
+  expect(api.salesPwaOrders.mock.calls.find((call) => call[0].stage === "Approval Payment")[0].limit).toBe(4);
   expect(node.querySelector('[data-testid="sales-actions-count"]').textContent).toBe("8 PO perlu tindakan");
+  expect(node.querySelector('[data-testid="sales-action-design-total"]').textContent).toBe("5 PO Approval Design");
+  expect(node.querySelector('[data-testid="sales-action-payment-total"]').textContent).toBe("3 PO Approval Payment");
+  const designAll = node.querySelector('[data-testid="sales-action-design-all"]');
+  const paymentAll = node.querySelector('[data-testid="sales-action-payment-all"]');
+  expect(designAll.textContent).toBe("Lihat semua");
+  expect(designAll.getAttribute("href")).toBe("/sales/po");
+  expect(JSON.parse(designAll.getAttribute("data-state"))).toEqual({ salesPwaPoContext: { stage: "Approval Design" } });
+  expect(JSON.parse(paymentAll.getAttribute("data-state"))).toEqual({ salesPwaPoContext: { stage: "Approval Payment" } });
+  expect(node.querySelectorAll('[data-testid="sales-action-design-po-design"]').length).toBe(1);
   expect(node.textContent).toContain("5 buffer stock");
   expect(node.textContent).not.toContain("Partial");
   expect(node.querySelector('[data-testid="sales-actions-empty"]')).toBeNull();

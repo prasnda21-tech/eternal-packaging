@@ -976,6 +976,29 @@ a.spwa-po-card {
 .spwa-action-card small { color: #5b6b73; font-size: 12px; }
 .spwa-action-card small.is-urgent { color: #9a3412; font-weight: 700; }
 .spwa-action-count { margin: 2px 0 0; color: #5b6b73; font-size: 12px; font-weight: 650; }
+.spwa-stage-block { display: grid; gap: 0; }
+.spwa-stage-total { margin: 8px 0 0; color: #1c3946; font-size: 12px; font-weight: 700; }
+.spwa-stage-all {
+  justify-self: start;
+  margin: 6px 0 2px;
+  color: #08785d;
+  font-size: 12px;
+  font-weight: 700;
+  text-decoration: none;
+}
+.spwa-page-more { display: grid; gap: 6px; margin-top: 8px; }
+.spwa-load-more {
+  width: 100%;
+  min-height: 40px;
+  padding: 8px 12px;
+  border: 1px solid #d7e2e7;
+  border-radius: 10px;
+  background: #fff;
+  color: #08785d;
+  font-size: 13px;
+  font-weight: 700;
+}
+.spwa-load-more:disabled { color: #647781; }
 .spwa-action-empty { display: grid; gap: 2px; padding: 2px 2px 4px; }
 .spwa-action-empty p { margin: 0; color: #5b6b73; font-size: 13px; }
 .spwa-action-empty p + p { color: #08785d; font-size: 12px; }

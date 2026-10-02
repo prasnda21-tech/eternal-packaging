@@ -73,6 +73,43 @@ function latestVisit(rows) {
   }, null);
 }
 
+function FieldStagePreview({ testKey, title, orders, total, stage, payment, showApproval }) {
+  const rows = Array.isArray(orders) ? orders : [];
+  const count = Number(total);
+  const shownTotal = Number.isFinite(count) ? count : rows.length;
+  if (shownTotal <= 0 && rows.length === 0) return null;
+  return (
+    <div className="spwa-stage-block" data-testid={`sales-action-${testKey}-block`}>
+      <p className="spwa-stage-total" data-testid={`sales-action-${testKey}-total`}>{shownTotal} PO {title}</p>
+      {rows.map((order) => (
+        <article
+          key={`${testKey}-${order.id}`}
+          className={`spwa-action-card${payment ? " is-payment" : ""}`}
+          data-testid={`sales-action-${testKey}-${order.id}`}
+        >
+          <p>{title}</p>
+          <strong>{order.customer}</strong>
+          <span>{order.po_number}</span>
+          <small>Status: {order.status}</small>
+          {order.tanggal_kirim_overdue ? <small className="is-urgent">Kirim terlambat</small> : null}
+          <Link to={`/sales/po/${encodeURIComponent(order.id)}`}>Lihat PO {title}</Link>
+          {showApproval ? <SalesPwaDesignApproval order={order} expectMissing /> : null}
+        </article>
+      ))}
+      {shownTotal > rows.length && (
+        <Link
+          className="spwa-stage-all"
+          to="/sales/po"
+          state={{ salesPwaPoContext: { stage } }}
+          data-testid={`sales-action-${testKey}-all`}
+        >
+          Lihat semua
+        </Link>
+      )}
+    </div>
+  );
+}
+
 export default function SalesPwaDashboardPage() {
   const [month, setMonth] = useState(currentSalesMonth());
   const [data, setData] = useState(null);
@@ -226,27 +263,22 @@ export default function SalesPwaDashboardPage() {
                 {actionVisible.ready === false && (
                   <p className="spwa-empty compact">Tindakan belum dapat dimuat.</p>
                 )}
-                {(actionVisible.design || []).map((order) => (
-                  <article key={`design-${order.id}`} className="spwa-action-card" data-testid={`sales-action-design-${order.id}`}>
-                    <p>Approval Design</p>
-                    <strong>{order.customer}</strong>
-                    <span>{order.po_number}</span>
-                    <small>Status: {order.status}</small>
-                    {order.tanggal_kirim_overdue ? <small className="is-urgent">Kirim terlambat</small> : null}
-                    <Link to={`/sales/po/${encodeURIComponent(order.id)}`}>Lihat PO Approval Design</Link>
-                    <SalesPwaDesignApproval order={order} expectMissing />
-                  </article>
-                ))}
-                {(actionVisible.payment || []).map((order) => (
-                  <article key={`payment-${order.id}`} className="spwa-action-card is-payment" data-testid={`sales-action-payment-${order.id}`}>
-                    <p>Approval Payment</p>
-                    <strong>{order.customer}</strong>
-                    <span>{order.po_number}</span>
-                    <small>Status: {order.status}</small>
-                    {order.tanggal_kirim_overdue ? <small className="is-urgent">Kirim terlambat</small> : null}
-                    <Link to={`/sales/po/${encodeURIComponent(order.id)}`}>Lihat PO Approval Payment</Link>
-                  </article>
-                ))}
+                <FieldStagePreview
+                  testKey="design"
+                  title="Approval Design"
+                  orders={actionVisible.design}
+                  total={actionVisible.designTotal}
+                  stage="Approval Design"
+                  showApproval
+                />
+                <FieldStagePreview
+                  testKey="payment"
+                  title="Approval Payment"
+                  orders={actionVisible.payment}
+                  total={actionVisible.paymentTotal}
+                  stage="Approval Payment"
+                  payment
+                />
               </section>
             )}
 
