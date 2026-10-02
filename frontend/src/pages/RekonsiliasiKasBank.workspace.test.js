@@ -56,8 +56,8 @@ beforeEach(() => {
   api.cashBankAccounts.mockResolvedValue({items:[{id:'account-1',name:'Rekening uji',currency_code:'IDR'}]});
   api.cashBankPairWorkspace.mockImplementation(async () => workspace);
   api.cashBankStatementImports.mockResolvedValue({items:[]});
-  api.cashBankDuplicateGroups.mockResolvedValue({groups:[]});
-  api.cashBankPendingReview.mockResolvedValue({solo_lines:[], outside_period:[], unreachable:[], other_accounts:[], truncated:false});
+  api.cashBankDuplicateGroups.mockResolvedValue({groups:[], pending_total:0, truncated:false, group_total:0, page:1, review_revision:'rev-0'});
+  api.cashBankPendingReview.mockResolvedValue({solo_lines:[], outside_period:[], unreachable:[], other_accounts:[], truncated:false, pending_total:0, total:0, page:1, review_revision:'rev-0'});
   api.resolveCashBankStatementDuplicate.mockResolvedValue({duplicate_status:'kept'});
   api.cashBankPairSuggestions.mockResolvedValue({ambiguous:true,suggestions:[{journal_line_id:'book-1',journal_number:'JE-18',reasons:['Nominal sama']}]});
   api.createCashBankPair.mockResolvedValue(pair); api.cancelCashBankPair.mockResolvedValue({status:'cancelled'});
@@ -611,7 +611,8 @@ const remount = async () => {
 test('duplicate review tab shows candidates and posts keep then refreshes', async () => {
   const openPair = duplicateGroup();
   const afterKeep = duplicateGroup({lines:[keptLine(openPair.lines[0]), openPair.lines[1]]});
-  api.cashBankDuplicateGroups.mockResolvedValueOnce({groups:[openPair]}).mockResolvedValue({groups:[afterKeep]});
+  api.cashBankDuplicateGroups.mockResolvedValueOnce({groups:[openPair], pending_total:2, review_revision:'rev-open'}).mockResolvedValue({groups:[afterKeep], pending_total:1, review_revision:'rev-kept'});
+  api.cashBankPendingReview.mockResolvedValueOnce({solo_lines:[], outside_period:[], unreachable:[], other_accounts:[], truncated:false, pending_total:2, review_revision:'rev-open'}).mockResolvedValue({solo_lines:[], outside_period:[], unreachable:[], other_accounts:[], truncated:false, pending_total:1, review_revision:'rev-kept'});
   await renderPage();
   expect(container.querySelector('#recon-tab-duplicates').textContent).toBe('Review Duplikat (2)');
   expect(api.createCashBankPair).not.toHaveBeenCalled();
@@ -649,6 +650,7 @@ test('duplicate review tab shows candidates and posts keep then refreshes', asyn
   expect(container.querySelector('[data-testid=duplicate-keep-line-a]')).toBeNull();
   expect(container.querySelector('[data-testid=duplicate-keep-line-b]')).toBeTruthy();
   expect(container.querySelector('[data-testid=duplicate-exclude-line-b]')).toBeTruthy();
+  expect(container.querySelector('#recon-tab-duplicates').textContent).toBe('Review Duplikat (1)');
 });
 test('exclude leaves the other candidate visible and a finished group leaves the queue', async () => {
   const openPair = duplicateGroup();
@@ -670,7 +672,8 @@ test('exclude leaves the other candidate visible and a finished group leaves the
 });
 test('refresh after the first decision still shows the remaining candidate', async () => {
   const openPair = duplicateGroup();
-  api.cashBankDuplicateGroups.mockResolvedValue({groups:[duplicateGroup({lines:[keptLine(openPair.lines[0]), openPair.lines[1]]})]});
+  api.cashBankDuplicateGroups.mockResolvedValue({groups:[duplicateGroup({lines:[keptLine(openPair.lines[0]), openPair.lines[1]]})], pending_total:1});
+  api.cashBankPendingReview.mockResolvedValue({solo_lines:[], outside_period:[], unreachable:[], other_accounts:[], truncated:false, pending_total:1});
   await renderPage();
   await click(container.querySelector('#recon-tab-duplicates'));
   expect(container.querySelector('#recon-tab-duplicates').textContent).toBe('Review Duplikat (1)');
@@ -820,6 +823,7 @@ test('a solo pending line stays reachable without an automatic decision', async 
     unreachable:[{statement_line_id:'seal-1', import_id:'imp-s', filename:'mutasi-tersegel.csv', imported_at:'2026-09-04T00:00:00Z', date:'2026-09-04', amount:3000, direction:'in', description:'Belum tersegel', duplicate_status:'pending_review', active_claim:'claim-1', reconciliation_status:'unmatched', screen_reason:'Baris belum tersegel, sehingga kelompok periode tidak menampilkannya.'}],
     other_accounts:[{cash_bank_id:'other-1', name:'Rekening Lain', pending_count:2}],
     truncated:false,
+    pending_total:3,
   });
   await renderPage();
   expect(container.querySelector('#recon-tab-duplicates').textContent).toBe('Review Duplikat (3)');
@@ -846,26 +850,28 @@ test('a solo pending line stays reachable without an automatic decision', async 
 test('pending review pages reach a later historical line without deciding it', async () => {
   api.cashBankPendingReview
     .mockResolvedValueOnce({
-      page:1, page_size:1, total:2, truncated:true, other_accounts:[],
+      page:1, page_size:1, total:2, pending_total:3, review_revision:'rev-page', truncated:true, other_accounts:[],
       solo_lines:[{statement_line_id:'solo-page', import_id:'imp-s', filename:'mutasi-tunggal.csv', imported_at:'2026-09-02T00:00:00Z', date:'2026-09-02', amount:1000, direction:'in', description:'Transfer tunggal', duplicate_status:'pending_review', active_claim:null, reconciliation_status:'unmatched', screen_reason:'Baris tunggal. Kelompok duplikat hanya menampilkan dua kandidat atau lebih.'}],
       outside_period:[], unreachable:[],
     })
     .mockResolvedValueOnce({
-      page:2, page_size:1, total:2, truncated:false, other_accounts:[],
+      page:2, page_size:1, total:2, pending_total:3, review_revision:'rev-page', truncated:false, other_accounts:[],
       solo_lines:[],
       outside_period:[{statement_line_id:'out-page', import_id:'imp-s', filename:'mutasi-lama.csv', imported_at:'2026-08-02T00:00:00Z', date:'2026-08-15', amount:2000, direction:'out', description:'Mutasi lama', duplicate_status:'pending_review', active_claim:null, reconciliation_status:'unmatched', screen_reason:'Di luar periode yang sedang dibuka.'}],
       unreachable:[{statement_line_id:'seal-free', import_id:'imp-s', filename:'mutasi-tersegel.csv', imported_at:'2026-09-04T00:00:00Z', date:'2026-09-04', amount:3000, direction:'in', description:'Belum tersegel', duplicate_status:'pending_review', active_claim:null, reconciliation_status:'unmatched', screen_reason:'Baris belum tersegel, sehingga kelompok periode tidak menampilkannya.'}],
     });
   await renderPage();
-  expect(container.querySelector('#recon-tab-duplicates').textContent).toBe('Review Duplikat (1)');
+  expect(container.querySelector('#recon-tab-duplicates').textContent).toBe('Review Duplikat (3)');
+  expect(container.querySelector('[data-testid=kas-bank-pending-shown]').textContent).toBe('Ditampilkan 1 dari 3 baris menunggu keputusan.');
   const more = container.querySelector('[data-testid=kas-bank-pending-more]');
   expect(more.textContent).toBe('Muat baris berikutnya');
   expect(api.resolveCashBankStatementDuplicate).not.toHaveBeenCalled();
   await click(more);
   await flush();
   await flush();
-  expect(api.cashBankPendingReview).toHaveBeenLastCalledWith(expect.objectContaining({cash_bank_id:'account-1', page:2}));
+  expect(api.cashBankPendingReview).toHaveBeenLastCalledWith(expect.objectContaining({cash_bank_id:'account-1', page:2, review_revision:'rev-page'}));
   expect(container.querySelector('#recon-tab-duplicates').textContent).toBe('Review Duplikat (3)');
+  expect(container.querySelector('[data-testid=kas-bank-pending-shown]').textContent).toBe('Ditampilkan 3 dari 3 baris menunggu keputusan.');
   expect(container.querySelector('[data-testid=kas-bank-pending-more]')).toBeNull();
   await click(container.querySelector('#recon-tab-duplicates'));
   expect(container.querySelector('[data-testid=kas-bank-pending-outside]').textContent).toContain('Mutasi lama');
@@ -959,4 +965,91 @@ test('old complete import history shows a dash instead of invented success count
   expect(panel.textContent).not.toContain('Semua baris diterima');
   expect(panel.textContent).not.toContain('Impor selesai');
   expect(panel.textContent).toContain('Selesai diimpor');
+});
+const hiddenLine = (id, description) => ({
+  statement_line_id:id, import_id:'imp-s', filename:'mutasi.csv', imported_at:'2026-09-02T00:00:00Z',
+  date:'2026-09-02', amount:1000, direction:'in', description, duplicate_status:'pending_review',
+  active_claim:null, reconciliation_status:'unmatched', screen_reason:'Baris tunggal. Kelompok duplikat hanya menampilkan dua kandidat atau lebih.',
+});
+test('group pages keep every member and the account total does not grow', async () => {
+  const first = duplicateGroup({group_key:'group-a', description:'KELOMPOK AWAL'});
+  const second = duplicateGroup({
+    group_key:'group-b', description:'KELOMPOK BERIKUT',
+    lines:[
+      {...duplicateGroup().lines[0], statement_line_id:'line-c', filename:'mutasi-c.csv'},
+      {...duplicateGroup().lines[1], statement_line_id:'line-d', filename:'mutasi-d.csv'},
+    ],
+  });
+  api.cashBankDuplicateGroups
+    .mockResolvedValueOnce({groups:[first], page:1, truncated:true, group_total:2, pending_total:4, review_revision:'groups-1'})
+    .mockResolvedValueOnce({groups:[second], page:2, truncated:false, group_total:2, pending_total:4, review_revision:'groups-1'});
+  api.cashBankPendingReview.mockResolvedValue({solo_lines:[], outside_period:[], unreachable:[], other_accounts:[], truncated:false, pending_total:4, review_revision:'groups-1'});
+  await renderPage();
+  expect(container.querySelector('#recon-tab-duplicates').textContent).toBe('Review Duplikat (4)');
+  expect(container.querySelector('[data-testid=kas-bank-pending-shown]').textContent).toBe('Ditampilkan 2 dari 4 baris menunggu keputusan.');
+  await click(container.querySelector('[data-testid=kas-bank-groups-more]'));
+  await flush();
+  await flush();
+  expect(api.cashBankDuplicateGroups).toHaveBeenLastCalledWith(expect.objectContaining({cash_bank_id:'account-1', page:2, review_revision:'groups-1'}));
+  expect(container.querySelector('#recon-tab-duplicates').textContent).toBe('Review Duplikat (4)');
+  expect(container.querySelector('[data-testid=kas-bank-pending-shown]').textContent).toBe('Ditampilkan 4 dari 4 baris menunggu keputusan.');
+  await click(container.querySelector('#recon-tab-duplicates'));
+  const panel = container.querySelector('[data-testid=kas-bank-duplicate-review]');
+  expect(panel.textContent).toContain('KELOMPOK AWAL');
+  expect(panel.textContent).toContain('KELOMPOK BERIKUT');
+  expect(panel.querySelector('[data-testid=duplicate-line-line-a]')).toBeTruthy();
+  expect(panel.querySelector('[data-testid=duplicate-line-line-b]')).toBeTruthy();
+  expect(panel.querySelector('[data-testid=duplicate-line-line-c]')).toBeTruthy();
+  expect(panel.querySelector('[data-testid=duplicate-line-line-d]')).toBeTruthy();
+  expect(container.querySelector('[data-testid=kas-bank-groups-more]')).toBeNull();
+});
+test('switching accounts replaces the duplicate list and a failed count is not zero', async () => {
+  api.cashBankAccounts.mockResolvedValue({items:[
+    {id:'account-1', name:'Rekening uji', currency_code:'IDR'},
+    {id:'account-2', name:'Rekening lain', currency_code:'IDR'},
+  ]});
+  api.cashBankPendingReview.mockImplementation(async (params) => (
+    params.cash_bank_id === 'account-2'
+      ? {solo_lines:[hiddenLine('only-b', 'Hanya rekening lain')], outside_period:[], unreachable:[], other_accounts:[], truncated:false, pending_total:1, page:1, review_revision:'account-2'}
+      : {solo_lines:[hiddenLine('only-a', 'Hanya rekening awal')], outside_period:[], unreachable:[], other_accounts:[], truncated:true, pending_total:4, page:1, review_revision:'account-1'}
+  ));
+  await renderPage();
+  expect(container.querySelector('#recon-tab-duplicates').textContent).toBe('Review Duplikat (4)');
+  expect(container.querySelector('[data-testid=kas-bank-pending-more]')).toBeTruthy();
+  await change('[aria-label="Rekening"]', 'account-2');
+  await flush();
+  await flush();
+  expect(api.cashBankPendingReview).toHaveBeenLastCalledWith(expect.objectContaining({cash_bank_id:'account-2'}));
+  expect(api.cashBankPendingReview.mock.calls.at(-1)[0].page).toBeUndefined();
+  expect(container.querySelector('#recon-tab-duplicates').textContent).toBe('Review Duplikat (1)');
+  expect(container.querySelector('[data-testid=kas-bank-pending-more]')).toBeNull();
+  await click(container.querySelector('#recon-tab-duplicates'));
+  expect(container.textContent).toContain('Hanya rekening lain');
+  expect(container.textContent).not.toContain('Hanya rekening awal');
+
+  api.cashBankPendingReview.mockRejectedValue(new Error('gagal memuat jumlah'));
+  api.cashBankDuplicateGroups.mockRejectedValue(new Error('gagal memuat kelompok'));
+  await change('[aria-label="Rekening"]', 'account-1');
+  await flush();
+  await flush();
+  expect(container.querySelector('#recon-tab-duplicates').textContent).toBe('Review Duplikat (—)');
+  expect(container.querySelector('[data-testid=kas-bank-pending-shown]')).toBeNull();
+  expect(container.textContent).toContain('gagal memuat jumlah');
+});
+test('a changed queue resets instead of appending the next page', async () => {
+  api.cashBankPendingReview
+    .mockResolvedValueOnce({page:1, truncated:true, pending_total:2, review_revision:'rev-a', solo_lines:[hiddenLine('stay-1', 'Baris tetap')], outside_period:[], unreachable:[], other_accounts:[]})
+    .mockResolvedValueOnce({stale:true, message:'Daftar berubah. Muat ulang dari awal.', pending_total:3, review_revision:'rev-b', solo_lines:[hiddenLine('skip-me', 'Baris yang tidak boleh ditempel')]})
+    .mockResolvedValue({page:1, truncated:false, pending_total:3, review_revision:'rev-b', solo_lines:[hiddenLine('fresh-1', 'Baris sesudah muat ulang')], outside_period:[], unreachable:[], other_accounts:[]});
+  await renderPage();
+  await click(container.querySelector('[data-testid=kas-bank-pending-more]'));
+  await flush();
+  await flush();
+  await flush();
+  expect(container.textContent).toContain('Daftar berubah. Muat ulang dari awal.');
+  expect(container.textContent).not.toContain('Baris yang tidak boleh ditempel');
+  expect(container.querySelector('#recon-tab-duplicates').textContent).toBe('Review Duplikat (3)');
+  await click(container.querySelector('#recon-tab-duplicates'));
+  expect(container.textContent).toContain('Baris sesudah muat ulang');
+  expect(container.textContent).not.toContain('Baris tetap');
 });
