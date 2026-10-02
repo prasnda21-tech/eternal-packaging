@@ -318,6 +318,13 @@ describe("reportsNavVisible", () => {
     expect(v.gajiOperator).toBe(false);
     expect(v.statusPo).toBe(false);
   });
+
+  test("shows parent for laporan penjualan", () => {
+    const v = reportsNavVisible(has(NAV_KEYS.reports, NAV_KEYS.salesReports));
+    expect(v.parent).toBe(true);
+    expect(v.salesReports).toBe(true);
+    expect(v.analytics).toBe(false);
+  });
 });
 
 describe("NAV_MENU_FALLBACK Settings catalog", () => {

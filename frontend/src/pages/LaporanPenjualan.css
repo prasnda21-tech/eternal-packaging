@@ -1,0 +1,294 @@
+.aol-page {
+  display: flex;
+  min-height: calc(100vh - 56px);
+  background: #f7f7f8;
+  color: #1d2430;
+  font-size: 13px;
+}
+
+.aol-side {
+  width: 228px;
+  flex: 0 0 228px;
+  background: #fff;
+  border-right: 1px solid #e4e7ee;
+  padding: 8px 0;
+}
+
+.aol-side button {
+  display: flex;
+  width: 100%;
+  text-align: left;
+  gap: 8px;
+  align-items: center;
+  border: 0;
+  background: transparent;
+  padding: 9px 16px;
+  color: #2a3344;
+  cursor: pointer;
+  font: inherit;
+}
+
+.aol-side button.is-active {
+  background: #e2136e;
+  color: #fff;
+}
+
+.aol-main {
+  flex: 1;
+  min-width: 0;
+  background: #fff;
+  display: flex;
+  flex-direction: column;
+}
+
+.aol-main-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 22px 8px;
+}
+
+.aol-main-head h1 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.aol-search {
+  width: 240px;
+  border: 1px solid #d5d9e2;
+  border-radius: 4px;
+  padding: 7px 10px;
+  font: inherit;
+}
+
+.aol-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px 28px;
+  padding: 8px 18px 24px;
+  align-content: start;
+}
+
+.aol-report {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  padding: 8px;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  border-radius: 6px;
+}
+
+.aol-report:hover,
+.aol-report.is-hit {
+  background: #fde8f1;
+}
+
+.aol-report strong {
+  display: block;
+  color: #24324a;
+  font-weight: 600;
+}
+
+.aol-report span {
+  display: block;
+  color: #7b8494;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.aol-ico {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  color: #5b6b86;
+}
+
+.aol-stage {
+  flex: 1;
+  background: #8d8d8d;
+  min-height: calc(100vh - 56px);
+  display: flex;
+  flex-direction: column;
+}
+
+.aol-toolbar {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  background: #f3f4f6;
+  border-bottom: 1px solid #d9dce3;
+  padding: 6px 8px;
+}
+
+.aol-toolbar button,
+.aol-modal button,
+.aol-pager button {
+  font: inherit;
+  cursor: pointer;
+}
+
+.aol-toolbar button {
+  border: 1px solid #d0d5df;
+  background: #fff;
+  border-radius: 4px;
+  padding: 4px 8px;
+}
+
+.aol-paper-wrap {
+  overflow: auto;
+  padding: 28px 16px 40px;
+  flex: 1;
+}
+
+.aol-paper {
+  width: min(920px, 100%);
+  margin: 0 auto;
+  background: #fff;
+  min-height: 640px;
+  padding: 28px 36px 48px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18);
+}
+
+.aol-company,
+.aol-period {
+  text-align: center;
+  margin: 0;
+}
+
+.aol-company { font-size: 14px; }
+.aol-title {
+  margin: 2px 0 0;
+  text-align: center;
+  color: #9d174d;
+  font-size: 20px;
+  font-weight: 700;
+}
+.aol-period { font-size: 13px; margin-top: 2px; }
+.aol-branch {
+  text-align: right;
+  margin: 10px 0 8px;
+  font-size: 12px;
+}
+
+.aol-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.aol-table th {
+  background: #d6ebf8;
+  border: 1px solid #9eb4c6;
+  padding: 4px 6px;
+  font-weight: 600;
+  text-align: left;
+}
+
+.aol-table td {
+  border: 1px solid #c5d0da;
+  padding: 3px 6px;
+  vertical-align: top;
+}
+
+.aol-table tr:nth-child(even) td { background: #f4f9fc; }
+.aol-table .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.aol-table .group td { font-weight: 700; background: #fff; }
+.aol-table .subtotal td,
+.aol-table .total td { font-weight: 700; background: #fff; }
+.aol-table a { color: #1d4f91; text-decoration: none; }
+.aol-empty { text-align: center; color: #667; padding: 18px; }
+
+.aol-note,
+.aol-error {
+  width: min(920px, calc(100% - 32px));
+  margin: 8px auto 0;
+  background: #fff;
+  padding: 8px 12px;
+  font-size: 12px;
+}
+
+.aol-error { color: #8d1d1d; }
+
+.aol-pager {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  width: min(920px, calc(100% - 32px));
+  margin: 8px auto 0;
+  color: #fff;
+}
+
+.aol-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(20, 24, 33, 0.35);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 72px;
+  z-index: 40;
+}
+
+.aol-modal {
+  width: min(640px, calc(100% - 24px));
+  background: #fff;
+  border-radius: 2px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+}
+
+.aol-modal header {
+  background: #1e3a5f;
+  color: #fff;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  font-weight: 600;
+}
+
+.aol-modal header button {
+  background: transparent;
+  color: #fff;
+  border: 0;
+}
+
+.aol-tabs { display: flex; gap: 16px; padding: 8px 16px 0; border-bottom: 1px solid #e5e8ef; }
+.aol-tabs button { border: 0; background: transparent; padding: 6px 0; font: inherit; cursor: pointer; }
+.aol-tabs button.is-active { color: #c2410c; border-bottom: 2px solid #c2410c; }
+
+.aol-form { padding: 12px 16px 16px; }
+.aol-form h2 { font-size: 14px; margin: 8px 0; }
+.aol-row { display: grid; grid-template-columns: 88px 1fr; gap: 8px; align-items: center; margin-bottom: 8px; }
+.aol-form input,
+.aol-form select,
+.aol-form textarea {
+  font: inherit;
+  border: 1px solid #cfd5e0;
+  padding: 6px 8px;
+  width: 100%;
+  box-sizing: border-box;
+}
+.aol-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+.aol-actions .primary,
+.aol-modal .primary {
+  background: #2463eb;
+  color: #fff;
+  border: 0;
+  border-radius: 4px;
+  padding: 7px 14px;
+}
+.aol-check { display: flex; gap: 8px; align-items: center; margin: 4px 0; }
+.aol-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 16px; }
+
+@media print {
+  .aol-side, .aol-toolbar, .aol-pager, .aol-note, .aol-mask { display: none !important; }
+  .aol-stage, .aol-paper-wrap, .aol-paper { background: #fff; box-shadow: none; overflow: visible; }
+  .aol-page { display: block; }
+}

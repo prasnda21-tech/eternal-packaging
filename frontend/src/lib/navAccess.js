@@ -44,6 +44,7 @@ export const NAV_KEYS = {
   statusPo: "nav.reports.status_po",
   gajiOperator: "nav.reports.gaji_operator",
   orderPrediction: "nav.reports.order_prediction",
+  salesReports: "nav.reports.sales",
   employeeAdmin: "nav.employee_administration",
   employeeAdminMine: "nav.employee_administration.mine",
   employeeAdminCreate: "nav.employee_administration.create",
@@ -124,6 +125,7 @@ export const NAV_MENU_FALLBACK = [
   { key: NAV_KEYS.reports, label: "Laporan", parent: null },
   { key: NAV_KEYS.analytics, label: "Analitik Output", parent: NAV_KEYS.reports },
   { key: NAV_KEYS.gajiOperator, label: "Gaji Operator", parent: NAV_KEYS.reports },
+  { key: NAV_KEYS.salesReports, label: "Laporan Penjualan", parent: NAV_KEYS.reports },
   { key: NAV_KEYS.employeeAdmin, label: "Administrasi Karyawan", parent: null },
   { key: NAV_KEYS.employeeAdminMine, label: "Pengajuan Saya", parent: NAV_KEYS.employeeAdmin },
   { key: NAV_KEYS.employeeAdminCreate, label: "Buat Pengajuan", parent: NAV_KEYS.employeeAdmin },
@@ -426,6 +428,7 @@ export const REPORTS_NAV_ROUTES = {
   // Status Pengiriman consolidated into Jadwal Pengiriman — no standalone menu route.
   [NAV_KEYS.gajiOperator]: "/laporan/gaji-operator",
   [NAV_KEYS.orderPrediction]: "/laporan/prediksi-order",
+  [NAV_KEYS.salesReports]: "/laporan/penjualan",
 };
 
 const REPORTS_VIS_FIELD = {
@@ -433,6 +436,7 @@ const REPORTS_VIS_FIELD = {
   [NAV_KEYS.statusPo]: "statusPo",
   [NAV_KEYS.gajiOperator]: "gajiOperator",
   [NAV_KEYS.orderPrediction]: "orderPrediction",
+  [NAV_KEYS.salesReports]: "salesReports",
 };
 
 export const REPORTS_TILE_TONES = {
@@ -440,6 +444,7 @@ export const REPORTS_TILE_TONES = {
   [NAV_KEYS.statusPo]: "blue",
   [NAV_KEYS.gajiOperator]: "purple",
   [NAV_KEYS.orderPrediction]: "green",
+  [NAV_KEYS.salesReports]: "green",
 };
 
 export const REPORTS_TILE_TESTIDS = {
@@ -447,6 +452,7 @@ export const REPORTS_TILE_TESTIDS = {
   [NAV_KEYS.statusPo]: "top-nav-status-po",
   [NAV_KEYS.gajiOperator]: "top-nav-gaji-operator",
   [NAV_KEYS.orderPrediction]: "top-nav-prediksi-order",
+  [NAV_KEYS.salesReports]: "top-nav-laporan-penjualan",
 };
 
 export function reportsMenuItems(hasPerm) {
@@ -514,9 +520,18 @@ export function reportsNavVisible(hasPerm) {
   const shipmentStatus = false;
   const gajiOperator = parent && canSeeNav(hasPerm, NAV_KEYS.gajiOperator);
   const orderPrediction = parent && canSeeNav(hasPerm, NAV_KEYS.orderPrediction);
+  const salesReports = parent && canSeeNav(hasPerm, NAV_KEYS.salesReports);
   // Status PO and Prediksi Order are still exposed for route/index decisions,
   // but no longer make the Laporan sidebar group visible.
-  return { parent: !!(analytics || gajiOperator), analytics, statusPo, shipmentStatus, gajiOperator, orderPrediction };
+  return {
+    parent: !!(analytics || gajiOperator || salesReports),
+    analytics,
+    statusPo,
+    shipmentStatus,
+    gajiOperator,
+    orderPrediction,
+    salesReports,
+  };
 }
 
 export function purchasingNavVisible(hasPerm) {
