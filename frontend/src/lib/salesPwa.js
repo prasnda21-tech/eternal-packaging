@@ -72,6 +72,23 @@ export function formatSalesDate(iso) {
   return `${m[3]}/${m[2]}/${m[1].slice(-2)}`;
 }
 
+export function salesJakartaDay(date = new Date()) {
+  const instant = date instanceof Date ? date : new Date(date);
+  if (Number.isNaN(instant.getTime())) return "";
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Jakarta",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(instant);
+  const pick = (type) => parts.find((part) => part.type === type)?.value || "";
+  const year = pick("year");
+  const month = pick("month");
+  const day = pick("day");
+  if (!year || !month || !day) return "";
+  return `${year}-${month}-${day}`;
+}
+
 export function salesWibParts(iso) {
   const text = String(iso || "").trim();
   if (!text) return null;

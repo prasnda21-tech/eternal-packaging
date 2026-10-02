@@ -3,7 +3,21 @@ import path from "path";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import api from "../lib/api";
+import { SALES_PWA_NAV, salesJakartaDay } from "../lib/salesPwa";
 import SalesPwaDashboardPage from "./SalesPwaDashboardPage";
+
+var mockSalesAuthState = { user: null };
+var mockJakartaDay = "";
+jest.mock("../lib/auth", () => ({
+  useAuth: () => mockSalesAuthState,
+}));
+jest.mock("../lib/salesPwa", () => {
+  const actual = jest.requireActual("../lib/salesPwa");
+  return {
+    ...actual,
+    salesJakartaDay: (date) => mockJakartaDay || actual.salesJakartaDay(date),
+  };
+});
 
 jest.mock("react-router-dom", () => ({
   Link: ({ children, to, state, ...props }) => (
@@ -14,6 +28,7 @@ jest.mock("../lib/api", () => ({
   __esModule: true,
   default: {
     salesPwaDashboard: jest.fn(),
+    salesPwaDeliveriesToday: jest.fn(),
     salesPwaOrders: jest.fn(),
     salesPwaVisits: jest.fn(),
     salesPwaIntelligence: jest.fn(),
@@ -21,7 +36,24 @@ jest.mock("../lib/api", () => ({
 }));
 global.IS_REACT_ACT_ENVIRONMENT = true;
 
+function emptyDeliveries(date = salesJakartaDay()) {
+  return {
+    date,
+    timezone: "Asia/Jakarta",
+    source: "delivery_schedule.schedule_rows",
+    sales_user_id: mockSalesAuthState.user?.id || "",
+    total: 0,
+    po_count: 0,
+    qty: 0,
+    rows: [],
+  };
+}
+
 beforeEach(() => {
+  mockSalesAuthState.user = null;
+  mockJakartaDay = "";
+  api.salesPwaDeliveriesToday.mockReset();
+  api.salesPwaDeliveriesToday.mockResolvedValue(emptyDeliveries());
   api.salesPwaOrders.mockReset();
   api.salesPwaOrders.mockResolvedValue({ orders: [], counts: { selesai: 0 }, total: 0 });
   api.salesPwaVisits.mockReset();
@@ -450,4 +482,211 @@ test("priority empty, loading, error, and incomplete states stay inside the sect
   expect(failed.node.querySelector('[data-testid="sales-intelligence-error"]').textContent).toBe("Prioritas belum dapat dimuat.");
   expect(failed.node.querySelector('[data-testid="sales-dashboard-revenue"]').textContent).toContain("Rp12.500.000");
   act(() => failed.root.unmount());
+});
+
+function deliveryRow(extra = {}) {
+  return {
+    id: "order-a",
+    row_id: "order-a:sh-a",
+    shipment_id: "sh-a",
+    po_number: "PO-A",
+    customer: "Pelanggan A",
+    schedule_date: salesJakartaDay(),
+    schedule_time: "08:15",
+    destination: "Gudang A",
+    status: "hari_ini",
+    status_label: "Hari Ini",
+    qty: 30,
+    items: [{ name: "Cup A", qty: 30 }],
+    ...extra,
+  };
+}
+
+test("today deliveries stay on the Jakarta day and do not follow the revenue month", async () => {
+  dashboardReady();
+  const row = deliveryRow();
+  api.salesPwaDeliveriesToday.mockResolvedValue({
+    ...emptyDeliveries(row.schedule_date),
+    total: 1,
+    po_count: 1,
+    qty: 30,
+    rows: [row],
+  });
+  const node = document.createElement("div");
+  const root = createRoot(node);
+  await act(async () => { root.render(<SalesPwaDashboardPage />); await Promise.resolve(); });
+  await act(async () => { await Promise.resolve(); });
+  const section = node.querySelector('[data-testid="sales-today-deliveries"]');
+  expect(section.textContent).toContain("Pengiriman Hari Ini");
+  expect(section.textContent).toContain("PO-A");
+  expect(section.textContent).toContain("Pelanggan A");
+  expect(section.textContent).toContain("08:15");
+  expect(section.textContent).toContain("Gudang A");
+  expect(section.textContent).toContain("Hari Ini");
+  expect(section.textContent).toContain("Qty kirim 30");
+  expect(section.textContent).toContain("1 pengiriman · 30 pcs");
+  expect(section.textContent).not.toContain("10000");
+  expect(section.querySelector("table")).toBeNull();
+  expect(section.textContent).not.toMatch(/Ubah jadwal|Tandai terkirim|Batalkan pengiriman/);
+  expect(section.querySelector('[data-testid="sales-today-po-order-a:sh-a"]').getAttribute("href")).toBe("/sales/po/order-a");
+  expect(SALES_PWA_NAV.map((item) => item.id)).toEqual(["dashboard", "orders", "visits", "more"]);
+  expect(SALES_PWA_NAV.map((item) => item.label).join(" ")).not.toContain("Pengiriman");
+  expect(api.salesPwaDeliveriesToday).toHaveBeenCalledTimes(1);
+  expect(api.salesPwaDeliveriesToday).toHaveBeenCalledWith();
+
+  const toggle = section.querySelector('[data-testid="sales-today-items-toggle-order-a:sh-a"]');
+  await act(async () => { toggle.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+  expect(section.querySelector('[data-testid="sales-today-items-order-a:sh-a"]').textContent).toContain("Cup A · 30");
+
+  const callsBeforeMonth = api.salesPwaDeliveriesToday.mock.calls.length;
+  const input = node.querySelector('input[type="month"]');
+  const nextMonth = input.value === "2026-10" ? "2026-11" : "2026-10";
+  let resolveMonth;
+  api.salesPwaDashboard.mockImplementationOnce(() => new Promise((resolve) => { resolveMonth = resolve; }));
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+  await act(async () => {
+    setter.call(input, nextMonth);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  expect(node.textContent).toContain("Memuat data penjualan...");
+  expect(node.textContent).toContain("PO-A");
+  expect(node.textContent).toContain("Qty kirim 30");
+  expect(api.salesPwaDeliveriesToday.mock.calls.length).toBe(callsBeforeMonth);
+  await act(async () => {
+    resolveMonth({
+      month: nextMonth,
+      metrics: { revenue: 5000, receivables: 0, invoice_count: 1, receivable_invoice_count: 0, active_po: 1, buffer_po: 0, visit_month: 0, visit_overdue: 0 },
+      upcoming_visits: [],
+    });
+  });
+  expect(node.textContent).toContain("PO-A");
+  expect(node.querySelector('[data-testid="sales-dashboard-revenue"]').textContent).toContain("Rp5.000");
+  act(() => root.unmount());
+});
+
+test("empty, failed, and retry states do not keep a previous delivery list", async () => {
+  dashboardReady();
+  const node = document.createElement("div");
+  const root = createRoot(node);
+  await act(async () => { root.render(<SalesPwaDashboardPage />); await Promise.resolve(); });
+  await act(async () => { await Promise.resolve(); });
+  expect(node.querySelector('[data-testid="sales-today-empty"]').textContent).toBe("Belum ada jadwal pengiriman untuk PO Anda hari ini");
+
+  api.salesPwaDeliveriesToday.mockReset();
+  api.salesPwaDeliveriesToday.mockRejectedValueOnce(new Error("offline"));
+  const failedNode = document.createElement("div");
+  const failedRoot = createRoot(failedNode);
+  await act(async () => { failedRoot.render(<SalesPwaDashboardPage />); await Promise.resolve(); });
+  await act(async () => { await Promise.resolve(); });
+  expect(failedNode.querySelector('[data-testid="sales-today-error"]').textContent).toContain("Jadwal pengiriman gagal dimuat.");
+  expect(failedNode.querySelector('[data-testid="sales-today-retry"]').textContent).toBe("Coba Lagi");
+  expect(failedNode.textContent).not.toContain("PO-A");
+
+  api.salesPwaDeliveriesToday.mockResolvedValue({
+    ...emptyDeliveries(),
+    total: 1,
+    po_count: 1,
+    qty: 30,
+    rows: [deliveryRow()],
+  });
+  await act(async () => {
+    failedNode.querySelector('[data-testid="sales-today-retry"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await Promise.resolve();
+  });
+  expect(failedNode.textContent).toContain("PO-A");
+  expect(failedNode.querySelector('[data-testid="sales-today-error"]')).toBeNull();
+  act(() => failedRoot.unmount());
+  act(() => root.unmount());
+});
+
+test("account switch and Jakarta day change drop the previous delivery list", async () => {
+  dashboardReady();
+  mockSalesAuthState.user = { id: "sales-a", user_id: "sales-a" };
+  mockJakartaDay = "2026-10-02";
+  let resolveA;
+  let resolveB;
+  api.salesPwaDeliveriesToday.mockImplementation(() => {
+    if (mockSalesAuthState.user?.id === "sales-b") {
+      return new Promise((resolve) => { resolveB = resolve; });
+    }
+    return new Promise((resolve) => { resolveA = resolve; });
+  });
+  const node = document.createElement("div");
+  const root = createRoot(node);
+  await act(async () => { root.render(<SalesPwaDashboardPage />); });
+  expect(node.querySelector('[data-testid="sales-today-loading"]')).not.toBeNull();
+  await act(async () => {
+    resolveA({
+      ...emptyDeliveries("2026-10-02"),
+      sales_user_id: "sales-a",
+      total: 1,
+      po_count: 1,
+      qty: 30,
+      rows: [deliveryRow({ schedule_date: "2026-10-02" })],
+    });
+  });
+  expect(node.textContent).toContain("PO-A");
+
+  mockSalesAuthState.user = { id: "sales-b", user_id: "sales-b" };
+  await act(async () => { root.render(<SalesPwaDashboardPage />); });
+  expect(node.textContent).not.toContain("PO-A");
+  expect(node.querySelector('[data-testid="sales-today-loading"]')).not.toBeNull();
+  await act(async () => {
+    resolveA({
+      ...emptyDeliveries("2026-10-02"),
+      sales_user_id: "sales-a",
+      total: 1,
+      qty: 30,
+      rows: [deliveryRow({ schedule_date: "2026-10-02", po_number: "PO-STALE", customer: "Pelanggan Lama" })],
+    });
+    resolveB({
+      ...emptyDeliveries("2026-10-02"),
+      sales_user_id: "sales-b",
+      total: 1,
+      po_count: 1,
+      qty: 4,
+      rows: [deliveryRow({
+        id: "order-b",
+        row_id: "order-b:sh-b",
+        po_number: "PO-B",
+        customer: "Pelanggan B",
+        qty: 4,
+        items: [{ name: "Item B", qty: 4 }],
+        schedule_date: "2026-10-02",
+      })],
+    });
+  });
+  expect(node.textContent).toContain("PO-B");
+  expect(node.textContent).not.toContain("PO-A");
+  expect(node.textContent).not.toContain("PO-STALE");
+  expect(node.textContent).not.toContain("Pelanggan Lama");
+
+  mockJakartaDay = "2026-10-03";
+  let resolveNext;
+  api.salesPwaDeliveriesToday.mockImplementation(() => new Promise((resolve) => { resolveNext = resolve; }));
+  await act(async () => { root.render(<SalesPwaDashboardPage />); });
+  expect(node.textContent).not.toContain("PO-B");
+  expect(node.querySelector('[data-testid="sales-today-loading"]')).not.toBeNull();
+  await act(async () => {
+    resolveNext({
+      ...emptyDeliveries("2026-10-03"),
+      sales_user_id: "sales-b",
+      total: 1,
+      po_count: 1,
+      qty: 5,
+      rows: [deliveryRow({
+        id: "order-next",
+        row_id: "order-next:sh-next",
+        po_number: "PO-NEXT",
+        customer: "Pelanggan Next",
+        schedule_date: "2026-10-03",
+        qty: 5,
+        items: [{ name: "Besok", qty: 5 }],
+      })],
+    });
+  });
+  expect(node.textContent).toContain("PO-NEXT");
+  expect(node.textContent).not.toContain("PO-B");
+  act(() => root.unmount());
 });
