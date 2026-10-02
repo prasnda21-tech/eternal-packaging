@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { CalendarDays, ChevronRight, ClipboardList, MapPin, TrendingUp, WalletCards } from "lucide-react";
 import api from "../lib/api";
 import { currentSalesMonth, formatSalesDate, formatSalesMoney, salesMonthBounds, salesWibParts } from "../lib/salesPwa";
+import SalesPwaDesignApproval from "./SalesPwaDesignApproval";
 
 const VISIT_MONTHS = ["Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus", "September", "Oktober", "November", "Desember"];
 const RECEIVABLE_INFO = "Saldo invoice yang masih belum lunas, termasuk periode sebelumnya.";
@@ -233,6 +234,7 @@ export default function SalesPwaDashboardPage() {
                     <small>Status: {order.status}</small>
                     {order.tanggal_kirim_overdue ? <small className="is-urgent">Kirim terlambat</small> : null}
                     <Link to={`/sales/po/${encodeURIComponent(order.id)}`}>Lihat PO Approval Design</Link>
+                    <SalesPwaDesignApproval order={order} expectMissing />
                   </article>
                 ))}
                 {(actionVisible.payment || []).map((order) => (

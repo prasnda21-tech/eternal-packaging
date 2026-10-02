@@ -1,4 +1,9 @@
-"""Read-only PWA Sales payloads. Scoped by orders.sales_user_id == session users.id."""
+"""PWA Sales payloads. Scoped by orders.sales_user_id == session users.id.
+
+Read-only, except one case: an active customer approval on an order that does
+not yet have a live-tracking token gets that existing opener persisted.
+That does not create or replace a customer-approval token.
+"""
 from __future__ import annotations
 
 import re
@@ -44,6 +49,7 @@ from services.tanggal_pengiriman import (
     attach_tanggal_pengiriman_snapshot,
     parse_calendar_date,
 )
+from services.customer_tracking import ensure_tracking_token, public_design_approval
 from services.sales_user_mapping import (
     SALES_PWA_ROLE,
     is_sales_pwa_role,
@@ -112,6 +118,7 @@ LIST_PROJECTION = {
     "payment_bypassed": 1,
     "payment_files": 1,
     "customer_approval": 1,
+    "tracking_token": 1,
     "screener_info": 1,
     "helper_prep": 1,
     "sample_files": 1,
@@ -558,6 +565,175 @@ def _sort_value(row: dict, key: str) -> Any:
     return str(row.get("updated_at") or row.get("order_date") or "")
 
 
+# Same labels as the internal Customer Approval panel. Status itself comes
+# from the approval record, with the same expiry derivation as the public link.
+_APPROVAL_STATUS_LABEL = {
+    "active": "Aktif · Menunggu customer",
+    "approved": "Disetujui oleh customer",
+    "rejected": "Ditolak oleh customer",
+    "expired": "Kedaluwarsa",
+    "revoked": "Dicabut",
+    "invalidated": "Design diperbarui (tidak berlaku)",
+}
+
+
+def effective_customer_approval_status(rec: Optional[dict], now: Optional[datetime] = None) -> str:
+    """Match customer_approval._derive_status. Does not write the record."""
+    if not isinstance(rec, dict):
+        return ""
+    status = str(rec.get("status") or "active").strip() or "active"
+    if status in ("approved", "rejected", "revoked", "invalidated"):
+        return status
+    try:
+        expires = datetime.fromisoformat(str(rec.get("expires_at") or ""))
+    except Exception:
+        return status
+    current = now or datetime.now(timezone.utc)
+    if current >= expires:
+        return "expired"
+    return status
+
+
+def _approval_record_id(rec: dict) -> str:
+    return str(rec.get("approval_id") or rec.get("id") or "").strip()
+
+
+def _bound_design_name(order: dict, version: Any) -> str:
+    """Name of the design file the approval record is bound to. No other file."""
+    if not version:
+        return ""
+    for file in order.get("design_files") or []:
+        if isinstance(file, dict) and file.get("id") == version:
+            return str(file.get("name") or file.get("original_filename") or "").strip()
+    return ""
+
+
+def _approval_item_labels(order: dict) -> List[dict]:
+    """Line identity kept distinct. Same item name with a different color stays."""
+    labels: List[dict] = []
+    for idx, line in enumerate(order.get("line_items") or []):
+        if not isinstance(line, dict):
+            continue
+        name = str(line.get("name") or line.get("item_name") or line.get("product_name") or "").strip()
+        color = str(line.get("color") or "").strip()
+        if not name and not color:
+            continue
+        label = name or "Item"
+        if color:
+            label = f"{label} · {color}"
+        labels.append({"idx": idx, "label": label})
+    return labels
+
+
+def _latest_approval_per_design(records: List[dict]) -> List[dict]:
+    chosen: Dict[str, dict] = {}
+    for rec in records:
+        if not isinstance(rec, dict):
+            continue
+        version = str(rec.get("design_version") or "")
+        previous = chosen.get(version)
+        if previous is None or str(rec.get("generated_at") or "") >= str(previous.get("generated_at") or ""):
+            chosen[version] = rec
+    return sorted(chosen.values(), key=lambda rec: str(rec.get("generated_at") or ""), reverse=True)
+
+
+def _approval_snapshot(order: dict) -> Optional[dict]:
+    snap = order.get("customer_approval")
+    return snap if isinstance(snap, dict) else None
+
+
+def approval_needs_tracking_opener(order: dict) -> bool:
+    snap = _approval_snapshot(order)
+    if not snap or not _approval_record_id(snap):
+        return False
+    return effective_customer_approval_status(snap) == "active"
+
+
+def design_approval_rows(order: dict, records: Optional[List[dict]] = None) -> List[dict]:
+    """Approval rows for one owned order.
+
+    The open path is the live-tracking opener from public_design_approval.
+    It is attached only to the snapshot approval that opener actually serves,
+    and only while that approval is still active. Other design versions keep
+    their own name and status and do not reuse that path.
+    """
+    snap = _approval_snapshot(order)
+    source = [rec for rec in (records or []) if isinstance(rec, dict)]
+    snap_id = _approval_record_id(snap or {})
+    if snap and snap_id and snap_id not in {_approval_record_id(rec) for rec in source}:
+        source.append(snap)
+    elif not source and snap:
+        source.append(snap)
+    latest = _latest_approval_per_design(source)
+    token = str(order.get("tracking_token") or "").strip()
+    official_path = ""
+    if snap and token and effective_customer_approval_status(snap) == "active":
+        official = public_design_approval(order, token) or {}
+        official_path = str(official.get("path") or "")
+    rows: List[dict] = []
+    for rec in latest:
+        status = effective_customer_approval_status(rec)
+        label = _APPROVAL_STATUS_LABEL.get(status)
+        if not label:
+            continue
+        version = rec.get("design_version")
+        if not version and snap and _approval_record_id(rec) == snap_id:
+            version = snap.get("design_version")
+        row: Dict[str, Any] = {
+            "id": _approval_record_id(rec) or str(version or "approval"),
+            "status": status,
+            "status_label": label,
+        }
+        design_name = _bound_design_name(order, version)
+        if design_name:
+            row["design_name"] = design_name
+        if official_path and status == "active" and snap_id and _approval_record_id(rec) == snap_id:
+            row["path"] = official_path
+        rows.append(row)
+    if len(rows) == 1:
+        items = _approval_item_labels(order)
+        if items:
+            rows[0]["items"] = items
+    return rows
+
+
+async def _load_approval_records(db, order_ids: List[str]) -> Dict[str, List[dict]]:
+    ids = [str(oid) for oid in order_ids if oid]
+    if not ids:
+        return {}
+    try:
+        found = await _cursor_rows(db.customer_approvals.find(
+            {"order_id": {"$in": ids}},
+            {"_id": 0, "token_hash": 0, "signature_storage_path": 0},
+        ))
+    except Exception:
+        return {}
+    grouped: Dict[str, List[dict]] = {}
+    for rec in found:
+        oid = str(rec.get("order_id") or "")
+        if oid:
+            grouped.setdefault(oid, []).append(rec)
+    return grouped
+
+
+async def attach_page_design_approvals(db, page: List[dict], raw_by_id: Dict[str, dict]) -> None:
+    """Fill design_approvals on an already scoped page. Does not mint an approval token."""
+    orders = [raw_by_id[row["id"]] for row in page if row.get("id") in raw_by_id]
+    for order in orders:
+        if approval_needs_tracking_opener(order) and not str(order.get("tracking_token") or "").strip():
+            try:
+                await ensure_tracking_token(db, order)
+            except HTTPException:
+                pass
+    grouped = await _load_approval_records(db, [order.get("id") for order in orders])
+    for row in page:
+        order = raw_by_id.get(row.get("id"))
+        if not order:
+            row["design_approvals"] = []
+            continue
+        row["design_approvals"] = design_approval_rows(order, grouped.get(str(order.get("id") or ""), []))
+
+
 def serialize_list_row(order: dict, deliveries: List[dict], invoices: List[dict]) -> dict:
     attach_tanggal_pengiriman_snapshot(order)
     workflow, reasons = status_po_workflow_detail(order)
@@ -590,6 +766,7 @@ def serialize_list_row(order: dict, deliveries: List[dict], invoices: List[dict]
         "active_stage": _active_stage_key(workflow),
         "progress_percent": _workflow_progress(workflow),
         "item_names": item_line_names(order),
+        "design_approvals": design_approval_rows(order),
         "documents": counts,
         "partial_delivery": effective_workflow_status(order) in ("Parsial Terkirim", "SJ parsial"),
     }
@@ -648,6 +825,8 @@ async def list_sales_pwa_orders(
     skip = max(0, int(skip or 0))
     limit = max(1, min(int(limit or 50), 200))
     page = rows[skip:skip + limit]
+    raw_by_id = {order.get("id"): order for order in filtered if order.get("id")}
+    await attach_page_design_approvals(db, page, raw_by_id)
 
     return {
         "orders": page,
@@ -1332,6 +1511,7 @@ async def get_sales_pwa_order(db, user: dict, order_id: str) -> dict:
     deliveries = deliveries_map.get(order.get("id"), [])
     invoices = invoices_map.get(order.get("id"), [])
     row = serialize_list_row(order, deliveries, invoices)
+    await attach_page_design_approvals(db, [row], {order.get("id"): order})
     timeline = []
     for ev in order.get("timeline") or []:
         if not isinstance(ev, dict):

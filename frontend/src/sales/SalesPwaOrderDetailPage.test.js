@@ -148,6 +148,47 @@ test("opens the existing document sheet when one kind has several files", async 
   act(() => root.unmount());
 });
 
+test("shows the approval link from the latest detail response", async () => {
+  api.salesPwaOrder.mockResolvedValue({
+    order: {
+      ...order,
+      design_approvals: [{
+        id: "appr-1",
+        status: "active",
+        status_label: "Aktif · Menunggu customer",
+        design_name: "Cup 16oz.pdf",
+        items: [{ idx: 0, label: "Cup 16oz · Putih" }, { idx: 1, label: "Sedotan" }],
+        path: "/customer/design-approval/track-cup",
+      }],
+    },
+  });
+  const first = await renderDetail();
+  const link = first.container.querySelector('[data-testid="sales-approval-open-appr-1"]');
+  expect(link.getAttribute("href")).toBe("/customer/design-approval/track-cup");
+  expect(link.textContent).toBe("Buka Approval Desain");
+  expect(link.parentElement.textContent).toContain("Cup 16oz.pdf");
+  expect(link.parentElement.textContent).toContain("Sedotan");
+  act(() => first.root.unmount());
+
+  api.salesPwaOrder.mockResolvedValue({
+    order: {
+      ...order,
+      design_approvals: [{
+        id: "appr-2",
+        status: "active",
+        status_label: "Aktif · Menunggu customer",
+        design_name: "Cup revisi.pdf",
+        path: "/customer/design-approval/track-revisi",
+      }],
+    },
+  });
+  const second = await renderDetail();
+  expect(second.container.querySelector('[data-testid="sales-approval-open-appr-2"]').getAttribute("href")).toBe("/customer/design-approval/track-revisi");
+  expect(second.container.textContent).not.toContain("track-cup");
+  expect(second.container.textContent).not.toContain("Cup 16oz.pdf");
+  act(() => second.root.unmount());
+});
+
 test("hides empty notes, ship date, buffer, and color", async () => {
   api.salesPwaDocuments.mockResolvedValue({
     po: { available: false },

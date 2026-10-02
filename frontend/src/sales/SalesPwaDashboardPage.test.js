@@ -134,10 +134,71 @@ test("shows owned action cards and the existing selesai count without an approva
   expect(payment.textContent).toBe("Lihat PO Approval Payment");
   expect(node.querySelector('[data-testid="sales-actions-count"]').textContent).toBe("2 PO perlu tindakan");
   expect(node.querySelector('[data-testid="sales-actions-empty"]')).toBeNull();
+  expect(node.querySelector('[data-testid="sales-approval-missing-po-design"]').textContent).toBe("Link approval belum tersedia");
+  expect(node.querySelector('[data-testid="sales-approval-open-po-design"]')).toBeNull();
+  expect(node.querySelector('[data-testid="sales-action-payment-po-pay"]').textContent).not.toContain("Link approval belum tersedia");
+  expect(node.querySelector('[data-testid="sales-action-payment-po-pay"] .spwa-approval-open')).toBeNull();
   expect(node.textContent).not.toContain("Buka Approval Design");
   expect(node.textContent).not.toContain("Menunggu:");
   expect(node.innerHTML).not.toContain("customer-approval");
   expect(node.innerHTML).not.toContain("token");
+  act(() => root.unmount());
+});
+
+test("opens the stored design approval from the lapangan card without mixing designs", async () => {
+  api.salesPwaDashboard.mockResolvedValue({
+    metrics: { revenue: 0, receivables: 0, invoice_count: 0, receivable_invoice_count: 0, active_po: 1, buffer_po: 0, visit_month: 0, visit_overdue: 0 },
+    upcoming_visits: [],
+  });
+  api.salesPwaOrders.mockImplementation((params) => {
+    if (params.stage === "Approval Design") {
+      return Promise.resolve({
+        orders: [{
+          id: "po-design",
+          customer: "Tala Bumi Coffee",
+          po_number: "PO/2026/09/23/000023",
+          status: "Approval Design",
+          design_approvals: [
+            {
+              id: "old-design",
+              status: "revoked",
+              status_label: "Dicabut",
+              design_name: "cup-lama.pdf",
+            },
+            {
+              id: "new-design",
+              status: "active",
+              status_label: "Aktif · Menunggu customer",
+              design_name: "cup-baru.pdf",
+              items: [{ idx: 0, label: "Cup 8oz · Merah" }],
+              path: "/customer/design-approval/tracking-cup-baru",
+            },
+          ],
+        }],
+        total: 1,
+      });
+    }
+    return Promise.resolve({ orders: [], counts: { selesai: 0 }, total: 0 });
+  });
+  const node = document.createElement("div");
+  const root = createRoot(node);
+  await act(async () => { root.render(<SalesPwaDashboardPage />); await Promise.resolve(); });
+  await act(async () => { await Promise.resolve(); });
+  const card = node.querySelector('[data-testid="sales-action-design-po-design"]');
+  const open = card.querySelector('[data-testid="sales-approval-open-new-design"]');
+  const stale = card.querySelector('[data-testid="sales-approval-row-old-design"]');
+  expect(open.textContent).toBe("Buka Approval Desain");
+  expect(open.getAttribute("href")).toBe("/customer/design-approval/tracking-cup-baru");
+  expect(open.getAttribute("target")).toBe("_blank");
+  expect(open.parentElement.textContent).toContain("cup-baru.pdf");
+  expect(open.parentElement.textContent).toContain("Cup 8oz · Merah");
+  expect(open.parentElement.textContent).toContain("Aktif · Menunggu customer");
+  expect(stale.querySelector("a")).toBeNull();
+  expect(stale.textContent).toContain("cup-lama.pdf");
+  expect(stale.textContent).toContain("Dicabut");
+  expect(stale.textContent).toContain("Link approval belum tersedia");
+  expect(stale.textContent).not.toContain("cup-baru.pdf");
+  expect(card.querySelector("a").getAttribute("href")).toBe("/sales/po/po-design");
   act(() => root.unmount());
 });
 

@@ -432,4 +432,61 @@ describe("SalesPwaOrdersPage", () => {
     act(() => root.unmount());
     container.remove();
   });
+
+  test("shows the stored design approval on the matching phone card only", async () => {
+    mockNarrow(true);
+    api.salesPwaOrders.mockResolvedValue({
+      orders: [
+        {
+          id: "po-link",
+          po_number: "PO-LINK",
+          customer: "Ada Link",
+          status: "Approval Design",
+          progress_percent: 20,
+          hold: false,
+          order_date: "2026-09-18",
+          buffer_stock: false,
+          documents: { total: 0 },
+          design_approvals: [
+            { id: "des-a", status: "invalidated", status_label: "Design diperbarui (tidak berlaku)", design_name: "desain-a.pdf" },
+            { id: "des-b", status: "active", status_label: "Aktif · Menunggu customer", design_name: "desain-b.pdf", items: [{ idx: 0, label: "Gelas · Biru" }, { idx: 1, label: "Gelas · Hijau" }], path: "/customer/design-approval/tok-b" },
+          ],
+        },
+        {
+          id: "po-none",
+          po_number: "PO-NONE",
+          customer: "Tanpa Link",
+          status: "Approval Design",
+          progress_percent: 10,
+          hold: false,
+          order_date: "2026-09-18",
+          buffer_stock: false,
+          documents: { total: 0 },
+          design_approvals: [],
+        },
+      ],
+      counts: { semua: 2, berjalan: 2, hold: 0, parsial: 0, selesai: 0 },
+      total: 2,
+    });
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = await mount(container);
+    const linked = container.querySelector('[data-testid="sales-po-card-PO-LINK"]');
+    const open = linked.querySelector('[data-testid="sales-approval-open-des-b"]');
+    const other = linked.querySelector('[data-testid="sales-approval-row-des-a"]');
+    expect(open.getAttribute("href")).toBe("/customer/design-approval/tok-b");
+    expect(open.textContent).toBe("Buka Approval Desain");
+    expect(open.parentElement.textContent).toContain("desain-b.pdf");
+    expect(open.parentElement.textContent).toContain("Gelas · Biru");
+    expect(open.parentElement.textContent).toContain("Gelas · Hijau");
+    expect(other.querySelector("a, button")).toBeNull();
+    expect(other.textContent).toContain("desain-a.pdf");
+    expect(other.textContent).toContain("Link approval belum tersedia");
+    expect(other.textContent).not.toContain("desain-b.pdf");
+    const empty = container.querySelector('[data-testid="sales-po-card-PO-NONE"]');
+    expect(empty.querySelector('[data-testid="sales-approval-missing-po-none"]').textContent).toBe("Link approval belum tersedia");
+    expect(empty.querySelector("a.spwa-approval-open, button.spwa-approval-open")).toBeNull();
+    act(() => root.unmount());
+    container.remove();
+  });
 });

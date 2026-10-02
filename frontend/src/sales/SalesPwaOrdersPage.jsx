@@ -4,6 +4,7 @@ import { ChevronRight, FileText, Search, SlidersHorizontal, X } from "lucide-rea
 import api from "../lib/api";
 import { documentTotal, formatSalesDate } from "../lib/salesPwa";
 import { readSalesPwaPoListState, salesPwaPoFiltersFromContext, writeSalesPwaPoListState } from "../lib/salesPwaPoListState";
+import SalesPwaDesignApproval, { orderExpectsDesignLink } from "./SalesPwaDesignApproval";
 import SalesPwaDocumentSheet from "./SalesPwaDocumentSheet";
 import SalesPwaProgress from "./SalesPwaProgress";
 
@@ -316,6 +317,7 @@ export default function SalesPwaOrdersPage() {
                     ? <span className="spwa-buffer-badge">Buffer Stock</span>
                     : <span className="spwa-buffer-plain">Bukan buffer stock</span>}
                 </div>
+                <SalesPwaDesignApproval order={o} expectMissing={orderExpectsDesignLink(o)} />
                 <div className="spwa-po-card-actions">
                   <button
                     type="button"
@@ -402,6 +404,9 @@ export default function SalesPwaOrdersPage() {
                           </button>
                         </span>
                       </Link>
+                      <div className="spwa-row-approval">
+                        <SalesPwaDesignApproval order={o} expectMissing={orderExpectsDesignLink(o)} />
+                      </div>
                     </td>
                   </tr>
                 ))}
