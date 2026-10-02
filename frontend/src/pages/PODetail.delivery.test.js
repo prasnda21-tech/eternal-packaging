@@ -174,7 +174,7 @@ describe("PO Detail delivery cards", () => {
 
   test("pairs payment evidence with Approval Payment in one outer card", () => {
     expect(detail).toMatch(/payment-approval-pair/);
-    expect(detail).toMatch(/<h3>Payment<\/h3>/);
+    expect(detail).toMatch(/<h3>4–5 · Payment & Approval<\/h3>/);
     expect(detail).toMatch(/upload-payment-label/);
     expect(detail).toMatch(/Tambah Bukti/);
     expect(detail).toMatch(/approve-payment-button/);

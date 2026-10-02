@@ -5901,12 +5901,8 @@ button.ghost.sm.icon{padding:4px 6px}
 .po-stage-sheet-status{display:block;font-size:12px;color:#64748b}
 .po-stage-sheet-flag{font-size:11px;font-weight:700;color:#0f5f63}
 @media (max-width:640px){
-  .po-mobile-stage-chrome{
-    display:flex;align-items:center;justify-content:space-between;gap:8px;
-    padding:8px 2px;margin:4px 0
-  }
+  .po-mobile-stage-chrome{display:none}
   .po-mobile-stage-kicker{margin:0;font-size:11px;color:#64748b}
-  .po-detail-stage-workspace .po-stage-bar-sticky{display:none}
   .po-summary-drawer{width:100%;max-width:none}
   .po-detail-stage-workspace{overflow-x:hidden}
   .po-detail-stage-workspace .po-hero-title-row{
@@ -6526,7 +6522,8 @@ button.ghost.sm.icon{padding:4px 6px}
   margin:0 0 6px;font-size:12px;color:#6b7280;
 }
 .po-detail-stage-workspace .po-hero-customer{
-  font-size:clamp(26px,3vw,34px)!important;font-weight:800!important;letter-spacing:-.03em;
+  font-size:24px!important;font-weight:700!important;letter-spacing:-.02em;
+  line-height:1.2!important;white-space:normal!important;overflow-wrap:anywhere;
 }
 .po-detail-stage-workspace .po-hero-title-actions{align-items:center;flex-wrap:wrap}
 .po-detail-stage-workspace .po-hero-title-actions .ghost,
@@ -6698,7 +6695,9 @@ button.ghost.sm.icon{padding:4px 6px}
 }
 .po-detail-stage-workspace .po-info-grid strong{font-size:13px!important;font-weight:650;line-height:1.3!important;color:#111827}
 @media (max-width:640px){
-  .po-detail-stage-workspace .po-stage-bar-sticky{display:none!important}
+  .po-detail-stage-workspace .po-stage-bar-sticky{
+    display:flex!important;flex-wrap:nowrap;align-items:center;min-width:0;max-width:100%;
+  }
   .po-detail-stage-workspace .po-doc-list li{
     grid-template-columns:minmax(0,1fr) auto;
     grid-template-areas:"kind action" "count action";
@@ -6868,7 +6867,7 @@ button.ghost.sm.icon{padding:4px 6px}
 .po-detail-stage-workspace .po-hero-toolbar:not(:has(.urgent-badge)):not(:has([data-testid="buffer-stock-badge"])){display:none}
 #po-stage-order-masuk .panel,
 .po-order-masuk-tail .panel{
-  border:1px solid #e5e7eb!important;border-radius:8px!important;box-shadow:none!important;background:#fff!important;
+  border:1px solid #e2e8f0!important;border-radius:8px!important;box-shadow:none!important;background:#fff!important;
 }
 .po-order-masuk-tail{display:flex;flex-direction:column;gap:12px;margin-top:12px}
 .po-order-masuk-tail[hidden]{display:none!important}
@@ -6898,26 +6897,31 @@ button.ghost.sm.icon{padding:4px 6px}
 .li-code{display:block;margin-top:2px;font-size:12px;color:#6b7280;font-weight:500}
 .content .li-process-select,
 .po-detail-stage-workspace .li-process-select{
-  appearance:none!important;-webkit-appearance:none!important;
-  min-height:36px!important;min-width:9.5rem;width:auto;
-  border:1px solid #d1d5db!important;border-radius:8px!important;
+  appearance:none!important;-webkit-appearance:none!important;-moz-appearance:none!important;
+  box-sizing:border-box;min-height:36px!important;min-width:10.5rem;max-width:100%;width:auto;
+  border:1.5px solid #94a3b8!important;border-radius:8px!important;
   background-color:#fff!important;
-  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'><path fill='%236b7280' d='M1 1.2l5 5 5-5' stroke='%236b7280' stroke-width='1.2' fill='none'/></svg>")!important;
-  background-repeat:no-repeat!important;background-position:right 10px center!important;
-  box-shadow:none!important;color:#111827!important;
-  font:600 13px/1.2 'IBM Plex Sans',sans-serif!important;padding:0 28px 0 10px!important;
+  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16'><path d='M3.5 6.2 8 10.4 12.5 6.2' fill='none' stroke='%23334155' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/></svg>")!important;
+  background-repeat:no-repeat!important;background-position:right 10px center!important;background-size:16px 16px!important;
+  box-shadow:none!important;color:#0b1f33!important;
+  font:600 13px/1.2 'IBM Plex Sans',sans-serif!important;padding:0 36px 0 10px!important;
 }
 .content .li-process-select:hover,
 .po-detail-stage-workspace .li-process-select:hover{
-  border-color:#d1d5db!important;background-color:#fff!important;box-shadow:none!important;
+  border-color:#64748b!important;background-color:#fff!important;box-shadow:none!important;
 }
 .content .li-process-select:focus,
 .po-detail-stage-workspace .li-process-select:focus{
-  outline:none!important;border-color:#d1d5db!important;box-shadow:none!important;background-color:#fff!important;
+  outline:none!important;border-color:#94a3b8!important;box-shadow:none!important;background-color:#fff!important;
 }
 .content .li-process-select:focus-visible,
 .po-detail-stage-workspace .li-process-select:focus-visible{
-  outline:2px solid #0f5f63!important;outline-offset:2px!important;border-color:#9ca3af!important;box-shadow:none!important;
+  outline:2px solid #0f5f63!important;outline-offset:2px!important;border-color:#94a3b8!important;box-shadow:none!important;
+}
+.content .li-process-select:disabled,
+.po-detail-stage-workspace .li-process-select:disabled{
+  background-color:#f8fafc!important;color:#334155!important;border-color:#cbd5e1!important;
+  opacity:1!important;cursor:not-allowed;
 }
 .li-total-cell{text-align:right!important;font-size:13px;color:#374151}
 .li-total-cell strong,.li-total-cell span{font-weight:700}
@@ -7033,4 +7037,573 @@ button.ghost.sm.icon{padding:4px 6px}
     height:auto;
     min-height:0;
   }
+}
+
+/* Compact Detail PO chrome: one-line workflow rail and stages 1–5 density. */
+.po-detail-stage-workspace .po-stage-ws-header{
+  background:#fff!important;padding-bottom:2px!important;
+}
+.po-detail-stage-workspace .po-hero-title-row{align-items:flex-start;min-width:0}
+.po-detail-stage-workspace .po-hero-identity{flex:1 1 auto;min-width:0}
+.po-detail-stage-workspace .po-hero-identity-meta{
+  display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;margin-top:2px;min-width:0;
+}
+.po-detail-stage-workspace .po-hero-title-actions{
+  flex:0 1 auto;margin-left:auto;justify-content:flex-end;flex-wrap:wrap;gap:6px;max-width:100%;
+}
+.po-detail-stage-workspace .po-hero-title-actions .ghost{
+  min-height:36px;font-size:13px;
+}
+.po-detail-stage-workspace .po-stage-bar-sticky{
+  display:flex;flex-wrap:nowrap;align-items:center;gap:8px;
+  min-width:0;width:100%;max-width:100%;background:#fff!important;
+  padding:0!important;margin:0 0 4px!important;
+}
+.po-detail-stage-workspace .po-stage-bar-block{
+  flex:1 1 auto!important;min-width:0!important;width:auto!important;max-width:100%!important;
+  overflow:hidden!important;padding:0!important;background:transparent!important;
+}
+.po-detail-stage-workspace .po-stage-rail{
+  display:flex;flex-wrap:nowrap;align-items:center;gap:4px;
+  min-width:0;width:100%;max-width:100%;
+}
+.po-detail-stage-workspace .po-stage-rail-viewport{
+  position:relative;flex:1 1 auto;min-width:0;max-width:100%;
+}
+.po-detail-stage-workspace .po-stage-rail-scroller{
+  overflow-x:auto;overflow-y:hidden;min-width:0;width:100%;max-width:100%;
+  overscroll-behavior-x:contain;-webkit-overflow-scrolling:touch;
+  scrollbar-width:thin;
+}
+.po-detail-stage-workspace .po-stage-rail-scroller .stage-bar.has-labels,
+.po-detail-stage-workspace .po-stage-rail-scroller .stage-bar.has-labels.equal-stages{
+  display:flex!important;flex-flow:row nowrap!important;align-items:flex-end!important;
+  width:max-content!important;min-width:max-content!important;max-width:none!important;
+  gap:0 16px!important;
+}
+.po-detail-stage-workspace .po-stage-rail-scroller .stage-bar.has-labels .stage-bar-col{
+  flex:0 0 auto!important;width:auto!important;min-width:max-content!important;max-width:none!important;
+}
+.po-detail-stage-workspace .po-stage-rail-scroller .stage-bar.has-labels .stage-bar-seg{
+  flex-flow:row nowrap!important;white-space:nowrap!important;
+  min-height:36px!important;height:auto!important;max-height:none!important;
+  font-size:14px!important;
+}
+.po-detail-stage-workspace .po-stage-rail-scroller .stage-bar.has-labels .stage-bar-label{
+  font-size:14px!important;font-weight:600!important;white-space:nowrap!important;
+  overflow:visible!important;text-overflow:clip!important;max-width:none!important;
+}
+.po-detail-stage-workspace .po-stage-rail-scroller .stage-bar.has-labels .stage-bar-step-num{
+  font-size:13px!important;white-space:nowrap!important;
+}
+.po-detail-stage-workspace .stage-bar-active-mark{
+  width:8px;height:8px;flex:0 0 auto;box-sizing:border-box;
+  border:2px solid #0f5f63;border-radius:2px;background:transparent;
+}
+.po-detail-stage-workspace .stage-bar-seg.is-viewed .stage-bar-active-mark{
+  background:#0f5f63;
+}
+.po-detail-stage-workspace .stage-bar-done-mark{
+  flex:0 0 auto;font-size:13px;font-weight:700;line-height:1;color:#0f5f63;
+}
+.po-detail-stage-workspace .po-stage-rail-nav{
+  flex:0 0 auto;min-width:36px;min-height:36px;padding:0 8px!important;
+  background:#fff;border:1px solid #d1d5db;border-radius:8px;color:#111827;font-size:18px;line-height:1;
+}
+.po-detail-stage-workspace .po-stage-rail-nav:disabled{opacity:.35}
+.po-detail-stage-workspace .po-stage-rail-fade{
+  position:absolute;top:0;bottom:0;width:18px;pointer-events:none;opacity:0;
+}
+.po-detail-stage-workspace .po-stage-rail-fade.is-on{opacity:1}
+.po-detail-stage-workspace .po-stage-rail-fade.is-start{
+  left:0;background:linear-gradient(90deg,#fff,rgba(255,255,255,0));
+}
+.po-detail-stage-workspace .po-stage-rail-fade.is-end{
+  right:0;background:linear-gradient(270deg,#fff,rgba(255,255,255,0));
+}
+.po-detail-stage-workspace .po-lihat-semua{flex:0 0 auto;min-height:36px}
+.po-detail-stage-workspace .po-view-context{
+  background:transparent!important;border:0!important;border-radius:0!important;
+  padding:2px 0 8px!important;gap:6px 16px!important;
+}
+.po-detail-stage-workspace .po-view-context strong{font-size:14px;font-weight:650}
+.po-detail-stage-workspace .po-stage-ws-chrome{margin-top:4px;background:transparent!important;border:0!important}
+.po-detail-stage-workspace .po-doc-breadcrumb{margin-bottom:2px}
+@media (min-width:960px){
+  .po-detail-stage-workspace #po-stage-design .po-split-65,
+  .po-detail-stage-workspace #po-stage-payment .po-split-65{
+    display:grid!important;grid-template-columns:minmax(0,65%) minmax(0,35%)!important;
+    flex-direction:row!important;align-items:start!important;gap:0!important;
+  }
+  .po-detail-stage-workspace #po-stage-design .po-split-65 > .po-pair-col + .po-pair-col,
+  .po-detail-stage-workspace #po-stage-payment .po-split-65 > .po-pair-col + .po-pair-col{
+    border-top:0!important;border-left:1px solid #e5e7eb!important;
+    padding:0 0 0 16px!important;margin:0!important;
+  }
+}
+.po-detail-stage-workspace #po-stage-design .design-approval-actions,
+.po-detail-stage-workspace #po-stage-payment .po-decision-row{
+  display:flex;flex-wrap:wrap;gap:8px;align-items:center;
+  padding:12px;border-top:1px solid #eef0f2;
+}
+.po-detail-stage-workspace #po-stage-design [data-testid="design-files-panel"]{
+  border:0!important;background:transparent!important;box-shadow:none!important;
+}
+.po-detail-stage-workspace #po-stage-design [data-testid="design-owner-badge"],
+.po-detail-stage-workspace #po-stage-design [data-testid="design-files-panel"] > p.muted{display:none}
+.po-detail-stage-workspace #po-stage-design [data-testid="design-files-panel"] .attachments-grid{
+  display:flex!important;flex-direction:column!important;gap:0!important;
+}
+.po-detail-stage-workspace #po-stage-design [data-testid="design-files-panel"] .design-proof-card{
+  display:flex!important;flex-direction:row;flex-wrap:wrap;align-items:center;
+  gap:8px 12px;width:100%!important;height:auto!important;min-height:0!important;
+  padding:8px 12px!important;border:0!important;border-bottom:1px solid #eef0f2!important;
+  border-radius:0!important;background:transparent!important;
+}
+.po-detail-stage-workspace #po-stage-design [data-testid="design-files-panel"] .design-proof-preview{
+  flex:0 0 44px;width:44px!important;height:44px!important;min-height:0!important;
+  padding:0!important;background:transparent!important;border:0!important;
+}
+.po-detail-stage-workspace #po-stage-design [data-testid="design-files-panel"] .design-proof-preview img,
+.po-detail-stage-workspace #po-stage-design [data-testid="design-files-panel"] .design-proof-preview .file-thumb{
+  width:44px!important;height:44px!important;min-height:0!important;max-height:44px!important;
+  object-fit:cover!important;box-shadow:none!important;
+}
+.po-detail-stage-workspace #po-stage-design [data-testid="design-files-panel"] .design-proof-meta{
+  flex:1 1 160px;min-width:0;margin:0!important;padding:0!important;
+  background:transparent!important;border:0!important;
+}
+.po-detail-stage-workspace #po-stage-design [data-testid="design-files-panel"] .design-proof-meta strong{
+  font-size:14px!important;margin:0 0 2px!important;
+}
+.po-detail-stage-workspace #po-stage-design .design-proof-facts{
+  display:flex;flex-wrap:wrap;gap:2px 12px;
+}
+.po-detail-stage-workspace #po-stage-design .design-proof-facts div{
+  display:flex;gap:4px;align-items:baseline;grid-template-columns:none!important;
+}
+.po-detail-stage-workspace #po-stage-design .design-proof-facts dt,
+.po-detail-stage-workspace #po-stage-design .design-proof-facts dd{font-size:12px}
+.po-detail-stage-workspace #po-stage-design .design-proof-actions{
+  flex:0 0 auto;margin:0!important;
+}
+.po-detail-stage-workspace #po-stage-payment .pay-ws-head{
+  display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;
+}
+.po-detail-stage-workspace #po-stage-payment .pay-ws-head h3{margin:0}
+.po-detail-stage-workspace #po-stage-payment .payment-body{padding:8px 12px 12px}
+.po-detail-stage-workspace #po-stage-payment .payment-files{
+  display:flex;flex-direction:column;gap:0;grid-template-columns:none;
+}
+.po-detail-stage-workspace #po-stage-payment .payment-file{
+  display:grid;grid-template-columns:44px minmax(0,1fr);align-items:center;gap:10px;
+  height:auto;min-height:0;padding:8px 0;background:transparent;border:0;
+  border-bottom:1px solid #eef0f2;
+}
+.po-detail-stage-workspace #po-stage-payment .payment-file-thumb{
+  width:44px;height:44px;min-height:0;
+}
+.po-detail-stage-workspace #po-stage-payment .payment-history{padding:0 12px 12px}
+.po-detail-stage-workspace .workflow-group .ghost,
+.po-detail-stage-workspace .workflow-group .primary,
+.po-detail-stage-workspace .workflow-group label.primary,
+.po-detail-stage-workspace #po-stage-order-masuk .panel-head .ghost{
+  min-height:36px;
+}
+@media (max-width:640px){
+  .po-detail-stage-workspace .po-hero-customer{font-size:22px!important}
+  .po-detail-stage-workspace.po-detail-industrial .po-stage-rail-nav,
+  .po-detail-stage-workspace.po-detail-industrial .po-lihat-semua,
+  .po-detail-stage-workspace.po-detail-industrial .po-stage-bar-block .po-stage-rail-scroller .stage-bar.has-labels.equal-stages .stage-bar-seg,
+  .po-detail-stage-workspace.po-detail-industrial .po-hero-title-actions .ghost,
+  .po-detail-stage-workspace.po-detail-industrial .workflow-group .ghost,
+  .po-detail-stage-workspace.po-detail-industrial .workflow-group .primary,
+  .po-detail-stage-workspace.po-detail-industrial .workflow-group label.primary{
+    min-height:44px!important;
+  }
+}
+
+/* Order Masuk section headers only. Design, Payment, rail, and role panels stay on the rules above. */
+.po-detail-stage-workspace #po-stage-order-masuk > .po-line-items-panel{
+  margin-top:12px!important;
+}
+.po-detail-stage-workspace .po-order-masuk-tail{
+  /* Page column already has an 8px flex gap. 4px more makes 12px after Barang Pesanan. */
+  margin-top:4px!important;
+  gap:12px!important;
+}
+.po-detail-stage-workspace .po-order-masuk-tail > .po-notes-panel,
+.po-detail-stage-workspace .po-order-masuk-tail > .po-doc-tabs{
+  margin-top:0!important;
+  margin-bottom:0!important;
+}
+.po-detail-stage-workspace #po-stage-order-masuk .po-info-panel > .po-om-section-head,
+.po-detail-stage-workspace #po-stage-order-masuk .po-line-items-panel > .po-om-section-head,
+.po-detail-stage-workspace .po-order-masuk-tail .po-notes-panel > .po-om-section-head,
+.po-detail-stage-workspace .po-order-masuk-tail .po-doc-tabs > .po-om-section-head{
+  display:flex;
+  flex-wrap:wrap;
+  align-items:center;
+  justify-content:space-between;
+  gap:4px 12px;
+  box-sizing:border-box;
+  background:#f8fafc!important;
+  background-image:none!important;
+  border-bottom:2px solid #cbd5e1!important;
+  border-radius:8px 8px 0 0;
+  box-shadow:none!important;
+  margin:0!important;
+  padding:8px 12px!important;
+  min-height:0!important;
+  height:auto!important;
+}
+.po-detail-stage-workspace #po-stage-order-masuk .po-info-panel > .po-om-section-head h3,
+.po-detail-stage-workspace #po-stage-order-masuk .po-line-items-panel > .po-om-section-head h3,
+.po-detail-stage-workspace .po-order-masuk-tail .po-notes-panel > .po-om-section-head h3{
+  flex:1 1 auto;
+  min-width:0;
+  margin:0;
+  color:var(--po-navy,#0b1f33)!important;
+  font-family:inherit;
+  font-size:15px!important;
+  font-weight:700!important;
+  line-height:24px;
+  letter-spacing:-.01em;
+  text-transform:none;
+}
+.po-detail-stage-workspace .po-om-head-count{
+  margin-left:8px;
+  color:#64748b;
+  font-size:13px;
+  font-weight:500;
+  line-height:24px;
+  letter-spacing:0;
+}
+.po-detail-stage-workspace #po-stage-order-masuk .po-info-panel > .po-om-section-head .ghost,
+.po-detail-stage-workspace .po-order-masuk-tail .po-notes-panel > .po-om-section-head .ghost{
+  flex:0 0 auto;
+  margin-left:auto;
+  box-sizing:border-box;
+  min-height:36px!important;
+  height:auto;
+  padding:4px 10px!important;
+  background:#fff!important;
+  border:1.5px solid #94a3b8!important;
+  border-radius:8px!important;
+  box-shadow:none!important;
+  color:var(--po-navy,#0b1f33)!important;
+  font-size:13px!important;
+  font-weight:600;
+  line-height:1.2;
+  letter-spacing:0;
+  text-transform:none;
+  white-space:nowrap;
+}
+.po-detail-stage-workspace #po-stage-order-masuk .po-info-panel > .po-om-section-head .ghost:hover,
+.po-detail-stage-workspace .po-order-masuk-tail .po-notes-panel > .po-om-section-head .ghost:hover{
+  background:#f1f5f9!important;
+}
+.po-detail-stage-workspace #po-stage-order-masuk .po-info-panel > .po-om-section-head .ghost:focus-visible,
+.po-detail-stage-workspace .po-order-masuk-tail .po-notes-panel > .po-om-section-head .ghost:focus-visible{
+  outline:2px solid #0f5f63!important;
+  outline-offset:2px!important;
+}
+.po-detail-stage-workspace .po-order-masuk-tail .po-doc-tabs > .po-om-section-head{
+  justify-content:flex-start;
+  gap:0 20px;
+}
+.po-detail-stage-workspace .po-order-masuk-tail .po-doc-tabs > .po-om-section-head button{
+  background:transparent;
+  border:0;
+  border-bottom:2px solid transparent;
+  border-radius:0;
+  margin:0;
+  min-height:0;
+  height:auto;
+  padding:0 0 2px;
+  color:#475569;
+  font-size:15px;
+  font-weight:700;
+  line-height:24px;
+  letter-spacing:-.01em;
+  text-transform:none;
+}
+.po-detail-stage-workspace .po-order-masuk-tail .po-doc-tabs > .po-om-section-head button.is-active{
+  color:var(--po-navy,#0b1f33);
+  border-bottom-color:#0f5f63;
+}
+@media (max-width:640px){
+  .po-detail-stage-workspace #po-stage-order-masuk .po-info-panel > .po-om-section-head,
+  .po-detail-stage-workspace #po-stage-order-masuk .po-line-items-panel > .po-om-section-head,
+  .po-detail-stage-workspace .po-order-masuk-tail .po-notes-panel > .po-om-section-head,
+  .po-detail-stage-workspace .po-order-masuk-tail .po-doc-tabs > .po-om-section-head{
+    align-items:center;
+    height:auto!important;
+    min-height:0!important;
+  }
+  .po-detail-stage-workspace #po-stage-order-masuk .po-info-panel > .po-om-section-head h3,
+  .po-detail-stage-workspace .po-order-masuk-tail .po-notes-panel > .po-om-section-head h3{
+    flex:1 1 9rem;
+  }
+  .po-detail-stage-workspace #po-stage-order-masuk .po-info-panel > .po-om-section-head .ghost,
+  .po-detail-stage-workspace .po-order-masuk-tail .po-notes-panel > .po-om-section-head .ghost{
+    min-height:44px!important;
+    padding:8px 12px!important;
+  }
+  .po-detail-stage-workspace .po-order-masuk-tail .po-doc-tabs > .po-om-section-head{
+    justify-content:flex-start;
+    gap:0 20px;
+  }
+  .po-detail-stage-workspace .po-order-masuk-tail .po-doc-tabs > .po-om-section-head button{
+    min-height:44px;
+    display:inline-flex;
+    align-items:center;
+  }
+}
+
+/* Stages 1–5 controls only. Header action buttons and doc tabs stay in the block above. */
+.po-detail-stage-workspace .po-hero-title-actions > .po-hero-refresh,
+.po-detail-stage-workspace .po-hero-title-actions > [data-testid="btn-po-summary"],
+.po-detail-stage-workspace .po-hero-title-actions > .po-more-menu > .po-more-trigger,
+.po-detail-stage-workspace .po-hero-title-actions > .po-hero-back,
+.po-detail-stage-workspace .po-view-context [data-testid="btn-back-to-active-stage"],
+.po-detail-stage-workspace #po-stage-order-masuk [data-testid="po-atur-lokasi"],
+.po-detail-stage-workspace #po-stage-order-masuk [data-testid^="ganti-barang-btn-"],
+.po-detail-stage-workspace .po-order-masuk-tail .po-doc-list > li > button,
+.po-detail-stage-workspace .po-order-masuk-tail [data-testid="copy-tracking-link"],
+.po-detail-stage-workspace .po-order-masuk-tail [data-testid="btn-buat-faktur-penjualan"],
+.po-detail-stage-workspace #po-stage-design [data-testid="upload-design-button"],
+.po-detail-stage-workspace #po-stage-design [data-testid^="view-design-file-"],
+.po-detail-stage-workspace #po-stage-design [data-testid="bypass-design-button"],
+.po-detail-stage-workspace #po-stage-design [data-testid="ca-generate-button"],
+.po-detail-stage-workspace #po-stage-design [data-testid="ca-copy-link-button"],
+.po-detail-stage-workspace #po-stage-design [data-testid="ca-copy-wa-button"],
+.po-detail-stage-workspace #po-stage-design [data-testid="ca-regenerate-button"],
+.po-detail-stage-workspace #po-stage-design [data-testid="ca-revoke-button"],
+.po-detail-stage-workspace #po-stage-design [data-testid="ca-resend-button"],
+.po-detail-stage-workspace #po-stage-payment [data-testid="upload-payment-label"],
+.po-detail-stage-workspace #po-stage-payment [data-testid="bypass-payment-button"],
+.po-detail-stage-workspace #po-stage-payment [data-testid^="btn-view-receipt-proof-"]{
+  box-sizing:border-box;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  gap:6px;
+  min-height:36px!important;
+  height:auto;
+  padding:4px 12px!important;
+  background:#fff!important;
+  border:1.5px solid #94a3b8!important;
+  border-radius:8px!important;
+  box-shadow:none!important;
+  color:#0b1f33!important;
+  font-size:13px!important;
+  font-weight:600!important;
+  line-height:1.2;
+  letter-spacing:0;
+  text-decoration:none;
+  text-transform:none;
+  opacity:1;
+  cursor:pointer;
+}
+.po-detail-stage-workspace .po-hero-title-actions > .po-hero-refresh:hover,
+.po-detail-stage-workspace .po-hero-title-actions > [data-testid="btn-po-summary"]:hover,
+.po-detail-stage-workspace .po-hero-title-actions > .po-more-menu > .po-more-trigger:hover,
+.po-detail-stage-workspace .po-hero-title-actions > .po-hero-back:hover,
+.po-detail-stage-workspace .po-view-context [data-testid="btn-back-to-active-stage"]:hover,
+.po-detail-stage-workspace #po-stage-order-masuk [data-testid="po-atur-lokasi"]:hover,
+.po-detail-stage-workspace #po-stage-order-masuk [data-testid^="ganti-barang-btn-"]:hover,
+.po-detail-stage-workspace .po-order-masuk-tail .po-doc-list > li > button:hover,
+.po-detail-stage-workspace .po-order-masuk-tail [data-testid="copy-tracking-link"]:hover,
+.po-detail-stage-workspace .po-order-masuk-tail [data-testid="btn-buat-faktur-penjualan"]:hover,
+.po-detail-stage-workspace #po-stage-design [data-testid="upload-design-button"]:hover,
+.po-detail-stage-workspace #po-stage-design [data-testid^="view-design-file-"]:hover,
+.po-detail-stage-workspace #po-stage-design [data-testid="bypass-design-button"]:hover,
+.po-detail-stage-workspace #po-stage-design [data-testid="ca-generate-button"]:hover,
+.po-detail-stage-workspace #po-stage-design [data-testid="ca-copy-link-button"]:hover,
+.po-detail-stage-workspace #po-stage-design [data-testid="ca-copy-wa-button"]:hover,
+.po-detail-stage-workspace #po-stage-design [data-testid="ca-regenerate-button"]:hover,
+.po-detail-stage-workspace #po-stage-design [data-testid="ca-revoke-button"]:hover,
+.po-detail-stage-workspace #po-stage-design [data-testid="ca-resend-button"]:hover,
+.po-detail-stage-workspace #po-stage-payment [data-testid="upload-payment-label"]:hover,
+.po-detail-stage-workspace #po-stage-payment [data-testid="bypass-payment-button"]:hover,
+.po-detail-stage-workspace #po-stage-payment [data-testid^="btn-view-receipt-proof-"]:hover{
+  background:#f1f5f9!important;
+}
+.po-detail-stage-workspace .po-hero-title-actions > .po-hero-refresh:focus-visible,
+.po-detail-stage-workspace .po-hero-title-actions > [data-testid="btn-po-summary"]:focus-visible,
+.po-detail-stage-workspace .po-hero-title-actions > .po-more-menu > .po-more-trigger:focus-visible,
+.po-detail-stage-workspace .po-hero-title-actions > .po-hero-back:focus-visible,
+.po-detail-stage-workspace .po-view-context [data-testid="btn-back-to-active-stage"]:focus-visible,
+.po-detail-stage-workspace #po-stage-order-masuk [data-testid="po-atur-lokasi"]:focus-visible,
+.po-detail-stage-workspace #po-stage-order-masuk [data-testid^="ganti-barang-btn-"]:focus-visible,
+.po-detail-stage-workspace .po-order-masuk-tail .po-doc-list > li > button:focus-visible,
+.po-detail-stage-workspace .po-order-masuk-tail [data-testid="copy-tracking-link"]:focus-visible,
+.po-detail-stage-workspace .po-order-masuk-tail [data-testid="btn-buat-faktur-penjualan"]:focus-visible,
+.po-detail-stage-workspace #po-stage-design [data-testid="upload-design-button"]:focus-visible,
+.po-detail-stage-workspace #po-stage-design [data-testid^="view-design-file-"]:focus-visible,
+.po-detail-stage-workspace #po-stage-design [data-testid="bypass-design-button"]:focus-visible,
+.po-detail-stage-workspace #po-stage-design [data-testid="ca-generate-button"]:focus-visible,
+.po-detail-stage-workspace #po-stage-design [data-testid="ca-copy-link-button"]:focus-visible,
+.po-detail-stage-workspace #po-stage-design [data-testid="ca-copy-wa-button"]:focus-visible,
+.po-detail-stage-workspace #po-stage-design [data-testid="ca-regenerate-button"]:focus-visible,
+.po-detail-stage-workspace #po-stage-design [data-testid="ca-revoke-button"]:focus-visible,
+.po-detail-stage-workspace #po-stage-design [data-testid="ca-resend-button"]:focus-visible,
+.po-detail-stage-workspace #po-stage-payment [data-testid="upload-payment-label"]:focus-visible,
+.po-detail-stage-workspace #po-stage-payment [data-testid="bypass-payment-button"]:focus-visible,
+.po-detail-stage-workspace #po-stage-payment [data-testid^="btn-view-receipt-proof-"]:focus-visible{
+  outline:2px solid #0f5f63!important;
+  outline-offset:2px!important;
+}
+.po-detail-stage-workspace .po-hero-title-actions > .po-more-trigger,
+.po-detail-stage-workspace .po-hero-title-actions > .po-more-menu > .po-more-trigger{
+  min-width:36px;
+  padding-left:8px;
+  padding-right:8px;
+}
+.po-detail-stage-workspace .po-order-masuk-tail [data-testid="btn-proses-pengiriman-pesanan"],
+.po-detail-stage-workspace #po-stage-design [data-testid="approve-design-button"],
+.po-detail-stage-workspace #po-stage-payment [data-testid="approve-payment-button"],
+.po-detail-stage-workspace .po-order-masuk-tail [data-testid="save-note-button"]{
+  box-sizing:border-box;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  gap:6px;
+  min-height:36px!important;
+  padding:4px 12px!important;
+  background:#0f5f63!important;
+  border:1.5px solid #0f5f63!important;
+  border-radius:8px!important;
+  box-shadow:none!important;
+  color:#fff!important;
+  font-size:13px!important;
+  font-weight:600!important;
+  line-height:1.2;
+  text-decoration:none;
+  opacity:1;
+  cursor:pointer;
+}
+.po-detail-stage-workspace .po-order-masuk-tail [data-testid="btn-proses-pengiriman-pesanan"]:hover,
+.po-detail-stage-workspace #po-stage-design [data-testid="approve-design-button"]:hover,
+.po-detail-stage-workspace #po-stage-payment [data-testid="approve-payment-button"]:hover,
+.po-detail-stage-workspace .po-order-masuk-tail [data-testid="save-note-button"]:hover{
+  background:#0b4c4f!important;
+  border-color:#0b4c4f!important;
+  color:#fff!important;
+}
+.po-detail-stage-workspace .po-order-masuk-tail [data-testid="btn-proses-pengiriman-pesanan"]:focus-visible,
+.po-detail-stage-workspace #po-stage-design [data-testid="approve-design-button"]:focus-visible,
+.po-detail-stage-workspace #po-stage-payment [data-testid="approve-payment-button"]:focus-visible,
+.po-detail-stage-workspace .po-order-masuk-tail [data-testid="save-note-button"]:focus-visible{
+  outline:2px solid #0f5f63!important;
+  outline-offset:2px!important;
+}
+.po-detail-stage-workspace .po-hero-title-actions > .po-hero-refresh:disabled,
+.po-detail-stage-workspace .po-hero-title-actions > [data-testid="btn-po-summary"]:disabled,
+.po-detail-stage-workspace .po-hero-title-actions > .po-more-menu > .po-more-trigger:disabled,
+.po-detail-stage-workspace .po-hero-title-actions > .po-hero-back:disabled,
+.po-detail-stage-workspace .po-view-context [data-testid="btn-back-to-active-stage"]:disabled,
+.po-detail-stage-workspace #po-stage-order-masuk .po-om-section-head .ghost:disabled,
+.po-detail-stage-workspace #po-stage-order-masuk [data-testid="po-atur-lokasi"]:disabled,
+.po-detail-stage-workspace #po-stage-order-masuk [data-testid^="ganti-barang-btn-"]:disabled,
+.po-detail-stage-workspace .po-order-masuk-tail .po-doc-list > li > button:disabled,
+.po-detail-stage-workspace .po-order-masuk-tail [data-testid="copy-tracking-link"]:disabled,
+.po-detail-stage-workspace #po-stage-design [data-testid="upload-design-button"]:disabled,
+.po-detail-stage-workspace #po-stage-design [data-testid="bypass-design-button"]:disabled,
+.po-detail-stage-workspace #po-stage-design [data-testid="approve-design-button"]:disabled,
+.po-detail-stage-workspace #po-stage-design button[data-testid^="ca-"]:disabled,
+.po-detail-stage-workspace #po-stage-payment [data-testid="upload-payment-label"].disabled,
+.po-detail-stage-workspace #po-stage-payment [data-testid="bypass-payment-button"]:disabled,
+.po-detail-stage-workspace #po-stage-payment [data-testid="approve-payment-button"]:disabled,
+.po-detail-stage-workspace .po-order-masuk-tail [data-testid="save-note-button"]:disabled{
+  background:#f8fafc!important;
+  border-color:#cbd5e1!important;
+  color:#334155!important;
+  opacity:1!important;
+  cursor:not-allowed;
+  box-shadow:none!important;
+}
+.po-detail-stage-workspace #po-stage-payment [data-testid="upload-payment-label"].disabled{
+  cursor:wait;
+}
+.po-detail-stage-workspace #po-stage-design .ghost.danger,
+.po-detail-stage-workspace #po-stage-payment .ghost.danger{
+  background:#fff!important;
+  border:1.5px solid #a53f2b!important;
+  color:#a53f2b!important;
+  opacity:1;
+}
+.po-detail-stage-workspace #po-stage-design .ghost.danger:hover,
+.po-detail-stage-workspace #po-stage-payment .ghost.danger:hover{
+  background:#f8e9e4!important;
+  color:#a53f2b!important;
+}
+.po-detail-stage-workspace #po-stage-order-masuk .po-maps-link{
+  color:#0f5f63;
+  background:transparent;
+  border:0;
+  font-weight:650;
+  text-decoration:underline;
+  text-underline-offset:2px;
+}
+.po-detail-stage-workspace #po-stage-order-masuk .po-maps-link:focus-visible{
+  outline:2px solid #0f5f63;
+  outline-offset:2px;
+}
+.po-detail-stage-workspace #po-stage-order-masuk .li-route-cell,
+.po-detail-stage-workspace #po-stage-order-masuk .li-route-editor{
+  overflow:visible;
+}
+@media (max-width:640px){
+  .po-detail-stage-workspace .po-hero-title-actions > .po-hero-refresh,
+  .po-detail-stage-workspace .po-hero-title-actions > [data-testid="btn-po-summary"],
+  .po-detail-stage-workspace .po-hero-title-actions > .po-more-menu > .po-more-trigger,
+  .po-detail-stage-workspace .po-hero-title-actions > .po-hero-back,
+  .po-detail-stage-workspace .po-view-context [data-testid="btn-back-to-active-stage"],
+  .po-detail-stage-workspace #po-stage-order-masuk [data-testid="po-atur-lokasi"],
+  .po-detail-stage-workspace #po-stage-order-masuk [data-testid^="ganti-barang-btn-"],
+  .po-detail-stage-workspace .po-order-masuk-tail .po-doc-list > li > button,
+  .po-detail-stage-workspace .po-order-masuk-tail [data-testid="copy-tracking-link"],
+  .po-detail-stage-workspace .po-order-masuk-tail [data-testid="btn-buat-faktur-penjualan"],
+  .po-detail-stage-workspace .po-order-masuk-tail [data-testid="btn-proses-pengiriman-pesanan"],
+  .po-detail-stage-workspace .po-order-masuk-tail [data-testid="save-note-button"],
+  .po-detail-stage-workspace #po-stage-design [data-testid="upload-design-button"],
+  .po-detail-stage-workspace #po-stage-design [data-testid^="view-design-file-"],
+  .po-detail-stage-workspace #po-stage-design [data-testid="bypass-design-button"],
+  .po-detail-stage-workspace #po-stage-design [data-testid="approve-design-button"],
+  .po-detail-stage-workspace #po-stage-design [data-testid="ca-generate-button"],
+  .po-detail-stage-workspace #po-stage-design [data-testid="ca-copy-link-button"],
+  .po-detail-stage-workspace #po-stage-design [data-testid="ca-copy-wa-button"],
+  .po-detail-stage-workspace #po-stage-design [data-testid="ca-regenerate-button"],
+  .po-detail-stage-workspace #po-stage-design [data-testid="ca-revoke-button"],
+  .po-detail-stage-workspace #po-stage-design [data-testid="ca-resend-button"],
+  .po-detail-stage-workspace #po-stage-design .ghost.danger,
+  .po-detail-stage-workspace #po-stage-payment [data-testid="upload-payment-label"],
+  .po-detail-stage-workspace #po-stage-payment [data-testid="bypass-payment-button"],
+  .po-detail-stage-workspace #po-stage-payment [data-testid="approve-payment-button"],
+  .po-detail-stage-workspace #po-stage-payment [data-testid^="btn-view-receipt-proof-"],
+  .po-detail-stage-workspace #po-stage-order-masuk .li-process-select{
+    min-height:44px!important;
+  }
+  .po-detail-stage-workspace .po-hero-title-actions > .po-more-menu > .po-more-trigger{
+    min-width:44px;
+  }
+}
+
+/* Existing stage 2–5 headers. Color and divider only; control positions stay. */
+.po-detail-stage-workspace #po-stage-design .design-ws-head,
+.po-detail-stage-workspace #po-stage-design [data-testid="design-files-panel"] > .panel-head,
+.po-detail-stage-workspace #po-stage-payment .pay-ws-head{
+  background:#f8fafc!important;
+  background-image:none!important;
+  border-bottom:2px solid #cbd5e1!important;
+  box-shadow:none!important;
+}
+.po-detail-stage-workspace #po-stage-design .design-ws-head h3,
+.po-detail-stage-workspace #po-stage-design [data-testid="design-files-panel"] > .panel-head h3,
+.po-detail-stage-workspace #po-stage-payment .pay-ws-head h3{
+  color:var(--po-navy,#0b1f33)!important;
+  font-size:15px!important;
+  font-weight:700!important;
 }
