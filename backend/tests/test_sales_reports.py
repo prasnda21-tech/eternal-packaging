@@ -457,6 +457,7 @@ async def test_unknown_posted_quantity_leaves_bpp_and_laba_blank():
     assert april_line["values"]["laba"] is None
     assert march.json()["totals"]["bpp"] is None
     assert both.json()["totals"]["laba"] is None
+    assert "dasar alokasi" in both.json()["gap"]
     assert all(row["values"]["bpp"] is None for row in both.json()["rows"] if row["kind"] == "line")
 
 

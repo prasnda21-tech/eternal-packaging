@@ -1178,7 +1178,7 @@ async def run_report(
     if report_id != "daftar-faktur-penjualan" and lines and not totals.get("bpp_complete") and any(
         col["key"] in {"bpp", "laba"} for col in columns
     ):
-        gap = "Sebagian baris belum punya HPP posted. BPP dan laba baris itu dikosongkan, bukan diisi dari harga beli."
+        gap = "Sebagian baris belum punya dasar alokasi HPP posted. BPP dan laba baris itu dikosongkan, bukan diisi dari harga beli."
 
     return {
         "report_id": report_id,
