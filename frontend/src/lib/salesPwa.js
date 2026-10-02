@@ -24,8 +24,8 @@ export function isCustomerDesignApprovalPath(pathname) {
   const path = String(pathname || "");
   const prefix = "/customer/design-approval/";
   if (!path.startsWith(prefix)) return false;
-  const token = path.slice(prefix.length).split("/")[0];
-  return Boolean(token);
+  const token = path.slice(prefix.length).replace(/\/+$/, "");
+  return Boolean(token) && !token.includes("/");
 }
 
 export function isSafeSalesNextPath(path) {

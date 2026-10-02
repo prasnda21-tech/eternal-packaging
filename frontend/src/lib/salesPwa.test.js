@@ -5,7 +5,13 @@ import { activeSalesPwaNav, documentTotal, formatSalesDate, isCustomerDesignAppr
 describe("sales PWA helpers", () => {
   test("role gate is sales_eternal only", () => {
     expect(isCustomerDesignApprovalPath("/customer/design-approval/track-cup")).toBe(true);
+    expect(isCustomerDesignApprovalPath("/customer/design-approval/track-cup/")).toBe(true);
     expect(isCustomerDesignApprovalPath("/customer/design-approval/")).toBe(false);
+    expect(isCustomerDesignApprovalPath("/customer/design-approval")).toBe(false);
+    expect(isCustomerDesignApprovalPath("/customer/design-approval/track-cup/submit")).toBe(false);
+    expect(isCustomerDesignApprovalPath("/customer/tracking/track-cup")).toBe(false);
+    expect(isCustomerDesignApprovalPath("/orders")).toBe(false);
+    expect(isCustomerDesignApprovalPath("/")).toBe(false);
     expect(isCustomerDesignApprovalPath("/sales")).toBe(false);
     expect(isSalesPwaRole({ role: "sales_eternal" })).toBe(true);
     expect(isSalesPwaRole({ role: "sales" })).toBe(false);

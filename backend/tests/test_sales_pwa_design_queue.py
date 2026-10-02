@@ -345,9 +345,38 @@ async def test_queue_ignores_month_and_matches_the_list_without_writes():
             assert view["design_file"]["id"] == new_id
             stale = await client.get(f"/api/public/customer-approval/{plain}")
             assert stale.status_code == 200, stale.text
-            assert stale.json()["view"]["status"] != "active"
+            assert stale.json()["view"]["status"] == "revoked"
             assert stale.json()["view"]["design_file"]["name"] == "lama.pdf"
             assert stale.json()["view"]["design_file"]["id"] == old_id
+            before_submit = await db.orders.find_one(
+                {"id": current["id"]},
+                {"_id": 0, "design_status": 1, "customer_approval": 1},
+            )
+            for action, note in (("approve", None), ("reject", "minta revisi")):
+                payload = {"action": action, "signer_name": "Customer"}
+                if note:
+                    payload["note"] = note
+                denied_submit = await client.post(
+                    f"/api/public/customer-approval/{plain}/submit",
+                    json=payload,
+                )
+                assert denied_submit.status_code == 400, denied_submit.text
+                assert "berlaku" in denied_submit.text or "dicabut" in denied_submit.text
+            after_submit = await db.orders.find_one(
+                {"id": current["id"]},
+                {"_id": 0, "design_status": 1, "customer_approval": 1},
+            )
+            assert after_submit == before_submit
+            assert after_submit.get("design_status") != "Approved"
+            old_records = await db.customer_approvals.find(
+                {"order_id": current["id"], "design_version": old_id},
+                {"_id": 0, "status": 1},
+            ).to_list(10)
+            assert old_records and all(row["status"] == "revoked" for row in old_records)
+            still_open = await client.get(f"/api/public/customer-approval/{plain}")
+            assert still_open.status_code == 200, still_open.text
+            assert still_open.json()["view"]["status"] == "revoked"
+            assert still_open.json()["view"]["design_file"]["name"] == "lama.pdf"
 
             before = await db.orders.find_one({"id": current["id"]}, {"_id": 0})
             spy = _WriteSpy()
