@@ -361,6 +361,7 @@
 .sd-density .sd-money{font-variant-numeric:tabular-nums;font-weight:700;white-space:nowrap}
 .sd-density .sd-money.is-due{color:#dc2626}
 .sd-density .sd-money.is-zero{color:#059669}
+.sd-density .sd-list-table td:has(.sd-actions){overflow:visible}
 .sd-density .sd-actions{
   display:inline-flex;
   flex-wrap:nowrap;

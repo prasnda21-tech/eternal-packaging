@@ -1541,9 +1541,9 @@ export default function FakturPenjualan() {
                 <col style={{ width: 148 }} />
                 <col style={{ width: 132 }} />
                 <col style={{ width: 132 }} />
-                <col style={{ width: 156 }} />
-                <col style={{ width: 118 }} />
-                <col style={{ width: 220 }} />
+                <col style={{ width: 150 }} />
+                <col style={{ width: 148 }} />
+                <col style={{ width: 268 }} />
               </colgroup>
               <thead>
                 <tr>
