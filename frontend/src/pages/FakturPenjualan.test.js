@@ -110,7 +110,11 @@ describe("Faktur Penjualan UI & Navigation Suite", () => {
     expect(pageSrc).toMatch(/delete-confirm-modal/);
     expect(pageSrc).toMatch(/delete-confirm-numbers/);
     expect(pageSrc).toMatch(/invoice_number/);
-    expect(pageSrc).toMatch(/selectedIds\.size === draftInvoiceIds\.length/);
+    expect(pageSrc).toMatch(/pageDeletableIds\.every\(\(id\) => selectedIds\.has\(id\)\)/);
+    expect(pageSrc).toMatch(/tab-faktur-aktif/);
+    expect(pageSrc).toMatch(/tab-faktur-dibatalkan/);
+    expect(pageSrc).toMatch(/reset-invoice-filters/);
+    expect(pageSrc).toMatch(/invoiceDeletable/);
   });
 
   test("Faktur lifecycle UI has finalize confirmation and status badges", () => {

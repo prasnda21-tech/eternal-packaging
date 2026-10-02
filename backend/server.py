@@ -9104,6 +9104,7 @@ from services.sales_invoices import (
     create_sales_invoice as _create_sales_invoice,
     generate_sales_invoice_pdf_bytes,
     list_sales_invoices as _list_sales_invoices,
+    query_sales_invoices as _query_sales_invoices,
     get_sales_invoice_detail as _get_sales_invoice_detail,
     update_sales_invoice as _update_sales_invoice,
     delete_sales_invoice as _delete_sales_invoice,
@@ -10525,13 +10526,57 @@ async def get_sales_delivery_pdf_endpoint(id: str, user=Depends(current_user)):
 async def list_sales_invoices_endpoint(
     q: Optional[str] = None,
     po_id: Optional[str] = None,
+    scope: Optional[str] = None,
+    party: Optional[str] = None,
+    po_number: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    total_min: Optional[float] = None,
+    total_max: Optional[float] = None,
+    outstanding_min: Optional[float] = None,
+    outstanding_max: Optional[float] = None,
+    financial_status: Optional[str] = None,
+    accounting_status: Optional[str] = None,
+    payment_status: Optional[str] = None,
+    page: Optional[int] = None,
+    page_size: Optional[int] = None,
     user=Depends(current_user),
 ):
-    """List sales invoices (Faktur Penjualan) with search and po_id filtering."""
+    """List sales invoices (Faktur Penjualan) with search and po_id filtering.
+
+    Callers that omit the tab/filter/page parameters keep the previous payload:
+    ``{"invoices": [...], "count": n}`` capped by the existing list helper.
+    Passing scope, column filters, or page returns one page plus tab totals.
+    """
     reject_sales_pwa_bypass(user)
     await _require_any_perm(user, "sales.invoice.view", "sales_order.view", "po.view", "sales.delivery.view")
     if po_id:
         await ensure_owned_po_id(db, user, po_id)
+    paged = any(value is not None for value in (
+        scope, party, po_number, date_from, date_to, total_min, total_max,
+        outstanding_min, outstanding_max, financial_status, accounting_status,
+        payment_status, page, page_size,
+    ))
+    if paged:
+        return await _query_sales_invoices(
+            db,
+            q=q,
+            po_id=po_id,
+            scope=scope or "active",
+            party=party,
+            po_number=po_number,
+            date_from=date_from,
+            date_to=date_to,
+            total_min=total_min,
+            total_max=total_max,
+            outstanding_min=outstanding_min,
+            outstanding_max=outstanding_max,
+            financial_status=financial_status,
+            accounting_status=accounting_status,
+            payment_status=payment_status,
+            page=page or 1,
+            page_size=page_size or 20,
+        )
     invoices = await _list_sales_invoices(db, q=q, po_id=po_id)
     return {"invoices": invoices, "count": len(invoices)}
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import {
   AlertCircle,
@@ -16,7 +16,6 @@ import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDisplayDate } from "../lib/constants";
 import { FormSection, FormField, FormProgress, computeStatus } from "../components/form-standard";
-import { loadedRangeLabel, showLoadedDocumentCount } from "../lib/salesSubmenuDensity";
 import "./salesSubmenuDensity.css";
 
 function getTodayString() {
@@ -348,6 +347,112 @@ function formatDeleteError(det) {
   return det || "Gagal menghapus.";
 }
 
+function deleteBlockerIds(det, fallbackIds) {
+  const blockers = det && typeof det === "object" && Array.isArray(det.blockers) ? det.blockers : [];
+  const ids = blockers.map((blocker) => blocker.id).filter(Boolean);
+  return ids.length ? ids : fallbackIds;
+}
+
+const EMPTY_INVOICE_COLUMN_FILTERS = {
+  party: "",
+  po: "",
+  dateFrom: "",
+  dateTo: "",
+  totalMin: "",
+  totalMax: "",
+  outstandingMin: "",
+  outstandingMax: "",
+  financialStatus: "",
+  accountingStatus: "",
+  paymentStatus: "",
+};
+
+const INVOICE_PAGE_SIZES = [20, 50, 100];
+
+function parseFilterAmount(raw) {
+  if (raw === "" || raw === null || raw === undefined) return { value: null, invalid: false };
+  const text = String(raw).trim().replace(",", ".");
+  if (!text) return { value: null, invalid: false };
+  const value = Number(text);
+  if (!Number.isFinite(value)) return { value: null, invalid: true };
+  return { value, invalid: false };
+}
+
+function invoiceFilterRangeMessage(filters) {
+  const messages = [];
+  if (filters.dateFrom && filters.dateTo && filters.dateFrom > filters.dateTo) {
+    messages.push("Rentang tanggal tidak valid: tanggal awal tidak boleh setelah tanggal akhir.");
+  }
+  const totalMin = parseFilterAmount(filters.totalMin);
+  const totalMax = parseFilterAmount(filters.totalMax);
+  if (totalMin.invalid || totalMax.invalid) {
+    messages.push("Nominal Total Faktur tidak valid.");
+  } else if (totalMin.value != null && totalMax.value != null && totalMin.value > totalMax.value) {
+    messages.push("Rentang Total Faktur tidak valid: nilai minimum tidak boleh lebih besar dari maksimum.");
+  }
+  const dueMin = parseFilterAmount(filters.outstandingMin);
+  const dueMax = parseFilterAmount(filters.outstandingMax);
+  if (dueMin.invalid || dueMax.invalid) {
+    messages.push("Nominal Sisa Tagihan tidak valid.");
+  } else if (dueMin.value != null && dueMax.value != null && dueMin.value > dueMax.value) {
+    messages.push("Rentang Sisa Tagihan tidak valid: nilai minimum tidak boleh lebih besar dari maksimum.");
+  }
+  return messages.join(" ");
+}
+
+function invoiceFiltersActive(filters, query) {
+  if (String(query || "").trim()) return true;
+  return Object.values(filters || {}).some((value) => String(value ?? "").trim() !== "");
+}
+
+function invoiceDeletable(inv) {
+  if (invoiceFinancialStatus(inv) !== "draft") return false;
+  if (inv?.can_delete === false) return false;
+  if (Number(inv?.receipt_count || 0) > 0) return false;
+  return true;
+}
+
+function invoiceListParams({ searchQuery, listTab, columnFilters, page, pageSize }) {
+  const params = {
+    scope: listTab === "cancelled" ? "cancelled" : "active",
+    page,
+    page_size: pageSize,
+  };
+  if (searchQuery.trim()) params.q = searchQuery.trim();
+  if (columnFilters.party.trim()) params.party = columnFilters.party.trim();
+  if (columnFilters.po.trim()) params.po_number = columnFilters.po.trim();
+  if (columnFilters.dateFrom) params.date_from = columnFilters.dateFrom;
+  if (columnFilters.dateTo) params.date_to = columnFilters.dateTo;
+  const totalMin = parseFilterAmount(columnFilters.totalMin);
+  const totalMax = parseFilterAmount(columnFilters.totalMax);
+  const dueMin = parseFilterAmount(columnFilters.outstandingMin);
+  const dueMax = parseFilterAmount(columnFilters.outstandingMax);
+  if (totalMin.value != null) params.total_min = totalMin.value;
+  if (totalMax.value != null) params.total_max = totalMax.value;
+  if (dueMin.value != null) params.outstanding_min = dueMin.value;
+  if (dueMax.value != null) params.outstanding_max = dueMax.value;
+  if (columnFilters.financialStatus) params.financial_status = columnFilters.financialStatus;
+  if (columnFilters.accountingStatus) params.accounting_status = columnFilters.accountingStatus;
+  if (columnFilters.paymentStatus) params.payment_status = columnFilters.paymentStatus;
+  return params;
+}
+
+function invoiceRangeLabel({ total, tabTotal, page, pageSize, tabLabel, filtered }) {
+  const safeTotal = Number(total) || 0;
+  const safeTab = Number(tabTotal) || 0;
+  const start = safeTotal === 0 ? 0 : (page - 1) * pageSize + 1;
+  const end = Math.min(page * pageSize, safeTotal);
+  const fmt = (value) => Number(value || 0).toLocaleString("id-ID");
+  if (!filtered) {
+    if (safeTab <= 0) return `Menampilkan 0 faktur pada tab ${tabLabel}`;
+    return `Menampilkan ${fmt(start)}–${fmt(end)} dari ${fmt(safeTab)} faktur pada tab ${tabLabel}`;
+  }
+  const result = safeTotal <= 0
+    ? "Menampilkan 0 hasil filter"
+    : `Menampilkan ${fmt(start)}–${fmt(end)} dari ${fmt(safeTotal)} hasil filter`;
+  return `${result} · ${fmt(safeTab)} faktur pada tab ${tabLabel}`;
+}
+
 export default function FakturPenjualan() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -369,6 +474,12 @@ export default function FakturPenjualan() {
     hasPerm("sales.invoice.create") ||
     hasPerm("po.edit") ||
     user?.role === "admin";
+  const canPrint =
+    hasPerm("sales.invoice.view") ||
+    hasPerm("sales_order.view") ||
+    hasPerm("po.view") ||
+    hasPerm("sales.delivery.view") ||
+    user?.role === "admin";
 
   const queryPoId = searchParams.get("po_id") || "";
   const initialMode =
@@ -379,13 +490,28 @@ export default function FakturPenjualan() {
   const [invoices, setInvoices] = useState([]);
   const [listLoading, setListLoading] = useState(false);
   const [listErr, setListErr] = useState("");
+  const [filterErr, setFilterErr] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
+  const [listTab, setListTab] = useState("active");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
+  const [columnFilters, setColumnFilters] = useState(EMPTY_INVOICE_COLUMN_FILTERS);
+  const [listMeta, setListMeta] = useState({
+    total: 0,
+    tabTotal: 0,
+    activeTotal: 0,
+    cancelledTotal: 0,
+  });
+  const requestSeq = useRef(0);
+  const loadAbortRef = useRef(null);
 
   // Checkbox selection
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [deleteConfirm, setDeleteConfirm] = useState(null); // {id, number} or {ids: [...], numbers: [...]}
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [deleteErr, setDeleteErr] = useState("");
+  const [deleteHold, setDeleteHold] = useState(false);
+  const [deleteBlockedIds, setDeleteBlockedIds] = useState([]);
 
   // Create state
   const [availablePOs, setAvailablePOs] = useState([]);
@@ -432,17 +558,52 @@ export default function FakturPenjualan() {
   const [lifecycleBusy, setLifecycleBusy] = useState(false);
   const [invoiceFormTab, setInvoiceFormTab] = useState("items");
 
+  const clearInvoiceSelection = useCallback(() => {
+    setSelectedIds(new Set());
+    setDeleteConfirm(null);
+    setDeleteErr("");
+    setDeleteHold(false);
+    setDeleteBlockedIds([]);
+  }, []);
+
+  const resetInvoiceListPosition = useCallback(() => {
+    setPage(1);
+    clearInvoiceSelection();
+  }, [clearInvoiceSelection]);
+
   // Load Invoices List
   const loadInvoices = useCallback(async () => {
+    const rangeMessage = invoiceFilterRangeMessage(columnFilters);
+    if (rangeMessage) {
+      setFilterErr(rangeMessage);
+      setListLoading(false);
+      return;
+    }
+    setFilterErr("");
+    loadAbortRef.current?.abort();
+    const ac = new AbortController();
+    loadAbortRef.current = ac;
+    const seq = requestSeq.current + 1;
+    requestSeq.current = seq;
     setListLoading(true);
     setListErr("");
-    setSelectedIds(new Set()); // reset selection on reload
+    setSelectedIds(new Set());
     try {
-      const params = {};
-      if (searchQuery.trim()) params.q = searchQuery.trim();
-      const res = await api.listSalesInvoices(params);
+      const params = invoiceListParams({ searchQuery, listTab, columnFilters, page, pageSize });
+      const res = await api.listSalesInvoices(params, { signal: ac.signal });
+      if (seq !== requestSeq.current || ac.signal.aborted) return;
       setInvoices(res.invoices || []);
+      const tabTotal = Number(res.tab_total ?? res.total ?? (res.invoices || []).length) || 0;
+      setListMeta({
+        total: Number(res.total ?? (res.invoices || []).length) || 0,
+        tabTotal,
+        activeTotal: Number(res.active_total ?? 0) || 0,
+        cancelledTotal: Number(res.cancelled_total ?? 0) || 0,
+      });
     } catch (e) {
+      if (seq !== requestSeq.current || ac.signal.aborted || e?.code === "ERR_CANCELED" || e?.name === "CanceledError") {
+        return;
+      }
       const det = e.response?.data?.detail;
       setListErr(
         typeof det === "object"
@@ -450,28 +611,79 @@ export default function FakturPenjualan() {
           : det || "Gagal memuat daftar Faktur Penjualan"
       );
     } finally {
-      setListLoading(false);
+      if (seq === requestSeq.current && !ac.signal.aborted) setListLoading(false);
     }
-  }, [searchQuery]);
+  }, [searchQuery, listTab, columnFilters, page, pageSize]);
 
-  // Checkbox helpers
-  const toggleSelect = (id) => {
+  // Checkbox helpers — current page, drafts that the backend marks deletable
+  const pageDeletableIds = invoices.filter((inv) => invoiceDeletable(inv)).map((inv) => inv.id);
+  const toggleSelect = (inv) => {
+    if (!invoiceDeletable(inv)) return;
     setSelectedIds((prev) => {
       const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
+      if (next.has(inv.id)) next.delete(inv.id);
+      else next.add(inv.id);
       return next;
     });
   };
-  const draftInvoiceIds = invoices
-    .filter((inv) => invoiceFinancialStatus(inv) === "draft")
-    .map((inv) => inv.id);
   const toggleSelectAll = () => {
-    if (selectedIds.size === draftInvoiceIds.length && draftInvoiceIds.length > 0) {
+    if (pageDeletableIds.length > 0 && pageDeletableIds.every((id) => selectedIds.has(id))) {
       setSelectedIds(new Set());
     } else {
-      setSelectedIds(new Set(draftInvoiceIds));
+      setSelectedIds(new Set(pageDeletableIds));
     }
+  };
+
+  const changeInvoiceTab = (tab) => {
+    if (tab === listTab) return;
+    setListTab(tab);
+    setColumnFilters((prev) => ({
+      ...prev,
+      financialStatus: tab === "cancelled"
+        ? (prev.financialStatus === "cancelled" ? "cancelled" : "")
+        : (prev.financialStatus === "draft" || prev.financialStatus === "finalized" ? prev.financialStatus : ""),
+    }));
+    resetInvoiceListPosition();
+  };
+
+  const patchColumnFilter = (patch) => {
+    setColumnFilters((prev) => ({ ...prev, ...patch }));
+    resetInvoiceListPosition();
+  };
+
+  const resetColumnFilters = () => {
+    setColumnFilters(EMPTY_INVOICE_COLUMN_FILTERS);
+    setSearchQuery("");
+    resetInvoiceListPosition();
+  };
+
+  const openDeleteConfirm = (payload) => {
+    setDeleteErr("");
+    setDeleteHold(false);
+    setDeleteBlockedIds([]);
+    setDeleteConfirm(payload);
+  };
+
+  const rejectDeleteConfirm = (det, fallbackIds) => {
+    setDeleteErr(formatDeleteError(det) || "Gagal menghapus faktur.");
+    setDeleteBlockedIds(deleteBlockerIds(det, fallbackIds));
+    setDeleteHold(true);
+  };
+
+  const removeDeleteCandidate = (id) => {
+    setDeleteConfirm((prev) => {
+      if (!prev?.ids) return prev;
+      const items = prev.ids.map((itemId, index) => ({
+        id: itemId,
+        number: prev.numbers?.[index],
+      })).filter((item) => item.id !== id);
+      return { ids: items.map((item) => item.id), numbers: items.map((item) => item.number) };
+    });
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
   };
 
   // Delete single
@@ -481,11 +693,11 @@ export default function FakturPenjualan() {
     try {
       await api.deleteSalesInvoice(id);
       setDeleteConfirm(null);
+      setDeleteHold(false);
+      setDeleteBlockedIds([]);
       loadInvoices();
     } catch (e) {
-      const det = e.response?.data?.detail;
-      const msg = formatDeleteError(det) || "Gagal menghapus faktur.";
-      setDeleteErr(msg);
+      rejectDeleteConfirm(e.response?.data?.detail, [id]);
     } finally {
       setDeleteLoading(false);
     }
@@ -515,18 +727,18 @@ export default function FakturPenjualan() {
   };
 
   const handleBulkDelete = async () => {
+    const ids = Array.from(selectedIds);
     setDeleteLoading(true);
     setDeleteErr("");
     try {
-      const ids = Array.from(selectedIds);
       await api.bulkDeleteSalesInvoices(ids);
       setDeleteConfirm(null);
+      setDeleteHold(false);
+      setDeleteBlockedIds([]);
       setSelectedIds(new Set());
       loadInvoices();
     } catch (e) {
-      const det = e.response?.data?.detail;
-      const msg = formatDeleteError(det) || "Gagal menghapus faktur.";
-      setDeleteErr(msg);
+      rejectDeleteConfirm(e.response?.data?.detail, ids);
     } finally {
       setDeleteLoading(false);
     }
@@ -577,6 +789,23 @@ export default function FakturPenjualan() {
       setPreviewLoading(false);
     }
   }, []);
+
+  useEffect(() => {
+    const nextCount = Math.max(1, Math.ceil((Number(listMeta.total) || 0) / pageSize) || 1);
+    if (page > nextCount) setPage(nextCount);
+  }, [page, pageSize, listMeta.total]);
+
+  useEffect(() => {
+    if (!deleteHold || !deleteConfirm) return;
+    const ids = deleteConfirm.ids || (deleteConfirm.id ? [deleteConfirm.id] : []);
+    if (!ids.length) return;
+    const stillBlocked = ids.some((id) => deleteBlockedIds.includes(id));
+    if (!stillBlocked) {
+      setDeleteHold(false);
+      setDeleteErr("");
+      setDeleteBlockedIds([]);
+    }
+  }, [deleteHold, deleteConfirm, deleteBlockedIds]);
 
   useEffect(() => {
     if (viewMode === "list") {
@@ -1087,11 +1316,19 @@ export default function FakturPenjualan() {
     detailData?.accounting_ready === false;
   const canEditFinancial = canEdit && !financialLocked;
 
-  const showInvoiceCount = showLoadedDocumentCount({
-    loading: listLoading,
-    error: listErr,
-    query: searchQuery,
-  });
+  const filtersActive = invoiceFiltersActive(columnFilters, searchQuery);
+  const showDeleteColumn = canDelete && listTab === "active";
+  const tabLabel = listTab === "cancelled" ? "Faktur Dibatalkan" : "Faktur Aktif";
+  const pageCount = Math.max(1, Math.ceil((Number(listMeta.total) || 0) / pageSize) || 1);
+  const allPageDeletableSelected = pageDeletableIds.length > 0 && pageDeletableIds.every((id) => selectedIds.has(id));
+  const financialStatusOptions = listTab === "cancelled"
+    ? [{ value: "", label: "Semua status faktur" }, { value: "cancelled", label: "Dibatalkan" }]
+    : [
+        { value: "", label: "Semua status faktur" },
+        { value: "draft", label: "Draft" },
+        { value: "finalized", label: "Finalized" },
+      ];
+  const columnCount = showDeleteColumn ? 9 : 8;
 
   return (
     <div
@@ -1120,10 +1357,10 @@ export default function FakturPenjualan() {
               ? "Detail Faktur Penjualan"
               : "Faktur Penjualan"}
           </h1>
-          {viewMode === "list" && showInvoiceCount && (
+          {viewMode === "list" && !listLoading && !listErr && (
             <div className="sd-list-summary" data-testid="invoice-list-count">
-              <strong>{invoices.length.toLocaleString("id-ID")}</strong>
-              <span>faktur</span>
+              <strong>{(filtersActive ? listMeta.total : listMeta.tabTotal).toLocaleString("id-ID")}</strong>
+              <span>{filtersActive ? "hasil filter" : "pada tab"}</span>
             </div>
           )}
           {viewMode === "detail" && (
@@ -1161,7 +1398,7 @@ export default function FakturPenjualan() {
 
         {viewMode === "list" && (
           <div className="sd-list-header-actions">
-            {canDelete && selectedIds.size > 0 && (
+            {showDeleteColumn && selectedIds.size > 0 && (
               <button
                 type="button"
                 className="sd-btn-danger"
@@ -1169,8 +1406,7 @@ export default function FakturPenjualan() {
                 onClick={() => {
                   const ids = Array.from(selectedIds);
                   const numbers = invoices.filter((inv) => selectedIds.has(inv.id)).map((inv) => inv.invoice_number || inv.id);
-                  setDeleteErr("");
-                  setDeleteConfirm({ ids, numbers });
+                  openDeleteConfirm({ ids, numbers });
                 }}
               >
                 <Trash2 size={16} /> Hapus Terpilih ({selectedIds.size})
@@ -1240,52 +1476,85 @@ export default function FakturPenjualan() {
       {/* VIEW: LIST */}
       {viewMode === "list" && (
         <section className="sd-list-panel">
-          {listErr && (
-            <div className="sd-banner is-error" role="alert">
+          {(listErr || filterErr) && (
+            <div className="sd-banner is-error" role="alert" data-testid="invoice-list-error">
               <AlertCircle size={16} />
-              <span>{listErr}</span>
+              <span>{filterErr || listErr}</span>
             </div>
           )}
 
-          <div className="sd-list-toolbar">
+          <div className="sd-list-toolbar fp-invoice-toolbar">
+            <div className="fp-invoice-tabs" role="tablist" aria-label="Status pembatalan faktur">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={listTab === "active"}
+                className={listTab === "active" ? "is-active" : ""}
+                data-testid="tab-faktur-aktif"
+                onClick={() => changeInvoiceTab("active")}
+              >
+                Faktur Aktif
+                <span className="fp-tab-count" data-testid="tab-count-active">{listMeta.activeTotal.toLocaleString("id-ID")}</span>
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={listTab === "cancelled"}
+                className={listTab === "cancelled" ? "is-active" : ""}
+                data-testid="tab-faktur-dibatalkan"
+                onClick={() => changeInvoiceTab("cancelled")}
+              >
+                Faktur Dibatalkan
+                <span className="fp-tab-count" data-testid="tab-count-cancelled">{listMeta.cancelledTotal.toLocaleString("id-ID")}</span>
+              </button>
+            </div>
             <div className="sd-list-search">
               <Search size={16} />
               <input
                 type="text"
                 placeholder="Cari No PO / Customer / Sales / Faktur..."
                 value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") loadInvoices();
+                onChange={(e) => {
+                  setSearchQuery(e.target.value);
+                  resetInvoiceListPosition();
                 }}
                 data-testid="search-invoice-input"
               />
             </div>
+            <button
+              type="button"
+              className="sd-list-reset"
+              data-testid="reset-invoice-filters"
+              onClick={resetColumnFilters}
+              disabled={!filtersActive && !filterErr}
+            >
+              Reset Filter
+            </button>
           </div>
 
           <div className="sd-list-table-scroll">
             <table className="sd-list-table" data-testid="invoices-table">
               <colgroup>
-                {canDelete && <col style={{ width: 36 }} />}
+                {showDeleteColumn && <col style={{ width: 36 }} />}
                 <col />
+                <col style={{ width: 132 }} />
                 <col style={{ width: 148 }} />
-                <col style={{ width: 92 }} />
+                <col style={{ width: 132 }} />
+                <col style={{ width: 132 }} />
+                <col style={{ width: 156 }} />
                 <col style={{ width: 118 }} />
-                <col style={{ width: 118 }} />
-                <col style={{ width: 108 }} />
-                <col style={{ width: 108 }} />
-                <col style={{ width: 248 }} />
+                <col style={{ width: 220 }} />
               </colgroup>
               <thead>
                 <tr>
-                  {canDelete && (
+                  {showDeleteColumn && (
                     <th>
                       <input
                         type="checkbox"
                         data-testid="select-all-invoices"
-                        checked={draftInvoiceIds.length > 0 && selectedIds.size === draftInvoiceIds.length}
+                        checked={allPageDeletableSelected}
                         onChange={toggleSelectAll}
-                        aria-label="Pilih semua baris tampilan"
+                        aria-label="Pilih semua faktur yang dapat dihapus pada halaman ini"
                       />
                     </th>
                   )}
@@ -1298,35 +1567,172 @@ export default function FakturPenjualan() {
                   <th>Pembayaran</th>
                   <th>Aksi</th>
                 </tr>
+                <tr className="fp-col-filters">
+                  {showDeleteColumn && <th aria-hidden="true" />}
+                  <th>
+                    <input
+                      type="text"
+                      value={columnFilters.party}
+                      placeholder="Pelanggan atau no. faktur"
+                      aria-label="Filter pelanggan atau nomor faktur"
+                      data-testid="filter-invoice-party"
+                      onChange={(e) => patchColumnFilter({ party: e.target.value })}
+                    />
+                  </th>
+                  <th>
+                    <input
+                      type="text"
+                      value={columnFilters.po}
+                      placeholder="No. PO"
+                      aria-label="Filter nomor PO"
+                      data-testid="filter-invoice-po"
+                      onChange={(e) => patchColumnFilter({ po: e.target.value })}
+                    />
+                  </th>
+                  <th>
+                    <div className="fp-filter-range">
+                      <input
+                        type="date"
+                        value={columnFilters.dateFrom}
+                        aria-label="Tanggal faktur dari"
+                        data-testid="filter-invoice-date-from"
+                        onChange={(e) => patchColumnFilter({ dateFrom: e.target.value })}
+                      />
+                      <input
+                        type="date"
+                        value={columnFilters.dateTo}
+                        aria-label="Tanggal faktur sampai"
+                        data-testid="filter-invoice-date-to"
+                        onChange={(e) => patchColumnFilter({ dateTo: e.target.value })}
+                      />
+                    </div>
+                  </th>
+                  <th>
+                    <div className="fp-filter-range">
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        value={columnFilters.totalMin}
+                        placeholder="min"
+                        aria-label="Total faktur minimum"
+                        data-testid="filter-invoice-total-min"
+                        onChange={(e) => patchColumnFilter({ totalMin: e.target.value })}
+                      />
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        value={columnFilters.totalMax}
+                        placeholder="maks"
+                        aria-label="Total faktur maksimum"
+                        data-testid="filter-invoice-total-max"
+                        onChange={(e) => patchColumnFilter({ totalMax: e.target.value })}
+                      />
+                    </div>
+                  </th>
+                  <th>
+                    <div className="fp-filter-range">
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        value={columnFilters.outstandingMin}
+                        placeholder="min"
+                        aria-label="Sisa tagihan minimum"
+                        data-testid="filter-invoice-outstanding-min"
+                        onChange={(e) => patchColumnFilter({ outstandingMin: e.target.value })}
+                      />
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        value={columnFilters.outstandingMax}
+                        placeholder="maks"
+                        aria-label="Sisa tagihan maksimum"
+                        data-testid="filter-invoice-outstanding-max"
+                        onChange={(e) => patchColumnFilter({ outstandingMax: e.target.value })}
+                      />
+                    </div>
+                  </th>
+                  <th>
+                    <div className="fp-filter-stack">
+                      <select
+                        value={columnFilters.financialStatus}
+                        aria-label="Filter status faktur"
+                        data-testid="filter-invoice-financial-status"
+                        onChange={(e) => patchColumnFilter({ financialStatus: e.target.value })}
+                      >
+                        {financialStatusOptions.map((option) => (
+                          <option key={option.value || "all-financial"} value={option.value}>{option.label}</option>
+                        ))}
+                      </select>
+                      <select
+                        value={columnFilters.accountingStatus}
+                        aria-label="Filter status posting"
+                        data-testid="filter-invoice-accounting-status"
+                        onChange={(e) => patchColumnFilter({ accountingStatus: e.target.value })}
+                      >
+                        <option value="">Semua status posting</option>
+                        <option value="not_posted">Belum Diposting</option>
+                        <option value="posted">Posted</option>
+                        <option value="reversed">Reversed</option>
+                      </select>
+                    </div>
+                  </th>
+                  <th>
+                    <select
+                      value={columnFilters.paymentStatus}
+                      aria-label="Filter status pembayaran"
+                      data-testid="filter-invoice-payment-status"
+                      onChange={(e) => patchColumnFilter({ paymentStatus: e.target.value })}
+                    >
+                      <option value="">Semua pembayaran</option>
+                      <option value="BELUM DIBAYAR">Belum Dibayar</option>
+                      <option value="DP">DP</option>
+                      <option value="LUNAS">Lunas</option>
+                    </select>
+                  </th>
+                  <th />
+                </tr>
               </thead>
               <tbody>
                 {listLoading ? (
                   <tr>
-                    <td colSpan={canDelete ? 9 : 8} className="sd-list-empty">
+                    <td colSpan={columnCount} className="sd-list-empty">
                       Memuat daftar Faktur Penjualan...
                     </td>
                   </tr>
                 ) : invoices.length === 0 ? (
                   <tr>
-                    <td colSpan={canDelete ? 9 : 8} className="sd-list-empty" data-testid="empty-invoices">
+                    <td colSpan={columnCount} className="sd-list-empty" data-testid="empty-invoices">
                       <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
                         <FileText size={32} color="#94a3b8" />
-                        <div style={{ fontWeight: 600, color: "#1e293b", marginTop: 8 }}>Belum ada Faktur Penjualan</div>
+                        <div style={{ fontWeight: 600, color: "#1e293b", marginTop: 8 }}>
+                          {filterErr
+                            ? "Perbaiki rentang filter"
+                            : filtersActive
+                            ? "Tidak ada faktur yang cocok dengan filter"
+                            : listTab === "cancelled"
+                            ? "Belum ada faktur dibatalkan"
+                            : "Belum ada faktur aktif"}
+                        </div>
                       </div>
                     </td>
                   </tr>
                 ) : (
-                  invoices.map((inv) => (
+                  invoices.map((inv) => {
+                    const deletable = invoiceDeletable(inv);
+                    const draftEditable = listTab === "active" && invoiceFinancialStatus(inv) === "draft" && canEdit;
+                    return (
                     <tr key={inv.id} data-testid={`invoice-row-${inv.id}`}>
-                      {canDelete && (
+                      {showDeleteColumn && (
                         <td>
-                          <input
-                            type="checkbox"
-                            data-testid={`invoice-checkbox-${inv.id}`}
-                            checked={selectedIds.has(inv.id)}
-                            onChange={() => toggleSelect(inv.id)}
-                            aria-label={`Pilih ${inv.invoice_number}`}
-                          />
+                          {deletable ? (
+                            <input
+                              type="checkbox"
+                              data-testid={`invoice-checkbox-${inv.id}`}
+                              checked={selectedIds.has(inv.id)}
+                              onChange={() => toggleSelect(inv)}
+                              aria-label={`Pilih ${inv.invoice_number}`}
+                            />
+                          ) : null}
                         </td>
                       )}
                       <td className="sd-identity">
@@ -1360,27 +1766,30 @@ export default function FakturPenjualan() {
                           onClick={() => handleOpenDetail(inv.id)}
                           data-testid={`view-invoice-btn-${inv.id}`}
                         >
-                          {invoiceFinancialStatus(inv) === "draft" ? "Lihat / Edit" : "Lihat"}
+                          {draftEditable ? "Lihat / Edit" : "Lihat"}
                         </button>
-                        <button
-                          type="button"
-                          className="sd-act sd-act-view"
-                          onClick={(e) => handlePrintPdf(e, inv.id)}
-                          data-testid={`btn-print-pdf-${inv.id}`}
-                          disabled={pdfLoadingId === inv.id}
-                          title="Cetak PDF Faktur Penjualan"
-                        >
-                          {pdfLoadingId === inv.id ? "Memuat..." : "Cetak PDF"}
-                        </button>
-                        {canDelete && invoiceFinancialStatus(inv) === "draft" && (
+                        {canPrint && (
+                          <button
+                            type="button"
+                            className="sd-act sd-act-view"
+                            onClick={(e) => handlePrintPdf(e, inv.id)}
+                            data-testid={`btn-print-pdf-${inv.id}`}
+                            disabled={pdfLoadingId === inv.id}
+                            title="Cetak PDF Faktur Penjualan"
+                          >
+                            {pdfLoadingId === inv.id ? "Memuat..." : "Cetak PDF"}
+                          </button>
+                        )}
+                        {showDeleteColumn && deletable && (
                           <button
                             type="button"
                             className="sd-act sd-act-delete"
                             data-testid={`btn-delete-invoice-${inv.id}`}
-                            onClick={() => {
-                              setDeleteErr("");
-                              setDeleteConfirm({ id: inv.id, number: inv.invoice_number, numbers: [inv.invoice_number] });
-                            }}
+                            onClick={() => openDeleteConfirm({
+                              id: inv.id,
+                              number: inv.invoice_number,
+                              numbers: [inv.invoice_number],
+                            })}
                           >
                             Hapus
                           </button>
@@ -1388,19 +1797,62 @@ export default function FakturPenjualan() {
                         </div>
                       </td>
                     </tr>
-                  ))
+                    );
+                  })
                 )}
               </tbody>
             </table>
           </div>
           <footer className="sd-list-footer" data-testid="invoice-list-footer">
-            <span>
+            <span data-testid="invoice-list-range">
               {listLoading
                 ? "Memuat daftar faktur..."
                 : listErr
                 ? "Daftar faktur belum dapat ditampilkan"
-                : loadedRangeLabel(invoices.length, "faktur")}
+                : invoiceRangeLabel({
+                    total: listMeta.total,
+                    tabTotal: listMeta.tabTotal,
+                    page,
+                    pageSize,
+                    tabLabel,
+                    filtered: filtersActive,
+                  })}
             </span>
+            <div className="fp-pager">
+              <button
+                type="button"
+                data-testid="invoice-page-prev"
+                disabled={listLoading || page <= 1}
+                onClick={() => setPage((current) => Math.max(1, current - 1))}
+              >
+                Sebelumnya
+              </button>
+              <span data-testid="invoice-page-indicator">{page} / {pageCount}</span>
+              <label className="fp-page-size">
+                <span>Baris</span>
+                <select
+                  aria-label="Jumlah baris per halaman"
+                  data-testid="invoice-page-size"
+                  value={pageSize}
+                  onChange={(e) => {
+                    setPageSize(Number(e.target.value));
+                    resetInvoiceListPosition();
+                  }}
+                >
+                  {INVOICE_PAGE_SIZES.map((size) => (
+                    <option key={size} value={size}>{size}</option>
+                  ))}
+                </select>
+              </label>
+              <button
+                type="button"
+                data-testid="invoice-page-next"
+                disabled={listLoading || page >= pageCount}
+                onClick={() => setPage((current) => current + 1)}
+              >
+                Berikutnya
+              </button>
+            </div>
           </footer>
         </section>
       )}
@@ -2112,9 +2564,25 @@ export default function FakturPenjualan() {
             <h3 style={{ margin: "0 0 8px", fontSize: "1.1rem" }}>Hapus Faktur Penjualan?</h3>
             <p style={{ margin: "0 0 12px", color: "#64748b", fontSize: "0.9rem" }}>Dokumen berikut akan dihapus:</p>
             <ul data-testid="delete-confirm-numbers" style={{ margin: "0 0 16px", paddingLeft: 18, fontWeight: 700, color: "#9333ea" }}>
-              {(deleteConfirm.numbers || [deleteConfirm.number]).filter(Boolean).map((n) => (
-                <li key={n}>{n}</li>
-              ))}
+              {(deleteConfirm.ids || [deleteConfirm.id]).filter(Boolean).map((id, index) => {
+                const number = (deleteConfirm.numbers || [deleteConfirm.number])[index] || id;
+                const blocked = deleteHold && deleteBlockedIds.includes(id);
+                return (
+                  <li key={id}>
+                    {number}
+                    {blocked && deleteConfirm.ids && (
+                      <button
+                        type="button"
+                        data-testid={`delete-remove-${id}`}
+                        onClick={() => removeDeleteCandidate(id)}
+                        style={{ marginLeft: 8, fontWeight: 600, fontSize: 12, border: "1px solid #fecaca", background: "#fff", color: "#991b1b", borderRadius: 6, cursor: "pointer" }}
+                      >
+                        Keluarkan
+                      </button>
+                    )}
+                  </li>
+                );
+              })}
             </ul>
             {deleteErr && (
               <div data-testid="delete-error" style={{ background: "#fef2f2", color: "#b91c1c", padding: "8px 12px", borderRadius: 8, marginBottom: 12, fontSize: "0.85rem" }}>
@@ -2122,15 +2590,15 @@ export default function FakturPenjualan() {
               </div>
             )}
             <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
-              <button type="button" onClick={() => { setDeleteConfirm(null); setDeleteErr(""); }} disabled={deleteLoading} style={{ padding: "8px 14px", borderRadius: 8, border: "1px solid #cbd5e1", background: "#fff", cursor: "pointer" }}>
+              <button type="button" onClick={() => { setDeleteConfirm(null); setDeleteErr(""); setDeleteHold(false); setDeleteBlockedIds([]); }} disabled={deleteLoading} style={{ padding: "8px 14px", borderRadius: 8, border: "1px solid #cbd5e1", background: "#fff", cursor: "pointer" }}>
                 Batal
               </button>
               <button
                 type="button"
                 data-testid="btn-confirm-delete"
                 onClick={() => (deleteConfirm.ids ? handleBulkDelete() : handleDelete(deleteConfirm.id))}
-                disabled={deleteLoading}
-                style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: "#dc2626", color: "#fff", fontWeight: 600, cursor: "pointer" }}
+                disabled={deleteLoading || deleteHold || !(deleteConfirm.ids ? deleteConfirm.ids.length : deleteConfirm.id)}
+                style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: "#dc2626", color: "#fff", fontWeight: 600, cursor: deleteHold ? "not-allowed" : "pointer", opacity: deleteHold ? 0.45 : 1 }}
               >
                 {deleteLoading ? "Menghapus..." : "Hapus"}
               </button>
