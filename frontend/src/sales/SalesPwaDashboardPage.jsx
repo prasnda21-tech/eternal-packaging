@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { CalendarDays, ChevronRight, ClipboardList, MapPin, TrendingUp, WalletCards } from "lucide-react";
 import api from "../lib/api";
 import { currentSalesMonth, formatSalesDate, formatSalesMoney, salesMonthBounds, salesWibParts } from "../lib/salesPwa";
-import SalesPwaDesignApproval from "./SalesPwaDesignApproval";
+import SalesPwaDesignApproval, { salesDesignApprovalPath } from "./SalesPwaDesignApproval";
 
 const VISIT_MONTHS = ["Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus", "September", "Oktober", "November", "Desember"];
 const RECEIVABLE_INFO = "Saldo invoice yang masih belum lunas, termasuk periode sebelumnya.";
@@ -73,6 +73,10 @@ function latestVisit(rows) {
   }, null);
 }
 
+function sameStageLabel(status, title) {
+  return String(status || "").trim().toLowerCase() === String(title || "").trim().toLowerCase();
+}
+
 function FieldStagePreview({ testKey, title, orders, total, stage, payment, showApproval }) {
   const rows = Array.isArray(orders) ? orders : [];
   const count = Number(total);
@@ -81,21 +85,28 @@ function FieldStagePreview({ testKey, title, orders, total, stage, payment, show
   return (
     <div className="spwa-stage-block" data-testid={`sales-action-${testKey}-block`}>
       <p className="spwa-stage-total" data-testid={`sales-action-${testKey}-total`}>{shownTotal} PO {title}</p>
-      {rows.map((order) => (
-        <article
-          key={`${testKey}-${order.id}`}
-          className={`spwa-action-card${payment ? " is-payment" : ""}`}
-          data-testid={`sales-action-${testKey}-${order.id}`}
-        >
-          <p>{title}</p>
-          <strong>{order.customer}</strong>
-          <span>{order.po_number}</span>
-          <small>Status: {order.status}</small>
-          {order.tanggal_kirim_overdue ? <small className="is-urgent">Kirim terlambat</small> : null}
-          <Link to={`/sales/po/${encodeURIComponent(order.id)}`}>Lihat PO {title}</Link>
-          {showApproval ? <SalesPwaDesignApproval order={order} expectMissing /> : null}
-        </article>
-      ))}
+      {rows.map((order) => {
+        const hasApprovalPath = (order.design_approvals || []).some((row) => salesDesignApprovalPath(row));
+        return (
+          <article
+            key={`${testKey}-${order.id}`}
+            className={`spwa-action-card${payment ? " is-payment" : ""}`}
+            data-testid={`sales-action-${testKey}-${order.id}`}
+          >
+            <strong>{order.customer}</strong>
+            <span>{order.po_number}</span>
+            {!sameStageLabel(order.status, title) && order.status ? <small>Status: {order.status}</small> : null}
+            {order.tanggal_kirim_overdue ? <small className="is-urgent">Kirim terlambat</small> : null}
+            {showApproval ? <SalesPwaDesignApproval order={order} expectMissing /> : null}
+            <Link
+              className={hasApprovalPath ? "spwa-action-secondary" : undefined}
+              to={`/sales/po/${encodeURIComponent(order.id)}`}
+            >
+              Lihat PO
+            </Link>
+          </article>
+        );
+      })}
       {shownTotal > rows.length && (
         <Link
           className="spwa-stage-all"

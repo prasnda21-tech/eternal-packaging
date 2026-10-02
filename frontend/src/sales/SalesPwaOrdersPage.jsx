@@ -114,12 +114,14 @@ export default function SalesPwaOrdersPage() {
   const [dataKey, setDataKey] = useState("");
   const [err, setErr] = useState("");
   const [loadingMore, setLoadingMore] = useState(false);
+  const [moreFailed, setMoreFailed] = useState(false);
   const [sheet, setSheet] = useState(null);
   const filtersRef = useRef(initial.filters);
   const scrollYRef = useRef(initial.scrollY);
   const restoredRef = useRef(false);
   const requestGen = useRef(0);
   const offsetRef = useRef(0);
+  const loadingMoreRef = useRef(false);
   const keyword = searchKeyword(debouncedQ, columns.customer_q);
   const requestKey = JSON.stringify({
     keyword,
@@ -187,7 +189,9 @@ export default function SalesPwaOrdersPage() {
     const generation = requestGen.current + 1;
     requestGen.current = generation;
     offsetRef.current = 0;
+    loadingMoreRef.current = false;
     setLoadingMore(false);
+    setMoreFailed(false);
     setErr("");
     let cancelled = false;
     api.salesPwaOrders(listParamsRef.current(0))
@@ -204,14 +208,17 @@ export default function SalesPwaOrdersPage() {
 
   const visible = !searchPending && dataKey === requestKey ? data : null;
   const orders = visible?.orders || [];
-  const detailCount = [columns.stage, columns.date_from, columns.date_to, columns.progress_min, columns.buffer].filter(Boolean).length;
-  const remaining = visible ? Math.max(0, Number(visible.total || 0) - orders.length) : 0;
+  const extraFilterCount = [columns.date_from, columns.date_to, columns.progress_min, columns.buffer].filter(Boolean).length;
+  const listedTotal = Number(visible?.total);
+  const remaining = visible && Number.isFinite(listedTotal) ? Math.max(0, listedTotal - orders.length) : 0;
 
   const loadMore = () => {
-    if (loadingMore || !visible || remaining <= 0) return;
+    if (loadingMoreRef.current || !visible || remaining <= 0) return;
     const generation = requestGen.current;
     const skip = offsetRef.current;
+    loadingMoreRef.current = true;
     setLoadingMore(true);
+    setMoreFailed(false);
     api.salesPwaOrders(listParamsRef.current(skip))
       .then((res) => {
         if (generation !== requestGen.current) return;
@@ -228,12 +235,18 @@ export default function SalesPwaOrdersPage() {
           return { ...(current || {}), ...res, orders: merged };
         });
         offsetRef.current = incoming.length === 0 ? Math.max(skip, Number(res?.total) || skip) : skip + incoming.length;
+        setMoreFailed(false);
+        setErr("");
       })
       .catch((e) => {
-        if (generation === requestGen.current) setErr(e.response?.data?.detail || e.message || "Gagal memuat PO");
+        if (generation !== requestGen.current) return;
+        setMoreFailed(true);
+        setErr(e.response?.data?.detail || e.message || "Gagal memuat PO");
       })
       .finally(() => {
-        if (generation === requestGen.current) setLoadingMore(false);
+        if (generation !== requestGen.current) return;
+        loadingMoreRef.current = false;
+        setLoadingMore(false);
       });
   };
 
@@ -311,6 +324,19 @@ export default function SalesPwaOrdersPage() {
             </button>
           ) : null}
         </label>
+        {columns.stage ? (
+          <div className="spwa-active-stage" data-testid="sales-active-stage">
+            <span>Tahap: {columns.stage}</span>
+            <button
+              type="button"
+              aria-label="Hapus filter tahap"
+              data-testid="sales-stage-clear"
+              onClick={() => setColumn("stage", "")}
+            >
+              <X size={14} />
+            </button>
+          </div>
+        ) : null}
         {!narrow && (
           <p className="spwa-filter-hint"><SlidersHorizontal size={13} /> Filter rinci tersedia langsung pada header tabel.</p>
         )}
@@ -322,7 +348,7 @@ export default function SalesPwaOrdersPage() {
               data-testid="sales-filter-open"
               onClick={() => setFilterOpen(true)}
             >
-              <SlidersHorizontal size={14} /> Filter{detailCount ? ` ${detailCount}` : ""}
+              <SlidersHorizontal size={14} /> Filter{extraFilterCount ? ` ${extraFilterCount}` : ""}
             </button>
           </div>
         )}
@@ -452,20 +478,22 @@ export default function SalesPwaOrdersPage() {
             </table>
           </div>
         )}
-        {visible && remaining > 0 && (
+        {visible && orders.length > 0 && Number.isFinite(listedTotal) && (
           <div className="spwa-page-more">
             <p className="spwa-muted" data-testid="sales-po-remainder">
-              Menampilkan {orders.length} dari {visible.total} PO. {remaining} PO belum ditampilkan.
+              {orders.length} dari {listedTotal} PO
             </p>
-            <button
-              type="button"
-              className="spwa-load-more"
-              data-testid="sales-po-load-more"
-              onClick={loadMore}
-              disabled={loadingMore}
-            >
-              {loadingMore ? "Memuat..." : "Muat lagi"}
-            </button>
+            {remaining > 0 && (
+              <button
+                type="button"
+                className="spwa-load-more"
+                data-testid="sales-po-load-more"
+                onClick={loadMore}
+                disabled={loadingMore}
+              >
+                {loadingMore ? "Memuat..." : moreFailed ? "Coba lagi" : "Muat lagi"}
+              </button>
+            )}
           </div>
         )}
       </main>

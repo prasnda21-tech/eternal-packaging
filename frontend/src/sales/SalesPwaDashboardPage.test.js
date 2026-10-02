@@ -129,9 +129,11 @@ test("shows owned action cards and the existing selesai count without an approva
   const design = node.querySelector('[data-testid="sales-action-design-po-design"] a');
   const payment = node.querySelector('[data-testid="sales-action-payment-po-pay"] a');
   expect(design.getAttribute("href")).toBe("/sales/po/po-design");
-  expect(design.textContent).toBe("Lihat PO Approval Design");
+  expect(design.textContent).toBe("Lihat PO");
+  expect(design.className).not.toContain("spwa-action-secondary");
   expect(payment.getAttribute("href")).toBe("/sales/po/po-pay");
-  expect(payment.textContent).toBe("Lihat PO Approval Payment");
+  expect(payment.textContent).toBe("Lihat PO");
+  expect(node.querySelector('[data-testid="sales-action-design-po-design"]').textContent).not.toContain("Status: Approval Design");
   expect(node.querySelector('[data-testid="sales-actions-count"]').textContent).toBe("2 PO perlu tindakan");
   expect(node.querySelector('[data-testid="sales-actions-empty"]')).toBeNull();
   expect(node.querySelector('[data-testid="sales-approval-missing-po-design"]').textContent).toBe("Link approval belum tersedia");
@@ -198,7 +200,11 @@ test("opens the stored design approval from the lapangan card without mixing des
   expect(stale.textContent).toContain("Dicabut");
   expect(stale.textContent).toContain("Link approval belum tersedia");
   expect(stale.textContent).not.toContain("cup-baru.pdf");
-  expect(card.querySelector("a").getAttribute("href")).toBe("/sales/po/po-design");
+  const poLink = card.querySelector('a[href="/sales/po/po-design"]');
+  expect(poLink.textContent).toBe("Lihat PO");
+  expect(poLink.className).toContain("spwa-action-secondary");
+  expect(card.textContent).not.toContain("Status: Approval Design");
+  expect(open.compareDocumentPosition(poLink) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   act(() => root.unmount());
 });
 

@@ -103,6 +103,15 @@ Tahap dihitung di Python (`effective_workflow_status`). HOLD tidak masuk jarum "
 
 - `backend/tests/test_sales_pwa_stage_page.py`: 6 PO Approval Design milik satu sales, `limit` 4 lalu `skip` 4, total 6, tidak ada id ganda atau yang terlewat, pencarian menemukan PO di luar 4 pertama, sales lain tidak melihat PO itu. Dokumen hanya dimuat untuk id pada halaman.
 - `test_sales_pwa_design_approval.py` bersama regresi scope, filter daftar, status PO, dan buffer stock: 46 lulus, termasuk 2 tes halaman tahap.
-- Jest dashboard, daftar PO, state filter, dan detail: lulus, termasuk "Lihat semua" membawa tahap yang sama dan "Muat lagi" tidak menduplikasi id. `src/lib/salesPwa.test.js` masih mengharapkan label navigasi lama; isi `SALES_PWA_NAV` sudah berubah sebelum revisi ini, dan tes itu tidak diubah.
+- Jest dashboard, daftar PO, state filter, dan detail: lulus, termasuk "Lihat semua" membawa tahap yang sama dan "Muat lagi" tidak menduplikasi id. Ekspektasi navigasi di `src/lib/salesPwa.test.js` kemudian disesuaikan dengan bar yang berlaku (Dashboard, PO Saya, Visit, Lainnya). Navigasi tidak diubah.
 - `npm run build` dengan `CI=false` dan `DISABLE_ESLINT_PLUGIN=true`, sama seperti workflow frontend, selesai tanpa error.
 - Pratinjau lokal `http://localhost:3002` dimuat ulang. Di lebar 390px: total tahap, 4 kartu, "Lihat semua", daftar dengan filter tahap yang sama, lalu "Muat lagi" sampai 45 kartu unik. Sales kedua tidak menerima PO sales pertama.
+
+## Lanjutan tampilan (2026-10-02)
+
+Bukan audit ulang. Hanya catatan pada daftar PO, kartu lapangan, dan navigasi.
+
+- Daftar PO menampilkan `Tahap: …` selama filter tahap aktif. Menghapus tahap meminta ulang dari `skip` 0 dan memakai total respons baru. Angka pada tombol Filter tidak lagi menghitung tahap itu.
+- Kartu lapangan memakai "Lihat PO". Status yang sama dengan judul tahap tidak diulang di dalam kartu. Bila path approval ada, "Buka Approval Desain" menjadi aksi utama dan "Lihat PO" menjadi aksi sekunder.
+- `src/lib/salesPwa.test.js` mengharapkan bar lama (PO Saya, Pelanggan, Prediksi Order, Profil) dan menganggap `/sales` sebagai daftar PO. Bar yang berlaku, dan yang sudah diuji `SalesPwaLayout.test.js`, adalah Dashboard, PO Saya, Visit, dan Lainnya. Prediksi Order ada di menu Lainnya. Ekspektasi tes disesuaikan. Isi `SALES_PWA_NAV` tidak diubah.
+- "Muat lagi" dikunci selama permintaan berjalan. Gagal memuat mempertahankan baris yang sudah ada dan mengganti tombol menjadi "Coba lagi". Setelah semua baris termuat, teksnya `{jumlah} dari {total} PO` dan tombol disembunyikan. Pergantian filter menaikkan generasi permintaan sehingga respons halaman lama diabaikan.

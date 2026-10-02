@@ -327,6 +327,30 @@
   justify-content: flex-end;
   padding: 0 10px 8px;
 }
+.spwa-active-stage {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 10px 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: #e7f6f1;
+  color: #102936;
+  font-size: 13px;
+  font-weight: 700;
+}
+.spwa-active-stage button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #08785d;
+}
 .spwa-filter-btn,
 .spwa-filter-apply,
 .spwa-filter-reset,
@@ -1012,6 +1036,11 @@ a.spwa-po-card {
   font-size: 12px;
   font-weight: 700;
   text-decoration: none;
+}
+.spwa-action-card a.spwa-action-secondary {
+  background: #fff;
+  color: #08785d;
+  border: 1px solid #c5d2d9;
 }
 .spwa-panel {
   margin: 10px 10px 0;

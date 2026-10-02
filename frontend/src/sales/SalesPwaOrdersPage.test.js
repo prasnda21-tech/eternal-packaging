@@ -163,7 +163,7 @@ describe("SalesPwaOrdersPage", () => {
       });
     });
     expect(container.textContent).toContain("Semua 1");
-    expect(container.querySelector('[data-testid="sales-po-remainder"]').textContent).toContain("Menampilkan 1 dari 4 PO");
+    expect(container.querySelector('[data-testid="sales-po-remainder"]').textContent).toBe("1 dari 4 PO");
     act(() => root.unmount());
     container.remove();
   });
@@ -445,7 +445,7 @@ describe("SalesPwaOrdersPage", () => {
     const root = await mount(container);
     expect(api.salesPwaOrders.mock.calls[0][0]).toMatchObject({ skip: 0, limit: SALES_PWA_PO_PAGE_SIZE, q: "" });
     expect(container.querySelectorAll("tbody tr").length).toBe(4);
-    expect(container.querySelector('[data-testid="sales-po-remainder"]').textContent).toContain("Menampilkan 4 dari 6 PO");
+    expect(container.querySelector('[data-testid="sales-po-remainder"]').textContent).toBe("4 dari 6 PO");
     await act(async () => {
       click(container.querySelector('[data-testid="sales-po-load-more"]'));
     });
@@ -522,6 +522,106 @@ describe("SalesPwaOrdersPage", () => {
     expect(params.date_from).toBe("");
     expect(params.buffer).toBe("");
     expect(storedFilters()).toMatchObject({ status: "semua", stage: "Approval Design", q: "" });
+    expect(container.querySelector('[data-testid="sales-active-stage"]').textContent).toContain("Tahap: Approval Design");
+    expect(container.querySelector('[data-testid="sales-filter-open"]')).toBeNull();
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  test("names the active stage and restores the full total when that stage is cleared", async () => {
+    mockNarrow(true);
+    mockRouter.state = { salesPwaPoContext: { stage: "Approval Design" } };
+    api.salesPwaOrders.mockReset();
+    api.salesPwaOrders.mockImplementation((params) => Promise.resolve(params.stage
+      ? { ...sample, orders: sample.orders.slice(0, 2), total: 2, counts: { semua: 2, berjalan: 2, hold: 0, parsial: 0, selesai: 0 } }
+      : { ...sample, total: 8, counts: sample.counts }));
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = await mount(container);
+    expect(container.querySelector('[data-testid="sales-active-stage"]').textContent).toContain("Tahap: Approval Design");
+    expect(container.querySelector('[data-testid="sales-filter-open"]').textContent).not.toMatch(/Filter\s+1/);
+    expect(container.textContent).toContain("Semua 2");
+    await act(async () => {
+      click(container.querySelector('[data-testid="sales-stage-clear"]'));
+    });
+    await flush();
+    const params = api.salesPwaOrders.mock.calls.at(-1)[0];
+    expect(params.stage).toBe("");
+    expect(params.skip).toBe(0);
+    expect(container.querySelector('[data-testid="sales-active-stage"]')).toBeNull();
+    expect(container.textContent).toContain("Semua 8");
+    expect(container.querySelector('[data-testid="sales-po-remainder"]').textContent).toBe("8 dari 8 PO");
+    expect(container.querySelector('[data-testid="sales-po-load-more"]')).toBeNull();
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  test("ignores a repeated load and a stale page after the filter changes", async () => {
+    const pending = [];
+    api.salesPwaOrders.mockReset();
+    api.salesPwaOrders.mockImplementation((params) => new Promise((resolve, reject) => {
+      pending.push({ params, resolve, reject });
+    }));
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = await mount(container);
+    const first = pending[0];
+    await act(async () => {
+      first.resolve({ ...sample, orders: sample.orders.slice(0, 2), total: 4 });
+    });
+    await flush();
+    await act(async () => {
+      click(container.querySelector('[data-testid="sales-po-load-more"]'));
+      click(container.querySelector('[data-testid="sales-po-load-more"]'));
+    });
+    expect(pending.filter((item) => item.params.skip === 2)).toHaveLength(1);
+    expect(container.querySelector('[data-testid="sales-po-load-more"]').disabled).toBe(true);
+    const stale = pending.find((item) => item.params.skip === 2);
+    await act(async () => {
+      click(container.querySelector('[data-testid="sales-filter-hold"]'));
+    });
+    const next = pending.at(-1);
+    expect(next.params.status).toBe("hold");
+    expect(next.params.skip).toBe(0);
+    await act(async () => {
+      stale.resolve({ ...sample, orders: [{ id: "stale", po_number: "PO-STALE", customer: "Usang", status: "Packing", order_date: "2026-09-01", documents: { total: 0 } }], total: 4 });
+      next.resolve({ ...sample, orders: sample.orders.slice(1, 2), total: 1, counts: { semua: 1, berjalan: 0, hold: 1, parsial: 0, selesai: 0 } });
+    });
+    await flush();
+    expect(container.textContent).toContain("PO-A002");
+    expect(container.textContent).not.toContain("PO-STALE");
+    expect(container.textContent).not.toContain("PO-A001");
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  test("keeps the loaded rows and offers another try when the next page fails", async () => {
+    api.salesPwaOrders.mockReset();
+    api.salesPwaOrders
+      .mockResolvedValueOnce({ ...sample, orders: sample.orders.slice(0, 2), total: 4 })
+      .mockRejectedValueOnce(new Error("jaringan"))
+      .mockResolvedValueOnce({ ...sample, orders: sample.orders.slice(2, 4), total: 4 });
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = await mount(container);
+    expect(container.textContent).toContain("PO-A001");
+    await act(async () => {
+      click(container.querySelector('[data-testid="sales-po-load-more"]'));
+    });
+    await flush();
+    expect(container.textContent).toContain("PO-A001");
+    expect(container.textContent).toContain("PO-A002");
+    expect(container.textContent).toContain("jaringan");
+    const retry = container.querySelector('[data-testid="sales-po-load-more"]');
+    expect(retry.textContent).toBe("Coba lagi");
+    expect(retry.disabled).toBe(false);
+    await act(async () => {
+      click(retry);
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="sales-po-remainder"]').textContent).toBe("4 dari 4 PO");
+    expect(container.querySelector('[data-testid="sales-po-load-more"]')).toBeNull();
+    expect(container.textContent).toContain("PO-A004");
     act(() => root.unmount());
     container.remove();
   });
