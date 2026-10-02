@@ -35,6 +35,7 @@ import {
   syncPoDetailStageQuery,
   visualCanonicalIndex,
   visualStepForInternalIndex,
+  visualStepPresentationIndex,
 } from "../lib/poDetailStageNav";
 import { salesOrderLineColor } from "../lib/salesOrderLineColor";
 import { mapsSearchUrl } from "../lib/mobileWorkspaces";
@@ -510,21 +511,16 @@ export default function PODetail() {
   const viewedStage = selectedWorkflowStage == null ? actualStage : clampWorkflowStageIndex(selectedWorkflowStage, actualStage);
   const viewedVisualStep = visualStepForInternalIndex(viewedStage);
   const viewingOtherStage = visualCanonicalIndex(viewedStage) !== visualCanonicalIndex(actualStage);
-  const viewedPres = getStagePresentation(viewedStage, order, actualStage);
+  const viewedPres = getStagePresentation(
+    visualStepPresentationIndex(viewedVisualStep, actualStage),
+    order,
+    actualStage,
+  );
   const actualPres = getStagePresentation(actualStage, order, actualStage);
   const ledgerSteps = PO_DETAIL_VISUAL_STEPS.map((step) => ({
     ...step,
     displayNumber: String(step.displayNumber).replace("&", "–"),
   }));
-  const railIndexes = new Set([
-    0,
-    1,
-    3,
-    5,
-    visualCanonicalIndex(viewedStage),
-    visualCanonicalIndex(actualStage),
-  ]);
-  const compactSteps = ledgerSteps.filter((step) => railIndexes.has(step.canonicalIndex));
   const designDocCount = (order.design_files || []).length;
   const paymentDocCount = (order.payment_files || []).length;
   const sampleDocCount = (order.sample_files || []).length;
@@ -681,6 +677,14 @@ export default function PODetail() {
               ) : (
                 <p className="po-hero-outlet" data-testid="detail-outlet" hidden>—</p>
               )}
+              <span className={order.priority === "urgent" ? "urgent-badge" : "standard-badge"} data-testid="detail-priority">
+                {order.priority === "urgent" ? "URGENT" : "NORMAL"}
+              </span>
+              {order.buffer_stock && (
+                <span className="pill sm" data-testid="buffer-stock-badge">
+                  BUFFER STOCK
+                </span>
+              )}
             </div>
           </div>
           <div className="po-hero-title-actions">
@@ -756,17 +760,9 @@ export default function PODetail() {
           </div>
         </div>
         <div className="po-hero-toolbar" data-testid="po-hero-toolbar">
-          <span className={order.priority === "urgent" ? "urgent-badge" : "standard-badge"} data-testid="detail-priority">
-            {order.priority === "urgent" ? "URGENT" : "NORMAL"}
-          </span>
           <span className="pill sm" data-testid="header-order-kind">
             {order.requires_printing === false ? "Non-Cetak" : "Cetak"}
           </span>
-          {order.buffer_stock && (
-            <span className="pill sm" data-testid="buffer-stock-badge">
-              BUFFER STOCK
-            </span>
-          )}
           <span data-testid="po-last-updated" className="po-hero-updated">
             Update: {poLastUpdated ? new Date(poLastUpdated).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" }) : "-"}
           </span>
@@ -795,7 +791,7 @@ export default function PODetail() {
             order={order}
             showLabels
             viewedStage={viewedStage}
-            steps={compactSteps}
+            steps={ledgerSteps}
             onStageClick={selectWorkflowStage}
           />
         </div>
@@ -812,9 +808,9 @@ export default function PODetail() {
       <section className="po-stage-ws-chrome" data-testid="po-stage-panel">
         <header className="po-stage-ws-chrome-head po-view-context" data-testid="po-view-context">
           <p className="po-view-context-item">
-            <span className="po-stage-ws-kicker">Anda melihat</span>
+            <span className="po-stage-ws-kicker">Dilihat:</span>
             <strong data-testid="po-viewed-stage-title" title={poDetailStagePanelTitle(viewedStage)}>
-              {STAGES[viewedStage]} · {viewedPres.summary || viewedPres.label || "—"}
+              {viewedVisualStep.label}{viewedPres.summary || viewedPres.label ? ` · ${viewedPres.summary || viewedPres.label}` : ""}
             </strong>
           </p>
           <p className="po-view-context-item po-hero-sedang" data-testid="po-actual-stage-label">
@@ -910,7 +906,7 @@ export default function PODetail() {
       <div className="po-meta-aksi-row" data-testid="po-meta-aksi-row">
       {/* Order Info */}
       <section className="panel po-info-panel" data-testid="detail-info">
-        <header className="panel-head">
+        <header className="panel-head po-om-section-head">
           <h3>Informasi Order</h3>
           {canEditPoInfo && !order.cancelled && (
             <button
@@ -1052,8 +1048,11 @@ export default function PODetail() {
       </div>
 
       <section className="panel po-line-items-panel" data-testid="line-items-panel">
-        <header className="panel-head">
-          <h3>Barang Pesanan ({order.item_count ?? (order.line_items || []).length})</h3>
+        <header className="panel-head po-om-section-head">
+          <h3>
+            Barang Pesanan{" "}
+            <span className="po-om-head-count">{order.item_count ?? (order.line_items || []).length} item</span>
+          </h3>
         </header>
         <div className="line-items-table-wrap">
           <table className="line-items-table" data-testid="line-items-table">
@@ -1148,47 +1147,44 @@ export default function PODetail() {
         data-testid="design-approval-pair"
         hidden={!deskPanelOwnsStage("design", viewedStage)}
       >
-      <PoStageSection stageIndex={1} order={order} title="Design" hasError={!!err}>
+      <PoStageSection stageIndex={1} order={order} title="2–3 · Design & Approval" hasError={!!err}>
         <header className="panel-head design-ws-head">
           <div className="design-ws-heading">
-            <h3>Design</h3>
-            <p className="muted small">File desain di bagian ini. Keputusan approval ada di bagian berikutnya.</p>
+            <h3>2–3 · Design & Approval</h3>
           </div>
           <DesignStatusBadge order={order} />
         </header>
-        <div className="po-pair-grid">
+        <div className="po-pair-grid po-split-65">
           <div className="po-pair-col" data-testid="workflow-slot-1" data-workflow-stage="1">
-            <h4 className="po-pair-col-title">Design File</h4>
             <AttachmentsPanel
               order={order}
               user={user}
               onUpdated={setOrder}
               section="design"
             />
+            <div className="workflow-stage-actions design-approval-actions" data-testid="approval-design-actions">
+              {canApproveDesign && (order.design_files?.length || 0) > 0 && !isApprovalDesignComplete(order) && (
+                <button className="primary" onClick={approveDesign} disabled={busy} data-testid="approve-design-button">
+                  <FileCheck2 size={16} /> Setujui desain
+                </button>
+              )}
+              {canBypassDesign && !isApprovalDesignComplete(order) && (
+                <button className="ghost" onClick={doBypassDesign} disabled={busy} data-testid="bypass-design-button" title="Butuh permission design.bypass_approval">
+                  <ShieldOff size={14}/> Lewati persetujuan
+                </button>
+              )}
+              {canApproveDesign && order.design_status === "Approved" && (order.current_stage || 0) < 12 && (
+                <button className="ghost" onClick={rejectDesign} disabled={busy} data-testid="revoke-design-button">
+                  Batalkan persetujuan desain
+                </button>
+              )}
+              {!canApproveDesign && !canBypassDesign && !isApprovalDesignComplete(order) && (
+                <p className="muted small" data-testid="design-readonly-note">Anda hanya dapat melihat status approval design (read-only).</p>
+              )}
+            </div>
           </div>
           <div className="po-pair-col" data-testid="workflow-slot-2" data-workflow-stage="2">
             <div data-testid="approval-design-panel">
-              <h4 className="po-pair-col-title">Approval Design</h4>
-              <div className="workflow-stage-actions design-approval-actions" data-testid="approval-design-actions">
-                {canApproveDesign && (order.design_files?.length || 0) > 0 && !isApprovalDesignComplete(order) && (
-                  <button className="primary" onClick={approveDesign} disabled={busy} data-testid="approve-design-button">
-                    <FileCheck2 size={16} /> Approve Design
-                  </button>
-                )}
-                {canBypassDesign && !isApprovalDesignComplete(order) && (
-                  <button className="ghost" onClick={doBypassDesign} disabled={busy} data-testid="bypass-design-button" title="Butuh permission design.bypass_approval">
-                    <ShieldOff size={14}/> Bypass Design
-                  </button>
-                )}
-                {canApproveDesign && order.design_status === "Approved" && (order.current_stage || 0) < 12 && (
-                  <button className="ghost" onClick={rejectDesign} disabled={busy} data-testid="revoke-design-button">
-                    Batalkan approve design
-                  </button>
-                )}
-                {!canApproveDesign && !canBypassDesign && !isApprovalDesignComplete(order) && (
-                  <p className="muted small" data-testid="design-readonly-note">Anda hanya dapat melihat status approval design (read-only).</p>
-                )}
-              </div>
               <CustomerApprovalPanel
                 order={order}
                 canView={canViewCustomerApproval}
@@ -1203,58 +1199,55 @@ export default function PODetail() {
 
       {/* 04–05 Payment + Approval Payment (visual pair only) */}
       <section id="po-stage-payment" className={"panel payment-panel po-pair-card po-phase-payment" + (deskPanelOwnsStage("payment", viewedStage) ? " is-desk-viewed" : "")} data-testid="payment-approval-pair" hidden={!deskPanelOwnsStage("payment", viewedStage)}>
-        <PoStageSection stageIndex={3} order={order} title="Payment &amp; Approval" hasError={!!payUploadErr || !!salesReceiptsErr}>
-        <header className="panel-head">
-          <h3>Payment</h3>
+        <PoStageSection stageIndex={3} order={order} title="4–5 · Payment & Approval" hasError={!!payUploadErr || !!salesReceiptsErr}>
+        <header className="panel-head pay-ws-head">
+          <h3>4–5 · Payment & Approval</h3>
+          {canUploadPayment && !order.cancelled && (
+            canAddPaymentProof(order.payment_files) ? (
+            <label className={"primary btn-file" + (payUploading ? " disabled" : "")} data-testid="upload-payment-label">
+              <input
+                type="file"
+                accept="image/jpeg,image/png,image/jpg,application/pdf"
+                disabled={payUploading}
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  e.target.value = "";
+                  if (f) uploadPaymentProof(f);
+                }}
+                data-testid="upload-payment-input"
+                style={{display:"none"}}
+              />
+              <FileText size={16} /> {payUploading ? "Mengupload..." : "Tambah Bukti pembayaran"}
+            </label>
+            ) : (
+              <p className="muted small" data-testid="payment-max-reached">Maksimal {MAX_PAYMENT_PROOFS} file.</p>
+            )
+          )}
           <span className="muted small" data-testid="payment-proof-count">
             Bukti Payment {paymentProofCount(order.payment_files)} / {MAX_PAYMENT_PROOFS} file
           </span>
           <PaymentStatusBadge order={order} receipts={salesReceipts} />
         </header>
-        <div className="po-pair-grid">
+        <div className="po-pair-grid po-split-65">
         <div className="po-pair-col" data-testid="workflow-slot-3" data-workflow-stage="3">
         <div data-testid="payment-panel">
-        <h4 className="po-pair-col-title">Bukti Payment</h4>
+        <h4 className="po-pair-col-title">Bukti pembayaran</h4>
         <div className="payment-body">
           <PaymentFilesList files={order.payment_files || []} order={order} hasReceiptProof={salesReceipts.some(receiptHasPaymentProof)} />
           {payUploadErr && (
             <div className="error" data-testid="payment-upload-error">{payUploadErr}</div>
           )}
-          <div className="payment-actions">
-            {canUploadPayment && !order.cancelled && (
-              canAddPaymentProof(order.payment_files) ? (
-              <label className={"primary btn-file" + (payUploading ? " disabled" : "")} data-testid="upload-payment-label">
-                <input
-                  type="file"
-                  accept="image/jpeg,image/png,image/jpg,application/pdf"
-                  disabled={payUploading}
-                  onChange={(e) => {
-                    const f = e.target.files?.[0];
-                    e.target.value = "";
-                    if (f) uploadPaymentProof(f);
-                  }}
-                  data-testid="upload-payment-input"
-                  style={{display:"none"}}
-                />
-                <FileText size={16} /> {payUploading ? "Mengupload..." : "Tambah Bukti"}
-              </label>
-              ) : (
-                <p className="muted small" data-testid="payment-max-reached">Maksimal {MAX_PAYMENT_PROOFS} file.</p>
-              )
-            )}
-            {!canUploadPayment && (
-              <p className="muted small" data-testid="payment-readonly-note">Anda hanya dapat melihat bukti pembayaran (read-only).</p>
-            )}
-          </div>
+          {!canUploadPayment && (
+            <p className="muted small" data-testid="payment-readonly-note">Anda hanya dapat melihat bukti pembayaran (read-only).</p>
+          )}
         </div>
         </div>
         </div>
 
       <div className="po-pair-col" data-testid="workflow-slot-4" data-workflow-stage="4">
       <div data-testid="approval-payment-panel">
-        <h4 className="po-pair-col-title">Approval Payment</h4>
+        <h4 className="po-pair-col-title">Penerimaan Penjualan</h4>
         <div className="sales-receipts-payment" data-testid="sales-receipts-payment-section">
-          <h4 style={{ margin: "0 0 8px 0", fontSize: 13 }}>Penerimaan Penjualan</h4>
           {salesReceiptsLoading && (
             <p className="muted small" data-testid="sales-receipts-loading">Memuat penerimaan…</p>
           )}
@@ -1304,26 +1297,29 @@ export default function PODetail() {
             </ul>
           )}
         </div>
-        <div className="workflow-stage-actions" data-testid="approval-payment-actions">
+      </div>
+      </div>
+        </div>
+        <div className="workflow-stage-actions po-decision-row" data-testid="approval-payment-actions">
           {canApprovePayment && order.payment_files?.length > 0 && order.payment_status !== "Approved" && !order.payment_bypassed && (
             <button className="primary" onClick={approvePayment} disabled={busy} data-testid="approve-payment-button">
-              <FileCheck2 size={16} /> Approve Payment
+              <FileCheck2 size={16} /> Setujui pembayaran
             </button>
           )}
           {canApprovePayment && order.payment_status === "Approved" && (order.current_stage || 0) < 12 && (
             <button className="ghost" onClick={rejectPayment} disabled={busy} data-testid="revoke-payment-button">
-              Batalkan approve payment
+              Batalkan persetujuan pembayaran
             </button>
           )}
           {canBypassPayment && !order.payment_bypassed && order.payment_status !== "Approved" && (
             <button className="ghost" onClick={doBypassPayment} disabled={busy} data-testid="bypass-payment-button" title="Butuh permission payment.bypass_approval">
-              <ShieldOff size={14}/> Bypass Payment
+              <ShieldOff size={14}/> Lewati persetujuan
             </button>
           )}
         </div>
         {(order.payment_approval_history || []).length > 0 && (
           <details className="payment-history" data-testid="payment-history">
-            <summary>Histori Approval Payment ({(order.payment_approval_history || []).length})</summary>
+            <summary>Riwayat approval ({(order.payment_approval_history || []).length})</summary>
             <ul>
               {(order.payment_approval_history || []).slice().reverse().map((h, i) => (
                 <li key={i}>
@@ -1336,9 +1332,6 @@ export default function PODetail() {
             </ul>
           </details>
         )}
-      </div>
-      </div>
-        </div>
       </PoStageSection>
       </section>
       </div>
@@ -1604,7 +1597,7 @@ export default function PODetail() {
       {/* Notes — Order Masuk workspace */}
       <div className="po-order-masuk-tail" hidden={!deskPanelOwnsStage("0", viewedStage)}>
       <section className={`panel po-notes-panel${!order.notes && !noteOpen ? " is-empty" : ""}`} data-testid="notes-panel">
-        <header className="panel-head">
+        <header className="panel-head po-om-section-head">
           <h3>Catatan Produksi</h3>
           {!isCrm && (
             <button
@@ -1639,7 +1632,7 @@ export default function PODetail() {
         )}
       </section>
       <section className="panel po-doc-tabs" data-testid="po-doc-tabs">
-        <div className="po-doc-tablist" role="tablist" aria-label="Dokumen dan riwayat">
+        <div className="po-doc-tablist po-om-section-head" role="tablist" aria-label="Dokumen dan riwayat">
           <button
             type="button"
             role="tab"
