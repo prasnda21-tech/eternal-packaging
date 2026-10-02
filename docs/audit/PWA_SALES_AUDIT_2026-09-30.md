@@ -59,8 +59,50 @@ Role `sales_eternal` tetap hanya lewat `/api/sales-pwa`. Sales lain mendapat 404
 
 Rekomendasi di `PWA_SALES_MOBILE_UX_2026-09-30.md` sudah ada di kode `main` saat lanjutan ini dimulai: filter dan scroll di session, kartu di layar sempit, bottom sheet filter, chip satu baris, debounce pencarian, dan skeleton. Tidak ada butir dari daftar itu yang masih belum dikerjakan.
 
-Di luar laporan UX itu, yang masih berlaku:
+Di luar laporan UX itu, yang masih berlaku setelah lanjutan batas 4 PO:
 
-- URL plaintext dari tombol generate tetap tidak bisa ditampilkan ulang. Kartu memakai pembuka live tracking. Keduanya membuka approval yang sama; string token generate tidak dikembalikan ke PWA.
-- Daftar aksi lapangan tetap mengambil paling banyak 4 PO per tahap (`limit: 4` di dashboard). Bukan bagian revisi ini.
-- SHA persis bundle production tidak bisa dicocokkan ke commit git.
+- URL plaintext dari tombol generate tetap tidak bisa ditampilkan ulang. Kartu memakai pembuka live tracking. Keduanya membuka approval yang sama; string token generate tidak dikembalikan ke PWA. Mekanisme generate tidak diubah.
+- SHA persis bundle production tetap tidak bisa dicocokkan ke commit git. Lihat bagian lanjutan di bawah.
+
+## Lanjutan: batas 4 PO per tahap (2026-10-02)
+
+### Sinkronisasi source
+
+`origin/main` saat digabung adalah `12477ea` (Merge PR #440, compact tahap 1–5 di detail PO). Perubahan itu hanya `App.css`, `StageBar.jsx`, `PODetail.jsx`, dan tes delivery detail. Digabung ke branch ini tanpa menghapus `7f3ba00`.
+
+### Production, read-only
+
+GET `https://produksi.eternalpackaging.id` pada 2026-10-02:
+
+- Indeks `Last-Modified: Fri, 02 Oct 2026 04:04:43 GMT`. Bundle utama sekarang `/static/js/main.b8332a37.js` (sebelumnya `main.597995bb.js`, indeks 02:00:20 GMT).
+- Chunk lapangan tetap `static/js/2353.b47158ce.chunk.js`. Isinya masih "LAPANGAN", "Butuh aksi", "Lihat PO Approval Design", dan `limit:4`. Tidak ada "Buka Approval Desain", "Link approval belum tersedia", atau `design_approvals`.
+- "Lihat semua" yang ada di bundle production berada di chunk lain (`3381.faf46bfd.chunk.js`) untuk kartu kerja hari ini, bukan daftar lapangan PWA Sales.
+- Source map `main.b8332a37.js.map` memuat `file: static/js/main.866a3970.js`, tidak sama dengan nama file yang dilayani. Tidak ada SHA git di map atau di chunk.
+- API deployment GitHub menolak akses (403).
+
+SHA yang sedang berjalan di production tidak terbukti. Kecocokan teks chunk tidak dipakai sebagai bukti bahwa bundle production sama dengan `main`.
+
+Tidak ada deploy, merge, atau penulisan ke data production.
+
+### Penyebab batas 4 PO
+
+Batas ada di frontend, di `SalesPwaDashboardPage.jsx`: kedua permintaan tahap memakai `limit: 4`. API `list_sales_pwa_orders` sudah menerima `skip`/`limit` (maksimum 200) dan `total` adalah jumlah seluruh order milik sales yang lolos filter, bukan 4.
+
+Daftar PO (`SalesPwaOrdersPage.jsx`) meminta `limit: 120` sekali. Jika `total` lebih besar, teks sisa tampil, tetapi tidak ada halaman berikutnya. Pencarian dan filter sudah dikirim ke API, jadi berlaku untuk seluruh order milik sales, tetapi order di luar respons pertama tidak bisa dibuka.
+
+Tahap dihitung di Python (`effective_workflow_status`). HOLD tidak masuk jarum "Approval Design" / "Approval Payment". Tidak ada batas 4 di API.
+
+### Perubahan
+
+- Kartu lapangan tetap menampilkan 4 PO pertama per tahap. Di atas kartu ada jumlah total tahap itu untuk sales yang login, misalnya "45 PO Approval Design". Bila total lebih dari yang tampil, "Lihat semua" membuka `/sales/po` dengan `salesPwaPoContext.stage` persis "Approval Design" atau "Approval Payment", status `semua`, dan filter sesi sebelumnya diganti.
+- Daftar PO memuat 40 baris, lalu "Muat lagi" meminta `skip` halaman server berikutnya. Baris digabung menurut id. `total` dan chip tetap dari respons terfilter, bukan dari 4 kartu. Halaman berikutnya memakai pencarian dan tahap yang sama.
+- Pengiriman, faktur, dan lampiran approval hanya dimuat untuk halaman yang diminta. Urutan sama dengan sortir baris yang sudah diserialkan. Seluruh order milik sales tetap dipindai untuk menentukan tahap, karena tahap tidak tersimpan sebagai filter database.
+- Alur approval desain dari `7f3ba00` tidak diubah: path hanya untuk approval aktif yang terikat, tidak ada token approval baru, dan order tanpa path tetap "Link approval belum tersedia".
+
+### Tes lanjutan
+
+- `backend/tests/test_sales_pwa_stage_page.py`: 6 PO Approval Design milik satu sales, `limit` 4 lalu `skip` 4, total 6, tidak ada id ganda atau yang terlewat, pencarian menemukan PO di luar 4 pertama, sales lain tidak melihat PO itu. Dokumen hanya dimuat untuk id pada halaman.
+- `test_sales_pwa_design_approval.py` bersama regresi scope, filter daftar, status PO, dan buffer stock: 46 lulus, termasuk 2 tes halaman tahap.
+- Jest dashboard, daftar PO, state filter, dan detail: lulus, termasuk "Lihat semua" membawa tahap yang sama dan "Muat lagi" tidak menduplikasi id. `src/lib/salesPwa.test.js` masih mengharapkan label navigasi lama; isi `SALES_PWA_NAV` sudah berubah sebelum revisi ini, dan tes itu tidak diubah.
+- `npm run build` dengan `CI=false` dan `DISABLE_ESLINT_PLUGIN=true`, sama seperti workflow frontend, selesai tanpa error.
+- Pratinjau lokal `http://localhost:3002` dimuat ulang. Di lebar 390px: total tahap, 4 kartu, "Lihat semua", daftar dengan filter tahap yang sama, lalu "Muat lagi" sampai 45 kartu unik. Sales kedua tidak menerima PO sales pertama.

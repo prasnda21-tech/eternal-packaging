@@ -168,7 +168,8 @@ export default function SalesPwaOrdersPage() {
     return () => window.removeEventListener("scroll", onScroll);
   }, []);
 
-  const listParams = (skip) => ({
+  const listParamsRef = useRef((skip) => ({ skip, limit: SALES_PWA_PO_PAGE_SIZE }));
+  listParamsRef.current = (skip) => ({
     q: keyword,
     status,
     stage: columns.stage,
@@ -189,7 +190,7 @@ export default function SalesPwaOrdersPage() {
     setLoadingMore(false);
     setErr("");
     let cancelled = false;
-    api.salesPwaOrders(listParams(0))
+    api.salesPwaOrders(listParamsRef.current(0))
       .then((res) => {
         if (cancelled || generation !== requestGen.current) return;
         const rows = Array.isArray(res?.orders) ? res.orders : [];
@@ -211,7 +212,7 @@ export default function SalesPwaOrdersPage() {
     const generation = requestGen.current;
     const skip = offsetRef.current;
     setLoadingMore(true);
-    api.salesPwaOrders(listParams(skip))
+    api.salesPwaOrders(listParamsRef.current(skip))
       .then((res) => {
         if (generation !== requestGen.current) return;
         const incoming = Array.isArray(res?.orders) ? res.orders : [];
