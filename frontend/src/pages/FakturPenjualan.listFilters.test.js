@@ -163,6 +163,21 @@ describe("Faktur Penjualan tabs, filters, and delete selection", () => {
     });
   };
 
+  const openFilter = async (key) => {
+    await act(async () => {
+      container.querySelector(`[data-testid="filter-invoice-open-${key}"]`).click();
+    });
+  };
+
+  const applyFilter = async () => {
+    await act(async () => {
+      document.querySelector('[data-testid="filter-invoice-apply"]').click();
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+  };
+
   test("active tab is default and cancelled invoices stay on the other tab", async () => {
     await renderPage();
     expect(container.querySelector('[data-testid="tab-faktur-aktif"]').getAttribute("aria-selected")).toBe("true");
@@ -225,17 +240,37 @@ describe("Faktur Penjualan tabs, filters, and delete selection", () => {
     expect(container.querySelector('[data-testid="invoice-row-far-1"]')).toBeFalsy();
     expect(container.querySelector('[data-testid="invoice-list-range"]').textContent).toContain("dari 21");
     await setValue(container.querySelector('[data-testid="search-invoice-input"]'), "Sentosa");
-    await setValue(container.querySelector('[data-testid="filter-invoice-party"]'), "Halaman Jauh");
-    await setValue(container.querySelector('[data-testid="filter-invoice-po"]'), "PO-JAUH");
-    await setValue(container.querySelector('[data-testid="filter-invoice-date-from"]'), "2026-01-01");
-    await setValue(container.querySelector('[data-testid="filter-invoice-date-to"]'), "2026-01-31");
-    await setValue(container.querySelector('[data-testid="filter-invoice-total-min"]'), "0");
-    await setValue(container.querySelector('[data-testid="filter-invoice-total-max"]'), "42");
-    await setValue(container.querySelector('[data-testid="filter-invoice-outstanding-min"]'), "0");
-    await setValue(container.querySelector('[data-testid="filter-invoice-outstanding-max"]'), "0");
-    await setValue(container.querySelector('[data-testid="filter-invoice-financial-status"]'), "draft");
-    await setValue(container.querySelector('[data-testid="filter-invoice-accounting-status"]'), "not_posted");
-    await setValue(container.querySelector('[data-testid="filter-invoice-payment-status"]'), "BELUM DIBAYAR");
+    await openFilter("party");
+    await setValue(document.querySelector('[data-testid="filter-invoice-party"]'), "Halaman Jauh");
+    await applyFilter();
+    await openFilter("po");
+    await setValue(document.querySelector('[data-testid="filter-invoice-po"]'), "PO-JAUH");
+    await applyFilter();
+    await openFilter("date");
+    await setValue(document.querySelector('[data-testid="filter-invoice-date-from"]'), "2026-01-01");
+    await setValue(document.querySelector('[data-testid="filter-invoice-date-to"]'), "2026-01-31");
+    await applyFilter();
+    await openFilter("total");
+    await setValue(document.querySelector('[data-testid="filter-invoice-total-min"]'), "0");
+    await setValue(document.querySelector('[data-testid="filter-invoice-total-max"]'), "42");
+    await applyFilter();
+    await openFilter("outstanding");
+    await setValue(document.querySelector('[data-testid="filter-invoice-outstanding-min"]'), "0");
+    await setValue(document.querySelector('[data-testid="filter-invoice-outstanding-max"]'), "0");
+    await applyFilter();
+    await openFilter("status");
+    await act(async () => {
+      document.querySelector('[data-testid="filter-invoice-financial-draft"]').click();
+      document.querySelector('[data-testid="filter-invoice-accounting-not_posted"]').click();
+    });
+    await applyFilter();
+    await openFilter("payment");
+    await act(async () => {
+      document.querySelector('[data-testid="filter-invoice-payment-BELUM-DIBAYAR"]').click();
+    });
+    await applyFilter();
+    expect(container.querySelector('[data-testid="filter-invoice-active-party"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="filter-invoice-active-payment"]')).toBeTruthy();
 
     const last = api.listSalesInvoices.mock.calls.at(-1)[0];
     expect(last.q).toBe("Sentosa");
@@ -257,22 +292,41 @@ describe("Faktur Penjualan tabs, filters, and delete selection", () => {
     expect(container.querySelector('[data-testid="invoice-list-range"]').textContent).toContain("hasil filter");
     expect(container.querySelector('[data-testid="tab-count-active"]').textContent).toBe(String(tabTotal));
 
+    await openFilter("party");
+    await act(async () => {
+      document.querySelector('[data-testid="filter-invoice-column-reset"]').click();
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const afterColumnReset = api.listSalesInvoices.mock.calls.at(-1)[0];
+    expect(afterColumnReset.party).toBeUndefined();
+    expect(afterColumnReset.po_number).toBe("PO-JAUH");
+    expect(container.querySelector('[data-testid="filter-invoice-active-party"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="filter-invoice-active-po"]')).toBeTruthy();
+
     await act(async () => {
       container.querySelector('[data-testid="reset-invoice-filters"]').click();
     });
     await act(async () => {
       await Promise.resolve();
     });
-    expect(container.querySelector('[data-testid="filter-invoice-party"]').value).toBe("");
+    expect(document.querySelector('[data-testid="filter-invoice-party"]')).toBeNull();
     expect(container.querySelector('[data-testid="search-invoice-input"]').value).toBe("");
+    expect(container.querySelector('[data-testid="filter-invoice-active-po"]')).toBeFalsy();
     expect(api.listSalesInvoices.mock.calls.at(-1)[0].party).toBeUndefined();
+    expect(api.listSalesInvoices.mock.calls.at(-1)[0].po_number).toBeUndefined();
   });
 
   test("invalid date range shows a message and does not request that range", async () => {
     await renderPage();
     const callsBefore = api.listSalesInvoices.mock.calls.length;
-    await setValue(container.querySelector('[data-testid="filter-invoice-date-from"]'), "2026-05-02");
-    await setValue(container.querySelector('[data-testid="filter-invoice-date-to"]'), "2026-05-01");
+    await openFilter("date");
+    await setValue(document.querySelector('[data-testid="filter-invoice-date-from"]'), "2026-05-02");
+    await setValue(document.querySelector('[data-testid="filter-invoice-date-to"]'), "2026-05-01");
+    expect(api.listSalesInvoices.mock.calls.length).toBe(callsBefore);
+    await applyFilter();
+    expect(document.querySelector('[data-testid="invoice-filter-panel-error"]').textContent).toContain("Rentang tanggal tidak valid");
     expect(container.querySelector('[data-testid="invoice-list-error"]').textContent).toContain("Rentang tanggal tidak valid");
     const later = api.listSalesInvoices.mock.calls.slice(callsBefore).map((call) => call[0]);
     expect(later.some((params) => params.date_from === "2026-05-02" && params.date_to === "2026-05-01")).toBe(false);
@@ -291,9 +345,10 @@ describe("Faktur Penjualan tabs, filters, and delete selection", () => {
     await renderPage();
     expect(container.querySelector('[data-testid="invoice-row-draft-1"]')).toBeFalsy();
 
+    await openFilter("total");
     await act(async () => {
-      const min = container.querySelector('[data-testid="filter-invoice-total-min"]');
-      const max = container.querySelector('[data-testid="filter-invoice-total-max"]');
+      const min = document.querySelector('[data-testid="filter-invoice-total-min"]');
+      const max = document.querySelector('[data-testid="filter-invoice-total-max"]');
       const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
       setter.call(min, "20");
       min.dispatchEvent(new Event("input", { bubbles: true }));
@@ -301,8 +356,12 @@ describe("Faktur Penjualan tabs, filters, and delete selection", () => {
       max.dispatchEvent(new Event("input", { bubbles: true }));
     });
     await act(async () => {
+      document.querySelector('[data-testid="filter-invoice-apply"]').click();
+    });
+    await act(async () => {
       await Promise.resolve();
     });
+    expect(document.querySelector('[data-testid="invoice-filter-panel-error"]').textContent).toContain("Rentang Total Faktur tidak valid");
     expect(container.querySelector('[data-testid="invoice-list-error"]').textContent).toContain("Rentang Total Faktur tidak valid");
     expect(api.listSalesInvoices.mock.calls.some((call) => call[0].total_min === 20 && call[0].total_max === 0)).toBe(false);
 
@@ -320,8 +379,11 @@ describe("Faktur Penjualan tabs, filters, and delete selection", () => {
   test("invalid amount range shows a message and does not request that range", async () => {
     await renderPage();
     const callsBefore = api.listSalesInvoices.mock.calls.length;
-    await setValue(container.querySelector('[data-testid="filter-invoice-total-min"]'), "20");
-    await setValue(container.querySelector('[data-testid="filter-invoice-total-max"]'), "0");
+    await openFilter("total");
+    await setValue(document.querySelector('[data-testid="filter-invoice-total-min"]'), "20");
+    await setValue(document.querySelector('[data-testid="filter-invoice-total-max"]'), "0");
+    await applyFilter();
+    expect(document.querySelector('[data-testid="invoice-filter-panel-error"]').textContent).toContain("Rentang Total Faktur tidak valid");
     expect(container.querySelector('[data-testid="invoice-list-error"]').textContent).toContain("Rentang Total Faktur tidak valid");
     const later = api.listSalesInvoices.mock.calls.slice(callsBefore).map((call) => call[0]);
     expect(later.some((params) => params.total_min === 20 && params.total_max === 0)).toBe(false);
@@ -428,6 +490,30 @@ describe("Faktur Penjualan tabs, filters, and delete selection", () => {
       container.querySelector('[data-testid="delete-remove-draft-2"]').click();
     });
     expect(container.querySelector('[data-testid="btn-confirm-delete"]').disabled).toBe(false);
+  });
+
+  test("escape and an outside click discard a draft without requesting it", async () => {
+    await renderPage();
+    const callsBefore = api.listSalesInvoices.mock.calls.length;
+    await openFilter("party");
+    expect(container.querySelector('[data-testid="filter-invoice-open-party"]').getAttribute("aria-expanded")).toBe("true");
+    await setValue(document.querySelector('[data-testid="filter-invoice-party"]'), "Belum diterapkan");
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    expect(document.querySelector('[data-testid="invoice-filter-panel"]')).toBeNull();
+    expect(container.querySelector('[data-testid="filter-invoice-open-party"]').getAttribute("aria-expanded")).toBe("false");
+    expect(document.activeElement).toBe(container.querySelector('[data-testid="filter-invoice-open-party"]'));
+
+    await openFilter("po");
+    await setValue(document.querySelector('[data-testid="filter-invoice-po"]'), "PO-X");
+    await act(async () => {
+      document.body.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    });
+    expect(document.querySelector('[data-testid="invoice-filter-panel"]')).toBeNull();
+    expect(api.listSalesInvoices.mock.calls.slice(callsBefore).some((call) => call[0].party || call[0].po_number)).toBe(false);
+    expect(container.querySelector('[data-testid="filter-invoice-active-party"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="filter-invoice-active-po"]')).toBeFalsy();
   });
 
   test("view, print, edit, and delete follow permissions", async () => {
