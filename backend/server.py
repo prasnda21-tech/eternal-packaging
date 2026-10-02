@@ -14053,6 +14053,12 @@ async def seed():
         name="tracking_token_unique",
         partialFilterExpression={"tracking_token": {"$exists": True, "$gt": ""}},
     )
+    await db.orders.create_index(
+        [("tracking_public_code", 1)],
+        unique=True,
+        name="tracking_public_code_unique",
+        partialFilterExpression={"tracking_public_code": {"$exists": True, "$gt": ""}},
+    )
     await db.master_items.create_index("id", unique=True)
     await db[MASTER_ITEMS_COLLECTION].create_index("accurate_item_id", unique=True)
     await db[STOCK_MANUAL_COLLECTION].create_index("id", unique=True)

@@ -5,11 +5,14 @@ Read-only. Workflow statuses come from existing evidence helpers
 """
 from __future__ import annotations
 
+import base64
 import logging
 import re
 import secrets
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+
+from pymongo.errors import DuplicateKeyError
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse, Response
@@ -29,7 +32,11 @@ ALLOWED_STATUSES = frozenset({STATUS_COMPLETED, STATUS_IN_PROGRESS, STATUS_WAITI
 TOKEN_BYTES = 32
 TOKEN_MIN_LEN = 16
 TOKEN_MAX_LEN = 128
+ALIAS_BYTES = 16
+ALIAS_LEN = 22
 ENSURE_ATTEMPTS = 8
+PUBLIC_CODE_INDEX = "tracking_public_code_unique"
+_PUBLIC_CODE_INDEXED = set()
 _TRACKING_LOG_RE = re.compile(r"(/api/public/tracking/)([^/\s\"'?]+)")
 _TRACKING_PAGE_LOG_RE = re.compile(r"(/t/)([^/\s\"'?]+)/([^/\s\"'?]+)/([^/\s\"'?]+)")
 
@@ -37,6 +44,18 @@ _TRACKING_PAGE_LOG_RE = re.compile(r"(/t/)([^/\s\"'?]+)/([^/\s\"'?]+)/([^/\s\"'?
 def new_tracking_token() -> str:
     """Opaque, non-sequential token. Not derived from PO number or DB id."""
     return secrets.token_urlsafe(TOKEN_BYTES)
+
+
+def new_tracking_alias() -> str:
+    """22-char base64url code with 128 bits of entropy.
+
+    This is a new random value, not a slice of the stored tracking token.
+    """
+    raw = secrets.token_bytes(ALIAS_BYTES)
+    code = base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+    if len(raw) != ALIAS_BYTES or len(code) != ALIAS_LEN or "=" in code:
+        raise RuntimeError("tracking alias length")
+    return code
 
 
 def mask_token(token: Optional[str]) -> str:
@@ -88,6 +107,8 @@ def strip_tracking_secret(order: Optional[dict]) -> None:
         return
     order.pop("tracking_token", None)
     order.pop("tracking_token_created_at", None)
+    order.pop("tracking_public_code", None)
+    order.pop("tracking_public_code_created_at", None)
 
 
 def customer_workflow(order: dict) -> List[Dict[str, str]]:
@@ -497,6 +518,72 @@ async def ensure_tracking_token(db, order: dict) -> str:
     raise HTTPException(500, "Tidak dapat membuat tautan tracking")
 
 
+async def ensure_public_code_index(db) -> None:
+    """Unique index for the public alias. Does not write alias values."""
+    key = id(db)
+    if key in _PUBLIC_CODE_INDEXED:
+        return
+    await db.orders.create_index(
+        [("tracking_public_code", 1)],
+        unique=True,
+        name=PUBLIC_CODE_INDEX,
+        partialFilterExpression={"tracking_public_code": {"$exists": True, "$gt": ""}},
+    )
+    _PUBLIC_CODE_INDEXED.add(key)
+
+
+async def ensure_tracking_public_code(db, order: dict) -> str:
+    """Return the stored public alias, or persist a new unique one.
+
+    Only an authorized share may call this. A public GET must not. Repeated
+    and overlapping calls keep the first stored alias.
+    """
+    order_id = order.get("id")
+    if not order_id:
+        raise HTTPException(404, PUBLIC_NOT_FOUND)
+    await ensure_public_code_index(db)
+    for _ in range(ENSURE_ATTEMPTS):
+        fresh = await db.orders.find_one(
+            {"id": order_id},
+            {"tracking_public_code": 1},
+        )
+        got = ((fresh or {}).get("tracking_public_code") or "").strip()
+        if got:
+            order["tracking_public_code"] = got
+            return got
+        code = new_tracking_alias()
+        clash = await db.orders.find_one(
+            {"$or": [{"tracking_public_code": code}, {"tracking_token": code}]},
+            {"id": 1},
+        )
+        if clash:
+            continue
+        now = datetime.now(timezone.utc).isoformat()
+        try:
+            await db.orders.update_one(
+                {
+                    "id": order_id,
+                    "$or": [
+                        {"tracking_public_code": {"$exists": False}},
+                        {"tracking_public_code": None},
+                        {"tracking_public_code": ""},
+                    ],
+                },
+                {"$set": {
+                    "tracking_public_code": code,
+                    "tracking_public_code_created_at": now,
+                }},
+            )
+        except DuplicateKeyError:
+            continue
+    fresh = await db.orders.find_one({"id": order_id}, {"tracking_public_code": 1})
+    got = ((fresh or {}).get("tracking_public_code") or "").strip()
+    if got:
+        order["tracking_public_code"] = got
+        return got
+    raise HTTPException(500, "Tidak dapat membuat tautan tracking")
+
+
 def build_router(deps: dict) -> APIRouter:
     db = deps["db"]
     get_db = deps.get("get_db") or (lambda: db)
@@ -647,7 +734,10 @@ def build_router(deps: dict) -> APIRouter:
         if not _token_usable(token):
             raise HTTPException(404, PUBLIC_NOT_FOUND)
         try:
-            order = await get_db().orders.find_one({"tracking_token": token}, {"_id": 0})
+            active = get_db()
+            order = await active.orders.find_one({"tracking_token": token}, {"_id": 0})
+            if not order:
+                order = await active.orders.find_one({"tracking_public_code": token}, {"_id": 0})
         except Exception:
             logger.warning("public tracking lookup failed token=%s", mask_token(token))
             raise HTTPException(404, PUBLIC_NOT_FOUND)
@@ -905,10 +995,11 @@ def build_router(deps: dict) -> APIRouter:
     async def tracking_link(order_id: str, user=Depends(current_user)):
         """Share link for one order.
 
-        Reuses the stored tracking token. Customer and PO segments are labels
-        computed at share time, so an existing link's code keeps working after
-        a rename and no backfill is required. GET of the public page does not
-        call this endpoint and does not create a token.
+        Reuses the stored tracking token and its public alias. The alias is a
+        separate 128-bit code, created here for an authorized share and never
+        by a public GET. Customer and PO segments are labels computed at share
+        time. No backfill is required: an old /tracking/:token link keeps the
+        stored token, and a later share returns the same alias.
         """
         await require_perm(user, "po.view")
         active = get_db()
@@ -916,10 +1007,12 @@ def build_router(deps: dict) -> APIRouter:
         if not order:
             raise HTTPException(404, "PO tidak ditemukan")
         token = await ensure_tracking_token(active, order)
-        public_path, po_label = tracking_public_path(order, token)
+        code = await ensure_tracking_public_code(active, order)
+        public_path, po_label = tracking_public_path(order, code)
         legacy = tracking_legacy_path(token)
         return {
             "token": token,
+            "code": code,
             "path": public_path,
             "public_path": public_path,
             "legacy_path": legacy,

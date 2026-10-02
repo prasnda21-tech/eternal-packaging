@@ -1,6 +1,7 @@
 """Live Tracking pretty URL. Isolated database only. No production writes."""
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 import uuid
@@ -22,7 +23,7 @@ assert ISOLATED_DB != "eternal_packaging"
 assert "prod" not in ISOLATED_DB
 
 import server
-from services.customer_tracking import new_tracking_token
+from services.customer_tracking import new_tracking_alias, new_tracking_token
 from services.tracking_public_url import customer_slug, encode_segment
 
 USER = {
@@ -100,6 +101,19 @@ async def _insert(**extra):
     return doc
 
 
+def _alias_of(body, long_token):
+    alias = body["code"]
+    assert len(alias) == 22
+    assert "=" not in alias
+    assert alias != long_token[:22]
+    assert body["token"] == long_token
+    assert body["legacy_path"] == f"/tracking/{long_token}"
+    assert body["public_path"].endswith(f"/{alias}")
+    assert body["path"] == body["public_path"]
+    assert long_token not in body["public_path"]
+    return alias
+
+
 @pytest.mark.anyio
 async def test_share_url_uses_customer_po_and_existing_code(isolated):
     code = new_tracking_token()
@@ -118,18 +132,20 @@ async def test_share_url_uses_customer_po_and_existing_code(isolated):
     assert shared.status_code == 200
     body = shared.json()
     assert body["token"] == code
+    alias = _alias_of(body, code)
     assert body["po_label"] == "single"
-    assert body["public_path"] == f"/t/frutavor/PO-2026-10-02-000012/{code}"
-    assert body["path"] == body["public_path"]
-    assert body["legacy_path"] == f"/tracking/{code}"
+    assert body["public_path"] == f"/t/frutavor/PO-2026-10-02-000012/{alias}"
     assert "02/10/2026" not in body["public_path"]
     assert opened.status_code == 200
     payload = opened.json()
     assert payload["customer_name"] == "Frutavor"
     assert payload["order_number"] == "PO-2026-10-02-000012"
     assert payload["summary"]["order_date"] == "2026-10-02"
+    assert "tracking_token" not in payload
+    assert "tracking_public_code" not in payload
     after = await server.db.orders.find_one({"id": order["id"]}, {"_id": 0})
     assert after["tracking_token"] == before["tracking_token"] == code
+    assert after["tracking_public_code"] == alias
     assert after["customer"] == "Frutavor"
     assert after["po_number"] == "PO-2026-10-02-000012"
 
@@ -150,7 +166,8 @@ async def test_punctuation_unicode_and_slash_po_stay_one_segment(isolated):
     body = shared.json()
     slug = customer_slug(customer)
     assert slug == "café-niño-co"
-    assert body["public_path"] == f"/t/{encode_segment(slug)}/PO-2026-10-02-000012/{code}"
+    alias = _alias_of(body, code)
+    assert body["public_path"] == f"/t/{encode_segment(slug)}/PO-2026-10-02-000012/{alias}"
     assert "/" not in body["public_path"].split("/")[3]
     assert opened.json()["customer_name"] == customer
     assert opened.json()["order_number"] == "PO/2026/10/02/000012"
@@ -202,11 +219,13 @@ async def test_rename_keeps_the_code_and_get_stays_read_only(isolated):
     assert after_get.json()["customer_name"] == "Nama Baru"
     assert after_get.json()["order_number"] == "PO/2026/99"
     body = shared.json()
-    assert body["token"] == code
-    assert body["public_path"] == f"/t/nama-baru/PO-2026-99/{code}"
-    fresh = await server.db.orders.find_one({"id": order["id"]}, {"_id": 0, "tracking_token": 1, "tracking_token_created_at": 1})
+    alias = _alias_of(body, code)
+    assert body["public_path"] == f"/t/nama-baru/PO-2026-99/{alias}"
+    assert not str(stored.get("tracking_public_code") or "").strip()
+    fresh = await server.db.orders.find_one({"id": order["id"]}, {"_id": 0, "tracking_token": 1, "tracking_token_created_at": 1, "tracking_public_code": 1})
     assert fresh["tracking_token"] == stored["tracking_token"] == code
     assert fresh["tracking_token_created_at"] == stored["tracking_token_created_at"]
+    assert fresh["tracking_public_code"] == alias
 
 
 @pytest.mark.anyio
@@ -219,6 +238,7 @@ async def test_get_does_not_create_a_code(isolated):
     assert res.status_code == res_order.status_code == 404
     stored = await server.db.orders.find_one({"id": order["id"]}, {"_id": 0})
     assert not str(stored.get("tracking_token") or "").strip()
+    assert not str(stored.get("tracking_public_code") or "").strip()
 
 
 @pytest.mark.anyio
@@ -230,12 +250,14 @@ async def test_post_creates_once_and_second_share_reuses_it(isolated):
         second = await client.post(f"/api/orders/{order['id']}/tracking-link", headers=headers)
     assert first.status_code == second.status_code == 200
     assert first.json()["token"] == second.json()["token"]
-    code = first.json()["token"]
-    assert len(code) >= 32
-    assert first.json()["public_path"] == f"/t/pt-maju-jaya/PO%2012-A/{code}"
+    assert first.json()["code"] == second.json()["code"]
+    long_token = first.json()["token"]
+    alias = _alias_of(first.json(), long_token)
+    assert first.json()["public_path"] == f"/t/pt-maju-jaya/PO%2012-A/{alias}"
     assert second.json()["public_path"] == first.json()["public_path"]
-    stored = await server.db.orders.find_one({"id": order["id"]}, {"_id": 0, "tracking_token": 1})
-    assert stored["tracking_token"] == code
+    stored = await server.db.orders.find_one({"id": order["id"]}, {"_id": 0, "tracking_token": 1, "tracking_public_code": 1})
+    assert stored["tracking_token"] == long_token
+    assert stored["tracking_public_code"] == alias
 
 
 @pytest.mark.anyio
@@ -268,3 +290,96 @@ async def test_missing_and_multiple_po_are_not_silently_chosen(isolated):
     assert "/beberapa-po/" in many_path
     assert "PO-2026-10-02-000012" not in many_path
     assert "PO-LAIN-000099" not in many_path
+    assert many_path.endswith(f"/{many_share.json()['code']}")
+    assert len(many_share.json()["code"]) == 22
+
+
+@pytest.mark.anyio
+async def test_alias_opens_same_order_and_old_token_still_works(isolated):
+    long_token = new_tracking_token()
+    order = await _insert(
+        customer="Frutavor",
+        po_number="PO-2026-10-02-000012",
+        tracking_token=long_token,
+        deadline="2026-10-02",
+    )
+    headers = await _auth_headers()
+    async with _client() as client:
+        shared = await client.post(f"/api/orders/{order['id']}/tracking-link", headers=headers)
+        body = shared.json()
+        alias = _alias_of(body, long_token)
+        by_alias = await client.get(f"/api/public/tracking/{alias}")
+        by_token = await client.get(f"/api/public/tracking/{long_token}")
+        again = await client.post(f"/api/orders/{order['id']}/tracking-link", headers=headers)
+    assert by_alias.status_code == by_token.status_code == 200
+    assert by_alias.json()["customer_name"] == by_token.json()["customer_name"] == "Frutavor"
+    assert by_alias.json()["order_number"] == by_token.json()["order_number"] == "PO-2026-10-02-000012"
+    assert by_alias.json()["summary"]["deadline"] == "2026-10-02"
+    assert again.json()["code"] == alias
+    assert again.json()["token"] == long_token
+
+
+@pytest.mark.anyio
+async def test_unknown_alias_and_cancelled_order_stay_closed(isolated):
+    long_token = new_tracking_token()
+    alias = new_tracking_alias()
+    await _insert(
+        customer="Ditutup",
+        tracking_token=long_token,
+        tracking_public_code=alias,
+        cancelled=True,
+    )
+    unknown = new_tracking_alias()
+    async with _client() as client:
+        by_alias = await client.get(f"/api/public/tracking/{alias}")
+        by_token = await client.get(f"/api/public/tracking/{long_token}")
+        missing = await client.get(f"/api/public/tracking/{unknown}")
+    assert by_alias.status_code == by_token.status_code == missing.status_code == 404
+
+
+@pytest.mark.anyio
+async def test_concurrent_shares_store_one_alias(isolated):
+    order = await _insert(customer="Frutavor", po_number="PO-2026-10-02-000012")
+    headers = await _auth_headers()
+
+    async with _client() as client:
+        results = await asyncio.gather(*[
+            client.post(f"/api/orders/{order['id']}/tracking-link", headers=headers)
+            for _ in range(8)
+        ])
+    assert [res.status_code for res in results] == [200] * 8
+    codes = {res.json()["code"] for res in results}
+    tokens = {res.json()["token"] for res in results}
+    assert len(codes) == 1
+    assert len(tokens) == 1
+    alias = codes.pop()
+    long_token = tokens.pop()
+    assert len(alias) == 22
+    assert alias != long_token[:22]
+    stored = await server.db.orders.find_one({"id": order["id"]}, {"_id": 0})
+    assert stored["tracking_public_code"] == alias
+    assert stored["tracking_token"] == long_token
+    assert await server.db.orders.count_documents({"tracking_public_code": alias}) == 1
+
+
+@pytest.mark.anyio
+async def test_alias_collision_stores_a_different_code(isolated, monkeypatch):
+    taken = new_tracking_alias()
+    await _insert(id="other-order", tracking_token=new_tracking_token(), tracking_public_code=taken)
+    fresh = new_tracking_alias()
+    calls = {"n": 0}
+
+    def sequenced():
+        calls["n"] += 1
+        return taken if calls["n"] == 1 else fresh
+
+    monkeypatch.setattr("services.customer_tracking.new_tracking_alias", sequenced)
+    order = await _insert(customer="Frutavor", po_number="PO-1")
+    headers = await _auth_headers()
+    async with _client() as client:
+        shared = await client.post(f"/api/orders/{order['id']}/tracking-link", headers=headers)
+    assert shared.status_code == 200
+    assert shared.json()["code"] == fresh
+    assert shared.json()["code"] != taken
+    stored = await server.db.orders.find_one({"id": order["id"]}, {"_id": 0, "tracking_public_code": 1})
+    assert stored["tracking_public_code"] == fresh

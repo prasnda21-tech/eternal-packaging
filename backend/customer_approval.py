@@ -555,6 +555,13 @@ def build_router(deps):
             {"_id": 0, "id": 1, "customer_approval": 1},
         )
         if not order:
+            # Public alias of the same tracking token. Approval status checks
+            # below still apply; this lookup does not mint a token.
+            order = await db.orders.find_one(
+                {"tracking_public_code": token},
+                {"_id": 0, "id": 1, "customer_approval": 1},
+            )
+        if not order:
             return None
         snap = order.get("customer_approval") or {}
         aid = str(snap.get("approval_id") or "").strip()
