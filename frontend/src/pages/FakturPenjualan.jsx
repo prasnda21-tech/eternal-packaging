@@ -406,10 +406,7 @@ function invoiceFiltersActive(filters, query) {
 }
 
 function invoiceDeletable(inv) {
-  if (invoiceFinancialStatus(inv) !== "draft") return false;
-  if (inv?.can_delete === false) return false;
-  if (Number(inv?.receipt_count || 0) > 0) return false;
-  return true;
+  return inv?.can_delete === true;
 }
 
 function invoiceListParams({ searchQuery, listTab, columnFilters, page, pageSize }) {

@@ -319,6 +319,35 @@ def effective_financial_status(invoice: Optional[dict]) -> str:
     return FINANCIAL_DRAFT
 
 
+def invoice_delete_block(invoice: Optional[dict], receipt_document_count: int):
+    """Data gates shared by ``can_delete`` and the delete endpoints.
+
+    A row may be deleted only when the invoice exists, its effective financial
+    status is draft, and ``sales_receipts`` has no document for that invoice.
+    Cancelled or reversed receipts still count. The delete endpoints also
+    require permission and repeat this check; they stay the last safeguard.
+    """
+    if not invoice:
+        return 404, "Faktur Penjualan tidak ditemukan."
+    if effective_financial_status(invoice) != FINANCIAL_DRAFT:
+        return 409, "Faktur yang sudah difinalisasi atau dibatalkan tidak dapat dihapus."
+    if int(receipt_document_count or 0) > 0:
+        return 400, "Hapus Penerimaan Penjualan terlebih dahulu."
+    return None
+
+
+async def sales_receipt_document_counts(db, invoice_ids: List[str]) -> Dict[str, int]:
+    """Uncapped receipt-document counts. Matches ``count_documents`` used on delete."""
+    ids = [str(invoice_id) for invoice_id in invoice_ids if invoice_id]
+    if not ids:
+        return {}
+    grouped = await db.sales_receipts.aggregate([
+        {"$match": {"invoice_id": {"$in": ids}}},
+        {"$group": {"_id": "$invoice_id", "n": {"$sum": 1}}},
+    ]).to_list(len(ids))
+    return {str(row["_id"]): int(row["n"]) for row in grouped}
+
+
 def monetary_invariant_valid(invoice: Optional[dict]) -> bool:
     invoice = invoice or {}
     grand = _money2(invoice.get("grand_total"))
@@ -405,9 +434,9 @@ async def attach_invoice_accounting_fields(db, invoices: List[Dict[str, Any]]) -
     from services.sales_receipt_posting import receipt_counts_toward_outstanding
 
     configured = await mappings_configured(db)
-    journals = await load_source_journals_by_invoice_ids(
-        db, [inv.get("id") for inv in invoices if inv.get("id")]
-    )
+    invoice_ids = [inv.get("id") for inv in invoices if inv.get("id")]
+    journals = await load_source_journals_by_invoice_ids(db, invoice_ids)
+    receipt_document_counts = await sales_receipt_document_counts(db, invoice_ids)
     for inv in invoices:
         status = effective_financial_status(inv)
         receipts = inv.get("receipts") if isinstance(inv.get("receipts"), list) else None
@@ -462,7 +491,9 @@ async def attach_invoice_accounting_fields(db, invoices: List[Dict[str, Any]]) -
             and _money2(inv.get("after_discount")) >= 0
             and _money2(inv.get("ppn_amount")) >= 0
         )
-        inv["can_delete"] = status == FINANCIAL_DRAFT and receipt_count == 0
+        inv["can_delete"] = invoice_delete_block(
+            inv, receipt_document_counts.get(str(inv.get("id")), 0)
+        ) is None
         ensure_other_charge_fields(inv)
     return invoices
 
@@ -1228,14 +1259,10 @@ async def delete_sales_invoice(db, invoice_id: str, user: dict) -> dict:
     if not inv:
         raise HTTPException(404, "Faktur Penjualan tidak ditemukan.")
 
-    status = effective_financial_status(inv)
-    if status != FINANCIAL_DRAFT:
-        raise HTTPException(409, "Faktur yang sudah difinalisasi atau dibatalkan tidak dapat dihapus.")
-
-    # Check PAY children
     pay_count = await db.sales_receipts.count_documents({"invoice_id": inv["id"]})
-    if pay_count > 0:
-        raise HTTPException(400, "Hapus Penerimaan Penjualan terlebih dahulu.")
+    block = invoice_delete_block(inv, pay_count)
+    if block:
+        raise HTTPException(block[0], block[1])
 
     inv_number = inv.get("invoice_number", inv["id"])
     await db.sales_invoices.delete_one({"id": inv["id"]})
@@ -1256,16 +1283,14 @@ async def bulk_delete_sales_invoices(db, ids: list, user: dict) -> dict:
         if not inv:
             blockers.append({"id": iid, "number": iid, "reason": "Faktur tidak ditemukan."})
             continue
-        if effective_financial_status(inv) != FINANCIAL_DRAFT:
+        pay_count = await db.sales_receipts.count_documents({"invoice_id": inv["id"]})
+        block = invoice_delete_block(inv, pay_count)
+        if block:
             blockers.append({
                 "id": inv["id"],
                 "number": inv.get("invoice_number", inv["id"]),
-                "reason": "Faktur yang sudah difinalisasi atau dibatalkan tidak dapat dihapus.",
+                "reason": block[1],
             })
-            continue
-        pay_count = await db.sales_receipts.count_documents({"invoice_id": inv["id"]})
-        if pay_count > 0:
-            blockers.append({"id": inv["id"], "number": inv.get("invoice_number", inv["id"]), "reason": "Hapus Penerimaan Penjualan terlebih dahulu."})
             continue
         to_delete.append(inv)
 

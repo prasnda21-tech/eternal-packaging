@@ -192,7 +192,38 @@ describe("Faktur Penjualan tabs, filters, and delete selection", () => {
   });
 
   test("column filters and global search are sent together and can reach another page", async () => {
+    const pageSize = 20;
+    const tabTotal = pageSize + 1;
+    api.listSalesInvoices.mockImplementation(async (params = {}) => {
+      if (params.scope === "cancelled") {
+        return listPayload([CANCELLED], { total: 1, tab_total: 1, active_total: tabTotal, cancelled_total: 1, page_size: params.page_size });
+      }
+      if (params.party) {
+        return listPayload([FAR], {
+          total: 1,
+          tab_total: tabTotal,
+          active_total: tabTotal,
+          cancelled_total: 1,
+          page: params.page,
+          page_size: params.page_size,
+        });
+      }
+      return listPayload([DRAFT, SECOND, PAID_DRAFT, FINAL], {
+        total: tabTotal,
+        tab_total: tabTotal,
+        active_total: tabTotal,
+        cancelled_total: 1,
+        page: params.page,
+        page_size: params.page_size,
+      });
+    });
     await renderPage();
+    const opened = api.listSalesInvoices.mock.calls.at(-1)[0];
+    expect(opened.page).toBe(1);
+    expect(opened.page_size).toBe(pageSize);
+    expect(tabTotal).toBeGreaterThan(opened.page_size);
+    expect(container.querySelector('[data-testid="invoice-row-far-1"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="invoice-list-range"]').textContent).toContain("dari 21");
     await setValue(container.querySelector('[data-testid="search-invoice-input"]'), "Sentosa");
     await setValue(container.querySelector('[data-testid="filter-invoice-party"]'), "Halaman Jauh");
     await setValue(container.querySelector('[data-testid="filter-invoice-po"]'), "PO-JAUH");
@@ -224,7 +255,7 @@ describe("Faktur Penjualan tabs, filters, and delete selection", () => {
     expect(container.querySelector('[data-testid="invoice-row-far-1"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="invoice-list-count"]').textContent).toContain("hasil filter");
     expect(container.querySelector('[data-testid="invoice-list-range"]').textContent).toContain("hasil filter");
-    expect(container.querySelector('[data-testid="tab-count-active"]').textContent).toBe("4");
+    expect(container.querySelector('[data-testid="tab-count-active"]').textContent).toBe(String(tabTotal));
 
     await act(async () => {
       container.querySelector('[data-testid="reset-invoice-filters"]').click();
@@ -235,6 +266,16 @@ describe("Faktur Penjualan tabs, filters, and delete selection", () => {
     expect(container.querySelector('[data-testid="filter-invoice-party"]').value).toBe("");
     expect(container.querySelector('[data-testid="search-invoice-input"]').value).toBe("");
     expect(api.listSalesInvoices.mock.calls.at(-1)[0].party).toBeUndefined();
+  });
+
+  test("invalid date range shows a message and does not request that range", async () => {
+    await renderPage();
+    const callsBefore = api.listSalesInvoices.mock.calls.length;
+    await setValue(container.querySelector('[data-testid="filter-invoice-date-from"]'), "2026-05-02");
+    await setValue(container.querySelector('[data-testid="filter-invoice-date-to"]'), "2026-05-01");
+    expect(container.querySelector('[data-testid="invoice-list-error"]').textContent).toContain("Rentang tanggal tidak valid");
+    const later = api.listSalesInvoices.mock.calls.slice(callsBefore).map((call) => call[0]);
+    expect(later.some((params) => params.date_from === "2026-05-02" && params.date_to === "2026-05-01")).toBe(false);
   });
 
   test("invalid amount range shows a message and does not request that range", async () => {

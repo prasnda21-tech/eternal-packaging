@@ -75,6 +75,7 @@ async def test_tabs_filters_pagination_and_delete_rules():
         "far": f"{prefix}-far",
         "newest": f"{prefix}-newest",
         "mid": f"{prefix}-mid",
+        "void_receipt": f"{prefix}-void-receipt",
     }
     docs = [
         _invoice(id=ids["draft"], invoice_number=f"{prefix}/DRAFT", customer="PT Aktif Draft", po_number=f"{prefix}-PO-DRAFT", invoice_date="2026-01-05", created_at="2026-01-05T01:00:00+00:00", grand_total=100, financial_status="draft"),
@@ -86,14 +87,16 @@ async def test_tabs_filters_pagination_and_delete_rules():
         _invoice(id=ids["far"], invoice_number=f"{prefix}/JAUH", customer="PT Halaman Jauh", po_number=f"{prefix}-PO-JAUH", invoice_date="2026-01-01", created_at="2024-01-01T01:00:00+00:00", grand_total=42, financial_status="draft"),
         _invoice(id=ids["newest"], invoice_number=f"{prefix}/NEW", customer="PT Terbaru", po_number=f"{prefix}-PO-NEW", invoice_date="2026-09-01", created_at="2026-09-01T01:00:00+00:00", grand_total=70, financial_status="draft"),
         _invoice(id=ids["mid"], invoice_number=f"{prefix}/MID", customer="PT Tengah", po_number=f"{prefix}-PO-MID", invoice_date="2026-06-01", created_at="2026-06-01T01:00:00+00:00", grand_total=55, financial_status="finalized"),
+        _invoice(id=ids["void_receipt"], invoice_number=f"{prefix}/VOID", customer="PT Draft Penerimaan Batal", po_number=f"{prefix}-PO-VOID", invoice_date="2026-02-20", created_at="2026-02-20T01:00:00+00:00", grand_total=90, financial_status="draft"),
     ]
-    receipt_ids = [f"{prefix}-pay-lunas", f"{prefix}-pay-dp"]
+    receipt_ids = [f"{prefix}-pay-lunas", f"{prefix}-pay-dp", f"{prefix}-pay-void"]
     journal_ids = [f"{prefix}-journal-lunas", f"{prefix}-journal-rev"]
     try:
         await db.sales_invoices.insert_many(docs)
         await db.sales_receipts.insert_many([
-            {"id": receipt_ids[0], "invoice_id": ids["lunas"], "amount": 1000, "allocated_amount": 1000, "financial_status": "active"},
-            {"id": receipt_ids[1], "invoice_id": ids["paid_draft"], "amount": 100, "allocated_amount": 100, "financial_status": "active"},
+            {"id": receipt_ids[0], "receipt_number": f"{prefix}-RCPT-LUNAS", "invoice_id": ids["lunas"], "amount": 1000, "allocated_amount": 1000, "financial_status": "active"},
+            {"id": receipt_ids[1], "receipt_number": f"{prefix}-RCPT-DP", "invoice_id": ids["paid_draft"], "amount": 100, "allocated_amount": 100, "financial_status": "active"},
+            {"id": receipt_ids[2], "receipt_number": f"{prefix}-RCPT-VOID", "invoice_id": ids["void_receipt"], "amount": 90, "allocated_amount": 0, "financial_status": "cancelled", "cancelled": True},
         ])
         await db.journal_entries.insert_many([
             {"id": journal_ids[0], "source_type": "sales_invoice", "source_id": ids["lunas"], "status": "posted", "reversal_of": None},
@@ -122,6 +125,9 @@ async def test_tabs_filters_pagination_and_delete_rules():
         paid_draft = next(row for row in active["invoices"] if row["id"] == ids["paid_draft"])
         assert paid_draft["can_delete"] is False
         assert paid_draft["payment_status"] == "DP"
+        void_row = next(row for row in active["invoices"] if row["id"] == ids["void_receipt"])
+        assert void_row["financial_status"] == "draft"
+        assert void_row["can_delete"] is False
         assert next(row for row in cancelled["invoices"] if row["id"] == ids["cancelled"])["can_delete"] is False
         assert active["active_total"] >= 8
         assert active["cancelled_total"] >= 1
@@ -129,9 +135,10 @@ async def test_tabs_filters_pagination_and_delete_rules():
         assert cancelled["tab_total"] == cancelled["cancelled_total"]
 
         first_page = await query_sales_invoices(db, q=prefix, scope="active", page=1, page_size=1)
+        assert first_page["page_size"] == 1
+        assert first_page["total"] > first_page["page_size"]
         assert first_page["invoices"][0]["id"] == ids["newest"]
         assert ids["far"] not in {row["id"] for row in first_page["invoices"]}
-        assert first_page["total"] > 1
         found = await query_sales_invoices(
             db, q=prefix, scope="active", party="Halaman Jauh", page=1, page_size=1,
         )
@@ -193,6 +200,11 @@ async def test_tabs_filters_pagination_and_delete_rules():
         with pytest.raises(HTTPException) as blocked_delete:
             await delete_sales_invoice(db, ids["lunas"], {"role": "admin"})
         assert blocked_delete.value.status_code == 409
+        with pytest.raises(HTTPException) as blocked_void:
+            await delete_sales_invoice(db, ids["void_receipt"], {"role": "admin"})
+        assert blocked_void.value.status_code == 400
+        assert "Hapus Penerimaan Penjualan terlebih dahulu." in str(blocked_void.value.detail)
+        assert await db.sales_invoices.find_one({"id": ids["void_receipt"]})
         with pytest.raises(HTTPException) as blocked_bulk:
             await bulk_delete_sales_invoices(db, [ids["cancelled"], ids["reversed"]], {"role": "admin"})
         assert blocked_bulk.value.status_code == 400
