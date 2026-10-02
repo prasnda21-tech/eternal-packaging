@@ -1007,6 +1007,57 @@ a.spwa-po-card {
 }
 .spwa-source-note.compact { display: flex; align-items: center; }
 .spwa-empty.compact { padding: 8px; }
+.spwa-ship-note { margin: 0 0 8px; color: #71838c; font-size: 12px; }
+.spwa-ship-count { margin: 0 0 8px; color: #1c3946; font-size: 12px; font-weight: 700; }
+.spwa-ship-list { display: grid; gap: 8px; }
+.spwa-ship-card {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 10px;
+  border-radius: 8px;
+  background: #f3f7f9;
+}
+.spwa-ship-top { display: flex; justify-content: space-between; gap: 8px; align-items: flex-start; }
+.spwa-ship-top strong { display: block; color: #102936; font-size: 15px; overflow-wrap: anywhere; }
+.spwa-ship-po { color: #08785d; font-size: 13px; font-weight: 700; text-decoration: none; overflow-wrap: anywhere; }
+.spwa-ship-status {
+  flex: none;
+  max-width: 46%;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: #e7eef2;
+  color: #0b1f2a;
+  font-size: 11px;
+  font-weight: 700;
+  text-align: center;
+}
+.spwa-ship-meta { margin: 0; color: #5b6b73; font-size: 12px; overflow-wrap: anywhere; }
+.spwa-ship-toggle {
+  justify-self: start;
+  margin-top: 2px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #1f4b7a;
+  font-size: 12px;
+  font-weight: 700;
+}
+.spwa-ship-items { margin: 2px 0 0; padding-left: 16px; color: #17313e; font-size: 12px; }
+.spwa-retry {
+  margin-top: 8px;
+  padding: 6px 10px;
+  border: 1px solid #0b1f2a;
+  border-radius: 8px;
+  background: #fff;
+  color: #0b1f2a;
+  font-size: 12px;
+  font-weight: 700;
+}
+@media (max-width: 767px) {
+  .spwa-ship-card { padding: 10px; }
+  .spwa-ship-list { width: 100%; }
+}
 .spwa-visit-summary {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
