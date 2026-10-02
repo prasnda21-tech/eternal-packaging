@@ -94,6 +94,64 @@ export function formatDisplayDate(iso) {
   }
 }
 
+const WIB_TRACKING_DATE_TIME = new Intl.DateTimeFormat("en-GB", {
+  timeZone: "Asia/Jakarta",
+  day: "2-digit",
+  month: "2-digit",
+  year: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+  hourCycle: "h23",
+});
+
+function _validCalendarParts(year, month, day) {
+  const y = Number(year);
+  const m = Number(month);
+  const d = Number(day);
+  if (!Number.isInteger(y) || m < 1 || m > 12 || d < 1 || d > 31) return false;
+  const utc = new Date(Date.UTC(y, m - 1, d));
+  return utc.getUTCFullYear() === y && utc.getUTCMonth() === m - 1 && utc.getUTCDate() === d;
+}
+
+function _calendarFromPrefix(text) {
+  const prefix = String(text || "").match(ISO_DATE_PREFIX_RE);
+  if (!prefix || !_validCalendarParts(prefix[1], prefix[2], prefix[3])) return "";
+  return `${prefix[3]}/${prefix[2]}/${prefix[1]}`;
+}
+
+/**
+ * Live Tracking business date: dd/mm/yyyy.
+ * Uses the calendar prefix and does not shift the day through a timezone.
+ * Empty or invalid values are blank, never "Invalid Date".
+ */
+export function formatTrackingPageDate(value) {
+  const text = String(value ?? "").trim();
+  if (!text) return "";
+  return _calendarFromPrefix(text);
+}
+
+/**
+ * Live Tracking timestamp in the application timezone (Asia/Jakarta):
+ * dd/mm/yyyy HH:mm. A date-only value stays a business date without a clock.
+ */
+export function formatTrackingPageDateTime(value) {
+  const text = String(value ?? "").trim();
+  if (!text) return "";
+  if (DATE_ONLY_RE.test(text)) return formatTrackingPageDate(text);
+  if (!/[T ]\d{2}:\d{2}/.test(text)) return formatTrackingPageDate(text);
+  const parsed = new Date(text);
+  if (Number.isNaN(parsed.getTime())) return "";
+  try {
+    const parts = Object.fromEntries(
+      WIB_TRACKING_DATE_TIME.formatToParts(parsed).map(({ type, value: part }) => [type, part]),
+    );
+    if (!parts.day || !parts.month || !parts.year || parts.hour == null || parts.minute == null) return "";
+    return `${parts.day}/${parts.month}/${parts.year} ${parts.hour}:${parts.minute}`;
+  } catch {
+    return "";
+  }
+}
+
 /** Display-only operational timestamp in WIB: dd/mm/yy HH:mm. */
 export function formatDisplayDateTime(iso) {
   if (!iso) return "-";

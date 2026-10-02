@@ -28,12 +28,16 @@ describe("Customer tracking public page", () => {
 
   test("public route is outside Protected AppShell and does not go to login", () => {
     expect(app).toMatch(/path="\/tracking\/:token"/);
+    expect(app).toMatch(/path="\/t\/:customerSlug\/:poSlug\/:code"/);
     expect(app).toMatch(/CustomerTrackingPage/);
     const trackingIdx = app.indexOf('path="/tracking/:token"');
+    const prettyIdx = app.indexOf('path="/t/:customerSlug/:poSlug/:code"');
     const protectedIdx = app.indexOf("<Protected>");
     const catchAllIdx = app.indexOf('path="*"');
     expect(trackingIdx).toBeGreaterThan(-1);
+    expect(prettyIdx).toBeGreaterThan(-1);
     expect(trackingIdx).toBeLessThan(protectedIdx);
+    expect(prettyIdx).toBeLessThan(protectedIdx);
     expect(trackingIdx).toBeLessThan(catchAllIdx);
     const trackingLine = app.split("\n").find((l) => l.includes("/tracking/:token")) || "";
     expect(trackingLine).toMatch(/CustomerTrackingPage/);
@@ -41,6 +45,10 @@ describe("Customer tracking public page", () => {
   });
 
   test("page has no internal shell, login redirect, or sensitive fields", () => {
+    expect(page).toMatch(/params\.code \|\| params\.token/);
+    expect(page).toMatch(/customer_name/);
+    expect(page).not.toMatch(/params\.customerSlug/);
+    expect(page).not.toMatch(/params\.poSlug/);
     expect(page).toMatch(/customer-tracking-page/);
     expect(page).toMatch(/Progress Pesanan/);
     expect(page).toMatch(/tracking-timeline/);
@@ -70,6 +78,9 @@ describe("Customer tracking public page", () => {
   test("internal detail keeps Live Tracking in Aksi PO and Buat Faktur in Dokumen", () => {
     expect(detail).toMatch(/Live Tracking/);
     expect(detail).toMatch(/copy-tracking-link/);
+    expect(detail).toMatch(/tracking-share-whatsapp/);
+    expect(detail).toMatch(/tracking-share-qr/);
+    expect(detail).toMatch(/trackingShareFromLink/);
     expect(detail).toMatch(/orderTrackingLink/);
     expect(detail).not.toMatch(/live-tracking-workflow/);
     expect(detail).not.toMatch(/liveTrackingRows/);

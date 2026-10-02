@@ -331,10 +331,18 @@ class TestToken:
         assert not a.isdigit()
 
     def test_strip_tracking_secret_from_internal_order(self):
-        order = {"po_number": "PO-1", "tracking_token": "abc", "tracking_token_created_at": "x"}
+        order = {
+            "po_number": "PO-1",
+            "tracking_token": "abc",
+            "tracking_token_created_at": "x",
+            "tracking_public_code": "alias",
+            "tracking_public_code_created_at": "y",
+        }
         strip_tracking_secret(order)
         assert "tracking_token" not in order
         assert "tracking_token_created_at" not in order
+        assert "tracking_public_code" not in order
+        assert "tracking_public_code_created_at" not in order
         assert order["po_number"] == "PO-1"
 
 
@@ -349,10 +357,107 @@ def test_workflow_uses_shared_stage_rows():
     assert "generate" not in get_block.lower()
 
 
+def test_public_alias_is_128_bits_and_not_a_token_slice():
+    import base64
+    from services.customer_tracking import ALIAS_BYTES, ALIAS_LEN, new_tracking_alias
+
+    token = new_tracking_token()
+    alias = new_tracking_alias()
+    assert ALIAS_BYTES * 8 == 128
+    assert len(alias) == ALIAS_LEN == 22
+    assert "=" not in alias
+    assert alias != token[:ALIAS_LEN]
+    raw = base64.urlsafe_b64decode(alias + "==")
+    assert len(raw) == ALIAS_BYTES
+    assert set(alias) <= set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_")
+
+
+def test_public_url_labels_customer_po_and_keeps_the_access_code():
+    from services.customer_tracking import TOKEN_BYTES
+    from services.tracking_public_url import (
+        customer_slug,
+        po_path_slug,
+        resolve_tracking_po,
+        tracking_public_path,
+    )
+
+    assert TOKEN_BYTES * 8 >= 128
+    assert customer_slug("Frutavor") == "frutavor"
+    assert customer_slug("PT. Maju Jaya") == "pt-maju-jaya"
+    assert customer_slug("Café Niño & Co.") == "café-niño-co"
+    assert customer_slug("客户 甲") == "客户-甲"
+    assert customer_slug("  ---  ") == "pelanggan"
+    assert po_path_slug("PO-2026-10-02-000012") == "PO-2026-10-02-000012"
+    assert po_path_slug("PO/2026/10/02/000012") == "PO-2026-10-02-000012"
+    assert "02/10/2026" not in po_path_slug("PO/2026/10/02/000012")
+
+    code = new_tracking_token()
+    order = {
+        "customer": "Frutavor",
+        "po_number": "PO-2026-10-02-000012",
+        "sj_number": "SJ/2026/99",
+    }
+    path, rule = tracking_public_path(order, code)
+    assert rule == "single"
+    assert path == f"/t/frutavor/PO-2026-10-02-000012/{code}"
+    assert "SJ" not in path
+    assert code not in customer_slug("Frutavor")
+    assert "frutavor" not in code.lower()
+    assert "PO-2026" not in code
+
+    slash = {"customer": "Frutavor", "po_number": "PO/2026/10/02/000012"}
+    slash_path, slash_rule = tracking_public_path(slash, code)
+    assert slash_rule == "single"
+    assert slash_path == f"/t/frutavor/PO-2026-10-02-000012/{code}"
+
+    missing_path, missing_rule = tracking_public_path(
+        {"customer": "Frutavor", "po_number": "", "sj_number": "SJ/1"},
+        code,
+    )
+    assert missing_rule == "missing"
+    assert missing_path == f"/t/frutavor/tanpa-po/{code}"
+
+    many_path, many_rule = tracking_public_path({
+        "customer": "Frutavor",
+        "po_number": "PO-SATU",
+        "line_items": [{"name": "Cup", "po_number": "PO-DUA"}],
+    }, code)
+    assert many_rule == "multiple"
+    assert resolve_tracking_po({"po_number": "PO-SATU", "po_numbers": ["PO-SATU"]}) == ("PO-SATU", "single")
+    assert many_path == f"/t/frutavor/beberapa-po/{code}"
+    assert "PO-SATU" not in many_path
+    assert "PO-DUA" not in many_path
+
+
+def test_page_url_log_redacts_the_access_code():
+    from services.customer_tracking import redact_tracking_in_text
+    code = new_tracking_token()
+    line = f"GET /t/frutavor/PO-2026-10-02-000012/{code} HTTP/1.1"
+    red = redact_tracking_in_text(line)
+    assert code not in red
+    assert "/t/frutavor/PO-2026-10-02-000012/" in red
+
+
+def test_share_endpoint_reuses_token_and_get_does_not_create_one():
+    src = Path(__file__).resolve().parents[1] / "services" / "customer_tracking.py"
+    text = src.read_text(encoding="utf-8")
+    share = text.split("async def tracking_link")[1]
+    assert "ensure_tracking_token" in share
+    assert "ensure_tracking_public_code" in share
+    assert "tracking_public_path" in share
+    assert "legacy_path" in share
+    getter = text.split("async def public_tracking")[1].split("async def ")[0]
+    assert "ensure_tracking_token" not in getter
+    assert "ensure_tracking_public_code" not in getter
+    assert "update_one" not in getter
+
+
 def test_approval_lookup_reuses_tracking_token_without_generate():
     src = Path(__file__).resolve().parents[1] / "customer_approval.py"
     text = src.read_text(encoding="utf-8")
     assert 'find_one({"tracking_token": token}' in text or "tracking_token\": token" in text
+    assert "tracking_public_code" in text
     load = text.split("async def _load_by_token")[1].split("async def ")[0]
     assert "token_urlsafe" not in load
     assert "insert_one" not in load
+    assert "update_one" not in load

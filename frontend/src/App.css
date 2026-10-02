@@ -6929,6 +6929,9 @@ button.ghost.sm.icon{padding:4px 6px}
   display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:12px;border-top:1px solid #eef0f2;
 }
 .po-doc-actionbar .po-doc-note{margin:0 0 0 auto}
+.tracking-share-url{flex-basis:100%;margin:0;font-size:12px;word-break:break-all}
+.tracking-share-qr-wrap{flex-basis:100%}
+.tracking-share-qr{width:160px;height:160px;background:#fff}
 .po-page-meta{color:#6b7280;font-size:12px;padding:2px 2px 4px}
 .po-page-meta .link-inline{
   border:0;background:transparent;color:#0f5f63;font:inherit;padding:0;cursor:pointer;
