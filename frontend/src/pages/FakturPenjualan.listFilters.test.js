@@ -278,6 +278,45 @@ describe("Faktur Penjualan tabs, filters, and delete selection", () => {
     expect(later.some((params) => params.date_from === "2026-05-02" && params.date_to === "2026-05-01")).toBe(false);
   });
 
+  test("a pending valid response is ignored after the range becomes invalid", async () => {
+    let releaseValid;
+    api.listSalesInvoices.mockImplementation(() => new Promise((resolve) => {
+      releaseValid = () => resolve(listPayload([DRAFT, FINAL], {
+        total: 2,
+        tab_total: 2,
+        active_total: 2,
+        cancelled_total: 1,
+      }));
+    }));
+    await renderPage();
+    expect(container.querySelector('[data-testid="invoice-row-draft-1"]')).toBeFalsy();
+
+    await act(async () => {
+      const min = container.querySelector('[data-testid="filter-invoice-total-min"]');
+      const max = container.querySelector('[data-testid="filter-invoice-total-max"]');
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+      setter.call(min, "20");
+      min.dispatchEvent(new Event("input", { bubbles: true }));
+      setter.call(max, "0");
+      max.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(container.querySelector('[data-testid="invoice-list-error"]').textContent).toContain("Rentang Total Faktur tidak valid");
+    expect(api.listSalesInvoices.mock.calls.some((call) => call[0].total_min === 20 && call[0].total_max === 0)).toBe(false);
+
+    await act(async () => {
+      releaseValid();
+      await Promise.resolve();
+    });
+    expect(container.querySelector('[data-testid="invoice-list-error"]').textContent).toContain("Rentang Total Faktur tidak valid");
+    expect(container.querySelector('[data-testid="invoice-row-draft-1"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="invoice-row-final-1"]')).toBeFalsy();
+    expect(container.textContent).not.toContain("Memuat daftar Faktur Penjualan");
+    expect(container.querySelector('[data-testid="invoice-list-count"]').textContent).toContain("0");
+  });
+
   test("invalid amount range shows a message and does not request that range", async () => {
     await renderPage();
     const callsBefore = api.listSalesInvoices.mock.calls.length;

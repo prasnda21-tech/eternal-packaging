@@ -570,6 +570,9 @@ export default function FakturPenjualan() {
 
   // Load Invoices List
   const loadInvoices = useCallback(async () => {
+    const seq = requestSeq.current + 1;
+    requestSeq.current = seq;
+    loadAbortRef.current?.abort();
     const rangeMessage = invoiceFilterRangeMessage(columnFilters);
     if (rangeMessage) {
       setFilterErr(rangeMessage);
@@ -577,11 +580,8 @@ export default function FakturPenjualan() {
       return;
     }
     setFilterErr("");
-    loadAbortRef.current?.abort();
     const ac = new AbortController();
     loadAbortRef.current = ac;
-    const seq = requestSeq.current + 1;
-    requestSeq.current = seq;
     setListLoading(true);
     setListErr("");
     setSelectedIds(new Set());
