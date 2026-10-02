@@ -145,17 +145,15 @@ describe("LaporanPenjualan", () => {
     expect(container.querySelector(".total").textContent).toContain("40");
   });
 
-  test("sends category analysis from modifikasi and does not invent retur numbers", async () => {
+  test("lists only calculated reports and sends category analysis", async () => {
     await act(async () => {
       root.render(<LaporanPenjualan />);
     });
     await flush();
-    clickButton(container, "Retur Penjualan per Barang");
-    expect(container.textContent).toContain("ERP belum menyimpan dokumen retur penjualan");
-    expect(api.salesReportShow).not.toHaveBeenCalled();
-    clickButton(container, "Tutup");
+    expect(container.textContent).not.toContain("Retur Penjualan per Barang");
+    expect(container.textContent).not.toContain("Penjualan per Pelanggan");
 
-    const itemButton = Array.from(container.querySelectorAll("button")).find((node) => node.textContent.includes("Penjualan per Barang") && !node.textContent.includes("Retur"));
+    const itemButton = Array.from(container.querySelectorAll("button")).find((node) => node.textContent.includes("Penjualan per Barang") && !node.textContent.includes("Rincian"));
     act(() => itemButton.dispatchEvent(new MouseEvent("click", { bubbles: true })));
     clickButton(container, "Kolom");
     const category = Array.from(container.querySelectorAll("option")).find((node) => node.textContent.includes("Nama Kategori"));

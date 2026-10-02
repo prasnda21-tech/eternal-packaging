@@ -8,28 +8,42 @@ Penjualan (nilai barang)
 - Tanggal dasar adalah ``invoice_date`` (YYYY-MM-DD, inklusif). Bukan tanggal
   pesanan, pengiriman, atau pembayaran.
 - Pesanan penjualan tidak dihitung sebagai omzet.
-- Nilai baris = kuantitas × harga satuan, lalu diskon header faktur dialokasikan
-  proporsional ke subtotal barang. Sisa pembulatan 0,01 menempel di baris terakhir
-  supaya jumlah baris sama dengan ``after_discount``.
-- PPN dan biaya lainnya tidak masuk kolom Penjualan. Keduanya tetap mengikuti
-  angka yang sudah tersimpan di faktur; pekerjaan ini tidak mengaktifkan pajak.
+- Dasar alokasi diskon header adalah nilai barang setelah diskon baris.
+  Diskon baris tidak dipotong lagi bila ``line_subtotal`` sudah menampungnya.
+- Sisa pembulatan 0,01 menempel di baris terakhir. Bila faktur menyimpan
+  ``after_discount`` dan tidak ada diskon baris di luar subtotal, jumlah
+  kolom Penjualan disamakan dengan ``after_discount``.
+- PPN dan biaya lainnya tidak masuk kolom Penjualan. Daftar Faktur memakai
+  ``grand_total`` dokumen, jadi totalnya boleh berbeda.
 - Tidak ada dokumen retur penjualan di ERP. Retur tidak direka dari faktur batal.
 
 BPP / laba kotor
 - BPP hanya dari ``inventory_issue_accounting`` berstatus posted,
-  field ``accounting_posting_basis.total_cogs``.
-- Dicocokkan ke baris pesanan (order_id + line_id, atau line_idx).
-- Bila satu baris pesanan terbagi ke beberapa faktur finalized, BPP dibagi
-  menurut kuantitas faktur. Pembulatan menempel di faktur terakhir.
-- Harga beli terakhir tidak dipakai. Bila posting HPP belum ada, BPP dan laba
-  dikosongkan, bukan diisi nol.
+  field ``accounting_posting_basis.total_cogs``. Dokumen yang ``movement_id``-nya
+  sama dihitung sekali. Status pending diabaikan. Harga beli terakhir tidak dipakai.
+- Dicocokkan ke baris sumber (order_id + line_id, atau line_idx bila line_id kosong).
+- Bila posting menyimpan ``base_qty`` / ``issue_base_qty``, bagian faktur memakai
+  kuantitas dasar (``base_qty`` baris atau kuantitas × ``conversion_factor``).
+  BPP tidak diberikan utuh ke setiap faktur parsial, dan tidak melebihi HPP posted.
+  Baris yang kuantitas dasarnya melebihi sisa HPP posted dikosongkan.
+- Bila posting tidak menyimpan kuantitas dasar, HPP dibagi ke faktur finalized
+  baris itu hanya jika satuannya sama. Satuan yang berbeda tanpa faktor konversi
+  tidak dibagi.
+- Bila BPP sebuah baris belum lengkap, laba baris itu dikosongkan. Total BPP
+  dan laba dikosongkan bila ada baris dalam cakupan yang belum lengkap.
 
 Cabang
-- Jogja, Semarang, dan [Semua Cabang] mengikuti akses user.
-- Cocok bila outlet/cabang faktur atau pesanannya memuat "jogja"/"yogyakarta"
-  atau "semarang". Outlet lain hanya tampil pada Semua, bagi user yang boleh
-  melihat Semua.
+- Identitas terstruktur ``branch_id`` / ``cabang_id`` / ``_branch_id`` dipakai
+  lebih dulu. Nilai yang tidak dikenali tidak dijatuhkan ke Jogja atau Semarang.
+- Tanpa identitas terstruktur, hanya teks yang ada di peta eksplisit
+  (Jogja, Yogyakarta, Semarang, dan label cabang/outlet yang sama persis).
+- Semua menampilkan cabang yang boleh diakses user, termasuk data yang
+  tidak dikenali hanya bagi user yang tidak dikunci ke satu cabang.
 - User yang terikat satu cabang tidak dapat meminta Semua atau cabang lain.
+
+Kategori
+- Dari kategori baris atau master item yang sudah tersimpan. Kosong menjadi
+  Tanpa Kategori. Laporan tidak mengarang kategori.
 
 Total
 - Dihitung dari seluruh baris yang lolos filter, sebelum potongan halaman.
@@ -88,50 +102,26 @@ REF_MEMORIZE = (
     "daftar-laporan/simpan-format-laporan-modifikasi/"
 )
 
-# Names and descriptions copied from the Penjualan list in official help screenshots.
-# implemented=True only when the rendered columns were also visible.
+# Only reports whose columns and totals can be calculated from current ERP documents.
 _CATALOG: Tuple[dict, ...] = (
-    {"id": "penjualan-per-pelanggan", "name": "Penjualan per Pelanggan", "description": "Menampilkan daftar nilai penjualan per pelanggan", "implemented": False, "reference": REF_CATEGORY},
     {"id": "penjualan-per-barang", "name": "Penjualan per Barang", "description": "Menampilkan daftar nilai penjualan per barang", "implemented": True, "reference": REF_CATEGORY},
-    {"id": "penjualan-per-merek", "name": "Penjualan per Merek", "description": "Menampilkan daftar nilai penjualan per merk barang", "implemented": False, "reference": REF_CATEGORY},
-    {"id": "penjualan-barang-per-pelanggan", "name": "Penjualan Barang per Pelanggan", "description": "Menampilkan nilai penjualan barang per pelanggan", "implemented": False, "reference": REF_CATEGORY},
-    {"id": "penjualan-barang-per-gudang", "name": "Penjualan Barang per Gudang", "description": "Menampilkan nilai penjualan barang per gudang", "implemented": False, "reference": REF_CATEGORY},
-    {"id": "penjualan-pelanggan-per-barang", "name": "Penjualan Pelanggan per Barang", "description": "Menampilkan nilai penjualan pelanggan per barang", "implemented": False, "reference": REF_CATEGORY},
-    {"id": "histori-proses-penjualan", "name": "Histori Proses Penjualan", "description": "Menampilkan rantai proses penjualan dari penawaran hingga pembayaran", "implemented": False, "reference": REF_CATEGORY},
-    {"id": "rincian-penjualan-per-pelanggan", "name": "Rincian Penjualan per Pelanggan", "description": "Menampilkan rincian nilai penjualan per pelanggan", "implemented": False, "reference": REF_CATEGORY},
     {"id": "rincian-penjualan-per-barang", "name": "Rincian Penjualan per Barang", "description": "Menampilkan rincian nilai penjualan per barang", "implemented": True, "reference": REF_BPP},
-    {"id": "penjualan-per-cabang", "name": "Penjualan per Cabang", "description": "Menampilkan daftar nilai penjualan per cabang", "implemented": False, "reference": REF_CATEGORY},
-    {"id": "penjualan-barang-per-cabang", "name": "Penjualan Barang per Cabang", "description": "Menampilkan nilai penjualan barang per cabang", "implemented": False, "reference": REF_CATEGORY},
-    {"id": "retur-penjualan-per-barang", "name": "Retur Penjualan per Barang", "description": "Menampilkan nilai retur penjualan per barang", "implemented": False, "reference": REF_CATEGORY, "gap": "ERP belum menyimpan dokumen retur penjualan. Faktur batal tidak dijadikan retur."},
-    {"id": "grafik-penjualan-bulanan", "name": "Grafik Penjualan Bulanan", "description": "Menampilkan grafik batang penjualan per bulan", "implemented": False, "reference": REF_CATEGORY},
-    {"id": "porsi-penjualan-per-pelanggan", "name": "Porsi Penjualan per Pelanggan", "description": "Terlihat di daftar laporan Penjualan. Teks deskripsi pada screenshot terpotong.", "implemented": False, "reference": REF_CATEGORY, "description_partial": True},
-    {"id": "porsi-penjualan-per-barang", "name": "Porsi Penjualan per Barang", "description": "Menampilkan porsi penjualan dari barang", "implemented": False, "reference": REF_CATEGORY},
-    {"id": "penawaran-per-pelanggan-belum-proses", "name": "Penawaran per Pelanggan (Belum Proses)", "description": "Menampilkan nilai penawaran penjualan yang belum di proses per pelanggan", "implemented": False, "reference": REF_CATEGORY},
-    {"id": "penawaran-per-barang-belum-proses", "name": "Penawaran per Barang (Belum Proses)", "description": "Menampilkan nilai penawaran penjualan yang belum di proses per barang", "implemented": False, "reference": REF_CATEGORY},
-    {"id": "pesanan-per-pelanggan-belum-proses", "name": "Pesanan per Pelanggan (Belum Proses)", "description": "Menampilkan nilai pesanan penjualan yang belum di proses per pelanggan", "implemented": False, "reference": REF_CATEGORY},
-    {"id": "pesanan-per-barang-belum-proses", "name": "Pesanan per Barang (Belum Proses)", "description": "Menampilkan nilai pesanan penjualan yang belum di proses per barang", "implemented": False, "reference": REF_CATEGORY},
-    {"id": "uang-muka-penjualan", "name": "Uang Muka Penjualan", "description": "Menampilkan daftar uang muka penjualan grup per pelanggan", "implemented": False, "reference": REF_CATEGORY},
-    {"id": "target-penjualan-barang", "name": "Target Penjualan Barang", "description": "Menampilkan target dan riil penjualan barang", "implemented": False, "reference": REF_CATEGORY},
-    {"id": "target-penjualan-per-kategori", "name": "Target Penjualan per Kategori", "description": "Menampilkan target dan riil penjualan per kategori barang", "implemented": False, "reference": REF_CATEGORY},
-    {"id": "target-penjualan-penjual", "name": "Target Penjualan Penjual", "description": "Menampilkan capaian target dan riil penjualan dari penjual", "implemented": False, "reference": REF_CATEGORY},
-    {"id": "target-penjualan-per-bulan", "name": "Target Penjualan per Bulan", "description": "Menampilkan target dan riil penjualan per bulan", "implemented": False, "reference": REF_CATEGORY},
-    {"id": "daftar-penawaran-penjualan", "name": "Daftar Penawaran Penjualan", "description": "Laporan yang berisi daftar penawaran penjualan", "implemented": False, "reference": REF_CATEGORY},
-    {"id": "rincian-penawaran-penjualan", "name": "Rincian Penawaran Penjualan", "description": "Laporan yang berisi rincian barang pada penawaran penjualan", "implemented": False, "reference": REF_CATEGORY},
-    {"id": "daftar-pesanan-penjualan", "name": "Daftar Pesanan Penjualan", "description": "Laporan yang berisi daftar pesanan penjualan", "implemented": False, "reference": REF_FAKTUR},
-    {"id": "rincian-pesanan-penjualan", "name": "Rincian Pesanan Penjualan", "description": "Laporan yang berisi rincian barang pada pesanan penjualan", "implemented": False, "reference": REF_FAKTUR},
-    {"id": "daftar-pengiriman-pesanan", "name": "Daftar Pengiriman Pesanan", "description": "Laporan yang berisi daftar pengiriman pesanan", "implemented": False, "reference": REF_FAKTUR},
-    {"id": "rincian-pengiriman-pesanan", "name": "Rincian Pengiriman Pesanan", "description": "Laporan yang berisi rincian barang pada pengiriman pesanan", "implemented": False, "reference": REF_FAKTUR},
-    {"id": "status-pengiriman-pesanan", "name": "Status Pengiriman Pesanan", "description": "Laporan yang berisi daftar pengiriman pesanan", "implemented": False, "reference": REF_FAKTUR, "description_partial": True},
     {"id": "daftar-faktur-penjualan", "name": "Daftar Faktur Penjualan", "description": "Laporan yang berisi daftar faktur penjualan", "implemented": True, "reference": REF_FAKTUR},
-    {"id": "rincian-faktur-penjualan", "name": "Rincian Faktur Penjualan", "description": "Laporan yang berisi rincian barang pada faktur penjualan", "implemented": False, "reference": REF_FAKTUR},
-    {"id": "grafik-penjualan", "name": "Grafik Penjualan", "description": "Menampilkan nilai penjualan dalam bentuk grafik berdasarkan waktu", "implemented": False, "reference": REF_FAKTUR},
-    {"id": "daftar-retur-penjualan", "name": "Daftar Retur Penjualan", "description": "Laporan yang berisi daftar retur penjualan", "implemented": False, "reference": REF_FAKTUR, "gap": "ERP belum menyimpan dokumen retur penjualan."},
-    {"id": "rincian-retur-penjualan", "name": "Rincian Retur Penjualan", "description": "Laporan yang berisi rincian barang pada retur penjualan", "implemented": False, "reference": REF_FAKTUR, "gap": "ERP belum menyimpan dokumen retur penjualan."},
-    {"id": "barang-klaim-pelanggan", "name": "Barang Klaim Pelanggan", "description": "Daftar barang-barang yang diklaim oleh pelanggan", "implemented": False, "reference": REF_FAKTUR},
-    {"id": "penggunaan-uang-muka-penjualan", "name": "Penggunaan Uang Muka Penjualan", "description": "Laporan yang berisi daftar penggunaan uang muka dalam faktur penjualan", "implemented": False, "reference": REF_FAKTUR},
-    {"id": "pembayaran-cicilan", "name": "Pembayaran Cicilan", "description": "Terlihat di daftar laporan Penjualan. Teks deskripsi pada screenshot terpotong.", "implemented": False, "reference": REF_FAKTUR, "description_partial": True},
-    {"id": "cicilan-belum-terbayar", "name": "Cicilan Belum Terbayar", "description": "Terlihat di daftar laporan Penjualan. Teks deskripsi pada screenshot terpotong.", "implemented": False, "reference": REF_FAKTUR, "description_partial": True},
 )
+
+NO_CATEGORY = "Tanpa Kategori"
+
+# Exact labels only. A longer outlet name that merely contains the city is not a branch.
+_BRANCH_TEXT = {
+    "jogja": BRANCH_JOGJA,
+    "cabang jogja": BRANCH_JOGJA,
+    "outlet jogja": BRANCH_JOGJA,
+    "yogyakarta": BRANCH_JOGJA,
+    "cabang yogyakarta": BRANCH_JOGJA,
+    "semarang": BRANCH_SEMARANG,
+    "cabang semarang": BRANCH_SEMARANG,
+    "outlet semarang": BRANCH_SEMARANG,
+}
 
 IMPLEMENTED_IDS = frozenset(row["id"] for row in _CATALOG if row["implemented"])
 
@@ -198,6 +188,20 @@ def _money_str(value: Optional[Decimal]) -> Optional[str]:
     return f"{_money(value):.2f}"
 
 
+def _display_number(value: Any) -> Any:
+    """Same thousands separator the paper uses, so Excel matches the screen."""
+    if value is None or value == "":
+        return ""
+    text = str(value)
+    if not text.replace("-", "", 1).replace(".", "", 1).isdigit():
+        return text
+    negative = text.startswith("-")
+    whole, _, frac = text.replace("-", "", 1).partition(".")
+    grouped = f"{int(whole):,}".replace(",", ".")
+    shown = f"{grouped},{frac}" if frac else grouped
+    return f"-{shown}" if negative else shown
+
+
 def _qty_str(value: Decimal) -> str:
     quantized = value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     text = f"{quantized:.2f}"
@@ -230,12 +234,26 @@ def format_row_date(iso_date: str) -> str:
     return f"{int(day):02d} {_MONTHS[int(month) - 1]} {year}"
 
 
+def explicit_branch_id(value: Any) -> str:
+    """Map one structured id or one exact label. Unknown text stays blank."""
+    if isinstance(value, dict):
+        for key in ("id", "branch_id", "cabang_id", "_branch_id", "name", "label", "cabang"):
+            if key in value and _text(value.get(key)):
+                found = explicit_branch_id(value.get(key))
+                if found:
+                    return found
+        return ""
+    text = " ".join(_text(value).lower().split())
+    if text in {"semua", "all", "[semua cabang]"}:
+        return BRANCH_SEMUA
+    return _BRANCH_TEXT.get(text, "")
+
+
 def canonical_branch(*values: Any) -> str:
-    blob = " ".join(_text(value).lower() for value in values)
-    if "jogja" in blob or "yogyakarta" in blob:
-        return BRANCH_JOGJA
-    if "semarang" in blob:
-        return BRANCH_SEMARANG
+    for value in values:
+        found = explicit_branch_id(value)
+        if found and found != BRANCH_SEMUA:
+            return found
     return ""
 
 
@@ -280,8 +298,10 @@ def user_branch_options(user: Optional[dict], user_doc: Optional[dict] = None) -
     for value in raw_values:
         tokens |= _branch_tokens(value)
     specific = tokens & {BRANCH_JOGJA, BRANCH_SEMARANG}
-    if not specific or BRANCH_SEMUA in tokens:
+    if BRANCH_SEMUA in tokens or not raw_values:
         return [dict(row) for row in BRANCH_OPTIONS]
+    if not specific:
+        return []
     options = [dict(row) for row in BRANCH_OPTIONS if row["id"] in specific]
     if len(specific) > 1:
         options.append(dict(BRANCH_OPTIONS[2]))
@@ -428,17 +448,74 @@ def split_cogs(total: Optional[Decimal], qtys: Sequence[Decimal]) -> List[Option
     return shares
 
 
-def _line_subtotal(line: dict) -> Decimal:
-    if line.get("line_subtotal") is not None:
+def _gross_amount(line: dict) -> Optional[Decimal]:
+    if line.get("quantity") in (None, "") or line.get("unit_price") in (None, ""):
+        return None
+    return _money(_dec(line.get("quantity")) * _dec(line.get("unit_price")))
+
+
+def _stored_goods_amount(line: dict) -> Optional[Decimal]:
+    if line.get("line_subtotal") not in (None, ""):
         return _money(_dec(line.get("line_subtotal")))
-    if line.get("line_total") is not None and line.get("discount_amount") in (None, "", 0, 0.0):
+    if line.get("line_total") not in (None, ""):
         return _money(_dec(line.get("line_total")))
-    qty = _dec(line.get("quantity"))
-    price = _dec(line.get("unit_price"))
-    return _money(qty * price)
+    return None
 
 
-def _category_name(line: dict, master: Optional[dict]) -> Optional[str]:
+def _explicit_line_discount(line: dict) -> Decimal:
+    for key in ("line_discount", "line_discount_amount", "discount_amount", "discount"):
+        if line.get(key) in (None, ""):
+            continue
+        amount = _money(_dec(line.get(key)))
+        if amount > 0:
+            return amount
+    return Decimal("0.00")
+
+
+def _line_discount_outside_stored(line: dict) -> bool:
+    """True when the stored subtotal is still gross and a separate line discount exists."""
+    gross = _gross_amount(line)
+    stored = _stored_goods_amount(line)
+    discount = _explicit_line_discount(line)
+    if gross is None or stored is None or discount <= 0:
+        return False
+    return stored == gross
+
+
+def _net_before_header(line: dict) -> Decimal:
+    """Goods value after the line discount, before the invoice header discount."""
+    gross = _gross_amount(line)
+    stored = _stored_goods_amount(line)
+    discount = _explicit_line_discount(line)
+    if gross is None:
+        return stored if stored is not None else Decimal("0.00")
+    if stored is None:
+        return _money(max(gross - discount, Decimal("0.00")))
+    if stored == _money(gross - discount) or (discount > 0 and stored < gross):
+        return stored
+    return _money(max(gross - discount, Decimal("0.00")))
+
+
+def _priced_lines(invoice: dict) -> Tuple[List[dict], List[Decimal], List[Decimal]]:
+    """Return lines, header-discount shares, and net penjualan. Shares sum to the header discount."""
+    lines = [
+        line for line in (invoice.get("lines") or [])
+        if isinstance(line, dict) and (_dec(line.get("quantity")) != 0 or (_net_before_header(line) != 0))
+    ]
+    nets = [_net_before_header(line) for line in lines]
+    shares = allocate_header_discount(nets, _dec(invoice.get("discount_amount")))
+    penjualan = [_money(net - share) for net, share in zip(nets, shares)]
+    outside = any(_line_discount_outside_stored(line) for line in lines)
+    stored_after = invoice.get("after_discount")
+    if penjualan and stored_after not in (None, "") and not outside:
+        drift = _money(_dec(stored_after) - sum(penjualan, Decimal("0.00")))
+        if drift != 0 and abs(drift) <= Decimal("0.05"):
+            penjualan[-1] = _money(penjualan[-1] + drift)
+            shares[-1] = _money(nets[-1] - penjualan[-1])
+    return lines, shares, penjualan
+
+
+def _category_name(line: dict, master: Optional[dict]) -> str:
     for source in (line, master or {}):
         if not isinstance(source, dict):
             continue
@@ -449,7 +526,7 @@ def _category_name(line: dict, master: Optional[dict]) -> Optional[str]:
             text = _text(raw)
             if text:
                 return text
-    return None
+    return NO_CATEGORY
 
 
 def _keterangan(line: dict) -> str:
@@ -489,21 +566,30 @@ async def _iter_docs(db, name: str, query: Optional[dict] = None) -> List[dict]:
     return rows
 
 
+def _structured_branch(doc: Optional[dict]) -> Optional[str]:
+    """Return a mapped id, '' when a structured id exists but is unknown, or None when absent."""
+    if not isinstance(doc, dict):
+        return None
+    for key in ("branch_id", "cabang_id", "_branch_id"):
+        if _text(doc.get(key)):
+            found = explicit_branch_id(doc.get(key))
+            return "" if found == BRANCH_SEMUA else found
+    return None
+
+
 def _invoice_branch(invoice: dict, order: Optional[dict]) -> str:
-    return canonical_branch(
-        invoice.get("branch"),
-        invoice.get("cabang"),
-        invoice.get("branch_name"),
-        invoice.get("outlet"),
-        invoice.get("branch_id"),
-        invoice.get("cabang_id"),
-        (order or {}).get("outlet"),
-        (order or {}).get("branch"),
-        (order or {}).get("cabang"),
-        (order or {}).get("branch_name"),
-        (order or {}).get("branch_id"),
-        (order or {}).get("cabang_id"),
-    )
+    for doc in (invoice, order or {}):
+        structured = _structured_branch(doc)
+        if structured is not None:
+            return structured
+    for doc in (invoice, order or {}):
+        if not isinstance(doc, dict):
+            continue
+        for key in ("branch", "cabang", "branch_name", "outlet"):
+            found = explicit_branch_id(doc.get(key))
+            if found and found != BRANCH_SEMUA:
+                return found
+    return ""
 
 
 def _customer_name(invoice: dict, order: Optional[dict]) -> str:
@@ -534,7 +620,8 @@ async def _sales_context(db) -> dict:
             token = _text(row.get(key))
             if token:
                 by_id[token] = row
-    cogs_by_line: Dict[Tuple[str, str], Decimal] = {}
+    cogs_by_line: Dict[Tuple[str, str], dict] = {}
+    seen_movements: Dict[Tuple[str, str], set] = {}
     for doc in await _iter_docs(db, "inventory_issue_accounting", {"status": "posted"}):
         basis = doc.get("accounting_posting_basis") if isinstance(doc.get("accounting_posting_basis"), dict) else {}
         if basis.get("total_cogs") is None:
@@ -544,10 +631,28 @@ async def _sales_context(db) -> dict:
         line_idx = basis.get("line_idx")
         if line_idx is None:
             line_idx = doc.get("line_idx")
-        if not order_id:
+        if not order_id or (not line_id and line_idx in (None, "")):
             continue
         key = (order_id, line_id or f"idx:{line_idx}")
-        cogs_by_line[key] = _money(cogs_by_line.get(key, Decimal("0")) + _dec(basis.get("total_cogs")))
+        movement_id = _text(doc.get("movement_id") or basis.get("movement_id"))
+        seen = seen_movements.setdefault(key, set())
+        if movement_id and movement_id in seen:
+            continue
+        if movement_id:
+            seen.add(movement_id)
+        slot = cogs_by_line.setdefault(key, {
+            "total": Decimal("0.00"),
+            "base_qty": Decimal("0"),
+            "base_complete": True,
+        })
+        slot["total"] = _money(slot["total"] + _dec(basis.get("total_cogs")))
+        raw_base = basis.get("base_qty")
+        if raw_base in (None, ""):
+            raw_base = basis.get("issue_base_qty")
+        if raw_base in (None, ""):
+            slot["base_complete"] = False
+        else:
+            slot["base_qty"] = slot["base_qty"] + _dec(raw_base)
     return {
         "invoices": invoices,
         "orders": orders,
@@ -576,6 +681,55 @@ def _line_key(invoice: dict, line: dict) -> Tuple[str, str]:
     return order_id, f"idx:{line.get('line_idx')}"
 
 
+def _line_weight(line: dict, master: Optional[dict]) -> Tuple[Optional[Decimal], str]:
+    """Weight for COGS allocation. Base quantity is used whenever a factor is known."""
+    qty = _dec(line.get("quantity"))
+    if line.get("base_qty") not in (None, ""):
+        return _dec(line.get("base_qty")), "base"
+    factor = None
+    for source in (line, master or {}):
+        if not isinstance(source, dict) or source.get("conversion_factor") in (None, ""):
+            continue
+        parsed = _dec(source.get("conversion_factor"))
+        if parsed > 0:
+            factor = parsed
+            break
+    if factor is not None:
+        return qty * factor, "base"
+    unit = _text(line.get("unit")).lower()
+    return qty, f"tx:{unit}"
+
+
+def _bpp_shares(posting: dict, weights: Sequence[Decimal], modes: Sequence[str]) -> List[Optional[Decimal]]:
+    """Allocate one posted COGS total without giving it in full to every partial invoice."""
+    if any(weight is None for weight in weights) or len(set(modes)) != 1:
+        return [None for _ in weights]
+    total = _money(_dec(posting.get("total")))
+    if posting.get("base_complete") and modes and modes[0] == "base":
+        posted_base = _dec(posting.get("base_qty"))
+        if posted_base <= 0:
+            return [None for _ in weights]
+        remaining = posted_base
+        covered: List[int] = []
+        for index, weight in enumerate(weights):
+            if weight < 0 or weight > remaining:
+                continue
+            covered.append(index)
+            remaining -= weight
+        result: List[Optional[Decimal]] = [None for _ in weights]
+        if not covered:
+            return result
+        covered_qty = sum((weights[index] for index in covered), Decimal("0"))
+        covered_cost = total if covered_qty == posted_base else _money(total * covered_qty / posted_base)
+        parts = split_cogs(covered_cost, [weights[index] for index in covered])
+        for index, share in zip(covered, parts):
+            result[index] = share
+        return result
+    if posting.get("base_complete"):
+        return [None for _ in weights]
+    return split_cogs(total, list(weights))
+
+
 def _prepared_lines(ctx: dict, start: str, end: str, branch: str) -> Tuple[List[dict], dict]:
     """Return filtered detail lines plus COGS shares computed across all finalized invoices."""
     finalized = []
@@ -584,15 +738,11 @@ def _prepared_lines(ctx: dict, start: str, end: str, branch: str) -> Tuple[List[
             continue
         order = ctx["orders"].get(_text(invoice.get("po_id") or invoice.get("order_id")))
         business = _text(invoice.get("invoice_date"))[:10]
-        lines = [
-            line for line in (invoice.get("lines") or [])
-            if isinstance(line, dict) and (_dec(line.get("quantity")) != 0 or _line_subtotal(line) != 0)
-        ]
-        subtotals = [_line_subtotal(line) for line in lines]
-        shares = allocate_header_discount(subtotals, _dec(invoice.get("discount_amount")))
+        lines, shares, nets = _priced_lines(invoice)
         for index, line in enumerate(lines):
             qty = _dec(line.get("quantity"))
             master = _master_for(line, ctx)
+            weight, weight_mode = _line_weight(line, master)
             finalized.append({
                 "invoice_id": invoice.get("id"),
                 "invoice_number": _text(invoice.get("invoice_number")),
@@ -605,29 +755,35 @@ def _prepared_lines(ctx: dict, start: str, end: str, branch: str) -> Tuple[List[
                 "unit": _text(line.get("unit") or (master or {}).get("unit")),
                 "quantity": qty,
                 "unit_price": _money(_dec(line.get("unit_price"))),
-                "subtotal": subtotals[index],
+                "subtotal": _net_before_header(line),
                 "discount": shares[index] if index < len(shares) else Decimal("0.00"),
+                "penjualan": nets[index],
                 "category": _category_name(line, master),
                 "line_key": _line_key(invoice, line),
                 "grand_total": _money(_dec(invoice.get("grand_total"))),
                 "order_id": _text(invoice.get("po_id") or invoice.get("order_id")),
+                "weight": weight,
+                "weight_mode": weight_mode,
             })
-    qty_by_key: Dict[Tuple[str, str], Decimal] = {}
     keys_order: Dict[Tuple[str, str], List[int]] = {}
     for index, row in enumerate(finalized):
         key = row["line_key"]
         if not key[0]:
             continue
-        qty_by_key[key] = qty_by_key.get(key, Decimal("0")) + row["quantity"]
         keys_order.setdefault(key, []).append(index)
     for key, indexes in keys_order.items():
-        total = ctx["cogs_by_line"].get(key)
-        shares = split_cogs(total, [finalized[index]["quantity"] for index in indexes])
+        posting = ctx["cogs_by_line"].get(key)
+        if not posting:
+            continue
+        shares = _bpp_shares(
+            posting,
+            [finalized[index]["weight"] for index in indexes],
+            [finalized[index]["weight_mode"] for index in indexes],
+        )
         for index, share in zip(indexes, shares):
             finalized[index]["bpp"] = share
     for row in finalized:
         row.setdefault("bpp", None)
-        row["penjualan"] = _money(row["subtotal"] - row["discount"])
         if row["bpp"] is None:
             row["laba"] = None
         else:
@@ -888,12 +1044,14 @@ def _methodology(branch: str, report_id: str) -> dict:
         "draft": "draft dan faktur tanpa status tidak masuk",
         "cancelled": "faktur batal tidak masuk dan tidak dihitung sebagai retur",
         "returns": "dokumen retur penjualan tidak ada di ERP",
-        "discount": "diskon header dialokasikan ke baris menurut subtotal barang; sisa 0,01 di baris terakhir",
-        "penjualan": "setelah diskon barang, sebelum PPN dan biaya lainnya",
-        "invoice_total": "kolom Total pada Daftar Faktur Penjualan adalah grand_total faktur",
+        "discount": "diskon header dialokasikan setelah diskon baris; diskon baris tidak dipotong dua kali; sisa 0,01 di baris terakhir",
+        "penjualan": "nilai bersih sebelum PPN dan biaya lainnya",
+        "invoice_total": "kolom Total pada Daftar Faktur Penjualan adalah grand_total faktur dan boleh berbeda dari Penjualan",
         "tax": "PPN tidak diaktifkan di pekerjaan ini; angka pajak yang sudah tersimpan tidak diubah",
-        "bpp": "hanya accounting_posting_basis.total_cogs dari inventory_issue_accounting posted",
-        "bpp_missing": "BPP dan laba dikosongkan bila posting HPP belum ada",
+        "bpp": "HPP posted dibagi menurut kuantitas dasar bila tersedia, tanpa dihitung ulang pada faktur lain",
+        "bpp_missing": "BPP dan laba dikosongkan bila posting HPP belum lengkap untuk baris itu",
+        "category": "kategori master atau baris; kosong ditampilkan sebagai Tanpa Kategori",
+        "branch_identity": "branch_id terstruktur didahulukan; teks hanya lewat peta eksplisit",
         "branch": branch,
         "orders_are_not_revenue": True,
         "report_id": report_id,
@@ -916,13 +1074,8 @@ async def run_report(
     if is_sales_pwa_role(user):
         raise SalesReportError(403, "Laporan ERP tidak tersedia untuk peran ini.")
     spec = next((row for row in _CATALOG if row["id"] == report_id), None)
-    if spec is None:
-        raise SalesReportError(404, "Laporan tidak ada di daftar Penjualan yang terverifikasi.")
-    if not spec["implemented"]:
-        raise SalesReportError(
-            422,
-            "Nama laporan ini terlihat di daftar Accurate, tetapi kolom defaultnya belum terlihat di screenshot referensi sehingga angka tidak dihitung.",
-        )
+    if spec is None or not spec["implemented"]:
+        raise SalesReportError(404, "Laporan ini tidak ada di daftar Penjualan yang dihitung dari data ERP.")
     start = parse_report_date(date_from, "Dari")
     end = parse_report_date(date_to, "s/d")
     if end < start:
@@ -1032,8 +1185,9 @@ def export_workbook(report: dict) -> bytes:
         values = row.get("values") or {}
         for index, key in enumerate(keys, start=1):
             raw = values.get(key)
-            cell = sheet.cell(row_index, index, "" if raw is None else raw)
-            if key in {"penjualan", "bpp", "laba", "diskon", "harga", "total", "kuantitas"} and raw not in (None, ""):
+            shown = _display_number(raw) if key in {"penjualan", "bpp", "laba", "diskon", "harga", "total", "kuantitas"} else raw
+            cell = sheet.cell(row_index, index, "" if shown is None else shown)
+            if key in {"penjualan", "bpp", "laba", "diskon", "harga", "total", "kuantitas"} and shown not in (None, ""):
                 cell.alignment = Alignment(horizontal="right")
         row_index += 1
     totals = report.get("totals") or {}
@@ -1042,7 +1196,8 @@ def export_workbook(report: dict) -> bytes:
         sheet.cell(row_index, 1).font = Font(bold=True)
         for index, key in enumerate(keys, start=1):
             if key in totals and totals.get(key) is not None:
-                cell = sheet.cell(row_index, index, totals.get(key))
+                shown = _display_number(totals.get(key)) if key in {"penjualan", "bpp", "laba", "diskon", "harga", "total", "kuantitas"} else totals.get(key)
+                cell = sheet.cell(row_index, index, shown)
                 cell.font = Font(bold=True)
                 cell.alignment = Alignment(horizontal="right")
     buffer = BytesIO()

@@ -287,8 +287,12 @@
 .aol-check { display: flex; gap: 8px; align-items: center; margin: 4px 0; }
 .aol-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 16px; }
 
+.aol-print-copy { display: none; }
+
 @media print {
   .aol-side, .aol-toolbar, .aol-pager, .aol-note, .aol-mask { display: none !important; }
+  .aol-screen-copy { display: none !important; }
+  .aol-print-copy { display: block !important; }
   .aol-stage, .aol-paper-wrap, .aol-paper { background: #fff; box-shadow: none; overflow: visible; }
   .aol-page { display: block; }
 }

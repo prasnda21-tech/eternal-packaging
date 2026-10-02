@@ -28,6 +28,7 @@ class ReportRunBody(BaseModel):
     layout: Dict[str, Any] = Field(default_factory=dict)
     page: int = 1
     page_size: int = 25
+    include_all: bool = False
 
 
 class MemorizeBody(BaseModel):
@@ -82,6 +83,7 @@ def register_sales_report_routes(
                 layout=body.layout,
                 page=body.page,
                 page_size=body.page_size,
+                include_all=body.include_all,
             )
         except SalesReportError as exc:
             _raise(exc)

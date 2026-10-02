@@ -168,10 +168,13 @@ async def test_catalog_uses_verified_names_and_admin_branches():
     assert response.status_code == 200, response.text
     body = response.json()
     names = [row["name"] for row in body["reports"]]
-    assert names.count("Penjualan per Barang") == 1
-    assert "Rincian Penjualan per Barang" in names
-    assert "Daftar Faktur Penjualan" in names
-    assert "Penjualan per Salesman" not in names
+    assert names == [
+        "Penjualan per Barang",
+        "Rincian Penjualan per Barang",
+        "Daftar Faktur Penjualan",
+    ]
+    assert "Penjualan per Pelanggan" not in names
+    assert "Retur Penjualan per Barang" not in names
     implemented = {row["id"] for row in body["reports"] if row["implemented"]}
     assert implemented == {
         "penjualan-per-barang",
@@ -288,8 +291,9 @@ async def test_normal_discount_return_draft_cancelled_and_dates():
 
 async def test_branch_access_jogja_semarang_and_semua():
     await _invoice(number="J1", date="2026-03-04", lines=[_line("Barang Jogja", 1, 100, code="J", line_id="j")], outlet="Outlet Jogja")
-    await _invoice(number="S1", date="2026-03-04", lines=[_line("Barang Semarang", 1, 40, code="S", line_id="s")], outlet="Semarang Pusat", po_id="po-s")
+    await _invoice(number="S1", date="2026-03-04", lines=[_line("Barang Semarang", 1, 40, code="S", line_id="s")], outlet="Cabang Semarang", po_id="po-s")
     await _invoice(number="X1", date="2026-03-04", lines=[_line("Barang Lain", 1, 7, code="X", line_id="x")], outlet="Jakarta", po_id="po-x")
+    await _invoice(number="Y1", date="2026-03-04", lines=[_line("Bukan Jogja", 1, 9, code="Y", line_id="y")], outlet="Toko Jogja Raya", po_id="po-y")
     jogja_user = _user(role="holding_team", permissions_override={
         "reports.sales.view": True,
         "nav.reports.sales": True,
@@ -310,10 +314,12 @@ async def test_branch_access_jogja_semarang_and_semua():
     async with await client_for(_user()) as client:
         all_rows = await _show(client, "penjualan-per-barang", branch="semua")
         only_semarang = await _show(client, "penjualan-per-barang", branch="semarang")
+        jogja_only = await _show(client, "penjualan-per-barang", branch="jogja")
     assert {row["values"]["nama_barang"] for row in all_rows.json()["rows"] if row["kind"] == "line"} == {
-        "Barang Jogja", "Barang Semarang", "Barang Lain",
+        "Barang Jogja", "Barang Semarang", "Barang Lain", "Bukan Jogja",
     }
     assert [row["values"]["nama_barang"] for row in only_semarang.json()["rows"] if row["kind"] == "line"] == ["Barang Semarang"]
+    assert [row["values"]["nama_barang"] for row in jogja_only.json()["rows"] if row["kind"] == "line"] == ["Barang Jogja"]
 
 
 async def test_empty_period_and_paged_totals_cover_every_row():
@@ -509,12 +515,11 @@ async def test_sales_eternal_and_unauthorized_are_rejected():
     assert denied.status_code == 403
 
 
-async def test_unimplemented_verified_report_does_not_invent_numbers():
+async def test_unknown_report_is_not_calculated():
     await _invoice(number="SI-1", date="2026-03-02", lines=[_line("Ada", 1, 50, code="A", line_id="a")])
     async with await client_for(_user()) as client:
         response = await _show(client, "retur-penjualan-per-barang")
-    assert response.status_code == 422
-    assert "tidak dihitung" in response.json()["detail"]
+    assert response.status_code == 404
 
 
 async def test_memorize_saves_category_layout():
@@ -532,3 +537,183 @@ async def test_memorize_saves_category_layout():
     item = listed.json()["items"][0]
     assert item["name"] == "Penjualan per kategori"
     assert item["layout"]["analysis_row"] == "nama_kategori_barang"
+
+
+async def test_line_discount_is_not_removed_twice_and_matches_after_discount():
+    gross = _line("Barang A", 2, 10000, code="A", line_id="a")
+    gross["discount_amount"] = 2000
+    net_stored = _line("Barang B", 1, 5000, code="B", line_id="b")
+    net_stored["line_subtotal"] = 3000
+    net_stored["line_total"] = 3000
+    net_stored["discount_amount"] = 2000
+    plain = _line("Barang C", 1, 10000, code="C", line_id="c")
+    await _invoice(
+        number="SI-DISC",
+        date="2026-03-08",
+        lines=[gross, net_stored, plain],
+        discount=3000,
+        ppn=1100,
+        charges=400,
+        po_id="po-disc",
+    )
+    async with await client_for(_user()) as client:
+        shown = await _show(client, "rincian-penjualan-per-barang", page_size=20)
+        invoices = await _show(client, "daftar-faktur-penjualan")
+    assert shown.status_code == 200, shown.text
+    by_number = {}
+    for row in shown.json()["rows"]:
+        if row["kind"] != "line":
+            continue
+        by_number.setdefault(row["values"]["keterangan"] or row["values"]["nomor"], row["values"])
+    lines = [row["values"] for row in shown.json()["rows"] if row["kind"] == "line"]
+    # Gross 20000 minus line discount 2000, then header share.
+    # Nets before header: 18000, 3000 (already stored), 10000. Header 3000.
+    assert lines[0]["penjualan"] == "16258.06"
+    assert lines[1]["penjualan"] == "2709.68"
+    assert lines[2]["penjualan"] == "9032.26"
+    assert sum(Decimal(row["penjualan"]) for row in lines) == Decimal("28000.00")
+    # 20000-2000 + 3000 + 10000 - 3000 = 28000. Invoice after_discount from helper is
+    # sum(line_subtotal)-header = (20000+3000+10000)-3000 = 30000, which ignored the
+    # separate line discount, so penjualan must not be pulled back up to 30000.
+    assert Decimal(lines[0]["penjualan"]) != Decimal("17600.00")
+    faktur = invoices.json()["rows"][0]["values"]["total"]
+    assert faktur == "31500.00"
+    assert Decimal(faktur) != sum(Decimal(row["penjualan"]) for row in lines)
+
+
+async def test_partial_invoice_cogs_uses_base_qty_once():
+    carton = _line("Karton", 1, 1000, code="KT", unit="Dus", line_id="L-part")
+    carton["conversion_factor"] = 1000
+    pieces = _line("Karton", 500, 1, code="KT", unit="Pcs", line_id="L-part")
+    pieces["conversion_factor"] = 1
+    await _invoice(number="SI-DUS", date="2026-03-04", lines=[carton], po_id="po-part")
+    await _invoice(number="SI-PCS", date="2026-03-18", lines=[pieces], po_id="po-part")
+    await server.db.inventory_issue_accounting.insert_one({
+        "status": "posted",
+        "movement_id": "mov-part",
+        "accounting_posting_basis": {
+            "order_id": "po-part",
+            "line_id": "L-part",
+            "base_qty": "1000",
+            "total_cogs": "100.00",
+        },
+    })
+    await server.db.inventory_issue_accounting.insert_one({
+        "status": "posted",
+        "movement_id": "mov-part",
+        "accounting_posting_basis": {
+            "order_id": "po-part",
+            "line_id": "L-part",
+            "base_qty": "1000",
+            "total_cogs": "100.00",
+        },
+    })
+    await server.db.inventory_issue_accounting.insert_one({
+        "status": "posted",
+        "movement_id": "mov-other",
+        "accounting_posting_basis": {
+            "order_id": "po-part",
+            "line_id": "L-lain",
+            "base_qty": "1000",
+            "total_cogs": "999.00",
+        },
+    })
+    layout = {"columns": ["nomor", "kuantitas", "satuan", "penjualan", "bpp", "laba"]}
+    async with await client_for(_user()) as client:
+        shown = await _show(client, "rincian-penjualan-per-barang", layout=layout, page_size=20)
+    rows = {row["values"]["nomor"]: row["values"] for row in shown.json()["rows"] if row["kind"] == "line"}
+    assert rows["SI-DUS"]["bpp"] == "100.00"
+    assert rows["SI-DUS"]["laba"] == "900.00"
+    assert rows["SI-PCS"]["bpp"] is None
+    assert rows["SI-PCS"]["laba"] is None
+    assert shown.json()["totals"]["bpp"] is None
+    assert shown.json()["totals"]["laba"] is None
+
+
+async def test_mixed_units_without_conversion_do_not_invent_bpp():
+    await _invoice(
+        number="SI-BOX",
+        date="2026-03-04",
+        lines=[_line("Campur", 1, 100, code="CX", unit="Dus", line_id="L-mix")],
+        po_id="po-mix",
+    )
+    await _invoice(
+        number="SI-PCS",
+        date="2026-03-05",
+        lines=[_line("Campur", 3, 10, code="CX", unit="Pcs", line_id="L-mix")],
+        po_id="po-mix",
+    )
+    await server.db.inventory_issue_accounting.insert_one({
+        "status": "posted",
+        "movement_id": "mov-mix",
+        "accounting_posting_basis": {
+            "order_id": "po-mix",
+            "line_id": "L-mix",
+            "total_cogs": "40.00",
+        },
+    })
+    layout = {"columns": ["nomor", "bpp", "laba"]}
+    async with await client_for(_user()) as client:
+        shown = await _show(client, "rincian-penjualan-per-barang", layout=layout)
+    values = [row["values"]["bpp"] for row in shown.json()["rows"] if row["kind"] == "line"]
+    assert values == [None, None]
+
+
+async def test_structured_branch_id_beats_outlet_text():
+    await _invoice(
+        number="SI-ID",
+        date="2026-03-06",
+        lines=[_line("Lewat Id", 1, 80, code="ID", line_id="id")],
+        outlet="Jakarta",
+        po_id="po-id",
+    )
+    await server.db.sales_invoices.update_one({"invoice_number": "SI-ID"}, {"$set": {"branch_id": "jogja"}})
+    await _invoice(
+        number="SI-UNKNOWN",
+        date="2026-03-06",
+        lines=[_line("Id Asing", 1, 15, code="AS", line_id="as")],
+        outlet="Cabang Jogja",
+        po_id="po-as",
+    )
+    await server.db.sales_invoices.update_one({"invoice_number": "SI-UNKNOWN"}, {"$set": {"branch_id": "bandung"}})
+    async with await client_for(_user()) as client:
+        jogja = await _show(client, "penjualan-per-barang", branch="jogja")
+        semua = await _show(client, "penjualan-per-barang", branch="semua")
+    jogja_names = [row["values"]["nama_barang"] for row in jogja.json()["rows"] if row["kind"] == "line"]
+    semua_names = {row["values"]["nama_barang"] for row in semua.json()["rows"] if row["kind"] == "line"}
+    assert jogja_names == ["Lewat Id"]
+    assert semua_names == {"Lewat Id", "Id Asing"}
+
+
+async def test_missing_category_is_named_and_export_matches_screen_total():
+    await _invoice(
+        number="SI-BARE",
+        date="2026-03-09",
+        lines=[_line("Tanpa Nama Kategori", 2, 1500, code="BK", line_id="bk")],
+        discount=100,
+        po_id="po-bare",
+    )
+    async with await client_for(_user()) as client:
+        shown = await _show(
+            client,
+            "penjualan-per-barang",
+            layout={"analysis_row": "nama_kategori_barang", "columns": ["nama_kategori", "kuantitas", "penjualan"]},
+        )
+        exported = await client.post("/api/laporan/penjualan/ekspor", json={
+            "report_id": "penjualan-per-barang",
+            "date_from": "01/03/2026",
+            "date_to": "31/03/2026",
+            "branch": "semua",
+            "layout": {"analysis_row": "nama_kategori_barang", "columns": ["nama_kategori", "kuantitas", "penjualan"]},
+            "page_size": 1,
+        })
+    assert shown.status_code == 200
+    row = shown.json()["rows"][0]["values"]
+    assert row["nama_kategori"] == "Tanpa Kategori"
+    assert row["penjualan"] == "2900.00"
+    assert shown.json()["totals"]["penjualan"] == "2900.00"
+    book = load_workbook(BytesIO(exported.content))
+    sheet = book.active
+    assert sheet.cell(7, 1).value == "Tanpa Kategori"
+    assert sheet.cell(7, 3).value == "2.900,00"
+    assert sheet.cell(8, 3).value == "2.900,00"

@@ -3,9 +3,6 @@ import { Link } from "react-router-dom";
 import { api } from "../lib/api";
 import "./LaporanPenjualan.css";
 
-const UNIMPLEMENTED_NOTE =
-  "Nama laporan ini terlihat di daftar Accurate, tetapi kolom defaultnya belum terlihat di screenshot referensi sehingga angka tidak dihitung.";
-
 function monthBounds(date = new Date()) {
   const year = date.getFullYear();
   const month = date.getMonth();
@@ -50,6 +47,74 @@ function layoutPayload(reportId, columnKeys, analysisOn, analysisRow, groupCurre
   return layout;
 }
 
+function totalText(report, key) {
+  if (!report?.totals || !(key in report.totals)) return "";
+  const value = report.totals[key];
+  if (value === null || value === undefined) return "";
+  const column = (report.columns || []).find((col) => col.key === key);
+  return column?.align === "right" ? formatCell(value) : String(value);
+}
+
+function ReportSheet({ report, className }) {
+  const labelAt = (report.columns || []).findIndex((item) => item.align !== "right");
+  return (
+    <article className={className}>
+      <p className="aol-company">{report.company_name}</p>
+      <h2 className="aol-title">{report.name}</h2>
+      <p className="aol-period">{report.period_label}</p>
+      <p className="aol-branch">{report.branch_label}</p>
+      <table className="aol-table">
+        <thead>
+          <tr>
+            {(report.columns || []).map((col) => (
+              <th key={col.key} className={col.align === "right" ? "num" : undefined}>{col.label}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {(report.rows || []).length === 0 ? (
+            <tr>
+              <td className="aol-empty" colSpan={(report.columns || []).length || 1}>Tidak ada data pada periode dan cabang ini.</td>
+            </tr>
+          ) : null}
+          {(report.rows || []).map((row, index) => {
+            if (row.kind === "group") {
+              return (
+                <tr key={`g-${index}`} className="group">
+                  <td colSpan={(report.columns || []).length || 1}>{row.label}</td>
+                </tr>
+              );
+            }
+            return (
+              <tr key={`r-${index}`} className={row.kind === "subtotal" ? "subtotal" : undefined}>
+                {(report.columns || []).map((col) => {
+                  const raw = row.values?.[col.key];
+                  const shown = col.align === "right" ? formatCell(raw) : (raw ?? "");
+                  const drill = col.key === "nomor" && row.drill?.href;
+                  return (
+                    <td key={col.key} className={col.align === "right" ? "num" : undefined}>
+                      {drill ? <Link to={row.drill.href}>{shown}</Link> : shown}
+                    </td>
+                  );
+                })}
+              </tr>
+            );
+          })}
+          {(report.rows || []).length > 0 ? (
+            <tr className="total">
+              {(report.columns || []).map((col, index) => (
+                <td key={col.key} className={col.align === "right" ? "num" : undefined}>
+                  {index === (labelAt === -1 ? 0 : labelAt) ? "Total" : totalText(report, col.key)}
+                </td>
+              ))}
+            </tr>
+          ) : null}
+        </tbody>
+      </table>
+    </article>
+  );
+}
+
 function DocIcon() {
   return (
     <svg className="aol-ico" viewBox="0 0 24 24" aria-hidden="true">
@@ -78,7 +143,7 @@ export default function LaporanPenjualan() {
   const [page, setPage] = useState(1);
   const [busy, setBusy] = useState(false);
   const [banner, setBanner] = useState("");
-  const [gapReport, setGapReport] = useState(null);
+  const [printReport, setPrintReport] = useState(null);
   const [memorizeOpen, setMemorizeOpen] = useState(false);
   const [memorizeName, setMemorizeName] = useState("");
   const [memorizeDescription, setMemorizeDescription] = useState("");
@@ -100,7 +165,7 @@ export default function LaporanPenjualan() {
     };
   }, []);
 
-  const reports = catalog?.reports || [];
+  const reports = (catalog?.reports || []).filter((row) => row.implemented !== false);
   const branches = catalog?.branches || [];
   const memorized = catalog?.memorized || [];
   const filtered = reports.filter((row) => {
@@ -110,10 +175,7 @@ export default function LaporanPenjualan() {
 
   const openReport = (row, layout) => {
     setBanner("");
-    if (!row.implemented) {
-      setGapReport(row);
-      return;
-    }
+    if (!row.implemented) return;
     setSelected(row);
     setColumnKeys(Array.isArray(layout?.columns) && layout.columns.length ? layout.columns : defaultColumns(row));
     setAnalysisOn(true);
@@ -164,6 +226,30 @@ export default function LaporanPenjualan() {
 
   const refresh = () => {
     if (report) showReport(page);
+  };
+
+  const printReportNow = async () => {
+    if (!selected) return;
+    setBusy(true);
+    setBanner("");
+    try {
+      const data = await api.salesReportShow({
+        report_id: selected.id,
+        date_from: dateFrom,
+        date_to: dateTo,
+        branch,
+        layout: currentLayout(),
+        include_all: true,
+        page: 1,
+        page_size: 25,
+      });
+      setPrintReport(data);
+      setTimeout(() => window.print(), 50);
+    } catch (err) {
+      setBanner(errorText(err));
+    } finally {
+      setBusy(false);
+    }
   };
 
   const exportReport = async () => {
@@ -238,14 +324,6 @@ export default function LaporanPenjualan() {
     ));
   };
 
-  const totalFor = (key) => {
-    if (!report?.totals || !(key in report.totals)) return "";
-    const value = report.totals[key];
-    if (value === null || value === undefined) return "";
-    const column = (report.columns || []).find((col) => col.key === key);
-    return column?.align === "right" ? formatCell(value) : String(value);
-  };
-
   return (
     <div className="aol-page">
       <aside className="aol-side">
@@ -308,72 +386,15 @@ export default function LaporanPenjualan() {
             <button type="button" onClick={() => setReport(null)}>Daftar Laporan</button>
             <button type="button" onClick={() => { setParamTab("kolom"); setParamOpen(true); }}>Modifikasi</button>
             <button type="button" onClick={refresh} disabled={busy}>Segarkan</button>
-            <button type="button" onClick={() => window.print()}>Cetak</button>
+            <button type="button" onClick={printReportNow} disabled={busy}>Cetak</button>
             <button type="button" onClick={exportReport} disabled={busy}>Ekspor</button>
             <button type="button" onClick={() => { setMemorizeName(report.name || ""); setMemorizeOpen(true); }}>Simpan Format</button>
           </div>
           {banner ? <p className="aol-error">{banner}</p> : null}
           {report.gap ? <p className="aol-note">{report.gap}</p> : null}
           <div className="aol-paper-wrap">
-            <article className="aol-paper">
-              <p className="aol-company">{report.company_name}</p>
-              <h2 className="aol-title">{report.name}</h2>
-              <p className="aol-period">{report.period_label}</p>
-              <p className="aol-branch">{report.branch_label}</p>
-              <table className="aol-table">
-                <thead>
-                  <tr>
-                    {(report.columns || []).map((col) => (
-                      <th key={col.key} className={col.align === "right" ? "num" : undefined}>{col.label}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {(report.rows || []).length === 0 ? (
-                    <tr>
-                      <td className="aol-empty" colSpan={(report.columns || []).length || 1}>Tidak ada data pada periode dan cabang ini.</td>
-                    </tr>
-                  ) : null}
-                  {(report.rows || []).map((row, index) => {
-                    if (row.kind === "group") {
-                      return (
-                        <tr key={`g-${index}`} className="group">
-                          <td colSpan={(report.columns || []).length || 1}>{row.label}</td>
-                        </tr>
-                      );
-                    }
-                    const className = row.kind === "subtotal" ? "subtotal" : undefined;
-                    return (
-                      <tr key={`r-${index}`} className={className}>
-                        {(report.columns || []).map((col) => {
-                          const raw = row.values?.[col.key];
-                          const shown = col.align === "right" ? formatCell(raw) : (raw ?? "");
-                          const drill = col.key === "nomor" && row.drill?.href;
-                          return (
-                            <td key={col.key} className={col.align === "right" ? "num" : undefined}>
-                              {drill ? <Link to={row.drill.href}>{shown}</Link> : shown}
-                            </td>
-                          );
-                        })}
-                      </tr>
-                    );
-                  })}
-                  {(report.rows || []).length > 0 ? (
-                    <tr className="total">
-                      {(report.columns || []).map((col, index) => {
-                        const labelAt = (report.columns || []).findIndex((item) => item.align !== "right");
-                        const showLabel = index === (labelAt === -1 ? 0 : labelAt);
-                        return (
-                          <td key={col.key} className={col.align === "right" ? "num" : undefined}>
-                            {showLabel ? "Total" : totalFor(col.key)}
-                          </td>
-                        );
-                      })}
-                    </tr>
-                  ) : null}
-                </tbody>
-              </table>
-            </article>
+            <ReportSheet report={report} className="aol-paper aol-screen-copy" />
+            {printReport ? <ReportSheet report={printReport} className="aol-paper aol-print-copy" /> : null}
           </div>
           <div className="aol-pager">
             <button type="button" onClick={() => showReport(page - 1)} disabled={busy || page <= 1}>Sebelumnya</button>
@@ -461,24 +482,6 @@ export default function LaporanPenjualan() {
               )}
               <div className="aol-actions">
                 <button type="button" className="primary" onClick={() => showReport(1)} disabled={busy}>Tampilkan</button>
-              </div>
-            </div>
-          </div>
-        </div>
-      ) : null}
-
-      {gapReport ? (
-        <div className="aol-mask" role="presentation">
-          <div className="aol-modal" role="dialog" aria-label={gapReport.name}>
-            <header>
-              {gapReport.name}
-              <button type="button" onClick={() => setGapReport(null)}>Tutup</button>
-            </header>
-            <div className="aol-form">
-              <p>{gapReport.gap || UNIMPLEMENTED_NOTE}</p>
-              <p>Referensi: {gapReport.reference}</p>
-              <div className="aol-actions">
-                <button type="button" className="primary" onClick={() => setGapReport(null)}>Tutup</button>
               </div>
             </div>
           </div>
