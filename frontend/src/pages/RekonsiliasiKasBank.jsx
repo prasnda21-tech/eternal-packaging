@@ -633,7 +633,16 @@ const duplicateExcludeReason = (group, line) => {
   if (lines.length > 2) return "Kandidat lebih dari dua.";
   return "";
 };
-const emptyPendingAccess = { solo_lines: [], outside_period: [], unreachable: [], other_accounts: [], truncated: false, page: 1, page_size: 100, total: 0 };
+const knownCount = (value) => (typeof value === "number" && Number.isFinite(value) ? value : null);
+const emptyPendingAccess = {
+  solo_lines: [], outside_period: [], unreachable: [], other_accounts: [],
+  truncated: false, page: 1, page_size: 100, total: 0, pending_total: null, review_revision: "", stale: false,
+};
+const emptyGroupAccess = {
+  groups: [], page: 1, page_size: 20, group_total: 0, truncated: false,
+  pending_total: null, review_revision: "", stale: false,
+};
+const groupIdentity = (group) => group?.group_key || (group?.lines || []).map((line) => line?.statement_line_id).filter(Boolean).join("|");
 const appendPendingLines = (current, incoming) => {
   const append = (key) => {
     const seen = new Set((current[key] || []).map((line) => line.statement_line_id));
@@ -655,6 +664,27 @@ const appendPendingLines = (current, incoming) => {
     other_accounts: Array.isArray(incoming?.other_accounts) ? incoming.other_accounts : (current.other_accounts || []),
     page: Number(incoming?.page) || Number(current.page || 1) + 1,
     truncated: Boolean(incoming?.truncated),
+    pending_total: knownCount(incoming?.pending_total) ?? knownCount(current.pending_total),
+    review_revision: incoming?.review_revision || current.review_revision || "",
+    stale: false,
+  };
+};
+const appendGroups = (current, incoming) => {
+  const seen = new Set((current.groups || []).map(groupIdentity));
+  const groups = [...(current.groups || [])];
+  (incoming?.groups || []).forEach((group) => {
+    const id = groupIdentity(group);
+    if (!id || seen.has(id)) return;
+    seen.add(id);
+    groups.push(group);
+  });
+  return {
+    ...emptyGroupAccess,
+    ...incoming,
+    groups,
+    pending_total: knownCount(incoming?.pending_total) ?? knownCount(current.pending_total),
+    review_revision: incoming?.review_revision || current.review_revision || "",
+    stale: false,
   };
 };
 
@@ -674,7 +704,7 @@ export default function RekonsiliasiKasBank() {
   const [pane, setPane] = useState("bank");
   const [workspace, setWorkspace] = useState(null);
   const [imports, setImports] = useState([]);
-  const [duplicateGroups, setDuplicateGroups] = useState([]);
+  const [groupAccess, setGroupAccess] = useState(emptyGroupAccess);
   const [pendingAccess, setPendingAccess] = useState(emptyPendingAccess);
   const [duplicateMessage, setDuplicateMessage] = useState("");
   const [decisionReasons, setDecisionReasons] = useState({});
@@ -786,9 +816,13 @@ export default function RekonsiliasiKasBank() {
       if (!shouldApplyResponse(token, requestRef.current)) return;
       setWorkspace(ws);
       setImports(Array.isArray(history?.items) ? history.items : []);
-      setDuplicateGroups(review.ok && Array.isArray(review.body?.groups) ? review.body.groups : []);
-      setPendingAccess(pending.ok && pending.body ? { ...emptyPendingAccess, ...pending.body } : emptyPendingAccess);
-      const reviewMessages = [review.ok ? "" : review.message, pending.ok ? "" : pending.message].filter(Boolean);
+      setGroupAccess(review.ok && review.body
+        ? { ...emptyGroupAccess, ...review.body, groups: Array.isArray(review.body.groups) ? review.body.groups : [] }
+        : emptyGroupAccess);
+      setPendingAccess(pending.ok && pending.body
+        ? { ...emptyPendingAccess, ...pending.body, pending_total: knownCount(pending.body.pending_total) }
+        : emptyPendingAccess);
+      const reviewMessages = [...new Set([review.ok ? "" : review.message, pending.ok ? "" : pending.message].filter(Boolean))];
       setDuplicateMessage(reviewMessages.join(" "));
       setPhase("ready");
     } catch (ex) {
@@ -796,7 +830,7 @@ export default function RekonsiliasiKasBank() {
       const parsed = errPayload(ex);
       setWorkspace(null);
       setImports([]);
-      setDuplicateGroups([]);
+      setGroupAccess(emptyGroupAccess);
       setPendingAccess(emptyPendingAccess);
       setDuplicateMessage("");
       if (parsed.status === 403) setPhase("forbidden");
@@ -805,6 +839,15 @@ export default function RekonsiliasiKasBank() {
       setMessage(parsed.message);
     }
   }, []);
+
+  const reloadAfterReviewChange = async (notice) => {
+    const bankId = cashBankId;
+    const start = startDate;
+    const end = endDate;
+    const query = q;
+    await loadWorkspace(bankId, start, end, query);
+    setDuplicateMessage(notice || "Daftar berubah. Muat ulang dari awal.");
+  };
 
   const loadMorePending = async () => {
     if (!cashBankId || busy || !pendingAccess.truncated) return;
@@ -817,9 +860,41 @@ export default function RekonsiliasiKasBank() {
         start_date: startDate,
         end_date: endDate,
         page: nextPage,
+        review_revision: pendingAccess.review_revision || undefined,
       });
       if (token !== requestRef.current) return;
+      if (body?.stale) {
+        await reloadAfterReviewChange(body.message);
+        return;
+      }
       setPendingAccess((current) => appendPendingLines(current, body || {}));
+    } catch (ex) {
+      if (token !== requestRef.current) return;
+      setDuplicateMessage(errPayload(ex).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const loadMoreGroups = async () => {
+    if (!cashBankId || busy || !groupAccess.truncated) return;
+    const token = requestRef.current;
+    const nextPage = Number(groupAccess.page || 1) + 1;
+    setBusy(true);
+    try {
+      const body = await api.cashBankDuplicateGroups({
+        cash_bank_id: cashBankId,
+        start_date: startDate,
+        end_date: endDate,
+        page: nextPage,
+        review_revision: groupAccess.review_revision || undefined,
+      });
+      if (token !== requestRef.current) return;
+      if (body?.stale) {
+        await reloadAfterReviewChange(body.message);
+        return;
+      }
+      setGroupAccess((current) => appendGroups(current, body || {}));
     } catch (ex) {
       if (token !== requestRef.current) return;
       setDuplicateMessage(errPayload(ex).message);
@@ -1219,10 +1294,13 @@ export default function RekonsiliasiKasBank() {
 
   const currency = workspace?.currency_code;
   const money = (value, code = currency) => reconMoney(value, code);
-  const pendingDuplicateCount = duplicateGroups.reduce((total, group) => total + (group.lines || []).filter((line) => line.duplicate_status === "pending_review").length, 0)
+  const duplicateGroups = groupAccess.groups || [];
+  const pendingTotal = knownCount(pendingAccess.pending_total) ?? knownCount(groupAccess.pending_total);
+  const shownPending = duplicateGroups.reduce((total, group) => total + (group.lines || []).filter((line) => line.duplicate_status === "pending_review").length, 0)
     + (pendingAccess.solo_lines || []).length
     + (pendingAccess.outside_period || []).length
     + (pendingAccess.unreachable || []).length;
+  const pendingBadge = pendingTotal == null ? "—" : String(pendingTotal);
   const visibleBank = bankRows.filter((row) => !row.claim_id);
   const visibleBook = bookRows.filter((row) => !row.claim_id);
   const suggestionList = suggestions?.suggestions || [];
@@ -1354,8 +1432,11 @@ export default function RekonsiliasiKasBank() {
       </div>
       <p className="recon-context">Buku Besar sampai {reconDate(endDate)}. Pencocokan transaksi tidak menyatakan saldo selesai direkonsiliasi.</p>
       {ready && <p className="recon-context" data-testid="kas-bank-period-close">{workspace?.period_close_note || "Penutupan periode rekonsiliasi belum disediakan."} {workspace?.pair_saved_note || "Pasangan tersimpan bukan rekonsiliasi saldo selesai."}</p>}
-      {ready && (pendingAccess.other_accounts || []).length > 0 && <p className="recon-notice" data-testid="kas-bank-pending-other-accounts" role="status">Rekening lain masih memiliki baris menunggu keputusan: {pendingAccess.other_accounts.map((item) => `${item.name || "Rekening tidak diketahui"} (${item.pending_count})`).join(", ")}. Badge periode ini tidak menghitung rekening lain.</p>}
-      {ready && pendingAccess.truncated && <p className="recon-notice" role="status">Daftar baris menunggu keputusan terpotong. Jangan anggap daftar ini seluruh pending_review. <button type="button" className="ghost sm" data-testid="kas-bank-pending-more" onClick={loadMorePending} disabled={busy}>Muat baris berikutnya</button></p>}
+      {ready && duplicateMessage && <p className="recon-notice" data-testid="kas-bank-duplicate-message" role="status">{duplicateMessage}</p>}
+      {ready && pendingTotal != null && <p className="recon-notice" data-testid="kas-bank-pending-shown" role="status">Ditampilkan {shownPending} dari {pendingTotal} baris menunggu keputusan.</p>}
+      {ready && (pendingAccess.other_accounts || []).length > 0 && <p className="recon-notice" data-testid="kas-bank-pending-other-accounts" role="status">Rekening lain masih memiliki baris menunggu keputusan: {pendingAccess.other_accounts.map((item) => `${item.name || "Rekening tidak diketahui"} (${item.pending_count})`).join(", ")}. Badge rekening ini tidak menghitung rekening lain.</p>}
+      {ready && groupAccess.truncated && <p className="recon-notice" role="status">Masih ada kelompok duplikat yang belum ditampilkan. <button type="button" className="ghost sm" data-testid="kas-bank-groups-more" onClick={loadMoreGroups} disabled={busy}>Muat kelompok berikutnya</button></p>}
+      {ready && pendingAccess.truncated && <p className="recon-notice" role="status">Masih ada baris menunggu keputusan yang belum ditampilkan. <button type="button" className="ghost sm" data-testid="kas-bank-pending-more" onClick={loadMorePending} disabled={busy}>Muat baris berikutnya</button></p>}
       {ready && cashBankId && !currency && <div className="kb-pair-note recon-notice" role="status">
         Mata uang rekening belum ditetapkan. Impor dapat dipratinjau; pencocokan belum tersedia.
         {canManage && <span className="kb-currency-set"><input aria-label="Kode mata uang" value={currencyDraft} onChange={(e) => setCurrencyDraft(e.target.value.toUpperCase())} placeholder="Contoh: IDR" maxLength={3} /><button type="button" className="ghost sm" onClick={saveCurrency} disabled={busy}>Simpan mata uang</button></span>}
@@ -1370,7 +1451,7 @@ export default function RekonsiliasiKasBank() {
       </div>}
 
       <div className="kb-pair-tabs" role="tablist" aria-label="Tampilan rekonsiliasi">
-        {[["unmatched", "Belum Cocok"], ["matched", "Sudah Cocok"], ["import", "Riwayat Impor"], ["duplicates", `Review Duplikat (${pendingDuplicateCount})`]].map(([id, label]) => <button key={id} id={`recon-tab-${id}`} role="tab" aria-selected={tab === id} aria-controls={`recon-panel-${id}`} type="button" className={tab === id ? "is-active" : ""} onClick={() => setTab(id)}>{label}</button>)}
+        {[["unmatched", "Belum Cocok"], ["matched", "Sudah Cocok"], ["import", "Riwayat Impor"], ["duplicates", `Review Duplikat (${pendingBadge})`]].map(([id, label]) => <button key={id} id={`recon-tab-${id}`} role="tab" aria-selected={tab === id} aria-controls={`recon-panel-${id}`} type="button" className={tab === id ? "is-active" : ""} onClick={() => setTab(id)}>{label}</button>)}
       </div>
 
       {tab === "unmatched" && <div className="recon-tab-body" role="tabpanel" id="recon-panel-unmatched" aria-labelledby="recon-tab-unmatched">
@@ -1510,7 +1591,6 @@ export default function RekonsiliasiKasBank() {
       {tab === "duplicates" && <section className="recon-tab-body recon-history" role="tabpanel" id="recon-panel-duplicates" aria-labelledby="recon-tab-duplicates" data-testid="kas-bank-duplicate-review">
         <div className="recon-pane-title"><h2>Review Duplikat</h2><span>Keputusan manual. Baris yang dikecualikan tetap tersimpan.</span></div>
         {!ready && <p className="recon-empty" role="status">{phase === "loading" ? "Memuat kelompok duplikat…" : "Kelompok duplikat tidak dapat dimuat."}</p>}
-        {ready && duplicateMessage && <p className="recon-notice" role="status">{duplicateMessage}</p>}
         {ready && !duplicateMessage && !duplicateGroups.length && <p className="recon-empty" role="status">Tidak ada kelompok duplikat pada periode ini.</p>}
         {ready && duplicateGroups.map((group) => {
           const lines = group.lines || [];
@@ -1544,7 +1624,7 @@ export default function RekonsiliasiKasBank() {
             );
           };
           return (
-            <article key={`${group.business_date}|${group.direction}|${group.amount}|${group.normalized_description}`} className="kb-dup-group" data-testid="kas-bank-duplicate-group">
+            <article key={group.group_key || `${group.business_date}|${group.direction}|${group.amount}|${group.normalized_description}|${group.normalized_reference || ""}`} className="kb-dup-group" data-testid="kas-bank-duplicate-group">
               <header>
                 <h3>{group.description || "—"}</h3>
                 <p>{money(group.amount)} · {group.business_date === "PEND" ? "PEND" : reconDate(group.business_date)} · {duplicateDirection(group.direction)} · {group.candidate_count} kandidat</p>

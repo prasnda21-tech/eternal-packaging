@@ -59,6 +59,8 @@ from services.cash_bank_reconciliation import (
     update_draft_reconciliation,
 )
 from services.cash_bank_statement import (
+    DUPLICATE_GROUP_PAGE_DEFAULT,
+    DUPLICATE_GROUP_PAGE_MAX,
     PENDING_REVIEW_PAGE_DEFAULT,
     PENDING_REVIEW_PAGE_MAX,
     StatementConflictError,
@@ -889,12 +891,21 @@ def register_cash_bank_routes(
         cash_bank_id: str = Query(..., min_length=1),
         start_date: str = Query(..., min_length=10, max_length=10),
         end_date: str = Query(..., min_length=10, max_length=10),
+        page: int = Query(1, ge=1),
+        page_size: int = Query(DUPLICATE_GROUP_PAGE_DEFAULT, ge=1, le=DUPLICATE_GROUP_PAGE_MAX),
+        review_revision: str = Query("", max_length=400),
         user=Depends(require_perm(PERM_VIEW)),
     ):
         db = get_db()
         try:
             return await list_duplicate_groups(
-                db, cash_bank_id=cash_bank_id, start=start_date, end=end_date,
+                db,
+                cash_bank_id=cash_bank_id,
+                start=start_date,
+                end=end_date,
+                page=page,
+                page_size=page_size,
+                review_revision=review_revision,
             )
         except StatementValidationError as exc:
             raise HTTPException(400, str(exc)) from exc
@@ -906,6 +917,7 @@ def register_cash_bank_routes(
         end_date: str = Query(..., min_length=10, max_length=10),
         page: int = Query(1, ge=1),
         page_size: int = Query(PENDING_REVIEW_PAGE_DEFAULT, ge=1, le=PENDING_REVIEW_PAGE_MAX),
+        review_revision: str = Query("", max_length=400),
         user=Depends(require_perm(PERM_VIEW)),
     ):
         db = get_db()
@@ -917,6 +929,7 @@ def register_cash_bank_routes(
                 end=end_date,
                 page=page,
                 page_size=page_size,
+                review_revision=review_revision,
             )
         except StatementValidationError as exc:
             raise HTTPException(400, str(exc)) from exc
