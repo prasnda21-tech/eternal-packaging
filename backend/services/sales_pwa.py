@@ -51,6 +51,9 @@ from services.tanggal_pengiriman import (
     parse_calendar_date,
 )
 from services.customer_tracking import public_design_approval
+from services.division_tasks import _design_status_label
+from quantity_rules import is_fully_delivered
+from workflow_gates import design_ok
 from services.sales_user_mapping import (
     SALES_PWA_ROLE,
     is_sales_pwa_role,
@@ -119,6 +122,7 @@ LIST_PROJECTION = {
     "payment_bypassed": 1,
     "payment_files": 1,
     "customer_approval": 1,
+    "customer_approval_history": 1,
     "tracking_token": 1,
     "screener_info": 1,
     "helper_prep": 1,
@@ -367,12 +371,14 @@ def select_sales_pwa_order_rows(
     status: str = "",
     date_from: str = "",
     date_to: str = "",
+    design_queue: bool = False,
 ) -> tuple:
     """Return rows for the selected status, and chip totals for the same other filters.
 
     Search, stage, date, buffer, and progress narrow the set first. Chip totals
     are the status breakdown of that set, not of every owned PO. The selected
     status then picks the rows. Status membership rules are unchanged.
+    design_queue keeps only POs that still need design approval.
     """
     customer_needle = _norm(customer_q)
     po_needle = _norm(po_q)
@@ -383,6 +389,8 @@ def select_sales_pwa_order_rows(
     filtered: List[dict] = []
     counts = _empty_status_counts()
     for order in raw:
+        if design_queue and not design_approval_need(order):
+            continue
         workflow = status_po_workflow(order)
         if not _matches_list_constraints(
             order,
@@ -695,6 +703,59 @@ def _approval_snapshot(order: dict) -> Optional[dict]:
     return snap if isinstance(snap, dict) else None
 
 
+# Same three outcomes as the designer queue label. Membership itself is the
+# active waiting-design rule: not cancelled, not fully delivered, and the
+# Approval Design gate is still open (design_ok).
+_DESIGN_NEED = {
+    "Belum ada design": ("waiting_design", "Menunggu desain"),
+    "Menunggu approval": ("waiting_customer", "Menunggu approval customer"),
+    "Revisi": ("needs_revision", "Perlu revisi"),
+}
+DESIGN_QUEUE_PREVIEW = 4
+
+
+def _queue_design_name(order: dict) -> str:
+    """File the open approval is bound to, otherwise the latest design file."""
+    snap = _approval_snapshot(order) or {}
+    bound = _bound_design_name(order, snap.get("design_version"))
+    if bound:
+        return bound
+    files = [f for f in (order.get("design_files") or []) if isinstance(f, dict)]
+    if not files:
+        return ""
+    return str(files[-1].get("name") or files[-1].get("original_filename") or "").strip()
+
+
+def design_approval_need(order: Optional[dict]) -> Optional[dict]:
+    """PO still needs design approval. None when the gate is finished or the PO is closed.
+
+    Finished means design_ok (internal approve, customer approve, or bypass).
+    Closed means cancelled or fully delivered, matching the dashboard
+    waiting-design partition. The label distinguishes waiting for a design,
+    waiting for the customer, and a revision, using the designer status rule.
+    """
+    if not isinstance(order, dict) or order.get("cancelled"):
+        return None
+    if is_fully_delivered(order):
+        return None
+    if design_ok(order):
+        return None
+    mapped = _DESIGN_NEED.get(_design_status_label(order))
+    if not mapped:
+        return None
+    code, label = mapped
+    row = {"code": code, "label": label}
+    name = _queue_design_name(order)
+    if name:
+        row["design_name"] = name
+    return row
+
+
+def _design_queue_sort_key(order: dict):
+    day, po_number = _list_sort_pair(order, "order_date")
+    return (day, po_number, str(order.get("id") or ""))
+
+
 def design_approval_rows(order: dict, records: Optional[List[dict]] = None) -> List[dict]:
     """Approval rows for one owned order.
 
@@ -807,6 +868,7 @@ def serialize_list_row(order: dict, deliveries: List[dict], invoices: List[dict]
         "progress_percent": _workflow_progress(workflow),
         "item_names": item_line_names(order),
         "design_approvals": design_approval_rows(order),
+        "design_need": design_approval_need(order),
         "documents": counts,
         "partial_delivery": effective_workflow_status(order) in ("Parsial Terkirim", "SJ parsial"),
     }
@@ -830,6 +892,7 @@ async def list_sales_pwa_orders(
     direction: str = "desc",
     skip: int = 0,
     limit: int = 50,
+    design_queue: bool = False,
 ) -> dict:
     require_sales_pwa(user)
     match = {"cancelled": {"$ne": True}, **sales_owner_match(user)}
@@ -850,11 +913,15 @@ async def list_sales_pwa_orders(
         status=status,
         date_from=date_from,
         date_to=date_to,
+        design_queue=design_queue,
     )
 
-    reverse = str(direction or "asc").lower() == "desc"
-    sort_key = (sort or "order_date").strip()
-    filtered.sort(key=lambda order: _list_sort_pair(order, sort_key), reverse=reverse)
+    if design_queue:
+        filtered.sort(key=_design_queue_sort_key, reverse=True)
+    else:
+        reverse = str(direction or "asc").lower() == "desc"
+        sort_key = (sort or "order_date").strip()
+        filtered.sort(key=lambda order: _list_sort_pair(order, sort_key), reverse=reverse)
 
     skip = max(0, int(skip or 0))
     limit = max(1, min(int(limit or 50), 200))
@@ -926,11 +993,14 @@ async def sales_pwa_field_actions(db, user: dict, *, month: str = "") -> dict:
     design, payment, selesai = _field_action_buckets(raw, date_from, date_to)
     design.sort(key=lambda order: _list_sort_pair(order, "order_date"), reverse=True)
     payment.sort(key=lambda order: _list_sort_pair(order, "order_date"), reverse=True)
+    queue = [order for order in raw if design_approval_need(order)]
+    queue.sort(key=_design_queue_sort_key, reverse=True)
     design_page = design[:4]
     payment_page = payment[:4]
+    queue_page = queue[:DESIGN_QUEUE_PREVIEW]
     combined: List[dict] = []
     seen = set()
-    for order in design_page + payment_page:
+    for order in design_page + payment_page + queue_page:
         oid = order.get("id")
         if not oid or oid in seen:
             continue
@@ -946,6 +1016,10 @@ async def sales_pwa_field_actions(db, user: dict, *, month: str = "") -> dict:
         "payment": {
             "orders": [by_id[order["id"]] for order in payment_page if order.get("id") in by_id],
             "total": len(payment),
+        },
+        "design_queue": {
+            "orders": [by_id[order["id"]] for order in queue_page if order.get("id") in by_id],
+            "total": len(queue),
         },
         "selesai": selesai,
         "month": _month_key(month),

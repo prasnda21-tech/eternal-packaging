@@ -10,7 +10,7 @@ import { NAV_KEYS, cashBankNavVisible, employeeAdminNavVisible, hrPayrollNavVisi
 import { inventoryValueRouteAllowed } from "./lib/inventoryValueLink";
 import { SPK_ACCESS_KEYS } from "./lib/spk";
 import "./lib/productRequestLeaveGuard";
-import { isSalesPwaRole } from "./lib/salesPwa";
+import { isCustomerDesignApprovalPath, isSalesPwaRole } from "./lib/salesPwa";
 import "@/App.css";
 import "@/ui-system.css";
 
@@ -118,6 +118,7 @@ function SalesEternalRedirect() {
   if (loading || !user) return null;
   if (!isSalesPwaRole(user)) return null;
   if (location.pathname === "/login") return null;
+  if (isCustomerDesignApprovalPath(location.pathname)) return null;
   if (location.pathname === "/sales" || location.pathname.startsWith("/sales/")) return null;
   return <Navigate to="/sales" replace />;
 }

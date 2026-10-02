@@ -107,6 +107,7 @@ export default function SalesPwaOrdersPage() {
     progress_min: initial.filters.progress_min,
     buffer: initial.filters.buffer,
   });
+  const [designQueue, setDesignQueue] = useState(Boolean(initial.filters.design_queue));
   const [filterOpen, setFilterOpen] = useState(false);
   const [stageOpen, setStageOpen] = useState(false);
   const [stageDraft, setStageDraft] = useState(initial.filters.stage);
@@ -131,6 +132,7 @@ export default function SalesPwaOrdersPage() {
     date_to: columns.date_to,
     progress_min: columns.progress_min,
     buffer: columns.buffer,
+    design_queue: designQueue,
   });
   const searchPending = q.trim() !== debouncedQ;
   filtersRef.current = {
@@ -142,6 +144,7 @@ export default function SalesPwaOrdersPage() {
     date_to: columns.date_to,
     progress_min: columns.progress_min,
     buffer: columns.buffer,
+    design_queue: designQueue,
   };
 
   const rememberPosition = () => {
@@ -159,7 +162,7 @@ export default function SalesPwaOrdersPage() {
 
   useEffect(() => {
     writeSalesPwaPoListState(filtersRef.current, scrollYRef.current);
-  }, [q, status, columns]);
+  }, [q, status, columns, designQueue]);
 
   useEffect(() => {
     const onScroll = () => {
@@ -179,6 +182,7 @@ export default function SalesPwaOrdersPage() {
     date_to: columns.date_to,
     progress_min: columns.progress_min === "" ? undefined : Number(columns.progress_min),
     buffer: columns.buffer,
+    ...(designQueue ? { design_queue: "1" } : {}),
     sort: "order_date",
     direction: "desc",
     skip,
@@ -337,6 +341,19 @@ export default function SalesPwaOrdersPage() {
             </button>
           </div>
         ) : null}
+        {designQueue ? (
+          <div className="spwa-active-stage" data-testid="sales-design-queue">
+            <span>Butuh Approval Desain</span>
+            <button
+              type="button"
+              aria-label="Hapus filter approval desain"
+              data-testid="sales-design-queue-clear"
+              onClick={() => setDesignQueue(false)}
+            >
+              <X size={14} />
+            </button>
+          </div>
+        ) : null}
         {!narrow && (
           <p className="spwa-filter-hint"><SlidersHorizontal size={13} /> Filter rinci tersedia langsung pada header tabel.</p>
         )}
@@ -381,6 +398,8 @@ export default function SalesPwaOrdersPage() {
                     ? <span className="spwa-buffer-badge">Buffer Stock</span>
                     : <span className="spwa-buffer-plain">Bukan buffer stock</span>}
                 </div>
+                {o.design_need?.label ? <div className="spwa-po-card-line" data-testid={`sales-po-design-need-${o.id}`}><span>{o.design_need.label}</span></div> : null}
+                {o.design_need?.design_name ? <div className="spwa-po-card-line"><span>{o.design_need.design_name}</span></div> : null}
                 <SalesPwaDesignApproval order={o} expectMissing={orderExpectsDesignLink(o)} />
                 <div className="spwa-po-card-actions">
                   <button
@@ -469,6 +488,8 @@ export default function SalesPwaOrdersPage() {
                         </span>
                       </Link>
                       <div className="spwa-row-approval">
+                        {o.design_need?.label ? <div data-testid={`sales-po-design-need-${o.id}`}>{o.design_need.label}</div> : null}
+                        {o.design_need?.design_name ? <div>{o.design_need.design_name}</div> : null}
                         <SalesPwaDesignApproval order={o} expectMissing={orderExpectsDesignLink(o)} />
                       </div>
                     </td>
