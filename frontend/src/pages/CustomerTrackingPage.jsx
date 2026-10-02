@@ -13,7 +13,6 @@ import {
   documentTiles,
   formatItemQty,
   formatTrackingDate,
-  formatTrackingDateShort,
   hasApprovalCta,
   itemLineLabel,
   stageBlurb,
@@ -23,7 +22,8 @@ import {
   trackingStatusClass,
   workflowRailModel,
 } from "../lib/customerTracking";
-import { displayOrDash, historyTimeLabel } from "../lib/deliveryHistory";
+import { formatTrackingPageDateTime } from "../lib/constants";
+import { displayOrDash } from "../lib/deliveryHistory";
 
 function openPublicHref(href, { image, onPreview }) {
   const url = publicApiUrl(href);
@@ -104,7 +104,8 @@ function TrackingSheet({ title, testId, onClose, children }) {
 }
 
 export default function CustomerTrackingPage() {
-  const { token } = useParams();
+  const params = useParams();
+  const token = String(params.code || params.token || "").trim();
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
   const [data, setData] = useState(null);
@@ -165,7 +166,7 @@ export default function CustomerTrackingPage() {
   const ctaPath = approvalActionPath(approval);
   const tiles = documentTiles(data);
   const headline = currentHeadline(data?.workflow, approval);
-  const estimasi = formatTrackingDateShort(summary.deadline || summary.estimated_delivery);
+  const estimasi = formatTrackingDate(summary.deadline || summary.estimated_delivery);
 
   const copyPo = async () => {
     const value = data?.order_number;
@@ -411,7 +412,7 @@ export default function CustomerTrackingPage() {
                         <span className="muted small">
                           Bertanda tangan
                           {d.recipient_name ? ` · ${d.recipient_name}` : ""}
-                          {d.signed_at ? ` · ${historyTimeLabel(d.signed_at)}` : ""}
+                          {d.signed_at ? ` · ${formatTrackingPageDateTime(d.signed_at) || "—"}` : ""}
                         </span>
                       </div>
                       <div className="tracking-doc-actions" data-testid={`tracking-sj-${d.id}-actions`}>
@@ -476,7 +477,7 @@ export default function CustomerTrackingPage() {
                 <div data-testid="tracking-reschedule">
                   <dt>Pengiriman dijadwalkan ulang</dt>
                   <dd data-testid="tracking-reschedule-date">
-                    Tanggal: {data.delivery_reschedule.scheduled_date}
+                    Tanggal: {formatTrackingDate(data.delivery_reschedule.scheduled_date) || "—"}
                   </dd>
                 </div>
               )}
@@ -526,7 +527,7 @@ export default function CustomerTrackingPage() {
                     <dt>Nama Driver</dt><dd data-testid={`tracking-history-driver-${i}`}>{displayOrDash(row.driver_name)}</dd>
                     <dt>Barang / Item</dt><dd data-testid={`tracking-history-item-${i}`}>{displayOrDash(row.item)}</dd>
                     <dt>Qty</dt><dd data-testid={`tracking-history-qty-${i}`}>{row.qty != null ? Number(row.qty).toLocaleString("id-ID") : "—"}</dd>
-                    <dt>Waktu</dt><dd data-testid={`tracking-history-time-${i}`}>{historyTimeLabel(row.time)}</dd>
+                    <dt>Waktu</dt><dd data-testid={`tracking-history-time-${i}`}>{formatTrackingPageDateTime(row.time) || "—"}</dd>
                     <dt>Plat Kendaraan</dt><dd data-testid={`tracking-history-plate-${i}`}>{displayOrDash(row.vehicle_plate)}</dd>
                   </dl>
                   {(row.photos || []).length > 0 && (
@@ -567,7 +568,7 @@ export default function CustomerTrackingPage() {
                       </dd>
                       <dt>Waktu Ditandatangani</dt>
                       <dd data-testid={`tracking-evidence-signed-at-${i}`}>
-                        {historyTimeLabel(rec?.recipient_signed_at || ev.time)}
+                        {formatTrackingPageDateTime(rec?.recipient_signed_at || ev.time) || "—"}
                       </dd>
                       {drv?.driver_name && (
                         <>

@@ -1,9 +1,12 @@
+import { formatTrackingPageDate, formatTrackingPageDateTime } from "./constants";
+import { formatInvoiceDate } from "./trackingInvoices";
 import {
   approvalActionPath,
   compactItemSummary,
   currentHeadline,
   documentRows,
   documentTiles,
+  formatTrackingDate,
   hasApprovalCta,
   itemLineLabel,
   railTone,
@@ -194,5 +197,29 @@ describe("customer tracking status labels", () => {
     expect(tiles.find((t) => t.key === "payment")).toMatchObject({ available: false, href: "", status: "Belum tersedia" });
     expect(tiles.find((t) => t.key === "sj").available).toBe(false);
     expect(tiles.find((t) => t.key === "ship").available).toBe(false);
+  });
+});
+
+describe("Live Tracking date display", () => {
+  test("business dates render dd/mm/yyyy without shifting the calendar day", () => {
+    expect(formatTrackingDate("2026-10-02")).toBe("02/10/2026");
+    expect(formatTrackingPageDate("2026-10-02T00:00:00.000Z")).toBe("02/10/2026");
+    expect(formatInvoiceDate("2026-10-02")).toBe("02/10/2026");
+    expect(formatTrackingDate("2026-10-02")).not.toBe("2 Oktober 2026");
+  });
+
+  test("timestamps stay on the application clock in Asia/Jakarta", () => {
+    expect(formatTrackingPageDateTime("2026-10-01T17:30:00Z")).toBe("02/10/2026 00:30");
+    expect(formatTrackingPageDateTime("2026-10-02T00:30:00+07:00")).toBe("02/10/2026 00:30");
+    expect(formatTrackingPageDateTime("2026-10-02")).toBe("02/10/2026");
+  });
+
+  test("empty and invalid dates stay blank", () => {
+    for (const value of ["", null, undefined, "bukan-tanggal", "Invalid Date", "2026-13-40"]) {
+      expect(formatTrackingDate(value)).toBe("");
+      expect(formatTrackingPageDateTime(value)).toBe("");
+      expect(formatInvoiceDate(value)).toBe("");
+      expect(formatTrackingDate(value)).not.toMatch(/Invalid Date/);
+    }
   });
 });

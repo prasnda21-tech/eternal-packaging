@@ -1,12 +1,7 @@
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"];
+import { formatTrackingPageDate } from "./constants";
 
 export function formatInvoiceDate(value) {
-  const raw = String(value || "").trim().slice(0, 10);
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw);
-  if (!match) return raw;
-  const month = MONTHS[Number(match[2]) - 1];
-  if (!month) return raw;
-  return `${match[3]} ${month} ${match[1]}`;
+  return formatTrackingPageDate(value);
 }
 
 export function formatInvoiceMoney(value) {

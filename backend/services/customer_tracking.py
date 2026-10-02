@@ -18,6 +18,7 @@ from quantity_rules import (
     valid_delivery_proofs,
     MAX_PUBLIC_DELIVERY_PROOFS,
 )
+from services.tracking_public_url import tracking_legacy_path, tracking_public_path
 from services.workflow_stage_status import workflow_stage_rows
 
 PUBLIC_NOT_FOUND = "Tidak ditemukan"
@@ -30,6 +31,7 @@ TOKEN_MIN_LEN = 16
 TOKEN_MAX_LEN = 128
 ENSURE_ATTEMPTS = 8
 _TRACKING_LOG_RE = re.compile(r"(/api/public/tracking/)([^/\s\"'?]+)")
+_TRACKING_PAGE_LOG_RE = re.compile(r"(/t/)([^/\s\"'?]+)/([^/\s\"'?]+)/([^/\s\"'?]+)")
 
 
 def new_tracking_token() -> str:
@@ -47,7 +49,12 @@ def mask_token(token: Optional[str]) -> str:
 def redact_tracking_in_text(text: str) -> str:
     def _sub(m):
         return m.group(1) + mask_token(m.group(2))
-    return _TRACKING_LOG_RE.sub(_sub, text or "")
+
+    def _page(m):
+        return f"{m.group(1)}{m.group(2)}/{m.group(3)}/{mask_token(m.group(4))}"
+
+    red = _TRACKING_LOG_RE.sub(_sub, text or "")
+    return _TRACKING_PAGE_LOG_RE.sub(_page, red)
 
 
 class TrackingAccessLogFilter(logging.Filter):
@@ -896,14 +903,27 @@ def build_router(deps: dict) -> APIRouter:
 
     @router.post("/orders/{order_id}/tracking-link")
     async def tracking_link(order_id: str, user=Depends(current_user)):
+        """Share link for one order.
+
+        Reuses the stored tracking token. Customer and PO segments are labels
+        computed at share time, so an existing link's code keeps working after
+        a rename and no backfill is required. GET of the public page does not
+        call this endpoint and does not create a token.
+        """
         await require_perm(user, "po.view")
-        order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+        active = get_db()
+        order = await active.orders.find_one({"id": order_id}, {"_id": 0})
         if not order:
             raise HTTPException(404, "PO tidak ditemukan")
-        token = await ensure_tracking_token(db, order)
+        token = await ensure_tracking_token(active, order)
+        public_path, po_label = tracking_public_path(order, token)
+        legacy = tracking_legacy_path(token)
         return {
             "token": token,
-            "path": f"/tracking/{token}",
+            "path": public_path,
+            "public_path": public_path,
+            "legacy_path": legacy,
+            "po_label": po_label,
         }
 
     return router

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { FileText } from "lucide-react";
 import api from "../lib/api";
+import { formatTrackingPageDate } from "../lib/constants";
 import InAppDocumentViewer from "./InAppDocumentViewer";
 
 function money(amount) {
@@ -95,7 +96,7 @@ export default function TrackingPaymentProofs({ token }) {
                   <strong>{row.receipt_number || "Penerimaan"}</strong>
                   <span className="muted small">
                     {" "}
-                    {row.receipt_date || "—"}
+                    {formatTrackingPageDate(row.receipt_date) || "—"}
                     {" · "}
                     {money(row.amount)}
                     {" · "}

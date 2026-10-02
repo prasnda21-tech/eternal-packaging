@@ -97,6 +97,8 @@ describe("Customer tracking one-screen dashboard", () => {
     expect(host.querySelector('[data-testid="customer-tracking-page"]')).toBeTruthy();
     expect(host.querySelector('[data-testid="tracking-po-summary"]')).toBeTruthy();
     expect(host.querySelector('[data-testid="tracking-order-number"]').textContent).toBe("PO-2025-00123");
+    expect(host.querySelector('[data-testid="tracking-deadline"]').textContent).toContain("25/09/2025");
+    expect(host.textContent).not.toMatch(/Invalid Date/);
     expect(host.querySelector('[data-testid="tracking-approval-cta"]').getAttribute("href"))
       .toBe("/customer/design-approval/tok-public-aaaaaaaaaaaaaaaa");
     expect(host.querySelector('[data-testid="tracking-workflow"]')).toBeTruthy();

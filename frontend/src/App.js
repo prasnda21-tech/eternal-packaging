@@ -241,6 +241,7 @@ export default function App() {
           {/* Public — customer pages (no login required) */}
           <Route path="/customer/design-approval/:token" element={<PublicCustomerApproval />} />
           <Route path="/tracking/:token" element={<CustomerTrackingPage />} />
+          <Route path="/t/:customerSlug/:poSlug/:code" element={<CustomerTrackingPage />} />
           <Route path="/harga" element={<PublicHargaPage />} />
           <Route path="/harga/:groupPublicId" element={<PublicHargaPage />} />
           <Route element={<Protected><MobileOperationalLayout /></Protected>}>
