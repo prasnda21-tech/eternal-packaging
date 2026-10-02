@@ -721,7 +721,8 @@ export const api = {
   reverseSalesCustomerCredit: (id) =>
     client.post(`/sales-receipts/customer-credit/applications/${encodeURIComponent(id)}/reverse`).then((r) => r.data),
 
-  listSalesInvoices: (params = {}) => client.get(`/sales-invoices`, { params }).then((r) => r.data),
+  listSalesInvoices: (params = {}, config = {}) =>
+    client.get(`/sales-invoices`, { ...config, params }).then((r) => r.data),
   getSalesInvoice: (id) => client.get(`/sales-invoices/${encodeURIComponent(id)}`).then((r) => r.data),
   getPoInvoicePreview: (poId) => client.get(`/sales-invoices/po/${encodeURIComponent(poId)}/preview`).then((r) => r.data),
   salesInvoiceChargeAccounts: (params = {}) => client.get(`/sales-invoices/charge-accounts`, { params }).then((r) => r.data),

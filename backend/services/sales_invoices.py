@@ -319,6 +319,35 @@ def effective_financial_status(invoice: Optional[dict]) -> str:
     return FINANCIAL_DRAFT
 
 
+def invoice_delete_block(invoice: Optional[dict], receipt_document_count: int):
+    """Data gates shared by ``can_delete`` and the delete endpoints.
+
+    A row may be deleted only when the invoice exists, its effective financial
+    status is draft, and ``sales_receipts`` has no document for that invoice.
+    Cancelled or reversed receipts still count. The delete endpoints also
+    require permission and repeat this check; they stay the last safeguard.
+    """
+    if not invoice:
+        return 404, "Faktur Penjualan tidak ditemukan."
+    if effective_financial_status(invoice) != FINANCIAL_DRAFT:
+        return 409, "Faktur yang sudah difinalisasi atau dibatalkan tidak dapat dihapus."
+    if int(receipt_document_count or 0) > 0:
+        return 400, "Hapus Penerimaan Penjualan terlebih dahulu."
+    return None
+
+
+async def sales_receipt_document_counts(db, invoice_ids: List[str]) -> Dict[str, int]:
+    """Uncapped receipt-document counts. Matches ``count_documents`` used on delete."""
+    ids = [str(invoice_id) for invoice_id in invoice_ids if invoice_id]
+    if not ids:
+        return {}
+    grouped = await db.sales_receipts.aggregate([
+        {"$match": {"invoice_id": {"$in": ids}}},
+        {"$group": {"_id": "$invoice_id", "n": {"$sum": 1}}},
+    ]).to_list(len(ids))
+    return {str(row["_id"]): int(row["n"]) for row in grouped}
+
+
 def monetary_invariant_valid(invoice: Optional[dict]) -> bool:
     invoice = invoice or {}
     grand = _money2(invoice.get("grand_total"))
@@ -405,9 +434,9 @@ async def attach_invoice_accounting_fields(db, invoices: List[Dict[str, Any]]) -
     from services.sales_receipt_posting import receipt_counts_toward_outstanding
 
     configured = await mappings_configured(db)
-    journals = await load_source_journals_by_invoice_ids(
-        db, [inv.get("id") for inv in invoices if inv.get("id")]
-    )
+    invoice_ids = [inv.get("id") for inv in invoices if inv.get("id")]
+    journals = await load_source_journals_by_invoice_ids(db, invoice_ids)
+    receipt_document_counts = await sales_receipt_document_counts(db, invoice_ids)
     for inv in invoices:
         status = effective_financial_status(inv)
         receipts = inv.get("receipts") if isinstance(inv.get("receipts"), list) else None
@@ -462,7 +491,9 @@ async def attach_invoice_accounting_fields(db, invoices: List[Dict[str, Any]]) -
             and _money2(inv.get("after_discount")) >= 0
             and _money2(inv.get("ppn_amount")) >= 0
         )
-        inv["can_delete"] = status == FINANCIAL_DRAFT
+        inv["can_delete"] = invoice_delete_block(
+            inv, receipt_document_counts.get(str(inv.get("id")), 0)
+        ) is None
         ensure_other_charge_fields(inv)
     return invoices
 
@@ -852,6 +883,238 @@ async def list_sales_invoices(db, q: Optional[str] = None, po_id: Optional[str] 
     return invoices
 
 
+_CANCELLED_STATUS_VALUES = ["cancelled", "Cancelled", "CANCELLED"]
+_INVOICE_SCOPES = frozenset({"active", "cancelled"})
+_INVOICE_FINANCIAL_FILTERS = frozenset({FINANCIAL_DRAFT, FINANCIAL_FINALIZED, FINANCIAL_CANCELLED})
+_INVOICE_ACCOUNTING_FILTERS = frozenset({"not_posted", "posted", "reversed"})
+_INVOICE_PAYMENT_FILTERS = frozenset({"BELUM DIBAYAR", "DP", "LUNAS"})
+_INVOICE_PAGE_SIZE_MAX = 100
+
+
+def _optional_text(raw: Optional[Any]) -> str:
+    return str(raw or "").strip()
+
+
+def _parse_optional_amount(raw: Optional[Any], label: str) -> Optional[float]:
+    if raw is None:
+        return None
+    if isinstance(raw, str) and not raw.strip():
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        raise HTTPException(400, f"{label} tidak valid.")
+    if value != value or value in (float("inf"), float("-inf")):
+        raise HTTPException(400, f"{label} tidak valid.")
+    return round(value, 2)
+
+
+def _parse_optional_day(raw: Optional[Any], label: str) -> Optional[str]:
+    text = _optional_text(raw)
+    if not text:
+        return None
+    day = text[:10]
+    try:
+        datetime.strptime(day, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(400, f"{label} tidak valid. Gunakan format YYYY-MM-DD.")
+    return day
+
+
+def _reject_inverted_range(low: Optional[float], high: Optional[float], label: str) -> None:
+    if low is not None and high is not None and low > high:
+        raise HTTPException(
+            400,
+            f"Rentang {label} tidak valid: nilai minimum tidak boleh lebih besar dari maksimum.",
+        )
+
+
+def _amount_in_range(value: Any, low: Optional[float], high: Optional[float]) -> bool:
+    try:
+        amount = round(float(value if value is not None else 0), 2)
+    except (TypeError, ValueError):
+        amount = 0.0
+    if low is not None and amount < low:
+        return False
+    if high is not None and amount > high:
+        return False
+    return True
+
+
+def _invoice_day(invoice: Dict[str, Any]) -> str:
+    raw = str(invoice.get("invoice_date") or invoice.get("created_at") or "").strip()
+    return raw[:10]
+
+
+def _scope_clause(scope: str) -> Dict[str, Any]:
+    cancelled = {"financial_status": {"$in": _CANCELLED_STATUS_VALUES}}
+    if scope == "cancelled":
+        return cancelled
+    return {"financial_status": {"$nin": _CANCELLED_STATUS_VALUES}}
+
+
+def _regex_or(fields: List[str], needle: str) -> Dict[str, Any]:
+    pattern = re.escape(needle)
+    return {"$or": [{field: {"$regex": pattern, "$options": "i"}} for field in fields]}
+
+
+async def _attach_live_payment_fields(db, invoices: List[Dict[str, Any]]) -> None:
+    """Same derived payment and posting fields as the unpaged list. Does not write invoices."""
+    inv_ids = [inv["id"] for inv in invoices if inv.get("id")]
+    if inv_ids:
+        receipt_cap = max(5000, len(inv_ids) * 50)
+        receipts = await db.sales_receipts.find(
+            {"invoice_id": {"$in": inv_ids}}, {"_id": 0}
+        ).to_list(receipt_cap)
+        receipts_by_inv: Dict[str, List[dict]] = {}
+        for receipt in receipts:
+            receipts_by_inv.setdefault(receipt.get("invoice_id"), []).append(receipt)
+
+        from services.sales_customer_credit import invoice_credit_applied_total
+
+        credit_by_invoice = {}
+        for inv_id in inv_ids:
+            credit_by_invoice[inv_id] = float(await invoice_credit_applied_total(db, inv_id))
+        for inv in invoices:
+            apply_invoice_payment_fields(
+                inv,
+                receipts_by_inv.get(inv.get("id"), []),
+                credit_by_invoice.get(inv.get("id"), 0),
+            )
+    await attach_invoice_accounting_fields(db, invoices)
+
+
+async def query_sales_invoices(
+    db,
+    *,
+    q: Optional[str] = None,
+    po_id: Optional[str] = None,
+    scope: str = "active",
+    party: Optional[str] = None,
+    po_number: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    total_min: Optional[Any] = None,
+    total_max: Optional[Any] = None,
+    outstanding_min: Optional[Any] = None,
+    outstanding_max: Optional[Any] = None,
+    financial_status: Optional[str] = None,
+    accounting_status: Optional[str] = None,
+    payment_status: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 20,
+) -> Dict[str, Any]:
+    """Paged invoice list. Cancellation is financial_status, never posting/reversed.
+
+    Returned rows are the current page only. ``total`` is the filtered count inside
+    the tab. ``active_total`` and ``cancelled_total`` ignore search and column filters.
+    """
+    scope_key = str(scope or "active").strip().lower()
+    if scope_key not in _INVOICE_SCOPES:
+        raise HTTPException(400, "Tab faktur tidak valid. Gunakan active atau cancelled.")
+
+    financial_key = str(financial_status or "").strip().lower()
+    if financial_key and financial_key not in _INVOICE_FINANCIAL_FILTERS:
+        raise HTTPException(400, "Status faktur tidak valid.")
+    accounting_key = str(accounting_status or "").strip().lower()
+    if accounting_key and accounting_key not in _INVOICE_ACCOUNTING_FILTERS:
+        raise HTTPException(400, "Status posting tidak valid.")
+    payment_key = str(payment_status or "").strip().upper()
+    if payment_key and payment_key not in _INVOICE_PAYMENT_FILTERS:
+        raise HTTPException(400, "Status pembayaran tidak valid.")
+
+    day_from = _parse_optional_day(date_from, "Tanggal awal")
+    day_to = _parse_optional_day(date_to, "Tanggal akhir")
+    if day_from and day_to and day_from > day_to:
+        raise HTTPException(
+            400,
+            "Rentang tanggal tidak valid: tanggal awal tidak boleh setelah tanggal akhir.",
+        )
+    parsed_total_min = _parse_optional_amount(total_min, "Total faktur minimum")
+    parsed_total_max = _parse_optional_amount(total_max, "Total faktur maksimum")
+    _reject_inverted_range(parsed_total_min, parsed_total_max, "Total Faktur")
+    parsed_outstanding_min = _parse_optional_amount(outstanding_min, "Sisa tagihan minimum")
+    parsed_outstanding_max = _parse_optional_amount(outstanding_max, "Sisa tagihan maksimum")
+    _reject_inverted_range(parsed_outstanding_min, parsed_outstanding_max, "Sisa Tagihan")
+
+    try:
+        page_num = int(page or 1)
+        size = int(page_size or 20)
+    except (TypeError, ValueError):
+        raise HTTPException(400, "Halaman atau ukuran halaman tidak valid.")
+    if page_num < 1 or size < 1 or size > _INVOICE_PAGE_SIZE_MAX:
+        raise HTTPException(400, "Halaman atau ukuran halaman tidak valid.")
+
+    active_clause = _scope_clause("active")
+    cancelled_clause = _scope_clause("cancelled")
+    if po_id:
+        owned = {"po_id": str(po_id)}
+        active_total = await db.sales_invoices.count_documents({"$and": [active_clause, owned]})
+        cancelled_total = await db.sales_invoices.count_documents({"$and": [cancelled_clause, owned]})
+    else:
+        active_total = await db.sales_invoices.count_documents(active_clause)
+        cancelled_total = await db.sales_invoices.count_documents(cancelled_clause)
+
+    clauses: List[Dict[str, Any]] = [_scope_clause(scope_key)]
+    if po_id:
+        clauses.append({"po_id": str(po_id)})
+    needle = _optional_text(q)
+    if needle:
+        clauses.append(_regex_or(
+            ["id", "invoice_number", "po_number", "customer", "outlet", "sales"],
+            needle,
+        ))
+    party_needle = _optional_text(party)
+    if party_needle:
+        clauses.append(_regex_or(["customer", "invoice_number"], party_needle))
+    po_needle = _optional_text(po_number)
+    if po_needle:
+        clauses.append(_regex_or(["po_number"], po_needle))
+
+    invoices = await db.sales_invoices.find(
+        {"$and": clauses}, {"_id": 0}
+    ).sort("created_at", -1).to_list(None)
+    await _attach_live_payment_fields(db, invoices)
+
+    filtered: List[Dict[str, Any]] = []
+    for inv in invoices:
+        status = effective_financial_status(inv)
+        if scope_key == "cancelled" and status != FINANCIAL_CANCELLED:
+            continue
+        if scope_key == "active" and status == FINANCIAL_CANCELLED:
+            continue
+        if financial_key and status != financial_key:
+            continue
+        if accounting_key and str(inv.get("accounting_status") or "not_posted").lower() != accounting_key:
+            continue
+        if payment_key and str(inv.get("payment_status") or "").upper() != payment_key:
+            continue
+        day = _invoice_day(inv)
+        if day_from and (not day or day < day_from):
+            continue
+        if day_to and (not day or day > day_to):
+            continue
+        if not _amount_in_range(inv.get("grand_total"), parsed_total_min, parsed_total_max):
+            continue
+        if not _amount_in_range(inv.get("outstanding_amount"), parsed_outstanding_min, parsed_outstanding_max):
+            continue
+        filtered.append(inv)
+
+    start = (page_num - 1) * size
+    page_rows = filtered[start:start + size]
+    tab_total = cancelled_total if scope_key == "cancelled" else active_total
+    return {
+        "invoices": page_rows,
+        "count": len(page_rows),
+        "total": len(filtered),
+        "tab_total": tab_total,
+        "active_total": active_total,
+        "cancelled_total": cancelled_total,
+        "page": page_num,
+        "page_size": size,
+    }
+
+
 async def get_sales_invoice_detail(db, invoice_id: str) -> Dict[str, Any]:
     """Fetch detail of a single sales invoice with live payment derived fields and receipt list."""
     inv = await db.sales_invoices.find_one({"id": str(invoice_id)}, {"_id": 0})
@@ -996,14 +1259,10 @@ async def delete_sales_invoice(db, invoice_id: str, user: dict) -> dict:
     if not inv:
         raise HTTPException(404, "Faktur Penjualan tidak ditemukan.")
 
-    status = effective_financial_status(inv)
-    if status != FINANCIAL_DRAFT:
-        raise HTTPException(409, "Faktur yang sudah difinalisasi atau dibatalkan tidak dapat dihapus.")
-
-    # Check PAY children
     pay_count = await db.sales_receipts.count_documents({"invoice_id": inv["id"]})
-    if pay_count > 0:
-        raise HTTPException(400, "Hapus Penerimaan Penjualan terlebih dahulu.")
+    block = invoice_delete_block(inv, pay_count)
+    if block:
+        raise HTTPException(block[0], block[1])
 
     inv_number = inv.get("invoice_number", inv["id"])
     await db.sales_invoices.delete_one({"id": inv["id"]})
@@ -1024,16 +1283,14 @@ async def bulk_delete_sales_invoices(db, ids: list, user: dict) -> dict:
         if not inv:
             blockers.append({"id": iid, "number": iid, "reason": "Faktur tidak ditemukan."})
             continue
-        if effective_financial_status(inv) != FINANCIAL_DRAFT:
+        pay_count = await db.sales_receipts.count_documents({"invoice_id": inv["id"]})
+        block = invoice_delete_block(inv, pay_count)
+        if block:
             blockers.append({
                 "id": inv["id"],
                 "number": inv.get("invoice_number", inv["id"]),
-                "reason": "Faktur yang sudah difinalisasi atau dibatalkan tidak dapat dihapus.",
+                "reason": block[1],
             })
-            continue
-        pay_count = await db.sales_receipts.count_documents({"invoice_id": inv["id"]})
-        if pay_count > 0:
-            blockers.append({"id": inv["id"], "number": inv.get("invoice_number", inv["id"]), "reason": "Hapus Penerimaan Penjualan terlebih dahulu."})
             continue
         to_delete.append(inv)
 

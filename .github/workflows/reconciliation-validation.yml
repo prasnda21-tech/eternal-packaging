@@ -220,6 +220,7 @@ jobs:
           src/pages/PesananPenjualan.createWorkspace.test.js
           src/pages/PesananPenjualan.test.js
           src/pages/FakturPenjualan.test.js
+          src/pages/FakturPenjualan.listFilters.test.js
           src/components/MasterItemSearchSelect.picker.test.js
           src/lib/salesOrderListPresentation.test.js
           src/pages/PesananPenjualan.searchDebounce.test.js
