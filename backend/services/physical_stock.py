@@ -146,6 +146,12 @@ async def ensure_indexes(db) -> None:
         name="reversal_original_unique",
         partialFilterExpression={"movement_type": MOVEMENT_REVERSAL},
     )
+    await ledger.create_index(
+        [("master_item_id", 1), ("branch_id", 1), ("warehouse_id", 1)],
+        unique=True,
+        name="opening_balance_identity_unique",
+        partialFilterExpression={"movement_type": MOVEMENT_OPENING_BALANCE},
+    )
     balances = db[BALANCE_COLLECTION]
     await balances.create_index("id", unique=True)
     await balances.create_index(
@@ -162,8 +168,8 @@ def _as_text(value: Any, label: str) -> str:
     return text
 
 
-def _as_qty(value: Any) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value == 0:
+def _as_qty(value: Any, *, allow_zero: bool = False) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or (value == 0 and not allow_zero):
         raise PhysicalStockValidationError("qty_delta harus bilangan bulat selain nol")
     return value
 
@@ -296,7 +302,18 @@ async def _apply_once(db, requested: dict) -> dict:
             }
             qty_delta = requested["qty_delta"]
             created_at = requested["created_at"]
-            if qty_delta > 0:
+            if requested["movement_type"] == MOVEMENT_OPENING_BALANCE:
+                prior_ledger = await ledger.find_one(identity, {"_id": 1}, session=session)
+                if prior_ledger:
+                    raise PhysicalStockConflictError(
+                        "Saldo awal ditolak karena identitas ini sudah memiliki mutasi stok fisik"
+                    )
+                prior_balance = await balances.find_one(identity, {"_id": 1}, session=session)
+                if prior_balance:
+                    raise PhysicalStockConflictError(
+                        "Saldo awal ditolak karena saldo fisik sudah ada"
+                    )
+            if qty_delta >= 0:
                 before_doc = await balances.find_one_and_update(
                     identity,
                     {
@@ -354,7 +371,10 @@ async def post_movement(
     movement_type = _as_text((raw or {}).get("movement_type"), "movement_type")
     if movement_type not in MOVEMENT_TYPES:
         raise PhysicalStockValidationError("Jenis movement tidak dikenal")
-    qty_delta = _as_qty((raw or {}).get("qty_delta"))
+    qty_delta = _as_qty(
+        (raw or {}).get("qty_delta"),
+        allow_zero=movement_type == MOVEMENT_OPENING_BALANCE,
+    )
     _check_sign(movement_type, qty_delta)
     occurred_at = str((raw or {}).get("occurred_at") or "").strip() or now_iso()
     created_at = now_iso()
@@ -689,3 +709,96 @@ async def list_physical_mutations(
         "limit": safe_limit,
         "page_count": page_count,
     }
+
+
+def _as_physical_qty(value: Any) -> int:
+    if isinstance(value, bool):
+        raise PhysicalStockValidationError("physical_qty harus bilangan bulat >= 0")
+    if isinstance(value, int):
+        qty = value
+    elif isinstance(value, float) and value.is_integer() and abs(value) != float("inf"):
+        qty = int(value)
+    else:
+        raise PhysicalStockValidationError("physical_qty harus bilangan bulat >= 0")
+    if qty < 0:
+        raise PhysicalStockValidationError("physical_qty harus bilangan bulat >= 0")
+    return qty
+
+
+def opening_reference_id(master_item_id: str, branch_id: str, warehouse_id: str) -> str:
+    return f"opening:{master_item_id}:{branch_id}:{warehouse_id}"
+
+
+async def post_opening_balance(db, item_id: str, raw: dict, *, actor_id: str) -> dict:
+    """Create the one-time OPENING_BALANCE movement through the R2 transaction engine."""
+    payload = raw or {}
+    branch_id = _as_text(payload.get("branch_id"), "branch_id")
+    warehouse_id = _as_text(payload.get("warehouse_id"), "warehouse_id")
+    physical_qty = _as_physical_qty(payload.get("physical_qty"))
+    reason = str(payload.get("reason") or "").strip() or "Saldo awal"
+    movement = await post_movement(
+        db,
+        {
+            "master_item_id": _as_text(item_id, "master_item_id"),
+            "branch_id": branch_id,
+            "warehouse_id": warehouse_id,
+            "movement_type": MOVEMENT_OPENING_BALANCE,
+            "qty_delta": physical_qty,
+            "reference_type": MOVEMENT_OPENING_BALANCE,
+            "reference_id": opening_reference_id(item_id, branch_id, warehouse_id),
+            "reason": reason,
+            "idempotency_key": _as_text(payload.get("idempotency_key"), "idempotency_key"),
+        },
+        actor_id=actor_id,
+    )
+    return {
+        "established": True,
+        "movement": movement,
+        "physical_qty": movement.get("balance_after"),
+    }
+
+
+async def read_opening_balance(
+    db,
+    item_id: str,
+    *,
+    branch_id: Optional[str] = None,
+    warehouse_id: Optional[str] = None,
+) -> dict:
+    """Read whether OPENING_BALANCE exists for one stock identity. Never writes."""
+    if not branch_id or not warehouse_id:
+        raise PhysicalStockValidationError("branch_id dan warehouse_id wajib diisi")
+    master = await _require_master_item(db, item_id)
+    branch = await _require_branch_any(db, branch_id)
+    warehouse = await _require_warehouse_any(db, warehouse_id)
+    if warehouse.get("branch_id") != branch.get("id"):
+        raise PhysicalStockValidationError("Gudang tidak berada pada cabang ini")
+    doc = await db[LEDGER_COLLECTION].find_one(
+        {
+            "master_item_id": master["id"],
+            "branch_id": branch["id"],
+            "warehouse_id": warehouse["id"],
+            "movement_type": MOVEMENT_OPENING_BALANCE,
+        },
+        {"_id": 0},
+    )
+    status = {
+        "master_item_id": master["id"],
+        "branch_id": branch["id"],
+        "warehouse_id": warehouse["id"],
+        "established": False,
+        "opening_movement_id": None,
+        "opening_qty": None,
+        "occurred_at": None,
+        "actor_id": None,
+    }
+    if not doc:
+        return status
+    status.update({
+        "established": True,
+        "opening_movement_id": doc.get("id"),
+        "opening_qty": doc.get("qty_delta"),
+        "occurred_at": doc.get("occurred_at"),
+        "actor_id": doc.get("actor_id") or "",
+    })
+    return status

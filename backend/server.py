@@ -11498,6 +11498,59 @@ async def master_item_physical_mutations_get(
         raise HTTPException(400, str(exc)) from exc
 
 
+@api_router.post("/master-items/{item_id}/physical-opening-balance")
+async def master_item_physical_opening_balance_post(
+    item_id: str,
+    payload: dict = Body(...),
+    user=Depends(current_user),
+):
+    """Create one R2 OPENING_BALANCE through the physical stock transaction engine."""
+    await _require_any_perm(user, "current_stock.update", "permissions.manage")
+    from services.physical_stock import (
+        PhysicalStockConflictError,
+        PhysicalStockNotFoundError,
+        PhysicalStockUnavailableError,
+        PhysicalStockValidationError,
+        post_opening_balance,
+    )
+    actor_id = str((user or {}).get("id") or (user or {}).get("user_id") or "").strip()
+    if not actor_id:
+        raise HTTPException(401, "Aktor tidak dikenal")
+    try:
+        return await post_opening_balance(db, item_id, payload or {}, actor_id=actor_id)
+    except PhysicalStockNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except PhysicalStockValidationError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except PhysicalStockConflictError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except PhysicalStockUnavailableError as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+
+@api_router.get("/master-items/{item_id}/physical-opening-balance")
+async def master_item_physical_opening_balance_get(
+    item_id: str,
+    branch_id: Optional[str] = None,
+    warehouse_id: Optional[str] = None,
+    user=Depends(require_perm("master_items.view")),
+):
+    """Read R2 opening-balance status for one item, branch, and warehouse. Does not write."""
+    from services.physical_stock import (
+        PhysicalStockNotFoundError,
+        PhysicalStockValidationError,
+        read_opening_balance,
+    )
+    try:
+        return await read_opening_balance(
+            db, item_id, branch_id=branch_id, warehouse_id=warehouse_id,
+        )
+    except PhysicalStockNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except PhysicalStockValidationError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 @api_router.get("/settings/physical-stock")
 async def physical_stock_settings_get(user=Depends(current_user)):
     """Pure read. Returns physical stock configuration."""
