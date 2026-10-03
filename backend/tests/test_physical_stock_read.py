@@ -336,127 +336,141 @@ async def test_catalog_returns_zero_without_writing_and_filters_locations(db):
     all_rows = await list_physical_stock_catalog(db)
     assert all_rows["master_item_count"] == 1
     assert all_rows["warehouse_count"] == 1
+    assert len(all_rows["items"]) == 1
     assert all_rows["items"][0]["physical_qty"] == 6
     assert all_rows["items"][0]["base_unit"] == "PCS"
-    smg_rows = await list_physical_stock_catalog(db, branch_id=smg["id"])
-    assert smg_rows["warehouse_count"] == 0
-    assert smg_rows["items"] == []
-    assert smg_rows["master_item_count"] == 1
-    empty_wh = await _seed_warehouse(db, smg, "NONE")
-    await db[WAREHOUSES_COLLECTION].delete_one({"id": empty_wh["id"]})
-    zero_branch = await list_physical_stock_catalog(db, branch_id=smg["id"])
-    assert zero_branch["warehouse_count"] == 0
-    assert zero_branch["items"] == []
+    assert all_rows["items"][0]["qty_pesanan"] == 0
+    assert all_rows["items"][0]["qty_tersedia"] == 6
+    ignored_branch = await list_physical_stock_catalog(db, branch_id=smg["id"])
+    assert ignored_branch["items"][0]["physical_qty"] == 6
     filtered = await list_physical_stock_catalog(db, branch_id=ygy["id"], warehouse_id=main["id"], q="Dus")
     assert filtered["items"][0]["physical_qty"] == 6
-    assert filtered["items"][0]["branch_code"] == "YGY"
+    assert "branch_code" not in filtered["items"][0]
     other = await _seed_item(db, item_code="CUP", item_name="Cup")
     missing = await list_physical_stock_catalog(db, q="Cup")
     assert missing["items"][0]["master_item_id"] == other["id"]
     assert missing["items"][0]["physical_qty"] == 0
+    assert missing["items"][0]["qty_tersedia"] == 0
     assert await db[BALANCE_COLLECTION].count_documents({}) == before_balance
     assert await db[LEDGER_COLLECTION].count_documents({}) == before_ledger
     source = inspect.getsource(list_physical_stock_catalog)
     for name in ("product_stock_state", "stock_movements", "item_stock_manual"):
         assert name not in source
+    for name in ("qty_po", "printed_qty", "available_qty", "order_qty", "stock_current"):
+        assert name not in source
     assert "warehouse_id" not in all_rows["items"][0]
 
 
-async def test_catalog_operational_demand_is_branch_sum_and_print_does_not_reduce_stock(db):
-    item = await _seed_item(db, item_code="CUP", item_name="Cup", accurate_item_id="ACC-CUP")
-    other = await _seed_item(db, item_code="LID", item_name="Lid")
+def _order(order_id, item, quantity, completed=0, cancelled=False, status=None):
+    doc = {
+        "id": order_id,
+        "cancelled": cancelled,
+        "line_items": [{
+            "master_item_id": item["id"],
+            "quantity": quantity,
+            "production_process": "print",
+        }],
+        "operator_splits": [{"line_idx": 0, "qty_completed": completed}],
+    }
+    if status:
+        doc["status"] = status
+    return doc
+
+
+def _expect_buckets(row, *, physical, pesanan, belum, tersedia):
+    assert row["physical_qty"] == physical
+    assert row["qty_pesanan"] == pesanan
+    assert row["qty_belum_terkirim"] == belum
+    assert row["qty_tersedia"] == tersedia
+
+
+async def test_operational_stock_buckets(db):
     ygy = await _seed_branch(db, "YGY")
     await db[BRANCHES_COLLECTION].update_one({"id": ygy["id"]}, {"$set": {"name": "Yogyakarta"}})
     smg = await _seed_branch(db, "SMG")
     main = await _seed_warehouse(db, ygy, "MAIN")
     second = await _seed_warehouse(db, ygy, "WHB")
     smg_wh = await _seed_warehouse(db, smg, "SMG1")
-    await _seed_balance(db, item, ygy, main, 300)
-    await _seed_balance(db, item, ygy, second, 200)
-    await _seed_balance(db, item, smg, smg_wh, 90)
+
+    item_a = await _seed_item(db, item_code="A", item_name="Case A", unit="pcs")
+    item_b = await _seed_item(db, item_code="B", item_name="Case B", unit="pcs")
+    item_c = await _seed_item(db, item_code="C", item_name="Case C", unit="pcs")
+    item_d = await _seed_item(db, item_code="D", item_name="Case D", unit="pcs")
+    item_e = await _seed_item(db, item_code="E", item_name="Case E", unit="pcs")
+    item_f = await _seed_item(db, item_code="F", item_name="Case F", unit="pcs")
+    item_g = await _seed_item(db, item_code="G", item_name="Case G", unit="pcs")
+    item_h = await _seed_item(db, item_code="H", item_name="Case H", unit="pcs")
+    item_i = await _seed_item(db, item_code="I", item_name="Case I", unit="pcs")
+    item_legacy = await _seed_item(db, item_code="L", item_name="Legacy Delivery", unit="pcs")
+
+    for item, qty in (
+        (item_a, 1000), (item_b, 1000), (item_c, 1000), (item_d, 1000),
+        (item_e, 100), (item_f, 100), (item_g, 1000), (item_h, 1000),
+        (item_i, 40), (item_legacy, 1000),
+    ):
+        await _seed_balance(db, item, ygy, main, qty)
+    await _seed_balance(db, item_a, smg, smg_wh, 999)
+    await _seed_balance(db, item_c, ygy, second, 0)
+
     await db.orders.insert_many([
-        {
-            "id": "so-open",
-            "cancelled": False,
-            "line_items": [{
-                "master_item_id": item["id"],
-                "accurate_item_id": "ACC-CUP",
-                "quantity": 700,
-                "production_process": "print",
-            }],
-            "operator_splits": [{"line_idx": 0, "qty_completed": 100}],
-        },
-        {
-            "id": "so-cancel",
-            "cancelled": True,
-            "line_items": [{"master_item_id": item["id"], "quantity": 500}],
-            "operator_splits": [{"line_idx": 0, "qty_completed": 500}],
-        },
-        {
-            "id": "so-ship",
-            "status": "open",
-            "line_items": [{"master_item_id": other["id"], "quantity": 100, "production_process": "print"}],
-            "operator_splits": [{"line_idx": 0, "qty_completed": 20}],
-        },
+        _order("b", item_b, 300, 0),
+        _order("c", item_c, 300, 200),
+        _order("d", item_d, 300, 300),
+        _order("e", item_e, 300, 0),
+        _order("f", item_f, 300, 200),
+        _order("g", item_g, 300, 300, cancelled=True),
+        _order("g-void", item_g, 80, 80, status="void"),
+        _order("h1", item_h, 200, 50),
+        _order("h2", item_h, 100, 100),
+        _order("i", item_i, 10, 4),
+        _order("legacy", item_legacy, 300, 200),
+        _order("mix", item_b, 0, 0),
     ])
+    await db.orders.update_one({"id": "mix"}, {"$set": {
+        "line_items": [
+            {"master_item_id": item_b["id"], "quantity": 0, "production_process": "print"},
+            {"master_item_id": item_i["id"], "quantity": 5, "production_process": "print"},
+        ],
+        "operator_splits": [
+            {"line_idx": 0, "qty_completed": 0},
+            {"line_idx": 1, "qty_completed": 1},
+        ],
+    }})
     await db.sales_deliveries.insert_one({
-        "id": "del-1",
-        "po_id": "so-ship",
-        "line_items": [{"line_idx": 0, "qty": 40}],
+        "id": "legacy-del",
+        "po_id": "legacy",
+        "line_items": [{"line_idx": 0, "qty": 200, "master_item_id": item_legacy["id"]}],
     })
+
     before_balance = await db[BALANCE_COLLECTION].count_documents({})
     before_ledger = await db[LEDGER_COLLECTION].count_documents({})
     before_orders = await db.orders.count_documents({})
+    before_legacy = {
+        name: await db[name].count_documents({})
+        for name in ("product_stock_state", "stock_movements", "item_stock_manual")
+    }
     rows = await list_physical_stock_catalog(db)
-    by_key = {(row["master_item_id"], row["branch_code"]): row for row in rows["items"]}
-    ygy_cup = by_key[(item["id"], "YGY")]
-    smg_cup = by_key[(item["id"], "SMG")]
-    ygy_lid = by_key[(other["id"], "YGY")]
-    smg_lid = by_key[(other["id"], "SMG")]
-    assert ygy_cup["physical_qty"] == 500
-    assert ygy_cup["order_qty"] == 700
-    assert ygy_cup["printed_qty"] == 100
-    assert ygy_cup["belum_dicetak"] == 600
-    assert ygy_cup["stock_current"] == -200
-    assert smg_cup["physical_qty"] == 90
-    assert smg_cup["order_qty"] == 0
-    assert smg_cup["printed_qty"] == 0
-    assert smg_cup["stock_current"] == 90
-    assert ygy_lid["physical_qty"] == 0
-    assert ygy_lid["order_qty"] == 60
-    assert ygy_lid["printed_qty"] == 20
-    assert ygy_lid["belum_dicetak"] == 40
-    assert ygy_lid["stock_current"] == -60
-    assert smg_lid["order_qty"] == 0
-    assert smg_lid["stock_current"] == 0
-    assert rows["operational_branch"]["code"] == "YGY"
+    by_code = {row["item_code"]: row for row in rows["items"]}
+    assert len(by_code) == 10
+    _expect_buckets(by_code["A"], physical=1000, pesanan=0, belum=0, tersedia=1000)
+    _expect_buckets(by_code["B"], physical=1000, pesanan=300, belum=0, tersedia=700)
+    _expect_buckets(by_code["C"], physical=1000, pesanan=100, belum=200, tersedia=700)
+    assert by_code["C"]["qty_tersedia"] == by_code["B"]["qty_tersedia"]
+    _expect_buckets(by_code["D"], physical=1000, pesanan=0, belum=300, tersedia=700)
+    _expect_buckets(by_code["E"], physical=100, pesanan=300, belum=0, tersedia=-200)
+    _expect_buckets(by_code["F"], physical=100, pesanan=100, belum=200, tersedia=-200)
+    _expect_buckets(by_code["G"], physical=1000, pesanan=0, belum=0, tersedia=1000)
+    _expect_buckets(by_code["H"], physical=1000, pesanan=150, belum=150, tersedia=700)
+    _expect_buckets(by_code["I"], physical=40, pesanan=10, belum=5, tersedia=25)
+    _expect_buckets(by_code["L"], physical=1000, pesanan=100, belum=200, tersedia=700)
+    assert by_code["I"]["qty_pesanan"] != by_code["B"]["qty_pesanan"]
+    assert by_code["A"]["base_unit"] == "PCS"
+    for row in rows["items"]:
+        assert "branch_id" not in row
+        assert "printed_qty" not in row
+        assert "stock_current" not in row
     assert await db[BALANCE_COLLECTION].count_documents({}) == before_balance
     assert await db[LEDGER_COLLECTION].count_documents({}) == before_ledger
     assert await db.orders.count_documents({}) == before_orders
-
-    delivered_print = await _seed_item(db, item_code="OLD", item_name="Old")
-    await db.orders.insert_many([
-        {
-            "id": "so-done",
-            "line_items": [{"master_item_id": delivered_print["id"], "quantity": 100}],
-            "operator_splits": [{"line_idx": 0, "qty_completed": 100}],
-        },
-        {
-            "id": "so-rest",
-            "line_items": [{"master_item_id": delivered_print["id"], "quantity": 50}],
-            "operator_splits": [{"line_idx": 0, "qty_completed": 0}],
-        },
-    ])
-    await db.sales_deliveries.insert_one({
-        "id": "del-done",
-        "po_id": "so-done",
-        "line_items": [{"line_idx": 0, "qty": 100}],
-    })
-    again = await list_physical_stock_catalog(db, q="Old")
-    old_row = next(row for row in again["items"] if row["branch_code"] == "YGY")
-    assert old_row["physical_qty"] == 0
-    assert old_row["order_qty"] == 50
-    assert old_row["printed_qty"] == 0
-    assert old_row["belum_dicetak"] == 50
-    assert old_row["stock_current"] == -50
-    assert await db[BALANCE_COLLECTION].count_documents({}) == before_balance
+    for name, count in before_legacy.items():
+        assert await db[name].count_documents({}) == count

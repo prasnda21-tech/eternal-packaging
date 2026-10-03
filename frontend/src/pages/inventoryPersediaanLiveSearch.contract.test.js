@@ -47,18 +47,22 @@ describe("Persediaan live search inventory scope", () => {
     expect(hook).toMatch(/LIVE_SEARCH_DEBOUNCE_MS = 300/);
   });
 
-  test("Stock Saat Ini shows branch physical stock minus outstanding orders", () => {
-    expect(stock).toMatch(/stok fisik cabang − qty pesanan outstanding/);
-    expect(stock).toMatch(/Progress cetak tidak mengurangi stok/);
+  test("Stock Saat Ini shows operational availability buckets", () => {
+    expect(stock).toMatch(/Qty Tersedia = Stock Fisik - Qty Pesanan - Qty Belum Terkirim/);
+    expect(stock).toMatch(/Nilai negatif menunjukkan kebutuhan stock/);
     expect(stock).toMatch(/api\.physicalStockCatalog\(/);
     expect(stock).toMatch(/Nama Barang/);
     expect(stock).toMatch(/Satuan Dasar/);
     expect(stock).toMatch(/Stock Fisik/);
     expect(stock).toMatch(/Qty Pesanan/);
-    expect(stock).toMatch(/Belum Dicetak/);
-    expect(stock).toMatch(/Sudah Dicetak/);
-    expect(stock).toMatch(/stock_current/);
+    expect(stock).toMatch(/Qty Belum Terkirim/);
+    expect(stock).toMatch(/qty_tersedia/);
+    expect(stock).not.toMatch(/stock-filter-branch/);
     expect(stock).not.toMatch(/stock-filter-warehouse/);
+    expect(stock).not.toMatch(/Belum Dicetak/);
+    expect(stock).not.toMatch(/Sudah Dicetak/);
+    expect(stock).not.toMatch(/<th[^>]*>Stock Saat Ini<\/th>/);
+    expect(stock).not.toMatch(/>Cabang</);
     expect(stock).not.toMatch(/Qty Saat Ini \+ Pembelian Barang/);
     expect(stock).not.toMatch(/Pembelian Barang/);
     expect(stock).not.toMatch(/Qty PO/);
