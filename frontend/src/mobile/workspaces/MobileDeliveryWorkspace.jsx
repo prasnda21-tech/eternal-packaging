@@ -10,7 +10,18 @@ import {
   X,
 } from "lucide-react";
 import api from "../../lib/api";
+import { useAuth } from "../../lib/auth";
+import {
+  clearConfirmAction,
+  confirmPayloadToken,
+  markConfirmActionUnknown,
+  readConfirmAction,
+  settleConfirmAction,
+  storeConfirmAction,
+  unknownConfirmActionKeys,
+} from "../../lib/deliveryConfirmAction";
 import { formatApiError } from "../../lib/errors";
+import { MOBILE_LOAD_TIMEOUT_MS, withTimeout } from "../../lib/mobileRequest";
 import { newActionId } from "../../lib/workflowEntries";
 import {
   MAX_PHOTOS,
@@ -72,7 +83,17 @@ function statusTone(selectedDelivered, batchAllowed) {
   return { key: "idle", label: "Belum siap" };
 }
 
-export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated, onRequestClose, shipmentId }) {
+export default function MobileDeliveryWorkspace({
+  order,
+  canEdit,
+  onUpdated,
+  onRequestClose,
+  onDeliveryConfirmed,
+  shipmentId,
+  userId,
+}) {
+  const auth = useAuth();
+  const actorId = String(userId || auth?.user?.id || "");
   const sjOptions = useMemo(() => pengirimanSjOptions(order), [order]);
   const explicitShipmentId = String(shipmentId || "").trim();
   const lockedToRequested = Boolean(explicitShipmentId);
@@ -265,16 +286,16 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated, onR
       const currentProofs = order?.delivery_proofs || [];
       let latestOrder = order;
       if (replaceId && currentProofs.length >= MAX_PHOTOS) {
-        const del = await api.deleteDeliveryProof(order.id, replaceId);
+        const del = await api.deleteDeliveryProof(order.id, replaceId, { params: { view: "operational" } });
         latestOrder = del.order;
         onUpdated(latestOrder);
         patchSlot(clientId, { replaceId: null });
       }
-      const res = await api.uploadDeliveryProof(order.id, uploadFile, "", undefined, selectedShipmentKey);
+      const res = await api.uploadDeliveryProof(order.id, uploadFile, "", undefined, selectedShipmentKey, { params: { view: "operational" } });
       latestOrder = res.order;
       onUpdated(latestOrder);
       if (replaceId && currentProofs.length < MAX_PHOTOS) {
-        const del = await api.deleteDeliveryProof(order.id, replaceId);
+        const del = await api.deleteDeliveryProof(order.id, replaceId, { params: { view: "operational" } });
         latestOrder = del.order;
         onUpdated(latestOrder);
       }
@@ -312,7 +333,7 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated, onR
         onUpdated(applyPreviewDeliveryMutation(order, "photo-delete", { proofId: proof.id }));
         return;
       }
-      const res = await api.deleteDeliveryProof(order.id, proof.id);
+      const res = await api.deleteDeliveryProof(order.id, proof.id, { params: { view: "operational" } });
       onUpdated(res.order);
     } catch (e) {
       setErr(proofUploadUserError(e));
@@ -342,6 +363,27 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated, onR
     submittingRef.current = true;
     setBusy(true);
     setErr("");
+    const shipmentKey = selectedShipmentKey;
+    const payloadToken = confirmPayloadToken(name, activeShipment);
+    let pending = null;
+    const publishIfDelivered = (nextOrder) => {
+      if (!nextOrder) return false;
+      onUpdated(nextOrder);
+      const shipment = findDeliveryShipment(nextOrder, shipmentKey);
+      if (!isShipmentDelivered(nextOrder, shipment)) return false;
+      onDeliveryConfirmed?.(nextOrder, shipmentKey);
+      setLocalSig({ recipient: null, driver: null });
+      clearConfirmAction(pending?.key);
+      onRequestClose?.();
+      return true;
+    };
+    const verifySavedShipment = async () => {
+      const verified = await withTimeout(
+        api.getOrder(order.id, { view: "operational" }),
+        MOBILE_LOAD_TIMEOUT_MS,
+      );
+      return verified?.order || verified;
+    };
     try {
       if (isPreview) {
         let latest = order;
@@ -352,10 +394,14 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated, onR
           latest = applyPreviewDeliveryMutation(latest, "driver-sig");
         }
         latest = applyPreviewDeliveryMutation(latest, "confirm", {
-          shipmentId: selectedShipmentKey,
+          shipmentId: shipmentKey,
           recipientName: name,
         });
         onUpdated(latest);
+        const previewShipment = findDeliveryShipment(latest, shipmentKey);
+        if (isShipmentDelivered(latest, previewShipment)) {
+          onDeliveryConfirmed?.(latest, shipmentKey);
+        }
         setLocalSig({ recipient: null, driver: null });
         onRequestClose?.();
         return;
@@ -365,29 +411,57 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated, onR
         const res = await api.uploadDeliveryRecipientSignature(latest.id, {
           recipientName: name,
           signatureDataUrl: localSig.recipient,
-          shipmentId: selectedShipmentKey,
-        });
+          shipmentId: shipmentKey,
+        }, { params: { view: "operational" } });
         latest = res.order;
         onUpdated(latest);
       }
       if (localSig.driver) {
         const res = await api.uploadDeliveryDriverSignature(latest.id, {
           signatureDataUrl: localSig.driver,
-          shipmentId: selectedShipmentKey,
-        });
+          shipmentId: shipmentKey,
+        }, { params: { view: "operational" } });
         latest = res.order;
         onUpdated(latest);
       }
-      const res = await api.confirmDelivered(latest.id, {
-        action_id: newActionId(),
+      pending = readConfirmAction(actorId, order.id, shipmentKey, payloadToken);
+      const unknownKeys = unknownConfirmActionKeys(actorId, order.id, shipmentKey, pending?.key);
+      if ((pending && pending.unknown) || unknownKeys.length) {
+        let verifiedOrder;
+        try {
+          verifiedOrder = await verifySavedShipment();
+        } catch {
+          setErr("Hasil konfirmasi belum diketahui. Periksa jadwal sebelum mencoba lagi.");
+          return;
+        }
+        if (publishIfDelivered(verifiedOrder)) return;
+        if (pending?.unknown) pending = settleConfirmAction(pending.key);
+        unknownKeys.forEach((key) => clearConfirmAction(key));
+      }
+      if (!pending) {
+        pending = storeConfirmAction(actorId, order.id, shipmentKey, payloadToken, newActionId());
+      }
+      const res = await withTimeout(api.confirmDelivered(latest.id, {
+        action_id: pending.actionId,
         shipment_id: selectedShipmentKey,
         recipient_name: name,
-      });
-      onUpdated(res.order);
-      setLocalSig({ recipient: null, driver: null });
-      onRequestClose?.();
+      }, { params: { view: "operational" } }), MOBILE_LOAD_TIMEOUT_MS);
+      if (!publishIfDelivered(res?.order)) {
+        setErr("Konfirmasi tidak tersimpan.");
+      }
     } catch (e) {
-      setErr(formatApiError(e, proofUploadUserError(e)));
+      const unknown = e?.code === "ETIMEDOUT" || e?.code === "ECONNABORTED" || (e?.message === "timeout" && !e?.response);
+      if (!unknown) {
+        setErr(formatApiError(e, proofUploadUserError(e)));
+      } else {
+        try {
+          const next = await verifySavedShipment();
+          if (!publishIfDelivered(next)) setErr("Konfirmasi tidak tersimpan.");
+        } catch {
+          if (pending?.key) markConfirmActionUnknown(pending.key);
+          setErr("Hasil konfirmasi belum diketahui. Periksa jadwal sebelum mencoba lagi.");
+        }
+      }
     } finally {
       submittingRef.current = false;
       setBusy(false);

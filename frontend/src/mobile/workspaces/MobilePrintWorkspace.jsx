@@ -53,6 +53,7 @@ export default function MobilePrintWorkspace({ order, canEdit, onUpdated }) {
         qty,
         action_id: actionId,
         work_date: workDate,
+        view: "operational",
       });
       delete actionIds.current[line.itemId];
       onUpdated(res.order);

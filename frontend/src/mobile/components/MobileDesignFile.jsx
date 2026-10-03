@@ -50,7 +50,8 @@ export default function MobileDesignFile({ order }) {
   const orderId = String(order?.id ?? "").trim();
   const fileId = String(file?.id ?? "").trim();
   const metadataPdf = Boolean(file) && !target.ok && designFileIsPdf(file);
-  const inlinePdf = (target.kind === "pdf" && !externalPdf) || metadataPdf;
+  const metadataById = Boolean(file) && !storagePath && !dataUrl.startsWith("data:") && !href && orderId && fileId;
+  const inlinePdf = (target.kind === "pdf" && !externalPdf) || metadataPdf || metadataById;
   const sourceKey = sourceKeyFor(orderId, fileId, file, storagePath, dataUrl, href);
   const epochRef = useRef(0);
   const [seenKey, setSeenKey] = useState(sourceKey);
@@ -92,15 +93,15 @@ export default function MobileDesignFile({ order }) {
         const type = String(response.headers.get("content-type") || "application/pdf").split(";")[0].trim();
         return new Blob([await response.arrayBuffer()], { type });
       }
-      if (designFileIsPdf(file)) {
-        if (!orderId || !fileId) {
-          if (!signal?.aborted && epoch === epochRef.current) {
-            setLoadError(MISSING_ID_MESSAGE);
-            setPdfOpen(false);
-          }
-          throw abortError();
-        }
+      if (orderId && fileId) {
         return api.getOrderAttachment(orderId, "design", fileId, { signal });
+      }
+      if (designFileIsPdf(file)) {
+        if (!signal?.aborted && epoch === epochRef.current) {
+          setLoadError(MISSING_ID_MESSAGE);
+          setPdfOpen(false);
+        }
+        throw abortError();
       }
       const error = new Error("missing");
       error.status = 404;

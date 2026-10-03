@@ -1863,6 +1863,12 @@
   color: #94a3b8;
   font-size: 14px;
 }
+.mop-ops-mark.is-unavailable {
+  background: transparent;
+  color: #64748b;
+  border: 1px dashed #94a3b8;
+  font-size: 12px;
+}
 .mop-ops-thead .mop-ops-status-group {
   text-align: center;
   font-size: 11px;

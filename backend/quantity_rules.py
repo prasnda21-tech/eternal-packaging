@@ -1260,6 +1260,22 @@ def find_sj_file(order: dict, file_id: str) -> Optional[dict]:
     return None
 
 
+def _surat_jalan_file_evidence(entry: dict) -> bool:
+    """Live-file evidence for has_surat_jalan_file.
+
+    Bytes, a storage path, a name, or an upload time. `_list_inline_present`
+    is ignored here: that flag exists only on division-task list reads after
+    inline bytes are dropped. A client payload cannot satisfy attachment,
+    stage, or FILE TERSIMPAN checks by sending the flag alone.
+    """
+    return bool(
+        str(entry.get("data_url") or "").startswith("data:")
+        or str(entry.get("storage_path") or "").strip()
+        or str(entry.get("name") or "").strip()
+        or entry.get("uploaded_at")
+    )
+
+
 def has_surat_jalan_file(order: dict) -> bool:
     """True only when a live Surat Jalan file entry exists.
 
@@ -1277,12 +1293,7 @@ def has_surat_jalan_file(order: dict) -> bool:
             st = str(f.get("status") or "").strip().lower()
             if st in INACTIVE_SJ_STATUSES:
                 continue
-            if str(f.get("id") or "").strip() and (
-                str(f.get("data_url") or "").startswith("data:")
-                or str(f.get("storage_path") or "").strip()
-                or str(f.get("name") or "").strip()
-                or f.get("uploaded_at")
-            ):
+            if str(f.get("id") or "").strip() and _surat_jalan_file_evidence(f):
                 return True
     return False
 

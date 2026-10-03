@@ -91,7 +91,7 @@ export default function MobileLoadingWorkspace({ order, canEdit, onUpdated, ship
       const res = await api.confirmLoadingMatch(order.id, {
         surat_jalan_id: activeSj.id,
         action_id: newActionId(),
-      });
+      }, { params: { view: "operational" } });
       onUpdated?.(res.order || res);
       setMode("actions");
     } catch (e) {

@@ -10,11 +10,9 @@ jest.mock("pdfjs-dist", () => ({
 }));
 
 jest.mock("../../lib/api", () => {
-  const configured = process.env.REACT_APP_BACKEND_URL || "http://localhost:8000";
-  const origin = new URL(configured).origin;
   return {
     __esModule: true,
-    fileUrl: (storagePath) => `${origin}/api/files/${storagePath}`,
+    fileUrl: (storagePath) => `http://localhost/api/files/${storagePath}`,
     default: {
       getOrderAttachment: jest.fn(),
       fetchStoredFileBlob: jest.fn(),
@@ -365,8 +363,26 @@ describe("MobileDesignFile PDF open", () => {
     expect(container.querySelector('[data-testid="mobile-design-pdf-viewer-canvas"]')).not.toBeNull();
   });
 
-  test("metadata that is not a PDF keeps the existing unavailable alert", async () => {
+  test("image with an id opens through the attachment endpoint", async () => {
+    URL.createObjectURL = jest.fn(() => "blob:image");
+    URL.revokeObjectURL = jest.fn();
+    api.getOrderAttachment.mockResolvedValue(new Blob([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], { type: "image/png" }));
     await renderDesign(orderWith([{ id: "img-1", name: "photo.png", content_type: "image/png" }]));
+    await clickOpen();
+    await flush();
+
+    expect(api.getOrderAttachment).toHaveBeenCalledWith(
+      "po-print-9",
+      "design",
+      "img-1",
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    expect(window.alert).not.toHaveBeenCalled();
+    expect(viewer()).not.toBeNull();
+  });
+
+  test("metadata without an id or bytes keeps the unavailable alert", async () => {
+    await renderDesign(orderWith([{ name: "photo.png", content_type: "image/png" }]));
     await clickOpen();
 
     expect(window.alert).toHaveBeenCalledWith("File tidak memiliki data yang dapat dibuka.");

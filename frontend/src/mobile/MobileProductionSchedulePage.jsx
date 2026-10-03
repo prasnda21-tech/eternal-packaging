@@ -281,7 +281,7 @@ export default function MobileProductionSchedulePage() {
     setTask({ open: true, order: null, shipmentId, row, busy: true, err: "" });
     (async () => {
       try {
-        const d = await withTimeout(api.getOrder(row.id), MOBILE_LOAD_TIMEOUT_MS);
+        const d = await withTimeout(api.getOrder(row.id, { view: "operational" }), MOBILE_LOAD_TIMEOUT_MS);
         setTask((prev) => ({ ...prev, order: d?.order || d, busy: false }));
       } catch (e) {
         setTask((prev) => ({

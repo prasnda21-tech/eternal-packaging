@@ -15,6 +15,11 @@ import {
 } from "../lib/productionSheetZoom";
 import MobileProductionSchedulePage, { scheduleLoadErrorMessage } from "./MobileProductionSchedulePage";
 
+jest.mock("pdfjs-dist", () => ({
+  GlobalWorkerOptions: { workerSrc: "" },
+  getDocument: jest.fn(() => ({ promise: Promise.resolve({ destroy: jest.fn(), numPages: 0 }) })),
+}));
+
 const mockHasPerm = jest.fn(() => false);
 const mockNavigate = jest.fn();
 
@@ -724,7 +729,7 @@ describe("MobileProductionSchedulePage", () => {
     await act(async () => { row.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
     await flush();
     expect(mockNavigate).not.toHaveBeenCalled();
-    expect(api.getOrder).toHaveBeenCalledWith("po-1");
+    expect(api.getOrder).toHaveBeenCalledWith("po-1", { view: "operational" });
     expect(container.querySelector('[data-testid="mobile-task-modal"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="mobile-ws-packing"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="mobile-po-ringkasan"]')).toBeFalsy();

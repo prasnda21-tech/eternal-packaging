@@ -293,8 +293,30 @@ async def list_my_rooms(db, user: dict, filter_type: Optional[str] = None) -> li
 
 
 async def unread_summary(db, user: dict) -> dict:
-    rooms = await list_my_rooms(db, user)
-    items = [{"room_id": r["id"], "unread": r.get("unread_count", 0)} for r in rooms if r.get("unread_count", 0) > 0]
+    """Header badge counts. Uses room last_sequence and member last_read_sequence.
+
+    Does not load messages. list_my_rooms remains the Chat page preview path.
+    Membership, empty-sequence, and response shape match the previous summary.
+    """
+    uid = user_id(user)
+    members = await db[COLL_MEMBERS].find(
+        {"user_id": uid, "active": True},
+        {"_id": 0, "room_id": 1, "last_read_sequence": 1},
+    ).to_list(1000)
+    by_room = {m["room_id"]: m for m in members if m.get("room_id")}
+    if not by_room:
+        return {"total_unread": 0, "rooms": []}
+    rooms = await db[COLL_ROOMS].find(
+        {"id": {"$in": list(by_room)}},
+        {"_id": 0, "id": 1, "last_sequence": 1, "last_activity_at": 1},
+    ).sort("last_activity_at", -1).to_list(1000)
+    items = []
+    for room in rooms:
+        member = by_room.get(room["id"], {})
+        last_read = int(member.get("last_read_sequence") or 0)
+        unread = max(0, int(room.get("last_sequence") or 0) - last_read)
+        if unread > 0:
+            items.append({"room_id": room["id"], "unread": unread})
     return {"total_unread": sum(i["unread"] for i in items), "rooms": items}
 
 

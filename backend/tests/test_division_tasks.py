@@ -620,7 +620,8 @@ def test_division_tasks_endpoint_is_read_only():
     assert "update_one" not in body
     assert "insert_one" not in body
     assert "replace_one" not in body
-    assert ".find(" in body
+    assert "aggregate(" in body
+    assert ".find(" not in body
 
 
 def _import_server():
