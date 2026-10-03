@@ -414,3 +414,54 @@ def test_screen_size_same_line_operators_stay_independent():
     assert by_id["deni"]["operator_name"] == "Deni"
     assert by_id["djoko"]["quantity"] == 3000
     assert by_id["djoko"]["work_date"] == "2026-10-03"
+
+
+def test_assignment_stores_selected_user_id_without_email_lookup():
+    o = _order()
+    apply_operator_assignments(
+        o,
+        [{
+            "operator_email": "budi@x.com",
+            "operator_name": "Budi",
+            "operator_user_id": "user-budi",
+            "quantity": 1000,
+            "line_idx": 0,
+        }],
+        {"email": "s"},
+        "t",
+        new_id_fn=lambda: "spl-1",
+    )
+    stored = o["operator_splits"][0]
+    assert stored["operator_user_id"] == "user-budi"
+    assert stored["operator_email"] == "budi@x.com"
+
+    apply_operator_assignments(
+        o,
+        [{
+            "id": "spl-1",
+            "operator_email": "budi@x.com",
+            "operator_name": "Budi",
+            "quantity": 1000,
+            "line_idx": 0,
+        }],
+        {"email": "s"},
+        "t2",
+        new_id_fn=lambda: "unused",
+    )
+    assert o["operator_splits"][0]["operator_user_id"] == "user-budi"
+
+    apply_operator_assignments(
+        o,
+        [{
+            "id": "spl-1",
+            "operator_email": "sari@x.com",
+            "operator_name": "Sari",
+            "quantity": 1000,
+            "line_idx": 0,
+        }],
+        {"email": "s"},
+        "t3",
+        new_id_fn=lambda: "unused-2",
+    )
+    assert "operator_user_id" not in o["operator_splits"][0]
+    assert o["operator_splits"][0]["operator_email"] == "sari@x.com"

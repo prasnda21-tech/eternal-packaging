@@ -319,4 +319,67 @@ describe("OperatorSplitPanel screen size", () => {
     expect(payload[0].line_idx).toBe(0);
     expect(payload[2].line_idx).toBe(1);
   });
+
+  test("selected operator id is sent and a progress retry keeps the first entry identity", async () => {
+    api.listOperators.mockResolvedValue({
+      operators: [
+        { id: "user-a", email: "a@x.com", name: "A" },
+        { id: "user-b", email: "b@x.com", name: "B" },
+      ],
+    });
+    const fresh = { ...order, operator_splits: [] };
+    const setValue = (el, value) => {
+      const proto = el.tagName === "SELECT" ? window.HTMLSelectElement.prototype : window.HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, "value").set.call(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+    };
+    await renderPanel({ order: fresh });
+    await act(async () => {
+      container.querySelector('[data-testid="split-add-row"]').click();
+    });
+    await flush();
+    await act(async () => {
+      setValue(container.querySelector('[data-testid="split-operator-select-0"]'), "a@x.com");
+      setValue(container.querySelector('[data-testid="split-quantity-input-0"]'), "100");
+    });
+    await flush();
+    await act(async () => {
+      container.querySelector('[data-testid="split-save"]').click();
+    });
+    await flush();
+    const payload = api.assignOperators.mock.calls.at(-1)[1];
+    expect(payload[0].operator_email).toBe("a@x.com");
+    expect(payload[0].operator_user_id).toBe("user-a");
+
+    api.updateOperatorProgress
+      .mockRejectedValueOnce({ response: { data: { detail: "gagal jaringan" } } })
+      .mockResolvedValueOnce({ order });
+    await act(async () => {
+      root.render(<OperatorSplitPanel order={order} canEdit onUpdated={() => {}} mode="progress" />);
+    });
+    await flush();
+    const date = container.querySelector('[data-testid="progress-work-date-a@x.com"]');
+    const qty = container.querySelector('[data-testid="qty-append-a@x.com-input"]');
+    await act(async () => {
+      setValue(date, "2026-09-10");
+      setValue(qty, "10");
+    });
+    await flush();
+    const confirm = container.querySelector('[data-testid="qty-append-a@x.com-confirm"]');
+    await act(async () => { confirm.click(); });
+    await flush();
+    const ok = container.querySelector('[data-testid="confirm-ok"]');
+    await act(async () => { ok.click(); });
+    await flush();
+    await act(async () => { ok.click(); });
+    await flush();
+    expect(api.updateOperatorProgress).toHaveBeenCalledTimes(2);
+    const first = api.updateOperatorProgress.mock.calls[0][3];
+    const second = api.updateOperatorProgress.mock.calls[1][3];
+    expect(first.work_date).toBe("2026-09-10");
+    expect(second.work_date).toBe(first.work_date);
+    expect(second.action_id).toBe(first.action_id);
+    expect(second.qty).toBe(first.qty);
+  });
 });

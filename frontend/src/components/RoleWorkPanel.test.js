@@ -17,4 +17,13 @@ describe("Card Screener remain label", () => {
     expect(mobile).toMatch(/testID="screener-panel"/);
     expect(mobile).toMatch(/showRemain=\{false\}/);
   });
+
+  test("operator progress sends the work date and retries the same action", () => {
+    expect(role).toMatch(/work_date: confirm\.workDate/);
+    expect(role).toMatch(/action_id: confirm\.actionId/);
+    expect(role).not.toMatch(/work_date: new Date/);
+    const execute = role.slice(role.indexOf("const execute = async"), role.indexOf("return (", role.indexOf("const execute = async")));
+    expect(execute.indexOf("await api.updateOperatorProgress")).toBeGreaterThan(-1);
+    expect(execute.indexOf("setConfirm(null)")).toBeGreaterThan(execute.indexOf("await api.updateOperatorProgress"));
+  });
 });

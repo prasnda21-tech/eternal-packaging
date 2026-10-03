@@ -21,6 +21,7 @@ const scheduleDraftFromOrder = (order) => (
     stage: s.stage,
     line_idx: s.line_idx ?? "",
     work_date: s.work_date || "",
+    operator_user_id: s.operator_user_id || "",
     qty_completed: Number(s.qty_completed || 0),
     qty_cancelled: Number(s.qty_cancelled || 0),
     // Allocation screen wins. Line screen is only a legacy fallback.
@@ -37,6 +38,7 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [qtyDrafts, setQtyDrafts] = useState({});
+  const [workDates, setWorkDates] = useState({});
   const [confirm, setConfirm] = useState(null);
   const scheduleDraftDirtyRef = useRef(false);
   const hydratedScheduleKeyRef = useRef("");
@@ -136,6 +138,7 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
       line_idx: defaultLine,
       work_date: "",
       screen_size: "",
+      operator_user_id: "",
     }]);
   };
 
@@ -202,15 +205,19 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
     }
     setBusy(true);
     try {
-      const res = await api.assignOperators(order.id, splits.map((s) => ({
-        id: s.id || undefined,
-        operator_email: s.operator_email,
-        operator_name: s.operator_name,
-        quantity: Number(s.quantity),
-        line_idx: Number(s.line_idx),
-        work_date: s.work_date ? s.work_date : null,
-        screen_size: s.screen_size ? s.screen_size : null,
-      })));
+      const res = await api.assignOperators(order.id, splits.map((s) => {
+        const row = {
+          id: s.id || undefined,
+          operator_email: s.operator_email,
+          operator_name: s.operator_name,
+          quantity: Number(s.quantity),
+          line_idx: Number(s.line_idx),
+          work_date: s.work_date ? s.work_date : null,
+          screen_size: s.screen_size ? s.screen_size : null,
+        };
+        if (s.operator_user_id) row.operator_user_id = s.operator_user_id;
+        return row;
+      }));
       scheduleDraftDirtyRef.current = false;
       onUpdated(res.order);
     } catch (e) {
@@ -232,10 +239,16 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
       setErr("Qty tambahan wajib diisi.");
       return;
     }
+    const workDate = String(workDates[op.id] || "").trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(workDate)) {
+      setErr("Tanggal pekerjaan wajib diisi.");
+      return;
+    }
     setErr("");
     setConfirm({
       op,
       qty,
+      workDate,
       actionId: newActionId(),
       time: formatDisplayDateTime(new Date().toISOString()),
     });
@@ -253,6 +266,7 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
       const res = await api.updateOperatorProgress(order.id, confirm.op.id, confirm.qty, {
         qty: confirm.qty,
         action_id: confirm.actionId,
+        work_date: confirm.workDate,
       });
       onUpdated(res.order);
       setQtyDrafts((prev) => ({ ...prev, [confirm.op.id]: "" }));
@@ -393,6 +407,10 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
               <div className="ind-op-qty">{Number(op.qty_completed || 0).toLocaleString("id-ID")}</div>
               <div className="ind-op-qty">{opRemaining.toLocaleString("id-ID")}</div>
               {canEditQty ? (
+                <>
+                <label className="muted small">Tanggal pekerjaan
+                  <input type="date" value={workDates[op.id] || ""} onChange={(e) => setWorkDates({ ...workDates, [op.id]: e.target.value })} data-testid={`progress-work-date-${op.operator_email}`} disabled={progressLocked} />
+                </label>
                 <AppendQtyEntries
                   entries={op.progress_entries}
                   snapshotQty={op.qty_completed}
@@ -406,6 +424,7 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
                   remaining={opRemaining}
                   testid={`qty-append-${op.operator_email}`}
                 />
+                </>
               ) : <span />}
             </div>
           );
@@ -454,7 +473,11 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
                     value={s.operator_email}
                     onChange={(e) => {
                       const op = operators.find((o) => o.email === e.target.value);
-                      updateRow(i, { operator_email: e.target.value, operator_name: op?.name || e.target.value });
+                      updateRow(i, {
+                        operator_email: e.target.value,
+                        operator_name: op?.name || e.target.value,
+                        operator_user_id: op?.id || "",
+                      });
                     }}
                     data-testid={`split-operator-select-${i}`}
                   >

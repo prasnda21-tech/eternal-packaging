@@ -194,6 +194,7 @@ PERMISSION_CATALOG = [
     ("HR & Payroll", "payroll.payslip.view_own", "Lihat slip gaji sendiri"),
     ("HR & Payroll", "payroll.payslip.view_all", "Lihat semua slip gaji"),
     ("HR & Payroll", "payroll.adjustment", "Penyesuaian manual penggajian"),
+    ("HR & Payroll", "payroll.piece_holding.edit", "Isi periode, bonus, dan kasbon upah borongan"),
     ("HR & Payroll", "payroll_payment.view", "Lihat Pembayaran Payroll"),
     ("HR & Payroll", "payroll_payment.create", "Buat Pembayaran Payroll"),
     ("HR & Payroll", "payroll_payment.approve", "Setujui Pembayaran Payroll"),
@@ -561,7 +562,7 @@ def derived_nav_permissions(existing: set) -> set:
         nav.add("nav.hr_payroll")
         nav.add("nav.hr_payroll.employees")
         nav.add("nav.hr_payroll.employment")
-    if "payroll.view" in existing or "payroll.calculate" in existing or "payroll.review" in existing or "payroll.approve" in existing or "payroll.finalize" in existing:
+    if "payroll.view" in existing or "payroll.calculate" in existing or "payroll.review" in existing or "payroll.approve" in existing or "payroll.finalize" in existing or "payroll.piece_holding.edit" in existing:
         nav.add("nav.hr_payroll")
         nav.add("nav.hr_payroll.payroll")
     if "payroll.payslip.view_own" in existing or "payroll.payslip.view_all" in existing:
@@ -775,6 +776,7 @@ ROLE_DEFAULT_PERMISSIONS = {
         "inventory_valuation.view",
         "inventory_valuation.export",
         "inventory_valuation.manage_opening",
+        "payroll.piece_holding.edit",
     ],
     "direktur_utama": [
         "product_request.read_all",

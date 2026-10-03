@@ -18,6 +18,14 @@ describe("HR & Payroll UI source", () => {
     expect(app).toMatch(/\/hr-payroll\/riwayat/);
   });
 
+  test("piece holding keeps kasbon input and shows omitted sources", () => {
+    expect(page).toMatch(/piece_kasbon_inputs/);
+    expect(page).toMatch(/amounts\[row\.schedule_id\] = row\.amount/);
+    expect(page).toMatch(/hr-piece-kasbon-amount-/);
+    expect(page).toMatch(/hr-piece-omitted/);
+    expect(page).toMatch(/tidak dianggap sudah dibayar/);
+  });
+
   test("payroll workflow controls and breakdown are present", () => {
     ["hr-calc-btn", "hr-transition-review", "hr-transition-approval", "hr-transition-final", "hr-reopen-btn", "hr-breakdown", "hr-kasbon-row", "hr-payroll-accounting-ready", "hr-payroll-accounting-preview"].forEach((id) => expect(page).toMatch(new RegExp(id)));
     expect(page).toMatch(/hasPerm\("payroll\.reopen"\)/);
