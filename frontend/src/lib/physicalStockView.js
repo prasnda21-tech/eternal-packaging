@@ -1,3 +1,20 @@
+export function yogyakartaWarehouses(branches, warehouses) {
+  const branch = (Array.isArray(branches) ? branches : []).find((row) => {
+    const code = String(row?.code || "").trim().toUpperCase();
+    const name = String(row?.name || "").trim().toLowerCase();
+    return code === "YGY" || name.includes("yogyakarta");
+  });
+  if (!branch) return [];
+  return (Array.isArray(warehouses) ? warehouses : []).filter(
+    (row) => row.branch_id === branch.id && row.active !== false,
+  );
+}
+
+export function preselectedWarehouseId(rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  return list.length === 1 ? list[0].id : "";
+}
+
 export function warehouseChoices(warehouses, branchId) {
   const rows = Array.isArray(warehouses) ? warehouses : [];
   if (!branchId) return rows;

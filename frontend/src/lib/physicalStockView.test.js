@@ -2,11 +2,33 @@ import {
   movementLabel,
   mutationQtyColumns,
   openingReady,
+  preselectedWarehouseId,
   stockEmptyMessage,
   warehouseChoices,
+  yogyakartaWarehouses,
 } from "./physicalStockView";
 
 describe("physical stock view helpers", () => {
+  test("one Yogyakarta warehouse is preselected and several warehouses are not guessed", () => {
+    const branches = [
+      { id: "ygy", code: "YGY", name: "Yogyakarta" },
+      { id: "smg", code: "SMG", name: "Semarang" },
+    ];
+    const warehouses = [
+      { id: "main", branch_id: "ygy", code: "MAIN", active: true },
+      { id: "smg-wh", branch_id: "smg", code: "ALT", active: true },
+    ];
+    const only = yogyakartaWarehouses(branches, warehouses);
+    expect(only.map((row) => row.id)).toEqual(["main"]);
+    expect(preselectedWarehouseId(only)).toBe("main");
+    const many = yogyakartaWarehouses(branches, [
+      ...warehouses,
+      { id: "whb", branch_id: "ygy", code: "WHB", active: true },
+    ]);
+    expect(preselectedWarehouseId(many)).toBe("");
+    expect(many.map((row) => row.id)).toEqual(["main", "whb"]);
+  });
+
   test("warehouse choices follow the selected branch and allow an empty branch", () => {
     const warehouses = [
       { id: "w1", branch_id: "ygy", code: "MAIN" },

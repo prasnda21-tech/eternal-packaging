@@ -5,7 +5,7 @@ import { useAuth } from "../lib/auth";
 import { formatDate } from "../lib/constants";
 import { fmtQty } from "../components/qtyUi";
 import { useDebouncedLiveSearch, liveSearchTableView } from "../hooks/useDebouncedLiveSearch";
-import { openingReady, stockEmptyMessage, warehouseChoices } from "../lib/physicalStockView";
+import { openingReady, preselectedWarehouseId, stockEmptyMessage, warehouseChoices, yogyakartaWarehouses } from "../lib/physicalStockView";
 
 function newKey() {
   return globalThis.crypto?.randomUUID?.() || `saldo-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -16,6 +16,7 @@ export default function StockSaatIni() {
   const canOpening = hasPerm("current_stock.update") || hasPerm("permissions.manage");
   const canExport = hasPerm("current_stock.export");
   const [data, setData] = useState(null);
+  const canAdjust = Boolean(data?.can_adjust_physical_stock);
   const [branches, setBranches] = useState([]);
   const [warehouses, setWarehouses] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -24,6 +25,7 @@ export default function StockSaatIni() {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
   const [openingOpen, setOpeningOpen] = useState(false);
+  const [adjustItem, setAdjustItem] = useState(null);
   const loadSeq = useRef(0);
 
   useEffect(() => { setPage(1); }, [q]);
@@ -78,6 +80,7 @@ export default function StockSaatIni() {
   };
 
   const items = data?.items || [];
+  const adjustWarehouses = yogyakartaWarehouses(branches, warehouses);
   const pageCount = data?.page_count || 1;
   const tableBusy = searchPending || loading;
   const tableView = liveSearchTableView({
@@ -215,7 +218,18 @@ export default function StockSaatIni() {
                 <td className="col-fit mono">{it.item_code || "—"}</td>
                 <td className="col-text">{it.item_name || "—"}</td>
                 <td className="col-fit">{it.base_unit || "—"}</td>
-                <td className="col-fit num mono" data-testid={`stock-physical-${it.master_item_id}`}>{fmtQty(it.physical_qty)}</td>
+                <td className="col-fit num mono" data-testid={`stock-physical-${it.master_item_id}`}>
+                  {canAdjust ? (
+                    <button
+                      type="button"
+                      className="ghost sm"
+                      data-testid={`stock-adjust-${it.master_item_id}`}
+                      onClick={() => setAdjustItem(it)}
+                    >
+                      {fmtQty(it.physical_qty)}
+                    </button>
+                  ) : fmtQty(it.physical_qty)}
+                </td>
                 <td className="col-fit num mono" data-testid={`stock-order-${it.master_item_id}`}>{fmtQty(it.qty_pesanan)}</td>
                 <td className="col-fit num mono" data-testid={`stock-undelivered-${it.master_item_id}`}>{fmtQty(it.qty_belum_terkirim)}</td>
                 <td className="col-fit num mono" data-testid={`stock-available-${it.master_item_id}`}>{fmtQty(it.qty_tersedia)}</td>
@@ -243,6 +257,104 @@ export default function StockSaatIni() {
           onSaved={load}
         />
       )}
+      {adjustItem && (
+        <PhysicalAdjustModal
+          item={adjustItem}
+          warehouses={adjustWarehouses}
+          onClose={() => setAdjustItem(null)}
+          onSaved={load}
+        />
+      )}
+    </div>
+  );
+}
+
+function PhysicalAdjustModal({ item, warehouses, onClose, onSaved }) {
+  const [warehouseId, setWarehouseId] = useState(() => preselectedWarehouseId(warehouses));
+  const [currentQty, setCurrentQty] = useState(null);
+  const [target, setTarget] = useState("");
+  const [reason, setReason] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [idempotencyKey] = useState(newKey);
+  const warehouse = warehouses.find((row) => row.id === warehouseId);
+  const parsed = Number(String(target).replace(",", "."));
+  const targetOk = target !== "" && Number.isFinite(parsed) && parsed >= 0 && Number.isInteger(parsed);
+  const ready = Boolean(warehouseId && targetOk && reason.trim() && !saving);
+
+  useEffect(() => {
+    if (!warehouseId) {
+      setCurrentQty(null);
+      return undefined;
+    }
+    let cancelled = false;
+    api.physicalStock(item.master_item_id, { branch_id: warehouse?.branch_id, warehouse_id: warehouseId })
+      .then((res) => {
+        if (cancelled) return;
+        const row = (res.items || []).find((entry) => entry.warehouse_id === warehouseId);
+        setCurrentQty(row ? row.physical_qty : 0);
+      })
+      .catch(() => {
+        if (!cancelled) setError("Gagal memuat stok fisik gudang");
+      });
+    return () => { cancelled = true; };
+  }, [item.master_item_id, warehouseId, warehouse?.branch_id]);
+
+  const submit = async (event) => {
+    event.preventDefault();
+    if (!ready) return;
+    setSaving(true);
+    setError("");
+    try {
+      await api.createPhysicalAdjustment(item.master_item_id, {
+        branch_id: warehouse.branch_id,
+        warehouse_id: warehouseId,
+        target_physical_qty: parsed,
+        reason: reason.trim(),
+        idempotency_key: idempotencyKey,
+      });
+      await onSaved();
+      onClose();
+    } catch (ex) {
+      const det = ex.response?.data?.detail;
+      setError(typeof det === "object" ? det.message : (det || "Gagal menyimpan koreksi"));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="mutation-drawer-overlay" data-testid="stock-adjust-modal" style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,.45)", zIndex: 40, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+      <form onSubmit={submit} style={{ width: "min(560px, 100%)", background: "#fff", borderRadius: 12, padding: 20, display: "grid", gap: 12 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+          <h2 style={{ margin: 0 }}>Koreksi Stock Fisik</h2>
+          <button type="button" className="ghost sm" onClick={onClose}>Tutup</button>
+        </div>
+        <p>{item.item_code || "—"} — {item.item_name || "—"}</p>
+        <p>Target ini adalah stok fisik gudang yang dipilih, bukan jumlah seluruh gudang.</p>
+        {error && <div className="signal-strip" role="alert"><div><AlertCircle size={16} /><span>{error}</span></div></div>}
+        <label>
+          Gudang
+          <select value={warehouseId} onChange={(e) => setWarehouseId(e.target.value)} data-testid="stock-adjust-warehouse">
+            <option value="">Pilih gudang</option>
+            {warehouses.map((row) => (
+              <option key={row.id} value={row.id}>{row.code} — {row.name}</option>
+            ))}
+          </select>
+        </label>
+        <p data-testid="stock-adjust-current">Stok fisik gudang saat ini: {currentQty == null ? "—" : fmtQty(currentQty)}</p>
+        <label>
+          Target Stock Fisik
+          <input value={target} onChange={(e) => setTarget(e.target.value)} inputMode="numeric" data-testid="stock-adjust-target" />
+        </label>
+        <label>
+          Alasan
+          <input value={reason} onChange={(e) => setReason(e.target.value)} data-testid="stock-adjust-reason" />
+        </label>
+        <button type="submit" className="primary" disabled={!ready} data-testid="stock-adjust-submit">
+          {saving ? "Menyimpan…" : "Simpan Koreksi"}
+        </button>
+      </form>
     </div>
   );
 }

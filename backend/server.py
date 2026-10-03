@@ -11528,6 +11528,54 @@ async def master_item_physical_opening_balance_post(
         raise HTTPException(503, str(exc)) from exc
 
 
+def _adjustment_allowed(user) -> bool:
+    """Reuse physical-stock correction access. Local preview admin stays allowed."""
+    from services.product_stock_state import can_correct_physical_stock
+
+    app_env = os.environ.get("APP_ENV")
+    mongo_url = os.environ.get("MONGO_URL")
+    if can_correct_physical_stock(user, app_env, mongo_url):
+        return True
+    if not str(app_env or "").strip():
+        return can_correct_physical_stock(user, "preview", mongo_url)
+    return False
+
+
+@api_router.post("/master-items/{item_id}/physical-adjustment")
+async def master_item_physical_adjustment_post(
+    item_id: str,
+    payload: dict = Body(...),
+    user=Depends(current_user),
+):
+    """Correct one warehouse to a target physical qty through an R2 MANUAL_ADJUSTMENT."""
+    from services.product_stock_state import require_physical_stock_correction_access
+
+    if not _adjustment_allowed(user):
+        require_physical_stock_correction_access(
+            user, os.environ.get("APP_ENV"), os.environ.get("MONGO_URL"),
+        )
+    from services.physical_stock import (
+        InsufficientPhysicalStockError,
+        PhysicalStockConflictError,
+        PhysicalStockUnavailableError,
+        PhysicalStockValidationError,
+        adjust_physical_stock_to_target,
+    )
+    actor_id = str((user or {}).get("id") or (user or {}).get("user_id") or "").strip()
+    if not actor_id:
+        raise HTTPException(401, "Aktor tidak dikenal")
+    try:
+        return await adjust_physical_stock_to_target(db, item_id, payload or {}, actor_id=actor_id)
+    except PhysicalStockValidationError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except PhysicalStockConflictError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except InsufficientPhysicalStockError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except PhysicalStockUnavailableError as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+
 @api_router.get("/master-items/{item_id}/physical-opening-balance")
 async def master_item_physical_opening_balance_get(
     item_id: str,
@@ -11567,7 +11615,7 @@ async def physical_stock_catalog_get(
         list_physical_stock_catalog,
     )
     try:
-        return await list_physical_stock_catalog(
+        result = await list_physical_stock_catalog(
             db,
             q=q,
             branch_id=branch_id,
@@ -11575,6 +11623,8 @@ async def physical_stock_catalog_get(
             page=page,
             limit=limit,
         )
+        result["can_adjust_physical_stock"] = _adjustment_allowed(user)
+        return result
     except PhysicalStockNotFoundError as exc:
         raise HTTPException(404, str(exc)) from exc
     except PhysicalStockValidationError as exc:

@@ -257,6 +257,7 @@ export const api = {
   physicalMutations: (id, params = {}) => client.get(`/master-items/${encodeURIComponent(id)}/physical-mutations`, { params }).then((r) => r.data),
   physicalOpeningBalance: (id, params = {}) => client.get(`/master-items/${encodeURIComponent(id)}/physical-opening-balance`, { params }).then((r) => r.data),
   createPhysicalOpeningBalance: (id, payload) => client.post(`/master-items/${encodeURIComponent(id)}/physical-opening-balance`, payload).then((r) => r.data),
+  createPhysicalAdjustment: (id, payload) => client.post(`/master-items/${encodeURIComponent(id)}/physical-adjustment`, payload).then((r) => r.data),
   listProductMutations: (id, params = {}) => client.get(`/master-items/${encodeURIComponent(id)}/mutations`, { params }).then((r) => r.data),
   getMutationDetail: (id, mutationId) => client.get(`/master-items/${encodeURIComponent(id)}/mutations/${encodeURIComponent(mutationId)}`).then((r) => r.data),
   ledgerAccounts: (params = {}) => client.get(`/ledger/accounts`, { params }).then((r) => r.data),

@@ -102,6 +102,10 @@ class PhysicalStockAbortError(PhysicalStockError):
     """Injected failure used to prove transaction rollback."""
 
 
+class PhysicalStockRetryError(PhysicalStockError):
+    """The balance changed before the target delta was applied."""
+
+
 def set_fail_after_balance(enabled: bool) -> None:
     global _fail_after_balance
     _fail_after_balance = bool(enabled)
@@ -728,6 +732,210 @@ def _as_physical_qty(value: Any) -> int:
 
 def opening_reference_id(master_item_id: str, branch_id: str, warehouse_id: str) -> str:
     return f"opening:{master_item_id}:{branch_id}:{warehouse_id}"
+
+
+def _same_adjustment(existing: dict, *, master_item_id: str, branch_id: str, warehouse_id: str, target: int, reason: str) -> bool:
+    metadata = existing.get("metadata") if isinstance(existing.get("metadata"), dict) else {}
+    try:
+        stored_target = int(metadata.get("target_physical_qty"))
+    except (TypeError, ValueError):
+        return False
+    return (
+        existing.get("movement_type") == MOVEMENT_MANUAL_ADJUSTMENT
+        and existing.get("master_item_id") == master_item_id
+        and existing.get("branch_id") == branch_id
+        and existing.get("warehouse_id") == warehouse_id
+        and str(existing.get("reason") or "") == reason
+        and stored_target == target
+    )
+
+
+def _adjustment_result(existing: dict, *, target: int, changed: bool) -> dict:
+    return {
+        "master_item_id": existing.get("master_item_id"),
+        "branch_id": existing.get("branch_id"),
+        "warehouse_id": existing.get("warehouse_id"),
+        "previous_physical_qty": int(existing.get("balance_before") or 0),
+        "target_physical_qty": target,
+        "qty_delta": int(existing.get("qty_delta") or 0),
+        "physical_qty": int(existing.get("balance_after") if existing.get("balance_after") is not None else target),
+        "movement_id": existing.get("id"),
+        "changed": changed,
+    }
+
+
+async def _adjust_to_target_once(
+    db,
+    *,
+    master_item_id: str,
+    branch_id: str,
+    warehouse_id: str,
+    target: int,
+    reason: str,
+    actor_id: str,
+    idempotency_key: str,
+) -> dict:
+    ledger = db[LEDGER_COLLECTION]
+    balances = db[BALANCE_COLLECTION]
+    async with await _client(db).start_session() as session:
+        async with session.start_transaction():
+            existing = await _existing_movement(db, idempotency_key, session)
+            if existing:
+                if not _same_adjustment(
+                    existing,
+                    master_item_id=master_item_id,
+                    branch_id=branch_id,
+                    warehouse_id=warehouse_id,
+                    target=target,
+                    reason=reason,
+                ):
+                    raise PhysicalStockConflictError(
+                        "Idempotency key sudah digunakan dengan payload yang berbeda"
+                    )
+                return _adjustment_result(existing, target=target, changed=True)
+            await _validate_masters(
+                db,
+                master_item_id=master_item_id,
+                branch_id=branch_id,
+                warehouse_id=warehouse_id,
+                session=session,
+            )
+            identity = {
+                "master_item_id": master_item_id,
+                "branch_id": branch_id,
+                "warehouse_id": warehouse_id,
+            }
+            current_doc = await balances.find_one(identity, {"_id": 0, "physical_qty": 1}, session=session)
+            current = int((current_doc or {}).get("physical_qty") or 0)
+            delta = target - current
+            if delta == 0:
+                return {
+                    "master_item_id": master_item_id,
+                    "branch_id": branch_id,
+                    "warehouse_id": warehouse_id,
+                    "previous_physical_qty": current,
+                    "target_physical_qty": target,
+                    "qty_delta": 0,
+                    "physical_qty": current,
+                    "movement_id": None,
+                    "changed": False,
+                }
+            created_at = now_iso()
+            movement_id = str(uuid.uuid4())
+            update = {
+                "$inc": {"physical_qty": delta, "version": 1},
+                "$set": {"last_movement_id": movement_id, "updated_at": created_at},
+            }
+            if delta > 0 and current_doc is None:
+                update["$setOnInsert"] = {"id": str(uuid.uuid4()), "created_at": created_at}
+                before_doc = await balances.find_one_and_update(
+                    identity,
+                    update,
+                    upsert=True,
+                    return_document=ReturnDocument.BEFORE,
+                    session=session,
+                )
+                balance_before = int((before_doc or {}).get("physical_qty") or 0)
+            else:
+                before_doc = await balances.find_one_and_update(
+                    {**identity, "physical_qty": current},
+                    update,
+                    upsert=False,
+                    return_document=ReturnDocument.BEFORE,
+                    session=session,
+                )
+                if not before_doc:
+                    raise PhysicalStockRetryError("Saldo fisik berubah sebelum delta diterapkan")
+                balance_before = int(before_doc.get("physical_qty") or 0)
+            if balance_before + delta != target or target < 0 or balance_before + delta < 0:
+                raise InsufficientPhysicalStockError(
+                    "Stok fisik tidak mencukupi dan tidak boleh menjadi negatif"
+                )
+            if _fail_after_balance:
+                raise PhysicalStockAbortError("forced transaction abort")
+            doc = {
+                "id": movement_id,
+                "master_item_id": master_item_id,
+                "branch_id": branch_id,
+                "warehouse_id": warehouse_id,
+                "movement_type": MOVEMENT_MANUAL_ADJUSTMENT,
+                "qty_delta": delta,
+                "balance_before": balance_before,
+                "balance_after": target,
+                "reference_type": MOVEMENT_MANUAL_ADJUSTMENT,
+                "reference_id": idempotency_key,
+                "reason": reason,
+                "actor_id": actor_id,
+                "occurred_at": created_at,
+                "created_at": created_at,
+                "idempotency_key": idempotency_key,
+                "metadata": {"target_physical_qty": target},
+            }
+            await ledger.insert_one(doc, session=session)
+            return _adjustment_result(doc, target=target, changed=True)
+
+
+async def adjust_physical_stock_to_target(
+    db,
+    item_id: str,
+    raw: dict,
+    *,
+    actor_id: str,
+) -> dict:
+    """Set one warehouse balance to a target qty by posting the delta in one transaction.
+
+    The current balance is read again on every attempt, then the delta is
+    recalculated against the target. A zero delta writes no ledger row.
+    """
+    await require_transaction_support(_client(db))
+    payload = raw or {}
+    master_item_id = _as_text(item_id, "master_item_id")
+    branch_id = _as_text(payload.get("branch_id"), "branch_id")
+    warehouse_id = _as_text(payload.get("warehouse_id"), "warehouse_id")
+    target = _as_physical_qty(payload.get("target_physical_qty"))
+    reason = _as_text(payload.get("reason"), "reason")
+    actor = _as_text(actor_id, "actor_id")
+    idempotency_key = _as_text(payload.get("idempotency_key"), "idempotency_key")
+    last_error: Optional[BaseException] = None
+    for _attempt in range(_MAX_ATTEMPTS):
+        try:
+            return await _adjust_to_target_once(
+                db,
+                master_item_id=master_item_id,
+                branch_id=branch_id,
+                warehouse_id=warehouse_id,
+                target=target,
+                reason=reason,
+                actor_id=actor,
+                idempotency_key=idempotency_key,
+            )
+        except PhysicalStockRetryError as exc:
+            last_error = exc
+            continue
+        except (PhysicalStockValidationError, PhysicalStockConflictError, InsufficientPhysicalStockError, PhysicalStockAbortError):
+            raise
+        except PyMongoError as exc:
+            last_error = exc
+            if not _retryable(exc):
+                raise
+    existing = await db[LEDGER_COLLECTION].find_one(
+        {"idempotency_key": idempotency_key},
+        {"_id": 0},
+    )
+    if existing:
+        if not _same_adjustment(
+            existing,
+            master_item_id=master_item_id,
+            branch_id=branch_id,
+            warehouse_id=warehouse_id,
+            target=target,
+            reason=reason,
+        ):
+            raise PhysicalStockConflictError(
+                "Idempotency key sudah digunakan dengan payload yang berbeda"
+            )
+        return _adjustment_result(existing, target=target, changed=True)
+    raise PhysicalStockUnavailableError("Transaksi stok fisik gagal setelah percobaan ulang") from last_error
 
 
 async def post_opening_balance(db, item_id: str, raw: dict, *, actor_id: str) -> dict:

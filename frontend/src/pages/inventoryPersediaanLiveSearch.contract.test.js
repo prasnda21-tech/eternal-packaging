@@ -77,6 +77,25 @@ describe("Persediaan live search inventory scope", () => {
     expect(stock).toMatch(/Belum tersedia untuk stok baru/);
   });
 
+  test("authorized physical correction uses a target dialog and refreshes the read", () => {
+    expect(stock).toMatch(/can_adjust_physical_stock/);
+    expect(stock).toMatch(/canAdjust \?/);
+    expect(stock).toMatch(/data-testid=\{`stock-adjust-\$\{it\.master_item_id\}`\}/);
+    expect(stock).toMatch(/data-testid="stock-adjust-modal"/);
+    expect(stock).toMatch(/data-testid="stock-adjust-current"/);
+    expect(stock).toMatch(/data-testid="stock-adjust-target"/);
+    expect(stock).toMatch(/data-testid="stock-adjust-warehouse"/);
+    expect(stock).toMatch(/data-testid="stock-adjust-reason"/);
+    expect(stock).toMatch(/Simpan Koreksi/);
+    expect(stock).toMatch(/createPhysicalAdjustment/);
+    expect(stock).toMatch(/await onSaved\(\)/);
+    expect(stock).toMatch(/qty_pesanan/);
+    expect(stock).toMatch(/qty_belum_terkirim/);
+    expect(stock).toMatch(/qty_tersedia/);
+    expect(stock).not.toMatch(/qty_pesanan:/);
+    expect(stock).not.toMatch(/qty_belum_terkirim:/);
+  });
+
   test("Stock Saat Ini clears rows while query pending", () => {
     expect(stock).toMatch(/useDebouncedLiveSearch/);
     expect(stock).toMatch(/loadSeq/);
