@@ -53,6 +53,18 @@ export default function MobilePrintWorkspace({ order, canEdit, onUpdated }) {
     }
   };
 
+  if (!display.length) {
+    return (
+      <section data-testid="mobile-ws-print" className="mop-ws-role mop-ws-role--print">
+        <div className="mop-ws-header"><h2>CETAK</h2></div>
+        <MobileDesignFile order={order} />
+        <p className="mop-empty" data-testid="mobile-print-empty">Tidak ada alokasi cetak untuk akun ini.</p>
+      </section>
+    );
+  }
+
+  const gateReason = order?.print_qty_gate_reason || "Input hasil cetak belum tersedia.";
+
   return (
     <section data-testid="mobile-ws-print" className="mop-ws-role mop-ws-role--print">
       <div className="mop-ws-header"><h2>CETAK</h2></div>
@@ -64,7 +76,7 @@ export default function MobilePrintWorkspace({ order, canEdit, onUpdated }) {
         { label: "Sisa", value: remain.toLocaleString("id-ID") },
       ]} />
       <div className="mop-progress" aria-label="Progress cetak"><span style={{ width: `${pct}%` }} /></div>
-      {locked && <p className="mop-card-meta">{order?.print_qty_gate_reason || "Cetak menunggu persiapan dan sampel."}</p>}
+      {locked && <p className="mop-card-meta" data-testid="mobile-print-gate">{gateReason}</p>}
       {err && <div className="mop-error">{err}</div>}
       {display.map((line) => (
         <div className="mop-line-block" key={`${line.lineIdx}-${line.itemId}`} data-testid={`mobile-print-line-${line.lineIdx}`}>
@@ -88,7 +100,6 @@ export default function MobilePrintWorkspace({ order, canEdit, onUpdated }) {
           </button>
         </div>
       ))}
-      {!display.length && <p className="mop-empty">Tidak ada alokasi cetak untuk akun ini.</p>}
     </section>
   );
 }
