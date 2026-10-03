@@ -174,6 +174,44 @@ describe("SalesPwaDocumentViewerPage", () => {
     act(() => root.unmount());
   });
 
+  test("aborts the previous request and revokes its object URL when the document changes", async () => {
+    let firstSignal;
+    URL.createObjectURL = jest.fn()
+      .mockReturnValueOnce("blob:first-doc")
+      .mockReturnValueOnce("blob:second-doc");
+    api.salesPwaDocumentFile.mockImplementation((id, kind, documentId, options) => {
+      if (documentId === "sj-1") {
+        firstSignal = options.signal;
+        return Promise.resolve({
+          blob: new Blob(["first"], { type: "application/pdf" }),
+          contentType: "application/pdf",
+          disposition: 'inline; filename="first.pdf"',
+        });
+      }
+      return Promise.resolve({
+        blob: new Blob(["second"], { type: "application/pdf" }),
+        contentType: "application/pdf",
+        disposition: 'inline; filename="second.pdf"',
+      });
+    });
+
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    await act(async () => root.render(<SalesPwaDocumentViewerPage />));
+    await flush();
+    expect(container.querySelector("h1").textContent).toBe("first.pdf");
+
+    mockParams = { id: "order-1", kind: "invoice", documentId: "inv-9" };
+    await act(async () => root.render(<SalesPwaDocumentViewerPage />));
+    await flush();
+
+    expect(firstSignal.aborted).toBe(true);
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:first-doc");
+    expect(container.querySelector("h1").textContent).toBe("second.pdf");
+    expect(container.querySelector('[data-testid="sales-document-download"]').getAttribute("href")).toBe("blob:second-doc");
+    act(() => root.unmount());
+  });
+
   test("previews a PDF attachment whose response type is generic", async () => {
     mockParams = { id: "order-1", kind: "proof", documentId: "lampiran-1" };
     const bytes = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31]);
