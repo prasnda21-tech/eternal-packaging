@@ -132,7 +132,8 @@ describe("Dashboard Penjualan source", () => {
   test("keeps current-state labels and has no mockup fallback numbers", () => {
     const combined = `${pageSrc}\n${helperSrc}`;
     FORBIDDEN.forEach((text) => expect(combined).not.toContain(text));
-    expect(pageSrc).toContain("Umur piutang · Saat ini");
+    expect(pageSrc).toContain("Umur piutang saat ini");
+    expect(pageSrc).toContain("Posisi saat ini");
     expect(pageSrc).toContain('data-testid="sales-orders-scope"');
     expect(pageSrc).toContain("Saat ini");
     expect(pageSrc).not.toContain("Lihat detail");
@@ -251,7 +252,7 @@ describe("Dashboard Penjualan runtime", () => {
     expect(container.querySelector('[data-testid="sales-order-aktif"]').textContent).toMatch(/Buka daftar/);
     expect(container.querySelector('[data-testid="sales-order-hold"]').tagName).toBe("DIV");
     expect(container.querySelector('[data-testid="sales-order-hold"]').textContent).not.toMatch(/Buka daftar/);
-    expect(container.querySelector('[data-testid="sales-receivables-scope"]').textContent).toBe("Umur piutang · Saat ini");
+    expect(container.querySelector('[data-testid="sales-receivables-scope"]').textContent).toBe("Posisi saat ini");
     expect(container.querySelector('[data-testid="sales-customer-coverage"]').textContent).toMatch(/Persentase belum ditampilkan/);
     expect(document.body.textContent).toMatch(/Omzet penjualan: Rp/);
 
@@ -295,11 +296,11 @@ describe("Dashboard Penjualan runtime", () => {
     await flush();
     expect(container.querySelector('[data-testid="sales-invoice-count"]').textContent).toBe('0');
     expect(container.querySelector('#sales-detail-panel-orders').hidden).toBe(false);
-    expect(container.querySelector('#sales-detail-panel-receivables').hidden).toBe(true);
-    await act(async () => container.querySelector('#sales-detail-tab-receivables').click());
+    expect(container.querySelector('#sales-detail-panel-receivables')).toBeNull();
+    expect(container.querySelector('[data-testid="sales-receivables"]').textContent).toContain('Tidak ada saldo piutang saat ini.');
+    await act(async () => container.querySelector('#sales-detail-tab-invoices').click());
     expect(container.querySelector('#sales-detail-panel-orders').hidden).toBe(true);
-    expect(container.querySelector('#sales-detail-panel-receivables').hidden).toBe(false);
-    expect(container.querySelector('#sales-detail-panel-receivables').textContent).toContain('Tidak ada saldo piutang saat ini.');
+    expect(container.querySelector('#sales-detail-panel-invoices').hidden).toBe(false);
   });
   test("invoice details remain accessible in a labelled native dialog", async () => {
     const showModal = jest.fn(function () { this.setAttribute('open', ''); });
@@ -333,8 +334,79 @@ describe("Dashboard Penjualan runtime", () => {
     api.salesDashboard.mockResolvedValue(payload({receivables:{status:'incomplete',outstanding:1500,open_invoice_count:2,customer_count:1,aging:[{key:'NOT_DUE',label:'Belum',amount:1000}],unbucketed_outstanding:500}}));
     await act(async () => root.render(<SalesDashboard />));
     await flush();
+    expect(container.querySelector('[data-testid="sales-ar-unbucketed"]').textContent).toMatch(/Tanggal tidak tersedia/);
     expect(container.querySelector('[data-testid="sales-ar-unbucketed"]').textContent).toMatch(/500/);
     expect(container.querySelector('[data-testid="sales-ar-outstanding"]').textContent).toMatch(/1[.,]500/);
+    expect(container.querySelector('[data-testid="sales-products"]').textContent).toMatch(/Nilai sebelum diskon faktur/);
+  });
+
+  test("trend uses only the response points and grain", async () => {
+    api.salesDashboard.mockResolvedValue(payload({
+      trend: {
+        status: "complete",
+        grain_label: "Harian",
+        points: [
+          { key: "2026-09-01", label: "1 Sep", omzet: 1000, invoice_count: 1 },
+          { key: "2026-09-02", label: "2 Sep", omzet: 0, invoice_count: 0 },
+        ],
+      },
+    }));
+    await act(async () => root.render(<SalesDashboard />));
+    await flush();
+    expect(container.querySelector('[data-testid="sales-line"]').getAttribute("data-points")).toBe("2");
+    const series = container.querySelectorAll('[data-testid="trend-series"]');
+    expect(series).toHaveLength(1);
+    expect(series[0].getAttribute("data-key")).toBe("omzet");
+    expect(container.querySelector('[data-testid="sales-trend"]').textContent).toMatch(/harian/i);
+    expect(container.querySelector('[data-testid="sales-trend"]').textContent).not.toMatch(/Januari|Desember/);
+    expect(pageSrc).not.toMatch(/dataKey="comparison"|name="Pembanding"/);
+  });
+
+  test("a failed reload does not keep the previous omzet on screen", async () => {
+    await act(async () => root.render(<SalesDashboard />));
+    await flush();
+    expect(container.querySelector('[data-testid="sales-omzet-value"]').textContent).toMatch(/4[.,]000/);
+    api.salesDashboard.mockRejectedValue({ response: { data: { detail: "ulang gagal" } } });
+    await click("sales-reload");
+    expect(container.querySelector('[data-testid="sales-error"]').textContent).toMatch(/ulang gagal/);
+    expect(container.querySelector('[data-testid="sales-omzet-value"]').textContent).toBe("Gagal muat");
+  });
+
+  test("an older in-flight period cannot overwrite the newer one", async () => {
+    let first;
+    let second;
+    let calls = 0;
+    api.salesDashboard.mockImplementation(() => new Promise((resolve) => {
+      calls += 1;
+      if (calls === 1) first = resolve;
+      else second = resolve;
+    }));
+    await act(async () => root.render(<SalesDashboard />));
+    await act(async () => container.querySelector('[data-testid="sales-preset-year"]').click());
+    await act(async () => second(payload({
+      omzet: { status: "complete", amount: 9000, invoice_count: 2, grand_total: 9000, comparison: { available: false } },
+    })));
+    await flush();
+    await act(async () => first(payload()));
+    await flush();
+    expect(container.querySelector('[data-testid="sales-omzet-value"]').textContent).toMatch(/9[.,]000/);
+    expect(container.querySelector('[data-testid="sales-omzet-value"]').textContent).not.toMatch(/4[.,]000/);
+  });
+
+  test("a null amount stays distinct from zero and from an empty period", async () => {
+    api.salesDashboard.mockResolvedValue(payload({
+      omzet: { status: "complete", amount: null, invoice_count: null, comparison: { available: false } },
+    }));
+    await act(async () => root.render(<SalesDashboard />));
+    await flush();
+    expect(container.querySelector('[data-testid="sales-omzet-value"]').textContent).toBe("—");
+    expect(container.querySelector('[data-testid="sales-invoice-count"]').textContent).toBe("—");
+    api.salesDashboard.mockResolvedValue(payload({
+      omzet: { status: "zero", amount: 0, invoice_count: 0, comparison: { available: false } },
+    }));
+    await click("sales-reload");
+    expect(container.querySelector('[data-testid="sales-omzet-value"]').textContent).toMatch(/^Rp\s/);
+    expect(container.querySelector('[data-testid="sales-invoice-count"]').textContent).toBe("0");
   });
 
 });

@@ -6251,7 +6251,7 @@ button.ghost.sm.icon{padding:4px 6px}
   flex:1 1 auto;
   min-height:0;
   min-width:0;
-  overflow:hidden;
+  overflow:auto;
   padding:8px 12px 10px;
   gap:8px;
   box-sizing:border-box;
@@ -6291,10 +6291,10 @@ button.ghost.sm.icon{padding:4px 6px}
 .sd-card > strong.sd-hero{font-size:28px;line-height:1.15;letter-spacing:-0.02em}
 .sd-chart header{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;min-width:0}
 .sd-chart header span{font-size:12px;color:var(--soft);text-align:right;overflow-wrap:anywhere}
-.sd-plot{height:108px;min-height:0;flex:0 0 108px;min-width:0;overflow:hidden}
-.sd-plot-short{height:92px;min-height:0;flex:0 0 92px}
+.sd-plot{height:auto;min-height:0;flex:1 1 auto;min-width:0;overflow:visible}
+.sd-plot-short{height:auto;min-height:72px;flex:1 1 auto}
 .sd-plot.is-message,.sd-plot.sd-plot-short.is-message{height:auto;min-height:0;flex:0 0 auto}
-.sd-plot .recharts-responsive-container,.sd-donut .recharts-responsive-container{overflow:hidden}
+.sd-plot .recharts-responsive-container,.sd-donut .recharts-responsive-container{overflow:visible}
 .sd-state{margin:0;min-height:48px;display:flex;align-items:center;font-size:13px;color:var(--soft)}
 .sd-plot.is-message .sd-state,.sd-card > .sd-state{min-height:0;height:auto}
 .sd-empty{margin:0;font-size:13px;line-height:1.35;font-weight:450;color:var(--soft)}
@@ -6395,7 +6395,7 @@ button.ghost.sm.icon{padding:4px 6px}
   display:flex;
   flex-direction:column;
   gap:12px;
-  padding-bottom:84px;
+  padding-bottom:0;
   scrollbar-gutter:stable;
 }
 .sf-distinction{
@@ -6410,15 +6410,15 @@ button.ghost.sm.icon{padding:4px 6px}
 }
 .sales-finance-page .sales-dashboard-page,
 .sales-finance-page .finance-dashboard-page{
-  flex:none;
-  height:auto;
+  flex:1 1 auto;
+  height:100%;
   min-height:0;
   overflow:visible;
-  padding:10px;
-  gap:8px;
-  border:1px solid var(--line);
-  border-radius:10px;
-  background:#f7faf8;
+  padding:0;
+  gap:6px;
+  border:0;
+  border-radius:0;
+  background:transparent;
 }
 .sales-finance-page .sd-head,
 .sales-finance-page .fd-head{padding-right:76px}
@@ -6461,9 +6461,9 @@ button.ghost.sm.icon{padding:4px 6px}
 }
 .sales-finance-page .fd-side{grid-template-rows:auto auto}
 .sales-finance-page .fd-plot.is-series{
-  flex:0 0 220px;
-  height:220px;
-  min-height:220px;
+  flex:1 1 auto;
+  height:auto;
+  min-height:140px;
 }
 .sales-finance-page .fd-plot.is-message{
   flex:0 0 auto;

@@ -1,4 +1,4 @@
-import { comparisonDisplay, displayAmount, displayCount, formatRatio } from "./salesDashboard";
+import { balanceAsOfLabel, comparisonDisplay, displayAmount, displayCount, formatRatio, otherResultLines, plBars, positionLabel } from "./salesDashboard";
 import { dashboardMenuItems, dashboardNavVisible, NAV_KEYS } from "./navAccess";
 
 const has = (...keys) => (key) => keys.includes(key);
@@ -57,5 +57,30 @@ describe("sales dashboard presentation", () => {
     expect(displayCount("zero", 0)).toBe("0");
     expect(formatRatio(null)).toBe("—");
     expect(formatRatio(0.7)).toBe("70%");
+  });
+
+  test("labels a live receivable position separately from a period-end balance", () => {
+    expect(positionLabel("")).toBe("Posisi saat ini");
+    expect(positionLabel("2026-10-03")).toBe("Posisi saat ini · 2026-10-03");
+    expect(positionLabel("bukan-tanggal")).toBe("Posisi saat ini");
+    expect(balanceAsOfLabel("2026-09-26")).toBe("Per 2026-09-26");
+    expect(balanceAsOfLabel("")).toBe("Per tanggal akhir periode");
+  });
+
+  test("keeps signed profit bars and only lists nonzero other results", () => {
+    expect(plBars(null)).toBeNull();
+    expect(plBars({ status: "empty", revenue: 0, cogs: 0, operating_expense: 0 })).toBeNull();
+    expect(plBars({ status: "complete", revenue: 10, cogs: null, operating_expense: 1 })).toBeNull();
+    expect(plBars({ status: "complete", revenue: 1000, cogs: 400, operating_expense: -50 })).toEqual([
+      { key: "revenue", label: "Pendapatan", amount: 1000 },
+      { key: "cogs", label: "HPP", amount: 400 },
+      { key: "operating_expense", label: "Beban operasional", amount: -50 },
+    ]);
+    expect(otherResultLines({ status: "complete", other_income: 0, other_expense: 0 })).toEqual([]);
+    expect(otherResultLines({ status: "error", other_income: 25, other_expense: -10 })).toEqual([]);
+    expect(otherResultLines({ status: "complete", other_income: 25, other_expense: -10 })).toEqual([
+      { key: "other_income", label: "Pendapatan lain", amount: 25 },
+      { key: "other_expense", label: "Beban lain", amount: -10 },
+    ]);
   });
 });
