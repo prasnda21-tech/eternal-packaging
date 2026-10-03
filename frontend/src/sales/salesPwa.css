@@ -741,7 +741,7 @@
   cursor: pointer;
 }
 .spwa-viewer-body {
-  overflow-y: auto;
+  overflow: auto;
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
 }
@@ -784,9 +784,9 @@
 }
 .spwa-pdf.is-windowed {
   max-width: 100%;
-  overflow-x: auto;
   align-items: stretch;
   gap: 12px;
+  padding-bottom: 48px;
 }
 .spwa-pdf.is-windowed.is-zoomed {
   align-items: flex-start;
@@ -799,6 +799,9 @@
   position: sticky;
   top: 0;
   z-index: 2;
+  align-self: stretch;
+  width: 100%;
+  box-sizing: border-box;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -806,7 +809,8 @@
   padding: 6px 8px;
   border: 1px solid #cad6dc;
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.96);
+  background: #fff;
+  box-shadow: 0 1px 0 #edf2f4;
   color: #173946;
   font-size: 12px;
   font-weight: 650;
