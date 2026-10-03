@@ -910,7 +910,7 @@ export const api = {
   salesPwaFieldActions: (params = {}) => client.get("/sales-pwa/field-actions", { params }).then((r) => r.data),
   salesPwaOrder: (id) => client.get(`/sales-pwa/orders/${encodeURIComponent(id)}`).then((r) => r.data),
   salesPwaDocuments: (id) => client.get(`/sales-pwa/orders/${encodeURIComponent(id)}/documents`).then((r) => r.data),
-  salesPwaDocumentFile: (id, kind, documentId) => {
+  salesPwaDocumentFile: (id, kind, documentId, options = {}) => {
     const orderId = encodeURIComponent(id);
     const docId = encodeURIComponent(documentId);
     const paths = {
@@ -921,7 +921,7 @@ export const api = {
     };
     const path = paths[kind];
     if (!path) return Promise.reject(new Error("Jenis dokumen tidak didukung"));
-    return client.get(path, { responseType: "blob" }).then((r) => ({
+    return client.get(path, { responseType: "blob", signal: options.signal }).then((r) => ({
       blob: r.data,
       contentType: r.headers?.["content-type"] || r.data?.type || "",
       disposition: r.headers?.["content-disposition"] || "",

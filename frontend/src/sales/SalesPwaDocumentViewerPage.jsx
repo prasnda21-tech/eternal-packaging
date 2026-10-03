@@ -15,14 +15,69 @@ function fallbackType(kind) {
   return kind === "proof" ? "image/jpeg" : "application/pdf";
 }
 
+function filenameFromDisposition(disposition) {
+  const value = String(disposition || "");
+  const encoded = /filename\*\s*=\s*[^']*''([^;]+)/i.exec(value);
+  if (encoded) {
+    try {
+      return decodeURIComponent(encoded[1].trim().replace(/^"|"$/g, ""));
+    } catch {
+      /* keep the plain filename below */
+    }
+  }
+  const quoted = /filename\s*=\s*"([^"]+)"/i.exec(value);
+  if (quoted) return quoted[1].trim();
+  const plain = /filename\s*=\s*([^;]+)/i.exec(value);
+  return plain ? plain[1].trim() : "";
+}
+
+function loadErrorMessage(error) {
+  const status = error?.response?.status;
+  if (status === 401) return "Sesi berakhir. Masuk kembali untuk membuka dokumen.";
+  if (status === 403) return "Anda tidak memiliki akses ke dokumen ini.";
+  if (status === 404) return "Dokumen tidak ditemukan.";
+  return "Dokumen gagal dimuat.";
+}
+
+function canceled(error, signal) {
+  return signal?.aborted || error?.code === "ERR_CANCELED" || error?.name === "CanceledError";
+}
+
+function DocumentActions({ onRetry, url, filename, allowOriginal }) {
+  return (
+    <div className="spwa-viewer-actions">
+      <button type="button" onClick={onRetry} data-testid="sales-document-retry">Coba lagi</button>
+      {allowOriginal && url ? (
+        <a href={url} download={filename} data-testid="sales-document-open-original">Buka PDF asli</a>
+      ) : null}
+    </div>
+  );
+}
+
 export default function SalesPwaDocumentViewerPage() {
   const { id, kind, documentId } = useParams();
   const location = useLocation();
   const navigate = useNavigate();
   const directGuard = useRef(false);
-  const [viewer, setViewer] = useState({ loading: true, blob: null, url: "", type: "", error: "" });
+  const requestRef = useRef(0);
+  const signatureRef = useRef("");
+  const [attempt, setAttempt] = useState(0);
+  const [pdfError, setPdfError] = useState("");
+  const [viewer, setViewer] = useState({
+    loading: true, blob: null, url: "", type: "", error: "", filename: "",
+  });
   const label = LABELS[kind] || "Dokumen";
   const orderPath = `/sales/po/${encodeURIComponent(id)}`;
+  const signature = `${id}|${kind}|${documentId}|${attempt}`;
+  if (signatureRef.current !== signature) {
+    signatureRef.current = signature;
+    requestRef.current += 1;
+  }
+  const requestId = requestRef.current;
+
+  useEffect(() => {
+    setPdfError("");
+  }, [signature]);
 
   useEffect(() => {
     if (location.state?.salesDocumentFrom === orderPath) return undefined;
@@ -46,46 +101,71 @@ export default function SalesPwaDocumentViewerPage() {
     navigate(-1);
   }, [navigate]);
 
+  const retry = useCallback(() => setAttempt((value) => value + 1), []);
+
   useEffect(() => {
-    let active = true;
+    const currentId = requestId;
+    const controller = new AbortController();
     let objectUrl = "";
 
-    setViewer({ loading: true, blob: null, url: "", type: "", error: "" });
-    api.salesPwaDocumentFile(id, kind, documentId)
-      .then(({ blob, contentType }) => {
-        if (!active) return;
+    setViewer({ loading: true, blob: null, url: "", type: "", error: "", filename: "" });
+    api.salesPwaDocumentFile(id, kind, documentId, { signal: controller.signal })
+      .then(({ blob, contentType, disposition }) => {
+        if (currentId !== requestRef.current) return;
         const type = String(contentType || blob?.type || fallbackType(kind)).split(";")[0].trim();
+        const named = filenameFromDisposition(disposition);
+        if (!blob || blob.size === 0) {
+          setViewer({
+            loading: false,
+            blob: null,
+            url: "",
+            type,
+            error: "Dokumen kosong.",
+            filename: named,
+          });
+          return;
+        }
         const typedBlob = blob?.type ? blob : new Blob([blob], { type });
         objectUrl = URL.createObjectURL(typedBlob);
-        setViewer({ loading: false, blob: typedBlob, url: objectUrl, type, error: "" });
+        setViewer({
+          loading: false,
+          blob: typedBlob,
+          url: objectUrl,
+          type,
+          error: "",
+          filename: named,
+        });
       })
       .catch((error) => {
-        if (!active) return;
-        const status = error?.response?.status;
-        const detail = error?.response?.data?.detail;
+        if (currentId !== requestRef.current || canceled(error, controller.signal)) return;
         setViewer({
           loading: false,
           blob: null,
           url: "",
           type: "",
-          error: status === 404 ? "Dokumen tidak ditemukan." : (detail || "Dokumen gagal dimuat."),
+          error: loadErrorMessage(error),
+          filename: "",
         });
       });
 
     return () => {
-      active = false;
+      controller.abort();
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [id, kind, documentId]);
+  }, [id, kind, documentId, requestId]);
 
   const filename = useMemo(() => {
+    if (viewer.filename) return viewer.filename;
     const safe = String(documentId || "dokumen").replace(/[^a-zA-Z0-9._-]+/g, "-");
     const ext = kind === "proof" ? "jpg" : "pdf";
     return `${kind || "dokumen"}-${safe}.${ext}`;
-  }, [kind, documentId]);
+  }, [kind, documentId, viewer.filename]);
 
+  const displayName = viewer.filename || label;
   const isImage = viewer.type.startsWith("image/");
-  const isPdf = viewer.type === "application/pdf" || kind !== "proof";
+  const isPdf = viewer.type === "application/pdf" || (kind !== "proof" && !isImage);
+  const showPdf = !viewer.loading && !viewer.error && !pdfError && viewer.blob && isPdf && !isImage;
+  const failure = viewer.error || pdfError;
 
   return (
     <div className="spwa-viewer" data-testid="sales-document-viewer">
@@ -95,10 +175,10 @@ export default function SalesPwaDocumentViewerPage() {
         </button>
         <div>
           <p className="spwa-kicker">DOKUMEN PO</p>
-          <h1>{label}</h1>
+          <h1 title={displayName}>{displayName}</h1>
         </div>
         {viewer.url ? (
-          <a className="spwa-viewer-download" href={viewer.url} download={filename}>
+          <a className="spwa-viewer-download" href={viewer.url} download={filename} data-testid="sales-document-download">
             <Download size={15} /> Unduh
           </a>
         ) : <span />}
@@ -106,14 +186,30 @@ export default function SalesPwaDocumentViewerPage() {
 
       <main className="spwa-viewer-body">
         {viewer.loading && <div className="spwa-viewer-state">Memuat dokumen...</div>}
-        {viewer.error && <div className="spwa-viewer-state is-error">{viewer.error}</div>}
-        {!viewer.loading && !viewer.error && viewer.url && isImage && (
-          <img className="spwa-viewer-image" src={viewer.url} alt={label} />
+        {!viewer.loading && failure && (
+          <div className="spwa-viewer-state is-error" data-testid="sales-document-error">
+            <p>{failure}</p>
+            <DocumentActions
+              onRetry={retry}
+              url={viewer.url}
+              filename={filename}
+              allowOriginal={Boolean(viewer.url) && isPdf}
+            />
+          </div>
         )}
-        {!viewer.loading && !viewer.error && viewer.blob && isPdf && !isImage && (
-          <SalesPwaPdfViewer blob={viewer.blob} label={label} />
+        {!viewer.loading && !failure && viewer.url && isImage && (
+          <img className="spwa-viewer-image" src={viewer.url} alt={displayName} />
         )}
-        {!viewer.loading && !viewer.error && viewer.url && !isImage && !isPdf && (
+        {showPdf && (
+          <SalesPwaPdfViewer
+            key={signature}
+            blob={viewer.blob}
+            label={displayName}
+            mode="windowed"
+            onError={setPdfError}
+          />
+        )}
+        {!viewer.loading && !failure && viewer.url && !isImage && !isPdf && (
           <div className="spwa-viewer-state">
             <FileText size={28} />
             Preview tidak tersedia. Gunakan tombol Unduh.

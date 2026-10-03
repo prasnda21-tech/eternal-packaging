@@ -782,6 +782,70 @@
   font-size: 9px;
   text-align: center;
 }
+.spwa-pdf.is-windowed {
+  max-width: 100%;
+  overflow-x: auto;
+  align-items: stretch;
+  gap: 12px;
+}
+.spwa-pdf.is-windowed.is-zoomed {
+  align-items: flex-start;
+}
+.spwa-pdf.is-windowed.is-zoomed .spwa-pdf-page,
+.spwa-pdf.is-windowed.is-zoomed .spwa-pdf-page canvas {
+  max-width: none;
+}
+.spwa-pdf-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid #cad6dc;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.96);
+  color: #173946;
+  font-size: 12px;
+  font-weight: 650;
+}
+.spwa-pdf-zoom {
+  display: flex;
+  gap: 6px;
+}
+.spwa-pdf-zoom button,
+.spwa-viewer-actions button,
+.spwa-viewer-actions a {
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 10px;
+  border: 1px solid #c5d2d9;
+  border-radius: 8px;
+  background: #fff;
+  color: #173946;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  text-decoration: none;
+  cursor: pointer;
+}
+.spwa-pdf-zoom button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.spwa-viewer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+}
+.spwa-viewer-state p {
+  margin: 0;
+}
 
 /* Sales command center: dense mobile layout with drawers for secondary work. */
 .spwa-top-inline {
