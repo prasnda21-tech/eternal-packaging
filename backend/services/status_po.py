@@ -376,19 +376,17 @@ def _consider_delivery_instant(best: Optional[tuple], raw: Any) -> Optional[tupl
 
 
 def _latest_valid_delivery_at(order: dict) -> Optional[str]:
-    """Latest successful delivery instant. Not deadline, schedule, SJ create, or proof upload.
+    """Latest successful delivery instant from an active shipment.
 
-    Per-delivery evidence wins over the PO-level stamp. A later cancelled or
-    superseded shipment must not extend the age. When those events exist but
-    none has a usable time, return None instead of inventing one.
+    Uses confirmation confirmed_at and active shipment delivered_at.
+    orders.delivered_at is not a completion proof: partial delivery writes it,
+    and a later stage advance leaves that stamp in place.
     """
     best: Optional[tuple] = None
-    saw_delivery_event = False
 
     for rec in order.get("delivery_confirmations") or []:
         if not isinstance(rec, dict):
             continue
-        saw_delivery_event = True
         if not _confirmation_is_valid_delivery(order, rec):
             continue
         best = _consider_delivery_instant(best, rec.get("confirmed_at"))
@@ -399,18 +397,12 @@ def _latest_valid_delivery_at(order: dict) -> Optional[str]:
         marked = bool(sh.get("delivered_at")) or str(sh.get("delivery_status") or "").strip() == "Terkirim"
         if not marked:
             continue
-        saw_delivery_event = True
         if not shipment_is_active(sh):
             continue
         best = _consider_delivery_instant(best, sh.get("delivered_at"))
 
     if best:
         return best[1]
-    if saw_delivery_event:
-        return None
-    legacy = order.get("delivered_at")
-    if _parse_dt(legacy):
-        return str(legacy).strip()
     return None
 
 

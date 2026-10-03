@@ -329,10 +329,24 @@ def test_superseded_only_delivery_does_not_fall_back_to_order_stamp():
     assert row["age_end_at"] is None
 
 
-def test_legacy_full_delivery_uses_order_delivered_at_only():
+def test_partial_delivered_at_then_completion_has_no_age_end():
+    row = status_po_row(_full(
+        delivered_at="2026-09-04T08:00:00+07:00",
+        delivery_status="Terkirim",
+        current_stage=14,
+        qty_delivered=10000,
+        scheduled_delivery_date="2026-09-20",
+        deadline="2026-09-30T00:00:00+07:00",
+        delivery_proofs=[{"uploaded_at": "2026-09-09T00:00:00+07:00"}],
+    ))
+    assert row["age_closed"] is True
+    assert row["age_end_at"] is None
+
+
+def test_order_delivered_at_alone_is_not_an_age_end():
     row = status_po_row(_full(delivered_at="2026-09-06T15:00:00+07:00"))
     assert row["age_closed"] is True
-    assert row["age_end_at"] == "2026-09-06T15:00:00+07:00"
+    assert row["age_end_at"] is None
 
 
 def test_zero_qty_confirmation_is_not_a_delivery_time():
