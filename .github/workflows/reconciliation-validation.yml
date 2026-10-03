@@ -239,6 +239,7 @@ jobs:
           src/lib/salesReceiptPaymentProof.test.js
           src/pages/SalesAccountingSettings.test.js
           src/components/OperatorSplitPanel.screenSize.test.js
+          src/mobile/workspaces/MobilePrintWorkspace.test.js
       - name: Build production frontend
         if: ${{ always() }}
         env:
