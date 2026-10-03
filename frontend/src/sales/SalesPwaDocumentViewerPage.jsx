@@ -43,6 +43,12 @@ function canceled(error, signal) {
   return signal?.aborted || error?.code === "ERR_CANCELED" || error?.name === "CanceledError";
 }
 
+async function looksLikePdf(blob) {
+  if (!blob || blob.size < 5) return false;
+  const header = new Uint8Array(await blob.slice(0, 5).arrayBuffer());
+  return header[0] === 0x25 && header[1] === 0x50 && header[2] === 0x44 && header[3] === 0x46 && header[4] === 0x2d;
+}
+
 function DocumentActions({ onRetry, url, filename, allowOriginal }) {
   return (
     <div className="spwa-viewer-actions">
@@ -64,7 +70,7 @@ export default function SalesPwaDocumentViewerPage() {
   const [attempt, setAttempt] = useState(0);
   const [pdfError, setPdfError] = useState("");
   const [viewer, setViewer] = useState({
-    loading: true, blob: null, url: "", type: "", error: "", filename: "",
+    loading: true, blob: null, url: "", type: "", error: "", filename: "", sniffedPdf: false,
   });
   const label = LABELS[kind] || "Dokumen";
   const orderPath = `/sales/po/${encodeURIComponent(id)}`;
@@ -108,9 +114,9 @@ export default function SalesPwaDocumentViewerPage() {
     const controller = new AbortController();
     let objectUrl = "";
 
-    setViewer({ loading: true, blob: null, url: "", type: "", error: "", filename: "" });
+    setViewer({ loading: true, blob: null, url: "", type: "", error: "", filename: "", sniffedPdf: false });
     api.salesPwaDocumentFile(id, kind, documentId, { signal: controller.signal })
-      .then(({ blob, contentType, disposition }) => {
+      .then(async ({ blob, contentType, disposition }) => {
         if (currentId !== requestRef.current) return;
         const type = String(contentType || blob?.type || fallbackType(kind)).split(";")[0].trim();
         const named = filenameFromDisposition(disposition);
@@ -122,9 +128,12 @@ export default function SalesPwaDocumentViewerPage() {
             type,
             error: "Dokumen kosong.",
             filename: named,
+            sniffedPdf: false,
           });
           return;
         }
+        const sniffedPdf = type.startsWith("image/") ? false : await looksLikePdf(blob);
+        if (currentId !== requestRef.current) return;
         const typedBlob = blob?.type ? blob : new Blob([blob], { type });
         objectUrl = URL.createObjectURL(typedBlob);
         setViewer({
@@ -134,6 +143,7 @@ export default function SalesPwaDocumentViewerPage() {
           type,
           error: "",
           filename: named,
+          sniffedPdf,
         });
       })
       .catch((error) => {
@@ -145,6 +155,7 @@ export default function SalesPwaDocumentViewerPage() {
           type: "",
           error: loadErrorMessage(error),
           filename: "",
+          sniffedPdf: false,
         });
       });
 
@@ -157,13 +168,14 @@ export default function SalesPwaDocumentViewerPage() {
   const filename = useMemo(() => {
     if (viewer.filename) return viewer.filename;
     const safe = String(documentId || "dokumen").replace(/[^a-zA-Z0-9._-]+/g, "-");
-    const ext = kind === "proof" ? "jpg" : "pdf";
+    const pdf = viewer.type === "application/pdf" || viewer.sniffedPdf || (kind !== "proof" && !viewer.type.startsWith("image/"));
+    const ext = viewer.type.startsWith("image/") ? "jpg" : (pdf ? "pdf" : "bin");
     return `${kind || "dokumen"}-${safe}.${ext}`;
-  }, [kind, documentId, viewer.filename]);
+  }, [kind, documentId, viewer.filename, viewer.type, viewer.sniffedPdf]);
 
   const displayName = viewer.filename || label;
   const isImage = viewer.type.startsWith("image/");
-  const isPdf = viewer.type === "application/pdf" || (kind !== "proof" && !isImage);
+  const isPdf = viewer.type === "application/pdf" || viewer.sniffedPdf || (kind !== "proof" && !isImage);
   const showPdf = !viewer.loading && !viewer.error && !pdfError && viewer.blob && isPdf && !isImage;
   const failure = viewer.error || pdfError;
 

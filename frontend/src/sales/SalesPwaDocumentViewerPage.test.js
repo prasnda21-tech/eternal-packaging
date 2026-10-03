@@ -173,4 +173,22 @@ describe("SalesPwaDocumentViewerPage", () => {
 
     act(() => root.unmount());
   });
+
+  test("previews a PDF attachment whose response type is generic", async () => {
+    mockParams = { id: "order-1", kind: "proof", documentId: "lampiran-1" };
+    const bytes = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31]);
+    api.salesPwaDocumentFile.mockResolvedValue({
+      blob: new Blob([bytes], { type: "application/octet-stream" }),
+      contentType: "application/octet-stream",
+      disposition: "",
+    });
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    await act(async () => root.render(<SalesPwaDocumentViewerPage />));
+    await flush();
+
+    expect(container.querySelector('[data-testid="sales-pdf-viewer"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="sales-document-download"]').getAttribute("download")).toBe("proof-lampiran-1.pdf");
+    act(() => root.unmount());
+  });
 });
