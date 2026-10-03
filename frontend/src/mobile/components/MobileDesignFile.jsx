@@ -1,25 +1,88 @@
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import api from "../../lib/api";
 import { dataUrlToBlob } from "../../lib/paymentProofOpen";
 import { isCrossOriginDocumentUrl } from "../../lib/pdfDocument";
 import { browserSafeOpenTarget, designFileMeta, latestDesignFile, openBrowserSafeFile } from "../../lib/mobileFileOpen";
 import InAppDocumentViewer from "../../components/InAppDocumentViewer";
 
+const MISSING_ID_MESSAGE = "File desain tidak dapat dibuka. ID tidak tersedia.";
+const MISSING_FILE_MESSAGE = "File atau isi desain tidak tersedia.";
+
+function abortError() {
+  const error = new Error("aborted");
+  error.name = "AbortError";
+  return error;
+}
+
+function isCanceledError(error) {
+  return error?.name === "AbortError" || error?.name === "CanceledError" || error?.code === "ERR_CANCELED";
+}
+
+function statusOf(error) {
+  return Number(error?.response?.status || error?.status || 0);
+}
+
+function designFileIsPdf(file) {
+  if (!file) return false;
+  const name = String(file.name || file.filename || "");
+  const type = String(file.content_type || file.mime || "").toLowerCase();
+  return type.includes("pdf") || /\.pdf$/i.test(name);
+}
+
+function sourceKeyFor(orderId, fileId, file, storagePath, dataUrl, href) {
+  const name = String(file?.name || file?.filename || "");
+  const type = String(file?.content_type || file?.mime || "");
+  const hrefKey = href.startsWith("data:") ? `data:${href.length}` : href;
+  const dataMarker = dataUrl ? `data:${dataUrl.length}:${dataUrl.slice(-24)}` : "";
+  return [orderId, fileId, storagePath, dataMarker, hrefKey, name, type].join("|");
+}
+
 export default function MobileDesignFile({ order }) {
   const file = latestDesignFile(order);
   const meta = designFileMeta(order, file);
   const [pdfOpen, setPdfOpen] = useState(false);
+  const [loadError, setLoadError] = useState("");
   const target = file ? browserSafeOpenTarget(file) : { ok: false };
   const storagePath = file?.storage_path || "";
   const dataUrl = String(file?.data_url || "");
   const href = target.href || "";
   const externalPdf = target.kind === "pdf" && href && isCrossOriginDocumentUrl(href);
+  const orderId = String(order?.id ?? "").trim();
+  const fileId = String(file?.id ?? "").trim();
+  const metadataPdf = Boolean(file) && !target.ok && designFileIsPdf(file);
+  const inlinePdf = (target.kind === "pdf" && !externalPdf) || metadataPdf;
+  const sourceKey = sourceKeyFor(orderId, fileId, file, storagePath, dataUrl, href);
+  const epochRef = useRef(0);
+  const [seenKey, setSeenKey] = useState(sourceKey);
+  if (seenKey !== sourceKey) {
+    epochRef.current += 1;
+    setSeenKey(sourceKey);
+    if (loadError) setLoadError("");
+  }
 
   const loadDesign = useCallback(({ signal } = {}) => {
-    if (storagePath) return api.fetchStoredFileBlob(storagePath, { signal });
-    if (dataUrl.startsWith("data:")) return Promise.resolve(dataUrlToBlob(dataUrl));
-    if (href && !isCrossOriginDocumentUrl(href)) {
-      return fetch(href, { credentials: "include", cache: "no-store", signal }).then(async (response) => {
+    const epoch = epochRef.current;
+    const current = () => {
+      if (signal?.aborted || epoch !== epochRef.current) throw abortError();
+    };
+    const finish = (error) => {
+      if (signal?.aborted || isCanceledError(error) || epoch !== epochRef.current) {
+        throw isCanceledError(error) ? error : abortError();
+      }
+      if (statusOf(error) === 404) {
+        setLoadError(MISSING_FILE_MESSAGE);
+        setPdfOpen(false);
+        throw abortError();
+      }
+      throw error;
+    };
+    const run = async () => {
+      current();
+      if (storagePath) return api.fetchStoredFileBlob(storagePath, { signal });
+      if (dataUrl.startsWith("data:")) return dataUrlToBlob(dataUrl);
+      if (href && !isCrossOriginDocumentUrl(href)) {
+        const response = await fetch(href, { credentials: "include", cache: "no-store", signal });
+        current();
         if (!response.ok) {
           const error = new Error("design");
           error.status = response.status;
@@ -28,15 +91,34 @@ export default function MobileDesignFile({ order }) {
         }
         const type = String(response.headers.get("content-type") || "application/pdf").split(";")[0].trim();
         return new Blob([await response.arrayBuffer()], { type });
-      });
-    }
-    const error = new Error("missing");
-    error.status = 404;
-    return Promise.reject(error);
-  }, [storagePath, dataUrl, href]);
+      }
+      if (designFileIsPdf(file)) {
+        if (!orderId || !fileId) {
+          if (!signal?.aborted && epoch === epochRef.current) {
+            setLoadError(MISSING_ID_MESSAGE);
+            setPdfOpen(false);
+          }
+          throw abortError();
+        }
+        return api.getOrderAttachment(orderId, "design", fileId, { signal });
+      }
+      const error = new Error("missing");
+      error.status = 404;
+      throw error;
+    };
+    return run().then((blob) => {
+      current();
+      return blob;
+    }).catch(finish);
+  }, [storagePath, dataUrl, href, file, orderId, fileId]);
 
   const open = () => {
-    if (target.kind === "pdf" && !externalPdf) {
+    setLoadError("");
+    if (inlinePdf) {
+      if (metadataPdf && (!orderId || !fileId)) {
+        setLoadError(MISSING_ID_MESSAGE);
+        return;
+      }
       setPdfOpen(true);
       return;
     }
@@ -56,15 +138,18 @@ export default function MobileDesignFile({ order }) {
       <button type="button" className="mop-btn-ghost" style={{ width: "100%", marginTop: 8 }} onClick={open} disabled={!file} data-testid="mobile-lihat-desain">
         Lihat Desain
       </button>
+      {loadError ? (
+        <p className="mop-error" role="alert" data-testid="mobile-design-open-error">{loadError}</p>
+      ) : null}
       {externalPdf ? (
         <p className="mop-muted" data-testid="mobile-design-pdf-external">PDF dari origin lain tetap dibuka di browser.</p>
       ) : null}
       {pdfOpen && file && (
         <InAppDocumentViewer
-          documentKey={file.id || file.storage_path || file.name || "desain"}
+          documentKey={sourceKey}
           title={meta.name || "Desain"}
-          fileName={file.name || "desain.pdf"}
-          contentType={file.content_type || "application/pdf"}
+          fileName={file.name || file.filename || "desain.pdf"}
+          contentType={file.content_type || file.mime || "application/pdf"}
           allowDownload={false}
           loadFile={loadDesign}
           onClose={() => setPdfOpen(false)}
