@@ -29,7 +29,7 @@ export default function MobilePackingWorkspace({ order, canEdit, onUpdated }) {
         line_idx: row.line_idx,
         qty,
         action_id: newActionId(),
-      }]);
+      }], "", { params: { view: "operational" } });
       onUpdated(res.order);
       setDrafts((d) => ({ ...d, [row.line_idx]: "" }));
     } catch (e) {

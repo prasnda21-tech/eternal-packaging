@@ -43,6 +43,7 @@ export default function MobilePrintWorkspace({ order, canEdit, onUpdated }) {
       const res = await api.updateOperatorProgress(order.id, split.id, qty, {
         qty,
         action_id: newActionId(),
+        view: "operational",
       });
       onUpdated(res.order);
       setDrafts((d) => ({ ...d, [line.itemId]: "" }));

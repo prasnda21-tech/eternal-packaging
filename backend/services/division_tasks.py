@@ -6,6 +6,7 @@ never PO print totals.
 """
 from __future__ import annotations
 
+import copy
 import re
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -20,6 +21,7 @@ from quantity_rules import (
     is_print_line,
     packing_line_breakdown,
     print_qty_total,
+    INACTIVE_SJ_STATUSES,
     has_surat_jalan_file,
     qty_confirmed_loading,
     available_for_loading_confirm_line,
@@ -176,6 +178,105 @@ TASK_PROJECTION = {
     "payment_bypassed": 1,
     "priority": 1,
 }
+
+# In-memory only. Not a URL, not a storage path, never persisted.
+LIST_INLINE_PRESENT = "_list_inline_present"
+
+_TASK_BLOB_UNSET = (
+    "surat_jalan_files.data_url",
+    "surat_jalan_files.url",
+    "delivery_proofs.data_url",
+    "delivery_proofs.url",
+    "operator_splits.progress_entries.data_url",
+    "operator_splits.progress_entries.photo",
+    "operator_splits.progress_entries.photos",
+)
+
+
+def _list_inline_present_expr(data_url_expr: str) -> dict:
+    return {
+        "$and": [
+            {"$eq": [{"$type": data_url_expr}, "string"]},
+            {"$eq": [{"$substrCP": [data_url_expr, 0, 5]}, "data:"]},
+        ]
+    }
+
+
+def division_tasks_read_pipeline(query: dict) -> list:
+    """Same unordered 1000-document cap as the previous find().
+
+    Drops attachment bytes. Legacy inline SJ bytes become LIST_INLINE_PRESENT
+    on the aggregation result only; the stored document is not updated.
+    """
+    return [
+        {"$match": query},
+        {"$limit": 1000},
+        {"$project": TASK_PROJECTION},
+        {"$set": {
+            "surat_jalan_files": {
+                "$map": {
+                    "input": {"$ifNull": ["$surat_jalan_files", []]},
+                    "as": "f",
+                    "in": {
+                        "$mergeObjects": [
+                            "$$f",
+                            {LIST_INLINE_PRESENT: _list_inline_present_expr("$$f.data_url")},
+                        ]
+                    },
+                }
+            }
+        }},
+        {"$unset": list(_TASK_BLOB_UNSET)},
+    ]
+
+
+def _without_blob_keys(value, blob_keys: Iterable[str]):
+    if isinstance(value, list):
+        return [_without_blob_keys(item, blob_keys) for item in value]
+    if not isinstance(value, dict):
+        return value
+    out = {}
+    for key, item in value.items():
+        if key in blob_keys:
+            continue
+        if key == "progress_entries" and isinstance(item, list):
+            out[key] = [_without_blob_keys(entry, ("data_url", "photo", "photos", "url")) for entry in item]
+            continue
+        out[key] = item
+    return out
+
+
+def project_order_for_task_list(order: dict) -> dict:
+    """In-memory mirror of division_tasks_read_pipeline. Does not mutate order."""
+    if not isinstance(order, dict):
+        return {}
+    out: Dict[str, Any] = {}
+    for key, include in TASK_PROJECTION.items():
+        if key == "_id" or include != 1 or "." in str(key):
+            continue
+        if key in order:
+            out[key] = copy.deepcopy(order[key])
+    design = []
+    for entry in order.get("design_files") or []:
+        if not isinstance(entry, dict):
+            continue
+        design.append({k: entry.get(k) for k in ("id", "name", "uploaded_at") if k in entry})
+    if "design_files" in order or design:
+        out["design_files"] = design
+    files = []
+    for entry in order.get("surat_jalan_files") or []:
+        if not isinstance(entry, dict):
+            continue
+        item = {k: copy.deepcopy(v) for k, v in entry.items() if k not in ("data_url", "url")}
+        data_url = entry.get("data_url")
+        item[LIST_INLINE_PRESENT] = isinstance(data_url, str) and data_url.startswith("data:")
+        files.append(item)
+    out["surat_jalan_files"] = files
+    if "delivery_proofs" in out:
+        out["delivery_proofs"] = _without_blob_keys(out["delivery_proofs"], ("data_url", "url"))
+    if "operator_splits" in out:
+        out["operator_splits"] = _without_blob_keys(out["operator_splits"], ())
+    return out
 
 
 def _safe_int(v, default: int = 0) -> int:
@@ -374,6 +475,27 @@ def _sj_file_count(order: dict) -> int:
         return 1
     shipments = order.get("shipments") or []
     return sum(1 for s in shipments if isinstance(s, dict) and (s.get("id") or s.get("file_id")))
+
+
+def _list_has_surat_jalan_file(order: dict) -> bool:
+    """Loading-list gate only. Does not validate uploads or stage evidence.
+
+    Projected list rows drop inline bytes and keep LIST_INLINE_PRESENT.
+    has_surat_jalan_file ignores that flag so a client cannot invent a file.
+    """
+    if has_surat_jalan_file(order):
+        return True
+    for entry in order.get("surat_jalan_files") or []:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("is_deleted") or entry.get("cancelled") or entry.get("superseded"):
+            continue
+        status = str(entry.get("status") or "").strip().lower()
+        if status in INACTIVE_SJ_STATUSES:
+            continue
+        if entry.get(LIST_INLINE_PRESENT) is True and str(entry.get("id") or "").strip():
+            return True
+    return False
 
 
 def _screener_done(order: dict) -> int:
@@ -699,7 +821,7 @@ def build_surat_jalan_tasks(order: dict) -> List[dict]:
 
 
 def build_loading_tasks(order: dict) -> List[dict]:
-    if not has_surat_jalan_file(order) and not order.get("surat_jalan_created") and _sj_file_count(order) <= 0:
+    if not _list_has_surat_jalan_file(order) and not order.get("surat_jalan_created") and _sj_file_count(order) <= 0:
         return []
     done = qty_confirmed_loading(order) or qty_loaded(order)
     remaining = 0
@@ -751,7 +873,7 @@ def po_needs_loading_task(order: dict) -> bool:
     """Actionable Loading: Surat Jalan ada dan masih ada sisa qty konfirmasi."""
     if (order.get("delivery_status") or "") == "Terkirim":
         return False
-    if not has_surat_jalan_file(order) and not order.get("surat_jalan_created") and _sj_file_count(order) <= 0:
+    if not _list_has_surat_jalan_file(order) and not order.get("surat_jalan_created") and _sj_file_count(order) <= 0:
         return False
     remaining = 0
     lis = order.get("line_items") or []

@@ -103,14 +103,26 @@ export function kirimMarkTone(row) {
  * Delivery Status per Role tones.
  * Screen stays idle unless production source is attached or screen_qty is present.
  */
-export function deliveryRoleMarkTones(row, productionAttached = false) {
+export function deliveryRoleMarkTones(row, productionAttached = false, productionState = "ready") {
+  const load = loadMarkTone(row);
+  const kirim = kirimMarkTone(row);
+  if (productionState === "loading" || productionState === "failed") {
+    return {
+      cup: "unavailable",
+      screen: "unavailable",
+      prod: "unavailable",
+      pack: "unavailable",
+      load,
+      kirim,
+    };
+  }
   const screenReady = productionAttached || screenerFilled(row);
   return {
     cup: cupMarkTone(row),
     screen: screenReady ? screenMarkTone(row) : "idle",
     prod: prodMarkTone(row),
     pack: packMarkTone(row),
-    load: loadMarkTone(row),
-    kirim: kirimMarkTone(row),
+    load,
+    kirim,
   };
 }

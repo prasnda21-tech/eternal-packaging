@@ -28,7 +28,7 @@ export default function MobileScreenerWorkspace({ order, canEdit, onUpdated }) {
     setBusy(true);
     setErr("");
     try {
-      const res = await api.updateScreenerInfo(order.id, { qty: n, notes: "", action_id: newActionId() });
+      const res = await api.updateScreenerInfo(order.id, { qty: n, notes: "", action_id: newActionId() }, { params: { view: "operational" } });
       onUpdated(res.order);
       setQty("");
     } catch (e) {

@@ -713,6 +713,69 @@ describe("MobileTasksPage remount retention", () => {
     expect(container.textContent).toContain("Sesi berakhir");
     expect(visibleTaskIds(container)).toEqual([]);
   });
+
+  test("late success or error from the previous division does not replace the latest list", async () => {
+    const packing = deferred();
+    const delivery = deferred();
+    api.divisionTasks.mockImplementation((division) => (
+      division === "packing" ? packing.promise : delivery.promise
+    ));
+    mockTasksRouter.search = "ws=packing";
+    await act(async () => { root.render(<MobileTasksPage />); });
+    mockTasksRouter.search = "ws=delivery";
+    await act(async () => { root.render(<MobileTasksPage />); });
+    await act(async () => { delivery.resolve({ tasks: [task("DEL-NEW")] }); });
+    await flush();
+    expect(visibleTaskIds(container)).toEqual(["mobile-task-DEL-NEW"]);
+
+    await act(async () => { packing.resolve({ tasks: [task("PACK-OLD")] }); });
+    await flush();
+    expect(visibleTaskIds(container)).toEqual(["mobile-task-DEL-NEW"]);
+    expect(container.textContent).not.toContain("PO-PACK-OLD");
+
+    const deliveryError = deferred();
+    const packingLateError = deferred();
+    api.divisionTasks.mockImplementation((division) => (
+      division === "packing" ? packingLateError.promise : deliveryError.promise
+    ));
+    mockTasksRouter.search = "ws=packing";
+    await act(async () => { root.render(<MobileTasksPage />); });
+    mockTasksRouter.search = "ws=delivery";
+    await act(async () => { root.render(<MobileTasksPage />); });
+    await act(async () => { deliveryError.resolve({ tasks: [task("DEL-KEEP")] }); });
+    await flush();
+    await act(async () => {
+      packingLateError.reject({ response: { status: 500, data: { detail: "packing gagal" } } });
+    });
+    await flush();
+    expect(visibleTaskIds(container)).toEqual(["mobile-task-DEL-KEEP"]);
+    expect(container.textContent).not.toContain("packing gagal");
+    expect(container.textContent).not.toContain("Memuat tugas...");
+  });
+
+  test("Cetak and Upload Sampel do not refetch when division, user, and scope stay the same", async () => {
+    mockHasPerm.mockImplementation((p) => ["operator.update", "operator.sample_upload"].includes(p));
+    mockTasksRouter.search = "ws=print";
+    api.divisionTasks.mockResolvedValue({ tasks: [task("OP-1")] });
+    await act(async () => { root.render(<MobileTasksPage />); });
+    await flush();
+    expect(api.divisionTasks).toHaveBeenCalledTimes(1);
+    expect(api.divisionTasks).toHaveBeenCalledWith("operator", "mine");
+    expect(visibleTaskIds(container)).toEqual(["mobile-task-OP-1"]);
+
+    mockTasksRouter.search = "ws=sample";
+    await act(async () => { root.render(<MobileTasksPage />); });
+    await flush();
+    expect(api.divisionTasks).toHaveBeenCalledTimes(1);
+    expect(visibleTaskIds(container)).toEqual(["mobile-task-OP-1"]);
+
+    act(() => root.unmount());
+    root = createRoot(container);
+    await act(async () => { root.render(<MobileTasksPage />); });
+    await flush();
+    expect(api.divisionTasks).toHaveBeenCalledTimes(2);
+    expect(api.divisionTasks).toHaveBeenLastCalledWith("operator", "mine");
+  });
 });
 
 

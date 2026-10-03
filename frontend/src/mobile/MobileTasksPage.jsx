@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
@@ -15,7 +15,6 @@ import {
   clearAllMobileTaskListRetention,
   deleteMobileTaskListRetention,
   isAuthSessionExpiredError,
-  mobileTaskListRetentionKey,
   readMobileTaskListRetention,
   writeMobileTaskListRetention,
 } from "../lib/mobileTaskListRetention";
@@ -46,9 +45,6 @@ export default function MobileTasksPage() {
     && selected.permission
     && hasPerm(selected.permission),
   );
-  const listIdentity = listAuthorized
-    ? mobileTaskListRetentionKey(user, selected.division, "mine", selected.permission)
-    : "";
   const retentionArgs = listAuthorized
     ? {
       user,
@@ -58,13 +54,17 @@ export default function MobileTasksPage() {
       hasPerm,
     }
     : null;
+  const scopeIdentity = listAuthorized
+    ? `${user?.id || ""}|${selected.division}|mine`
+    : "";
   const [data, setData] = useState(() => (
     retentionArgs ? readMobileTaskListRetention(retentionArgs) : null
   ));
-  const [retainedIdentity, setRetainedIdentity] = useState(listIdentity);
+  const [retainedScope, setRetainedScope] = useState(scopeIdentity);
+  const requestRef = useRef(0);
 
-  if (retainedIdentity !== listIdentity) {
-    setRetainedIdentity(listIdentity);
+  if (retainedScope !== scopeIdentity) {
+    setRetainedScope(scopeIdentity);
     setData(retentionArgs ? readMobileTaskListRetention(retentionArgs) : null);
   }
 
@@ -96,10 +96,13 @@ export default function MobileTasksPage() {
 
   const load = async (division) => {
     if (!division) return;
+    const requestId = ++requestRef.current;
+    const current = () => requestId === requestRef.current;
     setBusy(true);
     setErr("");
     try {
       const d = await api.divisionTasks(division, "mine");
+      if (!current()) return;
       setData(d);
       writeMobileTaskListRetention({
         user,
@@ -110,6 +113,7 @@ export default function MobileTasksPage() {
         payload: d,
       });
     } catch (e) {
+      if (!current()) return;
       if (isAuthSessionExpiredError(e)) {
         clearAllMobileTaskListRetention();
       } else {
@@ -123,15 +127,19 @@ export default function MobileTasksPage() {
       setErr(e.response?.data?.detail || "Gagal memuat tugas.");
       setData({ tasks: [] });
     } finally {
-      setBusy(false);
+      if (current()) setBusy(false);
     }
   };
 
   useEffect(() => {
-    if (selected?.id === "loading") return;
+    if (selected?.id === "loading") return undefined;
     if (selected?.division) load(selected.division);
+    return () => {
+      requestRef.current += 1;
+    };
+    // Cetak and Upload Sampel share division+user+scope, so this does not refetch.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selected?.id, selected?.division, user?.id]);
+  }, [selected?.division, user?.id]);
 
   const tasks = useMemo(
     () => (Array.isArray(data?.tasks) ? data.tasks : []),

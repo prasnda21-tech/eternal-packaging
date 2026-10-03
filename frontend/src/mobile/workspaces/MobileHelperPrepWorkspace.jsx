@@ -29,7 +29,7 @@ export default function MobileHelperPrepWorkspace({ order, canEdit, onUpdated })
         line_idx: line.lineIdx,
         qty,
         action_id: newActionId(),
-      }]);
+      }], "", { params: { view: "operational" } });
       onUpdated(res.order);
       setDrafts((d) => ({ ...d, [line.lineIdx]: "" }));
     } catch (e) {

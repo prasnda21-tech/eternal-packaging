@@ -239,12 +239,16 @@ from permissions import (
 )
 from services.division_tasks import (
     DIVISION_DEFS as _DIVISION_TASK_DEFS,
-    TASK_PROJECTION as _DIVISION_TASK_PROJECTION,
     build_division_tasks as _build_division_tasks,
+    division_tasks_read_pipeline as _division_tasks_read_pipeline,
     enrich_tasks_current_stock as _enrich_tasks_current_stock,
     can_view_all_division as _can_view_all_division,
     po_needs_loading_task as _po_needs_loading_task,
     resolve_division as _resolve_division,
+)
+from services.operational_order_view import (
+    is_operational_view as _is_operational_view,
+    operational_public_order as _operational_public_order,
 )
 from operator_analytics import (
     build_activity_analytics_pipeline,
@@ -1719,8 +1723,15 @@ async def _list_orders_dashboard(st: str, extra: Optional[dict] = None) -> dict:
     }
 
 
+def _public_saved_order(order: dict, view: Optional[str] = None) -> dict:
+    """Operational saves return a lighter copy. Other callers keep the order."""
+    if not _is_operational_view(view):
+        return order
+    return _operational_public_order(order)
+
+
 @api_router.get("/orders/{order_id}")
-async def get_order(order_id: str, user=Depends(current_user)):
+async def get_order(order_id: str, view: Optional[str] = None, user=Depends(current_user)):
     reject_sales_pwa_bypass(user)
     query = {"id": order_id}
     query.update(sales_owner_match(user))
@@ -1754,20 +1765,29 @@ async def get_order(order_id: str, user=Depends(current_user)):
     order["terkirim_confirmed"] = _terkirim_confirmed(order)
     _attach_quantity_snapshot(order)
     # quantity snapshot already attaches workflow_ready flags
-    # Batch 1: delivery deadline + sales delivery summary are independent reads
-    _dd_settings, _sales_delivery_summary = await asyncio.gather(
-        _get_delivery_deadline_settings(),
-        _get_po_delivery_summary(db, order),
-    )
+    # Batch 1: delivery deadline + sales delivery summary are independent reads.
+    # view=operational skips sales-delivery and line-replace enrichment. The PWA
+    # address comes from the order fields, and it does not render those blocks.
+    operational = _is_operational_view(view)
+    if operational:
+        _dd_settings = await _get_delivery_deadline_settings()
+    else:
+        _dd_settings, _sales_delivery_summary = await asyncio.gather(
+            _get_delivery_deadline_settings(),
+            _get_po_delivery_summary(db, order),
+        )
     _attach_deadline_snapshot(order, _dd_settings["lead_time_days"])
     attach_schedule_snapshot(order)
-    order["sales_delivery_summary"] = _sales_delivery_summary
-    try:
-        from services.line_product_replacement import evaluate_all_line_product_replacements
-        order["line_product_replace"] = await evaluate_all_line_product_replacements(db, order)
-    except Exception:
-        order["line_product_replace"] = []
+    if not operational:
+        order["sales_delivery_summary"] = _sales_delivery_summary
+        try:
+            from services.line_product_replacement import evaluate_all_line_product_replacements
+            order["line_product_replace"] = await evaluate_all_line_product_replacements(db, order)
+        except Exception:
+            order["line_product_replace"] = []
     _strip_tracking_secret(order)
+    if operational:
+        return {"order": _operational_public_order(order)}
     return {"order": _strip_inline_attachment_bytes(_strip_sj_bytes(order))}
 
 
@@ -3120,7 +3140,7 @@ async def update_helper_prep(order_id: str, payload: HelperPrepPayload, user=Dep
 
 # ---- Helper qty PER LINE ITEM (Batch 1) ----
 @api_router.post("/orders/{order_id}/helper-prep/items")
-async def update_helper_prep_items(order_id: str, payload: HelperPrepItemsPayload, user=Depends(current_user)):
+async def update_helper_prep_items(order_id: str, payload: HelperPrepItemsPayload, view: Optional[str] = None, user=Depends(current_user)):
     """Helper mengisi Qty Disiapkan per line item. Qty Dibutuhkan = read-only
     dari line_items[i].quantity (source of truth PO). Qty Order TIDAK berubah."""
     order = await db.orders.find_one({"id": order_id}, {"_id": 0})
@@ -3261,7 +3281,7 @@ async def update_helper_prep_items(order_id: str, payload: HelperPrepItemsPayloa
     _sync_workflow_stage(order)
     await _persist_order(order)
     await _audit_po(order, "helper.prep.items.update", user, before=before, after=order["helper_prep"])
-    return {"order": order}
+    return {"order": _public_saved_order(order, view)}
 
 
 # ---- Batch 3: Production routing (Cetak / Non-Cetak) ----
@@ -3915,7 +3935,7 @@ async def work_division_tasks(
         email = (user.get("email") or "").strip()
         if email:
             query["operator_splits.operator_email"] = email
-    raw = await db.orders.find(query, _DIVISION_TASK_PROJECTION).to_list(1000)
+    raw = await db.orders.aggregate(_division_tasks_read_pipeline(query)).to_list(1000)
     dd_settings = await _get_delivery_deadline_settings()
     lead_days = dd_settings["lead_time_days"]
     for o in raw:
@@ -3941,7 +3961,7 @@ async def work_division_tasks(
 
 # ---- Screener info (Requirement 10) ----
 @api_router.post("/orders/{order_id}/screener-info")
-async def update_screener_info(order_id: str, payload: ScreenerInfoPayload, user=Depends(current_user)):
+async def update_screener_info(order_id: str, payload: ScreenerInfoPayload, view: Optional[str] = None, user=Depends(current_user)):
     order = await db.orders.find_one({"id": order_id}, {"_id": 0})
     if not order:
         raise HTTPException(404, "PO tidak ditemukan")
@@ -3967,7 +3987,7 @@ async def update_screener_info(order_id: str, payload: ScreenerInfoPayload, user
     if int(increment) <= 0:
         raise HTTPException(400, "Qty Screener harus lebih besar dari 0.")
     if find_by_action_id(entries, payload.action_id):
-        return {"order": order}
+        return {"order": _public_saved_order(order, view)}
     entries = seed_legacy(
         entries,
         snapshot_qty=before.get("screen_qty"),
@@ -3989,7 +4009,7 @@ async def update_screener_info(order_id: str, payload: ScreenerInfoPayload, user
         extra={"notes": (payload.notes or "").strip() or None},
     )
     if not created:
-        return {"order": order}
+        return {"order": _public_saved_order(order, view)}
     total = sum_entry_qty(entries)
     order["screener_info"] = {
         "screen_qty": total,
@@ -4005,7 +4025,7 @@ async def update_screener_info(order_id: str, payload: ScreenerInfoPayload, user
     _sync_workflow_stage(order)
     await _persist_order(order)
     await _audit_po(order, "screener.info.update", user, before=before, after=order["screener_info"])
-    return {"order": order}
+    return {"order": _public_saved_order(order, view)}
 
 
 @api_router.post("/orders/{order_id}/assign-operators")
@@ -4147,7 +4167,7 @@ async def set_split_work_date(order_id: str, split_id: str, payload: WorkDatePay
 
 
 @api_router.post("/orders/{order_id}/operator-progress")
-async def update_operator_progress(order_id: str, payload: OperatorProgressPayload, user=Depends(current_user)):
+async def update_operator_progress(order_id: str, payload: OperatorProgressPayload, view: Optional[str] = None, user=Depends(current_user)):
     await _require_perm(user, "operator.update")
     eff = await user_permissions(user)
     wage_doc = await db.app_settings.find_one({"key": OPERATOR_WAGE_SETTINGS_KEY}, {"_id": 0}) or {}
@@ -4298,7 +4318,7 @@ async def update_operator_progress(order_id: str, payload: OperatorProgressPaylo
             user,
             live_enabled=live_enabled,
         )
-    return {"order": order}
+    return {"order": _public_saved_order(order, view)}
 
 
 @api_router.post("/orders/{order_id}/urgent")
@@ -4344,7 +4364,7 @@ async def set_buffer_stock(order_id: str, payload: BufferStockPayload, user=Depe
 
 
 @api_router.post("/orders/{order_id}/attachment")
-async def add_attachment(order_id: str, payload: AttachmentInput, user=Depends(current_user)):
+async def add_attachment(order_id: str, payload: AttachmentInput, view: Optional[str] = None, user=Depends(current_user)):
     order = await db.orders.find_one({"id": order_id}, {"_id": 0})
     if not order:
         raise HTTPException(404, "PO tidak ditemukan")
@@ -4518,6 +4538,8 @@ async def add_attachment(order_id: str, payload: AttachmentInput, user=Depends(c
     await _persist_order(order)
     if audit_action:
         await _audit_po(order, audit_action, user, note=f"{payload.name}")
+    if _is_operational_view(view):
+        return {"order": _public_saved_order(order, view)}
     return {"order": _strip_sj_bytes(order)}
 
 
@@ -4950,7 +4972,7 @@ async def confirm_loading(order_id: str, payload: LoadingConfirmPayload, user=De
 
 
 @api_router.post("/orders/{order_id}/loading-confirm-match")
-async def confirm_loading_match(order_id: str, payload: LoadingMatchConfirmPayload, user=Depends(current_user)):
+async def confirm_loading_match(order_id: str, payload: LoadingMatchConfirmPayload, view: Optional[str] = None, user=Depends(current_user)):
     """One-click: Semua Barang Sesuai SJ — backend generates lines from current SJ."""
     # Granular key only. Legacy loading.update expands via with_loading_permission_defaults
     # until Role & Hak Akses stamps loading.granular_configured (then revocation sticks).
@@ -5032,7 +5054,8 @@ async def confirm_loading_match(order_id: str, payload: LoadingMatchConfirmPaylo
         from services.physical_stock_engine import handle_loading_confirmed
         await handle_loading_confirmed(db, order, record_holder["record"], user)
     await _audit_po(order, "loading.confirm_match", user, note=payload.surat_jalan_id)
-    return {"order": _strip_sj_bytes(order), "confirmation": record_holder.get("record"), "idempotent": bool(record_holder.get("idempotent"))}
+    saved = _public_saved_order(order, view) if _is_operational_view(view) else _strip_sj_bytes(order)
+    return {"order": saved, "confirmation": record_holder.get("record"), "idempotent": bool(record_holder.get("idempotent"))}
 
 
 @api_router.post("/orders/{order_id}/loading-report-discrepancy")
@@ -5215,7 +5238,7 @@ class PackingInfoPayload(BaseModel):
 
 
 @api_router.post("/orders/{order_id}/packing-info")
-async def save_packing_info(order_id: str, payload: PackingInfoPayload, user=Depends(current_user)):
+async def save_packing_info(order_id: str, payload: PackingInfoPayload, view: Optional[str] = None, user=Depends(current_user)):
     """Save Qty Packing per line. qty_packed total = SUM(lines) untuk downstream."""
     await _require_perm(user, "packing.update")
     existing_order = await db.orders.find_one({"id": order_id}, {"_id": 0})
@@ -5365,7 +5388,7 @@ async def save_packing_info(order_id: str, payload: PackingInfoPayload, user=Dep
                     after={"qty_packed": (order.get("packing_info") or {}).get("qty_packed"),
                            "lines": (order.get("packing_info") or {}).get("lines")},
                     note=payload.notes or "")
-    return {"order": order}
+    return {"order": _public_saved_order(order, view)}
 
 
 class SuratJalanLineInput(BaseModel):
@@ -5741,7 +5764,7 @@ class ConfirmDeliveredPayload(BaseModel):
 
 
 @api_router.post("/orders/{order_id}/confirm-delivered")
-async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPayload] = None, user=Depends(current_user)):
+async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPayload] = None, view: Optional[str] = None, user=Depends(current_user)):
     """Explicit Konfirmasi Terkirim after >= 2 bukti kirim + recipient name + e-signature.
 
     Upload alone / save signature alone does not deliver.
@@ -5999,7 +6022,7 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
             logging.getLogger(__name__).warning("route stop progress update failed", exc_info=True)
     if isinstance(order, dict):
         order.pop("delivery_confirm_fence", None)
-    return {"order": order}
+    return {"order": _public_saved_order(order, view)}
 
 
 class DeliveryRecipientSignaturePayload(BaseModel):
@@ -6017,6 +6040,7 @@ async def upload_delivery_recipient_signature(
     sj_file_id: Optional[str] = Form(None),
     file: Optional[UploadFile] = File(None),
     signature_data_url: Optional[str] = Form(None),
+    view: Optional[str] = Query(None),
     user=Depends(current_user),
 ):
     """Save recipient electronic signature. Does NOT mark delivered."""
@@ -6128,7 +6152,7 @@ async def upload_delivery_recipient_signature(
         "frozen": False,
         "content_type": media,
     }
-    return {"order": order, "signature": safe}
+    return {"order": _public_saved_order(order, view), "signature": safe}
 
 
 @api_router.delete("/orders/{order_id}/delivery-recipient-signature")
@@ -6161,6 +6185,7 @@ async def upload_delivery_driver_signature(
     sj_file_id: Optional[str] = Form(None),
     file: Optional[UploadFile] = File(None),
     signature_data_url: Optional[str] = Form(None),
+    view: Optional[str] = Query(None),
     user=Depends(current_user),
 ):
     """Save driver/pengirim electronic signature. Does NOT mark delivered."""
@@ -6265,7 +6290,7 @@ async def upload_delivery_driver_signature(
         "frozen": False,
         "content_type": media,
     }
-    return {"order": order, "signature": safe}
+    return {"order": _public_saved_order(order, view), "signature": safe}
 
 
 @api_router.delete("/orders/{order_id}/delivery-driver-signature")
@@ -12712,6 +12737,7 @@ async def upload_delivery_proof(
     file: UploadFile = File(...),
     note: Optional[str] = Form(None),
     shipment_id: Optional[str] = Form(None),
+    view: Optional[str] = Query(None),
     user=Depends(require_perm("delivery.update")),
 ):
     """Upload a delivery-proof photo (from driver's phone). Stores to object
@@ -12800,11 +12826,11 @@ async def upload_delivery_proof(
             proof_ref["accurate_shipment_id"] = stamp_sh.get("accurate_shipment_id")
     add_timeline(order, order["current_stage"], user, note=f"Upload bukti kirim: {file_doc['original_filename']}")
     await _persist_order(order)
-    return {"order": order, "proof": proof_ref}
+    return {"order": _public_saved_order(order, view), "proof": proof_ref}
 
 
 @api_router.delete("/orders/{order_id}/delivery-proof/{proof_id}")
-async def delete_delivery_proof(order_id: str, proof_id: str, user=Depends(require_perm("delivery.update"))):
+async def delete_delivery_proof(order_id: str, proof_id: str, view: Optional[str] = None, user=Depends(require_perm("delivery.update"))):
     order = await db.orders.find_one({"id": order_id}, {"_id": 0})
     if not order:
         raise HTTPException(404, "PO tidak ditemukan")
@@ -12825,7 +12851,7 @@ async def delete_delivery_proof(order_id: str, proof_id: str, user=Depends(requi
     # Write only proof/timeline fields. Full-document $set rewrote unrelated binaries
     # (design/sample/SJ data_url) and made delete wait on a huge Mongo update.
     await _persist_order(order, persist_keys=("delivery_proofs", "timeline"))
-    return {"order": order}
+    return {"order": _public_saved_order(order, view)}
 
 
 # ---------- Analytics (raw base data, no KPI assumption) ----------

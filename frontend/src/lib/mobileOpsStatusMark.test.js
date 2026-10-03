@@ -149,6 +149,31 @@ describe("mobileOpsStatusMark — 3-state persisted evidence", () => {
     });
   });
 
+  test("production loading or failure is not the same mark as belum selesai", () => {
+    const row = {
+      qty_loaded: 2500,
+      qty_load_need: 5000,
+      qty_delivered_sj: 1000,
+      qty_sj: 5000,
+      helper_prepared: 0,
+      helper_required: 5000,
+      print_qty_total: 5000,
+      print_completed_qty: 0,
+      packing_status: "Belum",
+    };
+    for (const state of ["loading", "failed"]) {
+      const tones = deliveryRoleMarkTones(row, false, state);
+      expect(tones.cup).toBe("unavailable");
+      expect(tones.screen).toBe("unavailable");
+      expect(tones.prod).toBe("unavailable");
+      expect(tones.pack).toBe("unavailable");
+      expect(tones.load).toBe("pending");
+      expect(tones.kirim).toBe("pending");
+    }
+    expect(deliveryRoleMarkTones(row, false, "ready").cup).toBe("idle");
+    expect(deliveryRoleMarkTones(row, false, "ready").load).toBe("pending");
+  });
+
   test("does not fabricate earlier roles from later packing or kirim", () => {
     const packedAndShipped = {
       qty_packed: 1000,
