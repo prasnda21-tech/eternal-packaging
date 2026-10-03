@@ -1,7 +1,9 @@
 """Branch and Warehouse organizational masters.
 
 Stable ids for future inventory identity (master_item_id + branch_id + warehouse_id).
-Creating a Branch never creates a Warehouse. Soft deactivate via active flag only.
+Creating a Branch never creates a Warehouse. Established rows stay via active/inactive.
+Permanent delete is allowed only when the row has no warehouse children and no
+business references. Delete never cascades.
 """
 from __future__ import annotations
 
@@ -25,7 +27,33 @@ class OrgLocationValidationError(ValueError):
 
 
 class OrgLocationConflictError(Exception):
-    """Duplicate code or uniqueness violation."""
+    """Duplicate code, or delete blocked because the row is still in use."""
+
+
+BRANCH_HAS_WAREHOUSE_MESSAGE = "Cabang masih memiliki gudang dan tidak dapat dihapus."
+BRANCH_IN_USE_MESSAGE = (
+    "Cabang sudah digunakan dan tidak dapat dihapus. Nonaktifkan cabang sebagai gantinya."
+)
+WAREHOUSE_IN_USE_MESSAGE = (
+    "Gudang sudah digunakan dan tidak dapat dihapus. Nonaktifkan gudang sebagai gantinya."
+)
+
+# Identity fields used by stock, purchasing, sales, delivery, opening balance,
+# ledger, transfer, and opname documents. Masters themselves are not references.
+_REFERENCE_FIELDS = (
+    "branch_id",
+    "warehouse_id",
+    "from_branch_id",
+    "to_branch_id",
+    "from_warehouse_id",
+    "to_warehouse_id",
+    "source_branch_id",
+    "source_warehouse_id",
+    "dest_branch_id",
+    "dest_warehouse_id",
+    "cabang_id",
+    "gudang_id",
+)
 
 
 def now_iso() -> str:
@@ -332,3 +360,50 @@ async def update_warehouse(db, warehouse_id: str, raw: dict, *, user: Optional[d
         raise OrgLocationConflictError("Kode gudang sudah digunakan pada cabang ini") from exc
     doc = await db[WAREHOUSES_COLLECTION].find_one({"id": str(warehouse_id)}, {"_id": 0})
     return public_warehouse(doc)
+
+
+def _reference_query(entity_id: str) -> Dict[str, Any]:
+    return {"$or": [{field: entity_id} for field in _REFERENCE_FIELDS]}
+
+
+async def count_business_references(db, entity_id: str) -> int:
+    """Count documents outside branch/warehouse masters that point at this id."""
+    entity_id = str(entity_id or "").strip()
+    if not entity_id:
+        return 0
+    query = _reference_query(entity_id)
+    names = await db.list_collection_names()
+    total = 0
+    skip = {BRANCHES_COLLECTION, WAREHOUSES_COLLECTION}
+    for name in names:
+        if name in skip or name.startswith("system."):
+            continue
+        total += await db[name].count_documents(query)
+    return total
+
+
+async def delete_branch(db, branch_id: str, *, user: Optional[dict] = None) -> dict:
+    existing = await db[BRANCHES_COLLECTION].find_one({"id": str(branch_id)}, {"_id": 0})
+    if not existing:
+        raise KeyError(branch_id)
+    warehouse_count = await db[WAREHOUSES_COLLECTION].count_documents({"branch_id": str(existing.get("id"))})
+    if warehouse_count:
+        raise OrgLocationConflictError(BRANCH_HAS_WAREHOUSE_MESSAGE)
+    if await count_business_references(db, existing.get("id")):
+        raise OrgLocationConflictError(BRANCH_IN_USE_MESSAGE)
+    result = await db[BRANCHES_COLLECTION].delete_one({"id": str(existing.get("id"))})
+    if result.deleted_count != 1:
+        raise KeyError(branch_id)
+    return public_branch(existing)
+
+
+async def delete_warehouse(db, warehouse_id: str, *, user: Optional[dict] = None) -> dict:
+    existing = await db[WAREHOUSES_COLLECTION].find_one({"id": str(warehouse_id)}, {"_id": 0})
+    if not existing:
+        raise KeyError(warehouse_id)
+    if await count_business_references(db, existing.get("id")):
+        raise OrgLocationConflictError(WAREHOUSE_IN_USE_MESSAGE)
+    result = await db[WAREHOUSES_COLLECTION].delete_one({"id": str(existing.get("id"))})
+    if result.deleted_count != 1:
+        raise KeyError(warehouse_id)
+    return public_warehouse(existing)

@@ -20,17 +20,24 @@ import server
 from permissions import ALL_PERMISSIONS
 from server import app, current_user
 from services.org_locations import (
+    BRANCH_HAS_WAREHOUSE_MESSAGE,
+    BRANCH_IN_USE_MESSAGE,
     BRANCHES_COLLECTION,
     PERM_BRANCH_MANAGE,
     PERM_BRANCH_VIEW,
     PERM_WAREHOUSE_MANAGE,
     PERM_WAREHOUSE_VIEW,
+    WAREHOUSE_IN_USE_MESSAGE,
     WAREHOUSES_COLLECTION,
     OrgLocationConflictError,
     OrgLocationValidationError,
     create_branch,
     create_warehouse,
+    delete_branch,
+    delete_warehouse,
     ensure_indexes,
+    get_branch,
+    get_warehouse,
     list_warehouses,
     update_branch,
     update_warehouse,
@@ -222,3 +229,97 @@ async def test_http_branch_warehouse_flow_and_no_auto_warehouse():
 
         malformed = await client.post("/api/branches", json={"code": "", "name": "X"})
         assert malformed.status_code in (400, 422)
+
+
+@pytest.mark.anyio
+async def test_safe_delete_guards_do_not_cascade():
+    """Temporary records only. Referenced rows and children stay in place."""
+    db = server.db
+    probe = "org_location_delete_probe"
+    try:
+        empty = await create_branch(db, {"code": "TMP", "name": "Temp Empty"}, user=_user())
+        removed = await delete_branch(db, empty["id"], user=_user())
+        assert removed["id"] == empty["id"]
+        assert await get_branch(db, empty["id"]) is None
+
+        parent = await create_branch(db, {"code": "PAR", "name": "Temp Parent"}, user=_user())
+        child = await create_warehouse(
+            db, {"branch_id": parent["id"], "code": "TMP", "name": "Temp Gudang"}, user=_user()
+        )
+        spare = await create_warehouse(
+            db, {"branch_id": parent["id"], "code": "KEEP", "name": "Keep Gudang"}, user=_user()
+        )
+
+        deleted_wh = await delete_warehouse(db, child["id"], user=_user())
+        assert deleted_wh["id"] == child["id"]
+        assert await get_warehouse(db, child["id"]) is None
+        assert await get_branch(db, parent["id"]) is not None
+        assert await get_warehouse(db, spare["id"]) is not None
+
+        with pytest.raises(OrgLocationConflictError, match=BRANCH_HAS_WAREHOUSE_MESSAGE):
+            await delete_branch(db, parent["id"], user=_user())
+        assert await get_branch(db, parent["id"]) is not None
+        assert await get_warehouse(db, spare["id"]) is not None
+
+        await db[probe].insert_one({"id": "ref-wh", "warehouse_id": spare["id"], "kind": "stock"})
+        with pytest.raises(OrgLocationConflictError, match=WAREHOUSE_IN_USE_MESSAGE):
+            await delete_warehouse(db, spare["id"], user=_user())
+        assert await db[probe].count_documents({"warehouse_id": spare["id"]}) == 1
+        assert await get_warehouse(db, spare["id"]) is not None
+
+        lone = await create_branch(db, {"code": "REF", "name": "Temp Referenced"}, user=_user())
+        await db[probe].insert_one({"id": "ref-br", "branch_id": lone["id"], "kind": "purchase"})
+        with pytest.raises(OrgLocationConflictError, match=BRANCH_IN_USE_MESSAGE):
+            await delete_branch(db, lone["id"], user=_user())
+        assert await get_branch(db, lone["id"]) is not None
+        assert await db[probe].count_documents({"branch_id": lone["id"]}) == 1
+    finally:
+        await db[probe].delete_many({})
+
+
+@pytest.mark.anyio
+async def test_http_safe_delete():
+    db = server.db
+    probe = "org_location_delete_probe"
+    try:
+        async with await client_for(_user()) as client:
+            branch = (await client.post("/api/branches", json={"code": "TMP", "name": "Temp"})).json()
+            wh = (await client.post(
+                "/api/warehouses",
+                json={"branch_id": branch["id"], "code": "TMP", "name": "Temp Gudang"},
+            )).json()
+
+            blocked = await client.delete(f"/api/branches/{branch['id']}")
+            assert blocked.status_code == 409
+            assert blocked.json()["detail"] == BRANCH_HAS_WAREHOUSE_MESSAGE
+            assert await get_warehouse(db, wh["id"]) is not None
+
+            gone = await client.delete(f"/api/warehouses/{wh['id']}")
+            assert gone.status_code == 200, gone.text
+            assert await get_warehouse(db, wh["id"]) is None
+            assert await get_branch(db, branch["id"]) is not None
+
+            await db[probe].insert_one({"id": "http-ref", "branch_id": branch["id"]})
+            used = await client.delete(f"/api/branches/{branch['id']}")
+            assert used.status_code == 409
+            assert used.json()["detail"] == BRANCH_IN_USE_MESSAGE
+            assert await get_branch(db, branch["id"]) is not None
+            await db[probe].delete_many({})
+
+            ok = await client.delete(f"/api/branches/{branch['id']}")
+            assert ok.status_code == 200, ok.text
+            assert await get_branch(db, branch["id"]) is None
+
+            other = (await client.post("/api/branches", json={"code": "OTH", "name": "Other"})).json()
+            held = (await client.post(
+                "/api/warehouses",
+                json={"branch_id": other["id"], "code": "HOLD", "name": "Held"},
+            )).json()
+            await db[probe].insert_one({"id": "http-wh", "warehouse_id": held["id"], "purchase_order_id": "po-1"})
+            denied = await client.delete(f"/api/warehouses/{held['id']}")
+            assert denied.status_code == 409
+            assert denied.json()["detail"] == WAREHOUSE_IN_USE_MESSAGE
+            assert await get_warehouse(db, held["id"]) is not None
+            assert await db[probe].count_documents({"id": "http-wh"}) == 1
+    finally:
+        await db[probe].delete_many({})

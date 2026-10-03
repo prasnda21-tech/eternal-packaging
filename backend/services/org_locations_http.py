@@ -15,6 +15,8 @@ from services.org_locations import (
     OrgLocationValidationError,
     create_branch,
     create_warehouse,
+    delete_branch,
+    delete_warehouse,
     ensure_indexes,
     get_branch,
     get_warehouse,
@@ -120,6 +122,19 @@ def register_org_locations_routes(
         except OrgLocationConflictError as exc:
             raise HTTPException(409, str(exc)) from exc
 
+    @api_router.delete("/branches/{branch_id}")
+    async def delete_branch_route(
+        branch_id: str,
+        user=Depends(require_perm(PERM_BRANCH_MANAGE)),
+    ):
+        db = get_db()
+        try:
+            return await delete_branch(db, branch_id, user=user)
+        except KeyError:
+            raise HTTPException(404, "Cabang tidak ditemukan") from None
+        except OrgLocationConflictError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
     @api_router.get("/warehouses")
     async def get_warehouses(
         branch_id: Optional[str] = Query(None),
@@ -169,5 +184,18 @@ def register_org_locations_routes(
             raise HTTPException(404, "Gudang tidak ditemukan") from None
         except OrgLocationValidationError as exc:
             raise HTTPException(400, str(exc)) from exc
+        except OrgLocationConflictError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @api_router.delete("/warehouses/{warehouse_id}")
+    async def delete_warehouse_route(
+        warehouse_id: str,
+        user=Depends(require_perm(PERM_WAREHOUSE_MANAGE)),
+    ):
+        db = get_db()
+        try:
+            return await delete_warehouse(db, warehouse_id, user=user)
+        except KeyError:
+            raise HTTPException(404, "Gudang tidak ditemukan") from None
         except OrgLocationConflictError as exc:
             raise HTTPException(409, str(exc)) from exc

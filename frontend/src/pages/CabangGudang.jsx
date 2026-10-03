@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertCircle, Building2, Pencil, Plus, Warehouse } from "lucide-react";
+import { AlertCircle, Building2, Pencil, Plus, Trash2, Warehouse } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 
@@ -38,6 +38,8 @@ export default function CabangGudang() {
   const [whName, setWhName] = useState("");
   const [whActive, setWhActive] = useState(true);
   const [savingWarehouse, setSavingWarehouse] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(null);
+  const [deleting, setDeleting] = useState(false);
 
   const selectedBranch = useMemo(
     () => branches.find((b) => b.id === selectedBranchId) || null,
@@ -196,6 +198,47 @@ export default function CabangGudang() {
     }
   };
 
+  const toggleBranchActive = async (row) => {
+    if (!canManageBranch || !row?.id) return;
+    setActionError("");
+    try {
+      await api.updateBranch(row.id, { active: !row.active });
+      await loadBranches();
+    } catch (ex) {
+      setActionError(errText(ex));
+    }
+  };
+
+  const confirmCopy = (target) => {
+    if (!target?.row) return "";
+    if (target.kind === "warehouse") {
+      return `Hapus gudang ${target.row.code} · ${target.row.name}?\nData yang sudah digunakan dalam transaksi tidak dapat dihapus.`;
+    }
+    return `Hapus cabang ${target.row.code} · ${target.row.name}?\nCabang hanya dapat dihapus jika belum digunakan dan tidak memiliki gudang.`;
+  };
+
+  const submitDelete = async () => {
+    if (!confirmDelete?.row?.id || deleting) return;
+    setDeleting(true);
+    setActionError("");
+    try {
+      if (confirmDelete.kind === "warehouse") {
+        await api.deleteWarehouse(confirmDelete.row.id);
+        setConfirmDelete(null);
+        await loadWarehouses(selectedBranchId);
+      } else {
+        await api.deleteBranch(confirmDelete.row.id);
+        setConfirmDelete(null);
+        await loadBranches();
+      }
+    } catch (ex) {
+      setConfirmDelete(null);
+      setActionError(errText(ex));
+    } finally {
+      setDeleting(false);
+    }
+  };
+
   return (
     <div className="prod-page" data-testid="cabang-gudang-page">
       <div className="page-heading prod-heading">
@@ -253,15 +296,32 @@ export default function CabangGudang() {
             </ul>
           )}
           {canManageBranch && selectedBranch && (
-            <button
-              type="button"
-              className="ghost"
-              style={{ marginTop: 8 }}
-              onClick={() => openEditBranch(selectedBranch)}
-              data-testid="cabang-edit"
-            >
-              <Pencil size={14} /> Ubah Cabang
-            </button>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 8 }}>
+              <button
+                type="button"
+                className="ghost"
+                onClick={() => openEditBranch(selectedBranch)}
+                data-testid="cabang-edit"
+              >
+                <Pencil size={14} /> Ubah Cabang
+              </button>
+              <button
+                type="button"
+                className="ghost"
+                onClick={() => toggleBranchActive(selectedBranch)}
+                data-testid="cabang-toggle"
+              >
+                {selectedBranch.active ? "Nonaktifkan" : "Aktifkan"}
+              </button>
+              <button
+                type="button"
+                className="ghost sm danger"
+                onClick={() => { setActionError(""); setConfirmDelete({ kind: "branch", row: selectedBranch }); }}
+                data-testid="cabang-delete"
+              >
+                <Trash2 size={14} /> Hapus
+              </button>
+            </div>
           )}
         </section>
 
@@ -316,6 +376,14 @@ export default function CabangGudang() {
                           >
                             {w.active ? "Nonaktifkan" : "Aktifkan"}
                           </button>
+                          <button
+                            type="button"
+                            className="ghost sm danger"
+                            onClick={() => { setActionError(""); setConfirmDelete({ kind: "warehouse", row: w }); }}
+                            data-testid={`gudang-delete-${w.code}`}
+                          >
+                            <Trash2 size={14} /> Hapus
+                          </button>
                         </>
                       )}
                     </td>
@@ -350,6 +418,23 @@ export default function CabangGudang() {
               </button>
             </div>
           </form>
+        </div>
+      )}
+
+      {confirmDelete && (
+        <div className="modal-backdrop" data-testid="delete-confirm">
+          <div className="modal-card" role="dialog" aria-modal="true">
+            <h2>Hapus</h2>
+            <p data-testid="delete-confirm-text" style={{ whiteSpace: "pre-line" }}>{confirmCopy(confirmDelete)}</p>
+            <div className="modal-actions">
+              <button type="button" className="ghost" disabled={deleting} onClick={() => setConfirmDelete(null)} data-testid="delete-cancel">
+                Batal
+              </button>
+              <button type="button" className="primary destructive" disabled={deleting} onClick={submitDelete} data-testid="delete-confirm-submit">
+                {deleting ? "Menghapus…" : "Hapus"}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
