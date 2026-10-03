@@ -14017,6 +14017,8 @@ async def seed():
         partialFilterExpression={"tracking_token": {"$exists": True, "$gt": ""}},
     )
     await db.master_items.create_index("id", unique=True)
+    from services.physical_stock import ensure_indexes as ensure_physical_stock_indexes
+    await ensure_physical_stock_indexes(db)
     await db[MASTER_ITEMS_COLLECTION].create_index("accurate_item_id", unique=True)
     await db[STOCK_MANUAL_COLLECTION].create_index("id", unique=True)
     await db[STOCK_MANUAL_COLLECTION].create_index("accurate_item_id", unique=True, sparse=True)
