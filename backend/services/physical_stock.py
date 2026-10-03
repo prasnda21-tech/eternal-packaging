@@ -85,6 +85,10 @@ class PhysicalStockValidationError(PhysicalStockError):
     """Movement payload or master data is not acceptable."""
 
 
+class PhysicalStockNotFoundError(PhysicalStockError):
+    """A requested master item, branch, or warehouse does not exist."""
+
+
 class PhysicalStockConflictError(PhysicalStockError):
     """Idempotency payload clash or a movement already reversed."""
 
@@ -464,4 +468,224 @@ async def reconcile_balance(db, master_item_id: str, branch_id: str, warehouse_i
         "balance_qty": balance_qty,
         "match": ledger_qty == balance_qty,
         "discrepancy": balance_qty - ledger_qty,
+    }
+
+
+UNIT_SETTINGS_COLLECTION = "product_unit_settings"
+_MAX_READ_LIMIT = 200
+
+
+async def _require_master_item(db, item_id: str) -> dict:
+    doc = await db[MASTER_ITEMS_COLLECTION].find_one({"id": str(item_id)}, {"_id": 0})
+    if not doc:
+        raise PhysicalStockNotFoundError("Barang tidak ditemukan")
+    return doc
+
+
+async def _require_branch_any(db, branch_id: str) -> dict:
+    doc = await db[BRANCHES_COLLECTION].find_one({"id": str(branch_id)}, {"_id": 0})
+    if not doc:
+        raise PhysicalStockNotFoundError("Cabang tidak ditemukan")
+    return doc
+
+
+async def _require_warehouse_any(db, warehouse_id: str) -> dict:
+    doc = await db[WAREHOUSES_COLLECTION].find_one({"id": str(warehouse_id)}, {"_id": 0})
+    if not doc:
+        raise PhysicalStockNotFoundError("Gudang tidak ditemukan")
+    return doc
+
+
+async def _base_unit(db, master: dict) -> str:
+    setting = await db[UNIT_SETTINGS_COLLECTION].find_one(
+        {"master_item_id": master.get("id")},
+        {"_id": 0, "base_uom": 1},
+    )
+    raw = ""
+    if setting and setting.get("base_uom"):
+        raw = setting.get("base_uom")
+    elif master.get("unit"):
+        raw = master.get("unit")
+    text = str(raw or "PCS").strip().upper()
+    return text or "PCS"
+
+
+def _location_fields(branch: Optional[dict], warehouse: Optional[dict]) -> dict:
+    branch = branch or {}
+    warehouse = warehouse or {}
+    return {
+        "branch_id": branch.get("id") or "",
+        "branch_code": branch.get("code") or "",
+        "branch_name": branch.get("name") or "",
+        "warehouse_id": warehouse.get("id") or "",
+        "warehouse_code": warehouse.get("code") or "",
+        "warehouse_name": warehouse.get("name") or "",
+    }
+
+
+async def _location_maps(db, branch_ids, warehouse_ids):
+    branches = {}
+    warehouses = {}
+    if branch_ids:
+        rows = await db[BRANCHES_COLLECTION].find(
+            {"id": {"$in": list(branch_ids)}},
+            {"_id": 0},
+        ).to_list(len(branch_ids))
+        branches = {row["id"]: row for row in rows}
+    if warehouse_ids:
+        rows = await db[WAREHOUSES_COLLECTION].find(
+            {"id": {"$in": list(warehouse_ids)}},
+            {"_id": 0},
+        ).to_list(len(warehouse_ids))
+        warehouses = {row["id"]: row for row in rows}
+    return branches, warehouses
+
+
+def _stock_row(master_item_id: str, branch: Optional[dict], warehouse: Optional[dict], qty, base_unit: str) -> dict:
+    row = {
+        "master_item_id": master_item_id,
+        "physical_qty": int(qty or 0),
+        "base_unit": base_unit,
+    }
+    row.update(_location_fields(branch, warehouse))
+    return row
+
+
+async def read_physical_stock(
+    db,
+    item_id: str,
+    *,
+    branch_id: Optional[str] = None,
+    warehouse_id: Optional[str] = None,
+) -> dict:
+    """Read physical_qty from physical_stock_balances only. Never inserts a balance."""
+    master = await _require_master_item(db, item_id)
+    branch = await _require_branch_any(db, branch_id) if branch_id else None
+    warehouse = await _require_warehouse_any(db, warehouse_id) if warehouse_id else None
+    if branch and warehouse and warehouse.get("branch_id") != branch.get("id"):
+        raise PhysicalStockValidationError("Gudang tidak berada pada cabang ini")
+    if warehouse and not branch:
+        branch = await _require_branch_any(db, warehouse.get("branch_id"))
+
+    query = {"master_item_id": master["id"]}
+    if branch_id:
+        query["branch_id"] = branch["id"]
+    if warehouse_id:
+        query["warehouse_id"] = warehouse["id"]
+    docs = await db[BALANCE_COLLECTION].find(query, {"_id": 0}).sort(
+        [("branch_id", 1), ("warehouse_id", 1)]
+    ).to_list(5000)
+    base_unit = await _base_unit(db, master)
+    branches, warehouses = await _location_maps(
+        db,
+        {doc.get("branch_id") for doc in docs if doc.get("branch_id")},
+        {doc.get("warehouse_id") for doc in docs if doc.get("warehouse_id")},
+    )
+    items = [
+        _stock_row(
+            master["id"],
+            branches.get(doc.get("branch_id")),
+            warehouses.get(doc.get("warehouse_id")),
+            doc.get("physical_qty"),
+            base_unit,
+        )
+        for doc in docs
+    ]
+    if warehouse and not items:
+        items = [_stock_row(master["id"], branch, warehouse, 0, base_unit)]
+    total = sum(row["physical_qty"] for row in items)
+    return {
+        "master_item_id": master["id"],
+        "base_unit": base_unit,
+        "total_physical_qty": total,
+        "items": items,
+    }
+
+
+def _date_bound(value: str, *, end: bool) -> str:
+    text = str(value).strip()
+    if len(text) == 10 and text[4:5] == "-" and text[7:8] == "-":
+        return text + ("T23:59:59.999999" if end else "T00:00:00")
+    return text
+
+
+def _mutation_row(doc: dict, branch: Optional[dict], warehouse: Optional[dict]) -> dict:
+    row = {
+        "id": doc.get("id"),
+        "occurred_at": doc.get("occurred_at"),
+        "movement_type": doc.get("movement_type"),
+        "qty_delta": doc.get("qty_delta"),
+        "balance_before": doc.get("balance_before"),
+        "balance_after": doc.get("balance_after"),
+        "reference_type": doc.get("reference_type"),
+        "reference_id": doc.get("reference_id"),
+        "reason": doc.get("reason"),
+        "actor_id": doc.get("actor_id"),
+        "metadata": doc.get("metadata") if isinstance(doc.get("metadata"), dict) else {},
+    }
+    row.update(_location_fields(branch, warehouse))
+    row["branch_id"] = doc.get("branch_id") or row["branch_id"]
+    row["warehouse_id"] = doc.get("warehouse_id") or row["warehouse_id"]
+    return row
+
+
+async def list_physical_mutations(
+    db,
+    item_id: str,
+    *,
+    branch_id: Optional[str] = None,
+    warehouse_id: Optional[str] = None,
+    movement_type: Optional[str] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    page: int = 1,
+    limit: int = 50,
+) -> dict:
+    """Read physical_stock_ledger only. Newest occurred_at first. Never inserts."""
+    master = await _require_master_item(db, item_id)
+    branch = await _require_branch_any(db, branch_id) if branch_id else None
+    warehouse = await _require_warehouse_any(db, warehouse_id) if warehouse_id else None
+    if branch and warehouse and warehouse.get("branch_id") != branch.get("id"):
+        raise PhysicalStockValidationError("Gudang tidak berada pada cabang ini")
+    query: Dict[str, Any] = {"master_item_id": master["id"]}
+    if branch:
+        query["branch_id"] = branch["id"]
+    if warehouse:
+        query["warehouse_id"] = warehouse["id"]
+    if movement_type:
+        kind = str(movement_type).strip().upper()
+        if kind not in MOVEMENT_TYPES:
+            raise PhysicalStockValidationError("Jenis mutasi tidak dikenal")
+        query["movement_type"] = kind
+    occurred: Dict[str, str] = {}
+    if from_date:
+        occurred["$gte"] = _date_bound(from_date, end=False)
+    if to_date:
+        occurred["$lte"] = _date_bound(to_date, end=True)
+    if occurred:
+        query["occurred_at"] = occurred
+    safe_page = page if isinstance(page, int) and page > 0 else 1
+    safe_limit = limit if isinstance(limit, int) and limit > 0 else 50
+    safe_limit = min(safe_limit, _MAX_READ_LIMIT)
+    total = await db[LEDGER_COLLECTION].count_documents(query)
+    docs = await db[LEDGER_COLLECTION].find(query, {"_id": 0}).sort(
+        [("occurred_at", -1), ("created_at", -1), ("id", -1)]
+    ).skip((safe_page - 1) * safe_limit).limit(safe_limit).to_list(safe_limit)
+    branches, warehouses = await _location_maps(
+        db,
+        {doc.get("branch_id") for doc in docs if doc.get("branch_id")},
+        {doc.get("warehouse_id") for doc in docs if doc.get("warehouse_id")},
+    )
+    items = [
+        _mutation_row(doc, branches.get(doc.get("branch_id")), warehouses.get(doc.get("warehouse_id")))
+        for doc in docs
+    ]
+    page_count = (total + safe_limit - 1) // safe_limit if total else 0
+    return {
+        "master_item_id": master["id"],
+        "items": items,
+        "total": total,
+        "page": safe_page,
+        "limit": safe_limit,
+        "page_count": page_count,
     }

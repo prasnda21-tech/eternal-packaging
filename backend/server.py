@@ -11439,6 +11439,65 @@ async def master_item_mutation_detail_get(
     return {"mutation": detail}
 
 
+@api_router.get("/master-items/{item_id}/physical-stock")
+async def master_item_physical_stock_get(
+    item_id: str,
+    branch_id: Optional[str] = None,
+    warehouse_id: Optional[str] = None,
+    user=Depends(require_perm("master_items.view")),
+):
+    """Read physical_qty from physical_stock_balances. Does not write."""
+    from services.physical_stock import (
+        PhysicalStockNotFoundError,
+        PhysicalStockValidationError,
+        read_physical_stock,
+    )
+    try:
+        return await read_physical_stock(
+            db, item_id, branch_id=branch_id, warehouse_id=warehouse_id,
+        )
+    except PhysicalStockNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except PhysicalStockValidationError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@api_router.get("/master-items/{item_id}/physical-mutations")
+async def master_item_physical_mutations_get(
+    item_id: str,
+    branch_id: Optional[str] = None,
+    warehouse_id: Optional[str] = None,
+    movement_type: Optional[str] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    page: int = 1,
+    limit: int = 50,
+    user=Depends(require_perm("master_items.view")),
+):
+    """Read physical_stock_ledger newest first. Does not write."""
+    from services.physical_stock import (
+        PhysicalStockNotFoundError,
+        PhysicalStockValidationError,
+        list_physical_mutations,
+    )
+    try:
+        return await list_physical_mutations(
+            db,
+            item_id,
+            branch_id=branch_id,
+            warehouse_id=warehouse_id,
+            movement_type=movement_type,
+            from_date=from_date,
+            to_date=to_date,
+            page=page,
+            limit=limit,
+        )
+    except PhysicalStockNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except PhysicalStockValidationError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 @api_router.get("/settings/physical-stock")
 async def physical_stock_settings_get(user=Depends(current_user)):
     """Pure read. Returns physical stock configuration."""
