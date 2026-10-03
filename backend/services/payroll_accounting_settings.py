@@ -45,6 +45,8 @@ SOURCE_ATTENDANCE = "attendance"
 SOURCE_KASBON = "kasbon"
 SOURCE_COMPONENT = "component"
 SOURCE_ADJUSTMENT = "adjustment"
+SOURCE_OPERATOR_PIECE = "operator_piece"
+SOURCE_OPERATOR_BONUS = "operator_bonus"
 
 CODE_BASE = "BASE"
 CODE_KASBON = "KASBON"
@@ -129,6 +131,22 @@ SYSTEM_CATALOG: Tuple[Dict[str, str], ...] = (
         "label": "Kasbon",
         "system": True,
     },
+    {
+        "source_key": "operator_piece:UPAH_BORONGAN",
+        "source": SOURCE_OPERATOR_PIECE,
+        "code": "UPAH_BORONGAN",
+        "kind": "earning",
+        "label": "Upah Borongan Operator",
+        "system": True,
+    },
+    {
+        "source_key": "operator_bonus:BONUS_OPERATOR",
+        "source": SOURCE_OPERATOR_BONUS,
+        "code": "BONUS_OPERATOR",
+        "kind": "earning",
+        "label": "Bonus Operator",
+        "system": True,
+    },
 )
 
 SYSTEM_BY_KEY = {row["source_key"]: row for row in SYSTEM_CATALOG}
@@ -169,6 +187,10 @@ def source_key_for_row(row: Optional[dict]) -> Optional[str]:
         return f"attendance:{code}" if code in ATT_CODES else None
     if source == SOURCE_KASBON:
         return "kasbon:KASBON" if code == CODE_KASBON else None
+    if source == SOURCE_OPERATOR_PIECE:
+        return "operator_piece:UPAH_BORONGAN" if code == "UPAH_BORONGAN" else None
+    if source == SOURCE_OPERATOR_BONUS:
+        return "operator_bonus:BONUS_OPERATOR" if code == "BONUS_OPERATOR" else None
     if source == SOURCE_COMPONENT:
         component_id = str(row.get("component_id") or "").strip()
         return f"component:{component_id}" if UUID_RX.match(component_id) else None

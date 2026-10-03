@@ -1,6 +1,17 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import MobilePrintWorkspace from "./MobilePrintWorkspace";
+import api from "../../lib/api";
+
+jest.mock("../../lib/api", () => ({
+  __esModule: true,
+  fileUrl: (storagePath) => `/api/files/${storagePath}`,
+  default: {
+    updateOperatorProgress: jest.fn(),
+    fetchStoredFileBlob: jest.fn(),
+    getOrderAttachment: jest.fn(),
+  },
+}));
 
 jest.mock("pdfjs-dist", () => ({
   GlobalWorkerOptions: { workerSrc: "" },
@@ -280,5 +291,38 @@ describe("Mobile print panel allocation empty state and gate copy", () => {
     expect(container.textContent).not.toContain(`${idQty(50)} / ${idQty(300)}`);
     expect(container.querySelector('[data-testid="mobile-print-empty"]')).toBeNull();
     expectDesignAvailable();
+  });
+
+  test("retry sends the same work date and action id", async () => {
+    const order = printOrder({
+      splits: [split({ id: "sp-a", user: USER_A, lineIdx: 0, quantity: 1200, done: 0 })],
+    });
+    api.updateOperatorProgress
+      .mockRejectedValueOnce({ response: { data: { detail: "gagal jaringan" } } })
+      .mockResolvedValueOnce({ order });
+    renderPanel(order);
+    const date = container.querySelector('[data-testid="mobile-print-date-0"]');
+    const qty = container.querySelector('input[aria-label="Qty"]');
+    const setValue = (el, value) => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+      setter.call(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+    };
+    await act(async () => {
+      setValue(date, "2026-09-10");
+      setValue(qty, "10");
+    });
+    const button = saveButtons(container)[0];
+    await act(async () => { button.click(); });
+    await act(async () => { button.click(); });
+    expect(api.updateOperatorProgress).toHaveBeenCalledTimes(2);
+    const first = api.updateOperatorProgress.mock.calls[0][3];
+    const second = api.updateOperatorProgress.mock.calls[1][3];
+    expect(first.work_date).toBe("2026-09-10");
+    expect(second.work_date).toBe("2026-09-10");
+    expect(second.action_id).toBe(first.action_id);
+    expect(first.qty).toBe(10);
+    expect(second.qty).toBe(10);
   });
 });

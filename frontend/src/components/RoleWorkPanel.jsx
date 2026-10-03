@@ -69,6 +69,7 @@ function WorkHero({ order, title, itemLabel, testid, compactHeader }) {
 function OperatorWorkPanel({ order, division, onUpdated, compactHeader }) {
   const { user, hasPerm } = useAuth();
   const [drafts, setDrafts] = useState({});
+  const [workDates, setWorkDates] = useState({});
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [confirm, setConfirm] = useState(null);
@@ -107,11 +108,17 @@ function OperatorWorkPanel({ order, division, onUpdated, compactHeader }) {
       setErr("Tidak ada assignment Operator untuk item ini.");
       return;
     }
+    const workDate = String(workDates[line.lineIdx] || "").trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(workDate)) {
+      setErr("Tanggal pekerjaan wajib diisi.");
+      return;
+    }
     setErr("");
     setConfirm({
       line,
       split,
       qty,
+      workDate,
       actionId: newActionId(),
       time: formatDisplayDateTime(new Date().toISOString()),
     });
@@ -125,6 +132,7 @@ function OperatorWorkPanel({ order, division, onUpdated, compactHeader }) {
       const res = await api.updateOperatorProgress(order.id, confirm.split.id, confirm.qty, {
         qty: confirm.qty,
         action_id: confirm.actionId,
+        work_date: confirm.workDate,
       });
       onUpdated?.(res.order);
       setDrafts((prev) => ({ ...prev, [confirm.line.lineIdx]: "" }));
@@ -188,6 +196,9 @@ function OperatorWorkPanel({ order, division, onUpdated, compactHeader }) {
               TOTAL: <strong className="mono">{fmtQty(total)}</strong> {line.unit}
               {" · "}SISA: <strong className="mono">{fmtQty(line.remaining)}</strong>
             </div>
+            <label className="muted small">Tanggal pekerjaan
+              <input type="date" value={workDates[line.lineIdx] || ""} onChange={(e) => setWorkDates((p) => ({ ...p, [line.lineIdx]: e.target.value }))} data-testid={`work-date-${line.lineIdx}`} disabled={!lineCanEdit} />
+            </label>
             <RoleWorkEntryForm
               label={inputLabel}
               unit={line.unit}

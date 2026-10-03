@@ -198,7 +198,10 @@ def apply_operator_assignments(
     """Replace active assignment list without deleting completed history.
 
     payload_splits: dicts with operator_email, operator_name, quantity, line_idx,
-    optional id / work_date / screen_size.
+    optional id / work_date / screen_size / operator_user_id.
+    operator_user_id is stored only when the payload sends it. A resave that
+    omits it keeps the previous id when the email is unchanged. An email change
+    without a new id drops the old id and does not look the person up.
     Returns (new_splits, cancel_events_this_save).
     """
     helper_before = helper_prep_snapshot(order)
@@ -249,6 +252,15 @@ def apply_operator_assignments(
         if work_date is None and prev:
             work_date = prev.get("work_date")
         original = _safe_int(prev.get("original_quantity") if prev else 0) or max(old_qty, qty)
+        email = str(raw.get("operator_email") or "").strip().lower()
+        prev_email = str((prev or {}).get("operator_email") or "").strip().lower()
+        sent_id = str(raw.get("operator_user_id") or "").strip() if "operator_user_id" in raw else ""
+        if sent_id:
+            operator_user_id = sent_id
+        elif prev and email == prev_email:
+            operator_user_id = str(prev.get("operator_user_id") or "").strip()
+        else:
+            operator_user_id = ""
         row = {
             "id": sid,
             "operator_email": raw.get("operator_email"),
@@ -264,6 +276,8 @@ def apply_operator_assignments(
             "line_idx": line_idx,
             "work_date": work_date,
         }
+        if operator_user_id:
+            row["operator_user_id"] = operator_user_id
         write_allocation_screen(row, raw, prev)
         new_splits.append(row)
 

@@ -626,6 +626,8 @@ class OperatorSplitInput(BaseModel):
     work_date: Optional[str] = None
     # Planning metadata (Screen Besar / Screen Kecil) for this allocation. Omit preserves it.
     screen_size: Optional[str] = None
+    # Selected operator user id. Omit keeps the stored id when the email is unchanged.
+    operator_user_id: Optional[str] = None
 
 
 class CancelSplitPayload(BaseModel):
@@ -657,6 +659,7 @@ class OperatorProgressPayload(BaseModel):
     qty_completed: Optional[int] = None
     qty: Optional[int] = None
     action_id: Optional[str] = None
+    work_date: Optional[str] = None
 
 
 class LoadingLineInput(BaseModel):
@@ -4029,6 +4032,8 @@ async def assign_operators(order_id: str, payload: AssignOperatorsPayload, user=
             }
             if "screen_size" in dumped:
                 row["screen_size"] = dumped.get("screen_size")
+            if "operator_user_id" in dumped:
+                row["operator_user_id"] = str(dumped.get("operator_user_id") or "").strip()
             rows.append(row)
         try:
             new_splits, cancel_notes = _apply_operator_assignments(
@@ -4178,6 +4183,7 @@ async def update_operator_progress(order_id: str, payload: OperatorProgressPaylo
 
     act_id = (payload.action_id or "").strip() or str(uuid.uuid4())
     payload.action_id = act_id
+    progress_work_date = _parse_work_date(payload.work_date) if payload.work_date else None
     claimed_stock = None
     if found_split_pre:
         inc_val = payload.qty
@@ -4253,7 +4259,14 @@ async def update_operator_progress(order_id: str, payload: OperatorProgressPaylo
         except (TypeError, ValueError):
             ident = {}
         rate = _wage_effective_rate(ident, wib_today(), wage_doc, operator=found)
-        extra = {"rate_per_pcs": rate} if rate is not None else None
+        extra = {}
+        if rate is not None:
+            extra["rate_per_pcs"] = rate
+        if progress_work_date:
+            extra["work_date"] = progress_work_date
+        operator_uid = str(found.get("operator_user_id") or "").strip()
+        if operator_uid:
+            extra["operator_user_id"] = operator_uid
         entries, _entry, created = append_qty_entry(
             entries,
             qty=increment,

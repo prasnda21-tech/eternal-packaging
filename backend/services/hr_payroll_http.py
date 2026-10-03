@@ -27,6 +27,7 @@ from services.hr_payroll import (
     PERM_PAY_REVIEW,
     PERM_PAY_SETTINGS,
     PERM_PAY_VIEW,
+    PERM_PIECE_HOLDING,
     PERM_SLIP_ALL,
     PERM_SLIP_OWN,
     STATUS_APPROVAL,
@@ -41,6 +42,7 @@ from services.hr_payroll import (
     create_employee_with_optional_account,
     create_eternal_account_for_employee,
     create_period,
+    create_piece_period,
     ensure_indexes,
     ensure_kasbon_schedule,
     generate_payslip_for_line,
@@ -132,7 +134,7 @@ def register_hr_payroll_routes(
         page_size: Optional[int] = None,
         user=Depends(current_user),
     ):
-        await require_any_perm(user, PERM_EMP_VIEW, PERM_EMP_MANAGE, PERM_PAY_VIEW)
+        await require_any_perm(user, PERM_EMP_VIEW, PERM_EMP_MANAGE, PERM_PAY_VIEW, PERM_PIECE_HOLDING)
         return await list_employees(
             get_db(),
             include_inactive=include_inactive,
@@ -220,7 +222,7 @@ def register_hr_payroll_routes(
 
     @api_router.get("/hr-payroll/periods")
     async def periods(status: Optional[str] = None, user=Depends(current_user)):
-        await require_any_perm(user, PERM_PAY_VIEW, PERM_PAY_CALC, PERM_PAY_REVIEW, PERM_PAY_APPROVE, PERM_PAY_FINAL)
+        await require_any_perm(user, PERM_PAY_VIEW, PERM_PAY_CALC, PERM_PAY_REVIEW, PERM_PAY_APPROVE, PERM_PAY_FINAL, PERM_PIECE_HOLDING)
         rows = await list_periods(get_db(), status=(status or "").upper())
         return {"periods": rows, "count": len(rows)}
 
@@ -233,9 +235,37 @@ def register_hr_payroll_routes(
         )
         return {"period": row, "message": "Periode payroll dibuat"}
 
+    @api_router.get("/hr-payroll/piece-integration")
+    async def piece_integration_get(user=Depends(current_user)):
+        await require_any_perm(user, PERM_PIECE_HOLDING, PERM_PAY_VIEW, PERM_PAY_CALC)
+        from services.operator_wage_claims import get_integration
+        return {"integration": await get_integration(get_db())}
+
+    @api_router.put("/hr-payroll/piece-integration")
+    async def piece_integration_put(payload: LoosePayload, user=Depends(current_user)):
+        await require_any_perm(user, PERM_PIECE_HOLDING)
+        from services.operator_wage_claims import set_integration_start
+        row = await set_integration_start(get_db(), _dump(payload).get("start_date"), user)
+        return {"integration": row, "message": "Batas mulai integrasi disimpan"}
+
+    @api_router.post("/hr-payroll/piece-periods")
+    async def piece_period_create(payload: LoosePayload, user=Depends(current_user)):
+        await require_any_perm(user, PERM_PIECE_HOLDING)
+        body = _dump(payload)
+        row = await create_piece_period(get_db(), body.get("start_date"), body.get("end_date"), user)
+        return {"period": row, "message": "Periode upah borongan dibuat"}
+
+    @api_router.put("/hr-payroll/periods/{period_id}/piece-inputs")
+    async def piece_inputs_put(period_id: str, payload: LoosePayload, user=Depends(current_user)):
+        await require_any_perm(user, PERM_PIECE_HOLDING)
+        from services.operator_wage_claims import save_piece_inputs
+        period = await get_period(get_db(), period_id)
+        row = await save_piece_inputs(get_db(), period, _dump(payload), user)
+        return {"period": row, "message": "Input Holding disimpan"}
+
     @api_router.get("/hr-payroll/periods/{period_id}")
     async def period_detail(period_id: str, user=Depends(current_user)):
-        await require_any_perm(user, PERM_PAY_VIEW, PERM_PAY_CALC, PERM_PAY_REVIEW, PERM_PAY_APPROVE, PERM_PAY_FINAL)
+        await require_any_perm(user, PERM_PAY_VIEW, PERM_PAY_CALC, PERM_PAY_REVIEW, PERM_PAY_APPROVE, PERM_PAY_FINAL, PERM_PIECE_HOLDING)
         period = await get_period(get_db(), period_id)
         return {"period": period}
 
@@ -271,7 +301,7 @@ def register_hr_payroll_routes(
 
     @api_router.get("/hr-payroll/periods/{period_id}/lines")
     async def period_lines(period_id: str, user=Depends(current_user)):
-        await require_any_perm(user, PERM_PAY_VIEW, PERM_PAY_CALC, PERM_PAY_REVIEW, PERM_PAY_APPROVE, PERM_PAY_FINAL)
+        await require_any_perm(user, PERM_PAY_VIEW, PERM_PAY_CALC, PERM_PAY_REVIEW, PERM_PAY_APPROVE, PERM_PAY_FINAL, PERM_PIECE_HOLDING)
         await get_period(get_db(), period_id)
         rows = await list_lines(get_db(), period_id)
         return {"lines": rows, "count": len(rows)}
@@ -313,7 +343,7 @@ def register_hr_payroll_routes(
 
     @api_router.get("/hr-payroll/periods/{period_id}/attendance")
     async def attendance_get(period_id: str, user=Depends(current_user)):
-        await require_any_perm(user, PERM_PAY_VIEW, PERM_PAY_CALC)
+        await require_any_perm(user, PERM_PAY_VIEW, PERM_PAY_CALC, PERM_PIECE_HOLDING)
         await get_period(get_db(), period_id)
         rows = await get_attendance_for_period(get_db(), period_id)
         return {"attendance": rows, "count": len(rows)}
@@ -325,7 +355,7 @@ def register_hr_payroll_routes(
         include_eligible: bool = False,
         user=Depends(current_user),
     ):
-        await require_any_perm(user, PERM_PAY_VIEW, PERM_PAY_CALC, PERM_PAY_SETTINGS)
+        await require_any_perm(user, PERM_PAY_VIEW, PERM_PAY_CALC, PERM_PAY_SETTINGS, PERM_PIECE_HOLDING)
         rows = await list_kasbon_schedules(get_db(), employee_id=employee_id or "", active_only=active_only)
         result = {"schedules": rows, "count": len(rows)}
         if include_eligible and employee_id:
