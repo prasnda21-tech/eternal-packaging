@@ -1897,7 +1897,7 @@ export default function PesananPenjualan() {
                 ) : displayedOrders.map((o) => {
                   const isCancelled = !!o.cancelled;
                   const isHold = !!o.hold;
-                  const stageLabel = salesOrderStageLabel(o) || (o.current_stage == null ? "" : `Tahap ${o.current_stage}`);
+                  const stageLabel = salesOrderStageLabel(o);
                   const remainQty = salesOrderRemainingQty(o);
                   const salesName = salesOrderSalesName(o).trim();
                   const canProcessDelivery = !isCancelled && remainQty > 0;
@@ -1947,9 +1947,9 @@ export default function PesananPenjualan() {
                       <td>
                         <div className="so-list-status">
                           {isCancelled ? (
-                            <span className="so-list-badge is-cancel">Cancelled</span>
+                            <span className="so-list-badge is-cancel">{stageLabel || "—"}</span>
                           ) : isHold ? (
-                            <span className="so-list-badge is-hold">HOLD</span>
+                            <span className="so-list-badge is-hold">{stageLabel || "—"}</span>
                           ) : (
                             <span className={`so-list-badge${o.current_stage >= 14 ? " is-done" : " is-open"}`}>{stageLabel || "—"}</span>
                           )}
