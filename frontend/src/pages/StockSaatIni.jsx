@@ -1,36 +1,34 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle, Download, Search, X } from "lucide-react";
-import { Link } from "react-router-dom";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDate } from "../lib/constants";
 import { fmtQty } from "../components/qtyUi";
 import { useDebouncedLiveSearch, liveSearchTableView } from "../hooks/useDebouncedLiveSearch";
-import { INVENTORY_VALUE_LINK_LABEL, inventoryValueItemPath, inventoryValueLinkVisible } from "../lib/inventoryValueLink";
+import { openingReady, stockEmptyMessage, warehouseChoices } from "../lib/physicalStockView";
+
+function newKey() {
+  return globalThis.crypto?.randomUUID?.() || `saldo-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
 
 export default function StockSaatIni() {
   const { hasPerm } = useAuth();
-  const canUpdate = hasPerm("current_stock.update");
-  const canOpname = canUpdate;
+  const canOpening = hasPerm("current_stock.update") || hasPerm("permissions.manage");
   const canExport = hasPerm("current_stock.export");
   const [data, setData] = useState(null);
-  const canEditPhysical = Boolean(data?.can_correct_physical_stock);
+  const [branches, setBranches] = useState([]);
+  const [warehouses, setWarehouses] = useState([]);
+  const [branchId, setBranchId] = useState("");
+  const [warehouseId, setWarehouseId] = useState("");
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
   const { input: qInput, setInput: setQInput, q, flush: doSearch, clear: clearQuery, pending: searchPending } = useDebouncedLiveSearch();
-  const [stockFilter, setStockFilter] = useState("all");
-  const [sortBy, setSortBy] = useState("name");
-  const [sortDir, setSortDir] = useState("asc");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
-  const [exporting, setExporting] = useState(false);
-  const [editing, setEditing] = useState(null);
-  const [physicalInput, setPhysicalInput] = useState("");
-  const [editRequestId, setEditRequestId] = useState("");
-  const [savingPhysical, setSavingPhysical] = useState(false);
+  const [openingOpen, setOpeningOpen] = useState(false);
   const loadSeq = useRef(0);
 
-  useEffect(() => { setPage(1); }, [q]);
+  useEffect(() => { setPage(1); }, [q, branchId, warehouseId]);
 
   useEffect(() => {
     if (!searchPending) return;
@@ -38,14 +36,43 @@ export default function StockSaatIni() {
     setData((prev) => (prev ? { ...prev, items: [] } : prev));
   }, [searchPending]);
 
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([api.branches(), api.warehouses()])
+      .then(([branchRes, warehouseRes]) => {
+        if (cancelled) return;
+        setBranches(branchRes.items || []);
+        setWarehouses(warehouseRes.items || []);
+      })
+      .catch(() => {
+        if (!cancelled) setErr("Gagal memuat cabang dan gudang");
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  const warehouseOptions = useMemo(
+    () => warehouseChoices(warehouses, branchId),
+    [warehouses, branchId],
+  );
+
+  useEffect(() => {
+    if (warehouseId && !warehouseOptions.some((row) => row.id === warehouseId)) {
+      setWarehouseId("");
+    }
+  }, [warehouseId, warehouseOptions]);
+
   const load = useCallback(async () => {
     const seq = ++loadSeq.current;
     setLoading(true);
     setErr("");
     setData((prev) => (prev ? { ...prev, items: [] } : prev));
     try {
-      const d = await api.currentStock({
-        q, stock_filter: stockFilter, sort_by: sortBy, sort_dir: sortDir, page, page_size: pageSize,
+      const d = await api.physicalStockCatalog({
+        q,
+        branch_id: branchId || undefined,
+        warehouse_id: warehouseId || undefined,
+        page,
+        limit: pageSize,
       });
       if (seq !== loadSeq.current) return;
       setData(d);
@@ -56,91 +83,13 @@ export default function StockSaatIni() {
     } finally {
       if (seq === loadSeq.current) setLoading(false);
     }
-  }, [q, stockFilter, sortBy, sortDir, page, pageSize]);
+  }, [q, branchId, warehouseId, page, pageSize]);
 
   useEffect(() => { load(); }, [load]);
 
   const clearSearch = () => {
     clearQuery();
     setPage(1);
-  };
-
-  const cycleSort = (col) => {
-    if (sortBy === col) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
-    else {
-      setSortBy(col);
-      setSortDir(col === "name" ? "asc" : "desc");
-    }
-    setPage(1);
-  };
-
-  const openPhysicalEdit = (item) => {
-    setEditing(item);
-    setPhysicalInput(String(item.physical_qty ?? 0));
-    setEditRequestId(
-      globalThis.crypto?.randomUUID?.()
-      || `stock-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-    );
-    setErr("");
-  };
-
-  const savePhysical = async () => {
-    if (!editing || savingPhysical) return;
-    const physicalQty = Number(String(physicalInput).replace(",", "."));
-    if (!Number.isFinite(physicalQty) || physicalQty < 0) {
-      setErr("Stock Fisik harus berupa angka non-negatif");
-      return;
-    }
-    setSavingPhysical(true);
-    setErr("");
-    try {
-      await api.currentStockUpdate(editing.master_item_id, {
-        physical_qty: physicalQty,
-        note: "Koreksi manual Stock Fisik dari Stock Saat Ini",
-        client_request_id: editRequestId,
-      });
-      setEditing(null);
-      await load();
-    } catch (ex) {
-      const det = ex.response?.data?.detail;
-      setErr(typeof det === "object" ? det.message : (det || "Gagal mengubah Stock Fisik"));
-    } finally {
-      setSavingPhysical(false);
-    }
-  };
-
-  const handlePhysicalKeyDown = (e) => {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      savePhysical();
-    } else if (e.key === "Escape") {
-      e.preventDefault();
-      setEditing(null);
-      setErr("");
-    }
-  };
-
-  const download = async () => {
-    setExporting(true);
-    try {
-      const blob = await api.currentStockExport({
-        q, stock_filter: stockFilter, sort_by: sortBy, sort_dir: sortDir,
-      });
-      const url = URL.createObjectURL(new Blob([blob], {
-        type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      }));
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `stock-saat-ini-${new Date().toISOString().slice(0, 10)}.xlsx`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-    } catch (ex) {
-      alert(ex.response?.data?.detail || "Gagal export");
-    } finally {
-      setExporting(false);
-    }
   };
 
   const items = data?.items || [];
@@ -151,6 +100,37 @@ export default function StockSaatIni() {
     loading,
     itemCount: items.length,
   });
+  const emptyText = stockEmptyMessage({
+    masterItemCount: data?.master_item_count || 0,
+    warehouseCount: branchId ? warehouseOptions.length : (data?.warehouse_count || 0),
+    branchId,
+  });
+
+  const download = () => {
+    const header = ["Kode", "Nama Barang", "Satuan Dasar", "Cabang", "Gudang", "Stok Fisik", "Terakhir Update"];
+    const lines = [header.join(",")];
+    items.forEach((row) => {
+      const cells = [
+        row.item_code,
+        row.item_name,
+        row.base_unit,
+        row.branch_name || row.branch_code,
+        row.warehouse_name || row.warehouse_code,
+        row.physical_qty,
+        row.updated_at || "",
+      ].map((value) => `"${String(value ?? "").replace(/"/g, '""')}"`);
+      lines.push(cells.join(","));
+    });
+    const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `stock-saat-ini-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
 
   return (
     <div className="prod-page master-items-page stock-page" data-testid="stock-saat-ini-page">
@@ -158,20 +138,28 @@ export default function StockSaatIni() {
         <div className="prod-heading-copy">
           <p className="eyebrow">Persediaan</p>
           <h1 data-testid="stock-title">Stock Saat Ini</h1>
-          <p className="subhead" data-testid="stock-formula">
-            {data?.stock_engine === "v2"
-              ? "Stock Saat Ini = Stock Fisik − Qty Pesanan. Nilai negatif menunjukkan kekurangan stock. Belum Dicetak = MAX(Qty Pesanan − Sudah Dicetak, 0). Sudah Dicetak hanya informasi dan tidak memotong stock dua kali."
-              : "(Qty Saat Ini + Pembelian Barang) − Qty PO − Qty Cetak Operator"}
-          </p>
+          <p className="subhead" data-testid="stock-subtitle">Stok fisik aktual per Cabang & Gudang</p>
         </div>
         <div className="stock-heading-actions">
-          {canOpname && (
-            <Link className="ghost" to="/persediaan/stock-opname" data-testid="stock-opname-link">
-              Stock Opname
-            </Link>
-          )}
+          <button
+            type="button"
+            className="ghost"
+            onClick={() => setOpeningOpen(true)}
+            data-testid="saldo-awal-button"
+          >
+            Saldo Awal
+          </button>
+          <button
+            type="button"
+            className="ghost"
+            disabled
+            title="Belum tersedia untuk stok baru"
+            data-testid="stock-opname-disabled"
+          >
+            Stock Opname
+          </button>
           {canExport && (
-            <button className="primary" onClick={download} disabled={exporting} data-testid="stock-export-button">
+            <button className="primary" onClick={download} data-testid="stock-export-button">
               <Download size={14} /> Export
             </button>
           )}
@@ -194,7 +182,7 @@ export default function StockSaatIni() {
               onChange={(e) => setQInput(e.target.value)}
               placeholder="Cari kode / nama / Accurate ID (live)"
               data-testid="stock-search"
-              aria-label="Cari stock produk live"
+              aria-label="Cari kode / nama / Accurate ID"
             />
             {q && (
               <button type="button" className="ghost sm" onClick={clearSearch} aria-label="Bersihkan">
@@ -203,14 +191,26 @@ export default function StockSaatIni() {
             )}
           </form>
           <select
-            value={stockFilter}
-            onChange={(e) => { setStockFilter(e.target.value); setPage(1); }}
-            data-testid="stock-filter-sign"
+            value={branchId}
+            onChange={(e) => { setBranchId(e.target.value); setPage(1); }}
+            data-testid="stock-filter-branch"
+            aria-label="Cabang"
           >
-            <option value="all">Semua</option>
-            <option value="positive">Positif</option>
-            <option value="zero">Nol</option>
-            <option value="negative">Negatif</option>
+            <option value="">Semua Cabang</option>
+            {branches.map((branch) => (
+              <option key={branch.id} value={branch.id}>{branch.code} — {branch.name}</option>
+            ))}
+          </select>
+          <select
+            value={warehouseId}
+            onChange={(e) => { setWarehouseId(e.target.value); setPage(1); }}
+            data-testid="stock-filter-warehouse"
+            aria-label="Gudang"
+          >
+            <option value="">Semua Gudang</option>
+            {warehouseOptions.map((warehouse) => (
+              <option key={warehouse.id} value={warehouse.id}>{warehouse.code} — {warehouse.name}</option>
+            ))}
           </select>
           <select
             value={pageSize}
@@ -229,133 +229,34 @@ export default function StockSaatIni() {
           <thead>
             <tr>
               <th className="col-fit">Kode</th>
-              <th className="col-text">
-                <button type="button" className="prod-th-label is-sort" onClick={() => cycleSort("name")}>Nama</button>
-              </th>
-              <th className="col-fit">Satuan</th>
-              {data?.stock_engine === "v2" ? (
-                <>
-                  <th className="col-fit num">
-                    <button type="button" className="prod-th-label is-sort" onClick={() => cycleSort("physical_qty")}>Stock Fisik</button>
-                  </th>
-                  <th className="col-fit num">
-                    <button type="button" className="prod-th-label is-sort" onClick={() => cycleSort("outstanding_so_qty")}>Qty Pesanan</button>
-                  </th>
-                  <th className="col-fit num">Belum Dicetak</th>
-                  <th className="col-fit num">Sudah Dicetak</th>
-                </>
-              ) : (
-                <>
-                  <th className="col-fit num">Qty Saat Ini</th>
-                  <th className="col-fit num">Pembelian Barang</th>
-                  <th className="col-fit num">
-                    <button type="button" className="prod-th-label is-sort" onClick={() => cycleSort("qty_po")}>Qty PO</button>
-                  </th>
-                  <th className="col-fit num">Qty Cetak Operator</th>
-                </>
-              )}
-              <th className="col-fit num">
-                <button type="button" className="prod-th-label is-sort" onClick={() => cycleSort("stock_current")}>Stock Saat Ini</button>
-              </th>
+              <th className="col-text">Nama Barang</th>
+              <th className="col-fit">Satuan Dasar</th>
+              <th className="col-fit">Cabang</th>
+              <th className="col-fit">Gudang</th>
+              <th className="col-fit num">Stok Fisik</th>
               <th className="col-fit">Terakhir Update</th>
             </tr>
           </thead>
           <tbody data-testid="stock-tbody" data-search-state={tableView}>
             {tableView === "loading" && (
-              <tr data-testid="stock-loading"><td colSpan={9} className="muted small">Memuat…</td></tr>
+              <tr data-testid="stock-loading"><td colSpan={7} className="muted small">Memuat…</td></tr>
             )}
             {tableView === "empty" && (
               <tr>
-                <td colSpan={9} className="muted small" data-testid="stock-empty">Tidak ada item.</td>
+                <td colSpan={7} className="muted small" data-testid="stock-empty">{emptyText}</td>
               </tr>
             )}
-            {tableView === "results" && items.map((it) => {
-              const valueHref = inventoryValueLinkVisible({
-                masterItemId: it.master_item_id,
-                itemType: it.item_type,
-                isActive: it.is_active,
-                hasPerm,
-              }) ? inventoryValueItemPath(it.master_item_id) : "";
-              return (
-              <tr
-                key={it.accurate_item_id || it.master_item_id}
-                data-testid={`stock-row-${it.accurate_item_id || it.master_item_id}`}
-                className={Number(it.stock_current) < 0 ? "stock-neg" : ""}
-              >
+            {tableView === "results" && items.map((it) => (
+              <tr key={`${it.master_item_id}-${it.warehouse_id}`} data-testid={`stock-row-${it.master_item_id}-${it.warehouse_id}`}>
                 <td className="col-fit mono">{it.item_code || "—"}</td>
-                <td className="col-text">
-                  {it.item_name || "—"}
-                  {valueHref ? (
-                    <div>
-                      <Link className="stock-value-link" to={valueHref} data-testid={`stock-value-link-${it.master_item_id}`}>
-                        {INVENTORY_VALUE_LINK_LABEL}
-                      </Link>
-                    </div>
-                  ) : null}
-                </td>
-                <td className="col-fit">{it.unit || "—"}</td>
-                {data?.stock_engine === "v2" ? (
-                  <>
-                    <td className="col-fit num mono" data-testid={`stock-physical-${it.accurate_item_id || it.master_item_id}`}>
-                      {editing?.master_item_id === it.master_item_id ? (
-                        <input
-                          className="stock-inline-input"
-                          type="number"
-                          min="0"
-                          step="any"
-                          value={physicalInput}
-                          onChange={(e) => setPhysicalInput(e.target.value)}
-                          onKeyDown={handlePhysicalKeyDown}
-                          onBlur={() => { if (!savingPhysical) setEditing(null); }}
-                          onFocus={(e) => e.target.select()}
-                          disabled={savingPhysical}
-                          data-testid={`stock-physical-inline-input-${it.master_item_id}`}
-                          autoFocus
-                        />
-                      ) : canEditPhysical && it.master_item_id ? (
-                        <span
-                          className="stock-inline-value"
-                          role="button"
-                          tabIndex={0}
-                          title="Klik untuk koreksi Stock Fisik"
-                          onClick={() => openPhysicalEdit(it)}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter" || e.key === " ") openPhysicalEdit(it);
-                          }}
-                          data-testid={`stock-physical-inline-value-${it.master_item_id}`}
-                        >
-                          {fmtQty(it.physical_qty)}
-                        </span>
-                      ) : fmtQty(it.physical_qty)}
-                    </td>
-                    <td className="col-fit num mono" data-testid={`stock-outstanding-${it.accurate_item_id || it.master_item_id}`}>{fmtQty(it.outstanding_so_qty)}</td>
-                    <td className="col-fit num mono" data-testid={`stock-unprinted-${it.accurate_item_id || it.master_item_id}`}>{fmtQty(it.unprinted_qty)}</td>
-                    <td className="col-fit num mono" data-testid={`stock-printed-${it.accurate_item_id || it.master_item_id}`}>{fmtQty(it.printed_qty)}</td>
-                  </>
-                ) : (
-                  <>
-                    <td className="col-fit num mono" data-testid={`stock-manual-${it.accurate_item_id || it.master_item_id}`}>{fmtQty(it.manual_current_qty)}</td>
-                    <td className="col-fit num mono" data-testid={`stock-purchase-${it.accurate_item_id || it.master_item_id}`}>{fmtQty(it.purchase_qty)}</td>
-                    <td className="col-fit num mono" data-testid={`stock-po-${it.accurate_item_id || it.master_item_id}`}>{fmtQty(it.qty_po)}</td>
-                    <td className="col-fit num mono" data-testid={`stock-print-${it.accurate_item_id || it.master_item_id}`}>{fmtQty(it.operator_print_qty)}</td>
-                  </>
-                )}
-                <td className={"col-fit num mono" + (Number(it.stock_current) < 0 ? " stock-neg-val" : "")} data-testid={`stock-current-${it.accurate_item_id || it.master_item_id}`}>
-                  {fmtQty(it.stock_current)}
-                </td>
-                <td className="col-fit small nowrap" data-testid={`stock-updated-${it.accurate_item_id}`}>
-                  {it.updated_at ? (
-                    <>
-                      {formatDate(it.updated_at)}
-                      {it.updated_by_name || it.updated_by ? (
-                        <span className="muted"> · {it.updated_by_name || it.updated_by}</span>
-                      ) : null}
-                    </>
-                  ) : "—"}
-                </td>
+                <td className="col-text">{it.item_name || "—"}</td>
+                <td className="col-fit">{it.base_unit || "—"}</td>
+                <td className="col-fit">{it.branch_code || it.branch_name || "—"}</td>
+                <td className="col-fit">{it.warehouse_code || it.warehouse_name || "—"}</td>
+                <td className="col-fit num mono" data-testid={`stock-physical-${it.master_item_id}-${it.warehouse_id}`}>{fmtQty(it.physical_qty)}</td>
+                <td className="col-fit small nowrap">{it.updated_at ? formatDate(it.updated_at) : "—"}</td>
               </tr>
-              );
-            })}
+            ))}
           </tbody>
         </table>
       </div>
@@ -363,11 +264,170 @@ export default function StockSaatIni() {
       {pageCount > 1 && (
         <div className="master-pager" data-testid="stock-pager">
           <button className="ghost sm" disabled={page <= 1 || tableBusy} onClick={() => setPage((p) => p - 1)}>Sebelumnya</button>
-          <span className="muted small">Halaman {data?.page || page} dari {pageCount} · {data?.total || 0} item</span>
+          <span className="muted small">Halaman {data?.page || page} dari {pageCount} · {data?.total || 0} baris</span>
           <button className="ghost sm" disabled={page >= pageCount || tableBusy} onClick={() => setPage((p) => p + 1)}>Berikutnya</button>
         </div>
       )}
 
+      {openingOpen && (
+        <SaldoAwalModal
+          canSubmit={canOpening}
+          branches={branches}
+          warehouses={warehouses}
+          onClose={() => setOpeningOpen(false)}
+          onSaved={load}
+        />
+      )}
+    </div>
+  );
+}
+
+function SaldoAwalModal({ canSubmit, branches, warehouses, onClose, onSaved }) {
+  const [items, setItems] = useState([]);
+  const [itemId, setItemId] = useState("");
+  const [branchId, setBranchId] = useState("");
+  const [warehouseId, setWarehouseId] = useState("");
+  const [qty, setQty] = useState("");
+  const [reason, setReason] = useState("");
+  const [status, setStatus] = useState(null);
+  const [statusLoading, setStatusLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [idempotencyKey, setIdempotencyKey] = useState(newKey);
+  const options = warehouseChoices(warehouses, branchId);
+  const selected = items.find((row) => row.id === itemId);
+  const baseUnit = (selected?.unit || "PCS").toUpperCase();
+
+  useEffect(() => {
+    let cancelled = false;
+    api.masterItems({ page_size: 200 })
+      .then((res) => { if (!cancelled) setItems(res.items || []); })
+      .catch(() => { if (!cancelled) setError("Gagal memuat barang"); });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (warehouseId && !options.some((row) => row.id === warehouseId)) setWarehouseId("");
+  }, [options, warehouseId]);
+
+  useEffect(() => {
+    if (!itemId || !branchId || !warehouseId) {
+      setStatus(null);
+      return undefined;
+    }
+    let cancelled = false;
+    setStatusLoading(true);
+    setError("");
+    api.physicalOpeningBalance(itemId, { branch_id: branchId, warehouse_id: warehouseId })
+      .then((res) => { if (!cancelled) setStatus(res); })
+      .catch((ex) => {
+        if (cancelled) return;
+        const det = ex.response?.data?.detail;
+        setStatus(null);
+        setError(typeof det === "object" ? det.message : (det || "Gagal memeriksa saldo awal"));
+      })
+      .finally(() => { if (!cancelled) setStatusLoading(false); });
+    return () => { cancelled = true; };
+  }, [itemId, branchId, warehouseId]);
+
+  const established = Boolean(status?.established);
+  const ready = canSubmit && !established && !statusLoading && openingReady({ itemId, branchId, warehouseId, qty });
+  const branch = branches.find((row) => row.id === branchId);
+  const warehouse = options.find((row) => row.id === warehouseId);
+
+  const submit = async (event) => {
+    event.preventDefault();
+    if (!ready || saving) return;
+    setSaving(true);
+    setError("");
+    try {
+      await api.createPhysicalOpeningBalance(itemId, {
+        branch_id: branchId,
+        warehouse_id: warehouseId,
+        physical_qty: Number(String(qty).replace(",", ".")),
+        reason: reason.trim(),
+        idempotency_key: idempotencyKey,
+      });
+      const next = await api.physicalOpeningBalance(itemId, { branch_id: branchId, warehouse_id: warehouseId });
+      setStatus(next);
+      setIdempotencyKey(newKey());
+      await onSaved();
+    } catch (ex) {
+      const det = ex.response?.data?.detail;
+      setError(typeof det === "object" ? det.message : (det || "Gagal menetapkan saldo awal"));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="mutation-drawer-overlay" data-testid="saldo-awal-modal" style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,.45)", zIndex: 40, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+      <form onSubmit={submit} data-testid="saldo-awal-form" style={{ width: "min(560px, 100%)", background: "#fff", borderRadius: 12, padding: 20, display: "grid", gap: 12 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+          <h2 style={{ margin: 0 }}>Saldo Awal</h2>
+          <button type="button" className="ghost sm" onClick={onClose} aria-label="Tutup">Tutup</button>
+        </div>
+        {items.length === 0 && (
+          <p data-testid="saldo-awal-empty-items">Belum ada Barang/Jasa pada environment preview.</p>
+        )}
+        {error && <div className="signal-strip" role="alert"><div><AlertCircle size={16} /><span>{error}</span></div></div>}
+        <label>
+          Barang
+          <select value={itemId} onChange={(e) => setItemId(e.target.value)} data-testid="saldo-awal-item" disabled={established}>
+            <option value="">Pilih barang</option>
+            {items.map((row) => (
+              <option key={row.id} value={row.id}>{row.item_code || "—"} — {row.item_name || row.name || row.id}</option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Cabang
+          <select value={branchId} onChange={(e) => setBranchId(e.target.value)} data-testid="saldo-awal-branch" disabled={established}>
+            <option value="">Pilih cabang</option>
+            {branches.map((row) => (
+              <option key={row.id} value={row.id}>{row.code} — {row.name}</option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Gudang
+          <select value={warehouseId} onChange={(e) => setWarehouseId(e.target.value)} data-testid="saldo-awal-warehouse" disabled={established}>
+            <option value="">Pilih gudang</option>
+            {options.map((row) => (
+              <option key={row.id} value={row.id}>{row.code} — {row.name}</option>
+            ))}
+          </select>
+        </label>
+        {established ? (
+          <div data-testid="saldo-awal-established">
+            <strong>SALDO AWAL SUDAH DITETAPKAN</strong>
+            <p>Barang: {selected?.item_name || selected?.item_code || itemId}</p>
+            <p>Cabang: {branch?.name || branch?.code || branchId}</p>
+            <p>Gudang: {warehouse?.name || warehouse?.code || warehouseId}</p>
+            <p>Saldo Awal: {fmtQty(status.opening_qty)} {baseUnit}</p>
+            <p>Satuan: {baseUnit}</p>
+            <p>Waktu Penetapan: {status.occurred_at ? formatDate(status.occurred_at) : "—"}</p>
+          </div>
+        ) : (
+          <>
+            <label>
+              Qty Stok Fisik
+              <input value={qty} onChange={(e) => setQty(e.target.value)} inputMode="decimal" data-testid="saldo-awal-qty" />
+            </label>
+            <label>
+              Satuan Dasar
+              <input value={baseUnit} readOnly data-testid="saldo-awal-unit" />
+            </label>
+            <label>
+              Catatan
+              <input value={reason} onChange={(e) => setReason(e.target.value)} data-testid="saldo-awal-reason" />
+            </label>
+            <button type="submit" className="primary" disabled={!ready || saving} data-testid="saldo-awal-submit">
+              {saving ? "Menyimpan…" : "Tetapkan Saldo Awal"}
+            </button>
+          </>
+        )}
+      </form>
     </div>
   );
 }

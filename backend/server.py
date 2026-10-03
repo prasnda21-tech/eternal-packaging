@@ -11551,6 +11551,36 @@ async def master_item_physical_opening_balance_get(
         raise HTTPException(400, str(exc)) from exc
 
 
+@api_router.get("/physical-stock")
+async def physical_stock_catalog_get(
+    q: Optional[str] = None,
+    branch_id: Optional[str] = None,
+    warehouse_id: Optional[str] = None,
+    page: int = 1,
+    limit: int = 50,
+    user=Depends(require_perm("current_stock.view")),
+):
+    """Read physical stock rows for Stock Saat Ini. Does not write balances."""
+    from services.physical_stock import (
+        PhysicalStockNotFoundError,
+        PhysicalStockValidationError,
+        list_physical_stock_catalog,
+    )
+    try:
+        return await list_physical_stock_catalog(
+            db,
+            q=q,
+            branch_id=branch_id,
+            warehouse_id=warehouse_id,
+            page=page,
+            limit=limit,
+        )
+    except PhysicalStockNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except PhysicalStockValidationError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 @api_router.get("/settings/physical-stock")
 async def physical_stock_settings_get(user=Depends(current_user)):
     """Pure read. Returns physical stock configuration."""

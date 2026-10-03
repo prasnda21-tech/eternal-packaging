@@ -5,6 +5,7 @@ There is no non-transactional fallback. physical_qty cannot go below zero.
 """
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
@@ -802,3 +803,125 @@ async def read_opening_balance(
         "actor_id": doc.get("actor_id") or "",
     })
     return status
+
+
+async def list_physical_stock_catalog(
+    db,
+    *,
+    q: Optional[str] = None,
+    branch_id: Optional[str] = None,
+    warehouse_id: Optional[str] = None,
+    page: int = 1,
+    limit: int = 50,
+) -> dict:
+    """List item/location physical qty from balances only. Missing balances stay 0 and are not inserted."""
+    branch = await _require_branch_any(db, branch_id) if branch_id else None
+    warehouse = await _require_warehouse_any(db, warehouse_id) if warehouse_id else None
+    if branch and warehouse and warehouse.get("branch_id") != branch.get("id"):
+        raise PhysicalStockValidationError("Gudang tidak berada pada cabang ini")
+    warehouse_query: Dict[str, Any] = {}
+    if branch:
+        warehouse_query["branch_id"] = branch["id"]
+    if warehouse:
+        warehouse_query["id"] = warehouse["id"]
+    warehouses = await db[WAREHOUSES_COLLECTION].find(warehouse_query, {"_id": 0}).sort(
+        [("code", 1), ("id", 1)]
+    ).to_list(500)
+    branch_ids = {row.get("branch_id") for row in warehouses if row.get("branch_id")}
+    branches, _unused = await _location_maps(db, branch_ids, [])
+    item_query: Dict[str, Any] = {}
+    text = str(q or "").strip()
+    if text:
+        pattern = re.escape(text)
+        item_query["$or"] = [
+            {"item_code": {"$regex": pattern, "$options": "i"}},
+            {"item_name": {"$regex": pattern, "$options": "i"}},
+            {"accurate_item_id": {"$regex": pattern, "$options": "i"}},
+        ]
+    masters = await db[MASTER_ITEMS_COLLECTION].find(item_query, {"_id": 0}).sort(
+        [("item_name", 1), ("id", 1)]
+    ).to_list(1000)
+    safe_page = page if isinstance(page, int) and page > 0 else 1
+    safe_limit = limit if isinstance(limit, int) and limit > 0 else 50
+    safe_limit = min(safe_limit, _MAX_READ_LIMIT)
+    if not masters or not warehouses:
+        return {
+            "items": [],
+            "total": 0,
+            "page": safe_page,
+            "limit": safe_limit,
+            "page_count": 0,
+            "master_item_count": len(masters),
+            "warehouse_count": len(warehouses),
+        }
+    units = await _catalog_units(db, masters)
+    identities = [
+        {
+            "master_item_id": master["id"],
+            "warehouse_id": wh["id"],
+        }
+        for master in masters
+        for wh in warehouses
+    ]
+    balance_docs = await db[BALANCE_COLLECTION].find(
+        {
+            "master_item_id": {"$in": [master["id"] for master in masters]},
+            "warehouse_id": {"$in": [wh["id"] for wh in warehouses]},
+        },
+        {"_id": 0},
+    ).to_list(len(identities) or 1)
+    balances = {
+        (doc.get("master_item_id"), doc.get("branch_id"), doc.get("warehouse_id")): doc
+        for doc in balance_docs
+    }
+    rows = []
+    for master in masters:
+        for wh in warehouses:
+            branch_doc = branches.get(wh.get("branch_id")) or {}
+            balance = balances.get((master.get("id"), wh.get("branch_id"), wh.get("id")))
+            rows.append({
+                "master_item_id": master.get("id"),
+                "item_code": master.get("item_code") or "",
+                "item_name": master.get("item_name") or "",
+                "accurate_item_id": str(master.get("accurate_item_id") or ""),
+                "base_unit": units.get(master.get("id")) or "PCS",
+                "branch_id": wh.get("branch_id") or "",
+                "branch_code": branch_doc.get("code") or "",
+                "branch_name": branch_doc.get("name") or "",
+                "warehouse_id": wh.get("id") or "",
+                "warehouse_code": wh.get("code") or "",
+                "warehouse_name": wh.get("name") or "",
+                "physical_qty": int((balance or {}).get("physical_qty") or 0),
+                "updated_at": (balance or {}).get("updated_at"),
+            })
+    total = len(rows)
+    start = (safe_page - 1) * safe_limit
+    page_count = (total + safe_limit - 1) // safe_limit if total else 0
+    return {
+        "items": rows[start:start + safe_limit],
+        "total": total,
+        "page": safe_page,
+        "limit": safe_limit,
+        "page_count": page_count,
+        "master_item_count": len(masters),
+        "warehouse_count": len(warehouses),
+    }
+
+
+async def _catalog_units(db, masters) -> dict:
+    ids = [master.get("id") for master in masters if master.get("id")]
+    settings = []
+    if ids:
+        settings = await db[UNIT_SETTINGS_COLLECTION].find(
+            {"master_item_id": {"$in": ids}},
+            {"_id": 0, "master_item_id": 1, "base_uom": 1},
+        ).to_list(len(ids))
+    by_item = {
+        row.get("master_item_id"): str(row.get("base_uom") or "").strip().upper()
+        for row in settings
+        if row.get("base_uom")
+    }
+    units = {}
+    for master in masters:
+        units[master.get("id")] = by_item.get(master.get("id")) or str(master.get("unit") or "PCS").strip().upper() or "PCS"
+    return units

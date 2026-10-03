@@ -47,19 +47,26 @@ describe("Persediaan live search inventory scope", () => {
     expect(hook).toMatch(/LIVE_SEARCH_DEBOUNCE_MS = 300/);
   });
 
-  test("Stock Saat Ini formula copy follows stock_engine toggle", () => {
-    expect(stock).toMatch(/stock_engine === "v2"/);
-    expect(stock).toMatch(/Stock Saat Ini = Stock Fisik − Qty Pesanan/);
-    expect(stock).toMatch(/Nilai negatif menunjukkan kekurangan stock/);
-    expect(stock).toMatch(/Qty Pesanan/);
-    expect(stock).not.toMatch(/Outstanding/);
-    expect(stock).toMatch(/Qty Saat Ini \+ Pembelian Barang/);
-    expect(stock).toMatch(/data-testid="stock-formula"/);
-    expect(stock).toMatch(/stock-manual-/);
-    expect(stock).toMatch(/stock-physical-/);
+  test("Stock Saat Ini shows physical stock per branch and warehouse", () => {
+    expect(stock).toMatch(/Stok fisik aktual per Cabang & Gudang/);
+    expect(stock).toMatch(/api\.physicalStockCatalog\(/);
+    expect(stock).toMatch(/Nama Barang/);
+    expect(stock).toMatch(/Satuan Dasar/);
+    expect(stock).toMatch(/Stok Fisik/);
+    expect(stock).not.toMatch(/Qty Saat Ini \+ Pembelian Barang/);
+    expect(stock).not.toMatch(/Pembelian Barang/);
+    expect(stock).not.toMatch(/Qty PO/);
+    expect(stock).not.toMatch(/Qty Cetak Operator/);
+    expect(stock).not.toMatch(/GUDANG_UTAMA/);
+    expect(stock).toMatch(/data-testid="saldo-awal-button"/);
+    expect(stock).toMatch(/createPhysicalOpeningBalance/);
+    expect(stock).not.toMatch(/initOpeningBalance/);
+    expect(stock).toMatch(/Belum ada Barang\/Jasa pada environment preview/);
+    expect(stock).toMatch(/stock-opname-disabled/);
+    expect(stock).toMatch(/Belum tersedia untuk stok baru/);
   });
 
-  test("Stock Saat Ini clears rows while query pending and gates physical edit to holding team", () => {
+  test("Stock Saat Ini clears rows while query pending", () => {
     expect(stock).toMatch(/useDebouncedLiveSearch/);
     expect(stock).toMatch(/loadSeq/);
     expect(stock).toMatch(/liveSearchTableView/);
@@ -67,18 +74,10 @@ describe("Persediaan live search inventory scope", () => {
     expect(stock).toMatch(/stock-loading/);
     expect(stock).toMatch(/if \(!searchPending\) return/);
     expect(stock).toMatch(/items: \[\]/);
-    expect(stock).toMatch(/canEditPhysical.*can_correct_physical_stock/);
-    expect(stock).toMatch(/api\.currentStockUpdate/);
-    expect(stock).toMatch(/stock-physical-inline-input/);
-    expect(stock).toMatch(/fmtQty\(it\.stock_current\)/);
-    expect(stock).toMatch(/Number\(it\.stock_current\) < 0/);
-    expect(stock).toMatch(/e\.key === "Enter"/);
-    expect(stock).toMatch(/e\.key === "Escape"/);
-    expect(stock).toMatch(/Koreksi manual Stock Fisik dari Stock Saat Ini/);
-    expect(stock).not.toMatch(/>Koreksi Stock Fisik</);
-    expect(stock).toMatch(/api\.currentStock\(/);
     expect(stock).toMatch(/Cari kode \/ nama \/ Accurate ID \(live\)/);
     expect(stock).not.toMatch(/>Cari</);
+    expect(stock).not.toMatch(/api\.currentStock\(/);
+    expect(stock).not.toMatch(/currentStockUpdate/);
     expect(currentStockPy).toMatch(/aid = str\(item\.get\("accurate_item_id"/);
     expect(masterItemsPy).toMatch(/"accurate_item_id": \{"\$regex"/);
   });

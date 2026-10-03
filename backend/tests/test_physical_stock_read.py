@@ -23,6 +23,7 @@ from services.physical_stock import (  # noqa: E402
     PhysicalStockNotFoundError,
     PhysicalStockValidationError,
     list_physical_mutations,
+    list_physical_stock_catalog,
     read_physical_stock,
 )
 import server  # noqa: E402
@@ -322,3 +323,39 @@ async def test_http_physical_stock_and_mutations(db):
     assert mutations.status_code == 200
     assert mutations.json()["total"] == 1
     assert mutations.json()["items"][0]["reason"] == "adj"
+
+
+async def test_catalog_returns_zero_without_writing_and_filters_locations(db):
+    item = await _seed_item(db, item_code="BOX", item_name="Dus", accurate_item_id="ACC-1")
+    ygy = await _seed_branch(db, "YGY")
+    smg = await _seed_branch(db, "SMG")
+    main = await _seed_warehouse(db, ygy, "MAIN")
+    await _seed_balance(db, item, ygy, main, 6)
+    before_balance = await db[BALANCE_COLLECTION].count_documents({})
+    before_ledger = await db[LEDGER_COLLECTION].count_documents({})
+    all_rows = await list_physical_stock_catalog(db)
+    assert all_rows["master_item_count"] == 1
+    assert all_rows["warehouse_count"] == 1
+    assert all_rows["items"][0]["physical_qty"] == 6
+    assert all_rows["items"][0]["base_unit"] == "PCS"
+    smg_rows = await list_physical_stock_catalog(db, branch_id=smg["id"])
+    assert smg_rows["warehouse_count"] == 0
+    assert smg_rows["items"] == []
+    assert smg_rows["master_item_count"] == 1
+    empty_wh = await _seed_warehouse(db, smg, "NONE")
+    await db[WAREHOUSES_COLLECTION].delete_one({"id": empty_wh["id"]})
+    zero_branch = await list_physical_stock_catalog(db, branch_id=smg["id"])
+    assert zero_branch["warehouse_count"] == 0
+    assert zero_branch["items"] == []
+    filtered = await list_physical_stock_catalog(db, branch_id=ygy["id"], warehouse_id=main["id"], q="Dus")
+    assert filtered["items"][0]["physical_qty"] == 6
+    assert filtered["items"][0]["branch_code"] == "YGY"
+    other = await _seed_item(db, item_code="CUP", item_name="Cup")
+    missing = await list_physical_stock_catalog(db, q="Cup")
+    assert missing["items"][0]["master_item_id"] == other["id"]
+    assert missing["items"][0]["physical_qty"] == 0
+    assert await db[BALANCE_COLLECTION].count_documents({}) == before_balance
+    assert await db[LEDGER_COLLECTION].count_documents({}) == before_ledger
+    source = inspect.getsource(list_physical_stock_catalog)
+    for name in ("product_stock_state", "stock_movements", "item_stock_manual"):
+        assert name not in source

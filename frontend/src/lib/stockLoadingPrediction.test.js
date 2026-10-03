@@ -29,8 +29,9 @@ describe("stock import UI", () => {
   test("Stock page links to Stock Opname import workflow", () => {
     const src = fs.readFileSync(path.join(__dirname, "../pages/StockSaatIni.jsx"), "utf8");
     const opname = fs.readFileSync(path.join(__dirname, "../pages/StockOpname.jsx"), "utf8");
-    expect(src).toMatch(/stock-opname-link/);
-    expect(src).toMatch(/\/persediaan\/stock-opname/);
+    expect(src).toMatch(/stock-opname-disabled/);
+    expect(src).toMatch(/Belum tersedia untuk stok baru/);
+    expect(src).not.toMatch(/\/persediaan\/stock-opname/);
     expect(opname).toMatch(/stock-opname-import-button/);
     expect(opname).toMatch(/stock-opname-import-preview/);
     expect(opname).toMatch(/stockOpnameImportPreview/);
