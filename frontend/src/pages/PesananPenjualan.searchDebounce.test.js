@@ -2,15 +2,37 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { LIVE_SEARCH_DEBOUNCE_MS } from "../hooks/useDebouncedLiveSearch";
 import api from "../lib/api";
+import { periodBounds } from "../lib/salesOrderListPresentation";
+import { readPoReturnContext } from "../lib/poListReturn";
 import PesananPenjualan from "./PesananPenjualan";
 
-const mockSetSearchParams = jest.fn();
+const mockRouter = {
+  params: new URLSearchParams(),
+  search: "",
+};
+const mockSetSearchParams = jest.fn((next) => {
+  const params = next instanceof URLSearchParams ? new URLSearchParams(next) : new URLSearchParams(next);
+  mockRouter.params = params;
+  const qs = params.toString();
+  mockRouter.search = qs ? `?${qs}` : "";
+});
 
 jest.mock("react-router-dom", () => ({
-  Link: ({ to, children, ...props }) => <a href={to} {...props}>{children}</a>,
+  Link: ({ to, children, onClick, ...props }) => (
+    <a
+      href={to}
+      {...props}
+      onClick={(event) => {
+        event.preventDefault();
+        onClick?.(event);
+      }}
+    >
+      {children}
+    </a>
+  ),
   useNavigate: () => jest.fn(),
-  useLocation: () => ({ pathname: "/penjualan/pesanan-penjualan", search: "", state: null }),
-  useSearchParams: () => [new URLSearchParams(), mockSetSearchParams],
+  useLocation: () => ({ pathname: "/penjualan/pesanan-penjualan", search: mockRouter.search, state: null }),
+  useSearchParams: () => [mockRouter.params, mockSetSearchParams],
   useParams: () => ({}),
 }), { virtual: true });
 
@@ -55,7 +77,10 @@ describe("Pesanan Penjualan list search debounce", () => {
     root = createRoot(container);
     api.listSalesOrders.mockReset();
     api.listSalesOrders.mockResolvedValue({ orders: [] });
-    mockSetSearchParams.mockReset();
+    mockSetSearchParams.mockClear();
+    mockRouter.params = new URLSearchParams();
+    mockRouter.search = "";
+    sessionStorage.clear();
   });
 
   afterEach(() => {
@@ -133,5 +158,237 @@ describe("Pesanan Penjualan list search debounce", () => {
       { status: "aktif", page: 1, page_size: 10 },
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
+  });
+
+  const setQuery = (search) => {
+    const raw = String(search || "").replace(/^\?/, "");
+    mockRouter.params = new URLSearchParams(raw);
+    mockRouter.search = raw ? `?${raw}` : "";
+  };
+
+  const listedOrder = (id, customer) => ({
+    id,
+    po_number: `PO-${id}`,
+    customer,
+    outlet: "Gudang",
+    sales: "Citra",
+    order_date: "2026-09-15",
+    total_quantity: 10,
+    quantity_by_unit: [{ unit: "pcs", quantity: 10 }],
+    current_stage: 6,
+    status_label: "Penjadwalan",
+    cancelled: false,
+    hold: false,
+    delivery_summary: {
+      status: "BELUM DIKIRIM",
+      total_ordered: 10,
+      total_shipped: 0,
+      total_remaining: 10,
+    },
+  });
+
+  const chooseStatus = async (value) => {
+    const select = container.querySelector('[data-testid="sales-order-status-filter"]');
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, "value").set;
+      setter.call(select, value);
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+  };
+
+  const lastParams = () => {
+    const next = mockSetSearchParams.mock.calls.at(-1)?.[0];
+    return next instanceof URLSearchParams ? next : new URLSearchParams(next || "");
+  };
+
+  test("Semua requests gabungan, keeps search and period, and writes tab=semua", async () => {
+    api.listSalesOrders.mockResolvedValue({
+      orders: [listedOrder("a", "Maju"), listedOrder("b", "Sumber")],
+      total: 4,
+      capped: false,
+    });
+    await renderPage();
+    expect(container.querySelector('[data-testid="sales-order-aktif-count"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="sales-order-tab-semua"]')).toBeTruthy();
+
+    const period = container.querySelector('[data-testid="sales-order-period-filter"]');
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, "value").set;
+      setter.call(period, "last_month");
+      period.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await typeSearch("kopi");
+    await act(async () => {
+      jest.advanceTimersByTime(LIVE_SEARCH_DEBOUNCE_MS);
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      container.querySelector('[data-testid="sales-order-tab-semua"]').click();
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const bounds = periodBounds("last_month");
+    expect(api.listSalesOrders).toHaveBeenLastCalledWith(
+      {
+        q: "kopi",
+        status: "gabungan",
+        date_from: bounds.date_from,
+        date_to: bounds.date_to,
+        page: 1,
+        page_size: 10,
+      },
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    expect(lastParams().get("tab")).toBe("semua");
+    expect(lastParams().get("status")).toBeNull();
+    expect(lastParams().get("q")).toBe("kopi");
+    expect(lastParams().get("period")).toBe("last_month");
+    expect(container.querySelector('[data-testid="sales-order-tab-semua"]').getAttribute("aria-selected")).toBe("true");
+    expect(container.querySelector('[data-testid="sales-order-aktif-count"]')).toBeFalsy();
+
+    const customer = container.querySelector('[data-testid="so-filter-customer"]');
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+      setter.call(customer, "maju");
+      customer.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(container.querySelector('[data-testid="order-row-a"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="order-row-b"]')).toBeFalsy();
+
+    const pageSize = container.querySelector('[data-testid="sales-order-page-size"]');
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, "value").set;
+      setter.call(pageSize, "20");
+      pageSize.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(api.listSalesOrders).toHaveBeenLastCalledWith(
+      expect.objectContaining({ status: "gabungan", page: 1, page_size: 20, q: "kopi" }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+  });
+
+  test("remount of tab=semua requests gabungan and opening detail stores that query", async () => {
+    setQuery("tab=semua&q=kopi&period=last_month&page=2&page_size=20");
+    api.listSalesOrders.mockResolvedValue({
+      orders: [listedOrder("back", "Kopi")],
+      total: 25,
+      capped: false,
+    });
+    await renderPage();
+    const bounds = periodBounds("last_month");
+    expect(api.listSalesOrders).toHaveBeenLastCalledWith(
+      {
+        q: "kopi",
+        status: "gabungan",
+        date_from: bounds.date_from,
+        date_to: bounds.date_to,
+        page: 2,
+        page_size: 20,
+      },
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    expect(container.querySelector('[data-testid="sales-order-tab-semua"]').getAttribute("aria-selected")).toBe("true");
+    expect(container.querySelector('[data-testid="sales-order-aktif-count"]')).toBeFalsy();
+
+    await act(async () => {
+      container.querySelector('[data-testid="po-link-PO-back"]').click();
+    });
+    const href = readPoReturnContext("u1", "back")?.href || "";
+    const stored = new URL(href, "http://local");
+    expect(stored.pathname).toBe("/penjualan/pesanan-penjualan");
+    expect(stored.searchParams.get("tab")).toBe("semua");
+    expect(stored.searchParams.get("q")).toBe("kopi");
+    expect(stored.searchParams.get("period")).toBe("last_month");
+    expect(stored.searchParams.get("page")).toBe("2");
+    expect(stored.searchParams.get("page_size")).toBe("20");
+    expect(stored.searchParams.get("status")).toBeNull();
+  });
+
+  test("reset on Semua stays on gabungan", async () => {
+    await renderPage();
+    await act(async () => {
+      container.querySelector('[data-testid="sales-order-tab-semua"]').click();
+    });
+    await typeSearch("kopi");
+    await act(async () => {
+      jest.advanceTimersByTime(LIVE_SEARCH_DEBOUNCE_MS);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      container.querySelector('[data-testid="sales-order-reset-filters"]').click();
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(api.listSalesOrders).toHaveBeenLastCalledWith(
+      { status: "gabungan", page: 1, page_size: 10 },
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    expect(container.querySelector('[data-testid="sales-order-tab-semua"]').getAttribute("aria-selected")).toBe("true");
+    expect(lastParams().get("tab")).toBe("semua");
+    expect(lastParams().get("status")).toBeNull();
+  });
+
+  test("status dropdown and deep links keep the existing tab switch", async () => {
+    await renderPage();
+    await act(async () => {
+      container.querySelector('[data-testid="sales-order-tab-semua"]').click();
+    });
+    await chooseStatus("selesai");
+    expect(api.listSalesOrders).toHaveBeenLastCalledWith(
+      expect.objectContaining({ status: "selesai", page: 1, page_size: 10 }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    expect(container.querySelector('[data-testid="sales-order-tab-histori"]').getAttribute("aria-selected")).toBe("true");
+    expect(lastParams().get("tab")).toBe("histori");
+    expect(lastParams().get("status")).toBe("selesai");
+
+    await chooseStatus("hold");
+    expect(api.listSalesOrders).toHaveBeenLastCalledWith(
+      expect.objectContaining({ status: "hold" }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    expect(container.querySelector('[data-testid="sales-order-tab-aktif"]').getAttribute("aria-selected")).toBe("true");
+    expect(lastParams().get("tab")).toBeNull();
+    expect(lastParams().get("status")).toBe("hold");
+
+    await act(async () => {
+      container.querySelector('[data-testid="sales-order-tab-semua"]').click();
+    });
+    const stage = container.querySelector('[data-testid="so-filter-stage-text"]');
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+      setter.call(stage, "HOLD");
+      stage.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => {
+      container.querySelector('[data-testid="so-th-filter-stage"] .so-th-clear').click();
+    });
+    await chooseStatus("__tab__");
+    expect(api.listSalesOrders).toHaveBeenLastCalledWith(
+      { status: "gabungan", page: 1, page_size: 10 },
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    expect(container.querySelector('[data-testid="sales-order-tab-semua"]').getAttribute("aria-selected")).toBe("true");
+
+    act(() => root.unmount());
+    setQuery("tab=semua&status=selesai");
+    root = createRoot(container);
+    await renderPage();
+    expect(api.listSalesOrders).toHaveBeenLastCalledWith(
+      expect.objectContaining({ status: "selesai" }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    expect(container.querySelector('[data-testid="sales-order-tab-histori"]').getAttribute("aria-selected")).toBe("true");
+    expect(container.querySelector('[data-testid="sales-order-tab-semua"]').getAttribute("aria-selected")).toBe("false");
   });
 });

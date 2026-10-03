@@ -6,6 +6,9 @@ import {
   orderQuantityLabel,
   quantityByUnitFromLines,
   salesOrderListRequest,
+  salesOrderListTabFromQuery,
+  salesOrderStatusFromQuery,
+  salesOrderTabDefaultStatus,
 } from "./salesOrderListPresentation";
 
 describe("sales order quantity presentation", () => {
@@ -109,5 +112,44 @@ describe("aktif summary source", () => {
       page: 2,
       page_size: 10,
     });
+    expect(salesOrderListRequest({
+      status: "gabungan",
+      page: 1,
+      pageSize: 10,
+    })).toEqual({
+      status: "gabungan",
+      page: 1,
+      page_size: 10,
+    });
+    expect(salesOrderListRequest({ status: "all", page: 1, pageSize: 10 }).status).toBeUndefined();
+  });
+});
+
+describe("Semua tab query state", () => {
+  test("default route stays Aktif and Semua uses gabungan", () => {
+    expect(salesOrderListTabFromQuery({})).toBe("aktif");
+    expect(salesOrderStatusFromQuery({})).toBe("aktif");
+    expect(salesOrderTabDefaultStatus("aktif")).toBe("aktif");
+    expect(salesOrderTabDefaultStatus("histori")).toBe("histori");
+    expect(salesOrderTabDefaultStatus("semua")).toBe("gabungan");
+    expect(salesOrderListTabFromQuery({ tab: "semua" })).toBe("semua");
+    expect(salesOrderStatusFromQuery({ tab: "semua" })).toBe("gabungan");
+    expect(salesOrderListTabFromQuery({ status: "gabungan" })).toBe("semua");
+    expect(salesOrderStatusFromQuery({ status: "gabungan" })).toBe("gabungan");
+    expect(salesOrderListTabFromQuery({ tab: "histori" })).toBe("histori");
+    expect(salesOrderStatusFromQuery({ tab: "histori" })).toBe("histori");
+  });
+
+  test("explicit existing status chooses the tab, including over tab=semua", () => {
+    expect(salesOrderListTabFromQuery({ tab: "semua", status: "selesai" })).toBe("histori");
+    expect(salesOrderStatusFromQuery({ tab: "semua", status: "selesai" })).toBe("selesai");
+    expect(salesOrderListTabFromQuery({ tab: "semua", status: "cancelled" })).toBe("histori");
+    expect(salesOrderListTabFromQuery({ tab: "semua", status: "histori" })).toBe("histori");
+    expect(salesOrderListTabFromQuery({ tab: "semua", status: "aktif" })).toBe("aktif");
+    expect(salesOrderListTabFromQuery({ tab: "semua", status: "hold" })).toBe("aktif");
+    expect(salesOrderStatusFromQuery({ tab: "semua", status: "hold" })).toBe("hold");
+    expect(salesOrderListTabFromQuery({ tab: "semua", status: "all" })).toBe("aktif");
+    expect(salesOrderListTabFromQuery({ tab: "histori", status: "aktif" })).toBe("aktif");
+    expect(salesOrderListTabFromQuery({ status: "hold" })).toBe("aktif");
   });
 });

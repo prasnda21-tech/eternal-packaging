@@ -237,3 +237,290 @@ async def test_list_omits_heavy_file_payload_and_keeps_table_fields():
         app.dependency_overrides.pop(current_user, None)
         await server.db.orders.delete_many({"po_number": {"$regex": marker}})
         await server.db.sales_deliveries.delete_many({"po_id": ready_doc["id"]})
+
+
+def _slim(marker, **overrides):
+    oid = overrides.pop("id", None) or str(uuid.uuid4())
+    label = overrides.pop("label", uuid.uuid4().hex[:6])
+    doc = {
+        "id": oid,
+        "po_number": f"PO-GAB-{marker}-{label}",
+        "customer": f"Cust {marker}",
+        "outlet": f"Outlet {marker}",
+        "sales": "Vira",
+        "sales_user_id": overrides.get("sales_user_id", ""),
+        "order_date": "2026-09-15",
+        "created_at": "2026-09-15T00:00:00+00:00",
+        "total_quantity": 10,
+        "current_stage": 6,
+        "status_label": "Penjadwalan",
+        "cancelled": False,
+        "design_status": "Waiting",
+        "payment_status": "Waiting",
+        "design_files": [],
+        "payment_files": [],
+        "line_items": [{"name": "Box", "quantity": 10, "unit": "pcs"}],
+    }
+    doc.update(overrides)
+    return doc
+
+
+@pytest.mark.anyio
+async def test_gabungan_unions_aktif_and_histori_without_hold_or_unstaged():
+    import server
+    marker = uuid.uuid4().hex[:8].upper()
+    owner_a = f"owner-a-{marker}"
+    owner_b = f"owner-b-{marker}"
+    aktif = _slim(marker, label="AKTIF", sales_user_id=owner_a, created_at="2026-09-15T06:00:00+00:00", customer=f"Alpha {marker}")
+    selesai = _slim(
+        marker, label="SELESAI", sales_user_id=owner_a, current_stage=14, status_label="Pengiriman",
+        created_at="2026-09-16T05:00:00+00:00", order_date="2026-09-16", customer=f"Alpha {marker}",
+    )
+    batal = _slim(
+        marker, label="BATAL", sales_user_id=owner_a, cancelled=True, current_stage=2,
+        created_at="2026-09-17T05:00:00+00:00", order_date="2026-09-17", customer=f"Beta {marker}",
+    )
+    batal_stage = _slim(
+        marker, label="BATAL14", sales_user_id=owner_a, cancelled=True, current_stage=14,
+        created_at="2026-09-18T05:00:00+00:00", order_date="2026-09-18", customer=f"Gamma {marker}",
+    )
+    hold = _slim(
+        marker, label="HOLD", sales_user_id=owner_a, current_stage=0,
+        created_at="2026-09-19T05:00:00+00:00", order_date="2026-09-19", customer=f"Hold {marker}",
+    )
+    unstaged = _slim(
+        marker, label="BARE", sales_user_id=owner_a,
+        created_at="2026-09-20T05:00:00+00:00", order_date="2026-09-20", customer=f"Bare {marker}",
+    )
+    unstaged.pop("current_stage", None)
+    aktif_old = _slim(
+        marker, label="OLD-A", sales_user_id=owner_a, order_date="2026-01-02",
+        created_at="2026-01-02T05:00:00+00:00", customer=f"Alpha {marker}",
+    )
+    histori_old = _slim(
+        marker, label="OLD-H", sales_user_id=owner_a, cancelled=True, current_stage=1,
+        order_date="2026-01-03", created_at="2026-01-03T05:00:00+00:00", customer=f"Alpha {marker}",
+    )
+    other_aktif = _slim(
+        marker, label="OTH-A", sales_user_id=owner_b,
+        created_at="2026-09-15T08:00:00+00:00", customer=f"Alpha {marker}",
+    )
+    other_histori = _slim(
+        marker, label="OTH-H", sales_user_id=owner_b, cancelled=True, current_stage=4,
+        created_at="2026-09-15T07:00:00+00:00", customer=f"Alpha {marker}",
+    )
+    docs = [aktif, selesai, batal, batal_stage, hold, unstaged, aktif_old, histori_old, other_aktif, other_histori]
+    await server.db.orders.insert_many(docs)
+    app.dependency_overrides[current_user] = _admin
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            gabungan = await client.get("/api/sales-orders", params={"q": marker, "status": "gabungan", "page": 1, "page_size": 50})
+            assert gabungan.status_code == 200
+            body = gabungan.json()
+            ids = [row["id"] for row in body["orders"]]
+            assert body["total"] == 8
+            assert body["count"] == 8
+            assert body["capped"] is False
+            assert len(ids) == len(set(ids))
+            assert set(ids) == {
+                aktif["id"], selesai["id"], batal["id"], batal_stage["id"],
+                aktif_old["id"], histori_old["id"], other_aktif["id"], other_histori["id"],
+            }
+            assert hold["id"] not in ids
+            assert unstaged["id"] not in ids
+            assert ids.count(batal_stage["id"]) == 1
+            assert body["orders"][0]["delivery_summary"]["status"]
+
+            dated = await client.get("/api/sales-orders", params={
+                "q": marker,
+                "status": "gabungan",
+                "date_from": "2026-09-01",
+                "date_to": "2026-09-30",
+                "page": 1,
+                "page_size": 50,
+            })
+            dated_ids = {row["id"] for row in dated.json()["orders"]}
+            assert aktif_old["id"] not in dated_ids
+            assert histori_old["id"] not in dated_ids
+            assert aktif["id"] in dated_ids
+            assert selesai["id"] in dated_ids
+            assert batal["id"] in dated_ids
+
+            needle = await client.get("/api/sales-orders", params={
+                "q": f"Alpha {marker}",
+                "status": "gabungan",
+                "page": 1,
+                "page_size": 50,
+            })
+            needle_ids = {row["id"] for row in needle.json()["orders"]}
+            assert needle_ids == {
+                aktif["id"], selesai["id"], aktif_old["id"], histori_old["id"],
+                other_aktif["id"], other_histori["id"],
+            }
+
+            pages = []
+            seen = []
+            for page in range(1, 9):
+                page_res = await client.get("/api/sales-orders", params={
+                    "q": marker, "status": "gabungan", "page": page, "page_size": 1,
+                })
+                page_body = page_res.json()
+                assert page_body["total"] == 8
+                assert page_body["count"] == 1
+                assert page_body["page"] == page
+                assert page_body["page_size"] == 1
+                seen.extend(row["id"] for row in page_body["orders"])
+                pages.append(page_body["orders"][0]["id"])
+            assert len(seen) == len(set(seen)) == 8
+            assert pages[0] != pages[1]
+
+            aktif_res = await client.get("/api/sales-orders", params={"q": marker, "status": "aktif"})
+            assert {row["id"] for row in aktif_res.json()["orders"]} == {aktif["id"], aktif_old["id"], other_aktif["id"]}
+            histori_res = await client.get("/api/sales-orders", params={"q": marker, "status": "histori"})
+            assert {row["id"] for row in histori_res.json()["orders"]} == {
+                selesai["id"], batal["id"], batal_stage["id"], histori_old["id"], other_histori["id"],
+            }
+            hold_res = await client.get("/api/sales-orders", params={"q": marker, "status": "hold"})
+            # Missing current_stage is outside Aktif/Histori, and the existing HOLD
+            # snapshot treats that absence as stage 0 when design/payment are empty.
+            assert {row["id"] for row in hold_res.json()["orders"]} == {hold["id"], unstaged["id"]}
+            all_res = await client.get("/api/sales-orders", params={"q": marker, "status": "all"})
+            assert {row["id"] for row in all_res.json()["orders"]} == {doc["id"] for doc in docs}
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+        await server.db.orders.delete_many({"po_number": {"$regex": marker}})
+
+
+@pytest.mark.anyio
+async def test_gabungan_owner_filter_applies_to_both_branches(monkeypatch):
+    import server
+    monkeypatch.setattr(server, "reject_sales_pwa_bypass", lambda user: None)
+    marker = uuid.uuid4().hex[:8].upper()
+    owner_a = f"owner-a-{marker}"
+    owner_b = f"owner-b-{marker}"
+    own_aktif = _slim(marker, label="OWN-A", sales_user_id=owner_a, customer=f"Own {marker}")
+    own_histori = _slim(
+        marker, label="OWN-H", sales_user_id=owner_a, cancelled=True, current_stage=2,
+        customer=f"Own {marker}", created_at="2026-09-15T02:00:00+00:00",
+    )
+    other_aktif = _slim(marker, label="NO-A", sales_user_id=owner_b, customer=f"Own {marker}")
+    other_histori = _slim(
+        marker, label="NO-H", sales_user_id=owner_b, cancelled=True, current_stage=2,
+        customer=f"Own {marker}", created_at="2026-09-15T03:00:00+00:00",
+    )
+    await server.db.orders.insert_many([own_aktif, own_histori, other_aktif, other_histori])
+
+    def _owner():
+        return {
+            "email": f"owner-{marker}@example.com",
+            "name": "Owner",
+            "role": "sales_eternal",
+            "id": owner_a,
+            "user_id": owner_a,
+            "permissions_override": {"sales_order.view": True},
+        }
+
+    app.dependency_overrides[current_user] = _owner
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            listed = await client.get("/api/sales-orders", params={"q": marker, "status": "gabungan", "page": 1, "page_size": 20})
+            assert listed.status_code == 200
+            assert {row["id"] for row in listed.json()["orders"]} == {own_aktif["id"], own_histori["id"]}
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+        await server.db.orders.delete_many({"po_number": {"$regex": marker}})
+
+
+@pytest.mark.anyio
+async def test_gabungan_keeps_each_branch_window_when_histori_exceeds_1000():
+    import server
+    marker = uuid.uuid4().hex[:8].upper()
+    aktif = _slim(
+        marker, label="KEEP", customer=f"Cap {marker}",
+        created_at="2020-01-01T00:00:00+00:00", order_date="2020-01-01",
+    )
+    dropped = _slim(
+        marker, label="DROP", customer=f"Cap {marker}", cancelled=True, current_stage=1,
+        created_at="2026-08-01T00:00:00+00:00",
+    )
+    newest = _slim(
+        marker, label="NEW", customer=f"Cap {marker}", cancelled=True, current_stage=1,
+        created_at="2026-08-01T00:16:40+00:00",
+    )
+    from datetime import timedelta
+    base = datetime(2026, 8, 1, tzinfo=timezone.utc)
+    histori = []
+    for index in range(1, 1000):
+        created = (base + timedelta(seconds=index)).isoformat()
+        histori.append(_slim(
+            marker,
+            label=f"H{index}",
+            customer=f"Cap {marker}",
+            cancelled=True,
+            current_stage=1,
+            created_at=created,
+            order_date="2026-08-01",
+        ))
+    await server.db.orders.insert_many([aktif, dropped, newest, *histori])
+    app.dependency_overrides[current_user] = _admin
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            combined = await client.get("/api/sales-orders", params={"q": marker, "status": "gabungan"})
+            assert combined.status_code == 200
+            combined_ids = {row["id"] for row in combined.json()["orders"]}
+            assert combined.json()["count"] == 1001
+            assert aktif["id"] in combined_ids
+            assert newest["id"] in combined_ids
+            assert dropped["id"] not in combined_ids
+
+            paged = await client.get("/api/sales-orders", params={
+                "q": marker, "status": "gabungan", "page": 21, "page_size": 50,
+            })
+            page_body = paged.json()
+            assert page_body["capped"] is True
+            assert page_body["total"] == 1001
+            assert page_body["count"] == 1
+            assert page_body["orders"][0]["id"] == aktif["id"]
+
+            everything = await client.get("/api/sales-orders", params={"q": marker, "status": "all"})
+            all_ids = {row["id"] for row in everything.json()["orders"]}
+            assert everything.json()["count"] == 1000
+            assert aktif["id"] not in all_ids
+            assert dropped["id"] not in all_ids
+
+            aktif_only = await client.get("/api/sales-orders", params={"q": marker, "status": "aktif"})
+            assert {row["id"] for row in aktif_only.json()["orders"]} == {aktif["id"]}
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+        await server.db.orders.delete_many({"customer": f"Cap {marker}"})
+
+
+@pytest.mark.anyio
+async def test_sales_order_list_still_rejects_missing_permission_and_sales_eternal():
+    import server
+    app.dependency_overrides[current_user] = lambda: {
+        "email": "nobody-sales-list@example.com",
+        "name": "Nobody",
+        "role": "role_without_sales_list",
+        "id": "nobody-sales-list",
+    }
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            denied = await client.get("/api/sales-orders", params={"status": "gabungan"})
+            assert denied.status_code == 403
+            app.dependency_overrides[current_user] = lambda: {
+                "email": "sales-eternal-list@example.com",
+                "name": "Sales Eternal",
+                "role": "sales_eternal",
+                "id": "sales-eternal-list",
+                "user_id": "sales-eternal-list",
+                "permissions_override": {"sales_order.view": True, "po.view": True},
+            }
+            locked = await client.get("/api/sales-orders", params={"status": "gabungan"})
+            assert locked.status_code == 403
+    finally:
+        app.dependency_overrides.pop(current_user, None)

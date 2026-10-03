@@ -10270,6 +10270,80 @@ def _sales_order_date_clause(date_from: Optional[str], date_to: Optional[str]) -
     return {"order_date": clause} if clause else {}
 
 
+_SALES_ORDER_LIST_FETCH_LIMIT = 1000
+
+
+def _sales_order_list_match(clauses: list) -> dict:
+    return {"$and": clauses} if clauses else {}
+
+
+async def _fetch_sales_order_list_rows(match: dict) -> list:
+    return await db.orders.aggregate([
+        {"$match": match},
+        {"$sort": {"created_at": -1}},
+        {"$limit": _SALES_ORDER_LIST_FETCH_LIMIT},
+        {"$project": _SALES_ORDER_LIST_PROJECTION},
+    ]).to_list(_SALES_ORDER_LIST_FETCH_LIMIT)
+
+
+async def _decorate_sales_order_list_rows(orders: list) -> None:
+    """Existing list enrichment: unit totals, HOLD snapshot, deadline, delivery summary."""
+    if not orders:
+        return
+    dd_settings = await _get_delivery_deadline_settings()
+    po_ids = [o["id"] for o in orders if o.get("id")]
+    shipped_aggregates: Dict[str, dict] = {}
+    if po_ids:
+        pipe = [
+            {"$match": {"po_id": {"$in": po_ids}, "is_cancelled": {"$ne": True}}},
+            {"$group": {"_id": "$po_id", "total_shipped": {"$sum": "$total_qty"}, "count": {"$sum": 1}}},
+        ]
+        shipped_aggregates = {doc["_id"]: doc async for doc in db.sales_deliveries.aggregate(pipe)}
+    for o in orders:
+        o["quantity_by_unit"] = _quantity_by_unit(o.pop("line_items", None))
+        o["design_files"] = [True] if o.pop("_has_design_files", False) else []
+        o["payment_files"] = [True] if o.pop("_has_payment_files", False) else []
+        _apply_hold_snapshot(o)
+        _attach_deadline_snapshot(o, dd_settings["lead_time_days"])
+        _strip_tracking_secret(o)
+        o.pop("design_files", None)
+        o.pop("payment_files", None)
+        agg = shipped_aggregates.get(o.get("id"), {})
+        tot_shipped = int(agg.get("total_shipped", 0))
+        tot_ordered = int(o.get("total_quantity", 0))
+        tot_remain = max(0, tot_ordered - tot_shipped)
+        if o.get("cancelled"):
+            deliv_st = "DIBATALKAN"
+        elif tot_shipped == 0:
+            deliv_st = "BELUM DIKIRIM"
+        elif tot_remain > 0:
+            deliv_st = "SEBAGIAN"
+        else:
+            deliv_st = "SELESAI"
+        o["delivery_summary"] = {
+            "total_ordered": tot_ordered,
+            "total_shipped": tot_shipped,
+            "total_remaining": tot_remain,
+            "status": deliv_st,
+            "shipment_count": int(agg.get("count", 0)),
+        }
+
+
+def _merge_sales_order_branches(aktif_rows: list, histori_rows: list) -> list:
+    """Union of the two list branches, one row per id, newest created_at first."""
+    seen = set()
+    merged = []
+    for row in [*aktif_rows, *histori_rows]:
+        oid = row.get("id")
+        if oid:
+            if oid in seen:
+                continue
+            seen.add(oid)
+        merged.append(row)
+    merged.sort(key=lambda row: row.get("created_at") or "", reverse=True)
+    return merged
+
+
 @api_router.post("/sales-orders/price-quote")
 async def quote_sales_order_price(payload: SalesOrderPriceQuotePayload, user=Depends(current_user)):
     """Published selling price for one exact item, unit, and quantity tier.
@@ -10353,17 +10427,14 @@ async def list_sales_orders(
     reject_sales_pwa_bypass(user)
     await _require_any_perm(user, "sales_order.view", "sales_order.create", "po.view")
 
-    clauses = []
+    shared: list = []
     owner = sales_owner_match(user)
     if owner:
-        clauses.append(owner)
+        shared.append(owner)
     st = (status or "all").lower()
-    status_clause = _sales_order_status_clause(st)
-    if status_clause:
-        clauses.append(status_clause)
     if q and q.strip():
         needle = re.escape(q.strip())
-        clauses.append({"$or": [
+        shared.append({"$or": [
             {"po_number": {"$regex": needle, "$options": "i"}},
             {"customer": {"$regex": needle, "$options": "i"}},
             {"outlet": {"$regex": needle, "$options": "i"}},
@@ -10371,62 +10442,40 @@ async def list_sales_orders(
         ]})
     date_clause = _sales_order_date_clause(date_from, date_to)
     if date_clause:
-        clauses.append(date_clause)
-    query: dict = {"$and": clauses} if clauses else {}
-    
-    orders = await db.orders.aggregate([
-        {"$match": query},
-        {"$sort": {"created_at": -1}},
-        {"$limit": 1000},
-        {"$project": _SALES_ORDER_LIST_PROJECTION},
-    ]).to_list(1000)
-    dd_settings = await _get_delivery_deadline_settings()
-    
-    # Batch calculate delivery status summary for all returned orders
-    po_ids = [o["id"] for o in orders if o.get("id")]
-    shipped_aggregates: Dict[str, dict] = {}
-    if po_ids:
-        pipe = [
-            {"$match": {"po_id": {"$in": po_ids}, "is_cancelled": {"$ne": True}}},
-            {"$group": {"_id": "$po_id", "total_shipped": {"$sum": "$total_qty"}, "count": {"$sum": 1}}}
-        ]
-        shipped_aggregates = {doc["_id"]: doc async for doc in db.sales_deliveries.aggregate(pipe)}
+        shared.append(date_clause)
 
-    fetched_count = len(orders)
-    for o in orders:
-        o["quantity_by_unit"] = _quantity_by_unit(o.pop("line_items", None))
-        o["design_files"] = [True] if o.pop("_has_design_files", False) else []
-        o["payment_files"] = [True] if o.pop("_has_payment_files", False) else []
-        _apply_hold_snapshot(o)
-        _attach_deadline_snapshot(o, dd_settings["lead_time_days"])
-        _strip_tracking_secret(o)
-        o.pop("design_files", None)
-        o.pop("payment_files", None)
-        
-        agg = shipped_aggregates.get(o.get("id"), {})
-        tot_shipped = int(agg.get("total_shipped", 0))
-        tot_ordered = int(o.get("total_quantity", 0))
-        tot_remain = max(0, tot_ordered - tot_shipped)
-        if o.get("cancelled"):
-            deliv_st = "DIBATALKAN"
-        elif tot_shipped == 0:
-            deliv_st = "BELUM DIKIRIM"
-        elif tot_remain > 0:
-            deliv_st = "SEBAGIAN"
-        else:
-            deliv_st = "SELESAI"
-        o["delivery_summary"] = {
-            "total_ordered": tot_ordered,
-            "total_shipped": tot_shipped,
-            "total_remaining": tot_remain,
-            "status": deliv_st,
-            "shipment_count": int(agg.get("count", 0)),
-        }
-    
-    if st == "hold":
-        orders = [o for o in orders if o.get("hold")]
-    elif st == "aktif":
-        orders = [o for o in orders if not o.get("hold")]
+    if st == "gabungan":
+        # Separate 1000-row windows. A mixed query would drop rows still visible
+        # on Aktif or Histori once the other classification fills the cap.
+        aktif_rows, histori_rows = await asyncio.gather(
+            _fetch_sales_order_list_rows(_sales_order_list_match([
+                *shared, _sales_order_status_clause("aktif"),
+            ])),
+            _fetch_sales_order_list_rows(_sales_order_list_match([
+                *shared, _sales_order_status_clause("histori"),
+            ])),
+        )
+        branch_capped = (
+            len(aktif_rows) >= _SALES_ORDER_LIST_FETCH_LIMIT
+            or len(histori_rows) >= _SALES_ORDER_LIST_FETCH_LIMIT
+        )
+        await _decorate_sales_order_list_rows([*aktif_rows, *histori_rows])
+        orders = _merge_sales_order_branches(
+            [row for row in aktif_rows if not row.get("hold")],
+            histori_rows,
+        )
+    else:
+        clauses = list(shared)
+        status_clause = _sales_order_status_clause(st)
+        if status_clause:
+            clauses.append(status_clause)
+        orders = await _fetch_sales_order_list_rows(_sales_order_list_match(clauses))
+        branch_capped = len(orders) >= _SALES_ORDER_LIST_FETCH_LIMIT
+        await _decorate_sales_order_list_rows(orders)
+        if st == "hold":
+            orders = [o for o in orders if o.get("hold")]
+        elif st == "aktif":
+            orders = [o for o in orders if not o.get("hold")]
 
     paging = page is not None or page_size is not None
     if not paging:
@@ -10452,7 +10501,7 @@ async def list_sales_orders(
         "total": total,
         "page": current,
         "page_size": size,
-        "capped": fetched_count >= 1000,
+        "capped": branch_capped,
     }
 
 
