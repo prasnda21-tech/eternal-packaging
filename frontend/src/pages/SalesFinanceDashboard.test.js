@@ -13,7 +13,10 @@ jest.mock("react-router-dom", () => ({
 }), { virtual: true });
 
 jest.mock("../lib/auth", () => ({
-  useAuth: () => ({ hasPerm: (key) => (global.__dashboardPerms || []).includes(key) }),
+  useAuth: () => ({
+    user: global.__dashboardUser || null,
+    hasPerm: (key) => (global.__dashboardPerms || []).includes(key),
+  }),
 }));
 
 jest.mock("../lib/api", () => ({
@@ -113,6 +116,7 @@ describe("merged dashboard permissions", () => {
     api.financialDashboard.mockResolvedValue(financePayload());
     global.__dashboardHash = "";
     global.__dashboardPerms = [];
+    global.__dashboardUser = null;
   });
 
   afterEach(() => {
@@ -208,6 +212,206 @@ describe("merged dashboard permissions", () => {
     expect(container.querySelector('[data-testid="section-penjualan"]').hidden).toBe(false);
     expect(container.querySelector('#dashboard-tab-keuangan')).toBeNull();
     expect(api.financialDashboard).not.toHaveBeenCalled();
+  });
+
+  test("sends one date range to both sources and keeps finance free of the sales preset", async () => {
+    global.__dashboardPerms = ["dashboard.sales.view", "dashboard.finance.view"];
+    await act(async () => { root.render(<SalesFinanceDashboard />); });
+    await flush();
+    const salesCall = api.salesDashboard.mock.calls.at(-1)[0];
+    const financeCall = api.financialDashboard.mock.calls.at(-1)[0];
+    expect(salesCall.start_date).toBe(financeCall.start_date);
+    expect(salesCall.end_date).toBe(financeCall.end_date);
+    expect(financeCall.preset).toBeUndefined();
+    expect(Object.keys(financeCall).sort()).toEqual(["end_date", "start_date"]);
+    await act(async () => container.querySelector('[data-testid="sales-preset-year"]').click());
+    await flush();
+    const nextSales = api.salesDashboard.mock.calls.at(-1)[0];
+    const nextFinance = api.financialDashboard.mock.calls.at(-1)[0];
+    expect(nextSales.start_date).toBe(nextFinance.start_date);
+    expect(nextSales.end_date).toBe(nextFinance.end_date);
+    expect(nextSales.preset).toBe("year");
+    expect(nextFinance.preset).toBeUndefined();
+    expect(nextSales.start_date.endsWith("-01-01")).toBe(true);
+  });
+
+  test("sales permission omits finance figures and finance permission omits sales figures", async () => {
+    global.__dashboardPerms = ["dashboard.sales.view"];
+    await act(async () => { root.render(<SalesFinanceDashboard />); });
+    await flush();
+    expect(container.querySelector('[data-testid="kpi-laba"]')).toBeNull();
+    expect(container.querySelector('[data-testid="kpi-kas"]')).toBeNull();
+    expect(container.querySelector('[data-testid="panel-laba-rugi"]')).toBeNull();
+    expect(container.textContent).not.toMatch(/9[.,]000|2[.,]000/);
+
+    global.__dashboardPerms = ["dashboard.finance.view"];
+    await act(async () => { root.render(<SalesFinanceDashboard />); });
+    await flush();
+    expect(container.querySelector('[data-testid="sales-omzet"]')).toBeNull();
+    expect(container.querySelector('[data-testid="kpi-piutang"]')).toBeNull();
+    expect(container.querySelector('[data-testid="finance-revenue-value"]').textContent).toMatch(/9[.,]000/);
+  });
+
+  test("labels personal sales beside company finance without mixing a margin", async () => {
+    global.__dashboardPerms = ["dashboard.sales.view", "dashboard.finance.view"];
+    global.__dashboardUser = { role: "sales_eternal" };
+    api.salesDashboard.mockResolvedValue({
+      ...salesPayload(),
+      as_of_date: "2026-10-03",
+      omzet: { status: "complete", amount: 4000, comparison: { available: false } },
+    });
+    await act(async () => { root.render(<SalesFinanceDashboard />); });
+    await flush();
+    expect(container.querySelector('[data-testid="scope-penjualan"]').textContent).toBe("Penjualan saya");
+    expect(container.querySelector('[data-testid="scope-keuangan"]').textContent).toBe("Keuangan perusahaan");
+    expect(container.querySelector('[data-testid="sales-piutang-scope"]').textContent).toMatch(/^Penjualan saya · Posisi saat ini/);
+    expect(container.querySelector('[data-testid="sales-kas-scope"]').textContent).toMatch(/^Keuangan perusahaan · Per /);
+    expect(container.querySelector('[data-testid="kpi-laba-value"]').textContent).not.toMatch(/%/);
+    expect(container.querySelector('[data-testid="panel-laba-rugi"]').textContent).not.toMatch(/%/);
+  });
+
+  test("current receivables and cash as of the period end use different labels", async () => {
+    global.__dashboardPerms = ["dashboard.sales.view", "dashboard.finance.view"];
+    api.salesDashboard.mockResolvedValue({ ...salesPayload(), as_of_date: "2026-10-03" });
+    await act(async () => { root.render(<SalesFinanceDashboard />); });
+    await flush();
+    const piutang = container.querySelector('[data-testid="sales-piutang-scope"]').textContent;
+    const kas = container.querySelector('[data-testid="sales-kas-scope"]').textContent;
+    expect(piutang).toBe("Posisi saat ini · 2026-10-03");
+    expect(kas).toBe("Per 2026-09-26");
+    expect(piutang).not.toBe(kas);
+    expect(container.querySelector('[data-testid="sales-receivables-scope"]').textContent).toBe("Posisi saat ini · 2026-10-03");
+  });
+
+  test("keeps a failed reload from presenting the previous payload as current", async () => {
+    global.__dashboardPerms = ["dashboard.sales.view", "dashboard.finance.view"];
+    await act(async () => { root.render(<SalesFinanceDashboard />); });
+    await flush();
+    expect(container.querySelector('[data-testid="sales-omzet-value"]').textContent).toMatch(/4[.,]000/);
+    expect(container.querySelector('[data-testid="finance-revenue-value"]').textContent).toMatch(/9[.,]000/);
+    api.salesDashboard.mockRejectedValue({ response: { data: { detail: "penjualan gagal ulang" } } });
+    api.financialDashboard.mockRejectedValue({ response: { data: { detail: "keuangan gagal ulang" } } });
+    await act(async () => container.querySelector('[data-testid="sales-reload"]').click());
+    await flush();
+    expect(container.querySelector('[data-testid="sales-error"]').textContent).toMatch(/penjualan gagal ulang/);
+    expect(container.querySelector('[data-testid="sales-omzet-value"]').textContent).not.toMatch(/4[.,]000/);
+    expect(container.querySelector('[data-testid="finance-error"]').textContent).toMatch(/keuangan gagal ulang/);
+    expect(container.querySelector('[data-testid="finance-revenue-value"]').textContent).not.toMatch(/9[.,]000/);
+  });
+
+  test("drops a stale response after a faster period change", async () => {
+    global.__dashboardPerms = ["dashboard.sales.view", "dashboard.finance.view"];
+    let firstSales;
+    let secondSales;
+    let salesCalls = 0;
+    api.salesDashboard.mockImplementation(() => new Promise((resolve) => {
+      salesCalls += 1;
+      if (salesCalls === 1) firstSales = resolve;
+      else secondSales = resolve;
+    }));
+    api.financialDashboard.mockResolvedValue(financePayload());
+    await act(async () => { root.render(<SalesFinanceDashboard />); });
+    await act(async () => container.querySelector('[data-testid="sales-preset-today"]').click());
+    await act(async () => {
+      secondSales({
+        ...salesPayload(),
+        omzet: { status: "complete", amount: 9000, comparison: { available: false } },
+      });
+    });
+    await flush();
+    await act(async () => { firstSales(salesPayload()); });
+    await flush();
+    expect(container.querySelector('[data-testid="sales-omzet-value"]').textContent).toMatch(/9[.,]000/);
+    expect(container.querySelector('[data-testid="sales-omzet-value"]').textContent).not.toMatch(/4[.,]000/);
+    expect(api.salesDashboard.mock.calls.at(-1)[0].preset).toBe("today");
+  });
+
+  test("explains other results and keeps negative profit-loss amounts signed", async () => {
+    global.__dashboardPerms = ["dashboard.sales.view", "dashboard.finance.view"];
+    api.financialDashboard.mockResolvedValue({
+      ...financePayload(),
+      performance: {
+        status: "complete",
+        revenue: 1000,
+        cogs: 400,
+        operating_expense: -50,
+        other_income: 25,
+        other_expense: -10,
+        net_profit: 585,
+      },
+    });
+    api.salesDashboard.mockResolvedValue({
+      ...salesPayload(),
+      products: {
+        status: "incomplete",
+        items: [{ key: "master:1", label: "Karton", amount: 4000 }],
+        detail: "Satu baris tanpa identitas barang tidak masuk peringkat.",
+      },
+      receivables: {
+        status: "incomplete",
+        outstanding: 1500,
+        aging: [{ key: "NOT_DUE", label: "Belum jatuh tempo", amount: 1000 }],
+        unbucketed_outstanding: 500,
+      },
+      trend: {
+        status: "complete",
+        grain_label: "Harian",
+        points: [
+          { key: "2026-09-01", label: "1 Sep", omzet: 1000, invoice_count: 1 },
+          { key: "2026-09-02", label: "2 Sep", omzet: 0, invoice_count: 0 },
+        ],
+      },
+    });
+    await act(async () => { root.render(<SalesFinanceDashboard />); });
+    await flush();
+    expect(container.querySelector('[data-testid="pl-chart"]').getAttribute("data-amounts")).toBe("1000|400|-50");
+    expect(container.querySelector('[data-testid="pl-other_income"]').textContent).toMatch(/Pendapatan lain/);
+    expect(container.querySelector('[data-testid="pl-other_income"]').textContent).toMatch(/25/);
+    expect(container.querySelector('[data-testid="pl-other_expense"]').textContent).toMatch(/Beban lain/);
+    expect(container.querySelector('[data-testid="pl-other_expense"]').textContent).toMatch(/-10|−10/);
+    expect(container.querySelector('[data-testid="kpi-laba-value"]').textContent).toMatch(/585/);
+    expect(container.querySelector('[data-testid="sales-products"]').textContent).toMatch(/Nilai sebelum diskon faktur/);
+    expect(container.querySelector('[data-testid="sales-products"]').textContent).toMatch(/Satu baris tanpa identitas/);
+    expect(container.querySelector('[data-testid="sales-ar-unbucketed"]').textContent).toMatch(/Tanggal tidak tersedia/);
+    expect(container.querySelector('[data-testid="sales-ar-unbucketed"]').textContent).toMatch(/500/);
+    expect(container.querySelector('[data-testid="sales-trend"]').textContent).toMatch(/harian/i);
+    expect(container.querySelector('[data-testid="sales-trend"]').textContent).not.toMatch(/Januari|Desember/);
+  });
+
+  test("null, empty, and error stay distinct from a recorded zero", async () => {
+    global.__dashboardPerms = ["dashboard.sales.view", "dashboard.finance.view"];
+    api.salesDashboard.mockResolvedValue({
+      ...salesPayload(),
+      omzet: { status: "complete", amount: null, comparison: { available: false } },
+      receivables: { status: "empty", outstanding: null, aging: [], detail: "Belum ada saldo piutang" },
+    });
+    api.financialDashboard.mockResolvedValue({
+      ...financePayload(),
+      performance: { status: "complete", revenue: 1000, cogs: 0, operating_expense: 0, other_income: 0, other_expense: 0, net_profit: null },
+      position: { ...financePayload().position, cash_and_bank: { status: "unavailable", amount: null } },
+    });
+    await act(async () => { root.render(<SalesFinanceDashboard />); });
+    await flush();
+    expect(container.querySelector('[data-testid="sales-omzet-value"]').textContent).toBe("—");
+    expect(container.querySelector('[data-testid="kpi-piutang-value"]').textContent).toBe("Belum ada saldo piutang");
+    expect(container.querySelector('[data-testid="kpi-laba-value"]').textContent).toBe("—");
+    expect(container.querySelector('[data-testid="kpi-kas-value"]').textContent).toBe("Belum tersedia");
+    expect(container.querySelector('[data-testid="pl-other"]')).toBeNull();
+
+    api.salesDashboard.mockResolvedValue({
+      ...salesPayload(),
+      omzet: { status: "zero", amount: 0, invoice_count: 0, comparison: { available: false } },
+    });
+    api.financialDashboard.mockResolvedValue({
+      ...financePayload(),
+      performance: { status: "zero", revenue: 0, cogs: 0, operating_expense: 0, net_profit: 0 },
+      position: { ...financePayload().position, cash_and_bank: { status: "zero", amount: 0 } },
+    });
+    await act(async () => container.querySelector('[data-testid="sales-reload"]').click());
+    await flush();
+    expect(container.querySelector('[data-testid="sales-omzet-value"]').textContent).toMatch(/^Rp\s/);
+    expect(container.querySelector('[data-testid="kpi-laba-value"]').textContent).toMatch(/^Rp\s/);
+    expect(container.querySelector('[data-testid="kpi-kas-value"]').textContent).toMatch(/^Rp\s/);
   });
 
 });
