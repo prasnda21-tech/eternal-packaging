@@ -48,6 +48,7 @@ PERM_PAY_SETTINGS = "payroll.settings"
 PERM_SLIP_OWN = "payroll.payslip.view_own"
 PERM_SLIP_ALL = "payroll.payslip.view_all"
 PERM_ADJUST = "payroll.adjustment"
+PERM_PIECE_HOLDING = "payroll.piece_holding.edit"
 
 STATUS_DRAFT = "DRAFT"
 STATUS_REVIEW = "REVIEW"
@@ -323,7 +324,10 @@ async def ensure_indexes(db) -> None:
     await db[KASBON].create_index("employee_id")
     await db[PERIODS].create_index("period_number", unique=True)
     await db[PERIODS].create_index([("group_id", 1), ("revision", 1)], unique=True)
-    await db[PERIODS].create_index([("year", 1), ("month", 1), ("revision", 1)], unique=True)
+    # After migration the partial monthly index is the uniqueness guard.
+    # Do not recreate the full unique index, and do not drop one that is still there.
+    if not await _partial_monthly_index_name(db) and not await _legacy_monthly_index_name(db):
+        await db[PERIODS].create_index([("year", 1), ("month", 1), ("revision", 1)], unique=True)
     await db[LINES].create_index([("period_id", 1), ("employee_id", 1), ("revision", 1)], unique=True)
     await db[LINES].create_index("period_id")
 
@@ -471,6 +475,11 @@ def _employee_fields(payload: dict, existing: Optional[dict] = None) -> dict:
         out["active"] = bool(payload.get("active"))
     if "salary_profile" in payload:
         out["salary_profile"] = _salary_profile(payload.get("salary_profile"))
+    if "pay_basis" in payload:
+        basis = str(payload.get("pay_basis") or "monthly").strip().lower()
+        if basis not in ("monthly", "piece"):
+            raise HTTPException(400, "pay_basis harus monthly atau piece.")
+        out["pay_basis"] = basis
     if "employment_history" in payload:
         if not isinstance(payload.get("employment_history"), list):
             raise HTTPException(400, "Riwayat pekerjaan harus berupa daftar.")
@@ -971,6 +980,87 @@ async def get_attendance_for_period(db, period_id: str) -> List[dict]:
     return await db[ATTENDANCE].find({"period_id": period_id}, {"_id": 0}).sort("employee_id", 1).to_list(5000)
 
 
+async def _partial_monthly_index_name(db) -> Optional[str]:
+    try:
+        info = await db[PERIODS].index_information()
+    except Exception:
+        return None
+    for name, spec in (info or {}).items():
+        normalized = [(str(field), int(direction)) for field, direction in (spec.get("key") or [])]
+        if normalized != [("year", 1), ("month", 1), ("revision", 1)] or not spec.get("unique"):
+            continue
+        if (spec.get("partialFilterExpression") or {}).get("period_scope") == "monthly":
+            return name
+    return None
+
+
+async def _legacy_monthly_index_name(db) -> Optional[str]:
+    """Unique (year, month, revision) without a partial filter. Name is read from the server."""
+    try:
+        info = await db[PERIODS].index_information()
+    except Exception:
+        return None
+    for name, spec in (info or {}).items():
+        key = list(spec.get("key") or [])
+        normalized = [(str(field), int(direction)) for field, direction in key]
+        if normalized != [("year", 1), ("month", 1), ("revision", 1)]:
+            continue
+        if spec.get("unique") and not spec.get("partialFilterExpression"):
+            return name
+    return None
+
+
+async def create_piece_period(db, start_date: str, end_date: str, user: dict) -> dict:
+    start = str(start_date or "").strip()[:10]
+    end = str(end_date or "").strip()[:10]
+    try:
+        start_d = datetime.strptime(start, "%Y-%m-%d").date()
+        end_d = datetime.strptime(end, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(400, "Tanggal mulai dan akhir upah harus YYYY-MM-DD.")
+    if end_d < start_d:
+        raise HTTPException(400, "Tanggal akhir tidak boleh lebih kecil dari tanggal mulai.")
+    if (end_d - start_d).days + 1 > 120:
+        raise HTTPException(400, "Rentang upah maksimal 120 hari.")
+    year, month = end_d.year, end_d.month
+    if await _legacy_monthly_index_name(db) and await db[PERIODS].find_one({"year": year, "month": month, "revision": 1}):
+        raise HTTPException(
+            409,
+            "Indeks bulanan lama masih unik untuk seluruh dokumen. Jalankan backend/scripts/migrate_piece_payroll_indexes.py --apply sebelum menambah periode borongan pada bulan yang sama.",
+        )
+    settings = await get_settings(db)
+    ts = now_iso()
+    doc = {
+        "id": str(uuid.uuid4()),
+        "group_id": str(uuid.uuid4()),
+        "year": year,
+        "month": month,
+        "start_date": start,
+        "end_date": end,
+        "status": STATUS_DRAFT,
+        "revision": 1,
+        "period_scope": "piece",
+        "parent_period_id": None,
+        "piece_bonus": {"start_date": "", "end_date": "", "adjustments": {}},
+        "piece_kasbon_inputs": [],
+        "piece_blockers": [],
+        "piece_exclusions": [],
+        "config_snapshot": copy.deepcopy(settings),
+        "config_version": settings["config_version"],
+        "calculation_version": 0,
+        "audit_events": [_audit("created", user)],
+        "created_at": ts,
+        "updated_at": ts,
+        "created_by": actor_snapshot(user),
+    }
+    async with get_named_lock("hr_payroll_period_number"):
+        saved = await insert_with_unique_number(
+            db, PERIODS, "period_number", doc,
+            lambda: next_dated_seq(db, PERIODS, "period_number", "PRP"),
+        )
+    return public_period(saved)
+
+
 async def create_period(db, year: int, month: int, start_date: str, end_date: str, user: dict) -> dict:
     try:
         year, month = int(year), int(month)
@@ -978,8 +1068,22 @@ async def create_period(db, year: int, month: int, start_date: str, end_date: st
         raise HTTPException(400, "Tahun dan bulan tidak valid.")
     if year < 2000 or year > 2200 or month < 1 or month > 12:
         raise HTTPException(400, "Tahun atau bulan tidak valid.")
-    if await db[PERIODS].find_one({"year": year, "month": month}):
+    monthly_exists = await db[PERIODS].find_one({
+        "year": year,
+        "month": month,
+        "$or": [
+            {"period_scope": "monthly"},
+            {"period_scope": {"$exists": False}},
+            {"period_scope": None},
+        ],
+    })
+    if monthly_exists:
         raise HTTPException(409, "Periode tahun dan bulan tersebut sudah ada.")
+    if await _legacy_monthly_index_name(db) and await db[PERIODS].find_one({"year": year, "month": month, "revision": 1}):
+        raise HTTPException(
+            409,
+            "Indeks bulanan lama masih mencakup periode borongan. Jalankan backend/scripts/migrate_piece_payroll_indexes.py --apply.",
+        )
     settings = await get_settings(db)
     ts = now_iso()
     doc = {
@@ -991,6 +1095,7 @@ async def create_period(db, year: int, month: int, start_date: str, end_date: st
         "end_date": str(end_date or "")[:10],
         "status": STATUS_DRAFT,
         "revision": 1,
+        "period_scope": "monthly",
         "parent_period_id": None,
         "config_snapshot": copy.deepcopy(settings),
         "config_version": settings["config_version"],
@@ -1162,7 +1267,11 @@ async def calculate_period(db, period_id: str, user: dict) -> dict:
         period = await get_period(db, period_id)
         if period.get("status") != STATUS_DRAFT or await _posted_accrual(db, period_id):
             raise HTTPException(409, "Perhitungan hanya dapat dilakukan pada status DRAFT.")
+        if str(period.get("period_scope") or "") == "piece":
+            from services.operator_wage_claims import calculate_piece_period
+            return await calculate_piece_period(db, period, user)
         employees = await db[EMPLOYEES].find({"active": {"$ne": False}}, {"_id": 0}).sort("employee_number", 1).to_list(5000)
+        employees = [row for row in employees if str(row.get("pay_basis") or "monthly") != "piece"]
         components = await list_components(db, include_inactive=False)
         if not components:
             await seed_default_components(db)
@@ -1451,9 +1560,49 @@ async def _accrual_payable_snapshot(db, period_id: str) -> dict:
     snap = (doc or {}).get("payroll_payable") or {}
     account_id = str(snap.get("account_id") or "").strip()
     amount = to_money(snap.get("amount"))
+    if doc and account_id and amount == 0 and snap.get("zero_net") is True:
+        return {"journal_id": str(doc["id"]), "account_id": account_id, "amount": amount}
     if not doc or not account_id or amount <= 0:
         raise HTTPException(409, "Jurnal akrual belum menyimpan Utang Gaji asal.")
     return {"journal_id": str(doc["id"]), "account_id": account_id, "amount": amount}
+
+
+async def _store_zero_net_snapshot(db, period_id: str) -> None:
+    """Net nol tetap punya identitas Utang Gaji bernilai 0. Payment bank tidak memakai snapshot ini."""
+    lines = await db[LINES].find({"period_id": period_id}, {"_id": 0, "net": 1}).to_list(5000)
+    net = sum((to_money(line.get("net")) for line in lines), Decimal("0"))
+    if net != 0:
+        return
+    from services.journal_core import JOURNAL_ENTRIES, STATUS_POSTED
+    from services.payroll_accounting_settings import resolve_payable
+    from services.payroll_journal_posting import SOURCE_TYPE
+
+    journal = await db[JOURNAL_ENTRIES].find_one(
+        {"source_type": SOURCE_TYPE, "source_id": str(period_id), "reversal_of": None, "status": STATUS_POSTED},
+        {"_id": 0, "id": 1, "payroll_payable": 1},
+    )
+    if not journal:
+        return
+    current = journal.get("payroll_payable") or {}
+    if str(current.get("account_id") or "").strip() and to_money(current.get("amount")) == 0 and current.get("zero_net") is True:
+        return
+    if to_money(current.get("amount")) > 0:
+        return
+    payable = await resolve_payable(db)
+    if not payable or not payable.get("valid"):
+        raise HTTPException(409, "Akun Utang Gaji belum dipetakan.")
+    await db[JOURNAL_ENTRIES].update_one(
+        {"id": journal["id"], "$or": [
+            {"payroll_payable": {"$exists": False}},
+            {"payroll_payable.amount": {"$lte": 0}},
+        ]},
+        {"$set": {"payroll_payable": {
+            "account_id": payable["account_id"],
+            "amount": 0.0,
+            "line_code": "PAYROLL_PAYABLE",
+            "zero_net": True,
+        }}},
+    )
 
 
 async def _apply_final_effects(db, period_id: str, note: str, user: dict, token: str) -> None:
@@ -1570,6 +1719,9 @@ async def finalize_period_with_accrual(db, period_id: str, note: str, user: dict
     if not await db[LINES].find_one({"period_id": period_id}):
         raise HTTPException(409, "Periode tidak memiliki baris payroll.")
     if not posted:
+        if str(period.get("period_scope") or "") == "piece":
+            from services.operator_wage_claims import assert_piece_ready
+            await assert_piece_ready(db, period)
         readiness = await evaluate_payroll_accounting_readiness(db, period_id, for_finalization=True)
         if not readiness.get("accounting_ready"):
             raise HTTPException(409, explain_readiness_block(readiness))
@@ -1595,6 +1747,10 @@ async def finalize_period_with_accrual(db, period_id: str, note: str, user: dict
             if not await _posted_accrual(db, period_id):
                 await release_workflow_claim(db, period_id, token)
                 raise HTTPException(409, "Finalisasi payroll belum selesai.")
+        if str(period.get("period_scope") or "") == "piece":
+            from services.operator_wage_claims import freeze_piece_after_journal
+            await freeze_piece_after_journal(db, period_id)
+        await _store_zero_net_snapshot(db, period_id)
         await _apply_final_effects(db, period_id, note, user, token)
         return await _require_final_with_journal(db, period_id)
     except HTTPException:
@@ -1612,6 +1768,8 @@ async def transition_period(db, period_id: str, to_status: str, note: str, user:
             raise HTTPException(409, f"Transisi {current} ke {to_status} tidak diizinkan.")
         if current == STATUS_DRAFT and not await db[LINES].find_one({"period_id": period_id}):
             raise HTTPException(409, "Periode harus dihitung sebelum masuk REVIEW.")
+        if str(period.get("period_scope") or "") == "piece" and period.get("piece_blockers"):
+            raise HTTPException(409, "Masih ada operator yang belum terhubung ke profil HR.")
         if await _posted_accrual(db, period_id):
             raise HTTPException(
                 409,
@@ -1747,7 +1905,12 @@ async def reopen_period(db, period_id: str, reason: str, user: dict) -> dict:
                 "Periode yang sudah memiliki pembayaran payroll posted tidak dapat dibuka ulang.",
             )
         revision = int(old.get("revision") or 1) + 1
-        if await db[PERIODS].find_one({"group_id": old["group_id"], "revision": revision}):
+        existing_revision = await db[PERIODS].find_one({"group_id": old["group_id"], "revision": revision}, {"_id": 0})
+        if existing_revision:
+            if str(old.get("period_scope") or "") == "piece" and existing_revision.get("status") == STATUS_DRAFT:
+                from services.operator_wage_claims import transfer_piece_ownership
+                await transfer_piece_ownership(db, old, existing_revision["id"])
+                return public_period(existing_revision)
             raise HTTPException(409, "Revisi lanjutan periode ini sudah ada.")
         claimed = await claim_workflow(db, period_id, WORKFLOW_REOPEN, STATUS_FINAL)
         token = str(claimed.get("workflow_claim") or "")
@@ -1779,7 +1942,10 @@ async def _reopen_effects(db, old: dict, reason: str, user: dict, token: str, re
     await _restore_posted_kasbon(db, period_id)
     await own()
     doc = {
-        **{k: copy.deepcopy(old.get(k)) for k in ("year", "month", "start_date", "end_date", "group_id", "config_snapshot", "config_version")},
+        **{k: copy.deepcopy(old.get(k)) for k in (
+            "year", "month", "start_date", "end_date", "group_id", "config_snapshot", "config_version",
+            "period_scope", "piece_bonus", "piece_kasbon_inputs", "piece_exclusions", "piece_blockers",
+        )},
         "id": str(uuid.uuid4()),
         "period_number": f"{old.get('period_number')}-R{revision}",
         "status": STATUS_DRAFT,
@@ -1805,6 +1971,8 @@ async def _reopen_effects(db, old: dict, reason: str, user: dict, token: str, re
                 await db[ATTENDANCE].insert_many(copied)
         await own()
         await _insert_reopened_period(db, doc)
+        from services.operator_wage_claims import transfer_piece_ownership
+        await transfer_piece_ownership(db, old, doc["id"])
     except HTTPException:
         await db[ATTENDANCE].delete_many({"period_id": doc["id"]})
         await release_workflow_claim(db, period_id, token)
@@ -1836,6 +2004,12 @@ def generate_payslip_pdf_bytes(line: dict, period: dict) -> bytes:
         Paragraph(_safe(cfg.get("company_name") or "Eternal Packaging"), title),
         Paragraph(_safe(cfg.get("header_text") or "Slip Gaji"), body),
         Paragraph(f"Periode: {period.get('month'):02d}/{period.get('year')} · Revisi {period.get('revision', 1)}", body),
+        Paragraph(
+            f"Rentang: {_safe(period.get('start_date') or '-')} – {_safe(period.get('end_date') or '-')}"
+            if str(period.get("period_scope") or "") == "piece"
+            else f"Rentang tanggal: {_safe(period.get('start_date') or '-')} – {_safe(period.get('end_date') or '-')}",
+            body,
+        ),
         Spacer(1, 0.15 * cm),
         HRFlowable(width="100%", color=colors.HexColor("#0369a1"), thickness=1.2),
         Spacer(1, 0.15 * cm),

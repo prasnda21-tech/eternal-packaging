@@ -769,6 +769,7 @@ async def _mapped_approval(c, admin, *, year, month, nominal=1_000_000, installm
 @pytest.mark.anyio
 async def test_incomplete_finalization_rejects_inputs_and_keeps_original_journal():
     await _clean()
+    await server.db.accounting_periods.delete_many({"period_key": "2094-03"})
     import services.hr_payroll as payroll
     import services.payroll_journal_posting as posting
 

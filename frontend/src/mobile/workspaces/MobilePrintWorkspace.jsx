@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import api from "../../lib/api";
 import { formatApiError } from "../../lib/errors";
 import { newActionId } from "../../lib/workflowEntries";
@@ -22,8 +22,10 @@ export default function MobilePrintWorkspace({ order, canEdit, onUpdated }) {
   const ready = getWorkflowReady(order);
   const locked = ready.print_qty !== true || !canEdit;
   const [drafts, setDrafts] = useState({});
+  const [workDates, setWorkDates] = useState({});
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const actionIds = useRef({});
   const pct = target > 0 ? Math.min(100, Math.round((done / target) * 100)) : 0;
 
   const saveLine = async (line) => {
@@ -33,17 +35,26 @@ export default function MobilePrintWorkspace({ order, canEdit, onUpdated }) {
       setErr("Tidak ada alokasi cetak untuk akun ini.");
       return;
     }
+    const workDate = String(workDates[line.itemId] || "").trim();
     if (!qty) {
       setErr("Qty cetak tidak valid.");
       return;
     }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(workDate)) {
+      setErr("Tanggal pekerjaan wajib diisi.");
+      return;
+    }
     setBusy(true);
     setErr("");
+    const actionId = actionIds.current[line.itemId] || newActionId();
+    actionIds.current[line.itemId] = actionId;
     try {
       const res = await api.updateOperatorProgress(order.id, split.id, qty, {
         qty,
-        action_id: newActionId(),
+        action_id: actionId,
+        work_date: workDate,
       });
+      delete actionIds.current[line.itemId];
       onUpdated(res.order);
       setDrafts((d) => ({ ...d, [line.itemId]: "" }));
     } catch (e) {
@@ -87,6 +98,9 @@ export default function MobilePrintWorkspace({ order, canEdit, onUpdated }) {
             <span>{line.done.toLocaleString("id-ID")} / {line.target.toLocaleString("id-ID")}</span>
           </p>
           <h3 className="mop-card-title" style={{ fontSize: 13 }}>Tambah Hasil Cetak</h3>
+          <label className="mop-card-meta">Tanggal pekerjaan
+            <input type="date" value={workDates[line.itemId] || ""} onChange={(e) => setWorkDates((d) => ({ ...d, [line.itemId]: e.target.value }))} data-testid={`mobile-print-date-${line.lineIdx}`} disabled={locked || busy} />
+          </label>
           <MobileQtyStepper
             id={`print-${line.itemId}`}
             label="Qty"

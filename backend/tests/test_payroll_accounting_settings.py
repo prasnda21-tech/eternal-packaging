@@ -207,6 +207,8 @@ async def test_source_identity_does_not_use_names():
     assert source_key_for_row({"source": "salary_profile", "code": "BASE", "name": "Anything"}) == "salary_profile:BASE"
     assert source_key_for_row({"source": "attendance", "code": "ATT_LATE", "name": "Telat"}) == "attendance:ATT_LATE"
     assert source_key_for_row({"source": "kasbon", "code": "KASBON", "schedule_id": "x"}) == "kasbon:KASBON"
+    assert source_key_for_row({"source": "operator_piece", "code": "UPAH_BORONGAN", "claim_ids": ["a:b:c"]}) == "operator_piece:UPAH_BORONGAN"
+    assert source_key_for_row({"source": "operator_bonus", "code": "BONUS_OPERATOR", "bonus_snapshot": {"final_amount": 1}}) == "operator_bonus:BONUS_OPERATOR"
     cid = str(uuid.uuid4())
     assert source_key_for_row({"source": "component", "code": "BPJS_KARYAWAN", "component_id": cid}) == f"component:{cid}"
     assert source_key_for_row({"source": "component", "code": "BPJS_KARYAWAN"}) is None
