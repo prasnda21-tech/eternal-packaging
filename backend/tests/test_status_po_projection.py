@@ -41,6 +41,35 @@ def _parse_status_po_projection() -> dict:
     return ast.literal_eval(src[start:end])
 
 
+def _project_included(value, paths):
+    """Apply dotted inclusion paths from the parsed STATUS_PO_PROJECTION."""
+    if any(not parts for parts in paths):
+        return value
+    if isinstance(value, list):
+        return [
+            _project_included(item, paths) if isinstance(item, dict) else item
+            for item in value
+        ]
+    if not isinstance(value, dict):
+        return value
+    grouped = {}
+    for parts in paths:
+        grouped.setdefault(parts[0], []).append(parts[1:])
+    out = {}
+    for head, rests in grouped.items():
+        if head not in value:
+            continue
+        out[head] = _project_included(value[head], rests)
+    return out
+
+
+def apply_parsed_status_po_projection(order: dict) -> dict:
+    """Shape a document with the inclusion list parsed from server.py."""
+    projection = _parse_status_po_projection()
+    paths = [key.split(".") for key, flag in projection.items() if flag and key != "_id"]
+    return _project_included(order or {}, paths)
+
+
 def _pick(src: dict, keys: tuple) -> dict:
     return {k: src[k] for k in keys if k in src}
 
@@ -85,7 +114,8 @@ def apply_status_po_projection(order: dict) -> dict:
             continue
         row = _pick(sh, (
             "id", "created_at", "number", "delivery_status", "delivered_at",
-            "sales_delivery_id", "status", "sj_status", "cancelled", "superseded",
+            "sales_delivery_id", "status", "sj_status", "cancelled", "is_cancelled",
+            "deleted", "is_deleted", "superseded",
             "superseded_by_shipment_id", "qty_delivered", "total_qty",
         ))
         row["lines"] = [ln for ln in (sh.get("lines") or []) if isinstance(ln, dict)]
@@ -164,7 +194,7 @@ def apply_status_po_projection(order: dict) -> dict:
         if isinstance(f, dict)
     ]
     shaped["delivery_confirmations"] = [
-        _pick(rec, ("shipment_id", "qty"))
+        _pick(rec, ("shipment_id", "qty", "confirmed_at"))
         for rec in (src.get("delivery_confirmations") or [])
         if isinstance(rec, dict)
     ]
@@ -308,6 +338,12 @@ def test_projection_keeps_required_fields_and_excludes_file_bytes():
         "operator_splits.quantity",
         "line_items.name",
         "requires_printing",
+        "delivery_confirmations.confirmed_at",
+        "shipments.delivered_at",
+        "shipments.is_cancelled",
+        "shipments.deleted",
+        "shipments.is_deleted",
+        "delivered_at",
     ):
         assert key in src
     assert '"design_files": 1' not in src
@@ -380,6 +416,110 @@ def test_view_filters_unchanged_on_lean_docs():
     assert [o["id"] for o in filter_orders_for_view(lean, "active")] == ["po-op"]
     assert [o["id"] for o in filter_orders_for_view(orders, "completed")] == ["po-done"]
     assert [o["id"] for o in filter_orders_for_view(lean, "completed")] == ["po-done"]
+
+
+def test_projection_keeps_age_end_from_last_valid_confirmation():
+    order = _order_terkirim(
+        delivered_at="2026-09-20T10:00:00+07:00",
+        scheduled_delivery_date="2026-09-25",
+        deadline="2026-09-30T00:00:00+07:00",
+        delivery_proofs=[{
+            "uploaded_at": "2026-09-21T00:00:00+07:00",
+            "created_at": "2026-09-21T00:00:00+07:00",
+            "data_url": _fat_blob("proof"),
+        }],
+        shipments=[
+            {
+                "id": "sj-live",
+                "created_at": "2026-09-02T01:00:00+07:00",
+                "delivered_at": "2026-09-05T10:00:00+07:00",
+                "delivery_status": "Terkirim",
+                "lines": [{"line_idx": 0, "qty": 200}],
+                "photo": _fat_blob("sj"),
+            },
+            {
+                "id": "sj-old",
+                "superseded": True,
+                "status": "superseded",
+                "delivered_at": "2026-09-20T10:00:00+07:00",
+                "delivery_status": "Terkirim",
+                "lines": [{"line_idx": 0, "qty": 200}],
+            },
+        ],
+        delivery_confirmations=[
+            {
+                "shipment_id": "sj-old",
+                "qty": 200,
+                "confirmed_at": "2026-09-20T10:00:00+07:00",
+                "note": "ignore me",
+            },
+            {
+                "shipment_id": "sj-live",
+                "qty": 200,
+                "confirmed_at": "2026-09-05T10:00:00+07:00",
+            },
+        ],
+    )
+    lean = apply_status_po_projection(order)
+    assert "confirmed_at" in lean["delivery_confirmations"][0]
+    assert "data_url" not in json.dumps(lean)
+    full = status_po_row(order)
+    projected = status_po_row(lean)
+    assert full["age_closed"] is True
+    assert full["age_end_at"] == "2026-09-05T10:00:00+07:00"
+    assert projected["age_closed"] == full["age_closed"]
+    assert projected["age_end_at"] == full["age_end_at"]
+    assert projected["status"] == full["status"]
+    assert projected["percent_delivered"] == full["percent_delivered"]
+
+
+@pytest.mark.parametrize("flag", ["is_cancelled", "deleted", "is_deleted"])
+def test_parsed_projection_ignores_later_confirmation_on_inactive_shipment(flag):
+    """Age end uses STATUS_PO_PROJECTION as parsed from server.py."""
+    active_at = "2026-09-05T10:00:00+07:00"
+    inactive_at = "2026-09-20T10:00:00+07:00"
+    order = _order_terkirim(
+        delivered_at=inactive_at,
+        shipments=[
+            {
+                "id": "sj-live",
+                "delivered_at": active_at,
+                "delivery_status": "Terkirim",
+                "lines": [{"line_idx": 0, "qty": 200}],
+            },
+            {
+                "id": "sj-dead",
+                flag: True,
+                "delivered_at": inactive_at,
+                "delivery_status": "Terkirim",
+                "lines": [{"line_idx": 0, "qty": 200}],
+                "secret_blob": _fat_blob("dead"),
+            },
+        ],
+        delivery_confirmations=[
+            {"shipment_id": "sj-live", "qty": 200, "confirmed_at": active_at},
+            {
+                "shipment_id": "sj-dead",
+                "qty": 200,
+                "confirmed_at": inactive_at,
+                "note": "inactive confirmation",
+            },
+        ],
+    )
+    parsed = _parse_status_po_projection()
+    assert parsed[f"shipments.{flag}"] == 1
+    lean = apply_parsed_status_po_projection(order)
+    dead = next(sh for sh in lean["shipments"] if sh.get("id") == "sj-dead")
+    assert dead[flag] is True
+    assert "secret_blob" not in dead
+    assert lean["delivery_confirmations"][1]["confirmed_at"] == inactive_at
+    assert "note" not in lean["delivery_confirmations"][1]
+    row = status_po_row(lean)
+    assert row["age_closed"] is True
+    assert row["age_end_at"] == active_at
+    mirrored = apply_status_po_projection(order)
+    assert mirrored["shipments"][1][flag] is True
+    assert status_po_row(mirrored)["age_end_at"] == active_at
 
 
 def test_payload_size_reduction_local_harness_only():

@@ -96,30 +96,65 @@ export function matchesStatusPoFilters(row, filters) {
   return true;
 }
 
-/** Display-only PO age from order_date. No business threshold. */
-export function formatPoAgeLabel(orderDate, now = new Date()) {
-  if (!orderDate) return "—";
-  const text = String(orderDate).trim();
-  if (!text) return "—";
-  const prefix = text.match(/^(\d{4})-(\d{2})-(\d{2})/);
-  const then = prefix
-    ? Date.UTC(Number(prefix[1]), Number(prefix[2]) - 1, Number(prefix[3]))
-    : Date.parse(text);
-  if (!Number.isFinite(then)) return "—";
+function _validYmd(year, month, day) {
+  if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) return false;
+  if (month < 1 || month > 12 || day < 1 || day > 31) return false;
+  const dt = new Date(Date.UTC(year, month - 1, day));
+  return dt.getUTCFullYear() === year && dt.getUTCMonth() === month - 1 && dt.getUTCDate() === day;
+}
+
+/** Calendar day in Asia/Jakarta as UTC midnight. Date-only strings stay that day. */
+function jakartaCalendarUtc(raw) {
+  if (raw == null || raw === "") return null;
+  if (raw instanceof Date) {
+    if (Number.isNaN(raw.getTime())) return null;
+    return _jakartaInstantDay(raw);
+  }
+  const text = String(raw).trim();
+  if (!text) return null;
+  const dateOnly = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (dateOnly) {
+    const year = Number(dateOnly[1]);
+    const month = Number(dateOnly[2]);
+    const day = Number(dateOnly[3]);
+    if (!_validYmd(year, month, day)) return null;
+    return Date.UTC(year, month - 1, day);
+  }
+  const parsed = Date.parse(text);
+  if (!Number.isFinite(parsed)) return null;
+  return _jakartaInstantDay(new Date(parsed));
+}
+
+function _jakartaInstantDay(date) {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Jakarta",
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
-  }).formatToParts(now instanceof Date ? now : new Date(now));
+  }).formatToParts(date);
   const map = Object.fromEntries(parts.map(({ type, value }) => [type, value]));
-  const todayUtc = Date.UTC(Number(map.year), Number(map.month) - 1, Number(map.day));
-  const thenDay = prefix ? then : Date.UTC(
-    new Date(then).getUTCFullYear(),
-    new Date(then).getUTCMonth(),
-    new Date(then).getUTCDate(),
-  );
-  const days = Math.max(0, Math.round((todayUtc - thenDay) / 86400000));
+  const year = Number(map.year);
+  const month = Number(map.month);
+  const day = Number(map.day);
+  if (!_validYmd(year, month, day)) return null;
+  return Date.UTC(year, month - 1, day);
+}
+
+/**
+ * PO age in calendar days, Asia/Jakarta.
+ * Open orders count through `now`. Fully delivered orders stop at `age.endAt`.
+ * Missing, invalid, or end-before-order dates display "—".
+ */
+export function formatPoAgeLabel(orderDate, now = new Date(), age) {
+  const start = jakartaCalendarUtc(orderDate);
+  if (start == null) return "—";
+  const closed = !!(age && typeof age === "object" && !(age instanceof Date) && age.closed);
+  const end = closed
+    ? jakartaCalendarUtc(age.endAt)
+    : jakartaCalendarUtc(now instanceof Date ? now : new Date(now));
+  if (end == null) return "—";
+  const days = Math.round((end - start) / 86400000);
+  if (days < 0) return "—";
   return `${days} hari`;
 }
 
