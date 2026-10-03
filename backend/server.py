@@ -7577,6 +7577,7 @@ STATUS_PO_PROJECTION = {
     "surat_jalan_files.lines.quantity": 1,
     "delivery_confirmations.shipment_id": 1,
     "delivery_confirmations.qty": 1,
+    "delivery_confirmations.confirmed_at": 1,
     "terkirim_confirmed": 1,
     "print_status": 1,
     "print_completed_qty": 1,

@@ -1,6 +1,7 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import StatusPO from "./StatusPO";
+import { formatPoAgeLabel } from "../lib/statusPo";
 import { STATUS_PO_WORKFLOW_STAGES } from "../lib/statusPoWorkflow";
 import api from "../lib/api";
 
@@ -59,6 +60,8 @@ const rows = [
     status: "Terkirim",
     percent_delivered: 100,
     current_stage: 14,
+    age_closed: true,
+    age_end_at: "2026-08-10T10:00:00+07:00",
     workflow: Object.fromEntries([
       "order", "design", "appr_design", "payment", "appr_payment",
       "jadwal", "screen", "helper", "operator", "sample",
@@ -129,6 +132,10 @@ describe("Status PO workflow matrix UI", () => {
     expect(container.querySelector('[data-testid="status-po-wf-PO-PACK-kirim"]').getAttribute("data-state")).toBe("pending");
     expect(container.querySelector('[data-testid="status-po-wf-PO-CXL-order"]').getAttribute("data-state")).toBe("cancelled");
     expect(container.querySelector('[data-testid="status-po-pct-PO-DONE"]').textContent).toContain("100%");
+    expect(container.querySelector('[data-testid="status-po-age-PO-DONE"]').textContent.trim()).toBe("9 hari");
+    expect(container.querySelector('[data-testid="status-po-age-PO-PACK"]').textContent.trim()).toBe(
+      formatPoAgeLabel("2026-09-01"),
+    );
     const items = container.querySelector('[data-testid="status-po-items-PO-PACK"]');
     expect(items.textContent).toContain("Cup 16oz");
     expect(items.textContent).toContain("+2 lainnya");

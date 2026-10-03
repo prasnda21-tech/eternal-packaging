@@ -164,7 +164,7 @@ def apply_status_po_projection(order: dict) -> dict:
         if isinstance(f, dict)
     ]
     shaped["delivery_confirmations"] = [
-        _pick(rec, ("shipment_id", "qty"))
+        _pick(rec, ("shipment_id", "qty", "confirmed_at"))
         for rec in (src.get("delivery_confirmations") or [])
         if isinstance(rec, dict)
     ]
@@ -308,6 +308,9 @@ def test_projection_keeps_required_fields_and_excludes_file_bytes():
         "operator_splits.quantity",
         "line_items.name",
         "requires_printing",
+        "delivery_confirmations.confirmed_at",
+        "shipments.delivered_at",
+        "delivered_at",
     ):
         assert key in src
     assert '"design_files": 1' not in src
@@ -380,6 +383,61 @@ def test_view_filters_unchanged_on_lean_docs():
     assert [o["id"] for o in filter_orders_for_view(lean, "active")] == ["po-op"]
     assert [o["id"] for o in filter_orders_for_view(orders, "completed")] == ["po-done"]
     assert [o["id"] for o in filter_orders_for_view(lean, "completed")] == ["po-done"]
+
+
+def test_projection_keeps_age_end_from_last_valid_confirmation():
+    order = _order_terkirim(
+        delivered_at="2026-09-20T10:00:00+07:00",
+        scheduled_delivery_date="2026-09-25",
+        deadline="2026-09-30T00:00:00+07:00",
+        delivery_proofs=[{
+            "uploaded_at": "2026-09-21T00:00:00+07:00",
+            "created_at": "2026-09-21T00:00:00+07:00",
+            "data_url": _fat_blob("proof"),
+        }],
+        shipments=[
+            {
+                "id": "sj-live",
+                "created_at": "2026-09-02T01:00:00+07:00",
+                "delivered_at": "2026-09-05T10:00:00+07:00",
+                "delivery_status": "Terkirim",
+                "lines": [{"line_idx": 0, "qty": 200}],
+                "photo": _fat_blob("sj"),
+            },
+            {
+                "id": "sj-old",
+                "superseded": True,
+                "status": "superseded",
+                "delivered_at": "2026-09-20T10:00:00+07:00",
+                "delivery_status": "Terkirim",
+                "lines": [{"line_idx": 0, "qty": 200}],
+            },
+        ],
+        delivery_confirmations=[
+            {
+                "shipment_id": "sj-old",
+                "qty": 200,
+                "confirmed_at": "2026-09-20T10:00:00+07:00",
+                "note": "ignore me",
+            },
+            {
+                "shipment_id": "sj-live",
+                "qty": 200,
+                "confirmed_at": "2026-09-05T10:00:00+07:00",
+            },
+        ],
+    )
+    lean = apply_status_po_projection(order)
+    assert "confirmed_at" in lean["delivery_confirmations"][0]
+    assert "data_url" not in json.dumps(lean)
+    full = status_po_row(order)
+    projected = status_po_row(lean)
+    assert full["age_closed"] is True
+    assert full["age_end_at"] == "2026-09-05T10:00:00+07:00"
+    assert projected["age_closed"] == full["age_closed"]
+    assert projected["age_end_at"] == full["age_end_at"]
+    assert projected["status"] == full["status"]
+    assert projected["percent_delivered"] == full["percent_delivered"]
 
 
 def test_payload_size_reduction_local_harness_only():
