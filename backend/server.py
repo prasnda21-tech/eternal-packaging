@@ -10222,6 +10222,7 @@ _SALES_ORDER_LIST_PROJECTION = {
     "design_bypassed_at": 1,
     "payment_approved_at": 1,
     "payment_bypassed_at": 1,
+    "customer_approval.status": 1,
     "delivery_deadline_manual": 1,
     "buffer_stock": 1,
     "delivery_status": 1,

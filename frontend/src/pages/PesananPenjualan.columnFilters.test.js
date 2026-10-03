@@ -1,6 +1,11 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import api from "../lib/api";
+import {
+  EMPTY_SALES_ORDER_COLUMN_FILTERS,
+  applySalesOrderColumnFilters,
+  salesOrderStageLabel,
+} from "../lib/pesananPenjualanColumnFilters";
 import PesananPenjualan from "./PesananPenjualan";
 
 const mockSetSearchParams = jest.fn();
@@ -168,6 +173,121 @@ describe("Pesanan Penjualan header + column filters", () => {
     expect(container.querySelector('[data-testid="so-th-filter-outlet"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="so-th-filter-sales"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="so-th-filter-delivery"]')).toBeTruthy();
+  });
+
+  test("Proses / Sales badge uses only the stage label helper", async () => {
+    const blankStages = [null, "", "   ", "0", 99];
+    const blanks = blankStages.map((current_stage, index) => ({
+      id: `blank-${index}`,
+      po_number: `SO-BLANK-${index}`,
+      order_date: "2026-04-01",
+      customer: "Tanpa Tahap",
+      outlet: "Gudang",
+      sales: "Citra",
+      total_quantity: 10,
+      current_stage,
+    }));
+    const legacy = {
+      id: "legacy",
+      po_number: "SO-LEGACY",
+      order_date: "2026-04-02",
+      customer: "Label Lama",
+      outlet: "Gudang",
+      sales: "Citra",
+      total_quantity: 10,
+      current_stage: 99,
+      status_label: "Label Lama",
+    };
+    const scheduled = {
+      id: "scheduled",
+      po_number: "SO-SCHED",
+      order_date: "2026-04-03",
+      customer: "Jadwal",
+      outlet: "Gudang",
+      sales: "Citra",
+      total_quantity: 10,
+      current_stage: 5,
+      status_label: "Produksi",
+    };
+    const cancelled = {
+      id: "cancelled",
+      po_number: "SO-CANCEL",
+      order_date: "2026-04-04",
+      customer: "Batal",
+      outlet: "Gudang",
+      sales: "Citra",
+      total_quantity: 10,
+      cancelled: true,
+      hold: true,
+      current_stage: 5,
+      status_label: "Penjadwalan",
+    };
+    const held = {
+      id: "held",
+      po_number: "SO-HOLD",
+      order_date: "2026-04-05",
+      customer: "Tahan",
+      outlet: "Gudang",
+      sales: "Citra",
+      total_quantity: 10,
+      hold: true,
+      current_stage: 5,
+      status_label: "Penjadwalan",
+    };
+    const orders = [...blanks, legacy, scheduled, cancelled, held];
+    blanks.forEach((order) => {
+      expect(salesOrderStageLabel(order)).toBe("");
+    });
+    expect(applySalesOrderColumnFilters(blanks, {
+      ...EMPTY_SALES_ORDER_COLUMN_FILTERS,
+      stageText: "Tahap",
+    })).toEqual([]);
+    expect(applySalesOrderColumnFilters(blanks, {
+      ...EMPTY_SALES_ORDER_COLUMN_FILTERS,
+      stageText: "—",
+    })).toEqual([]);
+    expect(salesOrderStageLabel(legacy)).toBe("Label Lama");
+    expect(salesOrderStageLabel(scheduled)).toBe("Penjadwalan");
+    expect(salesOrderStageLabel(cancelled)).toBe("Cancelled");
+    expect(salesOrderStageLabel(held)).toBe("HOLD");
+
+    api.listSalesOrders.mockResolvedValue({ orders });
+    await renderPage();
+
+    const badge = (id) => container.querySelector(`[data-testid="order-row-${id}"] .so-list-badge`);
+    blanks.forEach((order) => {
+      const node = badge(order.id);
+      expect(node.textContent).toBe("—");
+      expect(node.textContent).not.toContain("Tahap");
+      expect(node.className).toBe(order.current_stage >= 14 ? "so-list-badge is-done" : "so-list-badge is-open");
+    });
+    expect(badge("legacy").textContent).toBe("Label Lama");
+    expect(badge("legacy").className).toBe("so-list-badge is-done");
+    expect(badge("scheduled").textContent).toBe("Penjadwalan");
+    expect(badge("scheduled").className).toBe("so-list-badge is-open");
+    expect(badge("cancelled").textContent).toBe("Cancelled");
+    expect(badge("cancelled").className).toBe("so-list-badge is-cancel");
+    expect(badge("held").textContent).toBe("HOLD");
+    expect(badge("held").className).toBe("so-list-badge is-hold");
+
+    const stageText = container.querySelector('[data-testid="so-filter-stage-text"]');
+    const setStageText = async (value) => {
+      await act(async () => {
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+        setter.call(stageText, value);
+        stageText.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    };
+    await setStageText("Penjadwalan");
+    expect(container.querySelector('[data-testid="order-row-scheduled"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="order-row-cancelled"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="order-row-held"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="order-row-blank-0"]')).toBeFalsy();
+    await setStageText("Produksi");
+    expect(container.querySelector('[data-testid="order-row-scheduled"]')).toBeFalsy();
+    await setStageText("Label Lama");
+    expect(container.querySelector('[data-testid="order-row-legacy"]')).toBeTruthy();
+    expect(container.querySelectorAll("[data-testid^='order-row-']").length).toBe(1);
   });
 });
 

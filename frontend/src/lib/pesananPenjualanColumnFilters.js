@@ -1,3 +1,5 @@
+import { STAGES } from "./constants";
+
 export const SALES_ORDER_STATUS_FILTERS = [
   { id: "all", label: "Semua" },
   { id: "aktif", label: "Aktif" },
@@ -31,6 +33,12 @@ export const EMPTY_SALES_ORDER_COLUMN_FILTERS = {
 };
 
 const ISO_DATE_PREFIX_RE = /^(\d{4})-(\d{2})-(\d{2})/;
+
+function salesOrderStageIndex(value) {
+  if (typeof value !== "number" || !Number.isInteger(value)) return null;
+  if (value < 0 || value >= STAGES.length) return null;
+  return value;
+}
 
 export function salesOrderIsoDate(value) {
   const text = String(value || "").trim();
@@ -66,9 +74,10 @@ export function salesOrderDeliveryStatus(order) {
 export function salesOrderStageLabel(order) {
   if (order?.cancelled) return "Cancelled";
   if (order?.hold) return "HOLD";
+  const stage = salesOrderStageIndex(order?.current_stage);
+  if (stage != null) return STAGES[stage];
   if (order?.status_label) return String(order.status_label);
-  if (order?.current_stage == null || order?.current_stage === "") return "";
-  return `Tahap ${order.current_stage}`;
+  return "";
 }
 
 export function salesOrderSalesName(order) {

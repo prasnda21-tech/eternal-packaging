@@ -524,3 +524,93 @@ async def test_sales_order_list_still_rejects_missing_permission_and_sales_etern
             assert locked.status_code == 403
     finally:
         app.dependency_overrides.pop(current_user, None)
+
+
+def _ids(response):
+    assert response.status_code == 200
+    return {row["id"] for row in response.json()["orders"]}
+
+
+@pytest.mark.anyio
+async def test_list_projection_customer_approval_reaches_hold_snapshot():
+    """Approved customer design leaves HOLD only through the list projection."""
+    import server
+    marker = uuid.uuid4().hex[:8].upper()
+    approved = _order(
+        marker=marker,
+        po_number=f"PO-LIST-{marker}-OK",
+        current_stage=2,
+        status_label="Design",
+        design_status="Waiting",
+        design_bypassed=False,
+        payment_status="Approved",
+        payment_bypassed=False,
+        design_files=[{"name": "design.pdf", "data": "x" * 4000}],
+        payment_files=[{"name": "pay.pdf", "data": "y" * 4000}],
+        customer_approval={
+            "status": "approved",
+            "token": "secret-token",
+            "note": "do-not-leak",
+        },
+        created_at="2026-09-03T10:00:00+00:00",
+    )
+    pending = _order(
+        marker=marker,
+        po_number=f"PO-LIST-{marker}-WAIT",
+        current_stage=2,
+        status_label="Design",
+        design_status="Waiting",
+        design_bypassed=False,
+        payment_status="Approved",
+        payment_bypassed=False,
+        design_files=[{"name": "design.pdf", "data": "x" * 4000}],
+        payment_files=[{"name": "pay.pdf", "data": "y" * 4000}],
+        customer_approval={
+            "status": "pending",
+            "token": "secret-token",
+            "note": "do-not-leak",
+        },
+        created_at="2026-09-03T11:00:00+00:00",
+    )
+    await server.db.orders.insert_many([approved, pending])
+    app.dependency_overrides[current_user] = _admin
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            listed = await client.get("/api/sales-orders", params={"q": marker})
+            assert listed.status_code == 200
+            by_id = {row["id"]: row for row in listed.json()["orders"]}
+            assert set(by_id) == {approved["id"], pending["id"]}
+
+            approved_row = by_id[approved["id"]]
+            pending_row = by_id[pending["id"]]
+            assert approved_row["customer_approval"] == {"status": "approved"}
+            assert pending_row["customer_approval"] == {"status": "pending"}
+            assert "design_files" not in approved_row
+            assert "payment_files" not in approved_row
+            assert approved_row["hold"] is False
+            assert approved_row["hold_reasons"] == []
+            assert pending_row["hold"] is True
+            assert pending_row["hold_reasons"] == ["Menunggu approval design"]
+
+            params = {"q": marker, "page": 1, "page_size": 50}
+            aktif_ids = _ids(await client.get("/api/sales-orders", params={**params, "status": "aktif"}))
+            gabungan_ids = _ids(await client.get("/api/sales-orders", params={**params, "status": "gabungan"}))
+            hold_ids = _ids(await client.get("/api/sales-orders", params={**params, "status": "hold"}))
+
+            assert approved["id"] in aktif_ids
+            assert approved["id"] in gabungan_ids
+            assert approved["id"] not in hold_ids
+            assert pending["id"] not in aktif_ids
+            assert pending["id"] not in gabungan_ids
+            assert pending["id"] in hold_ids
+
+            gabungan = await client.get("/api/sales-orders", params={**params, "status": "gabungan"})
+            gabungan_row = gabungan.json()["orders"][0]
+            assert gabungan_row["id"] == approved["id"]
+            assert gabungan_row["customer_approval"] == {"status": "approved"}
+            assert gabungan_row["hold"] is False
+            assert gabungan.json()["total"] == 1
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+        await server.db.orders.delete_many({"po_number": {"$regex": marker}})
