@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError, PyMongoError
@@ -805,6 +805,204 @@ async def read_opening_balance(
     return status
 
 
+def _order_cancelled(order: dict) -> bool:
+    if order.get("cancelled") or order.get("is_cancelled"):
+        return True
+    status = str(order.get("status") or order.get("status_label") or "").strip().lower()
+    return status in ("cancelled", "dibatalkan", "void")
+
+
+def _delivery_qty(line: dict) -> Any:
+    if line.get("qty") is not None:
+        return line.get("qty")
+    if line.get("quantity") is not None:
+        return line.get("quantity")
+    return line.get("shipped_qty")
+
+
+def _same_sales_identity(line: dict, ident: dict) -> bool:
+    left_accurate = str(line.get("accurate_item_id") or line.get("accurate_id") or "").strip()
+    right_accurate = str(ident.get("accurate_item_id") or ident.get("accurate_id") or "").strip()
+    if left_accurate and right_accurate and left_accurate == right_accurate:
+        return True
+    left_master = str(line.get("master_item_id") or line.get("item_id") or "").strip()
+    right_master = str(ident.get("master_item_id") or ident.get("item_id") or ident.get("id") or "").strip()
+    return bool(left_master and right_master and left_master == right_master)
+
+
+def _is_operational_branch(branch: dict) -> bool:
+    code = str(branch.get("code") or "").strip().upper()
+    name = str(branch.get("name") or "").strip().lower()
+    return code == "YGY" or "yogyakarta" in name
+
+
+def resolve_operational_branch(branches: Iterable[dict], warehouse_branch_ids: Iterable[str]) -> Optional[dict]:
+    """Current demand belongs to Yogyakarta, once. A single stocked branch is the fallback."""
+    rows = [row for row in branches if row.get("id")]
+    operational = [row for row in rows if _is_operational_branch(row)]
+    if len(operational) > 1:
+        coded = [row for row in operational if str(row.get("code") or "").strip().upper() == "YGY"]
+        operational = coded or operational[:1]
+    if len(operational) == 1:
+        return operational[0]
+    stocked_ids = {str(branch_id) for branch_id in warehouse_branch_ids if branch_id}
+    stocked = [row for row in rows if row.get("id") in stocked_ids]
+    if len(stocked) == 1:
+        return stocked[0]
+    return None
+
+
+def operational_sales_progress(
+    orders: Iterable[dict],
+    deliveries: Iterable[dict],
+) -> Tuple[Dict[str, float], Dict[str, str], Dict[str, float], Dict[str, str]]:
+    """Outstanding sales and print progress still sitting on that outstanding qty.
+
+    Print progress does not change physical stock. Delivered qty leaves outstanding,
+    and print already shipped with it is not counted again against open orders.
+    """
+    from quantity_rules import is_print_line
+    from services.stock_engine_v2 import _add, _line_item_identity, identity_keys, qty_num
+
+    order_by_id: Dict[str, dict] = {}
+    active_orders: List[dict] = []
+    for order in orders:
+        if _order_cancelled(order):
+            continue
+        active_orders.append(order)
+        order_id = str(order.get("id") or "").strip()
+        if order_id:
+            order_by_id[order_id] = order
+
+    delivery_lines: Dict[str, List[dict]] = {}
+    for delivery in deliveries:
+        if delivery.get("is_cancelled") or delivery.get("cancelled"):
+            continue
+        order_id = str(delivery.get("po_id") or delivery.get("order_id") or "").strip()
+        if order_id not in order_by_id:
+            continue
+        lines = delivery.get("line_items") or delivery.get("lines") or []
+        delivery_lines.setdefault(order_id, []).extend(line for line in lines if isinstance(line, dict))
+
+    outstanding: Dict[str, float] = {}
+    outstanding_alias: Dict[str, str] = {}
+    printed: Dict[str, float] = {}
+    printed_alias: Dict[str, str] = {}
+
+    for order in active_orders:
+        order_id = str(order.get("id") or "").strip()
+        lines = list(order.get("line_items") or [])
+        shipped = [0.0] * len(lines)
+        unindexed: List[Tuple[dict, Any]] = []
+        for line in delivery_lines.get(order_id, []):
+            qty = _delivery_qty(line)
+            try:
+                idx = int(line.get("line_idx"))
+            except (TypeError, ValueError):
+                idx = None
+            if idx is not None and 0 <= idx < len(lines):
+                shipped[idx] = qty_num(shipped[idx]) + qty_num(qty)
+                continue
+            ident = _line_item_identity(line)
+            if identity_keys(ident):
+                unindexed.append((ident, qty))
+        for ident, qty in unindexed:
+            left = qty_num(qty)
+            for idx, line in enumerate(lines):
+                if left <= 0:
+                    break
+                if not _same_sales_identity(line, ident):
+                    continue
+                room = max(0.0, qty_num(line.get("quantity")) - qty_num(shipped[idx]))
+                take = min(room, left)
+                shipped[idx] = qty_num(shipped[idx]) + take
+                left -= take
+
+        remaining: List[Optional[float]] = []
+        for idx, line in enumerate(lines):
+            ident = _line_item_identity(line)
+            if not identity_keys(ident):
+                remaining.append(None)
+                continue
+            open_qty = max(0.0, qty_num(line.get("quantity")) - qty_num(shipped[idx]))
+            remaining.append(open_qty)
+            _add(outstanding, outstanding_alias, ident, open_qty)
+
+        print_by_idx: Dict[int, float] = {}
+        unassigned = []
+        for split in order.get("operator_splits") or []:
+            raw_idx = split.get("line_idx")
+            if raw_idx is None or str(raw_idx).strip() == "":
+                unassigned.append(split)
+                continue
+            try:
+                idx = int(raw_idx)
+            except (TypeError, ValueError):
+                continue
+            if idx < 0 or idx >= len(lines) or remaining[idx] is None:
+                continue
+            print_by_idx[idx] = qty_num(print_by_idx.get(idx, 0)) + qty_num(split.get("qty_completed"))
+        print_lines = [
+            idx for idx, line in enumerate(lines)
+            if remaining[idx] is not None and is_print_line(line)
+        ]
+        if unassigned and len(print_lines) == 1:
+            idx = print_lines[0]
+            extra = sum(qty_num(split.get("qty_completed")) for split in unassigned)
+            print_by_idx[idx] = qty_num(print_by_idx.get(idx, 0)) + extra
+
+        for idx, line in enumerate(lines):
+            open_qty = remaining[idx]
+            if open_qty is None:
+                continue
+            applied = min(qty_num(print_by_idx.get(idx, 0)), qty_num(open_qty))
+            if applied <= 0:
+                continue
+            _add(printed, printed_alias, _line_item_identity(line), applied)
+
+    return outstanding, outstanding_alias, printed, printed_alias
+
+
+def _demand_for_master(master: dict, progress) -> dict:
+    from services.stock_engine_v2 import _get, compute_belum_dicetak, qty_num
+
+    outstanding, outstanding_alias, printed, printed_alias = progress
+    ident = {
+        "id": master.get("id"),
+        "master_item_id": master.get("id"),
+        "accurate_item_id": master.get("accurate_item_id"),
+    }
+    order_qty = qty_num(_get(outstanding, outstanding_alias, ident))
+    printed_qty = min(qty_num(_get(printed, printed_alias, ident)), order_qty)
+    return {
+        "order_qty": order_qty,
+        "printed_qty": printed_qty,
+        "belum_dicetak": compute_belum_dicetak(order_qty, printed_qty),
+    }
+
+
+async def _sales_progress(db):
+    orders = await db.orders.find({}, {"_id": 0}).to_list(20000)
+    deliveries = await db.sales_deliveries.find({}, {"_id": 0}).to_list(20000)
+    return operational_sales_progress(orders, deliveries)
+
+
+def _operational_branch_payload(branch: Optional[dict]) -> Optional[dict]:
+    if not branch:
+        return None
+    return {
+        "id": branch.get("id") or "",
+        "code": branch.get("code") or "",
+        "name": branch.get("name") or "",
+    }
+
+
+def _catalog_page(page: int, limit: int) -> Tuple[int, int]:
+    safe_page = page if isinstance(page, int) and page > 0 else 1
+    safe_limit = limit if isinstance(limit, int) and limit > 0 else 50
+    return safe_page, min(safe_limit, _MAX_READ_LIMIT)
+
+
 async def list_physical_stock_catalog(
     db,
     *,
@@ -814,7 +1012,12 @@ async def list_physical_stock_catalog(
     page: int = 1,
     limit: int = 50,
 ) -> dict:
-    """List item/location physical qty from balances only. Missing balances stay 0 and are not inserted."""
+    """Item + branch stock. Physical qty is the sum of that branch's warehouses.
+
+    Outstanding sales orders attach once, to the operational branch. Stock Saat Ini
+    is that physical sum minus outstanding qty and may be negative. Print progress
+    does not reduce physical stock or Stock Saat Ini. Missing balances stay 0.
+    """
     branch = await _require_branch_any(db, branch_id) if branch_id else None
     warehouse = await _require_warehouse_any(db, warehouse_id) if warehouse_id else None
     if branch and warehouse and warehouse.get("branch_id") != branch.get("id"):
@@ -822,13 +1025,14 @@ async def list_physical_stock_catalog(
     warehouse_query: Dict[str, Any] = {}
     if branch:
         warehouse_query["branch_id"] = branch["id"]
-    if warehouse:
-        warehouse_query["id"] = warehouse["id"]
     warehouses = await db[WAREHOUSES_COLLECTION].find(warehouse_query, {"_id": 0}).sort(
         [("code", 1), ("id", 1)]
     ).to_list(500)
     branch_ids = {row.get("branch_id") for row in warehouses if row.get("branch_id")}
     branches, _unused = await _location_maps(db, branch_ids, [])
+    all_branches = await db[BRANCHES_COLLECTION].find({}, {"_id": 0, "id": 1, "code": 1, "name": 1}).to_list(500)
+    operational = resolve_operational_branch(all_branches, branch_ids)
+    operational_id = (operational or {}).get("id")
     item_query: Dict[str, Any] = {}
     text = str(q or "").strip()
     if text:
@@ -841,58 +1045,63 @@ async def list_physical_stock_catalog(
     masters = await db[MASTER_ITEMS_COLLECTION].find(item_query, {"_id": 0}).sort(
         [("item_name", 1), ("id", 1)]
     ).to_list(1000)
-    safe_page = page if isinstance(page, int) and page > 0 else 1
-    safe_limit = limit if isinstance(limit, int) and limit > 0 else 50
-    safe_limit = min(safe_limit, _MAX_READ_LIMIT)
+    safe_page, safe_limit = _catalog_page(page, limit)
+    empty = {
+        "items": [],
+        "total": 0,
+        "page": safe_page,
+        "limit": safe_limit,
+        "page_count": 0,
+        "master_item_count": len(masters),
+        "warehouse_count": len(warehouses),
+        "operational_branch": _operational_branch_payload(operational),
+    }
     if not masters or not warehouses:
-        return {
-            "items": [],
-            "total": 0,
-            "page": safe_page,
-            "limit": safe_limit,
-            "page_count": 0,
-            "master_item_count": len(masters),
-            "warehouse_count": len(warehouses),
-        }
+        return empty
     units = await _catalog_units(db, masters)
-    identities = [
-        {
-            "master_item_id": master["id"],
-            "warehouse_id": wh["id"],
-        }
-        for master in masters
-        for wh in warehouses
-    ]
+    progress = await _sales_progress(db)
     balance_docs = await db[BALANCE_COLLECTION].find(
         {
             "master_item_id": {"$in": [master["id"] for master in masters]},
             "warehouse_id": {"$in": [wh["id"] for wh in warehouses]},
         },
         {"_id": 0},
-    ).to_list(len(identities) or 1)
-    balances = {
-        (doc.get("master_item_id"), doc.get("branch_id"), doc.get("warehouse_id")): doc
-        for doc in balance_docs
-    }
+    ).to_list(max(len(masters) * len(warehouses), 1))
+    by_branch: Dict[str, List[dict]] = {}
+    for wh in warehouses:
+        by_branch.setdefault(wh.get("branch_id") or "", []).append(wh)
+    balances = {}
+    for doc in balance_docs:
+        balances.setdefault((doc.get("master_item_id"), doc.get("branch_id")), []).append(doc)
+    from services.stock_engine_v2 import compute_stock_current, qty_num
+
     rows = []
     for master in masters:
-        for wh in warehouses:
-            branch_doc = branches.get(wh.get("branch_id")) or {}
-            balance = balances.get((master.get("id"), wh.get("branch_id"), wh.get("id")))
+        demand = _demand_for_master(master, progress)
+        for branch_key in sorted(by_branch, key=lambda key: ((branches.get(key) or {}).get("code") or "", key or "")):
+            branch_doc = branches.get(branch_key) or {}
+            docs = balances.get((master.get("id"), branch_key), [])
+            physical = sum(qty_num(doc.get("physical_qty")) for doc in docs)
+            updated = [doc.get("updated_at") for doc in docs if doc.get("updated_at")]
+            on_operational = bool(operational_id) and branch_key == operational_id
+            order_qty = demand["order_qty"] if on_operational else 0
+            printed_qty = demand["printed_qty"] if on_operational else 0
+            belum = demand["belum_dicetak"] if on_operational else 0
             rows.append({
                 "master_item_id": master.get("id"),
                 "item_code": master.get("item_code") or "",
                 "item_name": master.get("item_name") or "",
                 "accurate_item_id": str(master.get("accurate_item_id") or ""),
                 "base_unit": units.get(master.get("id")) or "PCS",
-                "branch_id": wh.get("branch_id") or "",
+                "branch_id": branch_key,
                 "branch_code": branch_doc.get("code") or "",
                 "branch_name": branch_doc.get("name") or "",
-                "warehouse_id": wh.get("id") or "",
-                "warehouse_code": wh.get("code") or "",
-                "warehouse_name": wh.get("name") or "",
-                "physical_qty": int((balance or {}).get("physical_qty") or 0),
-                "updated_at": (balance or {}).get("updated_at"),
+                "physical_qty": qty_num(physical),
+                "order_qty": order_qty,
+                "printed_qty": printed_qty,
+                "belum_dicetak": belum,
+                "stock_current": compute_stock_current(physical, order_qty),
+                "updated_at": max(updated) if updated else None,
             })
     total = len(rows)
     start = (safe_page - 1) * safe_limit
@@ -905,6 +1114,7 @@ async def list_physical_stock_catalog(
         "page_count": page_count,
         "master_item_count": len(masters),
         "warehouse_count": len(warehouses),
+        "operational_branch": _operational_branch_payload(operational),
     }
 
 

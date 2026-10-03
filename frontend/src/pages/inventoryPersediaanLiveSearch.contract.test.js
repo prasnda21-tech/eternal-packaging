@@ -47,17 +47,24 @@ describe("Persediaan live search inventory scope", () => {
     expect(hook).toMatch(/LIVE_SEARCH_DEBOUNCE_MS = 300/);
   });
 
-  test("Stock Saat Ini shows physical stock per branch and warehouse", () => {
-    expect(stock).toMatch(/Stok fisik aktual per Cabang & Gudang/);
+  test("Stock Saat Ini shows branch physical stock minus outstanding orders", () => {
+    expect(stock).toMatch(/stok fisik cabang − qty pesanan outstanding/);
+    expect(stock).toMatch(/Progress cetak tidak mengurangi stok/);
     expect(stock).toMatch(/api\.physicalStockCatalog\(/);
     expect(stock).toMatch(/Nama Barang/);
     expect(stock).toMatch(/Satuan Dasar/);
-    expect(stock).toMatch(/Stok Fisik/);
+    expect(stock).toMatch(/Stock Fisik/);
+    expect(stock).toMatch(/Qty Pesanan/);
+    expect(stock).toMatch(/Belum Dicetak/);
+    expect(stock).toMatch(/Sudah Dicetak/);
+    expect(stock).toMatch(/stock_current/);
+    expect(stock).not.toMatch(/stock-filter-warehouse/);
     expect(stock).not.toMatch(/Qty Saat Ini \+ Pembelian Barang/);
     expect(stock).not.toMatch(/Pembelian Barang/);
     expect(stock).not.toMatch(/Qty PO/);
     expect(stock).not.toMatch(/Qty Cetak Operator/);
     expect(stock).not.toMatch(/GUDANG_UTAMA/);
+    expect(stock).not.toMatch(/YGY \/ MAIN/);
     expect(stock).toMatch(/data-testid="saldo-awal-button"/);
     expect(stock).toMatch(/createPhysicalOpeningBalance/);
     expect(stock).not.toMatch(/initOpeningBalance/);

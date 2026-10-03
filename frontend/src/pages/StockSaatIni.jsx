@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertCircle, Download, Search, X } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
@@ -19,7 +19,6 @@ export default function StockSaatIni() {
   const [branches, setBranches] = useState([]);
   const [warehouses, setWarehouses] = useState([]);
   const [branchId, setBranchId] = useState("");
-  const [warehouseId, setWarehouseId] = useState("");
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
   const { input: qInput, setInput: setQInput, q, flush: doSearch, clear: clearQuery, pending: searchPending } = useDebouncedLiveSearch();
@@ -28,7 +27,7 @@ export default function StockSaatIni() {
   const [openingOpen, setOpeningOpen] = useState(false);
   const loadSeq = useRef(0);
 
-  useEffect(() => { setPage(1); }, [q, branchId, warehouseId]);
+  useEffect(() => { setPage(1); }, [q, branchId]);
 
   useEffect(() => {
     if (!searchPending) return;
@@ -50,17 +49,6 @@ export default function StockSaatIni() {
     return () => { cancelled = true; };
   }, []);
 
-  const warehouseOptions = useMemo(
-    () => warehouseChoices(warehouses, branchId),
-    [warehouses, branchId],
-  );
-
-  useEffect(() => {
-    if (warehouseId && !warehouseOptions.some((row) => row.id === warehouseId)) {
-      setWarehouseId("");
-    }
-  }, [warehouseId, warehouseOptions]);
-
   const load = useCallback(async () => {
     const seq = ++loadSeq.current;
     setLoading(true);
@@ -70,7 +58,6 @@ export default function StockSaatIni() {
       const d = await api.physicalStockCatalog({
         q,
         branch_id: branchId || undefined,
-        warehouse_id: warehouseId || undefined,
         page,
         limit: pageSize,
       });
@@ -83,7 +70,7 @@ export default function StockSaatIni() {
     } finally {
       if (seq === loadSeq.current) setLoading(false);
     }
-  }, [q, branchId, warehouseId, page, pageSize]);
+  }, [q, branchId, page, pageSize]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -102,12 +89,12 @@ export default function StockSaatIni() {
   });
   const emptyText = stockEmptyMessage({
     masterItemCount: data?.master_item_count || 0,
-    warehouseCount: branchId ? warehouseOptions.length : (data?.warehouse_count || 0),
+    warehouseCount: data?.warehouse_count || 0,
     branchId,
   });
 
   const download = () => {
-    const header = ["Kode", "Nama Barang", "Satuan Dasar", "Cabang", "Gudang", "Stok Fisik", "Terakhir Update"];
+    const header = ["Kode", "Nama Barang", "Satuan Dasar", "Cabang", "Stock Fisik", "Qty Pesanan", "Belum Dicetak", "Sudah Dicetak", "Stock Saat Ini", "Terakhir Update"];
     const lines = [header.join(",")];
     items.forEach((row) => {
       const cells = [
@@ -115,8 +102,11 @@ export default function StockSaatIni() {
         row.item_name,
         row.base_unit,
         row.branch_name || row.branch_code,
-        row.warehouse_name || row.warehouse_code,
         row.physical_qty,
+        row.order_qty,
+        row.belum_dicetak,
+        row.printed_qty,
+        row.stock_current,
         row.updated_at || "",
       ].map((value) => `"${String(value ?? "").replace(/"/g, '""')}"`);
       lines.push(cells.join(","));
@@ -138,7 +128,12 @@ export default function StockSaatIni() {
         <div className="prod-heading-copy">
           <p className="eyebrow">Persediaan</p>
           <h1 data-testid="stock-title">Stock Saat Ini</h1>
-          <p className="subhead" data-testid="stock-subtitle">Stok fisik aktual per Cabang & Gudang</p>
+          <p className="subhead" data-testid="stock-subtitle">Stock Saat Ini = stok fisik cabang − qty pesanan outstanding. Progress cetak tidak mengurangi stok.</p>
+          {data?.operational_branch && (
+            <p className="subhead" data-testid="stock-operational-branch">
+              Cabang operasional: {data.operational_branch.code} — {data.operational_branch.name}. Qty pesanan dihitung sekali pada cabang ini.
+            </p>
+          )}
         </div>
         <div className="stock-heading-actions">
           <button
@@ -202,17 +197,6 @@ export default function StockSaatIni() {
             ))}
           </select>
           <select
-            value={warehouseId}
-            onChange={(e) => { setWarehouseId(e.target.value); setPage(1); }}
-            data-testid="stock-filter-warehouse"
-            aria-label="Gudang"
-          >
-            <option value="">Semua Gudang</option>
-            {warehouseOptions.map((warehouse) => (
-              <option key={warehouse.id} value={warehouse.id}>{warehouse.code} — {warehouse.name}</option>
-            ))}
-          </select>
-          <select
             value={pageSize}
             onChange={(e) => { setPageSize(Number(e.target.value)); setPage(1); }}
             data-testid="stock-page-size"
@@ -232,28 +216,34 @@ export default function StockSaatIni() {
               <th className="col-text">Nama Barang</th>
               <th className="col-fit">Satuan Dasar</th>
               <th className="col-fit">Cabang</th>
-              <th className="col-fit">Gudang</th>
-              <th className="col-fit num">Stok Fisik</th>
+              <th className="col-fit num">Stock Fisik</th>
+              <th className="col-fit num">Qty Pesanan</th>
+              <th className="col-fit num">Belum Dicetak</th>
+              <th className="col-fit num">Sudah Dicetak</th>
+              <th className="col-fit num">Stock Saat Ini</th>
               <th className="col-fit">Terakhir Update</th>
             </tr>
           </thead>
           <tbody data-testid="stock-tbody" data-search-state={tableView}>
             {tableView === "loading" && (
-              <tr data-testid="stock-loading"><td colSpan={7} className="muted small">Memuat…</td></tr>
+              <tr data-testid="stock-loading"><td colSpan={10} className="muted small">Memuat…</td></tr>
             )}
             {tableView === "empty" && (
               <tr>
-                <td colSpan={7} className="muted small" data-testid="stock-empty">{emptyText}</td>
+                <td colSpan={10} className="muted small" data-testid="stock-empty">{emptyText}</td>
               </tr>
             )}
             {tableView === "results" && items.map((it) => (
-              <tr key={`${it.master_item_id}-${it.warehouse_id}`} data-testid={`stock-row-${it.master_item_id}-${it.warehouse_id}`}>
+              <tr key={`${it.master_item_id}-${it.branch_id}`} data-testid={`stock-row-${it.master_item_id}-${it.branch_id}`}>
                 <td className="col-fit mono">{it.item_code || "—"}</td>
                 <td className="col-text">{it.item_name || "—"}</td>
                 <td className="col-fit">{it.base_unit || "—"}</td>
                 <td className="col-fit">{it.branch_code || it.branch_name || "—"}</td>
-                <td className="col-fit">{it.warehouse_code || it.warehouse_name || "—"}</td>
-                <td className="col-fit num mono" data-testid={`stock-physical-${it.master_item_id}-${it.warehouse_id}`}>{fmtQty(it.physical_qty)}</td>
+                <td className="col-fit num mono" data-testid={`stock-physical-${it.master_item_id}`}>{fmtQty(it.physical_qty)}</td>
+                <td className="col-fit num mono" data-testid={`stock-order-${it.master_item_id}`}>{fmtQty(it.order_qty)}</td>
+                <td className="col-fit num mono" data-testid={`stock-belum-${it.master_item_id}`}>{fmtQty(it.belum_dicetak)}</td>
+                <td className="col-fit num mono" data-testid={`stock-printed-${it.master_item_id}`}>{fmtQty(it.printed_qty)}</td>
+                <td className="col-fit num mono" data-testid={`stock-current-${it.master_item_id}`}>{fmtQty(it.stock_current)}</td>
                 <td className="col-fit small nowrap">{it.updated_at ? formatDate(it.updated_at) : "—"}</td>
               </tr>
             ))}

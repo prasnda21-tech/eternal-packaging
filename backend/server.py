@@ -11560,7 +11560,7 @@ async def physical_stock_catalog_get(
     limit: int = 50,
     user=Depends(require_perm("current_stock.view")),
 ):
-    """Read physical stock rows for Stock Saat Ini. Does not write balances."""
+    """Read Stock Saat Ini. Branch physical sum minus outstanding sales. Does not write balances."""
     from services.physical_stock import (
         PhysicalStockNotFoundError,
         PhysicalStockValidationError,
