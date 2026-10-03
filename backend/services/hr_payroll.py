@@ -10,6 +10,7 @@ import html
 import io
 import re
 import uuid
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any, Dict, List, Optional
 
@@ -52,6 +53,10 @@ STATUS_DRAFT = "DRAFT"
 STATUS_REVIEW = "REVIEW"
 STATUS_APPROVAL = "APPROVAL"
 STATUS_FINAL = "FINAL"
+WORKFLOW_FINALIZE = "finalize"
+WORKFLOW_POST = "post"
+WORKFLOW_REOPEN = "reopen"
+WORKFLOW_CLAIM_TTL_SECONDS = 120
 ALLOWED = {
     STATUS_DRAFT: [STATUS_REVIEW],
     STATUS_REVIEW: [STATUS_APPROVAL, STATUS_DRAFT],
@@ -200,7 +205,13 @@ async def _load_all_users_for_directory(db) -> Dict[str, dict]:
 
 
 def public_period(doc: Optional[dict]) -> Optional[dict]:
-    return _clean(doc)
+    out = _clean(doc)
+    if not out:
+        return None
+    out.pop("workflow_claim", None)
+    out.pop("workflow_op", None)
+    out.pop("workflow_claim_expires_at", None)
+    return out
 
 
 def public_line(doc: Optional[dict]) -> Optional[dict]:
@@ -930,7 +941,9 @@ async def list_kasbon_schedules(db, *, employee_id: str = "", active_only: bool 
 
 
 async def upsert_attendance_entry(db, period_id: str, employee_id: str, payload: dict, user: Optional[dict] = None) -> dict:
-    await get_period(db, period_id)
+    period = await get_period(db, period_id)
+    if period.get("status") != STATUS_DRAFT or await _posted_accrual(db, period_id):
+        raise HTTPException(409, "Kehadiran hanya dapat diubah pada periode DRAFT.")
     await get_employee(db, employee_id)
     nonnegative = (
         "work_days", "late_minutes", "alpha_days", "unpaid_leave_days", "unpaid_sick_days",
@@ -1147,7 +1160,7 @@ async def _calculate_employee(db, employee: dict, period: dict, components: List
 async def calculate_period(db, period_id: str, user: dict) -> dict:
     async with get_named_lock(f"hr_payroll_calc:{period_id}"):
         period = await get_period(db, period_id)
-        if period.get("status") != STATUS_DRAFT:
+        if period.get("status") != STATUS_DRAFT or await _posted_accrual(db, period_id):
             raise HTTPException(409, "Perhitungan hanya dapat dilakukan pada status DRAFT.")
         employees = await db[EMPLOYEES].find({"active": {"$ne": False}}, {"_id": 0}).sort("employee_number", 1).to_list(5000)
         components = await list_components(db, include_inactive=False)
@@ -1237,7 +1250,7 @@ async def adjust_line(
     accounting_account_id: Any = None,
 ) -> dict:
     period = await get_period(db, period_id)
-    if period.get("status") != STATUS_DRAFT:
+    if period.get("status") != STATUS_DRAFT or await _posted_accrual(db, period_id):
         raise HTTPException(409, "Penyesuaian hanya dapat dilakukan pada status DRAFT.")
     if kind not in ("earning", "deduction"):
         raise HTTPException(400, "Jenis penyesuaian harus earning atau deduction.")
@@ -1276,15 +1289,336 @@ async def adjust_line(
     return public_line(line)
 
 
+def _claim_deadline() -> str:
+    return (datetime.now(timezone.utc) + timedelta(seconds=WORKFLOW_CLAIM_TTL_SECONDS)).isoformat()
+
+
+def _workflow_claim_free_filter() -> Dict[str, Any]:
+    """Blank, expired, or legacy claim with no expiry. A future expiry stays reserved."""
+    now = now_iso()
+    return {"$or": [
+        {"workflow_claim": None},
+        {"workflow_claim": ""},
+        {"workflow_claim": {"$exists": False}},
+        {"workflow_claim_expires_at": {"$lte": now}},
+        {"workflow_claim_expires_at": {"$exists": False}},
+    ]}
+
+
+def _claim_is_current(period: Optional[dict]) -> bool:
+    if not period:
+        return False
+    token = str(period.get("workflow_claim") or "")
+    expires = str(period.get("workflow_claim_expires_at") or "")
+    return bool(token and expires and expires > now_iso())
+
+
+def _workflow_claim_values(token: str, op: str) -> Dict[str, Any]:
+    return {
+        "workflow_claim": token,
+        "workflow_op": op,
+        "workflow_claim_expires_at": _claim_deadline(),
+        "updated_at": now_iso(),
+    }
+
+
+def _workflow_claim_unset() -> Dict[str, str]:
+    return {"workflow_claim": "", "workflow_op": "", "workflow_claim_expires_at": ""}
+
+
+async def claim_workflow(db, period_id: str, op: str, expected_status: str) -> dict:
+    """Reserve one payroll workflow.
+
+    The token is a lease. The same operation may take over immediately, including
+    a lease that has not expired, so a dead process is recovered without waiting
+    and without a finally block. A different operation waits until the lease expires.
+    """
+    token = str(uuid.uuid4())
+    claimed = await db[PERIODS].find_one_and_update(
+        {"id": str(period_id), "status": expected_status, **_workflow_claim_free_filter()},
+        {"$set": _workflow_claim_values(token, op)},
+        return_document=ReturnDocument.AFTER,
+    )
+    if claimed and str(claimed.get("workflow_claim") or "") == token:
+        return claimed
+    current = await db[PERIODS].find_one({"id": str(period_id)}, {"_id": 0})
+    if not current:
+        raise HTTPException(404, "Periode payroll tidak ditemukan.")
+    if str(current.get("status") or "") != expected_status:
+        raise HTTPException(409, "Status periode telah berubah.")
+    existing = str(current.get("workflow_claim") or "")
+    existing_op = str(current.get("workflow_op") or "")
+    if existing and existing_op == op:
+        stolen = await db[PERIODS].find_one_and_update(
+            {"id": str(period_id), "status": expected_status, "workflow_claim": existing},
+            {"$set": _workflow_claim_values(token, op)},
+            return_document=ReturnDocument.AFTER,
+        )
+        if stolen and str(stolen.get("workflow_claim") or "") == token:
+            return stolen
+        raise HTTPException(409, "Status periode telah berubah.")
+    if existing and _claim_is_current(current) and existing_op != op:
+        raise HTTPException(409, "Periode payroll sedang diproses.")
+    if existing:
+        stolen = await db[PERIODS].find_one_and_update(
+            {"id": str(period_id), "status": expected_status, "workflow_claim": existing, **_workflow_claim_free_filter()},
+            {"$set": _workflow_claim_values(token, op)},
+            return_document=ReturnDocument.AFTER,
+        )
+        if stolen and str(stolen.get("workflow_claim") or "") == token:
+            return stolen
+    raise HTTPException(409, "Periode payroll sedang diproses.")
+
+
+async def _touch_workflow_claim(db, period_id: str, token: str, expected_status: str) -> bool:
+    """Extend the lease only while this token still owns the expected status."""
+    if not token:
+        return False
+    result = await db[PERIODS].update_one(
+        {"id": str(period_id), "status": expected_status, "workflow_claim": token},
+        {"$set": {"workflow_claim_expires_at": _claim_deadline(), "updated_at": now_iso()}},
+    )
+    return result.matched_count == 1
+
+
+async def release_workflow_claim(db, period_id: str, token: str) -> None:
+    if not token:
+        return
+    await db[PERIODS].update_one(
+        {"id": str(period_id), "workflow_claim": token},
+        {"$unset": _workflow_claim_unset()},
+    )
+
+
+async def _commit_final_status(db, period_id: str, token: str, updates: dict):
+    return await db[PERIODS].find_one_and_update(
+        {"id": str(period_id), "status": STATUS_APPROVAL, "workflow_claim": token},
+        {"$set": updates, "$unset": _workflow_claim_unset()},
+        return_document=ReturnDocument.AFTER,
+    )
+
+
+async def _posted_accrual(db, period_id: str):
+    from services.journal_core import STATUS_POSTED, find_primary_journal_for_source
+    from services.payroll_journal_posting import SOURCE_TYPE
+    journal = await find_primary_journal_for_source(db, SOURCE_TYPE, str(period_id))
+    if journal and journal.get("status") == STATUS_POSTED:
+        return journal
+    return None
+
+
+async def _require_final_with_journal(db, period_id: str) -> dict:
+    fresh = await get_period(db, period_id)
+    journal = await _posted_accrual(db, period_id)
+    if str(fresh.get("status") or "") == STATUS_FINAL and journal:
+        return public_period(fresh)
+    raise HTTPException(409, "Finalisasi payroll belum selesai.")
+
+
+async def _mark_open_lines_final(db, period_id: str, when: str) -> None:
+    """First FINAL mark wins. A later writer cannot refresh finalized_at."""
+    await db[LINES].update_many(
+        {"period_id": period_id, "status": {"$ne": STATUS_FINAL}},
+        {"$set": {"status": STATUS_FINAL, "finalized_at": when}},
+    )
+
+
+async def _finalize_claim_state(db, period_id: str, token: str) -> str:
+    """Return own, done, or lost. Only own may write further effects."""
+    if await _touch_workflow_claim(db, period_id, token, STATUS_APPROVAL):
+        return "own"
+    fresh = await get_period(db, period_id)
+    if str(fresh.get("status") or "") == STATUS_FINAL and await _posted_accrual(db, period_id):
+        return "done"
+    return "lost"
+
+
+async def _accrual_payable_snapshot(db, period_id: str) -> dict:
+    """Utang Gaji identity stored on the original accrual. Does not read a new mapping."""
+    from services.journal_core import JOURNAL_ENTRIES, STATUS_POSTED
+    from services.payroll_journal_posting import SOURCE_TYPE, fill_missing_payable_snapshot
+
+    await fill_missing_payable_snapshot(db, period_id)
+    doc = await db[JOURNAL_ENTRIES].find_one(
+        {
+            "source_type": SOURCE_TYPE,
+            "source_id": str(period_id),
+            "reversal_of": None,
+            "status": STATUS_POSTED,
+        },
+        {"_id": 0, "id": 1, "payroll_payable": 1},
+    )
+    snap = (doc or {}).get("payroll_payable") or {}
+    account_id = str(snap.get("account_id") or "").strip()
+    amount = to_money(snap.get("amount"))
+    if not doc or not account_id or amount <= 0:
+        raise HTTPException(409, "Jurnal akrual belum menyimpan Utang Gaji asal.")
+    return {"journal_id": str(doc["id"]), "account_id": account_id, "amount": amount}
+
+
+async def _apply_final_effects(db, period_id: str, note: str, user: dict, token: str) -> None:
+    period = await get_period(db, period_id)
+    if str(period.get("status") or "") == STATUS_FINAL:
+        return
+    state = await _finalize_claim_state(db, period_id, token)
+    if state == "done":
+        return
+    if state != "own":
+        raise HTTPException(409, "Finalisasi payroll belum selesai.")
+    lines = await db[LINES].find({"period_id": period_id}, {"_id": 0}).to_list(5000)
+    if not lines:
+        raise HTTPException(409, "Periode tidak memiliki baris payroll.")
+    snapshot = await _accrual_payable_snapshot(db, period_id)
+    total_net = sum((to_money(line.get("net")) for line in lines), Decimal("0"))
+    if total_net != snapshot["amount"]:
+        raise HTTPException(409, "Nominal payroll tidak sama dengan Utang Gaji pada jurnal akrual.")
+    for line in lines:
+        slip = line.get("payslip") or {}
+        if not (slip.get("file_id") and slip.get("generated")):
+            continue
+        if str(slip.get("journal_id") or "") not in ("", snapshot["journal_id"]):
+            raise HTTPException(409, "Slip gaji tidak sesuai jurnal akrual asal.")
+        if slip.get("net") is not None and to_money(slip.get("net")) != to_money(line.get("net")):
+            raise HTTPException(409, "Slip gaji tidak sesuai jurnal akrual asal.")
+    events = list(period.get("audit_events") or [])
+    events.append(_audit("transition_final", user, note))
+    updates: Dict[str, Any] = {
+        "status": STATUS_FINAL,
+        "audit_events": events,
+        "updated_at": now_iso(),
+        "last_transition": {
+            "from": STATUS_APPROVAL,
+            "to": STATUS_FINAL,
+            "note": str(note or "")[:1000],
+            "actor": actor_snapshot(user),
+            "at": now_iso(),
+        },
+        "finalized_at": now_iso(),
+        "finalized_by": actor_snapshot(user),
+        "final_snapshot": {
+            "config": copy.deepcopy(period.get("config_snapshot") or {}),
+            "calculation": copy.deepcopy(period.get("calculation_snapshot") or {}),
+            "line_count": len(lines),
+        },
+        "frozen": True,
+    }
+    state = await _finalize_claim_state(db, period_id, token)
+    if state == "done":
+        return
+    if state != "own":
+        raise HTTPException(409, "Finalisasi payroll belum selesai.")
+    await _mark_open_lines_final(db, period_id, now_iso())
+    override = {**period, **updates}
+    for line in lines:
+        state = await _finalize_claim_state(db, period_id, token)
+        if state == "done":
+            return
+        if state != "own":
+            raise HTTPException(409, "Finalisasi payroll belum selesai.")
+        await generate_payslip_for_line(
+            db,
+            line["id"],
+            period_override=override,
+            binding={"net": line.get("net"), "journal_id": snapshot["journal_id"]},
+        )
+    state = await _finalize_claim_state(db, period_id, token)
+    if state == "done":
+        return
+    if state != "own":
+        raise HTTPException(409, "Finalisasi payroll belum selesai.")
+    await _post_kasbon_payments(db, period_id)
+    state = await _finalize_claim_state(db, period_id, token)
+    if state == "done":
+        return
+    if state != "own":
+        raise HTTPException(409, "Finalisasi payroll belum selesai.")
+    saved = await _commit_final_status(db, period_id, token, updates)
+    if saved:
+        return
+    fresh = await get_period(db, period_id)
+    if str(fresh.get("status") or "") == STATUS_FINAL and await _posted_accrual(db, period_id):
+        return
+    raise HTTPException(409, "Finalisasi payroll belum selesai.")
+
+
+async def finalize_period_with_accrual(db, period_id: str, note: str, user: dict) -> dict:
+    """APPROVAL → FINAL plus one accrual journal. Not a success until both exist.
+
+    The journal is stored while the period is still APPROVAL. Status becomes
+    FINAL only after the journal, payslips, and kasbon effects. Retry continues
+    the same claim instead of posting a second journal.
+    """
+    from services.payroll_accounting_readiness import (
+        evaluate_payroll_accounting_readiness,
+        explain_readiness_block,
+    )
+    from services.payroll_journal_posting import (
+        _assert_accounting_period_open,
+        fill_missing_payable_snapshot,
+        post_payroll_journal,
+    )
+
+    period = await get_period(db, period_id)
+    status = str(period.get("status") or "")
+    posted = await _posted_accrual(db, period_id)
+    if status == STATUS_FINAL:
+        if posted:
+            return await _require_final_with_journal(db, period_id)
+        raise HTTPException(409, "Periode FINAL belum memiliki jurnal akrual. Gunakan Post Accounting.")
+    if status != STATUS_APPROVAL:
+        raise HTTPException(409, f"Transisi {status} ke {STATUS_FINAL} tidak diizinkan.")
+    if not await db[LINES].find_one({"period_id": period_id}):
+        raise HTTPException(409, "Periode tidak memiliki baris payroll.")
+    if not posted:
+        readiness = await evaluate_payroll_accounting_readiness(db, period_id, for_finalization=True)
+        if not readiness.get("accounting_ready"):
+            raise HTTPException(409, explain_readiness_block(readiness))
+        await _assert_accounting_period_open(db, str(period.get("end_date") or ""))
+
+    claimed = await claim_workflow(db, period_id, WORKFLOW_FINALIZE, STATUS_APPROVAL)
+    token = str(claimed.get("workflow_claim") or "")
+    try:
+        if await _finalize_claim_state(db, period_id, token) != "own":
+            raise HTTPException(409, "Finalisasi payroll belum selesai.")
+        posted = await _posted_accrual(db, period_id)
+        if posted:
+            await fill_missing_payable_snapshot(db, period_id)
+        else:
+            try:
+                await post_payroll_journal(
+                    db, period_id, user, for_finalization=True, workflow_token=token,
+                )
+            except HTTPException:
+                if not await _posted_accrual(db, period_id):
+                    await release_workflow_claim(db, period_id, token)
+                    raise
+            if not await _posted_accrual(db, period_id):
+                await release_workflow_claim(db, period_id, token)
+                raise HTTPException(409, "Finalisasi payroll belum selesai.")
+        await _apply_final_effects(db, period_id, note, user, token)
+        return await _require_final_with_journal(db, period_id)
+    except HTTPException:
+        raise
+
+
 async def transition_period(db, period_id: str, to_status: str, note: str, user: dict) -> dict:
     to_status = str(to_status or "").upper()
     async with get_named_lock(f"hr_payroll_transition:{period_id}"):
+        if to_status == STATUS_FINAL:
+            return await finalize_period_with_accrual(db, period_id, note, user)
         period = await get_period(db, period_id)
         current = period.get("status")
         if to_status not in ALLOWED.get(current, []):
             raise HTTPException(409, f"Transisi {current} ke {to_status} tidak diizinkan.")
         if current == STATUS_DRAFT and not await db[LINES].find_one({"period_id": period_id}):
             raise HTTPException(409, "Periode harus dihitung sebelum masuk REVIEW.")
+        if await _posted_accrual(db, period_id):
+            raise HTTPException(
+                409,
+                "Periode sudah memiliki jurnal akrual. Selesaikan finalisasi, bukan kembalikan status.",
+            )
+        if _claim_is_current(period):
+            raise HTTPException(409, "Periode payroll sedang diproses.")
         events = list(period.get("audit_events") or [])
         events.append(_audit(f"transition_{to_status.lower()}", user, note))
         updates: Dict[str, Any] = {
@@ -1293,61 +1627,103 @@ async def transition_period(db, period_id: str, to_status: str, note: str, user:
             "updated_at": now_iso(),
             "last_transition": {"from": current, "to": to_status, "note": str(note or "")[:1000], "actor": actor_snapshot(user), "at": now_iso()},
         }
-        if to_status == STATUS_FINAL:
-            lines = await db[LINES].find({"period_id": period_id}, {"_id": 0}).to_list(5000)
-            if not lines:
-                raise HTTPException(409, "Periode tidak memiliki baris payroll.")
-            updates.update({
-                "finalized_at": now_iso(),
-                "finalized_by": actor_snapshot(user),
-                "final_snapshot": {
-                    "config": copy.deepcopy(period.get("config_snapshot") or {}),
-                    "calculation": copy.deepcopy(period.get("calculation_snapshot") or {}),
-                    "line_count": len(lines),
-                },
-                "frozen": True,
-            })
-            await db[LINES].update_many({"period_id": period_id}, {"$set": {"status": STATUS_FINAL, "finalized_at": now_iso()}})
-            for line in lines:
-                await generate_payslip_for_line(db, line["id"], period_override={**period, **updates})
-            await _post_kasbon_payments(db, period_id)
         result = await db[PERIODS].find_one_and_update(
-            {"id": period_id, "status": current},
+            {"id": period_id, "status": current, **_workflow_claim_free_filter()},
             {"$set": updates},
             return_document=ReturnDocument.AFTER,
         )
         if not result:
             raise HTTPException(409, "Status periode telah berubah.")
-        if to_status != STATUS_FINAL:
-            await db[LINES].update_many({"period_id": period_id}, {"$set": {"status": to_status}})
+        await db[LINES].update_many({"period_id": period_id}, {"$set": {"status": to_status}})
         return public_period(result)
+
+
+def _kasbon_post_pipeline(period_id: str, now: str) -> List[dict]:
+    """Flip only this period's pending rows and move outstanding in the same update."""
+    is_pending = {"$and": [
+        {"$eq": ["$$p.period_id", period_id]},
+        {"$eq": ["$$p.status", "pending"]},
+    ]}
+    pending_amount = {"$sum": {"$map": {
+        "input": {"$ifNull": ["$payments", []]},
+        "as": "p",
+        "in": {"$cond": [is_pending, {"$ifNull": ["$$p.amount", 0]}, 0]},
+    }}}
+    return [
+        {"$set": {"_kasbon_post_amount": pending_amount}},
+        {"$set": {
+            "payments": {"$map": {
+                "input": {"$ifNull": ["$payments", []]},
+                "as": "p",
+                "in": {"$cond": [
+                    is_pending,
+                    {"$mergeObjects": ["$$p", {"status": "posted", "posted_at": now}]},
+                    "$$p",
+                ]},
+            }},
+            "outstanding": {"$max": [0, {"$subtract": [{"$ifNull": ["$outstanding", 0]}, "$_kasbon_post_amount"]}]},
+            "paid_total": {"$add": [{"$ifNull": ["$paid_total", 0]}, "$_kasbon_post_amount"]},
+            "updated_at": now,
+        }},
+        {"$set": {"active": {"$gt": ["$outstanding", 0]}}},
+        {"$unset": "_kasbon_post_amount"},
+    ]
+
+
+async def _post_one_kasbon_schedule(db, schedule: dict, period_id: str) -> None:
+    pending = any(
+        str(payment.get("period_id")) == str(period_id) and payment.get("status") == "pending"
+        for payment in (schedule.get("payments") or [])
+    )
+    if not pending:
+        return
+    now = now_iso()
+    await db[KASBON].update_one(
+        {"id": schedule["id"], "payments": {"$elemMatch": {"period_id": period_id, "status": "pending"}}},
+        _kasbon_post_pipeline(period_id, now),
+    )
 
 
 async def _post_kasbon_payments(db, period_id: str) -> None:
     schedules = await db[KASBON].find({"payments.period_id": period_id}, {"_id": 0}).to_list(5000)
     for schedule in schedules:
-        payments = list(schedule.get("payments") or [])
-        changed = False
-        posted = Decimal("0")
-        for payment in payments:
-            if str(payment.get("period_id")) == period_id and payment.get("status") != "posted":
-                payment["status"] = "posted"
-                payment["posted_at"] = now_iso()
-                posted += to_money(payment.get("amount"))
-                changed = True
-        if changed:
-            outstanding = max(Decimal("0"), to_money(schedule.get("outstanding")) - posted)
-            paid = to_money(schedule.get("paid_total")) + posted
-            await db[KASBON].update_one(
-                {"id": schedule["id"]},
-                {"$set": {
-                    "payments": payments,
-                    "outstanding": money_float(outstanding),
-                    "paid_total": money_float(paid),
-                    "active": outstanding > 0,
-                    "updated_at": now_iso(),
-                }},
-            )
+        await _post_one_kasbon_schedule(db, schedule, period_id)
+
+
+async def _restore_posted_kasbon(db, period_id: str) -> None:
+    """Return posted installments of this period only. A second call matches nothing."""
+    schedules = await db[KASBON].find({"payments.period_id": period_id}, {"_id": 0, "id": 1, "payments": 1}).to_list(5000)
+    now = now_iso()
+    for schedule in schedules:
+        restore = Decimal("0")
+        for payment in schedule.get("payments") or []:
+            if str(payment.get("period_id")) == str(period_id) and payment.get("status") == "posted":
+                restore += to_money(payment.get("amount"))
+        if restore <= 0:
+            continue
+        await db[KASBON].update_one(
+            {"id": schedule["id"], "payments": {"$elemMatch": {"period_id": period_id, "status": "posted"}}},
+            {
+                "$set": {
+                    "payments.$[p].status": "restored",
+                    "payments.$[p].restored_at": now,
+                    "active": True,
+                    "updated_at": now,
+                },
+                "$inc": {
+                    "outstanding": money_float(restore),
+                    "paid_total": money_float(-restore),
+                },
+            },
+            array_filters=[{"p.period_id": period_id, "p.status": "posted"}],
+        )
+
+
+async def _insert_reopened_period(db, doc: dict) -> None:
+    try:
+        await db[PERIODS].insert_one(doc)
+    except DuplicateKeyError:
+        raise HTTPException(409, "Revisi periode sudah ada.")
 
 
 async def reopen_period(db, period_id: str, reason: str, user: dict) -> dict:
@@ -1357,9 +1733,9 @@ async def reopen_period(db, period_id: str, reason: str, user: dict) -> dict:
         old = await get_period(db, period_id)
         if old.get("status") != STATUS_FINAL:
             raise HTTPException(409, "Hanya periode FINAL yang dapat dibuka ulang.")
-        from services.journal_core import STATUS_POSTED, find_primary_journal_for_source
-        existing_journal = await find_primary_journal_for_source(db, "payroll_period", old["id"])
-        if existing_journal and existing_journal.get("status") == STATUS_POSTED:
+        if _claim_is_current(old) and str(old.get("workflow_op") or "") == WORKFLOW_POST:
+            raise HTTPException(409, "Periode payroll sedang diposting ke accounting.")
+        if await _posted_accrual(db, old["id"]):
             raise HTTPException(
                 409,
                 "Periode yang sudah memiliki jurnal accounting aktif tidak dapat dibuka ulang.",
@@ -1373,30 +1749,68 @@ async def reopen_period(db, period_id: str, reason: str, user: dict) -> dict:
         revision = int(old.get("revision") or 1) + 1
         if await db[PERIODS].find_one({"group_id": old["group_id"], "revision": revision}):
             raise HTTPException(409, "Revisi lanjutan periode ini sudah ada.")
-        doc = {
-            **{k: copy.deepcopy(old.get(k)) for k in ("year", "month", "start_date", "end_date", "group_id", "config_snapshot", "config_version")},
-            "id": str(uuid.uuid4()),
-            "period_number": f"{old.get('period_number')}-R{revision}",
-            "status": STATUS_DRAFT,
-            "revision": revision,
-            "parent_period_id": old["id"],
-            "calculation_version": 0,
-            "audit_events": [_audit("reopened", user, reason)],
-            "created_at": now_iso(),
-            "updated_at": now_iso(),
-            "created_by": actor_snapshot(user),
-            "reopen_reason": str(reason).strip()[:1000],
-        }
+        claimed = await claim_workflow(db, period_id, WORKFLOW_REOPEN, STATUS_FINAL)
+        token = str(claimed.get("workflow_claim") or "")
         try:
-            await db[PERIODS].insert_one(doc)
-        except DuplicateKeyError:
-            raise HTTPException(409, "Revisi periode sudah ada.")
-        old_attendance = await db[ATTENDANCE].find({"period_id": period_id}, {"_id": 0}).to_list(5000)
-        for item in old_attendance:
-            item.update({"id": str(uuid.uuid4()), "period_id": doc["id"], "created_at": now_iso(), "updated_at": now_iso()})
-        if old_attendance:
-            await db[ATTENDANCE].insert_many(old_attendance)
-        return public_period(doc)
+            return await _reopen_effects(db, old, reason, user, token, revision)
+        except HTTPException:
+            raise
+
+
+async def _reopen_effects(db, old: dict, reason: str, user: dict, token: str, revision: int) -> dict:
+    """Restore kasbon and insert one revision only while this token still owns the period."""
+    period_id = old["id"]
+
+    async def own() -> None:
+        if not await _touch_workflow_claim(db, period_id, token, STATUS_FINAL):
+            raise HTTPException(409, "Periode payroll sedang diproses.")
+
+    await own()
+    if await _posted_accrual(db, period_id):
+        await release_workflow_claim(db, period_id, token)
+        raise HTTPException(
+            409,
+            "Periode yang sudah memiliki jurnal accounting aktif tidak dapat dibuka ulang.",
+        )
+    if await db[PERIODS].find_one({"group_id": old["group_id"], "revision": revision}):
+        await release_workflow_claim(db, period_id, token)
+        raise HTTPException(409, "Revisi lanjutan periode ini sudah ada.")
+    await own()
+    await _restore_posted_kasbon(db, period_id)
+    await own()
+    doc = {
+        **{k: copy.deepcopy(old.get(k)) for k in ("year", "month", "start_date", "end_date", "group_id", "config_snapshot", "config_version")},
+        "id": str(uuid.uuid4()),
+        "period_number": f"{old.get('period_number')}-R{revision}",
+        "status": STATUS_DRAFT,
+        "revision": revision,
+        "parent_period_id": old["id"],
+        "calculation_version": 0,
+        "audit_events": [_audit("reopened", user, reason)],
+        "created_at": now_iso(),
+        "updated_at": now_iso(),
+        "created_by": actor_snapshot(user),
+        "reopen_reason": str(reason).strip()[:1000],
+    }
+    try:
+        await own()
+        if await db[ATTENDANCE].count_documents({"period_id": doc["id"]}) == 0:
+            old_attendance = await db[ATTENDANCE].find({"period_id": period_id}, {"_id": 0}).to_list(5000)
+            copied = []
+            for item in old_attendance:
+                item.pop("_id", None)
+                item.update({"id": str(uuid.uuid4()), "period_id": doc["id"], "created_at": now_iso(), "updated_at": now_iso()})
+                copied.append(item)
+            if copied:
+                await db[ATTENDANCE].insert_many(copied)
+        await own()
+        await _insert_reopened_period(db, doc)
+    except HTTPException:
+        await db[ATTENDANCE].delete_many({"period_id": doc["id"]})
+        await release_workflow_claim(db, period_id, token)
+        raise
+    await release_workflow_claim(db, period_id, token)
+    return public_period(doc)
 
 
 def _safe(value: Any) -> str:
@@ -1462,21 +1876,66 @@ def generate_payslip_pdf_bytes(line: dict, period: dict) -> bytes:
     return buffer.getvalue()
 
 
-async def generate_payslip_for_line(db, line_id: str, period_override: Optional[dict] = None) -> dict:
+def _payslip_binding_conflict(existing: dict, line: dict, binding: Optional[dict]) -> bool:
+    if not binding:
+        return False
+    net = to_money(binding.get("net"))
+    journal_id = str(binding.get("journal_id") or "")
+    if to_money(line.get("net")) != net:
+        return True
+    if existing.get("net") is not None and to_money(existing.get("net")) != net:
+        return True
+    stored_journal = str(existing.get("journal_id") or "")
+    if stored_journal and journal_id and stored_journal != journal_id:
+        return True
+    return False
+
+
+async def _return_existing_payslip(db, line: dict, binding: Optional[dict]) -> dict:
+    existing = line.get("payslip") or {}
+    if _payslip_binding_conflict(existing, line, binding):
+        raise HTTPException(409, "Slip gaji tidak sesuai jurnal akrual asal.")
+    if binding and (existing.get("net") is None or not str(existing.get("journal_id") or "")):
+        await db[LINES].update_one(
+            {"id": line["id"], "payslip.file_id": existing["file_id"], "payslip.generated": True},
+            [{"$set": {
+                "payslip.net": {"$cond": [
+                    {"$eq": [{"$ifNull": ["$payslip.net", None]}, None]},
+                    money_float(to_money(binding.get("net"))),
+                    "$payslip.net",
+                ]},
+                "payslip.journal_id": {"$cond": [
+                    {"$in": [{"$ifNull": ["$payslip.journal_id", ""]}, ["", None]]},
+                    str(binding.get("journal_id") or ""),
+                    "$payslip.journal_id",
+                ]},
+                "updated_at": now_iso(),
+            }}],
+        )
+        line = await get_line(db, line["id"])
+    return public_line(line)
+
+
+async def generate_payslip_for_line(
+    db,
+    line_id: str,
+    period_override: Optional[dict] = None,
+    binding: Optional[dict] = None,
+) -> dict:
     async with get_named_lock(f"hr_payroll_payslip:{line_id}"):
         line = await get_line(db, line_id)
         existing = line.get("payslip") or {}
         if existing.get("file_id") and existing.get("generated"):
-            return public_line(line)
+            return await _return_existing_payslip(db, line, binding)
         period = period_override or await get_period(db, line["period_id"])
         if period.get("status") != STATUS_FINAL:
             raise HTTPException(409, "Slip gaji hanya tersedia untuk periode FINAL.")
-        data = generate_payslip_pdf_bytes(line, period)
+        if binding and _payslip_binding_conflict(existing, line, binding):
+            raise HTTPException(409, "Slip gaji tidak sesuai jurnal akrual asal.")
         from services import storage as obj_storage
         file_id = str(uuid.uuid4())
         filename = f"{period.get('period_number')}-{(line.get('employee_snapshot') or {}).get('employee_number') or line['employee_id']}.pdf"
         storage_path = f"{obj_storage.APP_NAME}/hr-payroll/{period['id']}/{line_id}/{file_id}.pdf"
-        obj_storage.put_object(storage_path, data, "application/pdf")
         payslip = {
             "generated": True,
             "file_id": file_id,
@@ -1485,21 +1944,41 @@ async def generate_payslip_for_line(db, line_id: str, period_override: Optional[
             "filename": filename,
             "generated_at": now_iso(),
             "snapshot_version": int(line.get("calculation_version") or 1),
+            "net": money_float(to_money((binding or {}).get("net", line.get("net")))),
         }
-        await db.files.insert_one({
-            "id": file_id,
-            "kind": FILES_KIND,
-            "period_id": period["id"],
-            "line_id": line_id,
-            "storage_path": storage_path,
-            "content_type": "application/pdf",
-            "original_filename": filename,
-            "uploaded_at": now_iso(),
-            "is_deleted": False,
-        })
-        await db[LINES].update_one({"id": line_id, "payslip.file_id": {"$exists": False}}, {"$set": {"payslip": payslip, "updated_at": now_iso()}})
-        line["payslip"] = payslip
-        return public_line(line)
+        if binding and binding.get("journal_id"):
+            payslip["journal_id"] = str(binding["journal_id"])
+        won = await db[LINES].update_one(
+            {"id": line_id, "payslip.generated": {"$ne": True}},
+            {"$set": {"payslip": payslip, "updated_at": now_iso()}},
+        )
+        if won.matched_count != 1:
+            stored = await get_line(db, line_id)
+            stored_slip = stored.get("payslip") or {}
+            if stored_slip.get("file_id") and stored_slip.get("generated"):
+                return await _return_existing_payslip(db, stored, binding)
+            raise HTTPException(409, "Slip gaji tidak sesuai jurnal akrual asal.")
+        try:
+            data = generate_payslip_pdf_bytes(line, period)
+            obj_storage.put_object(storage_path, data, "application/pdf")
+            await db.files.insert_one({
+                "id": file_id,
+                "kind": FILES_KIND,
+                "period_id": period["id"],
+                "line_id": line_id,
+                "storage_path": storage_path,
+                "content_type": "application/pdf",
+                "original_filename": filename,
+                "uploaded_at": now_iso(),
+                "is_deleted": False,
+            })
+        except Exception:
+            await db[LINES].update_one(
+                {"id": line_id, "payslip.file_id": file_id},
+                {"$unset": {"payslip": ""}, "$set": {"updated_at": now_iso()}},
+            )
+            raise
+        return public_line(await get_line(db, line_id))
 
 
 def can_view_payslip(employee_user: dict, line: dict, perms: set) -> bool:

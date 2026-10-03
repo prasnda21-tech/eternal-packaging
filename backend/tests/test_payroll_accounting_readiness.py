@@ -186,15 +186,25 @@ async def test_final_unmapped_and_mapped_balance_no_plug():
             assert calc.status_code == 200, calc.text
             await _to_status(c, period["id"], STATUS_REVIEW)
             await _to_status(c, period["id"], STATUS_APPROVAL)
-            await _to_status(c, period["id"], STATUS_FINAL)
+            blocked = await c.post(
+                f"/api/hr-payroll/periods/{period['id']}/transition",
+                json={"to_status": STATUS_FINAL},
+            )
+            assert blocked.status_code == 409, blocked.text
+            assert "Komponen belum dipetakan" in blocked.text
 
             missing = await c.get(f"/api/hr-payroll/periods/{period['id']}/accounting-readiness")
             body = missing.json()["readiness"]
-            assert body["status"] == STATUS_FINAL
+            assert body["status"] == STATUS_APPROVAL
             assert body["accounting_ready"] is False
+            assert "payroll_not_final" in body["reasons"]
             assert "payable_account_missing" in body["reasons"]
             assert any(row["reason"] == "source_mapping_missing" for row in body["unmapped_sources"])
+            assert any(row.get("label") for row in body["unmapped_sources"])
             assert body["summary"]["gross"] == body["summary"]["net"] + body["summary"]["deductions"]
+            stayed = (await c.get(f"/api/hr-payroll/periods/{period['id']}")).json()["period"]
+            assert stayed["status"] == STATUS_APPROVAL
+            assert stayed.get("accounting_journal_id") in (None, "")
 
             line = (await c.get(f"/api/hr-payroll/periods/{period['id']}/lines")).json()["lines"][0]
             components = {row["code"]: row for row in line["earnings"] if row.get("source") == "component"}
@@ -216,7 +226,8 @@ async def test_final_unmapped_and_mapped_balance_no_plug():
             ready = await c.get(f"/api/hr-payroll/periods/{period['id']}/accounting-readiness")
             r = ready.json()["readiness"]
             assert r["unmapped_sources"] == []
-            assert r["accounting_ready"] is True
+            assert r["accounting_ready"] is False
+            assert "payroll_not_final" in r["reasons"]
             assert r["summary"]["difference"] == 0
             assert r["summary"]["total_debit"] == r["summary"]["total_credit"]
             assert r["summary"]["gross"] == line["gross"]
@@ -230,7 +241,17 @@ async def test_final_unmapped_and_mapped_balance_no_plug():
             assert all(not (row["debit"] == 0 and row["credit"] == 0) for row in r["planned_lines"])
             assert r["financial_source"] == "hr_payroll_lines"
             assert r["creates_journal"] is False
-        assert await server.db.journal_entries.count_documents({}) == before_j
+            finalized = await _to_status(c, period["id"], STATUS_FINAL)
+            assert finalized["status"] == STATUS_FINAL
+            assert finalized.get("accounting_journal_id")
+            posted = (await c.get(f"/api/hr-payroll/periods/{period['id']}/accounting-readiness")).json()["readiness"]
+            assert posted["accounting_ready"] is True
+            assert posted["creates_journal"] is False
+            assert posted["summary"]["difference"] == 0
+        assert await server.db.journal_entries.count_documents({"source_type": "payroll_period", "source_id": period["id"]}) == 1
+        assert await server.db.journal_entries.count_documents({
+            "source_type": {"$in": ["cash_bank_receipt", "cash_bank_payment", "cash_bank_transfer"]}
+        }) == 0
     finally:
         app.dependency_overrides.pop(current_user, None)
 
@@ -245,7 +266,10 @@ async def test_superseded_revision_not_ready():
             await c.post(f"/api/hr-payroll/periods/{period['id']}/calculate")
             await _to_status(c, period["id"], STATUS_REVIEW)
             await _to_status(c, period["id"], STATUS_APPROVAL)
-            await _to_status(c, period["id"], STATUS_FINAL)
+            await server.db[PERIODS].update_one(
+                {"id": period["id"]},
+                {"$set": {"status": STATUS_FINAL, "frozen": True}},
+            )
             await c.put("/api/settings/payroll-accounting", json={
                 "payroll_payable_account_id": accounts["payable"]["id"],
                 "component_mappings": {
@@ -334,17 +358,25 @@ async def test_legacy_adjustment_blocks_new_adjustment_maps():
                 "gross": float(gross), "total_deductions": float(deductions), "net": float(gross - deductions),
             }})
 
-            await _to_status(c, period["id"], STATUS_REVIEW)
-            await _to_status(c, period["id"], STATUS_APPROVAL)
-            await _to_status(c, period["id"], STATUS_FINAL)
             await c.put("/api/settings/payroll-accounting", json={
                 "payroll_payable_account_id": accounts["payable"]["id"],
                 "component_mappings": {
                     "salary_profile:BASE": {"treatment": "expense_debit", "account_id": accounts["salary"]["id"]},
                 },
             })
+            await _to_status(c, period["id"], STATUS_REVIEW)
+            await _to_status(c, period["id"], STATUS_APPROVAL)
+            blocked = await c.post(
+                f"/api/hr-payroll/periods/{period['id']}/transition",
+                json={"to_status": STATUS_FINAL},
+            )
+            assert blocked.status_code == 409, blocked.text
+            stayed = (await c.get(f"/api/hr-payroll/periods/{period['id']}")).json()["period"]
+            assert stayed["status"] == STATUS_APPROVAL
+            assert await server.db.journal_entries.count_documents({"source_id": period["id"]}) == 0
             ready = await c.get(f"/api/hr-payroll/periods/{period['id']}/accounting-readiness")
             r = ready.json()["readiness"]
+            assert r["status"] == STATUS_APPROVAL
             assert r["accounting_ready"] is False
             assert any(row["reason"] == "unsupported_adjustment" for row in r["unmapped_sources"])
             assert not any(row.get("label") == "legacy reason" and row.get("source_key") == "adjustment" for row in r["unmapped_sources"])
@@ -365,15 +397,15 @@ async def test_zero_lines_omitted_and_no_journal_core_post():
         async with await _client() as c:
             _emp, period = await _seed_employee_and_period(c, year=2094, month=6)
             await c.post(f"/api/hr-payroll/periods/{period['id']}/calculate")
-            await _to_status(c, period["id"], STATUS_REVIEW)
-            await _to_status(c, period["id"], STATUS_APPROVAL)
-            await _to_status(c, period["id"], STATUS_FINAL)
             await c.put("/api/settings/payroll-accounting", json={
                 "payroll_payable_account_id": accounts["payable"]["id"],
                 "component_mappings": {
                     "salary_profile:BASE": {"treatment": "expense_debit", "account_id": accounts["salary"]["id"]},
                 },
             })
+            await _to_status(c, period["id"], STATUS_REVIEW)
+            await _to_status(c, period["id"], STATUS_APPROVAL)
+            await _to_status(c, period["id"], STATUS_FINAL)
             r = (await c.get(f"/api/hr-payroll/periods/{period['id']}/accounting-readiness")).json()["readiness"]
             assert r["accounting_ready"] is True
             assert all((row["debit"] or 0) + (row["credit"] or 0) > 0 for row in r["planned_lines"])
@@ -384,13 +416,10 @@ async def test_zero_lines_omitted_and_no_journal_core_post():
                 assert "post_balanced_journal" not in text
                 callers.append(path.name)
             assert callers
-        assert await server.db.journal_entries.count_documents({}) == before_j
+        assert await server.db.journal_entries.count_documents({"source_type": "payroll_period", "source_id": period["id"]}) == 1
         cash = await server.db.journal_entries.count_documents({
             "source_type": {"$in": ["cash_bank_receipt", "cash_bank_payment", "cash_bank_transfer"]}
         })
-        after_cash = await server.db.journal_entries.count_documents({
-            "source_type": {"$in": ["cash_bank_receipt", "cash_bank_payment", "cash_bank_transfer"]}
-        })
-        assert cash == after_cash
+        assert cash == 0
     finally:
         app.dependency_overrides.pop(current_user, None)

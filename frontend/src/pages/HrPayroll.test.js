@@ -33,6 +33,13 @@ describe("HR & Payroll UI source", () => {
     expect(page).toMatch(/Journal:/);
     expect(page).toMatch(/hrPayrollPeriodJournal/);
     expect(page).toMatch(/accounting_ready === true/);
+    expect(page).toMatch(/hr-finalize-modal/);
+    expect(page).toMatch(/hr-finalize-confirm/);
+    expect(page).toMatch(/biaya payroll dan Utang Gaji secara otomatis/);
+    expect(page).toMatch(/Pembayaran bank dilakukan terpisah/);
+    expect(page).toMatch(/unmapped_sources/);
+    expect(page).toMatch(/hr-payroll-unmapped/);
+    expect(page).toMatch(/row\.label/);
     expect(page).toMatch(/Accounting: \{selected\.accounting_journal_id \? "Posted"/);
     expect(page).toMatch(/payroll_payment\.create/);
     expect(page).toMatch(/payroll_payment\.approve/);
