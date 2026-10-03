@@ -21,11 +21,13 @@ jest.mock("recharts", () => {
   return {
     ResponsiveContainer: Pass,
     LineChart: ({ children, data }) => <div data-testid="sales-line" data-points={data?.length || 0}>{children}</div>,
+    AreaChart: ({ children, data }) => <div data-testid="sales-line" data-points={data?.length || 0}>{children}</div>,
     BarChart: ({ children, data }) => <div data-testid="sales-bars" data-points={data?.length || 0}>{children}</div>,
     PieChart: Pass,
     Pie: () => null,
     Cell: () => null,
     Line: ({ dataKey }) => <span data-testid="trend-series" data-key={dataKey} />,
+    Area: ({ dataKey }) => <span data-testid="trend-series" data-key={dataKey} />,
     Bar: () => null,
     XAxis: () => null,
     YAxis: () => null,
@@ -407,6 +409,46 @@ describe("Dashboard Penjualan runtime", () => {
     await click("sales-reload");
     expect(container.querySelector('[data-testid="sales-omzet-value"]').textContent).toMatch(/^Rp\s/);
     expect(container.querySelector('[data-testid="sales-invoice-count"]').textContent).toBe("0");
+  });
+
+  test("compacts million amounts and keeps the full rupiah in the tooltip", async () => {
+    api.salesDashboard.mockResolvedValue(payload({
+      omzet: { status: "complete", amount: 31990000, invoice_count: 2, comparison: { available: false } },
+    }));
+    await act(async () => root.render(<SalesDashboard />));
+    await flush();
+    const value = container.querySelector('[data-testid="sales-omzet-value"]');
+    expect(value.textContent).toBe("Rp 31,99 jt");
+    expect(value.getAttribute("title")).toMatch(/31\.990\.000/);
+    expect(container.querySelector('[data-testid="sales-omzet"]').textContent).toMatch(/31\.990\.000/);
+    expect(container.querySelector('[data-testid="sales-omzet-delta"]').textContent).toContain("—");
+    expect(container.querySelector('[data-testid="sales-omzet-delta"]').textContent).not.toMatch(/↑|↓/);
+  });
+
+  test("shows five sales on the card and the rest through Lihat semua", async () => {
+    const showModal = jest.fn(function () { this.setAttribute("open", ""); });
+    HTMLDialogElement.prototype.showModal = showModal;
+    const groups = [1, 2, 3, 4, 5, 6].map((n) => ({
+      key: `user:${n}`,
+      label: `Sales ${n} dengan nama panjang`,
+      omzet: n * 1000,
+      invoice_count: 1,
+    }));
+    api.salesDashboard.mockResolvedValue(payload({
+      sales: { status: "complete", groups, detail: "Kelompok tanpa identitas tetap dihitung." },
+    }));
+    await act(async () => root.render(<SalesDashboard />));
+    await flush();
+    const card = container.querySelector('[data-testid="sales-by-sales"]');
+    const names = [...card.querySelectorAll(".sd-ranking .sd-sales-name")].map((node) => node.textContent);
+    expect(names).toHaveLength(5);
+    expect(names.join(" ")).not.toMatch(/Sales 6/);
+    expect(card.textContent).toMatch(/Kelompok tanpa identitas/);
+    await act(async () => card.querySelector('[data-testid="sales-show-all"]').click());
+    expect(showModal).toHaveBeenCalledTimes(1);
+    const panel = container.querySelector("#sales-detail-panel-sales");
+    expect(panel.hidden).toBe(false);
+    expect(panel.textContent).toMatch(/Sales 6/);
   });
 
 });

@@ -2,10 +2,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 import {
+  Area,
+  AreaChart,
   Bar,
   BarChart,
   CartesianGrid,
-  Cell,
   Line,
   LineChart,
   ResponsiveContainer,
@@ -68,6 +69,90 @@ const MOBILE_PANELS = [
   { id: "produk", label: "Produk" },
   { id: "umur", label: "Umur piutang" },
 ];
+
+const KPI_ICON = {
+  omzet: (
+    <>
+      <path d="M4 19V9" />
+      <path d="M10 19V5" />
+      <path d="M16 19v-6" />
+      <path d="M3 19h18" />
+    </>
+  ),
+  laba: (
+    <>
+      <rect x="3" y="6" width="18" height="13" rx="2" />
+      <path d="M3 10h18" />
+      <path d="M16 14h2" />
+    </>
+  ),
+  piutang: (
+    <>
+      <path d="M7 3.5h7.2L19 8.2V20a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4.5a1 1 0 0 1 1-1z" />
+      <path d="M14 3.5V8h5" />
+      <path d="M8 13h8" />
+      <path d="M8 17h5" />
+    </>
+  ),
+  kas: (
+    <>
+      <ellipse cx="12" cy="7" rx="7" ry="3" />
+      <path d="M5 7v4.5c0 1.7 3.1 3 7 3s7-1.3 7-3V7" />
+      <path d="M5 11.5V16c0 1.7 3.1 3 7 3s7-1.3 7-3v-4.5" />
+    </>
+  ),
+};
+
+function KpiGlyph({ kind }) {
+  return (
+    <span className="sd-kpi-icon" aria-hidden="true">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+        {KPI_ICON[kind]}
+      </svg>
+    </span>
+  );
+}
+
+function heroAmount(status, amount, detail) {
+  const full = displayAmount(status, amount, detail);
+  const value = Number(amount);
+  const numeric = status === "complete" || status === "zero" || status === "incomplete";
+  if (!numeric || !Number.isFinite(value) || Math.abs(value) < 1_000_000) {
+    return { text: full, title: Number.isFinite(value) ? full : "" };
+  }
+  const sign = value < 0 ? "-" : "";
+  const abs = Math.abs(value);
+  const scaled = abs >= 1_000_000_000 ? abs / 1_000_000_000 : abs / 1_000_000;
+  const suffix = abs >= 1_000_000_000 ? "M" : "jt";
+  const text = scaled.toLocaleString("id-ID", { maximumFractionDigits: 2, minimumFractionDigits: 0 });
+  return { text: `Rp ${sign}${text} ${suffix}`, title: full };
+}
+
+function axisWidth(labels, min, max) {
+  const longest = (labels || []).reduce((n, label) => Math.max(n, String(label ?? "").length), 0);
+  return Math.min(max, Math.max(min, Math.round(longest * 6.8 + 14)));
+}
+
+function xAxisBottom(points) {
+  const longest = (points || []).reduce((n, point) => Math.max(n, String(point?.label || "").length), 0);
+  if (longest >= 14) return 34;
+  if (longest >= 8) return 26;
+  return 20;
+}
+
+function AmountFigure({ testid, status, amount, detail, heroWhen }) {
+  const hero = heroAmount(status, amount, detail);
+  if (heroWhen.includes(status)) {
+    return <strong className="sd-hero" data-testid={testid} title={hero.title || undefined}>{hero.text}</strong>;
+  }
+  return <p className="sd-empty" data-testid={testid}>{hero.text}</p>;
+}
+
+function FullAmount({ status, amount, detail }) {
+  const hero = heroAmount(status, amount, detail);
+  if (!hero.title || hero.title === hero.text) return null;
+  return <p>Nominal penuh: {hero.title}</p>;
+}
 
 function errText(ex) {
   const detail = ex?.response?.data?.detail;
@@ -237,6 +322,12 @@ export default function SalesDashboard({ embedded = false, managed = null }) {
   const trendPoints = trend?.points || [];
   const settlementPoints = settlement?.points || [];
   const salesGroups = sales?.groups || [];
+  const salesShown = salesGroups.slice(0, 5);
+  const yLabels = trendMetric === "omzet"
+    ? trendPoints.map((point) => formatAxisMoney(point?.omzet))
+    : trendPoints.map((point) => (point?.invoice_count == null ? "" : Number(point.invoice_count).toLocaleString("id-ID")));
+  const yWidth = axisWidth(yLabels, trendMetric === "omzet" ? 44 : 28, trendMetric === "omzet" ? 88 : 56);
+  const trendBottom = xAxisBottom(trendPoints);
   const orderBuckets = orders?.buckets || [];
   const salesMax = Math.max(1, ...salesGroups.map((row) => Number(row.omzet) > 0 ? Number(row.omzet) : 0));
   const bars = plBars(plStatus === "error" ? { status: "error" } : performance);
@@ -292,19 +383,19 @@ export default function SalesDashboard({ embedded = false, managed = null }) {
         <div className={`sd-kpis${financeAllowed ? "" : " is-two"}`}>
           <section className="sd-card sd-kpi" data-testid="sales-omzet">
             <div className="sd-kpi-top">
-              <p className="sd-kicker" data-testid="scope-penjualan">{salesScope}</p>
+              <KpiGlyph kind="omzet" />
+              <div className="sd-kpi-copy">
+                <h2>Penjualan bersih</h2>
+                <p className="sd-kicker" data-testid="scope-penjualan" title={salesScope}>{salesScope}</p>
+              </div>
               <Info label="Tentang penjualan bersih">
                 <p>Setelah diskon faktur, sebelum PPN dan biaya lain. Tanggal acuan adalah tanggal faktur. Retur sebagian tidak memiliki dokumen, jadi tidak mengurangi angka ini.</p>
                 <p>{omzet?.basis_note}</p>
                 <p><span data-testid="sales-invoice-count">{displayCount(omzetStatus, omzet?.invoice_count, omzet?.detail)}</span> faktur</p>
+                <FullAmount status={omzetStatus} amount={omzet?.amount} detail={omzet?.detail} />
               </Info>
             </div>
-            <h2>Penjualan bersih</h2>
-            {omzetStatus === "complete" || omzetStatus === "zero" ? (
-              <strong className="sd-hero" data-testid="sales-omzet-value">{displayAmount(omzetStatus, omzet?.amount, omzet?.detail)}</strong>
-            ) : (
-              <p className="sd-empty" data-testid="sales-omzet-value">{displayAmount(omzetStatus, omzet?.amount, omzet?.detail)}</p>
-            )}
+            <AmountFigure testid="sales-omzet-value" status={omzetStatus} amount={omzet?.amount} detail={omzet?.detail} heroWhen={["complete", "zero"]} />
             <p className={`sd-delta is-${delta.arrow || "none"}`} data-testid="sales-omzet-delta">
               {delta.arrow === "up" ? "↑ " : null}
               {delta.arrow === "down" ? "↓ " : null}
@@ -316,49 +407,49 @@ export default function SalesDashboard({ embedded = false, managed = null }) {
           {financeAllowed ? (
             <section className="sd-card sd-kpi" data-testid="kpi-laba">
               <div className="sd-kpi-top">
-                <p className="sd-kicker" data-testid="scope-keuangan">{financeScope}</p>
+                <KpiGlyph kind="laba" />
+                <div className="sd-kpi-copy">
+                  <h2>Laba bersih</h2>
+                  <p className="sd-kicker" data-testid="scope-keuangan" title={financeScope}>{financeScope}</p>
+                </div>
                 <Info label="Tentang laba bersih">
                   <p>Laba bersih dari laba rugi: pendapatan dikurangi HPP, beban operasional, dan beban lain, ditambah pendapatan lain. Bukan omzet dikali margin.</p>
+                  <FullAmount status={labaStatus} amount={performance?.net_profit} detail={performance?.detail} />
                 </Info>
               </div>
-              <h2>Laba bersih</h2>
-              {labaStatus === "complete" || labaStatus === "zero" ? (
-                <strong className="sd-hero" data-testid="kpi-laba-value">{displayAmount(labaStatus, performance?.net_profit, performance?.detail)}</strong>
-              ) : (
-                <p className="sd-empty" data-testid="kpi-laba-value">{displayAmount(labaStatus, performance?.net_profit, labaStatus === "empty" ? (performance?.detail || "Tidak ada transaksi") : performance?.detail)}</p>
-              )}
+              <AmountFigure testid="kpi-laba-value" status={labaStatus} amount={performance?.net_profit} detail={labaStatus === "empty" ? (performance?.detail || "Tidak ada transaksi") : performance?.detail} heroWhen={["complete", "zero"]} />
             </section>
           ) : null}
 
           <section className="sd-card sd-kpi" data-testid="kpi-piutang">
             <div className="sd-kpi-top">
-              <p className="sd-kicker" data-testid="sales-piutang-scope">{personalSales ? `Penjualan saya · ${positionScope}` : positionScope}</p>
+              <KpiGlyph kind="piutang" />
+              <div className="sd-kpi-copy">
+                <h2>Sisa tagihan saat ini</h2>
+                <p className="sd-kicker" data-testid="sales-piutang-scope" title={personalSales ? `Penjualan saya · ${positionScope}` : positionScope}>{personalSales ? `Penjualan saya · ${positionScope}` : positionScope}</p>
+              </div>
               <Info label="Tentang sisa tagihan">
                 <p>Sisa tagihan operasional faktur yang masih terbuka, setelah alokasi penerimaan dan pemakaian saldo pelanggan. Bukan saldo akun piutang dan bukan subledger. Angka ini tidak mengikuti tanggal akhir periode.</p>
+                <FullAmount status={receivableStatus} amount={receivables?.outstanding} detail={receivables?.detail} />
               </Info>
             </div>
-            <h2>Sisa tagihan saat ini</h2>
-            {receivableStatus === "complete" || receivableStatus === "zero" || receivableStatus === "incomplete" ? (
-              <strong className="sd-hero" data-testid="kpi-piutang-value">{displayAmount(receivableStatus, receivables?.outstanding, receivables?.detail)}</strong>
-            ) : (
-              <p className="sd-empty" data-testid="kpi-piutang-value">{displayAmount(receivableStatus, receivables?.outstanding, receivables?.detail)}</p>
-            )}
+            <AmountFigure testid="kpi-piutang-value" status={receivableStatus} amount={receivables?.outstanding} detail={receivables?.detail} heroWhen={["complete", "zero", "incomplete"]} />
           </section>
 
           {financeAllowed ? (
             <section className="sd-card sd-kpi" data-testid="kpi-kas">
               <div className="sd-kpi-top">
-                <p className="sd-kicker" data-testid="sales-kas-scope">{cashScope}</p>
+                <KpiGlyph kind="kas" />
+                <div className="sd-kpi-copy">
+                  <h2>Kas &amp; Bank</h2>
+                  <p className="sd-kicker" data-testid="sales-kas-scope" title={cashScope}>{cashScope}</p>
+                </div>
                 <Info label="Tentang kas dan bank">
                   <p>Saldo akun kas dan bank pada neraca sampai tanggal akhir periode, termasuk saldo awal. Bukan kas masuk atau kas keluar periode.</p>
+                  <FullAmount status={cashStatus} amount={cash?.amount} detail={cash?.detail} />
                 </Info>
               </div>
-              <h2>Kas &amp; Bank</h2>
-              {cashStatus === "complete" || cashStatus === "zero" || cashStatus === "incomplete" ? (
-                <strong className="sd-hero" data-testid="kpi-kas-value">{displayAmount(cashStatus, cash?.amount, cash?.detail)}</strong>
-              ) : (
-                <p className="sd-empty" data-testid="kpi-kas-value">{displayAmount(cashStatus, cash?.amount, cashStatus === "empty" ? "Tidak ada transaksi" : cash?.detail)}</p>
-              )}
+              <AmountFigure testid="kpi-kas-value" status={cashStatus} amount={cash?.amount} detail={cashStatus === "empty" ? "Tidak ada transaksi" : cash?.detail} heroWhen={["complete", "zero", "incomplete"]} />
             </section>
           ) : null}
         </div>
@@ -388,15 +479,29 @@ export default function SalesDashboard({ embedded = false, managed = null }) {
             </div>}
           >
             <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={trendPoints} margin={{ top: 8, right: 8, left: 0, bottom: 4 }}>
-                <CartesianGrid stroke="#E2E8F0" />
-                <XAxis dataKey="label" minTickGap={28} tick={{ fontSize: 11, fill: "#3d4f48" }} padding={{ left: 8, right: 8 }} />
-                <YAxis yAxisId="omzet" hide={trendMetric !== "omzet"} tickFormatter={formatAxisMoney} tick={{ fontSize: 11, fill: "#3d4f48" }} width={48} />
-                <YAxis yAxisId="count" hide={trendMetric !== "invoice_count"} orientation="left" allowDecimals={false} tick={{ fontSize: 11, fill: "#3d4f48" }} width={28} />
-                <Tooltip content={(props) => <MoneyTip {...props} boxRef={trendRef} />} />
-                {trendMetric === "omzet" ? <Line yAxisId="omzet" dataKey="omzet" name="Omzet penjualan" stroke={COLOR.omzet} strokeWidth={2} dot={trendShowsDot(trendPoints.length) ? { r: 4 } : false} activeDot={{ r: 5 }} isAnimationActive={false} /> : null}
-                {trendMetric === "invoice_count" ? <Line yAxisId="count" dataKey="invoice_count" name="Jumlah faktur" stroke={COLOR.count} strokeWidth={2} dot={trendShowsDot(trendPoints.length) ? { r: 4 } : false} activeDot={{ r: 5 }} isAnimationActive={false} /> : null}
-              </LineChart>
+              {trendMetric === "omzet" ? (
+                <AreaChart data={trendPoints} margin={{ top: 8, right: 12, left: 4, bottom: trendBottom }}>
+                  <defs>
+                    <linearGradient id="sd-omzet-fill" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor={COLOR.omzet} stopOpacity={0.28} />
+                      <stop offset="100%" stopColor={COLOR.omzet} stopOpacity={0.02} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid stroke="#e6eeea" vertical={false} />
+                  <XAxis dataKey="label" minTickGap={28} tick={{ fontSize: 11, fill: "#3d4f48" }} padding={{ left: 8, right: 8 }} />
+                  <YAxis yAxisId="omzet" tickFormatter={formatAxisMoney} tick={{ fontSize: 11, fill: "#3d4f48" }} width={yWidth} />
+                  <Tooltip content={(props) => <MoneyTip {...props} boxRef={trendRef} />} />
+                  <Area yAxisId="omzet" type="monotone" dataKey="omzet" name="Omzet penjualan" stroke={COLOR.omzet} strokeWidth={2} fill="url(#sd-omzet-fill)" dot={trendShowsDot(trendPoints.length) ? { r: 4 } : false} activeDot={{ r: 5 }} isAnimationActive={false} />
+                </AreaChart>
+              ) : (
+                <LineChart data={trendPoints} margin={{ top: 8, right: 12, left: 4, bottom: trendBottom }}>
+                  <CartesianGrid stroke="#e6eeea" vertical={false} />
+                  <XAxis dataKey="label" minTickGap={28} tick={{ fontSize: 11, fill: "#3d4f48" }} padding={{ left: 8, right: 8 }} />
+                  <YAxis yAxisId="count" allowDecimals={false} tick={{ fontSize: 11, fill: "#3d4f48" }} width={yWidth} />
+                  <Tooltip content={(props) => <MoneyTip {...props} boxRef={trendRef} />} />
+                  <Line yAxisId="count" dataKey="invoice_count" name="Jumlah faktur" stroke={COLOR.count} strokeWidth={2} dot={trendShowsDot(trendPoints.length) ? { r: 4 } : false} activeDot={{ r: 5 }} isAnimationActive={false} />
+                </LineChart>
+              )}
             </ResponsiveContainer>
           </ChartFrame>
 
@@ -409,34 +514,35 @@ export default function SalesDashboard({ embedded = false, managed = null }) {
                 </div>
                 <Info label="Tentang laba rugi periode">
                   <p>Tiga batang adalah pendapatan, HPP, dan beban operasional selama periode. Laba bersih pada kartu tetap memakai laba rugi lengkap, termasuk pendapatan lain dan beban lain bila ada. Nilai negatif tetap negatif.</p>
+                  {otherLines.length ? (
+                    <ul className="sd-other" data-testid="pl-other">
+                      {otherLines.map((line) => (
+                        <li key={line.key} data-testid={`pl-${line.key}`}>{line.label} {formatMoney(line.amount)}</li>
+                      ))}
+                    </ul>
+                  ) : null}
                 </Info>
               </header>
-              <div className={`sd-plot${plPlot ? " is-series" : " is-message"}`} ref={plRef} data-testid="pl-chart" data-amounts={bars ? bars.map((row) => row.amount).join("|") : ""}>
+              <div className={`sd-plot${plPlot ? " is-series is-bars" : " is-message"}`} ref={plRef} data-testid="pl-chart" data-amounts={bars ? bars.map((row) => row.amount).join("|") : ""}>
                 {plPlot ? (
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={bars} layout="vertical" margin={{ top: 4, right: 12, left: 4, bottom: 0 }}>
-                      <CartesianGrid stroke="#E2E8F0" horizontal={false} />
-                      <XAxis type="number" tickFormatter={formatAxisMoney} tick={{ fontSize: 11, fill: "#3d4f48" }} />
-                      <YAxis type="category" dataKey="label" width={118} tick={{ fontSize: 11, fill: "#172126" }} />
-                      <Tooltip content={(props) => <MoneyTip {...props} boxRef={plRef} />} />
-                      <Bar dataKey="amount" name="Nilai" isAnimationActive={false} barSize={14}>
-                        {bars.map((row) => (
-                          <Cell key={row.key} fill={row.amount < 0 ? COLOR.negative : row.key === "revenue" ? COLOR.omzet : COLOR.hpp} />
-                        ))}
-                      </Bar>
-                    </BarChart>
-                  </ResponsiveContainer>
+                  <ul className="sd-ranking sd-pl-bars">
+                    {bars.map((row) => {
+                      const span = Math.max(...bars.map((item) => Math.abs(item.amount)), 1);
+                      const width = `${(Math.abs(row.amount) / span) * 100}%`;
+                      const fill = row.amount < 0 ? COLOR.negative : row.key === "revenue" ? COLOR.omzet : COLOR.hpp;
+                      return (
+                        <li key={row.key} data-sign={row.amount < 0 ? "negative" : row.amount === 0 ? "zero" : "positive"}>
+                          <span>{row.label}</span>
+                          <span className="sd-bar" aria-hidden="true"><i style={{ width, background: fill }} /></span>
+                          <strong>{formatMoney(row.amount)}</strong>
+                        </li>
+                      );
+                    })}
+                  </ul>
                 ) : (
                   <p className={`sd-state is-${plStatus}`}>{plStatus === "loading" ? "Memuat…" : plStatus === "error" ? "Gagal muat" : (performance?.detail || (plStatus === "empty" ? "Tidak ada transaksi" : "Belum tersedia"))}</p>
                 )}
               </div>
-              {otherLines.length ? (
-                <ul className="sd-other" data-testid="pl-other">
-                  {otherLines.map((line) => (
-                    <li key={line.key} data-testid={`pl-${line.key}`}>{line.label} {formatMoney(line.amount)}</li>
-                  ))}
-                </ul>
-              ) : null}
             </section>
           ) : null}
         </div>
@@ -448,21 +554,30 @@ export default function SalesDashboard({ embedded = false, managed = null }) {
                 <p className="sd-kicker">{salesScope}</p>
                 <h2>Penjualan per sales</h2>
               </div>
+              <Info label="Tentang penjualan per sales">
+                {sales?.detail ? <p>{sales.detail}</p> : <p>Kelompok mengikuti faktur pada periode. Lima teratas ada di kartu.</p>}
+              </Info>
             </header>
-            {sales?.detail ? <p className="sd-note">{sales.detail}</p> : null}
-            <div className={`sd-plot${chartPlotsSeries(salesStatus) ? " is-series" : " is-message"}`}>
-              {chartPlotsSeries(salesStatus) ? (
+            {chartPlotsSeries(salesStatus) ? (
+              <>
                 <ol className="sd-ranking">
-                  {salesGroups.map((row) => (
+                  {salesShown.map((row) => (
                     <li key={row.key}>
-                      <span className="sd-sales-name">{row.label}</span>
+                      <span className="sd-sales-name" title={row.label}>{row.label}</span>
                       <span className="sd-bar" aria-hidden="true"><i style={{ width: `${row.omzet > 0 ? Math.min(100, (Number(row.omzet) / salesMax) * 100) : 0}%`, background: row.key === "unassigned" || Number(row.omzet) < 0 ? COLOR.muted : COLOR.omzet }} /></span>
                       <strong>{displayAmount(salesStatus, row.omzet)}</strong>
                     </li>
                   ))}
                 </ol>
-              ) : <p className={`sd-state is-${salesStatus}`}>{salesStatus === "loading" ? "Memuat…" : salesStatus === "error" ? "Gagal muat" : sales?.detail || "Belum tersedia"}</p>}
-            </div>
+                {salesGroups.length > 5 ? (
+                  <button type="button" className="sd-more" data-testid="sales-show-all" onClick={() => { setDetailTab("sales"); invoiceDialog.current?.showModal(); }}>Lihat semua</button>
+                ) : null}
+              </>
+            ) : (
+              <div className="sd-plot is-message">
+                <p className={`sd-state is-${salesStatus}`}>{salesStatus === "loading" ? "Memuat…" : salesStatus === "error" ? "Gagal muat" : sales?.detail || "Belum tersedia"}</p>
+              </div>
+            )}
           </section>
 
           <section className={`sd-card sd-switch-panel${mobilePanel === "produk" ? " is-mobile-on" : ""}`} data-testid="sales-products">
@@ -473,21 +588,19 @@ export default function SalesDashboard({ embedded = false, managed = null }) {
               </div>
               <Info label="Tentang produk terlaris">
                 <p>Peringkat memakai nilai baris sebelum diskon faktur. Diskon faktur tidak dialokasikan ke barang. Maksimum lima produk dari respons.</p>
+                {products?.detail ? <p>{products.detail}</p> : null}
               </Info>
             </header>
             {productStatus === "complete" || productStatus === "incomplete" ? (
-              <>
-                <ol className="sd-ranking">
-                  {(products?.items || []).slice(0, 5).map((item) => (
-                    <li key={item.key}>
-                      <span className="sd-sales-name">{item.label}</span>
-                      <span className="sd-bar" aria-hidden="true"><i style={{ width: `${Math.min(100, (Math.max(Number(item.amount) || 0, 0) / Math.max(1, ...(products?.items || []).map((row) => Math.max(Number(row.amount) || 0, 0)))) * 100)}%` }} /></span>
-                      <strong>{item.amount == null ? "—" : formatMoney(item.amount)}</strong>
-                    </li>
-                  ))}
-                </ol>
-                {products?.detail ? <p className="sd-note">{products.detail}</p> : null}
-              </>
+              <ol className="sd-ranking">
+                {(products?.items || []).slice(0, 5).map((item) => (
+                  <li key={item.key}>
+                    <span className="sd-sales-name" title={item.label}>{item.label}</span>
+                    <span className="sd-bar" aria-hidden="true"><i style={{ width: `${Math.min(100, (Math.max(Number(item.amount) || 0, 0) / Math.max(1, ...(products?.items || []).map((row) => Math.max(Number(row.amount) || 0, 0)))) * 100)}%` }} /></span>
+                    <strong>{item.amount == null ? "—" : formatMoney(item.amount)}</strong>
+                  </li>
+                ))}
+              </ol>
             ) : (
               <p className={`sd-state is-${productStatus}`}>{productStatus === "loading" ? "Memuat…" : productStatus === "error" ? `Gagal muat. ${products?.detail || error || ""}`.trim() : (products?.detail || "Belum tersedia")}</p>
             )}
@@ -501,37 +614,39 @@ export default function SalesDashboard({ embedded = false, managed = null }) {
               </div>
               <Info label="Tentang umur piutang">
                 <p>Posisi saat ini, bukan saldo historis di akhir periode. Kelompok memakai tanggal jatuh tempo. Jika tanggal jatuh tempo kosong, tanggal faktur dipakai. Saldo tanpa kedua tanggal masuk Tanggal tidak tersedia dan tetap dihitung pada sisa tagihan.</p>
+                {receivables?.coverage_note ? <p>{receivables.coverage_note}</p> : null}
+                <p data-testid="sales-ar-outstanding">Sisa tagihan {displayAmount(receivableStatus, receivables?.outstanding, receivables?.detail)}</p>
               </Info>
             </header>
-            <p className="sd-note" data-testid="sales-ar-outstanding">Sisa tagihan {displayAmount(receivableStatus, receivables?.outstanding, receivables?.detail)}</p>
-            {receivables?.coverage_note ? <p className="sd-note">{receivables.coverage_note}</p> : null}
-            <div className={`sd-plot${chartPlotsSeries(receivableStatus) && receivableStatus !== "zero" ? " is-series" : " is-message"}`}>
-              {chartPlotsSeries(receivableStatus) && receivableStatus !== "zero" ? (
-                <ul className="sd-aging">
-                  {(receivables?.aging || []).map((row) => {
-                    const max = Math.max(1, ...(receivables?.aging || []).map((item) => Math.max(Number(item.amount) || 0, 0)));
-                    return (
-                      <li key={row.key}>
-                        <span>{row.label}</span>
-                        <span className="sd-bar" aria-hidden="true"><i style={{ width: `${(Math.max(Number(row.amount) || 0, 0) / max) * 100}%`, background: AGING_COLOR[row.key] || COLOR.omzet }} /></span>
-                        <strong>{formatMoney(row.amount)}</strong>
-                      </li>
-                    );
-                  })}
-                </ul>
-              ) : (
+            {chartPlotsSeries(receivableStatus) && receivableStatus !== "zero" ? (
+              <ul className="sd-aging">
+                {(receivables?.aging || []).map((row) => {
+                  const max = Math.max(1, ...(receivables?.aging || []).map((item) => Math.max(Number(item.amount) || 0, 0)));
+                  return (
+                    <li key={row.key}>
+                      <span title={row.label}>{row.label}</span>
+                      <span className="sd-bar" aria-hidden="true"><i style={{ width: `${(Math.max(Number(row.amount) || 0, 0) / max) * 100}%`, background: AGING_COLOR[row.key] || COLOR.omzet }} /></span>
+                      <strong>{formatMoney(row.amount)}</strong>
+                    </li>
+                  );
+                })}
+              </ul>
+            ) : (
+              <div className="sd-plot is-message">
                 <p className={`sd-state is-${receivableStatus}`}>{receivableStatus === "loading" ? "Memuat…" : (receivableStatus === "zero" ? "Tidak ada saldo piutang saat ini." : receivables?.detail || (error ? "Gagal muat" : "Belum tersedia"))}</p>
-              )}
-            </div>
+              </div>
+            )}
             {Number.isFinite(Number(receivables?.unbucketed_outstanding)) && Number(receivables.unbucketed_outstanding) !== 0 ? (
-              <p className="sd-note" data-testid="sales-ar-unbucketed">Tanggal tidak tersedia {formatMoney(receivables.unbucketed_outstanding)}. Saldo ini tetap termasuk dalam sisa tagihan.</p>
+              <p className="sd-note" data-testid="sales-ar-unbucketed" title="Saldo tanpa tanggal jatuh tempo dan tanggal faktur tetap termasuk dalam sisa tagihan.">Tanggal tidak tersedia {formatMoney(receivables.unbucketed_outstanding)}</p>
             ) : null}
           </section>
         </div>
 
         <div className="sd-foot">
-          <span>Penjualan memakai tanggal faktur. Sisa tagihan dan umur piutang adalah posisi saat ini.</span>
           <button type="button" onClick={() => invoiceDialog.current?.showModal()}>Rincian faktur dan pesanan</button>
+          <Info label="Dasar tanggal dashboard">
+            <p>Penjualan memakai tanggal faktur. Sisa tagihan dan umur piutang adalah posisi saat ini.</p>
+          </Info>
         </div>
       </div>
 
@@ -544,7 +659,7 @@ export default function SalesDashboard({ embedded = false, managed = null }) {
           <button type="button" onClick={() => invoiceDialog.current?.close()} aria-label="Tutup rincian faktur">Tutup</button>
         </header>
         <DashboardTabs id="sales-detail" label="Rincian operasional" value={detailTab} onChange={setDetailTab}
-          items={[{ id: "orders", label: "Status pesanan" }, { id: "invoices", label: "Faktur" }, { id: "customers", label: "Pelanggan" }]} />
+          items={[{ id: "orders", label: "Status pesanan" }, { id: "invoices", label: "Faktur" }, { id: "customers", label: "Pelanggan" }, { id: "sales", label: "Sales" }]} />
         <div role="tabpanel" id="sales-detail-panel-orders" aria-labelledby="sales-detail-tab-orders" hidden={detailTab !== "orders"} tabIndex={0}>
           <section className="sd-card" data-testid="sales-orders">
             <p className="sd-kicker" data-testid="sales-orders-scope">Saat ini</p>
@@ -612,6 +727,26 @@ export default function SalesDashboard({ embedded = false, managed = null }) {
               </BarChart>
             </ResponsiveContainer>
           </ChartFrame>
+        </div>
+        <div role="tabpanel" id="sales-detail-panel-sales" aria-labelledby="sales-detail-tab-sales" hidden={detailTab !== "sales"} tabIndex={0}>
+          <section className="sd-card" data-testid="sales-all-groups">
+            <p className="sd-kicker">{salesScope}</p>
+            <h2>Semua kelompok sales</h2>
+            {sales?.detail ? <p className="sd-note">{sales.detail}</p> : null}
+            {chartPlotsSeries(salesStatus) && salesGroups.length ? (
+              <ol className="sd-ranking">
+                {salesGroups.map((row) => (
+                  <li key={row.key}>
+                    <span className="sd-sales-name">{row.label}</span>
+                    <span className="sd-bar" aria-hidden="true"><i style={{ width: `${row.omzet > 0 ? Math.min(100, (Number(row.omzet) / salesMax) * 100) : 0}%`, background: row.key === "unassigned" || Number(row.omzet) < 0 ? COLOR.muted : COLOR.omzet }} /></span>
+                    <strong>{displayAmount(salesStatus, row.omzet)}</strong>
+                  </li>
+                ))}
+              </ol>
+            ) : (
+              <p className={`sd-state is-${salesStatus}`}>{salesStatus === "loading" ? "Memuat…" : sales?.detail || "Belum tersedia"}</p>
+            )}
+          </section>
         </div>
         <div role="tabpanel" id="sales-detail-panel-customers" aria-labelledby="sales-detail-tab-customers" hidden={detailTab !== "customers"} tabIndex={0}>
           <section className="sd-card" data-testid="sales-customers">
