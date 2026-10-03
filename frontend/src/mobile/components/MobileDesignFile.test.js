@@ -9,14 +9,18 @@ jest.mock("pdfjs-dist", () => ({
   getDocument: jest.fn(),
 }));
 
-jest.mock("../../lib/api", () => ({
-  __esModule: true,
-  fileUrl: (storagePath) => `http://localhost:8000/api/files/${storagePath}`,
-  default: {
-    getOrderAttachment: jest.fn(),
-    fetchStoredFileBlob: jest.fn(),
-  },
-}));
+jest.mock("../../lib/api", () => {
+  const configured = process.env.REACT_APP_BACKEND_URL || "http://localhost:8000";
+  const origin = new URL(configured).origin;
+  return {
+    __esModule: true,
+    fileUrl: (storagePath) => `${origin}/api/files/${storagePath}`,
+    default: {
+      getOrderAttachment: jest.fn(),
+      fetchStoredFileBlob: jest.fn(),
+    },
+  };
+});
 
 global.IS_REACT_ACT_ENVIRONMENT = true;
 
