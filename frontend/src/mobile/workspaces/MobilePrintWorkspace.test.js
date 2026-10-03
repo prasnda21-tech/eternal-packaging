@@ -2,6 +2,11 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import MobilePrintWorkspace from "./MobilePrintWorkspace";
 
+jest.mock("pdfjs-dist", () => ({
+  GlobalWorkerOptions: { workerSrc: "" },
+  getDocument: jest.fn(),
+}));
+
 const HELPER_REASON = "Persiapan Helper harus diisi sebelum pekerjaan Operator.";
 const SAMPLE_REASON = "Cetak Sample harus disetujui sebelum Qty Selesai Cetak dapat diisi.";
 const EMPTY_MSG = "Tidak ada alokasi cetak untuk akun ini.";
@@ -70,8 +75,8 @@ function metrics(container) {
 }
 
 function lineFigures(container) {
-  return [...container.querySelectorAll(".mop-line-block")].map((node) => (
-    node.querySelectorAll(".mop-card-meta span")[1].textContent
+  return [...container.querySelectorAll(".mop-line-block p.mop-card-meta")].map((node) => (
+    node.children[node.children.length - 1].textContent
   ));
 }
 
