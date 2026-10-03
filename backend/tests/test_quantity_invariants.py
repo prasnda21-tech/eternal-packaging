@@ -2,6 +2,7 @@
 
 No live API or Mongo required.
 """
+import copy
 import sys
 from pathlib import Path
 
@@ -679,6 +680,159 @@ def test_jadwal_total_qty_over_target_not_clamped():
     assert print_completed_qty(o) == 12000
     assert print_qty_total(o) == 10000
     assert print_completed_qty(o) > print_qty_total(o)
+
+
+def _two_print_packing_po(
+    *,
+    lines,
+    delivered,
+    line_qty=(2000, 500),
+    completed=None,
+    helper_items=None,
+    helper_total=None,
+    non_print=2000,
+    legacy_qty_packed=None,
+):
+    """Dummy dua line cetak. `lines=None` means no packing_info.lines."""
+    done = completed if completed is not None else line_qty
+    items = helper_items if helper_items is not None else [
+        {"line_idx": 0, "qty_prepared": done[0]},
+        {"line_idx": 1, "qty_prepared": done[1]},
+    ]
+    prepared = helper_total if helper_total is not None else (done[0] + done[1])
+    lis = [
+        {"name": "12 oz Datar 8 gr SA", "quantity": line_qty[0], "production_process": "print"},
+        {"name": "Paper Cup Double Wall 8 oz Putih", "quantity": line_qty[1], "production_process": "print"},
+    ]
+    if non_print:
+        lis.append({"name": "Lid", "quantity": non_print, "production_process": "non_print"})
+    if lines is None:
+        packing = {"qty_packed": 0 if legacy_qty_packed is None else legacy_qty_packed}
+    else:
+        packing = {
+            "qty_packed": sum(max(0, int(row.get("packed_qty") or 0)) for row in lines),
+            "lines": lines,
+        }
+    order = {
+        "line_items": lis,
+        "total_quantity": sum(li["quantity"] for li in lis),
+        "operator_splits": [
+            {"line_idx": 0, "quantity": line_qty[0], "qty_completed": done[0]},
+            {"line_idx": 1, "quantity": line_qty[1], "qty_completed": done[1]},
+        ],
+        "helper_prep": {"qty_prepared": prepared, "items": items},
+        "packing_info": packing,
+        "current_stage": 13,
+        "qty_delivered": delivered,
+    }
+    return order
+
+
+def test_packing_lines_plus_500_monotonic_does_not_mutate_order():
+    lines = [{"line_idx": 0, "packed_qty": 2000}, {"line_idx": 1, "packed_qty": 0}]
+    order = _two_print_packing_po(lines=lines, delivered=4000)
+    snapshot = copy.deepcopy(order)
+    updates = [{"line_idx": 1, "packed_qty": 500}]
+    updates_snapshot = copy.deepcopy(updates)
+    assert validate_packing_lines(updates, order) is None
+    assert order == snapshot
+    assert updates == updates_snapshot
+
+
+def test_packing_lines_unchanged_baseline_passes_when_delivered_is_higher():
+    order = _two_print_packing_po(
+        lines=[{"line_idx": 0, "packed_qty": 2000}, {"line_idx": 1, "packed_qty": 0}],
+        delivered=4000,
+    )
+    assert validate_packing_lines([{"line_idx": 0, "packed_qty": 2000}], order) is None
+
+
+def test_packing_lines_line_drop_hidden_by_other_increase_stays_rejected():
+    order = _two_print_packing_po(
+        lines=[{"line_idx": 0, "packed_qty": 2000}, {"line_idx": 1, "packed_qty": 0}],
+        delivered=4000,
+    )
+    err = validate_packing_lines(
+        [{"line_idx": 0, "packed_qty": 1600}, {"line_idx": 1, "packed_qty": 500}],
+        order,
+    )
+    assert err == (
+        "Qty Packing (2100) tidak boleh lebih kecil dari qty sudah dikirim (4000)."
+    )
+
+
+def test_packing_lines_decrease_still_allowed_when_total_meets_delivered():
+    order = _two_print_packing_po(
+        lines=[{"line_idx": 0, "packed_qty": 2000}, {"line_idx": 1, "packed_qty": 500}],
+        delivered=2000,
+    )
+    assert validate_packing_lines([{"line_idx": 1, "packed_qty": 0}], order) is None
+
+
+def test_packing_lines_empty_baseline_legacy_qty_keeps_delivered_guard():
+    order = _two_print_packing_po(lines=None, delivered=4000, legacy_qty_packed=2000)
+    assert packing_lines_stored(order) is None
+    err = validate_packing_lines([{"line_idx": 1, "packed_qty": 500}], order)
+    assert err == (
+        "Qty Packing (500) tidak boleh lebih kecil dari qty sudah dikirim (4000)."
+    )
+
+
+def test_packing_lines_other_guards_keep_their_messages():
+    base = _two_print_packing_po(
+        lines=[{"line_idx": 0, "packed_qty": 2000}, {"line_idx": 1, "packed_qty": 0}],
+        delivered=4000,
+    )
+    assert "non-cetak" in validate_packing_lines([{"line_idx": 2, "packed_qty": 10}], base)
+    assert validate_packing_lines([{"line_idx": 9, "packed_qty": 1}], base) == (
+        "line_idx 9 tidak valid."
+    )
+    assert validate_packing_lines([{"line_idx": 1, "packed_qty": -1}], base) == (
+        "Qty Packing tidak boleh negatif."
+    )
+    over_target = validate_packing_lines([{"line_idx": 1, "packed_qty": 501}], base)
+    assert over_target == (
+        "Qty Packing 'Paper Cup Double Wall 8 oz Putih' (501) melebihi qty PO (500)."
+    )
+    short = _two_print_packing_po(
+        lines=[{"line_idx": 0, "packed_qty": 2000}, {"line_idx": 1, "packed_qty": 0}],
+        delivered=4000,
+        completed=(2000, 100),
+    )
+    per_line = validate_packing_lines([{"line_idx": 1, "packed_qty": 500}], short)
+    assert per_line == (
+        "Qty Packing 'Paper Cup Double Wall 8 oz Putih' (500) melebihi qty tersedia "
+        "untuk packing line tersebut (100)."
+    )
+    capped = _two_print_packing_po(
+        lines=[{"line_idx": 0, "packed_qty": 500}, {"line_idx": 1, "packed_qty": 0}],
+        delivered=4000,
+        line_qty=(1000, 1000),
+        completed=(1000, 1000),
+        helper_items=[
+            {"line_idx": 0, "qty_prepared": 1000},
+            {"line_idx": 1, "qty_prepared": 1000},
+        ],
+        helper_total=1500,
+    )
+    total_avail = validate_packing_lines(
+        [{"line_idx": 0, "packed_qty": 1000}, {"line_idx": 1, "packed_qty": 1000}],
+        capped,
+    )
+    assert total_avail == (
+        "Total qty packing Cetak (2000) melebihi qty Cetak tersedia untuk packing (1500)."
+    )
+
+
+def test_validate_packing_qty_below_delivered_still_rejected():
+    order = _two_print_packing_po(
+        lines=[{"line_idx": 0, "packed_qty": 2000}, {"line_idx": 1, "packed_qty": 0}],
+        delivered=4000,
+    )
+    err = validate_packing_qty(2500, order)
+    assert err == (
+        "Qty Packing (2500) tidak boleh lebih kecil dari qty sudah dikirim (4000)."
+    )
 
 
 def run_all():

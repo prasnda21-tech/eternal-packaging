@@ -573,14 +573,30 @@ def validate_packing_qty(packed: int, order: dict) -> Optional[str]:
     return None
 
 
+def _packing_lines_baseline(order: dict) -> dict:
+    """Salinan packed per line_idx. Dict ini tidak ikut termutasi saat update diterapkan."""
+    baseline = {}
+    for it in packing_lines_stored(order) or []:
+        idx = _safe_int(it.get("line_idx"), default=-1)
+        baseline[idx] = max(0, _safe_int(it.get("packed_qty")))
+    return baseline
+
+
+def _packing_lines_monotonic(baseline: dict, merged: dict) -> bool:
+    """Setiap line tersimpan tidak turun. Kenaikan total tidak dipakai sebagai bukti."""
+    if not baseline:
+        return False
+    for idx, packed in baseline.items():
+        if max(0, _safe_int(merged.get(idx))) < packed:
+            return False
+    return True
+
+
 def validate_packing_lines(updates: list, order: dict) -> Optional[str]:
     """Validasi packed_qty kumulatif per line. updates: [{line_idx, packed_qty}]."""
     lis = list(order.get("line_items") or [])
-    merged = {}
-    existing = packing_lines_stored(order) or []
-    for it in existing:
-        idx = _safe_int(it.get("line_idx"), default=-1)
-        merged[idx] = max(0, _safe_int(it.get("packed_qty")))
+    baseline = _packing_lines_baseline(order)
+    merged = dict(baseline)
     if not updates:
         return "Qty Packing per line wajib diisi."
     for u in updates:
@@ -624,7 +640,9 @@ def validate_packing_lines(updates: list, order: dict) -> Optional[str]:
     if total <= 0:
         return "Qty Packing tidak valid."
     delivered = qty_delivered(order)
-    if total < delivered:
+    # Baseline kosong tetap memakai guard ini. Bypass hanya untuk update
+    # yang tidak menurunkan satupun line tersimpan.
+    if total < delivered and not _packing_lines_monotonic(baseline, merged):
         return (
             f"Qty Packing ({total}) tidak boleh lebih kecil dari qty sudah dikirim ({delivered})."
         )
