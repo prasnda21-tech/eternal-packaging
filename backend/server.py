@@ -3,7 +3,7 @@ from fastapi.responses import Response as FastAPIResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
-import os, logging, uuid, base64, re, secrets, hashlib, copy, inspect, asyncio
+import os, logging, uuid, base64, re, secrets, hashlib, copy, inspect, asyncio, contextvars
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict
 from typing import List, Optional, Any, Dict, Tuple, Union
@@ -1976,13 +1976,18 @@ async def _load_order_for_mutation(order_id: str) -> dict:
     return order
 
 
+_r2_delivery_hook = contextvars.ContextVar("r2_delivery_hook", default=None)
+
+
 async def _with_quantity_lock(order_id: str, mutate, extra_query=None):
     """Atomic optimistic lock + retry untuk mutasi qty kritis.
 
     `mutate(order)` memvalidasi & memodifikasi order in-place.
     Setiap attempt: baca fresh → validasi → update dengan filter updated_at.
     `extra_query` is optional and unused by every caller except Konfirmasi Terkirim.
+    A context hook, when set, runs inside the same Mongo transaction as the write.
     """
+    in_transaction = _r2_delivery_hook.get()
     last_token = None
     for attempt in range(_QUANTITY_LOCK_RETRIES):
         order = await _load_order_for_mutation(order_id)
@@ -1991,7 +1996,14 @@ async def _with_quantity_lock(order_id: str, mutate, extra_query=None):
         mutate(order)
         order["_expected_updated_at"] = lock_token
         try:
-            return await _persist_order(order, require_lock=True, extra_query=extra_query)
+            if in_transaction is None:
+                return await _persist_order(order, require_lock=True, extra_query=extra_query)
+            async with await db.client.start_session() as session:
+                async with session.start_transaction():
+                    await in_transaction(session, order)
+                    return await _persist_order(
+                        order, require_lock=True, extra_query=extra_query, session=session,
+                    )
         except HTTPException as exc:
             from services.physical_stock_engine import DELIVERY_FENCE_LOST
             if (
@@ -2001,10 +2013,19 @@ async def _with_quantity_lock(order_id: str, mutate, extra_query=None):
             ):
                 continue
             raise
+        except Exception as exc:
+            from services.physical_stock import (
+                InsufficientPhysicalStockError,
+                PhysicalStockConflictError,
+                PhysicalStockValidationError,
+            )
+            if isinstance(exc, (PhysicalStockValidationError, InsufficientPhysicalStockError, PhysicalStockConflictError)):
+                raise HTTPException(400, str(exc))
+            raise
     raise HTTPException(409, _CONFLICT_MSG)
 
 
-async def _persist_order(order, *, require_lock: bool = False, persist_keys: Optional[tuple] = None, extra_query=None):
+async def _persist_order(order, *, require_lock: bool = False, persist_keys: Optional[tuple] = None, extra_query=None, session=None):
     expected_updated = order.pop("_expected_updated_at", None)
     if require_lock and not expected_updated:
         raise HTTPException(409, _CONFLICT_MSG)
@@ -2018,7 +2039,9 @@ async def _persist_order(order, *, require_lock: bool = False, persist_keys: Opt
     incoming_files = order.get("surat_jalan_files")
     merge_sj = persist_keys is None or "surat_jalan_files" in persist_keys
     if merge_sj and isinstance(incoming_files, list) and incoming_files:
-        existing = await db.orders.find_one({"id": order["id"]}, {"surat_jalan_files": 1, "_id": 0})
+        existing = await db.orders.find_one(
+            {"id": order["id"]}, {"surat_jalan_files": 1, "_id": 0}, session=session,
+        )
         old_by_id = {
             str(f.get("id") or ""): f
             for f in ((existing or {}).get("surat_jalan_files") or [])
@@ -2053,6 +2076,7 @@ async def _persist_order(order, *, require_lock: bool = False, persist_keys: Opt
         query,
         {"$set": to_write},
         upsert=not bool(expected_updated or require_lock),
+        session=session,
     )
     if expected_updated and result.matched_count == 0:
         if extra_query:
@@ -5739,6 +5763,8 @@ class ConfirmDeliveredPayload(BaseModel):
     action_id: Optional[str] = None
     shipment_id: Optional[str] = None
     recipient_name: Optional[str] = None
+    warehouse_id: Optional[str] = None
+    branch_id: Optional[str] = None
 
 
 @api_router.post("/orders/{order_id}/confirm-delivered")
@@ -5778,13 +5804,18 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
     conf_holder = {}
     reconcile_holder = {"result": None}
 
+    from services.physical_stock import order_has_r2_balance as _order_has_r2_balance
+    uses_r2_stock = bool(existing_order) and await _order_has_r2_balance(db, existing_order)
+    r2_request = {}
+
     try:
-        if existing_order and op.get("ready"):
+        if existing_order and op.get("ready") and not uses_r2_stock:
             claimed_stock = await claim_selected_delivery_stock(
                 db, existing_order, selected_shipment_id, action_id, user, claim_plan_holder,
             )
 
         def mutate(order: dict):
+            r2_request.clear()
             conf_holder.pop("conf", None)
             reject_reused_delivery_action(order, action_id, op.get("shipment_id"))
             ids = list(order.get("delivery_confirm_action_ids") or [])
@@ -5876,12 +5907,78 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
             if action_id:
                 ids.append(action_id)
                 order["delivery_confirm_action_ids"] = ids[-20:]
+            if uses_r2_stock and conf_holder.get("conf"):
+                r2_request["confirmation_id"] = action_id or conf_holder["conf"].get("id")
+                r2_request["shipment"] = selected_sh
+                r2_request["increment"] = increment
+
+        async def _post_r2_delivery(session, order):
+            if not r2_request.get("confirmation_id"):
+                return
+            from services.physical_stock import (
+                PhysicalStockValidationError,
+                apply_confirmed_sales_delivery,
+            )
+            from services.physical_stock_engine import plan_confirmed_sj_stock
+            shipment = r2_request.get("shipment")
+            lines = None
+            if isinstance(shipment, dict):
+                plan = plan_confirmed_sj_stock(order, shipment, allow_delivered=True)
+                if plan.get("error") or not plan.get("lines"):
+                    raise PhysicalStockValidationError(
+                        plan.get("error") or "Baris pengiriman tidak dapat dipetakan ke master item"
+                    )
+                lines = [
+                    {
+                        "line_idx": int(ln["line_idx"]),
+                        "qty": int(ln["qty"]),
+                        "master_item_id": ln.get("master_item_id"),
+                        "line_id": ln.get("line_id"),
+                    }
+                    for ln in plan["lines"]
+                ]
+            else:
+                items = [
+                    (idx, line) for idx, line in enumerate(order.get("line_items") or [])
+                    if isinstance(line, dict) and str(line.get("master_item_id") or "").strip()
+                ]
+                increment_qty = int(r2_request.get("increment") or 0)
+                if len(items) == 1 and increment_qty > 0:
+                    idx, line = items[0]
+                    lines = [{
+                        "line_idx": idx,
+                        "qty": increment_qty,
+                        "master_item_id": line.get("master_item_id"),
+                        "line_id": line.get("line_id"),
+                    }]
+            if not lines:
+                raise PhysicalStockValidationError(
+                    "Baris pengiriman tidak dapat dipetakan ke master item"
+                )
+            await apply_confirmed_sales_delivery(
+                db,
+                session,
+                order=order,
+                confirmation_id=r2_request["confirmation_id"],
+                lines=lines,
+                actor_id=str(user.get("id") or user.get("email") or "user"),
+                warehouse_id=(payload.warehouse_id if payload else None),
+                branch_id=(payload.branch_id if payload else None),
+                reason="Konfirmasi terkirim",
+                write_order=False,
+            )
 
         try:
             await prepare_delivery_commit(db, op, claimed_stock)
-            order = await _with_quantity_lock(
-                order_id, mutate, extra_query=delivery_persist_filter(op),
-            )
+            token = _r2_delivery_hook.set(_post_r2_delivery if uses_r2_stock else None)
+            try:
+                order = await _with_quantity_lock(
+                    order_id,
+                    mutate,
+                    extra_query=delivery_persist_filter(op),
+                )
+            finally:
+                _r2_delivery_hook.reset(token)
         except Exception as exc:
             release_claim = getattr(exc, "detail", None) != DELIVERY_FENCE_LOST
             raise

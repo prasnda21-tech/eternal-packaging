@@ -15,6 +15,7 @@ from pymongo.errors import DuplicateKeyError, PyMongoError
 
 LEDGER_COLLECTION = "physical_stock_ledger"
 BALANCE_COLLECTION = "physical_stock_balances"
+SALES_DELIVERY_CONFIRMATIONS = "physical_sales_delivery_confirmations"
 MASTER_ITEMS_COLLECTION = "master_items"
 BRANCHES_COLLECTION = "branches"
 WAREHOUSES_COLLECTION = "warehouses"
@@ -111,6 +112,14 @@ def set_fail_after_balance(enabled: bool) -> None:
     _fail_after_balance = bool(enabled)
 
 
+_fail_sales_delivery_persist = False
+
+
+def set_fail_sales_delivery_persist(enabled: bool) -> None:
+    global _fail_sales_delivery_persist
+    _fail_sales_delivery_persist = bool(enabled)
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -164,6 +173,8 @@ async def ensure_indexes(db) -> None:
         unique=True,
         name="physical_balance_identity",
     )
+    confirmations = db[SALES_DELIVERY_CONFIRMATIONS]
+    await confirmations.create_index("id", unique=True)
 
 
 def _as_text(value: Any, label: str) -> str:
@@ -265,104 +276,109 @@ async def _existing_movement(db, idempotency_key: str, session):
     )
 
 
-async def _apply_once(db, requested: dict) -> dict:
+async def _apply_movement_in_session(db, requested: dict, session) -> dict:
+    """Post one movement inside the caller's transaction. No nested transaction."""
     ledger = db[LEDGER_COLLECTION]
     balances = db[BALANCE_COLLECTION]
+    existing = await _existing_movement(db, requested["idempotency_key"], session)
+    if existing:
+        if not _same_payload(existing, requested):
+            raise PhysicalStockConflictError(
+                "Idempotency key sudah digunakan dengan payload yang berbeda"
+            )
+        return _public_movement(existing)
+
+    await _validate_masters(
+        db,
+        master_item_id=requested["master_item_id"],
+        branch_id=requested["branch_id"],
+        warehouse_id=requested["warehouse_id"],
+        session=session,
+    )
+    if requested["movement_type"] == MOVEMENT_REVERSAL:
+        if not requested["reference_id"]:
+            raise PhysicalStockValidationError("Reversal wajib merujuk movement asal")
+        prior = await ledger.find_one(
+            {
+                "movement_type": MOVEMENT_REVERSAL,
+                "reference_id": requested["reference_id"],
+            },
+            {"_id": 1},
+            session=session,
+        )
+        if prior:
+            raise PhysicalStockConflictError("Movement asal sudah direversal")
+
+    movement_id = str(uuid.uuid4())
+    identity = {
+        "master_item_id": requested["master_item_id"],
+        "branch_id": requested["branch_id"],
+        "warehouse_id": requested["warehouse_id"],
+    }
+    qty_delta = requested["qty_delta"]
+    created_at = requested["created_at"]
+    if requested["movement_type"] == MOVEMENT_OPENING_BALANCE:
+        prior_ledger = await ledger.find_one(identity, {"_id": 1}, session=session)
+        if prior_ledger:
+            raise PhysicalStockConflictError(
+                "Saldo awal ditolak karena identitas ini sudah memiliki mutasi stok fisik"
+            )
+        prior_balance = await balances.find_one(identity, {"_id": 1}, session=session)
+        if prior_balance:
+            raise PhysicalStockConflictError(
+                "Saldo awal ditolak karena saldo fisik sudah ada"
+            )
+    if qty_delta >= 0:
+        before_doc = await balances.find_one_and_update(
+            identity,
+            {
+                "$inc": {"physical_qty": qty_delta, "version": 1},
+                "$set": {"last_movement_id": movement_id, "updated_at": created_at},
+                "$setOnInsert": {"id": str(uuid.uuid4()), "created_at": created_at},
+            },
+            upsert=True,
+            return_document=ReturnDocument.BEFORE,
+            session=session,
+        )
+        balance_before = int((before_doc or {}).get("physical_qty") or 0)
+    else:
+        before_doc = await balances.find_one_and_update(
+            {**identity, "physical_qty": {"$gte": abs(qty_delta)}},
+            {
+                "$inc": {"physical_qty": qty_delta, "version": 1},
+                "$set": {"last_movement_id": movement_id, "updated_at": created_at},
+            },
+            upsert=False,
+            return_document=ReturnDocument.BEFORE,
+            session=session,
+        )
+        if not before_doc:
+            raise InsufficientPhysicalStockError(
+                "Stok fisik tidak mencukupi dan tidak boleh menjadi negatif"
+            )
+        balance_before = int(before_doc.get("physical_qty") or 0)
+    balance_after = balance_before + qty_delta
+    if balance_after < 0:
+        raise InsufficientPhysicalStockError(
+            "Stok fisik tidak mencukupi dan tidak boleh menjadi negatif"
+        )
+    if _fail_after_balance:
+        raise PhysicalStockAbortError("forced transaction abort")
+
+    doc = {
+        **requested,
+        "id": movement_id,
+        "balance_before": balance_before,
+        "balance_after": balance_after,
+    }
+    await ledger.insert_one(doc, session=session)
+    return _public_movement(doc)
+
+
+async def _apply_once(db, requested: dict) -> dict:
     async with await _client(db).start_session() as session:
         async with session.start_transaction():
-            existing = await _existing_movement(db, requested["idempotency_key"], session)
-            if existing:
-                if not _same_payload(existing, requested):
-                    raise PhysicalStockConflictError(
-                        "Idempotency key sudah digunakan dengan payload yang berbeda"
-                    )
-                return _public_movement(existing)
-
-            await _validate_masters(
-                db,
-                master_item_id=requested["master_item_id"],
-                branch_id=requested["branch_id"],
-                warehouse_id=requested["warehouse_id"],
-                session=session,
-            )
-            if requested["movement_type"] == MOVEMENT_REVERSAL:
-                if not requested["reference_id"]:
-                    raise PhysicalStockValidationError("Reversal wajib merujuk movement asal")
-                prior = await ledger.find_one(
-                    {
-                        "movement_type": MOVEMENT_REVERSAL,
-                        "reference_id": requested["reference_id"],
-                    },
-                    {"_id": 1},
-                    session=session,
-                )
-                if prior:
-                    raise PhysicalStockConflictError("Movement asal sudah direversal")
-
-            movement_id = str(uuid.uuid4())
-            identity = {
-                "master_item_id": requested["master_item_id"],
-                "branch_id": requested["branch_id"],
-                "warehouse_id": requested["warehouse_id"],
-            }
-            qty_delta = requested["qty_delta"]
-            created_at = requested["created_at"]
-            if requested["movement_type"] == MOVEMENT_OPENING_BALANCE:
-                prior_ledger = await ledger.find_one(identity, {"_id": 1}, session=session)
-                if prior_ledger:
-                    raise PhysicalStockConflictError(
-                        "Saldo awal ditolak karena identitas ini sudah memiliki mutasi stok fisik"
-                    )
-                prior_balance = await balances.find_one(identity, {"_id": 1}, session=session)
-                if prior_balance:
-                    raise PhysicalStockConflictError(
-                        "Saldo awal ditolak karena saldo fisik sudah ada"
-                    )
-            if qty_delta >= 0:
-                before_doc = await balances.find_one_and_update(
-                    identity,
-                    {
-                        "$inc": {"physical_qty": qty_delta, "version": 1},
-                        "$set": {"last_movement_id": movement_id, "updated_at": created_at},
-                        "$setOnInsert": {"id": str(uuid.uuid4()), "created_at": created_at},
-                    },
-                    upsert=True,
-                    return_document=ReturnDocument.BEFORE,
-                    session=session,
-                )
-                balance_before = int((before_doc or {}).get("physical_qty") or 0)
-            else:
-                before_doc = await balances.find_one_and_update(
-                    {**identity, "physical_qty": {"$gte": abs(qty_delta)}},
-                    {
-                        "$inc": {"physical_qty": qty_delta, "version": 1},
-                        "$set": {"last_movement_id": movement_id, "updated_at": created_at},
-                    },
-                    upsert=False,
-                    return_document=ReturnDocument.BEFORE,
-                    session=session,
-                )
-                if not before_doc:
-                    raise InsufficientPhysicalStockError(
-                        "Stok fisik tidak mencukupi dan tidak boleh menjadi negatif"
-                    )
-                balance_before = int(before_doc.get("physical_qty") or 0)
-            balance_after = balance_before + qty_delta
-            if balance_after < 0:
-                raise InsufficientPhysicalStockError(
-                    "Stok fisik tidak mencukupi dan tidak boleh menjadi negatif"
-                )
-            if _fail_after_balance:
-                raise PhysicalStockAbortError("forced transaction abort")
-
-            doc = {
-                **requested,
-                "id": movement_id,
-                "balance_before": balance_before,
-                "balance_after": balance_after,
-            }
-            await ledger.insert_one(doc, session=session)
-            return _public_movement(doc)
+            return await _apply_movement_in_session(db, requested, session)
 
 
 async def post_movement(
@@ -424,6 +440,366 @@ async def post_movement(
             )
         return _public_movement(existing)
     raise PhysicalStockUnavailableError("Transaksi stok fisik gagal setelah percobaan ulang") from last_error
+
+
+def _delivery_line_key(row: dict) -> Tuple[int, str, int]:
+    return (int(row["line_idx"]), str(row["master_item_id"]), int(row["qty"]))
+
+
+def _same_delivery_confirmation(existing: dict, spec: dict) -> bool:
+    if str(existing.get("order_id") or "") != spec["order_id"]:
+        return False
+    if str(existing.get("branch_id") or "") != spec["branch_id"]:
+        return False
+    if str(existing.get("warehouse_id") or "") != spec["warehouse_id"]:
+        return False
+    old = existing.get("lines") if isinstance(existing.get("lines"), list) else []
+    new = spec["lines"]
+    if len(old) != len(new):
+        return False
+    try:
+        return sorted(_delivery_line_key(row) for row in old) == sorted(_delivery_line_key(row) for row in new)
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+def _completed_qty_for_line(order: dict, line_idx: int) -> int:
+    lines = list(order.get("line_items") or [])
+    if line_idx < 0 or line_idx >= len(lines) or not isinstance(lines[line_idx], dict):
+        raise PhysicalStockValidationError("Baris pesanan tidak ditemukan")
+    ordered = _qty_num(lines[line_idx].get("quantity"))
+    completed = 0.0
+    for split in order.get("operator_splits") or []:
+        if not isinstance(split, dict):
+            continue
+        raw_idx = split.get("line_idx")
+        if raw_idx is None or str(raw_idx).strip() == "":
+            continue
+        try:
+            idx = int(raw_idx)
+        except (TypeError, ValueError):
+            continue
+        if idx == line_idx:
+            completed += _qty_num(split.get("qty_completed"))
+    ready_base = min(max(completed, 0.0), max(ordered, 0.0))
+    return int(ready_base)
+
+
+def _resolve_requested_delivery_lines(order: dict, requested: List[dict]) -> List[dict]:
+    lines = list(order.get("line_items") or [])
+    if not requested:
+        raise PhysicalStockValidationError("Minimal satu baris pengiriman")
+    resolved = []
+    seen = set()
+    for raw in requested:
+        if not isinstance(raw, dict):
+            raise PhysicalStockValidationError("Baris pengiriman tidak valid")
+        try:
+            line_idx = int(raw.get("line_idx"))
+            qty = int(raw.get("qty"))
+        except (TypeError, ValueError):
+            raise PhysicalStockValidationError("Baris pengiriman tidak valid")
+        if isinstance(raw.get("qty"), bool) or qty <= 0:
+            raise PhysicalStockValidationError("Kuantitas terkirim harus bilangan bulat positif")
+        if line_idx in seen:
+            raise PhysicalStockValidationError("Baris pengiriman duplikat")
+        seen.add(line_idx)
+        if line_idx < 0 or line_idx >= len(lines) or not isinstance(lines[line_idx], dict):
+            raise PhysicalStockValidationError("Baris pesanan tidak ditemukan")
+        po_line = lines[line_idx]
+        master_item_id = str(po_line.get("master_item_id") or "").strip()
+        if not master_item_id:
+            raise PhysicalStockValidationError(
+                "Baris pesanan tidak memiliki master_item_id sehingga stok fisik tidak dapat dikonfirmasi"
+            )
+        requested_master = str(raw.get("master_item_id") or "").strip()
+        if requested_master and requested_master != master_item_id:
+            raise PhysicalStockValidationError("master_item_id tidak cocok dengan baris pesanan")
+        line_id = str(po_line.get("line_id") or raw.get("line_id") or line_idx)
+        resolved.append({
+            "line_idx": line_idx,
+            "line_id": line_id,
+            "master_item_id": master_item_id,
+            "qty": qty,
+        })
+    return resolved
+
+
+async def _resolve_delivery_location(db, session, *, branch_id: Optional[str], warehouse_id: Optional[str]) -> Tuple[str, str]:
+    if warehouse_id:
+        warehouse_id = _as_text(warehouse_id, "warehouse_id")
+        warehouse = await db[WAREHOUSES_COLLECTION].find_one(
+            {"id": warehouse_id},
+            {"_id": 0, "id": 1, "branch_id": 1, "active": 1},
+            session=session,
+        )
+        if not warehouse or warehouse.get("active") is not True:
+            raise PhysicalStockValidationError("Gudang tidak aktif")
+        resolved_branch = str(warehouse.get("branch_id") or "")
+        if branch_id and str(branch_id).strip() != resolved_branch:
+            raise PhysicalStockValidationError("Gudang tidak berada pada cabang ini")
+        branch = await db[BRANCHES_COLLECTION].find_one(
+            {"id": resolved_branch},
+            {"_id": 0, "id": 1, "active": 1},
+            session=session,
+        )
+        if not branch or branch.get("active") is not True:
+            raise PhysicalStockValidationError("Cabang tidak aktif")
+        return resolved_branch, warehouse_id
+
+    branches = await db[BRANCHES_COLLECTION].find({}, {"_id": 0, "id": 1, "code": 1, "name": 1, "active": 1}, session=session).to_list(200)
+    active = [row for row in branches if row.get("active") is True]
+    operational = resolve_operational_branch(active)
+    if not operational:
+        raise PhysicalStockValidationError("Cabang operasional Yogyakarta tidak ditemukan")
+    warehouses = await db[WAREHOUSES_COLLECTION].find(
+        {"branch_id": operational["id"], "active": True},
+        {"_id": 0, "id": 1},
+        session=session,
+    ).to_list(50)
+    if len(warehouses) == 1 and warehouses[0].get("id"):
+        return str(operational["id"]), str(warehouses[0]["id"])
+    if not warehouses:
+        raise PhysicalStockValidationError("Gudang aktif Yogyakarta tidak ditemukan")
+    raise PhysicalStockValidationError("Pilih gudang sebelum konfirmasi terkirim")
+
+
+async def _line_r2_delivered_qty(db, session, order_id: str, line_idx: int) -> int:
+    rows = await db[LEDGER_COLLECTION].find(
+        {
+            "movement_type": MOVEMENT_SALES_DELIVERY,
+            "metadata.order_id": order_id,
+            "metadata.line_idx": int(line_idx),
+        },
+        {"_id": 0, "qty_delta": 1},
+        session=session,
+    ).to_list(5000)
+    total = 0
+    for row in rows:
+        delta = int(row.get("qty_delta") or 0)
+        if delta < 0:
+            total += -delta
+    return total
+
+
+def _sales_delivery_request(
+    *,
+    line: dict,
+    order_id: str,
+    confirmation_id: str,
+    branch_id: str,
+    warehouse_id: str,
+    actor_id: str,
+    reason: str,
+) -> dict:
+    created_at = now_iso()
+    return {
+        "master_item_id": line["master_item_id"],
+        "branch_id": branch_id,
+        "warehouse_id": warehouse_id,
+        "movement_type": MOVEMENT_SALES_DELIVERY,
+        "qty_delta": -int(line["qty"]),
+        "reference_type": "sales_delivery_confirmation",
+        "reference_id": confirmation_id,
+        "reason": reason,
+        "actor_id": actor_id,
+        "occurred_at": created_at,
+        "created_at": created_at,
+        "idempotency_key": f"sales-delivery:{confirmation_id}:{line['line_idx']}:{line['master_item_id']}",
+        "metadata": {
+            "order_id": order_id,
+            "line_idx": int(line["line_idx"]),
+            "line_id": str(line["line_id"]),
+            "confirmation_id": confirmation_id,
+        },
+    }
+
+
+async def _load_delivery_movements(db, session, confirmation_id: str, lines: List[dict]) -> List[dict]:
+    movements = []
+    for line in lines:
+        key = f"sales-delivery:{confirmation_id}:{line['line_idx']}:{line['master_item_id']}"
+        existing = await _existing_movement(db, key, session)
+        if not existing:
+            raise PhysicalStockConflictError("Konfirmasi terkirim tersimpan tanpa movement stok fisik")
+        movements.append(_public_movement(existing))
+    return movements
+
+
+async def apply_confirmed_sales_delivery(
+    db,
+    session,
+    *,
+    order: dict,
+    confirmation_id: str,
+    lines: List[dict],
+    actor_id: str,
+    warehouse_id: Optional[str] = None,
+    branch_id: Optional[str] = None,
+    reason: str = "",
+    write_order: bool = False,
+) -> dict:
+    """Post every SALES_DELIVERY line inside the caller's transaction.
+
+    The caller persists delivery state in the same transaction. A failure here
+    aborts that transaction, so the confirmation and the ledger commit together.
+    """
+    if not isinstance(order, dict) or not str(order.get("id") or "").strip():
+        raise PhysicalStockValidationError("Pesanan tidak ditemukan")
+    if _order_cancelled(order):
+        raise PhysicalStockValidationError("Pesanan sudah dibatalkan")
+    order_id = str(order["id"])
+    confirmation_id = _as_text(confirmation_id, "confirmation_id")
+    actor = _as_text(actor_id, "actor_id")
+    note = str(reason or "").strip() or "Konfirmasi terkirim"
+    resolved = _resolve_requested_delivery_lines(order, lines)
+    resolved_branch, resolved_warehouse = await _resolve_delivery_location(
+        db, session, branch_id=branch_id, warehouse_id=warehouse_id,
+    )
+    spec = {
+        "order_id": order_id,
+        "branch_id": resolved_branch,
+        "warehouse_id": resolved_warehouse,
+        "lines": resolved,
+    }
+    existing = await db[SALES_DELIVERY_CONFIRMATIONS].find_one(
+        {"id": confirmation_id},
+        {"_id": 0},
+        session=session,
+    )
+    if existing:
+        if not _same_delivery_confirmation(existing, spec):
+            raise PhysicalStockConflictError(
+                "Konfirmasi terkirim sudah digunakan dengan payload yang berbeda"
+            )
+        movements = await _load_delivery_movements(db, session, confirmation_id, resolved)
+        return {
+            "confirmation_id": confirmation_id,
+            "order_id": order_id,
+            "branch_id": resolved_branch,
+            "warehouse_id": resolved_warehouse,
+            "replayed": True,
+            "movements": movements,
+        }
+
+    for line in resolved:
+        completed = _completed_qty_for_line(order, line["line_idx"])
+        delivered = await _line_r2_delivered_qty(db, session, order_id, line["line_idx"])
+        ready = max(completed - delivered, 0)
+        if line["qty"] > ready:
+            raise PhysicalStockValidationError(
+                "Kuantitas terkirim melebihi Qty Belum Terkirim pada baris pesanan ini"
+            )
+
+    movements = []
+    for line in resolved:
+        movements.append(await _apply_movement_in_session(
+            db,
+            _sales_delivery_request(
+                line=line,
+                order_id=order_id,
+                confirmation_id=confirmation_id,
+                branch_id=resolved_branch,
+                warehouse_id=resolved_warehouse,
+                actor_id=actor,
+                reason=note,
+            ),
+            session,
+        ))
+    confirmation = {
+        "id": confirmation_id,
+        "order_id": order_id,
+        "branch_id": resolved_branch,
+        "warehouse_id": resolved_warehouse,
+        "lines": resolved,
+        "actor_id": actor,
+        "reason": note,
+        "created_at": now_iso(),
+    }
+    await db[SALES_DELIVERY_CONFIRMATIONS].insert_one(confirmation, session=session)
+    if write_order:
+        marked = list(order.get("r2_confirmed_delivery_ids") or [])
+        if confirmation_id not in marked:
+            marked.append(confirmation_id)
+        result = await db.orders.update_one(
+            {"id": order_id},
+            {"$set": {
+                "r2_confirmed_delivery_ids": marked,
+                "updated_at": now_iso(),
+            }},
+            session=session,
+        )
+        if result.matched_count == 0:
+            raise PhysicalStockValidationError("Pesanan tidak ditemukan")
+    if _fail_sales_delivery_persist:
+        raise PhysicalStockAbortError("forced delivery persist abort")
+    return {
+        "confirmation_id": confirmation_id,
+        "order_id": order_id,
+        "branch_id": resolved_branch,
+        "warehouse_id": resolved_warehouse,
+        "replayed": False,
+        "movements": movements,
+    }
+
+
+async def confirm_sales_delivery(
+    db,
+    *,
+    order_id: str,
+    confirmation_id: str,
+    lines: List[dict],
+    actor_id: str,
+    warehouse_id: Optional[str] = None,
+    branch_id: Optional[str] = None,
+    reason: str = "",
+) -> dict:
+    """Confirm a physical delivery and post R2 stock in one transaction."""
+    await require_transaction_support(_client(db))
+    order_id = _as_text(order_id, "order_id")
+    last_error: Optional[BaseException] = None
+    for _attempt in range(_MAX_ATTEMPTS):
+        try:
+            async with await _client(db).start_session() as session:
+                async with session.start_transaction():
+                    order = await db.orders.find_one({"id": order_id}, {"_id": 0}, session=session)
+                    if not order:
+                        raise PhysicalStockValidationError("Pesanan tidak ditemukan")
+                    return await apply_confirmed_sales_delivery(
+                        db,
+                        session,
+                        order=order,
+                        confirmation_id=confirmation_id,
+                        lines=lines,
+                        actor_id=actor_id,
+                        warehouse_id=warehouse_id,
+                        branch_id=branch_id,
+                        reason=reason,
+                        write_order=True,
+                    )
+        except (PhysicalStockValidationError, PhysicalStockConflictError, InsufficientPhysicalStockError, PhysicalStockAbortError):
+            raise
+        except PyMongoError as exc:
+            last_error = exc
+            if not _retryable(exc):
+                raise
+    raise PhysicalStockUnavailableError("Transaksi pengiriman stok fisik gagal setelah percobaan ulang") from last_error
+
+
+async def order_has_r2_balance(db, order: Optional[dict]) -> bool:
+    """True when a sales line already has an R2 physical balance to protect."""
+    if not isinstance(order, dict):
+        return False
+    master_ids = []
+    for line in order.get("line_items") or []:
+        if isinstance(line, dict):
+            master_id = str(line.get("master_item_id") or "").strip()
+            if master_id:
+                master_ids.append(master_id)
+    if not master_ids:
+        return False
+    found = await db[BALANCE_COLLECTION].count_documents({"master_item_id": {"$in": master_ids}})
+    return found > 0
 
 
 async def reverse_movement(
@@ -1161,9 +1537,8 @@ async def _unique_accurate_owners(db) -> Dict[str, str]:
 async def _r2_confirmed_delivery_qty(db, master_ids: List[str]) -> Dict[str, float]:
     """Delivered qty that already left R2 physical stock.
 
-    A legacy sales_deliveries row does not count unless that same delivery id
-    is the reference of a SALES_DELIVERY ledger movement. Until delivery posts
-    through the R2 engine, Qty Belum Terkirim stays reserved.
+    The SALES_DELIVERY ledger movement is the proof. A legacy sales_deliveries
+    row, surat jalan, or loading record does not reduce Qty Belum Terkirim.
     """
     if not master_ids:
         return {}
@@ -1172,25 +1547,10 @@ async def _r2_confirmed_delivery_qty(db, master_ids: List[str]) -> Dict[str, flo
             "movement_type": MOVEMENT_SALES_DELIVERY,
             "master_item_id": {"$in": master_ids},
         },
-        {"_id": 0, "master_item_id": 1, "qty_delta": 1, "reference_id": 1},
+        {"_id": 0, "master_item_id": 1, "qty_delta": 1},
     ).to_list(20000)
-    reference_ids = [str(row.get("reference_id") or "").strip() for row in movements if row.get("reference_id")]
-    valid_ids = set()
-    if reference_ids:
-        deliveries = await db.sales_deliveries.find(
-            {"id": {"$in": reference_ids}},
-            {"_id": 0, "id": 1, "cancelled": 1, "is_cancelled": 1},
-        ).to_list(len(reference_ids))
-        valid_ids = {
-            str(row.get("id"))
-            for row in deliveries
-            if row.get("id") and not row.get("cancelled") and not row.get("is_cancelled")
-        }
     confirmed: Dict[str, float] = {}
     for row in movements:
-        reference_id = str(row.get("reference_id") or "").strip()
-        if reference_id not in valid_ids:
-            continue
         delta = _qty_num(row.get("qty_delta"))
         if delta >= 0:
             continue
