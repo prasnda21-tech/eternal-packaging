@@ -215,7 +215,7 @@
 .sd-premium .sd-kpis.is-two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .sd-premium .sd-card {
   border: 1px solid #d5e2da;
-  border-radius: 8px;
+  border-radius: 16px;
   padding: 8px 10px;
   background: #fff;
   box-shadow: none;
@@ -246,16 +246,41 @@
   position: relative;
   min-height: 0;
   justify-content: flex-start;
-  padding: 8px 10px 8px;
+  padding: 10px 12px 8px;
+  gap: 4px;
 }
-.sd-premium .sd-kpi-top { display: flex; align-items: flex-start; min-height: 16px; padding-right: 42px; }
-.sd-premium .sd-hero,
+.sd-premium .sd-kpi-top {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-height: 0;
+  padding-right: 40px;
+}
+.sd-premium .sd-kpi-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  background: #e7f3ec;
+  color: #176b4d;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+.sd-premium .sd-kpi-copy { min-width: 0; flex: 1 1 auto; }
+.sd-premium .sd-kpi-copy h2 { font-size: 13px; font-weight: 650; }
+.sd-premium .sd-kpi .sd-kicker {
+  margin-top: 1px;
+  line-height: 1.25;
+}
+.sd-premium .sd-kpi strong.sd-hero,
 .sd-premium .sd-kpi .sd-empty {
-  font-size: 20px;
-  font-weight: 650;
-  letter-spacing: -0.02em;
-  line-height: 1.2;
-  margin: 2px 0 0;
+  font-family: inherit;
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+  margin: 0;
   overflow-wrap: anywhere;
   font-variant-numeric: tabular-nums;
   color: #0f3d2e;
@@ -294,8 +319,8 @@
 .sd-premium .sd-info p:last-child { margin-bottom: 0; }
 .sd-premium .sd-mobile-nav { display: none; }
 .sd-premium .sd-main-grid {
-  flex: 1.35 1 0;
-  min-height: 148px;
+  flex: 1.15 1 0;
+  min-height: 0;
   display: grid;
   grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
   gap: 8px;
@@ -303,7 +328,7 @@
 .sd-premium .sd-main-grid.is-single { grid-template-columns: minmax(0, 1fr); }
 .sd-premium .sd-bottom-grid {
   flex: 1 1 0;
-  min-height: 132px;
+  min-height: 0;
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
@@ -330,11 +355,15 @@
 .sd-premium .sd-plot {
   flex: 1 1 auto;
   height: auto;
-  min-height: 72px;
+  min-height: 0;
   overflow: visible;
   position: relative;
 }
-.sd-premium .sd-plot.is-series { min-height: 96px; }
+.sd-premium .sd-plot.is-series { min-height: 0; }
+.sd-premium .sd-plot.is-bars {
+  display: flex;
+  flex-direction: column;
+}
 .sd-premium .sd-plot.is-message { min-height: 0; flex: 0 0 auto; }
 .sd-premium .sd-plot .recharts-responsive-container {
   position: absolute;
@@ -376,23 +405,33 @@
   list-style: none;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
   min-height: 0;
   overflow: auto;
   flex: 1 1 auto;
 }
+.sd-premium .sd-pl-bars {
+  justify-content: center;
+  gap: 10px;
+  overflow: visible;
+}
 .sd-premium .sd-ranking li,
 .sd-premium .sd-aging li {
   display: grid;
-  grid-template-columns: minmax(72px, 0.9fr) minmax(36px, 1fr) auto;
+  grid-template-columns: minmax(0, 0.95fr) minmax(40px, 1.1fr) auto;
   align-items: center;
   gap: 6px;
   font-size: 12px;
-  line-height: 1.3;
+  line-height: 1.2;
+  min-height: 18px;
   color: #183e32;
 }
 .sd-premium .sd-sales-name,
-.sd-premium .sd-aging li > span:first-child { overflow-wrap: anywhere; }
+.sd-premium .sd-aging li > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .sd-premium .sd-ranking strong,
 .sd-premium .sd-aging strong {
   font-size: 12px;
@@ -401,8 +440,22 @@
   white-space: nowrap;
   color: #0f3d2e;
 }
-.sd-premium .sd-bar { display: block; height: 8px; border-radius: 4px; background: #e6eeea; min-width: 0; }
-.sd-premium .sd-bar i { display: block; height: 100%; border-radius: 4px; background: #176b4d; }
+.sd-premium .sd-bar { display: block; height: 8px; border-radius: 999px; background: #e6eeea; min-width: 0; }
+.sd-premium .sd-bar i { display: block; height: 100%; border-radius: 999px; background: #176b4d; }
+.sd-premium .sd-pl-bars .sd-bar { height: 10px; }
+.sd-premium .sd-more {
+  align-self: flex-start;
+  flex: 0 0 auto;
+  height: 24px;
+  margin-top: 2px;
+  padding: 0 8px;
+  border: 1px solid #d5e2da;
+  border-radius: 8px;
+  background: #fff;
+  color: #176b4d;
+  font-size: 12px;
+  cursor: pointer;
+}
 .sd-premium .sd-other {
   list-style: none;
   margin: 4px 0 0;
@@ -414,14 +467,21 @@
   color: #183e32;
 }
 .sd-premium .sd-foot {
+  position: relative;
   display: flex;
   justify-content: space-between;
   align-items: center;
   gap: 8px;
   flex: 0 0 auto;
+  min-height: 28px;
   font-size: 12px;
   line-height: 1.3;
   color: #3d4f48;
+}
+.sd-premium .sd-foot .sd-info { position: static; }
+.sd-premium .sd-foot .sd-info div {
+  top: auto;
+  bottom: calc(100% + 4px);
 }
 .sd-premium .sd-state { font-size: 13px; }
 .sd-invoice-dialog {
@@ -462,6 +522,7 @@
 .sf-premium .fd-head { padding-right: 0; gap: 8px; min-height: 28px; }
 .sf-premium .fd-loaded { margin-left: 0; font-size: 11px; }
 .sf-premium .fd-banner { padding: 4px 8px; font-size: 12px; }
+.sales-finance-page.sf-premium .fd-stage,
 .sf-premium .fd-stage {
   flex: 1 1 auto;
   min-height: 0;
@@ -472,7 +533,7 @@
 }
 .sf-premium .fd-kpis { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
 .sf-premium .fd-card {
-  border-radius: 8px;
+  border-radius: 16px;
   box-shadow: none;
   padding: 8px 10px;
   background: #fff;
@@ -481,7 +542,7 @@
 .sf-premium .fd-card strong { font-size: 18px; }
 .sf-premium .fd-chart-stage {
   flex: 1 1 auto;
-  min-height: 180px;
+  min-height: 0;
   display: flex;
   flex-direction: column;
 }
@@ -502,10 +563,11 @@
   box-shadow: none;
   background: #fff;
 }
+.sales-finance-page.sf-premium .fd-plot.is-series,
 .sf-premium .fd-plot.is-series {
   flex: 1 1 auto;
   height: auto;
-  min-height: 180px;
+  min-height: 0;
   position: relative;
 }
 .sf-premium .fd-plot.is-series .recharts-responsive-container {
@@ -542,11 +604,15 @@
   .sf-premium .sf-period {
     grid-area: period;
     margin-left: 0;
-    flex-wrap: nowrap;
-    overflow-x: auto;
+    flex-wrap: wrap;
+    overflow: visible;
     max-width: 100%;
     min-width: 0;
     padding-bottom: 1px;
+  }
+  .sf-premium .sf-range {
+    flex: 1 0 100%;
+    white-space: normal;
   }
   .sf-premium .sf-custom { flex: 0 0 auto; flex-wrap: nowrap; }
   .sf-premium .sf-custom input { width: 148px; max-width: none; flex: 0 0 auto; }
@@ -564,10 +630,22 @@
   }
   .sd-premium .sd-kpi,
   .sf-premium .fd-card { padding: 6px 8px; }
-  .sd-premium .sd-kpi-top { min-height: 0; padding-right: 34px; }
+  .sd-premium .sd-kpi-top { min-height: 0; padding-right: 34px; gap: 6px; }
+  .sd-premium .sd-kpi-icon { width: 28px; height: 28px; }
+  .sd-premium .sd-kpi-copy {
+    display: flex;
+    flex-direction: column;
+    min-height: 56px;
+  }
+  .sd-premium .sd-kpi-copy h2,
+  .sd-premium .sd-kpi-copy .sd-kicker {
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+  }
   .sd-premium .sd-kicker,
   .sf-premium .fd-kicker { font-size: 10px; line-height: 1.25; }
-  .sd-premium .sd-hero { font-size: 16px; }
+  .sd-premium .sd-kpi strong.sd-hero { font-size: 18px; }
   .sf-premium .fd-card strong { font-size: 16px; }
   .sd-premium .sd-card h2,
   .sf-premium .fd-card h2,
@@ -626,7 +704,18 @@
     min-width: 0;
     flex: 0 0 auto;
   }
-  .sf-premium .fd-plot.is-series { min-height: 120px; }
+  .sales-finance-page.sf-premium .fd-plot.is-series,
+  .sf-premium .fd-plot.is-series { min-height: 0; }
   .sales-finance-page.sf-premium .fd-position ul { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .sf-premium .finance-dashboard-page.is-embedded { min-height: 0; }
+}
+
+/* Mobile shell is one column. The dashboard lock gives that grid a definite
+   100dvh height, so the default stretch on two auto rows dumps leftover space
+   into the sidebar slot. Size the nav to its content instead. */
+@media (max-width: 640px) {
+  .app-shell:has(.sales-finance-page),
+  .app-shell:has(.sales-dashboard-page) {
+    grid-template-rows: auto minmax(0, 1fr);
+  }
 }

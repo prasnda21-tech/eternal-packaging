@@ -63,11 +63,13 @@ jest.mock("recharts", () => {
   return {
     ResponsiveContainer: Pass,
     LineChart: Pass,
+    AreaChart: Pass,
     BarChart: Pass,
     PieChart: Pass,
     Pie: () => null,
     Cell: () => null,
     Line: () => null,
+    Area: () => null,
     Bar: () => null,
     XAxis: () => null,
     YAxis: () => null,
