@@ -36,6 +36,7 @@ export const NAV_KEYS = {
   purchaseReceipts: "nav.purchasing.receipts",
   inventory: "nav.inventory",
   masterItems: "nav.inventory.master_items",
+  branchesWarehouses: "nav.inventory.branches_warehouses",
   currentStock: "nav.inventory.current_stock",
   inventoryValue: "nav.inventory.inventory_value",
   reports: "nav.reports",
@@ -119,6 +120,7 @@ export const NAV_MENU_FALLBACK = [
   { key: NAV_KEYS.purchasePayments, label: "Pembayaran Pembelian", parent: NAV_KEYS.purchasing },
   { key: NAV_KEYS.inventory, label: "Persediaan", parent: null },
   { key: NAV_KEYS.masterItems, label: "Barang/Jasa", parent: NAV_KEYS.inventory },
+  { key: NAV_KEYS.branchesWarehouses, label: "Cabang & Gudang", parent: NAV_KEYS.inventory },
   { key: NAV_KEYS.currentStock, label: "Stock Saat Ini", parent: NAV_KEYS.inventory },
   { key: NAV_KEYS.inventoryValue, label: "Nilai Persediaan", parent: NAV_KEYS.inventory },
   { key: NAV_KEYS.reports, label: "Laporan", parent: null },
@@ -386,24 +388,28 @@ export function purchasingMenuItems(hasPerm) {
 
 export const INVENTORY_NAV_ROUTES = {
   [NAV_KEYS.masterItems]: "/persediaan/master-barang-jasa",
+  [NAV_KEYS.branchesWarehouses]: "/persediaan/cabang-gudang",
   [NAV_KEYS.currentStock]: "/persediaan/stock-saat-ini",
   [NAV_KEYS.inventoryValue]: "/persediaan/nilai-persediaan",
 };
 
 const INVENTORY_VIS_FIELD = {
   [NAV_KEYS.masterItems]: "masterItems",
+  [NAV_KEYS.branchesWarehouses]: "branchesWarehouses",
   [NAV_KEYS.currentStock]: "currentStock",
   [NAV_KEYS.inventoryValue]: "inventoryValue",
 };
 
 export const INVENTORY_TILE_TONES = {
   [NAV_KEYS.masterItems]: "green",
+  [NAV_KEYS.branchesWarehouses]: "teal",
   [NAV_KEYS.currentStock]: "blue",
   [NAV_KEYS.inventoryValue]: "amber",
 };
 
 export const INVENTORY_TILE_TESTIDS = {
   [NAV_KEYS.masterItems]: "top-nav-master-barang-jasa",
+  [NAV_KEYS.branchesWarehouses]: "top-nav-cabang-gudang",
   [NAV_KEYS.currentStock]: "top-nav-stock-saat-ini",
   [NAV_KEYS.inventoryValue]: "top-nav-nilai-persediaan",
 };
@@ -539,14 +545,20 @@ export function purchasingNavVisible(hasPerm) {
 export function inventoryNavVisible(hasPerm) {
   const parent = canSeeNav(hasPerm, NAV_KEYS.inventory);
   const masterItems = parent && canSeeNav(hasPerm, NAV_KEYS.masterItems);
+  const branchesWarehouses = parent && (
+    canSeeNav(hasPerm, NAV_KEYS.branchesWarehouses)
+    || canSeeNav(hasPerm, "org.branches.view")
+    || canSeeNav(hasPerm, "org.warehouses.view")
+  );
   const currentStock = parent && canSeeNav(hasPerm, NAV_KEYS.currentStock);
   const inventoryValue = parent && (
     canSeeNav(hasPerm, NAV_KEYS.inventoryValue)
     || canSeeNav(hasPerm, "inventory_valuation.view")
   );
   return {
-    parent: !!(masterItems || currentStock || inventoryValue),
+    parent: !!(masterItems || branchesWarehouses || currentStock || inventoryValue),
     masterItems,
+    branchesWarehouses,
     currentStock,
     inventoryValue,
   };

@@ -57,6 +57,7 @@ const SuratJalan = lazy(() => import("./pages/SuratJalan"));
 const PesananPenjualan = lazy(() => import("./pages/PesananPenjualan"));
 const MasterBarangJasa = lazy(() => import("./pages/MasterBarangJasa"));
 const ProductDetail = lazy(() => import("./pages/ProductDetail"));
+const CabangGudang = lazy(() => import("./pages/CabangGudang"));
 const StockSaatIni = lazy(() => import("./pages/StockSaatIni"));
 const NilaiPersediaan = lazy(() => import("./pages/NilaiPersediaan"));
 const StockOpname = lazy(() => import("./pages/StockOpname"));
@@ -154,6 +155,7 @@ function PersediaanIndex() {
   const { hasPerm } = useAuth();
   const inv = inventoryNavVisible(hasPerm);
   if (inv.masterItems) return <Navigate to="/persediaan/master-barang-jasa" replace />;
+  if (inv.branchesWarehouses) return <Navigate to="/persediaan/cabang-gudang" replace />;
   if (inv.currentStock) return <Navigate to="/persediaan/stock-saat-ini" replace />;
   if (inv.inventoryValue) return <Navigate to="/persediaan/nilai-persediaan" replace />;
   return <Navigate to="/" replace />;
@@ -327,6 +329,7 @@ export default function App() {
             <Route path="/pembelian" element={<PembelianIndex />} />
             <Route path="/persediaan/master-barang-jasa" element={<PermGate anyOf={[NAV_KEYS.masterItems]} alsoAnyOf={["master_items.view"]}><MasterBarangJasa /></PermGate>} />
             <Route path="/persediaan/master-barang-jasa/:id" element={<PermGate anyOf={[NAV_KEYS.masterItems]} alsoAnyOf={["master_items.view"]}><ProductDetail /></PermGate>} />
+            <Route path="/persediaan/cabang-gudang" element={<PermGate anyOf={[NAV_KEYS.branchesWarehouses]} alsoAnyOf={["org.branches.view", "org.warehouses.view"]}><CabangGudang /></PermGate>} />
             <Route path="/persediaan/stock-saat-ini" element={<PermGate anyOf={[NAV_KEYS.currentStock]} alsoAnyOf={["current_stock.view"]}><StockSaatIni /></PermGate>} />
             <Route path="/persediaan/nilai-persediaan" element={<NilaiPersediaanGate><NilaiPersediaan /></NilaiPersediaanGate>} />
             <Route path="/persediaan/stock-opname" element={<PermGate anyOf={[NAV_KEYS.currentStock]} alsoAnyOf={["current_stock.update", "current_stock.view"]}><StockOpname /></PermGate>} />

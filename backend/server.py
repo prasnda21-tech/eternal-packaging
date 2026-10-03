@@ -212,6 +212,7 @@ from services.employee_admin_http import register_employee_admin_routes
 from services.hr_payroll_http import register_hr_payroll_routes
 from services.chart_of_accounts_http import register_chart_of_accounts_routes
 from services.cash_bank_http import register_cash_bank_routes
+from services.org_locations_http import register_org_locations_routes
 from services.chat_http import register_chat_routes
 from services.chat_indexes import ensure_indexes as ensure_chat_indexes
 from services.chat_membership import bootstrap_system_groups as bootstrap_chat_system_groups, on_user_changed as on_chat_user_changed
@@ -12398,6 +12399,13 @@ register_employee_admin_routes(
     Depends=Depends,
 )
 register_chart_of_accounts_routes(
+    api_router,
+    get_db=lambda: db,
+    current_user=current_user,
+    require_perm=require_perm,
+    Depends=Depends,
+)
+register_org_locations_routes(
     api_router,
     get_db=lambda: db,
     current_user=current_user,

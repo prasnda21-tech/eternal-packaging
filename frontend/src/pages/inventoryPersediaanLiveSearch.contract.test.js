@@ -21,13 +21,15 @@ const masterItemsPy = fs.readFileSync(
 );
 
 describe("Persediaan live search inventory scope", () => {
-  test("sidebar Persediaan exposes Barang/Jasa, Stock Saat Ini, and Nilai Persediaan", () => {
+  test("sidebar Persediaan exposes Barang/Jasa, Cabang & Gudang, Stock Saat Ini, and Nilai Persediaan", () => {
     expect(nav).toMatch(/label: "Persediaan"/);
     expect(nav).toMatch(/label: "Barang\/Jasa"/);
+    expect(nav).toMatch(/label: "Cabang & Gudang"/);
     expect(nav).toMatch(/label: "Stock Saat Ini"/);
     expect(nav).toMatch(/label: "Nilai Persediaan"/);
     expect(nav).not.toMatch(/Nilai Stock|Kartu Stock|Mutasi Stock|Stock Valuation/i);
     expect(app).toMatch(/path="\/persediaan\/master-barang-jasa"/);
+    expect(app).toMatch(/path="\/persediaan\/cabang-gudang"/);
     expect(app).toMatch(/path="\/persediaan\/stock-saat-ini"/);
     expect(app).toMatch(/path="\/persediaan\/nilai-persediaan"/);
     expect(app).not.toMatch(/persediaan\/kartu|persediaan\/mutasi/i);

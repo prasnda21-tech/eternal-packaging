@@ -65,6 +65,10 @@ PERMISSION_CATALOG = [
     ("Import PO", "po.import.spreadsheet", "Import PO dari file XLSX / CSV"),
     ("Persediaan", "master_items.view", "Lihat Barang/Jasa"),
     ("Persediaan", "master_items.sync", "Sinkronkan Barang/Jasa dari Accurate"),
+    ("Persediaan", "org.branches.view", "Lihat Cabang"),
+    ("Persediaan", "org.branches.manage", "Kelola Cabang"),
+    ("Persediaan", "org.warehouses.view", "Lihat Gudang"),
+    ("Persediaan", "org.warehouses.manage", "Kelola Gudang"),
     ("Persediaan", "current_stock.view", "Lihat Stock Saat Ini"),
     ("Persediaan", "current_stock.update", "Ubah Qty Saat Ini / Pembelian Barang"),
     ("Persediaan", "current_stock.import", "Impor & Sesuaikan Stock Saat Ini"),
@@ -278,6 +282,7 @@ PERMISSION_CATALOG = [
     ("Akses Menu", "nav.purchasing.receipts", "Menu Penerimaan Barang"),
     ("Akses Menu", "nav.inventory", "Menu Persediaan"),
     ("Akses Menu", "nav.inventory.master_items", "Menu Barang/Jasa"),
+    ("Akses Menu", "nav.inventory.branches_warehouses", "Menu Cabang & Gudang"),
     ("Akses Menu", "nav.inventory.current_stock", "Menu Stock Saat Ini"),
     ("Akses Menu", "nav.inventory.inventory_value", "Menu Nilai Persediaan"),
     ("Akses Menu", "nav.reports", "Menu Laporan"),
@@ -411,6 +416,7 @@ NAV_MENU_ITEMS = (
     ("nav.purchasing.receipts", "Penerimaan Barang", "nav.purchasing"),
     ("nav.inventory", "Persediaan", None),
     ("nav.inventory.master_items", "Barang/Jasa", "nav.inventory"),
+    ("nav.inventory.branches_warehouses", "Cabang & Gudang", "nav.inventory"),
     ("nav.inventory.current_stock", "Stock Saat Ini", "nav.inventory"),
     ("nav.inventory.inventory_value", "Nilai Persediaan", "nav.inventory"),
     ("nav.reports", "Laporan", None),
@@ -481,6 +487,9 @@ def derived_nav_permissions(existing: set) -> set:
     if "delivery.reschedule" in existing or "delivery.reschedule.set_date" in existing:
         nav.add("nav.production")
         nav.add("nav.delivery_reschedule")
+    if "org.branches.view" in existing or "org.warehouses.view" in existing:
+        nav.add("nav.inventory")
+        nav.add("nav.inventory.branches_warehouses")
     if "current_stock.view" in existing:
         nav.add("nav.inventory")
         nav.add("nav.inventory.current_stock")
