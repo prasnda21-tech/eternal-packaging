@@ -551,7 +551,7 @@ function financeAction(period, payment, readiness, hasPerm) {
   if (period?.status !== "FINAL") return null;
   if (!period.accounting_journal_id) {
     if (readiness && readiness.accounting_ready === false) {
-      return { kind: "blocked", text: (readiness.reasons || []).join(" · ") || "Akuntansi belum siap." };
+      return { kind: "blocked", text: readiness.block_message || (readiness.reasons || []).join(" · ") || "Akuntansi belum siap." };
     }
     return null;
   }
@@ -746,6 +746,8 @@ function Payroll() {
   const [showPreview, setShowPreview] = useState(false);
   const [postOpen, setPostOpen] = useState(false);
   const [postBusy, setPostBusy] = useState(false);
+  const [finalizeOpen, setFinalizeOpen] = useState(false);
+  const [finalizeBusy, setFinalizeBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [postedJournal, setPostedJournal] = useState({ id: "", number: "" });
   const [form, setForm] = useState({ year: new Date().getFullYear(), month: new Date().getMonth() + 1, start_date: "", end_date: "" });
@@ -795,6 +797,21 @@ function Payroll() {
   const create = async (e) => { e.preventDefault(); try { const res = await api.hrPayrollCreatePeriod({ ...form, year: Number(form.year), month: Number(form.month) }); await loadPeriods(); await loadDetail(res.period); } catch (ex) { setErr(errorText(ex)); } };
   const calculate = async () => { try { await api.hrPayrollCalculate(selected.id); await loadDetail(selected); } catch (ex) { setErr(errorText(ex)); } };
   const transition = async (target) => { try { await api.hrPayrollTransition(selected.id, target); await loadPeriods(); await loadDetail(selected); } catch (ex) { setErr(errorText(ex)); } };
+  const confirmFinalize = async () => {
+    setFinalizeBusy(true);
+    setErr("");
+    setNotice("");
+    try {
+      await api.hrPayrollTransition(selected.id, "FINAL");
+      setFinalizeOpen(false);
+      await loadPeriods();
+      await loadDetail(selected);
+    } catch (ex) {
+      setErr(errorText(ex));
+    } finally {
+      setFinalizeBusy(false);
+    }
+  };
   const reopen = async () => { const reason = window.prompt("Alasan buka ulang payroll:"); if (!reason) return; try { const res = await api.hrPayrollReopen(selected.id, reason); await loadPeriods(); await loadDetail(res.period); } catch (ex) { setErr(errorText(ex)); } };
   const canPostAccounting = selected?.status === "FINAL" && !selected.accounting_journal_id && hasPerm("payroll_accounting.post") && readiness?.accounting_ready === true;
   const postAccounting = async () => {
@@ -828,7 +845,7 @@ function Payroll() {
           {selected.period_number && <span className="muted small">{selected.period_number}</span>}
         </div><div className="hr-actions">
           {selected.status === "DRAFT" && hasPerm("payroll.calculate") && <button className="primary" onClick={calculate} data-testid="hr-calc-btn">Hitung Payroll</button>}
-          {transitionButtons.map(([target, perm, testid, label]) => canTransition(selected.status, target) && hasPerm(perm) ? <button key={target} className="primary" onClick={() => transition(target)} data-testid={testid}>{label}</button> : null)}
+          {transitionButtons.map(([target, perm, testid, label]) => canTransition(selected.status, target) && hasPerm(perm) ? <button key={target} className="primary" onClick={() => (target === "FINAL" ? setFinalizeOpen(true) : transition(target))} data-testid={testid}>{label}</button> : null)}
           {selected.status === "FINAL" && hasPerm("payroll.reopen") && <button className="ghost" onClick={reopen} disabled={Boolean(selected.accounting_journal_id)} title={selected.accounting_journal_id ? "Jurnal akuntansi masih aktif" : undefined} data-testid="hr-reopen-btn">Buka Ulang</button>}
           {canPostAccounting && <button type="button" className="primary" onClick={() => { setErr(""); setPostOpen(true); }} data-testid="hr-payroll-post-accounting">Post Accounting</button>}
           {readiness && <button type="button" className="ghost" onClick={() => setShowPreview((open) => !open)} data-testid="hr-payroll-accounting-preview-btn">Lihat Preview Accounting</button>}
@@ -852,6 +869,28 @@ function Payroll() {
             onError={setErr}
             onChanged={() => loadDetail(selected)}
           />
+        )}
+        {(readiness?.unmapped_sources || []).some((row) => row?.label) && (
+          <p className="muted small" data-testid="hr-payroll-unmapped">
+            Komponen belum dipetakan: {(readiness.unmapped_sources || []).map((row) => row.label).filter(Boolean).join(", ")}
+          </p>
+        )}
+        {finalizeOpen && (
+          <div className="modal" role="dialog" aria-modal="true" data-testid="hr-finalize-modal">
+            <div className="modal-inner">
+              <div className="modal-head">
+                <h3>Finalkan payroll?</h3>
+                <button type="button" className="ghost sm" disabled={finalizeBusy} onClick={() => setFinalizeOpen(false)}>×</button>
+              </div>
+              <div className="emp-form">
+                <p>Finalisasi mencatat biaya payroll dan Utang Gaji secara otomatis. Pembayaran bank dilakukan terpisah dan tidak dijalankan sekarang.</p>
+                <div className="emp-actions">
+                  <button type="button" className="ghost" disabled={finalizeBusy} onClick={() => setFinalizeOpen(false)}>Batal</button>
+                  <button type="button" className="primary" disabled={finalizeBusy} onClick={confirmFinalize} data-testid="hr-finalize-confirm">{finalizeBusy ? "Memproses…" : "Finalkan"}</button>
+                </div>
+              </div>
+            </div>
+          </div>
         )}
         {postOpen && (
           <div className="modal" role="dialog" aria-modal="true" data-testid="hr-payroll-post-modal">

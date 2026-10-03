@@ -258,6 +258,8 @@ def register_hr_payroll_routes(
         if not permission:
             raise HTTPException(400, "Status tujuan tidak valid.")
         await require_any_perm(user, permission)
+        if target == STATUS_FINAL:
+            await require_any_perm(user, "payroll_accounting.post")
         row = await transition_period(get_db(), period_id, target, body.get("note") or "", user)
         return {"period": row, "message": f"Status periode menjadi {target}"}
 
