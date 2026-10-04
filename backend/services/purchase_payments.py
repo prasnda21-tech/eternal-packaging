@@ -24,6 +24,7 @@ from services.purchase_common import (
     is_cancelled,
     money_round,
     now_iso,
+    parse_optional_ymd,
     parse_positive_money,
     with_active_filter,
 )
@@ -108,6 +109,13 @@ def _enrich_payment(doc: dict, *, invoice: Optional[dict] = None) -> dict:
         out["invoice_paid_total"] = invoice.get("paid_total")
         out["invoice_outstanding_amount"] = invoice.get("outstanding_amount")
         out["invoice_payment_status"] = invoice.get("payment_status")
+        out["invoice_date"] = invoice.get("invoice_date")
+        out["invoice_due_date"] = invoice.get("due_date")
+        out["invoice_due_status"] = invoice.get("due_status")
+
+    # Explicit nullable contract for older payments.
+    if "requested_payment_date" not in out or out.get("requested_payment_date") in ("",):
+        out["requested_payment_date"] = out.get("requested_payment_date") or None
 
     return out
 
@@ -145,9 +153,13 @@ async def _build_draft_doc(db, invoice: dict, payload: Dict[str, Any], user: dic
         "supplier": invoice.get("supplier"),
         "invoice_grand_total": invoice.get("grand_total"),
         "amount": money_round(amount),
+        # payment_date = accounting/journal business date for this payment document.
+        # Distinct from paid_at (actual settlement confirmation timestamp).
         "payment_date": str(
             payload.get("payment_date") or payload.get("receipt_date") or ts[:10]
         ).strip()[:10],
+        # Target / tanggal dibutuhkan for the requester — optional, never invent.
+        "requested_payment_date": parse_optional_ymd(payload.get("requested_payment_date")),
         "notes": str(payload.get("notes") or "").strip(),
         "submission_status": SUBMISSION_NOT_SUBMITTED,
         "settlement_status": SETTLEMENT_UNPAID,
