@@ -4,6 +4,7 @@ import { loginThenLoadUser } from "./authSession";
 import { clearCashBankWorkspaceTabs } from "./cashBankWorkspace";
 import { clearGlobalWorkspaceTabs } from "./globalWorkspace";
 import { clearMobileOpsSessionForUser } from "./mobileOpsSession";
+import { clearProductionSummaryCache } from "./productionSummaryCache";
 import { clearPoListReturnForUser, storageUserKey } from "./poListReturn";
 import { clearSalesPwaPoListState } from "./salesPwaPoListState";
 import { clearSalesWorkspaceTabs } from "./salesWorkspace";
@@ -57,6 +58,7 @@ export function AuthProvider({ children }) {
       clearSalesPwaPoListState();
       clearPoListReturnForUser(previous);
       clearMobileOpsSessionForUser(storageUserKey(previous));
+      clearProductionSummaryCache();
       setUser(null);
     }
   };

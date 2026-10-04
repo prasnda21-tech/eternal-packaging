@@ -5,6 +5,7 @@ import { newActionId } from "../../lib/workflowEntries";
 import { getWorkflowReady } from "../../lib/stageState";
 import { operatorLineModels, operatorMyAssignmentModels, pickSubmitSplit } from "../../lib/workPanel";
 import { mobileWorkStatus } from "../../lib/mobileWorkspaces";
+import { invalidateProductionSummaryCache } from "../../lib/productionSummaryCache";
 import { useAuth } from "../../lib/auth";
 import MobileDesignFile from "../components/MobileDesignFile";
 import MobileMetricStrip from "../components/MobileMetricStrip";
@@ -56,6 +57,7 @@ export default function MobilePrintWorkspace({ order, canEdit, onUpdated }) {
         view: "operational",
       });
       delete actionIds.current[line.itemId];
+      invalidateProductionSummaryCache();
       onUpdated(res.order);
       setDrafts((d) => ({ ...d, [line.itemId]: "" }));
     } catch (e) {

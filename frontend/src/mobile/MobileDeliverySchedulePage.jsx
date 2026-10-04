@@ -63,7 +63,12 @@ import {
   packingProgressText,
   sortByOpsQueue,
 } from "../lib/mobileOpsQueue";
-import { canViewMobileSchedule, mobileProductionDashboardParams } from "../lib/mobileSchedule";
+import { canViewMobileSchedule, mobileProductionDashboardParams, rowsFromProductionDashboard } from "../lib/mobileSchedule";
+import {
+  invalidateProductionSummaryCache,
+  loadProductionSummary,
+  productionSummaryGeneration,
+} from "../lib/productionSummaryCache";
 import { patchScheduleRowsForDeliveredShipment } from "../lib/deliveryScheduleRowPatch";
 import { getCanonicalCustomerName } from "../lib/canonicalCustomer";
 import MobileWorkspaceSelect from "./components/MobileWorkspaceSelect";
@@ -349,6 +354,8 @@ export default function MobileDeliverySchedulePage() {
   const [err, setErr] = useState("");
   const scheduleLoadRef = useRef(0);
   const scheduleBusyRef = useRef(0);
+  const summaryLoadRef = useRef(0);
+  const summaryBypassRef = useRef(false);
   const taskLoadRef = useRef(0);
   const [taskRows, setTaskRows] = useState([]);
   const [taskBusy, setTaskBusy] = useState(false);
@@ -408,6 +415,45 @@ export default function MobileDeliverySchedulePage() {
     setParams(next, { replace: true });
   }, [allowed, activeRoleId, params, setParams]);
 
+  const fetchProductionSummary = useCallback(async ({ bypass, stillCurrent }) => {
+    if (!canOpenProduction) return;
+    if (stillCurrent && !stillCurrent()) return;
+    const requestId = ++summaryLoadRef.current;
+    const requestParams = mobileProductionDashboardParams({
+      includeCancelled: false,
+      includeCompleted: true,
+    });
+    const fetcher = () => withTimeout(api.productionDashboard(requestParams), MOBILE_LOAD_TIMEOUT_MS);
+    const stillMine = () => requestId === summaryLoadRef.current && (!stillCurrent || stillCurrent());
+    try {
+      const startedGen = productionSummaryGeneration();
+      let payload = await loadProductionSummary({
+        userKey,
+        requestParams,
+        bypass: Boolean(bypass),
+        fetcher,
+      });
+      if (!stillMine()) return;
+      if (productionSummaryGeneration() !== startedGen) {
+        const retryGen = productionSummaryGeneration();
+        payload = await loadProductionSummary({
+          userKey,
+          requestParams,
+          bypass: true,
+          fetcher,
+        });
+        if (!stillMine()) return;
+        if (productionSummaryGeneration() !== retryGen) return;
+      }
+      setProductionRows(rowsFromProductionDashboard(payload));
+      setProductionState("ready");
+    } catch {
+      if (!stillMine()) return;
+      setProductionRows([]);
+      setProductionState("failed");
+    }
+  }, [canOpenProduction, userKey]);
+
   const load = useCallback(async () => {
     if (!allowed) {
       setBusy(false);
@@ -445,29 +491,19 @@ export default function MobileDeliverySchedulePage() {
         setErr(deliveryScheduleLoadErrorMessage(e));
         setBusy(false);
       });
-    if (canOpenProduction) {
-      withTimeout(
-        api.productionDashboard(mobileProductionDashboardParams({
-          includeCancelled: false,
-          includeCompleted: true,
-        })),
-        MOBILE_LOAD_TIMEOUT_MS,
-      ).then((prod) => {
-        if (!current()) return;
-        setProductionRows(Array.isArray(prod?.rows) ? prod.rows : []);
-        setProductionState("ready");
-      }).catch(() => {
-        if (!current()) return;
-        setProductionRows([]);
-        setProductionState("failed");
-      });
-    }
     try {
       await schedulePromise;
     } finally {
       scheduleBusyRef.current = Math.max(0, scheduleBusyRef.current - 1);
     }
-  }, [allowed, canOpenProduction, previewEnabled]);
+    // Dashboard summary shares the API worker with the schedule query.
+    // Start it after the schedule settles so SJ rows are not delayed.
+    // Cup/Screen/Cetak/Pack stay unavailable until this response arrives.
+    if (!canOpenProduction || !current()) return;
+    const bypass = summaryBypassRef.current;
+    summaryBypassRef.current = false;
+    await fetchProductionSummary({ bypass, stillCurrent: current });
+  }, [allowed, canOpenProduction, previewEnabled, fetchProductionSummary]);
 
   const refreshScheduleRows = useCallback(async () => {
     if (!allowed || previewEnabled) return;
@@ -500,14 +536,19 @@ export default function MobileDeliverySchedulePage() {
     const onVisibility = () => {
       if (document.visibilityState !== "visible") return;
       if (scheduleBusyRef.current > 0) return;
-      refreshScheduleRows();
+      invalidateProductionSummaryCache();
+      if (canOpenProduction) setProductionState("loading");
+      refreshScheduleRows().finally(() => {
+        fetchProductionSummary({ bypass: true });
+      });
     };
     document.addEventListener("visibilitychange", onVisibility);
     return () => document.removeEventListener("visibilitychange", onVisibility);
-  }, [allowed, previewEnabled, refreshScheduleRows]);
+  }, [allowed, previewEnabled, refreshScheduleRows, fetchProductionSummary, canOpenProduction]);
 
   useEffect(() => () => {
     scheduleLoadRef.current += 1;
+    summaryLoadRef.current += 1;
     taskLoadRef.current += 1;
   }, []);
 
@@ -691,7 +732,11 @@ export default function MobileDeliverySchedulePage() {
   const Workspace = activeRole ? SCHEDULE_WORKSPACE_VIEWS[activeRole.id] : null;
   const taskContext = scheduleTaskContext(task.order, task.row);
 
-  const onRefresh = () => setReloadKey((n) => n + 1);
+  const onRefresh = () => {
+    summaryBypassRef.current = true;
+    invalidateProductionSummaryCache();
+    setReloadKey((n) => n + 1);
+  };
 
   return (
     <div className="mop-schedule-root mop-delivery-schedule-root">
