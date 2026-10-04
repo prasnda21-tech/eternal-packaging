@@ -33,6 +33,57 @@ def today_ymd() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%d")
 
 
+def today_iso_date() -> str:
+    """UTC calendar date as YYYY-MM-DD for purchasing due-date display."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+def parse_optional_ymd(value: Any) -> Optional[str]:
+    """Accept optional YYYY-MM-DD (or longer ISO) without inventing defaults.
+
+    Blank / missing → None. Invalid values raise HTTP 400.
+    """
+    if value is None:
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+    stamp = raw[:10]
+    try:
+        datetime.strptime(stamp, "%Y-%m-%d")
+    except ValueError as exc:
+        raise HTTPException(400, f"Tanggal tidak valid: '{raw}'. Gunakan format YYYY-MM-DD.") from exc
+    return stamp
+
+
+def invoice_due_display_status(
+    *,
+    due_date: Any,
+    payment_status: Any,
+    today: Optional[str] = None,
+) -> str:
+    """Derived display status only — does not replace payment_status / accounting state."""
+    pay = str(payment_status or "").strip().upper()
+    if pay in {"LUNAS", "DIBAYAR"} or "LUNAS" in pay:
+        return "LUNAS"
+    if pay == "DIBATALKAN" or "BATAL" in pay:
+        return "DIBATALKAN"
+    raw = str(due_date or "").strip()
+    due = raw[:10] if raw else ""
+    if len(due) != 10:
+        return "BELUM ADA JATUH TEMPO"
+    try:
+        datetime.strptime(due, "%Y-%m-%d")
+    except ValueError:
+        return "BELUM ADA JATUH TEMPO"
+    day = str(today or today_iso_date())[:10]
+    if day < due:
+        return "BELUM JATUH TEMPO"
+    if day == due:
+        return "JATUH TEMPO HARI INI"
+    return "TERLAMBAT"
+
+
 def get_named_lock(name: str) -> asyncio.Lock:
     loop = asyncio.get_running_loop()
     bucket = _locks.setdefault(name, {})
