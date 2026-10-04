@@ -250,7 +250,9 @@ async def test_reconciliation_partial_status_payment_and_no_writes(clean_db):
     assert settlement["settled_count"] == 1
     assert settlement["settled_grand_total"] == 4400
     assert settlement["open_count"] == 2
+    assert settlement["open_grand_total"] == 7000
     assert settlement["open_outstanding"] == 7000
+    assert all(group["share"] is None for group in body["sales"]["groups"])
     assert round(sum(point["grand_total"] for point in settlement["points"]), 2) == 11400
     assert round(sum(point["settled_grand"] for point in settlement["points"]), 2) == 4400
     assert round(sum(point["outstanding"] for point in settlement["points"]), 2) == 7000
