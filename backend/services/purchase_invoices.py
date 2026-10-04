@@ -19,14 +19,17 @@ from services.purchase_common import (
     PREFIX_PURCHASE_INVOICE,
     actor_snapshot,
     stamp_create,
+    stamp_update,
     cancellation_fields,
     derive_child_number,
     get_named_lock,
     insert_with_unique_number,
+    invoice_due_display_status,
     is_cancelled,
     line_subtotal,
     money_round,
     now_iso,
+    parse_optional_ymd,
     parse_qty,
     qty_le,
     with_active_filter,
@@ -78,6 +81,9 @@ async def attach_payment_fields(db, inv: dict) -> dict:
     grand = float(out.get("grand_total") or 0)
     out["paid_total"] = paid
     out["outstanding_amount"] = max(money_round(grand - paid), 0.0)
+    # Explicit nullable contract for older invoices that omit due_date.
+    if "due_date" not in out or out.get("due_date") in ("",):
+        out["due_date"] = out.get("due_date") or None
     active_pays = await _active_payment_count(db, out["id"])
     if is_cancelled(out):
         out["payment_status"] = "DIBATALKAN"
@@ -91,6 +97,10 @@ async def attach_payment_fields(db, inv: dict) -> dict:
             if out["can_cancel"]
             else "Faktur tidak dapat dihapus karena sudah memiliki pembayaran. Batalkan pembayaran terlebih dahulu."
         )
+    out["due_status"] = invoice_due_display_status(
+        due_date=out.get("due_date"),
+        payment_status=out.get("payment_status"),
+    )
     return out
 
 
@@ -344,6 +354,7 @@ async def create_purchase_invoice(db, payload: Dict[str, Any], user: dict) -> di
 
         ts = now_iso()
         total = money_round(total)
+        due_date = parse_optional_ymd(payload.get("due_date"))
         existing_count = await db[COLLECTION].count_documents({"purchase_order_id": preview["purchase_order_id"]})
         doc = {
             "id": str(uuid.uuid4()),
@@ -357,6 +368,7 @@ async def create_purchase_invoice(db, payload: Dict[str, Any], user: dict) -> di
             "receipt_number": (receipt_doc or {}).get("receipt_number") if invoice_source == "receipt" else None,
             "precedes_goods_receipt": bool(precedes_goods_receipt),
             "invoice_date": str(payload.get("invoice_date") or ts[:10]).strip()[:10],
+            "due_date": due_date,
             "notes": str(payload.get("notes") or "").strip(),
             "lines": calculated,
             "subtotal": total,
@@ -430,6 +442,39 @@ async def get_purchase_invoice(db, invoice_id: str) -> dict:
     await attach_invoice_accounting_fields(db, [inv])
     await attach_payment_accounting_fields(db, inv["payments"])
     return inv
+
+
+async def update_purchase_invoice_due_date(
+    db, invoice_id: str, payload: Optional[dict], user: dict
+) -> dict:
+    """Update only purchase_invoices.due_date (+ audit stamps).
+
+    Does not touch invoice_date, amounts, lines, PO/GR links, HPP, stock,
+    payment status, or accounting status.
+    """
+    data = dict(payload or {})
+    due_date = parse_optional_ymd(data.get("due_date"))
+
+    async with get_named_lock("purchase_invoice"):
+        doc = await db[COLLECTION].find_one({"id": str(invoice_id)}, {"_id": 0})
+        if not doc:
+            doc = await db[COLLECTION].find_one({"invoice_number": str(invoice_id)}, {"_id": 0})
+        if not doc:
+            raise HTTPException(404, f"Faktur Pembelian '{invoice_id}' tidak ditemukan.")
+        if is_cancelled(doc):
+            raise HTTPException(409, "Faktur yang dibatalkan tidak dapat diubah jatuh temponya.")
+
+        updated = await db[COLLECTION].find_one_and_update(
+            {"id": doc["id"], "cancelled": {"$ne": True}},
+            {"$set": {"due_date": due_date, **stamp_update(user)}},
+            return_document=ReturnDocument.AFTER,
+        )
+        if updated is None:
+            current = await db[COLLECTION].find_one({"id": doc["id"]}, {"_id": 0})
+            if current and is_cancelled(current):
+                raise HTTPException(409, "Faktur yang dibatalkan tidak dapat diubah jatuh temponya.")
+            raise HTTPException(409, "Gagal mengubah jatuh tempo karena perubahan bersamaan.")
+        return await get_purchase_invoice(db, updated["id"])
 
 
 async def cancel_purchase_invoice(

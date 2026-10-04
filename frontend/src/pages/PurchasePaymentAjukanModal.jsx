@@ -1,6 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import api from "../lib/api";
-import { errDetail, formatRupiah, newIdempotencyKey, validatePurchasePaymentAmount } from "../lib/purchaseUi";
+import {
+  dueDateLabel,
+  errDetail,
+  formatPurchaseDate,
+  formatRupiah,
+  newIdempotencyKey,
+  validatePurchasePaymentAmount,
+} from "../lib/purchaseUi";
 // uses existing purchaseUi helpers + submit-targets API (no Chat redesign)
 
 /**
@@ -20,6 +27,7 @@ export default function PurchasePaymentAjukanModal({
   const [users, setUsers] = useState([]);
   const [selected, setSelected] = useState(null);
   const [notes, setNotes] = useState("");
+  const [requestedPaymentDate, setRequestedPaymentDate] = useState("");
   const [searching, setSearching] = useState(false);
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -31,10 +39,11 @@ export default function PurchasePaymentAjukanModal({
     setQ("");
     setSelected(null);
     setNotes("");
+    setRequestedPaymentDate("");
     setError("");
     setUsers([]);
     idempotencyKeyRef.current = newIdempotencyKey();
-  }, [open, invoice?.id, outstanding]);
+  }, [open, invoice, outstanding]);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -72,6 +81,7 @@ export default function PurchasePaymentAjukanModal({
         purchase_invoice_id: invoice.id,
         amount: Number(amount),
         target_user_id: selected.id,
+        requested_payment_date: requestedPaymentDate || null,
         notes,
         idempotency_key: idempotencyKeyRef.current || newIdempotencyKey(),
       });
@@ -107,12 +117,28 @@ export default function PurchasePaymentAjukanModal({
           {error ? <p className="error" data-testid="payment-ajukan-error">{error}</p> : null}
           <div className="purchase-detail-meta" style={{ marginBottom: 12 }}>
             <div>
+              <span className="label">Supplier</span>
+              <span className="value">{invoice.supplier || "—"}</span>
+            </div>
+            <div>
               <span className="label">No Faktur</span>
               <span className="value mono">{invoice.invoice_number}</span>
             </div>
             <div>
-              <span className="label">Supplier</span>
-              <span className="value">{invoice.supplier || "—"}</span>
+              <span className="label">Tanggal Faktur</span>
+              <span className="value">{formatPurchaseDate(invoice.invoice_date)}</span>
+            </div>
+            <div>
+              <span className="label">Jatuh Tempo</span>
+              <span className="value" data-testid="payment-ajukan-invoice-due-date">{dueDateLabel(invoice.due_date)}</span>
+            </div>
+            <div>
+              <span className="label">Total Faktur</span>
+              <span className="value">{formatRupiah(invoice.grand_total)}</span>
+            </div>
+            <div>
+              <span className="label">Sudah Dibayar</span>
+              <span className="value">{formatRupiah(invoice.paid_total)}</span>
             </div>
             <div>
               <span className="label">Sisa Tagihan</span>
@@ -131,6 +157,17 @@ export default function PurchasePaymentAjukanModal({
             value={amount}
             disabled={locked}
             onChange={(e) => setAmount(e.target.value)}
+          />
+          <label className="purchase-cancel-reason-label" htmlFor="payment-ajukan-requested-date" style={{ marginTop: 12 }}>
+            Tanggal Dibutuhkan / Target Pembayaran
+          </label>
+          <input
+            id="payment-ajukan-requested-date"
+            data-testid="payment-ajukan-requested-date"
+            type="date"
+            value={requestedPaymentDate}
+            disabled={locked}
+            onChange={(e) => setRequestedPaymentDate(e.target.value)}
           />
           <label className="purchase-cancel-reason-label" htmlFor="payment-ajukan-user-search" style={{ marginTop: 12 }}>
             Ditujukan kepada <span className="req">*</span>

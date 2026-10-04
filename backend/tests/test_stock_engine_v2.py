@@ -9,7 +9,9 @@ from services.stock_engine_v2 import (
     STOCK_INSUFFICIENT_MSG,
     aggregate_outstanding_so,
     apply_stock_opname,
+    build_current_stock_rows,
     build_stock_rows_v2,
+    confirmed_delivery_evidence_from_orders,
     compute_available,
     compute_stock_current,
     physical_from_state,
@@ -51,10 +53,12 @@ def test_stock_current_read_model_preserves_negative_shortage():
     row = rows[0]
     assert row["physical_qty"] == 0
     assert row["outstanding_so_qty"] == 15000
-    assert row["unprinted_qty"] == 15000
+    assert row["unprinted_qty"] == 0
+    assert row["belum_dicetak_qty"] is None
+    assert row["sudah_dicetak_belum_terkirim_qty"] is None
     assert row["printed_qty"] == 0
     assert row["stock_current"] == -15000
-    assert row["available_qty"] == 0
+    assert row["available_qty"] == -15000
 
 
 def test_outstanding_so_ordered_minus_shipped():
@@ -72,6 +76,154 @@ def test_outstanding_so_ordered_minus_shipped():
     }]
     outstanding, _alias = aggregate_outstanding_so(orders, deliveries)
     assert any(abs(v - 10) < 1e-9 for v in outstanding.values())
+
+
+def test_surat_jalan_does_not_release_reservation_before_confirmation():
+    orders = [{
+        "id": "o1",
+        "line_items": [{
+            "master_item_id": "m1",
+            "accurate_item_id": "a1",
+            "quantity": 30,
+        }],
+        "delivery_confirmations": [],
+    }]
+    evidence = confirmed_delivery_evidence_from_orders(orders)
+    outstanding, aliases = aggregate_outstanding_so(orders, evidence)
+    rows = build_stock_rows_v2(
+        [{"id": "m1", "accurate_item_id": "a1", "item_code": "A"}],
+        state_by_master={"m1": {
+            "master_item_id": "m1",
+            "initialized": True,
+            "status": "INITIALIZED",
+            "total_qty": 100,
+            "unprinted_qty": 100,
+            "printed_qty": 0,
+        }},
+        outstanding_bucket=outstanding,
+        outstanding_alias=aliases,
+    )
+    assert rows[0]["physical_qty"] == 100
+    assert rows[0]["outstanding_so_qty"] == 30
+    assert rows[0]["stock_current"] == 70
+
+
+def test_confirmed_partial_delivery_releases_only_confirmed_qty():
+    orders = [{
+        "id": "o1",
+        "line_items": [{
+            "master_item_id": "m1",
+            "accurate_item_id": "a1",
+            "quantity": 1000,
+        }],
+        "delivery_confirmations": [{
+            "id": "c1",
+            "items": [{"line_idx": 0, "qty": 600}],
+        }],
+    }]
+    outstanding, _ = aggregate_outstanding_so(
+        orders,
+        confirmed_delivery_evidence_from_orders(orders),
+    )
+    assert any(abs(value - 400) < 1e-9 for value in outstanding.values())
+
+
+def test_confirmed_full_delivery_releases_reservation_without_reset():
+    orders = [{
+        "id": "o1",
+        "line_items": [{
+            "master_item_id": "m1",
+            "accurate_item_id": "a1",
+            "quantity": 1000,
+        }],
+        "delivery_confirmations": [{
+            "id": "c1",
+            "items": [{"line_idx": 0, "qty": 1000}],
+        }],
+    }]
+    outstanding, _ = aggregate_outstanding_so(
+        orders,
+        confirmed_delivery_evidence_from_orders(orders),
+    )
+    assert all(abs(value) < 1e-9 for value in outstanding.values())
+
+
+def test_overdelivery_on_one_order_does_not_release_another_order():
+    orders = [
+        {
+            "id": "o1",
+            "line_items": [{"master_item_id": "m1", "quantity": 10}],
+            "delivery_confirmations": [{
+                "items": [{"line_idx": 0, "qty": 15}],
+            }],
+        },
+        {
+            "id": "o2",
+            "line_items": [{"master_item_id": "m1", "quantity": 20}],
+            "delivery_confirmations": [],
+        },
+    ]
+    outstanding, aliases = aggregate_outstanding_so(
+        orders,
+        confirmed_delivery_evidence_from_orders(orders),
+    )
+    assert outstanding[aliases["m:m1"]] == 20
+
+
+def test_confirmation_reduces_physical_and_outstanding_together():
+    master = [{"id": "m1", "accurate_item_id": "a1", "item_code": "A"}]
+    order = {
+        "id": "o1",
+        "line_items": [{
+            "master_item_id": "m1",
+            "accurate_item_id": "a1",
+            "quantity": 30,
+        }],
+        "delivery_confirmations": [],
+    }
+
+    before_outstanding, before_aliases = aggregate_outstanding_so(
+        [order],
+        confirmed_delivery_evidence_from_orders([order]),
+    )
+    before = build_stock_rows_v2(
+        master,
+        state_by_master={"m1": {
+            "master_item_id": "m1",
+            "initialized": True,
+            "status": "INITIALIZED",
+            "total_qty": 100,
+            "unprinted_qty": 100,
+            "printed_qty": 0,
+        }},
+        outstanding_bucket=before_outstanding,
+        outstanding_alias=before_aliases,
+    )[0]
+
+    order["delivery_confirmations"] = [{
+        "id": "c1",
+        "items": [{"line_idx": 0, "qty": 10}],
+    }]
+    after_outstanding, after_aliases = aggregate_outstanding_so(
+        [order],
+        confirmed_delivery_evidence_from_orders([order]),
+    )
+    after = build_stock_rows_v2(
+        master,
+        state_by_master={"m1": {
+            "master_item_id": "m1",
+            "initialized": True,
+            "status": "INITIALIZED",
+            "total_qty": 90,
+            "unprinted_qty": 90,
+            "printed_qty": 0,
+        }},
+        outstanding_bucket=after_outstanding,
+        outstanding_alias=after_aliases,
+    )[0]
+
+    assert (before["physical_qty"], before["outstanding_so_qty"], before["stock_current"]) == (100, 30, 70)
+    assert (after["physical_qty"], after["outstanding_so_qty"], after["stock_current"]) == (90, 20, 70)
 
 
 def test_build_rows_v2_available_formula():
@@ -97,9 +249,12 @@ def test_build_rows_v2_available_formula():
     assert len(rows) == 1
     r = rows[0]
     assert r["physical_qty"] == 100
-    assert r["unprinted_qty"] == 0  # Belum = max(outstanding 20 - printed 40, 0)
+    assert r["unprinted_qty"] == 60
+    assert r["belum_dicetak_qty"] is None
     assert r["physical_unprinted_qty"] == 60
     assert r["printed_qty"] == 40
+    assert r["physical_printed_qty"] == 40
+    assert r["sudah_dicetak_belum_terkirim_qty"] is None
     assert r["outstanding_so_qty"] == 20
     assert r["stock_current"] == 80  # max(100 - outstanding 20, 0)
     assert r["purchase_qty"] == 0
@@ -241,6 +396,15 @@ class _FakeColl:
         self.updates.append((query, update))
         return dict(doc)
 
+    async def update_one(self, query, update, **k):
+        if not self.docs:
+            return None
+        doc = self.docs[0]
+        if "$set" in update:
+            doc.update(update["$set"])
+        self.updates.append((query, update))
+        return None
+
     async def insert_one(self, doc):
         self.inserts.append(doc)
         self.docs.append(doc)
@@ -301,6 +465,85 @@ async def test_validate_so_allows_within_available():
         [{"master_item_id": "m1", "accurate_item_id": "a1", "quantity": 20}],
     )
     assert warnings == []
+
+
+@pytest.mark.anyio
+async def test_validate_so_ignores_unconfirmed_surat_jalan_reservation_release():
+    db = _FakeDB()
+    db.orders.docs = [{
+        "id": "o1",
+        "line_items": [{
+            "master_item_id": "m1",
+            "accurate_item_id": "a1",
+            "quantity": 90,
+        }],
+        "delivery_confirmations": [],
+    }]
+    db.sales_deliveries.docs = [{
+        "po_id": "o1",
+        "line_items": [{
+            "master_item_id": "m1",
+            "accurate_item_id": "a1",
+            "qty": 90,
+        }],
+    }]
+    warnings = await validate_sales_order_availability(
+        db,
+        [{"master_item_id": "m1", "accurate_item_id": "a1", "quantity": 20}],
+    )
+    assert warnings == [STOCK_INSUFFICIENT_MSG]
+
+
+@pytest.mark.anyio
+async def test_validate_so_releases_only_confirmed_delivery_reservation():
+    db = _FakeDB()
+    db.orders.docs = [{
+        "id": "o1",
+        "line_items": [{
+            "master_item_id": "m1",
+            "accurate_item_id": "a1",
+            "quantity": 90,
+        }],
+        "delivery_confirmations": [{
+            "items": [{"line_idx": 0, "qty": 90}],
+        }],
+    }]
+    warnings = await validate_sales_order_availability(
+        db,
+        [{"master_item_id": "m1", "accurate_item_id": "a1", "quantity": 20}],
+    )
+    assert warnings == []
+
+
+@pytest.mark.anyio
+async def test_current_stock_runtime_reads_confirmations_not_sales_deliveries():
+    db = _FakeDB()
+    db.orders.docs = [{
+        "id": "o1",
+        "line_items": [{
+            "master_item_id": "m1",
+            "accurate_item_id": "a1",
+            "quantity": 30,
+        }],
+        "delivery_confirmations": [{
+            "items": [{"line_idx": 0, "qty": 10}],
+        }],
+    }]
+    # A completed Surat Jalan must not release more than confirmation evidence.
+    db.sales_deliveries.docs = [{
+        "po_id": "o1",
+        "line_items": [{
+            "master_item_id": "m1",
+            "accurate_item_id": "a1",
+            "qty": 30,
+        }],
+    }]
+
+    rows = await build_current_stock_rows(db)
+
+    assert rows[0]["physical_qty"] == 100
+    assert rows[0]["outstanding_so_qty"] == 20
+    assert rows[0]["stock_current"] == 80
 
 
 @pytest.mark.anyio
@@ -366,30 +609,50 @@ async def test_validate_so_negative_stock_current_warns_not_blocks():
 
 
 @pytest.mark.anyio
-async def test_opname_target_current_updates_physical_and_keeps_transaction_buckets(monkeypatch):
+async def test_opname_physical_count_updates_total_and_preserves_reservation(monkeypatch):
     db = _FakeDB()
 
-    async def fake_record(db, **k):
-        doc = {"id": k.get("movement_id"), **k}
+    async def fake_execute(db, **k):
+        state = db.product_stock_state.docs[0]
+        assert k["expected_total_qty"] == state["total_qty"]
+        assert k["expected_unprinted_qty"] == state["unprinted_qty"]
+        assert k["expected_printed_qty"] == state["printed_qty"]
+        state["total_qty"] += k["delta_total_override"]
+        state["unprinted_qty"] += k["delta_unprinted_override"]
+        state["printed_qty"] += k["delta_printed_override"]
+        doc = {
+            "id": k["event_id"],
+            "event_key": k["event_id"],
+            "delta": k["delta_total_override"],
+            "delta_unprinted": k["delta_unprinted_override"],
+            "delta_printed": k["delta_printed_override"],
+            "balance_before": 100,
+            "balance_after": state["total_qty"],
+            **k["change_metadata"],
+        }
         await db.stock_movements.insert_one(doc)
         return doc
 
-    monkeypatch.setattr("services.stock_engine_v2.record_stock_movement", fake_record)
+    monkeypatch.setattr("services.stock_engine_v2.execute_durable_stock_event", fake_execute)
 
     result = await apply_stock_opname(
         db,
         master_item_id="m1",
-        target_stock_current_qty=0,
+        stock_physical_counted=20,
         outstanding_so_qty=20,
         note="opname test",
         user={"email": "admin@test", "name": "Admin"},
+        valuation_context={"hpp_status": "MISSING_COST"},
     )
     assert result["unchanged"] is False
     assert result["opname_action"] == "KOREKSI"
     st = result["stock_state"]
     assert st["total_qty"] == 20
-    assert st["unprinted_qty"] == 100
+    assert st["unprinted_qty"] == 20
     assert st["printed_qty"] == 0
+    assert result["stock_physical_before"] == 100
+    assert result["stock_physical_counted"] == 20
+    assert result["difference_qty"] == -80
     assert len(db.stock_movements.inserts) == 1
     movement = db.stock_movements.inserts[0]
     assert movement["delta_printed"] == 0

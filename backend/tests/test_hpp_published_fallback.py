@@ -372,3 +372,274 @@ async def test_first_gr_base_uom_uses_published_base_cost(db):
     assert event["transaction_qty"] == 1
     assert event["base_qty"] == 1000
     assert event["unit_cost"] == 500
+
+
+@pytest.mark.anyio
+async def test_zero_stock_first_gr_bootstraps_without_published_hpp(db):
+    mid, aid = await _master(db, "zero35", 0)
+    po, line = await _po(db, "zero35", mid, aid, 200, "PCS", 35)
+    receipt = await _receive(db, "zero35", po, line, 200)
+    event = await db.hpp_recognition_events.find_one(
+        {"source_key": {"$regex": f"^gr:{receipt['id']}:"}},
+        {"_id": 0},
+    )
+    assert event["status"] == "RECOGNIZED"
+    assert event["qty"] == 200
+    assert event["unit_cost"] == 35
+    assert event["total_cost"] == 7000
+    cutover = await db.hpp_valuation_cutovers.find_one({"status": "ACTIVE"}, {"_id": 0})
+    assert cutover is not None
+    baseline = await db.hpp_valuation_baseline_lines.find_one(
+        {"cutover_id": cutover["cutover_id"], "master_item_id": mid},
+        {"_id": 0},
+    )
+    assert baseline["stock_fisik_snapshot"] == 0
+    assert baseline["valuation_qty"] == 0
+    assert baseline["provenance_source"] == "GOODS_RECEIPT"
+    row = _valuation(await build_inventory_valuation_rows(db), mid)
+    assert row["stock_fisik"] == 200
+    assert row["valuation_qty"] == 200
+    assert row["current_hpp"] == 35
+    assert row["inventory_value"] == 7000
+    assert row["hpp_source"] == "PURCHASING_MOVING_AVERAGE"
+
+
+@pytest.mark.anyio
+async def test_zero_stock_first_gr_retry_is_idempotent(db):
+    from services.hpp_cutover import recognize_posted_goods_receipt
+
+    mid, aid = await _master(db, "zero-retry", 0)
+    po, line = await _po(db, "zero-retry", mid, aid, 200, "PCS", 35)
+    receipt = await _receive(db, "zero-retry", po, line, 200)
+    first = await db.hpp_recognition_events.find_one(
+        {"source_key": {"$regex": f"^gr:{receipt['id']}:"}},
+        {"_id": 0},
+    )
+    assert first["status"] == "RECOGNIZED"
+    await recognize_posted_goods_receipt(db, receipt, USER)
+    events = await db.hpp_recognition_events.find(
+        {"source_key": {"$regex": f"^gr:{receipt['id']}:"}},
+        {"_id": 0},
+    ).to_list(10)
+    assert len(events) == 1
+    assert events[0]["event_id"] == first["event_id"]
+    assert events[0]["status"] == "RECOGNIZED"
+    assert await db.hpp_valuation_cutovers.count_documents({"status": "ACTIVE"}) == 1
+    row = _valuation(await build_inventory_valuation_rows(db), mid)
+    assert row["current_hpp"] == 35
+    assert row["inventory_value"] == 7000
+
+
+@pytest.mark.anyio
+async def test_zero_stock_second_gr_moves_average(db):
+    mid, aid = await _master(db, "zero-avg", 0)
+    po1, line1 = await _po(db, "zero-avg-1", mid, aid, 200, "PCS", 35)
+    await _receive(db, "zero-avg-1", po1, line1, 200)
+    po2, line2 = await _po(db, "zero-avg-2", mid, aid, 100, "PCS", 50)
+    await _receive(db, "zero-avg-2", po2, line2, 100)
+    row = _valuation(await build_inventory_valuation_rows(db), mid)
+    assert row["stock_fisik"] == 300
+    assert row["valuation_qty"] == 300
+    assert row["current_hpp"] == 40
+    assert row["inventory_value"] == 12_000
+
+
+@pytest.mark.anyio
+async def test_zero_stock_ambiguous_chain_uses_strict_durable_gr_boundary(db):
+    from services.hpp_cutover import (
+        order_stock_application_chain,
+        proven_opening_physical_qty,
+    )
+
+    mid, aid = await _master(db, "amb0", 0)
+    await db.stock_movements.insert_many([
+        {
+            "id": "cycle-in",
+            "master_item_id": mid,
+            "movement_type": "KOREKSI",
+            "reference_type": "stock_opname",
+            "reference_id": "opn-in",
+            "base_uom": "PCS",
+            "delta": 50,
+            "balance_before": 0,
+            "balance_after": 50,
+            "stock_applied_at": "2026-09-28T10:00:00+00:00",
+            "created_at": "2026-09-28T10:00:00+00:00",
+        },
+        {
+            "id": "cycle-out",
+            "master_item_id": mid,
+            "movement_type": "KOREKSI",
+            "reference_type": "stock_opname",
+            "reference_id": "opn-out",
+            "base_uom": "PCS",
+            "delta": -50,
+            "balance_before": 50,
+            "balance_after": 0,
+            "stock_applied_at": "2026-09-28T11:00:00+00:00",
+            "created_at": "2026-09-28T11:00:00+00:00",
+        },
+    ])
+    await db.product_stock_state.update_one(
+        {"_id": mid},
+        {"$set": {"total_qty": 0, "unprinted_qty": 0, "version": 3}},
+    )
+    po, line = await _po(db, "amb0", mid, aid, 200, "PCS", 35)
+    receipt = await _receive(db, "amb0", po, line, 200)
+    movements = await db.stock_movements.find({"master_item_id": mid}, {"_id": 0}).to_list(20)
+    generic = order_stock_application_chain(movements, base_uom="PCS")
+    assert generic["ok"] is False
+    assert generic["reason"] == "STOCK_CHAIN_AMBIGUOUS"
+    event = await db.hpp_recognition_events.find_one(
+        {"source_key": {"$regex": f"^gr:{receipt['id']}:"}},
+        {"_id": 0},
+    )
+    assert event["status"] == "RECOGNIZED"
+    assert event["unit_cost"] == 35
+    row = _valuation(await build_inventory_valuation_rows(db), mid)
+    assert row["stock_fisik"] == 200
+    assert row["current_hpp"] == 35
+    assert row["inventory_value"] == 7000
+    proof = await proven_opening_physical_qty(db, mid, receipt["id"])
+    assert proof["ok"] is True
+    assert proof["qty"] == 0
+    assert proof["proof_kind"] == "STRICT_ZERO_DURABLE_GR"
+
+
+@pytest.mark.anyio
+async def test_zero_stock_missing_cost_does_not_bootstrap(db):
+    mid, aid = await _master(db, "zero-nocost", 0)
+    po, line = await _po(db, "zero-nocost", mid, aid, 200, "PCS", 0)
+    receipt = await _receive(db, "zero-nocost", po, line, 200)
+    event = await db.hpp_recognition_events.find_one(
+        {"source_key": {"$regex": f"^gr:{receipt['id']}:"}},
+        {"_id": 0},
+    )
+    assert event["status"] == "NEEDS_COST"
+    assert await db.hpp_valuation_cutovers.count_documents({"status": "ACTIVE"}) == 0
+    row = _valuation(await build_inventory_valuation_rows(db), mid)
+    assert row["stock_fisik"] == 200
+    assert row["current_hpp"] is None
+
+
+@pytest.mark.anyio
+async def test_zero_stock_invalid_uom_does_not_bootstrap(db):
+    mid, aid = await _master(db, "zero-uom", 0)
+    await db.master_items.update_one({"id": mid}, {"$set": {"unit": "PCS"}})
+    await db.product_stock_state.update_one({"_id": mid}, {"$set": {"base_uom": "PCS"}})
+    po, line = await _po(db, "zero-uom", mid, aid, 1, "DUS", 35)
+    receipt = await _receive(db, "zero-uom", po, line, 1)
+    event = await db.hpp_recognition_events.find_one(
+        {"source_key": {"$regex": f"^gr:{receipt['id']}:"}},
+        {"_id": 0},
+    )
+    assert event["status"] == "NEEDS_UOM"
+    assert await db.hpp_valuation_cutovers.count_documents({"status": "ACTIVE"}) == 0
+
+
+@pytest.mark.anyio
+async def test_payment_and_invoice_do_not_alter_zero_stock_gr_hpp(db):
+    mid, aid = await _master(db, "pay-indep", 0)
+    po, line = await _po(db, "pay-indep", mid, aid, 200, "PCS", 35)
+    receipt = await _receive(db, "pay-indep", po, line, 200)
+    before = await db.hpp_recognition_events.find_one(
+        {"source_key": {"$regex": f"^gr:{receipt['id']}:"}},
+        {"_id": 0},
+    )
+    assert before["status"] == "RECOGNIZED"
+    await db.purchase_invoices.insert_one({
+        "id": "inv-pay-indep",
+        "invoice_number": "FPB-pay-indep",
+        "purchase_order_id": po,
+        "receipt_id": receipt["id"],
+        "invoice_date": "2026-09-28",
+        "grand_total": 7000,
+        "lines": [{"purchase_order_line_id": line, "invoice_qty": 200, "unit_price": 35}],
+    })
+    await db.purchase_payments.insert_one({
+        "id": "pay-pay-indep",
+        "payment_number": "PPB-pay-indep",
+        "purchase_invoice_id": "inv-pay-indep",
+        "amount": 7000,
+        "payment_date": "2026-09-28",
+        "status": "DIAJUKAN",
+        "settlement_status": "PAID",
+        "submitted_at": "2026-09-28T12:15:00+00:00",
+    })
+    after = await db.hpp_recognition_events.find_one(
+        {"source_key": {"$regex": f"^gr:{receipt['id']}:"}},
+        {"_id": 0},
+    )
+    assert after == before
+    assert await db.hpp_recognition_events.count_documents({}) == 1
+    row = _valuation(await build_inventory_valuation_rows(db), mid)
+    assert row["current_hpp"] == 35
+    assert row["inventory_value"] == 7000
+
+
+@pytest.mark.anyio
+async def test_hpp_recognition_does_not_create_extra_stock_movement(db):
+    mid, aid = await _master(db, "qty-isol", 0)
+    before = await db.stock_movements.count_documents({"master_item_id": mid})
+    po, line = await _po(db, "qty-isol", mid, aid, 200, "PCS", 35)
+    receipt = await _receive(db, "qty-isol", po, line, 200)
+    after = await db.stock_movements.find({"master_item_id": mid}, {"_id": 0}).to_list(20)
+    assert len(after) == before + 1
+    assert after[-1]["reference_type"] == "goods_receipt"
+    assert after[-1]["reference_id"] == receipt["id"]
+    assert after[-1]["delta"] == 200
+    event = await db.hpp_recognition_events.find_one(
+        {"source_key": {"$regex": f"^gr:{receipt['id']}:"}},
+        {"_id": 0},
+    )
+    assert event["status"] == "RECOGNIZED"
+
+
+@pytest.mark.anyio
+async def test_concurrent_zero_stock_first_gr_serializes_without_duplicate_opening(db):
+    import asyncio
+    from fastapi import HTTPException
+    from services.purchase_goods_receipts import create_purchase_goods_receipt
+
+    mid, aid = await _master(db, "conc-zero", 0)
+    po_a, line_a = await _po(db, "conc-a", mid, aid, 100, "PCS", 10)
+    po_b, line_b = await _po(db, "conc-b", mid, aid, 100, "PCS", 20)
+
+    async def _one(suffix, po_id, line_id):
+        try:
+            return await create_purchase_goods_receipt(db, {
+                "purchase_order_id": po_id,
+                "idempotency_key": f"gr-{suffix}",
+                "lines": [{"purchase_order_line_id": line_id, "received_qty": 100}],
+            }, USER)
+        except HTTPException as exc:
+            return {"error": exc.status_code, "detail": exc.detail}
+
+    first, second = await asyncio.gather(
+        _one("conc-a", po_a, line_a),
+        _one("conc-b", po_b, line_b),
+    )
+    # One may conflict while the other creates the cutover; retry the loser.
+    for result, suffix, po_id, line_id in (
+        (first, "conc-a", po_a, line_a),
+        (second, "conc-b", po_b, line_b),
+    ):
+        if isinstance(result, dict) and result.get("error"):
+            await create_purchase_goods_receipt(db, {
+                "purchase_order_id": po_id,
+                "idempotency_key": f"gr-{suffix}-retry",
+                "lines": [{"purchase_order_line_id": line_id, "received_qty": 100}],
+            }, USER)
+
+    assert await db.hpp_valuation_cutovers.count_documents({"status": "ACTIVE"}) == 1
+    assert await db.hpp_valuation_baseline_lines.count_documents({"master_item_id": mid}) == 1
+    events = await db.hpp_recognition_events.find(
+        {"master_item_id": mid, "status": "RECOGNIZED"},
+        {"_id": 0},
+    ).to_list(10)
+    assert len(events) == 2
+    row = _valuation(await build_inventory_valuation_rows(db), mid)
+    assert row["stock_fisik"] == 200
+    assert row["valuation_qty"] == 200
+    assert row["inventory_value"] == 3000
+    assert row["current_hpp"] == 15
