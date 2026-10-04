@@ -741,6 +741,18 @@ function PayrollFinanceFlow({ period, lines, readiness, payment, payments, banks
   );
 }
 
+export function pieceInputSyncKey(period) {
+  return JSON.stringify({
+    id: period?.id || "",
+    start: period?.start_date || "",
+    end: period?.end_date || "",
+    bonusStart: period?.piece_bonus?.start_date || "",
+    bonusEnd: period?.piece_bonus?.end_date || "",
+    adjustments: period?.piece_bonus?.adjustments || {},
+    kasbon: period?.piece_kasbon_inputs || [],
+  });
+}
+
 function PieceHoldingPanel({ period, lines, kasbon, hasPerm, onSaved, onError }) {
   const editable = period?.status === "DRAFT" && hasPerm("payroll.piece_holding.edit");
   const [tab, setTab] = useState("upah");
@@ -754,24 +766,25 @@ function PieceHoldingPanel({ period, lines, kasbon, hasPerm, onSaved, onError })
   const [bonusReason, setBonusReason] = useState({});
   const [kasbonAmount, setKasbonAmount] = useState({});
   const [busy, setBusy] = useState(false);
+  const pieceSyncKey = pieceInputSyncKey(period);
   useEffect(() => {
-    setStartDate(period?.start_date || "");
-    setEndDate(period?.end_date || "");
-    setBonusStart(period?.piece_bonus?.start_date || "");
-    setBonusEnd(period?.piece_bonus?.end_date || "");
-    const adjustments = period?.piece_bonus?.adjustments || {};
+    const snapshot = JSON.parse(pieceSyncKey);
+    setStartDate(snapshot.start || "");
+    setEndDate(snapshot.end || "");
+    setBonusStart(snapshot.bonusStart || "");
+    setBonusEnd(snapshot.bonusEnd || "");
     const finals = {};
     const reasons = {};
-    Object.entries(adjustments).forEach(([id, row]) => {
+    Object.entries(snapshot.adjustments || {}).forEach(([id, row]) => {
       finals[id] = row?.final_amount ?? "";
       reasons[id] = row?.reason || "";
     });
     setBonusFinal(finals);
     setBonusReason(reasons);
     const amounts = {};
-    (period?.piece_kasbon_inputs || []).forEach((row) => { amounts[row.schedule_id] = row.amount; });
+    (snapshot.kasbon || []).forEach((row) => { amounts[row.schedule_id] = row.amount; });
     setKasbonAmount(amounts);
-  }, [period?.id, period?.updated_at]);
+  }, [pieceSyncKey]);
   useEffect(() => {
     if (period?.period_scope !== "piece") return undefined;
     if (!hasPerm("payroll.piece_holding.edit") && !hasPerm("payroll.view") && !hasPerm("payroll.calculate")) return undefined;

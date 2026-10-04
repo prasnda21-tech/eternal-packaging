@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import {
   Users, Shield, ScrollText, Plus, Edit3, Power, PowerOff, Key, Trash2, ShieldCheck, ShieldAlert, ArrowRightLeft,
@@ -867,12 +867,16 @@ function RolesTab({ permissionCatalog, canManagePerms, notify }) {
   const [showCreate, setShowCreate] = useState(false);
   const [createForm, setCreateForm] = useState({ role: "", label: "", description: "" });
 
-  const load = async (keepSelected = true) => {
+  const selectedRef = useRef(selected);
+  selectedRef.current = selected;
+
+  const load = useCallback(async (keepSelected = true) => {
     setBusy(true);
     try {
       const d = await api.adminListRoles();
       setRoles(d.roles || []);
-      const target = keepSelected && selected ? d.roles.find((r) => r.role === selected) : null;
+      const current = selectedRef.current;
+      const target = keepSelected && current ? d.roles.find((r) => r.role === current) : null;
       if (target) {
         setPermsDraft(expandLoadingDraftForEdit(target.permissions));
         setInitial(expandLoadingDraftForEdit(target.permissions));
@@ -890,8 +894,8 @@ function RolesTab({ permissionCatalog, canManagePerms, notify }) {
       }
     } catch (e) { setErr(e.response?.data?.detail || "Gagal memuat"); }
     finally { setBusy(false); }
-  };
-  useEffect(() => { load(false); /* eslint-disable-next-line */ }, []);
+  }, []);
+  useEffect(() => { load(false); }, [load]);
 
   const selectRole = (r) => {
     setSelected(r.role);

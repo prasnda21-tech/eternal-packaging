@@ -1394,14 +1394,20 @@ export default function PesananPenjualan() {
     dirtyRef.current = true;
   };
 
+  const resetFormRef = useRef(resetForm);
+  const handleRepeatSpecificPoRef = useRef(handleRepeatSpecificPo);
+  resetFormRef.current = resetForm;
+  handleRepeatSpecificPoRef.current = handleRepeatSpecificPo;
+
   useEffect(() => {
     const rid = (searchParams.get(REPEAT_ORDER_QUERY_PARAM) || "").trim();
-    if (!rid || !canCreate) return;
-    if (consumedRepeatOrderIdRef.current === rid) return;
+    if (!rid || !canCreate) return undefined;
+    if (consumedRepeatOrderIdRef.current === rid) return undefined;
     consumedRepeatOrderIdRef.current = rid;
-    resetForm();
+    resetFormRef.current();
     setViewMode("create");
-    void handleRepeatSpecificPo(rid);
+    void handleRepeatSpecificPoRef.current(rid);
+    return undefined;
   }, [searchParams, canCreate]);
 
   const handleFormSubmit = async (e) => {

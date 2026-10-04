@@ -27,17 +27,16 @@ export default function EmployeeAdminDetail() {
   const [busy, setBusy] = useState(false);
   const [pdfFile, setPdfFile] = useState(null);
 
-  const load = async () => {
+  useEffect(() => {
+    let cancelled = false;
     setErr("");
-    try {
-      const res = await api.employeeAdminGetRequest(id);
-      setRow(res.request);
-    } catch (ex) {
-      setErr(errDetail(ex));
-    }
-  };
-
-  useEffect(() => { load(); }, [id]);
+    api.employeeAdminGetRequest(id).then((res) => {
+      if (!cancelled) setRow(res.request);
+    }).catch((ex) => {
+      if (!cancelled) setErr(errDetail(ex));
+    });
+    return () => { cancelled = true; };
+  }, [id]);
 
   const loadPdfFile = useCallback(({ signal } = {}) => {
     if (!row?.id || !pdfFile?.id) {

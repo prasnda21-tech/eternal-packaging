@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle, Plus, Save, Trash2 } from "lucide-react";
 import api from "../lib/api";
 import { EA_FIELD_TYPES, EA_SETTINGS_TABS, emptyEligibility, emptyField, emptyStep } from "../lib/employeeAdmin";
@@ -28,21 +28,27 @@ export default function EmployeeAdminSettings({ notify, canEdit }) {
   const [creating, setCreating] = useState(false);
 
   const selected = useMemo(() => types.find((t) => t.id === selectedId) || null, [types, selectedId]);
+  const selectedIdRef = useRef(selectedId);
+  selectedIdRef.current = selectedId;
 
-  const load = async (keepId) => {
+  const load = useCallback(async (keepId) => {
     const [t, m] = await Promise.all([api.employeeAdminTypes(true), api.employeeAdminMeta().catch(() => ({ roles: [], users: [], divisions: [] }))]);
     const rows = t.types || [];
     setTypes(rows);
     setMeta(m);
-    const id = keepId || selectedId || rows[0]?.id || "";
+    const id = keepId || selectedIdRef.current || rows[0]?.id || "";
     setSelectedId(id);
     const cur = rows.find((r) => r.id === id);
     if (cur) setForm(hydrate(cur));
-  };
+  }, []);
 
   useEffect(() => {
-    load().catch((ex) => setErr(errDetail(ex)));
-  }, []);
+    let cancelled = false;
+    load().catch((ex) => {
+      if (!cancelled) setErr(errDetail(ex));
+    });
+    return () => { cancelled = true; };
+  }, [load]);
 
   useEffect(() => {
     if (!selected) return;
