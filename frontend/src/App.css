@@ -752,7 +752,7 @@
 @media print{
   body{background:#fff}
   .app-shell,.content,.app-main{background:#fff !important;padding:0 !important}
-  .app-sidebar,.app-sidebar-slot,.sidebar-flyout,.sidebar-flyout-scrim,.topbar,.bottom-nav,.no-print{display:none !important}
+  .app-sidebar,.app-sidebar-slot,.sidebar-flyout,.sidebar-flyout-scrim,.topbar,.bottom-nav,.kb-workspace-tabs,.ep-web-notif-root,.no-print{display:none !important}
   .app-shell{display:block}
   .surat-jalan-wrap{max-width:none;margin:0}
   .surat-jalan{border:0;box-shadow:none;padding:12mm 14mm;page-break-inside:auto}

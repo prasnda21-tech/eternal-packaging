@@ -46,6 +46,7 @@ const AnalyticsOperators = lazy(() => import("./pages/AnalyticsOperators"));
 const StatusPO = lazy(() => import("./pages/StatusPO"));
 const GajiOperator = lazy(() => import("./pages/GajiOperator"));
 const PrediksiOrder = lazy(() => import("./pages/PrediksiOrder"));
+const LaporanPenjualan = lazy(() => import("./pages/LaporanPenjualan"));
 const OptimasiRute = lazy(() => import("./pages/OptimasiRute"));
 const OptimasiRuteEditor = lazy(() => import("./pages/OptimasiRuteEditor"));
 const Dashboard = lazy(() => import("./pages/Dashboard"));
@@ -178,6 +179,7 @@ function LaporanIndex() {
   if (r.statusPo) return <Navigate to="/laporan/status-po" replace />;
   if (r.gajiOperator) return <Navigate to="/laporan/gaji-operator" replace />;
   if (r.orderPrediction) return <Navigate to="/laporan/prediksi-order" replace />;
+  if (r.salesReports) return <Navigate to="/laporan/penjualan" replace />;
   return <Navigate to="/" replace />;
 }
 
@@ -356,6 +358,7 @@ export default function App() {
             <Route path="/laporan/status-pengiriman" element={<Navigate to="/produksi/jadwal-pengiriman" replace />} />
             <Route path="/laporan/gaji-operator" element={<PermGate anyOf={[NAV_KEYS.gajiOperator]} alsoAnyOf={["reports.gaji_operator.view", "schedule.view"]}><GajiOperator /></PermGate>} />
             <Route path="/laporan/prediksi-order" element={<PermGate anyOf={[NAV_KEYS.orderPrediction]} alsoAnyOf={["reports.order_prediction.view"]}><PrediksiOrder /></PermGate>} />
+            <Route path="/laporan/penjualan" element={<PermGate anyOf={[NAV_KEYS.salesReports, "reports.sales.view"]}><LaporanPenjualan /></PermGate>} />
             <Route path="/laporan" element={<LaporanIndex />} />
             <Route path="/administrasi-karyawan" element={<AdministrasiIndex />} />
             <Route path="/administrasi-karyawan/pengajuan-saya" element={<PermGate anyOf={[NAV_KEYS.employeeAdminMine, NAV_KEYS.employeeAdmin, "employee_admin.view_own", "employee_admin.submit"]}><EmployeeAdmin mode="mine" /></PermGate>} />

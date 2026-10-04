@@ -968,6 +968,12 @@ export const api = {
     form.append("file", file);
     return client.post("/spk/uploads", form).then((r) => r.data);
   },
+
+  salesReportCatalog: () => client.get("/laporan/penjualan/katalog").then((r) => r.data),
+  salesReportShow: (payload) => client.post("/laporan/penjualan/tampilkan", payload).then((r) => r.data),
+  salesReportExport: (payload) => client.post("/laporan/penjualan/ekspor", payload, { responseType: "blob" }).then((r) => r.data),
+  salesReportMemorize: (payload) => client.post("/laporan/penjualan/memorize", payload).then((r) => r.data),
+  salesReportForget: (id) => client.delete(`/laporan/penjualan/memorize/${encodeURIComponent(id)}`).then((r) => r.data),
 };
 
 function spkKeyHeader(payload) {

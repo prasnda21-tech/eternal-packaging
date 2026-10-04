@@ -133,6 +133,8 @@ PERMISSION_CATALOG = [
     ("Laporan", "reports.gaji_operator.view", "Lihat Gaji Operator"),
     ("Laporan", "reports.order_prediction.view", "Lihat Prediksi Order"),
     ("Laporan", "reports.order_prediction.import", "Impor Histori Prediksi Order"),
+    ("Laporan", "reports.sales.view", "Lihat Laporan Penjualan"),
+    ("Laporan", "reports.sales.export", "Ekspor Laporan Penjualan"),
     ("Pengaturan", "settings.operator_wage.view", "Lihat Upah Operator"),
     ("Pengaturan", "settings.operator_wage.manage", "Ubah Upah Operator"),
     ("Packing", "packing.update", "Packing"),
@@ -287,6 +289,7 @@ PERMISSION_CATALOG = [
     ("Akses Menu", "nav.reports.status_po", "Menu Status PO"),
     ("Akses Menu", "nav.reports.gaji_operator", "Menu Gaji Operator"),
     ("Akses Menu", "nav.reports.order_prediction", "Menu Prediksi Order"),
+    ("Akses Menu", "nav.reports.sales", "Menu Laporan Penjualan"),
     ("Akses Menu", "nav.settings", "Menu Pengaturan"),
     ("Akses Menu", "nav.employee_administration", "Menu Administrasi Karyawan"),
     ("Akses Menu", "nav.employee_administration.mine", "Menu Pengajuan Saya"),
@@ -420,6 +423,7 @@ NAV_MENU_ITEMS = (
     ("nav.reports.shipment_status", "Status Pengiriman", "nav.reports"),
     ("nav.reports.gaji_operator", "Gaji Operator", "nav.reports"),
     ("nav.reports.order_prediction", "Prediksi Order", "nav.reports"),
+    ("nav.reports.sales", "Laporan Penjualan", "nav.reports"),
     ("nav.employee_administration", "Administrasi Karyawan", None),
     ("nav.employee_administration.mine", "Pengajuan Saya", "nav.employee_administration"),
     ("nav.employee_administration.create", "Buat Pengajuan", "nav.employee_administration"),
@@ -476,6 +480,9 @@ def derived_nav_permissions(existing: set) -> set:
     if "reports.order_prediction.view" in existing:
         nav.add("nav.reports")
         nav.add("nav.reports.order_prediction")
+    if "reports.sales.view" in existing or "reports.sales.export" in existing:
+        nav.add("nav.reports")
+        nav.add("nav.reports.sales")
     if "delivery.schedule.view" in existing:
         nav.add("nav.production")
         nav.add("nav.delivery_schedule")

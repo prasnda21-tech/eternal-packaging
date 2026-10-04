@@ -227,6 +227,7 @@ from services.trial_balance_http import register_trial_balance_routes
 from services.profit_loss_http import register_profit_loss_routes
 from services.financial_dashboard_http import register_financial_dashboard_routes
 from services.sales_dashboard_http import register_sales_dashboard_routes
+from services.sales_reports_http import register_sales_report_routes
 from services.balance_sheet_http import register_balance_sheet_routes
 from services.inventory_reconciliation_http import register_inventory_reconciliation_routes
 from services.chart_of_accounts import COLLECTION as LEDGER_ACCOUNTS_COLLECTION
@@ -12648,6 +12649,12 @@ register_sales_dashboard_routes(
     user_permissions=user_permissions,
     Depends=Depends,
 )
+register_sales_report_routes(
+    api_router,
+    get_db=lambda: db,
+    require_perm=require_perm,
+    Depends=Depends,
+)
 register_balance_sheet_routes(
     api_router,
     get_db=lambda: db,
@@ -14500,6 +14507,7 @@ async def seed():
             # Batch 3: Production routing (Cetak/Non-Cetak)
             "production.route.edit",
             "buffer_stock.manage",
+            "reports.sales.view", "reports.sales.export", "nav.reports.sales",
         ],
         "designer": [
             "customer_approval.view", "customer_approval.manage",

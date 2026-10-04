@@ -829,7 +829,7 @@ export default function FakturPenjualan() {
   const [listLoading, setListLoading] = useState(false);
   const [listErr, setListErr] = useState("");
   const [filterErr, setFilterErr] = useState("");
-  const [searchQuery, setSearchQuery] = useState("");
+  const [searchQuery, setSearchQuery] = useState(() => searchParams.get("q") || "");
   const [listTab, setListTab] = useState("active");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
