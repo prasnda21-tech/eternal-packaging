@@ -182,15 +182,9 @@ TASK_PROJECTION = {
 # In-memory only. Not a URL, not a storage path, never persisted.
 LIST_INLINE_PRESENT = "_list_inline_present"
 
-_TASK_BLOB_UNSET = (
-    "surat_jalan_files.data_url",
-    "surat_jalan_files.url",
-    "delivery_proofs.data_url",
-    "delivery_proofs.url",
-    "operator_splits.progress_entries.data_url",
-    "operator_splits.progress_entries.photo",
-    "operator_splits.progress_entries.photos",
-)
+# Keys whose values are file bytes or progress photos. A field named url is
+# removed only when the value itself is an inline data: payload.
+_INLINE_CONTENT_KEYS = ("data_url", "photo", "photos")
 
 
 def _list_inline_present_expr(data_url_expr: str) -> dict:
@@ -202,11 +196,105 @@ def _list_inline_present_expr(data_url_expr: str) -> dict:
     }
 
 
+def _value_is_inline_data_url(value_expr: str) -> dict:
+    return {
+        "$cond": [
+            {"$eq": [{"$type": value_expr}, "string"]},
+            {"$eq": [{"$substrCP": [value_expr, 0, 5]}, "data:"]},
+            False,
+        ]
+    }
+
+
+def _keep_attachment_kv_expr() -> dict:
+    """True when this object key must stay on the aggregation result."""
+    return {
+        "$cond": [
+            {"$in": ["$$kv.k", list(_INLINE_CONTENT_KEYS)]},
+            False,
+            {
+                "$cond": [
+                    {"$ne": ["$$kv.k", "url"]},
+                    True,
+                    {"$not": [_value_is_inline_data_url("$$kv.v")]},
+                ]
+            },
+        ]
+    }
+
+
+def _slim_attachment_expr(doc_expr: str, *, stamp_inline: bool) -> dict:
+    slim = {
+        "$arrayToObject": {
+            "$filter": {
+                "input": {"$objectToArray": doc_expr},
+                "as": "kv",
+                "cond": _keep_attachment_kv_expr(),
+            }
+        }
+    }
+    if stamp_inline:
+        slim = {
+            "$mergeObjects": [
+                slim,
+                {LIST_INLINE_PRESENT: _list_inline_present_expr(f"{doc_expr}.data_url")},
+            ]
+        }
+    return {
+        "$cond": [
+            {"$eq": [{"$type": doc_expr}, "object"]},
+            slim,
+            doc_expr,
+        ]
+    }
+
+
+def _map_slim_attachments(array_expr: str, var: str, *, stamp_inline: bool) -> dict:
+    return {
+        "$map": {
+            "input": {"$ifNull": [array_expr, []]},
+            "as": var,
+            "in": _slim_attachment_expr(f"$${var}", stamp_inline=stamp_inline),
+        }
+    }
+
+
+def _slim_operator_split_expr() -> dict:
+    progress = _map_slim_attachments("$$split.progress_entries", "entry", stamp_inline=False)
+    slim_split = _slim_attachment_expr("$$split", stamp_inline=False)
+    return {
+        "$cond": [
+            {"$eq": [{"$type": "$$split"}, "object"]},
+            {
+                "$cond": [
+                    {"$isArray": "$$split.progress_entries"},
+                    {"$mergeObjects": [slim_split, {"progress_entries": progress}]},
+                    slim_split,
+                ]
+            },
+            "$$split",
+        ]
+    }
+
+
+def _rewrite_present_array(field: str, mapped: dict) -> dict:
+    """Replace an array in place. A missing field stays missing."""
+    return {
+        "$cond": [
+            {"$isArray": f"${field}"},
+            mapped,
+            {"$ifNull": [f"${field}", "$$REMOVE"]},
+        ]
+    }
+
+
 def division_tasks_read_pipeline(query: dict) -> list:
     """Same unordered 1000-document cap as the previous find().
 
-    Drops attachment bytes. Legacy inline SJ bytes become LIST_INLINE_PRESENT
-    on the aggregation result only; the stored document is not updated.
+    Legacy inline SJ bytes become LIST_INLINE_PRESENT inside this pipeline.
+    The aggregation result itself has no data_url, progress photo/photos, or
+    url value that is an inline data: payload. Other url values stay.
+    The stored document is not updated.
     """
     return [
         {"$match": query},
@@ -214,36 +302,58 @@ def division_tasks_read_pipeline(query: dict) -> list:
         {"$project": TASK_PROJECTION},
         {"$set": {
             "surat_jalan_files": {
-                "$map": {
-                    "input": {"$ifNull": ["$surat_jalan_files", []]},
-                    "as": "f",
-                    "in": {
-                        "$mergeObjects": [
-                            "$$f",
-                            {LIST_INLINE_PRESENT: _list_inline_present_expr("$$f.data_url")},
-                        ]
-                    },
-                }
-            }
+                "$cond": [
+                    {"$isArray": "$surat_jalan_files"},
+                    _map_slim_attachments("$surat_jalan_files", "sj", stamp_inline=True),
+                    {"$ifNull": ["$surat_jalan_files", []]},
+                ]
+            },
+            "delivery_proofs": _rewrite_present_array(
+                "delivery_proofs",
+                _map_slim_attachments("$delivery_proofs", "proof", stamp_inline=False),
+            ),
+            "operator_splits": _rewrite_present_array(
+                "operator_splits",
+                {
+                    "$map": {
+                        "input": "$operator_splits",
+                        "as": "split",
+                        "in": _slim_operator_split_expr(),
+                    }
+                },
+            ),
         }},
-        {"$unset": list(_TASK_BLOB_UNSET)},
     ]
 
 
-def _without_blob_keys(value, blob_keys: Iterable[str]):
-    if isinstance(value, list):
-        return [_without_blob_keys(item, blob_keys) for item in value]
-    if not isinstance(value, dict):
-        return value
-    out = {}
-    for key, item in value.items():
-        if key in blob_keys:
+def _is_inline_data_url(value) -> bool:
+    return isinstance(value, str) and value.startswith("data:")
+
+
+def _slim_attachment(entry: dict, *, stamp_inline: bool) -> dict:
+    item = {}
+    for key, value in entry.items():
+        if key in _INLINE_CONTENT_KEYS:
             continue
-        if key == "progress_entries" and isinstance(item, list):
-            out[key] = [_without_blob_keys(entry, ("data_url", "photo", "photos", "url")) for entry in item]
+        if key == "url" and _is_inline_data_url(value):
             continue
-        out[key] = item
-    return out
+        item[key] = copy.deepcopy(value)
+    if stamp_inline:
+        item[LIST_INLINE_PRESENT] = _is_inline_data_url(entry.get("data_url"))
+    return item
+
+
+def _slim_operator_split(split):
+    if not isinstance(split, dict):
+        return copy.deepcopy(split)
+    item = _slim_attachment(split, stamp_inline=False)
+    entries = split.get("progress_entries")
+    if isinstance(entries, list):
+        item["progress_entries"] = [
+            _slim_attachment(entry, stamp_inline=False) if isinstance(entry, dict) else copy.deepcopy(entry)
+            for entry in entries
+        ]
+    return item
 
 
 def project_order_for_task_list(order: dict) -> dict:
@@ -265,17 +375,18 @@ def project_order_for_task_list(order: dict) -> dict:
         out["design_files"] = design
     files = []
     for entry in order.get("surat_jalan_files") or []:
-        if not isinstance(entry, dict):
-            continue
-        item = {k: copy.deepcopy(v) for k, v in entry.items() if k not in ("data_url", "url")}
-        data_url = entry.get("data_url")
-        item[LIST_INLINE_PRESENT] = isinstance(data_url, str) and data_url.startswith("data:")
-        files.append(item)
+        if isinstance(entry, dict):
+            files.append(_slim_attachment(entry, stamp_inline=True))
+        else:
+            files.append(copy.deepcopy(entry))
     out["surat_jalan_files"] = files
-    if "delivery_proofs" in out:
-        out["delivery_proofs"] = _without_blob_keys(out["delivery_proofs"], ("data_url", "url"))
-    if "operator_splits" in out:
-        out["operator_splits"] = _without_blob_keys(out["operator_splits"], ())
+    if isinstance(out.get("delivery_proofs"), list):
+        out["delivery_proofs"] = [
+            _slim_attachment(entry, stamp_inline=False) if isinstance(entry, dict) else copy.deepcopy(entry)
+            for entry in out["delivery_proofs"]
+        ]
+    if isinstance(out.get("operator_splits"), list):
+        out["operator_splits"] = [_slim_operator_split(split) for split in out["operator_splits"]]
     return out
 
 
