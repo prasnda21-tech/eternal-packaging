@@ -6,6 +6,7 @@ import { AuthProvider, useAuth } from "./lib/auth";
 import MobileOperationalLayout from "./mobile/MobileOperationalLayout";
 import MobileTasksPage from "./mobile/MobileTasksPage";
 import Login from "./pages/Login";
+import { canOpenWidgetDashboard } from "./components/widgetDashboard/widgetDashboardCatalog";
 import { NAV_KEYS, cashBankNavVisible, employeeAdminNavVisible, hrPayrollNavVisible, inventoryNavVisible, ledgerNavVisible, purchasingNavVisible, reportsNavVisible } from "./lib/navAccess";
 import { inventoryValueRouteAllowed } from "./lib/inventoryValueLink";
 import { SPK_ACCESS_KEYS } from "./lib/spk";
@@ -52,6 +53,7 @@ const Dashboard = lazy(() => import("./pages/Dashboard"));
 const PODetail = lazy(() => import("./pages/PODetail"));
 const HoPDashboard = lazy(() => import("./pages/HoPDashboard"));
 const SalesFinanceDashboard = lazy(() => import("./pages/SalesFinanceDashboard"));
+const WidgetDashboard = lazy(() => import("./pages/WidgetDashboard"));
 const ProductionSchedule = lazy(() => import("./pages/ProductionSchedule"));
 const SuratJalan = lazy(() => import("./pages/SuratJalan"));
 const PesananPenjualan = lazy(() => import("./pages/PesananPenjualan"));
@@ -142,6 +144,12 @@ function PermGate({ anyOf, alsoAnyOf, children }) {
   const ok = (anyOf || []).some((p) => hasPerm(p));
   const also = !alsoAnyOf?.length || alsoAnyOf.some((p) => hasPerm(p));
   if (!ok || !also) return <Navigate to="/" replace />;
+  return children;
+}
+
+function WidgetDashboardGate({ children }) {
+  const { user, hasPerm } = useAuth();
+  if (!canOpenWidgetDashboard(user, hasPerm)) return <Navigate to="/" replace />;
   return children;
 }
 
@@ -289,6 +297,7 @@ export default function App() {
             <Route path="/chat/:roomId" element={<PermGate anyOf={[NAV_KEYS.chat, "chat.use"]}><ChatPage /></PermGate>} />
             <Route path="/dashboard/keuangan" element={<PermGate anyOf={["dashboard.finance.view", NAV_KEYS.dashboardFinance]}><Navigate to="/dashboard/penjualan#keuangan" replace /></PermGate>} />
             <Route path="/dashboard/penjualan" element={<PermGate anyOf={["dashboard.sales.view", NAV_KEYS.dashboardSales, "dashboard.finance.view", NAV_KEYS.dashboardFinance]}><SalesFinanceDashboard /></PermGate>} />
+            <Route path="/dashboard/widget" element={<WidgetDashboardGate><WidgetDashboard /></WidgetDashboardGate>} />
             <Route path="/dashboard" element={<PermGate anyOf={[NAV_KEYS.dashboard]}><HoPDashboard /></PermGate>} />
             <Route path="/tasks" element={<DivisionTaskIndex />} />
             <Route path="/tasks/designer" element={<PermGate anyOf={[NAV_KEYS.tasksDesigner, "design.upload"]}><DivisionTaskPage /></PermGate>} />

@@ -1117,6 +1117,107 @@ async def get_accounts_receivable_customers(
     }
 
 
+def aggregate_overdue_customers(rows: Sequence[dict], *, aging_reference_date: str) -> dict:
+    """Positive overdue accounting balances, grouped by customer_key.
+
+    Not-due and non-positive rows stay out. Ambiguous keys are not folded
+    into a stable id. Empty keys are counted and left unranked.
+    """
+    groups: Dict[str, dict] = {}
+    unidentified = 0
+    incomplete = False
+    for row in rows:
+        outstanding = _money(row.get("accounting_outstanding"))
+        try:
+            days = int(row.get("days_overdue") or 0)
+        except (TypeError, ValueError):
+            days = 0
+        if outstanding <= 0 or days <= 0:
+            continue
+        key = str(row.get("customer_key") or "").strip()
+        if not key:
+            unidentified += 1
+            incomplete = True
+            continue
+        ambiguous = bool(row.get("customer_identity_ambiguous") or row.get("ambiguous"))
+        if ambiguous or row.get("integrity_warning"):
+            incomplete = True
+        bucket = groups.get(key)
+        if bucket is None:
+            bucket = {
+                "customer_key": key,
+                "customer_name": str(row.get("customer_name") or "").strip(),
+                "ambiguous": ambiguous,
+                "amount": Decimal("0.00"),
+                "days_overdue": days,
+                "invoice_count": 0,
+            }
+            groups[key] = bucket
+        elif ambiguous:
+            bucket["ambiguous"] = True
+        name = str(row.get("customer_name") or "").strip()
+        if name and not bucket["customer_name"]:
+            bucket["customer_name"] = name
+        bucket["amount"] += outstanding
+        if days > bucket["days_overdue"]:
+            bucket["days_overdue"] = days
+        bucket["invoice_count"] += 1
+    items = []
+    for bucket in groups.values():
+        label = bucket["customer_name"] or bucket["customer_key"]
+        if bucket["ambiguous"]:
+            label = f"{label} · identitas belum pasti"
+        items.append({
+            "customer_key": bucket["customer_key"],
+            "customer_name": label,
+            "ambiguous": bucket["ambiguous"],
+            "accounting_outstanding": _money_float(bucket["amount"]),
+            "days_overdue": bucket["days_overdue"],
+            "invoice_count": bucket["invoice_count"],
+        })
+    items.sort(key=lambda item: (
+        -item["accounting_outstanding"],
+        -item["days_overdue"],
+        item["customer_name"],
+        item["customer_key"],
+    ))
+    if not items and not unidentified:
+        status = "empty"
+        detail = "Belum ada saldo piutang akuntansi yang sudah lewat jatuh tempo."
+    elif incomplete or unidentified:
+        status = "incomplete"
+        detail = "Ada saldo tanpa kunci pelanggan, kunci ambigu, atau peringatan integritas. Kunci ambigu tidak digabung."
+    else:
+        status = "complete"
+        detail = None
+    return {
+        "status": status,
+        "aging_reference_date": aging_reference_date,
+        "disclaimer": AGING_DISCLAIMER,
+        "current_state_only": True,
+        "historical_as_of": False,
+        "basis": "accounting_outstanding",
+        "items": items,
+        "total": len(items),
+        "unidentified_invoice_count": unidentified,
+        "detail": detail,
+    }
+
+
+async def get_accounts_receivable_overdue_customers(db, *, aging_reference_date: Optional[str] = None) -> dict:
+    """Current overdue AR by customer_key. Period filters are not applied."""
+    ref, rows = await _filtered_current(
+        db,
+        aging_reference_date=aging_reference_date,
+        q=None,
+        customer_key=None,
+        sales=None,
+        ar_account_id=None,
+        aging_bucket=None,
+    )
+    return aggregate_overdue_customers(rows, aging_reference_date=ref)
+
+
 async def get_accounts_receivable_statement(
     db,
     *,
