@@ -248,6 +248,7 @@ from services.division_tasks import (
 )
 from services.operational_order_view import (
     is_operational_view as _is_operational_view,
+    operational_order_pipeline as _operational_order_pipeline,
     operational_public_order as _operational_public_order,
 )
 from operator_analytics import (
@@ -1738,7 +1739,11 @@ async def get_order(order_id: str, view: Optional[str] = None, user=Depends(curr
     reject_sales_pwa_bypass(user)
     query = {"id": order_id}
     query.update(sales_owner_match(user))
-    order = await db.orders.find_one(query, {"_id": 0})
+    if _is_operational_view(view):
+        found = await db.orders.aggregate(_operational_order_pipeline(query)).to_list(1)
+        order = found[0] if found else None
+    else:
+        order = await db.orders.find_one(query, {"_id": 0})
     if not order:
         raise HTTPException(404, "PO tidak ditemukan")
     if user.get("role") != "admin":

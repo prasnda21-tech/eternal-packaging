@@ -14,6 +14,146 @@ def is_operational_view(view: Optional[str]) -> bool:
     return str(view or "").strip().lower() == "operational"
 
 
+def _nonempty_expr(value_expr: str) -> dict:
+    return {
+        "$gt": [
+            {"$strLenCP": {
+                "$convert": {"input": value_expr, "to": "string", "onError": "", "onNull": ""},
+            }},
+            0,
+        ]
+    }
+
+
+def _without_keys_expr(doc_expr: str, keys: tuple) -> dict:
+    return {
+        "$arrayToObject": {
+            "$filter": {
+                "input": {"$objectToArray": doc_expr},
+                "as": "kv",
+                "cond": {"$not": [{"$in": ["$$kv.k", list(keys)]}]},
+            }
+        }
+    }
+
+
+def _map_files_expr(field: str, drop_when: dict) -> dict:
+    """Drop data_url/url only when another open or evidence path remains."""
+    return {
+        "$map": {
+            "input": f"${field}",
+            "as": "file",
+            "in": {
+                "$cond": [
+                    {"$ne": [{"$type": "$$file"}, "object"]},
+                    "$$file",
+                    {
+                        "$cond": [
+                            drop_when,
+                            _without_keys_expr("$$file", ("data_url", "url")),
+                            "$$file",
+                        ]
+                    },
+                ]
+            },
+        }
+    }
+
+
+def _present_array_expr(field: str, mapped: dict) -> dict:
+    return {
+        "$cond": [
+            {"$isArray": f"${field}"},
+            mapped,
+            {"$ifNull": [f"${field}", "$$REMOVE"]},
+        ]
+    }
+
+
+def operational_order_pipeline(query: dict) -> list:
+    """One-order read for view=operational.
+
+    The aggregation result omits inline design/payment/sample/SJ bytes when
+    id or storage_path still proves the file, and omits progress photos.
+    Legacy data_url values with no other open path stay in the result.
+    Delivery proof bytes stay here because delivery history copies them.
+    """
+    id_or_storage = {
+        "$or": [
+            _nonempty_expr("$$file.storage_path"),
+            _nonempty_expr("$$file.id"),
+        ]
+    }
+    storage_only = _nonempty_expr("$$file.storage_path")
+    sj_drop = {
+        "$or": [
+            _nonempty_expr("$$file.storage_path"),
+            {
+                "$and": [
+                    _nonempty_expr("$$file.id"),
+                    {"$or": [
+                        _nonempty_expr("$$file.name"),
+                        _nonempty_expr("$$file.content_type"),
+                        _nonempty_expr("$$file.uploaded_at"),
+                    ]},
+                ]
+            },
+        ]
+    }
+    progress = {
+        "$map": {
+            "input": "$operator_splits",
+            "as": "split",
+            "in": {
+                "$cond": [
+                    {
+                        "$and": [
+                            {"$eq": [{"$type": "$$split"}, "object"]},
+                            {"$isArray": "$$split.progress_entries"},
+                        ]
+                    },
+                    {
+                        "$mergeObjects": [
+                            "$$split",
+                            {
+                                "progress_entries": {
+                                    "$map": {
+                                        "input": "$$split.progress_entries",
+                                        "as": "entry",
+                                        "in": {
+                                            "$cond": [
+                                                {"$eq": [{"$type": "$$entry"}, "object"]},
+                                                _without_keys_expr(
+                                                    "$$entry",
+                                                    ("data_url", "photo", "photos", "url"),
+                                                ),
+                                                "$$entry",
+                                            ]
+                                        },
+                                    }
+                                }
+                            },
+                        ]
+                    },
+                    "$$split",
+                ]
+            },
+        }
+    }
+    return [
+        {"$match": query},
+        {"$limit": 1},
+        {"$project": {"_id": 0}},
+        {"$set": {
+            "design_files": _present_array_expr("design_files", _map_files_expr("design_files", id_or_storage)),
+            "payment_files": _present_array_expr("payment_files", _map_files_expr("payment_files", id_or_storage)),
+            "sample_files": _present_array_expr("sample_files", _map_files_expr("sample_files", storage_only)),
+            "surat_jalan_files": _present_array_expr("surat_jalan_files", _map_files_expr("surat_jalan_files", sj_drop)),
+            "operator_splits": _present_array_expr("operator_splits", progress),
+        }},
+    ]
+
+
 def _has_open_substitute(entry: dict, field: str) -> bool:
     """True when a real open path remains after data_url is omitted.
 
