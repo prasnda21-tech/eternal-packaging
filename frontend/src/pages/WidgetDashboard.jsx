@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import WidgetBoard, { useNarrow } from "../components/widgetDashboard/WidgetBoard";
-import { TABS, widgetAllowed } from "../components/widgetDashboard/widgetDashboardCatalog";
+import { widgetAllowed } from "../components/widgetDashboard/widgetDashboardCatalog";
+import { resolveWidgetLocation } from "../components/widgetDashboard/widgetDashboardLocation";
 import { useAuth } from "../lib/auth";
 import { jakartaDate, periodRange, shouldApplyDashboardResponse } from "../lib/financialDashboard";
 import api from "../lib/api";
@@ -32,22 +33,21 @@ import {
   mapTrend,
 } from "../lib/widgetDashboardModel";
 
-function findTab(id) {
-  return TABS.find((tab) => tab.id === id) || TABS[0];
-}
-
 export default function WidgetDashboard() {
   const location = useLocation();
   const navigate = useNavigate();
   const narrow = useNarrow();
   const { user, hasPerm } = useAuth();
-  const params = new URLSearchParams(location.search);
-  const tab = findTab(params.get("tab"));
-  const panel = tab.panels.some((item) => item.id === params.get("panel"))
-    ? tab.panels.find((item) => item.id === params.get("panel"))
-    : tab.panels[0];
-  const requestedWidget = params.get("widget");
-  const widgetId = panel.widgets.includes(requestedWidget) ? requestedWidget : panel.widgets[0];
+  const resolved = resolveWidgetLocation({
+    search: location.search,
+    hash: location.hash,
+    user,
+    hasPerm,
+  });
+  const tab = resolved.tab;
+  const panel = resolved.panel;
+  const widgetId = resolved.widgetId;
+  const params = new URLSearchParams(location.search || "");
   const preset = ["today", "month", "year", "custom"].includes(params.get("preset")) ? params.get("preset") : "month";
   const today = jakartaDate();
   const ranged = preset === "custom"
@@ -62,12 +62,22 @@ export default function WidgetDashboard() {
   const requestRef = useRef(0);
 
   const go = (next) => {
-    const query = new URLSearchParams(location.search);
+    const query = new URLSearchParams(location.search || "");
+    const selection = Object.prototype.hasOwnProperty.call(next, "tab")
+      || Object.prototype.hasOwnProperty.call(next, "panel");
     Object.entries(next).forEach(([key, value]) => {
       if (value) query.set(key, value);
       else query.delete(key);
     });
-    navigate({ pathname: location.pathname, search: `?${query.toString()}` }, { replace: true });
+    if (!query.get("tab")) query.set("tab", tab.id);
+    const tabId = query.get("tab");
+    const hash = tabId === "penjualan" || tabId === "keuangan" ? `#${tabId}` : "";
+    const search = query.toString();
+    navigate({
+      pathname: "/dashboard/penjualan",
+      search: search ? `?${search}` : "",
+      hash,
+    }, { replace: !selection });
   };
 
   const allowed = (id) => widgetAllowed(id, user, hasPerm);

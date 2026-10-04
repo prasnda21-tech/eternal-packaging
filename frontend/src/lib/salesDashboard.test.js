@@ -33,6 +33,44 @@ describe("sales dashboard access", () => {
       "/dashboard/penjualan",
     ]);
   });
+
+  test("operations-only access opens the same penjualan menu", () => {
+    const items = dashboardMenuItems(has("po.view"), { role: "ops" });
+    expect(dashboardNavVisible(has("po.view"), { role: "ops" })).toEqual({
+      parent: true,
+      production: false,
+      sales: false,
+      finance: false,
+    });
+    expect(items.map((item) => item.label)).toEqual(["Dashboard Penjualan"]);
+    expect(items.map((item) => item.to)).toEqual(["/dashboard/penjualan"]);
+  });
+
+  test("finance-only access keeps one penjualan menu item", () => {
+    const items = dashboardMenuItems(has("dashboard.finance.view"), { role: "finance" });
+    expect(items.map((item) => item.to)).toEqual(["/dashboard/penjualan"]);
+    expect(items.map((item) => item.label)).toEqual(["Dashboard Penjualan"]);
+  });
+
+  test("admin without stored keys sees penjualan because O2 and O3 are allowed", () => {
+    const items = dashboardMenuItems(() => false, { role: "admin" });
+    expect(items.map((item) => ({ label: item.label, to: item.to }))).toEqual([
+      { label: "Dashboard Penjualan", to: "/dashboard/penjualan" },
+    ]);
+  });
+
+  test("a user with no widget permission does not see a dashboard menu", () => {
+    expect(dashboardNavVisible(() => false, { role: "sales" }).parent).toBe(false);
+    expect(dashboardMenuItems(() => false, { role: "sales" })).toEqual([]);
+    expect(dashboardMenuItems(has(NAV_KEYS.dashboardSales), { role: "sales" })).toEqual([]);
+  });
+
+  test("production stays its own menu and does not add a second penjualan entry", () => {
+    const items = dashboardMenuItems(has(NAV_KEYS.dashboard, "dashboard.sales.view", "po.view"), { role: "admin" });
+    expect(items.map((item) => item.to)).toEqual(["/dashboard", "/dashboard/penjualan"]);
+    expect(items.filter((item) => item.label === "Dashboard Penjualan")).toHaveLength(1);
+    expect(items.some((item) => item.to === "/dashboard/widget")).toBe(false);
+  });
 });
 
 describe("sales dashboard presentation", () => {

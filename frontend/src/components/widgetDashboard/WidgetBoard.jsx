@@ -597,7 +597,7 @@ export default function WidgetBoard({
         ) : null}
       </Overlay>
       <Overlay open={dialog === "info"} title="Catatan kualitas data" testid="widget-panel-info" onClose={() => setDialog(null)}>
-        <p className="wp-note">Angka mengikuti service. Gagal memuat tidak diganti angka contoh. Dashboard /dashboard dan /dashboard/penjualan tetap ada.</p>
+        <p className="wp-note">Angka mengikuti service. Gagal memuat tidak diganti angka contoh. Dashboard produksi tetap di /dashboard.</p>
         {panel.widgets.map((id) => (
           <p key={id} className="wp-note"><strong>{WIDGETS[id].code} {WIDGETS[id].title}.</strong> {WIDGETS[id].info}</p>
         ))}
