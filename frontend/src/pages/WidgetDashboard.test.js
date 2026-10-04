@@ -36,7 +36,7 @@ jest.mock("../lib/api", () => ({
 }));
 
 import api from "../lib/api";
-import { canOpenWidgetDashboard, widgetAllowed } from "../components/widgetDashboard/widgetDashboardCatalog";
+import { TABS, WIDGET_IDS, canOpenWidgetDashboard, widgetAllowed } from "../components/widgetDashboard/widgetDashboardCatalog";
 
 function Harness() {
   const [, setTick] = useState(0);
@@ -125,15 +125,23 @@ test("a stale period response does not replace the later one", async () => {
   view.unmount();
 });
 
-test("existing dashboard routes stay in App", () => {
+test("penjualan is the primary widget route and widget is a replace alias", () => {
   const app = fs.readFileSync(path.join(__dirname, "../App.js"), "utf8");
-  expect(app).toContain('path="/dashboard/penjualan"');
-  expect(app).toContain('path="/dashboard"');
-  expect(app).toContain("HoPDashboard");
-  expect(app).toContain("SalesFinanceDashboard");
-  expect(app).toContain('path="/dashboard/widget"');
+  const shell = fs.readFileSync(path.join(__dirname, "../components/AppShell.jsx"), "utf8");
+  const hook = fs.readFileSync(path.join(__dirname, "../hooks/useGlobalWorkspaceTabs.js"), "utf8");
+  expect(TABS).toHaveLength(3);
+  expect(TABS.flatMap((tab) => tab.panels)).toHaveLength(5);
+  expect(WIDGET_IDS).toHaveLength(20);
+  expect(app).toContain('path="/dashboard/penjualan" element={<WidgetDashboardGate><WidgetDashboard /></WidgetDashboardGate>}');
+  expect(app).toContain('path="/dashboard/widget" element={<WidgetDashboardAlias />}');
+  expect(app).toContain("<Navigate to={widgetDashboardAliasTarget(location)} replace />");
+  expect(app).toContain('path="/dashboard" element={<PermGate anyOf={[NAV_KEYS.dashboard]}><HoPDashboard /></PermGate>}');
+  expect(app).not.toContain("<SalesFinanceDashboard />");
   expect(app).toContain("WidgetDashboardGate");
   expect(app).toContain("canOpenWidgetDashboard");
+  expect(shell).toContain("dashboardMenuItems(hasPerm, user)");
+  expect(shell).not.toContain('to: "/dashboard/widget"');
+  expect(hook).toContain("user?.role");
 });
 
 test("delivery schedule access follows the endpoint contract", () => {
@@ -274,4 +282,106 @@ test("incomplete sales contribution is not shown as 100 percent", async () => {
   expect(settlement).toContain("7,7");
   expect(settlement).not.toContain("6,7");
   view.unmount();
+});
+
+function selectedSection() {
+  return document.querySelector('[aria-label="Bagian dashboard"] [role="tab"][aria-selected="true"]')?.textContent;
+}
+
+test("menu entry for operations skips the forbidden sales panel and does not fetch it", async () => {
+  global.__widgetRole = "ops";
+  global.__widgetPerms = ["po.view"];
+  global.__widgetLocation = { pathname: "/dashboard/penjualan", search: "", hash: "" };
+  api.dashboardToday.mockResolvedValue({ shipments_today: { total: 0, preview: [], date: "2026-10-05" } });
+  const view = render();
+  await act(async () => { await flush(); await flush(); });
+  expect(selectedSection()).toBe("Operasi");
+  expect(api.dashboardToday).toHaveBeenCalledTimes(1);
+  expect(api.salesDashboard).not.toHaveBeenCalled();
+  expect(api.deliverySchedule).not.toHaveBeenCalled();
+  expect(api.financialDashboard).not.toHaveBeenCalled();
+  expect(view.host.querySelector("[data-testid='widget-shipToday']").getAttribute("data-status")).not.toBe("forbidden");
+  expect(view.host.querySelector("[data-testid='forbidden-shipLate']").textContent).not.toMatch(/Rp\s*0/);
+  view.unmount();
+});
+
+test("an explicit forbidden tab does not fetch and does not fall back to a zero", async () => {
+  global.__widgetRole = "ops";
+  global.__widgetPerms = ["po.view"];
+  global.__widgetLocation = { pathname: "/dashboard/penjualan", search: "?tab=penjualan", hash: "" };
+  const view = render();
+  await act(async () => { await flush(); await flush(); });
+  expect(selectedSection()).toBe("Penjualan");
+  expect(api.salesDashboard).not.toHaveBeenCalled();
+  expect(api.dashboardToday).not.toHaveBeenCalled();
+  expect(view.host.querySelector("[data-testid='widget-omzet']").getAttribute("data-status")).toBe("forbidden");
+  expect(view.host.querySelector("[data-testid='widget-omzet']").textContent).not.toMatch(/Rp\s*0/);
+  view.unmount();
+});
+
+test("legacy keuangan hash opens finance and refresh keeps it", async () => {
+  global.__widgetRole = "finance";
+  global.__widgetPerms = ["dashboard.finance.view"];
+  global.__widgetLocation = { pathname: "/dashboard/penjualan", search: "", hash: "#keuangan" };
+  api.financialDashboard.mockResolvedValue({ cash_movement: { status: "empty" }, expense_composition: { status: "empty" } });
+  const view = render();
+  await act(async () => { await flush(); await flush(); });
+  expect(selectedSection()).toBe("Keuangan");
+  expect(api.financialDashboard).toHaveBeenCalled();
+  expect(api.salesDashboard).not.toHaveBeenCalled();
+  await act(async () => { global.__rerenderWidget(); await flush(); });
+  expect(selectedSection()).toBe("Keuangan");
+  view.unmount();
+});
+
+test("legacy penjualan hash for an admin opens O2 and O3 only", async () => {
+  global.__widgetRole = "admin";
+  global.__widgetPerms = [];
+  global.__widgetLocation = { pathname: "/dashboard/penjualan", search: "", hash: "#penjualan" };
+  api.deliverySchedule.mockResolvedValue({ rows: [] });
+  const view = render();
+  await act(async () => { await flush(); await flush(); });
+  expect(selectedSection()).toBe("Operasi");
+  expect(api.deliverySchedule).toHaveBeenCalledTimes(1);
+  expect(api.dashboardToday).not.toHaveBeenCalled();
+  expect(api.productionDashboard).not.toHaveBeenCalled();
+  expect(api.salesDashboard).not.toHaveBeenCalled();
+  expect(view.host.querySelector("[data-testid='widget-production']").getAttribute("data-status")).toBe("forbidden");
+  view.unmount();
+});
+
+test("tab changes push history and back returns to the legacy hash", async () => {
+  global.__widgetRole = "sales";
+  global.__widgetPerms = ["dashboard.sales.view", "dashboard.finance.view"];
+  global.__widgetLocation = { pathname: "/dashboard/penjualan", search: "", hash: "#keuangan" };
+  api.financialDashboard.mockResolvedValue({ cash_movement: { status: "empty" }, expense_composition: { status: "empty" } });
+  api.salesDashboard.mockResolvedValue({
+    omzet: { status: "empty" },
+    settlement: { status: "empty" },
+    trend: { status: "empty", points: [] },
+    sales: { status: "empty", groups: [] },
+    products: { status: "empty", items: [], all_items: [] },
+    receivables: { status: "empty", aging: [] },
+  });
+  const view = render();
+  await act(async () => { await flush(); await flush(); });
+  expect(selectedSection()).toBe("Keuangan");
+  const penjualan = view.host.querySelector('[aria-label="Bagian dashboard"] [role="tab"]');
+  await act(async () => { penjualan.click(); });
+  expect(global.__widgetNavigate).toHaveBeenCalledWith({
+    pathname: "/dashboard/penjualan",
+    search: "?tab=penjualan&panel=ringkasan&widget=omzet",
+    hash: "#penjualan",
+  }, { replace: false });
+  global.__widgetLocation = { pathname: "/dashboard/penjualan", search: "", hash: "#keuangan" };
+  await act(async () => { global.__rerenderWidget(); await flush(); });
+  expect(selectedSection()).toBe("Keuangan");
+  view.unmount();
+});
+
+test("a user without widget permission is not treated as able to open the dashboard", () => {
+  expect(canOpenWidgetDashboard({ role: "sales" }, () => false)).toBe(false);
+  expect(canOpenWidgetDashboard({ role: "finance" }, () => false)).toBe(false);
+  expect(canOpenWidgetDashboard({ role: "ops" }, () => false)).toBe(false);
+  expect(canOpenWidgetDashboard({ role: "admin" }, () => false)).toBe(true);
 });

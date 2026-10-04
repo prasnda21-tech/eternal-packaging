@@ -358,8 +358,8 @@ export default function AppShell() {
   const settingsItems = settingsMenuItems(hasPerm);
   void productionNav.deliveryToday;
   const showDashboard = hasPerm(NAV_KEYS.dashboard);
-  const dashboardNav = dashboardNavVisible(hasPerm);
-  const dashboardItems = dashboardMenuItems(hasPerm);
+  const dashboardNav = dashboardNavVisible(hasPerm, user);
+  const dashboardItems = dashboardMenuItems(hasPerm, user);
   const showSpk = canSeeSpkNav(hasPerm);
   const showChat = hasPerm(NAV_KEYS.chat) || hasPerm("chat.use");
   const showRouteOptimizer = canAccessRoutePage(hasPerm);
@@ -389,7 +389,7 @@ export default function AppShell() {
           <BrandMark compact onDark />
         </Link>
         <nav className="app-sidebar-nav" aria-label="Menu utama">
-          {(dashboardNav.parent && (showDashboard || dashboardNav.sales || dashboardNav.finance)) && (
+          {(showDashboard || dashboardNav.parent) && (
             <div className="nav-group" data-testid="top-nav-dashboard-group">
               <RailButton
                 ref={(el) => { railRefs.current.dashboard = el; }}

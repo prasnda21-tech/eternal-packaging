@@ -20,6 +20,7 @@ import { SALES_WORKSPACE_TABS } from "./salesWorkspace";
 import { createWorkspaceTabApi } from "./workspaceTabs";
 import { hydratePoDetailStoredTab, poDetailWorkspaceTab } from "./poWorkspaceTab";
 import { canSeeSpkNav } from "./spk";
+import { canOpenWidgetDashboard } from "../components/widgetDashboard/widgetDashboardCatalog";
 
 export const GLOBAL_WORKSPACE_STORAGE_PREFIX = "ep.workspaceTabs.";
 
@@ -51,7 +52,7 @@ function showRouteOptimizer(hasPerm) {
 }
 
 /** Active sidebar leaf destinations the current user may open as tabs. */
-export function visibleGlobalWorkspaceCatalog(hasPerm) {
+export function visibleGlobalWorkspaceCatalog(hasPerm, user) {
   const salesIdByPath = Object.fromEntries(SALES_WORKSPACE_TABS.map((t) => [t.path, t.id]));
   const cashBankIdByPath = Object.fromEntries(CASH_BANK_WORKSPACE_TABS.map((t) => [t.path, t.id]));
   const tabs = [];
@@ -59,12 +60,15 @@ export function visibleGlobalWorkspaceCatalog(hasPerm) {
   if (canSeeNav(hasPerm, NAV_KEYS.dashboard)) {
     tabs.push({ id: "dashboard", path: "/dashboard", label: "Dashboard Produksi" });
   }
-  if (
-    canSeeNav(hasPerm, NAV_KEYS.dashboardSales)
-    || canSeeNav(hasPerm, NAV_KEYS.dashboardFinance)
-    || (typeof hasPerm === "function" && (hasPerm("dashboard.sales.view") || hasPerm("dashboard.finance.view")))
-  ) {
-    tabs.push({ id: "dashboard-penjualan", path: "/dashboard/penjualan", label: "Dashboard Penjualan" });
+  if (canOpenWidgetDashboard(user, hasPerm)) {
+    tabs.push({
+      id: "dashboard-penjualan",
+      path: "/dashboard/penjualan",
+      label: "Dashboard Penjualan",
+      matches(path) {
+        return path === "/dashboard/penjualan" || path === "/dashboard/widget" || path === "/dashboard/keuangan";
+      },
+    });
   }
 
   if (canSeeNav(hasPerm, NAV_KEYS.chat) || (typeof hasPerm === "function" && hasPerm("chat.use"))) {
@@ -121,9 +125,9 @@ export function visibleGlobalWorkspaceCatalog(hasPerm) {
 /** Full leaf catalog (permission-unfiltered) for path resolution / tests. */
 export const GLOBAL_WORKSPACE_TABS = visibleGlobalWorkspaceCatalog(() => true);
 
-export function createGlobalWorkspaceApi(hasPerm) {
+export function createGlobalWorkspaceApi(hasPerm, user) {
   return createWorkspaceTabApi({
-    catalog: visibleGlobalWorkspaceCatalog(hasPerm),
+    catalog: visibleGlobalWorkspaceCatalog(hasPerm, user),
     storagePrefix: GLOBAL_WORKSPACE_STORAGE_PREFIX,
     dynamicFromPath: poDetailWorkspaceTab,
     resolveStoredTab: hydratePoDetailStoredTab,
@@ -146,7 +150,7 @@ export function globalWorkspaceStorageKey(user) {
 }
 
 export function loadGlobalWorkspaceTabs(user, hasPerm = () => true) {
-  return createGlobalWorkspaceApi(hasPerm).load(user);
+  return createGlobalWorkspaceApi(hasPerm, user).load(user);
 }
 
 export function saveGlobalWorkspaceTabs(user, tabs) {
@@ -157,10 +161,10 @@ export function clearGlobalWorkspaceTabs(user) {
   return fullApi.clear(user);
 }
 
-export function openOrActivateGlobalTab(tabs, pathname, hasPerm = () => true, meta) {
-  return createGlobalWorkspaceApi(hasPerm).openOrActivate(tabs, pathname, meta);
+export function openOrActivateGlobalTab(tabs, pathname, hasPerm = () => true, meta, user) {
+  return createGlobalWorkspaceApi(hasPerm, user).openOrActivate(tabs, pathname, meta);
 }
 
-export function closeGlobalTab(tabs, closeId, activePath, hasPerm = () => true) {
-  return createGlobalWorkspaceApi(hasPerm).closeTab(tabs, closeId, activePath);
+export function closeGlobalTab(tabs, closeId, activePath, hasPerm = () => true, user) {
+  return createGlobalWorkspaceApi(hasPerm, user).closeTab(tabs, closeId, activePath);
 }

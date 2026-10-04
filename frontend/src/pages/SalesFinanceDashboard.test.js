@@ -93,14 +93,15 @@ function financePayload() {
 }
 
 describe("merged dashboard route", () => {
-  test("keeps the finance bookmark as a redirect and opens the combined page for either permission", () => {
+  test("keeps the finance bookmark as a replace redirect into the widget dashboard", () => {
     expect(appSrc).toContain('path="/dashboard/keuangan"');
-    expect(appSrc).toContain('to="/dashboard/penjualan#keuangan"');
-    expect(appSrc).toContain('anyOf={["dashboard.finance.view", NAV_KEYS.dashboardFinance]}><Navigate to="/dashboard/penjualan#keuangan"');
-    expect(appSrc).toContain('path="/dashboard/penjualan"');
-    expect(appSrc).toContain('"dashboard.sales.view", NAV_KEYS.dashboardSales, "dashboard.finance.view", NAV_KEYS.dashboardFinance');
+    expect(appSrc).toContain("<WidgetDashboardFinanceAlias />");
+    expect(appSrc).toContain('path="/dashboard/penjualan" element={<WidgetDashboardGate><WidgetDashboard /></WidgetDashboardGate>}');
+    expect(appSrc).toContain('path="/dashboard" element={<PermGate anyOf={[NAV_KEYS.dashboard]}><HoPDashboard /></PermGate>}');
+    expect(appSrc).not.toContain("<SalesFinanceDashboard />");
     expect(appSrc).not.toContain("<FinancialDashboard />");
     expect(appSrc).not.toContain("<SalesDashboard />");
+    expect(appSrc).not.toContain('anyOf={["dashboard.sales.view", NAV_KEYS.dashboardSales, "dashboard.finance.view", NAV_KEYS.dashboardFinance]}');
   });
 });
 

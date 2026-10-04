@@ -19,6 +19,26 @@ describe("global workspace tabs", () => {
     sessionStorage.clear();
   });
 
+  test("the widget alias reuses the penjualan tab", () => {
+    const opened = openOrActivateGlobalTab([], "/dashboard/penjualan");
+    const alias = openOrActivateGlobalTab(opened.tabs, "/dashboard/widget");
+    const finance = openOrActivateGlobalTab(alias.tabs, "/dashboard/keuangan");
+    expect(finance.tabs.map((tab) => tab.id)).toEqual(["dashboard-penjualan"]);
+    expect(globalTabByPath("/dashboard/widget").id).toBe("dashboard-penjualan");
+    expect(globalTabByPath("/dashboard/penjualan").id).toBe("dashboard-penjualan");
+    expect(globalTabByPath("/dashboard").id).toBe("dashboard");
+    expect(GLOBAL_WORKSPACE_TABS.filter((tab) => tab.id === "dashboard-penjualan")).toHaveLength(1);
+    const ops = visibleGlobalWorkspaceCatalog((key) => key === "po.view", { role: "ops" });
+    expect(ops.filter((tab) => tab.id === "dashboard-penjualan")).toHaveLength(1);
+    expect(ops.find((tab) => tab.id === "dashboard")).toBeUndefined();
+    const admin = visibleGlobalWorkspaceCatalog(() => false, { role: "admin" });
+    expect(admin.filter((tab) => tab.id === "dashboard-penjualan")).toHaveLength(1);
+    const none = visibleGlobalWorkspaceCatalog(() => false, { role: "sales" });
+    expect(none.find((tab) => tab.id === "dashboard-penjualan")).toBeUndefined();
+    const production = visibleGlobalWorkspaceCatalog((key) => key === NAV_KEYS.dashboard, { role: "sales" });
+    expect(production.map((tab) => tab.id)).toEqual(["dashboard"]);
+  });
+
   test("sidebar leaf opens a tab", () => {
     const r = openOrActivateGlobalTab([], "/dashboard");
     expect(r.activated.id).toBe("dashboard");

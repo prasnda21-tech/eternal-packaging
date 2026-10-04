@@ -7,6 +7,7 @@ import MobileOperationalLayout from "./mobile/MobileOperationalLayout";
 import MobileTasksPage from "./mobile/MobileTasksPage";
 import Login from "./pages/Login";
 import { canOpenWidgetDashboard } from "./components/widgetDashboard/widgetDashboardCatalog";
+import { widgetDashboardAliasTarget, widgetDashboardFinanceTarget } from "./components/widgetDashboard/widgetDashboardLocation";
 import { NAV_KEYS, cashBankNavVisible, employeeAdminNavVisible, hrPayrollNavVisible, inventoryNavVisible, ledgerNavVisible, purchasingNavVisible, reportsNavVisible } from "./lib/navAccess";
 import { inventoryValueRouteAllowed } from "./lib/inventoryValueLink";
 import { SPK_ACCESS_KEYS } from "./lib/spk";
@@ -52,7 +53,6 @@ const OptimasiRuteEditor = lazy(() => import("./pages/OptimasiRuteEditor"));
 const Dashboard = lazy(() => import("./pages/Dashboard"));
 const PODetail = lazy(() => import("./pages/PODetail"));
 const HoPDashboard = lazy(() => import("./pages/HoPDashboard"));
-const SalesFinanceDashboard = lazy(() => import("./pages/SalesFinanceDashboard"));
 const WidgetDashboard = lazy(() => import("./pages/WidgetDashboard"));
 const ProductionSchedule = lazy(() => import("./pages/ProductionSchedule"));
 const SuratJalan = lazy(() => import("./pages/SuratJalan"));
@@ -151,6 +151,24 @@ function WidgetDashboardGate({ children }) {
   const { user, hasPerm } = useAuth();
   if (!canOpenWidgetDashboard(user, hasPerm)) return <Navigate to="/" replace />;
   return children;
+}
+
+function WidgetDashboardAlias() {
+  const location = useLocation();
+  return (
+    <WidgetDashboardGate>
+      <Navigate to={widgetDashboardAliasTarget(location)} replace />
+    </WidgetDashboardGate>
+  );
+}
+
+function WidgetDashboardFinanceAlias() {
+  const location = useLocation();
+  return (
+    <WidgetDashboardGate>
+      <Navigate to={widgetDashboardFinanceTarget(location)} replace />
+    </WidgetDashboardGate>
+  );
 }
 
 function NilaiPersediaanGate({ children }) {
@@ -295,9 +313,9 @@ export default function App() {
             <Route path="/spk" element={<PermGate anyOf={SPK_ACCESS_KEYS}><SpkDashboard /></PermGate>} />
             <Route path="/chat" element={<PermGate anyOf={[NAV_KEYS.chat, "chat.use"]}><ChatPage /></PermGate>} />
             <Route path="/chat/:roomId" element={<PermGate anyOf={[NAV_KEYS.chat, "chat.use"]}><ChatPage /></PermGate>} />
-            <Route path="/dashboard/keuangan" element={<PermGate anyOf={["dashboard.finance.view", NAV_KEYS.dashboardFinance]}><Navigate to="/dashboard/penjualan#keuangan" replace /></PermGate>} />
-            <Route path="/dashboard/penjualan" element={<PermGate anyOf={["dashboard.sales.view", NAV_KEYS.dashboardSales, "dashboard.finance.view", NAV_KEYS.dashboardFinance]}><SalesFinanceDashboard /></PermGate>} />
-            <Route path="/dashboard/widget" element={<WidgetDashboardGate><WidgetDashboard /></WidgetDashboardGate>} />
+            <Route path="/dashboard/keuangan" element={<WidgetDashboardFinanceAlias />} />
+            <Route path="/dashboard/penjualan" element={<WidgetDashboardGate><WidgetDashboard /></WidgetDashboardGate>} />
+            <Route path="/dashboard/widget" element={<WidgetDashboardAlias />} />
             <Route path="/dashboard" element={<PermGate anyOf={[NAV_KEYS.dashboard]}><HoPDashboard /></PermGate>} />
             <Route path="/tasks" element={<DivisionTaskIndex />} />
             <Route path="/tasks/designer" element={<PermGate anyOf={[NAV_KEYS.tasksDesigner, "design.upload"]}><DivisionTaskPage /></PermGate>} />

@@ -71,8 +71,8 @@ describe("sidebar flyout interaction", () => {
     expect(shell).toMatch(/salesNavVisible\(hasPerm\)/);
     expect(shell).toMatch(/hasPerm\(NAV_KEYS\.dashboard\)/);
     expect(shell).toMatch(/sidebar-flyout-dashboard/);
-    expect(shell).toMatch(/dashboardNavVisible\(hasPerm\)/);
-    expect(shell).toMatch(/dashboardMenuItems\(hasPerm\)/);
+    expect(shell).toMatch(/dashboardNavVisible\(hasPerm, user\)/);
+    expect(shell).toMatch(/dashboardMenuItems\(hasPerm, user\)/);
     expect(nav).toMatch(/Dashboard Produksi/);
     expect(nav).toMatch(/Dashboard Keuangan/);
     expect(shell).toMatch(/TASK_NAV_ORDER\.map/);
