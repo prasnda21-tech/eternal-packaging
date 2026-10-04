@@ -650,6 +650,8 @@ describe("PWA Pengiriman gallery picker", () => {
     });
     const btn = container.querySelector('[data-testid="mobile-confirm-delivered"]');
     await act(async () => { btn.click(); });
+    expect(btn.disabled).toBe(true);
+    expect(btn.textContent).toContain("Sedang menyimpan…");
     await act(async () => { btn.click(); });
     expect(api.confirmDelivered).toHaveBeenCalledTimes(1);
     await act(async () => {
@@ -1211,7 +1213,11 @@ describe("PWA Pengiriman gallery picker", () => {
     });
     await clickConfirm();
     expect(onDeliveryConfirmed).not.toHaveBeenCalled();
-    expect(container.querySelector('[data-testid="mobile-delivery-error"]').textContent).toBe("Konfirmasi tidak tersimpan.");
+    expect(container.querySelector('[data-testid="mobile-delivery-error"]').textContent).toBe(
+      "Hasil konfirmasi belum diketahui. Periksa status sebelum mencoba lagi.",
+    );
+    expect(container.querySelector('[data-testid="mobile-recipient-name"]').value).toBe("Budi Penerima");
+    expect(api.confirmDelivered).toHaveBeenCalledTimes(1);
   });
 
   test("timeout whose save cannot be verified stays unknown", async () => {
@@ -1233,6 +1239,60 @@ describe("PWA Pengiriman gallery picker", () => {
     await clickConfirm();
     expect(onDeliveryConfirmed).not.toHaveBeenCalled();
     expect(container.querySelector('[data-testid="mobile-delivery-error"]').textContent).toMatch(/belum diketahui/);
+    expect(container.querySelector('[data-testid="mobile-delivery-error"]').textContent).toBe(
+      "Hasil konfirmasi belum diketahui. Periksa status sebelum mencoba lagi.",
+    );
+  });
+
+  test("a network failure verifies the saved shipment without posting again", async () => {
+    const ready = namedReady("order-net-ok");
+    const saved = markShipmentDelivered(ready);
+    const network = new Error("Network Error");
+    network.code = "ERR_NETWORK";
+    api.confirmDelivered.mockRejectedValue(network);
+    api.getOrder.mockResolvedValue({ order: saved });
+    const onDeliveryConfirmed = jest.fn();
+    act(() => {
+      root.render(
+        <MobileDeliveryWorkspace
+          order={ready}
+          canEdit
+          userId="driver-a"
+          onUpdated={() => {}}
+          onDeliveryConfirmed={onDeliveryConfirmed}
+        />,
+      );
+    });
+    await clickConfirm();
+    expect(api.confirmDelivered).toHaveBeenCalledTimes(1);
+    expect(api.getOrder).toHaveBeenCalledWith("order-net-ok", { view: "operational" });
+    expect(onDeliveryConfirmed).toHaveBeenCalledTimes(1);
+    expect(onDeliveryConfirmed).toHaveBeenCalledWith(saved, "s1");
+  });
+
+  test("an uncertain confirm keeps its action id and does not post again until the driver retries", async () => {
+    const ready = namedReady("order-net-miss");
+    const network = new Error("Network Error");
+    network.code = "ERR_NETWORK";
+    api.confirmDelivered.mockRejectedValue(network);
+    api.getOrder.mockResolvedValue({ order: ready });
+    act(() => {
+      root.render(<MobileDeliveryWorkspace order={ready} canEdit userId="driver-a" onUpdated={() => {}} />);
+    });
+    await clickConfirm();
+    const firstId = api.confirmDelivered.mock.calls[0][1].action_id;
+    expect(api.confirmDelivered).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[data-testid="mobile-delivery-error"]').textContent).toBe(
+      "Hasil konfirmasi belum diketahui. Periksa status sebelum mencoba lagi.",
+    );
+    expect(container.querySelector('[data-testid="mobile-recipient-name"]').value).toBe("Budi Penerima");
+    api.getOrder.mockClear();
+    api.confirmDelivered.mockClear();
+    api.confirmDelivered.mockRejectedValue(network);
+    await clickConfirm();
+    expect(api.getOrder.mock.invocationCallOrder[0]).toBeLessThan(api.confirmDelivered.mock.invocationCallOrder[0]);
+    expect(api.confirmDelivered).toHaveBeenCalledTimes(1);
+    expect(api.confirmDelivered.mock.calls[0][1].action_id).toBe(firstId);
   });
 
   test("retry after a failed confirm reuses the same action id", async () => {
@@ -1423,7 +1483,13 @@ describe("PWA Pengiriman gallery picker", () => {
         await Promise.resolve();
       });
       expect(api.getOrder).toHaveBeenCalledWith("order-clock", { view: "operational" });
+      expect(api.confirmDelivered).toHaveBeenCalledTimes(1);
       expect(onDeliveryConfirmed).not.toHaveBeenCalled();
+      expect(container.querySelector('[data-testid="mobile-delivery-error"]').textContent).toBe(
+        "Hasil konfirmasi belum diketahui. Periksa status sebelum mencoba lagi.",
+      );
+      expect(container.textContent).not.toContain("Konfirmasi tidak tersimpan.");
+      expect(container.querySelector('[data-testid="mobile-recipient-name"]').value).toBe("Budi Penerima");
     } finally {
       jest.useRealTimers();
     }

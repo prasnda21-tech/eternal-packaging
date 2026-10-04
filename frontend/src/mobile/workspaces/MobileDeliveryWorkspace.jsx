@@ -61,6 +61,12 @@ import MobileSignatureModal from "../components/MobileSignatureModal";
 import MobileDeliverySjModal, { formatKirimDate } from "../components/MobileDeliverySjModal";
 import MobileTaskModal from "../components/MobileTaskModal";
 
+const UNKNOWN_CONFIRM_MESSAGE = "Hasil konfirmasi belum diketahui. Periksa status sebelum mencoba lagi.";
+
+function deliveryConfirmHasServerResponse(error) {
+  return Boolean(error && error.response);
+}
+
 function newClientId() {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
     return crypto.randomUUID();
@@ -137,6 +143,7 @@ export default function MobileDeliveryWorkspace({
   const [preview, setPreview] = useState(null);
   const [localSlots, setLocalSlots] = useState([]);
   const [busy, setBusy] = useState(false);
+  const [confirming, setConfirming] = useState(false);
   const submittingRef = useRef(false);
   const [err, setErr] = useState("");
 
@@ -151,6 +158,7 @@ export default function MobileDeliveryWorkspace({
     setPicker(null);
     setErr("");
     submittingRef.current = false;
+    setConfirming(false);
     setBusy(false);
     setLocalSig({ recipient: null, driver: null });
     const nextName = order?.delivery_recipient_signature?.recipient_name || "";
@@ -361,6 +369,7 @@ export default function MobileDeliveryWorkspace({
       return;
     }
     submittingRef.current = true;
+    setConfirming(true);
     setBusy(true);
     setErr("");
     const shipmentKey = selectedShipmentKey;
@@ -431,7 +440,7 @@ export default function MobileDeliveryWorkspace({
         try {
           verifiedOrder = await verifySavedShipment();
         } catch {
-          setErr("Hasil konfirmasi belum diketahui. Periksa jadwal sebelum mencoba lagi.");
+          setErr(UNKNOWN_CONFIRM_MESSAGE);
           return;
         }
         if (publishIfDelivered(verifiedOrder)) return;
@@ -450,20 +459,23 @@ export default function MobileDeliveryWorkspace({
         setErr("Konfirmasi tidak tersimpan.");
       }
     } catch (e) {
-      const unknown = e?.code === "ETIMEDOUT" || e?.code === "ECONNABORTED" || (e?.message === "timeout" && !e?.response);
-      if (!unknown) {
+      if (deliveryConfirmHasServerResponse(e)) {
         setErr(formatApiError(e, proofUploadUserError(e)));
       } else {
         try {
           const next = await verifySavedShipment();
-          if (!publishIfDelivered(next)) setErr("Konfirmasi tidak tersimpan.");
+          if (!publishIfDelivered(next)) {
+            if (pending?.key) markConfirmActionUnknown(pending.key);
+            setErr(UNKNOWN_CONFIRM_MESSAGE);
+          }
         } catch {
           if (pending?.key) markConfirmActionUnknown(pending.key);
-          setErr("Hasil konfirmasi belum diketahui. Periksa jadwal sebelum mencoba lagi.");
+          setErr(UNKNOWN_CONFIRM_MESSAGE);
         }
       }
     } finally {
       submittingRef.current = false;
+      setConfirming(false);
       setBusy(false);
     }
   };
@@ -733,7 +745,7 @@ export default function MobileDeliveryWorkspace({
         data-testid="mobile-confirm-delivered"
       >
         <CheckCircle2 size={22} aria-hidden="true" />
-        <span className="mop-delivery-action-title">Konfirmasi Terkirim</span>
+        <span className="mop-delivery-action-title">{confirming ? "Sedang menyimpan…" : "Konfirmasi Terkirim"}</span>
         <span className="mop-delivery-action-sub">Selesaikan pengiriman</span>
       </button>
 
