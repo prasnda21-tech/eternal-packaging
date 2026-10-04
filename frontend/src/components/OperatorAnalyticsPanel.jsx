@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { BarChart3, Download, RefreshCw, Search } from "lucide-react";
 import api from "../lib/api";
@@ -242,34 +242,51 @@ export default function OperatorAnalyticsPanel() {
     return params;
   };
 
-  const load = async () => {
-    if (period === "custom" && (!dateFrom || !dateTo)) return;
+  const requestRef = useRef(0);
+  const load = useCallback(async () => {
+    if (period === "custom" && (!dateFrom || !dateTo)) {
+      setBusy(false);
+      return;
+    }
+    const requestId = requestRef.current + 1;
+    requestRef.current = requestId;
     setBusy(true);
     setErr("");
     try {
-      const params = periodParams();
+      const params = { period };
+      if (period === "custom") {
+        if (dateFrom) params.from = dateFrom;
+        if (dateTo) params.to = dateTo;
+      }
+      if (customer && customer !== "all") params.customer = customer;
+      if (item && item !== "all") params.item = item;
+      if (po && po !== "all") params.po = po;
+      let next;
       if (tab === "operator") {
         if (userId && userId !== "all") params.operator_id = userId;
-        setData(await api.analyticsOperatorKpis(params));
+        next = await api.analyticsOperatorKpis(params);
       } else if (tab === "helper") {
         if (userId && userId !== "all") params.user_id = userId;
-        setData(await api.analyticsPreparation(params));
+        next = await api.analyticsPreparation(params);
       } else if (tab === "screener") {
         if (userId && userId !== "all") params.user_id = userId;
-        setData(await api.analyticsScreener(params));
+        next = await api.analyticsScreener(params);
       } else if (tab === "driver") {
         if (userId && userId !== "all") params.user_id = userId;
-        setData(await api.analyticsDriver(params));
+        next = await api.analyticsDriver(params);
       } else {
         if (userId && userId !== "all") params.user_id = userId;
-        setData(await api.analyticsDesigns(params));
+        next = await api.analyticsDesigns(params);
       }
+      if (requestRef.current !== requestId) return;
+      setData(next);
     } catch (e) {
+      if (requestRef.current !== requestId) return;
       setErr(e.response?.data?.detail || "Gagal memuat Analitik Output");
     } finally {
-      setBusy(false);
+      if (requestRef.current === requestId) setBusy(false);
     }
-  };
+  }, [customer, dateFrom, dateTo, item, period, po, tab, userId]);
 
   useEffect(() => {
     setUserId("all");
@@ -280,7 +297,10 @@ export default function OperatorAnalyticsPanel() {
 
   useEffect(() => { setPage(1); }, [userId, customer, item, po, period, dateFrom, dateTo, q]);
 
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [tab, period, dateFrom, dateTo, userId, customer, item, po]);
+  useEffect(() => {
+    load();
+    return () => { requestRef.current += 1; };
+  }, [load]);
 
   const resolvedFrom = data?.period?.from || dateFrom;
   const resolvedTo = data?.period?.to || dateTo;

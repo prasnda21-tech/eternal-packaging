@@ -15,6 +15,8 @@ export default function PurchasePaymentAjukanModal({
   onSubmitted,
 }) {
   const outstanding = Number(invoice?.outstanding_amount || 0);
+  const invoiceId = invoice?.id;
+  const invoicePresent = Boolean(invoice);
   const [amount, setAmount] = useState("");
   const [q, setQ] = useState("");
   const [users, setUsers] = useState([]);
@@ -26,7 +28,7 @@ export default function PurchasePaymentAjukanModal({
   const idempotencyKeyRef = useRef(null);
 
   useEffect(() => {
-    if (!open || !invoice) return;
+    if (!open || !invoicePresent) return;
     setAmount(String(outstanding || ""));
     setQ("");
     setSelected(null);
@@ -34,7 +36,7 @@ export default function PurchasePaymentAjukanModal({
     setError("");
     setUsers([]);
     idempotencyKeyRef.current = newIdempotencyKey();
-  }, [open, invoice?.id, outstanding]);
+  }, [open, invoicePresent, invoiceId, outstanding]);
 
   useEffect(() => {
     if (!open) return undefined;

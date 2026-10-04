@@ -44,7 +44,7 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
   const hydratedScheduleKeyRef = useRef("");
 
   const requiresPrinting = order?.requires_printing !== false;
-  const lineItems = order?.line_items || [];
+  const lineItems = useMemo(() => order?.line_items || [], [order?.line_items]);
 
   // Cetak lines (with original idx preserved).
   const printLines = useMemo(
@@ -65,7 +65,7 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
 
   const serverScheduleDraft = useMemo(
     () => scheduleDraftFromOrder(order),
-    [order?.operator_splits, order?.line_items]
+    [order]
   );
   const serverScheduleKey = useMemo(
     () => JSON.stringify(serverScheduleDraft),
