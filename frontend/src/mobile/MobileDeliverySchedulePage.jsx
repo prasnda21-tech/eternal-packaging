@@ -352,6 +352,7 @@ export default function MobileDeliverySchedulePage() {
   const [productionState, setProductionState] = useState("loading");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const [deliverySavedNotice, setDeliverySavedNotice] = useState("");
   const scheduleLoadRef = useRef(0);
   const scheduleBusyRef = useRef(0);
   const summaryLoadRef = useRef(0);
@@ -527,6 +528,7 @@ export default function MobileDeliverySchedulePage() {
   const noteDeliveryConfirmed = useCallback((nextOrder, shipmentId) => {
     if (!nextOrder) return;
     setRows((prev) => patchScheduleRowsForDeliveredShipment(prev, nextOrder, shipmentId));
+    setDeliverySavedNotice("Bukti kirim berhasil disimpan");
     setBusy(false);
     refreshScheduleRows();
   }, [refreshScheduleRows]);
@@ -800,6 +802,11 @@ export default function MobileDeliverySchedulePage() {
 
             {showTable && (
             <>
+            {deliverySavedNotice ? (
+              <p className="mop-muted" role="status" data-testid="mds-delivery-saved">
+                {deliverySavedNotice}
+              </p>
+            ) : null}
             {activeRoles.length > 0 && (
               <MobileWorkspaceSelect
                 workspaces={activeRoles}

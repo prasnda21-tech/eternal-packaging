@@ -2008,6 +2008,8 @@ describe("MobileDeliverySchedulePage", () => {
     const elapsedMs = performance.now() - started;
     expect(markKind(kirimOf("sh-1"))).toBe("done");
     expect(markKind(kirimOf("sh-2"))).toBe("idle");
+    expect(container.querySelector('[data-testid="mobile-confirm-delivered"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mds-delivery-saved"]').textContent).toBe("Bukti kirim berhasil disimpan");
     expect(container.querySelector('[data-testid="mds-cup-PO-MULTI"]').className).toMatch(/is-unavailable/);
     expect(container.querySelector('[data-testid="mds-screen-PO-MULTI"]').className).toMatch(/is-unavailable/);
     expect(container.querySelector('[data-testid="mds-prod-PO-MULTI"]').className).toMatch(/is-unavailable/);
@@ -2092,6 +2094,53 @@ describe("MobileDeliverySchedulePage", () => {
     expect(markKind(kirimOf("sh-1"))).toBe("done");
     expect(markKind(kirimOf("sh-2"))).toBe("idle");
     expect(container.querySelector('[data-testid="mds-table"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mobile-confirm-delivered"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mds-delivery-saved"]').textContent).toBe("Bukti kirim berhasil disimpan");
+  });
+
+  test("reopening the confirmed SJ shows the reread proof signatures and status", async () => {
+    mockHasPerm.mockImplementation((perm) => perm === "schedule.view" || perm === "delivery.update");
+    mockDsRouter.search = "ws=delivery";
+    mockProductionDashboard.mockImplementation(() => new Promise(() => {}));
+    mockDeliverySchedule.mockResolvedValue({ rows: [multiSjRow("sh-1", "SJ-1", 0), multiSjRow("sh-2", "SJ-2", 0)] });
+    const saved = {
+      ...confirmableMultiOrder(),
+      delivery_status: "Sebagian Terkirim",
+      shipments: confirmableMultiOrder().shipments.map((sh) => (
+        sh.id === "sh-1" ? { ...sh, delivery_status: "Terkirim", delivered_at: "t" } : sh
+      )),
+    };
+    mockGetOrder
+      .mockResolvedValueOnce({ order: confirmableMultiOrder() })
+      .mockResolvedValueOnce({ order: saved });
+    mockConfirmDelivered.mockResolvedValue({ order: saved });
+    await act(async () => { root.render(<MobileDeliverySchedulePage />); });
+    await flush();
+    await act(async () => {
+      container.querySelector('[data-testid="mds-row-PO-MULTI-sh-1"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+    await act(async () => {
+      container.querySelector('[data-testid="mobile-confirm-delivered"]').click();
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="mds-delivery-saved"]').textContent).toBe("Bukti kirim berhasil disimpan");
+    expect(container.querySelector('[data-testid="mobile-ws-delivery"]')).toBeFalsy();
+    await act(async () => {
+      container.querySelector('[data-testid="mds-row-PO-MULTI-sh-1"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+    expect(mockGetOrder).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('[data-testid="mobile-pengiriman-selected-status"]').textContent).toBe("Terkirim");
+    expect(container.querySelector('[data-testid="mobile-delivery-photo-action"]').textContent).toMatch(/2 Foto tersimpan/);
+    expect(container.querySelector('[data-testid="mobile-delivery-driver-sign-action"]').textContent).toMatch(/Sudah ditandatangani/);
+    expect(container.querySelector('[data-testid="mobile-delivery-recipient-sign-action"]').textContent).toMatch(/Sudah ditandatangani/);
+    await act(async () => {
+      container.querySelector('[data-testid="mobile-delivery-photo-action"]').click();
+    });
+    expect(container.querySelector('[data-testid="mobile-delivery-proof-p1"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mobile-delivery-proof-p2"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mds-delivery-saved"]').textContent).toBe("Bukti kirim berhasil disimpan");
   });
 
   function setVisibility(value) {
