@@ -66,6 +66,7 @@ describe("physical stock view helpers", () => {
   test("movement labels stay on physical types", () => {
     expect(movementLabel("OPENING_BALANCE")).toBe("Saldo Awal");
     expect(movementLabel("PURCHASE_RECEIPT")).toBe("Penerimaan Pembelian");
+    expect(movementLabel("PURCHASE_RETURN")).toBe("Retur Pembelian");
     expect(movementLabel("SALES_DELIVERY")).toBe("Pengiriman");
     expect(movementLabel("MANUAL_ADJUSTMENT")).toBe("Penyesuaian");
     expect(movementLabel("REVERSAL")).toBe("Reversal");

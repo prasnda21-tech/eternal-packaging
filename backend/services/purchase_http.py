@@ -66,6 +66,13 @@ def register_purchase_routes(api_router, *, get_db, current_user, require_perm, 
         list_allocations,
         reverse_allocation,
     )
+    from services.purchase_returns import (
+        cancel_purchase_return,
+        confirm_purchase_return,
+        create_purchase_return,
+        get_purchase_return,
+        list_purchase_returns,
+    )
     from services.purchase_invoice_posting import (
         PERM_POST as PURCHASE_INVOICE_POST_PERM,
         PERM_REVERSE as PURCHASE_INVOICE_REVERSE_PERM,
@@ -214,6 +221,54 @@ def register_purchase_routes(api_router, *, get_db, current_user, require_perm, 
         await require_any_perm(user, "purchase_receipts.receive", "purchase_receipts.sync")
         doc = await create_purchase_goods_receipt(get_db(), _dump(payload), user)
         return {"receipt": doc, "message": "Penerimaan terhadap Pesanan Pembelian tercatat"}
+
+    @api_router.get("/purchase-returns")
+    async def list_purchase_returns_endpoint(
+        q: Optional[str] = None,
+        purchase_order_id: Optional[str] = None,
+        include_cancelled: bool = False,
+        user=Depends(current_user),
+    ):
+        await require_any_perm(user, "purchase_receipts.view", "purchase_orders.view")
+        rows = await list_purchase_returns(
+            get_db(),
+            q=q,
+            purchase_order_id=purchase_order_id,
+            include_cancelled=include_cancelled,
+        )
+        return {"returns": rows, "count": len(rows)}
+
+    @api_router.get("/purchase-returns/{return_id}")
+    async def get_purchase_return_endpoint(return_id: str, user=Depends(current_user)):
+        await require_any_perm(user, "purchase_receipts.view", "purchase_orders.view")
+        return {"return": await get_purchase_return(get_db(), return_id)}
+
+    @api_router.post("/purchase-returns")
+    async def create_purchase_return_endpoint(payload: LoosePayload, user=Depends(current_user)):
+        await require_any_perm(user, "purchase_receipts.receive", "purchase_receipts.sync")
+        doc = await create_purchase_return(get_db(), _dump(payload), user)
+        return {"return": doc, "message": "Draf retur pembelian tercatat"}
+
+    @api_router.post("/purchase-returns/{return_id}/confirm")
+    async def confirm_purchase_return_endpoint(
+        return_id: str,
+        payload: Optional[LoosePayload] = None,
+        user=Depends(current_user),
+    ):
+        await require_any_perm(user, "purchase_receipts.receive", "purchase_receipts.sync")
+        doc = await confirm_purchase_return(get_db(), return_id, _dump(payload), user)
+        return {"return": doc, "message": "Retur pembelian dikonfirmasi"}
+
+    @api_router.post("/purchase-returns/{return_id}/cancel")
+    async def cancel_purchase_return_endpoint(
+        return_id: str,
+        payload: Optional[LoosePayload] = None,
+        user=Depends(current_user),
+    ):
+        await require_any_perm(user, "purchase_receipts.receive", "purchase_receipts.sync")
+        data = _dump(payload) if payload is not None else {}
+        doc = await cancel_purchase_return(get_db(), return_id, user, reason=str(data.get("reason") or ""))
+        return {"return": doc, "message": "Retur pembelian dibatalkan"}
 
     @api_router.post("/purchase-goods-receipts/{receipt_id}/cancel")
     async def cancel_po_goods_receipt_endpoint(

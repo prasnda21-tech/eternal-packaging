@@ -14575,6 +14575,16 @@ async def seed():
     await db.purchase_supplier_advance_allocations.create_index("supplier_advance_id")
     await db.purchase_supplier_advance_allocations.create_index("purchase_invoice_id")
     await db.purchase_supplier_advance_allocations.create_index("purchase_order_id")
+    await db.purchase_returns.create_index("id", unique=True)
+    await _ensure_unique_business_number_index(db.purchase_returns, "return_number")
+    await db.purchase_returns.create_index("purchase_order_id")
+    await db.purchase_returns.create_index("created_at")
+    await db.purchase_returns.create_index(
+        "confirmation_key",
+        unique=True,
+        partialFilterExpression={"confirmation_key": {"$type": "string"}},
+        name="purchase_return_confirmation_key_partial_unique",
+    )
     await db.purchase_supplier_advances.create_index(
         "confirmation_key",
         unique=True,
@@ -14589,6 +14599,7 @@ async def seed():
         db.purchase_payments,
         db.purchase_supplier_advances,
         db.purchase_supplier_advance_allocations,
+        db.purchase_returns,
     ):
         for idx_name in ("idempotency_key_1", "idempotency_key_partial_unique"):
             try:

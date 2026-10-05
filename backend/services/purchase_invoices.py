@@ -149,6 +149,8 @@ async def get_po_invoice_preview(db, purchase_order_id: str, exclude_invoice_id:
             "unit": li.get("unit") or "pcs",
             "ordered_qty": li.get("ordered_qty") or 0,
             "cumulative_received_qty": received,
+            "confirmed_return_qty": float(li.get("confirmed_return_qty") or 0),
+            "net_received_qty": float(li.get("net_received_qty") if li.get("net_received_qty") is not None else received),
             "cumulative_invoiced_qty": invoiced,
             "remaining_invoice_qty": remain,
             "receipt_invoice_eligible_qty": float(li.get("receipt_invoice_eligible_qty") or 0),
@@ -188,6 +190,8 @@ async def get_receipt_invoice_preview(db, receipt_id: str) -> dict:
         )
     po_preview = await get_po_invoice_preview(db, po_id)
     by_line = {str(l["purchase_order_line_id"]): l for l in po_preview["lines"]}
+    from services.purchase_returns import confirmed_return_qty_by_receipt_line
+    returned_on_receipt = await confirmed_return_qty_by_receipt_line(db, receipt["id"])
     lines = []
     for li in receipt.get("lines") or []:
         po_line_id = str(li.get("purchase_order_line_id") or "").strip()
@@ -195,6 +199,7 @@ async def get_receipt_invoice_preview(db, receipt_id: str) -> dict:
         if src is None:
             continue
         receipt_qty = float(li.get("received_qty") or 0)
+        receipt_qty = max(0.0, receipt_qty - float(returned_on_receipt.get(str(li.get("line_id") or ""), 0)))
         eligible = min(
             float(src.get("remaining_invoice_qty") or 0),
             float(src.get("receipt_invoice_eligible_qty") or 0),
@@ -249,10 +254,14 @@ async def create_purchase_invoice(db, payload: Dict[str, Any], user: dict) -> di
                 "Faktur dari penerimaan hanya didukung untuk penerimaan yang terhubung ke Pesanan Pembelian.",
             )
         precedes_goods_receipt = False
+        from services.purchase_returns import confirmed_return_qty_by_receipt_line
+        returned_on_receipt = await confirmed_return_qty_by_receipt_line(db, receipt_id)
         for li in receipt_doc.get("lines") or []:
             key = str(li.get("purchase_order_line_id") or "").strip()
             if key:
-                receipt_qty_by_line[key] = receipt_qty_by_line.get(key, 0.0) + float(li.get("received_qty") or 0)
+                gross = float(li.get("received_qty") or 0)
+                returned = float(returned_on_receipt.get(str(li.get("line_id") or ""), 0))
+                receipt_qty_by_line[key] = receipt_qty_by_line.get(key, 0.0) + max(0.0, gross - returned)
 
     if not po_id:
         raise HTTPException(400, "ID Pesanan Pembelian (purchase_order_id) wajib diisi.")
@@ -306,15 +315,23 @@ async def create_purchase_invoice(db, payload: Dict[str, Any], user: dict) -> di
                 continue
             qty = parse_qty(raw_qty, f"Qty faktur '{src['item_name']}'")
             remain = float(src["remaining_invoice_qty"] or 0)
-            if not qty_le(qty, remain):
+            returned = float(src.get("confirmed_return_qty") or 0)
+            invoice_cap = max(0.0, remain - returned)
+            if not qty_le(qty, invoice_cap):
+                if returned > 0:
+                    raise HTTPException(
+                        400,
+                        f"Qty faktur ({qty}) untuk '{src['item_name']}' melebihi qty yang masih dapat difaktur setelah retur ({invoice_cap}).",
+                    )
                 raise HTTPException(
                     400,
                     f"Qty faktur ({qty}) untuk '{src['item_name']}' melebihi sisa PO ({remain}).",
                 )
 
             received = float(src.get("cumulative_received_qty") or 0)
+            net_received = float(src.get("net_received_qty") if src.get("net_received_qty") is not None else max(0.0, received - returned))
             already = float(src.get("cumulative_invoiced_qty") or 0)
-            uninvoiced_received = max(0.0, received - already)
+            uninvoiced_received = max(0.0, net_received - already)
 
             if invoice_source == "receipt":
                 receipt_cap = float(receipt_qty_by_line.get(po_line_id) or 0)
@@ -329,7 +346,7 @@ async def create_purchase_invoice(db, payload: Dict[str, Any], user: dict) -> di
                         f"Qty faktur ({qty}) untuk '{src['item_name']}' melebihi sisa penerimaan yang belum difaktur ({uninvoiced_received}).",
                     )
             else:
-                if already + qty > received + 1e-9:
+                if already + qty > net_received + 1e-9:
                     early_needed = True
 
             unit_price = float(src["unit_price"] or 0)

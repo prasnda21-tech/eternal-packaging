@@ -51,6 +51,7 @@ export function openingReady({ itemId, branchId, warehouseId, qty }) {
 export const PHYSICAL_MOVEMENT_LABELS = {
   OPENING_BALANCE: "Saldo Awal",
   PURCHASE_RECEIPT: "Penerimaan Pembelian",
+  PURCHASE_RETURN: "Retur Pembelian",
   SALES_DELIVERY: "Pengiriman",
   STOCK_OPNAME_ADJUSTMENT: "Penyesuaian Opname",
   MANUAL_ADJUSTMENT: "Penyesuaian",

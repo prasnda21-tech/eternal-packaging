@@ -22,6 +22,7 @@ WAREHOUSES_COLLECTION = "warehouses"
 
 MOVEMENT_OPENING_BALANCE = "OPENING_BALANCE"
 MOVEMENT_PURCHASE_RECEIPT = "PURCHASE_RECEIPT"
+MOVEMENT_PURCHASE_RETURN = "PURCHASE_RETURN"
 MOVEMENT_SALES_DELIVERY = "SALES_DELIVERY"
 MOVEMENT_STOCK_OPNAME_ADJUSTMENT = "STOCK_OPNAME_ADJUSTMENT"
 MOVEMENT_MANUAL_ADJUSTMENT = "MANUAL_ADJUSTMENT"
@@ -34,6 +35,7 @@ MOVEMENT_PRODUCTION_OUTPUT = "PRODUCTION_OUTPUT"
 MOVEMENT_TYPES = frozenset({
     MOVEMENT_OPENING_BALANCE,
     MOVEMENT_PURCHASE_RECEIPT,
+    MOVEMENT_PURCHASE_RETURN,
     MOVEMENT_SALES_DELIVERY,
     MOVEMENT_STOCK_OPNAME_ADJUSTMENT,
     MOVEMENT_MANUAL_ADJUSTMENT,
@@ -48,6 +50,7 @@ MOVEMENT_TYPES = frozenset({
 _MOVEMENT_SIGN = {
     MOVEMENT_OPENING_BALANCE: 1,
     MOVEMENT_PURCHASE_RECEIPT: 1,
+    MOVEMENT_PURCHASE_RETURN: -1,
     MOVEMENT_SALES_DELIVERY: -1,
     MOVEMENT_STOCK_OPNAME_ADJUSTMENT: 0,
     MOVEMENT_MANUAL_ADJUSTMENT: 0,
@@ -850,6 +853,57 @@ async def apply_purchase_receipt_lines(db, session, receipt: dict, *, actor_id: 
     return movements
 
 
+def _purchase_return_request(document: dict, line: dict, *, actor_id: str) -> dict:
+    return_id = str(document.get("id") or "")
+    line_id = str(line.get("line_id") or "")
+    qty = line.get("return_qty")
+    if isinstance(qty, bool) or (isinstance(qty, float) and not float(qty).is_integer()):
+        raise PhysicalStockValidationError("Qty retur harus bilangan bulat")
+    if isinstance(qty, float):
+        qty = int(qty)
+    if not isinstance(qty, int) or qty <= 0:
+        raise PhysicalStockValidationError("Qty retur harus bilangan bulat")
+    _check_sign(MOVEMENT_PURCHASE_RETURN, -qty)
+    created_at = now_iso()
+    return {
+        "master_item_id": str(line.get("master_item_id") or ""),
+        "branch_id": str(line.get("branch_id") or ""),
+        "warehouse_id": str(line.get("warehouse_id") or ""),
+        "movement_type": MOVEMENT_PURCHASE_RETURN,
+        "qty_delta": -qty,
+        "reference_type": "purchase_return",
+        "reference_id": f"{return_id}:{line_id}",
+        "reason": "Retur Pembelian",
+        "actor_id": actor_id,
+        "occurred_at": created_at,
+        "created_at": created_at,
+        "idempotency_key": f"purchase-return:{return_id}:{line_id}",
+        "metadata": {
+            "purchase_return_id": return_id,
+            "purchase_return_line_id": line_id,
+            "purchase_goods_receipt_id": str(line.get("purchase_goods_receipt_id") or ""),
+            "purchase_goods_receipt_line_id": str(line.get("purchase_goods_receipt_line_id") or ""),
+            "purchase_order_id": str(line.get("purchase_order_id") or document.get("purchase_order_id") or ""),
+            "purchase_order_line_id": str(line.get("purchase_order_line_id") or ""),
+        },
+    }
+
+
+async def apply_purchase_return_lines(db, session, document: dict, *, actor_id: str) -> List[dict]:
+    """Post every PURCHASE_RETURN line inside the caller's transaction. Draft returns never call this."""
+    lines = document.get("lines") if isinstance(document.get("lines"), list) else []
+    if not lines:
+        raise PhysicalStockValidationError("Minimal satu baris retur")
+    movements = []
+    for line in lines:
+        movements.append(await _apply_movement_in_session(
+            db,
+            _purchase_return_request(document, line, actor_id=actor_id),
+            session,
+        ))
+    return movements
+
+
 async def resolve_purchase_receipt_warehouse(
     db,
     session,
@@ -920,8 +974,8 @@ async def reverse_movement_in_session(
         raise PhysicalStockValidationError("Movement asal tidak ditemukan")
     if original.get("movement_type") == MOVEMENT_REVERSAL:
         raise PhysicalStockValidationError("Reversal tidak dapat direversal")
-    if original.get("movement_type") != MOVEMENT_PURCHASE_RECEIPT:
-        raise PhysicalStockValidationError("Hanya penerimaan pembelian yang dapat dibatalkan pada jalur ini")
+    if original.get("movement_type") not in (MOVEMENT_PURCHASE_RECEIPT, MOVEMENT_PURCHASE_RETURN):
+        raise PhysicalStockValidationError("Hanya penerimaan atau retur pembelian yang dapat dibatalkan pada jalur ini")
     return await _apply_movement_in_session(
         db,
         _reversal_request(original, actor_id=actor_id, idempotency_key=idempotency_key, reason=reason),
@@ -1137,11 +1191,28 @@ def _date_bound(value: str, *, end: bool) -> str:
     return text
 
 
+_MOVEMENT_LABELS = {
+    MOVEMENT_OPENING_BALANCE: "Saldo Awal",
+    MOVEMENT_PURCHASE_RECEIPT: "Penerimaan Pembelian",
+    MOVEMENT_PURCHASE_RETURN: "Retur Pembelian",
+    MOVEMENT_SALES_DELIVERY: "Pengiriman",
+    MOVEMENT_STOCK_OPNAME_ADJUSTMENT: "Penyesuaian Opname",
+    MOVEMENT_MANUAL_ADJUSTMENT: "Penyesuaian",
+    MOVEMENT_WAREHOUSE_TRANSFER_OUT: "Transfer Keluar",
+    MOVEMENT_WAREHOUSE_TRANSFER_IN: "Transfer Masuk",
+    MOVEMENT_REVERSAL: "Reversal",
+    MOVEMENT_PRODUCTION_CONSUMPTION: "Pemakaian Produksi",
+    MOVEMENT_PRODUCTION_OUTPUT: "Hasil Produksi",
+}
+
+
 def _mutation_row(doc: dict, branch: Optional[dict], warehouse: Optional[dict]) -> dict:
+    movement_type = doc.get("movement_type")
     row = {
         "id": doc.get("id"),
         "occurred_at": doc.get("occurred_at"),
-        "movement_type": doc.get("movement_type"),
+        "movement_type": movement_type,
+        "movement_label": _MOVEMENT_LABELS.get(movement_type) or movement_type or "",
         "qty_delta": doc.get("qty_delta"),
         "balance_before": doc.get("balance_before"),
         "balance_after": doc.get("balance_after"),
