@@ -53,7 +53,7 @@ export const PHYSICAL_MOVEMENT_LABELS = {
   PURCHASE_RECEIPT: "Penerimaan Pembelian",
   PURCHASE_RETURN: "Retur Pembelian",
   SALES_DELIVERY: "Pengiriman",
-  STOCK_OPNAME_ADJUSTMENT: "Penyesuaian Opname",
+  STOCK_OPNAME_ADJUSTMENT: "Penyesuaian Stock Opname",
   MANUAL_ADJUSTMENT: "Penyesuaian",
   WAREHOUSE_TRANSFER_OUT: "Transfer Keluar",
   WAREHOUSE_TRANSFER_IN: "Transfer Masuk",

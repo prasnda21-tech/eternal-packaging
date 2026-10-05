@@ -110,6 +110,15 @@ class PhysicalStockRetryError(PhysicalStockError):
     """The balance changed before the target delta was applied."""
 
 
+class StockOpnameInProgressError(PhysicalStockConflictError):
+    """A frozen stock-opname session owns this warehouse."""
+
+
+OPNAME_SESSIONS = "stock_opname_sessions"
+FROZEN_OPNAME_STATUSES = ("COUNTING", "REVIEW")
+STOCK_OPNAME_IN_PROGRESS = "STOCK_OPNAME_IN_PROGRESS"
+
+
 def set_fail_after_balance(enabled: bool) -> None:
     global _fail_after_balance
     _fail_after_balance = bool(enabled)
@@ -279,7 +288,51 @@ async def _existing_movement(db, idempotency_key: str, session):
     )
 
 
-async def _apply_movement_in_session(db, requested: dict, session) -> dict:
+async def _frozen_opname_session(db, warehouse_id: str, session):
+    return await db[OPNAME_SESSIONS].find_one(
+        {
+            "warehouse_id": str(warehouse_id),
+            "status": {"$in": list(FROZEN_OPNAME_STATUSES)},
+        },
+        {"_id": 0, "id": 1},
+        session=session,
+    )
+
+
+async def _guard_opname_freeze(
+    db,
+    session,
+    *,
+    warehouse_id: str,
+    movement_type: str,
+    allow_opname_session_id: Optional[str] = None,
+) -> None:
+    """Reject normal R2 writes while a warehouse stock opname is frozen.
+
+    STOCK_OPNAME_ADJUSTMENT posts only for the owning frozen session.
+    Reversal is not exempt.
+    """
+    frozen = await _frozen_opname_session(db, warehouse_id, session)
+    allowed = str(allow_opname_session_id or "").strip()
+    if movement_type == MOVEMENT_STOCK_OPNAME_ADJUSTMENT:
+        if frozen and allowed and allowed == str(frozen.get("id") or ""):
+            return
+        if frozen:
+            raise StockOpnameInProgressError(STOCK_OPNAME_IN_PROGRESS)
+        raise PhysicalStockValidationError(
+            "Penyesuaian stock opname hanya dapat diposting dari konfirmasi sesi yang sedang berjalan"
+        )
+    if frozen:
+        raise StockOpnameInProgressError(STOCK_OPNAME_IN_PROGRESS)
+
+
+async def _apply_movement_in_session(
+    db,
+    requested: dict,
+    session,
+    *,
+    allow_opname_session_id: Optional[str] = None,
+) -> dict:
     """Post one movement inside the caller's transaction. No nested transaction."""
     ledger = db[LEDGER_COLLECTION]
     balances = db[BALANCE_COLLECTION]
@@ -291,6 +344,13 @@ async def _apply_movement_in_session(db, requested: dict, session) -> dict:
             )
         return _public_movement(existing)
 
+    await _guard_opname_freeze(
+        db,
+        session,
+        warehouse_id=requested["warehouse_id"],
+        movement_type=requested["movement_type"],
+        allow_opname_session_id=allow_opname_session_id,
+    )
     await _validate_masters(
         db,
         master_item_id=requested["master_item_id"],
@@ -889,6 +949,62 @@ def _purchase_return_request(document: dict, line: dict, *, actor_id: str) -> di
     }
 
 
+def _stock_opname_adjustment_request(session_doc: dict, line: dict, *, actor_id: str, occurred_at: str) -> dict:
+    session_id = str(session_doc.get("id") or "")
+    line_id = str(line.get("line_id") or "")
+    delta = int(line.get("difference_qty") or 0)
+    _check_sign(MOVEMENT_STOCK_OPNAME_ADJUSTMENT, delta)
+    return {
+        "master_item_id": str(line.get("master_item_id") or ""),
+        "branch_id": str(session_doc.get("branch_id") or ""),
+        "warehouse_id": str(session_doc.get("warehouse_id") or ""),
+        "movement_type": MOVEMENT_STOCK_OPNAME_ADJUSTMENT,
+        "qty_delta": delta,
+        "reference_type": "stock_opname_session",
+        "reference_id": session_id,
+        "reason": "Penyesuaian Stock Opname",
+        "actor_id": actor_id,
+        "occurred_at": occurred_at,
+        "created_at": occurred_at,
+        "idempotency_key": f"stock-opname:{session_id}:{line_id}",
+        "metadata": {
+            "stock_opname_session_id": session_id,
+            "stock_opname_line_id": line_id,
+            "opname_number": str(session_doc.get("opname_number") or ""),
+            "book_qty": int(line.get("book_qty") or 0),
+            "physical_count_qty": int(line.get("physical_count_qty") or 0),
+            "difference_qty": delta,
+        },
+    }
+
+
+async def apply_stock_opname_adjustments(
+    db,
+    mongo_session,
+    session_doc: dict,
+    lines: List[dict],
+    *,
+    actor_id: str,
+    occurred_at: str,
+) -> List[dict]:
+    """Post non-zero STOCK_OPNAME_ADJUSTMENT rows for the owning frozen session."""
+    session_id = str(session_doc.get("id") or "")
+    movements = []
+    for line in lines:
+        delta = int(line.get("difference_qty") or 0)
+        if delta == 0:
+            continue
+        movements.append(await _apply_movement_in_session(
+            db,
+            _stock_opname_adjustment_request(
+                session_doc, line, actor_id=actor_id, occurred_at=occurred_at,
+            ),
+            mongo_session,
+            allow_opname_session_id=session_id,
+        ))
+    return movements
+
+
 async def apply_purchase_return_lines(db, session, document: dict, *, actor_id: str) -> List[dict]:
     """Post every PURCHASE_RETURN line inside the caller's transaction. Draft returns never call this."""
     lines = document.get("lines") if isinstance(document.get("lines"), list) else []
@@ -1196,7 +1312,7 @@ _MOVEMENT_LABELS = {
     MOVEMENT_PURCHASE_RECEIPT: "Penerimaan Pembelian",
     MOVEMENT_PURCHASE_RETURN: "Retur Pembelian",
     MOVEMENT_SALES_DELIVERY: "Pengiriman",
-    MOVEMENT_STOCK_OPNAME_ADJUSTMENT: "Penyesuaian Opname",
+    MOVEMENT_STOCK_OPNAME_ADJUSTMENT: "Penyesuaian Stock Opname",
     MOVEMENT_MANUAL_ADJUSTMENT: "Penyesuaian",
     MOVEMENT_WAREHOUSE_TRANSFER_OUT: "Transfer Keluar",
     MOVEMENT_WAREHOUSE_TRANSFER_IN: "Transfer Masuk",
@@ -1367,6 +1483,12 @@ async def _adjust_to_target_once(
                         "Idempotency key sudah digunakan dengan payload yang berbeda"
                     )
                 return _adjustment_result(existing, target=target, changed=True)
+            await _guard_opname_freeze(
+                db,
+                session,
+                warehouse_id=warehouse_id,
+                movement_type=MOVEMENT_MANUAL_ADJUSTMENT,
+            )
             await _validate_masters(
                 db,
                 master_item_id=master_item_id,

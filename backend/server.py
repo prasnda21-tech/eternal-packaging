@@ -12758,6 +12758,14 @@ register_purchase_routes(
     require_any_perm=_require_any_perm,
     Depends=Depends,
 )
+from services.stock_opname_sessions import register_stock_opname_routes
+register_stock_opname_routes(
+    api_router,
+    get_db=lambda: db,
+    current_user=current_user,
+    require_perm=require_perm,
+    Depends=Depends,
+)
 register_product_request_routes(
     api_router,
     get_db=lambda: db,
@@ -14575,6 +14583,8 @@ async def seed():
     await db.purchase_supplier_advance_allocations.create_index("supplier_advance_id")
     await db.purchase_supplier_advance_allocations.create_index("purchase_invoice_id")
     await db.purchase_supplier_advance_allocations.create_index("purchase_order_id")
+    from services.stock_opname_sessions import ensure_indexes as _stock_opname_ensure_indexes
+    await _stock_opname_ensure_indexes(db)
     await db.purchase_returns.create_index("id", unique=True)
     await _ensure_unique_business_number_index(db.purchase_returns, "return_number")
     await db.purchase_returns.create_index("purchase_order_id")
