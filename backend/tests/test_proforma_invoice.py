@@ -505,7 +505,13 @@ async def test_two_active_drafts_are_not_chosen():
 
 @pytest.mark.anyio
 async def test_draft_and_finalized_together_are_not_chosen():
-    order = await _seed_order()
+    order = await _seed_order(line_items=[{
+        "name": "Paper Cup",
+        "quantity": 200,
+        "unit": "pcs",
+        "unit_price": 1,
+        "notes": "CATATAN SABLON INTERNAL",
+    }])
     draft = await _insert_invoice(_draft(order))
     finalized = await _insert_invoice(_draft(order, invoice_index=2))
     try:

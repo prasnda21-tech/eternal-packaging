@@ -25,6 +25,15 @@ FINANCIAL_FINALIZED = "finalized"
 FINANCIAL_CANCELLED = "cancelled"
 FINANCIAL_STATUSES = frozenset({FINANCIAL_DRAFT, FINANCIAL_FINALIZED, FINANCIAL_CANCELLED})
 
+REASON_INVOICE_QTY_OVER = "FAKTUR_QTY_MELEBIHI_SISA_PO"
+MSG_INVOICE_QTY_OVER = "Qty Faktur melebihi sisa Qty Pesanan Penjualan."
+MSG_INVOICE_QTY_OVER_FINALIZE = (
+    "Qty Faktur melebihi sisa Qty Pesanan Penjualan. Sesuaikan Qty Faktur sebelum Finalisasi."
+)
+MSG_INVOICE_QTY_INVALID = "Qty Faktur harus berupa bilangan bulat lebih dari 0."
+MSG_INVOICE_LINE_DUPLICATE = "Baris faktur tidak boleh dikirim lebih dari sekali."
+MSG_INVOICE_LINE_UNKNOWN = "Baris faktur tidak ditemukan pada faktur ini."
+
 DOCUMENT_INVOICE = "invoice"
 DOCUMENT_PROFORMA = "proforma"
 PROFORMA_WARNING = "Dokumen Proforma — bukan Faktur Penjualan resmi"
@@ -1203,14 +1212,147 @@ async def get_sales_invoice_detail(db, invoice_id: str) -> Dict[str, Any]:
     apply_invoice_payment_fields(inv, receipts, float(await invoice_credit_applied_total(db, inv["id"])))
     inv["receipts"] = receipts
     await attach_invoice_accounting_fields(db, [inv])
+    await _attach_invoice_qty_limits(db, inv)
     return inv
 
 
-async def update_sales_invoice(db, invoice_id: str, payload: Dict[str, Any], user: dict) -> Dict[str, Any]:
-    """Updates an existing sales invoice (unit prices, discount, PPN, termin, notes, invoice_date).
+def _parse_draft_invoice_qty(raw: Any) -> int:
+    """Whole number greater than zero. Floats that are not whole numbers are rejected."""
+    if isinstance(raw, bool) or raw is None:
+        raise HTTPException(400, {"code": "FAKTUR_QTY_TIDAK_VALID", "message": MSG_INVOICE_QTY_INVALID})
+    if isinstance(raw, int):
+        qty = raw
+    elif isinstance(raw, float):
+        if not raw.is_integer():
+            raise HTTPException(400, {"code": "FAKTUR_QTY_TIDAK_VALID", "message": MSG_INVOICE_QTY_INVALID})
+        qty = int(raw)
+    elif isinstance(raw, str):
+        text = raw.strip()
+        if not text.isdigit():
+            raise HTTPException(400, {"code": "FAKTUR_QTY_TIDAK_VALID", "message": MSG_INVOICE_QTY_INVALID})
+        qty = int(text)
+    else:
+        raise HTTPException(400, {"code": "FAKTUR_QTY_TIDAK_VALID", "message": MSG_INVOICE_QTY_INVALID})
+    if qty <= 0:
+        raise HTTPException(400, {"code": "FAKTUR_QTY_TIDAK_VALID", "message": MSG_INVOICE_QTY_INVALID})
+    return qty
 
-    Recalculates line totals, discount, PPN, and grand total authoritatively on backend.
-    Preserves exact PO lines and never mutates PO or Master collections.
+
+def _explicit_draft_qty_by_line(existing_lines: List[dict], input_lines: List[dict]) -> Dict[int, int]:
+    """Qty explicitly sent for an existing invoice line. Missing qty keeps the stored value.
+
+    Duplicate line_idx and unknown lines are rejected. This does not insert PO lines.
+    """
+    existing_idx = {
+        int(el.get("line_idx", idx))
+        for idx, el in enumerate(existing_lines or [])
+    }
+    seen = set()
+    requested: Dict[int, int] = {}
+    for fallback, inp in enumerate(input_lines or []):
+        if not isinstance(inp, dict):
+            raise HTTPException(400, {"code": "FAKTUR_BARIS_TIDAK_DITEMUKAN", "message": MSG_INVOICE_LINE_UNKNOWN})
+        raw_idx = inp.get("line_idx", fallback)
+        try:
+            line_idx = int(raw_idx)
+        except (TypeError, ValueError):
+            raise HTTPException(400, {"code": "FAKTUR_BARIS_TIDAK_DITEMUKAN", "message": MSG_INVOICE_LINE_UNKNOWN})
+        if line_idx in seen:
+            raise HTTPException(400, {"code": "FAKTUR_BARIS_DUPLIKAT", "message": MSG_INVOICE_LINE_DUPLICATE})
+        seen.add(line_idx)
+        if line_idx not in existing_idx:
+            raise HTTPException(400, {"code": "FAKTUR_BARIS_TIDAK_DITEMUKAN", "message": MSG_INVOICE_LINE_UNKNOWN})
+        if "quantity" not in inp or inp.get("quantity") in (None, ""):
+            continue
+        requested[line_idx] = _parse_draft_invoice_qty(inp.get("quantity"))
+    return requested
+
+
+async def invoice_line_qty_limits(
+    db,
+    po_id: str,
+    exclude_invoice_id: Optional[str] = None,
+) -> Dict[int, Dict[str, int]]:
+    """Latest PO qty minus other non-cancelled invoices.
+
+    The excluded invoice is the draft being edited or finalized, so it is not
+    counted against itself. Cancelled invoices are ignored by the preview helper.
+    """
+    key = str(po_id or "").strip()
+    if not key:
+        return {}
+    order = await db.orders.find_one({"id": key}, {"_id": 0})
+    if not order:
+        order = await db.orders.find_one({"po_number": key}, {"_id": 0})
+    if not order:
+        return {}
+    preview = await get_po_invoice_preview(db, order, exclude_invoice_id=exclude_invoice_id)
+    limits: Dict[int, Dict[str, int]] = {}
+    for line in preview.get("lines") or []:
+        limits[int(line["line_idx"])] = {
+            "po_qty": int(line.get("ordered_qty") or 0),
+            "other_active_invoiced_qty": int(line.get("invoiced_cumulative") or 0),
+            "max_qty": int(line.get("remaining_invoice_qty") or 0),
+        }
+    return limits
+
+
+def _qty_over_detail(line_idx: int, invoice_qty: int, cap: Dict[str, int], *, finalize: bool) -> Dict[str, Any]:
+    return {
+        "code": REASON_INVOICE_QTY_OVER,
+        "message": MSG_INVOICE_QTY_OVER_FINALIZE if finalize else MSG_INVOICE_QTY_OVER,
+        "line_idx": line_idx,
+        "po_qty": int(cap.get("po_qty") or 0),
+        "other_invoiced_qty": int(cap.get("other_active_invoiced_qty") or 0),
+        "invoice_qty": int(invoice_qty),
+        "max_qty": int(cap.get("max_qty") or 0),
+    }
+
+
+async def assert_invoice_qty_within_po(db, invoice: dict, *, finalize: bool = False) -> None:
+    """Reject when a saved line qty is above the latest remaining capacity.
+
+    Reads the order and other active invoices at call time. Create, draft update,
+    and finalize already share the in-process invoice lock, so one worker cannot
+    interleave those writes. Separate processes do not share that lock.
+    """
+    limits = await invoice_line_qty_limits(db, invoice.get("po_id"), invoice.get("id"))
+    empty = {"po_qty": 0, "other_active_invoiced_qty": 0, "max_qty": 0}
+    for idx, line in enumerate(invoice.get("lines") or []):
+        line_idx = int(line.get("line_idx", idx))
+        try:
+            invoice_qty = int(line.get("quantity") or 0)
+        except (TypeError, ValueError):
+            invoice_qty = 0
+        cap = limits.get(line_idx, empty)
+        if invoice_qty > int(cap["max_qty"]):
+            raise HTTPException(409, _qty_over_detail(line_idx, invoice_qty, cap, finalize=finalize))
+
+
+async def _attach_invoice_qty_limits(db, invoice: Dict[str, Any]) -> None:
+    """Read-only guidance for the draft editor. Not written back to the invoice."""
+    limits = await invoice_line_qty_limits(db, invoice.get("po_id"), invoice.get("id"))
+    empty = {"po_qty": 0, "other_active_invoiced_qty": 0, "max_qty": 0}
+    for idx, line in enumerate(invoice.get("lines") or []):
+        if not isinstance(line, dict):
+            continue
+        line_idx = int(line.get("line_idx", idx))
+        cap = limits.get(line_idx, empty)
+        try:
+            current_qty = int(line.get("quantity") or 0)
+        except (TypeError, ValueError):
+            current_qty = 0
+        line["current_qty"] = current_qty
+        line["po_qty"] = cap["po_qty"]
+        line["other_active_invoiced_qty"] = cap["other_active_invoiced_qty"]
+        line["max_qty"] = cap["max_qty"]
+
+
+async def update_sales_invoice(db, invoice_id: str, payload: Dict[str, Any], user: dict) -> Dict[str, Any]:
+    """Updates a draft sales invoice, including line quantity.
+
+    Recalculates line totals, discount, PPN, and grand total from the invoice
+    unit price. Does not read the price master and never mutates the PO.
     """
     async with _get_invoice_lock():
         inv = await db.sales_invoices.find_one({"id": str(invoice_id)}, {"_id": 0})
@@ -1228,7 +1370,15 @@ async def update_sales_invoice(db, invoice_id: str, payload: Dict[str, Any], use
 
         existing_lines = inv.get("lines") or []
         input_lines = payload.get("lines") or payload.get("line_items") or []
-        input_by_idx = {int(inp.get("line_idx", idx)): inp for idx, inp in enumerate(input_lines)}
+        explicit_qty = _explicit_draft_qty_by_line(existing_lines, input_lines)
+        input_by_idx = {}
+        seen_input = set()
+        for fallback, inp in enumerate(input_lines):
+            line_idx = int(inp.get("line_idx", fallback))
+            if line_idx in seen_input:
+                raise HTTPException(400, {"code": "FAKTUR_BARIS_DUPLIKAT", "message": MSG_INVOICE_LINE_DUPLICATE})
+            seen_input.add(line_idx)
+            input_by_idx[line_idx] = inp
 
         updated_lines = []
         authoritative_subtotal = 0.0
@@ -1236,7 +1386,15 @@ async def update_sales_invoice(db, invoice_id: str, payload: Dict[str, Any], use
 
         for idx, el in enumerate(existing_lines):
             line_idx = int(el.get("line_idx", idx))
-            qty = int(el.get("quantity") or 0)
+            if line_idx in explicit_qty:
+                qty = explicit_qty[line_idx]
+            else:
+                try:
+                    qty = int(el.get("quantity") or 0)
+                except (TypeError, ValueError):
+                    qty = 0
+            if qty <= 0:
+                raise HTTPException(400, {"code": "FAKTUR_QTY_TIDAK_VALID", "message": MSG_INVOICE_QTY_INVALID})
 
             if line_idx in input_by_idx and input_by_idx[line_idx].get("unit_price") not in (None, ""):
                 raw_price = input_by_idx[line_idx].get("unit_price")
@@ -1249,12 +1407,16 @@ async def update_sales_invoice(db, invoice_id: str, payload: Dict[str, Any], use
             total_invoice_qty += qty
 
             updated_el = dict(el)
+            updated_el["quantity"] = qty
             updated_el["unit_price"] = unit_price
             updated_el["line_subtotal"] = line_subtotal
             updated_el["line_total"] = line_subtotal
+            for derived in ("current_qty", "po_qty", "other_active_invoiced_qty", "max_qty"):
+                updated_el.pop(derived, None)
             updated_lines.append(updated_el)
 
         authoritative_subtotal = round(authoritative_subtotal, 2)
+        await assert_invoice_qty_within_po(db, {**inv, "lines": updated_lines}, finalize=False)
 
         raw_disc = payload.get("discount_amount") if "discount_amount" in payload else inv.get("discount_amount", 0)
         discount_amount = _parse_non_negative_price(raw_disc, "Diskon")
@@ -1397,6 +1559,8 @@ async def finalize_sales_invoice(db, invoice_id: str, user: dict) -> Dict[str, A
 
         if not monetary_invariant_valid(inv):
             raise HTTPException(400, TOTAL_INVARIANT_MESSAGE)
+
+        await assert_invoice_qty_within_po(db, inv, finalize=True)
 
         now = now_iso()
         claimed = await db.sales_invoices.find_one_and_update(

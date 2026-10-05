@@ -10945,7 +10945,7 @@ async def get_sales_invoice_proforma_pdf(id: str, user=Depends(current_user)):
 
 @api_router.put("/sales-invoices/{id}")
 async def update_sales_invoice_endpoint(id: str, payload: SalesInvoiceUpdatePayload, user=Depends(current_user)):
-    """Update unit prices or notes on an existing sales invoice."""
+    """Update draft qty, unit prices, or notes. Qty is rechecked against the latest PO."""
     await _require_any_perm(user, "sales.invoice.edit", "sales.invoice.create", "sales_order.create", "po.edit")
     inv = await _update_sales_invoice(db, id, payload.model_dump(), user)
     return {"invoice": inv, "message": "Faktur Penjualan berhasil diperbarui"}
