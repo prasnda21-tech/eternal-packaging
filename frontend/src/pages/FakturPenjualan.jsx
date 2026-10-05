@@ -32,6 +32,8 @@ function formatRupiah(num) {
 }
 
 const OTHER_CHARGE_ACCOUNT_TYPES = new Set(["EXPS", "OEXP", "OINC", "REVE"]);
+const DRAFT_QTY_OVER_MESSAGE = "Qty Faktur melebihi sisa Qty Pesanan Penjualan.";
+const FINALIZE_QTY_OVER_MESSAGE = "Qty Faktur melebihi sisa Qty Pesanan Penjualan. Sesuaikan Qty Faktur sebelum Finalisasi.";
 
 function chargeAccountEligible(account) {
   if (!account || !account.id) return false;
@@ -880,6 +882,7 @@ export default function FakturPenjualan() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailErr, setDetailErr] = useState("");
   const [detailPrices, setDetailPrices] = useState({});
+  const [detailQuantities, setDetailQuantities] = useState({});
   const [detailDiscount, setDetailDiscount] = useState(0);
   const [detailPpn, setDetailPpn] = useState(0);
   const [detailTermDays, setDetailTermDays] = useState(0);
@@ -1410,10 +1413,13 @@ export default function FakturPenjualan() {
       setDetailCharges((inv.other_charges || []).map(otherChargeFromStored));
       setShowDetailChargeErrors(false);
       const prices = {};
+      const qtys = {};
       (inv.lines || []).forEach((l) => {
         prices[l.line_idx] = l.unit_price != null ? l.unit_price : 0;
+        qtys[l.line_idx] = l.quantity != null ? l.quantity : "";
       });
       setDetailPrices(prices);
+      setDetailQuantities(qtys);
     } catch (e) {
       const det = e.response?.data?.detail;
       setDetailErr(
@@ -1434,7 +1440,9 @@ export default function FakturPenjualan() {
     let totalQty = 0;
     let subtotal = 0;
     const computedLines = detailData.lines.map((l) => {
-      const q = Number(l.quantity) || 0;
+      const rawQ = detailQuantities[l.line_idx];
+      const q = rawQ !== undefined && rawQ !== "" ? Math.max(0, Number(rawQ) || 0) : (Number(l.quantity) || 0);
+      const maxQty = Number.isFinite(Number(l.max_qty)) ? Number(l.max_qty) : null;
       const rawP = detailPrices[l.line_idx];
       const p = Math.max(0, Number(rawP) || 0);
       const lineTotal = q * p;
@@ -1442,6 +1450,9 @@ export default function FakturPenjualan() {
       subtotal += lineTotal;
       return {
         ...l,
+        numericQty: q,
+        maxQty,
+        qtyOver: maxQty !== null && q > maxQty,
         unitPrice: rawP !== undefined ? rawP : 0,
         numericPrice: p,
         lineTotal,
@@ -1468,7 +1479,7 @@ export default function FakturPenjualan() {
       grandTotal,
       totalQty,
     };
-  }, [detailData, detailPrices, detailDiscount, detailPpn, detailCharges]);
+  }, [detailData, detailPrices, detailQuantities, detailDiscount, detailPpn, detailCharges]);
 
   // Handle Update Invoice
   const handleUpdateInvoice = async (e) => {
@@ -1485,7 +1496,7 @@ export default function FakturPenjualan() {
     setSuccessMsg("");
 
     try {
-      const linesPayload = (detailData.lines || []).map((l) => {
+      const linesPayload = (detailCalculations.lines || []).map((l) => {
         const rawP = detailPrices[l.line_idx];
         const blank = rawP === "" || rawP === null || rawP === undefined;
         const numP = Number(rawP);
@@ -1495,10 +1506,14 @@ export default function FakturPenjualan() {
         if (numP < 0) {
           throw new Error(`Harga satuan untuk '${l.item_name}' tidak boleh negatif.`);
         }
+        const qty = Number(l.numericQty);
+        if (!Number.isInteger(qty) || qty <= 0) {
+          throw new Error("Qty Faktur harus berupa bilangan bulat lebih dari 0.");
+        }
         return {
           line_idx: l.line_idx,
           line_id: l.line_id,
-          quantity: l.quantity,
+          quantity: qty,
           unit_price: numP,
         };
       });
@@ -1516,17 +1531,26 @@ export default function FakturPenjualan() {
       const res = await api.updateSalesInvoice(selectedInvoiceId, payload);
       const updated = res.invoice || res;
       setDetailData(updated);
+      const savedQtys = {};
+      (updated.lines || []).forEach((l) => {
+        savedQtys[l.line_idx] = l.quantity != null ? l.quantity : "";
+      });
+      setDetailQuantities(savedQtys);
       setDetailCharges((updated.other_charges || []).map(otherChargeFromStored));
       setShowDetailChargeErrors(false);
       setSuccessMsg("Perubahan Faktur Penjualan berhasil disimpan");
       setTimeout(() => setSuccessMsg(""), 2500);
     } catch (err) {
       const det = err.response?.data?.detail;
-      setDetailErr(
-        typeof det === "object"
-          ? det.message
-          : det || err.message || "Gagal memperbarui Faktur Penjualan"
-      );
+      if (det && typeof det === "object" && det.code === "FAKTUR_QTY_MELEBIHI_SISA_PO") {
+        setDetailErr(DRAFT_QTY_OVER_MESSAGE);
+      } else {
+        setDetailErr(
+          typeof det === "object"
+            ? det.message
+            : det || err.message || "Gagal memperbarui Faktur Penjualan"
+        );
+      }
     } finally {
       setDetailSaving(false);
     }
@@ -1545,7 +1569,11 @@ export default function FakturPenjualan() {
       setTimeout(() => setSuccessMsg(""), 2500);
     } catch (err) {
       const det = err.response?.data?.detail;
-      setDetailErr(typeof det === "object" ? det.message : det || err.message || "Gagal finalisasi faktur");
+      if (det && typeof det === "object" && det.code === "FAKTUR_QTY_MELEBIHI_SISA_PO") {
+        setDetailErr(FINALIZE_QTY_OVER_MESSAGE);
+      } else {
+        setDetailErr(typeof det === "object" ? det.message : det || err.message || "Gagal finalisasi faktur");
+      }
     } finally {
       setLifecycleBusy(false);
     }
@@ -2667,7 +2695,38 @@ export default function FakturPenjualan() {
                         <tr key={li.line_idx}>
                           <td>{index + 1}</td>
                           <td className="fp-item-name">{li.item_name}</td>
-                          <td className="is-num">{Number(li.quantity || 0).toLocaleString("id-ID")}</td>
+                          <td className="is-num">
+                            {canEditFinancial ? (
+                              <>
+                                <input
+                                  type="number"
+                                  min={1}
+                                  max={li.maxQty ?? undefined}
+                                  step="1"
+                                  value={detailQuantities[li.line_idx] !== undefined ? detailQuantities[li.line_idx] : li.numericQty}
+                                  onChange={(e) => {
+                                    const val = e.target.value;
+                                    setDetailQuantities((prev) => ({ ...prev, [li.line_idx]: val }));
+                                  }}
+                                  data-testid={`detail-qty-input-${li.line_idx}`}
+                                />
+                                <div className="fp-item-meta" data-testid={`detail-qty-cap-${li.line_idx}`}>
+                                  <div>Qty PO: {Number(li.po_qty || 0).toLocaleString("id-ID")}</div>
+                                  <div>Sudah difakturkan lainnya: {Number(li.other_active_invoiced_qty || 0).toLocaleString("id-ID")}</div>
+                                  <div>Maksimum Faktur ini: {Number(li.max_qty || 0).toLocaleString("id-ID")}</div>
+                                </div>
+                                {li.qtyOver && (
+                                  <div className="fp-item-meta" data-testid={`detail-qty-over-${li.line_idx}`} style={{ color: "#b91c1c" }}>
+                                    {FINALIZE_QTY_OVER_MESSAGE}
+                                  </div>
+                                )}
+                              </>
+                            ) : (
+                              <span data-testid={`detail-qty-text-${li.line_idx}`}>
+                                {Number(li.numericQty || li.quantity || 0).toLocaleString("id-ID")}
+                              </span>
+                            )}
+                          </td>
                           <td className="is-center">{li.unit || "pcs"}</td>
                           <td className="is-num">
                             <input

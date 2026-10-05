@@ -164,11 +164,12 @@ async def test_finalize_checks_invariant_and_locks_financial_fields():
             assert inv["grand_total"] == inv["after_discount"] + inv["ppn_amount"]
             assert inv["after_discount"] == 90000.0
 
+            bad_po = await _seed_po()
             bad_id = str(uuid.uuid4())
             await server.db.sales_invoices.insert_one({
                 "id": bad_id,
                 "invoice_number": f"INV/BAD/{bad_id[:6]}",
-                "po_id": po["id"],
+                "po_id": bad_po["id"],
                 "invoice_date": "2026-09-01",
                 "lines": [{"line_idx": 0, "quantity": 1, "unit_price": 100}],
                 "subtotal": 100.0,
