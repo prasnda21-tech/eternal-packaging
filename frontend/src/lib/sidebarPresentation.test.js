@@ -1,16 +1,17 @@
 import { NAV_KEYS, SETTINGS_TAB_IDS, SETTINGS_TILE_LABELS, cashBankMenuItems, dashboardMenuItems, employeeAdminMenuItems, hrPayrollMenuItems, inventoryMenuItems, ledgerMenuItems, productionMenuItems, purchasingMenuItems, reportsMenuItems, salesMenuItems, settingsMenuItems, taskMenuItems } from "./navAccess";
 import {
-  SIDEBAR_MODE_STORAGE_KEY,
+  SIDEBAR_RAIL_WIDTH,
   buildDesktopSidebar,
+  groupedRailForPath,
   isDeliveryRailActive,
   isFinanceRailActive,
   isOperationalReportRailActive,
   isProductionRailActive,
   isSalesRailActive,
+  nextChevronMenu,
   presentSidebarLeaf,
-  readSidebarMode,
+  railLabel,
   sidebarLeaves,
-  writeSidebarMode,
 } from "./sidebarPresentation";
 
 const has = (...keys) => (key) => keys.includes(key);
@@ -213,17 +214,52 @@ describe("desktop sidebar presentation", () => {
     expect(isProductionRailActive("/kas-bank/daftar")).toBe(false);
   });
 
-  test("sidebar mode preference stays local and falls back to compact", () => {
-    const storage = { value: null, getItem: () => storage.value, setItem: (_k, v) => { storage.value = v; } };
-    expect(readSidebarMode(null)).toBe("compact");
-    expect(readSidebarMode({ getItem: () => { throw new Error("blocked"); } })).toBe("compact");
-    expect(readSidebarMode(storage)).toBe("compact");
-    writeSidebarMode(storage, "expanded");
-    expect(storage.value).toBe("expanded");
-    expect(readSidebarMode(storage)).toBe("expanded");
-    writeSidebarMode(storage, "nope");
-    expect(readSidebarMode(storage)).toBe("compact");
-    expect(SIDEBAR_MODE_STORAGE_KEY).toBe("ep.desktopSidebar.mode");
+  test("chevron follows the active grouped rail and ignores direct links", () => {
+    expect(SIDEBAR_RAIL_WIDTH).toBe(64);
+    expect(groupedRailForPath("/produksi")).toBe("produksi");
+    expect(groupedRailForPath("/tasks/packing")).toBe("produksi");
+    expect(groupedRailForPath("/tasks/surat-jalan")).toBe("pengiriman");
+    expect(groupedRailForPath("/tasks/loading")).toBe("pengiriman");
+    expect(groupedRailForPath("/tasks/delivery")).toBe("pengiriman");
+    expect(groupedRailForPath("/produksi/jadwal-pengiriman")).toBe("pengiriman");
+    expect(groupedRailForPath("/optimasi-rute")).toBe("pengiriman");
+    expect(groupedRailForPath("/penjualan/pesanan")).toBe("sales");
+    expect(groupedRailForPath("/admin/import")).toBe("sales");
+    expect(groupedRailForPath("/laporan/status-po")).toBe("sales");
+    expect(groupedRailForPath("/laporan/prediksi-order")).toBe("sales");
+    expect(groupedRailForPath("/kas-bank/daftar")).toBe("keuangan");
+    expect(groupedRailForPath("/buku-besar/jurnal")).toBe("keuangan");
+    expect(groupedRailForPath("/hr-payroll/karyawan")).toBe("hrPayroll");
+    expect(groupedRailForPath("/administrasi-karyawan/data")).toBe("employeeAdmin");
+    expect(groupedRailForPath("/settings/pengguna")).toBe("settings");
+    expect(groupedRailForPath("/laporan/analitik-output")).toBe("reports");
+    expect(groupedRailForPath("/laporan/gaji-operator")).toBe("reports");
+    expect(groupedRailForPath("/dashboard")).toBe("dashboard");
+    expect(groupedRailForPath("/dashboard/penjualan")).toBe("dashboard");
+    expect(groupedRailForPath("/chat")).toBeNull();
+    expect(groupedRailForPath("/spk")).toBeNull();
+    expect(nextChevronMenu(null, "produksi")).toBe("produksi");
+    expect(nextChevronMenu(null, "pengiriman")).toBe("pengiriman");
+    expect(nextChevronMenu(null, "keuangan")).toBe("keuangan");
+    expect(nextChevronMenu(null, "sales")).toBe("sales");
+    expect(nextChevronMenu("produksi", "produksi")).toBeNull();
+    expect(nextChevronMenu("keuangan", "sales")).toBeNull();
+    expect(nextChevronMenu(null, null)).toBeNull();
+    expect(railLabel({ label: "SPK", tooltipLabel: "SPK Antar Divisi" })).toBe("SPK Antar Divisi");
     expect(presentSidebarLeaf({ key: "terkirim", label: "Driver / Terkirim", to: "/tasks/delivery" }).label).toBe("Kurir / Terkirim");
+  });
+
+  test("permission-limited rails still map to the same chevron group", () => {
+    const produksiOnly = modelFrom(has(NAV_KEYS.schedule));
+    expect(group(produksiOnly, "produksi")).not.toBeNull();
+    expect(group(produksiOnly, "pengiriman")).toBeNull();
+    expect(groupedRailForPath("/produksi")).toBe("produksi");
+    const kirimOnly = modelFrom(has(NAV_KEYS.deliverySchedule));
+    expect(group(kirimOnly, "pengiriman")).not.toBeNull();
+    expect(group(kirimOnly, "produksi")).toBeNull();
+    expect(groupedRailForPath("/produksi/jadwal-pengiriman")).toBe("pengiriman");
+    const kasOnly = modelFrom(has(NAV_KEYS.cashBankAccounts));
+    expect(group(kasOnly, "keuangan").sections.map((section) => section.heading)).toEqual(["Kas & Bank"]);
+    expect(groupedRailForPath("/kas-bank/daftar")).toBe("keuangan");
   });
 });

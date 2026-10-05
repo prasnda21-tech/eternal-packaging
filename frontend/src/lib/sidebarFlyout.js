@@ -14,8 +14,8 @@ export function placeSidebarFlyout(railRect, anchorRect, panelSize = {}, viewpor
   const railBottom = Math.round(railRect?.bottom || 0);
   const railW = railRect?.width || 0;
   const railH = railRect?.height || 0;
-  // Short horizontal shell (narrow viewport) drops below. A vertical rail,
-  // including the optional 240px expanded sidebar, always opens to the right.
+  // Short horizontal shell (narrow viewport) drops below.
+  // The permanent compact vertical rail always opens to the right.
   const isHorizontalRail = railH > 0 && railH <= HORIZONTAL_RAIL_MAX_HEIGHT && railW > railH;
 
   let left;

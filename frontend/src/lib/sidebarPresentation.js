@@ -2,37 +2,10 @@
 
 import { NAV_KEYS } from "./navAccess";
 
-export const SIDEBAR_MODE_STORAGE_KEY = "ep.desktopSidebar.mode";
-export const SIDEBAR_RAIL_COMPACT = 64;
-export const SIDEBAR_RAIL_EXPANDED = 240;
+export const SIDEBAR_RAIL_WIDTH = 64;
 
 const PRODUCTION_TASK_KEYS = ["designer", "screener", "kepala_produksi", "helper", "operator", "packing"];
 const DELIVERY_TASK_KEYS = ["surat_jalan", "loading", "terkirim"];
-
-export function readSidebarMode(storage) {
-  try {
-    return storage?.getItem(SIDEBAR_MODE_STORAGE_KEY) === "expanded" ? "expanded" : "compact";
-  } catch {
-    return "compact";
-  }
-}
-
-export function writeSidebarMode(storage, mode) {
-  try {
-    storage?.setItem(SIDEBAR_MODE_STORAGE_KEY, mode === "expanded" ? "expanded" : "compact");
-  } catch {
-    /* preference is local and optional */
-  }
-}
-
-export function sidebarPreferenceStore() {
-  try {
-    if (typeof window === "undefined") return null;
-    return window.localStorage;
-  } catch {
-    return null;
-  }
-}
 
 /** Sidebar copy only. Workspace tabs keep the catalog labels from navAccess. */
 export function presentSidebarLeaf(item) {
@@ -99,8 +72,7 @@ export function buildDesktopSidebar({
     rails.push({
       id: "spk",
       label: "SPK",
-      labelCompact: "SPK",
-      labelExpanded: "SPK Antar Divisi",
+      tooltipLabel: "SPK Antar Divisi",
       kind: "link",
       to: "/spk",
       testid: "top-nav-spk",
@@ -264,7 +236,7 @@ export function sidebarLeaves(rails) {
   const leaves = [];
   (rails || []).forEach((rail) => {
     if (rail.kind === "link") {
-      leaves.push({ group: rail.id, section: "", label: rail.labelExpanded || rail.label, to: rail.to, key: rail.id });
+      leaves.push({ group: rail.id, section: "", label: rail.label, to: rail.to, key: rail.id });
     }
     (rail.sections || []).forEach((block) => {
       (block.items || []).forEach((item) => {
@@ -335,8 +307,30 @@ export function isFinanceRailActive(pathname) {
   return path.startsWith("/kas-bank") || path.startsWith("/buku-besar");
 }
 
-export function railLabel(entry, expanded) {
+export function railLabel(entry) {
   if (!entry) return "";
-  if (entry.id === "spk") return expanded ? entry.labelExpanded : entry.labelCompact;
-  return entry.label;
+  return entry.tooltipLabel || entry.label;
+}
+
+/** Grouped rail that owns this path. Direct links such as Chat and SPK return null. */
+export function groupedRailForPath(pathname) {
+  if (isDeliveryRailActive(pathname)) return "pengiriman";
+  if (isProductionRailActive(pathname)) return "produksi";
+  if (isSalesRailActive(pathname)) return "sales";
+  if (isFinanceRailActive(pathname)) return "keuangan";
+  const path = cleanPath(pathname);
+  if (path === "/dashboard" || path.startsWith("/dashboard/")) return "dashboard";
+  if (path.startsWith("/pembelian")) return "purchasing";
+  if (path.startsWith("/persediaan")) return "inventory";
+  if (path.startsWith("/administrasi-karyawan")) return "employeeAdmin";
+  if (path.startsWith("/hr-payroll")) return "hrPayroll";
+  if (isOperationalReportRailActive(pathname)) return "reports";
+  if (path.startsWith("/settings")) return "settings";
+  return null;
+}
+
+/** Open the active group, or close the flyout that is already open. */
+export function nextChevronMenu(openMenuId, groupedRailId) {
+  if (openMenuId) return null;
+  return groupedRailId || null;
 }

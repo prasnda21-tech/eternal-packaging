@@ -35,22 +35,27 @@ describe("sidebar flyout interaction", () => {
     expect(shell).toMatch(/onClick=\{closeFlyout\}/);
     expect(shell).toMatch(/title=\{label\}/);
     expect(shell).toMatch(/rail-tooltip/);
-    expect(shell).toMatch(/rail-label/);
+    expect(shell).toMatch(/aria-label=\{label\}/);
+    expect(shell).not.toMatch(/rail-label/);
   });
 
-  test("flyout stays to the right of compact and expanded rails", () => {
+  test("flyout stays to the right of the permanent 64px rail and does not shift main content", () => {
     expect(shell).toMatch(/placeSidebarFlyout/);
     expect(shell).toMatch(/app-sidebar-slot/);
     expect(shell).toMatch(/style=\{flyoutStyle\}/);
     expect(shell).toMatch(/ref=\{sidebarRef\}/);
     expect(css).toMatch(/\.app-sidebar-slot\{/);
-    expect(css).toMatch(/--sidebar-rail:64px/);
-    expect(css).toMatch(/\.app-shell\.is-sidebar-expanded\{--sidebar-rail:240px\}/);
+    expect(css).toMatch(/\.app-shell\{--sidebar-rail:64px/);
+    expect(css).toMatch(/grid-template-columns:var\(--sidebar-rail\) minmax\(0,1fr\)/);
+    expect(css).not.toMatch(/is-sidebar-expanded/);
+    expect(css).not.toMatch(/--sidebar-rail:240px/);
     expect(css).not.toMatch(/\.sidebar-flyout\{[^}]*top:12px/);
     expect(css).not.toMatch(/\.sidebar-flyout\{[^}]*left:8px;right:8px;top:56px/);
     expect(css).toMatch(/overflow-x:hidden/);
-    expect(css).toMatch(/max-width:min\(320px,calc\(100vw - var\(--sidebar-rail\)\)\)/);
-    expect(flyout).toMatch(/including the optional 240px expanded sidebar, always opens to the right/);
+    expect(css).toMatch(/width:min\(280px,calc\(100vw - var\(--sidebar-rail\) - 16px\)\)/);
+    expect(flyout).toMatch(/permanent compact vertical rail always opens to the right/);
+    expect(shell).not.toMatch(/sidebarExpanded/);
+    expect(shell).not.toMatch(/sidebar-mode-toggle/);
   });
 
   test("menu names routes and permission helpers stay the same", () => {
@@ -151,8 +156,10 @@ describe("sidebar flyout interaction", () => {
     expect(presentation).toMatch(/flyoutId: "sidebar-flyout-dashboard"/);
     expect(shell).toMatch(/toggleMenu\(entry\.id\)/);
     expect(shell).not.toMatch(/to="\/dashboard"/);
-    expect(presentation).toMatch(/labelCompact: "SPK"/);
-    expect(presentation).toMatch(/labelExpanded: "SPK Antar Divisi"/);
+    expect(presentation).toMatch(/label: "SPK"/);
+    expect(presentation).toMatch(/tooltipLabel: "SPK Antar Divisi"/);
+    expect(presentation).not.toMatch(/labelCompact/);
+    expect(presentation).not.toMatch(/labelExpanded/);
   });
 
   test("Pengaturan rail opens the shared list flyout without navigating", () => {
@@ -165,13 +172,24 @@ describe("sidebar flyout interaction", () => {
     expect(grid).toMatch(/to=\{item\.to\}/);
   });
 
-  test("compact is the default and expanded is a local preference", () => {
-    expect(shell).toMatch(/readSidebarMode\(sidebarPreferenceStore\(\)\)/);
-    expect(shell).toMatch(/writeSidebarMode/);
-    expect(shell).toMatch(/data-sidebar-mode=\{sidebarExpanded \? "expanded" : "compact"\}/);
-    expect(shell).toMatch(/aria-label=\{sidebarExpanded \? "Mode ringkas" : "Mode diperlebar"\}/);
-    expect(shell).toMatch(/data-testid="sidebar-mode-toggle"/);
-    expect(presentation).toMatch(/ep\.desktopSidebar\.mode/);
+  test("divider chevron opens the active grouped rail and stays off direct links", () => {
+    expect(shell).toMatch(/groupedRailForPath\(location\.pathname\)/);
+    expect(shell).toMatch(/nextChevronMenu\(cur, edgeGroupId\)/);
+    expect(shell).toMatch(/data-testid="sidebar-edge-toggle"/);
+    expect(shell).toMatch(/aria-label=\{activeSidebarMenu \? "Tutup menu" : "Buka menu"\}/);
+    expect(shell).toMatch(/aria-expanded=\{!!activeSidebarMenu\}/);
+    expect(shell).toMatch(/aria-controls=\{openEntry \? openEntry\.flyoutId : undefined\}/);
+    expect(shell).toMatch(/\{groupedEntry \? \(/);
+    expect(shell).toMatch(/<ChevronRight/);
+    expect(shell).toMatch(/<ChevronLeft/);
+    expect(css).toMatch(/\.sidebar-edge-toggle\{/);
+    expect(css).toMatch(/width:26px;height:26px/);
+    expect(css).toMatch(/\.sidebar-edge-toggle:focus-visible\{/);
+    expect(presentation).toMatch(/export const SIDEBAR_RAIL_WIDTH = 64/);
+    expect(presentation).not.toMatch(/ep\.desktopSidebar\.mode/);
+    expect(presentation).not.toMatch(/readSidebarMode/);
+    expect(presentation).not.toMatch(/writeSidebarMode/);
+    expect(shell).not.toMatch(/localStorage/);
     expect(shell).not.toMatch(/role === /);
   });
 

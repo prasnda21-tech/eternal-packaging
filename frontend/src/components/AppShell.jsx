@@ -1,4 +1,4 @@
-import { BarChart3, BookOpen, Boxes, CalendarClock, ClipboardCheck, ClipboardList, ClipboardPlus, Coins, Contact, CreditCard, Download, FileBarChart, FileText, FolderOpen, IdCard, Image as ImageIcon, Landmark, LayoutDashboard, LineChart, ListOrdered, LogOut, MessageCircle, Package, PanelLeft, PanelLeftClose, PanelLeftOpen, PlusCircle, Receipt, RotateCcw, Route, Scale, ScanLine, ScrollText, Settings as SettingsIcon, Shield, ShoppingBag, ShoppingCart, Table as TableIcon, Tags, Target, TrendingUp, Truck, Users, Wallet, Warehouse, ArrowLeftRight } from "lucide-react";
+import { BarChart3, BookOpen, Boxes, CalendarClock, ChevronLeft, ChevronRight, ClipboardCheck, ClipboardList, ClipboardPlus, Coins, Contact, CreditCard, Download, FileBarChart, FileText, FolderOpen, IdCard, Image as ImageIcon, Landmark, LayoutDashboard, LineChart, ListOrdered, LogOut, MessageCircle, Package, PanelLeft, PlusCircle, Receipt, RotateCcw, Route, Scale, ScanLine, ScrollText, Settings as SettingsIcon, Shield, ShoppingBag, ShoppingCart, Table as TableIcon, Tags, Target, TrendingUp, Truck, Users, Wallet, Warehouse, ArrowLeftRight } from "lucide-react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { Suspense, forwardRef, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import api from "../lib/api";
@@ -7,7 +7,7 @@ import { ROLES } from "../lib/constants";
 import { canAccessRoutePage } from "../lib/independentRoute";
 import { NAV_KEYS, TASK_NAV_ORDER, cashBankMenuItems, cashBankNavVisible, dashboardMenuItems, dashboardNavVisible, employeeAdminMenuItems, employeeAdminNavVisible, hrPayrollMenuItems, hrPayrollNavVisible, inventoryMenuItems, inventoryNavVisible, ledgerMenuItems, ledgerNavVisible, productionMenuItems, productionNavVisible, purchasingMenuItems, purchasingNavVisible, reportsMenuItems, reportsNavVisible, salesMenuItems, salesNavVisible, settingsMenuItems, taskMenuItems } from "../lib/navAccess";
 import { nextSidebarMenu, placeSidebarFlyout } from "../lib/sidebarFlyout";
-import { buildDesktopSidebar, isDeliveryRailActive, isFinanceRailActive, isOperationalReportRailActive, isProductionRailActive, isSalesRailActive, isSalesReportPath, railLabel, readSidebarMode, sidebarPreferenceStore, writeSidebarMode } from "../lib/sidebarPresentation";
+import { buildDesktopSidebar, groupedRailForPath, isDeliveryRailActive, isFinanceRailActive, isOperationalReportRailActive, isProductionRailActive, isSalesRailActive, isSalesReportPath, nextChevronMenu, railLabel } from "../lib/sidebarPresentation";
 import { canSeeSpkNav } from "../lib/spk";
 import { moduleFromPath } from "../lib/uiModule";
 import { mergeWorkspaceTabsPreview } from "../lib/workspaceTabsPreview";
@@ -150,7 +150,6 @@ const RailButton = forwardRef(function RailButton({ testid, label, icon: Icon, e
       data-testid={testid}
     >
       <Icon size={20} strokeWidth={1.75} aria-hidden="true" />
-      <span className="rail-label">{label}</span>
       <span className="rail-tooltip">{label}</span>
     </button>
   );
@@ -168,7 +167,6 @@ function RailNavLink({ to, testid, label, icon: Icon, end, onNavigate, badge }) 
       onClick={onNavigate}
     >
       <Icon size={20} strokeWidth={1.75} aria-hidden="true" />
-      <span className="rail-label">{label}</span>
       {badge ? (
         <span className="rail-unread-badge" data-testid={`${testid}-unread`}>
           {badge > 99 ? "99+" : badge}
@@ -204,8 +202,7 @@ export default function AppShell() {
   const produksiActive = isProductionRailActive(location.pathname);
   const pengirimanActive = isDeliveryRailActive(location.pathname);
   const [activeSidebarMenu, setActiveSidebarMenu] = useState(null);
-  const [sidebarMode, setSidebarMode] = useState(() => readSidebarMode(sidebarPreferenceStore()));
-  const sidebarExpanded = sidebarMode === "expanded";
+  const [edgeTop, setEdgeTop] = useState(96);
   // Go-Live: indikator koneksi backend/MongoDB berbasis health probe. TIDAK
   // menampilkan "Terhubung" kalau probe gagal.
   const [health, setHealth] = useState({ ok: null, checkedAt: null });
@@ -344,7 +341,7 @@ export default function AppShell() {
       window.removeEventListener("resize", update);
       window.removeEventListener("scroll", update, true);
     };
-  }, [activeSidebarMenu, sidebarExpanded]);
+  }, [activeSidebarMenu]);
 
   const doLogout = async () => {
     await logout();
@@ -471,18 +468,48 @@ export default function AppShell() {
     settings: settingsActive,
   };
 
-  const toggleSidebarMode = () => {
-    const next = sidebarExpanded ? "compact" : "expanded";
-    setSidebarMode(next);
-    writeSidebarMode(sidebarPreferenceStore(), next);
+  const groupedRailId = groupedRailForPath(location.pathname);
+  const groupedEntry = sidebar.find((entry) => entry.kind === "menu" && entry.id === groupedRailId) || null;
+  const edgeGroupId = groupedEntry ? groupedEntry.id : null;
+
+  useLayoutEffect(() => {
+    if (!edgeGroupId) return undefined;
+    const update = () => {
+      const rail = sidebarRef.current;
+      if (!rail) return;
+      const openAnchor = activeSidebarMenu ? railRefs.current[activeSidebarMenu] : null;
+      const anchor = openAnchor || railRefs.current[edgeGroupId];
+      const railBox = rail.getBoundingClientRect();
+      const minTop = 72;
+      const maxTop = Math.max(minTop, railBox.height - 20);
+      let next = 96;
+      if (anchor) {
+        const box = anchor.getBoundingClientRect();
+        next = box.top - railBox.top + (box.height / 2);
+      }
+      next = Math.min(maxTop, Math.max(minTop, Math.round(next)));
+      setEdgeTop((prev) => (prev === next ? prev : next));
+    };
+    update();
+    const nav = sidebarRef.current?.querySelector(".app-sidebar-nav");
+    nav?.addEventListener("scroll", update, { passive: true });
+    window.addEventListener("resize", update);
+    return () => {
+      nav?.removeEventListener("scroll", update);
+      window.removeEventListener("resize", update);
+    };
+  }, [activeSidebarMenu, edgeGroupId]);
+
+  const toggleChevron = () => {
+    setActiveSidebarMenu((cur) => nextChevronMenu(cur, edgeGroupId));
   };
 
   return (
-    <div className={"app-shell" + (sidebarExpanded ? " is-sidebar-expanded" : "")} data-module={uiModule} data-ui-system="colorful" data-sidebar-mode={sidebarExpanded ? "expanded" : "compact"}>
+    <div className="app-shell" data-module={uiModule} data-ui-system="colorful">
       <div className="app-sidebar-slot">
       <aside className="app-sidebar" ref={sidebarRef}>
         <Link to="/" className="brand" title="Eternal Packaging" data-testid="sidebar-brand" onClick={closeFlyout}>
-          <BrandMark compact={!sidebarExpanded} onDark />
+          <BrandMark compact onDark />
         </Link>
         <nav className="app-sidebar-nav" aria-label="Menu utama">
           {sidebar.map((entry) => (
@@ -491,7 +518,7 @@ export default function AppShell() {
                 key={entry.id}
                 to={entry.id === "spk" ? "/spk" : entry.id === "chat" ? "/chat" : entry.to}
                 testid={entry.testid}
-                label={railLabel(entry, sidebarExpanded)}
+                label={railLabel(entry)}
                 icon={RAIL_ICONS[entry.id]}
                 badge={entry.id === "chat" && chatUnread > 0 ? chatUnread : 0}
                 onNavigate={closeFlyout}
@@ -501,7 +528,7 @@ export default function AppShell() {
                 <RailButton
                   ref={(el) => { railRefs.current[entry.id] = el; }}
                   testid={entry.id === "employeeAdmin" ? "top-nav-employee-admin" : entry.testid}
-                  label={RAIL_LABELS[entry.id] || railLabel(entry, sidebarExpanded)}
+                  label={RAIL_LABELS[entry.id] || railLabel(entry)}
                   icon={RAIL_ICONS[entry.id]}
                   expanded={activeSidebarMenu === entry.id}
                   controls={entry.flyoutId}
@@ -513,17 +540,22 @@ export default function AppShell() {
             )
           ))}
         </nav>
-        <button
-          type="button"
-          className="rail-btn sidebar-mode-toggle"
-          aria-label={sidebarExpanded ? "Mode ringkas" : "Mode diperlebar"}
-          title={sidebarExpanded ? "Mode ringkas" : "Mode diperlebar"}
-          data-testid="sidebar-mode-toggle"
-          onClick={toggleSidebarMode}
-        >
-          {sidebarExpanded ? <PanelLeftClose size={20} strokeWidth={1.75} aria-hidden="true" /> : <PanelLeftOpen size={20} strokeWidth={1.75} aria-hidden="true" />}
-          <span className="rail-label">{sidebarExpanded ? "Ringkas" : "Lebar"}</span>
-        </button>
+        {groupedEntry ? (
+          <button
+            type="button"
+            className="sidebar-edge-toggle"
+            aria-label={activeSidebarMenu ? "Tutup menu" : "Buka menu"}
+            aria-expanded={!!activeSidebarMenu}
+            aria-controls={openEntry ? openEntry.flyoutId : undefined}
+            data-testid="sidebar-edge-toggle"
+            style={{ top: edgeTop }}
+            onClick={toggleChevron}
+          >
+            {activeSidebarMenu
+              ? <ChevronLeft size={16} strokeWidth={2} aria-hidden="true" />
+              : <ChevronRight size={16} strokeWidth={2} aria-hidden="true" />}
+          </button>
+        ) : null}
       </aside>
 
       {openEntry && openSections.length > 0 && (

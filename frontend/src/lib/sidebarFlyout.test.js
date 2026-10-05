@@ -44,18 +44,18 @@ describe("sidebar flyout placement", () => {
     expect(pos.top).toBeGreaterThanOrEqual(8);
   });
 
-  test("expanded vertical rail still places the panel to the right", () => {
+  test("permanent 64px rail at the desktop preview size keeps the panel to the right", () => {
     const pos = placeSidebarFlyout(
-      { left: 0, right: 240, top: 0, bottom: 768, width: 240, height: 768 },
-      { left: 8, right: 232, top: 180, bottom: 220, width: 224, height: 40 },
+      { left: 0, right: 64, top: 0, bottom: 614, width: 64, height: 614 },
+      { left: 8, right: 56, top: 180, bottom: 224, width: 48, height: 44 },
       { width: 280, height: 320 },
-      { width: 1366, height: 768 },
+      { width: 1093, height: 614 },
     );
     expect(pos.placement).toBe("right");
-    expect(pos.left).toBe(240);
+    expect(pos.left).toBe(64);
     expect(pos.top).toBe(180);
-    expect(pos.scrimLeft).toBe(240);
-    expect(pos.left).toBeGreaterThanOrEqual(240);
+    expect(pos.scrimLeft).toBe(64);
+    expect(pos.left).toBeGreaterThanOrEqual(64);
   });
 
   test("horizontal mobile rail places the panel below the rail, not over it", () => {
