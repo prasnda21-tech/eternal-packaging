@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Link, Navigate, useLocation, useNavigate, useParams } from "react-router-dom";
-import { AlertCircle, AlertTriangle, ArrowLeft, CalendarClock, Check, ChevronDown, Copy, Ellipsis, Eye, FileCheck2, FileText, List, MessageSquare, Pencil, RefreshCw, RotateCcw, ScanLine, ShieldOff, Trash2, Truck, X, XCircle, Zap } from "lucide-react";
+import { AlertCircle, AlertTriangle, ArrowLeft, CalendarClock, Check, ChevronDown, Copy, Ellipsis, Eye, FileCheck2, FileText, List, MessageSquare, Pencil, QrCode, RefreshCw, RotateCcw, ScanLine, Send, ShieldOff, Trash2, Truck, X, XCircle, Zap } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { STAGES, canAdvance, formatDate, formatDisplayDate, formatDisplayDateTime } from "../lib/constants";
@@ -22,6 +22,8 @@ import EditPoInfoModal from "../components/EditPoInfoModal";
 import StageBar from "../components/StageBar";
 import { MetricCell, MetricRow, QtyOpsHead, statusClassFor } from "../components/qtyUi";
 import { terkirimQtySummary } from "../lib/deliveryHistory";
+import { trackingShareFromLink } from "../lib/liveTrackingLink";
+import { trackingQrDataUrl } from "../lib/trackingQr";
 import { aksiPoSalesDeliveryState } from "../lib/aksiPoSalesDelivery";
 import useAutoRefresh from "../lib/useAutoRefresh";
 import {
@@ -101,6 +103,9 @@ export default function PODetail() {
   const [actionConfirm, setActionConfirm] = useState(null);
   const [trackingCopyMsg, setTrackingCopyMsg] = useState("");
   const [trackingBusy, setTrackingBusy] = useState(false);
+  const [trackingShare, setTrackingShare] = useState(null);
+  const [trackingQrOpen, setTrackingQrOpen] = useState(false);
+  const [trackingQrSrc, setTrackingQrSrc] = useState("");
   const [locRow, setLocRow] = useState(null);
   const [editInfoOpen, setEditInfoOpen] = useState(false);
   const [dangerActionsOpen, setDangerActionsOpen] = useState(false);
@@ -307,6 +312,18 @@ export default function PODetail() {
     }
     return api.fetchStoredFileBlob(storagePath, { signal });
   }, [order?.source_pdf?.storage_path]);
+
+  useEffect(() => {
+    if (!trackingQrOpen || !trackingShare?.qrValue) return undefined;
+    let cancelled = false;
+    setTrackingQrSrc("");
+    trackingQrDataUrl(trackingShare.qrValue).then((src) => {
+      if (!cancelled) setTrackingQrSrc(src || "");
+    }).catch(() => {
+      if (!cancelled) setTrackingQrSrc("");
+    });
+    return () => { cancelled = true; };
+  }, [trackingQrOpen, trackingShare]);
 
   const loadReceiptProof = useCallback(({ download = false, signal } = {}) => {
     const receiptId = proofViewerReceipt?.id;
@@ -543,14 +560,38 @@ export default function PODetail() {
     canManageSuratJalan || canCreateDelivery || canEditPoInfo || canReplaceLineProduct || canRepeatOrder
   );
 
-  const copyTrackingLink = async () => {
+  const loadTrackingShare = async () => {
+    const link = await api.orderTrackingLink(order.id);
+    const share = trackingShareFromLink({
+      origin: window.location.origin,
+      link,
+      customerName: order.customer || order.customer_name,
+      poNumber: order.po_number,
+    });
+    if (!share.url) {
+      const error = new Error("empty tracking url");
+      error.response = { data: { detail: "Gagal menyalin link tracking" } };
+      throw error;
+    }
+    setTrackingShare(share);
+    return share;
+  };
+
+  const openTrackingShare = async (channel) => {
     if (!order?.id || trackingBusy) return;
     setTrackingBusy(true);
     try {
-      const r = await api.orderTrackingLink(order.id);
-      const url = `${window.location.origin}${r.path || `/tracking/${r.token}`}`;
-      await navigator.clipboard.writeText(url);
-      setTrackingCopyMsg("Link tracking disalin");
+      const share = await loadTrackingShare();
+      if (channel === "copy") {
+        await navigator.clipboard.writeText(share.url);
+        setTrackingCopyMsg("Link tracking disalin");
+      } else if (channel === "whatsapp") {
+        window.open(share.whatsappHref, "_blank", "noopener,noreferrer");
+        setTrackingCopyMsg("WhatsApp dibuka");
+      } else if (channel === "qr") {
+        setTrackingQrOpen(true);
+        setTrackingCopyMsg("QR Live Tracking");
+      }
       setTimeout(() => setTrackingCopyMsg(""), 2200);
     } catch (e) {
       const d = e.response?.data?.detail;
@@ -1698,15 +1739,35 @@ export default function PODetail() {
           </ul>
           <div className="po-doc-actionbar" data-testid="po-actions-admin-docs">
             {canCopyTrackingLink && (
-              <button
-                type="button"
-                className="ghost sm"
-                onClick={copyTrackingLink}
-                disabled={trackingBusy || order.cancelled}
-                data-testid="copy-tracking-link"
-              >
-                <Copy size={14} /> Live Tracking
-              </button>
+              <>
+                <button
+                  type="button"
+                  className="ghost sm"
+                  onClick={() => openTrackingShare("copy")}
+                  disabled={trackingBusy || order.cancelled}
+                  data-testid="copy-tracking-link"
+                >
+                  <Copy size={14} /> Live Tracking
+                </button>
+                <button
+                  type="button"
+                  className="ghost sm"
+                  onClick={() => openTrackingShare("whatsapp")}
+                  disabled={trackingBusy || order.cancelled}
+                  data-testid="tracking-share-whatsapp"
+                >
+                  <Send size={14} /> WhatsApp
+                </button>
+                <button
+                  type="button"
+                  className="ghost sm"
+                  onClick={() => openTrackingShare("qr")}
+                  disabled={trackingBusy || order.cancelled}
+                  data-testid="tracking-share-qr"
+                >
+                  <QrCode size={14} /> QR
+                </button>
+              </>
             )}
             {canProcessSalesDelivery ? (
               <Link
@@ -1729,6 +1790,24 @@ export default function PODetail() {
               <FileText size={14} /> Buat Faktur
             </Link>
             {trackingCopyMsg && <span className="muted small" data-testid="tracking-copy-msg">{trackingCopyMsg}</span>}
+            {trackingShare?.url && (
+              <p className="tracking-share-url" data-testid="tracking-share-url">{trackingShare.url}</p>
+            )}
+            {trackingQrOpen && trackingShare?.qrValue && (
+              <div className="tracking-share-qr-wrap" data-testid="tracking-qr-panel">
+                {trackingQrSrc ? (
+                  <img
+                    src={trackingQrSrc}
+                    alt="QR Live Tracking"
+                    className="tracking-share-qr"
+                    data-testid="tracking-share-qr-image"
+                    data-qr-value={trackingShare.qrValue}
+                  />
+                ) : (
+                  <span className="muted small" data-testid="tracking-share-qr-pending">Menyiapkan QR</span>
+                )}
+              </div>
+            )}
             <p className="muted small po-doc-note">Dokumen mengikuti izin akses dan status order.</p>
           </div>
         </div>

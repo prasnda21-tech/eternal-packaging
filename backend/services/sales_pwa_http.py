@@ -86,6 +86,7 @@ def register_sales_pwa_routes(
         direction: Optional[str] = None,
         skip: int = 0,
         limit: int = 50,
+        design_queue: Optional[str] = None,
         sales_user_id: Optional[str] = None,
         sales_id: Optional[str] = None,
         user=Depends(_pwa_user),
@@ -108,7 +109,19 @@ def register_sales_pwa_routes(
             direction=direction or "desc",
             skip=skip,
             limit=limit,
+            design_queue=str(design_queue or "").strip().lower() in {"1", "true", "ya", "yes"},
         )
+
+    @api_router.get("/sales-pwa/field-actions")
+    async def sales_pwa_field_actions(
+        month: Optional[str] = None,
+        sales_user_id: Optional[str] = None,
+        sales_id: Optional[str] = None,
+        user=Depends(_pwa_user),
+    ):
+        """One owned-order read for both lapangan previews and the month selesai count."""
+        _ignore_spoofed_sales_id(sales_user_id, sales_id)
+        return await spwa.sales_pwa_field_actions(get_db(), user, month=month or "")
 
     @api_router.get("/sales-pwa/orders/{order_id}")
     async def sales_pwa_order_detail(

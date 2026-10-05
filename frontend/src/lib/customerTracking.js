@@ -1,3 +1,5 @@
+import { formatTrackingPageDate } from "./constants";
+
 export const CUSTOMER_STATUS_LABEL = {
   completed: "Selesai",
   in_progress: "Proses",
@@ -151,17 +153,7 @@ export function hasApprovalCta(designApproval) {
 }
 
 export function formatTrackingDate(value) {
-  const raw = String(value || "").trim();
-  if (!raw) return "";
-  const dt = new Date(raw);
-  if (Number.isNaN(dt.getTime())) {
-    return raw.length > 16 ? raw.slice(0, 10) : raw;
-  }
-  return dt.toLocaleDateString("id-ID", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-  });
+  return formatTrackingPageDate(value);
 }
 
 export function formatItemQty(item) {
@@ -172,11 +164,7 @@ export function formatItemQty(item) {
 }
 
 export function formatTrackingDateShort(value) {
-  const raw = String(value || "").trim();
-  if (!raw) return "";
-  const dt = new Date(raw);
-  if (Number.isNaN(dt.getTime())) return raw.length > 10 ? raw.slice(0, 10) : raw;
-  return dt.toLocaleDateString("id-ID", { day: "2-digit", month: "short" });
+  return formatTrackingPageDate(value);
 }
 
 export function stageShortLabel(stage) {

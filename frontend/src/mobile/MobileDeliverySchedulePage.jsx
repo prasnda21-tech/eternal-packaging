@@ -63,7 +63,13 @@ import {
   packingProgressText,
   sortByOpsQueue,
 } from "../lib/mobileOpsQueue";
-import { canViewMobileSchedule, mobileProductionDashboardParams } from "../lib/mobileSchedule";
+import { canViewMobileSchedule, mobileProductionDashboardParams, rowsFromProductionDashboard } from "../lib/mobileSchedule";
+import {
+  invalidateProductionSummaryCache,
+  loadProductionSummary,
+  productionSummaryGeneration,
+} from "../lib/productionSummaryCache";
+import { patchScheduleRowsForDeliveredShipment } from "../lib/deliveryScheduleRowPatch";
 import { getCanonicalCustomerName } from "../lib/canonicalCustomer";
 import MobileWorkspaceSelect from "./components/MobileWorkspaceSelect";
 import MobileTaskModal, { opsRoleIcon } from "./components/MobileTaskModal";
@@ -343,8 +349,15 @@ export default function MobileDeliverySchedulePage() {
   });
   const [rows, setRows] = useState([]);
   const [productionRows, setProductionRows] = useState([]);
+  const [productionState, setProductionState] = useState("loading");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const [deliverySavedNotice, setDeliverySavedNotice] = useState("");
+  const scheduleLoadRef = useRef(0);
+  const scheduleBusyRef = useRef(0);
+  const summaryLoadRef = useRef(0);
+  const summaryBypassRef = useRef(false);
+  const taskLoadRef = useRef(0);
   const [taskRows, setTaskRows] = useState([]);
   const [taskBusy, setTaskBusy] = useState(false);
   const [taskErr, setTaskErr] = useState("");
@@ -403,47 +416,143 @@ export default function MobileDeliverySchedulePage() {
     setParams(next, { replace: true });
   }, [allowed, activeRoleId, params, setParams]);
 
+  const fetchProductionSummary = useCallback(async ({ bypass, stillCurrent }) => {
+    if (!canOpenProduction) return;
+    if (stillCurrent && !stillCurrent()) return;
+    const requestId = ++summaryLoadRef.current;
+    const requestParams = mobileProductionDashboardParams({
+      includeCancelled: false,
+      includeCompleted: true,
+    });
+    const fetcher = () => withTimeout(api.productionDashboard(requestParams), MOBILE_LOAD_TIMEOUT_MS);
+    const stillMine = () => requestId === summaryLoadRef.current && (!stillCurrent || stillCurrent());
+    try {
+      const startedGen = productionSummaryGeneration();
+      let payload = await loadProductionSummary({
+        userKey,
+        requestParams,
+        bypass: Boolean(bypass),
+        fetcher,
+      });
+      if (!stillMine()) return;
+      if (productionSummaryGeneration() !== startedGen) {
+        const retryGen = productionSummaryGeneration();
+        payload = await loadProductionSummary({
+          userKey,
+          requestParams,
+          bypass: true,
+          fetcher,
+        });
+        if (!stillMine()) return;
+        if (productionSummaryGeneration() !== retryGen) return;
+      }
+      setProductionRows(rowsFromProductionDashboard(payload));
+      setProductionState("ready");
+    } catch {
+      if (!stillMine()) return;
+      setProductionRows([]);
+      setProductionState("failed");
+    }
+  }, [canOpenProduction, userKey]);
+
   const load = useCallback(async () => {
     if (!allowed) {
       setBusy(false);
       setRows([]);
       setProductionRows([]);
+      setProductionState("ready");
       setErr("");
       return;
     }
     if (previewEnabled) {
       setBusy(false);
       setErr("");
+      setProductionState("ready");
       setRows(getPwaDeliverySjPreviewRows());
       setProductionRows(getPwaDeliverySjPreviewProductionRows());
       return;
     }
+    const requestId = ++scheduleLoadRef.current;
+    const current = () => requestId === scheduleLoadRef.current;
+    scheduleBusyRef.current += 1;
     setBusy(true);
     setErr("");
+    setProductionState(canOpenProduction ? "loading" : "ready");
+    if (!canOpenProduction) setProductionRows([]);
+    const schedulePromise = withTimeout(api.deliverySchedule(), MOBILE_LOAD_TIMEOUT_MS)
+      .then((d) => {
+        if (!current()) return;
+        setRows(d.rows || []);
+        setErr("");
+        setBusy(false);
+      })
+      .catch((e) => {
+        if (!current()) return;
+        setRows([]);
+        setErr(deliveryScheduleLoadErrorMessage(e));
+        setBusy(false);
+      });
     try {
-      const productionP = canOpenProduction
-        ? withTimeout(
-          api.productionDashboard(mobileProductionDashboardParams({
-            includeCancelled: false,
-            includeCompleted: true,
-          })),
-          MOBILE_LOAD_TIMEOUT_MS,
-        ).catch(() => ({ rows: [] }))
-        : Promise.resolve({ rows: [] });
-      const [d, prod] = await Promise.all([
-        withTimeout(api.deliverySchedule(), MOBILE_LOAD_TIMEOUT_MS),
-        productionP,
-      ]);
-      setRows(d.rows || []);
-      setProductionRows(Array.isArray(prod?.rows) ? prod.rows : []);
-    } catch (e) {
-      setRows([]);
-      setProductionRows([]);
-      setErr(deliveryScheduleLoadErrorMessage(e));
+      await schedulePromise;
     } finally {
-      setBusy(false);
+      scheduleBusyRef.current = Math.max(0, scheduleBusyRef.current - 1);
     }
-  }, [allowed, canOpenProduction, previewEnabled]);
+    // Dashboard summary shares the API worker with the schedule query.
+    // Start it after the schedule settles so SJ rows are not delayed.
+    // Cup/Screen/Cetak/Pack stay unavailable until this response arrives.
+    if (!canOpenProduction || !current()) return;
+    const bypass = summaryBypassRef.current;
+    summaryBypassRef.current = false;
+    await fetchProductionSummary({ bypass, stillCurrent: current });
+  }, [allowed, canOpenProduction, previewEnabled, fetchProductionSummary]);
+
+  const refreshScheduleRows = useCallback(async () => {
+    if (!allowed || previewEnabled) return;
+    const requestId = ++scheduleLoadRef.current;
+    const current = () => requestId === scheduleLoadRef.current;
+    scheduleBusyRef.current += 1;
+    try {
+      const d = await withTimeout(api.deliverySchedule(), MOBILE_LOAD_TIMEOUT_MS);
+      if (!current()) return;
+      setRows(d.rows || []);
+      setErr("");
+      setBusy(false);
+    } catch {
+      if (!current()) return;
+      setBusy(false);
+    } finally {
+      scheduleBusyRef.current = Math.max(0, scheduleBusyRef.current - 1);
+    }
+  }, [allowed, previewEnabled]);
+
+  const noteDeliveryConfirmed = useCallback((nextOrder, shipmentId) => {
+    if (!nextOrder) return;
+    setRows((prev) => patchScheduleRowsForDeliveredShipment(prev, nextOrder, shipmentId));
+    setDeliverySavedNotice("Bukti kirim berhasil disimpan");
+    setBusy(false);
+    refreshScheduleRows();
+  }, [refreshScheduleRows]);
+
+  useEffect(() => {
+    if (!allowed || previewEnabled || typeof document === "undefined") return undefined;
+    const onVisibility = () => {
+      if (document.visibilityState !== "visible") return;
+      if (scheduleBusyRef.current > 0) return;
+      invalidateProductionSummaryCache();
+      if (canOpenProduction) setProductionState("loading");
+      refreshScheduleRows().finally(() => {
+        fetchProductionSummary({ bypass: true });
+      });
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, [allowed, previewEnabled, refreshScheduleRows, fetchProductionSummary, canOpenProduction]);
+
+  useEffect(() => () => {
+    scheduleLoadRef.current += 1;
+    summaryLoadRef.current += 1;
+    taskLoadRef.current += 1;
+  }, []);
 
   const loadTasks = useCallback(async (division) => {
     if (!allowed || !division) {
@@ -452,16 +561,20 @@ export default function MobileDeliverySchedulePage() {
       setTaskErr("");
       return;
     }
+    const requestId = ++taskLoadRef.current;
+    const current = () => requestId === taskLoadRef.current;
     setTaskBusy(true);
     setTaskErr("");
     try {
       const d = await withTimeout(api.divisionTasks(division, "mine"), MOBILE_LOAD_TIMEOUT_MS);
+      if (!current()) return;
       setTaskRows(Array.isArray(d?.tasks) ? d.tasks : []);
     } catch (e) {
+      if (!current()) return;
       setTaskRows([]);
       setTaskErr(e?.response?.data?.detail || formatApiError(e, "Gagal memuat tugas."));
     } finally {
-      setTaskBusy(false);
+      if (current()) setTaskBusy(false);
     }
   }, [allowed]);
 
@@ -586,7 +699,7 @@ export default function MobileDeliverySchedulePage() {
     setTask({ open: true, order: null, shipmentId, row: r, busy: true, err: "" });
     (async () => {
       try {
-        const d = await withTimeout(api.getOrder(r.id), MOBILE_LOAD_TIMEOUT_MS);
+        const d = await withTimeout(api.getOrder(r.id, { view: "operational" }), MOBILE_LOAD_TIMEOUT_MS);
         const loaded = d?.order || d;
         if (needsShipment && !orderMatchesRequestedShipment(activeRole.id, loaded, shipmentId)) {
           setTask((prev) => ({
@@ -621,7 +734,11 @@ export default function MobileDeliverySchedulePage() {
   const Workspace = activeRole ? SCHEDULE_WORKSPACE_VIEWS[activeRole.id] : null;
   const taskContext = scheduleTaskContext(task.order, task.row);
 
-  const onRefresh = () => setReloadKey((n) => n + 1);
+  const onRefresh = () => {
+    summaryBypassRef.current = true;
+    invalidateProductionSummaryCache();
+    setReloadKey((n) => n + 1);
+  };
 
   return (
     <div className="mop-schedule-root mop-delivery-schedule-root">
@@ -685,6 +802,11 @@ export default function MobileDeliverySchedulePage() {
 
             {showTable && (
             <>
+            {deliverySavedNotice ? (
+              <p className="mop-muted" role="status" data-testid="mds-delivery-saved">
+                {deliverySavedNotice}
+              </p>
+            ) : null}
             {activeRoles.length > 0 && (
               <MobileWorkspaceSelect
                 workspaces={activeRoles}
@@ -800,6 +922,7 @@ export default function MobileDeliverySchedulePage() {
               <div
                 className="mop-schedule-scroll production-sheet production-sheet-viewport mop-ds-sheet-viewport"
                 data-testid="mds-scroll"
+                data-production-state={productionState}
                 ref={sheetZoom.setViewportRef}
                 style={productionSheetZoomStyle(sheetZoom.zoom)}
                 onScroll={persistScroll}
@@ -837,7 +960,11 @@ export default function MobileDeliverySchedulePage() {
                         ? productionById.get(String(r.id).trim())
                         : undefined;
                       const statusRow = deliveryRowWithProductionStatus(r, productionById);
-                      const tones = deliveryRoleMarkTones(statusRow, Boolean(productionRow));
+                      const tones = deliveryRoleMarkTones(
+                        productionState === "ready" ? statusRow : r,
+                        productionState === "ready" && Boolean(productionRow),
+                        productionState,
+                      );
                       return (
                         <tr
                           key={pwaDeliverySjRowKey(r)}
@@ -965,6 +1092,7 @@ export default function MobileDeliverySchedulePage() {
                   canEdit={hasPerm(activeRole.permission)}
                   onUpdated={(next) => setTask((prev) => ({ ...prev, order: next || prev.order }))}
                   onRequestClose={closeTask}
+                  onDeliveryConfirmed={activeRole?.id === "delivery" ? noteDeliveryConfirmed : undefined}
                   shipmentId={task.shipmentId}
                 />
               ) : null}

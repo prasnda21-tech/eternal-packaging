@@ -1,4 +1,4 @@
-import { comparisonDisplay, displayAmount, displayCount, formatRatio } from "./salesDashboard";
+import { balanceAsOfLabel, comparisonDisplay, displayAmount, displayCount, formatRatio, otherResultLines, plBars, positionLabel } from "./salesDashboard";
 import { dashboardMenuItems, dashboardNavVisible, NAV_KEYS } from "./navAccess";
 
 const has = (...keys) => (key) => keys.includes(key);
@@ -33,6 +33,44 @@ describe("sales dashboard access", () => {
       "/dashboard/penjualan",
     ]);
   });
+
+  test("operations-only access opens the same penjualan menu", () => {
+    const items = dashboardMenuItems(has("po.view"), { role: "ops" });
+    expect(dashboardNavVisible(has("po.view"), { role: "ops" })).toEqual({
+      parent: true,
+      production: false,
+      sales: false,
+      finance: false,
+    });
+    expect(items.map((item) => item.label)).toEqual(["Dashboard Penjualan"]);
+    expect(items.map((item) => item.to)).toEqual(["/dashboard/penjualan"]);
+  });
+
+  test("finance-only access keeps one penjualan menu item", () => {
+    const items = dashboardMenuItems(has("dashboard.finance.view"), { role: "finance" });
+    expect(items.map((item) => item.to)).toEqual(["/dashboard/penjualan"]);
+    expect(items.map((item) => item.label)).toEqual(["Dashboard Penjualan"]);
+  });
+
+  test("admin without stored keys sees penjualan because O2 and O3 are allowed", () => {
+    const items = dashboardMenuItems(() => false, { role: "admin" });
+    expect(items.map((item) => ({ label: item.label, to: item.to }))).toEqual([
+      { label: "Dashboard Penjualan", to: "/dashboard/penjualan" },
+    ]);
+  });
+
+  test("a user with no widget permission does not see a dashboard menu", () => {
+    expect(dashboardNavVisible(() => false, { role: "sales" }).parent).toBe(false);
+    expect(dashboardMenuItems(() => false, { role: "sales" })).toEqual([]);
+    expect(dashboardMenuItems(has(NAV_KEYS.dashboardSales), { role: "sales" })).toEqual([]);
+  });
+
+  test("production stays its own menu and does not add a second penjualan entry", () => {
+    const items = dashboardMenuItems(has(NAV_KEYS.dashboard, "dashboard.sales.view", "po.view"), { role: "admin" });
+    expect(items.map((item) => item.to)).toEqual(["/dashboard", "/dashboard/penjualan"]);
+    expect(items.filter((item) => item.label === "Dashboard Penjualan")).toHaveLength(1);
+    expect(items.some((item) => item.to === "/dashboard/widget")).toBe(false);
+  });
 });
 
 describe("sales dashboard presentation", () => {
@@ -57,5 +95,30 @@ describe("sales dashboard presentation", () => {
     expect(displayCount("zero", 0)).toBe("0");
     expect(formatRatio(null)).toBe("—");
     expect(formatRatio(0.7)).toBe("70%");
+  });
+
+  test("labels a live receivable position separately from a period-end balance", () => {
+    expect(positionLabel("")).toBe("Posisi saat ini");
+    expect(positionLabel("2026-10-03")).toBe("Posisi saat ini · 2026-10-03");
+    expect(positionLabel("bukan-tanggal")).toBe("Posisi saat ini");
+    expect(balanceAsOfLabel("2026-09-26")).toBe("Per 2026-09-26");
+    expect(balanceAsOfLabel("")).toBe("Per tanggal akhir periode");
+  });
+
+  test("keeps signed profit bars and only lists nonzero other results", () => {
+    expect(plBars(null)).toBeNull();
+    expect(plBars({ status: "empty", revenue: 0, cogs: 0, operating_expense: 0 })).toBeNull();
+    expect(plBars({ status: "complete", revenue: 10, cogs: null, operating_expense: 1 })).toBeNull();
+    expect(plBars({ status: "complete", revenue: 1000, cogs: 400, operating_expense: -50 })).toEqual([
+      { key: "revenue", label: "Pendapatan", amount: 1000 },
+      { key: "cogs", label: "HPP", amount: 400 },
+      { key: "operating_expense", label: "Beban operasional", amount: -50 },
+    ]);
+    expect(otherResultLines({ status: "complete", other_income: 0, other_expense: 0 })).toEqual([]);
+    expect(otherResultLines({ status: "error", other_income: 25, other_expense: -10 })).toEqual([]);
+    expect(otherResultLines({ status: "complete", other_income: 25, other_expense: -10 })).toEqual([
+      { key: "other_income", label: "Pendapatan lain", amount: 25 },
+      { key: "other_expense", label: "Beban lain", amount: -10 },
+    ]);
   });
 });

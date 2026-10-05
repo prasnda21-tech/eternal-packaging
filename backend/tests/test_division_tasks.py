@@ -1,4 +1,6 @@
 """Division task list: own assignment, line identity, qty semantics."""
+import copy
+import json
 import os
 import sys
 from pathlib import Path
@@ -6,17 +8,22 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from services.division_tasks import (
+    LIST_INLINE_PRESENT,
     TASK_PROJECTION,
     build_delivery_tasks,
     build_designer_tasks,
     build_division_tasks,
     build_helper_tasks,
     build_kepala_produksi_tasks,
+    build_loading_tasks,
     build_operator_tasks,
     build_packing_tasks,
     build_screener_tasks,
     build_surat_jalan_tasks,
     can_view_all_division,
+    division_tasks_read_pipeline,
+    po_needs_loading_task,
+    project_order_for_task_list,
     resolve_division,
 )
 
@@ -620,7 +627,8 @@ def test_division_tasks_endpoint_is_read_only():
     assert "update_one" not in body
     assert "insert_one" not in body
     assert "replace_one" not in body
-    assert ".find(" in body
+    assert "aggregate(" in body
+    assert ".find(" not in body
 
 
 def _import_server():
@@ -698,3 +706,309 @@ def test_buffer_stock_overdue_date_is_not_overdue_on_division_task():
     assert buffer_rows[0]["order_id"] == "div-buffer"
     assert missing_rows[0]["delivery_deadline_status"] == "overdue"
     assert delivered_rows[0]["delivery_deadline_status"] == "terkirim"
+
+
+def _legacy_division_tasks_read_pipeline(query: dict) -> list:
+    """Pipeline before the stage-1 reshape. Comparison fixture only."""
+    return [
+        {"$match": query},
+        {"$limit": 1000},
+        {"$project": TASK_PROJECTION},
+        {"$set": {
+            "surat_jalan_files": {
+                "$map": {
+                    "input": {"$ifNull": ["$surat_jalan_files", []]},
+                    "as": "f",
+                    "in": {
+                        "$mergeObjects": [
+                            "$$f",
+                            {LIST_INLINE_PRESENT: {
+                                "$and": [
+                                    {"$eq": [{"$type": "$$f.data_url"}, "string"]},
+                                    {"$eq": [{"$substrCP": ["$$f.data_url", 0, 5]}, "data:"]},
+                                ]
+                            }},
+                        ]
+                    },
+                }
+            }
+        }},
+        {"$unset": [
+            "surat_jalan_files.data_url",
+            "surat_jalan_files.url",
+            "delivery_proofs.data_url",
+            "delivery_proofs.url",
+            "operator_splits.progress_entries.data_url",
+            "operator_splits.progress_entries.photo",
+            "operator_splits.progress_entries.photos",
+        ]},
+    ]
+
+
+def _json_size(value) -> int:
+    return len(json.dumps(value, default=str).encode("utf-8"))
+
+
+def _sorted_docs(docs):
+    return sorted(docs, key=lambda doc: doc.get("id") or "")
+
+
+def _inline_hits(value, path="$"):
+    hits = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            here = f"{path}.{key}"
+            if key in ("data_url", "photo", "photos"):
+                hits.append(here)
+            if key == "url" and isinstance(item, str) and item.startswith("data:"):
+                hits.append(here)
+            hits.extend(_inline_hits(item, here))
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            hits.extend(_inline_hits(item, f"{path}[{index}]"))
+    elif isinstance(value, str) and value.startswith("data:"):
+        hits.append(path)
+    return hits
+
+
+def _task_rows(docs, division, user, *, mine_only):
+    return build_division_tasks(docs, division, user, mine_only=mine_only)
+
+
+def test_pipeline_keeps_match_limit_and_skips_sort():
+    query = {"cancelled": {"$ne": True}, "operator_splits.operator_email": "op@x.com"}
+    pipeline = division_tasks_read_pipeline(query)
+    assert pipeline[0] == {"$match": query}
+    assert pipeline[1] == {"$limit": 1000}
+    assert all("$sort" not in stage for stage in pipeline)
+
+
+def test_task_list_pipeline_drops_inline_bytes_and_keeps_tasks():
+    from pymongo import MongoClient
+
+    marker = "INLINEBLOB9"
+    inline = "data:application/octet-stream;base64," + (marker * 20000)
+    https_sj = "https://files.example/sj/storage-ref"
+    https_progress = "https://files.example/progress/op-note"
+    object_url = {"href": "/api/files/sj-storage"}
+    user = {"id": "u-op", "email": "op@x.com", "role": "operator"}
+    other = {"id": "u-other", "email": "other@x.com", "role": "operator"}
+    split_blob = {
+        "qty": 100,
+        "data_url": inline,
+        "photo": inline,
+        "photos": [inline],
+        "url": inline,
+    }
+
+    def _split(sid, email, progress):
+        row = {
+            "id": sid,
+            "line_idx": 0,
+            "line_id": "L0",
+            "operator_email": email,
+            "operator_user_id": email,
+            "operator_name": email.split("@")[0],
+            "quantity": 1000,
+            "qty_completed": 100,
+            "work_date": "2026-10-04",
+            "screen_size": "large",
+        }
+        if progress is not None:
+            row["progress_entries"] = progress
+        return row
+
+    def _base(oid, po, email, progress):
+        return {
+            "id": oid,
+            "po_number": po,
+            "customer": "Cust Payload",
+            "customer_name": "Cust Payload",
+            "cancelled": False,
+            "hold": False,
+            "current_stage": 11,
+            "delivery_status": "Belum Terkirim",
+            "work_date": "2026-10-04",
+            "line_items": [{
+                "id": "L0",
+                "name": "Cup Merah",
+                "quantity": 1000,
+                "production_process": "print",
+            }],
+            "operator_splits": [_split(f"s-{oid}", email, progress)],
+            "screener_info": {"screen_qty": 1000, "entries": [{"qty": 1000, "cancelled": False}]},
+            "helper_prep": {"qty_prepared": 1000, "items": [{"line_idx": 0, "qty_prepared": 1000}]},
+            "packing_info": {"qty_packed": 200, "lines": [{"line_idx": 0, "packed_qty": 200}]},
+            "design_files": [{
+                "id": "design-1",
+                "name": "cup.pdf",
+                "uploaded_at": "2026-10-01T00:00:00Z",
+                "data_url": inline,
+            }],
+            "sample_files": [{"id": "sample-1", "name": "sample.png", "data_url": inline}],
+        }
+
+    legacy = _base("legacy", "PO-LEGACY", "op@x.com", [dict(split_blob), {"qty": 1, "url": https_progress}])
+    legacy["surat_jalan_files"] = [{
+        "id": "sj-legacy",
+        "data_url": inline,
+        "url": "https://files.example/sj/legacy-ref",
+        "shipment_id": "sh-legacy",
+        "lines": [{"line_idx": 0, "qty": 10}],
+    }]
+    legacy["shipments"] = [{"id": "sh-legacy", "lines": [{"line_idx": 0, "qty": 10}]}]
+    legacy["delivery_proofs"] = [{
+        "id": "proof-legacy",
+        "storage_path": "proofs/legacy.jpg",
+        "data_url": inline,
+        "url": "https://files.example/proof/legacy",
+    }]
+
+    stored = _base("stored", "PO-STORED", "op@x.com", [{"qty": 40, "url": https_progress}])
+    stored["surat_jalan_files"] = [{
+        "id": "sj-stored",
+        "storage_path": "eternal-packaging/sj/stored.pdf",
+        "name": "stored.pdf",
+        "uploaded_at": "2026-10-02T00:00:00Z",
+        "url": object_url,
+        "status": "active",
+        "shipment_id": "sh-stored",
+        "lines": [{"line_idx": 0, "qty": 4}],
+        "data_url": "not-inline-" + (marker * 1000),
+    }]
+    stored["delivery_proofs"] = [{
+        "id": "proof-stored",
+        "url": https_sj,
+        "data_url": inline,
+    }]
+
+    blank = _base("blank", "PO-BLANK", "op@x.com", [])
+    blank["surat_jalan_files"] = [{"id": "sj-blank", "url": ""}]
+    blank["delivery_proofs"] = []
+
+    missing = _base("missing", "PO-MISSING", "op@x.com", None)
+    missing.pop("sample_files")
+
+    other_order = _base("other", "PO-OTHER", "other@x.com", [{"qty": 5, "photo": inline, "url": inline}])
+    other_order["surat_jalan_files"] = [{"id": "sj-other", "storage_path": "eternal-packaging/sj/other.pdf"}]
+
+    cancelled = _base("cancelled", "PO-BATAL", "op@x.com", [{"photo": inline}])
+    cancelled["cancelled"] = True
+    cancelled["surat_jalan_files"] = [{"id": "sj-batal", "data_url": inline}]
+
+    orders = [legacy, stored, blank, missing, other_order, cancelled]
+    division_query = {"cancelled": {"$ne": True}}
+    operator_query = {"cancelled": {"$ne": True}, "operator_splits.operator_email": "op@x.com"}
+    client = MongoClient(os.environ.get("MONGO_URL", "mongodb://127.0.0.1:27017"))
+    db_name = "pwa_task_list_payload_stage1"
+    db = client[db_name]
+    try:
+        client.drop_database(db_name)
+        db.orders.insert_many(copy.deepcopy(orders))
+        before = _sorted_docs(list(db.orders.find({}, {"_id": 0})))
+
+        old_division = _sorted_docs(list(db.orders.aggregate(_legacy_division_tasks_read_pipeline(division_query))))
+        new_division = _sorted_docs(list(db.orders.aggregate(division_tasks_read_pipeline(division_query))))
+        old_operator = _sorted_docs(list(db.orders.aggregate(_legacy_division_tasks_read_pipeline(operator_query))))
+        new_operator = _sorted_docs(list(db.orders.aggregate(division_tasks_read_pipeline(operator_query))))
+        included = _sorted_docs(list(db.orders.find(division_query, TASK_PROJECTION)))
+        after = _sorted_docs(list(db.orders.find({}, {"_id": 0})))
+    finally:
+        client.drop_database(db_name)
+        client.close()
+
+    assert after == before
+    assert all(LIST_INLINE_PRESENT not in json.dumps(doc) for doc in before)
+    assert marker in json.dumps(before)
+
+    assert [doc["id"] for doc in old_division] == ["blank", "legacy", "missing", "other", "stored"]
+    assert [doc["id"] for doc in new_division] == [doc["id"] for doc in old_division]
+    assert [doc["id"] for doc in old_operator] == ["blank", "legacy", "missing", "stored"]
+    assert [doc["id"] for doc in new_operator] == [doc["id"] for doc in old_operator]
+    assert "cancelled" not in {doc["id"] for doc in new_division}
+    assert "other" not in {doc["id"] for doc in new_operator}
+
+    divisions = ("screener", "helper", "packing", "loading", "terkirim")
+    for division in divisions:
+        assert _task_rows(old_division, division, user, mine_only=False) == _task_rows(
+            new_division, division, user, mine_only=False
+        )
+    assert _task_rows(old_operator, "operator", user, mine_only=True) == _task_rows(
+        new_operator, "operator", user, mine_only=True
+    )
+    assert _task_rows(old_division, "operator", other, mine_only=True) == _task_rows(
+        new_division, "operator", other, mine_only=True
+    )
+
+    by_new = {doc["id"]: doc for doc in new_division}
+    by_old = {doc["id"]: doc for doc in old_division}
+    legacy_file = by_new["legacy"]["surat_jalan_files"][0]
+    assert legacy_file[LIST_INLINE_PRESENT] is True
+    assert legacy_file["id"] == "sj-legacy"
+    assert legacy_file["shipment_id"] == "sh-legacy"
+    assert legacy_file["lines"] == [{"line_idx": 0, "qty": 10}]
+    assert legacy_file["url"] == "https://files.example/sj/legacy-ref"
+    assert "url" not in by_old["legacy"]["surat_jalan_files"][0]
+    assert by_old["legacy"]["surat_jalan_files"][0][LIST_INLINE_PRESENT] is True
+    progress = by_new["legacy"]["operator_splits"][0]["progress_entries"]
+    assert progress[0]["qty"] == 100
+    assert "url" not in progress[0]
+    assert progress[1]["url"] == https_progress
+    assert by_old["legacy"]["operator_splits"][0]["progress_entries"][0]["url"].startswith("data:")
+    assert by_new["legacy"]["delivery_proofs"][0]["url"] == "https://files.example/proof/legacy"
+    assert by_new["legacy"]["delivery_proofs"][0]["storage_path"] == "proofs/legacy.jpg"
+    assert "url" not in by_old["legacy"]["delivery_proofs"][0]
+
+    stored_file = by_new["stored"]["surat_jalan_files"][0]
+    assert stored_file[LIST_INLINE_PRESENT] is False
+    assert stored_file["storage_path"] == "eternal-packaging/sj/stored.pdf"
+    assert stored_file["name"] == "stored.pdf"
+    assert stored_file["uploaded_at"] == "2026-10-02T00:00:00Z"
+    assert stored_file["url"] == object_url
+    assert "url" not in by_old["stored"]["surat_jalan_files"][0]
+    assert by_new["stored"]["delivery_proofs"][0]["url"] == https_sj
+    assert by_new["stored"]["delivery_proofs"][0]["id"] == "proof-stored"
+
+    blank_file = by_new["blank"]["surat_jalan_files"][0]
+    assert blank_file[LIST_INLINE_PRESENT] is False
+    assert blank_file["url"] == ""
+    assert by_new["blank"]["delivery_proofs"] == []
+    assert by_new["missing"]["surat_jalan_files"] == []
+    assert "delivery_proofs" not in by_new["missing"]
+    assert "progress_entries" not in by_new["missing"]["operator_splits"][0]
+    assert by_old["blank"]["surat_jalan_files"][0][LIST_INLINE_PRESENT] is False
+    assert by_old["missing"]["surat_jalan_files"] == []
+
+    assert _inline_hits(new_division) == []
+    assert _inline_hits(new_operator) == []
+    assert marker not in json.dumps(new_division)
+    assert marker in json.dumps(old_division)
+    legacy_tasks = build_loading_tasks(by_new["legacy"])
+    assert legacy_tasks
+    assert legacy_tasks == build_loading_tasks(by_old["legacy"])
+    assert po_needs_loading_task(by_new["legacy"]) == po_needs_loading_task(by_old["legacy"])
+    assert build_loading_tasks(by_new["stored"]) == build_loading_tasks(by_old["stored"])
+    assert build_loading_tasks(by_new["blank"]) == build_loading_tasks(by_old["blank"])
+    assert build_loading_tasks(by_new["missing"]) == []
+    assert build_screener_tasks(by_new["legacy"]) == build_screener_tasks(by_old["legacy"])
+    assert build_helper_tasks(by_new["stored"]) == build_helper_tasks(by_old["stored"])
+    assert build_packing_tasks(by_new["blank"]) == build_packing_tasks(by_old["blank"])
+    assert build_delivery_tasks(by_new["legacy"]) == build_delivery_tasks(by_old["legacy"])
+    assert build_operator_tasks(by_new["legacy"], user, mine_only=True) == build_operator_tasks(
+        by_old["legacy"], user, mine_only=True
+    )
+
+    mirrored = _sorted_docs(project_order_for_task_list(doc) for doc in before if not doc.get("cancelled"))
+    assert mirrored == new_division
+
+    old_tasks = {division: _task_rows(old_division, division, user, mine_only=False) for division in divisions}
+    new_tasks = {division: _task_rows(new_division, division, user, mine_only=False) for division in divisions}
+    old_tasks["operator"] = _task_rows(old_operator, "operator", user, mine_only=True)
+    new_tasks["operator"] = _task_rows(new_operator, "operator", user, mine_only=True)
+    legacy_aggregate_json_bytes = _json_size(old_division)
+    new_aggregate_json_bytes = _json_size(new_division)
+    legacy_task_response_json_bytes = _json_size(old_tasks)
+    new_task_response_json_bytes = _json_size(new_tasks)
+    assert new_aggregate_json_bytes < legacy_aggregate_json_bytes
+    assert new_task_response_json_bytes == legacy_task_response_json_bytes
+    assert _json_size(included) > legacy_aggregate_json_bytes

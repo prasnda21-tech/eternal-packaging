@@ -6,6 +6,10 @@ import { formatDate, formatDeadline } from "../lib/constants";
 import { formatApiError } from "../lib/errors";
 import DeliveryProofPanel from "../components/DeliveryProofPanel";
 
+export function latestTimelineEvent(order, stage) {
+  return order?.timeline?.filter((event) => event.stage === stage).slice(-1)[0] || null;
+}
+
 export default function SuratJalan() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -19,11 +23,9 @@ export default function SuratJalan() {
     }).catch((e) => setLoadErr(formatApiError(e, "Gagal memuat"))).finally(() => setLoading(false));
   }, [id]);
 
-  const timelineEvent = (stage) => order?.timeline?.filter((t) => t.stage === stage).slice(-1)[0] || null;
-
-  const packedEvent = useMemo(() => timelineEvent(11), [order]);
-  const loadingEvent = useMemo(() => timelineEvent(13), [order]);
-  const deliveredEvent = useMemo(() => timelineEvent(15), [order]);
+  const packedEvent = useMemo(() => latestTimelineEvent(order, 11), [order]);
+  const loadingEvent = useMemo(() => latestTimelineEvent(order, 13), [order]);
+  const deliveredEvent = useMemo(() => latestTimelineEvent(order, 15), [order]);
 
   const doPrint = () => window.print();
 

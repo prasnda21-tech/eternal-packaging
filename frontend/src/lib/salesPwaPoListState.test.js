@@ -55,6 +55,7 @@ describe("sales PWA PO list session state", () => {
         date_to: "",
         progress_min: "",
         buffer: "",
+        design_queue: false,
       },
       scrollY: 0,
     });
@@ -78,5 +79,25 @@ describe("sales PWA PO list session state", () => {
     });
     expect(salesPwaPoFiltersFromContext({ status: "selesai" })).toBeNull();
     expect(salesPwaPoFiltersFromContext(null)).toBeNull();
+    expect(salesPwaPoFiltersFromContext({ stage: "Approval Design" })).toMatchObject({
+      status: "semua",
+      stage: "Approval Design",
+      q: "",
+      date_from: "",
+      date_to: "",
+    });
+    expect(salesPwaPoFiltersFromContext({ stage: "Approval Payment" })).toMatchObject({
+      status: "semua",
+      stage: "Approval Payment",
+    });
+    expect(salesPwaPoFiltersFromContext({ stage: "Approval Design", active: true }).status).toBe("berjalan");
+    expect(salesPwaPoFiltersFromContext({ stage: "Packing" })).toBeNull();
+    expect(salesPwaPoFiltersFromContext({ designQueue: true })).toMatchObject({
+      status: "semua",
+      stage: "",
+      date_from: "",
+      date_to: "",
+      design_queue: true,
+    });
   });
 });

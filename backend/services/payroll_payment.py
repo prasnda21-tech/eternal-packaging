@@ -24,6 +24,7 @@ from services.chart_of_accounts import get_account
 from services.hr_payroll import LINES, STATUS_FINAL, get_period, money_float, to_money
 from services.journal_core import (
     JOURNAL_ENTRIES,
+    JOURNAL_LINES,
     STATUS_POSTED,
     find_primary_journal_for_source,
     get_journal,
@@ -179,9 +180,21 @@ def _journal_date(raw: Any) -> str:
 
 
 def payable_credit_from_accrual(journal: Optional[dict]) -> Dict[str, Any]:
-    """The single posted credit line named Utang Gaji. Not recomputed from slips."""
+    """Utang Gaji from the accrual snapshot, else one unambiguous legacy line.
+
+    A stored payroll_payable snapshot wins even when another credit uses the
+    same account or a component name ends with Utang Gaji. This function does
+    not write the journal.
+    """
     if not journal or journal.get("status") != STATUS_POSTED:
         raise HTTPException(409, NO_ACCRUAL_MESSAGE)
+    snap = journal.get("payroll_payable")
+    if isinstance(snap, dict):
+        account_id = str(snap.get("account_id") or "").strip()
+        amount = to_money(snap.get("amount"))
+        if account_id and amount > 0:
+            return {"account_id": account_id, "amount": amount}
+        raise HTTPException(409, PAYABLE_MISSING_MESSAGE)
     matches = []
     for line in journal.get("lines") or []:
         if not isinstance(line, dict):
@@ -406,7 +419,18 @@ async def create_payroll_payment(db, period_id: str, payload: dict, user: dict) 
     period = await get_period(db, period_id)
     if str(period.get("status") or "") != STATUS_FINAL:
         raise HTTPException(409, NOT_FINAL_MESSAGE)
-    accrual = await find_primary_journal_for_source(db, ACCRUAL_SOURCE_TYPE, str(period["id"]))
+    accrual = await db[JOURNAL_ENTRIES].find_one(
+        {
+            "source_type": ACCRUAL_SOURCE_TYPE,
+            "source_id": str(period["id"]),
+            "reversal_of": None,
+        },
+        {"_id": 0},
+    )
+    if accrual:
+        accrual["lines"] = await db[JOURNAL_LINES].find(
+            {"journal_id": accrual["id"]}, {"_id": 0}
+        ).to_list(100)
     payable = payable_credit_from_accrual(accrual)
     bank = await resolve_cash_bank(db, (payload or {}).get("cash_bank_account_id"))
     payment_date = _journal_date((payload or {}).get("payment_date") or period.get("end_date"))

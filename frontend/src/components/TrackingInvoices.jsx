@@ -224,10 +224,10 @@ export default function TrackingInvoices({ token }) {
                     </span>
                   </div>
                   <p className="tracking-inv-meta">
-                    <span>{formatInvoiceDate(inv.invoice_date)}</span>
+                    <span>{formatInvoiceDate(inv.invoice_date) || "—"}</span>
                     {inv.due_date ? (
                       <span data-testid={`tracking-invoice-due-${inv.id}`}>
-                        Jatuh tempo {formatInvoiceDate(inv.due_date)}
+                        Jatuh tempo {formatInvoiceDate(inv.due_date) || "—"}
                       </span>
                     ) : null}
                   </p>

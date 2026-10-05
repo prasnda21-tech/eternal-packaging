@@ -6,6 +6,7 @@ never PO print totals.
 """
 from __future__ import annotations
 
+import copy
 import re
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -20,6 +21,7 @@ from quantity_rules import (
     is_print_line,
     packing_line_breakdown,
     print_qty_total,
+    INACTIVE_SJ_STATUSES,
     has_surat_jalan_file,
     qty_confirmed_loading,
     available_for_loading_confirm_line,
@@ -176,6 +178,216 @@ TASK_PROJECTION = {
     "payment_bypassed": 1,
     "priority": 1,
 }
+
+# In-memory only. Not a URL, not a storage path, never persisted.
+LIST_INLINE_PRESENT = "_list_inline_present"
+
+# Keys whose values are file bytes or progress photos. A field named url is
+# removed only when the value itself is an inline data: payload.
+_INLINE_CONTENT_KEYS = ("data_url", "photo", "photos")
+
+
+def _list_inline_present_expr(data_url_expr: str) -> dict:
+    return {
+        "$and": [
+            {"$eq": [{"$type": data_url_expr}, "string"]},
+            {"$eq": [{"$substrCP": [data_url_expr, 0, 5]}, "data:"]},
+        ]
+    }
+
+
+def _value_is_inline_data_url(value_expr: str) -> dict:
+    return {
+        "$cond": [
+            {"$eq": [{"$type": value_expr}, "string"]},
+            {"$eq": [{"$substrCP": [value_expr, 0, 5]}, "data:"]},
+            False,
+        ]
+    }
+
+
+def _keep_attachment_kv_expr() -> dict:
+    """True when this object key must stay on the aggregation result."""
+    return {
+        "$cond": [
+            {"$in": ["$$kv.k", list(_INLINE_CONTENT_KEYS)]},
+            False,
+            {
+                "$cond": [
+                    {"$ne": ["$$kv.k", "url"]},
+                    True,
+                    {"$not": [_value_is_inline_data_url("$$kv.v")]},
+                ]
+            },
+        ]
+    }
+
+
+def _slim_attachment_expr(doc_expr: str, *, stamp_inline: bool) -> dict:
+    slim = {
+        "$arrayToObject": {
+            "$filter": {
+                "input": {"$objectToArray": doc_expr},
+                "as": "kv",
+                "cond": _keep_attachment_kv_expr(),
+            }
+        }
+    }
+    if stamp_inline:
+        slim = {
+            "$mergeObjects": [
+                slim,
+                {LIST_INLINE_PRESENT: _list_inline_present_expr(f"{doc_expr}.data_url")},
+            ]
+        }
+    return {
+        "$cond": [
+            {"$eq": [{"$type": doc_expr}, "object"]},
+            slim,
+            doc_expr,
+        ]
+    }
+
+
+def _map_slim_attachments(array_expr: str, var: str, *, stamp_inline: bool) -> dict:
+    return {
+        "$map": {
+            "input": {"$ifNull": [array_expr, []]},
+            "as": var,
+            "in": _slim_attachment_expr(f"$${var}", stamp_inline=stamp_inline),
+        }
+    }
+
+
+def _slim_operator_split_expr() -> dict:
+    progress = _map_slim_attachments("$$split.progress_entries", "entry", stamp_inline=False)
+    slim_split = _slim_attachment_expr("$$split", stamp_inline=False)
+    return {
+        "$cond": [
+            {"$eq": [{"$type": "$$split"}, "object"]},
+            {
+                "$cond": [
+                    {"$isArray": "$$split.progress_entries"},
+                    {"$mergeObjects": [slim_split, {"progress_entries": progress}]},
+                    slim_split,
+                ]
+            },
+            "$$split",
+        ]
+    }
+
+
+def _rewrite_present_array(field: str, mapped: dict) -> dict:
+    """Replace an array in place. A missing field stays missing."""
+    return {
+        "$cond": [
+            {"$isArray": f"${field}"},
+            mapped,
+            {"$ifNull": [f"${field}", "$$REMOVE"]},
+        ]
+    }
+
+
+def division_tasks_read_pipeline(query: dict) -> list:
+    """Same unordered 1000-document cap as the previous find().
+
+    Legacy inline SJ bytes become LIST_INLINE_PRESENT inside this pipeline.
+    The aggregation result itself has no data_url, progress photo/photos, or
+    url value that is an inline data: payload. Other url values stay.
+    The stored document is not updated.
+    """
+    return [
+        {"$match": query},
+        {"$limit": 1000},
+        {"$project": TASK_PROJECTION},
+        {"$set": {
+            "surat_jalan_files": {
+                "$cond": [
+                    {"$isArray": "$surat_jalan_files"},
+                    _map_slim_attachments("$surat_jalan_files", "sj", stamp_inline=True),
+                    {"$ifNull": ["$surat_jalan_files", []]},
+                ]
+            },
+            "delivery_proofs": _rewrite_present_array(
+                "delivery_proofs",
+                _map_slim_attachments("$delivery_proofs", "proof", stamp_inline=False),
+            ),
+            "operator_splits": _rewrite_present_array(
+                "operator_splits",
+                {
+                    "$map": {
+                        "input": "$operator_splits",
+                        "as": "split",
+                        "in": _slim_operator_split_expr(),
+                    }
+                },
+            ),
+        }},
+    ]
+
+
+def _is_inline_data_url(value) -> bool:
+    return isinstance(value, str) and value.startswith("data:")
+
+
+def _slim_attachment(entry: dict, *, stamp_inline: bool) -> dict:
+    item = {}
+    for key, value in entry.items():
+        if key in _INLINE_CONTENT_KEYS:
+            continue
+        if key == "url" and _is_inline_data_url(value):
+            continue
+        item[key] = copy.deepcopy(value)
+    if stamp_inline:
+        item[LIST_INLINE_PRESENT] = _is_inline_data_url(entry.get("data_url"))
+    return item
+
+
+def _slim_operator_split(split):
+    if not isinstance(split, dict):
+        return copy.deepcopy(split)
+    item = _slim_attachment(split, stamp_inline=False)
+    entries = split.get("progress_entries")
+    if isinstance(entries, list):
+        item["progress_entries"] = [
+            _slim_attachment(entry, stamp_inline=False) if isinstance(entry, dict) else copy.deepcopy(entry)
+            for entry in entries
+        ]
+    return item
+
+
+def project_order_for_task_list(order: dict) -> dict:
+    """In-memory mirror of division_tasks_read_pipeline. Does not mutate order."""
+    if not isinstance(order, dict):
+        return {}
+    out: Dict[str, Any] = {}
+    for key, include in TASK_PROJECTION.items():
+        if key == "_id" or include != 1 or "." in str(key):
+            continue
+        if key in order:
+            out[key] = copy.deepcopy(order[key])
+    design = []
+    for entry in order.get("design_files") or []:
+        if not isinstance(entry, dict):
+            continue
+        design.append({k: entry.get(k) for k in ("id", "name", "uploaded_at") if k in entry})
+    if "design_files" in order or design:
+        out["design_files"] = design
+    files = []
+    for entry in order.get("surat_jalan_files") or []:
+        if isinstance(entry, dict):
+            files.append(_slim_attachment(entry, stamp_inline=True))
+        else:
+            files.append(copy.deepcopy(entry))
+    out["surat_jalan_files"] = files
+    if isinstance(out.get("delivery_proofs"), list):
+        out["delivery_proofs"] = [
+            _slim_attachment(entry, stamp_inline=False) if isinstance(entry, dict) else copy.deepcopy(entry)
+            for entry in out["delivery_proofs"]
+        ]
+    if isinstance(out.get("operator_splits"), list):
+        out["operator_splits"] = [_slim_operator_split(split) for split in out["operator_splits"]]
+    return out
 
 
 def _safe_int(v, default: int = 0) -> int:
@@ -374,6 +586,27 @@ def _sj_file_count(order: dict) -> int:
         return 1
     shipments = order.get("shipments") or []
     return sum(1 for s in shipments if isinstance(s, dict) and (s.get("id") or s.get("file_id")))
+
+
+def _list_has_surat_jalan_file(order: dict) -> bool:
+    """Loading-list gate only. Does not validate uploads or stage evidence.
+
+    Projected list rows drop inline bytes and keep LIST_INLINE_PRESENT.
+    has_surat_jalan_file ignores that flag so a client cannot invent a file.
+    """
+    if has_surat_jalan_file(order):
+        return True
+    for entry in order.get("surat_jalan_files") or []:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("is_deleted") or entry.get("cancelled") or entry.get("superseded"):
+            continue
+        status = str(entry.get("status") or "").strip().lower()
+        if status in INACTIVE_SJ_STATUSES:
+            continue
+        if entry.get(LIST_INLINE_PRESENT) is True and str(entry.get("id") or "").strip():
+            return True
+    return False
 
 
 def _screener_done(order: dict) -> int:
@@ -699,7 +932,7 @@ def build_surat_jalan_tasks(order: dict) -> List[dict]:
 
 
 def build_loading_tasks(order: dict) -> List[dict]:
-    if not has_surat_jalan_file(order) and not order.get("surat_jalan_created") and _sj_file_count(order) <= 0:
+    if not _list_has_surat_jalan_file(order) and not order.get("surat_jalan_created") and _sj_file_count(order) <= 0:
         return []
     done = qty_confirmed_loading(order) or qty_loaded(order)
     remaining = 0
@@ -751,7 +984,7 @@ def po_needs_loading_task(order: dict) -> bool:
     """Actionable Loading: Surat Jalan ada dan masih ada sisa qty konfirmasi."""
     if (order.get("delivery_status") or "") == "Terkirim":
         return False
-    if not has_surat_jalan_file(order) and not order.get("surat_jalan_created") and _sj_file_count(order) <= 0:
+    if not _list_has_surat_jalan_file(order) and not order.get("surat_jalan_created") and _sj_file_count(order) <= 0:
         return False
     remaining = 0
     lis = order.get("line_items") or []

@@ -3,6 +3,11 @@ import { createRoot } from "react-dom/client";
 import fs from "fs";
 import path from "path";
 import api from "../../lib/api";
+import {
+  CONFIRM_ACTION_STORAGE,
+  confirmActionKey,
+  confirmPayloadToken,
+} from "../../lib/deliveryConfirmAction";
 import { MIN_DELIVERY_PROOFS } from "../../lib/deliveryProof";
 import MobileDeliveryWorkspace from "./MobileDeliveryWorkspace";
 
@@ -14,6 +19,7 @@ jest.mock("../../lib/api", () => ({
     uploadDeliveryRecipientSignature: jest.fn(),
     uploadDeliveryDriverSignature: jest.fn(),
     confirmDelivered: jest.fn(),
+    getOrder: jest.fn(),
   },
   fileUrl: (p) => p,
 }));
@@ -143,6 +149,7 @@ describe("PWA Pengiriman gallery picker", () => {
     api.uploadDeliveryRecipientSignature.mockReset();
     api.uploadDeliveryDriverSignature.mockReset();
     api.confirmDelivered.mockReset();
+    api.getOrder.mockReset();
   });
 
   afterEach(() => {
@@ -583,7 +590,7 @@ describe("PWA Pengiriman gallery picker", () => {
     expect(api.confirmDelivered).toHaveBeenCalledWith("order-delivery-1", expect.objectContaining({
       shipment_id: "s1",
       recipient_name: "me time",
-    }));
+    }), { params: { view: "operational" } });
     expect(onUpdated).toHaveBeenCalledWith(delivered);
   });
 
@@ -603,7 +610,7 @@ describe("PWA Pengiriman gallery picker", () => {
     await flush();
     expect(api.confirmDelivered).toHaveBeenCalledWith("order-delivery-1", expect.objectContaining({
       recipient_name: "me time",
-    }));
+    }), { params: { view: "operational" } });
   });
 
   test("API failure other than recipient name is shown as-is", async () => {
@@ -643,6 +650,8 @@ describe("PWA Pengiriman gallery picker", () => {
     });
     const btn = container.querySelector('[data-testid="mobile-confirm-delivered"]');
     await act(async () => { btn.click(); });
+    expect(btn.disabled).toBe(true);
+    expect(btn.textContent).toContain("Sedang menyimpan…");
     await act(async () => { btn.click(); });
     expect(api.confirmDelivered).toHaveBeenCalledTimes(1);
     await act(async () => {
@@ -687,7 +696,7 @@ describe("PWA Pengiriman gallery picker", () => {
     expect(api.confirmDelivered).toHaveBeenCalledWith("order-delivery-1", expect.objectContaining({
       shipment_id: "s1",
       recipient_name: "me time",
-    }));
+    }), { params: { view: "operational" } });
   });
 
   test("legacy PO that already has recipient_name still confirms", async () => {
@@ -709,7 +718,7 @@ describe("PWA Pengiriman gallery picker", () => {
     expect(api.confirmDelivered).toHaveBeenCalledTimes(1);
     expect(api.confirmDelivered).toHaveBeenCalledWith("order-delivery-1", expect.objectContaining({
       recipient_name: "Budi Penerima",
-    }));
+    }), { params: { view: "operational" } });
   });
 
   test("legacy PO already Terkirim does not send a second confirm", async () => {
@@ -785,7 +794,7 @@ describe("PWA Pengiriman gallery picker", () => {
     expect(api.confirmDelivered).toHaveBeenCalledWith("order-delivery-1", expect.objectContaining({
       shipment_id: "s1",
       recipient_name: "Budi",
-    }));
+    }), { params: { view: "operational" } });
     expect(onUpdated).toHaveBeenCalled();
   });
 
@@ -1068,5 +1077,421 @@ describe("PWA Pengiriman gallery picker", () => {
     expect(container.querySelector('[data-testid="mobile-pengiriman-sj-select"]').value).toBe("");
     expect(container.querySelector('[data-testid="mobile-pengiriman-selected-sj-number"]')?.textContent || "").not.toContain("DEMO-MULTISJ-PHOTO-001");
     expect(container.querySelector('[data-testid="mobile-delivery-error"]').textContent).toMatch(/Surat Jalan tidak dapat ditentukan/);
+  });
+
+  function namedReady(id = "order-delivery-1") {
+    return {
+      ...signedReadyOrder,
+      id,
+      delivery_recipient_signature: {
+        ...signedReadyOrder.delivery_recipient_signature,
+        recipient_name: "Budi Penerima",
+      },
+    };
+  }
+
+  function markShipmentDelivered(order, shipmentId = "s1") {
+    return {
+      ...order,
+      shipments: (order.shipments || []).map((sh) => (
+        sh.id === shipmentId ? { ...sh, delivery_status: "Terkirim", delivered_at: "t" } : sh
+      )),
+    };
+  }
+
+  async function clickConfirm() {
+    await act(async () => {
+      container.querySelector('[data-testid="mobile-confirm-delivered"]').click();
+    });
+    await flush();
+  }
+
+  test("successful confirm notifies the schedule with the saved shipment only", async () => {
+    const ready = namedReady();
+    const saved = markShipmentDelivered(ready);
+    api.confirmDelivered.mockResolvedValue({ order: saved });
+    const onDeliveryConfirmed = jest.fn();
+    const onRequestClose = jest.fn();
+    act(() => {
+      root.render(
+        <MobileDeliveryWorkspace
+          order={ready}
+          canEdit
+          onUpdated={() => {}}
+          onRequestClose={onRequestClose}
+          onDeliveryConfirmed={onDeliveryConfirmed}
+        />,
+      );
+    });
+    await clickConfirm();
+    expect(onDeliveryConfirmed).toHaveBeenCalledTimes(1);
+    expect(onDeliveryConfirmed).toHaveBeenCalledWith(saved, "s1");
+    expect(onRequestClose).toHaveBeenCalled();
+  });
+
+  test("a failed confirm does not notify the schedule", async () => {
+    api.confirmDelivered.mockRejectedValue({
+      response: { status: 400, data: { detail: "Qty Loading untuk pengiriman ini belum mencukupi." } },
+    });
+    const onDeliveryConfirmed = jest.fn();
+    const onRequestClose = jest.fn();
+    act(() => {
+      root.render(
+        <MobileDeliveryWorkspace
+          order={namedReady("order-fail")}
+          canEdit
+          onUpdated={() => {}}
+          onRequestClose={onRequestClose}
+          onDeliveryConfirmed={onDeliveryConfirmed}
+        />,
+      );
+    });
+    await clickConfirm();
+    expect(onDeliveryConfirmed).not.toHaveBeenCalled();
+    expect(onRequestClose).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="mobile-delivery-error"]').textContent).toMatch(/Loading/);
+  });
+
+  test("a saved-looking response that did not deliver the shipment stays open", async () => {
+    const ready = namedReady("order-unmarked");
+    api.confirmDelivered.mockResolvedValue({ order: { ...ready, delivery_status: "Terkirim" } });
+    const onDeliveryConfirmed = jest.fn();
+    act(() => {
+      root.render(
+        <MobileDeliveryWorkspace
+          order={ready}
+          canEdit
+          onUpdated={() => {}}
+          onDeliveryConfirmed={onDeliveryConfirmed}
+        />,
+      );
+    });
+    await clickConfirm();
+    expect(onDeliveryConfirmed).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="mobile-delivery-error"]').textContent).toBe("Konfirmasi tidak tersimpan.");
+  });
+
+  test("timeout is verified from the saved order before the schedule is notified", async () => {
+    const ready = namedReady("order-timeout");
+    const saved = markShipmentDelivered(ready);
+    const timeout = new Error("timeout");
+    timeout.code = "ETIMEDOUT";
+    api.confirmDelivered.mockRejectedValue(timeout);
+    api.getOrder.mockResolvedValue({ order: saved });
+    const onDeliveryConfirmed = jest.fn();
+    act(() => {
+      root.render(
+        <MobileDeliveryWorkspace
+          order={ready}
+          canEdit
+          onUpdated={() => {}}
+          onDeliveryConfirmed={onDeliveryConfirmed}
+        />,
+      );
+    });
+    await clickConfirm();
+    expect(api.getOrder).toHaveBeenCalledWith("order-timeout", { view: "operational" });
+    expect(onDeliveryConfirmed).toHaveBeenCalledWith(saved, "s1");
+  });
+
+  test("timeout that did not save does not turn the delivery into success", async () => {
+    const ready = namedReady("order-timeout-miss");
+    const timeout = new Error("timeout");
+    timeout.code = "ETIMEDOUT";
+    api.confirmDelivered.mockRejectedValue(timeout);
+    api.getOrder.mockResolvedValue({ order: ready });
+    const onDeliveryConfirmed = jest.fn();
+    act(() => {
+      root.render(
+        <MobileDeliveryWorkspace
+          order={ready}
+          canEdit
+          onUpdated={() => {}}
+          onDeliveryConfirmed={onDeliveryConfirmed}
+        />,
+      );
+    });
+    await clickConfirm();
+    expect(onDeliveryConfirmed).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="mobile-delivery-error"]').textContent).toBe(
+      "Hasil konfirmasi belum diketahui. Periksa status sebelum mencoba lagi.",
+    );
+    expect(container.querySelector('[data-testid="mobile-recipient-name"]').value).toBe("Budi Penerima");
+    expect(api.confirmDelivered).toHaveBeenCalledTimes(1);
+  });
+
+  test("timeout whose save cannot be verified stays unknown", async () => {
+    const timeout = new Error("timeout");
+    timeout.code = "ETIMEDOUT";
+    api.confirmDelivered.mockRejectedValue(timeout);
+    api.getOrder.mockRejectedValue(timeout);
+    const onDeliveryConfirmed = jest.fn();
+    act(() => {
+      root.render(
+        <MobileDeliveryWorkspace
+          order={namedReady("order-timeout-unknown")}
+          canEdit
+          onUpdated={() => {}}
+          onDeliveryConfirmed={onDeliveryConfirmed}
+        />,
+      );
+    });
+    await clickConfirm();
+    expect(onDeliveryConfirmed).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="mobile-delivery-error"]').textContent).toMatch(/belum diketahui/);
+    expect(container.querySelector('[data-testid="mobile-delivery-error"]').textContent).toBe(
+      "Hasil konfirmasi belum diketahui. Periksa status sebelum mencoba lagi.",
+    );
+  });
+
+  test("a network failure verifies the saved shipment without posting again", async () => {
+    const ready = namedReady("order-net-ok");
+    const saved = markShipmentDelivered(ready);
+    const network = new Error("Network Error");
+    network.code = "ERR_NETWORK";
+    api.confirmDelivered.mockRejectedValue(network);
+    api.getOrder.mockResolvedValue({ order: saved });
+    const onDeliveryConfirmed = jest.fn();
+    act(() => {
+      root.render(
+        <MobileDeliveryWorkspace
+          order={ready}
+          canEdit
+          userId="driver-a"
+          onUpdated={() => {}}
+          onDeliveryConfirmed={onDeliveryConfirmed}
+        />,
+      );
+    });
+    await clickConfirm();
+    expect(api.confirmDelivered).toHaveBeenCalledTimes(1);
+    expect(api.getOrder).toHaveBeenCalledWith("order-net-ok", { view: "operational" });
+    expect(onDeliveryConfirmed).toHaveBeenCalledTimes(1);
+    expect(onDeliveryConfirmed).toHaveBeenCalledWith(saved, "s1");
+  });
+
+  test("an uncertain confirm keeps its action id and does not post again until the driver retries", async () => {
+    const ready = namedReady("order-net-miss");
+    const network = new Error("Network Error");
+    network.code = "ERR_NETWORK";
+    api.confirmDelivered.mockRejectedValue(network);
+    api.getOrder.mockResolvedValue({ order: ready });
+    act(() => {
+      root.render(<MobileDeliveryWorkspace order={ready} canEdit userId="driver-a" onUpdated={() => {}} />);
+    });
+    await clickConfirm();
+    const firstId = api.confirmDelivered.mock.calls[0][1].action_id;
+    expect(api.confirmDelivered).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[data-testid="mobile-delivery-error"]').textContent).toBe(
+      "Hasil konfirmasi belum diketahui. Periksa status sebelum mencoba lagi.",
+    );
+    expect(container.querySelector('[data-testid="mobile-recipient-name"]').value).toBe("Budi Penerima");
+    api.getOrder.mockClear();
+    api.confirmDelivered.mockClear();
+    api.confirmDelivered.mockRejectedValue(network);
+    await clickConfirm();
+    expect(api.getOrder.mock.invocationCallOrder[0]).toBeLessThan(api.confirmDelivered.mock.invocationCallOrder[0]);
+    expect(api.confirmDelivered).toHaveBeenCalledTimes(1);
+    expect(api.confirmDelivered.mock.calls[0][1].action_id).toBe(firstId);
+  });
+
+  test("retry after a failed confirm reuses the same action id", async () => {
+    const ready = namedReady("order-retry");
+    api.confirmDelivered
+      .mockRejectedValueOnce({ response: { status: 500, data: { detail: "gagal simpan" } } })
+      .mockResolvedValueOnce({ order: markShipmentDelivered(ready) });
+    act(() => {
+      root.render(<MobileDeliveryWorkspace order={ready} canEdit onUpdated={() => {}} />);
+    });
+    await clickConfirm();
+    await clickConfirm();
+    expect(api.confirmDelivered).toHaveBeenCalledTimes(2);
+    expect(api.confirmDelivered.mock.calls[0][1].action_id).toBe(api.confirmDelivered.mock.calls[1][1].action_id);
+  });
+
+  test("a stored action for the same user and payload is reused", async () => {
+    const ready = namedReady("order-stored");
+    const payload = confirmPayloadToken("Budi Penerima", ready.shipments[0]);
+    const key = confirmActionKey("driver-a", "order-stored", "s1", payload);
+    sessionStorage.setItem(CONFIRM_ACTION_STORAGE, JSON.stringify({
+      version: 2,
+      entries: { [key]: { actionId: "action-kept", unknown: false } },
+    }));
+    api.confirmDelivered.mockRejectedValue({
+      response: { status: 500, data: { detail: "gagal simpan" } },
+    });
+    act(() => {
+      root.render(<MobileDeliveryWorkspace order={ready} canEdit userId="driver-a" onUpdated={() => {}} />);
+    });
+    await clickConfirm();
+    expect(api.confirmDelivered.mock.calls[0][1].action_id).toBe("action-kept");
+  });
+
+  test("a legacy global token and another user's action are not reused", async () => {
+    const ready = namedReady("order-legacy");
+    const payload = confirmPayloadToken("Budi Penerima", ready.shipments[0]);
+    const otherKey = confirmActionKey("driver-a", "order-legacy", "s1", payload);
+    sessionStorage.setItem(CONFIRM_ACTION_STORAGE, JSON.stringify({
+      "order-legacy|s1": "global-token",
+      version: 1,
+      entries: { [otherKey]: { actionId: "other-user", unknown: false } },
+    }));
+    api.confirmDelivered.mockRejectedValue({
+      response: { status: 500, data: { detail: "gagal simpan" } },
+    });
+    act(() => {
+      root.render(<MobileDeliveryWorkspace order={ready} canEdit userId="driver-b" onUpdated={() => {}} />);
+    });
+    await clickConfirm();
+    const sent = api.confirmDelivered.mock.calls[0][1].action_id;
+    expect(sent).not.toBe("global-token");
+    expect(sent).not.toBe("other-user");
+  });
+
+  test("a different shipment and a changed recipient name get their own action ids", async () => {
+    const ready = {
+      ...namedReady("order-scope"),
+      line_items: [{ name: "Cup", quantity: 20, line_id: "l0" }],
+      shipments: [
+        { id: "s1", number: "SJ-1", lines: [{ line_idx: 0, qty: 10 }] },
+        { id: "s2", number: "SJ-2", lines: [{ line_idx: 0, qty: 10 }] },
+      ],
+      delivery_proofs: [
+        { id: "p1", shipment_id: "s1", storage_path: "a.jpg" },
+        { id: "p2", shipment_id: "s1", storage_path: "b.jpg" },
+        { id: "p3", shipment_id: "s2", storage_path: "c.jpg" },
+        { id: "p4", shipment_id: "s2", storage_path: "d.jpg" },
+      ],
+      loading_confirmations: [
+        { id: "c1", shipment_id: "s1", lines: [{ line_idx: 0, qty: 10 }] },
+        { id: "c2", shipment_id: "s2", lines: [{ line_idx: 0, qty: 10 }] },
+      ],
+    };
+    api.confirmDelivered.mockRejectedValue({
+      response: { status: 500, data: { detail: "gagal simpan" } },
+    });
+    act(() => {
+      root.render(<MobileDeliveryWorkspace order={ready} canEdit userId="driver-a" shipmentId="s1" onUpdated={() => {}} />);
+    });
+    await clickConfirm();
+    act(() => {
+      root.render(<MobileDeliveryWorkspace order={ready} canEdit userId="driver-a" shipmentId="s2" onUpdated={() => {}} />);
+    });
+    await clickConfirm();
+    const first = api.confirmDelivered.mock.calls[0][1].action_id;
+    const second = api.confirmDelivered.mock.calls[1][1].action_id;
+    expect(first).not.toBe(second);
+    expect(api.confirmDelivered.mock.calls[0][1].shipment_id).toBe("s1");
+    expect(api.confirmDelivered.mock.calls[1][1].shipment_id).toBe("s2");
+
+    act(() => {
+      root.render(<MobileDeliveryWorkspace order={ready} canEdit userId="driver-a" shipmentId="s1" onUpdated={() => {}} />);
+    });
+    await act(async () => {
+      typeInput(container.querySelector('[data-testid="mobile-recipient-name"]'), "Siti Penerima");
+    });
+    await clickConfirm();
+    expect(api.confirmDelivered.mock.calls[2][1].action_id).not.toBe(first);
+    expect(api.confirmDelivered.mock.calls[2][1].recipient_name).toBe("Siti Penerima");
+  });
+
+  test("an unknown confirm is verified before another send", async () => {
+    const ready = namedReady("order-unknown-retry");
+    const sequence = [];
+    const timeout = new Error("timeout");
+    timeout.code = "ETIMEDOUT";
+    api.confirmDelivered.mockImplementation((id, payload) => {
+      sequence.push(["post", payload.action_id]);
+      return Promise.reject(timeout);
+    });
+    api.getOrder.mockImplementation(() => {
+      sequence.push(["get"]);
+      return Promise.reject(new Error("down"));
+    });
+    act(() => {
+      root.render(<MobileDeliveryWorkspace order={ready} canEdit userId="driver-a" onUpdated={() => {}} />);
+    });
+    await clickConfirm();
+    expect(sequence.map((step) => step[0])).toEqual(["post", "get"]);
+    api.getOrder.mockImplementation(() => {
+      sequence.push(["get"]);
+      return Promise.resolve({ order: ready });
+    });
+    await clickConfirm();
+    expect(sequence.map((step) => step[0])).toEqual(["post", "get", "get", "post", "get"]);
+    expect(sequence[0][1]).toBe(sequence[3][1]);
+  });
+
+  test("verified success clears the stored action id", async () => {
+    const ready = namedReady("order-clear-action");
+    const saved = markShipmentDelivered(ready);
+    api.confirmDelivered.mockResolvedValue({ order: saved });
+    act(() => {
+      root.render(<MobileDeliveryWorkspace order={ready} canEdit userId="driver-a" onUpdated={() => {}} />);
+    });
+    await clickConfirm();
+    const sent = api.confirmDelivered.mock.calls[0][1].action_id;
+    const stored = JSON.parse(sessionStorage.getItem(CONFIRM_ACTION_STORAGE) || "{\"entries\":{}}");
+    const ids = Object.values(stored.entries || {}).map((entry) => entry.actionId);
+    expect(ids).not.toContain(sent);
+  });
+
+  test("reopening the workspace after a failed confirm still reuses that action id", async () => {
+    const ready = namedReady("order-reopen");
+    api.confirmDelivered.mockRejectedValue({
+      response: { status: 500, data: { detail: "gagal simpan" } },
+    });
+    act(() => {
+      root.render(<MobileDeliveryWorkspace order={ready} canEdit onUpdated={() => {}} />);
+    });
+    await clickConfirm();
+    const first = api.confirmDelivered.mock.calls[0][1].action_id;
+    act(() => root.unmount());
+    root = createRoot(container);
+    act(() => {
+      root.render(<MobileDeliveryWorkspace order={ready} canEdit onUpdated={() => {}} />);
+    });
+    await clickConfirm();
+    expect(api.confirmDelivered.mock.calls[1][1].action_id).toBe(first);
+  });
+
+  test("confirm waits out the mobile timeout and then verifies the order", async () => {
+    jest.useFakeTimers();
+    try {
+      const ready = namedReady("order-clock");
+      api.confirmDelivered.mockImplementation(() => new Promise(() => {}));
+      api.getOrder.mockResolvedValue({ order: ready });
+      const onDeliveryConfirmed = jest.fn();
+      act(() => {
+        root.render(
+          <MobileDeliveryWorkspace
+            order={ready}
+            canEdit
+            onUpdated={() => {}}
+            onDeliveryConfirmed={onDeliveryConfirmed}
+          />,
+        );
+      });
+      await act(async () => {
+        container.querySelector('[data-testid="mobile-confirm-delivered"]').click();
+      });
+      expect(api.getOrder).not.toHaveBeenCalled();
+      await act(async () => {
+        jest.advanceTimersByTime(45000);
+      });
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(api.getOrder).toHaveBeenCalledWith("order-clock", { view: "operational" });
+      expect(api.confirmDelivered).toHaveBeenCalledTimes(1);
+      expect(onDeliveryConfirmed).not.toHaveBeenCalled();
+      expect(container.querySelector('[data-testid="mobile-delivery-error"]').textContent).toBe(
+        "Hasil konfirmasi belum diketahui. Periksa status sebelum mencoba lagi.",
+      );
+      expect(container.textContent).not.toContain("Konfirmasi tidak tersimpan.");
+      expect(container.querySelector('[data-testid="mobile-recipient-name"]').value).toBe("Budi Penerima");
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });

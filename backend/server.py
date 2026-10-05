@@ -228,6 +228,7 @@ from services.trial_balance_http import register_trial_balance_routes
 from services.profit_loss_http import register_profit_loss_routes
 from services.financial_dashboard_http import register_financial_dashboard_routes
 from services.sales_dashboard_http import register_sales_dashboard_routes
+from services.widget_dashboard_http import register_widget_dashboard_routes
 from services.balance_sheet_http import register_balance_sheet_routes
 from services.inventory_reconciliation_http import register_inventory_reconciliation_routes
 from services.chart_of_accounts import COLLECTION as LEDGER_ACCOUNTS_COLLECTION
@@ -240,12 +241,17 @@ from permissions import (
 )
 from services.division_tasks import (
     DIVISION_DEFS as _DIVISION_TASK_DEFS,
-    TASK_PROJECTION as _DIVISION_TASK_PROJECTION,
     build_division_tasks as _build_division_tasks,
+    division_tasks_read_pipeline as _division_tasks_read_pipeline,
     enrich_tasks_current_stock as _enrich_tasks_current_stock,
     can_view_all_division as _can_view_all_division,
     po_needs_loading_task as _po_needs_loading_task,
     resolve_division as _resolve_division,
+)
+from services.operational_order_view import (
+    is_operational_view as _is_operational_view,
+    operational_order_pipeline as _operational_order_pipeline,
+    operational_public_order as _operational_public_order,
 )
 from operator_analytics import (
     build_activity_analytics_pipeline,
@@ -627,6 +633,8 @@ class OperatorSplitInput(BaseModel):
     work_date: Optional[str] = None
     # Planning metadata (Screen Besar / Screen Kecil) for this allocation. Omit preserves it.
     screen_size: Optional[str] = None
+    # Selected operator user id. Omit keeps the stored id when the email is unchanged.
+    operator_user_id: Optional[str] = None
 
 
 class CancelSplitPayload(BaseModel):
@@ -658,6 +666,7 @@ class OperatorProgressPayload(BaseModel):
     qty_completed: Optional[int] = None
     qty: Optional[int] = None
     action_id: Optional[str] = None
+    work_date: Optional[str] = None
 
 
 class LoadingLineInput(BaseModel):
@@ -1720,12 +1729,23 @@ async def _list_orders_dashboard(st: str, extra: Optional[dict] = None) -> dict:
     }
 
 
+def _public_saved_order(order: dict, view: Optional[str] = None) -> dict:
+    """Operational saves return a lighter copy. Other callers keep the order."""
+    if not _is_operational_view(view):
+        return order
+    return _operational_public_order(order)
+
+
 @api_router.get("/orders/{order_id}")
-async def get_order(order_id: str, user=Depends(current_user)):
+async def get_order(order_id: str, view: Optional[str] = None, user=Depends(current_user)):
     reject_sales_pwa_bypass(user)
     query = {"id": order_id}
     query.update(sales_owner_match(user))
-    order = await db.orders.find_one(query, {"_id": 0})
+    if _is_operational_view(view):
+        found = await db.orders.aggregate(_operational_order_pipeline(query)).to_list(1)
+        order = found[0] if found else None
+    else:
+        order = await db.orders.find_one(query, {"_id": 0})
     if not order:
         raise HTTPException(404, "PO tidak ditemukan")
     if user.get("role") != "admin":
@@ -1755,20 +1775,29 @@ async def get_order(order_id: str, user=Depends(current_user)):
     order["terkirim_confirmed"] = _terkirim_confirmed(order)
     _attach_quantity_snapshot(order)
     # quantity snapshot already attaches workflow_ready flags
-    # Batch 1: delivery deadline + sales delivery summary are independent reads
-    _dd_settings, _sales_delivery_summary = await asyncio.gather(
-        _get_delivery_deadline_settings(),
-        _get_po_delivery_summary(db, order),
-    )
+    # Batch 1: delivery deadline + sales delivery summary are independent reads.
+    # view=operational skips sales-delivery and line-replace enrichment. The PWA
+    # address comes from the order fields, and it does not render those blocks.
+    operational = _is_operational_view(view)
+    if operational:
+        _dd_settings = await _get_delivery_deadline_settings()
+    else:
+        _dd_settings, _sales_delivery_summary = await asyncio.gather(
+            _get_delivery_deadline_settings(),
+            _get_po_delivery_summary(db, order),
+        )
     _attach_deadline_snapshot(order, _dd_settings["lead_time_days"])
     attach_schedule_snapshot(order)
-    order["sales_delivery_summary"] = _sales_delivery_summary
-    try:
-        from services.line_product_replacement import evaluate_all_line_product_replacements
-        order["line_product_replace"] = await evaluate_all_line_product_replacements(db, order)
-    except Exception:
-        order["line_product_replace"] = []
+    if not operational:
+        order["sales_delivery_summary"] = _sales_delivery_summary
+        try:
+            from services.line_product_replacement import evaluate_all_line_product_replacements
+            order["line_product_replace"] = await evaluate_all_line_product_replacements(db, order)
+        except Exception:
+            order["line_product_replace"] = []
     _strip_tracking_secret(order)
+    if operational:
+        return {"order": _operational_public_order(order)}
     return {"order": _strip_inline_attachment_bytes(_strip_sj_bytes(order))}
 
 
@@ -3145,7 +3174,7 @@ async def update_helper_prep(order_id: str, payload: HelperPrepPayload, user=Dep
 
 # ---- Helper qty PER LINE ITEM (Batch 1) ----
 @api_router.post("/orders/{order_id}/helper-prep/items")
-async def update_helper_prep_items(order_id: str, payload: HelperPrepItemsPayload, user=Depends(current_user)):
+async def update_helper_prep_items(order_id: str, payload: HelperPrepItemsPayload, view: Optional[str] = None, user=Depends(current_user)):
     """Helper mengisi Qty Disiapkan per line item. Qty Dibutuhkan = read-only
     dari line_items[i].quantity (source of truth PO). Qty Order TIDAK berubah."""
     order = await db.orders.find_one({"id": order_id}, {"_id": 0})
@@ -3286,7 +3315,7 @@ async def update_helper_prep_items(order_id: str, payload: HelperPrepItemsPayloa
     _sync_workflow_stage(order)
     await _persist_order(order)
     await _audit_po(order, "helper.prep.items.update", user, before=before, after=order["helper_prep"])
-    return {"order": order}
+    return {"order": _public_saved_order(order, view)}
 
 
 # ---- Batch 3: Production routing (Cetak / Non-Cetak) ----
@@ -3940,7 +3969,7 @@ async def work_division_tasks(
         email = (user.get("email") or "").strip()
         if email:
             query["operator_splits.operator_email"] = email
-    raw = await db.orders.find(query, _DIVISION_TASK_PROJECTION).to_list(1000)
+    raw = await db.orders.aggregate(_division_tasks_read_pipeline(query)).to_list(1000)
     dd_settings = await _get_delivery_deadline_settings()
     lead_days = dd_settings["lead_time_days"]
     for o in raw:
@@ -3966,7 +3995,7 @@ async def work_division_tasks(
 
 # ---- Screener info (Requirement 10) ----
 @api_router.post("/orders/{order_id}/screener-info")
-async def update_screener_info(order_id: str, payload: ScreenerInfoPayload, user=Depends(current_user)):
+async def update_screener_info(order_id: str, payload: ScreenerInfoPayload, view: Optional[str] = None, user=Depends(current_user)):
     order = await db.orders.find_one({"id": order_id}, {"_id": 0})
     if not order:
         raise HTTPException(404, "PO tidak ditemukan")
@@ -3992,7 +4021,7 @@ async def update_screener_info(order_id: str, payload: ScreenerInfoPayload, user
     if int(increment) <= 0:
         raise HTTPException(400, "Qty Screener harus lebih besar dari 0.")
     if find_by_action_id(entries, payload.action_id):
-        return {"order": order}
+        return {"order": _public_saved_order(order, view)}
     entries = seed_legacy(
         entries,
         snapshot_qty=before.get("screen_qty"),
@@ -4014,7 +4043,7 @@ async def update_screener_info(order_id: str, payload: ScreenerInfoPayload, user
         extra={"notes": (payload.notes or "").strip() or None},
     )
     if not created:
-        return {"order": order}
+        return {"order": _public_saved_order(order, view)}
     total = sum_entry_qty(entries)
     order["screener_info"] = {
         "screen_qty": total,
@@ -4030,7 +4059,7 @@ async def update_screener_info(order_id: str, payload: ScreenerInfoPayload, user
     _sync_workflow_stage(order)
     await _persist_order(order)
     await _audit_po(order, "screener.info.update", user, before=before, after=order["screener_info"])
-    return {"order": order}
+    return {"order": _public_saved_order(order, view)}
 
 
 @api_router.post("/orders/{order_id}/assign-operators")
@@ -4054,6 +4083,8 @@ async def assign_operators(order_id: str, payload: AssignOperatorsPayload, user=
             }
             if "screen_size" in dumped:
                 row["screen_size"] = dumped.get("screen_size")
+            if "operator_user_id" in dumped:
+                row["operator_user_id"] = str(dumped.get("operator_user_id") or "").strip()
             rows.append(row)
         try:
             new_splits, cancel_notes = _apply_operator_assignments(
@@ -4172,7 +4203,7 @@ async def set_split_work_date(order_id: str, split_id: str, payload: WorkDatePay
 
 
 @api_router.post("/orders/{order_id}/operator-progress")
-async def update_operator_progress(order_id: str, payload: OperatorProgressPayload, user=Depends(current_user)):
+async def update_operator_progress(order_id: str, payload: OperatorProgressPayload, view: Optional[str] = None, user=Depends(current_user)):
     await _require_perm(user, "operator.update")
     eff = await user_permissions(user)
     wage_doc = await db.app_settings.find_one({"key": OPERATOR_WAGE_SETTINGS_KEY}, {"_id": 0}) or {}
@@ -4203,6 +4234,7 @@ async def update_operator_progress(order_id: str, payload: OperatorProgressPaylo
 
     act_id = (payload.action_id or "").strip() or str(uuid.uuid4())
     payload.action_id = act_id
+    progress_work_date = _parse_work_date(payload.work_date) if payload.work_date else None
     claimed_stock = None
     if found_split_pre:
         inc_val = payload.qty
@@ -4278,7 +4310,14 @@ async def update_operator_progress(order_id: str, payload: OperatorProgressPaylo
         except (TypeError, ValueError):
             ident = {}
         rate = _wage_effective_rate(ident, wib_today(), wage_doc, operator=found)
-        extra = {"rate_per_pcs": rate} if rate is not None else None
+        extra = {}
+        if rate is not None:
+            extra["rate_per_pcs"] = rate
+        if progress_work_date:
+            extra["work_date"] = progress_work_date
+        operator_uid = str(found.get("operator_user_id") or "").strip()
+        if operator_uid:
+            extra["operator_user_id"] = operator_uid
         entries, _entry, created = append_qty_entry(
             entries,
             qty=increment,
@@ -4323,7 +4362,7 @@ async def update_operator_progress(order_id: str, payload: OperatorProgressPaylo
             user,
             live_enabled=live_enabled,
         )
-    return {"order": order}
+    return {"order": _public_saved_order(order, view)}
 
 
 @api_router.post("/orders/{order_id}/urgent")
@@ -4369,7 +4408,7 @@ async def set_buffer_stock(order_id: str, payload: BufferStockPayload, user=Depe
 
 
 @api_router.post("/orders/{order_id}/attachment")
-async def add_attachment(order_id: str, payload: AttachmentInput, user=Depends(current_user)):
+async def add_attachment(order_id: str, payload: AttachmentInput, view: Optional[str] = None, user=Depends(current_user)):
     order = await db.orders.find_one({"id": order_id}, {"_id": 0})
     if not order:
         raise HTTPException(404, "PO tidak ditemukan")
@@ -4543,6 +4582,8 @@ async def add_attachment(order_id: str, payload: AttachmentInput, user=Depends(c
     await _persist_order(order)
     if audit_action:
         await _audit_po(order, audit_action, user, note=f"{payload.name}")
+    if _is_operational_view(view):
+        return {"order": _public_saved_order(order, view)}
     return {"order": _strip_sj_bytes(order)}
 
 
@@ -4975,7 +5016,7 @@ async def confirm_loading(order_id: str, payload: LoadingConfirmPayload, user=De
 
 
 @api_router.post("/orders/{order_id}/loading-confirm-match")
-async def confirm_loading_match(order_id: str, payload: LoadingMatchConfirmPayload, user=Depends(current_user)):
+async def confirm_loading_match(order_id: str, payload: LoadingMatchConfirmPayload, view: Optional[str] = None, user=Depends(current_user)):
     """One-click: Semua Barang Sesuai SJ — backend generates lines from current SJ."""
     # Granular key only. Legacy loading.update expands via with_loading_permission_defaults
     # until Role & Hak Akses stamps loading.granular_configured (then revocation sticks).
@@ -5057,7 +5098,8 @@ async def confirm_loading_match(order_id: str, payload: LoadingMatchConfirmPaylo
         from services.physical_stock_engine import handle_loading_confirmed
         await handle_loading_confirmed(db, order, record_holder["record"], user)
     await _audit_po(order, "loading.confirm_match", user, note=payload.surat_jalan_id)
-    return {"order": _strip_sj_bytes(order), "confirmation": record_holder.get("record"), "idempotent": bool(record_holder.get("idempotent"))}
+    saved = _public_saved_order(order, view) if _is_operational_view(view) else _strip_sj_bytes(order)
+    return {"order": saved, "confirmation": record_holder.get("record"), "idempotent": bool(record_holder.get("idempotent"))}
 
 
 @api_router.post("/orders/{order_id}/loading-report-discrepancy")
@@ -5240,7 +5282,7 @@ class PackingInfoPayload(BaseModel):
 
 
 @api_router.post("/orders/{order_id}/packing-info")
-async def save_packing_info(order_id: str, payload: PackingInfoPayload, user=Depends(current_user)):
+async def save_packing_info(order_id: str, payload: PackingInfoPayload, view: Optional[str] = None, user=Depends(current_user)):
     """Save Qty Packing per line. qty_packed total = SUM(lines) untuk downstream."""
     await _require_perm(user, "packing.update")
     existing_order = await db.orders.find_one({"id": order_id}, {"_id": 0})
@@ -5390,7 +5432,7 @@ async def save_packing_info(order_id: str, payload: PackingInfoPayload, user=Dep
                     after={"qty_packed": (order.get("packing_info") or {}).get("qty_packed"),
                            "lines": (order.get("packing_info") or {}).get("lines")},
                     note=payload.notes or "")
-    return {"order": order}
+    return {"order": _public_saved_order(order, view)}
 
 
 class SuratJalanLineInput(BaseModel):
@@ -5768,7 +5810,7 @@ class ConfirmDeliveredPayload(BaseModel):
 
 
 @api_router.post("/orders/{order_id}/confirm-delivered")
-async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPayload] = None, user=Depends(current_user)):
+async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPayload] = None, view: Optional[str] = None, user=Depends(current_user)):
     """Explicit Konfirmasi Terkirim after >= 2 bukti kirim + recipient name + e-signature.
 
     Upload alone / save signature alone does not deliver.
@@ -6097,7 +6139,7 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
             logging.getLogger(__name__).warning("route stop progress update failed", exc_info=True)
     if isinstance(order, dict):
         order.pop("delivery_confirm_fence", None)
-    return {"order": order}
+    return {"order": _public_saved_order(order, view)}
 
 
 class DeliveryRecipientSignaturePayload(BaseModel):
@@ -6115,6 +6157,7 @@ async def upload_delivery_recipient_signature(
     sj_file_id: Optional[str] = Form(None),
     file: Optional[UploadFile] = File(None),
     signature_data_url: Optional[str] = Form(None),
+    view: Optional[str] = Query(None),
     user=Depends(current_user),
 ):
     """Save recipient electronic signature. Does NOT mark delivered."""
@@ -6226,7 +6269,7 @@ async def upload_delivery_recipient_signature(
         "frozen": False,
         "content_type": media,
     }
-    return {"order": order, "signature": safe}
+    return {"order": _public_saved_order(order, view), "signature": safe}
 
 
 @api_router.delete("/orders/{order_id}/delivery-recipient-signature")
@@ -6259,6 +6302,7 @@ async def upload_delivery_driver_signature(
     sj_file_id: Optional[str] = Form(None),
     file: Optional[UploadFile] = File(None),
     signature_data_url: Optional[str] = Form(None),
+    view: Optional[str] = Query(None),
     user=Depends(current_user),
 ):
     """Save driver/pengirim electronic signature. Does NOT mark delivered."""
@@ -6363,7 +6407,7 @@ async def upload_delivery_driver_signature(
         "frozen": False,
         "content_type": media,
     }
-    return {"order": order, "signature": safe}
+    return {"order": _public_saved_order(order, view), "signature": safe}
 
 
 @api_router.delete("/orders/{order_id}/delivery-driver-signature")
@@ -7660,6 +7704,9 @@ STATUS_PO_PROJECTION = {
     "shipments.status": 1,
     "shipments.sj_status": 1,
     "shipments.cancelled": 1,
+    "shipments.is_cancelled": 1,
+    "shipments.deleted": 1,
+    "shipments.is_deleted": 1,
     "shipments.superseded": 1,
     "shipments.superseded_by_shipment_id": 1,
     "shipments.qty_delivered": 1,
@@ -7675,6 +7722,7 @@ STATUS_PO_PROJECTION = {
     "surat_jalan_files.lines.quantity": 1,
     "delivery_confirmations.shipment_id": 1,
     "delivery_confirmations.qty": 1,
+    "delivery_confirmations.confirmed_at": 1,
     "terkirim_confirmed": 1,
     "print_status": 1,
     "print_completed_qty": 1,
@@ -9202,6 +9250,7 @@ from services.sales_invoices import (
     create_sales_invoice as _create_sales_invoice,
     generate_sales_invoice_pdf_bytes,
     list_sales_invoices as _list_sales_invoices,
+    query_sales_invoices as _query_sales_invoices,
     get_sales_invoice_detail as _get_sales_invoice_detail,
     update_sales_invoice as _update_sales_invoice,
     delete_sales_invoice as _delete_sales_invoice,
@@ -10315,6 +10364,7 @@ _SALES_ORDER_LIST_PROJECTION = {
     "design_bypassed_at": 1,
     "payment_approved_at": 1,
     "payment_bypassed_at": 1,
+    "customer_approval.status": 1,
     "delivery_deadline_manual": 1,
     "buffer_stock": 1,
     "delivery_status": 1,
@@ -10361,6 +10411,80 @@ def _sales_order_date_clause(date_from: Optional[str], date_to: Optional[str]) -
     if end:
         clause["$lte"] = f"{end}T23:59:59.999999"
     return {"order_date": clause} if clause else {}
+
+
+_SALES_ORDER_LIST_FETCH_LIMIT = 1000
+
+
+def _sales_order_list_match(clauses: list) -> dict:
+    return {"$and": clauses} if clauses else {}
+
+
+async def _fetch_sales_order_list_rows(match: dict) -> list:
+    return await db.orders.aggregate([
+        {"$match": match},
+        {"$sort": {"created_at": -1}},
+        {"$limit": _SALES_ORDER_LIST_FETCH_LIMIT},
+        {"$project": _SALES_ORDER_LIST_PROJECTION},
+    ]).to_list(_SALES_ORDER_LIST_FETCH_LIMIT)
+
+
+async def _decorate_sales_order_list_rows(orders: list) -> None:
+    """Existing list enrichment: unit totals, HOLD snapshot, deadline, delivery summary."""
+    if not orders:
+        return
+    dd_settings = await _get_delivery_deadline_settings()
+    po_ids = [o["id"] for o in orders if o.get("id")]
+    shipped_aggregates: Dict[str, dict] = {}
+    if po_ids:
+        pipe = [
+            {"$match": {"po_id": {"$in": po_ids}, "is_cancelled": {"$ne": True}}},
+            {"$group": {"_id": "$po_id", "total_shipped": {"$sum": "$total_qty"}, "count": {"$sum": 1}}},
+        ]
+        shipped_aggregates = {doc["_id"]: doc async for doc in db.sales_deliveries.aggregate(pipe)}
+    for o in orders:
+        o["quantity_by_unit"] = _quantity_by_unit(o.pop("line_items", None))
+        o["design_files"] = [True] if o.pop("_has_design_files", False) else []
+        o["payment_files"] = [True] if o.pop("_has_payment_files", False) else []
+        _apply_hold_snapshot(o)
+        _attach_deadline_snapshot(o, dd_settings["lead_time_days"])
+        _strip_tracking_secret(o)
+        o.pop("design_files", None)
+        o.pop("payment_files", None)
+        agg = shipped_aggregates.get(o.get("id"), {})
+        tot_shipped = int(agg.get("total_shipped", 0))
+        tot_ordered = int(o.get("total_quantity", 0))
+        tot_remain = max(0, tot_ordered - tot_shipped)
+        if o.get("cancelled"):
+            deliv_st = "DIBATALKAN"
+        elif tot_shipped == 0:
+            deliv_st = "BELUM DIKIRIM"
+        elif tot_remain > 0:
+            deliv_st = "SEBAGIAN"
+        else:
+            deliv_st = "SELESAI"
+        o["delivery_summary"] = {
+            "total_ordered": tot_ordered,
+            "total_shipped": tot_shipped,
+            "total_remaining": tot_remain,
+            "status": deliv_st,
+            "shipment_count": int(agg.get("count", 0)),
+        }
+
+
+def _merge_sales_order_branches(aktif_rows: list, histori_rows: list) -> list:
+    """Union of the two list branches, one row per id, newest created_at first."""
+    seen = set()
+    merged = []
+    for row in [*aktif_rows, *histori_rows]:
+        oid = row.get("id")
+        if oid:
+            if oid in seen:
+                continue
+            seen.add(oid)
+        merged.append(row)
+    merged.sort(key=lambda row: row.get("created_at") or "", reverse=True)
+    return merged
 
 
 @api_router.post("/sales-orders/price-quote")
@@ -10446,17 +10570,14 @@ async def list_sales_orders(
     reject_sales_pwa_bypass(user)
     await _require_any_perm(user, "sales_order.view", "sales_order.create", "po.view")
 
-    clauses = []
+    shared: list = []
     owner = sales_owner_match(user)
     if owner:
-        clauses.append(owner)
+        shared.append(owner)
     st = (status or "all").lower()
-    status_clause = _sales_order_status_clause(st)
-    if status_clause:
-        clauses.append(status_clause)
     if q and q.strip():
         needle = re.escape(q.strip())
-        clauses.append({"$or": [
+        shared.append({"$or": [
             {"po_number": {"$regex": needle, "$options": "i"}},
             {"customer": {"$regex": needle, "$options": "i"}},
             {"outlet": {"$regex": needle, "$options": "i"}},
@@ -10464,62 +10585,40 @@ async def list_sales_orders(
         ]})
     date_clause = _sales_order_date_clause(date_from, date_to)
     if date_clause:
-        clauses.append(date_clause)
-    query: dict = {"$and": clauses} if clauses else {}
-    
-    orders = await db.orders.aggregate([
-        {"$match": query},
-        {"$sort": {"created_at": -1}},
-        {"$limit": 1000},
-        {"$project": _SALES_ORDER_LIST_PROJECTION},
-    ]).to_list(1000)
-    dd_settings = await _get_delivery_deadline_settings()
-    
-    # Batch calculate delivery status summary for all returned orders
-    po_ids = [o["id"] for o in orders if o.get("id")]
-    shipped_aggregates: Dict[str, dict] = {}
-    if po_ids:
-        pipe = [
-            {"$match": {"po_id": {"$in": po_ids}, "is_cancelled": {"$ne": True}}},
-            {"$group": {"_id": "$po_id", "total_shipped": {"$sum": "$total_qty"}, "count": {"$sum": 1}}}
-        ]
-        shipped_aggregates = {doc["_id"]: doc async for doc in db.sales_deliveries.aggregate(pipe)}
+        shared.append(date_clause)
 
-    fetched_count = len(orders)
-    for o in orders:
-        o["quantity_by_unit"] = _quantity_by_unit(o.pop("line_items", None))
-        o["design_files"] = [True] if o.pop("_has_design_files", False) else []
-        o["payment_files"] = [True] if o.pop("_has_payment_files", False) else []
-        _apply_hold_snapshot(o)
-        _attach_deadline_snapshot(o, dd_settings["lead_time_days"])
-        _strip_tracking_secret(o)
-        o.pop("design_files", None)
-        o.pop("payment_files", None)
-        
-        agg = shipped_aggregates.get(o.get("id"), {})
-        tot_shipped = int(agg.get("total_shipped", 0))
-        tot_ordered = int(o.get("total_quantity", 0))
-        tot_remain = max(0, tot_ordered - tot_shipped)
-        if o.get("cancelled"):
-            deliv_st = "DIBATALKAN"
-        elif tot_shipped == 0:
-            deliv_st = "BELUM DIKIRIM"
-        elif tot_remain > 0:
-            deliv_st = "SEBAGIAN"
-        else:
-            deliv_st = "SELESAI"
-        o["delivery_summary"] = {
-            "total_ordered": tot_ordered,
-            "total_shipped": tot_shipped,
-            "total_remaining": tot_remain,
-            "status": deliv_st,
-            "shipment_count": int(agg.get("count", 0)),
-        }
-    
-    if st == "hold":
-        orders = [o for o in orders if o.get("hold")]
-    elif st == "aktif":
-        orders = [o for o in orders if not o.get("hold")]
+    if st == "gabungan":
+        # Separate 1000-row windows. A mixed query would drop rows still visible
+        # on Aktif or Histori once the other classification fills the cap.
+        aktif_rows, histori_rows = await asyncio.gather(
+            _fetch_sales_order_list_rows(_sales_order_list_match([
+                *shared, _sales_order_status_clause("aktif"),
+            ])),
+            _fetch_sales_order_list_rows(_sales_order_list_match([
+                *shared, _sales_order_status_clause("histori"),
+            ])),
+        )
+        branch_capped = (
+            len(aktif_rows) >= _SALES_ORDER_LIST_FETCH_LIMIT
+            or len(histori_rows) >= _SALES_ORDER_LIST_FETCH_LIMIT
+        )
+        await _decorate_sales_order_list_rows([*aktif_rows, *histori_rows])
+        orders = _merge_sales_order_branches(
+            [row for row in aktif_rows if not row.get("hold")],
+            histori_rows,
+        )
+    else:
+        clauses = list(shared)
+        status_clause = _sales_order_status_clause(st)
+        if status_clause:
+            clauses.append(status_clause)
+        orders = await _fetch_sales_order_list_rows(_sales_order_list_match(clauses))
+        branch_capped = len(orders) >= _SALES_ORDER_LIST_FETCH_LIMIT
+        await _decorate_sales_order_list_rows(orders)
+        if st == "hold":
+            orders = [o for o in orders if o.get("hold")]
+        elif st == "aktif":
+            orders = [o for o in orders if not o.get("hold")]
 
     paging = page is not None or page_size is not None
     if not paging:
@@ -10545,7 +10644,7 @@ async def list_sales_orders(
         "total": total,
         "page": current,
         "page_size": size,
-        "capped": fetched_count >= 1000,
+        "capped": branch_capped,
     }
 
 
@@ -10623,13 +10722,57 @@ async def get_sales_delivery_pdf_endpoint(id: str, user=Depends(current_user)):
 async def list_sales_invoices_endpoint(
     q: Optional[str] = None,
     po_id: Optional[str] = None,
+    scope: Optional[str] = None,
+    party: Optional[str] = None,
+    po_number: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    total_min: Optional[float] = None,
+    total_max: Optional[float] = None,
+    outstanding_min: Optional[float] = None,
+    outstanding_max: Optional[float] = None,
+    financial_status: Optional[str] = None,
+    accounting_status: Optional[str] = None,
+    payment_status: Optional[str] = None,
+    page: Optional[int] = None,
+    page_size: Optional[int] = None,
     user=Depends(current_user),
 ):
-    """List sales invoices (Faktur Penjualan) with search and po_id filtering."""
+    """List sales invoices (Faktur Penjualan) with search and po_id filtering.
+
+    Callers that omit the tab/filter/page parameters keep the previous payload:
+    ``{"invoices": [...], "count": n}`` capped by the existing list helper.
+    Passing scope, column filters, or page returns one page plus tab totals.
+    """
     reject_sales_pwa_bypass(user)
     await _require_any_perm(user, "sales.invoice.view", "sales_order.view", "po.view", "sales.delivery.view")
     if po_id:
         await ensure_owned_po_id(db, user, po_id)
+    paged = any(value is not None for value in (
+        scope, party, po_number, date_from, date_to, total_min, total_max,
+        outstanding_min, outstanding_max, financial_status, accounting_status,
+        payment_status, page, page_size,
+    ))
+    if paged:
+        return await _query_sales_invoices(
+            db,
+            q=q,
+            po_id=po_id,
+            scope=scope or "active",
+            party=party,
+            po_number=po_number,
+            date_from=date_from,
+            date_to=date_to,
+            total_min=total_min,
+            total_max=total_max,
+            outstanding_min=outstanding_min,
+            outstanding_max=outstanding_max,
+            financial_status=financial_status,
+            accounting_status=accounting_status,
+            payment_status=payment_status,
+            page=page or 1,
+            page_size=page_size or 20,
+        )
     invoices = await _list_sales_invoices(db, q=q, po_id=po_id)
     return {"invoices": invoices, "count": len(invoices)}
 
@@ -12803,6 +12946,12 @@ register_sales_dashboard_routes(
     user_permissions=user_permissions,
     Depends=Depends,
 )
+register_widget_dashboard_routes(
+    api_router,
+    get_db=lambda: db,
+    require_perm=require_perm,
+    Depends=Depends,
+)
 register_balance_sheet_routes(
     api_router,
     get_db=lambda: db,
@@ -12910,6 +13059,7 @@ async def upload_delivery_proof(
     file: UploadFile = File(...),
     note: Optional[str] = Form(None),
     shipment_id: Optional[str] = Form(None),
+    view: Optional[str] = Query(None),
     user=Depends(require_perm("delivery.update")),
 ):
     """Upload a delivery-proof photo (from driver's phone). Stores to object
@@ -12998,11 +13148,11 @@ async def upload_delivery_proof(
             proof_ref["accurate_shipment_id"] = stamp_sh.get("accurate_shipment_id")
     add_timeline(order, order["current_stage"], user, note=f"Upload bukti kirim: {file_doc['original_filename']}")
     await _persist_order(order)
-    return {"order": order, "proof": proof_ref}
+    return {"order": _public_saved_order(order, view), "proof": proof_ref}
 
 
 @api_router.delete("/orders/{order_id}/delivery-proof/{proof_id}")
-async def delete_delivery_proof(order_id: str, proof_id: str, user=Depends(require_perm("delivery.update"))):
+async def delete_delivery_proof(order_id: str, proof_id: str, view: Optional[str] = None, user=Depends(require_perm("delivery.update"))):
     order = await db.orders.find_one({"id": order_id}, {"_id": 0})
     if not order:
         raise HTTPException(404, "PO tidak ditemukan")
@@ -13023,7 +13173,7 @@ async def delete_delivery_proof(order_id: str, proof_id: str, user=Depends(requi
     # Write only proof/timeline fields. Full-document $set rewrote unrelated binaries
     # (design/sample/SJ data_url) and made delete wait on a huge Mongo update.
     await _persist_order(order, persist_keys=("delivery_proofs", "timeline"))
-    return {"order": order}
+    return {"order": _public_saved_order(order, view)}
 
 
 # ---------- Analytics (raw base data, no KPI assumption) ----------
@@ -14304,6 +14454,12 @@ async def seed():
         unique=True,
         name="tracking_token_unique",
         partialFilterExpression={"tracking_token": {"$exists": True, "$gt": ""}},
+    )
+    await db.orders.create_index(
+        [("tracking_public_code", 1)],
+        unique=True,
+        name="tracking_public_code_unique",
+        partialFilterExpression={"tracking_public_code": {"$exists": True, "$gt": ""}},
     )
     await db.master_items.create_index("id", unique=True)
     from services.physical_stock import ensure_indexes as ensure_physical_stock_indexes

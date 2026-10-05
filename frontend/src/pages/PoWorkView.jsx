@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, Navigate, useParams, useSearchParams } from "react-router-dom";
 import { ArrowLeft, RefreshCw } from "lucide-react";
 import api from "../lib/api";
@@ -25,24 +25,32 @@ export default function PoWorkView() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
 
-  const load = async () => {
+  const requestRef = useRef(0);
+  const load = useCallback(async () => {
+    const requestId = requestRef.current + 1;
+    requestRef.current = requestId;
     setErr("");
     try {
       const [od, st] = await Promise.all([
         api.getOrder(id),
         api.workPanelSettings().catch(() => ({ settings: { divisions: [] } })),
       ]);
+      if (requestRef.current !== requestId) return;
       setOrder(od.order);
       setSettings(st.settings || st);
     } catch (e) {
+      if (requestRef.current !== requestId) return;
       const d = e.response?.data?.detail;
       setErr(typeof d === "string" ? d : "Gagal memuat pekerjaan");
     } finally {
-      setLoading(false);
+      if (requestRef.current === requestId) setLoading(false);
     }
-  };
+  }, [id]);
 
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [id]);
+  useEffect(() => {
+    load();
+    return () => { requestRef.current += 1; };
+  }, [load]);
 
   const permitted = permittedDivisionIds(hasPerm);
   const activeId = defaultDivisionId(hasPerm, requested) || requested || "operator";

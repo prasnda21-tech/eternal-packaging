@@ -311,6 +311,13 @@ def _payment_position(grand: Optional[Decimal], paid: Decimal) -> Tuple[str, Dec
     return status, outstanding
 
 
+def _share_percent(amount: Decimal, total: Decimal):
+    """Percent of a known total. None when the total cannot be a denominator."""
+    if total <= 0 or amount < 0:
+        return None
+    return float((amount / total * Decimal("100")).quantize(Decimal("0.1")))
+
+
 async def _cursor_all(cursor) -> List[dict]:
     rows: List[dict] = []
     async for doc in cursor:
@@ -574,6 +581,7 @@ def _build_settlement(
             "settled_count": 0,
             "settled_grand_total": None,
             "open_count": 0,
+            "open_grand_total": None,
             "open_outstanding": None,
             "grain": grain,
             "grain_label": grain_label,
@@ -594,6 +602,7 @@ def _build_settlement(
     settled_count = 0
     settled_grand = Decimal("0.00")
     open_count = 0
+    open_grand = Decimal("0.00")
     open_outstanding = Decimal("0.00")
     for inv in invoices:
         grand = _money(inv.get("grand_total"))
@@ -606,6 +615,7 @@ def _build_settlement(
                 "settled_count": None,
                 "settled_grand_total": None,
                 "open_count": None,
+                "open_grand_total": None,
                 "open_outstanding": None,
                 "points": [],
                 "detail": "Ada faktur finalized dengan grand_total yang tidak dapat dibaca.",
@@ -620,6 +630,7 @@ def _build_settlement(
                 points[key]["grand_total"] += grand
         else:
             open_count += 1
+            open_grand += grand
             open_outstanding += outstanding
             if key in points:
                 points[key]["outstanding"] += outstanding
@@ -630,6 +641,7 @@ def _build_settlement(
         "settled_count": settled_count,
         "settled_grand_total": _num(settled_grand.quantize(MONEY_Q)),
         "open_count": open_count,
+        "open_grand_total": _num(open_grand.quantize(MONEY_Q)),
         "open_outstanding": _num(open_outstanding.quantize(MONEY_Q)),
         "grain": grain,
         "grain_label": grain_label,
@@ -846,14 +858,17 @@ async def _build_sales(db, invoices: Sequence[dict], mapping: Dict[str, str]) ->
     note = None
     if unassigned_count:
         note = f"{unassigned_count} faktur tanpa sales terpetakan masuk {UNASSIGNED_LABEL}, tidak ditebak dari nama."
+    status = "complete" if not unassigned_count else "incomplete"
+    show_share = status == "complete" and total > 0 and all(row["omzet"] >= 0 for row in public)
     return {
-        "status": "complete" if not unassigned_count else "incomplete",
+        "status": status,
         "groups": [
             {
                 "key": row["key"],
                 "label": row["label"],
                 "omzet": _num(row["omzet"].quantize(MONEY_Q)),
                 "invoice_count": row["invoice_count"],
+                "share": _share_percent(row["omzet"], total) if show_share else None,
             }
             for row in public
         ],
@@ -972,17 +987,20 @@ def _build_products(invoices: Sequence[dict], orders_by_id: Dict[str, dict]) -> 
             "unidentified_line_count": 0,
             "detail": "Belum ada baris faktur pada periode ini",
         }
-    ranked = sorted(groups.values(), key=lambda row: (-row["amount"], row["label"]))[:PRODUCT_LIMIT]
-    items = []
-    for row in ranked:
+    ranked_all = sorted(groups.values(), key=lambda row: (-row["amount"], row["label"], row["key"]))
+    share_base = identified_amount if identified_amount > 0 and all(row["amount"] >= 0 for row in ranked_all) else None
+
+    def public_item(row: dict) -> dict:
         show_qty = row["quantity_known"] and not row["mixed_unit"]
-        items.append({
+        return {
             "key": row["key"],
             "label": row["label"],
             "amount": _num(row["amount"].quantize(MONEY_Q)),
             "quantity": row["quantity"] if show_qty else None,
             "unit": row["unit"] if show_qty else None,
-        })
+            "share": None if share_base is None else _share_percent(row["amount"], share_base),
+        }
+
     note = "Peringkat memakai nilai baris sebelum diskon faktur. Diskon faktur tidak dialokasikan ke barang."
     if unidentified:
         note = f"{note} {unidentified} baris tanpa identitas barang tidak masuk peringkat."
@@ -990,7 +1008,8 @@ def _build_products(invoices: Sequence[dict], orders_by_id: Dict[str, dict]) -> 
         "status": "complete" if not unidentified else "incomplete",
         "basis": "line_subtotal",
         "basis_note": "Nilai barang sebelum diskon faktur",
-        "items": items,
+        "items": [public_item(row) for row in ranked_all[:PRODUCT_LIMIT]],
+        "all_items": [public_item(row) for row in ranked_all],
         "unidentified_line_count": unidentified,
         "identified_amount": _num(identified_amount.quantize(MONEY_Q)),
         "detail": note,
@@ -1048,6 +1067,89 @@ def _build_customers(
         "new_percent": new_percent,
         "repeat_percent": repeat_percent,
         "percents_available": percents_available,
+        "unidentified_invoice_count": unidentified,
+        "detail": note,
+    }
+
+
+def _build_customer_rank(invoices: Sequence[dict], orders_by_id: Dict[str, dict]) -> dict:
+    """Omzet after_discount grouped by stable customer_id. Names never merge rows."""
+    if not invoices:
+        return {
+            "status": "empty",
+            "basis": "after_discount",
+            "groups": [],
+            "identified_amount": None,
+            "unidentified_invoice_count": 0,
+            "detail": "Belum ada faktur pada periode ini",
+        }
+    groups: Dict[str, dict] = {}
+    unidentified = 0
+    identified = Decimal("0.00")
+    mixed_label = 0
+    for inv in invoices:
+        amount = _money(inv.get("after_discount"))
+        if amount is None:
+            return {
+                "status": "error",
+                "basis": "after_discount",
+                "amount": None,
+                "groups": [],
+                "detail": "Ada faktur finalized dengan after_discount yang tidak dapat dibaca.",
+            }
+        order = orders_by_id.get(str(inv.get("po_id") or ""))
+        stable = extract_stable_customer_id(order) if order else None
+        if not stable:
+            unidentified += 1
+            continue
+        label = ""
+        if order:
+            label = str(order.get("customer") or order.get("customer_name") or "").strip()
+        row = groups.get(stable)
+        if row is None:
+            row = {
+                "key": stable,
+                "label": label or stable,
+                "amount": Decimal("0.00"),
+                "invoice_count": 0,
+            }
+            groups[stable] = row
+        elif label and row["label"] not in {label, stable} and label != row["label"]:
+            mixed_label += 1
+        elif label and row["label"] == stable:
+            row["label"] = label
+        row["amount"] += amount
+        row["invoice_count"] += 1
+        identified += amount
+    if not groups:
+        return {
+            "status": "incomplete",
+            "basis": "after_discount",
+            "groups": [],
+            "identified_amount": None,
+            "unidentified_invoice_count": unidentified,
+            "detail": "Faktur tanpa identitas pelanggan yang stabil tidak diranking dan tidak digabung berdasarkan nama.",
+        }
+    public = sorted(groups.values(), key=lambda row: (-row["amount"], row["label"], row["key"]))
+    note = "Omzet setelah diskon dikelompokkan menurut identitas pelanggan yang stabil. Nama yang sama dengan identitas berbeda tetap terpisah."
+    if unidentified:
+        note = f"{note} {unidentified} faktur tanpa identitas tidak masuk peringkat."
+    if mixed_label:
+        note = f"{note} Beberapa nama tampilan untuk identitas yang sama tidak memecah baris."
+    status = "incomplete" if unidentified or mixed_label else ("zero" if identified == 0 else "complete")
+    return {
+        "status": status,
+        "basis": "after_discount",
+        "groups": [
+            {
+                "key": row["key"],
+                "label": row["label"],
+                "amount": _num(row["amount"].quantize(MONEY_Q)),
+                "invoice_count": row["invoice_count"],
+            }
+            for row in public
+        ],
+        "identified_amount": _num(identified.quantize(MONEY_Q)),
         "unidentified_invoice_count": unidentified,
         "detail": note,
     }
@@ -1215,6 +1317,7 @@ async def get_sales_dashboard(
             "settlement": err,
             "sales": err,
             "customers": err,
+            "customer_rank": err,
             "products": err,
         })
     else:
@@ -1269,12 +1372,17 @@ async def get_sales_dashboard(
             err = _section_error(exc)
             base["products"] = err
             base["customers"] = err
+            base["customer_rank"] = err
             orders_by_id = None
         if orders_by_id is not None:
             try:
                 base["products"] = _build_products(period_invoices, orders_by_id)
             except Exception as exc:
                 base["products"] = _section_error(exc)
+            try:
+                base["customer_rank"] = _build_customer_rank(period_invoices, orders_by_id)
+            except Exception as exc:
+                base["customer_rank"] = _section_error(exc)
             try:
                 stable_ids = []
                 for inv in period_invoices:

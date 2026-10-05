@@ -64,8 +64,10 @@ export const api = {
   bulkCancel: (ids, reason) => client.post(`/orders-bulk/cancel`, { ids, reason }).then((r) => r.data),
   bulkDelete: (ids, reason, confirm) => client.post(`/orders-bulk/delete`, { ids, reason, confirm }).then((r) => r.data),
   getOrder: dedupeInflight(
-    (id) => client.get(`/orders/${id}`).then((r) => r.data),
-    (id) => `getOrder:${id}`,
+    (id, options = {}) => client.get(`/orders/${id}`, {
+      params: options && options.view ? { view: options.view } : undefined,
+    }).then((r) => r.data),
+    (id, options = {}) => `getOrder:${id}:${(options && options.view) || ""}`,
   ),
   updateOrderInfo: (id, payload) => client.patch(`/orders/${id}/info`, payload).then((r) => r.data),
   advance: (id, payload = {}) => client.post(`/orders/${id}/advance`, payload).then((r) => r.data),
@@ -76,14 +78,14 @@ export const api = {
   bypassPayment: (id, reason) => client.post(`/orders/${id}/payment/bypass`, { reason }).then((r) => r.data),
   rollbackStage: (id, to_stage, reason) => client.post(`/orders/${id}/rollback`, { to_stage, reason }).then((r) => r.data),
   updateHelperPrep: (id, payload) => client.post(`/orders/${id}/helper-prep`, payload).then((r) => r.data),
-  updateHelperPrepItems: (id, items, notes = "") => client.post(`/orders/${id}/helper-prep/items`, { items, notes }).then((r) => r.data),
-  updateScreenerInfo: (id, payload) => client.post(`/orders/${id}/screener-info`, payload).then((r) => r.data),
+  updateHelperPrepItems: (id, items, notes = "", config) => client.post(`/orders/${id}/helper-prep/items`, { items, notes }, config).then((r) => r.data),
+  updateScreenerInfo: (id, payload, config) => client.post(`/orders/${id}/screener-info`, payload, config).then((r) => r.data),
   assignOperators: (id, splits) => client.post(`/orders/${id}/assign-operators`, { splits }).then((r) => r.data),
   cancelOperatorSplit: (id, splitId, qty, reason = "") =>
     client.post(`/orders/${id}/operator-splits/${splitId}/cancel`, { qty, reason }).then((r) => r.data),
   setUrgent: (id, urgent) => client.post(`/orders/${id}/urgent`, { urgent }).then((r) => r.data),
   setBufferStock: (id, buffer_stock) => client.post(`/orders/${id}/buffer-stock`, { buffer_stock }).then((r) => r.data),
-  addAttachment: (id, payload) => client.post(`/orders/${id}/attachment`, payload).then((r) => r.data),
+  addAttachment: (id, payload, config) => client.post(`/orders/${id}/attachment`, payload, config).then((r) => r.data),
   getOrderAttachment: (id, kind, fileId, config = {}) =>
     client.get(
       `/orders/${encodeURIComponent(id)}/attachments/${encodeURIComponent(kind)}/${encodeURIComponent(fileId)}`,
@@ -94,17 +96,17 @@ export const api = {
 
   addNote: (id, note) => client.post(`/orders/${id}/note`, { note }).then((r) => r.data),
   confirmLoading: (id, payload) => client.post(`/orders/${id}/loading-confirm`, payload).then((r) => r.data),
-  confirmLoadingMatch: (id, payload) => client.post(`/orders/${id}/loading-confirm-match`, payload).then((r) => r.data),
+  confirmLoadingMatch: (id, payload, config) => client.post(`/orders/${id}/loading-confirm-match`, payload, config).then((r) => r.data),
   reportLoadingDiscrepancy: (id, payload) => client.post(`/orders/${id}/loading-report-discrepancy`, payload).then((r) => r.data),
   deleteLoadingConfirm: (id, confirmationId) =>
     client.delete(`/orders/${id}/loading-confirm/${encodeURIComponent(confirmationId)}`).then((r) => r.data),
   updateLoading: (id, payload) => client.post(`/orders/${id}/loading`, payload).then((r) => r.data),
   markPacked: (id) => client.post(`/orders/${id}/packed`).then((r) => r.data),
-  savePackingInfo: (id, linesOrQty, notes = "") => {
+  savePackingInfo: (id, linesOrQty, notes = "", config) => {
     const body = Array.isArray(linesOrQty)
       ? { lines: linesOrQty, notes }
       : { qty_packed: linesOrQty, notes };
-    return client.post(`/orders/${id}/packing-info`, body).then((r) => r.data);
+    return client.post(`/orders/${id}/packing-info`, body, config).then((r) => r.data);
   },
   updateOrderWorkDate: (id, work_date) => client.patch(`/orders/${id}/work-date`, { work_date }).then((r) => r.data),
   updateOperatorWorkDate: (id, split_id, work_date) => client.patch(`/orders/${id}/operator-splits/${split_id}/work-date`, { work_date }).then((r) => r.data),
@@ -116,41 +118,42 @@ export const api = {
     }).then((r) => r.data),
   deleteSuratJalanFile: (id, fileId) =>
     client.delete(`/orders/${id}/surat-jalan/files/${encodeURIComponent(fileId)}`).then((r) => r.data),
-  confirmDelivered: (id, payload = {}) => client.post(`/orders/${id}/confirm-delivered`, payload).then((r) => r.data),
+  confirmDelivered: (id, payload = {}, config) => client.post(`/orders/${id}/confirm-delivered`, payload, config).then((r) => r.data),
   syncAccurate: () => client.post(`/accurate/sync`).then((r) => r.data),
   accurateStatus: () => client.get(`/accurate/status`).then((r) => r.data),
   accurateList: (limit = 20, refresh = false, page = 1, keyword = "") =>
     client.get(`/accurate/list`, { params: { limit, refresh, page, keyword } }).then((r) => r.data),
   reminders: () => client.get(`/reminders`).then((r) => r.data),
-  uploadDeliveryProof: (id, file, note, onProgress, shipmentId) => {
+  uploadDeliveryProof: (id, file, note, onProgress, shipmentId, config) => {
     const form = new FormData();
     form.append("file", file);
     if (note) form.append("note", note);
     if (shipmentId) form.append("shipment_id", shipmentId);
     return client.post(`/orders/${id}/delivery-proof`, form, {
-      headers: { "Content-Type": "multipart/form-data" },
+      ...(config || {}),
+      headers: { "Content-Type": "multipart/form-data", ...((config && config.headers) || {}) },
       onUploadProgress: (e) => {
         if (onProgress && e.total) onProgress(Math.round((e.loaded / e.total) * 100));
       },
     }).then((r) => r.data);
   },
-  deleteDeliveryProof: (id, proofId) => client.delete(`/orders/${id}/delivery-proof/${proofId}`).then((r) => r.data),
-  uploadDeliveryRecipientSignature: (id, { recipientName, signatureDataUrl, shipmentId, sjFileId }) => {
+  deleteDeliveryProof: (id, proofId, config) => client.delete(`/orders/${id}/delivery-proof/${proofId}`, config).then((r) => r.data),
+  uploadDeliveryRecipientSignature: (id, { recipientName, signatureDataUrl, shipmentId, sjFileId }, config) => {
     const form = new FormData();
     form.append("recipient_name", recipientName || "");
     if (signatureDataUrl) form.append("signature_data_url", signatureDataUrl);
     if (shipmentId) form.append("shipment_id", shipmentId);
     if (sjFileId) form.append("sj_file_id", sjFileId);
-    return client.post(`/orders/${id}/delivery-recipient-signature`, form).then((r) => r.data);
+    return client.post(`/orders/${id}/delivery-recipient-signature`, form, config).then((r) => r.data);
   },
   clearDeliveryRecipientSignature: (id) =>
     client.delete(`/orders/${id}/delivery-recipient-signature`).then((r) => r.data),
-  uploadDeliveryDriverSignature: (id, { signatureDataUrl, shipmentId, sjFileId }) => {
+  uploadDeliveryDriverSignature: (id, { signatureDataUrl, shipmentId, sjFileId }, config) => {
     const form = new FormData();
     if (signatureDataUrl) form.append("signature_data_url", signatureDataUrl);
     if (shipmentId) form.append("shipment_id", shipmentId);
     if (sjFileId) form.append("sj_file_id", sjFileId);
-    return client.post(`/orders/${id}/delivery-driver-signature`, form).then((r) => r.data);
+    return client.post(`/orders/${id}/delivery-driver-signature`, form, config).then((r) => r.data);
   },
   clearDeliveryDriverSignature: (id) =>
     client.delete(`/orders/${id}/delivery-driver-signature`).then((r) => r.data),
@@ -195,7 +198,8 @@ export const api = {
       qty: extra.qty != null ? extra.qty : undefined,
       qty_completed: extra.qty == null ? qtyCompleted : undefined,
       action_id: extra.action_id,
-    }).then((r) => r.data),
+      work_date: extra.work_date || undefined,
+    }, extra.view ? { params: { view: extra.view } } : undefined).then((r) => r.data),
   accurateImportPreview: (soNumber) => client.post(`/accurate/import/preview`, { so_number: soNumber }).then((r) => r.data),
   accurateImportConfirm: (soNumber) => client.post(`/accurate/import/confirm`, { so_number: soNumber }).then((r) => r.data),
   accurateImportPreviewBulk: (soNumbers) =>
@@ -617,6 +621,10 @@ export const api = {
   productionDashboard: (params = {}) => client.get(`/dashboard/production`, { params }).then((r) => r.data),
   financialDashboard: (params = {}) => client.get(`/dashboard/keuangan`, { params }).then((r) => r.data),
   salesDashboard: (params = {}) => client.get(`/dashboard/penjualan`, { params }).then((r) => r.data),
+  purchasePeriodSummary: (params = {}) => client.get(`/dashboard/pembelian`, { params }).then((r) => r.data),
+  widgetProfitLoss: (params = {}) => client.get(`/dashboard/widget/laba-rugi`, { params }).then((r) => r.data),
+  widgetReconciliations: () => client.get(`/dashboard/widget/reconciliations`).then((r) => r.data),
+  accountsReceivableOverdueCustomers: (params = {}) => client.get(`/ledger/accounts-receivable/overdue-customers`, { params }).then((r) => r.data),
   shipmentStatus: (params = {}) => client.get(`/dashboard/shipment-status`, { params }).then((r) => r.data),
   statusPo: (params = {}) => client.get(`/dashboard/status-po`, { params }).then((r) => r.data),
   productionExport: (payload = { scope: "filtered" }) => client.post(`/dashboard/production/export`, payload, { responseType: "blob" }).then((r) => r.data),
@@ -737,7 +745,8 @@ export const api = {
   reverseSalesCustomerCredit: (id) =>
     client.post(`/sales-receipts/customer-credit/applications/${encodeURIComponent(id)}/reverse`).then((r) => r.data),
 
-  listSalesInvoices: (params = {}) => client.get(`/sales-invoices`, { params }).then((r) => r.data),
+  listSalesInvoices: (params = {}, config = {}) =>
+    client.get(`/sales-invoices`, { ...config, params }).then((r) => r.data),
   getSalesInvoice: (id) => client.get(`/sales-invoices/${encodeURIComponent(id)}`).then((r) => r.data),
   getPoInvoicePreview: (poId) => client.get(`/sales-invoices/po/${encodeURIComponent(poId)}/preview`).then((r) => r.data),
   salesInvoiceChargeAccounts: (params = {}) => client.get(`/sales-invoices/charge-accounts`, { params }).then((r) => r.data),
@@ -804,6 +813,10 @@ export const api = {
   hrPayrollUpdateSettings: (payload) => client.put(`/hr-payroll/settings`, payload).then((r) => r.data),
   hrPayrollPeriods: (params = {}) => client.get(`/hr-payroll/periods`, { params }).then((r) => r.data),
   hrPayrollCreatePeriod: (payload) => client.post(`/hr-payroll/periods`, payload).then((r) => r.data),
+  hrPayrollPieceIntegration: () => client.get(`/hr-payroll/piece-integration`).then((r) => r.data),
+  hrPayrollSetPieceIntegration: (payload) => client.put(`/hr-payroll/piece-integration`, payload).then((r) => r.data),
+  hrPayrollCreatePiecePeriod: (payload) => client.post(`/hr-payroll/piece-periods`, payload).then((r) => r.data),
+  hrPayrollSavePieceInputs: (id, payload) => client.put(`/hr-payroll/periods/${encodeURIComponent(id)}/piece-inputs`, payload).then((r) => r.data),
   hrPayrollPeriod: (id) => client.get(`/hr-payroll/periods/${encodeURIComponent(id)}`).then((r) => r.data),
   hrPayrollCalculate: (id) => client.post(`/hr-payroll/periods/${encodeURIComponent(id)}/calculate`).then((r) => r.data),
   hrPayrollTransition: (id, toStatus, note = "") => client.post(`/hr-payroll/periods/${encodeURIComponent(id)}/transition`, { to_status: toStatus, note }).then((r) => r.data),
@@ -922,9 +935,10 @@ export const api = {
   salesPwaInvoices: (params = {}) => client.get("/sales-pwa/invoices", { params }).then((r) => r.data),
   salesPwaReceivables: () => client.get("/sales-pwa/receivables").then((r) => r.data),
   salesPwaOrders: (params = {}) => client.get("/sales-pwa/orders", { params }).then((r) => r.data),
+  salesPwaFieldActions: (params = {}) => client.get("/sales-pwa/field-actions", { params }).then((r) => r.data),
   salesPwaOrder: (id) => client.get(`/sales-pwa/orders/${encodeURIComponent(id)}`).then((r) => r.data),
   salesPwaDocuments: (id) => client.get(`/sales-pwa/orders/${encodeURIComponent(id)}/documents`).then((r) => r.data),
-  salesPwaDocumentFile: (id, kind, documentId) => {
+  salesPwaDocumentFile: (id, kind, documentId, options = {}) => {
     const orderId = encodeURIComponent(id);
     const docId = encodeURIComponent(documentId);
     const paths = {
@@ -935,7 +949,7 @@ export const api = {
     };
     const path = paths[kind];
     if (!path) return Promise.reject(new Error("Jenis dokumen tidak didukung"));
-    return client.get(path, { responseType: "blob" }).then((r) => ({
+    return client.get(path, { responseType: "blob", signal: options.signal }).then((r) => ({
       blob: r.data,
       contentType: r.headers?.["content-type"] || r.data?.type || "",
       disposition: r.headers?.["content-disposition"] || "",

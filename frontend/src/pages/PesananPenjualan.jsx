@@ -73,6 +73,9 @@ import {
   periodBounds,
   quantityByUnitFromLines,
   salesOrderListRequest,
+  salesOrderListTabFromQuery,
+  salesOrderStatusFromQuery,
+  salesOrderTabDefaultStatus,
 } from "../lib/salesOrderListPresentation";
 import {
   formatOrderRupiah,
@@ -400,19 +403,14 @@ export default function PesananPenjualan() {
     flush: flushSearch,
     clear: clearSearch,
   } = useDebouncedLiveSearch(searchParams.get("q") || "");
-  const [listTab, setListTab] = useState(() => {
-    const tab = searchParams.get("tab");
-    const status = searchParams.get("status");
-    if (tab === "histori" || status === "histori" || status === "selesai" || status === "cancelled") {
-      return "histori";
-    }
-    return "aktif";
-  });
-  const [statusFilter, setStatusFilter] = useState(() => {
-    const status = searchParams.get("status");
-    if (status) return status;
-    return searchParams.get("tab") === "histori" ? "histori" : "aktif";
-  });
+  const [listTab, setListTab] = useState(() => salesOrderListTabFromQuery({
+    tab: searchParams.get("tab"),
+    status: searchParams.get("status"),
+  }));
+  const [statusFilter, setStatusFilter] = useState(() => salesOrderStatusFromQuery({
+    tab: searchParams.get("tab"),
+    status: searchParams.get("status"),
+  }));
   const [period, setPeriod] = useState(() => {
     const value = searchParams.get("period") || "all";
     return value === "this_month" || value === "last_month" ? value : "all";
@@ -612,7 +610,7 @@ export default function PesananPenjualan() {
   }, [filteredOrders, serverPaged, page, pageSize]);
   const listTotal = serverPaged ? Number(listMeta.total) : filteredOrders.length;
   const pageCount = listPageCount(listTotal, pageSize);
-  const tabDefaultStatus = listTab === "histori" ? "histori" : "aktif";
+  const tabDefaultStatus = salesOrderTabDefaultStatus(listTab);
   const columnFiltersActive = salesOrderColumnFiltersAreActive(
     columnFilters,
     statusFilter === tabDefaultStatus ? "all" : statusFilter,
@@ -657,9 +655,10 @@ export default function PesananPenjualan() {
     if (searchParams.get(REPEAT_ORDER_QUERY_PARAM)) return;
     const next = new URLSearchParams();
     if (searchQuery.trim()) next.set("q", searchQuery.trim());
-    const tabDefault = listTab === "histori" ? "histori" : "aktif";
+    const tabDefault = salesOrderTabDefaultStatus(listTab);
     if (statusFilter && statusFilter !== tabDefault) next.set("status", statusFilter);
     if (listTab === "histori") next.set("tab", "histori");
+    if (listTab === "semua") next.set("tab", "semua");
     if (period !== "all") next.set("period", period);
     if (page > 1) next.set("page", String(page));
     if (pageSize !== 10) next.set("page_size", String(pageSize));
@@ -678,8 +677,11 @@ export default function PesananPenjualan() {
   }, [searchQuery, statusFilter, period, pageSize, listTab]);
 
   useEffect(() => {
+    // An empty list before the first response is not a one-page result.
+    // Clamping here would drop a restored page from the detail-return URL.
+    if (listMeta.total == null && orders.length === 0) return;
     if (page > pageCount) setPage(pageCount);
-  }, [page, pageCount]);
+  }, [page, pageCount, listMeta.total, orders.length]);
 
   const poListNavState = (extra = {}) => poNavStateFromList({
     pathname: location.pathname,
@@ -1392,14 +1394,20 @@ export default function PesananPenjualan() {
     dirtyRef.current = true;
   };
 
+  const resetFormRef = useRef(resetForm);
+  const handleRepeatSpecificPoRef = useRef(handleRepeatSpecificPo);
+  resetFormRef.current = resetForm;
+  handleRepeatSpecificPoRef.current = handleRepeatSpecificPo;
+
   useEffect(() => {
     const rid = (searchParams.get(REPEAT_ORDER_QUERY_PARAM) || "").trim();
-    if (!rid || !canCreate) return;
-    if (consumedRepeatOrderIdRef.current === rid) return;
+    if (!rid || !canCreate) return undefined;
+    if (consumedRepeatOrderIdRef.current === rid) return undefined;
     consumedRepeatOrderIdRef.current = rid;
-    resetForm();
+    resetFormRef.current();
     setViewMode("create");
-    void handleRepeatSpecificPo(rid);
+    void handleRepeatSpecificPoRef.current(rid);
+    return undefined;
   }, [searchParams, canCreate]);
 
   const handleFormSubmit = async (e) => {
@@ -1476,7 +1484,7 @@ export default function PesananPenjualan() {
 
   const onStatusChange = (value) => {
     if (!value || value === "__tab__") {
-      setStatusFilter(listTab === "histori" ? "histori" : "aktif");
+      setStatusFilter(salesOrderTabDefaultStatus(listTab));
       return;
     }
     setStatusFilter(value);
@@ -1488,7 +1496,7 @@ export default function PesananPenjualan() {
     clearSearch();
     setPeriod("all");
     clearAllColumnFilters();
-    setStatusFilter(listTab === "histori" ? "histori" : "aktif");
+    setStatusFilter(salesOrderTabDefaultStatus(listTab));
     setPage(1);
   };
 
@@ -1582,6 +1590,19 @@ export default function PesananPenjualan() {
               }}
             >
               Histori
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={listTab === "semua"}
+              data-testid="sales-order-tab-semua"
+              className={listTab === "semua" ? "is-active" : ""}
+              onClick={() => {
+                setListTab("semua");
+                setStatusFilter("gabungan");
+              }}
+            >
+              Semua
             </button>
           </div>
 
@@ -1882,7 +1903,7 @@ export default function PesananPenjualan() {
                 ) : displayedOrders.map((o) => {
                   const isCancelled = !!o.cancelled;
                   const isHold = !!o.hold;
-                  const stageLabel = salesOrderStageLabel(o) || (o.current_stage == null ? "" : `Tahap ${o.current_stage}`);
+                  const stageLabel = salesOrderStageLabel(o);
                   const remainQty = salesOrderRemainingQty(o);
                   const salesName = salesOrderSalesName(o).trim();
                   const canProcessDelivery = !isCancelled && remainQty > 0;
@@ -1932,9 +1953,9 @@ export default function PesananPenjualan() {
                       <td>
                         <div className="so-list-status">
                           {isCancelled ? (
-                            <span className="so-list-badge is-cancel">Cancelled</span>
+                            <span className="so-list-badge is-cancel">{stageLabel || "—"}</span>
                           ) : isHold ? (
-                            <span className="so-list-badge is-hold">HOLD</span>
+                            <span className="so-list-badge is-hold">{stageLabel || "—"}</span>
                           ) : (
                             <span className={`so-list-badge${o.current_stage >= 14 ? " is-done" : " is-open"}`}>{stageLabel || "—"}</span>
                           )}

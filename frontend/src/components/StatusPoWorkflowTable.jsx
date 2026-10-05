@@ -334,7 +334,10 @@ export default function StatusPoWorkflowTable({
                 </span>
               </td>
               <td className="mono spo-age" data-testid={`status-po-age-${r.po_number}`}>
-                {formatPoAgeLabel(r.order_date)}
+                {formatPoAgeLabel(r.order_date, undefined, {
+                  closed: r.age_closed === true,
+                  endAt: r.age_end_at,
+                })}
               </td>
               <td data-testid={`status-po-delivered-${r.po_number}`}>
                 <div

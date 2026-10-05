@@ -119,7 +119,7 @@ describe("delivery reschedule UI (static)", () => {
   });
 
   test("sidebar Produksi hierarchy without old labels", () => {
-    expect(shell).toMatch(/title="Produksi"/);
+    expect(shell).toMatch(/produksi: "Produksi"/);
     expect(nav).toMatch(/Jadwal Produksi/);
     expect(nav).toMatch(/Jadwal Pengiriman Ulang/);
     expect(shell).toMatch(/Tugas Produksi/);

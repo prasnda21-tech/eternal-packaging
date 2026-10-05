@@ -2741,3 +2741,44 @@ async def test_p2d_fence_lost_is_not_retried_with_a_newer_generation(mongo, monk
     assert pending["pending_event"]["action_id"] == "act-winner"
     assert pending["pending_event"]["stage"] == "CLAIMED"
     assert pending["printed_qty"] == 1000
+
+
+@pytest.mark.anyio
+async def test_confirmed_sj_reread_keeps_proof_name_signatures_and_status(mongo):
+    """Persisted document and operational GET, not a frontend mock."""
+    await mongo.master_items.insert_one({"id": MASTER, "item_name": "Namoy", "unit": "PCS"})
+    await initialize_opening_balance(
+        mongo, MASTER, {"unprinted_qty": 4700, "printed_qty": 2000, "base_uom": "PCS"}, user={"email": "admin@test.local"},
+    )
+    order = _order("ord-reread")
+    for li in order["line_items"]:
+        li["quantity"] = 400
+        li["qty"] = 400
+    order["delivery_proofs"] = [
+        {"id": "p1", "shipment_id": "sj-1", "storage_path": "proofs/p1.jpg", "name": "bukti-1.jpg"},
+        {"id": "p2", "shipment_id": "sj-1", "storage_path": "proofs/p2.jpg", "name": "bukti-2.jpg"},
+    ]
+    await mongo.orders.insert_one(dict(order))
+    saved = await _confirm(order["id"], "sj-1", "act-reread")
+    assert saved.status_code == 200, saved.text
+
+    stored = await mongo.orders.find_one({"id": order["id"]}, {"_id": 0})
+    sj = next(sh for sh in stored["shipments"] if sh["id"] == "sj-1")
+    assert sj["delivery_status"] == "Terkirim"
+    assert {p["storage_path"] for p in stored["delivery_proofs"]} == {"proofs/p1.jpg", "proofs/p2.jpg"}
+    assert stored["delivery_recipient_signature"]["recipient_name"] == "Penerima Uji"
+    assert stored["delivery_recipient_signature"]["signature_storage_path"]
+    assert stored["delivery_driver_signature"]["signature_storage_path"]
+    assert stored["delivery_confirmations"][0]["shipment_id"] == "sj-1"
+    assert stored["delivery_confirmations"][0]["action_id"] == "act-reread"
+
+    _as_admin()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        reread = await client.get(f"/api/orders/{order['id']}", params={"view": "operational"})
+    assert reread.status_code == 200, reread.text
+    body = reread.json()["order"]
+    opened = next(sh for sh in body["shipments"] if sh["id"] == "sj-1")
+    assert opened["delivery_status"] == "Terkirim"
+    assert {p["storage_path"] for p in body["delivery_proofs"]} == {"proofs/p1.jpg", "proofs/p2.jpg"}
+    assert body["delivery_recipient_signature"]["recipient_name"] == "Penerima Uji"
+    assert body["delivery_driver_signature"]["signature_storage_path"]

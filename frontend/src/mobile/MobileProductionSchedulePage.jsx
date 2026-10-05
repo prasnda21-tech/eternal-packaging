@@ -25,6 +25,11 @@ import {
   rowsFromProductionDashboard,
 } from "../lib/mobileSchedule";
 import {
+  invalidateProductionSummaryCache,
+  loadProductionSummary,
+  productionSummaryGeneration,
+} from "../lib/productionSummaryCache";
+import {
   EXACT_SJ_REQUIRED_MESSAGE,
   mobileScheduleWorkHref,
   permittedOpsActiveRoles,
@@ -126,6 +131,7 @@ export default function MobileProductionSchedulePage() {
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(allowed);
   const [reloadKey, setReloadKey] = useState(0);
+  const summaryBypassRef = useRef(false);
   const [q, setQ] = useState(saved.q ?? FILTER_DEFAULTS.q);
   const [includeCancelled, setIncludeCancelled] = useState(Boolean(saved.includeCancelled));
   const [includeCompleted, setIncludeCompleted] = useState(
@@ -179,6 +185,12 @@ export default function MobileProductionSchedulePage() {
     });
   }, [filterKey, q, includeCancelled, includeCompleted, quick]);
 
+  const requestFreshSummary = () => {
+    summaryBypassRef.current = true;
+    invalidateProductionSummaryCache();
+    setReloadKey((n) => n + 1);
+  };
+
   useEffect(() => {
     if (!allowed) {
       setLoading(false);
@@ -187,15 +199,28 @@ export default function MobileProductionSchedulePage() {
       return undefined;
     }
     let cancelled = false;
+    const bypass = summaryBypassRef.current;
+    summaryBypassRef.current = false;
     (async () => {
       setLoading(true);
       setErr("");
+      const requestParams = mobileProductionDashboardParams({ includeCancelled, includeCompleted });
+      const fetchSummary = (useBypass) => loadProductionSummary({
+        userKey,
+        requestParams,
+        bypass: useBypass,
+        fetcher: () => withTimeout(api.productionDashboard(requestParams), MOBILE_LOAD_TIMEOUT_MS),
+      });
       try {
-        const payload = await withTimeout(
-          api.productionDashboard(mobileProductionDashboardParams({ includeCancelled, includeCompleted })),
-          MOBILE_LOAD_TIMEOUT_MS,
-        );
+        const startedGen = productionSummaryGeneration();
+        let payload = await fetchSummary(bypass);
         if (cancelled) return;
+        if (productionSummaryGeneration() !== startedGen) {
+          const retryGen = productionSummaryGeneration();
+          payload = await fetchSummary(true);
+          if (cancelled) return;
+          if (productionSummaryGeneration() !== retryGen) return;
+        }
         setRows(rowsFromProductionDashboard(payload));
       } catch (e) {
         if (cancelled) return;
@@ -206,7 +231,17 @@ export default function MobileProductionSchedulePage() {
       }
     })();
     return () => { cancelled = true; };
-  }, [allowed, includeCancelled, includeCompleted, reloadKey]);
+  }, [allowed, includeCancelled, includeCompleted, reloadKey, userKey]);
+
+  useEffect(() => {
+    if (!allowed || typeof document === "undefined") return undefined;
+    const onVisibility = () => {
+      if (document.visibilityState !== "visible") return;
+      requestFreshSummary();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, [allowed]);
 
   const scoped = useMemo(
     () => applyProductionFilters(rows, {
@@ -281,7 +316,7 @@ export default function MobileProductionSchedulePage() {
     setTask({ open: true, order: null, shipmentId, row, busy: true, err: "" });
     (async () => {
       try {
-        const d = await withTimeout(api.getOrder(row.id), MOBILE_LOAD_TIMEOUT_MS);
+        const d = await withTimeout(api.getOrder(row.id, { view: "operational" }), MOBILE_LOAD_TIMEOUT_MS);
         setTask((prev) => ({ ...prev, order: d?.order || d, busy: false }));
       } catch (e) {
         setTask((prev) => ({
@@ -406,7 +441,7 @@ export default function MobileProductionSchedulePage() {
                 <button
                   type="button"
                   className="mop-btn-primary"
-                  onClick={() => setReloadKey((n) => n + 1)}
+                  onClick={requestFreshSummary}
                   data-testid="mobile-schedule-retry"
                 >
                   Coba Lagi

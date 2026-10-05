@@ -20,6 +20,14 @@ export function isSalesPwaRole(user) {
   return String(user?.role || "").trim() === SALES_PWA_ROLE;
 }
 
+export function isCustomerDesignApprovalPath(pathname) {
+  const path = String(pathname || "");
+  const prefix = "/customer/design-approval/";
+  if (!path.startsWith(prefix)) return false;
+  const token = path.slice(prefix.length).replace(/\/+$/, "");
+  return Boolean(token) && !token.includes("/");
+}
+
 export function isSafeSalesNextPath(path) {
   if (typeof path !== "string") return false;
   const value = path.trim();

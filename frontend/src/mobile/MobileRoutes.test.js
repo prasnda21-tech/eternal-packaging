@@ -160,7 +160,7 @@ describe("mobile route wiring", () => {
     expect(schedulePage).toMatch(/api\.productionDashboard/);
     expect(schedulePage).toMatch(/mobileProductionDashboardParams/);
     expect(mobileSchedule).toMatch(/view: "summary"/);
-    expect(schedulePage).toMatch(/withTimeout\(api\.getOrder\(row\.id\), MOBILE_LOAD_TIMEOUT_MS\)/);
+    expect(schedulePage).toMatch(/withTimeout\(api\.getOrder\(row\.id, \{ view: "operational" \}\), MOBILE_LOAD_TIMEOUT_MS\)/);
     expect(schedulePage).toMatch(/formatApiError/);
     expect(schedulePage).toMatch(/Coba Lagi/);
     expect(schedulePage).toMatch(/Belum ada jadwal produksi\./);

@@ -3,6 +3,13 @@ import path from "path";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import MobileDeliverySchedulePage from "./MobileDeliverySchedulePage";
+import { clearProductionSummaryCache, invalidateProductionSummaryCache, loadProductionSummary } from "../lib/productionSummaryCache";
+import { mobileProductionDashboardParams } from "../lib/mobileSchedule";
+
+jest.mock("pdfjs-dist", () => ({
+  GlobalWorkerOptions: { workerSrc: "" },
+  getDocument: jest.fn(() => ({ promise: Promise.resolve({ destroy: jest.fn(), numPages: 0 }) })),
+}));
 import {
   EMPTY_DELIVERY_FILTERS,
 } from "../lib/deliverySchedule";
@@ -17,6 +24,7 @@ const mockDeliverySchedule = jest.fn();
 const mockDivisionTasks = jest.fn();
 const mockProductionDashboard = jest.fn();
 const mockGetOrder = jest.fn();
+const mockConfirmDelivered = jest.fn();
 const mockNavigate = jest.fn();
 const mockDsRouter = {
   search: "",
@@ -47,8 +55,10 @@ jest.mock("../lib/api", () => ({
     divisionTasks: (...args) => mockDivisionTasks(...args),
     productionDashboard: (...args) => mockProductionDashboard(...args),
     getOrder: (...args) => mockGetOrder(...args),
+    confirmDelivered: (...args) => mockConfirmDelivered(...args),
     listDeliveryOutlets: jest.fn(async () => ({ outlets: [] })),
   },
+  fileUrl: (p) => p,
 }));
 
 jest.mock("../hooks/useProductionSheetZoom", () => ({
@@ -125,6 +135,16 @@ const flush = async () => {
   });
 };
 
+const deferred = () => {
+  let resolve;
+  let reject;
+  const promise = new Promise((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+};
+
 describe("MobileDeliverySchedulePage", () => {
   let container;
   let root;
@@ -133,11 +153,13 @@ describe("MobileDeliverySchedulePage", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
+    clearProductionSummaryCache();
     mockHasPerm.mockReset();
     mockDeliverySchedule.mockReset();
     mockDivisionTasks.mockReset();
     mockProductionDashboard.mockReset();
     mockGetOrder.mockReset();
+    mockConfirmDelivered.mockReset();
     mockNavigate.mockReset();
     mockDsRouter.search = "";
     mockDsRouter.setParams.mockClear();
@@ -448,7 +470,7 @@ describe("MobileDeliverySchedulePage", () => {
       row.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     expect(mockNavigate).not.toHaveBeenCalled();
-    expect(mockGetOrder).toHaveBeenCalledWith("o1");
+    expect(mockGetOrder).toHaveBeenCalledWith("o1", { view: "operational" });
     expect(container.querySelector('[data-testid="mobile-task-modal"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="mobile-ws-delivery"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="mobile-po-ringkasan"]')).toBeFalsy();
@@ -576,7 +598,7 @@ describe("MobileDeliverySchedulePage", () => {
     });
     await flush();
     expect(mockNavigate).not.toHaveBeenCalled();
-    expect(mockGetOrder).toHaveBeenCalledWith("po001");
+    expect(mockGetOrder).toHaveBeenCalledWith("po001", { view: "operational" });
     expect(container.querySelector('[data-testid="mobile-task-modal"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="mobile-ws-loading"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="mobile-loading-confirm-match"]')).toBeTruthy();
@@ -902,7 +924,7 @@ describe("MobileDeliverySchedulePage", () => {
       container.querySelector('[data-testid="mds-row-PO001-missing-sj"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flush();
-    expect(mockGetOrder).toHaveBeenCalledWith("po001");
+    expect(mockGetOrder).toHaveBeenCalledWith("po001", { view: "operational" });
     expect(container.querySelector('[data-testid="mobile-ws-loading"]')).toBeFalsy();
     expect(container.querySelector('[data-testid="mop-schedule-task-error"]').textContent)
       .toMatch(/Surat Jalan tidak dapat ditentukan/);
@@ -1373,6 +1395,31 @@ describe("MobileDeliverySchedulePage", () => {
     expect(markKind(container.querySelector('[data-testid="mds-terkirim-PO-100"]'))).toBe("idle");
   });
 
+  test("schedule rows render before the production summary request starts", async () => {
+    mockHasPerm.mockImplementation((p) => p === "schedule.view");
+    const schedule = deferred();
+    const dashboard = deferred();
+    mockDeliverySchedule.mockReturnValue(schedule.promise);
+    mockProductionDashboard.mockReturnValue(dashboard.promise);
+    await act(async () => { root.render(<MobileDeliverySchedulePage />); });
+    await flush();
+    expect(mockDeliverySchedule).toHaveBeenCalledTimes(1);
+    expect(mockProductionDashboard).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="mds-loading"]')).toBeTruthy();
+    await act(async () => { schedule.resolve({ rows: sampleRows }); });
+    await flush();
+    expect(mockProductionDashboard).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[data-testid="mds-table"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mds-cup-PO-100"]').className).toMatch(/is-unavailable/);
+    expect(container.querySelector('[data-testid="mds-screen-PO-100"]').className).toMatch(/is-unavailable/);
+    expect(container.querySelector('[data-testid="mds-prod-PO-100"]').className).toMatch(/is-unavailable/);
+    expect(container.querySelector('[data-testid="mds-packing-PO-100"]').className).toMatch(/is-unavailable/);
+    expect(container.querySelector('[data-testid="mds-load-PO-100"]')).toBeTruthy();
+    await act(async () => { dashboard.resolve({ rows: [] }); });
+    await flush();
+    expect(container.querySelector('[data-testid="mds-cup-PO-100"]').className).not.toMatch(/is-unavailable/);
+  });
+
   test("overlays canonical production cup/screen/prod onto packing-active delivery row", async () => {
     mockHasPerm.mockImplementation((p) => p === "schedule.view");
     mockDeliverySchedule.mockResolvedValue({
@@ -1757,5 +1804,769 @@ describe("MobileDeliverySchedulePage", () => {
     expect(css).toMatch(/mop-ds-sj-row/);
     expect(css).toMatch(/border-bottom:\s*1px solid #9aa0a6/);
     expect(css).toMatch(/mop-ds-sheet-viewport[\s\S]*overflow-x:\s*auto/);
+  });
+
+  test("SJ rows appear while production is held, and a failed dashboard is not belum selesai", async () => {
+    const production = deferred();
+    mockHasPerm.mockImplementation((perm) => perm === "schedule.view");
+    mockDeliverySchedule.mockResolvedValue({
+      rows: [{
+        ...sampleRows[0],
+        qty_loaded: 5000,
+        qty_load_need: 5000,
+        qty_delivered_sj: 2000,
+        qty_sj: 5000,
+      }],
+    });
+    mockProductionDashboard.mockImplementation(() => production.promise);
+    await act(async () => { root.render(<MobileDeliverySchedulePage />); });
+    await flush();
+    expect(container.querySelector('[data-testid="mds-table"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mds-scroll"]').getAttribute("data-production-state")).toBe("loading");
+    expect(container.querySelector('[data-testid="mds-cup-PO-100"]').className).toMatch(/is-unavailable/);
+    expect(container.querySelector('[data-testid="mds-cup-PO-100"]').getAttribute("aria-label")).toBe("Status belum tersedia");
+    expect(markKind(container.querySelector('[data-testid="mds-load-PO-100"]'))).toBe("done");
+    expect(markKind(container.querySelector('[data-testid="mds-terkirim-PO-100"]'))).toBe("pending");
+
+    await act(async () => { production.reject(new Error("dashboard down")); });
+    await flush();
+    expect(container.querySelector('[data-testid="mds-table"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mds-scroll"]').getAttribute("data-production-state")).toBe("failed");
+    expect(container.querySelector('[data-testid="mds-prod-PO-100"]').className).toMatch(/is-unavailable/);
+    expect(markKind(container.querySelector('[data-testid="mds-load-PO-100"]'))).toBe("done");
+    expect(container.textContent).not.toContain("Gagal memuat Jadwal Pengiriman.");
+  });
+
+  test("a previous schedule cycle cannot overwrite the latest reload", async () => {
+    const prod1 = deferred();
+    const prod2 = deferred();
+    const schedule2 = deferred();
+    let prodCalls = 0;
+    mockHasPerm.mockImplementation((perm) => perm === "schedule.view");
+    mockDeliverySchedule
+      .mockResolvedValueOnce({ rows: [{ ...sampleRows[0], order_number: "PO-OLD", id: "old" }] })
+      .mockImplementationOnce(() => schedule2.promise);
+    mockProductionDashboard.mockImplementation(() => {
+      prodCalls += 1;
+      return prodCalls === 1 ? prod1.promise : prod2.promise;
+    });
+    await act(async () => { root.render(<MobileDeliverySchedulePage />); });
+    await flush();
+    expect(container.textContent).toContain("PO-OLD");
+    expect(container.querySelector('[data-testid="mds-scroll"]').getAttribute("data-production-state")).toBe("loading");
+
+    await act(async () => {
+      container.querySelector('[data-testid="mds-refresh"]').click();
+    });
+    await act(async () => {
+      schedule2.resolve({ rows: [{ ...sampleRows[0], order_number: "PO-NEW", id: "new" }] });
+    });
+    await flush();
+    expect(container.textContent).toContain("PO-NEW");
+    expect(container.textContent).not.toContain("PO-OLD");
+
+    await act(async () => {
+      prod1.resolve({
+        rows: [{
+          id: "old",
+          helper_required: 10,
+          helper_prepared: 10,
+          screen_qty: 10,
+          packing_status: "Sudah",
+          print_completed_qty: 10,
+          print_qty_total: 10,
+        }],
+      });
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="mds-scroll"]').getAttribute("data-production-state")).toBe("loading");
+    expect(container.querySelector('[data-testid="mds-cup-PO-NEW"]').className).toMatch(/is-unavailable/);
+
+    await act(async () => { prod2.resolve({ rows: [] }); });
+    await flush();
+    expect(container.querySelector('[data-testid="mds-scroll"]').getAttribute("data-production-state")).toBe("ready");
+    expect(container.textContent).toContain("PO-NEW");
+    expect(container.textContent).not.toContain("PO-OLD");
+  });
+
+  function multiSjRow(shipmentId, number, delivered) {
+    return {
+      id: "po-multi",
+      order_number: "PO-MULTI",
+      customer_name: "Renea",
+      status: "terlambat",
+      status_label: "Terlambat",
+      effective_delivery_date: "2026-09-01",
+      shipment_id: shipmentId,
+      sj_label: number,
+      latest_sj_number: number,
+      qty_delivered_sj: delivered,
+      qty_sj: 400,
+      qty_loaded: 400,
+      qty_load_need: 400,
+      qty_delivered: delivered,
+      qty_total: 800,
+      delivery_status: "Belum Terkirim",
+      packing_status: "Berjalan",
+      helper_prepared: 0,
+      helper_required: 800,
+    };
+  }
+
+  function confirmableMultiOrder() {
+    return {
+      id: "po-multi",
+      po_number: "PO-MULTI",
+      customer: "Renea",
+      delivery_status: "Belum Terkirim",
+      line_items: [{ name: "Cup", quantity: 800, line_id: "l0" }],
+      packing_info: { qty_packed: 800, lines: [{ line_idx: 0, packed_qty: 800 }] },
+      shipments: [
+        { id: "sh-1", number: "SJ-1", lines: [{ line_idx: 0, qty: 400 }] },
+        { id: "sh-2", number: "SJ-2", lines: [{ line_idx: 0, qty: 400 }] },
+      ],
+      surat_jalan_files: [
+        { id: "sj-1", shipment_id: "sh-1", sj_number: "SJ-1" },
+        { id: "sj-2", shipment_id: "sh-2", sj_number: "SJ-2" },
+      ],
+      loading_confirmations: [
+        { id: "c1", shipment_id: "sh-1", surat_jalan_id: "sh-1", lines: [{ line_idx: 0, qty: 400 }] },
+        { id: "c2", shipment_id: "sh-2", surat_jalan_id: "sh-2", lines: [{ line_idx: 0, qty: 400 }] },
+      ],
+      delivery_proofs: [
+        { id: "p1", shipment_id: "sh-1", storage_path: "a.jpg" },
+        { id: "p2", shipment_id: "sh-1", storage_path: "b.jpg" },
+      ],
+      delivery_recipient_signature: {
+        id: "r1",
+        shipment_id: "sh-1",
+        signature_storage_path: "r.png",
+        recipient_signed_at: "t",
+        recipient_name: "Budi Penerima",
+      },
+      delivery_driver_signature: {
+        id: "d1",
+        shipment_id: "sh-1",
+        signature_storage_path: "d.png",
+        driver_signed_at: "t",
+      },
+    };
+  }
+
+  function kirimOf(shipmentId) {
+    const row = container.querySelector(`[data-testid="mds-row-PO-MULTI-${shipmentId}"]`);
+    return row ? row.querySelector('[data-testid="mds-terkirim-PO-MULTI"]') : null;
+  }
+
+  function typeSearch(value) {
+    const input = container.querySelector('[data-testid="mds-search"]');
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+    setter.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+
+  test("confirming one SJ turns only that Kirim mark green without waiting for production", async () => {
+    const lateSchedule = deferred();
+    const refreshSchedule = deferred();
+    const saved = {
+      ...confirmableMultiOrder(),
+      delivery_status: "Sebagian Terkirim",
+      shipments: confirmableMultiOrder().shipments.map((sh) => (
+        sh.id === "sh-1" ? { ...sh, delivery_status: "Terkirim", delivered_at: "2026-10-03T10:00:00+07:00" } : sh
+      )),
+    };
+    mockHasPerm.mockImplementation((perm) => perm === "schedule.view" || perm === "delivery.update");
+    mockDsRouter.search = "ws=delivery";
+    mockProductionDashboard.mockImplementation(() => new Promise(() => {}));
+    mockDeliverySchedule
+      .mockResolvedValueOnce({ rows: [multiSjRow("sh-1", "SJ-1", 0), multiSjRow("sh-2", "SJ-2", 0)] })
+      .mockImplementationOnce(() => lateSchedule.promise)
+      .mockImplementationOnce(() => refreshSchedule.promise);
+    mockGetOrder.mockResolvedValue({ order: confirmableMultiOrder() });
+    mockConfirmDelivered.mockResolvedValue({ order: saved });
+
+    await act(async () => { root.render(<MobileDeliverySchedulePage />); });
+    await flush();
+    expect(markKind(kirimOf("sh-1"))).toBe("idle");
+    expect(markKind(kirimOf("sh-2"))).toBe("idle");
+    await act(async () => { typeSearch("Renea"); });
+    await act(async () => {
+      container.querySelector('[data-testid="mds-row-PO-MULTI-sh-1"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+    const confirm = container.querySelector('[data-testid="mobile-confirm-delivered"]');
+    expect(confirm).toBeTruthy();
+    expect(confirm.disabled).toBe(false);
+    await act(async () => {
+      container.querySelector('[data-testid="mds-refresh"]').click();
+    });
+
+    const started = performance.now();
+    await act(async () => { confirm.click(); });
+    await flush();
+    const elapsedMs = performance.now() - started;
+    expect(markKind(kirimOf("sh-1"))).toBe("done");
+    expect(markKind(kirimOf("sh-2"))).toBe("idle");
+    expect(container.querySelector('[data-testid="mobile-confirm-delivered"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mds-delivery-saved"]').textContent).toBe("Bukti kirim berhasil disimpan");
+    expect(container.querySelector('[data-testid="mds-cup-PO-MULTI"]').className).toMatch(/is-unavailable/);
+    expect(container.querySelector('[data-testid="mds-screen-PO-MULTI"]').className).toMatch(/is-unavailable/);
+    expect(container.querySelector('[data-testid="mds-prod-PO-MULTI"]').className).toMatch(/is-unavailable/);
+    expect(container.querySelector('[data-testid="mds-packing-PO-MULTI"]').className).toMatch(/is-unavailable/);
+    expect(container.querySelector('[data-testid="mds-scroll"]').getAttribute("data-production-state")).toBe("loading");
+    expect(container.querySelector('[data-testid="mds-search"]').value).toBe("Renea");
+    fs.writeFileSync("/opt/cursor/artifacts/kirim_indicator_timing.json", JSON.stringify({
+      localhost_ms_from_confirm_resolve_to_kirim_done: Number(elapsedMs.toFixed(1)),
+      note: "jsdom localhost. Time is the React commit after confirm HTTP success, before the schedule refetch resolves. Not a phone or production measurement.",
+    }));
+
+    await act(async () => {
+      lateSchedule.resolve({ rows: [multiSjRow("sh-1", "SJ-1", 0), multiSjRow("sh-2", "SJ-2", 0)] });
+    });
+    await flush();
+    expect(markKind(kirimOf("sh-1"))).toBe("done");
+    expect(markKind(kirimOf("sh-2"))).toBe("idle");
+
+    await act(async () => {
+      refreshSchedule.resolve({
+        rows: [multiSjRow("sh-1", "SJ-1", 400), multiSjRow("sh-2", "SJ-2", 0)],
+      });
+    });
+    await flush();
+    expect(markKind(kirimOf("sh-1"))).toBe("done");
+    expect(markKind(kirimOf("sh-2"))).toBe("idle");
+    expect(container.querySelector('[data-testid="mds-search"]').value).toBe("Renea");
+    expect(elapsedMs).toBeLessThan(1000);
+  });
+
+  test("a failed confirm leaves both Kirim marks unchanged", async () => {
+    mockHasPerm.mockImplementation((perm) => perm === "schedule.view" || perm === "delivery.update");
+    mockDsRouter.search = "ws=delivery";
+    mockProductionDashboard.mockImplementation(() => new Promise(() => {}));
+    mockDeliverySchedule.mockResolvedValue({ rows: [multiSjRow("sh-1", "SJ-1", 0), multiSjRow("sh-2", "SJ-2", 0)] });
+    mockGetOrder.mockResolvedValue({ order: confirmableMultiOrder() });
+    mockConfirmDelivered.mockRejectedValue({
+      response: { status: 400, data: { detail: "Konfirmasi ditolak." } },
+    });
+    await act(async () => { root.render(<MobileDeliverySchedulePage />); });
+    await flush();
+    const callsBefore = mockDeliverySchedule.mock.calls.length;
+    await act(async () => {
+      container.querySelector('[data-testid="mds-row-PO-MULTI-sh-1"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+    await act(async () => {
+      container.querySelector('[data-testid="mobile-confirm-delivered"]').click();
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="mobile-delivery-error"]').textContent).toBe("Konfirmasi ditolak.");
+    expect(markKind(kirimOf("sh-1"))).toBe("idle");
+    expect(markKind(kirimOf("sh-2"))).toBe("idle");
+    expect(mockDeliverySchedule.mock.calls.length).toBe(callsBefore);
+  });
+
+  test("a failed schedule refetch keeps the Kirim mark painted from the saved order", async () => {
+    mockHasPerm.mockImplementation((perm) => perm === "schedule.view" || perm === "delivery.update");
+    mockDsRouter.search = "ws=delivery";
+    mockProductionDashboard.mockImplementation(() => new Promise(() => {}));
+    mockDeliverySchedule
+      .mockResolvedValueOnce({ rows: [multiSjRow("sh-1", "SJ-1", 0), multiSjRow("sh-2", "SJ-2", 0)] })
+      .mockRejectedValueOnce(new Error("schedule down"));
+    const saved = {
+      ...confirmableMultiOrder(),
+      shipments: confirmableMultiOrder().shipments.map((sh) => (
+        sh.id === "sh-1" ? { ...sh, delivery_status: "Terkirim", delivered_at: "t" } : sh
+      )),
+    };
+    mockGetOrder.mockResolvedValue({ order: confirmableMultiOrder() });
+    mockConfirmDelivered.mockResolvedValue({ order: saved });
+    await act(async () => { root.render(<MobileDeliverySchedulePage />); });
+    await flush();
+    await act(async () => {
+      container.querySelector('[data-testid="mds-row-PO-MULTI-sh-1"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+    await act(async () => {
+      container.querySelector('[data-testid="mobile-confirm-delivered"]').click();
+    });
+    await flush();
+    expect(markKind(kirimOf("sh-1"))).toBe("done");
+    expect(markKind(kirimOf("sh-2"))).toBe("idle");
+    expect(container.querySelector('[data-testid="mds-table"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mobile-confirm-delivered"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mds-delivery-saved"]').textContent).toBe("Bukti kirim berhasil disimpan");
+  });
+
+  test("reopening the confirmed SJ shows the reread proof signatures and status", async () => {
+    mockHasPerm.mockImplementation((perm) => perm === "schedule.view" || perm === "delivery.update");
+    mockDsRouter.search = "ws=delivery";
+    mockProductionDashboard.mockImplementation(() => new Promise(() => {}));
+    mockDeliverySchedule.mockResolvedValue({ rows: [multiSjRow("sh-1", "SJ-1", 0), multiSjRow("sh-2", "SJ-2", 0)] });
+    const saved = {
+      ...confirmableMultiOrder(),
+      delivery_status: "Sebagian Terkirim",
+      shipments: confirmableMultiOrder().shipments.map((sh) => (
+        sh.id === "sh-1" ? { ...sh, delivery_status: "Terkirim", delivered_at: "t" } : sh
+      )),
+    };
+    mockGetOrder
+      .mockResolvedValueOnce({ order: confirmableMultiOrder() })
+      .mockResolvedValueOnce({ order: saved });
+    mockConfirmDelivered.mockResolvedValue({ order: saved });
+    await act(async () => { root.render(<MobileDeliverySchedulePage />); });
+    await flush();
+    await act(async () => {
+      container.querySelector('[data-testid="mds-row-PO-MULTI-sh-1"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+    await act(async () => {
+      container.querySelector('[data-testid="mobile-confirm-delivered"]').click();
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="mds-delivery-saved"]').textContent).toBe("Bukti kirim berhasil disimpan");
+    expect(container.querySelector('[data-testid="mobile-ws-delivery"]')).toBeFalsy();
+    await act(async () => {
+      container.querySelector('[data-testid="mds-row-PO-MULTI-sh-1"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+    expect(mockGetOrder).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('[data-testid="mobile-pengiriman-selected-status"]').textContent).toBe("Terkirim");
+    expect(container.querySelector('[data-testid="mobile-delivery-photo-action"]').textContent).toMatch(/2 Foto tersimpan/);
+    expect(container.querySelector('[data-testid="mobile-delivery-driver-sign-action"]').textContent).toMatch(/Sudah ditandatangani/);
+    expect(container.querySelector('[data-testid="mobile-delivery-recipient-sign-action"]').textContent).toMatch(/Sudah ditandatangani/);
+    await act(async () => {
+      container.querySelector('[data-testid="mobile-delivery-photo-action"]').click();
+    });
+    expect(container.querySelector('[data-testid="mobile-delivery-proof-p1"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mobile-delivery-proof-p2"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mds-delivery-saved"]').textContent).toBe("Bukti kirim berhasil disimpan");
+  });
+
+  function setVisibility(value) {
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => value,
+    });
+  }
+
+  test("a visible tab refetches the schedule without production or a second confirm", async () => {
+    mockHasPerm.mockImplementation((perm) => perm === "schedule.view" || perm === "delivery.update");
+    mockDsRouter.search = "ws=delivery";
+    mockProductionDashboard.mockResolvedValue({ rows: [] });
+    mockDeliverySchedule.mockResolvedValue({
+      rows: [multiSjRow("sh-1", "SJ-1", 0), multiSjRow("sh-2", "SJ-2", 0)],
+    });
+    mockGetOrder.mockResolvedValue({ order: confirmableMultiOrder() });
+    await act(async () => { root.render(<MobileDeliverySchedulePage />); });
+    await flush();
+    const scheduleCalls = mockDeliverySchedule.mock.calls.length;
+    const productionCalls = mockProductionDashboard.mock.calls.length;
+    await act(async () => { typeSearch("Renea"); });
+    await act(async () => {
+      container.querySelector('[data-testid="mds-row-PO-MULTI-sh-1"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="mobile-confirm-delivered"]')).toBeTruthy();
+
+    setVisibility("hidden");
+    await act(async () => { document.dispatchEvent(new Event("visibilitychange")); });
+    expect(mockDeliverySchedule.mock.calls.length).toBe(scheduleCalls);
+
+    setVisibility("visible");
+    await act(async () => { document.dispatchEvent(new Event("visibilitychange")); });
+    await flush();
+    expect(mockDeliverySchedule.mock.calls.length).toBe(scheduleCalls + 1);
+    expect(mockProductionDashboard.mock.calls.length).toBe(productionCalls + 1);
+    expect(mockConfirmDelivered).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="mds-search"]').value).toBe("Renea");
+    expect(container.querySelector('[data-testid="mobile-confirm-delivered"]')).toBeTruthy();
+    expect(markKind(kirimOf("sh-1"))).toBe("idle");
+  });
+
+  test("a schedule response started before the visible refresh cannot overwrite the newer rows", async () => {
+    const older = deferred();
+    const newer = deferred();
+    mockHasPerm.mockImplementation((perm) => perm === "schedule.view");
+    mockProductionDashboard.mockResolvedValue({ rows: [] });
+    mockDeliverySchedule
+      .mockResolvedValueOnce({ rows: [multiSjRow("sh-1", "SJ-1", 0)] })
+      .mockImplementationOnce(() => older.promise)
+      .mockImplementationOnce(() => newer.promise);
+    await act(async () => { root.render(<MobileDeliverySchedulePage />); });
+    await flush();
+    setVisibility("visible");
+    await act(async () => { document.dispatchEvent(new Event("visibilitychange")); });
+    await act(async () => { container.querySelector('[data-testid="mds-refresh"]').click(); });
+    await act(async () => { older.resolve({ rows: [multiSjRow("sh-1", "SJ-1", 0)] }); });
+    await flush();
+    await act(async () => { newer.resolve({ rows: [multiSjRow("sh-1", "SJ-1", 400)] }); });
+    await flush();
+    expect(markKind(kirimOf("sh-1"))).toBe("done");
+    await act(async () => { older.resolve({ rows: [multiSjRow("sh-1", "SJ-1", 0)] }); });
+    await flush();
+    expect(markKind(kirimOf("sh-1"))).toBe("done");
+  });
+
+  test("unmount removes the visibility listener", async () => {
+    mockHasPerm.mockImplementation((perm) => perm === "schedule.view");
+    mockProductionDashboard.mockResolvedValue({ rows: [] });
+    mockDeliverySchedule.mockResolvedValue({ rows: [multiSjRow("sh-1", "SJ-1", 0)] });
+    await act(async () => { root.render(<MobileDeliverySchedulePage />); });
+    await flush();
+    const calls = mockDeliverySchedule.mock.calls.length;
+    act(() => root.unmount());
+    root = createRoot(container);
+    setVisibility("visible");
+    await act(async () => { document.dispatchEvent(new Event("visibilitychange")); });
+    expect(mockDeliverySchedule.mock.calls.length).toBe(calls);
+  });
+
+  test("reopening the schedule reads the stored SJ qty", async () => {
+    mockHasPerm.mockImplementation((perm) => perm === "schedule.view");
+    mockProductionDashboard.mockResolvedValue({ rows: [] });
+    mockDeliverySchedule.mockResolvedValue({
+      rows: [multiSjRow("sh-1", "SJ-1", 400), multiSjRow("sh-2", "SJ-2", 0)],
+    });
+    await act(async () => { root.render(<MobileDeliverySchedulePage />); });
+    await flush();
+    expect(markKind(kirimOf("sh-1"))).toBe("done");
+    expect(markKind(kirimOf("sh-2"))).toBe("idle");
+  });
+
+  function setNativeValue(selector, value) {
+    const input = container.querySelector(selector);
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+    setter.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+
+  test("a customer filter applied during the schedule request still limits the resolved rows", async () => {
+    const schedule = deferred();
+    mockHasPerm.mockImplementation((perm) => perm === "schedule.view");
+    mockProductionDashboard.mockResolvedValue({ rows: [] });
+    mockDeliverySchedule.mockImplementation(() => schedule.promise);
+    await act(async () => { root.render(<MobileDeliverySchedulePage />); });
+    await flush();
+    expect(container.querySelector('[data-testid="mds-loading"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mds-table"]')).toBeFalsy();
+
+    await act(async () => {
+      container.querySelector('[data-testid="mds-filter-btn"]').click();
+    });
+    await act(async () => { setNativeValue('[data-testid="mds-adv-customer"]', "CV Beta"); });
+    await act(async () => {
+      container.querySelector('[data-testid="mds-filter-apply"]').click();
+    });
+    expect(container.querySelector('[data-testid="mds-filter-panel"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mds-loading"]')).toBeTruthy();
+
+    await act(async () => {
+      schedule.resolve({
+        rows: [
+          sampleRows[0],
+          {
+            ...sampleRows[0],
+            id: "o2",
+            order_number: "PO-200",
+            customer_name: "CV Beta",
+            shipment_id: "sh-200",
+            sj_label: "SJ-2",
+            latest_sj_number: "SJ-2",
+          },
+        ],
+      });
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="mds-loading"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mds-row-PO-200-sh-200"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mds-row-PO-100-sh-100"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mds-filter-btn"]').textContent).toContain("Filter (1)");
+  });
+
+  test("unmount during an in-flight schedule ignores that response on the next mount", async () => {
+    const lateSchedule = deferred();
+    mockHasPerm.mockImplementation((perm) => perm === "schedule.view");
+    mockProductionDashboard.mockResolvedValue({ rows: [] });
+    mockDeliverySchedule
+      .mockImplementationOnce(() => lateSchedule.promise)
+      .mockResolvedValue({
+        rows: [{ ...sampleRows[0], id: "next", order_number: "PO-NEXT" }],
+      });
+    await act(async () => { root.render(<MobileDeliverySchedulePage />); });
+    await flush();
+    expect(container.querySelector('[data-testid="mds-loading"]')).toBeTruthy();
+    act(() => root.unmount());
+    root = createRoot(container);
+    await act(async () => {
+      lateSchedule.resolve({
+        rows: [{ ...sampleRows[0], id: "stale", order_number: "PO-STALE" }],
+      });
+    });
+    await act(async () => { root.render(<MobileDeliverySchedulePage />); });
+    await flush();
+    expect(container.textContent).toContain("PO-NEXT");
+    expect(container.textContent).not.toContain("PO-STALE");
+    expect(container.querySelector('[data-testid="mds-loading"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mds-table"]')).toBeTruthy();
+  });
+
+  test("unmount during an in-flight summary ignores that response on the next mount", async () => {
+    const lateDashboard = deferred();
+    mockHasPerm.mockImplementation((perm) => perm === "schedule.view");
+    mockDeliverySchedule
+      .mockResolvedValueOnce({ rows: [{ ...sampleRows[0], id: "live", order_number: "PO-LIVE" }] })
+      .mockResolvedValue({ rows: [{ ...sampleRows[0], id: "next", order_number: "PO-NEXT" }] });
+    mockProductionDashboard
+      .mockImplementationOnce(() => lateDashboard.promise)
+      .mockResolvedValue({ rows: [] });
+    await act(async () => { root.render(<MobileDeliverySchedulePage />); });
+    await flush();
+    expect(container.textContent).toContain("PO-LIVE");
+    expect(container.querySelector('[data-testid="mds-scroll"]').getAttribute("data-production-state")).toBe("loading");
+    act(() => root.unmount());
+    root = createRoot(container);
+    await act(async () => {
+      lateDashboard.resolve({
+        rows: [{
+          id: "live",
+          helper_required: 10,
+          helper_prepared: 10,
+          screen_qty: 10,
+          packing_status: "Sudah",
+          print_completed_qty: 10,
+          print_qty_total: 10,
+        }],
+      });
+    });
+    await act(async () => { root.render(<MobileDeliverySchedulePage />); });
+    await flush();
+    expect(container.textContent).toContain("PO-NEXT");
+    expect(container.textContent).not.toContain("PO-LIVE");
+    expect(container.querySelector('[data-testid="mds-loading"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mds-scroll"]').getAttribute("data-production-state")).toBe("ready");
+    expect(container.querySelector('[data-testid="mds-cup-PO-NEXT"]').className).not.toMatch(/is-done/);
+  });
+
+  test("a failed schedule clears loading and retry loads the latest rows", async () => {
+    const staleDashboard = deferred();
+    const retryDashboard = deferred();
+    let scheduleCalls = 0;
+    let dashboardCalls = 0;
+    mockHasPerm.mockImplementation((perm) => perm === "schedule.view");
+    mockDeliverySchedule.mockImplementation(() => {
+      scheduleCalls += 1;
+      if (scheduleCalls === 1) return Promise.reject(new Error("schedule down"));
+      return Promise.resolve({
+        rows: [{ ...sampleRows[0], id: "retry", order_number: "PO-RETRY" }],
+      });
+    });
+    mockProductionDashboard.mockImplementation(() => {
+      dashboardCalls += 1;
+      return dashboardCalls === 1 ? staleDashboard.promise : retryDashboard.promise;
+    });
+    await act(async () => { root.render(<MobileDeliverySchedulePage />); });
+    await flush();
+    expect(container.querySelector('[data-testid="mds-loading"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mds-error"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mds-table"]')).toBeFalsy();
+    expect(container.textContent).toContain("Gagal memuat Jadwal Pengiriman.");
+
+    await act(async () => {
+      container.querySelector('[data-testid="mds-retry"]').click();
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="mds-loading"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mds-error"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mds-table"]')).toBeTruthy();
+    expect(container.textContent).toContain("PO-RETRY");
+
+    await act(async () => {
+      staleDashboard.resolve({
+        rows: [{
+          id: "stale",
+          helper_required: 10,
+          helper_prepared: 10,
+          screen_qty: 10,
+          packing_status: "Sudah",
+          print_completed_qty: 10,
+          print_qty_total: 10,
+        }],
+      });
+    });
+    await flush();
+    expect(container.textContent).toContain("PO-RETRY");
+    expect(container.querySelector('[data-testid="mds-error"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mds-loading"]')).toBeFalsy();
+
+    await act(async () => { retryDashboard.resolve({ rows: [] }); });
+    await flush();
+    expect(container.textContent).toContain("PO-RETRY");
+    expect(container.querySelector('[data-testid="mds-scroll"]').getAttribute("data-production-state")).toBe("ready");
+    expect(container.querySelector('[data-testid="mds-loading"]')).toBeFalsy();
+  });
+
+  test("a fresh summary cache paints marks after the schedule without another request", async () => {
+    const schedule = deferred();
+    mockHasPerm.mockImplementation((perm) => perm === "schedule.view");
+    mockDeliverySchedule.mockReturnValue(schedule.promise);
+    await loadProductionSummary({
+      userKey: "u-mds",
+      requestParams: mobileProductionDashboardParams({ includeCancelled: false, includeCompleted: true }),
+      fetcher: async () => ({
+        rows: [{
+          id: "o1",
+          po_number: "PO-100",
+          helper_required: 10,
+          helper_prepared: 10,
+          screen_qty: 10,
+          packing_status: "Sudah",
+          print_completed_qty: 10,
+          print_qty_total: 10,
+        }],
+      }),
+    });
+    mockProductionDashboard.mockImplementation(() => {
+      throw new Error("summary should stay cached");
+    });
+    await act(async () => { root.render(<MobileDeliverySchedulePage />); });
+    await flush();
+    expect(mockProductionDashboard).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="mds-table"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mds-loading"]')).toBeTruthy();
+    await act(async () => { schedule.resolve({ rows: sampleRows }); });
+    await flush();
+    expect(container.querySelector('[data-testid="mds-table"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mds-loading"]')).toBeFalsy();
+    expect(mockProductionDashboard).not.toHaveBeenCalled();
+    expect(markKind(container.querySelector('[data-testid="mds-cup-PO-100"]'))).toBe("done");
+    expect(markKind(container.querySelector('[data-testid="mds-load-PO-100"]'))).toBe("idle");
+  });
+
+  test("manual refresh bypasses a fresh summary cache", async () => {
+    mockHasPerm.mockImplementation((perm) => perm === "schedule.view");
+    await loadProductionSummary({
+      userKey: "u-mds",
+      requestParams: mobileProductionDashboardParams({ includeCancelled: false, includeCompleted: true }),
+      fetcher: async () => ({ rows: [] }),
+    });
+    mockDeliverySchedule.mockResolvedValue({ rows: sampleRows });
+    mockProductionDashboard.mockResolvedValue({
+      rows: [{
+        id: "o1",
+        helper_required: 10,
+        helper_prepared: 10,
+        screen_qty: 0,
+        print_completed_qty: 0,
+        print_qty_total: 10,
+        packing_status: "Belum",
+      }],
+    });
+    await act(async () => { root.render(<MobileDeliverySchedulePage />); });
+    await flush();
+    expect(mockProductionDashboard).not.toHaveBeenCalled();
+    await act(async () => { container.querySelector('[data-testid="mds-refresh"]').click(); });
+    await flush();
+    expect(mockProductionDashboard).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[data-testid="mds-loading"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mds-table"]')).toBeTruthy();
+    expect(markKind(container.querySelector('[data-testid="mds-cup-PO-100"]'))).toBe("done");
+  });
+
+  test("a summary response started before refresh cannot restore the old marks", async () => {
+    const stale = deferred();
+    const fresh = deferred();
+    mockHasPerm.mockImplementation((perm) => perm === "schedule.view");
+    mockDeliverySchedule.mockResolvedValue({ rows: sampleRows });
+    mockProductionDashboard
+      .mockImplementationOnce(() => stale.promise)
+      .mockImplementationOnce(() => fresh.promise);
+    await act(async () => { root.render(<MobileDeliverySchedulePage />); });
+    await flush();
+    expect(container.querySelector('[data-testid="mds-table"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mds-cup-PO-100"]').className).toMatch(/is-unavailable/);
+    await act(async () => { container.querySelector('[data-testid="mds-refresh"]').click(); });
+    await flush();
+    await act(async () => {
+      stale.resolve({
+        rows: [{
+          id: "o1",
+          helper_required: 10,
+          helper_prepared: 10,
+          screen_qty: 10,
+          packing_status: "Sudah",
+          print_completed_qty: 10,
+          print_qty_total: 10,
+        }],
+      });
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="mds-cup-PO-100"]').className).toMatch(/is-unavailable/);
+    await act(async () => {
+      fresh.resolve({
+        rows: [{
+          id: "o1",
+          helper_required: 10,
+          helper_prepared: 0,
+          screen_qty: 0,
+          packing_status: "Belum",
+          print_completed_qty: 0,
+          print_qty_total: 10,
+        }],
+      });
+    });
+    await flush();
+    expect(markKind(container.querySelector('[data-testid="mds-cup-PO-100"]'))).not.toBe("done");
+    expect(container.querySelector('[data-testid="mds-scroll"]').getAttribute("data-production-state")).toBe("ready");
+    expect(container.querySelector('[data-testid="mds-table"]')).toBeTruthy();
+  });
+
+  test("a summary response started before save invalidation cannot paint old marks", async () => {
+    const stale = deferred();
+    const fresh = deferred();
+    mockHasPerm.mockImplementation((perm) => perm === "schedule.view");
+    mockDeliverySchedule.mockResolvedValue({ rows: sampleRows });
+    mockProductionDashboard
+      .mockImplementationOnce(() => stale.promise)
+      .mockImplementationOnce(() => fresh.promise);
+    await act(async () => { root.render(<MobileDeliverySchedulePage />); });
+    await flush();
+    expect(container.querySelector('[data-testid="mds-table"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mds-cup-PO-100"]').className).toMatch(/is-unavailable/);
+    invalidateProductionSummaryCache();
+    await act(async () => {
+      stale.resolve({
+        rows: [{
+          id: "o1",
+          helper_required: 10,
+          helper_prepared: 10,
+          screen_qty: 10,
+          packing_status: "Sudah",
+          print_completed_qty: 10,
+          print_qty_total: 10,
+        }],
+      });
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="mds-cup-PO-100"]').className).toMatch(/is-unavailable/);
+    await act(async () => {
+      fresh.resolve({
+        rows: [{
+          id: "o1",
+          helper_required: 10,
+          helper_prepared: 0,
+          screen_qty: 0,
+          packing_status: "Belum",
+          print_completed_qty: 0,
+          print_qty_total: 10,
+        }],
+      });
+    });
+    await flush();
+    expect(mockProductionDashboard).toHaveBeenCalledTimes(2);
+    expect(markKind(container.querySelector('[data-testid="mds-cup-PO-100"]'))).not.toBe("done");
+    expect(container.querySelector('[data-testid="mds-scroll"]').getAttribute("data-production-state")).toBe("ready");
+    expect(container.querySelector('[data-testid="mds-table"]')).toBeTruthy();
   });
 });

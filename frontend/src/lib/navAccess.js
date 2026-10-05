@@ -1,5 +1,7 @@
 /** Sidebar / page visibility helpers over existing `hasPerm` + nav.* keys. */
 
+import { canOpenWidgetDashboard } from "../components/widgetDashboard/widgetDashboardCatalog";
+
 export const NAV_KEYS = {
   dashboard: "nav.dashboard",
   dashboardSales: "nav.dashboard.sales",
@@ -165,20 +167,21 @@ export function canSeeNav(hasPerm, key) {
 }
 
 /** Dashboard parent is hidden when no dashboard child is visible. */
-export function dashboardNavVisible(hasPerm) {
+export function dashboardNavVisible(hasPerm, user) {
   const production = canSeeNav(hasPerm, NAV_KEYS.dashboard);
   const sales = canSeeNav(hasPerm, NAV_KEYS.dashboardSales) || canSeeNav(hasPerm, "dashboard.sales.view");
   const finance = canSeeNav(hasPerm, NAV_KEYS.dashboardFinance) || canSeeNav(hasPerm, "dashboard.finance.view");
+  const widget = canOpenWidgetDashboard(user, hasPerm);
   return {
-    parent: Boolean(production || sales || finance),
+    parent: Boolean(production || widget),
     production: Boolean(production),
     sales: Boolean(sales),
     finance: Boolean(finance),
   };
 }
 
-export function dashboardMenuItems(hasPerm) {
-  const visible = dashboardNavVisible(hasPerm);
+export function dashboardMenuItems(hasPerm, user) {
+  const visible = dashboardNavVisible(hasPerm, user);
   const items = [];
   if (visible.production) {
     items.push({
@@ -190,9 +193,9 @@ export function dashboardMenuItems(hasPerm) {
       testid: "top-nav-dashboard-produksi",
     });
   }
-  if (visible.sales || visible.finance) {
+  if (canOpenWidgetDashboard(user, hasPerm)) {
     items.push({
-      key: visible.sales ? NAV_KEYS.dashboardSales : NAV_KEYS.dashboardFinance,
+      key: visible.sales || !visible.finance ? NAV_KEYS.dashboardSales : NAV_KEYS.dashboardFinance,
       label: "Dashboard Penjualan",
       to: "/dashboard/penjualan",
       end: true,

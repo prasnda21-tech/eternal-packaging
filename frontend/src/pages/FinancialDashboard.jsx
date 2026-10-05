@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import api from "../lib/api";
 import { reconciliationControlHref } from "../lib/inventoryValueLink";
+import DashboardTabs from "./DashboardTabs";
 import {
   agingChartStatus,
   chartPlotsSeries,
@@ -70,6 +71,15 @@ function MoneyTooltip({ active, payload, label }) {
 }
 
 function MetricCard({ testid, title, scope, status, amount, hint, flagged }) {
+  if (status === "loading") {
+    return (
+      <article className="fd-card is-loading" data-testid={testid}>
+        <p className="fd-kicker">{scope}</p>
+        <h2>{title}</h2>
+        <strong data-testid={`${testid}-value`}>Memuat…</strong>
+      </article>
+    );
+  }
   const shown = formatMetric(status, amount);
   return (
     <article className={`fd-card is-${shown.kind}`} data-testid={testid}>
@@ -169,24 +179,39 @@ function OutstandingTable({ title, data, testid }) {
   );
 }
 
-export default function FinancialDashboard({ embedded = false }) {
+const FINANCE_CHARTS = [
+  { id: "tren", label: "Tren" },
+  { id: "beban", label: "Beban" },
+  { id: "kas", label: "Kas" },
+  { id: "posisi", label: "Posisi" },
+  { id: "umur", label: "Umur" },
+];
+
+export default function FinancialDashboard({ embedded = false, external = null }) {
+  const externalActive = external != null;
   const [preset, setPreset] = useState("month");
   const [custom, setCustom] = useState({ start: "", end: "" });
-  const [payload, setPayload] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
+  const [ownPayload, setPayload] = useState(null);
+  const [ownLoading, setLoading] = useState(!externalActive);
+  const [ownError, setError] = useState("");
   const [detailOpen, setDetailOpen] = useState(false);
+  const [chartTab, setChartTab] = useState("tren");
   const requestId = useRef(0);
+  const payload = externalActive ? (external.payload ?? null) : ownPayload;
+  const loading = externalActive ? Boolean(external.loading) : ownLoading;
+  const error = externalActive ? (external.error || "") : ownError;
 
   const range = periodRange(preset, custom);
   const rangeReady = Boolean(range.start && range.end && range.start <= range.end);
 
   const load = useCallback(async () => {
+    if (externalActive) return;
     if (!rangeReady) return;
     const current = requestId.current + 1;
     requestId.current = current;
     setLoading(true);
     setError("");
+    setPayload(null);
     try {
       const data = await api.financialDashboard({ start_date: range.start, end_date: range.end });
       if (!shouldApplyDashboardResponse(current, requestId.current)) return;
@@ -194,12 +219,17 @@ export default function FinancialDashboard({ embedded = false }) {
       setLoading(false);
     } catch (ex) {
       if (!shouldApplyDashboardResponse(current, requestId.current)) return;
+      setPayload(null);
       setError(errText(ex));
       setLoading(false);
     }
-  }, [range.start, range.end, rangeReady]);
+  }, [range.start, range.end, rangeReady, externalActive]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    if (externalActive) return undefined;
+    load();
+    return undefined;
+  }, [load, externalActive]);
 
   useEffect(() => {
     if (!detailOpen) return undefined;
@@ -254,23 +284,27 @@ export default function FinancialDashboard({ embedded = false }) {
   return (
     <div className={`finance-dashboard-page${embedded ? " is-embedded" : ""}`} data-testid="finance-dashboard-page">
       <header className="fd-head">
-        {embedded ? <h2>Keuangan</h2> : <h1>Dashboard Keuangan</h1>}
-        <div className="fd-presets" role="group" aria-label="Rentang tanggal">
-          {PRESETS.map((item) => (
-            <button key={item.id} type="button" className={preset === item.id ? "is-active" : ""} onClick={() => setPreset(item.id)} data-testid={`finance-preset-${item.id}`}>
-              {item.label}
-            </button>
-          ))}
-        </div>
-        {preset === "custom" ? (
-          <div className="fd-custom">
-            <input aria-label="Tanggal mulai" type="date" value={custom.start} onChange={(event) => setCustom((cur) => ({ ...cur, start: event.target.value }))} />
-            <input aria-label="Tanggal akhir" type="date" value={custom.end} onChange={(event) => setCustom((cur) => ({ ...cur, end: event.target.value }))} />
-          </div>
-        ) : (
-          <p className="fd-range" data-testid="finance-range">{range.start} – {range.end}</p>
+        {embedded ? null : <h1>Dashboard Keuangan</h1>}
+        {externalActive ? null : (
+          <>
+            <div className="fd-presets" role="group" aria-label="Rentang tanggal">
+              {PRESETS.map((item) => (
+                <button key={item.id} type="button" className={preset === item.id ? "is-active" : ""} onClick={() => setPreset(item.id)} data-testid={`finance-preset-${item.id}`}>
+                  {item.label}
+                </button>
+              ))}
+            </div>
+            {preset === "custom" ? (
+              <div className="fd-custom">
+                <input aria-label="Tanggal mulai" type="date" value={custom.start} onChange={(event) => setCustom((cur) => ({ ...cur, start: event.target.value }))} />
+                <input aria-label="Tanggal akhir" type="date" value={custom.end} onChange={(event) => setCustom((cur) => ({ ...cur, end: event.target.value }))} />
+              </div>
+            ) : (
+              <p className="fd-range" data-testid="finance-range">{range.start} – {range.end}</p>
+            )}
+            <button type="button" className="fd-reload" onClick={load} data-testid="finance-reload">Muat ulang</button>
+          </>
         )}
-        <button type="button" className="fd-reload" onClick={load} data-testid="finance-reload">Muat ulang</button>
         <p className="fd-loaded" data-testid="finance-loaded">Diperbarui {formatLoadedAt(payload?.loaded_at)}</p>
         <button type="button" className="fd-detail-btn" onClick={() => setDetailOpen(true)} data-testid="finance-open-detail">
           Lihat detail
@@ -293,13 +327,15 @@ export default function FinancialDashboard({ embedded = false }) {
 
       <div className="fd-stage" data-testid="finance-panel-ringkasan">
         <div className="fd-kpis">
-          <MetricCard testid="finance-revenue" title="Pendapatan" scope={perfScope} status={performance.status} amount={performance.revenue} flagged={perfFlag} />
-          <MetricCard testid="finance-gross" title="Laba kotor" scope={perfScope} status={performance.status} amount={performance.gross_profit} hint={`Margin ${formatMargin(performance.gross_margin)}`} flagged={perfFlag} />
-          <MetricCard testid="finance-net" title="Laba bersih" scope={perfScope} status={performance.status} amount={performance.net_profit} hint={`Margin ${formatMargin(performance.net_margin)}`} flagged={perfFlag} />
-          <MetricCard testid="finance-cash" title="Kas dan bank" scope={posScope} status={position.cash_and_bank?.status} amount={position.cash_and_bank?.amount} flagged={needsFlag(position.cash_and_bank?.status, position.cash_and_bank?.warning, position.cash_and_bank?.blocker_code)} />
+          <MetricCard testid="finance-revenue" title="Pendapatan" scope={perfScope} status={error ? "error" : (payload ? performance.status : (loading ? "loading" : "empty"))} amount={performance.revenue} flagged={perfFlag} />
+          <MetricCard testid="finance-gross" title="Laba kotor" scope={perfScope} status={error ? "error" : (payload ? performance.status : (loading ? "loading" : "empty"))} amount={performance.gross_profit} hint={payload && !error ? `Margin ${formatMargin(performance.gross_margin)}` : null} flagged={perfFlag} />
+          <MetricCard testid="finance-net" title="Laba bersih" scope={perfScope} status={error ? "error" : (payload ? performance.status : (loading ? "loading" : "empty"))} amount={performance.net_profit} hint={payload && !error ? `Margin ${formatMargin(performance.net_margin)}` : null} flagged={perfFlag} />
+          <MetricCard testid="finance-cash" title="Kas dan bank" scope={posScope} status={error ? "error" : (payload ? position.cash_and_bank?.status : (loading ? "loading" : "empty"))} amount={position.cash_and_bank?.amount} flagged={needsFlag(position.cash_and_bank?.status, position.cash_and_bank?.warning, position.cash_and_bank?.blocker_code)} />
         </div>
 
-        <div className="fd-visual">
+        <DashboardTabs id="finance-chart" label="Grafik keuangan" items={FINANCE_CHARTS} value={chartTab} onChange={setChartTab} />
+        <div className="fd-chart-stage">
+        <div className="fd-visual" role="tabpanel" id="finance-chart-panel-tren" aria-labelledby="finance-chart-tab-tren" hidden={chartTab !== "tren"}>
           <ChartFrame title="Tren pendapatan, HPP, dan laba bersih" note={perfScope} status={payload ? charts.trend?.status : (loading ? "loading" : "empty")} detail={charts.trend?.detail} testid="finance-chart-trend">
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={trendPoints} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
@@ -314,7 +350,8 @@ export default function FinancialDashboard({ embedded = false }) {
               </LineChart>
             </ResponsiveContainer>
           </ChartFrame>
-          <div className="fd-side">
+        </div>
+        <div role="tabpanel" id="finance-chart-panel-beban" aria-labelledby="finance-chart-tab-beban" hidden={chartTab !== "beban"}>
             <ChartFrame title="Komposisi beban operasional" note="Nama akun" status={payload ? charts.expense_composition?.status : (loading ? "loading" : "empty")} detail={charts.expense_composition?.detail} testid="finance-chart-expense">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={expenseItems} layout="vertical" margin={{ top: 4, right: 8, left: 4, bottom: 0 }}>
@@ -326,6 +363,8 @@ export default function FinancialDashboard({ embedded = false }) {
                 </BarChart>
               </ResponsiveContainer>
             </ChartFrame>
+        </div>
+        <div role="tabpanel" id="finance-chart-panel-kas" aria-labelledby="finance-chart-tab-kas" hidden={chartTab !== "kas"}>
             <ChartFrame title="Kas masuk dan kas keluar" note={cash.net_change == null ? "Eksternal" : `Eksternal · bersih ${formatMoney(cash.net_change)}`} status={payload ? cash.status : (loading ? "loading" : "empty")} detail={cash.detail} testid="finance-chart-cash">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={cashRows} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
@@ -341,20 +380,20 @@ export default function FinancialDashboard({ embedded = false }) {
                 </BarChart>
               </ResponsiveContainer>
             </ChartFrame>
-          </div>
         </div>
-
-        <div className="fd-bottom">
+        <div role="tabpanel" id="finance-chart-panel-posisi" aria-labelledby="finance-chart-tab-posisi" hidden={chartTab !== "posisi"}>
           <section className="fd-position" data-testid="finance-position">
             <h3>{posScope}</h3>
             <ul>
-              <PositionStat testid="finance-ar" title="Piutang usaha" status={position.accounts_receivable?.status} amount={position.accounts_receivable?.amount} flagged={needsFlag(position.accounts_receivable?.status, position.accounts_receivable?.warning)} />
-              <PositionStat testid="finance-ap" title="Utang usaha" status={position.accounts_payable?.status} amount={position.accounts_payable?.amount} flagged={needsFlag(position.accounts_payable?.status, position.accounts_payable?.warning)} />
-              <PositionStat testid="finance-inventory" title="Nilai buku persediaan" status={position.inventory_book?.status} amount={position.inventory_book?.amount} flagged={needsFlag(position.inventory_book?.status, position.inventory_book?.warning)} />
-              <PositionStat testid="finance-grni" title="GRNI" status={position.grni?.status} amount={position.grni?.amount} flagged={needsFlag(position.grni?.status, position.grni?.warning)} />
+              <PositionStat testid="finance-ar" title="Piutang usaha" status={error ? "error" : position.accounts_receivable?.status} amount={position.accounts_receivable?.amount} flagged={needsFlag(position.accounts_receivable?.status, position.accounts_receivable?.warning)} />
+              <PositionStat testid="finance-ap" title="Utang usaha" status={error ? "error" : position.accounts_payable?.status} amount={position.accounts_payable?.amount} flagged={needsFlag(position.accounts_payable?.status, position.accounts_payable?.warning)} />
+              <PositionStat testid="finance-inventory" title="Nilai buku persediaan" status={error ? "error" : position.inventory_book?.status} amount={position.inventory_book?.amount} flagged={needsFlag(position.inventory_book?.status, position.inventory_book?.warning)} />
+              <PositionStat testid="finance-grni" title="GRNI" status={error ? "error" : position.grni?.status} amount={position.grni?.amount} flagged={needsFlag(position.grni?.status, position.grni?.warning)} />
             </ul>
           </section>
-          <ChartFrame title="Umur piutang dan utang" note="Saat ini" status={agingStatus} detail={aging.detail || "Kondisi saat ini, bukan saldo historis tanggal filter."} testid="finance-chart-aging">
+        </div>
+        <div role="tabpanel" id="finance-chart-panel-umur" aria-labelledby="finance-chart-tab-umur" hidden={chartTab !== "umur"}>
+          <ChartFrame title="Umur piutang dan utang" note="Saat ini" status={error ? "error" : agingStatus} detail={aging.detail || "Kondisi saat ini, bukan saldo historis tanggal filter."} testid="finance-chart-aging">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={agingRows} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
                 <CartesianGrid stroke="#E2E8F0" />
@@ -367,6 +406,7 @@ export default function FinancialDashboard({ embedded = false }) {
               </BarChart>
             </ResponsiveContainer>
           </ChartFrame>
+        </div>
         </div>
       </div>
 

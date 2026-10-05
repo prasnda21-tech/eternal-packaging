@@ -16,7 +16,7 @@ const MODE_META = {
 
 const emptyEmployee = {
   name: "", employee_number: "", role: "", division: "", employment_status: "tetap",
-  join_date: "", end_date: "", worker_type: "monthly", email: "", phone: "", address: "",
+  join_date: "", end_date: "", worker_type: "monthly", pay_basis: "monthly", email: "", phone: "", address: "",
   bank_name: "", bank_account: "", bank_account_name: "", user_id: "", active: true,
   salary_profile: { base_salary: 0, allowances: [], effective_from: "" },
 };
@@ -314,6 +314,12 @@ function EmployeeForm({ initial, onClose, onSaved, roles = [], canCreateEternalA
                     />
                   </FormField>
                 ))}
+                <FormField id="hr-emp-pay-basis" label="Dasar upah" value={form.pay_basis || "monthly"}>
+                  <select value={form.pay_basis || "monthly"} disabled={!hasHrProfile} data-testid="hr-emp-pay-basis" onChange={(e) => set("pay_basis", e.target.value)}>
+                    <option value="monthly">Bulanan</option>
+                    <option value="piece">Borongan</option>
+                  </select>
+                </FormField>
                 <FormField id="hr-emp-gaji" label="Gaji pokok" value={form.salary_profile?.base_salary}>
                   <input type="number" min="0" value={form.salary_profile?.base_salary || 0} disabled={!hasHrProfile} onChange={(e) => setForm((cur) => ({ ...cur, salary_profile: { ...cur.salary_profile, base_salary: e.target.value } }))} />
                 </FormField>
@@ -551,11 +557,15 @@ function financeAction(period, payment, readiness, hasPerm) {
   if (period?.status !== "FINAL") return null;
   if (!period.accounting_journal_id) {
     if (readiness && readiness.accounting_ready === false) {
-      return { kind: "blocked", text: (readiness.reasons || []).join(" · ") || "Akuntansi belum siap." };
+      return { kind: "blocked", text: readiness.block_message || (readiness.reasons || []).join(" · ") || "Akuntansi belum siap." };
     }
     return null;
   }
   if (!payment) {
+    const net = Number(readiness?.summary?.net ?? 0);
+    if (readiness?.summary && net === 0) {
+      return { kind: "blocked", text: "Net nol. Payment bank tidak dibuat." };
+    }
     if (!hasPerm("payroll_payment.create")) return null;
     return { kind: "create", label: "Buat Payment" };
   }
@@ -731,6 +741,156 @@ function PayrollFinanceFlow({ period, lines, readiness, payment, payments, banks
   );
 }
 
+export function pieceInputSyncKey(period) {
+  return JSON.stringify({
+    id: period?.id || "",
+    start: period?.start_date || "",
+    end: period?.end_date || "",
+    bonusStart: period?.piece_bonus?.start_date || "",
+    bonusEnd: period?.piece_bonus?.end_date || "",
+    adjustments: period?.piece_bonus?.adjustments || {},
+    kasbon: period?.piece_kasbon_inputs || [],
+  });
+}
+
+function PieceHoldingPanel({ period, lines, kasbon, hasPerm, onSaved, onError }) {
+  const editable = period?.status === "DRAFT" && hasPerm("payroll.piece_holding.edit");
+  const [tab, setTab] = useState("upah");
+  const [integration, setIntegration] = useState(null);
+  const [startDate, setStartDate] = useState(period?.start_date || "");
+  const [endDate, setEndDate] = useState(period?.end_date || "");
+  const [bonusStart, setBonusStart] = useState(period?.piece_bonus?.start_date || "");
+  const [bonusEnd, setBonusEnd] = useState(period?.piece_bonus?.end_date || "");
+  const [integrationStart, setIntegrationStart] = useState("");
+  const [bonusFinal, setBonusFinal] = useState({});
+  const [bonusReason, setBonusReason] = useState({});
+  const [kasbonAmount, setKasbonAmount] = useState({});
+  const [busy, setBusy] = useState(false);
+  const pieceSyncKey = pieceInputSyncKey(period);
+  useEffect(() => {
+    const snapshot = JSON.parse(pieceSyncKey);
+    setStartDate(snapshot.start || "");
+    setEndDate(snapshot.end || "");
+    setBonusStart(snapshot.bonusStart || "");
+    setBonusEnd(snapshot.bonusEnd || "");
+    const finals = {};
+    const reasons = {};
+    Object.entries(snapshot.adjustments || {}).forEach(([id, row]) => {
+      finals[id] = row?.final_amount ?? "";
+      reasons[id] = row?.reason || "";
+    });
+    setBonusFinal(finals);
+    setBonusReason(reasons);
+    const amounts = {};
+    (snapshot.kasbon || []).forEach((row) => { amounts[row.schedule_id] = row.amount; });
+    setKasbonAmount(amounts);
+  }, [pieceSyncKey]);
+  useEffect(() => {
+    if (period?.period_scope !== "piece") return undefined;
+    if (!hasPerm("payroll.piece_holding.edit") && !hasPerm("payroll.view") && !hasPerm("payroll.calculate")) return undefined;
+    let active = true;
+    api.hrPayrollPieceIntegration().then((data) => { if (active) { setIntegration(data.integration || null); setIntegrationStart(data.integration?.start_date || ""); } }).catch(() => {});
+    return () => { active = false; };
+  }, [hasPerm, period?.id, period?.period_scope]);
+  const save = async () => {
+    setBusy(true);
+    try {
+      if (editable && integrationStart && !integration?.locked) {
+        await api.hrPayrollSetPieceIntegration({ start_date: integrationStart });
+      }
+      const bonus_adjustments = (lines || []).map((line) => ({
+        employee_id: line.employee_id,
+        final_amount: bonusFinal[line.employee_id] === "" || bonusFinal[line.employee_id] == null ? (line.bonus_snapshot?.proposed_amount || 0) : Number(bonusFinal[line.employee_id]),
+        reason: bonusReason[line.employee_id] || "",
+      })).filter((row) => row.employee_id);
+      const kasbon_inputs = (kasbon || []).filter((row) => kasbonAmount[row.id] !== "" && kasbonAmount[row.id] != null).map((row) => ({
+        employee_id: row.employee_id,
+        schedule_id: row.id,
+        amount: Number(kasbonAmount[row.id]),
+      }));
+      const saved = await api.hrPayrollSavePieceInputs(period.id, {
+        start_date: startDate,
+        end_date: endDate,
+        bonus: { start_date: bonusStart, end_date: bonusEnd },
+        bonus_adjustments,
+        kasbon_inputs,
+      });
+      await onSaved(saved.period);
+    } catch (ex) {
+      onError(errorText(ex));
+    } finally {
+      setBusy(false);
+    }
+  };
+  if (period?.period_scope !== "piece") return null;
+  const tabs = [["upah", "Upah"], ["bonus", "Bonus"], ["kasbon", "Kasbon"], ["blokir", "Pemblokir"]];
+  return (
+    <div className="settings-card" data-testid="hr-piece-panel">
+      <div className="hr-card-head"><h3>Upah borongan</h3>
+        <div className="hr-actions">{tabs.map(([id, label]) => <button type="button" key={id} className={tab === id ? "primary" : "ghost"} onClick={() => setTab(id)} data-testid={`hr-piece-tab-${id}`}>{label}</button>)}</div>
+      </div>
+      {tab === "upah" && (
+        <div className="emp-form">
+          <label>Batas mulai integrasi
+            <input type="date" value={integrationStart} disabled={!editable || integration?.locked} onChange={(e) => setIntegrationStart(e.target.value)} data-testid="hr-piece-integration-start" />
+          </label>
+          {integration?.locked && <p className="muted small">Batas mulai sudah dikunci.</p>}
+          <label>Mulai upah<input type="date" value={startDate} disabled={!editable} onChange={(e) => setStartDate(e.target.value)} data-testid="hr-piece-wage-start" /></label>
+          <label>Akhir upah<input type="date" value={endDate} disabled={!editable} onChange={(e) => setEndDate(e.target.value)} data-testid="hr-piece-wage-end" /></label>
+          {(period.piece_sources || []).map((row) => (
+            <p key={row.source_key} className="muted small" data-testid="hr-piece-source">{row.po_number || row.order_id} · {row.qty} × {moneyFormat(row.rate_per_pcs)} = {moneyFormat(row.amount)} · {row.work_date}</p>
+          ))}
+        </div>
+      )}
+      {tab === "bonus" && (
+        <div className="emp-form">
+          <label>Mulai bonus<input type="date" value={bonusStart} disabled={!editable} onChange={(e) => setBonusStart(e.target.value)} data-testid="hr-piece-bonus-start" /></label>
+          <label>Akhir bonus<input type="date" value={bonusEnd} disabled={!editable} onChange={(e) => setBonusEnd(e.target.value)} data-testid="hr-piece-bonus-end" /></label>
+          {(lines || []).map((line) => {
+            const snap = line.bonus_snapshot || {};
+            return (
+              <div key={line.id} data-testid={`hr-piece-bonus-${line.employee_id}`}>
+                <p>{employeeName(line)} · qty {snap.base_qty ?? "—"} · usulan {moneyFormat(snap.proposed_amount)}</p>
+                <label>Nominal final
+                  <input type="number" min="0" disabled={!editable} value={bonusFinal[line.employee_id] ?? snap.final_amount ?? ""} onChange={(e) => setBonusFinal({ ...bonusFinal, [line.employee_id]: e.target.value })} data-testid={`hr-piece-bonus-final-${line.employee_id}`} />
+                </label>
+                <label>Alasan jika berbeda
+                  <input value={bonusReason[line.employee_id] ?? snap.reason ?? ""} disabled={!editable} onChange={(e) => setBonusReason({ ...bonusReason, [line.employee_id]: e.target.value })} data-testid={`hr-piece-bonus-reason-${line.employee_id}`} />
+                </label>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {tab === "kasbon" && (
+        <div className="emp-form">
+          {(kasbon || []).map((row) => (
+            <label key={row.id} data-testid={`hr-piece-kasbon-${row.id}`}>
+              {row.request_number || row.id} · outstanding {moneyFormat(row.outstanding)}
+              <input type="number" min="0" disabled={!editable} value={kasbonAmount[row.id] ?? ""} onChange={(e) => setKasbonAmount({ ...kasbonAmount, [row.id]: e.target.value })} data-testid={`hr-piece-kasbon-amount-${row.id}`} />
+            </label>
+          ))}
+          {(kasbon || []).length === 0 && <p className="muted small">Tidak ada jadwal kasbon aktif.</p>}
+        </div>
+      )}
+      {tab === "blokir" && (
+        <div>
+          {(period.piece_blockers || []).map((row, idx) => <p key={`${row.source_key}-${idx}`} className="error" data-testid="hr-piece-blocker">{row.operator_name || row.operator_user_id} · {row.reason}</p>)}
+          {(period.piece_exclusions || []).map((row, idx) => <p key={`${row.source_key}-x-${idx}`} className="muted small" data-testid="hr-piece-exclusion">{row.po_number || row.source_key} · {row.reason}</p>)}
+          {(Number(period.piece_omitted_exclusions) > 0 || Number(period.piece_omitted_blockers) > 0) && (
+            <p className="error" data-testid="hr-piece-omitted">
+              {Number(period.piece_omitted_exclusions || 0)} sumber dikecualikan ({Number(period.piece_omitted_exclusion_qty || 0)} pcs) dan {Number(period.piece_omitted_blockers || 0)} pemblokir tidak muat di daftar. Qty itu tidak dihitung dan tidak dianggap sudah dibayar.
+            </p>
+          )}
+          {!(period.piece_blockers || []).length && !(period.piece_exclusions || []).length && Number(period.piece_omitted_exclusions || 0) === 0 && <p className="muted small">Tidak ada pemblokir.</p>}
+          <p data-testid="hr-piece-net">Upah bersih {moneyFormat((lines || []).reduce((sum, line) => sum + Number(line.net || 0), 0))}</p>
+        </div>
+      )}
+      {editable && <button type="button" className="primary" disabled={busy} onClick={save} data-testid="hr-piece-save">{busy ? "Menyimpan…" : "Simpan input Holding"}</button>}
+    </div>
+  );
+}
+
 function Payroll() {
   const { hasPerm } = useAuth();
   const [periods, setPeriods] = useState([]);
@@ -746,9 +906,12 @@ function Payroll() {
   const [showPreview, setShowPreview] = useState(false);
   const [postOpen, setPostOpen] = useState(false);
   const [postBusy, setPostBusy] = useState(false);
+  const [finalizeOpen, setFinalizeOpen] = useState(false);
+  const [finalizeBusy, setFinalizeBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [postedJournal, setPostedJournal] = useState({ id: "", number: "" });
   const [form, setForm] = useState({ year: new Date().getFullYear(), month: new Date().getMonth() + 1, start_date: "", end_date: "" });
+  const [pieceForm, setPieceForm] = useState({ start_date: "", end_date: "" });
   const [err, setErr] = useState("");
   const loadPeriods = useCallback(async () => { const data = await api.hrPayrollPeriods(); setPeriods(data.periods || []); }, []);
   const loadDetail = useCallback(async (period) => {
@@ -793,8 +956,24 @@ function Payroll() {
     return () => { active = false; };
   }, [selected?.id, selected?.status, selected?.accounting_journal_id, payment, canCreatePayment]);
   const create = async (e) => { e.preventDefault(); try { const res = await api.hrPayrollCreatePeriod({ ...form, year: Number(form.year), month: Number(form.month) }); await loadPeriods(); await loadDetail(res.period); } catch (ex) { setErr(errorText(ex)); } };
+  const createPiece = async (e) => { e.preventDefault(); try { const res = await api.hrPayrollCreatePiecePeriod(pieceForm); await loadPeriods(); await loadDetail(res.period); } catch (ex) { setErr(errorText(ex)); } };
   const calculate = async () => { try { await api.hrPayrollCalculate(selected.id); await loadDetail(selected); } catch (ex) { setErr(errorText(ex)); } };
   const transition = async (target) => { try { await api.hrPayrollTransition(selected.id, target); await loadPeriods(); await loadDetail(selected); } catch (ex) { setErr(errorText(ex)); } };
+  const confirmFinalize = async () => {
+    setFinalizeBusy(true);
+    setErr("");
+    setNotice("");
+    try {
+      await api.hrPayrollTransition(selected.id, "FINAL");
+      setFinalizeOpen(false);
+      await loadPeriods();
+      await loadDetail(selected);
+    } catch (ex) {
+      setErr(errorText(ex));
+    } finally {
+      setFinalizeBusy(false);
+    }
+  };
   const reopen = async () => { const reason = window.prompt("Alasan buka ulang payroll:"); if (!reason) return; try { const res = await api.hrPayrollReopen(selected.id, reason); await loadPeriods(); await loadDetail(res.period); } catch (ex) { setErr(errorText(ex)); } };
   const canPostAccounting = selected?.status === "FINAL" && !selected.accounting_journal_id && hasPerm("payroll_accounting.post") && readiness?.accounting_ready === true;
   const postAccounting = async () => {
@@ -821,6 +1000,7 @@ function Payroll() {
   ];
   return <div data-testid="hr-payroll-page"><PageHead title="Penggajian" />{err && <div className="error"><AlertCircle size={14} /> {err}</div>}{notice && <p className="muted" data-testid="hr-payroll-post-notice">{notice}</p>}
     {hasPerm("payroll.calculate") && <form className="settings-card hr-period-form" onSubmit={create}><h3>Buat Periode</h3>{[["year", "Tahun", "number"], ["month", "Bulan", "number"], ["start_date", "Tanggal mulai", "date"], ["end_date", "Tanggal akhir", "date"]].map(([key, label, type]) => <label key={key}>{label}<input type={type} value={form[key]} onChange={(e) => setForm({ ...form, [key]: e.target.value })} required /></label>)}<button className="primary"><Plus size={14} /> Buat</button></form>}
+    {hasPerm("payroll.piece_holding.edit") && <form className="settings-card hr-period-form" onSubmit={createPiece} data-testid="hr-piece-create"><h3>Periode borongan</h3><label>Mulai<input type="date" value={pieceForm.start_date} onChange={(e) => setPieceForm({ ...pieceForm, start_date: e.target.value })} required data-testid="hr-piece-create-start" /></label><label>Akhir<input type="date" value={pieceForm.end_date} onChange={(e) => setPieceForm({ ...pieceForm, end_date: e.target.value })} required data-testid="hr-piece-create-end" /></label><button className="primary">Buat borongan</button></form>}
     <div className="hr-master-detail"><div className="settings-card"><h3>Periode</h3>{periods.map((p) => <button type="button" className={`hr-list-button ${selected?.id === p.id ? "active" : ""}`} key={p.id} onClick={() => loadDetail(p).catch((ex) => setErr(errorText(ex)))}><span>{p.period_number || `${p.month}/${p.year}`}</span><span className={`hr-status hr-status-${String(p.status).toLowerCase()}`}>{statusLabel(p.status)}</span></button>)}</div>
       <div className="hr-payroll-detail">{!selected ? <div className="settings-card"><p className="muted">Pilih periode payroll.</p></div> : <>
         <div className="settings-card"><div className="hr-card-head"><div><h3>{payrollTitle(selected)}</h3><span className={`hr-status hr-status-${String(selected.status).toLowerCase()}`}>{statusLabel(selected.status)}</span>
@@ -828,7 +1008,7 @@ function Payroll() {
           {selected.period_number && <span className="muted small">{selected.period_number}</span>}
         </div><div className="hr-actions">
           {selected.status === "DRAFT" && hasPerm("payroll.calculate") && <button className="primary" onClick={calculate} data-testid="hr-calc-btn">Hitung Payroll</button>}
-          {transitionButtons.map(([target, perm, testid, label]) => canTransition(selected.status, target) && hasPerm(perm) ? <button key={target} className="primary" onClick={() => transition(target)} data-testid={testid}>{label}</button> : null)}
+          {transitionButtons.map(([target, perm, testid, label]) => canTransition(selected.status, target) && hasPerm(perm) ? <button key={target} className="primary" onClick={() => (target === "FINAL" ? setFinalizeOpen(true) : transition(target))} data-testid={testid}>{label}</button> : null)}
           {selected.status === "FINAL" && hasPerm("payroll.reopen") && <button className="ghost" onClick={reopen} disabled={Boolean(selected.accounting_journal_id)} title={selected.accounting_journal_id ? "Jurnal akuntansi masih aktif" : undefined} data-testid="hr-reopen-btn">Buka Ulang</button>}
           {canPostAccounting && <button type="button" className="primary" onClick={() => { setErr(""); setPostOpen(true); }} data-testid="hr-payroll-post-accounting">Post Accounting</button>}
           {readiness && <button type="button" className="ghost" onClick={() => setShowPreview((open) => !open)} data-testid="hr-payroll-accounting-preview-btn">Lihat Preview Accounting</button>}
@@ -852,6 +1032,28 @@ function Payroll() {
             onError={setErr}
             onChanged={() => loadDetail(selected)}
           />
+        )}
+        {(readiness?.unmapped_sources || []).some((row) => row?.label) && (
+          <p className="muted small" data-testid="hr-payroll-unmapped">
+            Komponen belum dipetakan: {(readiness.unmapped_sources || []).map((row) => row.label).filter(Boolean).join(", ")}
+          </p>
+        )}
+        {finalizeOpen && (
+          <div className="modal" role="dialog" aria-modal="true" data-testid="hr-finalize-modal">
+            <div className="modal-inner">
+              <div className="modal-head">
+                <h3>Finalkan payroll?</h3>
+                <button type="button" className="ghost sm" disabled={finalizeBusy} onClick={() => setFinalizeOpen(false)}>×</button>
+              </div>
+              <div className="emp-form">
+                <p>Finalisasi mencatat biaya payroll dan Utang Gaji secara otomatis. Pembayaran bank dilakukan terpisah dan tidak dijalankan sekarang.</p>
+                <div className="emp-actions">
+                  <button type="button" className="ghost" disabled={finalizeBusy} onClick={() => setFinalizeOpen(false)}>Batal</button>
+                  <button type="button" className="primary" disabled={finalizeBusy} onClick={confirmFinalize} data-testid="hr-finalize-confirm">{finalizeBusy ? "Memproses…" : "Finalkan"}</button>
+                </div>
+              </div>
+            </div>
+          </div>
         )}
         {postOpen && (
           <div className="modal" role="dialog" aria-modal="true" data-testid="hr-payroll-post-modal">
@@ -906,7 +1108,8 @@ function Payroll() {
             <button type="button" className="ghost" onClick={() => setShowPreview(false)}>Tutup</button>
           </div>
         )}
-        <AttendanceEditor period={selected} employees={employees} attendance={attendance} onSaved={() => loadDetail(selected)} />
+        <PieceHoldingPanel period={selected} lines={lines} kasbon={kasbon} hasPerm={hasPerm} onError={setErr} onSaved={() => loadDetail(selected)} />
+        {selected.period_scope !== "piece" && <AttendanceEditor period={selected} employees={employees} attendance={attendance} onSaved={() => loadDetail(selected)} />}
         <div className="settings-card" data-testid="hr-breakdown"><h3>Rincian Payroll</h3><div className="table-wrap"><table className="ship-table"><thead><tr><th>Karyawan</th><th>Pendapatan</th><th>Potongan</th><th>Gaji Bersih</th></tr></thead><tbody>{lines.map((line) => <tr key={line.id}><td>{employeeName(line)}</td><td>{moneyFormat(line.gross)}</td><td>{moneyFormat(line.total_deductions)}</td><td><strong>{moneyFormat(line.net)}</strong><div className="muted small">{(line.earnings || []).map((r) => `${r.name}: ${moneyFormat(r.amount)}`).join(" · ")}</div></td></tr>)}</tbody></table></div></div>
         <div className="settings-card"><h3>Jadwal Kasbon</h3><div className="table-wrap"><table className="ship-table"><tbody>{kasbon.map((row) => <tr key={row.id} data-testid="hr-kasbon-row"><td>{row.employee_name || row.employee_id}</td><td>{row.request_number || row.request_id}</td><td>{moneyFormat(row.outstanding)}</td></tr>)}</tbody></table></div></div>
       </>}</div>

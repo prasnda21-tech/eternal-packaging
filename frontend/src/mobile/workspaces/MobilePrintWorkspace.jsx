@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import api from "../../lib/api";
 import { formatApiError } from "../../lib/errors";
 import { newActionId } from "../../lib/workflowEntries";
 import { getWorkflowReady } from "../../lib/stageState";
 import { operatorLineModels, operatorMyAssignmentModels, pickSubmitSplit } from "../../lib/workPanel";
 import { mobileWorkStatus } from "../../lib/mobileWorkspaces";
+import { invalidateProductionSummaryCache } from "../../lib/productionSummaryCache";
 import { useAuth } from "../../lib/auth";
 import MobileDesignFile from "../components/MobileDesignFile";
 import MobileMetricStrip from "../components/MobileMetricStrip";
@@ -22,8 +23,10 @@ export default function MobilePrintWorkspace({ order, canEdit, onUpdated }) {
   const ready = getWorkflowReady(order);
   const locked = ready.print_qty !== true || !canEdit;
   const [drafts, setDrafts] = useState({});
+  const [workDates, setWorkDates] = useState({});
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const actionIds = useRef({});
   const pct = target > 0 ? Math.min(100, Math.round((done / target) * 100)) : 0;
 
   const saveLine = async (line) => {
@@ -33,17 +36,28 @@ export default function MobilePrintWorkspace({ order, canEdit, onUpdated }) {
       setErr("Tidak ada alokasi cetak untuk akun ini.");
       return;
     }
+    const workDate = String(workDates[line.itemId] || "").trim();
     if (!qty) {
       setErr("Qty cetak tidak valid.");
       return;
     }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(workDate)) {
+      setErr("Tanggal pekerjaan wajib diisi.");
+      return;
+    }
     setBusy(true);
     setErr("");
+    const actionId = actionIds.current[line.itemId] || newActionId();
+    actionIds.current[line.itemId] = actionId;
     try {
       const res = await api.updateOperatorProgress(order.id, split.id, qty, {
         qty,
-        action_id: newActionId(),
+        action_id: actionId,
+        work_date: workDate,
+        view: "operational",
       });
+      delete actionIds.current[line.itemId];
+      invalidateProductionSummaryCache();
       onUpdated(res.order);
       setDrafts((d) => ({ ...d, [line.itemId]: "" }));
     } catch (e) {
@@ -52,6 +66,18 @@ export default function MobilePrintWorkspace({ order, canEdit, onUpdated }) {
       setBusy(false);
     }
   };
+
+  if (!display.length) {
+    return (
+      <section data-testid="mobile-ws-print" className="mop-ws-role mop-ws-role--print">
+        <div className="mop-ws-header"><h2>CETAK</h2></div>
+        <MobileDesignFile order={order} />
+        <p className="mop-empty" data-testid="mobile-print-empty">Tidak ada alokasi cetak untuk akun ini.</p>
+      </section>
+    );
+  }
+
+  const gateReason = order?.print_qty_gate_reason || "Input hasil cetak belum tersedia.";
 
   return (
     <section data-testid="mobile-ws-print" className="mop-ws-role mop-ws-role--print">
@@ -64,7 +90,7 @@ export default function MobilePrintWorkspace({ order, canEdit, onUpdated }) {
         { label: "Sisa", value: remain.toLocaleString("id-ID") },
       ]} />
       <div className="mop-progress" aria-label="Progress cetak"><span style={{ width: `${pct}%` }} /></div>
-      {locked && <p className="mop-card-meta">{order?.print_qty_gate_reason || "Cetak menunggu persiapan dan sampel."}</p>}
+      {locked && <p className="mop-card-meta" data-testid="mobile-print-gate">{gateReason}</p>}
       {err && <div className="mop-error">{err}</div>}
       {display.map((line) => (
         <div className="mop-line-block" key={`${line.lineIdx}-${line.itemId}`} data-testid={`mobile-print-line-${line.lineIdx}`}>
@@ -75,6 +101,9 @@ export default function MobilePrintWorkspace({ order, canEdit, onUpdated }) {
             <span>{line.done.toLocaleString("id-ID")} / {line.target.toLocaleString("id-ID")}</span>
           </p>
           <h3 className="mop-card-title" style={{ fontSize: 13 }}>Tambah Hasil Cetak</h3>
+          <label className="mop-card-meta">Tanggal pekerjaan
+            <input type="date" value={workDates[line.itemId] || ""} onChange={(e) => setWorkDates((d) => ({ ...d, [line.itemId]: e.target.value }))} data-testid={`mobile-print-date-${line.lineIdx}`} disabled={locked || busy} />
+          </label>
           <MobileQtyStepper
             id={`print-${line.itemId}`}
             label="Qty"
@@ -88,7 +117,6 @@ export default function MobilePrintWorkspace({ order, canEdit, onUpdated }) {
           </button>
         </div>
       ))}
-      {!display.length && <p className="mop-empty">Tidak ada alokasi cetak untuk akun ini.</p>}
     </section>
   );
 }

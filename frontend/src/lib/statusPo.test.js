@@ -100,6 +100,46 @@ describe("Status PO display helpers", () => {
     expect(formatPoAgeLabel("", new Date("2026-09-17T05:00:00+07:00"))).toBe("—");
   });
 
+  test("open and partial orders keep aging when the day changes", () => {
+    const open = { closed: false, endAt: null };
+    expect(formatPoAgeLabel("2026-09-01", new Date("2026-09-10T10:00:00+07:00"), open)).toBe("9 hari");
+    expect(formatPoAgeLabel("2026-09-01", new Date("2026-09-11T10:00:00+07:00"), open)).toBe("10 hari");
+    const partial = { closed: false, endAt: "2026-09-05T10:00:00+07:00" };
+    expect(formatPoAgeLabel("2026-09-01", new Date("2026-10-03T02:00:00+07:00"), partial)).toBe("32 hari");
+  });
+
+  test("finished order stops on the response end date even if today moves", () => {
+    const age = { closed: true, endAt: "2026-09-05T10:00:00+07:00" };
+    expect(formatPoAgeLabel("2026-09-01", new Date("2026-09-17T05:00:00+07:00"), age)).toBe("4 hari");
+    expect(formatPoAgeLabel("2026-09-01", new Date("2026-10-03T05:00:00+07:00"), age)).toBe("4 hari");
+    expect(formatPoAgeLabel("2026-09-05", new Date("2026-10-03T05:00:00+07:00"), {
+      closed: true,
+      endAt: "2026-09-05T23:30:00+07:00",
+    })).toBe("0 hari");
+  });
+
+  test("finished order without a valid end date does not use today", () => {
+    const later = new Date("2026-10-03T05:00:00+07:00");
+    expect(formatPoAgeLabel("2026-09-01", later, { closed: true, endAt: null })).toBe("—");
+    expect(formatPoAgeLabel("2026-09-01", later, { closed: true, endAt: "" })).toBe("—");
+    expect(formatPoAgeLabel("2026-09-01", later, { closed: true, endAt: "bukan-tanggal" })).toBe("—");
+    expect(formatPoAgeLabel("2026-13-40", later, { closed: true, endAt: "2026-09-05" })).toBe("—");
+  });
+
+  test("end before order date is an em dash, not a negative age", () => {
+    expect(formatPoAgeLabel("2026-09-10", new Date("2026-10-03T00:00:00+07:00"), {
+      closed: true,
+      endAt: "2026-09-01T10:00:00+07:00",
+    })).toBe("—");
+  });
+
+  test("WIB calendar boundary, not the UTC date prefix", () => {
+    const closed = (endAt) => ({ closed: true, endAt });
+    expect(formatPoAgeLabel("2026-09-17", new Date("2026-10-03T00:00:00+07:00"), closed("2026-09-17T16:59:59Z"))).toBe("0 hari");
+    expect(formatPoAgeLabel("2026-09-17", new Date("2026-10-03T00:00:00+07:00"), closed("2026-09-17T17:00:00Z"))).toBe("1 hari");
+    expect(formatPoAgeLabel("2026-09-16T17:00:00Z", new Date("2026-10-03T00:00:00+07:00"), closed("2026-09-17T16:59:59Z"))).toBe("0 hari");
+  });
+
   test("updated label uses real timestamp parts", () => {
     expect(formatStatusPoUpdated(new Date("2026-09-17T02:12:00+07:00"))).toBe("17 Sep 2026 · 02:12");
   });

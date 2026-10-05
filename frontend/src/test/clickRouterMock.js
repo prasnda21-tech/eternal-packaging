@@ -41,6 +41,17 @@ function Navigate({ to }) {
   return <div data-testid="access-denied" data-to={to} />;
 }
 
+function useNavigate() {
+  return (to) => {
+    if (typeof to === "string") currentPath = to;
+    else if (to && typeof to === "object") {
+      const base = currentPath.split("#")[0].split("?")[0];
+      currentPath = `${to.pathname || base}${to.search || ""}${to.hash || ""}`;
+    }
+    notify();
+  };
+}
+
 function useLocation() {
   return { hash: "", pathname: "/dashboard/penjualan", search: "" };
 }
@@ -57,6 +68,7 @@ module.exports = {
   Link,
   Navigate,
   useLocation,
+  useNavigate,
   useSearchParams,
   __reset: reset,
   __path: path,

@@ -10,6 +10,7 @@ from services.accounts_receivable import (
     AccountsReceivableValidationError,
     get_accounts_receivable_aging,
     get_accounts_receivable_customers,
+    get_accounts_receivable_overdue_customers,
     get_accounts_receivable_statement,
     get_accounts_receivable_summary,
 )
@@ -91,6 +92,21 @@ def register_accounts_receivable_routes(
                 sales=sales,
                 ar_account_id=ar_account_id,
                 aging_bucket=aging_bucket,
+            )
+        except AccountsReceivableValidationError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @api_router.get("/ledger/accounts-receivable/overdue-customers")
+    async def get_ledger_accounts_receivable_overdue_customers(
+        aging_reference_date: Optional[str] = Query(None),
+        user=Depends(require_perm(PERM_VIEW)),
+    ):
+        """Current overdue accounting AR by customer_key. Zero-write."""
+        db = get_db()
+        try:
+            return await get_accounts_receivable_overdue_customers(
+                db,
+                aging_reference_date=aging_reference_date,
             )
         except AccountsReceivableValidationError as exc:
             raise HTTPException(400, str(exc)) from exc

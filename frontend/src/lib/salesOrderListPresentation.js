@@ -100,6 +100,31 @@ export function salesOrderListRequest({ q, status, dateFrom, dateTo, page, pageS
   return params;
 }
 
+/** Default status token for a Pesanan Penjualan list tab. */
+export function salesOrderTabDefaultStatus(listTab) {
+  if (listTab === "histori") return "histori";
+  if (listTab === "semua") return "gabungan";
+  return "aktif";
+}
+
+/**
+ * Explicit existing status values choose the tab.
+ * tab=semua or status=gabungan opens Semua only when no explicit status overrides it.
+ */
+export function salesOrderListTabFromQuery({ tab, status } = {}) {
+  const st = String(status || "");
+  if (st === "selesai" || st === "cancelled" || st === "histori") return "histori";
+  if (st === "aktif" || st === "hold" || st === "all") return "aktif";
+  if (tab === "semua" || st === "gabungan") return "semua";
+  if (tab === "histori") return "histori";
+  return "aktif";
+}
+
+export function salesOrderStatusFromQuery({ tab, status } = {}) {
+  if (status) return String(status);
+  return salesOrderTabDefaultStatus(salesOrderListTabFromQuery({ tab, status }));
+}
+
 /**
  * "Pesanan aktif" is the existing aktif classification counted by the server
  * for the unfiltered aktif query. A single page is not a valid total.

@@ -86,7 +86,7 @@ export default function MobileOrderDetailPage() {
     if (background && (retained || order)) setRefreshing(true);
     setErr("");
     try {
-      const d = await api.getOrder(id);
+      const d = await api.getOrder(id, { view: "operational" });
       if (requestId === loadRequestRef.current) commitOrder(d.order || d);
     } catch (e) {
       if (requestId === loadRequestRef.current) {

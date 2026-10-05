@@ -5,6 +5,7 @@ import { newActionId } from "../../lib/workflowEntries";
 import { screenerWorkModel } from "../../lib/workPanel";
 import { getWorkflowReady } from "../../lib/stageState";
 import { mobileWorkStatus } from "../../lib/mobileWorkspaces";
+import { invalidateProductionSummaryCache } from "../../lib/productionSummaryCache";
 import MobileDesignFile from "../components/MobileDesignFile";
 import MobileMetricStrip from "../components/MobileMetricStrip";
 import MobileQtyStepper from "../components/MobileQtyStepper";
@@ -28,7 +29,8 @@ export default function MobileScreenerWorkspace({ order, canEdit, onUpdated }) {
     setBusy(true);
     setErr("");
     try {
-      const res = await api.updateScreenerInfo(order.id, { qty: n, notes: "", action_id: newActionId() });
+      const res = await api.updateScreenerInfo(order.id, { qty: n, notes: "", action_id: newActionId() }, { params: { view: "operational" } });
+      invalidateProductionSummaryCache();
       onUpdated(res.order);
       setQty("");
     } catch (e) {

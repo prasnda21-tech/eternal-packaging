@@ -137,13 +137,6 @@ async def _finalize(c, *, year: int, month: int, map_accounts=None):
     period = created.json()["period"]
     calc = await c.post(f"/api/hr-payroll/periods/{period['id']}/calculate")
     assert calc.status_code == 200, calc.text
-    for target in (STATUS_REVIEW, STATUS_APPROVAL, STATUS_FINAL):
-        moved = await c.post(
-            f"/api/hr-payroll/periods/{period['id']}/transition",
-            json={"to_status": target},
-        )
-        assert moved.status_code == 200, moved.text
-        period = moved.json()["period"]
     if map_accounts:
         saved = await c.put("/api/settings/payroll-accounting", json={
             "payroll_payable_account_id": map_accounts["payable"]["id"],
@@ -155,6 +148,13 @@ async def _finalize(c, *, year: int, month: int, map_accounts=None):
             },
         })
         assert saved.status_code == 200, saved.text
+    for target in (STATUS_REVIEW, STATUS_APPROVAL, STATUS_FINAL):
+        moved = await c.post(
+            f"/api/hr-payroll/periods/{period['id']}/transition",
+            json={"to_status": target},
+        )
+        assert moved.status_code == 200, moved.text
+        period = moved.json()["period"]
     fresh = (await c.get(f"/api/hr-payroll/periods/{period['id']}")).json()["period"]
     return emp, fresh
 
@@ -259,6 +259,17 @@ async def test_payment_without_accrual_journal_fails():
     _admin()
     async with _client() as c:
         _emp, period = await _finalize(c, year=2093, month=2, map_accounts=accounts)
+        journal = await server.db.journal_entries.find_one(
+            {"source_type": "payroll_period", "source_id": period["id"], "reversal_of": None},
+            {"_id": 0, "id": 1},
+        )
+        assert journal
+        await server.db.journal_lines.delete_many({"journal_id": journal["id"]})
+        await server.db.journal_entries.delete_one({"id": journal["id"]})
+        await server.db[PERIODS].update_one(
+            {"id": period["id"]},
+            {"$unset": {"accounting_journal_id": "", "accounting_posted_at": "", "accounting_posted_by": ""}},
+        )
         created = await c.post(
             f"/api/hr-payroll/periods/{period['id']}/payments",
             json={"cash_bank_account_id": bank["id"], "payment_date": "2093-02-28"},
@@ -1215,3 +1226,100 @@ async def test_approved_payment_with_journal_cannot_be_cancelled():
     stored = await server.db[PAYMENTS].find_one({"id": payment["id"]}, {"_id": 0})
     assert stored["status"] == "PAID"
     assert len(await _payment_journals(payment["id"])) == 1
+
+
+@pytest.mark.anyio
+async def test_payment_uses_accrual_snapshot_not_later_mapping_or_same_account_credits():
+    accounts = await _setup_accounts()
+    other_payable = await _coa("22", "Utang Lain", "OCLY")
+    bank = await _bank(accounts["bank"])
+    _admin()
+    async with _client() as c:
+        emp = (await c.post("/api/hr-payroll/employees", json={
+            "name": "Andi Payroll",
+            "employee_number": f"NIK-{uuid.uuid4().hex[:8]}",
+            "role": "operator",
+            "division": "operator",
+            "salary_profile": {"base_salary": 1_000_000, "allowances": []},
+        })).json()["employee"]
+        component = (await c.post("/api/hr-payroll/components", json={
+            "code": "POTONG",
+            "name": "Penyesuaian Utang Gaji",
+            "kind": "deduction",
+            "calc_mode": "fixed",
+            "amount": 100_000,
+            "recurring": True,
+            "active": True,
+        })).json()["component"]
+        created = await c.post("/api/hr-payroll/periods", json={
+            "year": 2093, "month": 12, "start_date": "2093-12-01", "end_date": "2093-12-28",
+        })
+        assert created.status_code == 200, created.text
+        period = created.json()["period"]
+        calc = await c.post(f"/api/hr-payroll/periods/{period['id']}/calculate")
+        assert calc.status_code == 200, calc.text
+        saved = await c.put("/api/settings/payroll-accounting", json={
+            "payroll_payable_account_id": accounts["payable"]["id"],
+            "component_mappings": {
+                "salary_profile:BASE": {"treatment": "expense_debit", "account_id": accounts["salary"]["id"]},
+                f"component:{component['id']}": {"treatment": "liability_credit", "account_id": accounts["payable"]["id"]},
+            },
+        })
+        assert saved.status_code == 200, saved.text
+        for target in (STATUS_REVIEW, STATUS_APPROVAL, STATUS_FINAL):
+            moved = await c.post(f"/api/hr-payroll/periods/{period['id']}/transition", json={"to_status": target})
+            assert moved.status_code == 200, moved.text
+        journal = await server.db.journal_entries.find_one(
+            {"source_type": "payroll_period", "source_id": period["id"], "reversal_of": None},
+            {"_id": 0},
+        )
+        assert journal["payroll_payable"]["amount"] == 900_000
+        assert journal["payroll_payable"]["account_id"] == accounts["payable"]["id"]
+        lines = await server.db.journal_lines.find({"journal_id": journal["id"]}, {"_id": 0}).to_list(20)
+        same_account_credit = sum(
+            line["credit"] for line in lines if line["account_id"] == accounts["payable"]["id"]
+        )
+        assert same_account_credit == 1_000_000
+        changed = await c.put("/api/settings/payroll-accounting", json={
+            "payroll_payable_account_id": other_payable["id"],
+            "component_mappings": {
+                "salary_profile:BASE": {"treatment": "expense_debit", "account_id": accounts["salary"]["id"]},
+                f"component:{component['id']}": {"treatment": "liability_credit", "account_id": other_payable["id"]},
+            },
+        })
+        assert changed.status_code == 200, changed.text
+        created_payment = await c.post(
+            f"/api/hr-payroll/periods/{period['id']}/payments",
+            json={"cash_bank_account_id": bank["id"], "payment_date": "2093-12-28"},
+        )
+        assert created_payment.status_code == 200, created_payment.text
+        payment = created_payment.json()["payment"]
+        assert payment["total_amount"] == 900_000
+        assert payment["payable_account_id"] == accounts["payable"]["id"]
+        assert payment["lines"][0]["employee_id"] == emp["id"]
+        raw_after = await server.db.journal_entries.find_one({"id": journal["id"]}, {"_id": 0, "payroll_payable": 1})
+        assert raw_after["payroll_payable"]["amount"] == 900_000
+        assert await server.db.journal_entries.count_documents({"source_type": SOURCE_TYPE}) == 0
+
+
+@pytest.mark.anyio
+async def test_legacy_journal_without_snapshot_stays_compatible_when_unambiguous():
+    accounts = await _setup_accounts()
+    bank = await _bank(accounts["bank"])
+    _admin()
+    async with _client() as c:
+        _emp, period = await _finalize(c, year=2093, month=11, map_accounts=accounts)
+        journal = await server.db.journal_entries.find_one(
+            {"source_type": "payroll_period", "source_id": period["id"], "reversal_of": None},
+            {"_id": 0, "id": 1},
+        )
+        await server.db.journal_entries.update_one({"id": journal["id"]}, {"$unset": {"payroll_payable": ""}})
+        created = await c.post(
+            f"/api/hr-payroll/periods/{period['id']}/payments",
+            json={"cash_bank_account_id": bank["id"], "payment_date": "2093-11-28"},
+        )
+        assert created.status_code == 200, created.text
+        assert created.json()["payment"]["total_amount"] == 1_000_000
+        assert created.json()["payment"]["payable_account_id"] == accounts["payable"]["id"]
+        raw = await server.db.journal_entries.find_one({"id": journal["id"]}, {"_id": 0, "payroll_payable": 1})
+        assert raw.get("payroll_payable") in (None, {})

@@ -1,9 +1,18 @@
 import fs from "fs";
 import path from "path";
-import { activeSalesPwaNav, documentTotal, formatSalesDate, isSafeSalesNextPath, isSalesPwaRole, isValidSalesManifest, salesJakartaDay, SALES_PWA_NAV } from "./salesPwa";
+import { activeSalesPwaNav, documentTotal, formatSalesDate, isCustomerDesignApprovalPath, isSafeSalesNextPath, isSalesPwaRole, isValidSalesManifest, salesJakartaDay, SALES_PWA_MORE_NAV, SALES_PWA_NAV } from "./salesPwa";
 
 describe("sales PWA helpers", () => {
   test("role gate is sales_eternal only", () => {
+    expect(isCustomerDesignApprovalPath("/customer/design-approval/track-cup")).toBe(true);
+    expect(isCustomerDesignApprovalPath("/customer/design-approval/track-cup/")).toBe(true);
+    expect(isCustomerDesignApprovalPath("/customer/design-approval/")).toBe(false);
+    expect(isCustomerDesignApprovalPath("/customer/design-approval")).toBe(false);
+    expect(isCustomerDesignApprovalPath("/customer/design-approval/track-cup/submit")).toBe(false);
+    expect(isCustomerDesignApprovalPath("/customer/tracking/track-cup")).toBe(false);
+    expect(isCustomerDesignApprovalPath("/orders")).toBe(false);
+    expect(isCustomerDesignApprovalPath("/")).toBe(false);
+    expect(isCustomerDesignApprovalPath("/sales")).toBe(false);
     expect(isSalesPwaRole({ role: "sales_eternal" })).toBe(true);
     expect(isSalesPwaRole({ role: "sales" })).toBe(false);
     expect(isSalesPwaRole({ role: "admin" })).toBe(false);
@@ -17,9 +26,15 @@ describe("sales PWA helpers", () => {
     expect(isSafeSalesNextPath("https://evil/sales")).toBe(false);
   });
 
-  test("bottom nav replaces Dokumen with Prediksi Order", () => {
-    expect(SALES_PWA_NAV.map((i) => i.label)).toEqual(["PO Saya", "Pelanggan", "Prediksi Order", "Profil"]);
-    expect(activeSalesPwaNav("/sales")).toBe("orders");
+  test("bottom nav is dashboard, PO, visit, and more", () => {
+    // Prediksi Order moved into the more drawer when Visit and Lainnya became primary.
+    // The old four labels are not the current bar, so this expectation follows the nav in use.
+    expect(SALES_PWA_NAV.map((item) => item.label)).toEqual(["Dashboard", "PO Saya", "Visit", "Lainnya"]);
+    expect(SALES_PWA_MORE_NAV.map((item) => item.label)).toContain("Prediksi Order");
+    expect(SALES_PWA_NAV.map((item) => item.label)).not.toContain("Prediksi Order");
+    expect(activeSalesPwaNav("/sales")).toBe("dashboard");
+    expect(activeSalesPwaNav("/sales/po")).toBe("orders");
+    expect(activeSalesPwaNav("/sales/visit")).toBe("visits");
     expect(activeSalesPwaNav("/sales/prediksi")).toBe("predictions");
   });
 

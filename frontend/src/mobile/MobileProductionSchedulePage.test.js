@@ -14,6 +14,13 @@ import {
   productionSheetZoomStorageKey,
 } from "../lib/productionSheetZoom";
 import MobileProductionSchedulePage, { scheduleLoadErrorMessage } from "./MobileProductionSchedulePage";
+import { clearProductionSummaryCache, invalidateProductionSummaryCache } from "../lib/productionSummaryCache";
+import MobileScreenerWorkspace from "./workspaces/MobileScreenerWorkspace";
+
+jest.mock("pdfjs-dist", () => ({
+  GlobalWorkerOptions: { workerSrc: "" },
+  getDocument: jest.fn(() => ({ promise: Promise.resolve({ destroy: jest.fn(), numPages: 0 }) })),
+}));
 
 const mockHasPerm = jest.fn(() => false);
 const mockNavigate = jest.fn();
@@ -35,6 +42,7 @@ jest.mock("../lib/api", () => ({
     productionExport: jest.fn(),
     getOrder: jest.fn(),
     listOrders: jest.fn(),
+    updateScreenerInfo: jest.fn(),
   },
 }));
 
@@ -112,6 +120,7 @@ describe("MobileProductionSchedulePage", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
+    clearProductionSummaryCache();
     mockHasPerm.mockReset();
     mockHasPerm.mockImplementation((p) => p === "schedule.view");
     mockNavigate.mockReset();
@@ -119,6 +128,7 @@ describe("MobileProductionSchedulePage", () => {
     api.productionExport.mockReset();
     api.getOrder.mockReset();
     api.listOrders.mockReset();
+    api.updateScreenerInfo.mockReset();
     window.localStorage.clear();
     window.sessionStorage.clear();
     rafNow = 0;
@@ -724,7 +734,7 @@ describe("MobileProductionSchedulePage", () => {
     await act(async () => { row.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
     await flush();
     expect(mockNavigate).not.toHaveBeenCalled();
-    expect(api.getOrder).toHaveBeenCalledWith("po-1");
+    expect(api.getOrder).toHaveBeenCalledWith("po-1", { view: "operational" });
     expect(container.querySelector('[data-testid="mobile-task-modal"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="mobile-ws-packing"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="mobile-po-ringkasan"]')).toBeFalsy();
@@ -1235,5 +1245,103 @@ describe("MobileProductionSchedulePage", () => {
     const page = fs.readFileSync(path.join(__dirname, "MobileProductionSchedulePage.jsx"), "utf8");
     expect(page).not.toMatch(/MobileOpsRoleSummary/);
     expect(page).toMatch(/api\.getOrder/);
+  });
+
+  function setVisibility(value) {
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => value,
+    });
+  }
+
+  test("returning within TTL reuses the summary until a screener save", async () => {
+    const cached = { ...sampleRows[0], po_number: "PO-CACHE", screen_qty: 1 };
+    const fresh = { ...sampleRows[0], po_number: "PO-FRESH", screen_qty: 9 };
+    api.productionDashboard
+      .mockResolvedValueOnce({ rows: [cached] })
+      .mockResolvedValueOnce({ rows: [fresh] });
+    await renderPage();
+    expect(container.textContent).toContain("PO-CACHE");
+    expect(api.productionDashboard).toHaveBeenCalledTimes(1);
+
+    act(() => root.unmount());
+    root = createRoot(container);
+    await renderPage();
+    expect(container.textContent).toContain("PO-CACHE");
+    expect(container.textContent).not.toContain("PO-FRESH");
+    expect(api.productionDashboard).toHaveBeenCalledTimes(1);
+
+    mockHasPerm.mockImplementation((p) => p === "schedule.view" || p === "screen.update");
+    api.getOrder.mockResolvedValue({
+      order: {
+        id: "po-1",
+        po_number: "PO-CACHE",
+        customer: "PT Example",
+        workflow_ready: { screener: true },
+        line_items: [],
+      },
+    });
+    api.updateScreenerInfo.mockResolvedValue({
+      order: { id: "po-1", workflow_ready: { screener: true } },
+    });
+    await act(async () => { root.render(<MobileProductionSchedulePage />); });
+    await flush();
+    const row = container.querySelector('[data-testid="mobile-schedule-row-PO-CACHE"]');
+    await act(async () => { row.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    await flush();
+    await act(async () => { container.querySelector('[aria-label="Tambah"]').click(); });
+    const save = [...container.querySelectorAll("button")].find((btn) => btn.textContent === "Simpan Screener");
+    await act(async () => { save.click(); });
+    await flush();
+    expect(api.updateScreenerInfo).toHaveBeenCalled();
+
+    act(() => root.unmount());
+    root = createRoot(container);
+    await renderPage();
+    expect(api.productionDashboard).toHaveBeenCalledTimes(2);
+    expect(container.textContent).toContain("PO-FRESH");
+    expect(container.textContent).not.toContain("PO-CACHE");
+  });
+
+  test("a summary response started before invalidation cannot paint old rows", async () => {
+    let resolveStale;
+    let resolveFresh;
+    api.productionDashboard
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveStale = resolve; }))
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveFresh = resolve; }));
+    await renderPage();
+    invalidateProductionSummaryCache();
+    await act(async () => {
+      resolveStale({ rows: [{ ...sampleRows[0], po_number: "PO-STALE", screen_qty: 9 }] });
+    });
+    await flush();
+    expect(container.textContent).not.toContain("PO-STALE");
+    expect(container.querySelector('[data-testid="mobile-schedule-loading"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mobile-schedule-table"]')).toBeFalsy();
+    await act(async () => {
+      resolveFresh({ rows: [{ ...sampleRows[0], po_number: "PO-NEW", screen_qty: 1 }] });
+    });
+    await flush();
+    expect(api.productionDashboard).toHaveBeenCalledTimes(2);
+    expect(container.textContent).toContain("PO-NEW");
+    expect(container.textContent).not.toContain("PO-STALE");
+    expect(container.querySelector('[data-testid="prod-screen-qty-PO-NEW"]').className).toMatch(/is-done/);
+    expect(container.querySelector('[data-testid="mobile-schedule-loading"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mobile-schedule-table"]')).toBeTruthy();
+  });
+
+  test("becoming visible bypasses the summary cache and reloads the latest rows", async () => {
+    api.productionDashboard
+      .mockResolvedValueOnce({ rows: [{ ...sampleRows[0], po_number: "PO-OLD" }] })
+      .mockResolvedValueOnce({ rows: [{ ...sampleRows[0], po_number: "PO-NEW" }] });
+    await renderPage();
+    expect(container.textContent).toContain("PO-OLD");
+    setVisibility("visible");
+    await act(async () => { document.dispatchEvent(new Event("visibilitychange")); });
+    await flush();
+    expect(api.productionDashboard).toHaveBeenCalledTimes(2);
+    expect(container.textContent).toContain("PO-NEW");
+    expect(container.querySelector('[data-testid="mobile-schedule-loading"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mobile-schedule-table"]')).toBeTruthy();
   });
 });

@@ -8,13 +8,15 @@ from quantity_rules import (
     PRINT_STATUS_DONE,
     PRINT_STATUS_IN_PROGRESS,
     PRINT_STATUS_NOT_STARTED,
+    find_shipment,
     packing_status_semantic,
     print_completed_qty,
     print_status,
     requires_printing,
+    shipment_is_active,
 )
 from services.dashboard_today import is_shipment_today, is_work_today, wib_today
-from services.delivery_loading_gate import dispatch_stage_states
+from services.delivery_loading_gate import dispatch_stage_states, po_is_fully_delivered
 from services.shipment_status import shipment_status_row, status_percent, status_percent_display
 from workflow_gates import (
     customer_design_approved,
@@ -345,9 +347,81 @@ def matches_status_po_filters(row: dict, filters: Optional[dict] = None) -> bool
     return True
 
 
+def _confirmation_is_valid_delivery(order: dict, rec: dict) -> bool:
+    """Konfirmasi Terkirim on an active SJ. Cancelled/superseded SJ is ignored."""
+    qty = rec.get("qty")
+    if qty is not None and str(qty).strip() != "":
+        try:
+            if int(qty) <= 0:
+                return False
+        except (TypeError, ValueError):
+            return False
+    sid = str(rec.get("shipment_id") or "").strip()
+    if not sid:
+        return True
+    shipment = find_shipment(order, sid)
+    return bool(shipment) and shipment_is_active(shipment)
+
+
+def _consider_delivery_instant(best: Optional[tuple], raw: Any) -> Optional[tuple]:
+    text = str(raw).strip() if raw is not None else ""
+    if not text:
+        return best
+    dt = _parse_dt(text)
+    if dt is None:
+        return best
+    if best is None or dt > best[0]:
+        return (dt, text)
+    return best
+
+
+def _latest_valid_delivery_at(order: dict) -> Optional[str]:
+    """Latest successful delivery instant from an active shipment.
+
+    Uses confirmation confirmed_at and active shipment delivered_at.
+    orders.delivered_at is not a completion proof: partial delivery writes it,
+    and a later stage advance leaves that stamp in place.
+    """
+    best: Optional[tuple] = None
+
+    for rec in order.get("delivery_confirmations") or []:
+        if not isinstance(rec, dict):
+            continue
+        if not _confirmation_is_valid_delivery(order, rec):
+            continue
+        best = _consider_delivery_instant(best, rec.get("confirmed_at"))
+
+    for sh in order.get("shipments") or []:
+        if not isinstance(sh, dict):
+            continue
+        marked = bool(sh.get("delivered_at")) or str(sh.get("delivery_status") or "").strip() == "Terkirim"
+        if not marked:
+            continue
+        if not shipment_is_active(sh):
+            continue
+        best = _consider_delivery_instant(best, sh.get("delivered_at"))
+
+    if best:
+        return best[1]
+    return None
+
+
+def po_age_bounds(order: dict) -> dict:
+    """Umur stops only when the whole order is delivered (existing qty rule).
+
+    current_stage alone is not completion. Open and partial orders keep
+    age_end_at empty so the client continues through today.
+    """
+    order = order or {}
+    if not po_is_fully_delivered(order):
+        return {"age_closed": False, "age_end_at": None}
+    return {"age_closed": True, "age_end_at": _latest_valid_delivery_at(order)}
+
+
 def status_po_row(order: dict) -> dict:
     ship = shipment_status_row(order)
     workflow, reasons = status_po_workflow_detail(order)
+    age = po_age_bounds(order)
     return {
         "id": order.get("id"),
         "po_number": order.get("po_number") or ship.get("order_number") or "",
@@ -364,6 +438,8 @@ def status_po_row(order: dict) -> dict:
         "hold": bool(order.get("hold")),
         "workflow": workflow,
         "workflow_reasons": reasons,
+        "age_closed": age["age_closed"],
+        "age_end_at": age["age_end_at"],
     }
 
 

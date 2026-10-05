@@ -88,6 +88,7 @@ jobs:
           tests/test_sales_order_item_images.py
           tests/test_sales_order_list_read.py
           tests/test_customer_tracking.py
+          tests/test_live_tracking_url.py
           tests/test_customer_tracking_invoices.py
           tests/test_tracking_delivery_signature.py
           tests/test_sales_customer_credit.py
@@ -220,6 +221,7 @@ jobs:
           src/pages/PesananPenjualan.createWorkspace.test.js
           src/pages/PesananPenjualan.test.js
           src/pages/FakturPenjualan.test.js
+          src/pages/FakturPenjualan.listFilters.test.js
           src/components/MasterItemSearchSelect.picker.test.js
           src/lib/salesOrderListPresentation.test.js
           src/pages/PesananPenjualan.searchDebounce.test.js
@@ -227,13 +229,18 @@ jobs:
           src/components/TrackingInvoices.test.js
           src/lib/customerTracking.test.js
           src/lib/liveTracking.test.js
+          src/lib/liveTrackingLink.test.js
+          src/lib/trackingQr.test.js
           src/pages/CustomerTrackingPage.test.js
           src/pages/CustomerTrackingPage.onescreen.test.js
+          src/pages/CustomerTrackingPage.publicUrl.test.js
           src/pages/PenerimaanPenjualan.test.js
           src/lib/salesReceipts.test.js
           src/lib/salesReceiptPaymentProof.test.js
           src/pages/SalesAccountingSettings.test.js
           src/components/OperatorSplitPanel.screenSize.test.js
+          src/mobile/workspaces/MobilePrintWorkspace.test.js
+          src/mobile/components/MobileDesignFile.test.js
       - name: Build production frontend
         if: ${{ always() }}
         env:

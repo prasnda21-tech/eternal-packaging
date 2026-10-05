@@ -4,6 +4,7 @@ import { formatApiError } from "../../lib/errors";
 import { packingLinesForOrder } from "../../lib/packingCard";
 import { newActionId } from "../../lib/workflowEntries";
 import { mobileWorkStatus, packingMetrics } from "../../lib/mobileWorkspaces";
+import { invalidateProductionSummaryCache } from "../../lib/productionSummaryCache";
 import MobileMetricStrip from "../components/MobileMetricStrip";
 import MobileQtyStepper from "../components/MobileQtyStepper";
 import MobileStatusBadge from "../components/MobileStatusBadge";
@@ -29,7 +30,8 @@ export default function MobilePackingWorkspace({ order, canEdit, onUpdated }) {
         line_idx: row.line_idx,
         qty,
         action_id: newActionId(),
-      }]);
+      }], "", { params: { view: "operational" } });
+      invalidateProductionSummaryCache();
       onUpdated(res.order);
       setDrafts((d) => ({ ...d, [row.line_idx]: "" }));
     } catch (e) {

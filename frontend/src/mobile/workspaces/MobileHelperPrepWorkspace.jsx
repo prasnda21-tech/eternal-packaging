@@ -4,6 +4,7 @@ import { formatApiError } from "../../lib/errors";
 import { newActionId } from "../../lib/workflowEntries";
 import { helperWorkModel } from "../../lib/workPanel";
 import { mobileWorkStatus } from "../../lib/mobileWorkspaces";
+import { invalidateProductionSummaryCache } from "../../lib/productionSummaryCache";
 import MobileMetricStrip from "../components/MobileMetricStrip";
 import MobileQtyStepper from "../components/MobileQtyStepper";
 import MobileStatusBadge from "../components/MobileStatusBadge";
@@ -29,7 +30,8 @@ export default function MobileHelperPrepWorkspace({ order, canEdit, onUpdated })
         line_idx: line.lineIdx,
         qty,
         action_id: newActionId(),
-      }]);
+      }], "", { params: { view: "operational" } });
+      invalidateProductionSummaryCache();
       onUpdated(res.order);
       setDrafts((d) => ({ ...d, [line.lineIdx]: "" }));
     } catch (e) {

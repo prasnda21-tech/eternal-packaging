@@ -13,6 +13,7 @@ from fastapi import HTTPException
 from services.hr_payroll import (
     LINES,
     PERIODS,
+    STATUS_APPROVAL,
     STATUS_FINAL,
     get_period,
     money_float,
@@ -45,6 +46,45 @@ REASON_DIFFERENCE = "debit_credit_difference"
 
 ZERO = Decimal("0.00")
 
+_REASON_TEXT = {
+    REASON_NOT_FINAL: "Periode payroll belum FINAL.",
+    REASON_SUPERSEDED: "Periode ini bukan revisi aktif.",
+    REASON_PAYABLE_MISSING: "Akun Utang Gaji belum dipetakan.",
+    REASON_UNMAPPED: "Mapping komponen payroll belum lengkap.",
+    REASON_INVALID: "Klasifikasi akun mapping tidak valid.",
+    REASON_UNSUPPORTED_ADJUSTMENT: "Penyesuaian belum memiliki akun akuntansi.",
+    REASON_UNSUPPORTED_NEGATIVE: "Nominal negatif belum didukung.",
+    REASON_AMBIGUOUS: "Sumber payroll tidak dikenali.",
+    REASON_DIFFERENCE: "Jurnal payroll tidak seimbang.",
+}
+
+
+def explain_readiness_block(readiness: Optional[dict]) -> str:
+    """User-facing block reason. Skips payroll_not_final when other facts exist."""
+    data = readiness or {}
+    reasons = list(data.get("reasons") or [])
+    labels: List[str] = []
+    for row in data.get("unmapped_sources") or []:
+        label = str((row or {}).get("label") or "").strip()
+        if label and label not in labels:
+            labels.append(label)
+    parts: List[str] = []
+    if labels:
+        parts.append("Komponen belum dipetakan: " + ", ".join(labels))
+    for reason in reasons:
+        if reason == REASON_NOT_FINAL:
+            continue
+        if reason == REASON_UNMAPPED and labels:
+            continue
+        text = _REASON_TEXT.get(reason)
+        if text and text not in parts:
+            parts.append(text)
+    if parts:
+        return " ".join(parts)
+    if REASON_NOT_FINAL in reasons:
+        return _REASON_TEXT[REASON_NOT_FINAL]
+    return "Payroll belum siap diposting ke accounting."
+
 
 def _row_label(row: dict) -> str:
     return str(row.get("name") or row.get("code") or row.get("source") or "")
@@ -64,7 +104,9 @@ async def latest_revision_for_group(db, group_id: str) -> Optional[dict]:
     )
 
 
-async def evaluate_payroll_accounting_readiness(db, period_id: str) -> Dict[str, Any]:
+async def evaluate_payroll_accounting_readiness(
+    db, period_id: str, *, for_finalization: bool = False,
+) -> Dict[str, Any]:
     period = await get_period(db, period_id)
     latest = await latest_revision_for_group(db, str(period.get("group_id") or ""))
     revision = int(period.get("revision") or 1)
@@ -120,7 +162,8 @@ async def evaluate_payroll_accounting_readiness(db, period_id: str) -> Dict[str,
     total_credit = ZERO
 
     status = str(period.get("status") or "")
-    if status != STATUS_FINAL:
+    finalization_candidate = bool(for_finalization) and status == STATUS_APPROVAL
+    if status != STATUS_FINAL and not finalization_candidate:
         reasons.append(REASON_NOT_FINAL)
     if not is_latest:
         reasons.append(REASON_SUPERSEDED)
@@ -247,7 +290,7 @@ async def evaluate_payroll_accounting_readiness(db, period_id: str) -> Dict[str,
             unique_reasons.append(reason)
 
     accounting_ready = (
-        status == STATUS_FINAL
+        (status == STATUS_FINAL or finalization_candidate)
         and is_latest
         and not unmapped
         and payable is not None
@@ -267,6 +310,7 @@ async def evaluate_payroll_accounting_readiness(db, period_id: str) -> Dict[str,
         "latest_period_id": (latest or {}).get("id") or period["id"],
         "accounting_ready": accounting_ready,
         "reasons": unique_reasons,
+        "block_message": "" if accounting_ready else explain_readiness_block({"reasons": unique_reasons, "unmapped_sources": unmapped}),
         "financial_source": "hr_payroll_lines",
         "final_snapshot_present": bool(period.get("final_snapshot")),
         "payroll_payable_account": _account_display((payable or {}).get("account")) if payable and payable.get("valid") else None,

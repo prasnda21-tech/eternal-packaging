@@ -1,6 +1,12 @@
-"""Read-only PWA Sales payloads. Scoped by orders.sales_user_id == session users.id."""
+"""PWA Sales payloads. Scoped by orders.sales_user_id == session users.id.
+
+List and detail reads do not write orders. A design-approval path is returned
+only when the order already has a tracking token. Creating that token belongs
+to the authorized approval-generate path, which leaves an existing token as-is.
+"""
 from __future__ import annotations
 
+import calendar
 import re
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
@@ -44,6 +50,10 @@ from services.tanggal_pengiriman import (
     attach_tanggal_pengiriman_snapshot,
     parse_calendar_date,
 )
+from services.customer_tracking import public_design_approval
+from services.division_tasks import _design_status_label
+from quantity_rules import is_fully_delivered
+from workflow_gates import design_ok
 from services.sales_user_mapping import (
     SALES_PWA_ROLE,
     is_sales_pwa_role,
@@ -112,6 +122,8 @@ LIST_PROJECTION = {
     "payment_bypassed": 1,
     "payment_files": 1,
     "customer_approval": 1,
+    "customer_approval_history": 1,
+    "tracking_token": 1,
     "screener_info": 1,
     "helper_prep": 1,
     "sample_files": 1,
@@ -132,14 +144,15 @@ LIST_PROJECTION = {
     "terkirim_confirmed": 1,
     "print_status": 1,
     "print_completed_qty": 1,
+}
+
+# Document bytes are counted only for the page being returned.
+_PAGE_FILE_PROJECTION = {
+    "_id": 0,
+    "id": 1,
     "source_pdf": 1,
     "delivery_proofs": 1,
     "surat_jalan_files": 1,
-    "timeline": 1,
-    "address": 1,
-    "recipient": 1,
-    "notes": 1,
-    "estimated_delivery": 1,
 }
 
 DETAIL_STRIP_KEYS = (
@@ -358,12 +371,14 @@ def select_sales_pwa_order_rows(
     status: str = "",
     date_from: str = "",
     date_to: str = "",
+    design_queue: bool = False,
 ) -> tuple:
     """Return rows for the selected status, and chip totals for the same other filters.
 
     Search, stage, date, buffer, and progress narrow the set first. Chip totals
     are the status breakdown of that set, not of every owned PO. The selected
     status then picks the rows. Status membership rules are unchanged.
+    design_queue keeps only POs that still need design approval.
     """
     customer_needle = _norm(customer_q)
     po_needle = _norm(po_q)
@@ -374,6 +389,8 @@ def select_sales_pwa_order_rows(
     filtered: List[dict] = []
     counts = _empty_status_counts()
     for order in raw:
+        if design_queue and not design_approval_need(order):
+            continue
         workflow = status_po_workflow(order)
         if not _matches_list_constraints(
             order,
@@ -508,6 +525,35 @@ def _document_counts(order: dict, deliveries: List[dict], invoices: List[dict]) 
     }
 
 
+async def _merge_page_document_fields(db, orders: List[dict]) -> None:
+    """Load file pointers for the page only. The stage scan does not read them."""
+    ids = [order.get("id") for order in orders if order.get("id")]
+    if not ids:
+        return
+    found = await _cursor_rows(db.orders.find({"id": {"$in": ids}}, _PAGE_FILE_PROJECTION))
+    by_id = {row.get("id"): row for row in found if row.get("id")}
+    for order in orders:
+        extra = by_id.get(order.get("id"))
+        if not extra:
+            continue
+        for key in ("source_pdf", "delivery_proofs", "surat_jalan_files"):
+            if key in extra:
+                order[key] = extra[key]
+
+
+async def _serialize_owned_page(db, page_orders: List[dict]) -> List[dict]:
+    await _merge_page_document_fields(db, page_orders)
+    po_ids = [order.get("id") for order in page_orders if order.get("id")]
+    deliveries_map, invoices_map = await _load_docs_for_pos(db, po_ids)
+    page = [
+        serialize_list_row(order, deliveries_map.get(order.get("id"), []), invoices_map.get(order.get("id"), []))
+        for order in page_orders
+    ]
+    raw_by_id = {order.get("id"): order for order in page_orders if order.get("id")}
+    await attach_page_design_approvals(db, page, raw_by_id)
+    return page
+
+
 async def _load_docs_for_pos(db, po_ids: List[str]) -> tuple:
     if not po_ids:
         return {}, {}
@@ -558,6 +604,237 @@ def _sort_value(row: dict, key: str) -> Any:
     return str(row.get("updated_at") or row.get("order_date") or "")
 
 
+def _list_sort_pair(order: dict, sort_key: str) -> tuple:
+    """Same order as sorting serialize_list_row, without delivery or invoice loads.
+
+    serialize_list_row does not expose updated_at, so an unknown key falls back
+    to the calendar order date, matching _sort_value on that row.
+    """
+    order_day = parse_calendar_date(order.get("order_date")) or str(order.get("order_date") or "")[:10] or ""
+    po_number = str(order.get("po_number") or "")
+    key = (sort_key or "order_date").strip()
+    if key in ("order_date", "tanggal_po"):
+        primary = order_day
+    elif key == "customer":
+        primary = _norm(display_customer_name(order))
+    elif key == "progress":
+        primary = _workflow_progress(status_po_workflow(order)) or 0
+    elif key == "po":
+        primary = po_number
+    else:
+        primary = order_day
+    return (primary, po_number)
+
+
+# Same labels as the internal Customer Approval panel. Status itself comes
+# from the approval record, with the same expiry derivation as the public link.
+_APPROVAL_STATUS_LABEL = {
+    "active": "Aktif · Menunggu customer",
+    "approved": "Disetujui oleh customer",
+    "rejected": "Ditolak oleh customer",
+    "expired": "Kedaluwarsa",
+    "revoked": "Dicabut",
+    "invalidated": "Design diperbarui (tidak berlaku)",
+}
+
+
+def effective_customer_approval_status(rec: Optional[dict], now: Optional[datetime] = None) -> str:
+    """Match customer_approval._derive_status. Does not write the record."""
+    if not isinstance(rec, dict):
+        return ""
+    status = str(rec.get("status") or "active").strip() or "active"
+    if status in ("approved", "rejected", "revoked", "invalidated"):
+        return status
+    try:
+        expires = datetime.fromisoformat(str(rec.get("expires_at") or ""))
+    except Exception:
+        return status
+    current = now or datetime.now(timezone.utc)
+    if current >= expires:
+        return "expired"
+    return status
+
+
+def _approval_record_id(rec: dict) -> str:
+    return str(rec.get("approval_id") or rec.get("id") or "").strip()
+
+
+def _bound_design_name(order: dict, version: Any) -> str:
+    """Name of the design file the approval record is bound to. No other file."""
+    if not version:
+        return ""
+    for file in order.get("design_files") or []:
+        if isinstance(file, dict) and file.get("id") == version:
+            return str(file.get("name") or file.get("original_filename") or "").strip()
+    return ""
+
+
+def _approval_item_labels(order: dict) -> List[dict]:
+    """Line identity kept distinct. Same item name with a different color stays."""
+    labels: List[dict] = []
+    for idx, line in enumerate(order.get("line_items") or []):
+        if not isinstance(line, dict):
+            continue
+        name = str(line.get("name") or line.get("item_name") or line.get("product_name") or "").strip()
+        color = str(line.get("color") or "").strip()
+        if not name and not color:
+            continue
+        label = name or "Item"
+        if color:
+            label = f"{label} · {color}"
+        labels.append({"idx": idx, "label": label})
+    return labels
+
+
+def _latest_approval_per_design(records: List[dict]) -> List[dict]:
+    chosen: Dict[str, dict] = {}
+    for rec in records:
+        if not isinstance(rec, dict):
+            continue
+        version = str(rec.get("design_version") or "")
+        previous = chosen.get(version)
+        if previous is None or str(rec.get("generated_at") or "") >= str(previous.get("generated_at") or ""):
+            chosen[version] = rec
+    return sorted(chosen.values(), key=lambda rec: str(rec.get("generated_at") or ""), reverse=True)
+
+
+def _approval_snapshot(order: dict) -> Optional[dict]:
+    snap = order.get("customer_approval")
+    return snap if isinstance(snap, dict) else None
+
+
+# Same three outcomes as the designer queue label. Membership itself is the
+# active waiting-design rule: not cancelled, not fully delivered, and the
+# Approval Design gate is still open (design_ok).
+_DESIGN_NEED = {
+    "Belum ada design": ("waiting_design", "Menunggu desain"),
+    "Menunggu approval": ("waiting_customer", "Menunggu approval customer"),
+    "Revisi": ("needs_revision", "Perlu revisi"),
+}
+DESIGN_QUEUE_PREVIEW = 4
+
+
+def _queue_design_name(order: dict) -> str:
+    """File the open approval is bound to, otherwise the latest design file."""
+    snap = _approval_snapshot(order) or {}
+    bound = _bound_design_name(order, snap.get("design_version"))
+    if bound:
+        return bound
+    files = [f for f in (order.get("design_files") or []) if isinstance(f, dict)]
+    if not files:
+        return ""
+    return str(files[-1].get("name") or files[-1].get("original_filename") or "").strip()
+
+
+def design_approval_need(order: Optional[dict]) -> Optional[dict]:
+    """PO still needs design approval. None when the gate is finished or the PO is closed.
+
+    Finished means design_ok (internal approve, customer approve, or bypass).
+    Closed means cancelled or fully delivered, matching the dashboard
+    waiting-design partition. The label distinguishes waiting for a design,
+    waiting for the customer, and a revision, using the designer status rule.
+    """
+    if not isinstance(order, dict) or order.get("cancelled"):
+        return None
+    if is_fully_delivered(order):
+        return None
+    if design_ok(order):
+        return None
+    mapped = _DESIGN_NEED.get(_design_status_label(order))
+    if not mapped:
+        return None
+    code, label = mapped
+    row = {"code": code, "label": label}
+    name = _queue_design_name(order)
+    if name:
+        row["design_name"] = name
+    return row
+
+
+def _design_queue_sort_key(order: dict):
+    day, po_number = _list_sort_pair(order, "order_date")
+    return (day, po_number, str(order.get("id") or ""))
+
+
+def design_approval_rows(order: dict, records: Optional[List[dict]] = None) -> List[dict]:
+    """Approval rows for one owned order.
+
+    The open path is the live-tracking opener from public_design_approval.
+    It is attached only to the snapshot approval that opener actually serves,
+    and only while that approval is still active. Other design versions keep
+    their own name and status and do not reuse that path.
+    """
+    snap = _approval_snapshot(order)
+    source = [rec for rec in (records or []) if isinstance(rec, dict)]
+    snap_id = _approval_record_id(snap or {})
+    if snap and snap_id and snap_id not in {_approval_record_id(rec) for rec in source}:
+        source.append(snap)
+    elif not source and snap:
+        source.append(snap)
+    latest = _latest_approval_per_design(source)
+    token = str(order.get("tracking_token") or "").strip()
+    official_path = ""
+    if snap and token and effective_customer_approval_status(snap) == "active":
+        official = public_design_approval(order, token) or {}
+        official_path = str(official.get("path") or "")
+    rows: List[dict] = []
+    for rec in latest:
+        status = effective_customer_approval_status(rec)
+        label = _APPROVAL_STATUS_LABEL.get(status)
+        if not label:
+            continue
+        version = rec.get("design_version")
+        if not version and snap and _approval_record_id(rec) == snap_id:
+            version = snap.get("design_version")
+        row: Dict[str, Any] = {
+            "id": _approval_record_id(rec) or str(version or "approval"),
+            "status": status,
+            "status_label": label,
+        }
+        design_name = _bound_design_name(order, version)
+        if design_name:
+            row["design_name"] = design_name
+        if official_path and status == "active" and snap_id and _approval_record_id(rec) == snap_id:
+            row["path"] = official_path
+        rows.append(row)
+    if len(rows) == 1:
+        items = _approval_item_labels(order)
+        if items:
+            rows[0]["items"] = items
+    return rows
+
+
+async def _load_approval_records(db, order_ids: List[str]) -> Dict[str, List[dict]]:
+    ids = [str(oid) for oid in order_ids if oid]
+    if not ids:
+        return {}
+    try:
+        found = await _cursor_rows(db.customer_approvals.find(
+            {"order_id": {"$in": ids}},
+            {"_id": 0, "token_hash": 0, "signature_storage_path": 0},
+        ))
+    except Exception:
+        return {}
+    grouped: Dict[str, List[dict]] = {}
+    for rec in found:
+        oid = str(rec.get("order_id") or "")
+        if oid:
+            grouped.setdefault(oid, []).append(rec)
+    return grouped
+
+
+async def attach_page_design_approvals(db, page: List[dict], raw_by_id: Dict[str, dict]) -> None:
+    """Fill design_approvals on an already scoped page. Reads approval rows only."""
+    orders = [raw_by_id[row["id"]] for row in page if row.get("id") in raw_by_id]
+    grouped = await _load_approval_records(db, [order.get("id") for order in orders])
+    for row in page:
+        order = raw_by_id.get(row.get("id"))
+        if not order:
+            row["design_approvals"] = []
+            continue
+        row["design_approvals"] = design_approval_rows(order, grouped.get(str(order.get("id") or ""), []))
+
+
 def serialize_list_row(order: dict, deliveries: List[dict], invoices: List[dict]) -> dict:
     attach_tanggal_pengiriman_snapshot(order)
     workflow, reasons = status_po_workflow_detail(order)
@@ -590,6 +867,8 @@ def serialize_list_row(order: dict, deliveries: List[dict], invoices: List[dict]
         "active_stage": _active_stage_key(workflow),
         "progress_percent": _workflow_progress(workflow),
         "item_names": item_line_names(order),
+        "design_approvals": design_approval_rows(order),
+        "design_need": design_approval_need(order),
         "documents": counts,
         "partial_delivery": effective_workflow_status(order) in ("Parsial Terkirim", "SJ parsial"),
     }
@@ -613,6 +892,7 @@ async def list_sales_pwa_orders(
     direction: str = "desc",
     skip: int = 0,
     limit: int = 50,
+    design_queue: bool = False,
 ) -> dict:
     require_sales_pwa(user)
     match = {"cancelled": {"$ne": True}, **sales_owner_match(user)}
@@ -633,25 +913,24 @@ async def list_sales_pwa_orders(
         status=status,
         date_from=date_from,
         date_to=date_to,
+        design_queue=design_queue,
     )
 
-    po_ids = [o.get("id") for o in filtered if o.get("id")]
-    deliveries_map, invoices_map = await _load_docs_for_pos(db, po_ids)
-    rows = [
-        serialize_list_row(o, deliveries_map.get(o.get("id"), []), invoices_map.get(o.get("id"), []))
-        for o in filtered
-    ]
-    reverse = str(direction or "asc").lower() == "desc"
-    sort_key = (sort or "order_date").strip()
-    rows.sort(key=lambda r: (_sort_value(r, sort_key), r.get("po_number") or ""), reverse=reverse)
+    if design_queue:
+        filtered.sort(key=_design_queue_sort_key, reverse=True)
+    else:
+        reverse = str(direction or "asc").lower() == "desc"
+        sort_key = (sort or "order_date").strip()
+        filtered.sort(key=lambda order: _list_sort_pair(order, sort_key), reverse=reverse)
 
     skip = max(0, int(skip or 0))
     limit = max(1, min(int(limit or 50), 200))
-    page = rows[skip:skip + limit]
+    page_orders = filtered[skip:skip + limit]
+    page = await _serialize_owned_page(db, page_orders)
 
     return {
         "orders": page,
-        "total": len(rows),
+        "total": len(filtered),
         "skip": skip,
         "limit": limit,
         "counts": counts,
@@ -659,6 +938,91 @@ async def list_sales_pwa_orders(
         "min_orders_prediction": MIN_ORDERS,
         "source_count": len(raw),
         "source_truncated": False,
+    }
+
+
+def _sales_month_bounds(month: str) -> tuple:
+    """Same calendar bounds as the dashboard month input. Invalid month uses today."""
+    key = _month_key(month)
+    year, value = [int(part) for part in key.split("-")]
+    last = calendar.monthrange(year, value)[1]
+    return f"{key}-01", f"{key}-{last:02d}"
+
+
+def _field_action_buckets(raw: List[dict], date_from: str, date_to: str) -> tuple:
+    """One workflow pass for the two lapangan stages and the month's selesai count."""
+    design: List[dict] = []
+    payment: List[dict] = []
+    selesai = 0
+    design_needle = _norm("Approval Design")
+    payment_needle = _norm("Approval Payment")
+    empty = dict(
+        q="",
+        customer_needle="",
+        po_needle="",
+        buffer_key="",
+        progress_min=None,
+        progress_max=None,
+    )
+    for order in raw:
+        workflow = status_po_workflow(order)
+        if _matches_list_constraints(
+            order, workflow, stage_needle=design_needle, date_from="", date_to="", **empty,
+        ):
+            design.append(order)
+        if _matches_list_constraints(
+            order, workflow, stage_needle=payment_needle, date_from="", date_to="", **empty,
+        ):
+            payment.append(order)
+        if _matches_list_constraints(
+            order, workflow, stage_needle="", date_from=date_from, date_to=date_to, **empty,
+        ) and _matches_filter(order, FILTER_DONE, workflow):
+            selesai += 1
+    return design, payment, selesai
+
+
+async def sales_pwa_field_actions(db, user: dict, *, month: str = "") -> dict:
+    """Lapangan previews from one owned-order read. Same stage rules as the list."""
+    require_sales_pwa(user)
+    match = {"cancelled": {"$ne": True}, **sales_owner_match(user)}
+    raw = await _cursor_rows(db.orders.find(match, LIST_PROJECTION))
+    lead = await _lead_time_days(db)
+    for order in raw:
+        attach_tanggal_pengiriman_snapshot(order, lead)
+    date_from, date_to = _sales_month_bounds(month)
+    design, payment, selesai = _field_action_buckets(raw, date_from, date_to)
+    design.sort(key=lambda order: _list_sort_pair(order, "order_date"), reverse=True)
+    payment.sort(key=lambda order: _list_sort_pair(order, "order_date"), reverse=True)
+    queue = [order for order in raw if design_approval_need(order)]
+    queue.sort(key=_design_queue_sort_key, reverse=True)
+    design_page = design[:4]
+    payment_page = payment[:4]
+    queue_page = queue[:DESIGN_QUEUE_PREVIEW]
+    combined: List[dict] = []
+    seen = set()
+    for order in design_page + payment_page + queue_page:
+        oid = order.get("id")
+        if not oid or oid in seen:
+            continue
+        seen.add(oid)
+        combined.append(order)
+    rows = await _serialize_owned_page(db, combined)
+    by_id = {row.get("id"): row for row in rows if row.get("id")}
+    return {
+        "design": {
+            "orders": [by_id[order["id"]] for order in design_page if order.get("id") in by_id],
+            "total": len(design),
+        },
+        "payment": {
+            "orders": [by_id[order["id"]] for order in payment_page if order.get("id") in by_id],
+            "total": len(payment),
+        },
+        "design_queue": {
+            "orders": [by_id[order["id"]] for order in queue_page if order.get("id") in by_id],
+            "total": len(queue),
+        },
+        "selesai": selesai,
+        "month": _month_key(month),
     }
 
 
@@ -1332,6 +1696,7 @@ async def get_sales_pwa_order(db, user: dict, order_id: str) -> dict:
     deliveries = deliveries_map.get(order.get("id"), [])
     invoices = invoices_map.get(order.get("id"), [])
     row = serialize_list_row(order, deliveries, invoices)
+    await attach_page_design_approvals(db, [row], {order.get("id"): order})
     timeline = []
     for ev in order.get("timeline") or []:
         if not isinstance(ev, dict):

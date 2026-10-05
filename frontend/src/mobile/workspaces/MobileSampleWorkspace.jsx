@@ -33,7 +33,7 @@ export default function MobileSampleWorkspace({ order, canEdit, onUpdated }) {
         reader.onerror = reject;
         reader.readAsDataURL(blob);
       });
-      const res = await api.addAttachment(order.id, { kind: "sample", name: blob.name || file.name, data_url: dataUrl });
+      const res = await api.addAttachment(order.id, { kind: "sample", name: blob.name || file.name, data_url: dataUrl }, { params: { view: "operational" } });
       onUpdated(res.order);
     } catch (e) {
       setErr(formatApiError(e, "Gagal mengunggah sampel."));

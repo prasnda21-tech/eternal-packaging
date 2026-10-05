@@ -151,17 +151,25 @@ export default function ProductionSchedule() {
   const [exporting, setExporting] = useState(false);
   const sheetZoom = useProductionSheetZoom();
 
-  const load = async () => {
+  useEffect(() => {
+    let cancelled = false;
     setBusy(true);
     setErr("");
-    try {
-      const d = await api.productionDashboard(productionDashboardRequestParams({ includeCancelled, includeCompleted, workDateFilter }));
-      const ingested = ingestProductionDashboard(d);
-      setRows(ingested.rows);
-      setTotal(ingested.total);
-    } catch (e) { setErr(e.response?.data?.detail || "Gagal memuat"); }
-    finally { setBusy(false); }
-  };
+    api.productionDashboard(productionDashboardRequestParams({ includeCancelled, includeCompleted, workDateFilter }))
+      .then((payload) => {
+        if (cancelled) return;
+        const ingested = ingestProductionDashboard(payload);
+        setRows(ingested.rows);
+        setTotal(ingested.total);
+      })
+      .catch((error) => {
+        if (!cancelled) setErr(error.response?.data?.detail || "Gagal memuat");
+      })
+      .finally(() => {
+        if (!cancelled) setBusy(false);
+      });
+    return () => { cancelled = true; };
+  }, [includeCancelled, includeCompleted, workDateFilter]);
 
   const { lastUpdated: schedLastUpdated, isPolling: schedIsPolling, refreshNow: refreshSched } = useAutoRefresh(
     () => api.productionDashboard(productionDashboardRequestParams({ includeCancelled, includeCompleted, workDateFilter })),
@@ -171,8 +179,6 @@ export default function ProductionSchedule() {
       setTotal(ingested.total);
     } }
   );
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [includeCancelled, includeCompleted, workDateFilter]);
-
   useEffect(() => {
     if (statusFilter === "selesai" && !includeCompleted) setIncludeCompleted(true);
     if (statusFilter === "cancelled" && !includeCancelled) setIncludeCancelled(true);

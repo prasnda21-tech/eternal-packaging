@@ -49,7 +49,7 @@ export default function ActionCenter() {
     intervalMs: 30_000, enabled: !!data, onData: (d) => setData(d),
   });
 
-  const actions = data?.actions || [];
+  const actions = useMemo(() => data?.actions || [], [data?.actions]);
   const nonEmpty = actions.filter((a) => (a.count || 0) > 0);
   const selected = useMemo(() => actions.find((a) => a.key === selectedKey), [actions, selectedKey]);
 
