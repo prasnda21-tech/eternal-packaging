@@ -64,6 +64,7 @@ const TILE_ICONS = {
   [NAV_KEYS.salesActivity]: Contact,
   [NAV_KEYS.purchaseRequests]: ClipboardList,
   [NAV_KEYS.purchaseOrders]: ShoppingBag,
+  [NAV_KEYS.purchaseAdvances]: Wallet,
   [NAV_KEYS.purchaseInvoices]: FileText,
   [NAV_KEYS.purchasePayments]: CreditCard,
   [NAV_KEYS.purchaseReceipts]: Package,

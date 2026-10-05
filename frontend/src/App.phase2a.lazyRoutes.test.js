@@ -70,6 +70,7 @@ describe("Phase 2A / Batch 2A route code splitting", () => {
       "PenerimaanBarang",
       "PermintaanPembelian",
       "PesananPembelian",
+      "UangMukaPembelian",
       "FakturPembelian",
       "PembayaranPembelian",
       "HutangUsaha",

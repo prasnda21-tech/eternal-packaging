@@ -66,6 +66,7 @@ const StockOpname = lazy(() => import("./pages/StockOpname"));
 const PenerimaanBarang = lazy(() => import("./pages/PenerimaanBarang"));
 const PermintaanPembelian = lazy(() => import("./pages/PermintaanPembelian"));
 const PesananPembelian = lazy(() => import("./pages/PesananPembelian"));
+const UangMukaPembelian = lazy(() => import("./pages/UangMukaPembelian"));
 const FakturPembelian = lazy(() => import("./pages/FakturPembelian"));
 const PembayaranPembelian = lazy(() => import("./pages/PembayaranPembelian"));
 const SalesActivityPage = lazy(() => import("./pages/SalesActivityPage"));
@@ -352,6 +353,7 @@ export default function App() {
             <Route path="/penjualan" element={<Navigate to="/penjualan/pesanan-penjualan" replace />} />
             <Route path="/pembelian/permintaan" element={<PermGate anyOf={[NAV_KEYS.purchaseRequests, NAV_KEYS.purchasing, "purchase_requests.view", "purchase_requests.create"]}><PermintaanPembelian /></PermGate>} />
             <Route path="/pembelian/pesanan-pembelian" element={<PermGate anyOf={[NAV_KEYS.purchaseOrders, NAV_KEYS.purchasing, "purchase_orders.view", "purchase_orders.create"]}><PesananPembelian /></PermGate>} />
+            <Route path="/pembelian/uang-muka" element={<PermGate anyOf={[NAV_KEYS.purchaseAdvances, NAV_KEYS.purchaseOrders, NAV_KEYS.purchasing, "purchase_orders.view", "purchase_orders.create", "purchase_payments.view", "purchase_payments.create"]}><UangMukaPembelian /></PermGate>} />
             <Route path="/pembelian/faktur-pembelian" element={<PermGate anyOf={[NAV_KEYS.purchaseInvoices, NAV_KEYS.purchasing, "purchase_invoices.view", "purchase_invoices.create"]}><FakturPembelian /></PermGate>} />
             <Route path="/pembelian/pembayaran-pembelian" element={<PermGate anyOf={[NAV_KEYS.purchasePayments, NAV_KEYS.purchasing, "purchase_payments.view", "purchase_payments.create"]}><PembayaranPembelian /></PermGate>} />
             <Route path="/pembelian/penerimaan-barang" element={<PermGate anyOf={[NAV_KEYS.purchaseReceipts]} alsoAnyOf={["purchase_receipts.view"]}><PenerimaanBarang /></PermGate>} />

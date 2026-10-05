@@ -422,6 +422,7 @@ describe("purchasingMenuItems", () => {
     expect(items.map((item) => item.label)).toEqual([
       "Permintaan",
       "Pesanan Pembelian",
+      "Uang Muka",
       "Penerimaan Barang",
       "Faktur Pembelian",
       "Pembayaran Pembelian",
