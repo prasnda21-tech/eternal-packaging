@@ -450,6 +450,10 @@ export const api = {
     client.post(`/purchase-supplier-advances/${encodeURIComponent(id)}/confirm-paid`, payload).then((r) => r.data),
   cancelPurchaseSupplierAdvance: (id, reason = "") =>
     client.post(`/purchase-supplier-advances/${encodeURIComponent(id)}/cancel`, reason ? { reason } : {}).then((r) => r.data),
+  createPurchaseSupplierAdvanceAllocation: (payload) =>
+    client.post(`/purchase-supplier-advance-allocations`, payload).then((r) => r.data),
+  listPurchaseSupplierAdvanceAllocations: (params = {}) =>
+    client.get(`/purchase-supplier-advance-allocations`, { params }).then((r) => r.data),
 
   cancelPurchaseRequest: (id, reason = "") =>
     client.post(`/purchase-requests/${encodeURIComponent(id)}/cancel`, reason ? { reason } : {}).then((r) => r.data),

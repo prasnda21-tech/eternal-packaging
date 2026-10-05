@@ -58,6 +58,11 @@ export default function FakturPembelian() {
   const [qty, setQty] = useState({});
   const [precedesGoodsReceipt, setPrecedesGoodsReceipt] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [eligibleAdvances, setEligibleAdvances] = useState([]);
+  const [allocAdvanceId, setAllocAdvanceId] = useState("");
+  const [allocAmount, setAllocAmount] = useState("");
+  const [allocErr, setAllocErr] = useState("");
+  const [allocBusy, setAllocBusy] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true); setErr("");
@@ -164,12 +169,58 @@ export default function FakturPembelian() {
     finally { setBusy(false); }
   };
 
+  const loadEligibleAdvances = useCallback(async (invoice) => {
+    if (!invoice?.purchase_order_id) {
+      setEligibleAdvances([]);
+      return;
+    }
+    const res = await api.listPurchaseSupplierAdvances({ purchase_order_id: invoice.purchase_order_id });
+    const rows = (res.advances || []).filter((row) => row.status_label === "Dibayar" && Number(row.available_amount) > 0);
+    setEligibleAdvances(rows);
+  }, []);
+
   const openDetail = async (id) => {
     setErr("");
     try {
-      setDetail((await api.getPurchaseInvoice(id)).invoice);
+      const invoice = (await api.getPurchaseInvoice(id)).invoice;
+      setDetail(invoice);
       setView("detail");
+      await loadEligibleAdvances(invoice);
     } catch (ex) { setErr(errDetail(ex)); }
+  };
+
+  const allocateAdvance = async () => {
+    if (allocBusy || !detail) return;
+    const selected = eligibleAdvances.find((row) => row.id === allocAdvanceId);
+    const amount = Number(allocAmount);
+    if (!selected) {
+      setAllocErr("Pilih uang muka yang akan digunakan.");
+      return;
+    }
+    if (!(amount > 0)) {
+      setAllocErr("Nilai alokasi harus lebih besar dari 0.");
+      return;
+    }
+    if (amount > Number(selected.available_amount) || amount > Number(detail.outstanding_amount)) {
+      setAllocErr("Nilai alokasi melebihi uang muka tersedia atau sisa tagihan.");
+      return;
+    }
+    setAllocBusy(true);
+    setAllocErr("");
+    try {
+      await api.createPurchaseSupplierAdvanceAllocation({
+        supplier_advance_id: selected.id,
+        purchase_invoice_id: detail.id,
+        amount,
+        idempotency_key: newIdempotencyKey(),
+      });
+      const invoice = (await api.getPurchaseInvoice(detail.id)).invoice;
+      setDetail(invoice);
+      setAllocAmount("");
+      await loadEligibleAdvances(invoice);
+      setOk("Uang muka dialokasikan. Tidak ada pembayaran kas baru.");
+    } catch (ex) { setAllocErr(errDetail(ex)); }
+    finally { setAllocBusy(false); }
   };
 
   const openCancel = (row) => {
@@ -527,17 +578,45 @@ export default function FakturPembelian() {
 
           <div className="purchase-detail-meta" style={{ marginTop: 12 }} data-testid="invoice-detail-summary">
             <div>
-              <span className="label">Grand Total</span>
+              <span className="label">Nilai Faktur</span>
               <span className="value" data-testid="detail-grand-total">{formatRupiah(detail.grand_total)}</span>
             </div>
             <div>
-              <span className="label">Dibayar</span>
-              <span className="value">{formatRupiah(detail.paid_total)}</span>
+              <span className="label">Uang Muka Dialokasikan</span>
+              <span className="value" data-testid="detail-advance-applied">{formatRupiah(detail.advance_applied_amount || 0)}</span>
             </div>
             <div>
-              <span className="label">Sisa</span>
+              <span className="label">Pembayaran</span>
+              <span className="value" data-testid="detail-normal-payment">{formatRupiah(detail.paid_total)}</span>
+            </div>
+            <div>
+              <span className="label">Sisa Tagihan</span>
               <span className="value" data-testid="detail-outstanding">{formatRupiah(detail.outstanding_amount)}</span>
             </div>
+          </div>
+          <div data-testid="gunakan-uang-muka" style={{ marginTop: 12 }}>
+            <h3>Gunakan Uang Muka</h3>
+            {eligibleAdvances.length === 0 && <p className="muted">Tidak ada uang muka tersedia untuk pesanan ini.</p>}
+            {eligibleAdvances.map((row) => (
+              <div key={row.id} data-testid="eligible-advance-row">
+                <span>{row.advance_number}</span>
+                <span>{row.po_number}</span>
+                <span data-testid="eligible-advance-available">{formatRupiah(row.available_amount)}</span>
+              </div>
+            ))}
+            {eligibleAdvances.length > 0 && (
+              <div className="purchase-form-actions">
+                <select value={allocAdvanceId} onChange={(e) => setAllocAdvanceId(e.target.value)} data-testid="alloc-advance-select">
+                  <option value="">Pilih uang muka</option>
+                  {eligibleAdvances.map((row) => (
+                    <option key={row.id} value={row.id}>{row.advance_number} — {formatRupiah(row.available_amount)}</option>
+                  ))}
+                </select>
+                <input type="number" min="1" value={allocAmount} onChange={(e) => setAllocAmount(e.target.value)} data-testid="alloc-amount" placeholder="Nilai alokasi" />
+                <button type="button" className="primary" disabled={allocBusy} onClick={allocateAdvance} data-testid="alloc-submit">Alokasikan</button>
+              </div>
+            )}
+            {allocErr && <p data-testid="alloc-error">{allocErr}</p>}
           </div>
 
           <div className="purchase-detail-meta" style={{ marginTop: 12 }} data-testid="invoice-accounting-section">

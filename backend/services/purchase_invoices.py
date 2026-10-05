@@ -72,25 +72,42 @@ async def _active_payment_count(db, invoice_id: str) -> int:
     ))
 
 
+async def _advance_applied_total(db, invoice_id: str) -> float:
+    """Active supplier-advance allocations only. Future return credit is a separate subtraction."""
+    from services.purchase_supplier_advance_allocations import active_applied_total
+
+    return await active_applied_total(db, invoice_id)
+
+
 async def attach_payment_fields(db, inv: dict) -> dict:
     out = dict(inv)
     paid = await _paid_total(db, out["id"])
+    applied = await _advance_applied_total(db, out["id"])
     grand = float(out.get("grand_total") or 0)
+    # outstanding = invoice net - confirmed normal payments - active advance allocations.
+    outstanding = money_round(grand - paid - applied)
+    if outstanding < 0:
+        outstanding = 0.0
     out["paid_total"] = paid
-    out["outstanding_amount"] = max(money_round(grand - paid), 0.0)
+    out["normal_payment_total"] = paid
+    out["advance_applied_amount"] = applied
+    out["outstanding_amount"] = outstanding
     active_pays = await _active_payment_count(db, out["id"])
     if is_cancelled(out):
         out["payment_status"] = "DIBATALKAN"
         out["can_cancel"] = False
         out["cancel_block_reason"] = ""
     else:
-        out["payment_status"] = payment_status(grand, paid)
-        out["can_cancel"] = active_pays <= 0
-        out["cancel_block_reason"] = (
-            ""
-            if out["can_cancel"]
-            else "Faktur tidak dapat dihapus karena sudah memiliki pembayaran. Batalkan pembayaran terlebih dahulu."
-        )
+        out["payment_status"] = payment_status(grand, money_round(paid + applied))
+        out["can_cancel"] = active_pays <= 0 and applied <= 0
+        if active_pays > 0:
+            out["cancel_block_reason"] = (
+                "Faktur tidak dapat dihapus karena sudah memiliki pembayaran. Batalkan pembayaran terlebih dahulu."
+            )
+        elif applied > 0:
+            out["cancel_block_reason"] = "Faktur tidak dapat dihapus karena masih memiliki alokasi uang muka."
+        else:
+            out["cancel_block_reason"] = ""
     return out
 
 
@@ -489,8 +506,11 @@ async def cancel_purchase_invoice(
         try:
             paid = await _paid_total(db, doc["id"])
             active_pays = await _active_payment_count(db, doc["id"])
+            applied = await _advance_applied_total(db, doc["id"])
             if paid > 0 or active_pays > 0:
                 raise HTTPException(409, ACTIVE_PAYMENT_CANCEL_MESSAGE)
+            if applied > 0:
+                raise HTTPException(409, "Faktur tidak dapat dihapus karena masih memiliki alokasi uang muka.")
 
             journal = await find_purchase_invoice_source_journal(db, doc["id"])
             raise_if_journal_blocks_cancel(journal)

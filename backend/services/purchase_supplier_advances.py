@@ -230,16 +230,22 @@ async def create_purchase_supplier_advance(db, payload: Dict[str, Any], user: di
         return enrich_supplier_advance(saved)
 
 
+async def _with_allocation_truth(db, rows: List[dict]) -> List[dict]:
+    from services.purchase_supplier_advance_allocations import overlay_advance_allocations
+
+    return await overlay_advance_allocations(db, rows)
+
+
 async def list_purchase_supplier_advances(db, purchase_order_id: Optional[str] = None) -> List[dict]:
     query: Dict[str, Any] = {}
     if purchase_order_id:
         query["purchase_order_id"] = str(purchase_order_id)
     rows = await db[COLLECTION].find(query, {"_id": 0}).sort("created_at", 1).to_list(1000)
-    return [enrich_supplier_advance(row) for row in rows]
+    return await _with_allocation_truth(db, [enrich_supplier_advance(row) for row in rows])
 
 
 async def get_purchase_supplier_advance(db, advance_id: str) -> dict:
-    return enrich_supplier_advance(await _load(db, advance_id))
+    return (await _with_allocation_truth(db, [enrich_supplier_advance(await _load(db, advance_id))]))[0]
 
 
 async def supplier_advance_availability(db, purchase_order_id: str) -> dict:
@@ -252,10 +258,11 @@ async def supplier_advance_availability(db, purchase_order_id: str) -> dict:
             "settlement_status": SETTLEMENT_PAID,
             "cancelled": {"$ne": True},
         },
-        {"_id": 0, "original_amount": 1, "allocated_amount": 1, "supplier_key": 1, "supplier_name": 1},
+        {"_id": 0},
     ).to_list(1000)
-    paid = sum(money_round(row.get("original_amount")) for row in rows)
-    allocated = sum(money_round(row.get("allocated_amount") or 0) for row in rows)
+    enriched = await _with_allocation_truth(db, [enrich_supplier_advance(row) for row in rows])
+    paid = sum(money_round(row.get("original_amount")) for row in enriched)
+    allocated = sum(money_round(row.get("allocated_amount") or 0) for row in enriched)
     available = money_round(paid - allocated)
     return {
         "purchase_order_id": po_id,

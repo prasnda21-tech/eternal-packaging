@@ -61,6 +61,11 @@ def register_purchase_routes(api_router, *, get_db, current_user, require_perm, 
         submit_purchase_supplier_advance,
         supplier_advance_availability,
     )
+    from services.purchase_supplier_advance_allocations import (
+        create_allocation,
+        list_allocations,
+        reverse_allocation,
+    )
     from services.purchase_invoice_posting import (
         PERM_POST as PURCHASE_INVOICE_POST_PERM,
         PERM_REVERSE as PURCHASE_INVOICE_REVERSE_PERM,
@@ -471,6 +476,32 @@ def register_purchase_routes(api_router, *, get_db, current_user, require_perm, 
             get_db(), advance_id, user, reason=str(data.get("reason") or "")
         )
         return {"advance": doc, "message": "Uang muka dibatalkan"}
+
+    @api_router.get("/purchase-supplier-advance-allocations")
+    async def list_purchase_supplier_advance_allocations_endpoint(
+        purchase_invoice_id: Optional[str] = None,
+        supplier_advance_id: Optional[str] = None,
+        user=Depends(current_user),
+    ):
+        await require_any_perm(user, "purchase_invoices.view", "purchase_orders.view", "purchase_payments.view")
+        rows = await list_allocations(
+            get_db(),
+            purchase_invoice_id=purchase_invoice_id,
+            supplier_advance_id=supplier_advance_id,
+        )
+        return {"allocations": rows, "count": len(rows)}
+
+    @api_router.post("/purchase-supplier-advance-allocations")
+    async def create_purchase_supplier_advance_allocation_endpoint(payload: LoosePayload, user=Depends(current_user)):
+        await require_any_perm(user, "purchase_invoices.create", "purchase_payments.create")
+        doc = await create_allocation(get_db(), _dump(payload), user)
+        return {"allocation": doc, "message": "Uang muka dialokasikan ke faktur"}
+
+    @api_router.post("/purchase-supplier-advance-allocations/{allocation_id}/reverse")
+    async def reverse_purchase_supplier_advance_allocation_endpoint(allocation_id: str, user=Depends(current_user)):
+        await require_any_perm(user, "purchase_invoices.create", "purchase_payments.create")
+        doc = await reverse_allocation(get_db(), allocation_id, user)
+        return {"allocation": doc, "message": "Alokasi uang muka dibatalkan"}
 
     @api_router.post("/purchase-payments/{payment_id}/post-accounting")
     async def post_purchase_payment_accounting_endpoint(
