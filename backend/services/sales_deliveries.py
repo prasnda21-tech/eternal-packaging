@@ -334,7 +334,9 @@ async def ensure_generated_sj_pdf(db, order: dict, delivery: dict, user: dict, *
             return existing, None
 
     try:
-        pdf_bytes = generate_sales_delivery_pdf_bytes(delivery, None)
+        from services.print_design_settings import get_print_design_settings
+        design = await get_print_design_settings(db)
+        pdf_bytes = generate_sales_delivery_pdf_bytes(delivery, None, design=design)
     except Exception:
         logger.exception("Failed to generate Surat Jalan PDF for shipment %s", shipment_id)
         return None, "pdf_generate_failed"
@@ -1071,6 +1073,7 @@ def generate_sales_delivery_pdf_bytes(
     driver_signature_png: Optional[bytes] = None,
     driver_name: Optional[str] = None,
     driver_signed_at: Optional[str] = None,
+    design: Optional[dict] = None,
 ) -> bytes:
     """A4 portrait Surat Jalan. Renders the delivery document only.
 
@@ -1084,8 +1087,6 @@ def generate_sales_delivery_pdf_bytes(
     from services.delivery_pod_signature import normalize_signature_image_for_pdf
     from services.pdf_date import format_pdf_date
     from services.pdf_layout import (
-        COMPANY_ADDRESS_LINES,
-        COMPANY_NAME,
         build_pdf,
         content_width,
         esc,
@@ -1094,8 +1095,11 @@ def generate_sales_delivery_pdf_bytes(
         scale_widths,
         styles,
     )
+    from services.print_design_settings import resolve_print_design
 
     delivery = delivery or {}
+    design = resolve_print_design(design)
+    sj_design = design.get("surat_jalan") or {}
     _sig_tmp_paths: List[str] = []
 
     def _text(value) -> str:
@@ -1146,15 +1150,15 @@ def generate_sales_delivery_pdf_bytes(
             return ""
         return format_pdf_date(raw_ts, fallback="")
 
-    sty = styles()
+    sty = styles(design.get("accent_color"))
     width = content_width(A4)
     elements = []
     try:
         path = logo_path()
         logo = Image(path, width=36 * mm, height=12.2 * mm) if path else Paragraph("<b>ETERNAL</b>", sty["company"])
-        address_html = "<br/>".join(esc(line) for line in COMPANY_ADDRESS_LINES)
+        address_html = "<br/>".join(esc(line) for line in (design.get("address_lines") or []))
         identity = Paragraph(
-            f"<font size='12'><b>{esc(COMPANY_NAME)}</b></font><br/>{address_html}",
+            f"<font size='12'><b>{esc(design.get('company_name') or '')}</b></font><br/>{address_html}",
             sty["address"],
         )
         brand = Table(
@@ -1356,7 +1360,8 @@ def generate_sales_delivery_pdf_bytes(
         recipient_when = _signed_date(recipient_signed_at)
         driver_when = _signed_date(driver_signed_at)
 
-        labels = ["Gudang", "Cek Barang", "Kurir", "Penerima"]
+        labels = list(sj_design.get("signature_labels") or ["Gudang", "Cek Barang", "Kurir", "Penerima"])
+        date_label = str(sj_design.get("date_label") or "Tgl.")
         images = [None, None, driver_img, recipient_img]
         names = ["", "", display_driver, display_recipient]
         whens = ["", "", driver_when, recipient_when]
@@ -1367,7 +1372,7 @@ def generate_sales_delivery_pdf_bytes(
         for label, image, name, when in zip(labels, images, names, whens):
             label_row.append(Paragraph(esc(label), sty["center"]))
             gap_row.append(image if image is not None else Spacer(1, 12 * mm))
-            tgl = "Tgl." + (f" {when}" if when else "")
+            tgl = date_label + (f" {when}" if when else "")
             line = Table(
                 [[
                     Paragraph(esc(tgl), sty["small"]),
@@ -1553,6 +1558,8 @@ async def generate_signed_sj_pdf_for_order(
         return None, "driver_signature_bytes_missing"
 
     try:
+        from services.print_design_settings import get_print_design_settings
+        design = await get_print_design_settings(db)
         pdf_bytes = generate_sales_delivery_pdf_bytes(
             delivery,
             None,
@@ -1564,6 +1571,7 @@ async def generate_signed_sj_pdf_for_order(
                 order, driver_sig=driver_sig, delivery=delivery, user=user
             ),
             driver_signed_at=(driver_sig or {}).get("driver_signed_at"),
+            design=design,
         )
     except Exception:
         logger.exception("signed SJ PDF generate failed")

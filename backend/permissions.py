@@ -131,6 +131,8 @@ PERMISSION_CATALOG = [
     ("Produksi", "work_panel.view", "Lihat Form Pekerjaan Divisi"),
     ("Pengaturan", "settings.work_panel.view", "Lihat pengaturan Form Pekerjaan Divisi"),
     ("Pengaturan", "settings.work_panel.manage", "Ubah pengaturan Form Pekerjaan Divisi"),
+    ("Pengaturan", "settings.design_cetakan.view", "Lihat Design Cetakan"),
+    ("Pengaturan", "settings.design_cetakan.manage", "Ubah Design Cetakan"),
     ("Laporan", "reports.gaji_operator.view", "Lihat Gaji Operator"),
     ("Laporan", "reports.order_prediction.view", "Lihat Prediksi Order"),
     ("Laporan", "reports.order_prediction.import", "Impor Histori Prediksi Order"),

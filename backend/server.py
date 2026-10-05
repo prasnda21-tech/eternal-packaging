@@ -1817,7 +1817,9 @@ async def get_sales_order_pdf_endpoint(order_id: str, user=Depends(current_user)
         if not view_ok:
             raise HTTPException(403, "Anda tidak punya permission untuk melihat PO ini")
     from services.order_pdf import generate_sales_order_pdf_bytes
-    pdf_bytes = generate_sales_order_pdf_bytes(order)
+    from services.print_design_settings import get_print_design_settings
+    design = await get_print_design_settings(db)
+    pdf_bytes = generate_sales_order_pdf_bytes(order, design=design)
     po_num = str(order.get("po_number") or order_id).replace("/", "_").replace("\\", "_")
     filename = f"Pesanan_Penjualan_{po_num}.pdf"
     return FastAPIResponse(
@@ -10815,7 +10817,11 @@ async def get_sales_delivery_pdf_endpoint(id: str, user=Depends(current_user)):
     await _require_any_perm(user, "sales.delivery.print", "sales.delivery.view", "sales_order.view", "po.view")
     detail = await _get_sales_delivery_detail(db, id)
     await ensure_owned_po_id(db, user, ((detail or {}).get("delivery") or {}).get("po_id"))
-    pdf_bytes = _generate_sales_delivery_pdf_bytes(detail["delivery"], detail.get("po_summary"))
+    from services.print_design_settings import get_print_design_settings
+    design = await get_print_design_settings(db)
+    pdf_bytes = _generate_sales_delivery_pdf_bytes(
+        detail["delivery"], detail.get("po_summary"), design=design
+    )
     sj_num = str(detail["delivery"].get("sj_number", "SJ")).replace("/", "_").replace("\\", "_")
     filename = f"Pengiriman_Pesanan_{sj_num}.pdf"
     return FastAPIResponse(
@@ -10938,7 +10944,9 @@ async def get_sales_invoice_pdf_endpoint(id: str, user=Depends(current_user)):
     detail = await _get_sales_invoice_detail(db, id)
     await ensure_owned_po_id(db, user, (detail or {}).get("po_id"))
     shown = await invoice_pdf_presentation(db, detail)
-    pdf_bytes = generate_sales_invoice_pdf_bytes(shown)
+    from services.print_design_settings import get_print_design_settings
+    design = await get_print_design_settings(db)
+    pdf_bytes = generate_sales_invoice_pdf_bytes(shown, design=design)
     inv_num = str(detail.get("invoice_number", "INV")).replace("/", "_").replace("\\", "_")
     filename = f"Faktur_Penjualan_{inv_num}.pdf"
     return FastAPIResponse(
@@ -10963,7 +10971,9 @@ async def get_sales_invoice_proforma_pdf(id: str, user=Depends(current_user)):
     invoice = await _require_proforma_invoice(db, id)
     await ensure_owned_po_id(db, user, invoice.get("po_id"))
     shown = await invoice_pdf_presentation(db, invoice)
-    pdf_bytes = generate_sales_invoice_pdf_bytes(shown, document_type="proforma")
+    from services.print_design_settings import get_print_design_settings
+    design = await get_print_design_settings(db)
+    pdf_bytes = generate_sales_invoice_pdf_bytes(shown, document_type="proforma", design=design)
     inv_num = str(invoice.get("invoice_number") or invoice.get("id") or "PROFORMA").replace("/", "_").replace("\\", "_")
     filename = f"Proforma_{inv_num}.pdf"
     return FastAPIResponse(
@@ -11831,6 +11841,38 @@ async def physical_stock_settings_put(payload: dict = Body(...), user=Depends(cu
     from services.physical_stock_settings import update_physical_stock_settings
     settings = await update_physical_stock_settings(db, payload, user=user)
     return {"settings": settings, "message": "Pengaturan stok fisik berhasil disimpan"}
+
+
+@api_router.get("/settings/design-cetakan")
+async def design_cetakan_settings_get(user=Depends(current_user)):
+    """Read Design Cetakan letterhead settings. Empty DB returns PDF defaults."""
+    await _require_any_perm(
+        user,
+        "settings.design_cetakan.view",
+        "settings.design_cetakan.manage",
+        "permissions.manage",
+    )
+    from services.print_design_settings import get_print_design_settings
+    return {"settings": await get_print_design_settings(db)}
+
+
+@api_router.put("/settings/design-cetakan")
+async def design_cetakan_settings_put(payload: dict = Body(...), user=Depends(current_user)):
+    """Persist Design Cetakan letterhead settings (text only)."""
+    await _require_any_perm(user, "settings.design_cetakan.manage", "permissions.manage")
+    from services.print_design_settings import save_print_design_settings
+    settings = await save_print_design_settings(db, payload or {}, user=user)
+    await _write_audit(
+        action="settings.design_cetakan.update",
+        actor=user,
+        target_email="-",
+        after={
+            "company_name": settings.get("company_name"),
+            "accent_color": settings.get("accent_color"),
+            "bank_count": len(((settings.get("invoice") or {}).get("bank_accounts") or [])),
+        },
+    )
+    return {"settings": settings, "message": "Design Cetakan berhasil disimpan"}
 
 
 class CurrentStockPatch(BaseModel):

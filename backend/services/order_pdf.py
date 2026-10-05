@@ -103,10 +103,13 @@ def _box(flowable, width: float):
     return table
 
 
-def generate_sales_order_pdf_bytes(order: dict) -> bytes:
+def generate_sales_order_pdf_bytes(order: dict, design: dict | None = None) -> bytes:
     """A4 landscape Pesanan Penjualan. Same content, wider page."""
+    from services.print_design_settings import resolve_print_design
+
+    design = resolve_print_design(design)
     page = landscape(A4)
-    sty = styles()
+    sty = styles(design.get("accent_color"))
     width = content_width(page)
     elements = []
 
@@ -264,7 +267,8 @@ def generate_sales_order_pdf_bytes(order: dict) -> bytes:
     elements.append(bottom)
     elements.append(Spacer(1, 8 * mm))
 
-    labels = ["Operator", "Pengiriman", "Penerima"]
+    labels = list((design.get("po") or {}).get("signature_labels") or ["Operator", "Pengiriman", "Penerima"])
+    footer_name = str((design.get("po") or {}).get("footer_name_label") or "Nama")
     sig_cells = []
     line_cells = []
     name_cells = []
@@ -273,7 +277,7 @@ def generate_sales_order_pdf_bytes(order: dict) -> bytes:
     for label in labels:
         sig_cells.append(Paragraph(esc(label), sty["center"]))
         line_cells.append(Spacer(1, 16 * mm))
-        line = Table([[Paragraph("Nama", sty["center"])]], colWidths=[line_width])
+        line = Table([[Paragraph(esc(footer_name), sty["center"])]], colWidths=[line_width])
         line.setStyle(TableStyle([
             ("LINEABOVE", (0, 0), (-1, -1), 0.6, colors.black),
             ("ALIGN", (0, 0), (-1, -1), "CENTER"),

@@ -22,6 +22,8 @@ describe("Settings category card navigation", () => {
       "sidebar-access",
       "operator-wage",
       "hpp",
+      "physical-stock",
+      "design-cetakan",
       "sales-accounting",
       "purchase-accounting",
       "payroll-accounting",
@@ -63,6 +65,7 @@ describe("Settings category card navigation", () => {
     expect(settingsSrc).toMatch(/"sales-activity":\s*canViewSalesActivity/);
     expect(settingsSrc).toMatch(/"route-optimizer":\s*canViewRouteOptimizer/);
     expect(settingsSrc).toMatch(/hpp:\s*canViewHpp/);
+    expect(settingsSrc).toMatch(/"design-cetakan":\s*canViewDesignCetakan/);
     expect(settingsSrc).toMatch(/"sales-accounting":\s*canViewSalesAccounting/);
     expect(settingsSrc).toMatch(/"purchase-accounting":\s*canViewPurchaseAccounting/);
     expect(settingsSrc).toMatch(/"payroll-accounting":\s*canViewPayrollAccounting/);
@@ -73,6 +76,7 @@ describe("Settings category card navigation", () => {
     expect(settingsSrc).toMatch(/settings-active-panel/);
     expect(settingsSrc).toMatch(/tab === "employees" && canViewUsers/);
     expect(settingsSrc).toMatch(/tab === "hpp" && canViewHpp/);
+    expect(settingsSrc).toMatch(/tab === "design-cetakan" && canViewDesignCetakan/);
     expect(settingsSrc).toMatch(/tab === "hr-payroll" && canViewHrPayroll/);
     // Must not render all panels unconditionally
     expect(settingsSrc).not.toMatch(/<(EmployeesTab|HppSettings|HrPayrollSettings)[^/]*\/>\s*<(EmployeesTab|HppSettings)/);
