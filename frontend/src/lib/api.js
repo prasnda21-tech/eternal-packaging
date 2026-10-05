@@ -261,6 +261,17 @@ export const api = {
   physicalMutations: (id, params = {}) => client.get(`/master-items/${encodeURIComponent(id)}/physical-mutations`, { params }).then((r) => r.data),
   physicalOpeningBalance: (id, params = {}) => client.get(`/master-items/${encodeURIComponent(id)}/physical-opening-balance`, { params }).then((r) => r.data),
   createPhysicalOpeningBalance: (id, payload) => client.post(`/master-items/${encodeURIComponent(id)}/physical-opening-balance`, payload).then((r) => r.data),
+  physicalOpeningImportTemplate: () =>
+    client.get(`/physical-opening-balances/import/template`, { responseType: "blob" }).then((r) => r.data),
+  physicalOpeningImportPreview: (file) => {
+    const form = new FormData();
+    form.append("file", file);
+    return client.post(`/physical-opening-balances/import/preview`, form, {
+      headers: { "Content-Type": "multipart/form-data" },
+    }).then((r) => r.data);
+  },
+  physicalOpeningImportConfirm: (payload) =>
+    client.post(`/physical-opening-balances/import`, payload).then((r) => r.data),
   createPhysicalAdjustment: (id, payload) => client.post(`/master-items/${encodeURIComponent(id)}/physical-adjustment`, payload).then((r) => r.data),
   listProductMutations: (id, params = {}) => client.get(`/master-items/${encodeURIComponent(id)}/mutations`, { params }).then((r) => r.data),
   getMutationDetail: (id, mutationId) => client.get(`/master-items/${encodeURIComponent(id)}/mutations/${encodeURIComponent(mutationId)}`).then((r) => r.data),

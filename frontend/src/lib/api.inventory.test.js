@@ -10,6 +10,9 @@ const INVENTORY_METHODS = [
   "physicalMutations",
   "physicalOpeningBalance",
   "createPhysicalOpeningBalance",
+  "physicalOpeningImportTemplate",
+  "physicalOpeningImportPreview",
+  "physicalOpeningImportConfirm",
   "createPhysicalAdjustment",
 ];
 

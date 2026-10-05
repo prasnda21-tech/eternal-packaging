@@ -477,6 +477,13 @@ function PhysicalAdjustModal({ item, warehouses, onClose, onSaved }) {
   );
 }
 
+function importMessage(ex, fallback) {
+  const det = ex?.response?.data?.detail;
+  if (typeof det === "string" && det.trim()) return det;
+  if (det && typeof det.message === "string" && det.message.trim()) return det.message;
+  return fallback;
+}
+
 function SaldoAwalModal({ canSubmit, branches, warehouses, onClose, onSaved }) {
   const [items, setItems] = useState([]);
   const [itemId, setItemId] = useState("");
@@ -489,6 +496,10 @@ function SaldoAwalModal({ canSubmit, branches, warehouses, onClose, onSaved }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [idempotencyKey, setIdempotencyKey] = useState(newKey);
+  const [preview, setPreview] = useState(null);
+  const [importKey, setImportKey] = useState("");
+  const [importing, setImporting] = useState(false);
+  const [importError, setImportError] = useState("");
   const options = warehouseChoices(warehouses, branchId);
   const selected = items.find((row) => row.id === itemId);
   const baseUnit = (selected?.unit || "PCS").toUpperCase();
@@ -530,6 +541,63 @@ function SaldoAwalModal({ canSubmit, branches, warehouses, onClose, onSaved }) {
   const branch = branches.find((row) => row.id === branchId);
   const warehouse = options.find((row) => row.id === warehouseId);
 
+  const downloadTemplate = async () => {
+    setImportError("");
+    try {
+      const blob = await api.physicalOpeningImportTemplate();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "saldo-awal-stock-fisik.xlsx";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (ex) {
+      setImportError(importMessage(ex, "Gagal mengunduh template"));
+    }
+  };
+
+  const onImportFile = async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    setImportError("");
+    setPreview(null);
+    try {
+      const result = await api.physicalOpeningImportPreview(file);
+      setPreview(result);
+      setImportKey(newKey());
+    } catch (ex) {
+      setImportError(importMessage(ex, "File tidak dapat diperiksa"));
+    }
+  };
+
+  const confirmImport = async () => {
+    if (!preview?.can_confirm || !importKey || importing) return;
+    setImporting(true);
+    setImportError("");
+    try {
+      await api.physicalOpeningImportConfirm({
+        idempotency_key: importKey,
+        lines: (preview.rows || []).filter((row) => row.status === "Siap").map((row) => ({
+          master_item_id: row.master_item_id,
+          branch_id: row.branch_id,
+          warehouse_id: row.warehouse_id,
+          physical_qty: row.physical_qty,
+          item_code: row.item_code,
+        })),
+      });
+      setPreview(null);
+      setImportKey("");
+      await onSaved();
+    } catch (ex) {
+      setImportError(importMessage(ex, "Impor saldo awal gagal"));
+    } finally {
+      setImporting(false);
+    }
+  };
+
   const submit = async (event) => {
     event.preventDefault();
     if (!ready || saving) return;
@@ -557,11 +625,59 @@ function SaldoAwalModal({ canSubmit, branches, warehouses, onClose, onSaved }) {
 
   return (
     <div className="mutation-drawer-overlay" data-testid="saldo-awal-modal" style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,.45)", zIndex: 40, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
-      <form onSubmit={submit} data-testid="saldo-awal-form" style={{ width: "min(560px, 100%)", background: "#fff", borderRadius: 12, padding: 20, display: "grid", gap: 12 }}>
+      <div data-testid="saldo-awal-panel" style={{ width: "min(960px, 100%)", maxHeight: "90vh", overflow: "auto", background: "#fff", borderRadius: 12, padding: 20, display: "grid", gap: 12 }}>
         <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
-          <h2 style={{ margin: 0 }}>Saldo Awal</h2>
+          <h2 style={{ margin: 0 }} data-testid="saldo-awal-title">Saldo Awal Stock Fisik</h2>
           <button type="button" className="ghost sm" onClick={onClose} aria-label="Tutup">Tutup</button>
         </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button type="button" className="ghost" onClick={downloadTemplate} data-testid="opening-import-template">Download Template</button>
+          <label className="ghost" style={{ display: "inline-flex", alignItems: "center", cursor: "pointer" }}>
+            Import Excel
+            <input type="file" accept=".xlsx,.csv,text/csv" onChange={onImportFile} data-testid="opening-import-file" style={{ display: "none" }} />
+          </label>
+        </div>
+        {importError && <div className="signal-strip" role="alert" data-testid="opening-import-error"><div><AlertCircle size={16} /><span>{importError}</span></div></div>}
+        {preview && (
+          <div style={{ overflowX: "auto" }}>
+            <table className="prod-table" data-testid="opening-import-preview">
+              <thead>
+                <tr>
+                  <th>Kode</th>
+                  <th>Nama Barang</th>
+                  <th>Satuan</th>
+                  <th>Gudang</th>
+                  <th>Stock Fisik Excel</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(preview.rows || []).map((row) => (
+                  <tr key={`${row.row_number}-${row.item_code}`} data-testid={`opening-import-row-${row.row_number}`}>
+                    <td>{row.item_code || "—"}</td>
+                    <td>{row.item_name || "—"}</td>
+                    <td>{row.unit || "—"}</td>
+                    <td>{row.warehouse_name || "—"}</td>
+                    <td>{row.physical_qty == null ? "—" : fmtQty(row.physical_qty)}</td>
+                    <td data-testid={`opening-import-status-${row.row_number}`}>
+                      {row.status}{row.reason ? ` — ${row.reason}` : ""}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <button
+          type="button"
+          className="primary"
+          disabled={!preview?.can_confirm || importing}
+          onClick={confirmImport}
+          data-testid="opening-import-confirm"
+        >
+          {importing ? "Menyimpan…" : "Konfirmasi Saldo Awal"}
+        </button>
+        <form onSubmit={submit} data-testid="saldo-awal-form" style={{ display: "grid", gap: 12 }}>
         {items.length === 0 && (
           <p data-testid="saldo-awal-empty-items">Belum ada Barang/Jasa pada environment preview.</p>
         )}
@@ -622,7 +738,8 @@ function SaldoAwalModal({ canSubmit, branches, warehouses, onClose, onSaved }) {
             </button>
           </>
         )}
-      </form>
+        </form>
+      </div>
     </div>
   );
 }

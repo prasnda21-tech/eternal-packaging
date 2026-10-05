@@ -185,6 +185,8 @@ async def ensure_indexes(db) -> None:
         unique=True,
         name="physical_balance_identity",
     )
+    await db["physical_opening_imports"].create_index("id", unique=True)
+    await db["physical_opening_imports"].create_index("idempotency_key", unique=True)
     confirmations = db[SALES_DELIVERY_CONFIRMATIONS]
     await confirmations.create_index("id", unique=True)
 

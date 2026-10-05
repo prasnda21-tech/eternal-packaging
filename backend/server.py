@@ -11839,6 +11839,61 @@ async def master_item_physical_opening_balance_get(
         raise HTTPException(400, str(exc)) from exc
 
 
+def _opening_import_http(exc) -> HTTPException:
+    detail = {"message": str(exc), "rows": exc.rows} if getattr(exc, "rows", None) else str(exc)
+    return HTTPException(getattr(exc, "status_code", 400), detail)
+
+
+@api_router.get("/physical-opening-balances/import/template")
+async def physical_opening_import_template(user=Depends(current_user)):
+    """Download the physical opening-balance workbook. Does not write stock."""
+    await _require_any_perm(user, "current_stock.update", "permissions.manage")
+    from services.physical_opening_import import build_template_xlsx
+
+    return FastAPIResponse(
+        content=build_template_xlsx(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="saldo-awal-stock-fisik.xlsx"'},
+    )
+
+
+@api_router.post("/physical-opening-balances/import/preview")
+async def physical_opening_import_preview(
+    file: UploadFile = File(...),
+    user=Depends(current_user),
+):
+    """Validate an opening-balance workbook. Does not write stock."""
+    await _require_any_perm(user, "current_stock.update", "permissions.manage")
+    from services.physical_opening_import import OpeningImportError, preview_opening_import
+
+    content = await file.read()
+    try:
+        return await preview_opening_import(db, content, file.filename or "")
+    except OpeningImportError as exc:
+        raise _opening_import_http(exc) from exc
+
+
+@api_router.post("/physical-opening-balances/import")
+async def physical_opening_import_confirm(
+    payload: dict = Body(...),
+    user=Depends(current_user),
+):
+    """Post validated opening lines as R2 OPENING_BALANCE in one transaction."""
+    await _require_any_perm(user, "current_stock.update", "permissions.manage")
+    from services.physical_opening_import import OpeningImportError, confirm_opening_import
+    from services.physical_stock import PhysicalStockUnavailableError
+
+    actor_id = str((user or {}).get("id") or (user or {}).get("user_id") or "").strip()
+    if not actor_id:
+        raise HTTPException(401, "Aktor tidak dikenal")
+    try:
+        return await confirm_opening_import(db, payload or {}, actor_id=actor_id)
+    except OpeningImportError as exc:
+        raise _opening_import_http(exc) from exc
+    except PhysicalStockUnavailableError as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+
 @api_router.get("/physical-stock")
 async def physical_stock_catalog_get(
     q: Optional[str] = None,
