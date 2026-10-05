@@ -88,6 +88,9 @@ describe("Persediaan live search inventory scope", () => {
     expect(stock).toMatch(/data-testid="stock-adjust-reason"/);
     expect(stock).toMatch(/Simpan Koreksi/);
     expect(stock).toMatch(/createPhysicalAdjustment/);
+    expect(stock).toMatch(/Koreksi manual dari Stock Saat Ini/);
+    expect(stock).toMatch(/stock-inline-input/);
+    expect(stock).toMatch(/adjustWarehouses\.length > 1/);
     expect(stock).toMatch(/await onSaved\(\)/);
     expect(stock).toMatch(/qty_pesanan/);
     expect(stock).toMatch(/qty_belum_terkirim/);

@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertCircle, Download, Search, X } from "lucide-react";
+import { AlertCircle, Check, Download, Search, X } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDate } from "../lib/constants";
 import { fmtQty } from "../components/qtyUi";
 import { useDebouncedLiveSearch, liveSearchTableView } from "../hooks/useDebouncedLiveSearch";
 import { openingReady, preselectedWarehouseId, stockEmptyMessage, warehouseChoices, yogyakartaWarehouses } from "../lib/physicalStockView";
+
+const INLINE_ADJUST_REASON = "Koreksi manual dari Stock Saat Ini";
 
 function newKey() {
   return globalThis.crypto?.randomUUID?.() || `saldo-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -26,6 +28,9 @@ export default function StockSaatIni() {
   const [pageSize, setPageSize] = useState(50);
   const [openingOpen, setOpeningOpen] = useState(false);
   const [adjustItem, setAdjustItem] = useState(null);
+  const [inlineItemId, setInlineItemId] = useState(null);
+  const [savingAdjust, setSavingAdjust] = useState(false);
+  const saveLock = useRef(false);
   const loadSeq = useRef(0);
 
   useEffect(() => { setPage(1); }, [q]);
@@ -81,6 +86,54 @@ export default function StockSaatIni() {
 
   const items = data?.items || [];
   const adjustWarehouses = yogyakartaWarehouses(branches, warehouses);
+  const singleWarehouse = adjustWarehouses.length === 1 ? adjustWarehouses[0] : null;
+
+  const beginAdjust = (item) => {
+    if (savingAdjust || saveLock.current) return;
+    if (adjustWarehouses.length === 0) {
+      setInlineItemId(null);
+      setAdjustItem(null);
+      setErr("Koreksi tidak tersedia: belum ada gudang aktif.");
+      return;
+    }
+    if (adjustWarehouses.length > 1) {
+      setInlineItemId(null);
+      setAdjustItem(item);
+      return;
+    }
+    setAdjustItem(null);
+    setErr("");
+    setInlineItemId(item.master_item_id);
+  };
+
+  const saveInline = async (item, target, setCellError, close) => {
+    if (saveLock.current || !singleWarehouse) return;
+    const current = Number(item.physical_qty);
+    if (target === current) {
+      close();
+      return;
+    }
+    saveLock.current = true;
+    setSavingAdjust(true);
+    setCellError("");
+    try {
+      await api.createPhysicalAdjustment(item.master_item_id, {
+        branch_id: singleWarehouse.branch_id,
+        warehouse_id: singleWarehouse.id,
+        target_physical_qty: target,
+        reason: INLINE_ADJUST_REASON,
+        idempotency_key: newKey(),
+      });
+      close();
+      await load();
+    } catch (ex) {
+      const det = ex.response?.data?.detail;
+      setCellError(typeof det === "object" ? det.message : (det || "Gagal menyimpan koreksi"));
+    } finally {
+      saveLock.current = false;
+      setSavingAdjust(false);
+    }
+  };
   const pageCount = data?.page_count || 1;
   const tableBusy = searchPending || loading;
   const tableView = liveSearchTableView({
@@ -219,12 +272,19 @@ export default function StockSaatIni() {
                 <td className="col-text">{it.item_name || "—"}</td>
                 <td className="col-fit">{it.base_unit || "—"}</td>
                 <td className="col-fit num mono" data-testid={`stock-physical-${it.master_item_id}`}>
-                  {canAdjust ? (
+                  {canAdjust && inlineItemId === it.master_item_id && singleWarehouse ? (
+                    <InlinePhysicalEditor
+                      item={it}
+                      saving={savingAdjust}
+                      onCancel={() => setInlineItemId(null)}
+                      onSave={(target, setCellError, close) => saveInline(it, target, setCellError, close)}
+                    />
+                  ) : canAdjust ? (
                     <button
                       type="button"
                       className="ghost sm"
                       data-testid={`stock-adjust-${it.master_item_id}`}
-                      onClick={() => setAdjustItem(it)}
+                      onClick={() => beginAdjust(it)}
                     >
                       {fmtQty(it.physical_qty)}
                     </button>
@@ -257,7 +317,7 @@ export default function StockSaatIni() {
           onSaved={load}
         />
       )}
-      {adjustItem && (
+      {adjustItem && adjustWarehouses.length > 1 && (
         <PhysicalAdjustModal
           item={adjustItem}
           warehouses={adjustWarehouses}
@@ -266,6 +326,64 @@ export default function StockSaatIni() {
         />
       )}
     </div>
+  );
+}
+
+function InlinePhysicalEditor({ item, saving, onCancel, onSave }) {
+  const [draft, setDraft] = useState(() => String(item.physical_qty ?? 0));
+  const [error, setError] = useState("");
+  const inputRef = useRef(null);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+    inputRef.current?.select();
+  }, []);
+
+  const save = () => {
+    if (saving) return;
+    const raw = String(draft).trim();
+    if (!/^\d+$/.test(raw)) {
+      setError("Target stok fisik harus bilangan 0 atau lebih.");
+      return;
+    }
+    onSave(Number(raw), setError, onCancel);
+  };
+
+  return (
+    <span data-testid={`stock-inline-${item.master_item_id}`} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+      <input
+        ref={inputRef}
+        value={draft}
+        inputMode="numeric"
+        aria-label="Target Stock Fisik"
+        data-testid={`stock-inline-input-${item.master_item_id}`}
+        disabled={saving}
+        style={{ width: 72 }}
+        onChange={(e) => {
+          const next = e.target.value;
+          if (next === "" || /^\d+$/.test(next)) {
+            setDraft(next);
+            setError("");
+          }
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            save();
+          } else if (e.key === "Escape") {
+            e.preventDefault();
+            if (!saving) onCancel();
+          }
+        }}
+      />
+      <button type="button" className="ghost sm" aria-label="Simpan" data-testid={`stock-inline-save-${item.master_item_id}`} disabled={saving} onClick={save}>
+        {saving ? "…" : <Check size={14} />}
+      </button>
+      <button type="button" className="ghost sm" aria-label="Batal" data-testid={`stock-inline-cancel-${item.master_item_id}`} disabled={saving} onClick={onCancel}>
+        <X size={14} />
+      </button>
+      {error && <span role="alert" data-testid={`stock-inline-error-${item.master_item_id}`}>{error}</span>}
+    </span>
   );
 }
 
