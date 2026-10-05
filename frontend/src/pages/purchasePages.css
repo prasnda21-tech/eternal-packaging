@@ -945,6 +945,45 @@
   align-items: center;
 }
 
+.purchase-page .retur-detail-head,
+.purchase-page .retur-detail-head-actions {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.purchase-page .retur-detail-head {
+  margin-bottom: 8px;
+}
+
+.purchase-page .retur-detail-head-actions {
+  align-items: center;
+}
+
+.purchase-page .retur-item-cell {
+  max-width: 280px;
+}
+
+.purchase-page .retur-item-code,
+.purchase-page .retur-item-name,
+.purchase-page .retur-wrap {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.purchase-page .retur-item-code {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 12px;
+}
+
+.purchase-page .retur-item-name {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
 .purchase-page .purchase-receipt-list {
   margin-top: 16px;
   padding-top: 14px;

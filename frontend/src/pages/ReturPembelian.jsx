@@ -49,11 +49,30 @@ function receiptLabel(row, receiptsById) {
   return receiptsById[id]?.receipt_number || id;
 }
 
+function formatReturnDate(value) {
+  const text = String(value || "").slice(0, 10);
+  const match = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return text || "—";
+  const date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
+  return new Intl.DateTimeFormat("id-ID", {
+    day: "2-digit",
+    month: "long",
+    year: "numeric",
+    timeZone: "UTC",
+  }).format(date);
+}
+
+function warehouseName(id, warehouses) {
+  const row = (warehouses || []).find((item) => String(item.id) === String(id || ""));
+  return row?.name || row?.warehouse_name || "";
+}
+
 export default function ReturPembelian() {
   const { hasPerm } = useAuth();
   const canMutate = hasPerm("purchase_receipts.receive") || hasPerm("purchase_receipts.sync");
   const [rows, setRows] = useState([]);
   const [receipts, setReceipts] = useState([]);
+  const [warehouses, setWarehouses] = useState([]);
   const [q, setQ] = useState("");
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
@@ -72,12 +91,14 @@ export default function ReturPembelian() {
     setLoading(true);
     setErr("");
     try {
-      const [ret, rec] = await Promise.all([
+      const [ret, rec, warehouseResult] = await Promise.all([
         api.listPurchaseReturns({ include_cancelled: true }),
         api.listPurchaseGoodsReceipts(),
+        api.warehouses().catch(() => ({ items: [] })),
       ]);
       setRows(ret.returns || []);
       setReceipts(rec.receipts || []);
+      setWarehouses(warehouseResult.items || warehouseResult.warehouses || []);
     } catch (ex) {
       setErr(friendlyLoadError(ex, "Tidak dapat memuat retur pembelian."));
     } finally {
@@ -227,8 +248,15 @@ export default function ReturPembelian() {
     }
   };
 
+  const closeDetail = () => {
+    setDetail(null);
+    setFinance(null);
+  };
+
   const financeStatus = finance?.financial_status || detail?.financial_status;
   const readOnly = detail && (detail.status === "CANCELLED" || detail.status === "REVERSED");
+  const detailWarehouseId = (detail?.lines || [])[0]?.warehouse_id || "";
+  const detailWarehouse = warehouseName(detailWarehouseId, warehouses);
 
   return (
     <div className="prod-page purchase-page" data-testid="retur-pembelian-page">
@@ -363,33 +391,69 @@ export default function ReturPembelian() {
       )}
 
       {detail && (
-        <div className="card" data-testid="retur-detail" style={{ marginTop: 12 }}>
-          <h3 data-testid="retur-detail-number">{detail.return_number}</h3>
-          <p>Tanggal: {detail.return_date || "—"}</p>
-          <p data-testid="retur-detail-supplier">Supplier: {detail.supplier_name || detail.supplier || "—"}</p>
-          <p data-testid="retur-detail-po">Pesanan Pembelian: {detail.po_number || "—"}</p>
-          <p data-testid="retur-detail-receipt">Penerimaan: {receiptLabel(detail, receiptsById)}</p>
-          <p data-testid="retur-detail-warehouse">Gudang: {(detail.lines || [])[0]?.warehouse_id || "—"}</p>
-          <p data-testid="retur-detail-status">Status: {statusLabel(detail)}</p>
-          <p data-testid="retur-detail-financial">{financialLabel(financeStatus, detail.status)}</p>
+        <div className="card purchase-detail-card" data-testid="retur-detail">
+          <div className="retur-detail-head">
+            <div>
+              <p className="eyebrow">Retur Pembelian</p>
+              <h3 data-testid="retur-detail-number">{detail.return_number}</h3>
+            </div>
+            <div className="retur-detail-head-actions">
+              <span className={purchaseStatusPillClass(detail.status)} data-testid="retur-detail-status">{statusLabel(detail)}</span>
+              <button type="button" className="ghost sm" data-testid="retur-detail-close" onClick={closeDetail}>Tutup Detail</button>
+            </div>
+          </div>
+          <h4>Informasi Dokumen</h4>
+          <div className="purchase-detail-meta" data-testid="retur-detail-meta">
+            <div>
+              <span className="label">Tanggal</span>
+              <span className="value" data-testid="retur-detail-date">{formatReturnDate(detail.return_date)}</span>
+            </div>
+            <div>
+              <span className="label">Supplier</span>
+              <span className="value retur-wrap" data-testid="retur-detail-supplier">{detail.supplier_name || detail.supplier || "—"}</span>
+            </div>
+            <div>
+              <span className="label">Pesanan Pembelian</span>
+              <span className="value mono" data-testid="retur-detail-po">{detail.po_number || "—"}</span>
+            </div>
+            <div>
+              <span className="label">Penerimaan Barang</span>
+              <span className="value mono" data-testid="retur-detail-receipt">{receiptLabel(detail, receiptsById)}</span>
+            </div>
+            <div>
+              <span className="label">Gudang</span>
+              <span className="value" data-testid="retur-detail-warehouse">{detailWarehouse || "—"}</span>
+            </div>
+            <div>
+              <span className="label">Status Finansial</span>
+              <span className="value" data-testid="retur-detail-financial">{financialLabel(financeStatus, detail.status)}</span>
+            </div>
+          </div>
           {financeStatus === FINANCIAL_PENDING && (
             <p data-testid="retur-pending-allocation">Menunggu Alokasi Finansial. Faktur tidak dipilih otomatis.</p>
           )}
           {(finance?.credits || []).length > 0 && (
-            <div data-testid="retur-credits">
-              <h4>Kredit Retur</h4>
+            <div className="purchase-detail-meta" data-testid="retur-credits">
               {(finance.credits || []).map((credit) => (
-                <p key={credit.id} data-testid="retur-credit-row">
-                  Kredit retur {formatRupiah(credit.credit_amount)} · diterapkan ke faktur {credit.purchase_invoice_id || "—"} sebesar {formatRupiah(credit.applied_to_invoice_amount || 0)}
-                  {Number(credit.supplier_credit_amount) > 0 ? ` · kredit supplier ${formatRupiah(credit.supplier_credit_amount)}` : ""}
-                </p>
+                <div key={credit.id} data-testid="retur-credit-row">
+                  <span className="label">Kredit Retur</span>
+                  <span className="value">{formatRupiah(credit.credit_amount)}</span>
+                  <span className="label">Diterapkan ke faktur</span>
+                  <span className="value mono">{credit.purchase_invoice_id || "—"} · {formatRupiah(credit.applied_to_invoice_amount || 0)}</span>
+                  {Number(credit.supplier_credit_amount) > 0 && (
+                    <span className="value">Kredit supplier {formatRupiah(credit.supplier_credit_amount)}</span>
+                  )}
+                </div>
               ))}
             </div>
           )}
           {(finance?.supplier_credits || []).length > 0 && (
-            <div data-testid="retur-supplier-credits">
+            <div className="purchase-detail-meta" data-testid="retur-supplier-credits">
               {(finance.supplier_credits || []).map((credit) => (
-                <p key={credit.id}>Kredit supplier {formatRupiah(credit.original_amount)} · sisa {formatRupiah(credit.available_amount || 0)}</p>
+                <div key={credit.id}>
+                  <span className="label">Kredit Supplier</span>
+                  <span className="value">{formatRupiah(credit.original_amount)} · sisa {formatRupiah(credit.available_amount || 0)}</span>
+                </div>
               ))}
             </div>
           )}
@@ -398,16 +462,19 @@ export default function ReturPembelian() {
               <thead>
                 <tr>
                   <th>Barang</th>
-                  <th className="num">Diterima</th>
-                  <th className="num">Qty retur</th>
+                  <th className="num">Qty Diterima</th>
+                  <th className="num">Qty Retur</th>
                   <th>Satuan</th>
-                  <th>Status finansial</th>
+                  <th>Status Finansial</th>
                 </tr>
               </thead>
               <tbody>
                 {(detail.lines || []).map((line) => (
-                  <tr key={line.line_id}>
-                    <td>{line.item_code} {line.item_name}</td>
+                  <tr key={line.line_id} data-testid="retur-detail-line">
+                    <td className="retur-item-cell">
+                      <span className="retur-item-code" data-testid="retur-detail-item-code">{line.item_code || "—"}</span>
+                      <span className="retur-item-name" title={line.item_name || ""} data-testid="retur-detail-item">{line.item_name || "—"}</span>
+                    </td>
                     <td className="num">{line.received_qty}</td>
                     <td className="num" data-testid="retur-detail-qty">{line.return_qty}</td>
                     <td>{line.unit || "PCS"}</td>
@@ -418,18 +485,18 @@ export default function ReturPembelian() {
             </table>
           </div>
           {canMutate && detail.status === "DRAFT" && (
-            <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+            <div className="purchase-detail-actions">
               <button type="button" className="primary" disabled={busy} data-testid="retur-confirm" onClick={() => act("confirm")}>Konfirmasi Retur</button>
               <button type="button" className="ghost" disabled={busy} data-testid="retur-cancel" onClick={() => act("cancel")}>Batalkan</button>
             </div>
           )}
           {canMutate && detail.status === "CONFIRMED" && (
-            <div style={{ marginTop: 12 }}>
-              <p>Retur terkonfirmasi. Pembatalan mengikuti proses reversal yang ada.</p>
+            <div className="purchase-detail-actions">
+              <p className="muted small">Retur terkonfirmasi. Pembatalan mengikuti proses reversal yang ada.</p>
               <button type="button" className="ghost" disabled={busy} data-testid="retur-reverse" onClick={() => act("reverse")}>Batalkan Retur</button>
             </div>
           )}
-          {readOnly && <p data-testid="retur-readonly">Dokumen ini hanya dapat dibaca.</p>}
+          {readOnly && <p className="muted small" data-testid="retur-readonly">Dokumen ini hanya dapat dilihat.</p>}
         </div>
       )}
     </div>

@@ -36,6 +36,7 @@ jest.mock("../lib/api", () => ({
     createPurchaseReturn: jest.fn(),
     confirmPurchaseReturn: jest.fn(),
     cancelPurchaseReturn: jest.fn(),
+    warehouses: jest.fn(),
   },
 }));
 
@@ -132,6 +133,9 @@ describe("Retur Pembelian page", () => {
     mockHasPerm.mockImplementation((key) => key === "purchase_receipts.receive" || key === "purchase_receipts.view");
     mockApi.listPurchaseReturns.mockResolvedValue({ returns: [draftReturn()] });
     mockApi.listPurchaseGoodsReceipts.mockResolvedValue({ receipts: [receipt] });
+    mockApi.warehouses.mockResolvedValue({
+      items: [{ id: "wh-receipt", name: "Gudang Yogyakarta" }],
+    });
     mockApi.getPurchaseGoodsReceipt.mockResolvedValue({ receipt });
     mockApi.getPurchaseReturn.mockImplementation(async () => ({ return: draftReturn() }));
     mockApi.getPurchaseReturnFinancial.mockResolvedValue({
@@ -234,6 +238,24 @@ describe("Retur Pembelian page", () => {
     expect(container.querySelector('[data-testid="retur-readonly"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="retur-confirm"]')).toBeNull();
     expect(container.querySelector('[data-testid="retur-reverse"]')).toBeNull();
+  });
+
+  test("detail card shows document facts and can close", async () => {
+    await renderPage();
+    click(container, '[data-testid="retur-open"]');
+    await flush();
+    expect(container.querySelector('[data-testid="retur-detail-number"]').textContent).toBe("RPB-1");
+    expect(container.querySelector('[data-testid="retur-detail-supplier"]').textContent).toBe("Supplier Uji");
+    expect(container.querySelector('[data-testid="retur-detail-po"]').textContent).toBe("PB-1");
+    expect(container.querySelector('[data-testid="retur-detail-receipt"]').textContent).toBe("PB-RC-1");
+    expect(container.querySelector('[data-testid="retur-detail-warehouse"]').textContent).toBe("Gudang Yogyakarta");
+    expect(container.querySelector('[data-testid="retur-detail"]').textContent).not.toContain("wh-receipt");
+    expect(container.querySelector('[data-testid="retur-detail-date"]').textContent).toBe("05 Oktober 2026");
+    expect(container.querySelector('[data-testid="retur-detail-item"]').textContent).toBe("Dus Uji");
+    expect(container.querySelector('[data-testid="retur-detail-financial"]').textContent).toBe("Belum terkait kredit faktur");
+    expect(container.querySelectorAll('[data-testid="retur-detail"]')).toHaveLength(1);
+    click(container, '[data-testid="retur-detail-close"]');
+    expect(container.querySelector('[data-testid="retur-detail"]')).toBeNull();
   });
 
   test("cancelled state is read-only and pending finance is not guessed", async () => {
