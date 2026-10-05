@@ -14585,6 +14585,24 @@ async def seed():
         partialFilterExpression={"confirmation_key": {"$type": "string"}},
         name="purchase_return_confirmation_key_partial_unique",
     )
+    await db.purchase_return_credits.create_index("id", unique=True)
+    await db.purchase_return_credits.create_index("purchase_return_id")
+    await db.purchase_return_credits.create_index("purchase_invoice_id")
+    await db.purchase_return_credits.create_index(
+        "idempotency_key",
+        unique=True,
+        partialFilterExpression={"idempotency_key": {"$type": "string"}},
+        name="purchase_return_credit_idempotency_key",
+    )
+    await db.purchase_supplier_credits.create_index("id", unique=True)
+    await db.purchase_supplier_credits.create_index("supplier_key")
+    await db.purchase_supplier_credits.create_index("source_purchase_return_id")
+    await db.purchase_supplier_credits.create_index(
+        "source_purchase_return_credit_id",
+        unique=True,
+        partialFilterExpression={"source_purchase_return_credit_id": {"$type": "string"}},
+        name="supplier_credit_source_credit_unique",
+    )
     await db.purchase_supplier_advances.create_index(
         "confirmation_key",
         unique=True,

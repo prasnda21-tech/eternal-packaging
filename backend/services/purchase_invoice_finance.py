@@ -1,7 +1,9 @@
 """Canonical purchase-invoice settlement.
 
-Supplier advance is optional. Only active allocations and confirmed
-payments reduce outstanding. Purchase return credit is not included yet.
+Supplier advance is optional. Active purchase-return credit, active
+advance allocations, and confirmed payments reduce outstanding. Return
+credit is not a payment. Excess credit is supplier credit, never a
+negative outstanding.
 """
 from __future__ import annotations
 
@@ -40,14 +42,16 @@ def invoice_financial_summary(
     invoice_amount: Any,
     advance_applied: Any = 0,
     payments_applied: Any = 0,
+    purchase_return_credit: Any = 0,
     cancelled: bool = False,
 ) -> Dict[str, Any]:
-    """Single settlement formula for invoice, payment, and allocation reads."""
+    """invoice - return credit - advance - confirmed payments, floored at zero."""
     amount = money_round(invoice_amount)
+    credit = money_round(purchase_return_credit)
     advance = money_round(advance_applied)
     payments = money_round(payments_applied)
     settled = money_round(advance + payments)
-    raw_outstanding = money_round(amount - settled)
+    raw_outstanding = money_round(amount - credit - settled)
     outstanding = raw_outstanding if raw_outstanding > 0 else 0.0
     if cancelled:
         status = STATUS_CANCELLED
@@ -59,6 +63,7 @@ def invoice_financial_summary(
         status = STATUS_PARTIAL
     return {
         "invoice_amount": amount,
+        "purchase_return_credit": credit,
         "advance_applied": advance,
         "payments_applied": payments,
         "settled_amount": settled,

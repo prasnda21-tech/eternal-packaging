@@ -442,8 +442,14 @@ async def _confirm_once(db, doc: dict, confirmation_key: str, user: dict) -> dic
                 raise PhysicalStockAbortError("forced purchase return r2 abort")
             for line, movement in zip(prepared, movements):
                 line["movement_id"] = movement["id"]
+            from services.purchase_return_finance import (
+                _header_financial_status,
+                financialize_unambiguous_lines,
+            )
+            prepared = await financialize_unambiguous_lines(db, session, current, prepared, user)
             fields = {
                 "status": STATUS_CONFIRMED,
+                "financial_status": _header_financial_status(prepared),
                 "lines": prepared,
                 "confirmed_at": now_iso(),
                 "confirmed_by": actor_id,
@@ -542,6 +548,8 @@ async def _reverse_once(db, doc: dict, user: dict, reason: str) -> dict:
                 )
                 if not released:
                     raise HTTPException(409, "Pembatalan retur gagal karena kuantitas retur tidak tersimpan utuh.")
+            from services.purchase_return_finance import reverse_return_financials
+            await reverse_return_financials(db, session, current, user)
             if _fail_after_r2_movements:
                 raise PhysicalStockAbortError("forced purchase return reversal abort")
             fields = cancellation_fields(user, reason)

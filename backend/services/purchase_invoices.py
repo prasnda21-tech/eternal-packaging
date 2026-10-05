@@ -81,16 +81,21 @@ async def _advance_applied_total(db, invoice_id: str) -> float:
 
 async def attach_payment_fields(db, inv: dict) -> dict:
     from services.purchase_invoice_finance import invoice_financial_summary
+    from services.purchase_return_finance import active_return_credit_breakdown
 
     out = dict(inv)
     paid = await _paid_total(db, out["id"])
     applied = await _advance_applied_total(db, out["id"])
+    credit = await active_return_credit_breakdown(db, out["id"])
     summary = invoice_financial_summary(
         invoice_amount=out.get("grand_total"),
         advance_applied=applied,
         payments_applied=paid,
+        purchase_return_credit=credit["purchase_return_credit"],
         cancelled=is_cancelled(out),
     )
+    summary["purchase_return_credit_applied_to_outstanding"] = credit["purchase_return_credit_applied_to_outstanding"]
+    summary["supplier_credit_generated"] = credit["supplier_credit_generated"]
     raw_status = str(out.get("payment_status") or "")
     out.update(summary)
     out["paid_total"] = paid

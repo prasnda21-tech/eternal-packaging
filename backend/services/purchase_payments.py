@@ -760,10 +760,13 @@ async def confirm_purchase_payment(db, payment_id: str, user: dict) -> dict:
                         ).to_list(2000)
                         paid = money_round(sum(float(row.get("amount") or 0) for row in paid_rows))
                         applied = await active_applied_total(db, invoice["id"], session=session)
+                        from services.purchase_return_finance import active_return_credit_total
+                        credited = await active_return_credit_total(db, invoice["id"], session=session)
                         summary = invoice_financial_summary(
                             invoice_amount=invoice.get("grand_total"),
                             advance_applied=applied,
                             payments_applied=paid,
+                            purchase_return_credit=credited,
                         )
                         amount = money_round(current.get("amount"))
                         if amount > summary["outstanding_amount"]:

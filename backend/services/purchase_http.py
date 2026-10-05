@@ -73,6 +73,11 @@ def register_purchase_routes(api_router, *, get_db, current_user, require_perm, 
         get_purchase_return,
         list_purchase_returns,
     )
+    from services.purchase_return_finance import (
+        allocate_ambiguous_return,
+        list_supplier_credits,
+        read_return_financial_state,
+    )
     from services.purchase_invoice_posting import (
         PERM_POST as PURCHASE_INVOICE_POST_PERM,
         PERM_REVERSE as PURCHASE_INVOICE_REVERSE_PERM,
@@ -258,6 +263,29 @@ def register_purchase_routes(api_router, *, get_db, current_user, require_perm, 
         await require_any_perm(user, "purchase_receipts.receive", "purchase_receipts.sync")
         doc = await confirm_purchase_return(get_db(), return_id, _dump(payload), user)
         return {"return": doc, "message": "Retur pembelian dikonfirmasi"}
+
+    @api_router.get("/purchase-returns/{return_id}/financial")
+    async def purchase_return_financial_endpoint(return_id: str, user=Depends(current_user)):
+        await require_any_perm(user, "purchase_receipts.view", "purchase_orders.view", "purchase_invoices.view")
+        return await read_return_financial_state(get_db(), return_id)
+
+    @api_router.post("/purchase-returns/{return_id}/financial-allocations")
+    async def purchase_return_financial_allocation_endpoint(
+        return_id: str,
+        payload: LoosePayload,
+        user=Depends(current_user),
+    ):
+        await require_any_perm(user, "purchase_receipts.receive", "purchase_invoices.create")
+        return await allocate_ambiguous_return(get_db(), return_id, _dump(payload), user)
+
+    @api_router.get("/purchase-supplier-credits")
+    async def list_purchase_supplier_credits_endpoint(
+        supplier: Optional[str] = None,
+        user=Depends(current_user),
+    ):
+        await require_any_perm(user, "purchase_invoices.view", "purchase_orders.view", "purchase_payments.view")
+        rows = await list_supplier_credits(get_db(), supplier=supplier)
+        return {"supplier_credits": rows, "count": len(rows)}
 
     @api_router.post("/purchase-returns/{return_id}/cancel")
     async def cancel_purchase_return_endpoint(

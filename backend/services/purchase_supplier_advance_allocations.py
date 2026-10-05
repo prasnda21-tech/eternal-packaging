@@ -211,10 +211,18 @@ async def _write_allocation(db, session, payload: dict, user: dict) -> dict:
 
     paid = await _paid_payments(db, invoice_id, session=session)
     applied = await active_applied_total(db, invoice_id, session=session)
+    from services.purchase_return_finance import active_return_credit_total
+    from services.purchase_invoice_finance import invoice_financial_summary
+    credited = await active_return_credit_total(db, invoice_id, session=session)
     cached_applied = money_round(invoice.get("advance_applied_amount") or 0)
     if cached_applied != applied:
         raise HTTPException(409, "Alokasi faktur tidak rekonsiliasi.")
-    outstanding = money_round(float(invoice.get("grand_total") or 0) - paid - applied)
+    outstanding = invoice_financial_summary(
+        invoice_amount=invoice.get("grand_total"),
+        advance_applied=applied,
+        payments_applied=paid,
+        purchase_return_credit=credited,
+    )["outstanding_amount"]
     if money_round(amount) > outstanding:
         raise HTTPException(409, "Nilai alokasi melebihi sisa tagihan.")
 
