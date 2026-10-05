@@ -11845,13 +11845,20 @@ def _opening_import_http(exc) -> HTTPException:
 
 
 @api_router.get("/physical-opening-balances/import/template")
-async def physical_opening_import_template(user=Depends(current_user)):
-    """Download the physical opening-balance workbook. Does not write stock."""
+async def physical_opening_import_template(
+    warehouse_id: Optional[str] = None,
+    user=Depends(current_user),
+):
+    """Download a prefilled opening-balance workbook. Does not write stock."""
     await _require_any_perm(user, "current_stock.update", "permissions.manage")
-    from services.physical_opening_import import build_template_xlsx
+    from services.physical_opening_import import OpeningImportError, build_template_xlsx
 
+    try:
+        content = await build_template_xlsx(db, warehouse_id=warehouse_id)
+    except OpeningImportError as exc:
+        raise _opening_import_http(exc) from exc
     return FastAPIResponse(
-        content=build_template_xlsx(),
+        content=content,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": 'attachment; filename="saldo-awal-stock-fisik.xlsx"'},
     )

@@ -543,8 +543,13 @@ function SaldoAwalModal({ canSubmit, branches, warehouses, onClose, onSaved }) {
 
   const downloadTemplate = async () => {
     setImportError("");
+    const selectedWarehouseId = warehouseId || preselectedWarehouseId(yogyakartaWarehouses(branches, warehouses));
+    if (!selectedWarehouseId) {
+      setImportError("Pilih gudang sebelum mengunduh template.");
+      return;
+    }
     try {
-      const blob = await api.physicalOpeningImportTemplate();
+      const blob = await api.physicalOpeningImportTemplate({ warehouse_id: selectedWarehouseId });
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;

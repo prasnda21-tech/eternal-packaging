@@ -46,9 +46,9 @@ function catalog(physical = 0) {
   };
 }
 
-async function renderStock() {
+async function renderStock(warehouses = [{ id: "wh-main", branch_id: "ygy", code: "MAIN", name: "Gudang Yogyakarta", active: true }]) {
   api.branches.mockResolvedValue({ items: [{ id: "ygy", code: "YGY", name: "Yogyakarta" }] });
-  api.warehouses.mockResolvedValue({ items: [{ id: "wh-main", branch_id: "ygy", code: "MAIN", name: "Gudang Yogyakarta", active: true }] });
+  api.warehouses.mockResolvedValue({ items: warehouses });
   api.physicalStockCatalog.mockResolvedValue(catalog());
   api.masterItems.mockResolvedValue({ items: [] });
   const container = document.createElement("div");
@@ -151,6 +151,40 @@ describe("Stock Saat Ini physical opening import", () => {
     }));
     expect(api.physicalStockCatalog.mock.calls.length).toBeGreaterThan(1);
     expect(view.container.querySelector('[data-testid="stock-physical-item-1"]').textContent).toMatch(/100/);
+    view.cleanup();
+  });
+
+  test("template download sends the single known warehouse", async () => {
+    const view = await renderStock();
+    URL.createObjectURL = jest.fn(() => "blob:template");
+    URL.revokeObjectURL = jest.fn();
+    api.physicalOpeningImportTemplate.mockResolvedValue(new Blob(["xlsx"]));
+    await act(async () => {
+      view.container.querySelector('[data-testid="saldo-awal-button"]').click();
+    });
+    await act(async () => {
+      view.container.querySelector('[data-testid="opening-import-template"]').click();
+      await Promise.resolve();
+    });
+    expect(api.physicalOpeningImportTemplate).toHaveBeenCalledWith({ warehouse_id: "wh-main" });
+    expect(api.physicalOpeningImportPreview).not.toHaveBeenCalled();
+    expect(api.physicalOpeningImportConfirm).not.toHaveBeenCalled();
+    view.cleanup();
+  });
+
+  test("template download does not guess among multiple warehouses", async () => {
+    const view = await renderStock([
+      { id: "wh-main", branch_id: "ygy", code: "MAIN", name: "Gudang Yogyakarta", active: true },
+      { id: "wh-sop", branch_id: "ygy", code: "SOPUAT", name: "Gudang Opname", active: true },
+    ]);
+    await act(async () => {
+      view.container.querySelector('[data-testid="saldo-awal-button"]').click();
+    });
+    await act(async () => {
+      view.container.querySelector('[data-testid="opening-import-template"]').click();
+    });
+    expect(api.physicalOpeningImportTemplate).not.toHaveBeenCalled();
+    expect(view.container.querySelector('[data-testid="opening-import-error"]').textContent).toMatch(/Pilih gudang/);
     view.cleanup();
   });
 

@@ -7,7 +7,7 @@ import uuid
 
 import pytest
 from motor.motor_asyncio import AsyncIOMotorClient
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 
 os.environ["DB_NAME"] = "eternal_packaging_test_physical_opening_import"
 os.environ.setdefault(
@@ -24,6 +24,7 @@ from services.physical_opening_import import (  # noqa: E402
     STATUS_READY,
     STATUS_UNKNOWN,
     OpeningImportError,
+    build_template_xlsx,
     confirm_opening_import,
     preview_opening_import,
 )
@@ -357,6 +358,72 @@ def _admin():
         "user_id": "admin-open",
         "permissions_override": {},
     }
+
+
+def _sheet_rows(content: bytes):
+    book = load_workbook(io.BytesIO(content), data_only=True)
+    return [list(row) for row in book.active.iter_rows(values_only=True)]
+
+
+async def test_template_prefills_eligible_items_and_writes_nothing(db):
+    branch, (main, other) = await _location(
+        db, warehouses=(("MAIN", "Gudang Yogyakarta"), ("SOPUAT", "Gudang Opname")),
+    )
+    ready = await _item(db, "OB-READY", name="Cup Siap")
+    await _item(db, "JASA-1", item_type="service", name="Jasa Cetak")
+    inactive = {
+        "id": "item-off",
+        "item_code": "OB-OFF",
+        "item_name": "Tidak Aktif",
+        "unit": "PCS",
+        "is_active": False,
+    }
+    await db[MASTER_ITEMS_COLLECTION].insert_one(inactive)
+    opened = await _item(db, "OB-OPEN", name="Sudah Ada")
+    await confirm_opening_import(
+        db,
+        {"idempotency_key": "template-open", "lines": [_line(opened, branch, main, 4)]},
+        actor_id="actor-1",
+    )
+    duplicate = {"id": "dup-a", "item_code": "OB-DUP", "item_name": "Dup A", "unit": "PCS"}
+    await db[MASTER_ITEMS_COLLECTION].insert_one(dict(duplicate))
+    await db[MASTER_ITEMS_COLLECTION].insert_one(
+        {"id": "dup-b", "item_code": "OB-DUP", "item_name": "Dup B", "unit": "PCS"},
+    )
+    before_ledger = await db[LEDGER_COLLECTION].count_documents({})
+    before_balance = await db[BALANCE_COLLECTION].count_documents({})
+    with pytest.raises(OpeningImportError, match="Pilih gudang"):
+        await build_template_xlsx(db)
+    content = await build_template_xlsx(db, warehouse_id=main["id"])
+    assert await db[LEDGER_COLLECTION].count_documents({}) == before_ledger
+    assert await db[BALANCE_COLLECTION].count_documents({}) == before_balance
+    rows = _sheet_rows(content)
+    assert rows[0] == ["Kode Barang", "Nama Barang", "Satuan Dasar", "Gudang", "Stock Fisik"]
+    body = rows[1:]
+    codes = [row[0] for row in body]
+    assert codes == ["OB-READY"]
+    assert body[0][1] == "Cup Siap"
+    assert body[0][2] == "PCS"
+    assert body[0][3] == "Gudang Yogyakarta"
+    assert body[0][4] is None
+    assert main["id"] not in body[0]
+    assert "JASA-1" not in codes
+    assert "OB-OFF" not in codes
+    assert "OB-OPEN" not in codes
+    assert "OB-DUP" not in codes
+    assert len(codes) == len(set(codes))
+    book = load_workbook(io.BytesIO(content))
+    book.active.cell(row=2, column=5).value = 12
+    filled = io.BytesIO()
+    book.save(filled)
+    preview = await preview_opening_import(db, filled.getvalue(), "saldo.xlsx")
+    assert preview["can_confirm"] is True
+    assert preview["rows"][0]["master_item_id"] == ready["id"]
+    assert preview["rows"][0]["warehouse_id"] == main["id"]
+    assert preview["rows"][0]["warehouse_id"] != other["id"]
+    assert preview["rows"][0]["physical_qty"] == 12
+    assert await db[LEDGER_COLLECTION].count_documents({}) == before_ledger
+    assert await db[BALANCE_COLLECTION].count_documents({}) == before_balance
 
 
 async def test_http_preview_does_not_write_and_confirm_posts(db):

@@ -57,14 +57,100 @@ class OpeningImportError(Exception):
         self.rows = rows or []
 
 
-def build_template_xlsx() -> bytes:
+def _workbook(rows: List[list]) -> bytes:
     book = Workbook()
     sheet = book.active
     sheet.title = "Saldo Awal"
     sheet.append(list(HEADERS))
+    for row in rows:
+        sheet.append(row)
     buffer = io.BytesIO()
     book.save(buffer)
     return buffer.getvalue()
+
+
+def _item_active(master: dict) -> bool:
+    if master.get("is_active") is False or master.get("active") is False:
+        return False
+    status = str(master.get("status") or "").strip().lower()
+    return status not in {"inactive", "nonaktif", "non-active"}
+
+
+def _template_warehouse(context: dict, warehouse_id: Optional[str]) -> dict:
+    requested = str(warehouse_id or "").strip()
+    if requested:
+        warehouse = next((row for row in context["warehouses"] if row.get("id") == requested), None)
+        if not warehouse:
+            raise OpeningImportError("Gudang tidak dapat diidentifikasi.")
+        return warehouse
+    operational = context.get("operational") or {}
+    branch_id = operational.get("id")
+    active = [
+        row for row in context["warehouses"]
+        if branch_id
+        and row.get("branch_id") == branch_id
+        and row.get("active") is True
+        and row.get("id")
+    ]
+    if len(active) == 1:
+        return active[0]
+    raise OpeningImportError("Pilih gudang sebelum mengunduh template.")
+
+
+def _warehouse_label(warehouse: dict) -> str:
+    name = str(warehouse.get("name") or "").strip()
+    code = str(warehouse.get("code") or "").strip()
+    identity = str(warehouse.get("id") or "").strip()
+    if name and name != identity:
+        return name
+    if code and code != identity:
+        return code
+    raise OpeningImportError("Nama gudang tidak tersedia.")
+
+
+async def _blocked_master_ids(db, branch_id: str, warehouse_id: str) -> set:
+    identity = {"branch_id": branch_id, "warehouse_id": warehouse_id}
+    blocked = set()
+    for collection in (LEDGER_COLLECTION, BALANCE_COLLECTION):
+        rows = await db[collection].find(identity, {"_id": 0, "master_item_id": 1}).to_list(20000)
+        for row in rows:
+            master_id = str(row.get("master_item_id") or "").strip()
+            if master_id:
+                blocked.add(master_id)
+    return blocked
+
+
+async def build_template_xlsx(db, *, warehouse_id: Optional[str] = None) -> bytes:
+    """Read-only workbook of items that can still receive an opening balance."""
+    context = await _context(db)
+    warehouse = _template_warehouse(context, warehouse_id)
+    branch = context["branches"].get(warehouse.get("branch_id"))
+    if not branch or branch.get("active") is not True or warehouse.get("active") is not True:
+        raise OpeningImportError("Cabang atau gudang tidak aktif.")
+    label = _warehouse_label(warehouse)
+    blocked = await _blocked_master_ids(db, branch["id"], warehouse["id"])
+    rows = []
+    seen = set()
+    masters = sorted(
+        context["by_id"].values(),
+        key=lambda master: str(master.get("item_code") or "").casefold(),
+    )
+    for master in masters:
+        code = str(master.get("item_code") or "").strip()
+        if not code or not master.get("id"):
+            continue
+        folded = code.casefold()
+        if folded in seen or len(context["by_code"].get(code) or []) != 1:
+            continue
+        if not _item_active(master) or not _inventory_item(master):
+            continue
+        if master["id"] in blocked:
+            continue
+        seen.add(folded)
+        unit = str(master.get("base_unit") or master.get("unit") or "").strip()
+        name = str(master.get("item_name") or master.get("name") or code).strip()
+        rows.append([code, name, unit, label, None])
+    return _workbook(rows)
 
 
 def _cell(value: Any) -> str:

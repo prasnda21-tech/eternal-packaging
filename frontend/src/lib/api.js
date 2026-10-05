@@ -261,8 +261,8 @@ export const api = {
   physicalMutations: (id, params = {}) => client.get(`/master-items/${encodeURIComponent(id)}/physical-mutations`, { params }).then((r) => r.data),
   physicalOpeningBalance: (id, params = {}) => client.get(`/master-items/${encodeURIComponent(id)}/physical-opening-balance`, { params }).then((r) => r.data),
   createPhysicalOpeningBalance: (id, payload) => client.post(`/master-items/${encodeURIComponent(id)}/physical-opening-balance`, payload).then((r) => r.data),
-  physicalOpeningImportTemplate: () =>
-    client.get(`/physical-opening-balances/import/template`, { responseType: "blob" }).then((r) => r.data),
+  physicalOpeningImportTemplate: (params = {}) =>
+    client.get(`/physical-opening-balances/import/template`, { params, responseType: "blob" }).then((r) => r.data),
   physicalOpeningImportPreview: (file) => {
     const form = new FormData();
     form.append("file", file);
