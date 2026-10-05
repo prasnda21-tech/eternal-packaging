@@ -10,6 +10,13 @@ export function yogyakartaWarehouses(branches, warehouses) {
   );
 }
 
+export function goodsReceiptWarehouseChoice(branches, warehouses) {
+  const rows = yogyakartaWarehouses(branches, warehouses);
+  if (rows.length === 1) return { rows, warehouseId: rows[0].id, blocked: false, explicit: false };
+  if (!rows.length) return { rows, warehouseId: "", blocked: true, explicit: false };
+  return { rows, warehouseId: "", blocked: false, explicit: true };
+}
+
 export function preselectedWarehouseId(rows) {
   const list = Array.isArray(rows) ? rows : [];
   return list.length === 1 ? list[0].id : "";
@@ -43,7 +50,7 @@ export function openingReady({ itemId, branchId, warehouseId, qty }) {
 
 export const PHYSICAL_MOVEMENT_LABELS = {
   OPENING_BALANCE: "Saldo Awal",
-  PURCHASE_RECEIPT: "Penerimaan",
+  PURCHASE_RECEIPT: "Penerimaan Pembelian",
   SALES_DELIVERY: "Pengiriman",
   STOCK_OPNAME_ADJUSTMENT: "Penyesuaian Opname",
   MANUAL_ADJUSTMENT: "Penyesuaian",

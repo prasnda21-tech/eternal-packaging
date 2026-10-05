@@ -802,6 +802,133 @@ async def order_has_r2_balance(db, order: Optional[dict]) -> bool:
     return found > 0
 
 
+def _purchase_receipt_request(receipt: dict, line: dict, *, actor_id: str) -> dict:
+    receipt_id = str(receipt.get("id") or "")
+    line_id = str(line.get("line_id") or "")
+    qty = line.get("received_qty")
+    if isinstance(qty, bool) or (isinstance(qty, float) and not float(qty).is_integer()):
+        raise PhysicalStockValidationError("Qty diterima harus bilangan bulat")
+    if isinstance(qty, float):
+        qty = int(qty)
+    if not isinstance(qty, int) or qty <= 0:
+        raise PhysicalStockValidationError("Qty diterima harus bilangan bulat")
+    created_at = now_iso()
+    return {
+        "master_item_id": str(line.get("master_item_id") or ""),
+        "branch_id": str(receipt.get("branch_id") or ""),
+        "warehouse_id": str(receipt.get("warehouse_id") or ""),
+        "movement_type": MOVEMENT_PURCHASE_RECEIPT,
+        "qty_delta": qty,
+        "reference_type": "purchase_goods_receipt",
+        "reference_id": f"{receipt_id}:{line_id}",
+        "reason": "Penerimaan pembelian",
+        "actor_id": actor_id,
+        "occurred_at": created_at,
+        "created_at": created_at,
+        "idempotency_key": f"purchase-receipt:{receipt_id}:{line_id}",
+        "metadata": {
+            "receipt_id": receipt_id,
+            "line_id": line_id,
+            "purchase_order_id": str(receipt.get("purchase_order_id") or ""),
+            "purchase_order_line_id": str(line.get("purchase_order_line_id") or ""),
+        },
+    }
+
+
+async def apply_purchase_receipt_lines(db, session, receipt: dict, *, actor_id: str) -> List[dict]:
+    """Post every PURCHASE_RECEIPT line inside the caller's transaction."""
+    lines = receipt.get("lines") if isinstance(receipt.get("lines"), list) else []
+    if not lines:
+        raise PhysicalStockValidationError("Minimal satu baris penerimaan")
+    movements = []
+    for line in lines:
+        movements.append(await _apply_movement_in_session(
+            db,
+            _purchase_receipt_request(receipt, line, actor_id=actor_id),
+            session,
+        ))
+    return movements
+
+
+async def resolve_purchase_receipt_warehouse(
+    db,
+    session,
+    *,
+    warehouse_id: Optional[str],
+) -> Tuple[str, str]:
+    """Derive branch from the selected warehouse. Preselect only when one YGY warehouse is active."""
+    if warehouse_id and str(warehouse_id).strip():
+        return await _resolve_delivery_location(db, session, branch_id=None, warehouse_id=warehouse_id)
+    branches = await db[BRANCHES_COLLECTION].find(
+        {},
+        {"_id": 0, "id": 1, "code": 1, "name": 1, "active": 1},
+        session=session,
+    ).to_list(200)
+    operational = resolve_operational_branch([row for row in branches if row.get("active") is True])
+    if not operational:
+        raise PhysicalStockValidationError("Cabang operasional Yogyakarta tidak ditemukan")
+    warehouses = await db[WAREHOUSES_COLLECTION].find(
+        {"branch_id": operational["id"], "active": True},
+        {"_id": 0, "id": 1},
+        session=session,
+    ).to_list(50)
+    if len(warehouses) == 1 and warehouses[0].get("id"):
+        return str(operational["id"]), str(warehouses[0]["id"])
+    if not warehouses:
+        raise PhysicalStockValidationError("Gudang aktif Yogyakarta tidak ditemukan")
+    raise PhysicalStockValidationError("Pilih gudang sebelum penerimaan barang")
+
+
+def _reversal_request(original: dict, *, actor_id: str, idempotency_key: str, reason: str) -> dict:
+    delta = -int(original.get("qty_delta") or 0)
+    if delta == 0:
+        raise PhysicalStockValidationError("Movement asal tidak memiliki kuantitas")
+    created_at = now_iso()
+    return {
+        "master_item_id": original.get("master_item_id"),
+        "branch_id": original.get("branch_id"),
+        "warehouse_id": original.get("warehouse_id"),
+        "movement_type": MOVEMENT_REVERSAL,
+        "qty_delta": delta,
+        "reference_type": LEDGER_COLLECTION,
+        "reference_id": original.get("id"),
+        "reason": reason or f"Reversal {original.get('id')}",
+        "actor_id": actor_id,
+        "occurred_at": created_at,
+        "created_at": created_at,
+        "idempotency_key": idempotency_key,
+        "metadata": {"reverses_movement_id": original.get("id")},
+    }
+
+
+async def reverse_movement_in_session(
+    db,
+    session,
+    movement_id: str,
+    *,
+    actor_id: str,
+    idempotency_key: str,
+    reason: str = "",
+) -> dict:
+    """Append one reversal inside the caller's transaction. The original row is unchanged."""
+    original = await db[LEDGER_COLLECTION].find_one(
+        {"id": str(movement_id)},
+        {"_id": 0},
+        session=session,
+    )
+    if not original:
+        raise PhysicalStockValidationError("Movement asal tidak ditemukan")
+    if original.get("movement_type") == MOVEMENT_REVERSAL:
+        raise PhysicalStockValidationError("Reversal tidak dapat direversal")
+    if original.get("movement_type") != MOVEMENT_PURCHASE_RECEIPT:
+        raise PhysicalStockValidationError("Hanya penerimaan pembelian yang dapat dibatalkan pada jalur ini")
+    return await _apply_movement_in_session(
+        db,
+        _reversal_request(original, actor_id=actor_id, idempotency_key=idempotency_key, reason=reason),
+        session,
+    )
+
+
 async def reverse_movement(
     db,
     movement_id: str,

@@ -1,4 +1,5 @@
 import {
+  goodsReceiptWarehouseChoice,
   movementLabel,
   mutationQtyColumns,
   openingReady,
@@ -64,6 +65,27 @@ describe("physical stock view helpers", () => {
 
   test("movement labels stay on physical types", () => {
     expect(movementLabel("OPENING_BALANCE")).toBe("Saldo Awal");
+    expect(movementLabel("PURCHASE_RECEIPT")).toBe("Penerimaan Pembelian");
     expect(movementLabel("SALES_DELIVERY")).toBe("Pengiriman");
+    expect(movementLabel("MANUAL_ADJUSTMENT")).toBe("Penyesuaian");
+    expect(movementLabel("REVERSAL")).toBe("Reversal");
+  });
+
+  test("goods receipt warehouse choice never guesses among several warehouses", () => {
+    const branches = [{ id: "ygy", code: "YGY", name: "Yogyakarta" }];
+    const one = goodsReceiptWarehouseChoice(branches, [
+      { id: "main", branch_id: "ygy", code: "MAIN", name: "Gudang Yogyakarta", active: true },
+    ]);
+    expect(one).toMatchObject({ warehouseId: "main", blocked: false, explicit: false });
+    const many = goodsReceiptWarehouseChoice(branches, [
+      { id: "main", branch_id: "ygy", code: "MAIN", name: "Gudang Yogyakarta", active: true },
+      { id: "whb", branch_id: "ygy", code: "WHB", name: "Gudang B", active: true },
+    ]);
+    expect(many.warehouseId).toBe("");
+    expect(many.explicit).toBe(true);
+    expect(many.blocked).toBe(false);
+    const none = goodsReceiptWarehouseChoice(branches, []);
+    expect(none.blocked).toBe(true);
+    expect(none.warehouseId).toBe("");
   });
 });
