@@ -854,3 +854,74 @@ async def test_non_operational_warehouse_can_still_open_stock_opname(db):
     after_balance = await db[BALANCE_COLLECTION].find_one({"warehouse_id": warehouse_id}, {"_id": 0, "physical_qty": 1})
     assert after_balance["physical_qty"] == before_balance["physical_qty"] == 7
     assert await db[LEDGER_COLLECTION].count_documents({}) == before_ledger
+
+
+async def test_http_routes_accept_json_bodies(db):
+    import httpx
+    import server
+    from server import app, current_user
+
+    branch_id, warehouse_id = await _location(db, code="YGY", name="Yogyakarta")
+    item_id = await _item(db, name="Json", code="JSON-1")
+    await _open(db, item_id, branch_id, warehouse_id, 10)
+    server.db = db
+    app.dependency_overrides[current_user] = lambda: USER
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post("/api/stock-opname-sessions", json={
+                "branch_id": branch_id,
+                "warehouse_id": warehouse_id,
+                "idempotency_key": "json-create",
+            })
+            assert created.status_code == 200, created.text
+            assert "query" not in created.text
+            session_id = created.json()["id"]
+            assert created.json()["status"] == "DRAFT"
+
+            cutoff = await client.post(f"/api/stock-opname-sessions/{session_id}/cutoff")
+            assert cutoff.status_code == 200, cutoff.text
+            line = next(row for row in cutoff.json()["lines"] if row["master_item_id"] == item_id)
+
+            counted = await client.post(
+                f"/api/stock-opname-sessions/{session_id}/counts",
+                json={"lines": [{"line_id": line["line_id"], "physical_count_qty": 10}]},
+            )
+            assert counted.status_code == 200, counted.text
+            assert counted.json()["lines"]
+            saved = next(row for row in counted.json()["lines"] if row["line_id"] == line["line_id"])
+            assert saved["physical_count_qty"] == 10
+
+            reviewed = await client.post(f"/api/stock-opname-sessions/{session_id}/review")
+            assert reviewed.status_code == 200, reviewed.text
+
+            confirmed = await client.post(
+                f"/api/stock-opname-sessions/{session_id}/confirm",
+                json={"idempotency_key": "json-confirm"},
+            )
+            assert confirmed.status_code == 200, confirmed.text
+            assert confirmed.json()["status"] == "CONFIRMED"
+            again = await client.post(
+                f"/api/stock-opname-sessions/{session_id}/confirm",
+                json={"idempotency_key": "json-confirm"},
+            )
+            assert again.status_code == 200, again.text
+
+            other = await client.post("/api/stock-opname-sessions", json={
+                "branch_id": branch_id,
+                "warehouse_id": warehouse_id,
+                "idempotency_key": "json-cancel",
+            })
+            assert other.status_code == 200, other.text
+            other_id = other.json()["id"]
+            opened = await client.post(f"/api/stock-opname-sessions/{other_id}/cutoff")
+            assert opened.status_code == 200, opened.text
+            cancelled = await client.post(
+                f"/api/stock-opname-sessions/{other_id}/cancel",
+                json={"reason": "JSON cancel"},
+            )
+            assert cancelled.status_code == 200, cancelled.text
+            assert cancelled.json()["status"] == "CANCELLED"
+            assert await _qty(db, item_id, branch_id, warehouse_id) == 10
+    finally:
+        app.dependency_overrides.pop(current_user, None)

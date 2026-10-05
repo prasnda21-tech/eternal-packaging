@@ -8,7 +8,8 @@ from __future__ import annotations
 import uuid
 from typing import Any, Dict, List, Optional
 
-from fastapi import File, HTTPException, UploadFile
+from fastapi import Body, File, HTTPException, UploadFile
+from pydantic import BaseModel, ConfigDict
 from pymongo.errors import DuplicateKeyError, PyMongoError
 
 from services.inventory_accounting import ITEM_TYPE_SERVICE
@@ -26,6 +27,15 @@ ACTIVE_STATUSES = (STATUS_DRAFT, STATUS_COUNTING, STATUS_REVIEW)
 FROZEN_STATUSES = (STATUS_COUNTING, STATUS_REVIEW)
 
 _fail_after_adjustments = False
+
+
+class StockOpnameJsonBody(BaseModel):
+    """JSON body for session create, counts, confirm, and cancel.
+
+    No required fields. Callers keep sending the existing payload keys.
+    """
+
+    model_config = ConfigDict(extra="allow")
 
 
 class _AlreadyConfirmed(Exception):
@@ -684,11 +694,6 @@ async def cancel_stock_opname_session(db, session_id: str, payload: Optional[dic
 
 
 def register_stock_opname_routes(api_router, *, get_db, current_user, require_perm, Depends):
-    from pydantic import BaseModel, ConfigDict
-
-    class LoosePayload(BaseModel):
-        model_config = ConfigDict(extra="allow")
-
     @api_router.get("/stock-opname-sessions")
     async def stock_opname_sessions_list(
         warehouse_id: Optional[str] = None,
@@ -705,7 +710,7 @@ def register_stock_opname_routes(api_router, *, get_db, current_user, require_pe
 
     @api_router.post("/stock-opname-sessions")
     async def stock_opname_sessions_create(
-        payload: LoosePayload,
+        payload: StockOpnameJsonBody = Body(...),
         user=Depends(current_user),
     ):
         return await create_stock_opname_session(get_db(), payload.model_dump(), user)
@@ -720,7 +725,7 @@ def register_stock_opname_routes(api_router, *, get_db, current_user, require_pe
     @api_router.post("/stock-opname-sessions/{session_id}/counts")
     async def stock_opname_sessions_counts(
         session_id: str,
-        payload: LoosePayload,
+        payload: StockOpnameJsonBody = Body(...),
         user=Depends(current_user),
     ):
         return await record_stock_opname_counts(get_db(), session_id, payload.model_dump(), user)
@@ -735,7 +740,7 @@ def register_stock_opname_routes(api_router, *, get_db, current_user, require_pe
     @api_router.post("/stock-opname-sessions/{session_id}/confirm")
     async def stock_opname_sessions_confirm(
         session_id: str,
-        payload: LoosePayload,
+        payload: StockOpnameJsonBody = Body(...),
         user=Depends(current_user),
     ):
         return await confirm_stock_opname_session(get_db(), session_id, payload.model_dump(), user)
@@ -743,7 +748,7 @@ def register_stock_opname_routes(api_router, *, get_db, current_user, require_pe
     @api_router.post("/stock-opname-sessions/{session_id}/cancel")
     async def stock_opname_sessions_cancel(
         session_id: str,
-        payload: LoosePayload,
+        payload: StockOpnameJsonBody = Body(...),
         user=Depends(current_user),
     ):
         return await cancel_stock_opname_session(get_db(), session_id, payload.model_dump(), user)
