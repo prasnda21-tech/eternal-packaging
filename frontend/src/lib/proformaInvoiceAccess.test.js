@@ -8,7 +8,7 @@ describe("proforma row visibility", () => {
     available: true,
   };
 
-  test("no draft invoice hides the row", () => {
+  test("no invoice hides the row", () => {
     expect(proformaRowVisible({ ...eligible, available: false })).toBe(false);
   });
 
@@ -16,12 +16,28 @@ describe("proforma row visibility", () => {
     expect(proformaRowVisible(eligible)).toBe(true);
   });
 
-  test("draft invoice without permission hides the row", () => {
-    expect(proformaRowVisible({ ...eligible, hasView: false })).toBe(false);
+  test("finalized invoice stays visible", () => {
+    expect(proformaRowVisible(eligible)).toBe(true);
   });
 
-  test("finalized invoice hides the row", () => {
+  test("posted accounting stays visible", () => {
+    expect(proformaRowVisible(eligible)).toBe(true);
+  });
+
+  test("paid status stays visible", () => {
+    expect(proformaRowVisible(eligible)).toBe(true);
+  });
+
+  test("cancelled invoice only hides the row", () => {
     expect(proformaRowVisible({ ...eligible, available: false })).toBe(false);
+  });
+
+  test("multiple active invoices hide the row", () => {
+    expect(proformaRowVisible({ ...eligible, available: false })).toBe(false);
+  });
+
+  test("permission absent hides the row", () => {
+    expect(proformaRowVisible({ ...eligible, hasView: false })).toBe(false);
   });
 
   test("cancelled PO hides the row", () => {

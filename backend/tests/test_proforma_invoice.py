@@ -1,4 +1,4 @@
-"""Proforma Invoice reads one saved draft. Local test database only."""
+"""Proforma Invoice reads one saved non-cancelled invoice. Local test database only."""
 from __future__ import annotations
 
 import io
@@ -24,7 +24,7 @@ from permissions import ALL_PERMISSIONS, PERMISSION_CATALOG, ROLE_DEFAULT_PERMIS
 from server import app, current_user  # noqa: E402
 import server as server_mod  # noqa: E402
 from services.sales_invoices import (  # noqa: E402
-    PROFORMA_NON_FINAL_WARNING,
+    PROFORMA_WARNING,
     cancel_sales_invoice,
     finalize_sales_invoice,
     generate_sales_invoice_pdf_bytes,
@@ -99,6 +99,12 @@ def test_permission_catalog_lists_proforma_view_only():
 def _pdf_text(data: bytes) -> str:
     with pdfplumber.open(io.BytesIO(data)) as pdf:
         return "\n".join((page.extract_text() or "") for page in pdf.pages)
+
+
+def _assert_proforma_warning(text: str) -> None:
+    assert PROFORMA_WARNING in text
+    assert "belum final" not in text.lower()
+    assert "bukan Faktur Penjualan final" not in text
 
 
 async def _counts():
@@ -220,7 +226,7 @@ async def test_draft_proforma_matches_saved_invoice_and_writes_nothing():
         assert f'filename="Proforma_{safe_number}.pdf"' in disposition
         text = _pdf_text(response.content)
         assert "PROFORMA INVOICE" in text
-        assert PROFORMA_NON_FINAL_WARNING in text
+        _assert_proforma_warning(text)
         assert "FAKTUR PENJUALAN" not in text
         assert "Telah Dibayar" not in text
         assert "Sisa Tagihan" not in text
@@ -334,18 +340,27 @@ async def test_edited_draft_is_what_the_next_proforma_prints():
 
 
 @pytest.mark.anyio
-async def test_finalized_invoice_hides_proforma_and_keeps_official_pdf():
+async def test_finalized_invoice_keeps_proforma_and_official_pdf():
     order = await _seed_order()
     invoice = await _insert_invoice(_draft(order))
     try:
         await finalize_sales_invoice(db(), invoice["id"], ADMIN)
+        stored = await db().sales_invoices.find_one({"id": invoice["id"]}, {"_id": 0})
+        assert stored["financial_status"] == "finalized"
+        before = await _counts()
         async with _as(VIEWER) as client:
             availability = await client.get(f"/api/orders/{order['id']}/proforma")
-            rejected = await client.get(f"/api/sales-invoices/{invoice['id']}/proforma")
+            proforma = await client.get(f"/api/sales-invoices/{invoice['id']}/proforma")
         assert availability.status_code == 200
-        assert availability.json()["available"] is False
-        assert availability.json()["invoice_id"] is None
-        assert rejected.status_code == 409
+        assert availability.json()["available"] is True
+        assert availability.json()["invoice_id"] == invoice["id"]
+        assert proforma.status_code == 200, proforma.text
+        text = _pdf_text(proforma.content)
+        assert "PROFORMA INVOICE" in text
+        _assert_proforma_warning(text)
+        assert "FAKTUR PENJUALAN" not in text
+        assert await _counts() == before
+        assert await db().sales_invoices.find_one({"id": invoice["id"]}, {"_id": 0}) == stored
         async with _as(ADMIN) as client:
             official = await client.get(f"/api/sales-invoices/{invoice['id']}/pdf")
         assert official.status_code == 200, official.text
@@ -358,8 +373,70 @@ async def test_finalized_invoice_hides_proforma_and_keeps_official_pdf():
         assert "Sisa Tagihan" in official_text
         assert "BELUM DIBAYAR" in official_text
         assert "PROFORMA INVOICE" not in official_text
-        fresh = await db().sales_invoices.find_one({"id": invoice["id"]}, {"_id": 0, "financial_status": 1})
-        assert fresh["financial_status"] == "finalized"
+        assert PROFORMA_WARNING not in official_text
+    finally:
+        await _cleanup(order["id"])
+
+
+@pytest.mark.anyio
+async def test_posted_accounting_keeps_proforma_without_reading_the_journal():
+    order = await _seed_order()
+    invoice = await _insert_invoice(_draft(order))
+    journal_id = str(uuid.uuid4())
+    try:
+        await finalize_sales_invoice(db(), invoice["id"], ADMIN)
+        await db().journal_entries.insert_one({
+            "id": journal_id,
+            "source_type": "sales_invoice",
+            "source_id": invoice["id"],
+            "status": "posted",
+            "reversal_of": None,
+        })
+        stored = await db().sales_invoices.find_one({"id": invoice["id"]}, {"_id": 0})
+        before = await _counts()
+        async with _as(VIEWER) as client:
+            availability = await client.get(f"/api/orders/{order['id']}/proforma")
+            proforma = await client.get(f"/api/sales-invoices/{invoice['id']}/proforma")
+        assert availability.json()["invoice_id"] == invoice["id"]
+        assert proforma.status_code == 200, proforma.text
+        _assert_proforma_warning(_pdf_text(proforma.content))
+        assert await _counts() == before
+        assert await db().sales_invoices.find_one({"id": invoice["id"]}, {"_id": 0}) == stored
+        assert await db().journal_entries.count_documents({"id": journal_id}) == 1
+    finally:
+        await db().journal_entries.delete_many({"id": journal_id})
+        await _cleanup(order["id"])
+
+
+@pytest.mark.anyio
+async def test_payment_status_does_not_hide_proforma():
+    order = await _seed_order()
+    invoice = await _insert_invoice(_draft(order))
+    try:
+        await finalize_sales_invoice(db(), invoice["id"], ADMIN)
+        for payment_status, paid_total in (("DP", 100000), ("LUNAS", 1079500)):
+            await db().sales_invoices.update_one(
+                {"id": invoice["id"]},
+                {"$set": {
+                    "payment_status": payment_status,
+                    "paid_total": paid_total,
+                    "outstanding_amount": 1079500 - paid_total,
+                }},
+            )
+            stored = await db().sales_invoices.find_one({"id": invoice["id"]}, {"_id": 0})
+            before = await _counts()
+            async with _as(VIEWER) as client:
+                availability = await client.get(f"/api/orders/{order['id']}/proforma")
+                proforma = await client.get(f"/api/sales-invoices/{invoice['id']}/proforma")
+            assert availability.json()["available"] is True
+            assert proforma.status_code == 200, proforma.text
+            text = _pdf_text(proforma.content)
+            _assert_proforma_warning(text)
+            assert payment_status not in text
+            assert "Telah Dibayar" not in text
+            assert "Sisa Tagihan" not in text
+            assert await _counts() == before
+            assert await db().sales_invoices.find_one({"id": invoice["id"]}, {"_id": 0}) == stored
     finally:
         await _cleanup(order["id"])
 
@@ -427,6 +504,48 @@ async def test_two_active_drafts_are_not_chosen():
 
 
 @pytest.mark.anyio
+async def test_draft_and_finalized_together_are_not_chosen():
+    order = await _seed_order()
+    draft = await _insert_invoice(_draft(order))
+    finalized = await _insert_invoice(_draft(order, invoice_index=2))
+    try:
+        await finalize_sales_invoice(db(), finalized["id"], ADMIN)
+        async with _as(VIEWER) as client:
+            availability = await client.get(f"/api/orders/{order['id']}/proforma")
+            left = await client.get(f"/api/sales-invoices/{draft['id']}/proforma")
+            right = await client.get(f"/api/sales-invoices/{finalized['id']}/proforma")
+        assert availability.json() == {"available": False, "invoice_id": None, "invoice_number": None}
+        assert left.status_code == 409
+        assert right.status_code == 409
+    finally:
+        await _cleanup(order["id"])
+
+
+@pytest.mark.anyio
+async def test_cancelled_invoice_plus_one_finalized_uses_the_finalized():
+    order = await _seed_order()
+    first = await _insert_invoice(_draft(order))
+    try:
+        await finalize_sales_invoice(db(), first["id"], ADMIN)
+        await cancel_sales_invoice(db(), first["id"], ADMIN)
+        second = await _insert_invoice(_draft(order, invoice_index=2))
+        await finalize_sales_invoice(db(), second["id"], ADMIN)
+        async with _as(VIEWER) as client:
+            availability = await client.get(f"/api/orders/{order['id']}/proforma")
+            old = await client.get(f"/api/sales-invoices/{first['id']}/proforma")
+            new = await client.get(f"/api/sales-invoices/{second['id']}/proforma")
+        assert availability.json()["invoice_id"] == second["id"]
+        assert old.status_code == 409
+        assert new.status_code == 200, new.text
+        text = _pdf_text(new.content)
+        _assert_proforma_warning(text)
+        assert second["invoice_number"] in text
+        assert first["invoice_number"] not in text
+    finally:
+        await _cleanup(order["id"])
+
+
+@pytest.mark.anyio
 async def test_no_invoice_is_unavailable():
     order = await _seed_order()
     try:
@@ -454,7 +573,8 @@ def test_official_pdf_renderer_stays_on_the_invoice_title():
     assert "BELUM DIBAYAR" in official
     assert "PROFORMA INVOICE" not in official
     assert "PROFORMA INVOICE" in proforma
-    assert PROFORMA_NON_FINAL_WARNING in proforma
+    _assert_proforma_warning(proforma)
     assert "FAKTUR PENJUALAN" not in proforma
+    assert PROFORMA_WARNING not in official
     assert "Telah Dibayar" not in proforma
     assert "Sisa Tagihan" not in proforma
