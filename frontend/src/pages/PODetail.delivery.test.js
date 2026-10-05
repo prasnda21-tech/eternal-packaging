@@ -127,8 +127,8 @@ describe("PO Detail delivery cards", () => {
 
   test("document actions sit in Dokumen and shipping summary is gone", () => {
     expect(detail.indexOf("detail-info")).toBeLessThan(detail.indexOf("line-items-panel"));
-    expect(detail.indexOf("line-items-panel")).toBeLessThan(detail.indexOf("notes-panel"));
-    expect(detail.indexOf("notes-panel")).toBeLessThan(detail.indexOf("po-doc-panel-dokumen"));
+    expect(detail.indexOf("line-items-panel")).toBeLessThan(detail.indexOf("<ProductionNotesPanel"));
+    expect(detail.indexOf("<ProductionNotesPanel")).toBeLessThan(detail.indexOf("po-doc-panel-dokumen"));
     const docs = detail.slice(
       detail.indexOf('data-testid="po-doc-panel-dokumen"'),
       detail.indexOf('data-testid="po-doc-panel-riwayat"'),
@@ -219,7 +219,7 @@ describe("PO Detail delivery cards", () => {
   });
 
   test("Pengiriman keeps Lihat Surat Jalan in the preview dialog", () => {
-    const slot = detail.slice(detail.indexOf('id="po-stage-pengiriman"'), detail.indexOf('data-testid="notes-panel"'));
+    const slot = detail.slice(detail.indexOf('id="po-stage-pengiriman"'), detail.indexOf("<ProductionNotesPanel"));
     const viewButton = fs.readFileSync(path.join(__dirname, "../components/SuratJalanViewButton.jsx"), "utf8");
     const preview = fs.readFileSync(path.join(__dirname, "../components/SuratJalanPreviewModal.jsx"), "utf8");
     expect(slot).toMatch(/SuratJalanViewButton/);

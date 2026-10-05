@@ -6922,7 +6922,8 @@ button.ghost.sm.icon{padding:4px 6px}
   border:1px solid #e2e8f0!important;border-radius:8px!important;box-shadow:none!important;background:#fff!important;
 }
 .po-order-masuk-tail{display:flex;flex-direction:column;gap:12px;margin-top:12px}
-.po-order-masuk-tail[hidden]{display:none!important}
+.po-order-masuk-tail[hidden],
+.po-order-masuk-tail > [hidden]{display:none!important}
 .po-info-columns{
   display:grid!important;grid-template-columns:repeat(3,minmax(0,1fr))!important;gap:2px 32px;padding:4px 16px 0;
 }

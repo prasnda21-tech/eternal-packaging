@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Link, Navigate, useLocation, useNavigate, useParams } from "react-router-dom";
-import { AlertCircle, AlertTriangle, ArrowLeft, CalendarClock, Check, ChevronDown, Copy, Ellipsis, Eye, FileCheck2, FileText, List, MessageSquare, Pencil, QrCode, RefreshCw, RotateCcw, ScanLine, Send, ShieldOff, Trash2, Truck, X, XCircle, Zap } from "lucide-react";
+import { AlertCircle, AlertTriangle, ArrowLeft, CalendarClock, Check, ChevronDown, Copy, Ellipsis, Eye, FileCheck2, FileText, List, Pencil, QrCode, RefreshCw, RotateCcw, ScanLine, Send, ShieldOff, Trash2, Truck, X, XCircle, Zap } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { STAGES, canAdvance, formatDate, formatDisplayDate, formatDisplayDateTime } from "../lib/constants";
@@ -58,6 +58,8 @@ import LineProductReplaceControl from "../components/LineProductReplaceControl";
 import PoDetailFocusPanel from "../components/poDetail/PoDetailFocusPanel";
 import PoStageSection from "../components/poDetail/PoStageSection";
 import PoSummaryDrawer from "../components/poDetail/PoSummaryDrawer";
+import ProductionNotesPanel from "../components/poDetail/ProductionNotesPanel";
+import { canAppendProductionNote, productionNotesVisible } from "../lib/productionNoteAccess";
 import PoStagePickerSheet from "../components/poDetail/PoStagePickerSheet";
 import { PoStageAccordionProvider, usePoStageAccordion } from "../components/poDetail/PoStageAccordionContext";
 import { getStagePresentation } from "../lib/poDetailPresentation";
@@ -114,8 +116,6 @@ export default function PODetail() {
   const [stageSheetOpen, setStageSheetOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
   const [docTab, setDocTab] = useState("dokumen");
-  const [noteOpen, setNoteOpen] = useState(false);
-  const [noteSaveErr, setNoteSaveErr] = useState("");
   const selectedForOrderRef = useRef(null);
   const screenerServerNotesRef = useRef("");
 
@@ -432,32 +432,25 @@ export default function PODetail() {
     () => api.setBufferStock(order.id, !order.buffer_stock),
     order.buffer_stock ? "Buffer Stock dibatalkan" : "Ditandai Buffer Stock"
   );
-  const saveNote = async () => {
-    const text = note.trim();
-    if (!text) {
-      setNoteSaveErr("Catatan tidak boleh kosong.");
-      return;
-    }
-    setNoteSaveErr("");
+  const appendProductionNote = async (text) => {
     setBusy(true);
     try {
       const res = await api.addNote(order.id, text);
       if (res?.order) commitOrder(res.order);
-      setNote("");
-      setNoteOpen(false);
       showToast("Catatan disimpan");
-    } catch (e) {
-      setNoteSaveErr(formatApiError(e, "Gagal menyimpan catatan"));
     } finally {
       setBusy(false);
     }
   };
-  const toggleNoteComposer = () => {
-    if (noteOpen && note.trim()) {
-      if (!window.confirm("Catatan belum disimpan. Tutup kotak catatan?")) return;
+  const replaceProductionNote = async (text) => {
+    setBusy(true);
+    try {
+      const res = await api.updateNote(order.id, text);
+      if (res?.order) commitOrder(res.order);
+      showToast("Catatan diperbarui");
+    } finally {
+      setBusy(false);
     }
-    setNoteSaveErr("");
-    setNoteOpen((open) => !open);
   };
 
   const executeActionConfirm = async () => {
@@ -526,6 +519,10 @@ export default function PODetail() {
   const terkirimSummary = terkirimQtySummary(order);
   const actualStage = clampWorkflowStageIndex(resolveOperationalStage(order, order.current_stage), 0);
   const viewedStage = selectedWorkflowStage == null ? actualStage : clampWorkflowStageIndex(selectedWorkflowStage, actualStage);
+  const onOrderMasuk = deskPanelOwnsStage("0", viewedStage);
+  const showProductionNotes = productionNotesVisible(onOrderMasuk, hasPerm("production_note.view"));
+  const allowAppendProductionNote = canAppendProductionNote(role, hasPerm("production_note.create"));
+  const allowEditProductionNote = hasPerm("production_note.edit");
   const viewedVisualStep = visualStepForInternalIndex(viewedStage);
   const viewingOtherStage = visualCanonicalIndex(viewedStage) !== visualCanonicalIndex(actualStage);
   const viewedPres = getStagePresentation(
@@ -1635,44 +1632,18 @@ export default function PODetail() {
       </div>
       </section>
 
-      {/* Notes — Order Masuk workspace */}
-      <div className="po-order-masuk-tail" hidden={!deskPanelOwnsStage("0", viewedStage)}>
-      <section className={`panel po-notes-panel${!order.notes && !noteOpen ? " is-empty" : ""}`} data-testid="notes-panel">
-        <header className="panel-head po-om-section-head">
-          <h3>Catatan Produksi</h3>
-          {!isCrm && (
-            <button
-              type="button"
-              className="ghost sm"
-              data-testid="toggle-note-composer"
-              aria-expanded={noteOpen}
-              onClick={toggleNoteComposer}
-            >
-              Tambah Catatan
-            </button>
-          )}
-        </header>
-        {order.notes ? <pre className="notes-view" data-testid="notes-saved">{order.notes}</pre> : (
-          <p className="muted small po-notes-empty">Belum ada catatan produksi.</p>
-        )}
-        {!isCrm && noteOpen && (
-          <div className="note-add">
-            <textarea
-              value={note}
-              onChange={(e) => { setNote(e.target.value); if (noteSaveErr) setNoteSaveErr(""); }}
-              placeholder="Tambahkan catatan..."
-              rows={2}
-              data-testid="note-input"
-              className="manual-input"
-            />
-            {noteSaveErr && <p className="error" data-testid="note-save-error">{noteSaveErr}</p>}
-            <button className="ghost sm" onClick={saveNote} disabled={busy || !note.trim()} data-testid="save-note-button">
-              <MessageSquare size={14} /> Simpan catatan
-            </button>
-          </div>
-        )}
-      </section>
-      <section className="panel po-doc-tabs" data-testid="po-doc-tabs">
+      {/* Catatan Produksi: Order Masuk for every Detail PO viewer; all stages with production_note.view. */}
+      <div className="po-order-masuk-tail" hidden={!showProductionNotes}>
+      <ProductionNotesPanel
+        notes={order.notes}
+        visible={showProductionNotes}
+        canAppend={allowAppendProductionNote}
+        canEdit={allowEditProductionNote}
+        busy={busy}
+        onAppend={appendProductionNote}
+        onReplace={replaceProductionNote}
+      />
+      <section className="panel po-doc-tabs" data-testid="po-doc-tabs" hidden={!onOrderMasuk}>
         <div className="po-doc-tablist po-om-section-head" role="tablist" aria-label="Dokumen dan riwayat">
           <button
             type="button"
@@ -1822,7 +1793,7 @@ export default function PODetail() {
         </div>
       </section>
 
-      <footer className="po-page-meta" data-testid="po-page-meta">
+      <footer className="po-page-meta" data-testid="po-page-meta" hidden={!onOrderMasuk}>
         <span data-testid="detail-created-by-user">Dibuat oleh {order.created_by_user || "Perlu verifikasi"}</span>
         {order.imported_by ? (
           <span data-testid="detail-imported-by">
@@ -1841,7 +1812,7 @@ export default function PODetail() {
         {order.urgency_approved_by ? <span>{" · "}Urgent disetujui oleh {order.urgency_approved_by}</span> : null}
       </footer>
       {(canRollback || canCancel || canDelete) && (
-        <div className="po-actions-admin po-danger-foot">
+        <div className="po-actions-admin po-danger-foot" hidden={!onOrderMasuk}>
           <button
             type="button"
             className="po-actions-danger-toggle"

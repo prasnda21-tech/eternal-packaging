@@ -95,6 +95,7 @@ export const api = {
     client.delete(`/orders/${id}/design/files/${encodeURIComponent(fileId)}`).then((r) => r.data),
 
   addNote: (id, note) => client.post(`/orders/${id}/note`, { note }).then((r) => r.data),
+  updateNote: (id, note) => client.patch(`/orders/${id}/note`, { note }).then((r) => r.data),
   confirmLoading: (id, payload) => client.post(`/orders/${id}/loading-confirm`, payload).then((r) => r.data),
   confirmLoadingMatch: (id, payload, config) => client.post(`/orders/${id}/loading-confirm-match`, payload, config).then((r) => r.data),
   reportLoadingDiscrepancy: (id, payload) => client.post(`/orders/${id}/loading-report-discrepancy`, payload).then((r) => r.data),
