@@ -2016,7 +2016,9 @@ async def _with_quantity_lock(order_id: str, mutate, extra_query=None):
         order = await _load_order_for_mutation(order_id)
         lock_token = order.get("updated_at")
         last_token = lock_token
-        mutate(order)
+        result = mutate(order)
+        if inspect.isawaitable(result):
+            await result
         order["_expected_updated_at"] = lock_token
         try:
             return await _persist_order(order, require_lock=True, extra_query=extra_query)
@@ -4269,6 +4271,10 @@ async def update_operator_progress(order_id: str, payload: OperatorProgressPaylo
                 400,
                 f"Qty selesai ({new_total}) melebihi alokasi operator ({cap}).",
             )
+        from services.line_qty_commitment import operator_progress_line_cap_error
+        line_cap_err = operator_progress_line_cap_error(order, splits, found, new_total)
+        if line_cap_err:
+            raise HTTPException(400, line_cap_err)
         others = sum(
             int(s.get("qty_completed") or 0)
             for s in splits if s.get("id") != found.get("id")
@@ -10104,6 +10110,21 @@ async def replace_sales_order_line_product(
         REASON_SAME_PRODUCT,
         MSG_SAME,
     )
+    from services.line_qty_commitment import (
+        QuantityUnchanged,
+        MSG_PENDING,
+        MSG_SCHEDULE,
+        REASON_QTY_ABOVE,
+        REASON_QTY_BELOW,
+        REASON_QTY_PENDING,
+        REASON_SCHEDULE,
+        get_committed_qty_for_line,
+        message_qty_above,
+        message_qty_below,
+        qty_reject_detail,
+        recalc_derived_selling_amounts,
+        reconcile_operator_schedule_for_line,
+    )
 
     # Authoritative re-load at write time (race safety).
     order = await db.orders.find_one({"id": order_id}, {"_id": 0})
@@ -10128,19 +10149,6 @@ async def replace_sales_order_line_product(
     if not target_requested and payload.quantity is None:
         raise HTTPException(400, "Pilih barang pengganti atau ubah qty.")
 
-    guard = await evaluate_line_product_replacement(db, order, line_idx)
-    if not guard["allowed"]:
-        raise HTTPException(
-            409,
-            {
-                "code": guard["reason_code"],
-                "message": guard["reason_message"],
-                "line_idx": guard["line_idx"],
-                "production_process": guard["production_process"],
-                "downstream_sources": guard.get("downstream_sources") or [],
-            },
-        )
-
     mapped = None
     if target_requested:
         master = await resolve_replacement_master(
@@ -10158,78 +10166,179 @@ async def replace_sales_order_line_product(
         if not mapped.get("accurate_item_id") and not mapped.get("master_item_id"):
             raise HTTPException(400, "Produk target tidak memiliki identitas kanonis.")
 
-    before = current_product_snapshot(source_li)
-    same_aid = bool(target_requested and (
-        before.get("accurate_item_id")
-        and mapped.get("accurate_item_id")
-        and str(before["accurate_item_id"]) == str(mapped["accurate_item_id"])
-    ))
-    same_mid = bool(target_requested and (
-        before.get("master_item_id")
-        and mapped.get("master_item_id")
-        and str(before["master_item_id"]) == str(mapped["master_item_id"])
-        and not mapped.get("accurate_item_id")
-        and not before.get("accurate_item_id")
-    ))
-    product_changed = target_requested and not (same_aid or same_mid)
-    current_qty = int(source_li.get("quantity") or 0)
-    quantity_changed = payload.quantity is not None and payload.quantity != current_qty
-    if not product_changed and not quantity_changed:
-        raise HTTPException(400, {"code": REASON_SAME_PRODUCT, "message": MSG_SAME})
+    applied = {}
 
-    # Final race re-check immediately before persist
-    fresh = await db.orders.find_one({"id": order_id}, {"_id": 0})
-    if not fresh:
-        raise HTTPException(404, "PO tidak ditemukan")
-    race = await evaluate_line_product_replacement(db, fresh, line_idx)
-    if not race["allowed"]:
-        raise HTTPException(
-            409,
-            {
-                "code": race["reason_code"],
-                "message": race["reason_message"],
-                "line_idx": race["line_idx"],
-                "production_process": race["production_process"],
-                "downstream_sources": race.get("downstream_sources") or [],
-            },
+    def _same_product(before: dict) -> bool:
+        if not target_requested or not mapped:
+            return False
+        same_aid = bool(
+            before.get("accurate_item_id")
+            and mapped.get("accurate_item_id")
+            and str(before["accurate_item_id"]) == str(mapped["accurate_item_id"])
         )
-    fresh_lis = list(fresh.get("line_items") or [])
-    if line_idx >= len(fresh_lis) or not isinstance(fresh_lis[line_idx], dict):
-        raise HTTPException(400, "Line item tidak ditemukan.")
+        same_mid = bool(
+            before.get("master_item_id")
+            and mapped.get("master_item_id")
+            and str(before["master_item_id"]) == str(mapped["master_item_id"])
+            and not mapped.get("accurate_item_id")
+            and not before.get("accurate_item_id")
+        )
+        return same_aid or same_mid
 
-    fresh_line = fresh_lis[line_idx]
-    mutated = apply_product_fields_to_line(fresh_line, mapped) if product_changed else dict(fresh_line)
-    for keep in ("production_process", "color", "notes", "id", "line_id", "accurate_line_id", "color_source"):
-        if keep in fresh_lis[line_idx]:
-            mutated[keep] = fresh_lis[line_idx].get(keep)
-    mutated["quantity"] = payload.quantity if payload.quantity is not None else fresh_line.get("quantity")
-    if line_production_process(mutated) != source_process:
-        raise HTTPException(400, {"code": REASON_CROSS_TYPE, "message": MSG_CROSS_TYPE})
+    async def mutate(fresh: dict):
+        _ensure_not_cancelled(fresh)
+        fresh_lis = list(fresh.get("line_items") or [])
+        if line_idx >= len(fresh_lis) or not isinstance(fresh_lis[line_idx], dict):
+            raise HTTPException(400, "Line item tidak ditemukan.")
+        fresh_line = dict(fresh_lis[line_idx])
+        before_product = current_product_snapshot(fresh_line)
+        try:
+            current_qty = int(fresh_line.get("quantity") or 0)
+        except (TypeError, ValueError):
+            current_qty = 0
+        product_changed = target_requested and not _same_product(before_product)
+        requested_qty = payload.quantity
+        quantity_changed = requested_qty is not None and int(requested_qty) != current_qty
+        if not product_changed and not quantity_changed:
+            if target_requested:
+                raise HTTPException(400, {"code": REASON_SAME_PRODUCT, "message": MSG_SAME})
+            raise QuantityUnchanged()
 
-    fresh_lis[line_idx] = mutated
-    fresh["line_items"] = fresh_lis
-    fresh["total_quantity"] = sum(int((line or {}).get("quantity") or 0) for line in fresh_lis)
-    fresh["_expected_updated_at"] = fresh.get("updated_at")
-    await _persist_order(fresh, require_lock=True)
+        if product_changed:
+            guard = await evaluate_line_product_replacement(db, fresh, line_idx)
+            if not guard["allowed"]:
+                raise HTTPException(
+                    409,
+                    {
+                        "code": guard["reason_code"],
+                        "message": guard["reason_message"],
+                        "line_idx": guard["line_idx"],
+                        "production_process": guard["production_process"],
+                        "downstream_sources": guard.get("downstream_sources") or [],
+                    },
+                )
+
+        mutated = apply_product_fields_to_line(fresh_line, mapped) if product_changed else dict(fresh_line)
+        for keep in ("production_process", "color", "notes", "id", "line_id", "accurate_line_id", "color_source"):
+            if keep in fresh_line:
+                mutated[keep] = fresh_line.get(keep)
+
+        if quantity_changed:
+            floor = await get_committed_qty_for_line(db, fresh, line_idx)
+            committed_qty = int(floor["committed_qty"])
+            if floor.get("pending_stock_claim"):
+                raise HTTPException(
+                    409,
+                    qty_reject_detail(
+                        REASON_QTY_PENDING,
+                        MSG_PENDING,
+                        current_qty=current_qty,
+                        committed_qty=committed_qty,
+                        requested_qty=int(requested_qty),
+                    ),
+                )
+            if int(requested_qty) > current_qty:
+                raise HTTPException(
+                    409,
+                    qty_reject_detail(
+                        REASON_QTY_ABOVE,
+                        message_qty_above(current_qty, int(requested_qty)),
+                        current_qty=current_qty,
+                        committed_qty=committed_qty,
+                        requested_qty=int(requested_qty),
+                    ),
+                )
+            if int(requested_qty) < committed_qty:
+                raise HTTPException(
+                    409,
+                    qty_reject_detail(
+                        REASON_QTY_BELOW,
+                        message_qty_below(current_qty, committed_qty, int(requested_qty)),
+                        current_qty=current_qty,
+                        committed_qty=committed_qty,
+                        requested_qty=int(requested_qty),
+                    ),
+                )
+            mutated["quantity"] = int(requested_qty)
+            fresh_lis[line_idx] = mutated
+            fresh["line_items"] = fresh_lis
+            try:
+                reconcile_operator_schedule_for_line(fresh, line_idx, int(requested_qty))
+            except HTTPException as exc:
+                detail = exc.detail if isinstance(exc.detail, dict) else {}
+                if detail.get("code") != REASON_SCHEDULE:
+                    raise
+                raise HTTPException(
+                    409,
+                    qty_reject_detail(
+                        REASON_SCHEDULE,
+                        detail.get("message") or MSG_SCHEDULE,
+                        current_qty=current_qty,
+                        committed_qty=committed_qty,
+                        requested_qty=int(requested_qty),
+                    ),
+                ) from exc
+            fresh["total_quantity"] = sum(int((line or {}).get("quantity") or 0) for line in fresh_lis)
+            recalc_derived_selling_amounts(fresh)
+        else:
+            mutated["quantity"] = fresh_line.get("quantity")
+            fresh_lis[line_idx] = mutated
+            fresh["line_items"] = fresh_lis
+
+        if line_production_process(mutated) != source_process:
+            raise HTTPException(400, {"code": REASON_CROSS_TYPE, "message": MSG_CROSS_TYPE})
+
+        applied["before"] = before_product
+        applied["before_qty"] = current_qty
+        applied["line"] = mutated
+        applied["product_changed"] = product_changed
+        applied["quantity_changed"] = quantity_changed
+
+    try:
+        fresh = await _with_quantity_lock(order_id, mutate)
+    except QuantityUnchanged:
+        fresh = await db.orders.find_one({"id": order_id}, {"_id": 0})
+        if not fresh:
+            raise HTTPException(404, "PO tidak ditemukan")
+        eligibility = await evaluate_all_line_product_replacements(db, fresh)
+        fresh["line_product_replace"] = eligibility
+        line = (fresh.get("line_items") or [None])[line_idx]
+        current_qty = int((line or {}).get("quantity") or 0)
+        snap = current_product_snapshot(line or {})
+        return {
+            "order": fresh,
+            "line_idx": line_idx,
+            "line": line,
+            "before": snap,
+            "after": snap,
+            "before_quantity": current_qty,
+            "after_quantity": current_qty,
+            "eligibility": eligibility[line_idx] if line_idx < len(eligibility) else None,
+            "message": "Qty tidak berubah.",
+        }
+
+    mutated = applied["line"]
     after = current_product_snapshot(mutated)
+    note = "Ubah qty PO" if applied["quantity_changed"] and not applied["product_changed"] else f"Ubah item PO line_idx={line_idx}"
     await _audit_po(
         fresh,
         "sales_order.line_item.update",
         user,
-        before={"line_idx": line_idx, "product": before, "quantity": current_qty},
+        before={"line_idx": line_idx, "product": applied["before"], "quantity": applied["before_qty"]},
         after={"line_idx": line_idx, "product": after, "quantity": mutated["quantity"]},
-        note=f"Ubah item PO line_idx={line_idx}",
+        note=note,
     )
-
     eligibility = await evaluate_all_line_product_replacements(db, fresh)
     fresh["line_product_replace"] = eligibility
+    product_changed = applied["product_changed"]
+    quantity_changed = applied["quantity_changed"]
     return {
         "order": fresh,
         "line_idx": line_idx,
         "line": mutated,
-        "before": before,
+        "before": applied["before"],
         "after": after,
-        "before_quantity": current_qty,
+        "before_quantity": applied["before_qty"],
         "after_quantity": mutated["quantity"],
         "eligibility": eligibility[line_idx] if line_idx < len(eligibility) else None,
         "message": "Barang dan qty berhasil diperbarui" if product_changed and quantity_changed else (
