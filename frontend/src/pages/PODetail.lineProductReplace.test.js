@@ -5,7 +5,10 @@ import {
   isLineProductReplaceAllowed,
   isLineQtyEditAllowed,
   lockReasonForLine,
+  QTY_DELIVERED_MESSAGE,
+  QTY_INCREASE_WARNINGS,
   qtyEditBounds,
+  qtyIncreaseAllowed,
   replaceEligibilityForLine,
 } from "../components/LineProductReplaceControl";
 
@@ -35,14 +38,14 @@ describe("Imported line Ganti Barang UI", () => {
     expect(ctrl).toMatch(/Sudah Terikat/);
     expect(ctrl).toMatch(/Sisa Bisa Dikoreksi/);
     expect(ctrl).toMatch(/Minimum:/);
-    expect(ctrl).toMatch(/Maximum:/);
+    expect(ctrl).not.toMatch(/Maximum:/);
     expect(ctrl).toMatch(/ganti-barang-btn-/);
     expect(ctrl).toMatch(/ubah-qty-btn-/);
     expect(ctrl).toMatch(/ubah-qty-current-/);
     expect(ctrl).toMatch(/ubah-qty-committed-/);
     expect(ctrl).toMatch(/ubah-qty-remaining-/);
     expect(ctrl).toMatch(/ubah-qty-min-/);
-    expect(ctrl).toMatch(/ubah-qty-max-/);
+    expect(ctrl).not.toMatch(/ubah-qty-max-/);
     expect(ctrl).toMatch(/Simpan Item/);
     expect(ctrl).toMatch(/Simpan Qty/);
     expect(ctrl).not.toMatch(/Simpan Item & Qty/);
@@ -162,7 +165,8 @@ describe("Imported line Ganti Barang UI", () => {
         committed_qty: 3000,
         editable_remaining: 7000,
         min_qty: 3000,
-        max_qty: 10000,
+        max_qty: null,
+        qty_increase_allowed: true,
       }],
     };
     expect(isLineProductReplaceAllowed(order, 0)).toBe(false);
@@ -173,7 +177,9 @@ describe("Imported line Ganti Barang UI", () => {
       committed: 3000,
       remaining: 7000,
       min: 3000,
-      max: 10000,
+      max: null,
+      increaseAllowed: true,
+      increaseReason: "",
     });
     expect(ctrl).toMatch(/productAllowed \?/);
     expect(ctrl).toMatch(/qtyAllowed \?/);
@@ -191,13 +197,58 @@ describe("Imported line Ganti Barang UI", () => {
         committed_qty: 0,
         editable_remaining: 10000,
         min_qty: 0,
-        max_qty: 10000,
+        max_qty: null,
+        qty_increase_allowed: true,
       }],
     };
     expect(isLineProductReplaceAllowed(order, 0)).toBe(true);
     expect(isLineQtyEditAllowed(order, 0)).toBe(true);
+    expect(qtyIncreaseAllowed(order, 0)).toBe(true);
     expect(qtyEditBounds(order, 0).min).toBe(0);
-    expect(qtyEditBounds(order, 0).max).toBe(10000);
+    expect(qtyEditBounds(order, 0).max).toBe(null);
+  });
+
+  test("increase warning is shown only above the current qty and fully delivered stays blocked", () => {
+    const open = {
+      line_items: [{ name: "Cup", quantity: 10000, unit: "pcs" }],
+      line_product_replace: [{
+        line_idx: 0,
+        qty_edit_allowed: true,
+        qty_increase_allowed: true,
+        current_qty: 10000,
+        committed_qty: 3000,
+        min_qty: 3000,
+        max_qty: null,
+        editable_remaining: 7000,
+      }],
+    };
+    const closed = {
+      line_items: [{ name: "Cup", quantity: 10000, unit: "pcs" }],
+      line_product_replace: [{
+        line_idx: 0,
+        qty_edit_allowed: true,
+        qty_increase_allowed: false,
+        qty_increase_reason: QTY_DELIVERED_MESSAGE,
+        current_qty: 10000,
+        committed_qty: 10000,
+        min_qty: 10000,
+        max_qty: 10000,
+        editable_remaining: 0,
+      }],
+    };
+    expect(qtyEditBounds(open, 0).max).toBe(null);
+    expect(qtyEditBounds(open, 0).min).toBe(3000);
+    expect(qtyIncreaseAllowed(closed, 0)).toBe(false);
+    expect(qtyEditBounds(closed, 0).increaseReason).toBe(QTY_DELIVERED_MESSAGE);
+    expect(ctrl).toMatch(/QTY_INCREASE_WARNINGS/);
+    expect(ctrl).toMatch(/parsedQty > bounds\.current/);
+    expect(ctrl).toMatch(/Tambah qty dari/);
+    expect(ctrl).toMatch(/Penjadwalan Operator sebelum dapat dikerjakan/);
+    expect(ctrl).toMatch(/Ya, tambah qty/);
+    expect(ctrl).not.toMatch(/pending stock claim/);
+    expect(ctrl).not.toMatch(/pending_event/);
+    QTY_INCREASE_WARNINGS.forEach((note) => expect(ctrl).toMatch(note));
+    expect(ctrl).toMatch(/Stok sedang diproses Operator|qty_edit_reason/);
   });
 
   test("cancelled order and missing permission hide qty correction", () => {

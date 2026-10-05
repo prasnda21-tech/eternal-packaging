@@ -20,7 +20,10 @@ from typing import Any, Dict, List, Optional, Tuple
 from fastapi import HTTPException
 
 from quantity_rules import is_print_line
+from services.delivery_loading_gate import po_is_fully_delivered
 from services.line_qty_commitment import (
+    MSG_PENDING,
+    MSG_QTY_DELIVERED,
     committed_qty_from_context,
     load_line_commitment_context,
 )
@@ -61,9 +64,6 @@ MSG_SAME = "Produk pengganti sama dengan barang saat ini."
 MSG_INVALID_LINE = "Line item tidak ditemukan."
 MSG_CANCELLED = "PO dibatalkan — barang tidak dapat diganti."
 MSG_QTY_CANCELLED = "PO dibatalkan — qty tidak dapat diubah."
-MSG_QTY_PENDING = (
-    "Qty belum dapat dikoreksi karena masih ada klaim stok yang sedang diproses pada item ini."
-)
 
 # Product-derived fields mirrored from create_sales_order / PesananPenjualan mapping.
 PRODUCT_DERIVED_FIELDS = (
@@ -239,6 +239,8 @@ def _invalid_line_payload(line_idx: Any) -> Dict[str, Any]:
         "downstream_sources": [],
         "qty_edit_allowed": False,
         "qty_edit_reason": MSG_INVALID_LINE,
+        "qty_increase_allowed": False,
+        "qty_increase_reason": None,
         "current_qty": 0,
         "committed_qty": 0,
         "editable_remaining": 0,
@@ -253,11 +255,17 @@ def _with_qty_edit(
     breakdown: Dict[str, Any],
     *,
     cancelled: bool,
+    order: Optional[dict] = None,
 ) -> Dict[str, Any]:
-    """Keep `allowed` as the product-replacement flag. Qty is a separate capability."""
+    """Keep `allowed` as the product-replacement flag. Qty is a separate capability.
+
+    Decrease stays on the committed floor. Increase has no artificial maximum
+    unless the order is already fully delivered.
+    """
     current_qty = _safe_line_qty(li)
     committed = max(0, int(breakdown.get("committed_qty") or 0))
     pending = bool(breakdown.get("pending_stock_claim"))
+    delivered = po_is_fully_delivered(order or {})
     qty_reason = None
     qty_allowed = True
     if cancelled:
@@ -265,20 +273,23 @@ def _with_qty_edit(
         qty_reason = MSG_QTY_CANCELLED
     elif pending:
         qty_allowed = False
-        qty_reason = MSG_QTY_PENDING
+        qty_reason = MSG_PENDING
     elif committed > current_qty:
         qty_allowed = False
         qty_reason = "Qty terikat sudah melebihi qty pesanan."
+    increase_allowed = bool(qty_allowed) and not delivered
     product_allowed = bool(payload.get("allowed"))
     payload["product_replace_allowed"] = product_allowed
     payload["product_replace_reason"] = None if product_allowed else payload.get("reason_message")
     payload["qty_edit_allowed"] = qty_allowed
     payload["qty_edit_reason"] = qty_reason
+    payload["qty_increase_allowed"] = increase_allowed
+    payload["qty_increase_reason"] = MSG_QTY_DELIVERED if qty_allowed and delivered else None
     payload["current_qty"] = current_qty
     payload["committed_qty"] = committed
     payload["editable_remaining"] = max(0, current_qty - committed)
     payload["min_qty"] = committed
-    payload["max_qty"] = current_qty
+    payload["max_qty"] = None if increase_allowed else current_qty
     return payload
 
 
@@ -331,6 +342,7 @@ async def evaluate_line_product_replacement(
             li,
             breakdown,
             cancelled=cancelled,
+            order=order,
         )
 
     if cancelled:

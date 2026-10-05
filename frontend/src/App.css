@@ -566,6 +566,10 @@
 .line-qty-edit-facts{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px 16px;margin:0}
 .line-qty-edit-facts dt{margin:0;color:var(--soft);font-size:12px}
 .line-qty-edit-facts dd{margin:0;font-weight:650;text-align:right}
+.line-qty-increase-notes{margin:8px 0 0;padding-left:18px;color:var(--soft);font-size:12px;line-height:1.45}
+.line-qty-increase-notes li{margin:2px 0}
+.line-qty-confirm{margin:8px 0 0;font-size:13px}
+.line-qty-confirm p{margin:0 0 4px}
 .li-meta{display:flex;gap:22px;color:var(--soft);font-size:13px;flex-wrap:wrap}
 .li-meta span{display:flex;align-items:center;gap:5px}
 .li-notes{margin:0;color:var(--soft);font-size:13px;font-style:italic}
