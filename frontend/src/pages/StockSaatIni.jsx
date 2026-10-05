@@ -500,6 +500,7 @@ function SaldoAwalModal({ canSubmit, branches, warehouses, onClose, onSaved }) {
   const [importKey, setImportKey] = useState("");
   const [importing, setImporting] = useState(false);
   const [importError, setImportError] = useState("");
+  const [templateWarehouseId, setTemplateWarehouseId] = useState("");
   const options = warehouseChoices(warehouses, branchId);
   const selected = items.find((row) => row.id === itemId);
   const baseUnit = (selected?.unit || "PCS").toUpperCase();
@@ -541,15 +542,15 @@ function SaldoAwalModal({ canSubmit, branches, warehouses, onClose, onSaved }) {
   const branch = branches.find((row) => row.id === branchId);
   const warehouse = options.find((row) => row.id === warehouseId);
 
+  const templateWarehouses = yogyakartaWarehouses(branches, warehouses);
   const downloadTemplate = async () => {
     setImportError("");
-    const selectedWarehouseId = warehouseId || preselectedWarehouseId(yogyakartaWarehouses(branches, warehouses));
-    if (!selectedWarehouseId) {
+    if (!templateWarehouseId) {
       setImportError("Pilih gudang sebelum mengunduh template.");
       return;
     }
     try {
-      const blob = await api.physicalOpeningImportTemplate({ warehouse_id: selectedWarehouseId });
+      const blob = await api.physicalOpeningImportTemplate({ warehouse_id: templateWarehouseId });
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
@@ -635,8 +636,17 @@ function SaldoAwalModal({ canSubmit, branches, warehouses, onClose, onSaved }) {
           <h2 style={{ margin: 0 }} data-testid="saldo-awal-title">Saldo Awal Stock Fisik</h2>
           <button type="button" className="ghost sm" onClick={onClose} aria-label="Tutup">Tutup</button>
         </div>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <button type="button" className="ghost" onClick={downloadTemplate} data-testid="opening-import-template">Download Template</button>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "end" }}>
+          <label>
+            Gudang
+            <select value={templateWarehouseId} onChange={(e) => setTemplateWarehouseId(e.target.value)} data-testid="opening-import-warehouse">
+              <option value="">Pilih gudang</option>
+              {templateWarehouses.map((row) => (
+                <option key={row.id} value={row.id}>{row.name || row.code}</option>
+              ))}
+            </select>
+          </label>
+          <button type="button" className="ghost" onClick={downloadTemplate} disabled={!templateWarehouseId} data-testid="opening-import-template">Download Template</button>
           <label className="ghost" style={{ display: "inline-flex", alignItems: "center", cursor: "pointer" }}>
             Import Excel
             <input type="file" accept=".xlsx,.csv,text/csv" onChange={onImportFile} data-testid="opening-import-file" style={{ display: "none" }} />

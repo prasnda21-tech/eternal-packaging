@@ -154,37 +154,40 @@ describe("Stock Saat Ini physical opening import", () => {
     view.cleanup();
   });
 
-  test("template download sends the single known warehouse", async () => {
-    const view = await renderStock();
+  test("template download sends only the warehouse the user selects", async () => {
+    const view = await renderStock([
+      { id: "wh-main", branch_id: "ygy", code: "MAIN", name: "Gudang Yogyakarta", active: true },
+      { id: "wh-sop", branch_id: "ygy", code: "SOPUAT", name: "Gudang Stock Opname UAT", active: true },
+    ]);
     URL.createObjectURL = jest.fn(() => "blob:template");
     URL.revokeObjectURL = jest.fn();
     api.physicalOpeningImportTemplate.mockResolvedValue(new Blob(["xlsx"]));
     await act(async () => {
       view.container.querySelector('[data-testid="saldo-awal-button"]').click();
     });
+    const button = view.container.querySelector('[data-testid="opening-import-template"]');
+    const select = view.container.querySelector('[data-testid="opening-import-warehouse"]');
+    expect(button.disabled).toBe(true);
+    expect(select.value).toBe("");
+    expect(select.textContent).toMatch(/Gudang Yogyakarta/);
+    expect(select.textContent).toMatch(/Gudang Stock Opname UAT/);
+    await act(async () => {
+      button.click();
+    });
+    expect(api.physicalOpeningImportTemplate).not.toHaveBeenCalled();
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, "value").set;
+    await act(async () => {
+      setter.call(select, "wh-main");
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
     await act(async () => {
       view.container.querySelector('[data-testid="opening-import-template"]').click();
       await Promise.resolve();
     });
+    expect(api.physicalOpeningImportTemplate).toHaveBeenCalledTimes(1);
     expect(api.physicalOpeningImportTemplate).toHaveBeenCalledWith({ warehouse_id: "wh-main" });
     expect(api.physicalOpeningImportPreview).not.toHaveBeenCalled();
     expect(api.physicalOpeningImportConfirm).not.toHaveBeenCalled();
-    view.cleanup();
-  });
-
-  test("template download does not guess among multiple warehouses", async () => {
-    const view = await renderStock([
-      { id: "wh-main", branch_id: "ygy", code: "MAIN", name: "Gudang Yogyakarta", active: true },
-      { id: "wh-sop", branch_id: "ygy", code: "SOPUAT", name: "Gudang Opname", active: true },
-    ]);
-    await act(async () => {
-      view.container.querySelector('[data-testid="saldo-awal-button"]').click();
-    });
-    await act(async () => {
-      view.container.querySelector('[data-testid="opening-import-template"]').click();
-    });
-    expect(api.physicalOpeningImportTemplate).not.toHaveBeenCalled();
-    expect(view.container.querySelector('[data-testid="opening-import-error"]').textContent).toMatch(/Pilih gudang/);
     view.cleanup();
   });
 

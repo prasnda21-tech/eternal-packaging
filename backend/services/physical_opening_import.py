@@ -78,23 +78,12 @@ def _item_active(master: dict) -> bool:
 
 def _template_warehouse(context: dict, warehouse_id: Optional[str]) -> dict:
     requested = str(warehouse_id or "").strip()
-    if requested:
-        warehouse = next((row for row in context["warehouses"] if row.get("id") == requested), None)
-        if not warehouse:
-            raise OpeningImportError("Gudang tidak dapat diidentifikasi.")
-        return warehouse
-    operational = context.get("operational") or {}
-    branch_id = operational.get("id")
-    active = [
-        row for row in context["warehouses"]
-        if branch_id
-        and row.get("branch_id") == branch_id
-        and row.get("active") is True
-        and row.get("id")
-    ]
-    if len(active) == 1:
-        return active[0]
-    raise OpeningImportError("Pilih gudang sebelum mengunduh template.")
+    if not requested:
+        raise OpeningImportError("Pilih gudang sebelum mengunduh template.")
+    warehouse = next((row for row in context["warehouses"] if row.get("id") == requested), None)
+    if not warehouse:
+        raise OpeningImportError("Gudang tidak dapat diidentifikasi.")
+    return warehouse
 
 
 def _warehouse_label(warehouse: dict) -> str:

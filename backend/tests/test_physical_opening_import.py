@@ -433,7 +433,11 @@ async def test_http_preview_does_not_write_and_confirm_posts(db):
     app.dependency_overrides[current_user] = lambda: _admin()
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        template = await client.get("/api/physical-opening-balances/import/template")
+        missing = await client.get("/api/physical-opening-balances/import/template")
+        template = await client.get(
+            "/api/physical-opening-balances/import/template",
+            params={"warehouse_id": warehouse["id"]},
+        )
         preview = await client.post(
             "/api/physical-opening-balances/import/preview",
             files={"file": ("saldo.xlsx", content, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
@@ -444,6 +448,7 @@ async def test_http_preview_does_not_write_and_confirm_posts(db):
             json={"idempotency_key": "http-batch", "lines": [_line(item, branch, warehouse, 12)]},
         )
     app.dependency_overrides.clear()
+    assert missing.status_code == 400
     assert template.status_code == 200
     assert template.content[:2] == b"PK"
     assert preview.status_code == 200
