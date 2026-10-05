@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import io
+import logging
 from html import escape
 from pathlib import Path
-from typing import Iterable, List, Optional, Sequence
+from typing import Any, Iterable, List, Optional, Sequence
 
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER, TA_RIGHT
@@ -12,7 +13,12 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.pdfgen import canvas
-from reportlab.platypus import SimpleDocTemplate
+from reportlab.platypus import Image, Paragraph, SimpleDocTemplate
+
+logger = logging.getLogger(__name__)
+
+_PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+_JPEG_MAGIC = b"\xff\xd8\xff"
 
 # Owner reference letterhead. Not a settings document.
 COMPANY_NAME = "ETERNAL PACKAGING"
@@ -58,6 +64,78 @@ def logo_path() -> Optional[str]:
     if candidate.is_file():
         return str(candidate)
     return None
+
+
+def _reportlab_image_source(data: bytes) -> Optional[io.BytesIO]:
+    """Re-encode via PIL → PNG so ReportLab never sees broken/unsupported streams."""
+    if not data or len(data) < 64:
+        return None
+    try:
+        from PIL import Image as PILImage
+
+        im = PILImage.open(io.BytesIO(data))
+        im.load()
+        out = io.BytesIO()
+        if im.mode in ("RGBA", "LA") or (im.mode == "P" and "transparency" in im.info):
+            im.convert("RGBA").save(out, format="PNG")
+        else:
+            im.convert("RGB").save(out, format="PNG")
+        out.seek(0)
+        return out
+    except Exception:
+        logger.warning("print design image convert failed", exc_info=True)
+        return None
+
+
+def logo_flowable(design: Optional[dict], *, width: float, height: float, company_style) -> Any:
+    """Custom logo bytes → repo logo_path → text ETERNAL. Never raises."""
+    assets = (design or {}).get("_pdf_assets") if isinstance(design, dict) else None
+    custom = (assets or {}).get("company_logo") if isinstance(assets, dict) else None
+    if custom:
+        try:
+            src = _reportlab_image_source(custom)
+            if src is not None:
+                img = Image(src, width=width, height=height)
+                img.hAlign = "LEFT"
+                return img
+        except Exception:
+            logger.warning("custom company logo embed failed — falling back", exc_info=True)
+    path = logo_path()
+    if path:
+        try:
+            img = Image(path, width=width, height=height)
+            img.hAlign = "LEFT"
+            return img
+        except Exception:
+            logger.warning("repo logo embed failed — text fallback", exc_info=True)
+    return Paragraph("<b>ETERNAL</b>", company_style)
+
+
+def signature_image_flowable(raw: Optional[bytes], *, max_width: float, max_height: float) -> Optional[Any]:
+    """Bounded signature/stamp image for Faktur/Proforma. None → omit image."""
+    if not raw:
+        return None
+    try:
+        from services.delivery_pod_signature import normalize_signature_image_for_pdf
+
+        normalized = normalize_signature_image_for_pdf(raw)
+        if not normalized:
+            return None
+        from PIL import Image as PILImage
+
+        with PILImage.open(io.BytesIO(normalized)) as pil:
+            iw, ih = pil.size
+        iw = max(iw, 1)
+        ih = max(ih, 1)
+        scale = min(max_width / iw, max_height / ih)
+        draw_w = max(iw * scale, 0.5 * mm)
+        draw_h = max(ih * scale, 0.5 * mm)
+        img = Image(io.BytesIO(normalized), width=draw_w, height=draw_h)
+        img.hAlign = "CENTER"
+        return img
+    except Exception:
+        logger.warning("signature image embed failed — omitting", exc_info=True)
+        return None
 
 
 def esc(value) -> str:

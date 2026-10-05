@@ -500,6 +500,22 @@ export const api = {
   updatePhysicalStockSettings: (payload) => client.put(`/settings/physical-stock`, payload).then((r) => r.data),
   designCetakanSettings: () => client.get(`/settings/design-cetakan`).then((r) => r.data),
   updateDesignCetakanSettings: (payload) => client.put(`/settings/design-cetakan`, payload).then((r) => r.data),
+  uploadDesignCetakanAsset: (slot, file) => {
+    const form = new FormData();
+    form.append("file", file);
+    return client
+      .post(`/settings/design-cetakan/assets/${encodeURIComponent(slot)}`, form)
+      .then((r) => r.data);
+  },
+  designCetakanAssetPreview: (slot, config = {}) =>
+    client
+      .get(`/settings/design-cetakan/assets/${encodeURIComponent(slot)}`, {
+        responseType: "blob",
+        ...config,
+      })
+      .then((r) => r.data),
+  removeDesignCetakanAsset: (slot) =>
+    client.delete(`/settings/design-cetakan/assets/${encodeURIComponent(slot)}`).then((r) => r.data),
   listNotifications: (params = {}) => client.get(`/notifications`, { params }).then((r) => r.data),
   markNotificationRead: (id) => client.post(`/notifications/${encodeURIComponent(id)}/read`).then((r) => r.data),
   customerDesignApprovalNotificationSettings: () => client.get(`/settings/notifications/customer-design-approval`).then((r) => r.data),
