@@ -103,6 +103,8 @@ PY
 if ! port_open 8000; then
   (
     cd "$ROOT/backend"
+    # Local preview only. Does not change production CORS.
+    export CORS_ORIGINS="http://127.0.0.1:3002,http://localhost:3002"
     nohup python3 -m uvicorn server:app --host 127.0.0.1 --port 8000 \
       >>"$LOG_DIR/backend.log" 2>&1 &
   )
