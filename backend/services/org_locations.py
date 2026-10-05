@@ -108,6 +108,13 @@ def public_branch(doc: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     }
 
 
+def warehouse_is_operational(doc: Optional[Dict[str, Any]]) -> bool:
+    """Missing or null is_operational stays operational. Only explicit false is excluded."""
+    if not isinstance(doc, dict):
+        return True
+    return doc.get("is_operational") is not False
+
+
 def public_warehouse(doc: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     if not doc:
         return None
@@ -117,6 +124,7 @@ def public_warehouse(doc: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         "code": normalize_code(doc.get("code")),
         "name": normalize_name(doc.get("name")),
         "active": bool(doc.get("active", True)),
+        "is_operational": warehouse_is_operational(doc),
         "created_at": doc.get("created_at"),
         "updated_at": doc.get("updated_at"),
         "created_by": doc.get("created_by"),
@@ -336,6 +344,9 @@ async def update_warehouse(db, warehouse_id: str, raw: dict, *, user: Optional[d
 
     if "active" in payload:
         updates["active"] = normalize_active(payload.get("active"), default=True)
+
+    if "is_operational" in payload:
+        updates["is_operational"] = payload.get("is_operational") is not False
 
     if "code" in updates or "branch_id" in updates:
         conflict = await db[WAREHOUSES_COLLECTION].find_one(

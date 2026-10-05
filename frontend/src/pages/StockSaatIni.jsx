@@ -5,7 +5,7 @@ import { useAuth } from "../lib/auth";
 import { formatDate } from "../lib/constants";
 import { fmtQty } from "../components/qtyUi";
 import { useDebouncedLiveSearch, liveSearchTableView } from "../hooks/useDebouncedLiveSearch";
-import { openingReady, preselectedWarehouseId, stockEmptyMessage, warehouseChoices, yogyakartaWarehouses } from "../lib/physicalStockView";
+import { isOperationalWarehouse, openingReady, operationalOpeningWarehouses, preselectedWarehouseId, stockEmptyMessage, warehouseChoices, yogyakartaWarehouses } from "../lib/physicalStockView";
 
 const INLINE_ADJUST_REASON = "Koreksi manual dari Stock Saat Ini";
 
@@ -501,7 +501,7 @@ function SaldoAwalModal({ canSubmit, branches, warehouses, onClose, onSaved }) {
   const [importing, setImporting] = useState(false);
   const [importError, setImportError] = useState("");
   const [templateWarehouseId, setTemplateWarehouseId] = useState("");
-  const options = warehouseChoices(warehouses, branchId);
+  const options = warehouseChoices(warehouses, branchId).filter(isOperationalWarehouse);
   const selected = items.find((row) => row.id === itemId);
   const baseUnit = (selected?.unit || "PCS").toUpperCase();
 
@@ -542,7 +542,7 @@ function SaldoAwalModal({ canSubmit, branches, warehouses, onClose, onSaved }) {
   const branch = branches.find((row) => row.id === branchId);
   const warehouse = options.find((row) => row.id === warehouseId);
 
-  const templateWarehouses = yogyakartaWarehouses(branches, warehouses);
+  const templateWarehouses = operationalOpeningWarehouses(branches, warehouses);
   const downloadTemplate = async () => {
     setImportError("");
     if (!templateWarehouseId) {

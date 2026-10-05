@@ -13,6 +13,8 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError, PyMongoError
 
+from services.org_locations import warehouse_is_operational
+
 LEDGER_COLLECTION = "physical_stock_ledger"
 BALANCE_COLLECTION = "physical_stock_balances"
 SALES_DELIVERY_CONFIRMATIONS = "physical_sales_delivery_confirmations"
@@ -1899,9 +1901,13 @@ async def operational_physical_qty_by_item(
         return {}
     warehouses = await db[WAREHOUSES_COLLECTION].find(
         {"branch_id": operational["id"]},
-        {"_id": 0, "id": 1},
+        {"_id": 0, "id": 1, "is_operational": 1},
     ).to_list(500)
-    warehouse_ids = [row.get("id") for row in warehouses if row.get("id")]
+    warehouse_ids = [
+        row.get("id")
+        for row in warehouses
+        if row.get("id") and warehouse_is_operational(row)
+    ]
     if not warehouse_ids:
         return {}
     query: Dict[str, Any] = {"warehouse_id": {"$in": warehouse_ids}}
@@ -1948,6 +1954,7 @@ async def list_physical_stock_catalog(
             {"branch_id": operational_id},
             {"_id": 0},
         ).sort([("code", 1), ("id", 1)]).to_list(500)
+        warehouses = [row for row in warehouses if warehouse_is_operational(row)]
     item_query: Dict[str, Any] = {}
     text = str(q or "").strip()
     if text:

@@ -474,3 +474,44 @@ async def test_operational_stock_buckets(db):
     assert await db.orders.count_documents({}) == before_orders
     for name, count in before_legacy.items():
         assert await db[name].count_documents({}) == count
+
+
+async def test_operational_warehouse_scope_excludes_non_operational_balances(db):
+    from services.org_locations import public_warehouse, warehouse_is_operational
+    from services.physical_stock import operational_physical_qty_by_item
+
+    assert warehouse_is_operational({}) is True
+    assert warehouse_is_operational({"is_operational": None}) is True
+    assert warehouse_is_operational({"is_operational": True}) is True
+    assert warehouse_is_operational({"is_operational": False}) is False
+    assert public_warehouse({"id": "w", "code": "OLD", "name": "Old"})["is_operational"] is True
+
+    ygy = await _seed_branch(db, "YGY")
+    await db[BRANCHES_COLLECTION].update_one({"id": ygy["id"]}, {"$set": {"name": "Yogyakarta"}})
+    missing = await _seed_warehouse(db, ygy, "MAIN")
+    explicit = await _seed_warehouse(db, ygy, "OPS")
+    await db[WAREHOUSES_COLLECTION].update_one({"id": explicit["id"]}, {"$set": {"is_operational": True}})
+    hidden = await _seed_warehouse(db, ygy, "SOPUAT")
+    await db[WAREHOUSES_COLLECTION].update_one({"id": hidden["id"]}, {"$set": {"is_operational": False}})
+    item = await _seed_item(db, item_code="SCOPE", item_name="Scope Item", unit="pcs")
+    await _seed_balance(db, item, ygy, missing, 10)
+    await _seed_balance(db, item, ygy, explicit, 5)
+    await _seed_balance(db, item, ygy, hidden, 99)
+    before_balances = await db[BALANCE_COLLECTION].find({}, {"_id": 0}).to_list(20)
+    before_ledger = await db[LEDGER_COLLECTION].count_documents({})
+
+    catalog = await list_physical_stock_catalog(db, q="Scope")
+    row = catalog["items"][0]
+    assert row["physical_qty"] == 15
+    assert row["qty_pesanan"] == 0
+    assert row["qty_belum_terkirim"] == 0
+    assert row["qty_tersedia"] == 15
+    assert catalog["warehouse_count"] == 2
+    valued = await operational_physical_qty_by_item(db, master_ids=[item["id"]])
+    assert valued[item["id"]] == 15
+
+    after_balances = await db[BALANCE_COLLECTION].find({}, {"_id": 0}).to_list(20)
+    assert after_balances == before_balances
+    assert await db[LEDGER_COLLECTION].count_documents({}) == before_ledger
+    hidden_qty = await db[BALANCE_COLLECTION].find_one({"warehouse_id": hidden["id"]}, {"_id": 0})
+    assert hidden_qty["physical_qty"] == 99

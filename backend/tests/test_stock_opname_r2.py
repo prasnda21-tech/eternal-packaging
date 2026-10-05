@@ -655,3 +655,24 @@ async def test_stock_saat_ini_follows_physical_difference(db):
     assert row["qty_belum_terkirim"] == 10
     assert row["qty_tersedia"] == 65
     assert MOVEMENT_REVERSAL
+
+
+async def test_non_operational_warehouse_can_still_open_stock_opname(db):
+    branch_id, warehouse_id = await _location(db, code="YGY", warehouse_code="SOPUAT")
+    await db[WAREHOUSES_COLLECTION].update_one(
+        {"id": warehouse_id},
+        {"$set": {"is_operational": False}},
+    )
+    item_id = await _item(db, name="Hidden", code="HID")
+    await _open(db, item_id, branch_id, warehouse_id, 7)
+    before_balance = await db[BALANCE_COLLECTION].find_one({"warehouse_id": warehouse_id}, {"_id": 0, "physical_qty": 1})
+    before_ledger = await db[LEDGER_COLLECTION].count_documents({})
+    created = await create_stock_opname_session(db, {
+        "branch_id": branch_id,
+        "warehouse_id": warehouse_id,
+    }, USER)
+    assert created["status"] == "DRAFT"
+    assert created["warehouse_id"] == warehouse_id
+    after_balance = await db[BALANCE_COLLECTION].find_one({"warehouse_id": warehouse_id}, {"_id": 0, "physical_qty": 1})
+    assert after_balance["physical_qty"] == before_balance["physical_qty"] == 7
+    assert await db[LEDGER_COLLECTION].count_documents({}) == before_ledger

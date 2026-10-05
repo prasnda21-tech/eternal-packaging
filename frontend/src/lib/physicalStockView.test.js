@@ -1,6 +1,8 @@
 import {
   goodsReceiptWarehouseChoice,
+  isOperationalWarehouse,
   movementLabel,
+  operationalOpeningWarehouses,
   mutationQtyColumns,
   openingReady,
   preselectedWarehouseId,
@@ -28,6 +30,19 @@ describe("physical stock view helpers", () => {
     ]);
     expect(preselectedWarehouseId(many)).toBe("");
     expect(many.map((row) => row.id)).toEqual(["main", "whb"]);
+  });
+
+  test("opening balance warehouses hide a non-operational warehouse and keep a missing flag operational", () => {
+    const branches = [{ id: "ygy", code: "YGY", name: "Yogyakarta" }];
+    const warehouses = [
+      { id: "main", branch_id: "ygy", code: "MAIN", active: true },
+      { id: "ops", branch_id: "ygy", code: "OPS", active: true, is_operational: true },
+      { id: "sopuat", branch_id: "ygy", code: "SOPUAT", active: true, is_operational: false },
+    ];
+    expect(isOperationalWarehouse(warehouses[0])).toBe(true);
+    expect(isOperationalWarehouse(warehouses[2])).toBe(false);
+    expect(operationalOpeningWarehouses(branches, warehouses).map((row) => row.id)).toEqual(["main", "ops"]);
+    expect(yogyakartaWarehouses(branches, warehouses).map((row) => row.id)).toEqual(["main", "ops", "sopuat"]);
   });
 
   test("warehouse choices follow the selected branch and allow an empty branch", () => {

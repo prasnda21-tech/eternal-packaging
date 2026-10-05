@@ -1,3 +1,7 @@
+export function isOperationalWarehouse(row) {
+  return row?.is_operational !== false;
+}
+
 export function yogyakartaWarehouses(branches, warehouses) {
   const branch = (Array.isArray(branches) ? branches : []).find((row) => {
     const code = String(row?.code || "").trim().toUpperCase();
@@ -8,6 +12,10 @@ export function yogyakartaWarehouses(branches, warehouses) {
   return (Array.isArray(warehouses) ? warehouses : []).filter(
     (row) => row.branch_id === branch.id && row.active !== false,
   );
+}
+
+export function operationalOpeningWarehouses(branches, warehouses) {
+  return yogyakartaWarehouses(branches, warehouses).filter(isOperationalWarehouse);
 }
 
 export function goodsReceiptWarehouseChoice(branches, warehouses) {
