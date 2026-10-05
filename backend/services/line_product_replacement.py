@@ -307,7 +307,13 @@ async def evaluate_line_product_replacement(
     li = lis[idx] if isinstance(lis[idx], dict) else {}
     process = line_production_process(li)
     current = current_product_snapshot(li)
-    ctx = commitment_ctx if commitment_ctx is not None else await load_line_commitment_context(db, order)
+    if commitment_ctx is not None:
+        ctx = commitment_ctx
+    else:
+        # Shared per-order read, attached only to the evaluation view so the
+        # existing three-argument call shape stays intact.
+        embedded = order.get("_line_commitment_ctx") if isinstance(order, dict) else None
+        ctx = embedded if embedded is not None else await load_line_commitment_context(db, order)
     breakdown = committed_qty_from_context(order, idx, ctx)
     cancelled = bool(order.get("cancelled"))
 
@@ -345,9 +351,13 @@ async def evaluate_all_line_product_replacements(db, order: dict) -> List[Dict[s
     if not lis:
         return []
     # Invoice and stock reads are per order. Product locks stay per line.
+    # The context rides on a shallow copy so callers that replace
+    # evaluate_line_product_replacement still see (db, order, line_idx).
     ctx = await load_line_commitment_context(db, order)
+    view = dict(order)
+    view["_line_commitment_ctx"] = ctx
     return list(await asyncio.gather(*(
-        evaluate_line_product_replacement(db, order, i, commitment_ctx=ctx)
+        evaluate_line_product_replacement(db, view, i)
         for i in range(len(lis))
     )))
 
