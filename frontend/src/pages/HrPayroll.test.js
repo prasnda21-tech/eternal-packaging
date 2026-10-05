@@ -47,6 +47,8 @@ describe("HR & Payroll UI source", () => {
     expect(page).toMatch(/Pembayaran bank dilakukan terpisah/);
     expect(page).toMatch(/unmapped_sources/);
     expect(page).toMatch(/hr-payroll-unmapped/);
+    expect(page).toMatch(/hr-payroll-payable-early/);
+    expect(page).toMatch(/Finalkan akan ditolak/);
     expect(page).toMatch(/row\.label/);
     expect(page).toMatch(/Accounting: \{selected\.accounting_journal_id \? "Posted"/);
     expect(page).toMatch(/payroll_payment\.create/);

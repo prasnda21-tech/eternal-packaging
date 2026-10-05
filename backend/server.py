@@ -66,11 +66,8 @@ from services.operator_schedule import (
 from services.screen_size import allocation_screen_size as _allocation_screen_size
 from services.operator_payroll import (
     PAYROLL_EXPORT_COLUMNS,
-    PAYROLL_REKAP_COLUMNS,
     SETTINGS_KEY as OPERATOR_WAGE_SETTINGS_KEY,
-    compute_operator_payroll,
     item_identity as _wage_item_identity,
-    operators_and_items as _payroll_filter_options,
     snapshot_on_save as _wage_snapshot_on_save,
     effective_rate_as_of as _wage_effective_rate,
     normalize_wage_settings,
@@ -13884,21 +13881,14 @@ async def gaji_operator_report(
     await _require_gaji_view(user)
     start, end, preset = resolve_period("custom" if (date_from or date_to) else "month", date_from, date_to)
     ids = _parse_operator_ids(operator_id, operator_ids)
-    # One aggregation: keep the full operator dropdown; apply selection in compute.
-    pipeline = build_operator_analytics_pipeline(None, None, item, None, operator_ids=None)
-    blob = (await db.orders.aggregate(pipeline).to_list(1) or [{}])[0]
-    wage = await db.app_settings.find_one({"key": OPERATOR_WAGE_SETTINGS_KEY}, {"_id": 0}) or {}
-    docs = blob.get("docs") or []
-    result = compute_operator_payroll(
-        docs,
-        wage,
+    from services.operator_wage_claims import build_gaji_operator_report
+    result = await build_gaji_operator_report(
+        db,
         date_from=start,
         date_to=end,
         operator_ids=ids or None,
         item=item,
     )
-    ops, items = _payroll_filter_options(docs)
-    result["filters"] = {"operators": ops, "items": items}
     result["period"]["preset"] = preset
     result["generated_at"] = now_iso()
     return result
@@ -13917,12 +13907,9 @@ async def gaji_operator_export(
     await _require_gaji_view(user)
     start, end, _preset = resolve_period("custom" if (date_from or date_to) else "month", date_from, date_to)
     ids = _parse_operator_ids(operator_id, operator_ids)
-    pipeline = build_operator_analytics_pipeline(None, None, item, None, operator_ids=None)
-    blob = (await db.orders.aggregate(pipeline).to_list(1) or [{}])[0]
-    wage = await db.app_settings.find_one({"key": OPERATOR_WAGE_SETTINGS_KEY}, {"_id": 0}) or {}
-    result = compute_operator_payroll(
-        blob.get("docs") or [],
-        wage,
+    from services.operator_wage_claims import build_gaji_operator_report
+    result = await build_gaji_operator_report(
+        db,
         date_from=start,
         date_to=end,
         operator_ids=ids or None,
@@ -13930,13 +13917,27 @@ async def gaji_operator_export(
     )
     rows = result.get("rows") or []
     people = result.get("people") or []
-    keys = [c[0] for c in PAYROLL_EXPORT_COLUMNS]
-    headers = [c[1] for c in PAYROLL_EXPORT_COLUMNS]
-    rekap_keys = [c[0] for c in PAYROLL_REKAP_COLUMNS]
-    rekap_headers = [c[1] for c in PAYROLL_REKAP_COLUMNS]
+    keys = [c[0] for c in PAYROLL_EXPORT_COLUMNS] + ["payroll_status", "payroll_reason"]
+    headers = [
+        ("Upah Eligible" if label == "Upah Dasar" else label)
+        for label in ([c[1] for c in PAYROLL_EXPORT_COLUMNS] + ["Status Payroll", "Alasan"])
+    ]
+    rekap_keys = [
+        "name", "qty", "wage_basis", "product_addition",
+        "bonus_proposed_amount", "bonus_final_amount", "bonus_status", "bonus_source",
+        "total_payroll", "estimate_total", "payroll_status",
+    ]
+    rekap_headers = [
+        "Nama Operator", "Total Output", "Upah Eligible", "Tambahan Produk",
+        "Bonus Usulan", "Bonus Final", "Status Bonus", "Sumber Bonus",
+        "Total Payroll", "Estimasi/Usulan Total", "Status Payroll",
+    ]
     fmt = (fmt or "xlsx").strip().lower()
     filename = f"Gaji_Operator_{start.isoformat()}_{end.isoformat()}." + ("xlsx" if fmt == "xlsx" else "csv")
-    numeric = {"qty_completed", "rate_per_pcs", "base_wage", "product_addition", "total_upah", "qty", "bonus"}
+    numeric = {
+        "qty_completed", "rate_per_pcs", "base_wage", "product_addition", "total_upah", "qty", "bonus",
+        "wage_basis", "total_payroll", "bonus_proposed_amount", "bonus_final_amount", "estimate_total",
+    }
     if fmt == "xlsx":
         from io import BytesIO
         from openpyxl import Workbook
