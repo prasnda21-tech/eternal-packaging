@@ -132,16 +132,16 @@ async def test_quantity_only_change_recalculates_total_atomically():
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
         res = await client.patch(
             f"/api/sales-orders/{order['id']}/lines/0/product",
-            json={"quantity": 120},
+            json={"quantity": 80},
         )
     app.dependency_overrides.pop(current_user, None)
     assert res.status_code == 200, res.text
     assert res.json()["before_quantity"] == 100
-    assert res.json()["after_quantity"] == 120
+    assert res.json()["after_quantity"] == 80
     fresh = await db().orders.find_one({"id": order["id"]}, {"_id": 0})
-    assert fresh["line_items"][0]["quantity"] == 120
+    assert fresh["line_items"][0]["quantity"] == 80
     assert fresh["line_items"][0]["accurate_item_id"] == "AID-QTY-1"
-    assert fresh["total_quantity"] == 145
+    assert fresh["total_quantity"] == 105
 
 
 @pytest.mark.anyio
@@ -168,14 +168,14 @@ async def test_product_and_quantity_change_are_persisted_together():
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
         res = await client.patch(
             f"/api/sales-orders/{order['id']}/lines/0/product",
-            json={"master_item_id": target["id"], "quantity": 160},
+            json={"master_item_id": target["id"], "quantity": 80},
         )
     app.dependency_overrides.pop(current_user, None)
     assert res.status_code == 200, res.text
     fresh = await db().orders.find_one({"id": order["id"]}, {"_id": 0})
     assert fresh["line_items"][0]["accurate_item_id"] == "AID-BOTH-2"
-    assert fresh["line_items"][0]["quantity"] == 160
-    assert fresh["total_quantity"] == 160
+    assert fresh["line_items"][0]["quantity"] == 80
+    assert fresh["total_quantity"] == 80
 
 
 @pytest.mark.anyio

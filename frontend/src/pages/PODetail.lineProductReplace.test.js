@@ -3,7 +3,9 @@ import path from "path";
 import {
   formatReplaceApiError,
   isLineProductReplaceAllowed,
+  isLineQtyEditAllowed,
   lockReasonForLine,
+  qtyEditBounds,
   replaceEligibilityForLine,
 } from "../components/LineProductReplaceControl";
 
@@ -26,14 +28,24 @@ describe("Imported line Ganti Barang UI", () => {
     expect(detail).not.toMatch(/canReplaceLineProduct = hasPerm\("production\.route\.edit"\)/);
   });
 
-  test("editable control shows Ganti Barang and current item", () => {
-    expect(ctrl).toMatch(/Ganti Barang/);
-    expect(ctrl).toMatch(/Barang Saat Ini/);
-    expect(ctrl).toMatch(/Cari Barang Pengganti/);
-    expect(ctrl).toMatch(/Simpan Perubahan/);
+  test("editable control separates Ubah Item and Ubah Qty", () => {
+    expect(ctrl).toMatch(/Ubah Item/);
+    expect(ctrl).toMatch(/Ubah Qty/);
+    expect(ctrl).toMatch(/Qty Pesanan/);
+    expect(ctrl).toMatch(/Sudah Terikat/);
+    expect(ctrl).toMatch(/Sisa Bisa Dikoreksi/);
+    expect(ctrl).toMatch(/Minimum:/);
+    expect(ctrl).toMatch(/Maximum:/);
     expect(ctrl).toMatch(/ganti-barang-btn-/);
-    expect(ctrl).toMatch(/ganti-barang-current-/);
-    expect(ctrl).toMatch(/ganti-barang-save-/);
+    expect(ctrl).toMatch(/ubah-qty-btn-/);
+    expect(ctrl).toMatch(/ubah-qty-current-/);
+    expect(ctrl).toMatch(/ubah-qty-committed-/);
+    expect(ctrl).toMatch(/ubah-qty-remaining-/);
+    expect(ctrl).toMatch(/ubah-qty-min-/);
+    expect(ctrl).toMatch(/ubah-qty-max-/);
+    expect(ctrl).toMatch(/Simpan Item/);
+    expect(ctrl).toMatch(/Simpan Qty/);
+    expect(ctrl).not.toMatch(/Simpan Item & Qty/);
   });
 
   test("reuses MasterItemSearchSelect live search (no duplicate catalog)", () => {
@@ -48,9 +60,9 @@ describe("Imported line Ganti Barang UI", () => {
   test("explicit save only — open/search/select do not write", () => {
     expect(ctrl).toMatch(/if \(saving \|\| !target\) return;/);
     expect(ctrl).toMatch(/api\.replaceSalesOrderLineProduct/);
-    // Opening editor clears target; save gated on target
     expect(ctrl).toMatch(/setTarget\(null\)/);
     expect(ctrl).toMatch(/disabled=\{saving \|\| !target\}/);
+    expect(ctrl).toMatch(/quantity: qty/);
   });
 
   test("locked UI shows reason, not active control", () => {
@@ -133,6 +145,90 @@ describe("Imported line Ganti Barang UI", () => {
   test("same-name lines remain independent in UI (per lineIdx control)", () => {
     expect(ctrl).toMatch(/lineIdx/);
     expect(ctrl).toMatch(/ganti-barang-btn-\$\{lineIdx\}/);
+    expect(ctrl).toMatch(/ubah-qty-btn-\$\{lineIdx\}/);
     expect(ctrl).toMatch(/replaceSalesOrderLineProduct\(order\.id, lineIdx/);
+  });
+
+  test("product lock keeps Ubah Qty and shows the committed floor", () => {
+    const order = {
+      line_items: [{ name: "Cup A", quantity: 10000, production_process: "print" }],
+      line_product_replace: [{
+        line_idx: 0,
+        allowed: false,
+        product_replace_allowed: false,
+        reason_message: "Barang tidak dapat diganti karena item sudah punya identitas stok terkait.",
+        qty_edit_allowed: true,
+        current_qty: 10000,
+        committed_qty: 3000,
+        editable_remaining: 7000,
+        min_qty: 3000,
+        max_qty: 10000,
+      }],
+    };
+    expect(isLineProductReplaceAllowed(order, 0)).toBe(false);
+    expect(isLineQtyEditAllowed(order, 0)).toBe(true);
+    expect(lockReasonForLine(order, 0)).toMatch(/identitas stok/);
+    expect(qtyEditBounds(order, 0)).toEqual({
+      current: 10000,
+      committed: 3000,
+      remaining: 7000,
+      min: 3000,
+      max: 10000,
+    });
+    expect(ctrl).toMatch(/productAllowed \?/);
+    expect(ctrl).toMatch(/qtyAllowed \?/);
+    expect(ctrl).toMatch(/canEdit \?/);
+  });
+
+  test("clean line can replace product and correct qty", () => {
+    const order = {
+      line_items: [{ name: "Cup", quantity: 10000, production_process: "print" }],
+      line_product_replace: [{
+        line_idx: 0,
+        allowed: true,
+        qty_edit_allowed: true,
+        current_qty: 10000,
+        committed_qty: 0,
+        editable_remaining: 10000,
+        min_qty: 0,
+        max_qty: 10000,
+      }],
+    };
+    expect(isLineProductReplaceAllowed(order, 0)).toBe(true);
+    expect(isLineQtyEditAllowed(order, 0)).toBe(true);
+    expect(qtyEditBounds(order, 0).min).toBe(0);
+    expect(qtyEditBounds(order, 0).max).toBe(10000);
+  });
+
+  test("cancelled order and missing permission hide qty correction", () => {
+    const cancelled = {
+      cancelled: true,
+      line_items: [{ quantity: 10000 }],
+      line_product_replace: [{ line_idx: 0, allowed: false, qty_edit_allowed: false, current_qty: 10000, committed_qty: 0, min_qty: 0, max_qty: 10000, editable_remaining: 10000 }],
+    };
+    expect(isLineQtyEditAllowed(cancelled, 0)).toBe(false);
+    expect(isLineProductReplaceAllowed(cancelled, 0)).toBe(false);
+    expect(ctrl).toMatch(/Boolean\(canEdit\) && isLineQtyEditAllowed/);
+    expect(ctrl).toMatch(/Boolean\(canEdit\) && isLineProductReplaceAllowed/);
+  });
+
+  test("backend qty error is shown from the response message", () => {
+    expect(ctrl).toMatch(/setQtyErr\(formatReplaceApiError\(e\)\)/);
+    expect(
+      formatReplaceApiError({
+        response: {
+          data: {
+            detail: {
+              code: "QTY_DI_BAWAH_QTY_TERIKAT",
+              message: "Pesanan: 10.000. Sudah terikat: 3.000. Qty minimum: 3.000. Qty diminta: 2.999.",
+              current_qty: 10000,
+              committed_qty: 3000,
+              minimum_qty: 3000,
+              requested_qty: 2999,
+            },
+          },
+        },
+      })
+    ).toMatch(/Qty diminta: 2\.999/);
   });
 });
