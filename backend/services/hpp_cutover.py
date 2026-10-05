@@ -74,7 +74,11 @@ STATUS_MISSING_COST = "MISSING_COST"
 SOURCE_OPENING = "OPENING_HPP"
 SOURCE_GOODS_RECEIPT = "GOODS_RECEIPT"
 SOURCE_GOODS_RECEIPT_REVERSAL = "GOODS_RECEIPT_REVERSAL"
+SOURCE_PURCHASE_RETURN = "PURCHASE_RETURN"
+SOURCE_PURCHASE_RETURN_REVERSAL = "PURCHASE_RETURN_REVERSAL"
 SOURCE_PURCHASING_AUTO_BOOTSTRAP = "PURCHASING_AUTO_BOOTSTRAP"
+STATUS_PENDING_VALUATION = "PENDING_VALUATION"
+STATUS_QUEUED = "QUEUED"
 REASON_NEGATIVE = "NEGATIVE_PHYSICAL_STOCK"
 
 LEASE_SECONDS = 120
@@ -253,15 +257,26 @@ def _events_from_baseline_and_recognition(cutover: dict, lines: List[dict], reco
             continue
         if rec.get("status") != STATUS_RECOGNIZED:
             continue
-        if _dec(rec.get("qty")) <= 0 or _dec(rec.get("unit_cost")) <= 0:
-            continue
+        source_type = str(rec.get("source_type") or SOURCE_GOODS_RECEIPT)
+        qty = _dec(rec.get("qty"))
+        unit_cost = _dec(rec.get("unit_cost"))
+        if source_type == SOURCE_PURCHASE_RETURN:
+            if qty >= 0 or unit_cost <= 0:
+                continue
+        elif source_type == SOURCE_PURCHASE_RETURN_REVERSAL:
+            if qty <= 0 or unit_cost <= 0:
+                continue
+        else:
+            if qty <= 0 or unit_cost <= 0:
+                continue
+            source_type = SOURCE_GOODS_RECEIPT
         posted = str(rec.get("recognized_at") or "")
         if posted <= baseline_at:
             posted = baseline_at + "~"
         future.append({
             "event_id": rec["event_id"],
             "item_identity": rec["item_identity"],
-            "source_type": SOURCE_GOODS_RECEIPT,
+            "source_type": source_type,
             "source_id": rec.get("source_key"),
             "source_line_id": rec.get("source_key"),
             "source_number": rec.get("source_key"),
@@ -584,6 +599,7 @@ async def rebuild_cutover_valuation(
             bad_positive = [
                 row for row in rows
                 if row["hpp_status"] == STATUS_QTY_MISMATCH and _dec(row["stock_fisik"]) >= 0
+                and not _return_relief_explains_legacy_gap(recognitions, row)
             ]
             if bad_positive:
                 raise RuntimeError("valuation qty does not match stock fisik")
@@ -1885,3 +1901,400 @@ async def reverse_goods_receipt_hpp(
         {"event_id": {"$in": reversal_ids}},
         {"_id": 0},
     ).to_list(5000)
+
+
+def _return_relief_explains_legacy_gap(recognitions: List[dict], row: dict) -> bool:
+    """Legacy product_stock_state is not reduced by an R2 purchase return.
+
+    A mismatch equal to the net recognized return qty is the return itself.
+    """
+    net = Decimal("0")
+    mid = str(row.get("master_item_id") or "")
+    for rec in recognitions:
+        if str(rec.get("master_item_id") or "") != mid or rec.get("status") != STATUS_RECOGNIZED:
+            continue
+        kind = rec.get("source_type")
+        if kind == SOURCE_PURCHASE_RETURN:
+            net += abs(_dec(rec.get("qty")))
+        elif kind == SOURCE_PURCHASE_RETURN_REVERSAL:
+            net -= abs(_dec(rec.get("qty")))
+    if net == 0:
+        return False
+    return abs(_dec(row.get("difference")) - net) <= Decimal("0.000001")
+
+
+def purchase_return_source_key(return_id: str, line_id: str) -> str:
+    return f"purchase-return:{return_id}:{line_id}"
+
+
+def purchase_return_reversal_source_key(return_id: str, line_id: str) -> str:
+    return f"purchase-return-reversal:{return_id}:{line_id}"
+
+
+def _valuation_fingerprint(doc: dict) -> tuple:
+    return (
+        str(doc.get("purchase_return_id") or ""),
+        str(doc.get("purchase_return_line_id") or ""),
+        str(doc.get("goods_receipt_id") or ""),
+        str(doc.get("goods_receipt_line_id") or ""),
+        str(doc.get("master_item_id") or ""),
+        str(doc.get("returned_qty") or ""),
+        str(doc.get("unit_cost") if doc.get("unit_cost") is not None else ""),
+        str(doc.get("warehouse_id") or ""),
+        str(doc.get("branch_id") or ""),
+        str(doc.get("original_source_key") or ""),
+        str(doc.get("source_type") or ""),
+    )
+
+
+def _same_valuation_payload(existing: dict, incoming: dict) -> bool:
+    return _valuation_fingerprint(existing) == _valuation_fingerprint(incoming)
+
+
+async def _find_event(db, source_key: str, session=None):
+    return await db[EVENTS].find_one({"source_key": source_key}, {"_id": 0}, session=session)
+
+
+async def _upsert_valuation_event(db, doc: dict, session=None) -> dict:
+    source_key = doc["source_key"]
+    existing = await _find_event(db, source_key, session=session)
+    if existing:
+        if _same_valuation_payload(existing, doc):
+            if existing.get("status") in {STATUS_RECOGNIZED, STATUS_REVERSED, STATUS_PENDING_VALUATION}:
+                return existing
+            if existing.get("status") == doc.get("status"):
+                return existing
+            await db[EVENTS].update_one(
+                {"source_key": source_key},
+                {"$set": {
+                    "status": doc["status"],
+                    "updated_at": doc["updated_at"],
+                    "event_id": existing.get("event_id") or doc["event_id"],
+                }},
+                session=session,
+            )
+            return {**existing, "status": doc["status"], "event_id": existing.get("event_id") or doc["event_id"]}
+        if (
+            existing.get("status") == STATUS_PENDING_VALUATION
+            and doc.get("status") != STATUS_PENDING_VALUATION
+            and _valuation_fingerprint({**existing, "unit_cost": doc.get("unit_cost")}) == _valuation_fingerprint(doc)
+        ):
+            await db[EVENTS].update_one(
+                {"source_key": source_key, "status": STATUS_PENDING_VALUATION},
+                {"$set": {key: value for key, value in doc.items() if key != "event_id"}},
+                session=session,
+            )
+            saved = await _find_event(db, source_key, session=session)
+            return saved or doc
+        raise _http(409, "CONFLICT", "Idempotency key sudah digunakan dengan payload yang berbeda")
+    try:
+        await db[EVENTS].insert_one(dict(doc), session=session)
+    except DuplicateKeyError:
+        raced = await _find_event(db, source_key, session=session)
+        if raced and _same_valuation_payload(raced, doc):
+            return raced
+        raise _http(409, "CONFLICT", "Idempotency key sudah digunakan dengan payload yang berbeda")
+    return {key: value for key, value in doc.items() if key != "_id"}
+
+
+def _line_valuation_fields(event: dict, *, status: str, reason: Optional[str] = None) -> dict:
+    return {
+        "hpp_valuation_status": status,
+        "hpp_valuation_reason": reason,
+        "hpp_event_id": event.get("event_id"),
+        "hpp_source_key": event.get("source_key"),
+        "hpp_unit_cost": event.get("unit_cost"),
+        "hpp_valuation_qty": (
+            qty_round(abs(_dec(event.get("qty"))))
+            if event.get("qty") is not None
+            else None
+        ),
+        "hpp_valuation_value": (
+            money_round(abs(_dec(event.get("qty"))) * _dec(event.get("unit_cost")))
+            if event.get("unit_cost") is not None and event.get("qty") is not None
+            else None
+        ),
+        "hpp_source_event_id": event.get("original_event_id"),
+        "hpp_goods_receipt_source_key": event.get("original_source_key"),
+    }
+
+
+async def _recognized_receipt_event(db, receipt_id: str, line_id: str, session=None) -> Optional[dict]:
+    event = await _find_event(db, f"gr:{receipt_id}:{line_id}", session=session)
+    if not event or event.get("status") != STATUS_RECOGNIZED:
+        return None
+    if _dec(event.get("unit_cost")) <= 0 or _dec(event.get("qty")) <= 0:
+        return None
+    if not event.get("item_identity") or not event.get("master_item_id"):
+        return None
+    return event
+
+
+async def _relieved_base_qty(db, gr_event: dict, *, skip_return_line_id: str, session=None) -> Decimal:
+    receipt_id = str(gr_event.get("source_receipt_id") or "")
+    line_id = str(gr_event.get("source_line_id") or "")
+    query = {
+        "goods_receipt_id": receipt_id or str(gr_event.get("canonical_source_id") or ""),
+        "goods_receipt_line_id": line_id,
+        "source_type": {"$in": [SOURCE_PURCHASE_RETURN, SOURCE_PURCHASE_RETURN_REVERSAL]},
+    }
+    # GR events store the receipt on canonical_source_id and the line inside source_key.
+    if not query["goods_receipt_id"]:
+        source_key = str(gr_event.get("source_key") or "")
+        parts = source_key.split(":")
+        if len(parts) >= 3:
+            query["goods_receipt_id"] = parts[1]
+            query["goods_receipt_line_id"] = parts[2]
+    rows = await db[EVENTS].find(query, {"_id": 0}, session=session).to_list(500)
+    relieved = Decimal("0")
+    for row in rows:
+        if str(row.get("purchase_return_line_id") or "") == skip_return_line_id and row.get("source_type") == SOURCE_PURCHASE_RETURN:
+            continue
+        if row.get("status") not in {STATUS_RECOGNIZED, STATUS_QUEUED}:
+            continue
+        if row.get("source_type") == SOURCE_PURCHASE_RETURN:
+            relieved += abs(_dec(row.get("qty")))
+        elif row.get("source_type") == SOURCE_PURCHASE_RETURN_REVERSAL and row.get("status") == STATUS_RECOGNIZED:
+            relieved -= abs(_dec(row.get("qty")))
+    return relieved
+
+
+def _base_return_qty(gr_event: dict, returned_qty: Any) -> Decimal:
+    factor = _dec(gr_event.get("conversion_factor") or 1)
+    if factor <= 0:
+        factor = Decimal("1")
+    return _dec(returned_qty) * factor
+
+
+async def prepare_purchase_return_valuation(db, session, return_doc: dict, lines: List[dict]) -> List[dict]:
+    """Queue one valuation event per line inside the confirm transaction.
+
+    Missing recognized receipt cost records PENDING_VALUATION and does not
+    invent a unit cost. Physical confirmation stays with the caller.
+    """
+    active = await get_active_cutover(db)
+    stamp = now_iso()
+    prepared = []
+    for line in lines:
+        receipt_id = str(line.get("purchase_goods_receipt_id") or "")
+        receipt_line_id = str(line.get("purchase_goods_receipt_line_id") or "")
+        return_line_id = str(line.get("line_id") or "")
+        gr_event = await _recognized_receipt_event(db, receipt_id, receipt_line_id, session=session)
+        source_key = purchase_return_source_key(return_doc["id"], return_line_id)
+        common = {
+            "event_id": str(uuid.uuid4()),
+            "source_type": SOURCE_PURCHASE_RETURN,
+            "source_key": source_key,
+            "purchase_return_id": return_doc["id"],
+            "purchase_return_line_id": return_line_id,
+            "goods_receipt_id": receipt_id,
+            "goods_receipt_line_id": receipt_line_id,
+            "master_item_id": str(line.get("master_item_id") or ""),
+            "returned_qty": line.get("return_qty"),
+            "warehouse_id": str(line.get("warehouse_id") or ""),
+            "branch_id": str(line.get("branch_id") or ""),
+            "recognized_at": stamp,
+            "created_at": stamp,
+            "updated_at": stamp,
+            "cutover_id": (active or {}).get("cutover_id"),
+        }
+        if not active or not gr_event:
+            event = {
+                **common,
+                "status": STATUS_PENDING_VALUATION,
+                "reason": STATUS_PENDING_VALUATION,
+                "qty": None,
+                "unit_cost": None,
+                "total_cost": None,
+                "item_identity": None,
+                "original_event_id": (gr_event or {}).get("event_id"),
+                "original_source_key": (gr_event or {}).get("source_key"),
+            }
+            saved = await _upsert_valuation_event(db, event, session=session)
+            prepared.append({
+                **line,
+                **_line_valuation_fields(saved, status=STATUS_PENDING_VALUATION, reason=STATUS_PENDING_VALUATION),
+            })
+            continue
+        if str(gr_event.get("master_item_id") or "") != str(line.get("master_item_id") or ""):
+            raise _http(409, "CONFLICT", "Barang valuasi tidak sama dengan baris penerimaan.")
+        base_qty = _base_return_qty(gr_event, line.get("return_qty"))
+        relieved = await _relieved_base_qty(db, {**gr_event, "canonical_source_id": receipt_id, "source_line_id": receipt_line_id}, skip_return_line_id=return_line_id, session=session)
+        remaining = _dec(gr_event.get("qty")) - relieved
+        if base_qty <= 0 or base_qty > remaining:
+            raise _http(409, "CONFLICT", "Qty retur melebihi qty valuasi penerimaan yang masih tersisa.")
+        unit_cost = money_round(gr_event.get("unit_cost"))
+        signed_qty = qty_round(-base_qty)
+        event = {
+            **common,
+            "status": STATUS_QUEUED,
+            "qty": signed_qty,
+            "unit_cost": unit_cost,
+            "total_cost": money_round(_dec(signed_qty) * _dec(unit_cost)),
+            "item_identity": gr_event.get("item_identity"),
+            "item_code": gr_event.get("item_code") or line.get("item_code") or "",
+            "item_name": gr_event.get("item_name") or line.get("item_name") or "",
+            "accurate_item_id": gr_event.get("accurate_item_id") or "",
+            "original_event_id": gr_event.get("event_id"),
+            "original_source_key": gr_event.get("source_key"),
+            "source_receipt_id": receipt_id,
+            "source_line_id": receipt_line_id,
+            "conversion_factor": gr_event.get("conversion_factor") or 1,
+        }
+        saved = await _upsert_valuation_event(db, event, session=session)
+        prepared.append({**line, **_line_valuation_fields(saved, status=saved.get("status") or STATUS_QUEUED)})
+    return prepared
+
+
+async def _active_layer_has_event(db, event_id: str) -> bool:
+    settings = await db.app_settings.find_one({"key": SETTINGS_KEY}, {"_id": 0, "active_version": 1})
+    version_id = (settings or {}).get("active_version")
+    if not version_id or not event_id:
+        return False
+    found = await db[LAYERS].find_one(
+        {"calculation_version": version_id, "layer_id": event_id},
+        {"_id": 1},
+    )
+    return found is not None
+
+
+async def _rebuild_return_events(db, events: List[dict], user: Optional[dict]) -> None:
+    active = await get_active_cutover(db)
+    if not active:
+        raise _http(409, STATUS_PENDING_VALUATION, "Cutover HPP tidak aktif. Valuasi retur tidak diterapkan.")
+    ids = [row["event_id"] for row in events if row.get("event_id")]
+    await db[EVENTS].update_many(
+        {"event_id": {"$in": ids}, "status": {"$in": [STATUS_QUEUED, STATUS_FAILED]}},
+        {"$set": {"status": STATUS_RECOGNIZED, "updated_at": now_iso(), "failure_action": None, "last_error": None}},
+    )
+    try:
+        await rebuild_cutover_valuation(
+            db,
+            active,
+            user=user,
+            requested_method=METHOD_AVG,
+            requested_recognition=RECOG_GR,
+            activate_cutover=False,
+        )
+    except Exception as exc:
+        await db[EVENTS].update_many(
+            {"event_id": {"$in": ids}},
+            {"$set": {
+                "status": STATUS_FAILED,
+                "failure_action": "PURCHASE_RETURN",
+                "last_error": str(exc),
+                "updated_at": now_iso(),
+            }},
+        )
+        raise
+
+
+async def finalize_purchase_return_valuation(db, return_doc: dict, user: Optional[dict] = None) -> dict:
+    """Apply queued return valuation once. Exact retry does not post a second relief."""
+    await ensure_indexes(db)
+    keys = [
+        purchase_return_source_key(return_doc["id"], str(line.get("line_id") or ""))
+        for line in return_doc.get("lines") or []
+        if line.get("line_id")
+    ]
+    if not keys:
+        return return_doc
+    events = await db[EVENTS].find({"source_key": {"$in": keys}}, {"_id": 0}).to_list(100)
+    actionable = [
+        row for row in events
+        if row.get("source_type") == SOURCE_PURCHASE_RETURN
+        and row.get("status") in {STATUS_QUEUED, STATUS_FAILED, STATUS_RECOGNIZED}
+        and row.get("unit_cost") is not None
+    ]
+    needs_rebuild = []
+    for row in actionable:
+        if row.get("status") != STATUS_RECOGNIZED or not await _active_layer_has_event(db, row.get("event_id")):
+            needs_rebuild.append(row)
+    if needs_rebuild:
+        await _rebuild_return_events(db, needs_rebuild, user)
+    fresh = await db[EVENTS].find({"source_key": {"$in": keys}}, {"_id": 0}).to_list(100)
+    by_line = {str(row.get("purchase_return_line_id") or ""): row for row in fresh}
+    current = await db.purchase_returns.find_one({"id": return_doc["id"]}, {"_id": 0})
+    if not current:
+        return return_doc
+    lines = []
+    for line in current.get("lines") or []:
+        event = by_line.get(str(line.get("line_id") or ""))
+        if not event:
+            lines.append(line)
+            continue
+        status = event.get("status") or line.get("hpp_valuation_status")
+        lines.append({**line, **_line_valuation_fields(event, status=status, reason=event.get("reason"))})
+    await db.purchase_returns.update_one({"id": return_doc["id"]}, {"$set": {"lines": lines}})
+    saved = await db.purchase_returns.find_one({"id": return_doc["id"]}, {"_id": 0})
+    return saved or current
+
+
+async def prepare_purchase_return_valuation_reversal(db, session, return_doc: dict) -> None:
+    """Append one reversal event per recognized return line. The original event stays."""
+    active = await get_active_cutover(db)
+    stamp = now_iso()
+    for line in return_doc.get("lines") or []:
+        line_id = str(line.get("line_id") or "")
+        if not line_id:
+            continue
+        original = await _find_event(db, purchase_return_source_key(return_doc["id"], line_id), session=session)
+        if not original:
+            continue
+        if original.get("status") == STATUS_PENDING_VALUATION or original.get("unit_cost") is None:
+            continue
+        if original.get("status") in {STATUS_QUEUED, STATUS_FAILED} and not await _active_layer_has_event(db, original.get("event_id")):
+            await db[EVENTS].update_one(
+                {"source_key": original["source_key"], "status": original.get("status")},
+                {"$set": {"status": STATUS_REVERSED, "reversed_at": stamp, "updated_at": stamp}},
+                session=session,
+            )
+            continue
+        reversal_key = purchase_return_reversal_source_key(return_doc["id"], line_id)
+        reversal = {
+            "event_id": str(uuid.uuid4()),
+            "source_type": SOURCE_PURCHASE_RETURN_REVERSAL,
+            "source_key": reversal_key,
+            "purchase_return_id": return_doc["id"],
+            "purchase_return_line_id": line_id,
+            "goods_receipt_id": original.get("goods_receipt_id"),
+            "goods_receipt_line_id": original.get("goods_receipt_line_id"),
+            "master_item_id": original.get("master_item_id"),
+            "returned_qty": original.get("returned_qty"),
+            "warehouse_id": original.get("warehouse_id"),
+            "branch_id": original.get("branch_id"),
+            "qty": qty_round(abs(_dec(original.get("qty")))),
+            "unit_cost": original.get("unit_cost"),
+            "total_cost": money_round(abs(_dec(original.get("qty"))) * _dec(original.get("unit_cost"))),
+            "item_identity": original.get("item_identity"),
+            "item_code": original.get("item_code"),
+            "item_name": original.get("item_name"),
+            "accurate_item_id": original.get("accurate_item_id"),
+            "original_event_id": original.get("event_id"),
+            "original_source_key": original.get("source_key"),
+            "status": STATUS_QUEUED,
+            "recognized_at": stamp,
+            "created_at": stamp,
+            "updated_at": stamp,
+            "cutover_id": original.get("cutover_id") or (active or {}).get("cutover_id"),
+            "conversion_factor": original.get("conversion_factor") or 1,
+        }
+        await _upsert_valuation_event(db, reversal, session=session)
+
+
+async def finalize_purchase_return_valuation_reversal(db, return_doc: dict, user: Optional[dict] = None) -> dict:
+    await ensure_indexes(db)
+    keys = [
+        purchase_return_reversal_source_key(return_doc["id"], str(line.get("line_id") or ""))
+        for line in return_doc.get("lines") or []
+        if line.get("line_id")
+    ]
+    events = await db[EVENTS].find({"source_key": {"$in": keys}}, {"_id": 0}).to_list(100) if keys else []
+    pending = [
+        row for row in events
+        if row.get("status") in {STATUS_QUEUED, STATUS_FAILED}
+        or (row.get("status") == STATUS_RECOGNIZED and not await _active_layer_has_event(db, row.get("event_id")))
+    ]
+    if pending:
+        await _rebuild_return_events(db, events, user)
+    return await db.purchase_returns.find_one({"id": return_doc["id"]}, {"_id": 0}) or return_doc

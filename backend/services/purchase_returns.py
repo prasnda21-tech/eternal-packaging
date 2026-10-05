@@ -1,8 +1,9 @@
 """Canonical purchase return against an exact goods-receipt line.
 
 Draft has no stock effect. Confirmation posts R2 PURCHASE_RETURN (-qty) in one
-transaction. Cancellation of a confirmed return appends R2 REVERSAL and keeps
-the original movement. Financial supplier credit is not created here.
+transaction, then applies HPP relief at the original goods-receipt unit cost.
+Cancellation of a confirmed return appends R2 REVERSAL and the matching HPP
+reversal. Financial supplier credit is not created here.
 """
 from __future__ import annotations
 
@@ -442,6 +443,8 @@ async def _confirm_once(db, doc: dict, confirmation_key: str, user: dict) -> dic
                 raise PhysicalStockAbortError("forced purchase return r2 abort")
             for line, movement in zip(prepared, movements):
                 line["movement_id"] = movement["id"]
+            from services.hpp_cutover import prepare_purchase_return_valuation
+            prepared = await prepare_purchase_return_valuation(db, session, current, prepared)
             from services.purchase_return_finance import (
                 _header_financial_status,
                 financialize_unambiguous_lines,
@@ -469,9 +472,12 @@ async def _confirm_once(db, doc: dict, confirmation_key: str, user: dict) -> dic
 
 
 async def confirm_purchase_return(db, return_id: str, payload: Optional[Dict[str, Any]], user: dict) -> dict:
+    from services.hpp_cutover import ensure_indexes, finalize_purchase_return_valuation
+
     payload = payload or {}
     if str(payload.get("warehouse_id") or "").strip():
         raise HTTPException(400, "Gudang retur mengikuti gudang penerimaan dan tidak dapat dipilih ulang.")
+    await ensure_indexes(db)
     doc = await get_purchase_return(db, return_id)
     confirmation_key = str(payload.get("idempotency_key") or payload.get("confirmation_key") or "").strip()
     incoming = payload.get("lines") or payload.get("line_items")
@@ -480,11 +486,14 @@ async def confirm_purchase_return(db, return_id: str, payload: Optional[Dict[str
     if doc.get("status") == STATUS_CONFIRMED and not is_cancelled(doc):
         if confirmation_key and doc.get("confirmation_key") not in (None, "", confirmation_key):
             raise HTTPException(409, "Idempotency key sudah digunakan dengan payload yang berbeda")
-        return doc
+        await finalize_purchase_return_valuation(db, doc, user)
+        return await get_purchase_return(db, doc["id"])
     last_error = None
+    saved = None
     for _attempt in range(5):
         try:
-            return await _confirm_once(db, doc, confirmation_key, user)
+            saved = await _confirm_once(db, doc, confirmation_key, user)
+            break
         except _AlreadyConfirmed:
             current = await get_purchase_return(db, doc["id"])
             if current.get("status") == STATUS_CONFIRMED and not is_cancelled(current):
@@ -497,7 +506,10 @@ async def confirm_purchase_return(db, return_id: str, payload: Optional[Dict[str
                 last_error = exc
                 continue
             _r2_http(exc)
-    raise HTTPException(409, f"Gagal mengonfirmasi retur pembelian. {last_error}")
+    if saved is None:
+        raise HTTPException(409, f"Gagal mengonfirmasi retur pembelian. {last_error}")
+    await finalize_purchase_return_valuation(db, saved, user)
+    return await get_purchase_return(db, saved["id"])
 
 
 async def _reverse_once(db, doc: dict, user: dict, reason: str) -> dict:
@@ -550,6 +562,8 @@ async def _reverse_once(db, doc: dict, user: dict, reason: str) -> dict:
                     raise HTTPException(409, "Pembatalan retur gagal karena kuantitas retur tidak tersimpan utuh.")
             from services.purchase_return_finance import reverse_return_financials
             await reverse_return_financials(db, session, current, user)
+            from services.hpp_cutover import prepare_purchase_return_valuation_reversal
+            await prepare_purchase_return_valuation_reversal(db, session, current)
             if _fail_after_r2_movements:
                 raise PhysicalStockAbortError("forced purchase return reversal abort")
             fields = cancellation_fields(user, reason)
@@ -569,8 +583,14 @@ async def _reverse_once(db, doc: dict, user: dict, reason: str) -> dict:
 
 
 async def cancel_purchase_return(db, return_id: str, user: dict, reason: str = "") -> dict:
+    from services.hpp_cutover import ensure_indexes, finalize_purchase_return_valuation_reversal
+
+    await ensure_indexes(db)
     doc = await get_purchase_return(db, return_id)
     if doc.get("status") == STATUS_REVERSED or (doc.get("status") == STATUS_CANCELLED and is_cancelled(doc)):
+        if doc.get("status") == STATUS_REVERSED:
+            await finalize_purchase_return_valuation_reversal(db, doc, user)
+            return await get_purchase_return(db, doc["id"])
         return doc
     if doc.get("status") == STATUS_DRAFT:
         fields = cancellation_fields(user, reason)
@@ -588,13 +608,16 @@ async def cancel_purchase_return(db, return_id: str, user: dict, reason: str = "
     if doc.get("status") != STATUS_CONFIRMED:
         raise HTTPException(400, "Status retur tidak dapat dibatalkan.")
     last_error = None
+    saved = None
     for _attempt in range(5):
         try:
-            return await _reverse_once(db, doc, user, reason)
+            saved = await _reverse_once(db, doc, user, reason)
+            break
         except _AlreadyConfirmed:
             current = await get_purchase_return(db, doc["id"])
             if current.get("status") == STATUS_REVERSED:
-                return current
+                saved = current
+                break
             raise HTTPException(409, "Pembatalan retur gagal karena perubahan bersamaan.")
         except HTTPException:
             raise
@@ -603,4 +626,7 @@ async def cancel_purchase_return(db, return_id: str, user: dict, reason: str = "
                 last_error = exc
                 continue
             _r2_http(exc)
-    raise HTTPException(409, f"Gagal membatalkan retur pembelian. {last_error}")
+    if saved is None:
+        raise HTTPException(409, f"Gagal membatalkan retur pembelian. {last_error}")
+    await finalize_purchase_return_valuation_reversal(db, saved, user)
+    return await get_purchase_return(db, saved["id"])
