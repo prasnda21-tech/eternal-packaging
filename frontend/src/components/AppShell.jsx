@@ -1,12 +1,13 @@
-import { BarChart3, BookOpen, Boxes, CalendarClock, ClipboardCheck, ClipboardList, ClipboardPlus, Coins, Contact, CreditCard, Download, FileBarChart, FileText, FolderOpen, IdCard, Image as ImageIcon, Landmark, LayoutDashboard, LineChart, ListOrdered, LogOut, MessageCircle, Package, PanelLeft, PlusCircle, Receipt, RotateCcw, Route, Scale, ScanLine, ScrollText, Settings as SettingsIcon, Shield, ShoppingBag, ShoppingCart, Table as TableIcon, Tags, Target, TrendingUp, Truck, Users, Wallet, Warehouse, ArrowLeftRight } from "lucide-react";
+import { BarChart3, BookOpen, Boxes, CalendarClock, ClipboardCheck, ClipboardList, ClipboardPlus, Coins, Contact, CreditCard, Download, FileBarChart, FileText, FolderOpen, IdCard, Image as ImageIcon, Landmark, LayoutDashboard, LineChart, ListOrdered, LogOut, MessageCircle, Package, PanelLeft, PanelLeftClose, PanelLeftOpen, PlusCircle, Receipt, RotateCcw, Route, Scale, ScanLine, ScrollText, Settings as SettingsIcon, Shield, ShoppingBag, ShoppingCart, Table as TableIcon, Tags, Target, TrendingUp, Truck, Users, Wallet, Warehouse, ArrowLeftRight } from "lucide-react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { Suspense, forwardRef, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { ROLES } from "../lib/constants";
 import { canAccessRoutePage } from "../lib/independentRoute";
-import { NAV_KEYS, cashBankMenuItems, cashBankNavVisible, dashboardMenuItems, dashboardNavVisible, employeeAdminMenuItems, employeeAdminNavVisible, hrPayrollMenuItems, hrPayrollNavVisible, inventoryMenuItems, inventoryNavVisible, ledgerMenuItems, ledgerNavVisible, productionMenuItems, productionNavVisible, purchasingMenuItems, purchasingNavVisible, reportsMenuItems, reportsNavVisible, salesMenuItems, salesNavVisible, settingsMenuItems, taskMenuItems } from "../lib/navAccess";
+import { NAV_KEYS, TASK_NAV_ORDER, cashBankMenuItems, cashBankNavVisible, dashboardMenuItems, dashboardNavVisible, employeeAdminMenuItems, employeeAdminNavVisible, hrPayrollMenuItems, hrPayrollNavVisible, inventoryMenuItems, inventoryNavVisible, ledgerMenuItems, ledgerNavVisible, productionMenuItems, productionNavVisible, purchasingMenuItems, purchasingNavVisible, reportsMenuItems, reportsNavVisible, salesMenuItems, salesNavVisible, settingsMenuItems, taskMenuItems } from "../lib/navAccess";
 import { nextSidebarMenu, placeSidebarFlyout } from "../lib/sidebarFlyout";
+import { buildDesktopSidebar, isDeliveryRailActive, isFinanceRailActive, isOperationalReportRailActive, isProductionRailActive, isSalesRailActive, isSalesReportPath, railLabel, readSidebarMode, sidebarPreferenceStore, writeSidebarMode } from "../lib/sidebarPresentation";
 import { canSeeSpkNav } from "../lib/spk";
 import { moduleFromPath } from "../lib/uiModule";
 import { mergeWorkspaceTabsPreview } from "../lib/workspaceTabsPreview";
@@ -18,6 +19,36 @@ import WorkspaceChunkFallback from "./WorkspaceChunkFallback";
 import { useGlobalWorkspaceTabs } from "../hooks/useGlobalWorkspaceTabs";
 
 const railLinkClass = ({ isActive }) => "rail-btn" + (isActive ? " is-active" : "");
+
+const RAIL_LABELS = {
+  dashboard: "Dashboard",
+  sales: "Penjualan",
+  produksi: "Produksi",
+  pengiriman: "Pengiriman",
+  purchasing: "Pembelian",
+  inventory: "Persediaan",
+  keuangan: "Keuangan",
+  employeeAdmin: "Administrasi Karyawan",
+  hrPayroll: "HR & Payroll",
+  reports: "Laporan Operasional",
+  settings: "Pengaturan",
+};
+
+const RAIL_ICONS = {
+  dashboard: LayoutDashboard,
+  spk: ClipboardPlus,
+  chat: MessageCircle,
+  sales: ShoppingCart,
+  produksi: TableIcon,
+  pengiriman: Truck,
+  purchasing: ShoppingBag,
+  inventory: Warehouse,
+  keuangan: Landmark,
+  employeeAdmin: IdCard,
+  hrPayroll: Wallet,
+  reports: BarChart3,
+  settings: SettingsIcon,
+};
 
 const TILE_ICONS = {
   [NAV_KEYS.dashboard]: LayoutDashboard,
@@ -119,6 +150,7 @@ const RailButton = forwardRef(function RailButton({ testid, label, icon: Icon, e
       data-testid={testid}
     >
       <Icon size={20} strokeWidth={1.75} aria-hidden="true" />
+      <span className="rail-label">{label}</span>
       <span className="rail-tooltip">{label}</span>
     </button>
   );
@@ -136,6 +168,7 @@ function RailNavLink({ to, testid, label, icon: Icon, end, onNavigate, badge }) 
       onClick={onNavigate}
     >
       <Icon size={20} strokeWidth={1.75} aria-hidden="true" />
+      <span className="rail-label">{label}</span>
       {badge ? (
         <span className="rail-unread-badge" data-testid={`${testid}-unread`}>
           {badge > 99 ? "99+" : badge}
@@ -158,18 +191,21 @@ export default function AppShell() {
   const workspaceTabsVisible = workspace.visible || workspaceTabs.length > 0;
   const settingsActive = location.pathname.startsWith("/settings");
   const dashboardActive = location.pathname === "/dashboard" || location.pathname.startsWith("/dashboard/");
-  const salesReportActive = location.pathname === "/laporan/status-po" || location.pathname === "/laporan/prediksi-order";
-  const salesActive = location.pathname.startsWith("/admin/import") || location.pathname.startsWith("/penjualan") || salesReportActive;
-  const reportsActive = location.pathname.startsWith("/laporan") && !salesReportActive;
+  const salesReportActive = isSalesReportPath(location.pathname);
+  const salesActive = isSalesRailActive(location.pathname) || salesReportActive;
+  const reportsActive = isOperationalReportRailActive(location.pathname) && !salesReportActive;
   const inventoryActive = location.pathname.startsWith("/persediaan");
   const purchasingActive = location.pathname.startsWith("/pembelian");
   const ledgerActive = location.pathname.startsWith("/buku-besar");
   const cashBankActive = location.pathname.startsWith("/kas-bank");
+  const keuanganActive = isFinanceRailActive(location.pathname) || ledgerActive || cashBankActive;
   const employeeAdminActive = location.pathname.startsWith("/administrasi-karyawan");
   const hrPayrollActive = location.pathname.startsWith("/hr-payroll");
-  const tasksActive = location.pathname.startsWith("/tasks");
-  const produksiActive = location.pathname.startsWith("/produksi") || tasksActive;
+  const produksiActive = isProductionRailActive(location.pathname);
+  const pengirimanActive = isDeliveryRailActive(location.pathname);
   const [activeSidebarMenu, setActiveSidebarMenu] = useState(null);
+  const [sidebarMode, setSidebarMode] = useState(() => readSidebarMode(sidebarPreferenceStore()));
+  const sidebarExpanded = sidebarMode === "expanded";
   // Go-Live: indikator koneksi backend/MongoDB berbasis health probe. TIDAK
   // menampilkan "Terhubung" kalau probe gagal.
   const [health, setHealth] = useState({ ok: null, checkedAt: null });
@@ -275,8 +311,11 @@ export default function AppShell() {
 
   useEffect(() => {
     if (!activeSidebarMenu) return undefined;
+    const trigger = railRefs.current[activeSidebarMenu];
     const onKey = (e) => {
-      if (e.key === "Escape") setActiveSidebarMenu(null);
+      if (e.key !== "Escape") return;
+      setActiveSidebarMenu(null);
+      if (trigger && typeof trigger.focus === "function") trigger.focus();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -305,7 +344,7 @@ export default function AppShell() {
       window.removeEventListener("resize", update);
       window.removeEventListener("scroll", update, true);
     };
-  }, [activeSidebarMenu]);
+  }, [activeSidebarMenu, sidebarExpanded]);
 
   const doLogout = async () => {
     await logout();
@@ -346,7 +385,9 @@ export default function AppShell() {
   const purchasingItems = purchasingMenuItems(hasPerm);
   const productionNav = productionNavVisible(hasPerm);
   const productionItems = productionMenuItems(hasPerm);
-  const taskItems = taskMenuItems(hasPerm);
+  const taskItems = [...taskMenuItems(hasPerm)].sort(
+    (a, b) => TASK_NAV_ORDER.indexOf(a.key) - TASK_NAV_ORDER.indexOf(b.key),
+  );
   const employeeAdminNav = employeeAdminNavVisible(hasPerm);
   const employeeAdminItems = employeeAdminMenuItems(hasPerm);
   const hrPayrollNav = hrPayrollNavVisible(hasPerm);
@@ -356,406 +397,156 @@ export default function AppShell() {
   const cashBankNav = cashBankNavVisible(hasPerm);
   const cashBankItems = cashBankMenuItems(hasPerm);
   const settingsItems = settingsMenuItems(hasPerm);
+  void salesNav;
+  void reportsNav;
+  void inventoryNav;
+  void purchasingNav;
+  void employeeAdminNav;
+  void hrPayrollNav;
+  void ledgerNav;
+  void cashBankNav;
   void productionNav.deliveryToday;
-  const showDashboard = hasPerm(NAV_KEYS.dashboard);
   const dashboardNav = dashboardNavVisible(hasPerm, user);
   const dashboardItems = dashboardMenuItems(hasPerm, user);
+  const showDashboard = (hasPerm(NAV_KEYS.dashboard) || dashboardNav.parent) && dashboardItems.length > 0;
   const showSpk = canSeeSpkNav(hasPerm);
   const showChat = hasPerm(NAV_KEYS.chat) || hasPerm("chat.use");
   const showRouteOptimizer = canAccessRoutePage(hasPerm);
-  const showSettings = hasPerm(NAV_KEYS.settings);
+  const showSettings = settingsItems.length > 0;
+  const sidebar = buildDesktopSidebar({
+    dashboardItems: showDashboard ? dashboardItems : [],
+    salesItems,
+    productionItems,
+    taskItems,
+    showRouteOptimizer,
+    purchasingItems,
+    inventoryItems,
+    cashBankItems,
+    ledgerItems,
+    employeeAdminItems,
+    hrPayrollItems,
+    reportItems: reportsItems,
+    settingsItems: showSettings ? settingsItems : [],
+    showSpk,
+    showChat,
+  }).map((entry) => {
+    if (entry.id !== "pengiriman") return entry;
+    return {
+      ...entry,
+      sections: entry.sections.map((section) => ({
+        ...section,
+        items: section.items.map((item) => (
+          item.to === "/optimasi-rute" ? { ...item, testid: "top-nav-optimasi-rute" } : item
+        )),
+      })),
+    };
+  });
 
   const flyoutOpen = !!activeSidebarMenu;
-  const dashboardOpen = activeSidebarMenu === "dashboard";
-  const produksiOpen = activeSidebarMenu === "produksi";
-  const salesOpen = activeSidebarMenu === "sales";
-  const purchasingOpen = activeSidebarMenu === "purchasing";
-  const inventoryOpen = activeSidebarMenu === "inventory";
-  const reportsOpen = activeSidebarMenu === "reports";
-  const employeeAdminOpen = activeSidebarMenu === "employeeAdmin";
-  const hrPayrollOpen = activeSidebarMenu === "hrPayroll";
-  const ledgerOpen = activeSidebarMenu === "ledger";
-  const cashBankOpen = activeSidebarMenu === "cashBank";
-  const settingsOpen = activeSidebarMenu === "settings";
+  const keuanganOpen = activeSidebarMenu === "keuangan";
+  const ledgerOpen = keuanganOpen;
+  const cashBankOpen = keuanganOpen;
+  const showLedgerSection = Boolean(ledgerOpen && ledgerItems.length > 0);
+  const showCashSection = Boolean(cashBankOpen && cashBankItems.length > 0);
   const flyoutStyle = { left: flyoutPos.left, top: flyoutPos.top };
+  const openEntry = sidebar.find((entry) => entry.kind === "menu" && entry.id === activeSidebarMenu) || null;
+  const openSections = !openEntry ? [] : openEntry.id === "keuangan"
+    ? openEntry.sections.filter((section) => (
+      section.marker === "sidebar-flyout-cash-bank" ? showCashSection : showLedgerSection
+    ))
+    : openEntry.sections;
 
   const uiModule = moduleFromPath(location.pathname);
+  const railActive = {
+    dashboard: dashboardActive,
+    produksi: produksiActive,
+    pengiriman: pengirimanActive,
+    sales: salesActive,
+    purchasing: purchasingActive,
+    inventory: inventoryActive,
+    keuangan: keuanganActive,
+    employeeAdmin: employeeAdminActive,
+    hrPayroll: hrPayrollActive,
+    reports: reportsActive,
+    settings: settingsActive,
+  };
+
+  const toggleSidebarMode = () => {
+    const next = sidebarExpanded ? "compact" : "expanded";
+    setSidebarMode(next);
+    writeSidebarMode(sidebarPreferenceStore(), next);
+  };
 
   return (
-    <div className="app-shell" data-module={uiModule} data-ui-system="colorful">
+    <div className={"app-shell" + (sidebarExpanded ? " is-sidebar-expanded" : "")} data-module={uiModule} data-ui-system="colorful" data-sidebar-mode={sidebarExpanded ? "expanded" : "compact"}>
       <div className="app-sidebar-slot">
       <aside className="app-sidebar" ref={sidebarRef}>
         <Link to="/" className="brand" title="Eternal Packaging" data-testid="sidebar-brand" onClick={closeFlyout}>
-          <BrandMark compact onDark />
+          <BrandMark compact={!sidebarExpanded} onDark />
         </Link>
         <nav className="app-sidebar-nav" aria-label="Menu utama">
-          {(showDashboard || dashboardNav.parent) && (
-            <div className="nav-group" data-testid="top-nav-dashboard-group">
-              <RailButton
-                ref={(el) => { railRefs.current.dashboard = el; }}
-                testid="top-nav-dashboard"
-                label="Dashboard"
-                icon={LayoutDashboard}
-                expanded={dashboardOpen}
-                controls="sidebar-flyout-dashboard"
-                active={dashboardActive}
-                open={dashboardOpen}
-                onClick={() => toggleMenu("dashboard")}
+          {sidebar.map((entry) => (
+            entry.kind === "link" ? (
+              <RailNavLink
+                key={entry.id}
+                to={entry.id === "spk" ? "/spk" : entry.id === "chat" ? "/chat" : entry.to}
+                testid={entry.testid}
+                label={railLabel(entry, sidebarExpanded)}
+                icon={RAIL_ICONS[entry.id]}
+                badge={entry.id === "chat" && chatUnread > 0 ? chatUnread : 0}
+                onNavigate={closeFlyout}
               />
-            </div>
-          )}
-          {showSpk && (
-            <RailNavLink
-              to="/spk"
-              testid="top-nav-spk"
-              label="SPK"
-              icon={ClipboardPlus}
-              onNavigate={closeFlyout}
-            />
-          )}
-          {showChat && (
-            <RailNavLink
-              to="/chat"
-              testid="top-nav-chat"
-              label="Chat"
-              icon={MessageCircle}
-              badge={chatUnread > 0 ? chatUnread : 0}
-              onNavigate={closeFlyout}
-            />
-          )}
-          {productionNav.parent && (
-            <div className="nav-group" data-testid="top-nav-produksi-group">
-              <RailButton
-                ref={(el) => { railRefs.current.produksi = el; }}
-                testid="top-nav-produksi"
-                label="Produksi"
-                icon={TableIcon}
-                expanded={produksiOpen}
-                controls="sidebar-flyout-produksi"
-                active={produksiActive}
-                open={produksiOpen}
-                onClick={() => toggleMenu("produksi")}
-              />
-            </div>
-          )}
-          {salesNav.parent && (
-            <div className="nav-group">
-              <RailButton
-                ref={(el) => { railRefs.current.sales = el; }}
-                testid="top-nav-sales"
-                label="Penjualan"
-                icon={ShoppingCart}
-                expanded={salesOpen}
-                controls="sidebar-flyout-sales"
-                active={salesActive}
-                open={salesOpen}
-                onClick={() => toggleMenu("sales")}
-              />
-            </div>
-          )}
-          {purchasingNav.parent && (
-            <div className="nav-group">
-              <RailButton
-                ref={(el) => { railRefs.current.purchasing = el; }}
-                testid="top-nav-pembelian"
-                label="Pembelian"
-                icon={ShoppingBag}
-                expanded={purchasingOpen}
-                controls="sidebar-flyout-purchasing"
-                active={purchasingActive}
-                open={purchasingOpen}
-                onClick={() => toggleMenu("purchasing")}
-              />
-            </div>
-          )}
-          {inventoryNav.parent && (
-            <div className="nav-group">
-              <RailButton
-                ref={(el) => { railRefs.current.inventory = el; }}
-                testid="top-nav-persediaan"
-                label="Persediaan"
-                icon={Warehouse}
-                expanded={inventoryOpen}
-                controls="sidebar-flyout-inventory"
-                active={inventoryActive}
-                open={inventoryOpen}
-                onClick={() => toggleMenu("inventory")}
-              />
-            </div>
-          )}
-          {ledgerNav.parent && (
-            <div className="nav-group" data-testid="top-nav-buku-besar-group">
-              <RailButton
-                ref={(el) => { railRefs.current.ledger = el; }}
-                testid="top-nav-buku-besar"
-                label="Buku Besar"
-                icon={BookOpen}
-                expanded={ledgerOpen}
-                controls="sidebar-flyout-ledger"
-                active={ledgerActive}
-                open={ledgerOpen}
-                onClick={() => toggleMenu("ledger")}
-              />
-            </div>
-          )}
-          {cashBankNav.parent && (
-            <div className="nav-group" data-testid="top-nav-kas-bank-group">
-              <RailButton
-                ref={(el) => { railRefs.current.cashBank = el; }}
-                testid="top-nav-kas-bank"
-                label="Kas & Bank"
-                icon={Landmark}
-                expanded={cashBankOpen}
-                controls="sidebar-flyout-cash-bank"
-                active={cashBankActive}
-                open={cashBankOpen}
-                onClick={() => toggleMenu("cashBank")}
-              />
-            </div>
-          )}
-          {reportsNav.parent && (
-            <div className="nav-group">
-              <RailButton
-                ref={(el) => { railRefs.current.reports = el; }}
-                testid="top-nav-laporan"
-                label="Laporan"
-                icon={BarChart3}
-                expanded={reportsOpen}
-                controls="sidebar-flyout-reports"
-                active={reportsActive}
-                open={reportsOpen}
-                onClick={() => toggleMenu("reports")}
-              />
-            </div>
-          )}
-          {employeeAdminNav.parent && (
-            <div className="nav-group" data-testid="top-nav-employee-admin-group">
-              <RailButton
-                ref={(el) => { railRefs.current.employeeAdmin = el; }}
-                testid="top-nav-employee-admin"
-                label="Administrasi Karyawan"
-                icon={IdCard}
-                expanded={employeeAdminOpen}
-                controls="sidebar-flyout-employee-admin"
-                active={employeeAdminActive}
-                open={employeeAdminOpen}
-                onClick={() => toggleMenu("employeeAdmin")}
-              />
-            </div>
-          )}
-          {hrPayrollNav.parent && (
-            <div className="nav-group" data-testid="top-nav-hr-payroll-group">
-              <RailButton
-                ref={(el) => { railRefs.current.hrPayroll = el; }}
-                testid="top-nav-hr-payroll-menu"
-                label="HR & Payroll"
-                icon={Wallet}
-                expanded={hrPayrollOpen}
-                controls="sidebar-flyout-hr-payroll"
-                active={hrPayrollActive}
-                open={hrPayrollOpen}
-                onClick={() => toggleMenu("hrPayroll")}
-              />
-            </div>
-          )}
-          {showRouteOptimizer && (
-            <RailNavLink
-              to="/optimasi-rute"
-              testid="top-nav-optimasi-rute"
-              label="Optimasi Rute"
-              icon={Route}
-              onNavigate={closeFlyout}
-            />
-          )}
-          {showSettings && (
-            <div className="nav-group">
-              <RailButton
-                ref={(el) => { railRefs.current.settings = el; }}
-                testid="top-nav-settings"
-                label="Pengaturan"
-                icon={SettingsIcon}
-                expanded={settingsOpen}
-                controls="sidebar-flyout-settings"
-                active={settingsActive}
-                open={settingsOpen}
-                onClick={() => toggleMenu("settings")}
-              />
-            </div>
-          )}
+            ) : (
+              <div className="nav-group" key={entry.id} data-testid={`${entry.testid}-group`}>
+                <RailButton
+                  ref={(el) => { railRefs.current[entry.id] = el; }}
+                  testid={entry.id === "employeeAdmin" ? "top-nav-employee-admin" : entry.testid}
+                  label={RAIL_LABELS[entry.id] || railLabel(entry, sidebarExpanded)}
+                  icon={RAIL_ICONS[entry.id]}
+                  expanded={activeSidebarMenu === entry.id}
+                  controls={entry.flyoutId}
+                  active={!!railActive[entry.id]}
+                  open={activeSidebarMenu === entry.id}
+                  onClick={() => toggleMenu(entry.id)}
+                />
+              </div>
+            )
+          ))}
         </nav>
+        <button
+          type="button"
+          className="rail-btn sidebar-mode-toggle"
+          aria-label={sidebarExpanded ? "Mode ringkas" : "Mode diperlebar"}
+          title={sidebarExpanded ? "Mode ringkas" : "Mode diperlebar"}
+          data-testid="sidebar-mode-toggle"
+          onClick={toggleSidebarMode}
+        >
+          {sidebarExpanded ? <PanelLeftClose size={20} strokeWidth={1.75} aria-hidden="true" /> : <PanelLeftOpen size={20} strokeWidth={1.75} aria-hidden="true" />}
+          <span className="rail-label">{sidebarExpanded ? "Ringkas" : "Lebar"}</span>
+        </button>
       </aside>
 
-      {dashboardOpen && dashboardItems.length > 0 && (
+      {openEntry && openSections.length > 0 && (
         <SidebarFlyoutGrid
           innerRef={flyoutRef}
-          id="sidebar-flyout-dashboard"
-          testid="sidebar-flyout-dashboard"
-          title="Dashboard"
-          ariaLabel="Menu Dashboard"
-          placement={flyoutPos.placement}
-          style={flyoutStyle}
-          items={dashboardItems}
-          icons={TILE_ICONS}
-          onNavigate={closeFlyout}
-        />
-      )}
-
-      {produksiOpen && (productionItems.length + taskItems.length) > 0 && (
-        <SidebarFlyoutGrid
-          innerRef={flyoutRef}
-          id="sidebar-flyout-produksi"
-          testid="sidebar-flyout-produksi"
-          title="Produksi"
+          id={openEntry.flyoutId}
+          testid={openEntry.id === "employeeAdmin" ? "sidebar-flyout-employee-admin" : openEntry.id === "hrPayroll" ? "sidebar-flyout-hr-payroll" : openEntry.flyoutId}
+          title={RAIL_LABELS[openEntry.id] || openEntry.label}
+          ariaLabel={`Menu ${openEntry.label}`}
           placement={flyoutPos.placement}
           style={flyoutStyle}
           icons={TILE_ICONS}
           onNavigate={closeFlyout}
-          sections={[
-            { ariaLabel: "Menu Produksi", items: productionItems },
-            {
-              heading: "Tugas Produksi",
-              headingTestid: "top-nav-tasks-group",
-              ariaLabel: "Tugas Produksi",
-              items: taskItems,
-            },
-          ]}
-        />
-      )}
-      {/* TASK_NAV_ORDER.map stay in productionMenuItems / taskMenuItems */}
-
-      {salesOpen && salesItems.length > 0 && (
-        <SidebarFlyoutGrid
-          innerRef={flyoutRef}
-          id="sidebar-flyout-sales"
-          testid="sidebar-flyout-sales"
-          title="Penjualan"
-          ariaLabel="Menu Penjualan"
-          placement={flyoutPos.placement}
-          style={flyoutStyle}
-          items={salesItems}
-          icons={TILE_ICONS}
-          onNavigate={closeFlyout}
-        />
-      )}
-
-      {purchasingOpen && purchasingItems.length > 0 && (
-        <SidebarFlyoutGrid
-          innerRef={flyoutRef}
-          id="sidebar-flyout-purchasing"
-          testid="sidebar-flyout-purchasing"
-          title="Pembelian"
-          ariaLabel="Menu Pembelian"
-          placement={flyoutPos.placement}
-          style={flyoutStyle}
-          items={purchasingItems}
-          icons={TILE_ICONS}
-          onNavigate={closeFlyout}
-        />
-      )}
-
-      {inventoryOpen && inventoryItems.length > 0 && (
-        <SidebarFlyoutGrid
-          innerRef={flyoutRef}
-          id="sidebar-flyout-inventory"
-          testid="sidebar-flyout-inventory"
-          title="Persediaan"
-          ariaLabel="Menu Persediaan"
-          placement={flyoutPos.placement}
-          style={flyoutStyle}
-          items={inventoryItems}
-          icons={TILE_ICONS}
-          onNavigate={closeFlyout}
-        />
-      )}
-
-      {ledgerOpen && ledgerItems.length > 0 && (
-        <SidebarFlyoutGrid
-          innerRef={flyoutRef}
-          id="sidebar-flyout-ledger"
-          testid="sidebar-flyout-ledger"
-          title="Buku Besar"
-          ariaLabel="Menu Buku Besar"
-          placement={flyoutPos.placement}
-          style={flyoutStyle}
-          items={ledgerItems}
-          icons={TILE_ICONS}
-          onNavigate={closeFlyout}
-        />
-      )}
-
-      {cashBankOpen && cashBankItems.length > 0 && (
-        <SidebarFlyoutGrid
-          innerRef={flyoutRef}
-          id="sidebar-flyout-cash-bank"
-          testid="sidebar-flyout-cash-bank"
-          title="Kas & Bank"
-          ariaLabel="Menu Kas & Bank"
-          placement={flyoutPos.placement}
-          style={flyoutStyle}
-          items={cashBankItems}
-          icons={TILE_ICONS}
-          onNavigate={closeFlyout}
-        />
-      )}
-
-      {reportsOpen && reportsItems.length > 0 && (
-        <SidebarFlyoutGrid
-          innerRef={flyoutRef}
-          id="sidebar-flyout-reports"
-          testid="sidebar-flyout-reports"
-          title="Laporan"
-          ariaLabel="Menu Laporan"
-          placement={flyoutPos.placement}
-          style={flyoutStyle}
-          items={reportsItems}
-          icons={TILE_ICONS}
-          onNavigate={closeFlyout}
-        />
-      )}
-
-      {employeeAdminOpen && employeeAdminItems.length > 0 && (
-        <SidebarFlyoutGrid
-          innerRef={flyoutRef}
-          id="sidebar-flyout-employee-admin"
-          testid="sidebar-flyout-employee-admin"
-          title="Administrasi Karyawan"
-          ariaLabel="Menu Administrasi Karyawan"
-          placement={flyoutPos.placement}
-          style={flyoutStyle}
-          items={employeeAdminItems}
-          icons={TILE_ICONS}
-          onNavigate={closeFlyout}
-        />
-      )}
-      {hrPayrollOpen && hrPayrollItems.length > 0 && (
-        <SidebarFlyoutGrid
-          innerRef={flyoutRef}
-          id="sidebar-flyout-hr-payroll"
-          testid="sidebar-flyout-hr-payroll"
-          title="HR & Payroll"
-          ariaLabel="Menu HR & Payroll"
-          placement={flyoutPos.placement}
-          style={flyoutStyle}
-          items={hrPayrollItems}
-          icons={TILE_ICONS}
-          onNavigate={closeFlyout}
-        />
-      )}
-      {settingsOpen && settingsItems.length > 0 && (
-        <SidebarFlyoutGrid
-          innerRef={flyoutRef}
-          id="sidebar-flyout-settings"
-          testid="sidebar-flyout-settings"
-          title="Pengaturan"
-          ariaLabel="Menu Pengaturan"
-          placement={flyoutPos.placement}
-          style={flyoutStyle}
-          items={settingsItems}
-          icons={TILE_ICONS}
-          onNavigate={closeFlyout}
+          sections={openSections.map((section) => ({
+            ...section,
+            heading: section.heading === "Tugas Produksi" ? "Tugas Produksi" : section.heading === "Buku Besar" ? "Buku Besar" : section.heading === "Kas & Bank" ? "Kas & Bank" : section.heading,
+            headingTestid: section.heading === "Kas & Bank" ? "top-nav-kas-bank" : section.heading === "Buku Besar" ? "top-nav-buku-besar" : section.headingTestid,
+            marker: section.heading === "Kas & Bank" ? "sidebar-flyout-cash-bank" : section.heading === "Buku Besar" ? "sidebar-flyout-ledger" : section.marker,
+          }))}
         />
       )}
       </div>
+
 
       <div className="app-main">
         {flyoutOpen && (
