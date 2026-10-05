@@ -3,7 +3,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import { AlertCircle, Plus, Search } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
-import { errDetail, formatRupiah, friendlyLoadError, newIdempotencyKey, purchaseStatusPillClass, invoiceSourceLabel, todayYmd, purchaseRowInteractionProps, formatPurchaseDateTime} from "../lib/purchaseUi";
+import { errDetail, formatRupiah, friendlyLoadError, newIdempotencyKey, purchaseStatusPillClass, purchasePaymentStatusLabel, invoiceSourceLabel, todayYmd, purchaseRowInteractionProps, formatPurchaseDateTime} from "../lib/purchaseUi";
 import { fmtQty } from "../components/qtyUi";
 import { FormSection, FormField, FormProgress, computeStatus } from "../components/form-standard";
 import PurchasingFlowNav from "./PurchasingFlowNav";
@@ -373,7 +373,7 @@ export default function FakturPembelian() {
                       <td className="num">{formatRupiah(r.outstanding_amount)}</td>
                       <td className="cell-status">
                         <span className={`purchase-status-badge ${purchaseStatusPillClass(r.payment_status)}`}>
-                          {r.payment_status}
+                          {purchasePaymentStatusLabel(r.payment_status)}
                         </span>
                       </td>
                     </tr>
@@ -545,8 +545,8 @@ export default function FakturPembelian() {
               <span className="value" data-testid="detail-invoice-date">{detail.invoice_date || "—"}</span>
             </div>
             <div>
-              <span className="label">Status</span>
-              <span className={purchaseStatusPillClass(detail.payment_status)} data-testid="detail-payment-status">{detail.payment_status}</span>
+              <span className="label">Status Pembayaran</span>
+              <span className={purchaseStatusPillClass(detail.payment_status)} data-testid="detail-payment-status">{purchasePaymentStatusLabel(detail.payment_status)}</span>
             </div>
           </div>
 
@@ -712,7 +712,7 @@ export default function FakturPembelian() {
                 Hapus
               </button>
             )}
-            {Number(detail.outstanding_amount) > 0 && hasPerm("purchase_payments.create") && (
+            {Number(detail.outstanding_amount) > 0 && detail.payment_status !== "LUNAS" && hasPerm("purchase_payments.create") && (
               <button
                 type="button"
                 className="primary"
@@ -721,6 +721,9 @@ export default function FakturPembelian() {
               >
                 Ajukan Pembayaran
               </button>
+            )}
+            {Number(detail.outstanding_amount) > 0 && (
+              <span data-testid="payment-max">Maksimum pembayaran {formatRupiah(detail.outstanding_amount)}</span>
             )}
             {lastChatRoomId ? (
               <Link className="ghost" data-testid="btn-buka-chat-after-ajukan" to={`/chat/${encodeURIComponent(lastChatRoomId)}`}>

@@ -39,13 +39,13 @@ GR_COLLECTION = "purchase_goods_receipts"
 
 
 def payment_status(grand_total: float, paid_total: float) -> str:
-    paid = money_round(paid_total)
-    grand = money_round(grand_total)
-    if paid <= 0:
-        return "BELUM DIBAYAR"
-    if paid < grand:
-        return "DP"
-    return "LUNAS"
+    """Compatibility wrapper. Canonical fields come from invoice_financial_summary."""
+    from services.purchase_invoice_finance import invoice_financial_summary
+
+    return invoice_financial_summary(
+        invoice_amount=grand_total,
+        payments_applied=paid_total,
+    )["payment_status"]
 
 
 CONFIRMED_PAYMENT_FILTER = {
@@ -80,25 +80,29 @@ async def _advance_applied_total(db, invoice_id: str) -> float:
 
 
 async def attach_payment_fields(db, inv: dict) -> dict:
+    from services.purchase_invoice_finance import invoice_financial_summary
+
     out = dict(inv)
     paid = await _paid_total(db, out["id"])
     applied = await _advance_applied_total(db, out["id"])
-    grand = float(out.get("grand_total") or 0)
-    # outstanding = invoice net - confirmed normal payments - active advance allocations.
-    outstanding = money_round(grand - paid - applied)
-    if outstanding < 0:
-        outstanding = 0.0
+    summary = invoice_financial_summary(
+        invoice_amount=out.get("grand_total"),
+        advance_applied=applied,
+        payments_applied=paid,
+        cancelled=is_cancelled(out),
+    )
+    raw_status = str(out.get("payment_status") or "")
+    out.update(summary)
     out["paid_total"] = paid
     out["normal_payment_total"] = paid
     out["advance_applied_amount"] = applied
-    out["outstanding_amount"] = outstanding
+    if raw_status.upper() == "DP":
+        out["legacy_payment_status"] = "DP"
     active_pays = await _active_payment_count(db, out["id"])
     if is_cancelled(out):
-        out["payment_status"] = "DIBATALKAN"
         out["can_cancel"] = False
         out["cancel_block_reason"] = ""
     else:
-        out["payment_status"] = payment_status(grand, money_round(paid + applied))
         out["can_cancel"] = active_pays <= 0 and applied <= 0
         if active_pays > 0:
             out["cancel_block_reason"] = (

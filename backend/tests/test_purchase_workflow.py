@@ -238,7 +238,7 @@ async def test_invoice_partial_over_invoice_totals_and_payment_flow():
             })).json()["invoice"]
             assert inv["invoice_number"].startswith("FPB-") or inv["invoice_number"].startswith("FPB")
             assert inv["grand_total"] == 4000000.0
-            assert inv["payment_status"] == "BELUM DIBAYAR"
+            assert inv["payment_status"] == "BELUM_DIBAYAR"
             over_inv = await c.post("/api/purchase-invoices", json={
                 "purchase_order_id": po["id"],
                 "lines": [{"purchase_order_line_id": lid, "invoice_qty": 7}],
@@ -250,7 +250,7 @@ async def test_invoice_partial_over_invoice_totals_and_payment_flow():
             })).json()["payment"]
             assert p1["workflow_status"] == "BELUM DIAJUKAN"
             inv_after_draft = (await c.get(f"/api/purchase-invoices/{inv['id']}")).json()["invoice"]
-            assert inv_after_draft["payment_status"] == "BELUM DIBAYAR"
+            assert inv_after_draft["payment_status"] == "BELUM_DIBAYAR"
             assert inv_after_draft["paid_total"] == 0
 
             # Seed peer for submit
@@ -272,7 +272,7 @@ async def test_invoice_partial_over_invoice_totals_and_payment_flow():
             conf1 = await c.post(f"/api/purchase-payments/{p1['id']}/confirm-paid")
             assert conf1.status_code == 200, conf1.text
             assert conf1.json()["payment"]["workflow_status"] == "DIBAYAR"
-            assert conf1.json()["invoice"]["payment_status"] == "DP"
+            assert conf1.json()["invoice"]["payment_status"] == "DIBAYAR_SEBAGIAN"
 
             key = f"retry-{uuid.uuid4()}"
             a = await c.post("/api/purchase-payments", json={"purchase_invoice_id": inv["id"], "amount": 1000000, "idempotency_key": key})

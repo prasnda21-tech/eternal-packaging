@@ -43,6 +43,15 @@ export function shortReceivingStatus(status) {
 }
 
 /** Map purchasing status text to existing pill styles. */
+export function purchasePaymentStatusLabel(status) {
+  const raw = String(status || "").trim().toUpperCase();
+  if (raw === "DP" || raw === "DIBAYAR_SEBAGIAN" || raw.includes("SEBAGIAN")) return "Dibayar Sebagian";
+  if (raw === "BELUM_DIBAYAR" || raw === "BELUM DIBAYAR") return "Belum Dibayar";
+  if (raw === "LUNAS") return "Lunas";
+  if (raw === "DIBATALKAN") return "Dibatalkan";
+  return status || "—";
+}
+
 export function purchaseStatusPillClass(status) {
   const s = String(status || "").toUpperCase();
   if (!s) return "pill xs pill-muted";

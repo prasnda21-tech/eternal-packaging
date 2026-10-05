@@ -158,7 +158,7 @@ async def test_allocation_rules_partial_multiple_and_remainder(db):
     assert refreshed["advance_applied_amount"] == 30000000
     assert refreshed["paid_total"] == 0
     assert refreshed["outstanding_amount"] == 70000000
-    assert refreshed["payment_status"] == "DP"
+    assert refreshed["payment_status"] == "DIBAYAR_SEBAGIAN"
     assert refreshed["outstanding_amount"] >= 0
 
 

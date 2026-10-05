@@ -96,9 +96,11 @@ export function transactionSteps(doc) {
     || invoice === "SEBAGIAN DIFAKTUR"
     || pay === "LUNAS"
     || pay === "DP"
-    || pay === "BELUM DIBAYAR";
+    || pay === "DIBAYAR_SEBAGIAN"
+    || pay === "BELUM DIBAYAR"
+    || pay === "BELUM_DIBAYAR";
   const paid = pay === "LUNAS" || settlement === "PAID" || workflow === "DIBAYAR" || status === "DIBAYAR";
-  const payStarted = paid || pay === "DP" || workflow === "DIAJUKAN" || isPayment;
+  const payStarted = paid || pay === "DP" || pay === "DIBAYAR_SEBAGIAN" || workflow === "DIAJUKAN" || isPayment;
   const goodsReached = barangStarted || barangDone || Boolean(source.receipt_number) || ((isInvoice || isPayment) && !earlyInvoice);
 
   const reached = [
@@ -156,8 +158,8 @@ export function invoiceStatusSentence(status) {
   const raw = String(status || "").toUpperCase();
   if (raw === "DIBATALKAN") return "Dibatalkan";
   if (raw === "LUNAS") return "Lunas";
-  if (raw === "DP") return "Sebagian dibayar";
-  if (raw === "BELUM DIBAYAR" || !raw) return "Menunggu Pembayaran";
+  if (raw === "DP" || raw === "DIBAYAR_SEBAGIAN") return "Dibayar Sebagian";
+  if (raw === "BELUM DIBAYAR" || raw === "BELUM_DIBAYAR" || !raw) return "Belum Dibayar";
   return status;
 }
 

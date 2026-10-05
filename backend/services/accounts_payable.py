@@ -608,9 +608,9 @@ async def _load_current_invoices(db, *, aging_reference_date: str) -> List[dict]
         if not is_cancelled(invoice):
             grand = _money(invoice.get("grand_total"))
             if operational_paid <= 0:
-                payment_status = "BELUM DIBAYAR"
+                payment_status = "BELUM_DIBAYAR"
             elif operational_paid < grand:
-                payment_status = "DP"
+                payment_status = "DIBAYAR_SEBAGIAN"
             else:
                 payment_status = "LUNAS"
         else:

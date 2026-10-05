@@ -141,7 +141,7 @@ async def test_a_to_j_payment_lifecycle():
             inv_a = (await c.get(f"/api/purchase-invoices/{inv['id']}")).json()["invoice"]
             assert inv_a["paid_total"] == 0
             assert inv_a["outstanding_amount"] == 500000
-            assert inv_a["payment_status"] == "BELUM DIBAYAR"
+            assert inv_a["payment_status"] == "BELUM_DIBAYAR"
 
             # B — submit
             sub = await submit(c, pay["id"])
@@ -150,7 +150,7 @@ async def test_a_to_j_payment_lifecycle():
             assert p_b["workflow_status"] == "DIAJUKAN"
             inv_b = (await c.get(f"/api/purchase-invoices/{inv['id']}")).json()["invoice"]
             assert inv_b["paid_total"] == 0
-            assert inv_b["payment_status"] == "BELUM DIBAYAR"
+            assert inv_b["payment_status"] == "BELUM_DIBAYAR"
 
             # C — confirm paid
             conf = await confirm(c, pay["id"])
@@ -185,7 +185,7 @@ async def test_a_to_j_payment_lifecycle():
             inv_d = (await c.get(f"/api/purchase-invoices/{inv2['id']}")).json()["invoice"]
             assert inv_d["paid_total"] == 175000
             assert inv_d["outstanding_amount"] == 325000
-            assert inv_d["payment_status"] == "DP"
+            assert inv_d["payment_status"] == "DIBAYAR_SEBAGIAN"
 
             # E — second payment
             p325 = (await c.post("/api/purchase-payments", json={
@@ -213,7 +213,7 @@ async def test_a_to_j_payment_lifecycle():
             assert cancel_g.status_code == 200, cancel_g.text
             inv_g = (await c.get(f"/api/purchase-invoices/{inv3['id']}")).json()["invoice"]
             assert inv_g["paid_total"] == 0
-            assert inv_g["payment_status"] == "BELUM DIBAYAR"
+            assert inv_g["payment_status"] == "BELUM_DIBAYAR"
 
             # H — cancel submitted unpaid
             inv4 = await make_invoice(c, 200000)
@@ -225,7 +225,7 @@ async def test_a_to_j_payment_lifecycle():
             assert cancel_h.status_code == 200, cancel_h.text
             inv_h = (await c.get(f"/api/purchase-invoices/{inv4['id']}")).json()["invoice"]
             assert inv_h["paid_total"] == 0
-            assert inv_h["payment_status"] == "BELUM DIBAYAR"
+            assert inv_h["payment_status"] == "BELUM_DIBAYAR"
 
             # F variant: submitted overpay on confirm
             inv5 = await make_invoice(c, 100)
