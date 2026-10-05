@@ -10772,7 +10772,7 @@ async def get_sales_invoice_pdf_endpoint(id: str, user=Depends(current_user)):
 
 @api_router.get("/orders/{order_id}/proforma")
 async def get_order_proforma_availability(order_id: str, user=Depends(current_user)):
-    """Read whether this PO has exactly one active draft invoice. Does not write."""
+    """Read whether this PO has exactly one non-cancelled invoice. Does not write."""
     await _require_perm(user, "proforma_invoice.view")
     await ensure_owned_po_id(db, user, order_id)
     return await _proforma_availability(db, order_id)
@@ -10780,7 +10780,7 @@ async def get_order_proforma_availability(order_id: str, user=Depends(current_us
 
 @api_router.get("/sales-invoices/{id}/proforma")
 async def get_sales_invoice_proforma_pdf(id: str, user=Depends(current_user)):
-    """PDF of a saved draft invoice. Reads the draft; does not create or post anything."""
+    """PDF of the single non-cancelled saved invoice. Reads it; does not create or post anything."""
     await _require_perm(user, "proforma_invoice.view")
     invoice = await _require_proforma_invoice(db, id)
     await ensure_owned_po_id(db, user, invoice.get("po_id"))

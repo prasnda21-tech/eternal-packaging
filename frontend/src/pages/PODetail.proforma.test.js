@@ -37,6 +37,18 @@ test("Buat Faktur still navigates to invoice creation", () => {
   expect(actionBar).not.toMatch(/ProformaInvoiceDocRow|btn-lihat-proforma/);
 });
 
+test("Proforma visibility follows availability and ignores invoice status fields", () => {
+  const access = fs.readFileSync(path.join(__dirname, "../lib/proformaInvoiceAccess.js"), "utf8");
+  const row = fs.readFileSync(
+    path.join(__dirname, "../components/poDetail/ProformaInvoiceDocRow.jsx"),
+    "utf8",
+  );
+  expect(access).not.toMatch(/financial_status|accounting_status|payment_status/);
+  expect(row).not.toMatch(/financial_status|accounting_status|payment_status/);
+  expect(detail).toMatch(/available: Boolean\(proformaTarget\?\.invoice_id\)/);
+  expect(detail).not.toMatch(/proformaTarget\?\.financial_status|proformaTarget\?\.accounting_status|proformaTarget\?\.payment_status/);
+});
+
 test("Lihat Proforma uses the read-only PDF helper", () => {
   expect(detail).toMatch(/openProformaInvoicePdf\(proformaTarget\.invoice_id/);
   expect(detail).toMatch(/download: api\.downloadProformaInvoice/);

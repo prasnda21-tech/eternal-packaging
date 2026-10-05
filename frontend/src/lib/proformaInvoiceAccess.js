@@ -1,4 +1,4 @@
-/** Detail PO shows Proforma only for an eligible saved draft, on Order Masuk. */
+/** Detail PO shows Proforma for one eligible saved invoice, on Order Masuk. */
 export function proformaRowVisible({ onOrderMasuk, cancelled, hasView, available }) {
   if (!onOrderMasuk) return false;
   if (cancelled) return false;
