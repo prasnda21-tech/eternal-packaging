@@ -38,6 +38,12 @@ from services.physical_stock import (
     set_fail_after_balance,
     _client,
 )
+from services.stock_opname_count_import import (
+    COUNT_HEADERS,
+    build_count_template_xlsx,
+    import_physical_counts,
+    parse_count_rows,
+)
 from services.stock_opname_sessions import (
     COLLECTION,
     cancel_stock_opname_session,
@@ -655,6 +661,178 @@ async def test_stock_saat_ini_follows_physical_difference(db):
     assert row["qty_belum_terkirim"] == 10
     assert row["qty_tersedia"] == 65
     assert MOVEMENT_REVERSAL
+
+
+async def test_count_excel_uses_cutoff_snapshot_and_recalculates(db):
+    from io import BytesIO
+    from openpyxl import load_workbook as _load
+    from services.stock_opname_count_import import CountImportError
+
+    branch_id, warehouse_id = await _location(db, code="YGY", name="Yogyakarta")
+    item_a = await _item(db, name="Cup A", code="CUP-A")
+    item_b = await _item(db, name="Cup B", code="CUP-B")
+    item_c = await _item(db, name="Cup C", code="CUP-C")
+    foreign = await _item(db, name="Other", code="OTHER")
+    await _open(db, item_a, branch_id, warehouse_id, 1000)
+    await _open(db, item_b, branch_id, warehouse_id, 50)
+    await _open(db, item_c, branch_id, warehouse_id, 25)
+    await db.orders.insert_one({
+        "id": "so-opname",
+        "status": "open",
+        "line_items": [{
+            "master_item_id": item_a,
+            "quantity": 400,
+            "production_process": "print",
+        }],
+        "operator_splits": [{"line_idx": 0, "qty_completed": 100}],
+    })
+    before_ledger = await db[LEDGER_COLLECTION].count_documents({})
+    before_balance = await _qty(db, item_a, branch_id, warehouse_id)
+    created = await create_stock_opname_session(db, {
+        "branch_id": branch_id, "warehouse_id": warehouse_id,
+    }, USER)
+    counting = await start_stock_opname_cutoff(db, created["id"], USER)
+    assert _line(counting, foreign)["book_qty"] == 0
+    line_a = _line(counting, item_a)
+    assert line_a["book_qty"] == 1000
+    assert line_a["qty_pesanan"] == 300
+    assert line_a["qty_belum_terkirim"] == 100
+    assert line_a["physical_count_qty"] is None
+    with pytest.raises(StockOpnameInProgressError):
+        await post_movement(db, {
+            "master_item_id": item_b,
+            "branch_id": branch_id,
+            "warehouse_id": warehouse_id,
+            "movement_type": MOVEMENT_PURCHASE_RECEIPT,
+            "qty_delta": 1,
+            "reference_type": "purchase_goods_receipt",
+            "reference_id": "frozen",
+            "idempotency_key": "frozen-receipt",
+        }, actor_id="tester")
+
+    content = build_count_template_xlsx(counting)
+    workbook = _load(BytesIO(content), data_only=False)
+    sheet = workbook["Hitung Fisik"]
+    headers = [cell.value for cell in sheet[1]]
+    for name in COUNT_HEADERS:
+        assert name in headers
+    rows = {row[0]: row for row in sheet.iter_rows(min_row=2, values_only=True)}
+    assert rows["CUP-A"][3] == 1000
+    assert rows["CUP-A"][4] == 300
+    assert rows["CUP-A"][5] == 100
+    assert rows["CUP-A"][6] is None
+    assert str(rows["CUP-A"][7]).startswith("=IF")
+
+    sheet.cell(2, 4).value = 1
+    sheet.cell(2, 7).value = 950
+    sheet.cell(2, 8).value = 999
+    sheet.cell(2, 9).value = 1
+    buffer = BytesIO()
+    workbook.save(buffer)
+    imported = await import_physical_counts(db, counting["id"], buffer.getvalue(), USER)
+    counted = _line(imported, item_a)
+    assert counted["physical_count_qty"] == 950
+    assert counted["difference_qty"] == -50
+    assert counted["qty_pesanan"] == 300
+    assert counted["qty_belum_terkirim"] == 100
+    assert counted["qty_tersedia_setelah"] == 550
+    assert counted["book_qty"] == 1000
+    assert await db[LEDGER_COLLECTION].count_documents({}) == before_ledger
+    assert await _qty(db, item_a, branch_id, warehouse_id) == before_balance
+
+    duplicate = _load(BytesIO(content))
+    first = [cell.value for cell in duplicate["Hitung Fisik"][2]]
+    duplicate["Hitung Fisik"].append(first)
+    duplicate["Hitung Fisik"].cell(2, 7).value = 1
+    duplicate["Hitung Fisik"].cell(duplicate["Hitung Fisik"].max_row, 7).value = 2
+    bad = BytesIO()
+    duplicate.save(bad)
+    with pytest.raises(CountImportError):
+        parse_count_rows(bad.getvalue(), counting)
+
+    foreign_book = _load(BytesIO(content))
+    foreign_book["Hitung Fisik"].cell(2, 1).value = "MISSING"
+    foreign_book["Hitung Fisik"].cell(2, 10).value = "not-in-session"
+    foreign_book["Hitung Fisik"].cell(2, 7).value = 3
+    foreign_bytes = BytesIO()
+    foreign_book.save(foreign_bytes)
+    with pytest.raises(CountImportError):
+        parse_count_rows(foreign_bytes.getvalue(), counting)
+
+    negative = _load(BytesIO(content))
+    negative["Hitung Fisik"].cell(2, 7).value = -1
+    negative_bytes = BytesIO()
+    negative.save(negative_bytes)
+    with pytest.raises(CountImportError):
+        parse_count_rows(negative_bytes.getvalue(), counting)
+
+    with pytest.raises(HTTPException) as incomplete:
+        await submit_stock_opname_review(db, counting["id"], USER)
+    assert incomplete.value.status_code == 400
+    assert await db[LEDGER_COLLECTION].count_documents({}) == before_ledger
+
+    zero = _load(BytesIO(build_count_template_xlsx(imported)))
+    for row in zero["Hitung Fisik"].iter_rows(min_row=2):
+        code = row[0].value
+        if code == "CUP-A":
+            row[6].value = 950
+        elif code == "CUP-B":
+            row[6].value = 57
+        elif code == "CUP-C":
+            row[6].value = 0
+        else:
+            row[6].value = row[3].value
+    zero_bytes = BytesIO()
+    zero.save(zero_bytes)
+    filled = await import_physical_counts(db, counting["id"], zero_bytes.getvalue(), USER)
+    assert _line(filled, item_c)["physical_count_qty"] == 0
+    assert _line(filled, item_c)["difference_qty"] == -25
+    assert _line(filled, item_b)["difference_qty"] == 7
+    matched = _load(BytesIO(build_count_template_xlsx(filled)))
+    for row in matched["Hitung Fisik"].iter_rows(min_row=2):
+        code = row[0].value
+        if code == "CUP-A":
+            row[6].value = 950
+        elif code == "CUP-B":
+            row[6].value = 57
+        elif code == "CUP-C":
+            row[6].value = 25
+        else:
+            row[6].value = row[3].value
+    matched_bytes = BytesIO()
+    matched.save(matched_bytes)
+    filled = await import_physical_counts(db, counting["id"], matched_bytes.getvalue(), USER)
+    assert _line(filled, item_c)["difference_qty"] == 0
+    reviewed = await submit_stock_opname_review(db, counting["id"], USER)
+    assert reviewed["status"] == "REVIEW"
+    assert await db[LEDGER_COLLECTION].count_documents({}) == before_ledger
+    confirmed = await confirm_stock_opname_session(db, counting["id"], {"idempotency_key": "excel-confirm"}, USER)
+    again = await confirm_stock_opname_session(db, counting["id"], {"idempotency_key": "excel-confirm"}, USER)
+    assert again["status"] == "CONFIRMED"
+    assert await _qty(db, item_a, branch_id, warehouse_id) == 950
+    assert await _qty(db, item_b, branch_id, warehouse_id) == 57
+    assert await _qty(db, item_c, branch_id, warehouse_id) == 25
+    adjustments = await db[LEDGER_COLLECTION].find(
+        {"movement_type": MOVEMENT_STOCK_OPNAME_ADJUSTMENT, "reference_id": confirmed["id"]},
+        {"_id": 0, "master_item_id": 1, "qty_delta": 1},
+    ).to_list(20)
+    by_item = {row["master_item_id"]: row["qty_delta"] for row in adjustments}
+    assert by_item[item_a] == -50
+    assert by_item[item_b] == 7
+    assert item_c not in by_item
+    catalog = await list_physical_stock_catalog(db, limit=50)
+    row_a = next(row for row in catalog["items"] if row["master_item_id"] == item_a)
+    assert (row_a["physical_qty"], row_a["qty_pesanan"], row_a["qty_belum_terkirim"], row_a["qty_tersedia"]) == (950, 300, 100, 550)
+    await post_movement(db, {
+        "master_item_id": item_b,
+        "branch_id": branch_id,
+        "warehouse_id": warehouse_id,
+        "movement_type": MOVEMENT_PURCHASE_RECEIPT,
+        "qty_delta": 1,
+        "reference_type": "purchase_goods_receipt",
+        "reference_id": "after-confirm",
+        "idempotency_key": "after-confirm",
+    }, actor_id="tester")
 
 
 async def test_non_operational_warehouse_can_still_open_stock_opname(db):

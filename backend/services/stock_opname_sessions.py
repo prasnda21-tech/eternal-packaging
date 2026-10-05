@@ -8,7 +8,7 @@ from __future__ import annotations
 import uuid
 from typing import Any, Dict, List, Optional
 
-from fastapi import HTTPException
+from fastapi import File, HTTPException, UploadFile
 from pymongo.errors import DuplicateKeyError, PyMongoError
 
 from services.inventory_accounting import ITEM_TYPE_SERVICE
@@ -47,11 +47,100 @@ def _now():
     return now_iso()
 
 
+def _number(value: Any) -> float:
+    from services.physical_stock import _qty_num
+    return _qty_num(value)
+
+
+def present_opname_line(line: dict) -> dict:
+    """Display fields from the cutoff snapshot. Counts stay blank until entered."""
+    row = dict(line or {})
+    pesanan = _number(row.get("qty_pesanan"))
+    belum = _number(row.get("qty_belum_terkirim"))
+    row["qty_pesanan"] = pesanan
+    row["qty_belum_terkirim"] = belum
+    count = row.get("physical_count_qty")
+    if count is None or count == "":
+        row["physical_count_qty"] = None
+        row["difference_qty"] = None
+        row["qty_tersedia_setelah"] = None
+        return row
+    counted = int(count)
+    book = int(row.get("book_qty") or 0)
+    row["physical_count_qty"] = counted
+    row["difference_qty"] = counted - book
+    row["qty_tersedia_setelah"] = counted - pesanan - belum
+    return row
+
+
 def _public(doc: Optional[dict]) -> dict:
     if not doc:
         raise HTTPException(404, "Sesi stock opname tidak ditemukan.")
+    doc = dict(doc)
     doc.pop("_id", None)
+    lines = [present_opname_line(line) for line in doc.get("lines") or []]
+    doc["lines"] = lines
+    doc["item_count"] = len(lines)
+    doc["difference_count"] = sum(
+        1 for line in lines if line.get("difference_qty") not in (None, 0)
+    )
     return doc
+
+
+async def _snapshot_order_buckets(db, mongo_session, lines: List[dict]) -> None:
+    """Freeze Qty Pesanan and Qty Belum Terkirim with the same rules as Stock Saat Ini."""
+    from services.physical_stock import (
+        LEDGER_COLLECTION,
+        MASTER_ITEMS_COLLECTION,
+        MOVEMENT_SALES_DELIVERY,
+        _qty_num,
+        aggregate_operational_orders,
+        operational_availability,
+    )
+
+    masters = await db[MASTER_ITEMS_COLLECTION].find(
+        {},
+        {"_id": 0, "id": 1, "accurate_item_id": 1},
+        session=mongo_session,
+    ).to_list(20000)
+    counts: Dict[str, int] = {}
+    owner: Dict[str, str] = {}
+    for row in masters:
+        accurate_id = str(row.get("accurate_item_id") or "").strip()
+        master_id = str(row.get("id") or "").strip()
+        if not accurate_id or not master_id:
+            continue
+        counts[accurate_id] = counts.get(accurate_id, 0) + 1
+        owner[accurate_id] = master_id
+    owners = {accurate_id: master_id for accurate_id, master_id in owner.items() if counts[accurate_id] == 1}
+    orders = await db.orders.find({}, {"_id": 0}, session=mongo_session).to_list(20000)
+    progress = aggregate_operational_orders(orders, owners)
+    ids = [str(line.get("master_item_id") or "") for line in lines if line.get("master_item_id")]
+    movements = []
+    if ids:
+        movements = await db[LEDGER_COLLECTION].find(
+            {"movement_type": MOVEMENT_SALES_DELIVERY, "master_item_id": {"$in": ids}},
+            {"_id": 0, "master_item_id": 1, "qty_delta": 1},
+            session=mongo_session,
+        ).to_list(20000)
+    delivered: Dict[str, float] = {}
+    for row in movements:
+        delta = _qty_num(row.get("qty_delta"))
+        if delta >= 0:
+            continue
+        mid = str(row.get("master_item_id") or "")
+        delivered[mid] = _qty_num(delivered.get(mid, 0)) + abs(delta)
+    for line in lines:
+        mid = str(line.get("master_item_id") or "")
+        demand = progress.get(mid) or {"ordered_qty": 0.0, "completed_qty": 0.0}
+        buckets = operational_availability(
+            physical_qty=line.get("book_qty") or 0,
+            ordered_qty=demand["ordered_qty"],
+            completed_qty=demand["completed_qty"],
+            r2_delivered_qty=delivered.get(mid, 0),
+        )
+        line["qty_pesanan"] = buckets["qty_pesanan"]
+        line["qty_belum_terkirim"] = buckets["qty_belum_terkirim"]
 
 
 def parse_count_qty(value: Any) -> int:
@@ -207,6 +296,7 @@ async def _book_lines(db, session, *, warehouse_id: str) -> List[dict]:
         str(row.get("item_name") or ""),
         str(row.get("master_item_id") or ""),
     ))
+    await _snapshot_order_buckets(db, session, lines)
     return lines
 
 
@@ -292,7 +382,8 @@ async def list_stock_opname_sessions(db, warehouse_id: Optional[str] = None) -> 
     query: Dict[str, Any] = {}
     if warehouse_id:
         query["warehouse_id"] = str(warehouse_id)
-    return await db[COLLECTION].find(query, {"_id": 0}).sort("created_at", -1).to_list(200)
+    docs = await db[COLLECTION].find(query, {"_id": 0}).sort("created_at", -1).to_list(200)
+    return [_public(doc) for doc in docs]
 
 
 async def start_stock_opname_cutoff(db, session_id: str, user: dict) -> dict:
@@ -656,3 +747,38 @@ def register_stock_opname_routes(api_router, *, get_db, current_user, require_pe
         user=Depends(current_user),
     ):
         return await cancel_stock_opname_session(get_db(), session_id, payload.model_dump(), user)
+
+    @api_router.get("/stock-opname-sessions/{session_id}/count-template")
+    async def stock_opname_sessions_count_template(
+        session_id: str,
+        user=Depends(require_perm("master_items.view")),
+    ):
+        from fastapi.responses import Response
+        from services.stock_opname_count_import import build_count_template_xlsx
+
+        session = await get_stock_opname_session(get_db(), session_id)
+        if session["status"] not in (STATUS_COUNTING, STATUS_REVIEW, STATUS_CONFIRMED):
+            raise HTTPException(400, "Template hitung tersedia setelah cutoff.")
+        content = build_count_template_xlsx(session)
+        filename = f"hitung-fisik-{session.get('opname_number') or session_id}.xlsx"
+        return Response(
+            content=content,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    @api_router.post("/stock-opname-sessions/{session_id}/count-import")
+    async def stock_opname_sessions_count_import(
+        session_id: str,
+        file: UploadFile = File(...),
+        user=Depends(current_user),
+    ):
+        from services.stock_opname_count_import import CountImportError, import_physical_counts
+
+        data = await file.read()
+        if not data:
+            raise HTTPException(400, "File kosong")
+        try:
+            return await import_physical_counts(get_db(), session_id, data, user)
+        except CountImportError as exc:
+            raise HTTPException(400, exc.message) from exc

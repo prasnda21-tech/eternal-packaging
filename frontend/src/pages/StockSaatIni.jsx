@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import { AlertCircle, Check, Download, Search, X } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
@@ -190,15 +191,9 @@ export default function StockSaatIni() {
           >
             Saldo Awal
           </button>
-          <button
-            type="button"
-            className="ghost"
-            disabled
-            title="Belum tersedia untuk stok baru"
-            data-testid="stock-opname-disabled"
-          >
+          <Link className="ghost" to="/persediaan/stock-opname" data-testid="stock-opname-button">
             Stock Opname
-          </button>
+          </Link>
           {canExport && (
             <button className="primary" onClick={download} data-testid="stock-export-button">
               <Download size={14} /> Export

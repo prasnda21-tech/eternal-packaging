@@ -73,8 +73,8 @@ describe("Persediaan live search inventory scope", () => {
     expect(stock).toMatch(/createPhysicalOpeningBalance/);
     expect(stock).not.toMatch(/initOpeningBalance/);
     expect(stock).toMatch(/Belum ada Barang\/Jasa pada environment preview/);
-    expect(stock).toMatch(/stock-opname-disabled/);
-    expect(stock).toMatch(/Belum tersedia untuk stok baru/);
+    expect(stock).toMatch(/data-testid="stock-opname-button"/);
+    expect(stock).toMatch(/\/persediaan\/stock-opname/);
   });
 
   test("authorized physical correction uses a target dialog and refreshes the read", () => {

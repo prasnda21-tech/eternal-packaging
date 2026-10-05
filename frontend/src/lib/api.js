@@ -407,6 +407,22 @@ export const api = {
     client.get(`/inventory/reports/purchases`, { params }).then((r) => r.data),
   salesActivityReport: (params = {}) =>
     client.get(`/inventory/reports/sales`, { params }).then((r) => r.data),
+  stockOpnameSessions: (params = {}) => client.get(`/stock-opname-sessions`, { params }).then((r) => r.data),
+  stockOpnameSession: (id) => client.get(`/stock-opname-sessions/${encodeURIComponent(id)}`).then((r) => r.data),
+  createStockOpnameSession: (payload) => client.post(`/stock-opname-sessions`, payload).then((r) => r.data),
+  cutoffStockOpnameSession: (id) => client.post(`/stock-opname-sessions/${encodeURIComponent(id)}/cutoff`).then((r) => r.data),
+  countStockOpnameSession: (id, payload) => client.post(`/stock-opname-sessions/${encodeURIComponent(id)}/counts`, payload).then((r) => r.data),
+  reviewStockOpnameSession: (id) => client.post(`/stock-opname-sessions/${encodeURIComponent(id)}/review`).then((r) => r.data),
+  confirmStockOpnameSession: (id, payload) => client.post(`/stock-opname-sessions/${encodeURIComponent(id)}/confirm`, payload).then((r) => r.data),
+  cancelStockOpnameSession: (id, payload) => client.post(`/stock-opname-sessions/${encodeURIComponent(id)}/cancel`, payload).then((r) => r.data),
+  stockOpnameCountTemplate: (id) => client.get(`/stock-opname-sessions/${encodeURIComponent(id)}/count-template`, { responseType: "blob" }).then((r) => r.data),
+  stockOpnameCountImport: (id, file) => {
+    const form = new FormData();
+    form.append("file", file);
+    return client.post(`/stock-opname-sessions/${encodeURIComponent(id)}/count-import`, form, {
+      headers: { "Content-Type": "multipart/form-data" },
+    }).then((r) => r.data);
+  },
   stockOpnameItems: (params = {}) => client.get(`/stock-opname/items`, { params }).then((r) => r.data),
   stockOpnameExportTemplate: () =>
     client.get(`/stock-opname/export-template`, { responseType: "blob" }).then((r) => r.data),
