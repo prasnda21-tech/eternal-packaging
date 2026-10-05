@@ -14566,7 +14566,25 @@ async def seed():
     await _independent_route_ensure_indexes(db)
     from services.sales_activity.evaluator import start_evaluator_loop
     start_evaluator_loop(db)
-    for coll in (db.purchase_requests, db.purchase_orders, db.purchase_goods_receipts, db.purchase_invoices, db.purchase_payments):
+    await db.purchase_supplier_advances.create_index("id", unique=True)
+    await _ensure_unique_business_number_index(db.purchase_supplier_advances, "advance_number")
+    await db.purchase_supplier_advances.create_index("purchase_order_id")
+    await db.purchase_supplier_advances.create_index("supplier_key")
+    await db.purchase_supplier_advances.create_index("created_at")
+    await db.purchase_supplier_advances.create_index(
+        "confirmation_key",
+        unique=True,
+        partialFilterExpression={"confirmation_key": {"$type": "string"}},
+        name="confirmation_key_partial_unique",
+    )
+    for coll in (
+        db.purchase_requests,
+        db.purchase_orders,
+        db.purchase_goods_receipts,
+        db.purchase_invoices,
+        db.purchase_payments,
+        db.purchase_supplier_advances,
+    ):
         for idx_name in ("idempotency_key_1", "idempotency_key_partial_unique"):
             try:
                 await coll.drop_index(idx_name)

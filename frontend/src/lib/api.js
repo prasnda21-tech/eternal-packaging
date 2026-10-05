@@ -443,6 +443,13 @@ export const api = {
   listPurchasePayments: (params = {}) => client.get(`/purchase-payments`, { params }).then((r) => r.data),
   getPurchasePayment: (id) => client.get(`/purchase-payments/${encodeURIComponent(id)}`).then((r) => r.data),
   createPurchasePayment: (payload) => client.post(`/purchase-payments`, payload).then((r) => r.data),
+  listPurchaseSupplierAdvances: (params = {}) => client.get(`/purchase-supplier-advances`, { params }).then((r) => r.data),
+  createPurchaseSupplierAdvance: (payload) => client.post(`/purchase-supplier-advances`, payload).then((r) => r.data),
+  submitPurchaseSupplierAdvance: (id) => client.post(`/purchase-supplier-advances/${encodeURIComponent(id)}/submit`, {}).then((r) => r.data),
+  confirmPurchaseSupplierAdvance: (id, payload = {}) =>
+    client.post(`/purchase-supplier-advances/${encodeURIComponent(id)}/confirm-paid`, payload).then((r) => r.data),
+  cancelPurchaseSupplierAdvance: (id, reason = "") =>
+    client.post(`/purchase-supplier-advances/${encodeURIComponent(id)}/cancel`, reason ? { reason } : {}).then((r) => r.data),
 
   cancelPurchaseRequest: (id, reason = "") =>
     client.post(`/purchase-requests/${encodeURIComponent(id)}/cancel`, reason ? { reason } : {}).then((r) => r.data),

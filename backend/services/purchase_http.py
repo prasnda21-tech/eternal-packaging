@@ -52,6 +52,15 @@ def register_purchase_routes(api_router, *, get_db, current_user, require_perm, 
         list_purchase_payments,
         submit_purchase_payment,
     )
+    from services.purchase_supplier_advances import (
+        cancel_purchase_supplier_advance,
+        confirm_purchase_supplier_advance,
+        create_purchase_supplier_advance,
+        get_purchase_supplier_advance,
+        list_purchase_supplier_advances,
+        submit_purchase_supplier_advance,
+        supplier_advance_availability,
+    )
     from services.purchase_invoice_posting import (
         PERM_POST as PURCHASE_INVOICE_POST_PERM,
         PERM_REVERSE as PURCHASE_INVOICE_REVERSE_PERM,
@@ -401,6 +410,67 @@ def register_purchase_routes(api_router, *, get_db, current_user, require_perm, 
             "reused": result.get("reused", False),
             "message": "Pembayaran sudah dikonfirmasi" if result.get("reused") else "Pembayaran dikonfirmasi dibayar",
         }
+
+    @api_router.get("/purchase-supplier-advances")
+    async def list_purchase_supplier_advances_endpoint(
+        purchase_order_id: Optional[str] = None,
+        user=Depends(current_user),
+    ):
+        await require_any_perm(user, "purchase_orders.view", "purchase_payments.view")
+        rows = await list_purchase_supplier_advances(get_db(), purchase_order_id=purchase_order_id)
+        summary = None
+        if purchase_order_id:
+            summary = await supplier_advance_availability(get_db(), purchase_order_id)
+        return {"advances": rows, "count": len(rows), "summary": summary}
+
+    @api_router.get("/purchase-supplier-advances/availability")
+    async def purchase_supplier_advance_availability_endpoint(
+        purchase_order_id: str,
+        user=Depends(current_user),
+    ):
+        await require_any_perm(user, "purchase_orders.view", "purchase_payments.view")
+        return {"summary": await supplier_advance_availability(get_db(), purchase_order_id)}
+
+    @api_router.get("/purchase-supplier-advances/{advance_id}")
+    async def get_purchase_supplier_advance_endpoint(advance_id: str, user=Depends(current_user)):
+        await require_any_perm(user, "purchase_orders.view", "purchase_payments.view")
+        return {"advance": await get_purchase_supplier_advance(get_db(), advance_id)}
+
+    @api_router.post("/purchase-supplier-advances")
+    async def create_purchase_supplier_advance_endpoint(payload: LoosePayload, user=Depends(current_user)):
+        await require_any_perm(user, "purchase_orders.create", "purchase_payments.create")
+        doc = await create_purchase_supplier_advance(get_db(), _dump(payload), user)
+        return {"advance": doc, "message": "Uang muka pembelian tercatat"}
+
+    @api_router.post("/purchase-supplier-advances/{advance_id}/submit")
+    async def submit_purchase_supplier_advance_endpoint(advance_id: str, user=Depends(current_user)):
+        await require_any_perm(user, "purchase_orders.create", "purchase_payments.create")
+        doc = await submit_purchase_supplier_advance(get_db(), advance_id, user)
+        return {"advance": doc, "message": "Uang muka diajukan"}
+
+    @api_router.post("/purchase-supplier-advances/{advance_id}/confirm-paid")
+    async def confirm_purchase_supplier_advance_endpoint(
+        advance_id: str,
+        payload: Optional[LoosePayload] = None,
+        user=Depends(current_user),
+    ):
+        await require_any_perm(user, "purchase_orders.create", "purchase_payments.create")
+        data = _dump(payload) if payload is not None else {}
+        doc = await confirm_purchase_supplier_advance(get_db(), advance_id, user, data)
+        return {"advance": doc, "message": "Uang muka dikonfirmasi dibayar"}
+
+    @api_router.post("/purchase-supplier-advances/{advance_id}/cancel")
+    async def cancel_purchase_supplier_advance_endpoint(
+        advance_id: str,
+        payload: Optional[LoosePayload] = None,
+        user=Depends(current_user),
+    ):
+        await require_any_perm(user, "purchase_orders.create", "purchase_payments.create")
+        data = _dump(payload) if payload is not None else {}
+        doc = await cancel_purchase_supplier_advance(
+            get_db(), advance_id, user, reason=str(data.get("reason") or "")
+        )
+        return {"advance": doc, "message": "Uang muka dibatalkan"}
 
     @api_router.post("/purchase-payments/{payment_id}/post-accounting")
     async def post_purchase_payment_accounting_endpoint(

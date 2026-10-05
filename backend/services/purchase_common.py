@@ -21,6 +21,7 @@ PREFIX_PURCHASE_ORDER = "PB"
 PREFIX_GOODS_RECEIPT = "GR"
 PREFIX_PURCHASE_INVOICE = "FPB"
 PREFIX_PURCHASE_PAYMENT = "PPB"
+PREFIX_SUPPLIER_ADVANCE = "UMP"
 
 _locks: Dict[str, Dict[asyncio.AbstractEventLoop, asyncio.Lock]] = {}
 
