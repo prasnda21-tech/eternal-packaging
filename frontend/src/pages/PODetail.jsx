@@ -59,7 +59,9 @@ import PoDetailFocusPanel from "../components/poDetail/PoDetailFocusPanel";
 import PoStageSection from "../components/poDetail/PoStageSection";
 import PoSummaryDrawer from "../components/poDetail/PoSummaryDrawer";
 import ProductionNotesPanel from "../components/poDetail/ProductionNotesPanel";
+import ProformaInvoiceDocRow from "../components/poDetail/ProformaInvoiceDocRow";
 import { canAppendProductionNote, productionNotesVisible } from "../lib/productionNoteAccess";
+import { openProformaInvoicePdf, proformaRowVisible } from "../lib/proformaInvoiceAccess";
 import PoStagePickerSheet from "../components/poDetail/PoStagePickerSheet";
 import { PoStageAccordionProvider, usePoStageAccordion } from "../components/poDetail/PoStageAccordionContext";
 import { getStagePresentation } from "../lib/poDetailPresentation";
@@ -116,6 +118,8 @@ export default function PODetail() {
   const [stageSheetOpen, setStageSheetOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
   const [docTab, setDocTab] = useState("dokumen");
+  const [proformaTarget, setProformaTarget] = useState(null);
+  const [proformaBusy, setProformaBusy] = useState(false);
   const selectedForOrderRef = useRef(null);
   const screenerServerNotesRef = useRef("");
 
@@ -325,6 +329,24 @@ export default function PODetail() {
     return () => { cancelled = true; };
   }, [trackingQrOpen, trackingShare]);
 
+  useEffect(() => {
+    if (!order?.id || !hasPerm("proforma_invoice.view") || order.cancelled) {
+      setProformaTarget(null);
+      return undefined;
+    }
+    let cancelled = false;
+    api.getOrderProforma(order.id).then((data) => {
+      if (cancelled) return;
+      if (data?.available && data.invoice_id) setProformaTarget(data);
+      else setProformaTarget(null);
+    }).catch(() => {
+      if (!cancelled) setProformaTarget(null);
+    });
+    return () => { cancelled = true; };
+    // Reload when the PO identity or the signed-in principal changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [order?.id, order?.cancelled, order?.updated_at, user?.id, user?.email, user?.sub]);
+
   const loadReceiptProof = useCallback(({ download = false, signal } = {}) => {
     const receiptId = proofViewerReceipt?.id;
     if (!receiptId) {
@@ -523,6 +545,26 @@ export default function PODetail() {
   const showProductionNotes = productionNotesVisible(onOrderMasuk, hasPerm("production_note.view"));
   const allowAppendProductionNote = canAppendProductionNote(role, hasPerm("production_note.create"));
   const allowEditProductionNote = hasPerm("production_note.edit");
+  const canViewProforma = hasPerm("proforma_invoice.view");
+  const showProformaRow = proformaRowVisible({
+    onOrderMasuk,
+    cancelled: order.cancelled,
+    hasView: canViewProforma,
+    available: Boolean(proformaTarget?.invoice_id),
+  });
+  const openProforma = async () => {
+    if (!proformaTarget?.invoice_id || proformaBusy) return;
+    setProformaBusy(true);
+    try {
+      await openProformaInvoicePdf(proformaTarget.invoice_id, {
+        download: api.downloadProformaInvoice,
+      });
+    } catch (error) {
+      showToast(formatApiError(error, "Gagal memuat Proforma Invoice"));
+    } finally {
+      setProformaBusy(false);
+    }
+  };
   const viewedVisualStep = visualStepForInternalIndex(viewedStage);
   const viewingOtherStage = visualCanonicalIndex(viewedStage) !== visualCanonicalIndex(actualStage);
   const viewedPres = getStagePresentation(
@@ -1698,6 +1740,13 @@ export default function PODetail() {
               <strong>{sjDocs.length} file</strong>
               <button type="button" className="ghost sm" onClick={() => selectWorkflowStage(12)}>Buka Surat Jalan</button>
             </li>
+            {showProformaRow ? (
+              <ProformaInvoiceDocRow
+                invoiceNumber={proformaTarget.invoice_number}
+                busy={proformaBusy}
+                onView={openProforma}
+              />
+            ) : null}
             {order.source_pdf?.storage_path ? (
               <li>
                 <span>PDF asli import</span>

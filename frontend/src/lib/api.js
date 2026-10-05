@@ -714,6 +714,8 @@ export const api = {
   // ---- Sales Invoice (Faktur Penjualan) ----
 
   downloadSalesInvoicePdf: (id) => client.get(`/sales-invoices/${encodeURIComponent(id)}/pdf`, { responseType: "blob" }).then((r) => r.data),
+  getOrderProforma: (orderId) => client.get(`/orders/${encodeURIComponent(orderId)}/proforma`).then((r) => r.data),
+  downloadProformaInvoice: (id) => client.get(`/sales-invoices/${encodeURIComponent(id)}/proforma`, { responseType: "blob" }).then((r) => r.data),
   downloadSalesReceiptPdf: (id) => client.get(`/sales-receipts/${encodeURIComponent(id)}/pdf`, { responseType: "blob" }).then((r) => r.data),
   downloadSalesReceiptPaymentProof: (id, download = false, config = {}) =>
     client
