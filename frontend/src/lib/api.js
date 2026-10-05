@@ -498,6 +498,8 @@ export const api = {
   updateHppSettings: (payload) => client.put(`/settings/hpp`, payload).then((r) => r.data),
   physicalStockSettings: () => client.get(`/settings/physical-stock`).then((r) => r.data),
   updatePhysicalStockSettings: (payload) => client.put(`/settings/physical-stock`, payload).then((r) => r.data),
+  designCetakanSettings: () => client.get(`/settings/design-cetakan`).then((r) => r.data),
+  updateDesignCetakanSettings: (payload) => client.put(`/settings/design-cetakan`, payload).then((r) => r.data),
   listNotifications: (params = {}) => client.get(`/notifications`, { params }).then((r) => r.data),
   markNotificationRead: (id) => client.post(`/notifications/${encodeURIComponent(id)}/read`).then((r) => r.data),
   customerDesignApprovalNotificationSettings: () => client.get(`/settings/notifications/customer-design-approval`).then((r) => r.data),

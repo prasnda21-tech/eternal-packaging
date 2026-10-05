@@ -1682,7 +1682,11 @@ async def invoice_pdf_presentation(db, invoice: dict) -> dict:
     return shown
 
 
-def generate_sales_invoice_pdf_bytes(invoice: dict, document_type: str = DOCUMENT_INVOICE) -> bytes:
+def generate_sales_invoice_pdf_bytes(
+    invoice: dict,
+    document_type: str = DOCUMENT_INVOICE,
+    design: dict | None = None,
+) -> bytes:
     """A4 portrait Faktur Penjualan. Proforma reuses this layout with another title.
 
     Proforma still omits payment-settlement rows (uang dimuka). It does not
@@ -1695,12 +1699,6 @@ def generate_sales_invoice_pdf_bytes(invoice: dict, document_type: str = DOCUMEN
 
     from services.pdf_date import format_pdf_date
     from services.pdf_layout import (
-        BANK_LINES,
-        COMPANY_ADDRESS_LINES,
-        COMPANY_NAME,
-        ESTIMASI_LINES,
-        ESTIMASI_TITLE,
-        RED,
         build_pdf,
         content_width,
         esc,
@@ -1711,18 +1709,22 @@ def generate_sales_invoice_pdf_bytes(invoice: dict, document_type: str = DOCUMEN
         styles,
         terbilang,
     )
+    from services.print_design_settings import bank_display_lines, resolve_print_design
 
     invoice = invoice or {}
+    design = resolve_print_design(design)
+    inv_design = design.get("invoice") or {}
     proforma = document_type == DOCUMENT_PROFORMA
-    sty = styles()
+    sty = styles(design.get("accent_color"))
+    accent = sty["accent"]
     width = content_width(A4)
     elements = []
 
     path = logo_path()
     logo = Image(path, width=36 * mm, height=12.2 * mm) if path else Paragraph("<b>ETERNAL</b>", sty["company"])
-    address_html = "<br/>".join(esc(line) for line in COMPANY_ADDRESS_LINES)
+    address_html = "<br/>".join(esc(line) for line in (design.get("address_lines") or []))
     identity = Paragraph(
-        f"<font size='12'><b>{esc(COMPANY_NAME)}</b></font><br/>{address_html}",
+        f"<font size='12'><b>{esc(design.get('company_name') or '')}</b></font><br/>{address_html}",
         sty["address"],
     )
     brand = Table([[logo, identity]], colWidths=[40 * mm, width - 40 * mm])
@@ -1749,8 +1751,9 @@ def generate_sales_invoice_pdf_bytes(invoice: dict, document_type: str = DOCUMEN
     due = format_pdf_date(invoice.get("due_date"))
     jasa = str(invoice.get("presentation_expedition") or invoice.get("expedition") or "").strip()
     tipe = str(invoice.get("presentation_shipping_type") or invoice.get("shipping_type") or "").strip()
-    bank_left = "<br/>".join(esc(line) for line in BANK_LINES[:2])
-    bank_right = "<br/>".join(esc(line) for line in BANK_LINES[2:])
+    bank_lines = bank_display_lines(inv_design.get("bank_accounts"))
+    bank_left = "<br/>".join(esc(line) for line in bank_lines[:2])
+    bank_right = "<br/>".join(esc(line) for line in bank_lines[2:])
 
     def cell(label: str, value_html: str) -> Paragraph:
         return Paragraph(f"{esc(label)}<br/><b>{value_html or '&nbsp;'}</b>", sty["small"])
@@ -1929,13 +1932,22 @@ def generate_sales_invoice_pdf_bytes(invoice: dict, document_type: str = DOCUMEN
         ]))
         return column
 
-    prepared = signature_column("Disiapkan Oleh", "Admin")
-    approved = signature_column("Disetujui Oleh", "Pengelola", sales_name)
-    estimasi_html = "<b>" + esc(ESTIMASI_TITLE) + "</b><br/>" + "<br/>".join(esc(line) for line in ESTIMASI_LINES)
+    prepared = signature_column(
+        str(inv_design.get("prepared_label") or "Disiapkan Oleh"),
+        str(inv_design.get("prepared_footer") or "Admin"),
+    )
+    approved = signature_column(
+        str(inv_design.get("approved_label") or "Disetujui Oleh"),
+        str(inv_design.get("approved_footer") or "Pengelola"),
+        sales_name,
+    )
+    estimasi_title = str(inv_design.get("estimasi_title") or "")
+    estimasi_lines = inv_design.get("estimasi_lines") or []
+    estimasi_html = "<b>" + esc(estimasi_title) + "</b><br/>" + "<br/>".join(esc(line) for line in estimasi_lines)
     estimasi = Paragraph(estimasi_html, sty["red_small"])
     estimasi_table = Table([[estimasi]], colWidths=[68 * mm])
     estimasi_table.setStyle(TableStyle([
-        ("BOX", (0, 0), (-1, -1), 1.2, RED),
+        ("BOX", (0, 0), (-1, -1), 1.2, accent),
         ("LEFTPADDING", (0, 0), (-1, -1), 3),
         ("RIGHTPADDING", (0, 0), (-1, -1), 3),
         ("TOPPADDING", (0, 0), (-1, -1), 3),

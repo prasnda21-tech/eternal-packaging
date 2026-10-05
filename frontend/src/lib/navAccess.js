@@ -1038,6 +1038,7 @@ export const SETTINGS_TAB_IDS = [
   "operator-wage",
   "hpp",
   "physical-stock",
+  "design-cetakan",
   "sales-accounting",
   "purchase-accounting",
   "payroll-accounting",
@@ -1069,6 +1070,7 @@ export const SETTINGS_TILE_TONES = {
   "operator-wage": "green",
   hpp: "orange",
   "physical-stock": "emerald",
+  "design-cetakan": "rose",
   "sales-accounting": "purple",
   "purchase-accounting": "rose",
   "payroll-accounting": "blue",
@@ -1098,6 +1100,7 @@ export const SETTINGS_TILE_LABELS = {
   "operator-wage": "Sistem Upah Operator",
   hpp: "Pengaturan HPP",
   "physical-stock": "Stok Fisik",
+  "design-cetakan": "Design Cetakan",
   "sales-accounting": "Akuntansi Penjualan",
   "purchase-accounting": "Akuntansi Pembelian",
   "payroll-accounting": "Akuntansi Payroll",
@@ -1143,6 +1146,9 @@ export function settingsNavVisible(hasPerm) {
   const physicalStock = canSeeNav(hasPerm, "current_stock.view")
     || canSeeNav(hasPerm, "current_stock.update")
     || canSeeNav(hasPerm, "permissions.manage");
+  const designCetakan = canSeeNav(hasPerm, "settings.design_cetakan.view")
+    || canSeeNav(hasPerm, "settings.design_cetakan.manage")
+    || canSeeNav(hasPerm, "permissions.manage");
   const salesAccounting = canSeeNav(hasPerm, "settings.sales_accounting.view")
     || canSeeNav(hasPerm, "settings.sales_accounting.manage")
     || canSeeNav(hasPerm, "permissions.manage");
@@ -1187,6 +1193,7 @@ export function settingsNavVisible(hasPerm) {
     "operator-wage": Boolean(parentGranted && operatorWage),
     hpp: Boolean(parentGranted && hpp),
     "physical-stock": Boolean(parentGranted && physicalStock),
+    "design-cetakan": Boolean(parentGranted && designCetakan),
     "sales-accounting": Boolean(parentGranted && salesAccounting),
     "purchase-accounting": Boolean(parentGranted && purchaseAccounting),
     "payroll-accounting": Boolean(parentGranted && payrollAccounting),

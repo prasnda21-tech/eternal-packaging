@@ -7,6 +7,7 @@ import {
   BookOpen,
   CreditCard,
   Package,
+  Printer,
   Settings as SettingsIcon,
 } from "lucide-react";
 import api from "../lib/api";
@@ -18,6 +19,7 @@ import RolePermissionWorkspace from "../components/RolePermissionWorkspace";
 import OperatorWageSettings from "./OperatorWageSettings";
 import HppSettings from "./HppSettings";
 import PhysicalStockSettings from "./PhysicalStockSettings";
+import DesignCetakanSettings from "./DesignCetakanSettings";
 import SalesAccountingSettings from "./SalesAccountingSettings";
 import PurchaseAccountingSettings from "./PurchaseAccountingSettings";
 import PayrollAccountingSettings from "./PayrollAccountingSettings";
@@ -2146,6 +2148,7 @@ const SETTINGS_NAV_ITEMS = [
   { id: "operator-wage", label: "Sistem Upah Operator", description: "Atur skema upah", Icon: Coins, tone: "emerald", testid: "settings-tab-operator-wage" },
   { id: "hpp", label: "Pengaturan HPP", description: "Biaya & harga pokok", Icon: Scale, tone: "amber", testid: "settings-tab-hpp" },
   { id: "physical-stock", label: "Stok Fisik", description: "Otomatisasi & trigger stok", Icon: Package, tone: "emerald", testid: "settings-tab-physical-stock" },
+  { id: "design-cetakan", label: "Design Cetakan", description: "Letterhead PDF penjualan", Icon: Printer, tone: "rose", testid: "settings-tab-design-cetakan" },
   { id: "sales-accounting", label: "Akuntansi Penjualan", description: "Pemetaan akun penjualan", Icon: BookOpen, tone: "violet", testid: "settings-tab-sales-accounting" },
   { id: "purchase-accounting", label: "Akuntansi Pembelian", description: "Pemetaan akun pembelian", Icon: CreditCard, tone: "rose", testid: "settings-tab-purchase-accounting" },
   { id: "payroll-accounting", label: "Akuntansi Payroll", description: "Pemetaan akun penggajian", Icon: Wallet, tone: "indigo", testid: "settings-tab-payroll-accounting" },
@@ -2234,6 +2237,8 @@ export default function Settings() {
   const canEditHpp = hasPerm("settings.hpp.manage");
   const canViewPhysicalStock = hasPerm("current_stock.view") || hasPerm("current_stock.update") || hasPerm("permissions.manage");
   const canEditPhysicalStock = hasPerm("current_stock.update") || hasPerm("permissions.manage");
+  const canViewDesignCetakan = hasPerm("settings.design_cetakan.view") || hasPerm("settings.design_cetakan.manage") || hasPerm("permissions.manage");
+  const canEditDesignCetakan = hasPerm("settings.design_cetakan.manage") || hasPerm("permissions.manage");
   const canViewSalesAccounting = hasPerm("settings.sales_accounting.view") || hasPerm("settings.sales_accounting.manage") || hasPerm("permissions.manage");
   const canEditSalesAccounting = hasPerm("settings.sales_accounting.manage");
   const canViewPurchaseAccounting = hasPerm("settings.purchase_accounting.view") || hasPerm("settings.purchase_accounting.manage") || hasPerm("permissions.manage");
@@ -2258,6 +2263,7 @@ export default function Settings() {
     "operator-wage": canViewWage,
     hpp: canViewHpp,
     "physical-stock": canViewPhysicalStock,
+    "design-cetakan": canViewDesignCetakan,
     "sales-accounting": canViewSalesAccounting,
     "purchase-accounting": canViewPurchaseAccounting,
     "payroll-accounting": canViewPayrollAccounting,
@@ -2373,6 +2379,9 @@ export default function Settings() {
       {tab === "hpp" && canViewHpp && <HppSettings notify={notify} canEdit={canEditHpp}/>}
       {tab === "physical-stock" && canViewPhysicalStock && (
         <PhysicalStockSettings notify={notify} canEdit={canEditPhysicalStock}/>
+      )}
+      {tab === "design-cetakan" && canViewDesignCetakan && (
+        <DesignCetakanSettings notify={notify} canEdit={canEditDesignCetakan}/>
       )}
       {tab === "sales-accounting" && canViewSalesAccounting && (
         <SalesAccountingSettings notify={notify} canEdit={canEditSalesAccounting}/>
