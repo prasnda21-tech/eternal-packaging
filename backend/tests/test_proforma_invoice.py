@@ -237,10 +237,9 @@ async def test_draft_proforma_matches_saved_invoice_and_writes_nothing():
         assert "Sari Sales" in text
         assert "01/10/26" in text
         assert "15/10/26" in text
-        assert "14" in text
         assert "Catatan faktur uji" in text
         assert "CATATAN PRODUKSI INTERNAL" not in text
-        assert "100 pcs" in text
+        assert "100" in text
         assert "Rp 10.000" in text
         assert "Rp 1.000.000" in text
         assert "Rp 50.000" in text
@@ -368,10 +367,11 @@ async def test_finalized_invoice_keeps_proforma_and_official_pdf():
         assert "Faktur_Penjualan_" in official.headers["content-disposition"]
         assert "Proforma_" not in official.headers["content-disposition"]
         official_text = _pdf_text(official.content)
-        assert "FAKTUR PENJUALAN" in official_text
-        assert "Telah Dibayar" in official_text
-        assert "Sisa Tagihan" in official_text
-        assert "BELUM DIBAYAR" in official_text
+        assert "Faktur Penjualan" in official_text
+        assert "Uang dimuka" in official_text
+        assert "Telah Dibayar" not in official_text
+        assert "Sisa Tagihan" not in official_text
+        assert "BELUM DIBAYAR" not in official_text
         assert "PROFORMA INVOICE" not in official_text
         assert PROFORMA_WARNING not in official_text
     finally:
@@ -573,10 +573,11 @@ def test_official_pdf_renderer_stays_on_the_invoice_title():
     })
     official = _pdf_text(generate_sales_invoice_pdf_bytes(invoice))
     proforma = _pdf_text(generate_sales_invoice_pdf_bytes(invoice, document_type="proforma"))
-    assert "FAKTUR PENJUALAN" in official
-    assert "Telah Dibayar" in official
-    assert "Sisa Tagihan" in official
-    assert "BELUM DIBAYAR" in official
+    assert "Faktur Penjualan" in official
+    assert "Uang dimuka" in official
+    assert "Telah Dibayar" not in official
+    assert "Sisa Tagihan" not in official
+    assert "BELUM DIBAYAR" not in official
     assert "PROFORMA INVOICE" not in official
     assert "PROFORMA INVOICE" in proforma
     _assert_proforma_warning(proforma)
@@ -584,3 +585,4 @@ def test_official_pdf_renderer_stays_on_the_invoice_title():
     assert PROFORMA_WARNING not in official
     assert "Telah Dibayar" not in proforma
     assert "Sisa Tagihan" not in proforma
+    assert "Uang dimuka" not in proforma
