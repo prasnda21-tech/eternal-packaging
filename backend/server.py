@@ -4894,11 +4894,40 @@ async def add_note(order_id: str, payload: NotePayload, user=Depends(current_use
     if not order:
         raise HTTPException(404, "PO tidak ditemukan")
     _ensure_not_cancelled(order)
-    if user.get("role") == "crm":
-        raise HTTPException(403, "CRM hanya read-only")
+    if not await _may_append_production_note(user):
+        raise HTTPException(403, "Anda tidak punya permission 'production_note.create'")
     order["notes"] = (order.get("notes", "") + "\n" + payload.note).strip()
     add_timeline(order, order["current_stage"], user, note=f"Catatan: {payload.note}")
     await _persist_order(order)
+    return {"order": order}
+
+
+async def _may_append_production_note(user: dict) -> bool:
+    """Legacy non-CRM append stays open. CRM needs production_note.create.
+
+    A stored role_permissions document must not revoke append from roles that
+    could append before this permission existed. Explicit False on the new key
+    therefore does not apply to non-CRM roles.
+    """
+    if user.get("role") != "crm":
+        return True
+    eff = await user_permissions(user)
+    return "production_note.create" in eff
+
+
+@api_router.patch("/orders/{order_id}/note")
+async def update_note(order_id: str, payload: NotePayload, user=Depends(current_user)):
+    """Replace the full orders.notes string. Does not append and does not clear."""
+    await _require_perm(user, "production_note.edit")
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(404, "PO tidak ditemukan")
+    _ensure_not_cancelled(order)
+    text = (payload.note or "").strip()
+    if not text:
+        raise HTTPException(400, "Catatan tidak boleh kosong.")
+    order["notes"] = text
+    await _persist_order(order, persist_keys=("notes",))
     return {"order": order}
 
 
