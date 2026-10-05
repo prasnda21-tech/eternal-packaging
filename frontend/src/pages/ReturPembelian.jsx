@@ -67,6 +67,15 @@ function warehouseName(id, warehouses) {
   return row?.name || row?.warehouse_name || "";
 }
 
+function invoiceNumberLabel(credit, numbersById) {
+  const named = String(credit?.invoice_number || credit?.purchase_invoice_number || "").trim();
+  if (named) return named;
+  const id = String(credit?.purchase_invoice_id || "").trim();
+  const resolved = id ? String(numbersById[id] || "").trim() : "";
+  if (resolved) return resolved;
+  return id ? "Faktur Pembelian" : "—";
+}
+
 export default function ReturPembelian() {
   const { hasPerm } = useAuth();
   const canMutate = hasPerm("purchase_receipts.receive") || hasPerm("purchase_receipts.sync");
@@ -81,6 +90,7 @@ export default function ReturPembelian() {
   const [creating, setCreating] = useState(false);
   const [detail, setDetail] = useState(null);
   const [finance, setFinance] = useState(null);
+  const [invoiceNumbers, setInvoiceNumbers] = useState({});
   const [receiptId, setReceiptId] = useState("");
   const [receipt, setReceipt] = useState(null);
   const [qtyByLine, setQtyByLine] = useState({});
@@ -218,6 +228,7 @@ export default function ReturPembelian() {
     setErr("");
     setDetail(row);
     setFinance(null);
+    setInvoiceNumbers({});
     try {
       const [doc, fin] = await Promise.all([
         api.getPurchaseReturn(row.id),
@@ -225,6 +236,20 @@ export default function ReturPembelian() {
       ]);
       setDetail(doc.return || row);
       setFinance(fin);
+      const ids = [...new Set((fin?.credits || []).map((credit) => String(credit.purchase_invoice_id || "").trim()).filter(Boolean))];
+      const pairs = await Promise.all(ids.map(async (id) => {
+        if ((fin.credits || []).some((credit) => String(credit.purchase_invoice_id || "") === id && (credit.invoice_number || credit.purchase_invoice_number))) {
+          return [id, ""];
+        }
+        try {
+          const invoiceDoc = await api.getPurchaseInvoice(id);
+          const invoice = invoiceDoc.invoice || invoiceDoc;
+          return [id, String(invoice.invoice_number || "").trim()];
+        } catch {
+          return [id, ""];
+        }
+      }));
+      setInvoiceNumbers(Object.fromEntries(pairs));
     } catch (ex) {
       setErr(errDetail(ex));
     }
@@ -251,6 +276,7 @@ export default function ReturPembelian() {
   const closeDetail = () => {
     setDetail(null);
     setFinance(null);
+    setInvoiceNumbers({});
   };
 
   const financeStatus = finance?.financial_status || detail?.financial_status;
@@ -439,7 +465,7 @@ export default function ReturPembelian() {
                   <span className="label">Kredit Retur</span>
                   <span className="value">{formatRupiah(credit.credit_amount)}</span>
                   <span className="label">Diterapkan ke faktur</span>
-                  <span className="value mono">{credit.purchase_invoice_id || "—"} · {formatRupiah(credit.applied_to_invoice_amount || 0)}</span>
+                  <span className="value mono" data-testid="retur-credit-invoice">{invoiceNumberLabel(credit, invoiceNumbers)} · {formatRupiah(credit.applied_to_invoice_amount || 0)}</span>
                   {Number(credit.supplier_credit_amount) > 0 && (
                     <span className="value">Kredit supplier {formatRupiah(credit.supplier_credit_amount)}</span>
                   )}

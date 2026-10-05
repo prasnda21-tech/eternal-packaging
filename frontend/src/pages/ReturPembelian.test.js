@@ -37,6 +37,7 @@ jest.mock("../lib/api", () => ({
     confirmPurchaseReturn: jest.fn(),
     cancelPurchaseReturn: jest.fn(),
     warehouses: jest.fn(),
+    getPurchaseInvoice: jest.fn(),
   },
 }));
 
@@ -256,6 +257,40 @@ describe("Retur Pembelian page", () => {
     expect(container.querySelectorAll('[data-testid="retur-detail"]')).toHaveLength(1);
     click(container, '[data-testid="retur-detail-close"]');
     expect(container.querySelector('[data-testid="retur-detail"]')).toBeNull();
+  });
+
+  test("invoice credit shows the purchase invoice number", async () => {
+    const invoiceId = "ef7c4c30-25c8-403d-b798-bceb9567253f";
+    mockApi.listPurchaseReturns.mockResolvedValue({
+      returns: [draftReturn({ status: "CONFIRMED", financial_status: "FINANCIALIZED" })],
+    });
+    mockApi.getPurchaseReturn.mockResolvedValue({
+      return: draftReturn({ status: "CONFIRMED", financial_status: "FINANCIALIZED" }),
+    });
+    mockApi.getPurchaseReturnFinancial.mockResolvedValue({
+      financial_status: "FINANCIALIZED",
+      credits: [{
+        id: "credit-1",
+        purchase_invoice_id: invoiceId,
+        credit_amount: 20000000,
+        applied_to_invoice_amount: 20000000,
+        supplier_credit_amount: 0,
+      }],
+      supplier_credits: [],
+    });
+    mockApi.getPurchaseInvoice.mockResolvedValue({
+      invoice: { id: invoiceId, invoice_number: "FPB-20261005-003" },
+    });
+    await renderPage();
+    click(container, '[data-testid="retur-open"]');
+    await flush();
+    await flush();
+    const applied = container.querySelector('[data-testid="retur-credit-invoice"]').textContent;
+    expect(applied).toContain("FPB-20261005-003");
+    expect(applied).toMatch(/Rp\s?20\.000\.000/);
+    expect(container.querySelector('[data-testid="retur-detail"]').textContent).not.toContain(invoiceId);
+    expect(mockApi.getPurchaseInvoice).toHaveBeenCalledWith(invoiceId);
+    expect(container.querySelector('[data-testid="retur-detail-warehouse"]').textContent).toBe("Gudang Yogyakarta");
   });
 
   test("cancelled state is read-only and pending finance is not guessed", async () => {
