@@ -38,7 +38,8 @@ ESTIMASI_LINES = (
     "* Estimasi hari terhitung sejak ACC DESIGN dan PA",
 )
 
-RED = colors.HexColor("#cc1f1a")
+ACCENT_COLOR_HEX = "#cc1f1a"
+RED = colors.HexColor(ACCENT_COLOR_HEX)
 RULE = colors.black
 
 PAGE_MARGIN_X = 11 * mm
@@ -159,8 +160,18 @@ def terbilang(value) -> str:
     return words[0].upper() + words[1:]
 
 
-def styles():
+def accent_color(hex_value: Optional[str] = None):
+    """ReportLab color from settings hex; invalid/empty falls back to default red."""
+    raw = str(hex_value or "").strip() or ACCENT_COLOR_HEX
+    try:
+        return colors.HexColor(raw)
+    except Exception:
+        return RED
+
+
+def styles(accent_hex: Optional[str] = None):
     base = getSampleStyleSheet()
+    accent = accent_color(accent_hex)
     normal = ParagraphStyle(
         "EternalBody",
         parent=base["Normal"],
@@ -206,7 +217,7 @@ def styles():
         "red": ParagraphStyle(
             "EternalRed",
             parent=normal,
-            textColor=RED,
+            textColor=accent,
             fontName="Helvetica-Bold",
             fontSize=8,
             leading=10,
@@ -214,7 +225,7 @@ def styles():
         "red_small": ParagraphStyle(
             "EternalRedSmall",
             parent=normal,
-            textColor=RED,
+            textColor=accent,
             fontName="Helvetica",
             fontSize=7,
             leading=9,
@@ -236,6 +247,7 @@ def styles():
             leading=10,
             alignment=TA_CENTER,
         ),
+        "accent": accent,
     }
 
 
