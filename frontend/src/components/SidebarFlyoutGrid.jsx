@@ -1,22 +1,21 @@
 import { ShoppingCart } from "lucide-react";
 import { NavLink } from "react-router-dom";
 
-export function SidebarFlyoutTile({ item, icon: Icon, onNavigate }) {
-  const TileIcon = Icon || ShoppingCart;
+export function SidebarFlyoutRow({ item, icon: Icon, onNavigate }) {
+  const RowIcon = Icon || ShoppingCart;
   return (
     <NavLink
       to={item.to}
       end={!!item.end}
-      className={({ isActive }) => "sales-menu-tile" + (isActive ? " is-active" : "")}
-      data-tone={item.tone}
+      className={({ isActive }) => "sidebar-menu-link" + (isActive ? " is-active" : "")}
       data-testid={item.testid}
       aria-label={item.label}
       onClick={onNavigate}
     >
-      <span className="sales-menu-tile-icon" aria-hidden="true">
-        <TileIcon size={28} strokeWidth={1.6} />
+      <span className="sidebar-menu-link-icon" aria-hidden="true">
+        <RowIcon size={18} strokeWidth={1.75} />
       </span>
-      <span className="sales-menu-tile-label">{item.label}</span>
+      <span className="sidebar-menu-link-label">{item.label}</span>
     </NavLink>
   );
 }
@@ -42,7 +41,7 @@ export default function SidebarFlyoutGrid({
   return (
     <div
       ref={innerRef}
-      className="sidebar-flyout is-sales-grid"
+      className="sidebar-flyout is-menu-list"
       id={id}
       data-testid={testid}
       data-placement={placement}
@@ -52,15 +51,15 @@ export default function SidebarFlyoutGrid({
     >
       <header className="sidebar-flyout-head"><h2>{title}</h2></header>
       {blocks.map((block) => (
-        <div key={block.heading || block.ariaLabel}>
+        <div key={block.heading || block.ariaLabel || block.headingTestid || "leaves"} id={block.marker || undefined}>
           {block.heading ? (
-            <div className="sidebar-flyout-head sidebar-flyout-subhead" data-testid={block.headingTestid}>
-              <h3>{block.heading}</h3>
+            <div className="sidebar-menu-section" data-testid={block.headingTestid}>
+              {block.heading}
             </div>
           ) : null}
-          <nav className="sales-menu-grid" aria-label={block.ariaLabel}>
+          <nav className="sidebar-menu-list" aria-label={block.ariaLabel || block.heading || title}>
             {block.items.map((item) => (
-              <SidebarFlyoutTile
+              <SidebarFlyoutRow
                 key={item.key}
                 item={item}
                 icon={icons[item.key]}
