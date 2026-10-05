@@ -25,6 +25,10 @@ FINANCIAL_FINALIZED = "finalized"
 FINANCIAL_CANCELLED = "cancelled"
 FINANCIAL_STATUSES = frozenset({FINANCIAL_DRAFT, FINANCIAL_FINALIZED, FINANCIAL_CANCELLED})
 
+DOCUMENT_INVOICE = "invoice"
+DOCUMENT_PROFORMA = "proforma"
+PROFORMA_NON_FINAL_WARNING = "Dokumen ini bukan Faktur Penjualan final"
+
 _invoice_locks: Dict[asyncio.AbstractEventLoop, asyncio.Lock] = {}
 
 
@@ -1115,6 +1119,83 @@ async def query_sales_invoices(
     }
 
 
+def _classify_proforma_invoices(rows: List[dict]) -> tuple:
+    """Split non-cancelled invoices into drafts and finalized rows.
+
+    Cancelled invoices do not block or supply a proforma. A blank legacy
+    financial_status counts as draft, matching ``effective_financial_status``.
+    """
+    drafts: List[dict] = []
+    finalized: List[dict] = []
+    for row in rows or []:
+        status = effective_financial_status(row)
+        if status == FINANCIAL_CANCELLED:
+            continue
+        if status == FINANCIAL_FINALIZED:
+            finalized.append(row)
+        elif status == FINANCIAL_DRAFT:
+            drafts.append(row)
+    return drafts, finalized
+
+
+async def _invoices_for_po(db, po_id: str) -> List[dict]:
+    return await db.sales_invoices.find({"po_id": str(po_id)}, {"_id": 0}).to_list(100)
+
+
+async def proforma_availability(db, po_id: str) -> Dict[str, Any]:
+    """Lightweight read: one eligible draft id, or unavailable. Does not write."""
+    order = await db.orders.find_one({"id": str(po_id)}, {"_id": 0, "id": 1, "cancelled": 1})
+    if not order:
+        raise HTTPException(404, "PO tidak ditemukan")
+    empty = {"available": False, "invoice_id": None, "invoice_number": None}
+    if order.get("cancelled"):
+        return empty
+    drafts, finalized = _classify_proforma_invoices(await _invoices_for_po(db, order["id"]))
+    if finalized or len(drafts) != 1:
+        return empty
+    draft = drafts[0]
+    return {
+        "available": True,
+        "invoice_id": draft.get("id"),
+        "invoice_number": draft.get("invoice_number") or "",
+    }
+
+
+async def require_proforma_invoice(db, invoice_id: str) -> Dict[str, Any]:
+    """Load the saved draft that is the single proforma source for its PO.
+
+    Reads ``sales_invoices`` and ``orders`` only. Rejects when the invoice is
+    missing, not a draft, the PO is cancelled, another non-cancelled invoice is
+    finalized, or more than one active draft exists.
+    """
+    key = str(invoice_id or "").strip()
+    inv = await db.sales_invoices.find_one({"id": key}, {"_id": 0})
+    if not inv:
+        inv = await db.sales_invoices.find_one({"invoice_number": key}, {"_id": 0})
+    if not inv:
+        raise HTTPException(404, "Faktur Penjualan tidak ditemukan.")
+
+    po_id = str(inv.get("po_id") or "").strip()
+    order = await db.orders.find_one({"id": po_id}, {"_id": 0, "id": 1, "cancelled": 1})
+    if not order:
+        raise HTTPException(404, "PO tidak ditemukan")
+    if order.get("cancelled"):
+        raise HTTPException(409, "PO dibatalkan. Proforma tidak tersedia.")
+
+    status = effective_financial_status(inv)
+    if status == FINANCIAL_CANCELLED:
+        raise HTTPException(409, "Faktur dibatalkan. Proforma tidak tersedia.")
+    if status != FINANCIAL_DRAFT:
+        raise HTTPException(409, "Faktur Penjualan sudah difinalisasi. Proforma tidak tersedia.")
+
+    drafts, finalized = _classify_proforma_invoices(await _invoices_for_po(db, po_id))
+    if finalized:
+        raise HTTPException(409, "Faktur Penjualan sudah difinalisasi. Proforma tidak tersedia.")
+    if len(drafts) != 1 or drafts[0].get("id") != inv.get("id"):
+        raise HTTPException(409, "Proforma tidak tersedia untuk faktur ini.")
+    return inv
+
+
 async def get_sales_invoice_detail(db, invoice_id: str) -> Dict[str, Any]:
     """Fetch detail of a single sales invoice with live payment derived fields and receipt list."""
     inv = await db.sales_invoices.find_one({"id": str(invoice_id)}, {"_id": 0})
@@ -1430,8 +1511,14 @@ async def cancel_sales_invoice(
         return await get_sales_invoice_detail(db, inv["id"])
 
 
-def generate_sales_invoice_pdf_bytes(invoice: dict) -> bytes:
-    """Generate official A4 PDF for Sales Invoice (Faktur Penjualan)."""
+def generate_sales_invoice_pdf_bytes(invoice: dict, document_type: str = DOCUMENT_INVOICE) -> bytes:
+    """Generate the A4 sales-invoice layout.
+
+    ``document_type="invoice"`` is the official Faktur Penjualan and must stay
+    unchanged. ``document_type="proforma"`` reuses the same layout for a saved
+    draft, with a non-final title and without payment-settlement rows.
+    """
+    proforma = document_type == DOCUMENT_PROFORMA
     import io
     from reportlab.lib.pagesizes import A4
     from reportlab.lib import colors
@@ -1521,10 +1608,22 @@ def generate_sales_invoice_pdf_bytes(invoice: dict) -> bytes:
 
     elements = []
 
+    document_number = escape(str(invoice.get('invoice_number') or invoice.get('id') or ''))
+    if proforma:
+        title_html = (
+            "<b>PROFORMA INVOICE</b><br/>"
+            "<font size='9' color='#7e22ce'><b>" + document_number + "</b></font><br/>"
+            "<font size='8' color='#7e22ce'>" + escape(PROFORMA_NON_FINAL_WARNING) + "</font>"
+        )
+    else:
+        title_html = (
+            "<b>FAKTUR PENJUALAN</b><br/>"
+            "<font size='9' color='#7e22ce'><b>" + document_number + "</b></font>"
+        )
     header_data = [
         [
             Paragraph("<b>ETERNAL PACKAGING</b>", company_title_style),
-            Paragraph("<b>FAKTUR PENJUALAN</b><br/><font size='9' color='#7e22ce'><b>" + escape(str(invoice.get('invoice_number') or invoice.get('id') or '')) + "</b></font>", doc_title_style),
+            Paragraph(title_html, doc_title_style),
         ]
     ]
     header_tbl = Table(header_data, colWidths=[9.5 * cm, 8.5 * cm])
@@ -1562,7 +1661,10 @@ def generate_sales_invoice_pdf_bytes(invoice: dict) -> bytes:
             Paragraph("<b>Sales</b>", meta_label_style),
             Paragraph(f": {escape(invoice_sales_label(invoice) or '-')}", meta_val_style),
             Paragraph("<b>Status</b>", meta_label_style),
-            Paragraph(f": {escape(str(invoice.get('payment_status') or '-'))}", meta_val_style),
+            Paragraph(
+                f": {escape(PROFORMA_NON_FINAL_WARNING if proforma else str(invoice.get('payment_status') or '-'))}",
+                meta_val_style,
+            ),
         ],
         [
             # Same `notes` field the official invoice PDF already printed as Catatan.
@@ -1662,8 +1764,9 @@ def generate_sales_invoice_pdf_bytes(invoice: dict) -> bytes:
         ])
 
     summary_data.append([Paragraph("<b>GRAND TOTAL</b>", tbl_cell_style), Paragraph(f"<b>{format_money(grand)}</b>", tbl_cell_bold)])
-    summary_data.append([Paragraph("<b>Telah Dibayar</b>", tbl_cell_style), Paragraph(format_money(paid), tbl_cell_bold)])
-    summary_data.append([Paragraph("<b>Sisa Tagihan</b>", tbl_cell_style), Paragraph(format_money(outstanding), tbl_cell_bold)])
+    if not proforma:
+        summary_data.append([Paragraph("<b>Telah Dibayar</b>", tbl_cell_style), Paragraph(format_money(paid), tbl_cell_bold)])
+        summary_data.append([Paragraph("<b>Sisa Tagihan</b>", tbl_cell_style), Paragraph(format_money(outstanding), tbl_cell_bold)])
 
     sum_tbl = Table(summary_data, colWidths=[4.0 * cm, 4.0 * cm])
     sum_tbl.setStyle(TableStyle([

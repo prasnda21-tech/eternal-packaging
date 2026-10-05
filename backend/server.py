@@ -9180,6 +9180,8 @@ from services.sales_invoices import (
     list_charge_account_options as _list_charge_account_options,
     create_sales_invoice as _create_sales_invoice,
     generate_sales_invoice_pdf_bytes,
+    proforma_availability as _proforma_availability,
+    require_proforma_invoice as _require_proforma_invoice,
     list_sales_invoices as _list_sales_invoices,
     query_sales_invoices as _query_sales_invoices,
     get_sales_invoice_detail as _get_sales_invoice_detail,
@@ -10761,6 +10763,30 @@ async def get_sales_invoice_pdf_endpoint(id: str, user=Depends(current_user)):
     pdf_bytes = generate_sales_invoice_pdf_bytes(detail)
     inv_num = str(detail.get("invoice_number", "INV")).replace("/", "_").replace("\\", "_")
     filename = f"Faktur_Penjualan_{inv_num}.pdf"
+    return FastAPIResponse(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{filename}"'}
+    )
+
+
+@api_router.get("/orders/{order_id}/proforma")
+async def get_order_proforma_availability(order_id: str, user=Depends(current_user)):
+    """Read whether this PO has exactly one active draft invoice. Does not write."""
+    await _require_perm(user, "proforma_invoice.view")
+    await ensure_owned_po_id(db, user, order_id)
+    return await _proforma_availability(db, order_id)
+
+
+@api_router.get("/sales-invoices/{id}/proforma")
+async def get_sales_invoice_proforma_pdf(id: str, user=Depends(current_user)):
+    """PDF of a saved draft invoice. Reads the draft; does not create or post anything."""
+    await _require_perm(user, "proforma_invoice.view")
+    invoice = await _require_proforma_invoice(db, id)
+    await ensure_owned_po_id(db, user, invoice.get("po_id"))
+    pdf_bytes = generate_sales_invoice_pdf_bytes(invoice, document_type="proforma")
+    inv_num = str(invoice.get("invoice_number") or invoice.get("id") or "PROFORMA").replace("/", "_").replace("\\", "_")
+    filename = f"Proforma_{inv_num}.pdf"
     return FastAPIResponse(
         content=pdf_bytes,
         media_type="application/pdf",

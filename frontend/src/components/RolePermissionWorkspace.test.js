@@ -211,4 +211,26 @@ describe("RolePermissionWorkspace", () => {
     expect(container.textContent).not.toContain("production_note.delete");
     unmount();
   });
+
+  test("Role & Hak Akses lists Lihat Proforma Invoice", () => {
+    const { container, unmount } = mount({
+      permissionCatalog: {
+        modules: {
+          Penjualan: [
+            { key: "proforma_invoice.view", label: "Lihat Proforma Invoice" },
+            { key: "sales.invoice.view", label: "Lihat Faktur Penjualan" },
+          ],
+          "Akses Menu": [{ key: "nav.sales.sales_invoice", label: "Menu Faktur Penjualan" }],
+        },
+      },
+      permsDraft: new Set(),
+      initialPerms: new Set(),
+    });
+    expect(container.querySelector('[data-testid="role-cat-penjualan"]')).toBeTruthy();
+    expect(container.textContent).toContain("Lihat Proforma Invoice");
+    expect(container.querySelector('[data-testid="role-perm-crm-proforma_invoice.view"]')).toBeTruthy();
+    expect(container.textContent).not.toContain("Menu Faktur Penjualan");
+    expect(container.textContent).not.toContain("nav.sales.sales_invoice");
+    unmount();
+  });
 });
