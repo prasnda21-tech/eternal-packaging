@@ -26,14 +26,13 @@ from services.purchase_common import line_subtotal, money_round
 from services.sales_invoices import FINANCIAL_CANCELLED, effective_financial_status
 from services.workflow_entries import sum_entry_qty
 
-REASON_QTY_ABOVE = "QTY_TIDAK_BOLEH_MELEBIHI_QTY_PESANAN_SAAT_INI"
 REASON_QTY_BELOW = "QTY_DI_BAWAH_QTY_TERIKAT"
 REASON_QTY_PENDING = "QTY_KOREKSI_DITUNDA_KLAIM_STOK"
+REASON_QTY_DELIVERED = "QTY_TIDAK_BISA_DITAMBAH_PESANAN_TERKIRIM_LENGKAP"
 REASON_SCHEDULE = "JADWAL_OPERATOR_PERLU_DISESUAIKAN"
 
-MSG_PENDING = (
-    "Qty belum dapat dikoreksi karena masih ada klaim stok yang sedang diproses pada item ini."
-)
+MSG_PENDING = "Stok sedang diproses Operator. Perubahan qty sementara dikunci."
+MSG_QTY_DELIVERED = "Qty tidak dapat ditambah karena pesanan sudah terkirim lengkap."
 MSG_SCHEDULE = (
     "Qty pesanan tidak dapat diturunkan karena sisa jadwal operator terbagi ke lebih dari satu operator. "
     "Sesuaikan jadwal operator terlebih dahulu."
@@ -87,14 +86,6 @@ def message_qty_below(current_qty: int, committed_qty: int, requested_qty: int) 
         f"Pesanan: {format_qty_id(current_qty)}. "
         f"Sudah terikat: {format_qty_id(committed_qty)}. "
         f"Qty minimum: {format_qty_id(committed_qty)}. "
-        f"Qty diminta: {format_qty_id(requested_qty)}."
-    )
-
-
-def message_qty_above(current_qty: int, requested_qty: int) -> str:
-    return (
-        "Qty baru tidak boleh melebihi qty pesanan saat ini. "
-        f"Pesanan: {format_qty_id(current_qty)}. "
         f"Qty diminta: {format_qty_id(requested_qty)}."
     )
 

@@ -4,6 +4,7 @@ Local dummy documents only. No Accurate calls and no production orders.
 """
 from __future__ import annotations
 
+import copy
 import os
 import sys
 import uuid
@@ -22,8 +23,10 @@ from server import app, current_user  # noqa: E402
 import server as server_mod  # noqa: E402
 from services.line_product_replacement import evaluate_line_product_replacement  # noqa: E402
 from services.line_qty_commitment import (  # noqa: E402
-    REASON_QTY_ABOVE,
+    MSG_PENDING,
+    MSG_QTY_DELIVERED,
     REASON_QTY_BELOW,
+    REASON_QTY_DELIVERED,
     REASON_QTY_PENDING,
     REASON_SCHEDULE,
     committed_qty_from_context,
@@ -281,7 +284,8 @@ async def test_scenario_a_product_stays_locked_and_qty_respects_floor():
         assert guard["committed_qty"] == 3000
         assert guard["editable_remaining"] == 7000
         assert guard["min_qty"] == 3000
-        assert guard["max_qty"] == 10000
+        assert guard["max_qty"] is None
+        assert guard["qty_increase_allowed"] is True
 
         replaced = await _patch(order["id"], {"master_item_id": other["id"]})
         assert replaced.status_code == 409
@@ -294,11 +298,6 @@ async def test_scenario_a_product_stays_locked_and_qty_respects_floor():
         stored = await db().orders.find_one({"id": order["id"]}, {"_id": 0})
         assert stored["updated_at"] == order["updated_at"]
         assert stored["line_items"][0]["quantity"] == 10000
-
-        too_high = await _patch(order["id"], {"quantity": 12000})
-        assert too_high.status_code == 409
-        assert too_high.json()["detail"]["code"] == REASON_QTY_ABOVE
-        assert too_high.json()["detail"]["requested_qty"] == 12000
 
         too_low = await _patch(order["id"], {"quantity": 2999})
         low = too_low.json()["detail"]
@@ -470,6 +469,10 @@ async def test_pending_stock_claim_blocks_qty_correction():
         blocked = await _patch(order["id"], {"quantity": 8000})
         assert blocked.status_code == 409
         assert blocked.json()["detail"]["code"] == REASON_QTY_PENDING
+        assert blocked.json()["detail"]["message"] == MSG_PENDING
+        blocked_up = await _patch(order["id"], {"quantity": 12000})
+        assert blocked_up.status_code == 409
+        assert blocked_up.json()["detail"]["message"] == MSG_PENDING
         await db().product_stock_state.delete_many({"master_item_id": master["id"]})
         allowed = await _patch(order["id"], {"quantity": 8000})
         assert allowed.status_code == 200, allowed.text
@@ -653,3 +656,316 @@ async def test_qty_edit_requires_po_edit_and_admin_still_hits_the_floor():
         assert saved["line_items"][0]["quantity"] == 10000
     finally:
         await db().orders.delete_many({"id": order["id"]})
+
+
+def _schedule_ready(**extra):
+    base = _print_ready(helper_prep={"qty_prepared": 20000}, selling_total=5000000)
+    base.update(extra)
+    return base
+
+
+async def _post(path, body):
+    import httpx
+
+    app.dependency_overrides[current_user] = _as_user(_admin())
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            return await client.post(path, json=body)
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_qty_can_increase_above_current_without_an_artificial_maximum():
+    master = await _seed_master("AID-QTY-UP", "Cup Increase")
+    other = await _seed_master("AID-QTY-UP2", "Cup Other")
+    created = []
+    try:
+        for target in (3000, 8000, 10000, 11000, 12000, 15000):
+            order = await _seed_order(
+                selling_total=5000000,
+                line_items=[_line(master, price_source="pengaturan_harga")],
+                operator_splits=[_split(0, 10000, [3000])],
+            )
+            created.append(order["id"])
+            await db().stock_movements.insert_one({
+                "id": f"mov-{order['id']}",
+                "order_id": order["id"],
+                "line_idx": 0,
+                "movement_type": "STATUS_CETAK",
+                "transaction_qty": 3000,
+            })
+            res = await _patch(order["id"], {"quantity": target})
+            assert res.status_code == 200, res.text
+            saved = await db().orders.find_one({"id": order["id"]}, {"_id": 0})
+            assert saved["line_items"][0]["quantity"] == target
+            assert saved["line_items"][0]["accurate_item_id"] == master["accurate_item_id"]
+            assert saved["line_items"][0]["unit_price"] == 500
+            assert saved["line_items"][0]["price_source"] == "pengaturan_harga"
+            if target == 10000:
+                assert res.json()["message"] == "Qty tidak berubah."
+                assert saved["updated_at"] == order["updated_at"]
+            else:
+                assert saved["line_items"][0]["line_subtotal"] == target * 500
+                assert saved["selling_total"] == target * 500
+                assert saved["total_quantity"] == target
+                assert res.json()["before_quantity"] == 10000
+                assert res.json()["after_quantity"] == target
+        blocked = await _patch(created[0], {"master_item_id": other["id"], "quantity": 15000})
+        assert blocked.status_code == 409
+        stored = await db().orders.find_one({"id": created[0]}, {"_id": 0})
+        assert stored["line_items"][0]["accurate_item_id"] == master["accurate_item_id"]
+    finally:
+        await db().stock_movements.delete_many({"order_id": {"$in": created}})
+        await db().orders.delete_many({"id": {"$in": created}})
+
+
+@pytest.mark.anyio
+async def test_increase_keeps_schedule_and_operator_cap_until_reschedule():
+    from quantity_rules import operator_assigned_qty, print_qty_total
+
+    master = await _seed_master("AID-QTY-SCHUP", "Cup Schedule Up")
+    order = await _seed_order(
+        **_schedule_ready(),
+        line_items=[_line(master)],
+        operator_splits=[_split(0, 10000, [3000])],
+    )
+    try:
+        res = await _patch(order["id"], {"quantity": 12000})
+        assert res.status_code == 200, res.text
+        saved = await db().orders.find_one({"id": order["id"]}, {"_id": 0})
+        split = saved["operator_splits"][0]
+        assert saved["line_items"][0]["quantity"] == 12000
+        assert split["quantity"] == 10000
+        assert split["qty_completed"] == 3000
+        assert [entry["qty"] for entry in split["progress_entries"]] == [3000]
+        assert print_qty_total(saved) - operator_assigned_qty(saved) == 2000
+        over = await _progress(order["id"], "split-1", 7001, "over-old-split")
+        assert over.status_code == 400, over.text
+        await db().orders.update_one(
+            {"id": order["id"]},
+            {"$set": {"operator_splits.0.quantity": 12000}},
+        )
+        reached = await _progress(order["id"], "split-1", 9000, "reach-new-order")
+        assert reached.status_code == 200, reached.text
+        past = await _progress(order["id"], "split-1", 1, "past-order")
+        assert past.status_code == 400, past.text
+        final = await db().orders.find_one({"id": order["id"]}, {"_id": 0})
+        assert final["line_items"][0]["quantity"] == 12000
+        assert final["operator_splits"][0]["qty_completed"] == 12000
+        assert final["operator_splits"][0]["quantity"] == 12000
+    finally:
+        await db().orders.delete_many({"id": order["id"]})
+
+
+@pytest.mark.anyio
+async def test_increase_leaves_invoice_and_shipment_documents_unchanged():
+    from services.sales_invoices import get_po_invoice_preview
+
+    master = await _seed_master("AID-QTY-INVUP", "Cup Invoice Up")
+    order = await _seed_order(
+        selling_total=5000000,
+        line_items=[_line(master)],
+        operator_splits=[_split(0, 10000, [3000])],
+        shipments=[{"id": "sj-keep", "status": "confirmed", "lines": [{"line_idx": 0, "qty": 4000}]}],
+    )
+    invoice = {
+        "id": f"inv-up-{order['id']}",
+        "po_id": order["id"],
+        "financial_status": "finalized",
+        "accounting_status": "posted",
+        "payment_status": "LUNAS",
+        "grand_total": 2500000,
+        "lines": [{"line_idx": 0, "quantity": 5000, "unit_price": 500}],
+    }
+    await db().sales_invoices.insert_one(invoice)
+    try:
+        res = await _patch(order["id"], {"quantity": 12000})
+        assert res.status_code == 200, res.text
+        saved = await db().orders.find_one({"id": order["id"]}, {"_id": 0})
+        assert saved["line_items"][0]["quantity"] == 12000
+        assert saved["shipments"] == order["shipments"]
+        stored_invoice = await db().sales_invoices.find_one({"id": invoice["id"]}, {"_id": 0})
+        assert stored_invoice["lines"] == invoice["lines"]
+        assert stored_invoice["financial_status"] == "finalized"
+        assert stored_invoice["accounting_status"] == "posted"
+        assert stored_invoice["payment_status"] == "LUNAS"
+        assert stored_invoice["grand_total"] == 2500000
+        preview = await get_po_invoice_preview(db(), saved)
+        assert preview["lines"][0]["invoiced_cumulative"] == 5000
+        assert preview["lines"][0]["remaining_invoice_qty"] == 7000
+        assert preview["lines"][0]["unit_price"] == 500
+    finally:
+        await db().sales_invoices.delete_many({"id": invoice["id"]})
+        await db().orders.delete_many({"id": order["id"]})
+
+
+@pytest.mark.anyio
+async def test_increase_allowed_when_invoice_is_finalized_posted_and_paid():
+    from services.sales_invoices import get_po_invoice_preview
+
+    master = await _seed_master("AID-QTY-PAID", "Cup Paid")
+    order = await _seed_order(
+        selling_total=5000000,
+        current_stage=11,
+        line_items=[_line(master)],
+    )
+    invoice = {
+        "id": f"inv-paid-{order['id']}",
+        "po_id": order["id"],
+        "financial_status": "finalized",
+        "accounting_status": "posted",
+        "payment_status": "LUNAS",
+        "grand_total": 5000000,
+        "lines": [{"line_idx": 0, "quantity": 10000, "unit_price": 500}],
+    }
+    await db().sales_invoices.insert_one(invoice)
+    try:
+        res = await _patch(order["id"], {"quantity": 12000})
+        assert res.status_code == 200, res.text
+        saved = await db().orders.find_one({"id": order["id"]}, {"_id": 0})
+        assert saved["line_items"][0]["quantity"] == 12000
+        assert saved["current_stage"] == 11
+        stored_invoice = await db().sales_invoices.find_one({"id": invoice["id"]}, {"_id": 0})
+        assert stored_invoice["lines"][0]["quantity"] == 10000
+        assert stored_invoice["accounting_status"] == "posted"
+        assert stored_invoice["payment_status"] == "LUNAS"
+        preview = await get_po_invoice_preview(db(), saved)
+        assert preview["lines"][0]["remaining_invoice_qty"] == 2000
+    finally:
+        await db().sales_invoices.delete_many({"id": invoice["id"]})
+        await db().orders.delete_many({"id": order["id"]})
+
+
+@pytest.mark.anyio
+async def test_fully_delivered_order_rejects_qty_increase():
+    from services.line_product_replacement import evaluate_line_product_replacement
+    from services.status_po import po_age_bounds
+
+    master = await _seed_master("AID-QTY-DONE", "Cup Delivered")
+    order = await _seed_order(
+        selling_total=5000000,
+        current_stage=14,
+        qty_delivered=10000,
+        delivery_status="Terkirim",
+        line_items=[_line(master)],
+    )
+    before_age = po_age_bounds(order)
+    try:
+        guard = await evaluate_line_product_replacement(db(), order, 0)
+        assert guard["qty_increase_allowed"] is False
+        assert guard["qty_increase_reason"] == MSG_QTY_DELIVERED
+        res = await _patch(order["id"], {"quantity": 12000})
+        assert res.status_code == 409
+        detail = res.json()["detail"]
+        assert detail["code"] == REASON_QTY_DELIVERED
+        assert detail["message"] == MSG_QTY_DELIVERED
+        saved = await db().orders.find_one({"id": order["id"]}, {"_id": 0})
+        assert saved["line_items"][0]["quantity"] == 10000
+        assert saved["current_stage"] == 14
+        assert saved["qty_delivered"] == 10000
+        assert saved["delivery_status"] == "Terkirim"
+        assert saved["updated_at"] == order["updated_at"]
+        assert po_age_bounds(saved) == before_age
+        assert before_age["age_closed"] is True
+    finally:
+        await db().orders.delete_many({"id": order["id"]})
+
+
+async def _save_progress_from_stale_read(order_id, stale, post):
+    """First full order read returns the pre-increase snapshot. Later reads are live."""
+    from motor.motor_asyncio import AsyncIOMotorCollection
+
+    real_find = AsyncIOMotorCollection.find_one
+    seen = {"full": 0}
+
+    async def fake_find(self, filt=None, *args, **kwargs):
+        projection = args[0] if args else kwargs.get("projection")
+        if getattr(self, "name", None) == "orders" and isinstance(filt, dict) and filt.get("id") == order_id:
+            if projection == {"_id": 0}:
+                seen["full"] += 1
+                if seen["full"] == 1:
+                    return copy.deepcopy(stale)
+        return await real_find(self, filt, *args, **kwargs)
+
+    AsyncIOMotorCollection.find_one = fake_find
+    try:
+        response = await post()
+    finally:
+        AsyncIOMotorCollection.find_one = real_find
+    return response, seen["full"]
+
+
+@pytest.mark.anyio
+async def test_screener_stale_snapshot_does_not_overwrite_increased_qty():
+    master = await _seed_master("AID-QTY-SCR", "Cup Screener")
+    order = await _seed_order(
+        **_schedule_ready(),
+        line_items=[_line(master)],
+        operator_splits=[_split(0, 10000, [3000])],
+    )
+    stale = copy.deepcopy(order)
+    try:
+        increased = await _patch(order["id"], {"quantity": 12000})
+        assert increased.status_code == 200, increased.text
+        response, reads = await _save_progress_from_stale_read(
+            order["id"],
+            stale,
+            lambda: _post(f"/api/orders/{order['id']}/screener-info", {"qty": 100, "action_id": "scr-stale"}),
+        )
+        assert reads >= 1
+        assert response.status_code == 200, response.text
+        saved = await db().orders.find_one({"id": order["id"]}, {"_id": 0})
+        assert saved["line_items"][0]["quantity"] == 12000
+        assert saved["total_quantity"] == 12000
+        assert saved["screener_info"]["screen_qty"] == 100
+        assert saved["line_items"][0]["unit_price"] == 500
+    finally:
+        await db().orders.delete_many({"id": order["id"]})
+
+
+@pytest.mark.anyio
+async def test_helper_stale_snapshot_does_not_overwrite_increased_qty():
+    master = await _seed_master("AID-QTY-HLP", "Cup Helper")
+    order = await _seed_order(
+        **_schedule_ready(),
+        line_items=[_line(master)],
+        operator_splits=[_split(0, 10000, [3000])],
+    )
+    legacy = await _seed_order(
+        **_schedule_ready(),
+        line_items=[_line(master)],
+        operator_splits=[_split(0, 10000, [3000], split_id="split-legacy")],
+    )
+    stale_items = copy.deepcopy(order)
+    stale_legacy = copy.deepcopy(legacy)
+    try:
+        assert (await _patch(order["id"], {"quantity": 12000})).status_code == 200
+        assert (await _patch(legacy["id"], {"quantity": 12000})).status_code == 200
+        items_res, items_reads = await _save_progress_from_stale_read(
+            order["id"],
+            stale_items,
+            lambda: _post(
+                f"/api/orders/{order['id']}/helper-prep/items",
+                {"items": [{"line_idx": 0, "qty": 3000, "action_id": "hlp-stale"}]},
+            ),
+        )
+        legacy_res, legacy_reads = await _save_progress_from_stale_read(
+            legacy["id"],
+            stale_legacy,
+            lambda: _post(
+                f"/api/orders/{legacy['id']}/helper-prep",
+                {"qty_required": 4000, "qty_prepared": 4000},
+            ),
+        )
+        assert items_reads >= 1 and legacy_reads >= 1
+        assert items_res.status_code == 200, items_res.text
+        assert legacy_res.status_code == 200, legacy_res.text
+        saved_items = await db().orders.find_one({"id": order["id"]}, {"_id": 0})
+        saved_legacy = await db().orders.find_one({"id": legacy["id"]}, {"_id": 0})
+        assert saved_items["line_items"][0]["quantity"] == 12000
+        assert saved_items["helper_prep"]["qty_prepared"] == 3000
+        assert saved_legacy["line_items"][0]["quantity"] == 12000
+        assert saved_legacy["helper_prep"]["qty_prepared"] == 4000
+    finally:
+        await db().orders.delete_many({"id": {"$in": [order["id"], legacy["id"]]}})

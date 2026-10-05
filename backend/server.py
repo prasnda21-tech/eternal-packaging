@@ -1994,6 +1994,20 @@ def _ensure_print_qty_allowed(order: dict):
 
 _QUANTITY_LOCK_RETRIES = 5
 _CONFLICT_MSG = "PO baru saja diubah oleh user lain. Muat ulang halaman lalu coba lagi."
+# Progress saves must not write commercial quantity from a stale order snapshot.
+_PROGRESS_META_KEYS = (
+    "timeline",
+    "current_stage",
+    "status_label",
+    "hold",
+    "hold_reasons",
+)
+_SCREENER_PERSIST_KEYS = ("screener_info",) + _PROGRESS_META_KEYS
+_HELPER_PERSIST_KEYS = ("helper_prep",) + _PROGRESS_META_KEYS
+
+
+class _OrderMutationSkipped(Exception):
+    """Idempotent progress save. Leave the order document untouched."""
 
 
 async def _load_order_for_mutation(order_id: str) -> dict:
@@ -2004,12 +2018,14 @@ async def _load_order_for_mutation(order_id: str) -> dict:
     return order
 
 
-async def _with_quantity_lock(order_id: str, mutate, extra_query=None):
+async def _with_quantity_lock(order_id: str, mutate, extra_query=None, persist_keys=None):
     """Atomic optimistic lock + retry untuk mutasi qty kritis.
 
     `mutate(order)` memvalidasi & memodifikasi order in-place.
     Setiap attempt: baca fresh → validasi → update dengan filter updated_at.
     `extra_query` is optional and unused by every caller except Konfirmasi Terkirim.
+    `persist_keys` limits the write to those fields so a stale snapshot cannot
+    put an older line quantity back onto the order.
     """
     last_token = None
     for attempt in range(_QUANTITY_LOCK_RETRIES):
@@ -2021,7 +2037,9 @@ async def _with_quantity_lock(order_id: str, mutate, extra_query=None):
             await result
         order["_expected_updated_at"] = lock_token
         try:
-            return await _persist_order(order, require_lock=True, extra_query=extra_query)
+            return await _persist_order(
+                order, require_lock=True, extra_query=extra_query, persist_keys=persist_keys,
+            )
         except HTTPException as exc:
             from services.physical_stock_engine import DELIVERY_FENCE_LOST
             if (
@@ -3105,47 +3123,52 @@ async def bulk_delete(payload: BulkPayload, user=Depends(current_user)):
 # ---- Helper qty (Requirement 9) ----
 @api_router.post("/orders/{order_id}/helper-prep")
 async def update_helper_prep(order_id: str, payload: HelperPrepPayload, user=Depends(current_user)):
-    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
-    if not order:
+    existing = await db.orders.find_one({"id": order_id}, {"_id": 0, "id": 1, "cancelled": 1})
+    if not existing:
         raise HTTPException(404, "PO tidak ditemukan")
-    _ensure_not_cancelled(order)
+    _ensure_not_cancelled(existing)
     await _require_perm(user, "helper.prepare")
-    if _requires_printing(order) and not _stage_penjadwalan_done(order):
-        raise HTTPException(400, "Tahap Persiapan Helper belum dapat diproses. Selesaikan Penjadwalan terlebih dahulu.")
     if payload.qty_required < 0 or payload.qty_prepared < 0:
         raise HTTPException(400, "Qty tidak boleh negatif")
-    print_cap = _print_qty_total(order)
-    if payload.qty_required > print_cap:
-        raise HTTPException(
-            400,
-            f"Qty dibutuhkan Helper ({payload.qty_required}) melebihi total qty Cetak ({print_cap}). "
-            "Persiapan Helper hanya untuk barang Cetak."
-        )
-    if payload.qty_prepared > print_cap:
-        raise HTTPException(
-            400,
-            f"Qty disiapkan Helper ({payload.qty_prepared}) melebihi total qty Cetak ({print_cap})."
-        )
-    err = _qr_validate_helper_prepared_qty(payload.qty_prepared, order)
-    if err:
-        raise HTTPException(400, err)
-    order["_expected_updated_at"] = order.get("updated_at")
-    shortage = max(payload.qty_required - payload.qty_prepared, 0)
-    before = order.get("helper_prep") or {}
-    order["helper_prep"] = {
-        "qty_required": payload.qty_required,
-        "qty_prepared": payload.qty_prepared,
-        "qty_shortage": shortage,
-        "shortage_status": "Barang Kurang" if shortage > 0 else "Cukup",
-        "notes": (payload.notes or "").strip() or None,
-        "updated_by": user.get("email"),
-        "updated_by_name": user.get("name"),
-        "updated_at": now_iso(),
-    }
-    add_timeline(order, order["current_stage"], user, note=f"Persiapan Helper: {payload.qty_prepared}/{payload.qty_required} (kurang {shortage})")
-    _sync_workflow_stage(order)
-    await _persist_order(order)
-    await _audit_po(order, "helper.prep.update", user, before=before, after=order["helper_prep"])
+    applied = {}
+
+    def mutate(order: dict):
+        if _requires_printing(order) and not _stage_penjadwalan_done(order):
+            raise HTTPException(400, "Tahap Persiapan Helper belum dapat diproses. Selesaikan Penjadwalan terlebih dahulu.")
+        print_cap = _print_qty_total(order)
+        if payload.qty_required > print_cap:
+            raise HTTPException(
+                400,
+                f"Qty dibutuhkan Helper ({payload.qty_required}) melebihi total qty Cetak ({print_cap}). "
+                "Persiapan Helper hanya untuk barang Cetak."
+            )
+        if payload.qty_prepared > print_cap:
+            raise HTTPException(
+                400,
+                f"Qty disiapkan Helper ({payload.qty_prepared}) melebihi total qty Cetak ({print_cap})."
+            )
+        err = _qr_validate_helper_prepared_qty(payload.qty_prepared, order)
+        if err:
+            raise HTTPException(400, err)
+        shortage = max(payload.qty_required - payload.qty_prepared, 0)
+        before = order.get("helper_prep") or {}
+        order["helper_prep"] = {
+            "qty_required": payload.qty_required,
+            "qty_prepared": payload.qty_prepared,
+            "qty_shortage": shortage,
+            "shortage_status": "Barang Kurang" if shortage > 0 else "Cukup",
+            "notes": (payload.notes or "").strip() or None,
+            "updated_by": user.get("email"),
+            "updated_by_name": user.get("name"),
+            "updated_at": now_iso(),
+        }
+        add_timeline(order, order["current_stage"], user, note=f"Persiapan Helper: {payload.qty_prepared}/{payload.qty_required} (kurang {shortage})")
+        _sync_workflow_stage(order)
+        applied["before"] = before
+        applied["after"] = order["helper_prep"]
+
+    order = await _with_quantity_lock(order_id, mutate, persist_keys=_HELPER_PERSIST_KEYS)
+    await _audit_po(order, "helper.prep.update", user, before=applied.get("before"), after=applied.get("after"))
     return {"order": order}
 
 
@@ -3154,144 +3177,150 @@ async def update_helper_prep(order_id: str, payload: HelperPrepPayload, user=Dep
 async def update_helper_prep_items(order_id: str, payload: HelperPrepItemsPayload, view: Optional[str] = None, user=Depends(current_user)):
     """Helper mengisi Qty Disiapkan per line item. Qty Dibutuhkan = read-only
     dari line_items[i].quantity (source of truth PO). Qty Order TIDAK berubah."""
-    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
-    if not order:
+    existing = await db.orders.find_one({"id": order_id}, {"_id": 0, "id": 1, "cancelled": 1})
+    if not existing:
         raise HTTPException(404, "PO tidak ditemukan")
-    _ensure_not_cancelled(order)
+    _ensure_not_cancelled(existing)
     await _require_perm(user, "helper.prepare")
-    if _requires_printing(order) and not _stage_penjadwalan_done(order):
-        raise HTTPException(400, "Tahap Persiapan Helper belum dapat diproses. Selesaikan Penjadwalan terlebih dahulu.")
-    line_items = order.get("line_items") or []
-    if not line_items:
-        raise HTTPException(400, "PO tidak memiliki line item")
-    # Revisi routing: Helper hanya menyiapkan barang Cetak. Non-print line
-    # DIABAIKAN dari total qty_required/qty_prepared/qty_shortage.
-    print_idx_set = set(_print_line_indices(order))
-    hp_before = order.get("helper_prep") or {}
-    entries = list(hp_before.get("entries") or [])
-    increment_mode = any(it.qty is not None for it in payload.items)
-    if increment_mode:
-        if not entries:
-            for it in (hp_before.get("items") or []):
-                q = int(it.get("qty_prepared") or 0)
-                if q > 0:
-                    entries, _, _ = append_qty_entry(
-                        entries, qty=q, stage="helper", user={"email": hp_before.get("updated_by"), "name": hp_before.get("updated_by_name")},
-                        now=hp_before.get("updated_at") or now_iso(),
-                        action_id=f"legacy-helper-{it.get('line_idx')}",
-                        po_id=order.get("id"),
-                        line_idx=it.get("line_idx"),
-                        extra={"legacy": True},
+    applied = {}
+
+    def mutate(order: dict):
+        if _requires_printing(order) and not _stage_penjadwalan_done(order):
+            raise HTTPException(400, "Tahap Persiapan Helper belum dapat diproses. Selesaikan Penjadwalan terlebih dahulu.")
+        line_items = order.get("line_items") or []
+        if not line_items:
+            raise HTTPException(400, "PO tidak memiliki line item")
+        # Revisi routing: Helper hanya menyiapkan barang Cetak. Non-print line
+        # DIABAIKAN dari total qty_required/qty_prepared/qty_shortage.
+        print_idx_set = set(_print_line_indices(order))
+        hp_before = order.get("helper_prep") or {}
+        entries = list(hp_before.get("entries") or [])
+        increment_mode = any(it.qty is not None for it in payload.items)
+        if increment_mode:
+            if not entries:
+                for it in (hp_before.get("items") or []):
+                    q = int(it.get("qty_prepared") or 0)
+                    if q > 0:
+                        entries, _, _ = append_qty_entry(
+                            entries, qty=q, stage="helper", user={"email": hp_before.get("updated_by"), "name": hp_before.get("updated_by_name")},
+                            now=hp_before.get("updated_at") or now_iso(),
+                            action_id=f"legacy-helper-{it.get('line_idx')}",
+                            po_id=order.get("id"),
+                            line_idx=it.get("line_idx"),
+                            extra={"legacy": True},
+                        )
+            for it in payload.items:
+                if it.qty is None:
+                    continue
+                aid = it.action_id or payload.action_id
+                if find_by_action_id(entries, aid):
+                    continue
+                inc = max(0, int(it.qty))
+                if inc <= 0:
+                    continue
+                if it.line_idx not in print_idx_set:
+                    raise HTTPException(400, "Line item bukan proses Cetak — tidak masuk Persiapan Helper.")
+                line_qty = int((line_items[it.line_idx] or {}).get("quantity") or 0)
+                already = sum(int(e.get("qty") or 0) for e in entries if e.get("line_idx") == it.line_idx and not e.get("cancelled"))
+                new_total = already + inc
+                if new_total > line_qty:
+                    raise HTTPException(
+                        400,
+                        f"Qty disiapkan untuk '{line_items[it.line_idx].get('name')}' ({new_total}) melebihi qty Cetak line ({line_qty}).",
                     )
-        for it in payload.items:
-            if it.qty is None:
-                continue
-            aid = it.action_id or payload.action_id
-            if find_by_action_id(entries, aid):
-                continue
-            inc = max(0, int(it.qty))
-            if inc <= 0:
-                continue
-            if it.line_idx not in print_idx_set:
-                raise HTTPException(400, "Line item bukan proses Cetak — tidak masuk Persiapan Helper.")
-            line_qty = int((line_items[it.line_idx] or {}).get("quantity") or 0)
-            already = sum(int(e.get("qty") or 0) for e in entries if e.get("line_idx") == it.line_idx and not e.get("cancelled"))
-            new_total = already + inc
-            if new_total > line_qty:
+                target = _qr_helper_target_for_line(order, it.line_idx)
+                new_cap = min(line_qty, max(target, already))
+                if new_total > new_cap:
+                    raise HTTPException(
+                        400,
+                        f"Qty disiapkan untuk '{line_items[it.line_idx].get('name')}' ({new_total}) melebihi target jadwal ({target}).",
+                    )
+                entries, _, created = append_qty_entry(
+                    entries, qty=inc, stage="helper", user=user, now=now_iso(),
+                    action_id=aid, po_id=order.get("id"), line_idx=it.line_idx,
+                )
+            prepared_map = {}
+            for e in entries:
+                if e.get("cancelled"):
+                    continue
+                idx = int(e.get("line_idx") if e.get("line_idx") is not None else -1)
+                if idx < 0:
+                    continue
+                prepared_map[idx] = prepared_map.get(idx, 0) + int(e.get("qty") or 0)
+        else:
+            if entries:
+                raise HTTPException(409, "Entry Helper sudah dikonfirmasi. Kirim pekerjaan tambahan sebagai qty baru.")
+            prepared_map = {int(it.line_idx): max(0, int(it.qty_prepared or 0)) for it in payload.items}
+        items_out = []
+        total_required = 0
+        total_prepared = 0
+        for idx, li in enumerate(line_items):
+            req_full = int(li.get("quantity", 0) or 0)
+            prep_input = int(prepared_map.get(idx, 0))
+            if prep_input < 0:
+                prep_input = 0
+            if idx in print_idx_set:
+                req = _qr_helper_target_for_line(order, idx)
+                prep = prep_input
+                if prep_input > req_full:
+                    raise HTTPException(
+                        400,
+                        f"Qty disiapkan untuk '{li.get('name')}' ({prep_input}) melebihi qty Cetak line ({req_full})."
+                    )
+                shortage = max(req - prep, 0)
+                total_required += req
+                total_prepared += prep
+                items_out.append({
+                    "line_idx": idx,
+                    "name": li.get("name"),
+                    "color": li.get("color"),
+                    "qty_required": req,
+                    "qty_prepared": prep,
+                    "qty_shortage": shortage,
+                })
+            elif prep_input > 0:
                 raise HTTPException(
                     400,
-                    f"Qty disiapkan untuk '{line_items[it.line_idx].get('name')}' ({new_total}) melebihi qty Cetak line ({line_qty}).",
+                    f"Line item '{li.get('name')}' bukan proses Cetak — tidak masuk Persiapan Helper."
                 )
-            target = _qr_helper_target_for_line(order, it.line_idx)
-            new_cap = min(line_qty, max(target, already))
-            if new_total > new_cap:
-                raise HTTPException(
-                    400,
-                    f"Qty disiapkan untuk '{line_items[it.line_idx].get('name')}' ({new_total}) melebihi target jadwal ({target}).",
+            # Non-print line dihilangkan dari items_out & totals (out of scope).
+        err = _qr_validate_helper_prepared_qty(total_prepared, order)
+        if err:
+            raise HTTPException(400, err)
+        total_shortage = max(total_required - total_prepared, 0)
+        before = order.get("helper_prep") or {}
+        if not increment_mode:
+            for it in items_out:
+                q = int(it.get("qty_prepared") or 0)
+                if q <= 0:
+                    continue
+                entries, _, _ = append_qty_entry(
+                    entries, qty=q, stage="helper", user=user, now=now_iso(),
+                    action_id=payload.action_id or f"helper-first-{it.get('line_idx')}",
+                    po_id=order.get("id"),
+                    line_idx=it.get("line_idx"),
                 )
-            entries, _, created = append_qty_entry(
-                entries, qty=inc, stage="helper", user=user, now=now_iso(),
-                action_id=aid, po_id=order.get("id"), line_idx=it.line_idx,
-            )
-        prepared_map = {}
-        for e in entries:
-            if e.get("cancelled"):
-                continue
-            idx = int(e.get("line_idx") if e.get("line_idx") is not None else -1)
-            if idx < 0:
-                continue
-            prepared_map[idx] = prepared_map.get(idx, 0) + int(e.get("qty") or 0)
-    else:
-        if entries:
-            raise HTTPException(409, "Entry Helper sudah dikonfirmasi. Kirim pekerjaan tambahan sebagai qty baru.")
-        prepared_map = {int(it.line_idx): max(0, int(it.qty_prepared or 0)) for it in payload.items}
-    items_out = []
-    total_required = 0
-    total_prepared = 0
-    for idx, li in enumerate(line_items):
-        req_full = int(li.get("quantity", 0) or 0)
-        prep_input = int(prepared_map.get(idx, 0))
-        if prep_input < 0:
-            prep_input = 0
-        if idx in print_idx_set:
-            req = _qr_helper_target_for_line(order, idx)
-            prep = prep_input
-            if prep_input > req_full:
-                raise HTTPException(
-                    400,
-                    f"Qty disiapkan untuk '{li.get('name')}' ({prep_input}) melebihi qty Cetak line ({req_full})."
-                )
-            shortage = max(req - prep, 0)
-            total_required += req
-            total_prepared += prep
-            items_out.append({
-                "line_idx": idx,
-                "name": li.get("name"),
-                "color": li.get("color"),
-                "qty_required": req,
-                "qty_prepared": prep,
-                "qty_shortage": shortage,
-            })
-        elif prep_input > 0:
-            raise HTTPException(
-                400,
-                f"Line item '{li.get('name')}' bukan proses Cetak — tidak masuk Persiapan Helper."
-            )
-        # Non-print line dihilangkan dari items_out & totals (out of scope).
-    err = _qr_validate_helper_prepared_qty(total_prepared, order)
-    if err:
-        raise HTTPException(400, err)
-    total_shortage = max(total_required - total_prepared, 0)
-    before = order.get("helper_prep") or {}
-    order["_expected_updated_at"] = order.get("updated_at")
-    if not increment_mode:
-        for it in items_out:
-            q = int(it.get("qty_prepared") or 0)
-            if q <= 0:
-                continue
-            entries, _, _ = append_qty_entry(
-                entries, qty=q, stage="helper", user=user, now=now_iso(),
-                action_id=payload.action_id or f"helper-first-{it.get('line_idx')}",
-                po_id=order.get("id"), line_idx=it.get("line_idx"),
-            )
-    order["helper_prep"] = {
-        # Keep total fields for backward compatibility (Timeline & schedule pakai ini)
-        "qty_required": total_required,
-        "qty_prepared": total_prepared,
-        "qty_shortage": total_shortage,
-        "shortage_status": "Barang Kurang" if total_shortage > 0 else "Cukup",
-        "notes": (payload.notes or "").strip() or None,
-        "items": items_out,
-        "entries": entries,
-        "updated_by": user.get("email"),
-        "updated_by_name": user.get("name"),
-        "updated_at": now_iso(),
-    }
-    add_timeline(order, order["current_stage"], user,
-                 note=f"Persiapan Helper (per-line): {total_prepared}/{total_required} (kurang {total_shortage})")
-    _sync_workflow_stage(order)
-    await _persist_order(order)
-    await _audit_po(order, "helper.prep.items.update", user, before=before, after=order["helper_prep"])
+        order["helper_prep"] = {
+            # Keep total fields for backward compatibility (Timeline & schedule pakai ini)
+            "qty_required": total_required,
+            "qty_prepared": total_prepared,
+            "qty_shortage": total_shortage,
+            "shortage_status": "Barang Kurang" if total_shortage > 0 else "Cukup",
+            "notes": (payload.notes or "").strip() or None,
+            "items": items_out,
+            "entries": entries,
+            "updated_by": user.get("email"),
+            "updated_by_name": user.get("name"),
+            "updated_at": now_iso(),
+        }
+        add_timeline(order, order["current_stage"], user,
+                     note=f"Persiapan Helper (per-line): {total_prepared}/{total_required} (kurang {total_shortage})")
+        _sync_workflow_stage(order)
+        applied["before"] = before
+        applied["after"] = order["helper_prep"]
+
+    order = await _with_quantity_lock(order_id, mutate, persist_keys=_HELPER_PERSIST_KEYS)
+    await _audit_po(order, "helper.prep.items.update", user, before=applied.get("before"), after=applied.get("after"))
     return {"order": _public_saved_order(order, view)}
 
 
@@ -3973,69 +4002,79 @@ async def work_division_tasks(
 # ---- Screener info (Requirement 10) ----
 @api_router.post("/orders/{order_id}/screener-info")
 async def update_screener_info(order_id: str, payload: ScreenerInfoPayload, view: Optional[str] = None, user=Depends(current_user)):
-    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
-    if not order:
+    existing = await db.orders.find_one({"id": order_id}, {"_id": 0, "id": 1, "cancelled": 1})
+    if not existing:
         raise HTTPException(404, "PO tidak ditemukan")
-    _ensure_not_cancelled(order)
+    _ensure_not_cancelled(existing)
     await _require_perm(user, "screen.update")
-    if _requires_printing(order) and not _stage_penjadwalan_done(order):
-        raise HTTPException(400, "Tahap Screener belum dapat diproses. Selesaikan Penjadwalan terlebih dahulu.")
     screener_err = _qr_validate_screener_qty(
-        payload.qty if payload.qty is not None else payload.screen_qty, order
+        payload.qty if payload.qty is not None else payload.screen_qty, None
     )
     if screener_err:
         raise HTTPException(400, screener_err)
-    before = order.get("screener_info") or {}
-    entries = list(before.get("entries") or [])
-    increment = payload.qty
-    if increment is None and payload.screen_qty is not None and not entries:
-        increment = int(payload.screen_qty)
-        entries = []
-    elif increment is None and payload.screen_qty is not None and entries:
-        raise HTTPException(409, "Entry Screener sudah dikonfirmasi. Kirim pekerjaan tambahan sebagai qty baru.")
-    if increment is None:
-        raise HTTPException(400, "Qty Screener wajib diisi.")
-    if int(increment) <= 0:
-        raise HTTPException(400, "Qty Screener harus lebih besar dari 0.")
-    if find_by_action_id(entries, payload.action_id):
+    applied = {}
+
+    def mutate(order: dict):
+        if _requires_printing(order) and not _stage_penjadwalan_done(order):
+            raise HTTPException(400, "Tahap Screener belum dapat diproses. Selesaikan Penjadwalan terlebih dahulu.")
+        before = order.get("screener_info") or {}
+        entries = list(before.get("entries") or [])
+        increment = payload.qty
+        if increment is None and payload.screen_qty is not None and not entries:
+            increment = int(payload.screen_qty)
+            entries = []
+        elif increment is None and payload.screen_qty is not None and entries:
+            raise HTTPException(409, "Entry Screener sudah dikonfirmasi. Kirim pekerjaan tambahan sebagai qty baru.")
+        if increment is None:
+            raise HTTPException(400, "Qty Screener wajib diisi.")
+        if int(increment) <= 0:
+            raise HTTPException(400, "Qty Screener harus lebih besar dari 0.")
+        if find_by_action_id(entries, payload.action_id):
+            raise _OrderMutationSkipped()
+        entries = seed_legacy(
+            entries,
+            snapshot_qty=before.get("screen_qty"),
+            stage="screener",
+            now=now_iso(),
+            at=before.get("updated_at"),
+            by=before.get("updated_by"),
+            by_name=before.get("updated_by_name"),
+            po_id=order.get("id"),
+        )
+        entries, _entry, created = append_qty_entry(
+            entries,
+            qty=int(increment),
+            stage="screener",
+            user=user,
+            now=now_iso(),
+            action_id=payload.action_id,
+            po_id=order.get("id"),
+            extra={"notes": (payload.notes or "").strip() or None},
+        )
+        if not created:
+            raise _OrderMutationSkipped()
+        total = sum_entry_qty(entries)
+        order["screener_info"] = {
+            "screen_qty": total,
+            "notes": (payload.notes or "").strip() or before.get("notes"),
+            "entries": entries,
+            "updated_by": user.get("email"),
+            "updated_by_name": user.get("name"),
+            "updated_at": now_iso(),
+        }
+        # Auto-progress: setelah Screener Save, Operator menjadi READY.
+        # Tidak menandai Helper selesai (paralel).
+        add_timeline(order, order["current_stage"], user, note=f"Screen qty +{increment} (total {total})")
+        _sync_workflow_stage(order)
+        applied["before"] = before
+        applied["after"] = order["screener_info"]
+
+    try:
+        order = await _with_quantity_lock(order_id, mutate, persist_keys=_SCREENER_PERSIST_KEYS)
+    except _OrderMutationSkipped:
+        order = await db.orders.find_one({"id": order_id}, {"_id": 0})
         return {"order": _public_saved_order(order, view)}
-    entries = seed_legacy(
-        entries,
-        snapshot_qty=before.get("screen_qty"),
-        stage="screener",
-        now=now_iso(),
-        at=before.get("updated_at"),
-        by=before.get("updated_by"),
-        by_name=before.get("updated_by_name"),
-        po_id=order.get("id"),
-    )
-    entries, _entry, created = append_qty_entry(
-        entries,
-        qty=int(increment),
-        stage="screener",
-        user=user,
-        now=now_iso(),
-        action_id=payload.action_id,
-        po_id=order.get("id"),
-        extra={"notes": (payload.notes or "").strip() or None},
-    )
-    if not created:
-        return {"order": _public_saved_order(order, view)}
-    total = sum_entry_qty(entries)
-    order["screener_info"] = {
-        "screen_qty": total,
-        "notes": (payload.notes or "").strip() or before.get("notes"),
-        "entries": entries,
-        "updated_by": user.get("email"),
-        "updated_by_name": user.get("name"),
-        "updated_at": now_iso(),
-    }
-    # Auto-progress: setelah Screener Save, Operator menjadi READY.
-    # Tidak menandai Helper selesai (paralel).
-    add_timeline(order, order["current_stage"], user, note=f"Screen qty +{increment} (total {total})")
-    _sync_workflow_stage(order)
-    await _persist_order(order)
-    await _audit_po(order, "screener.info.update", user, before=before, after=order["screener_info"])
+    await _audit_po(order, "screener.info.update", user, before=applied.get("before"), after=applied.get("after"))
     return {"order": _public_saved_order(order, view)}
 
 
@@ -10110,16 +10149,17 @@ async def replace_sales_order_line_product(
         REASON_SAME_PRODUCT,
         MSG_SAME,
     )
+    from services.delivery_loading_gate import po_is_fully_delivered
     from services.line_qty_commitment import (
         QuantityUnchanged,
         MSG_PENDING,
+        MSG_QTY_DELIVERED,
         MSG_SCHEDULE,
-        REASON_QTY_ABOVE,
         REASON_QTY_BELOW,
+        REASON_QTY_DELIVERED,
         REASON_QTY_PENDING,
         REASON_SCHEDULE,
         get_committed_qty_for_line,
-        message_qty_above,
         message_qty_below,
         qty_reject_detail,
         recalc_derived_selling_amounts,
@@ -10237,12 +10277,12 @@ async def replace_sales_order_line_product(
                         requested_qty=int(requested_qty),
                     ),
                 )
-            if int(requested_qty) > current_qty:
+            if int(requested_qty) > current_qty and po_is_fully_delivered(fresh):
                 raise HTTPException(
                     409,
                     qty_reject_detail(
-                        REASON_QTY_ABOVE,
-                        message_qty_above(current_qty, int(requested_qty)),
+                        REASON_QTY_DELIVERED,
+                        MSG_QTY_DELIVERED,
                         current_qty=current_qty,
                         committed_qty=committed_qty,
                         requested_qty=int(requested_qty),

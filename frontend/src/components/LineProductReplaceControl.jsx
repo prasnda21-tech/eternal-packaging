@@ -45,17 +45,34 @@ export function isLineQtyEditAllowed(order, lineIdx) {
   return true;
 }
 
+export const QTY_DELIVERED_MESSAGE = "Qty tidak dapat ditambah karena pesanan sudah terkirim lengkap.";
+
+export const QTY_INCREASE_WARNINGS = [
+  "Qty tambahan belum masuk Penjadwalan Operator.",
+  "Stok tambahan akan diperiksa saat proses produksi.",
+  "Faktur yang sudah ada tidak berubah; tambahan qty menjadi sisa pesanan.",
+  "Harga tambahan mengikuti harga pada Pesanan Penjualan ini.",
+];
+
+export function qtyIncreaseAllowed(order, lineIdx) {
+  const el = replaceEligibilityForLine(order, lineIdx);
+  if (el && typeof el.qty_increase_allowed === "boolean") return el.qty_increase_allowed;
+  return true;
+}
+
 export function qtyEditBounds(order, lineIdx) {
   const el = replaceEligibilityForLine(order, lineIdx) || {};
   const li = (order?.line_items || [])[lineIdx] || {};
   const current = Number.isInteger(el.current_qty) ? el.current_qty : Number(li.quantity || 0);
   const committed = Number.isInteger(el.committed_qty) ? el.committed_qty : 0;
-  const max = Number.isInteger(el.max_qty) ? el.max_qty : current;
+  const increaseAllowed = qtyIncreaseAllowed(order, lineIdx);
+  const max = increaseAllowed ? null : (Number.isInteger(el.max_qty) ? el.max_qty : current);
   const min = Number.isInteger(el.min_qty) ? el.min_qty : committed;
   const remaining = Number.isInteger(el.editable_remaining)
     ? el.editable_remaining
     : Math.max(0, current - committed);
-  return { current, committed, remaining, min, max };
+  const increaseReason = el.qty_increase_reason || (increaseAllowed ? "" : QTY_DELIVERED_MESSAGE);
+  return { current, committed, remaining, min, max, increaseAllowed, increaseReason };
 }
 
 export function formatQtyId(value) {
@@ -125,6 +142,7 @@ export default function LineProductReplaceControl({
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
   const [qtyErr, setQtyErr] = useState("");
+  const [confirmIncrease, setConfirmIncrease] = useState(false);
 
   const li = (order?.line_items || [])[lineIdx];
   if (!li) return null;
@@ -150,6 +168,7 @@ export default function LineProductReplaceControl({
 
   const openQty = () => {
     setQtyErr("");
+    setConfirmIncrease(false);
     setQuantity(String(bounds.current || li.quantity || ""));
     setQtyOpen(true);
   };
@@ -159,6 +178,7 @@ export default function LineProductReplaceControl({
     setQtyOpen(false);
     setQuantity("");
     setQtyErr("");
+    setConfirmIncrease(false);
   };
 
   const saveProduct = async () => {
@@ -186,11 +206,24 @@ export default function LineProductReplaceControl({
     }
   };
 
+  const parsedQty = parsePositiveQty(quantity);
+  const increasing = parsedQty !== null && parsedQty > bounds.current;
+  const increaseBlocked = increasing && !bounds.increaseAllowed;
+  const addedQty = increasing ? parsedQty - bounds.current : 0;
+
   const saveQty = async () => {
     if (saving) return;
     const qty = parsePositiveQty(quantity);
     if (qty === null) {
       setQtyErr("Qty baru wajib berupa angka bulat lebih dari 0.");
+      return;
+    }
+    if (qty > bounds.current && !bounds.increaseAllowed) {
+      setQtyErr(bounds.increaseReason || QTY_DELIVERED_MESSAGE);
+      return;
+    }
+    if (qty > bounds.current && !confirmIncrease) {
+      setConfirmIncrease(true);
       return;
     }
     setSaving(true);
@@ -232,6 +265,10 @@ export default function LineProductReplaceControl({
             >
               Ubah Qty
             </button>
+          ) : replaceEligibilityForLine(order, lineIdx)?.qty_edit_reason ? (
+            <span className="muted small" data-testid={`ubah-qty-locked-${lineIdx}`}>
+              {replaceEligibilityForLine(order, lineIdx).qty_edit_reason}
+            </span>
           ) : null}
         </div>
       ) : null}
@@ -339,11 +376,14 @@ export default function LineProductReplaceControl({
                   <input
                     type="number"
                     min={bounds.min}
-                    max={bounds.max}
                     step="1"
                     inputMode="numeric"
                     value={quantity}
-                    onChange={(event) => { setQuantity(event.target.value); setQtyErr(""); }}
+                    onChange={(event) => {
+                      setQuantity(event.target.value);
+                      setQtyErr("");
+                      setConfirmIncrease(false);
+                    }}
                     disabled={saving}
                     data-testid={`ubah-qty-input-${lineIdx}`}
                   />
@@ -351,7 +391,24 @@ export default function LineProductReplaceControl({
                 </div>
               </label>
               <p className="muted small" data-testid={`ubah-qty-min-${lineIdx}`}>Minimum: {formatQtyId(bounds.min)}</p>
-              <p className="muted small" data-testid={`ubah-qty-max-${lineIdx}`}>Maximum: {formatQtyId(bounds.max)}</p>
+              {increasing && bounds.increaseAllowed && (
+                <ul className="line-qty-increase-notes" data-testid={`ubah-qty-increase-notes-${lineIdx}`}>
+                  {QTY_INCREASE_WARNINGS.map((note) => <li key={note}>{note}</li>)}
+                </ul>
+              )}
+              {increaseBlocked && (
+                <p className="error small" data-testid={`ubah-qty-delivered-${lineIdx}`}>
+                  {bounds.increaseReason || QTY_DELIVERED_MESSAGE}
+                </p>
+              )}
+              {confirmIncrease && (
+                <div className="line-qty-confirm" data-testid={`ubah-qty-confirm-${lineIdx}`}>
+                  <p>Tambah qty dari {formatQtyId(bounds.current)} menjadi {formatQtyId(parsedQty)}?</p>
+                  <p className="muted small">
+                    Tambahan {formatQtyId(addedQty)} {li.unit || "pcs"} perlu masuk Penjadwalan Operator sebelum dapat dikerjakan.
+                  </p>
+                </div>
+              )}
               {qtyErr && (
                 <p className="error small" data-testid={`ubah-qty-error-${lineIdx}`}>{qtyErr}</p>
               )}
@@ -364,10 +421,10 @@ export default function LineProductReplaceControl({
                 type="button"
                 className="primary"
                 onClick={saveQty}
-                disabled={saving || parsePositiveQty(quantity) === null}
+                disabled={saving || parsePositiveQty(quantity) === null || increaseBlocked}
                 data-testid={`ubah-qty-save-${lineIdx}`}
               >
-                {saving ? "Menyimpan…" : "Simpan Qty"}
+                {saving ? "Menyimpan…" : (confirmIncrease ? "Ya, tambah qty" : "Simpan Qty")}
               </button>
             </footer>
           </div>
