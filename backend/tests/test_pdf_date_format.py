@@ -97,7 +97,7 @@ def test_sales_delivery_pdf_date_format():
     assert "SJ/04/09/26/001" in text
     assert "PO/04/09/26/001" in text
     # Quantity unchanged
-    assert "5,000" in text or "5000" in text
+    assert "5.000" in text or "5,000" in text or "5000" in text
 
 
 # ===========================================================================

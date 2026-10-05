@@ -219,7 +219,9 @@ def customer_invoice_pdf_source(invoice: dict, order: dict) -> Dict[str, Any]:
 
 
 def render_customer_invoice_pdf(invoice: dict, order: dict) -> bytes:
-    return generate_sales_invoice_pdf_bytes(customer_invoice_pdf_source(invoice, order))
+    source = customer_invoice_pdf_source(invoice, order)
+    source["presentation_expedition"] = str((order or {}).get("expedition") or "").strip()
+    return generate_sales_invoice_pdf_bytes(source)
 
 
 async def _attach_receipts(db, invoices: List[dict]) -> None:

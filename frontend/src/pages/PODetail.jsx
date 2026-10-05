@@ -101,6 +101,7 @@ export default function PODetail() {
   const [salesReceiptsErr, setSalesReceiptsErr] = useState("");
   const [proofViewerReceipt, setProofViewerReceipt] = useState(null);
   const [sourcePdfOpen, setSourcePdfOpen] = useState(false);
+  const [poPdfBusy, setPoPdfBusy] = useState(false);
   const [receiptRefreshTick, setReceiptRefreshTick] = useState(0);
   const [screenerDraft, setScreenerDraft] = useState("");
   const [screenerNotes, setScreenerNotes] = useState("");
@@ -552,6 +553,20 @@ export default function PODetail() {
     hasView: canViewProforma,
     available: Boolean(proformaTarget?.invoice_id),
   });
+  const openEternalPoPdf = async () => {
+    if (!order?.id || poPdfBusy) return;
+    setPoPdfBusy(true);
+    try {
+      const blob = await api.downloadSalesOrderPdf(order.id);
+      const url = URL.createObjectURL(blob);
+      window.open(url, "_blank");
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+    } catch (error) {
+      showToast(formatApiError(error, "Gagal memuat PDF Pesanan Penjualan"));
+    } finally {
+      setPoPdfBusy(false);
+    }
+  };
   const openProforma = async () => {
     if (!proformaTarget?.invoice_id || proformaBusy) return;
     setProformaBusy(true);
@@ -1746,6 +1761,21 @@ export default function PODetail() {
                 busy={proformaBusy}
                 onView={openProforma}
               />
+            ) : null}
+            {hasPerm("po.view") ? (
+              <li>
+                <span>Pesanan Penjualan</span>
+                <strong>PDF Eternal</strong>
+                <button
+                  type="button"
+                  className="ghost sm"
+                  data-testid="po-doc-eternal-pdf"
+                  disabled={poPdfBusy}
+                  onClick={openEternalPoPdf}
+                >
+                  Cetak PO
+                </button>
+              </li>
             ) : null}
             {order.source_pdf?.storage_path ? (
               <li>

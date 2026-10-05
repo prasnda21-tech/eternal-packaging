@@ -392,7 +392,7 @@ async def test_proforma_follows_saved_draft_qty_and_create_stays_within_remainin
             assert proforma.status_code == 200, proforma.text
             with pdfplumber.open(io.BytesIO(proforma.content)) as pdf:
                 text = "\n".join((page.extract_text() or "") for page in pdf.pages)
-            assert "7000" in text
+            assert "7.000" in text
             saved = await server.db.sales_invoices.find_one({"id": current["id"]}, {"_id": 0})
             assert saved["lines"][0]["quantity"] == 7000
             assert saved["financial_status"] == "draft"

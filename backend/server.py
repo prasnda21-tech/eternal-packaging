@@ -1800,6 +1800,36 @@ async def get_order(order_id: str, view: Optional[str] = None, user=Depends(curr
     return {"order": _strip_inline_attachment_bytes(_strip_sj_bytes(order))}
 
 
+@api_router.get("/orders/{order_id}/pdf")
+async def get_sales_order_pdf_endpoint(order_id: str, user=Depends(current_user)):
+    """Read-only Eternal Pesanan Penjualan PDF. Does not replace the customer source PDF."""
+    reject_sales_pwa_bypass(user)
+    query = {"id": order_id}
+    query.update(sales_owner_match(user))
+    order = await db.orders.find_one(query, {"_id": 0})
+    if not order:
+        raise HTTPException(404, "PO tidak ditemukan")
+    if user.get("role") != "admin":
+        eff = await user_permissions(user)
+        view_ok = any(p in eff for p in (
+            "po.view", "work_panel.view", "schedule.view",
+            "screen.update", "helper.prepare", "operator.update",
+            "packing.update", "delivery_note.view", "delivery_note.manage",
+            "loading.update", "delivery.update", "design.view", "payment.view",
+        ))
+        if not view_ok:
+            raise HTTPException(403, "Anda tidak punya permission untuk melihat PO ini")
+    from services.order_pdf import generate_sales_order_pdf_bytes
+    pdf_bytes = generate_sales_order_pdf_bytes(order)
+    po_num = str(order.get("po_number") or order_id).replace("/", "_").replace("\\", "_")
+    filename = f"Pesanan_Penjualan_{po_num}.pdf"
+    return FastAPIResponse(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+    )
+
+
 def _check_stage_permission(current_stage: int, role: str):
     allowed = STAGE_EDIT_ROLES.get(current_stage, ["admin", "head_production"])
     if role not in allowed and role != "admin":
@@ -9225,6 +9255,7 @@ from services.sales_invoices import (
     list_charge_account_options as _list_charge_account_options,
     create_sales_invoice as _create_sales_invoice,
     generate_sales_invoice_pdf_bytes,
+    invoice_pdf_presentation,
     proforma_availability as _proforma_availability,
     require_proforma_invoice as _require_proforma_invoice,
     list_sales_invoices as _list_sales_invoices,
@@ -10909,7 +10940,8 @@ async def get_sales_invoice_pdf_endpoint(id: str, user=Depends(current_user)):
     await _require_any_perm(user, "sales.invoice.view", "sales_order.view", "po.view", "sales.delivery.view")
     detail = await _get_sales_invoice_detail(db, id)
     await ensure_owned_po_id(db, user, (detail or {}).get("po_id"))
-    pdf_bytes = generate_sales_invoice_pdf_bytes(detail)
+    shown = await invoice_pdf_presentation(db, detail)
+    pdf_bytes = generate_sales_invoice_pdf_bytes(shown)
     inv_num = str(detail.get("invoice_number", "INV")).replace("/", "_").replace("\\", "_")
     filename = f"Faktur_Penjualan_{inv_num}.pdf"
     return FastAPIResponse(
@@ -10933,7 +10965,8 @@ async def get_sales_invoice_proforma_pdf(id: str, user=Depends(current_user)):
     await _require_perm(user, "proforma_invoice.view")
     invoice = await _require_proforma_invoice(db, id)
     await ensure_owned_po_id(db, user, invoice.get("po_id"))
-    pdf_bytes = generate_sales_invoice_pdf_bytes(invoice, document_type="proforma")
+    shown = await invoice_pdf_presentation(db, invoice)
+    pdf_bytes = generate_sales_invoice_pdf_bytes(shown, document_type="proforma")
     inv_num = str(invoice.get("invoice_number") or invoice.get("id") or "PROFORMA").replace("/", "_").replace("\\", "_")
     filename = f"Proforma_{inv_num}.pdf"
     return FastAPIResponse(
