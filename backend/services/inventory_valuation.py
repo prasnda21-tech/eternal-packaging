@@ -1,7 +1,9 @@
-"""Read-only inventory valuation view over Stock V2 and canonical HPP.
+"""Read-only inventory valuation view over R2 physical stock and canonical HPP.
 
 The view never recalculates HPP and never writes stock, purchasing, pricing,
-or accounting data. Quantity comes from product_stock_state.total_qty.
+or accounting data. Stock Fisik is the Yogyakarta R2 physical balance sum,
+the same quantity Stock Saat Ini displays. product_stock_state is not the
+official quantity.
 """
 from __future__ import annotations
 
@@ -138,15 +140,22 @@ async def build_inventory_valuation_rows(db) -> dict:
     }
     published_candidates = await load_effective_published_hpp(db)
     from services.financial_inventory_opening import financial_display_by_item
+    from services.physical_stock import operational_physical_qty_by_item
 
     financial_by_item = await financial_display_by_item(db)
+    physical_by_item = await operational_physical_qty_by_item(
+        db,
+        [str(master.get("id") or "") for master in masters if master.get("id")],
+    )
 
     rows: List[dict] = []
     for master in masters:
         mid = str(master.get("id") or "").strip()
         aid = str(master.get("accurate_item_id") or "").strip()
         state = state_by_mid.get(mid) or {}
-        stock = float(state.get("total_qty") or 0)
+        stock = float(physical_by_item.get(mid, 0) or 0)
+        if stock < 0:
+            stock = 0.0
         stock_state_valid = bool(
             state
             and state.get("initialized") is True
@@ -197,18 +206,14 @@ async def build_inventory_valuation_rows(db) -> dict:
                     "hpp_source": SOURCE_PUBLISHED_FALLBACK,
                 }
 
-        if not stock_state_valid or stock < 0:
-            status = STATUS_QTY_MISMATCH
-        elif current_hpp is None:
+        if current_hpp is None:
             status = (
                 original_status
                 if original_status in {STATUS_NEEDS_COST, STATUS_NEEDS_UOM, STATUS_FAILED}
                 else STATUS_MISSING_COST
             )
-        elif abs(difference) > 0.0000001:
-            status = STATUS_QTY_MISMATCH
         else:
-            status = original_status
+            status = STATUS_OK if original_status == STATUS_QTY_MISMATCH else original_status
 
         inventory_value = None
         if stock == 0 and status == STATUS_OK and current_hpp is not None:
@@ -235,8 +240,7 @@ async def build_inventory_valuation_rows(db) -> dict:
             "inventory_value": inventory_value,
             "hpp_status": status,
             "hpp_reason": (
-                ("STOCK_STATE_UNAVAILABLE" if not stock_state_valid else None)
-                or position.get("reconciliation_reason")
+                position.get("reconciliation_reason")
                 or (
                     original_status
                     if original_status != status

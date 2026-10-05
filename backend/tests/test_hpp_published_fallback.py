@@ -171,6 +171,24 @@ async def _receive(db, suffix, po_id, line_id, qty):
     }, USER)
 
 
+async def _r2(db, mid, qty):
+    if await db.branches.count_documents({"id": "branch-ygy"}) == 0:
+        await db.branches.insert_one({
+            "id": "branch-ygy", "code": "YGY", "name": "Yogyakarta", "active": True,
+        })
+        await db.warehouses.insert_one({
+            "id": "wh-ygy", "branch_id": "branch-ygy", "code": "MAIN",
+            "name": "Gudang Yogyakarta", "active": True,
+        })
+    await db.physical_stock_balances.insert_one({
+        "id": f"bal-{mid}",
+        "master_item_id": mid,
+        "branch_id": "branch-ygy",
+        "warehouse_id": "wh-ygy",
+        "physical_qty": qty,
+    })
+
+
 def _valuation(view, mid):
     return next(row for row in view["rows"] if row["master_item_id"] == mid)
 
@@ -178,6 +196,7 @@ def _valuation(view, mid):
 @pytest.mark.anyio
 async def test_published_fallback_is_immediate_and_draft_history_are_ignored(db):
     pub_mid, pub_aid = await _master(db, "pub205", 10)
+    await _r2(db, pub_mid, 10)
     await _pricing(
         db,
         "pub205",
@@ -188,8 +207,10 @@ async def test_published_fallback_is_immediate_and_draft_history_are_ignored(db)
         historical=180,
     )
     draft_mid, draft_aid = await _master(db, "draft-only", 8)
+    await _r2(db, draft_mid, 8)
     await _pricing(db, "draft-only", draft_mid, draft_aid, draft=999)
     newer_mid, newer_aid = await _master(db, "pub290", 15999)
+    await _r2(db, newer_mid, 15999)
     await _pricing(db, "pub290", newer_mid, newer_aid, published=290, draft=310)
     unsafe_mid, unsafe_aid = await _master(db, "uninitialized", 0)
     await db.product_stock_state.delete_one({"master_item_id": unsafe_mid})
@@ -209,18 +230,20 @@ async def test_published_fallback_is_immediate_and_draft_history_are_ignored(db)
     assert bsm["current_hpp"] == 290
     assert bsm["inventory_value"] == 4_639_710
     unsafe = _valuation(view, unsafe_mid)
+    assert unsafe["stock_fisik"] == 0
     assert unsafe["current_hpp"] is None
     assert unsafe["inventory_value"] is None
-    assert unsafe["hpp_status"] == "QTY_MISMATCH"
-    assert unsafe["hpp_reason"] == "STOCK_STATE_UNAVAILABLE"
+    assert unsafe["hpp_status"] == "MISSING_COST"
+    assert unsafe["hpp_reason"] != "STOCK_STATE_UNAVAILABLE"
     assert view["summary"]["total_inventory_value"] == 4_641_760
     assert view["summary"]["valued_items"] == 2
-    assert view["summary"]["problem_items"] == 1
+    assert view["summary"]["problem_items"] == 0
 
 
 @pytest.mark.anyio
 async def test_canonical_layer_wins_and_later_published_change_is_ignored(db):
     mid, aid = await _master(db, "canonical", 10)
+    await _r2(db, mid, 10)
     await _pricing(db, "canonical", mid, aid, published=290)
     await db.app_settings.insert_one({
         "key": "hpp_valuation",

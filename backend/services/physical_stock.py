@@ -1879,6 +1879,48 @@ async def _r2_confirmed_delivery_qty(db, master_ids: List[str]) -> Dict[str, flo
     return confirmed
 
 
+async def operational_physical_qty_by_item(
+    db,
+    master_ids: Optional[List[str]] = None,
+) -> Dict[str, float]:
+    """Sum R2 physical_qty on operational Yogyakarta warehouses. Read only.
+
+    Missing balances are omitted. Callers treat a missing item as zero.
+    This is the same warehouse set Stock Saat Ini aggregates.
+    """
+    all_branches = await db[BRANCHES_COLLECTION].find(
+        {},
+        {"_id": 0, "id": 1, "code": 1, "name": 1},
+    ).to_list(500)
+    operational = resolve_operational_branch(all_branches)
+    if not operational:
+        return {}
+    warehouses = await db[WAREHOUSES_COLLECTION].find(
+        {"branch_id": operational["id"]},
+        {"_id": 0, "id": 1},
+    ).to_list(500)
+    warehouse_ids = [row.get("id") for row in warehouses if row.get("id")]
+    if not warehouse_ids:
+        return {}
+    query: Dict[str, Any] = {"warehouse_id": {"$in": warehouse_ids}}
+    if master_ids is not None:
+        ids = [str(mid).strip() for mid in master_ids if str(mid or "").strip()]
+        if not ids:
+            return {}
+        query["master_item_id"] = {"$in": ids}
+    docs = await db[BALANCE_COLLECTION].find(
+        query,
+        {"_id": 0, "master_item_id": 1, "physical_qty": 1},
+    ).to_list(20000)
+    totals: Dict[str, float] = {}
+    for doc in docs:
+        mid = str(doc.get("master_item_id") or "").strip()
+        if not mid:
+            continue
+        totals[mid] = _qty_num(totals.get(mid, 0)) + _qty_num(doc.get("physical_qty"))
+    return totals
+
+
 async def list_physical_stock_catalog(
     db,
     *,
