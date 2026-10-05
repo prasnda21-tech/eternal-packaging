@@ -1,0 +1,368 @@
+---
+description: Eternal Packaging shared execution, token efficiency, model-routing, media, and production-safety rules
+alwaysApply: true
+---
+
+# ETERNAL PACKAGING SHARED AGENT RULES
+
+These rules apply to all work in this repository.
+
+Primary goals:
+
+1. correctness
+2. data safety
+3. minimal scope
+4. low token usage
+5. fast execution
+6. predictable collaboration
+7. no accidental production changes
+
+# DEFAULT EXECUTION MODE
+
+DEFAULT EXECUTION STYLE = FAST / TARGETED / TOKEN-EFFICIENT.
+
+For normal work:
+
+- use normal targeted reasoning for ordinary tasks
+- inspect only files relevant to the task
+- make the smallest safe change
+- run focused tests only
+- reuse already-known project context
+- do not rediscover the whole repository
+- do not repeat audits already completed
+- do not spawn subagents unless explicitly required
+- do not perform broad repository exploration
+
+Treat deeper reasoning as escalation, not as default.
+
+# WHEN DEEPER REASONING IS JUSTIFIED
+
+Use deeper reasoning only when at least one condition is true:
+
+1. transaction atomicity or concurrency is involved
+2. financial/accounting calculations may be affected
+3. inventory/HPP/valuation integrity is involved
+4. authentication/security/permissions are involved
+5. a change spans more than 3 major subsystems
+6. a difficult merge conflict affects business logic
+7. database migration or irreversible data mutation is involved
+8. medium reasoning has failed twice on the same defect
+9. architecture must change rather than merely be implemented
+10. there is real risk of corrupting production data
+
+If none apply, use normal targeted reasoning for ordinary tasks.
+
+# NEVER USE DEEPER REASONING JUST FOR
+
+Do not escalate reasoning for:
+
+- CSS
+- spacing
+- typography
+- copy changes
+- labels
+- simple UI layout
+- navigation
+- sidebar/menu changes
+- route registration
+- simple frontend component changes
+- focused unit tests
+- git status
+- git diff
+- commit
+- push
+- branch verification
+- restarting localhost
+- checking process or PID
+- screenshot verification
+- simple API wiring
+- known one-file bugs
+
+# FAST MODE
+
+Unless deeper reasoning is clearly justified:
+
+FAST MODE.
+
+- NO subagents
+- NO broad audit
+- NO repository-wide scan
+- NO web research
+- NO unnecessary documentation search
+- NO giant test suite
+- NO speculative refactor
+- NO unrelated cleanup
+- NO redesign outside requested scope
+
+Read the minimum number of files necessary.
+
+Prefer:
+
+targeted inspection
+→ implementation
+→ focused test
+→ concise report
+
+# CONTEXT USAGE
+
+Before exploring code, use facts already supplied in the current task.
+
+If the prompt already provides:
+
+- current HEAD
+- exact module
+- known endpoint
+- known service
+- expected behavior
+
+start from those facts.
+
+Do not spend tokens rediscovering them unless runtime evidence contradicts them.
+
+# FILE READING POLICY
+
+Start narrow.
+
+Typical order:
+
+1. exact target file
+2. directly related helper/service
+3. focused related tests
+4. only expand if evidence requires it
+
+Do not read dozens of unrelated files "just in case".
+
+# TEST POLICY
+
+During implementation:
+
+run focused tests only.
+
+Run broader regressions only when:
+
+- shared business logic changed
+- transaction boundaries changed
+- common helper changed
+- user explicitly requests broader regression
+- task is approaching merge/deploy approval
+
+Never run a giant test suite merely for:
+
+- CSS changes
+- copy changes
+- simple UI adjustments
+- small route/navigation changes
+
+# FAILURE / ESCALATION RULE
+
+If the first attempt fails:
+
+1. inspect the exact failure
+2. fix the targeted cause
+3. retry the focused test
+
+Do not immediately launch a broad investigation.
+
+After 2 failed targeted attempts:
+
+Deeper reasoning may be justified.
+
+Explain why escalation is necessary before expanding scope.
+
+# COLLABORATION RULE
+
+This repository is worked on by multiple people and multiple Cursor Agents.
+
+Before substantial work:
+
+- identify current HEAD
+- identify current branch
+- inspect working tree
+- confirm requested work is not already implemented
+
+Do not overwrite unrelated collaborator changes.
+
+Do not:
+
+- reset
+- force checkout
+- clean
+- rebase
+- discard changes
+- force push
+
+unless explicitly authorized.
+
+# NEW AGENT BEHAVIOR
+
+New Agents may start from main and create their own cursor/* branch.
+
+Always verify:
+
+- repository
+- branch
+- HEAD
+- working tree
+
+before editing.
+
+Do not assume another Agent's branch contains the same changes.
+
+# GIT CHECKPOINT RULE
+
+After a bounded phase passes:
+
+1. git diff --check
+2. focused tests PASS
+3. confirm scope
+4. commit one logical checkpoint
+5. push only the approved development branch
+
+Never merge main automatically.
+
+# PRODUCTION SAFETY
+
+Production changes require explicit user approval.
+
+By default:
+
+- NO production deploy
+- NO production server restart
+- NO production database mutation
+- NO Accurate mutation
+- NO merge to main
+
+Local preview first.
+
+# PURCHASING / INVENTORY SAFETY
+
+For Purchasing and Inventory:
+
+- R2 physical stock is canonical physical quantity
+- do not directly overwrite physical_stock_balances
+- use canonical ledger movements
+- preserve idempotency
+- preserve transaction atomicity
+- no legacy physical-stock writes
+- Stock Opname changes physical stock only after confirmation
+- Purchasing must not silently depend on Accurate
+- HPP and financial accounting must not be invented
+
+If cost or accounting semantics are ambiguous:
+
+STOP and report the business decision required.
+
+# UI RULE
+
+Avoid AI-slop.
+
+Do not create:
+
+- random dashboard cards
+- excessive gradients
+- unnecessary badges
+- duplicated navigation
+- arbitrary buttons
+- layouts detached from real operational workflows
+
+Prefer actual business workflows.
+
+# MEDIA / ATTACHMENT PROCESSING
+
+To keep execution fast and token-efficient:
+
+- DO NOT process video files
+- DO NOT inspect video frames
+- DO NOT extract video metadata unless explicitly requested
+- DO NOT transcribe video
+- DO NOT analyze video content
+- DO NOT scan attached videos
+
+If a video is present:
+
+- ignore the video content
+- use only the user's written instruction and available static evidence
+- ask for screenshots if visual evidence is required
+
+Screenshots and static images are allowed.
+
+When screenshots are provided:
+
+- inspect only screenshots relevant to the current task
+- do not perform broad visual analysis
+- do not repeatedly analyze the same screenshot unless necessary
+
+Prefer:
+
+text result
+→ screenshot evidence
+→ targeted file inspection
+
+Avoid:
+
+video analysis
+→ frame extraction
+→ unnecessary media processing
+
+# REPORTING
+
+Final reports should be concise.
+
+Report only what is useful:
+
+- Starting HEAD
+- Ending HEAD
+- Working tree
+- What changed
+- Focused tests
+- Runtime verification if applicable
+- Commit
+- Push
+- Merge
+- Deploy
+- Production
+
+Do not repeat the entire analysis unless requested.
+
+# TOKEN BUDGET RULE
+
+Treat repository reads, long reasoning, screenshots, and tool calls as expensive.
+
+Before every expansion ask:
+
+"Will this materially improve correctness?"
+
+If NO:
+do not perform it.
+
+Prefer:
+
+- one precise command over multiple exploratory commands
+- one focused test over a full suite
+- existing facts over repeated discovery
+- screenshots over video
+- targeted inspection over broad audit
+
+# FINAL MODEL ROUTING PRINCIPLE
+
+NORMAL TASK
+→ normal targeted reasoning, fast and token-efficient
+
+COMPLEX OR HIGH-RISK TASK
+→ deeper reasoning only when justified
+
+UNCERTAIN TASK
+→ inspect narrowly first
+
+TWO FAILED TARGETED ATTEMPTS
+→ consider deeper reasoning
+
+ROUTINE GIT / UI / TEST / PREVIEW WORK
+→ never deeper reasoning by default
+
+# CURSOR AUTO
+
+When Cursor is set to Auto:
+- this rule does not select or force a specific underlying model
+- Cursor Auto remains responsible for model selection
+- these rules govern execution style, scope, reasoning discipline, and token efficiency regardless of the selected model
