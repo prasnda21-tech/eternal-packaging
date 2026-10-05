@@ -67,6 +67,7 @@ const PenerimaanBarang = lazy(() => import("./pages/PenerimaanBarang"));
 const PermintaanPembelian = lazy(() => import("./pages/PermintaanPembelian"));
 const PesananPembelian = lazy(() => import("./pages/PesananPembelian"));
 const UangMukaPembelian = lazy(() => import("./pages/UangMukaPembelian"));
+const ReturPembelian = lazy(() => import("./pages/ReturPembelian"));
 const FakturPembelian = lazy(() => import("./pages/FakturPembelian"));
 const PembayaranPembelian = lazy(() => import("./pages/PembayaranPembelian"));
 const SalesActivityPage = lazy(() => import("./pages/SalesActivityPage"));
@@ -357,6 +358,7 @@ export default function App() {
             <Route path="/pembelian/faktur-pembelian" element={<PermGate anyOf={[NAV_KEYS.purchaseInvoices, NAV_KEYS.purchasing, "purchase_invoices.view", "purchase_invoices.create"]}><FakturPembelian /></PermGate>} />
             <Route path="/pembelian/pembayaran-pembelian" element={<PermGate anyOf={[NAV_KEYS.purchasePayments, NAV_KEYS.purchasing, "purchase_payments.view", "purchase_payments.create"]}><PembayaranPembelian /></PermGate>} />
             <Route path="/pembelian/penerimaan-barang" element={<PermGate anyOf={[NAV_KEYS.purchaseReceipts]} alsoAnyOf={["purchase_receipts.view"]}><PenerimaanBarang /></PermGate>} />
+            <Route path="/pembelian/retur" element={<PermGate anyOf={[NAV_KEYS.purchaseReturns, NAV_KEYS.purchaseReceipts]} alsoAnyOf={["purchase_receipts.view"]}><ReturPembelian /></PermGate>} />
             <Route path="/pembelian" element={<PembelianIndex />} />
             <Route path="/persediaan/master-barang-jasa" element={<PermGate anyOf={[NAV_KEYS.masterItems]} alsoAnyOf={["master_items.view"]}><MasterBarangJasa /></PermGate>} />
             <Route path="/persediaan/master-barang-jasa/:id" element={<PermGate anyOf={[NAV_KEYS.masterItems]} alsoAnyOf={["master_items.view"]}><ProductDetail /></PermGate>} />

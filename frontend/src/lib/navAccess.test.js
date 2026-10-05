@@ -406,6 +406,7 @@ describe("purchasingMenuItems", () => {
   test("builds tiles from existing Pembelian children only", () => {
     expect(purchasingMenuItems(has(NAV_KEYS.purchasing, NAV_KEYS.purchaseReceipts))).toEqual([
       { key: NAV_KEYS.purchaseReceipts, label: "Penerimaan Barang", to: "/pembelian/penerimaan-barang", tone: "amber", testid: "top-nav-penerimaan-barang" },
+      { key: NAV_KEYS.purchaseReturns, label: "Retur Pembelian", to: "/pembelian/retur", tone: "rose", testid: "top-nav-retur-pembelian" },
     ]);
     expect(purchasingMenuItems(has(NAV_KEYS.purchasing))).toEqual([]);
   });
@@ -424,6 +425,7 @@ describe("purchasingMenuItems", () => {
       "Pesanan Pembelian",
       "Uang Muka",
       "Penerimaan Barang",
+      "Retur Pembelian",
       "Faktur Pembelian",
       "Pembayaran Pembelian",
     ]);

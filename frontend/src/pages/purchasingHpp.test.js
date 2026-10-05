@@ -25,7 +25,7 @@ describe("Pembelian workflow UI", () => {
       NAV_KEYS.purchaseReceipts,
     ));
     expect(items.map((i) => i.label)).toEqual([
-      "Permintaan", "Pesanan Pembelian", "Uang Muka", "Penerimaan Barang", "Faktur Pembelian", "Pembayaran Pembelian",
+      "Permintaan", "Pesanan Pembelian", "Uang Muka", "Penerimaan Barang", "Retur Pembelian", "Faktur Pembelian", "Pembayaran Pembelian",
     ]);
   });
 

@@ -460,6 +460,15 @@ export const api = {
   cancelPurchaseOrder: (id, reason = "") =>
     client.post(`/purchase-orders/${encodeURIComponent(id)}/cancel`, reason ? { reason } : {}).then((r) => r.data),
   getPurchaseGoodsReceipt: (id) => client.get(`/purchase-goods-receipts/${encodeURIComponent(id)}`).then((r) => r.data),
+  listPurchaseReturns: (params = {}) => client.get(`/purchase-returns`, { params }).then((r) => r.data),
+  getPurchaseReturn: (id) => client.get(`/purchase-returns/${encodeURIComponent(id)}`).then((r) => r.data),
+  createPurchaseReturn: (payload) => client.post(`/purchase-returns`, payload).then((r) => r.data),
+  confirmPurchaseReturn: (id, payload = {}) =>
+    client.post(`/purchase-returns/${encodeURIComponent(id)}/confirm`, payload).then((r) => r.data),
+  cancelPurchaseReturn: (id, reason = "") =>
+    client.post(`/purchase-returns/${encodeURIComponent(id)}/cancel`, reason ? { reason } : {}).then((r) => r.data),
+  getPurchaseReturnFinancial: (id) =>
+    client.get(`/purchase-returns/${encodeURIComponent(id)}/financial`).then((r) => r.data),
   cancelPurchaseGoodsReceipt: (id, reason = "") =>
     client.post(`/purchase-goods-receipts/${encodeURIComponent(id)}/cancel`, reason ? { reason } : {}).then((r) => r.data),
   getPurchaseGoodsReceiptAccountingReadiness: (id) =>

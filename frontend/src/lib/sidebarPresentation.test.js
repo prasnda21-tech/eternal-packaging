@@ -80,6 +80,7 @@ describe("desktop sidebar presentation", () => {
       "Pesanan Pembelian",
       "Uang Muka",
       "Penerimaan Barang",
+      "Retur Pembelian",
       "Faktur Pembelian",
       "Pembayaran Pembelian",
     ]);

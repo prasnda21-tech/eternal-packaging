@@ -21,6 +21,7 @@ test("Pembelian sidebar places Uang Muka after Pesanan and before Penerimaan", (
     "Pesanan Pembelian",
     "Uang Muka",
     "Penerimaan Barang",
+    "Retur Pembelian",
     "Faktur Pembelian",
     "Pembayaran Pembelian",
   ]);
