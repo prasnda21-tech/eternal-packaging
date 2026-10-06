@@ -556,6 +556,8 @@ export const api = {
       })
       .then((r) => r.data);
   },
+  getDesignCetakanHistory: (params = {}) =>
+    client.get(`/settings/design-cetakan/history`, { params }).then((r) => r.data),
   listNotifications: (params = {}) => client.get(`/notifications`, { params }).then((r) => r.data),
   markNotificationRead: (id) => client.post(`/notifications/${encodeURIComponent(id)}/read`).then((r) => r.data),
   customerDesignApprovalNotificationSettings: () => client.get(`/settings/notifications/customer-design-approval`).then((r) => r.data),

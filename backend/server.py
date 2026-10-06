@@ -11968,6 +11968,31 @@ def _design_cetakan_view_perms():
     )
 
 
+@api_router.get("/settings/design-cetakan/history")
+async def design_cetakan_history(
+    scope: Optional[str] = "all",
+    branch_id: Optional[str] = None,
+    page: Optional[int] = 1,
+    page_size: Optional[int] = 20,
+    user=Depends(current_user),
+):
+    """Read-only Design Cetakan mutation history from existing audit_logs."""
+    await _require_any_perm(user, *_design_cetakan_view_perms())
+    from services.print_design_history import list_print_design_history
+
+    async def _name(bid: str):
+        return await _accurate_client.lookup_branch_display_name(bid)
+
+    return await list_print_design_history(
+        db,
+        scope=scope,
+        branch_id=branch_id,
+        page=page,
+        page_size=page_size,
+        name_lookup=_name,
+    )
+
+
 @api_router.get("/settings/design-cetakan/preview/{document_type}")
 async def design_cetakan_preview(
     document_type: str,
