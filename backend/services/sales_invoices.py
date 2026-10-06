@@ -839,6 +839,9 @@ async def create_sales_invoice(db, payload: Dict[str, Any], user: dict) -> Dict[
                 "role": str(user.get("role") or ""),
             },
         }
+        order_branch_id = str(order.get("branch_id") or "").strip()
+        if order_branch_id.isdigit():
+            invoice_doc["branch_id"] = order_branch_id
 
         try:
             await db.sales_invoices.insert_one(invoice_doc)
