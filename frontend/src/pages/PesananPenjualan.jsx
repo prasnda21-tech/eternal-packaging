@@ -488,12 +488,13 @@ export default function PesananPenjualan() {
 
   const loadOrdersAbortRef = useRef(null);
 
-  const loadOptions = useCallback(async () => {
+  const loadOptions = useCallback(async ({ applySuggestedPo = false } = {}) => {
     setOptionsLoading(true);
     try {
       const data = await api.salesOrderOptions();
       setOptions(data || {});
-      if (data?.suggested_po_number) {
+      // List mode loads options for header filters (e.g. Sales); only create may seed PO.
+      if (applySuggestedPo && data?.suggested_po_number) {
         setFormData((prev) => ({
           ...prev,
           po_number: prev.po_number || data.suggested_po_number,
@@ -638,7 +639,7 @@ export default function PesananPenjualan() {
   };
   useEffect(() => {
     if (viewMode === "create") {
-      loadOptions();
+      loadOptions({ applySuggestedPo: true });
     }
   }, [viewMode, loadOptions]);
 

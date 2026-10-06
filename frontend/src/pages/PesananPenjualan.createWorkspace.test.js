@@ -280,7 +280,14 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
   });
 
   test("auto PO, customer search, repeat order, and totals keep their behavior", async () => {
+    // Call order: (1) list mount for sales filter options, (2) enter create, (3) generate PO.
     api.salesOrderOptions
+      .mockResolvedValueOnce({
+        suggested_po_number: "PO-OPEN",
+        master_customers: [MASTER],
+        outlets_by_customer: {},
+        sales_options: [],
+      })
       .mockResolvedValueOnce({
         suggested_po_number: "PO-OPEN",
         master_customers: [MASTER],
@@ -289,12 +296,14 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
       })
       .mockResolvedValueOnce({ suggested_po_number: "PO-AUTO-2" });
     await openCreate();
+    expect(api.salesOrderOptions).toHaveBeenCalledTimes(2);
     expect(container.querySelector('[data-testid="input-po-number"]').value).toBe("PO-OPEN");
     await act(async () => {
       setNativeValue(container.querySelector('[data-testid="input-po-number"]'), "");
       container.querySelector('[data-testid="btn-generate-po"]').click();
     });
     await tick(0);
+    expect(api.salesOrderOptions).toHaveBeenCalledTimes(3);
     expect(container.querySelector('[data-testid="input-po-number"]').value).toBe("PO-AUTO-2");
 
     await act(async () => {

@@ -78,8 +78,9 @@ describe("Pesanan Penjualan UI & Data Invariants", () => {
     expect(src).toMatch(/Quantity harus angka lebih besar dari 0/);
   });
 
-  test("defers options fetch until create view and aborts duplicate list fetches", () => {
-    expect(src).toMatch(/if \(viewMode === "create"\) \{\s*loadOptions\(\);/);
+  test("loads options on list for filters and seeds PO only in create; aborts duplicate list fetches", () => {
+    expect(src).toMatch(/if \(viewMode !== "list"\) return undefined;\s*loadOptions\(\);/);
+    expect(src).toMatch(/if \(viewMode === "create"\) \{\s*loadOptions\(\{ applySuggestedPo: true \}\);/);
     expect(src).toMatch(/new AbortController/);
     expect(src).toMatch(/signal: ac\.signal/);
     expect(src).toMatch(/ERR_CANCELED/);
