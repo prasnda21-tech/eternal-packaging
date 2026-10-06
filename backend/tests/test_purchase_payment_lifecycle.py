@@ -247,7 +247,10 @@ async def test_a_to_j_payment_lifecycle():
                 "cancelled": False,
             })
             bad_conf = await confirm(c, rogue_id)
-            assert bad_conf.status_code == 400
+            # Confirm-time overpay is a concurrency/conflict rejection (409), not a
+            # draft validation 400 — create already blocked ordinary overpay.
+            assert bad_conf.status_code == 409
+            assert "melebihi sisa tagihan" in str(bad_conf.json().get("detail") or "")
         finally:
             app.dependency_overrides.pop(current_user, None)
 

@@ -37,11 +37,27 @@ async def disable_physical_stock_for_purchase_flow_tests(bind_motor):
     Keep physical stock OFF so GR/invoice assertions stay about purchasing
     rules, not Stock V2 opening-balance gates. Stock V2 coverage lives in
     test_stock_engine_v2 / purchase→stock dedicated tests.
+
+    GR still resolves the operational Yogyakarta warehouse for receipt location
+    metadata even when physical stock posting is disabled.
     """
     from services.physical_stock_settings import SETTINGS_KEY
     await server.db.app_settings.update_one(
         {"key": SETTINGS_KEY},
         {"$set": {"key": SETTINGS_KEY, "enabled": False, "stock_in_trigger": "goods_receipt", "stock_out_trigger": "sales_delivery"}},
+        upsert=True,
+    )
+    await server.db.branches.update_one(
+        {"id": "branch-ygy"},
+        {"$set": {"id": "branch-ygy", "code": "YGY", "name": "Yogyakarta", "active": True}},
+        upsert=True,
+    )
+    await server.db.warehouses.update_one(
+        {"id": "wh-main"},
+        {"$set": {
+            "id": "wh-main", "branch_id": "branch-ygy", "code": "MAIN",
+            "name": "Gudang Yogyakarta", "active": True,
+        }},
         upsert=True,
     )
 
@@ -170,8 +186,9 @@ async def test_po_number_unique_and_concurrent():
 
 @pytest.mark.anyio
 async def test_goods_receipt_po_line_partial_over_receipt_no_stock_change():
-    items = [{"id": "m1", "accurate_item_id": "9001", "item_name": "Board", "item_code": "B1", "unit": "pcs", "is_active": True}]
-    await server.db.master_items.delete_many({"id": "m1"})
+    # master_item_id must match the request/PO identity; GR R2 validates masters.
+    items = [{"id": "9001", "accurate_item_id": "9001", "item_name": "Board", "item_code": "B1", "unit": "pcs", "is_active": True}]
+    await server.db.master_items.delete_many({"id": "9001"})
     await server.db.master_items.insert_one(items[0])
     before_rows = build_stock_rows(
         items,
@@ -184,7 +201,7 @@ async def test_goods_receipt_po_line_partial_over_receipt_no_stock_change():
 
     async with await client_ctx() as c:
         try:
-            req = await make_request(c, [{"item_name": "Board", "requested_qty": 10, "accurate_item_id": "9001"}])
+            req = await make_request(c, [{"item_name": "Board", "requested_qty": 10, "accurate_item_id": "9001", "master_item_id": "9001"}])
             po = (await c.post("/api/purchase-orders", json={
                 "request_id": req["id"], "supplier": "S",
                 "lines": [{"request_line_id": req["lines"][0]["line_id"], "ordered_qty": 10, "unit_price": 500}],
@@ -219,19 +236,29 @@ async def test_goods_receipt_po_line_partial_over_receipt_no_stock_change():
 
 @pytest.mark.anyio
 async def test_invoice_partial_over_invoice_totals_and_payment_flow():
+    mid = f"mi-resin-{uuid.uuid4().hex[:8]}"
+    await server.db.master_items.update_one(
+        {"id": mid},
+        {"$set": {
+            "id": mid, "accurate_item_id": mid, "item_name": "Resin", "item_code": "RESIN",
+            "unit": "pcs", "base_unit": "pcs", "is_active": True,
+        }},
+        upsert=True,
+    )
     async with await client_ctx() as c:
         try:
-            req = await make_request(c, [{"item_name": "Resin", "requested_qty": 10}])
+            req = await make_request(c, [{"item_name": "Resin", "requested_qty": 10, "master_item_id": mid, "accurate_item_id": mid}])
             po = (await c.post("/api/purchase-orders", json={
                 "request_id": req["id"], "supplier": "PT Kimia",
                 "lines": [{"request_line_id": req["lines"][0]["line_id"], "ordered_qty": 10, "unit_price": 1000000}],
             })).json()["order"]
             lid = po["lines"][0]["line_id"]
             # Normal flow: receive before invoice (or use early-invoice ack)
-            await c.post("/api/purchase-goods-receipts", json={
+            gr = await c.post("/api/purchase-goods-receipts", json={
                 "purchase_order_id": po["id"],
                 "lines": [{"purchase_order_line_id": lid, "received_qty": 10}],
             })
+            assert gr.status_code == 200, gr.text
             inv = (await c.post("/api/purchase-invoices", json={
                 "purchase_order_id": po["id"],
                 "lines": [{"purchase_order_line_id": lid, "invoice_qty": 4}],
