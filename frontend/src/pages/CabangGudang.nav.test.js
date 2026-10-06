@@ -14,12 +14,12 @@ describe("Cabang & Gudang nav", () => {
     expect(v.branchesWarehouses).toBe(true);
   });
 
-  test("menu item routes to /persediaan/cabang-gudang between barang and stock", () => {
+  test("menu item routes to /persediaan/cabang-gudang after nilai persediaan", () => {
     const items = inventoryMenuItems(
       has(NAV_KEYS.inventory, NAV_KEYS.masterItems, NAV_KEYS.branchesWarehouses, NAV_KEYS.currentStock),
     );
     const labels = items.map((i) => i.label);
-    expect(labels).toEqual(["Barang/Jasa", "Cabang & Gudang", "Stock Saat Ini"]);
+    expect(labels).toEqual(["Barang/Jasa", "Stock Saat Ini", "Cabang & Gudang"]);
     const cabang = items.find((i) => i.key === NAV_KEYS.branchesWarehouses);
     expect(cabang.to).toBe("/persediaan/cabang-gudang");
     expect(cabang.testid).toBe("top-nav-cabang-gudang");

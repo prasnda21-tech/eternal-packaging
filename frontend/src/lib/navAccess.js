@@ -128,9 +128,9 @@ export const NAV_MENU_FALLBACK = [
   { key: NAV_KEYS.purchaseHpp, label: "HPP Pembelian", parent: NAV_KEYS.purchasing },
   { key: NAV_KEYS.inventory, label: "Persediaan", parent: null },
   { key: NAV_KEYS.masterItems, label: "Barang/Jasa", parent: NAV_KEYS.inventory },
-  { key: NAV_KEYS.branchesWarehouses, label: "Cabang & Gudang", parent: NAV_KEYS.inventory },
   { key: NAV_KEYS.currentStock, label: "Stock Saat Ini", parent: NAV_KEYS.inventory },
   { key: NAV_KEYS.inventoryValue, label: "Nilai Persediaan", parent: NAV_KEYS.inventory },
+  { key: NAV_KEYS.branchesWarehouses, label: "Cabang & Gudang", parent: NAV_KEYS.inventory },
   { key: NAV_KEYS.reports, label: "Laporan", parent: null },
   { key: NAV_KEYS.analytics, label: "Analitik Output", parent: NAV_KEYS.reports },
   { key: NAV_KEYS.gajiOperator, label: "Gaji Operator", parent: NAV_KEYS.reports },
@@ -409,30 +409,30 @@ export function purchasingMenuItems(hasPerm) {
 
 export const INVENTORY_NAV_ROUTES = {
   [NAV_KEYS.masterItems]: "/persediaan/master-barang-jasa",
-  [NAV_KEYS.branchesWarehouses]: "/persediaan/cabang-gudang",
   [NAV_KEYS.currentStock]: "/persediaan/stock-saat-ini",
   [NAV_KEYS.inventoryValue]: "/persediaan/nilai-persediaan",
+  [NAV_KEYS.branchesWarehouses]: "/persediaan/cabang-gudang",
 };
 
 const INVENTORY_VIS_FIELD = {
   [NAV_KEYS.masterItems]: "masterItems",
-  [NAV_KEYS.branchesWarehouses]: "branchesWarehouses",
   [NAV_KEYS.currentStock]: "currentStock",
   [NAV_KEYS.inventoryValue]: "inventoryValue",
+  [NAV_KEYS.branchesWarehouses]: "branchesWarehouses",
 };
 
 export const INVENTORY_TILE_TONES = {
   [NAV_KEYS.masterItems]: "green",
-  [NAV_KEYS.branchesWarehouses]: "teal",
   [NAV_KEYS.currentStock]: "blue",
   [NAV_KEYS.inventoryValue]: "amber",
+  [NAV_KEYS.branchesWarehouses]: "teal",
 };
 
 export const INVENTORY_TILE_TESTIDS = {
   [NAV_KEYS.masterItems]: "top-nav-master-barang-jasa",
-  [NAV_KEYS.branchesWarehouses]: "top-nav-cabang-gudang",
   [NAV_KEYS.currentStock]: "top-nav-stock-saat-ini",
   [NAV_KEYS.inventoryValue]: "top-nav-nilai-persediaan",
+  [NAV_KEYS.branchesWarehouses]: "top-nav-cabang-gudang",
 };
 
 export function inventoryMenuItems(hasPerm) {
@@ -583,11 +583,11 @@ export function inventoryNavVisible(hasPerm) {
     || canSeeNav(hasPerm, "inventory_valuation.view")
   );
   return {
-    parent: !!(masterItems || branchesWarehouses || currentStock || inventoryValue),
+    parent: !!(masterItems || currentStock || inventoryValue || branchesWarehouses),
     masterItems,
-    branchesWarehouses,
     currentStock,
     inventoryValue,
+    branchesWarehouses,
   };
 }
 
@@ -1074,6 +1074,7 @@ export const SETTINGS_TAB_IDS = [
   "operator-wage",
   "hpp",
   "physical-stock",
+  "design-cetakan",
   "sales-accounting",
   "purchase-accounting",
   "payroll-accounting",
@@ -1105,6 +1106,7 @@ export const SETTINGS_TILE_TONES = {
   "operator-wage": "green",
   hpp: "orange",
   "physical-stock": "emerald",
+  "design-cetakan": "rose",
   "sales-accounting": "purple",
   "purchase-accounting": "rose",
   "payroll-accounting": "blue",
@@ -1134,6 +1136,7 @@ export const SETTINGS_TILE_LABELS = {
   "operator-wage": "Sistem Upah Operator",
   hpp: "Pengaturan HPP",
   "physical-stock": "Stok Fisik",
+  "design-cetakan": "Design Cetakan",
   "sales-accounting": "Akuntansi Penjualan",
   "purchase-accounting": "Akuntansi Pembelian",
   "payroll-accounting": "Akuntansi Payroll",
@@ -1179,6 +1182,9 @@ export function settingsNavVisible(hasPerm) {
   const physicalStock = canSeeNav(hasPerm, "current_stock.view")
     || canSeeNav(hasPerm, "current_stock.update")
     || canSeeNav(hasPerm, "permissions.manage");
+  const designCetakan = canSeeNav(hasPerm, "settings.design_cetakan.view")
+    || canSeeNav(hasPerm, "settings.design_cetakan.manage")
+    || canSeeNav(hasPerm, "permissions.manage");
   const salesAccounting = canSeeNav(hasPerm, "settings.sales_accounting.view")
     || canSeeNav(hasPerm, "settings.sales_accounting.manage")
     || canSeeNav(hasPerm, "permissions.manage");
@@ -1223,6 +1229,7 @@ export function settingsNavVisible(hasPerm) {
     "operator-wage": Boolean(parentGranted && operatorWage),
     hpp: Boolean(parentGranted && hpp),
     "physical-stock": Boolean(parentGranted && physicalStock),
+    "design-cetakan": Boolean(parentGranted && designCetakan),
     "sales-accounting": Boolean(parentGranted && salesAccounting),
     "purchase-accounting": Boolean(parentGranted && purchaseAccounting),
     "payroll-accounting": Boolean(parentGranted && payrollAccounting),

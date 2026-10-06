@@ -90,7 +90,7 @@ describe("desktop sidebar presentation", () => {
     expect(group(rails, "purchasing").sections[1].marker).toBe("sidebar-purchasing-divider");
     expect(group(rails, "purchasing").sections[1].headingTestid).toBe("sidebar-purchasing-hpp-divider");
     expect(group(rails, "purchasing").sections[1].items.map((item) => item.label)).toEqual(["HPP Pembelian"]);
-    expect(labels(group(rails, "inventory"))).toEqual(["Barang/Jasa", "Cabang & Gudang", "Stock Saat Ini", "Nilai Persediaan"]);
+    expect(labels(group(rails, "inventory"))).toEqual(["Barang/Jasa", "Stock Saat Ini", "Nilai Persediaan", "Cabang & Gudang"]);
     expect(group(rails, "keuangan").sections.map((section) => section.heading)).toEqual(["Kas & Bank", "Buku Besar"]);
     expect(labels(group(rails, "keuangan").sections[0] && { ...group(rails, "keuangan"), sections: [group(rails, "keuangan").sections[0]] })).toEqual([
       "Daftar Kas & Bank",
