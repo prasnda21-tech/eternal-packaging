@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Link, useLocation, useSearchParams } from "react-router-dom";
 import { AlertCircle, Edit3, Plus, Save, X } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { canTransition, moneyFormat, statusLabel } from "../lib/hrPayroll";
+import { formatDisplayDate, formatTrackingPageDate } from "../lib/constants";
 import { FormSection, FormField, FormProgress, computeStatus } from "../components/form-standard";
 
 const MODE_META = {
@@ -508,6 +510,79 @@ function payrollTitle(period) {
   return label === (period?.period_number || "Payroll") ? label : `Payroll ${label}`;
 }
 
+function formatIdDate(iso) {
+  return formatTrackingPageDate(iso) || formatDisplayDate(iso);
+}
+
+function formatIdRange(start, end) {
+  const a = formatIdDate(start);
+  const b = formatIdDate(end);
+  if (!a && !b) return "";
+  return `${a || "—"} – ${b || "—"}`;
+}
+
+function pieceOperatorTitle(period) {
+  return `Penggajian Operator — ${formatIdRange(period?.start_date, period?.end_date)}`;
+}
+
+function pieceEarningSum(lines, code) {
+  return (lines || []).reduce((sum, line) => {
+    const amount = (line.earnings || []).filter((row) => row.code === code).reduce((acc, row) => acc + Number(row.amount || 0), 0);
+    return sum + amount;
+  }, 0);
+}
+
+function pieceCalculated(period, lines) {
+  return Number(period?.calculation_version || 0) > 0 || (lines || []).length > 0;
+}
+
+function pieceWorkflowStep(period, lines) {
+  const status = period?.status;
+  if (status === "FINAL") return 4;
+  if (status === "APPROVAL") return 3;
+  if (status === "REVIEW") return 2;
+  if (status === "DRAFT" && pieceCalculated(period, lines)) return 2;
+  return 1;
+}
+
+function pieceOperatorCount(period, lines) {
+  const fromLines = new Set((lines || []).map((line) => line.employee_id).filter(Boolean));
+  if (fromLines.size) return fromLines.size;
+  const fromSources = new Set((period?.piece_sources || []).map((row) => row.operator_user_id || row.employee_id).filter(Boolean));
+  return fromSources.size || Number(period?.summary?.line_count || 0);
+}
+
+function pieceBonusTotal(lines) {
+  const earned = pieceEarningSum(lines, "BONUS_OPERATOR");
+  if (earned) return earned;
+  return (lines || []).reduce((sum, line) => {
+    const snap = line.bonus_snapshot || {};
+    const amount = snap.final_amount ?? snap.proposed_amount ?? 0;
+    return sum + Number(amount);
+  }, 0);
+}
+
+function pieceBonusIsUsulan(period, lines) {
+  if (period?.status === "FINAL") return false;
+  return (lines || []).some((line) => {
+    const snap = line.bonus_snapshot || {};
+    if (String(snap.status || "").toUpperCase() === "USULAN") return true;
+    return snap.final_amount == null && Number(snap.proposed_amount || 0) > 0;
+  });
+}
+
+function pieceNextAction(period, lines, hasPerm) {
+  const status = period?.status;
+  const calculated = pieceCalculated(period, lines);
+  if (status === "DRAFT" && !calculated && hasPerm("payroll.calculate")) return { kind: "calc", testid: "hr-calc-btn" };
+  if (status === "DRAFT" && calculated && canTransition(status, "REVIEW") && hasPerm("payroll.review")) return { kind: "REVIEW", testid: "hr-transition-review" };
+  if (status === "REVIEW" && canTransition(status, "APPROVAL") && hasPerm("payroll.approve")) return { kind: "APPROVAL", testid: "hr-transition-approval" };
+  if (status === "APPROVAL" && canTransition(status, "FINAL") && hasPerm("payroll.finalize")) return { kind: "FINAL", testid: "hr-transition-final" };
+  return null;
+}
+
+const PIECE_STEPS = ["Hitung", "Review", "Finalkan", "Payment"];
+
 function ledgerHref(period, readiness) {
   const payable = (readiness?.planned_lines || []).find((row) => previewIsPayable(row));
   const params = new URLSearchParams();
@@ -575,7 +650,7 @@ function financeAction(period, payment, readiness, hasPerm) {
   return null;
 }
 
-function PayrollFinanceFlow({ period, lines, readiness, payment, payments, banks, onChanged, onError, hasPerm }) {
+function PayrollFinanceFlow({ period, lines, readiness, payment, payments, banks, onChanged, onError, hasPerm, compact = false }) {
   const [busy, setBusy] = useState("");
   const [dialog, setDialog] = useState("");
   const [reason, setReason] = useState("");
@@ -599,9 +674,9 @@ function PayrollFinanceFlow({ period, lines, readiness, payment, payments, banks
     }
   };
   return (
-    <>
+    <div className={compact ? "hr-piece-pay-focus" : undefined} data-testid={compact ? "hr-piece-pay-focus" : undefined}>
       <p className="hr-pay-facts">
-        {period.start_date} – {period.end_date}
+        {compact ? formatIdRange(period.start_date, period.end_date) : `${period.start_date} – ${period.end_date}`}
         {" · "}
         {(lines || []).length} karyawan
         {" · "}
@@ -611,7 +686,7 @@ function PayrollFinanceFlow({ period, lines, readiness, payment, payments, banks
         <dt>Status jurnal</dt>
         <dd>{period.accounting_journal_id ? "Diposting" : "Belum diposting"}</dd>
         <dt>Tanggal posting</dt>
-        <dd>{postedOn(period.accounting_posted_at) || "—"}</dd>
+        <dd>{(compact ? formatIdDate(postedOn(period.accounting_posted_at)) : postedOn(period.accounting_posted_at)) || "—"}</dd>
         {hasActor(period.accounting_posted_by) && (
           <>
             <dt>Diposting oleh</dt>
@@ -656,6 +731,7 @@ function PayrollFinanceFlow({ period, lines, readiness, payment, payments, banks
       {action?.kind === "create" && (
         <div className="hr-pay-create">
           <label>Tanggal pembayaran
+            {compact && payDate ? <span className="gaji-period-id" data-testid="hr-payment-date-label">{formatIdDate(payDate)}</span> : null}
             <input type="date" value={payDate} onChange={(e) => setPayDate(e.target.value)} data-testid="hr-payment-date" />
           </label>
           <label>Bank
@@ -737,7 +813,7 @@ function PayrollFinanceFlow({ period, lines, readiness, payment, payments, banks
           </div>
         </div>
       )}
-    </>
+    </div>
   );
 }
 
@@ -753,9 +829,11 @@ export function pieceInputSyncKey(period) {
   });
 }
 
-function PieceHoldingPanel({ period, lines, kasbon, hasPerm, onSaved, onError }) {
+function PieceHoldingPanel({ period, lines, kasbon, hasPerm, onSaved, onError, compact = false }) {
   const editable = period?.status === "DRAFT" && hasPerm("payroll.piece_holding.edit");
-  const [tab, setTab] = useState("upah");
+  const datesFromGaji = period?.piece_prepared_from === "gaji_operator";
+  const dateLocked = !editable || datesFromGaji;
+  const [tab, setTab] = useState(compact ? "bonus" : "upah");
   const [integration, setIntegration] = useState(null);
   const [startDate, setStartDate] = useState(period?.start_date || "");
   const [endDate, setEndDate] = useState(period?.end_date || "");
@@ -823,29 +901,70 @@ function PieceHoldingPanel({ period, lines, kasbon, hasPerm, onSaved, onError })
     }
   };
   if (period?.period_scope !== "piece") return null;
-  const tabs = [["upah", "Upah"], ["bonus", "Bonus"], ["kasbon", "Kasbon"], ["blokir", "Pemblokir"]];
+  const tabs = compact
+    ? [["bonus", "Bonus"], ["kasbon", "Kasbon"], ["blokir", "Pemblokir"], ["upah", "Sumber"]]
+    : [["upah", "Upah"], ["bonus", "Bonus"], ["kasbon", "Kasbon"], ["blokir", "Pemblokir"]];
   return (
-    <div className="settings-card" data-testid="hr-piece-panel">
-      <div className="hr-card-head"><h3>Upah borongan</h3>
+    <div className={`settings-card ${compact ? "hr-piece-compact-panel" : ""}`} data-testid="hr-piece-panel">
+      {compact && (
+        <div className="hr-piece-settings" data-testid="hr-piece-period-settings">
+          <h3>Pengaturan Periode</h3>
+          {datesFromGaji && <p className="muted small" data-testid="hr-piece-dates-from-gaji">Rentang upah dan bonus mengikuti Gaji Operator.</p>}
+          <div className="hr-piece-settings-grid">
+            <label>Tanggal Upah
+              <span className="gaji-period-id" data-testid="hr-piece-wage-label">{formatIdRange(startDate, endDate)}</span>
+              <span className={`hr-piece-locked-dates ${datesFromGaji ? "is-locked" : ""}`}>
+                <input type="date" value={startDate} disabled={dateLocked} onChange={(e) => setStartDate(e.target.value)} data-testid="hr-piece-wage-start" />
+                <span>—</span>
+                <input type="date" value={endDate} disabled={dateLocked} onChange={(e) => setEndDate(e.target.value)} data-testid="hr-piece-wage-end" />
+              </span>
+            </label>
+            <label>Rentang Bonus
+              <span className="gaji-period-id" data-testid="hr-piece-bonus-label">{formatIdRange(bonusStart, bonusEnd)}</span>
+              <span className={`hr-piece-locked-dates ${datesFromGaji ? "is-locked" : ""}`}>
+                <input type="date" value={bonusStart} disabled={dateLocked} onChange={(e) => setBonusStart(e.target.value)} data-testid="hr-piece-bonus-start" />
+                <span>—</span>
+                <input type="date" value={bonusEnd} disabled={dateLocked} onChange={(e) => setBonusEnd(e.target.value)} data-testid="hr-piece-bonus-end" />
+              </span>
+            </label>
+            <label>Batas Integrasi
+              {integrationStart && <span className="gaji-period-id" data-testid="hr-piece-integration-label">{formatIdDate(integrationStart)}</span>}
+              <input type="date" value={integrationStart} disabled={!editable || integration?.locked} onChange={(e) => setIntegrationStart(e.target.value)} data-testid="hr-piece-integration-start" />
+            </label>
+            <p className="muted small">Kasbon (Opsional) — isi di tab Kasbon.</p>
+          </div>
+        </div>
+      )}
+      <div className="hr-card-head"><h3>{compact ? "Koreksi Holding" : "Upah borongan"}</h3>
         <div className="hr-actions">{tabs.map(([id, label]) => <button type="button" key={id} className={tab === id ? "primary" : "ghost"} onClick={() => setTab(id)} data-testid={`hr-piece-tab-${id}`}>{label}</button>)}</div>
       </div>
       {tab === "upah" && (
         <div className="emp-form">
-          <label>Batas mulai integrasi
-            <input type="date" value={integrationStart} disabled={!editable || integration?.locked} onChange={(e) => setIntegrationStart(e.target.value)} data-testid="hr-piece-integration-start" />
-          </label>
-          {integration?.locked && <p className="muted small">Batas mulai sudah dikunci.</p>}
-          <label>Mulai upah<input type="date" value={startDate} disabled={!editable} onChange={(e) => setStartDate(e.target.value)} data-testid="hr-piece-wage-start" /></label>
-          <label>Akhir upah<input type="date" value={endDate} disabled={!editable} onChange={(e) => setEndDate(e.target.value)} data-testid="hr-piece-wage-end" /></label>
+          {!compact && (
+            <>
+              <label>Batas mulai integrasi
+                <input type="date" value={integrationStart} disabled={!editable || integration?.locked} onChange={(e) => setIntegrationStart(e.target.value)} data-testid="hr-piece-integration-start" />
+              </label>
+              {integration?.locked && <p className="muted small">Batas mulai sudah dikunci.</p>}
+              {datesFromGaji && <p className="muted small" data-testid="hr-piece-dates-from-gaji">Rentang upah dan bonus mengikuti Gaji Operator.</p>}
+              <label>Mulai upah<input type="date" value={startDate} disabled={dateLocked} onChange={(e) => setStartDate(e.target.value)} data-testid="hr-piece-wage-start" /></label>
+              <label>Akhir upah<input type="date" value={endDate} disabled={dateLocked} onChange={(e) => setEndDate(e.target.value)} data-testid="hr-piece-wage-end" /></label>
+            </>
+          )}
+          {compact && integration?.locked && <p className="muted small">Batas mulai sudah dikunci.</p>}
           {(period.piece_sources || []).map((row) => (
-            <p key={row.source_key} className="muted small" data-testid="hr-piece-source">{row.po_number || row.order_id} · {row.qty} × {moneyFormat(row.rate_per_pcs)} = {moneyFormat(row.amount)} · {row.work_date}</p>
+            <p key={row.source_key} className="muted small" data-testid="hr-piece-source">{row.po_number || row.order_id} · {row.qty} × {moneyFormat(row.rate_per_pcs)} = {moneyFormat(row.amount)} · {formatIdDate(row.work_date)}</p>
           ))}
         </div>
       )}
       {tab === "bonus" && (
         <div className="emp-form">
-          <label>Mulai bonus<input type="date" value={bonusStart} disabled={!editable} onChange={(e) => setBonusStart(e.target.value)} data-testid="hr-piece-bonus-start" /></label>
-          <label>Akhir bonus<input type="date" value={bonusEnd} disabled={!editable} onChange={(e) => setBonusEnd(e.target.value)} data-testid="hr-piece-bonus-end" /></label>
+          {!compact && (
+            <>
+              <label>Mulai bonus<input type="date" value={bonusStart} disabled={dateLocked} onChange={(e) => setBonusStart(e.target.value)} data-testid="hr-piece-bonus-start" /></label>
+              <label>Akhir bonus<input type="date" value={bonusEnd} disabled={dateLocked} onChange={(e) => setBonusEnd(e.target.value)} data-testid="hr-piece-bonus-end" /></label>
+            </>
+          )}
           {(lines || []).map((line) => {
             const snap = line.bonus_snapshot || {};
             return (
@@ -886,13 +1005,16 @@ function PieceHoldingPanel({ period, lines, kasbon, hasPerm, onSaved, onError })
           <p data-testid="hr-piece-net">Upah bersih {moneyFormat((lines || []).reduce((sum, line) => sum + Number(line.net || 0), 0))}</p>
         </div>
       )}
-      {editable && <button type="button" className="primary" disabled={busy} onClick={save} data-testid="hr-piece-save">{busy ? "Menyimpan…" : "Simpan input Holding"}</button>}
+      {editable && <button type="button" className={compact ? "ghost" : "primary"} disabled={busy} onClick={save} data-testid="hr-piece-save">{busy ? "Menyimpan…" : "Simpan input Holding"}</button>}
     </div>
   );
 }
 
 function Payroll() {
   const { hasPerm } = useAuth();
+  const [searchParams] = useSearchParams();
+  const location = useLocation();
+  const openPeriodId = searchParams.get("period") || "";
   const [periods, setPeriods] = useState([]);
   const [selected, setSelected] = useState(null);
   const [lines, setLines] = useState([]);
@@ -913,6 +1035,8 @@ function Payroll() {
   const [form, setForm] = useState({ year: new Date().getFullYear(), month: new Date().getMonth() + 1, start_date: "", end_date: "" });
   const [pieceForm, setPieceForm] = useState({ start_date: "", end_date: "" });
   const [err, setErr] = useState("");
+  const [gajiWarn, setGajiWarn] = useState("");
+  const [showPieceDetail, setShowPieceDetail] = useState(false);
   const loadPeriods = useCallback(async () => { const data = await api.hrPayrollPeriods(); setPeriods(data.periods || []); }, []);
   const loadDetail = useCallback(async (period) => {
     if (!period?.id) return;
@@ -945,6 +1069,18 @@ function Payroll() {
   }, []);
   const canCreatePayment = hasPerm("payroll_payment.create");
   useEffect(() => { loadPeriods().catch((ex) => setErr(errorText(ex))); }, [loadPeriods]);
+  useEffect(() => {
+    if (!openPeriodId) return undefined;
+    let active = true;
+    loadDetail({ id: openPeriodId }).catch((ex) => { if (active) setErr(errorText(ex)); });
+    return () => { active = false; };
+  }, [openPeriodId, loadDetail]);
+  useEffect(() => {
+    const msg = location.state?.gajiPrepareMessage;
+    const warns = location.state?.accountingWarnings || [];
+    if (msg) setNotice(msg);
+    setGajiWarn(warns.join(" "));
+  }, [location.state]);
   useEffect(() => {
     if (selected?.status !== "FINAL" || !selected.accounting_journal_id || payment || !canCreatePayment) return undefined;
     let active = true;
@@ -998,7 +1134,202 @@ function Payroll() {
     ["APPROVAL", "payroll.approve", "hr-transition-approval", "Kirim Persetujuan"],
     ["FINAL", "payroll.finalize", "hr-transition-final", "Finalkan"],
   ];
-  return <div data-testid="hr-payroll-page"><PageHead title="Penggajian" />{err && <div className="error"><AlertCircle size={14} /> {err}</div>}{notice && <p className="muted" data-testid="hr-payroll-post-notice">{notice}</p>}
+  const isPieceView = selected?.period_scope === "piece";
+  const payrollNotices = selected ? (
+    <>
+      {(readiness?.unmapped_sources || []).some((row) => row?.label) && (
+        <p className="muted small" data-testid="hr-payroll-unmapped">
+          Komponen belum dipetakan: {(readiness.unmapped_sources || []).map((row) => row.label).filter(Boolean).join(", ")}
+          {selected.status !== "FINAL" ? " Finalkan akan ditolak sampai mapping ini lengkap." : ""}
+        </p>
+      )}
+      {selected.status !== "FINAL" && (readiness?.reasons || []).includes("payable_account_missing") && (
+        <p className="error" data-testid="hr-payroll-payable-early">Akun Utang Gaji belum dipetakan. Finalkan akan ditolak.</p>
+      )}
+      {selected.status !== "FINAL" && (readiness?.reasons || []).includes("invalid_mapping") && (
+        <p className="error" data-testid="hr-payroll-mapping-invalid">Klasifikasi akun mapping tidak valid. Finalkan akan ditolak.</p>
+      )}
+    </>
+  ) : null;
+  const payrollModals = selected ? (
+    <>
+      {finalizeOpen && (
+        <div className="modal" role="dialog" aria-modal="true" data-testid="hr-finalize-modal">
+          <div className="modal-inner">
+            <div className="modal-head">
+              <h3>Finalkan payroll?</h3>
+              <button type="button" className="ghost sm" disabled={finalizeBusy} onClick={() => setFinalizeOpen(false)}>×</button>
+            </div>
+            <div className="emp-form">
+              <p>Finalisasi mencatat biaya payroll dan Utang Gaji secara otomatis. Pembayaran bank dilakukan terpisah dan tidak dijalankan sekarang.</p>
+              <div className="emp-actions">
+                <button type="button" className="ghost" disabled={finalizeBusy} onClick={() => setFinalizeOpen(false)}>Batal</button>
+                <button type="button" className="primary" disabled={finalizeBusy} onClick={confirmFinalize} data-testid="hr-finalize-confirm">{finalizeBusy ? "Memproses…" : "Finalkan"}</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+      {postOpen && (
+        <div className="modal" role="dialog" aria-modal="true" data-testid="hr-payroll-post-modal">
+          <div className="modal-inner">
+            <div className="modal-head">
+              <h3>Pemulihan: Post Accounting Payroll?</h3>
+              <button type="button" className="ghost sm" disabled={postBusy} onClick={() => setPostOpen(false)}>×</button>
+            </div>
+            <div className="emp-form">
+              <dl className="hr-pay-meta">
+                <dt>Periode</dt><dd>{isPieceView ? pieceOperatorTitle(selected) : payrollMonthLabel(selected)}</dd>
+                <dt>Gross Payroll</dt><dd>{moneyFormat(readiness?.summary?.gross)}</dd>
+                <dt>Net Payroll</dt><dd>{moneyFormat(readiness?.summary?.net)}</dd>
+              </dl>
+              <p>Setelah posting, jurnal accounting akan dibuat dan periode payroll tidak dapat diposting ulang.</p>
+              <div className="emp-actions">
+                <button type="button" className="ghost" disabled={postBusy} onClick={() => setPostOpen(false)} data-testid="hr-payroll-post-cancel">Batalkan</button>
+                <button type="button" className="primary" disabled={postBusy} onClick={postAccounting} data-testid="hr-payroll-post-confirm">{postBusy ? "Memproses…" : "Post Accounting"}</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  ) : null;
+  const payrollPreview = showPreview && readiness ? (
+    <div className="settings-card hr-payroll-accounting-preview" data-testid="hr-payroll-accounting-preview">
+      <h3>Preview Accounting</h3>
+      <p className="muted small">PREVIEW — BELUM MEMBUAT JURNAL</p>
+      <p>Status: {readiness.accounting_ready ? "Siap" : "Belum Siap"}</p>
+      <p className="muted small">{(readiness.reasons || []).join(" · ")}</p>
+      <div className="table-wrap"><table className="ship-table"><thead><tr><th>Sumber</th><th>Treatment</th><th>Akun</th><th className="num">Debit</th><th className="num">Kredit</th></tr></thead><tbody>
+        {(readiness.planned_lines || []).map((row, idx) => (
+          <tr key={`${row.account_id}-${(row.source_keys || []).join(",")}-${idx}`} data-testid={previewIsPayable(row) ? "hr-payroll-accounting-preview-payable" : "hr-payroll-accounting-preview-line"}>
+            <td>
+              <div>{previewSourceLabel(row)}</div>
+              {previewIsPayable(row)
+                ? <div className="muted small">Saldo utang dari net payroll — bukan komponen mapped</div>
+                : row.name && row.name !== previewSourceLabel(row) ? <div className="muted small">{row.name}</div> : null}
+            </td>
+            <td>
+              <div>{previewTreatmentLabel(row.treatment)}</div>
+              {row.treatment ? <div className="muted small">{row.treatment}</div> : null}
+            </td>
+            <td className="mono">{previewAccountLabel(row)}</td>
+            <td className="num">{moneyFormat(row.debit)}</td>
+            <td className="num">{moneyFormat(row.credit)}</td>
+          </tr>
+        ))}
+      </tbody></table></div>
+      <p>Gross {moneyFormat(readiness.summary?.gross)} · Potongan {moneyFormat(readiness.summary?.deductions)} · Net {moneyFormat(readiness.summary?.net)}</p>
+      <p>Total debit {moneyFormat(readiness.summary?.total_debit)} · Total kredit {moneyFormat(readiness.summary?.total_credit)} · Selisih {moneyFormat(readiness.summary?.difference)}</p>
+      <button type="button" className="ghost" onClick={() => setShowPreview(false)}>Tutup</button>
+    </div>
+  ) : null;
+  const payrollFinance = selected?.status === "FINAL" ? (
+    <PayrollFinanceFlow
+      key={selected.id}
+      period={selected}
+      lines={lines}
+      readiness={readiness}
+      payment={payment}
+      payments={payments}
+      banks={banks}
+      hasPerm={hasPerm}
+      compact={isPieceView}
+      onError={setErr}
+      onChanged={() => loadDetail(selected)}
+    />
+  ) : null;
+  if (isPieceView) {
+    const nextPiece = pieceNextAction(selected, lines, hasPerm);
+    const pieceStep = pieceWorkflowStep(selected, lines);
+    const pieceWage = pieceEarningSum(lines, "UPAH_BORONGAN");
+    const pieceBonus = pieceBonusTotal(lines);
+    return (
+      <div data-testid="hr-payroll-page" className={`hr-piece-simple${selected.status === "FINAL" ? " is-final" : ""}`}>
+        {err && <div className="error"><AlertCircle size={14} /> {err}</div>}
+        {notice && <p className="muted" data-testid="hr-payroll-post-notice">{notice}</p>}
+        {gajiWarn && <p className="gaji-unset-warn" data-testid="hr-gaji-accounting-warning">{gajiWarn}</p>}
+        <header className="hr-piece-head" data-testid="hr-piece-simple">
+          <div>
+            <div className="hr-piece-kicker">
+              <p className="eyebrow">HR &amp; Payroll → Penggajian</p>
+              {selected.piece_prepared_from === "gaji_operator" && (
+                <span className="hr-piece-from-gaji" data-testid="hr-piece-from-gaji">Dibuat dari Gaji Operator</span>
+              )}
+            </div>
+            <h1>{pieceOperatorTitle(selected)}</h1>
+          </div>
+          <Link to="/laporan/gaji-operator" className="ghost sm" data-testid="hr-piece-back-gaji">Kembali ke Gaji Operator</Link>
+        </header>
+        <div className="hr-piece-kpi" data-testid="hr-piece-kpi">
+          <div className="hr-piece-kpi-card"><span>Operator</span><strong>{pieceOperatorCount(selected, lines)}</strong></div>
+          <div className="hr-piece-kpi-card"><span>Upah</span><strong>{moneyFormat(pieceWage)}</strong></div>
+          <div className="hr-piece-kpi-card hr-piece-kpi-bonus"><span>{pieceBonusIsUsulan(selected, lines) ? "Bonus Usulan" : "Bonus"}</span><strong>{moneyFormat(pieceBonus)}</strong></div>
+          <div className="hr-piece-kpi-card"><span>Status</span><strong className={`hr-status hr-status-${String(selected.status).toLowerCase()}`}>{statusLabel(selected.status)}</strong></div>
+        </div>
+        {(selected.accounting_journal_id || readiness) && <span className="muted small" data-testid="hr-payroll-accounting-ready">Accounting: {selected.accounting_journal_id ? "Posted" : readiness.accounting_ready ? "Siap" : "Belum Siap"}</span>}
+        <ol className="hr-piece-stepper" data-testid="hr-piece-stepper">
+          {PIECE_STEPS.map((label, idx) => {
+            const n = idx + 1;
+            const state = n < pieceStep ? "done" : n === pieceStep ? "current" : "next";
+            return (
+              <li key={label} className={state} data-testid={`hr-piece-step-${n}`}>
+                <span className="num">{n}</span>
+                {label}
+                {n < PIECE_STEPS.length && <span className="hr-piece-step-line" />}
+              </li>
+            );
+          })}
+        </ol>
+        <div className="hr-piece-actions" data-testid="hr-piece-primary-actions">
+          {selected.status === "DRAFT" && hasPerm("payroll.calculate") && (
+            <button className={nextPiece?.kind === "calc" ? "primary" : "ghost"} onClick={calculate} data-testid="hr-calc-btn">Hitung Payroll</button>
+          )}
+          {transitionButtons.map(([target, perm, testid, label]) => {
+            if (!(canTransition(selected.status, target) && hasPerm(perm))) return null;
+            const reviewBeforeCalc = target === "REVIEW" && !pieceCalculated(selected, lines);
+            return (
+              <button
+                key={target}
+                className={nextPiece?.testid === testid ? "primary" : "ghost"}
+                disabled={reviewBeforeCalc}
+                title={reviewBeforeCalc ? "Hitung Payroll dulu" : undefined}
+                onClick={() => (target === "FINAL" ? setFinalizeOpen(true) : transition(target))}
+                data-testid={testid}
+              >{label}</button>
+            );
+          })}
+          <button type="button" className="ghost" onClick={() => setShowPieceDetail((open) => !open)} data-testid="hr-piece-operator-detail">Lihat Detail Operator</button>
+          {selected.status === "FINAL" && hasPerm("payroll.reopen") && <button className="ghost" onClick={reopen} disabled={Boolean(selected.accounting_journal_id)} title={selected.accounting_journal_id ? "Jurnal akuntansi masih aktif" : undefined} data-testid="hr-reopen-btn">Buka Ulang</button>}
+          {readiness && <button type="button" className="ghost" onClick={() => setShowPreview((open) => !open)} data-testid="hr-payroll-accounting-preview-btn">Lihat Preview Accounting</button>}
+        </div>
+        {canPostAccounting && (
+          <div className="hr-piece-recovery" data-testid="hr-piece-recovery">
+            <span>Pemulihan jurnal akrual. Bukan langkah utama payroll.</span>
+            <button type="button" className="ghost" onClick={() => { setErr(""); setPostOpen(true); }} data-testid="hr-payroll-post-accounting" title="Hanya pemulihan bila Finalkan sudah selesai tetapi jurnal kosong">Pemulihan: Post Accounting</button>
+          </div>
+        )}
+        {payrollFinance}
+        {selected.accounting_journal_id && (
+          <div className="hr-piece-journal-quiet">
+            <p className="hr-pay-facts" data-testid="hr-payroll-journal-number">Journal: {postedJournal.number || "—"}</p>
+            <a className="ghost sm" href={ledgerHref(selected, readiness)} data-testid="hr-payroll-open-journal">Buka Jurnal</a>
+          </div>
+        )}
+        {payrollNotices}
+        {payrollModals}
+        {payrollPreview}
+        <PieceHoldingPanel compact period={selected} lines={lines} kasbon={kasbon} hasPerm={hasPerm} onError={setErr} onSaved={() => loadDetail(selected)} />
+        {showPieceDetail && (
+          <>
+            <div className="settings-card" data-testid="hr-breakdown"><h3>Rincian Payroll</h3><div className="table-wrap"><table className="ship-table"><thead><tr><th>Karyawan</th><th>Pendapatan</th><th>Potongan</th><th>Gaji Bersih</th></tr></thead><tbody>{lines.map((line) => <tr key={line.id}><td>{employeeName(line)}</td><td>{moneyFormat(line.gross)}</td><td>{moneyFormat(line.total_deductions)}</td><td><strong>{moneyFormat(line.net)}</strong><div className="muted small">{(line.earnings || []).map((r) => `${r.name}: ${moneyFormat(r.amount)}`).join(" · ")}</div></td></tr>)}</tbody></table></div></div>
+            <div className="settings-card"><h3>Jadwal Kasbon</h3><div className="table-wrap"><table className="ship-table"><tbody>{kasbon.map((row) => <tr key={row.id} data-testid="hr-kasbon-row"><td>{row.employee_name || row.employee_id}</td><td>{row.request_number || row.request_id}</td><td>{moneyFormat(row.outstanding)}</td></tr>)}</tbody></table></div></div>
+          </>
+        )}
+      </div>
+    );
+  }
+  return <div data-testid="hr-payroll-page"><PageHead title="Penggajian" />{err && <div className="error"><AlertCircle size={14} /> {err}</div>}{notice && <p className="muted" data-testid="hr-payroll-post-notice">{notice}</p>}{gajiWarn && <p className="gaji-unset-warn" data-testid="hr-gaji-accounting-warning">{gajiWarn}</p>}
     {hasPerm("payroll.calculate") && <form className="settings-card hr-period-form" onSubmit={create}><h3>Buat Periode</h3>{[["year", "Tahun", "number"], ["month", "Bulan", "number"], ["start_date", "Tanggal mulai", "date"], ["end_date", "Tanggal akhir", "date"]].map(([key, label, type]) => <label key={key}>{label}<input type={type} value={form[key]} onChange={(e) => setForm({ ...form, [key]: e.target.value })} required /></label>)}<button className="primary"><Plus size={14} /> Buat</button></form>}
     {hasPerm("payroll.piece_holding.edit") && <form className="settings-card hr-period-form" onSubmit={createPiece} data-testid="hr-piece-create"><h3>Periode borongan</h3><label>Mulai<input type="date" value={pieceForm.start_date} onChange={(e) => setPieceForm({ ...pieceForm, start_date: e.target.value })} required data-testid="hr-piece-create-start" /></label><label>Akhir<input type="date" value={pieceForm.end_date} onChange={(e) => setPieceForm({ ...pieceForm, end_date: e.target.value })} required data-testid="hr-piece-create-end" /></label><button className="primary">Buat borongan</button></form>}
     <div className="hr-master-detail"><div className="settings-card"><h3>Periode</h3>{periods.map((p) => <button type="button" className={`hr-list-button ${selected?.id === p.id ? "active" : ""}`} key={p.id} onClick={() => loadDetail(p).catch((ex) => setErr(errorText(ex)))}><span>{p.period_number || `${p.month}/${p.year}`}</span><span className={`hr-status hr-status-${String(p.status).toLowerCase()}`}>{statusLabel(p.status)}</span></button>)}</div>
@@ -1010,7 +1341,7 @@ function Payroll() {
           {selected.status === "DRAFT" && hasPerm("payroll.calculate") && <button className="primary" onClick={calculate} data-testid="hr-calc-btn">Hitung Payroll</button>}
           {transitionButtons.map(([target, perm, testid, label]) => canTransition(selected.status, target) && hasPerm(perm) ? <button key={target} className="primary" onClick={() => (target === "FINAL" ? setFinalizeOpen(true) : transition(target))} data-testid={testid}>{label}</button> : null)}
           {selected.status === "FINAL" && hasPerm("payroll.reopen") && <button className="ghost" onClick={reopen} disabled={Boolean(selected.accounting_journal_id)} title={selected.accounting_journal_id ? "Jurnal akuntansi masih aktif" : undefined} data-testid="hr-reopen-btn">Buka Ulang</button>}
-          {canPostAccounting && <button type="button" className="primary" onClick={() => { setErr(""); setPostOpen(true); }} data-testid="hr-payroll-post-accounting">Post Accounting</button>}
+          {canPostAccounting && <button type="button" className="ghost" onClick={() => { setErr(""); setPostOpen(true); }} data-testid="hr-payroll-post-accounting" title="Hanya pemulihan bila Finalkan sudah selesai tetapi jurnal kosong">Pemulihan: Post Accounting</button>}
           {readiness && <button type="button" className="ghost" onClick={() => setShowPreview((open) => !open)} data-testid="hr-payroll-accounting-preview-btn">Lihat Preview Accounting</button>}
         </div></div>
         {selected.accounting_journal_id && (
@@ -1019,102 +1350,11 @@ function Payroll() {
             <a className="ghost" href={ledgerHref(selected, readiness)} data-testid="hr-payroll-open-journal">Buka Jurnal</a>
           </>
         )}
-        {selected.status === "FINAL" && (
-          <PayrollFinanceFlow
-            key={selected.id}
-            period={selected}
-            lines={lines}
-            readiness={readiness}
-            payment={payment}
-            payments={payments}
-            banks={banks}
-            hasPerm={hasPerm}
-            onError={setErr}
-            onChanged={() => loadDetail(selected)}
-          />
-        )}
-        {(readiness?.unmapped_sources || []).some((row) => row?.label) && (
-          <p className="muted small" data-testid="hr-payroll-unmapped">
-            Komponen belum dipetakan: {(readiness.unmapped_sources || []).map((row) => row.label).filter(Boolean).join(", ")}
-            {selected.status !== "FINAL" ? " Finalkan akan ditolak sampai mapping ini lengkap." : ""}
-          </p>
-        )}
-        {selected.status !== "FINAL" && (readiness?.reasons || []).includes("payable_account_missing") && (
-          <p className="error" data-testid="hr-payroll-payable-early">Akun Utang Gaji belum dipetakan. Finalkan akan ditolak.</p>
-        )}
-        {selected.status !== "FINAL" && (readiness?.reasons || []).includes("invalid_mapping") && (
-          <p className="error" data-testid="hr-payroll-mapping-invalid">Klasifikasi akun mapping tidak valid. Finalkan akan ditolak.</p>
-        )}
-        {finalizeOpen && (
-          <div className="modal" role="dialog" aria-modal="true" data-testid="hr-finalize-modal">
-            <div className="modal-inner">
-              <div className="modal-head">
-                <h3>Finalkan payroll?</h3>
-                <button type="button" className="ghost sm" disabled={finalizeBusy} onClick={() => setFinalizeOpen(false)}>×</button>
-              </div>
-              <div className="emp-form">
-                <p>Finalisasi mencatat biaya payroll dan Utang Gaji secara otomatis. Pembayaran bank dilakukan terpisah dan tidak dijalankan sekarang.</p>
-                <div className="emp-actions">
-                  <button type="button" className="ghost" disabled={finalizeBusy} onClick={() => setFinalizeOpen(false)}>Batal</button>
-                  <button type="button" className="primary" disabled={finalizeBusy} onClick={confirmFinalize} data-testid="hr-finalize-confirm">{finalizeBusy ? "Memproses…" : "Finalkan"}</button>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-        {postOpen && (
-          <div className="modal" role="dialog" aria-modal="true" data-testid="hr-payroll-post-modal">
-            <div className="modal-inner">
-              <div className="modal-head">
-                <h3>Post Accounting Payroll?</h3>
-                <button type="button" className="ghost sm" disabled={postBusy} onClick={() => setPostOpen(false)}>×</button>
-              </div>
-              <div className="emp-form">
-                <dl className="hr-pay-meta">
-                  <dt>Periode</dt><dd>{payrollMonthLabel(selected)}</dd>
-                  <dt>Gross Payroll</dt><dd>{moneyFormat(readiness?.summary?.gross)}</dd>
-                  <dt>Net Payroll</dt><dd>{moneyFormat(readiness?.summary?.net)}</dd>
-                </dl>
-                <p>Setelah posting, jurnal accounting akan dibuat dan periode payroll tidak dapat diposting ulang.</p>
-                <div className="emp-actions">
-                  <button type="button" className="ghost" disabled={postBusy} onClick={() => setPostOpen(false)} data-testid="hr-payroll-post-cancel">Batalkan</button>
-                  <button type="button" className="primary" disabled={postBusy} onClick={postAccounting} data-testid="hr-payroll-post-confirm">{postBusy ? "Memproses…" : "Post Accounting"}</button>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
+        {payrollFinance}
+        {payrollNotices}
+        {payrollModals}
         </div>
-        {showPreview && readiness && (
-          <div className="settings-card hr-payroll-accounting-preview" data-testid="hr-payroll-accounting-preview">
-            <h3>Preview Accounting</h3>
-            <p className="muted small">PREVIEW — BELUM MEMBUAT JURNAL</p>
-            <p>Status: {readiness.accounting_ready ? "Siap" : "Belum Siap"}</p>
-            <p className="muted small">{(readiness.reasons || []).join(" · ")}</p>
-            <div className="table-wrap"><table className="ship-table"><thead><tr><th>Sumber</th><th>Treatment</th><th>Akun</th><th className="num">Debit</th><th className="num">Kredit</th></tr></thead><tbody>
-              {(readiness.planned_lines || []).map((row, idx) => (
-                <tr key={`${row.account_id}-${(row.source_keys || []).join(",")}-${idx}`} data-testid={previewIsPayable(row) ? "hr-payroll-accounting-preview-payable" : "hr-payroll-accounting-preview-line"}>
-                  <td>
-                    <div>{previewSourceLabel(row)}</div>
-                    {previewIsPayable(row)
-                      ? <div className="muted small">Saldo utang dari net payroll — bukan komponen mapped</div>
-                      : row.name && row.name !== previewSourceLabel(row) ? <div className="muted small">{row.name}</div> : null}
-                  </td>
-                  <td>
-                    <div>{previewTreatmentLabel(row.treatment)}</div>
-                    {row.treatment ? <div className="muted small">{row.treatment}</div> : null}
-                  </td>
-                  <td className="mono">{previewAccountLabel(row)}</td>
-                  <td className="num">{moneyFormat(row.debit)}</td>
-                  <td className="num">{moneyFormat(row.credit)}</td>
-                </tr>
-              ))}
-            </tbody></table></div>
-            <p>Gross {moneyFormat(readiness.summary?.gross)} · Potongan {moneyFormat(readiness.summary?.deductions)} · Net {moneyFormat(readiness.summary?.net)}</p>
-            <p>Total debit {moneyFormat(readiness.summary?.total_debit)} · Total kredit {moneyFormat(readiness.summary?.total_credit)} · Selisih {moneyFormat(readiness.summary?.difference)}</p>
-            <button type="button" className="ghost" onClick={() => setShowPreview(false)}>Tutup</button>
-          </div>
-        )}
+        {payrollPreview}
         <PieceHoldingPanel period={selected} lines={lines} kasbon={kasbon} hasPerm={hasPerm} onError={setErr} onSaved={() => loadDetail(selected)} />
         {selected.period_scope !== "piece" && <AttendanceEditor period={selected} employees={employees} attendance={attendance} onSaved={() => loadDetail(selected)} />}
         <div className="settings-card" data-testid="hr-breakdown"><h3>Rincian Payroll</h3><div className="table-wrap"><table className="ship-table"><thead><tr><th>Karyawan</th><th>Pendapatan</th><th>Potongan</th><th>Gaji Bersih</th></tr></thead><tbody>{lines.map((line) => <tr key={line.id}><td>{employeeName(line)}</td><td>{moneyFormat(line.gross)}</td><td>{moneyFormat(line.total_deductions)}</td><td><strong>{moneyFormat(line.net)}</strong><div className="muted small">{(line.earnings || []).map((r) => `${r.name}: ${moneyFormat(r.amount)}`).join(" · ")}</div></td></tr>)}</tbody></table></div></div>

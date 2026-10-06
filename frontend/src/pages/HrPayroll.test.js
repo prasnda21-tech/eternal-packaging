@@ -36,6 +36,7 @@ describe("HR & Payroll UI source", () => {
     expect(page).toMatch(/hr-payroll-reverse-summary/);
     expect(page).toMatch(/payroll_accounting\.post/);
     expect(page).toMatch(/hr-payroll-post-accounting/);
+    expect(page).toMatch(/Pemulihan: Post Accounting/);
     expect(page).toMatch(/Post Accounting Payroll\?/);
     expect(page).toMatch(/hr-payroll-open-journal/);
     expect(page).toMatch(/Journal:/);
@@ -222,5 +223,49 @@ describe("HR & Payroll UI source", () => {
     expect(page).toMatch(/source_keys \|\| \[\]/);
     expect(page).toMatch(/Selisih/);
     expect(page).not.toMatch(/Posted Accounting/);
+  });
+
+  test("gaji operator prepare opens period and locks piece dates as recovery post accounting", () => {
+    expect(page).toMatch(/useSearchParams/);
+    expect(page).toMatch(/searchParams.get\("period"\)/);
+    expect(page).toMatch(/loadDetail\(\{ id: openPeriodId \}\)/);
+    expect(page).toMatch(/piece_prepared_from === "gaji_operator"/);
+    expect(page).toMatch(/hr-piece-dates-from-gaji/);
+    expect(page).toMatch(/dateLocked/);
+    expect(page).toMatch(/hr-piece-bonus-start/);
+    expect(page).toMatch(/hr-piece-kasbon-amount-/);
+    expect(page).toMatch(/hr-calc-btn/);
+    expect(page).toMatch(/className="ghost".*hr-payroll-post-accounting|hr-payroll-post-accounting.*className="ghost"/s);
+    expect(page).toMatch(/Pemulihan: Post Accounting/);
+    expect(page).toMatch(/Hanya pemulihan bila Finalkan sudah selesai tetapi jurnal kosong/);
+  });
+
+  test("piece payroll compact shell keeps existing next actions and recovery", () => {
+    expect(page).toMatch(/Dibuat dari Gaji Operator/);
+    expect(page).toMatch(/hr-piece-from-gaji/);
+    expect(page).toMatch(/Kembali ke Gaji Operator/);
+    expect(page).toMatch(/Penggajian Operator/);
+    expect(page).toMatch(/hr-piece-kpi/);
+    expect(page).toMatch(/hr-piece-period-settings/);
+    expect(page).toMatch(/hr-piece-stepper/);
+    expect(page).toMatch(/pieceNextAction/);
+    expect(page).toMatch(/nextPiece\?\.kind === "calc" \? "primary" : "ghost"/);
+    expect(page).toMatch(/nextPiece\?\.testid === testid \? "primary" : "ghost"/);
+    expect(page).toMatch(/hr-piece-operator-detail/);
+    expect(page).toMatch(/hr-piece-recovery/);
+    expect(page).toMatch(/<PieceHoldingPanel compact /);
+    expect(page).toMatch(/datesFromGaji \? "is-locked"/);
+    expect(page).toMatch(/period_scope === "piece"/);
+    expect(page).toMatch(/canTransition\(selected\.status, target\)/);
+    expect(page).toMatch(/className="ghost".*hr-payroll-post-accounting|hr-payroll-post-accounting.*className="ghost"/s);
+    expect(page).toMatch(/hr-calc-btn/);
+    expect(page).toMatch(/hr-transition-review/);
+    expect(page).toMatch(/hr-transition-final/);
+    expect(page).toMatch(/reviewBeforeCalc/);
+    expect(page).toMatch(/compact \? "ghost" : "primary"/);
+    expect(page).toMatch(/hr-piece-pay-focus/);
+    expect(page).toMatch(/hr-piece-journal-quiet/);
+    expect(page).toMatch(/formatTrackingPageDate/);
+    expect(page).toMatch(/hr-payment-date-label/);
   });
 });

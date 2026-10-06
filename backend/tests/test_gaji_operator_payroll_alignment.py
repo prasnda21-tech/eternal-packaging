@@ -431,3 +431,34 @@ def test_missing_work_date_is_not_eligible_and_does_not_infer_a_date():
     before_person = next(row for row in before["people"] if row["operator_user_id"] == "user-1")
     assert person["wage_basis"] == before_person["wage_basis"]
     assert person["total_payroll"] == before_person["total_payroll"]
+
+
+def test_eligibility_summary_groups_not_eligible_by_reason():
+    report = _report(_db())
+    summary = report["eligibility_summary"]
+    blocked = [row for row in report["rows"] if row["payroll_status"] == PAYROLL_STATUS_BLOCKED]
+    assert summary["total"] == report["not_eligible_count"] == len(blocked)
+    by_reason = {row["reason"]: row for row in summary["by_reason"]}
+    assert by_reason["tanpa snapshot tarif"]["count"] == 1
+    assert by_reason["tanpa snapshot tarif"]["label"] == "Tanpa snapshot tarif"
+    assert by_reason["profil bukan pay_basis piece"]["count"] == 1
+    assert by_reason["profil bukan pay_basis piece"]["label"] == "Profil HR belum piece"
+    nouid = [row for row in blocked if "operator_user_id" in (row["payroll_reason"] or "")]
+    assert len(nouid) == 1
+    assert by_reason[nouid[0]["payroll_reason"]]["count"] == 1
+    assert _by_action(report, "act-norate")["payroll_status"] == PAYROLL_STATUS_BLOCKED
+    assert _by_action(report, "act-open")["payroll_status"] == PAYROLL_STATUS_BELUM
+
+    db = _db()
+    db["orders"].docs[0]["operator_splits"][0]["progress_entries"].append({
+        "action_id": "act-nodate",
+        "po_id": "po-1",
+        "split_id": "split-1",
+        "operator_user_id": "user-1",
+        "qty": 8,
+        "rate_per_pcs": 125,
+    })
+    with_date = _report(db)
+    labels = {row["label"]: row["count"] for row in with_date["eligibility_summary"]["by_reason"]}
+    assert labels["Tanpa tanggal kerja"] == 1
+    assert with_date["eligibility_summary"]["total"] == report["eligibility_summary"]["total"] + 1

@@ -1061,6 +1061,75 @@ async def create_piece_period(db, start_date: str, end_date: str, user: dict) ->
     return public_period(saved)
 
 
+EXISTING_PIECE_RANGE_MESSAGE = "Payroll borongan untuk periode ini sudah tersedia."
+
+
+async def find_piece_period_for_range(db, start_date: str, end_date: str) -> Optional[dict]:
+    """Latest piece period with this exact wage range. Periods have no cancelled status."""
+    start = str(start_date or "").strip()[:10]
+    end = str(end_date or "").strip()[:10]
+    rows = await db[PERIODS].find(
+        {"period_scope": "piece", "start_date": start, "end_date": end},
+        {"_id": 0},
+    ).sort([("revision", -1), ("updated_at", -1)]).to_list(20)
+    return rows[0] if rows else None
+
+
+async def _ensure_piece_bonus_range(db, period: dict, start: str, end: str, user: dict) -> dict:
+    from services.operator_wage_claims import save_piece_inputs
+
+    bonus = period.get("piece_bonus") or {}
+    if str(bonus.get("start_date") or "") and str(bonus.get("end_date") or ""):
+        return public_period(period)
+    if str(period.get("status") or "") != STATUS_DRAFT:
+        return public_period(period)
+    return await save_piece_inputs(
+        db,
+        period,
+        {"bonus": {"start_date": start, "end_date": end}},
+        user,
+    )
+
+
+async def prepare_piece_period_from_gaji_operator(db, start_date: str, end_date: str, user: dict) -> dict:
+    """Create or reuse a piece period for the Gaji Operator date filter.
+
+    Does not calculate claims, post journals, or create payments.
+    """
+    existing = await find_piece_period_for_range(db, start_date, end_date)
+    if existing:
+        period = await _ensure_piece_bonus_range(db, existing, str(existing.get("start_date") or start_date)[:10], str(existing.get("end_date") or end_date)[:10], user)
+        return {
+            "period": period,
+            "created": False,
+            "reused": True,
+            "message": EXISTING_PIECE_RANGE_MESSAGE,
+        }
+    created = await create_piece_period(db, start_date, end_date, user)
+    from services.operator_wage_claims import save_piece_inputs
+    period = await save_piece_inputs(
+        db,
+        created,
+        {
+            "start_date": created["start_date"],
+            "end_date": created["end_date"],
+            "bonus": {"start_date": created["start_date"], "end_date": created["end_date"]},
+        },
+        user,
+    )
+    await db[PERIODS].update_one(
+        {"id": period["id"], "status": STATUS_DRAFT},
+        {"$set": {"piece_prepared_from": "gaji_operator"}},
+    )
+    fresh = await get_period(db, period["id"])
+    return {
+        "period": fresh,
+        "created": True,
+        "reused": False,
+        "message": "Periode payroll borongan siap. Lanjutkan Hitung Payroll.",
+    }
+
+
 async def create_period(db, year: int, month: int, start_date: str, end_date: str, user: dict) -> dict:
     try:
         year, month = int(year), int(month)

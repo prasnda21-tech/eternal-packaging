@@ -866,6 +866,7 @@ export const api = {
   hrPayrollPieceIntegration: () => client.get(`/hr-payroll/piece-integration`).then((r) => r.data),
   hrPayrollSetPieceIntegration: (payload) => client.put(`/hr-payroll/piece-integration`, payload).then((r) => r.data),
   hrPayrollCreatePiecePeriod: (payload) => client.post(`/hr-payroll/piece-periods`, payload).then((r) => r.data),
+  hrPayrollPreparePieceFromGaji: (payload) => client.post(`/hr-payroll/piece-periods/from-gaji-operator`, payload).then((r) => r.data),
   hrPayrollSavePieceInputs: (id, payload) => client.put(`/hr-payroll/periods/${encodeURIComponent(id)}/piece-inputs`, payload).then((r) => r.data),
   hrPayrollPeriod: (id) => client.get(`/hr-payroll/periods/${encodeURIComponent(id)}`).then((r) => r.data),
   hrPayrollCalculate: (id) => client.post(`/hr-payroll/periods/${encodeURIComponent(id)}/calculate`).then((r) => r.data),
