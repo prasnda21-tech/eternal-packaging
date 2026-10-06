@@ -849,6 +849,9 @@ async def create_sales_delivery(db, payload: Dict[str, Any], user: dict) -> Dict
                 "is_cancelled": False,
                 "physical_stock_snapshot": order.get("physical_stock_snapshot"),
             }
+            order_branch_id = str(order.get("branch_id") or "").strip()
+            if order_branch_id.isdigit():
+                delivery_doc["branch_id"] = order_branch_id
             if sj_location:
                 delivery_doc["delivery_location"] = sj_location
 
@@ -908,6 +911,8 @@ async def create_sales_delivery(db, payload: Dict[str, Any], user: dict) -> Dict
                     "created_by": user.get("email") or "",
                     "sales_delivery_id": delivery_id,
                 }
+                if delivery_doc.get("branch_id"):
+                    shipment_entry["branch_id"] = delivery_doc["branch_id"]
                 if sj_location:
                     shipment_entry["delivery_location"] = sj_location
 

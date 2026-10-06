@@ -8695,6 +8695,7 @@ def _build_preview(so: Dict[str, Any]) -> Dict[str, Any]:
         "po_number": so.get("po_number"),
         "customer": so.get("customer"),
         "outlet": so.get("outlet"),
+        "branch_id": so.get("branch_id"),
         "recipient": so.get("recipient"),
         "address": so.get("address"),
         "payment_terms": so.get("payment_terms"),
@@ -8788,6 +8789,9 @@ async def _persist_imported_po(preview: Dict[str, Any], *, source: str, user: di
         "created_at": now,
         "updated_at": now,
     }
+    branch_id = str(preview.get("branch_id") or "").strip()
+    if branch_id.isdigit():
+        new["branch_id"] = branch_id
     from services.physical_stock_engine import attach_order_stock_snapshot
     stock_warnings = await validate_sales_order_availability(db, new.get("line_items") or [])
     await attach_order_stock_snapshot(db, new)

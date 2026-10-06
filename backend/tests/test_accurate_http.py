@@ -553,6 +553,7 @@ def test_branch_id_resolves_to_branch_name(monkeypatch):
     assert rows[0]["success"] is True
     so = rows[0]["data"]
     assert so["outlet"] == "Yogyakarta"
+    assert so["branch_id"] == "50"
     assert so["expedition"] == "OUTLET"
     assert so["outlet"] != so["expedition"]
     assert so["created_by_user"] is None
@@ -648,6 +649,7 @@ def test_branch_lookup_failure_keeps_so_and_blank_outlet(monkeypatch):
     assert rows[0]["success"] is True
     so = rows[0]["data"]
     assert so["outlet"] in (None, "", "-")
+    assert so["branch_id"] == "50"
     assert so["expedition"] == "OUTLET"
     assert so["created_by_user"] is None
     assert so["recipient"] == "CAKE IN LOVE"
