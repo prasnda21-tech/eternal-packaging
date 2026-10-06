@@ -39,7 +39,7 @@ import {
   visualStepForInternalIndex,
   visualStepPresentationIndex,
 } from "../lib/poDetailStageNav";
-import { salesOrderLineColor } from "../lib/salesOrderLineColor";
+import LineColorCell from "../components/poDetail/LineColorCell";
 import { mapsSearchUrl } from "../lib/mobileWorkspaces";
 import { enrichWorkspaceTab } from "../lib/workspaceTabEnrichment";
 import AppendQtyEntries from "../components/AppendQtyEntries";
@@ -121,6 +121,7 @@ export default function PODetail() {
   const [docTab, setDocTab] = useState("dokumen");
   const [proformaTarget, setProformaTarget] = useState(null);
   const [proformaBusy, setProformaBusy] = useState(false);
+  const [colorEditIdx, setColorEditIdx] = useState(null);
   const selectedForOrderRef = useRef(null);
   const screenerServerNotesRef = useRef("");
 
@@ -529,6 +530,7 @@ export default function PODetail() {
   const canCopyTrackingLink = hasPerm("po.view");
   const canEditRoute = hasPerm("production.route.edit");
   const canReplaceLineProduct = hasPerm("po.edit");
+  const canEditLineColor = hasPerm("po.edit") && !order?.cancelled;
   const canEditPoInfo = hasPerm("po.edit");
   const canSetLocation = hasPerm("delivery.location.manage");
   const canCreateDelivery = hasPerm("sales.delivery.create") || hasPerm("sales_order.create") || hasPerm("po.edit") || user?.role === "admin";
@@ -1187,7 +1189,18 @@ export default function PODetail() {
                       {(li.quantity ?? 0).toLocaleString("id-ID")}
                       <span className="muted small"> {li.unit}</span>
                     </td>
-                    <td className="li-color" data-testid={`line-item-color-${i}`}>{salesOrderLineColor(li) || "-"}</td>
+                    <td className="li-color" data-testid={`line-item-color-${i}`}>
+                      <LineColorCell
+                        orderId={order.id}
+                        line={li}
+                        lineIdx={i}
+                        canEdit={canEditLineColor}
+                        active={colorEditIdx === i}
+                        onActivate={setColorEditIdx}
+                        onDeactivate={() => setColorEditIdx((cur) => (cur === i ? null : cur))}
+                        onSaved={(next) => { if (next) commitOrder(next); }}
+                      />
+                    </td>
                     <td className="li-route-cell">
                       <LineRouteEditor
                         order={order}
