@@ -10,6 +10,7 @@ const mockAuth = { perms: new Set() };
 jest.mock("react-router-dom", () => ({
   useSearchParams: () => [new URLSearchParams(""), jest.fn()],
   useLocation: () => ({ pathname: "/hr-payroll/penggajian", search: "", state: null }),
+  Link: ({ to, children, ...props }) => <a href={to} {...props}>{children}</a>,
 }), { virtual: true });
 
 jest.mock("../lib/auth", () => ({
@@ -33,6 +34,8 @@ jest.mock("../lib/api", () => ({
     hrPayrollApprovePayment: jest.fn(),
     hrPayrollPostPayment: jest.fn(),
     hrPayrollReversePayment: jest.fn(),
+    hrPayrollPieceIntegration: jest.fn(),
+    hrPayrollSavePieceInputs: jest.fn(),
     cashBankAccounts: jest.fn(),
   },
 }));
@@ -259,5 +262,84 @@ describe("payroll payment UI smoke", () => {
     expect(cancelOnly.container.querySelector("[data-testid='hr-payroll-cancel-payment']")).not.toBeNull();
     expect(buttonByText(cancelOnly.container, "Setujui")).toBeFalsy();
     expect(buttonByText(cancelOnly.container, "Post Payment")).toBeFalsy();
+  });
+});
+
+describe("piece payroll compact UI", () => {
+  const piecePeriod = {
+    id: "piece-ui",
+    period_scope: "piece",
+    period_number: "PR-PIECE-1",
+    status: "DRAFT",
+    start_date: "2026-10-01",
+    end_date: "2026-10-06",
+    piece_prepared_from: "gaji_operator",
+    piece_bonus: { start_date: "2026-10-01", end_date: "2026-10-06" },
+    calculation_version: 0,
+    piece_sources: [],
+    piece_blockers: [],
+    piece_exclusions: [],
+  };
+
+  beforeEach(() => {
+    mockAuth.perms = new Set([
+      "payroll.view",
+      "payroll.calculate",
+      "payroll.review",
+      "payroll.approve",
+      "payroll.finalize",
+      "payroll.piece_holding.edit",
+      "payroll_accounting.post",
+    ]);
+    api.hrPayrollPeriods.mockResolvedValue({ periods: [piecePeriod] });
+    api.hrPayrollPeriod.mockResolvedValue({ period: piecePeriod });
+    api.hrPayrollLines.mockResolvedValue({ lines: [] });
+    api.hrPayrollAttendance.mockResolvedValue({ attendance: [] });
+    api.hrPayrollEmployees.mockResolvedValue({ employees: [] });
+    api.hrPayrollKasbonSchedules.mockResolvedValue({ schedules: [] });
+    api.hrPayrollPeriodJournal.mockResolvedValue({ journal_id: "", journal_number: "" });
+    api.hrPayrollAccountingReadiness.mockResolvedValue({ readiness: { accounting_ready: false, summary: {}, planned_lines: [] } });
+    api.hrPayrollPeriodPayment.mockResolvedValue({ payment: null, payments: [] });
+    api.hrPayrollPieceIntegration.mockResolvedValue({ integration: { start_date: "2026-09-30", locked: false } });
+  });
+
+  afterEach(() => {
+    document.body.innerHTML = "";
+  });
+
+  test("shows gaji badge locked dates stepper and hitung as the primary next action", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<HrPayroll mode="payroll" />);
+    });
+    await flush();
+    const periodButton = buttonByText(container, "PR-PIECE-1");
+    await act(async () => {
+      periodButton.click();
+    });
+    await flush();
+
+    expect(container.querySelector("[data-testid='hr-piece-from-gaji']").textContent).toContain("Dibuat dari Gaji Operator");
+    expect(container.querySelector("[data-testid='hr-piece-kpi']")).not.toBeNull();
+    expect(container.querySelector("[data-testid='hr-piece-period-settings']")).not.toBeNull();
+    expect(container.querySelector("[data-testid='hr-piece-wage-start']").disabled).toBe(true);
+    expect(container.querySelector("[data-testid='hr-piece-wage-end']").disabled).toBe(true);
+    expect(container.querySelector("[data-testid='hr-piece-stepper']").textContent).toContain("Hitung");
+    const calc = container.querySelector("[data-testid='hr-calc-btn']");
+    expect(calc).not.toBeNull();
+    expect(calc.className).toContain("primary");
+    const review = container.querySelector("[data-testid='hr-transition-review']");
+    expect(review).not.toBeNull();
+    expect(review.className).toContain("ghost");
+    expect(review.disabled).toBe(true);
+    expect(container.textContent).toContain("01/10/2026");
+    expect(container.textContent).toContain("06/10/2026");
+    expect(container.querySelector("[data-testid='hr-piece-wage-label']").textContent).toContain("01/10/2026");
+    expect(container.querySelector("[data-testid='hr-piece-save']")?.className || "ghost").toMatch(/ghost/);
+    expect(container.querySelector("[data-testid='hr-payroll-post-accounting']")).toBeNull();
+    expect(container.querySelector("[data-testid='hr-piece-recovery']")).toBeNull();
+    expect(buttonByText(container, "Lihat Detail Operator")).toBeTruthy();
   });
 });

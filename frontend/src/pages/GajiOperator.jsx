@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useState, Fragment } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { Download, RefreshCw, Settings2, ChevronDown, ChevronRight } from "lucide-react";
+import { Download, RefreshCw, Settings2, ChevronDown, ChevronRight, SlidersHorizontal } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
-import { formatDisplayDate } from "../lib/constants";
+import { formatDisplayDate, formatTrackingPageDate } from "../lib/constants";
 import { NAV_KEYS } from "../lib/navAccess";
 import { exportOperatorIds } from "../lib/operatorFilter";
 import OperatorMultiSelect from "../components/OperatorMultiSelect";
@@ -33,18 +33,29 @@ function fmtMoney(n) {
   return Number(n || 0).toLocaleString("id-ID");
 }
 
+function formatIdDate(iso) {
+  return formatTrackingPageDate(iso) || formatDisplayDate(iso);
+}
+
 const PAYROLL_STATUS = {
-  BELUM_MASUK_PAYROLL: ["Siap Payroll", "hr-status-draft"],
-  HELD: ["Dalam Proses", "hr-status-review"],
-  POSTED: ["Sudah Payroll", "hr-status-final"],
-  NOT_ELIGIBLE: ["Perlu Perbaikan", "hr-status-approval"],
+  BELUM_MASUK_PAYROLL: ["Siap Payroll", "gaji-badge-ready"],
+  HELD: ["Dalam Proses", "gaji-badge-progress"],
+  POSTED: ["Sudah Payroll", "gaji-badge-done"],
+  NOT_ELIGIBLE: ["Perlu Perbaikan", "gaji-badge-fix"],
 };
 
-const PAYROLL_STATUS_GROUP = [
-  ["SIAP PAYROLL", "Siap Payroll", "hr-status-draft"],
-  ["DALAM PROSES", "Dalam Proses", "hr-status-review"],
-  ["SUDAH PAYROLL", "Sudah Payroll", "hr-status-final"],
-  ["PERLU PERBAIKAN", "Perlu Perbaikan", "hr-status-approval"],
+const STATUS_TABS = [
+  ["BELUM_MASUK_PAYROLL", "Siap Payroll"],
+  ["HELD", "Dalam Proses"],
+  ["POSTED", "Sudah Payroll"],
+  ["NOT_ELIGIBLE", "Perlu Perbaikan"],
+];
+
+const KNOWN_ELIG_LABELS = [
+  "Tanpa tanggal kerja",
+  "Tanpa snapshot tarif",
+  "Profil HR belum piece",
+  "Sebelum batas integrasi",
 ];
 
 function payrollBadge(status, testId) {
@@ -79,6 +90,9 @@ export default function GajiOperator() {
   const [err, setErr] = useState("");
   const [openId, setOpenId] = useState("");
   const [acctWarn, setAcctWarn] = useState([]);
+  const [statusTab, setStatusTab] = useState("BELUM_MASUK_PAYROLL");
+  const [moreFilters, setMoreFilters] = useState(false);
+  const [eligOpen, setEligOpen] = useState(false);
   const canWage = hasPerm("settings.operator_wage.view") || hasPerm("settings.operator_wage.manage") || hasPerm(NAV_KEYS.settings);
   const canPrepare = hasPerm("payroll.piece_holding.edit");
 
@@ -160,31 +174,106 @@ export default function GajiOperator() {
   };
 
   const rows = data?.rows || [];
-  const people = data?.people || [];
+  const people = useMemo(() => data?.people || [], [data]);
   const items = data?.filters?.items || [];
   const missing = data?.missing_base_rate || [];
+  const kpis = data?.kpis || {};
+  const statusCounts = useMemo(() => {
+    const counts = {
+      BELUM_MASUK_PAYROLL: 0,
+      HELD: 0,
+      POSTED: 0,
+      NOT_ELIGIBLE: 0,
+    };
+    people.forEach((p) => {
+      const key = p.payroll_status;
+      if (counts[key] != null) counts[key] += 1;
+    });
+    return counts;
+  }, [people]);
+
+  const filteredPeople = useMemo(
+    () => people.filter((p) => (p.payroll_status || "") === statusTab),
+    [people, statusTab],
+  );
+
+  const bonusUsulan = Number(kpis.bonus_proposed || 0) > 0 || people.some((p) => p.bonus_status === "USULAN");
+  const proposedFallback = people.reduce((sum, p) => sum + Number(p.bonus_proposed_amount || p.bonus || 0), 0);
+  const bonusKpiValue = bonusUsulan ? (kpis.bonus_proposed ?? proposedFallback) : (kpis.bonus ?? 0);
+  const elig = data?.eligibility_summary || { total: 0, by_reason: [] };
+  const knownElig = KNOWN_ELIG_LABELS.map((label) => {
+    const row = (elig.by_reason || []).find((item) => (item.label || item.reason) === label);
+    return { label, count: row ? Number(row.count || 0) : 0 };
+  });
+  const otherElig = (elig.by_reason || []).reduce((sum, row) => {
+    const label = row.label || row.reason;
+    if (KNOWN_ELIG_LABELS.includes(label)) return sum;
+    return sum + Number(row.count || 0);
+  }, 0);
+
+  const openEligDetail = () => {
+    setStatusTab("NOT_ELIGIBLE");
+    setEligOpen(true);
+  };
 
   return (
-    <div className="ship-status-page" data-testid="gaji-operator-page">
-      <div className="ship-status-chrome">
-        <header className="ship-status-heading">
+    <div className="ship-status-page gaji-simple" data-testid="gaji-operator-page">
+      <header className="gaji-simple-head">
+        <div>
           <h1>Gaji Operator</h1>
-        </header>
-        <div className="ship-status-toolbar" data-testid="gaji-filter-bar">
-          <label className="ship-filter-field">
-            <span>Tanggal Mulai</span>
+          <p className="gaji-simple-sub">Lihat hasil kerja operator dan siapkan payroll.</p>
+        </div>
+        <div className="gaji-simple-actions">
+          <button type="button" className="ghost sm" onClick={load} title="Muat ulang" data-testid="gaji-refresh" disabled={busy}>
+            <RefreshCw size={14} className={busy ? "spin" : ""} />
+          </button>
+          <button type="button" className="ghost sm" onClick={exportFile} data-testid="gaji-export">
+            <Download size={14} /> Export
+          </button>
+          {canWage && (
+            <Link to="/settings?tab=operator-wage" className="ghost sm" data-testid="gaji-open-wage-settings">
+              <Settings2 size={14} /> Sistem Upah
+            </Link>
+          )}
+          {canPrepare && (
+            <button
+              type="button"
+              className="primary gaji-simple-primary"
+              onClick={preparePayroll}
+              disabled={busy || prepareBusy || !from || !to}
+              data-testid="gaji-siapkan-payroll"
+            >
+              {prepareBusy ? "Menyiapkan…" : "Siapkan Payroll"}
+            </button>
+          )}
+        </div>
+      </header>
+
+      <div className="gaji-simple-filters" data-testid="gaji-filter-bar">
+        <label className="gaji-simple-period">
+          <span>Periode</span>
+          {from && to && (
+            <em className="gaji-period-id" data-testid="gaji-period-label">{formatIdDate(from)} – {formatIdDate(to)}</em>
+          )}
+          <span className="gaji-simple-dates">
             <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} data-testid="gaji-filter-from" />
-          </label>
-          <label className="ship-filter-field">
-            <span>Tanggal Selesai</span>
+            <span className="gaji-simple-dash">—</span>
             <input type="date" value={to} onChange={(e) => setTo(e.target.value)} data-testid="gaji-filter-to" />
-          </label>
+          </span>
+        </label>
+        <div className="gaji-simple-ops">
+          <span>Operator</span>
           <OperatorMultiSelect
             operators={operators}
             selectedIds={selectedOps}
             onChange={setSelectedOps}
           />
-          <label className="ship-filter-field">
+        </div>
+        <button type="button" className="ghost sm" onClick={() => setMoreFilters((open) => !open)} data-testid="gaji-more-filters">
+          <SlidersHorizontal size={14} /> Produk
+        </button>
+        {moreFilters && (
+          <label className="ship-filter-field gaji-simple-item">
             <span>Produk / Item</span>
             <FacetSearchSelect
               testId="gaji-filter-item"
@@ -199,77 +288,73 @@ export default function GajiOperator() {
               getSearchText={(it) => `${it.item_code || ""} ${it.item_name || ""} ${it.accurate_item_id || ""}`}
             />
           </label>
-          <button type="button" className="ship-icon-btn" onClick={load} title="Muat ulang" data-testid="gaji-refresh" disabled={busy}>
-            <RefreshCw size={14} className={busy ? "spin" : ""} />
-          </button>
-          <button type="button" className="ghost sm" onClick={exportFile} data-testid="gaji-export">
-            <Download size={14} /> Export
-          </button>
-          {canWage && (
-            <Link to="/settings?tab=operator-wage" className="ghost sm" data-testid="gaji-open-wage-settings">
-              <Settings2 size={14} /> Sistem Upah
-            </Link>
-          )}
-          {canPrepare && (
-            <button
-              type="button"
-              className="primary sm"
-              onClick={preparePayroll}
-              disabled={busy || prepareBusy || !from || !to}
-              data-testid="gaji-siapkan-payroll"
-            >
-              {prepareBusy ? "Menyiapkan…" : "Siapkan Payroll"}
-            </button>
-          )}
-        </div>
-        {err && <div className="error" data-testid="gaji-error">{err}</div>}
-        {acctWarn.length > 0 && (
-          <div className="gaji-unset-warn" data-testid="gaji-accounting-warning">
-            {acctWarn.join(" ")} Finalkan tetap yang memposting jurnal.
-          </div>
         )}
-        {(data?.missing_base_rate_message || missing.length > 0 || data?.not_eligible_count > 0) && (
-          <div className="gaji-unset-warn" data-testid="gaji-unset-warning">
-            {data?.missing_base_rate_message || "Ada output yang tidak eligible untuk payroll borongan"}
-            {missing.length ? `: ${missing.join(", ")}` : ""}
-            {data?.not_eligible_count ? ` · ${data.not_eligible_count} output Tidak Eligible` : ""}
-          </div>
-        )}
-        {data?.eligibility_summary?.total > 0 && (
-          <div className="gaji-elig-summary" data-testid="gaji-eligibility-summary">
-            <strong>Tidak Eligible: {data.eligibility_summary.total}</strong>
-            <ul>
-              {(data.eligibility_summary.by_reason || []).map((row) => (
-                <li key={row.reason} data-testid="gaji-eligibility-reason">
-                  {row.label || row.reason}: {row.count}
-                </li>
-              ))}
-            </ul>
-            <p className="muted small">Rincian baris tetap dapat dibuka di tabel.</p>
-          </div>
-        )}
-        <div className="gaji-status-legend" data-testid="gaji-status-legend">
-          {PAYROLL_STATUS_GROUP.map(([group, label, tone]) => (
-            <span key={group} className={`hr-status ${tone}`}>{group} · {label}</span>
-          ))}
-        </div>
-        {data?.bonus_note && <p className="muted small" data-testid="gaji-bonus-note">{data.bonus_note}</p>}
       </div>
-      <div className="ship-status-grid" data-testid="gaji-table">
-        <table className="ship-table" data-testid="gaji-rekap-table">
+
+      {err && <div className="error" data-testid="gaji-error">{err}</div>}
+      {acctWarn.length > 0 && (
+        <div className="gaji-unset-warn" data-testid="gaji-accounting-warning">
+          {acctWarn.join(" ")} Finalkan tetap yang memposting jurnal.
+        </div>
+      )}
+      {(data?.missing_base_rate_message || missing.length > 0) && (
+        <div className="gaji-unset-warn" data-testid="gaji-unset-warning">
+          {data?.missing_base_rate_message || "Ada output yang tidak eligible untuk payroll borongan"}
+          {missing.length ? `: ${missing.join(", ")}` : ""}
+        </div>
+      )}
+
+      <div className="gaji-kpi" data-testid="gaji-kpi">
+        <div className="gaji-kpi-card">
+          <span>Operator</span>
+          <strong>{kpis.operator_count ?? people.length}</strong>
+          <em>orang</em>
+        </div>
+        <div className="gaji-kpi-card gaji-kpi-wage">
+          <span>Upah Eligible</span>
+          <strong>Rp {fmtMoney(kpis.base_wage)}</strong>
+        </div>
+        <div className="gaji-kpi-card gaji-kpi-bonus">
+          <span>{bonusUsulan ? "Bonus Usulan" : "Bonus"}</span>
+          <strong>Rp {fmtMoney(bonusKpiValue)}</strong>
+        </div>
+        <div className="gaji-kpi-card gaji-kpi-fix">
+          <span>Perlu Perbaikan</span>
+          <strong>{elig.total || data?.not_eligible_count || 0}</strong>
+          <em>output</em>
+        </div>
+      </div>
+
+      <div className="gaji-status-nav" data-testid="gaji-status-legend">
+        {STATUS_TABS.map(([id, label]) => (
+          <button
+            type="button"
+            key={id}
+            className={statusTab === id ? "is-active" : ""}
+            onClick={() => setStatusTab(id)}
+            data-testid={`gaji-status-tab-${id}`}
+          >
+            {label} ({statusCounts[id] || 0})
+          </button>
+        ))}
+      </div>
+      <span className="gaji-sr-only">SIAP PAYROLL DALAM PROSES SUDAH PAYROLL PERLU PERBAIKAN Total Payroll</span>
+
+      <div className="gaji-simple-table-wrap" data-testid="gaji-table">
+        <table className="ship-table gaji-simple-table" data-testid="gaji-rekap-table">
           <thead>
             <tr>
               <th></th>
-              <th>Nama Operator</th>
-              <th className="num">Total Output</th>
-              <th className="num">Upah Eligible</th>
-              <th className="num">Tambahan Produk</th>
+              <th>Operator</th>
+              <th className="num">Total Qty</th>
+              <th className="num">Upah</th>
               <th className="num">Bonus</th>
-              <th className="num">Total Payroll</th>
+              <th className="num">Total</th>
+              <th>Status</th>
             </tr>
           </thead>
           <tbody>
-            {people.map((p) => {
+            {filteredPeople.map((p) => {
               const pid = p.operator_user_id || p.id;
               const open = openId === pid;
               const detail = rows.filter((r) => (r.operator_user_id || r.operator_id) === pid || r.operator === p.name);
@@ -281,13 +366,12 @@ export default function GajiOperator() {
                         {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                       </button>
                     </td>
-                    <td>{p.name || p.email} {payrollBadge(p.payroll_status, `gaji-person-status-${pid}`)}{p.rate_unset ? <span className="gaji-unset-tag"> Tanpa tarif</span> : null}</td>
+                    <td className="gaji-op-name">{p.name || p.email}{p.rate_unset ? <span className="gaji-unset-tag"> Tanpa tarif</span> : null}</td>
                     <td className="num mono">{fmtQty(p.qty)}</td>
                     <td className="num mono" data-testid={`gaji-wage-eligible-${pid}`}>{fmtMoney(p.wage_basis ?? p.base_wage)}</td>
-                    <td className="num mono" title="Sudah termasuk di rate snapshot payroll">—</td>
                     <td className="num mono">
                       {p.bonus_status === "FINAL" ? (
-                        <span data-testid={`gaji-bonus-final-${pid}`}>{fmtMoney(p.bonus_final_amount ?? p.bonus)} <span className="gaji-unset-tag">Final</span></span>
+                        <span data-testid={`gaji-bonus-final-${pid}`}>{fmtMoney(p.bonus_final_amount ?? p.bonus)}</span>
                       ) : (
                         <span data-testid={`gaji-bonus-usulan-${pid}`}>{fmtMoney(p.bonus_proposed_amount ?? p.bonus)} <span className="gaji-unset-tag">Bonus Usulan</span></span>
                       )}
@@ -298,16 +382,18 @@ export default function GajiOperator() {
                         <div className="muted small" data-testid={`gaji-estimasi-total-${pid}`}>Estimasi/Usulan Total {fmtMoney(p.estimate_total)}</div>
                       )}
                     </td>
+                    <td>{payrollBadge(p.payroll_status, `gaji-person-status-${pid}`)}</td>
                   </tr>
                   {open && detail.map((r, i) => (
                     <tr key={`${pid}-d-${i}`} className="gaji-detail-row" data-testid={`gaji-row-${pid}-${i}`}>
                       <td></td>
                       <td colSpan={6} className="gaji-detail-cell">
                         {payrollBadge(r.payroll_status, `gaji-row-status-${pid}-${i}`)}
-                        {" "}{r.item_name || r.cup_item || "-"} · {formatDisplayDate(r.tanggal || r.date)} ·
+                        {" "}{r.item_name || r.cup_item || "-"} · {formatIdDate(r.tanggal || r.date)} ·
                         {" "}Output {fmtQty(r.qty_completed)}
                         {r.payroll_status === "NOT_ELIGIBLE" ? " · tidak dihitung" : ` × ${fmtMoney(r.base_rate_per_pcs)} = ${fmtMoney(r.base_wage)}`}
                         {" · Subtotal "}{r.payroll_status === "NOT_ELIGIBLE" ? "Tidak dihitung" : fmtMoney(r.total_upah)}
+                        {" · Tambahan Produk sudah termasuk di rate snapshot"}
                         {r.payroll_reason ? <span data-testid={`gaji-row-reason-${pid}-${i}`}> · {r.payroll_reason}</span> : null}
                       </td>
                     </tr>
@@ -315,12 +401,45 @@ export default function GajiOperator() {
                 </Fragment>
               );
             })}
-            {!people.length && !busy && (
-              <tr><td colSpan={7} className="empty-state">Tidak ada output Operator pada periode ini.</td></tr>
+            {!filteredPeople.length && !busy && (
+              <tr><td colSpan={7} className="empty-state">{people.length ? "Tidak ada operator pada status ini." : "Tidak ada output Operator pada periode ini."}</td></tr>
             )}
           </tbody>
         </table>
       </div>
+
+      {elig.total > 0 && (
+        <div className={`gaji-elig-card${statusTab === "NOT_ELIGIBLE" ? "" : " is-compact"}`} data-testid="gaji-eligibility-summary">
+          <div className="gaji-elig-head">
+            {statusTab === "NOT_ELIGIBLE" ? (
+              <strong>Perlu Perbaikan ({elig.total})</strong>
+            ) : (
+              <strong data-testid="gaji-elig-line">Perlu Perbaikan: {elig.total} output</strong>
+            )}
+            <button type="button" className="ghost sm" onClick={openEligDetail} data-testid="gaji-elig-detail">Lihat Detail</button>
+          </div>
+          {statusTab === "NOT_ELIGIBLE" && (
+            <>
+              <div className="gaji-elig-grid">
+                {knownElig.map((row) => (
+                  <div key={row.label} data-testid="gaji-eligibility-reason">
+                    <span>{row.label}</span>
+                    <b>{row.count}</b>
+                  </div>
+                ))}
+                <div data-testid="gaji-eligibility-reason">
+                  <span>Lainnya</span>
+                  <b>{otherElig}</b>
+                </div>
+              </div>
+              {eligOpen ? (
+                <p className="muted small">Rincian baris ada di tabel status Perlu Perbaikan.</p>
+              ) : null}
+            </>
+          )}
+        </div>
+      )}
+      {data?.bonus_note && <p className="muted small gaji-simple-note" data-testid="gaji-bonus-note">{data.bonus_note}</p>}
     </div>
   );
 }

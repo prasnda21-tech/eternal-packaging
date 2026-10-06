@@ -71,4 +71,34 @@ describe("Gaji Operator page", () => {
     expect(src).toMatch(/gaji-export/);
     expect(src).toMatch(/gajiPrepared: res.reused \? "existing" : "new"/);
   });
+
+  test("compact layout emphasizes siapkan payroll kpi status and grouped not eligible", () => {
+    expect(src).toMatch(/className="primary gaji-simple-primary"/);
+    expect(src).toMatch(/gaji-siapkan-payroll/);
+    expect(src).toMatch(/gaji-kpi/);
+    expect(src).toMatch(/Upah Eligible/);
+    expect(src).toMatch(/bonusUsulan \? "Bonus Usulan" : "Bonus"/);
+    expect(src).toMatch(/gaji-status-tab-\$\{id\}/);
+    expect(src).toMatch(/\["BELUM_MASUK_PAYROLL", "Siap Payroll"\]/);
+    expect(src).toMatch(/\["HELD", "Dalam Proses"\]/);
+    expect(src).toMatch(/\["POSTED", "Sudah Payroll"\]/);
+    expect(src).toMatch(/\["NOT_ELIGIBLE", "Perlu Perbaikan"\]/);
+    expect(src).toMatch(/filteredPeople/);
+    expect(src).toMatch(/payroll_status \|\| ""\) === statusTab/);
+    expect(src).toMatch(/gaji-elig-detail/);
+    expect(src).toMatch(/Tanpa tanggal kerja/);
+    expect(src).toMatch(/Tanpa snapshot tarif/);
+    expect(src).toMatch(/Profil HR belum piece/);
+    expect(src).toMatch(/Sebelum batas integrasi/);
+    expect(src).toMatch(/Lainnya/);
+    expect(src).toMatch(/gaji-person-toggle-/);
+    expect(src).toMatch(/gaji-export/);
+    expect(src).toMatch(/Sistem Upah/);
+    expect(src).toMatch(/gaji-open-wage-settings/);
+    expect(src).toMatch(/\/hr-payroll\/penggajian\?period=/);
+    expect(src).toMatch(/gaji-period-label/);
+    expect(src).toMatch(/formatTrackingPageDate/);
+    expect(src).toMatch(/gaji-elig-line/);
+    expect(src).toMatch(/is-compact/);
+  });
 });
