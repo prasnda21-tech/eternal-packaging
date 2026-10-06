@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle, Info, Save } from "lucide-react";
 import api from "../lib/api";
 import { errDetail } from "../lib/purchaseUi";
@@ -9,6 +9,9 @@ const TABS = [
   { id: "invoice", label: "Faktur & Proforma", testid: "design-cetakan-tab-invoice" },
   { id: "sj", label: "Surat Jalan", testid: "design-cetakan-tab-sj" },
 ];
+
+const LOGO_ACCEPT = "image/png,image/jpeg,image/jpg,image/webp";
+const SIGNATURE_ACCEPT = "image/png,image/jpeg,image/jpg,image/webp";
 
 function emptyDraft() {
   return {
@@ -35,6 +38,14 @@ function emptyDraft() {
       signature_labels: ["Gudang", "Cek Barang", "Kurir", "Penerima"],
       date_label: "Tgl.",
     },
+  };
+}
+
+function emptyAssets() {
+  return {
+    company_logo: { has_custom: false },
+    prepared_signature_image: { has_custom: false },
+    approved_signature_image: { has_custom: false },
   };
 }
 
@@ -73,21 +84,160 @@ function fromApi(settings) {
   };
 }
 
+function assetsFromApi(settings) {
+  const s = settings || {};
+  const inv = s.invoice || {};
+  return {
+    company_logo: s.company_logo || { has_custom: false },
+    prepared_signature_image: inv.prepared_signature_image || { has_custom: false },
+    approved_signature_image: inv.approved_signature_image || { has_custom: false },
+  };
+}
+
+function AssetSlot({
+  title,
+  slot,
+  asset,
+  previewUrl,
+  canEdit,
+  busy,
+  accept,
+  onPick,
+  onRemove,
+  removeLabel,
+  uploadLabel,
+  statusCustom,
+  statusDefault,
+  fileInputRef,
+  testIdPrefix,
+}) {
+  const hasCustom = Boolean(asset?.has_custom);
+  return (
+    <div className="settings-grid" data-testid={`${testIdPrefix}-slot`} style={{ gridColumn: "1 / -1" }}>
+      <div style={{ gridColumn: "1 / -1" }}>
+        <strong>{title}</strong>
+        <p className="muted small" style={{ marginTop: 2 }} data-testid={`${testIdPrefix}-status`}>
+          {hasCustom ? (statusCustom || "Custom") : (statusDefault || "Default")}
+          {hasCustom && asset?.filename ? ` · ${asset.filename}` : ""}
+        </p>
+      </div>
+      <div style={{ gridColumn: "1 / -1", display: "flex", gap: 16, alignItems: "flex-start", flexWrap: "wrap" }}>
+        <div
+          data-testid={`${testIdPrefix}-preview`}
+          style={{
+            width: 160,
+            minHeight: 72,
+            border: "1px solid var(--border, #ddd)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            background: "#fafafa",
+            padding: 8,
+          }}
+        >
+          {previewUrl ? (
+            <img src={previewUrl} alt={title} style={{ maxWidth: "100%", maxHeight: 64, objectFit: "contain" }} />
+          ) : (
+            <span className="muted small">{hasCustom ? "Memuat…" : "Tidak ada gambar custom"}</span>
+          )}
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept={accept}
+            hidden
+            data-testid={`${testIdPrefix}-file`}
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              e.target.value = "";
+              if (file) onPick(file);
+            }}
+          />
+          <button
+            type="button"
+            className="secondary"
+            data-testid={`${testIdPrefix}-upload`}
+            disabled={!canEdit || busy}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            {uploadLabel || (hasCustom ? "Ganti" : "Unggah")}
+          </button>
+          {hasCustom ? (
+            <button
+              type="button"
+              className="secondary"
+              data-testid={`${testIdPrefix}-remove`}
+              disabled={!canEdit || busy}
+              onClick={onRemove}
+            >
+              {removeLabel}
+            </button>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function DesignCetakanSettings({ notify, canEdit }) {
   const [tab, setTab] = useState("umum");
   const [draft, setDraft] = useState(emptyDraft);
+  const [assets, setAssets] = useState(emptyAssets);
+  const [previews, setPreviews] = useState({});
   const [meta, setMeta] = useState({ updated_at: null, updated_by: null });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const logoInputRef = useRef(null);
+  const preparedInputRef = useRef(null);
+  const approvedInputRef = useRef(null);
+  const objectUrlsRef = useRef([]);
+
+  const revokeAllPreviews = () => {
+    objectUrlsRef.current.forEach((url) => {
+      try {
+        URL.revokeObjectURL(url);
+      } catch (_) {
+        /* ignore */
+      }
+    });
+    objectUrlsRef.current = [];
+  };
+
+  const applySettings = (s) => {
+    setDraft(fromApi(s));
+    setAssets(assetsFromApi(s));
+    setMeta({ updated_at: s.updated_at || null, updated_by: s.updated_by || null });
+  };
+
+  const loadPreviews = async (nextAssets) => {
+    revokeAllPreviews();
+    const next = {};
+    const slots = ["company_logo", "prepared_signature_image", "approved_signature_image"];
+    await Promise.all(
+      slots.map(async (slot) => {
+        if (!nextAssets?.[slot]?.has_custom) return;
+        try {
+          const blob = await api.designCetakanAssetPreview(slot);
+          const url = URL.createObjectURL(blob);
+          objectUrlsRef.current.push(url);
+          next[slot] = url;
+        } catch (_) {
+          /* preview optional — status still shows custom */
+        }
+      })
+    );
+    setPreviews(next);
+  };
 
   const load = () => {
     setBusy(true);
     setErr("");
     api.designCetakanSettings()
-      .then((res) => {
+      .then(async (res) => {
         const s = res?.settings || {};
-        setDraft(fromApi(s));
-        setMeta({ updated_at: s.updated_at || null, updated_by: s.updated_by || null });
+        applySettings(s);
+        await loadPreviews(assetsFromApi(s));
       })
       .catch((e) => setErr(errDetail(e)))
       .finally(() => setBusy(false));
@@ -95,6 +245,8 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
 
   useEffect(() => {
     load();
+    return () => revokeAllPreviews();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const updatedByLabel = useMemo(() => {
@@ -153,9 +305,53 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
       };
       const res = await api.updateDesignCetakanSettings(payload);
       const s = res?.settings || {};
-      setDraft(fromApi(s));
-      setMeta({ updated_at: s.updated_at || null, updated_by: s.updated_by || null });
+      applySettings(s);
+      await loadPreviews(assetsFromApi(s));
       notify?.(res.message || "Design Cetakan berhasil disimpan");
+    } catch (ex) {
+      setErr(errDetail(ex));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const uploadSlot = async (slot, file) => {
+    if (!canEdit || busy || !file) return;
+    const type = String(file.type || "").toLowerCase();
+    if (type && !["image/png", "image/jpeg", "image/jpg", "image/webp"].includes(type)) {
+      setErr("File harus berupa gambar PNG, JPEG, atau WEBP.");
+      return;
+    }
+    setBusy(true);
+    setErr("");
+    // Local object-URL preview before upload completes
+    const localUrl = URL.createObjectURL(file);
+    objectUrlsRef.current.push(localUrl);
+    setPreviews((prev) => ({ ...prev, [slot]: localUrl }));
+    try {
+      const res = await api.uploadDesignCetakanAsset(slot, file);
+      const s = res?.settings || {};
+      applySettings(s);
+      await loadPreviews(assetsFromApi(s));
+      notify?.(res.message || "Asset berhasil diunggah");
+    } catch (ex) {
+      setErr(errDetail(ex));
+      await loadPreviews(assets);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const removeSlot = async (slot) => {
+    if (!canEdit || busy) return;
+    setBusy(true);
+    setErr("");
+    try {
+      const res = await api.removeDesignCetakanAsset(slot);
+      const s = res?.settings || {};
+      applySettings(s);
+      await loadPreviews(assetsFromApi(s));
+      notify?.(res.message || "Asset dihapus");
     } catch (ex) {
       setErr(errDetail(ex));
     } finally {
@@ -168,7 +364,7 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
       <div className="settings-card-header" style={{ marginBottom: 16 }}>
         <h2>Design Cetakan</h2>
         <p className="muted small" style={{ marginTop: 4 }}>
-          Letterhead PDF Pesanan Penjualan, Faktur/Proforma, dan Surat Jalan. Tanpa upload logo pada fase ini.
+          Letterhead PDF Pesanan Penjualan, Faktur/Proforma, dan Surat Jalan. Logo perusahaan dan tanda tangan Faktur/Proforma dapat diganti di sini.
         </p>
       </div>
 
@@ -178,6 +374,7 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
           <p><strong>Default mengikuti PDF yang sudah deploy.</strong></p>
           <p className="muted small" style={{ marginTop: 2 }}>
             Judul dokumen, layout, dan nomor halaman tetap fixed. Rekening di sini hanya teks presentasi PDF, bukan master Kas/Bank.
+            Tanda tangan PO dan POD Surat Jalan tidak diubah di Design Cetakan.
           </p>
         </div>
       </div>
@@ -208,6 +405,23 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
       <form onSubmit={save}>
         {tab === "umum" ? (
           <div className="settings-grid" data-testid="design-cetakan-umum">
+            <AssetSlot
+              title="Logo Perusahaan"
+              slot="company_logo"
+              asset={assets.company_logo}
+              previewUrl={previews.company_logo}
+              canEdit={canEdit}
+              busy={busy}
+              accept={LOGO_ACCEPT}
+              onPick={(file) => uploadSlot("company_logo", file)}
+              onRemove={() => removeSlot("company_logo")}
+              removeLabel="Gunakan Logo Default"
+              uploadLabel="Ganti Logo"
+              statusCustom="Custom"
+              statusDefault="Default (logo repo)"
+              fileInputRef={logoInputRef}
+              testIdPrefix="design-cetakan-logo"
+            />
             <label>
               Nama perusahaan
               <input
@@ -268,6 +482,40 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
 
         {tab === "invoice" ? (
           <div className="settings-grid" data-testid="design-cetakan-invoice">
+            <AssetSlot
+              title="Tanda Tangan — Disiapkan Oleh"
+              slot="prepared_signature_image"
+              asset={assets.prepared_signature_image}
+              previewUrl={previews.prepared_signature_image}
+              canEdit={canEdit}
+              busy={busy}
+              accept={SIGNATURE_ACCEPT}
+              onPick={(file) => uploadSlot("prepared_signature_image", file)}
+              onRemove={() => removeSlot("prepared_signature_image")}
+              removeLabel="Hapus"
+              uploadLabel="Ganti"
+              statusCustom="Custom"
+              statusDefault="Teks saja"
+              fileInputRef={preparedInputRef}
+              testIdPrefix="design-cetakan-prepared-sig"
+            />
+            <AssetSlot
+              title="Tanda Tangan / Stempel — Disetujui Oleh"
+              slot="approved_signature_image"
+              asset={assets.approved_signature_image}
+              previewUrl={previews.approved_signature_image}
+              canEdit={canEdit}
+              busy={busy}
+              accept={SIGNATURE_ACCEPT}
+              onPick={(file) => uploadSlot("approved_signature_image", file)}
+              onRemove={() => removeSlot("approved_signature_image")}
+              removeLabel="Hapus"
+              uploadLabel="Ganti"
+              statusCustom="Custom"
+              statusDefault="Teks saja"
+              fileInputRef={approvedInputRef}
+              testIdPrefix="design-cetakan-approved-sig"
+            />
             {draft.invoice.bank_accounts.map((row, idx) => (
               <div key={`bank-${idx}`} style={{ display: "contents" }}>
                 <label>
