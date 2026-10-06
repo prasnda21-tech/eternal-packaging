@@ -61,6 +61,23 @@ class VoucherConflictError(Exception):
     pass
 
 
+PAYROLL_PAYABLE_BLOCK_CODE = "PAYROLL_PAYABLE_MANUAL_PAYMENT_BLOCKED"
+PAYROLL_PAYABLE_BLOCK_MESSAGE = (
+    "Utang Gaji harus dibayar melalui HR & Payroll → Payment Payroll, "
+    "bukan melalui Pembayaran Kas & Bank manual."
+)
+
+
+async def _reject_payroll_payable_counter(db, counter_account_id: str) -> None:
+    """Block only the active payroll payable account. Other COA stay open."""
+    from services.payroll_accounting_settings import active_manual_payment_accounts
+
+    guard = await active_manual_payment_accounts(db)
+    payable_id = str(guard.get("payroll_payable_account_id") or "")
+    if payable_id and str(counter_account_id or "") == payable_id:
+        raise VoucherValidationError(f"{PAYROLL_PAYABLE_BLOCK_CODE}: {PAYROLL_PAYABLE_BLOCK_MESSAGE}")
+
+
 async def ensure_indexes(db) -> None:
     for coll_name, number_field in (
         (RECEIPTS, "number"),
@@ -259,6 +276,7 @@ async def create_payment(db, raw: dict, *, user: Optional[dict] = None) -> dict:
     counter = await _resolve_counter(db, (raw or {}).get("counter_account_id"))
     if counter["id"] == cash_bank.get("account_id"):
         raise VoucherValidationError("Akun lawan tidak boleh sama dengan akun Kas/Bank")
+    await _reject_payroll_payable_counter(db, counter["id"])
     amount = parse_positive_money((raw or {}).get("amount"), "Nominal")
     date = _norm_date((raw or {}).get("date"))
     description = str((raw or {}).get("description") or "").strip()
@@ -376,6 +394,8 @@ async def update_draft(db, kind: str, voucher_id: str, raw: dict, *, user: Optio
         counter = await _resolve_counter(db, counter_id)
         if counter["id"] == cash_bank.get("account_id"):
             raise VoucherValidationError("Akun lawan tidak boleh sama dengan akun Kas/Bank")
+        if kind == KIND_PAYMENT:
+            await _reject_payroll_payable_counter(db, counter["id"])
         updates.update({
             "cash_bank_id": cash_bank["id"],
             "cash_bank_name": cash_bank.get("name"),
@@ -479,6 +499,8 @@ async def post_voucher(db, kind: str, voucher_id: str, *, user: Optional[dict] =
         if kind in (KIND_RECEIPT, KIND_PAYMENT):
             await require_active_cash_bank(db, doc.get("cash_bank_id"))
             await _resolve_counter(db, doc.get("counter_account_id"))
+            if kind == KIND_PAYMENT:
+                await _reject_payroll_payable_counter(db, doc.get("counter_account_id"))
         else:
             await require_active_cash_bank(db, doc.get("source_cash_bank_id"))
             await require_active_cash_bank(db, doc.get("dest_cash_bank_id"))
