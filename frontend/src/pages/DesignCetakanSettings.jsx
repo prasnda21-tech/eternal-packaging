@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AlertCircle, Info, Save } from "lucide-react";
+import { AlertCircle, Info, Save, X } from "lucide-react";
 import api from "../lib/api";
 import { errDetail } from "../lib/purchaseUi";
 
@@ -265,6 +265,18 @@ function AssetSlot({
   );
 }
 
+function formatHistoryAt(iso) {
+  const raw = String(iso || "").trim();
+  if (!raw) return "";
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return raw;
+  const months = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agt", "Sep", "Okt", "Nov", "Des"];
+  const dd = String(d.getDate()).padStart(2, "0");
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  return `${dd} ${months[d.getMonth()] || ""} ${d.getFullYear()} · ${hh}:${mm}`;
+}
+
 export default function DesignCetakanSettings({ notify, canEdit }) {
   const [tab, setTab] = useState("umum");
   const [scope, setScope] = useState("global");
@@ -276,6 +288,14 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
   const [meta, setMeta] = useState({ updated_at: null, updated_by: null });
   const [busy, setBusy] = useState(false);
   const [previewBusy, setPreviewBusy] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyScope, setHistoryScope] = useState("all");
+  const [historyBranchId, setHistoryBranchId] = useState("");
+  const [historyItems, setHistoryItems] = useState([]);
+  const [historyPage, setHistoryPage] = useState(1);
+  const [historyHasMore, setHistoryHasMore] = useState(false);
+  const [historyBusy, setHistoryBusy] = useState(false);
+  const [historyErr, setHistoryErr] = useState("");
   const [err, setErr] = useState("");
   const globalSnapshotRef = useRef(null);
   const logoInputRef = useRef(null);
@@ -366,6 +386,58 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
     return () => revokeAllPreviews();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scope]);
+
+  useEffect(() => {
+    if (!historyOpen) return undefined;
+    let cancelled = false;
+    setHistoryBusy(true);
+    setHistoryErr("");
+    setHistoryItems([]);
+    setHistoryPage(1);
+    const params = { scope: historyScope, page: 1, page_size: 20 };
+    if (historyScope === "branch" && historyBranchId) params.branch_id = historyBranchId;
+    api.getDesignCetakanHistory(params)
+      .then((res) => {
+        if (cancelled) return;
+        setHistoryItems(Array.isArray(res?.items) ? res.items : []);
+        setHistoryPage(res?.page || 1);
+        setHistoryHasMore(Boolean(res?.has_more));
+      })
+      .catch((e) => {
+        if (!cancelled) setHistoryErr(errDetail(e));
+      })
+      .finally(() => {
+        if (!cancelled) setHistoryBusy(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [historyOpen, historyScope, historyBranchId]);
+
+  const openHistory = () => {
+    setHistoryScope("all");
+    setHistoryBranchId("");
+    setHistoryOpen(true);
+  };
+
+  const loadMoreHistory = async () => {
+    if (historyBusy || !historyHasMore) return;
+    setHistoryBusy(true);
+    setHistoryErr("");
+    try {
+      const next = historyPage + 1;
+      const params = { scope: historyScope, page: next, page_size: 20 };
+      if (historyScope === "branch" && historyBranchId) params.branch_id = historyBranchId;
+      const res = await api.getDesignCetakanHistory(params);
+      setHistoryItems((prev) => [...prev, ...(Array.isArray(res?.items) ? res.items : [])]);
+      setHistoryPage(res?.page || next);
+      setHistoryHasMore(Boolean(res?.has_more));
+    } catch (ex) {
+      setHistoryErr(errDetail(ex));
+    } finally {
+      setHistoryBusy(false);
+    }
+  };
 
   const updatedByLabel = useMemo(() => {
     const by = meta.updated_by;
@@ -593,6 +665,16 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
             ))}
           </select>
         </label>
+        <div>
+          <button
+            type="button"
+            className="secondary"
+            data-testid="design-cetakan-history-open"
+            onClick={openHistory}
+          >
+            Riwayat Perubahan
+          </button>
+        </div>
         {catalog.length === 0 ? (
           <p className="muted small" data-testid="design-cetakan-branch-empty" style={{ gridColumn: "1 / -1" }}>
             Belum ada cabang pada order. Default Semua Cabang tetap bisa diubah. Cabang muncul setelah ada order dengan branch_id.
@@ -955,6 +1037,102 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
           ) : null}
         </div>
       </form>
+
+      {historyOpen ? (
+        <div
+          className="modal modal-viewport-safe-wrap"
+          data-testid="design-cetakan-history-modal"
+          onClick={(e) => e.target === e.currentTarget && setHistoryOpen(false)}
+        >
+          <div className="modal-inner modal-viewport-safe" style={{ maxWidth: 560 }} onClick={(e) => e.stopPropagation()}>
+            <header className="modal-head">
+              <h3>Riwayat Perubahan</h3>
+              <button type="button" className="icon-button" data-testid="design-cetakan-history-close" onClick={() => setHistoryOpen(false)}>
+                <X size={16} />
+              </button>
+            </header>
+            <div className="settings-grid" style={{ marginBottom: 12 }}>
+              <label>
+                Filter
+                <select
+                  data-testid="design-cetakan-history-scope"
+                  value={historyScope}
+                  disabled={historyBusy}
+                  onChange={(e) => {
+                    setHistoryScope(e.target.value);
+                    if (e.target.value !== "branch") setHistoryBranchId("");
+                  }}
+                >
+                  <option value="all">Semua</option>
+                  <option value="global">Default Semua Cabang</option>
+                  <option value="branch">Cabang</option>
+                </select>
+              </label>
+              {historyScope === "branch" ? (
+                <label>
+                  Cabang
+                  <select
+                    data-testid="design-cetakan-history-branch"
+                    value={historyBranchId}
+                    disabled={historyBusy}
+                    onChange={(e) => setHistoryBranchId(e.target.value)}
+                  >
+                    <option value="">Semua cabang</option>
+                    {catalog.map((row) => (
+                      <option key={row.branch_id} value={String(row.branch_id)}>
+                        {row.name || `Cabang ${row.branch_id}`}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
+            </div>
+            {historyErr ? (
+              <div className="signal-strip" role="alert" data-testid="design-cetakan-history-error" style={{ marginBottom: 12 }}>
+                <AlertCircle size={16} />
+                <span>{historyErr}</span>
+              </div>
+            ) : null}
+            {historyBusy && historyItems.length === 0 ? (
+              <p className="muted small" data-testid="design-cetakan-history-loading">Memuat…</p>
+            ) : null}
+            {!historyBusy && !historyErr && historyItems.length === 0 ? (
+              <p className="muted small" data-testid="design-cetakan-history-empty">Belum ada riwayat perubahan Design Cetakan.</p>
+            ) : null}
+            <div data-testid="design-cetakan-history-list">
+              {historyItems.map((row) => (
+                <div
+                  key={row.id || `${row.at}-${row.action}`}
+                  className="settings-info"
+                  data-testid="design-cetakan-history-row"
+                  style={{ marginBottom: 8, display: "block" }}
+                >
+                  <p className="muted small" data-testid="design-cetakan-history-at">{formatHistoryAt(row.at)}</p>
+                  <p data-testid="design-cetakan-history-actor"><strong>{row.actor_name || "-"}</strong></p>
+                  <p className="muted small" data-testid="design-cetakan-history-branch">{row.branch_name || "Global"}</p>
+                  <p data-testid="design-cetakan-history-operation">{row.operation_label || row.summary}</p>
+                  {Array.isArray(row.changed_fields) && row.changed_fields.length ? (
+                    <p className="muted small" data-testid="design-cetakan-history-changes">
+                      Perubahan: {row.changed_fields.map((field) => field.label || field.key).filter(Boolean).join(", ")}
+                    </p>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+            {historyHasMore ? (
+              <button
+                type="button"
+                className="secondary"
+                data-testid="design-cetakan-history-more"
+                disabled={historyBusy}
+                onClick={loadMoreHistory}
+              >
+                {historyBusy ? "Memuat…" : "Muat lebih banyak"}
+              </button>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
