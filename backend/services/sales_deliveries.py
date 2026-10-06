@@ -335,7 +335,7 @@ async def ensure_generated_sj_pdf(db, order: dict, delivery: dict, user: dict, *
 
     try:
         from services.print_design_settings import get_print_design_for_pdf
-        design = await get_print_design_for_pdf(db)
+        design = await get_print_design_for_pdf(db, branch_id=(delivery or {}).get("branch_id"))
         pdf_bytes = generate_sales_delivery_pdf_bytes(delivery, None, design=design)
     except Exception:
         logger.exception("Failed to generate Surat Jalan PDF for shipment %s", shipment_id)
@@ -1563,7 +1563,7 @@ async def generate_signed_sj_pdf_for_order(
 
     try:
         from services.print_design_settings import get_print_design_for_pdf
-        design = await get_print_design_for_pdf(db)
+        design = await get_print_design_for_pdf(db, branch_id=(delivery or {}).get("branch_id"))
         pdf_bytes = generate_sales_delivery_pdf_bytes(
             delivery,
             None,
