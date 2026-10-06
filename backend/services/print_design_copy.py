@@ -236,7 +236,7 @@ async def _cleanup_old_target_assets(
         if not target_owned_storage_path(path, target_branch_id):
             continue
         try:
-            await _delete_branch_only_asset(db, clean, global_design, slot)
+            await _delete_branch_only_asset(db, clean, global_design, slot, target_branch_id)
         except Exception:
             logger.warning(
                 "copy old target asset cleanup failed slot=%s branch=%s",

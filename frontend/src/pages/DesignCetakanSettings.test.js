@@ -1,5 +1,16 @@
+import { act } from "react";
+import { createRoot } from "react-dom/client";
 import fs from "fs";
 import path from "path";
+import api from "../lib/api";
+import DesignCetakanSettings from "./DesignCetakanSettings";
+
+jest.mock("../lib/api", () => ({
+  __esModule: true,
+  default: {},
+}));
+
+global.IS_REACT_ACT_ENVIRONMENT = true;
 
 const settingsSrc = fs.readFileSync(path.join(__dirname, "Settings.jsx"), "utf8");
 const pageSrc = fs.readFileSync(path.join(__dirname, "DesignCetakanSettings.jsx"), "utf8");
@@ -215,6 +226,9 @@ describe("Design Cetakan settings wiring", () => {
     expect(targetBlock).toMatch(/Pilih cabang/);
     expect(targetBlock).not.toMatch(/value=["']global["']/);
     expect(pageSrc).toMatch(/copySource !== "global" && String\(copySource\) === String\(copyTarget\)/);
+    expect(pageSrc).toMatch(/Salin menggunakan pengaturan yang sudah disimpan\./);
+    expect(pageSrc).toMatch(/Perubahan yang belum disimpan akan dibuang\. Lanjutkan\?/);
+    expect(pageSrc).toMatch(/Perubahan yang belum disimpan juga akan dibuang\./);
     expect(pageSrc).toMatch(/Nilai yang disalin menjadi pengaturan khusus cabang dan tidak lagi mengikuti perubahan Global\./);
     expect(pageSrc).toMatch(/Hanya pengaturan khusus/);
     expect(pageSrc).toMatch(/data-testid="design-cetakan-copy-summary"/);
@@ -244,5 +258,273 @@ describe("Design Cetakan settings wiring", () => {
     expect(apiSrc).toMatch(/copyDesignCetakan:/);
     expect(apiSrc).toMatch(/\/settings\/design-cetakan\/copy/);
     expect(apiSrc).not.toMatch(/cloneDesignCetakan/);
+  });
+});
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+const settingsCalls = [];
+const branchCalls = [];
+
+function branchPayload(name) {
+  return {
+    effective: { company_name: name },
+    inherited: { company_name: { overridden: true, inherited: false } },
+    override: { company_name: name },
+  };
+}
+
+function installApi() {
+  settingsCalls.length = 0;
+  branchCalls.length = 0;
+  Object.assign(api, {
+    designCetakanBranches: jest.fn(() => Promise.resolve({
+      branches: [
+        { branch_id: "50", name: "Cabang 50" },
+        { branch_id: "77", name: "Cabang 77" },
+      ],
+    })),
+    designCetakanSettings: jest.fn(() => {
+      const pending = deferred();
+      settingsCalls.push(pending);
+      return pending.promise;
+    }),
+    designCetakanBranch: jest.fn((id) => {
+      const pending = deferred();
+      branchCalls.push({ id: String(id), pending });
+      return pending.promise;
+    }),
+    updateDesignCetakanSettings: jest.fn(async (payload) => ({
+      message: "Design Cetakan berhasil disimpan",
+      settings: { company_name: payload.company_name },
+    })),
+    resetDesignCetakanBranch: jest.fn(async () => ({
+      message: "Cabang kembali mengikuti pengaturan global",
+      branch: branchPayload("GLOBAL"),
+    })),
+    getDesignCetakanHistory: jest.fn(async () => ({ items: [], page: 1, has_more: false })),
+    designCetakanBranchAssetPreview: jest.fn(),
+    designCetakanAssetPreview: jest.fn(),
+  });
+}
+
+function setNativeValue(el, value) {
+  const proto = el.tagName === "SELECT" ? window.HTMLSelectElement.prototype : window.HTMLInputElement.prototype;
+  Object.getOwnPropertyDescriptor(proto, "value").set.call(el, value);
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+  el.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
+async function mountPage() {
+  installApi();
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  await act(async () => {
+    root.render(<DesignCetakanSettings notify={jest.fn()} canEdit />);
+  });
+  return { container, root };
+}
+
+async function settleGlobal(container, name = "GLOBAL") {
+  await act(async () => {
+    settingsCalls[0].resolve({ settings: { company_name: name } });
+  });
+  const input = container.querySelector('[data-testid="design-cetakan-company-name"]');
+  expect(input.value).toBe(name);
+  return input;
+}
+
+async function chooseScope(container, value) {
+  const select = container.querySelector('[data-testid="design-cetakan-scope"]');
+  await act(async () => {
+    setNativeValue(select, value);
+  });
+  return select;
+}
+
+async function typeName(input, value) {
+  await act(async () => {
+    setNativeValue(input, value);
+  });
+}
+
+describe("Design Cetakan hardening behavior", () => {
+  let root;
+  let container;
+
+  afterEach(() => {
+    if (root) {
+      act(() => {
+        root.unmount();
+      });
+    }
+    if (container) container.remove();
+    root = undefined;
+    container = undefined;
+    window.confirm = undefined;
+  });
+
+  test("late branch 50 response cannot replace branch 77", async () => {
+    ({ container, root } = await mountPage());
+    await settleGlobal(container);
+    await chooseScope(container, "50");
+    expect(settingsCalls).toHaveLength(2);
+    await chooseScope(container, "77");
+    expect(settingsCalls).toHaveLength(3);
+    await act(async () => {
+      settingsCalls[2].resolve({ settings: { company_name: "GLOBAL" } });
+    });
+    expect(branchCalls.map((row) => row.id)).toEqual(["77"]);
+    await act(async () => {
+      branchCalls[0].pending.resolve(branchPayload("CABANG 77"));
+    });
+    const input = container.querySelector('[data-testid="design-cetakan-company-name"]');
+    const select = container.querySelector('[data-testid="design-cetakan-scope"]');
+    expect(input.value).toBe("CABANG 77");
+    expect(select.value).toBe("77");
+    await act(async () => {
+      settingsCalls[1].resolve({ settings: { company_name: "SHOULD NOT APPLY" } });
+    });
+    expect(branchCalls.map((row) => row.id)).toEqual(["77"]);
+    expect(input.value).toBe("CABANG 77");
+    expect(select.value).toBe("77");
+    expect(container.querySelector('[data-testid="design-cetakan-error"]')).toBeNull();
+  });
+
+  test("stale branch 50 failure does not replace branch 77 state or clear its loading", async () => {
+    ({ container, root } = await mountPage());
+    await settleGlobal(container);
+    await chooseScope(container, "50");
+    await chooseScope(container, "77");
+    const save = container.querySelector('[data-testid="design-cetakan-save"]');
+    expect(save.textContent).toMatch(/Menyimpan/);
+    await act(async () => {
+      settingsCalls[1].reject({ response: { data: { detail: "cabang 50 gagal" } } });
+    });
+    expect(save.textContent).toMatch(/Menyimpan/);
+    expect(container.querySelector('[data-testid="design-cetakan-error"]')).toBeNull();
+    await act(async () => {
+      settingsCalls[2].resolve({ settings: { company_name: "GLOBAL" } });
+    });
+    await act(async () => {
+      branchCalls[0].pending.resolve(branchPayload("CABANG 77"));
+    });
+    expect(container.querySelector('[data-testid="design-cetakan-company-name"]').value).toBe("CABANG 77");
+    expect(container.querySelector('[data-testid="design-cetakan-scope"]').value).toBe("77");
+    expect(save.textContent).toMatch(/Simpan/);
+    expect(save.textContent).not.toMatch(/Menyimpan/);
+    expect(container.querySelector('[data-testid="design-cetakan-error"]')).toBeNull();
+  });
+
+  test("dirty scope switch confirms before changing selector", async () => {
+    ({ container, root } = await mountPage());
+    const input = await settleGlobal(container);
+    window.confirm = jest.fn(() => false);
+    await typeName(input, "DRAFT 50");
+    await chooseScope(container, "50");
+    expect(window.confirm).toHaveBeenCalledWith("Perubahan yang belum disimpan akan dibuang. Lanjutkan?");
+    expect(container.querySelector('[data-testid="design-cetakan-scope"]').value).toBe("global");
+    expect(input.value).toBe("DRAFT 50");
+    expect(settingsCalls).toHaveLength(1);
+
+    window.confirm.mockReturnValue(true);
+    await chooseScope(container, "50");
+    expect(settingsCalls).toHaveLength(2);
+    await act(async () => {
+      settingsCalls[1].resolve({ settings: { company_name: "GLOBAL" } });
+    });
+    await act(async () => {
+      branchCalls[0].pending.resolve(branchPayload("CABANG 50"));
+    });
+    expect(container.querySelector('[data-testid="design-cetakan-scope"]').value).toBe("50");
+    expect(input.value).toBe("CABANG 50");
+
+    window.confirm.mockReturnValue(false);
+    await typeName(input, "DRAFT GLOBAL");
+    await chooseScope(container, "global");
+    expect(window.confirm).toHaveBeenCalledWith("Perubahan yang belum disimpan akan dibuang. Lanjutkan?");
+    expect(container.querySelector('[data-testid="design-cetakan-scope"]').value).toBe("50");
+    expect(input.value).toBe("DRAFT GLOBAL");
+
+    window.confirm.mockReturnValue(true);
+    await chooseScope(container, "global");
+    await act(async () => {
+      settingsCalls[settingsCalls.length - 1].resolve({ settings: { company_name: "GLOBAL CLEAN" } });
+    });
+    expect(container.querySelector('[data-testid="design-cetakan-scope"]').value).toBe("global");
+    expect(input.value).toBe("GLOBAL CLEAN");
+  });
+
+  test("successful save clears dirty so the next scope change does not confirm", async () => {
+    ({ container, root } = await mountPage());
+    const input = await settleGlobal(container);
+    await typeName(input, "SAVED NAME");
+    await act(async () => {
+      container.querySelector('[data-testid="design-cetakan-save"]').click();
+    });
+    expect(input.value).toBe("SAVED NAME");
+    window.confirm = jest.fn(() => false);
+    const before = settingsCalls.length;
+    await chooseScope(container, "77");
+    expect(window.confirm).not.toHaveBeenCalled();
+    expect(settingsCalls).toHaveLength(before + 1);
+    expect(container.querySelector('[data-testid="design-cetakan-scope"]').value).toBe("77");
+  });
+
+  test("copy warns that saved settings are used and history cannot stack with copy", async () => {
+    ({ container, root } = await mountPage());
+    await settleGlobal(container);
+    await act(async () => {
+      container.querySelector('[data-testid="design-cetakan-copy-open"]').click();
+    });
+    expect(container.querySelector('[data-testid="design-cetakan-copy-modal"]').textContent).toMatch(
+      /Salin menggunakan pengaturan yang sudah disimpan\./
+    );
+    await act(async () => {
+      container.querySelector('[data-testid="design-cetakan-history-open"]').click();
+    });
+    expect(container.querySelector('[data-testid="design-cetakan-copy-modal"]')).toBeNull();
+    expect(container.querySelector('[data-testid="design-cetakan-history-modal"]')).toBeTruthy();
+    await act(async () => {
+      container.querySelector('[data-testid="design-cetakan-copy-open"]').click();
+    });
+    expect(container.querySelector('[data-testid="design-cetakan-history-modal"]')).toBeNull();
+    expect(container.querySelector('[data-testid="design-cetakan-copy-modal"]')).toBeTruthy();
+  });
+
+  test("dirty branch reset confirms unsaved discard and then clears dirty", async () => {
+    ({ container, root } = await mountPage());
+    const input = await settleGlobal(container);
+    await chooseScope(container, "50");
+    await act(async () => {
+      settingsCalls[1].resolve({ settings: { company_name: "GLOBAL" } });
+    });
+    await act(async () => {
+      branchCalls[0].pending.resolve(branchPayload("CABANG 50"));
+    });
+    expect(input.value).toBe("CABANG 50");
+    await typeName(input, "DRAFT RESET");
+    window.confirm = jest.fn(() => true);
+    await act(async () => {
+      container.querySelector('[data-testid="design-cetakan-reset-branch"]').click();
+    });
+    expect(window.confirm).toHaveBeenCalledWith(
+      "Pengaturan khusus cabang akan dihapus dan cabang kembali mengikuti Global. Perubahan yang belum disimpan juga akan dibuang."
+    );
+    expect(input.value).toBe("GLOBAL");
+    window.confirm.mockClear();
+    window.confirm.mockReturnValue(false);
+    await chooseScope(container, "global");
+    expect(window.confirm).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="design-cetakan-scope"]').value).toBe("global");
   });
 });
