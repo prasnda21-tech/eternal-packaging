@@ -78,8 +78,9 @@ describe("Pesanan Penjualan UI & Data Invariants", () => {
     expect(src).toMatch(/Quantity harus angka lebih besar dari 0/);
   });
 
-  test("defers options fetch until create view and aborts duplicate list fetches", () => {
-    expect(src).toMatch(/if \(viewMode === "create"\) \{\s*loadOptions\(\);/);
+  test("loads options on list for filters and seeds PO only in create; aborts duplicate list fetches", () => {
+    expect(src).toMatch(/if \(viewMode !== "list"\) return undefined;\s*loadOptions\(\);/);
+    expect(src).toMatch(/if \(viewMode === "create"\) \{\s*loadOptions\(\{ applySuggestedPo: true \}\);/);
     expect(src).toMatch(/new AbortController/);
     expect(src).toMatch(/signal: ac\.signal/);
     expect(src).toMatch(/ERR_CANCELED/);
@@ -116,22 +117,20 @@ describe("Pesanan Penjualan UI & Data Invariants", () => {
     expect(src).toMatch(/selectedIds\.size === displayedOrders\.length/);
   });
 
-  test("list header is title-only and table columns have compact filters", () => {
+  test("list header is title-only and table columns have selectable header filters", () => {
     expect(src).not.toMatch(/Penjualan · Pesanan Penjualan/);
     expect(src).not.toMatch(/Daftar PO Penjualan dan pembuatan Sales Order baru/);
     expect(src).toMatch(/data-testid="sales-order-title"/);
     expect(src).not.toMatch(/Daftar pesanan penjualan dari pelanggan/);
-    expect(src).toMatch(/so-th-filter-po/);
-    expect(src).toMatch(/so-th-filter-date/);
-    expect(src).toMatch(/so-th-filter-customer/);
-    expect(src).toMatch(/so-th-filter-outlet/);
-    expect(src).toMatch(/so-th-filter-qty/);
-    expect(src).toMatch(/so-th-filter-remain/);
+    expect(src).toMatch(/so-th-filter-ship-date/);
     expect(src).toMatch(/so-th-filter-delivery/);
     expect(src).toMatch(/so-th-filter-sales/);
     expect(src).toMatch(/so-th-filter-stage/);
-    expect(src).toMatch(/applySalesOrderColumnFilters/);
-    expect(src).toMatch(/sales-order-clear-column-filters/);
+    expect(src).toMatch(/HeaderSelectFilter/);
+    expect(src).toMatch(/tanggalKirimPreset/);
+    expect(src).toMatch(/Reset Filter/);
+    expect(src).not.toMatch(/so-filter-customer/);
+    expect(src).not.toMatch(/so-filter-qty-min/);
     expect(src).toMatch(/sales-order-refresh-button/);
     expect(src).toMatch(/create-sales-order-btn/);
   });

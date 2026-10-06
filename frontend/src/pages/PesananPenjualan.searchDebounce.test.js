@@ -252,14 +252,8 @@ describe("Pesanan Penjualan list search debounce", () => {
     expect(container.querySelector('[data-testid="sales-order-tab-semua"]').getAttribute("aria-selected")).toBe("true");
     expect(container.querySelector('[data-testid="sales-order-aktif-count"]')).toBeFalsy();
 
-    const customer = container.querySelector('[data-testid="so-filter-customer"]');
-    await act(async () => {
-      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
-      setter.call(customer, "maju");
-      customer.dispatchEvent(new Event("input", { bubbles: true }));
-    });
-    expect(container.querySelector('[data-testid="order-row-a"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="order-row-b"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="so-th-filter-ship-date"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="so-filter-customer"]')).toBeNull();
 
     const pageSize = container.querySelector('[data-testid="sales-order-page-size"]');
     await act(async () => {
@@ -364,14 +358,22 @@ describe("Pesanan Penjualan list search debounce", () => {
     await act(async () => {
       container.querySelector('[data-testid="sales-order-tab-semua"]').click();
     });
-    const stage = container.querySelector('[data-testid="so-filter-stage-text"]');
     await act(async () => {
-      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
-      setter.call(stage, "HOLD");
-      stage.dispatchEvent(new Event("input", { bubbles: true }));
+      container.querySelector('[data-testid="so-th-filter-stage-option-hold"]').click();
     });
+    expect(api.listSalesOrders).toHaveBeenLastCalledWith(
+      expect.objectContaining({ status: "hold", page: 1, page_size: 10 }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
     await act(async () => {
-      container.querySelector('[data-testid="so-th-filter-stage"] .so-th-clear').click();
+      container.querySelector('[data-testid="so-th-filter-stage-clear"]').click();
+    });
+    expect(api.listSalesOrders).toHaveBeenLastCalledWith(
+      { status: "aktif", page: 1, page_size: 10 },
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    await act(async () => {
+      container.querySelector('[data-testid="sales-order-tab-semua"]').click();
     });
     await chooseStatus("__tab__");
     expect(api.listSalesOrders).toHaveBeenLastCalledWith(

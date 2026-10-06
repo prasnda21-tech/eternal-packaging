@@ -19,7 +19,9 @@ import {
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDisplayDate } from "../lib/constants";
+import HeaderSelectFilter from "../components/HeaderSelectFilter";
 import SjDeliveryLocationPicker, { sjOverridePayload } from "../components/SjDeliveryLocationPicker";
+import { SHIPPING_DATE_PRESET_OPTIONS } from "../lib/salesDatePresets";
 import { loadedRangeLabel, showLoadedDocumentCount } from "../lib/salesSubmenuDensity";
 import "./salesSubmenuDensity.css";
 
@@ -48,6 +50,9 @@ export default function PengirimanPesanan() {
   const [listErr, setListErr] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [deliveryDatePreset, setDeliveryDatePreset] = useState("all");
+  const [createdByFilter, setCreatedByFilter] = useState("");
+  const [createdByOptions, setCreatedByOptions] = useState([]);
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [deleteConfirm, setDeleteConfirm] = useState(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
@@ -96,6 +101,10 @@ export default function PengirimanPesanan() {
       const params = {};
       if (searchQuery.trim()) params.q = searchQuery.trim();
       if (statusFilter !== "all") params.status = statusFilter;
+      if (deliveryDatePreset && deliveryDatePreset !== "all") {
+        params.delivery_date_preset = deliveryDatePreset;
+      }
+      if (createdByFilter.trim()) params.created_by = createdByFilter.trim();
       const res = await api.listSalesDeliveries(params);
       setDeliveries(res.deliveries || []);
       setSelectedIds(new Set());
@@ -105,7 +114,31 @@ export default function PengirimanPesanan() {
     } finally {
       setListLoading(false);
     }
-  }, [searchQuery, statusFilter]);
+  }, [searchQuery, statusFilter, deliveryDatePreset, createdByFilter]);
+
+  const loadDeliveryFilterOptions = useCallback(async () => {
+    try {
+      const data = await api.salesDeliveryFilterOptions();
+      setCreatedByOptions(Array.isArray(data?.created_by_options) ? data.created_by_options : []);
+    } catch {
+      setCreatedByOptions([]);
+    }
+  }, []);
+
+  const resetDeliveryFilters = () => {
+    setSearchQuery("");
+    setStatusFilter("all");
+    setDeliveryDatePreset("all");
+    setCreatedByFilter("");
+  };
+
+  const createdBySelectOptions = useMemo(() => ([
+    { value: "", label: "Semua" },
+    ...createdByOptions.map((item) => ({
+      value: item.value,
+      label: item.label || item.value,
+    })),
+  ]), [createdByOptions]);
 
   // Load active POs with remaining quantity
   const loadActivePOs = useCallback(async () => {
@@ -189,8 +222,9 @@ export default function PengirimanPesanan() {
   useEffect(() => {
     if (viewMode === "list") {
       loadDeliveries();
+      loadDeliveryFilterOptions();
     }
-  }, [viewMode, loadDeliveries]);
+  }, [viewMode, loadDeliveries, loadDeliveryFilterOptions]);
 
   useEffect(() => {
     if (viewMode === "create") {
@@ -422,7 +456,9 @@ export default function PengirimanPesanan() {
     loading: listLoading,
     error: listErr,
     query: searchQuery,
-  }) && statusFilter === "all";
+  }) && statusFilter === "all"
+    && deliveryDatePreset === "all"
+    && !createdByFilter;
 
   return (
     <div className={"page-container penjualan-page penjualan-workspace sd-density " + (viewMode === "list" ? "sd-list-mode" : "sd-form-mode")}>
@@ -951,6 +987,20 @@ export default function PengirimanPesanan() {
                 {tab.label}
               </button>
             ))}
+            <button
+              type="button"
+              className="sd-list-reset"
+              data-testid="reset-delivery-filters"
+              onClick={resetDeliveryFilters}
+              disabled={
+                !searchQuery
+                && statusFilter === "all"
+                && deliveryDatePreset === "all"
+                && !createdByFilter
+              }
+            >
+              Reset Filter
+            </button>
           </div>
 
           <div className="sd-list-table-scroll">
@@ -974,10 +1024,28 @@ export default function PengirimanPesanan() {
                   )}
                   <th>Pelanggan / No. SJ</th>
                   <th>No. PO</th>
-                  <th>Tgl Kirim</th>
+                  <th>
+                    <HeaderSelectFilter
+                      label="Tgl Kirim"
+                      testid="sj-th-filter-ship-date"
+                      options={SHIPPING_DATE_PRESET_OPTIONS}
+                      value={deliveryDatePreset}
+                      emptyValue="all"
+                      onChange={setDeliveryDatePreset}
+                    />
+                  </th>
                   <th>Qty</th>
                   <th>Status</th>
-                  <th>Dibuat Oleh</th>
+                  <th>
+                    <HeaderSelectFilter
+                      label="Dibuat Oleh"
+                      testid="sj-th-filter-created-by"
+                      options={createdBySelectOptions}
+                      value={createdByFilter}
+                      emptyValue=""
+                      onChange={setCreatedByFilter}
+                    />
+                  </th>
                   <th>Aksi</th>
                 </tr>
               </thead>

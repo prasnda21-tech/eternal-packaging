@@ -88,13 +88,31 @@ export function periodBounds(period, today = new Date()) {
   return { date_from: "", date_to: "" };
 }
 
-export function salesOrderListRequest({ q, status, dateFrom, dateTo, page, pageSize } = {}) {
+export function salesOrderListRequest({
+  q,
+  status,
+  dateFrom,
+  dateTo,
+  tanggalKirimPreset,
+  sales,
+  deliveryStatuses,
+  page,
+  pageSize,
+} = {}) {
   const params = {};
   const query = String(q || "").trim();
   if (query) params.q = query;
   if (status && status !== "all") params.status = status;
   if (dateFrom) params.date_from = dateFrom;
   if (dateTo) params.date_to = dateTo;
+  const shipPreset = String(tanggalKirimPreset || "all").trim() || "all";
+  if (shipPreset !== "all") params.tanggal_pengiriman_preset = shipPreset;
+  const salesKey = String(sales || "").trim();
+  if (salesKey) params.sales = salesKey;
+  const statuses = Array.isArray(deliveryStatuses)
+    ? deliveryStatuses.map((item) => String(item || "").trim()).filter(Boolean)
+    : [];
+  if (statuses.length) params.delivery_status = statuses.join(",");
   if (page) params.page = page;
   if (pageSize) params.page_size = pageSize;
   return params;

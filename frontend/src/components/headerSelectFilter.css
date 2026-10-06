@@ -1,0 +1,151 @@
+/* Shared sales-list header select filter */
+.hsf-th-inner {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.hsf-th-label {
+  white-space: nowrap;
+}
+
+.hsf-th-filter {
+  position: relative;
+  width: 18px;
+  height: 18px;
+  border: 0;
+  background: transparent;
+  color: #94a3b8;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  border-radius: 4px;
+}
+
+.hsf-th-filter:hover {
+  color: #1e3a8a;
+  background: #eff6ff;
+}
+
+.hsf-th-filter.is-active {
+  color: #1e3a8a;
+  background: #dbeafe;
+}
+
+.hsf-th-filter:focus-visible {
+  outline: 2px solid #0284c7;
+  outline-offset: 1px;
+}
+
+.hsf-th-dot {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #0284c7;
+  box-shadow: 0 0 0 1px #fff;
+}
+
+[data-radix-popper-content-wrapper]:has(> .hsf-th-popover) {
+  min-width: 0 !important;
+  max-width: min(280px, calc(100vw - 16px));
+  z-index: 90 !important;
+}
+
+.hsf-th-popover {
+  isolation: isolate;
+  z-index: 90;
+  box-sizing: border-box;
+  width: min(240px, var(--radix-popper-available-width, 240px));
+  max-width: min(280px, calc(100vw - 16px));
+  min-width: 0;
+  max-height: var(--radix-popper-available-height, calc(100vh - 16px));
+  overflow: auto;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+}
+
+.hsf-th-pop-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: #64748b;
+}
+
+.hsf-th-options {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.hsf-th-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  padding: 7px 8px;
+  border-radius: 6px;
+  font-size: 13px;
+  color: #0f172a;
+  cursor: pointer;
+}
+
+.hsf-th-option:hover,
+.hsf-th-option:focus-visible {
+  background: #f1f5f9;
+  outline: none;
+}
+
+.hsf-th-option.is-selected {
+  background: #e7f6ee;
+  font-weight: 600;
+  color: #047857;
+}
+
+.hsf-th-check {
+  width: 14px;
+  height: 14px;
+  border: 1.5px solid #94a3b8;
+  border-radius: 3px;
+  flex-shrink: 0;
+  background: #fff;
+}
+
+.hsf-th-check.is-on {
+  border-color: #047857;
+  background: #047857;
+  box-shadow: inset 0 0 0 2px #fff;
+}
+
+.hsf-th-clear {
+  margin-top: 2px;
+  border: 0;
+  background: transparent;
+  color: #0369a1;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 4px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.hsf-th-clear:hover,
+.hsf-th-clear:focus-visible {
+  text-decoration: underline;
+  outline: none;
+}

@@ -1392,6 +1392,13 @@ body .sd-density.penjualan-page .fp-detail textarea:not(:disabled):not([readonly
   box-shadow:0 0 0 3px rgba(22,101,52,.16) !important;
 }
 
+.fp-invoice-page .fp-th-status-filters{
+  display:flex;
+  flex-wrap:wrap;
+  align-items:center;
+  gap:8px 10px;
+  min-width:0;
+}
 .sd-density .fp-invoice-toolbar{flex-wrap:wrap}
 .sd-density .fp-invoice-tabs{
   display:inline-flex;

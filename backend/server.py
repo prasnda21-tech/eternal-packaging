@@ -9250,6 +9250,7 @@ from services.sales_deliveries import (
     get_po_delivery_summary as _get_po_delivery_summary,
     create_sales_delivery as _create_sales_delivery,
     list_sales_deliveries as _list_sales_deliveries,
+    list_sales_delivery_filter_options as _list_sales_delivery_filter_options,
     get_sales_delivery_detail as _get_sales_delivery_detail,
     generate_sales_delivery_pdf_bytes as _generate_sales_delivery_pdf_bytes,
 )
@@ -10586,6 +10587,7 @@ _SALES_ORDER_LIST_PROJECTION = {
     "payment_bypassed_at": 1,
     "customer_approval.status": 1,
     "delivery_deadline_manual": 1,
+    "scheduled_delivery_date": 1,
     "buffer_stock": 1,
     "delivery_status": 1,
     "_has_design_files": _mongo_array_nonempty_expr("design_files"),
@@ -10631,6 +10633,79 @@ def _sales_order_date_clause(date_from: Optional[str], date_to: Optional[str]) -
     if end:
         clause["$lte"] = f"{end}T23:59:59.999999"
     return {"order_date": clause} if clause else {}
+
+
+def _normalize_sales_order_delivery_status(raw: Optional[str]) -> str:
+    text = str(raw or "").strip().upper().replace("_", " ")
+    if not text:
+        return ""
+    if text in ("DIBATALKAN", "CANCELLED", "BATAL"):
+        return "DIBATALKAN"
+    if text in ("SELESAI", "SELESAI PENGIRIMAN", "TERKIRIM"):
+        return "SELESAI"
+    if text in ("SEBAGIAN", "SEBAGIAN DIKIRIM"):
+        return "SEBAGIAN"
+    if text in ("BELUM DIKIRIM", "BELUM"):
+        return "BELUM DIKIRIM"
+    return text
+
+
+def _sales_order_is_active_for_overdue(order: dict) -> bool:
+    """Overdue Tanggal Kirim only applies to non-cancelled, non-completed orders."""
+    if order.get("cancelled"):
+        return False
+    try:
+        stage = int(order.get("current_stage") or 0)
+    except (TypeError, ValueError):
+        stage = 0
+    return stage < 14
+
+
+def _apply_sales_order_header_filters(
+    orders: list,
+    *,
+    tanggal_pengiriman_preset: Optional[str] = None,
+    sales: Optional[str] = None,
+    delivery_status: Optional[str] = None,
+) -> list:
+    """Post-decorate header filters applied before pagination."""
+    from services.sales_date_presets import match_shipping_date
+
+    sales_key = str(sales or "").strip()
+    status_tokens = [
+        _normalize_sales_order_delivery_status(part)
+        for part in str(delivery_status or "").split(",")
+        if str(part or "").strip()
+    ]
+    status_tokens = [token for token in status_tokens if token]
+    preset = str(tanggal_pengiriman_preset or "all").strip().lower() or "all"
+
+    if not sales_key and not status_tokens and preset in ("", "all"):
+        return orders
+
+    filtered = []
+    for order in orders:
+        if sales_key:
+            row_sales = str(order.get("sales") or order.get("sales_user") or "").strip()
+            if row_sales != sales_key:
+                continue
+        if status_tokens:
+            row_status = _normalize_sales_order_delivery_status(
+                (order.get("delivery_summary") or {}).get("status")
+                or ("DIBATALKAN" if order.get("cancelled") else "BELUM DIKIRIM")
+            )
+            if row_status not in status_tokens:
+                continue
+        if preset not in ("", "all"):
+            active = _sales_order_is_active_for_overdue(order) if preset == "overdue" else None
+            if not match_shipping_date(
+                order.get("tanggal_pengiriman"),
+                preset,
+                is_active_order=active,
+            ):
+                continue
+        filtered.append(order)
+    return filtered
 
 
 _SALES_ORDER_LIST_FETCH_LIMIT = 1000
@@ -10782,6 +10857,9 @@ async def list_sales_orders(
     status: Optional[str] = None,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
+    tanggal_pengiriman_preset: Optional[str] = None,
+    sales: Optional[str] = None,
+    delivery_status: Optional[str] = None,
     page: Optional[int] = None,
     page_size: Optional[int] = None,
     user=Depends(current_user),
@@ -10806,6 +10884,12 @@ async def list_sales_orders(
     date_clause = _sales_order_date_clause(date_from, date_to)
     if date_clause:
         shared.append(date_clause)
+    sales_key = str(sales or "").strip()
+    if sales_key:
+        shared.append({"$or": [
+            {"sales": sales_key},
+            {"sales_user": sales_key},
+        ]})
 
     if st == "gabungan":
         # Separate 1000-row windows. A mixed query would drop rows still visible
@@ -10839,6 +10923,13 @@ async def list_sales_orders(
             orders = [o for o in orders if o.get("hold")]
         elif st == "aktif":
             orders = [o for o in orders if not o.get("hold")]
+
+    orders = _apply_sales_order_header_filters(
+        orders,
+        tanggal_pengiriman_preset=tanggal_pengiriman_preset,
+        sales=None,  # already applied in Mongo when present
+        delivery_status=delivery_status,
+    )
 
     paging = page is not None or page_size is not None
     if not paging:
@@ -10876,6 +10967,8 @@ async def list_sales_deliveries_endpoint(
     q: Optional[str] = None,
     po_id: Optional[str] = None,
     status: Optional[str] = None,
+    delivery_date_preset: Optional[str] = None,
+    created_by: Optional[str] = None,
     user=Depends(current_user),
 ):
     """List sales deliveries (Pengiriman Pesanan) with search and status filtering."""
@@ -10883,8 +10976,23 @@ async def list_sales_deliveries_endpoint(
     await _require_any_perm(user, "sales.delivery.view", "sales_order.view", "po.view")
     if po_id:
         await ensure_owned_po_id(db, user, po_id)
-    deliveries = await _list_sales_deliveries(db, q=q, po_id=po_id, status=status)
+    deliveries = await _list_sales_deliveries(
+        db,
+        q=q,
+        po_id=po_id,
+        status=status,
+        delivery_date_preset=delivery_date_preset,
+        created_by=created_by,
+    )
     return {"deliveries": deliveries, "count": len(deliveries)}
+
+
+@api_router.get("/sales-deliveries/filter-options")
+async def sales_deliveries_filter_options_endpoint(user=Depends(current_user)):
+    """Authoritative option lists for SJ header filters (created_by stable keys)."""
+    reject_sales_pwa_bypass(user)
+    await _require_any_perm(user, "sales.delivery.view", "sales_order.view", "po.view")
+    return await _list_sales_delivery_filter_options(db)
 
 
 @api_router.get("/sales-deliveries/po/{po_id}/summary")
