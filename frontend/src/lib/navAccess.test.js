@@ -431,6 +431,29 @@ describe("purchasingMenuItems", () => {
     ]);
     expect(items.filter((item) => item.label === "Penerimaan Barang")).toHaveLength(1);
   });
+
+  test("places HPP Pembelian after Pembayaran without joining the transaction sequence", () => {
+    const items = purchasingMenuItems(has(
+      NAV_KEYS.purchasing,
+      NAV_KEYS.purchaseRequests,
+      NAV_KEYS.purchaseOrders,
+      NAV_KEYS.purchaseInvoices,
+      NAV_KEYS.purchasePayments,
+      NAV_KEYS.purchaseReceipts,
+      NAV_KEYS.purchaseHpp,
+    ));
+    expect(items.map((item) => item.label)).toEqual([
+      "Permintaan",
+      "Pesanan Pembelian",
+      "Uang Muka",
+      "Penerimaan Barang",
+      "Retur Pembelian",
+      "Faktur Pembelian",
+      "Pembayaran Pembelian",
+      "HPP Pembelian",
+    ]);
+    expect(items.find((item) => item.label === "HPP Pembelian").to).toBe("/pembelian/hpp-pembelian");
+  });
 });
 
 describe("inventoryMenuItems", () => {

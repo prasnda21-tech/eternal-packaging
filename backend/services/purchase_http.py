@@ -747,3 +747,60 @@ def register_purchase_routes(api_router, *, get_db, current_user, require_perm, 
         await require_any_perm(user, "settings.hpp.view", "settings.hpp.manage")
         from services.hpp_cutover import list_reconciliation
         return {"rows": await list_reconciliation(get_db(), cutover_id)}
+
+    @api_router.get("/pembelian/hpp")
+    async def list_purchase_hpp_endpoint(
+        q: Optional[str] = None,
+        supplier: Optional[str] = None,
+        status: Optional[str] = None,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+        user=Depends(require_perm("purchase_hpp.view")),
+    ):
+        from services.purchase_hpp import list_purchase_hpp
+        return await list_purchase_hpp(
+            get_db(),
+            q=q or "",
+            supplier=supplier or "",
+            status=status or "",
+            date_from=date_from or "",
+            date_to=date_to or "",
+        )
+
+    @api_router.get("/pembelian/hpp/export")
+    async def export_purchase_hpp_endpoint(
+        q: Optional[str] = None,
+        supplier: Optional[str] = None,
+        status: Optional[str] = None,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+        user=Depends(require_perm("purchase_hpp.view")),
+    ):
+        from datetime import datetime, timezone
+
+        from fastapi.responses import Response as FastAPIResponse
+
+        from services.purchase_hpp import export_xlsx, list_purchase_hpp
+
+        listing = await list_purchase_hpp(
+            get_db(),
+            q=q or "",
+            supplier=supplier or "",
+            status=status or "",
+            date_from=date_from or "",
+            date_to=date_to or "",
+        )
+        filename = f"hpp-pembelian-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M')}.xlsx"
+        return FastAPIResponse(
+            content=export_xlsx(listing.get("rows") or []),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    @api_router.get("/pembelian/hpp/{master_item_id}")
+    async def get_purchase_hpp_item_endpoint(
+        master_item_id: str,
+        user=Depends(require_perm("purchase_hpp.view")),
+    ):
+        from services.purchase_hpp import get_purchase_hpp_item
+        return await get_purchase_hpp_item(get_db(), master_item_id)

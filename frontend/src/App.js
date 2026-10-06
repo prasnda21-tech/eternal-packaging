@@ -70,6 +70,7 @@ const UangMukaPembelian = lazy(() => import("./pages/UangMukaPembelian"));
 const ReturPembelian = lazy(() => import("./pages/ReturPembelian"));
 const FakturPembelian = lazy(() => import("./pages/FakturPembelian"));
 const PembayaranPembelian = lazy(() => import("./pages/PembayaranPembelian"));
+const HppPembelian = lazy(() => import("./pages/HppPembelian"));
 const SalesActivityPage = lazy(() => import("./pages/SalesActivityPage"));
 const SalesActivityOutletDetail = lazy(() => import("./pages/SalesActivityOutletDetail"));
 const PoWorkView = lazy(() => import("./pages/PoWorkView"));
@@ -198,6 +199,7 @@ function PembelianIndex() {
   if (buy.invoices) return <Navigate to="/pembelian/faktur-pembelian" replace />;
   if (buy.payments) return <Navigate to="/pembelian/pembayaran-pembelian" replace />;
   if (buy.receipts) return <Navigate to="/pembelian/penerimaan-barang" replace />;
+  if (buy.hpp) return <Navigate to="/pembelian/hpp-pembelian" replace />;
   return <Navigate to="/" replace />;
 }
 
@@ -359,6 +361,7 @@ export default function App() {
             <Route path="/pembelian/pembayaran-pembelian" element={<PermGate anyOf={[NAV_KEYS.purchasePayments, NAV_KEYS.purchasing, "purchase_payments.view", "purchase_payments.create"]}><PembayaranPembelian /></PermGate>} />
             <Route path="/pembelian/penerimaan-barang" element={<PermGate anyOf={[NAV_KEYS.purchaseReceipts]} alsoAnyOf={["purchase_receipts.view"]}><PenerimaanBarang /></PermGate>} />
             <Route path="/pembelian/retur" element={<PermGate anyOf={[NAV_KEYS.purchaseReturns, NAV_KEYS.purchaseReceipts]} alsoAnyOf={["purchase_receipts.view"]}><ReturPembelian /></PermGate>} />
+            <Route path="/pembelian/hpp-pembelian" element={<PermGate anyOf={[NAV_KEYS.purchaseHpp]} alsoAnyOf={["purchase_hpp.view"]}><HppPembelian /></PermGate>} />
             <Route path="/pembelian" element={<PembelianIndex />} />
             <Route path="/persediaan/master-barang-jasa" element={<PermGate anyOf={[NAV_KEYS.masterItems]} alsoAnyOf={["master_items.view"]}><MasterBarangJasa /></PermGate>} />
             <Route path="/persediaan/master-barang-jasa/:id" element={<PermGate anyOf={[NAV_KEYS.masterItems]} alsoAnyOf={["master_items.view"]}><ProductDetail /></PermGate>} />

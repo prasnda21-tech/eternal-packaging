@@ -88,6 +88,7 @@ PERMISSION_CATALOG = [
     ("Pembelian", "purchase_invoices.create", "Buat Faktur Pembelian"),
     ("Pembelian", "purchase_payments.view", "Lihat Pembayaran Pembelian"),
     ("Pembelian", "purchase_payments.create", "Buat Pembayaran Pembelian"),
+    ("Pembelian", "purchase_hpp.view", "Lihat HPP Pembelian"),
     ("Pengaturan", "settings.hpp.view", "Lihat Pengaturan HPP"),
     ("Pengaturan", "settings.hpp.manage", "Ubah Pengaturan HPP / hitung ulang"),
     ("Pengaturan", "settings.sales_accounting.view", "Lihat Pengaturan Akuntansi Penjualan"),
@@ -281,6 +282,7 @@ PERMISSION_CATALOG = [
     ("Akses Menu", "nav.purchasing.invoices", "Menu Faktur Pembelian"),
     ("Akses Menu", "nav.purchasing.payments", "Menu Pembayaran Pembelian"),
     ("Akses Menu", "nav.purchasing.receipts", "Menu Penerimaan Barang"),
+    ("Akses Menu", "nav.purchasing.hpp", "Menu HPP Pembelian"),
     ("Akses Menu", "nav.inventory", "Menu Persediaan"),
     ("Akses Menu", "nav.inventory.master_items", "Menu Barang/Jasa"),
     ("Akses Menu", "nav.inventory.branches_warehouses", "Menu Cabang & Gudang"),
@@ -415,6 +417,7 @@ NAV_MENU_ITEMS = (
     ("nav.purchasing.invoices", "Faktur Pembelian", "nav.purchasing"),
     ("nav.purchasing.payments", "Pembayaran Pembelian", "nav.purchasing"),
     ("nav.purchasing.receipts", "Penerimaan Barang", "nav.purchasing"),
+    ("nav.purchasing.hpp", "HPP Pembelian", "nav.purchasing"),
     ("nav.inventory", "Persediaan", None),
     ("nav.inventory.master_items", "Barang/Jasa", "nav.inventory"),
     ("nav.inventory.branches_warehouses", "Cabang & Gudang", "nav.inventory"),
@@ -512,6 +515,9 @@ def derived_nav_permissions(existing: set) -> set:
     if "purchase_payments.view" in existing or "purchase_payments.create" in existing:
         nav.add("nav.purchasing")
         nav.add("nav.purchasing.payments")
+    if "purchase_hpp.view" in existing:
+        nav.add("nav.purchasing")
+        nav.add("nav.purchasing.hpp")
     if "design.upload" in existing:
         nav.add("nav.production")
         nav.add("nav.tasks")
@@ -712,6 +718,7 @@ ROLE_DEFAULT_PERMISSIONS = {
         "purchase_orders.view", "purchase_orders.create",
         "purchase_invoices.view", "purchase_invoices.create",
         "purchase_payments.view", "purchase_payments.create",
+        "purchase_hpp.view",
         "settings.hpp.view", "settings.hpp.manage",
         "reports.gaji_operator.view",
         "reports.order_prediction.view", "reports.order_prediction.import",
@@ -742,6 +749,7 @@ ROLE_DEFAULT_PERMISSIONS = {
         "purchase_orders.view", "purchase_orders.create",
         "purchase_invoices.view", "purchase_invoices.create",
         "purchase_payments.view", "purchase_payments.create",
+        "purchase_hpp.view",
         "settings.hpp.view", "settings.hpp.manage",
         "reports.gaji_operator.view",
         "reports.order_prediction.view", "reports.order_prediction.import",
@@ -785,6 +793,7 @@ ROLE_DEFAULT_PERMISSIONS = {
         "inventory_valuation.view",
         "inventory_valuation.export",
         "inventory_valuation.manage_opening",
+        "purchase_hpp.view",
         "payroll.piece_holding.edit",
     ],
     "direktur_utama": [

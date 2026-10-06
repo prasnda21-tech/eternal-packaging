@@ -69,6 +69,7 @@ const TILE_ICONS = {
   [NAV_KEYS.purchasePayments]: CreditCard,
   [NAV_KEYS.purchaseReceipts]: Package,
   [NAV_KEYS.purchaseReturns]: RotateCcw,
+  [NAV_KEYS.purchaseHpp]: Coins,
   [NAV_KEYS.masterItems]: Package,
   [NAV_KEYS.currentStock]: Boxes,
   [NAV_KEYS.inventoryValue]: Coins,

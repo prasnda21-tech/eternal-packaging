@@ -38,6 +38,7 @@ export const NAV_KEYS = {
   purchasePayments: "nav.purchasing.payments",
   purchaseReceipts: "nav.purchasing.receipts",
   purchaseReturns: "nav.purchasing.returns",
+  purchaseHpp: "nav.purchasing.hpp",
   inventory: "nav.inventory",
   masterItems: "nav.inventory.master_items",
   branchesWarehouses: "nav.inventory.branches_warehouses",
@@ -124,6 +125,7 @@ export const NAV_MENU_FALLBACK = [
   { key: NAV_KEYS.purchaseReturns, label: "Retur Pembelian", parent: NAV_KEYS.purchasing },
   { key: NAV_KEYS.purchaseInvoices, label: "Faktur Pembelian", parent: NAV_KEYS.purchasing },
   { key: NAV_KEYS.purchasePayments, label: "Pembayaran Pembelian", parent: NAV_KEYS.purchasing },
+  { key: NAV_KEYS.purchaseHpp, label: "HPP Pembelian", parent: NAV_KEYS.purchasing },
   { key: NAV_KEYS.inventory, label: "Persediaan", parent: null },
   { key: NAV_KEYS.masterItems, label: "Barang/Jasa", parent: NAV_KEYS.inventory },
   { key: NAV_KEYS.branchesWarehouses, label: "Cabang & Gudang", parent: NAV_KEYS.inventory },
@@ -357,6 +359,7 @@ export const PURCHASING_NAV_ROUTES = {
   [NAV_KEYS.purchasePayments]: "/pembelian/pembayaran-pembelian",
   [NAV_KEYS.purchaseReceipts]: "/pembelian/penerimaan-barang",
   [NAV_KEYS.purchaseReturns]: "/pembelian/retur",
+  [NAV_KEYS.purchaseHpp]: "/pembelian/hpp-pembelian",
 };
 
 const PURCHASING_VIS_FIELD = {
@@ -367,6 +370,7 @@ const PURCHASING_VIS_FIELD = {
   [NAV_KEYS.purchasePayments]: "payments",
   [NAV_KEYS.purchaseReceipts]: "receipts",
   [NAV_KEYS.purchaseReturns]: "returns",
+  [NAV_KEYS.purchaseHpp]: "hpp",
 };
 
 export const PURCHASING_TILE_TONES = {
@@ -377,6 +381,7 @@ export const PURCHASING_TILE_TONES = {
   [NAV_KEYS.purchasePayments]: "emerald",
   [NAV_KEYS.purchaseReceipts]: "amber",
   [NAV_KEYS.purchaseReturns]: "rose",
+  [NAV_KEYS.purchaseHpp]: "amber",
 };
 
 export const PURCHASING_TILE_TESTIDS = {
@@ -387,6 +392,7 @@ export const PURCHASING_TILE_TESTIDS = {
   [NAV_KEYS.purchasePayments]: "top-nav-pembayaran-pembelian",
   [NAV_KEYS.purchaseReceipts]: "top-nav-penerimaan-barang",
   [NAV_KEYS.purchaseReturns]: "top-nav-retur-pembelian",
+  [NAV_KEYS.purchaseHpp]: "top-nav-hpp-pembelian",
 };
 
 export function purchasingMenuItems(hasPerm) {
@@ -549,8 +555,9 @@ export function purchasingNavVisible(hasPerm) {
   const payments = parent && (canSeeNav(hasPerm, NAV_KEYS.purchasePayments) || canSeeNav(hasPerm, "purchase_payments.view") || canSeeNav(hasPerm, "purchase_payments.create"));
   const receipts = parent && canSeeNav(hasPerm, NAV_KEYS.purchaseReceipts);
   const returns = receipts || (parent && canSeeNav(hasPerm, NAV_KEYS.purchaseReturns));
+  const hpp = parent && (canSeeNav(hasPerm, NAV_KEYS.purchaseHpp) || canSeeNav(hasPerm, "purchase_hpp.view"));
   return {
-    parent: !!(requests || orders || invoices || payments || receipts || returns),
+    parent: !!(requests || orders || invoices || payments || receipts || returns || hpp),
     requests: !!requests,
     orders: !!orders,
     advances: !!advances,
@@ -558,6 +565,7 @@ export function purchasingNavVisible(hasPerm) {
     payments: !!payments,
     receipts: !!receipts,
     returns: !!returns,
+    hpp: !!hpp,
   };
 }
 

@@ -383,6 +383,11 @@ export const api = {
     client.get(`/inventory-valuation/item`, { params: { master_item_id: masterItemId } }).then((r) => r.data),
   inventoryValuationExport: (params = {}) =>
     client.get(`/inventory-valuation/export`, { params, responseType: "blob" }).then((r) => r.data),
+  purchaseHpp: (params = {}) => client.get(`/pembelian/hpp`, { params }).then((r) => r.data),
+  purchaseHppItem: (masterItemId) =>
+    client.get(`/pembelian/hpp/${encodeURIComponent(masterItemId)}`).then((r) => r.data),
+  purchaseHppExport: (params = {}) =>
+    client.get(`/pembelian/hpp/export`, { params, responseType: "blob" }).then((r) => r.data),
   financialInventoryOpenings: () => client.get(`/inventory/financial-opening`).then((r) => r.data),
   previewFinancialInventoryOpening: (payload) =>
     client.post(`/inventory/financial-opening/preview`, payload).then((r) => r.data),
