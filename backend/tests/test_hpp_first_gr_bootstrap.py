@@ -24,10 +24,8 @@ from services.inventory_valuation import build_inventory_valuation_rows
 from services.physical_stock import (
     LEDGER_COLLECTION,
     MOVEMENT_PURCHASE_RECEIPT,
-    MOVEMENT_STOCK_OPNAME_ADJUSTMENT,
     ensure_indexes as ensure_stock_indexes,
     get_balance,
-    post_movement,
     post_opening_balance,
 )
 from services.purchase_common import money_round
@@ -272,21 +270,40 @@ async def test_first_gr_bootstrap_does_not_require_published_manual_hpp(db):
 
 
 async def test_bootstrap_uses_r2_opening_and_opname_qty(db):
+    from services.stock_opname_sessions import (
+        confirm_stock_opname_session,
+        create_stock_opname_session,
+        ensure_indexes as ensure_opname_indexes,
+        record_stock_opname_counts,
+        start_stock_opname_cutoff,
+        submit_stock_opname_review,
+    )
+
     await _org(db)
+    await ensure_opname_indexes(db)
     open_id = await _item(db, "BOOT-OPEN")
     opname_id = await _item(db, "BOOT-OPNAME")
     await _opening(db, open_id, 500)
-    await post_movement(db, {
-        "master_item_id": opname_id,
+    await _opening(db, opname_id, 400)
+    session = await create_stock_opname_session(db, {
         "branch_id": "branch-ygy",
         "warehouse_id": "wh-main",
-        "movement_type": MOVEMENT_STOCK_OPNAME_ADJUSTMENT,
-        "qty_delta": 500,
-        "reference_type": "stock_opname_session",
-        "reference_id": f"opname-{opname_id}",
-        "reason": "Stock opname",
-        "idempotency_key": f"opname-{opname_id}",
-    }, actor_id="user-bootstrap")
+        "idempotency_key": "opname-boot",
+    }, USER)
+    counting = await start_stock_opname_cutoff(db, session["id"], USER)
+    opname_line = next(line for line in counting["lines"] if line["master_item_id"] == opname_id)
+    lines = []
+    for line in counting["lines"]:
+        qty = 500 if line["master_item_id"] == opname_id else line["book_qty"]
+        lines.append({
+            "line_id": line["line_id"],
+            "physical_count_qty": qty,
+            "difference_qty": qty - int(line["book_qty"] or 0),
+        })
+    await record_stock_opname_counts(db, counting["id"], {"lines": lines}, USER)
+    await submit_stock_opname_review(db, counting["id"], USER)
+    await confirm_stock_opname_session(db, counting["id"], {"idempotency_key": "opname-boot-confirm"}, USER)
+    assert opname_line["master_item_id"] == opname_id
 
     for item_id, code in ((open_id, "BOOT-OPEN"), (opname_id, "BOOT-OPNAME")):
         assert (await get_balance(db, item_id, "branch-ygy", "wh-main"))["physical_qty"] == 500

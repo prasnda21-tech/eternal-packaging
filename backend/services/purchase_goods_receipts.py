@@ -733,6 +733,35 @@ async def create_purchase_goods_receipt(db, payload: Dict[str, Any], user: dict)
 
     async with get_named_lock("purchase_goods_receipt"):
         idem = str(payload.get("idempotency_key") or "").strip()
+        if idem:
+            existing = await db[COLLECTION].find_one({"idempotency_key": idem}, {"_id": 0})
+            if existing:
+                retry_lines = []
+                for inp in payload.get("lines") or payload.get("line_items") or []:
+                    po_line_id = str(inp.get("purchase_order_line_id") or inp.get("line_id") or "").strip()
+                    raw_qty = inp.get("received_qty", inp.get("quantity"))
+                    if not po_line_id or raw_qty in (None, ""):
+                        continue
+                    retry_lines.append((po_line_id, _whole_received_qty(raw_qty)))
+                existing_lines = [
+                    (
+                        str(line.get("purchase_order_line_id") or ""),
+                        _whole_received_qty(line.get("received_qty")),
+                    )
+                    for line in (existing.get("lines") or [])
+                ]
+                requested_wh = str(payload.get("warehouse_id") or "").strip()
+                same_lines = sorted(existing_lines) == sorted(retry_lines)
+                same_po = str(existing.get("purchase_order_id") or "") == po_id
+                same_wh = (not requested_wh) or requested_wh == str(existing.get("warehouse_id") or "")
+                if not (same_po and same_lines and same_wh):
+                    raise HTTPException(409, "Idempotency key sudah digunakan dengan payload yang berbeda")
+                from services.hpp_cutover import recognize_posted_goods_receipt
+                await recognize_posted_goods_receipt(db, existing, user)
+                out = await enrich_goods_receipt(db, existing)
+                from services.purchase_goods_receipt_posting import attach_goods_receipt_accounting_fields
+                await attach_goods_receipt_accounting_fields(db, [out])
+                return out
 
         preview = await get_po_receipt_preview(db, po_id)
         po_live = await db.purchase_orders.find_one({"id": po_id}, {"_id": 0, "cancelled": 1, "receiving_status": 1})

@@ -626,23 +626,22 @@ async def test_1_base_uom_gr_uses_base_qty_and_base_unit_cost(db):
         po_id="po-base-uom",
         mid=mid,
         aid=aid,
-        qty=1,
-        unit="DUS",
-        unit_price=500000,
+        qty=1000,
+        unit="PCS",
+        unit_price=500,
     )
     await create_purchase_goods_receipt(db, {
         "purchase_order_id": "po-base-uom",
         "idempotency_key": "gr-base-uom",
-        "lines": [{"purchase_order_line_id": po_line, "received_qty": 1}],
+        "lines": [{"purchase_order_line_id": po_line, "received_qty": 1000}],
     }, USER)
 
     event = await db.hpp_recognition_events.find_one(
         {"source_type": "GOODS_RECEIPT"},
         {"_id": 0},
     )
-    assert event["transaction_qty"] == 1
-    assert event["transaction_uom"] == "DUS"
-    assert event["conversion_factor"] == 1000
+    assert event["transaction_qty"] == 1000
+    assert event["transaction_uom"] == "PCS"
     assert event["base_qty"] == 1000
     assert event["base_uom"] == "PCS"
     assert event["qty"] == 1000

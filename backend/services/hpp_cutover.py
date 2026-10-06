@@ -1555,10 +1555,6 @@ async def _bootstrap_product_if_needed(
         master_item_id=mid,
         receipt=receipt,
     )
-    state = await db.product_stock_state.find_one(
-        {"$or": [{"_id": mid}, {"master_item_id": mid}]},
-        {"_id": 0},
-    ) or {}
     raw = {
         "master_item_id": mid,
         "accurate_item_id": canonical.get("accurate_item_id"),
@@ -1572,7 +1568,7 @@ async def _bootstrap_product_if_needed(
         cutover["cutover_id"],
         raw,
         qty_round(stock_before),
-        state,
+        {},
     )
     baseline["stock_snapshot_source"] = "R2_OPERATIONAL_PHYSICAL"
     baseline["pre_gr_operational_qty"] = qty_round(stock_before)
@@ -1778,6 +1774,7 @@ async def recognize_posted_goods_receipt(
     receipt_id = str(receipt.get("id") or "").strip()
     if not receipt_id:
         return []
+    await ensure_indexes(db)
     await register_baseline_participants(db, receipt)
     po = await db.purchase_orders.find_one(
         {"id": str(receipt.get("purchase_order_id") or "")},

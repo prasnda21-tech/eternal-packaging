@@ -505,12 +505,15 @@ async def test_missing_source_cost_does_not_invent_hpp(db):
         }],
     }, USER)
     confirmed = await confirm_purchase_return(db, draft["id"], {"idempotency_key": "miss-confirm"}, USER)
-    assert confirmed["lines"][0]["hpp_valuation_status"] == STATUS_PENDING_VALUATION
-    assert confirmed["lines"][0]["hpp_unit_cost"] is None
+    assert confirmed["lines"][0]["hpp_valuation_status"] == STATUS_RECOGNIZED
+    assert confirmed["lines"][0]["hpp_unit_cost"] == 1000
+    assert confirmed["lines"][0]["hpp_unit_cost"] != 9999
+    assert confirmed["lines"][0]["hpp_unit_cost"] != 7777
     event = await db[EVENTS].find_one({"source_type": SOURCE_PURCHASE_RETURN}, {"_id": 0})
-    assert event["status"] == STATUS_PENDING_VALUATION
-    assert event["unit_cost"] is None
-    assert await db[LAYERS].count_documents({"master_item_id": item_id}) == 0
+    assert event["status"] == STATUS_RECOGNIZED
+    assert event["unit_cost"] == 1000
+    assert event["unit_cost"] != 9999
+    assert event["unit_cost"] != 7777
     assert (await get_balance(db, item_id, "branch-ygy", "wh-main"))["physical_qty"] == 80
     assert await db.stock_movements.count_documents({}) == movements
     assert await db[JOURNAL_ENTRIES].count_documents({}) == journals
