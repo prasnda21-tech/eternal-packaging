@@ -24,9 +24,24 @@ from services import storage as obj_storage
 logger = logging.getLogger(__name__)
 
 SETTINGS_KEY = "design_cetakan"
+BRANCH_KEY_PREFIX = "design_cetakan_branch:"
 PERM_VIEW = "settings.design_cetakan.view"
 PERM_MANAGE = "settings.design_cetakan.manage"
 FILE_KIND = "print_design"
+
+# Sparse branch overrides. Empty/malformed values inherit global and are not stored.
+BRANCH_INHERITANCE_FIELDS = (
+    "company_name",
+    "address_lines",
+    "company_logo",
+    "bank_accounts",
+    "prepared_label",
+    "prepared_footer",
+    "approved_label",
+    "approved_footer",
+    "prepared_signature_image",
+    "approved_signature_image",
+)
 
 SLOT_COMPANY_LOGO = "company_logo"
 SLOT_PREPARED = "prepared_signature_image"
@@ -439,11 +454,15 @@ def validate_design_image(
     return media
 
 
-def _storage_key(slot: str, file_id: str, ext: str) -> str:
+def _storage_key(slot: str, file_id: str, ext: str, branch_id: Optional[str] = None) -> str:
     safe_slot = _FILENAME_SAFE.sub("_", slot) or "asset"
     safe_id = _FILENAME_SAFE.sub("_", file_id) or str(uuid.uuid4())
     safe_ext = _FILENAME_SAFE.sub("", (ext or "bin").lstrip(".")) or "bin"
-    return f"{obj_storage.APP_NAME}/print-design/{safe_slot}/{safe_id}.{safe_ext}"
+    prefix = f"{obj_storage.APP_NAME}/print-design"
+    if branch_id:
+        safe_branch = _FILENAME_SAFE.sub("_", branch_id) or "branch"
+        return f"{prefix}/branch-{safe_branch}/{safe_slot}/{safe_id}.{safe_ext}"
+    return f"{prefix}/{safe_slot}/{safe_id}.{safe_ext}"
 
 
 def _get_slot_ref(settings: dict, slot: str) -> Optional[dict]:
@@ -640,8 +659,464 @@ async def prefetch_pdf_assets(db, design: Optional[dict] = None) -> Dict[str, Op
     return out
 
 
-async def get_print_design_for_pdf(db) -> Dict[str, Any]:
-    """Resolved design + `_pdf_assets` bytes map for sync generators."""
-    design = await get_print_design_internal(db)
-    design["_pdf_assets"] = await prefetch_pdf_assets(db, design)
+def canonical_branch_id(raw: Any) -> Optional[str]:
+    """Digit string only. None when missing or not a digit id."""
+    if raw is None:
+        return None
+    bid = str(raw).strip()
+    if not bid or not bid.isdigit():
+        return None
+    return bid
+
+
+def branch_settings_key(branch_id: str) -> str:
+    """Authoritative app_settings key. Rejects non-digit ids. Never takes a client path."""
+    bid = canonical_branch_id(branch_id)
+    if not bid:
+        raise HTTPException(400, "branch_id tidak valid")
+    return f"{BRANCH_KEY_PREFIX}{bid}"
+
+
+async def assert_known_branch_id(db, branch_id: str) -> str:
+    """Settings writes accept a digit id only when some order already stores it."""
+    bid = canonical_branch_id(branch_id)
+    if not bid:
+        raise HTTPException(400, "branch_id tidak valid")
+    found = await db.orders.find_one({"branch_id": bid}, {"_id": 1})
+    if not found:
+        raise HTTPException(400, "Cabang tidak dikenal")
+    return bid
+
+
+def _strict_bank_accounts(raw: Any) -> List[Dict[str, str]]:
+    """Valid rows only. Empty/malformed → [] so the caller can inherit global."""
+    if not isinstance(raw, list) or not raw:
+        return []
+    out: List[Dict[str, str]] = []
+    for row in raw[:_MAX_BANKS]:
+        if not isinstance(row, dict):
+            continue
+        label = _clip(row.get("bank_label"))
+        number = _clip(row.get("account_number"), 64)
+        name = _clip(row.get("account_name"))
+        if not (label or number or name):
+            continue
+        out.append({
+            "bank_label": label or "Bank",
+            "account_number": number,
+            "account_name": name,
+        })
+    return out
+
+
+def _meaningful_address(raw: Any) -> List[str]:
+    if not isinstance(raw, list) or not raw:
+        return []
+    out: List[str] = []
+    for item in raw:
+        text = _clip(item, _MAX_LINE)
+        if text:
+            out.append(text)
+        if len(out) >= _MAX_ADDRESS_LINES:
+            break
+    return out
+
+
+def branch_override_active(doc: Optional[dict], field: str) -> bool:
+    """True only when the sparse document holds a real override for `field`."""
+    src = doc if isinstance(doc, dict) else {}
+    inv = src.get("invoice") if isinstance(src.get("invoice"), dict) else {}
+    if field == "company_name":
+        return "company_name" in src and bool(_clip(src.get("company_name")))
+    if field == "address_lines":
+        return "address_lines" in src and bool(_meaningful_address(src.get("address_lines")))
+    if field == "company_logo":
+        return "company_logo" in src and _sanitize_asset_ref(src.get("company_logo")) is not None
+    if field == "bank_accounts":
+        return "bank_accounts" in inv and bool(_strict_bank_accounts(inv.get("bank_accounts")))
+    if field in {"prepared_label", "prepared_footer", "approved_label", "approved_footer"}:
+        return field in inv and bool(_clip(inv.get(field)))
+    if field in {SLOT_PREPARED, SLOT_APPROVED}:
+        return field in inv and _sanitize_asset_ref(inv.get(field)) is not None
+    return False
+
+
+def inheritance_status(doc: Optional[dict]) -> Dict[str, Dict[str, bool]]:
+    status: Dict[str, Dict[str, bool]] = {}
+    for field in BRANCH_INHERITANCE_FIELDS:
+        overridden = branch_override_active(doc, field)
+        status[field] = {"inherited": not overridden, "overridden": overridden}
+    return status
+
+
+def sanitize_sparse_branch_payload(payload: Any) -> Dict[str, Any]:
+    """Keep only explicit, non-empty branch overrides. Global-only fields are dropped."""
+    if not isinstance(payload, dict):
+        raise HTTPException(400, "Payload tidak valid")
+    out: Dict[str, Any] = {}
+    if "company_name" in payload:
+        text = _clip(payload.get("company_name"))
+        if text:
+            out["company_name"] = text
+    if "address_lines" in payload:
+        lines = _meaningful_address(payload.get("address_lines"))
+        if lines:
+            out["address_lines"] = lines
+    inv_in = payload.get("invoice") if isinstance(payload.get("invoice"), dict) else {}
+    inv_out: Dict[str, Any] = {}
+    if "bank_accounts" in inv_in:
+        banks = _strict_bank_accounts(inv_in.get("bank_accounts"))
+        if banks:
+            inv_out["bank_accounts"] = banks
+    for field in ("prepared_label", "prepared_footer", "approved_label", "approved_footer"):
+        if field in inv_in:
+            text = _clip(inv_in.get(field))
+            if text:
+                inv_out[field] = text
+    if inv_out:
+        out["invoice"] = inv_out
+    return out
+
+
+def _sparse_from_doc(doc: Optional[dict]) -> Dict[str, Any]:
+    """Project a stored branch document down to meaningful override fields only."""
+    src = doc if isinstance(doc, dict) else {}
+    out: Dict[str, Any] = {}
+    if branch_override_active(src, "company_name"):
+        out["company_name"] = _clip(src.get("company_name"))
+    if branch_override_active(src, "address_lines"):
+        out["address_lines"] = _meaningful_address(src.get("address_lines"))
+    if branch_override_active(src, "company_logo"):
+        out["company_logo"] = _sanitize_asset_ref(src.get("company_logo"))
+    inv_out: Dict[str, Any] = {}
+    inv = src.get("invoice") if isinstance(src.get("invoice"), dict) else {}
+    if branch_override_active(src, "bank_accounts"):
+        inv_out["bank_accounts"] = _strict_bank_accounts(inv.get("bank_accounts"))
+    for field in ("prepared_label", "prepared_footer", "approved_label", "approved_footer"):
+        if branch_override_active(src, field):
+            inv_out[field] = _clip(inv.get(field))
+    for field in (SLOT_PREPARED, SLOT_APPROVED):
+        if branch_override_active(src, field):
+            inv_out[field] = _sanitize_asset_ref(inv.get(field))
+    if inv_out:
+        out["invoice"] = inv_out
+    return out
+
+
+def public_sparse_override(doc: Optional[dict]) -> Dict[str, Any]:
+    """API view of the sparse override. Asset refs never include storage paths."""
+    sparse = _sparse_from_doc(doc)
+    out: Dict[str, Any] = {}
+    if "company_name" in sparse:
+        out["company_name"] = sparse["company_name"]
+    if "address_lines" in sparse:
+        out["address_lines"] = list(sparse["address_lines"])
+    if "company_logo" in sparse:
+        out["company_logo"] = _public_asset(sparse.get("company_logo"))
+    inv = sparse.get("invoice") if isinstance(sparse.get("invoice"), dict) else {}
+    inv_out: Dict[str, Any] = {}
+    if "bank_accounts" in inv:
+        inv_out["bank_accounts"] = inv["bank_accounts"]
+    for field in ("prepared_label", "prepared_footer", "approved_label", "approved_footer"):
+        if field in inv:
+            inv_out[field] = inv[field]
+    for field in (SLOT_PREPARED, SLOT_APPROVED):
+        if field in inv:
+            inv_out[field] = _public_asset(inv.get(field))
+    if inv_out:
+        out["invoice"] = inv_out
+    return out
+
+
+def overlay_branch_design(global_design: dict, branch_doc: Optional[dict]) -> Dict[str, Any]:
+    """defaults+global (already resolved) then sparse branch fields that are actually set."""
+    out = copy.deepcopy(global_design if isinstance(global_design, dict) else resolve_print_design(None))
+    sparse = _sparse_from_doc(branch_doc)
+    if "company_name" in sparse:
+        out["company_name"] = sparse["company_name"]
+    if "address_lines" in sparse:
+        out["address_lines"] = list(sparse["address_lines"])
+    if "company_logo" in sparse:
+        out["company_logo"] = sparse["company_logo"]
+    inv = out.setdefault("invoice", {})
+    sparse_inv = sparse.get("invoice") if isinstance(sparse.get("invoice"), dict) else {}
+    if "bank_accounts" in sparse_inv:
+        inv["bank_accounts"] = copy.deepcopy(sparse_inv["bank_accounts"])
+    for field in ("prepared_label", "prepared_footer", "approved_label", "approved_footer"):
+        if field in sparse_inv:
+            inv[field] = sparse_inv[field]
+    for field in (SLOT_PREPARED, SLOT_APPROVED):
+        if field in sparse_inv:
+            inv[field] = sparse_inv[field]
+    return out
+
+
+def _merge_text_with_existing_assets(text_sparse: dict, existing: Optional[dict]) -> Dict[str, Any]:
+    """Text PUT replaces text overrides and keeps branch asset refs already stored."""
+    merged = copy.deepcopy(text_sparse)
+    assets = _sparse_from_doc(existing)
+    if "company_logo" in assets:
+        merged["company_logo"] = assets["company_logo"]
+    asset_inv = (assets.get("invoice") or {}) if isinstance(assets.get("invoice"), dict) else {}
+    kept = {
+        field: asset_inv[field]
+        for field in (SLOT_PREPARED, SLOT_APPROVED)
+        if field in asset_inv
+    }
+    if kept:
+        inv = merged.setdefault("invoice", {})
+        inv.update(kept)
+    return merged
+
+
+async def _load_branch_raw(db, branch_id: str) -> Dict[str, Any]:
+    key = branch_settings_key(branch_id)
+    doc = await db.app_settings.find_one({"key": key}, {"_id": 0})
+    return doc if isinstance(doc, dict) else {}
+
+
+async def _replace_branch_document(db, branch_id: str, sparse: Dict[str, Any], user: Optional[dict]) -> Dict[str, Any]:
+    """Replace the branch document. Empty sparse deletes it. Global key is never written."""
+    key = branch_settings_key(branch_id)
+    clean = _sparse_from_doc(sparse)
+    await db.app_settings.delete_one({"key": key})
+    if not clean:
+        return {"key": key, "branch_id": branch_id}
+    saved = {
+        "key": key,
+        "branch_id": branch_id,
+        **clean,
+        "updated_at": now_iso(),
+        "updated_by": _actor_snapshot(user),
+    }
+    await db.app_settings.insert_one(saved)
+    return saved
+
+
+async def list_design_cetakan_branches(db, name_lookup=None) -> List[Dict[str, str]]:
+    """Distinct digit orders.branch_id. One failed name lookup does not fail the catalog."""
+    raw_ids = await db.orders.distinct("branch_id")
+    ids = sorted(
+        {bid for bid in (canonical_branch_id(item) for item in (raw_ids or [])) if bid},
+        key=lambda value: int(value),
+    )
+    rows: List[Dict[str, str]] = []
+    for bid in ids:
+        label = ""
+        if name_lookup is not None:
+            try:
+                looked = await name_lookup(bid)
+                label = str(looked or "").strip()
+            except Exception:
+                logger.warning("branch catalog name lookup failed id=%s", bid, exc_info=True)
+                label = ""
+        rows.append({"branch_id": bid, "name": label or f"Cabang {bid}"})
+    return rows
+
+
+async def get_branch_design_view(db, branch_id: str) -> Dict[str, Any]:
+    bid = await assert_known_branch_id(db, branch_id)
+    raw = await _load_branch_raw(db, bid)
+    global_design = await get_print_design_internal(db)
+    effective = overlay_branch_design(global_design, raw)
+    return {
+        "branch_id": bid,
+        "override": public_sparse_override(raw),
+        "effective": public_settings(effective),
+        "inherited": inheritance_status(raw),
+    }
+
+
+async def save_branch_design_settings(db, branch_id: str, payload: Dict[str, Any], user: Optional[dict] = None) -> Dict[str, Any]:
+    bid = await assert_known_branch_id(db, branch_id)
+    text_sparse = sanitize_sparse_branch_payload(payload or {})
+    existing = await _load_branch_raw(db, bid)
+    merged = _merge_text_with_existing_assets(text_sparse, existing)
+    await _replace_branch_document(db, bid, merged, user)
+    return await get_branch_design_view(db, bid)
+
+
+async def _delete_branch_only_asset(db, ref: Optional[dict], global_design: dict, slot: str) -> None:
+    clean = _sanitize_asset_ref(ref)
+    if not clean:
+        return
+    global_ref = _get_slot_ref(global_design, slot)
+    if global_ref and global_ref.get("storage_path") == clean.get("storage_path"):
+        return
+    await _best_effort_delete_asset(db, clean)
+
+
+async def reset_branch_design_settings(db, branch_id: str, user: Optional[dict] = None) -> Dict[str, Any]:
+    """Delete the branch override document and its objects. Global settings stay."""
+    bid = await assert_known_branch_id(db, branch_id)
+    raw = await _load_branch_raw(db, bid)
+    refs = {
+        SLOT_COMPANY_LOGO: _get_slot_ref(raw, SLOT_COMPANY_LOGO),
+        SLOT_PREPARED: _get_slot_ref(raw, SLOT_PREPARED),
+        SLOT_APPROVED: _get_slot_ref(raw, SLOT_APPROVED),
+    }
+    global_design = await get_print_design_internal(db)
+    await db.app_settings.delete_one({"key": branch_settings_key(bid)})
+    for slot, ref in refs.items():
+        await _delete_branch_only_asset(db, ref, global_design, slot)
+    return await get_branch_design_view(db, bid)
+
+
+async def _read_asset_bytes(ref: Optional[dict]) -> Optional[bytes]:
+    clean = _sanitize_asset_ref(ref)
+    if not clean:
+        return None
+    try:
+        data, _ct = obj_storage.get_object(clean["storage_path"])
+    except Exception:
+        logger.warning("prefetch print_design asset failed", exc_info=True)
+        return None
+    if data and len(data) >= MIN_IMAGE_BYTES:
+        return data
+    return None
+
+
+async def prefetch_layered_assets(global_design: dict, branch_doc: Optional[dict]) -> Dict[str, Optional[bytes]]:
+    """Branch bytes, then global bytes. Missing branch object falls back to global."""
+    out: Dict[str, Optional[bytes]] = {
+        "company_logo": None,
+        "prepared_signature_image": None,
+        "approved_signature_image": None,
+    }
+    for slot, key in (
+        (SLOT_COMPANY_LOGO, "company_logo"),
+        (SLOT_PREPARED, "prepared_signature_image"),
+        (SLOT_APPROVED, "approved_signature_image"),
+    ):
+        data = None
+        if branch_override_active(branch_doc, slot if slot != SLOT_COMPANY_LOGO else "company_logo"):
+            data = await _read_asset_bytes(_get_slot_ref(branch_doc or {}, slot))
+        if data is None:
+            data = await _read_asset_bytes(_get_slot_ref(global_design, slot))
+        out[key] = data
+    return out
+
+
+async def get_print_design_for_pdf(db, branch_id: Any = None) -> Dict[str, Any]:
+    """Resolved design + `_pdf_assets`. Missing/invalid branch_id keeps global behavior."""
+    global_design = await get_print_design_internal(db)
+    bid = canonical_branch_id(branch_id)
+    branch_doc = None
+    if bid:
+        branch_doc = await db.app_settings.find_one({"key": branch_settings_key(bid)}, {"_id": 0})
+    design = overlay_branch_design(global_design, branch_doc) if bid else global_design
+    design["_pdf_assets"] = await prefetch_layered_assets(global_design, branch_doc if bid else None)
     return design
+
+
+async def upload_branch_print_design_asset(
+    db,
+    *,
+    branch_id: str,
+    slot: str,
+    body: bytes,
+    content_type: Optional[str],
+    filename: str,
+    user: Optional[dict],
+) -> Dict[str, Any]:
+    bid = await assert_known_branch_id(db, branch_id)
+    slot = str(slot or "").strip()
+    if slot not in ASSET_SLOTS:
+        raise HTTPException(400, "Slot asset tidak valid.")
+    media = validate_design_image(body, content_type, max_bytes=_slot_max_bytes(slot))
+    file_id = str(uuid.uuid4())
+    ext = obj_storage.ext_for(media, "bin")
+    path = _storage_key(slot, file_id, ext, branch_id=bid)
+    stamp = now_iso()
+    safe_name = _FILENAME_SAFE.sub("_", (filename or f"{slot}.{ext}").strip()) or f"{slot}.{ext}"
+    try:
+        stored = obj_storage.put_object(path, body, media)
+    except Exception as exc:
+        logger.exception("print_design branch put_object failed slot=%s branch=%s", slot, bid)
+        raise HTTPException(502, "Gagal menyimpan asset Design Cetakan.") from exc
+    storage_path = stored.get("path") or path
+    new_ref = {
+        "file_id": file_id,
+        "storage_path": storage_path,
+        "content_type": media,
+        "size": stored.get("size") or len(body),
+        "original_filename": safe_name[:180],
+        "updated_at": stamp,
+    }
+    current = await _load_branch_raw(db, bid)
+    old_ref = _get_slot_ref(current, slot)
+    next_doc = _set_slot_ref(current or {}, slot, new_ref)
+    try:
+        await _replace_branch_document(db, bid, next_doc, user)
+    except Exception:
+        try:
+            obj_storage.delete_object(storage_path)
+        except Exception:
+            logger.warning("cleanup new branch print_design object failed path=%s", storage_path, exc_info=True)
+        raise
+    try:
+        await db.files.insert_one({
+            "id": file_id,
+            "storage_path": storage_path,
+            "original_filename": safe_name[:180],
+            "content_type": media,
+            "size": new_ref["size"],
+            "kind": FILE_KIND,
+            "slot": slot,
+            "branch_id": bid,
+            "uploaded_at": stamp,
+            "uploaded_by": (user or {}).get("email") or (user or {}).get("name"),
+            "uploaded_by_name": (user or {}).get("name"),
+            "uploaded_by_role": (user or {}).get("role"),
+            "is_deleted": False,
+        })
+    except Exception:
+        logger.warning("print_design branch files metadata insert failed id=%s", file_id, exc_info=True)
+    global_design = await get_print_design_internal(db)
+    await _delete_branch_only_asset(db, old_ref, global_design, slot)
+    return await get_branch_design_view(db, bid)
+
+
+async def remove_branch_print_design_asset(db, *, branch_id: str, slot: str, user: Optional[dict]) -> Dict[str, Any]:
+    """Drop the branch asset override. Global asset object is not deleted."""
+    bid = await assert_known_branch_id(db, branch_id)
+    slot = str(slot or "").strip()
+    if slot not in ASSET_SLOTS:
+        raise HTTPException(400, "Slot asset tidak valid.")
+    current = await _load_branch_raw(db, bid)
+    old_ref = _get_slot_ref(current, slot)
+    next_doc = _set_slot_ref(current or {}, slot, None)
+    await _replace_branch_document(db, bid, next_doc, user)
+    global_design = await get_print_design_internal(db)
+    await _delete_branch_only_asset(db, old_ref, global_design, slot)
+    return await get_branch_design_view(db, bid)
+
+
+async def load_branch_slot_bytes(db, branch_id: str, slot: str) -> Tuple[bytes, str, str]:
+    bid = await assert_known_branch_id(db, branch_id)
+    slot = str(slot or "").strip()
+    if slot not in ASSET_SLOTS:
+        raise HTTPException(400, "Slot asset tidak valid.")
+    raw = await _load_branch_raw(db, bid)
+    ref = _get_slot_ref(raw, slot)
+    if not ref:
+        raise HTTPException(404, "Asset Design Cetakan tidak ditemukan.")
+    path = ref["storage_path"]
+    rec = await db.files.find_one(
+        {"id": ref["file_id"], "kind": FILE_KIND, "is_deleted": {"$ne": True}},
+        {"_id": 0},
+    )
+    if rec and str(rec.get("storage_path") or "") != path:
+        path = str(rec.get("storage_path") or path)
+    try:
+        data, ct = obj_storage.get_object(path)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, "Asset Design Cetakan tidak ditemukan.") from exc
+    except Exception as exc:
+        logger.exception("print_design branch get_object failed slot=%s", slot)
+        raise HTTPException(502, "Gagal membaca asset Design Cetakan.") from exc
+    if not data:
+        raise HTTPException(404, "Asset Design Cetakan tidak ditemukan.")
+    media = (rec or {}).get("content_type") or ref.get("content_type") or ct or "application/octet-stream"
+    name = (rec or {}).get("original_filename") or ref.get("original_filename") or f"{slot}.bin"
+    return data, media, name

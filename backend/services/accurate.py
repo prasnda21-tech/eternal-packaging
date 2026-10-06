@@ -1018,6 +1018,32 @@ class AccurateClient:
         name = _accurate_display_name(body) or _blank_to_none(body.get("branchName"))
         return name, True
 
+    async def lookup_branch_display_name(self, branch_id: str) -> Optional[str]:
+        """Read-only branch/detail.do name. None when offline or the lookup fails."""
+        bid = str(branch_id or "").strip()
+        if not bid or not self.is_live:
+            return None
+        try:
+            host, _session = await self._ensure_db_session()
+        except Exception:
+            logger.warning("branch display lookup skipped; Accurate session unavailable", exc_info=True)
+            return None
+        try:
+            async with httpx.AsyncClient(
+                timeout=accurate_http_timeout(),
+                follow_redirects=True,
+                limits=ACCURATE_HTTP_LIMITS,
+            ) as http:
+                return await self._lookup_cached_name(
+                    f"branch:{bid}",
+                    lambda: self._fetch_branch_name(
+                        http, host, bid, correlation_id=new_correlation_id(),
+                    ),
+                )
+        except Exception:
+            logger.warning("branch display lookup failed id=%s", bid, exc_info=True)
+            return None
+
     async def _enrich_creator_and_outlet(
         self,
         http: httpx.AsyncClient,

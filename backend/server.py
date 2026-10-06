@@ -1818,7 +1818,7 @@ async def get_sales_order_pdf_endpoint(order_id: str, user=Depends(current_user)
             raise HTTPException(403, "Anda tidak punya permission untuk melihat PO ini")
     from services.order_pdf import generate_sales_order_pdf_bytes
     from services.print_design_settings import get_print_design_for_pdf
-    design = await get_print_design_for_pdf(db)
+    design = await get_print_design_for_pdf(db, branch_id=order.get("branch_id"))
     pdf_bytes = generate_sales_order_pdf_bytes(order, design=design)
     po_num = str(order.get("po_number") or order_id).replace("/", "_").replace("\\", "_")
     filename = f"Pesanan_Penjualan_{po_num}.pdf"
@@ -10822,7 +10822,8 @@ async def get_sales_delivery_pdf_endpoint(id: str, user=Depends(current_user)):
     detail = await _get_sales_delivery_detail(db, id)
     await ensure_owned_po_id(db, user, ((detail or {}).get("delivery") or {}).get("po_id"))
     from services.print_design_settings import get_print_design_for_pdf
-    design = await get_print_design_for_pdf(db)
+    delivery_doc = (detail or {}).get("delivery") or {}
+    design = await get_print_design_for_pdf(db, branch_id=delivery_doc.get("branch_id"))
     pdf_bytes = _generate_sales_delivery_pdf_bytes(
         detail["delivery"], detail.get("po_summary"), design=design
     )
@@ -10949,7 +10950,7 @@ async def get_sales_invoice_pdf_endpoint(id: str, user=Depends(current_user)):
     await ensure_owned_po_id(db, user, (detail or {}).get("po_id"))
     shown = await invoice_pdf_presentation(db, detail)
     from services.print_design_settings import get_print_design_for_pdf
-    design = await get_print_design_for_pdf(db)
+    design = await get_print_design_for_pdf(db, branch_id=(detail or {}).get("branch_id"))
     pdf_bytes = generate_sales_invoice_pdf_bytes(shown, design=design)
     inv_num = str(detail.get("invoice_number", "INV")).replace("/", "_").replace("\\", "_")
     filename = f"Faktur_Penjualan_{inv_num}.pdf"
@@ -10976,7 +10977,7 @@ async def get_sales_invoice_proforma_pdf(id: str, user=Depends(current_user)):
     await ensure_owned_po_id(db, user, invoice.get("po_id"))
     shown = await invoice_pdf_presentation(db, invoice)
     from services.print_design_settings import get_print_design_for_pdf
-    design = await get_print_design_for_pdf(db)
+    design = await get_print_design_for_pdf(db, branch_id=(invoice or {}).get("branch_id"))
     pdf_bytes = generate_sales_invoice_pdf_bytes(shown, document_type="proforma", design=design)
     inv_num = str(invoice.get("invoice_number") or invoice.get("id") or "PROFORMA").replace("/", "_").replace("\\", "_")
     filename = f"Proforma_{inv_num}.pdf"
@@ -11957,6 +11958,146 @@ async def design_cetakan_asset_remove(slot: str, user=Depends(current_user)):
         after={"slot": slot},
     )
     return {"settings": settings, "message": "Asset Design Cetakan dihapus"}
+
+
+def _design_cetakan_view_perms():
+    return (
+        "settings.design_cetakan.view",
+        "settings.design_cetakan.manage",
+        "permissions.manage",
+    )
+
+
+@api_router.get("/settings/design-cetakan/branches")
+async def design_cetakan_branches_get(user=Depends(current_user)):
+    """Distinct order branch ids for the Design Cetakan selector."""
+    await _require_any_perm(user, *_design_cetakan_view_perms())
+    from services.print_design_settings import list_design_cetakan_branches
+
+    async def _name(branch_id: str):
+        return await _accurate_client.lookup_branch_display_name(branch_id)
+
+    return {"branches": await list_design_cetakan_branches(db, _name)}
+
+
+@api_router.get("/settings/design-cetakan/branches/{branch_id}")
+async def design_cetakan_branch_get(branch_id: str, user=Depends(current_user)):
+    """Sparse override, effective design, and per-field inheritance for one branch."""
+    await _require_any_perm(user, *_design_cetakan_view_perms())
+    from services.print_design_settings import get_branch_design_view
+    return await get_branch_design_view(db, branch_id)
+
+
+@api_router.put("/settings/design-cetakan/branches/{branch_id}")
+async def design_cetakan_branch_put(branch_id: str, payload: dict = Body(...), user=Depends(current_user)):
+    """Replace sparse text overrides for one branch. Assets on that branch are kept."""
+    await _require_any_perm(user, "settings.design_cetakan.manage", "permissions.manage")
+    from services.print_design_settings import get_branch_design_view, save_branch_design_settings
+
+    before = await get_branch_design_view(db, branch_id)
+    view = await save_branch_design_settings(db, branch_id, payload or {}, user=user)
+    await _write_audit(
+        action="settings.design_cetakan.branch_update",
+        actor=user,
+        target_email="-",
+        before={"branch_id": before.get("branch_id"), "operation": "update", "override": before.get("override")},
+        after={"branch_id": view.get("branch_id"), "operation": "update", "override": view.get("override")},
+    )
+    return {"branch": view, "message": "Design Cetakan cabang berhasil disimpan"}
+
+
+@api_router.delete("/settings/design-cetakan/branches/{branch_id}")
+async def design_cetakan_branch_reset(branch_id: str, user=Depends(current_user)):
+    """Delete the branch override document. Global Design Cetakan is untouched."""
+    await _require_any_perm(user, "settings.design_cetakan.manage", "permissions.manage")
+    from services.print_design_settings import get_branch_design_view, reset_branch_design_settings
+
+    before = await get_branch_design_view(db, branch_id)
+    view = await reset_branch_design_settings(db, branch_id, user=user)
+    await _write_audit(
+        action="settings.design_cetakan.branch_reset",
+        actor=user,
+        target_email="-",
+        before={"branch_id": before.get("branch_id"), "operation": "reset", "override": before.get("override")},
+        after={"branch_id": view.get("branch_id"), "operation": "reset", "override": view.get("override")},
+    )
+    return {"branch": view, "message": "Cabang kembali mengikuti pengaturan global"}
+
+
+@api_router.get("/settings/design-cetakan/branches/{branch_id}/assets/{slot}")
+async def design_cetakan_branch_asset_preview(branch_id: str, slot: str, user=Depends(current_user)):
+    """Preview a branch-specific Design Cetakan asset. Does not serve the global asset."""
+    await _require_any_perm(user, *_design_cetakan_view_perms())
+    from services.print_design_settings import load_branch_slot_bytes
+
+    data, media, name = await load_branch_slot_bytes(db, branch_id, slot)
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", str(name or f"{slot}.bin"))[:180] or f"{slot}.bin"
+    return FastAPIResponse(
+        content=data,
+        media_type=media or "application/octet-stream",
+        headers={
+            "Cache-Control": "private, no-store",
+            "Content-Disposition": f'inline; filename="{safe_name}"',
+        },
+    )
+
+
+@api_router.post("/settings/design-cetakan/branches/{branch_id}/assets/{slot}")
+async def design_cetakan_branch_asset_upload(
+    branch_id: str,
+    slot: str,
+    file: UploadFile = File(...),
+    user=Depends(current_user),
+):
+    """Upload a branch asset override. Does not replace the global asset."""
+    await _require_any_perm(user, "settings.design_cetakan.manage", "permissions.manage")
+    from services.print_design_settings import (
+        ASSET_SLOTS,
+        MAX_LOGO_BYTES,
+        MAX_SIGNATURE_BYTES,
+        SLOT_COMPANY_LOGO,
+        upload_branch_print_design_asset,
+    )
+
+    if str(slot or "").strip() not in ASSET_SLOTS:
+        raise HTTPException(400, "Slot asset tidak valid.")
+    max_bytes = MAX_LOGO_BYTES if slot == SLOT_COMPANY_LOGO else MAX_SIGNATURE_BYTES
+    body = await file.read(max_bytes + 1)
+    if len(body) > max_bytes:
+        mb = "2MB" if max_bytes >= 2_000_000 else "1.5MB"
+        raise HTTPException(400, f"File terlalu besar (maks {mb}).")
+    view = await upload_branch_print_design_asset(
+        db,
+        branch_id=branch_id,
+        slot=slot,
+        body=body,
+        content_type=file.content_type,
+        filename=file.filename or f"{slot}.bin",
+        user=user,
+    )
+    await _write_audit(
+        action="settings.design_cetakan.branch_asset_upload",
+        actor=user,
+        target_email="-",
+        after={"slot": slot, "branch_id": view.get("branch_id")},
+    )
+    return {"branch": view, "message": "Asset khusus cabang berhasil diunggah"}
+
+
+@api_router.delete("/settings/design-cetakan/branches/{branch_id}/assets/{slot}")
+async def design_cetakan_branch_asset_remove(branch_id: str, slot: str, user=Depends(current_user)):
+    """Remove a branch asset override. The global asset stays in place."""
+    await _require_any_perm(user, "settings.design_cetakan.manage", "permissions.manage")
+    from services.print_design_settings import remove_branch_print_design_asset
+
+    view = await remove_branch_print_design_asset(db, branch_id=branch_id, slot=slot, user=user)
+    await _write_audit(
+        action="settings.design_cetakan.branch_asset_remove",
+        actor=user,
+        target_email="-",
+        after={"slot": slot, "branch_id": view.get("branch_id")},
+    )
+    return {"branch": view, "message": "Asset cabang kembali mengikuti global"}
 
 
 class CurrentStockPatch(BaseModel):

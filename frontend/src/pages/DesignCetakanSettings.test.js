@@ -60,4 +60,53 @@ describe("Design Cetakan settings wiring", () => {
     expect(pageSrc).not.toMatch(/po_signature|sj_signature|gudang_signature|kurir_static/);
     expect(pageSrc).toMatch(/Tanda tangan PO dan POD Surat Jalan tidak diubah/);
   });
+
+  test("branch selector uses catalog names and empty state", () => {
+    expect(pageSrc).toMatch(/Terapkan Untuk/);
+    expect(pageSrc).toMatch(/Default Semua Cabang/);
+    expect(pageSrc).toMatch(/data-testid="design-cetakan-scope"/);
+    expect(pageSrc).toMatch(/designCetakanBranches/);
+    expect(pageSrc).toMatch(/row\.name \|\| `Cabang \$\{row\.branch_id\}`/);
+    expect(pageSrc).toMatch(/data-testid="design-cetakan-branch-empty"/);
+    expect(pageSrc).not.toMatch(/Yogyakarta|Semarang/);
+  });
+
+  test("branch mode tracks sparse overrides separately from the global form", () => {
+    expect(pageSrc).toMatch(/Mengikuti Global/);
+    expect(pageSrc).toMatch(/Khusus Cabang/);
+    expect(pageSrc).toMatch(/Atur khusus cabang/);
+    expect(pageSrc).toMatch(/Ikuti Global/);
+    expect(pageSrc).toMatch(/Gunakan Semua Pengaturan Global/);
+    expect(pageSrc).toMatch(/Ganti khusus cabang/);
+    expect(pageSrc).toMatch(/function buildBranchOverridePayload/);
+    const fn = pageSrc.slice(
+      pageSrc.indexOf("function buildBranchOverridePayload"),
+      pageSrc.indexOf("function restoreFieldFromGlobal"),
+    );
+    expect(fn).toMatch(/on\.company_name/);
+    expect(fn).toMatch(/on\.bank_accounts/);
+    expect(fn).not.toMatch(/accent_color|estimasi_|signature_labels|surat_jalan|company_logo/);
+    expect(pageSrc).toMatch(/updateDesignCetakanBranch\(scope, payload\)/);
+    expect(pageSrc).toMatch(/resetDesignCetakanBranch/);
+    expect(pageSrc).toMatch(/window\.confirm/);
+    expect(pageSrc).toMatch(/flagsFromInherited/);
+    expect(pageSrc).toMatch(/design-cetakan-global-only-accent/);
+    expect(pageSrc).toMatch(/design-cetakan-global-only-po/);
+    expect(pageSrc).toMatch(/design-cetakan-global-only-sj/);
+    expect(pageSrc).toMatch(/design-cetakan-global-only-estimasi/);
+    expect(pageSrc).toMatch(/fieldLocked\("bank_accounts"\)/);
+    expect(pageSrc).toMatch(/overrideOn\.company_logo/);
+    expect(pageSrc).toMatch(/overrideOn\.prepared_signature_image/);
+    expect(pageSrc).toMatch(/overrideOn\.approved_signature_image/);
+    expect(pageSrc).toMatch(/disabled=\{!canEdit \|\| busy\}/);
+    expect(pageSrc).toMatch(/useEffect\(\(\) => \{\s*load\(scope\)/s);
+    expect(pageSrc).toMatch(/if \(target === "global"\)/);
+    expect(apiSrc).toMatch(/designCetakanBranch:/);
+    expect(apiSrc).toMatch(/updateDesignCetakanBranch:/);
+    expect(apiSrc).toMatch(/resetDesignCetakanBranch:/);
+    expect(apiSrc).toMatch(/uploadDesignCetakanBranchAsset:/);
+    expect(apiSrc).toMatch(/designCetakanBranchAssetPreview:/);
+    expect(apiSrc).toMatch(/removeDesignCetakanBranchAsset:/);
+    expect(apiSrc).toMatch(/\/settings\/design-cetakan\/branches\/\$\{encodeURIComponent\(branchId\)\}/);
+  });
 });
