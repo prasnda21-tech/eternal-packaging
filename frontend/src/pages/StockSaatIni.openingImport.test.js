@@ -3,6 +3,8 @@ import { createRoot } from "react-dom/client";
 import api from "../lib/api";
 import StockSaatIni from "./StockSaatIni";
 
+jest.mock("react-router-dom", () => require("../test/reactRouterMock"), { virtual: true });
+
 jest.mock("../lib/auth", () => ({
   useAuth: () => ({ hasPerm: () => true }),
 }));
