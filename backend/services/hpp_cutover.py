@@ -43,12 +43,16 @@ from services.inventory_accounting import (
     resolve_conversion_from_setting,
 )
 from services.inventory_financial_locks import acquire_item_lock, release_item_lock
-from services.purchase_common import actor_snapshot, item_identity, money_round, now_iso, qty_round
-from services.published_hpp import (
-    SOURCE_PUBLISHED_FALLBACK,
-    exact_published_candidate,
-    load_effective_published_hpp,
+from services.org_locations import warehouse_is_operational
+from services.physical_stock import (
+    BRANCHES_COLLECTION,
+    LEDGER_COLLECTION,
+    MOVEMENT_PURCHASE_RECEIPT,
+    WAREHOUSES_COLLECTION,
+    operational_physical_qty_by_item,
+    resolve_operational_branch,
 )
+from services.purchase_common import actor_snapshot, item_identity, money_round, now_iso, qty_round
 
 CUTOVERS = "hpp_valuation_cutovers"
 BASELINES = "hpp_valuation_baseline_lines"
@@ -77,6 +81,7 @@ SOURCE_GOODS_RECEIPT_REVERSAL = "GOODS_RECEIPT_REVERSAL"
 SOURCE_PURCHASE_RETURN = "PURCHASE_RETURN"
 SOURCE_PURCHASE_RETURN_REVERSAL = "PURCHASE_RETURN_REVERSAL"
 SOURCE_PURCHASING_AUTO_BOOTSTRAP = "PURCHASING_AUTO_BOOTSTRAP"
+SOURCE_FIRST_GR_UNIT_COST = "FIRST_GR_UNIT_COST"
 STATUS_PENDING_VALUATION = "PENDING_VALUATION"
 STATUS_QUEUED = "QUEUED"
 REASON_NEGATIVE = "NEGATIVE_PHYSICAL_STOCK"
@@ -162,14 +167,16 @@ def _settings_conflict(current: dict, payload: dict) -> Optional[str]:
 
 
 async def _read_stock_qty(db, master_item_id: str) -> tuple:
+    """Operational R2 physical qty. product_stock_state is metadata only."""
     mid = str(master_item_id or "").strip()
     state = await db.product_stock_state.find_one(
         {"$or": [{"_id": mid}, {"master_item_id": mid}]},
         {"_id": 0},
-    )
-    if not state:
-        return 0.0, {}
-    return float(state.get("total_qty") or 0), state
+    ) or {}
+    if not mid:
+        return 0.0, state
+    totals = await operational_physical_qty_by_item(db, [mid])
+    return float(totals.get(mid, 0) or 0), state
 
 
 def _baseline_from_stock(cutover_id: str, raw: dict, physical: float, state: dict) -> dict:
@@ -1415,75 +1422,151 @@ async def proven_opening_physical_qty(db, master_item_id: str, receipt_id: str) 
         await release_item_lock(db, item_key, str(locked.get("token") or ""))
 
 
+async def _operational_warehouse_ids(db) -> set:
+    branches = await db[BRANCHES_COLLECTION].find(
+        {},
+        {"_id": 0, "id": 1, "code": 1, "name": 1},
+    ).to_list(500)
+    operational = resolve_operational_branch(branches)
+    if not operational:
+        return set()
+    warehouses = await db[WAREHOUSES_COLLECTION].find(
+        {"branch_id": operational["id"]},
+        {"_id": 0, "id": 1, "is_operational": 1},
+    ).to_list(500)
+    return {
+        str(row["id"])
+        for row in warehouses
+        if row.get("id") and warehouse_is_operational(row)
+    }
+
+
+def _canonical_unit_cost_valid(canonical: dict) -> bool:
+    cost = canonical.get("unit_cost")
+    if cost in (None, ""):
+        return False
+    try:
+        return _dec(cost) > 0
+    except Exception:
+        return False
+
+
+async def _pre_gr_operational_physical_qty(
+    db,
+    *,
+    master_item_id: str,
+    receipt: dict,
+) -> float:
+    """Item-level operational R2 qty immediately before this GR.
+
+    R2 physical is already committed, so live operational qty is post-GR.
+    Subtract this receipt's operational received qty. Prefer ledger
+    PURCHASE_RECEIPT qty_delta / balance_before; never read stock_movements.
+    """
+    mid = str(master_item_id or "").strip()
+    receipt_id = str((receipt or {}).get("id") or "").strip()
+    live = _dec(0)
+    if mid:
+        totals = await operational_physical_qty_by_item(db, [mid])
+        live = _dec(totals.get(mid, 0) or 0)
+    operational_ids = await _operational_warehouse_ids(db)
+    incoming = _dec(0)
+    movements = []
+    if mid and receipt_id:
+        movements = await db[LEDGER_COLLECTION].find(
+            {
+                "movement_type": MOVEMENT_PURCHASE_RECEIPT,
+                "master_item_id": mid,
+                "metadata.receipt_id": receipt_id,
+            },
+            {"_id": 0, "qty_delta": 1, "warehouse_id": 1, "balance_before": 1},
+        ).to_list(500)
+    for move in movements:
+        warehouse_id = str(move.get("warehouse_id") or "")
+        if operational_ids and warehouse_id not in operational_ids:
+            continue
+        incoming += _dec(move.get("qty_delta") or 0)
+    if not movements:
+        warehouse_id = str((receipt or {}).get("warehouse_id") or "")
+        warehouse_counts = not operational_ids or warehouse_id in operational_ids
+        if warehouse_counts:
+            for line in (receipt or {}).get("lines") or []:
+                if str(line.get("master_item_id") or "") != mid:
+                    continue
+                incoming += _dec(line.get("received_qty") or line.get("quantity") or 0)
+    opening = live - incoming
+    if opening < 0:
+        opening = _dec(0)
+    return qty_round(opening)
+
+
+async def _item_has_valid_canonical_valuation(db, cutover: dict, master_item_id: str) -> bool:
+    mid = str(master_item_id or "").strip()
+    if not mid:
+        return False
+    existing = await db[BASELINES].find_one(
+        {"cutover_id": cutover["cutover_id"], "master_item_id": mid},
+        {"_id": 0, "hpp_status": 1, "valuation_qty": 1, "opening_unit_cost": 1},
+    )
+    if existing:
+        status = existing.get("hpp_status")
+        if status == STATUS_OK:
+            return True
+        if _dec(existing.get("opening_unit_cost")) > 0:
+            return True
+        if _dec(existing.get("valuation_qty")) > 0:
+            return True
+    recognized = await db[EVENTS].find_one(
+        {
+            "cutover_id": cutover["cutover_id"],
+            "master_item_id": mid,
+            "status": STATUS_RECOGNIZED,
+            "source_type": {
+                "$in": [
+                    SOURCE_GOODS_RECEIPT,
+                    SOURCE_PURCHASE_RETURN,
+                    SOURCE_PURCHASE_RETURN_REVERSAL,
+                    SOURCE_GOODS_RECEIPT_REVERSAL,
+                ]
+            },
+        },
+        {"_id": 1},
+    )
+    return recognized is not None
+
+
 async def _bootstrap_product_if_needed(
     db,
     *,
     cutover: dict,
     canonical: dict,
-    published_candidates: Dict[str, List[dict]],
+    receipt: dict,
 ) -> dict:
-    """Freeze a per-product baseline immediately before its first future GR."""
+    """Freeze pending R2 physical at the first valid GR unit cost (Formula A)."""
     if canonical.get("status") != STATUS_PENDING:
         return canonical
-    mid = str(canonical.get("master_item_id") or "")
-    existing = await db[BASELINES].find_one(
-        {"cutover_id": cutover["cutover_id"], "master_item_id": mid},
-        {"_id": 0, "master_item_id": 1},
-    )
-    if existing:
+    if not _canonical_unit_cost_valid(canonical):
         return canonical
-    proof = await proven_opening_physical_qty(
+    mid = str(canonical.get("master_item_id") or "")
+    if await _item_has_valid_canonical_valuation(db, cutover, mid):
+        return canonical
+    stock_before = await _pre_gr_operational_physical_qty(
         db,
-        mid,
-        str(canonical.get("canonical_source_id") or ""),
-    )
-    if not proof.get("ok"):
-        reason = proof.get("reason") or "STOCK_BASELINE_UNAVAILABLE"
-        return {
-            **canonical,
-            "status": STATUS_NEEDS_COST,
-            "reason": reason,
-            "qty": None,
-            "unit_cost": None,
-            "total_cost": None,
-            "financial_inventory_eligible": False,
-            "financial_ineligibility_reason": reason,
-            "financial_ineligibility_reasons": [reason],
-        }
-    stock_before = proof["qty"]
-    state = proof.get("state") or {}
-    candidate = exact_published_candidate(
-        published_candidates,
-        accurate_item_id=canonical.get("accurate_item_id"),
         master_item_id=mid,
+        receipt=receipt,
     )
-    if not candidate:
-        return {
-            **canonical,
-            "status": STATUS_NEEDS_COST,
-            "reason": STATUS_NEEDS_COST,
-            "qty": None,
-            "unit_cost": None,
-            "total_cost": None,
-            "financial_inventory_eligible": False,
-            "financial_ineligibility_reason": STATUS_NEEDS_COST,
-            "financial_ineligibility_reasons": [STATUS_NEEDS_COST],
-        }
-    opening_cost = candidate["hpp"]
-    provenance = SOURCE_PUBLISHED_FALLBACK
+    state = await db.product_stock_state.find_one(
+        {"$or": [{"_id": mid}, {"master_item_id": mid}]},
+        {"_id": 0},
+    ) or {}
     raw = {
         "master_item_id": mid,
         "accurate_item_id": canonical.get("accurate_item_id"),
         "item_code": canonical.get("item_code"),
         "item_name": canonical.get("item_name"),
-        "opening_unit_cost": opening_cost,
+        "opening_unit_cost": canonical.get("unit_cost"),
         "base_uom": canonical.get("base_uom"),
-        "provenance_source": provenance,
-        "published_pricing_group_id": candidate.get("pricing_group_id"),
-        "published_pricing_version_id": candidate.get("version_id"),
-        "published_version_number": candidate.get("version_number"),
-        "published_revision": candidate.get("revision"),
-        "published_hpp_snapshot": candidate.get("hpp"),
+        "provenance_source": SOURCE_FIRST_GR_UNIT_COST,
     }
     baseline = _baseline_from_stock(
         cutover["cutover_id"],
@@ -1491,9 +1574,9 @@ async def _bootstrap_product_if_needed(
         qty_round(stock_before),
         state,
     )
-    baseline["stock_snapshot_proofs"] = proof.get("proofs") or []
-    baseline["stock_snapshot_boundary_receipt_id"] = proof.get("boundary_receipt_id")
-    baseline["stock_events_after_boundary"] = proof.get("events_after_boundary") or []
+    baseline["stock_snapshot_source"] = "R2_OPERATIONAL_PHYSICAL"
+    baseline["pre_gr_operational_qty"] = qty_round(stock_before)
+    baseline["bootstrap_receipt_id"] = str((receipt or {}).get("id") or "")
     try:
         await db[BASELINES].insert_one(baseline)
     except DuplicateKeyError:
@@ -1507,7 +1590,6 @@ async def _recognize_for_cutover(
     active: Optional[dict],
     receipt: dict,
     po_lines: Dict[str, dict],
-    published_candidates: Dict[str, List[dict]],
     activate_cutover: bool,
     user: Optional[dict],
 ) -> List[dict]:
@@ -1551,7 +1633,7 @@ async def _recognize_for_cutover(
                 db,
                 cutover=active,
                 canonical=canonical,
-                published_candidates=published_candidates,
+                receipt=receipt,
             )
         elif canonical.get("status") == STATUS_PENDING:
             canonical = {
@@ -1687,10 +1769,11 @@ async def recognize_posted_goods_receipt(
     receipt: dict,
     user: Optional[dict] = None,
 ) -> List[dict]:
-    """Bootstrap products lazily, then recognize only this future GR.
+    """Bootstrap pending R2 physical from the first valid GR unit cost.
 
-    Existing stock is frozen from Published HPP immediately before the first
-    future GR for that product. Historical receipts are never loaded.
+    Opening qty is operational physical immediately before this GR. Opening
+    cost is the canonical PO-line unit cost. Historical receipts are never
+    loaded. Published Customer Pricing HPP is not a canonical source.
     """
     receipt_id = str(receipt.get("id") or "").strip()
     if not receipt_id:
@@ -1704,7 +1787,6 @@ async def recognize_posted_goods_receipt(
         str(row.get("line_id") or ""): row
         for row in ((po or {}).get("lines") or [])
     }
-    published_candidates = await load_effective_published_hpp(db)
     active = await get_active_cutover(db)
     created = False
     claim_owner = None
@@ -1719,16 +1801,7 @@ async def recognize_posted_goods_receipt(
                 line=line,
                 po_lines=po_lines,
             )
-            if canonical.get("status") != STATUS_PENDING:
-                continue
-            mid = str(canonical.get("master_item_id") or "")
-            proof = await proven_opening_physical_qty(db, mid, receipt_id)
-            candidate = exact_published_candidate(
-                published_candidates,
-                accurate_item_id=canonical.get("accurate_item_id"),
-                master_item_id=mid,
-            )
-            if proof.get("ok") and candidate:
+            if canonical.get("status") == STATUS_PENDING and _canonical_unit_cost_valid(canonical):
                 can_bootstrap = True
                 break
         if can_bootstrap:
@@ -1761,7 +1834,6 @@ async def recognize_posted_goods_receipt(
             active=active,
             receipt=receipt,
             po_lines=po_lines,
-            published_candidates=published_candidates,
             activate_cutover=created,
             user=user,
         )

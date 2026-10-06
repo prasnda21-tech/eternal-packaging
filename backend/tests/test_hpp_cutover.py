@@ -9,6 +9,10 @@ from motor.motor_asyncio import AsyncIOMotorClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ.setdefault("MONGO_URL", "mongodb://127.0.0.1:27017")
+if "replicaSet=" not in os.environ["MONGO_URL"]:
+    os.environ["MONGO_URL"] = os.environ["MONGO_URL"].rstrip("/") + (
+        "&" if "?" in os.environ["MONGO_URL"] else "?"
+    ) + "replicaSet=eternal_local_rs"
 
 from services.hpp_cutover import (
     confirm_cutover,
@@ -18,6 +22,12 @@ from services.hpp_cutover import (
     recover_stale_cutover_lease,
 )
 from services.hpp_valuation import recalculate_hpp
+from services.physical_stock import (
+    LEDGER_COLLECTION,
+    MOVEMENT_PURCHASE_RECEIPT,
+    ensure_indexes as ensure_stock_indexes,
+    get_balance,
+)
 from services.purchase_goods_receipts import (
     cancel_purchase_goods_receipt,
     create_purchase_goods_receipt,
@@ -38,6 +48,7 @@ async def db():
     client = AsyncIOMotorClient(os.environ["MONGO_URL"])
     database = client[DB_NAME]
     await client.drop_database(DB_NAME)
+    await ensure_stock_indexes(database)
     await ensure_indexes(database)
     await database.hpp_cost_versions.create_index("id", unique=True)
     await database.hpp_cost_layers.create_index(
@@ -45,6 +56,11 @@ async def db():
         unique=True,
     )
     await database.purchase_goods_receipts.create_index("receipt_number", unique=True)
+    await database.purchase_goods_receipts.create_index(
+        "idempotency_key",
+        unique=True,
+        partialFilterExpression={"idempotency_key": {"$type": "string"}},
+    )
     await database.app_settings.create_index("key", unique=True)
     yield database
     await client.drop_database(DB_NAME)
@@ -82,7 +98,19 @@ def _payload(request_id, mid, cost, **extra):
     return body
 
 
+async def _ensure_org(db):
+    if await db.branches.count_documents({"id": "branch-ygy"}) == 0:
+        await db.branches.insert_one({
+            "id": "branch-ygy", "code": "YGY", "name": "Yogyakarta", "active": True,
+        })
+        await db.warehouses.insert_one({
+            "id": "wh-ygy", "branch_id": "branch-ygy", "code": "MAIN",
+            "name": "Gudang Yogyakarta", "active": True,
+        })
+
+
 async def _stock(db, mid, qty, aid="acc-a"):
+    await _ensure_org(db)
     await db.product_stock_state.insert_one({
         "_id": mid,
         "master_item_id": mid,
@@ -96,6 +124,17 @@ async def _stock(db, mid, qty, aid="acc-a"):
         "pending_event": None,
         "version": 1,
     })
+    await db.physical_stock_balances.update_one(
+        {"master_item_id": mid, "warehouse_id": "wh-ygy"},
+        {"$set": {
+            "id": f"bal-{mid}",
+            "master_item_id": mid,
+            "branch_id": "branch-ygy",
+            "warehouse_id": "wh-ygy",
+            "physical_qty": qty,
+        }},
+        upsert=True,
+    )
 
 
 async def _row(db, cutover_id, mid):
@@ -200,12 +239,13 @@ async def test_b_future_receipt_updates_average(db):
     }, USER)
     stock = await db.product_stock_state.find_one({"master_item_id": mid})
     row = await _row(db, opened["cutover"]["cutover_id"], mid)
-    assert stock["total_qty"] == 150
+    assert stock["total_qty"] == 100
+    assert (await get_balance(db, mid, "branch-ygy", "wh-ygy"))["physical_qty"] == 150
     assert row["valuation_qty"] == 150
     assert row["valuation_value"] == 160000
     assert row["exact_average"].startswith("1066.666")
     assert await db.hpp_recognition_events.count_documents({"source_key": {"$regex": "^gr:"}}) == 1
-    assert await db.stock_movements.count_documents({}) == movements_before + 1
+    assert await db.stock_movements.count_documents({}) == movements_before
     qty_after_gr = stock["total_qty"]
     moves_after_gr = await db.stock_movements.count_documents({})
     await recalculate_hpp(db, method="RATA-RATA", recognition_point="goods_receipt", user=USER)
@@ -755,8 +795,9 @@ async def test_5_hpp_failure_after_stock_success_retries_only_hpp(db, monkeypatc
     with pytest.raises(RuntimeError, match="forced HPP"):
         await create_purchase_goods_receipt(db, body, USER)
     assert await db.purchase_goods_receipts.count_documents({"idempotency_key": "gr-hpp-retry"}) == 1
-    assert (await db.product_stock_state.find_one({"master_item_id": mid}))["total_qty"] == 150
-    assert await db.stock_movements.count_documents({"reference_type": "goods_receipt"}) == 1
+    assert (await db.product_stock_state.find_one({"master_item_id": mid}))["total_qty"] == 100
+    assert await db.stock_movements.count_documents({"reference_type": "goods_receipt"}) == 0
+    assert await db[LEDGER_COLLECTION].count_documents({"movement_type": MOVEMENT_PURCHASE_RECEIPT}) == 1
     failed = await db.hpp_recognition_events.find_one({"source_type": "GOODS_RECEIPT"}, {"_id": 0})
     assert failed["status"] == "FAILED"
     failed_row = await _row(db, opened["cutover"]["cutover_id"], mid)
@@ -767,8 +808,9 @@ async def test_5_hpp_failure_after_stock_success_retries_only_hpp(db, monkeypatc
     receipt = await create_purchase_goods_receipt(db, body, USER)
     assert receipt["id"]
     assert await db.purchase_goods_receipts.count_documents({"idempotency_key": "gr-hpp-retry"}) == 1
-    assert (await db.product_stock_state.find_one({"master_item_id": mid}))["total_qty"] == 150
-    assert await db.stock_movements.count_documents({"reference_type": "goods_receipt"}) == 1
+    assert (await db.product_stock_state.find_one({"master_item_id": mid}))["total_qty"] == 100
+    assert await db.stock_movements.count_documents({"reference_type": "goods_receipt"}) == 0
+    assert await db[LEDGER_COLLECTION].count_documents({"movement_type": MOVEMENT_PURCHASE_RECEIPT}) == 1
     repaired = await db.hpp_recognition_events.find_one({"source_type": "GOODS_RECEIPT"}, {"_id": 0})
     assert repaired["status"] == "RECOGNIZED"
     row = await _row(db, opened["cutover"]["cutover_id"], mid)
