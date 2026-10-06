@@ -20,6 +20,7 @@ from services.print_design_history import (  # noqa: E402
     ACTION_ASSET_REMOVE,
     ACTION_BRANCH_ASSET_REMOVE,
     ACTION_BRANCH_ASSET_UPLOAD,
+    ACTION_BRANCH_COPY,
     ACTION_BRANCH_RESET,
     ACTION_BRANCH_UPDATE,
     ACTION_UPDATE,
@@ -214,6 +215,7 @@ async def test_global_and_branch_serialization_and_actor_fallback():
         ACTION_BRANCH_RESET,
         ACTION_BRANCH_ASSET_UPLOAD,
         ACTION_BRANCH_ASSET_REMOVE,
+        ACTION_BRANCH_COPY,
     )
 
     email_only = serialize_history_row(_row(actor_name="", actor_email="owner@example.com"))
@@ -364,6 +366,68 @@ async def test_name_lookup_batched_and_malformed_row_does_not_crash():
     assert by_id["1"]["operation_label"] == "Tanda tangan Approved diunggah"
 
 
+@pytest.mark.anyio
+async def test_copy_history_labels_copied_fields_and_batched_names():
+    calls = []
+
+    async def lookup(bid):
+        calls.append(bid)
+        if bid == "50":
+            return "Semarang"
+        if bid == "77":
+            return "Yogyakarta"
+        return None
+
+    logs = [
+        _row(
+            id="c1",
+            action=ACTION_BRANCH_COPY,
+            at="2026-10-06T16:00:00+00:00",
+            after={
+                "branch_id": "77",
+                "operation": "copy",
+                "source_scope": "global",
+                "source_branch_id": None,
+                "target_branch_id": "77",
+                "mode": "replace",
+                "copied_fields": ["company_name", "bank_accounts", "company_logo"],
+                "override": {"company_name": "Eternal Global"},
+            },
+            before={"branch_id": "77", "operation": "copy", "override": {}},
+        ),
+        _row(
+            id="c2",
+            action=ACTION_BRANCH_COPY,
+            at="2026-10-06T15:00:00+00:00",
+            after={
+                "branch_id": "77",
+                "operation": "copy",
+                "source_scope": "branch",
+                "source_branch_id": "50",
+                "target_branch_id": "77",
+                "mode": "replace",
+                "copied_fields": ["prepared_signature_image"],
+                "override": {},
+            },
+        ),
+    ]
+    db = MockDb(logs)
+    result = await list_print_design_history(db, name_lookup=lookup)
+    assert calls.count("50") == 1
+    assert calls.count("77") == 1
+    by_id = {row["id"]: row for row in result["items"]}
+    assert by_id["c1"]["operation_label"] == "Pengaturan Global disalin ke Cabang Yogyakarta"
+    assert by_id["c2"]["operation_label"] == "Pengaturan Cabang Semarang disalin ke Cabang Yogyakarta"
+    labels = [item["label"] for item in by_id["c1"]["changed_fields"]]
+    assert "Nama perusahaan" in labels
+    assert "Rekening bank" in labels
+    assert "Logo perusahaan" in labels
+    assert "storage_path" not in str(result)
+    assert by_id["c1"]["source_scope"] == "global"
+    assert by_id["c2"]["source_branch_id"] == "50"
+    assert ACTION_BRANCH_COPY in HISTORY_ACTIONS
+
+
 def test_history_route_permission_and_preview_has_no_audit():
     server = (ROOT / "server.py").read_text(encoding="utf-8")
     preview = (ROOT / "services" / "print_design_preview.py").read_text(encoding="utf-8")
@@ -382,5 +446,14 @@ def test_history_route_permission_and_preview_has_no_audit():
     history_src = (ROOT / "services" / "print_design_history.py").read_text(encoding="utf-8")
     assert "create_index" not in history_src
     assert "$regex" not in history_src
-    assert "startswith" not in history_src.lower()
+    assert "action.startswith" not in history_src
+    assert "startsWith" not in history_src
     assert '"action": {"$in": list(actions)}' in history_src
+    copy_idx = server.index("async def design_cetakan_copy")
+    copy_block = server[copy_idx:server.find("\nasync def ", copy_idx + 10)]
+    assert "settings.design_cetakan.manage" in copy_block
+    assert "audit.view" not in copy_block
+    assert copy_block.count("_write_audit") == 1
+    assert "settings.design_cetakan.branch_copy" in copy_block
+    assert "branch_update" not in copy_block
+    assert "asset_upload" not in copy_block

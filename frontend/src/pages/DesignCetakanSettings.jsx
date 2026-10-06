@@ -107,6 +107,57 @@ const BRANCH_OVERRIDE_FIELDS = [
   "approved_signature_image",
 ];
 
+const COPY_FIELD_LABELS = {
+  company_name: "Nama perusahaan",
+  address_lines: "Alamat",
+  company_logo: "Logo perusahaan",
+  bank_accounts: "Rekening bank",
+  prepared_label: "Label Prepared",
+  prepared_footer: "Footer Prepared",
+  approved_label: "Label Approved",
+  approved_footer: "Footer Approved",
+  prepared_signature_image: "Tanda tangan Prepared",
+  approved_signature_image: "Tanda tangan Approved",
+};
+
+function copyFieldLabel(key) {
+  return COPY_FIELD_LABELS[key] || key;
+}
+
+function copyableKeysFromSettings(settings) {
+  const s = settings || {};
+  const inv = s.invoice || {};
+  const keys = [];
+  if (String(s.company_name || "").trim()) keys.push("company_name");
+  if ((s.address_lines || []).some((line) => String(line || "").trim())) keys.push("address_lines");
+  if (s.company_logo && s.company_logo.has_custom) keys.push("company_logo");
+  if ((inv.bank_accounts || []).some((row) => row && (row.bank_label || row.account_number || row.account_name))) {
+    keys.push("bank_accounts");
+  }
+  ["prepared_label", "prepared_footer", "approved_label", "approved_footer"].forEach((field) => {
+    if (String(inv[field] || "").trim()) keys.push(field);
+  });
+  if (inv.prepared_signature_image && inv.prepared_signature_image.has_custom) keys.push("prepared_signature_image");
+  if (inv.approved_signature_image && inv.approved_signature_image.has_custom) keys.push("approved_signature_image");
+  return keys;
+}
+
+function copyableKeysFromOverride(override) {
+  const o = override || {};
+  const inv = o.invoice || {};
+  const keys = [];
+  if (o.company_name) keys.push("company_name");
+  if (Array.isArray(o.address_lines) && o.address_lines.length) keys.push("address_lines");
+  if (o.company_logo && o.company_logo.has_custom) keys.push("company_logo");
+  if (Array.isArray(inv.bank_accounts) && inv.bank_accounts.length) keys.push("bank_accounts");
+  ["prepared_label", "prepared_footer", "approved_label", "approved_footer"].forEach((field) => {
+    if (inv[field]) keys.push(field);
+  });
+  if (inv.prepared_signature_image && inv.prepared_signature_image.has_custom) keys.push("prepared_signature_image");
+  if (inv.approved_signature_image && inv.approved_signature_image.has_custom) keys.push("approved_signature_image");
+  return keys;
+}
+
 function emptyOverrideFlags() {
   return BRANCH_OVERRIDE_FIELDS.reduce((acc, key) => {
     acc[key] = false;
@@ -296,6 +347,13 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
   const [historyHasMore, setHistoryHasMore] = useState(false);
   const [historyBusy, setHistoryBusy] = useState(false);
   const [historyErr, setHistoryErr] = useState("");
+  const [copyOpen, setCopyOpen] = useState(false);
+  const [copySource, setCopySource] = useState("global");
+  const [copyTarget, setCopyTarget] = useState("");
+  const [copySourceOverride, setCopySourceOverride] = useState(null);
+  const [copyTargetOverride, setCopyTargetOverride] = useState(null);
+  const [copyBusy, setCopyBusy] = useState(false);
+  const [copyErr, setCopyErr] = useState("");
   const [err, setErr] = useState("");
   const globalSnapshotRef = useRef(null);
   const logoInputRef = useRef(null);
@@ -436,6 +494,96 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
       setHistoryErr(errDetail(ex));
     } finally {
       setHistoryBusy(false);
+    }
+  };
+
+  const openCopy = () => {
+    setCopySource(scope === "global" ? "global" : String(scope));
+    setCopyTarget("");
+    setCopySourceOverride(null);
+    setCopyTargetOverride(null);
+    setCopyErr("");
+    setCopyOpen(true);
+  };
+
+  const copySourceKeys = copySource === "global"
+    ? copyableKeysFromSettings(globalSnapshotRef.current)
+    : copyableKeysFromOverride(copySourceOverride);
+  const copyTargetKeys = copyableKeysFromOverride(copyTargetOverride);
+  const copyReplaceKeys = copySourceKeys.filter((key) => copyTargetKeys.includes(key));
+  const copyDropKeys = copyTargetKeys.filter((key) => !copySourceKeys.includes(key));
+  const copySame = Boolean(copyTarget) && copySource !== "global" && String(copySource) === String(copyTarget);
+  const copyEmptyBranch = copySource !== "global" && copySourceKeys.length === 0;
+  const copyBlocked = copyBusy || !copyTarget || copySame || copyEmptyBranch || (copySource !== "global" && !copySourceOverride && !copyErr);
+
+  useEffect(() => {
+    if (!copyOpen) return undefined;
+    let cancelled = false;
+    const loadOverride = async (branchId, setter) => {
+      if (!branchId) {
+        setter(null);
+        return;
+      }
+      try {
+        const view = await api.designCetakanBranch(branchId);
+        if (!cancelled) setter(view?.override || {});
+      } catch (ex) {
+        if (!cancelled) {
+          setter(null);
+          setCopyErr(errDetail(ex));
+        }
+      }
+    };
+    setCopyErr("");
+    if (copySource === "global") {
+      setCopySourceOverride(null);
+    } else {
+      loadOverride(copySource, setCopySourceOverride);
+    }
+    if (copyTarget) loadOverride(copyTarget, setCopyTargetOverride);
+    else setCopyTargetOverride(null);
+    return () => {
+      cancelled = true;
+    };
+  }, [copyOpen, copySource, copyTarget]);
+
+  const submitCopy = async () => {
+    if (!canEdit || copyBlocked) return;
+    setCopyBusy(true);
+    setCopyErr("");
+    try {
+      const payload = {
+        source_scope: copySource === "global" ? "global" : "branch",
+        target_branch_id: copyTarget,
+      };
+      if (payload.source_scope === "branch") payload.source_branch_id = copySource;
+      const res = await api.copyDesignCetakan(payload);
+      notify?.(res.message || "Pengaturan khusus Design Cetakan berhasil disalin");
+      setCopyOpen(false);
+      if (scope === copyTarget) {
+        const applied = applyBranchView(res?.branch || {});
+        await loadPreviews(applied.assets, copyTarget, applied.flags);
+      }
+      if (historyOpen) {
+        setHistoryItems([]);
+        setHistoryPage(1);
+        try {
+          const hist = await api.getDesignCetakanHistory({
+            scope: historyScope,
+            page: 1,
+            page_size: 20,
+            ...(historyScope === "branch" && historyBranchId ? { branch_id: historyBranchId } : {}),
+          });
+          setHistoryItems(Array.isArray(hist?.items) ? hist.items : []);
+          setHistoryHasMore(Boolean(hist?.has_more));
+        } catch (_) {
+          /* history refresh is optional */
+        }
+      }
+    } catch (ex) {
+      setCopyErr(errDetail(ex));
+    } finally {
+      setCopyBusy(false);
     }
   };
 
@@ -674,6 +822,17 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
           >
             Riwayat Perubahan
           </button>
+          {canEdit ? (
+            <button
+              type="button"
+              className="secondary"
+              data-testid="design-cetakan-copy-open"
+              onClick={openCopy}
+              style={{ marginLeft: 8 }}
+            >
+              Salin Pengaturan
+            </button>
+          ) : null}
         </div>
         {catalog.length === 0 ? (
           <p className="muted small" data-testid="design-cetakan-branch-empty" style={{ gridColumn: "1 / -1" }}>
@@ -1130,6 +1289,114 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
                 {historyBusy ? "Memuat…" : "Muat lebih banyak"}
               </button>
             ) : null}
+          </div>
+        </div>
+      ) : null}
+
+      {copyOpen ? (
+        <div
+          className="modal modal-viewport-safe-wrap"
+          data-testid="design-cetakan-copy-modal"
+          onClick={(e) => e.target === e.currentTarget && !copyBusy && setCopyOpen(false)}
+        >
+          <div className="modal-inner modal-viewport-safe" style={{ maxWidth: 560 }} onClick={(e) => e.stopPropagation()}>
+            <header className="modal-head">
+              <h3>Salin Pengaturan Khusus</h3>
+              <button type="button" className="icon-button" data-testid="design-cetakan-copy-close" onClick={() => !copyBusy && setCopyOpen(false)}>
+                <X size={16} />
+              </button>
+            </header>
+            <p className="muted small" style={{ marginBottom: 12 }}>
+              Menyalin pengaturan khusus sumber ke cabang tujuan. Nilai yang diwarisi dari Global tidak disalin.
+            </p>
+            <div className="settings-grid" style={{ marginBottom: 12 }}>
+              <label>
+                Sumber
+                <select
+                  data-testid="design-cetakan-copy-source"
+                  value={copySource}
+                  disabled={copyBusy}
+                  onChange={(e) => setCopySource(e.target.value)}
+                >
+                  <option value="global">Default Semua Cabang</option>
+                  {catalog.map((row) => (
+                    <option key={`src-${row.branch_id}`} value={String(row.branch_id)}>
+                      {row.name || `Cabang ${row.branch_id}`}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Tujuan
+                <select
+                  data-testid="design-cetakan-copy-target"
+                  value={copyTarget}
+                  disabled={copyBusy}
+                  onChange={(e) => setCopyTarget(e.target.value)}
+                >
+                  <option value="">Pilih cabang</option>
+                  {catalog.map((row) => (
+                    <option key={`dst-${row.branch_id}`} value={String(row.branch_id)}>
+                      {row.name || `Cabang ${row.branch_id}`}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            {copySource === "global" ? (
+              <div className="settings-info" data-testid="design-cetakan-copy-global-warning" style={{ marginBottom: 12 }}>
+                <Info size={16} />
+                <div>
+                  <p>Nilai yang disalin menjadi pengaturan khusus cabang dan tidak lagi mengikuti perubahan Global.</p>
+                  <p className="muted small" style={{ marginTop: 4 }}>
+                    Mengikuti Global ≠ menyalin Global. Gunakan Semua Pengaturan Global menghapus override cabang agar kembali mewarisi Global.
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <p className="muted small" data-testid="design-cetakan-copy-branch-note" style={{ marginBottom: 12 }}>
+                Hanya pengaturan khusus {catalog.find((row) => String(row.branch_id) === String(copySource))?.name || `Cabang ${copySource}`} yang akan disalin.
+              </p>
+            )}
+            {copyEmptyBranch ? (
+              <p className="muted small" data-testid="design-cetakan-copy-empty">Cabang ini belum memiliki pengaturan khusus.</p>
+            ) : null}
+            {copySame ? (
+              <p className="muted small" data-testid="design-cetakan-copy-same">Sumber dan tujuan tidak boleh sama.</p>
+            ) : null}
+            {copySourceKeys.length ? (
+              <div data-testid="design-cetakan-copy-summary" style={{ marginBottom: 12 }}>
+                <p className="small"><strong>Akan disalin</strong></p>
+                <p className="muted small" data-testid="design-cetakan-copy-fields">{copySourceKeys.map(copyFieldLabel).join(", ")}</p>
+                {copyReplaceKeys.length ? (
+                  <p className="muted small" data-testid="design-cetakan-copy-replaced">
+                    Akan diganti di tujuan: {copyReplaceKeys.map(copyFieldLabel).join(", ")}
+                  </p>
+                ) : null}
+                {copyDropKeys.length ? (
+                  <p className="muted small" data-testid="design-cetakan-copy-dropped">
+                    Akan berhenti di-override / kembali ke Global: {copyDropKeys.map(copyFieldLabel).join(", ")}
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
+            {copyErr ? (
+              <div className="signal-strip" role="alert" data-testid="design-cetakan-copy-error" style={{ marginBottom: 12 }}>
+                <AlertCircle size={16} />
+                <span>{copyErr}</span>
+              </div>
+            ) : null}
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button type="button" className="secondary" disabled={copyBusy} onClick={() => setCopyOpen(false)}>Batal</button>
+              <button
+                type="button"
+                data-testid="design-cetakan-copy-confirm"
+                disabled={copyBlocked}
+                onClick={submitCopy}
+              >
+                {copyBusy ? "Menyalin…" : "Salin ke Cabang"}
+              </button>
+            </div>
           </div>
         </div>
       ) : null}
