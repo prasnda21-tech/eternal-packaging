@@ -1,7 +1,8 @@
 """Warehouse-wide frozen stock opname against R2 physical balances.
 
 Book quantities are snapshotted from physical_stock_balances at cutoff.
-Confirmed differences append STOCK_OPNAME_ADJUSTMENT. No valuation and no GL.
+Confirmed differences append STOCK_OPNAME_ADJUSTMENT physical movements and
+canonical valuation events when a valid HPP already exists. No GL posting.
 """
 from __future__ import annotations
 
@@ -536,6 +537,10 @@ def _retryable(exc: BaseException) -> bool:
 
 
 async def _confirm_once(db, doc: dict, confirmation_key: str, user: dict) -> dict:
+    from services.hpp_cutover import (
+        _current_canonical_hpp_snapshot,
+        prepare_stock_opname_valuation,
+    )
     from services.physical_stock import (
         PhysicalStockAbortError,
         _client,
@@ -571,6 +576,16 @@ async def _confirm_once(db, doc: dict, confirmation_key: str, user: dict) -> dic
                 qty = int(line["physical_count_qty"])
                 book = int(line.get("book_qty") or 0)
                 line["difference_qty"] = qty - book
+            # Capture canonical HPP before physical adjustment mutates R2 balances.
+            hpp_by_item: Dict[str, Any] = {}
+            for line in lines:
+                if int(line.get("difference_qty") or 0) == 0:
+                    continue
+                mid = str(line.get("master_item_id") or "")
+                if mid and mid not in hpp_by_item:
+                    hpp_by_item[mid] = await _current_canonical_hpp_snapshot(
+                        db, mid, session=mongo_session,
+                    )
             occurred_at = _now()
             movements = await apply_stock_opname_adjustments(
                 db,
@@ -591,6 +606,13 @@ async def _confirm_once(db, doc: dict, confirmation_key: str, user: dict) -> dic
                 by_line[str(meta.get("stock_opname_line_id") or "")] = movement.get("id")
             for line in lines:
                 line["movement_id"] = by_line.get(str(line.get("line_id") or ""))
+            lines = await prepare_stock_opname_valuation(
+                db,
+                mongo_session,
+                current,
+                lines,
+                hpp_by_item=hpp_by_item,
+            )
             fields = {
                 "status": STATUS_CONFIRMED,
                 "lines": lines,
@@ -612,7 +634,10 @@ async def _confirm_once(db, doc: dict, confirmation_key: str, user: dict) -> dic
 
 
 async def confirm_stock_opname_session(db, session_id: str, payload: Optional[dict], user: dict) -> dict:
+    from services.hpp_cutover import ensure_indexes, finalize_stock_opname_valuation
+
     payload = payload or {}
+    await ensure_indexes(db)
     doc = await get_stock_opname_session(db, session_id)
     confirmation_key = str(payload.get("idempotency_key") or payload.get("confirmation_key") or "").strip()
     incoming = payload.get("lines")
@@ -623,19 +648,23 @@ async def confirm_stock_opname_session(db, session_id: str, payload: Optional[di
         stored_key = str(doc.get("confirmation_key") or "")
         if confirmation_key and stored_key and stored_key != confirmation_key:
             raise HTTPException(409, "Idempotency key sudah digunakan dengan payload yang berbeda")
-        return doc
+        await finalize_stock_opname_valuation(db, doc, user)
+        return await get_stock_opname_session(db, doc["id"])
     if doc["status"] != STATUS_REVIEW:
         raise HTTPException(400, "Konfirmasi hanya dapat dilakukan dari status REVIEW.")
     last_error = None
+    saved = None
     for _attempt in range(5):
         try:
-            return await _confirm_once(db, doc, confirmation_key, user)
+            saved = await _confirm_once(db, doc, confirmation_key, user)
+            break
         except _AlreadyConfirmed:
             current = await get_stock_opname_session(db, doc["id"])
             if current["status"] == STATUS_CONFIRMED:
                 if confirmation_key and current.get("confirmation_key") not in (None, "", confirmation_key):
                     raise HTTPException(409, "Idempotency key sudah digunakan dengan payload yang berbeda")
-                return current
+                await finalize_stock_opname_valuation(db, current, user)
+                return await get_stock_opname_session(db, current["id"])
             raise HTTPException(409, "Konfirmasi stock opname gagal karena perubahan bersamaan.")
         except HTTPException:
             raise
@@ -657,7 +686,10 @@ async def confirm_stock_opname_session(db, session_id: str, payload: Optional[di
                 last_error = exc
                 continue
             raise
-    raise HTTPException(409, f"Gagal mengonfirmasi stock opname. {last_error}")
+    if saved is None:
+        raise HTTPException(409, f"Gagal mengonfirmasi stock opname. {last_error}")
+    await finalize_stock_opname_valuation(db, saved, user)
+    return await get_stock_opname_session(db, saved["id"])
 
 
 async def cancel_stock_opname_session(db, session_id: str, payload: Optional[dict], user: dict) -> dict:

@@ -80,6 +80,7 @@ SOURCE_GOODS_RECEIPT = "GOODS_RECEIPT"
 SOURCE_GOODS_RECEIPT_REVERSAL = "GOODS_RECEIPT_REVERSAL"
 SOURCE_PURCHASE_RETURN = "PURCHASE_RETURN"
 SOURCE_PURCHASE_RETURN_REVERSAL = "PURCHASE_RETURN_REVERSAL"
+SOURCE_STOCK_OPNAME_ADJUSTMENT = "STOCK_OPNAME_ADJUSTMENT"
 SOURCE_PURCHASING_AUTO_BOOTSTRAP = "PURCHASING_AUTO_BOOTSTRAP"
 SOURCE_FIRST_GR_UNIT_COST = "FIRST_GR_UNIT_COST"
 STATUS_PENDING_VALUATION = "PENDING_VALUATION"
@@ -272,6 +273,9 @@ def _events_from_baseline_and_recognition(cutover: dict, lines: List[dict], reco
                 continue
         elif source_type == SOURCE_PURCHASE_RETURN_REVERSAL:
             if qty <= 0 or unit_cost <= 0:
+                continue
+        elif source_type == SOURCE_STOCK_OPNAME_ADJUSTMENT:
+            if qty == 0 or unit_cost <= 0:
                 continue
         else:
             if qty <= 0 or unit_cost <= 0:
@@ -1527,6 +1531,7 @@ async def _item_has_valid_canonical_valuation(db, cutover: dict, master_item_id:
                     SOURCE_PURCHASE_RETURN,
                     SOURCE_PURCHASE_RETURN_REVERSAL,
                     SOURCE_GOODS_RECEIPT_REVERSAL,
+                    SOURCE_STOCK_OPNAME_ADJUSTMENT,
                 ]
             },
         },
@@ -2006,8 +2011,12 @@ def _valuation_fingerprint(doc: dict) -> tuple:
         str(doc.get("purchase_return_line_id") or ""),
         str(doc.get("goods_receipt_id") or ""),
         str(doc.get("goods_receipt_line_id") or ""),
+        str(doc.get("stock_opname_session_id") or ""),
+        str(doc.get("stock_opname_line_id") or ""),
         str(doc.get("master_item_id") or ""),
         str(doc.get("returned_qty") or ""),
+        str(doc.get("adjustment_qty") if doc.get("adjustment_qty") is not None else ""),
+        str(doc.get("qty") if doc.get("qty") is not None else ""),
         str(doc.get("unit_cost") if doc.get("unit_cost") is not None else ""),
         str(doc.get("warehouse_id") or ""),
         str(doc.get("branch_id") or ""),
@@ -2367,3 +2376,222 @@ async def finalize_purchase_return_valuation_reversal(db, return_doc: dict, user
     if pending:
         await _rebuild_return_events(db, events, user)
     return await db.purchase_returns.find_one({"id": return_doc["id"]}, {"_id": 0}) or return_doc
+
+
+def stock_opname_source_key(session_id: str, line_id: str) -> str:
+    return f"stock-opname:{session_id}:{line_id}"
+
+
+async def _current_canonical_hpp_snapshot(
+    db,
+    master_item_id: str,
+    *,
+    session=None,
+) -> Optional[dict]:
+    """Canonical HPP and identity for one item from the active valuation layers."""
+    mid = str(master_item_id or "").strip()
+    if not mid:
+        return None
+    settings = await db.app_settings.find_one(
+        {"key": SETTINGS_KEY},
+        {"_id": 0, "active_version": 1},
+        session=session,
+    )
+    version_id = (settings or {}).get("active_version")
+    if not version_id:
+        return None
+    layers = await db[LAYERS].find(
+        {"calculation_version": version_id, "master_item_id": mid},
+        {"_id": 0},
+        session=session,
+    ).to_list(200)
+    if not layers:
+        return None
+    latest = max(
+        layers,
+        key=lambda row: (str(row.get("recognized_at") or ""), str(row.get("layer_id") or "")),
+    )
+    qty = _dec(latest.get("remaining_qty"))
+    unit = money_round(latest.get("unit_cost") or 0)
+    if qty <= 0 or _dec(unit) <= 0:
+        return None
+    identity = str(latest.get("item_identity") or "").strip()
+    if not identity:
+        identity = item_identity({
+            "master_item_id": mid,
+            "accurate_item_id": latest.get("accurate_item_id"),
+        })
+    return {
+        "valuation_qty": qty_round(qty),
+        "unit_cost": unit,
+        "item_identity": identity,
+        "accurate_item_id": str(latest.get("accurate_item_id") or ""),
+        "item_code": str(latest.get("item_code") or ""),
+        "item_name": str(latest.get("item_name") or ""),
+    }
+
+
+async def prepare_stock_opname_valuation(
+    db,
+    session,
+    session_doc: dict,
+    lines: List[dict],
+    *,
+    hpp_by_item: Optional[Dict[str, dict]] = None,
+) -> List[dict]:
+    """Queue STOCK_OPNAME_ADJUSTMENT events using pre-captured canonical HPP.
+
+    Zero differences create no event. Missing HPP stays PENDING_VALUATION
+    without inventing a unit cost. Physical confirmation stays with the caller.
+    """
+    active = await get_active_cutover(db)
+    stamp = now_iso()
+    snapshots = hpp_by_item or {}
+    prepared = []
+    for line in lines:
+        line_id = str(line.get("line_id") or "").strip()
+        mid = str(line.get("master_item_id") or "").strip()
+        delta = int(line.get("difference_qty") or 0)
+        if not line_id or not mid or delta == 0:
+            prepared.append(line)
+            continue
+        source_key = stock_opname_source_key(session_doc["id"], line_id)
+        snapshot = snapshots.get(mid)
+        if snapshot is None and mid not in snapshots:
+            snapshot = await _current_canonical_hpp_snapshot(db, mid, session=session)
+            snapshots[mid] = snapshot
+        common = {
+            "event_id": str(uuid.uuid4()),
+            "source_type": SOURCE_STOCK_OPNAME_ADJUSTMENT,
+            "source_key": source_key,
+            "stock_opname_session_id": session_doc["id"],
+            "stock_opname_line_id": line_id,
+            "opname_number": str(session_doc.get("opname_number") or ""),
+            "master_item_id": mid,
+            "adjustment_qty": delta,
+            "warehouse_id": str(session_doc.get("warehouse_id") or ""),
+            "branch_id": str(session_doc.get("branch_id") or ""),
+            "book_qty": int(line.get("book_qty") or 0),
+            "physical_count_qty": int(line.get("physical_count_qty") or 0),
+            "recognized_at": stamp,
+            "created_at": stamp,
+            "updated_at": stamp,
+            "cutover_id": (active or {}).get("cutover_id"),
+        }
+        if not active or not snapshot:
+            event = {
+                **common,
+                "status": STATUS_PENDING_VALUATION,
+                "reason": STATUS_PENDING_VALUATION,
+                "qty": None,
+                "unit_cost": None,
+                "total_cost": None,
+                "item_identity": None,
+            }
+            saved = await _upsert_valuation_event(db, event, session=session)
+            prepared.append({
+                **line,
+                **_line_valuation_fields(
+                    saved,
+                    status=STATUS_PENDING_VALUATION,
+                    reason=STATUS_PENDING_VALUATION,
+                ),
+            })
+            continue
+        unit_cost = money_round(snapshot["unit_cost"])
+        signed_qty = qty_round(delta)
+        event = {
+            **common,
+            "status": STATUS_QUEUED,
+            "qty": signed_qty,
+            "unit_cost": unit_cost,
+            "total_cost": money_round(_dec(signed_qty) * _dec(unit_cost)),
+            "item_identity": snapshot.get("item_identity"),
+            "item_code": snapshot.get("item_code") or line.get("item_code") or "",
+            "item_name": snapshot.get("item_name") or line.get("item_name") or "",
+            "accurate_item_id": snapshot.get("accurate_item_id") or "",
+            "pre_adjustment_hpp": unit_cost,
+            "pre_adjustment_valuation_qty": snapshot.get("valuation_qty"),
+        }
+        saved = await _upsert_valuation_event(db, event, session=session)
+        prepared.append({
+            **line,
+            **_line_valuation_fields(saved, status=saved.get("status") or STATUS_QUEUED),
+        })
+    return prepared
+
+
+async def _rebuild_stock_opname_events(db, events: List[dict], user: Optional[dict]) -> None:
+    active = await get_active_cutover(db)
+    if not active:
+        raise _http(409, STATUS_PENDING_VALUATION, "Cutover HPP tidak aktif. Valuasi stock opname tidak diterapkan.")
+    ids = [row["event_id"] for row in events if row.get("event_id")]
+    await db[EVENTS].update_many(
+        {"event_id": {"$in": ids}, "status": {"$in": [STATUS_QUEUED, STATUS_FAILED]}},
+        {"$set": {"status": STATUS_RECOGNIZED, "updated_at": now_iso(), "failure_action": None, "last_error": None}},
+    )
+    try:
+        await rebuild_cutover_valuation(
+            db,
+            active,
+            user=user,
+            requested_method=METHOD_AVG,
+            requested_recognition=RECOG_GR,
+            activate_cutover=False,
+        )
+    except Exception as exc:
+        await db[EVENTS].update_many(
+            {"event_id": {"$in": ids}},
+            {"$set": {
+                "status": STATUS_FAILED,
+                "failure_action": "STOCK_OPNAME",
+                "last_error": str(exc),
+                "updated_at": now_iso(),
+            }},
+        )
+        raise
+
+
+async def finalize_stock_opname_valuation(
+    db,
+    session_doc: dict,
+    user: Optional[dict] = None,
+) -> dict:
+    """Apply queued stock-opname valuation once. Exact retry does not post twice."""
+    await ensure_indexes(db)
+    keys = [
+        stock_opname_source_key(session_doc["id"], str(line.get("line_id") or ""))
+        for line in session_doc.get("lines") or []
+        if line.get("line_id") and int(line.get("difference_qty") or 0) != 0
+    ]
+    if not keys:
+        return session_doc
+    events = await db[EVENTS].find({"source_key": {"$in": keys}}, {"_id": 0}).to_list(500)
+    actionable = [
+        row for row in events
+        if row.get("source_type") == SOURCE_STOCK_OPNAME_ADJUSTMENT
+        and row.get("status") in {STATUS_QUEUED, STATUS_FAILED, STATUS_RECOGNIZED}
+        and row.get("unit_cost") is not None
+    ]
+    needs_rebuild = []
+    for row in actionable:
+        if row.get("status") != STATUS_RECOGNIZED or not await _active_layer_has_event(db, row.get("event_id")):
+            needs_rebuild.append(row)
+    if needs_rebuild:
+        await _rebuild_stock_opname_events(db, needs_rebuild, user)
+    fresh = await db[EVENTS].find({"source_key": {"$in": keys}}, {"_id": 0}).to_list(500)
+    by_line = {str(row.get("stock_opname_line_id") or ""): row for row in fresh}
+    current = await db["stock_opname_sessions"].find_one({"id": session_doc["id"]}, {"_id": 0})
+    if not current:
+        return session_doc
+    lines = []
+    for line in current.get("lines") or []:
+        event = by_line.get(str(line.get("line_id") or ""))
+        if not event:
+            lines.append(line)
+            continue
+        status = event.get("status") or line.get("hpp_valuation_status")
+        lines.append({**line, **_line_valuation_fields(event, status=status, reason=event.get("reason"))})
+    await db["stock_opname_sessions"].update_one({"id": session_doc["id"]}, {"$set": {"lines": lines}})
+    saved = await db["stock_opname_sessions"].find_one({"id": session_doc["id"]}, {"_id": 0})
+    return saved or current
