@@ -237,6 +237,14 @@ async def test_multi_line_failure_rolls_back_and_r2_abort_keeps_draft(db):
     assert (await db.purchase_returns.find_one({"id": draft["id"]}))["status"] == "DRAFT"
     assert (await get_balance(db, item_a, branch_id, "wh-main"))["physical_qty"] == 10
     assert await db[LEDGER_COLLECTION].count_documents({"movement_type": MOVEMENT_PURCHASE_RETURN}) == 0
+    # Restore B physical qty after the forced shortfall. The drain was only to make
+    # multi-line confirm fail; leaving B mismatched blocks later HPP rebuild on GR.
+    await post_movement(db, {
+        "master_item_id": item_b, "branch_id": branch_id, "warehouse_id": "wh-main",
+        "movement_type": MOVEMENT_MANUAL_ADJUSTMENT, "qty_delta": 10,
+        "idempotency_key": "restore-b", "reason": "test",
+    }, actor_id="user-1")
+    assert (await get_balance(db, item_b, branch_id, "wh-main"))["physical_qty"] == 10
     other = await _po(db, [_line(item_a, 5, "A2")])
     other_receipt = await _receive(db, other, [{"purchase_order_line_id": other["lines"][0]["line_id"], "received_qty": 5}])
     pending = await _draft(db, other_receipt, 2)

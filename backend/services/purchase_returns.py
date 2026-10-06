@@ -7,6 +7,7 @@ reversal. Financial supplier credit is not created here.
 """
 from __future__ import annotations
 
+import asyncio
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -364,7 +365,36 @@ async def list_purchase_returns(
     return await db[COLLECTION].find(query, {"_id": 0}).sort("created_at", -1).to_list(1000)
 
 
-async def _confirm_once(db, doc: dict, confirmation_key: str, user: dict) -> dict:
+def _cutover_lease_busy(exc: HTTPException) -> bool:
+    detail = exc.detail if isinstance(exc.detail, dict) else {}
+    message = str(detail.get("message") or exc.detail or "")
+    return exc.status_code == 409 and (
+        detail.get("code") == "CONFLICT"
+        or "Cutover HPP sedang diproses" in message
+    )
+
+
+async def _finalize_valuation_after_confirm(db, doc: dict, user: dict) -> dict:
+    """Finalize HPP after physical confirm. Retry briefly while the cutover lease is busy.
+
+    Physical R2 is already committed; exact confirm retry must stay idempotent and must
+    still complete valuation once the peer release frees the lease.
+    """
+    from services.hpp_cutover import finalize_purchase_return_valuation
+
+    for attempt in range(12):
+        try:
+            await finalize_purchase_return_valuation(db, doc, user)
+            return await get_purchase_return(db, doc["id"])
+        except HTTPException as exc:
+            if not _cutover_lease_busy(exc):
+                raise
+            await asyncio.sleep(0.025 * (attempt + 1))
+    return await get_purchase_return(db, doc["id"])
+
+
+async def _confirm_once(db, doc: dict, confirmation_key: str, user: dict) -> tuple[dict, bool]:
+    """Confirm one return. Returns (document, newly_confirmed)."""
     from services.physical_stock import (
         PhysicalStockAbortError,
         _client,
@@ -385,7 +415,7 @@ async def _confirm_once(db, doc: dict, confirmation_key: str, user: dict) -> dic
                 if confirmation_key and current.get("confirmation_key") == confirmation_key:
                     if _line_fingerprint(current.get("lines") or []) != _line_fingerprint(doc.get("lines") or []):
                         raise HTTPException(409, "Idempotency key sudah digunakan dengan payload yang berbeda")
-                return current
+                return current, False
             if current.get("status") != STATUS_DRAFT or is_cancelled(current):
                 raise HTTPException(400, "Hanya retur berstatus draf yang dapat dikonfirmasi.")
             if confirmation_key:
@@ -468,11 +498,11 @@ async def _confirm_once(db, doc: dict, confirmation_key: str, user: dict) -> dic
             if result.matched_count != 1:
                 raise _AlreadyConfirmed()
             saved = await db[COLLECTION].find_one({"id": current["id"]}, {"_id": 0}, session=session)
-            return saved
+            return saved, True
 
 
 async def confirm_purchase_return(db, return_id: str, payload: Optional[Dict[str, Any]], user: dict) -> dict:
-    from services.hpp_cutover import ensure_indexes, finalize_purchase_return_valuation
+    from services.hpp_cutover import ensure_indexes
 
     payload = payload or {}
     if str(payload.get("warehouse_id") or "").strip():
@@ -486,18 +516,20 @@ async def confirm_purchase_return(db, return_id: str, payload: Optional[Dict[str
     if doc.get("status") == STATUS_CONFIRMED and not is_cancelled(doc):
         if confirmation_key and doc.get("confirmation_key") not in (None, "", confirmation_key):
             raise HTTPException(409, "Idempotency key sudah digunakan dengan payload yang berbeda")
-        await finalize_purchase_return_valuation(db, doc, user)
-        return await get_purchase_return(db, doc["id"])
+        return await _finalize_valuation_after_confirm(db, doc, user)
     last_error = None
     saved = None
     for _attempt in range(5):
         try:
-            saved = await _confirm_once(db, doc, confirmation_key, user)
+            saved, _newly_confirmed = await _confirm_once(db, doc, confirmation_key, user)
             break
         except _AlreadyConfirmed:
             current = await get_purchase_return(db, doc["id"])
             if current.get("status") == STATUS_CONFIRMED and not is_cancelled(current):
-                return current
+                # Physical confirm won elsewhere; still attempt valuation finalize below
+                # so concurrent exact retries remain idempotent and complete HPP when free.
+                saved = current
+                break
             raise HTTPException(409, "Konfirmasi retur gagal karena perubahan bersamaan.")
         except HTTPException:
             raise
@@ -508,8 +540,7 @@ async def confirm_purchase_return(db, return_id: str, payload: Optional[Dict[str
             _r2_http(exc)
     if saved is None:
         raise HTTPException(409, f"Gagal mengonfirmasi retur pembelian. {last_error}")
-    await finalize_purchase_return_valuation(db, saved, user)
-    return await get_purchase_return(db, saved["id"])
+    return await _finalize_valuation_after_confirm(db, saved, user)
 
 
 async def _reverse_once(db, doc: dict, user: dict, reason: str) -> dict:
