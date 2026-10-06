@@ -95,14 +95,7 @@ async def _has_early_invoice(db, purchase_order_id: str) -> bool:
     return bool(doc)
 
 
-def _with_progress(
-    doc: dict,
-    received: Dict[str, float],
-    invoiced: Dict[str, float],
-    *,
-    early_invoice: bool = False,
-    returned: Optional[Dict[str, float]] = None,
-) -> dict:
+def _with_progress(doc: dict, received: Dict[str, float], invoiced: Dict[str, float], *, early_invoice: bool = False) -> dict:
     out = dict(doc)
     lines = []
     rec_total = 0.0
@@ -114,17 +107,13 @@ def _with_progress(
         ordered = float(row.get("ordered_qty") or 0)
         rec = float(received.get(lid, 0.0))
         inv = float(invoiced.get(lid, 0.0))
-        ret = float((returned or {}).get(lid, 0.0))
-        net = max(0.0, rec - ret)
         row["cumulative_received_qty"] = rec
-        row["confirmed_return_qty"] = ret
-        row["net_received_qty"] = net
         row["remaining_receivable_qty"] = remaining_qty(ordered, rec)
         row["cumulative_invoiced_qty"] = inv
         row["remaining_invoice_qty"] = remaining_qty(ordered, inv)
         row["receipt_invoice_eligible_qty"] = min(
             float(row["remaining_invoice_qty"] or 0),
-            max(0.0, net - inv),
+            max(0.0, rec - inv),
         )
         row["item_identity"] = item_identity({**row, "purchase_order_id": out.get("id")})
         rec_total += rec
@@ -177,13 +166,10 @@ def _with_progress(
 
 
 async def enrich_purchase_order(db, doc: dict) -> dict:
-    from services.purchase_returns import confirmed_return_qty_by_po_line
-
     received = await _received_qty_by_po_line(db, doc["id"])
     invoiced = await _invoiced_qty_by_po_line(db, doc["id"])
-    returned = await confirmed_return_qty_by_po_line(db, doc["id"])
     early = await _has_early_invoice(db, doc["id"])
-    return _with_progress(doc, received, invoiced, early_invoice=early, returned=returned)
+    return _with_progress(doc, received, invoiced, early_invoice=early)
 
 
 async def get_request_po_preview(db, request_id: str) -> dict:

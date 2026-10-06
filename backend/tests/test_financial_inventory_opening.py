@@ -693,36 +693,6 @@ async def test_preview_and_get_do_not_write_and_role_is_denied():
 
 
 async def test_two_concurrent_receipts_do_not_double_count_baseline():
-    from services.physical_stock import (
-        MOVEMENT_MANUAL_ADJUSTMENT,
-        PhysicalStockUnavailableError,
-        ensure_indexes as ensure_physical_indexes,
-        get_balance,
-        post_movement,
-        require_transaction_support,
-    )
-
-    # Goods receipt posts R2 inside a Mongo transaction. CI mongo:7 is standalone.
-    try:
-        await require_transaction_support(server.client)
-    except PhysicalStockUnavailableError:
-        pytest.skip("MongoDB replica set required for concurrent R2 goods receipts")
-
-    await ensure_physical_indexes(server.db)
-    await server.db.branches.update_one(
-        {"id": "branch-ygy"},
-        {"$set": {"id": "branch-ygy", "code": "YGY", "name": "Yogyakarta", "active": True}},
-        upsert=True,
-    )
-    await server.db.warehouses.update_one(
-        {"id": "wh-main"},
-        {"$set": {
-            "id": "wh-main", "branch_id": "branch-ygy", "code": "MAIN",
-            "name": "Gudang Yogyakarta", "active": True,
-        }},
-        upsert=True,
-    )
-
     mid = f"mid-concurrent"
     aid = "aid-concurrent"
     await server.db.master_items.insert_one({
@@ -732,7 +702,6 @@ async def test_two_concurrent_receipts_do_not_double_count_baseline():
         "item_name": "Concurrent",
         "item_type": "INVENTORY",
         "unit": "PCS",
-        "base_unit": "PCS",
         "is_active": True,
     })
     await server.db.product_stock_state.insert_one({
@@ -748,16 +717,6 @@ async def test_two_concurrent_receipts_do_not_double_count_baseline():
         "pending_event": None,
         "version": 1,
     })
-    # Canonical pre-GR physical qty lives on R2, not product_stock_state.
-    await post_movement(server.db, {
-        "master_item_id": mid,
-        "branch_id": "branch-ygy",
-        "warehouse_id": "wh-main",
-        "movement_type": MOVEMENT_MANUAL_ADJUSTMENT,
-        "qty_delta": 100,
-        "idempotency_key": f"open-{uuid.uuid4().hex[:8]}",
-        "reason": "pre-gr operational stock",
-    }, actor_id="admin-fio")
     await server.db.customer_pricing_groups.insert_one({
         "id": "group-con",
         "enabled": True,
@@ -814,16 +773,11 @@ async def test_two_concurrent_receipts_do_not_double_count_baseline():
 
     await asyncio.gather(_receive("a", po_a, line_a), _receive("b", po_b, line_b))
     state = await server.db.product_stock_state.find_one({"master_item_id": mid}, {"_id": 0})
-    assert state["total_qty"] == 100  # GR must not write legacy product_stock_state
-    physical = await get_balance(server.db, mid, "branch-ygy", "wh-main")
-    assert physical["physical_qty"] == 200
-    baselines = await server.db.hpp_valuation_baseline_lines.find(
-        {"master_item_id": mid}, {"_id": 0},
-    ).to_list(5)
-    assert len(baselines) == 1
-    baseline = baselines[0]
+    assert state["total_qty"] == 200
+    baseline = await server.db.hpp_valuation_baseline_lines.find_one({"master_item_id": mid}, {"_id": 0})
     assert baseline["stock_fisik_snapshot"] == 100
-    assert baseline.get("pre_gr_operational_qty") == 100
+    assert baseline["stock_snapshot_proofs"]
+    assert all(row.get("balance_before") is not None for row in baseline["stock_snapshot_proofs"])
 
 
 async def test_valuation_export_uses_full_filter_not_one_page():

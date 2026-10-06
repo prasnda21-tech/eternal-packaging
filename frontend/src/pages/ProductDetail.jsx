@@ -1,12 +1,16 @@
 import { useCallback, useEffect, useState } from "react";
-import { Link, useParams, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   AlertCircle,
   ArrowLeft,
   CheckCircle2,
+  ExternalLink,
+  Filter,
   Lock,
+  Package,
   RefreshCw,
   Search,
+  Sliders,
   X,
 } from "lucide-react";
 import api from "../lib/api";
@@ -15,7 +19,6 @@ import { formatDate } from "../lib/constants";
 import { fmtQty } from "../components/qtyUi";
 import InventoryValueMeaning from "../components/InventoryValueMeaning";
 import { acceptValuationFocus, INVENTORY_VALUE_LINK_LABEL, inventoryValueItemPath, inventoryValueLinkVisible } from "../lib/inventoryValueLink";
-import { movementLabel, mutationQtyColumns, openingReady, PHYSICAL_MOVEMENT_LABELS, warehouseChoices } from "../lib/physicalStockView";
 import "./productDetail.css";
 
 const TYPE_LABEL = {
@@ -32,6 +35,7 @@ function typeLabel(raw) {
 
 export default function ProductDetail() {
   const { id } = useParams();
+  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { hasPerm } = useAuth();
   const canEditConversion = hasPerm("current_stock.update") || hasPerm("master_items.sync");
@@ -59,21 +63,12 @@ export default function ProductDetail() {
   const [settingSuccess, setSettingSuccess] = useState("");
   const [settingError, setSettingError] = useState("");
 
-  const [physicalStock, setPhysicalStock] = useState(null);
-  const [branches, setBranches] = useState([]);
-  const [warehouses, setWarehouses] = useState([]);
-  const [stockBranchId, setStockBranchId] = useState("");
-  const [stockWarehouseId, setStockWarehouseId] = useState("");
-  const [openingBranchId, setOpeningBranchId] = useState("");
-  const [openingWarehouseId, setOpeningWarehouseId] = useState("");
-  const [openingQty, setOpeningQty] = useState("");
-  const [openingReason, setOpeningReason] = useState("");
-  const [openingStatus, setOpeningStatus] = useState(null);
-  const [openingStatusLoading, setOpeningStatusLoading] = useState(false);
+  // Opening balance form state
+  const [unprintedInput, setUnprintedInput] = useState("");
+  const [printedInput, setPrintedInput] = useState("");
   const [savingOpening, setSavingOpening] = useState(false);
   const [openingSuccess, setOpeningSuccess] = useState("");
   const [openingError, setOpeningError] = useState("");
-  const [openingKey, setOpeningKey] = useState("");
 
   // Mutation ledger state
   const [mutations, setMutations] = useState([]);
@@ -155,12 +150,14 @@ export default function ProductDetail() {
     try {
       const params = {
         page,
-        limit: pageSize,
+        page_size: pageSize,
       };
-      if (startDate) params.from_date = startDate;
-      if (endDate) params.to_date = endDate;
+      if (startDate) params.start_date = startDate;
+      if (endDate) params.end_date = endDate;
       if (typeFilter && typeFilter !== "ALL") params.movement_type = typeFilter;
-      const res = await api.physicalMutations(id, params);
+      if (searchQ.trim()) params.q = searchQ.trim();
+
+      const res = await api.listProductMutations(id, params);
       setMutations(res.items || []);
       setTotalMutations(res.total || 0);
       setPageCount(res.page_count || 1);
@@ -170,7 +167,7 @@ export default function ProductDetail() {
     } finally {
       setMutationLoading(false);
     }
-  }, [id, page, pageSize, startDate, endDate, typeFilter]);
+  }, [id, page, pageSize, startDate, endDate, typeFilter, searchQ]);
 
   useEffect(() => {
     loadProduct();
@@ -181,47 +178,6 @@ export default function ProductDetail() {
       loadMutations();
     }
   }, [activeTab, loadMutations]);
-
-  const loadPhysicalStock = useCallback(async () => {
-    try {
-      const res = await api.physicalStock(id);
-      setPhysicalStock(res);
-    } catch (ex) {
-      const det = ex.response?.data?.detail;
-      setPhysicalStock({ items: [], total_physical_qty: 0, base_unit: "" });
-      setProductError(typeof det === "object" ? det.message : (det || "Gagal memuat stok fisik"));
-    }
-  }, [id]);
-
-  useEffect(() => {
-    loadPhysicalStock();
-  }, [loadPhysicalStock]);
-
-  useEffect(() => {
-    let cancelled = false;
-    Promise.all([api.branches(), api.warehouses()])
-      .then(([branchRes, warehouseRes]) => {
-        if (cancelled) return;
-        setBranches(branchRes.items || []);
-        setWarehouses(warehouseRes.items || []);
-      })
-      .catch(() => {});
-    return () => { cancelled = true; };
-  }, []);
-
-  useEffect(() => {
-    if (!openingBranchId || !openingWarehouseId) {
-      setOpeningStatus(null);
-      return undefined;
-    }
-    let cancelled = false;
-    setOpeningStatusLoading(true);
-    api.physicalOpeningBalance(id, { branch_id: openingBranchId, warehouse_id: openingWarehouseId })
-      .then((res) => { if (!cancelled) setOpeningStatus(res); })
-      .catch(() => { if (!cancelled) setOpeningStatus(null); })
-      .finally(() => { if (!cancelled) setOpeningStatusLoading(false); });
-    return () => { cancelled = true; };
-  }, [id, openingBranchId, openingWarehouseId, openingSuccess]);
 
   // Save unit conversion setting
   const handleSaveConversion = async (e) => {
@@ -253,30 +209,54 @@ export default function ProductDetail() {
     }
   };
 
+  // Save physical stock opening balance
   const handleSaveOpeningBalance = async (e) => {
     e.preventDefault();
     setSavingOpening(true);
     setOpeningSuccess("");
     setOpeningError("");
-    if (!openingReady({ itemId: id, branchId: openingBranchId, warehouseId: openingWarehouseId, qty: openingQty })) {
-      setOpeningError("Barang, cabang, gudang, dan qty stok fisik wajib diisi");
+
+    const unprintedStr = unprintedInput.trim().replace(",", ".");
+    const printedStr = printedInput.trim().replace(",", ".");
+
+    if (unprintedStr === "") {
+      setOpeningError("Kuantitas stok cup belum dicetak wajib diisi");
       setSavingOpening(false);
       return;
     }
-    const key = openingKey || (globalThis.crypto?.randomUUID?.() || `saldo-${Date.now()}`);
-    setOpeningKey(key);
+    if (printedStr === "") {
+      setOpeningError("Kuantitas stok cup sudah dicetak wajib diisi");
+      setSavingOpening(false);
+      return;
+    }
+
+    const unprinted = parseFloat(unprintedStr);
+    const printed = parseFloat(printedStr);
+
+    if (isNaN(unprinted) || unprinted < 0) {
+      setOpeningError("Kuantitas stok cup belum dicetak harus berupa angka non-negatif");
+      setSavingOpening(false);
+      return;
+    }
+    if (isNaN(printed) || printed < 0) {
+      setOpeningError("Kuantitas stok cup sudah dicetak harus berupa angka non-negatif");
+      setSavingOpening(false);
+      return;
+    }
+
+    const total = unprinted + printed;
+
     try {
-      await api.createPhysicalOpeningBalance(id, {
-        branch_id: openingBranchId,
-        warehouse_id: openingWarehouseId,
-        physical_qty: Number(String(openingQty).replace(",", ".")),
-        reason: openingReason.trim(),
-        idempotency_key: key,
+      await api.initOpeningBalance(id, {
+        unprinted_qty: unprinted,
+        printed_qty: printed,
+        total_qty: total,
+        base_uom: normalizedBaseUom,
       });
       setOpeningSuccess("Saldo awal stok fisik berhasil ditetapkan");
-      setOpeningQty("");
-      setOpeningKey("");
-      await loadPhysicalStock();
+      setUnprintedInput("");
+      setPrintedInput("");
+      await loadProduct();
     } catch (ex) {
       const det = ex.response?.data?.detail;
       setOpeningError(typeof det === "object" ? det.message : (det || "Gagal menetapkan saldo awal stok fisik"));
@@ -291,37 +271,12 @@ export default function ProductDetail() {
   const isStockInitialized = Boolean(stockState && stockState.initialized);
   const normalizedBaseUom = (stockSummary.base_uom || item.unit || "PCS").toUpperCase();
 
-  const stockWarehouses = warehouseChoices(warehouses, stockBranchId).filter(
-    (row) => !stockWarehouseId || row.id === stockWarehouseId,
-  );
-  const physicalByLocation = new Map(
-    (physicalStock?.items || []).map((row) => [`${row.branch_id}:${row.warehouse_id}`, row]),
-  );
-  const stockRows = stockWarehouses.map((row) => {
-    const hit = physicalByLocation.get(`${row.branch_id}:${row.id}`);
-    const branch = branches.find((itemRow) => itemRow.id === row.branch_id);
-    return {
-      branch_id: row.branch_id,
-      branch_code: hit?.branch_code || branch?.code || "",
-      branch_name: hit?.branch_name || branch?.name || "",
-      warehouse_id: row.id,
-      warehouse_code: hit?.warehouse_code || row.code || "",
-      warehouse_name: hit?.warehouse_name || row.name || "",
-      physical_qty: hit ? Number(hit.physical_qty || 0) : 0,
-    };
-  });
-  const openingWarehouses = warehouseChoices(warehouses, openingBranchId);
-  const openingBranch = branches.find((row) => row.id === openingBranchId);
-  const openingWarehouse = openingWarehouses.find((row) => row.id === openingWarehouseId);
-  const openingEstablished = Boolean(openingStatus?.established);
-  const visibleMutations = mutations.filter((row) => {
-    const text = searchQ.trim().toLowerCase();
-    if (!text) return true;
-    return [row.reference_id, row.reason, row.movement_type, row.branch_code, row.warehouse_code]
-      .join(" ")
-      .toLowerCase()
-      .includes(text);
-  });
+  const parseQtyInput = (v) => {
+    if (!v || typeof v !== "string") return 0;
+    const n = parseFloat(v.trim().replace(",", "."));
+    return isNaN(n) || n < 0 ? 0 : n;
+  };
+  const computedOpeningTotal = parseQtyInput(unprintedInput) + parseQtyInput(printedInput);
 
   return (
     <div className="product-detail-page" data-testid="product-detail-page">
@@ -376,19 +331,37 @@ export default function ProductDetail() {
       {/* STOCK SUMMARY CARDS */}
       <div className="stock-kpi-grid" data-testid="stock-kpi-grid">
         <div className="stock-kpi-card" data-testid="kpi-total-stock">
-          <div className="kpi-label">Stok Fisik Saat Ini</div>
-          <div className="kpi-value" data-testid="kpi-physical-qty">
-            {physicalStock
-              ? `${fmtQty(physicalStock.total_physical_qty || 0)} ${physicalStock.base_unit || normalizedBaseUom}`
-              : "Memuat"}
+          <div className="kpi-label">Stok Total Saat Ini</div>
+          <div className="kpi-value">
+            {stockSummary.stock_total != null
+              ? `${fmtQty(stockSummary.stock_total)} ${normalizedBaseUom}`
+              : "Belum tersedia"}
           </div>
-          <div className="kpi-sub">Per cabang dan gudang</div>
+          <div className="kpi-sub">
+            {stockSummary.stock_total != null ? "Belum dicetak + sudah dicetak" : "Otoritas stok fisik belum ditetapkan"}
+          </div>
+        </div>
+
+        <div className="stock-kpi-card" data-testid="kpi-unprinted-cup-stock">
+          <div className="kpi-label">Stok Cup Belum Dicetak</div>
+          <div className="kpi-value">
+            {stockSummary.stock_unprinted_cup != null
+              ? `${fmtQty(stockSummary.stock_unprinted_cup)} ${normalizedBaseUom}`
+              : "Belum tersedia"}
+          </div>
+          <div className="kpi-sub">
+            {stockSummary.stock_unprinted_cup != null
+              ? (stockSummary.stock_printed_cup != null
+                  ? `Sudah dicetak: ${fmtQty(stockSummary.stock_printed_cup)} ${normalizedBaseUom}`
+                  : "Fisik polos / belum dicetak")
+              : "Otoritas stok fisik belum ditetapkan"}
+          </div>
         </div>
 
         <div className="stock-kpi-card" data-testid="kpi-base-uom">
           <div className="kpi-label">Satuan Dasar</div>
-          <div className="kpi-value">{physicalStock?.base_unit || normalizedBaseUom}</div>
-          <div className="kpi-sub">Satuan stok fisik</div>
+          <div className="kpi-value">{normalizedBaseUom}</div>
+          <div className="kpi-sub">Kanonikal persediaan</div>
         </div>
       </div>
 
@@ -396,9 +369,9 @@ export default function ProductDetail() {
         <div className="product-tab-card" data-testid="product-value-labels">
           <h3 className="card-section-title">Nilai dan rekonsiliasi</h3>
           <InventoryValueMeaning
-            physicalText={physicalStock
-              ? `${fmtQty(physicalStock.total_physical_qty || 0)} ${physicalStock.base_unit || normalizedBaseUom}`
-              : "Memuat"}
+            physicalText={stockSummary.stock_total != null
+              ? `${fmtQty(stockSummary.stock_total)} ${normalizedBaseUom}`
+              : "Belum tersedia"}
             item={valueFocus?.item}
             covered={Boolean(valueFocus?.covered)}
             loading={valueFocusLoading}
@@ -570,109 +543,219 @@ export default function ProductDetail() {
       {activeTab === "stok" && (
         <div data-testid="tab-content-stok">
           <div className="product-tab-card">
-            <h3 className="card-section-title">Stok Fisik Saat Ini</h3>
-            <div className="prod-filter-row" style={{ marginBottom: 12 }}>
-              <select value={stockBranchId} onChange={(e) => { setStockBranchId(e.target.value); setStockWarehouseId(""); }} data-testid="product-stock-branch" aria-label="Cabang">
-                <option value="">Semua Cabang</option>
-                {branches.map((row) => <option key={row.id} value={row.id}>{row.code} — {row.name}</option>)}
-              </select>
-              <select value={stockWarehouseId} onChange={(e) => setStockWarehouseId(e.target.value)} data-testid="product-stock-warehouse" aria-label="Gudang">
-                <option value="">Semua Gudang</option>
-                {warehouseChoices(warehouses, stockBranchId).map((row) => <option key={row.id} value={row.id}>{row.code} — {row.name}</option>)}
-              </select>
-            </div>
-            <table className="prod-table" data-testid="product-physical-stock-table">
-              <thead>
-                <tr>
-                  <th>Cabang</th>
-                  <th>Gudang</th>
-                  <th>Stok Fisik</th>
-                  <th>Satuan Dasar</th>
-                </tr>
-              </thead>
+            <h3 className="card-section-title">Ringkasan Parameter Stok</h3>
+            <table className="prod-table" style={{ width: "100%", maxWidth: 640 }}>
               <tbody>
-                {stockRows.length === 0 && (
-                  <tr><td colSpan={4} data-testid="product-stock-empty">{stockBranchId ? "Cabang ini belum memiliki gudang." : "Belum ada gudang."}</td></tr>
-                )}
-                {stockRows.map((row) => (
-                  <tr key={`${row.branch_id}-${row.warehouse_id}`} data-testid={`product-stock-row-${row.warehouse_id}`}>
-                    <td>{row.branch_code || row.branch_name || "—"}</td>
-                    <td>{row.warehouse_code || row.warehouse_name || "—"}</td>
-                    <td data-testid={`product-stock-qty-${row.warehouse_id}`}>{fmtQty(row.physical_qty)}</td>
-                    <td>{physicalStock?.base_unit || normalizedBaseUom}</td>
-                  </tr>
-                ))}
+                <tr>
+                  <td style={{ width: 220, color: "#64748b", fontWeight: 500 }}>Stok Total Saat Ini</td>
+                  <td style={{ fontWeight: 700, fontSize: 16 }}>
+                    {stockSummary.stock_total != null
+                      ? `${fmtQty(stockSummary.stock_total)} ${normalizedBaseUom}`
+                      : "Belum tersedia"}
+                  </td>
+                </tr>
+                <tr>
+                  <td style={{ color: "#64748b", fontWeight: 500 }}>Stok Cup Belum Dicetak</td>
+                  <td style={{ fontWeight: 600 }}>
+                    {stockSummary.stock_unprinted_cup != null
+                      ? `${fmtQty(stockSummary.stock_unprinted_cup)} ${normalizedBaseUom}`
+                      : "Belum tersedia"}
+                  </td>
+                </tr>
+                <tr>
+                  <td style={{ color: "#64748b", fontWeight: 500 }}>Stok Cup Sudah Dicetak</td>
+                  <td style={{ fontWeight: 600 }}>
+                    {stockSummary.stock_printed_cup != null
+                      ? `${fmtQty(stockSummary.stock_printed_cup)} ${normalizedBaseUom}`
+                      : "Belum tersedia"}
+                  </td>
+                </tr>
+                <tr>
+                  <td style={{ color: "#64748b", fontWeight: 500 }}>Satuan Dasar (Base UOM)</td>
+                  <td className="mono">{normalizedBaseUom}</td>
+                </tr>
+                <tr>
+                  <td style={{ color: "#64748b", fontWeight: 500 }}>Satuan Transaksi Aktif</td>
+                  <td className="mono">{stockSummary.transaction_uom || normalizedBaseUom}</td>
+                </tr>
+                <tr>
+                  <td style={{ color: "#64748b", fontWeight: 500 }}>Konversi Aktif</td>
+                  <td>
+                    1 {stockSummary.transaction_uom || normalizedBaseUom} ={" "}
+                    {stockSummary.conversion_factor ?? 1} {normalizedBaseUom}
+                  </td>
+                </tr>
               </tbody>
             </table>
           </div>
 
+          {/* SALDO AWAL STOK FISIK */}
           <div className="product-tab-card" data-testid="opening-balance-card">
-            <h3 className="card-section-title">Saldo Awal</h3>
-            <p style={{ fontSize: 13, color: "#64748b" }}>Menetapkan stok fisik awal untuk satu barang, cabang, dan gudang. Penetapan hanya satu kali.</p>
-            {openingSuccess && (
-              <div className="signal-strip" style={{ marginBottom: 14, background: "#ecfdf5", borderColor: "#a7f3d0", color: "#065f46" }}>
-                <div><CheckCircle2 size={16} /><span>{openingSuccess}</span></div>
-              </div>
-            )}
-            {openingError && (
-              <div className="signal-strip" role="alert" style={{ marginBottom: 14 }}>
-                <div><AlertCircle size={16} /><span>{openingError}</span></div>
-              </div>
-            )}
-            <form onSubmit={handleSaveOpeningBalance}>
-              <div className="unit-setting-grid">
-                <div className="form-field">
-                  <label htmlFor="opening-branch">Cabang</label>
-                  <select id="opening-branch" value={openingBranchId} onChange={(e) => { setOpeningBranchId(e.target.value); setOpeningWarehouseId(""); }} data-testid="opening-branch" disabled={openingEstablished}>
-                    <option value="">Pilih cabang</option>
-                    {branches.map((row) => <option key={row.id} value={row.id}>{row.code} — {row.name}</option>)}
-                  </select>
-                </div>
-                <div className="form-field">
-                  <label htmlFor="opening-warehouse">Gudang</label>
-                  <select id="opening-warehouse" value={openingWarehouseId} onChange={(e) => setOpeningWarehouseId(e.target.value)} data-testid="opening-warehouse" disabled={openingEstablished}>
-                    <option value="">Pilih gudang</option>
-                    {openingWarehouses.map((row) => <option key={row.id} value={row.id}>{row.code} — {row.name}</option>)}
-                  </select>
-                </div>
-              </div>
-              {openingEstablished ? (
-                <div data-testid="opening-established">
-                  <strong>SALDO AWAL SUDAH DITETAPKAN</strong>
-                  <p data-testid="badge-opening-status">Barang: {item.item_name || item.item_code || id}</p>
-                  <p>Cabang: {openingBranch?.name || openingBranch?.code || openingBranchId}</p>
-                  <p>Gudang: {openingWarehouse?.name || openingWarehouse?.code || openingWarehouseId}</p>
-                  <p data-testid="opening-display-total">Saldo Awal: {fmtQty(openingStatus.opening_qty)} {physicalStock?.base_unit || normalizedBaseUom}</p>
-                  <p>Satuan: {physicalStock?.base_unit || normalizedBaseUom}</p>
-                  <p>Waktu Penetapan: {openingStatus.occurred_at ? formatDate(openingStatus.occurred_at) : "—"}</p>
-                </div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
+              <h3 className="card-section-title" style={{ margin: 0 }}>Saldo Awal Stok Fisik</h3>
+              {isStockInitialized ? (
+                <span className="badge-status active" data-testid="badge-opening-status" style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                  <CheckCircle2 size={12} /> Sudah Ditetapkan
+                </span>
               ) : (
-                <>
+                <span className="badge-status inactive" data-testid="badge-opening-status" style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                  <AlertCircle size={12} /> Belum Ditetapkan
+                </span>
+              )}
+            </div>
+
+            <p style={{ fontSize: 13, color: "#64748b", marginBottom: 16 }}>
+              Menetapkan posisi fisik awal persediaan per produk dan mencatat mutasi <code>SALDO_AWAL</code> di ledger.
+              Penetapan saldo awal hanya dapat dilakukan satu kali dan mengunci Satuan Dasar kanonikal (<code>{normalizedBaseUom}</code>).
+            </p>
+
+            {isStockInitialized ? (
+              <div>
+                <div style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 6, padding: 16, marginBottom: 16 }}>
+                  <table className="prod-table" style={{ width: "100%", maxWidth: 640 }}>
+                    <tbody>
+                      <tr>
+                        <td style={{ width: 220, color: "#64748b", fontWeight: 500 }}>Total Saldo Awal</td>
+                        <td style={{ fontWeight: 700, fontSize: 16 }} data-testid="opening-display-total">
+                          {fmtQty(stockState.total_qty)} {stockState.base_uom || normalizedBaseUom}
+                        </td>
+                      </tr>
+                      <tr>
+                        <td style={{ color: "#64748b", fontWeight: 500 }}>Stok Belum Dicetak</td>
+                        <td style={{ fontWeight: 600 }} data-testid="opening-display-unprinted">
+                          {fmtQty(stockState.unprinted_qty)} {stockState.base_uom || normalizedBaseUom}
+                        </td>
+                      </tr>
+                      <tr>
+                        <td style={{ color: "#64748b", fontWeight: 500 }}>Stok Sudah Dicetak</td>
+                        <td style={{ fontWeight: 600 }} data-testid="opening-display-printed">
+                          {fmtQty(stockState.printed_qty)} {stockState.base_uom || normalizedBaseUom}
+                        </td>
+                      </tr>
+                      <tr>
+                        <td style={{ color: "#64748b", fontWeight: 500 }}>Waktu Penetapan</td>
+                        <td>{formatDate(stockState.initialized_at)}</td>
+                      </tr>
+                      <tr>
+                        <td style={{ color: "#64748b", fontWeight: 500 }}>Ditetapkan Oleh</td>
+                        <td>{stockState.initialized_by?.name || stockState.initialized_by?.email || "Petugas"}</td>
+                      </tr>
+                      <tr>
+                        <td style={{ color: "#64748b", fontWeight: 500 }}>Status Otoritas</td>
+                        <td>
+                          <span style={{ display: "inline-flex", alignItems: "center", gap: 4, color: "#0f766e", fontWeight: 600 }}>
+                            <Lock size={13} /> Terkunci Permanen (1 Kali Penetapan)
+                          </span>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <div style={{ fontSize: 12.5, color: "#475569", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 6, padding: "10px 14px", display: "flex", alignItems: "center", gap: 8 }}>
+                  <CheckCircle2 size={16} color="#16a34a" style={{ flexShrink: 0 }} />
+                  <span>
+                    Saldo awal fisik telah aktif sebagai otoritas stok kanonikal. Mutasi berikutnya akan memperbarui saldo fisik secara berurutan di ledger.
+                  </span>
+                </div>
+                {openingSuccess && (
+                  <div className="signal-strip" style={{ marginTop: 14, background: "#ecfdf5", borderColor: "#a7f3d0", color: "#065f46" }}>
+                    <div><CheckCircle2 size={16} /><span>{openingSuccess}</span></div>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div>
+                <div style={{ fontSize: 12.5, color: "#b45309", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 6, padding: "10px 14px", marginBottom: 16, display: "flex", alignItems: "flex-start", gap: 8 }}>
+                  <AlertCircle size={16} color="#d97706" style={{ flexShrink: 0, marginTop: 2 }} />
+                  <div>
+                    <strong>Penting:</strong> Saldo awal stok fisik hanya dapat ditetapkan <strong>satu kali</strong>. Setelah ditetapkan, Satuan Dasar (<code>{normalizedBaseUom}</code>) tidak dapat diubah lagi. Pastikan angka yang dimasukkan sesuai dengan stok fisik di gudang.
+                  </div>
+                </div>
+
+                {openingSuccess && (
+                  <div className="signal-strip" style={{ marginBottom: 14, background: "#ecfdf5", borderColor: "#a7f3d0", color: "#065f46" }}>
+                    <div><CheckCircle2 size={16} /><span>{openingSuccess}</span></div>
+                  </div>
+                )}
+                {openingError && (
+                  <div className="signal-strip" style={{ marginBottom: 14 }} role="alert">
+                    <div><AlertCircle size={16} /><span>{openingError}</span></div>
+                  </div>
+                )}
+
+                <form onSubmit={handleSaveOpeningBalance}>
                   <div className="unit-setting-grid">
                     <div className="form-field">
-                      <label htmlFor="opening-qty">Qty Stok Fisik</label>
-                      <input id="opening-qty" value={openingQty} onChange={(e) => setOpeningQty(e.target.value)} data-testid="input-opening-qty" disabled={!canEditOpeningBalance || savingOpening || openingStatusLoading} />
+                      <label htmlFor="opening-unprinted-input">
+                        Stok Belum Dicetak ({normalizedBaseUom}) <span style={{ color: "#dc2626" }}>*</span>
+                      </label>
+                      <input
+                        id="opening-unprinted-input"
+                        type="text"
+                        value={unprintedInput}
+                        onChange={(e) => setUnprintedInput(e.target.value)}
+                        placeholder="Contoh: 5000"
+                        disabled={!canEditOpeningBalance || savingOpening}
+                        data-testid="input-opening-unprinted"
+                      />
                     </div>
+
                     <div className="form-field">
-                      <label htmlFor="opening-unit">Satuan Dasar</label>
-                      <input id="opening-unit" value={physicalStock?.base_unit || normalizedBaseUom} readOnly data-testid="opening-base-unit" />
+                      <label htmlFor="opening-printed-input">
+                        Stok Sudah Dicetak ({normalizedBaseUom}) <span style={{ color: "#dc2626" }}>*</span>
+                      </label>
+                      <input
+                        id="opening-printed-input"
+                        type="text"
+                        value={printedInput}
+                        onChange={(e) => setPrintedInput(e.target.value)}
+                        placeholder="Contoh: 0"
+                        disabled={!canEditOpeningBalance || savingOpening}
+                        data-testid="input-opening-printed"
+                      />
                     </div>
+
                     <div className="form-field">
-                      <label htmlFor="opening-reason">Catatan</label>
-                      <input id="opening-reason" value={openingReason} onChange={(e) => setOpeningReason(e.target.value)} data-testid="input-opening-reason" disabled={!canEditOpeningBalance || savingOpening} />
+                      <label htmlFor="opening-base-uom">Satuan Dasar</label>
+                      <input
+                        id="opening-base-uom"
+                        type="text"
+                        value={normalizedBaseUom}
+                        disabled
+                        style={{ background: "#f1f5f9", color: "#64748b" }}
+                      />
                     </div>
                   </div>
+
+                  {/* Live Total Computation */}
+                  <div className="conversion-preview-box" style={{ marginBottom: 16 }} data-testid="display-opening-total">
+                    <span>Total Saldo Awal Terhitung:</span>
+                    <strong>
+                      {fmtQty(computedOpeningTotal)} {normalizedBaseUom}
+                    </strong>
+                    <span style={{ fontSize: 12, color: "#64748b", marginLeft: 8 }}>
+                      (Total = {fmtQty(parseQtyInput(unprintedInput))} Belum Dicetak + {fmtQty(parseQtyInput(printedInput))} Sudah Dicetak)
+                    </span>
+                  </div>
+
                   {canEditOpeningBalance ? (
-                    <button type="submit" className="primary" disabled={savingOpening || openingStatusLoading || !openingReady({ itemId: id, branchId: openingBranchId, warehouseId: openingWarehouseId, qty: openingQty })} data-testid="btn-save-opening">
+                    <button
+                      type="submit"
+                      className="primary"
+                      disabled={savingOpening}
+                      data-testid="btn-save-opening"
+                    >
                       <RefreshCw size={14} className={savingOpening ? "spin" : ""} />
-                      {savingOpening ? "Menyimpan…" : "Tetapkan Saldo Awal"}
+                      {savingOpening ? "Menyimpan…" : "Tetapkan Saldo Awal Stok Fisik"}
                     </button>
                   ) : (
-                    <div style={{ fontSize: 12, color: "#64748b" }}>Anda memerlukan izin current_stock.update atau permissions.manage untuk menetapkan saldo awal.</div>
+                    <div style={{ fontSize: 12, color: "#64748b", fontStyle: "italic" }}>
+                      Anda memerlukan izin <code>current_stock.update</code> atau <code>permissions.manage</code> untuk menetapkan saldo awal.
+                    </div>
                   )}
-                </>
-              )}
-            </form>
+                </form>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -712,7 +795,13 @@ export default function ProductDetail() {
               </div>
 
               <div className="filter-btn-group" data-testid="type-filter-group">
-                {[{ key: "ALL", label: "Semua" }, ...Object.entries(PHYSICAL_MOVEMENT_LABELS).map(([key, label]) => ({ key, label }))].map((tf) => (
+                {[
+                  { key: "ALL", label: "Semua" },
+                  { key: "STOK_MASUK", label: "Stok Masuk" },
+                  { key: "STATUS_CETAK", label: "Status Cetak" },
+                  { key: "PENGIRIMAN", label: "Pengiriman" },
+                  { key: "KOREKSI", label: "Koreksi" },
+                ].map((tf) => (
                   <button
                     key={tf.key}
                     type="button"
@@ -731,8 +820,8 @@ export default function ProductDetail() {
               <input
                 type="text"
                 value={searchQ}
-                onChange={(e) => setSearchQ(e.target.value)}
-                placeholder="Cari referensi / keterangan"
+                onChange={(e) => { setSearchQ(e.target.value); setPage(1); }}
+                placeholder="Cari referensi / sumber / tujuan…"
                 data-testid="input-search-mutation"
                 aria-label="Cari mutasi"
               />
@@ -750,34 +839,44 @@ export default function ProductDetail() {
             </div>
           )}
 
+          {/* Mutation Table */}
           <div className="mutation-table-container">
             <table className="mutation-table" data-testid="mutation-table">
               <thead>
                 <tr>
-                  <th>Tanggal</th>
-                  <th>Referensi</th>
-                  <th>Tipe Mutasi</th>
-                  <th>Cabang</th>
-                  <th>Gudang</th>
+                  <th style={{ width: 120 }}>Tanggal</th>
+                  <th style={{ width: 140 }}>No. Sumber</th>
+                  <th style={{ width: 130 }}>Tipe Transaksi</th>
                   <th>Keterangan</th>
-                  <th style={{ textAlign: "right" }}>Masuk</th>
-                  <th style={{ textAlign: "right" }}>Keluar</th>
-                  <th style={{ textAlign: "right" }}>Saldo</th>
+                  <th>Sumber</th>
+                  <th>Tujuan</th>
+                  <th style={{ width: 110, textAlign: "right" }}>Masuk</th>
+                  <th style={{ width: 110, textAlign: "right" }}>Keluar</th>
+                  <th style={{ width: 110, textAlign: "right" }}>Saldo</th>
                 </tr>
               </thead>
               <tbody data-testid="mutation-tbody">
                 {mutationLoading && (
                   <tr>
-                    <td colSpan={9} data-testid="mutation-loading">Memuat mutasi persediaan…</td>
+                    <td colSpan={9} style={{ textAlign: "center", padding: 24, color: "#64748b" }} data-testid="mutation-loading">
+                      Memuat mutasi persediaan…
+                    </td>
                   </tr>
                 )}
-                {!mutationLoading && visibleMutations.length === 0 && (
+                {!mutationLoading && mutations.length === 0 && (
                   <tr>
-                    <td colSpan={9} data-testid="mutation-empty">Belum ada riwayat mutasi stok untuk filter ini.</td>
+                    <td colSpan={9} style={{ textAlign: "center", padding: 24, color: "#64748b" }} data-testid="mutation-empty">
+                      Belum ada riwayat mutasi stok untuk filter ini.
+                    </td>
                   </tr>
                 )}
-                {!mutationLoading && visibleMutations.map((m) => {
-                  const qty = mutationQtyColumns(m.qty_delta);
+                {!mutationLoading && mutations.map((m) => {
+                  const isSameUom = (m.transaction_uom || "").toUpperCase() === (m.base_uom || "").toUpperCase();
+                  const isPenerimaan = m.movement_type === "PENERIMAAN" || m.movement_type === "STOK_MASUK";
+                  const isPengiriman = m.movement_type === "PENGIRIMAN";
+                  const isCetak = m.movement_type === "STATUS_CETAK" || m.movement_type === "PEMAKAIAN_CETAK";
+                  const isKoreksi = m.movement_type === "KOREKSI";
+
                   return (
                     <tr
                       key={m.id}
@@ -792,17 +891,93 @@ export default function ProductDetail() {
                       tabIndex={0}
                       data-testid={`mutation-row-${m.id}`}
                       role="button"
-                      aria-label={`Detail mutasi ${m.reference_id || m.id}`}
+                      aria-label={`Detail mutasi ${m.reference_number || m.id}`}
                     >
-                      <td data-testid={`mutation-date-${m.id}`}>{m.occurred_at ? formatDate(m.occurred_at) : "—"}</td>
-                      <td className="mono" data-testid={`mutation-ref-${m.id}`}>{m.reference_id || "—"}</td>
-                      <td data-testid={`mutation-type-${m.id}`}>{movementLabel(m.movement_type)}</td>
-                      <td>{m.branch_code || m.branch_name || "—"}</td>
-                      <td>{m.warehouse_code || m.warehouse_name || "—"}</td>
-                      <td data-testid={`mutation-desc-${m.id}`}>{m.reason || "—"}</td>
-                      <td style={{ textAlign: "right" }} data-testid={`mutation-in-${m.id}`}>{qty.masuk == null ? "—" : fmtQty(qty.masuk)}</td>
-                      <td style={{ textAlign: "right" }} data-testid={`mutation-out-${m.id}`}>{qty.keluar == null ? "—" : fmtQty(qty.keluar)}</td>
-                      <td style={{ textAlign: "right" }} data-testid={`mutation-bal-${m.id}`}>{m.balance_after == null ? "—" : fmtQty(m.balance_after)}</td>
+                      {/* Tanggal */}
+                      <td className="nowrap" data-testid={`mutation-date-${m.id}`}>
+                        {m.date ? formatDate(m.date) : "—"}
+                      </td>
+
+                      {/* No. Sumber (Inner Link) */}
+                      <td className="mono" data-testid={`mutation-ref-${m.id}`}>
+                        {m.reference_number ? (
+                          <span
+                            className="inner-entity-link"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (isPengiriman && m.reference_number.startsWith("SJ")) {
+                                navigate(`/penjualan/pengiriman-pesanan?q=${encodeURIComponent(m.reference_number)}`);
+                              } else if (isPenerimaan && m.reference_number.startsWith("PB")) {
+                                navigate(`/pembelian/penerimaan-barang?q=${encodeURIComponent(m.reference_number)}`);
+                              } else if (isCetak && m.order_id) {
+                                navigate(`/tasks/operator`);
+                              }
+                            }}
+                            data-testid={`inner-link-ref-${m.id}`}
+                          >
+                            {m.reference_number}
+                          </span>
+                        ) : (
+                          "—"
+                        )}
+                      </td>
+
+                      {/* Tipe Transaksi */}
+                      <td>
+                        <span className={`mutation-tag ${m.movement_type.toLowerCase()}`}>
+                          {m.movement_type.replace("_", " ")}
+                        </span>
+                      </td>
+
+                      {/* Keterangan */}
+                      <td data-testid={`mutation-desc-${m.id}`}>{m.description || "—"}</td>
+
+                      {/* Sumber */}
+                      <td data-testid={`mutation-source-${m.id}`}>{m.source || "—"}</td>
+
+                      {/* Tujuan */}
+                      <td data-testid={`mutation-dest-${m.id}`}>{m.destination || "—"}</td>
+
+                      {/* Masuk */}
+                      <td style={{ textAlign: "right" }} data-testid={`mutation-in-${m.id}`}>
+                        {m.delta > 0 ? (
+                          <div className="qty-dual">
+                            <span className="qty-in">+{fmtQty(m.transaction_qty)} {m.transaction_uom}</span>
+                            {!isSameUom && (
+                              <span className="base-qty">+{fmtQty(m.base_qty)} {m.base_uom}</span>
+                            )}
+                          </div>
+                        ) : isCetak && m.delta_printed > 0 ? (
+                          <div className="qty-dual">
+                            <span className="qty-in">+{fmtQty(m.delta_printed)} Cetak</span>
+                          </div>
+                        ) : (
+                          "—"
+                        )}
+                      </td>
+
+                      {/* Keluar */}
+                      <td style={{ textAlign: "right" }} data-testid={`mutation-out-${m.id}`}>
+                        {m.delta < 0 ? (
+                          <div className="qty-dual">
+                            <span className="qty-out">-{fmtQty(m.transaction_qty)} {m.transaction_uom}</span>
+                            {!isSameUom && (
+                              <span className="base-qty">-{fmtQty(m.base_qty)} {m.base_uom}</span>
+                            )}
+                          </div>
+                        ) : isCetak && m.delta_unprinted < 0 ? (
+                          <div className="qty-dual">
+                            <span className="qty-out">-{fmtQty(Math.abs(m.delta_unprinted))} Polos</span>
+                          </div>
+                        ) : (
+                          "—"
+                        )}
+                      </td>
+
+                      {/* Saldo */}
+                      <td style={{ textAlign: "right" }} className="qty-saldo" data-testid={`mutation-bal-${m.id}`}>
+                        {m.balance_after != null ? `${fmtQty(m.balance_after)} ${m.base_uom}` : "—"}
+                      </td>
                     </tr>
                   );
                 })}
@@ -810,37 +985,193 @@ export default function ProductDetail() {
             </table>
           </div>
 
+          {/* Pager */}
           {pageCount > 1 && (
             <div className="master-pager" style={{ marginTop: 14 }}>
-              <button className="ghost sm" disabled={page <= 1 || mutationLoading} onClick={() => setPage((p) => p - 1)}>Sebelumnya</button>
-              <span className="muted small">Halaman {page} dari {pageCount} · Total {totalMutations} transaksi</span>
-              <button className="ghost sm" disabled={page >= pageCount || mutationLoading} onClick={() => setPage((p) => p + 1)}>Berikutnya</button>
+              <button
+                className="ghost sm"
+                disabled={page <= 1 || mutationLoading}
+                onClick={() => setPage((p) => p - 1)}
+              >
+                Sebelumnya
+              </button>
+              <span className="muted small">
+                Halaman {page} dari {pageCount} · Total {totalMutations} transaksi
+              </span>
+              <button
+                className="ghost sm"
+                disabled={page >= pageCount || mutationLoading}
+                onClick={() => setPage((p) => p + 1)}
+              >
+                Berikutnya
+              </button>
             </div>
           )}
         </div>
       )}
 
+      {/* DETAIL MUTASI DRAWER */}
       {selectedMutation && (
-        <div className="mutation-drawer-overlay" onClick={() => setSelectedMutation(null)} data-testid="mutation-drawer-backdrop">
-          <div className="mutation-drawer" onClick={(e) => e.stopPropagation()} data-testid="mutation-detail-drawer">
+        <div
+          className="mutation-drawer-overlay"
+          onClick={() => setSelectedMutation(null)}
+          data-testid="mutation-drawer-backdrop"
+        >
+          <div
+            className="mutation-drawer"
+            onClick={(e) => e.stopPropagation()}
+            data-testid="mutation-detail-drawer"
+          >
             <div className="drawer-header">
               <h3>Detail Mutasi Stok</h3>
-              <button type="button" className="ghost sm" onClick={() => setSelectedMutation(null)} aria-label="Tutup Detail" data-testid="btn-close-drawer">
+              <button
+                type="button"
+                className="ghost sm"
+                onClick={() => setSelectedMutation(null)}
+                aria-label="Tutup Detail"
+                data-testid="btn-close-drawer"
+              >
                 <X size={16} />
               </button>
             </div>
+
             <div className="drawer-body">
               <div className="drawer-prop-list">
-                <div className="drawer-prop-row"><span className="prop-label">Tanggal</span><span className="prop-value">{selectedMutation.occurred_at ? formatDate(selectedMutation.occurred_at) : "—"}</span></div>
-                <div className="drawer-prop-row"><span className="prop-label">Tipe Mutasi</span><span className="prop-value">{movementLabel(selectedMutation.movement_type)}</span></div>
-                <div className="drawer-prop-row"><span className="prop-label">Cabang</span><span className="prop-value">{selectedMutation.branch_code || selectedMutation.branch_name || "—"}</span></div>
-                <div className="drawer-prop-row"><span className="prop-label">Gudang</span><span className="prop-value">{selectedMutation.warehouse_code || selectedMutation.warehouse_name || "—"}</span></div>
-                <div className="drawer-prop-row"><span className="prop-label">Masuk</span><span className="prop-value">{mutationQtyColumns(selectedMutation.qty_delta).masuk == null ? "—" : fmtQty(mutationQtyColumns(selectedMutation.qty_delta).masuk)}</span></div>
-                <div className="drawer-prop-row"><span className="prop-label">Keluar</span><span className="prop-value">{mutationQtyColumns(selectedMutation.qty_delta).keluar == null ? "—" : fmtQty(mutationQtyColumns(selectedMutation.qty_delta).keluar)}</span></div>
-                <div className="drawer-prop-row"><span className="prop-label">Saldo Sebelum</span><span className="prop-value" data-testid="drawer-balance-before">{selectedMutation.balance_before == null ? "—" : fmtQty(selectedMutation.balance_before)}</span></div>
-                <div className="drawer-prop-row"><span className="prop-label">Saldo</span><span className="prop-value" data-testid="drawer-balance-after">{selectedMutation.balance_after == null ? "—" : fmtQty(selectedMutation.balance_after)}</span></div>
-                <div className="drawer-prop-row"><span className="prop-label">Referensi</span><span className="prop-value mono">{selectedMutation.reference_id || "—"}</span></div>
-                <div className="drawer-prop-row"><span className="prop-label">Keterangan</span><span className="prop-value">{selectedMutation.reason || "—"}</span></div>
+                <div className="drawer-prop-row">
+                  <span className="prop-label">Produk</span>
+                  <span className="prop-value">{selectedMutation.item_name || item.item_name}</span>
+                </div>
+
+                <div className="drawer-prop-row">
+                  <span className="prop-label">Tanggal</span>
+                  <span className="prop-value">{formatDate(selectedMutation.date)}</span>
+                </div>
+
+                <div className="drawer-prop-row">
+                  <span className="prop-label">Tipe Transaksi</span>
+                  <span className="prop-value">
+                    <span className={`mutation-tag ${selectedMutation.movement_type.toLowerCase()}`}>
+                      {selectedMutation.movement_type.replace("_", " ")}
+                    </span>
+                  </span>
+                </div>
+
+                <div className="drawer-prop-row">
+                  <span className="prop-label">Qty Transaksi</span>
+                  <span className="prop-value mono">
+                    {fmtQty(selectedMutation.transaction_qty)} {selectedMutation.transaction_uom}
+                  </span>
+                </div>
+
+                <div className="drawer-prop-row">
+                  <span className="prop-label">Konversi Transaksi</span>
+                  <span className="prop-value">
+                    1 {selectedMutation.transaction_uom} = {selectedMutation.conversion_factor}{" "}
+                    {selectedMutation.base_uom}
+                  </span>
+                </div>
+
+                <div className="drawer-prop-row">
+                  <span className="prop-label">Qty Dasar</span>
+                  <span className="prop-value mono">
+                    {fmtQty(selectedMutation.base_qty)} {selectedMutation.base_uom}
+                  </span>
+                </div>
+
+                <div className="drawer-prop-row">
+                  <span className="prop-label">Perubahan Total</span>
+                  <span
+                    className={`prop-value mono ${selectedMutation.delta > 0 ? "qty-in" : selectedMutation.delta < 0 ? "qty-out" : ""}`}
+                  >
+                    {selectedMutation.delta > 0 ? "+" : ""}{fmtQty(selectedMutation.delta)}{" "}
+                    {selectedMutation.base_uom}
+                  </span>
+                </div>
+
+                {selectedMutation.delta_unprinted != null && (
+                  <div className="drawer-prop-row">
+                    <span className="prop-label">Δ Belum Dicetak</span>
+                    <span className={`prop-value mono ${selectedMutation.delta_unprinted > 0 ? "qty-in" : "qty-out"}`}>
+                      {selectedMutation.delta_unprinted > 0 ? "+" : ""}{fmtQty(selectedMutation.delta_unprinted)}{" "}
+                      {selectedMutation.base_uom}
+                    </span>
+                  </div>
+                )}
+
+                {selectedMutation.delta_printed != null && (
+                  <div className="drawer-prop-row">
+                    <span className="prop-label">Δ Sudah Dicetak</span>
+                    <span className={`prop-value mono ${selectedMutation.delta_printed > 0 ? "qty-in" : "qty-out"}`}>
+                      {selectedMutation.delta_printed > 0 ? "+" : ""}{fmtQty(selectedMutation.delta_printed)}{" "}
+                      {selectedMutation.base_uom}
+                    </span>
+                  </div>
+                )}
+
+                <div className="drawer-prop-row">
+                  <span className="prop-label">Saldo Sebelum</span>
+                  <span className="prop-value mono" data-testid="drawer-balance-before">
+                    {selectedMutation.balance_before != null
+                      ? `${fmtQty(selectedMutation.balance_before)} ${selectedMutation.base_uom}`
+                      : "— (Belum ditetapkan)"}
+                  </span>
+                </div>
+
+                <div className="drawer-prop-row">
+                  <span className="prop-label">Saldo Sesudah</span>
+                  <span className="prop-value mono" data-testid="drawer-balance-after">
+                    {selectedMutation.balance_after != null
+                      ? `${fmtQty(selectedMutation.balance_after)} ${selectedMutation.base_uom}`
+                      : "— (Belum ditetapkan)"}
+                  </span>
+                </div>
+
+                {selectedMutation.unprinted_before != null && (
+                  <div className="drawer-prop-row" data-testid="drawer-unprinted-transition">
+                    <span className="prop-label">Belum Dicetak</span>
+                    <span className="prop-value mono">
+                      {fmtQty(selectedMutation.unprinted_before)} → {fmtQty(selectedMutation.unprinted_after)} {selectedMutation.base_uom}
+                    </span>
+                  </div>
+                )}
+
+                {selectedMutation.printed_before != null && (
+                  <div className="drawer-prop-row" data-testid="drawer-printed-transition">
+                    <span className="prop-label">Sudah Dicetak</span>
+                    <span className="prop-value mono">
+                      {fmtQty(selectedMutation.printed_before)} → {fmtQty(selectedMutation.printed_after)} {selectedMutation.base_uom}
+                    </span>
+                  </div>
+                )}
+
+                <div className="drawer-prop-row">
+                  <span className="prop-label">Sumber</span>
+                  <span className="prop-value">{selectedMutation.source || "—"}</span>
+                </div>
+
+                <div className="drawer-prop-row">
+                  <span className="prop-label">Tujuan</span>
+                  <span className="prop-value">{selectedMutation.destination || "—"}</span>
+                </div>
+
+                <div className="drawer-prop-row">
+                  <span className="prop-label">No. Referensi</span>
+                  <span className="prop-value mono">{selectedMutation.reference_number || "—"}</span>
+                </div>
+
+                {selectedMutation.description && (
+                  <div className="drawer-prop-row">
+                    <span className="prop-label">Keterangan</span>
+                    <span className="prop-value">{selectedMutation.description}</span>
+                  </div>
+                )}
+
+                <div className="drawer-prop-row">
+                  <span className="prop-label">Dilakukan Oleh</span>
+                  <span className="prop-value">
+                    {selectedMutation.actor?.name || selectedMutation.actor?.email || "Sistem"}
+                  </span>
+                </div>
               </div>
             </div>
           </div>

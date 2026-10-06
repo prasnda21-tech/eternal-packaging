@@ -80,7 +80,6 @@ def test_catalog_includes_nav_keys():
         "nav.inventory.master_items",
         "nav.inventory.current_stock",
         "nav.purchasing.receipts",
-        "nav.purchasing.hpp",
         "nav.purchasing.requests",
         "nav.purchasing.orders",
         "nav.purchasing.invoices",
@@ -89,7 +88,6 @@ def test_catalog_includes_nav_keys():
         "purchase_orders.view",
         "purchase_invoices.view",
         "purchase_payments.view",
-        "purchase_hpp.view",
         "settings.hpp.view",
         "settings.hpp.manage",
         "delivery.reschedule",
@@ -285,36 +283,6 @@ def test_inventory_valuation_is_admin_and_holding_only_by_default():
         assert "inventory_valuation.export" not in permissions, role
         assert "inventory_valuation.manage_opening" not in permissions, role
         assert "nav.inventory.inventory_value" not in permissions, role
-
-
-def test_purchase_hpp_is_not_granted_by_receipt_visibility():
-    for role in ("admin", "holding_team", "head_production", "head_operations"):
-        permissions = set(ROLE_DEFAULT_PERMISSIONS[role])
-        assert "purchase_hpp.view" in permissions, role
-        if role != "admin":
-            derived = derived_nav_permissions(permissions)
-            assert "nav.purchasing.hpp" in derived or "nav.purchasing.hpp" in permissions, role
-    for role in (
-        "operator",
-        "helper",
-        "screener",
-        "designer",
-        "driver",
-        "crm",
-        "direktur_utama",
-        "sales_eternal",
-    ):
-        permissions = set(ROLE_DEFAULT_PERMISSIONS[role])
-        assert "purchase_hpp.view" not in permissions, role
-        assert "nav.purchasing.hpp" not in permissions, role
-    receipts_only = {"purchase_receipts.view"}
-    derived = derived_nav_permissions(receipts_only)
-    assert "nav.purchasing.receipts" in derived
-    assert "nav.purchasing.hpp" not in derived
-    hpp_only = {"purchase_hpp.view"}
-    derived_hpp = derived_nav_permissions(hpp_only)
-    assert "nav.purchasing.hpp" in derived_hpp
-    assert "nav.purchasing" in derived_hpp
 
 
 def test_designer_gets_designer_task_nav_not_scheduling():

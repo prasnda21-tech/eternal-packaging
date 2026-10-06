@@ -5,7 +5,6 @@ import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDate } from "../lib/constants";
 import { fmtQty } from "../components/qtyUi";
-import { goodsReceiptWarehouseChoice } from "../lib/physicalStockView";
 import {
   errDetail,
   friendlyLoadError,
@@ -92,8 +91,6 @@ export default function PenerimaanBarang() {
   const [recvPoId, setRecvPoId] = useState("");
   const [recvPreview, setRecvPreview] = useState(null);
   const [recvQty, setRecvQty] = useState({});
-  const [recvWarehouseChoice, setRecvWarehouseChoice] = useState({ rows: [], warehouseId: "", blocked: false, explicit: false });
-  const [recvWarehouseId, setRecvWarehouseId] = useState("");
   const [recvDate, setRecvDate] = useState(todayYmd());
   const [recvBusy, setRecvBusy] = useState(false);
   const [recvErr, setRecvErr] = useState("");
@@ -166,22 +163,6 @@ export default function PenerimaanBarang() {
   useEffect(() => {
     refreshSideData();
   }, [refreshSideData, recvMsg, ok]);
-
-  useEffect(() => {
-    if (!receiveOpen) return undefined;
-    let cancelled = false;
-    Promise.all([api.branches(), api.warehouses()])
-      .then(([branchRes, warehouseRes]) => {
-        if (cancelled) return;
-        const choice = goodsReceiptWarehouseChoice(branchRes.items || [], warehouseRes.items || []);
-        setRecvWarehouseChoice(choice);
-        setRecvWarehouseId(choice.warehouseId || "");
-      })
-      .catch(() => {
-        if (!cancelled) setRecvErr("Gagal memuat gudang penerimaan.");
-      });
-    return () => { cancelled = true; };
-  }, [receiveOpen]);
 
   useEffect(() => {
     if (!receiveOpen || !recvPoId) {
@@ -432,12 +413,6 @@ export default function PenerimaanBarang() {
       setRecvErr("Minimal satu baris dengan qty diterima > 0.");
       return;
     }
-    if (recvWarehouseChoice.blocked || !recvWarehouseId) {
-      setRecvErr(recvWarehouseChoice.explicit
-        ? "Pilih gudang sebelum menyimpan penerimaan."
-        : "Penerimaan tidak dapat disimpan: belum ada gudang aktif.");
-      return;
-    }
     setRecvBusy(true);
     setRecvErr("");
     setRecvMsg("");
@@ -445,7 +420,6 @@ export default function PenerimaanBarang() {
       const res = await api.createPurchaseGoodsReceipt({
         purchase_order_id: recvPreview.purchase_order_id,
         receipt_date: recvDate,
-        warehouse_id: recvWarehouseId,
         lines: qtyLines,
         idempotency_key: newIdempotencyKey(),
       });
@@ -1205,27 +1179,6 @@ export default function PenerimaanBarang() {
                       <span className="label">Tanggal Terima</span>
                       <input type="date" value={recvDate} onChange={(e) => setRecvDate(e.target.value)} />
                     </div>
-                    <div>
-                      <span className="label">Gudang</span>
-                      {recvWarehouseChoice.explicit ? (
-                        <select
-                          value={recvWarehouseId}
-                          onChange={(e) => setRecvWarehouseId(e.target.value)}
-                          data-testid="receive-warehouse"
-                        >
-                          <option value="">Pilih gudang</option>
-                          {recvWarehouseChoice.rows.map((row) => (
-                            <option key={row.id} value={row.id}>{row.code} — {row.name}</option>
-                          ))}
-                        </select>
-                      ) : (
-                        <span className="value" data-testid="receive-warehouse">
-                          {recvWarehouseChoice.rows[0]
-                            ? `${recvWarehouseChoice.rows[0].code} — ${recvWarehouseChoice.rows[0].name}`
-                            : "Belum ada gudang aktif"}
-                        </span>
-                      )}
-                    </div>
                   </div>
                   <div className="purchase-table-wrap purchase-modal-table-wrap">
                     <table className="prod-table purchase-table purchase-table-recv-modal">
@@ -1275,7 +1228,7 @@ export default function PenerimaanBarang() {
               <button className="ghost" type="button" onClick={closeReceive} disabled={recvBusy}>Batal</button>
               <button
                 className="primary"
-                disabled={recvBusy || !recvPreview || recvWarehouseChoice.blocked || (recvWarehouseChoice.explicit && !recvWarehouseId)}
+                disabled={recvBusy || !recvPreview}
                 data-testid="save-po-receipt"
                 onClick={savePoReceipt}
               >

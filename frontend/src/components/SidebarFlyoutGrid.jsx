@@ -51,17 +51,11 @@ export default function SidebarFlyoutGrid({
     >
       <header className="sidebar-flyout-head"><h2>{title}</h2></header>
       {blocks.map((block) => (
-        <div
-          key={block.heading || block.ariaLabel || block.headingTestid || block.marker || "leaves"}
-          id={block.marker || undefined}
-          className={block.marker || undefined}
-        >
+        <div key={block.heading || block.ariaLabel || block.headingTestid || "leaves"} id={block.marker || undefined}>
           {block.heading ? (
             <div className="sidebar-menu-section" data-testid={block.headingTestid}>
               {block.heading}
             </div>
-          ) : block.headingTestid ? (
-            <div className="sidebar-menu-section is-unlabeled" data-testid={block.headingTestid} aria-hidden="true" />
           ) : null}
           <nav className="sidebar-menu-list" aria-label={block.ariaLabel || block.heading || title}>
             {block.items.map((item) => (

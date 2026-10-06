@@ -116,9 +116,7 @@ describe("Nilai Persediaan financial actions", () => {
           item_code: "UNK",
           item_name: "Tanpa bukti stok",
           unit: "PCS",
-          // stockLabel shows "Tidak tersedia" only when stock_fisik is null/empty;
-          // zero is a real quantity and renders as "0" (see mid-zero above).
-          stock_fisik: null,
+          stock_fisik: 0,
           hpp_reason: "STOCK_STATE_UNAVAILABLE",
           current_hpp: null,
           inventory_value: null,

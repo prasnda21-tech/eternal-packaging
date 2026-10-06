@@ -40,11 +40,10 @@ describe("Product Detail & Stock Ledger Frontend Contracts", () => {
     expect(productDetailSrc).toMatch(/product-header-card/);
 
     // KPI Cards
-    expect(productDetailSrc).toMatch(/Stok Fisik Saat Ini/);
-    expect(productDetailSrc).toMatch(/api\.physicalStock\(/);
-    expect(productDetailSrc).not.toMatch(/Stok Cup Belum Dicetak/);
+    expect(productDetailSrc).toMatch(/Stok Total Saat Ini/);
+    expect(productDetailSrc).toMatch(/Stok Cup Belum Dicetak/);
     expect(productDetailSrc).toMatch(/Satuan Dasar/);
-    expect(productDetailSrc).toMatch(/Konversi Terdefinisi/);
+    expect(productDetailSrc).toMatch(/Konversi Aktif/);
 
     // Tabs
     expect(productDetailSrc).toMatch(/tab-btn-umum/);
@@ -69,22 +68,21 @@ describe("Product Detail & Stock Ledger Frontend Contracts", () => {
   });
 
   test("ProductDetail Mutation Table implements dense ledger and click mechanics", () => {
-    expect(productDetailSrc).toMatch(/api\.physicalMutations\(/);
-    expect(productDetailSrc).toMatch(/mutationQtyColumns\(m\.qty_delta\)/);
-    expect(productDetailSrc).toMatch(/fmtQty\(m\.balance_after\)/);
+    // Table columns
     expect(productDetailSrc).toMatch(/Tanggal/);
-    expect(productDetailSrc).toMatch(/Referensi/);
-    expect(productDetailSrc).toMatch(/Tipe Mutasi/);
-    expect(productDetailSrc).toMatch(/Cabang/);
-    expect(productDetailSrc).toMatch(/Gudang/);
+    expect(productDetailSrc).toMatch(/No\. Sumber/);
+    expect(productDetailSrc).toMatch(/Tipe Transaksi/);
     expect(productDetailSrc).toMatch(/Keterangan/);
+    expect(productDetailSrc).toMatch(/Sumber/);
+    expect(productDetailSrc).toMatch(/Tujuan/);
     expect(productDetailSrc).toMatch(/Masuk/);
     expect(productDetailSrc).toMatch(/Keluar/);
     expect(productDetailSrc).toMatch(/Saldo/);
-    expect(productDetailSrc).not.toMatch(/GUDANG_UTAMA/);
-    expect(productDetailSrc).not.toMatch(/initOpeningBalance/);
 
+    // Whole row click opens drawer
     expect(productDetailSrc).toMatch(/onClick=\{\(\) => setSelectedMutation\(m\)\}/);
+
+    // Inner link clicks stop propagation
     expect(productDetailSrc).toMatch(/e\.stopPropagation\(\)/);
 
     // Slide-in Detail Mutasi Drawer
@@ -103,22 +101,33 @@ describe("Product Detail & Stock Ledger Frontend Contracts", () => {
   });
 
   test("ProductDetail enforces Physical Stock Authority & Opening Balance card contracts", () => {
+    // Opening balance card exists
     expect(productDetailSrc).toMatch(/opening-balance-card/);
-    expect(productDetailSrc).toMatch(/SALDO AWAL SUDAH DITETAPKAN/);
-    expect(productDetailSrc).toMatch(/createPhysicalOpeningBalance/);
-    expect(productDetailSrc).toMatch(/physicalOpeningBalance/);
-    expect(productDetailSrc).toMatch(/btn-save-opening/);
-    expect(productDetailSrc).toMatch(/opening-branch/);
-    expect(productDetailSrc).toMatch(/opening-warehouse/);
-    expect(productDetailSrc).not.toMatch(/initOpeningBalance/);
-    expect(productDetailSrc).not.toMatch(/input-opening-unprinted/);
-    expect(productDetailSrc).not.toMatch(/input-opening-printed/);
+    expect(productDetailSrc).toMatch(/badge-opening-status/);
 
+    // Initialized state display
+    expect(productDetailSrc).toMatch(/opening-display-total/);
+    expect(productDetailSrc).toMatch(/opening-display-unprinted/);
+    expect(productDetailSrc).toMatch(/opening-display-printed/);
+    expect(productDetailSrc).toMatch(/Terkunci Permanen \(1 Kali Penetapan\)/);
+
+    // Uninitialized form fields and live preview
+    expect(productDetailSrc).toMatch(/input-opening-unprinted/);
+    expect(productDetailSrc).toMatch(/input-opening-printed/);
+    expect(productDetailSrc).toMatch(/display-opening-total/);
+    expect(productDetailSrc).toMatch(/btn-save-opening/);
+
+    // Base UOM locked once stock is initialized
     expect(productDetailSrc).toMatch(/disabled=\{!canEditConversion \|\| savingSetting \|\| isStockInitialized\}/);
     expect(productDetailSrc).toMatch(/Terkunci: Saldo awal stok fisik sudah ditetapkan/);
+
+    // Initialized opening balance remains read-only history
     expect(productDetailSrc).toMatch(/canEditOpeningBalance = hasPerm\("current_stock\.update"\) \|\| hasPerm\("permissions\.manage"\)/);
     expect(productDetailSrc).not.toMatch(/>Koreksi Stock Fisik</);
     expect(productDetailSrc).not.toMatch(/currentStockUpdate/);
-    expect(productDetailSrc).toMatch(/Penetapan hanya satu kali/);
+    expect(productDetailSrc).not.toMatch(/product-physical-inline-input/);
+
+    // One-time warning notice
+    expect(productDetailSrc).toMatch(/Saldo awal stok fisik hanya dapat ditetapkan.*satu kali/);
   });
 });
