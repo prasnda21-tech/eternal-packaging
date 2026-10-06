@@ -100,5 +100,7 @@ describe("Gaji Operator page", () => {
     expect(src).toMatch(/formatTrackingPageDate/);
     expect(src).toMatch(/gaji-elig-line/);
     expect(src).toMatch(/is-compact/);
+    expect(src).toMatch(/gaji-simple-period-head/);
+    expect(src).toMatch(/gaji-simple-table-wrap/);
   });
 });

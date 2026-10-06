@@ -251,10 +251,12 @@ export default function GajiOperator() {
 
       <div className="gaji-simple-filters" data-testid="gaji-filter-bar">
         <label className="gaji-simple-period">
-          <span>Periode</span>
-          {from && to && (
-            <em className="gaji-period-id" data-testid="gaji-period-label">{formatIdDate(from)} – {formatIdDate(to)}</em>
-          )}
+          <span className="gaji-simple-period-head">
+            <span>Periode</span>
+            {from && to && (
+              <em className="gaji-period-id" data-testid="gaji-period-label">{formatIdDate(from)} – {formatIdDate(to)}</em>
+            )}
+          </span>
           <span className="gaji-simple-dates">
             <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} data-testid="gaji-filter-from" />
             <span className="gaji-simple-dash">—</span>
