@@ -52,6 +52,11 @@ export default function PesananPembelian() {
   const [orderDate, setOrderDate] = useState(todayYmd());
   const [lines, setLines] = useState([emptyPoLine()]);
   const [busy, setBusy] = useState(false);
+  const [advances, setAdvances] = useState([]);
+  const [advanceSummary, setAdvanceSummary] = useState(null);
+  const [advanceAmount, setAdvanceAmount] = useState("");
+  const [advanceDate, setAdvanceDate] = useState(todayYmd());
+  const [advanceBusy, setAdvanceBusy] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -179,17 +184,63 @@ export default function PesananPembelian() {
       });
       setDetail(res.order);
       setView("detail");
+      setAdvances([]);
+      setAdvanceSummary(null);
       setOk(`Pesanan Pembelian ${res.order?.po_number || ""} berhasil disimpan.`);
     } catch (ex) { setErr(errDetail(ex)); }
     finally { setBusy(false); }
   };
+
+  const loadAdvances = useCallback(async (poId) => {
+    if (!poId) return;
+    const res = await api.listPurchaseSupplierAdvances({ purchase_order_id: poId });
+    setAdvances(res.advances || []);
+    setAdvanceSummary(res.summary || null);
+  }, []);
 
   const openDetail = async (id) => {
     try {
       const res = await api.getPurchaseOrder(id);
       setDetail(res.order);
       setView("detail");
+      await loadAdvances(res.order?.id || id);
     } catch (ex) { setErr(errDetail(ex)); }
+  };
+
+  const createAdvance = async () => {
+    if (advanceBusy || !detail?.id || !canCreate) return;
+    const amount = Number(advanceAmount);
+    if (!(amount > 0)) {
+      setErr("Nilai uang muka harus lebih besar dari 0.");
+      return;
+    }
+    setAdvanceBusy(true);
+    setErr("");
+    try {
+      await api.createPurchaseSupplierAdvance({
+        purchase_order_id: detail.id,
+        amount,
+        payment_date: advanceDate,
+        idempotency_key: newIdempotencyKey(),
+      });
+      setAdvanceAmount("");
+      setOk("Uang muka tercatat. Ajukan lalu konfirmasi dibayar agar saldo tersedia.");
+      await loadAdvances(detail.id);
+    } catch (ex) { setErr(errDetail(ex)); }
+    finally { setAdvanceBusy(false); }
+  };
+
+  const advanceAction = async (row, action) => {
+    if (advanceBusy) return;
+    setAdvanceBusy(true);
+    setErr("");
+    try {
+      if (action === "submit") await api.submitPurchaseSupplierAdvance(row.id);
+      if (action === "confirm") await api.confirmPurchaseSupplierAdvance(row.id, { payment_date: row.payment_date });
+      if (action === "cancel") await api.cancelPurchaseSupplierAdvance(row.id);
+      await loadAdvances(detail.id);
+    } catch (ex) { setErr(errDetail(ex)); }
+    finally { setAdvanceBusy(false); }
   };
 
   const openCancel = (row) => {
@@ -508,6 +559,46 @@ export default function PesananPembelian() {
                 ))}
               </tbody>
             </table>
+          </div>
+          <div className="purchase-detail-card" data-testid="po-uang-muka">
+            <h3>Uang Muka</h3>
+            <div className="purchase-detail-meta">
+              <div>
+                <span className="label">Nilai Uang Muka</span>
+                <span className="value" data-testid="uang-muka-paid">{formatRupiah(advanceSummary?.total_paid_amount || 0)}</span>
+              </div>
+              <div>
+                <span className="label">Tersedia / Belum Dialokasikan</span>
+                <span className="value" data-testid="uang-muka-available">{formatRupiah(advanceSummary?.available_amount || 0)}</span>
+              </div>
+            </div>
+            {(advances || []).map((row) => (
+              <div key={row.id} data-testid="uang-muka-row">
+                <span>{formatRupiah(row.original_amount)}</span>
+                <span data-testid="uang-muka-status">{row.status_label}</span>
+                <span>{row.payment_date || "—"}</span>
+                <span data-testid="uang-muka-row-available">{formatRupiah(row.available_amount || 0)}</span>
+                {row.can_submit && <button type="button" className="ghost sm" onClick={() => advanceAction(row, "submit")}>Ajukan</button>}
+                {row.can_confirm_paid && <button type="button" className="ghost sm" onClick={() => advanceAction(row, "confirm")}>Konfirmasi Dibayar</button>}
+                {row.can_cancel && <button type="button" className="ghost sm" onClick={() => advanceAction(row, "cancel")}>Batalkan</button>}
+              </div>
+            ))}
+            {canCreate && (
+              <div className="purchase-form-actions">
+                <input
+                  type="number"
+                  min="1"
+                  value={advanceAmount}
+                  onChange={(e) => setAdvanceAmount(e.target.value)}
+                  placeholder="Nilai uang muka"
+                  data-testid="uang-muka-amount"
+                />
+                <input type="date" value={advanceDate} onChange={(e) => setAdvanceDate(e.target.value)} data-testid="uang-muka-date" />
+                <button type="button" className="primary" disabled={advanceBusy} onClick={createAdvance} data-testid="uang-muka-create">
+                  Buat Uang Muka
+                </button>
+              </div>
+            )}
           </div>
           <PurchaseDocuments
             entityType="purchase_order"
