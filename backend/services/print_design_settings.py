@@ -454,6 +454,14 @@ def validate_design_image(
     return media
 
 
+def _branch_owned_asset_path(path: str, branch_id: str) -> bool:
+    """True only for objects stored under this branch's print-design prefix."""
+    safe_branch = _FILENAME_SAFE.sub("_", str(branch_id or "")) or "branch"
+    prefix = f"{obj_storage.APP_NAME}/print-design/branch-{safe_branch}/"
+    raw = str(path or "").strip()
+    return bool(raw) and raw.startswith(prefix) and ".." not in raw and not raw.startswith("/")
+
+
 def _storage_key(slot: str, file_id: str, ext: str, branch_id: Optional[str] = None) -> str:
     safe_slot = _FILENAME_SAFE.sub("_", slot) or "asset"
     safe_id = _FILENAME_SAFE.sub("_", file_id) or str(uuid.uuid4())
@@ -936,12 +944,25 @@ async def save_branch_design_settings(db, branch_id: str, payload: Dict[str, Any
     return await get_branch_design_view(db, bid)
 
 
-async def _delete_branch_only_asset(db, ref: Optional[dict], global_design: dict, slot: str) -> None:
+async def _delete_branch_only_asset(
+    db,
+    ref: Optional[dict],
+    global_design: dict,
+    slot: str,
+    branch_id: str,
+) -> None:
     clean = _sanitize_asset_ref(ref)
     if not clean:
         return
     global_ref = _get_slot_ref(global_design, slot)
     if global_ref and global_ref.get("storage_path") == clean.get("storage_path"):
+        return
+    if not _branch_owned_asset_path(clean.get("storage_path") or "", branch_id):
+        logger.warning(
+            "skip print_design delete; path not owned by branch %s slot=%s",
+            branch_id,
+            slot,
+        )
         return
     await _best_effort_delete_asset(db, clean)
 
@@ -958,7 +979,7 @@ async def reset_branch_design_settings(db, branch_id: str, user: Optional[dict] 
     global_design = await get_print_design_internal(db)
     await db.app_settings.delete_one({"key": branch_settings_key(bid)})
     for slot, ref in refs.items():
-        await _delete_branch_only_asset(db, ref, global_design, slot)
+        await _delete_branch_only_asset(db, ref, global_design, slot, bid)
     return await get_branch_design_view(db, bid)
 
 
@@ -1073,7 +1094,7 @@ async def upload_branch_print_design_asset(
     except Exception:
         logger.warning("print_design branch files metadata insert failed id=%s", file_id, exc_info=True)
     global_design = await get_print_design_internal(db)
-    await _delete_branch_only_asset(db, old_ref, global_design, slot)
+    await _delete_branch_only_asset(db, old_ref, global_design, slot, bid)
     return await get_branch_design_view(db, bid)
 
 
@@ -1088,7 +1109,7 @@ async def remove_branch_print_design_asset(db, *, branch_id: str, slot: str, use
     next_doc = _set_slot_ref(current or {}, slot, None)
     await _replace_branch_document(db, bid, next_doc, user)
     global_design = await get_print_design_internal(db)
-    await _delete_branch_only_asset(db, old_ref, global_design, slot)
+    await _delete_branch_only_asset(db, old_ref, global_design, slot, bid)
     return await get_branch_design_view(db, bid)
 
 

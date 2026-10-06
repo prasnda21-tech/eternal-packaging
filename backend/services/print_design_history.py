@@ -16,6 +16,7 @@ SCOPES = frozenset({SCOPE_ALL, SCOPE_GLOBAL, SCOPE_BRANCH})
 DEFAULT_PAGE = 1
 DEFAULT_PAGE_SIZE = 20
 MAX_PAGE_SIZE = 50
+MAX_PAGE = 500
 
 ACTION_UPDATE = "settings.design_cetakan.update"
 ACTION_ASSET_UPLOAD = "settings.design_cetakan.asset_upload"
@@ -24,6 +25,7 @@ ACTION_BRANCH_UPDATE = "settings.design_cetakan.branch_update"
 ACTION_BRANCH_RESET = "settings.design_cetakan.branch_reset"
 ACTION_BRANCH_ASSET_UPLOAD = "settings.design_cetakan.branch_asset_upload"
 ACTION_BRANCH_ASSET_REMOVE = "settings.design_cetakan.branch_asset_remove"
+ACTION_BRANCH_COPY = "settings.design_cetakan.branch_copy"
 
 GLOBAL_ACTIONS = (ACTION_UPDATE, ACTION_ASSET_UPLOAD, ACTION_ASSET_REMOVE)
 BRANCH_ACTIONS = (
@@ -31,6 +33,7 @@ BRANCH_ACTIONS = (
     ACTION_BRANCH_RESET,
     ACTION_BRANCH_ASSET_UPLOAD,
     ACTION_BRANCH_ASSET_REMOVE,
+    ACTION_BRANCH_COPY,
 )
 HISTORY_ACTIONS = GLOBAL_ACTIONS + BRANCH_ACTIONS
 
@@ -100,11 +103,15 @@ def _clip_scope(raw: Any) -> str:
 
 
 def _clip_page(raw: Any) -> int:
+    if raw is None or raw == "":
+        return DEFAULT_PAGE
     try:
         page = int(raw)
     except (TypeError, ValueError):
-        page = DEFAULT_PAGE
-    return max(page, DEFAULT_PAGE)
+        raise HTTPException(400, "page tidak valid")
+    if page < 1 or page > MAX_PAGE:
+        raise HTTPException(400, "page tidak valid")
+    return page
 
 
 def _clip_page_size(raw: Any) -> int:
@@ -233,9 +240,50 @@ def _reset_fields(before_override: dict) -> List[Dict[str, str]]:
     return out
 
 
+def _cabang_phrase(branch_id: Optional[str], names: Optional[Dict[str, str]]) -> str:
+    bid = str(branch_id or "").strip()
+    looked = str((names or {}).get(bid) or "").strip() if bid else ""
+    if looked:
+        if looked.lower().startswith("cabang "):
+            return looked
+        return f"Cabang {looked}"
+    if bid:
+        return f"Cabang {bid}"
+    return "Cabang tidak diketahui"
+
+
+def _copy_operation_label(after: dict, names: Optional[Dict[str, str]]) -> str:
+    src = _as_dict(after)
+    target_phrase = _cabang_phrase(src.get("target_branch_id") or src.get("branch_id"), names)
+    if str(src.get("source_scope") or "").strip().lower() == SCOPE_GLOBAL:
+        return f"Pengaturan Global disalin ke {target_phrase}"
+    source_phrase = _cabang_phrase(src.get("source_branch_id"), names)
+    return f"Pengaturan {source_phrase} disalin ke {target_phrase}"
+
+
+def _copy_changed_fields(after: dict) -> List[Dict[str, str]]:
+    keys = after.get("copied_fields")
+    if not isinstance(keys, list):
+        return []
+    out: List[Dict[str, str]] = []
+    for raw in keys:
+        if isinstance(raw, dict):
+            key = str(raw.get("key") or "").strip()
+        else:
+            key = str(raw or "").strip()
+        if key == "invoice.bank_accounts":
+            key = "bank_accounts"
+        label = field_label(key)
+        if key and label:
+            out.append({"key": key, "label": label})
+    return out
+
+
 def _changed_fields(action: str, doc: dict) -> List[Dict[str, str]]:
     before = _as_dict(doc.get("before"))
     after = _as_dict(doc.get("after"))
+    if action == ACTION_BRANCH_COPY:
+        return _copy_changed_fields(after)
     if action == ACTION_BRANCH_UPDATE:
         return _changed_from_overrides(_as_dict(before.get("override")), _as_dict(after.get("override")))
     if action == ACTION_BRANCH_RESET:
@@ -260,7 +308,10 @@ def serialize_history_row(doc: dict, branch_names: Optional[Dict[str, str]] = No
         branch_name = "Global"
         branch_id = None
     changed = _changed_fields(action, src)
-    label = operation_label(action, slot)
+    if action == ACTION_BRANCH_COPY:
+        label = _copy_operation_label(_as_dict(src.get("after")), names)
+    else:
+        label = operation_label(action, slot)
     row = {
         "id": str(src.get("id") or ""),
         "at": src.get("at"),
@@ -337,10 +388,19 @@ async def list_print_design_history(
     unique_ids = []
     seen = set()
     for doc in page_docs:
-        event_bid = _event_branch_id(doc)
-        if event_bid and event_bid not in seen:
-            seen.add(event_bid)
-            unique_ids.append(event_bid)
+        after = _as_dict((doc or {}).get("after"))
+        before = _as_dict((doc or {}).get("before"))
+        candidates = [
+            _event_branch_id(doc),
+            after.get("source_branch_id"),
+            after.get("target_branch_id"),
+            before.get("branch_id"),
+        ]
+        for raw in candidates:
+            event_bid = str(raw or "").strip()
+            if event_bid.isdigit() and event_bid not in seen:
+                seen.add(event_bid)
+                unique_ids.append(event_bid)
     names = await _lookup_names(unique_ids, name_lookup)
 
     items = []

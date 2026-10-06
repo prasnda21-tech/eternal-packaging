@@ -18,6 +18,7 @@ os.environ.setdefault("DB_NAME", "eternal_packaging_design_cetakan_branch_test")
 
 from services import storage as obj_storage  # noqa: E402
 from services.order_pdf import generate_sales_order_pdf_bytes  # noqa: E402
+from services.print_design_copy import copy_print_design  # noqa: E402
 from services.print_design_settings import (  # noqa: E402
     BRANCH_KEY_PREFIX,
     SETTINGS_KEY,
@@ -462,6 +463,133 @@ async def test_pdf_uses_document_branch_not_session_and_falls_back_when_missing(
     reset_design = await get_print_design_for_pdf(db, branch_id="50")
     assert reset_design["company_name"] == "Eternal Global"
     assert "Eternal Global" in _pdf_text(generate_sales_invoice_pdf_bytes(invoice, design=reset_design))
+
+
+def _asset_ref(path: str, file_id: str = "foreign-file") -> dict:
+    return {
+        "file_id": file_id,
+        "storage_path": path,
+        "content_type": "image/png",
+        "size": 32,
+        "original_filename": "x.png",
+    }
+
+
+@pytest.mark.anyio
+async def test_branch_delete_skips_foreign_and_global_paths(monkeypatch):
+    db = MockDb(_orders())
+    foreign = f"{obj_storage.APP_NAME}/print-design/branch-77/company_logo/other.png"
+    global_path = f"{obj_storage.APP_NAME}/print-design/company_logo/global.png"
+    foreign_body = _png((1, 2, 3))
+    global_body = _png((4, 5, 6))
+    obj_storage.put_object(foreign, foreign_body, "image/png")
+    obj_storage.put_object(global_path, global_body, "image/png")
+    await db.files.insert_one({"id": "foreign-file", "kind": "print_design", "is_deleted": False})
+    await db.app_settings.insert_one({
+        "key": branch_settings_key("50"),
+        "company_name": "Jogja",
+        "company_logo": _asset_ref(foreign),
+    })
+    deleted = []
+    real_delete = obj_storage.delete_object
+
+    def spy(path):
+        deleted.append(path)
+        return real_delete(path)
+
+    monkeypatch.setattr(obj_storage, "delete_object", spy)
+    removed = await remove_branch_print_design_asset(db, branch_id="50", slot=SLOT_COMPANY_LOGO, user=USER)
+    assert foreign not in deleted and global_path not in deleted
+    assert obj_storage.get_object(foreign)[0] == foreign_body
+    stored = await db.app_settings.find_one({"key": branch_settings_key("50")}, {"_id": 0})
+    assert not stored.get("company_logo")
+    assert stored.get("company_name") == "Jogja"
+    assert removed["inherited"]["company_logo"]["inherited"] is True
+    file_row = await db.files.find_one({"id": "foreign-file"})
+    assert file_row.get("is_deleted") is not True
+
+    await db.app_settings.update_one(
+        {"key": branch_settings_key("50")},
+        {"$set": {"company_logo": _asset_ref(global_path, "global-file")}},
+    )
+    deleted.clear()
+    await reset_branch_design_settings(db, "50", user=USER)
+    assert global_path not in deleted and foreign not in deleted
+    assert obj_storage.get_object(global_path)[0] == global_body
+    assert obj_storage.get_object(foreign)[0] == foreign_body
+    assert await db.app_settings.find_one({"key": branch_settings_key("50")}) is None
+    reset_view = await get_branch_design_view(db, "50")
+    assert reset_view["override"] == {}
+
+
+@pytest.mark.anyio
+async def test_branch_reset_skips_other_branch_path_and_keeps_settings_reset(monkeypatch):
+    db = MockDb(_orders())
+    foreign = f"{obj_storage.APP_NAME}/print-design/branch-77/company_logo/kept.png"
+    body = _png((9, 9, 9))
+    obj_storage.put_object(foreign, body, "image/png")
+    await db.app_settings.insert_one({
+        "key": branch_settings_key("50"),
+        "company_logo": _asset_ref(foreign, "kept-file"),
+    })
+    deleted = []
+    real_delete = obj_storage.delete_object
+
+    def spy(path):
+        deleted.append(path)
+        return real_delete(path)
+
+    monkeypatch.setattr(obj_storage, "delete_object", spy)
+    await reset_branch_design_settings(db, "50", user=USER)
+    assert deleted == []
+    assert obj_storage.get_object(foreign)[0] == body
+    assert await db.app_settings.find_one({"key": branch_settings_key("50")}) is None
+
+
+@pytest.mark.anyio
+async def test_owned_branch_asset_remove_and_reset_delete_branch_prefix():
+    db = MockDb(_orders())
+    body = _png((20, 30, 40))
+    await upload_branch_print_design_asset(
+        db, branch_id="50", slot=SLOT_COMPANY_LOGO, body=body, content_type="image/png", filename="b.png", user=USER
+    )
+    stored = await db.app_settings.find_one({"key": branch_settings_key("50")}, {"_id": 0})
+    owned = stored["company_logo"]["storage_path"]
+    assert f"/print-design/branch-50/" in owned
+    await remove_branch_print_design_asset(db, branch_id="50", slot=SLOT_COMPANY_LOGO, user=USER)
+    with pytest.raises(FileNotFoundError):
+        obj_storage.get_object(owned)
+    after_remove = await db.app_settings.find_one({"key": branch_settings_key("50")}, {"_id": 0})
+    assert after_remove is None or not after_remove.get("company_logo")
+
+    await upload_branch_print_design_asset(
+        db, branch_id="50", slot=SLOT_COMPANY_LOGO, body=body, content_type="image/png", filename="b2.png", user=USER
+    )
+    stored = await db.app_settings.find_one({"key": branch_settings_key("50")}, {"_id": 0})
+    owned_reset = stored["company_logo"]["storage_path"]
+    await reset_branch_design_settings(db, "50", user=USER)
+    with pytest.raises(FileNotFoundError):
+        obj_storage.get_object(owned_reset)
+    assert await db.app_settings.find_one({"key": branch_settings_key("50")}) is None
+
+
+@pytest.mark.anyio
+async def test_copied_branch_asset_resets_without_touching_source():
+    db = MockDb(_orders())
+    body = _png((8, 8, 8))
+    await upload_print_design_asset(
+        db, slot=SLOT_COMPANY_LOGO, body=body, content_type="image/png", filename="g.png", user=USER
+    )
+    global_path = (await db.app_settings.find_one({"key": SETTINGS_KEY}, {"_id": 0}))["company_logo"]["storage_path"]
+    await copy_print_design(db, {"source_scope": "global", "target_branch_id": "50"}, user=USER)
+    copied = (await db.app_settings.find_one({"key": branch_settings_key("50")}, {"_id": 0}))["company_logo"]["storage_path"]
+    assert "/print-design/branch-50/" in copied
+    assert copied != global_path
+    await reset_branch_design_settings(db, "50", user=USER)
+    with pytest.raises(FileNotFoundError):
+        obj_storage.get_object(copied)
+    assert obj_storage.get_object(global_path)[0] == body
+    assert (await db.app_settings.find_one({"key": SETTINGS_KEY}, {"_id": 0}))["company_logo"]["storage_path"] == global_path
 
 
 def test_pdf_and_permission_call_sites_use_document_branch():
