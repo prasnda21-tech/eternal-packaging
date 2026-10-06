@@ -11968,6 +11968,28 @@ def _design_cetakan_view_perms():
     )
 
 
+@api_router.get("/settings/design-cetakan/preview/{document_type}")
+async def design_cetakan_preview(
+    document_type: str,
+    branch_id: Optional[str] = None,
+    user=Depends(current_user),
+):
+    """PDF preview of saved Design Cetakan using dummy documents. No business writes."""
+    await _require_any_perm(user, *_design_cetakan_view_perms())
+    from services.print_design_preview import preview_filename, render_print_design_preview
+
+    pdf_bytes = await render_print_design_preview(db, document_type, branch_id=branch_id)
+    filename = preview_filename(document_type)
+    return FastAPIResponse(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Cache-Control": "private, no-store",
+            "Content-Disposition": f'inline; filename="{filename}"',
+        },
+    )
+
+
 @api_router.get("/settings/design-cetakan/branches")
 async def design_cetakan_branches_get(user=Depends(current_user)):
     """Distinct order branch ids for the Design Cetakan selector."""

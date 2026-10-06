@@ -109,4 +109,36 @@ describe("Design Cetakan settings wiring", () => {
     expect(apiSrc).toMatch(/removeDesignCetakanBranchAsset:/);
     expect(apiSrc).toMatch(/\/settings\/design-cetakan\/branches\/\$\{encodeURIComponent\(branchId\)\}/);
   });
+
+  test("preview actions reuse saved config and window.open", () => {
+    expect(pageSrc).toMatch(/Preview PO/);
+    expect(pageSrc).toMatch(/Preview Faktur/);
+    expect(pageSrc).toMatch(/Preview Proforma/);
+    expect(pageSrc).toMatch(/Preview Surat Jalan/);
+    expect(pageSrc).toMatch(/Preview mengikuti pengaturan yang sudah disimpan\./);
+    expect(pageSrc).toMatch(/data-testid="design-cetakan-preview-po"/);
+    expect(pageSrc).toMatch(/data-testid="design-cetakan-preview-invoice"/);
+    expect(pageSrc).toMatch(/data-testid="design-cetakan-preview-proforma"/);
+    expect(pageSrc).toMatch(/data-testid="design-cetakan-preview-delivery"/);
+    expect(pageSrc).toMatch(/previewDesignCetakan\(documentType, branchMode \? scope : undefined\)/);
+    expect(pageSrc).toMatch(/window\.open\(url, ["']_blank["']\)/);
+    expect(pageSrc).toMatch(/URL\.createObjectURL\(blob\)/);
+    expect(pageSrc).toMatch(/URL\.revokeObjectURL\(url\)/);
+    expect(pageSrc).toMatch(/previewBusy/);
+    expect(pageSrc).toMatch(/disabled=\{previewLocked\}/);
+    expect(pageSrc).toMatch(/Popup diblokir/);
+    expect(pageSrc).toMatch(/data-testid="design-cetakan-error"/);
+    const previewFn = pageSrc.slice(
+      pageSrc.indexOf("const openPreview"),
+      pageSrc.indexOf('data-testid="design-cetakan-settings"'),
+    );
+    expect(previewFn).toMatch(/previewDesignCetakan/);
+    expect(previewFn).not.toMatch(/updateDesignCetakanSettings|updateDesignCetakanBranch/);
+    expect(previewFn).not.toMatch(/uploadDesignCetakan|resetDesignCetakanBranch/);
+    expect(pageSrc).toMatch(/data-testid="design-cetakan-preview-po"[^>]*disabled=\{previewLocked\}/);
+    expect(apiSrc).toMatch(/previewDesignCetakan:/);
+    expect(apiSrc).toMatch(/\/settings\/design-cetakan\/preview\/\$\{encodeURIComponent\(documentType\)\}/);
+    expect(apiSrc).toMatch(/if \(branchId\) params\.branch_id = branchId/);
+    expect(apiSrc).toMatch(/responseType: ["']blob["']/);
+  });
 });

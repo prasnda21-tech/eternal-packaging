@@ -546,6 +546,16 @@ export const api = {
         `/settings/design-cetakan/branches/${encodeURIComponent(branchId)}/assets/${encodeURIComponent(slot)}`,
       )
       .then((r) => r.data),
+  previewDesignCetakan: (documentType, branchId) => {
+    const params = {};
+    if (branchId) params.branch_id = branchId;
+    return client
+      .get(`/settings/design-cetakan/preview/${encodeURIComponent(documentType)}`, {
+        params,
+        responseType: "blob",
+      })
+      .then((r) => r.data);
+  },
   listNotifications: (params = {}) => client.get(`/notifications`, { params }).then((r) => r.data),
   markNotificationRead: (id) => client.post(`/notifications/${encodeURIComponent(id)}/read`).then((r) => r.data),
   customerDesignApprovalNotificationSettings: () => client.get(`/settings/notifications/customer-design-approval`).then((r) => r.data),

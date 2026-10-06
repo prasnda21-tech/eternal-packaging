@@ -275,6 +275,7 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
   const [previews, setPreviews] = useState({});
   const [meta, setMeta] = useState({ updated_at: null, updated_by: null });
   const [busy, setBusy] = useState(false);
+  const [previewBusy, setPreviewBusy] = useState(false);
   const [err, setErr] = useState("");
   const globalSnapshotRef = useRef(null);
   const logoInputRef = useRef(null);
@@ -528,6 +529,32 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
 
   const fieldLocked = (field) => !canEdit || busy || (branchMode && !overrideOn[field]);
   const globalOnlyLocked = !canEdit || busy || branchMode;
+  const previewLocked = busy || previewBusy;
+
+  const openPreview = async (documentType) => {
+    if (previewLocked) return;
+    setPreviewBusy(true);
+    setErr("");
+    try {
+      const blob = await api.previewDesignCetakan(documentType, branchMode ? scope : undefined);
+      const url = URL.createObjectURL(blob);
+      const opened = window.open(url, "_blank");
+      setTimeout(() => {
+        try {
+          URL.revokeObjectURL(url);
+        } catch (_) {
+          /* ignore */
+        }
+      }, 5000);
+      if (!opened) {
+        setErr("Popup diblokir. Izinkan jendela baru untuk melihat preview.");
+      }
+    } catch (ex) {
+      setErr(errDetail(ex));
+    } finally {
+      setPreviewBusy(false);
+    }
+  };
 
   return (
     <div className="settings-card" data-testid="design-cetakan-settings">
@@ -571,6 +598,23 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
             Belum ada cabang pada order. Default Semua Cabang tetap bisa diubah. Cabang muncul setelah ada order dengan branch_id.
           </p>
         ) : null}
+        <div style={{ gridColumn: "1 / -1", display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+          <button type="button" className="secondary" data-testid="design-cetakan-preview-po" disabled={previewLocked} onClick={() => openPreview("po")}>
+            {previewBusy ? "Memuat…" : "Preview PO"}
+          </button>
+          <button type="button" className="secondary" data-testid="design-cetakan-preview-invoice" disabled={previewLocked} onClick={() => openPreview("invoice")}>
+            Preview Faktur
+          </button>
+          <button type="button" className="secondary" data-testid="design-cetakan-preview-proforma" disabled={previewLocked} onClick={() => openPreview("proforma")}>
+            Preview Proforma
+          </button>
+          <button type="button" className="secondary" data-testid="design-cetakan-preview-delivery" disabled={previewLocked} onClick={() => openPreview("delivery")}>
+            Preview Surat Jalan
+          </button>
+        </div>
+        <p className="muted small" data-testid="design-cetakan-preview-note" style={{ gridColumn: "1 / -1", margin: 0 }}>
+          Preview mengikuti pengaturan yang sudah disimpan.
+        </p>
       </div>
 
       {err ? (

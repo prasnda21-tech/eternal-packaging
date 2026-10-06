@@ -5,327 +5,142 @@ description: Gunakan untuk task coding Eternal Packaging agar Cursor bekerja pre
 
 # Eternal Fast Precision Mode
 
-Tujuan:
-- PRESISI tinggi
-- MODE CEPAT
-- HEMAT TOKEN / CREDIT
-- TANPA mengurangi guardrail bisnis Eternal Packaging
+Always-on safety and execution policy is defined in:
+`.cursor/rules/eternal-model-routing.mdc`
+This skill does not override that rule.
 
-Repository:
-prasnda21-tech/eternal-packaging
+Procedural add-on for fast-task execution on `prasnda21-tech/eternal-packaging`.
 
-## DEFAULT MODE
+## 1. PRECISION / REUSE PRIOR PROOF
 
-Gunakan MAIN AGENT saja.
+Before changing source:
+- understand the exact task;
+- reuse prior audit/proof when still relevant;
+- do not guess fields, endpoints, files, permissions, status, or business rules;
+- if one material fact is unproven, check only that gap.
 
-JANGAN gunakan:
-- subagent
-- delegation
-- video
-- broad repo scan
-- audit ulang penuh
-- test suite luas tanpa alasan
-- build ulang tanpa perubahan input
-- production data untuk test
-- perubahan di luar scope
+If a prior audit already proved file, function, endpoint, data source, or guard — use it directly.
 
-Default response harus singkat dan actionable.
+Re-audit only when:
+- source changed materially;
+- CI/test failed;
+- new evidence appeared;
+- prior result is ambiguous;
+- owner requests re-audit.
 
-## 1. PRESISI
+## 2. DECISION CONTRACT
 
-Sebelum mengubah source:
-- pahami task exact;
-- gunakan audit/bukti sebelumnya jika masih relevan;
-- jangan menebak field, endpoint, file, permission, status, atau business rule;
-- jika satu fakta penting belum terbukti, cek hanya gap itu;
-- jangan rediscover seluruh flow dari nol.
+Prefer a short decision contract over narrating the whole ERP:
 
-Gunakan source-of-truth yang sudah terbukti.
-
-Jika audit sebelumnya sudah membuktikan:
-- file,
-- function,
-- endpoint,
-- data source,
-- guard,
-maka langsung gunakan itu.
-
-Jangan ulang audit kecuali:
-- source berubah material;
-- CI/test gagal;
-- ada bukti baru;
-- hasil sebelumnya ambigu;
-- owner meminta audit ulang.
-
-## 2. FAST MODE
-
-Bekerja hanya pada jalur terpendek yang valid.
-
-Prioritas:
-1. file langsung terkait task;
-2. helper yang dipanggil langsung;
-3. test langsung terkait;
-4. dependency hanya jika benar-benar dibutuhkan.
-
-Jangan membaca seluruh repository.
-
-Jangan menjalankan:
-- full grep repo,
-- broad test suite,
-- full build,
-- smoke luas,
-jika focused check sudah cukup.
-
-Jika perlu file tambahan:
-laporkan singkat alasan sebelum memperluas scope.
-
-## 3. HEMAT TOKEN
-
-Jangan mengulang di prompt/laporan:
-- sejarah percakapan;
-- aturan bisnis yang tidak terkait;
-- daftar modul Eternal lain;
-- hasil audit lama yang tidak dipakai;
-- test PASS yang tidak berubah;
-- penjelasan panjang yang tidak membantu keputusan.
-
-Gunakan decision contract ringkas.
-
-Contoh:
-
+```
 BUSINESS RULE
-- qty baru >= committed qty
-- fully delivered reject
-- unit price unchanged
+- [rule 1]
+- [rule 2]
 
 SCOPE
-- backend/server.py
-- backend/services/...
+- [file/module]
 - focused tests
 
 JANGAN UBAH
-- accounting
-- payment
-- shipment semantics
+- [high-risk adjacent modules]
+```
 
-Itu lebih baik daripada menjelaskan seluruh ERP.
+## 3. AUDIT MODE
 
-## 4. AUDIT MODE
+When source-of-truth is unclear: audit only what the task needs. Do not implement.
 
-Untuk task baru yang source-of-truth belum jelas:
-audit hanya yang dibutuhkan untuk menjawab task.
-
-Audit output minimum:
-- penyebab
+Minimum audit output:
+- cause
 - file/function
 - data source
 - guard
 - side effect
-- file terdampak
-- test yang diperlukan
+- impacted files
+- required tests
 - uncertainty
 
-Jangan implementasi pada tahap audit.
+Stop after the report.
 
-Stop setelah laporan.
+## 4. IMPLEMENTATION MODE
 
-## 5. IMPLEMENTATION MODE
+After audit is enough: implement minimum scope.
 
-Setelah audit cukup:
-langsung implement scope minimum.
-
-Prompt/task harus berisi:
-- tujuan
-- business rule exact
+Task should state:
+- goal
+- exact business rule
 - expected files
-- frozen areas penting
+- frozen areas
 - focused tests
 - stop gate
 
-Jangan copy seluruh laporan audit kembali.
+Do not paste the full audit report back into the implementation prompt.
 
-## 6. TEST POLICY
+## 5. BUILD REUSE
 
-Jalankan hanya:
-- test kasus yang berubah;
-- regresi langsung;
-- test business guard terkait.
+- Frontend build: run only if frontend/build inputs changed; reuse a prior valid build when inputs are unchanged.
+- Do not rebuild an artifact that is already valid for the same inputs.
+- If a build appears hung: check live process, artifact, and health first — do not blindly restart the build.
+- Skip already-PASS focused tests when related source and build inputs are unchanged and no new failure/uncertainty exists.
 
-Jangan ulang test yang sudah PASS jika:
-- source terkait tidak berubah;
-- input build tidak berubah;
-- tidak ada failure/uncertainty baru.
+## 6. OWNER FALLBACK → DETAILED MODE
 
-Frontend build:
-- jalankan jika frontend/build input berubah;
-- jangan ulang jika frontend source sama dan build sebelumnya masih valid.
+If the owner says any of:
+- kurang presisi / kurang detail / terlalu singkat
+- kembalikan seperti sebelumnya / pakai versi lengkap
+- hasilnya membingungkan / menyebabkan rework
 
-Backend:
-- focused tests dulu;
-- broad suite hanya jika ada bukti scope meluas.
+switch immediately to DETAILED MODE for that task:
+- fuller audit
+- explicit source-of-truth
+- edge cases and side effects
+- file impact
+- test matrix
+- more detailed report
 
-## 7. REPORT POLICY
+Stay in DETAILED MODE until the owner says fast mode may be used again.
 
-Laporan default harus singkat.
+## 7. PR / MERGE FINALIZATION
 
-Format:
+Keep finalization short:
 
-BASE:
-BRANCH:
-HEAD:
+1. fetch latest `main`
+2. race-check
+3. semantic overlap check
+4. diff review
+5. commit
+6. push
+7. PR
+8. CI on exact HEAD
+9. stop
 
-CHANGED:
-- ...
+Do not re-audit the whole feature during finalization.
+Deploy remains manual; use the exact approved merge SHA only when deploy is explicitly authorized.
 
-TEST:
-- ...
+## 8. DEFAULT TASK TEMPLATE
 
-BUILD:
-PASS / NOT NEEDED
-
-RISK:
-- ...
-
-STATUS:
-COMMIT:
-PUSH:
-PR:
-MERGE:
-DEPLOY:
-
-Jangan membuat laporan panjang kecuali:
-- accounting;
-- stock;
-- invoice vs PO;
-- concurrency;
-- shipment integrity;
-- migration;
-- permission/security;
-- owner meminta detail.
-
-## 8. COMPLEX TASK ESCALATION
-
-Keluar dari fast mode dan gunakan detail lebih tinggi jika task menyentuh:
-
-- accounting / journal
-- payment / receipt
-- stock fisik
-- HPP
-- invoice vs PO reconciliation
-- shipment integrity
-- concurrency / race condition
-- permission/security
-- migration/backfill
-- multi-module business logic
-
-Fast mode tidak boleh mengorbankan correctness.
-
-## 9. OWNER FALLBACK RULE
-
-Jika owner mengatakan:
-
-- kurang presisi
-- kurang detail
-- terlalu singkat
-- kembalikan seperti sebelumnya
-- pakai versi lengkap
-- hasilnya membingungkan
-- hasilnya menyebabkan rework
-
-maka segera pindah ke:
-
-DETAILED MODE
-
-untuk task tersebut.
-
-Dalam Detailed Mode:
-- audit lebih lengkap;
-- jelaskan source-of-truth;
-- edge case;
-- side effect;
-- file impact;
-- test matrix;
-- report lebih detail.
-
-Tetap gunakan Detailed Mode sampai owner menyatakan fast mode boleh dipakai lagi.
-
-## 10. BUSINESS SAFETY
-
-Jangan pernah mengorbankan:
-
-- aturan bisnis Eternal
-- data integrity
-- backend authority
-- test evidence
-- exact HEAD merge gate
-- CI
-- deploy safety
-- production isolation
-
-Hemat token berarti:
-mengurangi pekerjaan berulang,
-BUKAN mengurangi verifikasi penting.
-
-## 11. MERGE / PR
-
-Finalisasi PR harus ringkas:
-
-- fetch latest main
-- race-check
-- semantic overlap
-- diff review
-- commit
-- push
-- PR
-- CI exact HEAD
-- stop
-
-Jangan audit ulang seluruh fitur saat finalisasi.
-
-## 12. DEPLOY
-
-Deploy tetap manual.
-
-Jangan deploy otomatis.
-
-Gunakan exact approved merge SHA.
-
-Jangan build ulang artifact yang sudah valid pada input sama.
-
-Jika build terlihat hang:
-cek proses aktual + artifact + health dulu.
-Jangan ulang build secara buta.
-
-## DEFAULT TASK TEMPLATE
-
-Gunakan template ini bila task sudah cukup jelas:
-
-MAIN AGENT ONLY.
-NO SUBAGENT.
-NO VIDEO.
-NO PROD DATA.
-
+```
 TUGAS
-[tujuan singkat]
+[short goal]
 
 BUSINESS RULE
 - [rule 1]
 - [rule 2]
 
 SCOPE
-- [file/modul]
+- [file/module]
 
 JANGAN UBAH
-- [modul terkait risiko langsung]
+- [adjacent high-risk modules]
 
 TES
 - [focused case]
 - [direct regression]
-- build hanya jika perlu
+- build only if inputs changed
 - git diff --check
 
 STOP
-No commit/push/PR/merge/deploy.
+[explicit stop gate, e.g. no commit/push/PR/merge/deploy]
 
 LAPORAN
-changed files, test result, risk, status.
+changed files, test result, risk, status
+```
