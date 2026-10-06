@@ -482,6 +482,31 @@ async def resolve_mapping(db, source_key: str) -> Optional[Dict[str, Any]]:
     }
 
 
+async def active_manual_payment_accounts(db) -> Dict[str, Any]:
+    """Read-only ids used by Kas & Bank payment guard.
+
+    Payable is included only while the stored liability mapping is valid.
+    Expense ids are active expense_debit / expense_credit component mappings.
+    """
+    doc = await db.app_settings.find_one({"key": SETTINGS_KEY}, {"_id": 0})
+    payable = await resolve_payable(db)
+    payable_id = str(payable["account_id"]) if payable and payable.get("valid") else ""
+    expense_ids: List[str] = []
+    seen = set()
+    for row in _stored_mappings(doc).values():
+        if row.get("treatment") not in (TREATMENT_EXPENSE_DEBIT, TREATMENT_EXPENSE_CREDIT):
+            continue
+        account_id = str(row.get("account_id") or "")
+        if not account_id or account_id in seen:
+            continue
+        seen.add(account_id)
+        expense_ids.append(account_id)
+    return {
+        "payroll_payable_account_id": payable_id or None,
+        "expense_account_ids": expense_ids,
+    }
+
+
 async def resolve_payable(db) -> Optional[Dict[str, Any]]:
     doc = await db.app_settings.find_one({"key": SETTINGS_KEY}, {"_id": 0})
     payable_id = _account_id((doc or {}).get("payroll_payable_account_id"))

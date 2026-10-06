@@ -174,6 +174,7 @@ export default function CashBankVoucherPage({ kind }) {
   const [reference, setReference] = useState("");
   const [attachmentFile, setAttachmentFile] = useState(null);
   const [statusFilter, setStatusFilter] = useState("all");
+  const [payrollGuard, setPayrollGuard] = useState({ payableId: "", expenseIds: [] });
 
   const { input: qInput, setInput: setQInput, q, flush: doSearch, clear: clearQuery, pending: searchPending } = useDebouncedLiveSearch();
 
@@ -213,6 +214,31 @@ export default function CashBankVoucherPage({ kind }) {
   }, [meta, kind]);
 
   useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    if (kind !== "payment") return undefined;
+    let cancelled = false;
+    api.payrollAccountingSettings()
+      .then((data) => {
+        if (cancelled) return;
+        const settings = data?.settings || {};
+        const mappings = settings.component_mappings || {};
+        const expenseIds = Object.values(mappings)
+          .filter((row) => row && (row.treatment === "expense_debit" || row.treatment === "expense_credit") && row.account_id)
+          .map((row) => String(row.account_id));
+        setPayrollGuard({
+          payableId: settings.payroll_payable_valid ? String(settings.payroll_payable_account_id || "") : "",
+          expenseIds,
+        });
+      })
+      .catch(() => {
+        if (!cancelled) setPayrollGuard({ payableId: "", expenseIds: [] });
+      });
+    return () => { cancelled = true; };
+  }, [kind]);
+
+  const payableBlocked = kind === "payment" && Boolean(payrollGuard.payableId) && counterAccountId === payrollGuard.payableId;
+  const expenseWarning = kind === "payment" && !payableBlocked && payrollGuard.expenseIds.includes(counterAccountId);
 
   const activeCashBanks = useMemo(
     () => cashBanks.filter((b) => b.active !== false),
@@ -340,7 +366,7 @@ export default function CashBankVoucherPage({ kind }) {
 
   const submit = async (e) => {
     e?.preventDefault?.();
-    if (!canManage || saving) return;
+    if (!canManage || saving || payableBlocked) return;
     setSaving(true);
     setFormError("");
     try {
@@ -472,6 +498,16 @@ export default function CashBankVoucherPage({ kind }) {
                             <option key={a.id} value={a.id}>{a.code} — {a.name}</option>
                           ))}
                         </select>
+                        {payableBlocked && (
+                          <p className="error" data-testid="kb-payroll-payable-block">
+                            Utang Gaji harus dibayar melalui HR & Payroll → Payment Payroll, bukan melalui Pembayaran Kas & Bank manual.
+                          </p>
+                        )}
+                        {expenseWarning && (
+                          <p className="muted small" data-testid="kb-payroll-expense-warning">
+                            Akun ini digunakan oleh Payroll. Pastikan transaksi ini bukan pembayaran gaji yang sudah difinalkan di HR & Payroll agar tidak terjadi double expense.
+                          </p>
+                        )}
                       </KbField>
                       <KbField id={`${meta.testid}-desc`} label="Keterangan" className="kb-span-2">
                         <textarea id={`${meta.testid}-desc`} value={description} onChange={(e) => setDescription(e.target.value)} rows={3} className="kb-textarea" />
@@ -529,7 +565,7 @@ export default function CashBankVoucherPage({ kind }) {
               <div className="muted small">Disimpan sebagai Draft. Posting dilakukan dari list atau detail.</div>
               <div className="emp-actions">
                 <button type="button" className="ghost" disabled={saving} onClick={() => setFormOpen(false)}>Batal</button>
-                <button type="submit" className="primary" disabled={saving || !canManage} data-testid={`${meta.testid}-form-submit`}>
+                <button type="submit" className="primary" disabled={saving || !canManage || payableBlocked} data-testid={`${meta.testid}-form-submit`}>
                   {saving ? "Menyimpan…" : "Simpan Draft"}
                 </button>
               </div>
