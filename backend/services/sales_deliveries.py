@@ -334,7 +334,9 @@ async def ensure_generated_sj_pdf(db, order: dict, delivery: dict, user: dict, *
             return existing, None
 
     try:
-        pdf_bytes = generate_sales_delivery_pdf_bytes(delivery, None)
+        from services.print_design_settings import get_print_design_for_pdf
+        design = await get_print_design_for_pdf(db, branch_id=(delivery or {}).get("branch_id"))
+        pdf_bytes = generate_sales_delivery_pdf_bytes(delivery, None, design=design)
     except Exception:
         logger.exception("Failed to generate Surat Jalan PDF for shipment %s", shipment_id)
         return None, "pdf_generate_failed"
@@ -847,6 +849,9 @@ async def create_sales_delivery(db, payload: Dict[str, Any], user: dict) -> Dict
                 "is_cancelled": False,
                 "physical_stock_snapshot": order.get("physical_stock_snapshot"),
             }
+            order_branch_id = str(order.get("branch_id") or "").strip()
+            if order_branch_id.isdigit():
+                delivery_doc["branch_id"] = order_branch_id
             if sj_location:
                 delivery_doc["delivery_location"] = sj_location
 
@@ -906,6 +911,8 @@ async def create_sales_delivery(db, payload: Dict[str, Any], user: dict) -> Dict
                     "created_by": user.get("email") or "",
                     "sales_delivery_id": delivery_id,
                 }
+                if delivery_doc.get("branch_id"):
+                    shipment_entry["branch_id"] = delivery_doc["branch_id"]
                 if sj_location:
                     shipment_entry["delivery_location"] = sj_location
 
@@ -1071,26 +1078,39 @@ def generate_sales_delivery_pdf_bytes(
     driver_signature_png: Optional[bytes] = None,
     driver_name: Optional[str] = None,
     driver_signed_at: Optional[str] = None,
+    design: Optional[dict] = None,
 ) -> bytes:
-    """Generate official A4 / Letter PDF for Sales Delivery / Surat Jalan.
+    """A4 portrait Surat Jalan. Renders the delivery document only.
 
-    Optional signature PNGs enrich 'Diterima Oleh' and 'Pengirim / Supir' only.
+    Optional signature PNGs stay on Kurir (driver) and Penerima (recipient).
     This is document rendering — it MUST NOT mutate packed/loading/delivery qty.
     """
-    from reportlab.lib.pagesizes import A4
     from reportlab.lib import colors
-    from reportlab.platypus import (
-        SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, KeepTogether, HRFlowable, Image,
-    )
-    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.lib.units import cm
-    from reportlab.lib.utils import ImageReader
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.units import mm
+    from reportlab.platypus import Image, Paragraph, Spacer, Table, TableStyle
     from services.delivery_pod_signature import normalize_signature_image_for_pdf
+    from services.pdf_date import format_pdf_date
+    from services.pdf_layout import (
+        build_pdf,
+        content_width,
+        esc,
+        format_qty,
+        logo_flowable,
+        scale_widths,
+        styles,
+    )
+    from services.print_design_settings import resolve_print_design
 
+    delivery = delivery or {}
+    design = resolve_print_design(design)
+    sj_design = design.get("surat_jalan") or {}
     _sig_tmp_paths: List[str] = []
 
+    def _text(value) -> str:
+        return str(value or "").strip()
+
     def _normalize_sig_file(raw_png: Optional[bytes]):
-        """Write normalized PNG to temp; return (path, iw, ih) or None."""
         if not raw_png:
             return None
         normalized = normalize_signature_image_for_pdf(raw_png)
@@ -1122,390 +1142,272 @@ def generate_sales_delivery_pdf_bytes(
                     pass
             return None
 
-    def _sig_image_in_box(tmp_path: str, iw: int, ih: int, max_w: float, max_h: float):
-        """Fit stroke into max_w×max_h; preserve aspect — no stretch, no border."""
+    def _sig_image(tmp_path: str, iw: int, ih: int, max_w: float, max_h: float):
         scale = min(max_w / iw, max_h / ih)
-        draw_w = max(iw * scale, 0.5 * cm)
-        draw_h = max(ih * scale, 0.5 * cm)
+        draw_w = max(iw * scale, 0.5 * mm * 10)
+        draw_h = max(ih * scale, 0.5 * mm * 10)
         img = Image(tmp_path, width=draw_w, height=draw_h)
         img.hAlign = "CENTER"
-        return img, draw_w, draw_h
+        return img
 
-    def _signed_at_label(raw_ts: Optional[str]) -> str:
+    def _signed_date(raw_ts: Optional[str]) -> str:
         if not raw_ts:
             return ""
-        try:
-            from services.pdf_date import format_pdf_date
-            return f"<br/><font size='7' color='#64748b'>Ditandatangani: {format_pdf_date(raw_ts)}</font>"
-        except Exception:
-            return f"<br/><font size='7' color='#64748b'>Ditandatangani: {raw_ts}</font>"
+        return format_pdf_date(raw_ts, fallback="")
 
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(
-        buffer,
-        pagesize=A4,
-        rightMargin=1.5 * cm,
-        leftMargin=1.5 * cm,
-        topMargin=1.5 * cm,
-        bottomMargin=1.5 * cm,
-    )
-
-    styles = getSampleStyleSheet()
-    
-    company_title_style = ParagraphStyle(
-        'CompanyTitle',
-        parent=styles['Normal'],
-        fontName='Helvetica-Bold',
-        fontSize=14,
-        leading=17,
-        textColor=colors.HexColor('#0f172a'),
-    )
-    
-    doc_title_style = ParagraphStyle(
-        'DocTitle',
-        parent=styles['Normal'],
-        fontName='Helvetica-Bold',
-        fontSize=13,
-        leading=16,
-        alignment=2, # Right
-        textColor=colors.HexColor('#0369a1'),
-    )
-
-    meta_label_style = ParagraphStyle(
-        'MetaLabel',
-        parent=styles['Normal'],
-        fontName='Helvetica-Bold',
-        fontSize=8.5,
-        leading=11,
-        textColor=colors.HexColor('#334155'),
-    )
-    
-    meta_val_style = ParagraphStyle(
-        'MetaVal',
-        parent=styles['Normal'],
-        fontName='Helvetica',
-        fontSize=8.5,
-        leading=11,
-        textColor=colors.HexColor('#0f172a'),
-    )
-
-    tbl_header_style = ParagraphStyle(
-        'TblHeader',
-        parent=styles['Normal'],
-        fontName='Helvetica-Bold',
-        fontSize=8.5,
-        leading=11,
-        textColor=colors.HexColor('#1e293b'),
-    )
-
-    tbl_cell_style = ParagraphStyle(
-        'TblCell',
-        parent=styles['Normal'],
-        fontName='Helvetica',
-        fontSize=8.5,
-        leading=11,
-        textColor=colors.HexColor('#0f172a'),
-    )
-    sig_center_style = ParagraphStyle(
-        'SigCenter',
-        parent=tbl_cell_style,
-        alignment=1,  # TA_CENTER
-    )
-    sig_header_style = ParagraphStyle(
-        'SigHeader',
-        parent=meta_label_style,
-        alignment=1,  # TA_CENTER
-    )
-
-    tbl_cell_bold = ParagraphStyle(
-        'TblCellBold',
-        parent=styles['Normal'],
-        fontName='Helvetica-Bold',
-        fontSize=8.5,
-        leading=11,
-        textColor=colors.HexColor('#0f172a'),
-    )
-
+    sty = styles(design.get("accent_color"))
+    width = content_width(A4)
     elements = []
-
-    # 1. Header: Company Info + Document Title
-    header_data = [
-        [
-            Paragraph("<b>ETERNAL PACKAGING</b><br/><font color='#64748b' size='7.5'>Food Packaging & Printing Solutions</font>", company_title_style),
-            Paragraph("<b>PENGIRIMAN PESANAN / SURAT JALAN</b><br/><font size='9' color='#0284c7'><b>" + str(delivery.get('sj_number') or '') + "</b></font>", doc_title_style),
-        ]
-    ]
-    header_tbl = Table(header_data, colWidths=[9.5 * cm, 8.5 * cm])
-    header_tbl.setStyle(TableStyle([
-        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
-        ('TOPPADDING', (0, 0), (-1, -1), 0),
-        ('LEFTPADDING', (0, 0), (-1, -1), 0),
-        ('RIGHTPADDING', (0, 0), (-1, -1), 0),
-    ]))
-    elements.append(header_tbl)
-    elements.append(Spacer(1, 0.2 * cm))
-    elements.append(HRFlowable(width="100%", thickness=1.5, color=colors.HexColor('#0284c7'), spaceAfter=8, spaceBefore=0))
-
-    # 2. Metadata Grid
-    from services.pdf_date import format_pdf_date
-    d_date = format_pdf_date(delivery.get("delivery_date"))
-    meta_data = [
-        [
-            Paragraph("<b>Nomor PO</b>", meta_label_style),
-            Paragraph(f": {delivery.get('po_number') or '-'}", meta_val_style),
-            Paragraph("<b>Customer</b>", meta_label_style),
-            Paragraph(f": {delivery.get('customer') or '-'}", meta_val_style),
-        ],
-        [
-            Paragraph("<b>Nomor SJ</b>", meta_label_style),
-            Paragraph(f": <b>{delivery.get('sj_number') or '-'}</b> (Kirim #{delivery.get('shipment_index', 1)})", meta_val_style),
-            Paragraph("<b>Outlet / Cabang</b>", meta_label_style),
-            Paragraph(f": {delivery.get('outlet') or '-'}", meta_val_style),
-        ],
-        [
-            Paragraph("<b>Tanggal Kirim</b>", meta_label_style),
-            Paragraph(f": {d_date}", meta_val_style),
-            Paragraph("<b>Penerima (PIC)</b>", meta_label_style),
-            Paragraph(f": {delivery.get('recipient') or '-'}", meta_val_style),
-        ],
-        [
-            Paragraph("<b>Sales</b>", meta_label_style),
-            Paragraph(f": {delivery.get('sales') or '-'}", meta_val_style),
-            Paragraph("<b>Alamat Kirim</b>", meta_label_style),
-            Paragraph(f": {delivery.get('address') or '-'}", meta_val_style),
-        ],
-        [
-            Paragraph("<b>Ekspedisi</b>", meta_label_style),
-            Paragraph(f": {delivery.get('expedition') or '-'}", meta_val_style),
-            Paragraph("<b>Zona Kirim</b>", meta_label_style),
-            Paragraph(f": {delivery.get('delivery_zone') or '-'}", meta_val_style),
-        ],
-    ]
-    meta_tbl = Table(meta_data, colWidths=[2.5 * cm, 6.5 * cm, 2.5 * cm, 6.5 * cm])
-    meta_tbl.setStyle(TableStyle([
-        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-        ('TOPPADDING', (0, 0), (-1, -1), 2),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
-        ('LEFTPADDING', (0, 0), (-1, -1), 2),
-        ('RIGHTPADDING', (0, 0), (-1, -1), 2),
-    ]))
-    elements.append(meta_tbl)
-    elements.append(Spacer(1, 0.4 * cm))
-
-    # 3. Line Items Table
-    table_rows = [
-        [
-            Paragraph("<b>No</b>", tbl_header_style),
-            Paragraph("<b>Barang / Jasa</b>", tbl_header_style),
-            Paragraph("<b>Kode</b>", tbl_header_style),
-            Paragraph("<b>Proses</b>", tbl_header_style),
-            Paragraph("<b>Qty Kirim</b>", tbl_header_style),
-            Paragraph("<b>Satuan</b>", tbl_header_style),
-            Paragraph("<b>Catatan</b>", tbl_header_style),
-        ]
-    ]
-
-    total_shipped = 0
-    line_items = delivery.get("line_items") or []
-    for idx, li in enumerate(line_items):
-        q = int(li.get("qty") if li.get("qty") is not None else li.get("quantity", 0))
-        total_shipped += q
-        proc = "Cetak" if (li.get("production_process") or "").lower() != "non_print" else "Non-Cetak"
-        table_rows.append([
-            Paragraph(str(idx + 1), tbl_cell_style),
-            Paragraph(f"<b>{li.get('name') or '-'}</b>" + (f"<br/><font size='7' color='#64748b'>{li.get('color')}</font>" if li.get('color') else ""), tbl_cell_style),
-            Paragraph(str(li.get("item_code") or "-"), tbl_cell_style),
-            Paragraph(proc, tbl_cell_style),
-            Paragraph(f"<b>{q:,}</b>", tbl_cell_bold),
-            Paragraph(str(li.get("unit") or "pcs"), tbl_cell_style),
-            Paragraph(str(li.get("notes") or "-"), tbl_cell_style),
-        ])
-
-    # Summary row
-    table_rows.append([
-        Paragraph("", tbl_cell_style),
-        Paragraph("<b>TOTAL KUANTITAS PENGIRIMAN</b>", tbl_cell_bold),
-        Paragraph("", tbl_cell_style),
-        Paragraph("", tbl_cell_style),
-        Paragraph(f"<b>{total_shipped:,}</b>", tbl_cell_bold),
-        Paragraph("pcs", tbl_cell_bold),
-        Paragraph("", tbl_cell_style),
-    ])
-
-    items_tbl = Table(
-        table_rows,
-        colWidths=[0.9 * cm, 6.2 * cm, 2.0 * cm, 1.8 * cm, 2.0 * cm, 1.6 * cm, 3.5 * cm]
-    )
-    items_tbl.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#f1f5f9')),
-        ('LINEBELOW', (0, 0), (-1, 0), 1.5, colors.HexColor('#cbd5e1')),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
-        ('TOPPADDING', (0, 0), (-1, -1), 4),
-        ('GRID', (0, 0), (-1, -2), 0.5, colors.HexColor('#e2e8f0')),
-        ('BACKGROUND', (0, -1), (-1, -1), colors.HexColor('#f8fafc')),
-        ('LINEABOVE', (0, -1), (-1, -1), 1, colors.HexColor('#94a3b8')),
-        ('LINEBELOW', (0, -1), (-1, -1), 1, colors.HexColor('#94a3b8')),
-        ('ALIGN', (4, 0), (4, -1), 'RIGHT'),
-        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-    ]))
-    elements.append(items_tbl)
-    elements.append(Spacer(1, 0.3 * cm))
-
-    # 4. Catatan / Notes if present
-    notes = (delivery.get("notes") or "").strip()
-    if notes:
-        notes_tbl = Table([
-            [Paragraph("<b>Catatan Pengiriman:</b>", meta_label_style)],
-            [Paragraph(notes, meta_val_style)]
-        ], colWidths=[18 * cm])
-        notes_tbl.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#f8fafc')),
-            ('BOX', (0, 0), (-1, -1), 0.5, colors.HexColor('#e2e8f0')),
-            ('PADDING', (0, 0), (-1, -1), 6),
-        ]))
-        elements.append(notes_tbl)
-        elements.append(Spacer(1, 0.4 * cm))
-
-    # 5. Signatures Block
-    display_recipient = (recipient_name or delivery.get("recipient") or "").strip()
-    display_driver = (driver_name or delivery.get("driver_name") or "").strip()
-    recipient_signed_label = _signed_at_label(recipient_signed_at)
-    driver_signed_label = _signed_at_label(driver_signed_at)
-
-    def _sig_name_block(name: str, sublabel: str, signed_label: str) -> Paragraph:
-        name_hint = f"<b>{name}</b>" if name else "_____________________ "
-        return Paragraph(
-            f"( {name_hint} )<br/>"
-            f"<font size='7' color='#64748b'>{sublabel}</font>{signed_label}",
-            sig_center_style,
-        )
-
-    # Fixed-height signature slots so recipient/driver names share one baseline.
-    # Shared render box = recipient's current fit size (never enlarge recipient);
-    # driver is contained in that same box (aspect preserved).
-    _sig_col_w = 5.6 * cm
-    _sig_cap_w = 5.2 * cm
-    _sig_cap_h = 4.0 * cm
-
-    recip_file = _normalize_sig_file(recipient_signature_png)
-    driver_file = _normalize_sig_file(driver_signature_png)
-
-    if recip_file:
-        _rp, _riw, _rih = recip_file
-        _rs = min(_sig_cap_w / _riw, _sig_cap_h / _rih)
-        box_w = max(_riw * _rs, 0.5 * cm)
-        box_h = max(_rih * _rs, 0.5 * cm)
-    elif driver_file:
-        _dp, _diw, _dih = driver_file
-        _ds = min(_sig_cap_w / _diw, _sig_cap_h / _dih)
-        box_w = max(_diw * _ds, 0.5 * cm)
-        box_h = max(_dih * _ds, 0.5 * cm)
-    else:
-        box_w, box_h = _sig_cap_w, _sig_cap_h
-
-    _sig_slot_h = box_h
-
-    recipient_img = None
-    driver_img = None
-    if recip_file:
-        recipient_img, _, _ = _sig_image_in_box(*recip_file, box_w, box_h)
-    if driver_file:
-        driver_img, _, _ = _sig_image_in_box(*driver_file, box_w, box_h)
-
-    def _sig_slot(img):
-        """Borderless equal-height slot; stroke bottom-aligned above the name."""
-        cell = img if img is not None else Spacer(1, 0.1 * cm)
-        slot = Table([[cell]], colWidths=[_sig_col_w], rowHeights=[_sig_slot_h])
-        slot.setStyle(TableStyle([
-            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-            ('VALIGN', (0, 0), (-1, -1), 'BOTTOM'),
-            ('LEFTPADDING', (0, 0), (-1, -1), 0),
-            ('RIGHTPADDING', (0, 0), (-1, -1), 0),
-            ('TOPPADDING', (0, 0), (-1, -1), 0),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
-        ]))
-        return slot
-
-    def _sig_column_cell(img, name: str, sublabel: str, signed_label: str):
-        # Nested Table (not KeepTogether) — KeepTogether+Image inside Table cells
-        # can explode row height on some ReportLab versions.
-        if img is not None:
-            inner = Table(
-                [[_sig_slot(img)], [Spacer(1, 0.12 * cm)], [_sig_name_block(name, sublabel, signed_label)]],
-                colWidths=[_sig_col_w],
-            )
-            inner.setStyle(TableStyle([
-                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-                ('TOPPADDING', (0, 0), (-1, -1), 1),
-                ('BOTTOMPADDING', (0, 0), (-1, -1), 1),
-                ('LEFTPADDING', (0, 0), (-1, -1), 0),
-                ('RIGHTPADDING', (0, 0), (-1, -1), 0),
-            ]))
-            return inner
-        name_hint = f"<b>{name}</b>" if name else "_____________________ "
-        return Paragraph(
-            f"<br/><br/><br/>( {name_hint} )<br/>"
-            f"<font size='7' color='#64748b'>{sublabel}</font>{signed_label}",
-            sig_center_style,
-        )
-
-    recipient_cell = _sig_column_cell(
-        recipient_img,
-        display_recipient,
-        "Tanda Tangan & Nama Terang",
-        recipient_signed_label,
-    )
-    driver_cell = _sig_column_cell(
-        driver_img,
-        display_driver,
-        "Logistik / Ekspedisi",
-        driver_signed_label,
-    )
-    hormat_name = Paragraph(
-        f"( <b>{delivery.get('created_by_name') or 'Eternal Packaging'}</b> )"
-        f"<br/><font size='7' color='#64748b'>Bagian Penjualan</font>",
-        sig_center_style,
-    )
-    # Same signature-slot height so Hormat Kami name stays on the shared baseline.
-    hormat_cell = Table(
-        [[_sig_slot(None)], [Spacer(1, 0.12 * cm)], [hormat_name]],
-        colWidths=[_sig_col_w],
-    )
-    hormat_cell.setStyle(TableStyle([
-        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-        ('TOPPADDING', (0, 0), (-1, -1), 1),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 1),
-        ('LEFTPADDING', (0, 0), (-1, -1), 0),
-        ('RIGHTPADDING', (0, 0), (-1, -1), 0),
-    ]))
-
-    sig_data = [
-        [
-            Paragraph("Diterima Oleh,", sig_header_style),
-            Paragraph("Pengirim / Supir,", sig_header_style),
-            Paragraph("Hormat Kami,", sig_header_style),
-        ],
-        [
-            recipient_cell,
-            driver_cell,
-            hormat_cell,
-        ],
-    ]
-    sig_tbl = Table(sig_data, colWidths=[6.0 * cm, 6.0 * cm, 6.0 * cm])
-    sig_tbl.setStyle(TableStyle([
-        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-        ('TOPPADDING', (0, 0), (-1, -1), 4),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
-    ]))
-    elements.append(sig_tbl)
-
     try:
-        doc.build(elements)
-        pdf_bytes = buffer.getvalue()
+        logo = logo_flowable(design, width=36 * mm, height=12.2 * mm, company_style=sty["company"])
+        address_html = "<br/>".join(esc(line) for line in (design.get("address_lines") or []))
+        identity = Paragraph(
+            f"<font size='12'><b>{esc(design.get('company_name') or '')}</b></font><br/>{address_html}",
+            sty["address"],
+        )
+        brand = Table(
+            [[logo, identity]],
+            colWidths=[40 * mm, width - 40 * mm],
+        )
+        brand.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 0),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+            ("TOPPADDING", (0, 0), (-1, -1), 0),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+        ]))
+        elements.append(brand)
+        elements.append(Spacer(1, 2 * mm))
+        elements.append(Paragraph("SURAT JALAN", sty["title"]))
+        elements.append(Spacer(1, 2 * mm))
+
+        address = _text(delivery.get("address"))
+        po_number = _text(delivery.get("po_number"))
+        customer = Paragraph(
+            f"Kepada<br/><b>{esc(_text(delivery.get('customer')) or '-')}</b><br/>{esc(address)}",
+            sty["body"],
+        )
+        grid_width = width * 0.56
+        left_width = width - grid_width
+        customer_cell = Table([[customer]], colWidths=[left_width - 2 * mm])
+        customer_cell.setStyle(TableStyle([
+            ("LINEBELOW", (0, 0), (-1, -1), 0.7, colors.black),
+            ("LEFTPADDING", (0, 0), (-1, -1), 1),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+            ("TOPPADDING", (0, 0), (-1, -1), 1),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ]))
+
+        def cell(label: str, value: str) -> Paragraph:
+            shown = esc(value) if value else "&nbsp;"
+            return Paragraph(f"{esc(label)}<br/><b>{shown}</b>", sty["small"])
+
+        meta = [
+            [
+                cell("Nama Penjual", _text(delivery.get("sales"))),
+                cell("Nomor", _text(delivery.get("sj_number"))),
+            ],
+            [
+                cell("Ekspedisi", _text(delivery.get("expedition"))),
+                cell("Pembuat Data", _text(delivery.get("created_by_name"))),
+            ],
+            [
+                cell("Tanggal Pengiriman", format_pdf_date(delivery.get("delivery_date"))),
+                cell("Zona Kirim", _text(delivery.get("delivery_zone"))),
+            ],
+        ]
+        meta_table = Table(meta, colWidths=[grid_width / 2, grid_width / 2])
+        meta_table.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("BOX", (0, 0), (-1, -1), 0.7, colors.black),
+            ("LINEAFTER", (0, 0), (0, -1), 0.6, colors.black),
+            ("LINEBELOW", (0, 0), (-1, -2), 0.4, colors.black, None, (2, 2)),
+            ("LEFTPADDING", (0, 0), (-1, -1), 3),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+            ("TOPPADDING", (0, 0), (-1, -1), 2),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+        ]))
+        party = Table(
+            [[customer_cell, meta_table]],
+            colWidths=[width - grid_width, grid_width],
+        )
+        party.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 0),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+            ("TOPPADDING", (0, 0), (-1, -1), 0),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+        ]))
+        elements.append(party)
+        if po_number:
+            elements.append(Spacer(1, 1 * mm))
+            elements.append(Paragraph(f"Nomor PO : {esc(po_number)}", sty["small"]))
+        elements.append(Spacer(1, 3 * mm))
+
+        header = [
+            Paragraph("<b>Kode Barang</b>", sty["header"]),
+            Paragraph("<b>Nama Barang</b>", sty["header"]),
+            Paragraph("<b>Kts.</b>", sty["header"]),
+            Paragraph("<b>Satuan</b>", sty["header"]),
+            Paragraph("<b>Outlet</b>", sty["header"]),
+        ]
+        rows = [header]
+        total_qty = 0
+        note_parts: List[str] = []
+        header_note = _text(delivery.get("notes"))
+        if header_note:
+            note_parts.append(header_note)
+        lines = [row for row in (delivery.get("line_items") or []) if isinstance(row, dict)]
+        delivery_outlet = _text(delivery.get("outlet"))
+        for line in lines:
+            raw_qty = line.get("qty") if line.get("qty") is not None else line.get("quantity")
+            try:
+                qty = int(float(raw_qty or 0))
+            except (TypeError, ValueError):
+                qty = 0
+            total_qty += qty
+            line_note = _text(line.get("notes"))
+            if line_note and line_note not in note_parts and line_note not in ("-",):
+                note_parts.append(line_note)
+            outlet = _text(line.get("outlet")) or delivery_outlet
+            rows.append([
+                Paragraph(esc(_text(line.get("item_code"))), sty["body"]),
+                Paragraph(esc(_text(line.get("name") or line.get("item_name"))), sty["body"]),
+                Paragraph(esc(format_qty(qty)), sty["right"]),
+                Paragraph(esc(_text(line.get("unit")) or "pcs"), sty["right"]),
+                Paragraph(esc(outlet), sty["body"]),
+            ])
+        if len(rows) == 1:
+            rows.append([Paragraph("", sty["body"]) for _ in range(5)])
+        items = Table(rows, colWidths=scale_widths([78, 210, 58, 52, 80], width), repeatRows=1)
+        items.setStyle(TableStyle([
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.black),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("TOPPADDING", (0, 0), (-1, -1), 2),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+            ("LEFTPADDING", (0, 0), (-1, -1), 2),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 2),
+        ]))
+        elements.append(items)
+        elements.append(Spacer(1, 3 * mm))
+
+        if delivery.get("total_qty") is not None and not lines:
+            try:
+                shown_total = int(float(delivery.get("total_qty")))
+            except (TypeError, ValueError):
+                shown_total = total_qty
+        else:
+            shown_total = total_qty
+        item_count = len(lines)
+        if not lines and delivery.get("item_count") is not None:
+            try:
+                item_count = int(delivery.get("item_count"))
+            except (TypeError, ValueError):
+                item_count = 0
+        note = Paragraph(
+            f"<b>Keterangan:</b><br/>{esc(chr(10).join(note_parts)) or '&nbsp;'}",
+            sty["body"],
+        )
+        note_width = width - 62 * mm
+        note_box = Table([[note]], colWidths=[note_width])
+        note_box.setStyle(TableStyle([
+            ("BOX", (0, 0), (-1, -1), 0.7, colors.black),
+            ("LEFTPADDING", (0, 0), (-1, -1), 4),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+            ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ]))
+        totals = [
+            [
+                Paragraph("<b>Total Kuantitas</b>", sty["body"]),
+                Paragraph(f"<b>{esc(format_qty(shown_total))}</b>", sty["right_bold"]),
+            ],
+            [
+                Paragraph("<b>Jumlah Barang</b>", sty["body"]),
+                Paragraph(f"<b>{item_count}</b>", sty["right_bold"]),
+            ],
+        ]
+        totals_table = Table(totals, colWidths=[34 * mm, 22 * mm])
+        totals_table.setStyle(TableStyle([
+            ("LINEBELOW", (0, 0), (-1, -1), 0.6, colors.black),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 2),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 2),
+            ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ]))
+        lower = Table(
+            [[note_box, totals_table]],
+            colWidths=[note_width + 2 * mm, width - note_width - 2 * mm],
+        )
+        lower.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("ALIGN", (1, 0), (1, 0), "RIGHT"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 0),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+            ("TOPPADDING", (0, 0), (-1, -1), 0),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+        ]))
+        elements.append(lower)
+        elements.append(Spacer(1, 6 * mm))
+
+        recip_file = _normalize_sig_file(recipient_signature_png)
+        driver_file = _normalize_sig_file(driver_signature_png)
+        cap_w = 32 * mm
+        cap_h = 18 * mm
+        recipient_img = _sig_image(*recip_file, cap_w, cap_h) if recip_file else None
+        driver_img = _sig_image(*driver_file, cap_w, cap_h) if driver_file else None
+        display_recipient = _text(recipient_name or delivery.get("recipient"))
+        display_driver = _text(driver_name or delivery.get("driver_name"))
+        recipient_when = _signed_date(recipient_signed_at)
+        driver_when = _signed_date(driver_signed_at)
+
+        labels = list(sj_design.get("signature_labels") or ["Gudang", "Cek Barang", "Kurir", "Penerima"])
+        date_label = str(sj_design.get("date_label") or "Tgl.")
+        images = [None, None, driver_img, recipient_img]
+        names = ["", "", display_driver, display_recipient]
+        whens = ["", "", driver_when, recipient_when]
+        slot = width / 4
+        label_row = []
+        gap_row = []
+        line_row = []
+        for label, image, name, when in zip(labels, images, names, whens):
+            label_row.append(Paragraph(esc(label), sty["center"]))
+            gap_row.append(image if image is not None else Spacer(1, 12 * mm))
+            tgl = date_label + (f" {when}" if when else "")
+            line = Table(
+                [[
+                    Paragraph(esc(tgl), sty["small"]),
+                    Paragraph(esc(name) if name else "&nbsp;", sty["small"]),
+                ]],
+                colWidths=[14 * mm, slot - 16 * mm],
+            )
+            line.setStyle(TableStyle([
+                ("VALIGN", (0, 0), (-1, -1), "BOTTOM"),
+                ("LINEBELOW", (1, 0), (1, 0), 0.6, colors.black),
+                ("LEFTPADDING", (0, 0), (-1, -1), 1),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 2),
+                ("TOPPADDING", (0, 0), (-1, -1), 1),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+            ]))
+            line_row.append(line)
+        sig = Table([label_row, gap_row, line_row], colWidths=[slot, slot, slot, slot])
+        sig.setStyle(TableStyle([
+            ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+            ("VALIGN", (0, 0), (-1, 1), "BOTTOM"),
+            ("VALIGN", (0, 2), (-1, 2), "BOTTOM"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 2),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 2),
+            ("TOPPADDING", (0, 0), (-1, 0), 1),
+            ("BOTTOMPADDING", (0, 0), (-1, 0), 1),
+            ("TOPPADDING", (0, 1), (-1, 1), 1),
+            ("BOTTOMPADDING", (0, 1), (-1, 1), 1),
+        ]))
+        elements.append(sig)
+        _ = po_summary
+        return build_pdf(elements, A4)
     finally:
         import os
         for tmp in _sig_tmp_paths:
@@ -1513,9 +1415,6 @@ def generate_sales_delivery_pdf_bytes(
                 os.unlink(tmp)
             except Exception:
                 pass
-        buffer.close()
-    return pdf_bytes
-
 
 async def generate_signed_sj_pdf_for_order(
     db,
@@ -1663,6 +1562,8 @@ async def generate_signed_sj_pdf_for_order(
         return None, "driver_signature_bytes_missing"
 
     try:
+        from services.print_design_settings import get_print_design_for_pdf
+        design = await get_print_design_for_pdf(db, branch_id=(delivery or {}).get("branch_id"))
         pdf_bytes = generate_sales_delivery_pdf_bytes(
             delivery,
             None,
@@ -1674,6 +1575,7 @@ async def generate_signed_sj_pdf_for_order(
                 order, driver_sig=driver_sig, delivery=delivery, user=user
             ),
             driver_signed_at=(driver_sig or {}).get("driver_signed_at"),
+            design=design,
         )
     except Exception:
         logger.exception("signed SJ PDF generate failed")

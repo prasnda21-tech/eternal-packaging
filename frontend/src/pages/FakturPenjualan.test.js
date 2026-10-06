@@ -147,4 +147,48 @@ describe("Faktur Penjualan UI & Navigation Suite", () => {
     expect(pageSrc).toMatch(/priceMissingAny/);
     expect(pageSrc).toMatch(/FormSection/);
   });
+
+  test("draft invoice qty is an input and finalized or cancelled qty stays display-only", () => {
+    expect(pageSrc).toMatch(/detail-qty-input-\$\{li\.line_idx\}/);
+    expect(pageSrc).toMatch(/canEditFinancial \?/);
+    expect(pageSrc).toMatch(/detail-qty-text-\$\{li\.line_idx\}/);
+    expect(pageSrc).toMatch(/financialLocked = Boolean\(detailData\) && detailStatus !== "draft"/);
+    expect(pageSrc).toMatch(/min=\{1\}/);
+    expect(pageSrc).toMatch(/max=\{li\.maxQty/);
+  });
+
+  test("draft qty cap is shown from backend metadata and save sends the edited qty", () => {
+    expect(pageSrc).toMatch(/Qty PO:/);
+    expect(pageSrc).toMatch(/Sudah difakturkan lainnya:/);
+    expect(pageSrc).toMatch(/Maksimum Faktur ini:/);
+    expect(pageSrc).toMatch(/li\.po_qty/);
+    expect(pageSrc).toMatch(/li\.other_active_invoiced_qty/);
+    expect(pageSrc).toMatch(/li\.max_qty/);
+    expect(pageSrc).toMatch(/detail-qty-cap-/);
+    expect(pageSrc).toMatch(/quantity: qty/);
+    expect(pageSrc).toMatch(/setDetailQuantities/);
+  });
+
+  test("over-limit draft save and finalize show Eternal wording", () => {
+    expect(pageSrc).toMatch(/Qty Faktur melebihi sisa Qty Pesanan Penjualan\./);
+    expect(pageSrc).toMatch(/Qty Faktur melebihi sisa Qty Pesanan Penjualan\. Sesuaikan Qty Faktur sebelum Finalisasi\./);
+    expect(pageSrc).toMatch(/FAKTUR_QTY_MELEBIHI_SISA_PO/);
+    expect(pageSrc).toMatch(/DRAFT_QTY_OVER_MESSAGE/);
+    expect(pageSrc).toMatch(/FINALIZE_QTY_OVER_MESSAGE/);
+    expect(pageSrc).toMatch(/detail-qty-over-/);
+    expect(pageSrc).not.toMatch(/aggregate/);
+    expect(pageSrc).not.toMatch(/non-cancelled/);
+    expect(pageSrc).not.toMatch(/remaining capacity/);
+  });
+
+  test("draft financial fields, official PDF, and Proforma lifecycle stay in place", () => {
+    expect(pageSrc).toMatch(/disabled=\{!canEditFinancial\}/);
+    expect(pageSrc).toMatch(/btn-print-pdf-detail/);
+    expect(pageSrc).toMatch(/Cetak PDF/);
+    expect(pageSrc).toMatch(/btn-finalize-invoice/);
+    expect(pageSrc).not.toMatch(/proforma/i);
+    const proformaSrc = fs.readFileSync(path.join(__dirname, "../components/poDetail/ProformaInvoiceDocRow.jsx"), "utf8");
+    expect(proformaSrc).toMatch(/Proforma/);
+    expect(proformaSrc).not.toMatch(/detail-qty-input/);
+  });
 });

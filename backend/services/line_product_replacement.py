@@ -20,6 +20,13 @@ from typing import Any, Dict, List, Optional, Tuple
 from fastapi import HTTPException
 
 from quantity_rules import is_print_line
+from services.delivery_loading_gate import po_is_fully_delivered
+from services.line_qty_commitment import (
+    MSG_PENDING,
+    MSG_QTY_DELIVERED,
+    committed_qty_from_context,
+    load_line_commitment_context,
+)
 from workflow_gates import sample_uploaded
 
 REASON_SAMPLE = "ITEM_SUDAH_MASUK_SAMPEL_CETAK"
@@ -56,6 +63,7 @@ MSG_NOT_FOUND = "Produk target tidak ditemukan di Barang/Jasa."
 MSG_SAME = "Produk pengganti sama dengan barang saat ini."
 MSG_INVALID_LINE = "Line item tidak ditemukan."
 MSG_CANCELLED = "PO dibatalkan — barang tidak dapat diganti."
+MSG_QTY_CANCELLED = "PO dibatalkan — qty tidak dapat diubah."
 
 # Product-derived fields mirrored from create_sales_order / PesananPenjualan mapping.
 PRODUCT_DERIVED_FIELDS = (
@@ -211,95 +219,157 @@ async def gather_downstream_sources(db, order: dict, line_idx: int) -> List[str]
     return out
 
 
+def _safe_line_qty(li: Optional[dict]) -> int:
+    try:
+        return max(0, int((li or {}).get("quantity") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _invalid_line_payload(line_idx: Any) -> Dict[str, Any]:
+    return {
+        "allowed": False,
+        "product_replace_allowed": False,
+        "product_replace_reason": MSG_INVALID_LINE,
+        "reason_code": REASON_INVALID_LINE,
+        "reason_message": MSG_INVALID_LINE,
+        "line_idx": line_idx,
+        "production_process": None,
+        "current_product": None,
+        "downstream_sources": [],
+        "qty_edit_allowed": False,
+        "qty_edit_reason": MSG_INVALID_LINE,
+        "qty_increase_allowed": False,
+        "qty_increase_reason": None,
+        "current_qty": 0,
+        "committed_qty": 0,
+        "editable_remaining": 0,
+        "min_qty": 0,
+        "max_qty": 0,
+    }
+
+
+def _with_qty_edit(
+    payload: Dict[str, Any],
+    li: Optional[dict],
+    breakdown: Dict[str, Any],
+    *,
+    cancelled: bool,
+    order: Optional[dict] = None,
+) -> Dict[str, Any]:
+    """Keep `allowed` as the product-replacement flag. Qty is a separate capability.
+
+    Decrease stays on the committed floor. Increase has no artificial maximum
+    unless the order is already fully delivered.
+    """
+    current_qty = _safe_line_qty(li)
+    committed = max(0, int(breakdown.get("committed_qty") or 0))
+    pending = bool(breakdown.get("pending_stock_claim"))
+    delivered = po_is_fully_delivered(order or {})
+    qty_reason = None
+    qty_allowed = True
+    if cancelled:
+        qty_allowed = False
+        qty_reason = MSG_QTY_CANCELLED
+    elif pending:
+        qty_allowed = False
+        qty_reason = MSG_PENDING
+    elif committed > current_qty:
+        qty_allowed = False
+        qty_reason = "Qty terikat sudah melebihi qty pesanan."
+    increase_allowed = bool(qty_allowed) and not delivered
+    product_allowed = bool(payload.get("allowed"))
+    payload["product_replace_allowed"] = product_allowed
+    payload["product_replace_reason"] = None if product_allowed else payload.get("reason_message")
+    payload["qty_edit_allowed"] = qty_allowed
+    payload["qty_edit_reason"] = qty_reason
+    payload["qty_increase_allowed"] = increase_allowed
+    payload["qty_increase_reason"] = MSG_QTY_DELIVERED if qty_allowed and delivered else None
+    payload["current_qty"] = current_qty
+    payload["committed_qty"] = committed
+    payload["editable_remaining"] = max(0, current_qty - committed)
+    payload["min_qty"] = committed
+    payload["max_qty"] = None if increase_allowed else current_qty
+    return payload
+
+
 async def evaluate_line_product_replacement(
     db,
     order: dict,
     line_idx: int,
+    *,
+    commitment_ctx: Optional[dict] = None,
 ) -> Dict[str, Any]:
-    """Authoritative can_replace_product(order, line_idx)."""
+    """Authoritative can_replace_product(order, line_idx).
+
+    `allowed` remains product replacement. Quantity correction is reported
+    separately and is not closed by stock identity, sample, SJ, loading,
+    or delivery confirmation.
+    """
     lis = order.get("line_items") or []
     try:
         idx = int(line_idx)
     except (TypeError, ValueError):
-        return {
-            "allowed": False,
-            "reason_code": REASON_INVALID_LINE,
-            "reason_message": MSG_INVALID_LINE,
-            "line_idx": line_idx,
-            "production_process": None,
-            "current_product": None,
-            "downstream_sources": [],
-        }
+        return _invalid_line_payload(line_idx)
 
     if idx < 0 or idx >= len(lis):
-        return {
-            "allowed": False,
-            "reason_code": REASON_INVALID_LINE,
-            "reason_message": MSG_INVALID_LINE,
-            "line_idx": idx,
-            "production_process": None,
-            "current_product": None,
-            "downstream_sources": [],
-        }
+        return _invalid_line_payload(idx)
 
     li = lis[idx] if isinstance(lis[idx], dict) else {}
     process = line_production_process(li)
     current = current_product_snapshot(li)
+    if commitment_ctx is not None:
+        ctx = commitment_ctx
+    else:
+        # Shared per-order read, attached only to the evaluation view so the
+        # existing three-argument call shape stays intact.
+        embedded = order.get("_line_commitment_ctx") if isinstance(order, dict) else None
+        ctx = embedded if embedded is not None else await load_line_commitment_context(db, order)
+    breakdown = committed_qty_from_context(order, idx, ctx)
+    cancelled = bool(order.get("cancelled"))
 
-    if order.get("cancelled"):
-        return {
-            "allowed": False,
-            "reason_code": REASON_CANCELLED,
-            "reason_message": MSG_CANCELLED,
-            "line_idx": idx,
-            "production_process": process,
-            "current_product": current,
-            "downstream_sources": [],
-        }
+    def finish(allowed: bool, code: Optional[str], message: Optional[str], downstream: List[str]) -> Dict[str, Any]:
+        return _with_qty_edit(
+            {
+                "allowed": allowed,
+                "reason_code": code,
+                "reason_message": message,
+                "line_idx": idx,
+                "production_process": process,
+                "current_product": current,
+                "downstream_sources": downstream,
+            },
+            li,
+            breakdown,
+            cancelled=cancelled,
+            order=order,
+        )
+
+    if cancelled:
+        return finish(False, REASON_CANCELLED, MSG_CANCELLED, [])
 
     downstream = await gather_downstream_sources(db, order, idx)
     if downstream:
-        return {
-            "allowed": False,
-            "reason_code": REASON_DOWNSTREAM,
-            "reason_message": message_for_downstream(downstream),
-            "line_idx": idx,
-            "production_process": process,
-            "current_product": current,
-            "downstream_sources": downstream,
-        }
+        return finish(False, REASON_DOWNSTREAM, message_for_downstream(downstream), downstream)
 
     if process == "print" and sample_uploaded(order):
-        return {
-            "allowed": False,
-            "reason_code": REASON_SAMPLE,
-            "reason_message": MSG_SAMPLE,
-            "line_idx": idx,
-            "production_process": process,
-            "current_product": current,
-            "downstream_sources": [],
-        }
+        return finish(False, REASON_SAMPLE, MSG_SAMPLE, [])
 
-    return {
-        "allowed": True,
-        "reason_code": None,
-        "reason_message": None,
-        "line_idx": idx,
-        "production_process": process,
-        "current_product": current,
-        "downstream_sources": [],
-    }
+    return finish(True, None, None, [])
 
 
 async def evaluate_all_line_product_replacements(db, order: dict) -> List[Dict[str, Any]]:
     lis = order.get("line_items") or []
     if not lis:
         return []
-    # Read-only eligibility checks are independent per exact line. Running
-    # them concurrently preserves result order while avoiding an N-line
-    # database waterfall on every PO detail load (web and operational PWA).
+    # Invoice and stock reads are per order. Product locks stay per line.
+    # The context rides on a shallow copy so callers that replace
+    # evaluate_line_product_replacement still see (db, order, line_idx).
+    ctx = await load_line_commitment_context(db, order)
+    view = dict(order)
+    view["_line_commitment_ctx"] = ctx
     return list(await asyncio.gather(*(
-        evaluate_line_product_replacement(db, order, i)
+        evaluate_line_product_replacement(db, view, i)
         for i in range(len(lis))
     )))
 

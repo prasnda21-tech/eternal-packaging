@@ -1489,3 +1489,73 @@ async def test_hard_stop_partial_reservation_recovers_and_stale_worker_cannot_de
         fresh = await server.db[PERIODS].find_one({"id": period["id"]}, {"_id": 0, "status": 1})
         assert fresh["status"] == STATUS_APPROVAL
         assert await server.db[BONUS_DAYS].count_documents({"period_id": period["id"], "status": "held"}) == 6
+
+
+@pytest.mark.anyio
+async def test_prepare_piece_from_gaji_operator_reuses_range_without_side_effects():
+    _admin()
+    await _wage_config()
+    async with _client() as c:
+        piece, uid = await _person(c, name="Budi Siapkan", basis="piece")
+        src = await _output(server.db, user_id=uid, qty=120, work_date=_day(3), rate=100)
+        start, end = _day(1), _day(6)
+        first = await c.post("/api/hr-payroll/piece-periods/from-gaji-operator", json={
+            "date_from": start,
+            "date_to": end,
+        })
+        assert first.status_code == 200, first.text
+        body = first.json()
+        period = body["period"]
+        assert body["created"] is True
+        assert body["reused"] is False
+        assert period["period_scope"] == "piece"
+        assert period["start_date"] == start
+        assert period["end_date"] == end
+        assert period["piece_bonus"]["start_date"] == start
+        assert period["piece_bonus"]["end_date"] == end
+        assert period["piece_prepared_from"] == "gaji_operator"
+        assert period["status"] == STATUS_DRAFT
+        assert await server.db[WAGE_CLAIMS].count_documents({}) == 0
+        assert await server.db[WAGE_CLAIMS].count_documents({"source_key": src["source_key"]}) == 0
+        assert await server.db.journal_entries.count_documents({}) == 0
+        assert await server.db.hr_payroll_payments.count_documents({}) == 0
+
+        second = await c.post("/api/hr-payroll/piece-periods/from-gaji-operator", json={
+            "from": start,
+            "to": end,
+        })
+        assert second.status_code == 200, second.text
+        again = second.json()
+        assert again["created"] is False
+        assert again["reused"] is True
+        assert "sudah tersedia" in again["message"]
+        assert again["period"]["id"] == period["id"]
+        assert await server.db[PERIODS].count_documents({
+            "period_scope": "piece", "start_date": start, "end_date": end,
+        }) == 1
+        assert await server.db[WAGE_CLAIMS].count_documents({}) == 0
+        assert await server.db.journal_entries.count_documents({}) == 0
+        assert await server.db.hr_payroll_payments.count_documents({}) == 0
+
+        other = await c.post("/api/hr-payroll/piece-periods/from-gaji-operator", json={
+            "date_from": _day(8),
+            "date_to": _day(10),
+        })
+        assert other.status_code == 200, other.text
+        assert other.json()["created"] is True
+        assert other.json()["period"]["id"] != period["id"]
+        assert other.json()["period"]["start_date"] == _day(8)
+        assert other.json()["period"]["piece_bonus"]["end_date"] == _day(10)
+
+        await _integrate(c, start)
+        calc = await _calc(c, period["id"])
+        assert calc.status_code == 200, calc.text
+        assert await server.db[WAGE_CLAIMS].count_documents({
+            "source_key": src["source_key"], "status": "held",
+        }) == 1
+        wage = next(
+            item for item in calc.json()["lines"][0]["earnings"] if item["code"] == "UPAH_BORONGAN"
+        )
+        assert to_money(wage["amount"]) == to_money(12000)
+        assert await server.db.journal_entries.count_documents({"source_type": "payroll_period"}) == 0
+        assert await server.db.hr_payroll_payments.count_documents({}) == 0

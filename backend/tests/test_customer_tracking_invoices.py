@@ -411,7 +411,8 @@ async def test_pdf_uses_customer_label_and_blocks_other_order_number():
     assert "inline" in pdf.headers["content-disposition"]
     text = _pdf_text(pdf.content)
     assert inv["invoice_number"] in text
-    assert "Belum lunas" in text
+    assert "Belum lunas" not in text
+    assert "BELUM DIBAYAR" not in text
     assert "catatan internal" not in text.lower()
 
 
@@ -571,7 +572,18 @@ async def test_public_pdf_forwards_sales_charges_and_stored_total():
     assert shipping["code"] not in ongkir_text
     ongkir_band = _phrase_band(ongkir_pages[0]["words"], "Ongkir")
     ppn_band = _phrase_band(ongkir_pages[0]["words"], "PPN (11.0%)")
-    total_band = _phrase_band(ongkir_pages[0]["words"], "GRAND TOTAL")
+    total_hits = []
+    ongkir_words = ongkir_pages[0]["words"]
+    for index, word in enumerate(ongkir_words):
+        if word["text"] != "Total":
+            continue
+        nxt = ongkir_words[index + 1]["text"] if index + 1 < len(ongkir_words) else ""
+        if nxt == "Harga":
+            continue
+        total_hits.append(word)
+    assert total_hits, "PDF is missing the summary Total"
+    total_word = max(total_hits, key=lambda item: item["top"])
+    total_band = {"top": total_word["top"], "bottom": total_word["bottom"]}
     assert _bands_separated(ppn_band, ongkir_band)
     assert _bands_separated(ongkir_band, total_band)
 

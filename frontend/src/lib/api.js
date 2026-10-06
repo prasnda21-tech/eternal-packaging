@@ -95,6 +95,7 @@ export const api = {
     client.delete(`/orders/${id}/design/files/${encodeURIComponent(fileId)}`).then((r) => r.data),
 
   addNote: (id, note) => client.post(`/orders/${id}/note`, { note }).then((r) => r.data),
+  updateNote: (id, note) => client.patch(`/orders/${id}/note`, { note }).then((r) => r.data),
   confirmLoading: (id, payload) => client.post(`/orders/${id}/loading-confirm`, payload).then((r) => r.data),
   confirmLoadingMatch: (id, payload, config) => client.post(`/orders/${id}/loading-confirm-match`, payload, config).then((r) => r.data),
   reportLoadingDiscrepancy: (id, payload) => client.post(`/orders/${id}/loading-report-discrepancy`, payload).then((r) => r.data),
@@ -565,6 +566,68 @@ export const api = {
   updateHppSettings: (payload) => client.put(`/settings/hpp`, payload).then((r) => r.data),
   physicalStockSettings: () => client.get(`/settings/physical-stock`).then((r) => r.data),
   updatePhysicalStockSettings: (payload) => client.put(`/settings/physical-stock`, payload).then((r) => r.data),
+  designCetakanSettings: () => client.get(`/settings/design-cetakan`).then((r) => r.data),
+  updateDesignCetakanSettings: (payload) => client.put(`/settings/design-cetakan`, payload).then((r) => r.data),
+  uploadDesignCetakanAsset: (slot, file) => {
+    const form = new FormData();
+    form.append("file", file);
+    return client
+      .post(`/settings/design-cetakan/assets/${encodeURIComponent(slot)}`, form)
+      .then((r) => r.data);
+  },
+  designCetakanAssetPreview: (slot, config = {}) =>
+    client
+      .get(`/settings/design-cetakan/assets/${encodeURIComponent(slot)}`, {
+        responseType: "blob",
+        ...config,
+      })
+      .then((r) => r.data),
+  removeDesignCetakanAsset: (slot) =>
+    client.delete(`/settings/design-cetakan/assets/${encodeURIComponent(slot)}`).then((r) => r.data),
+  designCetakanBranches: () => client.get(`/settings/design-cetakan/branches`).then((r) => r.data),
+  designCetakanBranch: (branchId) =>
+    client.get(`/settings/design-cetakan/branches/${encodeURIComponent(branchId)}`).then((r) => r.data),
+  updateDesignCetakanBranch: (branchId, payload) =>
+    client.put(`/settings/design-cetakan/branches/${encodeURIComponent(branchId)}`, payload).then((r) => r.data),
+  resetDesignCetakanBranch: (branchId) =>
+    client.delete(`/settings/design-cetakan/branches/${encodeURIComponent(branchId)}`).then((r) => r.data),
+  uploadDesignCetakanBranchAsset: (branchId, slot, file) => {
+    const form = new FormData();
+    form.append("file", file);
+    return client
+      .post(
+        `/settings/design-cetakan/branches/${encodeURIComponent(branchId)}/assets/${encodeURIComponent(slot)}`,
+        form,
+      )
+      .then((r) => r.data);
+  },
+  designCetakanBranchAssetPreview: (branchId, slot, config = {}) =>
+    client
+      .get(
+        `/settings/design-cetakan/branches/${encodeURIComponent(branchId)}/assets/${encodeURIComponent(slot)}`,
+        { responseType: "blob", ...config },
+      )
+      .then((r) => r.data),
+  removeDesignCetakanBranchAsset: (branchId, slot) =>
+    client
+      .delete(
+        `/settings/design-cetakan/branches/${encodeURIComponent(branchId)}/assets/${encodeURIComponent(slot)}`,
+      )
+      .then((r) => r.data),
+  previewDesignCetakan: (documentType, branchId) => {
+    const params = {};
+    if (branchId) params.branch_id = branchId;
+    return client
+      .get(`/settings/design-cetakan/preview/${encodeURIComponent(documentType)}`, {
+        params,
+        responseType: "blob",
+      })
+      .then((r) => r.data);
+  },
+  getDesignCetakanHistory: (params = {}) =>
+    client.get(`/settings/design-cetakan/history`, { params }).then((r) => r.data),
+  copyDesignCetakan: (payload) =>
+    client.post(`/settings/design-cetakan/copy`, payload).then((r) => r.data),
   listNotifications: (params = {}) => client.get(`/notifications`, { params }).then((r) => r.data),
   markNotificationRead: (id) => client.post(`/notifications/${encodeURIComponent(id)}/read`).then((r) => r.data),
   customerDesignApprovalNotificationSettings: () => client.get(`/settings/notifications/customer-design-approval`).then((r) => r.data),
@@ -781,6 +844,9 @@ export const api = {
   // ---- Sales Invoice (Faktur Penjualan) ----
 
   downloadSalesInvoicePdf: (id) => client.get(`/sales-invoices/${encodeURIComponent(id)}/pdf`, { responseType: "blob" }).then((r) => r.data),
+  downloadSalesOrderPdf: (id) => client.get(`/orders/${encodeURIComponent(id)}/pdf`, { responseType: "blob" }).then((r) => r.data),
+  getOrderProforma: (orderId) => client.get(`/orders/${encodeURIComponent(orderId)}/proforma`).then((r) => r.data),
+  downloadProformaInvoice: (id) => client.get(`/sales-invoices/${encodeURIComponent(id)}/proforma`, { responseType: "blob" }).then((r) => r.data),
   downloadSalesReceiptPdf: (id) => client.get(`/sales-receipts/${encodeURIComponent(id)}/pdf`, { responseType: "blob" }).then((r) => r.data),
   downloadSalesReceiptPaymentProof: (id, download = false, config = {}) =>
     client
@@ -868,6 +934,7 @@ export const api = {
   hrPayrollPieceIntegration: () => client.get(`/hr-payroll/piece-integration`).then((r) => r.data),
   hrPayrollSetPieceIntegration: (payload) => client.put(`/hr-payroll/piece-integration`, payload).then((r) => r.data),
   hrPayrollCreatePiecePeriod: (payload) => client.post(`/hr-payroll/piece-periods`, payload).then((r) => r.data),
+  hrPayrollPreparePieceFromGaji: (payload) => client.post(`/hr-payroll/piece-periods/from-gaji-operator`, payload).then((r) => r.data),
   hrPayrollSavePieceInputs: (id, payload) => client.put(`/hr-payroll/periods/${encodeURIComponent(id)}/piece-inputs`, payload).then((r) => r.data),
   hrPayrollPeriod: (id) => client.get(`/hr-payroll/periods/${encodeURIComponent(id)}`).then((r) => r.data),
   hrPayrollCalculate: (id) => client.post(`/hr-payroll/periods/${encodeURIComponent(id)}/calculate`).then((r) => r.data),

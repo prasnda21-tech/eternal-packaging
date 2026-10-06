@@ -99,9 +99,11 @@ def test_invoice_duplicate_lines_structure(monkeypatch):
     }
     generate_sales_invoice_pdf_bytes(invoice)
 
-    # Verify that the line items table has header + 2 distinct rows
-    # table_calls[2] is the items_tbl (header, meta, items, summary wrapper)
-    items_table_data = table_calls[2]
+    # The items table is the one whose header starts with Kode Barang.
+    items_table_data = next(
+        data for data in table_calls
+        if data and getattr(data[0][0], "text", "").find("Kode Barang") >= 0
+    )
     assert len(items_table_data) == 3 # Header + 2 data rows
     assert "Produk &lt;A&gt;" in items_table_data[1][1].text # Escaped
     assert "Produk &lt;A&gt;" in items_table_data[2][1].text

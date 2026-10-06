@@ -68,6 +68,16 @@ describe("Kas & Bank frontend contracts", () => {
     expect(src).toMatch(/className="num/);
     expect(src).toMatch(/empty-state/);
     expect(src).toMatch(/Trash2/);
+    expect(src).toMatch(/payrollAccountingSettings/);
+    expect(src).toMatch(/kb-payroll-expense-warning/);
+    expect(src).toMatch(/Akun ini digunakan oleh Payroll/);
+    expect(src).toMatch(/double expense/);
+    expect(src).toMatch(/kb-payroll-payable-block/);
+    expect(src).toMatch(/Payment Payroll/);
+    expect(src).toMatch(/payableBlocked/);
+    expect(src).toMatch(/expense_debit/);
+    expect(src).toMatch(/Simpan Draft/);
+    expect(src).toMatch(/form-counter/);
   });
 
   test("Daftar page full workspace list/form/detail", () => {

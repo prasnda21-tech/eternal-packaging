@@ -19,7 +19,7 @@ from fastapi import HTTPException
 from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
-from operator_analytics import wib_today
+from operator_analytics import line_item_name, line_matches_item, wib_today
 from services.hr_payroll import (
     EMPLOYEES,
     KASBON,
@@ -266,7 +266,10 @@ def _source_from(order, split, entry) -> dict:
     }
 
 
-async def collect_outputs(db, *, wage_start: str, wage_end: str, bonus_start: str, bonus_end: str, integration_start: str) -> dict:
+async def collect_outputs(
+    db, *, wage_start: str, wage_end: str, bonus_start: str, bonus_end: str, integration_start: str,
+    list_cap: int = 200,
+) -> dict:
     window_start = min(wage_start, bonus_start)
     window_end = max(wage_end, bonus_end)
     orders = await _load_orders(db, window_start, window_end)
@@ -346,7 +349,7 @@ async def collect_outputs(db, *, wage_start: str, wage_end: str, bonus_start: st
     return {
         "wage": wage_rows,
         "bonus": bonus_rows,
-        **_capped_lists(exclusions, blockers),
+        **_capped_lists(exclusions, blockers, cap=list_cap),
     }
 
 
@@ -1130,3 +1133,512 @@ async def save_piece_inputs(db, period: dict, payload: dict, user: dict) -> dict
     )
     fresh = await db[PERIODS].find_one({"id": period["id"]}, {"_id": 0})
     return public_period(fresh)
+
+
+PAYROLL_STATUS_BELUM = "BELUM_MASUK_PAYROLL"
+PAYROLL_STATUS_HELD = "HELD"
+PAYROLL_STATUS_POSTED = "POSTED"
+PAYROLL_STATUS_BLOCKED = "NOT_ELIGIBLE"
+_OUTSIDE_REASON = "di luar rentang upah dan bonus"
+ELIGIBILITY_REASON_LABELS = {
+    "Tanggal kerja tidak tersedia": "Tanpa tanggal kerja",
+    "tanpa tanggal pekerjaan": "Tanpa tanggal kerja",
+    "tanpa snapshot tarif": "Tanpa snapshot tarif",
+    "profil bukan pay_basis piece": "Profil HR belum piece",
+    "sebelum batas integrasi": "Sebelum batas integrasi",
+    "belum terhubung ke satu profil HR": "Belum terhubung ke profil HR",
+}
+_REPORT_LIST_CAP = 20000
+BONUS_STATUS_FINAL = "FINAL"
+BONUS_STATUS_USULAN = "USULAN"
+MISSING_WORK_DATE_REASON = "Tanggal kerja tidak tersedia"
+BONUS_NOTE = (
+    "Upah Eligible = qty × rate_per_pcs snapshot, sama dengan upah borongan payroll. "
+    "Tambahan produk tidak ditambahkan lagi. "
+    "Bonus Usulan belum final dan tidak masuk Total Payroll. "
+    "Total Payroll memuat bonus hanya bila nominal BONUS_OPERATOR final pada baris payroll cocok dengan rentang dan qty ini."
+)
+
+
+def _status_from_claim(claim_status: Optional[str]) -> str:
+    if claim_status == POSTED:
+        return PAYROLL_STATUS_POSTED
+    if claim_status == HELD:
+        return PAYROLL_STATUS_HELD
+    return PAYROLL_STATUS_BELUM
+
+
+def _claim_by_source(claims: List[dict]) -> Dict[str, str]:
+    rank = {HELD: 1, POSTED: 2}
+    out: Dict[str, str] = {}
+    for row in claims or []:
+        key = str((row or {}).get("source_key") or "")
+        status = str((row or {}).get("status") or "")
+        if not key or status not in ACTIVE_CLAIM:
+            continue
+        previous = out.get(key)
+        if previous is None or rank.get(status, 0) >= rank.get(previous, 0):
+            out[key] = status
+    return out
+
+
+def _work_in_range(row: dict, start: str, end: str) -> bool:
+    work_date = str((row or {}).get("work_date") or "")[:10]
+    return bool(work_date) and start <= work_date <= end
+
+
+def _line_bits(order: dict, line_idx: Any) -> dict:
+    lis = (order or {}).get("line_items") or []
+    try:
+        idx = int(line_idx)
+    except (TypeError, ValueError):
+        idx = -1
+    li = lis[idx] if 0 <= idx < len(lis) else {}
+    name = str(li.get("name") or li.get("item_name") or "").strip() or line_item_name(order or {}, line_idx)
+    return {
+        "item_code": str(li.get("item_code") or "").strip(),
+        "item_name": name,
+        "accurate_item_id": str(li.get("accurate_item_id") or "").strip(),
+        "line_idx": line_idx,
+    }
+
+
+def _split_on(order: dict, split_id: str) -> dict:
+    for split in (order or {}).get("operator_splits") or []:
+        if str(split.get("id") or "") == str(split_id or ""):
+            return split
+    return {}
+
+
+def _has_work_date(row: dict) -> bool:
+    return len(str((row or {}).get("work_date") or "")[:10]) == 10
+
+
+def _keep_for_report(row: dict, start: str, end: str) -> bool:
+    """Dated rows stay inside the filter. Undated rows stay visible and undated.
+
+    A sibling output in range does not assign them a payroll date.
+    """
+    if not _has_work_date(row):
+        return True
+    if str(row.get("reason") or "") == _OUTSIDE_REASON:
+        return False
+    if _work_in_range(row, start, end):
+        return True
+    return bool(row.get("in_wage_range") or row.get("in_bonus_range"))
+
+
+def _bonus_operator_match(stored: Optional[dict], qty_bonus: int, start: str, end: str) -> Optional[Decimal]:
+    """Final BONUS_OPERATOR only when the stored snapshot is this exact view."""
+    if not stored:
+        return None
+    earnings = stored.get("earnings") or []
+    if not any(str((row or {}).get("code") or "").upper() == CODE_BONUS for row in earnings if isinstance(row, dict)):
+        return None
+    snap = stored.get("bonus_snapshot") or {}
+    if str(snap.get("start_date") or "") != start or str(snap.get("end_date") or "") != end:
+        return None
+    try:
+        stored_qty = int(snap.get("base_qty"))
+    except (TypeError, ValueError):
+        return None
+    if stored_qty != int(qty_bonus):
+        return None
+    return to_money(snap.get("final_amount"))
+
+
+def _passes_filters(row: dict, order: dict, operator_ids: Optional[List[str]], item: Optional[str]) -> bool:
+    if operator_ids:
+        identity = {
+            str(row.get("operator_user_id") or ""),
+            str(row.get("operator_email") or ""),
+            str(row.get("operator_name") or ""),
+            str(row.get("operator") or ""),
+        }
+        identity.discard("")
+        if not identity.intersection(set(operator_ids)):
+            return False
+    if item and str(item).strip() and str(item).strip().lower() not in ("all", "*"):
+        if not line_matches_item(order, row.get("line_idx"), item):
+            return False
+    return True
+
+
+def _group_key(row: dict) -> str:
+    return (
+        str(row.get("operator_user_id") or "").strip()
+        or str(row.get("employee_id") or "").strip()
+        or f"name:{str(row.get('operator_name') or '').strip()}"
+        or str(row.get("source_key") or "")
+    )
+
+
+def _summary_status(rows: List[dict]) -> str:
+    eligible = [row for row in rows if row.get("payroll_status") != PAYROLL_STATUS_BLOCKED]
+    if not eligible:
+        return PAYROLL_STATUS_BLOCKED if rows else ""
+    for status in (PAYROLL_STATUS_BELUM, PAYROLL_STATUS_HELD, PAYROLL_STATUS_POSTED):
+        if any(row.get("payroll_status") == status for row in eligible):
+            return status
+    return str(eligible[0].get("payroll_status") or "")
+
+
+def eligibility_summary_from_rows(rows: List[dict]) -> dict:
+    """Group NOT_ELIGIBLE report rows by existing payroll_reason. Rules are unchanged."""
+    blocked = [row for row in rows if row.get("payroll_status") == PAYROLL_STATUS_BLOCKED]
+    counts: Dict[str, int] = {}
+    for row in blocked:
+        reason = str(row.get("payroll_reason") or "tidak eligible").strip() or "tidak eligible"
+        counts[reason] = counts.get(reason, 0) + 1
+    by_reason = [
+        {
+            "reason": reason,
+            "label": ELIGIBILITY_REASON_LABELS.get(reason, reason),
+            "count": count,
+        }
+        for reason, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    ]
+    return {"total": len(blocked), "by_reason": by_reason}
+
+
+def assemble_gaji_operator_rows(
+    found: dict,
+    claims: List[dict],
+    *,
+    start: str,
+    end: str,
+    orders: Dict[str, dict],
+    operator_ids: Optional[List[str]] = None,
+    item: Optional[str] = None,
+    bonus_by_employee: Optional[Dict[str, dict]] = None,
+    bonus_config: Optional[dict] = None,
+) -> dict:
+    """Shape canonical collect_outputs rows for the read-only Gaji Operator report.
+
+    Wage amounts are the collect_outputs amounts. This function does not rate
+    rows again and does not write claims.
+    """
+    claim_map = _claim_by_source(claims)
+    bonus_by_employee = bonus_by_employee or {}
+
+    def present(raw: dict, *, eligible: bool, apply_filters: bool) -> Optional[dict]:
+        order = orders.get(str(raw.get("order_id") or "")) or {}
+        split = _split_on(order, str(raw.get("split_id") or ""))
+        bits = _line_bits(order, split.get("line_idx"))
+        row = {
+            **raw,
+            "operator_email": str(split.get("operator_email") or ""),
+            "operator_name": raw.get("operator_name") or split.get("operator_name") or "",
+            **bits,
+        }
+        if not _keep_for_report(row, start, end):
+            return None
+        if apply_filters and not _passes_filters(row, order, operator_ids, item):
+            return None
+        claim_status = claim_map.get(str(row.get("source_key") or ""))
+        if not _has_work_date(row):
+            status = PAYROLL_STATUS_BLOCKED
+            reason = MISSING_WORK_DATE_REASON
+        elif eligible and row.get("has_rate"):
+            status = _status_from_claim(claim_status)
+            reason = ""
+        elif claim_status:
+            status = _status_from_claim(claim_status)
+            reason = str(row.get("reason") or "")
+        else:
+            status = PAYROLL_STATUS_BLOCKED
+            reason = str(row.get("reason") or "tidak eligible")
+        amount = money_float(row.get("amount")) if status != PAYROLL_STATUS_BLOCKED else 0.0
+        if status == PAYROLL_STATUS_BLOCKED:
+            amount = 0.0
+        qty = int(row.get("qty") or 0)
+        return {
+            "source_key": row.get("source_key") or "",
+            "order_id": row.get("order_id") or "",
+            "split_id": row.get("split_id") or "",
+            "action_id": row.get("action_id") or "",
+            "po_number": row.get("po_number") or "",
+            "operator_user_id": row.get("operator_user_id") or "",
+            "operator_id": row.get("operator_user_id") or row.get("operator_email") or "",
+            "operator_email": row.get("operator_email") or "",
+            "operator": row.get("employee_name") or row.get("operator_name") or row.get("operator_user_id") or "",
+            "operator_name": row.get("operator_name") or "",
+            "employee_id": row.get("employee_id") or "",
+            "employee_name": row.get("employee_name") or "",
+            "tanggal": str(row.get("work_date") or "")[:10],
+            "date": str(row.get("work_date") or "")[:10],
+            "work_date": str(row.get("work_date") or "")[:10],
+            "qty_completed": qty,
+            "qty": qty,
+            "rate_per_pcs": row.get("rate_per_pcs") if row.get("has_rate") else "",
+            "base_rate_per_pcs": row.get("rate_per_pcs") if row.get("has_rate") else "",
+            "addition_per_pcs": 0,
+            "base_wage": amount,
+            "product_addition": 0,
+            "total_upah": amount,
+            "item_code": bits["item_code"],
+            "item_name": bits["item_name"],
+            "accurate_item_id": bits["accurate_item_id"],
+            "line_idx": bits["line_idx"],
+            "payroll_status": status,
+            "payroll_reason": reason,
+            "rate_unset": status == PAYROLL_STATUS_BLOCKED and reason == "tanpa snapshot tarif",
+            "rate_source": "entry_snapshot" if row.get("has_rate") else "",
+        }
+
+    def collect(apply_filters: bool) -> List[dict]:
+        chosen: List[dict] = []
+        seen = set()
+        for raw in found.get("wage") or []:
+            row = present(raw, eligible=True, apply_filters=apply_filters)
+            if row and row["source_key"] not in seen:
+                seen.add(row["source_key"])
+                chosen.append(row)
+        for bucket in ("blockers", "exclusions"):
+            for raw in found.get(bucket) or []:
+                row = present(raw, eligible=False, apply_filters=apply_filters)
+                if row and row["source_key"] not in seen:
+                    seen.add(row["source_key"])
+                    chosen.append(row)
+        return chosen
+
+    catalog = collect(False)
+    visible = collect(True)
+
+    bonus_qty: Dict[str, int] = {}
+    for raw in found.get("bonus") or []:
+        order = orders.get(str(raw.get("order_id") or "")) or {}
+        split = _split_on(order, str(raw.get("split_id") or ""))
+        probed = {**raw, "operator_email": str(split.get("operator_email") or ""), "line_idx": split.get("line_idx")}
+        if not _work_in_range(probed, start, end):
+            continue
+        if not _passes_filters(probed, order, operator_ids, item):
+            continue
+        employee_id = str(raw.get("employee_id") or "")
+        if employee_id:
+            bonus_qty[employee_id] = bonus_qty.get(employee_id, 0) + int(raw.get("qty") or 0)
+
+    grouped: Dict[str, List[dict]] = {}
+    for row in visible:
+        grouped.setdefault(_group_key(row), []).append(row)
+
+    people = []
+    for key, rows in grouped.items():
+        eligible = [row for row in rows if row["payroll_status"] != PAYROLL_STATUS_BLOCKED]
+        base = sum((to_money(row["base_wage"]) for row in eligible), Decimal("0"))
+        employee_ids = [str(row.get("employee_id") or "") for row in rows if row.get("employee_id")]
+        employee_id = employee_ids[0] if employee_ids else ""
+        qty_bonus = bonus_qty.get(employee_id, 0) if employee_id else 0
+        proposed = to_money(compute_bonus(qty_bonus, bonus_config))
+        final_bonus = _bonus_operator_match(
+            bonus_by_employee.get(employee_id) if employee_id else None,
+            qty_bonus,
+            start,
+            end,
+        )
+        if final_bonus is not None:
+            bonus = final_bonus
+            bonus_final = final_bonus
+            bonus_source = "payroll_line"
+            bonus_status = BONUS_STATUS_FINAL
+            payroll_total = base + final_bonus
+        else:
+            bonus = proposed
+            bonus_final = Decimal("0")
+            bonus_source = "proposed"
+            bonus_status = BONUS_STATUS_USULAN
+            payroll_total = base
+        head = rows[0]
+        counts: Dict[str, int] = {}
+        for row in rows:
+            counts[row["payroll_status"]] = counts.get(row["payroll_status"], 0) + 1
+        people.append({
+            "id": key,
+            "operator_user_id": head.get("operator_user_id") or "",
+            "email": head.get("operator_email") or head.get("operator_user_id") or "",
+            "name": head.get("operator") or head.get("operator_name") or key,
+            "employee_id": employee_id,
+            "qty": sum(int(row["qty_completed"] or 0) for row in eligible),
+            "blocked_qty": sum(int(row["qty_completed"] or 0) for row in rows if row["payroll_status"] == PAYROLL_STATUS_BLOCKED),
+            "base_wage": money_float(base),
+            "product_addition": 0,
+            "bonus": money_float(bonus),
+            "bonus_source": bonus_source,
+            "bonus_status": bonus_status,
+            "bonus_proposed_amount": money_float(proposed),
+            "bonus_final_amount": money_float(bonus_final),
+            "total_upah": money_float(payroll_total),
+            "total_payroll": money_float(payroll_total),
+            "estimate_total": money_float(base + proposed if bonus_status == BONUS_STATUS_USULAN else payroll_total),
+            "wage_basis": money_float(base),
+            "payroll_status": _summary_status(rows),
+            "payroll_counts": counts,
+            "rate_unset": any(row.get("rate_unset") for row in rows),
+        })
+    people.sort(key=lambda row: (row.get("name") or "", row.get("id") or ""))
+    visible.sort(key=lambda row: (row.get("tanggal") or "", row.get("operator") or "", row.get("source_key") or ""))
+
+    operators: Dict[str, dict] = {}
+    items: Dict[str, dict] = {}
+    for row in catalog:
+        op_key = row.get("operator_user_id") or row.get("operator_email") or row.get("operator")
+        if op_key and op_key not in operators:
+            operators[op_key] = {
+                "id": row.get("operator_user_id") or row.get("operator_email") or op_key,
+                "operator_user_id": row.get("operator_user_id") or "",
+                "email": row.get("operator_email") or "",
+                "name": row.get("operator") or row.get("operator_name") or op_key,
+            }
+        item_key = row.get("item_code") or row.get("item_name")
+        if item_key and item_key not in items:
+            items[item_key] = {
+                "item_code": row.get("item_code") or "",
+                "item_name": row.get("item_name") or "",
+                "accurate_item_id": row.get("accurate_item_id") or "",
+            }
+    blocked = [row for row in visible if row["payroll_status"] == PAYROLL_STATUS_BLOCKED]
+    return {
+        "rows": visible,
+        "people": people,
+        "filters": {
+            "operators": sorted(operators.values(), key=lambda row: row.get("name") or ""),
+            "items": sorted(items.values(), key=lambda row: (row.get("item_code") or "", row.get("item_name") or "")),
+        },
+        "not_eligible_count": len(blocked),
+        "eligibility_summary": eligibility_summary_from_rows(visible),
+        "missing_base_rate": sorted({row.get("operator") or row.get("operator_user_id") for row in blocked if row.get("rate_unset")}),
+        "read_only": True,
+        "canonical_source": "progress_entries.work_date.rate_per_pcs",
+    }
+
+
+async def _orders_for_display(db, order_ids: List[str]) -> Dict[str, dict]:
+    if not order_ids:
+        return {}
+    docs = await db.orders.find(
+        {"id": {"$in": order_ids}},
+        {"_id": 0, "id": 1, "line_items": 1, "operator_splits": 1, "po_number": 1, "product_name": 1},
+    ).to_list(5000)
+    return {str(doc.get("id") or ""): doc for doc in docs}
+
+
+async def _claims_for_keys(db, source_keys: List[str]) -> List[dict]:
+    if not source_keys:
+        return []
+    return await db[WAGE_CLAIMS].find(
+        {"source_key": {"$in": source_keys}, "status": {"$in": list(ACTIVE_CLAIM)}},
+        {"_id": 0, "source_key": 1, "status": 1, "period_id": 1},
+    ).to_list(len(source_keys) + 1)
+
+
+async def _stored_bonus(db, employee_ids: List[str], start: str, end: str) -> Dict[str, dict]:
+    if not employee_ids:
+        return {}
+    rows = await db[LINES].find(
+        {
+            "employee_id": {"$in": employee_ids},
+            "bonus_snapshot.start_date": start,
+            "bonus_snapshot.end_date": end,
+        },
+        {"_id": 0, "employee_id": 1, "bonus_snapshot": 1, "earnings": 1, "updated_at": 1},
+    ).to_list(5000)
+    chosen: Dict[str, dict] = {}
+    for row in rows:
+        employee_id = str(row.get("employee_id") or "")
+        previous = chosen.get(employee_id)
+        if previous is None or str(row.get("updated_at") or "") >= str(previous.get("updated_at") or ""):
+            chosen[employee_id] = row
+    return chosen
+
+
+async def build_gaji_operator_report(
+    db,
+    *,
+    date_from: date,
+    date_to: date,
+    operator_ids: Optional[List[str]] = None,
+    item: Optional[str] = None,
+) -> dict:
+    """Read-only Gaji Operator view. Uses collect_outputs. Does not write."""
+    start = date_from.isoformat()
+    end = date_to.isoformat()
+    if end < start:
+        raise HTTPException(400, "Tanggal akhir tidak boleh lebih kecil dari tanggal mulai.")
+    integration = await get_integration(db)
+    found = await collect_outputs(
+        db,
+        wage_start=start,
+        wage_end=end,
+        bonus_start=start,
+        bonus_end=end,
+        integration_start=str(integration.get("start_date") or ""),
+        list_cap=_REPORT_LIST_CAP,
+    )
+    order_ids = sorted({
+        str(row.get("order_id") or "")
+        for bucket in ("wage", "bonus", "blockers", "exclusions")
+        for row in (found.get(bucket) or [])
+        if row.get("order_id")
+    })
+    orders = await _orders_for_display(db, order_ids)
+    source_keys = [str(row.get("source_key") or "") for row in (found.get("wage") or []) if row.get("source_key")]
+    for bucket in ("blockers", "exclusions"):
+        for row in found.get(bucket) or []:
+            if row.get("source_key"):
+                source_keys.append(str(row["source_key"]))
+    claims = await _claims_for_keys(db, source_keys)
+    employee_ids = sorted({
+        str(row.get("employee_id") or "")
+        for row in (found.get("bonus") or [])
+        if row.get("employee_id")
+    })
+    stored_bonus = await _stored_bonus(db, employee_ids, start, end)
+    wage_doc = await db.app_settings.find_one({"key": WAGE_SETTINGS_KEY}, {"_id": 0}) or {}
+    bonus_config = effective_bonus_as_of(date_to, normalize_wage_settings(wage_doc))
+    assembled = assemble_gaji_operator_rows(
+        found,
+        claims,
+        start=start,
+        end=end,
+        orders=orders,
+        operator_ids=operator_ids or None,
+        item=item,
+        bonus_by_employee=stored_bonus,
+        bonus_config=bonus_config,
+    )
+    people = assembled["people"]
+    rows = assembled["rows"]
+    eligible = [row for row in rows if row.get("payroll_status") != PAYROLL_STATUS_BLOCKED]
+    missing = assembled["missing_base_rate"]
+    payroll_total = sum(person["total_payroll"] for person in people)
+    return {
+        "rows": rows,
+        "people": people,
+        "kpis": {
+            "output": sum(int(row.get("qty_completed") or 0) for row in eligible),
+            "base_wage": sum(person["wage_basis"] for person in people),
+            "product_addition": 0,
+            "bonus": sum(person["bonus_final_amount"] for person in people),
+            "bonus_proposed": sum(
+                person["bonus_proposed_amount"] for person in people
+                if person.get("bonus_status") == BONUS_STATUS_USULAN
+            ),
+            "total_upah": payroll_total,
+            "total_payroll": payroll_total,
+            "estimate_total": sum(person["estimate_total"] for person in people),
+            "operator_count": len(people),
+        },
+        "filters": assembled["filters"],
+        "period": {"from": start, "to": end},
+        "read_only": True,
+        "canonical_source": assembled["canonical_source"],
+        "bonus_note": BONUS_NOTE,
+        "not_eligible_count": assembled["not_eligible_count"],
+        "eligibility_summary": assembled["eligibility_summary"],
+        "missing_base_rate": missing,
+        "missing_base_rate_message": (
+            "Output tanpa snapshot tarif tidak masuk payroll borongan"
+            if missing else None
+        ),
+        "source": "collect_outputs progress_entries",
+    }

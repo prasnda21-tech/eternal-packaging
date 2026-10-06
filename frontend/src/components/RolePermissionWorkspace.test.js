@@ -184,4 +184,53 @@ describe("RolePermissionWorkspace", () => {
     expect(onTogglePerm).not.toHaveBeenCalled();
     unmount();
   });
+
+  test("Role & Hak Akses lists Catatan Produksi permissions for CRM", () => {
+    const { container, unmount } = mount({
+      permissionCatalog: {
+        modules: {
+          "Catatan Produksi": [
+            { key: "production_note.view", label: "Lihat Catatan Produksi" },
+            { key: "production_note.create", label: "Tambah Catatan Produksi" },
+            { key: "production_note.edit", label: "Edit Catatan Produksi" },
+          ],
+          "Akses Menu": [{ key: "nav.production", label: "Menu Produksi" }],
+        },
+      },
+      permsDraft: new Set(),
+      initialPerms: new Set(),
+    });
+    expect(container.querySelector('[data-testid="role-cat-catatan-produksi"]')).toBeTruthy();
+    expect(container.textContent).toContain("Lihat Catatan Produksi");
+    expect(container.textContent).toContain("Tambah Catatan Produksi");
+    expect(container.textContent).toContain("Edit Catatan Produksi");
+    expect(container.querySelector('[data-testid="role-perm-crm-production_note.view"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="role-perm-crm-production_note.create"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="role-perm-crm-production_note.edit"]')).toBeTruthy();
+    expect(container.textContent).not.toContain("Menu Produksi");
+    expect(container.textContent).not.toContain("production_note.delete");
+    unmount();
+  });
+
+  test("Role & Hak Akses lists Lihat Proforma Invoice", () => {
+    const { container, unmount } = mount({
+      permissionCatalog: {
+        modules: {
+          Penjualan: [
+            { key: "proforma_invoice.view", label: "Lihat Proforma Invoice" },
+            { key: "sales.invoice.view", label: "Lihat Faktur Penjualan" },
+          ],
+          "Akses Menu": [{ key: "nav.sales.sales_invoice", label: "Menu Faktur Penjualan" }],
+        },
+      },
+      permsDraft: new Set(),
+      initialPerms: new Set(),
+    });
+    expect(container.querySelector('[data-testid="role-cat-penjualan"]')).toBeTruthy();
+    expect(container.textContent).toContain("Lihat Proforma Invoice");
+    expect(container.querySelector('[data-testid="role-perm-crm-proforma_invoice.view"]')).toBeTruthy();
+    expect(container.textContent).not.toContain("Menu Faktur Penjualan");
+    expect(container.textContent).not.toContain("nav.sales.sales_invoice");
+    unmount();
+  });
 });

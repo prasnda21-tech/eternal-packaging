@@ -25,6 +25,19 @@ FINANCIAL_FINALIZED = "finalized"
 FINANCIAL_CANCELLED = "cancelled"
 FINANCIAL_STATUSES = frozenset({FINANCIAL_DRAFT, FINANCIAL_FINALIZED, FINANCIAL_CANCELLED})
 
+REASON_INVOICE_QTY_OVER = "FAKTUR_QTY_MELEBIHI_SISA_PO"
+MSG_INVOICE_QTY_OVER = "Qty Faktur melebihi sisa Qty Pesanan Penjualan."
+MSG_INVOICE_QTY_OVER_FINALIZE = (
+    "Qty Faktur melebihi sisa Qty Pesanan Penjualan. Sesuaikan Qty Faktur sebelum Finalisasi."
+)
+MSG_INVOICE_QTY_INVALID = "Qty Faktur harus berupa bilangan bulat lebih dari 0."
+MSG_INVOICE_LINE_DUPLICATE = "Baris faktur tidak boleh dikirim lebih dari sekali."
+MSG_INVOICE_LINE_UNKNOWN = "Baris faktur tidak ditemukan pada faktur ini."
+
+DOCUMENT_INVOICE = "invoice"
+DOCUMENT_PROFORMA = "proforma"
+PROFORMA_WARNING = "Dokumen Proforma — bukan Faktur Penjualan resmi"
+
 _invoice_locks: Dict[asyncio.AbstractEventLoop, asyncio.Lock] = {}
 
 
@@ -826,6 +839,9 @@ async def create_sales_invoice(db, payload: Dict[str, Any], user: dict) -> Dict[
                 "role": str(user.get("role") or ""),
             },
         }
+        order_branch_id = str(order.get("branch_id") or "").strip()
+        if order_branch_id.isdigit():
+            invoice_doc["branch_id"] = order_branch_id
 
         try:
             await db.sales_invoices.insert_one(invoice_doc)
@@ -1115,6 +1131,75 @@ async def query_sales_invoices(
     }
 
 
+def _active_proforma_invoices(rows: List[dict]) -> List[dict]:
+    """Non-cancelled invoices that can supply a proforma.
+
+    Draft and finalized both qualify. Cancelled rows are ignored and do not
+    block the remaining invoice. Accounting status and payment status are not
+    consulted. A blank legacy financial_status counts as draft, matching
+    ``effective_financial_status``.
+    """
+    active: List[dict] = []
+    for row in rows or []:
+        if effective_financial_status(row) == FINANCIAL_CANCELLED:
+            continue
+        active.append(row)
+    return active
+
+
+async def _invoices_for_po(db, po_id: str) -> List[dict]:
+    return await db.sales_invoices.find({"po_id": str(po_id)}, {"_id": 0}).to_list(100)
+
+
+async def proforma_availability(db, po_id: str) -> Dict[str, Any]:
+    """Lightweight read: one non-cancelled invoice id, or unavailable. Does not write."""
+    order = await db.orders.find_one({"id": str(po_id)}, {"_id": 0, "id": 1, "cancelled": 1})
+    if not order:
+        raise HTTPException(404, "PO tidak ditemukan")
+    empty = {"available": False, "invoice_id": None, "invoice_number": None}
+    if order.get("cancelled"):
+        return empty
+    active = _active_proforma_invoices(await _invoices_for_po(db, order["id"]))
+    if len(active) != 1:
+        return empty
+    chosen = active[0]
+    return {
+        "available": True,
+        "invoice_id": chosen.get("id"),
+        "invoice_number": chosen.get("invoice_number") or "",
+    }
+
+
+async def require_proforma_invoice(db, invoice_id: str) -> Dict[str, Any]:
+    """Load the single non-cancelled saved invoice that supplies this PO's proforma.
+
+    Reads ``sales_invoices`` and ``orders`` only. Draft and finalized invoices
+    both qualify. Rejects a cancelled invoice, a cancelled PO, a missing
+    invoice, or more than one non-cancelled invoice for the same PO.
+    """
+    key = str(invoice_id or "").strip()
+    inv = await db.sales_invoices.find_one({"id": key}, {"_id": 0})
+    if not inv:
+        inv = await db.sales_invoices.find_one({"invoice_number": key}, {"_id": 0})
+    if not inv:
+        raise HTTPException(404, "Faktur Penjualan tidak ditemukan.")
+
+    po_id = str(inv.get("po_id") or "").strip()
+    order = await db.orders.find_one({"id": po_id}, {"_id": 0, "id": 1, "cancelled": 1})
+    if not order:
+        raise HTTPException(404, "PO tidak ditemukan")
+    if order.get("cancelled"):
+        raise HTTPException(409, "PO dibatalkan. Proforma tidak tersedia.")
+
+    if effective_financial_status(inv) == FINANCIAL_CANCELLED:
+        raise HTTPException(409, "Faktur dibatalkan. Proforma tidak tersedia.")
+
+    active = _active_proforma_invoices(await _invoices_for_po(db, po_id))
+    if len(active) != 1 or active[0].get("id") != inv.get("id"):
+        raise HTTPException(409, "Proforma tidak tersedia untuk faktur ini.")
+    return inv
+
+
 async def get_sales_invoice_detail(db, invoice_id: str) -> Dict[str, Any]:
     """Fetch detail of a single sales invoice with live payment derived fields and receipt list."""
     inv = await db.sales_invoices.find_one({"id": str(invoice_id)}, {"_id": 0})
@@ -1130,14 +1215,147 @@ async def get_sales_invoice_detail(db, invoice_id: str) -> Dict[str, Any]:
     apply_invoice_payment_fields(inv, receipts, float(await invoice_credit_applied_total(db, inv["id"])))
     inv["receipts"] = receipts
     await attach_invoice_accounting_fields(db, [inv])
+    await _attach_invoice_qty_limits(db, inv)
     return inv
 
 
-async def update_sales_invoice(db, invoice_id: str, payload: Dict[str, Any], user: dict) -> Dict[str, Any]:
-    """Updates an existing sales invoice (unit prices, discount, PPN, termin, notes, invoice_date).
+def _parse_draft_invoice_qty(raw: Any) -> int:
+    """Whole number greater than zero. Floats that are not whole numbers are rejected."""
+    if isinstance(raw, bool) or raw is None:
+        raise HTTPException(400, {"code": "FAKTUR_QTY_TIDAK_VALID", "message": MSG_INVOICE_QTY_INVALID})
+    if isinstance(raw, int):
+        qty = raw
+    elif isinstance(raw, float):
+        if not raw.is_integer():
+            raise HTTPException(400, {"code": "FAKTUR_QTY_TIDAK_VALID", "message": MSG_INVOICE_QTY_INVALID})
+        qty = int(raw)
+    elif isinstance(raw, str):
+        text = raw.strip()
+        if not text.isdigit():
+            raise HTTPException(400, {"code": "FAKTUR_QTY_TIDAK_VALID", "message": MSG_INVOICE_QTY_INVALID})
+        qty = int(text)
+    else:
+        raise HTTPException(400, {"code": "FAKTUR_QTY_TIDAK_VALID", "message": MSG_INVOICE_QTY_INVALID})
+    if qty <= 0:
+        raise HTTPException(400, {"code": "FAKTUR_QTY_TIDAK_VALID", "message": MSG_INVOICE_QTY_INVALID})
+    return qty
 
-    Recalculates line totals, discount, PPN, and grand total authoritatively on backend.
-    Preserves exact PO lines and never mutates PO or Master collections.
+
+def _explicit_draft_qty_by_line(existing_lines: List[dict], input_lines: List[dict]) -> Dict[int, int]:
+    """Qty explicitly sent for an existing invoice line. Missing qty keeps the stored value.
+
+    Duplicate line_idx and unknown lines are rejected. This does not insert PO lines.
+    """
+    existing_idx = {
+        int(el.get("line_idx", idx))
+        for idx, el in enumerate(existing_lines or [])
+    }
+    seen = set()
+    requested: Dict[int, int] = {}
+    for fallback, inp in enumerate(input_lines or []):
+        if not isinstance(inp, dict):
+            raise HTTPException(400, {"code": "FAKTUR_BARIS_TIDAK_DITEMUKAN", "message": MSG_INVOICE_LINE_UNKNOWN})
+        raw_idx = inp.get("line_idx", fallback)
+        try:
+            line_idx = int(raw_idx)
+        except (TypeError, ValueError):
+            raise HTTPException(400, {"code": "FAKTUR_BARIS_TIDAK_DITEMUKAN", "message": MSG_INVOICE_LINE_UNKNOWN})
+        if line_idx in seen:
+            raise HTTPException(400, {"code": "FAKTUR_BARIS_DUPLIKAT", "message": MSG_INVOICE_LINE_DUPLICATE})
+        seen.add(line_idx)
+        if line_idx not in existing_idx:
+            raise HTTPException(400, {"code": "FAKTUR_BARIS_TIDAK_DITEMUKAN", "message": MSG_INVOICE_LINE_UNKNOWN})
+        if "quantity" not in inp or inp.get("quantity") in (None, ""):
+            continue
+        requested[line_idx] = _parse_draft_invoice_qty(inp.get("quantity"))
+    return requested
+
+
+async def invoice_line_qty_limits(
+    db,
+    po_id: str,
+    exclude_invoice_id: Optional[str] = None,
+) -> Dict[int, Dict[str, int]]:
+    """Latest PO qty minus other non-cancelled invoices.
+
+    The excluded invoice is the draft being edited or finalized, so it is not
+    counted against itself. Cancelled invoices are ignored by the preview helper.
+    """
+    key = str(po_id or "").strip()
+    if not key:
+        return {}
+    order = await db.orders.find_one({"id": key}, {"_id": 0})
+    if not order:
+        order = await db.orders.find_one({"po_number": key}, {"_id": 0})
+    if not order:
+        return {}
+    preview = await get_po_invoice_preview(db, order, exclude_invoice_id=exclude_invoice_id)
+    limits: Dict[int, Dict[str, int]] = {}
+    for line in preview.get("lines") or []:
+        limits[int(line["line_idx"])] = {
+            "po_qty": int(line.get("ordered_qty") or 0),
+            "other_active_invoiced_qty": int(line.get("invoiced_cumulative") or 0),
+            "max_qty": int(line.get("remaining_invoice_qty") or 0),
+        }
+    return limits
+
+
+def _qty_over_detail(line_idx: int, invoice_qty: int, cap: Dict[str, int], *, finalize: bool) -> Dict[str, Any]:
+    return {
+        "code": REASON_INVOICE_QTY_OVER,
+        "message": MSG_INVOICE_QTY_OVER_FINALIZE if finalize else MSG_INVOICE_QTY_OVER,
+        "line_idx": line_idx,
+        "po_qty": int(cap.get("po_qty") or 0),
+        "other_invoiced_qty": int(cap.get("other_active_invoiced_qty") or 0),
+        "invoice_qty": int(invoice_qty),
+        "max_qty": int(cap.get("max_qty") or 0),
+    }
+
+
+async def assert_invoice_qty_within_po(db, invoice: dict, *, finalize: bool = False) -> None:
+    """Reject when a saved line qty is above the latest remaining capacity.
+
+    Reads the order and other active invoices at call time. Create, draft update,
+    and finalize already share the in-process invoice lock, so one worker cannot
+    interleave those writes. Separate processes do not share that lock.
+    """
+    limits = await invoice_line_qty_limits(db, invoice.get("po_id"), invoice.get("id"))
+    empty = {"po_qty": 0, "other_active_invoiced_qty": 0, "max_qty": 0}
+    for idx, line in enumerate(invoice.get("lines") or []):
+        line_idx = int(line.get("line_idx", idx))
+        try:
+            invoice_qty = int(line.get("quantity") or 0)
+        except (TypeError, ValueError):
+            invoice_qty = 0
+        cap = limits.get(line_idx, empty)
+        if invoice_qty > int(cap["max_qty"]):
+            raise HTTPException(409, _qty_over_detail(line_idx, invoice_qty, cap, finalize=finalize))
+
+
+async def _attach_invoice_qty_limits(db, invoice: Dict[str, Any]) -> None:
+    """Read-only guidance for the draft editor. Not written back to the invoice."""
+    limits = await invoice_line_qty_limits(db, invoice.get("po_id"), invoice.get("id"))
+    empty = {"po_qty": 0, "other_active_invoiced_qty": 0, "max_qty": 0}
+    for idx, line in enumerate(invoice.get("lines") or []):
+        if not isinstance(line, dict):
+            continue
+        line_idx = int(line.get("line_idx", idx))
+        cap = limits.get(line_idx, empty)
+        try:
+            current_qty = int(line.get("quantity") or 0)
+        except (TypeError, ValueError):
+            current_qty = 0
+        line["current_qty"] = current_qty
+        line["po_qty"] = cap["po_qty"]
+        line["other_active_invoiced_qty"] = cap["other_active_invoiced_qty"]
+        line["max_qty"] = cap["max_qty"]
+
+
+async def update_sales_invoice(db, invoice_id: str, payload: Dict[str, Any], user: dict) -> Dict[str, Any]:
+    """Updates a draft sales invoice, including line quantity.
+
+    Recalculates line totals, discount, PPN, and grand total from the invoice
+    unit price. Does not read the price master and never mutates the PO.
     """
     async with _get_invoice_lock():
         inv = await db.sales_invoices.find_one({"id": str(invoice_id)}, {"_id": 0})
@@ -1155,7 +1373,15 @@ async def update_sales_invoice(db, invoice_id: str, payload: Dict[str, Any], use
 
         existing_lines = inv.get("lines") or []
         input_lines = payload.get("lines") or payload.get("line_items") or []
-        input_by_idx = {int(inp.get("line_idx", idx)): inp for idx, inp in enumerate(input_lines)}
+        explicit_qty = _explicit_draft_qty_by_line(existing_lines, input_lines)
+        input_by_idx = {}
+        seen_input = set()
+        for fallback, inp in enumerate(input_lines):
+            line_idx = int(inp.get("line_idx", fallback))
+            if line_idx in seen_input:
+                raise HTTPException(400, {"code": "FAKTUR_BARIS_DUPLIKAT", "message": MSG_INVOICE_LINE_DUPLICATE})
+            seen_input.add(line_idx)
+            input_by_idx[line_idx] = inp
 
         updated_lines = []
         authoritative_subtotal = 0.0
@@ -1163,7 +1389,15 @@ async def update_sales_invoice(db, invoice_id: str, payload: Dict[str, Any], use
 
         for idx, el in enumerate(existing_lines):
             line_idx = int(el.get("line_idx", idx))
-            qty = int(el.get("quantity") or 0)
+            if line_idx in explicit_qty:
+                qty = explicit_qty[line_idx]
+            else:
+                try:
+                    qty = int(el.get("quantity") or 0)
+                except (TypeError, ValueError):
+                    qty = 0
+            if qty <= 0:
+                raise HTTPException(400, {"code": "FAKTUR_QTY_TIDAK_VALID", "message": MSG_INVOICE_QTY_INVALID})
 
             if line_idx in input_by_idx and input_by_idx[line_idx].get("unit_price") not in (None, ""):
                 raw_price = input_by_idx[line_idx].get("unit_price")
@@ -1176,12 +1410,16 @@ async def update_sales_invoice(db, invoice_id: str, payload: Dict[str, Any], use
             total_invoice_qty += qty
 
             updated_el = dict(el)
+            updated_el["quantity"] = qty
             updated_el["unit_price"] = unit_price
             updated_el["line_subtotal"] = line_subtotal
             updated_el["line_total"] = line_subtotal
+            for derived in ("current_qty", "po_qty", "other_active_invoiced_qty", "max_qty"):
+                updated_el.pop(derived, None)
             updated_lines.append(updated_el)
 
         authoritative_subtotal = round(authoritative_subtotal, 2)
+        await assert_invoice_qty_within_po(db, {**inv, "lines": updated_lines}, finalize=False)
 
         raw_disc = payload.get("discount_amount") if "discount_amount" in payload else inv.get("discount_amount", 0)
         discount_amount = _parse_non_negative_price(raw_disc, "Diskon")
@@ -1325,6 +1563,8 @@ async def finalize_sales_invoice(db, invoice_id: str, user: dict) -> Dict[str, A
         if not monetary_invariant_valid(inv):
             raise HTTPException(400, TOTAL_INVARIANT_MESSAGE)
 
+        await assert_invoice_qty_within_po(db, inv, finalize=True)
+
         now = now_iso()
         claimed = await db.sales_invoices.find_one_and_update(
             _draft_filter(inv["id"]),
@@ -1430,256 +1670,315 @@ async def cancel_sales_invoice(
         return await get_sales_invoice_detail(db, inv["id"])
 
 
-def generate_sales_invoice_pdf_bytes(invoice: dict) -> bytes:
-    """Generate official A4 PDF for Sales Invoice (Faktur Penjualan)."""
-    import io
-    from reportlab.lib.pagesizes import A4
+
+
+async def invoice_pdf_presentation(db, invoice: dict) -> dict:
+    """Read-only shipping label for the PDF. Does not write the invoice."""
+    shown = dict(invoice or {})
+    po_id = str(shown.get("po_id") or "").strip()
+    if not po_id or db is None:
+        return shown
+    order = await db.orders.find_one({"id": po_id}, {"_id": 0, "expedition": 1})
+    if not order:
+        return shown
+    shown["presentation_expedition"] = str(order.get("expedition") or "").strip()
+    return shown
+
+
+def generate_sales_invoice_pdf_bytes(
+    invoice: dict,
+    document_type: str = DOCUMENT_INVOICE,
+    design: dict | None = None,
+) -> bytes:
+    """A4 portrait Faktur Penjualan. Proforma reuses this layout with another title.
+
+    Proforma still omits payment-settlement rows (uang dimuka). It does not
+    reprice, post, or change the saved invoice.
+    """
     from reportlab.lib import colors
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, KeepTogether, HRFlowable
-    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.lib.units import cm
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.units import mm
+    from reportlab.platypus import Paragraph, Spacer, Table, TableStyle
+
     from services.pdf_date import format_pdf_date
-
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(
-        buffer,
-        pagesize=A4,
-        rightMargin=1.5 * cm,
-        leftMargin=1.5 * cm,
-        topMargin=1.5 * cm,
-        bottomMargin=1.5 * cm,
+    from services.pdf_layout import (
+        build_pdf,
+        content_width,
+        esc,
+        format_money,
+        format_qty,
+        logo_flowable,
+        scale_widths,
+        signature_image_flowable,
+        styles,
+        terbilang,
     )
+    from services.print_design_settings import bank_display_lines, resolve_print_design
 
-    styles = getSampleStyleSheet()
-
-    company_title_style = ParagraphStyle(
-        'CompanyTitle',
-        parent=styles['Normal'],
-        fontName='Helvetica-Bold',
-        fontSize=14,
-        leading=17,
-        textColor=colors.HexColor('#0f172a'),
-    )
-
-    doc_title_style = ParagraphStyle(
-        'DocTitle',
-        parent=styles['Normal'],
-        fontName='Helvetica-Bold',
-        fontSize=13,
-        leading=16,
-        alignment=2,
-        textColor=colors.HexColor('#9333ea'), # Purple for invoice
-    )
-
-    meta_label_style = ParagraphStyle(
-        'MetaLabel',
-        parent=styles['Normal'],
-        fontName='Helvetica-Bold',
-        fontSize=8.5,
-        leading=11,
-        textColor=colors.HexColor('#334155'),
-    )
-
-    meta_val_style = ParagraphStyle(
-        'MetaVal',
-        parent=styles['Normal'],
-        fontName='Helvetica',
-        fontSize=8.5,
-        leading=11,
-        textColor=colors.HexColor('#0f172a'),
-    )
-
-    tbl_header_style = ParagraphStyle(
-        'TblHeader',
-        parent=styles['Normal'],
-        fontName='Helvetica-Bold',
-        fontSize=8.5,
-        leading=11,
-        textColor=colors.HexColor('#1e293b'),
-    )
-
-    tbl_cell_style = ParagraphStyle(
-        'TblCell',
-        parent=styles['Normal'],
-        fontName='Helvetica',
-        fontSize=8.5,
-        leading=11,
-        textColor=colors.HexColor('#0f172a'),
-    )
-
-    tbl_cell_bold = ParagraphStyle(
-        'TblCellBold',
-        parent=styles['Normal'],
-        fontName='Helvetica-Bold',
-        fontSize=8.5,
-        leading=11,
-        alignment=2, # Right align for numbers
-        textColor=colors.HexColor('#0f172a'),
-    )
-
-    from html import escape
-
+    invoice = invoice or {}
+    design = resolve_print_design(design)
+    inv_design = design.get("invoice") or {}
+    pdf_assets = design.get("_pdf_assets") if isinstance(design.get("_pdf_assets"), dict) else {}
+    proforma = document_type == DOCUMENT_PROFORMA
+    sty = styles(design.get("accent_color"))
+    accent = sty["accent"]
+    width = content_width(A4)
     elements = []
 
-    header_data = [
-        [
-            Paragraph("<b>ETERNAL PACKAGING</b>", company_title_style),
-            Paragraph("<b>FAKTUR PENJUALAN</b><br/><font size='9' color='#7e22ce'><b>" + escape(str(invoice.get('invoice_number') or invoice.get('id') or '')) + "</b></font>", doc_title_style),
-        ]
-    ]
-    header_tbl = Table(header_data, colWidths=[9.5 * cm, 8.5 * cm])
-    header_tbl.setStyle(TableStyle([
-        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
-        ('TOPPADDING', (0, 0), (-1, -1), 0),
-        ('LEFTPADDING', (0, 0), (-1, -1), 0),
-        ('RIGHTPADDING', (0, 0), (-1, -1), 0),
-    ]))
-    elements.append(header_tbl)
-    elements.append(Spacer(1, 0.2 * cm))
-    elements.append(HRFlowable(width="100%", thickness=1.5, color=colors.HexColor('#a855f7'), spaceAfter=8, spaceBefore=0))
-
-    meta_data = [
-        [
-            Paragraph("<b>Nomor PO</b>", meta_label_style),
-            Paragraph(f": {escape(str(invoice.get('po_number') or '-'))}", meta_val_style),
-            Paragraph("<b>Customer</b>", meta_label_style),
-            Paragraph(f": {escape(str(invoice.get('customer') or '-'))}", meta_val_style),
-        ],
-        [
-            Paragraph("<b>Tanggal Faktur</b>", meta_label_style),
-            Paragraph(f": {format_pdf_date(invoice.get('invoice_date'))}", meta_val_style),
-            Paragraph("<b>Alamat</b>", meta_label_style),
-            Paragraph(f": {escape(str(invoice.get('address') or '-'))}", meta_val_style),
-        ],
-        [
-            Paragraph("<b>Termin (Hari)</b>", meta_label_style),
-            Paragraph(f": {invoice.get('payment_term_days') or '0'}", meta_val_style),
-            Paragraph("<b>Jatuh Tempo</b>", meta_label_style),
-            Paragraph(f": {format_pdf_date(invoice.get('due_date'))}", meta_val_style),
-        ],
-        [
-            Paragraph("<b>Sales</b>", meta_label_style),
-            Paragraph(f": {escape(invoice_sales_label(invoice) or '-')}", meta_val_style),
-            Paragraph("<b>Status</b>", meta_label_style),
-            Paragraph(f": {escape(str(invoice.get('payment_status') or '-'))}", meta_val_style),
-        ],
-        [
-            # Same `notes` field the official invoice PDF already printed as Catatan.
-            # The form label is Catatan Faktur. Account, journal, HPP, and margin stay off the PDF.
-            Paragraph("<b>Catatan</b>", meta_label_style),
-            Paragraph(f": {escape(str(invoice.get('notes') or '-'))}", meta_val_style),
-            Paragraph("", meta_label_style),
-            Paragraph("", meta_val_style),
-        ],
-    ]
-    meta_tbl = Table(meta_data, colWidths=[2.5 * cm, 6.5 * cm, 2.5 * cm, 6.5 * cm])
-    meta_tbl.setStyle(TableStyle([
-        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-        ('TOPPADDING', (0, 0), (-1, -1), 2),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
-        ('LEFTPADDING', (0, 0), (-1, -1), 2),
-        ('RIGHTPADDING', (0, 0), (-1, -1), 2),
-    ]))
-    elements.append(meta_tbl)
-    elements.append(Spacer(1, 0.4 * cm))
-
-    # Line Items
-    table_rows = [
-        [
-            Paragraph("<b>No</b>", tbl_header_style),
-            Paragraph("<b>Produk / Jasa</b>", tbl_header_style),
-            Paragraph("<b>Qty</b>", tbl_header_style),
-            Paragraph("<b>Harga Satuan</b>", tbl_header_style),
-            Paragraph("<b>Subtotal</b>", tbl_header_style),
-        ]
-    ]
-
-    def format_money(val):
-        try:
-            f_val = float(val)
-            if f_val.is_integer():
-                return "Rp " + f"{int(f_val):,}".replace(",", ".")
-            else:
-                s = f"{f_val:,.2f}"
-                return "Rp " + s.replace(",", "X").replace(".", ",").replace("X", ".")
-        except:
-            return "Rp 0"
-
-    total_qty = 0
-    lines = invoice.get("lines") or []
-    for idx, li in enumerate(lines):
-        q = li.get("quantity", 0)
-        total_qty += q
-        price = li.get("unit_price", 0)
-        subt = li.get("line_subtotal", 0)
-        table_rows.append([
-            Paragraph(str(idx + 1), tbl_cell_style),
-            Paragraph(f"<b>{escape(str(li.get('item_name') or '-'))}</b>", tbl_cell_style),
-            Paragraph(f"{q} {escape(str(li.get('unit') or ''))}".strip(), tbl_cell_style),
-            Paragraph(format_money(price), tbl_cell_bold),
-            Paragraph(format_money(subt), tbl_cell_bold),
-        ])
-
-    items_tbl = Table(
-        table_rows,
-        colWidths=[1.0 * cm, 7.0 * cm, 2.5 * cm, 3.5 * cm, 4.0 * cm]
+    logo = logo_flowable(design, width=36 * mm, height=12.2 * mm, company_style=sty["company"])
+    address_html = "<br/>".join(esc(line) for line in (design.get("address_lines") or []))
+    identity = Paragraph(
+        f"<font size='12'><b>{esc(design.get('company_name') or '')}</b></font><br/>{address_html}",
+        sty["address"],
     )
-    items_tbl.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#f1f5f9')),
-        ('LINEBELOW', (0, 0), (-1, 0), 1.5, colors.HexColor('#cbd5e1')),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
-        ('TOPPADDING', (0, 0), (-1, -1), 4),
-        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#e2e8f0')),
+    brand = Table([[logo, identity]], colWidths=[40 * mm, width - 40 * mm])
+    brand.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("TOPPADDING", (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
     ]))
-    elements.append(items_tbl)
-    elements.append(Spacer(1, 0.4 * cm))
+    elements.append(brand)
+    elements.append(Spacer(1, 2 * mm))
+    title = "PROFORMA INVOICE" if proforma else "Faktur Penjualan"
+    elements.append(Paragraph(esc(title), sty["title"]))
+    if proforma:
+        elements.append(Paragraph(esc(PROFORMA_WARNING), sty["warn"]))
+    elements.append(Spacer(1, 2 * mm))
 
-    # Financial Summary
-    subtotal = invoice.get("subtotal", 0)
-    discount = invoice.get("discount_amount", 0)
-    ppn_pct = invoice.get("ppn_percent", 0)
-    ppn_amt = invoice.get("ppn_amount", 0)
-    grand = invoice.get("grand_total", 0)
-    paid = invoice.get("paid_total", 0)
-    outstanding = invoice.get("outstanding_amount", 0)
+    address = str(invoice.get("address") or "").strip()
+    customer = Paragraph(
+        f"Kepada :<br/><b>{esc(invoice.get('customer') or '-')}</b><br/>{esc(address)}",
+        sty["body"],
+    )
+    due = format_pdf_date(invoice.get("due_date"))
+    jasa = str(invoice.get("presentation_expedition") or invoice.get("expedition") or "").strip()
+    tipe = str(invoice.get("presentation_shipping_type") or invoice.get("shipping_type") or "").strip()
+    bank_lines = bank_display_lines(inv_design.get("bank_accounts"))
+    bank_left = "<br/>".join(esc(line) for line in bank_lines[:2])
+    bank_right = "<br/>".join(esc(line) for line in bank_lines[2:])
 
-    summary_data = [
-        [Paragraph("<b>Subtotal</b>", tbl_cell_style), Paragraph(format_money(subtotal), tbl_cell_bold)],
+    def cell(label: str, value_html: str) -> Paragraph:
+        return Paragraph(f"{esc(label)}<br/><b>{value_html or '&nbsp;'}</b>", sty["small"])
+
+    meta = [
+        [
+            cell("Tanggal", esc(format_pdf_date(invoice.get("invoice_date")))),
+            cell("Nomor", esc(invoice.get("invoice_number") or invoice.get("id") or "")),
+        ],
+        [
+            cell("Sales", esc(invoice_sales_label(invoice))),
+            cell("Tipe Pengiriman", esc(tipe)),
+        ],
+        [
+            cell("Jasa Pengiriman", esc(jasa)),
+            Paragraph(bank_left, sty["small"]),
+        ],
+        [
+            cell("PO No", esc(invoice.get("po_number") or "")),
+            Paragraph(bank_right, sty["small"]),
+        ],
     ]
-    if float(discount) > 0:
-        summary_data.append([Paragraph("<b>Diskon</b>", tbl_cell_style), Paragraph(f"- {format_money(discount)}", tbl_cell_bold)])
-    if float(ppn_pct) > 0:
-        summary_data.append([Paragraph(f"<b>PPN ({ppn_pct}%)</b>", tbl_cell_style), Paragraph(format_money(ppn_amt), tbl_cell_bold)])
+    grid_width = width * 0.58
+    meta_table = Table(meta, colWidths=[grid_width / 2, grid_width / 2])
+    meta_table.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("BOX", (0, 0), (-1, -1), 0.7, colors.black),
+        ("LINEAFTER", (0, 0), (0, -1), 0.6, colors.black),
+        ("LINEBELOW", (0, 0), (-1, -2), 0.4, colors.black, None, (2, 2)),
+        ("LEFTPADDING", (0, 0), (-1, -1), 3),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+        ("TOPPADDING", (0, 0), (-1, -1), 2),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+    ]))
+    left_width = width - grid_width
+    party = Table([[customer, meta_table]], colWidths=[left_width, grid_width])
+    party.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (0, 0), 3),
+        ("RIGHTPADDING", (1, 0), (1, 0), 0),
+        ("TOPPADDING", (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+        ("LINEBELOW", (0, 0), (0, 0), 0.6, colors.black),
+    ]))
+    elements.append(party)
+    elements.append(Spacer(1, 1.5 * mm))
+    elements.append(Paragraph(f"Jatuh Tempo : {esc(due) or '-'}", sty["red"]))
+    elements.append(Spacer(1, 2 * mm))
+
+    header = [
+        Paragraph("<b>Kode Barang</b>", sty["header"]),
+        Paragraph("<b>Nama Barang</b>", sty["header"]),
+        Paragraph("<b>Kts.</b>", sty["header"]),
+        Paragraph("<b>@Harga</b>", sty["header"]),
+        Paragraph("<b>Diskon</b>", sty["header"]),
+        Paragraph("<b>Total Harga</b>", sty["header"]),
+    ]
+    rows = [header]
+    for line in invoice.get("lines") or []:
+        if not isinstance(line, dict):
+            continue
+        rows.append([
+            Paragraph(esc(line.get("item_code") or ""), sty["body"]),
+            Paragraph(esc(line.get("item_name") or line.get("name") or "-"), sty["body"]),
+            Paragraph(esc(format_qty(line.get("quantity"))), sty["right"]),
+            Paragraph(esc(format_money(line.get("unit_price"))), sty["right"]),
+            Paragraph("0", sty["right"]),
+            Paragraph(esc(format_money(line.get("line_subtotal"))), sty["right"]),
+        ])
+    if len(rows) == 1:
+        rows.append([Paragraph("", sty["body"]) for _ in range(6)])
+    items = Table(rows, colWidths=scale_widths([70, 190, 42, 68, 48, 78], width), repeatRows=1)
+    items.setStyle(TableStyle([
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.black),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 2),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+        ("LEFTPADDING", (0, 0), (-1, -1), 2),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 2),
+    ]))
+    elements.append(items)
+    elements.append(Spacer(1, 1.5 * mm))
+    words = terbilang(invoice.get("grand_total"))
+    elements.append(Paragraph(f"Terbilang : <b>{esc(words)}</b>", sty["body"]))
+    rule = Table([[""]], colWidths=[width])
+    rule.setStyle(TableStyle([
+        ("LINEABOVE", (0, 0), (-1, -1), 0.6, colors.black),
+        ("TOPPADDING", (0, 0), (-1, -1), 1),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+    ]))
+    elements.append(rule)
+    elements.append(Spacer(1, 2 * mm))
+
+    notes = str(invoice.get("notes") or "").strip()
+    note = Paragraph(f"<b>Keterangan:</b><br/>{esc(notes) or '&nbsp;'}", sty["body"])
+    summary = [
+        [Paragraph("Sub Total", sty["body"]), Paragraph(esc(format_money(invoice.get("subtotal"))), sty["right"])],
+        [Paragraph("Diskon", sty["body"]), Paragraph(esc(format_money(invoice.get("discount_amount"))), sty["right"])],
+        [
+            Paragraph(f"PPN ({invoice.get('ppn_percent') if invoice.get('ppn_percent') not in (None, '') else 0}%)", sty["body"]),
+            Paragraph(esc(format_money(invoice.get("ppn_amount"))), sty["right"]),
+        ],
+    ]
     for charge in invoice.get("other_charges") or []:
         if not isinstance(charge, dict):
             continue
-        # Customer sees the charge description, not the internal ledger account.
         label = str(charge.get("description") or "").strip() or "Biaya lainnya"
-        summary_data.append([
-            Paragraph(f"<b>{escape(label)}</b>", tbl_cell_style),
-            Paragraph(format_money(charge.get("amount")), tbl_cell_bold),
+        summary.append([
+            Paragraph(esc(label), sty["body"]),
+            Paragraph(esc(format_money(charge.get("amount"))), sty["right"]),
         ])
-
-    summary_data.append([Paragraph("<b>GRAND TOTAL</b>", tbl_cell_style), Paragraph(f"<b>{format_money(grand)}</b>", tbl_cell_bold)])
-    summary_data.append([Paragraph("<b>Telah Dibayar</b>", tbl_cell_style), Paragraph(format_money(paid), tbl_cell_bold)])
-    summary_data.append([Paragraph("<b>Sisa Tagihan</b>", tbl_cell_style), Paragraph(format_money(outstanding), tbl_cell_bold)])
-
-    sum_tbl = Table(summary_data, colWidths=[4.0 * cm, 4.0 * cm])
-    sum_tbl.setStyle(TableStyle([
-        ('ALIGN', (0,0), (-1,-1), 'RIGHT'),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
-        ('TOPPADDING', (0, 0), (-1, -1), 3),
+    if not proforma:
+        summary.append([
+            Paragraph("Uang dimuka", sty["body"]),
+            Paragraph(esc(format_money(invoice.get("paid_total"))), sty["right"]),
+        ])
+    summary.append([
+        Paragraph("<b>Total</b>", sty["bold"]),
+        Paragraph(f"<b>{esc(format_money(invoice.get('grand_total')))}</b>", sty["right_bold"]),
+    ])
+    summary_table = Table(summary, colWidths=[32 * mm, 28 * mm])
+    summary_table.setStyle(TableStyle([
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.black),
+        ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#f4f4f4")),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 3),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+        ("TOPPADDING", (0, 0), (-1, -1), 2),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
     ]))
-
-    # Align summary table to the right
-    wrapper_data = [[Paragraph(""), sum_tbl]]
-    wrapper_tbl = Table(wrapper_data, colWidths=[10.0 * cm, 8.0 * cm])
-    wrapper_tbl.setStyle(TableStyle([
-        ('ALIGN', (1,0), (1,0), 'RIGHT'),
-        ('VALIGN', (0,0), (-1,-1), 'TOP'),
+    note_width = width - 64 * mm
+    lower = Table(
+        [[note, summary_table]],
+        colWidths=[note_width, 64 * mm],
+    )
+    lower.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("BOX", (0, 0), (0, 0), 0.7, colors.black),
+        ("LEFTPADDING", (0, 0), (0, 0), 4),
+        ("RIGHTPADDING", (0, 0), (0, 0), 4),
+        ("TOPPADDING", (0, 0), (0, 0), 3),
+        ("BOTTOMPADDING", (0, 0), (0, 0), 3),
+        ("LEFTPADDING", (1, 0), (1, 0), 4),
+        ("RIGHTPADDING", (1, 0), (1, 0), 0),
+        ("ALIGN", (1, 0), (1, 0), "RIGHT"),
     ]))
-    elements.append(wrapper_tbl)
+    elements.append(lower)
+    elements.append(Spacer(1, 4 * mm))
 
-    doc.build(elements)
-    return buffer.getvalue()
+    sales_name = invoice_sales_label(invoice)
+
+    gap = 4 * mm
+    sig_w = (width - 68 * mm - (2 * gap)) / 2
+
+    def signature_column(title: str, footer: str, middle: str = "", image_bytes: Optional[bytes] = None) -> Table:
+        sig_img = signature_image_flowable(image_bytes, max_width=sig_w - 4 * mm, max_height=14 * mm)
+        middle_cell = sig_img if sig_img is not None else Paragraph(
+            f"<b>{esc(middle)}</b>" if middle else "&nbsp;",
+            sty["center"],
+        )
+        # Keep row height bounded: image replaces blank pad; text-only keeps existing pad.
+        mid_top = 2 * mm if sig_img is not None else 10 * mm
+        column = Table(
+            [
+                [Paragraph(esc(title), sty["center"])],
+                [middle_cell],
+                [Paragraph(esc(footer), sty["center"])],
+            ],
+            colWidths=[sig_w],
+        )
+        column.setStyle(TableStyle([
+            ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+            ("VALIGN", (0, 1), (-1, 1), "BOTTOM"),
+            ("TOPPADDING", (0, 1), (-1, 1), mid_top),
+            ("BOTTOMPADDING", (0, 1), (-1, 1), 3),
+            ("LINEABOVE", (0, 2), (-1, 2), 0.6, colors.black),
+            ("TOPPADDING", (0, 2), (-1, 2), 2),
+            ("LEFTPADDING", (0, 0), (-1, -1), 3),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+        ]))
+        return column
+
+    prepared = signature_column(
+        str(inv_design.get("prepared_label") or "Disiapkan Oleh"),
+        str(inv_design.get("prepared_footer") or "Admin"),
+        image_bytes=pdf_assets.get("prepared_signature_image"),
+    )
+    approved = signature_column(
+        str(inv_design.get("approved_label") or "Disetujui Oleh"),
+        str(inv_design.get("approved_footer") or "Pengelola"),
+        sales_name,
+        image_bytes=pdf_assets.get("approved_signature_image"),
+    )
+    estimasi_title = str(inv_design.get("estimasi_title") or "")
+    estimasi_lines = inv_design.get("estimasi_lines") or []
+    estimasi_html = "<b>" + esc(estimasi_title) + "</b><br/>" + "<br/>".join(esc(line) for line in estimasi_lines)
+    estimasi = Paragraph(estimasi_html, sty["red_small"])
+    estimasi_table = Table([[estimasi]], colWidths=[68 * mm])
+    estimasi_table.setStyle(TableStyle([
+        ("BOX", (0, 0), (-1, -1), 1.2, accent),
+        ("LEFTPADDING", (0, 0), (-1, -1), 3),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+    ]))
+    blank = Paragraph("&nbsp;", sty["small"])
+    sign = Table(
+        [[prepared, blank, approved, blank, estimasi_table]],
+        colWidths=[sig_w, gap, sig_w, gap, 68 * mm],
+    )
+    sign.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("ALIGN", (0, 0), (1, 0), "CENTER"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 1),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 1),
+        ("TOPPADDING", (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+    ]))
+    elements.append(sign)
+    return build_pdf(elements, A4)

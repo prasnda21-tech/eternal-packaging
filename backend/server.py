@@ -66,11 +66,8 @@ from services.operator_schedule import (
 from services.screen_size import allocation_screen_size as _allocation_screen_size
 from services.operator_payroll import (
     PAYROLL_EXPORT_COLUMNS,
-    PAYROLL_REKAP_COLUMNS,
     SETTINGS_KEY as OPERATOR_WAGE_SETTINGS_KEY,
-    compute_operator_payroll,
     item_identity as _wage_item_identity,
-    operators_and_items as _payroll_filter_options,
     snapshot_on_save as _wage_snapshot_on_save,
     effective_rate_as_of as _wage_effective_rate,
     normalize_wage_settings,
@@ -1801,6 +1798,38 @@ async def get_order(order_id: str, view: Optional[str] = None, user=Depends(curr
     return {"order": _strip_inline_attachment_bytes(_strip_sj_bytes(order))}
 
 
+@api_router.get("/orders/{order_id}/pdf")
+async def get_sales_order_pdf_endpoint(order_id: str, user=Depends(current_user)):
+    """Read-only Eternal Pesanan Penjualan PDF. Does not replace the customer source PDF."""
+    reject_sales_pwa_bypass(user)
+    query = {"id": order_id}
+    query.update(sales_owner_match(user))
+    order = await db.orders.find_one(query, {"_id": 0})
+    if not order:
+        raise HTTPException(404, "PO tidak ditemukan")
+    if user.get("role") != "admin":
+        eff = await user_permissions(user)
+        view_ok = any(p in eff for p in (
+            "po.view", "work_panel.view", "schedule.view",
+            "screen.update", "helper.prepare", "operator.update",
+            "packing.update", "delivery_note.view", "delivery_note.manage",
+            "loading.update", "delivery.update", "design.view", "payment.view",
+        ))
+        if not view_ok:
+            raise HTTPException(403, "Anda tidak punya permission untuk melihat PO ini")
+    from services.order_pdf import generate_sales_order_pdf_bytes
+    from services.print_design_settings import get_print_design_for_pdf
+    design = await get_print_design_for_pdf(db, branch_id=order.get("branch_id"))
+    pdf_bytes = generate_sales_order_pdf_bytes(order, design=design)
+    po_num = str(order.get("po_number") or order_id).replace("/", "_").replace("\\", "_")
+    filename = f"Pesanan_Penjualan_{po_num}.pdf"
+    return FastAPIResponse(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+    )
+
+
 def _check_stage_permission(current_stage: int, role: str):
     allowed = STAGE_EDIT_ROLES.get(current_stage, ["admin", "head_production"])
     if role not in allowed and role != "admin":
@@ -1995,6 +2024,20 @@ def _ensure_print_qty_allowed(order: dict):
 
 _QUANTITY_LOCK_RETRIES = 5
 _CONFLICT_MSG = "PO baru saja diubah oleh user lain. Muat ulang halaman lalu coba lagi."
+# Progress saves must not write commercial quantity from a stale order snapshot.
+_PROGRESS_META_KEYS = (
+    "timeline",
+    "current_stage",
+    "status_label",
+    "hold",
+    "hold_reasons",
+)
+_SCREENER_PERSIST_KEYS = ("screener_info",) + _PROGRESS_META_KEYS
+_HELPER_PERSIST_KEYS = ("helper_prep",) + _PROGRESS_META_KEYS
+
+
+class _OrderMutationSkipped(Exception):
+    """Idempotent progress save. Leave the order document untouched."""
 
 
 async def _load_order_for_mutation(order_id: str) -> dict:
@@ -2008,13 +2051,15 @@ async def _load_order_for_mutation(order_id: str) -> dict:
 _r2_delivery_hook = contextvars.ContextVar("r2_delivery_hook", default=None)
 
 
-async def _with_quantity_lock(order_id: str, mutate, extra_query=None):
+async def _with_quantity_lock(order_id: str, mutate, extra_query=None, persist_keys=None):
     """Atomic optimistic lock + retry untuk mutasi qty kritis.
 
     `mutate(order)` memvalidasi & memodifikasi order in-place.
     Setiap attempt: baca fresh → validasi → update dengan filter updated_at.
     `extra_query` is optional and unused by every caller except Konfirmasi Terkirim.
     A context hook, when set, runs inside the same Mongo transaction as the write.
+    `persist_keys` limits the write to those fields so a stale snapshot cannot
+    put an older line quantity back onto the order.
     """
     in_transaction = _r2_delivery_hook.get()
     last_token = None
@@ -2022,16 +2067,24 @@ async def _with_quantity_lock(order_id: str, mutate, extra_query=None):
         order = await _load_order_for_mutation(order_id)
         lock_token = order.get("updated_at")
         last_token = lock_token
-        mutate(order)
+        result = mutate(order)
+        if inspect.isawaitable(result):
+            await result
         order["_expected_updated_at"] = lock_token
         try:
             if in_transaction is None:
-                return await _persist_order(order, require_lock=True, extra_query=extra_query)
+                return await _persist_order(
+                    order, require_lock=True, extra_query=extra_query, persist_keys=persist_keys,
+                )
             async with await db.client.start_session() as session:
                 async with session.start_transaction():
                     await in_transaction(session, order)
                     return await _persist_order(
-                        order, require_lock=True, extra_query=extra_query, session=session,
+                        order,
+                        require_lock=True,
+                        extra_query=extra_query,
+                        persist_keys=persist_keys,
+                        session=session,
                     )
         except HTTPException as exc:
             from services.physical_stock_engine import DELIVERY_FENCE_LOST
@@ -3128,47 +3181,52 @@ async def bulk_delete(payload: BulkPayload, user=Depends(current_user)):
 # ---- Helper qty (Requirement 9) ----
 @api_router.post("/orders/{order_id}/helper-prep")
 async def update_helper_prep(order_id: str, payload: HelperPrepPayload, user=Depends(current_user)):
-    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
-    if not order:
+    existing = await db.orders.find_one({"id": order_id}, {"_id": 0, "id": 1, "cancelled": 1})
+    if not existing:
         raise HTTPException(404, "PO tidak ditemukan")
-    _ensure_not_cancelled(order)
+    _ensure_not_cancelled(existing)
     await _require_perm(user, "helper.prepare")
-    if _requires_printing(order) and not _stage_penjadwalan_done(order):
-        raise HTTPException(400, "Tahap Persiapan Helper belum dapat diproses. Selesaikan Penjadwalan terlebih dahulu.")
     if payload.qty_required < 0 or payload.qty_prepared < 0:
         raise HTTPException(400, "Qty tidak boleh negatif")
-    print_cap = _print_qty_total(order)
-    if payload.qty_required > print_cap:
-        raise HTTPException(
-            400,
-            f"Qty dibutuhkan Helper ({payload.qty_required}) melebihi total qty Cetak ({print_cap}). "
-            "Persiapan Helper hanya untuk barang Cetak."
-        )
-    if payload.qty_prepared > print_cap:
-        raise HTTPException(
-            400,
-            f"Qty disiapkan Helper ({payload.qty_prepared}) melebihi total qty Cetak ({print_cap})."
-        )
-    err = _qr_validate_helper_prepared_qty(payload.qty_prepared, order)
-    if err:
-        raise HTTPException(400, err)
-    order["_expected_updated_at"] = order.get("updated_at")
-    shortage = max(payload.qty_required - payload.qty_prepared, 0)
-    before = order.get("helper_prep") or {}
-    order["helper_prep"] = {
-        "qty_required": payload.qty_required,
-        "qty_prepared": payload.qty_prepared,
-        "qty_shortage": shortage,
-        "shortage_status": "Barang Kurang" if shortage > 0 else "Cukup",
-        "notes": (payload.notes or "").strip() or None,
-        "updated_by": user.get("email"),
-        "updated_by_name": user.get("name"),
-        "updated_at": now_iso(),
-    }
-    add_timeline(order, order["current_stage"], user, note=f"Persiapan Helper: {payload.qty_prepared}/{payload.qty_required} (kurang {shortage})")
-    _sync_workflow_stage(order)
-    await _persist_order(order)
-    await _audit_po(order, "helper.prep.update", user, before=before, after=order["helper_prep"])
+    applied = {}
+
+    def mutate(order: dict):
+        if _requires_printing(order) and not _stage_penjadwalan_done(order):
+            raise HTTPException(400, "Tahap Persiapan Helper belum dapat diproses. Selesaikan Penjadwalan terlebih dahulu.")
+        print_cap = _print_qty_total(order)
+        if payload.qty_required > print_cap:
+            raise HTTPException(
+                400,
+                f"Qty dibutuhkan Helper ({payload.qty_required}) melebihi total qty Cetak ({print_cap}). "
+                "Persiapan Helper hanya untuk barang Cetak."
+            )
+        if payload.qty_prepared > print_cap:
+            raise HTTPException(
+                400,
+                f"Qty disiapkan Helper ({payload.qty_prepared}) melebihi total qty Cetak ({print_cap})."
+            )
+        err = _qr_validate_helper_prepared_qty(payload.qty_prepared, order)
+        if err:
+            raise HTTPException(400, err)
+        shortage = max(payload.qty_required - payload.qty_prepared, 0)
+        before = order.get("helper_prep") or {}
+        order["helper_prep"] = {
+            "qty_required": payload.qty_required,
+            "qty_prepared": payload.qty_prepared,
+            "qty_shortage": shortage,
+            "shortage_status": "Barang Kurang" if shortage > 0 else "Cukup",
+            "notes": (payload.notes or "").strip() or None,
+            "updated_by": user.get("email"),
+            "updated_by_name": user.get("name"),
+            "updated_at": now_iso(),
+        }
+        add_timeline(order, order["current_stage"], user, note=f"Persiapan Helper: {payload.qty_prepared}/{payload.qty_required} (kurang {shortage})")
+        _sync_workflow_stage(order)
+        applied["before"] = before
+        applied["after"] = order["helper_prep"]
+
+    order = await _with_quantity_lock(order_id, mutate, persist_keys=_HELPER_PERSIST_KEYS)
+    await _audit_po(order, "helper.prep.update", user, before=applied.get("before"), after=applied.get("after"))
     return {"order": order}
 
 
@@ -3177,144 +3235,150 @@ async def update_helper_prep(order_id: str, payload: HelperPrepPayload, user=Dep
 async def update_helper_prep_items(order_id: str, payload: HelperPrepItemsPayload, view: Optional[str] = None, user=Depends(current_user)):
     """Helper mengisi Qty Disiapkan per line item. Qty Dibutuhkan = read-only
     dari line_items[i].quantity (source of truth PO). Qty Order TIDAK berubah."""
-    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
-    if not order:
+    existing = await db.orders.find_one({"id": order_id}, {"_id": 0, "id": 1, "cancelled": 1})
+    if not existing:
         raise HTTPException(404, "PO tidak ditemukan")
-    _ensure_not_cancelled(order)
+    _ensure_not_cancelled(existing)
     await _require_perm(user, "helper.prepare")
-    if _requires_printing(order) and not _stage_penjadwalan_done(order):
-        raise HTTPException(400, "Tahap Persiapan Helper belum dapat diproses. Selesaikan Penjadwalan terlebih dahulu.")
-    line_items = order.get("line_items") or []
-    if not line_items:
-        raise HTTPException(400, "PO tidak memiliki line item")
-    # Revisi routing: Helper hanya menyiapkan barang Cetak. Non-print line
-    # DIABAIKAN dari total qty_required/qty_prepared/qty_shortage.
-    print_idx_set = set(_print_line_indices(order))
-    hp_before = order.get("helper_prep") or {}
-    entries = list(hp_before.get("entries") or [])
-    increment_mode = any(it.qty is not None for it in payload.items)
-    if increment_mode:
-        if not entries:
-            for it in (hp_before.get("items") or []):
-                q = int(it.get("qty_prepared") or 0)
-                if q > 0:
-                    entries, _, _ = append_qty_entry(
-                        entries, qty=q, stage="helper", user={"email": hp_before.get("updated_by"), "name": hp_before.get("updated_by_name")},
-                        now=hp_before.get("updated_at") or now_iso(),
-                        action_id=f"legacy-helper-{it.get('line_idx')}",
-                        po_id=order.get("id"),
-                        line_idx=it.get("line_idx"),
-                        extra={"legacy": True},
+    applied = {}
+
+    def mutate(order: dict):
+        if _requires_printing(order) and not _stage_penjadwalan_done(order):
+            raise HTTPException(400, "Tahap Persiapan Helper belum dapat diproses. Selesaikan Penjadwalan terlebih dahulu.")
+        line_items = order.get("line_items") or []
+        if not line_items:
+            raise HTTPException(400, "PO tidak memiliki line item")
+        # Revisi routing: Helper hanya menyiapkan barang Cetak. Non-print line
+        # DIABAIKAN dari total qty_required/qty_prepared/qty_shortage.
+        print_idx_set = set(_print_line_indices(order))
+        hp_before = order.get("helper_prep") or {}
+        entries = list(hp_before.get("entries") or [])
+        increment_mode = any(it.qty is not None for it in payload.items)
+        if increment_mode:
+            if not entries:
+                for it in (hp_before.get("items") or []):
+                    q = int(it.get("qty_prepared") or 0)
+                    if q > 0:
+                        entries, _, _ = append_qty_entry(
+                            entries, qty=q, stage="helper", user={"email": hp_before.get("updated_by"), "name": hp_before.get("updated_by_name")},
+                            now=hp_before.get("updated_at") or now_iso(),
+                            action_id=f"legacy-helper-{it.get('line_idx')}",
+                            po_id=order.get("id"),
+                            line_idx=it.get("line_idx"),
+                            extra={"legacy": True},
+                        )
+            for it in payload.items:
+                if it.qty is None:
+                    continue
+                aid = it.action_id or payload.action_id
+                if find_by_action_id(entries, aid):
+                    continue
+                inc = max(0, int(it.qty))
+                if inc <= 0:
+                    continue
+                if it.line_idx not in print_idx_set:
+                    raise HTTPException(400, "Line item bukan proses Cetak — tidak masuk Persiapan Helper.")
+                line_qty = int((line_items[it.line_idx] or {}).get("quantity") or 0)
+                already = sum(int(e.get("qty") or 0) for e in entries if e.get("line_idx") == it.line_idx and not e.get("cancelled"))
+                new_total = already + inc
+                if new_total > line_qty:
+                    raise HTTPException(
+                        400,
+                        f"Qty disiapkan untuk '{line_items[it.line_idx].get('name')}' ({new_total}) melebihi qty Cetak line ({line_qty}).",
                     )
-        for it in payload.items:
-            if it.qty is None:
-                continue
-            aid = it.action_id or payload.action_id
-            if find_by_action_id(entries, aid):
-                continue
-            inc = max(0, int(it.qty))
-            if inc <= 0:
-                continue
-            if it.line_idx not in print_idx_set:
-                raise HTTPException(400, "Line item bukan proses Cetak — tidak masuk Persiapan Helper.")
-            line_qty = int((line_items[it.line_idx] or {}).get("quantity") or 0)
-            already = sum(int(e.get("qty") or 0) for e in entries if e.get("line_idx") == it.line_idx and not e.get("cancelled"))
-            new_total = already + inc
-            if new_total > line_qty:
+                target = _qr_helper_target_for_line(order, it.line_idx)
+                new_cap = min(line_qty, max(target, already))
+                if new_total > new_cap:
+                    raise HTTPException(
+                        400,
+                        f"Qty disiapkan untuk '{line_items[it.line_idx].get('name')}' ({new_total}) melebihi target jadwal ({target}).",
+                    )
+                entries, _, created = append_qty_entry(
+                    entries, qty=inc, stage="helper", user=user, now=now_iso(),
+                    action_id=aid, po_id=order.get("id"), line_idx=it.line_idx,
+                )
+            prepared_map = {}
+            for e in entries:
+                if e.get("cancelled"):
+                    continue
+                idx = int(e.get("line_idx") if e.get("line_idx") is not None else -1)
+                if idx < 0:
+                    continue
+                prepared_map[idx] = prepared_map.get(idx, 0) + int(e.get("qty") or 0)
+        else:
+            if entries:
+                raise HTTPException(409, "Entry Helper sudah dikonfirmasi. Kirim pekerjaan tambahan sebagai qty baru.")
+            prepared_map = {int(it.line_idx): max(0, int(it.qty_prepared or 0)) for it in payload.items}
+        items_out = []
+        total_required = 0
+        total_prepared = 0
+        for idx, li in enumerate(line_items):
+            req_full = int(li.get("quantity", 0) or 0)
+            prep_input = int(prepared_map.get(idx, 0))
+            if prep_input < 0:
+                prep_input = 0
+            if idx in print_idx_set:
+                req = _qr_helper_target_for_line(order, idx)
+                prep = prep_input
+                if prep_input > req_full:
+                    raise HTTPException(
+                        400,
+                        f"Qty disiapkan untuk '{li.get('name')}' ({prep_input}) melebihi qty Cetak line ({req_full})."
+                    )
+                shortage = max(req - prep, 0)
+                total_required += req
+                total_prepared += prep
+                items_out.append({
+                    "line_idx": idx,
+                    "name": li.get("name"),
+                    "color": li.get("color"),
+                    "qty_required": req,
+                    "qty_prepared": prep,
+                    "qty_shortage": shortage,
+                })
+            elif prep_input > 0:
                 raise HTTPException(
                     400,
-                    f"Qty disiapkan untuk '{line_items[it.line_idx].get('name')}' ({new_total}) melebihi qty Cetak line ({line_qty}).",
+                    f"Line item '{li.get('name')}' bukan proses Cetak — tidak masuk Persiapan Helper."
                 )
-            target = _qr_helper_target_for_line(order, it.line_idx)
-            new_cap = min(line_qty, max(target, already))
-            if new_total > new_cap:
-                raise HTTPException(
-                    400,
-                    f"Qty disiapkan untuk '{line_items[it.line_idx].get('name')}' ({new_total}) melebihi target jadwal ({target}).",
+            # Non-print line dihilangkan dari items_out & totals (out of scope).
+        err = _qr_validate_helper_prepared_qty(total_prepared, order)
+        if err:
+            raise HTTPException(400, err)
+        total_shortage = max(total_required - total_prepared, 0)
+        before = order.get("helper_prep") or {}
+        if not increment_mode:
+            for it in items_out:
+                q = int(it.get("qty_prepared") or 0)
+                if q <= 0:
+                    continue
+                entries, _, _ = append_qty_entry(
+                    entries, qty=q, stage="helper", user=user, now=now_iso(),
+                    action_id=payload.action_id or f"helper-first-{it.get('line_idx')}",
+                    po_id=order.get("id"),
+                    line_idx=it.get("line_idx"),
                 )
-            entries, _, created = append_qty_entry(
-                entries, qty=inc, stage="helper", user=user, now=now_iso(),
-                action_id=aid, po_id=order.get("id"), line_idx=it.line_idx,
-            )
-        prepared_map = {}
-        for e in entries:
-            if e.get("cancelled"):
-                continue
-            idx = int(e.get("line_idx") if e.get("line_idx") is not None else -1)
-            if idx < 0:
-                continue
-            prepared_map[idx] = prepared_map.get(idx, 0) + int(e.get("qty") or 0)
-    else:
-        if entries:
-            raise HTTPException(409, "Entry Helper sudah dikonfirmasi. Kirim pekerjaan tambahan sebagai qty baru.")
-        prepared_map = {int(it.line_idx): max(0, int(it.qty_prepared or 0)) for it in payload.items}
-    items_out = []
-    total_required = 0
-    total_prepared = 0
-    for idx, li in enumerate(line_items):
-        req_full = int(li.get("quantity", 0) or 0)
-        prep_input = int(prepared_map.get(idx, 0))
-        if prep_input < 0:
-            prep_input = 0
-        if idx in print_idx_set:
-            req = _qr_helper_target_for_line(order, idx)
-            prep = prep_input
-            if prep_input > req_full:
-                raise HTTPException(
-                    400,
-                    f"Qty disiapkan untuk '{li.get('name')}' ({prep_input}) melebihi qty Cetak line ({req_full})."
-                )
-            shortage = max(req - prep, 0)
-            total_required += req
-            total_prepared += prep
-            items_out.append({
-                "line_idx": idx,
-                "name": li.get("name"),
-                "color": li.get("color"),
-                "qty_required": req,
-                "qty_prepared": prep,
-                "qty_shortage": shortage,
-            })
-        elif prep_input > 0:
-            raise HTTPException(
-                400,
-                f"Line item '{li.get('name')}' bukan proses Cetak — tidak masuk Persiapan Helper."
-            )
-        # Non-print line dihilangkan dari items_out & totals (out of scope).
-    err = _qr_validate_helper_prepared_qty(total_prepared, order)
-    if err:
-        raise HTTPException(400, err)
-    total_shortage = max(total_required - total_prepared, 0)
-    before = order.get("helper_prep") or {}
-    order["_expected_updated_at"] = order.get("updated_at")
-    if not increment_mode:
-        for it in items_out:
-            q = int(it.get("qty_prepared") or 0)
-            if q <= 0:
-                continue
-            entries, _, _ = append_qty_entry(
-                entries, qty=q, stage="helper", user=user, now=now_iso(),
-                action_id=payload.action_id or f"helper-first-{it.get('line_idx')}",
-                po_id=order.get("id"), line_idx=it.get("line_idx"),
-            )
-    order["helper_prep"] = {
-        # Keep total fields for backward compatibility (Timeline & schedule pakai ini)
-        "qty_required": total_required,
-        "qty_prepared": total_prepared,
-        "qty_shortage": total_shortage,
-        "shortage_status": "Barang Kurang" if total_shortage > 0 else "Cukup",
-        "notes": (payload.notes or "").strip() or None,
-        "items": items_out,
-        "entries": entries,
-        "updated_by": user.get("email"),
-        "updated_by_name": user.get("name"),
-        "updated_at": now_iso(),
-    }
-    add_timeline(order, order["current_stage"], user,
-                 note=f"Persiapan Helper (per-line): {total_prepared}/{total_required} (kurang {total_shortage})")
-    _sync_workflow_stage(order)
-    await _persist_order(order)
-    await _audit_po(order, "helper.prep.items.update", user, before=before, after=order["helper_prep"])
+        order["helper_prep"] = {
+            # Keep total fields for backward compatibility (Timeline & schedule pakai ini)
+            "qty_required": total_required,
+            "qty_prepared": total_prepared,
+            "qty_shortage": total_shortage,
+            "shortage_status": "Barang Kurang" if total_shortage > 0 else "Cukup",
+            "notes": (payload.notes or "").strip() or None,
+            "items": items_out,
+            "entries": entries,
+            "updated_by": user.get("email"),
+            "updated_by_name": user.get("name"),
+            "updated_at": now_iso(),
+        }
+        add_timeline(order, order["current_stage"], user,
+                     note=f"Persiapan Helper (per-line): {total_prepared}/{total_required} (kurang {total_shortage})")
+        _sync_workflow_stage(order)
+        applied["before"] = before
+        applied["after"] = order["helper_prep"]
+
+    order = await _with_quantity_lock(order_id, mutate, persist_keys=_HELPER_PERSIST_KEYS)
+    await _audit_po(order, "helper.prep.items.update", user, before=applied.get("before"), after=applied.get("after"))
     return {"order": _public_saved_order(order, view)}
 
 
@@ -3996,69 +4060,79 @@ async def work_division_tasks(
 # ---- Screener info (Requirement 10) ----
 @api_router.post("/orders/{order_id}/screener-info")
 async def update_screener_info(order_id: str, payload: ScreenerInfoPayload, view: Optional[str] = None, user=Depends(current_user)):
-    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
-    if not order:
+    existing = await db.orders.find_one({"id": order_id}, {"_id": 0, "id": 1, "cancelled": 1})
+    if not existing:
         raise HTTPException(404, "PO tidak ditemukan")
-    _ensure_not_cancelled(order)
+    _ensure_not_cancelled(existing)
     await _require_perm(user, "screen.update")
-    if _requires_printing(order) and not _stage_penjadwalan_done(order):
-        raise HTTPException(400, "Tahap Screener belum dapat diproses. Selesaikan Penjadwalan terlebih dahulu.")
     screener_err = _qr_validate_screener_qty(
-        payload.qty if payload.qty is not None else payload.screen_qty, order
+        payload.qty if payload.qty is not None else payload.screen_qty, None
     )
     if screener_err:
         raise HTTPException(400, screener_err)
-    before = order.get("screener_info") or {}
-    entries = list(before.get("entries") or [])
-    increment = payload.qty
-    if increment is None and payload.screen_qty is not None and not entries:
-        increment = int(payload.screen_qty)
-        entries = []
-    elif increment is None and payload.screen_qty is not None and entries:
-        raise HTTPException(409, "Entry Screener sudah dikonfirmasi. Kirim pekerjaan tambahan sebagai qty baru.")
-    if increment is None:
-        raise HTTPException(400, "Qty Screener wajib diisi.")
-    if int(increment) <= 0:
-        raise HTTPException(400, "Qty Screener harus lebih besar dari 0.")
-    if find_by_action_id(entries, payload.action_id):
+    applied = {}
+
+    def mutate(order: dict):
+        if _requires_printing(order) and not _stage_penjadwalan_done(order):
+            raise HTTPException(400, "Tahap Screener belum dapat diproses. Selesaikan Penjadwalan terlebih dahulu.")
+        before = order.get("screener_info") or {}
+        entries = list(before.get("entries") or [])
+        increment = payload.qty
+        if increment is None and payload.screen_qty is not None and not entries:
+            increment = int(payload.screen_qty)
+            entries = []
+        elif increment is None and payload.screen_qty is not None and entries:
+            raise HTTPException(409, "Entry Screener sudah dikonfirmasi. Kirim pekerjaan tambahan sebagai qty baru.")
+        if increment is None:
+            raise HTTPException(400, "Qty Screener wajib diisi.")
+        if int(increment) <= 0:
+            raise HTTPException(400, "Qty Screener harus lebih besar dari 0.")
+        if find_by_action_id(entries, payload.action_id):
+            raise _OrderMutationSkipped()
+        entries = seed_legacy(
+            entries,
+            snapshot_qty=before.get("screen_qty"),
+            stage="screener",
+            now=now_iso(),
+            at=before.get("updated_at"),
+            by=before.get("updated_by"),
+            by_name=before.get("updated_by_name"),
+            po_id=order.get("id"),
+        )
+        entries, _entry, created = append_qty_entry(
+            entries,
+            qty=int(increment),
+            stage="screener",
+            user=user,
+            now=now_iso(),
+            action_id=payload.action_id,
+            po_id=order.get("id"),
+            extra={"notes": (payload.notes or "").strip() or None},
+        )
+        if not created:
+            raise _OrderMutationSkipped()
+        total = sum_entry_qty(entries)
+        order["screener_info"] = {
+            "screen_qty": total,
+            "notes": (payload.notes or "").strip() or before.get("notes"),
+            "entries": entries,
+            "updated_by": user.get("email"),
+            "updated_by_name": user.get("name"),
+            "updated_at": now_iso(),
+        }
+        # Auto-progress: setelah Screener Save, Operator menjadi READY.
+        # Tidak menandai Helper selesai (paralel).
+        add_timeline(order, order["current_stage"], user, note=f"Screen qty +{increment} (total {total})")
+        _sync_workflow_stage(order)
+        applied["before"] = before
+        applied["after"] = order["screener_info"]
+
+    try:
+        order = await _with_quantity_lock(order_id, mutate, persist_keys=_SCREENER_PERSIST_KEYS)
+    except _OrderMutationSkipped:
+        order = await db.orders.find_one({"id": order_id}, {"_id": 0})
         return {"order": _public_saved_order(order, view)}
-    entries = seed_legacy(
-        entries,
-        snapshot_qty=before.get("screen_qty"),
-        stage="screener",
-        now=now_iso(),
-        at=before.get("updated_at"),
-        by=before.get("updated_by"),
-        by_name=before.get("updated_by_name"),
-        po_id=order.get("id"),
-    )
-    entries, _entry, created = append_qty_entry(
-        entries,
-        qty=int(increment),
-        stage="screener",
-        user=user,
-        now=now_iso(),
-        action_id=payload.action_id,
-        po_id=order.get("id"),
-        extra={"notes": (payload.notes or "").strip() or None},
-    )
-    if not created:
-        return {"order": _public_saved_order(order, view)}
-    total = sum_entry_qty(entries)
-    order["screener_info"] = {
-        "screen_qty": total,
-        "notes": (payload.notes or "").strip() or before.get("notes"),
-        "entries": entries,
-        "updated_by": user.get("email"),
-        "updated_by_name": user.get("name"),
-        "updated_at": now_iso(),
-    }
-    # Auto-progress: setelah Screener Save, Operator menjadi READY.
-    # Tidak menandai Helper selesai (paralel).
-    add_timeline(order, order["current_stage"], user, note=f"Screen qty +{increment} (total {total})")
-    _sync_workflow_stage(order)
-    await _persist_order(order)
-    await _audit_po(order, "screener.info.update", user, before=before, after=order["screener_info"])
+    await _audit_po(order, "screener.info.update", user, before=applied.get("before"), after=applied.get("after"))
     return {"order": _public_saved_order(order, view)}
 
 
@@ -4294,6 +4368,10 @@ async def update_operator_progress(order_id: str, payload: OperatorProgressPaylo
                 400,
                 f"Qty selesai ({new_total}) melebihi alokasi operator ({cap}).",
             )
+        from services.line_qty_commitment import operator_progress_line_cap_error
+        line_cap_err = operator_progress_line_cap_error(order, splits, found, new_total)
+        if line_cap_err:
+            raise HTTPException(400, line_cap_err)
         others = sum(
             int(s.get("qty_completed") or 0)
             for s in splits if s.get("id") != found.get("id")
@@ -4919,11 +4997,40 @@ async def add_note(order_id: str, payload: NotePayload, user=Depends(current_use
     if not order:
         raise HTTPException(404, "PO tidak ditemukan")
     _ensure_not_cancelled(order)
-    if user.get("role") == "crm":
-        raise HTTPException(403, "CRM hanya read-only")
+    if not await _may_append_production_note(user):
+        raise HTTPException(403, "Anda tidak punya permission 'production_note.create'")
     order["notes"] = (order.get("notes", "") + "\n" + payload.note).strip()
     add_timeline(order, order["current_stage"], user, note=f"Catatan: {payload.note}")
     await _persist_order(order)
+    return {"order": order}
+
+
+async def _may_append_production_note(user: dict) -> bool:
+    """Legacy non-CRM append stays open. CRM needs production_note.create.
+
+    A stored role_permissions document must not revoke append from roles that
+    could append before this permission existed. Explicit False on the new key
+    therefore does not apply to non-CRM roles.
+    """
+    if user.get("role") != "crm":
+        return True
+    eff = await user_permissions(user)
+    return "production_note.create" in eff
+
+
+@api_router.patch("/orders/{order_id}/note")
+async def update_note(order_id: str, payload: NotePayload, user=Depends(current_user)):
+    """Replace the full orders.notes string. Does not append and does not clear."""
+    await _require_perm(user, "production_note.edit")
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(404, "PO tidak ditemukan")
+    _ensure_not_cancelled(order)
+    text = (payload.note or "").strip()
+    if not text:
+        raise HTTPException(400, "Catatan tidak boleh kosong.")
+    order["notes"] = text
+    await _persist_order(order, persist_keys=("notes",))
     return {"order": order}
 
 
@@ -8687,6 +8794,7 @@ def _build_preview(so: Dict[str, Any]) -> Dict[str, Any]:
         "po_number": so.get("po_number"),
         "customer": so.get("customer"),
         "outlet": so.get("outlet"),
+        "branch_id": so.get("branch_id"),
         "recipient": so.get("recipient"),
         "address": so.get("address"),
         "payment_terms": so.get("payment_terms"),
@@ -8780,6 +8888,9 @@ async def _persist_imported_po(preview: Dict[str, Any], *, source: str, user: di
         "created_at": now,
         "updated_at": now,
     }
+    branch_id = str(preview.get("branch_id") or "").strip()
+    if branch_id.isdigit():
+        new["branch_id"] = branch_id
     from services.physical_stock_engine import attach_order_stock_snapshot
     stock_warnings = await validate_sales_order_availability(db, new.get("line_items") or [])
     await attach_order_stock_snapshot(db, new)
@@ -9249,6 +9360,9 @@ from services.sales_invoices import (
     list_charge_account_options as _list_charge_account_options,
     create_sales_invoice as _create_sales_invoice,
     generate_sales_invoice_pdf_bytes,
+    invoice_pdf_presentation,
+    proforma_availability as _proforma_availability,
+    require_proforma_invoice as _require_proforma_invoice,
     list_sales_invoices as _list_sales_invoices,
     query_sales_invoices as _query_sales_invoices,
     get_sales_invoice_detail as _get_sales_invoice_detail,
@@ -10171,6 +10285,22 @@ async def replace_sales_order_line_product(
         REASON_SAME_PRODUCT,
         MSG_SAME,
     )
+    from services.delivery_loading_gate import po_is_fully_delivered
+    from services.line_qty_commitment import (
+        QuantityUnchanged,
+        MSG_PENDING,
+        MSG_QTY_DELIVERED,
+        MSG_SCHEDULE,
+        REASON_QTY_BELOW,
+        REASON_QTY_DELIVERED,
+        REASON_QTY_PENDING,
+        REASON_SCHEDULE,
+        get_committed_qty_for_line,
+        message_qty_below,
+        qty_reject_detail,
+        recalc_derived_selling_amounts,
+        reconcile_operator_schedule_for_line,
+    )
 
     # Authoritative re-load at write time (race safety).
     order = await db.orders.find_one({"id": order_id}, {"_id": 0})
@@ -10195,19 +10325,6 @@ async def replace_sales_order_line_product(
     if not target_requested and payload.quantity is None:
         raise HTTPException(400, "Pilih barang pengganti atau ubah qty.")
 
-    guard = await evaluate_line_product_replacement(db, order, line_idx)
-    if not guard["allowed"]:
-        raise HTTPException(
-            409,
-            {
-                "code": guard["reason_code"],
-                "message": guard["reason_message"],
-                "line_idx": guard["line_idx"],
-                "production_process": guard["production_process"],
-                "downstream_sources": guard.get("downstream_sources") or [],
-            },
-        )
-
     mapped = None
     if target_requested:
         master = await resolve_replacement_master(
@@ -10225,78 +10342,179 @@ async def replace_sales_order_line_product(
         if not mapped.get("accurate_item_id") and not mapped.get("master_item_id"):
             raise HTTPException(400, "Produk target tidak memiliki identitas kanonis.")
 
-    before = current_product_snapshot(source_li)
-    same_aid = bool(target_requested and (
-        before.get("accurate_item_id")
-        and mapped.get("accurate_item_id")
-        and str(before["accurate_item_id"]) == str(mapped["accurate_item_id"])
-    ))
-    same_mid = bool(target_requested and (
-        before.get("master_item_id")
-        and mapped.get("master_item_id")
-        and str(before["master_item_id"]) == str(mapped["master_item_id"])
-        and not mapped.get("accurate_item_id")
-        and not before.get("accurate_item_id")
-    ))
-    product_changed = target_requested and not (same_aid or same_mid)
-    current_qty = int(source_li.get("quantity") or 0)
-    quantity_changed = payload.quantity is not None and payload.quantity != current_qty
-    if not product_changed and not quantity_changed:
-        raise HTTPException(400, {"code": REASON_SAME_PRODUCT, "message": MSG_SAME})
+    applied = {}
 
-    # Final race re-check immediately before persist
-    fresh = await db.orders.find_one({"id": order_id}, {"_id": 0})
-    if not fresh:
-        raise HTTPException(404, "PO tidak ditemukan")
-    race = await evaluate_line_product_replacement(db, fresh, line_idx)
-    if not race["allowed"]:
-        raise HTTPException(
-            409,
-            {
-                "code": race["reason_code"],
-                "message": race["reason_message"],
-                "line_idx": race["line_idx"],
-                "production_process": race["production_process"],
-                "downstream_sources": race.get("downstream_sources") or [],
-            },
+    def _same_product(before: dict) -> bool:
+        if not target_requested or not mapped:
+            return False
+        same_aid = bool(
+            before.get("accurate_item_id")
+            and mapped.get("accurate_item_id")
+            and str(before["accurate_item_id"]) == str(mapped["accurate_item_id"])
         )
-    fresh_lis = list(fresh.get("line_items") or [])
-    if line_idx >= len(fresh_lis) or not isinstance(fresh_lis[line_idx], dict):
-        raise HTTPException(400, "Line item tidak ditemukan.")
+        same_mid = bool(
+            before.get("master_item_id")
+            and mapped.get("master_item_id")
+            and str(before["master_item_id"]) == str(mapped["master_item_id"])
+            and not mapped.get("accurate_item_id")
+            and not before.get("accurate_item_id")
+        )
+        return same_aid or same_mid
 
-    fresh_line = fresh_lis[line_idx]
-    mutated = apply_product_fields_to_line(fresh_line, mapped) if product_changed else dict(fresh_line)
-    for keep in ("production_process", "color", "notes", "id", "line_id", "accurate_line_id", "color_source"):
-        if keep in fresh_lis[line_idx]:
-            mutated[keep] = fresh_lis[line_idx].get(keep)
-    mutated["quantity"] = payload.quantity if payload.quantity is not None else fresh_line.get("quantity")
-    if line_production_process(mutated) != source_process:
-        raise HTTPException(400, {"code": REASON_CROSS_TYPE, "message": MSG_CROSS_TYPE})
+    async def mutate(fresh: dict):
+        _ensure_not_cancelled(fresh)
+        fresh_lis = list(fresh.get("line_items") or [])
+        if line_idx >= len(fresh_lis) or not isinstance(fresh_lis[line_idx], dict):
+            raise HTTPException(400, "Line item tidak ditemukan.")
+        fresh_line = dict(fresh_lis[line_idx])
+        before_product = current_product_snapshot(fresh_line)
+        try:
+            current_qty = int(fresh_line.get("quantity") or 0)
+        except (TypeError, ValueError):
+            current_qty = 0
+        product_changed = target_requested and not _same_product(before_product)
+        requested_qty = payload.quantity
+        quantity_changed = requested_qty is not None and int(requested_qty) != current_qty
+        if not product_changed and not quantity_changed:
+            if target_requested:
+                raise HTTPException(400, {"code": REASON_SAME_PRODUCT, "message": MSG_SAME})
+            raise QuantityUnchanged()
 
-    fresh_lis[line_idx] = mutated
-    fresh["line_items"] = fresh_lis
-    fresh["total_quantity"] = sum(int((line or {}).get("quantity") or 0) for line in fresh_lis)
-    fresh["_expected_updated_at"] = fresh.get("updated_at")
-    await _persist_order(fresh, require_lock=True)
+        if product_changed:
+            guard = await evaluate_line_product_replacement(db, fresh, line_idx)
+            if not guard["allowed"]:
+                raise HTTPException(
+                    409,
+                    {
+                        "code": guard["reason_code"],
+                        "message": guard["reason_message"],
+                        "line_idx": guard["line_idx"],
+                        "production_process": guard["production_process"],
+                        "downstream_sources": guard.get("downstream_sources") or [],
+                    },
+                )
+
+        mutated = apply_product_fields_to_line(fresh_line, mapped) if product_changed else dict(fresh_line)
+        for keep in ("production_process", "color", "notes", "id", "line_id", "accurate_line_id", "color_source"):
+            if keep in fresh_line:
+                mutated[keep] = fresh_line.get(keep)
+
+        if quantity_changed:
+            floor = await get_committed_qty_for_line(db, fresh, line_idx)
+            committed_qty = int(floor["committed_qty"])
+            if floor.get("pending_stock_claim"):
+                raise HTTPException(
+                    409,
+                    qty_reject_detail(
+                        REASON_QTY_PENDING,
+                        MSG_PENDING,
+                        current_qty=current_qty,
+                        committed_qty=committed_qty,
+                        requested_qty=int(requested_qty),
+                    ),
+                )
+            if int(requested_qty) > current_qty and po_is_fully_delivered(fresh):
+                raise HTTPException(
+                    409,
+                    qty_reject_detail(
+                        REASON_QTY_DELIVERED,
+                        MSG_QTY_DELIVERED,
+                        current_qty=current_qty,
+                        committed_qty=committed_qty,
+                        requested_qty=int(requested_qty),
+                    ),
+                )
+            if int(requested_qty) < committed_qty:
+                raise HTTPException(
+                    409,
+                    qty_reject_detail(
+                        REASON_QTY_BELOW,
+                        message_qty_below(current_qty, committed_qty, int(requested_qty)),
+                        current_qty=current_qty,
+                        committed_qty=committed_qty,
+                        requested_qty=int(requested_qty),
+                    ),
+                )
+            mutated["quantity"] = int(requested_qty)
+            fresh_lis[line_idx] = mutated
+            fresh["line_items"] = fresh_lis
+            try:
+                reconcile_operator_schedule_for_line(fresh, line_idx, int(requested_qty))
+            except HTTPException as exc:
+                detail = exc.detail if isinstance(exc.detail, dict) else {}
+                if detail.get("code") != REASON_SCHEDULE:
+                    raise
+                raise HTTPException(
+                    409,
+                    qty_reject_detail(
+                        REASON_SCHEDULE,
+                        detail.get("message") or MSG_SCHEDULE,
+                        current_qty=current_qty,
+                        committed_qty=committed_qty,
+                        requested_qty=int(requested_qty),
+                    ),
+                ) from exc
+            fresh["total_quantity"] = sum(int((line or {}).get("quantity") or 0) for line in fresh_lis)
+            recalc_derived_selling_amounts(fresh)
+        else:
+            mutated["quantity"] = fresh_line.get("quantity")
+            fresh_lis[line_idx] = mutated
+            fresh["line_items"] = fresh_lis
+
+        if line_production_process(mutated) != source_process:
+            raise HTTPException(400, {"code": REASON_CROSS_TYPE, "message": MSG_CROSS_TYPE})
+
+        applied["before"] = before_product
+        applied["before_qty"] = current_qty
+        applied["line"] = mutated
+        applied["product_changed"] = product_changed
+        applied["quantity_changed"] = quantity_changed
+
+    try:
+        fresh = await _with_quantity_lock(order_id, mutate)
+    except QuantityUnchanged:
+        fresh = await db.orders.find_one({"id": order_id}, {"_id": 0})
+        if not fresh:
+            raise HTTPException(404, "PO tidak ditemukan")
+        eligibility = await evaluate_all_line_product_replacements(db, fresh)
+        fresh["line_product_replace"] = eligibility
+        line = (fresh.get("line_items") or [None])[line_idx]
+        current_qty = int((line or {}).get("quantity") or 0)
+        snap = current_product_snapshot(line or {})
+        return {
+            "order": fresh,
+            "line_idx": line_idx,
+            "line": line,
+            "before": snap,
+            "after": snap,
+            "before_quantity": current_qty,
+            "after_quantity": current_qty,
+            "eligibility": eligibility[line_idx] if line_idx < len(eligibility) else None,
+            "message": "Qty tidak berubah.",
+        }
+
+    mutated = applied["line"]
     after = current_product_snapshot(mutated)
+    note = "Ubah qty PO" if applied["quantity_changed"] and not applied["product_changed"] else f"Ubah item PO line_idx={line_idx}"
     await _audit_po(
         fresh,
         "sales_order.line_item.update",
         user,
-        before={"line_idx": line_idx, "product": before, "quantity": current_qty},
+        before={"line_idx": line_idx, "product": applied["before"], "quantity": applied["before_qty"]},
         after={"line_idx": line_idx, "product": after, "quantity": mutated["quantity"]},
-        note=f"Ubah item PO line_idx={line_idx}",
+        note=note,
     )
-
     eligibility = await evaluate_all_line_product_replacements(db, fresh)
     fresh["line_product_replace"] = eligibility
+    product_changed = applied["product_changed"]
+    quantity_changed = applied["quantity_changed"]
     return {
         "order": fresh,
         "line_idx": line_idx,
         "line": mutated,
-        "before": before,
+        "before": applied["before"],
         "after": after,
-        "before_quantity": current_qty,
+        "before_quantity": applied["before_qty"],
         "after_quantity": mutated["quantity"],
         "eligibility": eligibility[line_idx] if line_idx < len(eligibility) else None,
         "message": "Barang dan qty berhasil diperbarui" if product_changed and quantity_changed else (
@@ -10705,7 +10923,12 @@ async def get_sales_delivery_pdf_endpoint(id: str, user=Depends(current_user)):
     await _require_any_perm(user, "sales.delivery.print", "sales.delivery.view", "sales_order.view", "po.view")
     detail = await _get_sales_delivery_detail(db, id)
     await ensure_owned_po_id(db, user, ((detail or {}).get("delivery") or {}).get("po_id"))
-    pdf_bytes = _generate_sales_delivery_pdf_bytes(detail["delivery"], detail.get("po_summary"))
+    from services.print_design_settings import get_print_design_for_pdf
+    delivery_doc = (detail or {}).get("delivery") or {}
+    design = await get_print_design_for_pdf(db, branch_id=delivery_doc.get("branch_id"))
+    pdf_bytes = _generate_sales_delivery_pdf_bytes(
+        detail["delivery"], detail.get("po_summary"), design=design
+    )
     sj_num = str(detail["delivery"].get("sj_number", "SJ")).replace("/", "_").replace("\\", "_")
     filename = f"Pengiriman_Pesanan_{sj_num}.pdf"
     return FastAPIResponse(
@@ -10827,7 +11050,10 @@ async def get_sales_invoice_pdf_endpoint(id: str, user=Depends(current_user)):
     await _require_any_perm(user, "sales.invoice.view", "sales_order.view", "po.view", "sales.delivery.view")
     detail = await _get_sales_invoice_detail(db, id)
     await ensure_owned_po_id(db, user, (detail or {}).get("po_id"))
-    pdf_bytes = generate_sales_invoice_pdf_bytes(detail)
+    shown = await invoice_pdf_presentation(db, detail)
+    from services.print_design_settings import get_print_design_for_pdf
+    design = await get_print_design_for_pdf(db, branch_id=(detail or {}).get("branch_id"))
+    pdf_bytes = generate_sales_invoice_pdf_bytes(shown, design=design)
     inv_num = str(detail.get("invoice_number", "INV")).replace("/", "_").replace("\\", "_")
     filename = f"Faktur_Penjualan_{inv_num}.pdf"
     return FastAPIResponse(
@@ -10837,9 +11063,36 @@ async def get_sales_invoice_pdf_endpoint(id: str, user=Depends(current_user)):
     )
 
 
+@api_router.get("/orders/{order_id}/proforma")
+async def get_order_proforma_availability(order_id: str, user=Depends(current_user)):
+    """Read whether this PO has exactly one non-cancelled invoice. Does not write."""
+    await _require_perm(user, "proforma_invoice.view")
+    await ensure_owned_po_id(db, user, order_id)
+    return await _proforma_availability(db, order_id)
+
+
+@api_router.get("/sales-invoices/{id}/proforma")
+async def get_sales_invoice_proforma_pdf(id: str, user=Depends(current_user)):
+    """PDF of the single non-cancelled saved invoice. Reads it; does not create or post anything."""
+    await _require_perm(user, "proforma_invoice.view")
+    invoice = await _require_proforma_invoice(db, id)
+    await ensure_owned_po_id(db, user, invoice.get("po_id"))
+    shown = await invoice_pdf_presentation(db, invoice)
+    from services.print_design_settings import get_print_design_for_pdf
+    design = await get_print_design_for_pdf(db, branch_id=(invoice or {}).get("branch_id"))
+    pdf_bytes = generate_sales_invoice_pdf_bytes(shown, document_type="proforma", design=design)
+    inv_num = str(invoice.get("invoice_number") or invoice.get("id") or "PROFORMA").replace("/", "_").replace("\\", "_")
+    filename = f"Proforma_{inv_num}.pdf"
+    return FastAPIResponse(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{filename}"'}
+    )
+
+
 @api_router.put("/sales-invoices/{id}")
 async def update_sales_invoice_endpoint(id: str, payload: SalesInvoiceUpdatePayload, user=Depends(current_user)):
-    """Update unit prices or notes on an existing sales invoice."""
+    """Update draft qty, unit prices, or notes. Qty is rechecked against the latest PO."""
     await _require_any_perm(user, "sales.invoice.edit", "sales.invoice.create", "sales_order.create", "po.edit")
     inv = await _update_sales_invoice(db, id, payload.model_dump(), user)
     return {"invoice": inv, "message": "Faktur Penjualan berhasil diperbarui"}
@@ -11949,6 +12202,345 @@ async def physical_stock_settings_put(payload: dict = Body(...), user=Depends(cu
     from services.physical_stock_settings import update_physical_stock_settings
     settings = await update_physical_stock_settings(db, payload, user=user)
     return {"settings": settings, "message": "Pengaturan stok fisik berhasil disimpan"}
+
+
+@api_router.get("/settings/design-cetakan")
+async def design_cetakan_settings_get(user=Depends(current_user)):
+    """Read Design Cetakan letterhead settings. Empty DB returns PDF defaults."""
+    await _require_any_perm(
+        user,
+        "settings.design_cetakan.view",
+        "settings.design_cetakan.manage",
+        "permissions.manage",
+    )
+    from services.print_design_settings import get_print_design_settings
+    return {"settings": await get_print_design_settings(db)}
+
+
+@api_router.put("/settings/design-cetakan")
+async def design_cetakan_settings_put(payload: dict = Body(...), user=Depends(current_user)):
+    """Persist Design Cetakan letterhead settings (text only)."""
+    await _require_any_perm(user, "settings.design_cetakan.manage", "permissions.manage")
+    from services.print_design_settings import save_print_design_settings
+    settings = await save_print_design_settings(db, payload or {}, user=user)
+    await _write_audit(
+        action="settings.design_cetakan.update",
+        actor=user,
+        target_email="-",
+        after={
+            "company_name": settings.get("company_name"),
+            "accent_color": settings.get("accent_color"),
+            "bank_count": len(((settings.get("invoice") or {}).get("bank_accounts") or [])),
+        },
+    )
+    return {"settings": settings, "message": "Design Cetakan berhasil disimpan"}
+
+
+@api_router.get("/settings/design-cetakan/assets/{slot}")
+async def design_cetakan_asset_preview(slot: str, user=Depends(current_user)):
+    """Authenticated preview of an active Design Cetakan custom asset."""
+    await _require_any_perm(
+        user,
+        "settings.design_cetakan.view",
+        "settings.design_cetakan.manage",
+        "permissions.manage",
+    )
+    from services.print_design_settings import load_slot_bytes
+
+    data, media, name = await load_slot_bytes(db, slot)
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", str(name or f"{slot}.bin"))[:180] or f"{slot}.bin"
+    return FastAPIResponse(
+        content=data,
+        media_type=media or "application/octet-stream",
+        headers={
+            "Cache-Control": "private, no-store",
+            "Content-Disposition": f'inline; filename="{safe_name}"',
+        },
+    )
+
+
+@api_router.post("/settings/design-cetakan/assets/{slot}")
+async def design_cetakan_asset_upload(
+    slot: str,
+    file: UploadFile = File(...),
+    user=Depends(current_user),
+):
+    """Upload/replace a Design Cetakan asset slot (logo or Faktur signatures)."""
+    await _require_any_perm(user, "settings.design_cetakan.manage", "permissions.manage")
+    from services.print_design_settings import (
+        ASSET_SLOTS,
+        MAX_LOGO_BYTES,
+        MAX_SIGNATURE_BYTES,
+        SLOT_COMPANY_LOGO,
+        upload_print_design_asset,
+    )
+
+    if str(slot or "").strip() not in ASSET_SLOTS:
+        raise HTTPException(400, "Slot asset tidak valid.")
+    max_bytes = MAX_LOGO_BYTES if slot == SLOT_COMPANY_LOGO else MAX_SIGNATURE_BYTES
+    # Bound read: reject early if Content-Length claims oversize; still validate body length.
+    body = await file.read(max_bytes + 1)
+    if len(body) > max_bytes:
+        mb = "2MB" if max_bytes >= 2_000_000 else "1.5MB"
+        raise HTTPException(400, f"File terlalu besar (maks {mb}).")
+    settings = await upload_print_design_asset(
+        db,
+        slot=slot,
+        body=body,
+        content_type=file.content_type,
+        filename=file.filename or f"{slot}.bin",
+        user=user,
+    )
+    await _write_audit(
+        action="settings.design_cetakan.asset_upload",
+        actor=user,
+        target_email="-",
+        after={"slot": slot},
+    )
+    return {"settings": settings, "message": "Asset Design Cetakan berhasil diunggah"}
+
+
+@api_router.delete("/settings/design-cetakan/assets/{slot}")
+async def design_cetakan_asset_remove(slot: str, user=Depends(current_user)):
+    """Clear a custom Design Cetakan asset slot (logo → repo default; signatures → text-only)."""
+    await _require_any_perm(user, "settings.design_cetakan.manage", "permissions.manage")
+    from services.print_design_settings import remove_print_design_asset
+
+    settings = await remove_print_design_asset(db, slot=slot, user=user)
+    await _write_audit(
+        action="settings.design_cetakan.asset_remove",
+        actor=user,
+        target_email="-",
+        after={"slot": slot},
+    )
+    return {"settings": settings, "message": "Asset Design Cetakan dihapus"}
+
+
+def _design_cetakan_view_perms():
+    return (
+        "settings.design_cetakan.view",
+        "settings.design_cetakan.manage",
+        "permissions.manage",
+    )
+
+
+@api_router.get("/settings/design-cetakan/history")
+async def design_cetakan_history(
+    scope: Optional[str] = "all",
+    branch_id: Optional[str] = None,
+    page: Optional[int] = 1,
+    page_size: Optional[int] = 20,
+    user=Depends(current_user),
+):
+    """Read-only Design Cetakan mutation history from existing audit_logs."""
+    await _require_any_perm(user, *_design_cetakan_view_perms())
+    from services.print_design_history import list_print_design_history
+
+    async def _name(bid: str):
+        return await _accurate_client.lookup_branch_display_name(bid)
+
+    return await list_print_design_history(
+        db,
+        scope=scope,
+        branch_id=branch_id,
+        page=page,
+        page_size=page_size,
+        name_lookup=_name,
+    )
+
+
+@api_router.post("/settings/design-cetakan/copy")
+async def design_cetakan_copy(payload: dict = Body(...), user=Depends(current_user)):
+    """Copy explicit Design Cetakan overrides onto a branch. Replace mode only."""
+    await _require_any_perm(user, "settings.design_cetakan.manage", "permissions.manage")
+    from services.print_design_copy import copy_print_design
+
+    result = await copy_print_design(db, payload or {}, user=user)
+    view = result.get("branch") or {}
+    await _write_audit(
+        action="settings.design_cetakan.branch_copy",
+        actor=user,
+        target_email="-",
+        before={
+            "branch_id": result.get("target_branch_id"),
+            "operation": "copy",
+            "override": result.get("before_override") or {},
+        },
+        after={
+            "branch_id": result.get("target_branch_id"),
+            "operation": "copy",
+            "source_scope": result.get("source_scope"),
+            "source_branch_id": result.get("source_branch_id"),
+            "target_branch_id": result.get("target_branch_id"),
+            "mode": result.get("mode") or "replace",
+            "copied_fields": result.get("copied_field_keys") or [],
+            "override": (view.get("override") if isinstance(view, dict) else {}) or {},
+        },
+    )
+    return {
+        "copied": True,
+        "copied_fields": result.get("copied_fields") or [],
+        "source_scope": result.get("source_scope"),
+        "source_branch_id": result.get("source_branch_id"),
+        "target_branch_id": result.get("target_branch_id"),
+        "mode": result.get("mode") or "replace",
+        "message": result.get("message") or "Pengaturan khusus Design Cetakan berhasil disalin",
+        "branch": view,
+    }
+
+
+@api_router.get("/settings/design-cetakan/preview/{document_type}")
+async def design_cetakan_preview(
+    document_type: str,
+    branch_id: Optional[str] = None,
+    user=Depends(current_user),
+):
+    """PDF preview of saved Design Cetakan using dummy documents. No business writes."""
+    await _require_any_perm(user, *_design_cetakan_view_perms())
+    from services.print_design_preview import preview_filename, render_print_design_preview
+
+    pdf_bytes = await render_print_design_preview(db, document_type, branch_id=branch_id)
+    filename = preview_filename(document_type)
+    return FastAPIResponse(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Cache-Control": "private, no-store",
+            "Content-Disposition": f'inline; filename="{filename}"',
+        },
+    )
+
+
+@api_router.get("/settings/design-cetakan/branches")
+async def design_cetakan_branches_get(user=Depends(current_user)):
+    """Distinct order branch ids for the Design Cetakan selector."""
+    await _require_any_perm(user, *_design_cetakan_view_perms())
+    from services.print_design_settings import list_design_cetakan_branches
+
+    async def _name(branch_id: str):
+        return await _accurate_client.lookup_branch_display_name(branch_id)
+
+    return {"branches": await list_design_cetakan_branches(db, _name)}
+
+
+@api_router.get("/settings/design-cetakan/branches/{branch_id}")
+async def design_cetakan_branch_get(branch_id: str, user=Depends(current_user)):
+    """Sparse override, effective design, and per-field inheritance for one branch."""
+    await _require_any_perm(user, *_design_cetakan_view_perms())
+    from services.print_design_settings import get_branch_design_view
+    return await get_branch_design_view(db, branch_id)
+
+
+@api_router.put("/settings/design-cetakan/branches/{branch_id}")
+async def design_cetakan_branch_put(branch_id: str, payload: dict = Body(...), user=Depends(current_user)):
+    """Replace sparse text overrides for one branch. Assets on that branch are kept."""
+    await _require_any_perm(user, "settings.design_cetakan.manage", "permissions.manage")
+    from services.print_design_settings import get_branch_design_view, save_branch_design_settings
+
+    before = await get_branch_design_view(db, branch_id)
+    view = await save_branch_design_settings(db, branch_id, payload or {}, user=user)
+    await _write_audit(
+        action="settings.design_cetakan.branch_update",
+        actor=user,
+        target_email="-",
+        before={"branch_id": before.get("branch_id"), "operation": "update", "override": before.get("override")},
+        after={"branch_id": view.get("branch_id"), "operation": "update", "override": view.get("override")},
+    )
+    return {"branch": view, "message": "Design Cetakan cabang berhasil disimpan"}
+
+
+@api_router.delete("/settings/design-cetakan/branches/{branch_id}")
+async def design_cetakan_branch_reset(branch_id: str, user=Depends(current_user)):
+    """Delete the branch override document. Global Design Cetakan is untouched."""
+    await _require_any_perm(user, "settings.design_cetakan.manage", "permissions.manage")
+    from services.print_design_settings import get_branch_design_view, reset_branch_design_settings
+
+    before = await get_branch_design_view(db, branch_id)
+    view = await reset_branch_design_settings(db, branch_id, user=user)
+    await _write_audit(
+        action="settings.design_cetakan.branch_reset",
+        actor=user,
+        target_email="-",
+        before={"branch_id": before.get("branch_id"), "operation": "reset", "override": before.get("override")},
+        after={"branch_id": view.get("branch_id"), "operation": "reset", "override": view.get("override")},
+    )
+    return {"branch": view, "message": "Cabang kembali mengikuti pengaturan global"}
+
+
+@api_router.get("/settings/design-cetakan/branches/{branch_id}/assets/{slot}")
+async def design_cetakan_branch_asset_preview(branch_id: str, slot: str, user=Depends(current_user)):
+    """Preview a branch-specific Design Cetakan asset. Does not serve the global asset."""
+    await _require_any_perm(user, *_design_cetakan_view_perms())
+    from services.print_design_settings import load_branch_slot_bytes
+
+    data, media, name = await load_branch_slot_bytes(db, branch_id, slot)
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", str(name or f"{slot}.bin"))[:180] or f"{slot}.bin"
+    return FastAPIResponse(
+        content=data,
+        media_type=media or "application/octet-stream",
+        headers={
+            "Cache-Control": "private, no-store",
+            "Content-Disposition": f'inline; filename="{safe_name}"',
+        },
+    )
+
+
+@api_router.post("/settings/design-cetakan/branches/{branch_id}/assets/{slot}")
+async def design_cetakan_branch_asset_upload(
+    branch_id: str,
+    slot: str,
+    file: UploadFile = File(...),
+    user=Depends(current_user),
+):
+    """Upload a branch asset override. Does not replace the global asset."""
+    await _require_any_perm(user, "settings.design_cetakan.manage", "permissions.manage")
+    from services.print_design_settings import (
+        ASSET_SLOTS,
+        MAX_LOGO_BYTES,
+        MAX_SIGNATURE_BYTES,
+        SLOT_COMPANY_LOGO,
+        upload_branch_print_design_asset,
+    )
+
+    if str(slot or "").strip() not in ASSET_SLOTS:
+        raise HTTPException(400, "Slot asset tidak valid.")
+    max_bytes = MAX_LOGO_BYTES if slot == SLOT_COMPANY_LOGO else MAX_SIGNATURE_BYTES
+    body = await file.read(max_bytes + 1)
+    if len(body) > max_bytes:
+        mb = "2MB" if max_bytes >= 2_000_000 else "1.5MB"
+        raise HTTPException(400, f"File terlalu besar (maks {mb}).")
+    view = await upload_branch_print_design_asset(
+        db,
+        branch_id=branch_id,
+        slot=slot,
+        body=body,
+        content_type=file.content_type,
+        filename=file.filename or f"{slot}.bin",
+        user=user,
+    )
+    await _write_audit(
+        action="settings.design_cetakan.branch_asset_upload",
+        actor=user,
+        target_email="-",
+        after={"slot": slot, "branch_id": view.get("branch_id")},
+    )
+    return {"branch": view, "message": "Asset khusus cabang berhasil diunggah"}
+
+
+@api_router.delete("/settings/design-cetakan/branches/{branch_id}/assets/{slot}")
+async def design_cetakan_branch_asset_remove(branch_id: str, slot: str, user=Depends(current_user)):
+    """Remove a branch asset override. The global asset stays in place."""
+    await _require_any_perm(user, "settings.design_cetakan.manage", "permissions.manage")
+    from services.print_design_settings import remove_branch_print_design_asset
+
+    view = await remove_branch_print_design_asset(db, branch_id=branch_id, slot=slot, user=user)
+    await _write_audit(
+        action="settings.design_cetakan.branch_asset_remove",
+        actor=user,
+        target_email="-",
+        after={"slot": slot, "branch_id": view.get("branch_id")},
+    )
+    return {"branch": view, "message": "Asset cabang kembali mengikuti global"}
 
 
 class CurrentStockPatch(BaseModel):
@@ -14014,21 +14606,14 @@ async def gaji_operator_report(
     await _require_gaji_view(user)
     start, end, preset = resolve_period("custom" if (date_from or date_to) else "month", date_from, date_to)
     ids = _parse_operator_ids(operator_id, operator_ids)
-    # One aggregation: keep the full operator dropdown; apply selection in compute.
-    pipeline = build_operator_analytics_pipeline(None, None, item, None, operator_ids=None)
-    blob = (await db.orders.aggregate(pipeline).to_list(1) or [{}])[0]
-    wage = await db.app_settings.find_one({"key": OPERATOR_WAGE_SETTINGS_KEY}, {"_id": 0}) or {}
-    docs = blob.get("docs") or []
-    result = compute_operator_payroll(
-        docs,
-        wage,
+    from services.operator_wage_claims import build_gaji_operator_report
+    result = await build_gaji_operator_report(
+        db,
         date_from=start,
         date_to=end,
         operator_ids=ids or None,
         item=item,
     )
-    ops, items = _payroll_filter_options(docs)
-    result["filters"] = {"operators": ops, "items": items}
     result["period"]["preset"] = preset
     result["generated_at"] = now_iso()
     return result
@@ -14047,12 +14632,9 @@ async def gaji_operator_export(
     await _require_gaji_view(user)
     start, end, _preset = resolve_period("custom" if (date_from or date_to) else "month", date_from, date_to)
     ids = _parse_operator_ids(operator_id, operator_ids)
-    pipeline = build_operator_analytics_pipeline(None, None, item, None, operator_ids=None)
-    blob = (await db.orders.aggregate(pipeline).to_list(1) or [{}])[0]
-    wage = await db.app_settings.find_one({"key": OPERATOR_WAGE_SETTINGS_KEY}, {"_id": 0}) or {}
-    result = compute_operator_payroll(
-        blob.get("docs") or [],
-        wage,
+    from services.operator_wage_claims import build_gaji_operator_report
+    result = await build_gaji_operator_report(
+        db,
         date_from=start,
         date_to=end,
         operator_ids=ids or None,
@@ -14060,13 +14642,27 @@ async def gaji_operator_export(
     )
     rows = result.get("rows") or []
     people = result.get("people") or []
-    keys = [c[0] for c in PAYROLL_EXPORT_COLUMNS]
-    headers = [c[1] for c in PAYROLL_EXPORT_COLUMNS]
-    rekap_keys = [c[0] for c in PAYROLL_REKAP_COLUMNS]
-    rekap_headers = [c[1] for c in PAYROLL_REKAP_COLUMNS]
+    keys = [c[0] for c in PAYROLL_EXPORT_COLUMNS] + ["payroll_status", "payroll_reason"]
+    headers = [
+        ("Upah Eligible" if label == "Upah Dasar" else label)
+        for label in ([c[1] for c in PAYROLL_EXPORT_COLUMNS] + ["Status Payroll", "Alasan"])
+    ]
+    rekap_keys = [
+        "name", "qty", "wage_basis", "product_addition",
+        "bonus_proposed_amount", "bonus_final_amount", "bonus_status", "bonus_source",
+        "total_payroll", "estimate_total", "payroll_status",
+    ]
+    rekap_headers = [
+        "Nama Operator", "Total Output", "Upah Eligible", "Tambahan Produk",
+        "Bonus Usulan", "Bonus Final", "Status Bonus", "Sumber Bonus",
+        "Total Payroll", "Estimasi/Usulan Total", "Status Payroll",
+    ]
     fmt = (fmt or "xlsx").strip().lower()
     filename = f"Gaji_Operator_{start.isoformat()}_{end.isoformat()}." + ("xlsx" if fmt == "xlsx" else "csv")
-    numeric = {"qty_completed", "rate_per_pcs", "base_wage", "product_addition", "total_upah", "qty", "bonus"}
+    numeric = {
+        "qty_completed", "rate_per_pcs", "base_wage", "product_addition", "total_upah", "qty", "bonus",
+        "wage_basis", "total_payroll", "bonus_proposed_amount", "bonus_final_amount", "estimate_total",
+    }
     if fmt == "xlsx":
         from io import BytesIO
         from openpyxl import Workbook
@@ -14550,6 +15146,7 @@ async def seed():
     await db.audit_logs.create_index("at")
     await db.audit_logs.create_index("actor_email")
     await db.audit_logs.create_index("target_email")
+    await db.audit_logs.create_index([("action", 1), ("at", -1)], name="audit_action_at")
     await db.role_permissions.create_index("role", unique=True)
     await db.roles.create_index("role", unique=True)
     # Customer Approval indexes

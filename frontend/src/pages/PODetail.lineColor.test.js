@@ -31,10 +31,12 @@ describe("PO Detail line color display", () => {
     expect(info).not.toMatch(/data-testid="detail-keterangan"/);
     expect(info).not.toMatch(/\{order\.notes\}/);
     expect(info).not.toMatch(/Keterangan/);
-    const notes = detail.slice(detail.indexOf('data-testid="notes-panel"'));
-    expect(notes).toMatch(/data-testid="notes-saved"/);
-    expect(notes).toMatch(/\{order\.notes\}/);
+    const panel = fs.readFileSync(path.join(__dirname, "../components/poDetail/ProductionNotesPanel.jsx"), "utf8");
+    expect(detail).toMatch(/<ProductionNotesPanel/);
     expect(detail.match(/\{order\.notes\}/g)).toEqual(["{order.notes}"]);
+    expect(panel).toMatch(/data-testid="notes-panel"/);
+    expect(panel).toMatch(/data-testid="notes-saved"/);
+    expect(panel).not.toMatch(/\{order\.notes\}/);
   });
 
   test("Pesanan Penjualan binds Warna input to exact line.color", () => {
