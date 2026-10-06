@@ -516,6 +516,36 @@ export const api = {
       .then((r) => r.data),
   removeDesignCetakanAsset: (slot) =>
     client.delete(`/settings/design-cetakan/assets/${encodeURIComponent(slot)}`).then((r) => r.data),
+  designCetakanBranches: () => client.get(`/settings/design-cetakan/branches`).then((r) => r.data),
+  designCetakanBranch: (branchId) =>
+    client.get(`/settings/design-cetakan/branches/${encodeURIComponent(branchId)}`).then((r) => r.data),
+  updateDesignCetakanBranch: (branchId, payload) =>
+    client.put(`/settings/design-cetakan/branches/${encodeURIComponent(branchId)}`, payload).then((r) => r.data),
+  resetDesignCetakanBranch: (branchId) =>
+    client.delete(`/settings/design-cetakan/branches/${encodeURIComponent(branchId)}`).then((r) => r.data),
+  uploadDesignCetakanBranchAsset: (branchId, slot, file) => {
+    const form = new FormData();
+    form.append("file", file);
+    return client
+      .post(
+        `/settings/design-cetakan/branches/${encodeURIComponent(branchId)}/assets/${encodeURIComponent(slot)}`,
+        form,
+      )
+      .then((r) => r.data);
+  },
+  designCetakanBranchAssetPreview: (branchId, slot, config = {}) =>
+    client
+      .get(
+        `/settings/design-cetakan/branches/${encodeURIComponent(branchId)}/assets/${encodeURIComponent(slot)}`,
+        { responseType: "blob", ...config },
+      )
+      .then((r) => r.data),
+  removeDesignCetakanBranchAsset: (branchId, slot) =>
+    client
+      .delete(
+        `/settings/design-cetakan/branches/${encodeURIComponent(branchId)}/assets/${encodeURIComponent(slot)}`,
+      )
+      .then((r) => r.data),
   listNotifications: (params = {}) => client.get(`/notifications`, { params }).then((r) => r.data),
   markNotificationRead: (id) => client.post(`/notifications/${encodeURIComponent(id)}/read`).then((r) => r.data),
   customerDesignApprovalNotificationSettings: () => client.get(`/settings/notifications/customer-design-approval`).then((r) => r.data),

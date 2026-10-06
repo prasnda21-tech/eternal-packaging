@@ -94,6 +94,88 @@ function assetsFromApi(settings) {
   };
 }
 
+const BRANCH_OVERRIDE_FIELDS = [
+  "company_name",
+  "address_lines",
+  "company_logo",
+  "bank_accounts",
+  "prepared_label",
+  "prepared_footer",
+  "approved_label",
+  "approved_footer",
+  "prepared_signature_image",
+  "approved_signature_image",
+];
+
+function emptyOverrideFlags() {
+  return BRANCH_OVERRIDE_FIELDS.reduce((acc, key) => {
+    acc[key] = false;
+    return acc;
+  }, {});
+}
+
+function flagsFromInherited(inherited) {
+  const flags = emptyOverrideFlags();
+  const src = inherited || {};
+  BRANCH_OVERRIDE_FIELDS.forEach((key) => {
+    flags[key] = Boolean(src[key] && src[key].overridden);
+  });
+  return flags;
+}
+
+function buildBranchOverridePayload(draft, overrideOn) {
+  const on = overrideOn || {};
+  const payload = {};
+  const invoice = {};
+  if (on.company_name) payload.company_name = draft.company_name;
+  if (on.address_lines) {
+    payload.address_lines = (draft.address_lines || []).filter((line) => String(line || "").trim());
+  }
+  if (on.bank_accounts) {
+    invoice.bank_accounts = (draft.invoice.bank_accounts || []).filter(
+      (row) => row.bank_label || row.account_number || row.account_name
+    );
+  }
+  ["prepared_label", "prepared_footer", "approved_label", "approved_footer"].forEach((field) => {
+    if (on[field]) invoice[field] = draft.invoice[field];
+  });
+  if (Object.keys(invoice).length) payload.invoice = invoice;
+  return payload;
+}
+
+function restoreFieldFromGlobal(draft, field, globalSettings) {
+  const base = fromApi(globalSettings);
+  const next = JSON.parse(JSON.stringify(draft));
+  if (field === "company_name") next.company_name = base.company_name;
+  else if (field === "address_lines") next.address_lines = base.address_lines;
+  else if (field === "bank_accounts") next.invoice.bank_accounts = base.invoice.bank_accounts;
+  else if (["prepared_label", "prepared_footer", "approved_label", "approved_footer"].includes(field)) {
+    next.invoice[field] = base.invoice[field];
+  }
+  return next;
+}
+
+function OverrideBar({ field, branchMode, enabled, canEdit, busy, onEnable, onFollow }) {
+  if (!branchMode) return null;
+  return (
+    <div data-testid={`design-cetakan-inherit-${field}`} style={{ gridColumn: "1 / -1", display: "flex", gap: 8, alignItems: "center" }}>
+      <span className="muted small" data-testid={`design-cetakan-badge-${field}`}>
+        {enabled ? "Khusus Cabang" : "Mengikuti Global"}
+      </span>
+      {canEdit && !enabled ? (
+        <button type="button" className="secondary" data-testid={`design-cetakan-override-${field}`} disabled={busy} onClick={onEnable}>
+          Atur khusus cabang
+        </button>
+      ) : null}
+      {canEdit && enabled ? (
+        <button type="button" className="secondary" data-testid={`design-cetakan-follow-${field}`} disabled={busy} onClick={onFollow}>
+          Ikuti Global
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 function AssetSlot({
   title,
   slot,
@@ -108,16 +190,19 @@ function AssetSlot({
   uploadLabel,
   statusCustom,
   statusDefault,
+  statusLabel,
+  allowRemove,
   fileInputRef,
   testIdPrefix,
 }) {
   const hasCustom = Boolean(asset?.has_custom);
+  const canRemove = allowRemove === undefined ? hasCustom : allowRemove;
   return (
     <div className="settings-grid" data-testid={`${testIdPrefix}-slot`} style={{ gridColumn: "1 / -1" }}>
       <div style={{ gridColumn: "1 / -1" }}>
         <strong>{title}</strong>
         <p className="muted small" style={{ marginTop: 2 }} data-testid={`${testIdPrefix}-status`}>
-          {hasCustom ? (statusCustom || "Custom") : (statusDefault || "Default")}
+          {statusLabel || (hasCustom ? (statusCustom || "Custom") : (statusDefault || "Default"))}
           {hasCustom && asset?.filename ? ` · ${asset.filename}` : ""}
         </p>
       </div>
@@ -163,7 +248,7 @@ function AssetSlot({
           >
             {uploadLabel || (hasCustom ? "Ganti" : "Unggah")}
           </button>
-          {hasCustom ? (
+          {canRemove ? (
             <button
               type="button"
               className="secondary"
@@ -182,12 +267,16 @@ function AssetSlot({
 
 export default function DesignCetakanSettings({ notify, canEdit }) {
   const [tab, setTab] = useState("umum");
+  const [scope, setScope] = useState("global");
+  const [catalog, setCatalog] = useState([]);
   const [draft, setDraft] = useState(emptyDraft);
   const [assets, setAssets] = useState(emptyAssets);
+  const [overrideOn, setOverrideOn] = useState(emptyOverrideFlags);
   const [previews, setPreviews] = useState({});
   const [meta, setMeta] = useState({ updated_at: null, updated_by: null });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const globalSnapshotRef = useRef(null);
   const logoInputRef = useRef(null);
   const preparedInputRef = useRef(null);
   const approvedInputRef = useRef(null);
@@ -210,7 +299,9 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
     setMeta({ updated_at: s.updated_at || null, updated_by: s.updated_by || null });
   };
 
-  const loadPreviews = async (nextAssets) => {
+  const branchMode = scope !== "global";
+
+  const loadPreviews = async (nextAssets, activeScope, flags) => {
     revokeAllPreviews();
     const next = {};
     const slots = ["company_logo", "prepared_signature_image", "approved_signature_image"];
@@ -218,7 +309,10 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
       slots.map(async (slot) => {
         if (!nextAssets?.[slot]?.has_custom) return;
         try {
-          const blob = await api.designCetakanAssetPreview(slot);
+          const useBranch = activeScope && activeScope !== "global" && flags?.[slot];
+          const blob = useBranch
+            ? await api.designCetakanBranchAssetPreview(activeScope, slot)
+            : await api.designCetakanAssetPreview(slot);
           const url = URL.createObjectURL(blob);
           objectUrlsRef.current.push(url);
           next[slot] = url;
@@ -230,24 +324,47 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
     setPreviews(next);
   };
 
-  const load = () => {
+  const applyBranchView = (view) => {
+    const effective = view?.effective || {};
+    applySettings(effective);
+    const flags = flagsFromInherited(view?.inherited);
+    setOverrideOn(flags);
+    return { assets: assetsFromApi(effective), flags };
+  };
+
+  const load = (activeScope) => {
     setBusy(true);
     setErr("");
+    const target = activeScope || "global";
     api.designCetakanSettings()
-      .then(async (res) => {
-        const s = res?.settings || {};
-        applySettings(s);
-        await loadPreviews(assetsFromApi(s));
+      .then(async (globalRes) => {
+        const globalSettings = globalRes?.settings || {};
+        globalSnapshotRef.current = globalSettings;
+        if (target === "global") {
+          applySettings(globalSettings);
+          setOverrideOn(emptyOverrideFlags());
+          await loadPreviews(assetsFromApi(globalSettings), "global", emptyOverrideFlags());
+          return;
+        }
+        const branchRes = await api.designCetakanBranch(target);
+        const applied = applyBranchView(branchRes);
+        await loadPreviews(applied.assets, target, applied.flags);
       })
       .catch((e) => setErr(errDetail(e)))
       .finally(() => setBusy(false));
   };
 
   useEffect(() => {
-    load();
+    api.designCetakanBranches()
+      .then((res) => setCatalog(Array.isArray(res?.branches) ? res.branches : []))
+      .catch((e) => setErr(errDetail(e)));
+  }, []);
+
+  useEffect(() => {
+    load(scope);
     return () => revokeAllPreviews();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [scope]);
 
   const updatedByLabel = useMemo(() => {
     const by = meta.updated_by;
@@ -279,35 +396,43 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
     setBusy(true);
     setErr("");
     try {
-      const payload = {
-        company_name: draft.company_name,
-        address_lines: draft.address_lines.filter((line) => String(line || "").trim()),
-        accent_color: draft.accent_color,
-        po: {
-          signature_labels: draft.po.signature_labels,
-          footer_name_label: draft.po.footer_name_label,
-        },
-        invoice: {
-          bank_accounts: draft.invoice.bank_accounts.filter(
-            (row) => row.bank_label || row.account_number || row.account_name
-          ),
-          estimasi_title: draft.invoice.estimasi_title,
-          estimasi_lines: draft.invoice.estimasi_lines.filter((line) => String(line || "").trim()),
-          prepared_label: draft.invoice.prepared_label,
-          prepared_footer: draft.invoice.prepared_footer,
-          approved_label: draft.invoice.approved_label,
-          approved_footer: draft.invoice.approved_footer,
-        },
-        surat_jalan: {
-          signature_labels: draft.surat_jalan.signature_labels,
-          date_label: draft.surat_jalan.date_label,
-        },
-      };
-      const res = await api.updateDesignCetakanSettings(payload);
-      const s = res?.settings || {};
-      applySettings(s);
-      await loadPreviews(assetsFromApi(s));
-      notify?.(res.message || "Design Cetakan berhasil disimpan");
+      if (branchMode) {
+        const payload = buildBranchOverridePayload(draft, overrideOn);
+        const res = await api.updateDesignCetakanBranch(scope, payload);
+        const applied = applyBranchView(res?.branch || {});
+        await loadPreviews(applied.assets, scope, applied.flags);
+        notify?.(res.message || "Design Cetakan cabang berhasil disimpan");
+      } else {
+        const payload = {
+          company_name: draft.company_name,
+          address_lines: draft.address_lines.filter((line) => String(line || "").trim()),
+          accent_color: draft.accent_color,
+          po: {
+            signature_labels: draft.po.signature_labels,
+            footer_name_label: draft.po.footer_name_label,
+          },
+          invoice: {
+            bank_accounts: draft.invoice.bank_accounts.filter(
+              (row) => row.bank_label || row.account_number || row.account_name
+            ),
+            estimasi_title: draft.invoice.estimasi_title,
+            estimasi_lines: draft.invoice.estimasi_lines.filter((line) => String(line || "").trim()),
+            prepared_label: draft.invoice.prepared_label,
+            prepared_footer: draft.invoice.prepared_footer,
+            approved_label: draft.invoice.approved_label,
+            approved_footer: draft.invoice.approved_footer,
+          },
+          surat_jalan: {
+            signature_labels: draft.surat_jalan.signature_labels,
+            date_label: draft.surat_jalan.date_label,
+          },
+        };
+        const res = await api.updateDesignCetakanSettings(payload);
+        const s = res?.settings || {};
+        applySettings(s);
+        await loadPreviews(assetsFromApi(s), "global", emptyOverrideFlags());
+        notify?.(res.message || "Design Cetakan berhasil disimpan");
+      }
     } catch (ex) {
       setErr(errDetail(ex));
     } finally {
@@ -329,10 +454,17 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
     objectUrlsRef.current.push(localUrl);
     setPreviews((prev) => ({ ...prev, [slot]: localUrl }));
     try {
-      const res = await api.uploadDesignCetakanAsset(slot, file);
-      const s = res?.settings || {};
-      applySettings(s);
-      await loadPreviews(assetsFromApi(s));
+      const res = branchMode
+        ? await api.uploadDesignCetakanBranchAsset(scope, slot, file)
+        : await api.uploadDesignCetakanAsset(slot, file);
+      if (branchMode) {
+        const applied = applyBranchView(res?.branch || {});
+        await loadPreviews(applied.assets, scope, applied.flags);
+      } else {
+        const s = res?.settings || {};
+        applySettings(s);
+        await loadPreviews(assetsFromApi(s), "global", emptyOverrideFlags());
+      }
       notify?.(res.message || "Asset berhasil diunggah");
     } catch (ex) {
       setErr(errDetail(ex));
@@ -347,10 +479,17 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
     setBusy(true);
     setErr("");
     try {
-      const res = await api.removeDesignCetakanAsset(slot);
-      const s = res?.settings || {};
-      applySettings(s);
-      await loadPreviews(assetsFromApi(s));
+      const res = branchMode
+        ? await api.removeDesignCetakanBranchAsset(scope, slot)
+        : await api.removeDesignCetakanAsset(slot);
+      if (branchMode) {
+        const applied = applyBranchView(res?.branch || {});
+        await loadPreviews(applied.assets, scope, applied.flags);
+      } else {
+        const s = res?.settings || {};
+        applySettings(s);
+        await loadPreviews(assetsFromApi(s), "global", emptyOverrideFlags());
+      }
       notify?.(res.message || "Asset dihapus");
     } catch (ex) {
       setErr(errDetail(ex));
@@ -358,6 +497,37 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
       setBusy(false);
     }
   };
+
+  const enableOverride = (field) => {
+    if (!canEdit || busy || !branchMode) return;
+    setOverrideOn((prev) => ({ ...prev, [field]: true }));
+  };
+
+  const followGlobal = (field) => {
+    if (!canEdit || busy || !branchMode) return;
+    setOverrideOn((prev) => ({ ...prev, [field]: false }));
+    setDraft((prev) => restoreFieldFromGlobal(prev, field, globalSnapshotRef.current));
+  };
+
+  const resetBranch = async () => {
+    if (!canEdit || busy || !branchMode) return;
+    if (!window.confirm("Gunakan semua pengaturan global untuk cabang ini? Override cabang akan dihapus.")) return;
+    setBusy(true);
+    setErr("");
+    try {
+      const res = await api.resetDesignCetakanBranch(scope);
+      const applied = applyBranchView(res?.branch || {});
+      await loadPreviews(applied.assets, scope, applied.flags);
+      notify?.(res.message || "Cabang kembali mengikuti pengaturan global");
+    } catch (ex) {
+      setErr(errDetail(ex));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const fieldLocked = (field) => !canEdit || busy || (branchMode && !overrideOn[field]);
+  const globalOnlyLocked = !canEdit || busy || branchMode;
 
   return (
     <div className="settings-card" data-testid="design-cetakan-settings">
@@ -377,6 +547,30 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
             Tanda tangan PO dan POD Surat Jalan tidak diubah di Design Cetakan.
           </p>
         </div>
+      </div>
+
+      <div className="settings-grid" style={{ marginBottom: 16 }} data-testid="design-cetakan-scope-wrap">
+        <label>
+          Terapkan Untuk
+          <select
+            data-testid="design-cetakan-scope"
+            value={scope}
+            disabled={busy}
+            onChange={(e) => setScope(e.target.value)}
+          >
+            <option value="global">Default Semua Cabang</option>
+            {catalog.map((row) => (
+              <option key={row.branch_id} value={String(row.branch_id)}>
+                {row.name || `Cabang ${row.branch_id}`}
+              </option>
+            ))}
+          </select>
+        </label>
+        {catalog.length === 0 ? (
+          <p className="muted small" data-testid="design-cetakan-branch-empty" style={{ gridColumn: "1 / -1" }}>
+            Belum ada cabang pada order. Default Semua Cabang tetap bisa diubah. Cabang muncul setelah ada order dengan branch_id.
+          </p>
+        ) : null}
       </div>
 
       {err ? (
@@ -415,39 +609,62 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
               accept={LOGO_ACCEPT}
               onPick={(file) => uploadSlot("company_logo", file)}
               onRemove={() => removeSlot("company_logo")}
-              removeLabel="Gunakan Logo Default"
-              uploadLabel="Ganti Logo"
+              removeLabel={branchMode ? "Ikuti Global" : "Gunakan Logo Default"}
+              uploadLabel={branchMode ? "Ganti khusus cabang" : "Ganti Logo"}
               statusCustom="Custom"
               statusDefault="Default (logo repo)"
+              statusLabel={branchMode ? (overrideOn.company_logo ? "Khusus Cabang" : "Mengikuti Global") : undefined}
+              allowRemove={branchMode ? Boolean(overrideOn.company_logo) : undefined}
               fileInputRef={logoInputRef}
               testIdPrefix="design-cetakan-logo"
+            />
+            <OverrideBar
+              field="company_name"
+              branchMode={branchMode}
+              enabled={overrideOn.company_name}
+              canEdit={canEdit}
+              busy={busy}
+              onEnable={() => enableOverride("company_name")}
+              onFollow={() => followGlobal("company_name")}
             />
             <label>
               Nama perusahaan
               <input
                 data-testid="design-cetakan-company-name"
                 value={draft.company_name}
-                disabled={!canEdit || busy}
+                disabled={fieldLocked("company_name")}
                 onChange={(e) => patch("company_name", e.target.value)}
               />
             </label>
             <label>
               Warna aksen
+              {branchMode ? (
+                <span className="muted small" data-testid="design-cetakan-global-only-accent"> Mengikuti Global</span>
+              ) : null}
               <input
                 data-testid="design-cetakan-accent"
                 value={draft.accent_color}
-                disabled={!canEdit || busy}
+                disabled={globalOnlyLocked}
                 onChange={(e) => patch("accent_color", e.target.value)}
                 placeholder="#cc1f1a"
               />
             </label>
+            <OverrideBar
+              field="address_lines"
+              branchMode={branchMode}
+              enabled={overrideOn.address_lines}
+              canEdit={canEdit}
+              busy={busy}
+              onEnable={() => enableOverride("address_lines")}
+              onFollow={() => followGlobal("address_lines")}
+            />
             {draft.address_lines.map((line, idx) => (
               <label key={`addr-${idx}`}>
                 Alamat baris {idx + 1}
                 <input
                   data-testid={`design-cetakan-address-${idx}`}
                   value={line}
-                  disabled={!canEdit || busy}
+                  disabled={fieldLocked("address_lines")}
                   onChange={(e) => patch(`address_lines.${idx}`, e.target.value)}
                 />
               </label>
@@ -457,13 +674,18 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
 
         {tab === "po" ? (
           <div className="settings-grid" data-testid="design-cetakan-po">
+            {branchMode ? (
+              <p className="muted small" data-testid="design-cetakan-global-only-po" style={{ gridColumn: "1 / -1" }}>
+                Mengikuti Global
+              </p>
+            ) : null}
             {draft.po.signature_labels.map((label, idx) => (
               <label key={`po-sig-${idx}`}>
                 Label tanda tangan {idx + 1}
                 <input
                   data-testid={`design-cetakan-po-sig-${idx}`}
                   value={label}
-                  disabled={!canEdit || busy}
+                  disabled={globalOnlyLocked}
                   onChange={(e) => patch(`po.signature_labels.${idx}`, e.target.value)}
                 />
               </label>
@@ -473,7 +695,7 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
               <input
                 data-testid="design-cetakan-po-footer-name"
                 value={draft.po.footer_name_label}
-                disabled={!canEdit || busy}
+                disabled={globalOnlyLocked}
                 onChange={(e) => patch("po.footer_name_label", e.target.value)}
               />
             </label>
@@ -492,10 +714,12 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
               accept={SIGNATURE_ACCEPT}
               onPick={(file) => uploadSlot("prepared_signature_image", file)}
               onRemove={() => removeSlot("prepared_signature_image")}
-              removeLabel="Hapus"
-              uploadLabel="Ganti"
+              removeLabel={branchMode ? "Ikuti Global" : "Hapus"}
+              uploadLabel={branchMode ? "Ganti khusus cabang" : "Ganti"}
               statusCustom="Custom"
               statusDefault="Teks saja"
+              statusLabel={branchMode ? (overrideOn.prepared_signature_image ? "Khusus Cabang" : "Mengikuti Global") : undefined}
+              allowRemove={branchMode ? Boolean(overrideOn.prepared_signature_image) : undefined}
               fileInputRef={preparedInputRef}
               testIdPrefix="design-cetakan-prepared-sig"
             />
@@ -509,12 +733,23 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
               accept={SIGNATURE_ACCEPT}
               onPick={(file) => uploadSlot("approved_signature_image", file)}
               onRemove={() => removeSlot("approved_signature_image")}
-              removeLabel="Hapus"
-              uploadLabel="Ganti"
+              removeLabel={branchMode ? "Ikuti Global" : "Hapus"}
+              uploadLabel={branchMode ? "Ganti khusus cabang" : "Ganti"}
               statusCustom="Custom"
               statusDefault="Teks saja"
+              statusLabel={branchMode ? (overrideOn.approved_signature_image ? "Khusus Cabang" : "Mengikuti Global") : undefined}
+              allowRemove={branchMode ? Boolean(overrideOn.approved_signature_image) : undefined}
               fileInputRef={approvedInputRef}
               testIdPrefix="design-cetakan-approved-sig"
+            />
+            <OverrideBar
+              field="bank_accounts"
+              branchMode={branchMode}
+              enabled={overrideOn.bank_accounts}
+              canEdit={canEdit}
+              busy={busy}
+              onEnable={() => enableOverride("bank_accounts")}
+              onFollow={() => followGlobal("bank_accounts")}
             />
             {draft.invoice.bank_accounts.map((row, idx) => (
               <div key={`bank-${idx}`} style={{ display: "contents" }}>
@@ -523,7 +758,7 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
                   <input
                     data-testid={`design-cetakan-bank-label-${idx}`}
                     value={row.bank_label}
-                    disabled={!canEdit || busy}
+                    disabled={fieldLocked("bank_accounts")}
                     onChange={(e) => patch(`invoice.bank_accounts.${idx}.bank_label`, e.target.value)}
                   />
                 </label>
@@ -532,7 +767,7 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
                   <input
                     data-testid={`design-cetakan-bank-number-${idx}`}
                     value={row.account_number}
-                    disabled={!canEdit || busy}
+                    disabled={fieldLocked("bank_accounts")}
                     onChange={(e) => patch(`invoice.bank_accounts.${idx}.account_number`, e.target.value)}
                   />
                 </label>
@@ -541,18 +776,23 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
                   <input
                     data-testid={`design-cetakan-bank-name-${idx}`}
                     value={row.account_name}
-                    disabled={!canEdit || busy}
+                    disabled={fieldLocked("bank_accounts")}
                     onChange={(e) => patch(`invoice.bank_accounts.${idx}.account_name`, e.target.value)}
                   />
                 </label>
               </div>
             ))}
+            {branchMode ? (
+              <p className="muted small" data-testid="design-cetakan-global-only-estimasi" style={{ gridColumn: "1 / -1" }}>
+                Estimasi Mengikuti Global
+              </p>
+            ) : null}
             <label>
               Judul estimasi
               <input
                 data-testid="design-cetakan-estimasi-title"
                 value={draft.invoice.estimasi_title}
-                disabled={!canEdit || busy}
+                disabled={globalOnlyLocked}
                 onChange={(e) => patch("invoice.estimasi_title", e.target.value)}
               />
             </label>
@@ -562,44 +802,48 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
                 <input
                   data-testid={`design-cetakan-estimasi-line-${idx}`}
                   value={line}
-                  disabled={!canEdit || busy}
+                  disabled={globalOnlyLocked}
                   onChange={(e) => patch(`invoice.estimasi_lines.${idx}`, e.target.value)}
                 />
               </label>
             ))}
+            <OverrideBar field="prepared_label" branchMode={branchMode} enabled={overrideOn.prepared_label} canEdit={canEdit} busy={busy} onEnable={() => enableOverride("prepared_label")} onFollow={() => followGlobal("prepared_label")} />
             <label>
               Label Disiapkan
               <input
                 data-testid="design-cetakan-prepared-label"
                 value={draft.invoice.prepared_label}
-                disabled={!canEdit || busy}
+                disabled={fieldLocked("prepared_label")}
                 onChange={(e) => patch("invoice.prepared_label", e.target.value)}
               />
             </label>
+            <OverrideBar field="prepared_footer" branchMode={branchMode} enabled={overrideOn.prepared_footer} canEdit={canEdit} busy={busy} onEnable={() => enableOverride("prepared_footer")} onFollow={() => followGlobal("prepared_footer")} />
             <label>
               Footer Disiapkan
               <input
                 data-testid="design-cetakan-prepared-footer"
                 value={draft.invoice.prepared_footer}
-                disabled={!canEdit || busy}
+                disabled={fieldLocked("prepared_footer")}
                 onChange={(e) => patch("invoice.prepared_footer", e.target.value)}
               />
             </label>
+            <OverrideBar field="approved_label" branchMode={branchMode} enabled={overrideOn.approved_label} canEdit={canEdit} busy={busy} onEnable={() => enableOverride("approved_label")} onFollow={() => followGlobal("approved_label")} />
             <label>
               Label Disetujui
               <input
                 data-testid="design-cetakan-approved-label"
                 value={draft.invoice.approved_label}
-                disabled={!canEdit || busy}
+                disabled={fieldLocked("approved_label")}
                 onChange={(e) => patch("invoice.approved_label", e.target.value)}
               />
             </label>
+            <OverrideBar field="approved_footer" branchMode={branchMode} enabled={overrideOn.approved_footer} canEdit={canEdit} busy={busy} onEnable={() => enableOverride("approved_footer")} onFollow={() => followGlobal("approved_footer")} />
             <label>
               Footer Disetujui
               <input
                 data-testid="design-cetakan-approved-footer"
                 value={draft.invoice.approved_footer}
-                disabled={!canEdit || busy}
+                disabled={fieldLocked("approved_footer")}
                 onChange={(e) => patch("invoice.approved_footer", e.target.value)}
               />
             </label>
@@ -608,13 +852,18 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
 
         {tab === "sj" ? (
           <div className="settings-grid" data-testid="design-cetakan-sj">
+            {branchMode ? (
+              <p className="muted small" data-testid="design-cetakan-global-only-sj" style={{ gridColumn: "1 / -1" }}>
+                Mengikuti Global
+              </p>
+            ) : null}
             {draft.surat_jalan.signature_labels.map((label, idx) => (
               <label key={`sj-sig-${idx}`}>
                 Label tanda tangan {idx + 1}
                 <input
                   data-testid={`design-cetakan-sj-sig-${idx}`}
                   value={label}
-                  disabled={!canEdit || busy}
+                  disabled={globalOnlyLocked}
                   onChange={(e) => patch(`surat_jalan.signature_labels.${idx}`, e.target.value)}
                 />
               </label>
@@ -624,7 +873,7 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
               <input
                 data-testid="design-cetakan-sj-date-label"
                 value={draft.surat_jalan.date_label}
-                disabled={!canEdit || busy}
+                disabled={globalOnlyLocked}
                 onChange={(e) => patch("surat_jalan.date_label", e.target.value)}
               />
             </label>
@@ -641,6 +890,17 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
             <Save size={16} />
             {busy ? "Menyimpan…" : "Simpan"}
           </button>
+          {branchMode ? (
+            <button
+              type="button"
+              className="secondary"
+              data-testid="design-cetakan-reset-branch"
+              disabled={!canEdit || busy}
+              onClick={resetBranch}
+            >
+              Gunakan Semua Pengaturan Global
+            </button>
+          ) : null}
           {!canEdit ? (
             <span className="muted small">Anda hanya dapat melihat pengaturan ini.</span>
           ) : null}
