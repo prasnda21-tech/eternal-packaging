@@ -1817,8 +1817,8 @@ async def get_sales_order_pdf_endpoint(order_id: str, user=Depends(current_user)
         if not view_ok:
             raise HTTPException(403, "Anda tidak punya permission untuk melihat PO ini")
     from services.order_pdf import generate_sales_order_pdf_bytes
-    from services.print_design_settings import get_print_design_settings
-    design = await get_print_design_settings(db)
+    from services.print_design_settings import get_print_design_for_pdf
+    design = await get_print_design_for_pdf(db)
     pdf_bytes = generate_sales_order_pdf_bytes(order, design=design)
     po_num = str(order.get("po_number") or order_id).replace("/", "_").replace("\\", "_")
     filename = f"Pesanan_Penjualan_{po_num}.pdf"
@@ -8692,6 +8692,7 @@ def _build_preview(so: Dict[str, Any]) -> Dict[str, Any]:
         "po_number": so.get("po_number"),
         "customer": so.get("customer"),
         "outlet": so.get("outlet"),
+        "branch_id": so.get("branch_id"),
         "recipient": so.get("recipient"),
         "address": so.get("address"),
         "payment_terms": so.get("payment_terms"),
@@ -8785,6 +8786,9 @@ async def _persist_imported_po(preview: Dict[str, Any], *, source: str, user: di
         "created_at": now,
         "updated_at": now,
     }
+    branch_id = str(preview.get("branch_id") or "").strip()
+    if branch_id.isdigit():
+        new["branch_id"] = branch_id
     from services.physical_stock_engine import attach_order_stock_snapshot
     stock_warnings = await validate_sales_order_availability(db, new.get("line_items") or [])
     await attach_order_stock_snapshot(db, new)
@@ -10817,8 +10821,8 @@ async def get_sales_delivery_pdf_endpoint(id: str, user=Depends(current_user)):
     await _require_any_perm(user, "sales.delivery.print", "sales.delivery.view", "sales_order.view", "po.view")
     detail = await _get_sales_delivery_detail(db, id)
     await ensure_owned_po_id(db, user, ((detail or {}).get("delivery") or {}).get("po_id"))
-    from services.print_design_settings import get_print_design_settings
-    design = await get_print_design_settings(db)
+    from services.print_design_settings import get_print_design_for_pdf
+    design = await get_print_design_for_pdf(db)
     pdf_bytes = _generate_sales_delivery_pdf_bytes(
         detail["delivery"], detail.get("po_summary"), design=design
     )
@@ -10944,8 +10948,8 @@ async def get_sales_invoice_pdf_endpoint(id: str, user=Depends(current_user)):
     detail = await _get_sales_invoice_detail(db, id)
     await ensure_owned_po_id(db, user, (detail or {}).get("po_id"))
     shown = await invoice_pdf_presentation(db, detail)
-    from services.print_design_settings import get_print_design_settings
-    design = await get_print_design_settings(db)
+    from services.print_design_settings import get_print_design_for_pdf
+    design = await get_print_design_for_pdf(db)
     pdf_bytes = generate_sales_invoice_pdf_bytes(shown, design=design)
     inv_num = str(detail.get("invoice_number", "INV")).replace("/", "_").replace("\\", "_")
     filename = f"Faktur_Penjualan_{inv_num}.pdf"
@@ -10971,8 +10975,8 @@ async def get_sales_invoice_proforma_pdf(id: str, user=Depends(current_user)):
     invoice = await _require_proforma_invoice(db, id)
     await ensure_owned_po_id(db, user, invoice.get("po_id"))
     shown = await invoice_pdf_presentation(db, invoice)
-    from services.print_design_settings import get_print_design_settings
-    design = await get_print_design_settings(db)
+    from services.print_design_settings import get_print_design_for_pdf
+    design = await get_print_design_for_pdf(db)
     pdf_bytes = generate_sales_invoice_pdf_bytes(shown, document_type="proforma", design=design)
     inv_num = str(invoice.get("invoice_number") or invoice.get("id") or "PROFORMA").replace("/", "_").replace("\\", "_")
     filename = f"Proforma_{inv_num}.pdf"
@@ -11873,6 +11877,86 @@ async def design_cetakan_settings_put(payload: dict = Body(...), user=Depends(cu
         },
     )
     return {"settings": settings, "message": "Design Cetakan berhasil disimpan"}
+
+
+@api_router.get("/settings/design-cetakan/assets/{slot}")
+async def design_cetakan_asset_preview(slot: str, user=Depends(current_user)):
+    """Authenticated preview of an active Design Cetakan custom asset."""
+    await _require_any_perm(
+        user,
+        "settings.design_cetakan.view",
+        "settings.design_cetakan.manage",
+        "permissions.manage",
+    )
+    from services.print_design_settings import load_slot_bytes
+
+    data, media, name = await load_slot_bytes(db, slot)
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", str(name or f"{slot}.bin"))[:180] or f"{slot}.bin"
+    return FastAPIResponse(
+        content=data,
+        media_type=media or "application/octet-stream",
+        headers={
+            "Cache-Control": "private, no-store",
+            "Content-Disposition": f'inline; filename="{safe_name}"',
+        },
+    )
+
+
+@api_router.post("/settings/design-cetakan/assets/{slot}")
+async def design_cetakan_asset_upload(
+    slot: str,
+    file: UploadFile = File(...),
+    user=Depends(current_user),
+):
+    """Upload/replace a Design Cetakan asset slot (logo or Faktur signatures)."""
+    await _require_any_perm(user, "settings.design_cetakan.manage", "permissions.manage")
+    from services.print_design_settings import (
+        ASSET_SLOTS,
+        MAX_LOGO_BYTES,
+        MAX_SIGNATURE_BYTES,
+        SLOT_COMPANY_LOGO,
+        upload_print_design_asset,
+    )
+
+    if str(slot or "").strip() not in ASSET_SLOTS:
+        raise HTTPException(400, "Slot asset tidak valid.")
+    max_bytes = MAX_LOGO_BYTES if slot == SLOT_COMPANY_LOGO else MAX_SIGNATURE_BYTES
+    # Bound read: reject early if Content-Length claims oversize; still validate body length.
+    body = await file.read(max_bytes + 1)
+    if len(body) > max_bytes:
+        mb = "2MB" if max_bytes >= 2_000_000 else "1.5MB"
+        raise HTTPException(400, f"File terlalu besar (maks {mb}).")
+    settings = await upload_print_design_asset(
+        db,
+        slot=slot,
+        body=body,
+        content_type=file.content_type,
+        filename=file.filename or f"{slot}.bin",
+        user=user,
+    )
+    await _write_audit(
+        action="settings.design_cetakan.asset_upload",
+        actor=user,
+        target_email="-",
+        after={"slot": slot},
+    )
+    return {"settings": settings, "message": "Asset Design Cetakan berhasil diunggah"}
+
+
+@api_router.delete("/settings/design-cetakan/assets/{slot}")
+async def design_cetakan_asset_remove(slot: str, user=Depends(current_user)):
+    """Clear a custom Design Cetakan asset slot (logo → repo default; signatures → text-only)."""
+    await _require_any_perm(user, "settings.design_cetakan.manage", "permissions.manage")
+    from services.print_design_settings import remove_print_design_asset
+
+    settings = await remove_print_design_asset(db, slot=slot, user=user)
+    await _write_audit(
+        action="settings.design_cetakan.asset_remove",
+        actor=user,
+        target_email="-",
+        after={"slot": slot},
+    )
+    return {"settings": settings, "message": "Asset Design Cetakan dihapus"}
 
 
 class CurrentStockPatch(BaseModel):

@@ -1078,7 +1078,7 @@ class AccurateClient:
             so = row.get("data") if row.get("success") else None
             if isinstance(so, dict):
                 so.pop(_SO_INTERNAL_CREATED_BY_ID, None)
-                so.pop(_SO_INTERNAL_BRANCH_ID, None)
+                _promote_persisted_branch_id(so)
 
     async def _fetch_so_on_http(
         self,
@@ -1280,7 +1280,7 @@ class AccurateClient:
                     so = row.get("data") if isinstance(row, dict) else None
                     if isinstance(so, dict):
                         so.pop(_SO_INTERNAL_CREATED_BY_ID, None)
-                        so.pop(_SO_INTERNAL_BRANCH_ID, None)
+                        _promote_persisted_branch_id(so)
             return out
 
     async def list_recent_sales_orders(
@@ -2521,6 +2521,17 @@ def _accurate_branch_id(d: Dict[str, Any]) -> Optional[str]:
     return _accurate_record_id(branch)
 
 
+def _promote_persisted_branch_id(so: Dict[str, Any]) -> None:
+    """Copy transient Accurate branchId onto persisted `branch_id`, then drop the internal key.
+
+    Independent of outlet name lookup. Does not invent an id from outlet text.
+    """
+    bid = str(so.get(_SO_INTERNAL_BRANCH_ID) or "").strip()
+    if bid.isdigit():
+        so["branch_id"] = bid
+    so.pop(_SO_INTERNAL_BRANCH_ID, None)
+
+
 def _ship_pic_name(obj: Any) -> Optional[str]:
     if not isinstance(obj, dict):
         return None
@@ -3444,11 +3455,14 @@ async def sync_sales_orders(db, client: AccurateClient) -> Dict[str, Any]:
             "accurate_synced_at": now_iso(),
             "accurate_source": "mock" if not client.is_live else "live",
         }
+        branch_id = str(so.get("branch_id") or "").strip()
+        if branch_id.isdigit():
+            sales_payload["branch_id"] = branch_id
         uid, _status = resolve_from_map(mapping, so.get("sales"))
 
         if existing:
             # Only refresh sales-side fields. Preserve all workflow state.
-            update = {k: v for k, v in sales_payload.items() if k in _SALES_FIELDS or k in ("updated_at", "accurate_synced_at", "accurate_source")}
+            update = {k: v for k, v in sales_payload.items() if k in _SALES_FIELDS or k in ("updated_at", "accurate_synced_at", "accurate_source", "branch_id")}
             # Derived ownership — never keep a previous users.id for an unmatched label.
             update["sales_user_id"] = uid or None
             update["sales_ownership_status"] = _status

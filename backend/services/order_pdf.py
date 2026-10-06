@@ -5,7 +5,7 @@ from typing import List
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
-from reportlab.platypus import Image, Paragraph, Spacer, Table, TableStyle
+from reportlab.platypus import Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.units import mm
 
 from services.pdf_date import format_pdf_date
@@ -14,7 +14,7 @@ from services.pdf_layout import (
     content_width,
     esc,
     format_qty,
-    logo_path,
+    logo_flowable,
     scale_widths,
     styles,
 )
@@ -113,13 +113,7 @@ def generate_sales_order_pdf_bytes(order: dict, design: dict | None = None) -> b
     width = content_width(page)
     elements = []
 
-    path = logo_path()
-    if path:
-        img = Image(path, width=52 * mm, height=17.6 * mm)
-        img.hAlign = "LEFT"
-        elements.append(img)
-    else:
-        elements.append(Paragraph("<b>ETERNAL</b>", sty["company"]))
+    elements.append(logo_flowable(design, width=52 * mm, height=17.6 * mm, company_style=sty["company"]))
     elements.append(Spacer(1, 4 * mm))
 
     address = _text(order.get("address"))

@@ -334,8 +334,8 @@ async def ensure_generated_sj_pdf(db, order: dict, delivery: dict, user: dict, *
             return existing, None
 
     try:
-        from services.print_design_settings import get_print_design_settings
-        design = await get_print_design_settings(db)
+        from services.print_design_settings import get_print_design_for_pdf
+        design = await get_print_design_for_pdf(db)
         pdf_bytes = generate_sales_delivery_pdf_bytes(delivery, None, design=design)
     except Exception:
         logger.exception("Failed to generate Surat Jalan PDF for shipment %s", shipment_id)
@@ -849,6 +849,9 @@ async def create_sales_delivery(db, payload: Dict[str, Any], user: dict) -> Dict
                 "is_cancelled": False,
                 "physical_stock_snapshot": order.get("physical_stock_snapshot"),
             }
+            order_branch_id = str(order.get("branch_id") or "").strip()
+            if order_branch_id.isdigit():
+                delivery_doc["branch_id"] = order_branch_id
             if sj_location:
                 delivery_doc["delivery_location"] = sj_location
 
@@ -908,6 +911,8 @@ async def create_sales_delivery(db, payload: Dict[str, Any], user: dict) -> Dict
                     "created_by": user.get("email") or "",
                     "sales_delivery_id": delivery_id,
                 }
+                if delivery_doc.get("branch_id"):
+                    shipment_entry["branch_id"] = delivery_doc["branch_id"]
                 if sj_location:
                     shipment_entry["delivery_location"] = sj_location
 
@@ -1091,7 +1096,7 @@ def generate_sales_delivery_pdf_bytes(
         content_width,
         esc,
         format_qty,
-        logo_path,
+        logo_flowable,
         scale_widths,
         styles,
     )
@@ -1154,8 +1159,7 @@ def generate_sales_delivery_pdf_bytes(
     width = content_width(A4)
     elements = []
     try:
-        path = logo_path()
-        logo = Image(path, width=36 * mm, height=12.2 * mm) if path else Paragraph("<b>ETERNAL</b>", sty["company"])
+        logo = logo_flowable(design, width=36 * mm, height=12.2 * mm, company_style=sty["company"])
         address_html = "<br/>".join(esc(line) for line in (design.get("address_lines") or []))
         identity = Paragraph(
             f"<font size='12'><b>{esc(design.get('company_name') or '')}</b></font><br/>{address_html}",
@@ -1558,8 +1562,8 @@ async def generate_signed_sj_pdf_for_order(
         return None, "driver_signature_bytes_missing"
 
     try:
-        from services.print_design_settings import get_print_design_settings
-        design = await get_print_design_settings(db)
+        from services.print_design_settings import get_print_design_for_pdf
+        design = await get_print_design_for_pdf(db)
         pdf_bytes = generate_sales_delivery_pdf_bytes(
             delivery,
             None,

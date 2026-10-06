@@ -839,6 +839,9 @@ async def create_sales_invoice(db, payload: Dict[str, Any], user: dict) -> Dict[
                 "role": str(user.get("role") or ""),
             },
         }
+        order_branch_id = str(order.get("branch_id") or "").strip()
+        if order_branch_id.isdigit():
+            invoice_doc["branch_id"] = order_branch_id
 
         try:
             await db.sales_invoices.insert_one(invoice_doc)
@@ -1695,7 +1698,7 @@ def generate_sales_invoice_pdf_bytes(
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.units import mm
-    from reportlab.platypus import Image, Paragraph, Spacer, Table, TableStyle
+    from reportlab.platypus import Paragraph, Spacer, Table, TableStyle
 
     from services.pdf_date import format_pdf_date
     from services.pdf_layout import (
@@ -1704,8 +1707,9 @@ def generate_sales_invoice_pdf_bytes(
         esc,
         format_money,
         format_qty,
-        logo_path,
+        logo_flowable,
         scale_widths,
+        signature_image_flowable,
         styles,
         terbilang,
     )
@@ -1714,14 +1718,14 @@ def generate_sales_invoice_pdf_bytes(
     invoice = invoice or {}
     design = resolve_print_design(design)
     inv_design = design.get("invoice") or {}
+    pdf_assets = design.get("_pdf_assets") if isinstance(design.get("_pdf_assets"), dict) else {}
     proforma = document_type == DOCUMENT_PROFORMA
     sty = styles(design.get("accent_color"))
     accent = sty["accent"]
     width = content_width(A4)
     elements = []
 
-    path = logo_path()
-    logo = Image(path, width=36 * mm, height=12.2 * mm) if path else Paragraph("<b>ETERNAL</b>", sty["company"])
+    logo = logo_flowable(design, width=36 * mm, height=12.2 * mm, company_style=sty["company"])
     address_html = "<br/>".join(esc(line) for line in (design.get("address_lines") or []))
     identity = Paragraph(
         f"<font size='12'><b>{esc(design.get('company_name') or '')}</b></font><br/>{address_html}",
@@ -1911,11 +1915,18 @@ def generate_sales_invoice_pdf_bytes(
     gap = 4 * mm
     sig_w = (width - 68 * mm - (2 * gap)) / 2
 
-    def signature_column(title: str, footer: str, middle: str = "") -> Table:
+    def signature_column(title: str, footer: str, middle: str = "", image_bytes: Optional[bytes] = None) -> Table:
+        sig_img = signature_image_flowable(image_bytes, max_width=sig_w - 4 * mm, max_height=14 * mm)
+        middle_cell = sig_img if sig_img is not None else Paragraph(
+            f"<b>{esc(middle)}</b>" if middle else "&nbsp;",
+            sty["center"],
+        )
+        # Keep row height bounded: image replaces blank pad; text-only keeps existing pad.
+        mid_top = 2 * mm if sig_img is not None else 10 * mm
         column = Table(
             [
                 [Paragraph(esc(title), sty["center"])],
-                [Paragraph(f"<b>{esc(middle)}</b>" if middle else "&nbsp;", sty["center"])],
+                [middle_cell],
                 [Paragraph(esc(footer), sty["center"])],
             ],
             colWidths=[sig_w],
@@ -1923,7 +1934,7 @@ def generate_sales_invoice_pdf_bytes(
         column.setStyle(TableStyle([
             ("ALIGN", (0, 0), (-1, -1), "CENTER"),
             ("VALIGN", (0, 1), (-1, 1), "BOTTOM"),
-            ("TOPPADDING", (0, 1), (-1, 1), 10 * mm),
+            ("TOPPADDING", (0, 1), (-1, 1), mid_top),
             ("BOTTOMPADDING", (0, 1), (-1, 1), 3),
             ("LINEABOVE", (0, 2), (-1, 2), 0.6, colors.black),
             ("TOPPADDING", (0, 2), (-1, 2), 2),
@@ -1935,11 +1946,13 @@ def generate_sales_invoice_pdf_bytes(
     prepared = signature_column(
         str(inv_design.get("prepared_label") or "Disiapkan Oleh"),
         str(inv_design.get("prepared_footer") or "Admin"),
+        image_bytes=pdf_assets.get("prepared_signature_image"),
     )
     approved = signature_column(
         str(inv_design.get("approved_label") or "Disetujui Oleh"),
         str(inv_design.get("approved_footer") or "Pengelola"),
         sales_name,
+        image_bytes=pdf_assets.get("approved_signature_image"),
     )
     estimasi_title = str(inv_design.get("estimasi_title") or "")
     estimasi_lines = inv_design.get("estimasi_lines") or []
