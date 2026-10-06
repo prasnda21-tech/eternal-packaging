@@ -2322,8 +2322,11 @@ export default function Settings() {
     setTimeout(() => setToast(""), 2800);
   };
 
+  const designCetakanPage = !showCategoryNav && tab === "design-cetakan";
+
   return (
     <div data-testid="settings-page" className="settings-page">
+      {!designCetakanPage ? (
       <div className="page-heading">
         <div style={{ display: "flex", alignItems: "flex-start", gap: 14 }}>
           <span className="page-heading-icon" aria-hidden="true"><SettingsIcon size={22} /></span>
@@ -2343,6 +2346,7 @@ export default function Settings() {
           </div>
         </div>
       </div>
+      ) : null}
 
       {showCategoryNav && (
         <InfoBanner testid="settings-intro">

@@ -1,25 +1,31 @@
 .dc-page,
 .dc-page * { box-sizing: border-box; }
-.dc-page {
+.content .dc-page.settings-card {
   border-top-color: var(--ep-primary);
+  border-top-width: 3px;
+  border-radius: 10px;
+  box-shadow: none;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 12px 14px 10px;
+  gap: 8px;
+  padding: 10px 80px 12px 12px;
+  font-size: 13px;
+  line-height: 1.35;
 }
 .dc-form {
-  display: grid;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 .dc-main {
-  grid-area: 1 / 1;
   overflow: visible;
   min-width: 0;
-  padding-bottom: 84px;
 }
 
-.dc-page h2 {
+.content .dc-page h2 {
   margin: 0;
-  font-size: 20px;
+  font-size: 16px;
+  line-height: 1.25;
   letter-spacing: -0.02em;
 }
 
@@ -52,15 +58,16 @@
 
 .dc-info {
   display: flex;
-  gap: 8px;
-  align-items: flex-start;
+  gap: 6px;
+  align-items: center;
   background: var(--muted);
   border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 8px 10px;
+  border-radius: 8px;
+  padding: 4px 8px;
   color: var(--soft);
-  font-size: 12.5px;
-  line-height: 1.45;
+  font-size: 12px;
+  line-height: 1.25;
+  min-height: 28px;
 }
 
 .dc-info svg { color: var(--ep-primary); flex: 0 0 auto; margin-top: 1px; }
@@ -70,31 +77,56 @@
   flex-wrap: wrap;
   background: var(--surface);
   border: 1px solid var(--line);
-  border-radius: 12px;
-  padding: 8px 10px;
+  border-radius: 8px;
+  padding: 6px 8px;
+}
+.dc-command {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content;
+  align-items: start;
+  column-gap: 12px;
 }
 
 .dc-scope {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  min-width: min(280px, 100%);
+  min-width: 0;
   font-size: 12px;
   font-weight: 650;
   color: var(--soft);
 }
+.dc-scope .dc-empty {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.25;
+}
+.dc-command-actions {
+  align-self: start;
+  margin-top: 20px;
+}
 
-.dc-page select,
-.dc-page input {
+.content .dc-page input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]):not([type="file"]):not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="range"]):not([type="color"]),
+.content .dc-page select,
+.content .dc-page textarea {
   width: 100%;
   min-width: 0;
   max-width: 100%;
+  height: 36px;
   min-height: 36px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: #fff;
   color: var(--ink);
-  padding: 6px 10px;
+  padding: 4px 10px;
+  font-size: 13px;
+  line-height: 1.3;
+  box-shadow: none;
+}
+.content .dc-page textarea {
+  height: auto;
+  min-height: 64px;
 }
 
 .dc-page input:disabled,
@@ -127,7 +159,19 @@
 
 .dc-page .secondary:hover:not(:disabled) { background: var(--muted); }
 .dc-page .secondary:disabled { opacity: 0.55; cursor: not-allowed; }
-.dc-page .primary { min-height: 36px; border-radius: 8px; }
+.content .dc-page .primary,
+.content .dc-page .secondary,
+.content .dc-page .dc-tabs button {
+  font-size: 13px;
+  line-height: 1.2;
+}
+.content .dc-page .primary {
+  min-height: 34px;
+  height: 34px;
+  border-radius: 8px;
+  padding: 0 12px;
+  box-shadow: none;
+}
 .dc-reset { color: var(--red); }
 
 .dc-preview { position: relative; }
@@ -160,15 +204,16 @@
   gap: 4px;
   flex-wrap: wrap;
   background: var(--muted);
-  border-radius: 10px;
-  padding: 3px;
+  border-radius: 8px;
+  padding: 2px;
 }
 .dc-tabs button {
   border: 0;
   background: transparent;
   color: var(--soft);
-  min-height: 32px;
-  padding: 0 12px;
+  min-height: 30px;
+  height: 30px;
+  padding: 0 10px;
   border-radius: 8px;
   font-weight: 600;
 }
@@ -180,9 +225,9 @@
 
 .dc-section {
   border: 1px solid var(--line);
-  border-radius: 12px;
-  padding: 10px 12px 12px;
-  margin-bottom: 10px;
+  border-radius: 10px;
+  padding: 8px 10px 10px;
+  margin-bottom: 8px;
   background: #fff;
 }
 .dc-section h3 {
@@ -275,12 +320,7 @@
 .dc-asset-actions { flex: 0 0 auto; }
 
 .dc-savebar {
-  grid-area: 1 / 1;
-  position: sticky;
-  align-self: start;
-  top: calc(100dvh - 68px);
-  z-index: 4;
-  height: fit-content;
+  position: static;
   margin-top: 0;
   background: #fff;
 }
@@ -315,8 +355,9 @@
 .dc-page .signal-strip { margin-bottom: 0; }
 
 @media (max-width: 860px) {
-  .dc-savebar { top: calc(100dvh - 156px); }
-  .dc-main { padding-bottom: 172px; }
+  .content .dc-page.settings-card { padding-right: 12px; }
+  .dc-command { grid-template-columns: 1fr; }
+  .dc-command-actions { margin-top: 0; }
   .dc-fields-3,
   .dc-bank,
   .dc-history-filters,

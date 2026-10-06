@@ -893,6 +893,11 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
               </option>
             ))}
           </select>
+          {catalog.length === 0 ? (
+            <p className="muted small dc-empty" data-testid="design-cetakan-branch-empty">
+              Belum ada cabang pada order. Default Semua Cabang tetap bisa diubah. Cabang muncul setelah ada order dengan branch_id.
+            </p>
+          ) : null}
         </label>
         <div className="dc-command-actions">
           <div className="dc-preview" ref={previewWrapRef}>
@@ -950,11 +955,6 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
             </button>
           ) : null}
         </div>
-        {catalog.length === 0 ? (
-          <p className="muted small dc-empty" data-testid="design-cetakan-branch-empty">
-            Belum ada cabang pada order. Default Semua Cabang tetap bisa diubah. Cabang muncul setelah ada order dengan branch_id.
-          </p>
-        ) : null}
       </div>
 
       {err ? (
