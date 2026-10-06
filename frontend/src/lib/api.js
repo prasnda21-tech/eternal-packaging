@@ -254,6 +254,8 @@ export const api = {
   masterItemsSync: () => client.post(`/master-items/sync`).then((r) => r.data),
   replaceSalesOrderLineProduct: (orderId, lineIdx, payload) =>
     client.patch(`/sales-orders/${orderId}/lines/${lineIdx}/product`, payload).then((r) => r.data),
+  updateSalesOrderLineColor: (orderId, lineIdx, payload) =>
+    client.patch(`/sales-orders/${orderId}/lines/${lineIdx}/color`, payload).then((r) => r.data),
   masterItemDetail: (id) => client.get(`/master-items/${encodeURIComponent(id)}/detail`).then((r) => r.data),
   saveUnitConversion: (id, payload) => client.put(`/master-items/${encodeURIComponent(id)}/unit-conversion`, payload).then((r) => r.data),
   initOpeningBalance: (id, payload) => client.post(`/master-items/${encodeURIComponent(id)}/opening-balance`, payload).then((r) => r.data),
