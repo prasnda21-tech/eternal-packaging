@@ -43,16 +43,12 @@ from services.inventory_accounting import (
     resolve_conversion_from_setting,
 )
 from services.inventory_financial_locks import acquire_item_lock, release_item_lock
-from services.org_locations import warehouse_is_operational
-from services.physical_stock import (
-    BRANCHES_COLLECTION,
-    LEDGER_COLLECTION,
-    MOVEMENT_PURCHASE_RECEIPT,
-    WAREHOUSES_COLLECTION,
-    operational_physical_qty_by_item,
-    resolve_operational_branch,
-)
 from services.purchase_common import actor_snapshot, item_identity, money_round, now_iso, qty_round
+from services.published_hpp import (
+    SOURCE_PUBLISHED_FALLBACK,
+    exact_published_candidate,
+    load_effective_published_hpp,
+)
 
 CUTOVERS = "hpp_valuation_cutovers"
 BASELINES = "hpp_valuation_baseline_lines"
@@ -78,13 +74,7 @@ STATUS_MISSING_COST = "MISSING_COST"
 SOURCE_OPENING = "OPENING_HPP"
 SOURCE_GOODS_RECEIPT = "GOODS_RECEIPT"
 SOURCE_GOODS_RECEIPT_REVERSAL = "GOODS_RECEIPT_REVERSAL"
-SOURCE_PURCHASE_RETURN = "PURCHASE_RETURN"
-SOURCE_PURCHASE_RETURN_REVERSAL = "PURCHASE_RETURN_REVERSAL"
-SOURCE_STOCK_OPNAME_ADJUSTMENT = "STOCK_OPNAME_ADJUSTMENT"
 SOURCE_PURCHASING_AUTO_BOOTSTRAP = "PURCHASING_AUTO_BOOTSTRAP"
-SOURCE_FIRST_GR_UNIT_COST = "FIRST_GR_UNIT_COST"
-STATUS_PENDING_VALUATION = "PENDING_VALUATION"
-STATUS_QUEUED = "QUEUED"
 REASON_NEGATIVE = "NEGATIVE_PHYSICAL_STOCK"
 
 LEASE_SECONDS = 120
@@ -168,16 +158,14 @@ def _settings_conflict(current: dict, payload: dict) -> Optional[str]:
 
 
 async def _read_stock_qty(db, master_item_id: str) -> tuple:
-    """Operational R2 physical qty. product_stock_state is metadata only."""
     mid = str(master_item_id or "").strip()
     state = await db.product_stock_state.find_one(
         {"$or": [{"_id": mid}, {"master_item_id": mid}]},
         {"_id": 0},
-    ) or {}
-    if not mid:
-        return 0.0, state
-    totals = await operational_physical_qty_by_item(db, [mid])
-    return float(totals.get(mid, 0) or 0), state
+    )
+    if not state:
+        return 0.0, {}
+    return float(state.get("total_qty") or 0), state
 
 
 def _baseline_from_stock(cutover_id: str, raw: dict, physical: float, state: dict) -> dict:
@@ -265,29 +253,15 @@ def _events_from_baseline_and_recognition(cutover: dict, lines: List[dict], reco
             continue
         if rec.get("status") != STATUS_RECOGNIZED:
             continue
-        source_type = str(rec.get("source_type") or SOURCE_GOODS_RECEIPT)
-        qty = _dec(rec.get("qty"))
-        unit_cost = _dec(rec.get("unit_cost"))
-        if source_type == SOURCE_PURCHASE_RETURN:
-            if qty >= 0 or unit_cost <= 0:
-                continue
-        elif source_type == SOURCE_PURCHASE_RETURN_REVERSAL:
-            if qty <= 0 or unit_cost <= 0:
-                continue
-        elif source_type == SOURCE_STOCK_OPNAME_ADJUSTMENT:
-            if qty == 0 or unit_cost <= 0:
-                continue
-        else:
-            if qty <= 0 or unit_cost <= 0:
-                continue
-            source_type = SOURCE_GOODS_RECEIPT
+        if _dec(rec.get("qty")) <= 0 or _dec(rec.get("unit_cost")) <= 0:
+            continue
         posted = str(rec.get("recognized_at") or "")
         if posted <= baseline_at:
             posted = baseline_at + "~"
         future.append({
             "event_id": rec["event_id"],
             "item_identity": rec["item_identity"],
-            "source_type": source_type,
+            "source_type": SOURCE_GOODS_RECEIPT,
             "source_id": rec.get("source_key"),
             "source_line_id": rec.get("source_key"),
             "source_number": rec.get("source_key"),
@@ -610,7 +584,6 @@ async def rebuild_cutover_valuation(
             bad_positive = [
                 row for row in rows
                 if row["hpp_status"] == STATUS_QTY_MISMATCH and _dec(row["stock_fisik"]) >= 0
-                and not _return_relief_explains_legacy_gap(recognitions, row)
             ]
             if bad_positive:
                 raise RuntimeError("valuation qty does not match stock fisik")
@@ -1426,158 +1399,85 @@ async def proven_opening_physical_qty(db, master_item_id: str, receipt_id: str) 
         await release_item_lock(db, item_key, str(locked.get("token") or ""))
 
 
-async def _operational_warehouse_ids(db) -> set:
-    branches = await db[BRANCHES_COLLECTION].find(
-        {},
-        {"_id": 0, "id": 1, "code": 1, "name": 1},
-    ).to_list(500)
-    operational = resolve_operational_branch(branches)
-    if not operational:
-        return set()
-    warehouses = await db[WAREHOUSES_COLLECTION].find(
-        {"branch_id": operational["id"]},
-        {"_id": 0, "id": 1, "is_operational": 1},
-    ).to_list(500)
-    return {
-        str(row["id"])
-        for row in warehouses
-        if row.get("id") and warehouse_is_operational(row)
-    }
-
-
-def _canonical_unit_cost_valid(canonical: dict) -> bool:
-    cost = canonical.get("unit_cost")
-    if cost in (None, ""):
-        return False
-    try:
-        return _dec(cost) > 0
-    except Exception:
-        return False
-
-
-async def _pre_gr_operational_physical_qty(
-    db,
-    *,
-    master_item_id: str,
-    receipt: dict,
-) -> float:
-    """Item-level operational R2 qty immediately before this GR.
-
-    R2 physical is already committed, so live operational qty is post-GR.
-    Subtract this receipt's operational received qty. Prefer ledger
-    PURCHASE_RECEIPT qty_delta / balance_before; never read stock_movements.
-    """
-    mid = str(master_item_id or "").strip()
-    receipt_id = str((receipt or {}).get("id") or "").strip()
-    live = _dec(0)
-    if mid:
-        totals = await operational_physical_qty_by_item(db, [mid])
-        live = _dec(totals.get(mid, 0) or 0)
-    operational_ids = await _operational_warehouse_ids(db)
-    incoming = _dec(0)
-    movements = []
-    if mid and receipt_id:
-        movements = await db[LEDGER_COLLECTION].find(
-            {
-                "movement_type": MOVEMENT_PURCHASE_RECEIPT,
-                "master_item_id": mid,
-                "metadata.receipt_id": receipt_id,
-            },
-            {"_id": 0, "qty_delta": 1, "warehouse_id": 1, "balance_before": 1},
-        ).to_list(500)
-    for move in movements:
-        warehouse_id = str(move.get("warehouse_id") or "")
-        if operational_ids and warehouse_id not in operational_ids:
-            continue
-        incoming += _dec(move.get("qty_delta") or 0)
-    if not movements:
-        warehouse_id = str((receipt or {}).get("warehouse_id") or "")
-        warehouse_counts = not operational_ids or warehouse_id in operational_ids
-        if warehouse_counts:
-            for line in (receipt or {}).get("lines") or []:
-                if str(line.get("master_item_id") or "") != mid:
-                    continue
-                incoming += _dec(line.get("received_qty") or line.get("quantity") or 0)
-    opening = live - incoming
-    if opening < 0:
-        opening = _dec(0)
-    return qty_round(opening)
-
-
-async def _item_has_valid_canonical_valuation(db, cutover: dict, master_item_id: str) -> bool:
-    mid = str(master_item_id or "").strip()
-    if not mid:
-        return False
-    existing = await db[BASELINES].find_one(
-        {"cutover_id": cutover["cutover_id"], "master_item_id": mid},
-        {"_id": 0, "hpp_status": 1, "valuation_qty": 1, "opening_unit_cost": 1},
-    )
-    if existing:
-        status = existing.get("hpp_status")
-        if status == STATUS_OK:
-            return True
-        if _dec(existing.get("opening_unit_cost")) > 0:
-            return True
-        if _dec(existing.get("valuation_qty")) > 0:
-            return True
-    recognized = await db[EVENTS].find_one(
-        {
-            "cutover_id": cutover["cutover_id"],
-            "master_item_id": mid,
-            "status": STATUS_RECOGNIZED,
-            "source_type": {
-                "$in": [
-                    SOURCE_GOODS_RECEIPT,
-                    SOURCE_PURCHASE_RETURN,
-                    SOURCE_PURCHASE_RETURN_REVERSAL,
-                    SOURCE_GOODS_RECEIPT_REVERSAL,
-                    SOURCE_STOCK_OPNAME_ADJUSTMENT,
-                ]
-            },
-        },
-        {"_id": 1},
-    )
-    return recognized is not None
-
-
 async def _bootstrap_product_if_needed(
     db,
     *,
     cutover: dict,
     canonical: dict,
-    receipt: dict,
+    published_candidates: Dict[str, List[dict]],
 ) -> dict:
-    """Freeze pending R2 physical at the first valid GR unit cost (Formula A)."""
+    """Freeze a per-product baseline immediately before its first future GR."""
     if canonical.get("status") != STATUS_PENDING:
         return canonical
-    if not _canonical_unit_cost_valid(canonical):
-        return canonical
     mid = str(canonical.get("master_item_id") or "")
-    if await _item_has_valid_canonical_valuation(db, cutover, mid):
-        return canonical
-    stock_before = await _pre_gr_operational_physical_qty(
-        db,
-        master_item_id=mid,
-        receipt=receipt,
+    existing = await db[BASELINES].find_one(
+        {"cutover_id": cutover["cutover_id"], "master_item_id": mid},
+        {"_id": 0, "master_item_id": 1},
     )
+    if existing:
+        return canonical
+    proof = await proven_opening_physical_qty(
+        db,
+        mid,
+        str(canonical.get("canonical_source_id") or ""),
+    )
+    if not proof.get("ok"):
+        reason = proof.get("reason") or "STOCK_BASELINE_UNAVAILABLE"
+        return {
+            **canonical,
+            "status": STATUS_NEEDS_COST,
+            "reason": reason,
+            "qty": None,
+            "unit_cost": None,
+            "total_cost": None,
+            "financial_inventory_eligible": False,
+            "financial_ineligibility_reason": reason,
+            "financial_ineligibility_reasons": [reason],
+        }
+    stock_before = proof["qty"]
+    state = proof.get("state") or {}
+    candidate = exact_published_candidate(
+        published_candidates,
+        accurate_item_id=canonical.get("accurate_item_id"),
+        master_item_id=mid,
+    )
+    if not candidate:
+        return {
+            **canonical,
+            "status": STATUS_NEEDS_COST,
+            "reason": STATUS_NEEDS_COST,
+            "qty": None,
+            "unit_cost": None,
+            "total_cost": None,
+            "financial_inventory_eligible": False,
+            "financial_ineligibility_reason": STATUS_NEEDS_COST,
+            "financial_ineligibility_reasons": [STATUS_NEEDS_COST],
+        }
+    opening_cost = candidate["hpp"]
+    provenance = SOURCE_PUBLISHED_FALLBACK
     raw = {
         "master_item_id": mid,
         "accurate_item_id": canonical.get("accurate_item_id"),
         "item_code": canonical.get("item_code"),
         "item_name": canonical.get("item_name"),
-        "opening_unit_cost": canonical.get("unit_cost"),
+        "opening_unit_cost": opening_cost,
         "base_uom": canonical.get("base_uom"),
-        "provenance_source": SOURCE_FIRST_GR_UNIT_COST,
+        "provenance_source": provenance,
+        "published_pricing_group_id": candidate.get("pricing_group_id"),
+        "published_pricing_version_id": candidate.get("version_id"),
+        "published_version_number": candidate.get("version_number"),
+        "published_revision": candidate.get("revision"),
+        "published_hpp_snapshot": candidate.get("hpp"),
     }
     baseline = _baseline_from_stock(
         cutover["cutover_id"],
         raw,
         qty_round(stock_before),
-        {},
+        state,
     )
-    baseline["stock_snapshot_source"] = "R2_OPERATIONAL_PHYSICAL"
-    baseline["pre_gr_operational_qty"] = qty_round(stock_before)
-    baseline["bootstrap_receipt_id"] = str((receipt or {}).get("id") or "")
+    baseline["stock_snapshot_proofs"] = proof.get("proofs") or []
+    baseline["stock_snapshot_boundary_receipt_id"] = proof.get("boundary_receipt_id")
+    baseline["stock_events_after_boundary"] = proof.get("events_after_boundary") or []
     try:
         await db[BASELINES].insert_one(baseline)
     except DuplicateKeyError:
@@ -1591,6 +1491,7 @@ async def _recognize_for_cutover(
     active: Optional[dict],
     receipt: dict,
     po_lines: Dict[str, dict],
+    published_candidates: Dict[str, List[dict]],
     activate_cutover: bool,
     user: Optional[dict],
 ) -> List[dict]:
@@ -1634,7 +1535,7 @@ async def _recognize_for_cutover(
                 db,
                 cutover=active,
                 canonical=canonical,
-                receipt=receipt,
+                published_candidates=published_candidates,
             )
         elif canonical.get("status") == STATUS_PENDING:
             canonical = {
@@ -1770,16 +1671,14 @@ async def recognize_posted_goods_receipt(
     receipt: dict,
     user: Optional[dict] = None,
 ) -> List[dict]:
-    """Bootstrap pending R2 physical from the first valid GR unit cost.
+    """Bootstrap products lazily, then recognize only this future GR.
 
-    Opening qty is operational physical immediately before this GR. Opening
-    cost is the canonical PO-line unit cost. Historical receipts are never
-    loaded. Published Customer Pricing HPP is not a canonical source.
+    Existing stock is frozen from Published HPP immediately before the first
+    future GR for that product. Historical receipts are never loaded.
     """
     receipt_id = str(receipt.get("id") or "").strip()
     if not receipt_id:
         return []
-    await ensure_indexes(db)
     await register_baseline_participants(db, receipt)
     po = await db.purchase_orders.find_one(
         {"id": str(receipt.get("purchase_order_id") or "")},
@@ -1789,6 +1688,7 @@ async def recognize_posted_goods_receipt(
         str(row.get("line_id") or ""): row
         for row in ((po or {}).get("lines") or [])
     }
+    published_candidates = await load_effective_published_hpp(db)
     active = await get_active_cutover(db)
     created = False
     claim_owner = None
@@ -1803,7 +1703,16 @@ async def recognize_posted_goods_receipt(
                 line=line,
                 po_lines=po_lines,
             )
-            if canonical.get("status") == STATUS_PENDING and _canonical_unit_cost_valid(canonical):
+            if canonical.get("status") != STATUS_PENDING:
+                continue
+            mid = str(canonical.get("master_item_id") or "")
+            proof = await proven_opening_physical_qty(db, mid, receipt_id)
+            candidate = exact_published_candidate(
+                published_candidates,
+                accurate_item_id=canonical.get("accurate_item_id"),
+                master_item_id=mid,
+            )
+            if proof.get("ok") and candidate:
                 can_bootstrap = True
                 break
         if can_bootstrap:
@@ -1836,6 +1745,7 @@ async def recognize_posted_goods_receipt(
             active=active,
             receipt=receipt,
             po_lines=po_lines,
+            published_candidates=published_candidates,
             activate_cutover=created,
             user=user,
         )
@@ -1975,623 +1885,3 @@ async def reverse_goods_receipt_hpp(
         {"event_id": {"$in": reversal_ids}},
         {"_id": 0},
     ).to_list(5000)
-
-
-def _return_relief_explains_legacy_gap(recognitions: List[dict], row: dict) -> bool:
-    """Legacy product_stock_state is not reduced by an R2 purchase return.
-
-    A mismatch equal to the net recognized return qty is the return itself.
-    """
-    net = Decimal("0")
-    mid = str(row.get("master_item_id") or "")
-    for rec in recognitions:
-        if str(rec.get("master_item_id") or "") != mid or rec.get("status") != STATUS_RECOGNIZED:
-            continue
-        kind = rec.get("source_type")
-        if kind == SOURCE_PURCHASE_RETURN:
-            net += abs(_dec(rec.get("qty")))
-        elif kind == SOURCE_PURCHASE_RETURN_REVERSAL:
-            net -= abs(_dec(rec.get("qty")))
-    if net == 0:
-        return False
-    return abs(_dec(row.get("difference")) - net) <= Decimal("0.000001")
-
-
-def purchase_return_source_key(return_id: str, line_id: str) -> str:
-    return f"purchase-return:{return_id}:{line_id}"
-
-
-def purchase_return_reversal_source_key(return_id: str, line_id: str) -> str:
-    return f"purchase-return-reversal:{return_id}:{line_id}"
-
-
-def _valuation_fingerprint(doc: dict) -> tuple:
-    return (
-        str(doc.get("purchase_return_id") or ""),
-        str(doc.get("purchase_return_line_id") or ""),
-        str(doc.get("goods_receipt_id") or ""),
-        str(doc.get("goods_receipt_line_id") or ""),
-        str(doc.get("stock_opname_session_id") or ""),
-        str(doc.get("stock_opname_line_id") or ""),
-        str(doc.get("master_item_id") or ""),
-        str(doc.get("returned_qty") or ""),
-        str(doc.get("adjustment_qty") if doc.get("adjustment_qty") is not None else ""),
-        str(doc.get("qty") if doc.get("qty") is not None else ""),
-        str(doc.get("unit_cost") if doc.get("unit_cost") is not None else ""),
-        str(doc.get("warehouse_id") or ""),
-        str(doc.get("branch_id") or ""),
-        str(doc.get("original_source_key") or ""),
-        str(doc.get("source_type") or ""),
-    )
-
-
-def _same_valuation_payload(existing: dict, incoming: dict) -> bool:
-    return _valuation_fingerprint(existing) == _valuation_fingerprint(incoming)
-
-
-async def _find_event(db, source_key: str, session=None):
-    return await db[EVENTS].find_one({"source_key": source_key}, {"_id": 0}, session=session)
-
-
-async def _upsert_valuation_event(db, doc: dict, session=None) -> dict:
-    source_key = doc["source_key"]
-    existing = await _find_event(db, source_key, session=session)
-    if existing:
-        if _same_valuation_payload(existing, doc):
-            if existing.get("status") in {STATUS_RECOGNIZED, STATUS_REVERSED, STATUS_PENDING_VALUATION}:
-                return existing
-            if existing.get("status") == doc.get("status"):
-                return existing
-            await db[EVENTS].update_one(
-                {"source_key": source_key},
-                {"$set": {
-                    "status": doc["status"],
-                    "updated_at": doc["updated_at"],
-                    "event_id": existing.get("event_id") or doc["event_id"],
-                }},
-                session=session,
-            )
-            return {**existing, "status": doc["status"], "event_id": existing.get("event_id") or doc["event_id"]}
-        if (
-            existing.get("status") == STATUS_PENDING_VALUATION
-            and doc.get("status") != STATUS_PENDING_VALUATION
-            and _valuation_fingerprint({**existing, "unit_cost": doc.get("unit_cost")}) == _valuation_fingerprint(doc)
-        ):
-            await db[EVENTS].update_one(
-                {"source_key": source_key, "status": STATUS_PENDING_VALUATION},
-                {"$set": {key: value for key, value in doc.items() if key != "event_id"}},
-                session=session,
-            )
-            saved = await _find_event(db, source_key, session=session)
-            return saved or doc
-        raise _http(409, "CONFLICT", "Idempotency key sudah digunakan dengan payload yang berbeda")
-    try:
-        await db[EVENTS].insert_one(dict(doc), session=session)
-    except DuplicateKeyError:
-        raced = await _find_event(db, source_key, session=session)
-        if raced and _same_valuation_payload(raced, doc):
-            return raced
-        raise _http(409, "CONFLICT", "Idempotency key sudah digunakan dengan payload yang berbeda")
-    return {key: value for key, value in doc.items() if key != "_id"}
-
-
-def _line_valuation_fields(event: dict, *, status: str, reason: Optional[str] = None) -> dict:
-    return {
-        "hpp_valuation_status": status,
-        "hpp_valuation_reason": reason,
-        "hpp_event_id": event.get("event_id"),
-        "hpp_source_key": event.get("source_key"),
-        "hpp_unit_cost": event.get("unit_cost"),
-        "hpp_valuation_qty": (
-            qty_round(abs(_dec(event.get("qty"))))
-            if event.get("qty") is not None
-            else None
-        ),
-        "hpp_valuation_value": (
-            money_round(abs(_dec(event.get("qty"))) * _dec(event.get("unit_cost")))
-            if event.get("unit_cost") is not None and event.get("qty") is not None
-            else None
-        ),
-        "hpp_source_event_id": event.get("original_event_id"),
-        "hpp_goods_receipt_source_key": event.get("original_source_key"),
-    }
-
-
-async def _recognized_receipt_event(db, receipt_id: str, line_id: str, session=None) -> Optional[dict]:
-    event = await _find_event(db, f"gr:{receipt_id}:{line_id}", session=session)
-    if not event or event.get("status") != STATUS_RECOGNIZED:
-        return None
-    if _dec(event.get("unit_cost")) <= 0 or _dec(event.get("qty")) <= 0:
-        return None
-    if not event.get("item_identity") or not event.get("master_item_id"):
-        return None
-    return event
-
-
-async def _relieved_base_qty(db, gr_event: dict, *, skip_return_line_id: str, session=None) -> Decimal:
-    receipt_id = str(gr_event.get("source_receipt_id") or "")
-    line_id = str(gr_event.get("source_line_id") or "")
-    query = {
-        "goods_receipt_id": receipt_id or str(gr_event.get("canonical_source_id") or ""),
-        "goods_receipt_line_id": line_id,
-        "source_type": {"$in": [SOURCE_PURCHASE_RETURN, SOURCE_PURCHASE_RETURN_REVERSAL]},
-    }
-    # GR events store the receipt on canonical_source_id and the line inside source_key.
-    if not query["goods_receipt_id"]:
-        source_key = str(gr_event.get("source_key") or "")
-        parts = source_key.split(":")
-        if len(parts) >= 3:
-            query["goods_receipt_id"] = parts[1]
-            query["goods_receipt_line_id"] = parts[2]
-    rows = await db[EVENTS].find(query, {"_id": 0}, session=session).to_list(500)
-    relieved = Decimal("0")
-    for row in rows:
-        if str(row.get("purchase_return_line_id") or "") == skip_return_line_id and row.get("source_type") == SOURCE_PURCHASE_RETURN:
-            continue
-        if row.get("status") not in {STATUS_RECOGNIZED, STATUS_QUEUED}:
-            continue
-        if row.get("source_type") == SOURCE_PURCHASE_RETURN:
-            relieved += abs(_dec(row.get("qty")))
-        elif row.get("source_type") == SOURCE_PURCHASE_RETURN_REVERSAL and row.get("status") == STATUS_RECOGNIZED:
-            relieved -= abs(_dec(row.get("qty")))
-    return relieved
-
-
-def _base_return_qty(gr_event: dict, returned_qty: Any) -> Decimal:
-    factor = _dec(gr_event.get("conversion_factor") or 1)
-    if factor <= 0:
-        factor = Decimal("1")
-    return _dec(returned_qty) * factor
-
-
-async def prepare_purchase_return_valuation(db, session, return_doc: dict, lines: List[dict]) -> List[dict]:
-    """Queue one valuation event per line inside the confirm transaction.
-
-    Missing recognized receipt cost records PENDING_VALUATION and does not
-    invent a unit cost. Physical confirmation stays with the caller.
-    """
-    active = await get_active_cutover(db)
-    stamp = now_iso()
-    prepared = []
-    for line in lines:
-        receipt_id = str(line.get("purchase_goods_receipt_id") or "")
-        receipt_line_id = str(line.get("purchase_goods_receipt_line_id") or "")
-        return_line_id = str(line.get("line_id") or "")
-        gr_event = await _recognized_receipt_event(db, receipt_id, receipt_line_id, session=session)
-        source_key = purchase_return_source_key(return_doc["id"], return_line_id)
-        common = {
-            "event_id": str(uuid.uuid4()),
-            "source_type": SOURCE_PURCHASE_RETURN,
-            "source_key": source_key,
-            "purchase_return_id": return_doc["id"],
-            "purchase_return_line_id": return_line_id,
-            "goods_receipt_id": receipt_id,
-            "goods_receipt_line_id": receipt_line_id,
-            "master_item_id": str(line.get("master_item_id") or ""),
-            "returned_qty": line.get("return_qty"),
-            "warehouse_id": str(line.get("warehouse_id") or ""),
-            "branch_id": str(line.get("branch_id") or ""),
-            "recognized_at": stamp,
-            "created_at": stamp,
-            "updated_at": stamp,
-            "cutover_id": (active or {}).get("cutover_id"),
-        }
-        if not active or not gr_event:
-            event = {
-                **common,
-                "status": STATUS_PENDING_VALUATION,
-                "reason": STATUS_PENDING_VALUATION,
-                "qty": None,
-                "unit_cost": None,
-                "total_cost": None,
-                "item_identity": None,
-                "original_event_id": (gr_event or {}).get("event_id"),
-                "original_source_key": (gr_event or {}).get("source_key"),
-            }
-            saved = await _upsert_valuation_event(db, event, session=session)
-            prepared.append({
-                **line,
-                **_line_valuation_fields(saved, status=STATUS_PENDING_VALUATION, reason=STATUS_PENDING_VALUATION),
-            })
-            continue
-        if str(gr_event.get("master_item_id") or "") != str(line.get("master_item_id") or ""):
-            raise _http(409, "CONFLICT", "Barang valuasi tidak sama dengan baris penerimaan.")
-        base_qty = _base_return_qty(gr_event, line.get("return_qty"))
-        relieved = await _relieved_base_qty(db, {**gr_event, "canonical_source_id": receipt_id, "source_line_id": receipt_line_id}, skip_return_line_id=return_line_id, session=session)
-        remaining = _dec(gr_event.get("qty")) - relieved
-        if base_qty <= 0 or base_qty > remaining:
-            raise _http(409, "CONFLICT", "Qty retur melebihi qty valuasi penerimaan yang masih tersisa.")
-        unit_cost = money_round(gr_event.get("unit_cost"))
-        signed_qty = qty_round(-base_qty)
-        event = {
-            **common,
-            "status": STATUS_QUEUED,
-            "qty": signed_qty,
-            "unit_cost": unit_cost,
-            "total_cost": money_round(_dec(signed_qty) * _dec(unit_cost)),
-            "item_identity": gr_event.get("item_identity"),
-            "item_code": gr_event.get("item_code") or line.get("item_code") or "",
-            "item_name": gr_event.get("item_name") or line.get("item_name") or "",
-            "accurate_item_id": gr_event.get("accurate_item_id") or "",
-            "original_event_id": gr_event.get("event_id"),
-            "original_source_key": gr_event.get("source_key"),
-            "source_receipt_id": receipt_id,
-            "source_line_id": receipt_line_id,
-            "conversion_factor": gr_event.get("conversion_factor") or 1,
-        }
-        saved = await _upsert_valuation_event(db, event, session=session)
-        prepared.append({**line, **_line_valuation_fields(saved, status=saved.get("status") or STATUS_QUEUED)})
-    return prepared
-
-
-async def _active_layer_has_event(db, event_id: str) -> bool:
-    settings = await db.app_settings.find_one({"key": SETTINGS_KEY}, {"_id": 0, "active_version": 1})
-    version_id = (settings or {}).get("active_version")
-    if not version_id or not event_id:
-        return False
-    found = await db[LAYERS].find_one(
-        {"calculation_version": version_id, "layer_id": event_id},
-        {"_id": 1},
-    )
-    return found is not None
-
-
-async def _rebuild_return_events(db, events: List[dict], user: Optional[dict]) -> None:
-    active = await get_active_cutover(db)
-    if not active:
-        raise _http(409, STATUS_PENDING_VALUATION, "Cutover HPP tidak aktif. Valuasi retur tidak diterapkan.")
-    ids = [row["event_id"] for row in events if row.get("event_id")]
-    await db[EVENTS].update_many(
-        {"event_id": {"$in": ids}, "status": {"$in": [STATUS_QUEUED, STATUS_FAILED]}},
-        {"$set": {"status": STATUS_RECOGNIZED, "updated_at": now_iso(), "failure_action": None, "last_error": None}},
-    )
-    try:
-        await rebuild_cutover_valuation(
-            db,
-            active,
-            user=user,
-            requested_method=METHOD_AVG,
-            requested_recognition=RECOG_GR,
-            activate_cutover=False,
-        )
-    except Exception as exc:
-        await db[EVENTS].update_many(
-            {"event_id": {"$in": ids}},
-            {"$set": {
-                "status": STATUS_FAILED,
-                "failure_action": "PURCHASE_RETURN",
-                "last_error": str(exc),
-                "updated_at": now_iso(),
-            }},
-        )
-        raise
-
-
-async def finalize_purchase_return_valuation(db, return_doc: dict, user: Optional[dict] = None) -> dict:
-    """Apply queued return valuation once. Exact retry does not post a second relief."""
-    await ensure_indexes(db)
-    keys = [
-        purchase_return_source_key(return_doc["id"], str(line.get("line_id") or ""))
-        for line in return_doc.get("lines") or []
-        if line.get("line_id")
-    ]
-    if not keys:
-        return return_doc
-    events = await db[EVENTS].find({"source_key": {"$in": keys}}, {"_id": 0}).to_list(100)
-    actionable = [
-        row for row in events
-        if row.get("source_type") == SOURCE_PURCHASE_RETURN
-        and row.get("status") in {STATUS_QUEUED, STATUS_FAILED, STATUS_RECOGNIZED}
-        and row.get("unit_cost") is not None
-    ]
-    needs_rebuild = []
-    for row in actionable:
-        if row.get("status") != STATUS_RECOGNIZED or not await _active_layer_has_event(db, row.get("event_id")):
-            needs_rebuild.append(row)
-    if needs_rebuild:
-        await _rebuild_return_events(db, needs_rebuild, user)
-    fresh = await db[EVENTS].find({"source_key": {"$in": keys}}, {"_id": 0}).to_list(100)
-    by_line = {str(row.get("purchase_return_line_id") or ""): row for row in fresh}
-    current = await db.purchase_returns.find_one({"id": return_doc["id"]}, {"_id": 0})
-    if not current:
-        return return_doc
-    lines = []
-    for line in current.get("lines") or []:
-        event = by_line.get(str(line.get("line_id") or ""))
-        if not event:
-            lines.append(line)
-            continue
-        status = event.get("status") or line.get("hpp_valuation_status")
-        lines.append({**line, **_line_valuation_fields(event, status=status, reason=event.get("reason"))})
-    await db.purchase_returns.update_one({"id": return_doc["id"]}, {"$set": {"lines": lines}})
-    saved = await db.purchase_returns.find_one({"id": return_doc["id"]}, {"_id": 0})
-    return saved or current
-
-
-async def prepare_purchase_return_valuation_reversal(db, session, return_doc: dict) -> None:
-    """Append one reversal event per recognized return line. The original event stays."""
-    active = await get_active_cutover(db)
-    stamp = now_iso()
-    for line in return_doc.get("lines") or []:
-        line_id = str(line.get("line_id") or "")
-        if not line_id:
-            continue
-        original = await _find_event(db, purchase_return_source_key(return_doc["id"], line_id), session=session)
-        if not original:
-            continue
-        if original.get("status") == STATUS_PENDING_VALUATION or original.get("unit_cost") is None:
-            continue
-        if original.get("status") in {STATUS_QUEUED, STATUS_FAILED} and not await _active_layer_has_event(db, original.get("event_id")):
-            await db[EVENTS].update_one(
-                {"source_key": original["source_key"], "status": original.get("status")},
-                {"$set": {"status": STATUS_REVERSED, "reversed_at": stamp, "updated_at": stamp}},
-                session=session,
-            )
-            continue
-        reversal_key = purchase_return_reversal_source_key(return_doc["id"], line_id)
-        reversal = {
-            "event_id": str(uuid.uuid4()),
-            "source_type": SOURCE_PURCHASE_RETURN_REVERSAL,
-            "source_key": reversal_key,
-            "purchase_return_id": return_doc["id"],
-            "purchase_return_line_id": line_id,
-            "goods_receipt_id": original.get("goods_receipt_id"),
-            "goods_receipt_line_id": original.get("goods_receipt_line_id"),
-            "master_item_id": original.get("master_item_id"),
-            "returned_qty": original.get("returned_qty"),
-            "warehouse_id": original.get("warehouse_id"),
-            "branch_id": original.get("branch_id"),
-            "qty": qty_round(abs(_dec(original.get("qty")))),
-            "unit_cost": original.get("unit_cost"),
-            "total_cost": money_round(abs(_dec(original.get("qty"))) * _dec(original.get("unit_cost"))),
-            "item_identity": original.get("item_identity"),
-            "item_code": original.get("item_code"),
-            "item_name": original.get("item_name"),
-            "accurate_item_id": original.get("accurate_item_id"),
-            "original_event_id": original.get("event_id"),
-            "original_source_key": original.get("source_key"),
-            "status": STATUS_QUEUED,
-            "recognized_at": stamp,
-            "created_at": stamp,
-            "updated_at": stamp,
-            "cutover_id": original.get("cutover_id") or (active or {}).get("cutover_id"),
-            "conversion_factor": original.get("conversion_factor") or 1,
-        }
-        await _upsert_valuation_event(db, reversal, session=session)
-
-
-async def finalize_purchase_return_valuation_reversal(db, return_doc: dict, user: Optional[dict] = None) -> dict:
-    await ensure_indexes(db)
-    keys = [
-        purchase_return_reversal_source_key(return_doc["id"], str(line.get("line_id") or ""))
-        for line in return_doc.get("lines") or []
-        if line.get("line_id")
-    ]
-    events = await db[EVENTS].find({"source_key": {"$in": keys}}, {"_id": 0}).to_list(100) if keys else []
-    pending = [
-        row for row in events
-        if row.get("status") in {STATUS_QUEUED, STATUS_FAILED}
-        or (row.get("status") == STATUS_RECOGNIZED and not await _active_layer_has_event(db, row.get("event_id")))
-    ]
-    if pending:
-        await _rebuild_return_events(db, events, user)
-    return await db.purchase_returns.find_one({"id": return_doc["id"]}, {"_id": 0}) or return_doc
-
-
-def stock_opname_source_key(session_id: str, line_id: str) -> str:
-    return f"stock-opname:{session_id}:{line_id}"
-
-
-async def _current_canonical_hpp_snapshot(
-    db,
-    master_item_id: str,
-    *,
-    session=None,
-) -> Optional[dict]:
-    """Canonical HPP and identity for one item from the active valuation layers."""
-    mid = str(master_item_id or "").strip()
-    if not mid:
-        return None
-    settings = await db.app_settings.find_one(
-        {"key": SETTINGS_KEY},
-        {"_id": 0, "active_version": 1},
-        session=session,
-    )
-    version_id = (settings or {}).get("active_version")
-    if not version_id:
-        return None
-    layers = await db[LAYERS].find(
-        {"calculation_version": version_id, "master_item_id": mid},
-        {"_id": 0},
-        session=session,
-    ).to_list(200)
-    if not layers:
-        return None
-    latest = max(
-        layers,
-        key=lambda row: (str(row.get("recognized_at") or ""), str(row.get("layer_id") or "")),
-    )
-    qty = _dec(latest.get("remaining_qty"))
-    unit = money_round(latest.get("unit_cost") or 0)
-    if qty <= 0 or _dec(unit) <= 0:
-        return None
-    identity = str(latest.get("item_identity") or "").strip()
-    if not identity:
-        identity = item_identity({
-            "master_item_id": mid,
-            "accurate_item_id": latest.get("accurate_item_id"),
-        })
-    return {
-        "valuation_qty": qty_round(qty),
-        "unit_cost": unit,
-        "item_identity": identity,
-        "accurate_item_id": str(latest.get("accurate_item_id") or ""),
-        "item_code": str(latest.get("item_code") or ""),
-        "item_name": str(latest.get("item_name") or ""),
-    }
-
-
-async def prepare_stock_opname_valuation(
-    db,
-    session,
-    session_doc: dict,
-    lines: List[dict],
-    *,
-    hpp_by_item: Optional[Dict[str, dict]] = None,
-) -> List[dict]:
-    """Queue STOCK_OPNAME_ADJUSTMENT events using pre-captured canonical HPP.
-
-    Zero differences create no event. Missing HPP stays PENDING_VALUATION
-    without inventing a unit cost. Physical confirmation stays with the caller.
-    """
-    active = await get_active_cutover(db)
-    stamp = now_iso()
-    snapshots = hpp_by_item or {}
-    prepared = []
-    for line in lines:
-        line_id = str(line.get("line_id") or "").strip()
-        mid = str(line.get("master_item_id") or "").strip()
-        delta = int(line.get("difference_qty") or 0)
-        if not line_id or not mid or delta == 0:
-            prepared.append(line)
-            continue
-        source_key = stock_opname_source_key(session_doc["id"], line_id)
-        snapshot = snapshots.get(mid)
-        if snapshot is None and mid not in snapshots:
-            snapshot = await _current_canonical_hpp_snapshot(db, mid, session=session)
-            snapshots[mid] = snapshot
-        common = {
-            "event_id": str(uuid.uuid4()),
-            "source_type": SOURCE_STOCK_OPNAME_ADJUSTMENT,
-            "source_key": source_key,
-            "stock_opname_session_id": session_doc["id"],
-            "stock_opname_line_id": line_id,
-            "opname_number": str(session_doc.get("opname_number") or ""),
-            "master_item_id": mid,
-            "adjustment_qty": delta,
-            "warehouse_id": str(session_doc.get("warehouse_id") or ""),
-            "branch_id": str(session_doc.get("branch_id") or ""),
-            "book_qty": int(line.get("book_qty") or 0),
-            "physical_count_qty": int(line.get("physical_count_qty") or 0),
-            "recognized_at": stamp,
-            "created_at": stamp,
-            "updated_at": stamp,
-            "cutover_id": (active or {}).get("cutover_id"),
-        }
-        if not active or not snapshot:
-            event = {
-                **common,
-                "status": STATUS_PENDING_VALUATION,
-                "reason": STATUS_PENDING_VALUATION,
-                "qty": None,
-                "unit_cost": None,
-                "total_cost": None,
-                "item_identity": None,
-            }
-            saved = await _upsert_valuation_event(db, event, session=session)
-            prepared.append({
-                **line,
-                **_line_valuation_fields(
-                    saved,
-                    status=STATUS_PENDING_VALUATION,
-                    reason=STATUS_PENDING_VALUATION,
-                ),
-            })
-            continue
-        unit_cost = money_round(snapshot["unit_cost"])
-        signed_qty = qty_round(delta)
-        event = {
-            **common,
-            "status": STATUS_QUEUED,
-            "qty": signed_qty,
-            "unit_cost": unit_cost,
-            "total_cost": money_round(_dec(signed_qty) * _dec(unit_cost)),
-            "item_identity": snapshot.get("item_identity"),
-            "item_code": snapshot.get("item_code") or line.get("item_code") or "",
-            "item_name": snapshot.get("item_name") or line.get("item_name") or "",
-            "accurate_item_id": snapshot.get("accurate_item_id") or "",
-            "pre_adjustment_hpp": unit_cost,
-            "pre_adjustment_valuation_qty": snapshot.get("valuation_qty"),
-        }
-        saved = await _upsert_valuation_event(db, event, session=session)
-        prepared.append({
-            **line,
-            **_line_valuation_fields(saved, status=saved.get("status") or STATUS_QUEUED),
-        })
-    return prepared
-
-
-async def _rebuild_stock_opname_events(db, events: List[dict], user: Optional[dict]) -> None:
-    active = await get_active_cutover(db)
-    if not active:
-        raise _http(409, STATUS_PENDING_VALUATION, "Cutover HPP tidak aktif. Valuasi stock opname tidak diterapkan.")
-    ids = [row["event_id"] for row in events if row.get("event_id")]
-    await db[EVENTS].update_many(
-        {"event_id": {"$in": ids}, "status": {"$in": [STATUS_QUEUED, STATUS_FAILED]}},
-        {"$set": {"status": STATUS_RECOGNIZED, "updated_at": now_iso(), "failure_action": None, "last_error": None}},
-    )
-    try:
-        await rebuild_cutover_valuation(
-            db,
-            active,
-            user=user,
-            requested_method=METHOD_AVG,
-            requested_recognition=RECOG_GR,
-            activate_cutover=False,
-        )
-    except Exception as exc:
-        await db[EVENTS].update_many(
-            {"event_id": {"$in": ids}},
-            {"$set": {
-                "status": STATUS_FAILED,
-                "failure_action": "STOCK_OPNAME",
-                "last_error": str(exc),
-                "updated_at": now_iso(),
-            }},
-        )
-        raise
-
-
-async def finalize_stock_opname_valuation(
-    db,
-    session_doc: dict,
-    user: Optional[dict] = None,
-) -> dict:
-    """Apply queued stock-opname valuation once. Exact retry does not post twice."""
-    await ensure_indexes(db)
-    keys = [
-        stock_opname_source_key(session_doc["id"], str(line.get("line_id") or ""))
-        for line in session_doc.get("lines") or []
-        if line.get("line_id") and int(line.get("difference_qty") or 0) != 0
-    ]
-    if not keys:
-        return session_doc
-    events = await db[EVENTS].find({"source_key": {"$in": keys}}, {"_id": 0}).to_list(500)
-    actionable = [
-        row for row in events
-        if row.get("source_type") == SOURCE_STOCK_OPNAME_ADJUSTMENT
-        and row.get("status") in {STATUS_QUEUED, STATUS_FAILED, STATUS_RECOGNIZED}
-        and row.get("unit_cost") is not None
-    ]
-    needs_rebuild = []
-    for row in actionable:
-        if row.get("status") != STATUS_RECOGNIZED or not await _active_layer_has_event(db, row.get("event_id")):
-            needs_rebuild.append(row)
-    if needs_rebuild:
-        await _rebuild_stock_opname_events(db, needs_rebuild, user)
-    fresh = await db[EVENTS].find({"source_key": {"$in": keys}}, {"_id": 0}).to_list(500)
-    by_line = {str(row.get("stock_opname_line_id") or ""): row for row in fresh}
-    current = await db["stock_opname_sessions"].find_one({"id": session_doc["id"]}, {"_id": 0})
-    if not current:
-        return session_doc
-    lines = []
-    for line in current.get("lines") or []:
-        event = by_line.get(str(line.get("line_id") or ""))
-        if not event:
-            lines.append(line)
-            continue
-        status = event.get("status") or line.get("hpp_valuation_status")
-        lines.append({**line, **_line_valuation_fields(event, status=status, reason=event.get("reason"))})
-    await db["stock_opname_sessions"].update_one({"id": session_doc["id"]}, {"$set": {"lines": lines}})
-    saved = await db["stock_opname_sessions"].find_one({"id": session_doc["id"]}, {"_id": 0})
-    return saved or current

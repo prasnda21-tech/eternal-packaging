@@ -142,29 +142,15 @@ export function buildDesktopSidebar({
     });
   }
 
-  const purchasingLeaves = leavesOf(purchasingItems);
-  const purchasingTxn = purchasingLeaves.filter((item) => item.key !== NAV_KEYS.purchaseHpp);
-  const purchasingHpp = purchasingLeaves.filter((item) => item.key === NAV_KEYS.purchaseHpp);
-  const purchasingSections = [];
-  if (purchasingTxn.length) {
-    purchasingSections.push({ heading: "", headingTestid: "", marker: "", items: purchasingTxn });
-  }
-  if (purchasingHpp.length) {
-    purchasingSections.push({
-      heading: "",
-      headingTestid: "sidebar-purchasing-hpp-divider",
-      marker: purchasingTxn.length ? "sidebar-purchasing-divider" : "",
-      items: purchasingHpp,
-    });
-  }
-  if (purchasingSections.length) {
+  const purchasing = leavesOf(purchasingItems);
+  if (purchasing.length) {
     rails.push({
       id: "purchasing",
       label: "Pembelian",
       kind: "menu",
       testid: "top-nav-pembelian",
       flyoutId: "sidebar-flyout-purchasing",
-      sections: purchasingSections,
+      sections: [{ heading: "", headingTestid: "", marker: "", items: purchasing }],
     });
   }
 

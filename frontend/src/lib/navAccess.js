@@ -33,15 +33,11 @@ export const NAV_KEYS = {
   purchasing: "nav.purchasing",
   purchaseRequests: "nav.purchasing.requests",
   purchaseOrders: "nav.purchasing.orders",
-  purchaseAdvances: "nav.purchasing.advances",
   purchaseInvoices: "nav.purchasing.invoices",
   purchasePayments: "nav.purchasing.payments",
   purchaseReceipts: "nav.purchasing.receipts",
-  purchaseReturns: "nav.purchasing.returns",
-  purchaseHpp: "nav.purchasing.hpp",
   inventory: "nav.inventory",
   masterItems: "nav.inventory.master_items",
-  branchesWarehouses: "nav.inventory.branches_warehouses",
   currentStock: "nav.inventory.current_stock",
   inventoryValue: "nav.inventory.inventory_value",
   reports: "nav.reports",
@@ -120,17 +116,13 @@ export const NAV_MENU_FALLBACK = [
   { key: NAV_KEYS.purchasing, label: "Pembelian", parent: null },
   { key: NAV_KEYS.purchaseRequests, label: "Permintaan", parent: NAV_KEYS.purchasing },
   { key: NAV_KEYS.purchaseOrders, label: "Pesanan Pembelian", parent: NAV_KEYS.purchasing },
-  { key: NAV_KEYS.purchaseAdvances, label: "Uang Muka", parent: NAV_KEYS.purchasing },
   { key: NAV_KEYS.purchaseReceipts, label: "Penerimaan Barang", parent: NAV_KEYS.purchasing },
-  { key: NAV_KEYS.purchaseReturns, label: "Retur Pembelian", parent: NAV_KEYS.purchasing },
   { key: NAV_KEYS.purchaseInvoices, label: "Faktur Pembelian", parent: NAV_KEYS.purchasing },
   { key: NAV_KEYS.purchasePayments, label: "Pembayaran Pembelian", parent: NAV_KEYS.purchasing },
-  { key: NAV_KEYS.purchaseHpp, label: "HPP Pembelian", parent: NAV_KEYS.purchasing },
   { key: NAV_KEYS.inventory, label: "Persediaan", parent: null },
   { key: NAV_KEYS.masterItems, label: "Barang/Jasa", parent: NAV_KEYS.inventory },
   { key: NAV_KEYS.currentStock, label: "Stock Saat Ini", parent: NAV_KEYS.inventory },
   { key: NAV_KEYS.inventoryValue, label: "Nilai Persediaan", parent: NAV_KEYS.inventory },
-  { key: NAV_KEYS.branchesWarehouses, label: "Cabang & Gudang", parent: NAV_KEYS.inventory },
   { key: NAV_KEYS.reports, label: "Laporan", parent: null },
   { key: NAV_KEYS.analytics, label: "Analitik Output", parent: NAV_KEYS.reports },
   { key: NAV_KEYS.gajiOperator, label: "Gaji Operator", parent: NAV_KEYS.reports },
@@ -354,45 +346,33 @@ export function salesMenuItems(hasPerm) {
 export const PURCHASING_NAV_ROUTES = {
   [NAV_KEYS.purchaseRequests]: "/pembelian/permintaan",
   [NAV_KEYS.purchaseOrders]: "/pembelian/pesanan-pembelian",
-  [NAV_KEYS.purchaseAdvances]: "/pembelian/uang-muka",
   [NAV_KEYS.purchaseInvoices]: "/pembelian/faktur-pembelian",
   [NAV_KEYS.purchasePayments]: "/pembelian/pembayaran-pembelian",
   [NAV_KEYS.purchaseReceipts]: "/pembelian/penerimaan-barang",
-  [NAV_KEYS.purchaseReturns]: "/pembelian/retur",
-  [NAV_KEYS.purchaseHpp]: "/pembelian/hpp-pembelian",
 };
 
 const PURCHASING_VIS_FIELD = {
   [NAV_KEYS.purchaseRequests]: "requests",
   [NAV_KEYS.purchaseOrders]: "orders",
-  [NAV_KEYS.purchaseAdvances]: "advances",
   [NAV_KEYS.purchaseInvoices]: "invoices",
   [NAV_KEYS.purchasePayments]: "payments",
   [NAV_KEYS.purchaseReceipts]: "receipts",
-  [NAV_KEYS.purchaseReturns]: "returns",
-  [NAV_KEYS.purchaseHpp]: "hpp",
 };
 
 export const PURCHASING_TILE_TONES = {
   [NAV_KEYS.purchaseRequests]: "green",
   [NAV_KEYS.purchaseOrders]: "blue",
-  [NAV_KEYS.purchaseAdvances]: "teal",
   [NAV_KEYS.purchaseInvoices]: "purple",
   [NAV_KEYS.purchasePayments]: "emerald",
   [NAV_KEYS.purchaseReceipts]: "amber",
-  [NAV_KEYS.purchaseReturns]: "rose",
-  [NAV_KEYS.purchaseHpp]: "amber",
 };
 
 export const PURCHASING_TILE_TESTIDS = {
   [NAV_KEYS.purchaseRequests]: "top-nav-permintaan",
   [NAV_KEYS.purchaseOrders]: "top-nav-pesanan-pembelian",
-  [NAV_KEYS.purchaseAdvances]: "top-nav-uang-muka",
   [NAV_KEYS.purchaseInvoices]: "top-nav-faktur-pembelian",
   [NAV_KEYS.purchasePayments]: "top-nav-pembayaran-pembelian",
   [NAV_KEYS.purchaseReceipts]: "top-nav-penerimaan-barang",
-  [NAV_KEYS.purchaseReturns]: "top-nav-retur-pembelian",
-  [NAV_KEYS.purchaseHpp]: "top-nav-hpp-pembelian",
 };
 
 export function purchasingMenuItems(hasPerm) {
@@ -411,28 +391,24 @@ export const INVENTORY_NAV_ROUTES = {
   [NAV_KEYS.masterItems]: "/persediaan/master-barang-jasa",
   [NAV_KEYS.currentStock]: "/persediaan/stock-saat-ini",
   [NAV_KEYS.inventoryValue]: "/persediaan/nilai-persediaan",
-  [NAV_KEYS.branchesWarehouses]: "/persediaan/cabang-gudang",
 };
 
 const INVENTORY_VIS_FIELD = {
   [NAV_KEYS.masterItems]: "masterItems",
   [NAV_KEYS.currentStock]: "currentStock",
   [NAV_KEYS.inventoryValue]: "inventoryValue",
-  [NAV_KEYS.branchesWarehouses]: "branchesWarehouses",
 };
 
 export const INVENTORY_TILE_TONES = {
   [NAV_KEYS.masterItems]: "green",
   [NAV_KEYS.currentStock]: "blue",
   [NAV_KEYS.inventoryValue]: "amber",
-  [NAV_KEYS.branchesWarehouses]: "teal",
 };
 
 export const INVENTORY_TILE_TESTIDS = {
   [NAV_KEYS.masterItems]: "top-nav-master-barang-jasa",
   [NAV_KEYS.currentStock]: "top-nav-stock-saat-ini",
   [NAV_KEYS.inventoryValue]: "top-nav-nilai-persediaan",
-  [NAV_KEYS.branchesWarehouses]: "top-nav-cabang-gudang",
 };
 
 export function inventoryMenuItems(hasPerm) {
@@ -550,44 +526,32 @@ export function purchasingNavVisible(hasPerm) {
   const parent = canSeeNav(hasPerm, NAV_KEYS.purchasing);
   const requests = parent && (canSeeNav(hasPerm, NAV_KEYS.purchaseRequests) || canSeeNav(hasPerm, "purchase_requests.view") || canSeeNav(hasPerm, "purchase_requests.create"));
   const orders = parent && (canSeeNav(hasPerm, NAV_KEYS.purchaseOrders) || canSeeNav(hasPerm, "purchase_orders.view") || canSeeNav(hasPerm, "purchase_orders.create"));
-  const advances = orders || (parent && (canSeeNav(hasPerm, "purchase_payments.view") || canSeeNav(hasPerm, "purchase_payments.create")));
   const invoices = parent && (canSeeNav(hasPerm, NAV_KEYS.purchaseInvoices) || canSeeNav(hasPerm, "purchase_invoices.view") || canSeeNav(hasPerm, "purchase_invoices.create"));
   const payments = parent && (canSeeNav(hasPerm, NAV_KEYS.purchasePayments) || canSeeNav(hasPerm, "purchase_payments.view") || canSeeNav(hasPerm, "purchase_payments.create"));
   const receipts = parent && canSeeNav(hasPerm, NAV_KEYS.purchaseReceipts);
-  const returns = receipts || (parent && canSeeNav(hasPerm, NAV_KEYS.purchaseReturns));
-  const hpp = parent && (canSeeNav(hasPerm, NAV_KEYS.purchaseHpp) || canSeeNav(hasPerm, "purchase_hpp.view"));
   return {
-    parent: !!(requests || orders || invoices || payments || receipts || returns || hpp),
+    parent: !!(requests || orders || invoices || payments || receipts),
     requests: !!requests,
     orders: !!orders,
-    advances: !!advances,
     invoices: !!invoices,
     payments: !!payments,
     receipts: !!receipts,
-    returns: !!returns,
-    hpp: !!hpp,
   };
 }
 
 export function inventoryNavVisible(hasPerm) {
   const parent = canSeeNav(hasPerm, NAV_KEYS.inventory);
   const masterItems = parent && canSeeNav(hasPerm, NAV_KEYS.masterItems);
-  const branchesWarehouses = parent && (
-    canSeeNav(hasPerm, NAV_KEYS.branchesWarehouses)
-    || canSeeNav(hasPerm, "org.branches.view")
-    || canSeeNav(hasPerm, "org.warehouses.view")
-  );
   const currentStock = parent && canSeeNav(hasPerm, NAV_KEYS.currentStock);
   const inventoryValue = parent && (
     canSeeNav(hasPerm, NAV_KEYS.inventoryValue)
     || canSeeNav(hasPerm, "inventory_valuation.view")
   );
   return {
-    parent: !!(masterItems || currentStock || inventoryValue || branchesWarehouses),
+    parent: !!(masterItems || currentStock || inventoryValue),
     masterItems,
     currentStock,
     inventoryValue,
-    branchesWarehouses,
   };
 }
 

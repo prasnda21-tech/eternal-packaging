@@ -31,7 +31,7 @@ describe("Nilai Persediaan read-only page", () => {
     expect(source).toMatch(/item\.inventory_value != null/);
     expect(source).toMatch(/hasHpp \? formatRupiah\(item\.current_hpp\) : "Belum Ada HPP"/);
     expect(source).toMatch(/hasValue \? formatRupiah\(item\.inventory_value\) : "—"/);
-    expect(source).toMatch(/stock_fisik == null/);
+    expect(source).toMatch(/STOCK_STATE_UNAVAILABLE/);
     expect(source).toMatch(/Tidak tersedia/);
   });
 

@@ -16,7 +16,6 @@ describe("SidebarFlyoutGrid", () => {
     expect(grid).toMatch(/sidebar-menu-link-label/);
     expect(grid).toMatch(/role="dialog"/);
     expect(grid).toMatch(/sidebar-menu-section/);
-    expect(grid).toMatch(/is-unlabeled/);
     expect(grid).not.toMatch(/sales-menu-tile/);
     expect(grid).not.toMatch(/is-sales-grid/);
   });

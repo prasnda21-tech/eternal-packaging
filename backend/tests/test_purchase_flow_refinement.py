@@ -341,7 +341,7 @@ async def test_invoice_from_receipt_and_payments():
             })).json()["payment"]
             assert pay1["payment_number"]
             inv_draft = (await c.get(f"/api/purchase-invoices/{inv['id']}")).json()["invoice"]
-            assert inv_draft["payment_status"] == "BELUM_DIBAYAR"
+            assert inv_draft["payment_status"] == "BELUM DIBAYAR"
             assert inv_draft["outstanding_amount"] == 10000
 
             # Submit + confirm partial => DP (chat requires both users active in DB)
@@ -364,7 +364,7 @@ async def test_invoice_from_receipt_and_payments():
             conf = await c.post(f"/api/purchase-payments/{pay1['id']}/confirm-paid")
             assert conf.status_code == 200, conf.text
             inv_dp = (await c.get(f"/api/purchase-invoices/{inv['id']}")).json()["invoice"]
-            assert inv_dp["payment_status"] == "DIBAYAR_SEBAGIAN"
+            assert inv_dp["payment_status"] == "DP"
             assert inv_dp["outstanding_amount"] == 6000
 
             # Overpay reject (even as draft against remaining outstanding)

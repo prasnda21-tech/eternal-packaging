@@ -505,15 +505,7 @@ def moving_average_from_events(events: List[dict], issues: Optional[List[dict]] 
             st = state.get(ident) or {"qty": Decimal("0"), "average_cost": Decimal("0")}
             prev_qty = st["qty"]
             incoming = _dec(payload["recognized_qty"])
-            if incoming < 0 and abs(incoming) > prev_qty:
-                raise InsufficientCostLayerError(
-                    f"{INSUFFICIENT_COST_LAYER}: relief {qty_round(abs(incoming))} melebihi qty valuasi {qty_round(prev_qty)}"
-                )
             denom = prev_qty + incoming
-            if denom < 0:
-                raise InsufficientCostLayerError(
-                    f"{INSUFFICIENT_COST_LAYER}: qty valuasi tidak boleh negatif"
-                )
             if denom > 0:
                 new_avg = ((prev_qty * st["average_cost"]) + (incoming * _dec(payload["unit_cost"]))) / denom
             else:

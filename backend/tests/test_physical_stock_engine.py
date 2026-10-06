@@ -2769,9 +2769,7 @@ def test_confirm_delivered_stock_claim_uses_selected_sj_rows():
 
     server = Path(__file__).resolve().parents[1].joinpath("server.py").read_text()
     start = server.index("async def confirm_delivered")
-    # confirm_delivered grew past the old 4500-char window; keep the structural
-    # order check without requiring the whole function body.
-    window = server[start:start + 9000]
+    window = server[start:start + 4500]
     assert "claim_selected_delivery_stock(" in window
     assert 'claim_delivery_confirmed_stock(' not in window
     assert 'existing_order.get("line_items")' not in window

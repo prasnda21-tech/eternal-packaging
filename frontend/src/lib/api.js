@@ -259,23 +259,6 @@ export const api = {
   masterItemDetail: (id) => client.get(`/master-items/${encodeURIComponent(id)}/detail`).then((r) => r.data),
   saveUnitConversion: (id, payload) => client.put(`/master-items/${encodeURIComponent(id)}/unit-conversion`, payload).then((r) => r.data),
   initOpeningBalance: (id, payload) => client.post(`/master-items/${encodeURIComponent(id)}/opening-balance`, payload).then((r) => r.data),
-  physicalStockCatalog: (params = {}) => client.get(`/physical-stock`, { params }).then((r) => r.data),
-  physicalStock: (id, params = {}) => client.get(`/master-items/${encodeURIComponent(id)}/physical-stock`, { params }).then((r) => r.data),
-  physicalMutations: (id, params = {}) => client.get(`/master-items/${encodeURIComponent(id)}/physical-mutations`, { params }).then((r) => r.data),
-  physicalOpeningBalance: (id, params = {}) => client.get(`/master-items/${encodeURIComponent(id)}/physical-opening-balance`, { params }).then((r) => r.data),
-  createPhysicalOpeningBalance: (id, payload) => client.post(`/master-items/${encodeURIComponent(id)}/physical-opening-balance`, payload).then((r) => r.data),
-  physicalOpeningImportTemplate: (params = {}) =>
-    client.get(`/physical-opening-balances/import/template`, { params, responseType: "blob" }).then((r) => r.data),
-  physicalOpeningImportPreview: (file) => {
-    const form = new FormData();
-    form.append("file", file);
-    return client.post(`/physical-opening-balances/import/preview`, form, {
-      headers: { "Content-Type": "multipart/form-data" },
-    }).then((r) => r.data);
-  },
-  physicalOpeningImportConfirm: (payload) =>
-    client.post(`/physical-opening-balances/import`, payload).then((r) => r.data),
-  createPhysicalAdjustment: (id, payload) => client.post(`/master-items/${encodeURIComponent(id)}/physical-adjustment`, payload).then((r) => r.data),
   listProductMutations: (id, params = {}) => client.get(`/master-items/${encodeURIComponent(id)}/mutations`, { params }).then((r) => r.data),
   getMutationDetail: (id, mutationId) => client.get(`/master-items/${encodeURIComponent(id)}/mutations/${encodeURIComponent(mutationId)}`).then((r) => r.data),
   ledgerAccounts: (params = {}) => client.get(`/ledger/accounts`, { params }).then((r) => r.data),
@@ -283,16 +266,6 @@ export const api = {
   createLedgerAccount: (payload) => client.post(`/ledger/accounts`, payload).then((r) => r.data),
   updateLedgerAccount: (id, payload) => client.patch(`/ledger/accounts/${encodeURIComponent(id)}`, payload).then((r) => r.data),
   deleteLedgerAccount: (id) => client.delete(`/ledger/accounts/${encodeURIComponent(id)}`).then((r) => r.data),
-  branches: (params = {}) => client.get(`/branches`, { params }).then((r) => r.data),
-  getBranch: (id) => client.get(`/branches/${encodeURIComponent(id)}`).then((r) => r.data),
-  createBranch: (payload) => client.post(`/branches`, payload).then((r) => r.data),
-  updateBranch: (id, payload) => client.patch(`/branches/${encodeURIComponent(id)}`, payload).then((r) => r.data),
-  deleteBranch: (id) => client.delete(`/branches/${encodeURIComponent(id)}`).then((r) => r.data),
-  warehouses: (params = {}) => client.get(`/warehouses`, { params }).then((r) => r.data),
-  getWarehouse: (id) => client.get(`/warehouses/${encodeURIComponent(id)}`).then((r) => r.data),
-  createWarehouse: (payload) => client.post(`/warehouses`, payload).then((r) => r.data),
-  updateWarehouse: (id, payload) => client.patch(`/warehouses/${encodeURIComponent(id)}`, payload).then((r) => r.data),
-  deleteWarehouse: (id) => client.delete(`/warehouses/${encodeURIComponent(id)}`).then((r) => r.data),
   generalJournals: (params = {}) => client.get(`/ledger/general-journals`, { params }).then((r) => r.data),
   getGeneralJournal: (id) => client.get(`/ledger/general-journals/${encodeURIComponent(id)}`).then((r) => r.data),
   createGeneralJournal: (payload) => client.post(`/ledger/general-journals`, payload).then((r) => r.data),
@@ -386,11 +359,6 @@ export const api = {
     client.get(`/inventory-valuation/item`, { params: { master_item_id: masterItemId } }).then((r) => r.data),
   inventoryValuationExport: (params = {}) =>
     client.get(`/inventory-valuation/export`, { params, responseType: "blob" }).then((r) => r.data),
-  purchaseHpp: (params = {}) => client.get(`/pembelian/hpp`, { params }).then((r) => r.data),
-  purchaseHppItem: (masterItemId) =>
-    client.get(`/pembelian/hpp/${encodeURIComponent(masterItemId)}`).then((r) => r.data),
-  purchaseHppExport: (params = {}) =>
-    client.get(`/pembelian/hpp/export`, { params, responseType: "blob" }).then((r) => r.data),
   financialInventoryOpenings: () => client.get(`/inventory/financial-opening`).then((r) => r.data),
   previewFinancialInventoryOpening: (payload) =>
     client.post(`/inventory/financial-opening/preview`, payload).then((r) => r.data),
@@ -415,22 +383,6 @@ export const api = {
     client.get(`/inventory/reports/purchases`, { params }).then((r) => r.data),
   salesActivityReport: (params = {}) =>
     client.get(`/inventory/reports/sales`, { params }).then((r) => r.data),
-  stockOpnameSessions: (params = {}) => client.get(`/stock-opname-sessions`, { params }).then((r) => r.data),
-  stockOpnameSession: (id) => client.get(`/stock-opname-sessions/${encodeURIComponent(id)}`).then((r) => r.data),
-  createStockOpnameSession: (payload) => client.post(`/stock-opname-sessions`, payload).then((r) => r.data),
-  cutoffStockOpnameSession: (id) => client.post(`/stock-opname-sessions/${encodeURIComponent(id)}/cutoff`).then((r) => r.data),
-  countStockOpnameSession: (id, payload) => client.post(`/stock-opname-sessions/${encodeURIComponent(id)}/counts`, payload).then((r) => r.data),
-  reviewStockOpnameSession: (id) => client.post(`/stock-opname-sessions/${encodeURIComponent(id)}/review`).then((r) => r.data),
-  confirmStockOpnameSession: (id, payload) => client.post(`/stock-opname-sessions/${encodeURIComponent(id)}/confirm`, payload).then((r) => r.data),
-  cancelStockOpnameSession: (id, payload) => client.post(`/stock-opname-sessions/${encodeURIComponent(id)}/cancel`, payload).then((r) => r.data),
-  stockOpnameCountTemplate: (id) => client.get(`/stock-opname-sessions/${encodeURIComponent(id)}/count-template`, { responseType: "blob" }).then((r) => r.data),
-  stockOpnameCountImport: (id, file) => {
-    const form = new FormData();
-    form.append("file", file);
-    return client.post(`/stock-opname-sessions/${encodeURIComponent(id)}/count-import`, form, {
-      headers: { "Content-Type": "multipart/form-data" },
-    }).then((r) => r.data);
-  },
   stockOpnameItems: (params = {}) => client.get(`/stock-opname/items`, { params }).then((r) => r.data),
   stockOpnameExportTemplate: () =>
     client.get(`/stock-opname/export-template`, { responseType: "blob" }).then((r) => r.data),
@@ -478,32 +430,12 @@ export const api = {
   listPurchasePayments: (params = {}) => client.get(`/purchase-payments`, { params }).then((r) => r.data),
   getPurchasePayment: (id) => client.get(`/purchase-payments/${encodeURIComponent(id)}`).then((r) => r.data),
   createPurchasePayment: (payload) => client.post(`/purchase-payments`, payload).then((r) => r.data),
-  listPurchaseSupplierAdvances: (params = {}) => client.get(`/purchase-supplier-advances`, { params }).then((r) => r.data),
-  createPurchaseSupplierAdvance: (payload) => client.post(`/purchase-supplier-advances`, payload).then((r) => r.data),
-  submitPurchaseSupplierAdvance: (id) => client.post(`/purchase-supplier-advances/${encodeURIComponent(id)}/submit`, {}).then((r) => r.data),
-  confirmPurchaseSupplierAdvance: (id, payload = {}) =>
-    client.post(`/purchase-supplier-advances/${encodeURIComponent(id)}/confirm-paid`, payload).then((r) => r.data),
-  cancelPurchaseSupplierAdvance: (id, reason = "") =>
-    client.post(`/purchase-supplier-advances/${encodeURIComponent(id)}/cancel`, reason ? { reason } : {}).then((r) => r.data),
-  createPurchaseSupplierAdvanceAllocation: (payload) =>
-    client.post(`/purchase-supplier-advance-allocations`, payload).then((r) => r.data),
-  listPurchaseSupplierAdvanceAllocations: (params = {}) =>
-    client.get(`/purchase-supplier-advance-allocations`, { params }).then((r) => r.data),
 
   cancelPurchaseRequest: (id, reason = "") =>
     client.post(`/purchase-requests/${encodeURIComponent(id)}/cancel`, reason ? { reason } : {}).then((r) => r.data),
   cancelPurchaseOrder: (id, reason = "") =>
     client.post(`/purchase-orders/${encodeURIComponent(id)}/cancel`, reason ? { reason } : {}).then((r) => r.data),
   getPurchaseGoodsReceipt: (id) => client.get(`/purchase-goods-receipts/${encodeURIComponent(id)}`).then((r) => r.data),
-  listPurchaseReturns: (params = {}) => client.get(`/purchase-returns`, { params }).then((r) => r.data),
-  getPurchaseReturn: (id) => client.get(`/purchase-returns/${encodeURIComponent(id)}`).then((r) => r.data),
-  createPurchaseReturn: (payload) => client.post(`/purchase-returns`, payload).then((r) => r.data),
-  confirmPurchaseReturn: (id, payload = {}) =>
-    client.post(`/purchase-returns/${encodeURIComponent(id)}/confirm`, payload).then((r) => r.data),
-  cancelPurchaseReturn: (id, reason = "") =>
-    client.post(`/purchase-returns/${encodeURIComponent(id)}/cancel`, reason ? { reason } : {}).then((r) => r.data),
-  getPurchaseReturnFinancial: (id) =>
-    client.get(`/purchase-returns/${encodeURIComponent(id)}/financial`).then((r) => r.data),
   cancelPurchaseGoodsReceipt: (id, reason = "") =>
     client.post(`/purchase-goods-receipts/${encodeURIComponent(id)}/cancel`, reason ? { reason } : {}).then((r) => r.data),
   getPurchaseGoodsReceiptAccountingReadiness: (id) =>

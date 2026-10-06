@@ -103,16 +103,6 @@
   text-transform:uppercase;
   color:var(--soft);
 }
-.sidebar-purchasing-divider{
-  border-top:1px solid var(--line);
-  margin-top:8px;
-  padding-top:8px;
-}
-.sidebar-menu-section.is-unlabeled{
-  margin:0;
-  height:0;
-  overflow:hidden;
-}
 .sidebar-menu-list{display:flex;flex-direction:column;gap:2px}
 .sidebar-menu-link{
   display:flex;align-items:center;gap:10px;

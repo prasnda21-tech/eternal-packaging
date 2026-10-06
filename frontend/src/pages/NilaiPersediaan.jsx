@@ -152,7 +152,7 @@ export function openingHistoryCells(row) {
 }
 
 function stockLabel(item) {
-  if (!item || item.stock_fisik == null || item.stock_fisik === "") {
+  if (!item || item.stock_fisik == null || item.hpp_reason === "STOCK_STATE_UNAVAILABLE") {
     return "Tidak tersedia";
   }
   return fmtQty(item.stock_fisik);

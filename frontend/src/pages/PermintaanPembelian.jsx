@@ -6,17 +6,16 @@ import { useAuth } from "../lib/auth";
 import { formatDisplayDate } from "../lib/constants";
 import { errDetail, friendlyLoadError, purchaseStatusPillClass, todayYmd, purchaseRowInteractionProps } from "../lib/purchaseUi";
 import { fmtQty } from "../components/qtyUi";
+import { FormSection, FormField, FormProgress, computeStatus } from "../components/form-standard";
 import MasterItemSearchSelect from "../components/MasterItemSearchSelect";
 import PurchasingFlowNav from "./PurchasingFlowNav";
 import PurchaseCancelModal from "./PurchaseCancelModal";
 import PurchaseActivityHistory from "./PurchaseActivityHistory";
-import PurchaseDocumentLayout from "../components/purchase-document/PurchaseDocumentLayout";
-import { actorName, dash, formatLongDate, requestStatusSentence, transactionSteps } from "../components/purchase-document/model";
 import "./purchasePages.css";
 
 export default function PermintaanPembelian() {
   const [searchParams] = useSearchParams();
-  const { hasPerm, user } = useAuth();
+  const { hasPerm } = useAuth();
   const canCreate = hasPerm("purchase_requests.create");
   const canCreatePo = hasPerm("purchase_orders.create");
   const initial = searchParams.get("action") === "create" ? "create" : "list";
@@ -33,9 +32,7 @@ export default function PermintaanPembelian() {
 
   const [requestDate, setRequestDate] = useState(todayYmd());
   const [notes, setNotes] = useState("");
-  const [lines, setLines] = useState([]);
-  const [focusLine, setFocusLine] = useState(null);
-  const [focusQty, setFocusQty] = useState(null);
+  const [lines, setLines] = useState([{ item_name: "", item_code: "", unit: "pcs", requested_qty: "", master_item_id: "", accurate_item_id: "" }]);
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
@@ -53,42 +50,16 @@ export default function PermintaanPembelian() {
 
   useEffect(() => { if (view === "list") load(); }, [load, view]);
 
-  useEffect(() => {
-    if (focusLine == null || view !== "create") return;
-    const node = document.querySelector(`[data-testid="line-item-${focusLine}-input"]`);
-    if (!node) return;
-    node.focus();
-    setFocusLine(null);
-  }, [focusLine, lines, view]);
-
-  useEffect(() => {
-    if (focusQty == null || view !== "create") return;
-    const node = document.querySelector(`[data-testid="line-qty-${focusQty}"]`);
-    if (!node) return;
-    node.focus();
-    setFocusQty(null);
-  }, [focusQty, lines, view]);
-
   const openCreate = async () => {
-    setRequestDate(todayYmd());
-    setNotes("");
-    setLines([]);
-    setFocusLine(null);
-    setFocusQty(null);
-    setErr("");
-    setOk("");
     setView("create");
   };
 
-  const addLine = () => {
-    setFocusLine(lines.length);
-    setLines((p) => [...p, { item_name: "", item_code: "", unit: "", requested_qty: "", master_item_id: "", accurate_item_id: "", notes: "" }]);
-  };
-  const removeLine = (i) => setLines((p) => p.filter((_, idx) => idx !== i));
+  const addLine = () => setLines((p) => [...p, { item_name: "", item_code: "", unit: "pcs", requested_qty: "", master_item_id: "", accurate_item_id: "" }]);
+  const removeLine = (i) => setLines((p) => (p.length <= 1 ? p : p.filter((_, idx) => idx !== i)));
   const setLine = (i, patch) => setLines((p) => p.map((l, idx) => (idx === i ? { ...l, ...patch } : l)));
 
   const pickItem = (i, it) => {
-    if (!it) return setLine(i, { master_item_id: "", accurate_item_id: "", item_name: "", item_code: "", unit: "" });
+    if (!it) return setLine(i, { master_item_id: "", accurate_item_id: "", item_name: "", item_code: "", unit: "pcs" });
     setLine(i, {
       master_item_id: it.id || it.master_item_id || "",
       accurate_item_id: it.accurate_item_id || "",
@@ -96,36 +67,12 @@ export default function PermintaanPembelian() {
       item_code: it.item_code || "",
       unit: it.unit || "pcs",
     });
-    setFocusQty(i);
   };
-
-  const onLineKeyDown = (index, event) => {
-    if (event.key !== "Enter" || event.defaultPrevented) return;
-    const qty = document.querySelector(`[data-testid="line-qty-${index}"]`);
-    if (event.target === qty) {
-      event.preventDefault();
-      addLine();
-      return;
-    }
-    const search = document.querySelector(`[data-testid="line-item-${index}-input"]`);
-    if (event.target !== search || !lines[index]?.master_item_id) return;
-    event.preventDefault();
-    qty?.focus();
-  };
-
-  const pemohon = String(user?.name || user?.email || "").trim() || "—";
-  const itemQty = lines.reduce((sum, line) => sum + (Number(line.requested_qty) || 0), 0);
-  const itemUnits = [...new Set(lines.map((line) => String(line.unit || "").trim()).filter(Boolean))];
-  const itemTotal = itemUnits.length === 1 ? `${fmtQty(itemQty)} ${itemUnits[0]}` : fmtQty(itemQty);
 
   const save = async () => {
     if (busy) return;
-    if (!lines.length || lines.some((l) => !l.master_item_id)) {
+    if (lines.some((l) => !l.master_item_id)) {
       setErr("Setiap baris harus memilih item dari Master Item.");
-      return;
-    }
-    if (lines.some((l) => !(Number(String(l.requested_qty).replace(",", ".")) > 0))) {
-      setErr("Qty setiap baris harus lebih besar dari 0.");
       return;
     }
     setBusy(true);
@@ -185,17 +132,20 @@ export default function PermintaanPembelian() {
 
   return (
     <div className="prod-page purchase-page" data-testid="permintaan-page">
-      {view === "list" && <div className="page-heading prod-heading">
+      <div className="page-heading prod-heading">
         <div className="prod-heading-copy">
           <p className="eyebrow">Pembelian</p>
           <h1 data-testid="permintaan-title">Permintaan Pembelian</h1>
           <p className="subhead">Ajukan kebutuhan barang sebelum dibuat menjadi pesanan pembelian.</p>
         </div>
-        {canCreate && (
+        {view === "list" && canCreate && (
           <button className="primary" onClick={openCreate} data-testid="btn-create-permintaan"><Plus size={14} /> Buat Permintaan</button>
         )}
-      </div>}
-      {view === "list" && <PurchasingFlowNav />}
+        {view !== "list" && (
+          <button className="ghost" onClick={() => { setView("list"); load(); }}>Kembali ke daftar</button>
+        )}
+      </div>
+      <PurchasingFlowNav />
       {err && (
         <div className="purchase-error-panel" role="alert">
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -268,167 +218,152 @@ export default function PermintaanPembelian() {
       )}
 
       {view === "create" && (
-        <article className="pr-create" data-testid="permintaan-create-form">
-          <header className="pr-create-head">
-            <div className="pr-create-title">
-              <h1>Permintaan Pembelian</h1>
-              <span className="sr-only">Buat Permintaan Pembelian</span>
-              <button type="button" className="pr-create-back" onClick={() => { setView("list"); load(); }}>Kembali ke daftar</button>
+        <div className="card purchase-detail-card" data-testid="permintaan-create-form">
+          <h2 className="purchase-form-title">Buat Permintaan Pembelian</h2>
+          <p className="purchase-form-helper">Isi tanggal dan daftar barang yang dibutuhkan.</p>
+          <FormProgress
+            percentage={Math.round(([requestDate, lines.some(l => l.item_name || l.master_item_id)].filter(Boolean).length / 2) * 100)}
+            completed={[requestDate, lines.some(l => l.item_name || l.master_item_id)].filter(Boolean).length}
+            total={2}
+          />
+          <FormSection
+            id="permintaan-header"
+            title="Informasi Permintaan"
+            status={computeStatus([{ value: requestDate, isRequired: true }])}
+          >
+            <div className="purchase-form-grid">
+              <FormField id="permintaan-date-field" label="Tanggal" isRequired value={requestDate}>
+                <input type="date" value={requestDate} onChange={(e) => setRequestDate(e.target.value)} data-testid="permintaan-date" />
+              </FormField>
+              <FormField id="permintaan-notes-field" label="Catatan" value={notes}>
+                <input value={notes} onChange={(e) => setNotes(e.target.value)} />
+              </FormField>
             </div>
-            <div className="pr-create-meta">
-              <div><span className="pr-k">Nomor PR</span><span className="pr-v">Otomatis</span></div>
-              <div>
-                <span className="pr-k">Tanggal</span>
-                <input className="pr-date" type="date" value={requestDate} onChange={(e) => setRequestDate(e.target.value)} data-testid="permintaan-date" />
-              </div>
-              <div><span className="pr-k">Pemohon</span><span className="pr-v">{pemohon}</span></div>
-              <div><span className="pr-k">Departemen</span><span className="pr-v pr-muted">—</span></div>
-              <div><span className="pr-k">Prioritas</span><span className="pr-v pr-muted">—</span></div>
-              <div><span className="pr-k">Status</span><span className="pr-v pr-status">Belum Disimpan</span></div>
-            </div>
-          </header>
-          <div className="pr-create-sheet">
-            <div className="pr-create-table-wrap">
-              <table data-testid="permintaan-lines">
+          </FormSection>
+          <FormSection
+            id="permintaan-lines"
+            title="Daftar Item"
+            status={lines.some(l => l.master_item_id) ? "complete" : "incomplete"}
+          >
+            <div className="purchase-table-wrap">
+              <table className="prod-table purchase-lines-table" data-testid="permintaan-lines">
                 <colgroup>
-                  <col className="pr-col-code" />
-                  <col />
-                  <col className="pr-col-spec" />
-                  <col className="pr-col-qty" />
-                  <col className="pr-col-unit" />
-                  <col className="pr-col-wh" />
-                  <col className="pr-col-need" />
-                  <col className="pr-col-note" />
-                  <col className="pr-col-action" />
+                  <col className="col-item-line" />
+                  <col className="col-code-line" />
+                  <col className="col-unit-line" />
+                  <col className="col-qty-line" />
+                  <col className="col-action-line" />
                 </colgroup>
                 <thead>
                   <tr>
-                    <th>Kode Barang</th>
-                    <th>Nama Barang</th>
-                    <th>Spesifikasi</th>
-                    <th className="num">Qty</th>
+                    <th>Item</th>
+                    <th>Kode</th>
                     <th>Satuan</th>
-                    <th>Gudang</th>
-                    <th>Tanggal Dibutuhkan</th>
-                    <th>Keterangan</th>
-                    <th className="pr-action-head"><span className="sr-only">Aksi</span></th>
+                    <th className="num">Qty</th>
+                    <th>Aksi</th>
                   </tr>
                 </thead>
                 <tbody>
                   {lines.map((l, i) => (
-                    <tr key={i} onKeyDown={(event) => onLineKeyDown(i, event)}>
-                      <td className="mono pr-code">{l.item_code || "—"}</td>
-                      <td className="pr-name">
-                        {l.master_item_id ? (
-                          <span className="pr-item-name">{l.item_name}</span>
-                        ) : (
-                          <MasterItemSearchSelect
-                            testId={`line-item-${i}`}
-                            allowClear={false}
-                            value={null}
-                            onChange={(item) => pickItem(i, item)}
-                            placeholder="Cari master item"
-                          />
-                        )}
+                    <tr key={i}>
+                      <td>
+                        <MasterItemSearchSelect
+                          testId={`line-item-${i}`}
+                          value={
+                            l.master_item_id
+                              ? {
+                                  accurate_item_id: l.accurate_item_id,
+                                  id: l.master_item_id,
+                                  master_item_id: l.master_item_id,
+                                  item_name: l.item_name,
+                                  item_code: l.item_code,
+                                  unit: l.unit,
+                                }
+                              : null
+                          }
+                          onChange={(item) => pickItem(i, item)}
+                          placeholder="Cari Master Item…"
+                        />
                       </td>
-                      <td className="pr-muted">—</td>
-                      <td className="num">
-                        <input className="pr-qty" type="number" min="0" value={l.requested_qty} onChange={(e) => setLine(i, { requested_qty: e.target.value })} data-testid={`line-qty-${i}`} />
-                      </td>
-                      <td className="pr-unit">{l.unit || "—"}</td>
-                      <td className="pr-muted">—</td>
-                      <td className="pr-muted">—</td>
-                      <td><input className="pr-note" value={l.notes || ""} onChange={(e) => setLine(i, { notes: e.target.value })} aria-label="Keterangan" /></td>
-                      <td className="pr-row-action">
-                        <button type="button" className="pr-remove" onClick={() => removeLine(i)}>Hapus</button>
-                      </td>
+                      <td className="mono">{l.item_code || "—"}</td>
+                      <td className="unit-cell"><input value={l.unit} readOnly tabIndex={-1} /></td>
+                      <td className="qty-cell"><input type="number" min="0" value={l.requested_qty} onChange={(e) => setLine(i, { requested_qty: e.target.value })} data-testid={`line-qty-${i}`} /></td>
+                      <td className="action-cell"><button type="button" className="ghost sm" onClick={() => removeLine(i)}>Hapus</button></td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
-            <button className="pr-add" type="button" onClick={addLine} data-testid="add-request-line">+ Tambah Barang</button>
-          </div>
-          <footer className="pr-create-dock">
-            <label className="pr-create-note">
-              <span className="pr-k">Catatan Umum</span>
-              <input value={notes} onChange={(e) => setNotes(e.target.value)} />
-            </label>
-            <div className="pr-create-total"><span>Total jumlah item</span><b>{itemTotal}</b></div>
+            <button className="ghost purchase-add-line" type="button" onClick={addLine} data-testid="add-request-line">Tambah baris</button>
+          </FormSection>
+          <div className="purchase-form-actions">
+            <button className="ghost" type="button" onClick={() => setView("list")}>Batal</button>
             <button className="primary" disabled={busy} onClick={save} data-testid="save-permintaan">{busy ? "Menyimpan…" : "Simpan Permintaan"}</button>
-          </footer>
-        </article>
+          </div>
+        </div>
       )}
 
       {view === "detail" && detail && (
-        <PurchaseDocumentLayout
-          testId="permintaan-detail"
-          title="Permintaan Pembelian"
-          number={detail.request_number}
-          numberTestId="detail-request-number"
-          note={detail.notes || ""}
-          steps={transactionSteps(detail)}
-          facts={[
-            { label: "Tanggal", value: formatLongDate(detail.request_date) },
-            { label: "Cabang", value: dash(detail.branch_name || detail.branch) },
-            { label: "Pemohon", value: actorName(detail) },
-            { label: "Jenis transaksi", value: dash(detail.transaction_type || detail.jenis) },
-            { label: "Supplier", value: detail.supplier ? detail.supplier : "Belum ditentukan" },
-            { label: "Status", value: requestStatusSentence(detail.status), status: true },
-          ]}
-          totals={[{ label: "Subtotal", value: "—" }, { label: "Total", value: "—" }]}
-          history={<PurchaseActivityHistory doc={detail} testId="permintaan-activity" />}
-          extraMenu={[
-            { label: "Kembali ke daftar", onClick: () => { setView("list"); load(); } },
-            ...(canCreate ? [{ label: "Hapus", onClick: () => openCancel(detail) }] : []),
-          ]}
-          primary={canCreatePo && Number(detail.total_remaining_order_qty) > 0 ? (
-            <Link className="primary" data-testid="btn-buat-pesanan-pembelian" to={`/pembelian/pesanan-pembelian?request_id=${detail.id}&action=create`}>Buat Pesanan</Link>
-          ) : null}
-        >
-          {canCreate && (
-            <button
-              type="button"
-              className="sr-only"
-              data-testid="btn-hapus-pr-detail"
-              disabled={detail.can_cancel === false}
-              title={detail.can_cancel === false ? (detail.cancel_block_reason || "") : undefined}
-              onClick={() => openCancel(detail)}
-            >
-              Hapus
-            </button>
-          )}
-          <table>
-            <thead>
-              <tr>
-                <th>Kode Barang</th>
-                <th>Nama Barang</th>
-                <th className="num">Qty</th>
-                <th>Satuan</th>
-                <th>Gudang</th>
-                <th>Tanggal Dibutuhkan</th>
-                <th className="num">Harga</th>
-                <th className="num">Total</th>
-                <th>Keterangan</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(detail.lines || []).map((l) => (
-                <tr key={l.line_id} data-testid={`detail-line-${l.line_id}`}>
-                  <td className="mono">{dash(l.item_code)}</td>
-                  <td className="pd-name">{dash(l.item_name)}</td>
-                  <td className="num">{fmtQty(l.requested_qty)}</td>
-                  <td>{dash(l.unit)}</td>
-                  <td>{dash(l.warehouse_name || l.warehouse)}</td>
-                  <td>{dash(l.needed_date)}</td>
-                  <td className="num">—</td>
-                  <td className="num">—</td>
-                  <td>{dash(l.notes)}</td>
+        <div className="card purchase-detail-card" data-testid="permintaan-detail">
+          <div className="purchase-detail-meta">
+            <div>
+              <span className="label">No PR</span>
+              <span className="value mono" data-testid="detail-request-number">{detail.request_number}</span>
+            </div>
+            <div>
+              <span className="label">Tanggal</span>
+              <span className="value">{detail.request_date || "—"}</span>
+            </div>
+            <div>
+              <span className="label">Status</span>
+              <span className={purchaseStatusPillClass(detail.status)}>{detail.status}</span>
+            </div>
+          </div>
+          <div className="purchase-table-wrap">
+            <table className="prod-table">
+              <thead>
+                <tr>
+                  <th>Item</th>
+                  <th>Kode</th>
+                  <th>Satuan</th>
+                  <th className="num">Qty</th>
+                  <th className="num">Sudah dipesan</th>
+                  <th className="num">Sisa</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </PurchaseDocumentLayout>
+              </thead>
+              <tbody>
+                {(detail.lines || []).map((l) => (
+                  <tr key={l.line_id} data-testid={`detail-line-${l.line_id}`}>
+                    <td>{l.item_name}</td>
+                    <td className="mono">{l.item_code || "—"}</td>
+                    <td>{l.unit || "pcs"}</td>
+                    <td className="num">{fmtQty(l.requested_qty)}</td>
+                    <td className="num">{fmtQty(l.cumulative_ordered_qty)}</td>
+                    <td className="num">{fmtQty(l.remaining_order_qty)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <PurchaseActivityHistory doc={detail} testId="permintaan-activity" />
+          <div className="purchase-detail-actions">
+            {canCreate && (
+              <button
+                type="button"
+                className="ghost danger"
+                data-testid="btn-hapus-pr-detail"
+                disabled={detail.can_cancel === false}
+                title={detail.can_cancel === false ? (detail.cancel_block_reason || "") : undefined}
+                onClick={() => openCancel(detail)}
+              >
+                Hapus
+              </button>
+            )}
+            {canCreatePo && Number(detail.total_remaining_order_qty) > 0 && (
+              <Link className="primary" data-testid="btn-buat-pesanan-pembelian" to={`/pembelian/pesanan-pembelian?request_id=${detail.id}&action=create`}>Buat Pesanan</Link>
+            )}
+          </div>
+        </div>
       )}
 
       <PurchaseCancelModal
