@@ -21,12 +21,24 @@ describe("Gaji Operator page", () => {
     expect(src).toMatch(/OperatorMultiSelect/);
     expect(src).toMatch(/operator_ids/);
     expect(src).toMatch(/gaji-unset-warning/);
-    expect(src).toMatch(/Belum Payroll/);
-    expect(src).toMatch(/Held/);
-    expect(src).toMatch(/Posted/);
-    expect(src).toMatch(/Tidak Eligible/);
+    expect(src).toMatch(/Siap Payroll/);
+    expect(src).toMatch(/Dalam Proses/);
+    expect(src).toMatch(/Sudah Payroll/);
+    expect(src).toMatch(/Perlu Perbaikan/);
     expect(src).toMatch(/payroll_reason/);
     expect(src).toMatch(/gaji-bonus-note/);
+    expect(src).toMatch(/gaji-siapkan-payroll/);
+    expect(src).toMatch(/hasPerm\("payroll.piece_holding.edit"\)/);
+    expect(src).toMatch(/hrPayrollPreparePieceFromGaji/);
+    expect(src).toMatch(/date_from: from/);
+    expect(src).toMatch(/date_to: to/);
+    expect(src).toMatch(/\/hr-payroll\/penggajian\?period=/);
+    expect(src).toMatch(/gaji-eligibility-summary/);
+    expect(src).toMatch(/eligibility_summary/);
+    expect(src).toMatch(/SIAP PAYROLL/);
+    expect(src).toMatch(/DALAM PROSES/);
+    expect(src).toMatch(/SUDAH PAYROLL/);
+    expect(src).toMatch(/PERLU PERBAIKAN/);
     expect(src).not.toMatch(/<select value=\{operatorId\}/);
   });
 
@@ -49,5 +61,14 @@ describe("Gaji Operator page", () => {
     expect(src).toMatch(/gajiFilterItemValue/);
     expect(src).not.toMatch(/<select value=\{item\}/);
     expect(src).toMatch(/item_code \|\| it\.item_name/);
+  });
+
+  test("siapkan payroll uses report range and keeps existing filters", () => {
+    const api = fs.readFileSync(path.join(__dirname, "..", "lib", "api.js"), "utf8");
+    expect(api).toMatch(/hrPayrollPreparePieceFromGaji:/);
+    expect(api).toMatch(/piece-periods\/from-gaji-operator/);
+    expect(src).toMatch(/gaji-filter-from/);
+    expect(src).toMatch(/gaji-export/);
+    expect(src).toMatch(/gajiPrepared: res.reused \? "existing" : "new"/);
   });
 });

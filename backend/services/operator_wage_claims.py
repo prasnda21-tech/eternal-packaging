@@ -1140,6 +1140,14 @@ PAYROLL_STATUS_HELD = "HELD"
 PAYROLL_STATUS_POSTED = "POSTED"
 PAYROLL_STATUS_BLOCKED = "NOT_ELIGIBLE"
 _OUTSIDE_REASON = "di luar rentang upah dan bonus"
+ELIGIBILITY_REASON_LABELS = {
+    "Tanggal kerja tidak tersedia": "Tanpa tanggal kerja",
+    "tanpa tanggal pekerjaan": "Tanpa tanggal kerja",
+    "tanpa snapshot tarif": "Tanpa snapshot tarif",
+    "profil bukan pay_basis piece": "Profil HR belum piece",
+    "sebelum batas integrasi": "Sebelum batas integrasi",
+    "belum terhubung ke satu profil HR": "Belum terhubung ke profil HR",
+}
 _REPORT_LIST_CAP = 20000
 BONUS_STATUS_FINAL = "FINAL"
 BONUS_STATUS_USULAN = "USULAN"
@@ -1273,6 +1281,24 @@ def _summary_status(rows: List[dict]) -> str:
         if any(row.get("payroll_status") == status for row in eligible):
             return status
     return str(eligible[0].get("payroll_status") or "")
+
+
+def eligibility_summary_from_rows(rows: List[dict]) -> dict:
+    """Group NOT_ELIGIBLE report rows by existing payroll_reason. Rules are unchanged."""
+    blocked = [row for row in rows if row.get("payroll_status") == PAYROLL_STATUS_BLOCKED]
+    counts: Dict[str, int] = {}
+    for row in blocked:
+        reason = str(row.get("payroll_reason") or "tidak eligible").strip() or "tidak eligible"
+        counts[reason] = counts.get(reason, 0) + 1
+    by_reason = [
+        {
+            "reason": reason,
+            "label": ELIGIBILITY_REASON_LABELS.get(reason, reason),
+            "count": count,
+        }
+        for reason, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    ]
+    return {"total": len(blocked), "by_reason": by_reason}
 
 
 def assemble_gaji_operator_rows(
@@ -1479,6 +1505,7 @@ def assemble_gaji_operator_rows(
             "items": sorted(items.values(), key=lambda row: (row.get("item_code") or "", row.get("item_name") or "")),
         },
         "not_eligible_count": len(blocked),
+        "eligibility_summary": eligibility_summary_from_rows(visible),
         "missing_base_rate": sorted({row.get("operator") or row.get("operator_user_id") for row in blocked if row.get("rate_unset")}),
         "read_only": True,
         "canonical_source": "progress_entries.work_date.rate_per_pcs",
@@ -1607,6 +1634,7 @@ async def build_gaji_operator_report(
         "canonical_source": assembled["canonical_source"],
         "bonus_note": BONUS_NOTE,
         "not_eligible_count": assembled["not_eligible_count"],
+        "eligibility_summary": assembled["eligibility_summary"],
         "missing_base_rate": missing,
         "missing_base_rate_message": (
             "Output tanpa snapshot tarif tidak masuk payroll borongan"

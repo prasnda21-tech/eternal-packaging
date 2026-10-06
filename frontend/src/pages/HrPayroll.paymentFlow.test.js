@@ -7,6 +7,11 @@ import api from "../lib/api";
 
 const mockAuth = { perms: new Set() };
 
+jest.mock("react-router-dom", () => ({
+  useSearchParams: () => [new URLSearchParams(""), jest.fn()],
+  useLocation: () => ({ pathname: "/hr-payroll/penggajian", search: "", state: null }),
+}), { virtual: true });
+
 jest.mock("../lib/auth", () => ({
   useAuth: () => ({ hasPerm: (key) => mockAuth.perms.has(key), user: { id: "ui-user", name: "UI" } }),
 }));

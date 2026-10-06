@@ -1,3 +1,8 @@
+jest.mock("react-router-dom", () => ({
+  useSearchParams: () => [new URLSearchParams(""), jest.fn()],
+  useLocation: () => ({ pathname: "/hr-payroll/penggajian", search: "", state: null }),
+}), { virtual: true });
+
 import { pieceInputSyncKey } from "./HrPayroll";
 
 test("piece draft sync key changes only when server fields change", () => {

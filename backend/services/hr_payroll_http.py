@@ -44,6 +44,7 @@ from services.hr_payroll import (
     create_period,
     create_piece_period,
     ensure_indexes,
+    prepare_piece_period_from_gaji_operator,
     ensure_kasbon_schedule,
     generate_payslip_for_line,
     get_attendance_for_period,
@@ -254,6 +255,33 @@ def register_hr_payroll_routes(
         body = _dump(payload)
         row = await create_piece_period(get_db(), body.get("start_date"), body.get("end_date"), user)
         return {"period": row, "message": "Periode upah borongan dibuat"}
+
+    @api_router.post("/hr-payroll/piece-periods/from-gaji-operator")
+    async def piece_period_from_gaji_operator(payload: LoosePayload, user=Depends(current_user)):
+        await require_any_perm(user, PERM_PIECE_HOLDING)
+        body = _dump(payload)
+        result = await prepare_piece_period_from_gaji_operator(
+            get_db(),
+            body.get("start_date") or body.get("date_from") or body.get("from"),
+            body.get("end_date") or body.get("date_to") or body.get("to"),
+            user,
+        )
+        warnings = []
+        period = result.get("period") or {}
+        if period.get("id"):
+            from services.payroll_accounting_readiness import evaluate_payroll_accounting_readiness
+            try:
+                readiness = await evaluate_payroll_accounting_readiness(get_db(), period["id"])
+            except Exception:
+                readiness = {}
+            reasons = set(readiness.get("reasons") or [])
+            if "payable_account_missing" in reasons:
+                warnings.append("Utang Gaji belum dipetakan.")
+            if reasons.intersection({"source_mapping_missing", "invalid_mapping"}) or readiness.get("unmapped_sources"):
+                warnings.append("Mapping payroll belum lengkap.")
+            result["accounting_ready"] = bool(readiness.get("accounting_ready"))
+        result["accounting_warnings"] = warnings
+        return result
 
     @api_router.put("/hr-payroll/periods/{period_id}/piece-inputs")
     async def piece_inputs_put(period_id: str, payload: LoosePayload, user=Depends(current_user)):

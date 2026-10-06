@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useLocation, useSearchParams } from "react-router-dom";
 import { AlertCircle, Edit3, Plus, Save, X } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
@@ -755,6 +756,8 @@ export function pieceInputSyncKey(period) {
 
 function PieceHoldingPanel({ period, lines, kasbon, hasPerm, onSaved, onError }) {
   const editable = period?.status === "DRAFT" && hasPerm("payroll.piece_holding.edit");
+  const datesFromGaji = period?.piece_prepared_from === "gaji_operator";
+  const dateLocked = !editable || datesFromGaji;
   const [tab, setTab] = useState("upah");
   const [integration, setIntegration] = useState(null);
   const [startDate, setStartDate] = useState(period?.start_date || "");
@@ -835,8 +838,9 @@ function PieceHoldingPanel({ period, lines, kasbon, hasPerm, onSaved, onError })
             <input type="date" value={integrationStart} disabled={!editable || integration?.locked} onChange={(e) => setIntegrationStart(e.target.value)} data-testid="hr-piece-integration-start" />
           </label>
           {integration?.locked && <p className="muted small">Batas mulai sudah dikunci.</p>}
-          <label>Mulai upah<input type="date" value={startDate} disabled={!editable} onChange={(e) => setStartDate(e.target.value)} data-testid="hr-piece-wage-start" /></label>
-          <label>Akhir upah<input type="date" value={endDate} disabled={!editable} onChange={(e) => setEndDate(e.target.value)} data-testid="hr-piece-wage-end" /></label>
+          {datesFromGaji && <p className="muted small" data-testid="hr-piece-dates-from-gaji">Rentang upah dan bonus mengikuti Gaji Operator.</p>}
+          <label>Mulai upah<input type="date" value={startDate} disabled={dateLocked} onChange={(e) => setStartDate(e.target.value)} data-testid="hr-piece-wage-start" /></label>
+          <label>Akhir upah<input type="date" value={endDate} disabled={dateLocked} onChange={(e) => setEndDate(e.target.value)} data-testid="hr-piece-wage-end" /></label>
           {(period.piece_sources || []).map((row) => (
             <p key={row.source_key} className="muted small" data-testid="hr-piece-source">{row.po_number || row.order_id} · {row.qty} × {moneyFormat(row.rate_per_pcs)} = {moneyFormat(row.amount)} · {row.work_date}</p>
           ))}
@@ -844,8 +848,8 @@ function PieceHoldingPanel({ period, lines, kasbon, hasPerm, onSaved, onError })
       )}
       {tab === "bonus" && (
         <div className="emp-form">
-          <label>Mulai bonus<input type="date" value={bonusStart} disabled={!editable} onChange={(e) => setBonusStart(e.target.value)} data-testid="hr-piece-bonus-start" /></label>
-          <label>Akhir bonus<input type="date" value={bonusEnd} disabled={!editable} onChange={(e) => setBonusEnd(e.target.value)} data-testid="hr-piece-bonus-end" /></label>
+          <label>Mulai bonus<input type="date" value={bonusStart} disabled={dateLocked} onChange={(e) => setBonusStart(e.target.value)} data-testid="hr-piece-bonus-start" /></label>
+          <label>Akhir bonus<input type="date" value={bonusEnd} disabled={dateLocked} onChange={(e) => setBonusEnd(e.target.value)} data-testid="hr-piece-bonus-end" /></label>
           {(lines || []).map((line) => {
             const snap = line.bonus_snapshot || {};
             return (
@@ -893,6 +897,9 @@ function PieceHoldingPanel({ period, lines, kasbon, hasPerm, onSaved, onError })
 
 function Payroll() {
   const { hasPerm } = useAuth();
+  const [searchParams] = useSearchParams();
+  const location = useLocation();
+  const openPeriodId = searchParams.get("period") || "";
   const [periods, setPeriods] = useState([]);
   const [selected, setSelected] = useState(null);
   const [lines, setLines] = useState([]);
@@ -913,6 +920,7 @@ function Payroll() {
   const [form, setForm] = useState({ year: new Date().getFullYear(), month: new Date().getMonth() + 1, start_date: "", end_date: "" });
   const [pieceForm, setPieceForm] = useState({ start_date: "", end_date: "" });
   const [err, setErr] = useState("");
+  const [gajiWarn, setGajiWarn] = useState("");
   const loadPeriods = useCallback(async () => { const data = await api.hrPayrollPeriods(); setPeriods(data.periods || []); }, []);
   const loadDetail = useCallback(async (period) => {
     if (!period?.id) return;
@@ -945,6 +953,18 @@ function Payroll() {
   }, []);
   const canCreatePayment = hasPerm("payroll_payment.create");
   useEffect(() => { loadPeriods().catch((ex) => setErr(errorText(ex))); }, [loadPeriods]);
+  useEffect(() => {
+    if (!openPeriodId) return undefined;
+    let active = true;
+    loadDetail({ id: openPeriodId }).catch((ex) => { if (active) setErr(errorText(ex)); });
+    return () => { active = false; };
+  }, [openPeriodId, loadDetail]);
+  useEffect(() => {
+    const msg = location.state?.gajiPrepareMessage;
+    const warns = location.state?.accountingWarnings || [];
+    if (msg) setNotice(msg);
+    setGajiWarn(warns.join(" "));
+  }, [location.state]);
   useEffect(() => {
     if (selected?.status !== "FINAL" || !selected.accounting_journal_id || payment || !canCreatePayment) return undefined;
     let active = true;
@@ -998,7 +1018,7 @@ function Payroll() {
     ["APPROVAL", "payroll.approve", "hr-transition-approval", "Kirim Persetujuan"],
     ["FINAL", "payroll.finalize", "hr-transition-final", "Finalkan"],
   ];
-  return <div data-testid="hr-payroll-page"><PageHead title="Penggajian" />{err && <div className="error"><AlertCircle size={14} /> {err}</div>}{notice && <p className="muted" data-testid="hr-payroll-post-notice">{notice}</p>}
+  return <div data-testid="hr-payroll-page"><PageHead title="Penggajian" />{err && <div className="error"><AlertCircle size={14} /> {err}</div>}{notice && <p className="muted" data-testid="hr-payroll-post-notice">{notice}</p>}{gajiWarn && <p className="gaji-unset-warn" data-testid="hr-gaji-accounting-warning">{gajiWarn}</p>}
     {hasPerm("payroll.calculate") && <form className="settings-card hr-period-form" onSubmit={create}><h3>Buat Periode</h3>{[["year", "Tahun", "number"], ["month", "Bulan", "number"], ["start_date", "Tanggal mulai", "date"], ["end_date", "Tanggal akhir", "date"]].map(([key, label, type]) => <label key={key}>{label}<input type={type} value={form[key]} onChange={(e) => setForm({ ...form, [key]: e.target.value })} required /></label>)}<button className="primary"><Plus size={14} /> Buat</button></form>}
     {hasPerm("payroll.piece_holding.edit") && <form className="settings-card hr-period-form" onSubmit={createPiece} data-testid="hr-piece-create"><h3>Periode borongan</h3><label>Mulai<input type="date" value={pieceForm.start_date} onChange={(e) => setPieceForm({ ...pieceForm, start_date: e.target.value })} required data-testid="hr-piece-create-start" /></label><label>Akhir<input type="date" value={pieceForm.end_date} onChange={(e) => setPieceForm({ ...pieceForm, end_date: e.target.value })} required data-testid="hr-piece-create-end" /></label><button className="primary">Buat borongan</button></form>}
     <div className="hr-master-detail"><div className="settings-card"><h3>Periode</h3>{periods.map((p) => <button type="button" className={`hr-list-button ${selected?.id === p.id ? "active" : ""}`} key={p.id} onClick={() => loadDetail(p).catch((ex) => setErr(errorText(ex)))}><span>{p.period_number || `${p.month}/${p.year}`}</span><span className={`hr-status hr-status-${String(p.status).toLowerCase()}`}>{statusLabel(p.status)}</span></button>)}</div>
@@ -1010,7 +1030,7 @@ function Payroll() {
           {selected.status === "DRAFT" && hasPerm("payroll.calculate") && <button className="primary" onClick={calculate} data-testid="hr-calc-btn">Hitung Payroll</button>}
           {transitionButtons.map(([target, perm, testid, label]) => canTransition(selected.status, target) && hasPerm(perm) ? <button key={target} className="primary" onClick={() => (target === "FINAL" ? setFinalizeOpen(true) : transition(target))} data-testid={testid}>{label}</button> : null)}
           {selected.status === "FINAL" && hasPerm("payroll.reopen") && <button className="ghost" onClick={reopen} disabled={Boolean(selected.accounting_journal_id)} title={selected.accounting_journal_id ? "Jurnal akuntansi masih aktif" : undefined} data-testid="hr-reopen-btn">Buka Ulang</button>}
-          {canPostAccounting && <button type="button" className="primary" onClick={() => { setErr(""); setPostOpen(true); }} data-testid="hr-payroll-post-accounting">Post Accounting</button>}
+          {canPostAccounting && <button type="button" className="ghost" onClick={() => { setErr(""); setPostOpen(true); }} data-testid="hr-payroll-post-accounting" title="Hanya pemulihan bila Finalkan sudah selesai tetapi jurnal kosong">Pemulihan: Post Accounting</button>}
           {readiness && <button type="button" className="ghost" onClick={() => setShowPreview((open) => !open)} data-testid="hr-payroll-accounting-preview-btn">Lihat Preview Accounting</button>}
         </div></div>
         {selected.accounting_journal_id && (
@@ -1066,7 +1086,7 @@ function Payroll() {
           <div className="modal" role="dialog" aria-modal="true" data-testid="hr-payroll-post-modal">
             <div className="modal-inner">
               <div className="modal-head">
-                <h3>Post Accounting Payroll?</h3>
+                <h3>Pemulihan: Post Accounting Payroll?</h3>
                 <button type="button" className="ghost sm" disabled={postBusy} onClick={() => setPostOpen(false)}>×</button>
               </div>
               <div className="emp-form">

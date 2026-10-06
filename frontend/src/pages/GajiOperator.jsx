@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, Fragment } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { Download, RefreshCw, Settings2, ChevronDown, ChevronRight } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
@@ -34,11 +34,18 @@ function fmtMoney(n) {
 }
 
 const PAYROLL_STATUS = {
-  BELUM_MASUK_PAYROLL: ["Belum Payroll", "hr-status-draft"],
-  HELD: ["Held", "hr-status-review"],
-  POSTED: ["Posted", "hr-status-final"],
-  NOT_ELIGIBLE: ["Tidak Eligible", "hr-status-approval"],
+  BELUM_MASUK_PAYROLL: ["Siap Payroll", "hr-status-draft"],
+  HELD: ["Dalam Proses", "hr-status-review"],
+  POSTED: ["Sudah Payroll", "hr-status-final"],
+  NOT_ELIGIBLE: ["Perlu Perbaikan", "hr-status-approval"],
 };
+
+const PAYROLL_STATUS_GROUP = [
+  ["SIAP PAYROLL", "Siap Payroll", "hr-status-draft"],
+  ["DALAM PROSES", "Dalam Proses", "hr-status-review"],
+  ["SUDAH PAYROLL", "Sudah Payroll", "hr-status-final"],
+  ["PERLU PERBAIKAN", "Perlu Perbaikan", "hr-status-approval"],
+];
 
 function payrollBadge(status, testId) {
   const [label, tone] = PAYROLL_STATUS[status] || [status || "—", "hr-status-draft"];
@@ -61,15 +68,19 @@ export function gajiFilterItemLabel(it) {
 
 export default function GajiOperator() {
   const { hasPerm } = useAuth();
+  const navigate = useNavigate();
   const [from, setFrom] = useState(monthStartIso());
   const [to, setTo] = useState(todayIso());
   const [selectedOps, setSelectedOps] = useState([]);
   const [item, setItem] = useState("");
   const [data, setData] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [prepareBusy, setPrepareBusy] = useState(false);
   const [err, setErr] = useState("");
   const [openId, setOpenId] = useState("");
+  const [acctWarn, setAcctWarn] = useState([]);
   const canWage = hasPerm("settings.operator_wage.view") || hasPerm("settings.operator_wage.manage") || hasPerm(NAV_KEYS.settings);
+  const canPrepare = hasPerm("payroll.piece_holding.edit");
 
   const operators = data?.filters?.operators || [];
   const operatorIdsParam = exportOperatorIds(selectedOps, operators);
@@ -95,6 +106,43 @@ export default function GajiOperator() {
   }, [params]);
 
   useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    if (!canPrepare) return undefined;
+    let active = true;
+    api.payrollAccountingSettings().then((d) => {
+      if (!active) return;
+      const settings = d.settings || d || {};
+      const warns = [];
+      if (settings.payroll_payable_valid === false) warns.push("Utang Gaji belum dipetakan.");
+      setAcctWarn(warns);
+    }).catch(() => {
+      if (active) setAcctWarn([]);
+    });
+    return () => { active = false; };
+  }, [canPrepare]);
+
+  const preparePayroll = async () => {
+    setPrepareBusy(true);
+    setErr("");
+    try {
+      const res = await api.hrPayrollPreparePieceFromGaji({ date_from: from, date_to: to });
+      const id = res.period?.id;
+      if (!id) throw new Error("Periode payroll tidak ditemukan");
+      navigate(`/hr-payroll/penggajian?period=${encodeURIComponent(id)}`, {
+        state: {
+          gajiPrepareMessage: res.message,
+          accountingWarnings: res.accounting_warnings || [],
+          gajiPrepared: res.reused ? "existing" : "new",
+        },
+      });
+    } catch (e) {
+      const det = e.response?.data?.detail;
+      setErr(typeof det === "object" ? det.message : (det || e.message || "Gagal menyiapkan payroll"));
+    } finally {
+      setPrepareBusy(false);
+    }
+  };
 
   const exportFile = async () => {
     try {
@@ -162,8 +210,24 @@ export default function GajiOperator() {
               <Settings2 size={14} /> Sistem Upah
             </Link>
           )}
+          {canPrepare && (
+            <button
+              type="button"
+              className="primary sm"
+              onClick={preparePayroll}
+              disabled={busy || prepareBusy || !from || !to}
+              data-testid="gaji-siapkan-payroll"
+            >
+              {prepareBusy ? "Menyiapkan…" : "Siapkan Payroll"}
+            </button>
+          )}
         </div>
         {err && <div className="error" data-testid="gaji-error">{err}</div>}
+        {acctWarn.length > 0 && (
+          <div className="gaji-unset-warn" data-testid="gaji-accounting-warning">
+            {acctWarn.join(" ")} Finalkan tetap yang memposting jurnal.
+          </div>
+        )}
         {(data?.missing_base_rate_message || missing.length > 0 || data?.not_eligible_count > 0) && (
           <div className="gaji-unset-warn" data-testid="gaji-unset-warning">
             {data?.missing_base_rate_message || "Ada output yang tidak eligible untuk payroll borongan"}
@@ -171,6 +235,24 @@ export default function GajiOperator() {
             {data?.not_eligible_count ? ` · ${data.not_eligible_count} output Tidak Eligible` : ""}
           </div>
         )}
+        {data?.eligibility_summary?.total > 0 && (
+          <div className="gaji-elig-summary" data-testid="gaji-eligibility-summary">
+            <strong>Tidak Eligible: {data.eligibility_summary.total}</strong>
+            <ul>
+              {(data.eligibility_summary.by_reason || []).map((row) => (
+                <li key={row.reason} data-testid="gaji-eligibility-reason">
+                  {row.label || row.reason}: {row.count}
+                </li>
+              ))}
+            </ul>
+            <p className="muted small">Rincian baris tetap dapat dibuka di tabel.</p>
+          </div>
+        )}
+        <div className="gaji-status-legend" data-testid="gaji-status-legend">
+          {PAYROLL_STATUS_GROUP.map(([group, label, tone]) => (
+            <span key={group} className={`hr-status ${tone}`}>{group} · {label}</span>
+          ))}
+        </div>
         {data?.bonus_note && <p className="muted small" data-testid="gaji-bonus-note">{data.bonus_note}</p>}
       </div>
       <div className="ship-status-grid" data-testid="gaji-table">
