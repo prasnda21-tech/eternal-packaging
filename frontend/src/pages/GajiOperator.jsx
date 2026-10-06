@@ -33,6 +33,18 @@ function fmtMoney(n) {
   return Number(n || 0).toLocaleString("id-ID");
 }
 
+const PAYROLL_STATUS = {
+  BELUM_MASUK_PAYROLL: ["Belum Payroll", "hr-status-draft"],
+  HELD: ["Held", "hr-status-review"],
+  POSTED: ["Posted", "hr-status-final"],
+  NOT_ELIGIBLE: ["Tidak Eligible", "hr-status-approval"],
+};
+
+function payrollBadge(status, testId) {
+  const [label, tone] = PAYROLL_STATUS[status] || [status || "—", "hr-status-draft"];
+  return <span className={`hr-status ${tone}`} data-testid={testId || "gaji-payroll-status"}>{label}</span>;
+}
+
 /** Backend matches line item_code / name — never send accurate_item_id alone. */
 export function gajiFilterItemValue(it) {
   if (!it) return "";
@@ -152,11 +164,14 @@ export default function GajiOperator() {
           )}
         </div>
         {err && <div className="error" data-testid="gaji-error">{err}</div>}
-        {(data?.missing_base_rate_message || missing.length > 0) && (
+        {(data?.missing_base_rate_message || missing.length > 0 || data?.not_eligible_count > 0) && (
           <div className="gaji-unset-warn" data-testid="gaji-unset-warning">
-            Upah Operator belum disetel{missing.length ? `: ${missing.join(", ")}` : ""}
+            {data?.missing_base_rate_message || "Ada output yang tidak eligible untuk payroll borongan"}
+            {missing.length ? `: ${missing.join(", ")}` : ""}
+            {data?.not_eligible_count ? ` · ${data.not_eligible_count} output Tidak Eligible` : ""}
           </div>
         )}
+        {data?.bonus_note && <p className="muted small" data-testid="gaji-bonus-note">{data.bonus_note}</p>}
       </div>
       <div className="ship-status-grid" data-testid="gaji-table">
         <table className="ship-table" data-testid="gaji-rekap-table">
@@ -165,10 +180,10 @@ export default function GajiOperator() {
               <th></th>
               <th>Nama Operator</th>
               <th className="num">Total Output</th>
-              <th className="num">Upah Dasar</th>
+              <th className="num">Upah Eligible</th>
               <th className="num">Tambahan Produk</th>
               <th className="num">Bonus</th>
-              <th className="num">Total Upah</th>
+              <th className="num">Total Payroll</th>
             </tr>
           </thead>
           <tbody>
@@ -184,22 +199,34 @@ export default function GajiOperator() {
                         {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                       </button>
                     </td>
-                    <td>{p.name || p.email}{p.rate_unset ? <span className="gaji-unset-tag"> Belum Disetel</span> : null}</td>
+                    <td>{p.name || p.email} {payrollBadge(p.payroll_status, `gaji-person-status-${pid}`)}{p.rate_unset ? <span className="gaji-unset-tag"> Tanpa tarif</span> : null}</td>
                     <td className="num mono">{fmtQty(p.qty)}</td>
-                    <td className="num mono">{p.rate_unset ? "Belum Disetel" : fmtMoney(p.base_wage)}</td>
-                    <td className="num mono">{fmtMoney(p.product_addition)}</td>
-                    <td className="num mono">{fmtMoney(p.bonus)}</td>
-                    <td className="num mono">{fmtMoney(p.total_upah)}</td>
+                    <td className="num mono" data-testid={`gaji-wage-eligible-${pid}`}>{fmtMoney(p.wage_basis ?? p.base_wage)}</td>
+                    <td className="num mono" title="Sudah termasuk di rate snapshot payroll">—</td>
+                    <td className="num mono">
+                      {p.bonus_status === "FINAL" ? (
+                        <span data-testid={`gaji-bonus-final-${pid}`}>{fmtMoney(p.bonus_final_amount ?? p.bonus)} <span className="gaji-unset-tag">Final</span></span>
+                      ) : (
+                        <span data-testid={`gaji-bonus-usulan-${pid}`}>{fmtMoney(p.bonus_proposed_amount ?? p.bonus)} <span className="gaji-unset-tag">Bonus Usulan</span></span>
+                      )}
+                    </td>
+                    <td className="num mono" data-testid={`gaji-total-payroll-${pid}`}>
+                      {fmtMoney(p.total_payroll ?? p.total_upah)}
+                      {p.bonus_status !== "FINAL" && (
+                        <div className="muted small" data-testid={`gaji-estimasi-total-${pid}`}>Estimasi/Usulan Total {fmtMoney(p.estimate_total)}</div>
+                      )}
+                    </td>
                   </tr>
                   {open && detail.map((r, i) => (
                     <tr key={`${pid}-d-${i}`} className="gaji-detail-row" data-testid={`gaji-row-${pid}-${i}`}>
                       <td></td>
                       <td colSpan={6} className="gaji-detail-cell">
-                        {r.item_name || r.cup_item || "-"} · {formatDisplayDate(r.tanggal || r.date)} ·
+                        {payrollBadge(r.payroll_status, `gaji-row-status-${pid}-${i}`)}
+                        {" "}{r.item_name || r.cup_item || "-"} · {formatDisplayDate(r.tanggal || r.date)} ·
                         {" "}Output {fmtQty(r.qty_completed)}
-                        {r.rate_unset ? " × Rate Belum Disetel" : ` × ${fmtMoney(r.base_rate_per_pcs)} = ${fmtMoney(r.base_wage)}`}
-                        {r.product_addition ? ` · Tambahan ${fmtMoney(r.product_addition)}` : ""}
-                        {" · Subtotal "}{r.rate_unset ? "Belum Disetel" : fmtMoney(r.total_upah)}
+                        {r.payroll_status === "NOT_ELIGIBLE" ? " · tidak dihitung" : ` × ${fmtMoney(r.base_rate_per_pcs)} = ${fmtMoney(r.base_wage)}`}
+                        {" · Subtotal "}{r.payroll_status === "NOT_ELIGIBLE" ? "Tidak dihitung" : fmtMoney(r.total_upah)}
+                        {r.payroll_reason ? <span data-testid={`gaji-row-reason-${pid}-${i}`}> · {r.payroll_reason}</span> : null}
                       </td>
                     </tr>
                   ))}

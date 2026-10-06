@@ -1036,7 +1036,14 @@ function Payroll() {
         {(readiness?.unmapped_sources || []).some((row) => row?.label) && (
           <p className="muted small" data-testid="hr-payroll-unmapped">
             Komponen belum dipetakan: {(readiness.unmapped_sources || []).map((row) => row.label).filter(Boolean).join(", ")}
+            {selected.status !== "FINAL" ? " Finalkan akan ditolak sampai mapping ini lengkap." : ""}
           </p>
+        )}
+        {selected.status !== "FINAL" && (readiness?.reasons || []).includes("payable_account_missing") && (
+          <p className="error" data-testid="hr-payroll-payable-early">Akun Utang Gaji belum dipetakan. Finalkan akan ditolak.</p>
+        )}
+        {selected.status !== "FINAL" && (readiness?.reasons || []).includes("invalid_mapping") && (
+          <p className="error" data-testid="hr-payroll-mapping-invalid">Klasifikasi akun mapping tidak valid. Finalkan akan ditolak.</p>
         )}
         {finalizeOpen && (
           <div className="modal" role="dialog" aria-modal="true" data-testid="hr-finalize-modal">
