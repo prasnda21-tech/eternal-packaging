@@ -146,6 +146,18 @@ describe("Design Cetakan settings wiring", () => {
     expect(previewFn).toMatch(/previewDesignCetakan/);
     expect(previewFn).not.toMatch(/updateDesignCetakanSettings|updateDesignCetakanBranch/);
     expect(previewFn).not.toMatch(/uploadDesignCetakan|resetDesignCetakanBranch/);
+    expect(pageSrc).toMatch(/data-testid="design-cetakan-preview-open"/);
+    expect(pageSrc).toMatch(/data-testid="design-cetakan-preview-menu"/);
+    expect(pageSrc).toMatch(/role="menu"/);
+    expect(pageSrc).toMatch(/openPreview\("po"\)/);
+    expect(pageSrc).toMatch(/openPreview\("invoice"\)/);
+    expect(pageSrc).toMatch(/openPreview\("proforma"\)/);
+    expect(pageSrc).toMatch(/openPreview\("delivery"\)/);
+    expect(pageSrc).toMatch(/data-testid="design-cetakan-command"/);
+    expect(pageSrc).toMatch(/data-testid="design-cetakan-savebar"/);
+    expect(pageSrc).toMatch(/data-testid="design-cetakan-save-state"/);
+    expect(pageSrc).toMatch(/Perubahan belum disimpan/);
+    expect(pageSrc).toMatch(/"Tersimpan"/);
     expect(pageSrc).toMatch(/data-testid="design-cetakan-preview-po"[^>]*disabled=\{previewLocked\}/);
     expect(apiSrc).toMatch(/previewDesignCetakan:/);
     expect(apiSrc).toMatch(/\/settings\/design-cetakan\/preview\/\$\{encodeURIComponent\(documentType\)\}/);
@@ -311,6 +323,7 @@ function installApi() {
       branch: branchPayload("GLOBAL"),
     })),
     getDesignCetakanHistory: jest.fn(async () => ({ items: [], page: 1, has_more: false })),
+    previewDesignCetakan: jest.fn(async () => new Blob(["pdf"])),
     designCetakanBranchAssetPreview: jest.fn(),
     designCetakanAssetPreview: jest.fn(),
   });
@@ -323,13 +336,13 @@ function setNativeValue(el, value) {
   el.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
-async function mountPage() {
+async function mountPage(canEdit = true) {
   installApi();
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
   await act(async () => {
-    root.render(<DesignCetakanSettings notify={jest.fn()} canEdit />);
+    root.render(<DesignCetakanSettings notify={jest.fn()} canEdit={canEdit} />);
   });
   return { container, root };
 }
@@ -430,6 +443,7 @@ describe("Design Cetakan hardening behavior", () => {
     const input = await settleGlobal(container);
     window.confirm = jest.fn(() => false);
     await typeName(input, "DRAFT 50");
+    expect(container.querySelector('[data-testid="design-cetakan-save-state"]').textContent).toMatch(/Perubahan belum disimpan/);
     await chooseScope(container, "50");
     expect(window.confirm).toHaveBeenCalledWith("Perubahan yang belum disimpan akan dibuang. Lanjutkan?");
     expect(container.querySelector('[data-testid="design-cetakan-scope"]').value).toBe("global");
@@ -499,6 +513,74 @@ describe("Design Cetakan hardening behavior", () => {
     });
     expect(container.querySelector('[data-testid="design-cetakan-history-modal"]')).toBeNull();
     expect(container.querySelector('[data-testid="design-cetakan-copy-modal"]')).toBeTruthy();
+  });
+
+  test("preview menu calls the existing document preview and view-only hides mutations", async () => {
+    const createObjectURL = jest.fn(() => "blob:preview");
+    const revokeObjectURL = jest.fn();
+    const open = jest.fn(() => ({ closed: false }));
+    const prevCreate = URL.createObjectURL;
+    const prevRevoke = URL.revokeObjectURL;
+    const prevOpen = window.open;
+    URL.createObjectURL = createObjectURL;
+    URL.revokeObjectURL = revokeObjectURL;
+    window.open = open;
+    ({ container, root } = await mountPage());
+    await settleGlobal(container);
+    expect(container.querySelector('[data-testid="design-cetakan-save-state"]').textContent).toMatch(/Tersimpan/);
+    expect(container.querySelector('[data-testid="design-cetakan-savebar"]')).toBeTruthy();
+    expect(container.querySelectorAll('[data-testid="design-cetakan-preview-open"]')).toHaveLength(1);
+    await act(async () => {
+      container.querySelector('[data-testid="design-cetakan-preview-open"]').click();
+    });
+    const menu = container.querySelector('[data-testid="design-cetakan-preview-menu"]');
+    expect(menu.querySelector('[data-testid="design-cetakan-preview-po"]')).toBeTruthy();
+    expect(menu.querySelector('[data-testid="design-cetakan-preview-invoice"]')).toBeTruthy();
+    expect(menu.querySelector('[data-testid="design-cetakan-preview-proforma"]')).toBeTruthy();
+    expect(menu.querySelector('[data-testid="design-cetakan-preview-delivery"]')).toBeTruthy();
+    await act(async () => {
+      menu.querySelector('[data-testid="design-cetakan-preview-po"]').click();
+    });
+    expect(api.previewDesignCetakan).toHaveBeenCalledWith("po", undefined);
+    URL.createObjectURL = prevCreate;
+    URL.revokeObjectURL = prevRevoke;
+    window.open = prevOpen;
+
+    act(() => root.unmount());
+    container.remove();
+    ({ container, root } = await mountPage(false));
+    await settleGlobal(container);
+    expect(container.querySelector('[data-testid="design-cetakan-copy-open"]')).toBeNull();
+    expect(container.querySelector('[data-testid="design-cetakan-history-open"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="design-cetakan-save"]').disabled).toBe(true);
+    expect(container.querySelector('[data-testid="design-cetakan-logo-upload"]').disabled).toBe(true);
+  });
+
+  test("branch override enable keeps global-only fields locked", async () => {
+    ({ container, root } = await mountPage());
+    await settleGlobal(container);
+    await chooseScope(container, "50");
+    await act(async () => {
+      settingsCalls[1].resolve({ settings: { company_name: "GLOBAL" } });
+    });
+    await act(async () => {
+      branchCalls[0].pending.resolve({
+        effective: { company_name: "DARI GLOBAL" },
+        inherited: { company_name: { overridden: false, inherited: true } },
+        override: {},
+      });
+    });
+    const input = container.querySelector('[data-testid="design-cetakan-company-name"]');
+    const accent = container.querySelector('[data-testid="design-cetakan-accent"]');
+    expect(input.disabled).toBe(true);
+    expect(accent.disabled).toBe(true);
+    expect(container.querySelector('[data-testid="design-cetakan-global-only-accent"]').textContent).toMatch(/Mengikuti Global/);
+    await act(async () => {
+      container.querySelector('[data-testid="design-cetakan-override-company_name"]').click();
+    });
+    expect(input.disabled).toBe(false);
+    expect(accent.disabled).toBe(true);
+    expect(container.querySelector('[data-testid="design-cetakan-follow-company_name"]').textContent).toMatch(/Ikuti Global/);
   });
 
   test("dirty branch reset confirms unsaved discard and then clears dirty", async () => {

@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AlertCircle, Info, Save, X } from "lucide-react";
+import { AlertCircle, CheckCircle2, Copy, Eye, History, Image, Info, Lock, Save, X } from "lucide-react";
 import api from "../lib/api";
 import { errDetail } from "../lib/purchaseUi";
+import "./DesignCetakanSettings.css";
 
 const TABS = [
   { id: "umum", label: "Umum", testid: "design-cetakan-tab-umum" },
@@ -206,11 +207,20 @@ function restoreFieldFromGlobal(draft, field, globalSettings) {
   return next;
 }
 
+function GlobalOnlyMark({ testid, children }) {
+  return (
+    <span className="dc-badge is-lock" data-testid={testid}>
+      <Lock size={12} aria-hidden="true" />
+      {children || "Mengikuti Global"}
+    </span>
+  );
+}
+
 function OverrideBar({ field, branchMode, enabled, canEdit, busy, onEnable, onFollow }) {
   if (!branchMode) return null;
   return (
-    <div data-testid={`design-cetakan-inherit-${field}`} style={{ gridColumn: "1 / -1", display: "flex", gap: 8, alignItems: "center" }}>
-      <span className="muted small" data-testid={`design-cetakan-badge-${field}`}>
+    <span className="dc-inherit" data-testid={`design-cetakan-inherit-${field}`}>
+      <span className={`dc-badge ${enabled ? "is-branch" : "is-global"}`} data-testid={`design-cetakan-badge-${field}`}>
         {enabled ? "Khusus Cabang" : "Mengikuti Global"}
       </span>
       {canEdit && !enabled ? (
@@ -223,7 +233,7 @@ function OverrideBar({ field, branchMode, enabled, canEdit, busy, onEnable, onFo
           Ikuti Global
         </button>
       ) : null}
-    </div>
+    </span>
   );
 }
 
@@ -245,72 +255,64 @@ function AssetSlot({
   allowRemove,
   fileInputRef,
   testIdPrefix,
+  emptyLabel,
 }) {
   const hasCustom = Boolean(asset?.has_custom);
   const canRemove = allowRemove === undefined ? hasCustom : allowRemove;
   return (
-    <div className="settings-grid" data-testid={`${testIdPrefix}-slot`} style={{ gridColumn: "1 / -1" }}>
-      <div style={{ gridColumn: "1 / -1" }}>
+    <div className="dc-asset" data-testid={`${testIdPrefix}-slot`}>
+      <div className="dc-asset-thumb" data-testid={`${testIdPrefix}-preview`}>
+        {previewUrl ? (
+          <img src={previewUrl} alt={title} />
+        ) : hasCustom ? (
+          <span className="muted small">Memuat…</span>
+        ) : (
+          <span className="dc-asset-empty">
+            <Image size={14} aria-hidden="true" />
+            <span>{emptyLabel || "Belum ada gambar"}</span>
+          </span>
+        )}
+      </div>
+      <div className="dc-asset-copy">
         <strong>{title}</strong>
-        <p className="muted small" style={{ marginTop: 2 }} data-testid={`${testIdPrefix}-status`}>
+        <p className="muted small" data-testid={`${testIdPrefix}-status`}>
           {statusLabel || (hasCustom ? (statusCustom || "Custom") : (statusDefault || "Default"))}
           {hasCustom && asset?.filename ? ` · ${asset.filename}` : ""}
         </p>
       </div>
-      <div style={{ gridColumn: "1 / -1", display: "flex", gap: 16, alignItems: "flex-start", flexWrap: "wrap" }}>
-        <div
-          data-testid={`${testIdPrefix}-preview`}
-          style={{
-            width: 160,
-            minHeight: 72,
-            border: "1px solid var(--border, #ddd)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            background: "#fafafa",
-            padding: 8,
+      <div className="dc-asset-actions">
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept={accept}
+          hidden
+          data-testid={`${testIdPrefix}-file`}
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            e.target.value = "";
+            if (file) onPick(file);
           }}
+        />
+        <button
+          type="button"
+          className="secondary"
+          data-testid={`${testIdPrefix}-upload`}
+          disabled={!canEdit || busy}
+          onClick={() => fileInputRef.current?.click()}
         >
-          {previewUrl ? (
-            <img src={previewUrl} alt={title} style={{ maxWidth: "100%", maxHeight: 64, objectFit: "contain" }} />
-          ) : (
-            <span className="muted small">{hasCustom ? "Memuat…" : "Tidak ada gambar custom"}</span>
-          )}
-        </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept={accept}
-            hidden
-            data-testid={`${testIdPrefix}-file`}
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              e.target.value = "";
-              if (file) onPick(file);
-            }}
-          />
+          {uploadLabel || (hasCustom ? "Ganti" : "Unggah")}
+        </button>
+        {canRemove ? (
           <button
             type="button"
             className="secondary"
-            data-testid={`${testIdPrefix}-upload`}
+            data-testid={`${testIdPrefix}-remove`}
             disabled={!canEdit || busy}
-            onClick={() => fileInputRef.current?.click()}
+            onClick={onRemove}
           >
-            {uploadLabel || (hasCustom ? "Ganti" : "Unggah")}
+            {removeLabel}
           </button>
-          {canRemove ? (
-            <button
-              type="button"
-              className="secondary"
-              data-testid={`${testIdPrefix}-remove`}
-              disabled={!canEdit || busy}
-              onClick={onRemove}
-            >
-              {removeLabel}
-            </button>
-          ) : null}
-        </div>
+        ) : null}
       </div>
     </div>
   );
@@ -339,6 +341,7 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
   const [meta, setMeta] = useState({ updated_at: null, updated_by: null });
   const [busy, setBusy] = useState(false);
   const [previewBusy, setPreviewBusy] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyScope, setHistoryScope] = useState("all");
   const [historyBranchId, setHistoryBranchId] = useState("");
@@ -359,6 +362,7 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
   const globalSnapshotRef = useRef(null);
   const loadRequestRef = useRef(0);
   const scopeRef = useRef("global");
+  const previewWrapRef = useRef(null);
   const logoInputRef = useRef(null);
   const preparedInputRef = useRef(null);
   const approvedInputRef = useRef(null);
@@ -498,6 +502,22 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
       cancelled = true;
     };
   }, [historyOpen, historyScope, historyBranchId]);
+
+  useEffect(() => {
+    if (!previewOpen) return undefined;
+    const onPointer = (event) => {
+      if (!previewWrapRef.current?.contains(event.target)) setPreviewOpen(false);
+    };
+    const onKey = (event) => {
+      if (event.key === "Escape") setPreviewOpen(false);
+    };
+    document.addEventListener("mousedown", onPointer);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onPointer);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [previewOpen]);
 
   const openHistory = () => {
     setCopyOpen(false);
@@ -835,29 +855,32 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
     }
   };
 
+  const saveState = dirty ? "Perubahan belum disimpan" : "Tersimpan";
+
   return (
-    <div className="settings-card" data-testid="design-cetakan-settings">
-      <div className="settings-card-header" style={{ marginBottom: 16 }}>
-        <h2>Design Cetakan</h2>
-        <p className="muted small" style={{ marginTop: 4 }}>
-          Letterhead PDF Pesanan Penjualan, Faktur/Proforma, dan Surat Jalan. Logo perusahaan dan tanda tangan Faktur/Proforma dapat diganti di sini.
+    <div className="settings-card dc-page" data-testid="design-cetakan-settings">
+      <header className="dc-header">
+        <div>
+          <h2>Design Cetakan</h2>
+          <p className="muted small">Atur identitas, elemen PDF, dan pengaturan per cabang.</p>
+        </div>
+        <span className={`dc-badge ${dirty ? "is-dirty" : "is-saved"}`} data-testid="design-cetakan-save-state" role="status">
+          {dirty ? <AlertCircle size={14} aria-hidden="true" /> : <CheckCircle2 size={14} aria-hidden="true" />}
+          {saveState}
+        </span>
+      </header>
+
+      <div className="dc-info" data-testid="design-cetakan-info">
+        <Info size={15} aria-hidden="true" />
+        <p>
+          Layout & judul dokumen tetap · Rekening hanya teks PDF · Preview menggunakan pengaturan yang sudah disimpan.
+          Tanda tangan PO dan POD Surat Jalan tidak diubah di Design Cetakan.
         </p>
       </div>
 
-      <div className="settings-info" style={{ marginBottom: 16 }}>
-        <Info size={16} />
-        <div>
-          <p><strong>Default mengikuti PDF yang sudah deploy.</strong></p>
-          <p className="muted small" style={{ marginTop: 2 }}>
-            Judul dokumen, layout, dan nomor halaman tetap fixed. Rekening di sini hanya teks presentasi PDF, bukan master Kas/Bank.
-            Tanda tangan PO dan POD Surat Jalan tidak diubah di Design Cetakan.
-          </p>
-        </div>
-      </div>
-
-      <div className="settings-grid" style={{ marginBottom: 16 }} data-testid="design-cetakan-scope-wrap">
-        <label>
-          Terapkan Untuk
+      <div className="dc-command" data-testid="design-cetakan-command">
+        <label className="dc-scope" data-testid="design-cetakan-scope-wrap">
+          <span>Terapkan Untuk</span>
           <select
             data-testid="design-cetakan-scope"
             value={scope}
@@ -871,14 +894,49 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
             ))}
           </select>
         </label>
-        <div>
+        <div className="dc-command-actions">
+          <div className="dc-preview" ref={previewWrapRef}>
+            <button
+              type="button"
+              className="secondary"
+              data-testid="design-cetakan-preview-open"
+              aria-haspopup="menu"
+              aria-expanded={previewOpen}
+              aria-controls="design-cetakan-preview-menu"
+              disabled={previewLocked}
+              onClick={() => setPreviewOpen((open) => !open)}
+            >
+              <Eye size={15} aria-hidden="true" />
+              {previewBusy ? "Memuat…" : "Preview"}
+            </button>
+            {previewOpen ? (
+              <div id="design-cetakan-preview-menu" className="dc-menu" role="menu" data-testid="design-cetakan-preview-menu">
+                <button type="button" role="menuitem" className="dc-menu-item" data-testid="design-cetakan-preview-po" disabled={previewLocked} onClick={() => { setPreviewOpen(false); openPreview("po"); }}>
+                  Preview PO
+                </button>
+                <button type="button" role="menuitem" className="dc-menu-item" data-testid="design-cetakan-preview-invoice" disabled={previewLocked} onClick={() => { setPreviewOpen(false); openPreview("invoice"); }}>
+                  Preview Faktur
+                </button>
+                <button type="button" role="menuitem" className="dc-menu-item" data-testid="design-cetakan-preview-proforma" disabled={previewLocked} onClick={() => { setPreviewOpen(false); openPreview("proforma"); }}>
+                  Preview Proforma
+                </button>
+                <button type="button" role="menuitem" className="dc-menu-item" data-testid="design-cetakan-preview-delivery" disabled={previewLocked} onClick={() => { setPreviewOpen(false); openPreview("delivery"); }}>
+                  Preview Surat Jalan
+                </button>
+                <p className="muted small" data-testid="design-cetakan-preview-note">
+                  Preview mengikuti pengaturan yang sudah disimpan.
+                </p>
+              </div>
+            ) : null}
+          </div>
           <button
             type="button"
             className="secondary"
             data-testid="design-cetakan-history-open"
             onClick={openHistory}
           >
-            Riwayat Perubahan
+            <History size={15} aria-hidden="true" />
+            Riwayat
           </button>
           {canEdit ? (
             <button
@@ -886,34 +944,17 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
               className="secondary"
               data-testid="design-cetakan-copy-open"
               onClick={openCopy}
-              style={{ marginLeft: 8 }}
             >
+              <Copy size={15} aria-hidden="true" />
               Salin Pengaturan
             </button>
           ) : null}
         </div>
         {catalog.length === 0 ? (
-          <p className="muted small" data-testid="design-cetakan-branch-empty" style={{ gridColumn: "1 / -1" }}>
+          <p className="muted small dc-empty" data-testid="design-cetakan-branch-empty">
             Belum ada cabang pada order. Default Semua Cabang tetap bisa diubah. Cabang muncul setelah ada order dengan branch_id.
           </p>
         ) : null}
-        <div style={{ gridColumn: "1 / -1", display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
-          <button type="button" className="secondary" data-testid="design-cetakan-preview-po" disabled={previewLocked} onClick={() => openPreview("po")}>
-            {previewBusy ? "Memuat…" : "Preview PO"}
-          </button>
-          <button type="button" className="secondary" data-testid="design-cetakan-preview-invoice" disabled={previewLocked} onClick={() => openPreview("invoice")}>
-            Preview Faktur
-          </button>
-          <button type="button" className="secondary" data-testid="design-cetakan-preview-proforma" disabled={previewLocked} onClick={() => openPreview("proforma")}>
-            Preview Proforma
-          </button>
-          <button type="button" className="secondary" data-testid="design-cetakan-preview-delivery" disabled={previewLocked} onClick={() => openPreview("delivery")}>
-            Preview Surat Jalan
-          </button>
-        </div>
-        <p className="muted small" data-testid="design-cetakan-preview-note" style={{ gridColumn: "1 / -1", margin: 0 }}>
-          Preview mengikuti pengaturan yang sudah disimpan.
-        </p>
       </div>
 
       {err ? (
@@ -923,7 +964,7 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
         </div>
       ) : null}
 
-      <div className="settings-tabs" role="tablist" aria-label="Bagian Design Cetakan" style={{ marginBottom: 16 }}>
+      <div className="dc-tabs" role="tablist" aria-label="Bagian Design Cetakan">
         {TABS.map((item) => (
           <button
             key={item.id}
@@ -939,114 +980,135 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
         ))}
       </div>
 
-      <form onSubmit={save}>
+      <form className="dc-form" onSubmit={save}>
+        <div className="dc-main">
         {tab === "umum" ? (
-          <div className="settings-grid" data-testid="design-cetakan-umum">
-            <AssetSlot
-              title="Logo Perusahaan"
-              slot="company_logo"
-              asset={assets.company_logo}
-              previewUrl={previews.company_logo}
-              canEdit={canEdit}
-              busy={busy}
-              accept={LOGO_ACCEPT}
-              onPick={(file) => uploadSlot("company_logo", file)}
-              onRemove={() => removeSlot("company_logo")}
-              removeLabel={branchMode ? "Ikuti Global" : "Gunakan Logo Default"}
-              uploadLabel={branchMode ? "Ganti khusus cabang" : "Ganti Logo"}
-              statusCustom="Custom"
-              statusDefault="Default (logo repo)"
-              statusLabel={branchMode ? (overrideOn.company_logo ? "Khusus Cabang" : "Mengikuti Global") : undefined}
-              allowRemove={branchMode ? Boolean(overrideOn.company_logo) : undefined}
-              fileInputRef={logoInputRef}
-              testIdPrefix="design-cetakan-logo"
-            />
-            <OverrideBar
-              field="company_name"
-              branchMode={branchMode}
-              enabled={overrideOn.company_name}
-              canEdit={canEdit}
-              busy={busy}
-              onEnable={() => enableOverride("company_name")}
-              onFollow={() => followGlobal("company_name")}
-            />
-            <label>
-              Nama perusahaan
-              <input
-                data-testid="design-cetakan-company-name"
-                value={draft.company_name}
-                disabled={fieldLocked("company_name")}
-                onChange={(e) => patch("company_name", e.target.value)}
+          <div data-testid="design-cetakan-umum">
+            <section className="dc-section">
+              <h3>Identitas Perusahaan</h3>
+              <div className="dc-fields">
+                <label>
+                  <span className="dc-label-row">
+                    Nama perusahaan
+                    <OverrideBar
+                      field="company_name"
+                      branchMode={branchMode}
+                      enabled={overrideOn.company_name}
+                      canEdit={canEdit}
+                      busy={busy}
+                      onEnable={() => enableOverride("company_name")}
+                      onFollow={() => followGlobal("company_name")}
+                    />
+                  </span>
+                  <input
+                    data-testid="design-cetakan-company-name"
+                    value={draft.company_name}
+                    disabled={fieldLocked("company_name")}
+                    onChange={(e) => patch("company_name", e.target.value)}
+                  />
+                </label>
+                <div className="dc-address">
+                  <span className="dc-label-row">
+                    Alamat
+                    <OverrideBar
+                      field="address_lines"
+                      branchMode={branchMode}
+                      enabled={overrideOn.address_lines}
+                      canEdit={canEdit}
+                      busy={busy}
+                      onEnable={() => enableOverride("address_lines")}
+                      onFollow={() => followGlobal("address_lines")}
+                    />
+                  </span>
+                  {draft.address_lines.map((line, idx) => (
+                    <label key={`addr-${idx}`}>
+                      Alamat baris {idx + 1}
+                      <input
+                        data-testid={`design-cetakan-address-${idx}`}
+                        value={line}
+                        disabled={fieldLocked("address_lines")}
+                        onChange={(e) => patch(`address_lines.${idx}`, e.target.value)}
+                      />
+                    </label>
+                  ))}
+                </div>
+                <label>
+                  <span className="dc-label-row">
+                    Warna aksen
+                    {branchMode ? <GlobalOnlyMark testid="design-cetakan-global-only-accent" /> : null}
+                  </span>
+                  <input
+                    data-testid="design-cetakan-accent"
+                    value={draft.accent_color}
+                    disabled={globalOnlyLocked}
+                    onChange={(e) => patch("accent_color", e.target.value)}
+                    placeholder="#cc1f1a"
+                  />
+                </label>
+              </div>
+            </section>
+            <section className="dc-section">
+              <h3>Logo Perusahaan</h3>
+              <AssetSlot
+                title="Logo Perusahaan"
+                slot="company_logo"
+                asset={assets.company_logo}
+                previewUrl={previews.company_logo}
+                canEdit={canEdit}
+                busy={busy}
+                accept={LOGO_ACCEPT}
+                onPick={(file) => uploadSlot("company_logo", file)}
+                onRemove={() => removeSlot("company_logo")}
+                removeLabel={branchMode ? "Ikuti Global" : "Gunakan Logo Default"}
+                uploadLabel={branchMode ? "Ganti khusus cabang" : "Ganti Logo"}
+                statusCustom="Custom"
+                statusDefault="Default (logo repo)"
+                statusLabel={branchMode ? (overrideOn.company_logo ? "Khusus Cabang" : "Mengikuti Global") : undefined}
+                allowRemove={branchMode ? Boolean(overrideOn.company_logo) : undefined}
+                fileInputRef={logoInputRef}
+                testIdPrefix="design-cetakan-logo"
               />
-            </label>
-            <label>
-              Warna aksen
-              {branchMode ? (
-                <span className="muted small" data-testid="design-cetakan-global-only-accent"> Mengikuti Global</span>
-              ) : null}
-              <input
-                data-testid="design-cetakan-accent"
-                value={draft.accent_color}
-                disabled={globalOnlyLocked}
-                onChange={(e) => patch("accent_color", e.target.value)}
-                placeholder="#cc1f1a"
-              />
-            </label>
-            <OverrideBar
-              field="address_lines"
-              branchMode={branchMode}
-              enabled={overrideOn.address_lines}
-              canEdit={canEdit}
-              busy={busy}
-              onEnable={() => enableOverride("address_lines")}
-              onFollow={() => followGlobal("address_lines")}
-            />
-            {draft.address_lines.map((line, idx) => (
-              <label key={`addr-${idx}`}>
-                Alamat baris {idx + 1}
-                <input
-                  data-testid={`design-cetakan-address-${idx}`}
-                  value={line}
-                  disabled={fieldLocked("address_lines")}
-                  onChange={(e) => patch(`address_lines.${idx}`, e.target.value)}
-                />
-              </label>
-            ))}
+            </section>
           </div>
         ) : null}
 
         {tab === "po" ? (
-          <div className="settings-grid" data-testid="design-cetakan-po">
-            {branchMode ? (
-              <p className="muted small" data-testid="design-cetakan-global-only-po" style={{ gridColumn: "1 / -1" }}>
-                Mengikuti Global
-              </p>
-            ) : null}
-            {draft.po.signature_labels.map((label, idx) => (
-              <label key={`po-sig-${idx}`}>
-                Label tanda tangan {idx + 1}
-                <input
-                  data-testid={`design-cetakan-po-sig-${idx}`}
-                  value={label}
-                  disabled={globalOnlyLocked}
-                  onChange={(e) => patch(`po.signature_labels.${idx}`, e.target.value)}
-                />
-              </label>
-            ))}
-            <label>
-              Label nama footer
-              <input
-                data-testid="design-cetakan-po-footer-name"
-                value={draft.po.footer_name_label}
-                disabled={globalOnlyLocked}
-                onChange={(e) => patch("po.footer_name_label", e.target.value)}
-              />
-            </label>
+          <div data-testid="design-cetakan-po">
+            <section className="dc-section">
+              <h3 className="dc-label-row">
+                Tanda Tangan PO
+                {branchMode ? <GlobalOnlyMark testid="design-cetakan-global-only-po" /> : null}
+              </h3>
+              <div className="dc-fields dc-fields-3">
+                {draft.po.signature_labels.map((label, idx) => (
+                  <label key={`po-sig-${idx}`}>
+                    Label tanda tangan {idx + 1}
+                    <input
+                      data-testid={`design-cetakan-po-sig-${idx}`}
+                      value={label}
+                      disabled={globalOnlyLocked}
+                      onChange={(e) => patch(`po.signature_labels.${idx}`, e.target.value)}
+                    />
+                  </label>
+                ))}
+                <label>
+                  Label nama footer
+                  <input
+                    data-testid="design-cetakan-po-footer-name"
+                    value={draft.po.footer_name_label}
+                    disabled={globalOnlyLocked}
+                    onChange={(e) => patch("po.footer_name_label", e.target.value)}
+                  />
+                </label>
+              </div>
+            </section>
           </div>
         ) : null}
 
         {tab === "invoice" ? (
-          <div className="settings-grid" data-testid="design-cetakan-invoice">
+          <div data-testid="design-cetakan-invoice">
+            <section className="dc-section">
+              <h3>Tanda Tangan</h3>
             <AssetSlot
               title="Tanda Tangan — Disiapkan Oleh"
               slot="prepared_signature_image"
@@ -1063,9 +1125,10 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
               statusDefault="Teks saja"
               statusLabel={branchMode ? (overrideOn.prepared_signature_image ? "Khusus Cabang" : "Mengikuti Global") : undefined}
               allowRemove={branchMode ? Boolean(overrideOn.prepared_signature_image) : undefined}
-              fileInputRef={preparedInputRef}
-              testIdPrefix="design-cetakan-prepared-sig"
-            />
+                fileInputRef={preparedInputRef}
+                testIdPrefix="design-cetakan-prepared-sig"
+                emptyLabel="Belum ada tanda tangan"
+              />
             <AssetSlot
               title="Tanda Tangan / Stempel — Disetujui Oleh"
               slot="approved_signature_image"
@@ -1082,20 +1145,26 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
               statusDefault="Teks saja"
               statusLabel={branchMode ? (overrideOn.approved_signature_image ? "Khusus Cabang" : "Mengikuti Global") : undefined}
               allowRemove={branchMode ? Boolean(overrideOn.approved_signature_image) : undefined}
-              fileInputRef={approvedInputRef}
-              testIdPrefix="design-cetakan-approved-sig"
-            />
-            <OverrideBar
-              field="bank_accounts"
-              branchMode={branchMode}
-              enabled={overrideOn.bank_accounts}
-              canEdit={canEdit}
-              busy={busy}
-              onEnable={() => enableOverride("bank_accounts")}
-              onFollow={() => followGlobal("bank_accounts")}
-            />
+                fileInputRef={approvedInputRef}
+                testIdPrefix="design-cetakan-approved-sig"
+                emptyLabel="Belum ada tanda tangan"
+              />
+            </section>
+            <section className="dc-section">
+              <h3 className="dc-label-row">
+                Rekening Bank
+                <OverrideBar
+                  field="bank_accounts"
+                  branchMode={branchMode}
+                  enabled={overrideOn.bank_accounts}
+                  canEdit={canEdit}
+                  busy={busy}
+                  onEnable={() => enableOverride("bank_accounts")}
+                  onFollow={() => followGlobal("bank_accounts")}
+                />
+              </h3>
             {draft.invoice.bank_accounts.map((row, idx) => (
-              <div key={`bank-${idx}`} style={{ display: "contents" }}>
+              <div className="dc-bank" key={`bank-${idx}`}>
                 <label>
                   Bank {idx + 1}
                   <input
@@ -1125,11 +1194,13 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
                 </label>
               </div>
             ))}
-            {branchMode ? (
-              <p className="muted small" data-testid="design-cetakan-global-only-estimasi" style={{ gridColumn: "1 / -1" }}>
-                Estimasi Mengikuti Global
-              </p>
-            ) : null}
+            </section>
+            <section className="dc-section">
+              <h3 className="dc-label-row">
+                Teks Faktur / Proforma
+                {branchMode ? <GlobalOnlyMark testid="design-cetakan-global-only-estimasi">Estimasi Mengikuti Global</GlobalOnlyMark> : null}
+              </h3>
+              <div className="dc-fields">
             <label>
               Judul estimasi
               <input
@@ -1150,9 +1221,12 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
                 />
               </label>
             ))}
-            <OverrideBar field="prepared_label" branchMode={branchMode} enabled={overrideOn.prepared_label} canEdit={canEdit} busy={busy} onEnable={() => enableOverride("prepared_label")} onFollow={() => followGlobal("prepared_label")} />
+            <div className="dc-fields dc-fields-2">
             <label>
-              Label Disiapkan
+              <span className="dc-label-row">
+                Label Disiapkan
+                <OverrideBar field="prepared_label" branchMode={branchMode} enabled={overrideOn.prepared_label} canEdit={canEdit} busy={busy} onEnable={() => enableOverride("prepared_label")} onFollow={() => followGlobal("prepared_label")} />
+              </span>
               <input
                 data-testid="design-cetakan-prepared-label"
                 value={draft.invoice.prepared_label}
@@ -1160,9 +1234,11 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
                 onChange={(e) => patch("invoice.prepared_label", e.target.value)}
               />
             </label>
-            <OverrideBar field="prepared_footer" branchMode={branchMode} enabled={overrideOn.prepared_footer} canEdit={canEdit} busy={busy} onEnable={() => enableOverride("prepared_footer")} onFollow={() => followGlobal("prepared_footer")} />
             <label>
-              Footer Disiapkan
+              <span className="dc-label-row">
+                Footer Disiapkan
+                <OverrideBar field="prepared_footer" branchMode={branchMode} enabled={overrideOn.prepared_footer} canEdit={canEdit} busy={busy} onEnable={() => enableOverride("prepared_footer")} onFollow={() => followGlobal("prepared_footer")} />
+              </span>
               <input
                 data-testid="design-cetakan-prepared-footer"
                 value={draft.invoice.prepared_footer}
@@ -1170,9 +1246,11 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
                 onChange={(e) => patch("invoice.prepared_footer", e.target.value)}
               />
             </label>
-            <OverrideBar field="approved_label" branchMode={branchMode} enabled={overrideOn.approved_label} canEdit={canEdit} busy={busy} onEnable={() => enableOverride("approved_label")} onFollow={() => followGlobal("approved_label")} />
             <label>
-              Label Disetujui
+              <span className="dc-label-row">
+                Label Disetujui
+                <OverrideBar field="approved_label" branchMode={branchMode} enabled={overrideOn.approved_label} canEdit={canEdit} busy={busy} onEnable={() => enableOverride("approved_label")} onFollow={() => followGlobal("approved_label")} />
+              </span>
               <input
                 data-testid="design-cetakan-approved-label"
                 value={draft.invoice.approved_label}
@@ -1180,9 +1258,11 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
                 onChange={(e) => patch("invoice.approved_label", e.target.value)}
               />
             </label>
-            <OverrideBar field="approved_footer" branchMode={branchMode} enabled={overrideOn.approved_footer} canEdit={canEdit} busy={busy} onEnable={() => enableOverride("approved_footer")} onFollow={() => followGlobal("approved_footer")} />
             <label>
-              Footer Disetujui
+              <span className="dc-label-row">
+                Footer Disetujui
+                <OverrideBar field="approved_footer" branchMode={branchMode} enabled={overrideOn.approved_footer} canEdit={canEdit} busy={busy} onEnable={() => enableOverride("approved_footer")} onFollow={() => followGlobal("approved_footer")} />
+              </span>
               <input
                 data-testid="design-cetakan-approved-footer"
                 value={draft.invoice.approved_footer}
@@ -1190,68 +1270,83 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
                 onChange={(e) => patch("invoice.approved_footer", e.target.value)}
               />
             </label>
+            </div>
+              </div>
+            </section>
           </div>
         ) : null}
 
         {tab === "sj" ? (
-          <div className="settings-grid" data-testid="design-cetakan-sj">
-            {branchMode ? (
-              <p className="muted small" data-testid="design-cetakan-global-only-sj" style={{ gridColumn: "1 / -1" }}>
-                Mengikuti Global
-              </p>
-            ) : null}
-            {draft.surat_jalan.signature_labels.map((label, idx) => (
-              <label key={`sj-sig-${idx}`}>
-                Label tanda tangan {idx + 1}
-                <input
-                  data-testid={`design-cetakan-sj-sig-${idx}`}
-                  value={label}
-                  disabled={globalOnlyLocked}
-                  onChange={(e) => patch(`surat_jalan.signature_labels.${idx}`, e.target.value)}
-                />
-              </label>
-            ))}
-            <label>
-              Label tanggal
-              <input
-                data-testid="design-cetakan-sj-date-label"
-                value={draft.surat_jalan.date_label}
-                disabled={globalOnlyLocked}
-                onChange={(e) => patch("surat_jalan.date_label", e.target.value)}
-              />
-            </label>
+          <div data-testid="design-cetakan-sj">
+            <section className="dc-section">
+              <h3 className="dc-label-row">
+                Label Tanda Tangan
+                {branchMode ? <GlobalOnlyMark testid="design-cetakan-global-only-sj" /> : null}
+              </h3>
+              <div className="dc-fields dc-fields-3">
+                {draft.surat_jalan.signature_labels.map((label, idx) => (
+                  <label key={`sj-sig-${idx}`}>
+                    Label tanda tangan {idx + 1}
+                    <input
+                      data-testid={`design-cetakan-sj-sig-${idx}`}
+                      value={label}
+                      disabled={globalOnlyLocked}
+                      onChange={(e) => patch(`surat_jalan.signature_labels.${idx}`, e.target.value)}
+                    />
+                  </label>
+                ))}
+                <label>
+                  Label tanggal
+                  <input
+                    data-testid="design-cetakan-sj-date-label"
+                    value={draft.surat_jalan.date_label}
+                    disabled={globalOnlyLocked}
+                    onChange={(e) => patch("surat_jalan.date_label", e.target.value)}
+                  />
+                </label>
+              </div>
+            </section>
           </div>
         ) : null}
+        </div>
 
-        <div style={{ display: "flex", gap: 12, alignItems: "center", marginTop: 20 }}>
-          <button
-            type="submit"
-            className="primary"
-            data-testid="design-cetakan-save"
-            disabled={!canEdit || busy}
-          >
-            <Save size={16} />
-            {busy ? "Menyimpan…" : "Simpan"}
-          </button>
-          {branchMode ? (
-            <button
-              type="button"
-              className="secondary"
-              data-testid="design-cetakan-reset-branch"
-              disabled={!canEdit || busy}
-              onClick={resetBranch}
-            >
-              Gunakan Semua Pengaturan Global
-            </button>
-          ) : null}
-          {!canEdit ? (
-            <span className="muted small">Anda hanya dapat melihat pengaturan ini.</span>
-          ) : null}
-          {meta.updated_at ? (
-            <span className="muted small" data-testid="design-cetakan-updated">
-              Terakhir diubah{updatedByLabel ? ` oleh ${updatedByLabel}` : ""}
+        <div className="dc-savebar" data-testid="design-cetakan-savebar">
+          <div className="dc-savebar-meta">
+            <span className={`dc-badge ${dirty ? "is-dirty" : "is-saved"}`}>
+              {dirty ? <AlertCircle size={14} aria-hidden="true" /> : <CheckCircle2 size={14} aria-hidden="true" />}
+              {saveState}
             </span>
-          ) : null}
+            {!canEdit ? (
+              <span className="muted small">Anda hanya dapat melihat pengaturan ini.</span>
+            ) : null}
+            {meta.updated_at ? (
+              <span className="muted small" data-testid="design-cetakan-updated">
+                Terakhir diubah{updatedByLabel ? ` oleh ${updatedByLabel}` : ""}
+              </span>
+            ) : null}
+          </div>
+          <div className="dc-savebar-actions">
+            {branchMode ? (
+              <button
+                type="button"
+                className="secondary dc-reset"
+                data-testid="design-cetakan-reset-branch"
+                disabled={!canEdit || busy}
+                onClick={resetBranch}
+              >
+                Gunakan Semua Pengaturan Global
+              </button>
+            ) : null}
+            <button
+              type="submit"
+              className="primary"
+              data-testid="design-cetakan-save"
+              disabled={!canEdit || busy}
+            >
+              <Save size={16} aria-hidden="true" />
+              {busy ? "Menyimpan…" : "Simpan Perubahan"}
+            </button>
+          </div>
         </div>
       </form>
 
@@ -1261,14 +1356,14 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
           data-testid="design-cetakan-history-modal"
           onClick={(e) => e.target === e.currentTarget && setHistoryOpen(false)}
         >
-          <div className="modal-inner modal-viewport-safe" style={{ maxWidth: 560 }} onClick={(e) => e.stopPropagation()}>
+          <div className="modal-inner modal-viewport-safe dc-modal" onClick={(e) => e.stopPropagation()}>
             <header className="modal-head">
               <h3>Riwayat Perubahan</h3>
               <button type="button" className="icon-button" data-testid="design-cetakan-history-close" onClick={() => setHistoryOpen(false)}>
                 <X size={16} />
               </button>
             </header>
-            <div className="settings-grid" style={{ marginBottom: 12 }}>
+            <div className="dc-history-filters">
               <label>
                 Filter
                 <select
@@ -1320,17 +1415,18 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
               {historyItems.map((row) => (
                 <div
                   key={row.id || `${row.at}-${row.action}`}
-                  className="settings-info"
+                  className="dc-history-row"
                   data-testid="design-cetakan-history-row"
-                  style={{ marginBottom: 8, display: "block" }}
                 >
-                  <p className="muted small" data-testid="design-cetakan-history-at">{formatHistoryAt(row.at)}</p>
-                  <p data-testid="design-cetakan-history-actor"><strong>{row.actor_name || "-"}</strong></p>
-                  <p className="muted small" data-testid="design-cetakan-history-branch">{row.branch_name || "Global"}</p>
                   <p data-testid="design-cetakan-history-operation">{row.operation_label || row.summary}</p>
+                  <p className="muted small dc-history-meta">
+                    <span data-testid="design-cetakan-history-at">{formatHistoryAt(row.at)}</span>
+                    <span data-testid="design-cetakan-history-actor">{row.actor_name || "-"}</span>
+                    <span data-testid="design-cetakan-history-branch">{row.branch_name || "Global"}</span>
+                  </p>
                   {Array.isArray(row.changed_fields) && row.changed_fields.length ? (
-                    <p className="muted small" data-testid="design-cetakan-history-changes">
-                      Perubahan: {row.changed_fields.map((field) => field.label || field.key).filter(Boolean).join(", ")}
+                    <p className="dc-chips" data-testid="design-cetakan-history-changes">
+                      {row.changed_fields.map((field) => field.label || field.key).filter(Boolean).join(", ")}
                     </p>
                   ) : null}
                 </div>
@@ -1357,18 +1453,17 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
           data-testid="design-cetakan-copy-modal"
           onClick={(e) => e.target === e.currentTarget && !copyBusy && setCopyOpen(false)}
         >
-          <div className="modal-inner modal-viewport-safe" style={{ maxWidth: 560 }} onClick={(e) => e.stopPropagation()}>
+          <div className="modal-inner modal-viewport-safe dc-modal" onClick={(e) => e.stopPropagation()}>
             <header className="modal-head">
               <h3>Salin Pengaturan Khusus</h3>
               <button type="button" className="icon-button" data-testid="design-cetakan-copy-close" onClick={() => !copyBusy && setCopyOpen(false)}>
                 <X size={16} />
               </button>
             </header>
-            <p className="muted small" style={{ marginBottom: 12 }}>
-              Menyalin pengaturan khusus sumber ke cabang tujuan. Nilai yang diwarisi dari Global tidak disalin.
-              Salin menggunakan pengaturan yang sudah disimpan.
+            <p className="dc-callout">
+              Salin menggunakan pengaturan yang sudah disimpan. Nilai yang diwarisi dari Global tidak disalin.
             </p>
-            <div className="settings-grid" style={{ marginBottom: 12 }}>
+            <div className="dc-history-filters">
               <label>
                 Sumber
                 <select
@@ -1424,16 +1519,16 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
               <p className="muted small" data-testid="design-cetakan-copy-same">Sumber dan tujuan tidak boleh sama.</p>
             ) : null}
             {copySourceKeys.length ? (
-              <div data-testid="design-cetakan-copy-summary" style={{ marginBottom: 12 }}>
+              <div className="dc-summary" data-testid="design-cetakan-copy-summary">
                 <p className="small"><strong>Akan disalin</strong></p>
-                <p className="muted small" data-testid="design-cetakan-copy-fields">{copySourceKeys.map(copyFieldLabel).join(", ")}</p>
+                <p className="dc-chips" data-testid="design-cetakan-copy-fields">{copySourceKeys.map(copyFieldLabel).join(", ")}</p>
                 {copyReplaceKeys.length ? (
-                  <p className="muted small" data-testid="design-cetakan-copy-replaced">
+                  <p className="dc-chips" data-testid="design-cetakan-copy-replaced">
                     Akan diganti di tujuan: {copyReplaceKeys.map(copyFieldLabel).join(", ")}
                   </p>
                 ) : null}
                 {copyDropKeys.length ? (
-                  <p className="muted small" data-testid="design-cetakan-copy-dropped">
+                  <p className="dc-chips" data-testid="design-cetakan-copy-dropped">
                     Akan berhenti di-override / kembali ke Global: {copyDropKeys.map(copyFieldLabel).join(", ")}
                   </p>
                 ) : null}
@@ -1445,10 +1540,11 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
                 <span>{copyErr}</span>
               </div>
             ) : null}
-            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+            <div className="dc-modal-actions">
               <button type="button" className="secondary" disabled={copyBusy} onClick={() => setCopyOpen(false)}>Batal</button>
               <button
                 type="button"
+                className="primary"
                 data-testid="design-cetakan-copy-confirm"
                 disabled={copyBlocked}
                 onClick={submitCopy}
