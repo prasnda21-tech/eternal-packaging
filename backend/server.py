@@ -10523,6 +10523,110 @@ async def replace_sales_order_line_product(
     }
 
 
+def _normalize_line_color(value):
+    """Create rule: trim, blank becomes null, case and separators stay."""
+    return (value or "").strip() or None
+
+
+def _line_color_stable_id(line: dict) -> str:
+    line_id = str(line.get("line_id") or "").strip()
+    if line_id:
+        return line_id
+    return str(line.get("accurate_line_id") or "").strip()
+
+
+class _LineColorUnchanged(Exception):
+    """Normalized color already matches. Skip persist and audit."""
+
+
+class LineColorUpdatePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    color: Optional[str] = None
+    line_id: Optional[str] = None
+
+
+@api_router.patch("/sales-orders/{order_id}/lines/{line_idx}/color")
+async def update_sales_order_line_color(
+    order_id: str,
+    line_idx: int,
+    payload: LineColorUpdatePayload,
+    user=Depends(current_user),
+):
+    """Edit the descriptive sablon color on one order line. Does not touch qty or product."""
+    await _require_perm(user, "po.edit")
+    applied: Dict[str, Any] = {}
+
+    def mutate(fresh: dict):
+        fresh_lis = list(fresh.get("line_items") or [])
+        if line_idx < 0 or line_idx >= len(fresh_lis) or not isinstance(fresh_lis[line_idx], dict):
+            raise HTTPException(400, "Line item tidak ditemukan.")
+        fresh_line = fresh_lis[line_idx]
+        stable = _line_color_stable_id(fresh_line)
+        requested = str(payload.line_id or "").strip()
+        if stable != requested:
+            raise HTTPException(409, "Identitas baris berubah. Muat ulang halaman lalu coba lagi.")
+        before_color = _normalize_line_color(fresh_line.get("color"))
+        after_color = _normalize_line_color(payload.color)
+        if before_color == after_color:
+            raise _LineColorUnchanged()
+        mutated = dict(fresh_line)
+        mutated["color"] = after_color
+        fresh_lis[line_idx] = mutated
+        fresh["line_items"] = fresh_lis
+        applied["before_color"] = before_color
+        applied["after_color"] = after_color
+        applied["line_id"] = stable or None
+        applied["item_code"] = fresh_line.get("item_code")
+
+    try:
+        fresh = await _with_quantity_lock(
+            order_id, mutate, persist_keys=("line_items",),
+        )
+    except _LineColorUnchanged:
+        detail = await get_order(order_id, user=user)
+        order_out = detail["order"]
+        line = (order_out.get("line_items") or [None])[line_idx] if line_idx >= 0 else None
+        color = _normalize_line_color((line or {}).get("color")) if isinstance(line, dict) else None
+        return {
+            "order": order_out,
+            "line_idx": line_idx,
+            "line": line,
+            "before_color": color,
+            "after_color": color,
+        }
+
+    identity = applied.get("line_id")
+    audit_base = {
+        "order_id": fresh.get("id"),
+        "po_number": fresh.get("po_number"),
+        "line_idx": line_idx,
+        "line_id": identity,
+        "item_code": applied.get("item_code"),
+    }
+    await _audit_po(
+        fresh,
+        "sales_order.line_color.update",
+        user,
+        before={**audit_base, "before_color": applied.get("before_color")},
+        after={
+            **audit_base,
+            "after_color": applied.get("after_color"),
+            "actor": user.get("email"),
+        },
+        note=f"Ubah warna item PO line_idx={line_idx}",
+    )
+    detail = await get_order(order_id, user=user)
+    order_out = detail["order"]
+    line = (order_out.get("line_items") or [None])[line_idx]
+    return {
+        "order": order_out,
+        "line_idx": line_idx,
+        "line": line,
+        "before_color": applied.get("before_color"),
+        "after_color": applied.get("after_color"),
+    }
+
+
 def _quantity_by_unit(lines) -> List[dict]:
     """Sum quantity per stored unit. Different units are not folded into pcs."""
     totals: Dict[str, int] = {}
