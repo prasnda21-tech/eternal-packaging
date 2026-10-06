@@ -428,6 +428,39 @@ async def test_copy_history_labels_copied_fields_and_batched_names():
     assert ACTION_BRANCH_COPY in HISTORY_ACTIONS
 
 
+@pytest.mark.anyio
+async def test_page_number_is_bounded():
+    db = MockDb([_row(id="a", action=ACTION_UPDATE)])
+    first = await list_print_design_history(db, page=1, page_size=20)
+    assert first["page"] == 1
+    assert first["page_size"] == 20
+    assert [row["id"] for row in first["items"]] == ["a"]
+    top = await list_print_design_history(db, page=500, page_size=20)
+    assert top["page"] == 500
+    assert top["page_size"] == 20
+    assert top["items"] == []
+    capped = await list_print_design_history(db, page=1, page_size=999)
+    assert capped["page_size"] == 50
+    with pytest.raises(HTTPException) as zero:
+        await list_print_design_history(db, page=0)
+    assert zero.value.status_code == 400
+    with pytest.raises(HTTPException) as negative:
+        await list_print_design_history(db, page=-1)
+    assert negative.value.status_code == 400
+    with pytest.raises(HTTPException) as over:
+        await list_print_design_history(db, page=501)
+    assert over.value.status_code == 400
+
+
+def test_startup_declares_audit_action_at_index():
+    server = (ROOT / "server.py").read_text(encoding="utf-8")
+    assert 'await db.audit_logs.create_index("at")' in server
+    assert 'await db.audit_logs.create_index("actor_email")' in server
+    assert 'await db.audit_logs.create_index("target_email")' in server
+    assert 'await db.audit_logs.create_index([("action", 1), ("at", -1)], name="audit_action_at")' in server
+    assert "drop_index" not in server[server.index("audit_logs.create_index"):server.index("audit_action_at") + 40]
+
+
 def test_history_route_permission_and_preview_has_no_audit():
     server = (ROOT / "server.py").read_text(encoding="utf-8")
     preview = (ROOT / "services" / "print_design_preview.py").read_text(encoding="utf-8")

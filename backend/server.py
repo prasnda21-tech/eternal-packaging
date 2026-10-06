@@ -14773,6 +14773,7 @@ async def seed():
     await db.audit_logs.create_index("at")
     await db.audit_logs.create_index("actor_email")
     await db.audit_logs.create_index("target_email")
+    await db.audit_logs.create_index([("action", 1), ("at", -1)], name="audit_action_at")
     await db.role_permissions.create_index("role", unique=True)
     await db.roles.create_index("role", unique=True)
     # Customer Approval indexes

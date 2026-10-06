@@ -16,6 +16,7 @@ SCOPES = frozenset({SCOPE_ALL, SCOPE_GLOBAL, SCOPE_BRANCH})
 DEFAULT_PAGE = 1
 DEFAULT_PAGE_SIZE = 20
 MAX_PAGE_SIZE = 50
+MAX_PAGE = 500
 
 ACTION_UPDATE = "settings.design_cetakan.update"
 ACTION_ASSET_UPLOAD = "settings.design_cetakan.asset_upload"
@@ -102,11 +103,15 @@ def _clip_scope(raw: Any) -> str:
 
 
 def _clip_page(raw: Any) -> int:
+    if raw is None or raw == "":
+        return DEFAULT_PAGE
     try:
         page = int(raw)
     except (TypeError, ValueError):
-        page = DEFAULT_PAGE
-    return max(page, DEFAULT_PAGE)
+        raise HTTPException(400, "page tidak valid")
+    if page < 1 or page > MAX_PAGE:
+        raise HTTPException(400, "page tidak valid")
+    return page
 
 
 def _clip_page_size(raw: Any) -> int:

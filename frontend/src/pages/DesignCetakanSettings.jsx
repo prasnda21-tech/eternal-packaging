@@ -355,7 +355,10 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
   const [copyBusy, setCopyBusy] = useState(false);
   const [copyErr, setCopyErr] = useState("");
   const [err, setErr] = useState("");
+  const [dirty, setDirty] = useState(false);
   const globalSnapshotRef = useRef(null);
+  const loadRequestRef = useRef(0);
+  const scopeRef = useRef("global");
   const logoInputRef = useRef(null);
   const preparedInputRef = useRef(null);
   const approvedInputRef = useRef(null);
@@ -380,7 +383,8 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
 
   const branchMode = scope !== "global";
 
-  const loadPreviews = async (nextAssets, activeScope, flags) => {
+  const loadPreviews = async (nextAssets, activeScope, flags, requestId) => {
+    if (requestId !== loadRequestRef.current) return;
     revokeAllPreviews();
     const next = {};
     const slots = ["company_logo", "prepared_signature_image", "approved_signature_image"];
@@ -400,8 +404,11 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
         }
       })
     );
+    if (requestId !== loadRequestRef.current) return;
     setPreviews(next);
   };
+
+  const markClean = () => setDirty(false);
 
   const applyBranchView = (view) => {
     const effective = view?.effective || {};
@@ -412,25 +419,37 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
   };
 
   const load = (activeScope) => {
+    const requestId = ++loadRequestRef.current;
+    const target = activeScope || "global";
+    const current = () => requestId === loadRequestRef.current && scopeRef.current === target;
     setBusy(true);
     setErr("");
-    const target = activeScope || "global";
     api.designCetakanSettings()
       .then(async (globalRes) => {
+        if (!current()) return;
         const globalSettings = globalRes?.settings || {};
         globalSnapshotRef.current = globalSettings;
         if (target === "global") {
           applySettings(globalSettings);
           setOverrideOn(emptyOverrideFlags());
-          await loadPreviews(assetsFromApi(globalSettings), "global", emptyOverrideFlags());
+          markClean();
+          await loadPreviews(assetsFromApi(globalSettings), "global", emptyOverrideFlags(), requestId);
           return;
         }
         const branchRes = await api.designCetakanBranch(target);
+        if (!current()) return;
         const applied = applyBranchView(branchRes);
-        await loadPreviews(applied.assets, target, applied.flags);
+        markClean();
+        await loadPreviews(applied.assets, target, applied.flags, requestId);
       })
-      .catch((e) => setErr(errDetail(e)))
-      .finally(() => setBusy(false));
+      .catch((e) => {
+        if (!current()) return;
+        setErr(errDetail(e));
+      })
+      .finally(() => {
+        if (requestId !== loadRequestRef.current) return;
+        setBusy(false);
+      });
   };
 
   useEffect(() => {
@@ -444,6 +463,14 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
     return () => revokeAllPreviews();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scope]);
+
+  const requestScopeChange = (next) => {
+    const target = next || "global";
+    if (target === scopeRef.current) return;
+    if (dirty && !window.confirm("Perubahan yang belum disimpan akan dibuang. Lanjutkan?")) return;
+    scopeRef.current = target;
+    setScope(target);
+  };
 
   useEffect(() => {
     if (!historyOpen) return undefined;
@@ -473,6 +500,7 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
   }, [historyOpen, historyScope, historyBranchId]);
 
   const openHistory = () => {
+    setCopyOpen(false);
     setHistoryScope("all");
     setHistoryBranchId("");
     setHistoryOpen(true);
@@ -498,6 +526,7 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
   };
 
   const openCopy = () => {
+    setHistoryOpen(false);
     setCopySource(scope === "global" ? "global" : String(scope));
     setCopyTarget("");
     setCopySourceOverride(null);
@@ -562,7 +591,8 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
       setCopyOpen(false);
       if (scope === copyTarget) {
         const applied = applyBranchView(res?.branch || {});
-        await loadPreviews(applied.assets, copyTarget, applied.flags);
+        await loadPreviews(applied.assets, copyTarget, applied.flags, loadRequestRef.current);
+        markClean();
       }
       if (historyOpen) {
         setHistoryItems([]);
@@ -609,19 +639,25 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
       cur[lastKey] = value;
       return next;
     });
+    setDirty(true);
   };
 
   const save = async (e) => {
     e?.preventDefault();
     if (!canEdit || busy) return;
+    const requestId = loadRequestRef.current;
+    const target = scopeRef.current;
+    const stillHere = () => requestId === loadRequestRef.current && scopeRef.current === target;
     setBusy(true);
     setErr("");
     try {
       if (branchMode) {
         const payload = buildBranchOverridePayload(draft, overrideOn);
         const res = await api.updateDesignCetakanBranch(scope, payload);
+        if (!stillHere()) return;
         const applied = applyBranchView(res?.branch || {});
-        await loadPreviews(applied.assets, scope, applied.flags);
+        await loadPreviews(applied.assets, scope, applied.flags, requestId);
+        markClean();
         notify?.(res.message || "Design Cetakan cabang berhasil disimpan");
       } else {
         const payload = {
@@ -649,20 +685,26 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
           },
         };
         const res = await api.updateDesignCetakanSettings(payload);
+        if (!stillHere()) return;
         const s = res?.settings || {};
         applySettings(s);
-        await loadPreviews(assetsFromApi(s), "global", emptyOverrideFlags());
+        await loadPreviews(assetsFromApi(s), "global", emptyOverrideFlags(), requestId);
+        markClean();
         notify?.(res.message || "Design Cetakan berhasil disimpan");
       }
     } catch (ex) {
-      setErr(errDetail(ex));
+      if (stillHere()) setErr(errDetail(ex));
     } finally {
+      if (requestId !== loadRequestRef.current) return;
       setBusy(false);
     }
   };
 
   const uploadSlot = async (slot, file) => {
     if (!canEdit || busy || !file) return;
+    const requestId = loadRequestRef.current;
+    const target = scopeRef.current;
+    const stillHere = () => requestId === loadRequestRef.current && scopeRef.current === target;
     const type = String(file.type || "").toLowerCase();
     if (type && !["image/png", "image/jpeg", "image/jpg", "image/webp"].includes(type)) {
       setErr("File harus berupa gambar PNG, JPEG, atau WEBP.");
@@ -678,43 +720,52 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
       const res = branchMode
         ? await api.uploadDesignCetakanBranchAsset(scope, slot, file)
         : await api.uploadDesignCetakanAsset(slot, file);
+      if (!stillHere()) return;
       if (branchMode) {
         const applied = applyBranchView(res?.branch || {});
-        await loadPreviews(applied.assets, scope, applied.flags);
+        await loadPreviews(applied.assets, scope, applied.flags, requestId);
       } else {
         const s = res?.settings || {};
         applySettings(s);
-        await loadPreviews(assetsFromApi(s), "global", emptyOverrideFlags());
+        await loadPreviews(assetsFromApi(s), "global", emptyOverrideFlags(), requestId);
       }
+      markClean();
       notify?.(res.message || "Asset berhasil diunggah");
     } catch (ex) {
+      if (!stillHere()) return;
       setErr(errDetail(ex));
-      await loadPreviews(assets);
+      await loadPreviews(assets, target, overrideOn, requestId);
     } finally {
+      if (requestId !== loadRequestRef.current) return;
       setBusy(false);
     }
   };
 
   const removeSlot = async (slot) => {
     if (!canEdit || busy) return;
+    const requestId = loadRequestRef.current;
+    const stillHere = () => requestId === loadRequestRef.current && scopeRef.current === scope;
     setBusy(true);
     setErr("");
     try {
       const res = branchMode
         ? await api.removeDesignCetakanBranchAsset(scope, slot)
         : await api.removeDesignCetakanAsset(slot);
+      if (!stillHere()) return;
       if (branchMode) {
         const applied = applyBranchView(res?.branch || {});
-        await loadPreviews(applied.assets, scope, applied.flags);
+        await loadPreviews(applied.assets, scope, applied.flags, requestId);
       } else {
         const s = res?.settings || {};
         applySettings(s);
-        await loadPreviews(assetsFromApi(s), "global", emptyOverrideFlags());
+        await loadPreviews(assetsFromApi(s), "global", emptyOverrideFlags(), requestId);
       }
+      markClean();
       notify?.(res.message || "Asset dihapus");
     } catch (ex) {
-      setErr(errDetail(ex));
+      if (stillHere()) setErr(errDetail(ex));
     } finally {
+      if (requestId !== loadRequestRef.current) return;
       setBusy(false);
     }
   };
@@ -722,27 +773,35 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
   const enableOverride = (field) => {
     if (!canEdit || busy || !branchMode) return;
     setOverrideOn((prev) => ({ ...prev, [field]: true }));
+    setDirty(true);
   };
 
   const followGlobal = (field) => {
     if (!canEdit || busy || !branchMode) return;
     setOverrideOn((prev) => ({ ...prev, [field]: false }));
     setDraft((prev) => restoreFieldFromGlobal(prev, field, globalSnapshotRef.current));
+    setDirty(true);
   };
 
   const resetBranch = async () => {
     if (!canEdit || busy || !branchMode) return;
-    if (!window.confirm("Gunakan semua pengaturan global untuk cabang ini? Override cabang akan dihapus.")) return;
+    if (!window.confirm("Pengaturan khusus cabang akan dihapus dan cabang kembali mengikuti Global. Perubahan yang belum disimpan juga akan dibuang.")) return;
+    const requestId = loadRequestRef.current;
+    const target = scopeRef.current;
+    const stillHere = () => requestId === loadRequestRef.current && scopeRef.current === target;
     setBusy(true);
     setErr("");
     try {
       const res = await api.resetDesignCetakanBranch(scope);
+      if (!stillHere()) return;
       const applied = applyBranchView(res?.branch || {});
-      await loadPreviews(applied.assets, scope, applied.flags);
+      await loadPreviews(applied.assets, scope, applied.flags, requestId);
+      markClean();
       notify?.(res.message || "Cabang kembali mengikuti pengaturan global");
     } catch (ex) {
-      setErr(errDetail(ex));
+      if (stillHere()) setErr(errDetail(ex));
     } finally {
+      if (requestId !== loadRequestRef.current) return;
       setBusy(false);
     }
   };
@@ -802,8 +861,7 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
           <select
             data-testid="design-cetakan-scope"
             value={scope}
-            disabled={busy}
-            onChange={(e) => setScope(e.target.value)}
+            onChange={(e) => requestScopeChange(e.target.value)}
           >
             <option value="global">Default Semua Cabang</option>
             {catalog.map((row) => (
@@ -1308,6 +1366,7 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
             </header>
             <p className="muted small" style={{ marginBottom: 12 }}>
               Menyalin pengaturan khusus sumber ke cabang tujuan. Nilai yang diwarisi dari Global tidak disalin.
+              Salin menggunakan pengaturan yang sudah disimpan.
             </p>
             <div className="settings-grid" style={{ marginBottom: 12 }}>
               <label>
