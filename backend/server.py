@@ -11993,6 +11993,46 @@ async def design_cetakan_history(
     )
 
 
+@api_router.post("/settings/design-cetakan/copy")
+async def design_cetakan_copy(payload: dict = Body(...), user=Depends(current_user)):
+    """Copy explicit Design Cetakan overrides onto a branch. Replace mode only."""
+    await _require_any_perm(user, "settings.design_cetakan.manage", "permissions.manage")
+    from services.print_design_copy import copy_print_design
+
+    result = await copy_print_design(db, payload or {}, user=user)
+    view = result.get("branch") or {}
+    await _write_audit(
+        action="settings.design_cetakan.branch_copy",
+        actor=user,
+        target_email="-",
+        before={
+            "branch_id": result.get("target_branch_id"),
+            "operation": "copy",
+            "override": result.get("before_override") or {},
+        },
+        after={
+            "branch_id": result.get("target_branch_id"),
+            "operation": "copy",
+            "source_scope": result.get("source_scope"),
+            "source_branch_id": result.get("source_branch_id"),
+            "target_branch_id": result.get("target_branch_id"),
+            "mode": result.get("mode") or "replace",
+            "copied_fields": result.get("copied_field_keys") or [],
+            "override": (view.get("override") if isinstance(view, dict) else {}) or {},
+        },
+    )
+    return {
+        "copied": True,
+        "copied_fields": result.get("copied_fields") or [],
+        "source_scope": result.get("source_scope"),
+        "source_branch_id": result.get("source_branch_id"),
+        "target_branch_id": result.get("target_branch_id"),
+        "mode": result.get("mode") or "replace",
+        "message": result.get("message") or "Pengaturan khusus Design Cetakan berhasil disalin",
+        "branch": view,
+    }
+
+
 @api_router.get("/settings/design-cetakan/preview/{document_type}")
 async def design_cetakan_preview(
     document_type: str,
