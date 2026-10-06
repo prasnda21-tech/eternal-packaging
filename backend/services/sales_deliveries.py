@@ -969,12 +969,20 @@ async def list_sales_deliveries(
     q: Optional[str] = None,
     po_id: Optional[str] = None,
     status: Optional[str] = None,
+    delivery_date_preset: Optional[str] = None,
+    created_by: Optional[str] = None,
 ) -> List[dict]:
     """Query list of sales deliveries with search and filter."""
+    from services.sales_date_presets import match_shipping_date
+
     query: dict = {"is_cancelled": {"$ne": True}}
 
     if po_id and po_id.strip():
         query["po_id"] = po_id.strip()
+
+    created_by_key = str(created_by or "").strip()
+    if created_by_key:
+        query["created_by"] = created_by_key
 
     if q and q.strip():
         needle = re.escape(q.strip())
@@ -1026,6 +1034,7 @@ async def list_sales_deliveries(
             else:
                 po_statuses[pid] = "SEBAGIAN"
 
+    date_preset = str(delivery_date_preset or "all").strip().lower() or "all"
     enriched_deliveries = []
     filter_norm = (status or "").strip().upper()
     for d in deliveries:
@@ -1037,9 +1046,32 @@ async def list_sales_deliveries(
         if filter_norm and filter_norm not in ("ALL", "SEMUA", "SEMUA STATUS"):
             if derived != filter_norm:
                 continue
+        if date_preset not in ("", "all"):
+            if not match_shipping_date(d.get("delivery_date"), date_preset):
+                continue
         enriched_deliveries.append(d)
 
     return enriched_deliveries
+
+
+async def list_sales_delivery_filter_options(db) -> Dict[str, Any]:
+    """Global created_by options for SJ header filter (deduped by created_by)."""
+    rows = await db.sales_deliveries.find(
+        {"is_cancelled": {"$ne": True}, "created_by": {"$exists": True, "$nin": [None, ""]}},
+        {"_id": 0, "created_by": 1, "created_by_name": 1},
+    ).to_list(5000)
+    by_key: Dict[str, str] = {}
+    for row in rows:
+        key = str(row.get("created_by") or "").strip()
+        if not key or key in by_key:
+            continue
+        label = str(row.get("created_by_name") or "").strip() or key
+        by_key[key] = label
+    options = [
+        {"value": key, "label": by_key[key]}
+        for key in sorted(by_key.keys(), key=lambda k: by_key[k].lower())
+    ]
+    return {"created_by_options": options}
 
 
 async def get_sales_delivery_detail(db, delivery_id: str) -> Dict[str, Any]:

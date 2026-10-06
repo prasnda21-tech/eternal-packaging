@@ -771,6 +771,7 @@ export const api = {
   },
   // ---- Sales Delivery (Pengiriman Pesanan) ----
   listSalesDeliveries: (params = {}) => client.get(`/sales-deliveries`, { params }).then((r) => r.data),
+  salesDeliveryFilterOptions: () => client.get(`/sales-deliveries/filter-options`).then((r) => r.data),
   getSalesDelivery: (id) => client.get(`/sales-deliveries/${encodeURIComponent(id)}`).then((r) => r.data),
   getPoDeliverySummary: (poId) => client.get(`/sales-deliveries/po/${encodeURIComponent(poId)}/summary`).then((r) => r.data),
   createSalesDelivery: (payload) => client.post(`/sales-deliveries`, payload).then((r) => r.data),

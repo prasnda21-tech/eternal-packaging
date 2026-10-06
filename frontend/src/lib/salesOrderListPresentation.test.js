@@ -102,6 +102,9 @@ describe("aktif summary source", () => {
       status: "aktif",
       dateFrom: "2026-09-01",
       dateTo: "2026-09-30",
+      tanggalKirimPreset: "today",
+      sales: "Andi",
+      deliveryStatuses: ["SEBAGIAN", "SELESAI"],
       page: 2,
       pageSize: 10,
     })).toEqual({
@@ -109,6 +112,9 @@ describe("aktif summary source", () => {
       status: "aktif",
       date_from: "2026-09-01",
       date_to: "2026-09-30",
+      tanggal_pengiriman_preset: "today",
+      sales: "Andi",
+      delivery_status: "SEBAGIAN,SELESAI",
       page: 2,
       page_size: 10,
     });

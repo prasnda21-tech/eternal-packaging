@@ -1,12 +1,9 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import {
   AlertCircle,
   ArrowLeft,
-  Check,
   CheckCircle2,
-  ChevronDown,
   CreditCard,
   FileText,
   Plus,
@@ -18,7 +15,9 @@ import {
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDisplayDate } from "../lib/constants";
+import HeaderSelectFilter from "../components/HeaderSelectFilter";
 import { FormSection, FormField, FormProgress, computeStatus } from "../components/form-standard";
+import { INVOICE_DATE_PRESET_OPTIONS, invoiceDatePresetRange } from "../lib/salesDatePresets";
 import "./salesSubmenuDensity.css";
 
 function getTodayString() {
@@ -359,14 +358,7 @@ function deleteBlockerIds(det, fallbackIds) {
 }
 
 const EMPTY_INVOICE_COLUMN_FILTERS = {
-  party: "",
-  po: "",
-  dateFrom: "",
-  dateTo: "",
-  totalMin: "",
-  totalMax: "",
-  outstandingMin: "",
-  outstandingMax: "",
+  datePreset: "all",
   financialStatus: "",
   accountingStatus: "",
   paymentStatus: "",
@@ -374,40 +366,28 @@ const EMPTY_INVOICE_COLUMN_FILTERS = {
 
 const INVOICE_PAGE_SIZES = [20, 50, 100];
 
-function parseFilterAmount(raw) {
-  if (raw === "" || raw === null || raw === undefined) return { value: null, invalid: false };
-  const text = String(raw).trim().replace(",", ".");
-  if (!text) return { value: null, invalid: false };
-  const value = Number(text);
-  if (!Number.isFinite(value)) return { value: null, invalid: true };
-  return { value, invalid: false };
-}
+const INVOICE_POSTING_OPTIONS = [
+  { value: "", label: "Semua posting" },
+  { value: "not_posted", label: "Belum diposting" },
+  { value: "posted", label: "Sudah diposting" },
+  { value: "reversed", label: "Dibalik" },
+];
 
-function invoiceFilterRangeMessage(filters) {
-  const messages = [];
-  if (filters.dateFrom && filters.dateTo && filters.dateFrom > filters.dateTo) {
-    messages.push("Rentang tanggal tidak valid: tanggal awal tidak boleh setelah tanggal akhir.");
-  }
-  const totalMin = parseFilterAmount(filters.totalMin);
-  const totalMax = parseFilterAmount(filters.totalMax);
-  if (totalMin.invalid || totalMax.invalid) {
-    messages.push("Nominal Total Faktur tidak valid.");
-  } else if (totalMin.value != null && totalMax.value != null && totalMin.value > totalMax.value) {
-    messages.push("Rentang Total Faktur tidak valid: nilai minimum tidak boleh lebih besar dari maksimum.");
-  }
-  const dueMin = parseFilterAmount(filters.outstandingMin);
-  const dueMax = parseFilterAmount(filters.outstandingMax);
-  if (dueMin.invalid || dueMax.invalid) {
-    messages.push("Nominal Sisa Tagihan tidak valid.");
-  } else if (dueMin.value != null && dueMax.value != null && dueMin.value > dueMax.value) {
-    messages.push("Rentang Sisa Tagihan tidak valid: nilai minimum tidak boleh lebih besar dari maksimum.");
-  }
-  return messages.join(" ");
-}
+const INVOICE_PAYMENT_OPTIONS = [
+  { value: "", label: "Semua" },
+  { value: "BELUM DIBAYAR", label: "Belum dibayar" },
+  { value: "DP", label: "DP" },
+  { value: "LUNAS", label: "Lunas" },
+];
 
 function invoiceFiltersActive(filters, query) {
   if (String(query || "").trim()) return true;
-  return Object.values(filters || {}).some((value) => String(value ?? "").trim() !== "");
+  const f = filters || EMPTY_INVOICE_COLUMN_FILTERS;
+  if (f.datePreset && f.datePreset !== "all") return true;
+  if (String(f.financialStatus || "").trim()) return true;
+  if (String(f.accountingStatus || "").trim()) return true;
+  if (String(f.paymentStatus || "").trim()) return true;
+  return false;
 }
 
 function invoiceDeletable(inv) {
@@ -421,54 +401,13 @@ function invoiceListParams({ searchQuery, listTab, columnFilters, page, pageSize
     page_size: pageSize,
   };
   if (searchQuery.trim()) params.q = searchQuery.trim();
-  if (columnFilters.party.trim()) params.party = columnFilters.party.trim();
-  if (columnFilters.po.trim()) params.po_number = columnFilters.po.trim();
-  if (columnFilters.dateFrom) params.date_from = columnFilters.dateFrom;
-  if (columnFilters.dateTo) params.date_to = columnFilters.dateTo;
-  const totalMin = parseFilterAmount(columnFilters.totalMin);
-  const totalMax = parseFilterAmount(columnFilters.totalMax);
-  const dueMin = parseFilterAmount(columnFilters.outstandingMin);
-  const dueMax = parseFilterAmount(columnFilters.outstandingMax);
-  if (totalMin.value != null) params.total_min = totalMin.value;
-  if (totalMax.value != null) params.total_max = totalMax.value;
-  if (dueMin.value != null) params.outstanding_min = dueMin.value;
-  if (dueMax.value != null) params.outstanding_max = dueMax.value;
+  const range = invoiceDatePresetRange(columnFilters.datePreset || "all");
+  if (range.date_from) params.date_from = range.date_from;
+  if (range.date_to) params.date_to = range.date_to;
   if (columnFilters.financialStatus) params.financial_status = columnFilters.financialStatus;
   if (columnFilters.accountingStatus) params.accounting_status = columnFilters.accountingStatus;
   if (columnFilters.paymentStatus) params.payment_status = columnFilters.paymentStatus;
   return params;
-}
-
-const INVOICE_FILTER_FIELDS = {
-  party: ["party"],
-  po: ["po"],
-  date: ["dateFrom", "dateTo"],
-  total: ["totalMin", "totalMax"],
-  outstanding: ["outstandingMin", "outstandingMax"],
-  status: ["financialStatus", "accountingStatus"],
-  payment: ["paymentStatus"],
-};
-
-const INVOICE_POSTING_OPTIONS = [
-  { value: "", label: "Semua" },
-  { value: "not_posted", label: "Belum diposting" },
-  { value: "posted", label: "Sudah diposting" },
-  { value: "reversed", label: "Dibalik" },
-];
-
-const INVOICE_PAYMENT_OPTIONS = [
-  { value: "", label: "Semua" },
-  { value: "BELUM DIBAYAR", label: "Belum dibayar" },
-  { value: "DP", label: "DP" },
-  { value: "LUNAS", label: "Lunas" },
-];
-
-function pickFilterDraft(filters, fields) {
-  const draft = {};
-  fields.forEach((field) => {
-    draft[field] = filters?.[field] || "";
-  });
-  return draft;
 }
 
 function invoiceFinancialLabel(status) {
@@ -490,291 +429,6 @@ function invoicePaymentLabel(status) {
   if (s === "LUNAS") return "Lunas";
   if (s === "DP") return "DP";
   return "Belum dibayar";
-}
-
-function InvoiceFilterChoices({ name, options, value, onChange, testPrefix }) {
-  return (
-    <div className="fp-filter-choices" role="radiogroup">
-      {options.map((option) => {
-        const selected = value === option.value;
-        const slug = option.value ? String(option.value).replace(/\s+/g, "-") : "all";
-        return (
-          <label key={slug} className={selected ? "fp-filter-option is-selected" : "fp-filter-option"}>
-            <input
-              type="radio"
-              name={name}
-              value={option.value}
-              checked={selected}
-              data-testid={`${testPrefix}-${slug}`}
-              onChange={() => onChange(option.value)}
-            />
-            <span>{option.label}</span>
-            {selected ? <Check size={14} aria-hidden="true" /> : null}
-          </label>
-        );
-      })}
-    </div>
-  );
-}
-
-function InvoiceColumnFilter({
-  columnKey,
-  label,
-  kind,
-  open,
-  filters,
-  financialOptions,
-  onOpenChange,
-  onApply,
-  onReset,
-}) {
-  const fields = INVOICE_FILTER_FIELDS[columnKey];
-  const triggerRef = useRef(null);
-  const panelRef = useRef(null);
-  const onOpenChangeRef = useRef(onOpenChange);
-  const wasOpen = useRef(false);
-  const [draft, setDraft] = useState(() => pickFilterDraft(filters, fields));
-  const [panelError, setPanelError] = useState("");
-  onOpenChangeRef.current = onOpenChange;
-
-  useEffect(() => {
-    if (open && !wasOpen.current) {
-      setDraft(pickFilterDraft(filters, fields));
-      setPanelError("");
-    }
-    wasOpen.current = open;
-  }, [open, filters, fields]);
-
-  useLayoutEffect(() => {
-    if (!open) return undefined;
-    const panel = panelRef.current;
-    const trigger = triggerRef.current;
-    if (!panel || !trigger) return undefined;
-    const place = () => {
-      const rect = trigger.getBoundingClientRect();
-      const margin = 8;
-      const width = panel.offsetWidth || 240;
-      const height = panel.offsetHeight || 160;
-      let left = rect.left;
-      if (left + width > window.innerWidth - margin) left = window.innerWidth - margin - width;
-      if (left < margin) left = margin;
-      let top = rect.bottom + 6;
-      if (top + height > window.innerHeight - margin) {
-        const above = rect.top - 6 - height;
-        top = above >= margin ? above : Math.max(margin, window.innerHeight - margin - height);
-      }
-      panel.style.top = `${Math.round(top)}px`;
-      panel.style.left = `${Math.round(left)}px`;
-    };
-    place();
-    const firstField = panel.querySelector("input, select, textarea");
-    if (firstField && document.activeElement === trigger) firstField.focus();
-    const onScroll = () => place();
-    const onKey = (event) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      onOpenChangeRef.current(false);
-      trigger.focus();
-    };
-    const onPointer = (event) => {
-      const target = event.target;
-      if (!(target instanceof Node)) return;
-      if (panel.contains(target) || trigger.contains(target)) return;
-      const another = target instanceof Element && target.closest(".fp-filter-trigger");
-      onOpenChangeRef.current(false);
-      if (!another) trigger.focus();
-    };
-    window.addEventListener("scroll", onScroll, true);
-    window.addEventListener("resize", onScroll);
-    document.addEventListener("keydown", onKey);
-    document.addEventListener("mousedown", onPointer);
-    return () => {
-      window.removeEventListener("scroll", onScroll, true);
-      window.removeEventListener("resize", onScroll);
-      document.removeEventListener("keydown", onKey);
-      document.removeEventListener("mousedown", onPointer);
-    };
-  }, [open, panelError, draft]);
-
-  const active = fields.some((field) => String(filters?.[field] ?? "").trim() !== "");
-  const setField = (field, value) => {
-    setDraft((prev) => ({ ...prev, [field]: value }));
-    setPanelError("");
-  };
-  const handleApply = () => {
-    const message = invoiceFilterRangeMessage({ ...filters, ...draft });
-    if (message) {
-      setPanelError(message);
-      onApply(draft, message);
-      return;
-    }
-    setPanelError("");
-    onApply(draft, "");
-    onOpenChange(false);
-    triggerRef.current?.focus();
-  };
-  const handleReset = () => {
-    setDraft(pickFilterDraft(EMPTY_INVOICE_COLUMN_FILTERS, fields));
-    setPanelError("");
-    onReset(fields);
-  };
-
-  let body = null;
-  if (kind === "text") {
-    const field = fields[0];
-    body = (
-      <label className="fp-filter-field">
-        <span>{columnKey === "po" ? "Nomor PO" : "Pelanggan atau no. faktur"}</span>
-        <input
-          type="text"
-          value={draft[field] || ""}
-          placeholder={columnKey === "po" ? "Cari nomor PO" : "Cari pelanggan atau nomor faktur"}
-          aria-label={columnKey === "po" ? "Filter nomor PO" : "Filter pelanggan atau nomor faktur"}
-          data-testid={columnKey === "po" ? "filter-invoice-po" : "filter-invoice-party"}
-          onChange={(event) => setField(field, event.target.value)}
-        />
-      </label>
-    );
-  } else if (kind === "date") {
-    body = (
-      <div className="fp-filter-range-grid">
-        <label className="fp-filter-field">
-          <span>Dari</span>
-          <input
-            type="date"
-            value={draft.dateFrom || ""}
-            aria-label="Tanggal faktur dari"
-            data-testid="filter-invoice-date-from"
-            onChange={(event) => setField("dateFrom", event.target.value)}
-          />
-        </label>
-        <label className="fp-filter-field">
-          <span>Sampai</span>
-          <input
-            type="date"
-            value={draft.dateTo || ""}
-            aria-label="Tanggal faktur sampai"
-            data-testid="filter-invoice-date-to"
-            onChange={(event) => setField("dateTo", event.target.value)}
-          />
-        </label>
-      </div>
-    );
-  } else if (kind === "amount") {
-    const minField = columnKey === "outstanding" ? "outstandingMin" : "totalMin";
-    const maxField = columnKey === "outstanding" ? "outstandingMax" : "totalMax";
-    const minTest = columnKey === "outstanding" ? "filter-invoice-outstanding-min" : "filter-invoice-total-min";
-    const maxTest = columnKey === "outstanding" ? "filter-invoice-outstanding-max" : "filter-invoice-total-max";
-    const caption = columnKey === "outstanding" ? "Sisa tagihan" : "Total faktur";
-    body = (
-      <div className="fp-filter-range-grid">
-        <label className="fp-filter-field">
-          <span>Min</span>
-          <input
-            type="text"
-            inputMode="decimal"
-            value={draft[minField] || ""}
-            placeholder="0"
-            aria-label={`${caption} minimum`}
-            data-testid={minTest}
-            onChange={(event) => setField(minField, event.target.value)}
-          />
-        </label>
-        <label className="fp-filter-field">
-          <span>Maks</span>
-          <input
-            type="text"
-            inputMode="decimal"
-            value={draft[maxField] || ""}
-            placeholder="0"
-            aria-label={`${caption} maksimum`}
-            data-testid={maxTest}
-            onChange={(event) => setField(maxField, event.target.value)}
-          />
-        </label>
-      </div>
-    );
-  } else if (kind === "status") {
-    body = (
-      <>
-        <div className="fp-filter-section">
-          <div className="fp-filter-section-title">Status faktur</div>
-          <InvoiceFilterChoices
-            name="fp-financial-status"
-            options={financialOptions}
-            value={draft.financialStatus || ""}
-            testPrefix="filter-invoice-financial"
-            onChange={(value) => setField("financialStatus", value)}
-          />
-        </div>
-        <div className="fp-filter-section">
-          <div className="fp-filter-section-title">Status posting</div>
-          <InvoiceFilterChoices
-            name="fp-accounting-status"
-            options={INVOICE_POSTING_OPTIONS}
-            value={draft.accountingStatus || ""}
-            testPrefix="filter-invoice-accounting"
-            onChange={(value) => setField("accountingStatus", value)}
-          />
-        </div>
-      </>
-    );
-  } else if (kind === "payment") {
-    body = (
-      <div className="fp-filter-section">
-        <div className="fp-filter-section-title">Status pembayaran</div>
-        <InvoiceFilterChoices
-          name="fp-payment-status"
-          options={INVOICE_PAYMENT_OPTIONS}
-          value={draft.paymentStatus || ""}
-          testPrefix="filter-invoice-payment"
-          onChange={(value) => setField("paymentStatus", value)}
-        />
-      </div>
-    );
-  }
-
-  return (
-    <>
-      <button
-        type="button"
-        ref={triggerRef}
-        className={active ? "fp-filter-trigger is-active" : "fp-filter-trigger"}
-        aria-expanded={open ? "true" : "false"}
-        aria-haspopup="dialog"
-        aria-controls={open ? "invoice-filter-panel" : undefined}
-        aria-label={`Filter ${label}`}
-        data-testid={`filter-invoice-open-${columnKey}`}
-        onClick={() => onOpenChange(!open)}
-      >
-        <span className="fp-filter-label">{label}</span>
-        <span className="fp-filter-caret" aria-hidden="true">
-          <ChevronDown size={14} />
-          {active ? <span className="fp-filter-dot" data-testid={`filter-invoice-active-${columnKey}`} /> : null}
-        </span>
-      </button>
-      {open && createPortal(
-        <div
-          id="invoice-filter-panel"
-          role="dialog"
-          aria-label={`Filter ${label}`}
-          className="fp-filter-popover"
-          data-testid="invoice-filter-panel"
-          ref={panelRef}
-        >
-          {body}
-          {panelError ? (
-            <p className="fp-filter-error" role="alert" data-testid="invoice-filter-panel-error">{panelError}</p>
-          ) : null}
-          <div className="fp-filter-actions">
-            <button type="button" data-testid="filter-invoice-column-reset" onClick={handleReset}>Reset</button>
-            <button type="button" className="is-apply" data-testid="filter-invoice-apply" onClick={handleApply}>Terapkan</button>
-          </div>
-        </div>,
-        document.body
-      )}
-    </>
-  );
 }
 
 function invoiceRangeLabel({ total, tabTotal, page, pageSize, tabLabel, filtered }) {
@@ -830,13 +484,11 @@ export default function FakturPenjualan() {
   const [invoices, setInvoices] = useState([]);
   const [listLoading, setListLoading] = useState(false);
   const [listErr, setListErr] = useState("");
-  const [filterErr, setFilterErr] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [listTab, setListTab] = useState("active");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
   const [columnFilters, setColumnFilters] = useState(EMPTY_INVOICE_COLUMN_FILTERS);
-  const [openFilter, setOpenFilter] = useState("");
   const [listMeta, setListMeta] = useState({
     total: 0,
     tabTotal: 0,
@@ -918,13 +570,6 @@ export default function FakturPenjualan() {
     const seq = requestSeq.current + 1;
     requestSeq.current = seq;
     loadAbortRef.current?.abort();
-    const rangeMessage = invoiceFilterRangeMessage(columnFilters);
-    if (rangeMessage) {
-      setFilterErr(rangeMessage);
-      setListLoading(false);
-      return;
-    }
-    setFilterErr("");
     const ac = new AbortController();
     loadAbortRef.current = ac;
     setListLoading(true);
@@ -979,7 +624,6 @@ export default function FakturPenjualan() {
   const changeInvoiceTab = (tab) => {
     if (tab === listTab) return;
     setListTab(tab);
-    setOpenFilter("");
     setColumnFilters((prev) => ({
       ...prev,
       financialStatus: tab === "cancelled"
@@ -994,32 +638,9 @@ export default function FakturPenjualan() {
     resetInvoiceListPosition();
   };
 
-  const applyInvoiceColumnDraft = (patch, message) => {
-    if (message) {
-      requestSeq.current += 1;
-      loadAbortRef.current?.abort();
-      setFilterErr(message);
-      setListLoading(false);
-      return;
-    }
-    setFilterErr("");
-    patchColumnFilter(patch);
-  };
-
-  const resetInvoiceColumn = (fields) => {
-    const patch = {};
-    fields.forEach((field) => {
-      patch[field] = "";
-    });
-    setFilterErr("");
-    patchColumnFilter(patch);
-  };
-
   const resetColumnFilters = () => {
     setColumnFilters(EMPTY_INVOICE_COLUMN_FILTERS);
     setSearchQuery("");
-    setFilterErr("");
-    setOpenFilter("");
     resetInvoiceListPosition();
   };
 
@@ -1714,16 +1335,13 @@ export default function FakturPenjualan() {
   const pageCount = Math.max(1, Math.ceil((Number(listMeta.total) || 0) / pageSize) || 1);
   const allPageDeletableSelected = pageDeletableIds.length > 0 && pageDeletableIds.every((id) => selectedIds.has(id));
   const financialStatusOptions = listTab === "cancelled"
-    ? [{ value: "", label: "Semua" }, { value: "cancelled", label: "Dibatalkan" }]
+    ? [{ value: "", label: "Semua status" }, { value: "cancelled", label: "Dibatalkan" }]
     : [
-        { value: "", label: "Semua" },
+        { value: "", label: "Semua status" },
         { value: "draft", label: "Draft" },
         { value: "finalized", label: "Final" },
       ];
   const columnCount = reserveCheckboxColumn ? 9 : 8;
-  const setInvoiceFilterOpen = (key, next) => {
-    setOpenFilter(next ? key : "");
-  };
 
   return (
     <div
@@ -1871,10 +1489,10 @@ export default function FakturPenjualan() {
       {/* VIEW: LIST */}
       {viewMode === "list" && (
         <section className="sd-list-panel">
-          {(listErr || filterErr) && (
+          {listErr && (
             <div className="sd-banner is-error" role="alert" data-testid="invoice-list-error">
               <AlertCircle size={16} />
-              <span>{filterErr || listErr}</span>
+              <span>{listErr}</span>
             </div>
           )}
 
@@ -1921,7 +1539,7 @@ export default function FakturPenjualan() {
               className="sd-list-reset"
               data-testid="reset-invoice-filters"
               onClick={resetColumnFilters}
-              disabled={!filtersActive && !filterErr}
+              disabled={!filtersActive}
             >
               Reset Filter
             </button>
@@ -1955,89 +1573,48 @@ export default function FakturPenjualan() {
                       ) : null}
                     </th>
                   )}
+                  <th>Pelanggan / No. Faktur</th>
+                  <th>No. PO</th>
                   <th>
-                    <InvoiceColumnFilter
-                      columnKey="party"
-                      label="Pelanggan / No. Faktur"
-                      kind="text"
-                      open={openFilter === "party"}
-                      filters={columnFilters}
-                      onOpenChange={(next) => setInvoiceFilterOpen("party", next)}
-                      onApply={applyInvoiceColumnDraft}
-                      onReset={resetInvoiceColumn}
-                    />
-                  </th>
-                  <th>
-                    <InvoiceColumnFilter
-                      columnKey="po"
-                      label="No. PO"
-                      kind="text"
-                      open={openFilter === "po"}
-                      filters={columnFilters}
-                      onOpenChange={(next) => setInvoiceFilterOpen("po", next)}
-                      onApply={applyInvoiceColumnDraft}
-                      onReset={resetInvoiceColumn}
-                    />
-                  </th>
-                  <th>
-                    <InvoiceColumnFilter
-                      columnKey="date"
+                    <HeaderSelectFilter
                       label="Tanggal"
-                      kind="date"
-                      open={openFilter === "date"}
-                      filters={columnFilters}
-                      onOpenChange={(next) => setInvoiceFilterOpen("date", next)}
-                      onApply={applyInvoiceColumnDraft}
-                      onReset={resetInvoiceColumn}
+                      testid="fp-th-filter-date"
+                      options={INVOICE_DATE_PRESET_OPTIONS}
+                      value={columnFilters.datePreset || "all"}
+                      emptyValue="all"
+                      onChange={(next) => patchColumnFilter({ datePreset: next })}
                     />
                   </th>
+                  <th>Total Faktur</th>
+                  <th>Sisa Tagihan</th>
                   <th>
-                    <InvoiceColumnFilter
-                      columnKey="total"
-                      label="Total Faktur"
-                      kind="amount"
-                      open={openFilter === "total"}
-                      filters={columnFilters}
-                      onOpenChange={(next) => setInvoiceFilterOpen("total", next)}
-                      onApply={applyInvoiceColumnDraft}
-                      onReset={resetInvoiceColumn}
-                    />
+                    <div className="fp-th-status-filters">
+                      <HeaderSelectFilter
+                        label="Status Faktur"
+                        testid="fp-th-filter-financial"
+                        options={financialStatusOptions}
+                        value={columnFilters.financialStatus || ""}
+                        emptyValue=""
+                        onChange={(next) => patchColumnFilter({ financialStatus: next })}
+                      />
+                      <HeaderSelectFilter
+                        label="Posting"
+                        testid="fp-th-filter-accounting"
+                        options={INVOICE_POSTING_OPTIONS}
+                        value={columnFilters.accountingStatus || ""}
+                        emptyValue=""
+                        onChange={(next) => patchColumnFilter({ accountingStatus: next })}
+                      />
+                    </div>
                   </th>
                   <th>
-                    <InvoiceColumnFilter
-                      columnKey="outstanding"
-                      label="Sisa Tagihan"
-                      kind="amount"
-                      open={openFilter === "outstanding"}
-                      filters={columnFilters}
-                      onOpenChange={(next) => setInvoiceFilterOpen("outstanding", next)}
-                      onApply={applyInvoiceColumnDraft}
-                      onReset={resetInvoiceColumn}
-                    />
-                  </th>
-                  <th>
-                    <InvoiceColumnFilter
-                      columnKey="status"
-                      label="Status Faktur"
-                      kind="status"
-                      open={openFilter === "status"}
-                      filters={columnFilters}
-                      financialOptions={financialStatusOptions}
-                      onOpenChange={(next) => setInvoiceFilterOpen("status", next)}
-                      onApply={applyInvoiceColumnDraft}
-                      onReset={resetInvoiceColumn}
-                    />
-                  </th>
-                  <th>
-                    <InvoiceColumnFilter
-                      columnKey="payment"
+                    <HeaderSelectFilter
                       label="Pembayaran"
-                      kind="payment"
-                      open={openFilter === "payment"}
-                      filters={columnFilters}
-                      onOpenChange={(next) => setInvoiceFilterOpen("payment", next)}
-                      onApply={applyInvoiceColumnDraft}
-                      onReset={resetInvoiceColumn}
+                      testid="fp-th-filter-payment"
+                      options={INVOICE_PAYMENT_OPTIONS}
+                      value={columnFilters.paymentStatus || ""}
+                      emptyValue=""
+                      onChange={(next) => patchColumnFilter({ paymentStatus: next })}
                     />
                   </th>
                   <th>Aksi</th>
@@ -2056,9 +1633,7 @@ export default function FakturPenjualan() {
                       <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
                         <FileText size={32} color="#94a3b8" />
                         <div style={{ fontWeight: 600, color: "#1e293b", marginTop: 8 }}>
-                          {filterErr
-                            ? "Perbaiki rentang filter"
-                            : filtersActive
+                          {filtersActive
                             ? "Tidak ada faktur yang cocok dengan filter"
                             : listTab === "cancelled"
                             ? "Belum ada faktur dibatalkan"

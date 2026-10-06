@@ -111,9 +111,22 @@ describe("Pengiriman Pesanan UI & Data Invariants", () => {
   });
 
   test("adds Proses ke Pengiriman Pesanan button and summary to PesananPenjualan", () => {
-    expect(salesOrderSrc).toMatch(/Tgl Kirim/);
+    expect(salesOrderSrc).toMatch(/Tanggal Kirim/);
     expect(salesOrderSrc).toMatch(/so-act-ship/);
     expect(salesOrderSrc).toMatch(/\/penjualan\/pengiriman-pesanan\?po_id=/);
+  });
+
+  test("SJ list has selectable Tgl Kirim / Dibuat Oleh header filters and Reset Filter", () => {
+    expect(src).toMatch(/sj-th-filter-ship-date/);
+    expect(src).toMatch(/sj-th-filter-created-by/);
+    expect(src).toMatch(/delivery_date_preset/);
+    expect(src).toMatch(/created_by/);
+    expect(src).toMatch(/salesDeliveryFilterOptions/);
+    expect(src).toMatch(/reset-delivery-filters/);
+    expect(src).toMatch(/Reset Filter/);
+    expect(src).toMatch(/filter-status-\$\{tab\.id\}/);
+    expect(src).toMatch(/id: "SEBAGIAN"/);
+    expect(src).not.toMatch(/sj-th-filter-status/);
   });
 
   test("implements SEBAGIAN and SELESAI status filters and badges without Dikirim/Terkirim", () => {
