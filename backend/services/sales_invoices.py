@@ -1725,88 +1725,117 @@ def generate_sales_invoice_pdf_bytes(
     width = content_width(A4)
     elements = []
 
-    logo = logo_flowable(design, width=36 * mm, height=12.2 * mm, company_style=sty["company"])
-    address_html = "<br/>".join(esc(line) for line in (design.get("address_lines") or []))
-    identity = Paragraph(
-        f"<font size='12'><b>{esc(design.get('company_name') or '')}</b></font><br/>{address_html}",
-        sty["address"],
+    from services.print_context_resolver import build_invoice_print_context
+    from services.print_header_render import (
+        build_generic_invoice_header_flowables,
+        header_elements_active,
     )
-    brand = Table([[logo, identity]], colWidths=[40 * mm, width - 40 * mm])
-    brand.setStyle(TableStyle([
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 0),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-        ("TOPPADDING", (0, 0), (-1, -1), 0),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
-    ]))
-    elements.append(brand)
-    elements.append(Spacer(1, 2 * mm))
+
+    header_elements = inv_design.get("header_elements") or []
+    use_generic_header = header_elements_active(header_elements)
     title = "PROFORMA INVOICE" if proforma else "Faktur Penjualan"
-    elements.append(Paragraph(esc(title), sty["title"]))
-    if proforma:
-        elements.append(Paragraph(esc(PROFORMA_WARNING), sty["warn"]))
-    elements.append(Spacer(1, 2 * mm))
 
-    address = str(invoice.get("address") or "").strip()
-    customer = Paragraph(
-        f"Kepada :<br/><b>{esc(invoice.get('customer') or '-')}</b><br/>{esc(address)}",
-        sty["body"],
-    )
-    due = format_pdf_date(invoice.get("due_date"))
-    jasa = str(invoice.get("presentation_expedition") or invoice.get("expedition") or "").strip()
-    tipe = str(invoice.get("presentation_shipping_type") or invoice.get("shipping_type") or "").strip()
-    bank_lines = bank_display_lines(inv_design.get("bank_accounts"))
-    bank_left = "<br/>".join(esc(line) for line in bank_lines[:2])
-    bank_right = "<br/>".join(esc(line) for line in bank_lines[2:])
+    if use_generic_header:
+        # Phase 1 V2: controlled multi-source header. Body/totals/footer unchanged.
+        context = build_invoice_print_context(
+            invoice,
+            design,
+            document_type="proforma" if proforma else "invoice",
+        )
+        elements.extend(
+            build_generic_invoice_header_flowables(
+                elements=header_elements,
+                context=context,
+                design=design,
+                sty=sty,
+                width=width,
+                document_title=title,
+                proforma_warning=PROFORMA_WARNING if proforma else None,
+            )
+        )
+    else:
+        # Exact V1 legacy header path.
+        logo = logo_flowable(design, width=36 * mm, height=12.2 * mm, company_style=sty["company"])
+        address_html = "<br/>".join(esc(line) for line in (design.get("address_lines") or []))
+        identity = Paragraph(
+            f"<font size='12'><b>{esc(design.get('company_name') or '')}</b></font><br/>{address_html}",
+            sty["address"],
+        )
+        brand = Table([[logo, identity]], colWidths=[40 * mm, width - 40 * mm])
+        brand.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 0),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+            ("TOPPADDING", (0, 0), (-1, -1), 0),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+        ]))
+        elements.append(brand)
+        elements.append(Spacer(1, 2 * mm))
+        elements.append(Paragraph(esc(title), sty["title"]))
+        if proforma:
+            elements.append(Paragraph(esc(PROFORMA_WARNING), sty["warn"]))
+        elements.append(Spacer(1, 2 * mm))
 
-    def cell(label: str, value_html: str) -> Paragraph:
-        return Paragraph(f"{esc(label)}<br/><b>{value_html or '&nbsp;'}</b>", sty["small"])
+        address = str(invoice.get("address") or "").strip()
+        customer = Paragraph(
+            f"Kepada :<br/><b>{esc(invoice.get('customer') or '-')}</b><br/>{esc(address)}",
+            sty["body"],
+        )
+        due = format_pdf_date(invoice.get("due_date"))
+        jasa = str(invoice.get("presentation_expedition") or invoice.get("expedition") or "").strip()
+        tipe = str(invoice.get("presentation_shipping_type") or invoice.get("shipping_type") or "").strip()
+        bank_lines = bank_display_lines(inv_design.get("bank_accounts"))
+        bank_left = "<br/>".join(esc(line) for line in bank_lines[:2])
+        bank_right = "<br/>".join(esc(line) for line in bank_lines[2:])
 
-    meta = [
-        [
-            cell("Tanggal", esc(format_pdf_date(invoice.get("invoice_date")))),
-            cell("Nomor", esc(invoice.get("invoice_number") or invoice.get("id") or "")),
-        ],
-        [
-            cell("Sales", esc(invoice_sales_label(invoice))),
-            cell("Tipe Pengiriman", esc(tipe)),
-        ],
-        [
-            cell("Jasa Pengiriman", esc(jasa)),
-            Paragraph(bank_left, sty["small"]),
-        ],
-        [
-            cell("PO No", esc(invoice.get("po_number") or "")),
-            Paragraph(bank_right, sty["small"]),
-        ],
-    ]
-    grid_width = width * 0.58
-    meta_table = Table(meta, colWidths=[grid_width / 2, grid_width / 2])
-    meta_table.setStyle(TableStyle([
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("BOX", (0, 0), (-1, -1), 0.7, colors.black),
-        ("LINEAFTER", (0, 0), (0, -1), 0.6, colors.black),
-        ("LINEBELOW", (0, 0), (-1, -2), 0.4, colors.black, None, (2, 2)),
-        ("LEFTPADDING", (0, 0), (-1, -1), 3),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 3),
-        ("TOPPADDING", (0, 0), (-1, -1), 2),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
-    ]))
-    left_width = width - grid_width
-    party = Table([[customer, meta_table]], colWidths=[left_width, grid_width])
-    party.setStyle(TableStyle([
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 0),
-        ("RIGHTPADDING", (0, 0), (0, 0), 3),
-        ("RIGHTPADDING", (1, 0), (1, 0), 0),
-        ("TOPPADDING", (0, 0), (-1, -1), 0),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
-        ("LINEBELOW", (0, 0), (0, 0), 0.6, colors.black),
-    ]))
-    elements.append(party)
-    elements.append(Spacer(1, 1.5 * mm))
-    elements.append(Paragraph(f"Jatuh Tempo : {esc(due) or '-'}", sty["red"]))
-    elements.append(Spacer(1, 2 * mm))
+        def cell(label: str, value_html: str) -> Paragraph:
+            return Paragraph(f"{esc(label)}<br/><b>{value_html or '&nbsp;'}</b>", sty["small"])
+
+        meta = [
+            [
+                cell("Tanggal", esc(format_pdf_date(invoice.get("invoice_date")))),
+                cell("Nomor", esc(invoice.get("invoice_number") or invoice.get("id") or "")),
+            ],
+            [
+                cell("Sales", esc(invoice_sales_label(invoice))),
+                cell("Tipe Pengiriman", esc(tipe)),
+            ],
+            [
+                cell("Jasa Pengiriman", esc(jasa)),
+                Paragraph(bank_left, sty["small"]),
+            ],
+            [
+                cell("PO No", esc(invoice.get("po_number") or "")),
+                Paragraph(bank_right, sty["small"]),
+            ],
+        ]
+        grid_width = width * 0.58
+        meta_table = Table(meta, colWidths=[grid_width / 2, grid_width / 2])
+        meta_table.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("BOX", (0, 0), (-1, -1), 0.7, colors.black),
+            ("LINEAFTER", (0, 0), (0, -1), 0.6, colors.black),
+            ("LINEBELOW", (0, 0), (-1, -2), 0.4, colors.black, None, (2, 2)),
+            ("LEFTPADDING", (0, 0), (-1, -1), 3),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+            ("TOPPADDING", (0, 0), (-1, -1), 2),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+        ]))
+        left_width = width - grid_width
+        party = Table([[customer, meta_table]], colWidths=[left_width, grid_width])
+        party.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 0),
+            ("RIGHTPADDING", (0, 0), (0, 0), 3),
+            ("RIGHTPADDING", (1, 0), (1, 0), 0),
+            ("TOPPADDING", (0, 0), (-1, -1), 0),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+            ("LINEBELOW", (0, 0), (0, 0), 0.6, colors.black),
+        ]))
+        elements.append(party)
+        elements.append(Spacer(1, 1.5 * mm))
+        elements.append(Paragraph(f"Jatuh Tempo : {esc(due) or '-'}", sty["red"]))
+        elements.append(Spacer(1, 2 * mm))
 
     header = [
         Paragraph("<b>Kode Barang</b>", sty["header"]),

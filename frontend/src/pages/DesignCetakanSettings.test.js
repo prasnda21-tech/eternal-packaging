@@ -54,6 +54,26 @@ describe("Design Cetakan settings wiring", () => {
     expect(pageSrc).not.toMatch(/onDrop|dragover|draggable/);
   });
 
+  test("Phase 1 invoice header editor uses whitelist sources only", () => {
+    expect(pageSrc).toMatch(/data-testid="design-cetakan-header-section"/);
+    expect(pageSrc).toMatch(/data-testid="design-cetakan-header-add"/);
+    expect(pageSrc).toMatch(/data-testid="design-cetakan-header-list"/);
+    expect(pageSrc).toMatch(/HEADER_SOURCE_OPTIONS/);
+    expect(pageSrc).toMatch(/company\.logo/);
+    expect(pageSrc).toMatch(/company\.name/);
+    expect(pageSrc).toMatch(/customer\.name/);
+    expect(pageSrc).toMatch(/document\.number/);
+    expect(pageSrc).toMatch(/sales\.name/);
+    expect(pageSrc).toMatch(/static\.text/);
+    expect(pageSrc).toMatch(/header_elements/);
+    expect(pageSrc).toMatch(/design-cetakan-global-only-header/);
+    expect(pageSrc).toMatch(/optgroup/);
+    expect(pageSrc).not.toMatch(/hpp\.|margin\.|arbitrary/);
+    expect(pageSrc).toMatch(/normalizeHeaderElements/);
+    expect(pageSrc).toMatch(/moveHeaderElement/);
+    expect(pageSrc).toMatch(/Tambah Elemen/);
+  });
+
   test("api exposes asset upload preview remove helpers", () => {
     expect(apiSrc).toMatch(/designCetakanSettings:\s*\(\)\s*=>\s*client\.get\(`\/settings\/design-cetakan`/);
     expect(apiSrc).toMatch(/updateDesignCetakanSettings:/);

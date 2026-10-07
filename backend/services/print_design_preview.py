@@ -100,6 +100,7 @@ def dummy_invoice() -> Dict[str, Any]:
         "due_date": "2026-01-29",
         "customer": SAMPLE_CUSTOMER,
         "address": SAMPLE_ADDRESS,
+        "outlet": "Outlet Contoh",
         "sales": SAMPLE_SALES,
         "po_number": "PREVIEW/PO/0001",
         "expedition": "Internal",

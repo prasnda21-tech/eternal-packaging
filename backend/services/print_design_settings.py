@@ -104,7 +104,10 @@ def default_settings() -> Dict[str, Any]:
             "approved_footer": "Pengelola",
             "prepared_signature_image": None,
             "approved_signature_image": None,
+            # Phase 1 generic header — empty means V1 legacy path.
+            "header_elements": [],
         },
+        "schema_version": 1,
         "surat_jalan": {
             "signature_labels": ["Gudang", "Cek Barang", "Kurir", "Penerima"],
             "date_label": "Tgl.",
@@ -233,6 +236,93 @@ def _public_asset(ref: Optional[dict]) -> Dict[str, Any]:
     }
 
 
+def _sanitize_header_elements(raw: Any, *, strict: bool) -> List[Dict[str, Any]]:
+    """Normalize invoice.header_elements. strict=True raises HTTP 400 on invalid input."""
+    from services.print_field_registry import (
+        ALLOWED_ALIGNS,
+        ALLOWED_ELEMENT_TYPES,
+        ELEMENT_TYPE_FIELD,
+        ELEMENT_TYPE_STATIC,
+        FIELD_SOURCES,
+        MAX_ELEMENT_ID,
+        MAX_ELEMENT_LABEL,
+        MAX_HEADER_ELEMENTS,
+        MAX_STATIC_TEXT,
+        SOURCE_STATIC_TEXT,
+        is_known_source,
+    )
+
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        if strict:
+            raise HTTPException(400, "header_elements harus berupa array")
+        return []
+    if len(raw) > MAX_HEADER_ELEMENTS:
+        if strict:
+            raise HTTPException(400, f"Maksimal {MAX_HEADER_ELEMENTS} elemen header")
+        raw = raw[:MAX_HEADER_ELEMENTS]
+
+    out: List[Dict[str, Any]] = []
+    for idx, row in enumerate(raw):
+        if not isinstance(row, dict):
+            if strict:
+                raise HTTPException(400, f"Elemen header #{idx + 1} tidak valid")
+            continue
+        el_type = str(row.get("type") or "").strip()
+        if el_type not in ALLOWED_ELEMENT_TYPES:
+            if strict:
+                raise HTTPException(400, f"Tipe elemen header tidak dikenali: {el_type or '-'}")
+            continue
+        source = str(row.get("source") or "").strip()
+        if el_type == ELEMENT_TYPE_STATIC:
+            source = SOURCE_STATIC_TEXT
+        elif source not in FIELD_SOURCES or not is_known_source(source):
+            if strict:
+                raise HTTPException(400, f"Sumber elemen header tidak diizinkan: {source or '-'}")
+            continue
+        align = str(row.get("align") or "left").strip().lower()
+        if align not in ALLOWED_ALIGNS:
+            if strict:
+                raise HTTPException(400, f"Align elemen header tidak valid: {align}")
+            align = "left"
+        eid = _clip(row.get("id"), MAX_ELEMENT_ID) or f"hdr-{idx + 1}"
+        label = _clip(row.get("label"), MAX_ELEMENT_LABEL)
+        text = _clip(row.get("text"), MAX_STATIC_TEXT) if el_type == ELEMENT_TYPE_STATIC or source == SOURCE_STATIC_TEXT else ""
+        visible = row.get("visible")
+        bold = row.get("bold")
+        if visible is not None and not isinstance(visible, bool):
+            if strict:
+                raise HTTPException(400, "visible harus boolean")
+            visible = bool(visible)
+        if bold is not None and not isinstance(bold, bool):
+            if strict:
+                raise HTTPException(400, "bold harus boolean")
+            bold = bool(bold)
+        # Reject HTML-looking static payloads in strict mode
+        if strict and text and ("<" in text or ">" in text):
+            raise HTTPException(400, "Teks elemen tidak boleh berisi markup HTML")
+        if el_type == ELEMENT_TYPE_FIELD and source == SOURCE_STATIC_TEXT:
+            if strict:
+                raise HTTPException(400, "Sumber static.text harus bertipe static_text")
+            el_type = ELEMENT_TYPE_STATIC
+        out.append({
+            "id": eid,
+            "type": el_type,
+            "source": source,
+            "label": label,
+            "align": align,
+            "bold": bool(bold) if bold is not None else False,
+            "visible": True if visible is None else bool(visible),
+            "text": text,
+        })
+    return out
+
+
+def schema_version_for_invoice(header_elements: Optional[list]) -> int:
+    return 2 if isinstance(header_elements, list) and len(header_elements) > 0 else 1
+
+
 def resolve_print_design(raw: Optional[dict] = None) -> Dict[str, Any]:
     """Merge saved/partial settings with defaults. Never raises for PDF use."""
     base = default_settings()
@@ -249,6 +339,7 @@ def resolve_print_design(raw: Optional[dict] = None) -> Dict[str, Any]:
     po_raw = doc.get("po") if isinstance(doc.get("po"), dict) else {}
     inv_raw = doc.get("invoice") if isinstance(doc.get("invoice"), dict) else {}
     sj_raw = doc.get("surat_jalan") if isinstance(doc.get("surat_jalan"), dict) else {}
+    header_elements = _sanitize_header_elements(inv_raw.get("header_elements"), strict=False)
 
     po = {
         "signature_labels": _labels(po_raw.get("signature_labels"), base["po"]["signature_labels"]),
@@ -268,6 +359,7 @@ def resolve_print_design(raw: Optional[dict] = None) -> Dict[str, Any]:
         "approved_footer": _clip(inv_raw.get("approved_footer")) or base["invoice"]["approved_footer"],
         "prepared_signature_image": _sanitize_asset_ref(inv_raw.get("prepared_signature_image")),
         "approved_signature_image": _sanitize_asset_ref(inv_raw.get("approved_signature_image")),
+        "header_elements": header_elements,
     }
     surat_jalan = {
         "signature_labels": _labels(
@@ -279,6 +371,7 @@ def resolve_print_design(raw: Optional[dict] = None) -> Dict[str, Any]:
 
     out = {
         "key": SETTINGS_KEY,
+        "schema_version": schema_version_for_invoice(header_elements),
         "company_name": company,
         "address_lines": address,
         "accent_color": accent,
@@ -301,6 +394,7 @@ def public_settings(doc: Optional[dict] = None) -> Dict[str, Any]:
     inv = resolved.get("invoice") or {}
     return {
         "key": SETTINGS_KEY,
+        "schema_version": resolved.get("schema_version") or 1,
         "company_name": resolved.get("company_name"),
         "address_lines": resolved.get("address_lines"),
         "accent_color": resolved.get("accent_color"),
@@ -316,6 +410,7 @@ def public_settings(doc: Optional[dict] = None) -> Dict[str, Any]:
             "approved_footer": inv.get("approved_footer"),
             "prepared_signature_image": _public_asset(inv.get("prepared_signature_image")),
             "approved_signature_image": _public_asset(inv.get("approved_signature_image")),
+            "header_elements": list(inv.get("header_elements") or []),
         },
         "surat_jalan": resolved.get("surat_jalan"),
         "updated_at": resolved.get("updated_at"),
@@ -338,6 +433,16 @@ def _validate_put_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
             raise HTTPException(400, "Daftar rekening harus berupa array")
         if isinstance(banks, list) and len(banks) > _MAX_BANKS:
             raise HTTPException(400, f"Maksimal {_MAX_BANKS} rekening pada Design Cetakan")
+
+    # Strict validate header_elements when present on PUT.
+    if "header_elements" in invoice_payload:
+        invoice_payload = dict(invoice_payload)
+        invoice_payload["header_elements"] = _sanitize_header_elements(
+            invoice_payload.get("header_elements"),
+            strict=True,
+        )
+        payload = dict(payload)
+        payload["invoice"] = invoice_payload
 
     resolved = resolve_print_design(payload)
     # Client PUT must not set asset refs — preserved from existing on save.
@@ -382,6 +487,13 @@ async def save_print_design_settings(db, payload: Dict[str, Any], user: Optional
     cleaned["invoice"]["approved_signature_image"] = (existing_resolved.get("invoice") or {}).get(
         "approved_signature_image"
     )
+    # Preserve V2 header when client omits the key (older clients / partial payloads).
+    inv_in = payload.get("invoice") if isinstance(payload.get("invoice"), dict) else {}
+    if "header_elements" not in inv_in:
+        cleaned["invoice"]["header_elements"] = list(
+            (existing_resolved.get("invoice") or {}).get("header_elements") or []
+        )
+        cleaned["schema_version"] = schema_version_for_invoice(cleaned["invoice"]["header_elements"])
     saved = {
         **cleaned,
         "key": SETTINGS_KEY,
