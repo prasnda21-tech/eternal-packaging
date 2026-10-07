@@ -49,6 +49,7 @@ ISSUE_COLLECTION = "inventory_issue_accounting"
 SOURCE_TYPE = "financial_inventory_opening"
 SOURCE_REVERSAL = "financial_inventory_opening_reversal"
 SOURCE_APPROVED = "APPROVED_OPENING"
+# Customer Pricing / published HPP must never seed financial inventory opening.
 REJECTED_SOURCES = frozenset({
     "PUBLISHED_CUSTOMER_PRICING_FALLBACK",
     "PUBLISHED",

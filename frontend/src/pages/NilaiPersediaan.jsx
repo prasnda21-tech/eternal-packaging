@@ -28,6 +28,7 @@ const LEDGER_TAB = { id: "ledger-recon", label: "Rekonsiliasi Persediaan & HPP" 
 const STATUS_LABELS = {
   OK: "Ada harga pokok",
   MISSING_COST: "Belum Ada HPP",
+  PENDING_VALUATION: "Menunggu valuasi",
   NEEDS_COST: "Butuh Harga PO",
   NEEDS_UOM: "Butuh Konversi Satuan",
   QTY_MISMATCH: "Qty Tidak Cocok",
@@ -54,9 +55,9 @@ function statusLabel(status) {
 }
 
 function sourceLabel(source) {
-  if (source === "PUBLISHED_CUSTOMER_PRICING_FALLBACK") return "Published Pricing";
   if (source === "PURCHASING_MOVING_AVERAGE") return "Rata-rata pembelian";
   if (source === "APPROVED_OPENING") return "Opening disetujui";
+  if (source === "FIRST_GR_UNIT_COST") return "Bootstrap GR pertama";
   return source || "Belum ada sumber";
 }
 
@@ -1383,7 +1384,7 @@ export default function NilaiPersediaan() {
           <div className="inventory-detail-drawer-body">
             <p data-testid={`inventory-value-source-${drawer.item.accurate_item_id || drawer.item.master_item_id}`}>
               Sumber harga: {sourceLabel(drawer.item.hpp_source)}.
-              {drawer.item.hpp_source === "PUBLISHED_CUSTOMER_PRICING_FALLBACK" ? " Valuasi Published (bukan saldo buku)." : ""}
+              HPP inventori hanya dari akuisisi (PO/GR/WMA), bukan harga customer.
               {drawer.item.financial_opening_source ? ` Buku ${sourceLabel(drawer.item.financial_opening_source)}${drawer.item.financial_opening_unit_cost != null ? ` ${formatRupiah(drawer.item.financial_opening_unit_cost)}` : ""}.` : ""}
             </p>
             <p data-testid={`inventory-value-posting-${drawer.item.accurate_item_id || drawer.item.master_item_id}`}>

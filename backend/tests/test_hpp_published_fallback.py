@@ -1,4 +1,4 @@
-"""Published HPP fallback and lazy per-product purchasing bootstrap."""
+"""Inventory valuation must ignore Customer Pricing; first-GR bootstrap stays intact."""
 import copy
 import os
 import sys
@@ -18,6 +18,7 @@ from services.hpp_cutover import SOURCE_FIRST_GR_UNIT_COST, ensure_indexes, list
 from services.inventory_valuation import build_inventory_valuation_rows
 from services.physical_stock import ensure_indexes as ensure_stock_indexes
 from services.purchase_goods_receipts import create_purchase_goods_receipt
+from services.r2_go_live import set_r2_authority_active
 
 DB_NAME = "eternal_hpp_published_fallback_test"
 USER = {"id": "holding", "name": "Holding", "email": "holding@test", "role": "holding_team"}
@@ -35,6 +36,7 @@ async def db():
     await client.drop_database(DB_NAME)
     await ensure_stock_indexes(database)
     await ensure_indexes(database)
+    await set_r2_authority_active(database, active=True)
     await database.hpp_cost_versions.create_index("id", unique=True)
     await database.hpp_cost_layers.create_index(
         [("calculation_version", 1), ("layer_id", 1)],
@@ -208,7 +210,8 @@ def _valuation(view, mid):
 
 
 @pytest.mark.anyio
-async def test_published_fallback_is_immediate_and_draft_history_are_ignored(db):
+async def test_customer_pricing_alone_does_not_value_inventory(db):
+    """Only published Customer Pricing present → MISSING_COST, no invented value."""
     pub_mid, pub_aid = await _master(db, "pub205", 10)
     await _r2(db, pub_mid, 10)
     await _pricing(
@@ -226,36 +229,22 @@ async def test_published_fallback_is_immediate_and_draft_history_are_ignored(db)
     newer_mid, newer_aid = await _master(db, "pub290", 15999)
     await _r2(db, newer_mid, 15999)
     await _pricing(db, "pub290", newer_mid, newer_aid, published=290, draft=310)
-    unsafe_mid, unsafe_aid = await _master(db, "uninitialized", 0)
-    await db.product_stock_state.delete_one({"master_item_id": unsafe_mid})
-    await _pricing(db, "uninitialized", unsafe_mid, unsafe_aid, published=500)
 
     view = await build_inventory_valuation_rows(db)
-    published = _valuation(view, pub_mid)
-    assert published["current_hpp"] == 205
-    assert published["inventory_value"] == 2050
-    assert published["hpp_status"] == "OK"
-    assert published["hpp_source"] == "PUBLISHED_CUSTOMER_PRICING_FALLBACK"
-    missing = _valuation(view, draft_mid)
-    assert missing["current_hpp"] is None
-    assert missing["inventory_value"] is None
-    assert missing["hpp_status"] == "MISSING_COST"
-    bsm = _valuation(view, newer_mid)
-    assert bsm["current_hpp"] == 290
-    assert bsm["inventory_value"] == 4_639_710
-    unsafe = _valuation(view, unsafe_mid)
-    assert unsafe["stock_fisik"] == 0
-    assert unsafe["current_hpp"] is None
-    assert unsafe["inventory_value"] is None
-    assert unsafe["hpp_status"] == "MISSING_COST"
-    assert unsafe["hpp_reason"] != "STOCK_STATE_UNAVAILABLE"
-    assert view["summary"]["total_inventory_value"] == 4_641_760
-    assert view["summary"]["valued_items"] == 2
-    assert view["summary"]["problem_items"] == 0
+    for mid in (pub_mid, draft_mid, newer_mid):
+        row = _valuation(view, mid)
+        assert row["current_hpp"] is None
+        assert row["inventory_value"] is None
+        assert row["hpp_status"] == "MISSING_COST"
+        assert row["hpp_source"] is None
+        assert row["published_pricing_version_id"] is None
+    assert view["summary"]["total_inventory_value"] == 0
+    assert view["summary"]["valued_items"] == 0
+    assert view["summary"]["items_without_hpp"] == 3
 
 
 @pytest.mark.anyio
-async def test_canonical_layer_wins_and_later_published_change_is_ignored(db):
+async def test_canonical_hpp_values_and_customer_pricing_change_ignored(db):
     mid, aid = await _master(db, "canonical", 10)
     await _r2(db, mid, 10)
     await _pricing(db, "canonical", mid, aid, published=290)
@@ -285,7 +274,9 @@ async def test_canonical_layer_wins_and_later_published_change_is_ignored(db):
     })
     first = _valuation(await build_inventory_valuation_rows(db), mid)
     assert first["current_hpp"] == 209.09
+    assert first["inventory_value"] == 2090.9
     assert first["hpp_source"] == "PURCHASING_MOVING_AVERAGE"
+    assert first["hpp_status"] == "OK"
     await db.customer_pricing_versions.update_one(
         {"id": "pub-canonical"},
         {"$set": {"products.0.hpp_snapshot": 230, "revision": 8}},
@@ -293,6 +284,7 @@ async def test_canonical_layer_wins_and_later_published_change_is_ignored(db):
     second = _valuation(await build_inventory_valuation_rows(db), mid)
     assert second["current_hpp"] == 209.09
     assert second["inventory_value"] == 2090.9
+    assert second["hpp_source"] == "PURCHASING_MOVING_AVERAGE"
 
 
 @pytest.mark.anyio

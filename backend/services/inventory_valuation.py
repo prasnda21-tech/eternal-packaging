@@ -4,6 +4,10 @@ The view never recalculates HPP and never writes stock, purchasing, pricing,
 or accounting data. Stock Fisik is the Yogyakarta R2 physical balance sum,
 the same quantity Stock Saat Ini displays. product_stock_state is not the
 official quantity.
+
+Inventory HPP comes only from acquisition cost (PO / Goods Receipt / WMA /
+approved cutover / first-GR bootstrap). Customer Pricing must never become
+inventory HPP fallback.
 """
 from __future__ import annotations
 
@@ -15,14 +19,13 @@ from typing import Any, Dict, List, Optional
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 
-from services.hpp_cutover import get_active_cutover, list_reconciliation
+from services.hpp_cutover import (
+    STATUS_PENDING_VALUATION,
+    get_active_cutover,
+    list_reconciliation,
+)
 from services.hpp_valuation import LAYERS, SETTINGS_KEY, VERSIONS
 from services.inventory_accounting import ITEM_TYPE_SERVICE
-from services.published_hpp import (
-    SOURCE_PUBLISHED_FALLBACK,
-    exact_published_candidate,
-    load_effective_published_hpp,
-)
 from services.purchase_common import money_round
 
 STATUS_OK = "OK"
@@ -39,8 +42,9 @@ SUPPORTED_STATUSES = {
     STATUS_NEEDS_UOM,
     STATUS_QTY_MISMATCH,
     STATUS_FAILED,
+    STATUS_PENDING_VALUATION,
 }
-MISSING_STATUSES = {STATUS_MISSING_COST, STATUS_NEEDS_COST}
+MISSING_STATUSES = {STATUS_MISSING_COST, STATUS_NEEDS_COST, STATUS_PENDING_VALUATION}
 PROBLEM_STATUSES = {STATUS_NEEDS_UOM, STATUS_QTY_MISMATCH, STATUS_FAILED}
 SORT_KEYS = {
     "code",
@@ -138,7 +142,6 @@ async def build_inventory_valuation_rows(db) -> dict:
         for row in reconciliation_rows
         if row.get("master_item_id")
     }
-    published_candidates = await load_effective_published_hpp(db)
     from services.financial_inventory_opening import financial_display_by_item
     from services.physical_stock import operational_physical_qty_by_item
 
@@ -156,12 +159,6 @@ async def build_inventory_valuation_rows(db) -> dict:
         stock = float(physical_by_item.get(mid, 0) or 0)
         if stock < 0:
             stock = 0.0
-        stock_state_valid = bool(
-            state
-            and state.get("initialized") is True
-            and state.get("status") == "INITIALIZED"
-            and not state.get("pending_event")
-        )
         position = reconciliation_by_mid.get(mid)
         if not position:
             position = positions.get(mid) or positions.get(f"a:{aid}") or {}
@@ -178,40 +175,19 @@ async def build_inventory_valuation_rows(db) -> dict:
         if original_status not in SUPPORTED_STATUSES:
             original_status = STATUS_FAILED
 
+        # Never invent cost from Customer Pricing / published HPP.
         canonical_exists = current_hpp is not None
-        published = None
-        if not canonical_exists and stock_state_valid and stock >= 0:
-            published = exact_published_candidate(
-                published_candidates,
-                accurate_item_id=aid,
-                master_item_id=mid,
-            )
-            if published:
-                current_hpp = money_round(published["hpp"])
-                valuation_qty = stock
-                difference = 0.0
-                original_status = STATUS_OK
-                position = {
-                    **position,
-                    "valuation_qty": stock,
-                    "current_hpp": current_hpp,
-                    "exact_average": str(current_hpp),
-                    "valuation_value": (
-                        money_round(_dec(stock) * _dec(current_hpp))
-                        if stock >= 0
-                        else None
-                    ),
-                    "hpp_status": STATUS_OK,
-                    "updated_at": published.get("published_at"),
-                    "hpp_source": SOURCE_PUBLISHED_FALLBACK,
-                }
 
         if current_hpp is None:
-            status = (
-                original_status
-                if original_status in {STATUS_NEEDS_COST, STATUS_NEEDS_UOM, STATUS_FAILED}
-                else STATUS_MISSING_COST
-            )
+            if original_status in {
+                STATUS_NEEDS_COST,
+                STATUS_NEEDS_UOM,
+                STATUS_FAILED,
+                STATUS_PENDING_VALUATION,
+            }:
+                status = original_status
+            else:
+                status = STATUS_MISSING_COST
         else:
             status = STATUS_OK if original_status == STATUS_QTY_MISMATCH else original_status
 
@@ -249,6 +225,7 @@ async def build_inventory_valuation_rows(db) -> dict:
                         STATUS_NEEDS_COST,
                         STATUS_NEEDS_UOM,
                         STATUS_FAILED,
+                        STATUS_PENDING_VALUATION,
                     }
                     else None
                 )
@@ -257,9 +234,7 @@ async def build_inventory_valuation_rows(db) -> dict:
                 position.get("hpp_source")
                 or ("PURCHASING_MOVING_AVERAGE" if canonical_exists else None)
             ),
-            "published_pricing_version_id": (
-                published.get("version_id") if published else None
-            ),
+            "published_pricing_version_id": None,
             "valuation_status": status,
             "financial_posting_status": (financial_by_item.get(mid) or {}).get("financial_posting_status") or "UNPOSTED",
             "financial_opening_qty": (financial_by_item.get(mid) or {}).get("financial_opening_qty"),
@@ -274,9 +249,8 @@ async def build_inventory_valuation_rows(db) -> dict:
             "published_is_book_value": False,
             "reconciliation_difference": difference,
             "reconciliation_explanation": (
-                "Selisih stok fisik dan qty valuasi manajerial. "
-                "HPP Published bukan saldo buku posted."
-                if (position.get("hpp_source") == SOURCE_PUBLISHED_FALLBACK or not canonical_exists)
+                "Belum ada HPP akuisisi kanonik. Nilai estimasi belum tersedia."
+                if not canonical_exists
                 else "Selisih stok fisik terhadap qty valuasi rata-rata pembelian."
             ),
             "updated_at": _latest_text(

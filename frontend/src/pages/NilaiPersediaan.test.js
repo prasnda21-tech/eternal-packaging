@@ -22,6 +22,7 @@ describe("Nilai Persediaan read-only page", () => {
     [
       "OK",
       "MISSING_COST",
+      "PENDING_VALUATION",
       "NEEDS_COST",
       "NEEDS_UOM",
       "QTY_MISMATCH",
@@ -48,9 +49,13 @@ describe("Nilai Persediaan read-only page", () => {
     expect(source).not.toMatch(/confirmInventoryValuationOpening/);
     expect(source).not.toMatch(/Konfirmasi HPP Awal/);
     expect(source).not.toMatch(/window\.confirm/);
-    expect(source).toMatch(/Valuasi Published \(bukan saldo buku\)/);
+    expect(source).not.toMatch(/PUBLISHED_CUSTOMER_PRICING_FALLBACK/);
+    expect(source).not.toMatch(/Valuasi Published \(bukan saldo buku\)/);
+    expect(source).toMatch(/HPP inventori hanya dari akuisisi/);
     expect(source).toMatch(/Posting saldo awal/);
-    expect(source).toMatch(/bukan saldo buku posted/);
+    expect(source).toMatch(/bukan harga customer/);
+    expect(source).toMatch(/bukan HPP Published/);
+    expect(source).toMatch(/Tidak diisi dari Published Pricing|Harga tidak diisi dari Published Pricing/);
     expect(source).not.toMatch(/HPP Rata-Rata \/ OK/);
     expect(source).toMatch(/Daftar Barang/);
     expect(source).toMatch(/Saldo Awal/);

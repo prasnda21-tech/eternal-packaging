@@ -31,6 +31,7 @@ from services.purchase_goods_receipts import create_purchase_goods_receipt
 from services.purchase_hpp import get_purchase_hpp_item, list_purchase_hpp
 from services.purchase_orders import create_purchase_order
 from services.purchase_returns import confirm_purchase_return, create_purchase_return
+from services.r2_go_live import set_r2_authority_active
 
 TEST_DB = "eternal_packaging_test_purchase_hpp"
 MONGO_URL = os.environ.get("MONGO_URL", "mongodb://127.0.0.1:27017/?replicaSet=eternal_local_rs")
@@ -54,6 +55,7 @@ async def db():
     await client.drop_database(TEST_DB)
     await ensure_stock_indexes(database)
     await ensure_indexes(database)
+    await set_r2_authority_active(database, active=True)
     await database.purchase_goods_receipts.create_index("id", unique=True)
     await database.purchase_goods_receipts.create_index("receipt_number", unique=True)
     await database.purchase_goods_receipts.create_index(
