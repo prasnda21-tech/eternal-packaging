@@ -20,6 +20,7 @@ jest.mock("../lib/auth", () => ({
 jest.mock("../lib/api", () => ({
   __esModule: true,
   default: {
+    branches: jest.fn(),
     inventoryValuation: jest.fn(),
     inventoryValuationItem: jest.fn(),
     inventoryValuationExport: jest.fn(),
@@ -87,6 +88,7 @@ describe("Nilai Persediaan financial actions", () => {
 
   beforeEach(() => {
     mockHasPerm.mockImplementation((perm) => FULL_PERMS.includes(perm));
+    mockApi.branches.mockResolvedValue({ items: [] });
     mockApi.inventoryValuation.mockResolvedValue({
       items: [
         {

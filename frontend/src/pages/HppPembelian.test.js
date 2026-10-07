@@ -28,6 +28,7 @@ jest.mock("../lib/auth", () => ({
 jest.mock("../lib/api", () => ({
   __esModule: true,
   default: {
+    branches: jest.fn(),
     purchaseHpp: jest.fn(),
     purchaseHppItem: jest.fn(),
     purchaseHppExport: jest.fn(),
@@ -133,6 +134,7 @@ describe("HPP Pembelian page", () => {
   let root;
 
   beforeEach(() => {
+    mockApi.branches.mockResolvedValue({ items: [] });
     mockApi.purchaseHpp.mockResolvedValue({ rows: [sampleRow, downRow], suppliers: ["Supplier HPP"] });
     mockApi.purchaseHppItem.mockResolvedValue({
       ...sampleRow,
@@ -202,7 +204,7 @@ describe("HPP Pembelian page", () => {
       container.querySelector('[data-testid="hpp-list-row"]').click();
     });
     await flush();
-    expect(mockApi.purchaseHppItem).toHaveBeenCalledWith("item-1");
+    expect(mockApi.purchaseHppItem).toHaveBeenCalledWith("item-1", expect.any(Object));
     expect(container.querySelector('[data-testid="hpp-detail"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="hpp-drawer-scrim"]')).toBeTruthy();
     const analysis = container.querySelector('[data-testid="hpp-detail-current"]').textContent;

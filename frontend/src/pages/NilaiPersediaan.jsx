@@ -700,7 +700,7 @@ export default function NilaiPersediaan() {
           <p className="subhead" data-testid="inventory-value-formula">
             {tab === "ledger-recon"
               ? "Rekonsiliasi persediaan dan HPP dari catatan saat ini."
-              : "Nilai = qty cabang × HPP company-wide. Bukan saldo buku posted."}
+              : "Nilai estimasi stok, bukan saldo buku posted. Qty cabang × HPP company-wide."}
           </p>
         </div>
       </div>

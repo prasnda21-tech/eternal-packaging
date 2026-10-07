@@ -48,7 +48,8 @@ describe("Nilai Persediaan read-only page", () => {
     expect(source).toMatch(/inventory-branch-select/);
     expect(source).toMatch(/can_switch_branches/);
     expect(source).toMatch(/branch_id/);
-    expect(source).toMatch(/qty cabang × HPP company-wide/);
+    expect(source).toMatch(/Nilai estimasi stok, bukan saldo buku posted/);
+    expect(source).toMatch(/Qty cabang × HPP company-wide/);
   });
 
   test("keeps opening explicit and separates estimate from book value", () => {
