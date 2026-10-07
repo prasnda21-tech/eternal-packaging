@@ -189,7 +189,13 @@ function StatusBadge({ product }) {
   return <span className="cp-badge-warn">{product.hpp_status || "Belum diisi"}</span>;
 }
 
-export default function CustomerPricingSettings({ notify, canEdit, canPublish }) {
+export default function CustomerPricingSettings({
+  notify,
+  canEdit,
+  canPublish,
+  embedded = false,
+  selectedGroupId,
+}) {
   const [settings, setSettings] = useState({
     admin_phone: "",
     default_quotation_validity_days: "",
@@ -205,6 +211,7 @@ export default function CustomerPricingSettings({ notify, canEdit, canPublish })
   const [newGroupName, setNewGroupName] = useState("");
 
   const [editorGroup, setEditorGroup] = useState(null);
+  const focusedGroupRef = useRef("");
   const [version, setVersion] = useState(null);
   const [viewOnlyVersion, setViewOnlyVersion] = useState(null);
   const [history, setHistory] = useState([]);
@@ -321,6 +328,31 @@ export default function CustomerPricingSettings({ notify, canEdit, canPublish })
       setBusy(false);
     }
   };
+
+  useEffect(() => {
+    if (selectedGroupId === undefined) return;
+    const targetId = String(selectedGroupId || "").trim();
+    if (!targetId) {
+      focusedGroupRef.current = "";
+      setEditorGroup(null);
+      setVersion(null);
+      setViewOnlyVersion(null);
+      setHistory([]);
+      setPublicDescription("");
+      setCatalogImage(null);
+      setCatalogImageBroken(false);
+      setBrokenProductImages({});
+      setPreview(null);
+      return;
+    }
+    if (focusedGroupRef.current === targetId && editorGroup?.id === targetId) return;
+    const group = groups.find((item) => item.id === targetId);
+    if (!group) return;
+    focusedGroupRef.current = targetId;
+    void openGroup(group);
+    // Controlled focus only; openGroup closes over latest canEdit/applyVersion.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedGroupId, groups, editorGroup?.id]);
 
   const closeEditor = () => {
     setEditorGroup(null);
@@ -794,25 +826,49 @@ export default function CustomerPricingSettings({ notify, canEdit, canPublish })
   }, [pricingMode, products, hppSource, tiers, profitMode]);
 
   return (
-    <div className="settings-card cp-settings" data-testid="customer-pricing-settings">
-      <div className="cp-page-head">
-        <div className="cp-page-head-copy">
-          <h2>Harga Customer</h2>
-          <p className="muted small">
-            Atur kelompok harga dan harga khusus produk.
-          </p>
+    <div
+      className={`settings-card cp-settings${embedded ? " embedded" : ""}`}
+      data-testid="customer-pricing-settings"
+    >
+      {!embedded ? (
+        <div className="cp-page-head">
+          <div className="cp-page-head-copy">
+            <h2>Harga Customer</h2>
+            <p className="muted small">
+              Atur kelompok harga dan harga khusus produk.
+            </p>
+          </div>
+          {!editorGroup && canEdit && (
+            <button
+              className="primary sm"
+              disabled={busy}
+              onClick={saveSettings}
+              data-testid="cp-save-settings"
+            >
+              Simpan Pengaturan
+            </button>
+          )}
         </div>
-        {!editorGroup && canEdit && (
-          <button
-            className="primary sm"
-            disabled={busy}
-            onClick={saveSettings}
-            data-testid="cp-save-settings"
-          >
-            Simpan Pengaturan
-          </button>
-        )}
-      </div>
+      ) : (
+        !editorGroup && canEdit ? (
+          <div className="cp-page-head cp-page-head-embedded">
+            <div className="cp-page-head-copy">
+              <h3>Harga Customer</h3>
+              <p className="muted small">
+                Atur kelompok harga dan harga khusus produk.
+              </p>
+            </div>
+            <button
+              className="primary sm"
+              disabled={busy}
+              onClick={saveSettings}
+              data-testid="cp-save-settings"
+            >
+              Simpan Pengaturan
+            </button>
+          </div>
+        ) : null
+      )}
 
       {error && (
         <div className="signal-strip" role="alert" data-testid="cp-error">

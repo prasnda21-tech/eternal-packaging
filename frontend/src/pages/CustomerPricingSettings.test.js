@@ -22,9 +22,10 @@ const apiSrc = fs.readFileSync(path.join(__dirname, "../lib/api.js"), "utf8");
 
 describe("Customer Pricing multi-product group UI", () => {
   test("Settings APIs stay group-based while public pricing uses anonymous transport", () => {
-    expect(settingsSrc).toMatch(/id:\s*"customer-pricing"/);
-    expect(settingsSrc).toMatch(/CustomerPricingSettings/);
+    expect(settingsSrc).toMatch(/id:\s*"pricing-catalog"/);
+    expect(settingsSrc).toMatch(/PricingCatalogSettings/);
     expect(settingsSrc).toMatch(/canPublishCustomerPricing/);
+    expect(settingsSrc).toMatch(/canViewPricing/);
     expect(apiSrc).toMatch(/customerPricingGroups/);
     expect(apiSrc).toMatch(/createCustomerPricingGroup/);
     expect(apiSrc).toMatch(/customer-pricing\/groups/);
@@ -59,13 +60,13 @@ describe("Customer Pricing multi-product group UI", () => {
     expect(cpSrc).toMatch(/Atur kelompok harga dan harga khusus produk/);
   });
 
-  test("shared Settings hero is hidden only for customer-pricing and design-cetakan", () => {
-    expect(settingsSrc).toMatch(/customerPricingPage/);
+  test("shared Settings hero is hidden for pricing-catalog and design-cetakan", () => {
+    expect(settingsSrc).toMatch(/pricingCatalogPage/);
     expect(settingsSrc).toMatch(/hideSharedSettingsHeading/);
-    expect(settingsSrc).toMatch(/designCetakanPage \|\| customerPricingPage \|\| publicCatalogPage/);
+    expect(settingsSrc).toMatch(/designCetakanPage \|\| pricingCatalogPage/);
     expect(settingsSrc).toMatch(/!hideSharedSettingsHeading \?/);
     expect(settingsSrc).toMatch(/tab === "design-cetakan"/);
-    expect(settingsSrc).toMatch(/tab === "customer-pricing"/);
+    expect(settingsSrc).toMatch(/tab === "pricing-catalog"/);
     expect(settingsSrc).toMatch(/tab === "hpp"/);
     expect(settingsSrc).toMatch(/page-heading/);
   });
