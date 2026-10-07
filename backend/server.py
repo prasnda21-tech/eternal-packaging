@@ -12846,7 +12846,7 @@ async def current_stock_update(
 
 class StockOpnamePayload(BaseModel):
     master_item_id: str
-    target_stock_current_qty: Any
+    stock_physical_counted: Any
     note: Optional[str] = ""
     client_request_id: Optional[str] = None
 
@@ -12866,7 +12866,7 @@ async def stock_opname_apply(
     result = await apply_stock_opname(
         db,
         master_item_id=payload.master_item_id,
-        target_stock_current_qty=payload.target_stock_current_qty,
+        stock_physical_counted=payload.stock_physical_counted,
         outstanding_so_qty=stock_row.get("outstanding_so_qty"),
         note=payload.note or "",
         user=user,
@@ -12876,11 +12876,20 @@ async def stock_opname_apply(
         "stock_opname.apply",
         user,
         target_email=f"item:{payload.master_item_id}",
-        before=None,
+        before={
+            "stock_physical": result.get("stock_physical_before"),
+        },
         after={
             "master_item_id": payload.master_item_id,
-            "target_stock_current_qty": payload.target_stock_current_qty,
+            "stock_physical_counted": payload.stock_physical_counted,
+            "stock_physical_before": result.get("stock_physical_before"),
+            "difference_qty": result.get("difference_qty"),
             "delta_total": result.get("delta_total"),
+            "effective_hpp_snapshot": result.get("effective_hpp_snapshot"),
+            "hpp_source": result.get("hpp_source"),
+            "estimated_difference_value": result.get("estimated_difference_value"),
+            "estimated_value_is_informational": True,
+            "valuation_adjustment_required": result.get("valuation_adjustment_required"),
         },
         note=payload.note or "Stock Opname",
     )
