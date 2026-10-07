@@ -94,6 +94,65 @@ describe("Design Cetakan settings wiring", () => {
     expect(pageSrc).not.toMatch(/free-form|mm coordinates|arbitrary\.css/i);
   });
 
+  test("Phase 3 PO and SJ editors reuse controlled element model", () => {
+    expect(pageSrc).toMatch(/PO_HEADER_SOURCE_OPTIONS/);
+    expect(pageSrc).toMatch(/PO_FOOTER_SOURCE_OPTIONS/);
+    expect(pageSrc).toMatch(/SJ_HEADER_SOURCE_OPTIONS/);
+    expect(pageSrc).toMatch(/SJ_FOOTER_SOURCE_OPTIONS/);
+    expect(pageSrc).toMatch(/data-testid="design-cetakan-po-section-header"/);
+    expect(pageSrc).toMatch(/data-testid="design-cetakan-po-section-footer"/);
+    expect(pageSrc).toMatch(/data-testid="design-cetakan-sj-section-header"/);
+    expect(pageSrc).toMatch(/data-testid="design-cetakan-sj-section-footer"/);
+    expect(pageSrc).toMatch(/data-testid="design-cetakan-po-header-list"/);
+    expect(pageSrc).toMatch(/data-testid="design-cetakan-po-footer-list"/);
+    expect(pageSrc).toMatch(/data-testid="design-cetakan-sj-header-list"/);
+    expect(pageSrc).toMatch(/data-testid="design-cetakan-sj-footer-list"/);
+    expect(pageSrc).toMatch(/document\.delivery_date/);
+    expect(pageSrc).toMatch(/document\.payment_terms/);
+    expect(pageSrc).toMatch(/document\.expedition/);
+    expect(pageSrc).toMatch(/user\.created_by/);
+    expect(pageSrc).toMatch(/po\.signatures_block/);
+    expect(pageSrc).toMatch(/normalizePoHeaderElements/);
+    expect(pageSrc).toMatch(/normalizeSjFooterElements/);
+    expect(pageSrc).toMatch(/loadDefaultPoHeaderElements/);
+    expect(pageSrc).toMatch(/loadDefaultSjFooterElements/);
+    expect(pageSrc).toMatch(/Kosongkan \(pakai Legacy\)/);
+    const poHeaderBlock = pageSrc.slice(
+      pageSrc.indexOf("const PO_HEADER_SOURCE_OPTIONS"),
+      pageSrc.indexOf("const PO_FOOTER_SOURCE_OPTIONS"),
+    );
+    const sjFooterBlock = pageSrc.slice(
+      pageSrc.indexOf("const SJ_FOOTER_SOURCE_OPTIONS"),
+      pageSrc.indexOf("const PO_HEADER_SOURCE_FLAT"),
+    );
+    expect(poHeaderBlock).not.toMatch(/document\.due_date|signature\.prepared|estimasi\.block/);
+    expect(sjFooterBlock).not.toMatch(/signature\.prepared|po\.signatures_block|document\.due_date/);
+    expect(pageSrc).not.toMatch(/pod\.|driver\.evidence|hpp\.|margin\./i);
+  });
+
+  test("Phase 3 legacy settings collapsed with section status badges", () => {
+    expect(pageSrc).toMatch(/Pengaturan Legacy/);
+    expect(pageSrc).toMatch(/Digunakan sebagai fallback jika bagian Header\/Footer baru belum dikonfigurasi/);
+    expect(pageSrc).toMatch(/data-testid="design-cetakan-invoice-legacy-toggle"/);
+    expect(pageSrc).toMatch(/data-testid="design-cetakan-po-legacy-toggle"/);
+    expect(pageSrc).toMatch(/data-testid="design-cetakan-sj-legacy-toggle"/);
+    expect(pageSrc).toMatch(/legacyOpen, setLegacyOpen/);
+    expect(pageSrc).toMatch(/invoice: false, po: false, sj: false/);
+    expect(pageSrc).toMatch(/Generic Aktif/);
+    expect(pageSrc).toMatch(/Legacy Fallback/);
+    expect(pageSrc).toMatch(/sectionModeLabel/);
+    expect(pageSrc).toMatch(/data-testid="design-cetakan-invoice-header-status"/);
+    expect(pageSrc).toMatch(/data-testid="design-cetakan-invoice-footer-status"/);
+    expect(pageSrc).toMatch(/data-testid="design-cetakan-po-header-status"/);
+    expect(pageSrc).toMatch(/data-testid="design-cetakan-po-footer-status"/);
+    expect(pageSrc).toMatch(/data-testid="design-cetakan-sj-header-status"/);
+    expect(pageSrc).toMatch(/data-testid="design-cetakan-sj-footer-status"/);
+    expect(pageSrc).toMatch(/Header Mengikuti Global/);
+    expect(pageSrc).toMatch(/Footer Mengikuti Global/);
+    expect(pageSrc).toMatch(/po\.header_elements/);
+    expect(pageSrc).toMatch(/surat_jalan\.footer_elements/);
+  });
+
   test("api exposes asset upload preview remove helpers", () => {
     expect(apiSrc).toMatch(/designCetakanSettings:\s*\(\)\s*=>\s*client\.get\(`\/settings\/design-cetakan`/);
     expect(apiSrc).toMatch(/updateDesignCetakanSettings:/);

@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from reportlab.lib import colors
 from reportlab.lib.units import mm
-from reportlab.platypus import Paragraph, Table, TableStyle
+from reportlab.platypus import Paragraph, Spacer, Table, TableStyle
 
 from services.pdf_layout import esc, logo_flowable, signature_image_flowable
 from services.print_context_resolver import resolve_source_value
@@ -23,11 +23,13 @@ from services.print_field_registry import (
     SOURCE_COMPANY_LOGO,
     SOURCE_COMPANY_NAME,
     SOURCE_ESTIMASI_BLOCK,
+    SOURCE_PO_SIGNATURES_BLOCK,
     SOURCE_SIGNATURE_PREPARED,
     SOURCE_STATIC_TEXT,
     VALUE_TYPE_ESTIMASI,
     VALUE_TYPE_IMAGE,
     VALUE_TYPE_MULTILINE,
+    VALUE_TYPE_PO_SIGNATURES,
     VALUE_TYPE_SIGNATURE,
     field_spec,
 )
@@ -146,13 +148,52 @@ def _signature_flowable(
     return column
 
 
-def _element_flowable(el: dict, context: dict, design: dict, sty: dict, col_width: float):
+def _po_signatures_block(block: Any, sty: dict, width: float) -> Table:
+    data = block if isinstance(block, dict) else {}
+    labels = list(data.get("labels") or ["Operator", "Pengiriman", "Penerima"])
+    footer_name = str(data.get("footer_name") or "Nama").strip() or "Nama"
+    while len(labels) < 3:
+        labels.append("")
+    labels = labels[:3]
+    slot = width / 3
+    line_width = max(slot - 18 * mm, 20 * mm)
+    sig_cells = []
+    line_cells = []
+    name_cells = []
+    for label in labels:
+        sig_cells.append(Paragraph(esc(str(label)), sty["center"]))
+        line_cells.append(Spacer(1, 16 * mm))
+        line = Table([[Paragraph(esc(footer_name), sty["center"])]], colWidths=[line_width])
+        line.setStyle(TableStyle([
+            ("LINEABOVE", (0, 0), (-1, -1), 0.6, colors.black),
+            ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+            ("TOPPADDING", (0, 0), (-1, -1), 2),
+            ("LEFTPADDING", (0, 0), (-1, -1), 2),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 2),
+        ]))
+        name_cells.append(line)
+    sig = Table([sig_cells, line_cells, name_cells], colWidths=[slot, slot, slot])
+    sig.setStyle(TableStyle([
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "BOTTOM"),
+        ("TOPPADDING", (0, 0), (-1, 0), 2),
+        ("BOTTOMPADDING", (0, 1), (-1, 1), 1),
+        ("LEFTPADDING", (0, 0), (-1, -1), 2),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 2),
+    ]))
+    return sig
+
+
+def _element_flowable(el: dict, context: dict, design: dict, sty: dict, col_width: float, *, full_width: float):
     source = str(el.get("source") or "").strip()
     label = str(el.get("label") or "").strip()
     bold = _bool(el.get("bold"), False)
     el_type = str(el.get("type") or "").strip()
     static_text = str(el.get("text") or "").strip()
     spec = field_spec(source)
+
+    if source == SOURCE_PO_SIGNATURES_BLOCK or (spec and spec.get("value_type") == VALUE_TYPE_PO_SIGNATURES):
+        return _po_signatures_block(resolve_source_value(context, SOURCE_PO_SIGNATURES_BLOCK), sty, full_width)
 
     if el_type == ELEMENT_TYPE_SIGNATURE or (spec and spec.get("value_type") == VALUE_TYPE_SIGNATURE):
         raw = resolve_source_value(context, source)
@@ -240,12 +281,23 @@ def build_generic_invoice_footer_flowables(
     visible = _visible_elements(elements)
     if not visible:
         return out
+    # Full-width PO signature block alone uses legacy 3-slot proportions.
+    only_po_sig = (
+        len(visible) == 1
+        and str(visible[0].get("source") or "").strip() == SOURCE_PO_SIGNATURES_BLOCK
+    )
+    if only_po_sig:
+        out.append(
+            _element_flowable(visible[0], context, design, sty, width, full_width=width)
+        )
+        return out
+
     groups = _group_by_align(visible)
     col_w = width / 3.0
 
-    left_items = [_element_flowable(el, context, design, sty, col_w) for el in groups[ALIGN_LEFT]]
-    center_items = [_element_flowable(el, context, design, sty, col_w) for el in groups[ALIGN_CENTER]]
-    right_items = [_element_flowable(el, context, design, sty, col_w) for el in groups[ALIGN_RIGHT]]
+    left_items = [_element_flowable(el, context, design, sty, col_w, full_width=width) for el in groups[ALIGN_LEFT]]
+    center_items = [_element_flowable(el, context, design, sty, col_w, full_width=width) for el in groups[ALIGN_CENTER]]
+    right_items = [_element_flowable(el, context, design, sty, col_w, full_width=width) for el in groups[ALIGN_RIGHT]]
 
     def col(items: List[Any]) -> Table:
         if not items:

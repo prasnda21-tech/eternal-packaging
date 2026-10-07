@@ -105,75 +105,106 @@ def _box(flowable, width: float):
 
 def generate_sales_order_pdf_bytes(order: dict, design: dict | None = None) -> bytes:
     """A4 landscape Pesanan Penjualan. Same content, wider page."""
+    from services.print_context_resolver import build_po_print_context
     from services.print_design_settings import resolve_print_design
+    from services.print_footer_render import (
+        build_generic_invoice_footer_flowables,
+        footer_elements_active,
+    )
+    from services.print_header_render import (
+        build_generic_invoice_header_flowables,
+        header_elements_active,
+    )
 
     design = resolve_print_design(design)
+    po_design = design.get("po") or {}
     page = landscape(A4)
     sty = styles(design.get("accent_color"))
     width = content_width(page)
     elements = []
 
-    elements.append(logo_flowable(design, width=52 * mm, height=17.6 * mm, company_style=sty["company"]))
-    elements.append(Spacer(1, 4 * mm))
+    header_elements = po_design.get("header_elements") or []
+    footer_elements = po_design.get("footer_elements") or []
+    use_generic_header = header_elements_active(header_elements)
+    use_generic_footer = footer_elements_active(footer_elements)
+    print_context = None
+    if use_generic_header or use_generic_footer:
+        print_context = build_po_print_context(order, design)
 
-    address = _text(order.get("address"))
-    customer = Paragraph(
-        f"Kepada<br/><b>{esc(_text(order.get('customer')) or '-')}</b><br/>{esc(address)}",
-        sty["body"],
-    )
-    meta = [
-        [
-            _meta_cell("Tanggal", format_pdf_date(order.get("order_date") or order.get("created_at")), sty),
-            _meta_cell("Nomor", _text(order.get("po_number")), sty),
-        ],
-        [
-            _meta_cell("Syarat Pembayaran", _text(order.get("payment_terms")), sty),
-            _meta_cell("User", _text(order.get("created_by_user")), sty),
-        ],
-        [
-            _meta_cell("Ekspedisi", _text(order.get("expedition")), sty),
-            _meta_cell("Estimasi Tanggal Pengiriman", _delivery_date(order), sty),
-        ],
-        [
-            _meta_cell("Zona Pengiriman", _text(order.get("delivery_zone")), sty),
-            _meta_cell("Penjual", _text(order.get("sales")), sty),
-        ],
-    ]
-    grid_width = width * 0.56
-    meta_table = Table(meta, colWidths=[grid_width / 2, grid_width / 2])
-    meta_table.setStyle(TableStyle([
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("BOX", (0, 0), (-1, -1), 0.7, colors.black),
-        ("LINEAFTER", (0, 0), (0, -1), 0.6, colors.black),
-        ("LINEBELOW", (0, 0), (-1, -2), 0.4, colors.black, None, (2, 2)),
-        ("LEFTPADDING", (0, 0), (-1, -1), 3),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 3),
-        ("TOPPADDING", (0, 0), (-1, -1), 2),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
-    ]))
-    left_width = width - grid_width
-    customer_cell = Table([[customer]], colWidths=[left_width - 3 * mm])
-    customer_cell.setStyle(TableStyle([
-        ("LINEBELOW", (0, 0), (-1, -1), 0.7, colors.black),
-        ("LEFTPADDING", (0, 0), (-1, -1), 1),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-        ("TOPPADDING", (0, 0), (-1, -1), 1),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-    ]))
-    header = Table(
-        [[customer_cell, meta_table]],
-        colWidths=[left_width, grid_width],
-    )
-    header.setStyle(TableStyle([
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 0),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-        ("TOPPADDING", (0, 0), (-1, -1), 0),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
-    ]))
-    elements.append(header)
-    elements.append(Spacer(1, 4 * mm))
+    if use_generic_header:
+        elements.extend(
+            build_generic_invoice_header_flowables(
+                elements=header_elements,
+                context=print_context,
+                design=design,
+                sty=sty,
+                width=width,
+                document_title="",
+            )
+        )
+        elements.append(Spacer(1, 2 * mm))
+    else:
+        elements.append(logo_flowable(design, width=52 * mm, height=17.6 * mm, company_style=sty["company"]))
+        elements.append(Spacer(1, 4 * mm))
+
+        address = _text(order.get("address"))
+        customer = Paragraph(
+            f"Kepada<br/><b>{esc(_text(order.get('customer')) or '-')}</b><br/>{esc(address)}",
+            sty["body"],
+        )
+        meta = [
+            [
+                _meta_cell("Tanggal", format_pdf_date(order.get("order_date") or order.get("created_at")), sty),
+                _meta_cell("Nomor", _text(order.get("po_number")), sty),
+            ],
+            [
+                _meta_cell("Syarat Pembayaran", _text(order.get("payment_terms")), sty),
+                _meta_cell("User", _text(order.get("created_by_user")), sty),
+            ],
+            [
+                _meta_cell("Ekspedisi", _text(order.get("expedition")), sty),
+                _meta_cell("Estimasi Tanggal Pengiriman", _delivery_date(order), sty),
+            ],
+            [
+                _meta_cell("Zona Pengiriman", _text(order.get("delivery_zone")), sty),
+                _meta_cell("Penjual", _text(order.get("sales")), sty),
+            ],
+        ]
+        grid_width = width * 0.56
+        meta_table = Table(meta, colWidths=[grid_width / 2, grid_width / 2])
+        meta_table.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("BOX", (0, 0), (-1, -1), 0.7, colors.black),
+            ("LINEAFTER", (0, 0), (0, -1), 0.6, colors.black),
+            ("LINEBELOW", (0, 0), (-1, -2), 0.4, colors.black, None, (2, 2)),
+            ("LEFTPADDING", (0, 0), (-1, -1), 3),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+            ("TOPPADDING", (0, 0), (-1, -1), 2),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+        ]))
+        left_width = width - grid_width
+        customer_cell = Table([[customer]], colWidths=[left_width - 3 * mm])
+        customer_cell.setStyle(TableStyle([
+            ("LINEBELOW", (0, 0), (-1, -1), 0.7, colors.black),
+            ("LEFTPADDING", (0, 0), (-1, -1), 1),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+            ("TOPPADDING", (0, 0), (-1, -1), 1),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ]))
+        header = Table(
+            [[customer_cell, meta_table]],
+            colWidths=[left_width, grid_width],
+        )
+        header.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 0),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+            ("TOPPADDING", (0, 0), (-1, -1), 0),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+        ]))
+        elements.append(header)
+        elements.append(Spacer(1, 4 * mm))
 
     header_row = [
         Paragraph("<b>Kode Barang</b>", sty["header"]),
@@ -261,33 +292,44 @@ def generate_sales_order_pdf_bytes(order: dict, design: dict | None = None) -> b
     elements.append(bottom)
     elements.append(Spacer(1, 8 * mm))
 
-    labels = list((design.get("po") or {}).get("signature_labels") or ["Operator", "Pengiriman", "Penerima"])
-    footer_name = str((design.get("po") or {}).get("footer_name_label") or "Nama")
-    sig_cells = []
-    line_cells = []
-    name_cells = []
-    slot = width / 3
-    line_width = slot - 18 * mm
-    for label in labels:
-        sig_cells.append(Paragraph(esc(label), sty["center"]))
-        line_cells.append(Spacer(1, 16 * mm))
-        line = Table([[Paragraph(esc(footer_name), sty["center"])]], colWidths=[line_width])
-        line.setStyle(TableStyle([
-            ("LINEABOVE", (0, 0), (-1, -1), 0.6, colors.black),
+    if use_generic_footer:
+        elements.extend(
+            build_generic_invoice_footer_flowables(
+                elements=footer_elements,
+                context=print_context,
+                design=design,
+                sty=sty,
+                width=width,
+            )
+        )
+    else:
+        labels = list(po_design.get("signature_labels") or ["Operator", "Pengiriman", "Penerima"])
+        footer_name = str(po_design.get("footer_name_label") or "Nama")
+        sig_cells = []
+        line_cells = []
+        name_cells = []
+        slot = width / 3
+        line_width = slot - 18 * mm
+        for label in labels:
+            sig_cells.append(Paragraph(esc(label), sty["center"]))
+            line_cells.append(Spacer(1, 16 * mm))
+            line = Table([[Paragraph(esc(footer_name), sty["center"])]], colWidths=[line_width])
+            line.setStyle(TableStyle([
+                ("LINEABOVE", (0, 0), (-1, -1), 0.6, colors.black),
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                ("TOPPADDING", (0, 0), (-1, -1), 2),
+                ("LEFTPADDING", (0, 0), (-1, -1), 2),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 2),
+            ]))
+            name_cells.append(line)
+        sig = Table([sig_cells, line_cells, name_cells], colWidths=[slot, slot, slot])
+        sig.setStyle(TableStyle([
             ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-            ("TOPPADDING", (0, 0), (-1, -1), 2),
+            ("VALIGN", (0, 0), (-1, -1), "BOTTOM"),
+            ("TOPPADDING", (0, 0), (-1, 0), 2),
+            ("BOTTOMPADDING", (0, 1), (-1, 1), 1),
             ("LEFTPADDING", (0, 0), (-1, -1), 2),
             ("RIGHTPADDING", (0, 0), (-1, -1), 2),
         ]))
-        name_cells.append(line)
-    sig = Table([sig_cells, line_cells, name_cells], colWidths=[slot, slot, slot])
-    sig.setStyle(TableStyle([
-        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-        ("VALIGN", (0, 0), (-1, -1), "BOTTOM"),
-        ("TOPPADDING", (0, 0), (-1, 0), 2),
-        ("BOTTOMPADDING", (0, 1), (-1, 1), 1),
-        ("LEFTPADDING", (0, 0), (-1, -1), 2),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 2),
-    ]))
-    elements.append(sig)
+        elements.append(sig)
     return build_pdf(elements, page)

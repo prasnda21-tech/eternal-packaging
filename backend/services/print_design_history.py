@@ -66,6 +66,10 @@ FIELD_LABELS = {
     "invoice.header_elements": "Header Faktur & Proforma",
     "footer_elements": "Footer Faktur & Proforma",
     "invoice.footer_elements": "Footer Faktur & Proforma",
+    "po.header_elements": "Header PO",
+    "po.footer_elements": "Footer PO",
+    "surat_jalan.header_elements": "Header Surat Jalan",
+    "surat_jalan.footer_elements": "Footer Surat Jalan",
 }
 
 OVERRIDE_FIELDS = (

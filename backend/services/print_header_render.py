@@ -135,16 +135,21 @@ def build_generic_invoice_header_flowables(
     document_title: str,
     proforma_warning: Optional[str] = None,
 ) -> List[Any]:
-    """Return Platypus flowables for the generic header (title + 3-column elements)."""
+    """Return Platypus flowables for the generic header (optional title + 3-column elements)."""
     out: List[Any] = []
     visible = _visible_elements(elements)
     groups = _group_by_align(visible)
 
-    # Document title stays hardcoded (business document identity).
-    out.append(Paragraph(esc(document_title), sty["title"]))
-    if proforma_warning:
+    # Document title stays hardcoded when provided (business document identity).
+    title = str(document_title or "").strip()
+    if title:
+        out.append(Paragraph(esc(title), sty["title"]))
+        if proforma_warning:
+            out.append(Paragraph(esc(proforma_warning), sty["warn"]))
+        out.append(Spacer(1, 2 * mm))
+    elif proforma_warning:
         out.append(Paragraph(esc(proforma_warning), sty["warn"]))
-    out.append(Spacer(1, 2 * mm))
+        out.append(Spacer(1, 2 * mm))
 
     col_w = width / 3.0
     left_items = [_element_flowable(el, context, design, sty, col_w) for el in groups[ALIGN_LEFT]]
