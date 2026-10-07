@@ -85,4 +85,79 @@ describe("HeaderSelectFilter", () => {
     });
     expect(onChange).toHaveBeenCalledWith("");
   });
+
+  test("grouped mode keeps independent values and clears both", async () => {
+    const onGroupChange = jest.fn();
+    const onClearGroups = jest.fn();
+    const groups = (financial, accounting) => ([
+      {
+        key: "financial",
+        label: "Status Faktur",
+        testid: "status-filter-financial",
+        options: [
+          { value: "", label: "Semua" },
+          { value: "finalized", label: "Final" },
+        ],
+        value: financial,
+        emptyValue: "",
+      },
+      {
+        key: "accounting",
+        label: "Posting Akuntansi",
+        testid: "status-filter-accounting",
+        options: [
+          { value: "", label: "Semua" },
+          { value: "not_posted", label: "Belum diposting" },
+        ],
+        value: accounting,
+        emptyValue: "",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(
+        <HeaderSelectFilter
+          label="Status"
+          testid="status-filter"
+          groups={groups("finalized", "not_posted")}
+          onGroupChange={onGroupChange}
+          onClearGroups={onClearGroups}
+        />
+      );
+    });
+    expect(container.querySelector('[data-testid="status-filter-active-dot"]')).toBeTruthy();
+    expect(container.querySelectorAll('[data-testid="status-filter"]').length).toBe(1);
+    expect(
+      container.querySelector('[data-testid="status-filter-financial-option-finalized"]')
+        .getAttribute("aria-selected"),
+    ).toBe("true");
+    expect(
+      container.querySelector('[data-testid="status-filter-accounting-option-not_posted"]')
+        .getAttribute("aria-selected"),
+    ).toBe("true");
+
+    await act(async () => {
+      container.querySelector('[data-testid="status-filter-clear"]').click();
+    });
+    expect(onClearGroups).toHaveBeenCalled();
+
+    await act(async () => {
+      root.render(
+        <HeaderSelectFilter
+          label="Status"
+          testid="status-filter"
+          groups={groups("", "")}
+          onGroupChange={onGroupChange}
+          onClearGroups={onClearGroups}
+        />
+      );
+    });
+    expect(container.querySelector('[data-testid="status-filter-active-dot"]')).toBeNull();
+    expect(
+      container.querySelector('[data-testid="status-filter-financial-option-"]').getAttribute("aria-selected"),
+    ).toBe("true");
+    expect(
+      container.querySelector('[data-testid="status-filter-accounting-option-"]').getAttribute("aria-selected"),
+    ).toBe("true");
+  });
 });

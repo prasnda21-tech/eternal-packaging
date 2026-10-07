@@ -367,7 +367,7 @@ const EMPTY_INVOICE_COLUMN_FILTERS = {
 const INVOICE_PAGE_SIZES = [20, 50, 100];
 
 const INVOICE_POSTING_OPTIONS = [
-  { value: "", label: "Semua posting" },
+  { value: "", label: "Semua" },
   { value: "not_posted", label: "Belum diposting" },
   { value: "posted", label: "Sudah diposting" },
   { value: "reversed", label: "Dibalik" },
@@ -1335,12 +1335,30 @@ export default function FakturPenjualan() {
   const pageCount = Math.max(1, Math.ceil((Number(listMeta.total) || 0) / pageSize) || 1);
   const allPageDeletableSelected = pageDeletableIds.length > 0 && pageDeletableIds.every((id) => selectedIds.has(id));
   const financialStatusOptions = listTab === "cancelled"
-    ? [{ value: "", label: "Semua status" }, { value: "cancelled", label: "Dibatalkan" }]
+    ? [{ value: "", label: "Semua" }, { value: "cancelled", label: "Dibatalkan" }]
     : [
-        { value: "", label: "Semua status" },
+        { value: "", label: "Semua" },
         { value: "draft", label: "Draft" },
         { value: "finalized", label: "Final" },
       ];
+  const statusFilterGroups = [
+    {
+      key: "financial",
+      label: "Status Faktur",
+      testid: "fp-th-filter-status-financial",
+      options: financialStatusOptions,
+      value: columnFilters.financialStatus || "",
+      emptyValue: "",
+    },
+    {
+      key: "accounting",
+      label: "Posting Akuntansi",
+      testid: "fp-th-filter-status-accounting",
+      options: INVOICE_POSTING_OPTIONS,
+      value: columnFilters.accountingStatus || "",
+      emptyValue: "",
+    },
+  ];
   const columnCount = reserveCheckboxColumn ? 9 : 8;
 
   return (
@@ -1588,24 +1606,19 @@ export default function FakturPenjualan() {
                   <th>Total Faktur</th>
                   <th>Sisa Tagihan</th>
                   <th>
-                    <div className="fp-th-status-filters">
-                      <HeaderSelectFilter
-                        label="Status Faktur"
-                        testid="fp-th-filter-financial"
-                        options={financialStatusOptions}
-                        value={columnFilters.financialStatus || ""}
-                        emptyValue=""
-                        onChange={(next) => patchColumnFilter({ financialStatus: next })}
-                      />
-                      <HeaderSelectFilter
-                        label="Posting"
-                        testid="fp-th-filter-accounting"
-                        options={INVOICE_POSTING_OPTIONS}
-                        value={columnFilters.accountingStatus || ""}
-                        emptyValue=""
-                        onChange={(next) => patchColumnFilter({ accountingStatus: next })}
-                      />
-                    </div>
+                    <HeaderSelectFilter
+                      label="Status"
+                      testid="fp-th-filter-status"
+                      groups={statusFilterGroups}
+                      onGroupChange={(key, next) => {
+                        if (key === "financial") patchColumnFilter({ financialStatus: next });
+                        else if (key === "accounting") patchColumnFilter({ accountingStatus: next });
+                      }}
+                      onClearGroups={() => patchColumnFilter({
+                        financialStatus: "",
+                        accountingStatus: "",
+                      })}
+                    />
                   </th>
                   <th>
                     <HeaderSelectFilter
