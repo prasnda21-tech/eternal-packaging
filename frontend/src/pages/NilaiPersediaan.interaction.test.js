@@ -88,8 +88,17 @@ describe("Nilai Persediaan financial actions", () => {
 
   beforeEach(() => {
     mockHasPerm.mockImplementation((perm) => FULL_PERMS.includes(perm));
-    mockApi.branches.mockResolvedValue({ items: [] });
+    mockApi.branches.mockResolvedValue({
+      items: [
+        { id: "br-ygy", code: "YGY", name: "Yogyakarta", active: true },
+        { id: "br-smg", code: "SMG", name: "Semarang", active: true },
+      ],
+    });
     mockApi.inventoryValuation.mockResolvedValue({
+      effective_branch_id: "br-ygy",
+      effective_branch_code: "YGY",
+      can_switch_branches: true,
+      hpp_cost_scope: "COMPANY_WIDE",
       items: [
         {
           master_item_id: "mid-1",

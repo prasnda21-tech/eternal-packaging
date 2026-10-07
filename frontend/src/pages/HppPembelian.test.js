@@ -134,8 +134,20 @@ describe("HPP Pembelian page", () => {
   let root;
 
   beforeEach(() => {
-    mockApi.branches.mockResolvedValue({ items: [] });
-    mockApi.purchaseHpp.mockResolvedValue({ rows: [sampleRow, downRow], suppliers: ["Supplier HPP"] });
+    mockApi.branches.mockResolvedValue({
+      items: [
+        { id: "br-ygy", code: "YGY", name: "Yogyakarta", active: true },
+        { id: "br-smg", code: "SMG", name: "Semarang", active: true },
+      ],
+    });
+    mockApi.purchaseHpp.mockResolvedValue({
+      rows: [sampleRow, downRow],
+      suppliers: ["Supplier HPP"],
+      effective_branch_id: "br-ygy",
+      effective_branch_code: "YGY",
+      can_switch_branches: true,
+      hpp_cost_scope: "COMPANY_WIDE",
+    });
     mockApi.purchaseHppItem.mockResolvedValue({
       ...sampleRow,
       history: [{

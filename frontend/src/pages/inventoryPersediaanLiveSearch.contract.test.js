@@ -122,9 +122,13 @@ describe("Persediaan live search inventory scope", () => {
     expect(value).toMatch(/liveSearchTableView/);
     expect(value).toMatch(/api\.inventoryValuation\(/);
     expect(value).toMatch(/api\.inventoryValuationExport\(/);
+    // Approved valuation meaning: estimate from physical stock × canonical HPP,
+    // never a posted book balance, never Customer Pricing / published HPP fallback.
     expect(value).toMatch(/Nilai estimasi stok, bukan saldo buku posted/);
+    expect(value).toMatch(/Qty cabang × HPP company-wide|current_hpp|inventory_value/);
     expect(value).toMatch(/Belum Ada HPP/);
     expect(value).not.toMatch(/currentStockUpdate|manual_hpp|hpp_snapshot|tier_prices/);
+    expect(value).not.toMatch(/PUBLISHED_CUSTOMER_PRICING_FALLBACK/);
   });
 
   test("query A then B: stale rows leave results view until B settles", () => {
