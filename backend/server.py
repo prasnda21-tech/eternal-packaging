@@ -4248,6 +4248,62 @@ async def set_split_work_date(order_id: str, split_id: str, payload: WorkDatePay
     return {"order": order}
 
 
+async def _piece_operator_display(db, split: dict) -> tuple[bool, str]:
+    """True when split maps to exactly one active HR employee with pay_basis piece.
+
+    Matches collect_outputs linkage: single hr_employees.user_id + pay_basis=piece.
+    """
+    uid = str((split or {}).get("operator_user_id") or "").strip()
+    fallback = str((split or {}).get("operator_name") or uid or "operator").strip()
+    if not uid:
+        return False, fallback
+    from services.hr_payroll import EMPLOYEES
+    matches = await db[EMPLOYEES].find(
+        {"user_id": uid, "active": {"$ne": False}},
+        {"_id": 0, "id": 1, "name": 1, "pay_basis": 1},
+    ).to_list(5)
+    if len(matches) != 1:
+        return False, fallback
+    emp = matches[0]
+    label = str(emp.get("name") or fallback).strip() or fallback
+    if str(emp.get("pay_basis") or "monthly").strip().lower() != "piece":
+        return False, label
+    return True, label
+
+
+def _progress_line_ident(order: dict, split: dict) -> dict:
+    lis = (order or {}).get("line_items") or []
+    try:
+        idx = int((split or {}).get("line_idx"))
+        if 0 <= idx < len(lis):
+            return _wage_item_identity(lis[idx])
+    except (TypeError, ValueError):
+        pass
+    return {}
+
+
+def _piece_rate_missing_message(operator_label: str) -> str:
+    name = str(operator_label or "").strip() or "operator"
+    return (
+        f"Tarif borongan untuk {name} belum tersedia. "
+        "Lengkapi tarif operator sebelum konfirmasi hasil."
+    )
+
+
+def _piece_work_date_missing_message() -> str:
+    return "Tanggal pekerjaan wajib diisi untuk operator borongan."
+
+
+def _piece_rate_as_of_date(work_date_iso: Optional[str]) -> date:
+    """Canonical production date for piece rate snapshot (not confirmation day)."""
+    if not work_date_iso:
+        raise HTTPException(400, _piece_work_date_missing_message())
+    try:
+        return date.fromisoformat(str(work_date_iso)[:10])
+    except Exception:
+        raise HTTPException(400, "Format tanggal tidak valid (gunakan YYYY-MM-DD)")
+
+
 @api_router.post("/orders/{order_id}/operator-progress")
 async def update_operator_progress(order_id: str, payload: OperatorProgressPayload, view: Optional[str] = None, user=Depends(current_user)):
     await _require_perm(user, "operator.update")
@@ -4268,6 +4324,33 @@ async def update_operator_progress(order_id: str, payload: OperatorProgressPaylo
         from services.physical_stock_settings import get_physical_stock_settings
         live_enabled = bool((await get_physical_stock_settings(db)).get("enabled"))
 
+    act_id = (payload.action_id or "").strip() or str(uuid.uuid4())
+    payload.action_id = act_id
+    progress_work_date = _parse_work_date(payload.work_date) if payload.work_date else None
+
+    # Piece payroll: require work_date + rate as-of work_date before any write/side effect.
+    requires_piece_rate = False
+    piece_operator_label = ""
+    if found_split_pre:
+        requires_piece_rate, piece_operator_label = await _piece_operator_display(db, found_split_pre)
+        entries_pre = list(found_split_pre.get("progress_entries") or [])
+        already = find_by_action_id(entries_pre, act_id)
+        inc_probe = payload.qty
+        if inc_probe is None and payload.qty_completed is not None and not entries_pre:
+            inc_probe = int(payload.qty_completed)
+        creating_new = (not already) and inc_probe is not None and int(inc_probe) > 0
+        if creating_new and requires_piece_rate:
+            if not progress_work_date:
+                raise HTTPException(400, _piece_work_date_missing_message())
+            resolved_rate = _wage_effective_rate(
+                _progress_line_ident(existing_order, found_split_pre),
+                _piece_rate_as_of_date(progress_work_date),
+                wage_doc,
+                operator=found_split_pre,
+            )
+            if resolved_rate is None:
+                raise HTTPException(400, _piece_rate_missing_message(piece_operator_label))
+
     if found_split_pre:
         inc_check = payload.qty
         if inc_check is None and payload.qty_completed is not None and not found_split_pre.get("progress_entries"):
@@ -4278,9 +4361,6 @@ async def update_operator_progress(order_id: str, payload: OperatorProgressPaylo
                 db, existing_order, found_split_pre, int(inc_check), live_enabled=live_enabled
             )
 
-    act_id = (payload.action_id or "").strip() or str(uuid.uuid4())
-    payload.action_id = act_id
-    progress_work_date = _parse_work_date(payload.work_date) if payload.work_date else None
     claimed_stock = None
     if found_split_pre:
         inc_val = payload.qty
@@ -4322,6 +4402,21 @@ async def update_operator_progress(order_id: str, payload: OperatorProgressPaylo
         increment = int(increment)
         if increment < 0:
             raise HTTPException(400, "Qty cetak selesai tidak boleh negatif.")
+        # Piece: snapshot as-of work_date. Non-piece: preserve confirmation-day lookup.
+        if requires_piece_rate:
+            if not progress_work_date:
+                raise HTTPException(400, _piece_work_date_missing_message())
+            rate_as_of = _piece_rate_as_of_date(progress_work_date)
+        else:
+            rate_as_of = wib_today()
+        rate = _wage_effective_rate(
+            _progress_line_ident(order, found),
+            rate_as_of,
+            wage_doc,
+            operator=found,
+        )
+        if requires_piece_rate and rate is None:
+            raise HTTPException(400, _piece_rate_missing_message(piece_operator_label))
         entries = seed_legacy(
             entries,
             snapshot_qty=found.get("qty_completed"),
@@ -4351,15 +4446,6 @@ async def update_operator_progress(order_id: str, payload: OperatorProgressPaylo
         err = _qr_validate_print_completed_total(others + new_total, order)
         if err:
             raise HTTPException(400, err)
-        lis = order.get("line_items") or []
-        ident = {}
-        try:
-            idx = int(found.get("line_idx"))
-            if 0 <= idx < len(lis):
-                ident = _wage_item_identity(lis[idx])
-        except (TypeError, ValueError):
-            ident = {}
-        rate = _wage_effective_rate(ident, wib_today(), wage_doc, operator=found)
         extra = {}
         if rate is not None:
             extra["rate_per_pcs"] = rate

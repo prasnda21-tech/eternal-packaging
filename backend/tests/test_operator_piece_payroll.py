@@ -862,7 +862,12 @@ async def test_boundary_legacy_identity_and_progress_retry():
         assert entries[0]["operator_user_id"] == uid
         assert entries[0]["rate_per_pcs"] == 100
         omitted = await c.post(f"/api/orders/{oid}/operator-progress", json={"operator_id": sid, "qty": 10, "action_id": "act-no-date"})
-        assert omitted.status_code == 200, omitted.text
+        assert omitted.status_code == 400, omitted.text
+        assert "Tanggal pekerjaan wajib diisi" in omitted.json()["detail"]
+        order_after = await server.db.orders.find_one({"id": oid}, {"_id": 0})
+        entries_after = [row for row in order_after["operator_splits"][0]["progress_entries"] if not row.get("legacy")]
+        assert len(entries_after) == 1
+        assert order_after["operator_splits"][0]["qty_completed"] == 100
     for rel in (
         "frontend/src/components/RoleWorkPanel.jsx",
         "frontend/src/components/OperatorSplitPanel.jsx",
