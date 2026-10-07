@@ -2323,10 +2323,12 @@ export default function Settings() {
   };
 
   const designCetakanPage = !showCategoryNav && tab === "design-cetakan";
+  const customerPricingPage = !showCategoryNav && tab === "customer-pricing";
+  const hideSharedSettingsHeading = designCetakanPage || customerPricingPage;
 
   return (
     <div data-testid="settings-page" className="settings-page">
-      {!designCetakanPage ? (
+      {!hideSharedSettingsHeading ? (
       <div className="page-heading">
         <div style={{ display: "flex", alignItems: "flex-start", gap: 14 }}>
           <span className="page-heading-icon" aria-hidden="true"><SettingsIcon size={22} /></span>
