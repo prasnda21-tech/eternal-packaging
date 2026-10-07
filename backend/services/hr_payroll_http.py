@@ -44,6 +44,7 @@ from services.hr_payroll import (
     create_period,
     create_piece_period,
     ensure_indexes,
+    finalize_from_review,
     prepare_piece_period_from_gaji_operator,
     ensure_kasbon_schedule,
     generate_payslip_for_line,
@@ -328,8 +329,22 @@ def register_hr_payroll_routes(
         await require_any_perm(user, permission)
         if target == STATUS_FINAL:
             await require_any_perm(user, "payroll_accounting.post")
+            current = await get_period(get_db(), period_id)
+            if str(current.get("status") or "") == STATUS_REVIEW:
+                # Happy-path Finalkan from REVIEW also requires approval control.
+                await require_any_perm(user, PERM_PAY_APPROVE)
         row = await transition_period(get_db(), period_id, target, body.get("note") or "", user)
         return {"period": row, "message": f"Status periode menjadi {target}"}
+
+    @api_router.post("/hr-payroll/periods/{period_id}/finalize-from-review")
+    async def period_finalize_from_review(period_id: str, payload: LoosePayload, user=Depends(current_user)):
+        """Combined Finalkan: REVIEW → FINAL with approval + finalize + accounting.post."""
+        body = _dump(payload)
+        await require_any_perm(user, PERM_PAY_APPROVE)
+        await require_any_perm(user, PERM_PAY_FINAL)
+        await require_any_perm(user, "payroll_accounting.post")
+        row = await finalize_from_review(get_db(), period_id, body.get("note") or "", user)
+        return {"period": row, "message": "Status periode menjadi FINAL"}
 
     @api_router.post("/hr-payroll/periods/{period_id}/reopen")
     async def period_reopen(period_id: str, payload: LoosePayload, user=Depends(current_user)):

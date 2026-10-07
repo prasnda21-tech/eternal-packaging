@@ -3,7 +3,15 @@ import { Link, useLocation, useSearchParams } from "react-router-dom";
 import { AlertCircle, Edit3, Plus, Save, X } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
-import { canTransition, moneyFormat, paymentVisibilityCode, paymentVisibilityLabel, statusLabel } from "../lib/hrPayroll";
+import {
+  canBayarPayment,
+  canFinalizeFromReview,
+  canTransition,
+  moneyFormat,
+  paymentVisibilityCode,
+  paymentVisibilityLabel,
+  statusLabel,
+} from "../lib/hrPayroll";
 import { formatDisplayDate, formatTrackingPageDate } from "../lib/constants";
 import { FormSection, FormField, FormProgress, computeStatus } from "../components/form-standard";
 
@@ -539,8 +547,7 @@ function pieceCalculated(period, lines) {
 function pieceWorkflowStep(period, lines) {
   const status = period?.status;
   if (status === "FINAL") return 4;
-  if (status === "APPROVAL") return 3;
-  if (status === "REVIEW") return 2;
+  if (status === "APPROVAL" || status === "REVIEW") return 3;
   if (status === "DRAFT" && pieceCalculated(period, lines)) return 2;
   return 1;
 }
@@ -576,12 +583,15 @@ function pieceNextAction(period, lines, hasPerm) {
   const calculated = pieceCalculated(period, lines);
   if (status === "DRAFT" && !calculated && hasPerm("payroll.calculate")) return { kind: "calc", testid: "hr-calc-btn" };
   if (status === "DRAFT" && calculated && canTransition(status, "REVIEW") && hasPerm("payroll.review")) return { kind: "REVIEW", testid: "hr-transition-review" };
-  if (status === "REVIEW" && canTransition(status, "APPROVAL") && hasPerm("payroll.approve")) return { kind: "APPROVAL", testid: "hr-transition-approval" };
+  if (status === "REVIEW" && canFinalizeFromReview(hasPerm)) return { kind: "FINAL", testid: "hr-transition-final" };
+  if (status === "REVIEW" && canTransition(status, "APPROVAL") && hasPerm("payroll.approve") && !canFinalizeFromReview(hasPerm)) {
+    return { kind: "APPROVAL", testid: "hr-transition-approval" };
+  }
   if (status === "APPROVAL" && canTransition(status, "FINAL") && hasPerm("payroll.finalize")) return { kind: "FINAL", testid: "hr-transition-final" };
   return null;
 }
 
-const PIECE_STEPS = ["Hitung", "Review", "Finalkan", "Payment"];
+const PIECE_STEPS = ["Hitung", "Review", "Finalkan", "Bayar"];
 
 function ledgerHref(period, readiness) {
   const payable = (readiness?.planned_lines || []).find((row) => previewIsPayable(row));
@@ -619,9 +629,8 @@ function financeSteps(period, payment) {
   const steps = [
     { key: "final", label: "FINAL", done: period?.status === "FINAL" },
     { key: "journal", label: "Jurnal akrual", done: accrual },
-    { key: "payment", label: "Payment", done: Boolean(payment) },
-    { key: "approval", label: "Persetujuan", done: ["APPROVED", "PAID", "REVERSED"].includes(status) },
-    { key: "posting", label: "Posting bank", done: ["PAID", "REVERSED"].includes(status) },
+    { key: "payment", label: "Bayar", done: ["PAID", "REVERSED"].includes(status) || (Boolean(payment) && status === "PAID") },
+    { key: "paid", label: "Selesai", done: ["PAID", "REVERSED"].includes(status) },
     { key: "reverse", label: "Reverse", done: status === "REVERSED" },
   ];
   const current = steps.findIndex((step) => !step.done);
@@ -636,17 +645,30 @@ function financeAction(period, payment, readiness, hasPerm) {
     }
     return null;
   }
+  const trusted = canBayarPayment(hasPerm);
   if (!payment) {
     const net = Number(readiness?.summary?.net ?? 0);
     if (readiness?.summary && net === 0) {
       return { kind: "blocked", text: "Net nol. Payment bank tidak dibuat." };
     }
+    if (trusted) return { kind: "bayar", label: "Bayar" };
     if (!hasPerm("payroll_payment.create")) return null;
     return { kind: "create", label: "Buat Payment" };
   }
-  if (payment.status === "DRAFT" && hasPerm("payroll_payment.approve")) return { kind: "approve", label: "Setujui" };
-  if (payment.status === "APPROVED" && hasPerm("payroll_payment.post")) return { kind: "post-pay", label: "Post Payment" };
-  if (payment.status === "PAID" && hasPerm("payroll_payment.reverse")) return { kind: "reverse", label: "Reverse" };
+  if (payment.status === "DRAFT") {
+    if (trusted) return { kind: "bayar", label: "Bayar" };
+    if (hasPerm("payroll_payment.approve")) return { kind: "approve", label: "Setujui" };
+    return null;
+  }
+  if (payment.status === "APPROVED") {
+    if (trusted) return { kind: "bayar", label: "Bayar" };
+    if (hasPerm("payroll_payment.post")) return { kind: "post-pay", label: "Post Payment" };
+    return null;
+  }
+  if (payment.status === "PAID") {
+    if (hasPerm("payroll_payment.reverse")) return { kind: "reverse", label: "Reverse" };
+    return { kind: "done", label: "Sudah Dibayar" };
+  }
   return null;
 }
 
@@ -654,18 +676,20 @@ function PayrollFinanceFlow({ period, lines, readiness, payment, payments, banks
   const [busy, setBusy] = useState("");
   const [dialog, setDialog] = useState("");
   const [reason, setReason] = useState("");
-  const [payDate, setPayDate] = useState(period?.end_date || "");
-  const [bankId, setBankId] = useState("");
+  const [payDate, setPayDate] = useState(payment?.payment_date || period?.end_date || "");
+  const [bankId, setBankId] = useState(payment?.cash_bank_account_id || "");
   const action = financeAction(period, payment, readiness, hasPerm);
   const canCancel = Boolean(payment && ["DRAFT", "APPROVED"].includes(payment.status) && hasPerm("payroll_payment.cancel"));
   const steps = financeSteps(period, payment);
-  const bankName = (banks || []).find((row) => row.id === payment?.cash_bank_account_id)?.name
+  const payAmount = payment?.total_amount ?? readiness?.summary?.net ?? payrollNet(lines, readiness);
+  const bankName = (banks || []).find((row) => row.id === (bankId || payment?.cash_bank_account_id))?.name
     || (banks || []).find((row) => row.id === period?.payment_bank_account)?.name
     || payment?.cash_bank_account_id
     || period?.payment_bank_account
     || "—";
   const payVisCode = period?.payment_status || paymentVisibilityCode(payment || null, period);
   const payVisLabel = period?.payment_status_label || paymentVisibilityLabel(payment || null, period);
+  const needsBayarForm = action?.kind === "bayar" && !payment;
   const run = async (work) => {
     setBusy(action?.kind || "save");
     try {
@@ -743,8 +767,9 @@ function PayrollFinanceFlow({ period, lines, readiness, payment, payments, banks
         </ul>
       )}
       {action?.kind === "blocked" && <p className="muted small" data-testid="hr-payroll-accounting-blocked">{action.text}</p>}
-      {action?.kind === "create" && (
-        <div className="hr-pay-create">
+      {action?.kind === "done" && <p className="muted small" data-testid="hr-payroll-paid-done">Sudah Dibayar</p>}
+      {(action?.kind === "create" || needsBayarForm) && (
+        <div className="hr-pay-create" data-testid={action?.kind === "bayar" ? "hr-bayar-form" : undefined}>
           <label>Tanggal pembayaran
             {compact && payDate ? <span className="gaji-period-id" data-testid="hr-payment-date-label">{formatIdDate(payDate)}</span> : null}
             <input type="date" value={payDate} onChange={(e) => setPayDate(e.target.value)} data-testid="hr-payment-date" />
@@ -761,16 +786,25 @@ function PayrollFinanceFlow({ period, lines, readiness, payment, payments, banks
               <input value={bankId} onChange={(e) => setBankId(e.target.value)} placeholder="ID kas/bank" data-testid="hr-payment-bank" />
             )}
           </label>
+          {action?.kind === "bayar" && (
+            <dl className="hr-pay-meta" data-testid="hr-bayar-readonly">
+              <dt>Periode</dt><dd>{period.period_number || `${period.start_date} – ${period.end_date}`}</dd>
+              <dt>Total pembayaran</dt><dd data-testid="hr-bayar-amount">{moneyFormat(payAmount)}</dd>
+              <dt>Utang Gaji</dt><dd>{moneyFormat(payAmount)}</dd>
+            </dl>
+          )}
         </div>
       )}
       <div className="hr-actions">
-        {action && action.kind !== "blocked" && (
+        {action && action.kind !== "blocked" && action.kind !== "done" && (
           <button
             type="button"
             className={action.kind === "reverse" ? "ghost danger" : "primary"}
-            disabled={Boolean(busy) || (action.kind === "create" && (!payDate || !bankId))}
+            disabled={Boolean(busy)
+              || (action.kind === "create" && (!payDate || !bankId))
+              || (action.kind === "bayar" && needsBayarForm && (!payDate || !bankId))}
             onClick={() => setDialog(action.kind)}
-            data-testid="hr-payroll-finance-action"
+            data-testid={action.kind === "bayar" ? "hr-payroll-bayar-action" : "hr-payroll-finance-action"}
           >
             {action.label}
           </button>
@@ -783,10 +817,21 @@ function PayrollFinanceFlow({ period, lines, readiness, payment, payments, banks
         <div className="modal" role="dialog" aria-modal="true" data-testid="hr-payroll-finance-modal">
           <div className="modal-inner">
             <div className="modal-head">
-              <h3>{dialog === "cancel" ? "Batalkan Payment" : action?.label}</h3>
+              <h3>{dialog === "cancel" ? "Batalkan Payment" : dialog === "bayar" ? "Bayar payroll?" : action?.label}</h3>
               <button type="button" className="ghost sm" disabled={Boolean(busy)} onClick={() => setDialog("")}>×</button>
             </div>
             <div className="emp-form">
+              {dialog === "bayar" && (
+                <>
+                  <dl className="hr-pay-meta" data-testid="hr-bayar-confirm-summary">
+                    <dt>Periode</dt><dd>{period.period_number || `${period.start_date} – ${period.end_date}`}</dd>
+                    <dt>Bank</dt><dd>{payment ? bankName : ((banks || []).find((row) => row.id === bankId)?.name || bankId || "—")}</dd>
+                    <dt>Tanggal</dt><dd>{payment?.payment_date || payDate || "—"}</dd>
+                    <dt>Nominal</dt><dd>{moneyFormat(payAmount)}</dd>
+                  </dl>
+                  <p data-testid="hr-bayar-confirm-note">Satu aksi ini membuat payment, menyetujui, dan memposting jurnal pembayaran (debit Utang Gaji, kredit bank).</p>
+                </>
+              )}
               {dialog === "create" && <p>Membuat satu payment DRAFT untuk periode ini. Nominal mengikuti kredit Utang Gaji.</p>}
               {dialog === "approve" && <p>Menyetujui {payment?.payment_number}. Belum memotong bank.</p>}
               {dialog === "post-pay" && <p>Jurnal pembayaran: debit Utang Gaji, kredit bank. Tanggal jurnal = tanggal pembayaran.</p>}
@@ -814,6 +859,11 @@ function PayrollFinanceFlow({ period, lines, readiness, payment, payments, banks
                   disabled={Boolean(busy) || ((dialog === "reverse" || dialog === "cancel") && reason.trim().length < 3)}
                   data-testid="hr-payroll-finance-confirm"
                   onClick={() => {
+                    if (dialog === "bayar") {
+                      run(() => api.hrPayrollPayPeriod(period.id, payment
+                        ? {}
+                        : { payment_date: payDate, cash_bank_account_id: bankId }));
+                    }
                     if (dialog === "create") run(() => api.hrPayrollCreatePayment(period.id, { payment_date: payDate, cash_bank_account_id: bankId }));
                     if (dialog === "approve") run(() => api.hrPayrollApprovePayment(payment.id));
                     if (dialog === "post-pay") run(() => api.hrPayrollPostPayment(payment.id));
@@ -821,7 +871,7 @@ function PayrollFinanceFlow({ period, lines, readiness, payment, payments, banks
                     if (dialog === "cancel") run(() => api.hrPayrollCancelPayment(payment.id, reason.trim()));
                   }}
                 >
-                  {busy ? "Memproses…" : dialog === "reverse" ? "Reverse" : dialog === "cancel" ? "Batalkan" : "Lanjutkan"}
+                  {busy ? "Memproses…" : dialog === "reverse" ? "Reverse" : dialog === "cancel" ? "Batalkan" : dialog === "bayar" ? "Bayar" : "Lanjutkan"}
                 </button>
               </div>
             </div>
@@ -1096,8 +1146,14 @@ function Payroll() {
     if (msg) setNotice(msg);
     setGajiWarn(warns.join(" "));
   }, [location.state]);
+  const needsBankList = Boolean(
+    selected?.status === "FINAL"
+    && selected.accounting_journal_id
+    && !payment
+    && (canCreatePayment || canBayarPayment(hasPerm)),
+  );
   useEffect(() => {
-    if (selected?.status !== "FINAL" || !selected.accounting_journal_id || payment || !canCreatePayment) return undefined;
+    if (!needsBankList) return undefined;
     let active = true;
     api.cashBankAccounts({ active_only: true }).then((data) => {
       if (active) setBanks(data.items || []);
@@ -1105,7 +1161,7 @@ function Payroll() {
       if (active) setBanks([]);
     });
     return () => { active = false; };
-  }, [selected?.id, selected?.status, selected?.accounting_journal_id, payment, canCreatePayment]);
+  }, [selected?.id, selected?.status, selected?.accounting_journal_id, payment, needsBankList]);
   const create = async (e) => { e.preventDefault(); try { const res = await api.hrPayrollCreatePeriod({ ...form, year: Number(form.year), month: Number(form.month) }); await loadPeriods(); await loadDetail(res.period); } catch (ex) { setErr(errorText(ex)); } };
   const createPiece = async (e) => { e.preventDefault(); try { const res = await api.hrPayrollCreatePiecePeriod(pieceForm); await loadPeriods(); await loadDetail(res.period); } catch (ex) { setErr(errorText(ex)); } };
   const calculate = async () => { try { await api.hrPayrollCalculate(selected.id); await loadDetail(selected); } catch (ex) { setErr(errorText(ex)); } };
@@ -1115,7 +1171,11 @@ function Payroll() {
     setErr("");
     setNotice("");
     try {
-      await api.hrPayrollTransition(selected.id, "FINAL");
+      if (selected.status === "REVIEW") {
+        await api.hrPayrollFinalizeFromReview(selected.id);
+      } else {
+        await api.hrPayrollTransition(selected.id, "FINAL");
+      }
       setFinalizeOpen(false);
       await loadPeriods();
       await loadDetail(selected);
@@ -1124,6 +1184,14 @@ function Payroll() {
     } finally {
       setFinalizeBusy(false);
     }
+  };
+  const canCombinedFinalize = canFinalizeFromReview(hasPerm);
+  const showTransitionButton = (target, perm) => {
+    if (!canTransition(selected?.status, target)) return false;
+    if (target === "APPROVAL" && selected?.status === "REVIEW" && canCombinedFinalize) return false;
+    if (target === "FINAL" && selected?.status === "REVIEW") return canCombinedFinalize;
+    if (target === "FINAL") return hasPerm("payroll.finalize");
+    return hasPerm(perm);
   };
   const reopen = async () => { const reason = window.prompt("Alasan buka ulang payroll:"); if (!reason) return; try { const res = await api.hrPayrollReopen(selected.id, reason); await loadPeriods(); await loadDetail(res.period); } catch (ex) { setErr(errorText(ex)); } };
   const canPostAccounting = selected?.status === "FINAL" && !selected.accounting_journal_id && hasPerm("payroll_accounting.post") && readiness?.accounting_ready === true;
@@ -1301,7 +1369,7 @@ function Payroll() {
             <button className={nextPiece?.kind === "calc" ? "primary" : "ghost"} onClick={calculate} data-testid="hr-calc-btn">Hitung Payroll</button>
           )}
           {transitionButtons.map(([target, perm, testid, label]) => {
-            if (!(canTransition(selected.status, target) && hasPerm(perm))) return null;
+            if (!showTransitionButton(target, perm)) return null;
             const reviewBeforeCalc = target === "REVIEW" && !pieceCalculated(selected, lines);
             return (
               <button
@@ -1354,7 +1422,7 @@ function Payroll() {
           {selected.period_number && <span className="muted small">{selected.period_number}</span>}
         </div><div className="hr-actions">
           {selected.status === "DRAFT" && hasPerm("payroll.calculate") && <button className="primary" onClick={calculate} data-testid="hr-calc-btn">Hitung Payroll</button>}
-          {transitionButtons.map(([target, perm, testid, label]) => canTransition(selected.status, target) && hasPerm(perm) ? <button key={target} className="primary" onClick={() => (target === "FINAL" ? setFinalizeOpen(true) : transition(target))} data-testid={testid}>{label}</button> : null)}
+          {transitionButtons.map(([target, perm, testid, label]) => showTransitionButton(target, perm) ? <button key={target} className="primary" onClick={() => (target === "FINAL" ? setFinalizeOpen(true) : transition(target))} data-testid={testid}>{label}</button> : null)}
           {selected.status === "FINAL" && hasPerm("payroll.reopen") && <button className="ghost" onClick={reopen} disabled={Boolean(selected.accounting_journal_id)} title={selected.accounting_journal_id ? "Jurnal akuntansi masih aktif" : undefined} data-testid="hr-reopen-btn">Buka Ulang</button>}
           {canPostAccounting && <button type="button" className="ghost" onClick={() => { setErr(""); setPostOpen(true); }} data-testid="hr-payroll-post-accounting" title="Hanya pemulihan bila Finalkan sudah selesai tetapi jurnal kosong">Pemulihan: Post Accounting</button>}
           {readiness && <button type="button" className="ghost" onClick={() => setShowPreview((open) => !open)} data-testid="hr-payroll-accounting-preview-btn">Lihat Preview Accounting</button>}

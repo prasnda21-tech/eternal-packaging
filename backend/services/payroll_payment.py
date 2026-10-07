@@ -864,3 +864,72 @@ async def period_has_posted_payroll_payment(db, period_id: str) -> bool:
         if journal and journal.get("status") == STATUS_POSTED:
             return True
     return False
+
+
+async def pay_payroll_period(db, period_id: str, payload: dict, user: dict) -> dict:
+    """Trusted-role Bayar: create → approve → post with resume semantics.
+
+    Does not invent NONE→PAID. Reuses create/approve/post services so journals,
+    stamps, and one-active-payment guards stay authoritative. Retry-safe:
+    DRAFT resumes approve+post; APPROVED resumes post; PAID returns existing.
+    HTTP must require create + approve + post permissions before calling.
+    """
+    from services.payroll_payment_posting import post_payroll_payment
+
+    period = await get_period(db, period_id)
+    if str(period.get("status") or "") != STATUS_FINAL:
+        raise HTTPException(409, NOT_FINAL_MESSAGE)
+
+    async with get_named_lock(f"payroll_payment_pay:{period['id']}"):
+        active = await get_payment_for_period(db, period["id"])
+        if active and str(active.get("status") or "") == STATUS_PAID:
+            journal_ref = await read_payment_journal_reference(db, active["id"])
+            return {
+                "payment": active,
+                "journal_id": journal_ref.get("journal_id") or active.get("accounting_journal_id"),
+                "journal_number": journal_ref.get("journal_number") or active.get("journal_number"),
+                "payment_status": STATUS_PAID,
+                "already": True,
+                "message": "Pembayaran payroll sudah diposting.",
+            }
+
+        if not active:
+            created = await create_payroll_payment(db, period["id"], payload or {}, user)
+            payment_id = str(created["id"])
+        else:
+            payment_id = str(active["id"])
+
+        fresh = await db[PAYMENTS].find_one({"id": payment_id}, {"_id": 0})
+        if not fresh:
+            raise HTTPException(404, "Pembayaran payroll tidak ditemukan.")
+
+        if str(fresh.get("status") or "") == STATUS_DRAFT:
+            approved = await approve_payroll_payment(db, payment_id, user)
+            fresh = await db[PAYMENTS].find_one({"id": payment_id}, {"_id": 0}) or approved
+
+        status = str(fresh.get("status") or "")
+        if status == STATUS_APPROVED:
+            posted = await post_payroll_payment(db, payment_id, user)
+            payment = await get_payment(db, payment_id, with_lines=True)
+            return {
+                "payment": payment,
+                "journal_id": posted.get("journal_id"),
+                "journal_number": posted.get("journal_number"),
+                "payment_status": STATUS_PAID,
+                "already": bool(posted.get("message") and "sudah" in str(posted.get("message") or "").lower()),
+                "message": posted.get("message") or "Pembayaran payroll diposting ke accounting.",
+            }
+
+        if status == STATUS_PAID:
+            journal_ref = await read_payment_journal_reference(db, payment_id)
+            payment = await get_payment(db, payment_id, with_lines=True)
+            return {
+                "payment": payment,
+                "journal_id": journal_ref.get("journal_id") or payment.get("accounting_journal_id"),
+                "journal_number": journal_ref.get("journal_number") or payment.get("journal_number"),
+                "payment_status": STATUS_PAID,
+                "already": True,
+                "message": "Pembayaran payroll sudah diposting.",
+            }
+
+        raise HTTPException(409, f"Status pembayaran {status} tidak dapat dilanjutkan ke Bayar.")

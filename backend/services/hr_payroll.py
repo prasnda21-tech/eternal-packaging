@@ -60,7 +60,9 @@ WORKFLOW_REOPEN = "reopen"
 WORKFLOW_CLAIM_TTL_SECONDS = 120
 ALLOWED = {
     STATUS_DRAFT: [STATUS_REVIEW],
-    STATUS_REVIEW: [STATUS_APPROVAL, STATUS_DRAFT],
+    # REVIEW → FINAL is the happy-path combined finalize (approval gate + accrual).
+    # REVIEW → APPROVAL remains for legacy / partial-permission actors.
+    STATUS_REVIEW: [STATUS_APPROVAL, STATUS_DRAFT, STATUS_FINAL],
     STATUS_APPROVAL: [STATUS_FINAL, STATUS_REVIEW],
     STATUS_FINAL: [],
 }
@@ -1826,10 +1828,101 @@ async def finalize_period_with_accrual(db, period_id: str, note: str, user: dict
         raise
 
 
+async def _stamp_review_approval_gate(db, period_id: str, note: str, user: dict) -> dict:
+    """REVIEW → APPROVAL with explicit approval-gate audit for combined Finalkan."""
+    period = await get_period(db, period_id)
+    if str(period.get("status") or "") != STATUS_REVIEW:
+        raise HTTPException(409, f"Transisi {period.get('status')} ke {STATUS_APPROVAL} tidak diizinkan.")
+    if not await db[LINES].find_one({"period_id": period_id}):
+        raise HTTPException(409, "Periode harus dihitung sebelum finalisasi.")
+    if str(period.get("period_scope") or "") == "piece" and period.get("piece_blockers"):
+        raise HTTPException(409, "Masih ada operator yang belum terhubung ke profil HR.")
+    if await _posted_accrual(db, period_id):
+        raise HTTPException(
+            409,
+            "Periode sudah memiliki jurnal akrual. Selesaikan finalisasi, bukan kembalikan status.",
+        )
+    if _claim_is_current(period):
+        raise HTTPException(409, "Periode payroll sedang diproses.")
+    gate_note = str(note or "").strip() or "Combined finalize from REVIEW (approval gate satisfied)"
+    events = list(period.get("audit_events") or [])
+    gate_event = _audit("approval_gate_satisfied", user, "finalize-from-review")
+    gate_event["mode"] = "combined_finalize"
+    approval_event = _audit("transition_approval", user, gate_note)
+    approval_event["mode"] = "combined_finalize"
+    events.append(gate_event)
+    events.append(approval_event)
+    updates: Dict[str, Any] = {
+        "status": STATUS_APPROVAL,
+        "audit_events": events,
+        "updated_at": now_iso(),
+        "last_transition": {
+            "from": STATUS_REVIEW,
+            "to": STATUS_APPROVAL,
+            "note": gate_note[:1000],
+            "actor": actor_snapshot(user),
+            "at": now_iso(),
+            "approval_gate": True,
+            "combined_finalize": True,
+            "mode": "combined_finalize",
+        },
+    }
+    result = await db[PERIODS].find_one_and_update(
+        {"id": period_id, "status": STATUS_REVIEW, **_workflow_claim_free_filter()},
+        {"$set": updates},
+        return_document=ReturnDocument.AFTER,
+    )
+    if not result:
+        raise HTTPException(409, "Status periode telah berubah.")
+    await db[LINES].update_many({"period_id": period_id}, {"$set": {"status": STATUS_APPROVAL}})
+    return result
+
+
+async def _finalize_from_review_body(db, period_id: str, note: str, user: dict) -> dict:
+    """REVIEW/APPROVAL → FINAL. Caller must hold hr_payroll_transition lock."""
+    period = await get_period(db, period_id)
+    status = str(period.get("status") or "")
+    posted = await _posted_accrual(db, period_id)
+    if status == STATUS_FINAL:
+        if posted:
+            return await _require_final_with_journal(db, period_id)
+        raise HTTPException(409, "Periode FINAL belum memiliki jurnal akrual. Gunakan Post Accounting.")
+    if status == STATUS_APPROVAL:
+        return await finalize_period_with_accrual(db, period_id, note, user)
+    if status != STATUS_REVIEW:
+        raise HTTPException(409, f"Transisi {status} ke {STATUS_FINAL} dari review tidak diizinkan.")
+    try:
+        await _stamp_review_approval_gate(db, period_id, note, user)
+    except HTTPException:
+        fresh = await get_period(db, period_id)
+        fresh_status = str(fresh.get("status") or "")
+        if fresh_status == STATUS_APPROVAL:
+            return await finalize_period_with_accrual(db, period_id, note, user)
+        if fresh_status == STATUS_FINAL and await _posted_accrual(db, period_id):
+            return await _require_final_with_journal(db, period_id)
+        raise
+    return await finalize_period_with_accrual(db, period_id, note, user)
+
+
+async def finalize_from_review(db, period_id: str, note: str, user: dict) -> dict:
+    """Happy-path Finalkan: REVIEW → FINAL via approval stamp + existing finalize.
+
+    Requires HTTP to enforce payroll.approve + payroll.finalize + payroll_accounting.post.
+    Reuses finalize_period_with_accrual so accrual/idempotency/claims stay unchanged.
+    Resumes from APPROVAL if the gate stamp already happened.
+    """
+    async with get_named_lock(f"hr_payroll_transition:{period_id}"):
+        return await _finalize_from_review_body(db, period_id, note, user)
+
+
 async def transition_period(db, period_id: str, to_status: str, note: str, user: dict) -> dict:
     to_status = str(to_status or "").upper()
     async with get_named_lock(f"hr_payroll_transition:{period_id}"):
         if to_status == STATUS_FINAL:
+            period = await get_period(db, period_id)
+            status = str(period.get("status") or "")
+            if status == STATUS_REVIEW:
+                return await _finalize_from_review_body(db, period_id, note, user)
             return await finalize_period_with_accrual(db, period_id, note, user)
         period = await get_period(db, period_id)
         current = period.get("status")
@@ -1847,12 +1940,24 @@ async def transition_period(db, period_id: str, to_status: str, note: str, user:
         if _claim_is_current(period):
             raise HTTPException(409, "Periode payroll sedang diproses.")
         events = list(period.get("audit_events") or [])
-        events.append(_audit(f"transition_{to_status.lower()}", user, note))
+        transition_event = _audit(f"transition_{to_status.lower()}", user, note)
+        last_transition: Dict[str, Any] = {
+            "from": current,
+            "to": to_status,
+            "note": str(note or "")[:1000],
+            "actor": actor_snapshot(user),
+            "at": now_iso(),
+        }
+        if to_status == STATUS_APPROVAL:
+            # Manual REVIEW → APPROVAL (distinct from combined Finalkan gate).
+            transition_event["mode"] = "manual"
+            last_transition["mode"] = "manual"
+        events.append(transition_event)
         updates: Dict[str, Any] = {
             "status": to_status,
             "audit_events": events,
             "updated_at": now_iso(),
-            "last_transition": {"from": current, "to": to_status, "note": str(note or "")[:1000], "actor": actor_snapshot(user), "at": now_iso()},
+            "last_transition": last_transition,
         }
         result = await db[PERIODS].find_one_and_update(
             {"id": period_id, "status": current, **_workflow_claim_free_filter()},
