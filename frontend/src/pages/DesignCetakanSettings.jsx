@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AlertCircle, CheckCircle2, Copy, Eye, History, Image, Info, Lock, Save, X } from "lucide-react";
+import { AlertCircle, CheckCircle2, ChevronDown, ChevronUp, Copy, Eye, EyeOff, History, Image, Info, Lock, Plus, Save, Trash2, X } from "lucide-react";
 import api from "../lib/api";
 import { errDetail } from "../lib/purchaseUi";
 import "./DesignCetakanSettings.css";
@@ -13,6 +13,74 @@ const TABS = [
 
 const LOGO_ACCEPT = "image/png,image/jpeg,image/jpg,image/webp";
 const SIGNATURE_ACCEPT = "image/png,image/jpeg,image/jpg,image/webp";
+
+/** Phase 1 whitelist — labels only; keys must match backend print_field_registry. */
+const HEADER_SOURCE_OPTIONS = [
+  { group: "Perusahaan", options: [
+    { key: "company.logo", label: "Logo", type: "field" },
+    { key: "company.name", label: "Nama", type: "field" },
+    { key: "company.address", label: "Alamat", type: "field" },
+  ]},
+  { group: "Customer", options: [
+    { key: "customer.name", label: "Nama", type: "field" },
+    { key: "customer.address", label: "Alamat", type: "field" },
+    { key: "customer.outlet", label: "Outlet", type: "field" },
+  ]},
+  { group: "Dokumen", options: [
+    { key: "document.number", label: "Nomor Faktur", type: "field" },
+    { key: "document.date", label: "Tanggal", type: "field" },
+    { key: "document.due_date", label: "Jatuh Tempo", type: "field" },
+    { key: "document.po_number", label: "No. PO", type: "field" },
+  ]},
+  { group: "Sales", options: [
+    { key: "sales.name", label: "Nama Sales", type: "field" },
+  ]},
+  { group: "Lainnya", options: [
+    { key: "static.text", label: "Teks Manual", type: "static_text" },
+  ]},
+];
+
+const HEADER_SOURCE_FLAT = HEADER_SOURCE_OPTIONS.flatMap((g) => g.options);
+const HEADER_SOURCE_KEYS = new Set(HEADER_SOURCE_FLAT.map((o) => o.key));
+const HEADER_ALIGN_OPTIONS = [
+  { value: "left", label: "Kiri" },
+  { value: "center", label: "Tengah" },
+  { value: "right", label: "Kanan" },
+];
+const MAX_HEADER_ELEMENTS = 24;
+
+function newHeaderElement(sourceKey = "company.name") {
+  const opt = HEADER_SOURCE_FLAT.find((o) => o.key === sourceKey) || HEADER_SOURCE_FLAT[1];
+  return {
+    id: `hdr-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+    type: opt.type === "static_text" ? "static_text" : "field",
+    source: opt.key,
+    label: "",
+    align: "left",
+    bold: opt.key === "company.name",
+    visible: true,
+    text: "",
+  };
+}
+
+function normalizeHeaderElements(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw.slice(0, MAX_HEADER_ELEMENTS).map((row, idx) => {
+    const source = HEADER_SOURCE_KEYS.has(row?.source) ? row.source : "company.name";
+    const opt = HEADER_SOURCE_FLAT.find((o) => o.key === source) || HEADER_SOURCE_FLAT[1];
+    const align = ["left", "center", "right"].includes(row?.align) ? row.align : "left";
+    return {
+      id: String(row?.id || `hdr-${idx + 1}`).slice(0, 64),
+      type: opt.type === "static_text" ? "static_text" : "field",
+      source,
+      label: String(row?.label || "").slice(0, 80),
+      align,
+      bold: Boolean(row?.bold),
+      visible: row?.visible === false ? false : true,
+      text: String(row?.text || "").slice(0, 240),
+    };
+  });
+}
 
 function emptyDraft() {
   return {
@@ -34,6 +102,7 @@ function emptyDraft() {
       prepared_footer: "",
       approved_label: "",
       approved_footer: "",
+      header_elements: [],
     },
     surat_jalan: {
       signature_labels: ["Gudang", "Cek Barang", "Kurir", "Penerima"],
@@ -77,6 +146,7 @@ function fromApi(settings) {
       prepared_footer: inv.prepared_footer || "",
       approved_label: inv.approved_label || "",
       approved_footer: inv.approved_footer || "",
+      header_elements: normalizeHeaderElements(inv.header_elements),
     },
     surat_jalan: {
       signature_labels: [...((s.surat_jalan || {}).signature_labels || []), "", "", "", ""].slice(0, 4),
@@ -698,6 +768,7 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
             prepared_footer: draft.invoice.prepared_footer,
             approved_label: draft.invoice.approved_label,
             approved_footer: draft.invoice.approved_footer,
+            header_elements: normalizeHeaderElements(draft.invoice.header_elements),
           },
           surat_jalan: {
             signature_labels: draft.surat_jalan.signature_labels,
@@ -856,6 +927,62 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
   };
 
   const saveState = dirty ? "Perubahan belum disimpan" : "Tersimpan";
+
+  const updateHeaderElements = (nextList) => {
+    patch("invoice.header_elements", normalizeHeaderElements(nextList));
+  };
+
+  const addHeaderElement = () => {
+    const list = Array.isArray(draft.invoice.header_elements) ? draft.invoice.header_elements : [];
+    if (list.length >= MAX_HEADER_ELEMENTS) return;
+    updateHeaderElements([...list, newHeaderElement()]);
+  };
+
+  const removeHeaderElement = (id) => {
+    const list = Array.isArray(draft.invoice.header_elements) ? draft.invoice.header_elements : [];
+    updateHeaderElements(list.filter((row) => row.id !== id));
+  };
+
+  const moveHeaderElement = (id, direction) => {
+    const list = [...(draft.invoice.header_elements || [])];
+    const idx = list.findIndex((row) => row.id === id);
+    if (idx < 0) return;
+    const target = idx + direction;
+    if (target < 0 || target >= list.length) return;
+    const tmp = list[idx];
+    list[idx] = list[target];
+    list[target] = tmp;
+    updateHeaderElements(list);
+  };
+
+  const patchHeaderElement = (id, key, value) => {
+    const list = (draft.invoice.header_elements || []).map((row) => {
+      if (row.id !== id) return row;
+      const next = { ...row, [key]: value };
+      if (key === "source") {
+        const opt = HEADER_SOURCE_FLAT.find((o) => o.key === value);
+        next.type = opt?.type === "static_text" ? "static_text" : "field";
+        if (next.type !== "static_text") next.text = "";
+      }
+      return next;
+    });
+    updateHeaderElements(list);
+  };
+
+  const loadDefaultHeaderElements = () => {
+    updateHeaderElements([
+      newHeaderElement("company.logo"),
+      { ...newHeaderElement("company.name"), bold: true, align: "left" },
+      { ...newHeaderElement("company.address"), align: "left" },
+      { ...newHeaderElement("customer.name"), label: "Kepada", bold: true, align: "left" },
+      { ...newHeaderElement("customer.address"), align: "left" },
+      { ...newHeaderElement("document.date"), label: "Tanggal", align: "right" },
+      { ...newHeaderElement("document.number"), label: "Nomor", align: "right" },
+      { ...newHeaderElement("sales.name"), label: "Sales", align: "right" },
+      { ...newHeaderElement("document.po_number"), label: "PO No", align: "right" },
+      { ...newHeaderElement("document.due_date"), label: "Jatuh Tempo", align: "right" },
+    ]);
+  };
 
   return (
     <div className="settings-card dc-page" data-testid="design-cetakan-settings">
@@ -1107,6 +1234,164 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
 
         {tab === "invoice" ? (
           <div data-testid="design-cetakan-invoice">
+            <section className="dc-section" data-testid="design-cetakan-header-section">
+              <h3 className="dc-label-row">
+                Header Cetakan
+                {branchMode ? <GlobalOnlyMark testid="design-cetakan-global-only-header">Header Mengikuti Global</GlobalOnlyMark> : null}
+              </h3>
+              <p className="muted small dc-header-help">
+                Susun elemen header dari sumber terdaftar. Kosongkan = header V1. Bank/ekspedisi/tipe kirim belum di Phase 1.
+              </p>
+              <div className="dc-header-toolbar">
+                <button
+                  type="button"
+                  className="secondary"
+                  data-testid="design-cetakan-header-add"
+                  disabled={globalOnlyLocked || (draft.invoice.header_elements || []).length >= MAX_HEADER_ELEMENTS}
+                  onClick={addHeaderElement}
+                >
+                  <Plus size={14} aria-hidden="true" />
+                  Tambah Elemen
+                </button>
+                <button
+                  type="button"
+                  className="secondary"
+                  data-testid="design-cetakan-header-load-default"
+                  disabled={globalOnlyLocked}
+                  onClick={loadDefaultHeaderElements}
+                >
+                  Isi Default Header
+                </button>
+                {(draft.invoice.header_elements || []).length > 0 ? (
+                  <button
+                    type="button"
+                    className="secondary"
+                    data-testid="design-cetakan-header-clear"
+                    disabled={globalOnlyLocked}
+                    onClick={() => updateHeaderElements([])}
+                  >
+                    Kosongkan (pakai V1)
+                  </button>
+                ) : null}
+              </div>
+              <div className="dc-header-list" data-testid="design-cetakan-header-list">
+                {(draft.invoice.header_elements || []).length === 0 ? (
+                  <p className="muted small" data-testid="design-cetakan-header-empty">
+                    Belum ada elemen header generik. PDF memakai header V1 yang sudah ada.
+                  </p>
+                ) : (
+                  (draft.invoice.header_elements || []).map((row, idx) => (
+                    <div className={`dc-header-row${row.source === "static.text" ? " has-text" : ""}`} key={row.id} data-testid={`design-cetakan-header-row-${idx}`}>
+                      <div className="dc-header-order">
+                        <button type="button" className="secondary dc-icon-btn" aria-label="Naikkan" title="Naikkan" disabled={globalOnlyLocked || idx === 0} onClick={() => moveHeaderElement(row.id, -1)}>
+                          <ChevronUp size={12} aria-hidden="true" />
+                        </button>
+                        <button type="button" className="secondary dc-icon-btn" aria-label="Turunkan" title="Turunkan" disabled={globalOnlyLocked || idx === (draft.invoice.header_elements || []).length - 1} onClick={() => moveHeaderElement(row.id, 1)}>
+                          <ChevronDown size={12} aria-hidden="true" />
+                        </button>
+                      </div>
+                      <label className="dc-header-source">
+                        <span className="dc-sr-only">Sumber</span>
+                        <select
+                          data-testid={`design-cetakan-header-source-${idx}`}
+                          value={row.source}
+                          disabled={globalOnlyLocked}
+                          aria-label="Sumber"
+                          title="Sumber"
+                          onChange={(e) => patchHeaderElement(row.id, "source", e.target.value)}
+                        >
+                          {HEADER_SOURCE_OPTIONS.map((group) => (
+                            <optgroup key={group.group} label={group.group}>
+                              {group.options.map((opt) => (
+                                <option key={opt.key} value={opt.key}>{opt.label}</option>
+                              ))}
+                            </optgroup>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="dc-header-align">
+                        <span className="dc-sr-only">Posisi</span>
+                        <select
+                          data-testid={`design-cetakan-header-align-${idx}`}
+                          value={row.align}
+                          disabled={globalOnlyLocked}
+                          aria-label="Posisi"
+                          title="Posisi"
+                          onChange={(e) => patchHeaderElement(row.id, "align", e.target.value)}
+                        >
+                          {HEADER_ALIGN_OPTIONS.map((opt) => (
+                            <option key={opt.value} value={opt.value}>{opt.label}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="dc-header-label">
+                        <span className="dc-sr-only">Label</span>
+                        <input
+                          data-testid={`design-cetakan-header-label-${idx}`}
+                          value={row.label}
+                          disabled={globalOnlyLocked}
+                          aria-label="Label"
+                          title="Label"
+                          onChange={(e) => patchHeaderElement(row.id, "label", e.target.value)}
+                          placeholder="Label"
+                        />
+                      </label>
+                      {row.source === "static.text" ? (
+                        <label className="dc-header-text">
+                          <span className="dc-sr-only">Teks</span>
+                          <input
+                            data-testid={`design-cetakan-header-text-${idx}`}
+                            value={row.text}
+                            disabled={globalOnlyLocked}
+                            aria-label="Teks manual"
+                            title="Teks manual"
+                            onChange={(e) => patchHeaderElement(row.id, "text", e.target.value)}
+                            placeholder="Teks"
+                          />
+                        </label>
+                      ) : null}
+                      <button
+                        type="button"
+                        className={`secondary dc-icon-btn dc-toggle-btn${row.bold ? " is-on" : ""}`}
+                        data-testid={`design-cetakan-header-bold-${idx}`}
+                        aria-label="Bold"
+                        title="Bold"
+                        aria-pressed={Boolean(row.bold)}
+                        disabled={globalOnlyLocked}
+                        onClick={() => patchHeaderElement(row.id, "bold", !row.bold)}
+                      >
+                        <span className="dc-toggle-b" aria-hidden="true">B</span>
+                      </button>
+                      <button
+                        type="button"
+                        className={`secondary dc-icon-btn dc-toggle-btn${row.visible !== false ? " is-on" : ""}`}
+                        data-testid={`design-cetakan-header-visible-${idx}`}
+                        aria-label="Tampilkan elemen"
+                        title="Tampilkan elemen"
+                        aria-pressed={row.visible !== false}
+                        disabled={globalOnlyLocked}
+                        onClick={() => patchHeaderElement(row.id, "visible", row.visible === false)}
+                      >
+                        {row.visible !== false
+                          ? <Eye size={13} aria-hidden="true" />
+                          : <EyeOff size={13} aria-hidden="true" />}
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary dc-icon-btn"
+                        data-testid={`design-cetakan-header-remove-${idx}`}
+                        aria-label="Hapus elemen"
+                        title="Hapus elemen"
+                        disabled={globalOnlyLocked}
+                        onClick={() => removeHeaderElement(row.id)}
+                      >
+                        <Trash2 size={13} aria-hidden="true" />
+                      </button>
+                    </div>
+                  ))
+                )}
+              </div>
+            </section>
             <section className="dc-section">
               <h3>Tanda Tangan</h3>
             <AssetSlot
