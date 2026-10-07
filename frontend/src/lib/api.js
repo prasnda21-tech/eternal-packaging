@@ -614,6 +614,56 @@ export const api = {
     client
       .put(`/settings/public-catalog/groups/${encodeURIComponent(pricingGroupId)}`, payload)
       .then((r) => r.data),
+  publicCatalogVariants: (pricingGroupId, params = {}) =>
+    client
+      .get(
+        `/settings/public-catalog/groups/${encodeURIComponent(pricingGroupId)}/variants`,
+        { params }
+      )
+      .then((r) => r.data),
+  updatePublicCatalogVariant: (pricingGroupId, accurateItemId, payload) =>
+    client
+      .put(
+        `/settings/public-catalog/groups/${encodeURIComponent(pricingGroupId)}/variants/${encodeURIComponent(accurateItemId)}`,
+        payload
+      )
+      .then((r) => r.data),
+  publicCatalogVariantImages: (pricingGroupId, accurateItemId) =>
+    client
+      .get(
+        `/settings/public-catalog/groups/${encodeURIComponent(pricingGroupId)}/variants/${encodeURIComponent(accurateItemId)}/images`
+      )
+      .then((r) => r.data),
+  uploadPublicCatalogVariantImage: (pricingGroupId, accurateItemId, file, meta = {}) => {
+    const form = new FormData();
+    form.append("file", file);
+    if (meta.role != null) form.append("role", meta.role);
+    if (meta.display_order != null) form.append("display_order", String(meta.display_order));
+    if (meta.is_default != null) form.append("is_default", meta.is_default ? "true" : "false");
+    if (meta.enabled != null) form.append("enabled", meta.enabled ? "true" : "false");
+    return client
+      .post(
+        `/settings/public-catalog/groups/${encodeURIComponent(pricingGroupId)}/variants/${encodeURIComponent(accurateItemId)}/images`,
+        form,
+        { headers: { "Content-Type": "multipart/form-data" } }
+      )
+      .then((r) => r.data);
+  },
+  patchPublicCatalogVariantImage: (pricingGroupId, accurateItemId, imageId, payload) =>
+    client
+      .patch(
+        `/settings/public-catalog/groups/${encodeURIComponent(pricingGroupId)}/variants/${encodeURIComponent(accurateItemId)}/images/${encodeURIComponent(imageId)}`,
+        payload
+      )
+      .then((r) => r.data),
+  deletePublicCatalogVariantImage: (pricingGroupId, accurateItemId, imageId) =>
+    client
+      .delete(
+        `/settings/public-catalog/groups/${encodeURIComponent(pricingGroupId)}/variants/${encodeURIComponent(accurateItemId)}/images/${encodeURIComponent(imageId)}`
+      )
+      .then((r) => r.data),
+  publicCatalogVariantImageUrl: (pricingGroupId, accurateItemId, imageId, version = "") =>
+    `${API}/settings/public-catalog/groups/${encodeURIComponent(pricingGroupId)}/variants/${encodeURIComponent(accurateItemId)}/images/${encodeURIComponent(imageId)}/content${version ? `?v=${encodeURIComponent(version)}` : ""}`,
   customerPricingGroups: (params = {}) => client.get(`/customer-pricing/groups`, { params }).then((r) => r.data),
   createCustomerPricingGroup: (payload) => client.post(`/customer-pricing/groups`, payload).then((r) => r.data),
   customerPricingGroup: (id) => client.get(`/customer-pricing/groups/${encodeURIComponent(id)}`).then((r) => r.data),
