@@ -24,6 +24,7 @@ jest.mock("../lib/auth", () => ({
 jest.mock("../lib/api", () => ({
   __esModule: true,
   default: {
+    branches: jest.fn(),
     inventoryValuation: jest.fn(),
     inventoryValuationItem: jest.fn(),
     inventoryValuationExport: jest.fn(),
@@ -123,6 +124,9 @@ describe("Phase 5B.1 ledger reconciliation panel", () => {
 
   beforeEach(() => {
     mockHasPerm.mockImplementation((perm) => BOTH.includes(perm));
+    mockApi.branches.mockResolvedValue({
+      items: [{ id: "br-ygy", code: "YGY", name: "Yogyakarta", active: true }],
+    });
     mockApi.inventoryValuation.mockResolvedValue({ items: [], summary: null, total: 0, page: 1, page_count: 1 });
     mockApi.inventoryValuationItem.mockResolvedValue({
       found: true,
