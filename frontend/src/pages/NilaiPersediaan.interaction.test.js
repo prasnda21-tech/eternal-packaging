@@ -20,6 +20,7 @@ jest.mock("../lib/auth", () => ({
 jest.mock("../lib/api", () => ({
   __esModule: true,
   default: {
+    branches: jest.fn(),
     inventoryValuation: jest.fn(),
     inventoryValuationItem: jest.fn(),
     inventoryValuationExport: jest.fn(),
@@ -87,7 +88,17 @@ describe("Nilai Persediaan financial actions", () => {
 
   beforeEach(() => {
     mockHasPerm.mockImplementation((perm) => FULL_PERMS.includes(perm));
+    mockApi.branches.mockResolvedValue({
+      items: [
+        { id: "br-ygy", code: "YGY", name: "Yogyakarta", active: true },
+        { id: "br-smg", code: "SMG", name: "Semarang", active: true },
+      ],
+    });
     mockApi.inventoryValuation.mockResolvedValue({
+      effective_branch_id: "br-ygy",
+      effective_branch_code: "YGY",
+      can_switch_branches: true,
+      hpp_cost_scope: "COMPANY_WIDE",
       items: [
         {
           master_item_id: "mid-1",
@@ -116,7 +127,9 @@ describe("Nilai Persediaan financial actions", () => {
           item_code: "UNK",
           item_name: "Tanpa bukti stok",
           unit: "PCS",
-          stock_fisik: 0,
+          // stockLabel shows "Tidak tersedia" only when stock_fisik is null/empty;
+          // zero is a real quantity and renders as "0" (see mid-zero above).
+          stock_fisik: null,
           hpp_reason: "STOCK_STATE_UNAVAILABLE",
           current_hpp: null,
           inventory_value: null,

@@ -66,6 +66,10 @@ PERMISSION_CATALOG = [
     ("Import PO", "po.import.spreadsheet", "Import PO dari file XLSX / CSV"),
     ("Persediaan", "master_items.view", "Lihat Barang/Jasa"),
     ("Persediaan", "master_items.sync", "Sinkronkan Barang/Jasa dari Accurate"),
+    ("Persediaan", "org.branches.view", "Lihat Cabang"),
+    ("Persediaan", "org.branches.manage", "Kelola Cabang"),
+    ("Persediaan", "org.warehouses.view", "Lihat Gudang"),
+    ("Persediaan", "org.warehouses.manage", "Kelola Gudang"),
     ("Persediaan", "current_stock.view", "Lihat Stock Saat Ini"),
     ("Persediaan", "current_stock.update", "Ubah Qty Saat Ini / Pembelian Barang"),
     ("Persediaan", "current_stock.import", "Impor & Sesuaikan Stock Saat Ini"),
@@ -85,6 +89,7 @@ PERMISSION_CATALOG = [
     ("Pembelian", "purchase_invoices.create", "Buat Faktur Pembelian"),
     ("Pembelian", "purchase_payments.view", "Lihat Pembayaran Pembelian"),
     ("Pembelian", "purchase_payments.create", "Buat Pembayaran Pembelian"),
+    ("Pembelian", "purchase_hpp.view", "Lihat HPP Pembelian"),
     ("Pengaturan", "settings.hpp.view", "Lihat Pengaturan HPP"),
     ("Pengaturan", "settings.hpp.manage", "Ubah Pengaturan HPP / hitung ulang"),
     ("Pengaturan", "settings.sales_accounting.view", "Lihat Pengaturan Akuntansi Penjualan"),
@@ -285,8 +290,10 @@ PERMISSION_CATALOG = [
     ("Akses Menu", "nav.purchasing.invoices", "Menu Faktur Pembelian"),
     ("Akses Menu", "nav.purchasing.payments", "Menu Pembayaran Pembelian"),
     ("Akses Menu", "nav.purchasing.receipts", "Menu Penerimaan Barang"),
+    ("Akses Menu", "nav.purchasing.hpp", "Menu HPP Pembelian"),
     ("Akses Menu", "nav.inventory", "Menu Persediaan"),
     ("Akses Menu", "nav.inventory.master_items", "Menu Barang/Jasa"),
+    ("Akses Menu", "nav.inventory.branches_warehouses", "Menu Cabang & Gudang"),
     ("Akses Menu", "nav.inventory.current_stock", "Menu Stock Saat Ini"),
     ("Akses Menu", "nav.inventory.inventory_value", "Menu Nilai Persediaan"),
     ("Akses Menu", "nav.reports", "Menu Laporan"),
@@ -419,8 +426,10 @@ NAV_MENU_ITEMS = (
     ("nav.purchasing.invoices", "Faktur Pembelian", "nav.purchasing"),
     ("nav.purchasing.payments", "Pembayaran Pembelian", "nav.purchasing"),
     ("nav.purchasing.receipts", "Penerimaan Barang", "nav.purchasing"),
+    ("nav.purchasing.hpp", "HPP Pembelian", "nav.purchasing"),
     ("nav.inventory", "Persediaan", None),
     ("nav.inventory.master_items", "Barang/Jasa", "nav.inventory"),
+    ("nav.inventory.branches_warehouses", "Cabang & Gudang", "nav.inventory"),
     ("nav.inventory.current_stock", "Stock Saat Ini", "nav.inventory"),
     ("nav.inventory.inventory_value", "Nilai Persediaan", "nav.inventory"),
     ("nav.reports", "Laporan", None),
@@ -492,6 +501,9 @@ def derived_nav_permissions(existing: set) -> set:
     if "delivery.reschedule" in existing or "delivery.reschedule.set_date" in existing:
         nav.add("nav.production")
         nav.add("nav.delivery_reschedule")
+    if "org.branches.view" in existing or "org.warehouses.view" in existing:
+        nav.add("nav.inventory")
+        nav.add("nav.inventory.branches_warehouses")
     if "current_stock.view" in existing:
         nav.add("nav.inventory")
         nav.add("nav.inventory.current_stock")
@@ -513,6 +525,9 @@ def derived_nav_permissions(existing: set) -> set:
     if "purchase_payments.view" in existing or "purchase_payments.create" in existing:
         nav.add("nav.purchasing")
         nav.add("nav.purchasing.payments")
+    if "purchase_hpp.view" in existing:
+        nav.add("nav.purchasing")
+        nav.add("nav.purchasing.hpp")
     if "design.upload" in existing:
         nav.add("nav.production")
         nav.add("nav.tasks")
@@ -716,6 +731,7 @@ ROLE_DEFAULT_PERMISSIONS = {
         "purchase_orders.view", "purchase_orders.create",
         "purchase_invoices.view", "purchase_invoices.create",
         "purchase_payments.view", "purchase_payments.create",
+        "purchase_hpp.view",
         "settings.hpp.view", "settings.hpp.manage",
         "reports.gaji_operator.view",
         "reports.order_prediction.view", "reports.order_prediction.import",
@@ -746,6 +762,7 @@ ROLE_DEFAULT_PERMISSIONS = {
         "purchase_orders.view", "purchase_orders.create",
         "purchase_invoices.view", "purchase_invoices.create",
         "purchase_payments.view", "purchase_payments.create",
+        "purchase_hpp.view",
         "settings.hpp.view", "settings.hpp.manage",
         "reports.gaji_operator.view",
         "reports.order_prediction.view", "reports.order_prediction.import",
@@ -786,6 +803,32 @@ ROLE_DEFAULT_PERMISSIONS = {
     ],
     "holding_team": [
         "product_request.read_all",
+        # Recovered Purchasing + Inventory + HPP package (production-only role).
+        # Local admin still uses ALL_PERMISSIONS; production non-holding roles
+        # lose these keys via services.purchasing_inventory_access filter.
+        "purchase_requests.view",
+        "purchase_requests.create",
+        "purchase_orders.view",
+        "purchase_orders.create",
+        "purchase_invoices.view",
+        "purchase_invoices.create",
+        "purchase_payments.view",
+        "purchase_payments.create",
+        "purchase_receipts.view",
+        "purchase_receipts.sync",
+        "purchase_receipts.export",
+        "purchase_receipts.receive",
+        "purchase_hpp.view",
+        "master_items.view",
+        "master_items.manage",
+        "org.branches.view",
+        "org.branches.manage",
+        "org.warehouses.view",
+        "org.warehouses.manage",
+        "current_stock.view",
+        "current_stock.update",
+        "current_stock.import",
+        "current_stock.export",
         "inventory_valuation.view",
         "inventory_valuation.export",
         "inventory_valuation.manage_opening",

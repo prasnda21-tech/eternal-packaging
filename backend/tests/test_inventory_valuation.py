@@ -55,6 +55,22 @@ async def _master_stock(db, mid, code, stock):
         "initialized": True,
         "updated_at": "2026-09-22T10:00:00+00:00",
     })
+    if await db.branches.count_documents({"id": "branch-ygy"}) == 0:
+        await db.branches.insert_one({
+            "id": "branch-ygy", "code": "YGY", "name": "Yogyakarta", "active": True,
+        })
+        await db.warehouses.insert_one({
+            "id": "wh-ygy", "branch_id": "branch-ygy", "code": "MAIN",
+            "name": "Gudang Yogyakarta", "active": True,
+        })
+    if stock != 0:
+        await db.physical_stock_balances.insert_one({
+            "id": f"bal-{mid}",
+            "master_item_id": mid,
+            "branch_id": "branch-ygy",
+            "warehouse_id": "wh-ygy",
+            "physical_qty": stock,
+        })
 
 
 def _baseline(cutover_id, mid, qty, cost):
@@ -179,8 +195,10 @@ async def test_read_model_summary_statuses_and_exact_value(db):
     assert rows["missing"]["inventory_value"] is None
     assert rows["uom"]["hpp_status"] == "NEEDS_UOM"
     assert rows["uom"]["inventory_value"] is None
-    assert rows["mismatch"]["hpp_status"] == "QTY_MISMATCH"
-    assert rows["mismatch"]["inventory_value"] is None
+    assert rows["mismatch"]["stock_fisik"] == 5
+    assert rows["mismatch"]["hpp_status"] == "OK"
+    assert rows["mismatch"]["inventory_value"] == 500
+    assert rows["mismatch"]["difference"] == 1
     assert rows["zero"]["stock_fisik"] == 0
     assert rows["zero"]["inventory_value"] is None
     assert rows["zero"]["hpp_status"] == "MISSING_COST"
@@ -189,14 +207,15 @@ async def test_read_model_summary_statuses_and_exact_value(db):
     assert rows["zero-valid"]["current_hpp"] == 500
     assert rows["zero-valid"]["inventory_value"] == 0
     assert rows["zero-valid"]["hpp_status"] == "OK"
-    assert rows["negative"]["hpp_status"] == "QTY_MISMATCH"
+    assert rows["negative"]["stock_fisik"] == 0
+    assert rows["negative"]["hpp_status"] == "MISSING_COST"
     assert rows["negative"]["inventory_value"] is None
 
     assert view["summary"] == {
-        "total_inventory_value": 160000,
-        "valued_items": 2,
+        "total_inventory_value": 160500,
+        "valued_items": 3,
         "items_without_hpp": 4,
-        "problem_items": 3,
+        "problem_items": 1,
     }
 
 

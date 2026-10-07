@@ -60,14 +60,18 @@ const SuratJalan = lazy(() => import("./pages/SuratJalan"));
 const PesananPenjualan = lazy(() => import("./pages/PesananPenjualan"));
 const MasterBarangJasa = lazy(() => import("./pages/MasterBarangJasa"));
 const ProductDetail = lazy(() => import("./pages/ProductDetail"));
+const CabangGudang = lazy(() => import("./pages/CabangGudang"));
 const StockSaatIni = lazy(() => import("./pages/StockSaatIni"));
 const NilaiPersediaan = lazy(() => import("./pages/NilaiPersediaan"));
 const StockOpname = lazy(() => import("./pages/StockOpname"));
 const PenerimaanBarang = lazy(() => import("./pages/PenerimaanBarang"));
 const PermintaanPembelian = lazy(() => import("./pages/PermintaanPembelian"));
 const PesananPembelian = lazy(() => import("./pages/PesananPembelian"));
+const UangMukaPembelian = lazy(() => import("./pages/UangMukaPembelian"));
+const ReturPembelian = lazy(() => import("./pages/ReturPembelian"));
 const FakturPembelian = lazy(() => import("./pages/FakturPembelian"));
 const PembayaranPembelian = lazy(() => import("./pages/PembayaranPembelian"));
+const HppPembelian = lazy(() => import("./pages/HppPembelian"));
 const SalesActivityPage = lazy(() => import("./pages/SalesActivityPage"));
 const SalesActivityOutletDetail = lazy(() => import("./pages/SalesActivityOutletDetail"));
 const PoWorkView = lazy(() => import("./pages/PoWorkView"));
@@ -182,6 +186,7 @@ function PersediaanIndex() {
   const { hasPerm } = useAuth();
   const inv = inventoryNavVisible(hasPerm);
   if (inv.masterItems) return <Navigate to="/persediaan/master-barang-jasa" replace />;
+  if (inv.branchesWarehouses) return <Navigate to="/persediaan/cabang-gudang" replace />;
   if (inv.currentStock) return <Navigate to="/persediaan/stock-saat-ini" replace />;
   if (inv.inventoryValue) return <Navigate to="/persediaan/nilai-persediaan" replace />;
   return <Navigate to="/" replace />;
@@ -195,6 +200,7 @@ function PembelianIndex() {
   if (buy.invoices) return <Navigate to="/pembelian/faktur-pembelian" replace />;
   if (buy.payments) return <Navigate to="/pembelian/pembayaran-pembelian" replace />;
   if (buy.receipts) return <Navigate to="/pembelian/penerimaan-barang" replace />;
+  if (buy.hpp) return <Navigate to="/pembelian/hpp-pembelian" replace />;
   return <Navigate to="/" replace />;
 }
 
@@ -353,12 +359,16 @@ export default function App() {
             <Route path="/penjualan" element={<Navigate to="/penjualan/pesanan-penjualan" replace />} />
             <Route path="/pembelian/permintaan" element={<PermGate anyOf={[NAV_KEYS.purchaseRequests, NAV_KEYS.purchasing, "purchase_requests.view", "purchase_requests.create"]}><PermintaanPembelian /></PermGate>} />
             <Route path="/pembelian/pesanan-pembelian" element={<PermGate anyOf={[NAV_KEYS.purchaseOrders, NAV_KEYS.purchasing, "purchase_orders.view", "purchase_orders.create"]}><PesananPembelian /></PermGate>} />
+            <Route path="/pembelian/uang-muka" element={<PermGate anyOf={[NAV_KEYS.purchaseAdvances, NAV_KEYS.purchaseOrders, NAV_KEYS.purchasing, "purchase_orders.view", "purchase_orders.create", "purchase_payments.view", "purchase_payments.create"]}><UangMukaPembelian /></PermGate>} />
             <Route path="/pembelian/faktur-pembelian" element={<PermGate anyOf={[NAV_KEYS.purchaseInvoices, NAV_KEYS.purchasing, "purchase_invoices.view", "purchase_invoices.create"]}><FakturPembelian /></PermGate>} />
             <Route path="/pembelian/pembayaran-pembelian" element={<PermGate anyOf={[NAV_KEYS.purchasePayments, NAV_KEYS.purchasing, "purchase_payments.view", "purchase_payments.create"]}><PembayaranPembelian /></PermGate>} />
             <Route path="/pembelian/penerimaan-barang" element={<PermGate anyOf={[NAV_KEYS.purchaseReceipts]} alsoAnyOf={["purchase_receipts.view"]}><PenerimaanBarang /></PermGate>} />
+            <Route path="/pembelian/retur" element={<PermGate anyOf={[NAV_KEYS.purchaseReturns, NAV_KEYS.purchaseReceipts]} alsoAnyOf={["purchase_receipts.view"]}><ReturPembelian /></PermGate>} />
+            <Route path="/pembelian/hpp-pembelian" element={<PermGate anyOf={[NAV_KEYS.purchaseHpp]} alsoAnyOf={["purchase_hpp.view"]}><HppPembelian /></PermGate>} />
             <Route path="/pembelian" element={<PembelianIndex />} />
             <Route path="/persediaan/master-barang-jasa" element={<PermGate anyOf={[NAV_KEYS.masterItems]} alsoAnyOf={["master_items.view"]}><MasterBarangJasa /></PermGate>} />
             <Route path="/persediaan/master-barang-jasa/:id" element={<PermGate anyOf={[NAV_KEYS.masterItems]} alsoAnyOf={["master_items.view"]}><ProductDetail /></PermGate>} />
+            <Route path="/persediaan/cabang-gudang" element={<PermGate anyOf={[NAV_KEYS.branchesWarehouses]} alsoAnyOf={["org.branches.view", "org.warehouses.view"]}><CabangGudang /></PermGate>} />
             <Route path="/persediaan/stock-saat-ini" element={<PermGate anyOf={[NAV_KEYS.currentStock]} alsoAnyOf={["current_stock.view"]}><StockSaatIni /></PermGate>} />
             <Route path="/persediaan/nilai-persediaan" element={<NilaiPersediaanGate><NilaiPersediaan /></NilaiPersediaanGate>} />
             <Route path="/persediaan/stock-opname" element={<PermGate anyOf={[NAV_KEYS.currentStock]} alsoAnyOf={["current_stock.update", "current_stock.view"]}><StockOpname /></PermGate>} />

@@ -1,7 +1,16 @@
-"""Read-only inventory valuation view over Stock V2 and canonical HPP.
+"""Read-only inventory valuation view over R2 physical stock and canonical HPP.
 
 The view never recalculates HPP and never writes stock, purchasing, pricing,
-or accounting data. Quantity comes from product_stock_state.total_qty.
+or accounting data. Stock Fisik is the R2 physical balance sum for ONE
+selected/effective branch (default YGY). product_stock_state is not the
+official quantity. HPP unit cost remains company-wide — never branch-specific.
+
+Inventory HPP comes only from acquisition cost (PO / Goods Receipt / WMA /
+approved cutover / first-GR bootstrap). Customer Pricing must never become
+inventory HPP fallback.
+
+Scope note: branch qty awareness here is Purchasing/Inventory recovery only;
+it does not claim full Sales/Production/Delivery enterprise isolation.
 """
 from __future__ import annotations
 
@@ -13,14 +22,13 @@ from typing import Any, Dict, List, Optional
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 
-from services.hpp_cutover import get_active_cutover, list_reconciliation
+from services.hpp_cutover import (
+    STATUS_PENDING_VALUATION,
+    get_active_cutover,
+    list_reconciliation,
+)
 from services.hpp_valuation import LAYERS, SETTINGS_KEY, VERSIONS
 from services.inventory_accounting import ITEM_TYPE_SERVICE
-from services.published_hpp import (
-    SOURCE_PUBLISHED_FALLBACK,
-    exact_published_candidate,
-    load_effective_published_hpp,
-)
 from services.purchase_common import money_round
 
 STATUS_OK = "OK"
@@ -37,8 +45,9 @@ SUPPORTED_STATUSES = {
     STATUS_NEEDS_UOM,
     STATUS_QTY_MISMATCH,
     STATUS_FAILED,
+    STATUS_PENDING_VALUATION,
 }
-MISSING_STATUSES = {STATUS_MISSING_COST, STATUS_NEEDS_COST}
+MISSING_STATUSES = {STATUS_MISSING_COST, STATUS_NEEDS_COST, STATUS_PENDING_VALUATION}
 PROBLEM_STATUSES = {STATUS_NEEDS_UOM, STATUS_QTY_MISMATCH, STATUS_FAILED}
 SORT_KEYS = {
     "code",
@@ -113,8 +122,12 @@ async def _canonical_positions(db) -> tuple[Dict[str, dict], Optional[dict], Opt
     return positions, settings, version
 
 
-async def build_inventory_valuation_rows(db) -> dict:
-    """Build all rows before search/filter/pagination."""
+async def build_inventory_valuation_rows(db, *, branch_id: Optional[str] = None) -> dict:
+    """Build all rows before search/filter/pagination.
+
+    Physical qty is for ONE branch (default operational YGY when omitted).
+    HPP / unit cost remains company-wide — never invent branch-specific HPP.
+    """
     masters = await db.master_items.find(
         {
             "is_active": {"$ne": False},
@@ -136,23 +149,24 @@ async def build_inventory_valuation_rows(db) -> dict:
         for row in reconciliation_rows
         if row.get("master_item_id")
     }
-    published_candidates = await load_effective_published_hpp(db)
     from services.financial_inventory_opening import financial_display_by_item
+    from services.physical_stock import operational_physical_qty_by_item
 
     financial_by_item = await financial_display_by_item(db)
+    physical_by_item = await operational_physical_qty_by_item(
+        db,
+        [str(master.get("id") or "") for master in masters if master.get("id")],
+        branch_id=branch_id,
+    )
 
     rows: List[dict] = []
     for master in masters:
         mid = str(master.get("id") or "").strip()
         aid = str(master.get("accurate_item_id") or "").strip()
         state = state_by_mid.get(mid) or {}
-        stock = float(state.get("total_qty") or 0)
-        stock_state_valid = bool(
-            state
-            and state.get("initialized") is True
-            and state.get("status") == "INITIALIZED"
-            and not state.get("pending_event")
-        )
+        stock = float(physical_by_item.get(mid, 0) or 0)
+        if stock < 0:
+            stock = 0.0
         position = reconciliation_by_mid.get(mid)
         if not position:
             position = positions.get(mid) or positions.get(f"a:{aid}") or {}
@@ -169,46 +183,21 @@ async def build_inventory_valuation_rows(db) -> dict:
         if original_status not in SUPPORTED_STATUSES:
             original_status = STATUS_FAILED
 
+        # Never invent cost from Customer Pricing / published HPP.
         canonical_exists = current_hpp is not None
-        published = None
-        if not canonical_exists and stock_state_valid and stock >= 0:
-            published = exact_published_candidate(
-                published_candidates,
-                accurate_item_id=aid,
-                master_item_id=mid,
-            )
-            if published:
-                current_hpp = money_round(published["hpp"])
-                valuation_qty = stock
-                difference = 0.0
-                original_status = STATUS_OK
-                position = {
-                    **position,
-                    "valuation_qty": stock,
-                    "current_hpp": current_hpp,
-                    "exact_average": str(current_hpp),
-                    "valuation_value": (
-                        money_round(_dec(stock) * _dec(current_hpp))
-                        if stock >= 0
-                        else None
-                    ),
-                    "hpp_status": STATUS_OK,
-                    "updated_at": published.get("published_at"),
-                    "hpp_source": SOURCE_PUBLISHED_FALLBACK,
-                }
 
-        if not stock_state_valid or stock < 0:
-            status = STATUS_QTY_MISMATCH
-        elif current_hpp is None:
-            status = (
-                original_status
-                if original_status in {STATUS_NEEDS_COST, STATUS_NEEDS_UOM, STATUS_FAILED}
-                else STATUS_MISSING_COST
-            )
-        elif abs(difference) > 0.0000001:
-            status = STATUS_QTY_MISMATCH
+        if current_hpp is None:
+            if original_status in {
+                STATUS_NEEDS_COST,
+                STATUS_NEEDS_UOM,
+                STATUS_FAILED,
+                STATUS_PENDING_VALUATION,
+            }:
+                status = original_status
+            else:
+                status = STATUS_MISSING_COST
         else:
-            status = original_status
+            status = STATUS_OK if original_status == STATUS_QTY_MISMATCH else original_status
 
         inventory_value = None
         if stock == 0 and status == STATUS_OK and current_hpp is not None:
@@ -235,8 +224,7 @@ async def build_inventory_valuation_rows(db) -> dict:
             "inventory_value": inventory_value,
             "hpp_status": status,
             "hpp_reason": (
-                ("STOCK_STATE_UNAVAILABLE" if not stock_state_valid else None)
-                or position.get("reconciliation_reason")
+                position.get("reconciliation_reason")
                 or (
                     original_status
                     if original_status != status
@@ -245,6 +233,7 @@ async def build_inventory_valuation_rows(db) -> dict:
                         STATUS_NEEDS_COST,
                         STATUS_NEEDS_UOM,
                         STATUS_FAILED,
+                        STATUS_PENDING_VALUATION,
                     }
                     else None
                 )
@@ -253,9 +242,7 @@ async def build_inventory_valuation_rows(db) -> dict:
                 position.get("hpp_source")
                 or ("PURCHASING_MOVING_AVERAGE" if canonical_exists else None)
             ),
-            "published_pricing_version_id": (
-                published.get("version_id") if published else None
-            ),
+            "published_pricing_version_id": None,
             "valuation_status": status,
             "financial_posting_status": (financial_by_item.get(mid) or {}).get("financial_posting_status") or "UNPOSTED",
             "financial_opening_qty": (financial_by_item.get(mid) or {}).get("financial_opening_qty"),
@@ -270,9 +257,8 @@ async def build_inventory_valuation_rows(db) -> dict:
             "published_is_book_value": False,
             "reconciliation_difference": difference,
             "reconciliation_explanation": (
-                "Selisih stok fisik dan qty valuasi manajerial. "
-                "HPP Published bukan saldo buku posted."
-                if (position.get("hpp_source") == SOURCE_PUBLISHED_FALLBACK or not canonical_exists)
+                "Belum ada HPP akuisisi kanonik. Nilai estimasi belum tersedia."
+                if not canonical_exists
                 else "Selisih stok fisik terhadap qty valuasi rata-rata pembelian."
             ),
             "updated_at": _latest_text(
@@ -348,7 +334,9 @@ def _uncovered_master(master: Optional[dict]) -> tuple:
     return "NOT_COVERED", "Item tidak tercakup dalam daftar Nilai Persediaan.", item_type
 
 
-async def lookup_inventory_valuation_item(db, master_item_id: str) -> dict:
+async def lookup_inventory_valuation_item(
+    db, master_item_id: str, *, branch_id: Optional[str] = None,
+) -> dict:
     """Read one builder row by exact master_item_id.
 
     The row is the object produced by build_inventory_valuation_rows. This
@@ -363,7 +351,7 @@ async def lookup_inventory_valuation_item(db, master_item_id: str) -> dict:
             reason_code="MISSING_MASTER_ITEM_ID",
             reason="Item tidak punya ID master yang stabil.",
         )
-    view = await build_inventory_valuation_rows(db)
+    view = await build_inventory_valuation_rows(db, branch_id=branch_id)
     matches = [
         row for row in view["rows"]
         if str(row.get("master_item_id") or "") == mid

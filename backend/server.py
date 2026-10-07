@@ -3,7 +3,7 @@ from fastapi.responses import Response as FastAPIResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
-import os, logging, uuid, base64, re, secrets, hashlib, copy, inspect, asyncio
+import os, logging, uuid, base64, re, secrets, hashlib, copy, inspect, asyncio, contextvars
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict
 from typing import List, Optional, Any, Dict, Tuple, Union
@@ -210,6 +210,7 @@ from services.employee_admin_http import register_employee_admin_routes
 from services.hr_payroll_http import register_hr_payroll_routes
 from services.chart_of_accounts_http import register_chart_of_accounts_routes
 from services.cash_bank_http import register_cash_bank_routes
+from services.org_locations_http import register_org_locations_routes
 from services.chat_http import register_chat_routes
 from services.chat_indexes import ensure_indexes as ensure_chat_indexes
 from services.chat_membership import bootstrap_system_groups as bootstrap_chat_system_groups, on_user_changed as on_chat_user_changed
@@ -491,11 +492,19 @@ async def _role_defaults_override():
 
 async def user_permissions(user: dict) -> set:
     """Compute effective permissions for the JWT payload / user."""
-    # Super admin gets everything, always.
+    from services.purchasing_inventory_access import filter_package_permissions
+
+    # Super admin gets everything, always — except production package lock
+    # which restricts Purchasing/Inventory/HPP to HOLDING_TEAM only.
     if user.get("email"):
         u = await db.users.find_one({"email": user["email"]}, {"is_super_admin": 1, "role": 1})
         if u and u.get("is_super_admin"):
-            return set(ALL_PERMISSIONS)
+            return filter_package_permissions(
+                ALL_PERMISSIONS,
+                user,
+                os.environ.get("APP_ENV"),
+                os.environ.get("MONGO_URL"),
+            )
     role_override = await _role_defaults_override()
     # Inactive roles: user with an inactive role gets empty defaults (still keeps overrides).
     inactive = await _inactive_role_slugs()
@@ -504,8 +513,18 @@ async def user_permissions(user: dict) -> set:
         for perm, allowed in (user.get("permissions_override") or {}).items():
             if allowed:
                 base.add(perm)
-        return base
-    return effective_permissions(user.get("role"), user.get("permissions_override"), role_override)
+        return filter_package_permissions(
+            base,
+            user,
+            os.environ.get("APP_ENV"),
+            os.environ.get("MONGO_URL"),
+        )
+    return filter_package_permissions(
+        effective_permissions(user.get("role"), user.get("permissions_override"), role_override),
+        user,
+        os.environ.get("APP_ENV"),
+        os.environ.get("MONGO_URL"),
+    )
 
 
 async def _inactive_role_slugs() -> set:
@@ -516,7 +535,18 @@ async def _inactive_role_slugs() -> set:
 def require_perm(*perms):
     """Dependency that ensures caller has ALL the given permission keys."""
     async def checker(request: Request, user=Depends(current_user)):
+        from services.purchasing_inventory_access import (
+            require_purchasing_inventory_package_access,
+            touches_package_permissions,
+        )
+
         enforce_sales_eternal_surface(request, user)
+        if touches_package_permissions(perms):
+            require_purchasing_inventory_package_access(
+                user,
+                os.environ.get("APP_ENV"),
+                os.environ.get("MONGO_URL"),
+            )
         eff = await user_permissions(user)
         for p in perms:
             if p not in eff:
@@ -2048,15 +2078,20 @@ async def _load_order_for_mutation(order_id: str) -> dict:
     return order
 
 
+_r2_delivery_hook = contextvars.ContextVar("r2_delivery_hook", default=None)
+
+
 async def _with_quantity_lock(order_id: str, mutate, extra_query=None, persist_keys=None):
     """Atomic optimistic lock + retry untuk mutasi qty kritis.
 
     `mutate(order)` memvalidasi & memodifikasi order in-place.
     Setiap attempt: baca fresh → validasi → update dengan filter updated_at.
     `extra_query` is optional and unused by every caller except Konfirmasi Terkirim.
+    A context hook, when set, runs inside the same Mongo transaction as the write.
     `persist_keys` limits the write to those fields so a stale snapshot cannot
     put an older line quantity back onto the order.
     """
+    in_transaction = _r2_delivery_hook.get()
     last_token = None
     for attempt in range(_QUANTITY_LOCK_RETRIES):
         order = await _load_order_for_mutation(order_id)
@@ -2067,9 +2102,20 @@ async def _with_quantity_lock(order_id: str, mutate, extra_query=None, persist_k
             await result
         order["_expected_updated_at"] = lock_token
         try:
-            return await _persist_order(
-                order, require_lock=True, extra_query=extra_query, persist_keys=persist_keys,
-            )
+            if in_transaction is None:
+                return await _persist_order(
+                    order, require_lock=True, extra_query=extra_query, persist_keys=persist_keys,
+                )
+            async with await db.client.start_session() as session:
+                async with session.start_transaction():
+                    await in_transaction(session, order)
+                    return await _persist_order(
+                        order,
+                        require_lock=True,
+                        extra_query=extra_query,
+                        persist_keys=persist_keys,
+                        session=session,
+                    )
         except HTTPException as exc:
             from services.physical_stock_engine import DELIVERY_FENCE_LOST
             if (
@@ -2079,10 +2125,19 @@ async def _with_quantity_lock(order_id: str, mutate, extra_query=None, persist_k
             ):
                 continue
             raise
+        except Exception as exc:
+            from services.physical_stock import (
+                InsufficientPhysicalStockError,
+                PhysicalStockConflictError,
+                PhysicalStockValidationError,
+            )
+            if isinstance(exc, (PhysicalStockValidationError, InsufficientPhysicalStockError, PhysicalStockConflictError)):
+                raise HTTPException(400, str(exc))
+            raise
     raise HTTPException(409, _CONFLICT_MSG)
 
 
-async def _persist_order(order, *, require_lock: bool = False, persist_keys: Optional[tuple] = None, extra_query=None):
+async def _persist_order(order, *, require_lock: bool = False, persist_keys: Optional[tuple] = None, extra_query=None, session=None):
     expected_updated = order.pop("_expected_updated_at", None)
     if require_lock and not expected_updated:
         raise HTTPException(409, _CONFLICT_MSG)
@@ -2096,7 +2151,9 @@ async def _persist_order(order, *, require_lock: bool = False, persist_keys: Opt
     incoming_files = order.get("surat_jalan_files")
     merge_sj = persist_keys is None or "surat_jalan_files" in persist_keys
     if merge_sj and isinstance(incoming_files, list) and incoming_files:
-        existing = await db.orders.find_one({"id": order["id"]}, {"surat_jalan_files": 1, "_id": 0})
+        existing = await db.orders.find_one(
+            {"id": order["id"]}, {"surat_jalan_files": 1, "_id": 0}, session=session,
+        )
         old_by_id = {
             str(f.get("id") or ""): f
             for f in ((existing or {}).get("surat_jalan_files") or [])
@@ -2131,6 +2188,7 @@ async def _persist_order(order, *, require_lock: bool = False, persist_keys: Opt
         query,
         {"$set": to_write},
         upsert=not bool(expected_updated or require_lock),
+        session=session,
     )
     if expected_updated and result.matched_count == 0:
         if extra_query:
@@ -2336,8 +2394,20 @@ async def _audit_po(order: dict, action: str, actor: dict, before=None, after=No
 
 
 async def _require_perm(user: dict, perm: str):
-    """Deny if the user lacks `perm` in their effective set (admin still passes)."""
+    """Deny if the user lacks `perm` in their effective set (admin still passes locally)."""
+    from services.purchasing_inventory_access import (
+        require_purchasing_inventory_package_access,
+        touches_package_permissions,
+    )
+
     reject_sales_pwa_bypass(user)
+    if touches_package_permissions([perm]):
+        require_purchasing_inventory_package_access(
+            user,
+            os.environ.get("APP_ENV"),
+            os.environ.get("MONGO_URL"),
+        )
+    # Admin bypass remains for non-package perms; package access already gated above.
     if user.get("role") == "admin":
         return
     eff = await user_permissions(user)
@@ -5970,6 +6040,8 @@ class ConfirmDeliveredPayload(BaseModel):
     action_id: Optional[str] = None
     shipment_id: Optional[str] = None
     recipient_name: Optional[str] = None
+    warehouse_id: Optional[str] = None
+    branch_id: Optional[str] = None
 
 
 @api_router.post("/orders/{order_id}/confirm-delivered")
@@ -6009,13 +6081,18 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
     conf_holder = {}
     reconcile_holder = {"result": None}
 
+    from services.physical_stock import order_has_r2_balance as _order_has_r2_balance
+    uses_r2_stock = bool(existing_order) and await _order_has_r2_balance(db, existing_order)
+    r2_request = {}
+
     try:
-        if existing_order and op.get("ready"):
+        if existing_order and op.get("ready") and not uses_r2_stock:
             claimed_stock = await claim_selected_delivery_stock(
                 db, existing_order, selected_shipment_id, action_id, user, claim_plan_holder,
             )
 
         def mutate(order: dict):
+            r2_request.clear()
             conf_holder.pop("conf", None)
             reject_reused_delivery_action(order, action_id, op.get("shipment_id"))
             ids = list(order.get("delivery_confirm_action_ids") or [])
@@ -6107,12 +6184,83 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
             if action_id:
                 ids.append(action_id)
                 order["delivery_confirm_action_ids"] = ids[-20:]
+            if uses_r2_stock and conf_holder.get("conf"):
+                r2_request["confirmation_id"] = action_id or conf_holder["conf"].get("id")
+                r2_request["shipment"] = selected_sh
+                r2_request["increment"] = increment
+
+        async def _post_r2_delivery(session, order):
+            if not r2_request.get("confirmation_id"):
+                return
+            from services.physical_stock import (
+                PhysicalStockValidationError,
+                apply_confirmed_sales_delivery,
+            )
+            from services.physical_stock_engine import plan_confirmed_sj_stock
+            shipment = r2_request.get("shipment")
+            lines = None
+            if isinstance(shipment, dict):
+                plan = plan_confirmed_sj_stock(order, shipment, allow_delivered=True)
+                if plan.get("error") or not plan.get("lines"):
+                    raise PhysicalStockValidationError(
+                        plan.get("error") or "Baris pengiriman tidak dapat dipetakan ke master item"
+                    )
+                lines = [
+                    {
+                        "line_idx": int(ln["line_idx"]),
+                        "qty": int(ln["qty"]),
+                        "master_item_id": ln.get("master_item_id"),
+                        "line_id": ln.get("line_id"),
+                    }
+                    for ln in plan["lines"]
+                ]
+            else:
+                items = [
+                    (idx, line) for idx, line in enumerate(order.get("line_items") or [])
+                    if isinstance(line, dict) and str(line.get("master_item_id") or "").strip()
+                ]
+                increment_qty = int(r2_request.get("increment") or 0)
+                if len(items) == 1 and increment_qty > 0:
+                    idx, line = items[0]
+                    lines = [{
+                        "line_idx": idx,
+                        "qty": increment_qty,
+                        "master_item_id": line.get("master_item_id"),
+                        "line_id": line.get("line_id"),
+                    }]
+            if not lines:
+                raise PhysicalStockValidationError(
+                    "Baris pengiriman tidak dapat dipetakan ke master item"
+                )
+            sj_src = shipment if isinstance(shipment, dict) else {}
+            sj_link = str(
+                sj_src.get("sales_delivery_id") or sj_src.get("id") or ""
+            ).strip()
+            await apply_confirmed_sales_delivery(
+                db,
+                session,
+                order=order,
+                confirmation_id=r2_request["confirmation_id"],
+                lines=lines,
+                actor_id=str(user.get("id") or user.get("email") or "user"),
+                warehouse_id=(payload.warehouse_id if payload else None),
+                branch_id=(payload.branch_id if payload else None),
+                reason="Konfirmasi terkirim",
+                write_order=False,
+                sales_delivery_id=sj_link or None,
+            )
 
         try:
             await prepare_delivery_commit(db, op, claimed_stock)
-            order = await _with_quantity_lock(
-                order_id, mutate, extra_query=delivery_persist_filter(op),
-            )
+            token = _r2_delivery_hook.set(_post_r2_delivery if uses_r2_stock else None)
+            try:
+                order = await _with_quantity_lock(
+                    order_id,
+                    mutate,
+                    extra_query=delivery_persist_filter(op),
+                )
+            finally:
+                _r2_delivery_hook.reset(token)
         except Exception as exc:
             release_claim = getattr(exc, "detail", None) != DELIVERY_FENCE_LOST
             raise
@@ -6539,7 +6687,18 @@ class DeliveryRescheduleSetDatePayload(BaseModel):
 
 
 async def _require_any_perm(user: dict, *perms: str):
+    from services.purchasing_inventory_access import (
+        require_purchasing_inventory_package_access,
+        touches_package_permissions,
+    )
+
     reject_sales_pwa_bypass(user)
+    if touches_package_permissions(perms):
+        require_purchasing_inventory_package_access(
+            user,
+            os.environ.get("APP_ENV"),
+            os.environ.get("MONGO_URL"),
+        )
     if user.get("role") == "admin":
         return
     eff = await user_permissions(user)
@@ -11684,15 +11843,58 @@ async def delete_sales_delivery_endpoint(id: str, user=Depends(current_user)):
     delivery = await db.sales_deliveries.find_one({"id": str(id)}, {"_id": 0})
     if not delivery:
         raise HTTPException(404, "Pengiriman Pesanan tidak ditemukan.")
+    from services.physical_stock import reverse_r2_deliveries_for_sales_delivery
+    r2_reverse = await reverse_r2_deliveries_for_sales_delivery(
+        db,
+        delivery,
+        actor_id=str(user.get("id") or user.get("email") or "user"),
+        reason="Pembatalan Surat Jalan",
+    )
     blocker = await _sales_delivery_delete_blocker(delivery)
     if blocker:
+        if r2_reverse.get("reversed_confirmations"):
+            await db.sales_deliveries.update_one(
+                {"id": delivery["id"]},
+                {"$set": {
+                    "is_cancelled": True,
+                    "cancelled_at": now_iso(),
+                    "cancel_reason": "R2 delivery reversed; SJ soft-cancelled",
+                    "r2_reversal": r2_reverse,
+                    "updated_at": now_iso(),
+                }},
+            )
+            await _write_audit(
+                action="sales.delivery.r2_reverse_soft_cancel",
+                actor=user,
+                target_email=f"delivery:{delivery.get('sj_number', delivery['id'])}",
+                before={"id": delivery["id"]},
+                after={"r2_reversal": r2_reverse, "soft_cancelled": True},
+            )
+            return {
+                "deleted": False,
+                "soft_cancelled": True,
+                "sj_number": delivery.get("sj_number", delivery["id"]),
+                "id": delivery["id"],
+                "r2_reversal": r2_reverse,
+                "blocker": blocker,
+            }
         raise HTTPException(400, blocker)
     sj_number = delivery.get("sj_number", delivery["id"])
     await db.sales_deliveries.delete_one({"id": delivery["id"]})
     await _remove_matching_business_sj_shipment(delivery.get("po_id"), delivery)
-    await _write_audit(action="sales.delivery.delete", actor=user, target_email=f"delivery:{sj_number}",
-                       before={"sj_number": sj_number, "id": delivery["id"]}, after={"deleted": True})
-    return {"deleted": True, "sj_number": sj_number, "id": delivery["id"]}
+    await _write_audit(
+        action="sales.delivery.delete",
+        actor=user,
+        target_email=f"delivery:{sj_number}",
+        before={"sj_number": sj_number, "id": delivery["id"]},
+        after={"deleted": True, "r2_reversal": r2_reverse},
+    )
+    return {
+        "deleted": True,
+        "sj_number": sj_number,
+        "id": delivery["id"],
+        "r2_reversal": r2_reverse,
+    }
 
 
 @api_router.post("/sales-deliveries-bulk/delete")
@@ -12022,6 +12224,8 @@ async def master_item_opening_balance_post(
 ):
     """Atomically initialize physical stock opening balance for an exact product."""
     await _require_any_perm(user, "current_stock.update", "permissions.manage")
+    from services.r2_go_live import require_legacy_stock_mutation_allowed
+    await require_legacy_stock_mutation_allowed(db)
     from services.product_stock_state import initialize_opening_balance
     res = await initialize_opening_balance(db, item_id, payload, user=user)
     return res
@@ -12034,6 +12238,8 @@ async def master_item_opening_balance_correction_post(
     user=Depends(current_user),
 ):
     """HOLDING_TEAM-only: append KOREKSI to set current physical buckets. Does not rewrite SALDO_AWAL."""
+    from services.r2_go_live import require_legacy_stock_mutation_allowed
+    await require_legacy_stock_mutation_allowed(db)
     from services.product_stock_state import correct_opening_balance, require_holding_team
     require_holding_team(user)
     res = await correct_opening_balance(db, item_id, payload or {}, user=user)
@@ -12129,6 +12335,329 @@ async def master_item_mutation_detail_get(
     return {"mutation": detail}
 
 
+@api_router.get("/master-items/{item_id}/physical-stock")
+async def master_item_physical_stock_get(
+    item_id: str,
+    branch_id: Optional[str] = None,
+    warehouse_id: Optional[str] = None,
+    user=Depends(require_perm("master_items.view")),
+):
+    """Read physical_qty from physical_stock_balances. Does not write."""
+    from services.branch_access import authorize_stock_location
+    from services.physical_stock import (
+        PhysicalStockNotFoundError,
+        PhysicalStockValidationError,
+        read_physical_stock,
+    )
+    await authorize_stock_location(
+        db, user, branch_id=branch_id, warehouse_id=warehouse_id,
+    )
+    try:
+        return await read_physical_stock(
+            db, item_id, branch_id=branch_id, warehouse_id=warehouse_id,
+        )
+    except PhysicalStockNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except PhysicalStockValidationError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@api_router.get("/master-items/{item_id}/physical-mutations")
+async def master_item_physical_mutations_get(
+    item_id: str,
+    branch_id: Optional[str] = None,
+    warehouse_id: Optional[str] = None,
+    movement_type: Optional[str] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    page: int = 1,
+    limit: int = 50,
+    user=Depends(require_perm("master_items.view")),
+):
+    """Read physical_stock_ledger newest first. Does not write."""
+    from services.branch_access import authorize_stock_location
+    from services.physical_stock import (
+        PhysicalStockNotFoundError,
+        PhysicalStockValidationError,
+        list_physical_mutations,
+    )
+    await authorize_stock_location(
+        db, user, branch_id=branch_id, warehouse_id=warehouse_id,
+    )
+    try:
+        return await list_physical_mutations(
+            db,
+            item_id,
+            branch_id=branch_id,
+            warehouse_id=warehouse_id,
+            movement_type=movement_type,
+            from_date=from_date,
+            to_date=to_date,
+            page=page,
+            limit=limit,
+        )
+    except PhysicalStockNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except PhysicalStockValidationError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@api_router.post("/master-items/{item_id}/physical-opening-balance")
+async def master_item_physical_opening_balance_post(
+    item_id: str,
+    payload: dict = Body(...),
+    user=Depends(current_user),
+):
+    """Create one R2 OPENING_BALANCE through the physical stock transaction engine."""
+    await _require_any_perm(user, "current_stock.update", "permissions.manage")
+    from services.branch_access import authorize_stock_location
+    from services.r2_go_live import require_r2_authority_active
+    await require_r2_authority_active(db)
+    body = payload or {}
+    await authorize_stock_location(
+        db,
+        user,
+        branch_id=body.get("branch_id"),
+        warehouse_id=body.get("warehouse_id"),
+        require_warehouse=True,
+    )
+    from services.physical_stock import (
+        PhysicalStockConflictError,
+        PhysicalStockNotFoundError,
+        PhysicalStockUnavailableError,
+        PhysicalStockValidationError,
+        post_opening_balance,
+    )
+    actor_id = str((user or {}).get("id") or (user or {}).get("user_id") or "").strip()
+    if not actor_id:
+        raise HTTPException(401, "Aktor tidak dikenal")
+    try:
+        return await post_opening_balance(db, item_id, body, actor_id=actor_id)
+    except PhysicalStockNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except PhysicalStockValidationError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except PhysicalStockConflictError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except PhysicalStockUnavailableError as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+
+def _adjustment_allowed(user) -> bool:
+    """Reuse physical-stock correction access. Local preview admin stays allowed."""
+    from services.product_stock_state import can_correct_physical_stock
+
+    app_env = os.environ.get("APP_ENV")
+    mongo_url = os.environ.get("MONGO_URL")
+    if can_correct_physical_stock(user, app_env, mongo_url):
+        return True
+    if not str(app_env or "").strip():
+        return can_correct_physical_stock(user, "preview", mongo_url)
+    return False
+
+
+@api_router.post("/master-items/{item_id}/physical-adjustment")
+async def master_item_physical_adjustment_post(
+    item_id: str,
+    payload: dict = Body(...),
+    user=Depends(current_user),
+):
+    """Correct one warehouse to a target physical qty through an R2 MANUAL_ADJUSTMENT."""
+    from services.branch_access import authorize_stock_location
+    from services.r2_go_live import require_r2_authority_active
+    await require_r2_authority_active(db)
+    from services.product_stock_state import require_physical_stock_correction_access
+
+    if not _adjustment_allowed(user):
+        require_physical_stock_correction_access(
+            user, os.environ.get("APP_ENV"), os.environ.get("MONGO_URL"),
+        )
+    body = payload or {}
+    await authorize_stock_location(
+        db,
+        user,
+        branch_id=body.get("branch_id"),
+        warehouse_id=body.get("warehouse_id"),
+        require_warehouse=True,
+    )
+    from services.physical_stock import (
+        InsufficientPhysicalStockError,
+        PhysicalStockConflictError,
+        PhysicalStockUnavailableError,
+        PhysicalStockValidationError,
+        adjust_physical_stock_to_target,
+    )
+    actor_id = str((user or {}).get("id") or (user or {}).get("user_id") or "").strip()
+    if not actor_id:
+        raise HTTPException(401, "Aktor tidak dikenal")
+    try:
+        return await adjust_physical_stock_to_target(db, item_id, body, actor_id=actor_id)
+    except PhysicalStockValidationError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except PhysicalStockConflictError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except InsufficientPhysicalStockError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except PhysicalStockUnavailableError as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+
+@api_router.get("/master-items/{item_id}/physical-opening-balance")
+async def master_item_physical_opening_balance_get(
+    item_id: str,
+    branch_id: Optional[str] = None,
+    warehouse_id: Optional[str] = None,
+    user=Depends(require_perm("master_items.view")),
+):
+    """Read R2 opening-balance status for one item, branch, and warehouse. Does not write."""
+    from services.branch_access import authorize_stock_location
+    from services.physical_stock import (
+        PhysicalStockNotFoundError,
+        PhysicalStockValidationError,
+        read_opening_balance,
+    )
+    await authorize_stock_location(
+        db, user, branch_id=branch_id, warehouse_id=warehouse_id,
+        require_warehouse=bool(warehouse_id),
+    )
+    try:
+        return await read_opening_balance(
+            db, item_id, branch_id=branch_id, warehouse_id=warehouse_id,
+        )
+    except PhysicalStockNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except PhysicalStockValidationError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+def _opening_import_http(exc) -> HTTPException:
+    detail = {"message": str(exc), "rows": exc.rows} if getattr(exc, "rows", None) else str(exc)
+    return HTTPException(getattr(exc, "status_code", 400), detail)
+
+
+@api_router.get("/physical-opening-balances/import/template")
+async def physical_opening_import_template(
+    warehouse_id: Optional[str] = None,
+    user=Depends(current_user),
+):
+    """Download a prefilled opening-balance workbook. Does not write stock."""
+    await _require_any_perm(user, "current_stock.update", "permissions.manage")
+    if warehouse_id:
+        from services.branch_access import authorize_stock_location
+        await authorize_stock_location(
+            db, user, warehouse_id=warehouse_id, require_warehouse=True,
+        )
+    from services.physical_opening_import import OpeningImportError, build_template_xlsx
+
+    try:
+        content = await build_template_xlsx(db, warehouse_id=warehouse_id)
+    except OpeningImportError as exc:
+        raise _opening_import_http(exc) from exc
+    return FastAPIResponse(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="saldo-awal-stock-fisik.xlsx"'},
+    )
+
+
+@api_router.post("/physical-opening-balances/import/preview")
+async def physical_opening_import_preview(
+    file: UploadFile = File(...),
+    user=Depends(current_user),
+):
+    """Validate an opening-balance workbook. Does not write stock."""
+    await _require_any_perm(user, "current_stock.update", "permissions.manage")
+    from services.physical_opening_import import OpeningImportError, preview_opening_import
+
+    content = await file.read()
+    try:
+        return await preview_opening_import(db, content, file.filename or "")
+    except OpeningImportError as exc:
+        raise _opening_import_http(exc) from exc
+
+
+@api_router.post("/physical-opening-balances/import")
+async def physical_opening_import_confirm(
+    payload: dict = Body(...),
+    user=Depends(current_user),
+):
+    """Post validated opening lines as R2 OPENING_BALANCE in one transaction."""
+    await _require_any_perm(user, "current_stock.update", "permissions.manage")
+    from services.r2_go_live import require_r2_authority_active
+    await require_r2_authority_active(db)
+    from services.physical_opening_import import OpeningImportError, confirm_opening_import
+    from services.physical_stock import PhysicalStockUnavailableError
+
+    actor_id = str((user or {}).get("id") or (user or {}).get("user_id") or "").strip()
+    if not actor_id:
+        raise HTTPException(401, "Aktor tidak dikenal")
+    try:
+        return await confirm_opening_import(db, payload or {}, actor_id=actor_id)
+    except OpeningImportError as exc:
+        raise _opening_import_http(exc) from exc
+    except PhysicalStockUnavailableError as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+
+@api_router.get("/physical-stock")
+async def physical_stock_catalog_get(
+    q: Optional[str] = None,
+    branch_id: Optional[str] = None,
+    warehouse_id: Optional[str] = None,
+    page: int = 1,
+    limit: int = 50,
+    user=Depends(require_perm("current_stock.view")),
+):
+    """Read operational Stock Saat Ini. Does not write balances or ledger rows.
+
+    Pre-cutover (r2_authority_active=false): compatibility read from legacy sources.
+    Post-cutover: R2 balances only. Never mixes write authorities.
+    Branch access is enforced; default operational branch is YGY.
+    """
+    from services.branch_access import (
+        can_switch_branches,
+        require_warehouse_access,
+        resolve_stock_catalog_branch_id,
+    )
+    from services.physical_stock import (
+        PhysicalStockNotFoundError,
+        PhysicalStockValidationError,
+        list_physical_stock_catalog,
+    )
+    from services.r2_go_live import is_r2_authority_active
+    try:
+        resolved = await resolve_stock_catalog_branch_id(db, user, branch_id)
+        access = resolved.get("access") or {}
+        effective_branch_id = (resolved.get("branch") or {}).get("id")
+        if warehouse_id:
+            await require_warehouse_access(
+                db, user, warehouse_id, expected_branch_id=effective_branch_id,
+            )
+        result = await list_physical_stock_catalog(
+            db,
+            q=q,
+            branch_id=effective_branch_id,
+            warehouse_id=warehouse_id,
+            page=page,
+            limit=limit,
+        )
+        r2_on = bool(result.get("r2_authority_active"))
+        if "r2_authority_active" not in result:
+            r2_on = await is_r2_authority_active(db)
+            result["r2_authority_active"] = r2_on
+        # R2 physical adjust only when R2 authority is active
+        result["can_adjust_physical_stock"] = bool(r2_on and _adjustment_allowed(user))
+        result["effective_branch_id"] = effective_branch_id
+        result["effective_branch_code"] = (resolved.get("branch") or {}).get("code")
+        result["branch_scope"] = access.get("scope")
+        result["can_switch_branches"] = can_switch_branches(access)
+        return result
+    except PhysicalStockNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except PhysicalStockValidationError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 @api_router.get("/settings/physical-stock")
 async def physical_stock_settings_get(user=Depends(current_user)):
     """Pure read. Returns physical stock configuration."""
@@ -12145,6 +12674,68 @@ async def physical_stock_settings_put(payload: dict = Body(...), user=Depends(cu
     from services.physical_stock_settings import update_physical_stock_settings
     settings = await update_physical_stock_settings(db, payload, user=user)
     return {"settings": settings, "message": "Pengaturan stok fisik berhasil disimpan"}
+
+
+@api_router.get("/r2-go-live/readiness")
+async def r2_go_live_readiness_get(user=Depends(current_user)):
+    """Read-only R2 production readiness. Never mutates."""
+    await _require_any_perm(user, "current_stock.view", "permissions.manage", "org.branches.view")
+    from services.r2_go_live import check_r2_production_readiness
+    return await check_r2_production_readiness(db)
+
+
+@api_router.get("/r2-go-live/delivery-cutover/preview")
+async def r2_delivery_cutover_preview(user=Depends(current_user)):
+    """Preview Belum Terkirim cutover baseline. Read-only."""
+    await _require_any_perm(user, "current_stock.view", "permissions.manage")
+    from services.r2_go_live import preview_delivery_cutover_baseline
+    return await preview_delivery_cutover_baseline(db)
+
+
+@api_router.post("/r2-go-live/delivery-cutover/initialize")
+async def r2_delivery_cutover_initialize(
+    payload: dict = Body(default={}),
+    user=Depends(current_user),
+):
+    """Persist Belum Terkirim cutover baseline (idempotent). Local/go-live tooling."""
+    await _require_any_perm(user, "current_stock.update", "permissions.manage")
+    from services.r2_go_live import initialize_delivery_cutover_baseline
+    force = bool((payload or {}).get("force"))
+    return await initialize_delivery_cutover_baseline(db, actor=user, force=force)
+
+
+@api_router.get("/r2-go-live/opening-cutover/dry-run")
+async def r2_opening_cutover_dry_run(
+    warehouse_id: Optional[str] = None,
+    user=Depends(current_user),
+):
+    """Dry-run legacy product_stock_state → R2 OPENING_BALANCE. No writes."""
+    await _require_any_perm(user, "current_stock.view", "permissions.manage")
+    from services.r2_go_live import OpeningCutoverError, dry_run_legacy_to_r2_opening
+    try:
+        return await dry_run_legacy_to_r2_opening(db, warehouse_id=warehouse_id)
+    except OpeningCutoverError as exc:
+        raise HTTPException(exc.status_code, str(exc)) from exc
+
+
+@api_router.get("/r2-go-live/holding-team-permissions/preview")
+async def r2_holding_team_permissions_preview(user=Depends(current_user)):
+    """Preview HOLDING_TEAM package permission top-up. Read-only."""
+    await _require_any_perm(user, "permissions.manage", "current_stock.view")
+    from services.r2_go_live import preview_holding_team_permission_top_up
+    return await preview_holding_team_permission_top_up(db)
+
+
+@api_router.post("/r2-go-live/holding-team-permissions/top-up")
+async def r2_holding_team_permissions_top_up(
+    payload: dict = Body(default={}),
+    user=Depends(current_user),
+):
+    """Idempotent HOLDING_TEAM package top-up. Default dry-run; apply=true to write."""
+    await _require_any_perm(user, "permissions.manage")
+    from services.r2_go_live import apply_holding_team_permission_top_up
+    apply = bool((payload or {}).get("apply"))
+    return await apply_holding_team_permission_top_up(db, apply=apply, actor=user)
 
 
 @api_router.get("/settings/design-cetakan")
@@ -12625,12 +13216,27 @@ def _stock_xlsx(rows: list, *, v2: bool = True) -> FastAPIResponse:
 @api_router.get("/inventory-valuation/item")
 async def inventory_valuation_item(
     master_item_id: str = "",
+    branch_id: Optional[str] = None,
     user=Depends(require_perm("inventory_valuation.view")),
 ):
-    """Read one Nilai Persediaan row by exact master_item_id. Does not write."""
+    """Read one Nilai Persediaan row by exact master_item_id. Does not write.
+
+    Qty is branch-scoped; HPP cost remains company-wide.
+    """
+    from services.branch_access import can_switch_branches, resolve_stock_catalog_branch_id
     from services.inventory_valuation import lookup_inventory_valuation_item
 
-    return await lookup_inventory_valuation_item(db, master_item_id)
+    resolved = await resolve_stock_catalog_branch_id(db, user, branch_id)
+    effective_branch_id = (resolved.get("branch") or {}).get("id")
+    payload = await lookup_inventory_valuation_item(
+        db, master_item_id, branch_id=effective_branch_id,
+    )
+    payload["effective_branch_id"] = effective_branch_id
+    payload["effective_branch_code"] = (resolved.get("branch") or {}).get("code")
+    payload["branch_scope"] = (resolved.get("access") or {}).get("scope")
+    payload["can_switch_branches"] = can_switch_branches(resolved.get("access"))
+    payload["hpp_cost_scope"] = "COMPANY_WIDE"
+    return payload
 
 
 @api_router.get("/inventory-valuation")
@@ -12641,15 +13247,23 @@ async def inventory_valuation_list(
     sort_dir: str = "asc",
     page: int = 1,
     page_size: int = 50,
+    branch_id: Optional[str] = None,
     user=Depends(require_perm("inventory_valuation.view")),
 ):
-    """Read-only Stock V2 × canonical moving-average HPP view."""
+    """Read-only Stock V2 × canonical moving-average HPP view.
+
+    Physical qty is for the effective/selected branch only. HPP remains company-wide.
+    Never silently sums all branches.
+    """
+    from services.branch_access import can_switch_branches, resolve_stock_catalog_branch_id
     from services.inventory_valuation import (
         build_inventory_valuation_rows,
         filter_sort_page,
     )
 
-    view = await build_inventory_valuation_rows(db)
+    resolved = await resolve_stock_catalog_branch_id(db, user, branch_id)
+    effective_branch_id = (resolved.get("branch") or {}).get("id")
+    view = await build_inventory_valuation_rows(db, branch_id=effective_branch_id)
     payload = filter_sort_page(
         view["rows"],
         q=q,
@@ -12664,6 +13278,11 @@ async def inventory_valuation_list(
         "method": view["method"],
         "active_version": view["active_version"],
         "cutover_id": view["cutover_id"],
+        "effective_branch_id": effective_branch_id,
+        "effective_branch_code": (resolved.get("branch") or {}).get("code"),
+        "branch_scope": (resolved.get("access") or {}).get("scope"),
+        "can_switch_branches": can_switch_branches(resolved.get("access")),
+        "hpp_cost_scope": "COMPANY_WIDE",
     })
     return payload
 
@@ -12674,16 +13293,20 @@ async def inventory_valuation_export(
     status_filter: str = "all",
     sort_by: str = "name",
     sort_dir: str = "asc",
+    branch_id: Optional[str] = None,
     user=Depends(require_perm("inventory_valuation.export")),
 ):
     """Read-only Excel export; no inventory or HPP data is mutated."""
+    from services.branch_access import resolve_stock_catalog_branch_id
     from services.inventory_valuation import (
         build_inventory_valuation_rows,
         export_xlsx,
         filter_sort_all,
     )
 
-    view = await build_inventory_valuation_rows(db)
+    resolved = await resolve_stock_catalog_branch_id(db, user, branch_id)
+    effective_branch_id = (resolved.get("branch") or {}).get("id")
+    view = await build_inventory_valuation_rows(db, branch_id=effective_branch_id)
     filtered = filter_sort_all(
         view["rows"],
         q=q,
@@ -12875,6 +13498,8 @@ async def current_stock_update(
     user=Depends(current_user),
 ):
     """HOLDING_TEAM-only append-only correction of total physical stock."""
+    from services.r2_go_live import require_legacy_stock_mutation_allowed
+    await require_legacy_stock_mutation_allowed(db)
     from services.product_stock_state import (
         correct_opening_balance,
         get_product_stock_state,
@@ -12943,6 +13568,8 @@ async def stock_opname_apply(
     payload: StockOpnamePayload,
     user=Depends(current_user),
 ):
+    from services.r2_go_live import require_legacy_stock_mutation_allowed
+    await require_legacy_stock_mutation_allowed(db)
     from services.product_stock_state import require_physical_stock_correction_access
     require_physical_stock_correction_access(
         user,
@@ -13038,6 +13665,8 @@ async def stock_opname_import_apply(
     payload: StockOpnameImportApply,
     user=Depends(current_user),
 ):
+    from services.r2_go_live import require_legacy_stock_mutation_allowed
+    await require_legacy_stock_mutation_allowed(db)
     from services.product_stock_state import require_physical_stock_correction_access
     require_physical_stock_correction_access(
         user,
@@ -13355,6 +13984,14 @@ register_purchase_routes(
     require_any_perm=_require_any_perm,
     Depends=Depends,
 )
+from services.stock_opname_sessions import register_stock_opname_routes
+register_stock_opname_routes(
+    api_router,
+    get_db=lambda: db,
+    current_user=current_user,
+    require_perm=require_perm,
+    Depends=Depends,
+)
 register_product_request_routes(
     api_router,
     get_db=lambda: db,
@@ -13435,6 +14072,13 @@ register_employee_admin_routes(
     Depends=Depends,
 )
 register_chart_of_accounts_routes(
+    api_router,
+    get_db=lambda: db,
+    current_user=current_user,
+    require_perm=require_perm,
+    Depends=Depends,
+)
+register_org_locations_routes(
     api_router,
     get_db=lambda: db,
     current_user=current_user,
@@ -15063,6 +15707,8 @@ async def seed():
         partialFilterExpression={"tracking_public_code": {"$exists": True, "$gt": ""}},
     )
     await db.master_items.create_index("id", unique=True)
+    from services.physical_stock import ensure_indexes as ensure_physical_stock_indexes
+    await ensure_physical_stock_indexes(db)
     await db[MASTER_ITEMS_COLLECTION].create_index("accurate_item_id", unique=True)
     await db[STOCK_MANUAL_COLLECTION].create_index("id", unique=True)
     await db[STOCK_MANUAL_COLLECTION].create_index("accurate_item_id", unique=True, sparse=True)
@@ -15166,7 +15812,61 @@ async def seed():
     await _independent_route_ensure_indexes(db)
     from services.sales_activity.evaluator import start_evaluator_loop
     start_evaluator_loop(db)
-    for coll in (db.purchase_requests, db.purchase_orders, db.purchase_goods_receipts, db.purchase_invoices, db.purchase_payments):
+    await db.purchase_supplier_advances.create_index("id", unique=True)
+    await _ensure_unique_business_number_index(db.purchase_supplier_advances, "advance_number")
+    await db.purchase_supplier_advances.create_index("purchase_order_id")
+    await db.purchase_supplier_advances.create_index("supplier_key")
+    await db.purchase_supplier_advances.create_index("created_at")
+    await db.purchase_supplier_advance_allocations.create_index("id", unique=True)
+    await db.purchase_supplier_advance_allocations.create_index("supplier_advance_id")
+    await db.purchase_supplier_advance_allocations.create_index("purchase_invoice_id")
+    await db.purchase_supplier_advance_allocations.create_index("purchase_order_id")
+    from services.stock_opname_sessions import ensure_indexes as _stock_opname_ensure_indexes
+    await _stock_opname_ensure_indexes(db)
+    await db.purchase_returns.create_index("id", unique=True)
+    await _ensure_unique_business_number_index(db.purchase_returns, "return_number")
+    await db.purchase_returns.create_index("purchase_order_id")
+    await db.purchase_returns.create_index("created_at")
+    await db.purchase_returns.create_index(
+        "confirmation_key",
+        unique=True,
+        partialFilterExpression={"confirmation_key": {"$type": "string"}},
+        name="purchase_return_confirmation_key_partial_unique",
+    )
+    await db.purchase_return_credits.create_index("id", unique=True)
+    await db.purchase_return_credits.create_index("purchase_return_id")
+    await db.purchase_return_credits.create_index("purchase_invoice_id")
+    await db.purchase_return_credits.create_index(
+        "idempotency_key",
+        unique=True,
+        partialFilterExpression={"idempotency_key": {"$type": "string"}},
+        name="purchase_return_credit_idempotency_key",
+    )
+    await db.purchase_supplier_credits.create_index("id", unique=True)
+    await db.purchase_supplier_credits.create_index("supplier_key")
+    await db.purchase_supplier_credits.create_index("source_purchase_return_id")
+    await db.purchase_supplier_credits.create_index(
+        "source_purchase_return_credit_id",
+        unique=True,
+        partialFilterExpression={"source_purchase_return_credit_id": {"$type": "string"}},
+        name="supplier_credit_source_credit_unique",
+    )
+    await db.purchase_supplier_advances.create_index(
+        "confirmation_key",
+        unique=True,
+        partialFilterExpression={"confirmation_key": {"$type": "string"}},
+        name="confirmation_key_partial_unique",
+    )
+    for coll in (
+        db.purchase_requests,
+        db.purchase_orders,
+        db.purchase_goods_receipts,
+        db.purchase_invoices,
+        db.purchase_payments,
+        db.purchase_supplier_advances,
+        db.purchase_supplier_advance_allocations,
+        db.purchase_returns,
+    ):
         for idx_name in ("idempotency_key_1", "idempotency_key_partial_unique"):
             try:
                 await coll.drop_index(idx_name)

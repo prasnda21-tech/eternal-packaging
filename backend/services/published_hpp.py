@@ -1,4 +1,10 @@
-"""Read-only effective Published Customer Pricing HPP resolution."""
+"""Customer Pricing published HPP snapshots — reference only.
+
+This module resolves Published Customer Pricing HPP for pricing / margin
+reference flows. It must NEVER be used as inventory HPP / Nilai Persediaan
+fallback. Inventory cost comes only from PO / Goods Receipt / WMA /
+approved cutover / first-GR bootstrap.
+"""
 from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
@@ -13,6 +19,8 @@ from services.customer_pricing import (
 )
 from services.purchase_common import money_round
 
+# Retained as a rejected / historical label for financial opening guards.
+# Inventory valuation must not apply this source.
 SOURCE_PUBLISHED_FALLBACK = "PUBLISHED_CUSTOMER_PRICING_FALLBACK"
 
 
@@ -29,7 +37,11 @@ def _positive_money(value: Any):
 
 
 async def load_effective_published_hpp(db) -> Dict[str, List[dict]]:
-    """Use only enabled groups' current Published pointer; never Draft/history."""
+    """Load current Published Customer Pricing HPP snapshots (pricing reference).
+
+    Not an inventory valuation source. Callers that value inventory must not
+    use this as fallback cost.
+    """
     groups = await db[GROUPS].find(
         {
             "enabled": {"$ne": False},
@@ -86,6 +98,7 @@ def exact_published_candidate(
     accurate_item_id: str,
     master_item_id: str,
 ):
+    """Exact published pricing HPP candidate for pricing/margin reference only."""
     options = candidates.get(str(accurate_item_id or "").strip()) or []
     if len(options) != 1:
         return None

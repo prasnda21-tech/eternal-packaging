@@ -78,11 +78,19 @@ describe("desktop sidebar presentation", () => {
     expect(labels(group(rails, "purchasing"))).toEqual([
       "Permintaan",
       "Pesanan Pembelian",
+      "Uang Muka",
       "Penerimaan Barang",
+      "Retur Pembelian",
       "Faktur Pembelian",
       "Pembayaran Pembelian",
+      "HPP Pembelian",
     ]);
-    expect(labels(group(rails, "inventory"))).toEqual(["Barang/Jasa", "Stock Saat Ini", "Nilai Persediaan"]);
+    expect(group(rails, "purchasing").sections).toHaveLength(2);
+    expect(group(rails, "purchasing").sections.map((section) => section.heading)).toEqual(["", ""]);
+    expect(group(rails, "purchasing").sections[1].marker).toBe("sidebar-purchasing-divider");
+    expect(group(rails, "purchasing").sections[1].headingTestid).toBe("sidebar-purchasing-hpp-divider");
+    expect(group(rails, "purchasing").sections[1].items.map((item) => item.label)).toEqual(["HPP Pembelian"]);
+    expect(labels(group(rails, "inventory"))).toEqual(["Barang/Jasa", "Stock Saat Ini", "Nilai Persediaan", "Cabang & Gudang"]);
     expect(group(rails, "keuangan").sections.map((section) => section.heading)).toEqual(["Kas & Bank", "Buku Besar"]);
     expect(labels(group(rails, "keuangan").sections[0] && { ...group(rails, "keuangan"), sections: [group(rails, "keuangan").sections[0]] })).toEqual([
       "Daftar Kas & Bank",
