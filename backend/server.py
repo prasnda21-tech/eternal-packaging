@@ -12316,6 +12316,8 @@ async def master_item_physical_opening_balance_post(
 ):
     """Create one R2 OPENING_BALANCE through the physical stock transaction engine."""
     await _require_any_perm(user, "current_stock.update", "permissions.manage")
+    from services.r2_go_live import require_r2_authority_active
+    await require_r2_authority_active(db)
     from services.physical_stock import (
         PhysicalStockConflictError,
         PhysicalStockNotFoundError,
@@ -12358,6 +12360,8 @@ async def master_item_physical_adjustment_post(
     user=Depends(current_user),
 ):
     """Correct one warehouse to a target physical qty through an R2 MANUAL_ADJUSTMENT."""
+    from services.r2_go_live import require_r2_authority_active
+    await require_r2_authority_active(db)
     from services.product_stock_state import require_physical_stock_correction_access
 
     if not _adjustment_allowed(user):
@@ -12457,6 +12461,8 @@ async def physical_opening_import_confirm(
 ):
     """Post validated opening lines as R2 OPENING_BALANCE in one transaction."""
     await _require_any_perm(user, "current_stock.update", "permissions.manage")
+    from services.r2_go_live import require_r2_authority_active
+    await require_r2_authority_active(db)
     from services.physical_opening_import import OpeningImportError, confirm_opening_import
     from services.physical_stock import PhysicalStockUnavailableError
 
@@ -12480,12 +12486,17 @@ async def physical_stock_catalog_get(
     limit: int = 50,
     user=Depends(require_perm("current_stock.view")),
 ):
-    """Read operational Stock Saat Ini. Does not write balances or ledger rows."""
+    """Read operational Stock Saat Ini. Does not write balances or ledger rows.
+
+    Pre-cutover (r2_authority_active=false): compatibility read from legacy sources.
+    Post-cutover: R2 balances only. Never mixes write authorities.
+    """
     from services.physical_stock import (
         PhysicalStockNotFoundError,
         PhysicalStockValidationError,
         list_physical_stock_catalog,
     )
+    from services.r2_go_live import is_r2_authority_active
     try:
         result = await list_physical_stock_catalog(
             db,
@@ -12495,7 +12506,12 @@ async def physical_stock_catalog_get(
             page=page,
             limit=limit,
         )
-        result["can_adjust_physical_stock"] = _adjustment_allowed(user)
+        r2_on = bool(result.get("r2_authority_active"))
+        if "r2_authority_active" not in result:
+            r2_on = await is_r2_authority_active(db)
+            result["r2_authority_active"] = r2_on
+        # R2 physical adjust only when R2 authority is active
+        result["can_adjust_physical_stock"] = bool(r2_on and _adjustment_allowed(user))
         return result
     except PhysicalStockNotFoundError as exc:
         raise HTTPException(404, str(exc)) from exc

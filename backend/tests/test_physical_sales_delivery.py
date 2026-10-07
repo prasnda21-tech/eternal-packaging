@@ -33,6 +33,7 @@ from services.physical_stock import (  # noqa: E402
     set_fail_after_balance,
     set_fail_sales_delivery_persist,
 )
+from services.r2_go_live import set_r2_authority_active  # noqa: E402
 
 TEST_DB = "eternal_packaging_test_physical_sales_delivery"
 MONGO_URL = os.environ["MONGO_URL"]
@@ -55,6 +56,7 @@ async def db():
     database = client[TEST_DB]
     await client.drop_database(TEST_DB)
     await ensure_indexes(database)
+    await set_r2_authority_active(database, active=True)
     set_fail_after_balance(False)
     set_fail_sales_delivery_persist(False)
     try:

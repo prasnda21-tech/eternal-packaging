@@ -43,10 +43,11 @@ export function mutationQtyColumns(qtyDelta) {
   return { masuk: null, keluar: Math.abs(qty) };
 }
 
-export function stockEmptyMessage({ masterItemCount = 0, warehouseCount = 0, branchId = "" } = {}) {
+export function stockEmptyMessage({ masterItemCount = 0, warehouseCount = 0, branchId = "", readMode = "" } = {}) {
   if (!masterItemCount) return "Belum ada Barang/Jasa pada environment preview.";
-  if (branchId && !warehouseCount) return "Cabang ini belum memiliki gudang.";
-  return "Tidak ada stok fisik untuk filter ini.";
+  if (readMode === "r2" && branchId && !warehouseCount) return "Cabang ini belum memiliki gudang.";
+  if (readMode === "r2" && !warehouseCount) return "Tidak ada stok fisik untuk filter ini.";
+  return "Tidak ada baris stok untuk filter ini.";
 }
 
 export function openingReady({ itemId, branchId, warehouseId, qty }) {

@@ -142,9 +142,12 @@ export default function StockSaatIni() {
     loading,
     itemCount: items.length,
   });
+  const readMode = data?.stock_read_mode || (data?.r2_authority_active ? "r2" : "compatibility");
+  const r2Active = Boolean(data?.r2_authority_active);
   const emptyText = stockEmptyMessage({
     masterItemCount: data?.master_item_count || 0,
     warehouseCount: data?.warehouse_count || 0,
+    readMode,
   });
 
   const download = () => {
@@ -181,6 +184,13 @@ export default function StockSaatIni() {
           <p className="eyebrow">Persediaan</p>
           <h1 data-testid="stock-title">Stock Saat Ini</h1>
           <p className="subhead" data-testid="stock-subtitle">Qty Tersedia = Stock Fisik - Qty Pesanan - Qty Belum Terkirim. Nilai negatif menunjukkan kebutuhan stock.</p>
+          {data && (
+            <p className="muted small" data-testid="stock-read-mode">
+              {r2Active
+                ? "Mode R2 aktif — sumber stok fisik: physical_stock_balances."
+                : "Mode kompatibilitas pra-cutover — sumber stok fisik: product_stock_state (baca saja)."}
+            </p>
+          )}
         </div>
         <div className="stock-heading-actions">
           <button
@@ -286,7 +296,15 @@ export default function StockSaatIni() {
                   ) : fmtQty(it.physical_qty)}
                 </td>
                 <td className="col-fit num mono" data-testid={`stock-order-${it.master_item_id}`}>{fmtQty(it.qty_pesanan)}</td>
-                <td className="col-fit num mono" data-testid={`stock-undelivered-${it.master_item_id}`}>{fmtQty(it.qty_belum_terkirim)}</td>
+                <td
+                  className="col-fit num mono"
+                  data-testid={`stock-undelivered-${it.master_item_id}`}
+                  data-belum-status={it.belum_terkirim_status || "READY"}
+                >
+                  {it.belum_terkirim_status === "CUTOVER_PENDING"
+                    ? "Cutover pending"
+                    : fmtQty(it.qty_belum_terkirim)}
+                </td>
                 <td className="col-fit num mono" data-testid={`stock-available-${it.master_item_id}`}>{fmtQty(it.qty_tersedia)}</td>
                 <td className="col-fit small nowrap">{it.updated_at ? formatDate(it.updated_at) : "—"}</td>
               </tr>

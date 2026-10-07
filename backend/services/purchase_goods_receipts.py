@@ -550,8 +550,10 @@ async def _commit_r2_goods_receipt(
         require_transaction_support,
         resolve_purchase_receipt_warehouse,
     )
+    from services.r2_go_live import require_r2_authority_active
 
     actor_id = str((user or {}).get("id") or (user or {}).get("email") or "user")
+    await require_r2_authority_active(db)
     await require_transaction_support(_client(db))
     spec_lines = _receipt_line_identity(doc.get("lines") or [])
     last_error = None

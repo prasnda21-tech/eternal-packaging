@@ -26,6 +26,7 @@ from services.physical_stock import (  # noqa: E402
     list_physical_stock_catalog,
     read_physical_stock,
 )
+from services.r2_go_live import set_r2_authority_active  # noqa: E402
 import server  # noqa: E402
 from server import app, current_user  # noqa: E402
 
@@ -52,6 +53,7 @@ async def db():
     database = client[TEST_DB]
     await client.drop_database(TEST_DB)
     server.db = database
+    await set_r2_authority_active(database, active=True)
     try:
         yield database
     finally:
@@ -354,8 +356,10 @@ async def test_catalog_returns_zero_without_writing_and_filters_locations(db):
     assert await db[BALANCE_COLLECTION].count_documents({}) == before_balance
     assert await db[LEDGER_COLLECTION].count_documents({}) == before_ledger
     source = inspect.getsource(list_physical_stock_catalog)
-    for name in ("product_stock_state", "stock_movements", "item_stock_manual"):
-        assert name not in source
+    # R2 catalog path must not query legacy collections directly (compat adapter is separate).
+    assert "db.product_stock_state" not in source
+    assert "db.stock_movements" not in source
+    assert "db.item_stock_manual" not in source
     for name in ("qty_po", "printed_qty", "available_qty", "order_qty", "stock_current"):
         assert name not in source
     assert "warehouse_id" not in all_rows["items"][0]

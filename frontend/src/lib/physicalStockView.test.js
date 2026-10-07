@@ -66,8 +66,16 @@ describe("physical stock view helpers", () => {
     expect(stockEmptyMessage({ masterItemCount: 0, warehouseCount: 1 })).toBe(
       "Belum ada Barang/Jasa pada environment preview.",
     );
-    expect(stockEmptyMessage({ masterItemCount: 3, warehouseCount: 0, branchId: "smg" })).toBe(
+    expect(stockEmptyMessage({
+      masterItemCount: 3,
+      warehouseCount: 0,
+      branchId: "smg",
+      readMode: "r2",
+    })).toBe(
       "Cabang ini belum memiliki gudang.",
+    );
+    expect(stockEmptyMessage({ masterItemCount: 3, warehouseCount: 0, readMode: "compatibility" })).toBe(
+      "Tidak ada baris stok untuk filter ini.",
     );
   });
 

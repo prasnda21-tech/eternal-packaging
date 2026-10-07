@@ -41,6 +41,7 @@ from services.physical_stock import (  # noqa: E402
     post_movement,
     set_fail_after_balance,
 )
+from services.r2_go_live import set_r2_authority_active  # noqa: E402
 import server  # noqa: E402
 from server import app, current_user  # noqa: E402
 
@@ -66,6 +67,7 @@ async def db():
     database = client[TEST_DB]
     await client.drop_database(TEST_DB)
     await ensure_indexes(database)
+    await set_r2_authority_active(database, active=True)
     server.db = database
     set_fail_after_balance(False)
     try:

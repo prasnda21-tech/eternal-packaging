@@ -83,6 +83,17 @@ async def require_legacy_stock_mutation_allowed(db) -> None:
         raise HTTPException(409, LEGACY_MUTATION_BLOCKED_MSG)
 
 
+R2_MUTATION_BLOCKED_MSG = (
+    "Mutasi stok R2 belum diaktifkan. Aktifkan r2_authority_active sebelum menulis R2."
+)
+
+
+async def require_r2_authority_active(db) -> None:
+    """Refuse R2 physical mutations until authority is explicitly activated."""
+    if not await is_r2_authority_active(db):
+        raise HTTPException(409, R2_MUTATION_BLOCKED_MSG)
+
+
 def order_line_baseline_key(order_id: str, line_idx: int) -> str:
     return f"{order_id}:{int(line_idx)}"
 

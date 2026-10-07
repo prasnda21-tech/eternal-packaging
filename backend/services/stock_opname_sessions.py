@@ -635,8 +635,10 @@ async def _confirm_once(db, doc: dict, confirmation_key: str, user: dict) -> dic
 
 async def confirm_stock_opname_session(db, session_id: str, payload: Optional[dict], user: dict) -> dict:
     from services.hpp_cutover import ensure_indexes, finalize_stock_opname_valuation
+    from services.r2_go_live import require_r2_authority_active
 
     payload = payload or {}
+    await require_r2_authority_active(db)
     await ensure_indexes(db)
     doc = await get_stock_opname_session(db, session_id)
     confirmation_key = str(payload.get("idempotency_key") or payload.get("confirmation_key") or "").strip()

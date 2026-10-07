@@ -24,6 +24,7 @@ from services.physical_stock import (
     reconcile_balance,
     set_fail_after_balance,
 )
+from services.r2_go_live import set_r2_authority_active  # noqa: E402
 from services.purchase_goods_receipts import (
     create_purchase_goods_receipt,
     cancel_purchase_goods_receipt,
@@ -54,6 +55,7 @@ async def db():
     database = client[TEST_DB]
     await client.drop_database(TEST_DB)
     await ensure_indexes(database)
+    await set_r2_authority_active(database, active=True)
     await database.purchase_goods_receipts.create_index("id", unique=True)
     await database.purchase_goods_receipts.create_index(
         "idempotency_key",

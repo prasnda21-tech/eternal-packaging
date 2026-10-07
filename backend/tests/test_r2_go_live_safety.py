@@ -105,6 +105,7 @@ async def _seed_ygy(db):
 
 
 async def test_cutover_baseline_zeros_historical_belum_terkirim(db):
+    await set_r2_authority_active(db, active=True)
     item, branch, warehouse = await _seed_ygy(db)
     await post_opening_balance(
         db,
@@ -150,6 +151,7 @@ async def test_cutover_baseline_zeros_historical_belum_terkirim(db):
 
 
 async def test_post_cutover_new_completion_creates_belum_terkirim(db):
+    await set_r2_authority_active(db, active=True)
     item, branch, warehouse = await _seed_ygy(db)
     await post_opening_balance(
         db,
@@ -243,6 +245,7 @@ async def test_legacy_stock_opname_http_blocked_after_activation(db):
 
 
 async def test_r2_delivery_confirm_and_reverse_idempotent(db):
+    await set_r2_authority_active(db, active=True)
     item, branch, warehouse = await _seed_ygy(db)
     await post_opening_balance(
         db,
@@ -307,6 +310,7 @@ async def test_r2_delivery_confirm_and_reverse_idempotent(db):
 
 
 async def test_cutover_blocks_r2_redelivery_of_historical_completion(db):
+    await set_r2_authority_active(db, active=True)
     item, branch, warehouse = await _seed_ygy(db)
     await post_opening_balance(
         db,

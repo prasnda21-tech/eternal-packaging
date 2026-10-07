@@ -15,6 +15,7 @@ from services.physical_stock import (
     post_movement,
     MOVEMENT_OPENING_BALANCE,
 )
+from services.r2_go_live import set_r2_authority_active  # noqa: E402
 from services.stock_opname_sessions import (
     confirm_stock_opname_session,
     create_stock_opname_session,
@@ -45,6 +46,7 @@ async def db():
     database = client[TEST_DB]
     await client.drop_database(TEST_DB)
     await ensure_indexes(database)
+    await set_r2_authority_active(database, active=True)
     yield database
     await client.drop_database(TEST_DB)
     client.close()

@@ -401,8 +401,10 @@ async def _confirm_once(db, doc: dict, confirmation_key: str, user: dict) -> tup
         apply_purchase_return_lines,
         require_transaction_support,
     )
+    from services.r2_go_live import require_r2_authority_active
 
     actor_id = str((user or {}).get("id") or (user or {}).get("email") or "user")
+    await require_r2_authority_active(db)
     await require_transaction_support(_client(db))
     async with await _client(db).start_session() as session:
         async with session.start_transaction():

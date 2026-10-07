@@ -733,6 +733,12 @@ async def apply_confirmed_sales_delivery(
         raise PhysicalStockValidationError("Pesanan tidak ditemukan")
     if _order_cancelled(order):
         raise PhysicalStockValidationError("Pesanan sudah dibatalkan")
+    # Callers may invoke this inside an outer txn; authority must already be on.
+    from services.r2_go_live import is_r2_authority_active
+    if not await is_r2_authority_active(db):
+        raise PhysicalStockValidationError(
+            "Mutasi stok R2 belum diaktifkan. Aktifkan r2_authority_active sebelum menulis R2."
+        )
     order_id = str(order["id"])
     confirmation_id = _as_text(confirmation_id, "confirmation_id")
     actor = _as_text(actor_id, "actor_id")
@@ -847,6 +853,9 @@ async def confirm_sales_delivery(
     reason: str = "",
 ) -> dict:
     """Confirm a physical delivery and post R2 stock in one transaction."""
+    from services.r2_go_live import require_r2_authority_active
+
+    await require_r2_authority_active(db)
     await require_transaction_support(_client(db))
     order_id = _as_text(order_id, "order_id")
     last_error: Optional[BaseException] = None
@@ -2156,12 +2165,21 @@ async def list_physical_stock_catalog(
     page: int = 1,
     limit: int = 50,
 ) -> dict:
-    """Operational Stock Saat Ini for the Yogyakarta branch.
+    """Operational Stock Saat Ini.
 
-    Stock fisik is the sum of R2 balances on YGY warehouses. One row per item.
-    branch_id and warehouse_id are accepted and ignored: this read is not a
-    per-warehouse available-stock view. Missing balances stay 0 and are not inserted.
+    When r2_authority_active is FALSE: read-only compatibility adapter
+    (legacy physical state + orders + sales deliveries). No R2 writes.
+
+    When r2_authority_active is TRUE: Stock fisik is the sum of R2 balances on
+    YGY warehouses. One row per item. Missing balances stay 0 and are not inserted.
+    branch_id and warehouse_id are accepted and ignored.
     """
+    from services.r2_go_live import is_r2_authority_active
+    from services.stock_compatibility_read import list_compatibility_stock_catalog
+
+    if not await is_r2_authority_active(db):
+        return await list_compatibility_stock_catalog(db, q=q, page=page, limit=limit)
+
     del branch_id, warehouse_id
     all_branches = await db[BRANCHES_COLLECTION].find({}, {"_id": 0, "id": 1, "code": 1, "name": 1}).to_list(500)
     operational = resolve_operational_branch(all_branches)
@@ -2244,6 +2262,8 @@ async def list_physical_stock_catalog(
             "qty_belum_terkirim": buckets["qty_belum_terkirim"],
             "qty_tersedia": buckets["qty_tersedia"],
             "updated_at": max(updated) if updated else None,
+            "belum_terkirim_status": "READY",
+            "stock_read_mode": "r2",
         })
     total = len(rows)
     start = (safe_page - 1) * safe_limit
@@ -2256,6 +2276,8 @@ async def list_physical_stock_catalog(
         "page_count": page_count,
         "master_item_count": len(masters),
         "warehouse_count": len(warehouses),
+        "stock_read_mode": "r2",
+        "r2_authority_active": True,
     }
 
 

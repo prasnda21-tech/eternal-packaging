@@ -38,6 +38,7 @@ from services.physical_stock import (
     set_fail_after_balance,
     _client,
 )
+from services.r2_go_live import set_r2_authority_active  # noqa: E402
 from services.stock_opname_count_import import (
     COUNT_HEADERS,
     build_count_template_xlsx,
@@ -82,6 +83,7 @@ async def db():
     await client.drop_database(TEST_DB)
     await ensure_physical_indexes(database)
     await ensure_indexes(database)
+    await set_r2_authority_active(database, active=True)
     yield database
     set_fail_after_balance(False)
     set_fail_after_adjustments(False)
