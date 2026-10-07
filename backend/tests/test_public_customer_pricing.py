@@ -41,6 +41,23 @@ async def isolated_db():
     server.client = client
     server.db = client[db_name]
     await cp.ensure_indexes(server.db)
+    from services import public_catalog as pc
+
+    await pc.ensure_indexes(server.db)
+    await server.db.app_settings.update_one(
+        {"key": pc.SETTINGS_KEY},
+        {
+            "$set": {
+                "key": pc.SETTINGS_KEY,
+                "catalog_name": "Eternal Catalog",
+                "hero_title": "Kemasan Berkualitas",
+                "hero_subtitle": "Harga produk terkini",
+                "public_whatsapp_phone": "",
+                "catalog_enabled": True,
+            }
+        },
+        upsert=True,
+    )
     yield
     await client.drop_database(db_name)
     client.close()
@@ -267,6 +284,7 @@ async def test_public_json_serializer_excludes_every_internal_pricing_field_and_
     assert catalog_response.json()["groups"][0]["image_url"] == (
         f"/api/public/customer-pricing/groups/{group['public_id']}/image"
     )
+    # Public-safe category/image `id` keys are intentional exceptions.
     forbidden = {
         "hpp",
         "hpp_snapshot",
@@ -286,7 +304,8 @@ async def test_public_json_serializer_excludes_every_internal_pricing_field_and_
         "current_draft_version_id",
         "current_published_version_id",
         "_id",
-        "id",
+        "file_id",
+        "storage_key",
         "notes",
     }
     for response in (catalog_response, detail_response, calculate_response):
