@@ -3,13 +3,13 @@ import { hrPayrollMenuItems, hrPayrollNavVisible, NAV_KEYS, NAV_MENU_FALLBACK } 
 const has = (...keys) => (key) => keys.includes(key);
 
 describe("HR & Payroll nav", () => {
-  test("catalog contains parent and six children", () => {
+  test("catalog contains parent and children including reconciliation", () => {
     const labels = NAV_MENU_FALLBACK
       .filter((item) => item.key === NAV_KEYS.hrPayroll || item.parent === NAV_KEYS.hrPayroll)
       .map((item) => item.label);
     expect(labels).toEqual([
       "HR & Payroll", "Daftar Karyawan", "Data Kepegawaian", "Penggajian",
-      "Slip Gaji", "Komponen Gaji", "Riwayat Payroll",
+      "Slip Gaji", "Komponen Gaji", "Riwayat Payroll", "Rekonsiliasi Payroll",
     ]);
   });
 
@@ -27,6 +27,8 @@ describe("HR & Payroll nav", () => {
     expect(hrPayrollNavVisible(has("payroll.payslip.view_own")).payslips).toBe(true);
     expect(hrPayrollNavVisible(has("payroll.settings")).components).toBe(true);
     expect(hrPayrollNavVisible(has("payroll.payslip.view_all")).history).toBe(true);
+    expect(hrPayrollNavVisible(has("payroll.view", "payroll_payment.view")).reconciliation).toBe(true);
+    expect(hrPayrollNavVisible(has("payroll.view")).reconciliation).toBe(false);
   });
 
   test("hidden without grants", () => {

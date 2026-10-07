@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { AlertCircle, Eye } from "lucide-react";
 import api from "../lib/api";
 import { useDebouncedLiveSearch } from "../hooks/useDebouncedLiveSearch";
@@ -29,6 +29,7 @@ const SOURCE_OPTIONS = [
   { value: "cash_bank_payment", label: "Pembayaran" },
   { value: "cash_bank_transfer", label: "Transfer" },
   { value: "cash_bank_reversal", label: "Reversal" },
+  { value: "payroll_payment", label: "Pembayaran Payroll" },
 ];
 
 const monthStart = () => {
@@ -39,11 +40,16 @@ const todayIso = () => new Date().toISOString().slice(0, 10);
 
 export default function MutasiKasBank() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const urlBank = searchParams.get("cash_bank_id") || "";
+  const urlStart = searchParams.get("start_date") || "";
+  const urlEnd = searchParams.get("end_date") || "";
+  const urlSource = searchParams.get("source_type") || "";
   const [banks, setBanks] = useState([]);
-  const [cashBankId, setCashBankId] = useState("");
-  const [startDate, setStartDate] = useState(monthStart);
-  const [endDate, setEndDate] = useState(todayIso);
-  const [sourceType, setSourceType] = useState("");
+  const [cashBankId, setCashBankId] = useState(urlBank);
+  const [startDate, setStartDate] = useState(urlStart || monthStart);
+  const [endDate, setEndDate] = useState(urlEnd || todayIso);
+  const [sourceType, setSourceType] = useState(urlSource);
   const { input: qInput, setInput: setQInput, q, flush: doSearch, clear: clearQuery } = useDebouncedLiveSearch();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -58,7 +64,7 @@ export default function MutasiKasBank() {
         if (cancelled) return;
         const items = Array.isArray(res?.items) ? res.items : [];
         setBanks(items);
-        if (!cashBankId && items.length) setCashBankId(items[0].id);
+        if (!cashBankId && items.length) setCashBankId(urlBank || items[0].id);
       } catch (ex) {
         if (!cancelled) setBanksError(errText(ex));
       }
