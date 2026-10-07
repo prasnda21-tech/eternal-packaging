@@ -672,6 +672,16 @@ export const api = {
   },
   deletePublicCatalogCategoryImage: (id) =>
     client.delete(`/public-catalog/categories/${encodeURIComponent(id)}/image`).then((r) => r.data),
+  publicCatalogGroups: (params = {}) =>
+    client.get(`/settings/public-catalog/groups`, { params }).then((r) => r.data),
+  publicCatalogGroup: (pricingGroupId) =>
+    client
+      .get(`/settings/public-catalog/groups/${encodeURIComponent(pricingGroupId)}`)
+      .then((r) => r.data),
+  updatePublicCatalogGroup: (pricingGroupId, payload) =>
+    client
+      .put(`/settings/public-catalog/groups/${encodeURIComponent(pricingGroupId)}`, payload)
+      .then((r) => r.data),
   customerPricingGroups: (params = {}) => client.get(`/customer-pricing/groups`, { params }).then((r) => r.data),
   createCustomerPricingGroup: (payload) => client.post(`/customer-pricing/groups`, payload).then((r) => r.data),
   customerPricingGroup: (id) => client.get(`/customer-pricing/groups/${encodeURIComponent(id)}`).then((r) => r.data),

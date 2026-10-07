@@ -1,4 +1,4 @@
-"""Internal RBAC routes for Public Catalog Settings (Phase A)."""
+"""Internal RBAC routes for Public Catalog Settings (Phase A + B)."""
 from __future__ import annotations
 
 from typing import Optional
@@ -132,3 +132,36 @@ def register_public_catalog_routes(
             get_db(), category_id=category_id, user=user
         )
         return {"category": category, "message": "Gambar kategori dihapus"}
+
+    @api_router.get("/settings/public-catalog/groups")
+    async def list_public_catalog_groups(
+        q: Optional[str] = None, user=Depends(current_user)
+    ):
+        await require_view(user)
+        groups = await pc.list_presentation_groups(get_db(), q=q or "")
+        return {"groups": groups, "count": len(groups)}
+
+    @api_router.get("/settings/public-catalog/groups/{pricing_group_id}")
+    async def get_public_catalog_group(pricing_group_id: str, user=Depends(current_user)):
+        await require_view(user)
+        return {"group": await pc.get_presentation_group(get_db(), pricing_group_id)}
+
+    @api_router.put("/settings/public-catalog/groups/{pricing_group_id}")
+    async def put_public_catalog_group(
+        pricing_group_id: str, payload: LoosePayload, user=Depends(current_user)
+    ):
+        await require_manage(user)
+        group = await pc.upsert_presentation_group(
+            get_db(), pricing_group_id, dump(payload), user
+        )
+        return {"group": group, "message": "Presentasi kelompok katalog disimpan"}
+
+    @api_router.patch("/settings/public-catalog/groups/{pricing_group_id}")
+    async def patch_public_catalog_group(
+        pricing_group_id: str, payload: LoosePayload, user=Depends(current_user)
+    ):
+        await require_manage(user)
+        group = await pc.upsert_presentation_group(
+            get_db(), pricing_group_id, dump(payload), user
+        )
+        return {"group": group, "message": "Presentasi kelompok katalog disimpan"}
