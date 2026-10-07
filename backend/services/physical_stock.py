@@ -632,20 +632,33 @@ async def _resolve_delivery_location(db, session, *, branch_id: Optional[str], w
 
 
 async def _line_r2_delivered_qty(db, session, order_id: str, line_idx: int) -> int:
+    """Net R2 delivered qty for one order line (SALES_DELIVERY minus reversals)."""
     rows = await db[LEDGER_COLLECTION].find(
         {
             "movement_type": MOVEMENT_SALES_DELIVERY,
             "metadata.order_id": order_id,
             "metadata.line_idx": int(line_idx),
         },
-        {"_id": 0, "qty_delta": 1},
+        {"_id": 0, "id": 1, "qty_delta": 1},
         session=session,
     ).to_list(5000)
     total = 0
     for row in rows:
         delta = int(row.get("qty_delta") or 0)
-        if delta < 0:
-            total += -delta
+        if delta >= 0:
+            continue
+        movement_id = str(row.get("id") or "")
+        reversed_already = await db[LEDGER_COLLECTION].find_one(
+            {
+                "movement_type": MOVEMENT_REVERSAL,
+                "reference_id": movement_id,
+            },
+            {"_id": 1},
+            session=session,
+        )
+        if reversed_already:
+            continue
+        total += -delta
     return total
 
 
@@ -658,8 +671,17 @@ def _sales_delivery_request(
     warehouse_id: str,
     actor_id: str,
     reason: str,
+    sales_delivery_id: str = "",
 ) -> dict:
     created_at = now_iso()
+    metadata = {
+        "order_id": order_id,
+        "line_idx": int(line["line_idx"]),
+        "line_id": str(line["line_id"]),
+        "confirmation_id": confirmation_id,
+    }
+    if sales_delivery_id:
+        metadata["sales_delivery_id"] = sales_delivery_id
     return {
         "master_item_id": line["master_item_id"],
         "branch_id": branch_id,
@@ -673,12 +695,7 @@ def _sales_delivery_request(
         "occurred_at": created_at,
         "created_at": created_at,
         "idempotency_key": f"sales-delivery:{confirmation_id}:{line['line_idx']}:{line['master_item_id']}",
-        "metadata": {
-            "order_id": order_id,
-            "line_idx": int(line["line_idx"]),
-            "line_id": str(line["line_id"]),
-            "confirmation_id": confirmation_id,
-        },
+        "metadata": metadata,
     }
 
 
@@ -705,6 +722,7 @@ async def apply_confirmed_sales_delivery(
     branch_id: Optional[str] = None,
     reason: str = "",
     write_order: bool = False,
+    sales_delivery_id: Optional[str] = None,
 ) -> dict:
     """Post every SALES_DELIVERY line inside the caller's transaction.
 
@@ -719,6 +737,7 @@ async def apply_confirmed_sales_delivery(
     confirmation_id = _as_text(confirmation_id, "confirmation_id")
     actor = _as_text(actor_id, "actor_id")
     note = str(reason or "").strip() or "Konfirmasi terkirim"
+    sj_id = str(sales_delivery_id or "").strip()
     resolved = _resolve_requested_delivery_lines(order, lines)
     resolved_branch, resolved_warehouse = await _resolve_delivery_location(
         db, session, branch_id=branch_id, warehouse_id=warehouse_id,
@@ -749,10 +768,13 @@ async def apply_confirmed_sales_delivery(
             "movements": movements,
         }
 
+    from services.r2_go_live import cutover_delivered_qty_for_order_line
+
     for line in resolved:
         completed = _completed_qty_for_line(order, line["line_idx"])
         delivered = await _line_r2_delivered_qty(db, session, order_id, line["line_idx"])
-        ready = max(completed - delivered, 0)
+        cutover_done = int(await cutover_delivered_qty_for_order_line(db, order_id, line["line_idx"]))
+        ready = max(completed - delivered - cutover_done, 0)
         if line["qty"] > ready:
             raise PhysicalStockValidationError(
                 "Kuantitas terkirim melebihi Qty Belum Terkirim pada baris pesanan ini"
@@ -770,6 +792,7 @@ async def apply_confirmed_sales_delivery(
                 warehouse_id=resolved_warehouse,
                 actor_id=actor,
                 reason=note,
+                sales_delivery_id=sj_id,
             ),
             session,
         ))
@@ -781,6 +804,8 @@ async def apply_confirmed_sales_delivery(
         "lines": resolved,
         "actor_id": actor,
         "reason": note,
+        "sales_delivery_id": sj_id or None,
+        "reversed": False,
         "created_at": now_iso(),
     }
     await db[SALES_DELIVERY_CONFIRMATIONS].insert_one(confirmation, session=session)
@@ -1075,6 +1100,13 @@ def _reversal_request(original: dict, *, actor_id: str, idempotency_key: str, re
     }
 
 
+_REVERSIBLE_MOVEMENT_TYPES = frozenset({
+    MOVEMENT_PURCHASE_RECEIPT,
+    MOVEMENT_PURCHASE_RETURN,
+    MOVEMENT_SALES_DELIVERY,
+})
+
+
 async def reverse_movement_in_session(
     db,
     session,
@@ -1094,13 +1126,185 @@ async def reverse_movement_in_session(
         raise PhysicalStockValidationError("Movement asal tidak ditemukan")
     if original.get("movement_type") == MOVEMENT_REVERSAL:
         raise PhysicalStockValidationError("Reversal tidak dapat direversal")
-    if original.get("movement_type") not in (MOVEMENT_PURCHASE_RECEIPT, MOVEMENT_PURCHASE_RETURN):
-        raise PhysicalStockValidationError("Hanya penerimaan atau retur pembelian yang dapat dibatalkan pada jalur ini")
+    if original.get("movement_type") not in _REVERSIBLE_MOVEMENT_TYPES:
+        raise PhysicalStockValidationError(
+            "Hanya penerimaan, retur pembelian, atau pengiriman R2 yang dapat dibatalkan pada jalur ini"
+        )
     return await _apply_movement_in_session(
         db,
         _reversal_request(original, actor_id=actor_id, idempotency_key=idempotency_key, reason=reason),
         session,
     )
+
+
+async def reverse_confirmed_sales_delivery(
+    db,
+    *,
+    confirmation_id: str,
+    actor_id: str,
+    reason: str = "",
+) -> dict:
+    """Reverse every R2 SALES_DELIVERY posted for one confirmation. Idempotent.
+
+    Pre-cutover historical deliveries have no R2 confirmation row / movements —
+    those are a no-op (replayed with zero reversals).
+    """
+    confirmation_id = _as_text(confirmation_id, "confirmation_id")
+    actor = _as_text(actor_id, "actor_id")
+    note = str(reason or "").strip() or "Pembatalan konfirmasi terkirim R2"
+    await require_transaction_support(_client(db))
+
+    last_error: Optional[BaseException] = None
+    for _attempt in range(_MAX_ATTEMPTS):
+        try:
+            async with await _client(db).start_session() as session:
+                async with session.start_transaction():
+                    confirmation = await db[SALES_DELIVERY_CONFIRMATIONS].find_one(
+                        {"id": confirmation_id},
+                        {"_id": 0},
+                        session=session,
+                    )
+                    if not confirmation:
+                        return {
+                            "confirmation_id": confirmation_id,
+                            "replayed": True,
+                            "reversed": False,
+                            "reason": "confirmation_not_found",
+                            "reversals": [],
+                        }
+                    if confirmation.get("reversed") is True:
+                        return {
+                            "confirmation_id": confirmation_id,
+                            "replayed": True,
+                            "reversed": True,
+                            "reversals": list(confirmation.get("reversal_movement_ids") or []),
+                        }
+                    originals = await db[LEDGER_COLLECTION].find(
+                        {
+                            "movement_type": MOVEMENT_SALES_DELIVERY,
+                            "metadata.confirmation_id": confirmation_id,
+                        },
+                        {"_id": 0, "id": 1},
+                        session=session,
+                    ).to_list(500)
+                    reversal_ids = []
+                    for original in originals:
+                        movement = await reverse_movement_in_session(
+                            db,
+                            session,
+                            original["id"],
+                            actor_id=actor,
+                            idempotency_key=f"sales-delivery-reversal:{confirmation_id}:{original['id']}",
+                            reason=note,
+                        )
+                        reversal_ids.append(movement["id"])
+                    await db[SALES_DELIVERY_CONFIRMATIONS].update_one(
+                        {"id": confirmation_id, "reversed": {"$ne": True}},
+                        {"$set": {
+                            "reversed": True,
+                            "reversed_at": now_iso(),
+                            "reversed_by": actor,
+                            "reversal_reason": note,
+                            "reversal_movement_ids": reversal_ids,
+                        }},
+                        session=session,
+                    )
+                    return {
+                        "confirmation_id": confirmation_id,
+                        "replayed": False,
+                        "reversed": True,
+                        "reversals": reversal_ids,
+                    }
+        except (PhysicalStockValidationError, PhysicalStockConflictError, InsufficientPhysicalStockError):
+            raise
+        except PyMongoError as exc:
+            last_error = exc
+            if not _retryable(exc):
+                raise
+    raise PhysicalStockUnavailableError(
+        "Transaksi pembatalan pengiriman stok fisik gagal setelah percobaan ulang"
+    ) from last_error
+
+
+async def reverse_r2_deliveries_for_sales_delivery(
+    db,
+    delivery: dict,
+    *,
+    actor_id: str,
+    reason: str = "",
+) -> dict:
+    """Reverse R2 confirmations linked to a sales_delivery / SJ document.
+
+    Legacy SJ with no R2 confirmation movements → no-op.
+    """
+    if not isinstance(delivery, dict):
+        return {"reversed_confirmations": [], "replayed": True}
+    identity = {
+        token
+        for token in (
+            str(delivery.get("id") or "").strip(),
+            str(delivery.get("delivery_id") or "").strip(),
+            str(delivery.get("sj_number") or "").strip(),
+        )
+        if token
+    }
+    confirmation_ids = set()
+    if identity:
+        linked = await db[SALES_DELIVERY_CONFIRMATIONS].find(
+            {
+                "$or": [
+                    {"sales_delivery_id": {"$in": list(identity)}},
+                    {"id": {"$in": list(identity)}},
+                ]
+            },
+            {"_id": 0, "id": 1},
+        ).to_list(200)
+        for row in linked:
+            if row.get("id"):
+                confirmation_ids.add(str(row["id"]))
+        rows = await db[LEDGER_COLLECTION].find(
+            {
+                "movement_type": MOVEMENT_SALES_DELIVERY,
+                "metadata.sales_delivery_id": {"$in": list(identity)},
+            },
+            {"_id": 0, "metadata.confirmation_id": 1},
+        ).to_list(500)
+        for row in rows:
+            cid = str((row.get("metadata") or {}).get("confirmation_id") or "").strip()
+            if cid:
+                confirmation_ids.add(cid)
+
+    po_id = str(delivery.get("po_id") or delivery.get("order_id") or "").strip()
+    if po_id and not confirmation_ids:
+        # Fallback: order-level r2 confirmation ids when SJ link was not stored.
+        order = await db.orders.find_one(
+            {"id": po_id},
+            {"_id": 0, "r2_confirmed_delivery_ids": 1, "delivery_confirmations": 1},
+        )
+        if order:
+            for cid in order.get("r2_confirmed_delivery_ids") or []:
+                if cid:
+                    confirmation_ids.add(str(cid))
+            for conf in order.get("delivery_confirmations") or []:
+                if not isinstance(conf, dict):
+                    continue
+                for field in ("sales_delivery_id", "shipment_id", "surat_jalan_id", "sj_number", "delivery_id"):
+                    token = str(conf.get(field) or "").strip()
+                    if token and token in identity and conf.get("id"):
+                        confirmation_ids.add(str(conf["id"]))
+                        break
+
+    results = []
+    for cid in sorted(confirmation_ids):
+        results.append(
+            await reverse_confirmed_sales_delivery(
+                db, confirmation_id=cid, actor_id=actor_id, reason=reason,
+            )
+        )
+    return {
+        "reversed_confirmations": results,
+        "confirmation_ids": sorted(confirmation_ids),
+    }
 
 
 async def reverse_movement(
@@ -1859,10 +2063,11 @@ async def _unique_accurate_owners(db) -> Dict[str, str]:
 
 
 async def _r2_confirmed_delivery_qty(db, master_ids: List[str]) -> Dict[str, float]:
-    """Delivered qty that already left R2 physical stock.
+    """Delivered qty that already left R2 physical stock (net of reversals).
 
     The SALES_DELIVERY ledger movement is the proof. A legacy sales_deliveries
     row, surat jalan, or loading record does not reduce Qty Belum Terkirim.
+    Reversed SALES_DELIVERY rows are excluded.
     """
     if not master_ids:
         return {}
@@ -1871,10 +2076,23 @@ async def _r2_confirmed_delivery_qty(db, master_ids: List[str]) -> Dict[str, flo
             "movement_type": MOVEMENT_SALES_DELIVERY,
             "master_item_id": {"$in": master_ids},
         },
-        {"_id": 0, "master_item_id": 1, "qty_delta": 1},
+        {"_id": 0, "id": 1, "master_item_id": 1, "qty_delta": 1},
     ).to_list(20000)
+    movement_ids = [str(row.get("id") or "") for row in movements if row.get("id")]
+    reversed_ids = set()
+    if movement_ids:
+        reversals = await db[LEDGER_COLLECTION].find(
+            {
+                "movement_type": MOVEMENT_REVERSAL,
+                "reference_id": {"$in": movement_ids},
+            },
+            {"_id": 0, "reference_id": 1},
+        ).to_list(20000)
+        reversed_ids = {str(row.get("reference_id") or "") for row in reversals}
     confirmed: Dict[str, float] = {}
     for row in movements:
+        if str(row.get("id") or "") in reversed_ids:
+            continue
         delta = _qty_num(row.get("qty_delta"))
         if delta >= 0:
             continue
@@ -1984,6 +2202,10 @@ async def list_physical_stock_catalog(
     progress = aggregate_operational_orders(orders, owners)
     master_ids = [master["id"] for master in masters if master.get("id")]
     delivered = await _r2_confirmed_delivery_qty(db, master_ids)
+    from services.r2_go_live import get_delivery_cutover_baseline
+
+    cutover = await get_delivery_cutover_baseline(db)
+    baseline_by_item = cutover.get("baseline_by_master_item_id") or {} if cutover.get("initialized") else {}
     warehouse_ids = [row.get("id") for row in warehouses if row.get("id")]
     balance_docs = []
     if warehouse_ids and master_ids:
@@ -2003,11 +2225,13 @@ async def list_physical_stock_catalog(
         physical = sum(_qty_num(doc.get("physical_qty")) for doc in docs)
         updated = [doc.get("updated_at") for doc in docs if doc.get("updated_at")]
         demand = progress.get(master.get("id")) or {"ordered_qty": 0.0, "completed_qty": 0.0}
+        mid = master.get("id")
+        effective_delivered = _qty_num(delivered.get(mid, 0)) + _qty_num(baseline_by_item.get(str(mid), 0))
         buckets = operational_availability(
             physical_qty=physical,
             ordered_qty=demand["ordered_qty"],
             completed_qty=demand["completed_qty"],
-            r2_delivered_qty=delivered.get(master.get("id"), 0),
+            r2_delivered_qty=effective_delivered,
         )
         rows.append({
             "master_item_id": master.get("id"),

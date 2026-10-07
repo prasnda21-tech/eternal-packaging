@@ -86,6 +86,7 @@ HOLDING_TEAM_PACKAGE_GRANTS: tuple[str, ...] = (
     "purchase_receipts.receive",
     "purchase_hpp.view",
     "master_items.view",
+    "master_items.manage",
     "org.branches.view",
     "org.branches.manage",
     "org.warehouses.view",
@@ -97,6 +98,21 @@ HOLDING_TEAM_PACKAGE_GRANTS: tuple[str, ...] = (
     "inventory_valuation.view",
     "inventory_valuation.export",
     "inventory_valuation.manage_opening",
+    # Nav keys required when role_permissions override replaces builtins
+    "nav.purchasing",
+    "nav.purchasing.requests",
+    "nav.purchasing.orders",
+    "nav.purchasing.advances",
+    "nav.purchasing.invoices",
+    "nav.purchasing.payments",
+    "nav.purchasing.receipts",
+    "nav.purchasing.returns",
+    "nav.purchasing.hpp",
+    "nav.inventory",
+    "nav.inventory.master_items",
+    "nav.inventory.branches_warehouses",
+    "nav.inventory.current_stock",
+    "nav.inventory.inventory_value",
 )
 
 

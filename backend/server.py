@@ -6146,6 +6146,10 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
                 raise PhysicalStockValidationError(
                     "Baris pengiriman tidak dapat dipetakan ke master item"
                 )
+            sj_src = shipment if isinstance(shipment, dict) else {}
+            sj_link = str(
+                sj_src.get("sales_delivery_id") or sj_src.get("id") or ""
+            ).strip()
             await apply_confirmed_sales_delivery(
                 db,
                 session,
@@ -6157,6 +6161,7 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
                 branch_id=(payload.branch_id if payload else None),
                 reason="Konfirmasi terkirim",
                 write_order=False,
+                sales_delivery_id=sj_link or None,
             )
 
         try:
@@ -11752,15 +11757,58 @@ async def delete_sales_delivery_endpoint(id: str, user=Depends(current_user)):
     delivery = await db.sales_deliveries.find_one({"id": str(id)}, {"_id": 0})
     if not delivery:
         raise HTTPException(404, "Pengiriman Pesanan tidak ditemukan.")
+    from services.physical_stock import reverse_r2_deliveries_for_sales_delivery
+    r2_reverse = await reverse_r2_deliveries_for_sales_delivery(
+        db,
+        delivery,
+        actor_id=str(user.get("id") or user.get("email") or "user"),
+        reason="Pembatalan Surat Jalan",
+    )
     blocker = await _sales_delivery_delete_blocker(delivery)
     if blocker:
+        if r2_reverse.get("reversed_confirmations"):
+            await db.sales_deliveries.update_one(
+                {"id": delivery["id"]},
+                {"$set": {
+                    "is_cancelled": True,
+                    "cancelled_at": now_iso(),
+                    "cancel_reason": "R2 delivery reversed; SJ soft-cancelled",
+                    "r2_reversal": r2_reverse,
+                    "updated_at": now_iso(),
+                }},
+            )
+            await _write_audit(
+                action="sales.delivery.r2_reverse_soft_cancel",
+                actor=user,
+                target_email=f"delivery:{delivery.get('sj_number', delivery['id'])}",
+                before={"id": delivery["id"]},
+                after={"r2_reversal": r2_reverse, "soft_cancelled": True},
+            )
+            return {
+                "deleted": False,
+                "soft_cancelled": True,
+                "sj_number": delivery.get("sj_number", delivery["id"]),
+                "id": delivery["id"],
+                "r2_reversal": r2_reverse,
+                "blocker": blocker,
+            }
         raise HTTPException(400, blocker)
     sj_number = delivery.get("sj_number", delivery["id"])
     await db.sales_deliveries.delete_one({"id": delivery["id"]})
     await _remove_matching_business_sj_shipment(delivery.get("po_id"), delivery)
-    await _write_audit(action="sales.delivery.delete", actor=user, target_email=f"delivery:{sj_number}",
-                       before={"sj_number": sj_number, "id": delivery["id"]}, after={"deleted": True})
-    return {"deleted": True, "sj_number": sj_number, "id": delivery["id"]}
+    await _write_audit(
+        action="sales.delivery.delete",
+        actor=user,
+        target_email=f"delivery:{sj_number}",
+        before={"sj_number": sj_number, "id": delivery["id"]},
+        after={"deleted": True, "r2_reversal": r2_reverse},
+    )
+    return {
+        "deleted": True,
+        "sj_number": sj_number,
+        "id": delivery["id"],
+        "r2_reversal": r2_reverse,
+    }
 
 
 @api_router.post("/sales-deliveries-bulk/delete")
@@ -12090,6 +12138,8 @@ async def master_item_opening_balance_post(
 ):
     """Atomically initialize physical stock opening balance for an exact product."""
     await _require_any_perm(user, "current_stock.update", "permissions.manage")
+    from services.r2_go_live import require_legacy_stock_mutation_allowed
+    await require_legacy_stock_mutation_allowed(db)
     from services.product_stock_state import initialize_opening_balance
     res = await initialize_opening_balance(db, item_id, payload, user=user)
     return res
@@ -12102,6 +12152,8 @@ async def master_item_opening_balance_correction_post(
     user=Depends(current_user),
 ):
     """HOLDING_TEAM-only: append KOREKSI to set current physical buckets. Does not rewrite SALDO_AWAL."""
+    from services.r2_go_live import require_legacy_stock_mutation_allowed
+    await require_legacy_stock_mutation_allowed(db)
     from services.product_stock_state import correct_opening_balance, require_holding_team
     require_holding_team(user)
     res = await correct_opening_balance(db, item_id, payload or {}, user=user)
@@ -12467,6 +12519,68 @@ async def physical_stock_settings_put(payload: dict = Body(...), user=Depends(cu
     from services.physical_stock_settings import update_physical_stock_settings
     settings = await update_physical_stock_settings(db, payload, user=user)
     return {"settings": settings, "message": "Pengaturan stok fisik berhasil disimpan"}
+
+
+@api_router.get("/r2-go-live/readiness")
+async def r2_go_live_readiness_get(user=Depends(current_user)):
+    """Read-only R2 production readiness. Never mutates."""
+    await _require_any_perm(user, "current_stock.view", "permissions.manage", "org.branches.view")
+    from services.r2_go_live import check_r2_production_readiness
+    return await check_r2_production_readiness(db)
+
+
+@api_router.get("/r2-go-live/delivery-cutover/preview")
+async def r2_delivery_cutover_preview(user=Depends(current_user)):
+    """Preview Belum Terkirim cutover baseline. Read-only."""
+    await _require_any_perm(user, "current_stock.view", "permissions.manage")
+    from services.r2_go_live import preview_delivery_cutover_baseline
+    return await preview_delivery_cutover_baseline(db)
+
+
+@api_router.post("/r2-go-live/delivery-cutover/initialize")
+async def r2_delivery_cutover_initialize(
+    payload: dict = Body(default={}),
+    user=Depends(current_user),
+):
+    """Persist Belum Terkirim cutover baseline (idempotent). Local/go-live tooling."""
+    await _require_any_perm(user, "current_stock.update", "permissions.manage")
+    from services.r2_go_live import initialize_delivery_cutover_baseline
+    force = bool((payload or {}).get("force"))
+    return await initialize_delivery_cutover_baseline(db, actor=user, force=force)
+
+
+@api_router.get("/r2-go-live/opening-cutover/dry-run")
+async def r2_opening_cutover_dry_run(
+    warehouse_id: Optional[str] = None,
+    user=Depends(current_user),
+):
+    """Dry-run legacy product_stock_state → R2 OPENING_BALANCE. No writes."""
+    await _require_any_perm(user, "current_stock.view", "permissions.manage")
+    from services.r2_go_live import OpeningCutoverError, dry_run_legacy_to_r2_opening
+    try:
+        return await dry_run_legacy_to_r2_opening(db, warehouse_id=warehouse_id)
+    except OpeningCutoverError as exc:
+        raise HTTPException(exc.status_code, str(exc)) from exc
+
+
+@api_router.get("/r2-go-live/holding-team-permissions/preview")
+async def r2_holding_team_permissions_preview(user=Depends(current_user)):
+    """Preview HOLDING_TEAM package permission top-up. Read-only."""
+    await _require_any_perm(user, "permissions.manage", "current_stock.view")
+    from services.r2_go_live import preview_holding_team_permission_top_up
+    return await preview_holding_team_permission_top_up(db)
+
+
+@api_router.post("/r2-go-live/holding-team-permissions/top-up")
+async def r2_holding_team_permissions_top_up(
+    payload: dict = Body(default={}),
+    user=Depends(current_user),
+):
+    """Idempotent HOLDING_TEAM package top-up. Default dry-run; apply=true to write."""
+    await _require_any_perm(user, "permissions.manage")
+    from services.r2_go_live import apply_holding_team_permission_top_up
+    apply = bool((payload or {}).get("apply"))
+    return await apply_holding_team_permission_top_up(db, apply=apply, actor=user)
 
 
 @api_router.get("/settings/design-cetakan")
@@ -13197,6 +13311,8 @@ async def current_stock_update(
     user=Depends(current_user),
 ):
     """HOLDING_TEAM-only append-only correction of total physical stock."""
+    from services.r2_go_live import require_legacy_stock_mutation_allowed
+    await require_legacy_stock_mutation_allowed(db)
     from services.product_stock_state import (
         correct_opening_balance,
         get_product_stock_state,
@@ -13265,6 +13381,8 @@ async def stock_opname_apply(
     payload: StockOpnamePayload,
     user=Depends(current_user),
 ):
+    from services.r2_go_live import require_legacy_stock_mutation_allowed
+    await require_legacy_stock_mutation_allowed(db)
     from services.product_stock_state import require_physical_stock_correction_access
     require_physical_stock_correction_access(
         user,
@@ -13360,6 +13478,8 @@ async def stock_opname_import_apply(
     payload: StockOpnameImportApply,
     user=Depends(current_user),
 ):
+    from services.r2_go_live import require_legacy_stock_mutation_allowed
+    await require_legacy_stock_mutation_allowed(db)
     from services.product_stock_state import require_physical_stock_correction_access
     require_physical_stock_correction_access(
         user,

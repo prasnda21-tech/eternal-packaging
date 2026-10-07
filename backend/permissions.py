@@ -815,6 +815,7 @@ ROLE_DEFAULT_PERMISSIONS = {
         "purchase_receipts.receive",
         "purchase_hpp.view",
         "master_items.view",
+        "master_items.manage",
         "org.branches.view",
         "org.branches.manage",
         "org.warehouses.view",
