@@ -166,6 +166,27 @@ describe("Public Catalog Settings Phase B", () => {
   });
 });
 
+describe("Public Catalog Settings drawer focus hygiene", () => {
+  test("initial focus keys use drawer identity, not full draft objects", () => {
+    expect(pageSrc).toMatch(/const anyDrawerOpen = Boolean/);
+    expect(pageSrc).toMatch(/const groupDrawerKey = groupEditor\?\.pricing_group_id/);
+    expect(pageSrc).toMatch(/const variantDrawerKey = variantEditor/);
+    expect(pageSrc).toMatch(/const galleryDrawerKey = galleryEditor/);
+    expect(pageSrc).toMatch(/const categoryDrawerKey = editor \?/);
+    expect(pageSrc).toMatch(/\[anyDrawerOpen\]/);
+    expect(pageSrc).toMatch(/\[groupDrawerKey\]/);
+    expect(pageSrc).not.toMatch(
+      /groupCloseRef\.current\?\.focus\?\(\);\s*\n\s*if \(variantEditor\)/s
+    );
+    expect(pageSrc).not.toMatch(
+      /\}, \[editor, groupEditor, variantEditor, galleryEditor\]\);/
+    );
+    expect(pageSrc).toMatch(
+      /if \(current && current\.pricing_group_id === gid\) return current;/
+    );
+  });
+});
+
 describe("Public Catalog Settings Phase C", () => {
   test("Varian and Galeri nav appear with Phase A/B sections", () => {
     expect(pageSrc).toMatch(/pcs-nav-varian/);
