@@ -118,15 +118,26 @@ describe("Faktur Penjualan selectable header filters", () => {
     });
   };
 
-  test("no free-text/amount header inputs; date/status/payment are selectable", async () => {
+  const lastParams = () => api.listSalesInvoices.mock.calls.at(-1)[0];
+
+  test("one Status funnel keeps independent faktur/posting filters and payment separate", async () => {
     await renderPage();
     expect(container.querySelector('[data-testid="fp-th-filter-date"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="fp-th-filter-financial"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="fp-th-filter-status"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="fp-th-filter-payment"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="fp-th-filter-financial"]')).toBeNull();
+    expect(container.querySelector('[data-testid="fp-th-filter-accounting"]')).toBeNull();
     expect(container.querySelector('[data-testid="filter-invoice-party"]')).toBeNull();
     expect(container.querySelector('[data-testid="filter-invoice-total-min"]')).toBeNull();
     expect(container.querySelector('thead input[type="text"]')).toBeNull();
     expect(container.querySelector('thead input[type="date"]')).toBeNull();
+
+    expect(container.querySelector('[data-testid="fp-th-filter-status-financial"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="fp-th-filter-status-accounting"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="fp-th-filter-status-financial-option-draft"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="fp-th-filter-status-financial-option-finalized"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="fp-th-filter-status-accounting-option-not_posted"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="fp-th-filter-status-accounting-option-posted"]')).toBeTruthy();
 
     await act(async () => {
       container.querySelector('[data-testid="fp-th-filter-date-option-today"]').click();
@@ -134,19 +145,40 @@ describe("Faktur Penjualan selectable header filters", () => {
     await act(async () => {
       await Promise.resolve();
     });
-    let last = api.listSalesInvoices.mock.calls.at(-1)[0];
-    expect(last.date_from).toBe("2026-10-06");
-    expect(last.date_to).toBe("2026-10-06");
-    expect(last.page).toBe(1);
+    expect(lastParams().date_from).toBe("2026-10-06");
+    expect(lastParams().date_to).toBe("2026-10-06");
+    expect(lastParams().page).toBe(1);
 
     await act(async () => {
-      container.querySelector('[data-testid="fp-th-filter-financial-option-draft"]').click();
+      container.querySelector('[data-testid="fp-th-filter-status-financial-option-finalized"]').click();
     });
     await act(async () => {
       await Promise.resolve();
     });
-    last = api.listSalesInvoices.mock.calls.at(-1)[0];
-    expect(last.financial_status).toBe("draft");
+    expect(lastParams().financial_status).toBe("finalized");
+    expect(lastParams().accounting_status).toBeUndefined();
+    expect(lastParams().page).toBe(1);
+    expect(container.querySelector('[data-testid="fp-th-filter-status-active-dot"]')).toBeTruthy();
+
+    await act(async () => {
+      container.querySelector('[data-testid="fp-th-filter-status-accounting-option-not_posted"]').click();
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(lastParams().financial_status).toBe("finalized");
+    expect(lastParams().accounting_status).toBe("not_posted");
+    expect(lastParams().page).toBe(1);
+    expect(container.querySelectorAll('[data-testid="fp-th-filter-status-active-dot"]').length).toBe(1);
+    // Reopen/restore: both subgroup radios remain selected from controlled filter state.
+    expect(
+      container.querySelector('[data-testid="fp-th-filter-status-financial-option-finalized"]')
+        .getAttribute("aria-selected"),
+    ).toBe("true");
+    expect(
+      container.querySelector('[data-testid="fp-th-filter-status-accounting-option-not_posted"]')
+        .getAttribute("aria-selected"),
+    ).toBe("true");
 
     await act(async () => {
       container.querySelector('[data-testid="fp-th-filter-payment-option-LUNAS"]').click();
@@ -154,8 +186,21 @@ describe("Faktur Penjualan selectable header filters", () => {
     await act(async () => {
       await Promise.resolve();
     });
-    last = api.listSalesInvoices.mock.calls.at(-1)[0];
-    expect(last.payment_status).toBe("LUNAS");
+    expect(lastParams().payment_status).toBe("LUNAS");
+    expect(lastParams().financial_status).toBe("finalized");
+    expect(lastParams().accounting_status).toBe("not_posted");
+
+    await act(async () => {
+      container.querySelector('[data-testid="fp-th-filter-status-clear"]').click();
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(lastParams().financial_status).toBeUndefined();
+    expect(lastParams().accounting_status).toBeUndefined();
+    expect(lastParams().payment_status).toBe("LUNAS");
+    expect(lastParams().page).toBe(1);
+    expect(container.querySelector('[data-testid="fp-th-filter-status-active-dot"]')).toBeNull();
 
     const cancelledTab = container.querySelector('[data-testid="tab-faktur-dibatalkan"]');
     await act(async () => {
@@ -164,7 +209,7 @@ describe("Faktur Penjualan selectable header filters", () => {
     await act(async () => {
       await Promise.resolve();
     });
-    expect(api.listSalesInvoices.mock.calls.at(-1)[0].scope).toBe("cancelled");
+    expect(lastParams().scope).toBe("cancelled");
     expect(cancelledTab.getAttribute("aria-selected")).toBe("true");
 
     await act(async () => {
@@ -173,9 +218,10 @@ describe("Faktur Penjualan selectable header filters", () => {
     await act(async () => {
       await Promise.resolve();
     });
-    last = api.listSalesInvoices.mock.calls.at(-1)[0];
+    const last = lastParams();
     expect(last.date_from).toBeUndefined();
     expect(last.financial_status).toBeUndefined();
+    expect(last.accounting_status).toBeUndefined();
     expect(last.payment_status).toBeUndefined();
     expect(last.q).toBeUndefined();
     expect(last.scope).toBe("cancelled");

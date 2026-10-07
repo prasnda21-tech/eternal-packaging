@@ -1394,9 +1394,7 @@ body .sd-density.penjualan-page .fp-detail textarea:not(:disabled):not([readonly
 
 .fp-invoice-page .fp-th-status-filters{
   display:flex;
-  flex-wrap:wrap;
   align-items:center;
-  gap:8px 10px;
   min-width:0;
 }
 .sd-density .fp-invoice-toolbar{flex-wrap:wrap}
