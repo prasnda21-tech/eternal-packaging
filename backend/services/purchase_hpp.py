@@ -304,7 +304,8 @@ async def _catalog(db) -> List[dict]:
     ).to_list(20000)
 
 
-async def _build_item_models(db) -> Dict[str, dict]:
+async def _build_item_models(db, *, branch_id: Optional[str] = None) -> Dict[str, dict]:
+    """Build HPP rows. Stock Fisik is branch-scoped; HPP cost stays company-wide."""
     masters = await _catalog(db)
     states = await db.product_stock_state.find({}, {"_id": 0, "master_item_id": 1, "base_uom": 1}).to_list(20000)
     unit_by_mid = {
@@ -315,6 +316,7 @@ async def _build_item_models(db) -> Dict[str, dict]:
     physical = await operational_physical_qty_by_item(
         db,
         [str(master.get("id") or "") for master in masters if master.get("id")],
+        branch_id=branch_id,
     )
     cutover = await get_active_cutover(db)
     baselines: List[dict] = []
@@ -507,8 +509,9 @@ async def list_purchase_hpp(
     status: str = "",
     date_from: str = "",
     date_to: str = "",
+    branch_id: Optional[str] = None,
 ) -> dict:
-    models = await _build_item_models(db)
+    models = await _build_item_models(db, branch_id=branch_id)
     rows = [_public_row(model) for model in models.values() if _matches(
         model, q=q, supplier=supplier, status=status, date_from=date_from, date_to=date_to,
     )]
@@ -518,18 +521,29 @@ async def list_purchase_hpp(
         for model in models.values()
         if str(model.get("latest_supplier") or "").strip()
     })
-    return {"rows": rows, "total": len(rows), "suppliers": suppliers}
+    return {
+        "rows": rows,
+        "total": len(rows),
+        "suppliers": suppliers,
+        "hpp_cost_scope": "COMPANY_WIDE",
+        "stock_branch_id": str(branch_id or "").strip() or None,
+    }
 
 
-async def get_purchase_hpp_item(db, master_item_id: str) -> dict:
+async def get_purchase_hpp_item(
+    db, master_item_id: str, *, branch_id: Optional[str] = None,
+) -> dict:
     mid = str(master_item_id or "").strip()
     if not mid:
         raise HTTPException(400, {"code": "MISSING_MASTER_ITEM_ID", "message": "Item tidak punya ID master yang stabil."})
-    models = await _build_item_models(db)
+    models = await _build_item_models(db, branch_id=branch_id)
     model = models.get(mid)
     if not model:
         raise HTTPException(404, {"code": "NOT_FOUND", "message": "Barang tidak ditemukan pada HPP Pembelian."})
-    return _public_row(model, include_history=True)
+    row = _public_row(model, include_history=True)
+    row["hpp_cost_scope"] = "COMPANY_WIDE"
+    row["stock_branch_id"] = str(branch_id or "").strip() or None
+    return row
 
 
 def export_xlsx(rows: List[dict]) -> bytes:

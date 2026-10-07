@@ -14,6 +14,8 @@ from services.branch_access import (  # noqa: E402
     SCOPE_ALL,
     SCOPE_ASSIGNED,
     SCOPE_YGY_FALLBACK,
+    authorize_stock_location,
+    can_switch_branches,
     require_branch_access,
     require_warehouse_access,
     resolve_branch_access,
@@ -168,3 +170,20 @@ async def test_direct_api_cross_branch_tamper_denied(db):
     with pytest.raises(HTTPException) as exc3:
         await require_warehouse_access(db, user, "wh-smg", **PROD)
     assert exc3.value.status_code == 403
+
+
+async def test_authorize_stock_location_and_can_switch(db):
+    holding = {"id": "h1", "role": "holding_team"}
+    access = await resolve_branch_access(db, holding, **PROD)
+    assert can_switch_branches(access) is True
+    await authorize_stock_location(
+        db, holding, branch_id="br-smg", warehouse_id="wh-smg", **PROD,
+    )
+    ygy = {"id": "u1", "role": "sales", "branch_ids": ["br-ygy"]}
+    access_ygy = await resolve_branch_access(db, ygy, **PROD)
+    assert can_switch_branches(access_ygy) is False
+    with pytest.raises(HTTPException) as exc:
+        await authorize_stock_location(
+            db, ygy, warehouse_id="wh-smg", require_warehouse=True, **PROD,
+        )
+    assert exc.value.status_code == 403

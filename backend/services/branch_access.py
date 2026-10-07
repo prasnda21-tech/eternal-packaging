@@ -10,6 +10,13 @@ Scopes:
   migration-safe; does not mutate the user document)
 
 Backend authorization is authoritative. Frontend filters are convenience only.
+
+Enterprise limitation (this Purchasing/Inventory recovery scope):
+Branch authorization here covers Purchasing stock mutations + Inventory/R2/HPP
+display scope (physical stock, GR location, purchase return location, Stock Saat
+Ini, Stock Opname, Nilai Persediaan qty, HPP Pembelian stock context, Cabang &
+Gudang). It does NOT claim full Sales / Production / Delivery / Payroll
+enterprise branch isolation.
 """
 from __future__ import annotations
 
@@ -236,6 +243,57 @@ async def filter_warehouses_for_user(
         return list(warehouses)
     allowed = set(access.get("branch_ids") or [])
     return [row for row in warehouses if str(row.get("branch_id") or "") in allowed]
+
+
+async def authorize_stock_location(
+    db,
+    user: Optional[dict],
+    *,
+    branch_id: Optional[str] = None,
+    warehouse_id: Optional[str] = None,
+    require_warehouse: bool = False,
+    app_env: Optional[str] = None,
+    mongo_url: Optional[str] = None,
+) -> dict:
+    """Authorize optional branch/warehouse query or mutation payload.
+
+    If warehouse_id is set, warehouse must belong to an authorized branch.
+    If only branch_id is set, that branch must be authorized.
+    If neither is set and require_warehouse is False, resolve default YGY catalog branch.
+    """
+    wid = str(warehouse_id or "").strip()
+    bid = str(branch_id or "").strip()
+    if wid:
+        return await require_warehouse_access(
+            db,
+            user,
+            wid,
+            expected_branch_id=bid or None,
+            app_env=app_env,
+            mongo_url=mongo_url,
+        )
+    if bid:
+        access = await require_branch_access(
+            db, user, bid, app_env=app_env, mongo_url=mongo_url,
+        )
+        return {"access": access, "warehouse": None, "branch_id": bid}
+    if require_warehouse:
+        raise HTTPException(400, "warehouse_id wajib diisi")
+    resolved = await resolve_stock_catalog_branch_id(
+        db, user, None, app_env=app_env, mongo_url=mongo_url,
+    )
+    return {
+        "access": resolved.get("access"),
+        "warehouse": None,
+        "branch_id": (resolved.get("branch") or {}).get("id"),
+        "branch": resolved.get("branch"),
+        "defaulted": True,
+    }
+
+
+def can_switch_branches(access: Optional[dict]) -> bool:
+    """True when UI may show a multi-branch selector (HOLDING / local unrestricted)."""
+    return str((access or {}).get("scope") or "") == SCOPE_ALL
 
 
 async def resolve_stock_catalog_branch_id(

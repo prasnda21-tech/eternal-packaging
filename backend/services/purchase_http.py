@@ -208,6 +208,7 @@ def register_purchase_routes(api_router, *, get_db, current_user, require_perm, 
             q=q,
             purchase_order_id=purchase_order_id,
             include_cancelled=include_cancelled,
+            user=user,
         )
         return {"receipts": rows, "count": len(rows)}
 
@@ -219,7 +220,7 @@ def register_purchase_routes(api_router, *, get_db, current_user, require_perm, 
     @api_router.get("/purchase-goods-receipts/{receipt_id}")
     async def get_po_goods_receipt_endpoint(receipt_id: str, user=Depends(current_user)):
         await require_any_perm(user, "purchase_receipts.view", "purchase_orders.view", "purchase_invoices.create")
-        return {"receipt": await get_purchase_goods_receipt(get_db(), receipt_id)}
+        return {"receipt": await get_purchase_goods_receipt(get_db(), receipt_id, user=user)}
 
     @api_router.post("/purchase-goods-receipts")
     async def create_po_goods_receipt_endpoint(payload: LoosePayload, user=Depends(current_user)):
@@ -240,13 +241,14 @@ def register_purchase_routes(api_router, *, get_db, current_user, require_perm, 
             q=q,
             purchase_order_id=purchase_order_id,
             include_cancelled=include_cancelled,
+            user=user,
         )
         return {"returns": rows, "count": len(rows)}
 
     @api_router.get("/purchase-returns/{return_id}")
     async def get_purchase_return_endpoint(return_id: str, user=Depends(current_user)):
         await require_any_perm(user, "purchase_receipts.view", "purchase_orders.view")
-        return {"return": await get_purchase_return(get_db(), return_id)}
+        return {"return": await get_purchase_return(get_db(), return_id, user=user)}
 
     @api_router.post("/purchase-returns")
     async def create_purchase_return_endpoint(payload: LoosePayload, user=Depends(current_user)):
@@ -755,17 +757,29 @@ def register_purchase_routes(api_router, *, get_db, current_user, require_perm, 
         status: Optional[str] = None,
         date_from: Optional[str] = None,
         date_to: Optional[str] = None,
+        branch_id: Optional[str] = None,
         user=Depends(require_perm("purchase_hpp.view")),
     ):
+        """HPP is company-wide; Stock Fisik column is for the effective branch only."""
+        from services.branch_access import can_switch_branches, resolve_stock_catalog_branch_id
         from services.purchase_hpp import list_purchase_hpp
-        return await list_purchase_hpp(
+
+        resolved = await resolve_stock_catalog_branch_id(get_db(), user, branch_id)
+        effective_branch_id = (resolved.get("branch") or {}).get("id")
+        payload = await list_purchase_hpp(
             get_db(),
             q=q or "",
             supplier=supplier or "",
             status=status or "",
             date_from=date_from or "",
             date_to=date_to or "",
+            branch_id=effective_branch_id,
         )
+        payload["effective_branch_id"] = effective_branch_id
+        payload["effective_branch_code"] = (resolved.get("branch") or {}).get("code")
+        payload["branch_scope"] = (resolved.get("access") or {}).get("scope")
+        payload["can_switch_branches"] = can_switch_branches(resolved.get("access"))
+        return payload
 
     @api_router.get("/pembelian/hpp/export")
     async def export_purchase_hpp_endpoint(
@@ -774,14 +788,18 @@ def register_purchase_routes(api_router, *, get_db, current_user, require_perm, 
         status: Optional[str] = None,
         date_from: Optional[str] = None,
         date_to: Optional[str] = None,
+        branch_id: Optional[str] = None,
         user=Depends(require_perm("purchase_hpp.view")),
     ):
         from datetime import datetime, timezone
 
         from fastapi.responses import Response as FastAPIResponse
 
+        from services.branch_access import resolve_stock_catalog_branch_id
         from services.purchase_hpp import export_xlsx, list_purchase_hpp
 
+        resolved = await resolve_stock_catalog_branch_id(get_db(), user, branch_id)
+        effective_branch_id = (resolved.get("branch") or {}).get("id")
         listing = await list_purchase_hpp(
             get_db(),
             q=q or "",
@@ -789,6 +807,7 @@ def register_purchase_routes(api_router, *, get_db, current_user, require_perm, 
             status=status or "",
             date_from=date_from or "",
             date_to=date_to or "",
+            branch_id=effective_branch_id,
         )
         filename = f"hpp-pembelian-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M')}.xlsx"
         return FastAPIResponse(
@@ -800,7 +819,19 @@ def register_purchase_routes(api_router, *, get_db, current_user, require_perm, 
     @api_router.get("/pembelian/hpp/{master_item_id}")
     async def get_purchase_hpp_item_endpoint(
         master_item_id: str,
+        branch_id: Optional[str] = None,
         user=Depends(require_perm("purchase_hpp.view")),
     ):
+        from services.branch_access import can_switch_branches, resolve_stock_catalog_branch_id
         from services.purchase_hpp import get_purchase_hpp_item
-        return await get_purchase_hpp_item(get_db(), master_item_id)
+
+        resolved = await resolve_stock_catalog_branch_id(get_db(), user, branch_id)
+        effective_branch_id = (resolved.get("branch") or {}).get("id")
+        row = await get_purchase_hpp_item(
+            get_db(), master_item_id, branch_id=effective_branch_id,
+        )
+        row["effective_branch_id"] = effective_branch_id
+        row["effective_branch_code"] = (resolved.get("branch") or {}).get("code")
+        row["branch_scope"] = (resolved.get("access") or {}).get("scope")
+        row["can_switch_branches"] = can_switch_branches(resolved.get("access"))
+        return row

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertCircle, Download, RefreshCw, Search, X } from "lucide-react";
 import api from "../lib/api";
 import { friendlyLoadError } from "../lib/purchaseUi";
+import BranchScopeSelect from "../components/BranchScopeSelect";
 import "./purchasePages.css";
 
 const STATUS_FILTERS = [
@@ -117,6 +118,9 @@ function MoverList({ items, emptyLabel, testId }) {
 export default function HppPembelian() {
   const [rows, setRows] = useState([]);
   const [suppliers, setSuppliers] = useState([]);
+  const [branches, setBranches] = useState([]);
+  const [branchId, setBranchId] = useState("");
+  const [branchMeta, setBranchMeta] = useState(null);
   const [q, setQ] = useState("");
   const [supplier, setSupplier] = useState("");
   const [status, setStatus] = useState("");
@@ -130,26 +134,47 @@ export default function HppPembelian() {
   const [selectedId, setSelectedId] = useState("");
   const [drawerOpen, setDrawerOpen] = useState(false);
 
+  useEffect(() => {
+    let cancelled = false;
+    api.branches()
+      .then((res) => {
+        if (!cancelled) setBranches(res.items || []);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
   const load = useCallback(async () => {
     setLoading(true);
     setErr("");
     try {
-      const res = await api.purchaseHpp({
+      const params = {
         q,
         supplier,
         status,
         date_from: dateFrom,
         date_to: dateTo,
-      });
+      };
+      if (branchId) params.branch_id = branchId;
+      const res = await api.purchaseHpp(params);
       setRows(res.rows || []);
       setSuppliers(res.suppliers || []);
+      setBranchMeta({
+        effective_branch_id: res.effective_branch_id,
+        effective_branch_code: res.effective_branch_code,
+        can_switch_branches: res.can_switch_branches,
+        hpp_cost_scope: res.hpp_cost_scope,
+      });
+      if (!branchId && res?.effective_branch_id) {
+        setBranchId(res.effective_branch_id);
+      }
     } catch (ex) {
       setErr(friendlyLoadError(ex, "Tidak dapat memuat HPP Pembelian."));
       setRows([]);
     } finally {
       setLoading(false);
     }
-  }, [q, supplier, status, dateFrom, dateTo]);
+  }, [q, supplier, status, dateFrom, dateTo, branchId]);
 
   useEffect(() => {
     load();
@@ -173,7 +198,7 @@ export default function HppPembelian() {
     setDetailLoading(true);
     setErr("");
     try {
-      const item = await api.purchaseHppItem(id);
+      const item = await api.purchaseHppItem(id, branchId ? { branch_id: branchId } : {});
       setDetail(item);
     } catch (ex) {
       setErr(friendlyLoadError(ex, "Tidak dapat memuat detail HPP barang."));
@@ -188,13 +213,15 @@ export default function HppPembelian() {
     setExporting(true);
     setErr("");
     try {
-      const blob = await api.purchaseHppExport({
+      const params = {
         q,
         supplier,
         status,
         date_from: dateFrom,
         date_to: dateTo,
-      });
+      };
+      if (branchId) params.branch_id = branchId;
+      const blob = await api.purchaseHppExport(params);
       const url = URL.createObjectURL(new Blob([blob], {
         type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
       }));
@@ -219,8 +246,8 @@ export default function HppPembelian() {
           <p className="eyebrow">Pembelian</p>
           <h1 data-testid="hpp-pembelian-title">HPP Pembelian</h1>
           <p className="subhead">
-            Pantau HPP persediaan dari penerimaan barang (rata-rata tertimbang).
-            Bukan jurnal, bukan HPP penjualan, bukan harga customer.
+            HPP company-wide dari penerimaan barang (rata-rata tertimbang).
+            Stock Fisik mengikuti cabang terpilih. Bukan jurnal, bukan HPP penjualan, bukan harga customer.
           </p>
         </div>
         <div className="stock-heading-actions purchase-toolbar-actions">
@@ -251,6 +278,14 @@ export default function HppPembelian() {
       </div>
 
       <div className="purchase-search-bar is-toolbar hpp-filter-bar" data-testid="hpp-pembelian-filters">
+        <BranchScopeSelect
+          branches={branches}
+          value={branchId || branchMeta?.effective_branch_id || ""}
+          canSwitch={Boolean(branchMeta?.can_switch_branches)}
+          effectiveCode={branchMeta?.effective_branch_code}
+          onChange={setBranchId}
+          testId="hpp-branch-select"
+        />
         <form className="search-inline" onSubmit={(e) => e.preventDefault()}>
           <Search size={14} />
           <input

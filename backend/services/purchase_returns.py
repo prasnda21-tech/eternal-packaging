@@ -268,6 +268,15 @@ async def create_purchase_return(db, payload: Dict[str, Any], user: dict) -> dic
                 )
             branch_id = str(source.get("branch_id") or receipt.get("branch_id"))
             warehouse_id = str(source.get("warehouse_id") or receipt.get("warehouse_id"))
+            # Location lineage is authoritative from GR; deny foreign branch/warehouse.
+            from services.branch_access import authorize_stock_location
+            await authorize_stock_location(
+                db,
+                user,
+                branch_id=branch_id or None,
+                warehouse_id=warehouse_id or None,
+                require_warehouse=bool(warehouse_id),
+            )
             if receipt_id not in receipt_ids:
                 receipt_ids.append(receipt_id)
             calculated.append({
@@ -336,12 +345,38 @@ async def create_purchase_return(db, payload: Dict[str, Any], user: dict) -> dic
         raise HTTPException(409, "Gagal menyimpan nomor retur pembelian.")
 
 
-async def get_purchase_return(db, return_id: str) -> dict:
+async def _authorize_return_locations(db, user: Optional[dict], doc: dict) -> None:
+    """Return uses authoritative GR/R2 location; deny foreign branch/warehouse."""
+    if user is None:
+        return
+    from services.branch_access import authorize_stock_location
+
+    seen = set()
+    for line in doc.get("lines") or []:
+        branch_id = str(line.get("branch_id") or doc.get("branch_id") or "").strip()
+        warehouse_id = str(line.get("warehouse_id") or doc.get("warehouse_id") or "").strip()
+        key = (branch_id, warehouse_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        if not branch_id and not warehouse_id:
+            continue
+        await authorize_stock_location(
+            db,
+            user,
+            branch_id=branch_id or None,
+            warehouse_id=warehouse_id or None,
+            require_warehouse=bool(warehouse_id),
+        )
+
+
+async def get_purchase_return(db, return_id: str, user: Optional[dict] = None) -> dict:
     doc = await db[COLLECTION].find_one({"id": str(return_id)}, {"_id": 0})
     if not doc:
         doc = await db[COLLECTION].find_one({"return_number": str(return_id)}, {"_id": 0})
     if not doc:
         raise HTTPException(404, "Retur pembelian tidak ditemukan.")
+    await _authorize_return_locations(db, user, doc)
     return doc
 
 
@@ -350,6 +385,7 @@ async def list_purchase_returns(
     q: Optional[str] = None,
     purchase_order_id: Optional[str] = None,
     include_cancelled: bool = False,
+    user: Optional[dict] = None,
 ) -> List[dict]:
     filters: Dict[str, Any] = {}
     if purchase_order_id:
@@ -362,7 +398,26 @@ async def list_purchase_returns(
             {"supplier": {"$regex": needle, "$options": "i"}},
         ]
     query = filters if include_cancelled else with_active_filter(filters)
-    return await db[COLLECTION].find(query, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    rows = await db[COLLECTION].find(query, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    if user is not None:
+        from services.branch_access import SCOPE_ALL, resolve_branch_access
+
+        access = await resolve_branch_access(db, user)
+        if access.get("scope") != SCOPE_ALL:
+            allowed = set(access.get("branch_ids") or [])
+
+            def _row_allowed(row: dict) -> bool:
+                for line in row.get("lines") or []:
+                    bid = str(line.get("branch_id") or "").strip()
+                    if bid and bid not in allowed:
+                        return False
+                header = str(row.get("branch_id") or "").strip()
+                if header and header not in allowed:
+                    return False
+                return True
+
+            rows = [row for row in rows if _row_allowed(row)]
+    return rows
 
 
 def _cutover_lease_busy(exc: HTTPException) -> bool:
@@ -509,8 +564,10 @@ async def confirm_purchase_return(db, return_id: str, payload: Optional[Dict[str
     payload = payload or {}
     if str(payload.get("warehouse_id") or "").strip():
         raise HTTPException(400, "Gudang retur mengikuti gudang penerimaan dan tidak dapat dipilih ulang.")
+    if str(payload.get("branch_id") or "").strip():
+        raise HTTPException(400, "Cabang retur mengikuti penerimaan dan tidak dapat dipilih ulang.")
     await ensure_indexes(db)
-    doc = await get_purchase_return(db, return_id)
+    doc = await get_purchase_return(db, return_id, user=user)
     confirmation_key = str(payload.get("idempotency_key") or payload.get("confirmation_key") or "").strip()
     incoming = payload.get("lines") or payload.get("line_items")
     if incoming and _line_fingerprint(incoming) != _line_fingerprint(doc.get("lines") or []):
@@ -619,7 +676,7 @@ async def cancel_purchase_return(db, return_id: str, user: dict, reason: str = "
     from services.hpp_cutover import ensure_indexes, finalize_purchase_return_valuation_reversal
 
     await ensure_indexes(db)
-    doc = await get_purchase_return(db, return_id)
+    doc = await get_purchase_return(db, return_id, user=user)
     if doc.get("status") == STATUS_REVERSED or (doc.get("status") == STATUS_CANCELLED and is_cancelled(doc)):
         if doc.get("status") == STATUS_REVERSED:
             await finalize_purchase_return_valuation_reversal(db, doc, user)

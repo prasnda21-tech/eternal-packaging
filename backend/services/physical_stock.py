@@ -2113,17 +2113,23 @@ async def _r2_confirmed_delivery_qty(db, master_ids: List[str]) -> Dict[str, flo
 async def operational_physical_qty_by_item(
     db,
     master_ids: Optional[List[str]] = None,
+    *,
+    branch_id: Optional[str] = None,
 ) -> Dict[str, float]:
-    """Sum R2 physical_qty on operational Yogyakarta warehouses. Read only.
+    """Sum R2 physical_qty on operational warehouses for ONE branch. Read only.
 
-    Missing balances are omitted. Callers treat a missing item as zero.
-    This is the same warehouse set Stock Saat Ini aggregates.
+    Default branch is Yogyakarta (resolve_operational_branch) when branch_id omitted.
+    Never aggregates multiple branches. Missing balances are omitted (qty 0).
     """
     all_branches = await db[BRANCHES_COLLECTION].find(
         {},
         {"_id": 0, "id": 1, "code": 1, "name": 1},
     ).to_list(500)
-    operational = resolve_operational_branch(all_branches)
+    requested = str(branch_id or "").strip()
+    if requested:
+        operational = next((row for row in all_branches if str(row.get("id") or "") == requested), None)
+    else:
+        operational = resolve_operational_branch(all_branches)
     if not operational:
         return {}
     warehouses = await db[WAREHOUSES_COLLECTION].find(

@@ -43,6 +43,14 @@ describe("Nilai Persediaan read-only page", () => {
     expect(source).not.toMatch(/current_stock\.(view|export)/);
   });
 
+  test("exposes branch selector for HOLDING / local admin scope only", () => {
+    expect(source).toMatch(/BranchScopeSelect/);
+    expect(source).toMatch(/inventory-branch-select/);
+    expect(source).toMatch(/can_switch_branches/);
+    expect(source).toMatch(/branch_id/);
+    expect(source).toMatch(/qty cabang × HPP company-wide/);
+  });
+
   test("keeps opening explicit and separates estimate from book value", () => {
     expect(source).not.toMatch(/Atur HPP Awal/);
     expect(source).not.toMatch(/inventoryValuationOpeningPreview/);

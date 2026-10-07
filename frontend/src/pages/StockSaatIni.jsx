@@ -7,6 +7,7 @@ import { formatDate } from "../lib/constants";
 import { fmtQty } from "../components/qtyUi";
 import { useDebouncedLiveSearch, liveSearchTableView } from "../hooks/useDebouncedLiveSearch";
 import { isOperationalWarehouse, openingReady, operationalOpeningWarehouses, preselectedWarehouseId, stockEmptyMessage, warehouseChoices, yogyakartaWarehouses } from "../lib/physicalStockView";
+import BranchScopeSelect from "../components/BranchScopeSelect";
 
 const INLINE_ADJUST_REASON = "Koreksi manual dari Stock Saat Ini";
 
@@ -22,6 +23,7 @@ export default function StockSaatIni() {
   const canAdjust = Boolean(data?.can_adjust_physical_stock);
   const [branches, setBranches] = useState([]);
   const [warehouses, setWarehouses] = useState([]);
+  const [branchId, setBranchId] = useState("");
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
   const { input: qInput, setInput: setQInput, q, flush: doSearch, clear: clearQuery, pending: searchPending } = useDebouncedLiveSearch();
@@ -34,7 +36,7 @@ export default function StockSaatIni() {
   const saveLock = useRef(false);
   const loadSeq = useRef(0);
 
-  useEffect(() => { setPage(1); }, [q]);
+  useEffect(() => { setPage(1); }, [q, branchId]);
 
   useEffect(() => {
     if (!searchPending) return;
@@ -62,13 +64,14 @@ export default function StockSaatIni() {
     setErr("");
     setData((prev) => (prev ? { ...prev, items: [] } : prev));
     try {
-      const d = await api.physicalStockCatalog({
-        q,
-        page,
-        limit: pageSize,
-      });
+      const params = { q, page, limit: pageSize };
+      if (branchId) params.branch_id = branchId;
+      const d = await api.physicalStockCatalog(params);
       if (seq !== loadSeq.current) return;
       setData(d);
+      if (!branchId && d?.effective_branch_id) {
+        setBranchId(d.effective_branch_id);
+      }
     } catch (ex) {
       if (seq !== loadSeq.current) return;
       const det = ex.response?.data?.detail;
@@ -76,7 +79,7 @@ export default function StockSaatIni() {
     } finally {
       if (seq === loadSeq.current) setLoading(false);
     }
-  }, [q, page, pageSize]);
+  }, [q, page, pageSize, branchId]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -86,7 +89,11 @@ export default function StockSaatIni() {
   };
 
   const items = data?.items || [];
-  const adjustWarehouses = yogyakartaWarehouses(branches, warehouses);
+  const effectiveBranchId = branchId || data?.effective_branch_id || "";
+  const canSwitchBranches = Boolean(data?.can_switch_branches);
+  const adjustWarehouses = effectiveBranchId
+    ? warehouseChoices(warehouses, effectiveBranchId).filter((row) => row.active !== false)
+    : yogyakartaWarehouses(branches, warehouses);
   const singleWarehouse = adjustWarehouses.length === 1 ? adjustWarehouses[0] : null;
 
   const beginAdjust = (item) => {
@@ -220,6 +227,19 @@ export default function StockSaatIni() {
 
       <div className="prod-filters" data-testid="stock-filters">
         <div className="prod-filter-row">
+          <BranchScopeSelect
+            branches={branches}
+            value={effectiveBranchId}
+            canSwitch={canSwitchBranches}
+            effectiveCode={data?.effective_branch_code}
+            onChange={(next) => {
+              setBranchId(next);
+              setPage(1);
+              setInlineItemId(null);
+              setAdjustItem(null);
+            }}
+            testId="stock-branch-select"
+          />
           <form className="search-inline" onSubmit={doSearch}>
             <Search size={14} />
             <input

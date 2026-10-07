@@ -233,12 +233,31 @@ async def enrich_goods_receipt(db, doc: dict) -> dict:
     return out
 
 
-async def get_purchase_goods_receipt(db, receipt_id: str) -> dict:
+async def _authorize_receipt_location(db, user: Optional[dict], doc: dict) -> None:
+    """Receiving location is authoritative; deny foreign branch/warehouse."""
+    from services.branch_access import authorize_stock_location
+
+    warehouse_id = str(doc.get("warehouse_id") or "").strip()
+    branch_id = str(doc.get("branch_id") or "").strip()
+    if not warehouse_id and not branch_id:
+        return
+    await authorize_stock_location(
+        db,
+        user,
+        branch_id=branch_id or None,
+        warehouse_id=warehouse_id or None,
+        require_warehouse=bool(warehouse_id),
+    )
+
+
+async def get_purchase_goods_receipt(db, receipt_id: str, user: Optional[dict] = None) -> dict:
     doc = await db[COLLECTION].find_one({"id": str(receipt_id)}, {"_id": 0})
     if not doc:
         doc = await db[COLLECTION].find_one({"receipt_number": str(receipt_id)}, {"_id": 0})
     if not doc:
         raise HTTPException(404, f"Penerimaan Barang '{receipt_id}' tidak ditemukan.")
+    if user is not None:
+        await _authorize_receipt_location(db, user, doc)
     out = await enrich_goods_receipt(db, doc)
     from services.purchase_goods_receipt_posting import attach_goods_receipt_accounting_fields
 
@@ -398,8 +417,10 @@ async def cancel_purchase_goods_receipt(
         if not doc:
             raise HTTPException(404, f"Penerimaan Barang '{receipt_id}' tidak ditemukan.")
 
+        await _authorize_receipt_location(db, user, doc)
+
         if is_cancelled(doc):
-            return await get_purchase_goods_receipt(db, doc["id"])
+            return await get_purchase_goods_receipt(db, doc["id"], user=user)
 
         from services.purchase_goods_receipt_posting import (
             ACCOUNTING_REVERSED,
@@ -733,6 +754,19 @@ async def create_purchase_goods_receipt(db, payload: Dict[str, Any], user: dict)
     if not po_id:
         raise HTTPException(400, "ID Pesanan Pembelian (purchase_order_id) wajib diisi.")
 
+    from services.branch_access import authorize_stock_location
+
+    requested_warehouse_id = str(payload.get("warehouse_id") or "").strip() or None
+    # Authorize selected receiving location before any stock mutation.
+    # Warehouse must belong to an authorized branch for this user.
+    if requested_warehouse_id:
+        await authorize_stock_location(
+            db,
+            user,
+            warehouse_id=requested_warehouse_id,
+            require_warehouse=True,
+        )
+
     async with get_named_lock("purchase_goods_receipt"):
         idem = str(payload.get("idempotency_key") or "").strip()
         if idem:
@@ -752,12 +786,13 @@ async def create_purchase_goods_receipt(db, payload: Dict[str, Any], user: dict)
                     )
                     for line in (existing.get("lines") or [])
                 ]
-                requested_wh = str(payload.get("warehouse_id") or "").strip()
+                requested_wh = requested_warehouse_id or ""
                 same_lines = sorted(existing_lines) == sorted(retry_lines)
                 same_po = str(existing.get("purchase_order_id") or "") == po_id
                 same_wh = (not requested_wh) or requested_wh == str(existing.get("warehouse_id") or "")
                 if not (same_po and same_lines and same_wh):
                     raise HTTPException(409, "Idempotency key sudah digunakan dengan payload yang berbeda")
+                await _authorize_receipt_location(db, user, existing)
                 from services.hpp_cutover import recognize_posted_goods_receipt
                 await recognize_posted_goods_receipt(db, existing, user)
                 out = await enrich_goods_receipt(db, existing)
@@ -832,13 +867,20 @@ async def create_purchase_goods_receipt(db, payload: Dict[str, Any], user: dict)
 
         po_doc = await db.purchase_orders.find_one({"id": preview["purchase_order_id"]}, {"_id": 0})
         doc["physical_stock_snapshot"] = (po_doc or {}).get("physical_stock_snapshot")
+        # If warehouse omitted, resolve_purchase_receipt_warehouse defaults to YGY —
+        # still authorize that default branch before mutating R2.
+        if not requested_warehouse_id:
+            from services.branch_access import require_branch_access, find_branch_by_code
+            ygy = await find_branch_by_code(db, "YGY")
+            if ygy and ygy.get("id"):
+                await require_branch_access(db, user, ygy["id"])
         saved = await _commit_r2_goods_receipt(
             db,
             doc,
             user=user,
             po_number=preview["po_number"],
             existing_count=existing_count,
-            warehouse_id=str(payload.get("warehouse_id") or "").strip() or None,
+            warehouse_id=requested_warehouse_id,
         )
         from services.hpp_cutover import register_baseline_participants, recognize_posted_goods_receipt
         await register_baseline_participants(db, saved)
@@ -855,6 +897,7 @@ async def list_purchase_goods_receipts(
     q: Optional[str] = None,
     purchase_order_id: Optional[str] = None,
     include_cancelled: bool = False,
+    user: Optional[dict] = None,
 ) -> List[dict]:
     filters: Dict[str, Any] = {}
     if purchase_order_id:
@@ -868,6 +911,17 @@ async def list_purchase_goods_receipts(
         ]
     query = filters if include_cancelled else with_active_filter(filters)
     rows = await db[COLLECTION].find(query, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    if user is not None:
+        from services.branch_access import SCOPE_ALL, resolve_branch_access
+
+        access = await resolve_branch_access(db, user)
+        if access.get("scope") != SCOPE_ALL:
+            allowed = set(access.get("branch_ids") or [])
+            rows = [
+                row for row in rows
+                if str(row.get("branch_id") or "") in allowed
+                or not str(row.get("branch_id") or "").strip()
+            ]
     enriched = [await enrich_goods_receipt(db, r) for r in rows]
     from services.purchase_goods_receipt_posting import attach_goods_receipt_accounting_fields
 

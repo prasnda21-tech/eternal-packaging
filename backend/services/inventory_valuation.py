@@ -1,13 +1,16 @@
 """Read-only inventory valuation view over R2 physical stock and canonical HPP.
 
 The view never recalculates HPP and never writes stock, purchasing, pricing,
-or accounting data. Stock Fisik is the Yogyakarta R2 physical balance sum,
-the same quantity Stock Saat Ini displays. product_stock_state is not the
-official quantity.
+or accounting data. Stock Fisik is the R2 physical balance sum for ONE
+selected/effective branch (default YGY). product_stock_state is not the
+official quantity. HPP unit cost remains company-wide — never branch-specific.
 
 Inventory HPP comes only from acquisition cost (PO / Goods Receipt / WMA /
 approved cutover / first-GR bootstrap). Customer Pricing must never become
 inventory HPP fallback.
+
+Scope note: branch qty awareness here is Purchasing/Inventory recovery only;
+it does not claim full Sales/Production/Delivery enterprise isolation.
 """
 from __future__ import annotations
 
@@ -119,8 +122,12 @@ async def _canonical_positions(db) -> tuple[Dict[str, dict], Optional[dict], Opt
     return positions, settings, version
 
 
-async def build_inventory_valuation_rows(db) -> dict:
-    """Build all rows before search/filter/pagination."""
+async def build_inventory_valuation_rows(db, *, branch_id: Optional[str] = None) -> dict:
+    """Build all rows before search/filter/pagination.
+
+    Physical qty is for ONE branch (default operational YGY when omitted).
+    HPP / unit cost remains company-wide — never invent branch-specific HPP.
+    """
     masters = await db.master_items.find(
         {
             "is_active": {"$ne": False},
@@ -149,6 +156,7 @@ async def build_inventory_valuation_rows(db) -> dict:
     physical_by_item = await operational_physical_qty_by_item(
         db,
         [str(master.get("id") or "") for master in masters if master.get("id")],
+        branch_id=branch_id,
     )
 
     rows: List[dict] = []
@@ -326,7 +334,9 @@ def _uncovered_master(master: Optional[dict]) -> tuple:
     return "NOT_COVERED", "Item tidak tercakup dalam daftar Nilai Persediaan.", item_type
 
 
-async def lookup_inventory_valuation_item(db, master_item_id: str) -> dict:
+async def lookup_inventory_valuation_item(
+    db, master_item_id: str, *, branch_id: Optional[str] = None,
+) -> dict:
     """Read one builder row by exact master_item_id.
 
     The row is the object produced by build_inventory_valuation_rows. This
@@ -341,7 +351,7 @@ async def lookup_inventory_valuation_item(db, master_item_id: str) -> dict:
             reason_code="MISSING_MASTER_ITEM_ID",
             reason="Item tidak punya ID master yang stabil.",
         )
-    view = await build_inventory_valuation_rows(db)
+    view = await build_inventory_valuation_rows(db, branch_id=branch_id)
     matches = [
         row for row in view["rows"]
         if str(row.get("master_item_id") or "") == mid

@@ -12343,10 +12343,14 @@ async def master_item_physical_stock_get(
     user=Depends(require_perm("master_items.view")),
 ):
     """Read physical_qty from physical_stock_balances. Does not write."""
+    from services.branch_access import authorize_stock_location
     from services.physical_stock import (
         PhysicalStockNotFoundError,
         PhysicalStockValidationError,
         read_physical_stock,
+    )
+    await authorize_stock_location(
+        db, user, branch_id=branch_id, warehouse_id=warehouse_id,
     )
     try:
         return await read_physical_stock(
@@ -12371,10 +12375,14 @@ async def master_item_physical_mutations_get(
     user=Depends(require_perm("master_items.view")),
 ):
     """Read physical_stock_ledger newest first. Does not write."""
+    from services.branch_access import authorize_stock_location
     from services.physical_stock import (
         PhysicalStockNotFoundError,
         PhysicalStockValidationError,
         list_physical_mutations,
+    )
+    await authorize_stock_location(
+        db, user, branch_id=branch_id, warehouse_id=warehouse_id,
     )
     try:
         return await list_physical_mutations(
@@ -12402,8 +12410,17 @@ async def master_item_physical_opening_balance_post(
 ):
     """Create one R2 OPENING_BALANCE through the physical stock transaction engine."""
     await _require_any_perm(user, "current_stock.update", "permissions.manage")
+    from services.branch_access import authorize_stock_location
     from services.r2_go_live import require_r2_authority_active
     await require_r2_authority_active(db)
+    body = payload or {}
+    await authorize_stock_location(
+        db,
+        user,
+        branch_id=body.get("branch_id"),
+        warehouse_id=body.get("warehouse_id"),
+        require_warehouse=True,
+    )
     from services.physical_stock import (
         PhysicalStockConflictError,
         PhysicalStockNotFoundError,
@@ -12415,7 +12432,7 @@ async def master_item_physical_opening_balance_post(
     if not actor_id:
         raise HTTPException(401, "Aktor tidak dikenal")
     try:
-        return await post_opening_balance(db, item_id, payload or {}, actor_id=actor_id)
+        return await post_opening_balance(db, item_id, body, actor_id=actor_id)
     except PhysicalStockNotFoundError as exc:
         raise HTTPException(404, str(exc)) from exc
     except PhysicalStockValidationError as exc:
@@ -12446,6 +12463,7 @@ async def master_item_physical_adjustment_post(
     user=Depends(current_user),
 ):
     """Correct one warehouse to a target physical qty through an R2 MANUAL_ADJUSTMENT."""
+    from services.branch_access import authorize_stock_location
     from services.r2_go_live import require_r2_authority_active
     await require_r2_authority_active(db)
     from services.product_stock_state import require_physical_stock_correction_access
@@ -12454,6 +12472,14 @@ async def master_item_physical_adjustment_post(
         require_physical_stock_correction_access(
             user, os.environ.get("APP_ENV"), os.environ.get("MONGO_URL"),
         )
+    body = payload or {}
+    await authorize_stock_location(
+        db,
+        user,
+        branch_id=body.get("branch_id"),
+        warehouse_id=body.get("warehouse_id"),
+        require_warehouse=True,
+    )
     from services.physical_stock import (
         InsufficientPhysicalStockError,
         PhysicalStockConflictError,
@@ -12465,7 +12491,7 @@ async def master_item_physical_adjustment_post(
     if not actor_id:
         raise HTTPException(401, "Aktor tidak dikenal")
     try:
-        return await adjust_physical_stock_to_target(db, item_id, payload or {}, actor_id=actor_id)
+        return await adjust_physical_stock_to_target(db, item_id, body, actor_id=actor_id)
     except PhysicalStockValidationError as exc:
         raise HTTPException(400, str(exc)) from exc
     except PhysicalStockConflictError as exc:
@@ -12484,10 +12510,15 @@ async def master_item_physical_opening_balance_get(
     user=Depends(require_perm("master_items.view")),
 ):
     """Read R2 opening-balance status for one item, branch, and warehouse. Does not write."""
+    from services.branch_access import authorize_stock_location
     from services.physical_stock import (
         PhysicalStockNotFoundError,
         PhysicalStockValidationError,
         read_opening_balance,
+    )
+    await authorize_stock_location(
+        db, user, branch_id=branch_id, warehouse_id=warehouse_id,
+        require_warehouse=bool(warehouse_id),
     )
     try:
         return await read_opening_balance(
@@ -12511,6 +12542,11 @@ async def physical_opening_import_template(
 ):
     """Download a prefilled opening-balance workbook. Does not write stock."""
     await _require_any_perm(user, "current_stock.update", "permissions.manage")
+    if warehouse_id:
+        from services.branch_access import authorize_stock_location
+        await authorize_stock_location(
+            db, user, warehouse_id=warehouse_id, require_warehouse=True,
+        )
     from services.physical_opening_import import OpeningImportError, build_template_xlsx
 
     try:
@@ -12578,7 +12614,11 @@ async def physical_stock_catalog_get(
     Post-cutover: R2 balances only. Never mixes write authorities.
     Branch access is enforced; default operational branch is YGY.
     """
-    from services.branch_access import require_warehouse_access, resolve_stock_catalog_branch_id
+    from services.branch_access import (
+        can_switch_branches,
+        require_warehouse_access,
+        resolve_stock_catalog_branch_id,
+    )
     from services.physical_stock import (
         PhysicalStockNotFoundError,
         PhysicalStockValidationError,
@@ -12587,6 +12627,7 @@ async def physical_stock_catalog_get(
     from services.r2_go_live import is_r2_authority_active
     try:
         resolved = await resolve_stock_catalog_branch_id(db, user, branch_id)
+        access = resolved.get("access") or {}
         effective_branch_id = (resolved.get("branch") or {}).get("id")
         if warehouse_id:
             await require_warehouse_access(
@@ -12607,7 +12648,9 @@ async def physical_stock_catalog_get(
         # R2 physical adjust only when R2 authority is active
         result["can_adjust_physical_stock"] = bool(r2_on and _adjustment_allowed(user))
         result["effective_branch_id"] = effective_branch_id
-        result["branch_scope"] = (resolved.get("access") or {}).get("scope")
+        result["effective_branch_code"] = (resolved.get("branch") or {}).get("code")
+        result["branch_scope"] = access.get("scope")
+        result["can_switch_branches"] = can_switch_branches(access)
         return result
     except PhysicalStockNotFoundError as exc:
         raise HTTPException(404, str(exc)) from exc
@@ -13173,12 +13216,27 @@ def _stock_xlsx(rows: list, *, v2: bool = True) -> FastAPIResponse:
 @api_router.get("/inventory-valuation/item")
 async def inventory_valuation_item(
     master_item_id: str = "",
+    branch_id: Optional[str] = None,
     user=Depends(require_perm("inventory_valuation.view")),
 ):
-    """Read one Nilai Persediaan row by exact master_item_id. Does not write."""
+    """Read one Nilai Persediaan row by exact master_item_id. Does not write.
+
+    Qty is branch-scoped; HPP cost remains company-wide.
+    """
+    from services.branch_access import can_switch_branches, resolve_stock_catalog_branch_id
     from services.inventory_valuation import lookup_inventory_valuation_item
 
-    return await lookup_inventory_valuation_item(db, master_item_id)
+    resolved = await resolve_stock_catalog_branch_id(db, user, branch_id)
+    effective_branch_id = (resolved.get("branch") or {}).get("id")
+    payload = await lookup_inventory_valuation_item(
+        db, master_item_id, branch_id=effective_branch_id,
+    )
+    payload["effective_branch_id"] = effective_branch_id
+    payload["effective_branch_code"] = (resolved.get("branch") or {}).get("code")
+    payload["branch_scope"] = (resolved.get("access") or {}).get("scope")
+    payload["can_switch_branches"] = can_switch_branches(resolved.get("access"))
+    payload["hpp_cost_scope"] = "COMPANY_WIDE"
+    return payload
 
 
 @api_router.get("/inventory-valuation")
@@ -13189,15 +13247,23 @@ async def inventory_valuation_list(
     sort_dir: str = "asc",
     page: int = 1,
     page_size: int = 50,
+    branch_id: Optional[str] = None,
     user=Depends(require_perm("inventory_valuation.view")),
 ):
-    """Read-only Stock V2 × canonical moving-average HPP view."""
+    """Read-only Stock V2 × canonical moving-average HPP view.
+
+    Physical qty is for the effective/selected branch only. HPP remains company-wide.
+    Never silently sums all branches.
+    """
+    from services.branch_access import can_switch_branches, resolve_stock_catalog_branch_id
     from services.inventory_valuation import (
         build_inventory_valuation_rows,
         filter_sort_page,
     )
 
-    view = await build_inventory_valuation_rows(db)
+    resolved = await resolve_stock_catalog_branch_id(db, user, branch_id)
+    effective_branch_id = (resolved.get("branch") or {}).get("id")
+    view = await build_inventory_valuation_rows(db, branch_id=effective_branch_id)
     payload = filter_sort_page(
         view["rows"],
         q=q,
@@ -13212,6 +13278,11 @@ async def inventory_valuation_list(
         "method": view["method"],
         "active_version": view["active_version"],
         "cutover_id": view["cutover_id"],
+        "effective_branch_id": effective_branch_id,
+        "effective_branch_code": (resolved.get("branch") or {}).get("code"),
+        "branch_scope": (resolved.get("access") or {}).get("scope"),
+        "can_switch_branches": can_switch_branches(resolved.get("access")),
+        "hpp_cost_scope": "COMPANY_WIDE",
     })
     return payload
 
@@ -13222,16 +13293,20 @@ async def inventory_valuation_export(
     status_filter: str = "all",
     sort_by: str = "name",
     sort_dir: str = "asc",
+    branch_id: Optional[str] = None,
     user=Depends(require_perm("inventory_valuation.export")),
 ):
     """Read-only Excel export; no inventory or HPP data is mutated."""
+    from services.branch_access import resolve_stock_catalog_branch_id
     from services.inventory_valuation import (
         build_inventory_valuation_rows,
         export_xlsx,
         filter_sort_all,
     )
 
-    view = await build_inventory_valuation_rows(db)
+    resolved = await resolve_stock_catalog_branch_id(db, user, branch_id)
+    effective_branch_id = (resolved.get("branch") or {}).get("id")
+    view = await build_inventory_valuation_rows(db, branch_id=effective_branch_id)
     filtered = filter_sort_all(
         view["rows"],
         q=q,
