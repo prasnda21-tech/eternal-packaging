@@ -1,4 +1,4 @@
-"""Explicit unauthenticated HTTP schemas for public Customer Pricing."""
+"""Explicit unauthenticated HTTP schemas for public Customer Pricing / Catalog."""
 from __future__ import annotations
 
 from typing import List, Optional
@@ -12,23 +12,62 @@ class PublicSchema(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class PublicCategory(PublicSchema):
+    id: str
+    name: str
+    slug: str = ""
+    display_order: int = 0
+    image_url: Optional[str] = None
+
+
+class PublicCatalogSettings(PublicSchema):
+    catalog_name: str = ""
+    hero_title: str = ""
+    hero_subtitle: str = ""
+    public_whatsapp_phone: str = ""
+    catalog_enabled: bool = False
+
+
+class PublicCategoryRef(PublicSchema):
+    id: str
+    name: str
+    slug: str = ""
+
+
 class PublicVariantSummary(PublicSchema):
     public_variant_id: str
     display_name: str
     unit: Optional[str] = None
     image_url: Optional[str] = None
+    size: Optional[str] = None
+    color: Optional[str] = None
+    finishing: Optional[str] = None
 
 
 class PublicGroupSummary(PublicSchema):
     public_id: str
+    slug: Optional[str] = None
     name: str
     public_description: Optional[str] = Field(default=None, max_length=280)
     image_url: Optional[str] = None
+    category: Optional[PublicCategoryRef] = None
+    display_order: Optional[int] = None
+    min_unit_price: Optional[float] = None
+    variant_count: Optional[int] = None
+    size_summary: Optional[str] = None
+    search_text: Optional[str] = None
     variants: List[PublicVariantSummary]
 
 
 class PublicGroupsResponse(PublicSchema):
     groups: List[PublicGroupSummary]
+
+
+class PublicCatalogHomeResponse(PublicSchema):
+    settings: PublicCatalogSettings
+    categories: List[PublicCategory]
+    groups: List[PublicGroupSummary]
+    message: Optional[str] = None
 
 
 class PublicTier(PublicSchema):
@@ -37,17 +76,41 @@ class PublicTier(PublicSchema):
     unit_price: float
 
 
+class PublicGalleryImage(PublicSchema):
+    id: str
+    role: str
+    role_label: str
+    display_order: int = 0
+    is_default: bool = False
+    url: str
+
+
 class PublicVariantDetail(PublicVariantSummary):
     minimum_quantity: int
     tiers: List[PublicTier]
+    display_order: Optional[int] = None
+    images: List[PublicGalleryImage] = []
+
+
+class PublicContact(PublicSchema):
+    public_whatsapp_phone: str = ""
 
 
 class PublicGroupDetail(PublicSchema):
     public_id: str
+    slug: Optional[str] = None
     name: str
     public_description: Optional[str] = Field(default=None, max_length=280)
     image_url: Optional[str] = None
+    category: Optional[PublicCategoryRef] = None
+    display_order: Optional[int] = None
+    min_unit_price: Optional[float] = None
+    variant_count: Optional[int] = None
+    size_summary: Optional[str] = None
+    meta_title: Optional[str] = None
+    meta_description: Optional[str] = None
     variants: List[PublicVariantDetail]
+    contact: Optional[PublicContact] = None
 
 
 class PublicGroupResponse(PublicSchema):
@@ -90,6 +153,31 @@ def register_public_customer_pricing_routes(api_router, *, get_db):
 
     def no_store(response) -> None:
         response.headers["Cache-Control"] = "no-store"
+
+    @api_router.get(
+        "/public/catalog",
+        response_model=PublicCatalogHomeResponse,
+    )
+    async def get_public_catalog_home(response: Response):
+        no_store(response)
+        return await public_pricing.get_public_catalog_home(get_db())
+
+    @api_router.get(
+        "/public/catalog/categories/{category_id}/image",
+        response_class=BinaryResponse,
+    )
+    async def get_public_catalog_category_image(category_id: str):
+        data, content_type, _filename = await public_pricing.get_public_category_image(
+            get_db(), category_id
+        )
+        return BinaryResponse(
+            content=data,
+            media_type=content_type,
+            headers={
+                "Cache-Control": "public, max-age=300",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
 
     @api_router.get(
         "/public/customer-pricing/groups",
@@ -138,6 +226,39 @@ def register_public_customer_pricing_routes(api_router, *, get_db):
                 "X-Content-Type-Options": "nosniff",
             },
         )
+
+    @api_router.get(
+        "/public/customer-pricing/groups/{group_public_id}/variants/{public_variant_id}/gallery/{image_id}/image",
+        response_class=BinaryResponse,
+    )
+    async def get_public_customer_pricing_gallery_image(
+        group_public_id: str, public_variant_id: str, image_id: str
+    ):
+        data, content_type, _filename = (
+            await public_pricing.get_public_gallery_image(
+                get_db(), group_public_id, public_variant_id, image_id
+            )
+        )
+        return BinaryResponse(
+            content=data,
+            media_type=content_type,
+            headers={
+                "Cache-Control": "public, max-age=300",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
+    @api_router.get(
+        "/public/customer-pricing/groups/by-slug/{slug}",
+        response_model=PublicGroupResponse,
+    )
+    async def get_public_customer_pricing_group_by_slug(
+        slug: str, response: Response
+    ):
+        no_store(response)
+        return {
+            "group": await public_pricing.get_public_group_by_slug(get_db(), slug)
+        }
 
     @api_router.get(
         "/public/customer-pricing/groups/{group_public_id}",

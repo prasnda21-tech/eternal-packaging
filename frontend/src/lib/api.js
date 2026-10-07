@@ -798,10 +798,15 @@ export const api = {
     if (!r.ok) throw { response: { status: r.status, data: d } };
     return d;
   },
+  publicCatalogHome: () => publicJsonRequest("/public/catalog"),
   publicCustomerPricingGroups: () =>
     publicJsonRequest("/public/customer-pricing/groups"),
   publicCustomerPricingGroup: (publicId) =>
     publicJsonRequest(`/public/customer-pricing/groups/${encodeURIComponent(publicId)}`),
+  publicCustomerPricingGroupBySlug: (slug) =>
+    publicJsonRequest(
+      `/public/customer-pricing/groups/by-slug/${encodeURIComponent(slug)}`
+    ),
   calculatePublicCustomerPrice: (payload) =>
     publicJsonRequest("/public/customer-pricing/calculate", {
       method: "POST",
