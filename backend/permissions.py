@@ -315,6 +315,7 @@ PERMISSION_CATALOG = [
     ("Akses Menu", "nav.hr_payroll.payslips", "Menu Slip Gaji"),
     ("Akses Menu", "nav.hr_payroll.components", "Menu Komponen Gaji"),
     ("Akses Menu", "nav.hr_payroll.history", "Menu Riwayat Penggajian"),
+    ("Akses Menu", "nav.hr_payroll.reconciliation", "Menu Rekonsiliasi Payroll"),
     ("Akses Menu", "nav.route_optimizer", "Menu Optimasi Rute"),
     ("Akses Menu", "nav.ledger", "Menu Buku Besar"),
     ("Akses Menu", "nav.ledger.accounts", "Menu Akun Perkiraan"),
@@ -449,6 +450,7 @@ NAV_MENU_ITEMS = (
     ("nav.hr_payroll.payslips", "Slip Gaji", "nav.hr_payroll"),
     ("nav.hr_payroll.components", "Komponen Gaji", "nav.hr_payroll"),
     ("nav.hr_payroll.history", "Riwayat Penggajian", "nav.hr_payroll"),
+    ("nav.hr_payroll.reconciliation", "Rekonsiliasi Payroll", "nav.hr_payroll"),
     ("nav.route_optimizer", "Optimasi Rute", None),
     ("nav.ledger", "Buku Besar", None),
     ("nav.ledger.accounts", "Akun Perkiraan", "nav.ledger"),
@@ -597,6 +599,9 @@ def derived_nav_permissions(existing: set) -> set:
     if "payroll.view" in existing or "payroll.payslip.view_all" in existing:
         nav.add("nav.hr_payroll")
         nav.add("nav.hr_payroll.history")
+    if "payroll.view" in existing and "payroll_payment.view" in existing:
+        nav.add("nav.hr_payroll")
+        nav.add("nav.hr_payroll.reconciliation")
     if "payroll.settings" in existing:
         nav.add("nav.hr_payroll")
     if (

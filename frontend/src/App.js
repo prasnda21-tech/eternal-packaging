@@ -41,6 +41,7 @@ const TransferKasBank = lazy(() => import("./pages/TransferKasBank"));
 const MutasiKasBank = lazy(() => import("./pages/MutasiKasBank"));
 const RekonsiliasiKasBank = lazy(() => import("./pages/RekonsiliasiKasBank"));
 const HrPayroll = lazy(() => import("./pages/HrPayroll"));
+const PayrollReconciliation = lazy(() => import("./pages/PayrollReconciliation"));
 const EmployeeAdmin = lazy(() => import("./pages/EmployeeAdmin"));
 const EmployeeAdminDetail = lazy(() => import("./pages/EmployeeAdminDetail"));
 const AnalitikOutput = lazy(() => import("./pages/AnalitikOutput"));
@@ -260,6 +261,7 @@ function HrPayrollIndex() {
   if (v.payslips) return <Navigate to="/hr-payroll/slip-gaji" replace />;
   if (v.components) return <Navigate to="/hr-payroll/komponen-gaji" replace />;
   if (v.history) return <Navigate to="/hr-payroll/riwayat" replace />;
+  if (v.reconciliation) return <Navigate to="/hr-payroll/rekonsiliasi" replace />;
   return <Navigate to="/" replace />;
 }
 
@@ -408,6 +410,7 @@ export default function App() {
             <Route path="/hr-payroll/slip-gaji" element={<PermGate anyOf={[NAV_KEYS.hrPayrollPayslips, NAV_KEYS.hrPayroll, "payroll.payslip.view_own", "payroll.payslip.view_all"]}><HrPayroll mode="payslips" /></PermGate>} />
             <Route path="/hr-payroll/komponen-gaji" element={<PermGate anyOf={[NAV_KEYS.hrPayrollComponents, NAV_KEYS.hrPayroll, "payroll.settings", "payroll.view"]}><HrPayroll mode="components" /></PermGate>} />
             <Route path="/hr-payroll/riwayat" element={<PermGate anyOf={[NAV_KEYS.hrPayrollHistory, NAV_KEYS.hrPayroll, "payroll.view", "payroll.payslip.view_all"]}><HrPayroll mode="history" /></PermGate>} />
+            <Route path="/hr-payroll/rekonsiliasi" element={<PermGate anyOf={[NAV_KEYS.hrPayrollReconciliation, "payroll.view"]} alsoAnyOf={["payroll_payment.view"]}><PayrollReconciliation /></PermGate>} />
             <Route path="/settings/physical-stock" element={<PermGate anyOf={[NAV_KEYS.settings]} alsoAnyOf={PHYSICAL_STOCK_SETTINGS_PERMS}><PhysicalStockSettingsRoute /></PermGate>} />
             <Route path="/settings/:tab" element={<PermGate anyOf={[NAV_KEYS.settings]} alsoAnyOf={SETTINGS_PERMS}><Settings /></PermGate>} />
             <Route path="/settings" element={<PermGate anyOf={[NAV_KEYS.settings]} alsoAnyOf={SETTINGS_HUB_PERMS}><Settings /></PermGate>} />

@@ -62,6 +62,7 @@ export const NAV_KEYS = {
   hrPayrollPayslips: "nav.hr_payroll.payslips",
   hrPayrollComponents: "nav.hr_payroll.components",
   hrPayrollHistory: "nav.hr_payroll.history",
+  hrPayrollReconciliation: "nav.hr_payroll.reconciliation",
   routeOptimizer: "nav.route_optimizer",
   ledger: "nav.ledger",
   ledgerAccounts: "nav.ledger.accounts",
@@ -146,6 +147,7 @@ export const NAV_MENU_FALLBACK = [
   { key: NAV_KEYS.hrPayrollPayslips, label: "Slip Gaji", parent: NAV_KEYS.hrPayroll },
   { key: NAV_KEYS.hrPayrollComponents, label: "Komponen Gaji", parent: NAV_KEYS.hrPayroll },
   { key: NAV_KEYS.hrPayrollHistory, label: "Riwayat Payroll", parent: NAV_KEYS.hrPayroll },
+  { key: NAV_KEYS.hrPayrollReconciliation, label: "Rekonsiliasi Payroll", parent: NAV_KEYS.hrPayroll },
   { key: NAV_KEYS.routeOptimizer, label: "Optimasi Rute", parent: null },
   { key: NAV_KEYS.ledger, label: "Buku Besar", parent: null },
   { key: NAV_KEYS.ledgerAccounts, label: "Akun Perkiraan", parent: NAV_KEYS.ledger },
@@ -808,6 +810,7 @@ export const HR_PAYROLL_NAV_ROUTES = {
   [NAV_KEYS.hrPayrollPayslips]: "/hr-payroll/slip-gaji",
   [NAV_KEYS.hrPayrollComponents]: "/hr-payroll/komponen-gaji",
   [NAV_KEYS.hrPayrollHistory]: "/hr-payroll/riwayat",
+  [NAV_KEYS.hrPayrollReconciliation]: "/hr-payroll/rekonsiliasi",
 };
 
 const HR_PAYROLL_VIS_FIELD = {
@@ -817,6 +820,7 @@ const HR_PAYROLL_VIS_FIELD = {
   [NAV_KEYS.hrPayrollPayslips]: "payslips",
   [NAV_KEYS.hrPayrollComponents]: "components",
   [NAV_KEYS.hrPayrollHistory]: "history",
+  [NAV_KEYS.hrPayrollReconciliation]: "reconciliation",
 };
 
 export const HR_PAYROLL_TILE_TONES = {
@@ -826,6 +830,7 @@ export const HR_PAYROLL_TILE_TONES = {
   [NAV_KEYS.hrPayrollPayslips]: "emerald",
   [NAV_KEYS.hrPayrollComponents]: "purple",
   [NAV_KEYS.hrPayrollHistory]: "orange",
+  [NAV_KEYS.hrPayrollReconciliation]: "teal",
 };
 
 export const HR_PAYROLL_TILE_TESTIDS = {
@@ -835,6 +840,7 @@ export const HR_PAYROLL_TILE_TESTIDS = {
   [NAV_KEYS.hrPayrollPayslips]: "top-nav-hr-payslips",
   [NAV_KEYS.hrPayrollComponents]: "top-nav-hr-components",
   [NAV_KEYS.hrPayrollHistory]: "top-nav-hr-history",
+  [NAV_KEYS.hrPayrollReconciliation]: "top-nav-hr-reconciliation",
 };
 
 export function hrPayrollNavVisible(hasPerm) {
@@ -850,14 +856,17 @@ export function hrPayrollNavVisible(hasPerm) {
     || canSeeNav(hasPerm, "payroll.settings") || canSeeNav(hasPerm, "payroll.view");
   const history = canSeeNav(hasPerm, NAV_KEYS.hrPayrollHistory)
     || canSeeNav(hasPerm, "payroll.view") || canSeeNav(hasPerm, "payroll.payslip.view_all");
+  const reconciliation = canSeeNav(hasPerm, NAV_KEYS.hrPayrollReconciliation)
+    || (canSeeNav(hasPerm, "payroll.view") && canSeeNav(hasPerm, "payroll_payment.view"));
   return {
-    parent: Boolean(employees || employment || payroll || payslips || components || history || canSeeNav(hasPerm, NAV_KEYS.hrPayroll)),
+    parent: Boolean(employees || employment || payroll || payslips || components || history || reconciliation || canSeeNav(hasPerm, NAV_KEYS.hrPayroll)),
     employees: Boolean(employees),
     employment: Boolean(employment),
     payroll: Boolean(payroll),
     payslips: Boolean(payslips),
     components: Boolean(components),
     history: Boolean(history),
+    reconciliation: Boolean(reconciliation),
   };
 }
 

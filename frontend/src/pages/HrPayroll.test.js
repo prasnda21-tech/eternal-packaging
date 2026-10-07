@@ -16,6 +16,7 @@ describe("HR & Payroll UI source", () => {
     expect(app).toMatch(/\/hr-payroll\/slip-gaji/);
     expect(app).toMatch(/\/hr-payroll\/komponen-gaji/);
     expect(app).toMatch(/\/hr-payroll\/riwayat/);
+    expect(app).toMatch(/\/hr-payroll\/rekonsiliasi/);
   });
 
   test("piece holding keeps kasbon input and shows omitted sources", () => {
