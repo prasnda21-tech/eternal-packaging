@@ -132,3 +132,35 @@ def register_payroll_accounting_routes(
         await require_any_perm(user, PAYMENT_REVERSE)
         data = dump(payload)
         return await reverse_payroll_payment(get_db(), payment_id, user, data.get("reason"))
+
+    @api_router.get("/hr-payroll/reconciliation")
+    async def list_payroll_reconciliation_endpoint(
+        limit: int = 50,
+        status: str = "",
+        period_scope: str = "",
+        reconciliation_status: str = "",
+        user=Depends(current_user),
+    ):
+        """Read-only Payroll ↔ Bank reconciliation list. Zero writes."""
+        from services.payroll_reconciliation import list_reconciliation
+
+        await require_any_perm(user, PERM_PAY_VIEW)
+        await require_any_perm(user, PAYMENT_VIEW)
+        return await list_reconciliation(
+            get_db(),
+            limit=limit,
+            status=status,
+            period_scope=period_scope,
+            reconciliation_status=reconciliation_status,
+        )
+
+    @api_router.get("/hr-payroll/reconciliation/{period_id}")
+    async def get_payroll_reconciliation_detail_endpoint(
+        period_id: str, user=Depends(current_user)
+    ):
+        """Read-only reconciliation detail for one period. Zero writes."""
+        from services.payroll_reconciliation import get_reconciliation_detail
+
+        await require_any_perm(user, PERM_PAY_VIEW)
+        await require_any_perm(user, PAYMENT_VIEW)
+        return await get_reconciliation_detail(get_db(), period_id)

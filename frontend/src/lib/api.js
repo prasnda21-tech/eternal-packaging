@@ -968,6 +968,8 @@ export const api = {
   hrPayrollCreateKasbonSchedule: (payload) => client.post(`/hr-payroll/kasbon-schedules`, payload).then((r) => r.data),
   hrPayrollPayslipUrl: (periodId, lineId, download = true) => `${API}/hr-payroll/periods/${encodeURIComponent(periodId)}/lines/${encodeURIComponent(lineId)}/payslip?download=${download}`,
   hrPayrollHistory: (params = {}) => client.get(`/hr-payroll/history`, { params }).then((r) => r.data),
+  hrPayrollReconciliation: (params = {}) => client.get(`/hr-payroll/reconciliation`, { params }).then((r) => r.data),
+  hrPayrollReconciliationDetail: (id) => client.get(`/hr-payroll/reconciliation/${encodeURIComponent(id)}`).then((r) => r.data),
   salesActivitySettings: () => client.get(`/sales-activity/settings`).then((r) => r.data),
   updateSalesActivitySettings: (payload) => client.put(`/sales-activity/settings`, payload).then((r) => r.data),
   salesActivityUsers: () => client.get(`/sales-activity/sales-users`).then((r) => r.data),
