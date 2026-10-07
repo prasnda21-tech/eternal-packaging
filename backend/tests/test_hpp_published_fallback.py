@@ -1,4 +1,4 @@
-"""Published HPP fallback and lazy per-product purchasing bootstrap."""
+"""Inventory valuation must ignore Customer Pricing; first-GR bootstrap stays intact."""
 import copy
 import os
 import sys
@@ -9,10 +9,16 @@ from motor.motor_asyncio import AsyncIOMotorClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ.setdefault("MONGO_URL", "mongodb://127.0.0.1:27017")
+if "replicaSet=" not in os.environ["MONGO_URL"]:
+    os.environ["MONGO_URL"] = os.environ["MONGO_URL"].rstrip("/") + (
+        "&" if "?" in os.environ["MONGO_URL"] else "?"
+    ) + "replicaSet=eternal_local_rs"
 
-from services.hpp_cutover import ensure_indexes, list_reconciliation
+from services.hpp_cutover import SOURCE_FIRST_GR_UNIT_COST, ensure_indexes, list_reconciliation
 from services.inventory_valuation import build_inventory_valuation_rows
+from services.physical_stock import ensure_indexes as ensure_stock_indexes
 from services.purchase_goods_receipts import create_purchase_goods_receipt
+from services.r2_go_live import set_r2_authority_active
 
 DB_NAME = "eternal_hpp_published_fallback_test"
 USER = {"id": "holding", "name": "Holding", "email": "holding@test", "role": "holding_team"}
@@ -28,13 +34,20 @@ async def db():
     client = AsyncIOMotorClient(os.environ["MONGO_URL"])
     database = client[DB_NAME]
     await client.drop_database(DB_NAME)
+    await ensure_stock_indexes(database)
     await ensure_indexes(database)
+    await set_r2_authority_active(database, active=True)
     await database.hpp_cost_versions.create_index("id", unique=True)
     await database.hpp_cost_layers.create_index(
         [("calculation_version", 1), ("layer_id", 1)],
         unique=True,
     )
     await database.purchase_goods_receipts.create_index("receipt_number", unique=True)
+    await database.purchase_goods_receipts.create_index(
+        "idempotency_key",
+        unique=True,
+        partialFilterExpression={"idempotency_key": {"$type": "string"}},
+    )
     await database.app_settings.create_index("key", unique=True)
     yield database
     await client.drop_database(DB_NAME)
@@ -164,6 +177,9 @@ async def _po(db, suffix, mid, aid, qty, unit, cost):
 
 
 async def _receive(db, suffix, po_id, line_id, qty):
+    if await db.branches.count_documents({"id": "branch-ygy"}) == 0:
+        await _r2(db, "org-seed", 0)
+        await db.physical_stock_balances.delete_many({"master_item_id": "org-seed"})
     return await create_purchase_goods_receipt(db, {
         "purchase_order_id": po_id,
         "idempotency_key": f"gr-{suffix}",
@@ -171,13 +187,33 @@ async def _receive(db, suffix, po_id, line_id, qty):
     }, USER)
 
 
+async def _r2(db, mid, qty):
+    if await db.branches.count_documents({"id": "branch-ygy"}) == 0:
+        await db.branches.insert_one({
+            "id": "branch-ygy", "code": "YGY", "name": "Yogyakarta", "active": True,
+        })
+        await db.warehouses.insert_one({
+            "id": "wh-ygy", "branch_id": "branch-ygy", "code": "MAIN",
+            "name": "Gudang Yogyakarta", "active": True,
+        })
+    await db.physical_stock_balances.insert_one({
+        "id": f"bal-{mid}",
+        "master_item_id": mid,
+        "branch_id": "branch-ygy",
+        "warehouse_id": "wh-ygy",
+        "physical_qty": qty,
+    })
+
+
 def _valuation(view, mid):
     return next(row for row in view["rows"] if row["master_item_id"] == mid)
 
 
 @pytest.mark.anyio
-async def test_published_fallback_is_immediate_and_draft_history_are_ignored(db):
+async def test_customer_pricing_alone_does_not_value_inventory(db):
+    """Only published Customer Pricing present → MISSING_COST, no invented value."""
     pub_mid, pub_aid = await _master(db, "pub205", 10)
+    await _r2(db, pub_mid, 10)
     await _pricing(
         db,
         "pub205",
@@ -188,39 +224,29 @@ async def test_published_fallback_is_immediate_and_draft_history_are_ignored(db)
         historical=180,
     )
     draft_mid, draft_aid = await _master(db, "draft-only", 8)
+    await _r2(db, draft_mid, 8)
     await _pricing(db, "draft-only", draft_mid, draft_aid, draft=999)
     newer_mid, newer_aid = await _master(db, "pub290", 15999)
+    await _r2(db, newer_mid, 15999)
     await _pricing(db, "pub290", newer_mid, newer_aid, published=290, draft=310)
-    unsafe_mid, unsafe_aid = await _master(db, "uninitialized", 0)
-    await db.product_stock_state.delete_one({"master_item_id": unsafe_mid})
-    await _pricing(db, "uninitialized", unsafe_mid, unsafe_aid, published=500)
 
     view = await build_inventory_valuation_rows(db)
-    published = _valuation(view, pub_mid)
-    assert published["current_hpp"] == 205
-    assert published["inventory_value"] == 2050
-    assert published["hpp_status"] == "OK"
-    assert published["hpp_source"] == "PUBLISHED_CUSTOMER_PRICING_FALLBACK"
-    missing = _valuation(view, draft_mid)
-    assert missing["current_hpp"] is None
-    assert missing["inventory_value"] is None
-    assert missing["hpp_status"] == "MISSING_COST"
-    bsm = _valuation(view, newer_mid)
-    assert bsm["current_hpp"] == 290
-    assert bsm["inventory_value"] == 4_639_710
-    unsafe = _valuation(view, unsafe_mid)
-    assert unsafe["current_hpp"] is None
-    assert unsafe["inventory_value"] is None
-    assert unsafe["hpp_status"] == "QTY_MISMATCH"
-    assert unsafe["hpp_reason"] == "STOCK_STATE_UNAVAILABLE"
-    assert view["summary"]["total_inventory_value"] == 4_641_760
-    assert view["summary"]["valued_items"] == 2
-    assert view["summary"]["problem_items"] == 1
+    for mid in (pub_mid, draft_mid, newer_mid):
+        row = _valuation(view, mid)
+        assert row["current_hpp"] is None
+        assert row["inventory_value"] is None
+        assert row["hpp_status"] == "MISSING_COST"
+        assert row["hpp_source"] is None
+        assert row["published_pricing_version_id"] is None
+    assert view["summary"]["total_inventory_value"] == 0
+    assert view["summary"]["valued_items"] == 0
+    assert view["summary"]["items_without_hpp"] == 3
 
 
 @pytest.mark.anyio
-async def test_canonical_layer_wins_and_later_published_change_is_ignored(db):
+async def test_canonical_hpp_values_and_customer_pricing_change_ignored(db):
     mid, aid = await _master(db, "canonical", 10)
+    await _r2(db, mid, 10)
     await _pricing(db, "canonical", mid, aid, published=290)
     await db.app_settings.insert_one({
         "key": "hpp_valuation",
@@ -248,7 +274,9 @@ async def test_canonical_layer_wins_and_later_published_change_is_ignored(db):
     })
     first = _valuation(await build_inventory_valuation_rows(db), mid)
     assert first["current_hpp"] == 209.09
+    assert first["inventory_value"] == 2090.9
     assert first["hpp_source"] == "PURCHASING_MOVING_AVERAGE"
+    assert first["hpp_status"] == "OK"
     await db.customer_pricing_versions.update_one(
         {"id": "pub-canonical"},
         {"$set": {"products.0.hpp_snapshot": 230, "revision": 8}},
@@ -256,11 +284,13 @@ async def test_canonical_layer_wins_and_later_published_change_is_ignored(db):
     second = _valuation(await build_inventory_valuation_rows(db), mid)
     assert second["current_hpp"] == 209.09
     assert second["inventory_value"] == 2090.9
+    assert second["hpp_source"] == "PURCHASING_MOVING_AVERAGE"
 
 
 @pytest.mark.anyio
 async def test_first_and_second_future_gr_bootstrap_without_historical_replay(db):
     mid, aid = await _master(db, "future", 10_000)
+    await _r2(db, mid, 10_000)
     await _pricing(db, "future", mid, aid, published=205)
     await db.purchase_orders.insert_one({
         "id": "historical-po",
@@ -294,10 +324,10 @@ async def test_first_and_second_future_gr_bootstrap_without_historical_replay(db
     first = _valuation(await build_inventory_valuation_rows(db), mid)
     assert first["stock_fisik"] == 11_000
     assert first["valuation_qty"] == 11_000
-    assert first["inventory_value"] == 2_300_000
+    assert first["inventory_value"] == 2_750_000
     assert first["hpp_source"] == "PURCHASING_MOVING_AVERAGE"
     recon = await list_reconciliation(db, cutover["cutover_id"])
-    assert next(row for row in recon if row["master_item_id"] == mid)["exact_average"].startswith("209.0909")
+    assert next(row for row in recon if row["master_item_id"] == mid)["current_hpp"] == 250
     layers = await db.hpp_cost_layers.find(
         {"calculation_version": (await db.app_settings.find_one({"key": "hpp_valuation"}))["active_version"]},
         {"_id": 0},
@@ -309,8 +339,8 @@ async def test_first_and_second_future_gr_bootstrap_without_historical_replay(db
         {"_id": 0},
     )
     assert baseline["stock_fisik_snapshot"] == 10_000
-    assert baseline["opening_unit_cost"] == 205
-    assert baseline["provenance_source"] == "PUBLISHED_CUSTOMER_PRICING_FALLBACK"
+    assert baseline["opening_unit_cost"] == 250
+    assert baseline["provenance_source"] == SOURCE_FIRST_GR_UNIT_COST
 
     po2, line2 = await _po(db, "future-2", mid, aid, 1000, "PCS", 300)
     pricing_before = copy.deepcopy(
@@ -320,9 +350,9 @@ async def test_first_and_second_future_gr_bootstrap_without_historical_replay(db
     second = _valuation(await build_inventory_valuation_rows(db), mid)
     assert second["stock_fisik"] == 12_000
     assert second["valuation_qty"] == 12_000
-    assert second["inventory_value"] == 2_600_000
+    assert second["inventory_value"] == 3_050_000
     recon = await list_reconciliation(db, cutover["cutover_id"])
-    assert next(row for row in recon if row["master_item_id"] == mid)["exact_average"].startswith("216.666")
+    assert next(row for row in recon if row["master_item_id"] == mid)["exact_average"].startswith("254.166")
     assert await db.customer_pricing_versions.find_one(
         {"id": "pub-future"},
         {"_id": 0},
@@ -330,36 +360,41 @@ async def test_first_and_second_future_gr_bootstrap_without_historical_replay(db
 
 
 @pytest.mark.anyio
-async def test_missing_published_future_gr_stays_needs_cost(db):
+async def test_missing_published_future_gr_bootstraps_from_receipt_cost(db):
     mid, aid = await _master(db, "missing", 100)
+    await _r2(db, mid, 100)
     po, line = await _po(db, "missing", mid, aid, 10, "PCS", 250)
     receipt = await _receive(db, "missing", po, line, 10)
     event = await db.hpp_recognition_events.find_one(
         {"source_key": {"$regex": f"^gr:{receipt['id']}:"}},
         {"_id": 0},
     )
-    assert event["status"] == "NEEDS_COST"
-    assert event["unit_cost"] is None
-    assert await db.hpp_valuation_cutovers.count_documents({"status": "ACTIVE"}) == 0
+    assert event["status"] == "RECOGNIZED"
+    assert event["unit_cost"] == 250
+    assert await db.hpp_valuation_cutovers.count_documents({"status": "ACTIVE"}) == 1
     row = _valuation(await build_inventory_valuation_rows(db), mid)
     assert row["stock_fisik"] == 110
-    assert row["current_hpp"] is None
-    assert row["inventory_value"] is None
-    assert row["hpp_status"] == "MISSING_COST"
+    assert row["valuation_qty"] == 110
+    assert row["current_hpp"] == 250
+    assert row["inventory_value"] == 27500
+    baseline = await db.hpp_valuation_baseline_lines.find_one({"master_item_id": mid}, {"_id": 0})
+    assert baseline["opening_unit_cost"] == 250
+    assert baseline["stock_fisik_snapshot"] == 100
+    assert baseline["provenance_source"] == SOURCE_FIRST_GR_UNIT_COST
 
 
 @pytest.mark.anyio
-async def test_first_gr_base_uom_uses_published_base_cost(db):
+async def test_first_gr_base_uom_uses_receipt_base_cost(db):
     mid, aid = await _master(db, "uom", 1000)
-    await _pricing(db, "uom", mid, aid, published=500)
+    await _r2(db, mid, 1000)
     await db.product_unit_settings.insert_one({
         "master_item_id": mid,
         "base_uom": "PCS",
         "transaction_uom": "DUS",
         "conversion_factor": 1000,
     })
-    po, line = await _po(db, "uom", mid, aid, 1, "DUS", 500_000)
-    await _receive(db, "uom", po, line, 1)
+    po, line = await _po(db, "uom", mid, aid, 1000, "PCS", 500)
+    await _receive(db, "uom", po, line, 1000)
     row = _valuation(await build_inventory_valuation_rows(db), mid)
     assert row["stock_fisik"] == 2000
     assert row["valuation_qty"] == 2000
@@ -369,6 +404,9 @@ async def test_first_gr_base_uom_uses_published_base_cost(db):
         {"source_type": "GOODS_RECEIPT"},
         {"_id": 0},
     )
-    assert event["transaction_qty"] == 1
+    assert event["transaction_qty"] == 1000
     assert event["base_qty"] == 1000
     assert event["unit_cost"] == 500
+    baseline = await db.hpp_valuation_baseline_lines.find_one({"master_item_id": mid}, {"_id": 0})
+    assert baseline["opening_unit_cost"] == 500
+    assert baseline["provenance_source"] == SOURCE_FIRST_GR_UNIT_COST

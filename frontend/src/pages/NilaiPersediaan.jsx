@@ -16,6 +16,7 @@ import {
   inventoryValueTabFromSearch,
 } from "../lib/inventoryValueLink";
 import { formatRupiah } from "../lib/purchaseUi";
+import BranchScopeSelect from "../components/BranchScopeSelect";
 
 const TABS = [
   { id: "daftar", label: "Daftar Barang" },
@@ -28,6 +29,7 @@ const LEDGER_TAB = { id: "ledger-recon", label: "Rekonsiliasi Persediaan & HPP" 
 const STATUS_LABELS = {
   OK: "Ada harga pokok",
   MISSING_COST: "Belum Ada HPP",
+  PENDING_VALUATION: "Menunggu valuasi",
   NEEDS_COST: "Butuh Harga PO",
   NEEDS_UOM: "Butuh Konversi Satuan",
   QTY_MISMATCH: "Qty Tidak Cocok",
@@ -54,9 +56,9 @@ function statusLabel(status) {
 }
 
 function sourceLabel(source) {
-  if (source === "PUBLISHED_CUSTOMER_PRICING_FALLBACK") return "Published Pricing";
   if (source === "PURCHASING_MOVING_AVERAGE") return "Rata-rata pembelian";
   if (source === "APPROVED_OPENING") return "Opening disetujui";
+  if (source === "FIRST_GR_UNIT_COST") return "Bootstrap GR pertama";
   return source || "Belum ada sumber";
 }
 
@@ -152,7 +154,7 @@ export function openingHistoryCells(row) {
 }
 
 function stockLabel(item) {
-  if (!item || item.stock_fisik == null || item.hpp_reason === "STOCK_STATE_UNAVAILABLE") {
+  if (!item || item.stock_fisik == null || item.stock_fisik === "") {
     return "Tidak tersedia";
   }
   return fmtQty(item.stock_fisik);
@@ -279,6 +281,8 @@ export default function NilaiPersediaan() {
   const [salesReport, setSalesReport] = useState(null);
   const [loadingReports, setLoadingReports] = useState(false);
   const [data, setData] = useState(null);
+  const [branches, setBranches] = useState([]);
+  const [branchId, setBranchId] = useState("");
   const [loading, setLoading] = useState(true);
   const [valuationError, setValuationError] = useState("");
   const [error, setError] = useState("");
@@ -300,13 +304,23 @@ export default function NilaiPersediaan() {
   const loadSeq = useRef(0);
   const actionGuard = useRef(false);
 
-  useEffect(() => { setPage(1); }, [q]);
+  useEffect(() => { setPage(1); }, [q, branchId]);
 
   useEffect(() => {
     if (!searchPending) return;
     setLoading(true);
     setData((previous) => (previous ? { ...previous, items: [] } : previous));
   }, [searchPending]);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.branches()
+      .then((res) => {
+        if (!cancelled) setBranches(res.items || []);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
 
   const load = useCallback(async () => {
     if (!canViewOpening) {
@@ -319,16 +333,21 @@ export default function NilaiPersediaan() {
     setValuationError("");
     setData((previous) => (previous ? { ...previous, items: [] } : previous));
     try {
-      const response = await api.inventoryValuation({
+      const params = {
         q,
         status_filter: statusFilter,
         sort_by: sortBy,
         sort_dir: sortDir,
         page,
         page_size: pageSize,
-      });
+      };
+      if (branchId) params.branch_id = branchId;
+      const response = await api.inventoryValuation(params);
       if (seq !== loadSeq.current) return;
       setData(response);
+      if (!branchId && response?.effective_branch_id) {
+        setBranchId(response.effective_branch_id);
+      }
     } catch (exception) {
       if (seq !== loadSeq.current) return;
       const detail = exception.response?.data?.detail;
@@ -339,7 +358,7 @@ export default function NilaiPersediaan() {
     } finally {
       if (seq === loadSeq.current) setLoading(false);
     }
-  }, [q, statusFilter, sortBy, sortDir, page, pageSize, canViewOpening]);
+  }, [q, statusFilter, sortBy, sortDir, page, pageSize, canViewOpening, branchId]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -433,12 +452,14 @@ export default function NilaiPersediaan() {
     setExporting(true);
     setError("");
     try {
-      const blob = await api.inventoryValuationExport({
+      const exportParams = {
         q,
         status_filter: statusFilter,
         sort_by: sortBy,
         sort_dir: sortDir,
-      });
+      };
+      if (branchId) exportParams.branch_id = branchId;
+      const blob = await api.inventoryValuationExport(exportParams);
       const url = URL.createObjectURL(new Blob([blob], {
         type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
       }));
@@ -679,7 +700,7 @@ export default function NilaiPersediaan() {
           <p className="subhead" data-testid="inventory-value-formula">
             {tab === "ledger-recon"
               ? "Rekonsiliasi persediaan dan HPP dari catatan saat ini."
-              : "Nilai estimasi stok, bukan saldo buku posted."}
+              : "Nilai estimasi stok, bukan saldo buku posted. Qty cabang × HPP company-wide."}
           </p>
         </div>
       </div>
@@ -746,6 +767,14 @@ export default function NilaiPersediaan() {
 
           <div className="prod-filters" data-testid="inventory-value-filters">
             <div className="prod-filter-row">
+              <BranchScopeSelect
+                branches={branches}
+                value={branchId || data?.effective_branch_id || ""}
+                canSwitch={Boolean(data?.can_switch_branches)}
+                effectiveCode={data?.effective_branch_code}
+                onChange={(next) => { setBranchId(next); setPage(1); }}
+                testId="inventory-branch-select"
+              />
               <form className="search-inline" onSubmit={doSearch}>
                 <Search size={14} />
                 <input
@@ -1383,7 +1412,7 @@ export default function NilaiPersediaan() {
           <div className="inventory-detail-drawer-body">
             <p data-testid={`inventory-value-source-${drawer.item.accurate_item_id || drawer.item.master_item_id}`}>
               Sumber harga: {sourceLabel(drawer.item.hpp_source)}.
-              {drawer.item.hpp_source === "PUBLISHED_CUSTOMER_PRICING_FALLBACK" ? " Valuasi Published (bukan saldo buku)." : ""}
+              HPP inventori hanya dari akuisisi (PO/GR/WMA), bukan harga customer.
               {drawer.item.financial_opening_source ? ` Buku ${sourceLabel(drawer.item.financial_opening_source)}${drawer.item.financial_opening_unit_cost != null ? ` ${formatRupiah(drawer.item.financial_opening_unit_cost)}` : ""}.` : ""}
             </p>
             <p data-testid={`inventory-value-posting-${drawer.item.accurate_item_id || drawer.item.master_item_id}`}>

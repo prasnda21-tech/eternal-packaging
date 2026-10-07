@@ -11,6 +11,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException
+from pymongo.errors import PyMongoError
 
 from services.purchase_common import (
     PREFIX_PURCHASE_PAYMENT,
@@ -704,47 +705,117 @@ async def create_and_submit_purchase_payment(
         }
 
 
+def _payment_retryable(exc: PyMongoError) -> bool:
+    labels = getattr(exc, "has_error_label", None)
+    if not labels:
+        return False
+    return labels("TransientTransactionError") or labels("UnknownTransactionCommitResult")
+
+
 async def confirm_purchase_payment(db, payment_id: str, user: dict) -> dict:
-    """Confirm settlement: only then invoice paid_total / outstanding update."""
+    """Confirm settlement against the latest outstanding, in one Mongo transaction."""
+    from services.physical_stock import require_transaction_support
+    from services.purchase_invoice_finance import invoice_financial_summary
+    from services.purchase_supplier_advance_allocations import active_applied_total
+
     async with get_named_lock("purchase_payment"):
         doc = await get_purchase_payment(db, payment_id)
         if is_cancelled(doc):
             raise HTTPException(400, "Pembayaran sudah dibatalkan.")
         if is_settlement_paid(doc):
-            return {"payment": doc, "reused": True, "invoice": None}
+            return {"payment": doc, "reused": True, "invoice": await get_purchase_invoice(db, doc["purchase_invoice_id"])}
 
         if doc.get("submission_status") != SUBMISSION_SUBMITTED:
             raise HTTPException(400, "Pembayaran harus diajukan sebelum dikonfirmasi dibayar.")
 
-        invoice = await get_purchase_invoice(db, doc["purchase_invoice_id"])
-        if is_cancelled(invoice):
-            raise HTTPException(400, "Faktur sudah dibatalkan.")
-
-        amount = money_round(doc.get("amount"))
-        outstanding = money_round(invoice.get("outstanding_amount"))
-        if amount > outstanding + 1e-9:
-            raise HTTPException(
-                400,
-                f"Konfirmasi ditolak: nominal (Rp {amount:,.2f}) melebihi sisa tagihan (Rp {outstanding:,.2f}).",
-            )
-
+        await require_transaction_support(db.client)
         actor = actor_snapshot(user)
-        ts = now_iso()
-        fields = {
-            "settlement_status": SETTLEMENT_PAID,
-            "payment_state": STATUS_DIBAYAR,
-            "workflow_status": STATUS_DIBAYAR,
-            "status": STATUS_DIBAYAR,
-            "paid_at": ts,
-            "paid_by": actor,
-            "paid_by_user_id": actor.get("id"),
-            "paid_by_name": actor.get("name"),
-            **stamp_update(user),
-        }
-        await db[COLLECTION].update_one({"id": doc["id"]}, {"$set": fields})
+        last_error = None
+        reused = False
+        for _attempt in range(5):
+            try:
+                async with await db.client.start_session() as session:
+                    async with session.start_transaction():
+                        current = await db[COLLECTION].find_one({"id": doc["id"]}, {"_id": 0}, session=session)
+                        if not current:
+                            raise HTTPException(404, "Pembayaran tidak ditemukan.")
+                        if is_cancelled(current):
+                            raise HTTPException(400, "Pembayaran sudah dibatalkan.")
+                        if is_settlement_paid(current):
+                            reused = True
+                            break
+                        invoice = await db.purchase_invoices.find_one(
+                            {"id": current["purchase_invoice_id"]}, {"_id": 0}, session=session,
+                        )
+                        if not invoice or is_cancelled(invoice):
+                            raise HTTPException(400, "Faktur sudah dibatalkan.")
+                        paid_rows = await db[COLLECTION].find(
+                            {
+                                "purchase_invoice_id": invoice["id"],
+                                "cancelled": {"$ne": True},
+                                "settlement_status": SETTLEMENT_PAID,
+                            },
+                            {"_id": 0, "amount": 1},
+                            session=session,
+                        ).to_list(2000)
+                        paid = money_round(sum(float(row.get("amount") or 0) for row in paid_rows))
+                        applied = await active_applied_total(db, invoice["id"], session=session)
+                        from services.purchase_return_finance import active_return_credit_total
+                        credited = await active_return_credit_total(db, invoice["id"], session=session)
+                        summary = invoice_financial_summary(
+                            invoice_amount=invoice.get("grand_total"),
+                            advance_applied=applied,
+                            payments_applied=paid,
+                            purchase_return_credit=credited,
+                        )
+                        amount = money_round(current.get("amount"))
+                        if amount > summary["outstanding_amount"]:
+                            raise HTTPException(
+                                409,
+                                f"Konfirmasi ditolak: nominal melebihi sisa tagihan (Rp {summary['outstanding_amount']:,.2f}).",
+                            )
+                        ts = now_iso()
+                        result = await db[COLLECTION].update_one(
+                            {"id": current["id"], "settlement_status": SETTLEMENT_UNPAID, "cancelled": {"$ne": True}},
+                            {"$set": {
+                                "settlement_status": SETTLEMENT_PAID,
+                                "payment_state": STATUS_DIBAYAR,
+                                "workflow_status": STATUS_DIBAYAR,
+                                "status": STATUS_DIBAYAR,
+                                "paid_at": ts,
+                                "paid_by": actor,
+                                "paid_by_user_id": actor.get("id"),
+                                "paid_by_name": actor.get("name"),
+                                **stamp_update(user),
+                            }},
+                            session=session,
+                        )
+                        if result.modified_count != 1:
+                            raced = await db[COLLECTION].find_one({"id": current["id"]}, {"_id": 0}, session=session)
+                            if raced and is_settlement_paid(raced):
+                                break
+                            raise HTTPException(409, "Konfirmasi pembayaran bentrok.")
+                        await db.purchase_invoices.update_one(
+                            {"id": invoice["id"]},
+                            {"$set": {
+                                "payments_applied_amount": money_round(paid + amount),
+                                "updated_at": ts,
+                            }},
+                            session=session,
+                        )
+                break
+            except HTTPException:
+                raise
+            except PyMongoError as exc:
+                last_error = exc
+                if _payment_retryable(exc):
+                    continue
+                raise
+        else:
+            raise HTTPException(409, "Konfirmasi pembayaran gagal karena perubahan bersamaan.") from last_error
         refreshed = await get_purchase_payment(db, doc["id"])
         invoice_after = await get_purchase_invoice(db, doc["purchase_invoice_id"])
-        return {"payment": refreshed, "reused": False, "invoice": invoice_after}
+        return {"payment": refreshed, "reused": reused, "invoice": invoice_after}
 
 
 async def repair_dev_payment_settlements(db) -> dict:

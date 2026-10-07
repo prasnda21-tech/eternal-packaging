@@ -3,7 +3,9 @@ import { NavLink } from "react-router-dom";
 export const PURCHASING_FLOW = [
   { to: "/pembelian/permintaan", label: "Permintaan", testId: "purchase-flow-permintaan" },
   { to: "/pembelian/pesanan-pembelian", label: "Pesanan", testId: "purchase-flow-pesanan" },
+  { to: "/pembelian/uang-muka", label: "Uang Muka", testId: "purchase-flow-uang-muka" },
   { to: "/pembelian/penerimaan-barang", label: "Penerimaan", testId: "purchase-flow-penerimaan" },
+  { to: "/pembelian/retur", label: "Retur", testId: "purchase-flow-retur" },
   { to: "/pembelian/faktur-pembelian", label: "Faktur", testId: "purchase-flow-faktur" },
   { to: "/pembelian/pembayaran-pembelian", label: "Pembayaran", testId: "purchase-flow-pembayaran" },
 ];
