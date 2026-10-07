@@ -189,6 +189,7 @@ from services.purchase_http import register_purchase_routes
 from services.product_requests_http import register_product_request_routes
 from services.spk_http import register_spk_routes
 from services.customer_pricing_http import register_customer_pricing_routes
+from services.public_catalog_http import register_public_catalog_routes
 from services.sales_accounting_settings_http import register_sales_accounting_settings_routes
 from services.sales_user_mapping_http import register_sales_user_mapping_routes
 from services.sales_pwa_http import register_sales_pwa_routes
@@ -13291,6 +13292,13 @@ register_customer_pricing_routes(
     require_any_perm=_require_any_perm,
     Depends=Depends,
 )
+register_public_catalog_routes(
+    api_router,
+    get_db=lambda: db,
+    current_user=current_user,
+    require_any_perm=_require_any_perm,
+    Depends=Depends,
+)
 register_sales_accounting_settings_routes(
     api_router,
     get_db=lambda: db,
@@ -15095,6 +15103,8 @@ async def seed():
     await _financial_opening_ensure_indexes(db)
     from services.customer_pricing import ensure_indexes as _customer_pricing_ensure_indexes
     await _customer_pricing_ensure_indexes(db)
+    from services.public_catalog import ensure_indexes as _public_catalog_ensure_indexes
+    await _public_catalog_ensure_indexes(db)
     from services.cash_bank_master import ensure_indexes as _cash_bank_master_ensure_indexes
     from services.cash_bank_vouchers import ensure_indexes as _cash_bank_voucher_ensure_indexes
     from services.journal_core import ensure_indexes as _journal_core_ensure_indexes

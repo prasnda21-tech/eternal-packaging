@@ -28,6 +28,7 @@ describe("Settings category card navigation", () => {
       "purchase-accounting",
       "payroll-accounting",
       "customer-pricing",
+      "public-catalog",
       "customer-approval",
       "notifications",
       "delivery-deadline",
@@ -70,6 +71,7 @@ describe("Settings category card navigation", () => {
     expect(settingsSrc).toMatch(/"purchase-accounting":\s*canViewPurchaseAccounting/);
     expect(settingsSrc).toMatch(/"payroll-accounting":\s*canViewPayrollAccounting/);
     expect(settingsSrc).toMatch(/"customer-pricing":\s*canViewCustomerPricing/);
+    expect(settingsSrc).toMatch(/"public-catalog":\s*canViewPublicCatalog/);
   });
 
   test("only active panel content is conditionally rendered", () => {

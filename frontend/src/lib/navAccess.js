@@ -1043,6 +1043,7 @@ export const SETTINGS_TAB_IDS = [
   "purchase-accounting",
   "payroll-accounting",
   "customer-pricing",
+  "public-catalog",
   "customer-approval",
   "notifications",
   "delivery-deadline",
@@ -1075,6 +1076,7 @@ export const SETTINGS_TILE_TONES = {
   "purchase-accounting": "rose",
   "payroll-accounting": "blue",
   "customer-pricing": "green",
+  "public-catalog": "teal",
   "customer-approval": "teal",
   "notifications": "cyan",
   "delivery-deadline": "orange",
@@ -1105,6 +1107,7 @@ export const SETTINGS_TILE_LABELS = {
   "purchase-accounting": "Akuntansi Pembelian",
   "payroll-accounting": "Akuntansi Payroll",
   "customer-pricing": "Harga Customer",
+  "public-catalog": "Katalog Publik",
   "customer-approval": "Customer Approval",
   "notifications": "Notifikasi",
   "delivery-deadline": "Deadline Pengiriman",
@@ -1162,6 +1165,9 @@ export function settingsNavVisible(hasPerm) {
     || canSeeNav(hasPerm, "settings.customer_pricing.manage")
     || canSeeNav(hasPerm, "settings.customer_pricing.publish")
     || canSeeNav(hasPerm, "permissions.manage");
+  const publicCatalog = canSeeNav(hasPerm, "settings.public_catalog.view")
+    || canSeeNav(hasPerm, "settings.public_catalog.manage")
+    || canSeeNav(hasPerm, "permissions.manage");
   const customerApproval = canSeeNav(hasPerm, "customer_approval.view")
     || canSeeNav(hasPerm, "customer_approval.settings");
   const deliveryDeadline = canSeeNav(hasPerm, "delivery.deadline.settings")
@@ -1198,6 +1204,7 @@ export function settingsNavVisible(hasPerm) {
     "purchase-accounting": Boolean(parentGranted && purchaseAccounting),
     "payroll-accounting": Boolean(parentGranted && payrollAccounting),
     "customer-pricing": Boolean(parentGranted && customerPricing),
+    "public-catalog": Boolean(parentGranted && publicCatalog),
     "customer-approval": Boolean(parentGranted && customerApproval),
     "notifications": Boolean(parentGranted && customerApproval),
     "delivery-deadline": Boolean(parentGranted && deliveryDeadline),

@@ -62,7 +62,7 @@ describe("Customer Pricing multi-product group UI", () => {
   test("shared Settings hero is hidden only for customer-pricing and design-cetakan", () => {
     expect(settingsSrc).toMatch(/customerPricingPage/);
     expect(settingsSrc).toMatch(/hideSharedSettingsHeading/);
-    expect(settingsSrc).toMatch(/designCetakanPage \|\| customerPricingPage/);
+    expect(settingsSrc).toMatch(/designCetakanPage \|\| customerPricingPage \|\| publicCatalogPage/);
     expect(settingsSrc).toMatch(/!hideSharedSettingsHeading \?/);
     expect(settingsSrc).toMatch(/tab === "design-cetakan"/);
     expect(settingsSrc).toMatch(/tab === "customer-pricing"/);
