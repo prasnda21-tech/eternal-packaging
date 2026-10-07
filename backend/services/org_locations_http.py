@@ -77,8 +77,11 @@ def register_org_locations_routes(
         active: Optional[bool] = Query(None),
         user=Depends(require_perm(PERM_BRANCH_VIEW)),
     ):
+        from services.branch_access import filter_branches_for_user
+
         db = get_db()
         items = await list_branches(db, q=q, active=active)
+        items = await filter_branches_for_user(db, user, items)
         return {"items": items, "total": len(items)}
 
     @api_router.get("/branches/{branch_id}")
@@ -86,7 +89,10 @@ def register_org_locations_routes(
         branch_id: str,
         user=Depends(require_perm(PERM_BRANCH_VIEW)),
     ):
+        from services.branch_access import require_branch_access
+
         db = get_db()
+        await require_branch_access(db, user, branch_id)
         doc = await get_branch(db, branch_id)
         if not doc:
             raise HTTPException(404, "Cabang tidak ditemukan")
@@ -142,8 +148,13 @@ def register_org_locations_routes(
         active: Optional[bool] = Query(None),
         user=Depends(require_perm(PERM_WAREHOUSE_VIEW)),
     ):
+        from services.branch_access import filter_warehouses_for_user, require_branch_access
+
         db = get_db()
+        if branch_id:
+            await require_branch_access(db, user, branch_id)
         items = await list_warehouses(db, branch_id=branch_id, q=q, active=active)
+        items = await filter_warehouses_for_user(db, user, items)
         return {"items": items, "total": len(items)}
 
     @api_router.get("/warehouses/{warehouse_id}")
@@ -151,7 +162,10 @@ def register_org_locations_routes(
         warehouse_id: str,
         user=Depends(require_perm(PERM_WAREHOUSE_VIEW)),
     ):
+        from services.branch_access import require_warehouse_access
+
         db = get_db()
+        await require_warehouse_access(db, user, warehouse_id)
         doc = await get_warehouse(db, warehouse_id)
         if not doc:
             raise HTTPException(404, "Gudang tidak ditemukan")

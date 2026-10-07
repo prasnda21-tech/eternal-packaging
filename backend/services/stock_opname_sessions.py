@@ -313,6 +313,14 @@ async def _book_lines(db, session, *, warehouse_id: str) -> List[dict]:
 
 async def create_stock_opname_session(db, payload: Optional[dict], user: dict) -> dict:
     payload = payload or {}
+    from services.branch_access import require_warehouse_access
+
+    await require_warehouse_access(
+        db,
+        user,
+        payload.get("warehouse_id"),
+        expected_branch_id=payload.get("branch_id"),
+    )
     branch, warehouse = await _warehouse_branch(
         db,
         branch_id=payload.get("branch_id"),
@@ -382,26 +390,53 @@ async def create_stock_opname_session(db, payload: Optional[dict], user: dict) -
     raise HTTPException(409, f"Gagal menyimpan nomor stock opname. {last_error}")
 
 
-async def get_stock_opname_session(db, session_id: str) -> dict:
+async def get_stock_opname_session(db, session_id: str, user: Optional[dict] = None) -> dict:
     doc = await db[COLLECTION].find_one({"id": str(session_id)}, {"_id": 0})
     if not doc:
         doc = await db[COLLECTION].find_one({"opname_number": str(session_id)}, {"_id": 0})
-    return _public(doc)
+    public = _public(doc)
+    if user is not None:
+        from services.branch_access import require_branch_access
+
+        await require_branch_access(db, user, public.get("branch_id"))
+    return public
 
 
-async def list_stock_opname_sessions(db, warehouse_id: Optional[str] = None) -> List[dict]:
+async def list_stock_opname_sessions(
+    db,
+    warehouse_id: Optional[str] = None,
+    user: Optional[dict] = None,
+) -> List[dict]:
     query: Dict[str, Any] = {}
     if warehouse_id:
+        from services.branch_access import require_warehouse_access
+
+        if user is not None:
+            await require_warehouse_access(db, user, warehouse_id)
         query["warehouse_id"] = str(warehouse_id)
     docs = await db[COLLECTION].find(query, {"_id": 0}).sort("created_at", -1).to_list(200)
-    return [_public(doc) for doc in docs]
+    rows = [_public(doc) for doc in docs]
+    if user is not None:
+        from services.branch_access import filter_warehouses_for_user
+
+        # Reuse warehouse filter: keep sessions whose warehouse.branch is allowed.
+        warehouses = [
+            {"id": row.get("warehouse_id"), "branch_id": row.get("branch_id")}
+            for row in rows
+        ]
+        allowed = {
+            str(w.get("id") or "")
+            for w in await filter_warehouses_for_user(db, user, warehouses)
+        }
+        rows = [row for row in rows if str(row.get("warehouse_id") or "") in allowed]
+    return rows
 
 
 async def start_stock_opname_cutoff(db, session_id: str, user: dict) -> dict:
     from services.physical_stock import _client, require_transaction_support
 
     await require_transaction_support(_client(db))
-    doc = await get_stock_opname_session(db, session_id)
+    doc = await get_stock_opname_session(db, session_id, user=user)
     if doc["status"] in (STATUS_COUNTING, STATUS_REVIEW, STATUS_CONFIRMED):
         if doc["status"] == STATUS_CONFIRMED:
             raise HTTPException(400, "Sesi stock opname sudah dikonfirmasi.")
@@ -447,7 +482,7 @@ async def record_stock_opname_counts(db, session_id: str, payload: Optional[dict
         incoming = [payload]
     if not isinstance(incoming, list) or not incoming:
         raise HTTPException(400, "Minimal satu baris hitungan.")
-    doc = await get_stock_opname_session(db, session_id)
+    doc = await get_stock_opname_session(db, session_id, user=user)
     if doc["status"] != STATUS_COUNTING:
         raise HTTPException(400, "Hitungan hanya dapat diisi selama status COUNTING.")
     by_id = {str(line.get("line_id")): dict(line) for line in doc.get("lines") or []}
@@ -491,7 +526,7 @@ async def record_stock_opname_counts(db, session_id: str, payload: Optional[dict
 
 
 async def submit_stock_opname_review(db, session_id: str, user: dict) -> dict:
-    doc = await get_stock_opname_session(db, session_id)
+    doc = await get_stock_opname_session(db, session_id, user=user)
     if doc["status"] == STATUS_REVIEW:
         return doc
     if doc["status"] != STATUS_COUNTING:
@@ -640,7 +675,7 @@ async def confirm_stock_opname_session(db, session_id: str, payload: Optional[di
     payload = payload or {}
     await require_r2_authority_active(db)
     await ensure_indexes(db)
-    doc = await get_stock_opname_session(db, session_id)
+    doc = await get_stock_opname_session(db, session_id, user=user)
     confirmation_key = str(payload.get("idempotency_key") or payload.get("confirmation_key") or "").strip()
     incoming = payload.get("lines")
     if incoming:
@@ -696,7 +731,7 @@ async def confirm_stock_opname_session(db, session_id: str, payload: Optional[di
 
 async def cancel_stock_opname_session(db, session_id: str, payload: Optional[dict], user: dict) -> dict:
     payload = payload or {}
-    doc = await get_stock_opname_session(db, session_id)
+    doc = await get_stock_opname_session(db, session_id, user=user)
     if doc["status"] == STATUS_CONFIRMED:
         raise HTTPException(409, "Stock opname terkonfirmasi tidak dapat dibatalkan atau dihapus.")
     if doc["status"] == STATUS_CANCELLED:
@@ -733,14 +768,14 @@ def register_stock_opname_routes(api_router, *, get_db, current_user, require_pe
         warehouse_id: Optional[str] = None,
         user=Depends(require_perm("master_items.view")),
     ):
-        return await list_stock_opname_sessions(get_db(), warehouse_id)
+        return await list_stock_opname_sessions(get_db(), warehouse_id, user=user)
 
     @api_router.get("/stock-opname-sessions/{session_id}")
     async def stock_opname_sessions_get(
         session_id: str,
         user=Depends(require_perm("master_items.view")),
     ):
-        return await get_stock_opname_session(get_db(), session_id)
+        return await get_stock_opname_session(get_db(), session_id, user=user)
 
     @api_router.post("/stock-opname-sessions")
     async def stock_opname_sessions_create(

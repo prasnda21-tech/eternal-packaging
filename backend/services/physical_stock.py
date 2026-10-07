@@ -2171,8 +2171,8 @@ async def list_physical_stock_catalog(
     (legacy physical state + orders + sales deliveries). No R2 writes.
 
     When r2_authority_active is TRUE: Stock fisik is the sum of R2 balances on
-    YGY warehouses. One row per item. Missing balances stay 0 and are not inserted.
-    branch_id and warehouse_id are accepted and ignored.
+    operational warehouses for ONE branch (default YGY). Never aggregates all
+    branches. Optional warehouse_id further narrows within that branch.
     """
     from services.r2_go_live import is_r2_authority_active
     from services.stock_compatibility_read import list_compatibility_stock_catalog
@@ -2180,9 +2180,12 @@ async def list_physical_stock_catalog(
     if not await is_r2_authority_active(db):
         return await list_compatibility_stock_catalog(db, q=q, page=page, limit=limit)
 
-    del branch_id, warehouse_id
     all_branches = await db[BRANCHES_COLLECTION].find({}, {"_id": 0, "id": 1, "code": 1, "name": 1}).to_list(500)
-    operational = resolve_operational_branch(all_branches)
+    requested = str(branch_id or "").strip()
+    if requested:
+        operational = next((row for row in all_branches if str(row.get("id") or "") == requested), None)
+    else:
+        operational = resolve_operational_branch(all_branches)
     operational_id = (operational or {}).get("id")
     warehouses = []
     if operational_id:
@@ -2191,6 +2194,9 @@ async def list_physical_stock_catalog(
             {"_id": 0},
         ).sort([("code", 1), ("id", 1)]).to_list(500)
         warehouses = [row for row in warehouses if warehouse_is_operational(row)]
+        requested_wh = str(warehouse_id or "").strip()
+        if requested_wh:
+            warehouses = [row for row in warehouses if str(row.get("id") or "") == requested_wh]
     item_query: Dict[str, Any] = {}
     text = str(q or "").strip()
     if text:

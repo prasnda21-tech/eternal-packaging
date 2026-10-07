@@ -343,8 +343,9 @@ async def test_catalog_returns_zero_without_writing_and_filters_locations(db):
     assert all_rows["items"][0]["base_unit"] == "PCS"
     assert all_rows["items"][0]["qty_pesanan"] == 0
     assert all_rows["items"][0]["qty_tersedia"] == 6
-    ignored_branch = await list_physical_stock_catalog(db, branch_id=smg["id"])
-    assert ignored_branch["items"][0]["physical_qty"] == 6
+    # Branch-aware: SMG must not reuse YGY balances (never silently aggregate).
+    smg_branch = await list_physical_stock_catalog(db, branch_id=smg["id"])
+    assert smg_branch["items"][0]["physical_qty"] == 0
     filtered = await list_physical_stock_catalog(db, branch_id=ygy["id"], warehouse_id=main["id"], q="Dus")
     assert filtered["items"][0]["physical_qty"] == 6
     assert "branch_code" not in filtered["items"][0]

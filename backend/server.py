@@ -12576,7 +12576,9 @@ async def physical_stock_catalog_get(
 
     Pre-cutover (r2_authority_active=false): compatibility read from legacy sources.
     Post-cutover: R2 balances only. Never mixes write authorities.
+    Branch access is enforced; default operational branch is YGY.
     """
+    from services.branch_access import require_warehouse_access, resolve_stock_catalog_branch_id
     from services.physical_stock import (
         PhysicalStockNotFoundError,
         PhysicalStockValidationError,
@@ -12584,10 +12586,16 @@ async def physical_stock_catalog_get(
     )
     from services.r2_go_live import is_r2_authority_active
     try:
+        resolved = await resolve_stock_catalog_branch_id(db, user, branch_id)
+        effective_branch_id = (resolved.get("branch") or {}).get("id")
+        if warehouse_id:
+            await require_warehouse_access(
+                db, user, warehouse_id, expected_branch_id=effective_branch_id,
+            )
         result = await list_physical_stock_catalog(
             db,
             q=q,
-            branch_id=branch_id,
+            branch_id=effective_branch_id,
             warehouse_id=warehouse_id,
             page=page,
             limit=limit,
@@ -12598,6 +12606,8 @@ async def physical_stock_catalog_get(
             result["r2_authority_active"] = r2_on
         # R2 physical adjust only when R2 authority is active
         result["can_adjust_physical_stock"] = bool(r2_on and _adjustment_allowed(user))
+        result["effective_branch_id"] = effective_branch_id
+        result["branch_scope"] = (resolved.get("access") or {}).get("scope")
         return result
     except PhysicalStockNotFoundError as exc:
         raise HTTPException(404, str(exc)) from exc
