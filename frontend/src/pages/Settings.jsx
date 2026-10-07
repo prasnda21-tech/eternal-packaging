@@ -6,6 +6,7 @@ import {
   Target as TargetIcon, PanelLeft, ClipboardList, Coins, Scale, IdCard, Wallet, Route, Tags,
   BookOpen,
   CreditCard,
+  LayoutGrid,
   Package,
   Printer,
   Settings as SettingsIcon,
@@ -24,6 +25,7 @@ import SalesAccountingSettings from "./SalesAccountingSettings";
 import PurchaseAccountingSettings from "./PurchaseAccountingSettings";
 import PayrollAccountingSettings from "./PayrollAccountingSettings";
 import CustomerPricingSettings from "./CustomerPricingSettings";
+import PublicCatalogSettings from "./PublicCatalogSettings";
 import FormAccessMatrix from "../components/FormAccessMatrix";
 import EmployeeAdminSettings from "../components/EmployeeAdminSettings";
 import HrPayrollSettings from "../components/HrPayrollSettings";
@@ -2153,6 +2155,7 @@ const SETTINGS_NAV_ITEMS = [
   { id: "purchase-accounting", label: "Akuntansi Pembelian", description: "Pemetaan akun pembelian", Icon: CreditCard, tone: "rose", testid: "settings-tab-purchase-accounting" },
   { id: "payroll-accounting", label: "Akuntansi Payroll", description: "Pemetaan akun penggajian", Icon: Wallet, tone: "indigo", testid: "settings-tab-payroll-accounting" },
   { id: "customer-pricing", label: "Harga Customer", description: "Harga publik per produk", Icon: Tags, tone: "emerald", testid: "settings-tab-customer-pricing" },
+  { id: "public-catalog", label: "Katalog Publik", description: "Tampilan & kategori katalog", Icon: LayoutGrid, tone: "teal", testid: "settings-tab-public-catalog" },
   { id: "customer-approval", label: "Customer Approval", description: "Alur persetujuan", Icon: ClipboardCheck, tone: "teal", testid: "settings-tab-customer-approval" },
   { id: "notifications", label: "Notifikasi", description: "Notifikasi operasional", Icon: Bell, tone: "cyan", testid: "settings-tab-notifications" },
   { id: "delivery-deadline", label: "Tanggal Pengiriman", description: "Lead time otomatis setelah approval", Icon: Truck, tone: "rose", testid: "settings-tab-delivery-deadline" },
@@ -2248,6 +2251,8 @@ export default function Settings() {
   const canViewCustomerPricing = hasPerm("settings.customer_pricing.view") || hasPerm("settings.customer_pricing.manage") || hasPerm("settings.customer_pricing.publish") || hasPerm("permissions.manage");
   const canEditCustomerPricing = hasPerm("settings.customer_pricing.manage");
   const canPublishCustomerPricing = hasPerm("settings.customer_pricing.publish");
+  const canViewPublicCatalog = hasPerm("settings.public_catalog.view") || hasPerm("settings.public_catalog.manage") || hasPerm("permissions.manage");
+  const canEditPublicCatalog = hasPerm("settings.public_catalog.manage");
   const canViewEmployeeAdmin = hasPerm("employee_admin.settings");
   const canEditEmployeeAdmin = hasPerm("employee_admin.settings");
   const canViewHrPayroll = hasPerm("payroll.settings");
@@ -2268,6 +2273,7 @@ export default function Settings() {
     "purchase-accounting": canViewPurchaseAccounting,
     "payroll-accounting": canViewPayrollAccounting,
     "customer-pricing": canViewCustomerPricing,
+    "public-catalog": canViewPublicCatalog,
     "customer-approval": canViewCaSettings,
     notifications: canViewCaSettings,
     "delivery-deadline": canViewDdSettings,
@@ -2324,7 +2330,8 @@ export default function Settings() {
 
   const designCetakanPage = !showCategoryNav && tab === "design-cetakan";
   const customerPricingPage = !showCategoryNav && tab === "customer-pricing";
-  const hideSharedSettingsHeading = designCetakanPage || customerPricingPage;
+  const publicCatalogPage = !showCategoryNav && tab === "public-catalog";
+  const hideSharedSettingsHeading = designCetakanPage || customerPricingPage || publicCatalogPage;
 
   return (
     <div data-testid="settings-page" className="settings-page">
@@ -2404,6 +2411,9 @@ export default function Settings() {
           canEdit={canEditCustomerPricing}
           canPublish={canPublishCustomerPricing}
         />
+      )}
+      {tab === "public-catalog" && canViewPublicCatalog && (
+        <PublicCatalogSettings notify={notify} canEdit={canEditPublicCatalog}/>
       )}
       {tab === "customer-approval" && canViewCaSettings && <CustomerApprovalSettingsTab notify={notify} canEdit={canEditCaSettings}/>}
       {tab === "notifications" && canViewCaSettings && <NotificationsSettingsTab notify={notify} canEdit={canEditCaSettings}/>}

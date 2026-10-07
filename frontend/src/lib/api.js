@@ -585,6 +585,25 @@ export const api = {
   hppCostQuery: (params = {}) => client.get(`/hpp/cost-query`, { params }).then((r) => r.data),
   customerPricingSettings: () => client.get(`/settings/customer-pricing`).then((r) => r.data),
   updateCustomerPricingSettings: (payload) => client.put(`/settings/customer-pricing`, payload).then((r) => r.data),
+  publicCatalogSettings: () => client.get(`/settings/public-catalog`).then((r) => r.data),
+  updatePublicCatalogSettings: (payload) => client.put(`/settings/public-catalog`, payload).then((r) => r.data),
+  publicCatalogCategories: (params = {}) => client.get(`/public-catalog/categories`, { params }).then((r) => r.data),
+  createPublicCatalogCategory: (payload) => client.post(`/public-catalog/categories`, payload).then((r) => r.data),
+  patchPublicCatalogCategory: (id, payload) =>
+    client.patch(`/public-catalog/categories/${encodeURIComponent(id)}`, payload).then((r) => r.data),
+  publicCatalogCategoryImageUrl: (id, version = "") =>
+    `${API}/public-catalog/categories/${encodeURIComponent(id)}/image${version ? `?v=${encodeURIComponent(version)}` : ""}`,
+  uploadPublicCatalogCategoryImage: (id, file) => {
+    const form = new FormData();
+    form.append("file", file);
+    return client.post(
+      `/public-catalog/categories/${encodeURIComponent(id)}/image`,
+      form,
+      { headers: { "Content-Type": "multipart/form-data" } }
+    ).then((r) => r.data);
+  },
+  deletePublicCatalogCategoryImage: (id) =>
+    client.delete(`/public-catalog/categories/${encodeURIComponent(id)}/image`).then((r) => r.data),
   customerPricingGroups: (params = {}) => client.get(`/customer-pricing/groups`, { params }).then((r) => r.data),
   createCustomerPricingGroup: (payload) => client.post(`/customer-pricing/groups`, payload).then((r) => r.data),
   customerPricingGroup: (id) => client.get(`/customer-pricing/groups/${encodeURIComponent(id)}`).then((r) => r.data),

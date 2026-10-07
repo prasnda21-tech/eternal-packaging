@@ -110,6 +110,8 @@ PERMISSION_CATALOG = [
     ("Pengaturan", "settings.customer_pricing.view", "Lihat Harga Customer"),
     ("Pengaturan", "settings.customer_pricing.manage", "Kelola Draft Harga Customer"),
     ("Pengaturan", "settings.customer_pricing.publish", "Publish Harga Customer"),
+    ("Pengaturan", "settings.public_catalog.view", "Lihat Katalog Publik"),
+    ("Pengaturan", "settings.public_catalog.manage", "Kelola Katalog Publik"),
     ("Design", "design.view", "Lihat desain"),
     ("Design", "design.upload", "Upload desain"),
     ("Design", "design.approve", "Approve desain"),

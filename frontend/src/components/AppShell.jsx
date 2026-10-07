@@ -1,4 +1,4 @@
-import { BarChart3, BookOpen, Boxes, CalendarClock, ChevronLeft, ChevronRight, ClipboardCheck, ClipboardList, ClipboardPlus, Coins, Contact, CreditCard, Download, FileBarChart, FileText, FolderOpen, IdCard, Image as ImageIcon, Landmark, LayoutDashboard, LineChart, ListOrdered, LogOut, MessageCircle, Package, PanelLeft, PlusCircle, Receipt, RotateCcw, Route, Scale, ScanLine, ScrollText, Settings as SettingsIcon, Shield, ShoppingBag, ShoppingCart, Table as TableIcon, Tags, Target, TrendingUp, Truck, Users, Wallet, Warehouse, ArrowLeftRight } from "lucide-react";
+import { BarChart3, BookOpen, Boxes, CalendarClock, ChevronLeft, ChevronRight, ClipboardCheck, ClipboardList, ClipboardPlus, Coins, Contact, CreditCard, Download, FileBarChart, FileText, FolderOpen, IdCard, Image as ImageIcon, Landmark, LayoutDashboard, LayoutGrid, LineChart, ListOrdered, LogOut, MessageCircle, Package, PanelLeft, PlusCircle, Receipt, RotateCcw, Route, Scale, ScanLine, ScrollText, Settings as SettingsIcon, Shield, ShoppingBag, ShoppingCart, Table as TableIcon, Tags, Target, TrendingUp, Truck, Users, Wallet, Warehouse, ArrowLeftRight } from "lucide-react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { Suspense, forwardRef, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import api from "../lib/api";
@@ -123,6 +123,7 @@ const TILE_ICONS = {
   "purchase-accounting": CreditCard,
   "payroll-accounting": Wallet,
   "customer-pricing": Tags,
+  "public-catalog": LayoutGrid,
   "customer-approval": ClipboardCheck,
   "delivery-deadline": Truck,
   "operator-target": Target,
