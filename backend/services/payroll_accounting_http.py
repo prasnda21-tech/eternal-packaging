@@ -31,6 +31,7 @@ def register_payroll_accounting_routes(
         create_payroll_payment,
         get_payment,
         list_payments_for_period,
+        pay_payroll_period,
     )
     from services.payroll_payment_posting import post_payroll_payment, reverse_payroll_payment
     from services.hr_payroll import PERM_PAY_VIEW
@@ -81,6 +82,16 @@ def register_payroll_accounting_routes(
         await require_any_perm(user, PAYMENT_CREATE)
         payment = await create_payroll_payment(get_db(), period_id, dump(payload), user)
         return {"payment": payment}
+
+    @api_router.post("/hr-payroll/periods/{period_id}/pay")
+    async def pay_payroll_period_endpoint(
+        period_id: str, payload: LoosePayload, user=Depends(current_user)
+    ):
+        """Trusted-role Bayar: create → approve → post (resumable)."""
+        await require_any_perm(user, PAYMENT_CREATE)
+        await require_any_perm(user, PAYMENT_APPROVE)
+        await require_any_perm(user, PAYMENT_POST)
+        return await pay_payroll_period(get_db(), period_id, dump(payload), user)
 
     @api_router.get("/hr-payroll/periods/{period_id}/payments")
     async def get_period_payroll_payment_endpoint(period_id: str, user=Depends(current_user)):

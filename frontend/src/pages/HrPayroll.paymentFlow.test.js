@@ -31,9 +31,13 @@ jest.mock("../lib/api", () => ({
     hrPayrollPeriodPayment: jest.fn(),
     hrPayrollCancelPayment: jest.fn(),
     hrPayrollCreatePayment: jest.fn(),
+    hrPayrollPayPeriod: jest.fn(),
     hrPayrollApprovePayment: jest.fn(),
     hrPayrollPostPayment: jest.fn(),
     hrPayrollReversePayment: jest.fn(),
+    hrPayrollFinalizeFromReview: jest.fn(),
+    hrPayrollTransition: jest.fn(),
+    hrPayrollCalculate: jest.fn(),
     hrPayrollPieceIntegration: jest.fn(),
     hrPayrollSavePieceInputs: jest.fn(),
     cashBankAccounts: jest.fn(),
@@ -162,68 +166,32 @@ describe("payroll payment UI smoke", () => {
     document.body.innerHTML = "";
   });
 
-  test("cancel, recreate, approve, post, reload, reverse, and recreate", async () => {
+  test("trusted Bayar resumes DRAFT then reverse remains separate", async () => {
+    api.hrPayrollPayPeriod.mockImplementation(async () => {
+      const row = rows.find((item) => item.status === "DRAFT") || rows[0];
+      row.status = "PAID";
+      row.journal_number = "JE-20260930-001";
+      row.approved_at = "2096-04-18T00:00:00Z";
+      row.paid_at = "2096-04-18T00:00:00Z";
+      return { payment: row, payment_status: "PAID", journal_number: row.journal_number };
+    });
     const { container } = await openPeriod();
     expect(container.querySelector("[data-testid='hr-payroll-cancel-payment']")).not.toBeNull();
-    expect(container.querySelector("[data-testid='hr-payroll-payment-visibility-label']").textContent).toBe("Menunggu Persetujuan");
-    expect(container.textContent).toMatch(/PYB-1 · Menunggu Persetujuan|PYB-1 · DRAFT/);
+    expect(container.querySelector("[data-testid='hr-payroll-bayar-action']")).not.toBeNull();
+    expect(buttonByText(container, "Buat Payment")).toBeFalsy();
+    expect(buttonByText(container, "Setujui")).toBeFalsy();
 
     await act(async () => {
-      container.querySelector("[data-testid='hr-payroll-cancel-payment']").click();
+      container.querySelector("[data-testid='hr-payroll-bayar-action']").click();
     });
-    const cancelReason = container.querySelector("[data-testid='hr-payment-cancel-reason']");
-    await act(async () => {
-      setControl(cancelReason, "bank salah");
-    });
+    expect(container.querySelector("[data-testid='hr-bayar-confirm-note']")).not.toBeNull();
     await act(async () => {
       container.querySelector("[data-testid='hr-payroll-finance-confirm']").click();
     });
     await flush();
-    expect(api.hrPayrollCancelPayment).toHaveBeenCalledWith("pay-1", "bank salah");
-    expect(container.textContent).toContain("CANCELLED");
-    expect(buttonByText(container, "Buat Payment")).toBeTruthy();
-
-    const date = container.querySelector("[data-testid='hr-payment-date']");
-    const bank = container.querySelector("[data-testid='hr-payment-bank']");
-    await act(async () => {
-      setControl(date, "2096-04-18");
-      setControl(bank, "bank-1");
-    });
-    await act(async () => {
-      buttonByText(container, "Buat Payment").click();
-    });
-    await act(async () => {
-      container.querySelector("[data-testid='hr-payroll-finance-confirm']").click();
-    });
-    await flush();
-    expect(api.hrPayrollCreatePayment).toHaveBeenCalled();
-    expect(buttonByText(container, "Setujui")).toBeTruthy();
-
-    await act(async () => {
-      buttonByText(container, "Setujui").click();
-    });
-    await act(async () => {
-      container.querySelector("[data-testid='hr-payroll-finance-confirm']").click();
-    });
-    await flush();
-    expect(buttonByText(container, "Post Payment")).toBeTruthy();
-
-    await act(async () => {
-      buttonByText(container, "Post Payment").click();
-    });
-    await act(async () => {
-      container.querySelector("[data-testid='hr-payroll-finance-confirm']").click();
-    });
-    await flush();
+    expect(api.hrPayrollPayPeriod).toHaveBeenCalledWith("period-ui", {});
     expect(container.querySelector("[data-testid='hr-payroll-payment-journal-number']").textContent).toBe("JE-20260930-001");
-
-    await act(async () => {
-      api.hrPayrollPeriodPayment.mockClear();
-      buttonByText(container, "PR-2096-04").click();
-    });
-    await flush();
-    expect(api.hrPayrollPeriodPayment).toHaveBeenCalled();
-    expect(container.querySelector("[data-testid='hr-payroll-payment-journal-number']").textContent).toBe("JE-20260930-001");
+    expect(buttonByText(container, "Reverse")).toBeTruthy();
 
     await act(async () => {
       buttonByText(container, "Reverse").click();
@@ -237,8 +205,47 @@ describe("payroll payment UI smoke", () => {
     });
     await flush();
     expect(container.textContent).toContain("REVERSED");
-    expect(container.textContent).toContain("CANCELLED");
+    expect(buttonByText(container, "Bayar")).toBeTruthy();
+  });
+
+  test("granular create/approve/post remains when Bayar perms incomplete", async () => {
+    mockAuth.perms = new Set(["payroll.view", "payroll_payment.create", "payroll_payment.approve"]);
+    rows = [];
+    api.hrPayrollCreatePayment.mockImplementation(async () => {
+      const row = {
+        id: "pay-new",
+        payment_number: "PYB-9",
+        status: "DRAFT",
+        total_amount: 1000000,
+        cash_bank_account_id: "bank-1",
+        journal_number: null,
+      };
+      rows.push(row);
+      return { payment: row };
+    });
+    api.hrPayrollApprovePayment.mockImplementation(async (id) => {
+      const row = rows.find((item) => item.id === id);
+      row.status = "APPROVED";
+      return { payment: row };
+    });
+    const { container } = await openPeriod();
     expect(buttonByText(container, "Buat Payment")).toBeTruthy();
+    expect(container.querySelector("[data-testid='hr-payroll-bayar-action']")).toBeNull();
+    const date = container.querySelector("[data-testid='hr-payment-date']");
+    const bank = container.querySelector("[data-testid='hr-payment-bank']");
+    await act(async () => {
+      setControl(date, "2096-04-18");
+      setControl(bank, "bank-1");
+    });
+    await act(async () => {
+      buttonByText(container, "Buat Payment").click();
+    });
+    await act(async () => {
+      container.querySelector("[data-testid='hr-payroll-finance-confirm']").click();
+    });
+    await flush();
+    expect(buttonByText(container, "Setujui")).toBeTruthy();
+    expect(buttonByText(container, "Post Payment")).toBeFalsy();
   });
 
   test("cancel permission is separate from approve and post", async () => {
@@ -263,6 +270,78 @@ describe("payroll payment UI smoke", () => {
     expect(cancelOnly.container.querySelector("[data-testid='hr-payroll-cancel-payment']")).not.toBeNull();
     expect(buttonByText(cancelOnly.container, "Setujui")).toBeFalsy();
     expect(buttonByText(cancelOnly.container, "Post Payment")).toBeFalsy();
+  });
+
+  test("zero-net FINAL has no Bayar", async () => {
+    rows = [];
+    api.hrPayrollAccountingReadiness.mockResolvedValue({
+      readiness: { accounting_ready: true, summary: { gross: 0, net: 0 }, planned_lines: [] },
+    });
+    api.hrPayrollLines.mockResolvedValue({ lines: [] });
+    const { container } = await openPeriod();
+    expect(container.querySelector("[data-testid='hr-payroll-bayar-action']")).toBeNull();
+    expect(container.querySelector("[data-testid='hr-payroll-accounting-blocked']").textContent).toMatch(/Net nol/);
+  });
+});
+
+describe("payroll finalize happy path UI", () => {
+  const reviewPeriod = {
+    id: "period-review",
+    year: 2096,
+    month: 5,
+    start_date: "2096-05-01",
+    end_date: "2096-05-31",
+    status: "REVIEW",
+    period_number: "PR-2096-05",
+  };
+
+  beforeEach(() => {
+    mockAuth.perms = new Set([
+      "payroll.view",
+      "payroll.review",
+      "payroll.approve",
+      "payroll.finalize",
+      "payroll_accounting.post",
+    ]);
+    api.hrPayrollPeriods.mockResolvedValue({ periods: [reviewPeriod] });
+    api.hrPayrollPeriod.mockResolvedValue({ period: reviewPeriod });
+    api.hrPayrollLines.mockResolvedValue({ lines: [{ id: "line-1", net: 1000000 }] });
+    api.hrPayrollAttendance.mockResolvedValue({ attendance: [] });
+    api.hrPayrollEmployees.mockResolvedValue({ employees: [] });
+    api.hrPayrollKasbonSchedules.mockResolvedValue({ schedules: [] });
+    api.hrPayrollPeriodJournal.mockResolvedValue({ journal_id: "", journal_number: "" });
+    api.hrPayrollAccountingReadiness.mockResolvedValue({ readiness: { accounting_ready: true, summary: { net: 1000000 }, planned_lines: [] } });
+    api.hrPayrollPeriodPayment.mockResolvedValue({ payment: null, payments: [] });
+    api.hrPayrollFinalizeFromReview.mockResolvedValue({ period: { ...reviewPeriod, status: "FINAL" } });
+  });
+
+  afterEach(() => {
+    document.body.innerHTML = "";
+  });
+
+  test("REVIEW shows Finalkan and hides Kirim Persetujuan", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<HrPayroll mode="payroll" />);
+    });
+    await flush();
+    await act(async () => {
+      buttonByText(container, "PR-2096-05").click();
+    });
+    await flush();
+    expect(container.querySelector("[data-testid='hr-transition-final']")).not.toBeNull();
+    expect(container.querySelector("[data-testid='hr-transition-approval']")).toBeNull();
+    await act(async () => {
+      container.querySelector("[data-testid='hr-transition-final']").click();
+    });
+    expect(container.querySelector("[data-testid='hr-finalize-modal']")).not.toBeNull();
+    await act(async () => {
+      container.querySelector("[data-testid='hr-finalize-confirm']").click();
+    });
+    await flush();
+    expect(api.hrPayrollFinalizeFromReview).toHaveBeenCalledWith("period-review");
   });
 });
 

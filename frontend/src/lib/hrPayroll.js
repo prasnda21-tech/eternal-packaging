@@ -14,10 +14,28 @@ export const PAYMENT_VISIBILITY_LABELS = {
 
 export const ALLOWED_TRANSITIONS = {
   DRAFT: ["REVIEW"],
-  REVIEW: ["APPROVAL", "DRAFT"],
+  REVIEW: ["APPROVAL", "DRAFT", "FINAL"],
   APPROVAL: ["FINAL", "REVIEW"],
   FINAL: [],
 };
+
+/** Trusted finance: create + approve + post in one Bayar action. */
+export function canBayarPayment(hasPerm) {
+  return Boolean(
+    hasPerm("payroll_payment.create")
+    && hasPerm("payroll_payment.approve")
+    && hasPerm("payroll_payment.post"),
+  );
+}
+
+/** Happy-path Finalkan from REVIEW requires approve + finalize (+ accounting.post gated by server). */
+export function canFinalizeFromReview(hasPerm) {
+  return Boolean(
+    hasPerm("payroll.approve")
+    && hasPerm("payroll.finalize")
+    && hasPerm("payroll_accounting.post"),
+  );
+}
 
 export function statusLabel(status) {
   const key = String(status || "").toUpperCase();
