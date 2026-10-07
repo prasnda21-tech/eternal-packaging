@@ -103,4 +103,20 @@ describe("Gaji Operator page", () => {
     expect(src).toMatch(/gaji-simple-period-head/);
     expect(src).toMatch(/gaji-simple-table-wrap/);
   });
+
+  test("shows separate payroll and payment visibility without widening columns", () => {
+    expect(src).toMatch(/gaji-status-stack/);
+    expect(src).toMatch(/Pembayaran/);
+    expect(src).toMatch(/Belum Dibayar/);
+    expect(src).toMatch(/Sudah Dibayar/);
+    expect(src).toMatch(/Menunggu Persetujuan/);
+    expect(src).toMatch(/Siap Diposting/);
+    expect(src).toMatch(/p\.payment_status/);
+    expect(src).toMatch(/gaji-payment-summary/);
+    expect(src).toMatch(/Sudah Dibayar: \{kpis\.sudah_dibayar/);
+    expect(src).toMatch(/Belum Dibayar: \{kpis\.belum_dibayar/);
+    expect(src).toMatch(/>Status</);
+    expect(src).not.toMatch(/<th>Payroll<\/th>/);
+    expect(src).not.toMatch(/<th>Pembayaran<\/th>/);
+  });
 });

@@ -3,7 +3,7 @@ import { Link, useLocation, useSearchParams } from "react-router-dom";
 import { AlertCircle, Edit3, Plus, Save, X } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
-import { canTransition, moneyFormat, statusLabel } from "../lib/hrPayroll";
+import { canTransition, moneyFormat, paymentVisibilityCode, paymentVisibilityLabel, statusLabel } from "../lib/hrPayroll";
 import { formatDisplayDate, formatTrackingPageDate } from "../lib/constants";
 import { FormSection, FormField, FormProgress, computeStatus } from "../components/form-standard";
 
@@ -659,7 +659,13 @@ function PayrollFinanceFlow({ period, lines, readiness, payment, payments, banks
   const action = financeAction(period, payment, readiness, hasPerm);
   const canCancel = Boolean(payment && ["DRAFT", "APPROVED"].includes(payment.status) && hasPerm("payroll_payment.cancel"));
   const steps = financeSteps(period, payment);
-  const bankName = (banks || []).find((row) => row.id === payment?.cash_bank_account_id)?.name || payment?.cash_bank_account_id || "—";
+  const bankName = (banks || []).find((row) => row.id === payment?.cash_bank_account_id)?.name
+    || (banks || []).find((row) => row.id === period?.payment_bank_account)?.name
+    || payment?.cash_bank_account_id
+    || period?.payment_bank_account
+    || "—";
+  const payVisCode = period?.payment_status || paymentVisibilityCode(payment || null, period);
+  const payVisLabel = period?.payment_status_label || paymentVisibilityLabel(payment || null, period);
   const run = async (work) => {
     setBusy(action?.kind || "save");
     try {
@@ -682,6 +688,12 @@ function PayrollFinanceFlow({ period, lines, readiness, payment, payments, banks
         {" · "}
         Total gaji bersih {moneyFormat(payrollNet(lines, readiness))}
       </p>
+      {payVisLabel ? (
+        <div className={`hr-pay-visibility hr-pay-vis-${String(payVisCode || "").toLowerCase()}`} data-testid="hr-payroll-payment-visibility">
+          <span>Pembayaran</span>
+          <strong data-testid="hr-payroll-payment-visibility-label">{payVisLabel}</strong>
+        </div>
+      ) : null}
       <dl className="hr-pay-meta" data-testid="hr-payroll-accounting-state">
         <dt>Status jurnal</dt>
         <dd>{period.accounting_journal_id ? "Diposting" : "Belum diposting"}</dd>
@@ -706,8 +718,9 @@ function PayrollFinanceFlow({ period, lines, readiness, payment, payments, banks
         <dl className="hr-pay-meta" data-testid="hr-payroll-payment-facts">
           <dt>Nomor payment</dt><dd>{payment.payment_number || "—"}</dd>
           <dt>Bank</dt><dd>{bankName}</dd>
+          <dt>Tanggal pembayaran</dt><dd>{(compact ? formatIdDate(payment.payment_date) : payment.payment_date) || "—"}</dd>
           <dt>Nominal</dt><dd>{moneyFormat(payment.total_amount)}</dd>
-          <dt>Status</dt><dd>{payment.status}</dd>
+          <dt>Status</dt><dd data-testid="hr-payroll-payment-status-label">{payment.payment_status_label || payVisLabel || payment.status}</dd>
           <dt>Jurnal payment</dt><dd data-testid="hr-payroll-payment-journal-number">{payment.journal_number || "—"}</dd>
           <dt>Disetujui</dt><dd>{payment.approved_at ? `${actorName(payment.approved_by)}, ${String(payment.approved_at).slice(0, 10)}` : "—"}</dd>
           <dt>Dibayar</dt><dd>{payment.paid_at ? `${actorName(payment.paid_by)}, ${String(payment.paid_at).slice(0, 10)}` : "—"}</dd>
@@ -723,7 +736,9 @@ function PayrollFinanceFlow({ period, lines, readiness, payment, payments, banks
       {(payments || []).length > 0 && (
         <ul className="hr-pay-facts" data-testid="hr-payroll-payment-history">
           {(payments || []).map((row) => (
-            <li key={row.id} data-testid="hr-payroll-payment-history-row">{row.payment_number || row.id} · {row.status} · {moneyFormat(row.total_amount)} · {row.journal_number || "—"}</li>
+            <li key={row.id} data-testid="hr-payroll-payment-history-row">
+              {row.payment_number || row.id} · {row.payment_status_label || paymentVisibilityLabel(row) || row.status} · {moneyFormat(row.total_amount)} · {row.journal_number || "—"}
+            </li>
           ))}
         </ul>
       )}

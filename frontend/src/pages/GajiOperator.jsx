@@ -44,6 +44,13 @@ const PAYROLL_STATUS = {
   NOT_ELIGIBLE: ["Perlu Perbaikan", "gaji-badge-fix"],
 };
 
+const PAYMENT_STATUS = {
+  BELUM_DIBAYAR: ["Belum Dibayar", "gaji-badge-pay-unpaid"],
+  MENUNGGU_PERSETUJUAN: ["Menunggu Persetujuan", "gaji-badge-pay-wait"],
+  SIAP_DIPOSTING: ["Siap Diposting", "gaji-badge-pay-ready"],
+  SUDAH_DIBAYAR: ["Sudah Dibayar", "gaji-badge-pay-done"],
+};
+
 const STATUS_TABS = [
   ["BELUM_MASUK_PAYROLL", "Siap Payroll"],
   ["HELD", "Dalam Proses"],
@@ -61,6 +68,29 @@ const KNOWN_ELIG_LABELS = [
 function payrollBadge(status, testId) {
   const [label, tone] = PAYROLL_STATUS[status] || [status || "—", "hr-status-draft"];
   return <span className={`hr-status ${tone}`} data-testid={testId || "gaji-payroll-status"}>{label}</span>;
+}
+
+function paymentBadge(status, testId) {
+  if (!status) return null;
+  const [label, tone] = PAYMENT_STATUS[status] || [status, "hr-status-draft"];
+  return <span className={`hr-status ${tone}`} data-testid={testId || "gaji-payment-status"}>{label}</span>;
+}
+
+function statusStack(payrollStatus, paymentStatus, testIdBase) {
+  return (
+    <div className="gaji-status-stack" data-testid={testIdBase}>
+      <span className="gaji-status-stack-row">
+        <em>Payroll</em>
+        {payrollBadge(payrollStatus, `${testIdBase}-payroll`)}
+      </span>
+      {paymentStatus ? (
+        <span className="gaji-status-stack-row">
+          <em>Pembayaran</em>
+          {paymentBadge(paymentStatus, `${testIdBase}-payment`)}
+        </span>
+      ) : null}
+    </div>
+  );
 }
 
 /** Backend matches line item_code / name — never send accurate_item_id alone. */
@@ -339,8 +369,14 @@ export default function GajiOperator() {
             {label} ({statusCounts[id] || 0})
           </button>
         ))}
+        {(Number(kpis.sudah_dibayar) > 0 || Number(kpis.belum_dibayar) > 0) && (
+          <span className="gaji-pay-chips" data-testid="gaji-payment-summary">
+            <span className="gaji-pay-chip is-paid" data-testid="gaji-pay-chip-paid">Sudah Dibayar: {kpis.sudah_dibayar || 0}</span>
+            <span className="gaji-pay-chip is-unpaid" data-testid="gaji-pay-chip-unpaid">Belum Dibayar: {kpis.belum_dibayar || 0}</span>
+          </span>
+        )}
       </div>
-      <span className="gaji-sr-only">SIAP PAYROLL DALAM PROSES SUDAH PAYROLL PERLU PERBAIKAN Total Payroll</span>
+      <span className="gaji-sr-only">SIAP PAYROLL DALAM PROSES SUDAH PAYROLL PERLU PERBAIKAN Total Payroll Belum Dibayar Sudah Dibayar</span>
 
       <div className="gaji-simple-table-wrap" data-testid="gaji-table">
         <table className="ship-table gaji-simple-table" data-testid="gaji-rekap-table">
@@ -384,13 +420,15 @@ export default function GajiOperator() {
                         <div className="muted small" data-testid={`gaji-estimasi-total-${pid}`}>Estimasi/Usulan Total {fmtMoney(p.estimate_total)}</div>
                       )}
                     </td>
-                    <td>{payrollBadge(p.payroll_status, `gaji-person-status-${pid}`)}</td>
+                    <td className="gaji-status-cell">
+                      {statusStack(p.payroll_status, p.payment_status, `gaji-person-status-${pid}`)}
+                    </td>
                   </tr>
                   {open && detail.map((r, i) => (
                     <tr key={`${pid}-d-${i}`} className="gaji-detail-row" data-testid={`gaji-row-${pid}-${i}`}>
                       <td></td>
                       <td colSpan={6} className="gaji-detail-cell">
-                        {payrollBadge(r.payroll_status, `gaji-row-status-${pid}-${i}`)}
+                        {statusStack(r.payroll_status, r.payment_status, `gaji-row-status-${pid}-${i}`)}
                         {" "}{r.item_name || r.cup_item || "-"} · {formatIdDate(r.tanggal || r.date)} ·
                         {" "}Output {fmtQty(r.qty_completed)}
                         {r.payroll_status === "NOT_ELIGIBLE" ? " · tidak dihitung" : ` × ${fmtMoney(r.base_rate_per_pcs)} = ${fmtMoney(r.base_wage)}`}
