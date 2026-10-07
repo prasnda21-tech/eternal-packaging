@@ -64,6 +64,8 @@ FIELD_LABELS = {
     "approved_signature_image": "Tanda tangan Approved",
     "header_elements": "Header Faktur & Proforma",
     "invoice.header_elements": "Header Faktur & Proforma",
+    "footer_elements": "Footer Faktur & Proforma",
+    "invoice.footer_elements": "Footer Faktur & Proforma",
 }
 
 OVERRIDE_FIELDS = (

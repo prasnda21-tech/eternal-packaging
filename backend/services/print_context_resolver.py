@@ -1,4 +1,4 @@
-"""Build a one-shot print context for invoice/proforma Design Cetakan headers.
+"""Build a one-shot print context for invoice/proforma Design Cetakan header/footer.
 
 Uses design settings + invoice document already in memory. No DB I/O.
 """
@@ -18,7 +18,15 @@ from services.print_field_registry import (
     SOURCE_DOCUMENT_DUE_DATE,
     SOURCE_DOCUMENT_NUMBER,
     SOURCE_DOCUMENT_PO_NUMBER,
+    SOURCE_ESTIMASI_BLOCK,
+    SOURCE_ESTIMASI_TITLE,
     SOURCE_SALES_NAME,
+    SOURCE_SIGNATURE_APPROVED,
+    SOURCE_SIGNATURE_APPROVED_FOOTER,
+    SOURCE_SIGNATURE_APPROVED_LABEL,
+    SOURCE_SIGNATURE_PREPARED,
+    SOURCE_SIGNATURE_PREPARED_FOOTER,
+    SOURCE_SIGNATURE_PREPARED_LABEL,
     SOURCE_STATIC_TEXT,
 )
 
@@ -45,13 +53,27 @@ def build_invoice_print_context(
 
     inv = invoice if isinstance(invoice, dict) else {}
     des = design if isinstance(design, dict) else {}
+    inv_design = des.get("invoice") if isinstance(des.get("invoice"), dict) else {}
     assets = des.get("_pdf_assets") if isinstance(des.get("_pdf_assets"), dict) else {}
     logo_bytes = assets.get("company_logo") if isinstance(assets, dict) else None
+    prepared_sig = assets.get("prepared_signature_image") if isinstance(assets, dict) else None
+    approved_sig = assets.get("approved_signature_image") if isinstance(assets, dict) else None
 
     company_address = _address_lines(des)
     customer_address = _text(inv.get("address"))
     due_raw = inv.get("due_date")
     due_shown = format_pdf_date(due_raw) if due_raw not in (None, "") else ""
+    sales_name = _text(invoice_sales_label(inv))
+    estimasi_title = _text(inv_design.get("estimasi_title"))
+    estimasi_lines = [
+        _text(line)
+        for line in (inv_design.get("estimasi_lines") or [])
+        if _text(line)
+    ]
+    prepared_label = _text(inv_design.get("prepared_label")) or "Disiapkan Oleh"
+    prepared_footer = _text(inv_design.get("prepared_footer")) or "Admin"
+    approved_label = _text(inv_design.get("approved_label")) or "Disetujui Oleh"
+    approved_footer = _text(inv_design.get("approved_footer")) or "Pengelola"
 
     values: Dict[str, Any] = {
         SOURCE_COMPANY_LOGO: logo_bytes if logo_bytes else None,
@@ -64,8 +86,29 @@ def build_invoice_print_context(
         SOURCE_DOCUMENT_DATE: format_pdf_date(inv.get("invoice_date")),
         SOURCE_DOCUMENT_DUE_DATE: due_shown,
         SOURCE_DOCUMENT_PO_NUMBER: _text(inv.get("po_number")),
-        SOURCE_SALES_NAME: _text(invoice_sales_label(inv)),
+        SOURCE_SALES_NAME: sales_name,
         SOURCE_STATIC_TEXT: "",
+        SOURCE_SIGNATURE_PREPARED_LABEL: prepared_label,
+        SOURCE_SIGNATURE_PREPARED_FOOTER: prepared_footer,
+        SOURCE_SIGNATURE_APPROVED_LABEL: approved_label,
+        SOURCE_SIGNATURE_APPROVED_FOOTER: approved_footer,
+        SOURCE_ESTIMASI_TITLE: estimasi_title,
+        SOURCE_ESTIMASI_BLOCK: {
+            "title": estimasi_title,
+            "lines": estimasi_lines,
+        },
+        SOURCE_SIGNATURE_PREPARED: {
+            "label": prepared_label,
+            "footer": prepared_footer,
+            "image": prepared_sig if prepared_sig else None,
+            "middle": "",
+        },
+        SOURCE_SIGNATURE_APPROVED: {
+            "label": approved_label,
+            "footer": approved_footer,
+            "image": approved_sig if approved_sig else None,
+            "middle": sales_name,
+        },
     }
     return {
         "document_type": str(document_type or "invoice"),
@@ -88,6 +131,14 @@ def build_invoice_print_context(
         },
         "sales": {
             "name": values[SOURCE_SALES_NAME],
+        },
+        "signature": {
+            "prepared": values[SOURCE_SIGNATURE_PREPARED],
+            "approved": values[SOURCE_SIGNATURE_APPROVED],
+        },
+        "estimasi": {
+            "title": estimasi_title,
+            "lines": estimasi_lines,
         },
     }
 

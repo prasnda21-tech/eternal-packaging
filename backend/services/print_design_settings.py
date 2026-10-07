@@ -106,6 +106,8 @@ def default_settings() -> Dict[str, Any]:
             "approved_signature_image": None,
             # Phase 1 generic header — empty means V1 legacy path.
             "header_elements": [],
+            # Phase 2 generic footer — empty means V1 legacy footer path.
+            "footer_elements": [],
         },
         "schema_version": 1,
         "surat_jalan": {
@@ -319,8 +321,111 @@ def _sanitize_header_elements(raw: Any, *, strict: bool) -> List[Dict[str, Any]]
     return out
 
 
-def schema_version_for_invoice(header_elements: Optional[list]) -> int:
-    return 2 if isinstance(header_elements, list) and len(header_elements) > 0 else 1
+def _sanitize_footer_elements(raw: Any, *, strict: bool) -> List[Dict[str, Any]]:
+    """Normalize invoice.footer_elements. strict=True raises HTTP 400 on invalid input."""
+    from services.print_field_registry import (
+        ALLOWED_ALIGNS,
+        ALLOWED_FOOTER_ELEMENT_TYPES,
+        ELEMENT_TYPE_FIELD,
+        ELEMENT_TYPE_SIGNATURE,
+        ELEMENT_TYPE_STATIC,
+        FOOTER_FIELD_SOURCES,
+        MAX_ELEMENT_ID,
+        MAX_ELEMENT_LABEL,
+        MAX_FOOTER_ELEMENTS,
+        MAX_STATIC_TEXT,
+        SIGNATURE_SOURCES,
+        SOURCE_STATIC_TEXT,
+        is_footer_source,
+    )
+
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        if strict:
+            raise HTTPException(400, "footer_elements harus berupa array")
+        return []
+    if len(raw) > MAX_FOOTER_ELEMENTS:
+        if strict:
+            raise HTTPException(400, f"Maksimal {MAX_FOOTER_ELEMENTS} elemen footer")
+        raw = raw[:MAX_FOOTER_ELEMENTS]
+
+    out: List[Dict[str, Any]] = []
+    for idx, row in enumerate(raw):
+        if not isinstance(row, dict):
+            if strict:
+                raise HTTPException(400, f"Elemen footer #{idx + 1} tidak valid")
+            continue
+        el_type = str(row.get("type") or "").strip()
+        if el_type not in ALLOWED_FOOTER_ELEMENT_TYPES:
+            if strict:
+                raise HTTPException(400, f"Tipe elemen footer tidak dikenali: {el_type or '-'}")
+            continue
+        source = str(row.get("source") or "").strip()
+        if el_type == ELEMENT_TYPE_STATIC:
+            source = SOURCE_STATIC_TEXT
+        elif el_type == ELEMENT_TYPE_SIGNATURE:
+            if source not in SIGNATURE_SOURCES or not is_footer_source(source):
+                if strict:
+                    raise HTTPException(400, f"Sumber tanda tangan footer tidak diizinkan: {source or '-'}")
+                continue
+        elif source not in FOOTER_FIELD_SOURCES or not is_footer_source(source):
+            if strict:
+                raise HTTPException(400, f"Sumber elemen footer tidak diizinkan: {source or '-'}")
+            continue
+        align = str(row.get("align") or "left").strip().lower()
+        if align not in ALLOWED_ALIGNS:
+            if strict:
+                raise HTTPException(400, f"Align elemen footer tidak valid: {align}")
+            align = "left"
+        eid = _clip(row.get("id"), MAX_ELEMENT_ID) or f"ftr-{idx + 1}"
+        label = _clip(row.get("label"), MAX_ELEMENT_LABEL)
+        text = (
+            _clip(row.get("text"), MAX_STATIC_TEXT)
+            if el_type == ELEMENT_TYPE_STATIC or source == SOURCE_STATIC_TEXT
+            else ""
+        )
+        visible = row.get("visible")
+        bold = row.get("bold")
+        if visible is not None and not isinstance(visible, bool):
+            if strict:
+                raise HTTPException(400, "visible harus boolean")
+            visible = bool(visible)
+        if bold is not None and not isinstance(bold, bool):
+            if strict:
+                raise HTTPException(400, "bold harus boolean")
+            bold = bool(bold)
+        if strict and text and ("<" in text or ">" in text):
+            raise HTTPException(400, "Teks elemen tidak boleh berisi markup HTML")
+        if el_type == ELEMENT_TYPE_FIELD and source == SOURCE_STATIC_TEXT:
+            if strict:
+                raise HTTPException(400, "Sumber static.text harus bertipe static_text")
+            el_type = ELEMENT_TYPE_STATIC
+        if el_type == ELEMENT_TYPE_FIELD and source in SIGNATURE_SOURCES:
+            if strict:
+                raise HTTPException(400, "Sumber tanda tangan harus bertipe signature")
+            el_type = ELEMENT_TYPE_SIGNATURE
+        out.append({
+            "id": eid,
+            "type": el_type,
+            "source": source,
+            "label": label,
+            "align": align,
+            "bold": bool(bold) if bold is not None else False,
+            "visible": True if visible is None else bool(visible),
+            "text": text,
+        })
+    return out
+
+
+def schema_version_for_invoice(
+    header_elements: Optional[list] = None,
+    footer_elements: Optional[list] = None,
+) -> int:
+    """v1 = no generic sections; v2 = generic header and/or footer present."""
+    has_header = isinstance(header_elements, list) and len(header_elements) > 0
+    has_footer = isinstance(footer_elements, list) and len(footer_elements) > 0
+    return 2 if (has_header or has_footer) else 1
 
 
 def resolve_print_design(raw: Optional[dict] = None) -> Dict[str, Any]:
@@ -340,6 +445,7 @@ def resolve_print_design(raw: Optional[dict] = None) -> Dict[str, Any]:
     inv_raw = doc.get("invoice") if isinstance(doc.get("invoice"), dict) else {}
     sj_raw = doc.get("surat_jalan") if isinstance(doc.get("surat_jalan"), dict) else {}
     header_elements = _sanitize_header_elements(inv_raw.get("header_elements"), strict=False)
+    footer_elements = _sanitize_footer_elements(inv_raw.get("footer_elements"), strict=False)
 
     po = {
         "signature_labels": _labels(po_raw.get("signature_labels"), base["po"]["signature_labels"]),
@@ -360,6 +466,7 @@ def resolve_print_design(raw: Optional[dict] = None) -> Dict[str, Any]:
         "prepared_signature_image": _sanitize_asset_ref(inv_raw.get("prepared_signature_image")),
         "approved_signature_image": _sanitize_asset_ref(inv_raw.get("approved_signature_image")),
         "header_elements": header_elements,
+        "footer_elements": footer_elements,
     }
     surat_jalan = {
         "signature_labels": _labels(
@@ -371,7 +478,7 @@ def resolve_print_design(raw: Optional[dict] = None) -> Dict[str, Any]:
 
     out = {
         "key": SETTINGS_KEY,
-        "schema_version": schema_version_for_invoice(header_elements),
+        "schema_version": schema_version_for_invoice(header_elements, footer_elements),
         "company_name": company,
         "address_lines": address,
         "accent_color": accent,
@@ -411,6 +518,7 @@ def public_settings(doc: Optional[dict] = None) -> Dict[str, Any]:
             "prepared_signature_image": _public_asset(inv.get("prepared_signature_image")),
             "approved_signature_image": _public_asset(inv.get("approved_signature_image")),
             "header_elements": list(inv.get("header_elements") or []),
+            "footer_elements": list(inv.get("footer_elements") or []),
         },
         "surat_jalan": resolved.get("surat_jalan"),
         "updated_at": resolved.get("updated_at"),
@@ -434,13 +542,19 @@ def _validate_put_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
         if isinstance(banks, list) and len(banks) > _MAX_BANKS:
             raise HTTPException(400, f"Maksimal {_MAX_BANKS} rekening pada Design Cetakan")
 
-    # Strict validate header_elements when present on PUT.
-    if "header_elements" in invoice_payload:
+    # Strict validate header/footer elements when present on PUT.
+    if "header_elements" in invoice_payload or "footer_elements" in invoice_payload:
         invoice_payload = dict(invoice_payload)
-        invoice_payload["header_elements"] = _sanitize_header_elements(
-            invoice_payload.get("header_elements"),
-            strict=True,
-        )
+        if "header_elements" in invoice_payload:
+            invoice_payload["header_elements"] = _sanitize_header_elements(
+                invoice_payload.get("header_elements"),
+                strict=True,
+            )
+        if "footer_elements" in invoice_payload:
+            invoice_payload["footer_elements"] = _sanitize_footer_elements(
+                invoice_payload.get("footer_elements"),
+                strict=True,
+            )
         payload = dict(payload)
         payload["invoice"] = invoice_payload
 
@@ -487,13 +601,20 @@ async def save_print_design_settings(db, payload: Dict[str, Any], user: Optional
     cleaned["invoice"]["approved_signature_image"] = (existing_resolved.get("invoice") or {}).get(
         "approved_signature_image"
     )
-    # Preserve V2 header when client omits the key (older clients / partial payloads).
+    # Preserve V2 header/footer when client omits the key (older clients / partial payloads).
     inv_in = payload.get("invoice") if isinstance(payload.get("invoice"), dict) else {}
     if "header_elements" not in inv_in:
         cleaned["invoice"]["header_elements"] = list(
             (existing_resolved.get("invoice") or {}).get("header_elements") or []
         )
-        cleaned["schema_version"] = schema_version_for_invoice(cleaned["invoice"]["header_elements"])
+    if "footer_elements" not in inv_in:
+        cleaned["invoice"]["footer_elements"] = list(
+            (existing_resolved.get("invoice") or {}).get("footer_elements") or []
+        )
+    cleaned["schema_version"] = schema_version_for_invoice(
+        cleaned["invoice"]["header_elements"],
+        cleaned["invoice"]["footer_elements"],
+    )
     saved = {
         **cleaned,
         "key": SETTINGS_KEY,

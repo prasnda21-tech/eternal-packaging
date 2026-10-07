@@ -1726,26 +1726,34 @@ def generate_sales_invoice_pdf_bytes(
     elements = []
 
     from services.print_context_resolver import build_invoice_print_context
+    from services.print_footer_render import (
+        build_generic_invoice_footer_flowables,
+        footer_elements_active,
+    )
     from services.print_header_render import (
         build_generic_invoice_header_flowables,
         header_elements_active,
     )
 
     header_elements = inv_design.get("header_elements") or []
+    footer_elements = inv_design.get("footer_elements") or []
     use_generic_header = header_elements_active(header_elements)
+    use_generic_footer = footer_elements_active(footer_elements)
     title = "PROFORMA INVOICE" if proforma else "Faktur Penjualan"
-
-    if use_generic_header:
-        # Phase 1 V2: controlled multi-source header. Body/totals/footer unchanged.
-        context = build_invoice_print_context(
+    print_context = None
+    if use_generic_header or use_generic_footer:
+        print_context = build_invoice_print_context(
             invoice,
             design,
             document_type="proforma" if proforma else "invoice",
         )
+
+    if use_generic_header:
+        # Phase 1 V2: controlled multi-source header. Body/totals unchanged.
         elements.extend(
             build_generic_invoice_header_flowables(
                 elements=header_elements,
-                context=context,
+                context=print_context,
                 design=design,
                 sty=sty,
                 width=width,
@@ -1939,75 +1947,88 @@ def generate_sales_invoice_pdf_bytes(
     elements.append(lower)
     elements.append(Spacer(1, 4 * mm))
 
-    sales_name = invoice_sales_label(invoice)
-
-    gap = 4 * mm
-    sig_w = (width - 68 * mm - (2 * gap)) / 2
-
-    def signature_column(title: str, footer: str, middle: str = "", image_bytes: Optional[bytes] = None) -> Table:
-        sig_img = signature_image_flowable(image_bytes, max_width=sig_w - 4 * mm, max_height=14 * mm)
-        middle_cell = sig_img if sig_img is not None else Paragraph(
-            f"<b>{esc(middle)}</b>" if middle else "&nbsp;",
-            sty["center"],
+    if use_generic_footer:
+        # Phase 2: controlled multi-source footer. Body/totals/header path unchanged.
+        elements.extend(
+            build_generic_invoice_footer_flowables(
+                elements=footer_elements,
+                context=print_context,
+                design=design,
+                sty=sty,
+                width=width,
+            )
         )
-        # Keep row height bounded: image replaces blank pad; text-only keeps existing pad.
-        mid_top = 2 * mm if sig_img is not None else 10 * mm
-        column = Table(
-            [
-                [Paragraph(esc(title), sty["center"])],
-                [middle_cell],
-                [Paragraph(esc(footer), sty["center"])],
-            ],
-            colWidths=[sig_w],
+    else:
+        # Exact V1 legacy footer path.
+        sales_name = invoice_sales_label(invoice)
+
+        gap = 4 * mm
+        sig_w = (width - 68 * mm - (2 * gap)) / 2
+
+        def signature_column(title: str, footer: str, middle: str = "", image_bytes: Optional[bytes] = None) -> Table:
+            sig_img = signature_image_flowable(image_bytes, max_width=sig_w - 4 * mm, max_height=14 * mm)
+            middle_cell = sig_img if sig_img is not None else Paragraph(
+                f"<b>{esc(middle)}</b>" if middle else "&nbsp;",
+                sty["center"],
+            )
+            # Keep row height bounded: image replaces blank pad; text-only keeps existing pad.
+            mid_top = 2 * mm if sig_img is not None else 10 * mm
+            column = Table(
+                [
+                    [Paragraph(esc(title), sty["center"])],
+                    [middle_cell],
+                    [Paragraph(esc(footer), sty["center"])],
+                ],
+                colWidths=[sig_w],
+            )
+            column.setStyle(TableStyle([
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                ("VALIGN", (0, 1), (-1, 1), "BOTTOM"),
+                ("TOPPADDING", (0, 1), (-1, 1), mid_top),
+                ("BOTTOMPADDING", (0, 1), (-1, 1), 3),
+                ("LINEABOVE", (0, 2), (-1, 2), 0.6, colors.black),
+                ("TOPPADDING", (0, 2), (-1, 2), 2),
+                ("LEFTPADDING", (0, 0), (-1, -1), 3),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+            ]))
+            return column
+
+        prepared = signature_column(
+            str(inv_design.get("prepared_label") or "Disiapkan Oleh"),
+            str(inv_design.get("prepared_footer") or "Admin"),
+            image_bytes=pdf_assets.get("prepared_signature_image"),
         )
-        column.setStyle(TableStyle([
-            ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-            ("VALIGN", (0, 1), (-1, 1), "BOTTOM"),
-            ("TOPPADDING", (0, 1), (-1, 1), mid_top),
-            ("BOTTOMPADDING", (0, 1), (-1, 1), 3),
-            ("LINEABOVE", (0, 2), (-1, 2), 0.6, colors.black),
-            ("TOPPADDING", (0, 2), (-1, 2), 2),
+        approved = signature_column(
+            str(inv_design.get("approved_label") or "Disetujui Oleh"),
+            str(inv_design.get("approved_footer") or "Pengelola"),
+            sales_name,
+            image_bytes=pdf_assets.get("approved_signature_image"),
+        )
+        estimasi_title = str(inv_design.get("estimasi_title") or "")
+        estimasi_lines = inv_design.get("estimasi_lines") or []
+        estimasi_html = "<b>" + esc(estimasi_title) + "</b><br/>" + "<br/>".join(esc(line) for line in estimasi_lines)
+        estimasi = Paragraph(estimasi_html, sty["red_small"])
+        estimasi_table = Table([[estimasi]], colWidths=[68 * mm])
+        estimasi_table.setStyle(TableStyle([
+            ("BOX", (0, 0), (-1, -1), 1.2, accent),
             ("LEFTPADDING", (0, 0), (-1, -1), 3),
             ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+            ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ]))
-        return column
-
-    prepared = signature_column(
-        str(inv_design.get("prepared_label") or "Disiapkan Oleh"),
-        str(inv_design.get("prepared_footer") or "Admin"),
-        image_bytes=pdf_assets.get("prepared_signature_image"),
-    )
-    approved = signature_column(
-        str(inv_design.get("approved_label") or "Disetujui Oleh"),
-        str(inv_design.get("approved_footer") or "Pengelola"),
-        sales_name,
-        image_bytes=pdf_assets.get("approved_signature_image"),
-    )
-    estimasi_title = str(inv_design.get("estimasi_title") or "")
-    estimasi_lines = inv_design.get("estimasi_lines") or []
-    estimasi_html = "<b>" + esc(estimasi_title) + "</b><br/>" + "<br/>".join(esc(line) for line in estimasi_lines)
-    estimasi = Paragraph(estimasi_html, sty["red_small"])
-    estimasi_table = Table([[estimasi]], colWidths=[68 * mm])
-    estimasi_table.setStyle(TableStyle([
-        ("BOX", (0, 0), (-1, -1), 1.2, accent),
-        ("LEFTPADDING", (0, 0), (-1, -1), 3),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 3),
-        ("TOPPADDING", (0, 0), (-1, -1), 3),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-    ]))
-    blank = Paragraph("&nbsp;", sty["small"])
-    sign = Table(
-        [[prepared, blank, approved, blank, estimasi_table]],
-        colWidths=[sig_w, gap, sig_w, gap, 68 * mm],
-    )
-    sign.setStyle(TableStyle([
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("ALIGN", (0, 0), (1, 0), "CENTER"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 1),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 1),
-        ("TOPPADDING", (0, 0), (-1, -1), 0),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
-    ]))
-    elements.append(sign)
+        blank = Paragraph("&nbsp;", sty["small"])
+        sign = Table(
+            [[prepared, blank, approved, blank, estimasi_table]],
+            colWidths=[sig_w, gap, sig_w, gap, 68 * mm],
+        )
+        sign.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("ALIGN", (0, 0), (1, 0), "CENTER"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 1),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 1),
+            ("TOPPADDING", (0, 0), (-1, -1), 0),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+        ]))
+        elements.append(sign)
     return build_pdf(elements, A4)
