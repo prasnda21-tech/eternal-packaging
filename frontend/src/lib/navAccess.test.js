@@ -406,6 +406,7 @@ describe("purchasingMenuItems", () => {
   test("builds tiles from existing Pembelian children only", () => {
     expect(purchasingMenuItems(has(NAV_KEYS.purchasing, NAV_KEYS.purchaseReceipts))).toEqual([
       { key: NAV_KEYS.purchaseReceipts, label: "Penerimaan Barang", to: "/pembelian/penerimaan-barang", tone: "amber", testid: "top-nav-penerimaan-barang" },
+      { key: NAV_KEYS.purchaseReturns, label: "Retur Pembelian", to: "/pembelian/retur", tone: "rose", testid: "top-nav-retur-pembelian" },
     ]);
     expect(purchasingMenuItems(has(NAV_KEYS.purchasing))).toEqual([]);
   });
@@ -422,11 +423,36 @@ describe("purchasingMenuItems", () => {
     expect(items.map((item) => item.label)).toEqual([
       "Permintaan",
       "Pesanan Pembelian",
+      "Uang Muka",
       "Penerimaan Barang",
+      "Retur Pembelian",
       "Faktur Pembelian",
       "Pembayaran Pembelian",
     ]);
     expect(items.filter((item) => item.label === "Penerimaan Barang")).toHaveLength(1);
+  });
+
+  test("places HPP Pembelian after Pembayaran without joining the transaction sequence", () => {
+    const items = purchasingMenuItems(has(
+      NAV_KEYS.purchasing,
+      NAV_KEYS.purchaseRequests,
+      NAV_KEYS.purchaseOrders,
+      NAV_KEYS.purchaseInvoices,
+      NAV_KEYS.purchasePayments,
+      NAV_KEYS.purchaseReceipts,
+      NAV_KEYS.purchaseHpp,
+    ));
+    expect(items.map((item) => item.label)).toEqual([
+      "Permintaan",
+      "Pesanan Pembelian",
+      "Uang Muka",
+      "Penerimaan Barang",
+      "Retur Pembelian",
+      "Faktur Pembelian",
+      "Pembayaran Pembelian",
+      "HPP Pembelian",
+    ]);
+    expect(items.find((item) => item.label === "HPP Pembelian").to).toBe("/pembelian/hpp-pembelian");
   });
 });
 

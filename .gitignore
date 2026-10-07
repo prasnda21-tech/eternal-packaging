@@ -55,8 +55,10 @@ credentials.json
 # ===== LOGS / TEMP =====
 *.log
 .cache/
+.tmp/
 
 # ===== EDITOR / OS =====
-.vscode/
+.vscode/*
+!.vscode/tasks.json
 .DS_Store
 Thumbs.db

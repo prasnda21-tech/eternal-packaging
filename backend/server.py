@@ -3,7 +3,7 @@ from fastapi.responses import Response as FastAPIResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
-import os, logging, uuid, base64, re, secrets, hashlib, copy, inspect, asyncio
+import os, logging, uuid, base64, re, secrets, hashlib, copy, inspect, asyncio, contextvars
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict
 from typing import List, Optional, Any, Dict, Tuple, Union
@@ -210,6 +210,7 @@ from services.employee_admin_http import register_employee_admin_routes
 from services.hr_payroll_http import register_hr_payroll_routes
 from services.chart_of_accounts_http import register_chart_of_accounts_routes
 from services.cash_bank_http import register_cash_bank_routes
+from services.org_locations_http import register_org_locations_routes
 from services.chat_http import register_chat_routes
 from services.chat_indexes import ensure_indexes as ensure_chat_indexes
 from services.chat_membership import bootstrap_system_groups as bootstrap_chat_system_groups, on_user_changed as on_chat_user_changed
@@ -2048,15 +2049,20 @@ async def _load_order_for_mutation(order_id: str) -> dict:
     return order
 
 
+_r2_delivery_hook = contextvars.ContextVar("r2_delivery_hook", default=None)
+
+
 async def _with_quantity_lock(order_id: str, mutate, extra_query=None, persist_keys=None):
     """Atomic optimistic lock + retry untuk mutasi qty kritis.
 
     `mutate(order)` memvalidasi & memodifikasi order in-place.
     Setiap attempt: baca fresh → validasi → update dengan filter updated_at.
     `extra_query` is optional and unused by every caller except Konfirmasi Terkirim.
+    A context hook, when set, runs inside the same Mongo transaction as the write.
     `persist_keys` limits the write to those fields so a stale snapshot cannot
     put an older line quantity back onto the order.
     """
+    in_transaction = _r2_delivery_hook.get()
     last_token = None
     for attempt in range(_QUANTITY_LOCK_RETRIES):
         order = await _load_order_for_mutation(order_id)
@@ -2067,9 +2073,20 @@ async def _with_quantity_lock(order_id: str, mutate, extra_query=None, persist_k
             await result
         order["_expected_updated_at"] = lock_token
         try:
-            return await _persist_order(
-                order, require_lock=True, extra_query=extra_query, persist_keys=persist_keys,
-            )
+            if in_transaction is None:
+                return await _persist_order(
+                    order, require_lock=True, extra_query=extra_query, persist_keys=persist_keys,
+                )
+            async with await db.client.start_session() as session:
+                async with session.start_transaction():
+                    await in_transaction(session, order)
+                    return await _persist_order(
+                        order,
+                        require_lock=True,
+                        extra_query=extra_query,
+                        persist_keys=persist_keys,
+                        session=session,
+                    )
         except HTTPException as exc:
             from services.physical_stock_engine import DELIVERY_FENCE_LOST
             if (
@@ -2079,10 +2096,19 @@ async def _with_quantity_lock(order_id: str, mutate, extra_query=None, persist_k
             ):
                 continue
             raise
+        except Exception as exc:
+            from services.physical_stock import (
+                InsufficientPhysicalStockError,
+                PhysicalStockConflictError,
+                PhysicalStockValidationError,
+            )
+            if isinstance(exc, (PhysicalStockValidationError, InsufficientPhysicalStockError, PhysicalStockConflictError)):
+                raise HTTPException(400, str(exc))
+            raise
     raise HTTPException(409, _CONFLICT_MSG)
 
 
-async def _persist_order(order, *, require_lock: bool = False, persist_keys: Optional[tuple] = None, extra_query=None):
+async def _persist_order(order, *, require_lock: bool = False, persist_keys: Optional[tuple] = None, extra_query=None, session=None):
     expected_updated = order.pop("_expected_updated_at", None)
     if require_lock and not expected_updated:
         raise HTTPException(409, _CONFLICT_MSG)
@@ -2096,7 +2122,9 @@ async def _persist_order(order, *, require_lock: bool = False, persist_keys: Opt
     incoming_files = order.get("surat_jalan_files")
     merge_sj = persist_keys is None or "surat_jalan_files" in persist_keys
     if merge_sj and isinstance(incoming_files, list) and incoming_files:
-        existing = await db.orders.find_one({"id": order["id"]}, {"surat_jalan_files": 1, "_id": 0})
+        existing = await db.orders.find_one(
+            {"id": order["id"]}, {"surat_jalan_files": 1, "_id": 0}, session=session,
+        )
         old_by_id = {
             str(f.get("id") or ""): f
             for f in ((existing or {}).get("surat_jalan_files") or [])
@@ -2131,6 +2159,7 @@ async def _persist_order(order, *, require_lock: bool = False, persist_keys: Opt
         query,
         {"$set": to_write},
         upsert=not bool(expected_updated or require_lock),
+        session=session,
     )
     if expected_updated and result.matched_count == 0:
         if extra_query:
@@ -5884,6 +5913,8 @@ class ConfirmDeliveredPayload(BaseModel):
     action_id: Optional[str] = None
     shipment_id: Optional[str] = None
     recipient_name: Optional[str] = None
+    warehouse_id: Optional[str] = None
+    branch_id: Optional[str] = None
 
 
 @api_router.post("/orders/{order_id}/confirm-delivered")
@@ -5923,13 +5954,18 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
     conf_holder = {}
     reconcile_holder = {"result": None}
 
+    from services.physical_stock import order_has_r2_balance as _order_has_r2_balance
+    uses_r2_stock = bool(existing_order) and await _order_has_r2_balance(db, existing_order)
+    r2_request = {}
+
     try:
-        if existing_order and op.get("ready"):
+        if existing_order and op.get("ready") and not uses_r2_stock:
             claimed_stock = await claim_selected_delivery_stock(
                 db, existing_order, selected_shipment_id, action_id, user, claim_plan_holder,
             )
 
         def mutate(order: dict):
+            r2_request.clear()
             conf_holder.pop("conf", None)
             reject_reused_delivery_action(order, action_id, op.get("shipment_id"))
             ids = list(order.get("delivery_confirm_action_ids") or [])
@@ -6021,12 +6057,78 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
             if action_id:
                 ids.append(action_id)
                 order["delivery_confirm_action_ids"] = ids[-20:]
+            if uses_r2_stock and conf_holder.get("conf"):
+                r2_request["confirmation_id"] = action_id or conf_holder["conf"].get("id")
+                r2_request["shipment"] = selected_sh
+                r2_request["increment"] = increment
+
+        async def _post_r2_delivery(session, order):
+            if not r2_request.get("confirmation_id"):
+                return
+            from services.physical_stock import (
+                PhysicalStockValidationError,
+                apply_confirmed_sales_delivery,
+            )
+            from services.physical_stock_engine import plan_confirmed_sj_stock
+            shipment = r2_request.get("shipment")
+            lines = None
+            if isinstance(shipment, dict):
+                plan = plan_confirmed_sj_stock(order, shipment, allow_delivered=True)
+                if plan.get("error") or not plan.get("lines"):
+                    raise PhysicalStockValidationError(
+                        plan.get("error") or "Baris pengiriman tidak dapat dipetakan ke master item"
+                    )
+                lines = [
+                    {
+                        "line_idx": int(ln["line_idx"]),
+                        "qty": int(ln["qty"]),
+                        "master_item_id": ln.get("master_item_id"),
+                        "line_id": ln.get("line_id"),
+                    }
+                    for ln in plan["lines"]
+                ]
+            else:
+                items = [
+                    (idx, line) for idx, line in enumerate(order.get("line_items") or [])
+                    if isinstance(line, dict) and str(line.get("master_item_id") or "").strip()
+                ]
+                increment_qty = int(r2_request.get("increment") or 0)
+                if len(items) == 1 and increment_qty > 0:
+                    idx, line = items[0]
+                    lines = [{
+                        "line_idx": idx,
+                        "qty": increment_qty,
+                        "master_item_id": line.get("master_item_id"),
+                        "line_id": line.get("line_id"),
+                    }]
+            if not lines:
+                raise PhysicalStockValidationError(
+                    "Baris pengiriman tidak dapat dipetakan ke master item"
+                )
+            await apply_confirmed_sales_delivery(
+                db,
+                session,
+                order=order,
+                confirmation_id=r2_request["confirmation_id"],
+                lines=lines,
+                actor_id=str(user.get("id") or user.get("email") or "user"),
+                warehouse_id=(payload.warehouse_id if payload else None),
+                branch_id=(payload.branch_id if payload else None),
+                reason="Konfirmasi terkirim",
+                write_order=False,
+            )
 
         try:
             await prepare_delivery_commit(db, op, claimed_stock)
-            order = await _with_quantity_lock(
-                order_id, mutate, extra_query=delivery_persist_filter(op),
-            )
+            token = _r2_delivery_hook.set(_post_r2_delivery if uses_r2_stock else None)
+            try:
+                order = await _with_quantity_lock(
+                    order_id,
+                    mutate,
+                    extra_query=delivery_persist_filter(op),
+                )
+            finally:
+                _r2_delivery_hook.reset(token)
         except Exception as exc:
             release_claim = getattr(exc, "detail", None) != DELIVERY_FENCE_LOST
             raise
@@ -12043,6 +12145,260 @@ async def master_item_mutation_detail_get(
     return {"mutation": detail}
 
 
+@api_router.get("/master-items/{item_id}/physical-stock")
+async def master_item_physical_stock_get(
+    item_id: str,
+    branch_id: Optional[str] = None,
+    warehouse_id: Optional[str] = None,
+    user=Depends(require_perm("master_items.view")),
+):
+    """Read physical_qty from physical_stock_balances. Does not write."""
+    from services.physical_stock import (
+        PhysicalStockNotFoundError,
+        PhysicalStockValidationError,
+        read_physical_stock,
+    )
+    try:
+        return await read_physical_stock(
+            db, item_id, branch_id=branch_id, warehouse_id=warehouse_id,
+        )
+    except PhysicalStockNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except PhysicalStockValidationError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@api_router.get("/master-items/{item_id}/physical-mutations")
+async def master_item_physical_mutations_get(
+    item_id: str,
+    branch_id: Optional[str] = None,
+    warehouse_id: Optional[str] = None,
+    movement_type: Optional[str] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    page: int = 1,
+    limit: int = 50,
+    user=Depends(require_perm("master_items.view")),
+):
+    """Read physical_stock_ledger newest first. Does not write."""
+    from services.physical_stock import (
+        PhysicalStockNotFoundError,
+        PhysicalStockValidationError,
+        list_physical_mutations,
+    )
+    try:
+        return await list_physical_mutations(
+            db,
+            item_id,
+            branch_id=branch_id,
+            warehouse_id=warehouse_id,
+            movement_type=movement_type,
+            from_date=from_date,
+            to_date=to_date,
+            page=page,
+            limit=limit,
+        )
+    except PhysicalStockNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except PhysicalStockValidationError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@api_router.post("/master-items/{item_id}/physical-opening-balance")
+async def master_item_physical_opening_balance_post(
+    item_id: str,
+    payload: dict = Body(...),
+    user=Depends(current_user),
+):
+    """Create one R2 OPENING_BALANCE through the physical stock transaction engine."""
+    await _require_any_perm(user, "current_stock.update", "permissions.manage")
+    from services.physical_stock import (
+        PhysicalStockConflictError,
+        PhysicalStockNotFoundError,
+        PhysicalStockUnavailableError,
+        PhysicalStockValidationError,
+        post_opening_balance,
+    )
+    actor_id = str((user or {}).get("id") or (user or {}).get("user_id") or "").strip()
+    if not actor_id:
+        raise HTTPException(401, "Aktor tidak dikenal")
+    try:
+        return await post_opening_balance(db, item_id, payload or {}, actor_id=actor_id)
+    except PhysicalStockNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except PhysicalStockValidationError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except PhysicalStockConflictError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except PhysicalStockUnavailableError as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+
+def _adjustment_allowed(user) -> bool:
+    """Reuse physical-stock correction access. Local preview admin stays allowed."""
+    from services.product_stock_state import can_correct_physical_stock
+
+    app_env = os.environ.get("APP_ENV")
+    mongo_url = os.environ.get("MONGO_URL")
+    if can_correct_physical_stock(user, app_env, mongo_url):
+        return True
+    if not str(app_env or "").strip():
+        return can_correct_physical_stock(user, "preview", mongo_url)
+    return False
+
+
+@api_router.post("/master-items/{item_id}/physical-adjustment")
+async def master_item_physical_adjustment_post(
+    item_id: str,
+    payload: dict = Body(...),
+    user=Depends(current_user),
+):
+    """Correct one warehouse to a target physical qty through an R2 MANUAL_ADJUSTMENT."""
+    from services.product_stock_state import require_physical_stock_correction_access
+
+    if not _adjustment_allowed(user):
+        require_physical_stock_correction_access(
+            user, os.environ.get("APP_ENV"), os.environ.get("MONGO_URL"),
+        )
+    from services.physical_stock import (
+        InsufficientPhysicalStockError,
+        PhysicalStockConflictError,
+        PhysicalStockUnavailableError,
+        PhysicalStockValidationError,
+        adjust_physical_stock_to_target,
+    )
+    actor_id = str((user or {}).get("id") or (user or {}).get("user_id") or "").strip()
+    if not actor_id:
+        raise HTTPException(401, "Aktor tidak dikenal")
+    try:
+        return await adjust_physical_stock_to_target(db, item_id, payload or {}, actor_id=actor_id)
+    except PhysicalStockValidationError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except PhysicalStockConflictError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except InsufficientPhysicalStockError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except PhysicalStockUnavailableError as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+
+@api_router.get("/master-items/{item_id}/physical-opening-balance")
+async def master_item_physical_opening_balance_get(
+    item_id: str,
+    branch_id: Optional[str] = None,
+    warehouse_id: Optional[str] = None,
+    user=Depends(require_perm("master_items.view")),
+):
+    """Read R2 opening-balance status for one item, branch, and warehouse. Does not write."""
+    from services.physical_stock import (
+        PhysicalStockNotFoundError,
+        PhysicalStockValidationError,
+        read_opening_balance,
+    )
+    try:
+        return await read_opening_balance(
+            db, item_id, branch_id=branch_id, warehouse_id=warehouse_id,
+        )
+    except PhysicalStockNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except PhysicalStockValidationError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+def _opening_import_http(exc) -> HTTPException:
+    detail = {"message": str(exc), "rows": exc.rows} if getattr(exc, "rows", None) else str(exc)
+    return HTTPException(getattr(exc, "status_code", 400), detail)
+
+
+@api_router.get("/physical-opening-balances/import/template")
+async def physical_opening_import_template(
+    warehouse_id: Optional[str] = None,
+    user=Depends(current_user),
+):
+    """Download a prefilled opening-balance workbook. Does not write stock."""
+    await _require_any_perm(user, "current_stock.update", "permissions.manage")
+    from services.physical_opening_import import OpeningImportError, build_template_xlsx
+
+    try:
+        content = await build_template_xlsx(db, warehouse_id=warehouse_id)
+    except OpeningImportError as exc:
+        raise _opening_import_http(exc) from exc
+    return FastAPIResponse(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="saldo-awal-stock-fisik.xlsx"'},
+    )
+
+
+@api_router.post("/physical-opening-balances/import/preview")
+async def physical_opening_import_preview(
+    file: UploadFile = File(...),
+    user=Depends(current_user),
+):
+    """Validate an opening-balance workbook. Does not write stock."""
+    await _require_any_perm(user, "current_stock.update", "permissions.manage")
+    from services.physical_opening_import import OpeningImportError, preview_opening_import
+
+    content = await file.read()
+    try:
+        return await preview_opening_import(db, content, file.filename or "")
+    except OpeningImportError as exc:
+        raise _opening_import_http(exc) from exc
+
+
+@api_router.post("/physical-opening-balances/import")
+async def physical_opening_import_confirm(
+    payload: dict = Body(...),
+    user=Depends(current_user),
+):
+    """Post validated opening lines as R2 OPENING_BALANCE in one transaction."""
+    await _require_any_perm(user, "current_stock.update", "permissions.manage")
+    from services.physical_opening_import import OpeningImportError, confirm_opening_import
+    from services.physical_stock import PhysicalStockUnavailableError
+
+    actor_id = str((user or {}).get("id") or (user or {}).get("user_id") or "").strip()
+    if not actor_id:
+        raise HTTPException(401, "Aktor tidak dikenal")
+    try:
+        return await confirm_opening_import(db, payload or {}, actor_id=actor_id)
+    except OpeningImportError as exc:
+        raise _opening_import_http(exc) from exc
+    except PhysicalStockUnavailableError as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+
+@api_router.get("/physical-stock")
+async def physical_stock_catalog_get(
+    q: Optional[str] = None,
+    branch_id: Optional[str] = None,
+    warehouse_id: Optional[str] = None,
+    page: int = 1,
+    limit: int = 50,
+    user=Depends(require_perm("current_stock.view")),
+):
+    """Read operational Stock Saat Ini. Does not write balances or ledger rows."""
+    from services.physical_stock import (
+        PhysicalStockNotFoundError,
+        PhysicalStockValidationError,
+        list_physical_stock_catalog,
+    )
+    try:
+        result = await list_physical_stock_catalog(
+            db,
+            q=q,
+            branch_id=branch_id,
+            warehouse_id=warehouse_id,
+            page=page,
+            limit=limit,
+        )
+        result["can_adjust_physical_stock"] = _adjustment_allowed(user)
+        return result
+    except PhysicalStockNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except PhysicalStockValidationError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 @api_router.get("/settings/physical-stock")
 async def physical_stock_settings_get(user=Depends(current_user)):
     """Pure read. Returns physical stock configuration."""
@@ -13269,6 +13625,14 @@ register_purchase_routes(
     require_any_perm=_require_any_perm,
     Depends=Depends,
 )
+from services.stock_opname_sessions import register_stock_opname_routes
+register_stock_opname_routes(
+    api_router,
+    get_db=lambda: db,
+    current_user=current_user,
+    require_perm=require_perm,
+    Depends=Depends,
+)
 register_product_request_routes(
     api_router,
     get_db=lambda: db,
@@ -13349,6 +13713,13 @@ register_employee_admin_routes(
     Depends=Depends,
 )
 register_chart_of_accounts_routes(
+    api_router,
+    get_db=lambda: db,
+    current_user=current_user,
+    require_perm=require_perm,
+    Depends=Depends,
+)
+register_org_locations_routes(
     api_router,
     get_db=lambda: db,
     current_user=current_user,
@@ -14977,6 +15348,8 @@ async def seed():
         partialFilterExpression={"tracking_public_code": {"$exists": True, "$gt": ""}},
     )
     await db.master_items.create_index("id", unique=True)
+    from services.physical_stock import ensure_indexes as ensure_physical_stock_indexes
+    await ensure_physical_stock_indexes(db)
     await db[MASTER_ITEMS_COLLECTION].create_index("accurate_item_id", unique=True)
     await db[STOCK_MANUAL_COLLECTION].create_index("id", unique=True)
     await db[STOCK_MANUAL_COLLECTION].create_index("accurate_item_id", unique=True, sparse=True)
@@ -15080,7 +15453,61 @@ async def seed():
     await _independent_route_ensure_indexes(db)
     from services.sales_activity.evaluator import start_evaluator_loop
     start_evaluator_loop(db)
-    for coll in (db.purchase_requests, db.purchase_orders, db.purchase_goods_receipts, db.purchase_invoices, db.purchase_payments):
+    await db.purchase_supplier_advances.create_index("id", unique=True)
+    await _ensure_unique_business_number_index(db.purchase_supplier_advances, "advance_number")
+    await db.purchase_supplier_advances.create_index("purchase_order_id")
+    await db.purchase_supplier_advances.create_index("supplier_key")
+    await db.purchase_supplier_advances.create_index("created_at")
+    await db.purchase_supplier_advance_allocations.create_index("id", unique=True)
+    await db.purchase_supplier_advance_allocations.create_index("supplier_advance_id")
+    await db.purchase_supplier_advance_allocations.create_index("purchase_invoice_id")
+    await db.purchase_supplier_advance_allocations.create_index("purchase_order_id")
+    from services.stock_opname_sessions import ensure_indexes as _stock_opname_ensure_indexes
+    await _stock_opname_ensure_indexes(db)
+    await db.purchase_returns.create_index("id", unique=True)
+    await _ensure_unique_business_number_index(db.purchase_returns, "return_number")
+    await db.purchase_returns.create_index("purchase_order_id")
+    await db.purchase_returns.create_index("created_at")
+    await db.purchase_returns.create_index(
+        "confirmation_key",
+        unique=True,
+        partialFilterExpression={"confirmation_key": {"$type": "string"}},
+        name="purchase_return_confirmation_key_partial_unique",
+    )
+    await db.purchase_return_credits.create_index("id", unique=True)
+    await db.purchase_return_credits.create_index("purchase_return_id")
+    await db.purchase_return_credits.create_index("purchase_invoice_id")
+    await db.purchase_return_credits.create_index(
+        "idempotency_key",
+        unique=True,
+        partialFilterExpression={"idempotency_key": {"$type": "string"}},
+        name="purchase_return_credit_idempotency_key",
+    )
+    await db.purchase_supplier_credits.create_index("id", unique=True)
+    await db.purchase_supplier_credits.create_index("supplier_key")
+    await db.purchase_supplier_credits.create_index("source_purchase_return_id")
+    await db.purchase_supplier_credits.create_index(
+        "source_purchase_return_credit_id",
+        unique=True,
+        partialFilterExpression={"source_purchase_return_credit_id": {"$type": "string"}},
+        name="supplier_credit_source_credit_unique",
+    )
+    await db.purchase_supplier_advances.create_index(
+        "confirmation_key",
+        unique=True,
+        partialFilterExpression={"confirmation_key": {"$type": "string"}},
+        name="confirmation_key_partial_unique",
+    )
+    for coll in (
+        db.purchase_requests,
+        db.purchase_orders,
+        db.purchase_goods_receipts,
+        db.purchase_invoices,
+        db.purchase_payments,
+        db.purchase_supplier_advances,
+        db.purchase_supplier_advance_allocations,
+        db.purchase_returns,
+    ):
         for idx_name in ("idempotency_key_1", "idempotency_key_partial_unique"):
             try:
                 await coll.drop_index(idx_name)

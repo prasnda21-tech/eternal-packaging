@@ -47,6 +47,22 @@ async def _master(db, mid, *, code, name, item_type="INVENTORY", active=True, st
     })
     if stock is None:
         return
+    if await db.branches.count_documents({"id": "branch-ygy"}) == 0:
+        await db.branches.insert_one({
+            "id": "branch-ygy", "code": "YGY", "name": "Yogyakarta", "active": True,
+        })
+        await db.warehouses.insert_one({
+            "id": "wh-ygy", "branch_id": "branch-ygy", "code": "MAIN",
+            "name": "Gudang Yogyakarta", "active": True,
+        })
+    if stock:
+        await db.physical_stock_balances.insert_one({
+            "id": f"bal-{mid}",
+            "master_item_id": mid,
+            "branch_id": "branch-ygy",
+            "warehouse_id": "wh-ygy",
+            "physical_qty": stock,
+        })
     await db.product_stock_state.insert_one({
         "_id": mid,
         "master_item_id": mid,
