@@ -3217,6 +3217,30 @@
 .gaji-badge-progress{background:#fff3d9;color:#8a5a00}
 .gaji-badge-done{background:#dcefe6;color:#176B4D}
 .gaji-badge-fix{background:#fde8e8;color:#b42318}
+.gaji-badge-pay-unpaid{background:#fde8e8;color:#b42318}
+.gaji-badge-pay-wait{background:#fff3d9;color:#8a5a00}
+.gaji-badge-pay-ready{background:#e8eefc;color:#1d4ed8}
+.gaji-badge-pay-done{background:#dcefe6;color:#176B4D}
+.gaji-status-cell{min-width:0;max-width:160px}
+.gaji-status-stack{display:flex;flex-direction:column;gap:2px;min-width:0}
+.gaji-status-stack-row{display:flex;align-items:center;gap:6px;min-width:0}
+.gaji-status-stack-row em{font-style:normal;font-size:10px;color:var(--soft);font-weight:600;min-width:4.5em}
+.gaji-status-stack .hr-status{font-size:11px;padding:1px 6px;white-space:nowrap}
+.gaji-pay-chips{display:inline-flex;align-items:center;gap:6px;margin-left:auto;flex-wrap:wrap}
+.gaji-pay-chip{font-size:11px;font-weight:700;padding:2px 8px;border-radius:999px;border:1px solid var(--line);background:#fff}
+.gaji-pay-chip.is-paid{color:#176B4D;border-color:#cfe8d8;background:#e7f6ec}
+.gaji-pay-chip.is-unpaid{color:#b42318;border-color:#f4cfcf;background:#fff7f7}
+.hr-pay-visibility{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0 0 8px;padding:8px 10px;border-radius:8px;border:1px solid var(--line);background:#fff}
+.hr-pay-visibility span{font-size:11px;font-weight:600;color:var(--soft)}
+.hr-pay-visibility strong{font-size:14px}
+.hr-pay-vis-belum_dibayar{border-color:#f4cfcf;background:#fff7f7}
+.hr-pay-vis-belum_dibayar strong{color:#b42318}
+.hr-pay-vis-menunggu_persetujuan{border-color:#f0d9a0;background:#fffaf0}
+.hr-pay-vis-menunggu_persetujuan strong{color:#8a5a00}
+.hr-pay-vis-siap_diposting{border-color:#c7d5f5;background:#f5f8ff}
+.hr-pay-vis-siap_diposting strong{color:#1d4ed8}
+.hr-pay-vis-sudah_dibayar{border-color:#cfe8d8;background:#f7fbf8}
+.hr-pay-vis-sudah_dibayar strong{color:#176B4D}
 .hr-piece-simple{display:flex;flex-direction:column;gap:8px;min-width:0}
 .hr-piece-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap}
 .hr-piece-kicker{display:flex;align-items:center;gap:8px;flex-wrap:wrap}

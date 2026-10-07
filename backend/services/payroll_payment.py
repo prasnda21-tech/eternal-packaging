@@ -58,6 +58,31 @@ STATUS_CANCELLED = "CANCELLED"
 ACTIVE_STATUSES = (STATUS_DRAFT, STATUS_APPROVED, STATUS_PAID)
 ACTIVE_PERIOD_INDEX = "uniq_active_payroll_period_payment"
 
+# Normalized payment visibility for UI (separate from claim payroll_status).
+VIS_BELUM_DIBAYAR = "BELUM_DIBAYAR"
+VIS_MENUNGGU_PERSETUJUAN = "MENUNGGU_PERSETUJUAN"
+VIS_SIAP_DIPOSTING = "SIAP_DIPOSTING"
+VIS_SUDAH_DIBAYAR = "SUDAH_DIBAYAR"
+PAYMENT_VISIBILITY_STATUSES = (
+    VIS_BELUM_DIBAYAR,
+    VIS_MENUNGGU_PERSETUJUAN,
+    VIS_SIAP_DIPOSTING,
+    VIS_SUDAH_DIBAYAR,
+)
+PAYMENT_VISIBILITY_LABELS = {
+    VIS_BELUM_DIBAYAR: "Belum Dibayar",
+    VIS_MENUNGGU_PERSETUJUAN: "Menunggu Persetujuan",
+    VIS_SIAP_DIPOSTING: "Siap Diposting",
+    VIS_SUDAH_DIBAYAR: "Sudah Dibayar",
+}
+# Unpaid-first precedence when one operator spans multiple periods.
+PAYMENT_VISIBILITY_RANK = {
+    VIS_BELUM_DIBAYAR: 0,
+    VIS_MENUNGGU_PERSETUJUAN: 1,
+    VIS_SIAP_DIPOSTING: 2,
+    VIS_SUDAH_DIBAYAR: 3,
+}
+
 PAYABLE_MARKER = "Utang Gaji"
 
 NOT_FINAL_MESSAGE = "Pembayaran hanya dapat dibuat untuk periode payroll FINAL."
@@ -254,9 +279,128 @@ async def _employee_lines(db, period_id: str, payment_id: str) -> List[dict]:
     return lines
 
 
+def map_payment_visibility(payment_status: Optional[str]) -> Optional[str]:
+    """Map active payment document status → UI visibility code. None = no payment."""
+    status = str(payment_status or "").strip().upper()
+    if not status:
+        return VIS_BELUM_DIBAYAR
+    if status == STATUS_DRAFT:
+        return VIS_MENUNGGU_PERSETUJUAN
+    if status == STATUS_APPROVED:
+        return VIS_SIAP_DIPOSTING
+    if status == STATUS_PAID:
+        return VIS_SUDAH_DIBAYAR
+    # Cancelled / reversed are not active; treat as no active payment.
+    return VIS_BELUM_DIBAYAR
+
+
+def payment_visibility_label(code: Optional[str]) -> str:
+    if not code:
+        return ""
+    return PAYMENT_VISIBILITY_LABELS.get(str(code), str(code))
+
+
+def summarize_payment_visibility(codes: List[Optional[str]]) -> Optional[str]:
+    """Unpaid-first among relevant visibility codes. Ignores empty/None."""
+    present = [str(code) for code in codes if code in PAYMENT_VISIBILITY_RANK]
+    if not present:
+        return None
+    return min(present, key=lambda code: PAYMENT_VISIBILITY_RANK[code])
+
+
+def payment_visibility_fields(
+    payment: Optional[dict],
+    *,
+    period_final: bool = False,
+) -> Dict[str, Any]:
+    """Safe read-only visibility fields for period/detail responses."""
+    empty = {
+        "payment_status": None,
+        "payment_status_label": "",
+        "payment_id": None,
+        "payment_bank_account": None,
+        "payment_date": None,
+        "paid_at": None,
+        "payment_journal_id": None,
+        "payment_number": None,
+        "payment_amount": None,
+        "payment_raw_status": None,
+    }
+    if not period_final:
+        return empty
+    if not payment or str(payment.get("status") or "") not in ACTIVE_STATUSES:
+        return {
+            **empty,
+            "payment_status": VIS_BELUM_DIBAYAR,
+            "payment_status_label": payment_visibility_label(VIS_BELUM_DIBAYAR),
+        }
+    code = map_payment_visibility(payment.get("status"))
+    return {
+        "payment_status": code,
+        "payment_status_label": payment_visibility_label(code),
+        "payment_id": payment.get("id"),
+        "payment_bank_account": payment.get("cash_bank_account_id"),
+        "payment_date": payment.get("payment_date"),
+        "paid_at": payment.get("paid_at"),
+        "payment_journal_id": payment.get("accounting_journal_id"),
+        "payment_number": payment.get("payment_number"),
+        "payment_amount": payment.get("total_amount"),
+        "payment_raw_status": payment.get("status"),
+    }
+
+
+def enrich_period_with_payment_visibility(period: Optional[dict], payment: Optional[dict]) -> Optional[dict]:
+    """Attach payment visibility onto a period dict. Does not write."""
+    if not period:
+        return period
+    out = dict(period)
+    out.update(payment_visibility_fields(
+        payment,
+        period_final=str(period.get("status") or "") == STATUS_FINAL,
+    ))
+    return out
+
+
+async def active_payments_by_period(db, period_ids: List[str]) -> Dict[str, dict]:
+    """Latest active payment per period. Read-only; no journal enrichment."""
+    ids = sorted({str(pid).strip() for pid in period_ids if str(pid or "").strip()})
+    if not ids:
+        return {}
+    docs = await db[PAYMENTS].find(
+        {"payroll_period_id": {"$in": ids}, "status": {"$in": list(ACTIVE_STATUSES)}},
+        {
+            "_id": 0,
+            "id": 1,
+            "payroll_period_id": 1,
+            "status": 1,
+            "payment_date": 1,
+            "cash_bank_account_id": 1,
+            "paid_at": 1,
+            "accounting_journal_id": 1,
+            "payment_number": 1,
+            "total_amount": 1,
+            "created_at": 1,
+        },
+    ).to_list(len(ids) + 50)
+    out: Dict[str, dict] = {}
+    for doc in docs:
+        pid = str(doc.get("payroll_period_id") or "")
+        if not pid:
+            continue
+        previous = out.get(pid)
+        if previous is None or str(doc.get("created_at") or "") >= str(previous.get("created_at") or ""):
+            out[pid] = doc
+    return out
+
+
 def public_payment(doc: Optional[dict], lines: Optional[List[dict]] = None) -> Optional[dict]:
     if not doc:
         return None
+    active = str(doc.get("status") or "") in ACTIVE_STATUSES
+    visibility = payment_visibility_fields(doc, period_final=True) if active else {
+        "payment_status": None,
+        "payment_status_label": "",
+    }
     out = {
         "id": doc.get("id"),
         "payment_number": doc.get("payment_number"),
@@ -267,6 +411,8 @@ def public_payment(doc: Optional[dict], lines: Optional[List[dict]] = None) -> O
         "payable_account_id": doc.get("payable_account_id"),
         "total_amount": doc.get("total_amount"),
         "status": doc.get("status"),
+        "payment_status": visibility.get("payment_status"),
+        "payment_status_label": visibility.get("payment_status_label"),
         "created_by": doc.get("created_by"),
         "created_at": doc.get("created_at"),
         "approved_by": doc.get("approved_by"),

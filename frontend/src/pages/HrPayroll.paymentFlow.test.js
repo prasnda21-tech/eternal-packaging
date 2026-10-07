@@ -165,7 +165,8 @@ describe("payroll payment UI smoke", () => {
   test("cancel, recreate, approve, post, reload, reverse, and recreate", async () => {
     const { container } = await openPeriod();
     expect(container.querySelector("[data-testid='hr-payroll-cancel-payment']")).not.toBeNull();
-    expect(container.textContent).toContain("PYB-1 · DRAFT");
+    expect(container.querySelector("[data-testid='hr-payroll-payment-visibility-label']").textContent).toBe("Menunggu Persetujuan");
+    expect(container.textContent).toMatch(/PYB-1 · Menunggu Persetujuan|PYB-1 · DRAFT/);
 
     await act(async () => {
       container.querySelector("[data-testid='hr-payroll-cancel-payment']").click();

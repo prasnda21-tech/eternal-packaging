@@ -1168,18 +1168,70 @@ def _status_from_claim(claim_status: Optional[str]) -> str:
     return PAYROLL_STATUS_BELUM
 
 
-def _claim_by_source(claims: List[dict]) -> Dict[str, str]:
+def _claim_by_source(claims: List[dict]) -> Dict[str, dict]:
+    """Map source_key → {status, period_id} using strongest active claim."""
     rank = {HELD: 1, POSTED: 2}
-    out: Dict[str, str] = {}
+    out: Dict[str, dict] = {}
     for row in claims or []:
         key = str((row or {}).get("source_key") or "")
         status = str((row or {}).get("status") or "")
         if not key or status not in ACTIVE_CLAIM:
             continue
         previous = out.get(key)
-        if previous is None or rank.get(status, 0) >= rank.get(previous, 0):
-            out[key] = status
+        if previous is None or rank.get(status, 0) >= rank.get(previous.get("status"), 0):
+            out[key] = {
+                "status": status,
+                "period_id": str((row or {}).get("period_id") or ""),
+            }
     return out
+
+
+def _row_payment_visibility(payroll_status: str, period_id: str, payment: Optional[dict]) -> Dict[str, Any]:
+    """Derive payment visibility for one Gaji Operator output row.
+
+    Relation: source_key → claim → period → active payment.
+    Does not mark unpaid POSTED rows as paid.
+    """
+    from services.payroll_payment import (
+        VIS_BELUM_DIBAYAR,
+        map_payment_visibility,
+        payment_visibility_label,
+    )
+
+    empty = {
+        "payment_status": None,
+        "payment_status_label": "",
+        "payroll_period_id": period_id or "",
+        "payment_id": None,
+    }
+    if payroll_status in (PAYROLL_STATUS_BELUM, PAYROLL_STATUS_BLOCKED, PAYROLL_STATUS_HELD):
+        return empty
+    if payroll_status != PAYROLL_STATUS_POSTED:
+        return empty
+    if not period_id or not payment:
+        return {
+            **empty,
+            "payroll_period_id": period_id or "",
+            "payment_status": VIS_BELUM_DIBAYAR,
+            "payment_status_label": payment_visibility_label(VIS_BELUM_DIBAYAR),
+        }
+    code = map_payment_visibility(payment.get("status"))
+    return {
+        "payment_status": code,
+        "payment_status_label": payment_visibility_label(code),
+        "payroll_period_id": period_id,
+        "payment_id": payment.get("id"),
+    }
+
+
+def _summary_payment_status(rows: List[dict]) -> Optional[str]:
+    """Person-level payment visibility with unpaid-first precedence."""
+    from services.payroll_payment import summarize_payment_visibility
+
+    return summarize_payment_visibility([
+        row.get("payment_status") for row in rows
+        if row.get("payroll_status") == PAYROLL_STATUS_POSTED
+    ])
 
 
 def _work_in_range(row: dict, start: str, end: str) -> bool:
@@ -1312,14 +1364,18 @@ def assemble_gaji_operator_rows(
     item: Optional[str] = None,
     bonus_by_employee: Optional[Dict[str, dict]] = None,
     bonus_config: Optional[dict] = None,
+    payments_by_period: Optional[Dict[str, dict]] = None,
 ) -> dict:
     """Shape canonical collect_outputs rows for the read-only Gaji Operator report.
 
     Wage amounts are the collect_outputs amounts. This function does not rate
     rows again and does not write claims.
     """
+    from services.payroll_payment import payment_visibility_label
+
     claim_map = _claim_by_source(claims)
     bonus_by_employee = bonus_by_employee or {}
+    payments_by_period = payments_by_period or {}
 
     def present(raw: dict, *, eligible: bool, apply_filters: bool) -> Optional[dict]:
         order = orders.get(str(raw.get("order_id") or "")) or {}
@@ -1335,7 +1391,9 @@ def assemble_gaji_operator_rows(
             return None
         if apply_filters and not _passes_filters(row, order, operator_ids, item):
             return None
-        claim_status = claim_map.get(str(row.get("source_key") or ""))
+        claim = claim_map.get(str(row.get("source_key") or "")) or {}
+        claim_status = claim.get("status")
+        period_id = str(claim.get("period_id") or "")
         if not _has_work_date(row):
             status = PAYROLL_STATUS_BLOCKED
             reason = MISSING_WORK_DATE_REASON
@@ -1352,6 +1410,8 @@ def assemble_gaji_operator_rows(
         if status == PAYROLL_STATUS_BLOCKED:
             amount = 0.0
         qty = int(row.get("qty") or 0)
+        payment = payments_by_period.get(period_id) if period_id else None
+        pay_vis = _row_payment_visibility(status, period_id, payment)
         return {
             "source_key": row.get("source_key") or "",
             "order_id": row.get("order_id") or "",
@@ -1384,6 +1444,10 @@ def assemble_gaji_operator_rows(
             "payroll_reason": reason,
             "rate_unset": status == PAYROLL_STATUS_BLOCKED and reason == "tanpa snapshot tarif",
             "rate_source": "entry_snapshot" if row.get("has_rate") else "",
+            "payroll_period_id": pay_vis.get("payroll_period_id") or "",
+            "payment_status": pay_vis.get("payment_status"),
+            "payment_status_label": pay_vis.get("payment_status_label") or "",
+            "payment_id": pay_vis.get("payment_id"),
         }
 
     def collect(apply_filters: bool) -> List[dict]:
@@ -1452,6 +1516,7 @@ def assemble_gaji_operator_rows(
         counts: Dict[str, int] = {}
         for row in rows:
             counts[row["payroll_status"]] = counts.get(row["payroll_status"], 0) + 1
+        pay_status = _summary_payment_status(rows)
         people.append({
             "id": key,
             "operator_user_id": head.get("operator_user_id") or "",
@@ -1474,6 +1539,8 @@ def assemble_gaji_operator_rows(
             "payroll_status": _summary_status(rows),
             "payroll_counts": counts,
             "rate_unset": any(row.get("rate_unset") for row in rows),
+            "payment_status": pay_status,
+            "payment_status_label": payment_visibility_label(pay_status) if pay_status else "",
         })
     people.sort(key=lambda row: (row.get("name") or "", row.get("id") or ""))
     visible.sort(key=lambda row: (row.get("tanggal") or "", row.get("operator") or "", row.get("source_key") or ""))
@@ -1587,6 +1654,13 @@ async def build_gaji_operator_report(
             if row.get("source_key"):
                 source_keys.append(str(row["source_key"]))
     claims = await _claims_for_keys(db, source_keys)
+    period_ids = sorted({
+        str(row.get("period_id") or "")
+        for row in claims
+        if row.get("period_id")
+    })
+    from services.payroll_payment import VIS_SUDAH_DIBAYAR, active_payments_by_period
+    payments_by_period = await active_payments_by_period(db, period_ids)
     employee_ids = sorted({
         str(row.get("employee_id") or "")
         for row in (found.get("bonus") or [])
@@ -1605,12 +1679,16 @@ async def build_gaji_operator_report(
         item=item,
         bonus_by_employee=stored_bonus,
         bonus_config=bonus_config,
+        payments_by_period=payments_by_period,
     )
     people = assembled["people"]
     rows = assembled["rows"]
     eligible = [row for row in rows if row.get("payroll_status") != PAYROLL_STATUS_BLOCKED]
     missing = assembled["missing_base_rate"]
     payroll_total = sum(person["total_payroll"] for person in people)
+    posted_people = [p for p in people if p.get("payroll_status") == PAYROLL_STATUS_POSTED]
+    paid_people = sum(1 for p in posted_people if p.get("payment_status") == VIS_SUDAH_DIBAYAR)
+    unpaid_people = sum(1 for p in posted_people if p.get("payment_status") != VIS_SUDAH_DIBAYAR)
     return {
         "rows": rows,
         "people": people,
@@ -1627,6 +1705,9 @@ async def build_gaji_operator_report(
             "total_payroll": payroll_total,
             "estimate_total": sum(person["estimate_total"] for person in people),
             "operator_count": len(people),
+            "sudah_dibayar": paid_people,
+            "belum_dibayar": unpaid_people,
+            "payment_posted_operators": len(posted_people),
         },
         "filters": assembled["filters"],
         "period": {"from": start, "to": end},

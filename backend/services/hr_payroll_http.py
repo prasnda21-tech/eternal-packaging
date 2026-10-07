@@ -59,12 +59,17 @@ from services.hr_payroll import (
     list_lines,
     list_periods,
     public_line,
+    public_period,
     reopen_period,
     save_settings,
     transition_period,
     update_component,
     update_employee,
     upsert_attendance_entry,
+)
+from services.payroll_payment import (
+    enrich_period_with_payment_visibility,
+    get_payment_for_period,
 )
 
 
@@ -294,8 +299,13 @@ def register_hr_payroll_routes(
     @api_router.get("/hr-payroll/periods/{period_id}")
     async def period_detail(period_id: str, user=Depends(current_user)):
         await require_any_perm(user, PERM_PAY_VIEW, PERM_PAY_CALC, PERM_PAY_REVIEW, PERM_PAY_APPROVE, PERM_PAY_FINAL, PERM_PIECE_HOLDING)
-        period = await get_period(get_db(), period_id)
-        return {"period": period}
+        db = get_db()
+        period = await get_period(db, period_id)
+        presented = public_period(period) or period
+        payment = None
+        if str(presented.get("status") or "") == STATUS_FINAL:
+            payment = await get_payment_for_period(db, period_id)
+        return {"period": enrich_period_with_payment_visibility(presented, payment)}
 
     @api_router.post("/hr-payroll/periods/{period_id}/calculate")
     async def period_calculate(period_id: str, user=Depends(current_user)):
