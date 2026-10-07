@@ -492,11 +492,19 @@ async def _role_defaults_override():
 
 async def user_permissions(user: dict) -> set:
     """Compute effective permissions for the JWT payload / user."""
-    # Super admin gets everything, always.
+    from services.purchasing_inventory_access import filter_package_permissions
+
+    # Super admin gets everything, always — except production package lock
+    # which restricts Purchasing/Inventory/HPP to HOLDING_TEAM only.
     if user.get("email"):
         u = await db.users.find_one({"email": user["email"]}, {"is_super_admin": 1, "role": 1})
         if u and u.get("is_super_admin"):
-            return set(ALL_PERMISSIONS)
+            return filter_package_permissions(
+                ALL_PERMISSIONS,
+                user,
+                os.environ.get("APP_ENV"),
+                os.environ.get("MONGO_URL"),
+            )
     role_override = await _role_defaults_override()
     # Inactive roles: user with an inactive role gets empty defaults (still keeps overrides).
     inactive = await _inactive_role_slugs()
@@ -505,8 +513,18 @@ async def user_permissions(user: dict) -> set:
         for perm, allowed in (user.get("permissions_override") or {}).items():
             if allowed:
                 base.add(perm)
-        return base
-    return effective_permissions(user.get("role"), user.get("permissions_override"), role_override)
+        return filter_package_permissions(
+            base,
+            user,
+            os.environ.get("APP_ENV"),
+            os.environ.get("MONGO_URL"),
+        )
+    return filter_package_permissions(
+        effective_permissions(user.get("role"), user.get("permissions_override"), role_override),
+        user,
+        os.environ.get("APP_ENV"),
+        os.environ.get("MONGO_URL"),
+    )
 
 
 async def _inactive_role_slugs() -> set:
@@ -517,7 +535,18 @@ async def _inactive_role_slugs() -> set:
 def require_perm(*perms):
     """Dependency that ensures caller has ALL the given permission keys."""
     async def checker(request: Request, user=Depends(current_user)):
+        from services.purchasing_inventory_access import (
+            require_purchasing_inventory_package_access,
+            touches_package_permissions,
+        )
+
         enforce_sales_eternal_surface(request, user)
+        if touches_package_permissions(perms):
+            require_purchasing_inventory_package_access(
+                user,
+                os.environ.get("APP_ENV"),
+                os.environ.get("MONGO_URL"),
+            )
         eff = await user_permissions(user)
         for p in perms:
             if p not in eff:
@@ -2365,8 +2394,20 @@ async def _audit_po(order: dict, action: str, actor: dict, before=None, after=No
 
 
 async def _require_perm(user: dict, perm: str):
-    """Deny if the user lacks `perm` in their effective set (admin still passes)."""
+    """Deny if the user lacks `perm` in their effective set (admin still passes locally)."""
+    from services.purchasing_inventory_access import (
+        require_purchasing_inventory_package_access,
+        touches_package_permissions,
+    )
+
     reject_sales_pwa_bypass(user)
+    if touches_package_permissions([perm]):
+        require_purchasing_inventory_package_access(
+            user,
+            os.environ.get("APP_ENV"),
+            os.environ.get("MONGO_URL"),
+        )
+    # Admin bypass remains for non-package perms; package access already gated above.
     if user.get("role") == "admin":
         return
     eff = await user_permissions(user)
@@ -6555,7 +6596,18 @@ class DeliveryRescheduleSetDatePayload(BaseModel):
 
 
 async def _require_any_perm(user: dict, *perms: str):
+    from services.purchasing_inventory_access import (
+        require_purchasing_inventory_package_access,
+        touches_package_permissions,
+    )
+
     reject_sales_pwa_bypass(user)
+    if touches_package_permissions(perms):
+        require_purchasing_inventory_package_access(
+            user,
+            os.environ.get("APP_ENV"),
+            os.environ.get("MONGO_URL"),
+        )
     if user.get("role") == "admin":
         return
     eff = await user_permissions(user)
