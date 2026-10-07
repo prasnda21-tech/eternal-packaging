@@ -91,34 +91,124 @@ const FOOTER_SOURCE_OPTIONS = [
 const FOOTER_SOURCE_FLAT = FOOTER_SOURCE_OPTIONS.flatMap((g) => g.options);
 const FOOTER_SOURCE_KEYS = new Set(FOOTER_SOURCE_FLAT.map((o) => o.key));
 
+/** Phase 3 PO whitelist — keys must match backend print_field_registry for document=po. */
+const PO_HEADER_SOURCE_OPTIONS = [
+  { group: "Perusahaan", options: [
+    { key: "company.logo", label: "Logo", type: "field" },
+    { key: "company.name", label: "Nama", type: "field" },
+    { key: "company.address", label: "Alamat", type: "field" },
+  ]},
+  { group: "Customer", options: [
+    { key: "customer.name", label: "Nama", type: "field" },
+    { key: "customer.address", label: "Alamat", type: "field" },
+  ]},
+  { group: "Dokumen", options: [
+    { key: "document.number", label: "Nomor PO", type: "field" },
+    { key: "document.date", label: "Tanggal", type: "field" },
+    { key: "document.delivery_date", label: "Estimasi Pengiriman", type: "field" },
+    { key: "document.payment_terms", label: "Syarat Pembayaran", type: "field" },
+    { key: "document.expedition", label: "Ekspedisi", type: "field" },
+    { key: "document.zone", label: "Zona Pengiriman", type: "field" },
+    { key: "document.notes", label: "Keterangan", type: "field" },
+  ]},
+  { group: "Sales / User", options: [
+    { key: "sales.name", label: "Nama Sales", type: "field" },
+    { key: "user.created_by", label: "Pembuat Data", type: "field" },
+  ]},
+  { group: "Lainnya", options: [
+    { key: "static.text", label: "Teks Manual", type: "static_text" },
+  ]},
+];
+
+const PO_FOOTER_SOURCE_OPTIONS = [
+  { group: "Dokumen", options: [
+    { key: "document.notes", label: "Keterangan", type: "field" },
+  ]},
+  { group: "Tanda Tangan", options: [
+    { key: "po.signatures_block", label: "Blok Tanda Tangan PO", type: "field" },
+  ]},
+  { group: "Lainnya", options: [
+    { key: "static.text", label: "Teks Manual", type: "static_text" },
+  ]},
+];
+
+/** Phase 3 Surat Jalan whitelist — document=delivery. POD/driver not exposed. */
+const SJ_HEADER_SOURCE_OPTIONS = [
+  { group: "Perusahaan", options: [
+    { key: "company.logo", label: "Logo", type: "field" },
+    { key: "company.name", label: "Nama", type: "field" },
+    { key: "company.address", label: "Alamat", type: "field" },
+  ]},
+  { group: "Customer", options: [
+    { key: "customer.name", label: "Nama", type: "field" },
+    { key: "customer.address", label: "Alamat", type: "field" },
+    { key: "customer.outlet", label: "Outlet", type: "field" },
+  ]},
+  { group: "Dokumen", options: [
+    { key: "document.number", label: "Nomor SJ", type: "field" },
+    { key: "document.date", label: "Tanggal", type: "field" },
+    { key: "document.po_number", label: "No. PO", type: "field" },
+    { key: "document.delivery_date", label: "Tanggal Pengiriman", type: "field" },
+    { key: "document.expedition", label: "Ekspedisi", type: "field" },
+    { key: "document.zone", label: "Zona Kirim", type: "field" },
+    { key: "document.notes", label: "Keterangan", type: "field" },
+  ]},
+  { group: "Sales / User", options: [
+    { key: "sales.name", label: "Nama Sales", type: "field" },
+    { key: "user.created_by", label: "Pembuat Data", type: "field" },
+  ]},
+  { group: "Lainnya", options: [
+    { key: "static.text", label: "Teks Manual", type: "static_text" },
+  ]},
+];
+
+const SJ_FOOTER_SOURCE_OPTIONS = [
+  { group: "Dokumen", options: [
+    { key: "document.notes", label: "Keterangan", type: "field" },
+  ]},
+  { group: "Lainnya", options: [
+    { key: "static.text", label: "Teks Manual", type: "static_text" },
+  ]},
+];
+
+const PO_HEADER_SOURCE_FLAT = PO_HEADER_SOURCE_OPTIONS.flatMap((g) => g.options);
+const PO_HEADER_SOURCE_KEYS = new Set(PO_HEADER_SOURCE_FLAT.map((o) => o.key));
+const PO_FOOTER_SOURCE_FLAT = PO_FOOTER_SOURCE_OPTIONS.flatMap((g) => g.options);
+const PO_FOOTER_SOURCE_KEYS = new Set(PO_FOOTER_SOURCE_FLAT.map((o) => o.key));
+const SJ_HEADER_SOURCE_FLAT = SJ_HEADER_SOURCE_OPTIONS.flatMap((g) => g.options);
+const SJ_HEADER_SOURCE_KEYS = new Set(SJ_HEADER_SOURCE_FLAT.map((o) => o.key));
+const SJ_FOOTER_SOURCE_FLAT = SJ_FOOTER_SOURCE_OPTIONS.flatMap((g) => g.options);
+const SJ_FOOTER_SOURCE_KEYS = new Set(SJ_FOOTER_SOURCE_FLAT.map((o) => o.key));
+
 function elementTypeForOpt(opt) {
   if (opt?.type === "static_text") return "static_text";
   if (opt?.type === "signature") return "signature";
   return "field";
 }
 
-function newHeaderElement(sourceKey = "company.name") {
-  const opt = HEADER_SOURCE_FLAT.find((o) => o.key === sourceKey) || HEADER_SOURCE_FLAT[1];
+function newCatalogElement(sourceFlat, sourceKey, idPrefix, align = "left") {
+  const opt = sourceFlat.find((o) => o.key === sourceKey) || sourceFlat[0];
   return {
-    id: `hdr-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+    id: `${idPrefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
     type: elementTypeForOpt(opt),
     source: opt.key,
     label: "",
-    align: "left",
+    align,
     bold: opt.key === "company.name",
     visible: true,
     text: "",
   };
 }
 
-function normalizeHeaderElements(raw) {
+function normalizeCatalogElements(raw, sourceKeys, sourceFlat, max, idPrefix, fallbackSource) {
   if (!Array.isArray(raw)) return [];
-  return raw.slice(0, MAX_HEADER_ELEMENTS).map((row, idx) => {
-    const source = HEADER_SOURCE_KEYS.has(row?.source) ? row.source : "company.name";
-    const opt = HEADER_SOURCE_FLAT.find((o) => o.key === source) || HEADER_SOURCE_FLAT[1];
+  const fallback = fallbackSource || (sourceFlat[0] && sourceFlat[0].key) || "static.text";
+  return raw.slice(0, max).map((row, idx) => {
+    const source = sourceKeys.has(row?.source) ? row.source : fallback;
+    const opt = sourceFlat.find((o) => o.key === source) || sourceFlat[0];
     const align = ["left", "center", "right"].includes(row?.align) ? row.align : "left";
     return {
-      id: String(row?.id || `hdr-${idx + 1}`).slice(0, 64),
+      id: String(row?.id || `${idPrefix}-${idx + 1}`).slice(0, 64),
       type: elementTypeForOpt(opt),
       source,
       label: String(row?.label || "").slice(0, 80),
@@ -128,39 +218,59 @@ function normalizeHeaderElements(raw) {
       text: String(row?.text || "").slice(0, 240),
     };
   });
+}
+
+function newHeaderElement(sourceKey = "company.name") {
+  return newCatalogElement(HEADER_SOURCE_FLAT, sourceKey, "hdr");
+}
+
+function normalizeHeaderElements(raw) {
+  return normalizeCatalogElements(raw, HEADER_SOURCE_KEYS, HEADER_SOURCE_FLAT, MAX_HEADER_ELEMENTS, "hdr", "company.name");
 }
 
 function newFooterElement(sourceKey = "signature.prepared") {
-  const opt = FOOTER_SOURCE_FLAT.find((o) => o.key === sourceKey) || FOOTER_SOURCE_FLAT.find((o) => o.key === "static.text");
-  return {
-    id: `ftr-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
-    type: elementTypeForOpt(opt),
-    source: opt.key,
-    label: "",
-    align: sourceKey === "signature.approved" ? "center" : sourceKey === "estimasi.block" ? "right" : "left",
-    bold: false,
-    visible: true,
-    text: "",
-  };
+  const align = sourceKey === "signature.approved" ? "center" : sourceKey === "estimasi.block" ? "right" : "left";
+  return newCatalogElement(FOOTER_SOURCE_FLAT, sourceKey, "ftr", align);
 }
 
 function normalizeFooterElements(raw) {
-  if (!Array.isArray(raw)) return [];
-  return raw.slice(0, MAX_FOOTER_ELEMENTS).map((row, idx) => {
-    const source = FOOTER_SOURCE_KEYS.has(row?.source) ? row.source : "static.text";
-    const opt = FOOTER_SOURCE_FLAT.find((o) => o.key === source) || FOOTER_SOURCE_FLAT[FOOTER_SOURCE_FLAT.length - 1];
-    const align = ["left", "center", "right"].includes(row?.align) ? row.align : "left";
-    return {
-      id: String(row?.id || `ftr-${idx + 1}`).slice(0, 64),
-      type: elementTypeForOpt(opt),
-      source,
-      label: String(row?.label || "").slice(0, 80),
-      align,
-      bold: Boolean(row?.bold),
-      visible: row?.visible === false ? false : true,
-      text: String(row?.text || "").slice(0, 240),
-    };
-  });
+  return normalizeCatalogElements(raw, FOOTER_SOURCE_KEYS, FOOTER_SOURCE_FLAT, MAX_FOOTER_ELEMENTS, "ftr", "static.text");
+}
+
+function newPoHeaderElement(sourceKey = "company.name") {
+  return newCatalogElement(PO_HEADER_SOURCE_FLAT, sourceKey, "po-hdr");
+}
+
+function normalizePoHeaderElements(raw) {
+  return normalizeCatalogElements(raw, PO_HEADER_SOURCE_KEYS, PO_HEADER_SOURCE_FLAT, MAX_HEADER_ELEMENTS, "po-hdr", "company.name");
+}
+
+function newPoFooterElement(sourceKey = "po.signatures_block") {
+  return newCatalogElement(PO_FOOTER_SOURCE_FLAT, sourceKey, "po-ftr", sourceKey === "po.signatures_block" ? "center" : "left");
+}
+
+function normalizePoFooterElements(raw) {
+  return normalizeCatalogElements(raw, PO_FOOTER_SOURCE_KEYS, PO_FOOTER_SOURCE_FLAT, MAX_FOOTER_ELEMENTS, "po-ftr", "static.text");
+}
+
+function newSjHeaderElement(sourceKey = "company.name") {
+  return newCatalogElement(SJ_HEADER_SOURCE_FLAT, sourceKey, "sj-hdr");
+}
+
+function normalizeSjHeaderElements(raw) {
+  return normalizeCatalogElements(raw, SJ_HEADER_SOURCE_KEYS, SJ_HEADER_SOURCE_FLAT, MAX_HEADER_ELEMENTS, "sj-hdr", "company.name");
+}
+
+function newSjFooterElement(sourceKey = "document.notes") {
+  return newCatalogElement(SJ_FOOTER_SOURCE_FLAT, sourceKey, "sj-ftr");
+}
+
+function normalizeSjFooterElements(raw) {
+  return normalizeCatalogElements(raw, SJ_FOOTER_SOURCE_KEYS, SJ_FOOTER_SOURCE_FLAT, MAX_FOOTER_ELEMENTS, "sj-ftr", "static.text");
+}
+
+function sectionModeLabel(elements) {
+  return Array.isArray(elements) && elements.length > 0 ? "Generic Aktif" : "Legacy Fallback";
 }
 
 function emptyDraft() {
@@ -171,6 +281,8 @@ function emptyDraft() {
     po: {
       signature_labels: ["Operator", "Pengiriman", "Penerima"],
       footer_name_label: "Nama",
+      header_elements: [],
+      footer_elements: [],
     },
     invoice: {
       bank_accounts: [
@@ -189,6 +301,8 @@ function emptyDraft() {
     surat_jalan: {
       signature_labels: ["Gudang", "Cek Barang", "Kurir", "Penerima"],
       date_label: "Tgl.",
+      header_elements: [],
+      footer_elements: [],
     },
   };
 }
@@ -219,6 +333,8 @@ function fromApi(settings) {
     po: {
       signature_labels: [...((s.po || {}).signature_labels || []), "", "", ""].slice(0, 3),
       footer_name_label: (s.po || {}).footer_name_label || "Nama",
+      header_elements: normalizePoHeaderElements((s.po || {}).header_elements),
+      footer_elements: normalizePoFooterElements((s.po || {}).footer_elements),
     },
     invoice: {
       bank_accounts: banks.slice(0, 4),
@@ -234,6 +350,8 @@ function fromApi(settings) {
     surat_jalan: {
       signature_labels: [...((s.surat_jalan || {}).signature_labels || []), "", "", "", ""].slice(0, 4),
       date_label: (s.surat_jalan || {}).date_label || "Tgl.",
+      header_elements: normalizeSjHeaderElements((s.surat_jalan || {}).header_elements),
+      footer_elements: normalizeSjFooterElements((s.surat_jalan || {}).footer_elements),
     },
   };
 }
@@ -486,6 +604,9 @@ function formatHistoryAt(iso) {
 export default function DesignCetakanSettings({ notify, canEdit }) {
   const [tab, setTab] = useState("umum");
   const [invoiceSection, setInvoiceSection] = useState("header");
+  const [poSection, setPoSection] = useState("header");
+  const [sjSection, setSjSection] = useState("header");
+  const [legacyOpen, setLegacyOpen] = useState({ invoice: false, po: false, sj: false });
   const [scope, setScope] = useState("global");
   const [catalog, setCatalog] = useState([]);
   const [draft, setDraft] = useState(emptyDraft);
@@ -841,6 +962,8 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
           po: {
             signature_labels: draft.po.signature_labels,
             footer_name_label: draft.po.footer_name_label,
+            header_elements: normalizePoHeaderElements(draft.po.header_elements),
+            footer_elements: normalizePoFooterElements(draft.po.footer_elements),
           },
           invoice: {
             bank_accounts: draft.invoice.bank_accounts.filter(
@@ -858,6 +981,8 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
           surat_jalan: {
             signature_labels: draft.surat_jalan.signature_labels,
             date_label: draft.surat_jalan.date_label,
+            header_elements: normalizeSjHeaderElements(draft.surat_jalan.header_elements),
+            footer_elements: normalizeSjFooterElements(draft.surat_jalan.footer_elements),
           },
         };
         const res = await api.updateDesignCetakanSettings(payload);
@@ -1118,6 +1243,197 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
     ]);
   };
 
+  const updatePoHeaderElements = (nextList) => {
+    patch("po.header_elements", normalizePoHeaderElements(nextList));
+  };
+  const addPoHeaderElement = () => {
+    const list = Array.isArray(draft.po.header_elements) ? draft.po.header_elements : [];
+    if (list.length >= MAX_HEADER_ELEMENTS) return;
+    updatePoHeaderElements([...list, newPoHeaderElement()]);
+  };
+  const removePoHeaderElement = (id) => {
+    updatePoHeaderElements((draft.po.header_elements || []).filter((row) => row.id !== id));
+  };
+  const movePoHeaderElement = (id, direction) => {
+    const list = [...(draft.po.header_elements || [])];
+    const idx = list.findIndex((row) => row.id === id);
+    if (idx < 0) return;
+    const target = idx + direction;
+    if (target < 0 || target >= list.length) return;
+    const tmp = list[idx];
+    list[idx] = list[target];
+    list[target] = tmp;
+    updatePoHeaderElements(list);
+  };
+  const patchPoHeaderElement = (id, key, value) => {
+    const list = (draft.po.header_elements || []).map((row) => {
+      if (row.id !== id) return row;
+      const next = { ...row, [key]: value };
+      if (key === "source") {
+        const opt = PO_HEADER_SOURCE_FLAT.find((o) => o.key === value);
+        next.type = elementTypeForOpt(opt);
+        if (next.type !== "static_text") next.text = "";
+      }
+      return next;
+    });
+    updatePoHeaderElements(list);
+  };
+  const loadDefaultPoHeaderElements = () => {
+    updatePoHeaderElements([
+      newPoHeaderElement("company.logo"),
+      { ...newPoHeaderElement("company.name"), bold: true },
+      newPoHeaderElement("company.address"),
+      { ...newPoHeaderElement("customer.name"), label: "Kepada", bold: true },
+      newPoHeaderElement("customer.address"),
+      { ...newPoHeaderElement("document.date"), label: "Tanggal", align: "right" },
+      { ...newPoHeaderElement("document.number"), label: "Nomor", align: "right" },
+      { ...newPoHeaderElement("document.payment_terms"), label: "Syarat Pembayaran", align: "right" },
+      { ...newPoHeaderElement("user.created_by"), label: "User", align: "right" },
+      { ...newPoHeaderElement("document.expedition"), label: "Ekspedisi", align: "right" },
+      { ...newPoHeaderElement("document.delivery_date"), label: "Estimasi Tanggal Pengiriman", align: "right" },
+      { ...newPoHeaderElement("document.zone"), label: "Zona Pengiriman", align: "right" },
+      { ...newPoHeaderElement("sales.name"), label: "Penjual", align: "right" },
+    ]);
+  };
+
+  const updatePoFooterElements = (nextList) => {
+    patch("po.footer_elements", normalizePoFooterElements(nextList));
+  };
+  const addPoFooterElement = () => {
+    const list = Array.isArray(draft.po.footer_elements) ? draft.po.footer_elements : [];
+    if (list.length >= MAX_FOOTER_ELEMENTS) return;
+    updatePoFooterElements([...list, newPoFooterElement()]);
+  };
+  const removePoFooterElement = (id) => {
+    updatePoFooterElements((draft.po.footer_elements || []).filter((row) => row.id !== id));
+  };
+  const movePoFooterElement = (id, direction) => {
+    const list = [...(draft.po.footer_elements || [])];
+    const idx = list.findIndex((row) => row.id === id);
+    if (idx < 0) return;
+    const target = idx + direction;
+    if (target < 0 || target >= list.length) return;
+    const tmp = list[idx];
+    list[idx] = list[target];
+    list[target] = tmp;
+    updatePoFooterElements(list);
+  };
+  const patchPoFooterElement = (id, key, value) => {
+    const list = (draft.po.footer_elements || []).map((row) => {
+      if (row.id !== id) return row;
+      const next = { ...row, [key]: value };
+      if (key === "source") {
+        const opt = PO_FOOTER_SOURCE_FLAT.find((o) => o.key === value);
+        next.type = elementTypeForOpt(opt);
+        if (next.type !== "static_text") next.text = "";
+      }
+      return next;
+    });
+    updatePoFooterElements(list);
+  };
+  const loadDefaultPoFooterElements = () => {
+    updatePoFooterElements([
+      { ...newPoFooterElement("po.signatures_block"), align: "center" },
+    ]);
+  };
+
+  const updateSjHeaderElements = (nextList) => {
+    patch("surat_jalan.header_elements", normalizeSjHeaderElements(nextList));
+  };
+  const addSjHeaderElement = () => {
+    const list = Array.isArray(draft.surat_jalan.header_elements) ? draft.surat_jalan.header_elements : [];
+    if (list.length >= MAX_HEADER_ELEMENTS) return;
+    updateSjHeaderElements([...list, newSjHeaderElement()]);
+  };
+  const removeSjHeaderElement = (id) => {
+    updateSjHeaderElements((draft.surat_jalan.header_elements || []).filter((row) => row.id !== id));
+  };
+  const moveSjHeaderElement = (id, direction) => {
+    const list = [...(draft.surat_jalan.header_elements || [])];
+    const idx = list.findIndex((row) => row.id === id);
+    if (idx < 0) return;
+    const target = idx + direction;
+    if (target < 0 || target >= list.length) return;
+    const tmp = list[idx];
+    list[idx] = list[target];
+    list[target] = tmp;
+    updateSjHeaderElements(list);
+  };
+  const patchSjHeaderElement = (id, key, value) => {
+    const list = (draft.surat_jalan.header_elements || []).map((row) => {
+      if (row.id !== id) return row;
+      const next = { ...row, [key]: value };
+      if (key === "source") {
+        const opt = SJ_HEADER_SOURCE_FLAT.find((o) => o.key === value);
+        next.type = elementTypeForOpt(opt);
+        if (next.type !== "static_text") next.text = "";
+      }
+      return next;
+    });
+    updateSjHeaderElements(list);
+  };
+  const loadDefaultSjHeaderElements = () => {
+    updateSjHeaderElements([
+      newSjHeaderElement("company.logo"),
+      { ...newSjHeaderElement("company.name"), bold: true },
+      newSjHeaderElement("company.address"),
+      { ...newSjHeaderElement("customer.name"), label: "Kepada", bold: true },
+      newSjHeaderElement("customer.address"),
+      { ...newSjHeaderElement("sales.name"), label: "Nama Penjual", align: "right" },
+      { ...newSjHeaderElement("document.number"), label: "Nomor", align: "right" },
+      { ...newSjHeaderElement("document.expedition"), label: "Ekspedisi", align: "right" },
+      { ...newSjHeaderElement("user.created_by"), label: "Pembuat Data", align: "right" },
+      { ...newSjHeaderElement("document.delivery_date"), label: "Tanggal Pengiriman", align: "right" },
+      { ...newSjHeaderElement("document.zone"), label: "Zona Kirim", align: "right" },
+      { ...newSjHeaderElement("document.po_number"), label: "Nomor PO", align: "right" },
+    ]);
+  };
+
+  const updateSjFooterElements = (nextList) => {
+    patch("surat_jalan.footer_elements", normalizeSjFooterElements(nextList));
+  };
+  const addSjFooterElement = () => {
+    const list = Array.isArray(draft.surat_jalan.footer_elements) ? draft.surat_jalan.footer_elements : [];
+    if (list.length >= MAX_FOOTER_ELEMENTS) return;
+    updateSjFooterElements([...list, newSjFooterElement()]);
+  };
+  const removeSjFooterElement = (id) => {
+    updateSjFooterElements((draft.surat_jalan.footer_elements || []).filter((row) => row.id !== id));
+  };
+  const moveSjFooterElement = (id, direction) => {
+    const list = [...(draft.surat_jalan.footer_elements || [])];
+    const idx = list.findIndex((row) => row.id === id);
+    if (idx < 0) return;
+    const target = idx + direction;
+    if (target < 0 || target >= list.length) return;
+    const tmp = list[idx];
+    list[idx] = list[target];
+    list[target] = tmp;
+    updateSjFooterElements(list);
+  };
+  const patchSjFooterElement = (id, key, value) => {
+    const list = (draft.surat_jalan.footer_elements || []).map((row) => {
+      if (row.id !== id) return row;
+      const next = { ...row, [key]: value };
+      if (key === "source") {
+        const opt = SJ_FOOTER_SOURCE_FLAT.find((o) => o.key === value);
+        next.type = elementTypeForOpt(opt);
+        if (next.type !== "static_text") next.text = "";
+      }
+      return next;
+    });
+    updateSjFooterElements(list);
+  };
+  const loadDefaultSjFooterElements = () => {
+    updateSjFooterElements([
+      { ...newSjFooterElement("document.notes"), label: "Keterangan" },
+    ]);
+  };
+
+  const toggleLegacy = (key) => {
+    setLegacyOpen((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
+
   return (
     <div className="settings-card dc-page" data-testid="design-cetakan-settings">
       <header className="dc-header">
@@ -1335,33 +1651,215 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
 
         {tab === "po" ? (
           <div data-testid="design-cetakan-po">
-            <section className="dc-section">
-              <h3 className="dc-label-row">
-                Tanda Tangan PO
-                {branchMode ? <GlobalOnlyMark testid="design-cetakan-global-only-po" /> : null}
-              </h3>
-              <div className="dc-fields dc-fields-3">
-                {draft.po.signature_labels.map((label, idx) => (
-                  <label key={`po-sig-${idx}`}>
-                    Label tanda tangan {idx + 1}
-                    <input
-                      data-testid={`design-cetakan-po-sig-${idx}`}
-                      value={label}
-                      disabled={globalOnlyLocked}
-                      onChange={(e) => patch(`po.signature_labels.${idx}`, e.target.value)}
-                    />
-                  </label>
-                ))}
-                <label>
-                  Label nama footer
-                  <input
-                    data-testid="design-cetakan-po-footer-name"
-                    value={draft.po.footer_name_label}
-                    disabled={globalOnlyLocked}
-                    onChange={(e) => patch("po.footer_name_label", e.target.value)}
-                  />
-                </label>
-              </div>
+            <div className="dc-invoice-panel-tabs" role="tablist" aria-label="Bagian PO">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={poSection === "header"}
+                data-testid="design-cetakan-po-section-header"
+                className={poSection === "header" ? "is-active" : ""}
+                onClick={() => setPoSection("header")}
+              >
+                Header
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={poSection === "footer"}
+                data-testid="design-cetakan-po-section-footer"
+                className={poSection === "footer" ? "is-active" : ""}
+                onClick={() => setPoSection("footer")}
+              >
+                Footer
+              </button>
+            </div>
+            {poSection === "header" ? (
+              <section className="dc-section" data-testid="design-cetakan-po-header-section">
+                <h3 className="dc-label-row">
+                  Header PO
+                  <span
+                    className={`dc-mode-badge ${sectionModeLabel(draft.po.header_elements) === "Generic Aktif" ? "is-generic" : "is-legacy"}`}
+                    data-testid="design-cetakan-po-header-status"
+                  >
+                    {sectionModeLabel(draft.po.header_elements)}
+                  </span>
+                  {branchMode ? <GlobalOnlyMark testid="design-cetakan-global-only-po-header">Header Mengikuti Global</GlobalOnlyMark> : null}
+                </h3>
+                <p className="muted small dc-header-help">
+                  Susun elemen header PO dari sumber terdaftar. Kosongkan = header Legacy.
+                </p>
+                <div className="dc-header-toolbar">
+                  <button type="button" className="secondary" data-testid="design-cetakan-po-header-add" disabled={globalOnlyLocked || (draft.po.header_elements || []).length >= MAX_HEADER_ELEMENTS} onClick={addPoHeaderElement}>
+                    <Plus size={14} aria-hidden="true" /> Tambah Elemen
+                  </button>
+                  <button type="button" className="secondary" data-testid="design-cetakan-po-header-load-default" disabled={globalOnlyLocked} onClick={loadDefaultPoHeaderElements}>
+                    Isi Default Header
+                  </button>
+                  {(draft.po.header_elements || []).length > 0 ? (
+                    <button type="button" className="secondary" data-testid="design-cetakan-po-header-clear" disabled={globalOnlyLocked} onClick={() => updatePoHeaderElements([])}>
+                      Kosongkan (pakai Legacy)
+                    </button>
+                  ) : null}
+                </div>
+                <div className="dc-header-list" data-testid="design-cetakan-po-header-list">
+                  {(draft.po.header_elements || []).length === 0 ? (
+                    <p className="muted small" data-testid="design-cetakan-po-header-empty">Belum ada elemen header generik. PDF memakai header Legacy.</p>
+                  ) : (
+                    (draft.po.header_elements || []).map((row, idx) => (
+                      <div className={`dc-header-row${row.source === "static.text" ? " has-text" : ""}`} key={row.id} data-testid={`design-cetakan-po-header-row-${idx}`}>
+                        <div className="dc-header-order">
+                          <button type="button" className="secondary dc-icon-btn" aria-label="Naikkan" disabled={globalOnlyLocked || idx === 0} onClick={() => movePoHeaderElement(row.id, -1)}><ChevronUp size={12} aria-hidden="true" /></button>
+                          <button type="button" className="secondary dc-icon-btn" aria-label="Turunkan" disabled={globalOnlyLocked || idx === (draft.po.header_elements || []).length - 1} onClick={() => movePoHeaderElement(row.id, 1)}><ChevronDown size={12} aria-hidden="true" /></button>
+                        </div>
+                        <label className="dc-header-source">
+                          <span className="dc-sr-only">Sumber</span>
+                          <select data-testid={`design-cetakan-po-header-source-${idx}`} value={row.source} disabled={globalOnlyLocked} aria-label="Sumber" onChange={(e) => patchPoHeaderElement(row.id, "source", e.target.value)}>
+                            {PO_HEADER_SOURCE_OPTIONS.map((group) => (
+                              <optgroup key={group.group} label={group.group}>
+                                {group.options.map((opt) => (<option key={opt.key} value={opt.key}>{opt.label}</option>))}
+                              </optgroup>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="dc-header-align">
+                          <span className="dc-sr-only">Posisi</span>
+                          <select data-testid={`design-cetakan-po-header-align-${idx}`} value={row.align} disabled={globalOnlyLocked} aria-label="Posisi" onChange={(e) => patchPoHeaderElement(row.id, "align", e.target.value)}>
+                            {HEADER_ALIGN_OPTIONS.map((opt) => (<option key={opt.value} value={opt.value}>{opt.label}</option>))}
+                          </select>
+                        </label>
+                        <label className="dc-header-label">
+                          <span className="dc-sr-only">Label</span>
+                          <input data-testid={`design-cetakan-po-header-label-${idx}`} value={row.label} disabled={globalOnlyLocked} aria-label="Label" onChange={(e) => patchPoHeaderElement(row.id, "label", e.target.value)} placeholder="Label" />
+                        </label>
+                        {row.source === "static.text" ? (
+                          <label className="dc-header-text">
+                            <span className="dc-sr-only">Teks</span>
+                            <input data-testid={`design-cetakan-po-header-text-${idx}`} value={row.text} disabled={globalOnlyLocked} aria-label="Teks manual" onChange={(e) => patchPoHeaderElement(row.id, "text", e.target.value)} placeholder="Teks" />
+                          </label>
+                        ) : null}
+                        <button type="button" className={`secondary dc-icon-btn dc-toggle-btn${row.bold ? " is-on" : ""}`} data-testid={`design-cetakan-po-header-bold-${idx}`} aria-label="Bold" aria-pressed={Boolean(row.bold)} disabled={globalOnlyLocked} onClick={() => patchPoHeaderElement(row.id, "bold", !row.bold)}><span className="dc-toggle-b" aria-hidden="true">B</span></button>
+                        <button type="button" className={`secondary dc-icon-btn dc-toggle-btn${row.visible !== false ? " is-on" : ""}`} data-testid={`design-cetakan-po-header-visible-${idx}`} aria-label="Tampilkan elemen" aria-pressed={row.visible !== false} disabled={globalOnlyLocked} onClick={() => patchPoHeaderElement(row.id, "visible", row.visible === false)}>{row.visible !== false ? <Eye size={13} aria-hidden="true" /> : <EyeOff size={13} aria-hidden="true" />}</button>
+                        <button type="button" className="secondary dc-icon-btn" data-testid={`design-cetakan-po-header-remove-${idx}`} aria-label="Hapus elemen" disabled={globalOnlyLocked} onClick={() => removePoHeaderElement(row.id)}><Trash2 size={13} aria-hidden="true" /></button>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </section>
+            ) : (
+              <section className="dc-section" data-testid="design-cetakan-po-footer-section">
+                <h3 className="dc-label-row">
+                  Footer PO
+                  <span
+                    className={`dc-mode-badge ${sectionModeLabel(draft.po.footer_elements) === "Generic Aktif" ? "is-generic" : "is-legacy"}`}
+                    data-testid="design-cetakan-po-footer-status"
+                  >
+                    {sectionModeLabel(draft.po.footer_elements)}
+                  </span>
+                  {branchMode ? <GlobalOnlyMark testid="design-cetakan-global-only-po-footer">Footer Mengikuti Global</GlobalOnlyMark> : null}
+                </h3>
+                <p className="muted small dc-header-help">
+                  Susun elemen footer PO. Totals tetap di body. Kosongkan = footer Legacy.
+                </p>
+                <div className="dc-header-toolbar">
+                  <button type="button" className="secondary" data-testid="design-cetakan-po-footer-add" disabled={globalOnlyLocked || (draft.po.footer_elements || []).length >= MAX_FOOTER_ELEMENTS} onClick={addPoFooterElement}>
+                    <Plus size={14} aria-hidden="true" /> Tambah Elemen
+                  </button>
+                  <button type="button" className="secondary" data-testid="design-cetakan-po-footer-load-default" disabled={globalOnlyLocked} onClick={loadDefaultPoFooterElements}>
+                    Isi Default Footer
+                  </button>
+                  {(draft.po.footer_elements || []).length > 0 ? (
+                    <button type="button" className="secondary" data-testid="design-cetakan-po-footer-clear" disabled={globalOnlyLocked} onClick={() => updatePoFooterElements([])}>
+                      Kosongkan (pakai Legacy)
+                    </button>
+                  ) : null}
+                </div>
+                <div className="dc-header-list" data-testid="design-cetakan-po-footer-list">
+                  {(draft.po.footer_elements || []).length === 0 ? (
+                    <p className="muted small" data-testid="design-cetakan-po-footer-empty">Belum ada elemen footer generik. PDF memakai footer Legacy.</p>
+                  ) : (
+                    (draft.po.footer_elements || []).map((row, idx) => (
+                      <div className={`dc-header-row${row.source === "static.text" ? " has-text" : ""}`} key={row.id} data-testid={`design-cetakan-po-footer-row-${idx}`}>
+                        <div className="dc-header-order">
+                          <button type="button" className="secondary dc-icon-btn" aria-label="Naikkan" disabled={globalOnlyLocked || idx === 0} onClick={() => movePoFooterElement(row.id, -1)}><ChevronUp size={12} aria-hidden="true" /></button>
+                          <button type="button" className="secondary dc-icon-btn" aria-label="Turunkan" disabled={globalOnlyLocked || idx === (draft.po.footer_elements || []).length - 1} onClick={() => movePoFooterElement(row.id, 1)}><ChevronDown size={12} aria-hidden="true" /></button>
+                        </div>
+                        <label className="dc-header-source">
+                          <span className="dc-sr-only">Sumber</span>
+                          <select data-testid={`design-cetakan-po-footer-source-${idx}`} value={row.source} disabled={globalOnlyLocked} aria-label="Sumber" onChange={(e) => patchPoFooterElement(row.id, "source", e.target.value)}>
+                            {PO_FOOTER_SOURCE_OPTIONS.map((group) => (
+                              <optgroup key={group.group} label={group.group}>
+                                {group.options.map((opt) => (<option key={opt.key} value={opt.key}>{opt.label}</option>))}
+                              </optgroup>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="dc-header-align">
+                          <span className="dc-sr-only">Posisi</span>
+                          <select data-testid={`design-cetakan-po-footer-align-${idx}`} value={row.align} disabled={globalOnlyLocked} aria-label="Posisi" onChange={(e) => patchPoFooterElement(row.id, "align", e.target.value)}>
+                            {HEADER_ALIGN_OPTIONS.map((opt) => (<option key={opt.value} value={opt.value}>{opt.label}</option>))}
+                          </select>
+                        </label>
+                        <label className="dc-header-label">
+                          <span className="dc-sr-only">Label</span>
+                          <input data-testid={`design-cetakan-po-footer-label-${idx}`} value={row.label} disabled={globalOnlyLocked} aria-label="Label" onChange={(e) => patchPoFooterElement(row.id, "label", e.target.value)} placeholder="Label" />
+                        </label>
+                        {row.source === "static.text" ? (
+                          <label className="dc-header-text">
+                            <span className="dc-sr-only">Teks</span>
+                            <input data-testid={`design-cetakan-po-footer-text-${idx}`} value={row.text} disabled={globalOnlyLocked} aria-label="Teks manual" onChange={(e) => patchPoFooterElement(row.id, "text", e.target.value)} placeholder="Teks" />
+                          </label>
+                        ) : null}
+                        <button type="button" className={`secondary dc-icon-btn dc-toggle-btn${row.bold ? " is-on" : ""}`} data-testid={`design-cetakan-po-footer-bold-${idx}`} aria-label="Bold" aria-pressed={Boolean(row.bold)} disabled={globalOnlyLocked} onClick={() => patchPoFooterElement(row.id, "bold", !row.bold)}><span className="dc-toggle-b" aria-hidden="true">B</span></button>
+                        <button type="button" className={`secondary dc-icon-btn dc-toggle-btn${row.visible !== false ? " is-on" : ""}`} data-testid={`design-cetakan-po-footer-visible-${idx}`} aria-label="Tampilkan elemen" aria-pressed={row.visible !== false} disabled={globalOnlyLocked} onClick={() => patchPoFooterElement(row.id, "visible", row.visible === false)}>{row.visible !== false ? <Eye size={13} aria-hidden="true" /> : <EyeOff size={13} aria-hidden="true" />}</button>
+                        <button type="button" className="secondary dc-icon-btn" data-testid={`design-cetakan-po-footer-remove-${idx}`} aria-label="Hapus elemen" disabled={globalOnlyLocked} onClick={() => removePoFooterElement(row.id)}><Trash2 size={13} aria-hidden="true" /></button>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </section>
+            )}
+            <section className="dc-section dc-legacy-section" data-testid="design-cetakan-po-legacy">
+              <button
+                type="button"
+                className="dc-legacy-toggle"
+                data-testid="design-cetakan-po-legacy-toggle"
+                aria-expanded={Boolean(legacyOpen.po)}
+                onClick={() => toggleLegacy("po")}
+              >
+                <span>Pengaturan Legacy</span>
+                {legacyOpen.po ? <ChevronUp size={14} aria-hidden="true" /> : <ChevronDown size={14} aria-hidden="true" />}
+              </button>
+              {legacyOpen.po ? (
+                <div className="dc-legacy-body" data-testid="design-cetakan-po-legacy-body">
+                  <p className="muted small dc-legacy-help">Digunakan sebagai fallback jika bagian Header/Footer baru belum dikonfigurasi.</p>
+                  <h3 className="dc-label-row">
+                    Tanda Tangan PO
+                    {branchMode ? <GlobalOnlyMark testid="design-cetakan-global-only-po" /> : null}
+                  </h3>
+                  <div className="dc-fields dc-fields-3">
+                    {draft.po.signature_labels.map((label, idx) => (
+                      <label key={`po-sig-${idx}`}>
+                        Label tanda tangan {idx + 1}
+                        <input
+                          data-testid={`design-cetakan-po-sig-${idx}`}
+                          value={label}
+                          disabled={globalOnlyLocked}
+                          onChange={(e) => patch(`po.signature_labels.${idx}`, e.target.value)}
+                        />
+                      </label>
+                    ))}
+                    <label>
+                      Label nama footer
+                      <input
+                        data-testid="design-cetakan-po-footer-name"
+                        value={draft.po.footer_name_label}
+                        disabled={globalOnlyLocked}
+                        onChange={(e) => patch("po.footer_name_label", e.target.value)}
+                      />
+                    </label>
+                  </div>
+                </div>
+              ) : null}
             </section>
           </div>
         ) : null}
@@ -1394,10 +1892,16 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
             <section className="dc-section" data-testid="design-cetakan-header-section">
               <h3 className="dc-label-row">
                 Header Cetakan
+                <span
+                  className={`dc-mode-badge ${sectionModeLabel(draft.invoice.header_elements) === "Generic Aktif" ? "is-generic" : "is-legacy"}`}
+                  data-testid="design-cetakan-invoice-header-status"
+                >
+                  {sectionModeLabel(draft.invoice.header_elements)}
+                </span>
                 {branchMode ? <GlobalOnlyMark testid="design-cetakan-global-only-header">Header Mengikuti Global</GlobalOnlyMark> : null}
               </h3>
               <p className="muted small dc-header-help">
-                Susun elemen header dari sumber terdaftar. Kosongkan = header V1. Bank/ekspedisi/tipe kirim belum di Phase 1.
+                Susun elemen header dari sumber terdaftar. Kosongkan = header Legacy. Bank/ekspedisi/tipe kirim belum di Phase 1.
               </p>
               <div className="dc-header-toolbar">
                 <button
@@ -1427,14 +1931,14 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
                     disabled={globalOnlyLocked}
                     onClick={() => updateHeaderElements([])}
                   >
-                    Kosongkan (pakai V1)
+                    Kosongkan (pakai Legacy)
                   </button>
                 ) : null}
               </div>
               <div className="dc-header-list" data-testid="design-cetakan-header-list">
                 {(draft.invoice.header_elements || []).length === 0 ? (
                   <p className="muted small" data-testid="design-cetakan-header-empty">
-                    Belum ada elemen header generik. PDF memakai header V1 yang sudah ada.
+                    Belum ada elemen header generik. PDF memakai header Legacy yang sudah ada.
                   </p>
                 ) : (
                   (draft.invoice.header_elements || []).map((row, idx) => (
@@ -1553,10 +2057,16 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
             <section className="dc-section" data-testid="design-cetakan-footer-section">
               <h3 className="dc-label-row">
                 Footer Cetakan
+                <span
+                  className={`dc-mode-badge ${sectionModeLabel(draft.invoice.footer_elements) === "Generic Aktif" ? "is-generic" : "is-legacy"}`}
+                  data-testid="design-cetakan-invoice-footer-status"
+                >
+                  {sectionModeLabel(draft.invoice.footer_elements)}
+                </span>
                 {branchMode ? <GlobalOnlyMark testid="design-cetakan-global-only-footer">Footer Mengikuti Global</GlobalOnlyMark> : null}
               </h3>
               <p className="muted small dc-header-help">
-                Susun elemen footer dari sumber terdaftar. Kosongkan = footer V1. Estimasi &amp; tanda tangan legacy tetap tersedia di bawah.
+                Susun elemen footer dari sumber terdaftar. Kosongkan = footer Legacy. Estimasi &amp; tanda tangan legacy di Pengaturan Legacy.
               </p>
               <div className="dc-header-toolbar">
                 <button
@@ -1586,14 +2096,14 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
                     disabled={globalOnlyLocked}
                     onClick={() => updateFooterElements([])}
                   >
-                    Kosongkan (pakai V1)
+                    Kosongkan (pakai Legacy)
                   </button>
                 ) : null}
               </div>
               <div className="dc-header-list" data-testid="design-cetakan-footer-list">
                 {(draft.invoice.footer_elements || []).length === 0 ? (
                   <p className="muted small" data-testid="design-cetakan-footer-empty">
-                    Belum ada elemen footer generik. PDF memakai footer V1 yang sudah ada.
+                    Belum ada elemen footer generik. PDF memakai footer Legacy yang sudah ada.
                   </p>
                 ) : (
                   (draft.invoice.footer_elements || []).map((row, idx) => (
@@ -1709,204 +2219,397 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
               </div>
             </section>
             )}
-            <section className="dc-section">
-              <h3>Tanda Tangan</h3>
-            <AssetSlot
-              title="Tanda Tangan — Disiapkan Oleh"
-              slot="prepared_signature_image"
-              asset={assets.prepared_signature_image}
-              previewUrl={previews.prepared_signature_image}
-              canEdit={canEdit}
-              busy={busy}
-              accept={SIGNATURE_ACCEPT}
-              onPick={(file) => uploadSlot("prepared_signature_image", file)}
-              onRemove={() => removeSlot("prepared_signature_image")}
-              removeLabel={branchMode ? "Ikuti Global" : "Hapus"}
-              uploadLabel={branchMode ? "Ganti khusus cabang" : "Ganti"}
-              statusCustom="Custom"
-              statusDefault="Teks saja"
-              statusLabel={branchMode ? (overrideOn.prepared_signature_image ? "Khusus Cabang" : "Mengikuti Global") : undefined}
-              allowRemove={branchMode ? Boolean(overrideOn.prepared_signature_image) : undefined}
-                fileInputRef={preparedInputRef}
-                testIdPrefix="design-cetakan-prepared-sig"
-                emptyLabel="Belum ada tanda tangan"
-              />
-            <AssetSlot
-              title="Tanda Tangan / Stempel — Disetujui Oleh"
-              slot="approved_signature_image"
-              asset={assets.approved_signature_image}
-              previewUrl={previews.approved_signature_image}
-              canEdit={canEdit}
-              busy={busy}
-              accept={SIGNATURE_ACCEPT}
-              onPick={(file) => uploadSlot("approved_signature_image", file)}
-              onRemove={() => removeSlot("approved_signature_image")}
-              removeLabel={branchMode ? "Ikuti Global" : "Hapus"}
-              uploadLabel={branchMode ? "Ganti khusus cabang" : "Ganti"}
-              statusCustom="Custom"
-              statusDefault="Teks saja"
-              statusLabel={branchMode ? (overrideOn.approved_signature_image ? "Khusus Cabang" : "Mengikuti Global") : undefined}
-              allowRemove={branchMode ? Boolean(overrideOn.approved_signature_image) : undefined}
-                fileInputRef={approvedInputRef}
-                testIdPrefix="design-cetakan-approved-sig"
-                emptyLabel="Belum ada tanda tangan"
-              />
-            </section>
-            <section className="dc-section">
-              <h3 className="dc-label-row">
-                Rekening Bank
-                <OverrideBar
-                  field="bank_accounts"
-                  branchMode={branchMode}
-                  enabled={overrideOn.bank_accounts}
-                  canEdit={canEdit}
-                  busy={busy}
-                  onEnable={() => enableOverride("bank_accounts")}
-                  onFollow={() => followGlobal("bank_accounts")}
-                />
-              </h3>
-            {draft.invoice.bank_accounts.map((row, idx) => (
-              <div className="dc-bank" key={`bank-${idx}`}>
-                <label>
-                  Bank {idx + 1}
-                  <input
-                    data-testid={`design-cetakan-bank-label-${idx}`}
-                    value={row.bank_label}
-                    disabled={fieldLocked("bank_accounts")}
-                    onChange={(e) => patch(`invoice.bank_accounts.${idx}.bank_label`, e.target.value)}
+            <section className="dc-section dc-legacy-section" data-testid="design-cetakan-invoice-legacy">
+              <button
+                type="button"
+                className="dc-legacy-toggle"
+                data-testid="design-cetakan-invoice-legacy-toggle"
+                aria-expanded={Boolean(legacyOpen.invoice)}
+                onClick={() => toggleLegacy("invoice")}
+              >
+                <span>Pengaturan Legacy</span>
+                {legacyOpen.invoice ? <ChevronUp size={14} aria-hidden="true" /> : <ChevronDown size={14} aria-hidden="true" />}
+              </button>
+              {legacyOpen.invoice ? (
+                <div className="dc-legacy-body" data-testid="design-cetakan-invoice-legacy-body">
+                  <p className="muted small dc-legacy-help">Digunakan sebagai fallback jika bagian Header/Footer baru belum dikonfigurasi.</p>
+                  <h3>Tanda Tangan</h3>
+                  <AssetSlot
+                    title="Tanda Tangan — Disiapkan Oleh"
+                    slot="prepared_signature_image"
+                    asset={assets.prepared_signature_image}
+                    previewUrl={previews.prepared_signature_image}
+                    canEdit={canEdit}
+                    busy={busy}
+                    accept={SIGNATURE_ACCEPT}
+                    onPick={(file) => uploadSlot("prepared_signature_image", file)}
+                    onRemove={() => removeSlot("prepared_signature_image")}
+                    removeLabel={branchMode ? "Ikuti Global" : "Hapus"}
+                    uploadLabel={branchMode ? "Ganti khusus cabang" : "Ganti"}
+                    statusCustom="Custom"
+                    statusDefault="Teks saja"
+                    statusLabel={branchMode ? (overrideOn.prepared_signature_image ? "Khusus Cabang" : "Mengikuti Global") : undefined}
+                    allowRemove={branchMode ? Boolean(overrideOn.prepared_signature_image) : undefined}
+                    fileInputRef={preparedInputRef}
+                    testIdPrefix="design-cetakan-prepared-sig"
+                    emptyLabel="Belum ada tanda tangan"
                   />
-                </label>
-                <label>
-                  Nomor rekening {idx + 1}
-                  <input
-                    data-testid={`design-cetakan-bank-number-${idx}`}
-                    value={row.account_number}
-                    disabled={fieldLocked("bank_accounts")}
-                    onChange={(e) => patch(`invoice.bank_accounts.${idx}.account_number`, e.target.value)}
+                  <AssetSlot
+                    title="Tanda Tangan / Stempel — Disetujui Oleh"
+                    slot="approved_signature_image"
+                    asset={assets.approved_signature_image}
+                    previewUrl={previews.approved_signature_image}
+                    canEdit={canEdit}
+                    busy={busy}
+                    accept={SIGNATURE_ACCEPT}
+                    onPick={(file) => uploadSlot("approved_signature_image", file)}
+                    onRemove={() => removeSlot("approved_signature_image")}
+                    removeLabel={branchMode ? "Ikuti Global" : "Hapus"}
+                    uploadLabel={branchMode ? "Ganti khusus cabang" : "Ganti"}
+                    statusCustom="Custom"
+                    statusDefault="Teks saja"
+                    statusLabel={branchMode ? (overrideOn.approved_signature_image ? "Khusus Cabang" : "Mengikuti Global") : undefined}
+                    allowRemove={branchMode ? Boolean(overrideOn.approved_signature_image) : undefined}
+                    fileInputRef={approvedInputRef}
+                    testIdPrefix="design-cetakan-approved-sig"
+                    emptyLabel="Belum ada tanda tangan"
                   />
-                </label>
-                <label>
-                  A.N rekening {idx + 1}
-                  <input
-                    data-testid={`design-cetakan-bank-name-${idx}`}
-                    value={row.account_name}
-                    disabled={fieldLocked("bank_accounts")}
-                    onChange={(e) => patch(`invoice.bank_accounts.${idx}.account_name`, e.target.value)}
-                  />
-                </label>
-              </div>
-            ))}
-            </section>
-            <section className="dc-section">
-              <h3 className="dc-label-row">
-                Teks Faktur / Proforma
-                {branchMode ? <GlobalOnlyMark testid="design-cetakan-global-only-estimasi">Estimasi Mengikuti Global</GlobalOnlyMark> : null}
-              </h3>
-              <div className="dc-fields">
-            <label>
-              Judul estimasi
-              <input
-                data-testid="design-cetakan-estimasi-title"
-                value={draft.invoice.estimasi_title}
-                disabled={globalOnlyLocked}
-                onChange={(e) => patch("invoice.estimasi_title", e.target.value)}
-              />
-            </label>
-            {draft.invoice.estimasi_lines.map((line, idx) => (
-              <label key={`est-${idx}`}>
-                Estimasi baris {idx + 1}
-                <input
-                  data-testid={`design-cetakan-estimasi-line-${idx}`}
-                  value={line}
-                  disabled={globalOnlyLocked}
-                  onChange={(e) => patch(`invoice.estimasi_lines.${idx}`, e.target.value)}
-                />
-              </label>
-            ))}
-            <div className="dc-fields dc-fields-2">
-            <label>
-              <span className="dc-label-row">
-                Label Disiapkan
-                <OverrideBar field="prepared_label" branchMode={branchMode} enabled={overrideOn.prepared_label} canEdit={canEdit} busy={busy} onEnable={() => enableOverride("prepared_label")} onFollow={() => followGlobal("prepared_label")} />
-              </span>
-              <input
-                data-testid="design-cetakan-prepared-label"
-                value={draft.invoice.prepared_label}
-                disabled={fieldLocked("prepared_label")}
-                onChange={(e) => patch("invoice.prepared_label", e.target.value)}
-              />
-            </label>
-            <label>
-              <span className="dc-label-row">
-                Footer Disiapkan
-                <OverrideBar field="prepared_footer" branchMode={branchMode} enabled={overrideOn.prepared_footer} canEdit={canEdit} busy={busy} onEnable={() => enableOverride("prepared_footer")} onFollow={() => followGlobal("prepared_footer")} />
-              </span>
-              <input
-                data-testid="design-cetakan-prepared-footer"
-                value={draft.invoice.prepared_footer}
-                disabled={fieldLocked("prepared_footer")}
-                onChange={(e) => patch("invoice.prepared_footer", e.target.value)}
-              />
-            </label>
-            <label>
-              <span className="dc-label-row">
-                Label Disetujui
-                <OverrideBar field="approved_label" branchMode={branchMode} enabled={overrideOn.approved_label} canEdit={canEdit} busy={busy} onEnable={() => enableOverride("approved_label")} onFollow={() => followGlobal("approved_label")} />
-              </span>
-              <input
-                data-testid="design-cetakan-approved-label"
-                value={draft.invoice.approved_label}
-                disabled={fieldLocked("approved_label")}
-                onChange={(e) => patch("invoice.approved_label", e.target.value)}
-              />
-            </label>
-            <label>
-              <span className="dc-label-row">
-                Footer Disetujui
-                <OverrideBar field="approved_footer" branchMode={branchMode} enabled={overrideOn.approved_footer} canEdit={canEdit} busy={busy} onEnable={() => enableOverride("approved_footer")} onFollow={() => followGlobal("approved_footer")} />
-              </span>
-              <input
-                data-testid="design-cetakan-approved-footer"
-                value={draft.invoice.approved_footer}
-                disabled={fieldLocked("approved_footer")}
-                onChange={(e) => patch("invoice.approved_footer", e.target.value)}
-              />
-            </label>
-            </div>
-              </div>
+                  <h3 className="dc-label-row">
+                    Rekening Bank
+                    <OverrideBar
+                      field="bank_accounts"
+                      branchMode={branchMode}
+                      enabled={overrideOn.bank_accounts}
+                      canEdit={canEdit}
+                      busy={busy}
+                      onEnable={() => enableOverride("bank_accounts")}
+                      onFollow={() => followGlobal("bank_accounts")}
+                    />
+                  </h3>
+                  {draft.invoice.bank_accounts.map((row, idx) => (
+                    <div className="dc-bank" key={`bank-${idx}`}>
+                      <label>
+                        Bank {idx + 1}
+                        <input
+                          data-testid={`design-cetakan-bank-label-${idx}`}
+                          value={row.bank_label}
+                          disabled={fieldLocked("bank_accounts")}
+                          onChange={(e) => patch(`invoice.bank_accounts.${idx}.bank_label`, e.target.value)}
+                        />
+                      </label>
+                      <label>
+                        Nomor rekening {idx + 1}
+                        <input
+                          data-testid={`design-cetakan-bank-number-${idx}`}
+                          value={row.account_number}
+                          disabled={fieldLocked("bank_accounts")}
+                          onChange={(e) => patch(`invoice.bank_accounts.${idx}.account_number`, e.target.value)}
+                        />
+                      </label>
+                      <label>
+                        A.N rekening {idx + 1}
+                        <input
+                          data-testid={`design-cetakan-bank-name-${idx}`}
+                          value={row.account_name}
+                          disabled={fieldLocked("bank_accounts")}
+                          onChange={(e) => patch(`invoice.bank_accounts.${idx}.account_name`, e.target.value)}
+                        />
+                      </label>
+                    </div>
+                  ))}
+                  <h3 className="dc-label-row">
+                    Teks Faktur / Proforma
+                    {branchMode ? <GlobalOnlyMark testid="design-cetakan-global-only-estimasi">Estimasi Mengikuti Global</GlobalOnlyMark> : null}
+                  </h3>
+                  <div className="dc-fields">
+                    <label>
+                      Judul estimasi
+                      <input
+                        data-testid="design-cetakan-estimasi-title"
+                        value={draft.invoice.estimasi_title}
+                        disabled={globalOnlyLocked}
+                        onChange={(e) => patch("invoice.estimasi_title", e.target.value)}
+                      />
+                    </label>
+                    {draft.invoice.estimasi_lines.map((line, idx) => (
+                      <label key={`est-${idx}`}>
+                        Estimasi baris {idx + 1}
+                        <input
+                          data-testid={`design-cetakan-estimasi-line-${idx}`}
+                          value={line}
+                          disabled={globalOnlyLocked}
+                          onChange={(e) => patch(`invoice.estimasi_lines.${idx}`, e.target.value)}
+                        />
+                      </label>
+                    ))}
+                    <div className="dc-fields dc-fields-2">
+                      <label>
+                        <span className="dc-label-row">
+                          Label Disiapkan
+                          <OverrideBar field="prepared_label" branchMode={branchMode} enabled={overrideOn.prepared_label} canEdit={canEdit} busy={busy} onEnable={() => enableOverride("prepared_label")} onFollow={() => followGlobal("prepared_label")} />
+                        </span>
+                        <input
+                          data-testid="design-cetakan-prepared-label"
+                          value={draft.invoice.prepared_label}
+                          disabled={fieldLocked("prepared_label")}
+                          onChange={(e) => patch("invoice.prepared_label", e.target.value)}
+                        />
+                      </label>
+                      <label>
+                        <span className="dc-label-row">
+                          Footer Disiapkan
+                          <OverrideBar field="prepared_footer" branchMode={branchMode} enabled={overrideOn.prepared_footer} canEdit={canEdit} busy={busy} onEnable={() => enableOverride("prepared_footer")} onFollow={() => followGlobal("prepared_footer")} />
+                        </span>
+                        <input
+                          data-testid="design-cetakan-prepared-footer"
+                          value={draft.invoice.prepared_footer}
+                          disabled={fieldLocked("prepared_footer")}
+                          onChange={(e) => patch("invoice.prepared_footer", e.target.value)}
+                        />
+                      </label>
+                      <label>
+                        <span className="dc-label-row">
+                          Label Disetujui
+                          <OverrideBar field="approved_label" branchMode={branchMode} enabled={overrideOn.approved_label} canEdit={canEdit} busy={busy} onEnable={() => enableOverride("approved_label")} onFollow={() => followGlobal("approved_label")} />
+                        </span>
+                        <input
+                          data-testid="design-cetakan-approved-label"
+                          value={draft.invoice.approved_label}
+                          disabled={fieldLocked("approved_label")}
+                          onChange={(e) => patch("invoice.approved_label", e.target.value)}
+                        />
+                      </label>
+                      <label>
+                        <span className="dc-label-row">
+                          Footer Disetujui
+                          <OverrideBar field="approved_footer" branchMode={branchMode} enabled={overrideOn.approved_footer} canEdit={canEdit} busy={busy} onEnable={() => enableOverride("approved_footer")} onFollow={() => followGlobal("approved_footer")} />
+                        </span>
+                        <input
+                          data-testid="design-cetakan-approved-footer"
+                          value={draft.invoice.approved_footer}
+                          disabled={fieldLocked("approved_footer")}
+                          onChange={(e) => patch("invoice.approved_footer", e.target.value)}
+                        />
+                      </label>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
             </section>
           </div>
         ) : null}
 
         {tab === "sj" ? (
           <div data-testid="design-cetakan-sj">
-            <section className="dc-section">
-              <h3 className="dc-label-row">
-                Label Tanda Tangan
-                {branchMode ? <GlobalOnlyMark testid="design-cetakan-global-only-sj" /> : null}
-              </h3>
-              <div className="dc-fields dc-fields-3">
-                {draft.surat_jalan.signature_labels.map((label, idx) => (
-                  <label key={`sj-sig-${idx}`}>
-                    Label tanda tangan {idx + 1}
-                    <input
-                      data-testid={`design-cetakan-sj-sig-${idx}`}
-                      value={label}
-                      disabled={globalOnlyLocked}
-                      onChange={(e) => patch(`surat_jalan.signature_labels.${idx}`, e.target.value)}
-                    />
-                  </label>
-                ))}
-                <label>
-                  Label tanggal
-                  <input
-                    data-testid="design-cetakan-sj-date-label"
-                    value={draft.surat_jalan.date_label}
-                    disabled={globalOnlyLocked}
-                    onChange={(e) => patch("surat_jalan.date_label", e.target.value)}
-                  />
-                </label>
-              </div>
+            <div className="dc-invoice-panel-tabs" role="tablist" aria-label="Bagian Surat Jalan">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={sjSection === "header"}
+                data-testid="design-cetakan-sj-section-header"
+                className={sjSection === "header" ? "is-active" : ""}
+                onClick={() => setSjSection("header")}
+              >
+                Header
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={sjSection === "footer"}
+                data-testid="design-cetakan-sj-section-footer"
+                className={sjSection === "footer" ? "is-active" : ""}
+                onClick={() => setSjSection("footer")}
+              >
+                Footer
+              </button>
+            </div>
+            {sjSection === "header" ? (
+              <section className="dc-section" data-testid="design-cetakan-sj-header-section">
+                <h3 className="dc-label-row">
+                  Header Surat Jalan
+                  <span
+                    className={`dc-mode-badge ${sectionModeLabel(draft.surat_jalan.header_elements) === "Generic Aktif" ? "is-generic" : "is-legacy"}`}
+                    data-testid="design-cetakan-sj-header-status"
+                  >
+                    {sectionModeLabel(draft.surat_jalan.header_elements)}
+                  </span>
+                  {branchMode ? <GlobalOnlyMark testid="design-cetakan-global-only-sj-header">Header Mengikuti Global</GlobalOnlyMark> : null}
+                </h3>
+                <p className="muted small dc-header-help">
+                  Susun elemen header SJ dari sumber terdaftar. Kosongkan = header Legacy. POD tidak dikonfigurasi di sini.
+                </p>
+                <div className="dc-header-toolbar">
+                  <button type="button" className="secondary" data-testid="design-cetakan-sj-header-add" disabled={globalOnlyLocked || (draft.surat_jalan.header_elements || []).length >= MAX_HEADER_ELEMENTS} onClick={addSjHeaderElement}>
+                    <Plus size={14} aria-hidden="true" /> Tambah Elemen
+                  </button>
+                  <button type="button" className="secondary" data-testid="design-cetakan-sj-header-load-default" disabled={globalOnlyLocked} onClick={loadDefaultSjHeaderElements}>
+                    Isi Default Header
+                  </button>
+                  {(draft.surat_jalan.header_elements || []).length > 0 ? (
+                    <button type="button" className="secondary" data-testid="design-cetakan-sj-header-clear" disabled={globalOnlyLocked} onClick={() => updateSjHeaderElements([])}>
+                      Kosongkan (pakai Legacy)
+                    </button>
+                  ) : null}
+                </div>
+                <div className="dc-header-list" data-testid="design-cetakan-sj-header-list">
+                  {(draft.surat_jalan.header_elements || []).length === 0 ? (
+                    <p className="muted small" data-testid="design-cetakan-sj-header-empty">Belum ada elemen header generik. PDF memakai header Legacy.</p>
+                  ) : (
+                    (draft.surat_jalan.header_elements || []).map((row, idx) => (
+                      <div className={`dc-header-row${row.source === "static.text" ? " has-text" : ""}`} key={row.id} data-testid={`design-cetakan-sj-header-row-${idx}`}>
+                        <div className="dc-header-order">
+                          <button type="button" className="secondary dc-icon-btn" aria-label="Naikkan" disabled={globalOnlyLocked || idx === 0} onClick={() => moveSjHeaderElement(row.id, -1)}><ChevronUp size={12} aria-hidden="true" /></button>
+                          <button type="button" className="secondary dc-icon-btn" aria-label="Turunkan" disabled={globalOnlyLocked || idx === (draft.surat_jalan.header_elements || []).length - 1} onClick={() => moveSjHeaderElement(row.id, 1)}><ChevronDown size={12} aria-hidden="true" /></button>
+                        </div>
+                        <label className="dc-header-source">
+                          <span className="dc-sr-only">Sumber</span>
+                          <select data-testid={`design-cetakan-sj-header-source-${idx}`} value={row.source} disabled={globalOnlyLocked} aria-label="Sumber" onChange={(e) => patchSjHeaderElement(row.id, "source", e.target.value)}>
+                            {SJ_HEADER_SOURCE_OPTIONS.map((group) => (
+                              <optgroup key={group.group} label={group.group}>
+                                {group.options.map((opt) => (<option key={opt.key} value={opt.key}>{opt.label}</option>))}
+                              </optgroup>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="dc-header-align">
+                          <span className="dc-sr-only">Posisi</span>
+                          <select data-testid={`design-cetakan-sj-header-align-${idx}`} value={row.align} disabled={globalOnlyLocked} aria-label="Posisi" onChange={(e) => patchSjHeaderElement(row.id, "align", e.target.value)}>
+                            {HEADER_ALIGN_OPTIONS.map((opt) => (<option key={opt.value} value={opt.value}>{opt.label}</option>))}
+                          </select>
+                        </label>
+                        <label className="dc-header-label">
+                          <span className="dc-sr-only">Label</span>
+                          <input data-testid={`design-cetakan-sj-header-label-${idx}`} value={row.label} disabled={globalOnlyLocked} aria-label="Label" onChange={(e) => patchSjHeaderElement(row.id, "label", e.target.value)} placeholder="Label" />
+                        </label>
+                        {row.source === "static.text" ? (
+                          <label className="dc-header-text">
+                            <span className="dc-sr-only">Teks</span>
+                            <input data-testid={`design-cetakan-sj-header-text-${idx}`} value={row.text} disabled={globalOnlyLocked} aria-label="Teks manual" onChange={(e) => patchSjHeaderElement(row.id, "text", e.target.value)} placeholder="Teks" />
+                          </label>
+                        ) : null}
+                        <button type="button" className={`secondary dc-icon-btn dc-toggle-btn${row.bold ? " is-on" : ""}`} data-testid={`design-cetakan-sj-header-bold-${idx}`} aria-label="Bold" aria-pressed={Boolean(row.bold)} disabled={globalOnlyLocked} onClick={() => patchSjHeaderElement(row.id, "bold", !row.bold)}><span className="dc-toggle-b" aria-hidden="true">B</span></button>
+                        <button type="button" className={`secondary dc-icon-btn dc-toggle-btn${row.visible !== false ? " is-on" : ""}`} data-testid={`design-cetakan-sj-header-visible-${idx}`} aria-label="Tampilkan elemen" aria-pressed={row.visible !== false} disabled={globalOnlyLocked} onClick={() => patchSjHeaderElement(row.id, "visible", row.visible === false)}>{row.visible !== false ? <Eye size={13} aria-hidden="true" /> : <EyeOff size={13} aria-hidden="true" />}</button>
+                        <button type="button" className="secondary dc-icon-btn" data-testid={`design-cetakan-sj-header-remove-${idx}`} aria-label="Hapus elemen" disabled={globalOnlyLocked} onClick={() => removeSjHeaderElement(row.id)}><Trash2 size={13} aria-hidden="true" /></button>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </section>
+            ) : (
+              <section className="dc-section" data-testid="design-cetakan-sj-footer-section">
+                <h3 className="dc-label-row">
+                  Footer Surat Jalan
+                  <span
+                    className={`dc-mode-badge ${sectionModeLabel(draft.surat_jalan.footer_elements) === "Generic Aktif" ? "is-generic" : "is-legacy"}`}
+                    data-testid="design-cetakan-sj-footer-status"
+                  >
+                    {sectionModeLabel(draft.surat_jalan.footer_elements)}
+                  </span>
+                  {branchMode ? <GlobalOnlyMark testid="design-cetakan-global-only-sj-footer">Footer Mengikuti Global</GlobalOnlyMark> : null}
+                </h3>
+                <p className="muted small dc-header-help">
+                  Presentasi footer saja. Bukti POD/driver tetap di renderer operasional dan tidak dikonfigurasi di sini.
+                </p>
+                <div className="dc-header-toolbar">
+                  <button type="button" className="secondary" data-testid="design-cetakan-sj-footer-add" disabled={globalOnlyLocked || (draft.surat_jalan.footer_elements || []).length >= MAX_FOOTER_ELEMENTS} onClick={addSjFooterElement}>
+                    <Plus size={14} aria-hidden="true" /> Tambah Elemen
+                  </button>
+                  <button type="button" className="secondary" data-testid="design-cetakan-sj-footer-load-default" disabled={globalOnlyLocked} onClick={loadDefaultSjFooterElements}>
+                    Isi Default Footer
+                  </button>
+                  {(draft.surat_jalan.footer_elements || []).length > 0 ? (
+                    <button type="button" className="secondary" data-testid="design-cetakan-sj-footer-clear" disabled={globalOnlyLocked} onClick={() => updateSjFooterElements([])}>
+                      Kosongkan (pakai Legacy)
+                    </button>
+                  ) : null}
+                </div>
+                <div className="dc-header-list" data-testid="design-cetakan-sj-footer-list">
+                  {(draft.surat_jalan.footer_elements || []).length === 0 ? (
+                    <p className="muted small" data-testid="design-cetakan-sj-footer-empty">Belum ada elemen footer generik. PDF memakai footer Legacy + POD operasional.</p>
+                  ) : (
+                    (draft.surat_jalan.footer_elements || []).map((row, idx) => (
+                      <div className={`dc-header-row${row.source === "static.text" ? " has-text" : ""}`} key={row.id} data-testid={`design-cetakan-sj-footer-row-${idx}`}>
+                        <div className="dc-header-order">
+                          <button type="button" className="secondary dc-icon-btn" aria-label="Naikkan" disabled={globalOnlyLocked || idx === 0} onClick={() => moveSjFooterElement(row.id, -1)}><ChevronUp size={12} aria-hidden="true" /></button>
+                          <button type="button" className="secondary dc-icon-btn" aria-label="Turunkan" disabled={globalOnlyLocked || idx === (draft.surat_jalan.footer_elements || []).length - 1} onClick={() => moveSjFooterElement(row.id, 1)}><ChevronDown size={12} aria-hidden="true" /></button>
+                        </div>
+                        <label className="dc-header-source">
+                          <span className="dc-sr-only">Sumber</span>
+                          <select data-testid={`design-cetakan-sj-footer-source-${idx}`} value={row.source} disabled={globalOnlyLocked} aria-label="Sumber" onChange={(e) => patchSjFooterElement(row.id, "source", e.target.value)}>
+                            {SJ_FOOTER_SOURCE_OPTIONS.map((group) => (
+                              <optgroup key={group.group} label={group.group}>
+                                {group.options.map((opt) => (<option key={opt.key} value={opt.key}>{opt.label}</option>))}
+                              </optgroup>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="dc-header-align">
+                          <span className="dc-sr-only">Posisi</span>
+                          <select data-testid={`design-cetakan-sj-footer-align-${idx}`} value={row.align} disabled={globalOnlyLocked} aria-label="Posisi" onChange={(e) => patchSjFooterElement(row.id, "align", e.target.value)}>
+                            {HEADER_ALIGN_OPTIONS.map((opt) => (<option key={opt.value} value={opt.value}>{opt.label}</option>))}
+                          </select>
+                        </label>
+                        <label className="dc-header-label">
+                          <span className="dc-sr-only">Label</span>
+                          <input data-testid={`design-cetakan-sj-footer-label-${idx}`} value={row.label} disabled={globalOnlyLocked} aria-label="Label" onChange={(e) => patchSjFooterElement(row.id, "label", e.target.value)} placeholder="Label" />
+                        </label>
+                        {row.source === "static.text" ? (
+                          <label className="dc-header-text">
+                            <span className="dc-sr-only">Teks</span>
+                            <input data-testid={`design-cetakan-sj-footer-text-${idx}`} value={row.text} disabled={globalOnlyLocked} aria-label="Teks manual" onChange={(e) => patchSjFooterElement(row.id, "text", e.target.value)} placeholder="Teks" />
+                          </label>
+                        ) : null}
+                        <button type="button" className={`secondary dc-icon-btn dc-toggle-btn${row.bold ? " is-on" : ""}`} data-testid={`design-cetakan-sj-footer-bold-${idx}`} aria-label="Bold" aria-pressed={Boolean(row.bold)} disabled={globalOnlyLocked} onClick={() => patchSjFooterElement(row.id, "bold", !row.bold)}><span className="dc-toggle-b" aria-hidden="true">B</span></button>
+                        <button type="button" className={`secondary dc-icon-btn dc-toggle-btn${row.visible !== false ? " is-on" : ""}`} data-testid={`design-cetakan-sj-footer-visible-${idx}`} aria-label="Tampilkan elemen" aria-pressed={row.visible !== false} disabled={globalOnlyLocked} onClick={() => patchSjFooterElement(row.id, "visible", row.visible === false)}>{row.visible !== false ? <Eye size={13} aria-hidden="true" /> : <EyeOff size={13} aria-hidden="true" />}</button>
+                        <button type="button" className="secondary dc-icon-btn" data-testid={`design-cetakan-sj-footer-remove-${idx}`} aria-label="Hapus elemen" disabled={globalOnlyLocked} onClick={() => removeSjFooterElement(row.id)}><Trash2 size={13} aria-hidden="true" /></button>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </section>
+            )}
+            <section className="dc-section dc-legacy-section" data-testid="design-cetakan-sj-legacy">
+              <button
+                type="button"
+                className="dc-legacy-toggle"
+                data-testid="design-cetakan-sj-legacy-toggle"
+                aria-expanded={Boolean(legacyOpen.sj)}
+                onClick={() => toggleLegacy("sj")}
+              >
+                <span>Pengaturan Legacy</span>
+                {legacyOpen.sj ? <ChevronUp size={14} aria-hidden="true" /> : <ChevronDown size={14} aria-hidden="true" />}
+              </button>
+              {legacyOpen.sj ? (
+                <div className="dc-legacy-body" data-testid="design-cetakan-sj-legacy-body">
+                  <p className="muted small dc-legacy-help">Digunakan sebagai fallback jika bagian Header/Footer baru belum dikonfigurasi.</p>
+                  <h3 className="dc-label-row">
+                    Label Tanda Tangan
+                    {branchMode ? <GlobalOnlyMark testid="design-cetakan-global-only-sj" /> : null}
+                  </h3>
+                  <div className="dc-fields dc-fields-3">
+                    {draft.surat_jalan.signature_labels.map((label, idx) => (
+                      <label key={`sj-sig-${idx}`}>
+                        Label tanda tangan {idx + 1}
+                        <input
+                          data-testid={`design-cetakan-sj-sig-${idx}`}
+                          value={label}
+                          disabled={globalOnlyLocked}
+                          onChange={(e) => patch(`surat_jalan.signature_labels.${idx}`, e.target.value)}
+                        />
+                      </label>
+                    ))}
+                    <label>
+                      Label tanggal
+                      <input
+                        data-testid="design-cetakan-sj-date-label"
+                        value={draft.surat_jalan.date_label}
+                        disabled={globalOnlyLocked}
+                        onChange={(e) => patch("surat_jalan.date_label", e.target.value)}
+                      />
+                    </label>
+                  </div>
+                </div>
+              ) : null}
             </section>
           </div>
         ) : null}

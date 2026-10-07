@@ -402,6 +402,65 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.dc-mode-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--soft);
+  white-space: nowrap;
+}
+.dc-mode-badge.is-generic {
+  color: #166534;
+  border-color: #86efac;
+  background: #f0fdf4;
+}
+.dc-mode-badge.is-legacy {
+  color: #92400e;
+  border-color: #fcd34d;
+  background: #fffbeb;
+}
+.dc-legacy-section {
+  margin-top: 4px;
+  padding-top: 4px;
+}
+.dc-legacy-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--muted);
+  color: var(--ep-dark);
+  font-size: 13px;
+  font-weight: 650;
+  cursor: pointer;
+}
+.dc-legacy-toggle:hover {
+  border-color: var(--ep-primary);
+}
+.dc-legacy-body {
+  margin-top: 8px;
+  padding: 8px 10px 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  min-width: 0;
+}
+.dc-legacy-help {
+  margin: 0 0 10px;
+  font-size: 12px;
+  line-height: 1.35;
+}
 .dc-header-toolbar {
   display: flex;
   flex-wrap: wrap;

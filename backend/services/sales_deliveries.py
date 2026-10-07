@@ -1132,11 +1132,27 @@ def generate_sales_delivery_pdf_bytes(
         scale_widths,
         styles,
     )
+    from services.print_context_resolver import build_delivery_print_context
     from services.print_design_settings import resolve_print_design
+    from services.print_footer_render import (
+        build_generic_invoice_footer_flowables,
+        footer_elements_active,
+    )
+    from services.print_header_render import (
+        build_generic_invoice_header_flowables,
+        header_elements_active,
+    )
 
     delivery = delivery or {}
     design = resolve_print_design(design)
     sj_design = design.get("surat_jalan") or {}
+    header_elements = sj_design.get("header_elements") or []
+    footer_elements = sj_design.get("footer_elements") or []
+    use_generic_header = header_elements_active(header_elements)
+    use_generic_footer = footer_elements_active(footer_elements)
+    print_context = None
+    if use_generic_header or use_generic_footer:
+        print_context = build_delivery_print_context(delivery, design)
     _sig_tmp_paths: List[str] = []
 
     def _text(value) -> str:
@@ -1191,91 +1207,106 @@ def generate_sales_delivery_pdf_bytes(
     width = content_width(A4)
     elements = []
     try:
-        logo = logo_flowable(design, width=36 * mm, height=12.2 * mm, company_style=sty["company"])
-        address_html = "<br/>".join(esc(line) for line in (design.get("address_lines") or []))
-        identity = Paragraph(
-            f"<font size='12'><b>{esc(design.get('company_name') or '')}</b></font><br/>{address_html}",
-            sty["address"],
-        )
-        brand = Table(
-            [[logo, identity]],
-            colWidths=[40 * mm, width - 40 * mm],
-        )
-        brand.setStyle(TableStyle([
-            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("LEFTPADDING", (0, 0), (-1, -1), 0),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-            ("TOPPADDING", (0, 0), (-1, -1), 0),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
-        ]))
-        elements.append(brand)
-        elements.append(Spacer(1, 2 * mm))
-        elements.append(Paragraph("SURAT JALAN", sty["title"]))
-        elements.append(Spacer(1, 2 * mm))
-
-        address = _text(delivery.get("address"))
         po_number = _text(delivery.get("po_number"))
-        customer = Paragraph(
-            f"Kepada<br/><b>{esc(_text(delivery.get('customer')) or '-')}</b><br/>{esc(address)}",
-            sty["body"],
-        )
-        grid_width = width * 0.56
-        left_width = width - grid_width
-        customer_cell = Table([[customer]], colWidths=[left_width - 2 * mm])
-        customer_cell.setStyle(TableStyle([
-            ("LINEBELOW", (0, 0), (-1, -1), 0.7, colors.black),
-            ("LEFTPADDING", (0, 0), (-1, -1), 1),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 3),
-            ("TOPPADDING", (0, 0), (-1, -1), 1),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-            ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ]))
+        if use_generic_header:
+            elements.extend(
+                build_generic_invoice_header_flowables(
+                    elements=header_elements,
+                    context=print_context,
+                    design=design,
+                    sty=sty,
+                    width=width,
+                    document_title="SURAT JALAN",
+                )
+            )
+            if po_number:
+                elements.append(Paragraph(f"Nomor PO : {esc(po_number)}", sty["small"]))
+            elements.append(Spacer(1, 2 * mm))
+        else:
+            logo = logo_flowable(design, width=36 * mm, height=12.2 * mm, company_style=sty["company"])
+            address_html = "<br/>".join(esc(line) for line in (design.get("address_lines") or []))
+            identity = Paragraph(
+                f"<font size='12'><b>{esc(design.get('company_name') or '')}</b></font><br/>{address_html}",
+                sty["address"],
+            )
+            brand = Table(
+                [[logo, identity]],
+                colWidths=[40 * mm, width - 40 * mm],
+            )
+            brand.setStyle(TableStyle([
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                ("TOPPADDING", (0, 0), (-1, -1), 0),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+            ]))
+            elements.append(brand)
+            elements.append(Spacer(1, 2 * mm))
+            elements.append(Paragraph("SURAT JALAN", sty["title"]))
+            elements.append(Spacer(1, 2 * mm))
 
-        def cell(label: str, value: str) -> Paragraph:
-            shown = esc(value) if value else "&nbsp;"
-            return Paragraph(f"{esc(label)}<br/><b>{shown}</b>", sty["small"])
+            address = _text(delivery.get("address"))
+            customer = Paragraph(
+                f"Kepada<br/><b>{esc(_text(delivery.get('customer')) or '-')}</b><br/>{esc(address)}",
+                sty["body"],
+            )
+            grid_width = width * 0.56
+            left_width = width - grid_width
+            customer_cell = Table([[customer]], colWidths=[left_width - 2 * mm])
+            customer_cell.setStyle(TableStyle([
+                ("LINEBELOW", (0, 0), (-1, -1), 0.7, colors.black),
+                ("LEFTPADDING", (0, 0), (-1, -1), 1),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+                ("TOPPADDING", (0, 0), (-1, -1), 1),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ]))
 
-        meta = [
-            [
-                cell("Nama Penjual", _text(delivery.get("sales"))),
-                cell("Nomor", _text(delivery.get("sj_number"))),
-            ],
-            [
-                cell("Ekspedisi", _text(delivery.get("expedition"))),
-                cell("Pembuat Data", _text(delivery.get("created_by_name"))),
-            ],
-            [
-                cell("Tanggal Pengiriman", format_pdf_date(delivery.get("delivery_date"))),
-                cell("Zona Kirim", _text(delivery.get("delivery_zone"))),
-            ],
-        ]
-        meta_table = Table(meta, colWidths=[grid_width / 2, grid_width / 2])
-        meta_table.setStyle(TableStyle([
-            ("VALIGN", (0, 0), (-1, -1), "TOP"),
-            ("BOX", (0, 0), (-1, -1), 0.7, colors.black),
-            ("LINEAFTER", (0, 0), (0, -1), 0.6, colors.black),
-            ("LINEBELOW", (0, 0), (-1, -2), 0.4, colors.black, None, (2, 2)),
-            ("LEFTPADDING", (0, 0), (-1, -1), 3),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 3),
-            ("TOPPADDING", (0, 0), (-1, -1), 2),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
-        ]))
-        party = Table(
-            [[customer_cell, meta_table]],
-            colWidths=[width - grid_width, grid_width],
-        )
-        party.setStyle(TableStyle([
-            ("VALIGN", (0, 0), (-1, -1), "TOP"),
-            ("LEFTPADDING", (0, 0), (-1, -1), 0),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-            ("TOPPADDING", (0, 0), (-1, -1), 0),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
-        ]))
-        elements.append(party)
-        if po_number:
-            elements.append(Spacer(1, 1 * mm))
-            elements.append(Paragraph(f"Nomor PO : {esc(po_number)}", sty["small"]))
-        elements.append(Spacer(1, 3 * mm))
+            def cell(label: str, value: str) -> Paragraph:
+                shown = esc(value) if value else "&nbsp;"
+                return Paragraph(f"{esc(label)}<br/><b>{shown}</b>", sty["small"])
+
+            meta = [
+                [
+                    cell("Nama Penjual", _text(delivery.get("sales"))),
+                    cell("Nomor", _text(delivery.get("sj_number"))),
+                ],
+                [
+                    cell("Ekspedisi", _text(delivery.get("expedition"))),
+                    cell("Pembuat Data", _text(delivery.get("created_by_name"))),
+                ],
+                [
+                    cell("Tanggal Pengiriman", format_pdf_date(delivery.get("delivery_date"))),
+                    cell("Zona Kirim", _text(delivery.get("delivery_zone"))),
+                ],
+            ]
+            meta_table = Table(meta, colWidths=[grid_width / 2, grid_width / 2])
+            meta_table.setStyle(TableStyle([
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("BOX", (0, 0), (-1, -1), 0.7, colors.black),
+                ("LINEAFTER", (0, 0), (0, -1), 0.6, colors.black),
+                ("LINEBELOW", (0, 0), (-1, -2), 0.4, colors.black, None, (2, 2)),
+                ("LEFTPADDING", (0, 0), (-1, -1), 3),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+                ("TOPPADDING", (0, 0), (-1, -1), 2),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+            ]))
+            party = Table(
+                [[customer_cell, meta_table]],
+                colWidths=[width - grid_width, grid_width],
+            )
+            party.setStyle(TableStyle([
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                ("TOPPADDING", (0, 0), (-1, -1), 0),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+            ]))
+            elements.append(party)
+            if po_number:
+                elements.append(Spacer(1, 1 * mm))
+                elements.append(Paragraph(f"Nomor PO : {esc(po_number)}", sty["small"]))
+            elements.append(Spacer(1, 3 * mm))
 
         header = [
             Paragraph("<b>Kode Barang</b>", sty["header"]),
@@ -1384,6 +1415,19 @@ def generate_sales_delivery_pdf_bytes(
         ]))
         elements.append(lower)
         elements.append(Spacer(1, 6 * mm))
+
+        # Presentation-only generic footer (optional). POD/driver evidence stays frozen below.
+        if use_generic_footer:
+            elements.extend(
+                build_generic_invoice_footer_flowables(
+                    elements=footer_elements,
+                    context=print_context,
+                    design=design,
+                    sty=sty,
+                    width=width,
+                )
+            )
+            elements.append(Spacer(1, 4 * mm))
 
         recip_file = _normalize_sig_file(recipient_signature_png)
         driver_file = _normalize_sig_file(driver_signature_png)
