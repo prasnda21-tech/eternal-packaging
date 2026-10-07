@@ -1,9 +1,9 @@
-"""Internal RBAC routes for Public Catalog Settings (Phase A + B)."""
+"""Internal RBAC routes for Public Catalog Settings (Phase A + B + C)."""
 from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import File, UploadFile
+from fastapi import File, Form, UploadFile
 from fastapi.responses import Response as BinaryResponse
 from pydantic import BaseModel, ConfigDict
 
@@ -165,3 +165,201 @@ def register_public_catalog_routes(
             get_db(), pricing_group_id, dump(payload), user
         )
         return {"group": group, "message": "Presentasi kelompok katalog disimpan"}
+
+    @api_router.get(
+        "/settings/public-catalog/groups/{pricing_group_id}/variants"
+    )
+    async def list_public_catalog_variants(
+        pricing_group_id: str,
+        q: Optional[str] = None,
+        user=Depends(current_user),
+    ):
+        await require_view(user)
+        variants = await pc.list_presentation_variants(
+            get_db(), pricing_group_id, q=q or ""
+        )
+        return {"variants": variants, "count": len(variants)}
+
+    @api_router.get(
+        "/settings/public-catalog/groups/{pricing_group_id}/variants/{accurate_item_id}"
+    )
+    async def get_public_catalog_variant(
+        pricing_group_id: str,
+        accurate_item_id: str,
+        user=Depends(current_user),
+    ):
+        await require_view(user)
+        return {
+            "variant": await pc.get_presentation_variant(
+                get_db(), pricing_group_id, accurate_item_id
+            )
+        }
+
+    @api_router.put(
+        "/settings/public-catalog/groups/{pricing_group_id}/variants/{accurate_item_id}"
+    )
+    async def put_public_catalog_variant(
+        pricing_group_id: str,
+        accurate_item_id: str,
+        payload: LoosePayload,
+        user=Depends(current_user),
+    ):
+        await require_manage(user)
+        variant = await pc.upsert_presentation_variant(
+            get_db(), pricing_group_id, accurate_item_id, dump(payload), user
+        )
+        return {"variant": variant, "message": "Metadata varian katalog disimpan"}
+
+    @api_router.patch(
+        "/settings/public-catalog/groups/{pricing_group_id}/variants/{accurate_item_id}"
+    )
+    async def patch_public_catalog_variant(
+        pricing_group_id: str,
+        accurate_item_id: str,
+        payload: LoosePayload,
+        user=Depends(current_user),
+    ):
+        await require_manage(user)
+        variant = await pc.upsert_presentation_variant(
+            get_db(), pricing_group_id, accurate_item_id, dump(payload), user
+        )
+        return {"variant": variant, "message": "Metadata varian katalog disimpan"}
+
+    @api_router.get(
+        "/settings/public-catalog/groups/{pricing_group_id}/variants/{accurate_item_id}/images"
+    )
+    async def list_public_catalog_variant_images(
+        pricing_group_id: str,
+        accurate_item_id: str,
+        user=Depends(current_user),
+    ):
+        await require_view(user)
+        gallery = await pc.gallery_context(
+            get_db(), pricing_group_id, accurate_item_id
+        )
+        return gallery
+
+    def _form_bool(raw: Optional[str]):
+        if raw is None or raw == "":
+            return None
+        text = str(raw).strip().lower()
+        if text in ("1", "true", "yes", "on"):
+            return True
+        if text in ("0", "false", "no", "off"):
+            return False
+        return None
+
+    @api_router.post(
+        "/settings/public-catalog/groups/{pricing_group_id}/variants/{accurate_item_id}/images"
+    )
+    async def upload_public_catalog_variant_image(
+        pricing_group_id: str,
+        accurate_item_id: str,
+        file: UploadFile = File(...),
+        role: Optional[str] = Form(None),
+        display_order: Optional[str] = Form(None),
+        is_default: Optional[str] = Form(None),
+        enabled: Optional[str] = Form(None),
+        user=Depends(current_user),
+    ):
+        await require_manage(user)
+        raw = await file.read(MAX_CATALOG_IMAGE_BYTES + 1)
+        order_value = None
+        if display_order not in (None, ""):
+            try:
+                order_value = int(display_order)
+            except (TypeError, ValueError):
+                order_value = display_order
+        image = await images.upload_variant_gallery_image(
+            get_db(),
+            pricing_group_id=pricing_group_id,
+            accurate_item_id=accurate_item_id,
+            filename=file.filename or "",
+            content_type=file.content_type or "",
+            data=raw,
+            user=user,
+            role=role,
+            display_order=order_value,
+            is_default=_form_bool(is_default),
+            enabled=_form_bool(enabled),
+        )
+        gallery = await pc.gallery_context(
+            get_db(), pricing_group_id, accurate_item_id
+        )
+        return {
+            "image": image,
+            "gallery": gallery,
+            "message": "Gambar galeri ditambahkan",
+        }
+
+    @api_router.patch(
+        "/settings/public-catalog/groups/{pricing_group_id}/variants/{accurate_item_id}/images/{image_id}"
+    )
+    async def patch_public_catalog_variant_image(
+        pricing_group_id: str,
+        accurate_item_id: str,
+        image_id: str,
+        payload: LoosePayload,
+        user=Depends(current_user),
+    ):
+        await require_manage(user)
+        image = await pc.update_gallery_image(
+            get_db(),
+            pricing_group_id,
+            accurate_item_id,
+            image_id,
+            dump(payload),
+            user,
+        )
+        gallery = await pc.gallery_context(
+            get_db(), pricing_group_id, accurate_item_id
+        )
+        return {
+            "image": image,
+            "gallery": gallery,
+            "message": "Gambar galeri diperbarui",
+        }
+
+    @api_router.delete(
+        "/settings/public-catalog/groups/{pricing_group_id}/variants/{accurate_item_id}/images/{image_id}"
+    )
+    async def delete_public_catalog_variant_image(
+        pricing_group_id: str,
+        accurate_item_id: str,
+        image_id: str,
+        user=Depends(current_user),
+    ):
+        await require_manage(user)
+        result = await images.remove_variant_gallery_image(
+            get_db(),
+            pricing_group_id=pricing_group_id,
+            accurate_item_id=accurate_item_id,
+            image_id=image_id,
+            user=user,
+        )
+        return {**result, "message": "Gambar galeri dihapus"}
+
+    @api_router.get(
+        "/settings/public-catalog/groups/{pricing_group_id}/variants/{accurate_item_id}/images/{image_id}/content"
+    )
+    async def get_public_catalog_variant_image_content(
+        pricing_group_id: str,
+        accurate_item_id: str,
+        image_id: str,
+        user=Depends(current_user),
+    ):
+        await require_view(user)
+        data, content_type, _filename = await images.get_variant_gallery_image(
+            get_db(),
+            pricing_group_id=pricing_group_id,
+            accurate_item_id=accurate_item_id,
+            image_id=image_id,
+        )
+        return BinaryResponse(
+            content=data,
+            media_type=content_type,
+            headers={
+                "Cache-Control": "private, no-store",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )

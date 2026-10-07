@@ -277,6 +277,7 @@ export default function App() {
           <Route path="/t/:customerSlug/:poSlug/:code" element={<CustomerTrackingPage />} />
           <Route path="/harga" element={<PublicHargaPage />} />
           <Route path="/harga/:groupPublicId" element={<PublicHargaPage />} />
+          <Route path="/produk/:slug" element={<PublicHargaPage />} />
           <Route element={<Protected><MobileOperationalLayout /></Protected>}>
             <Route path="/m" element={<Navigate to="/m/tasks" replace />} />
             <Route path="/m/tasks" element={<MobileTasksPage />} />

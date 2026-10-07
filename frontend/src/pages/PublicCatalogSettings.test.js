@@ -31,7 +31,7 @@ describe("Public Catalog Settings Phase A", () => {
     expect(shellSrc).toMatch(/"public-catalog":\s*LayoutGrid/);
   });
 
-  test("page renders Phase A sections only with own title", () => {
+  test("page renders Phase A sections with own title", () => {
     expect(pageSrc).toMatch(/data-testid="public-catalog-settings"/);
     expect(pageSrc).toMatch(/Katalog Publik/);
     expect(pageSrc).toMatch(/Atur tampilan, struktur produk, gambar, dan URL katalog customer/);
@@ -45,8 +45,6 @@ describe("Public Catalog Settings Phase A", () => {
     expect(pageSrc).toMatch(/Kelompok Produk/);
     expect(pageSrc).toMatch(/URL & SEO/);
     expect(pageSrc).not.toMatch(/Tahap berikutnya/);
-    expect(pageSrc).not.toMatch(/pcs-nav-varian|Varian/);
-    expect(pageSrc).not.toMatch(/pcs-nav-galeri|Galeri/);
     expect(cssSrc).toMatch(/\.pcs-page/);
     expect(cssSrc).toMatch(/background:\s*#fff\s*!important/);
     expect(cssSrc).toMatch(/\.pcs-section-nav/);
@@ -121,15 +119,11 @@ describe("Public Catalog Settings Phase A", () => {
 });
 
 describe("Public Catalog Settings Phase B", () => {
-  test("Kelompok Produk and URL & SEO sections exist without Varian/Galeri", () => {
+  test("Kelompok Produk and URL & SEO sections remain intact", () => {
     expect(pageSrc).toMatch(/pcs-nav-kelompok/);
     expect(pageSrc).toMatch(/pcs-nav-seo/);
     expect(pageSrc).toMatch(/data-testid="pcs-groups"/);
     expect(pageSrc).toMatch(/data-testid="pcs-seo"/);
-    expect(pageSrc).not.toMatch(/pcs-nav-varian/);
-    expect(pageSrc).not.toMatch(/pcs-nav-galeri/);
-    expect(pageSrc).not.toMatch(/public_catalog_variants/);
-    expect(pageSrc).not.toMatch(/public_catalog_images/);
   });
 
   test("group list, drawer, visibility and read-only pricing status", () => {
@@ -168,5 +162,66 @@ describe("Public Catalog Settings Phase B", () => {
       "katalog.eternalpackaging.id/produk/cup-inject"
     );
     expect(pageSrc).not.toMatch(/path:\s*["']\/produk/);
+  });
+});
+
+describe("Public Catalog Settings Phase C", () => {
+  test("Varian and Galeri nav appear with Phase A/B sections", () => {
+    expect(pageSrc).toMatch(/pcs-nav-varian/);
+    expect(pageSrc).toMatch(/pcs-nav-galeri/);
+    expect(pageSrc).toMatch(/pcs-nav-umum/);
+    expect(pageSrc).toMatch(/pcs-nav-kategori/);
+    expect(pageSrc).toMatch(/pcs-nav-kelompok/);
+    expect(pageSrc).toMatch(/pcs-nav-seo/);
+    expect(pageSrc).toMatch(/data-testid="pcs-variants"/);
+    expect(pageSrc).toMatch(/data-testid="pcs-gallery"/);
+  });
+
+  test("variant list, drawer, attrs and read-only pricing/master status", () => {
+    expect(apiSrc).toMatch(/publicCatalogVariants/);
+    expect(apiSrc).toMatch(/updatePublicCatalogVariant/);
+    expect(pageSrc).toMatch(/pcs-variant-group-select/);
+    expect(pageSrc).toMatch(/pcs-variant-search/);
+    expect(pageSrc).toMatch(/pcs-variant-list/);
+    expect(pageSrc).toMatch(/pcs-variant-row/);
+    expect(pageSrc).toMatch(/pcs-variant-configure/);
+    expect(pageSrc).toMatch(/pcs-variant-drawer/);
+    expect(pageSrc).toMatch(/pcs-variant-editor-size/);
+    expect(pageSrc).toMatch(/pcs-variant-editor-color/);
+    expect(pageSrc).toMatch(/pcs-variant-editor-finishing/);
+    expect(pageSrc).toMatch(/pcs-variant-editor-order/);
+    expect(pageSrc).toMatch(/pcs-variant-editor-visible/);
+    expect(pageSrc).toMatch(/pcs-variant-readonly/);
+    expect(pageSrc).toMatch(/Status Master/);
+    expect(pageSrc).toMatch(/pcs-variant-name/);
+    expect(pageSrc).not.toMatch(/patchCustomerPricingGroup/);
+    expect(pageSrc).not.toMatch(/updateCustomerPricingVersion/);
+    expect(pageSrc).not.toMatch(/hpp|profit|tier_prices/i);
+  });
+
+  test("gallery manager, legacy read-only, upload and preview interactions", () => {
+    expect(apiSrc).toMatch(/publicCatalogVariantImages/);
+    expect(apiSrc).toMatch(/uploadPublicCatalogVariantImage/);
+    expect(apiSrc).toMatch(/patchPublicCatalogVariantImage/);
+    expect(apiSrc).toMatch(/deletePublicCatalogVariantImage/);
+    expect(pageSrc).toMatch(/pcs-gallery-group-select/);
+    expect(pageSrc).toMatch(/pcs-gallery-variant-select/);
+    expect(pageSrc).toMatch(/pcs-gallery-add/);
+    expect(pageSrc).toMatch(/pcs-gallery-preview/);
+    expect(pageSrc).toMatch(/pcs-gallery-thumbs/);
+    expect(pageSrc).toMatch(/pcs-gallery-thumb/);
+    expect(pageSrc).toMatch(/setGalleryPreviewId/);
+    expect(pageSrc).toMatch(/pcs-gallery-drawer/);
+    expect(pageSrc).toMatch(/pcs-gallery-editor-role/);
+    expect(pageSrc).toMatch(/pcs-gallery-editor-order/);
+    expect(pageSrc).toMatch(/pcs-gallery-editor-default/);
+    expect(pageSrc).toMatch(/pcs-gallery-editor-enabled/);
+    expect(pageSrc).toMatch(/pcs-gallery-legacy/);
+    expect(pageSrc).toMatch(/Legacy image/);
+    expect(pageSrc).toMatch(/Read-only/);
+    expect(pageSrc).toMatch(/Hapus gambar galeri ini/);
+    expect(pageSrc).toMatch(/onError/);
+    expect(pageSrc).not.toMatch(/\/produk\/\{/);
+    expect(hargaSrc).toMatch(/publicCustomerPricingGroups|\/harga/);
   });
 });
