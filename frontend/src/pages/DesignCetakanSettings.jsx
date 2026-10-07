@@ -48,12 +48,60 @@ const HEADER_ALIGN_OPTIONS = [
   { value: "right", label: "Kanan" },
 ];
 const MAX_HEADER_ELEMENTS = 24;
+const MAX_FOOTER_ELEMENTS = 24;
+
+/** Phase 2 whitelist — keys must match backend print_field_registry footer sections. */
+const FOOTER_SOURCE_OPTIONS = [
+  { group: "Perusahaan", options: [
+    { key: "company.logo", label: "Logo", type: "field" },
+    { key: "company.name", label: "Nama", type: "field" },
+    { key: "company.address", label: "Alamat", type: "field" },
+  ]},
+  { group: "Customer", options: [
+    { key: "customer.name", label: "Nama", type: "field" },
+    { key: "customer.address", label: "Alamat", type: "field" },
+    { key: "customer.outlet", label: "Outlet", type: "field" },
+  ]},
+  { group: "Dokumen", options: [
+    { key: "document.number", label: "Nomor Faktur", type: "field" },
+    { key: "document.date", label: "Tanggal", type: "field" },
+    { key: "document.due_date", label: "Jatuh Tempo", type: "field" },
+    { key: "document.po_number", label: "No. PO", type: "field" },
+  ]},
+  { group: "Sales", options: [
+    { key: "sales.name", label: "Nama Sales", type: "field" },
+  ]},
+  { group: "Tanda Tangan", options: [
+    { key: "signature.prepared", label: "Tanda Tangan Disiapkan", type: "signature" },
+    { key: "signature.approved", label: "Tanda Tangan Disetujui", type: "signature" },
+    { key: "signature.prepared_label", label: "Label Disiapkan", type: "field" },
+    { key: "signature.prepared_footer", label: "Footer Disiapkan", type: "field" },
+    { key: "signature.approved_label", label: "Label Disetujui", type: "field" },
+    { key: "signature.approved_footer", label: "Footer Disetujui", type: "field" },
+  ]},
+  { group: "Estimasi", options: [
+    { key: "estimasi.title", label: "Judul Estimasi", type: "field" },
+    { key: "estimasi.block", label: "Blok Estimasi", type: "field" },
+  ]},
+  { group: "Lainnya", options: [
+    { key: "static.text", label: "Teks Manual", type: "static_text" },
+  ]},
+];
+
+const FOOTER_SOURCE_FLAT = FOOTER_SOURCE_OPTIONS.flatMap((g) => g.options);
+const FOOTER_SOURCE_KEYS = new Set(FOOTER_SOURCE_FLAT.map((o) => o.key));
+
+function elementTypeForOpt(opt) {
+  if (opt?.type === "static_text") return "static_text";
+  if (opt?.type === "signature") return "signature";
+  return "field";
+}
 
 function newHeaderElement(sourceKey = "company.name") {
   const opt = HEADER_SOURCE_FLAT.find((o) => o.key === sourceKey) || HEADER_SOURCE_FLAT[1];
   return {
     id: `hdr-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
-    type: opt.type === "static_text" ? "static_text" : "field",
+    type: elementTypeForOpt(opt),
     source: opt.key,
     label: "",
     align: "left",
@@ -71,7 +119,40 @@ function normalizeHeaderElements(raw) {
     const align = ["left", "center", "right"].includes(row?.align) ? row.align : "left";
     return {
       id: String(row?.id || `hdr-${idx + 1}`).slice(0, 64),
-      type: opt.type === "static_text" ? "static_text" : "field",
+      type: elementTypeForOpt(opt),
+      source,
+      label: String(row?.label || "").slice(0, 80),
+      align,
+      bold: Boolean(row?.bold),
+      visible: row?.visible === false ? false : true,
+      text: String(row?.text || "").slice(0, 240),
+    };
+  });
+}
+
+function newFooterElement(sourceKey = "signature.prepared") {
+  const opt = FOOTER_SOURCE_FLAT.find((o) => o.key === sourceKey) || FOOTER_SOURCE_FLAT.find((o) => o.key === "static.text");
+  return {
+    id: `ftr-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+    type: elementTypeForOpt(opt),
+    source: opt.key,
+    label: "",
+    align: sourceKey === "signature.approved" ? "center" : sourceKey === "estimasi.block" ? "right" : "left",
+    bold: false,
+    visible: true,
+    text: "",
+  };
+}
+
+function normalizeFooterElements(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw.slice(0, MAX_FOOTER_ELEMENTS).map((row, idx) => {
+    const source = FOOTER_SOURCE_KEYS.has(row?.source) ? row.source : "static.text";
+    const opt = FOOTER_SOURCE_FLAT.find((o) => o.key === source) || FOOTER_SOURCE_FLAT[FOOTER_SOURCE_FLAT.length - 1];
+    const align = ["left", "center", "right"].includes(row?.align) ? row.align : "left";
+    return {
+      id: String(row?.id || `ftr-${idx + 1}`).slice(0, 64),
+      type: elementTypeForOpt(opt),
       source,
       label: String(row?.label || "").slice(0, 80),
       align,
@@ -103,6 +184,7 @@ function emptyDraft() {
       approved_label: "",
       approved_footer: "",
       header_elements: [],
+      footer_elements: [],
     },
     surat_jalan: {
       signature_labels: ["Gudang", "Cek Barang", "Kurir", "Penerima"],
@@ -147,6 +229,7 @@ function fromApi(settings) {
       approved_label: inv.approved_label || "",
       approved_footer: inv.approved_footer || "",
       header_elements: normalizeHeaderElements(inv.header_elements),
+      footer_elements: normalizeFooterElements(inv.footer_elements),
     },
     surat_jalan: {
       signature_labels: [...((s.surat_jalan || {}).signature_labels || []), "", "", "", ""].slice(0, 4),
@@ -402,6 +485,7 @@ function formatHistoryAt(iso) {
 
 export default function DesignCetakanSettings({ notify, canEdit }) {
   const [tab, setTab] = useState("umum");
+  const [invoiceSection, setInvoiceSection] = useState("header");
   const [scope, setScope] = useState("global");
   const [catalog, setCatalog] = useState([]);
   const [draft, setDraft] = useState(emptyDraft);
@@ -769,6 +853,7 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
             approved_label: draft.invoice.approved_label,
             approved_footer: draft.invoice.approved_footer,
             header_elements: normalizeHeaderElements(draft.invoice.header_elements),
+            footer_elements: normalizeFooterElements(draft.invoice.footer_elements),
           },
           surat_jalan: {
             signature_labels: draft.surat_jalan.signature_labels,
@@ -981,6 +1066,55 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
       { ...newHeaderElement("sales.name"), label: "Sales", align: "right" },
       { ...newHeaderElement("document.po_number"), label: "PO No", align: "right" },
       { ...newHeaderElement("document.due_date"), label: "Jatuh Tempo", align: "right" },
+    ]);
+  };
+
+  const updateFooterElements = (nextList) => {
+    patch("invoice.footer_elements", normalizeFooterElements(nextList));
+  };
+
+  const addFooterElement = () => {
+    const list = Array.isArray(draft.invoice.footer_elements) ? draft.invoice.footer_elements : [];
+    if (list.length >= MAX_FOOTER_ELEMENTS) return;
+    updateFooterElements([...list, newFooterElement()]);
+  };
+
+  const removeFooterElement = (id) => {
+    const list = Array.isArray(draft.invoice.footer_elements) ? draft.invoice.footer_elements : [];
+    updateFooterElements(list.filter((row) => row.id !== id));
+  };
+
+  const moveFooterElement = (id, direction) => {
+    const list = [...(draft.invoice.footer_elements || [])];
+    const idx = list.findIndex((row) => row.id === id);
+    if (idx < 0) return;
+    const target = idx + direction;
+    if (target < 0 || target >= list.length) return;
+    const tmp = list[idx];
+    list[idx] = list[target];
+    list[target] = tmp;
+    updateFooterElements(list);
+  };
+
+  const patchFooterElement = (id, key, value) => {
+    const list = (draft.invoice.footer_elements || []).map((row) => {
+      if (row.id !== id) return row;
+      const next = { ...row, [key]: value };
+      if (key === "source") {
+        const opt = FOOTER_SOURCE_FLAT.find((o) => o.key === value);
+        next.type = elementTypeForOpt(opt);
+        if (next.type !== "static_text") next.text = "";
+      }
+      return next;
+    });
+    updateFooterElements(list);
+  };
+
+  const loadDefaultFooterElements = () => {
+    updateFooterElements([
+      { ...newFooterElement("signature.prepared"), align: "left" },
+      { ...newFooterElement("signature.approved"), align: "center" },
+      { ...newFooterElement("estimasi.block"), align: "right" },
     ]);
   };
 
@@ -1234,6 +1368,29 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
 
         {tab === "invoice" ? (
           <div data-testid="design-cetakan-invoice">
+            <div className="dc-invoice-panel-tabs" role="tablist" aria-label="Bagian Faktur">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={invoiceSection === "header"}
+                data-testid="design-cetakan-invoice-section-header"
+                className={invoiceSection === "header" ? "is-active" : ""}
+                onClick={() => setInvoiceSection("header")}
+              >
+                Header
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={invoiceSection === "footer"}
+                data-testid="design-cetakan-invoice-section-footer"
+                className={invoiceSection === "footer" ? "is-active" : ""}
+                onClick={() => setInvoiceSection("footer")}
+              >
+                Footer
+              </button>
+            </div>
+            {invoiceSection === "header" ? (
             <section className="dc-section" data-testid="design-cetakan-header-section">
               <h3 className="dc-label-row">
                 Header Cetakan
@@ -1392,6 +1549,166 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
                 )}
               </div>
             </section>
+            ) : (
+            <section className="dc-section" data-testid="design-cetakan-footer-section">
+              <h3 className="dc-label-row">
+                Footer Cetakan
+                {branchMode ? <GlobalOnlyMark testid="design-cetakan-global-only-footer">Footer Mengikuti Global</GlobalOnlyMark> : null}
+              </h3>
+              <p className="muted small dc-header-help">
+                Susun elemen footer dari sumber terdaftar. Kosongkan = footer V1. Estimasi &amp; tanda tangan legacy tetap tersedia di bawah.
+              </p>
+              <div className="dc-header-toolbar">
+                <button
+                  type="button"
+                  className="secondary"
+                  data-testid="design-cetakan-footer-add"
+                  disabled={globalOnlyLocked || (draft.invoice.footer_elements || []).length >= MAX_FOOTER_ELEMENTS}
+                  onClick={addFooterElement}
+                >
+                  <Plus size={14} aria-hidden="true" />
+                  Tambah Elemen
+                </button>
+                <button
+                  type="button"
+                  className="secondary"
+                  data-testid="design-cetakan-footer-load-default"
+                  disabled={globalOnlyLocked}
+                  onClick={loadDefaultFooterElements}
+                >
+                  Isi Default Footer
+                </button>
+                {(draft.invoice.footer_elements || []).length > 0 ? (
+                  <button
+                    type="button"
+                    className="secondary"
+                    data-testid="design-cetakan-footer-clear"
+                    disabled={globalOnlyLocked}
+                    onClick={() => updateFooterElements([])}
+                  >
+                    Kosongkan (pakai V1)
+                  </button>
+                ) : null}
+              </div>
+              <div className="dc-header-list" data-testid="design-cetakan-footer-list">
+                {(draft.invoice.footer_elements || []).length === 0 ? (
+                  <p className="muted small" data-testid="design-cetakan-footer-empty">
+                    Belum ada elemen footer generik. PDF memakai footer V1 yang sudah ada.
+                  </p>
+                ) : (
+                  (draft.invoice.footer_elements || []).map((row, idx) => (
+                    <div className={`dc-header-row${row.source === "static.text" ? " has-text" : ""}`} key={row.id} data-testid={`design-cetakan-footer-row-${idx}`}>
+                      <div className="dc-header-order">
+                        <button type="button" className="secondary dc-icon-btn" aria-label="Naikkan" title="Naikkan" disabled={globalOnlyLocked || idx === 0} onClick={() => moveFooterElement(row.id, -1)}>
+                          <ChevronUp size={12} aria-hidden="true" />
+                        </button>
+                        <button type="button" className="secondary dc-icon-btn" aria-label="Turunkan" title="Turunkan" disabled={globalOnlyLocked || idx === (draft.invoice.footer_elements || []).length - 1} onClick={() => moveFooterElement(row.id, 1)}>
+                          <ChevronDown size={12} aria-hidden="true" />
+                        </button>
+                      </div>
+                      <label className="dc-header-source">
+                        <span className="dc-sr-only">Sumber</span>
+                        <select
+                          data-testid={`design-cetakan-footer-source-${idx}`}
+                          value={row.source}
+                          disabled={globalOnlyLocked}
+                          aria-label="Sumber"
+                          title="Sumber"
+                          onChange={(e) => patchFooterElement(row.id, "source", e.target.value)}
+                        >
+                          {FOOTER_SOURCE_OPTIONS.map((group) => (
+                            <optgroup key={group.group} label={group.group}>
+                              {group.options.map((opt) => (
+                                <option key={opt.key} value={opt.key}>{opt.label}</option>
+                              ))}
+                            </optgroup>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="dc-header-align">
+                        <span className="dc-sr-only">Posisi</span>
+                        <select
+                          data-testid={`design-cetakan-footer-align-${idx}`}
+                          value={row.align}
+                          disabled={globalOnlyLocked}
+                          aria-label="Posisi"
+                          title="Posisi"
+                          onChange={(e) => patchFooterElement(row.id, "align", e.target.value)}
+                        >
+                          {HEADER_ALIGN_OPTIONS.map((opt) => (
+                            <option key={opt.value} value={opt.value}>{opt.label}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="dc-header-label">
+                        <span className="dc-sr-only">Label</span>
+                        <input
+                          data-testid={`design-cetakan-footer-label-${idx}`}
+                          value={row.label}
+                          disabled={globalOnlyLocked}
+                          aria-label="Label"
+                          title="Label"
+                          onChange={(e) => patchFooterElement(row.id, "label", e.target.value)}
+                          placeholder="Label"
+                        />
+                      </label>
+                      {row.source === "static.text" ? (
+                        <label className="dc-header-text">
+                          <span className="dc-sr-only">Teks</span>
+                          <input
+                            data-testid={`design-cetakan-footer-text-${idx}`}
+                            value={row.text}
+                            disabled={globalOnlyLocked}
+                            aria-label="Teks manual"
+                            title="Teks manual"
+                            onChange={(e) => patchFooterElement(row.id, "text", e.target.value)}
+                            placeholder="Teks"
+                          />
+                        </label>
+                      ) : null}
+                      <button
+                        type="button"
+                        className={`secondary dc-icon-btn dc-toggle-btn${row.bold ? " is-on" : ""}`}
+                        data-testid={`design-cetakan-footer-bold-${idx}`}
+                        aria-label="Bold"
+                        title="Bold"
+                        aria-pressed={Boolean(row.bold)}
+                        disabled={globalOnlyLocked}
+                        onClick={() => patchFooterElement(row.id, "bold", !row.bold)}
+                      >
+                        <span className="dc-toggle-b" aria-hidden="true">B</span>
+                      </button>
+                      <button
+                        type="button"
+                        className={`secondary dc-icon-btn dc-toggle-btn${row.visible !== false ? " is-on" : ""}`}
+                        data-testid={`design-cetakan-footer-visible-${idx}`}
+                        aria-label="Tampilkan elemen"
+                        title="Tampilkan elemen"
+                        aria-pressed={row.visible !== false}
+                        disabled={globalOnlyLocked}
+                        onClick={() => patchFooterElement(row.id, "visible", row.visible === false)}
+                      >
+                        {row.visible !== false
+                          ? <Eye size={13} aria-hidden="true" />
+                          : <EyeOff size={13} aria-hidden="true" />}
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary dc-icon-btn"
+                        data-testid={`design-cetakan-footer-remove-${idx}`}
+                        aria-label="Hapus elemen"
+                        title="Hapus elemen"
+                        disabled={globalOnlyLocked}
+                        onClick={() => removeFooterElement(row.id)}
+                      >
+                        <Trash2 size={13} aria-hidden="true" />
+                      </button>
+                    </div>
+                  ))
+                )}
+              </div>
+            </section>
+            )}
             <section className="dc-section">
               <h3>Tanda Tangan</h3>
             <AssetSlot

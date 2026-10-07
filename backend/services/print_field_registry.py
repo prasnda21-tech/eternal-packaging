@@ -1,4 +1,4 @@
-"""Whitelisted print field registry for Design Cetakan Phase 1 (invoice/proforma header).
+"""Whitelisted print field registry for Design Cetakan Phase 1–2 (invoice/proforma).
 
 No user-controlled dotted DB paths. Keys are closed constants only.
 """
@@ -12,7 +12,13 @@ ALLOWED_DOCUMENTS = frozenset({DOCUMENT_INVOICE, DOCUMENT_PROFORMA})
 
 ELEMENT_TYPE_FIELD = "field"
 ELEMENT_TYPE_STATIC = "static_text"
+ELEMENT_TYPE_SIGNATURE = "signature"
 ALLOWED_ELEMENT_TYPES = frozenset({ELEMENT_TYPE_FIELD, ELEMENT_TYPE_STATIC})
+ALLOWED_FOOTER_ELEMENT_TYPES = frozenset({
+    ELEMENT_TYPE_FIELD,
+    ELEMENT_TYPE_STATIC,
+    ELEMENT_TYPE_SIGNATURE,
+})
 
 ALIGN_LEFT = "left"
 ALIGN_CENTER = "center"
@@ -32,6 +38,15 @@ SOURCE_DOCUMENT_PO_NUMBER = "document.po_number"
 SOURCE_SALES_NAME = "sales.name"
 SOURCE_STATIC_TEXT = "static.text"
 
+SOURCE_SIGNATURE_PREPARED = "signature.prepared"
+SOURCE_SIGNATURE_APPROVED = "signature.approved"
+SOURCE_SIGNATURE_PREPARED_LABEL = "signature.prepared_label"
+SOURCE_SIGNATURE_PREPARED_FOOTER = "signature.prepared_footer"
+SOURCE_SIGNATURE_APPROVED_LABEL = "signature.approved_label"
+SOURCE_SIGNATURE_APPROVED_FOOTER = "signature.approved_footer"
+SOURCE_ESTIMASI_TITLE = "estimasi.title"
+SOURCE_ESTIMASI_BLOCK = "estimasi.block"
+
 # field sources only — static_text uses SOURCE_STATIC_TEXT with element.text
 FIELD_SOURCES = frozenset({
     SOURCE_COMPANY_LOGO,
@@ -47,14 +62,36 @@ FIELD_SOURCES = frozenset({
     SOURCE_SALES_NAME,
 })
 
+SIGNATURE_SOURCES = frozenset({
+    SOURCE_SIGNATURE_PREPARED,
+    SOURCE_SIGNATURE_APPROVED,
+})
+
+FOOTER_TEXT_SOURCES = frozenset({
+    SOURCE_SIGNATURE_PREPARED_LABEL,
+    SOURCE_SIGNATURE_PREPARED_FOOTER,
+    SOURCE_SIGNATURE_APPROVED_LABEL,
+    SOURCE_SIGNATURE_APPROVED_FOOTER,
+    SOURCE_ESTIMASI_TITLE,
+    SOURCE_ESTIMASI_BLOCK,
+})
+
+FOOTER_FIELD_SOURCES = FIELD_SOURCES | FOOTER_TEXT_SOURCES
+
 VALUE_TYPE_TEXT = "text"
 VALUE_TYPE_MULTILINE = "multiline"
 VALUE_TYPE_IMAGE = "image"
+VALUE_TYPE_SIGNATURE = "signature"
+VALUE_TYPE_ESTIMASI = "estimasi_block"
 
 MAX_HEADER_ELEMENTS = 24
+MAX_FOOTER_ELEMENTS = 24
 MAX_ELEMENT_LABEL = 80
 MAX_STATIC_TEXT = 240
 MAX_ELEMENT_ID = 64
+
+SECTION_HEADER = "header"
+SECTION_FOOTER = "footer"
 
 
 def _spec(
@@ -64,6 +101,7 @@ def _spec(
     group: str,
     group_label: str,
     value_type: str = VALUE_TYPE_TEXT,
+    sections: Optional[Tuple[str, ...]] = None,
 ) -> Dict[str, Any]:
     return {
         "key": key,
@@ -72,6 +110,7 @@ def _spec(
         "group_label": group_label,
         "value_type": value_type,
         "documents": sorted(ALLOWED_DOCUMENTS),
+        "sections": list(sections or (SECTION_HEADER, SECTION_FOOTER)),
     }
 
 
@@ -87,6 +126,65 @@ FIELD_REGISTRY: Tuple[Dict[str, Any], ...] = (
     _spec(SOURCE_DOCUMENT_DUE_DATE, label="Jatuh Tempo", group="document", group_label="Dokumen"),
     _spec(SOURCE_DOCUMENT_PO_NUMBER, label="No. PO", group="document", group_label="Dokumen"),
     _spec(SOURCE_SALES_NAME, label="Nama Sales", group="sales", group_label="Sales"),
+    _spec(
+        SOURCE_SIGNATURE_PREPARED,
+        label="Tanda Tangan Disiapkan",
+        group="signature",
+        group_label="Tanda Tangan",
+        value_type=VALUE_TYPE_SIGNATURE,
+        sections=(SECTION_FOOTER,),
+    ),
+    _spec(
+        SOURCE_SIGNATURE_APPROVED,
+        label="Tanda Tangan Disetujui",
+        group="signature",
+        group_label="Tanda Tangan",
+        value_type=VALUE_TYPE_SIGNATURE,
+        sections=(SECTION_FOOTER,),
+    ),
+    _spec(
+        SOURCE_SIGNATURE_PREPARED_LABEL,
+        label="Label Disiapkan",
+        group="signature",
+        group_label="Tanda Tangan",
+        sections=(SECTION_FOOTER,),
+    ),
+    _spec(
+        SOURCE_SIGNATURE_PREPARED_FOOTER,
+        label="Footer Disiapkan",
+        group="signature",
+        group_label="Tanda Tangan",
+        sections=(SECTION_FOOTER,),
+    ),
+    _spec(
+        SOURCE_SIGNATURE_APPROVED_LABEL,
+        label="Label Disetujui",
+        group="signature",
+        group_label="Tanda Tangan",
+        sections=(SECTION_FOOTER,),
+    ),
+    _spec(
+        SOURCE_SIGNATURE_APPROVED_FOOTER,
+        label="Footer Disetujui",
+        group="signature",
+        group_label="Tanda Tangan",
+        sections=(SECTION_FOOTER,),
+    ),
+    _spec(
+        SOURCE_ESTIMASI_TITLE,
+        label="Judul Estimasi",
+        group="estimasi",
+        group_label="Estimasi",
+        sections=(SECTION_FOOTER,),
+    ),
+    _spec(
+        SOURCE_ESTIMASI_BLOCK,
+        label="Blok Estimasi",
+        group="estimasi",
+        group_label="Estimasi",
+        value_type=VALUE_TYPE_ESTIMASI,
+        sections=(SECTION_FOOTER,),
+    ),
     _spec(SOURCE_STATIC_TEXT, label="Teks Manual", group="static", group_label="Lainnya"),
 )
 
@@ -101,9 +199,26 @@ def is_known_source(key: str) -> bool:
     return str(key or "").strip() in _REGISTRY_BY_KEY
 
 
-def registry_catalog() -> List[Dict[str, Any]]:
+def is_footer_source(key: str) -> bool:
+    spec = field_spec(key)
+    if not spec:
+        return False
+    return SECTION_FOOTER in (spec.get("sections") or [])
+
+
+def is_header_source(key: str) -> bool:
+    spec = field_spec(key)
+    if not spec:
+        return False
+    return SECTION_HEADER in (spec.get("sections") or [])
+
+
+def registry_catalog(*, section: Optional[str] = None) -> List[Dict[str, Any]]:
     """UI-safe catalog (no resolvers)."""
-    return [dict(row) for row in FIELD_REGISTRY]
+    rows = [dict(row) for row in FIELD_REGISTRY]
+    if section:
+        rows = [row for row in rows if section in (row.get("sections") or [])]
+    return rows
 
 
 def default_invoice_header_elements() -> List[Dict[str, Any]]:
@@ -207,6 +322,42 @@ def default_invoice_header_elements() -> List[Dict[str, Any]]:
             "type": ELEMENT_TYPE_FIELD,
             "source": SOURCE_DOCUMENT_DUE_DATE,
             "label": "Jatuh Tempo",
+            "align": ALIGN_RIGHT,
+            "bold": False,
+            "visible": True,
+            "text": "",
+        },
+    ]
+
+
+def default_invoice_footer_elements() -> List[Dict[str, Any]]:
+    """Approximate legacy footer: prepared | approved | estimasi block."""
+    return [
+        {
+            "id": "ftr-sig-prepared",
+            "type": ELEMENT_TYPE_SIGNATURE,
+            "source": SOURCE_SIGNATURE_PREPARED,
+            "label": "",
+            "align": ALIGN_LEFT,
+            "bold": False,
+            "visible": True,
+            "text": "",
+        },
+        {
+            "id": "ftr-sig-approved",
+            "type": ELEMENT_TYPE_SIGNATURE,
+            "source": SOURCE_SIGNATURE_APPROVED,
+            "label": "",
+            "align": ALIGN_CENTER,
+            "bold": False,
+            "visible": True,
+            "text": "",
+        },
+        {
+            "id": "ftr-estimasi-block",
+            "type": ELEMENT_TYPE_FIELD,
+            "source": SOURCE_ESTIMASI_BLOCK,
+            "label": "",
             "align": ALIGN_RIGHT,
             "bold": False,
             "visible": True,

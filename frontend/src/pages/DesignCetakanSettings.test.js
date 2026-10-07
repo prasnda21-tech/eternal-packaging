@@ -74,6 +74,26 @@ describe("Design Cetakan settings wiring", () => {
     expect(pageSrc).toMatch(/Tambah Elemen/);
   });
 
+  test("Phase 2 invoice footer editor uses whitelist sources and section tabs", () => {
+    expect(pageSrc).toMatch(/data-testid="design-cetakan-invoice-section-header"/);
+    expect(pageSrc).toMatch(/data-testid="design-cetakan-invoice-section-footer"/);
+    expect(pageSrc).toMatch(/data-testid="design-cetakan-footer-section"/);
+    expect(pageSrc).toMatch(/data-testid="design-cetakan-footer-add"/);
+    expect(pageSrc).toMatch(/data-testid="design-cetakan-footer-list"/);
+    expect(pageSrc).toMatch(/data-testid="design-cetakan-footer-load-default"/);
+    expect(pageSrc).toMatch(/FOOTER_SOURCE_OPTIONS/);
+    expect(pageSrc).toMatch(/signature\.prepared/);
+    expect(pageSrc).toMatch(/signature\.approved/);
+    expect(pageSrc).toMatch(/estimasi\.block/);
+    expect(pageSrc).toMatch(/footer_elements/);
+    expect(pageSrc).toMatch(/design-cetakan-global-only-footer/);
+    expect(pageSrc).toMatch(/normalizeFooterElements/);
+    expect(pageSrc).toMatch(/moveFooterElement/);
+    expect(pageSrc).toMatch(/Isi Default Footer/);
+    expect(pageSrc).toMatch(/Footer Mengikuti Global/);
+    expect(pageSrc).not.toMatch(/free-form|mm coordinates|arbitrary\.css/i);
+  });
+
   test("api exposes asset upload preview remove helpers", () => {
     expect(apiSrc).toMatch(/designCetakanSettings:\s*\(\)\s*=>\s*client\.get\(`\/settings\/design-cetakan`/);
     expect(apiSrc).toMatch(/updateDesignCetakanSettings:/);
