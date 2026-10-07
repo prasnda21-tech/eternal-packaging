@@ -12,23 +12,24 @@ const shellSrc = fs.readFileSync(path.join(__dirname, "../components/AppShell.js
 const hargaSrc = fs.readFileSync(path.join(__dirname, "PublicHargaPage.jsx"), "utf8");
 
 describe("Public Catalog Settings Phase A", () => {
-  test("Katalog Publik tab appears with permission wiring", () => {
-    expect(settingsSrc).toMatch(/id:\s*"public-catalog"/);
-    expect(settingsSrc).toMatch(/label:\s*"Katalog Publik"/);
-    expect(settingsSrc).toMatch(/settings-tab-public-catalog/);
+  test("Harga & Katalog workspace wires public catalog permissions", () => {
+    expect(settingsSrc).toMatch(/id:\s*"pricing-catalog"/);
+    expect(settingsSrc).toMatch(/label:\s*"Harga & Katalog"/);
+    expect(settingsSrc).toMatch(/settings-tab-pricing-catalog/);
     expect(settingsSrc).toMatch(/canViewPublicCatalog/);
     expect(settingsSrc).toMatch(/canEditPublicCatalog/);
-    expect(settingsSrc).toMatch(/"public-catalog":\s*canViewPublicCatalog/);
-    expect(settingsSrc).toMatch(/tab === "public-catalog" && canViewPublicCatalog/);
-    expect(settingsSrc).toMatch(/PublicCatalogSettings/);
-    expect(navSrc).toMatch(/"public-catalog"/);
-    expect(navSrc).toMatch(/Katalog Publik/);
+    expect(settingsSrc).toMatch(/"pricing-catalog":\s*canViewCustomerPricing \|\| canViewPublicCatalog/);
+    expect(settingsSrc).toMatch(/PricingCatalogSettings/);
+    expect(settingsSrc).toMatch(/canViewCatalog/);
+    expect(navSrc).toMatch(/"pricing-catalog"/);
+    expect(navSrc).toMatch(/Harga & Katalog/);
     expect(navSrc).toMatch(/settings\.public_catalog\.view/);
     expect(navSrc).toMatch(/settings\.public_catalog\.manage/);
     expect(navSrc).not.toMatch(/settings\.public_catalog\.publish/);
+    expect(navSrc).toMatch(/SETTINGS_ROUTE_ALIASES/);
     expect(appSrc).toMatch(/settings\.public_catalog\.view/);
     expect(appSrc).toMatch(/settings\.public_catalog\.manage/);
-    expect(shellSrc).toMatch(/"public-catalog":\s*LayoutGrid/);
+    expect(shellSrc).toMatch(/"pricing-catalog":\s*Tags/);
   });
 
   test("page renders Phase A sections with own title", () => {
@@ -51,10 +52,10 @@ describe("Public Catalog Settings Phase A", () => {
     expect(cssSrc).toMatch(/\.pcs-drawer-footer/);
   });
 
-  test("shared Settings hero hidden only for public-catalog among new wiring", () => {
-    expect(settingsSrc).toMatch(/publicCatalogPage/);
+  test("shared Settings hero hidden for pricing-catalog among new wiring", () => {
+    expect(settingsSrc).toMatch(/pricingCatalogPage/);
     expect(settingsSrc).toMatch(/hideSharedSettingsHeading/);
-    expect(settingsSrc).toMatch(/designCetakanPage \|\| customerPricingPage \|\| publicCatalogPage/);
+    expect(settingsSrc).toMatch(/designCetakanPage \|\| pricingCatalogPage/);
     expect(settingsSrc).toMatch(/!hideSharedSettingsHeading \?/);
     expect(settingsSrc).toMatch(/tab === "hpp"/);
     expect(settingsSrc).toMatch(/page-heading/);
@@ -106,7 +107,7 @@ describe("Public Catalog Settings Phase A", () => {
     expect(pageSrc).toMatch(/canEdit/);
     expect(pageSrc).toMatch(/\{canEdit \?/);
     expect(pageSrc).toMatch(/disabled=\{!canEdit \|\| busy\}/);
-    expect(settingsSrc).toMatch(/canEdit=\{canEditPublicCatalog\}/);
+    expect(settingsSrc).toMatch(/canEditCatalog=\{canEditPublicCatalog\}/);
     expect(settingsSrc).toMatch(/settings\.public_catalog\.manage/);
   });
 

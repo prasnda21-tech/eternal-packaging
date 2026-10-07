@@ -6,7 +6,6 @@ import {
   Target as TargetIcon, PanelLeft, ClipboardList, Coins, Scale, IdCard, Wallet, Route, Tags,
   BookOpen,
   CreditCard,
-  LayoutGrid,
   Package,
   Printer,
   Settings as SettingsIcon,
@@ -14,7 +13,8 @@ import {
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDate } from "../lib/constants";
-import { NAV_MENU_FALLBACK, settingsTabFromPath } from "../lib/navAccess";
+import { NAV_MENU_FALLBACK, settingsAliasFromPath, settingsTabFromPath } from "../lib/navAccess";
+import PricingCatalogSettings from "./PricingCatalogSettings";
 import { businessPermissionModules, isSidebarNavPermissionKey, roleBusinessSavePayload, expandLoadingDraftForEdit } from "../lib/settingsPermissionUi";
 import RolePermissionWorkspace from "../components/RolePermissionWorkspace";
 import OperatorWageSettings from "./OperatorWageSettings";
@@ -24,8 +24,6 @@ import DesignCetakanSettings from "./DesignCetakanSettings";
 import SalesAccountingSettings from "./SalesAccountingSettings";
 import PurchaseAccountingSettings from "./PurchaseAccountingSettings";
 import PayrollAccountingSettings from "./PayrollAccountingSettings";
-import CustomerPricingSettings from "./CustomerPricingSettings";
-import PublicCatalogSettings from "./PublicCatalogSettings";
 import FormAccessMatrix from "../components/FormAccessMatrix";
 import EmployeeAdminSettings from "../components/EmployeeAdminSettings";
 import HrPayrollSettings from "../components/HrPayrollSettings";
@@ -2154,8 +2152,7 @@ const SETTINGS_NAV_ITEMS = [
   { id: "sales-accounting", label: "Akuntansi Penjualan", description: "Pemetaan akun penjualan", Icon: BookOpen, tone: "violet", testid: "settings-tab-sales-accounting" },
   { id: "purchase-accounting", label: "Akuntansi Pembelian", description: "Pemetaan akun pembelian", Icon: CreditCard, tone: "rose", testid: "settings-tab-purchase-accounting" },
   { id: "payroll-accounting", label: "Akuntansi Payroll", description: "Pemetaan akun penggajian", Icon: Wallet, tone: "indigo", testid: "settings-tab-payroll-accounting" },
-  { id: "customer-pricing", label: "Harga Customer", description: "Harga publik per produk", Icon: Tags, tone: "emerald", testid: "settings-tab-customer-pricing" },
-  { id: "public-catalog", label: "Katalog Publik", description: "Tampilan & kategori katalog", Icon: LayoutGrid, tone: "teal", testid: "settings-tab-public-catalog" },
+  { id: "pricing-catalog", label: "Harga & Katalog", description: "Harga customer & katalog publik", Icon: Tags, tone: "emerald", testid: "settings-tab-pricing-catalog" },
   { id: "customer-approval", label: "Customer Approval", description: "Alur persetujuan", Icon: ClipboardCheck, tone: "teal", testid: "settings-tab-customer-approval" },
   { id: "notifications", label: "Notifikasi", description: "Notifikasi operasional", Icon: Bell, tone: "cyan", testid: "settings-tab-notifications" },
   { id: "delivery-deadline", label: "Tanggal Pengiriman", description: "Lead time otomatis setelah approval", Icon: Truck, tone: "rose", testid: "settings-tab-delivery-deadline" },
@@ -2272,8 +2269,7 @@ export default function Settings() {
     "sales-accounting": canViewSalesAccounting,
     "purchase-accounting": canViewPurchaseAccounting,
     "payroll-accounting": canViewPayrollAccounting,
-    "customer-pricing": canViewCustomerPricing,
-    "public-catalog": canViewPublicCatalog,
+    "pricing-catalog": canViewCustomerPricing || canViewPublicCatalog,
     "customer-approval": canViewCaSettings,
     notifications: canViewCaSettings,
     "delivery-deadline": canViewDdSettings,
@@ -2301,15 +2297,31 @@ export default function Settings() {
   const [toast, setToast] = useState("");
 
   useEffect(() => {
+    const alias = settingsAliasFromPath(location.pathname);
+    if (alias) {
+      const params = new URLSearchParams(location.search);
+      if (!params.get("section")) params.set("section", alias.section);
+      const rest = params.toString();
+      navigate(`/settings/${alias.tab}${rest ? `?${rest}` : ""}`, { replace: true });
+      return;
+    }
     const next = settingsTabFromPath(location.pathname, location.search);
     if (next) setTab(next);
-  }, [location.pathname, location.search]);
+  }, [location.pathname, location.search, navigate]);
 
   useEffect(() => {
     const q = searchParams.get("tab");
     if (location.pathname !== "/settings" || !q || !settingsTabFromPath("/settings", location.search)) return;
     const params = new URLSearchParams(location.search);
     params.delete("tab");
+    // Legacy ?tab=customer-pricing|public-catalog → canonical pricing-catalog + section
+    const alias = settingsAliasFromPath(`/settings/${q}`);
+    if (alias) {
+      if (!params.get("section")) params.set("section", alias.section);
+      const rest = params.toString();
+      navigate(`/settings/${alias.tab}${rest ? `?${rest}` : ""}`, { replace: true });
+      return;
+    }
     const rest = params.toString();
     navigate(`/settings/${q}${rest ? `?${rest}` : ""}`, { replace: true });
   }, [location.pathname, location.search, navigate, searchParams]);
@@ -2329,9 +2341,8 @@ export default function Settings() {
   };
 
   const designCetakanPage = !showCategoryNav && tab === "design-cetakan";
-  const customerPricingPage = !showCategoryNav && tab === "customer-pricing";
-  const publicCatalogPage = !showCategoryNav && tab === "public-catalog";
-  const hideSharedSettingsHeading = designCetakanPage || customerPricingPage || publicCatalogPage;
+  const pricingCatalogPage = !showCategoryNav && tab === "pricing-catalog";
+  const hideSharedSettingsHeading = designCetakanPage || pricingCatalogPage;
 
   return (
     <div data-testid="settings-page" className="settings-page">
@@ -2405,15 +2416,15 @@ export default function Settings() {
       {tab === "payroll-accounting" && canViewPayrollAccounting && (
         <PayrollAccountingSettings notify={notify} canEdit={canEditPayrollAccounting}/>
       )}
-      {tab === "customer-pricing" && canViewCustomerPricing && (
-        <CustomerPricingSettings
+      {tab === "pricing-catalog" && (canViewCustomerPricing || canViewPublicCatalog) && (
+        <PricingCatalogSettings
           notify={notify}
-          canEdit={canEditCustomerPricing}
-          canPublish={canPublishCustomerPricing}
+          canViewPricing={canViewCustomerPricing}
+          canEditPricing={canEditCustomerPricing}
+          canPublishPricing={canPublishCustomerPricing}
+          canViewCatalog={canViewPublicCatalog}
+          canEditCatalog={canEditPublicCatalog}
         />
-      )}
-      {tab === "public-catalog" && canViewPublicCatalog && (
-        <PublicCatalogSettings notify={notify} canEdit={canEditPublicCatalog}/>
       )}
       {tab === "customer-approval" && canViewCaSettings && <CustomerApprovalSettingsTab notify={notify} canEdit={canEditCaSettings}/>}
       {tab === "notifications" && canViewCaSettings && <NotificationsSettingsTab notify={notify} canEdit={canEditCaSettings}/>}

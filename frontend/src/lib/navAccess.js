@@ -1087,8 +1087,7 @@ export const SETTINGS_TAB_IDS = [
   "sales-accounting",
   "purchase-accounting",
   "payroll-accounting",
-  "customer-pricing",
-  "public-catalog",
+  "pricing-catalog",
   "customer-approval",
   "notifications",
   "delivery-deadline",
@@ -1120,8 +1119,7 @@ export const SETTINGS_TILE_TONES = {
   "sales-accounting": "purple",
   "purchase-accounting": "rose",
   "payroll-accounting": "blue",
-  "customer-pricing": "green",
-  "public-catalog": "teal",
+  "pricing-catalog": "green",
   "customer-approval": "teal",
   "notifications": "cyan",
   "delivery-deadline": "orange",
@@ -1151,8 +1149,7 @@ export const SETTINGS_TILE_LABELS = {
   "sales-accounting": "Akuntansi Penjualan",
   "purchase-accounting": "Akuntansi Pembelian",
   "payroll-accounting": "Akuntansi Payroll",
-  "customer-pricing": "Harga Customer",
-  "public-catalog": "Katalog Publik",
+  "pricing-catalog": "Harga & Katalog",
   "customer-approval": "Customer Approval",
   "notifications": "Notifikasi",
   "delivery-deadline": "Deadline Pengiriman",
@@ -1167,16 +1164,34 @@ export const SETTINGS_TILE_LABELS = {
   audit: "Audit Log",
 };
 
+/** Legacy Settings paths → canonical pricing-catalog section. */
+export const SETTINGS_ROUTE_ALIASES = {
+  "customer-pricing": { tab: "pricing-catalog", section: "harga" },
+  "public-catalog": { tab: "pricing-catalog", section: "katalog" },
+};
+
 /** Resolve an existing Settings section from path or legacy ?tab=. */
 export function settingsTabFromPath(pathname, search = "") {
   const path = String(pathname || "").split("?")[0].replace(/\/$/, "") || "/";
   const child = path.startsWith("/settings/") ? path.slice("/settings/".length) : "";
+  if (child && !child.includes("/") && SETTINGS_ROUTE_ALIASES[child]) {
+    return SETTINGS_ROUTE_ALIASES[child].tab;
+  }
   if (child && !child.includes("/") && SETTINGS_TAB_ID_SET.has(child)) return child;
   const raw = String(search || "");
   const query = raw.startsWith("?") ? raw.slice(1) : raw;
   const tab = new URLSearchParams(query).get("tab");
+  if (tab && SETTINGS_ROUTE_ALIASES[tab]) return SETTINGS_ROUTE_ALIASES[tab].tab;
   if (tab && SETTINGS_TAB_ID_SET.has(tab)) return tab;
   return null;
+}
+
+/** Path child segment for alias redirect (null when already canonical). */
+export function settingsAliasFromPath(pathname) {
+  const path = String(pathname || "").split("?")[0].replace(/\/$/, "") || "/";
+  const child = path.startsWith("/settings/") ? path.slice("/settings/".length) : "";
+  if (!child || child.includes("/")) return null;
+  return SETTINGS_ROUTE_ALIASES[child] || null;
 }
 
 /** Same permission gates as Settings.jsx category cards. Requires nav.settings for the rail. */
@@ -1206,11 +1221,10 @@ export function settingsNavVisible(hasPerm) {
   const payrollAccounting = canSeeNav(hasPerm, "payroll_accounting.view")
     || canSeeNav(hasPerm, "payroll_accounting.manage")
     || canSeeNav(hasPerm, "permissions.manage");
-  const customerPricing = canSeeNav(hasPerm, "settings.customer_pricing.view")
+  const pricingCatalog = canSeeNav(hasPerm, "settings.customer_pricing.view")
     || canSeeNav(hasPerm, "settings.customer_pricing.manage")
     || canSeeNav(hasPerm, "settings.customer_pricing.publish")
-    || canSeeNav(hasPerm, "permissions.manage");
-  const publicCatalog = canSeeNav(hasPerm, "settings.public_catalog.view")
+    || canSeeNav(hasPerm, "settings.public_catalog.view")
     || canSeeNav(hasPerm, "settings.public_catalog.manage")
     || canSeeNav(hasPerm, "permissions.manage");
   const customerApproval = canSeeNav(hasPerm, "customer_approval.view")
@@ -1248,8 +1262,7 @@ export function settingsNavVisible(hasPerm) {
     "sales-accounting": Boolean(parentGranted && salesAccounting),
     "purchase-accounting": Boolean(parentGranted && purchaseAccounting),
     "payroll-accounting": Boolean(parentGranted && payrollAccounting),
-    "customer-pricing": Boolean(parentGranted && customerPricing),
-    "public-catalog": Boolean(parentGranted && publicCatalog),
+    "pricing-catalog": Boolean(parentGranted && pricingCatalog),
     "customer-approval": Boolean(parentGranted && customerApproval),
     "notifications": Boolean(parentGranted && customerApproval),
     "delivery-deadline": Boolean(parentGranted && deliveryDeadline),

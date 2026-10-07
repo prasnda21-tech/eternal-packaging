@@ -112,8 +112,21 @@ function emptyGroupEditor(group) {
   };
 }
 
-export default function PublicCatalogSettings({ notify, canEdit }) {
-  const [section, setSection] = useState("umum");
+export default function PublicCatalogSettings({
+  notify,
+  canEdit,
+  embedded = false,
+  section: sectionProp = null,
+  onSectionChange = null,
+  selectedGroupId: controlledGroupId,
+}) {
+  const [sectionState, setSectionState] = useState(sectionProp || "umum");
+  const section = embedded && sectionProp ? sectionProp : sectionState;
+  const setSection = (next) => {
+    if (!embedded || !sectionProp) setSectionState(next);
+    if (typeof onSectionChange === "function") onSectionChange(next);
+  };
+  const isGroupControlled = controlledGroupId !== undefined;
   const [settings, setSettings] = useState(emptyGlobal);
   const [categories, setCategories] = useState([]);
   const [groups, setGroups] = useState([]);
@@ -122,8 +135,11 @@ export default function PublicCatalogSettings({ notify, canEdit }) {
   const [groupQuery, setGroupQuery] = useState("");
   const [groupVisibilityFilter, setGroupVisibilityFilter] = useState("all");
   const [groupCategoryFilter, setGroupCategoryFilter] = useState("all");
-  const [selectedGroupId, setSelectedGroupId] = useState("");
+  const [selectedGroupId, setSelectedGroupId] = useState(
+    isGroupControlled ? String(controlledGroupId || "") : ""
+  );
   const [selectedVariantId, setSelectedVariantId] = useState("");
+  const hideGroupPicker = isGroupControlled && Boolean(selectedGroupId);
   const [variants, setVariants] = useState([]);
   const [variantQuery, setVariantQuery] = useState("");
   const [variantVisibilityFilter, setVariantVisibilityFilter] = useState("all");
@@ -207,6 +223,37 @@ export default function PublicCatalogSettings({ notify, canEdit }) {
       setGallery(null);
     }
   }, []);
+
+  useEffect(() => {
+    if (embedded && sectionProp) setSectionState(sectionProp);
+  }, [embedded, sectionProp]);
+
+  useEffect(() => {
+    if (!isGroupControlled) return;
+    const next = String(controlledGroupId || "");
+    setSelectedGroupId((prev) => {
+      if (prev !== next) {
+        setSelectedVariantId("");
+        setGallery(null);
+        setGalleryPreviewId("");
+        setGalleryEditor(null);
+        setVariantEditor(null);
+      }
+      return next;
+    });
+  }, [isGroupControlled, controlledGroupId]);
+
+  useEffect(() => {
+    if (!isGroupControlled) return;
+    if (section !== "kelompok") return;
+    const gid = String(controlledGroupId || "");
+    if (!gid) {
+      setGroupEditor(null);
+      return;
+    }
+    const group = groups.find((item) => item.pricing_group_id === gid);
+    if (group) setGroupEditor(emptyGroupEditor(group));
+  }, [isGroupControlled, controlledGroupId, groups, section]);
 
   useEffect(() => {
     if (section === "varian" || section === "galeri") {
@@ -602,40 +649,47 @@ export default function PublicCatalogSettings({ notify, canEdit }) {
   }, [pendingFile, previewUrl]);
 
   return (
-    <div className="settings-card pcs-page" data-testid="public-catalog-settings">
-      <div className="pcs-head">
-        <div>
-          <h2>Katalog Publik</h2>
-          <p className="pcs-subhead">
-            Atur tampilan, struktur produk, gambar, dan URL katalog customer.
-          </p>
-        </div>
-        <div className="pcs-meta-strip" data-testid="pcs-meta-strip">
-          <div className="pcs-meta-item">
-            <span className="pcs-meta-label">Public URL</span>
-            <span className="pcs-meta-value">katalog.eternalpackaging.id</span>
+    <div
+      className={`settings-card pcs-page${embedded ? " embedded" : ""}`}
+      data-testid="public-catalog-settings"
+    >
+      {!embedded ? (
+        <>
+          <div className="pcs-head">
+            <div>
+              <h2>Katalog Publik</h2>
+              <p className="pcs-subhead">
+                Atur tampilan, struktur produk, gambar, dan URL katalog customer.
+              </p>
+            </div>
+            <div className="pcs-meta-strip" data-testid="pcs-meta-strip">
+              <div className="pcs-meta-item">
+                <span className="pcs-meta-label">Public URL</span>
+                <span className="pcs-meta-value">katalog.eternalpackaging.id</span>
+              </div>
+              <div className="pcs-meta-item">
+                <span className="pcs-meta-label">Status</span>
+                <span className="pcs-meta-badge">Draft Konfigurasi</span>
+              </div>
+            </div>
           </div>
-          <div className="pcs-meta-item">
-            <span className="pcs-meta-label">Status</span>
-            <span className="pcs-meta-badge">Draft Konfigurasi</span>
-          </div>
-        </div>
-      </div>
 
-      <nav className="pcs-section-nav" aria-label="Bagian Katalog Publik" data-testid="pcs-section-nav">
-        {SECTIONS.map((item) => (
-          <button
-            key={item.id}
-            type="button"
-            className={section === item.id ? "is-active" : ""}
-            data-testid={item.testid}
-            aria-current={section === item.id ? "page" : undefined}
-            onClick={() => setSection(item.id)}
-          >
-            {item.label}
-          </button>
-        ))}
-      </nav>
+          <nav className="pcs-section-nav" aria-label="Bagian Katalog Publik" data-testid="pcs-section-nav">
+            {SECTIONS.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                className={section === item.id ? "is-active" : ""}
+                data-testid={item.testid}
+                aria-current={section === item.id ? "page" : undefined}
+                onClick={() => setSection(item.id)}
+              >
+                {item.label}
+              </button>
+            ))}
+          </nav>
+        </>
+      ) : null}
 
       {error && (
         <div className="signal-strip" role="alert" data-testid="pcs-error">
@@ -988,25 +1042,27 @@ export default function PublicCatalogSettings({ notify, canEdit }) {
                 </p>
               </div>
               <div className="pcs-toolbar">
-                <label className="pcs-field pcs-inline-select">
-                  <span className="sr-only">Pilih Kelompok</span>
-                  <select
-                    value={selectedGroupId}
-                    onChange={(event) => {
-                      setSelectedGroupId(event.target.value);
-                      setSelectedVariantId("");
-                    }}
-                    data-testid="pcs-variant-group-select"
-                    aria-label="Pilih Kelompok"
-                  >
-                    <option value="">Pilih Kelompok</option>
-                    {groups.map((group) => (
-                      <option key={group.pricing_group_id} value={group.pricing_group_id}>
-                        {group.group_name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+                {!hideGroupPicker ? (
+                  <label className="pcs-field pcs-inline-select">
+                    <span className="sr-only">Pilih Kelompok</span>
+                    <select
+                      value={selectedGroupId}
+                      onChange={(event) => {
+                        setSelectedGroupId(event.target.value);
+                        setSelectedVariantId("");
+                      }}
+                      data-testid="pcs-variant-group-select"
+                      aria-label="Pilih Kelompok"
+                    >
+                      <option value="">Pilih Kelompok</option>
+                      {groups.map((group) => (
+                        <option key={group.pricing_group_id} value={group.pricing_group_id}>
+                          {group.group_name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                ) : null}
                 <label className="pcs-search">
                   <span className="sr-only">Cari varian</span>
                   <Search size={14} className="pcs-search-icon" aria-hidden="true" />
@@ -1033,7 +1089,9 @@ export default function PublicCatalogSettings({ notify, canEdit }) {
 
             {!selectedGroupId ? (
               <p className="muted small" data-testid="pcs-variant-empty-group">
-                Pilih kelompok produk untuk melihat varian.
+                {isGroupControlled
+                  ? "Pilih kelompok dari Kelompok Produk."
+                  : "Pilih kelompok produk untuk melihat varian."}
               </p>
             ) : filteredVariants.length === 0 ? (
               <div className="pcs-empty" data-testid="pcs-variant-empty">
@@ -1124,27 +1182,31 @@ export default function PublicCatalogSettings({ notify, canEdit }) {
             <div className="pcs-section-head">
               <div>
                 <h3>Galeri</h3>
-                <p className="pcs-section-desc">
-                  Multi-gambar per varian. Legacy image tetap terpisah dan read-only.
-                </p>
+                {!embedded ? (
+                  <p className="pcs-section-desc">
+                    Multi-gambar per varian. Legacy image tetap terpisah dan read-only.
+                  </p>
+                ) : null}
               </div>
               <div className="pcs-toolbar">
-                <select
-                  value={selectedGroupId}
-                  onChange={(event) => {
-                    setSelectedGroupId(event.target.value);
-                    setSelectedVariantId("");
-                  }}
-                  data-testid="pcs-gallery-group-select"
-                  aria-label="Pilih Kelompok"
-                >
-                  <option value="">Pilih Kelompok</option>
-                  {groups.map((group) => (
-                    <option key={group.pricing_group_id} value={group.pricing_group_id}>
-                      {group.group_name}
-                    </option>
-                  ))}
-                </select>
+                {!hideGroupPicker ? (
+                  <select
+                    value={selectedGroupId}
+                    onChange={(event) => {
+                      setSelectedGroupId(event.target.value);
+                      setSelectedVariantId("");
+                    }}
+                    data-testid="pcs-gallery-group-select"
+                    aria-label="Pilih Kelompok"
+                  >
+                    <option value="">Pilih Kelompok</option>
+                    {groups.map((group) => (
+                      <option key={group.pricing_group_id} value={group.pricing_group_id}>
+                        {group.group_name}
+                      </option>
+                    ))}
+                  </select>
+                ) : null}
                 <select
                   value={selectedVariantId}
                   onChange={(event) => setSelectedVariantId(event.target.value)}
@@ -1175,7 +1237,11 @@ export default function PublicCatalogSettings({ notify, canEdit }) {
 
             {!selectedGroupId || !selectedVariantId ? (
               <p className="muted small" data-testid="pcs-gallery-empty-select">
-                Pilih kelompok dan varian untuk mengelola galeri.
+                {!selectedGroupId
+                  ? (isGroupControlled
+                    ? "Pilih kelompok dari Kelompok Produk."
+                    : "Pilih kelompok dan varian untuk mengelola galeri.")
+                  : "Pilih varian untuk mengelola galeri."}
               </p>
             ) : (
               <div className="pcs-gallery-layout" data-testid="pcs-gallery-manager">
@@ -1314,21 +1380,23 @@ export default function PublicCatalogSettings({ notify, canEdit }) {
                 </p>
               </div>
             </div>
-            <label className="pcs-field">
-              Pilih Kelompok Produk
-              <select
-                value={selectedGroupId}
-                onChange={(event) => setSelectedGroupId(event.target.value)}
-                data-testid="pcs-seo-group-select"
-              >
-                <option value="">— Pilih kelompok —</option>
-                {groups.map((group) => (
-                  <option key={group.pricing_group_id} value={group.pricing_group_id}>
-                    {group.group_name}
-                  </option>
-                ))}
-              </select>
-            </label>
+            {!hideGroupPicker ? (
+              <label className="pcs-field">
+                Pilih Kelompok Produk
+                <select
+                  value={selectedGroupId}
+                  onChange={(event) => setSelectedGroupId(event.target.value)}
+                  data-testid="pcs-seo-group-select"
+                >
+                  <option value="">— Pilih kelompok —</option>
+                  {groups.map((group) => (
+                    <option key={group.pricing_group_id} value={group.pricing_group_id}>
+                      {group.group_name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
 
             {!seoForm ? (
               <p className="muted small" data-testid="pcs-seo-empty">
