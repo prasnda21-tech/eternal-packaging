@@ -243,6 +243,8 @@ export default function PublicCatalogSettings({
     });
   }, [isGroupControlled, controlledGroupId]);
 
+  // Controlled auto-open: init draft only when pricing_group_id identity changes.
+  // Same-group groups[] refetch must NOT wipe in-progress typing.
   useEffect(() => {
     if (!isGroupControlled) return;
     if (section !== "kelompok") return;
@@ -252,7 +254,11 @@ export default function PublicCatalogSettings({
       return;
     }
     const group = groups.find((item) => item.pricing_group_id === gid);
-    if (group) setGroupEditor(emptyGroupEditor(group));
+    if (!group) return;
+    setGroupEditor((current) => {
+      if (current && current.pricing_group_id === gid) return current;
+      return emptyGroupEditor(group);
+    });
   }, [isGroupControlled, controlledGroupId, groups, section]);
 
   useEffect(() => {
@@ -267,8 +273,10 @@ export default function PublicCatalogSettings({
     }
   }, [section, selectedGroupId, selectedVariantId, loadGallery]);
 
+  // Escape handling — open/closed only; never depends on draft field identity.
+  const anyDrawerOpen = Boolean(editor || groupEditor || variantEditor || galleryEditor);
   useEffect(() => {
-    if (!editor && !groupEditor && !variantEditor && !galleryEditor) return undefined;
+    if (!anyDrawerOpen) return undefined;
     const onKey = (event) => {
       if (event.key === "Escape") {
         setEditor(null);
@@ -280,12 +288,38 @@ export default function PublicCatalogSettings({
       }
     };
     window.addEventListener("keydown", onKey);
-    if (editor) closeRef.current?.focus?.();
-    if (groupEditor) groupCloseRef.current?.focus?.();
-    if (variantEditor) variantCloseRef.current?.focus?.();
-    if (galleryEditor) galleryCloseRef.current?.focus?.();
     return () => window.removeEventListener("keydown", onKey);
-  }, [editor, groupEditor, variantEditor, galleryEditor]);
+  }, [anyDrawerOpen]);
+
+  // Initial focus — only when a drawer identity opens/changes, not on each keystroke.
+  const categoryDrawerKey = editor ? (editor.id || "__new_category__") : null;
+  const groupDrawerKey = groupEditor?.pricing_group_id || null;
+  const variantDrawerKey = variantEditor
+    ? `${variantEditor.pricing_group_id}:${variantEditor.accurate_item_id || ""}`
+    : null;
+  const galleryDrawerKey = galleryEditor
+    ? `${galleryEditor.id || "__new_gallery__"}:${selectedGroupId}:${selectedVariantId}`
+    : null;
+
+  useEffect(() => {
+    if (categoryDrawerKey == null) return;
+    closeRef.current?.focus?.();
+  }, [categoryDrawerKey]);
+
+  useEffect(() => {
+    if (!groupDrawerKey) return;
+    groupCloseRef.current?.focus?.();
+  }, [groupDrawerKey]);
+
+  useEffect(() => {
+    if (!variantDrawerKey) return;
+    variantCloseRef.current?.focus?.();
+  }, [variantDrawerKey]);
+
+  useEffect(() => {
+    if (!galleryDrawerKey) return;
+    galleryCloseRef.current?.focus?.();
+  }, [galleryDrawerKey]);
 
   const filteredHint = useMemo(
     () => (query ? `Hasil pencarian “${query}”` : null),
