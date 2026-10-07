@@ -1,6 +1,6 @@
 import fs from "fs";
 import path from "path";
-import { slugifyCategoryName } from "./PublicCatalogSettings";
+import { previewProductUrl, slugifyCategoryName } from "./PublicCatalogSettings";
 
 const settingsSrc = fs.readFileSync(path.join(__dirname, "Settings.jsx"), "utf8");
 const pageSrc = fs.readFileSync(path.join(__dirname, "PublicCatalogSettings.jsx"), "utf8");
@@ -42,10 +42,11 @@ describe("Public Catalog Settings Phase A", () => {
     expect(pageSrc).toMatch(/pcs-nav-kategori/);
     expect(pageSrc).toMatch(/Informasi Umum/);
     expect(pageSrc).toMatch(/Kategori Produk/);
-    expect(pageSrc).not.toMatch(/Kelompok Produk/);
+    expect(pageSrc).toMatch(/Kelompok Produk/);
+    expect(pageSrc).toMatch(/URL & SEO/);
     expect(pageSrc).not.toMatch(/Tahap berikutnya/);
-    expect(pageSrc).not.toMatch(/URL & SEO/);
-    expect(pageSrc).not.toMatch(/Galeri/);
+    expect(pageSrc).not.toMatch(/pcs-nav-varian|Varian/);
+    expect(pageSrc).not.toMatch(/pcs-nav-galeri|Galeri/);
     expect(cssSrc).toMatch(/\.pcs-page/);
     expect(cssSrc).toMatch(/background:\s*#fff\s*!important/);
     expect(cssSrc).toMatch(/\.pcs-section-nav/);
@@ -116,5 +117,56 @@ describe("Public Catalog Settings Phase A", () => {
     expect(pageSrc).not.toMatch(/publicCustomerPricing/);
     expect(apiSrc).toMatch(/\/public\/customer-pricing\/groups/);
     expect(hargaSrc).toMatch(/publicCustomerPricingGroups|\/harga/);
+  });
+});
+
+describe("Public Catalog Settings Phase B", () => {
+  test("Kelompok Produk and URL & SEO sections exist without Varian/Galeri", () => {
+    expect(pageSrc).toMatch(/pcs-nav-kelompok/);
+    expect(pageSrc).toMatch(/pcs-nav-seo/);
+    expect(pageSrc).toMatch(/data-testid="pcs-groups"/);
+    expect(pageSrc).toMatch(/data-testid="pcs-seo"/);
+    expect(pageSrc).not.toMatch(/pcs-nav-varian/);
+    expect(pageSrc).not.toMatch(/pcs-nav-galeri/);
+    expect(pageSrc).not.toMatch(/public_catalog_variants/);
+    expect(pageSrc).not.toMatch(/public_catalog_images/);
+  });
+
+  test("group list, drawer, visibility and read-only pricing status", () => {
+    expect(apiSrc).toMatch(/publicCatalogGroups/);
+    expect(apiSrc).toMatch(/updatePublicCatalogGroup/);
+    expect(apiSrc).toMatch(/\/settings\/public-catalog\/groups/);
+    expect(pageSrc).toMatch(/pcs-group-list/);
+    expect(pageSrc).toMatch(/pcs-group-row/);
+    expect(pageSrc).toMatch(/pcs-group-configure/);
+    expect(pageSrc).toMatch(/pcs-group-drawer/);
+    expect(pageSrc).toMatch(/pcs-group-editor-category/);
+    expect(pageSrc).toMatch(/pcs-group-editor-public-name/);
+    expect(pageSrc).toMatch(/pcs-group-editor-slug/);
+    expect(pageSrc).toMatch(/pcs-group-editor-order/);
+    expect(pageSrc).toMatch(/pcs-group-editor-visible/);
+    expect(pageSrc).toMatch(/pcs-group-pricing-status/);
+    expect(pageSrc).toMatch(/pcs-group-catalog-status/);
+    expect(pageSrc).toMatch(/Status Pricing/);
+    expect(pageSrc).toMatch(/Deskripsi Publik/);
+    expect(pageSrc).toMatch(/customerPricingCatalogImageUrl/);
+    expect(pageSrc).not.toMatch(/patchCustomerPricingGroup/);
+    expect(pageSrc).not.toMatch(/updateCustomerPricingVersion/);
+  });
+
+  test("URL & SEO preview and meta fields", () => {
+    expect(pageSrc).toMatch(/pcs-seo-group-select/);
+    expect(pageSrc).toMatch(/pcs-seo-public-name/);
+    expect(pageSrc).toMatch(/pcs-seo-slug/);
+    expect(pageSrc).toMatch(/pcs-seo-preview-url/);
+    expect(pageSrc).toMatch(/pcs-seo-meta-title/);
+    expect(pageSrc).toMatch(/pcs-seo-meta-description/);
+    expect(pageSrc).toMatch(/pcs-seo-save/);
+    expect(pageSrc).toMatch(/previewProductUrl/);
+    expect(previewProductUrl("")).toBe("Belum ada slug");
+    expect(previewProductUrl("cup-inject")).toBe(
+      "katalog.eternalpackaging.id/produk/cup-inject"
+    );
+    expect(pageSrc).not.toMatch(/path:\s*["']\/produk/);
   });
 });
