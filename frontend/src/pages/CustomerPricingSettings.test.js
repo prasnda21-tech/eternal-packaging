@@ -3,8 +3,11 @@ import path from "path";
 import {
   appendExactProduct,
   calculateFormulaPrice,
+  filterGroupProducts,
+  groupProductCount,
   hppSourceSummary,
   modeSummary,
+  productDrawerMeta,
   profitSummary,
   removeExactProduct,
   setProductTierPrice,
@@ -33,7 +36,7 @@ describe("Customer Pricing multi-product group UI", () => {
     expect(apiSrc).toMatch(/deleteCustomerPricingCatalogImage/);
   });
 
-  test("group list has requested compact columns and group-level summary", () => {
+  test("group list has compact columns, count-only products, and product drawer", () => {
     for (const label of [
       "Kelompok", "Produk", "Mode Harga", "Sumber HPP", "Keuntungan",
       "Draft", "Published", "Status", "Updated", "Aksi",
@@ -41,8 +44,44 @@ describe("Customer Pricing multi-product group UI", () => {
       expect(cpSrc).toContain(`<th>${label}</th>`);
     }
     expect(cpSrc).toMatch(/summary_version/);
-    expect(cpSrc).toMatch(/names\.join\(" • "\)/);
-    expect(cpSrc).toMatch(/0 produk|produk exact/);
+    expect(cpSrc).not.toMatch(/names\.join\(" • "\)/);
+    expect(cpSrc).toMatch(/groupProductCount/);
+    expect(cpSrc).toMatch(/cp-product-count/);
+    expect(cpSrc).toMatch(/data-testid="cp-product-drawer"/);
+    expect(cpSrc).toMatch(/createPortal/);
+    expect(cpSrc).toMatch(/Cari produk dalam kelompok/);
+    expect(cpSrc).toMatch(/Buka Editor Harga/);
+    expect(cpSrc).toMatch(/openProductDrawer/);
+    expect(cpSrc).toMatch(/openEditorFromDrawer/);
+    expect(cpSrc).toMatch(/Escape/);
+    expect(cpSrc).not.toMatch(/Hapus Kelompok/);
+    expect(cpSrc).toMatch(/0 produk|produk exact|produk dalam kelompok/);
+    expect(cpSrc).toMatch(/Atur kelompok harga dan harga khusus produk/);
+  });
+
+  test("shared Settings hero is hidden only for customer-pricing and design-cetakan", () => {
+    expect(settingsSrc).toMatch(/customerPricingPage/);
+    expect(settingsSrc).toMatch(/hideSharedSettingsHeading/);
+    expect(settingsSrc).toMatch(/designCetakanPage \|\| customerPricingPage/);
+    expect(settingsSrc).toMatch(/!hideSharedSettingsHeading \?/);
+    expect(settingsSrc).toMatch(/tab === "design-cetakan"/);
+    expect(settingsSrc).toMatch(/tab === "customer-pricing"/);
+    expect(settingsSrc).toMatch(/tab === "hpp"/);
+    expect(settingsSrc).toMatch(/page-heading/);
+  });
+
+  test("general settings save stays independent from draft/publish", () => {
+    expect(cpSrc).toMatch(/updateCustomerPricingSettings/);
+    expect(cpSrc).toMatch(/data-testid="cp-save-settings"/);
+    expect(cpSrc).toMatch(/createCustomerPricingDraft/);
+    expect(cpSrc).toMatch(/publishCustomerPricingVersion/);
+    expect(cpSrc).toMatch(/updateCustomerPricingVersion/);
+    expect(cpSrc).toMatch(/const saveSettings = async/);
+    expect(cpSrc).toMatch(/const saveDraft = async/);
+    expect(cpSrc).toMatch(/const publish = async/);
+    expect(cpSrc.indexOf("updateCustomerPricingSettings")).toBeGreaterThan(-1);
+    expect(cpSrc.indexOf("updateCustomerPricingVersion")).toBeGreaterThan(-1);
+    expect(cpSrc.indexOf("publishCustomerPricingVersion")).toBeGreaterThan(-1);
   });
 
   test("editor preserves shared tier sheet and per-product matrices", () => {
@@ -99,6 +138,60 @@ describe("Customer Pricing multi-product group UI", () => {
     expect(cpSrc).toMatch(/deleteCustomerPricingCatalogImage/);
     expect(cpSrc).not.toMatch(/catalog_image:\s*catalogImage/);
     expect(cssSrc).toMatch(/\.cp-catalog-image-preview/);
+  });
+});
+
+describe("compact table and product drawer helpers", () => {
+  const longName =
+    "Plastik Klip Pond Hitam 20 x 30 Premium Anti Sobek Extra Panjang Label Custom";
+
+  test("groupProductCount uses summary products without joining names", () => {
+    expect(groupProductCount({
+      summary_version: {
+        products: [
+          { accurate_item_id: "a", display_name: longName },
+          { accurate_item_id: "b", display_name: "BOWL 500" },
+        ],
+      },
+    })).toBe(2);
+    expect(groupProductCount({})).toBe(0);
+  });
+
+  test("drawer client search matches display_name and item_code", () => {
+    const products = [
+      { accurate_item_id: "1", display_name: longName, item_code: "100300" },
+      { accurate_item_id: "2", display_name: "CUP PET 12oz", item_code: "CUP-12" },
+    ];
+    expect(filterGroupProducts(products, "klip").map((p) => p.accurate_item_id)).toEqual(["1"]);
+    expect(filterGroupProducts(products, "cup-12").map((p) => p.accurate_item_id)).toEqual(["2"]);
+    expect(filterGroupProducts(products, "zzz")).toEqual([]);
+    expect(filterGroupProducts(products, "")).toHaveLength(2);
+  });
+
+  test("drawer meta derives only from already-loaded product fields", () => {
+    expect(productDrawerMeta({
+      item_code: "100300",
+      hpp_snapshot: 1200,
+      tier_prices: [2500, 2200],
+    })).toEqual({
+      code: "100300",
+      hpp: expect.stringMatching(/1\.?200|1200/),
+      price: expect.stringMatching(/2\.?500|2500/),
+    });
+    expect(productDrawerMeta({ accurate_item_id: "x" })).toEqual({
+      code: "—",
+      hpp: "—",
+      price: "—",
+    });
+  });
+
+  test("CSS scopes compact inputs and drawer under customer pricing", () => {
+    expect(cssSrc).toMatch(/\.content \.cp-settings input/);
+    expect(cssSrc).toMatch(/height:\s*36px/);
+    expect(cssSrc).toMatch(/\.cp-product-drawer/);
+    expect(cssSrc).toMatch(/-webkit-line-clamp:\s*2/);
+    expect(cssSrc).toMatch(/\.cp-group-sheet/);
+    expect(cssSrc).not.toMatch(/\.cp-product-count[\s\S]{0,80}!important/);
   });
 });
 

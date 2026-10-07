@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { AlertCircle, ImageIcon, Plus, RefreshCw, Trash2, Upload, X } from "lucide-react";
 import api from "../lib/api";
 import { formatDate } from "../lib/constants";
@@ -118,6 +119,37 @@ export function removeExactProduct(current, accurateItemId) {
   return current.filter((product) => product.accurate_item_id !== accurateItemId);
 }
 
+export function groupProductCount(group) {
+  return (group?.summary_version?.products || []).length;
+}
+
+export function filterGroupProducts(products, query) {
+  const needle = String(query || "").trim().toLowerCase();
+  const rows = Array.isArray(products) ? products : [];
+  if (!needle) return rows;
+  return rows.filter((product) => {
+    const name = String(product?.display_name || "").toLowerCase();
+    const code = String(product?.item_code || "").toLowerCase();
+    return name.includes(needle) || code.includes(needle);
+  });
+}
+
+export function productDrawerMeta(product) {
+  if (!product) return { code: "—", hpp: "—", price: "—" };
+  const prices = Array.isArray(product.tier_prices) ? product.tier_prices : [];
+  const firstPrice = prices.find((value) => value != null && value !== "");
+  const hpp = product.hpp_snapshot ?? product.manual_hpp;
+  return {
+    code: product.item_code || "—",
+    hpp: hpp != null && hpp !== "" && Number.isFinite(Number(hpp))
+      ? formatRupiah(hpp)
+      : "—",
+    price: firstPrice != null && Number.isFinite(Number(firstPrice))
+      ? formatRupiah(firstPrice)
+      : "—",
+  };
+}
+
 export function setProductTierPrice(current, accurateItemId, tierIndex, value, tierCount) {
   return current.map((product) => {
     if (product.accurate_item_id !== accurateItemId) return product;
@@ -195,6 +227,10 @@ export default function CustomerPricingSettings({ notify, canEdit, canPublish })
   const [masterSearchBusy, setMasterSearchBusy] = useState(false);
   const [selectedMaster, setSelectedMaster] = useState(null);
   const masterSearchSeq = useRef(0);
+
+  const [drawerGroup, setDrawerGroup] = useState(null);
+  const [drawerQuery, setDrawerQuery] = useState("");
+  const drawerCloseRef = useRef(null);
 
   const loadSettings = useCallback(async () => {
     const response = await api.customerPricingSettings();
@@ -298,6 +334,49 @@ export default function CustomerPricingSettings({ notify, canEdit, canPublish })
     setPreview(null);
     setError("");
   };
+
+  const closeProductDrawer = useCallback(() => {
+    setDrawerGroup(null);
+    setDrawerQuery("");
+  }, []);
+
+  const openProductDrawer = (group) => {
+    setDrawerGroup(group);
+    setDrawerQuery("");
+  };
+
+  const openEditorFromDrawer = async (group) => {
+    const target = group || drawerGroup;
+    closeProductDrawer();
+    if (target) await openGroup(target);
+  };
+
+  useEffect(() => {
+    if (!drawerGroup) return undefined;
+    const onKeyDown = (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeProductDrawer();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    drawerCloseRef.current?.focus?.();
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [drawerGroup, closeProductDrawer]);
+
+  const drawerProducts = useMemo(
+    () => drawerGroup?.summary_version?.products || [],
+    [drawerGroup]
+  );
+  const drawerFilteredProducts = useMemo(
+    () => filterGroupProducts(drawerProducts, drawerQuery),
+    [drawerProducts, drawerQuery]
+  );
 
   const saveSettings = async () => {
     setBusy(true);
@@ -717,10 +796,22 @@ export default function CustomerPricingSettings({ notify, canEdit, canPublish })
   return (
     <div className="settings-card cp-settings" data-testid="customer-pricing-settings">
       <div className="cp-page-head">
-        <h2>Harga Customer</h2>
-        <p className="muted small">
-          Kelompok harga untuk beberapa produk exact. HPP dan harga akhir tetap dihitung per produk.
-        </p>
+        <div className="cp-page-head-copy">
+          <h2>Harga Customer</h2>
+          <p className="muted small">
+            Atur kelompok harga dan harga khusus produk.
+          </p>
+        </div>
+        {!editorGroup && canEdit && (
+          <button
+            className="primary sm"
+            disabled={busy}
+            onClick={saveSettings}
+            data-testid="cp-save-settings"
+          >
+            Simpan Pengaturan
+          </button>
+        )}
       </div>
 
       {error && (
@@ -734,11 +825,6 @@ export default function CustomerPricingSettings({ notify, canEdit, canPublish })
           <section className="cp-section cp-section-compact" data-testid="cp-general-settings">
             <div className="cp-section-head">
               <h3>Pengaturan Umum</h3>
-              {canEdit && (
-                <button className="ghost sm" disabled={busy} onClick={saveSettings}>
-                  Simpan Pengaturan
-                </button>
-              )}
             </div>
             <div className="cp-inline-fields">
               <label>Nomor Admin Eternal
@@ -748,6 +834,7 @@ export default function CustomerPricingSettings({ notify, canEdit, canPublish })
                     setSettings((current) => ({ ...current, admin_phone: event.target.value }))
                   }
                   disabled={!canEdit || busy}
+                  data-testid="cp-admin-phone"
                 />
               </label>
               <label>Masa Berlaku Quotation (hari)
@@ -762,6 +849,7 @@ export default function CustomerPricingSettings({ notify, canEdit, canPublish })
                     }))
                   }
                   disabled={!canEdit || busy}
+                  data-testid="cp-quotation-days"
                 />
               </label>
             </div>
@@ -780,9 +868,9 @@ export default function CustomerPricingSettings({ notify, canEdit, canPublish })
                       setQuery(queryInput.trim());
                     }
                   }}
-                  placeholder="Cari kelompok / produk (live)…"
+                  placeholder="Cari kelompok / produk..."
                   data-testid="cp-group-search"
-                  aria-label="Cari kelompok harga live"
+                  aria-label="Cari kelompok atau produk"
                 />
                 {canEdit && (
                   <button
@@ -797,7 +885,7 @@ export default function CustomerPricingSettings({ notify, canEdit, canPublish })
               </div>
             </div>
             <div className="cp-product-table-wrap">
-              <table className="cp-sheet cp-product-sheet">
+              <table className="cp-sheet cp-product-sheet cp-group-sheet">
                 <thead>
                   <tr>
                     <th>Kelompok</th>
@@ -816,13 +904,20 @@ export default function CustomerPricingSettings({ notify, canEdit, canPublish })
                   {groups.map((group) => {
                     const summary = group.summary_version;
                     const profit = profitSummary(summary);
-                    const names = (summary?.products || []).map((product) => product.display_name);
+                    const count = groupProductCount(group);
                     return (
                       <tr key={group.id} data-testid={`cp-group-${group.id}`}>
                         <td><strong>{group.group_name}</strong></td>
                         <td>
-                          <strong>{names.length} produk</strong>
-                          <span className="cp-cell-sub">{names.join(" • ") || "Belum ada produk"}</span>
+                          <button
+                            type="button"
+                            className="cp-product-count"
+                            onClick={() => openProductDrawer(group)}
+                            data-testid={`cp-product-count-${group.id}`}
+                            aria-label={`Lihat ${count} produk kelompok ${group.group_name}`}
+                          >
+                            {count} produk
+                          </button>
                         </td>
                         <td>{modeSummary(summary)}</td>
                         <td>{hppSourceSummary(summary)}</td>
@@ -851,8 +946,13 @@ export default function CustomerPricingSettings({ notify, canEdit, canPublish })
                           {group.updated_at ? formatDate(group.updated_at) : "—"}
                         </td>
                         <td>
-                          <button className="ghost sm" onClick={() => openGroup(group)}>
-                            {canEdit ? "Edit" : "Lihat"}
+                          <button
+                            type="button"
+                            className="ghost sm"
+                            onClick={() => openProductDrawer(group)}
+                            data-testid={`cp-lihat-${group.id}`}
+                          >
+                            Lihat
                           </button>
                         </td>
                       </tr>
@@ -868,6 +968,104 @@ export default function CustomerPricingSettings({ notify, canEdit, canPublish })
             </div>
           </section>
         </>
+      )}
+
+      {drawerGroup && createPortal(
+        <div
+          className="drawer cp-product-drawer"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="cp-product-drawer-title"
+          data-testid="cp-product-drawer"
+          onClick={closeProductDrawer}
+        >
+          <div
+            className="drawer-panel cp-product-drawer-panel"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <header className="drawer-head">
+              <div>
+                <h3 id="cp-product-drawer-title" data-testid="cp-product-drawer-title">
+                  {drawerGroup.group_name}
+                </h3>
+                <p className="muted small" data-testid="cp-product-drawer-count">
+                  {drawerProducts.length} produk dalam kelompok
+                </p>
+              </div>
+              <button
+                ref={drawerCloseRef}
+                type="button"
+                className="icon-button"
+                onClick={closeProductDrawer}
+                aria-label="Tutup"
+                data-testid="cp-product-drawer-close"
+              >
+                <X size={18} />
+              </button>
+            </header>
+            <div className="drawer-body cp-product-drawer-body">
+              <input
+                value={drawerQuery}
+                onChange={(event) => setDrawerQuery(event.target.value)}
+                placeholder="Cari produk dalam kelompok..."
+                data-testid="cp-drawer-product-search"
+                aria-label="Cari produk dalam kelompok"
+              />
+              {drawerProducts.length === 0 ? (
+                <p className="muted small" data-testid="cp-drawer-empty">
+                  Belum ada produk dalam kelompok.
+                </p>
+              ) : drawerFilteredProducts.length === 0 ? (
+                <p className="muted small" data-testid="cp-drawer-search-empty">
+                  Produk tidak ditemukan.
+                </p>
+              ) : (
+                <ul className="cp-drawer-product-list" data-testid="cp-drawer-product-list">
+                  {drawerFilteredProducts.map((product) => {
+                    const meta = productDrawerMeta(product);
+                    return (
+                      <li
+                        key={product.accurate_item_id}
+                        data-testid={`cp-drawer-product-${product.accurate_item_id}`}
+                      >
+                        <strong
+                          className="cp-drawer-product-name"
+                          title={product.display_name || ""}
+                        >
+                          {product.display_name || "—"}
+                        </strong>
+                        <span className="cp-drawer-product-meta muted small">
+                          Kode: {meta.code}
+                          {"  "}HPP: {meta.hpp}
+                          {"  "}Harga: {meta.price}
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
+            <footer className="cp-product-drawer-footer">
+              <button
+                type="button"
+                className="ghost sm"
+                onClick={() => openEditorFromDrawer(drawerGroup)}
+                data-testid="cp-drawer-edit-group"
+              >
+                {canEdit ? "Edit Kelompok" : "Lihat Kelompok"}
+              </button>
+              <button
+                type="button"
+                className="primary sm"
+                onClick={() => openEditorFromDrawer(drawerGroup)}
+                data-testid="cp-drawer-open-editor"
+              >
+                Buka Editor Harga
+              </button>
+            </footer>
+          </div>
+        </div>,
+        document.body
       )}
 
       {createOpen && (
