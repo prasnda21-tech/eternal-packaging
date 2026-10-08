@@ -226,6 +226,7 @@ from services.trial_balance_http import register_trial_balance_routes
 from services.profit_loss_http import register_profit_loss_routes
 from services.financial_dashboard_http import register_financial_dashboard_routes
 from services.sales_dashboard_http import register_sales_dashboard_routes
+from services.owner_analytics_http import register_owner_analytics_routes
 from services.widget_dashboard_http import register_widget_dashboard_routes
 from services.balance_sheet_http import register_balance_sheet_routes
 from services.inventory_reconciliation_http import register_inventory_reconciliation_routes
@@ -14184,6 +14185,13 @@ register_sales_dashboard_routes(
     get_db=lambda: db,
     current_user=current_user,
     require_perm=require_perm,
+    user_permissions=user_permissions,
+    Depends=Depends,
+)
+register_owner_analytics_routes(
+    api_router,
+    get_db=lambda: db,
+    current_user=current_user,
     user_permissions=user_permissions,
     Depends=Depends,
 )

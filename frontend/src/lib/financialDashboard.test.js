@@ -23,7 +23,7 @@ describe("dashboard submenu access", () => {
 
   test("production access keeps the existing route and does not add finance", () => {
     const visible = dashboardNavVisible(has(NAV_KEYS.dashboard));
-    expect(visible).toEqual({ parent: true, production: true, finance: false, sales: false });
+    expect(visible).toEqual({ parent: true, production: true, owner: false, finance: false, sales: false });
     expect(dashboardMenuItems(has(NAV_KEYS.dashboard))).toEqual([
       expect.objectContaining({ label: "Dashboard Produksi", to: "/dashboard", end: true }),
     ]);

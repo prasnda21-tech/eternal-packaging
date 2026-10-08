@@ -1,9 +1,11 @@
 /** Sidebar / page visibility helpers over existing `hasPerm` + nav.* keys. */
 
 import { canOpenWidgetDashboard } from "../components/widgetDashboard/widgetDashboardCatalog";
+import { canAccessOwnerDashboard } from "./ownerAnalytics";
 
 export const NAV_KEYS = {
   dashboard: "nav.dashboard",
+  dashboardOwner: "nav.dashboard.owner",
   dashboardSales: "nav.dashboard.sales",
   dashboardFinance: "nav.dashboard.finance",
   production: "nav.production",
@@ -89,6 +91,7 @@ export const NAV_KEYS = {
 
 export const NAV_MENU_FALLBACK = [
   { key: NAV_KEYS.dashboard, label: "Dashboard", parent: null },
+  { key: NAV_KEYS.dashboardOwner, label: "Dashboard Owner", parent: NAV_KEYS.dashboard },
   { key: NAV_KEYS.dashboardSales, label: "Dashboard Penjualan", parent: NAV_KEYS.dashboard },
   { key: NAV_KEYS.dashboardFinance, label: "Dashboard Keuangan", parent: NAV_KEYS.dashboard },
   { key: NAV_KEYS.spk, label: "SPK Antar Divisi", parent: null },
@@ -177,12 +180,15 @@ export function canSeeNav(hasPerm, key) {
 /** Dashboard parent is hidden when no dashboard child is visible. */
 export function dashboardNavVisible(hasPerm, user) {
   const production = canSeeNav(hasPerm, NAV_KEYS.dashboard);
+  // Owner nav requires role allowlist + permission (admin must not see it).
+  const owner = canAccessOwnerDashboard(user, hasPerm);
   const sales = canSeeNav(hasPerm, NAV_KEYS.dashboardSales) || canSeeNav(hasPerm, "dashboard.sales.view");
   const finance = canSeeNav(hasPerm, NAV_KEYS.dashboardFinance) || canSeeNav(hasPerm, "dashboard.finance.view");
   const widget = canOpenWidgetDashboard(user, hasPerm);
   return {
-    parent: Boolean(production || widget),
+    parent: Boolean(production || widget || owner),
     production: Boolean(production),
+    owner: Boolean(owner),
     sales: Boolean(sales),
     finance: Boolean(finance),
   };
@@ -191,6 +197,16 @@ export function dashboardNavVisible(hasPerm, user) {
 export function dashboardMenuItems(hasPerm, user) {
   const visible = dashboardNavVisible(hasPerm, user);
   const items = [];
+  if (visible.owner) {
+    items.push({
+      key: NAV_KEYS.dashboardOwner,
+      label: "Dashboard Owner",
+      to: "/dashboard/owner",
+      end: true,
+      tone: "green",
+      testid: "top-nav-dashboard-owner",
+    });
+  }
   if (visible.production) {
     items.push({
       key: NAV_KEYS.dashboard,

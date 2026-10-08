@@ -821,6 +821,7 @@ export const api = {
   productionDashboard: (params = {}) => client.get(`/dashboard/production`, { params }).then((r) => r.data),
   financialDashboard: (params = {}) => client.get(`/dashboard/keuangan`, { params }).then((r) => r.data),
   salesDashboard: (params = {}) => client.get(`/dashboard/penjualan`, { params }).then((r) => r.data),
+  ownerDashboard: (params = {}) => client.get(`/dashboard/owner`, { params }).then((r) => r.data),
   purchasePeriodSummary: (params = {}) => client.get(`/dashboard/pembelian`, { params }).then((r) => r.data),
   widgetProfitLoss: (params = {}) => client.get(`/dashboard/widget/laba-rugi`, { params }).then((r) => r.data),
   widgetReconciliations: () => client.get(`/dashboard/widget/reconciliations`).then((r) => r.data),

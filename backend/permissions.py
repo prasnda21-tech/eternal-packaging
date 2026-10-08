@@ -185,6 +185,7 @@ PERMISSION_CATALOG = [
     ("Dashboard Produksi", "dashboard.production.view", "Lihat Dashboard Produksi"),
     ("Dashboard Keuangan", "dashboard.finance.view", "Lihat Dashboard Keuangan"),
     ("Dashboard Penjualan", "dashboard.sales.view", "Lihat Dashboard Penjualan"),
+    ("Dashboard Owner", "dashboard.owner.view", "Lihat Dashboard Owner (read-only)"),
     ("Dashboard Produksi", "dashboard.production.input", "Input data dari Dashboard"),
     ("Dashboard Produksi", "dashboard.production.edit", "Edit data dari Dashboard"),
     ("Dashboard Produksi", "dashboard.production.export", "Export Excel Dashboard Jadwal Produksi"),
@@ -394,6 +395,7 @@ NAV_ALWAYS_VISIBLE = (
 
 NAV_MENU_ITEMS = (
     ("nav.dashboard", "Dashboard", None),
+    ("nav.dashboard.owner", "Dashboard Owner", "nav.dashboard"),
     ("nav.dashboard.sales", "Dashboard Penjualan", "nav.dashboard"),
     ("nav.dashboard.finance", "Dashboard Keuangan", "nav.dashboard"),
     ("nav.spk", "SPK Antar Divisi", None),
@@ -480,6 +482,9 @@ def derived_nav_permissions(existing: set) -> set:
     nav = set(NAV_ALWAYS_VISIBLE)
     if "dashboard.production.view" in existing:
         nav.add("nav.dashboard")
+    if "dashboard.owner.view" in existing:
+        nav.add("nav.dashboard")
+        nav.add("nav.dashboard.owner")
     if "dashboard.sales.view" in existing:
         nav.add("nav.dashboard.sales")
     if "dashboard.finance.view" in existing:
@@ -803,6 +808,7 @@ ROLE_DEFAULT_PERMISSIONS = {
     ],
     "holding_team": [
         "product_request.read_all",
+        "dashboard.owner.view",
         # Recovered Purchasing + Inventory + HPP package (production-only role).
         # Local admin still uses ALL_PERMISSIONS; production non-holding roles
         # lose these keys via services.purchasing_inventory_access filter.
@@ -836,6 +842,7 @@ ROLE_DEFAULT_PERMISSIONS = {
     ],
     "direktur_utama": [
         "product_request.read_all",
+        "dashboard.owner.view",
     ],
     "sales_eternal": [
         # PWA Sales is a dedicated scoped surface. PO/financial data remains
