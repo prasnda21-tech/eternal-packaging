@@ -413,12 +413,14 @@ def test_missing_work_date_is_not_eligible_and_does_not_infer_a_date():
     before = _report(_db())
     report = _report(db)
     dated = _by_action(report, "act-open")
-    missing = _by_action(report, "act-nodate")
+    missing = next(row for row in report["historic_rows"] if row["action_id"] == "act-nodate")
     assert dated["work_date"] == "2026-08-10"
     assert dated["tanggal"] == "2026-08-10"
     assert dated["payroll_status"] == PAYROLL_STATUS_BELUM
     assert dated["base_wage"] == 1250
     assert missing["payroll_status"] == PAYROLL_STATUS_BLOCKED
+    assert missing["reason_code"] == "HISTORIC_UNDATED"
+    assert missing["issue_bucket"] == "locked"
     assert missing["payroll_reason"] == MISSING_WORK_DATE_REASON
     assert missing["work_date"] == ""
     assert missing["tanggal"] == ""
@@ -427,6 +429,8 @@ def test_missing_work_date_is_not_eligible_and_does_not_infer_a_date():
     assert missing["tanggal"] != order["order_date"]
     assert "2026-08-21" not in missing["tanggal"]
     assert "2026-08-22" not in missing["tanggal"]
+    assert all(row["action_id"] != "act-nodate" for row in report["rows"])
+    assert report["eligibility_summary"]["total"] == before["eligibility_summary"]["total"]
     person = next(row for row in report["people"] if row["operator_user_id"] == "user-1")
     before_person = next(row for row in before["people"] if row["operator_user_id"] == "user-1")
     assert person["wage_basis"] == before_person["wage_basis"]
@@ -436,7 +440,10 @@ def test_missing_work_date_is_not_eligible_and_does_not_infer_a_date():
 def test_eligibility_summary_groups_not_eligible_by_reason():
     report = _report(_db())
     summary = report["eligibility_summary"]
-    blocked = [row for row in report["rows"] if row["payroll_status"] == PAYROLL_STATUS_BLOCKED]
+    blocked = [
+        row for row in report["rows"]
+        if row["payroll_status"] == PAYROLL_STATUS_BLOCKED and row.get("issue_bucket") == "actionable"
+    ]
     assert summary["total"] == report["not_eligible_count"] == len(blocked)
     by_reason = {row["reason"]: row for row in summary["by_reason"]}
     assert by_reason["tanpa snapshot tarif"]["count"] == 1
@@ -458,7 +465,8 @@ def test_eligibility_summary_groups_not_eligible_by_reason():
         "qty": 8,
         "rate_per_pcs": 125,
     })
-    with_date = _report(db)
-    labels = {row["label"]: row["count"] for row in with_date["eligibility_summary"]["by_reason"]}
-    assert labels["Tanpa tanggal kerja"] == 1
-    assert with_date["eligibility_summary"]["total"] == report["eligibility_summary"]["total"] + 1
+    with_undated = _report(db)
+    assert with_undated["eligibility_summary"]["total"] == report["eligibility_summary"]["total"]
+    hist_labels = {row["label"]: row["count"] for row in with_undated["historic_summary"]["by_reason"]}
+    assert hist_labels.get("Tanpa tanggal kerja") == 1 or hist_labels.get("Historis tanpa tanggal kerja") == 1
+    assert with_undated["historic_summary"]["total"] >= 1

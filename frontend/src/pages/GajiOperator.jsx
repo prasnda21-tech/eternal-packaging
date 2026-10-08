@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, Fragment } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { Download, RefreshCw, Settings2, ChevronDown, ChevronRight, SlidersHorizontal } from "lucide-react";
+import { Download, RefreshCw, Settings2, ChevronDown, ChevronRight, SlidersHorizontal, X } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDisplayDate, formatTrackingPageDate } from "../lib/constants";
@@ -58,13 +58,6 @@ const STATUS_TABS = [
   ["NOT_ELIGIBLE", "Perlu Perbaikan"],
 ];
 
-const KNOWN_ELIG_LABELS = [
-  "Tanpa tanggal kerja",
-  "Tanpa snapshot tarif",
-  "Profil HR belum piece",
-  "Sebelum batas integrasi",
-];
-
 function payrollBadge(status, testId) {
   const [label, tone] = PAYROLL_STATUS[status] || [status || "—", "hr-status-draft"];
   return <span className={`hr-status ${tone}`} data-testid={testId || "gaji-payroll-status"}>{label}</span>;
@@ -107,6 +100,147 @@ export function gajiFilterItemLabel(it) {
   return code || name || String(it.accurate_item_id || "");
 }
 
+function RepairDrawer({ issue, mode, onClose, onSaved, canRepairDate, canRepairRate }) {
+  const [workDate, setWorkDate] = useState("");
+  const [rate, setRate] = useState("");
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [localErr, setLocalErr] = useState("");
+
+  if (!issue) return null;
+  const repair = issue.repair || {};
+  const locked = repair.action_type === "locked" || issue.issue_bucket === "locked";
+  const isDate = mode === "work_date";
+  const isRate = mode === "rate";
+  const canEdit = isDate ? canRepairDate : isRate ? canRepairRate : false;
+
+  const save = async () => {
+    if (!canEdit || locked) return;
+    setBusy(true);
+    setLocalErr("");
+    try {
+      if (isDate) {
+        await api.gajiOperatorRepairWorkDate({
+          order_id: issue.order_id,
+          split_id: issue.split_id,
+          action_id: issue.action_id,
+          work_date: workDate,
+          expected_work_date: issue.expected_work_date || issue.work_date || "",
+          reason,
+        });
+      } else {
+        await api.gajiOperatorRepairRate({
+          order_id: issue.order_id,
+          split_id: issue.split_id,
+          action_id: issue.action_id,
+          rate_per_pcs: Number(rate),
+          expected_rate_per_pcs: issue.expected_rate_per_pcs == null || issue.expected_rate_per_pcs === ""
+            ? null
+            : Number(issue.expected_rate_per_pcs),
+          reason,
+        });
+      }
+      onSaved();
+      onClose();
+    } catch (e) {
+      const det = e.response?.data?.detail;
+      setLocalErr(typeof det === "object" ? (det.message || JSON.stringify(det)) : (det || e.message || "Gagal menyimpan"));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="modal" data-testid="gaji-repair-drawer" onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="modal-inner gaji-repair-modal" onClick={(e) => e.stopPropagation()}>
+        <header className="modal-head">
+          <h3>{isDate ? "Perbaiki Tanggal Kerja" : isRate ? "Perbaiki Snapshot Tarif" : "Detail Masalah"}</h3>
+          <button type="button" className="icon-button" onClick={onClose} data-testid="gaji-repair-close"><X size={16} /></button>
+        </header>
+        <div className="gaji-repair-body">
+          <dl className="gaji-repair-meta">
+            <div><dt>Operator</dt><dd>{issue.operator || issue.operator_name || "—"}</dd></div>
+            <div><dt>PO</dt><dd>{issue.po_number || "—"}</dd></div>
+            <div><dt>Qty</dt><dd>{fmtQty(issue.qty_completed || issue.qty)}</dd></div>
+            <div><dt>Alasan</dt><dd data-testid="gaji-repair-reason-label">{repair.reason_label || issue.payroll_reason || "—"}</dd></div>
+            <div><dt>Field</dt><dd>{repair.target_field || "—"}</dd></div>
+            <div><dt>Tindakan</dt><dd>{repair.required_action || "—"}</dd></div>
+          </dl>
+          {locked && (
+            <p className="gaji-repair-locked" data-testid="gaji-repair-locked">{repair.lock_reason || "Output terkunci."}</p>
+          )}
+          {!locked && isDate && canEdit && (
+            <label className="gaji-repair-field">
+              <span>Tanggal kerja (progress_entries.work_date)</span>
+              <input type="date" value={workDate} onChange={(e) => setWorkDate(e.target.value)} data-testid="gaji-repair-work-date" autoFocus />
+            </label>
+          )}
+          {!locked && isRate && canEdit && (
+            <label className="gaji-repair-field">
+              <span>Tarif per pcs (manual)</span>
+              <input type="number" min="0" step="0.01" value={rate} onChange={(e) => setRate(e.target.value)} data-testid="gaji-repair-rate" autoFocus />
+            </label>
+          )}
+          {!locked && canEdit && (isDate || isRate) && (
+            <label className="gaji-repair-field">
+              <span>Alasan koreksi</span>
+              <input value={reason} onChange={(e) => setReason(e.target.value)} data-testid="gaji-repair-note" placeholder="Minimal 5 karakter" />
+            </label>
+          )}
+          {!canEdit && !locked && (isDate || isRate) && (
+            <p className="muted small" data-testid="gaji-repair-no-perm">Anda tidak punya permission untuk koreksi ini.</p>
+          )}
+          {localErr && <div className="error" data-testid="gaji-repair-error">{localErr}</div>}
+        </div>
+        <footer className="emp-actions gaji-repair-foot">
+          <button type="button" className="ghost" onClick={onClose}>Tutup</button>
+          {!locked && canEdit && (isDate || isRate) && (
+            <button type="button" className="primary" disabled={busy} onClick={save} data-testid="gaji-repair-save">
+              {busy ? "Menyimpan…" : "Simpan & Validasi Ulang"}
+            </button>
+          )}
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+function IssueActions({ issue, canRepairDate, canRepairRate, canHr, onRepair }) {
+  const repair = issue.repair || {};
+  const type = repair.action_type || "inspect";
+  if (type === "locked") {
+    return repair.target_route ? (
+      <Link className="ghost sm" to={repair.target_route} data-testid={`gaji-fix-locked-${issue.source_key}`}>Lihat Payroll Terkunci</Link>
+    ) : <span className="muted small">Terkunci</span>;
+  }
+  if (type === "repair_work_date") {
+    return canRepairDate ? (
+      <button type="button" className="primary sm" onClick={() => onRepair(issue, "work_date")} data-testid={`gaji-fix-date-${issue.source_key}`}>
+        Perbaiki Tanggal Kerja
+      </button>
+    ) : <span className="muted small">Butuh permission koreksi tanggal</span>;
+  }
+  if (type === "repair_rate") {
+    return canRepairRate ? (
+      <button type="button" className="primary sm" onClick={() => onRepair(issue, "rate")} data-testid={`gaji-fix-rate-${issue.source_key}`}>
+        Perbaiki Snapshot Tarif
+      </button>
+    ) : <span className="muted small">Butuh permission koreksi tarif</span>;
+  }
+  if (type === "open_hr") {
+    return canHr && repair.target_route ? (
+      <Link className="primary sm" to={repair.target_route} data-testid={`gaji-fix-hr-${issue.source_key}`}>Buka Profil HR</Link>
+    ) : <span className="muted small">Butuh permission HR</span>;
+  }
+  if (type === "inspect_identity" && repair.target_route) {
+    return <Link className="ghost sm" to={repair.target_route} data-testid={`gaji-fix-uid-${issue.source_key}`}>Periksa Identitas Operator</Link>;
+  }
+  if (repair.target_route) {
+    return <Link className="ghost sm" to={repair.target_route} data-testid={`gaji-fix-inspect-${issue.source_key}`}>{repair.button_label || "Lihat Data Historis"}</Link>;
+  }
+  return <button type="button" className="ghost sm" onClick={() => onRepair(issue, "inspect")} data-testid={`gaji-fix-detail-${issue.source_key}`}>Lihat Detail</button>;
+}
+
 export default function GajiOperator() {
   const { hasPerm } = useAuth();
   const navigate = useNavigate();
@@ -123,8 +257,14 @@ export default function GajiOperator() {
   const [statusTab, setStatusTab] = useState("BELUM_MASUK_PAYROLL");
   const [moreFilters, setMoreFilters] = useState(false);
   const [eligOpen, setEligOpen] = useState(false);
+  const [historicOpen, setHistoricOpen] = useState(false);
+  const [repairIssue, setRepairIssue] = useState(null);
+  const [repairMode, setRepairMode] = useState("");
   const canWage = hasPerm("settings.operator_wage.view") || hasPerm("settings.operator_wage.manage") || hasPerm(NAV_KEYS.settings);
   const canPrepare = hasPerm("payroll.piece_holding.edit");
+  const canRepairDate = hasPerm("reports.gaji_operator.repair_work_date");
+  const canRepairRate = hasPerm("reports.gaji_operator.repair_rate");
+  const canHr = hasPerm("hr.employee.manage") || hasPerm("hr.employee.view");
 
   const operators = data?.filters?.operators || [];
   const operatorIdsParam = exportOperatorIds(selectedOps, operators);
@@ -204,6 +344,7 @@ export default function GajiOperator() {
   };
 
   const rows = data?.rows || [];
+  const historicRows = data?.historic_rows || [];
   const people = useMemo(() => data?.people || [], [data]);
   const items = data?.filters?.items || [];
   const missing = data?.missing_base_rate || [];
@@ -230,20 +371,21 @@ export default function GajiOperator() {
   const bonusUsulan = Number(kpis.bonus_proposed || 0) > 0 || people.some((p) => p.bonus_status === "USULAN");
   const proposedFallback = people.reduce((sum, p) => sum + Number(p.bonus_proposed_amount || p.bonus || 0), 0);
   const bonusKpiValue = bonusUsulan ? (kpis.bonus_proposed ?? proposedFallback) : (kpis.bonus ?? 0);
-  const elig = data?.eligibility_summary || { total: 0, by_reason: [] };
-  const knownElig = KNOWN_ELIG_LABELS.map((label) => {
-    const row = (elig.by_reason || []).find((item) => (item.label || item.reason) === label);
-    return { label, count: row ? Number(row.count || 0) : 0 };
-  });
-  const otherElig = (elig.by_reason || []).reduce((sum, row) => {
-    const label = row.label || row.reason;
-    if (KNOWN_ELIG_LABELS.includes(label)) return sum;
-    return sum + Number(row.count || 0);
-  }, 0);
+  const elig = data?.eligibility_summary || { total: 0, by_reason: [], by_code: [] };
+  const historicSummary = data?.historic_summary || { total: 0, by_reason: [] };
+  const actionableIssues = useMemo(
+    () => rows.filter((r) => r.payroll_status === "NOT_ELIGIBLE" && r.issue_bucket === "actionable"),
+    [rows],
+  );
 
   const openEligDetail = () => {
     setStatusTab("NOT_ELIGIBLE");
     setEligOpen(true);
+  };
+
+  const openRepair = (issue, mode) => {
+    setRepairIssue(issue);
+    setRepairMode(mode);
   };
 
   return (
@@ -448,38 +590,91 @@ export default function GajiOperator() {
         </table>
       </div>
 
-      {elig.total > 0 && (
-        <div className={`gaji-elig-card${statusTab === "NOT_ELIGIBLE" ? "" : " is-compact"}`} data-testid="gaji-eligibility-summary">
+      {(elig.total > 0 || historicSummary.total > 0) && (
+        <div className={`gaji-elig-card${statusTab === "NOT_ELIGIBLE" || eligOpen ? "" : " is-compact"}`} data-testid="gaji-eligibility-summary">
           <div className="gaji-elig-head">
-            {statusTab === "NOT_ELIGIBLE" ? (
-              <strong>Perlu Perbaikan ({elig.total})</strong>
-            ) : (
-              <strong data-testid="gaji-elig-line">Perlu Perbaikan: {elig.total} output</strong>
-            )}
+            <strong data-testid="gaji-elig-line">Perlu Perbaikan: {elig.total || 0} output</strong>
             <button type="button" className="ghost sm" onClick={openEligDetail} data-testid="gaji-elig-detail">Lihat Detail</button>
           </div>
-          {statusTab === "NOT_ELIGIBLE" && (
+          {(statusTab === "NOT_ELIGIBLE" || eligOpen) && (
             <>
-              <div className="gaji-elig-grid">
-                {knownElig.map((row) => (
-                  <div key={row.label} data-testid="gaji-eligibility-reason">
-                    <span>{row.label}</span>
+              <div className="gaji-elig-grid" data-testid="gaji-elig-by-code">
+                {(elig.by_code || elig.by_reason || []).map((row) => (
+                  <div key={row.reason_code || row.reason || row.label} data-testid="gaji-eligibility-reason">
+                    <span>{row.label || row.reason_code || row.reason}</span>
                     <b>{row.count}</b>
                   </div>
                 ))}
-                <div data-testid="gaji-eligibility-reason">
-                  <span>Lainnya</span>
-                  <b>{otherElig}</b>
-                </div>
               </div>
-              {eligOpen ? (
-                <p className="muted small">Rincian baris ada di tabel status Perlu Perbaikan.</p>
-              ) : null}
+              <div className="gaji-issue-list" data-testid="gaji-issue-list">
+                {actionableIssues.map((issue) => (
+                  <div key={issue.source_key} className="gaji-issue-row" data-testid={`gaji-issue-${issue.source_key}`}>
+                    <div className="gaji-issue-main">
+                      <strong>{issue.operator || issue.operator_name}</strong>
+                      <span>{issue.po_number} · Qty {fmtQty(issue.qty_completed)}</span>
+                      <span className="gaji-issue-reason">{issue.repair?.reason_label || issue.payroll_reason}</span>
+                      <em className="muted">{issue.repair?.target_field || ""}</em>
+                    </div>
+                    <IssueActions
+                      issue={issue}
+                      canRepairDate={canRepairDate}
+                      canRepairRate={canRepairRate}
+                      canHr={canHr}
+                      onRepair={openRepair}
+                    />
+                  </div>
+                ))}
+                {!actionableIssues.length && <p className="muted small">Tidak ada masalah actionable pada periode ini.</p>}
+              </div>
             </>
           )}
         </div>
       )}
+
+      {historicSummary.total > 0 && (
+        <div className="gaji-historic-card" data-testid="gaji-historic-summary">
+          <div className="gaji-elig-head">
+            <strong>Historis / Legacy: {historicSummary.total} output</strong>
+            <button type="button" className="ghost sm" onClick={() => setHistoricOpen((v) => !v)} data-testid="gaji-historic-toggle">
+              {historicOpen ? "Sembunyikan" : "Lihat Data Historis"}
+            </button>
+          </div>
+          <p className="muted small">Tidak dihitung sebagai Perlu Perbaikan periode aktif. Keterkaitan tanggal ke periode ini belum terbukti.</p>
+          {historicOpen && (
+            <div className="gaji-issue-list" data-testid="gaji-historic-list">
+              {historicRows.slice(0, 100).map((issue) => (
+                <div key={issue.source_key} className="gaji-issue-row is-historic" data-testid={`gaji-historic-${issue.source_key}`}>
+                  <div className="gaji-issue-main">
+                    <strong>{issue.operator || issue.operator_name}</strong>
+                    <span>{issue.po_number} · Qty {fmtQty(issue.qty_completed)}</span>
+                    <span className="gaji-issue-reason">{issue.repair?.reason_label || issue.payroll_reason}</span>
+                  </div>
+                  <IssueActions
+                    issue={issue}
+                    canRepairDate={canRepairDate}
+                    canRepairRate={canRepairRate}
+                    canHr={canHr}
+                    onRepair={openRepair}
+                  />
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {data?.bonus_note && <p className="muted small gaji-simple-note" data-testid="gaji-bonus-note">{data.bonus_note}</p>}
+
+      {repairIssue && (
+        <RepairDrawer
+          issue={repairIssue}
+          mode={repairMode}
+          onClose={() => { setRepairIssue(null); setRepairMode(""); }}
+          onSaved={load}
+          canRepairDate={canRepairDate}
+          canRepairRate={canRepairRate}
+        />
+      )}
     </div>
   );
 }

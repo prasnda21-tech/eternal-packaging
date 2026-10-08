@@ -325,7 +325,14 @@ function EmployeeForm({ initial, onClose, onSaved, roles = [], canCreateEternalA
                   </FormField>
                 ))}
                 <FormField id="hr-emp-pay-basis" label="Dasar upah" value={form.pay_basis || "monthly"}>
-                  <select value={form.pay_basis || "monthly"} disabled={!hasHrProfile} data-testid="hr-emp-pay-basis" onChange={(e) => set("pay_basis", e.target.value)}>
+                  <select
+                    value={form.pay_basis || "monthly"}
+                    disabled={!hasHrProfile}
+                    data-testid="hr-emp-pay-basis"
+                    autoFocus={Boolean(initial?.__focusPayBasis)}
+                    className={initial?.__focusPayBasis ? "hr-field-focus" : undefined}
+                    onChange={(e) => set("pay_basis", e.target.value)}
+                  >
                     <option value="monthly">Bulanan</option>
                     <option value="piece">Borongan</option>
                   </select>
@@ -356,12 +363,14 @@ function EmployeeForm({ initial, onClose, onSaved, roles = [], canCreateEternalA
 
 function Employees({ employment = false }) {
   const { hasPerm } = useAuth();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [rows, setRows] = useState([]);
   const [selected, setSelected] = useState(null);
   const [editing, setEditing] = useState(null);
   const [accountFor, setAccountFor] = useState(null);
   const [roles, setRoles] = useState([]);
   const [err, setErr] = useState("");
+  const [focusPayBasis, setFocusPayBasis] = useState(false);
   const canCreateEternalAccount = hasPerm("users.manage") && hasPerm("hr.employee.manage");
   const rowKey = (row) => row?.directory_key || row?.id || row?.user_id;
   const canEditHr = (row) => Boolean(row?.has_hr_profile !== false && row?.id);
@@ -379,6 +388,27 @@ function Employees({ employment = false }) {
     } catch (ex) { setErr(errorText(ex)); }
   }, []);
   useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    if (employment || !rows.length) return undefined;
+    const employeeId = String(searchParams.get("employee") || "").trim();
+    if (!employeeId) return undefined;
+    const wantEdit = searchParams.get("edit") === "1";
+    const wantFocus = String(searchParams.get("focus") || "") === "pay_basis";
+    const match = rows.find((row) => String(row.id || "") === employeeId || String(row.user_id || "") === employeeId);
+    if (!match) return undefined;
+    setSelected(match);
+    if (wantEdit && hasPerm("hr.employee.manage") && canEditHr(match)) {
+      setEditing({ ...match, __focusPayBasis: wantFocus });
+      setFocusPayBasis(wantFocus);
+    }
+    const next = new URLSearchParams(searchParams);
+    next.delete("employee");
+    next.delete("edit");
+    next.delete("focus");
+    setSearchParams(next, { replace: true });
+    return undefined;
+  }, [rows, employment, searchParams, setSearchParams, hasPerm]);
   if (employment) {
     return (
       <div data-testid="hr-employment-page">
@@ -412,7 +442,7 @@ function Employees({ employment = false }) {
             </>}
           </div>
         </div>
-        {editing && <EmployeeForm initial={editing} onClose={() => setEditing(null)} onSaved={load} roles={roles} canCreateEternalAccount={canCreateEternalAccount} />}
+        {editing && <EmployeeForm initial={editing} onClose={() => { setEditing(null); setFocusPayBasis(false); }} onSaved={load} roles={roles} canCreateEternalAccount={canCreateEternalAccount} />}
         {accountFor && canCreateAccountFor(accountFor) && <EmployeeForm initial={accountFor} onClose={() => setAccountFor(null)} onSaved={load} roles={roles} canCreateEternalAccount={canCreateEternalAccount} startWithAccountCreate />}
       </div>
     );
@@ -421,6 +451,7 @@ function Employees({ employment = false }) {
     <div data-testid="hr-employees-page">
       <PageHead title="Daftar Karyawan" action={hasPerm("hr.employee.manage") && <button className="primary" onClick={() => setEditing({})}><Plus size={14} /> Tambah Karyawan</button>} />
       {err && <div className="error">{err}</div>}
+      {focusPayBasis && <p className="muted small" data-testid="hr-pay-basis-focus-hint">Fokus: ubah Dasar Upah (Metode Upah) untuk operator borongan.</p>}
       <div className="table-wrap"><table className="ship-table" data-testid="hr-employees-table"><thead><tr><th>No.</th><th>Nama</th><th>Jabatan</th><th>Divisi</th><th>Status</th><th>Gaji Pokok</th><th></th></tr></thead>
         <tbody>{rows.map((row) => (
           <tr
@@ -450,7 +481,7 @@ function Employees({ employment = false }) {
         ))}</tbody>
       </table></div>
       {editing && (
-        <EmployeeForm initial={editing} onClose={() => setEditing(null)} onSaved={load} roles={roles} canCreateEternalAccount={canCreateEternalAccount} />
+        <EmployeeForm initial={editing} onClose={() => { setEditing(null); setFocusPayBasis(false); }} onSaved={load} roles={roles} canCreateEternalAccount={canCreateEternalAccount} />
       )}
       {accountFor && canCreateAccountFor(accountFor) && (
         <EmployeeForm initial={accountFor} onClose={() => setAccountFor(null)} onSaved={async () => { setAccountFor(null); await load(); }} roles={roles} canCreateEternalAccount={canCreateEternalAccount} startWithAccountCreate />

@@ -174,6 +174,10 @@ export const api = {
   gajiOperator: (params = {}) => client.get(`/reports/gaji-operator`, { params }).then((r) => r.data),
   gajiOperatorExport: (params = {}) =>
     client.get(`/reports/gaji-operator/export`, { params, responseType: "blob" }).then((r) => r.data),
+  gajiOperatorRepairWorkDate: (payload) =>
+    client.post(`/reports/gaji-operator/repair-work-date`, payload).then((r) => r.data),
+  gajiOperatorRepairRate: (payload) =>
+    client.post(`/reports/gaji-operator/repair-rate`, payload).then((r) => r.data),
   orderPrediction: (params = {}) => client.get(`/reports/order-prediction`, { params }).then((r) => r.data),
   orderPredictionDetail: (customerKey) =>
     client.get(`/reports/order-prediction/${encodeURIComponent(customerKey)}`).then((r) => r.data),

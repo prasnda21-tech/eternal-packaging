@@ -141,6 +141,8 @@ PERMISSION_CATALOG = [
     ("Pengaturan", "settings.design_cetakan.view", "Lihat Design Cetakan"),
     ("Pengaturan", "settings.design_cetakan.manage", "Ubah Design Cetakan"),
     ("Laporan", "reports.gaji_operator.view", "Lihat Gaji Operator"),
+    ("Laporan", "reports.gaji_operator.repair_work_date", "Koreksi tanggal kerja output Gaji Operator"),
+    ("Laporan", "reports.gaji_operator.repair_rate", "Koreksi snapshot tarif output Gaji Operator"),
     ("Laporan", "reports.order_prediction.view", "Lihat Prediksi Order"),
     ("Laporan", "reports.order_prediction.import", "Impor Histori Prediksi Order"),
     ("Pengaturan", "settings.operator_wage.view", "Lihat Upah Operator"),
@@ -739,6 +741,8 @@ ROLE_DEFAULT_PERMISSIONS = {
         "purchase_hpp.view",
         "settings.hpp.view", "settings.hpp.manage",
         "reports.gaji_operator.view",
+        "reports.gaji_operator.repair_work_date",
+        "reports.gaji_operator.repair_rate",
         "reports.order_prediction.view", "reports.order_prediction.import",
         "settings.operator_wage.view", "settings.operator_wage.manage",
     ],
@@ -770,6 +774,8 @@ ROLE_DEFAULT_PERMISSIONS = {
         "purchase_hpp.view",
         "settings.hpp.view", "settings.hpp.manage",
         "reports.gaji_operator.view",
+        "reports.gaji_operator.repair_work_date",
+        "reports.gaji_operator.repair_rate",
         "reports.order_prediction.view", "reports.order_prediction.import",
         "settings.operator_wage.view", "settings.operator_wage.manage",
     ],
@@ -843,6 +849,9 @@ ROLE_DEFAULT_PERMISSIONS = {
     "direktur_utama": [
         "product_request.read_all",
         "dashboard.owner.view",
+        "reports.gaji_operator.view",
+        "reports.gaji_operator.repair_work_date",
+        "reports.gaji_operator.repair_rate",
     ],
     "sales_eternal": [
         # PWA Sales is a dedicated scoped surface. PO/financial data remains
