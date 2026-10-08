@@ -361,6 +361,7 @@ export const api = {
   deleteCashBankReconciliation: (id) => client.delete(`/cash-bank/reconciliations/${encodeURIComponent(id)}`).then((r) => r.data),
   finalizeCashBankReconciliation: (id) => client.post(`/cash-bank/reconciliations/${encodeURIComponent(id)}/finalize`).then((r) => r.data),
   cashBankPairWorkspace: (params = {}) => client.get(`/cash-bank/reconciliations/pairs/workspace`, { params }).then((r) => r.data),
+  cashBankOwnerReconView: (params = {}) => client.get(`/cash-bank/reconciliation/owner-view`, { params }).then((r) => r.data),
   cashBankPairSuggestions: (params = {}) => client.get(`/cash-bank/reconciliations/pairs/suggestions`, { params }).then((r) => r.data),
   createCashBankPair: (payload) => client.post(`/cash-bank/reconciliations/pairs`, payload).then((r) => r.data),
   getCashBankPair: (id) => client.get(`/cash-bank/reconciliations/pairs/${encodeURIComponent(id)}`).then((r) => r.data),

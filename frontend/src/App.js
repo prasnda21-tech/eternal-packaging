@@ -40,6 +40,7 @@ const PenerimaanKasBank = lazy(() => import("./pages/PenerimaanKasBank"));
 const PembayaranKasBank = lazy(() => import("./pages/PembayaranKasBank"));
 const TransferKasBank = lazy(() => import("./pages/TransferKasBank"));
 const MutasiKasBank = lazy(() => import("./pages/MutasiKasBank"));
+const RekonsiliasiOwnerKasBank = lazy(() => import("./pages/RekonsiliasiOwnerKasBank"));
 const RekonsiliasiKasBank = lazy(() => import("./pages/RekonsiliasiKasBank"));
 const HrPayroll = lazy(() => import("./pages/HrPayroll"));
 const PayrollReconciliation = lazy(() => import("./pages/PayrollReconciliation"));
@@ -247,6 +248,7 @@ function KasBankIndex() {
   if (v.transfers) return <Navigate to="/kas-bank/transfer" replace />;
   if (v.mutasi) return <Navigate to="/kas-bank/mutasi" replace />;
   if (v.reconciliation) return <Navigate to="/kas-bank/rekonsiliasi" replace />;
+  if (v.reconOwner) return <Navigate to="/kas-bank/rekonsiliasi-owner" replace />;
   return <Navigate to="/" replace />;
 }
 
@@ -399,6 +401,7 @@ export default function App() {
             <Route path="/kas-bank/transfer" element={<PermGate anyOf={[NAV_KEYS.cashBankTransfers, NAV_KEYS.cashBank, "cash_bank.view", "cash_bank.manage"]}><TransferKasBank /></PermGate>} />
             <Route path="/kas-bank/mutasi" element={<PermGate anyOf={[NAV_KEYS.cashBankMutasi, NAV_KEYS.cashBank, "cash_bank.view"]}><MutasiKasBank /></PermGate>} />
             <Route path="/kas-bank/rekonsiliasi" element={<PermGate anyOf={[NAV_KEYS.cashBankReconciliation, NAV_KEYS.cashBank, "cash_bank.view", "cash_bank.reconcile"]}><RekonsiliasiKasBank /></PermGate>} />
+            <Route path="/kas-bank/rekonsiliasi-owner" element={<PermGate anyOf={[NAV_KEYS.cashBankReconOwner, NAV_KEYS.cashBank, "cash_bank.view"]}><RekonsiliasiOwnerKasBank /></PermGate>} />
             <Route path="/kas-bank" element={<KasBankIndex />} />
             <Route path="/laporan/analitik-output" element={<PermGate anyOf={[NAV_KEYS.analytics]} alsoAnyOf={["schedule.view"]}><AnalitikOutput /></PermGate>} />
             <Route path="/laporan/status-po" element={<PermGate anyOf={[NAV_KEYS.statusPo]} alsoAnyOf={["schedule.view"]}><StatusPO /></PermGate>} />

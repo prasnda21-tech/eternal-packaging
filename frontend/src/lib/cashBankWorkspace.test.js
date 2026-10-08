@@ -15,7 +15,7 @@ describe("cashBankWorkspace tabs", () => {
     sessionStorage.clear();
   });
 
-  test("catalog has six Kas & Bank menus", () => {
+  test("catalog has Kas & Bank menus including owner recon", () => {
     expect(CASH_BANK_WORKSPACE_TABS.map((t) => t.path)).toEqual([
       "/kas-bank/daftar",
       "/kas-bank/penerimaan",
@@ -23,6 +23,7 @@ describe("cashBankWorkspace tabs", () => {
       "/kas-bank/transfer",
       "/kas-bank/mutasi",
       "/kas-bank/rekonsiliasi",
+      "/kas-bank/rekonsiliasi-owner",
     ]);
   });
 

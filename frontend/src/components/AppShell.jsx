@@ -103,6 +103,7 @@ const TILE_ICONS = {
   [NAV_KEYS.cashBankTransfers]: ArrowLeftRight,
   [NAV_KEYS.cashBankMutasi]: ListOrdered,
   [NAV_KEYS.cashBankReconciliation]: Scale,
+  [NAV_KEYS.cashBankReconOwner]: Scale,
   [NAV_KEYS.schedule]: TableIcon,
   deliveryToday: ClipboardList,
   [NAV_KEYS.deliverySchedule]: Truck,

@@ -86,6 +86,7 @@ from services.cash_bank_pair_match import (
     pair_workspace,
     suggest_pairs,
 )
+from services.cash_bank_owner_recon import get_owner_recon_view
 from services.general_ledger import GeneralLedgerValidationError
 
 
@@ -1000,6 +1001,31 @@ def register_cash_bank_routes(
                 q=q,
                 page=page,
                 page_size=page_size,
+            )
+        except PairValidationError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except GeneralLedgerValidationError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @api_router.get("/cash-bank/reconciliation/owner-view")
+    async def get_reconciliation_owner_view(
+        cash_bank_id: str = Query(..., min_length=1),
+        start_date: str = Query(..., min_length=1),
+        end_date: str = Query(..., min_length=1),
+        status: Optional[str] = Query(None),
+        q: Optional[str] = Query(None),
+        user=Depends(require_perm(PERM_VIEW)),
+    ):
+        """Phase 1 read-only owner reconciliation view. Zero-write."""
+        db = get_db()
+        try:
+            return await get_owner_recon_view(
+                db,
+                cash_bank_id=cash_bank_id,
+                start_date=start_date,
+                end_date=end_date,
+                status=status,
+                q=q,
             )
         except PairValidationError as exc:
             raise HTTPException(400, str(exc)) from exc

@@ -15,6 +15,7 @@ describe("cashBank nav", () => {
       NAV_KEYS.cashBankTransfers,
       NAV_KEYS.cashBankMutasi,
       NAV_KEYS.cashBankReconciliation,
+      NAV_KEYS.cashBankReconOwner,
     ]));
   });
 
@@ -33,6 +34,7 @@ describe("cashBank nav", () => {
     expect(v.transfers).toBe(true);
     expect(v.mutasi).toBe(true);
     expect(v.reconciliation).toBe(true);
+    expect(v.reconOwner).toBe(true);
     expect(cashBankMenuItems(has("cash_bank.view")).map((i) => i.to)).toEqual([
       "/kas-bank/daftar",
       "/kas-bank/penerimaan",
@@ -40,6 +42,7 @@ describe("cashBank nav", () => {
       "/kas-bank/transfer",
       "/kas-bank/mutasi",
       "/kas-bank/rekonsiliasi",
+      "/kas-bank/rekonsiliasi-owner",
     ]);
   });
 });
