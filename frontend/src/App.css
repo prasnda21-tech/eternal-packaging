@@ -1479,6 +1479,115 @@
   .kas-bank-page .kb-summary-strip{grid-template-columns:1fr}
 }
 
+/* Owner reconciliation — compact read-only strip + drawer */
+.kas-bank-page.kb-owner-recon .kb-owner-summary{
+  display:grid;
+  grid-template-columns:repeat(6,minmax(0,1fr));
+  gap:6px 10px;
+  margin:0 0 10px;
+  padding:8px 10px;
+  border:1.5px solid var(--kb-line-strong);
+  border-radius:6px;
+  background:#fff;
+  font-size:12.5px;
+}
+.kas-bank-page.kb-owner-recon .kb-owner-summary > div{
+  display:flex;
+  flex-direction:column;
+  gap:2px;
+  min-width:0;
+}
+.kas-bank-page.kb-owner-recon .kb-owner-summary span{
+  font:600 10px/1.2 'IBM Plex Mono',monospace;
+  letter-spacing:.04em;
+  text-transform:uppercase;
+  color:var(--mod-ink);
+}
+.kas-bank-page.kb-owner-recon .kb-owner-summary strong{
+  font-size:13px;
+  color:var(--ink);
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+.kas-bank-page.kb-owner-recon .kb-owner-table-wrap{
+  overflow-x:auto;
+  max-width:100%;
+}
+.kas-bank-page.kb-owner-recon .kb-owner-table{
+  min-width:720px;
+  width:100%;
+}
+.kas-bank-page.kb-owner-recon .kb-owner-toolbar{
+  flex-wrap:nowrap;
+  overflow:hidden;
+}
+.kas-bank-page.kb-owner-recon .kb-owner-toolbar .kb-search-field{
+  flex:0 1 7.5rem;
+  min-width:5.5rem;
+  max-width:9rem;
+}
+.kas-bank-page.kb-owner-recon .kb-owner-toolbar .kb-search-field input{
+  min-width:0;
+}
+.kas-bank-page .kb-owner-status-review{
+  background:#fef3c7;
+  color:#92400e;
+  border:1.5px solid #f59e0b;
+}
+.kas-bank-page .kb-owner-status-dup{
+  background:#ede9fe;
+  color:#5b21b6;
+  border:1.5px solid #c4b5fd;
+}
+.kas-bank-page .kb-owner-drawer-overlay{
+  position:fixed;
+  inset:0;
+  background:rgba(15,23,42,.4);
+  z-index:40;
+  display:flex;
+  justify-content:flex-end;
+}
+.kas-bank-page .kb-owner-drawer{
+  width:min(420px,100%);
+  height:100%;
+  background:#fff;
+  border-left:2px solid var(--kb-line-strong);
+  overflow:auto;
+  padding:12px 14px 24px;
+  box-shadow:-8px 0 24px rgba(15,23,42,.12);
+}
+.kas-bank-page .kb-owner-drawer .drawer-header{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:8px;
+  margin:0 0 10px;
+}
+.kas-bank-page .kb-owner-drawer h2{margin:0;font-size:16px}
+.kas-bank-page .kb-owner-drawer h3{
+  margin:14px 0 6px;
+  font-size:11px;
+  letter-spacing:.06em;
+  text-transform:uppercase;
+  color:var(--mod-ink);
+}
+.kas-bank-page .kb-owner-drawer .drawer-prop-list{display:flex;flex-direction:column;gap:4px}
+.kas-bank-page .kb-owner-drawer .drawer-prop-row{
+  display:grid;
+  grid-template-columns:7.5rem minmax(0,1fr);
+  gap:8px;
+  font-size:13px;
+}
+.kas-bank-page .kb-owner-drawer .prop-label{color:var(--soft)}
+.kas-bank-page .kb-owner-drawer .prop-value{color:var(--ink);word-break:break-word}
+@media (max-width:1100px){
+  .kas-bank-page.kb-owner-recon .kb-owner-summary{grid-template-columns:repeat(3,minmax(0,1fr))}
+}
+@media (max-width:640px){
+  .kas-bank-page.kb-owner-recon .kb-owner-summary{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+
 /* Toolbar */
 .kas-bank-page .kb-toolbar{
   display:flex;
