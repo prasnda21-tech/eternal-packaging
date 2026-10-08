@@ -6,7 +6,7 @@ const has = (...keys) => (key) => keys.includes(key);
 describe("sales dashboard access", () => {
   test("sales permission opens only Dashboard Penjualan", () => {
     const visible = dashboardNavVisible(has("dashboard.sales.view"));
-    expect(visible).toEqual({ parent: true, production: false, sales: true, finance: false });
+    expect(visible).toEqual({ parent: true, production: false, owner: false, sales: true, finance: false });
     expect(dashboardMenuItems(has("dashboard.sales.view"))).toEqual([
       expect.objectContaining({
         label: "Dashboard Penjualan",
@@ -39,6 +39,7 @@ describe("sales dashboard access", () => {
     expect(dashboardNavVisible(has("po.view"), { role: "ops" })).toEqual({
       parent: true,
       production: false,
+      owner: false,
       sales: false,
       finance: false,
     });

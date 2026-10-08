@@ -7,6 +7,7 @@ import MobileOperationalLayout from "./mobile/MobileOperationalLayout";
 import MobileTasksPage from "./mobile/MobileTasksPage";
 import Login from "./pages/Login";
 import { canOpenWidgetDashboard } from "./components/widgetDashboard/widgetDashboardCatalog";
+import { canAccessOwnerDashboard } from "./lib/ownerAnalytics";
 import { widgetDashboardAliasTarget, widgetDashboardFinanceTarget } from "./components/widgetDashboard/widgetDashboardLocation";
 import { NAV_KEYS, cashBankNavVisible, employeeAdminNavVisible, hrPayrollNavVisible, inventoryNavVisible, ledgerNavVisible, purchasingNavVisible, reportsNavVisible } from "./lib/navAccess";
 import { inventoryValueRouteAllowed } from "./lib/inventoryValueLink";
@@ -54,6 +55,7 @@ const OptimasiRuteEditor = lazy(() => import("./pages/OptimasiRuteEditor"));
 const Dashboard = lazy(() => import("./pages/Dashboard"));
 const PODetail = lazy(() => import("./pages/PODetail"));
 const HoPDashboard = lazy(() => import("./pages/HoPDashboard"));
+const OwnerDashboard = lazy(() => import("./pages/OwnerDashboard"));
 const WidgetDashboard = lazy(() => import("./pages/WidgetDashboard"));
 const ProductionSchedule = lazy(() => import("./pages/ProductionSchedule"));
 const SuratJalan = lazy(() => import("./pages/SuratJalan"));
@@ -155,6 +157,12 @@ function PermGate({ anyOf, alsoAnyOf, children }) {
 function WidgetDashboardGate({ children }) {
   const { user, hasPerm } = useAuth();
   if (!canOpenWidgetDashboard(user, hasPerm)) return <Navigate to="/" replace />;
+  return children;
+}
+
+function OwnerDashboardGate({ children }) {
+  const { user, hasPerm } = useAuth();
+  if (!canAccessOwnerDashboard(user, hasPerm)) return <Navigate to="/" replace />;
   return children;
 }
 
@@ -325,6 +333,7 @@ export default function App() {
             <Route path="/dashboard/keuangan" element={<WidgetDashboardFinanceAlias />} />
             <Route path="/dashboard/penjualan" element={<WidgetDashboardGate><WidgetDashboard /></WidgetDashboardGate>} />
             <Route path="/dashboard/widget" element={<WidgetDashboardAlias />} />
+            <Route path="/dashboard/owner" element={<OwnerDashboardGate><OwnerDashboard /></OwnerDashboardGate>} />
             <Route path="/dashboard" element={<PermGate anyOf={[NAV_KEYS.dashboard]}><HoPDashboard /></PermGate>} />
             <Route path="/tasks" element={<DivisionTaskIndex />} />
             <Route path="/tasks/designer" element={<PermGate anyOf={[NAV_KEYS.tasksDesigner, "design.upload"]}><DivisionTaskPage /></PermGate>} />

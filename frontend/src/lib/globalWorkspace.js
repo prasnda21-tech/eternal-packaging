@@ -21,6 +21,7 @@ import { createWorkspaceTabApi } from "./workspaceTabs";
 import { hydratePoDetailStoredTab, poDetailWorkspaceTab } from "./poWorkspaceTab";
 import { canSeeSpkNav } from "./spk";
 import { canOpenWidgetDashboard } from "../components/widgetDashboard/widgetDashboardCatalog";
+import { canAccessOwnerDashboard } from "./ownerAnalytics";
 
 export const GLOBAL_WORKSPACE_STORAGE_PREFIX = "ep.workspaceTabs.";
 
@@ -57,6 +58,9 @@ export function visibleGlobalWorkspaceCatalog(hasPerm, user) {
   const cashBankIdByPath = Object.fromEntries(CASH_BANK_WORKSPACE_TABS.map((t) => [t.path, t.id]));
   const tabs = [];
 
+  if (canAccessOwnerDashboard(user, hasPerm)) {
+    tabs.push({ id: "dashboard-owner", path: "/dashboard/owner", label: "Dashboard Owner" });
+  }
   if (canSeeNav(hasPerm, NAV_KEYS.dashboard)) {
     tabs.push({ id: "dashboard", path: "/dashboard", label: "Dashboard Produksi" });
   }
