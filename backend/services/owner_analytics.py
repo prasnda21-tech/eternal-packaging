@@ -1,9 +1,11 @@
-"""Owner Analytics Dashboard — thin read-only facade (Phase 2 + 3A finance).
+"""Owner Analytics Dashboard — thin read-only facade (Phase 2 + 3A + 3B).
 
 Reuses sales_dashboard omzet (after_discount / invoice_date / finalized).
 Adds Average PO Value from orders.selling_total when prices are complete.
 Operational counts reuse delivery schedule + quantity delivery predicates.
 Phase 3A reuses financial_dashboard cash helpers and cash_bank_owner_recon MTD.
+Phase 3B reuses accounts_receivable / accounts_payable current-invoice loaders
+for accounting outstanding + aging (Saat Ini). Does not recompute settlements.
 
 No branch filter. No profit calculation. No OTP/OTD percentages.
 GET must not post, reverse, or backfill business documents.
@@ -15,6 +17,22 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from quantity_rules import is_fully_delivered
+from services.accounts_payable import (
+    BUCKET_1_30 as AP_BUCKET_1_30,
+    BUCKET_31_60 as AP_BUCKET_31_60,
+    BUCKET_61_90 as AP_BUCKET_61_90,
+    BUCKET_NOT_DUE as AP_BUCKET_NOT_DUE,
+    BUCKET_OVER_90 as AP_BUCKET_OVER_90,
+    _current_invoice_sets as _ap_current_invoice_sets,
+)
+from services.accounts_receivable import (
+    BUCKET_1_30 as AR_BUCKET_1_30,
+    BUCKET_31_60 as AR_BUCKET_31_60,
+    BUCKET_61_90 as AR_BUCKET_61_90,
+    BUCKET_NOT_DUE as AR_BUCKET_NOT_DUE,
+    BUCKET_OVER_90 as AR_BUCKET_OVER_90,
+    _current_invoice_sets as _ar_current_invoice_sets,
+)
 from services.cash_bank_owner_recon import get_owner_recon_mtd_global
 from services.dashboard_today import partition_orders_by_delivery, wib_today
 from services.delivery_schedule import (
@@ -34,6 +52,12 @@ from services.sales_dashboard import (
     get_sales_dashboard,
 )
 from services.status_po import STAGES
+
+AP_COVERAGE_NOTE = (
+    "Nilai hutang mengikuti jurnal AP yang telah diposting. "
+    "Penyesuaian supplier credit/advance/return yang belum tercakup engine "
+    "tidak termasuk dalam perhitungan."
+)
 
 PERM_VIEW = "dashboard.owner.view"
 OWNER_ROLES = frozenset({"direktur_utama", "holding_team"})
@@ -461,8 +485,172 @@ def _finance_flow_card(cash: dict, *, field: str, label: str, start: str, end: s
     }
 
 
+def _finance_arap_from_rows(
+    rows: Sequence[dict],
+    *,
+    as_of: str,
+    label: str,
+    source: str,
+    not_due_key: str,
+    bucket_keys: Sequence[str],
+    note: Optional[str] = None,
+) -> dict:
+    """Map precomputed AR/AP invoice rows into Owner Saat Ini card. No settlement math."""
+    buckets = {key: Decimal("0.00") for key in bucket_keys}
+    total = Decimal("0.00")
+    classified_positive = Decimal("0.00")
+    overdue_amount = Decimal("0.00")
+    not_due_amount = Decimal("0.00")
+    invoice_count = 0
+    overdue_invoice_count = 0
+    fallback_count = 0
+    fallback_amount = Decimal("0.00")
+    mismatch_count = 0
+    mismatch_amount = Decimal("0.00")
+    has_negative = False
+    warnings: List[str] = []
+
+    for row in rows:
+        amount = _money(row.get("accounting_outstanding"))
+        if amount is None:
+            amount = Decimal("0.00")
+        total += amount
+        invoice_count += 1
+        if amount < -MONEY_Q:
+            has_negative = True
+        bucket = row.get("aging_bucket")
+        if amount > 0 and bucket in buckets:
+            buckets[bucket] += amount
+            classified_positive += amount
+            if bucket == not_due_key:
+                not_due_amount += amount
+            else:
+                overdue_amount += amount
+                overdue_invoice_count += 1
+        if amount > 0 and row.get("due_date_fallback"):
+            fallback_count += 1
+            fallback_amount += amount
+        if amount > 0 and row.get("document_mismatch"):
+            mismatch_count += 1
+            mismatch_amount += amount
+        for code in row.get("integrity_warnings") or []:
+            warnings.append(str(code))
+
+    aging_sum = sum(buckets.values(), Decimal("0.00"))
+    reconcile_ok = aging_sum == classified_positive
+    completeness = "complete"
+    detail_parts: List[str] = []
+    if has_negative:
+        completeness = "incomplete"
+        detail_parts.append("Terdapat saldo accounting negatif.")
+    if not reconcile_ok:
+        completeness = "incomplete"
+        detail_parts.append("Jumlah aging tidak selaras dengan outstanding terklasifikasi.")
+    if fallback_count:
+        completeness = "incomplete"
+        detail_parts.append(
+            f"{fallback_count} dokumen memakai tanggal jatuh tempo cadangan."
+        )
+    if mismatch_count:
+        completeness = "incomplete"
+        detail_parts.append(
+            f"{mismatch_count} dokumen accounting aktif tidak selaras status dokumen."
+        )
+    if warnings:
+        # Presence of integrity warnings on any row → incomplete, without listing invoices.
+        completeness = "incomplete"
+        if "Peringatan integritas accounting terdeteksi." not in detail_parts:
+            detail_parts.append("Peringatan integritas accounting terdeteksi.")
+
+    status = "zero" if total == 0 and completeness == "complete" else completeness
+    if completeness == "complete" and total != 0:
+        status = "complete"
+
+    return {
+        "status": status,
+        "amount": _num(total),
+        "label": label,
+        "scope": "current_snapshot",
+        "scope_label": "Saat Ini",
+        "as_of": as_of,
+        "source": source,
+        "overdue_amount": _num(overdue_amount),
+        "not_due_amount": _num(not_due_amount),
+        "aging": {
+            "not_due": _num(buckets[not_due_key]),
+            "d1_30": _num(buckets[bucket_keys[1]]),
+            "d31_60": _num(buckets[bucket_keys[2]]),
+            "d61_90": _num(buckets[bucket_keys[3]]),
+            "over_90": _num(buckets[bucket_keys[4]]),
+        },
+        "invoice_count": invoice_count,
+        "overdue_invoice_count": overdue_invoice_count,
+        "due_date_fallback_count": fallback_count,
+        "due_date_fallback_amount": _num(fallback_amount),
+        "document_mismatch_count": mismatch_count,
+        "document_mismatch_amount": _num(mismatch_amount),
+        "completeness": completeness,
+        "aging_reconcile_ok": reconcile_ok,
+        "detail": " ".join(detail_parts) if detail_parts else None,
+        "note": note,
+    }
+
+
+async def _owner_receivables(db, *, as_of: str) -> dict:
+    ref, _all_rows, rows = await _ar_current_invoice_sets(
+        db,
+        aging_reference_date=as_of,
+        q=None,
+        customer_key=None,
+        sales=None,
+        ar_account_id=None,
+        aging_bucket=None,
+    )
+    return _finance_arap_from_rows(
+        rows,
+        as_of=ref,
+        label="Piutang Usaha",
+        source="accounts_receivable.accounting_outstanding",
+        not_due_key=AR_BUCKET_NOT_DUE,
+        bucket_keys=(
+            AR_BUCKET_NOT_DUE,
+            AR_BUCKET_1_30,
+            AR_BUCKET_31_60,
+            AR_BUCKET_61_90,
+            AR_BUCKET_OVER_90,
+        ),
+        note="Piutang accounting dari jurnal AREC yang sudah diposting. Saat Ini (WIB).",
+    )
+
+
+async def _owner_payables(db, *, as_of: str) -> dict:
+    ref, _all_rows, rows = await _ap_current_invoice_sets(
+        db,
+        aging_reference_date=as_of,
+        q=None,
+        supplier_key=None,
+        ap_account_id=None,
+        aging_bucket=None,
+    )
+    return _finance_arap_from_rows(
+        rows,
+        as_of=ref,
+        label="Hutang Usaha",
+        source="accounts_payable.accounting_outstanding",
+        not_due_key=AP_BUCKET_NOT_DUE,
+        bucket_keys=(
+            AP_BUCKET_NOT_DUE,
+            AP_BUCKET_1_30,
+            AP_BUCKET_31_60,
+            AP_BUCKET_61_90,
+            AP_BUCKET_OVER_90,
+        ),
+        note=AP_COVERAGE_NOTE,
+    )
+
+
 async def _build_finance(db, *, start: str, end: str, today: date) -> dict:
-    """Cash & Bank Owner section. Isolated failures must not break Phase 2."""
+    """Cash & Bank + AR/AP Owner section. Isolated failures must not break Phase 2."""
     as_of = today.isoformat()
     finance: Dict[str, Any] = {
         "status": "complete",
@@ -471,99 +659,136 @@ async def _build_finance(db, *, start: str, end: str, today: date) -> dict:
         "period_start": start,
         "period_end": end,
     }
+    accounts = None
     try:
         accounts = _account_index(await load_statement_accounts(db))
     except Exception as exc:
         err = _section_error(exc)
-        finance["status"] = "error"
         finance["cash_balance"] = {**err, "label": "Saldo Kas & Bank", "scope_label": "Saat Ini", "amount": None}
         finance["cash_in"] = {**err, "label": "Kas Masuk", "scope_label": "Periode", "amount": None}
         finance["cash_out"] = {**err, "label": "Kas Keluar", "scope_label": "Periode", "amount": None}
         finance["cash_trend"] = {**err, "grain": None, "points": [], "timezone": "Asia/Jakarta"}
         finance["reconciliation"] = {**err, "status_label": "Belum Lengkap", "unmatched_count": None, "review_count": None}
-        return finance
 
+    if accounts is not None:
+        try:
+            position = await _position(db, as_of, None, None)
+            cash_metric = position.get("cash_and_bank") if isinstance(position, dict) else None
+            if not isinstance(cash_metric, dict):
+                raise RuntimeError("Saldo kas/bank tidak tersedia")
+            finance["cash_balance"] = _finance_cash_card(cash_metric, as_of=as_of)
+        except Exception as exc:
+            finance["cash_balance"] = {
+                **_section_error(exc),
+                "label": "Saldo Kas & Bank",
+                "scope_label": "Saat Ini",
+                "amount": None,
+                "as_of": as_of,
+            }
+
+        try:
+            cash = await _cash_movement(db, start, end, accounts)
+            finance["cash_in"] = _finance_flow_card(cash, field="cash_in", label="Kas Masuk", start=start, end=end)
+            finance["cash_out"] = _finance_flow_card(cash, field="cash_out", label="Kas Keluar", start=start, end=end)
+        except Exception as exc:
+            err = _section_error(exc)
+            finance["cash_in"] = {**err, "label": "Kas Masuk", "scope_label": "Periode", "amount": None}
+            finance["cash_out"] = {**err, "label": "Kas Keluar", "scope_label": "Periode", "amount": None}
+
+        try:
+            trend = await _cash_movement_trend(db, start, end, accounts)
+            finance["cash_trend"] = trend
+            cash_in = finance.get("cash_in") or {}
+            cash_out = finance.get("cash_out") or {}
+            if (
+                cash_in.get("status") in {"complete", "zero", "incomplete"}
+                and trend.get("status") in {"complete", "zero", "incomplete"}
+                and cash_in.get("amount") is not None
+                and trend.get("cash_in") is not None
+                and round(float(cash_in["amount"]), 2) != round(float(trend["cash_in"]), 2)
+            ):
+                finance["cash_trend"] = {
+                    **trend,
+                    "status": "error",
+                    "points": [],
+                    "detail": "Agregasi tren kas tidak konsisten dengan total Kas Masuk.",
+                }
+            elif (
+                cash_out.get("status") in {"complete", "zero", "incomplete"}
+                and trend.get("status") in {"complete", "zero", "incomplete"}
+                and cash_out.get("amount") is not None
+                and trend.get("cash_out") is not None
+                and round(float(cash_out["amount"]), 2) != round(float(trend["cash_out"]), 2)
+            ):
+                finance["cash_trend"] = {
+                    **trend,
+                    "status": "error",
+                    "points": [],
+                    "detail": "Agregasi tren kas tidak konsisten dengan total Kas Keluar.",
+                }
+        except Exception as exc:
+            finance["cash_trend"] = {
+                **_section_error(exc),
+                "grain": None,
+                "points": [],
+                "timezone": "Asia/Jakarta",
+                "cash_in": None,
+                "cash_out": None,
+            }
+
+        try:
+            finance["reconciliation"] = await get_owner_recon_mtd_global(db, today=today)
+        except Exception as exc:
+            finance["reconciliation"] = {
+                **_section_error(exc),
+                "status_label": "Belum Lengkap",
+                "unmatched_count": None,
+                "review_count": None,
+                "label": "Rekonsiliasi Bulan Ini",
+                "scope_label": "Bulan Ini (WIB)",
+            }
+
+    # Phase 3B — Saat Ini snapshot; independent of Owner period filters and cash COA load.
     try:
-        position = await _position(db, as_of, None, None)
-        cash_metric = position.get("cash_and_bank") if isinstance(position, dict) else None
-        if not isinstance(cash_metric, dict):
-            raise RuntimeError("Saldo kas/bank tidak tersedia")
-        finance["cash_balance"] = _finance_cash_card(cash_metric, as_of=as_of)
+        finance["receivables"] = await _owner_receivables(db, as_of=as_of)
     except Exception as exc:
-        finance["cash_balance"] = {
+        finance["receivables"] = {
             **_section_error(exc),
-            "label": "Saldo Kas & Bank",
+            "label": "Piutang Usaha",
             "scope_label": "Saat Ini",
             "amount": None,
+            "overdue_amount": None,
+            "not_due_amount": None,
+            "aging": None,
             "as_of": as_of,
         }
 
     try:
-        cash = await _cash_movement(db, start, end, accounts)
-        finance["cash_in"] = _finance_flow_card(cash, field="cash_in", label="Kas Masuk", start=start, end=end)
-        finance["cash_out"] = _finance_flow_card(cash, field="cash_out", label="Kas Keluar", start=start, end=end)
+        finance["payables"] = await _owner_payables(db, as_of=as_of)
     except Exception as exc:
-        err = _section_error(exc)
-        finance["cash_in"] = {**err, "label": "Kas Masuk", "scope_label": "Periode", "amount": None}
-        finance["cash_out"] = {**err, "label": "Kas Keluar", "scope_label": "Periode", "amount": None}
-
-    try:
-        trend = await _cash_movement_trend(db, start, end, accounts)
-        finance["cash_trend"] = trend
-        # Consistency: when both complete/zero/incomplete, KPI totals should match trend totals.
-        cash_in = finance.get("cash_in") or {}
-        cash_out = finance.get("cash_out") or {}
-        if (
-            cash_in.get("status") in {"complete", "zero", "incomplete"}
-            and trend.get("status") in {"complete", "zero", "incomplete"}
-            and cash_in.get("amount") is not None
-            and trend.get("cash_in") is not None
-            and round(float(cash_in["amount"]), 2) != round(float(trend["cash_in"]), 2)
-        ):
-            finance["cash_trend"] = {
-                **trend,
-                "status": "error",
-                "points": [],
-                "detail": "Agregasi tren kas tidak konsisten dengan total Kas Masuk.",
-            }
-        elif (
-            cash_out.get("status") in {"complete", "zero", "incomplete"}
-            and trend.get("status") in {"complete", "zero", "incomplete"}
-            and cash_out.get("amount") is not None
-            and trend.get("cash_out") is not None
-            and round(float(cash_out["amount"]), 2) != round(float(trend["cash_out"]), 2)
-        ):
-            finance["cash_trend"] = {
-                **trend,
-                "status": "error",
-                "points": [],
-                "detail": "Agregasi tren kas tidak konsisten dengan total Kas Keluar.",
-            }
-    except Exception as exc:
-        finance["cash_trend"] = {
+        finance["payables"] = {
             **_section_error(exc),
-            "grain": None,
-            "points": [],
-            "timezone": "Asia/Jakarta",
-            "cash_in": None,
-            "cash_out": None,
-        }
-
-    try:
-        finance["reconciliation"] = await get_owner_recon_mtd_global(db, today=today)
-    except Exception as exc:
-        finance["reconciliation"] = {
-            **_section_error(exc),
-            "status_label": "Belum Lengkap",
-            "unmatched_count": None,
-            "review_count": None,
-            "label": "Rekonsiliasi Bulan Ini",
-            "scope_label": "Bulan Ini (WIB)",
+            "label": "Hutang Usaha",
+            "scope_label": "Saat Ini",
+            "amount": None,
+            "overdue_amount": None,
+            "not_due_amount": None,
+            "aging": None,
+            "as_of": as_of,
+            "note": AP_COVERAGE_NOTE,
         }
 
     subsection_statuses = [
         str((finance.get(key) or {}).get("status") or "")
-        for key in ("cash_balance", "cash_in", "cash_out", "cash_trend", "reconciliation")
+        for key in (
+            "cash_balance",
+            "cash_in",
+            "cash_out",
+            "cash_trend",
+            "reconciliation",
+            "receivables",
+            "payables",
+        )
     ]
     if any(status == "error" for status in subsection_statuses):
         finance["status"] = "incomplete"

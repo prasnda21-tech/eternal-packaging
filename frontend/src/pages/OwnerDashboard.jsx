@@ -3,11 +3,13 @@ import { useLocation, useNavigate } from "react-router-dom";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import {
+  agingBarPercents,
   canAccessOwnerDashboard,
   countOrState,
   formatAxisMoney,
   formatMoney,
   formatOwnerStamp,
+  mapOwnerArapCard,
   mapOwnerCashTrend,
   mapOwnerTrend,
   moneyOrState,
@@ -244,6 +246,79 @@ function KpiCard({
   );
 }
 
+function ArapKpiCard({ testid, title, tip, card, tone }) {
+  const valueState = moneyOrState(
+    card.status === "loading" ? { status: "loading" } : card,
+    { emptyText: "Rp 0" },
+  );
+  const warn = card.completeness === "incomplete" || card.status === "incomplete";
+  const metaParts = [];
+  if (card.overdue_amount != null && valueState.kind === "value") {
+    metaParts.push(`Overdue ${formatMoney(card.overdue_amount)}`);
+  }
+  if (card.due_date_fallback_count) {
+    metaParts.push(`${card.due_date_fallback_count} tgl cadangan`);
+  }
+  if (card.document_mismatch_count) {
+    metaParts.push(`${card.document_mismatch_count} mismatch dokumen`);
+  }
+  if (warn && card.detail) {
+    metaParts.push(card.detail);
+  }
+  return (
+    <article
+      className={`owner-kpi owner-kpi--arap owner-kpi--${tone} ${warn ? "is-warn" : ""} ${card.status === "error" ? "is-danger" : ""}`}
+      data-testid={testid}
+      data-status={valueState.kind}
+    >
+      <p className="owner-kpi__title">
+        <span className="owner-kpi__title-text">{title}</span>
+        <span className="owner-kpi__badge" data-testid={`${testid}-badge`}>Saat Ini</span>
+        {tip ? (
+          <button type="button" className="owner-kpi__tip" title={tip} aria-label={`Info ${title}`}>ⓘ</button>
+        ) : null}
+      </p>
+      <p className={`owner-kpi__value is-${valueState.kind}`}>{valueState.text}</p>
+      <p className="owner-kpi__meta" data-testid={`${testid}-meta`}>
+        {metaParts.length ? metaParts.join(" · ") : (card.as_of ? `As-of ${formatOwnerAsOfDay(card.as_of) || card.as_of}` : "Saat Ini")}
+      </p>
+    </article>
+  );
+}
+
+function AgingPanel({ testid, title, tone, card }) {
+  const bars = agingBarPercents(card.aging);
+  const errored = card.status === "error" || card.status === "unavailable";
+  const loadingState = card.status === "loading";
+  return (
+    <div className={`owner-aging owner-aging--${tone}`} data-testid={testid} data-status={card.status || "unavailable"}>
+      <div className="owner-aging__head">
+        <h3>{title}</h3>
+        <span>{card.scope_label || "Saat Ini"}</span>
+      </div>
+      {loadingState ? (
+        <p className="owner-aging__empty">Memuat…</p>
+      ) : errored ? (
+        <p className="owner-aging__empty">{card.detail || "Tidak dapat memuat aging"}</p>
+      ) : (
+        <ul className="owner-aging__list">
+          {bars.map((row) => (
+            <li key={row.key} className="owner-aging__row" data-testid={`${testid}-${row.key}`}>
+              <div className="owner-aging__label-row">
+                <span>{row.label}</span>
+                <span>{formatMoney(row.amount)}</span>
+              </div>
+              <div className="owner-aging__track" aria-hidden="true">
+                <div className="owner-aging__fill" style={{ width: `${row.pct}%` }} />
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 export default function OwnerDashboard() {
   const { user, hasPerm, loading: authLoading } = useAuth();
   const location = useLocation();
@@ -336,6 +411,8 @@ export default function OwnerDashboard() {
   const cashOut = loading ? { status: "loading" } : (finance?.cash_out || { status: "error" });
   const cashTrend = mapOwnerCashTrend(loading ? { status: "loading" } : finance?.cash_trend);
   const reconState = reconOrState(loading ? { status: "loading" } : finance?.reconciliation);
+  const receivables = mapOwnerArapCard(loading ? { status: "loading" } : finance?.receivables);
+  const payables = mapOwnerArapCard(loading ? { status: "loading" } : finance?.payables);
   const ops = data?.operations && data.operations.status !== "error" ? data.operations : null;
   const drills = data?.drilldowns || {};
   const openDrill = (key) => {
@@ -520,7 +597,7 @@ export default function OwnerDashboard() {
       <section className="owner-finance" data-testid="owner-finance" aria-label="Keuangan">
         <div className="owner-finance__head">
           <h2>Keuangan</h2>
-          <span data-testid="owner-finance-note">Kas & Bank · ledger Eternal</span>
+          <span data-testid="owner-finance-note">Kas & Bank · Piutang · Hutang</span>
         </div>
         <div className="owner-dash__kpis owner-finance__kpis" aria-label="KPI keuangan kas dan bank">
           <KpiCard
@@ -585,6 +662,43 @@ export default function OwnerDashboard() {
             <span data-testid="owner-cash-trend-period">{cashTrend.grain || "Kinerja periode"}</span>
           </div>
           <CashTrendPlot points={cashTrend.points} status={loading ? "loading" : cashTrend.status} />
+        </div>
+
+        <div className="owner-finance__arap" data-testid="owner-arap">
+          <div className="owner-finance__head owner-finance__head--sub">
+            <h2>Piutang &amp; Hutang</h2>
+            <span>Saat Ini · accounting posted</span>
+          </div>
+          <div className="owner-dash__kpis owner-finance__arap-kpis" aria-label="KPI piutang dan hutang">
+            <ArapKpiCard
+              testid="owner-kpi-receivables"
+              title="Piutang Usaha"
+              tone="ar"
+              card={receivables}
+              tip="Saldo accounting piutang dari jurnal AREC yang sudah diposting per hari ini WIB. Bukan grand_total faktur mentah."
+            />
+            <ArapKpiCard
+              testid="owner-kpi-payables"
+              title="Hutang Usaha"
+              tone="ap"
+              card={payables}
+              tip={payables.note || "Saldo accounting hutang dari jurnal AP yang sudah diposting per hari ini WIB."}
+            />
+          </div>
+          <div className="owner-finance__aging-grid" aria-label="Aging piutang dan hutang">
+            <AgingPanel
+              testid="owner-aging-receivables"
+              title="Aging Piutang"
+              tone="ar"
+              card={receivables}
+            />
+            <AgingPanel
+              testid="owner-aging-payables"
+              title="Aging Hutang"
+              tone="ap"
+              card={payables}
+            />
+          </div>
         </div>
       </section>
 
