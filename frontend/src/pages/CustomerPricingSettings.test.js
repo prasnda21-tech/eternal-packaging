@@ -79,10 +79,35 @@ describe("Customer Pricing multi-product group UI", () => {
     expect(cpSrc).toMatch(/updateCustomerPricingVersion/);
     expect(cpSrc).toMatch(/const saveSettings = async/);
     expect(cpSrc).toMatch(/const saveDraft = async/);
-    expect(cpSrc).toMatch(/const publish = async/);
+    expect(cpSrc).toMatch(/const requestPublish = async/);
+    expect(cpSrc).toMatch(/const confirmPublish = async/);
     expect(cpSrc.indexOf("updateCustomerPricingSettings")).toBeGreaterThan(-1);
     expect(cpSrc.indexOf("updateCustomerPricingVersion")).toBeGreaterThan(-1);
     expect(cpSrc.indexOf("publishCustomerPricingVersion")).toBeGreaterThan(-1);
+  });
+
+  test("publish confirmation always opens and keeps hard validation authoritative", () => {
+    expect(cpSrc).toMatch(/data-testid="cp-publish-confirm"/);
+    expect(cpSrc).toMatch(/Konfirmasi Publish Harga/);
+    expect(cpSrc).toMatch(/Harga terendah dalam draft/);
+    expect(cpSrc).toMatch(/Kembali Periksa/);
+    expect(cpSrc).toMatch(/Konfirmasi Publish/);
+    expect(cpSrc).toMatch(/summarizeDraftPriceQuality/);
+    expect(cpSrc).toMatch(/publishInFlightRef/);
+    expect(cpSrc).toMatch(/Draft berubah\. Validasi ulang sebelum Publish/);
+    expect(cpSrc).toMatch(/previewCustomerPricingVersion/);
+    expect(cpSrc).toMatch(/!saved\.preview\?\.valid/);
+    expect(cpSrc).not.toMatch(/Harga publik terendah/);
+    // Editor may show HPP; publish-confirm modal must not leak HPP/margin.
+    const modalChunk = cpSrc.slice(
+      cpSrc.indexOf('data-testid="cp-publish-confirm"'),
+      cpSrc.indexOf('data-testid="cp-publish-confirm-btn"') + 40
+    );
+    expect(modalChunk.length).toBeGreaterThan(200);
+    expect(modalChunk).not.toMatch(/\bHPP\b|hpp_snapshot|manual_hpp|\bMargin\b/);
+    expect(modalChunk).not.toMatch(/profit_value|hpp_status/);
+    expect(cpSrc).toMatch(/canPublish/);
+    expect(cpSrc).toMatch(/data-testid="cp-publish"/);
   });
 
   test("editor preserves shared tier sheet and per-product matrices", () => {
