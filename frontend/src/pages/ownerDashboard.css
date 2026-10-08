@@ -14,6 +14,7 @@
   color: var(--od-text);
   max-width: 100%;
   padding: 0 0 1.25rem;
+  overflow-x: clip;
 }
 
 .owner-dash * { box-sizing: border-box; }
@@ -21,10 +22,12 @@
 .owner-dash__header {
   display: flex;
   flex-wrap: wrap;
-  align-items: flex-end;
+  align-items: flex-start;
   justify-content: space-between;
-  gap: 0.75rem 1rem;
-  margin-bottom: 0.85rem;
+  gap: 0.45rem 1rem;
+  margin: 0 0 0.55rem;
+  position: relative;
+  z-index: 2;
 }
 
 .owner-dash__title-block h1 {
@@ -58,19 +61,39 @@
   opacity: 0.7;
 }
 
+.owner-dash__toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: 0.45rem 0.75rem;
+  margin: 0 0 0.85rem;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid var(--od-border);
+  border-radius: 10px;
+  background: #fbfdfc;
+  position: relative;
+  z-index: 3;
+  overflow: visible;
+}
+
 .owner-dash__filters {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.4rem 0.55rem;
+  gap: 0.45rem 0.65rem;
+  width: 100%;
+  min-width: 0;
 }
 
 .owner-dash__presets {
   display: inline-flex;
+  flex-wrap: wrap;
   border: 1px solid var(--od-border);
   border-radius: 8px;
   overflow: hidden;
   background: var(--od-card);
+  max-width: 100%;
 }
 
 .owner-dash__presets button {
@@ -90,10 +113,25 @@
 
 .owner-dash__custom {
   display: inline-flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 0.35rem;
+  gap: 0.35rem 0.45rem;
   font-size: 0.78rem;
   color: var(--od-muted);
+  min-width: 0;
+}
+
+.owner-dash__custom label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  min-width: 0;
+}
+
+.owner-dash__custom-sep {
+  color: var(--od-muted);
+  font-weight: 600;
+  padding: 0 0.1rem;
 }
 
 .owner-dash__custom input {
@@ -101,13 +139,21 @@
   border-radius: 6px;
   padding: 0.28rem 0.4rem;
   font-size: 0.78rem;
-  max-width: 9.5rem;
+  max-width: 10.5rem;
+  min-width: 0;
+  background: #fff;
+  position: relative;
+  z-index: 4;
 }
 
 .owner-dash__stamp {
   font-size: 0.72rem;
   color: var(--od-muted);
   white-space: nowrap;
+}
+
+.owner-dash__stamp--header {
+  margin-top: 0.2rem;
 }
 
 .owner-dash__kpis {
@@ -122,7 +168,43 @@
 }
 
 @media (max-width: 720px) {
+  .owner-dash {
+    padding-top: 0;
+    margin-top: 0;
+  }
+
+  .owner-dash__header {
+    margin-top: 0;
+    margin-bottom: 0.4rem;
+    gap: 0.3rem 0.6rem;
+  }
+
+  .owner-dash__title-block h1 {
+    font-size: 1.15rem;
+    line-height: 1.2;
+  }
+
+  .owner-dash__context {
+    margin-top: 0.12rem;
+    font-size: 0.74rem;
+  }
+
+  .owner-dash__toolbar {
+    margin-bottom: 0.65rem;
+    padding: 0.4rem 0.45rem;
+  }
+
+  .owner-dash__custom {
+    width: 100%;
+  }
+
+  .owner-dash__custom input {
+    max-width: none;
+    width: 8.6rem;
+  }
+
   .owner-dash__kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .owner-finance__kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 .owner-kpi {
@@ -436,3 +518,89 @@
   color: var(--od-danger);
   font-size: 0.82rem;
 }
+
+.owner-finance {
+  margin: 0 0 0.95rem;
+  padding: 0.65rem 0.7rem 0.75rem;
+  border: 1px solid var(--od-border);
+  border-radius: 12px;
+  background: linear-gradient(180deg, #f7fbf9 0%, #ffffff 48%);
+}
+
+.owner-finance__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.55rem;
+}
+
+.owner-finance__head h2 {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--od-green-deep);
+}
+
+.owner-finance__head span {
+  font-size: 0.72rem;
+  color: var(--od-muted);
+}
+
+.owner-finance__kpis {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-bottom: 0.55rem;
+}
+
+@media (max-width: 1280px) {
+  .owner-finance__kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+.owner-finance__chart {
+  margin: 0;
+  overflow: visible;
+}
+
+.owner-cash-trend {
+  width: 100%;
+  min-width: 0;
+  overflow: visible;
+}
+
+.owner-cash-trend__svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 240px;
+  overflow: visible;
+}
+
+.owner-cash-legend {
+  display: flex;
+  gap: 0.85rem;
+  margin: 0 0 0.35rem 3rem;
+  font-size: 0.72rem;
+  color: var(--od-muted);
+}
+
+@media (max-width: 720px) {
+  .owner-cash-legend {
+    margin-left: 0.25rem;
+  }
+}
+
+.owner-cash-legend__in::before,
+.owner-cash-legend__out::before {
+  content: "";
+  display: inline-block;
+  width: 0.7rem;
+  height: 0.18rem;
+  margin-right: 0.3rem;
+  vertical-align: middle;
+  border-radius: 2px;
+}
+
+.owner-cash-legend__in::before { background: #176b4d; }
+.owner-cash-legend__out::before { background: #c45c26; }
+
+.owner-kpi__value.is-incomplete { color: var(--od-warn); font-size: 0.95rem; font-weight: 700; }

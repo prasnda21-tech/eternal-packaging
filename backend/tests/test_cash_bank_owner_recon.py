@@ -22,12 +22,14 @@ import server
 from server import app, current_user
 from services.cash_bank_master import COLLECTION as CB_COLLECTION, ensure_indexes as ensure_cb
 from services.cash_bank_owner_recon import (
+    MAX_OWNER_RECON_ACCOUNTS,
     STATUS_BOOK_ONLY,
     STATUS_DUPLIKAT,
     STATUS_REVIEW_CANON,
     STATUS_REVERSED,
     STATUS_SESUAI,
     STATUS_STMT_ONLY,
+    get_owner_recon_mtd_global,
     get_owner_recon_view,
 )
 from services.cash_bank_reconciliation import RECON_MATCHES, RECONCILIATIONS, ensure_indexes as ensure_recon
@@ -446,3 +448,70 @@ async def test_status_filter_belum_cocok():
         for r in view["items"]
     )
     assert not any(r["status"] == STATUS_SESUAI for r in view["items"])
+
+
+async def test_mtd_global_incomplete_preserves_counts():
+    from datetime import date
+
+    coa1 = await _coa("1121", "BankG1")
+    bank1 = await _bank(coa1["id"], "BankG1")
+    coa2 = await _coa("1122", "BankG2")
+    bank2 = await _bank(coa2["id"], "BankG2")
+    await _journal(account_id=coa1["id"], date="2026-09-10", debit=1000, credit=0)
+    await _import_and_line(cash_bank_id=bank1["id"], date="2026-09-11", amount=500, direction="in")
+    await _journal(account_id=coa2["id"], date="2026-09-12", debit=2000, credit=0)
+    # No closing → incomplete, but counts still readable.
+    summary = await get_owner_recon_mtd_global(server.db, today=date(2026, 9, 30))
+    assert summary["start_date"] == "2026-09-01"
+    assert summary["end_date"] == "2026-09-30"
+    assert summary["status"] == "incomplete"
+    assert summary["status_label"] == "Belum Lengkap"
+    assert summary["balance_match_declared"] is False
+    assert summary["accounts_total"] == 2
+    assert summary["accounts_read"] == 2
+    assert summary["unmatched_count"] is not None and summary["unmatched_count"] >= 1
+    assert summary["review_count"] is not None
+
+
+async def test_mtd_global_partial_read_nulls_counts(monkeypatch):
+    from datetime import date
+
+    coa = await _coa("1123", "BankG3")
+    await _bank(coa["id"], "BankG3")
+    calls = {"n": 0}
+
+    async def flaky(*args, **kwargs):
+        calls["n"] += 1
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(
+        "services.cash_bank_owner_recon.get_owner_recon_view",
+        flaky,
+    )
+    summary = await get_owner_recon_mtd_global(server.db, today=date(2026, 9, 15))
+    assert summary["status_label"] == "Belum Lengkap"
+    assert summary["unmatched_count"] is None
+    assert summary["review_count"] is None
+    assert summary["accounts_total"] >= 1
+
+
+async def test_mtd_global_caps_unbounded_account_fanout(monkeypatch):
+    from datetime import date
+
+    accounts = [
+        {"id": f"cb-{i}", "name": f"B{i}", "account_id": f"acc-{i}"}
+        for i in range(MAX_OWNER_RECON_ACCOUNTS + 3)
+    ]
+
+    async def many_accounts(_db):
+        return accounts
+
+    monkeypatch.setattr(
+        "services.cash_bank_owner_recon.list_eligible_recon_cash_banks",
+        many_accounts,
+    )
+    summary = await get_owner_recon_mtd_global(server.db, today=date(2026, 9, 15))
+    assert summary["status"] == "unavailable"
+    assert summary["unmatched_count"] is None
+    assert summary["review_count"] is None
+    assert MAX_OWNER_RECON_ACCOUNTS < summary["accounts_total"]

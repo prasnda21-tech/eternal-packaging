@@ -81,6 +81,33 @@ beforeEach(() => {
     },
     profit: { status: "not_ready", detail: "Data Belum Siap." },
     otp_otd: { status: "not_ready" },
+    finance: {
+      status: "incomplete",
+      cash_balance: {
+        status: "complete",
+        amount: 65000,
+        as_of: "2026-03-15",
+        scope_label: "Saat Ini",
+      },
+      cash_in: { status: "complete", amount: 30000, scope_label: "Periode" },
+      cash_out: { status: "complete", amount: 15000, scope_label: "Periode" },
+      cash_trend: {
+        status: "complete",
+        grain: "day",
+        points: [
+          { period: "2026-03-01", cash_in: 10000, cash_out: 5000 },
+          { period: "2026-03-02", cash_in: 20000, cash_out: 10000 },
+          { period: "2026-03-15", cash_in: 5000, cash_out: 1000 },
+        ],
+      },
+      reconciliation: {
+        status: "incomplete",
+        status_label: "Belum Lengkap",
+        unmatched_count: 3,
+        review_count: 1,
+        label: "Rekonsiliasi Bulan Ini",
+      },
+    },
     operations: {
       status: "complete",
       po_status: { aktif: 5, selesai: 3, terlambat_overlay: 2, partition: "disjoint_active_completed" },
@@ -133,7 +160,87 @@ test("authorized director loads KPIs without hardcoded sample millions", async (
   expect(view.host.querySelector("[data-testid='owner-kpi-profit']").textContent).toMatch(/Data Belum Siap/);
   expect(view.host.textContent).not.toMatch(/\bOTP\b|\bOTD\b/);
   expect(view.host.querySelector("[data-testid='owner-po-late-overlay']").textContent).toBe("2");
+  expect(view.host.querySelector("[data-testid='owner-finance']")).toBeTruthy();
+  expect(view.host.querySelector("[data-testid='owner-kpi-cash-balance']").textContent).toMatch(/65\.000|65,000|Rp/);
+  expect(view.host.querySelector("[data-testid='owner-kpi-cash-balance-badge']").textContent).toBe("Saat Ini");
+  expect(view.host.querySelector("[data-testid='owner-kpi-cash-in-badge']").textContent).toBe("Periode");
+  expect(view.host.querySelector("[data-testid='owner-kpi-cash-out']").textContent).toMatch(/15\.000|15,000|Rp/);
+  expect(view.host.querySelector("[data-testid='owner-kpi-recon']").textContent).toMatch(/Belum Lengkap/);
+  expect(view.host.querySelector("[data-testid='owner-recon-counts']").textContent).toMatch(/Belum cocok:\s*3/);
+  expect(view.host.querySelector("[data-testid='owner-cash-trend-plot']")).toBeTruthy();
+  expect(view.host.querySelector("[data-testid='owner-cash-trend-period']").textContent).toBe("Harian");
+  expect(view.host.querySelector("[data-testid='owner-period-toolbar']")).toBeTruthy();
+  expect(view.host.textContent).toMatch(/01 Mar|02 Mar|15 Mar/);
+  expect(view.host.textContent).not.toMatch(/\bday\b/);
   expect(api.ownerDashboard).toHaveBeenCalled();
+  view.unmount();
+});
+
+test("custom filter toolbar stays outside sticky collision zone", async () => {
+  global.__ownerLocation = {
+    pathname: "/dashboard/owner",
+    search: "?preset=custom&start=2025-01-01&end=2025-01-31",
+  };
+  const view = render();
+  await act(async () => { await flush(); await flush(); });
+  const toolbar = view.host.querySelector("[data-testid='owner-period-toolbar']");
+  const custom = view.host.querySelector("[data-testid='owner-custom-range']");
+  const title = view.host.querySelector("h1");
+  expect(toolbar).toBeTruthy();
+  expect(custom).toBeTruthy();
+  expect(title?.textContent).toBe("Dashboard Owner");
+  expect(view.host.querySelector("[data-testid='owner-start']").value).toBe("2025-01-01");
+  expect(view.host.querySelector("[data-testid='owner-end']").value).toBe("2025-01-31");
+  expect(custom.textContent).toMatch(/s\/d/);
+  // Snapshot badges remain Saat Ini even on historical custom period.
+  expect(view.host.querySelector("[data-testid='owner-kpi-cash-balance-badge']").textContent).toBe("Saat Ini");
+  expect(view.host.querySelector("[data-testid='owner-kpi-omzet']")).toBeTruthy();
+  view.unmount();
+});
+
+test("recon null counts do not invent totals", async () => {
+  const base = {
+    start_date: "2026-03-01",
+    end_date: "2026-03-15",
+    as_of_date: "2026-03-15",
+    loaded_at: "2026-03-15T07:00:00+00:00",
+    omzet: { status: "complete", amount: 4000, invoice_count: 2 },
+    invoice_count: { status: "complete", count: 2 },
+    aov_invoice: { status: "complete", amount: 2000, invoice_count: 2 },
+    average_po: { status: "empty", amount: null, po_count: 0 },
+    po_active: { status: "complete", count: 1 },
+    delivery_late: { status: "complete", count: 0 },
+    trend: { status: "empty", points: [] },
+    profit: { status: "not_ready" },
+    operations: {
+      status: "complete",
+      po_status: { aktif: 1, selesai: 0, terlambat_overlay: 0 },
+      stage_breakdown: { unit: "po_count", active_po_count: 1, rows: [] },
+      delivery: { late_count: 0, today_count: 0, upcoming_count: 0, late: [], today: [], upcoming: [] },
+      exceptions: { status: "complete", items: [] },
+    },
+    drilldowns: {},
+    finance: {
+      status: "error",
+      cash_balance: { status: "error", amount: null },
+      cash_in: { status: "error", amount: null },
+      cash_out: { status: "error", amount: null },
+      cash_trend: { status: "error", points: [] },
+      reconciliation: {
+        status: "error",
+        status_label: "Belum Lengkap",
+        unmatched_count: null,
+        review_count: null,
+        detail: "Sebagian rekening tidak dapat dimuat.",
+      },
+    },
+  };
+  api.ownerDashboard.mockResolvedValue(base);
+  const view = render();
+  await act(async () => { await flush(); await flush(); });
+  expect(view.host.querySelector("[data-testid='owner-kpi-omzet']")).toBeTruthy();
+  expect(view.host.querySelector("[data-testid='owner-recon-counts']").textContent).not.toMatch(/Belum cocok:\s*\d/);
+  expect(view.host.querySelector("[data-testid='owner-kpi-cash-balance']").getAttribute("data-status")).toBe("error");
   view.unmount();
 });
 

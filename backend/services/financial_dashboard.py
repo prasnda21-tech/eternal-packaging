@@ -485,6 +485,113 @@ async def _cash_movement(db, start: str, end: str, accounts: Dict[str, dict]) ->
     }
 
 
+async def _cash_movement_trend(db, start: str, end: str, accounts: Dict[str, dict]) -> dict:
+    """Daily/monthly external BANK cash in/out. Same classification as _cash_movement."""
+    bank_ids = [account_id for account_id, row in accounts.items() if row.get("account_type") == "BANK"]
+    grain = _grain_for(start, end)
+    keys = _bucket_keys(start, end, grain)
+    blank = {"cash_in": Decimal("0.00"), "cash_out": Decimal("0.00")}
+    buckets = {key: dict(blank) for key in keys}
+
+    if not bank_ids:
+        return {
+            "status": "unavailable",
+            "grain": grain,
+            "timezone": "Asia/Jakarta",
+            "source": "journal_lines.account_type_BANK",
+            "points": [],
+            "cash_in": None,
+            "cash_out": None,
+            "blocker_code": None,
+            "detail": "Tidak ada akun BANK pada COA.",
+            "note": CASH_NOTE,
+        }
+
+    journals_all = await _legitimate_journals(db, {"date": {"$lte": end}})
+    transfer_ids = {
+        str(row.get("id") or "")
+        for row in journals_all
+        if str(row.get("source_type") or "") == SOURCE_TRANSFER
+    }
+    journals = [
+        row for row in journals_all
+        if start <= str(row.get("date") or "") <= end
+    ]
+    by_id = {str(row.get("id") or ""): row for row in journals}
+    lines = await _lines_for(db, list(by_id), bank_ids)
+    period_activity = False
+    external_in = Decimal("0.00")
+    external_out = Decimal("0.00")
+    for line in lines:
+        journal = by_id.get(str(line.get("journal_id") or ""))
+        if not journal:
+            continue
+        period_activity = True
+        if _is_internal_transfer(journal, transfer_ids):
+            continue
+        key = _bucket_of(str(journal.get("date") or ""), grain)
+        slot = buckets.get(key)
+        if slot is None:
+            continue
+        debit = money(line.get("debit"))
+        credit = money(line.get("credit"))
+        slot["cash_in"] = money(slot["cash_in"] + debit)
+        slot["cash_out"] = money(slot["cash_out"] + credit)
+        external_in = money(external_in + debit)
+        external_out = money(external_out + credit)
+
+    blocker = await reversal_incomplete_blocker(
+        db,
+        ({"date": {"$lt": start}}, {"date": {"$gte": start, "$lte": end}}),
+    )
+    if not period_activity:
+        status = "empty"
+        points: List[dict] = []
+    elif external_in == 0 and external_out == 0:
+        status = "zero"
+        points = [
+            {
+                "period": key,
+                "cash_in": money_float(buckets[key]["cash_in"]),
+                "cash_out": money_float(buckets[key]["cash_out"]),
+            }
+            for key in keys
+        ]
+    else:
+        status = "complete"
+        points = [
+            {
+                "period": key,
+                "cash_in": money_float(buckets[key]["cash_in"]),
+                "cash_out": money_float(buckets[key]["cash_out"]),
+            }
+            for key in keys
+        ]
+    if blocker and status in {"empty", "zero", "complete"}:
+        status = "incomplete"
+        if not points and period_activity:
+            points = [
+                {
+                    "period": key,
+                    "cash_in": money_float(buckets[key]["cash_in"]),
+                    "cash_out": money_float(buckets[key]["cash_out"]),
+                }
+                for key in keys
+            ]
+    return {
+        "status": status,
+        "grain": grain,
+        "timezone": "Asia/Jakarta",
+        "source": "journal_lines.account_type_BANK",
+        "points": points,
+        "cash_in": None if status in {"unavailable", "empty"} else money_float(external_in),
+        "cash_out": None if status in {"unavailable", "empty"} else money_float(external_out),
+        "blocker_code": blocker,
+        "detail": CASH_NOTE if blocker is None else f"{CASH_NOTE} Ada reversal yang belum selesai.",
+        "note": CASH_NOTE,
+    }
+
+
 async def _trend(db, start: str, end: str, accounts: Dict[str, dict], performance: dict) -> dict:
     if performance.get("status") == "error":
         return {"status": "error", "grain": None, "points": [], "detail": performance.get("detail")}
