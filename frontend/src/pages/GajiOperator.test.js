@@ -86,11 +86,13 @@ describe("Gaji Operator page", () => {
     expect(src).toMatch(/filteredPeople/);
     expect(src).toMatch(/payroll_status \|\| ""\) === statusTab/);
     expect(src).toMatch(/gaji-elig-detail/);
-    expect(src).toMatch(/Tanpa tanggal kerja/);
-    expect(src).toMatch(/Tanpa snapshot tarif/);
-    expect(src).toMatch(/Profil HR belum piece/);
-    expect(src).toMatch(/Sebelum batas integrasi/);
-    expect(src).toMatch(/Lainnya/);
+    expect(src).toMatch(/Perbaiki Tanggal Kerja/);
+    expect(src).toMatch(/Perbaiki Snapshot Tarif/);
+    expect(src).toMatch(/Buka Profil HR/);
+    expect(src).toMatch(/Lihat Data Historis/);
+    expect(src).toMatch(/gaji-repair-drawer/);
+    expect(src).toMatch(/reports\.gaji_operator\.repair_work_date/);
+    expect(src).toMatch(/reports\.gaji_operator\.repair_rate/);
     expect(src).toMatch(/gaji-person-toggle-/);
     expect(src).toMatch(/gaji-export/);
     expect(src).toMatch(/Sistem Upah/);

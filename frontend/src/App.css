@@ -3330,6 +3330,23 @@
 .gaji-elig-head{display:flex;justify-content:space-between;align-items:center;gap:8px}
 .gaji-elig-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:4px;margin-top:4px}
 .gaji-elig-grid div{display:flex;justify-content:space-between;gap:8px;font-size:12px;background:#fff;border:1px solid #f0d6d6;border-radius:6px;padding:3px 8px;min-width:0}
+.gaji-historic-card{flex-shrink:0;border:1px solid #d7dde3;background:#f7f8fa;border-radius:10px;padding:6px 10px;margin-right:56px}
+.gaji-issue-list{display:flex;flex-direction:column;gap:4px;margin-top:6px;max-height:220px;overflow:auto}
+.gaji-issue-row{display:flex;justify-content:space-between;align-items:center;gap:8px;background:#fff;border:1px solid #eadfdf;border-radius:8px;padding:6px 8px}
+.gaji-issue-row.is-historic{border-color:#d7dde3}
+.gaji-issue-main{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:baseline;font-size:12px;min-width:0}
+.gaji-issue-main strong{font-size:13px;color:var(--ep-dark,#0F3D2E)}
+.gaji-issue-reason{color:#b42318;font-weight:600}
+.gaji-repair-modal{max-width:520px;width:min(520px,94vw)}
+.gaji-repair-body{padding:8px 12px 4px;display:flex;flex-direction:column;gap:8px}
+.gaji-repair-meta{display:grid;grid-template-columns:1fr 1fr;gap:6px 10px;margin:0;font-size:12px}
+.gaji-repair-meta dt{color:var(--soft);font-weight:600}
+.gaji-repair-meta dd{margin:0}
+.gaji-repair-field{display:flex;flex-direction:column;gap:2px;font-size:12px;font-weight:600;color:var(--soft)}
+.gaji-repair-field input{min-height:36px;font-weight:500;color:var(--text)}
+.gaji-repair-locked{margin:0;padding:6px 8px;border-radius:6px;background:#fde8e8;color:#b42318;font-size:12px}
+.gaji-repair-foot{padding:8px 12px 12px}
+.hr-field-focus{outline:2px solid #176B4D;outline-offset:1px}
 .gaji-simple-note{flex-shrink:0;margin:0;padding-right:56px}
 .gaji-sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
 .gaji-badge-ready{background:#e7f6ec;color:#176B4D}

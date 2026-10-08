@@ -15210,6 +15210,58 @@ async def gaji_operator_report(
     return result
 
 
+class GajiRepairWorkDatePayload(BaseModel):
+    order_id: str
+    split_id: str
+    action_id: str
+    work_date: str
+    expected_work_date: Optional[str] = None
+    reason: str
+
+
+class GajiRepairRatePayload(BaseModel):
+    order_id: str
+    split_id: str
+    action_id: str
+    rate_per_pcs: float
+    expected_rate_per_pcs: Optional[float] = None
+    reason: str
+
+
+@api_router.post("/reports/gaji-operator/repair-work-date")
+async def gaji_operator_repair_work_date(payload: GajiRepairWorkDatePayload, user=Depends(current_user)):
+    await _require_perm(user, "reports.gaji_operator.repair_work_date")
+    from services.operator_output_repair import repair_work_date
+    return await repair_work_date(
+        db,
+        order_id=str(payload.order_id or "").strip(),
+        split_id=str(payload.split_id or "").strip(),
+        action_id=str(payload.action_id or "").strip(),
+        work_date=payload.work_date,
+        expected_work_date=payload.expected_work_date,
+        reason=payload.reason,
+        user=user,
+        write_audit=_write_audit,
+    )
+
+
+@api_router.post("/reports/gaji-operator/repair-rate")
+async def gaji_operator_repair_rate(payload: GajiRepairRatePayload, user=Depends(current_user)):
+    await _require_perm(user, "reports.gaji_operator.repair_rate")
+    from services.operator_output_repair import repair_rate_snapshot
+    return await repair_rate_snapshot(
+        db,
+        order_id=str(payload.order_id or "").strip(),
+        split_id=str(payload.split_id or "").strip(),
+        action_id=str(payload.action_id or "").strip(),
+        rate_per_pcs=payload.rate_per_pcs,
+        expected_rate=payload.expected_rate_per_pcs,
+        reason=payload.reason,
+        user=user,
+        write_audit=_write_audit,
+    )
+
+
 @api_router.get("/reports/gaji-operator/export")
 async def gaji_operator_export(
     fmt: str = Query("xlsx"),

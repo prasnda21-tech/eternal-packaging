@@ -72,6 +72,14 @@ describe("HR & Payroll UI source", () => {
     expect(shell).toMatch(/sidebar-flyout-hr-payroll/);
   });
 
+  test("daftar karyawan deep-link opens employee edit and focuses pay_basis", () => {
+    expect(page).toMatch(/searchParams\.get\("employee"\)/);
+    expect(page).toMatch(/searchParams\.get\("edit"\) === "1"/);
+    expect(page).toMatch(/focusPayBasis|__focusPayBasis|pay_basis/);
+    expect(page).toMatch(/hr-emp-pay-basis/);
+    expect(page).toMatch(/hr-pay-basis-focus-hint|hr-field-focus|__focusPayBasis/);
+  });
+
   test("daftar karyawan shows canonical settings fields and keeps nav stable", () => {
     expect(page).toMatch(/role_label \|\| row\.role/);
     expect(page).toMatch(/hr-employees-table/);

@@ -93,6 +93,8 @@ async def ensure_piece_indexes(db) -> None:
         partialFilterExpression={"status": {"$in": list(ACTIVE_CLAIM)}},
     )
     await db[BONUS_DAYS].create_index([("period_id", 1), ("status", 1)])
+    from services.operator_output_coord import ensure_coord_indexes
+    await ensure_coord_indexes(db)
 
 
 async def get_integration(db) -> dict:
@@ -386,61 +388,66 @@ async def _period_number(db, period_id: str) -> str:
 
 
 async def _claim_wage(db, period: dict, source: dict, attempt_id: str) -> Tuple[str, dict]:
-    for _ in range(2):
-        doc = {
-            "id": str(uuid.uuid4()),
-            "source_key": source["source_key"],
-            "order_id": source["order_id"],
-            "split_id": source["split_id"],
-            "action_id": source["action_id"],
-            "period_id": period["id"],
-            "group_id": period.get("group_id"),
-            "employee_id": source["employee_id"],
-            "work_date": source["work_date"],
-            "qty": source["qty"],
-            "rate_per_pcs": source["rate_per_pcs"],
-            "amount": source["amount"],
-            "operator_user_id": source["operator_user_id"],
-            "status": HELD,
-            "calc_attempt": attempt_id,
-            "created_at": now_iso(),
-            "updated_at": now_iso(),
-        }
-        try:
-            await db[WAGE_CLAIMS].insert_one(dict(doc))
-            return "inserted", doc
-        except DuplicateKeyError:
-            existing = await db[WAGE_CLAIMS].find_one(
-                {"source_key": source["source_key"], "status": {"$in": list(ACTIVE_CLAIM)}},
-                {"_id": 0},
-            )
-            if not existing:
-                continue
-            same = existing.get("period_id") == period["id"] or (
-                existing.get("group_id") and existing.get("group_id") == period.get("group_id") and existing.get("status") == HELD
-            )
-            if same and existing.get("status") == HELD and existing.get("period_id") == period["id"]:
-                adopted = await db[WAGE_CLAIMS].find_one_and_update(
-                    {"id": existing["id"], "status": HELD, "period_id": period["id"]},
-                    {"$set": {
-                        "qty": source["qty"],
-                        "rate_per_pcs": source["rate_per_pcs"],
-                        "amount": source["amount"],
-                        "employee_id": source["employee_id"],
-                        "work_date": source["work_date"],
-                        "operator_user_id": source["operator_user_id"],
-                        "calc_attempt": attempt_id,
-                        "updated_at": now_iso(),
-                    }},
-                    return_document=ReturnDocument.AFTER,
+    from services.operator_output_coord import coordinate_source_key, require_coord_holder
+
+    async with coordinate_source_key(db, source["source_key"], purpose="wage_claim") as holder:
+        for _ in range(2):
+            await require_coord_holder(db, source["source_key"], holder)
+            doc = {
+                "id": str(uuid.uuid4()),
+                "source_key": source["source_key"],
+                "order_id": source["order_id"],
+                "split_id": source["split_id"],
+                "action_id": source["action_id"],
+                "period_id": period["id"],
+                "group_id": period.get("group_id"),
+                "employee_id": source["employee_id"],
+                "work_date": source["work_date"],
+                "qty": source["qty"],
+                "rate_per_pcs": source["rate_per_pcs"],
+                "amount": source["amount"],
+                "operator_user_id": source["operator_user_id"],
+                "status": HELD,
+                "calc_attempt": attempt_id,
+                "created_at": now_iso(),
+                "updated_at": now_iso(),
+            }
+            try:
+                await db[WAGE_CLAIMS].insert_one(dict(doc))
+                return "inserted", doc
+            except DuplicateKeyError:
+                existing = await db[WAGE_CLAIMS].find_one(
+                    {"source_key": source["source_key"], "status": {"$in": list(ACTIVE_CLAIM)}},
+                    {"_id": 0},
                 )
-                if adopted:
-                    return "owned", adopted
-                continue
-            if same:
-                return "owned", existing
-            return "conflict", existing
-    raise HTTPException(409, "Klaim upah belum pulih. Hitung ulang periode ini.")
+                if not existing:
+                    continue
+                same = existing.get("period_id") == period["id"] or (
+                    existing.get("group_id") and existing.get("group_id") == period.get("group_id") and existing.get("status") == HELD
+                )
+                if same and existing.get("status") == HELD and existing.get("period_id") == period["id"]:
+                    await require_coord_holder(db, source["source_key"], holder)
+                    adopted = await db[WAGE_CLAIMS].find_one_and_update(
+                        {"id": existing["id"], "status": HELD, "period_id": period["id"]},
+                        {"$set": {
+                            "qty": source["qty"],
+                            "rate_per_pcs": source["rate_per_pcs"],
+                            "amount": source["amount"],
+                            "employee_id": source["employee_id"],
+                            "work_date": source["work_date"],
+                            "operator_user_id": source["operator_user_id"],
+                            "calc_attempt": attempt_id,
+                            "updated_at": now_iso(),
+                        }},
+                        return_document=ReturnDocument.AFTER,
+                    )
+                    if adopted:
+                        return "owned", adopted
+                    continue
+                if same:
+                    return "owned", existing
+                return "conflict", existing
+        raise HTTPException(409, "Klaim upah belum pulih. Hitung ulang periode ini.")
 
 
 async def _rollback_wage(db, ids: List[str], attempt_id: str, period_id: str) -> None:
@@ -1140,6 +1147,33 @@ PAYROLL_STATUS_HELD = "HELD"
 PAYROLL_STATUS_POSTED = "POSTED"
 PAYROLL_STATUS_BLOCKED = "NOT_ELIGIBLE"
 _OUTSIDE_REASON = "di luar rentang upah dan bonus"
+BUCKET_ACTIONABLE = "actionable"
+BUCKET_HISTORIC = "historic"
+BUCKET_LOCKED = "locked"
+REASON_MISSING_WORK_DATE = "MISSING_WORK_DATE"
+REASON_HISTORIC_UNDATED = "HISTORIC_UNDATED"
+REASON_MISSING_RATE = "MISSING_RATE_SNAPSHOT"
+REASON_HR_NOT_PIECE = "HR_NOT_PIECE"
+REASON_BEFORE_INTEGRATION = "BEFORE_INTEGRATION"
+REASON_HR_UNLINKED = "HR_UNLINKED"
+REASON_UID_EMPTY = "OPERATOR_UID_EMPTY"
+REASON_SPLIT_MISMATCH = "SPLIT_UID_MISMATCH"
+REASON_LEGACY = "LEGACY_SOURCE"
+REASON_ORDER_CANCELLED = "ORDER_CANCELLED"
+REASON_ENTRY_CANCELLED = "ENTRY_CANCELLED"
+REASON_CODE_LABELS = {
+    REASON_MISSING_WORK_DATE: "Tanpa tanggal kerja",
+    REASON_HISTORIC_UNDATED: "Historis tanpa tanggal kerja",
+    REASON_MISSING_RATE: "Tanpa snapshot tarif",
+    REASON_HR_NOT_PIECE: "Profil HR belum piece",
+    REASON_BEFORE_INTEGRATION: "Sebelum batas integrasi",
+    REASON_HR_UNLINKED: "Belum terhubung ke profil HR",
+    REASON_UID_EMPTY: "Operator tanpa user ID",
+    REASON_SPLIT_MISMATCH: "Identitas split berubah",
+    REASON_LEGACY: "Sumber legacy",
+    REASON_ORDER_CANCELLED: "Order dibatalkan",
+    REASON_ENTRY_CANCELLED: "Entri dibatalkan atau diganti",
+}
 ELIGIBILITY_REASON_LABELS = {
     "Tanggal kerja tidak tersedia": "Tanpa tanggal kerja",
     "tanpa tanggal pekerjaan": "Tanpa tanggal kerja",
@@ -1147,6 +1181,25 @@ ELIGIBILITY_REASON_LABELS = {
     "profil bukan pay_basis piece": "Profil HR belum piece",
     "sebelum batas integrasi": "Sebelum batas integrasi",
     "belum terhubung ke satu profil HR": "Belum terhubung ke profil HR",
+    "operator_user_id kosong, tidak ditautkan lewat nama atau email": "Operator tanpa user ID",
+    "identitas split berubah sesudah konfirmasi": "Identitas split berubah",
+    "sumber legacy": "Sumber legacy",
+    "order dibatalkan": "Order dibatalkan",
+    "entri dibatalkan atau diganti": "Entri dibatalkan atau diganti",
+    **{code: label for code, label in REASON_CODE_LABELS.items()},
+}
+_INTERNAL_TO_CODE = {
+    "Tanggal kerja tidak tersedia": REASON_MISSING_WORK_DATE,
+    "tanpa tanggal pekerjaan": REASON_MISSING_WORK_DATE,
+    "tanpa snapshot tarif": REASON_MISSING_RATE,
+    "profil bukan pay_basis piece": REASON_HR_NOT_PIECE,
+    "sebelum batas integrasi": REASON_BEFORE_INTEGRATION,
+    "belum terhubung ke satu profil HR": REASON_HR_UNLINKED,
+    "operator_user_id kosong, tidak ditautkan lewat nama atau email": REASON_UID_EMPTY,
+    "identitas split berubah sesudah konfirmasi": REASON_SPLIT_MISMATCH,
+    "sumber legacy": REASON_LEGACY,
+    "order dibatalkan": REASON_ORDER_CANCELLED,
+    "entri dibatalkan atau diganti": REASON_ENTRY_CANCELLED,
 }
 _REPORT_LIST_CAP = 20000
 BONUS_STATUS_FINAL = "FINAL"
@@ -1158,6 +1211,144 @@ BONUS_NOTE = (
     "Bonus Usulan belum final dan tidak masuk Total Payroll. "
     "Total Payroll memuat bonus hanya bila nominal BONUS_OPERATOR final pada baris payroll cocok dengan rentang dan qty ini."
 )
+
+
+def _reason_code_from_internal(internal: str, *, has_work_date: bool) -> str:
+    text = str(internal or "").strip()
+    if text in _INTERNAL_TO_CODE:
+        code = _INTERNAL_TO_CODE[text]
+        if code == REASON_MISSING_WORK_DATE and not has_work_date:
+            # Period relevance for undated entries is unproven → historic bucket code.
+            return REASON_HISTORIC_UNDATED
+        return code
+    if not has_work_date:
+        return REASON_HISTORIC_UNDATED
+    return text or "UNKNOWN"
+
+
+def _issue_bucket(code: str, claim_status: Optional[str]) -> str:
+    if claim_status in ACTIVE_CLAIM:
+        return BUCKET_LOCKED
+    if code in (
+        REASON_HISTORIC_UNDATED,
+        REASON_LEGACY,
+        REASON_ORDER_CANCELLED,
+        REASON_ENTRY_CANCELLED,
+    ):
+        return BUCKET_HISTORIC
+    # Dated issues inside the selected period stay actionable (repair or inspect).
+    return BUCKET_ACTIONABLE
+
+
+def _repair_guidance(code: str, bucket: str, row: dict) -> dict:
+    """Describe the guided action for one blocked output. Does not grant permission."""
+    employee_id = str(row.get("employee_id") or "")
+    order_id = str(row.get("order_id") or "")
+    base = {
+        "reason_code": code,
+        "reason_label": REASON_CODE_LABELS.get(code, code),
+        "issue_bucket": bucket,
+        "target_field": "",
+        "target_route": "",
+        "button_label": "",
+        "action_type": "inspect",
+        "editable": False,
+        "lock_reason": "",
+        "required_action": "",
+        "problem_detail": "",
+    }
+    if bucket == BUCKET_LOCKED:
+        return {
+            **base,
+            "action_type": "locked",
+            "button_label": "Lihat Payroll Terkunci",
+            "target_route": f"/hr-payroll/penggajian?period={row.get('payroll_period_id') or ''}" if row.get("payroll_period_id") else "/hr-payroll/penggajian",
+            "lock_reason": "Output terikat klaim payroll aktif (HELD/POSTED) atau pembayaran.",
+            "required_action": "Gunakan prosedur payroll resmi; jangan koreksi dari Gaji Operator.",
+            "problem_detail": "Output terkunci karena sudah masuk alur payroll.",
+        }
+    if code == REASON_HISTORIC_UNDATED:
+        return {
+            **base,
+            "action_type": "repair_work_date",
+            "button_label": "Perbaiki Tanggal Kerja",
+            "target_field": "progress_entries.work_date",
+            "target_route": "/laporan/gaji-operator",
+            "editable": True,
+            "required_action": "Isi tanggal kerja aktual pada output (bukan tanggal jadwal PO).",
+            "problem_detail": "Output tanpa tanggal; keterkaitan ke periode aktif tidak terbukti sehingga masuk pemeriksaan historis.",
+        }
+    if code == REASON_MISSING_WORK_DATE:
+        return {
+            **base,
+            "action_type": "repair_work_date",
+            "button_label": "Perbaiki Tanggal Kerja",
+            "target_field": "progress_entries.work_date",
+            "target_route": "/laporan/gaji-operator",
+            "editable": True,
+            "required_action": "Isi tanggal kerja output.",
+            "problem_detail": "progress_entries.work_date kosong.",
+        }
+    if code == REASON_MISSING_RATE:
+        return {
+            **base,
+            "action_type": "repair_rate",
+            "button_label": "Perbaiki Snapshot Tarif",
+            "target_field": "progress_entries.rate_per_pcs",
+            "target_route": "/laporan/gaji-operator",
+            "editable": True,
+            "required_action": "Masukkan tarif per pcs yang berlaku pada tanggal kerja (manual; bukan salin master).",
+            "problem_detail": "Snapshot rate_per_pcs tidak ada pada output.",
+        }
+    if code == REASON_HR_NOT_PIECE:
+        route = f"/hr-payroll/daftar-karyawan?employee={employee_id}&edit=1&focus=pay_basis" if employee_id else "/hr-payroll/daftar-karyawan"
+        return {
+            **base,
+            "action_type": "open_hr",
+            "button_label": "Buka Profil HR",
+            "target_field": "hr_employees.pay_basis",
+            "target_route": route,
+            "editable": True,
+            "required_action": "Ubah Dasar Upah menjadi Borongan (piece) jika memang operator borongan.",
+            "problem_detail": "Karyawan terhubung tetapi pay_basis bukan piece.",
+        }
+    if code == REASON_HR_UNLINKED:
+        return {
+            **base,
+            "action_type": "open_hr",
+            "button_label": "Buka Profil HR",
+            "target_field": "hr_employees.user_id",
+            "target_route": "/hr-payroll/daftar-karyawan",
+            "editable": True,
+            "required_action": "Hubungkan operator ke tepat satu profil HR aktif.",
+            "problem_detail": "operator_user_id tidak memetakan ke tepat satu karyawan HR.",
+        }
+    if code == REASON_UID_EMPTY:
+        return {
+            **base,
+            "action_type": "inspect_identity",
+            "button_label": "Periksa Identitas Operator",
+            "target_field": "operator_splits.operator_user_id",
+            "target_route": f"/po/{order_id}?stage=5" if order_id else "/po",
+            "editable": False,
+            "required_action": "Lengkapi operator_user_id pada penjadwalan; output historis tidak diganti otomatis.",
+            "problem_detail": "operator_user_id kosong pada output/split.",
+        }
+    if code in (REASON_LEGACY, REASON_ORDER_CANCELLED, REASON_ENTRY_CANCELLED, REASON_BEFORE_INTEGRATION, REASON_SPLIT_MISMATCH):
+        return {
+            **base,
+            "action_type": "inspect",
+            "button_label": "Lihat Data Historis",
+            "target_route": f"/po/{order_id}?stage=10" if order_id else "/laporan/gaji-operator",
+            "required_action": "Periksa data; tidak dapat dikoreksi lewat Guided Repair V1.",
+            "problem_detail": REASON_CODE_LABELS.get(code, code),
+        }
+    return {
+        **base,
+        "button_label": "Lihat Detail",
+        "required_action": "Periksa penyebab spesifik.",
+        "problem_detail": str(row.get("payroll_reason") or code),
+    }
 
 
 def _status_from_claim(claim_status: Optional[str]) -> str:
@@ -1267,17 +1458,31 @@ def _has_work_date(row: dict) -> bool:
 
 
 def _keep_for_report(row: dict, start: str, end: str) -> bool:
-    """Dated rows stay inside the filter. Undated rows stay visible and undated.
+    """Dated rows stay inside the filter.
 
+    Undated rows are excluded from the active period table; they are collected
+    separately as historic issues because period relevance cannot be proven.
     A sibling output in range does not assign them a payroll date.
     """
     if not _has_work_date(row):
-        return True
+        return False
     if str(row.get("reason") or "") == _OUTSIDE_REASON:
         return False
     if _work_in_range(row, start, end):
         return True
     return bool(row.get("in_wage_range") or row.get("in_bonus_range"))
+
+
+def _keep_historic(row: dict) -> bool:
+    """Undated / legacy / cancelled exclusions remain inspectable outside the active KPI."""
+    if not _has_work_date(row):
+        return True
+    reason = str(row.get("reason") or "")
+    return reason in (
+        "sumber legacy",
+        "order dibatalkan",
+        "entri dibatalkan atau diganti",
+    )
 
 
 def _bonus_operator_match(stored: Optional[dict], qty_bonus: int, start: str, end: str) -> Optional[Decimal]:
@@ -1335,22 +1540,41 @@ def _summary_status(rows: List[dict]) -> str:
     return str(eligible[0].get("payroll_status") or "")
 
 
-def eligibility_summary_from_rows(rows: List[dict]) -> dict:
-    """Group NOT_ELIGIBLE report rows by existing payroll_reason. Rules are unchanged."""
-    blocked = [row for row in rows if row.get("payroll_status") == PAYROLL_STATUS_BLOCKED]
+def eligibility_summary_from_rows(rows: List[dict], *, bucket: Optional[str] = BUCKET_ACTIONABLE) -> dict:
+    """Group NOT_ELIGIBLE rows. Default bucket=actionable for the active-period KPI."""
+    blocked = [
+        row for row in rows
+        if row.get("payroll_status") == PAYROLL_STATUS_BLOCKED
+        and (bucket is None or row.get("issue_bucket") == bucket)
+    ]
     counts: Dict[str, int] = {}
+    code_counts: Dict[str, int] = {}
     for row in blocked:
         reason = str(row.get("payroll_reason") or "tidak eligible").strip() or "tidak eligible"
         counts[reason] = counts.get(reason, 0) + 1
+        code = str(row.get("reason_code") or reason)
+        code_counts[code] = code_counts.get(code, 0) + 1
     by_reason = [
         {
             "reason": reason,
-            "label": ELIGIBILITY_REASON_LABELS.get(reason, reason),
+            "reason_code": next(
+                (str(row.get("reason_code") or "") for row in blocked if str(row.get("payroll_reason") or "") == reason),
+                _reason_code_from_internal(reason, has_work_date=True),
+            ),
+            "label": ELIGIBILITY_REASON_LABELS.get(reason, REASON_CODE_LABELS.get(reason, reason)),
             "count": count,
         }
         for reason, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
     ]
-    return {"total": len(blocked), "by_reason": by_reason}
+    by_code = [
+        {
+            "reason_code": code,
+            "label": REASON_CODE_LABELS.get(code, ELIGIBILITY_REASON_LABELS.get(code, code)),
+            "count": count,
+        }
+        for code, count in sorted(code_counts.items(), key=lambda item: (-item[1], item[0]))
+    ]
+    return {"total": len(blocked), "by_reason": by_reason, "by_code": by_code}
 
 
 def assemble_gaji_operator_rows(
@@ -1377,7 +1601,7 @@ def assemble_gaji_operator_rows(
     bonus_by_employee = bonus_by_employee or {}
     payments_by_period = payments_by_period or {}
 
-    def present(raw: dict, *, eligible: bool, apply_filters: bool) -> Optional[dict]:
+    def shape(raw: dict, *, eligible: bool, status: str, reason: str, claim: dict, pay_vis: dict) -> dict:
         order = orders.get(str(raw.get("order_id") or "")) or {}
         split = _split_on(order, str(raw.get("split_id") or ""))
         bits = _line_bits(order, split.get("line_idx"))
@@ -1387,32 +1611,27 @@ def assemble_gaji_operator_rows(
             "operator_name": raw.get("operator_name") or split.get("operator_name") or "",
             **bits,
         }
-        if not _keep_for_report(row, start, end):
-            return None
-        if apply_filters and not _passes_filters(row, order, operator_ids, item):
-            return None
-        claim = claim_map.get(str(row.get("source_key") or "")) or {}
-        claim_status = claim.get("status")
-        period_id = str(claim.get("period_id") or "")
-        if not _has_work_date(row):
-            status = PAYROLL_STATUS_BLOCKED
-            reason = MISSING_WORK_DATE_REASON
-        elif eligible and row.get("has_rate"):
-            status = _status_from_claim(claim_status)
-            reason = ""
-        elif claim_status:
-            status = _status_from_claim(claim_status)
-            reason = str(row.get("reason") or "")
-        else:
-            status = PAYROLL_STATUS_BLOCKED
-            reason = str(row.get("reason") or "tidak eligible")
         amount = money_float(row.get("amount")) if status != PAYROLL_STATUS_BLOCKED else 0.0
         if status == PAYROLL_STATUS_BLOCKED:
             amount = 0.0
         qty = int(row.get("qty") or 0)
-        payment = payments_by_period.get(period_id) if period_id else None
-        pay_vis = _row_payment_visibility(status, period_id, payment)
-        return {
+        has_wd = _has_work_date(row)
+        internal = reason if reason else str(row.get("reason") or "")
+        code = _reason_code_from_internal(internal, has_work_date=has_wd) if status == PAYROLL_STATUS_BLOCKED else ""
+        if status == PAYROLL_STATUS_BLOCKED and not has_wd and code == REASON_MISSING_WORK_DATE:
+            code = REASON_HISTORIC_UNDATED
+        # Preserve classify reason for legacy/cancelled instead of forcing missing-date label.
+        if status == PAYROLL_STATUS_BLOCKED and not has_wd:
+            if internal in ("sumber legacy", "order dibatalkan", "entri dibatalkan atau diganti"):
+                display_reason = internal
+                code = _INTERNAL_TO_CODE.get(internal, REASON_HISTORIC_UNDATED)
+            else:
+                display_reason = MISSING_WORK_DATE_REASON
+                code = REASON_HISTORIC_UNDATED
+        else:
+            display_reason = reason
+        bucket = _issue_bucket(code, claim.get("status")) if status == PAYROLL_STATUS_BLOCKED else ""
+        shaped = {
             "source_key": row.get("source_key") or "",
             "order_id": row.get("order_id") or "",
             "split_id": row.get("split_id") or "",
@@ -1441,33 +1660,94 @@ def assemble_gaji_operator_rows(
             "accurate_item_id": bits["accurate_item_id"],
             "line_idx": bits["line_idx"],
             "payroll_status": status,
-            "payroll_reason": reason,
-            "rate_unset": status == PAYROLL_STATUS_BLOCKED and reason == "tanpa snapshot tarif",
+            "payroll_reason": display_reason,
+            "reason_code": code,
+            "issue_bucket": bucket,
+            "rate_unset": status == PAYROLL_STATUS_BLOCKED and (
+                display_reason == "tanpa snapshot tarif" or code == REASON_MISSING_RATE
+            ),
             "rate_source": "entry_snapshot" if row.get("has_rate") else "",
             "payroll_period_id": pay_vis.get("payroll_period_id") or "",
             "payment_status": pay_vis.get("payment_status"),
             "payment_status_label": pay_vis.get("payment_status_label") or "",
             "payment_id": pay_vis.get("payment_id"),
+            "expected_work_date": str(row.get("work_date") or "")[:10],
+            "expected_rate_per_pcs": row.get("rate_per_pcs") if row.get("has_rate") else None,
         }
+        if status == PAYROLL_STATUS_BLOCKED:
+            shaped["repair"] = _repair_guidance(code, bucket, shaped)
+        return shaped
 
-    def collect(apply_filters: bool) -> List[dict]:
+    def present(raw: dict, *, eligible: bool, apply_filters: bool, historic: bool = False) -> Optional[dict]:
+        order = orders.get(str(raw.get("order_id") or "")) or {}
+        split = _split_on(order, str(raw.get("split_id") or ""))
+        bits = _line_bits(order, split.get("line_idx"))
+        row = {
+            **raw,
+            "operator_email": str(split.get("operator_email") or ""),
+            "operator_name": raw.get("operator_name") or split.get("operator_name") or "",
+            **bits,
+        }
+        if historic:
+            if not _keep_historic(row):
+                return None
+        elif not _keep_for_report(row, start, end):
+            return None
+        if apply_filters and not _passes_filters(row, order, operator_ids, item):
+            return None
+        claim = claim_map.get(str(row.get("source_key") or "")) or {}
+        claim_status = claim.get("status")
+        period_id = str(claim.get("period_id") or "")
+        if not _has_work_date(row):
+            status = PAYROLL_STATUS_BLOCKED
+            reason = str(row.get("reason") or MISSING_WORK_DATE_REASON)
+        elif eligible and row.get("has_rate"):
+            if historic:
+                return None
+            status = _status_from_claim(claim_status)
+            reason = ""
+        elif claim_status:
+            status = _status_from_claim(claim_status)
+            reason = str(row.get("reason") or "")
+        else:
+            status = PAYROLL_STATUS_BLOCKED
+            reason = str(row.get("reason") or "tidak eligible")
+        payment = payments_by_period.get(period_id) if period_id else None
+        pay_vis = _row_payment_visibility(status, period_id, payment)
+        return shape(raw, eligible=eligible, status=status, reason=reason, claim=claim, pay_vis=pay_vis)
+
+    def collect(apply_filters: bool, *, historic: bool = False) -> List[dict]:
         chosen: List[dict] = []
         seen = set()
-        for raw in found.get("wage") or []:
-            row = present(raw, eligible=True, apply_filters=apply_filters)
-            if row and row["source_key"] not in seen:
-                seen.add(row["source_key"])
-                chosen.append(row)
-        for bucket in ("blockers", "exclusions"):
-            for raw in found.get(bucket) or []:
-                row = present(raw, eligible=False, apply_filters=apply_filters)
+        if not historic:
+            for raw in found.get("wage") or []:
+                row = present(raw, eligible=True, apply_filters=apply_filters, historic=False)
                 if row and row["source_key"] not in seen:
+                    seen.add(row["source_key"])
+                    chosen.append(row)
+        for bucket_name in ("blockers", "exclusions"):
+            for raw in found.get(bucket_name) or []:
+                row = present(raw, eligible=False, apply_filters=apply_filters, historic=historic)
+                if row and row["source_key"] not in seen:
+                    # Active path: only actionable/locked dated issues.
+                    if not historic and row.get("payroll_status") == PAYROLL_STATUS_BLOCKED:
+                        if row.get("issue_bucket") == BUCKET_HISTORIC:
+                            continue
+                    if historic and row.get("issue_bucket") not in (BUCKET_HISTORIC, BUCKET_LOCKED):
+                        # Locked undated still appear in historic inspection.
+                        if row.get("issue_bucket") != BUCKET_LOCKED or _has_work_date(row):
+                            if not _keep_historic({**raw, "work_date": row.get("work_date"), "reason": row.get("payroll_reason")}):
+                                continue
                     seen.add(row["source_key"])
                     chosen.append(row)
         return chosen
 
     catalog = collect(False)
     visible = collect(True)
+    historic_rows = collect(True, historic=True)
+    # Avoid duplicating actionable rows inside historic list.
+    visible_keys = {row["source_key"] for row in visible}
+    historic_rows = [row for row in historic_rows if row["source_key"] not in visible_keys]
 
     bonus_qty: Dict[str, int] = {}
     for raw in found.get("bonus") or []:
@@ -1563,16 +1843,30 @@ def assemble_gaji_operator_rows(
                 "item_name": row.get("item_name") or "",
                 "accurate_item_id": row.get("accurate_item_id") or "",
             }
-    blocked = [row for row in visible if row["payroll_status"] == PAYROLL_STATUS_BLOCKED]
+    blocked = [
+        row for row in visible
+        if row["payroll_status"] == PAYROLL_STATUS_BLOCKED and row.get("issue_bucket") == BUCKET_ACTIONABLE
+    ]
+    locked_in_period = [
+        row for row in visible
+        if row["payroll_status"] == PAYROLL_STATUS_BLOCKED and row.get("issue_bucket") == BUCKET_LOCKED
+    ]
+    historic_rows.sort(key=lambda row: (row.get("operator") or "", row.get("source_key") or ""))
     return {
         "rows": visible,
+        "historic_rows": historic_rows,
         "people": people,
         "filters": {
             "operators": sorted(operators.values(), key=lambda row: row.get("name") or ""),
             "items": sorted(items.values(), key=lambda row: (row.get("item_code") or "", row.get("item_name") or "")),
         },
         "not_eligible_count": len(blocked),
-        "eligibility_summary": eligibility_summary_from_rows(visible),
+        "eligibility_summary": eligibility_summary_from_rows(visible, bucket=BUCKET_ACTIONABLE),
+        "historic_summary": eligibility_summary_from_rows(historic_rows, bucket=None),
+        "locked_summary": {
+            "total": len(locked_in_period),
+            "by_reason": eligibility_summary_from_rows(locked_in_period, bucket=BUCKET_LOCKED).get("by_reason") or [],
+        },
         "missing_base_rate": sorted({row.get("operator") or row.get("operator_user_id") for row in blocked if row.get("rate_unset")}),
         "read_only": True,
         "canonical_source": "progress_entries.work_date.rate_per_pcs",
@@ -1691,6 +1985,7 @@ async def build_gaji_operator_report(
     unpaid_people = sum(1 for p in posted_people if p.get("payment_status") != VIS_SUDAH_DIBAYAR)
     return {
         "rows": rows,
+        "historic_rows": assembled.get("historic_rows") or [],
         "people": people,
         "kpis": {
             "output": sum(int(row.get("qty_completed") or 0) for row in eligible),
@@ -1708,6 +2003,7 @@ async def build_gaji_operator_report(
             "sudah_dibayar": paid_people,
             "belum_dibayar": unpaid_people,
             "payment_posted_operators": len(posted_people),
+            "historic_issue_count": int((assembled.get("historic_summary") or {}).get("total") or 0),
         },
         "filters": assembled["filters"],
         "period": {"from": start, "to": end},
@@ -1716,6 +2012,8 @@ async def build_gaji_operator_report(
         "bonus_note": BONUS_NOTE,
         "not_eligible_count": assembled["not_eligible_count"],
         "eligibility_summary": assembled["eligibility_summary"],
+        "historic_summary": assembled.get("historic_summary") or {"total": 0, "by_reason": []},
+        "locked_summary": assembled.get("locked_summary") or {"total": 0, "by_reason": []},
         "missing_base_rate": missing,
         "missing_base_rate_message": (
             "Output tanpa snapshot tarif tidak masuk payroll borongan"
