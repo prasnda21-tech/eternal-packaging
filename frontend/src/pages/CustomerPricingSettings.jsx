@@ -3,6 +3,10 @@ import { createPortal } from "react-dom";
 import { AlertCircle, ImageIcon, Plus, RefreshCw, Trash2, Upload, X } from "lucide-react";
 import api from "../lib/api";
 import { formatDate } from "../lib/constants";
+import {
+  formatTierBand,
+  summarizeDraftPriceQuality,
+} from "../lib/customerPricingAnomaly";
 import { errDetail, formatRupiah } from "../lib/purchaseUi";
 import { LIVE_SEARCH_DEBOUNCE_MS } from "../hooks/useDebouncedLiveSearch";
 
@@ -206,6 +210,9 @@ export default function CustomerPricingSettings({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [preview, setPreview] = useState(null);
+  const [publishConfirm, setPublishConfirm] = useState(null);
+  const publishInFlightRef = useRef(false);
+  const confirmPublishButtonRef = useRef(null);
 
   const [createOpen, setCreateOpen] = useState(false);
   const [newGroupName, setNewGroupName] = useState("");
@@ -364,6 +371,7 @@ export default function CustomerPricingSettings({
     setCatalogImageBroken(false);
     setBrokenProductImages({});
     setPreview(null);
+    setPublishConfirm(null);
     setError("");
   };
 
@@ -691,7 +699,7 @@ export default function CustomerPricingSettings({
     })),
   });
 
-  const saveDraft = async () => {
+  const saveDraft = async ({ quietNotify = false } = {}) => {
     if (!version) return null;
     setBusy(true);
     setError("");
@@ -699,20 +707,21 @@ export default function CustomerPricingSettings({
       const response = await api.updateCustomerPricingVersion(version.id, buildPayload());
       applyVersion(response.version);
       const previewResponse = await api.previewCustomerPricingVersion(response.version.id, {});
-      setPreview(previewResponse.preview);
-      if (!previewResponse.preview?.valid) {
+      const nextPreview = previewResponse.preview;
+      setPreview(nextPreview);
+      if (!nextPreview?.valid) {
         setError(
-          (previewResponse.preview?.errors || []).join(" · ") ||
+          (nextPreview?.errors || []).join(" · ") ||
             "Draft tersimpan, tetapi belum siap Publish."
         );
-        notify?.("Draft disimpan (belum siap Publish)");
-      } else {
+        if (!quietNotify) notify?.("Draft disimpan (belum siap Publish)");
+      } else if (!quietNotify) {
         notify?.(response.message || "Draft disimpan");
       }
       const versionsResponse = await api.customerPricingVersions(editorGroup.id);
       setHistory(versionsResponse.versions || []);
       await loadGroups();
-      return response.version;
+      return { version: response.version, preview: nextPreview };
     } catch (exception) {
       setError(errDetail(exception));
       return null;
@@ -723,10 +732,10 @@ export default function CustomerPricingSettings({
 
   const runPreview = async () => {
     const saved = await saveDraft();
-    if (!saved) return;
+    if (!saved?.version) return;
     setBusy(true);
     try {
-      const response = await api.previewCustomerPricingVersion(saved.id, {});
+      const response = await api.previewCustomerPricingVersion(saved.version.id, {});
       setPreview(response.preview);
       if (!response.preview?.valid) {
         setError((response.preview?.errors || []).join(" · "));
@@ -743,11 +752,11 @@ export default function CustomerPricingSettings({
 
   const refreshHpp = async () => {
     const saved = await saveDraft();
-    if (!saved) return;
+    if (!saved?.version) return;
     setBusy(true);
     setError("");
     try {
-      const response = await api.refreshCustomerPricingHpp(saved.id);
+      const response = await api.refreshCustomerPricingHpp(saved.version.id);
       applyVersion(response.version);
       const unresolved = response.version.products.filter(
         (product) => product.hpp_status !== "OK"
@@ -768,15 +777,84 @@ export default function CustomerPricingSettings({
     }
   };
 
-  const publish = async () => {
-    const saved = await saveDraft();
-    if (!saved) return;
+  const closePublishConfirm = useCallback(() => {
+    if (publishInFlightRef.current) return;
+    setPublishConfirm(null);
+  }, []);
+
+  useEffect(() => {
+    if (!publishConfirm) return;
+    if (
+      !version ||
+      version.id !== publishConfirm.versionId ||
+      version.revision !== publishConfirm.revision
+    ) {
+      setPublishConfirm(null);
+      setError("Draft berubah. Validasi ulang sebelum Publish.");
+    }
+  }, [version, publishConfirm]);
+
+  useEffect(() => {
+    if (!publishConfirm) return undefined;
+    const onKeyDown = (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closePublishConfirm();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const focusTimer = window.setTimeout(() => {
+      confirmPublishButtonRef.current?.focus?.();
+    }, 0);
+    return () => {
+      window.clearTimeout(focusTimer);
+      window.removeEventListener("keydown", onKeyDown);
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [publishConfirm, closePublishConfirm]);
+
+  const requestPublish = async () => {
+    if (!canPublish || publishInFlightRef.current) return;
+    const saved = await saveDraft({ quietNotify: true });
+    if (!saved?.version) return;
+    if (!saved.preview?.valid) {
+      setError(
+        (saved.preview?.errors || []).join(" · ") ||
+          "Publish diblokir karena konfigurasi belum valid."
+      );
+      return;
+    }
+    const quality = summarizeDraftPriceQuality(saved.preview);
+    setPublishConfirm({
+      versionId: saved.version.id,
+      revision: saved.version.revision,
+      versionNumber: saved.version.version_number,
+      groupName: saved.preview.group_name || saved.version.group_name || groupName,
+      quality,
+    });
+  };
+
+  const confirmPublish = async () => {
+    if (!publishConfirm || publishInFlightRef.current) return;
+    if (
+      !version ||
+      version.id !== publishConfirm.versionId ||
+      version.revision !== publishConfirm.revision
+    ) {
+      setPublishConfirm(null);
+      setError("Draft berubah. Validasi ulang sebelum Publish.");
+      return;
+    }
+    publishInFlightRef.current = true;
     setBusy(true);
     setError("");
     try {
-      const response = await api.publishCustomerPricingVersion(saved.id, {
-        revision: saved.revision,
+      const response = await api.publishCustomerPricingVersion(publishConfirm.versionId, {
+        revision: publishConfirm.revision,
       });
+      setPublishConfirm(null);
       setEditorGroup(response.group);
       setVersion(null);
       setViewOnlyVersion(response.version);
@@ -785,7 +863,9 @@ export default function CustomerPricingSettings({
       notify?.(response.message || "Berhasil di-Publish");
     } catch (exception) {
       setError(errDetail(exception));
+      setPublishConfirm(null);
     } finally {
+      publishInFlightRef.current = false;
       setBusy(false);
     }
   };
@@ -1248,7 +1328,14 @@ export default function CustomerPricingSettings({
                 <button className="ghost sm" disabled={busy} onClick={runPreview}>Preview</button>
               )}
               {!readOnly && canPublish && (
-                <button className="primary sm" disabled={busy} onClick={publish}>Publish</button>
+                <button
+                  className="primary sm"
+                  disabled={busy || Boolean(publishConfirm)}
+                  onClick={requestPublish}
+                  data-testid="cp-publish"
+                >
+                  Publish
+                </button>
               )}
               {readOnly && canEdit && (
                 <button
@@ -1800,6 +1887,137 @@ export default function CustomerPricingSettings({
           )}
         </section>
       )}
+
+      {publishConfirm &&
+        createPortal(
+          <div
+            className="modal"
+            data-testid="cp-publish-confirm"
+            role="presentation"
+            onClick={closePublishConfirm}
+          >
+            <div
+              className="modal-inner"
+              style={{ maxWidth: 480 }}
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="cp-publish-confirm-title"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <header className="modal-head">
+                <h3 id="cp-publish-confirm-title">Konfirmasi Publish Harga</h3>
+                <button
+                  type="button"
+                  className="icon-button"
+                  onClick={closePublishConfirm}
+                  disabled={busy}
+                  aria-label="Tutup"
+                >
+                  <X size={16} />
+                </button>
+              </header>
+              <div style={{ padding: "14px 18px", display: "grid", gap: 10 }}>
+                <div>
+                  <strong>{publishConfirm.groupName || "Kelompok harga"}</strong>
+                  <div className="muted small">
+                    v{publishConfirm.versionNumber ?? "—"} · rev {publishConfirm.revision}
+                  </div>
+                </div>
+                {publishConfirm.quality?.available ? (
+                  <dl
+                    data-testid="cp-publish-quality"
+                    style={{
+                      margin: 0,
+                      display: "grid",
+                      gridTemplateColumns: "auto 1fr",
+                      gap: "4px 12px",
+                      fontSize: 13,
+                    }}
+                  >
+                    <dt className="muted">Harga terendah dalam draft</dt>
+                    <dd style={{ margin: 0 }}>{formatRupiah(publishConfirm.quality.min)}</dd>
+                    <dt className="muted">Rentang harga</dt>
+                    <dd style={{ margin: 0 }}>
+                      {formatRupiah(publishConfirm.quality.min)} –{" "}
+                      {formatRupiah(publishConfirm.quality.max)}
+                    </dd>
+                    <dt className="muted">Median kelompok</dt>
+                    <dd style={{ margin: 0 }}>{formatRupiah(publishConfirm.quality.median)}</dd>
+                    <dt className="muted">Peringatan</dt>
+                    <dd style={{ margin: 0 }} data-testid="cp-publish-warning-count">
+                      {publishConfirm.quality.warningCount}
+                    </dd>
+                  </dl>
+                ) : (
+                  <p className="muted small" data-testid="cp-publish-quality-unavailable">
+                    Ringkasan harga tidak tersedia — tidak ada unit price positif yang valid
+                    pada preview. Validasi backend tetap berlaku saat Publish.
+                  </p>
+                )}
+                <p className="muted small" style={{ margin: 0 }}>
+                  Label memakai harga terendah dalam draft/preview. Minimum yang terlihat di
+                  katalog publik dapat berbeda jika ada varian nonaktif atau disembunyikan.
+                </p>
+                {publishConfirm.quality?.warningCount > 0 && (
+                  <div data-testid="cp-publish-anomalies">
+                    <p style={{ margin: "0 0 6px", fontSize: 13 }}>
+                      <span className="cp-badge-warn">Peringatan</span>{" "}
+                      Harga di bawah 10% median kelompok
+                    </p>
+                    <ul
+                      style={{
+                        margin: 0,
+                        paddingLeft: 18,
+                        maxHeight: 160,
+                        overflow: "auto",
+                        fontSize: 12.5,
+                        lineHeight: 1.35,
+                      }}
+                    >
+                      {publishConfirm.quality.anomalies.map((row) => (
+                        <li
+                          key={`${row.accurateItemId || row.productName}-${row.tierIndex}`}
+                        >
+                          {row.productName} · {formatTierBand(row)} · {formatRupiah(row.price)}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+              <footer
+                style={{
+                  display: "flex",
+                  justifyContent: "flex-end",
+                  gap: 8,
+                  padding: "12px 18px 16px",
+                  borderTop: "1px solid var(--line, #e5e7eb)",
+                }}
+              >
+                <button
+                  type="button"
+                  className="ghost sm"
+                  disabled={busy}
+                  onClick={closePublishConfirm}
+                  data-testid="cp-publish-cancel"
+                >
+                  Kembali Periksa
+                </button>
+                <button
+                  type="button"
+                  className="primary sm"
+                  disabled={busy}
+                  onClick={confirmPublish}
+                  ref={confirmPublishButtonRef}
+                  data-testid="cp-publish-confirm-btn"
+                >
+                  {busy ? "Mempublish…" : "Konfirmasi Publish"}
+                </button>
+              </footer>
+            </div>
+          </div>,
+          document.body
+        )}
     </div>
   );
 }
