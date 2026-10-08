@@ -13284,6 +13284,10 @@ async def inventory_valuation_list(
         "branch_scope": (resolved.get("access") or {}).get("scope"),
         "can_switch_branches": can_switch_branches(resolved.get("access")),
         "hpp_cost_scope": "COMPANY_WIDE",
+        "physical_stock_source": view.get("physical_stock_source"),
+        "physical_stock_mode": view.get("physical_stock_mode"),
+        "physical_qty_scope": view.get("physical_qty_scope"),
+        "physical_qty_note": view.get("physical_qty_note"),
     })
     return payload
 

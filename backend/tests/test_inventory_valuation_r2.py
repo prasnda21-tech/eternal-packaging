@@ -162,10 +162,14 @@ async def test_valuation_stock_follows_r2_not_legacy(db):
     assert bare_row["inventory_value"] is None
     assert bare_row["hpp_status"] == "MISSING_COST"
     assert bare_row["hpp_reason"] != "STOCK_STATE_UNAVAILABLE"
-    assert empty_row["stock_fisik"] == 0
+    assert empty_row["stock_fisik"] is None
+    assert empty_row["stock_fisik_status"] == "UNAVAILABLE"
+    assert empty_row["inventory_value"] is None
     assert legacy_row["stock_fisik"] == 4
     assert await _catalog_qty(db, priced) == priced_row["stock_fisik"]
     assert await _catalog_qty(db, bare) == bare_row["stock_fisik"]
+    # Stock Saat Ini R2 catalog may still surface 0 for missing balances;
+    # Nilai Persediaan must not treat that omission as proven official zero.
     assert await _catalog_qty(db, empty) == 0
     assert await _catalog_qty(db, legacy) == 4
 

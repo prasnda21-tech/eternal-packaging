@@ -194,8 +194,14 @@ export default function StockSaatIni() {
           {data && (
             <p className="muted small" data-testid="stock-read-mode">
               {r2Active
-                ? "Mode R2 aktif — sumber stok fisik: physical_stock_balances."
-                : "Mode kompatibilitas pra-cutover — sumber stok fisik: product_stock_state (baca saja)."}
+                ? "Mode R2 aktif — sumber stok fisik: physical_stock_balances per cabang."
+                : "Mode kompatibilitas pra-cutover — stok fisik legacy digabung perusahaan (product_stock_state, baca saja); belum dipisah per cabang."}
+            </p>
+          )}
+          {data && !r2Active && (
+            <p className="muted small" data-testid="stock-compat-branch-note">
+              {data.physical_qty_note
+                || "Filter cabang tidak mengubah qty fisik legacy. Qty pesanan / belum terkirim tetap dari sumber kompatibilitas perusahaan."}
             </p>
           )}
         </div>
@@ -230,7 +236,7 @@ export default function StockSaatIni() {
           <BranchScopeSelect
             branches={branches}
             value={effectiveBranchId}
-            canSwitch={canSwitchBranches}
+            canSwitch={Boolean(canSwitchBranches && r2Active)}
             effectiveCode={data?.effective_branch_code}
             onChange={(next) => {
               setBranchId(next);

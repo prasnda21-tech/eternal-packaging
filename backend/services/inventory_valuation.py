@@ -5,6 +5,9 @@ or accounting data. Stock Fisik is the R2 physical balance sum for ONE
 selected/effective branch (default YGY). product_stock_state is not the
 official quantity. HPP unit cost remains company-wide — never branch-specific.
 
+Missing R2 balance rows are UNAVAILABLE (stock_fisik=null), not proven zero.
+A balance document with physical_qty 0 is proven zero (stock_fisik=0).
+
 Inventory HPP comes only from acquisition cost (PO / Goods Receipt / WMA /
 approved cutover / first-GR bootstrap). Customer Pricing must never become
 inventory HPP fallback.
@@ -37,6 +40,11 @@ STATUS_NEEDS_COST = "NEEDS_COST"
 STATUS_NEEDS_UOM = "NEEDS_UOM"
 STATUS_QTY_MISMATCH = "QTY_MISMATCH"
 STATUS_FAILED = "FAILED"
+
+STOCK_AVAILABLE = "AVAILABLE"
+STOCK_UNAVAILABLE = "UNAVAILABLE"
+PHYSICAL_SOURCE = "physical_stock_balances"
+PHYSICAL_MODE = "r2_official"
 
 SUPPORTED_STATUSES = {
     STATUS_OK,
@@ -164,15 +172,24 @@ async def build_inventory_valuation_rows(db, *, branch_id: Optional[str] = None)
         mid = str(master.get("id") or "").strip()
         aid = str(master.get("accurate_item_id") or "").strip()
         state = state_by_mid.get(mid) or {}
-        stock = float(physical_by_item.get(mid, 0) or 0)
-        if stock < 0:
-            stock = 0.0
+        # Official qty is R2 only. Omitted balance → UNAVAILABLE (null), not legacy PSS.
+        if mid in physical_by_item:
+            stock_status = STOCK_AVAILABLE
+            stock = float(physical_by_item.get(mid) or 0)
+            if stock < 0:
+                stock = 0.0
+        else:
+            stock_status = STOCK_UNAVAILABLE
+            stock = None
         position = reconciliation_by_mid.get(mid)
         if not position:
             position = positions.get(mid) or positions.get(f"a:{aid}") or {}
 
         valuation_qty = float(position.get("valuation_qty") or 0)
-        difference = float(_dec(stock) - _dec(valuation_qty))
+        if stock is None:
+            difference = None
+        else:
+            difference = float(_dec(stock) - _dec(valuation_qty))
         current_hpp_raw = position.get("current_hpp")
         current_hpp = (
             money_round(current_hpp_raw)
@@ -199,17 +216,39 @@ async def build_inventory_valuation_rows(db, *, branch_id: Optional[str] = None)
         else:
             status = STATUS_OK if original_status == STATUS_QTY_MISMATCH else original_status
 
+        # Never treat unavailable official stock as valued 0.
         inventory_value = None
-        if stock == 0 and status == STATUS_OK and current_hpp is not None:
+        if stock is not None and stock == 0 and status == STATUS_OK and current_hpp is not None:
             inventory_value = 0.0
-        elif stock > 0 and status == STATUS_OK and current_hpp is not None:
+        elif stock is not None and stock > 0 and status == STATUS_OK and current_hpp is not None:
             exact_average = position.get("exact_average")
             if exact_average is not None and _dec(exact_average) > 0:
                 inventory_value = money_round(_dec(stock) * _dec(exact_average))
-            elif position.get("valuation_value") is not None and abs(difference) <= 0.0000001:
+            elif (
+                position.get("valuation_value") is not None
+                and difference is not None
+                and abs(difference) <= 0.0000001
+            ):
                 inventory_value = money_round(position.get("valuation_value"))
             else:
                 inventory_value = money_round(_dec(stock) * _dec(current_hpp))
+
+        if stock_status == STOCK_UNAVAILABLE:
+            recon_explanation = (
+                "Saldo resmi R2 belum tersedia untuk cabang ini. "
+                "Bukan stok 0 terbukti; nilai estimasi belum dihitung dari qty resmi."
+            )
+            if not canonical_exists:
+                recon_explanation = (
+                    "Saldo resmi R2 belum tersedia. Belum ada HPP akuisisi kanonik. "
+                    "Nilai estimasi belum tersedia."
+                )
+        elif not canonical_exists:
+            recon_explanation = (
+                "Belum ada HPP akuisisi kanonik. Nilai estimasi belum tersedia."
+            )
+        else:
+            recon_explanation = "Selisih stok fisik terhadap qty valuasi rata-rata pembelian."
 
         rows.append({
             "master_item_id": mid,
@@ -218,6 +257,7 @@ async def build_inventory_valuation_rows(db, *, branch_id: Optional[str] = None)
             "item_name": master.get("item_name") or master.get("item_code") or aid or mid,
             "unit": state.get("base_uom") or master.get("unit") or "",
             "stock_fisik": stock,
+            "stock_fisik_status": stock_status,
             "valuation_qty": valuation_qty,
             "difference": difference,
             "current_hpp": current_hpp,
@@ -256,11 +296,7 @@ async def build_inventory_valuation_rows(db, *, branch_id: Optional[str] = None)
             "financial_blocker_message": (financial_by_item.get(mid) or {}).get("financial_blocker_message"),
             "published_is_book_value": False,
             "reconciliation_difference": difference,
-            "reconciliation_explanation": (
-                "Belum ada HPP akuisisi kanonik. Nilai estimasi belum tersedia."
-                if not canonical_exists
-                else "Selisih stok fisik terhadap qty valuasi rata-rata pembelian."
-            ),
+            "reconciliation_explanation": recon_explanation,
             "updated_at": _latest_text(
                 position.get("updated_at"),
                 state.get("updated_at"),
@@ -277,6 +313,9 @@ async def build_inventory_valuation_rows(db, *, branch_id: Optional[str] = None)
         "valued_items": sum(1 for row in rows if row["hpp_status"] == STATUS_OK),
         "items_without_hpp": sum(1 for row in rows if row["current_hpp"] is None),
         "problem_items": sum(1 for row in rows if row["hpp_status"] in PROBLEM_STATUSES),
+        "items_without_official_stock": sum(
+            1 for row in rows if row.get("stock_fisik_status") == STOCK_UNAVAILABLE
+        ),
     }
     return {
         "rows": rows,
@@ -284,6 +323,14 @@ async def build_inventory_valuation_rows(db, *, branch_id: Optional[str] = None)
         "method": (settings or {}).get("method"),
         "active_version": (settings or {}).get("active_version"),
         "cutover_id": (cutover or {}).get("cutover_id"),
+        "physical_stock_source": PHYSICAL_SOURCE,
+        "physical_stock_mode": PHYSICAL_MODE,
+        "physical_qty_scope": "BRANCH",
+        "physical_qty_note": (
+            "Qty resmi dari physical_stock_balances per cabang. "
+            "Tanpa baris saldo R2 = belum tersedia (bukan 0 terbukti). "
+            "product_stock_state bukan sumber qty resmi."
+        ),
     }
 
 
@@ -465,6 +512,7 @@ def export_xlsx(rows: List[dict]) -> bytes:
         "Nama",
         "Satuan",
         "Stock Fisik",
+        "Ketersediaan Stok",
         "HPP Rata-Rata",
         "Nilai Persediaan",
         "Status HPP",
@@ -485,13 +533,22 @@ def export_xlsx(rows: List[dict]) -> bytes:
         cell.fill = header_fill
         cell.alignment = Alignment(horizontal="left", vertical="center")
     for row in rows:
+        stock_status = row.get("stock_fisik_status") or STOCK_AVAILABLE
+        # Keep unavailable qty blank — never coerce to 0 in export.
+        stock_cell = row.get("stock_fisik") if stock_status == STOCK_AVAILABLE else None
+        availability_label = (
+            "Belum tersedia" if stock_status == STOCK_UNAVAILABLE else "Tersedia"
+        )
+        value_cell = row.get("inventory_value")
+        hpp_cell = row.get("current_hpp")
         ws.append([
             row.get("item_code") or "",
             row.get("item_name") or "",
             row.get("unit") or "",
-            row.get("stock_fisik"),
-            row.get("current_hpp"),
-            row.get("inventory_value"),
+            stock_cell,
+            availability_label,
+            hpp_cell,
+            value_cell,
             row.get("hpp_status") or "",
             row.get("hpp_source") or "",
             row.get("financial_posting_status") or "",
@@ -502,12 +559,16 @@ def export_xlsx(rows: List[dict]) -> bytes:
             row.get("updated_at") or "",
         ])
     for row_index in range(2, ws.max_row + 1):
-        ws.cell(row=row_index, column=4).number_format = "#,##0.######"
-        ws.cell(row=row_index, column=5).number_format = '"Rp " #,##0.00'
-        ws.cell(row=row_index, column=6).number_format = '"Rp " #,##0'
-    widths = [16, 34, 12, 16, 18, 22, 18, 28, 18, 18, 14, 42, 28, 24]
+        if ws.cell(row=row_index, column=4).value is not None:
+            ws.cell(row=row_index, column=4).number_format = "#,##0.######"
+        if ws.cell(row=row_index, column=6).value is not None:
+            ws.cell(row=row_index, column=6).number_format = '"Rp " #,##0.00'
+        if ws.cell(row=row_index, column=7).value is not None:
+            ws.cell(row=row_index, column=7).number_format = '"Rp " #,##0'
+    widths = [16, 34, 12, 16, 16, 18, 22, 18, 28, 18, 18, 14, 42, 28, 24]
     for index, width in enumerate(widths, start=1):
-        ws.column_dimensions[chr(64 + index)].width = width
+        col = ws.cell(row=1, column=index).column_letter
+        ws.column_dimensions[col].width = width
     ws.auto_filter.ref = ws.dimensions
     ws.freeze_panes = "A2"
     output = BytesIO()
