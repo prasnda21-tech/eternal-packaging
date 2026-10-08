@@ -270,7 +270,8 @@ def _user(role):
 
 async def test_http_adjustment_allows_local_admin_and_rejects_other_roles(db, monkeypatch):
     item, branch, warehouse = await _location(db, qty=1000)
-    monkeypatch.delenv("APP_ENV", raising=False)
+    # Explicit local APP_ENV required after fail-closed package/runtime detection.
+    monkeypatch.setenv("APP_ENV", "preview")
     transport = httpx.ASGITransport(app=app)
     app.dependency_overrides[current_user] = lambda: _user("sales")
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:

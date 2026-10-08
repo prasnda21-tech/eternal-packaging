@@ -54,6 +54,12 @@ if db_name != "eternal_packaging_preview":
     sys.exit("CAUSE: DB_NAME is not eternal_packaging_preview\nFILE/COMMAND: backend/.env")
 if app_env in {"production", "prod"}:
     sys.exit("CAUSE: APP_ENV is production\nFILE/COMMAND: backend/.env")
+# Fail-closed package lock: admin UAT requires explicit local APP_ENV.
+if app_env not in {"local", "development", "preview", "test"}:
+    sys.exit(
+        "CAUSE: APP_ENV must be local|development|preview|test for local preview\n"
+        "FILE/COMMAND: backend/.env"
+    )
 PY
 
 if ! port_open 27017; then

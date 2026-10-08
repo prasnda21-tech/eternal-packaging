@@ -25,10 +25,16 @@ from services.purchasing_inventory_access import (
 )
 
 
-def test_local_runtime_detects_preview_mongo():
-    assert is_local_runtime(None, "mongodb://127.0.0.1:27017/?replicaSet=eternal_local_rs") is True
+def test_local_runtime_fail_closed():
+    """Local only with explicit APP_ENV; loopback Mongo alone is not local."""
     assert is_local_runtime("preview", "mongodb://127.0.0.1:27017") is True
+    assert is_local_runtime("local", "mongodb://127.0.0.1:27017") is True
+    assert is_local_runtime("development", "mongodb://127.0.0.1:27017") is True
+    assert is_local_runtime("test", "mongodb://127.0.0.1:27017") is True
     assert is_local_runtime("production", "mongodb://127.0.0.1:27017") is False
+    assert is_local_runtime(None, "mongodb://127.0.0.1:27017/?replicaSet=eternal_local_rs") is False
+    assert is_local_runtime("", "mongodb://127.0.0.1:27017") is False
+    assert is_local_runtime("staging", "mongodb://127.0.0.1:27017") is False
     assert is_local_runtime(None, "mongodb://prod-mongo.example:27017") is False
 
 
@@ -44,6 +50,24 @@ def test_production_allows_only_holding_team():
     )
 
 
+def test_unset_app_env_loopback_denies_admin_package():
+    """Unset APP_ENV + loopback Mongo must not grant admin package access."""
+    admin = {"role": "admin"}
+    assert not can_access_purchasing_inventory_package(
+        admin, None, "mongodb://127.0.0.1:27017"
+    )
+    filtered = filter_package_permissions(
+        PACKAGE_PERMISSIONS | {"po.view", "chat.use", "nav.settings"},
+        admin,
+        None,
+        "mongodb://127.0.0.1:27017",
+    )
+    assert "po.view" in filtered
+    assert "chat.use" in filtered
+    assert "nav.settings" in filtered
+    assert not filtered.intersection(PACKAGE_PERMISSIONS)
+
+
 def test_filter_strips_package_keys_on_production():
     filtered = filter_package_permissions(
         PACKAGE_PERMISSIONS | {"po.view", "chat.use"},
@@ -54,6 +78,26 @@ def test_filter_strips_package_keys_on_production():
     assert "po.view" in filtered
     assert "chat.use" in filtered
     assert not filtered.intersection(PACKAGE_PERMISSIONS)
+
+
+def test_filter_preserves_unrelated_module_keys_for_admin_when_locked():
+    """Sales/SPK/Production/Delivery/Payroll/Settings keys stay when package stripped."""
+    unrelated = {
+        "po.view",
+        "spk.view_all",
+        "dashboard.production.view",
+        "delivery.update",
+        "payroll.view",
+        "nav.settings",
+        "nav.sales",
+    }
+    filtered = filter_package_permissions(
+        unrelated | PACKAGE_PERMISSIONS,
+        {"role": "admin"},
+        "production",
+        "mongodb://127.0.0.1:27017",
+    )
+    assert filtered == unrelated
 
 
 @pytest.fixture
@@ -142,3 +186,47 @@ async def test_local_api_allows_admin_hpp(bind_db, monkeypatch):
     monkeypatch.setenv("MONGO_URL", "mongodb://127.0.0.1:27017/?replicaSet=eternal_local_rs")
     listing = await _get_as("admin", "/api/pembelian/hpp")
     assert listing.status_code == 200, listing.text
+
+
+@pytest.mark.anyio
+async def test_preview_api_allows_admin_hpp(bind_db, monkeypatch):
+    monkeypatch.setenv("APP_ENV", "preview")
+    monkeypatch.setenv("MONGO_URL", "mongodb://127.0.0.1:27017/?replicaSet=eternal_local_rs")
+    listing = await _get_as("admin", "/api/pembelian/hpp")
+    assert listing.status_code == 200, listing.text
+
+
+@pytest.mark.anyio
+async def test_unset_app_env_api_denies_admin_hpp(bind_db, monkeypatch):
+    monkeypatch.delenv("APP_ENV", raising=False)
+    monkeypatch.setenv("MONGO_URL", "mongodb://127.0.0.1:27017/?replicaSet=eternal_local_rs")
+    listing = await _get_as("admin", "/api/pembelian/hpp")
+    assert listing.status_code == 403, listing.text
+
+
+@pytest.mark.anyio
+async def test_production_api_denies_admin_hpp(bind_db, monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("MONGO_URL", "mongodb://127.0.0.1:27017")
+    listing = await _get_as("admin", "/api/pembelian/hpp")
+    assert listing.status_code == 403, listing.text
+
+
+@pytest.mark.anyio
+async def test_production_holding_missing_org_view_denied_branches(bind_db, monkeypatch):
+    """HOLDING_TEAM still needs granted org.branches.view — package role alone is not enough."""
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("MONGO_URL", "mongodb://prod-mongo.example:27017")
+    await server.db.role_permissions.insert_one(
+        {
+            "role": "holding_team",
+            "permissions": [
+                "purchase_hpp.view",
+                "nav.purchasing.hpp",
+                "current_stock.view",
+                "nav.inventory.current_stock",
+            ],
+        }
+    )
+    listing = await _get_as("holding_team", "/api/branches")
+    assert listing.status_code == 403, listing.text

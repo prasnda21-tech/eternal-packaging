@@ -2,6 +2,10 @@
 
 import os
 
+# Fail-closed package lock: explicit local APP_ENV required for admin package access.
+# Individual tests may override APP_ENV (production / unset) via monkeypatch.
+os.environ.setdefault("APP_ENV", "test")
+
 
 def pytest_configure(config):
     """Give each xdist worker its own database before test modules import."""
