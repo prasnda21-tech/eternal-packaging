@@ -32,8 +32,11 @@ describe("Nilai Persediaan read-only page", () => {
     expect(source).toMatch(/item\.inventory_value != null/);
     expect(source).toMatch(/hasHpp \? formatRupiah\(item\.current_hpp\) : "Belum Ada HPP"/);
     expect(source).toMatch(/hasValue \? formatRupiah\(item\.inventory_value\) : "—"/);
+    expect(source).toMatch(/stock_fisik_status === "UNAVAILABLE"/);
     expect(source).toMatch(/stock_fisik == null/);
-    expect(source).toMatch(/Tidak tersedia/);
+    expect(source).toMatch(/Belum tersedia/);
+    expect(source).toMatch(/inventory-stock-source/);
+    expect(source).toMatch(/physical_stock_balances/);
   });
 
   test("contains no stock, purchasing, or customer-pricing write calls", () => {

@@ -105,6 +105,11 @@ async def test_compatibility_reads_product_stock_state_and_orders(db):
     catalog = await list_physical_stock_catalog(db)
     assert catalog["stock_read_mode"] == MODE_COMPATIBILITY
     assert catalog["r2_authority_active"] is False
+    assert catalog["physical_qty_scope"] == "COMPANY"
+    assert catalog["branch_filter_affects_physical_qty"] is False
+    assert "per cabang" in (catalog.get("physical_qty_note") or "").lower() or "perusahaan" in (
+        catalog.get("physical_qty_note") or ""
+    ).lower()
     row = next(r for r in catalog["items"] if r["master_item_id"] == item["id"])
     assert row["physical_qty"] == 15900
     assert row["qty_pesanan"] == 600  # 1000 - 400
@@ -233,6 +238,8 @@ async def test_authority_switch_to_r2_stops_legacy_physical(db):
     r2 = await list_physical_stock_catalog(db)
     assert r2["stock_read_mode"] == "r2"
     assert r2["r2_authority_active"] is True
+    assert r2["physical_qty_scope"] == "BRANCH"
+    assert r2["branch_filter_affects_physical_qty"] is True
     # No R2 balances → physical 0 (legacy fallback stopped)
     row = next(r for r in r2["items"] if r["master_item_id"] == item["id"])
     assert row["physical_qty"] == 0

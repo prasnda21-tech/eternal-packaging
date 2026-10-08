@@ -58,9 +58,8 @@ export default function CabangGudang() {
         return items[0]?.id || "";
       });
     } catch (ex) {
+      // Keep prior list; never present API/403 failure as an empty dataset.
       setLoadError(errText(ex));
-      setBranches([]);
-      setSelectedBranchId("");
     } finally {
       setLoadingBranches(false);
     }
@@ -272,7 +271,9 @@ export default function CabangGudang() {
             <strong>Cabang</strong>
           </div>
           {loadingBranches ? (
-            <p className="muted small">Memuat cabang…</p>
+            <p className="muted small" data-testid="cabang-loading">Memuat cabang…</p>
+          ) : loadError ? (
+            <p className="muted small" data-testid="cabang-load-failed">Daftar cabang gagal dimuat.</p>
           ) : branches.length === 0 ? (
             <p className="muted small" data-testid="cabang-empty">Belum ada cabang.</p>
           ) : (
@@ -340,10 +341,14 @@ export default function CabangGudang() {
             )}
           </div>
 
-          {!selectedBranch ? (
+          {!selectedBranch && loadError ? (
+            <p className="muted small" data-testid="gudang-load-blocked">Gudang tidak dapat dimuat karena daftar cabang gagal.</p>
+          ) : !selectedBranch ? (
             <p className="muted small">Pilih cabang untuk melihat gudang.</p>
           ) : loadingWarehouses ? (
-            <p className="muted small">Memuat gudang…</p>
+            <p className="muted small" data-testid="gudang-loading">Memuat gudang…</p>
+          ) : actionError && warehouses.length === 0 ? (
+            <p className="muted small" data-testid="gudang-load-failed">Daftar gudang gagal dimuat.</p>
           ) : warehouses.length === 0 ? (
             <p className="muted small" data-testid="gudang-empty">Belum ada gudang untuk cabang ini.</p>
           ) : (

@@ -127,9 +127,10 @@ describe("Nilai Persediaan financial actions", () => {
           item_code: "UNK",
           item_name: "Tanpa bukti stok",
           unit: "PCS",
-          // stockLabel shows "Tidak tersedia" only when stock_fisik is null/empty;
-          // zero is a real quantity and renders as "0" (see mid-zero above).
+          // stockLabel shows "Belum tersedia" when stock_fisik is null/UNAVAILABLE;
+          // proven zero is a real quantity and renders as "0" (see mid-zero above).
           stock_fisik: null,
+          stock_fisik_status: "UNAVAILABLE",
           hpp_reason: "STOCK_STATE_UNAVAILABLE",
           current_hpp: null,
           inventory_value: null,
@@ -307,7 +308,8 @@ describe("Nilai Persediaan financial actions", () => {
     expect(container.querySelector('[data-testid="inventory-estimate-missing"]').textContent).toBe("4");
     expect(container.querySelector('[data-testid="inventory-estimate-review"]').textContent).toBe("2");
     expect(container.querySelector('[data-testid="inventory-value-stock-mid-zero"]').textContent).toBe("0");
-    expect(container.querySelector('[data-testid="inventory-value-stock-mid-unknown"]').textContent).toBe("Tidak tersedia");
+    expect(container.querySelector('[data-testid="inventory-value-stock-mid-unknown"]').textContent).toBe("Belum tersedia");
+    expect(container.querySelector('[data-testid="inventory-value-stock-mid-unknown"]').textContent).not.toBe("0");
     expect(container.querySelector('[data-testid="inventory-value-search"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="inventory-value-export"]').textContent).toMatch(/Export Excel/);
     expect(mockApi.captureFinancialOpeningSnapshot).not.toHaveBeenCalled();

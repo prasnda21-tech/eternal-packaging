@@ -239,10 +239,18 @@ async def list_compatibility_stock_catalog(
             "warehouse_count": 0,
             "stock_read_mode": MODE_COMPATIBILITY,
             "r2_authority_active": False,
+            "physical_qty_scope": "COMPANY",
+            "branch_filter_affects_physical_qty": False,
+            "physical_qty_note": (
+                "Qty fisik legacy digabung perusahaan (product_stock_state); "
+                "belum dipisahkan per cabang. Filter cabang tidak mengubah qty fisik legacy."
+            ),
             "compatibility": {
                 "physical_source": "product_stock_state.total_qty",
                 "order_source": "orders.line_items + operator_splits",
                 "delivery_source": "sales_deliveries (+ order.qty_delivered single-line fallback)",
+                "physical_qty_scope": "COMPANY",
+                "branch_filter_affects_physical_qty": False,
             },
         }
 
@@ -304,9 +312,17 @@ async def list_compatibility_stock_catalog(
         "warehouse_count": 0,
         "stock_read_mode": MODE_COMPATIBILITY,
         "r2_authority_active": False,
+        "physical_qty_scope": "COMPANY",
+        "branch_filter_affects_physical_qty": False,
+        "physical_qty_note": (
+            "Qty fisik legacy digabung perusahaan (product_stock_state); "
+            "belum dipisahkan per cabang. Filter cabang tidak mengubah qty fisik legacy."
+        ),
         "compatibility": {
             "physical_source": "product_stock_state.total_qty",
             "order_source": "orders.line_items + operator_splits",
             "delivery_source": "sales_deliveries (+ order.qty_delivered single-line fallback)",
+            "physical_qty_scope": "COMPANY",
+            "branch_filter_affects_physical_qty": False,
         },
     }

@@ -2119,7 +2119,8 @@ async def operational_physical_qty_by_item(
     """Sum R2 physical_qty on operational warehouses for ONE branch. Read only.
 
     Default branch is Yogyakarta (resolve_operational_branch) when branch_id omitted.
-    Never aggregates multiple branches. Missing balances are omitted (qty 0).
+    Never aggregates multiple branches. Missing balances are omitted from the map
+    (callers must treat omission as UNAVAILABLE, not proven zero).
     """
     all_branches = await db[BRANCHES_COLLECTION].find(
         {},
@@ -2290,6 +2291,11 @@ async def list_physical_stock_catalog(
         "warehouse_count": len(warehouses),
         "stock_read_mode": "r2",
         "r2_authority_active": True,
+        "physical_qty_scope": "BRANCH",
+        "branch_filter_affects_physical_qty": True,
+        "physical_qty_note": (
+            "Qty fisik resmi dari physical_stock_balances pada cabang yang dipilih."
+        ),
     }
 
 

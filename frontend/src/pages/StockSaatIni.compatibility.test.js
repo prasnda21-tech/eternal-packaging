@@ -67,6 +67,9 @@ describe("Stock Saat Ini compatibility mode", () => {
       await Promise.resolve();
     });
     expect(container.querySelector('[data-testid="stock-read-mode"]')?.textContent).toMatch(/kompatibilitas/i);
+    expect(container.querySelector('[data-testid="stock-read-mode"]')?.textContent).toMatch(/perusahaan/i);
+    expect(container.querySelector('[data-testid="stock-compat-branch-note"]')?.textContent).toMatch(/cabang/i);
+    expect(container.querySelector('[data-testid="stock-branch-select-input"]')).toBeNull();
     expect(container.querySelector('[data-testid="stock-undelivered-m1"]')?.textContent).toMatch(/Cutover pending/i);
     expect(container.querySelector('[data-testid="stock-undelivered-m1"]')?.getAttribute("data-belum-status")).toBe("CUTOVER_PENDING");
   });

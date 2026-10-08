@@ -35,7 +35,7 @@ async def db():
     client.close()
 
 
-async def _master_stock(db, mid, code, stock):
+async def _master_stock(db, mid, code, stock, *, with_official_balance=True):
     await db.master_items.insert_one({
         "id": mid,
         "accurate_item_id": f"aid-{mid}",
@@ -63,7 +63,8 @@ async def _master_stock(db, mid, code, stock):
             "id": "wh-ygy", "branch_id": "branch-ygy", "code": "MAIN",
             "name": "Gudang Yogyakarta", "active": True,
         })
-    if stock != 0:
+    # Official R2 presence is independent of legacy product_stock_state.
+    if with_official_balance:
         await db.physical_stock_balances.insert_one({
             "id": f"bal-{mid}",
             "master_item_id": mid,
@@ -200,23 +201,75 @@ async def test_read_model_summary_statuses_and_exact_value(db):
     assert rows["mismatch"]["inventory_value"] == 500
     assert rows["mismatch"]["difference"] == 1
     assert rows["zero"]["stock_fisik"] == 0
+    assert rows["zero"]["stock_fisik_status"] == "AVAILABLE"
     assert rows["zero"]["inventory_value"] is None
     assert rows["zero"]["hpp_status"] == "MISSING_COST"
     assert rows["zero"]["hpp_reason"] is None
     assert rows["zero-valid"]["stock_fisik"] == 0
+    assert rows["zero-valid"]["stock_fisik_status"] == "AVAILABLE"
     assert rows["zero-valid"]["current_hpp"] == 500
     assert rows["zero-valid"]["inventory_value"] == 0
     assert rows["zero-valid"]["hpp_status"] == "OK"
     assert rows["negative"]["stock_fisik"] == 0
+    assert rows["negative"]["stock_fisik_status"] == "AVAILABLE"
     assert rows["negative"]["hpp_status"] == "MISSING_COST"
     assert rows["negative"]["inventory_value"] is None
+    assert view["physical_stock_source"] == "physical_stock_balances"
+    assert view["physical_stock_mode"] == "r2_official"
 
     assert view["summary"] == {
         "total_inventory_value": 160500,
         "valued_items": 3,
         "items_without_hpp": 4,
         "problem_items": 1,
+        "items_without_official_stock": 0,
     }
+
+
+@pytest.mark.anyio
+async def test_unavailable_official_stock_is_null_not_zero(db):
+    await _master_stock(db, "legacy-only", "LEG-001", 999, with_official_balance=False)
+    await _master_stock(db, "proven-zero", "ZERO-002", 0, with_official_balance=True)
+    await db.hpp_cost_layers.insert_one({
+        "layer_id": "legacy-hpp",
+        "calculation_version": "ver-unavail",
+        "master_item_id": "legacy-only",
+        "item_identity": "a:aid-legacy-only",
+        "recognized_at": "2026-09-22T10:50:00+00:00",
+        "recognized_qty": 1,
+        "remaining_qty": 1,
+        "unit_cost": 100,
+        "total_cost": 100,
+        "source_type": "OPENING_HPP",
+    })
+    await db.app_settings.insert_one({
+        "key": "hpp_valuation",
+        "active_version": "ver-unavail",
+        "method": "RATA-RATA",
+    })
+    await db.hpp_cost_versions.insert_one({"id": "ver-unavail", "status": "ACTIVE"})
+
+    view = await build_inventory_valuation_rows(db)
+    rows = {row["master_item_id"]: row for row in view["rows"]}
+    assert rows["legacy-only"]["stock_fisik"] is None
+    assert rows["legacy-only"]["stock_fisik_status"] == "UNAVAILABLE"
+    assert rows["legacy-only"]["inventory_value"] is None
+    assert rows["legacy-only"]["hpp_status"] == "OK"
+    assert rows["legacy-only"]["current_hpp"] == 100
+    assert "belum tersedia" in (rows["legacy-only"]["reconciliation_explanation"] or "").lower()
+    assert rows["proven-zero"]["stock_fisik"] == 0
+    assert rows["proven-zero"]["stock_fisik_status"] == "AVAILABLE"
+    assert rows["proven-zero"]["inventory_value"] is None
+    assert view["summary"]["items_without_official_stock"] == 1
+
+    payload = export_xlsx([rows["legacy-only"], rows["proven-zero"]])
+    workbook = load_workbook(BytesIO(payload), data_only=True)
+    sheet = workbook["Nilai Persediaan"]
+    assert sheet["D2"].value is None
+    assert sheet["E2"].value == "Belum tersedia"
+    assert sheet["G2"].value is None
+    assert sheet["D3"].value == 0
+    assert sheet["E3"].value == "Tersedia"
 
 
 @pytest.mark.anyio
@@ -248,6 +301,7 @@ async def test_search_filter_pagination_and_export_are_read_only(db):
         "Nama",
         "Satuan",
         "Stock Fisik",
+        "Ketersediaan Stok",
         "HPP Rata-Rata",
         "Nilai Persediaan",
         "Status HPP",
@@ -260,8 +314,10 @@ async def test_search_filter_pagination_and_export_are_read_only(db):
         "Terakhir Update",
     ]
     assert sheet["A2"].value == "BB-001"
-    assert sheet["E2"].value is None
+    assert sheet["D2"].value == 0
+    assert sheet["E2"].value == "Tersedia"
     assert sheet["F2"].value is None
+    assert sheet["G2"].value is None
 
     after_stock = await db.product_stock_state.find({}, {"_id": 0}).sort("_id", 1).to_list(10)
     assert after_stock == before_stock

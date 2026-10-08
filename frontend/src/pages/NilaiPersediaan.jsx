@@ -154,8 +154,13 @@ export function openingHistoryCells(row) {
 }
 
 function stockLabel(item) {
-  if (!item || item.stock_fisik == null || item.stock_fisik === "") {
-    return "Tidak tersedia";
+  if (!item) return "—";
+  if (
+    item.stock_fisik_status === "UNAVAILABLE"
+    || item.stock_fisik == null
+    || item.stock_fisik === ""
+  ) {
+    return "Belum tersedia";
   }
   return fmtQty(item.stock_fisik);
 }
@@ -702,6 +707,12 @@ export default function NilaiPersediaan() {
               ? "Rekonsiliasi persediaan dan HPP dari catatan saat ini."
               : "Nilai estimasi stok, bukan saldo buku posted. Qty cabang × HPP company-wide."}
           </p>
+          {tab !== "ledger-recon" && data && (
+            <p className="muted small" data-testid="inventory-stock-source">
+              {data.physical_qty_note
+                || "Qty resmi dari physical_stock_balances per cabang. Tanpa saldo R2 = belum tersedia (bukan 0)."}
+            </p>
+          )}
         </div>
       </div>
 
