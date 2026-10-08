@@ -296,3 +296,205 @@ async def test_operations_late_uses_active_sj_only(clean_db):
     assert "PO-CAN" not in late_pos
     assert owner["operations"]["po_status"]["partition"] == "disjoint_active_completed"
     assert owner["operations"]["stage_breakdown"]["unit"] == "po_count"
+
+
+@pytest.mark.anyio
+async def test_finance_section_isolated_and_profit_still_not_ready(clean_db):
+    """Finance may be empty/unavailable without breaking Phase 2 omzet."""
+    await server.db.sales_invoices.insert_one(
+        _invoice(id="fin1", after_discount=2500, invoice_date="2026-03-10"),
+    )
+    owner = await get_owner_analytics(
+        server.db,
+        start_date="2026-03-01",
+        end_date="2026-03-31",
+        preset="custom",
+        user=_user(),
+        permissions=[PERM_VIEW],
+    )
+    assert owner["omzet"]["amount"] == 2500.0
+    assert owner["profit"]["status"] == "not_ready"
+    assert "finance" in owner
+    finance = owner["finance"]
+    assert finance["cash_balance"]["scope_label"] == "Saat Ini"
+    assert finance["cash_in"]["scope_label"] == "Periode"
+    assert finance["cash_out"]["scope_label"] == "Periode"
+    assert finance["reconciliation"]["label"] == "Rekonsiliasi Bulan Ini"
+    assert "cash_trend" in finance
+    # No finance.view / cash_bank.view grant required for Owner payload.
+    assert owner["omzet"]["amount"] == 2500.0
+
+
+@pytest.mark.anyio
+async def test_finance_balance_uses_today_not_historical_period(clean_db, monkeypatch):
+    from services.chart_of_accounts import create_account, ensure_indexes as ensure_coa
+    from services.journal_core import JOURNAL_ENTRIES, JOURNAL_LINES, STATUS_POSTED, ensure_indexes as ensure_journal
+
+    await ensure_coa(server.db)
+    await ensure_journal(server.db)
+    bank = await create_account(
+        server.db, {"code": "1111", "name": "Kas Owner", "account_type": "BANK"},
+        user=_user(),
+    )
+    equity = await create_account(
+        server.db, {"code": "3101", "name": "Ekuitas Owner", "account_type": "EQTY"},
+        user=_user(),
+    )
+    jid = uuid.uuid4().hex
+    await server.db[JOURNAL_ENTRIES].insert_one({
+        "id": jid,
+        "number": "JE-OWN-1",
+        "date": "2026-01-15",
+        "status": STATUS_POSTED,
+        "source_type": "general_journal",
+        "source_id": "gj1",
+        "description": "Saldo kas",
+    })
+    await server.db[JOURNAL_LINES].insert_many([
+        {"id": uuid.uuid4().hex, "journal_id": jid, "account_id": bank["id"], "debit": 50000, "credit": 0},
+        {"id": uuid.uuid4().hex, "journal_id": jid, "account_id": equity["id"], "debit": 0, "credit": 50000},
+    ])
+    from datetime import datetime, timezone
+    now = datetime(2026, 3, 20, 3, 0, 0, tzinfo=timezone.utc)  # WIB 2026-03-20
+    owner = await get_owner_analytics(
+        server.db,
+        start_date="2025-01-01",
+        end_date="2025-01-31",
+        preset="custom",
+        user=_user(),
+        permissions=[PERM_VIEW],
+        now=now,
+    )
+    assert owner["as_of_date"] == "2026-03-20"
+    assert owner["finance"]["cash_balance"]["as_of"] == "2026-03-20"
+    assert owner["finance"]["cash_balance"]["amount"] == 50000.0
+    # Historical period has no cash movement in Jan 2025.
+    assert owner["finance"]["cash_in"]["amount"] in (None, 0.0) or owner["finance"]["cash_in"]["status"] in {
+        "empty", "zero", "unavailable",
+    }
+    assert owner["finance"]["reconciliation"]["start_date"] == "2026-03-01"
+    assert owner["finance"]["reconciliation"]["end_date"] == "2026-03-20"
+
+
+@pytest.mark.anyio
+async def test_finance_cash_trend_matches_totals_and_excludes_transfer(clean_db):
+    from services.chart_of_accounts import create_account, ensure_indexes as ensure_coa
+    from services.journal_core import (
+        JOURNAL_ENTRIES,
+        JOURNAL_LINES,
+        SOURCE_TRANSFER,
+        STATUS_POSTED,
+        ensure_indexes as ensure_journal,
+    )
+
+    await ensure_coa(server.db)
+    await ensure_journal(server.db)
+    bank_a = await create_account(
+        server.db, {"code": "1112", "name": "Bank A", "account_type": "BANK"}, user=_user(),
+    )
+    bank_b = await create_account(
+        server.db, {"code": "1113", "name": "Bank B", "account_type": "BANK"}, user=_user(),
+    )
+    revenue = await create_account(
+        server.db, {"code": "4101", "name": "Pendapatan", "account_type": "REVE"}, user=_user(),
+    )
+    expense = await create_account(
+        server.db, {"code": "6101", "name": "Beban", "account_type": "EXPS"}, user=_user(),
+    )
+
+    async def post_je(date, lines, source_type="general_journal"):
+        jid = uuid.uuid4().hex
+        await server.db[JOURNAL_ENTRIES].insert_one({
+            "id": jid,
+            "number": f"JE-{jid[:6]}",
+            "date": date,
+            "status": STATUS_POSTED,
+            "source_type": source_type,
+            "source_id": uuid.uuid4().hex,
+            "description": source_type,
+        })
+        for line in lines:
+            await server.db[JOURNAL_LINES].insert_one({
+                "id": uuid.uuid4().hex,
+                "journal_id": jid,
+                "account_id": line["account_id"],
+                "debit": line.get("debit", 0),
+                "credit": line.get("credit", 0),
+            })
+        return jid
+
+    await post_je("2026-03-05", [
+        {"account_id": bank_a["id"], "debit": 20000},
+        {"account_id": revenue["id"], "credit": 20000},
+    ])
+    await post_je("2026-03-06", [
+        {"account_id": expense["id"], "debit": 7000},
+        {"account_id": bank_a["id"], "credit": 7000},
+    ])
+    # Internal transfer — must not inflate external in/out.
+    await post_je("2026-03-07", [
+        {"account_id": bank_b["id"], "debit": 3000},
+        {"account_id": bank_a["id"], "credit": 3000},
+    ], source_type=SOURCE_TRANSFER)
+    # Draft must be excluded.
+    draft_id = uuid.uuid4().hex
+    await server.db[JOURNAL_ENTRIES].insert_one({
+        "id": draft_id,
+        "number": "JE-DRAFT",
+        "date": "2026-03-08",
+        "status": "draft",
+        "source_type": "general_journal",
+        "source_id": "d1",
+        "description": "draft",
+    })
+    await server.db[JOURNAL_LINES].insert_many([
+        {"id": uuid.uuid4().hex, "journal_id": draft_id, "account_id": bank_a["id"], "debit": 99999, "credit": 0},
+        {"id": uuid.uuid4().hex, "journal_id": draft_id, "account_id": revenue["id"], "debit": 0, "credit": 99999},
+    ])
+
+    from datetime import datetime, timezone
+    now = datetime(2026, 3, 15, 3, 0, 0, tzinfo=timezone.utc)
+    owner = await get_owner_analytics(
+        server.db,
+        start_date="2026-03-01",
+        end_date="2026-03-31",
+        preset="custom",
+        user=_user(),
+        permissions=[PERM_VIEW],
+        now=now,
+    )
+    finance = owner["finance"]
+    assert finance["cash_in"]["amount"] == 20000.0
+    assert finance["cash_out"]["amount"] == 7000.0
+    trend = finance["cash_trend"]
+    assert trend["status"] in {"complete", "incomplete"}
+    assert trend["cash_in"] == 20000.0
+    assert trend["cash_out"] == 7000.0
+    assert trend["grain"] in {"day", "month"}
+    assert isinstance(trend["points"], list) and trend["points"]
+    assert sum(p["cash_in"] for p in trend["points"]) == 20000.0
+    assert sum(p["cash_out"] for p in trend["points"]) == 7000.0
+
+
+@pytest.mark.anyio
+async def test_finance_error_does_not_zero_phase2(clean_db, monkeypatch):
+    await server.db.sales_invoices.insert_one(
+        _invoice(id="iso1", after_discount=1200, invoice_date="2026-03-10"),
+    )
+
+    async def boom(*args, **kwargs):
+        raise RuntimeError("finance boom")
+
+    monkeypatch.setattr("services.owner_analytics._build_finance", boom)
+    owner = await get_owner_analytics(
+        server.db,
+        start_date="2026-03-01",
+        end_date="2026-03-31",
+        preset="custom",
+        user=_user(),
+        permissions=[PERM_VIEW],
+    )
+    assert owner["omzet"]["amount"] == 1200.0
+    assert owner["finance"]["status"] == "error"
+    assert owner["finance"]["cash_balance"]["amount"] is None
+    assert owner["profit"]["status"] == "not_ready"

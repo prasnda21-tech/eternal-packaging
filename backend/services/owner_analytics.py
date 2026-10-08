@@ -1,8 +1,9 @@
-"""Owner Analytics Dashboard — thin read-only facade (Phase 2).
+"""Owner Analytics Dashboard — thin read-only facade (Phase 2 + 3A finance).
 
 Reuses sales_dashboard omzet (after_discount / invoice_date / finalized).
 Adds Average PO Value from orders.selling_total when prices are complete.
 Operational counts reuse delivery schedule + quantity delivery predicates.
+Phase 3A reuses financial_dashboard cash helpers and cash_bank_owner_recon MTD.
 
 No branch filter. No profit calculation. No OTP/OTD percentages.
 GET must not post, reverse, or backfill business documents.
@@ -14,13 +15,20 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from quantity_rules import is_fully_delivered
+from services.cash_bank_owner_recon import get_owner_recon_mtd_global
 from services.dashboard_today import partition_orders_by_delivery, wib_today
 from services.delivery_schedule import (
     DEFAULT_LEAD_TIME_DAYS,
     SCHEDULE_PROJECTION,
     schedule_rows,
 )
-from services.financial_statement_common import parse_financial_date_range
+from services.financial_dashboard import (
+    _account_index,
+    _cash_movement,
+    _cash_movement_trend,
+    _position,
+)
+from services.financial_statement_common import load_statement_accounts, parse_financial_date_range
 from services.sales_dashboard import (
     SalesDashboardValidationError,
     get_sales_dashboard,
@@ -418,6 +426,154 @@ def _profit_placeholder() -> dict:
     }
 
 
+def _finance_cash_card(metric: dict, *, as_of: str) -> dict:
+    return {
+        "status": metric.get("status") or "unavailable",
+        "amount": metric.get("amount"),
+        "label": "Saldo Kas & Bank",
+        "scope": "current_snapshot",
+        "scope_label": "Saat Ini",
+        "as_of": as_of,
+        "source": metric.get("source") or "balance_sheet.account_type_BANK",
+        "detail": metric.get("detail"),
+        "warning": metric.get("warning"),
+        "note": "Saldo ledger COA BANK. Bukan otomatis saldo rekening yang sudah direkonsiliasi.",
+    }
+
+
+def _finance_flow_card(cash: dict, *, field: str, label: str, start: str, end: str) -> dict:
+    status = str(cash.get("status") or "unavailable")
+    amount = cash.get(field)
+    if status == "error":
+        amount = None
+    return {
+        "status": status,
+        "amount": amount,
+        "label": label,
+        "scope": "selected_period",
+        "scope_label": "Periode",
+        "start_date": start,
+        "end_date": end,
+        "source": cash.get("source") or "journal_lines.account_type_BANK",
+        "detail": cash.get("detail"),
+        "blocker_code": cash.get("blocker_code"),
+        "note": cash.get("note"),
+    }
+
+
+async def _build_finance(db, *, start: str, end: str, today: date) -> dict:
+    """Cash & Bank Owner section. Isolated failures must not break Phase 2."""
+    as_of = today.isoformat()
+    finance: Dict[str, Any] = {
+        "status": "complete",
+        "timezone": "Asia/Jakarta",
+        "as_of_date": as_of,
+        "period_start": start,
+        "period_end": end,
+    }
+    try:
+        accounts = _account_index(await load_statement_accounts(db))
+    except Exception as exc:
+        err = _section_error(exc)
+        finance["status"] = "error"
+        finance["cash_balance"] = {**err, "label": "Saldo Kas & Bank", "scope_label": "Saat Ini", "amount": None}
+        finance["cash_in"] = {**err, "label": "Kas Masuk", "scope_label": "Periode", "amount": None}
+        finance["cash_out"] = {**err, "label": "Kas Keluar", "scope_label": "Periode", "amount": None}
+        finance["cash_trend"] = {**err, "grain": None, "points": [], "timezone": "Asia/Jakarta"}
+        finance["reconciliation"] = {**err, "status_label": "Belum Lengkap", "unmatched_count": None, "review_count": None}
+        return finance
+
+    try:
+        position = await _position(db, as_of, None, None)
+        cash_metric = position.get("cash_and_bank") if isinstance(position, dict) else None
+        if not isinstance(cash_metric, dict):
+            raise RuntimeError("Saldo kas/bank tidak tersedia")
+        finance["cash_balance"] = _finance_cash_card(cash_metric, as_of=as_of)
+    except Exception as exc:
+        finance["cash_balance"] = {
+            **_section_error(exc),
+            "label": "Saldo Kas & Bank",
+            "scope_label": "Saat Ini",
+            "amount": None,
+            "as_of": as_of,
+        }
+
+    try:
+        cash = await _cash_movement(db, start, end, accounts)
+        finance["cash_in"] = _finance_flow_card(cash, field="cash_in", label="Kas Masuk", start=start, end=end)
+        finance["cash_out"] = _finance_flow_card(cash, field="cash_out", label="Kas Keluar", start=start, end=end)
+    except Exception as exc:
+        err = _section_error(exc)
+        finance["cash_in"] = {**err, "label": "Kas Masuk", "scope_label": "Periode", "amount": None}
+        finance["cash_out"] = {**err, "label": "Kas Keluar", "scope_label": "Periode", "amount": None}
+
+    try:
+        trend = await _cash_movement_trend(db, start, end, accounts)
+        finance["cash_trend"] = trend
+        # Consistency: when both complete/zero/incomplete, KPI totals should match trend totals.
+        cash_in = finance.get("cash_in") or {}
+        cash_out = finance.get("cash_out") or {}
+        if (
+            cash_in.get("status") in {"complete", "zero", "incomplete"}
+            and trend.get("status") in {"complete", "zero", "incomplete"}
+            and cash_in.get("amount") is not None
+            and trend.get("cash_in") is not None
+            and round(float(cash_in["amount"]), 2) != round(float(trend["cash_in"]), 2)
+        ):
+            finance["cash_trend"] = {
+                **trend,
+                "status": "error",
+                "points": [],
+                "detail": "Agregasi tren kas tidak konsisten dengan total Kas Masuk.",
+            }
+        elif (
+            cash_out.get("status") in {"complete", "zero", "incomplete"}
+            and trend.get("status") in {"complete", "zero", "incomplete"}
+            and cash_out.get("amount") is not None
+            and trend.get("cash_out") is not None
+            and round(float(cash_out["amount"]), 2) != round(float(trend["cash_out"]), 2)
+        ):
+            finance["cash_trend"] = {
+                **trend,
+                "status": "error",
+                "points": [],
+                "detail": "Agregasi tren kas tidak konsisten dengan total Kas Keluar.",
+            }
+    except Exception as exc:
+        finance["cash_trend"] = {
+            **_section_error(exc),
+            "grain": None,
+            "points": [],
+            "timezone": "Asia/Jakarta",
+            "cash_in": None,
+            "cash_out": None,
+        }
+
+    try:
+        finance["reconciliation"] = await get_owner_recon_mtd_global(db, today=today)
+    except Exception as exc:
+        finance["reconciliation"] = {
+            **_section_error(exc),
+            "status_label": "Belum Lengkap",
+            "unmatched_count": None,
+            "review_count": None,
+            "label": "Rekonsiliasi Bulan Ini",
+            "scope_label": "Bulan Ini (WIB)",
+        }
+
+    subsection_statuses = [
+        str((finance.get(key) or {}).get("status") or "")
+        for key in ("cash_balance", "cash_in", "cash_out", "cash_trend", "reconciliation")
+    ]
+    if any(status == "error" for status in subsection_statuses):
+        finance["status"] = "incomplete"
+    elif any(status in {"incomplete", "unavailable"} for status in subsection_statuses):
+        finance["status"] = "incomplete"
+    else:
+        finance["status"] = "complete"
+    return finance
+
+
 def _drilldowns(permissions: Optional[Sequence[str]]) -> dict:
     perms = set(permissions or [])
     def can(*keys: str) -> bool:
@@ -543,5 +699,23 @@ async def get_owner_analytics(
         base["operations"] = err
         base["po_active"] = err
         base["delivery_late"] = err
+
+    # Phase 3A Cash & Bank — isolated from Phase 2 failures.
+    try:
+        base["finance"] = await _build_finance(db, start=start, end=end, today=today)
+    except Exception as exc:
+        base["finance"] = {
+            **_section_error(exc),
+            "cash_balance": {"status": "error", "amount": None, "detail": str(exc) or "Gagal memuat"},
+            "cash_in": {"status": "error", "amount": None},
+            "cash_out": {"status": "error", "amount": None},
+            "cash_trend": {"status": "error", "points": [], "grain": None},
+            "reconciliation": {
+                "status": "error",
+                "status_label": "Belum Lengkap",
+                "unmatched_count": None,
+                "review_count": None,
+            },
+        }
 
     return base

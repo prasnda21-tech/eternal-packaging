@@ -8,9 +8,12 @@ import {
   formatAxisMoney,
   formatMoney,
   formatOwnerStamp,
+  mapOwnerCashTrend,
   mapOwnerTrend,
   moneyOrState,
   ownerRangeFromSearch,
+  pickCashAxisTickIndexes,
+  reconOrState,
   shouldApplyDashboardResponse,
 } from "../lib/ownerAnalytics";
 import "./ownerDashboard.css";
@@ -52,6 +55,120 @@ export function formatOwnerPeriodRange(start, end) {
 export function ownerSnapshotContext(asOfDate) {
   const day = formatOwnerAsOfDay(asOfDate);
   return day ? `Saat Ini · ${day}` : "Saat Ini";
+}
+
+function CashTrendPlot({ points, status }) {
+  const wrapRef = useRef(null);
+  const [chartWidth, setChartWidth] = useState(640);
+
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return undefined;
+    const apply = () => {
+      const next = Math.max(280, Math.round(el.getBoundingClientRect().width || 640));
+      setChartWidth(next);
+    };
+    apply();
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", apply);
+      return () => window.removeEventListener("resize", apply);
+    }
+    const observer = new ResizeObserver(apply);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  if (status === "loading") {
+    return <p className="owner-empty" data-testid="owner-cash-trend-loading">Memuat arus kas…</p>;
+  }
+  if (status === "error") {
+    return <p className="owner-empty" data-testid="owner-cash-trend-error">Tidak dapat memuat arus kas.</p>;
+  }
+  if (status === "unavailable") {
+    return <p className="owner-empty" data-testid="owner-cash-trend-unavailable">Data arus kas belum tersedia.</p>;
+  }
+  if (status === "empty" || !points?.length) {
+    return <p className="owner-empty" data-testid="owner-cash-trend-empty">Belum ada mutasi kas eksternal pada periode ini.</p>;
+  }
+
+  const width = 640;
+  const height = 220;
+  const padL = 4;
+  const padR = 22;
+  const padT = 12;
+  const padB = 34;
+  const axis = 48;
+  const amounts = points.flatMap((p) => [Number(p.cash_in) || 0, Number(p.cash_out) || 0]);
+  const yMax = Math.max(...amounts, 1);
+  const plotW = Math.max(1, width - axis - padL - padR);
+  const plotH = height - padT - padB;
+  const xAt = (index) => {
+    if (points.length === 1) return axis + padL + plotW / 2;
+    return axis + padL + (plotW * index) / (points.length - 1);
+  };
+  const yAt = (amount) => padT + plotH * (1 - Number(amount) / yMax);
+  const pathFor = (key) => points
+    .map((point, index) => `${index === 0 ? "M" : "L"}${xAt(index)},${yAt(point[key])}`)
+    .join(" ");
+  const areaIn = `${pathFor("cash_in")} L${xAt(points.length - 1)},${yAt(0)} L${xAt(0)},${yAt(0)} Z`;
+  const tickIndexes = new Set(pickCashAxisTickIndexes(points.length, chartWidth));
+  const ticks = [0, yMax * 0.5, yMax];
+  const anchorFor = (index) => {
+    if (index === 0) return "start";
+    if (index === points.length - 1) return "end";
+    return "middle";
+  };
+
+  return (
+    <div className="owner-trend owner-cash-trend" data-testid="owner-cash-trend-plot" ref={wrapRef}>
+      <div className="owner-cash-legend" aria-hidden="true">
+        <span className="owner-cash-legend__in">Kas Masuk</span>
+        <span className="owner-cash-legend__out">Kas Keluar</span>
+      </div>
+      <svg
+        viewBox={`0 0 ${width} ${height}`}
+        role="img"
+        aria-label="Grafik arus kas masuk dan keluar"
+        preserveAspectRatio="xMidYMid meet"
+        className="owner-cash-trend__svg"
+      >
+        {ticks.map((tick) => (
+          <g key={tick}>
+            <line x1={axis} x2={width - padR} y1={yAt(tick)} y2={yAt(tick)} stroke="#e7f0eb" />
+            <text x={axis - 6} y={yAt(tick) + 4} textAnchor="end" fill="#3d4f48" fontSize="11">{formatAxisMoney(tick)}</text>
+          </g>
+        ))}
+        <path d={areaIn} fill="#176B4D" fillOpacity="0.10" />
+        <path d={pathFor("cash_in")} fill="none" stroke="#176B4D" strokeWidth="2.4" />
+        <path d={pathFor("cash_out")} fill="none" stroke="#c45c26" strokeWidth="2.4" />
+        {points.map((point, index) => {
+          const tipDate = point.fullLabel || point.label || point.period;
+          return (
+            <g key={`${point.period || point.label}-${index}`}>
+              <circle cx={xAt(index)} cy={yAt(point.cash_in)} r="3.2" fill="#176B4D">
+                <title>{`${tipDate}\nKas Masuk ${formatMoney(point.cash_in)}\nKas Keluar ${formatMoney(point.cash_out)}`}</title>
+              </circle>
+              <circle cx={xAt(index)} cy={yAt(point.cash_out)} r="3.2" fill="#c45c26">
+                <title>{`${tipDate}\nKas Masuk ${formatMoney(point.cash_in)}\nKas Keluar ${formatMoney(point.cash_out)}`}</title>
+              </circle>
+              {tickIndexes.has(index) ? (
+                <text
+                  x={xAt(index)}
+                  y={height - 10}
+                  textAnchor={anchorFor(index)}
+                  fill="#3d4f48"
+                  fontSize="11"
+                  data-testid={index === 0 || index === points.length - 1 ? "owner-cash-axis-edge" : undefined}
+                >
+                  {point.label || point.period}
+                </text>
+              ) : null}
+            </g>
+          );
+        })}
+      </svg>
+    </div>
+  );
 }
 
 function TrendPlot({ points, status }) {
@@ -213,6 +330,12 @@ export default function OwnerDashboard() {
     : (data?.invoice_count || { status: "error" });
 
   const trend = mapOwnerTrend(loading ? { status: "loading" } : data?.trend);
+  const finance = loading ? null : (data?.finance || null);
+  const cashBalance = loading ? { status: "loading" } : (finance?.cash_balance || { status: "error" });
+  const cashIn = loading ? { status: "loading" } : (finance?.cash_in || { status: "error" });
+  const cashOut = loading ? { status: "loading" } : (finance?.cash_out || { status: "error" });
+  const cashTrend = mapOwnerCashTrend(loading ? { status: "loading" } : finance?.cash_trend);
+  const reconState = reconOrState(loading ? { status: "loading" } : finance?.reconciliation);
   const ops = data?.operations && data.operations.status !== "error" ? data.operations : null;
   const drills = data?.drilldowns || {};
   const openDrill = (key) => {
@@ -260,6 +383,12 @@ export default function OwnerDashboard() {
             </span>
           </p>
         </div>
+        <span className="owner-dash__stamp owner-dash__stamp--header" data-testid="owner-loaded-at">
+          Diperbarui {formatOwnerStamp(data?.loaded_at)} WIB
+        </span>
+      </header>
+
+      <div className="owner-dash__toolbar" data-testid="owner-period-toolbar">
         <div className="owner-dash__filters">
           <div className="owner-dash__presets" role="group" aria-label="Filter periode">
             {PRESETS.map((item) => (
@@ -275,7 +404,7 @@ export default function OwnerDashboard() {
             ))}
           </div>
           {range.preset === "custom" ? (
-            <div className="owner-dash__custom">
+            <div className="owner-dash__custom" data-testid="owner-custom-range">
               <label>
                 Dari
                 <input
@@ -285,6 +414,7 @@ export default function OwnerDashboard() {
                   onChange={(e) => setCustomDate("start", e.target.value)}
                 />
               </label>
+              <span className="owner-dash__custom-sep" aria-hidden="true">s/d</span>
               <label>
                 Sampai
                 <input
@@ -296,11 +426,8 @@ export default function OwnerDashboard() {
               </label>
             </div>
           ) : null}
-          <span className="owner-dash__stamp" data-testid="owner-loaded-at">
-            Diperbarui {formatOwnerStamp(data?.loaded_at)} WIB
-          </span>
         </div>
-      </header>
+      </div>
 
       {loadError ? (
         <p className="owner-banner-error" data-testid="owner-load-error">{String(loadError)}</p>
@@ -388,6 +515,77 @@ export default function OwnerDashboard() {
           meta="Bukan omzet − pembelian."
           tone="is-muted"
         />
+      </section>
+
+      <section className="owner-finance" data-testid="owner-finance" aria-label="Keuangan">
+        <div className="owner-finance__head">
+          <h2>Keuangan</h2>
+          <span data-testid="owner-finance-note">Kas & Bank · ledger Eternal</span>
+        </div>
+        <div className="owner-dash__kpis owner-finance__kpis" aria-label="KPI keuangan kas dan bank">
+          <KpiCard
+            testid="owner-kpi-cash-balance"
+            title="Saldo Kas & Bank"
+            tip="Saldo ledger akun COA tipe BANK per hari ini WIB. Bukan otomatis saldo rekening yang sudah direkonsiliasi."
+            badge="Saat Ini"
+            valueState={moneyOrState(cashBalance, { emptyText: "Belum tersedia" })}
+            meta={
+              cashBalance.as_of
+                ? `As-of ${formatOwnerAsOfDay(cashBalance.as_of) || cashBalance.as_of} · ${cashBalance.status || "—"}`
+                : (cashBalance.status || "Saat Ini")
+            }
+            tone={cashBalance.status === "incomplete" ? "is-warn" : ""}
+          />
+          <KpiCard
+            testid="owner-kpi-cash-in"
+            title="Kas Masuk"
+            tip="Debit eksternal pada akun BANK dari jurnal sah pada periode terpilih. Transfer internal dikecualikan."
+            badge="Periode"
+            valueState={moneyOrState(cashIn, { emptyText: "Belum ada mutasi" })}
+            meta="Debit BANK eksternal"
+            tone={cashIn.status === "incomplete" ? "is-warn" : ""}
+          />
+          <KpiCard
+            testid="owner-kpi-cash-out"
+            title="Kas Keluar"
+            tip="Kredit eksternal pada akun BANK dari jurnal sah pada periode terpilih. Transfer internal dikecualikan."
+            badge="Periode"
+            valueState={moneyOrState(cashOut, { emptyText: "Belum ada mutasi" })}
+            meta="Kredit BANK eksternal"
+            tone={cashOut.status === "incomplete" ? "is-warn" : ""}
+          />
+          <article
+            className={`owner-kpi ${reconState.kind === "incomplete" || reconState.kind === "unavailable" ? "is-warn" : ""} ${reconState.kind === "error" ? "is-danger" : ""}`}
+            data-testid="owner-kpi-recon"
+            data-status={reconState.kind}
+          >
+            <p className="owner-kpi__title">
+              <span className="owner-kpi__title-text">Rekonsiliasi Bulan Ini</span>
+              <span className="owner-kpi__badge">Saat Ini</span>
+              <button
+                type="button"
+                className="owner-kpi__tip"
+                title="Status rekonsiliasi month-to-date semua rekening Kas/Bank aktif. Pasangan cocok ≠ rekening sudah selesai direkonsiliasi."
+                aria-label="Info Rekonsiliasi Bulan Ini"
+              >
+                ⓘ
+              </button>
+            </p>
+            <p className={`owner-kpi__value is-${reconState.kind}`}>{reconState.text}</p>
+            <p className="owner-kpi__meta" data-testid="owner-recon-counts">
+              {reconState.unmatched == null && reconState.review == null
+                ? (reconState.detail || "Jumlah belum dapat dihitung")
+                : `Belum cocok: ${reconState.unmatched ?? "—"} · Perlu review: ${reconState.review ?? "—"}`}
+            </p>
+          </article>
+        </div>
+        <div className="owner-panel owner-panel--trend owner-finance__chart">
+          <div className="owner-panel__head">
+            <h2>Grafik Arus Kas</h2>
+            <span data-testid="owner-cash-trend-period">{cashTrend.grain || "Kinerja periode"}</span>
+          </div>
+          <CashTrendPlot points={cashTrend.points} status={loading ? "loading" : cashTrend.status} />
+        </div>
       </section>
 
       <section className="owner-dash__grid">
