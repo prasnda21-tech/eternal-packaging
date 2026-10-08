@@ -91,11 +91,119 @@ _NAME_GUARD = asyncio.Lock()
 _SO_INTERNAL_CREATED_BY_ID = "_created_by_id"
 _SO_INTERNAL_BRANCH_ID = "_branch_id"
 
+# Opportunistic eviction (no background task). O(1) gate per call; O(N) sweep
+# only when the interval elapses or a soft max is exceeded.
+_CACHE_SWEEP_MIN_INTERVAL_S = 30.0
+_LAST_CACHE_SWEEP_MONO = 0.0
+
+
+def _env_positive_int(name: str, default: int) -> int:
+    raw = (os.environ.get(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return val if val > 0 else default
+
+
+# Soft size thresholds: when exceeded, allow an early expired-only sweep even
+# inside the throttle interval. Live (unexpired) entries are never dropped —
+# avoids Accurate API amplification and preserves SO stale-on-error fallbacks.
+ACCURATE_NAME_CACHE_MAX_ENTRIES = _env_positive_int("ACCURATE_NAME_CACHE_MAX_ENTRIES", 5000)
+ACCURATE_SO_LIST_CACHE_MAX_ENTRIES = _env_positive_int("ACCURATE_SO_LIST_CACHE_MAX_ENTRIES", 256)
+
 
 def clear_accurate_name_cache() -> None:
     """Tests only. Drops TTL cache and in-flight lookups."""
     _NAME_CACHE.clear()
     _NAME_INFLIGHT.clear()
+
+
+def clear_accurate_so_list_cache() -> None:
+    """Tests only. Drops SO list cache entries."""
+    _SO_LIST_CACHE.clear()
+
+
+def reset_accurate_cache_sweep_clock() -> None:
+    """Tests only. Allows the next opportunistic sweep immediately."""
+    global _LAST_CACHE_SWEEP_MONO
+    _LAST_CACHE_SWEEP_MONO = 0.0
+
+
+def _evict_expired_name_cache(now_mono: float) -> int:
+    """Remove expired name entries. Snapshot keys first — safe under mutation."""
+    expired = [
+        key for key, (expires_at, _name) in list(_NAME_CACHE.items())
+        if expires_at <= now_mono
+    ]
+    removed = 0
+    for key in expired:
+        # Never drop a key mid single-flight; inflight owns the refresh.
+        if key in _NAME_INFLIGHT:
+            continue
+        cur = _NAME_CACHE.get(key)
+        if cur is not None and cur[0] <= now_mono:
+            _NAME_CACHE.pop(key, None)
+            removed += 1
+    return removed
+
+
+def _evict_expired_so_list_cache(now_wall: float) -> int:
+    """Remove SO list entries past _LIST_CACHE_TTL. Snapshot keys first."""
+    expired = [
+        key for key, entry in list(_SO_LIST_CACHE.items())
+        if not isinstance(entry, dict)
+        or (now_wall - float(entry.get("at") or 0)) >= _LIST_CACHE_TTL
+    ]
+    removed = 0
+    for key in expired:
+        entry = _SO_LIST_CACHE.get(key)
+        if entry is None:
+            continue
+        if not isinstance(entry, dict) or (now_wall - float(entry.get("at") or 0)) >= _LIST_CACHE_TTL:
+            _SO_LIST_CACHE.pop(key, None)
+            removed += 1
+    return removed
+
+
+def maybe_sweep_accurate_caches(*, force: bool = False) -> Dict[str, int]:
+    """Throttled expired-entry eviction. No network I/O. Never drops live entries.
+
+    Returns counts for tests/diagnostics. Skips when within the min interval
+    unless force=True or a soft size threshold is already exceeded (early
+    expired sweep only — live entries remain).
+    """
+    global _LAST_CACHE_SWEEP_MONO
+    now_mono = time.monotonic()
+    name_over = len(_NAME_CACHE) > ACCURATE_NAME_CACHE_MAX_ENTRIES
+    so_over = len(_SO_LIST_CACHE) > ACCURATE_SO_LIST_CACHE_MAX_ENTRIES
+    if (
+        not force
+        and not name_over
+        and not so_over
+        and (now_mono - _LAST_CACHE_SWEEP_MONO) < _CACHE_SWEEP_MIN_INTERVAL_S
+    ):
+        return {
+            "skipped": 1,
+            "name_expired": 0,
+            "so_expired": 0,
+            "name_size": len(_NAME_CACHE),
+            "so_size": len(_SO_LIST_CACHE),
+        }
+
+    _LAST_CACHE_SWEEP_MONO = now_mono
+    now_wall = time.time()
+    name_expired = _evict_expired_name_cache(now_mono)
+    so_expired = _evict_expired_so_list_cache(now_wall)
+    return {
+        "skipped": 0,
+        "name_expired": name_expired,
+        "so_expired": so_expired,
+        "name_size": len(_NAME_CACHE),
+        "so_size": len(_SO_LIST_CACHE),
+    }
 
 
 def now_iso() -> str:
@@ -928,7 +1036,10 @@ class AccurateClient:
         now = time.monotonic()
         hit = _NAME_CACHE.get(cache_key)
         if hit and hit[0] > now:
+            maybe_sweep_accurate_caches()
             return hit[1]
+        # Drop expired entries opportunistically before miss path / single-flight.
+        maybe_sweep_accurate_caches()
         async with _NAME_GUARD:
             hit = _NAME_CACHE.get(cache_key)
             if hit and hit[0] > time.monotonic():
@@ -1334,9 +1445,13 @@ class AccurateClient:
         page = max(1, int(page or 1))
         keyword = (keyword or "").strip()
         cache_key = f"list:{self.auth_mode}:{page}:{limit}:{keyword.lower()}"
+        # Capture entry before sweep so stale-on-error fallback still works even
+        # if the dict entry is removed as expired.
         entry = _SO_LIST_CACHE.get(cache_key)
         if not force and entry and (_t.time() - entry["at"]) < _LIST_CACHE_TTL:
+            maybe_sweep_accurate_caches()
             return {**entry["data"], "cached": True, "fetched_at": entry["at"]}
+        maybe_sweep_accurate_caches()
 
         if not self.is_live:
             all_mock = _MOCK_SALES_ORDERS
