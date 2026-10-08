@@ -1,10 +1,11 @@
 """Production lock for recovered Purchasing + Inventory + HPP package.
 
-LOCAL / preview / development:
+LOCAL / preview / development / test (explicit APP_ENV only):
   Existing role permissions apply (admin keeps full package access).
 
-PRODUCTION (non-local Mongo host, or APP_ENV=production):
+All other runtimes (including APP_ENV unset/unknown, and production):
   Only role holding_team may hold package permission keys.
+  Mongo on 127.0.0.1/localhost alone NEVER implies local.
   Sidebar, routes, and APIs all derive from filtered effective permissions —
   no separate soft-hide.
 """
@@ -19,10 +20,11 @@ HOLDING_TEAM_ROLE = "holding_team"
 PACKAGE_DENIED_MSG = "Modul Pembelian/Persediaan/HPP hanya untuk HOLDING_TEAM di production."
 
 LOCAL_ENVS = frozenset({"local", "development", "preview", "test"})
+# Documented loopback hosts only — never used to grant local package access.
 LOCAL_MONGO_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
 # Capability + nav keys restored by PR495 recovery. Filtered out for
-# non-HOLDING_TEAM users when runtime is production.
+# non-HOLDING_TEAM users when runtime is not an explicit LOCAL_ENVS.
 PACKAGE_PERMISSIONS: frozenset[str] = frozenset({
     # Purchasing capabilities
     "purchase_requests.view",
@@ -124,17 +126,16 @@ def mongo_hostname(mongo_url: Optional[str]) -> Optional[str]:
 
 
 def is_local_runtime(app_env: Optional[str], mongo_url: Optional[str] = None) -> bool:
-    """True for Cloud/local preview. False for production hosts."""
+    """True only for explicitly configured local/preview/dev/test runtimes.
+
+    Fail-closed:
+    - APP_ENV must be one of LOCAL_ENVS (local, development, preview, test).
+    - Unset / unknown APP_ENV is NOT local (denies admin package exemption).
+    - Loopback Mongo alone never implies local (production VPS often uses 127.0.0.1).
+    - mongo_url is retained for callers/tests but does not grant local status.
+    """
     env = str(app_env or "").strip().lower()
-    host = mongo_hostname(mongo_url)
-    if env == "production":
-        return False
-    if host and host not in LOCAL_MONGO_HOSTS:
-        return False
     if env in LOCAL_ENVS:
-        return True
-    # APP_ENV unset + local Mongo → treat as local preview (current Cloud DEV).
-    if not env and (host in LOCAL_MONGO_HOSTS or host is None):
         return True
     return False
 
