@@ -5,10 +5,11 @@ Zero-write. Does not call suggest_pairs in bulk. Does not change match rules.
 """
 from __future__ import annotations
 
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
 
-from services.cash_bank_master import get_cash_bank_raw
+from services.cash_bank_master import COLLECTION as CASH_BANK_COLLECTION, get_cash_bank_raw
 from services.cash_bank_mutasi import SOURCE_LABELS, _resolve_voucher_meta
 from services.cash_bank_pair_match import (
     PairValidationError,
@@ -27,6 +28,9 @@ from services.general_ledger import GeneralLedgerValidationError, get_general_le
 from services.journal_core import JOURNAL_ENTRIES, STATUS_REVERSED as JOURNAL_STATUS_REVERSED
 
 MONEY = Decimal("0.01")
+WIB = timezone(timedelta(hours=7))
+# Bound Owner Dashboard fan-out; larger sets return unavailable instead of unbounded scans.
+MAX_OWNER_RECON_ACCOUNTS = 40
 
 STATUS_SESUAI = "SESUAI"
 STATUS_BELUM = "BELUM_DICOCOKKAN"
@@ -137,6 +141,7 @@ async def get_owner_recon_view(
     end_date: str,
     status: Optional[str] = None,
     q: Optional[str] = None,
+    include_items: bool = True,
 ) -> dict:
     """Batch read-only owner reconciliation view. No writes. No suggest_pairs."""
     cb_id = str(cash_bank_id or "").strip()
@@ -402,10 +407,163 @@ async def get_owner_recon_view(
             ),
             "perlu_review": counts.get(STATUS_REVIEW_CANON, 0),
         },
-        "items": visible,
-        "total": len(visible),
+        "items": visible if include_items else [],
+        "total": len(visible) if include_items else 0,
         "total_unfiltered": len(rows),
         "status_labels": STATUS_LABELS,
+    }
+
+
+async def list_eligible_recon_cash_banks(db) -> List[dict]:
+    """Active cash/bank masters with a linked COA account (reconciliation-eligible)."""
+    out: List[dict] = []
+    cursor = db[CASH_BANK_COLLECTION].find(
+        {"active": {"$ne": False}},
+        {"_id": 0, "id": 1, "name": 1, "account_id": 1, "active": 1},
+    ).sort("name", 1)
+    async for doc in cursor:
+        cb_id = str(doc.get("id") or "").strip()
+        account_id = str(doc.get("account_id") or "").strip()
+        if not cb_id or not account_id:
+            continue
+        out.append({
+            "id": cb_id,
+            "name": doc.get("name"),
+            "account_id": account_id,
+        })
+    return out
+
+
+async def get_owner_recon_mtd_global(
+    db,
+    *,
+    today: Optional[date] = None,
+) -> dict:
+    """Month-to-date global recon summary for Owner Dashboard. Read-only.
+
+    Window: first day of current WIB month through today WIB.
+    Does not declare global balance match / 'Sesuai'.
+    """
+    day = today or datetime.now(WIB).date()
+    start = day.replace(day=1).isoformat()
+    end = day.isoformat()
+    base = {
+        "label": "Rekonsiliasi Bulan Ini",
+        "scope": "current_month_to_date",
+        "scope_label": "Bulan Ini (WIB)",
+        "start_date": start,
+        "end_date": end,
+        "timezone": "Asia/Jakarta",
+        "source": "cash_bank_owner_recon.get_owner_recon_view",
+        "balance_match_declared": False,
+        "read_only": True,
+    }
+    accounts = await list_eligible_recon_cash_banks(db)
+    if len(accounts) > MAX_OWNER_RECON_ACCOUNTS:
+        return {
+            **base,
+            "status": "unavailable",
+            "status_label": "Belum Lengkap",
+            "unmatched_count": None,
+            "review_count": None,
+            "accounts_total": len(accounts),
+            "accounts_read": 0,
+            "accounts_closing_complete": None,
+            "completeness_reason": (
+                f"Terlalu banyak rekening Kas/Bank ({len(accounts)}) "
+                f"untuk agregasi aman (batas {MAX_OWNER_RECON_ACCOUNTS})."
+            ),
+            "detail": "Agregasi global ditunda demi batas performa baca.",
+        }
+    if not accounts:
+        return {
+            **base,
+            "status": "unavailable",
+            "status_label": "Belum Lengkap",
+            "unmatched_count": None,
+            "review_count": None,
+            "accounts_total": 0,
+            "accounts_read": 0,
+            "accounts_closing_complete": 0,
+            "completeness_reason": "Tidak ada rekening Kas/Bank aktif dengan Akun Perkiraan.",
+            "detail": "Belum ada rekening yang dapat direkonsiliasi.",
+        }
+
+    unmatched_total = 0
+    review_total = 0
+    closing_complete_count = 0
+    read_errors = 0
+    for account in accounts:
+        try:
+            view = await get_owner_recon_view(
+                db,
+                cash_bank_id=account["id"],
+                start_date=start,
+                end_date=end,
+                include_items=False,
+            )
+        except Exception:
+            read_errors += 1
+            continue
+        summary = view.get("summary") or {}
+        try:
+            unmatched_total += int(summary.get("belum_cocok") or 0)
+            review_total += int(summary.get("perlu_review") or 0)
+        except (TypeError, ValueError):
+            read_errors += 1
+            continue
+        if view.get("statement_closing_complete"):
+            closing_complete_count += 1
+
+    accounts_read = len(accounts) - read_errors
+    if read_errors:
+        return {
+            **base,
+            "status": "error" if accounts_read == 0 else "incomplete",
+            "status_label": "Belum Lengkap",
+            "unmatched_count": None,
+            "review_count": None,
+            "accounts_total": len(accounts),
+            "accounts_read": accounts_read,
+            "accounts_closing_complete": closing_complete_count,
+            "completeness_reason": (
+                f"{read_errors} rekening gagal dibaca; total Eternal tidak dapat dipercaya."
+            ),
+            "detail": "Sebagian rekening tidak dapat dimuat.",
+        }
+
+    all_closing_complete = closing_complete_count == len(accounts)
+    if all_closing_complete and unmatched_total == 0 and review_total == 0:
+        status = "complete"
+        status_label = "Lengkap"
+        reason = "Semua rekening aktif memiliki closing statement impor dan tidak ada item belum cocok/perlu review."
+    else:
+        status = "incomplete"
+        status_label = "Belum Lengkap"
+        parts = []
+        if not all_closing_complete:
+            parts.append(
+                f"Closing statement belum lengkap pada {len(accounts) - closing_complete_count} rekening."
+            )
+        if unmatched_total:
+            parts.append(f"{unmatched_total} transaksi belum cocok.")
+        if review_total:
+            parts.append(f"{review_total} perlu review.")
+        reason = " ".join(parts) if parts else "Rekonsiliasi belum lengkap."
+
+    return {
+        **base,
+        "status": status,
+        "status_label": status_label,
+        # Counts preserved when every account summary was read successfully,
+        # even if closing is incomplete (Owner contract rule 10).
+        "unmatched_count": unmatched_total,
+        "review_count": review_total,
+        "accounts_total": len(accounts),
+        "accounts_read": accounts_read,
+        "accounts_closing_complete": closing_complete_count,
+        "completeness_reason": reason,
+        "detail": reason,
     }
 
 
