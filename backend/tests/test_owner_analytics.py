@@ -498,3 +498,310 @@ async def test_finance_error_does_not_zero_phase2(clean_db, monkeypatch):
     assert owner["finance"]["status"] == "error"
     assert owner["finance"]["cash_balance"]["amount"] is None
     assert owner["profit"]["status"] == "not_ready"
+
+
+def test_finance_arap_from_rows_buckets_fallback_and_mismatch():
+    from services.owner_analytics import _finance_arap_from_rows
+    from services.accounts_receivable import (
+        BUCKET_NOT_DUE,
+        BUCKET_1_30,
+        BUCKET_31_60,
+        BUCKET_61_90,
+        BUCKET_OVER_90,
+    )
+
+    rows = [
+        {
+            "accounting_outstanding": 100,
+            "aging_bucket": BUCKET_NOT_DUE,
+            "due_date_fallback": False,
+            "document_mismatch": False,
+            "integrity_warnings": [],
+        },
+        {
+            "accounting_outstanding": 40,
+            "aging_bucket": BUCKET_1_30,
+            "due_date_fallback": True,
+            "document_mismatch": False,
+            "integrity_warnings": [],
+        },
+        {
+            "accounting_outstanding": 30,
+            "aging_bucket": BUCKET_31_60,
+            "due_date_fallback": False,
+            "document_mismatch": True,
+            "integrity_warnings": [],
+        },
+        {
+            "accounting_outstanding": 20,
+            "aging_bucket": BUCKET_61_90,
+            "due_date_fallback": False,
+            "document_mismatch": False,
+            "integrity_warnings": [],
+        },
+        {
+            "accounting_outstanding": 10,
+            "aging_bucket": BUCKET_OVER_90,
+            "due_date_fallback": False,
+            "document_mismatch": False,
+            "integrity_warnings": [],
+        },
+        {
+            "accounting_outstanding": 0,
+            "aging_bucket": None,
+            "due_date_fallback": False,
+            "document_mismatch": False,
+            "integrity_warnings": [],
+        },
+    ]
+    card = _finance_arap_from_rows(
+        rows,
+        as_of="2026-03-20",
+        label="Piutang Usaha",
+        source="accounts_receivable.accounting_outstanding",
+        not_due_key=BUCKET_NOT_DUE,
+        bucket_keys=(BUCKET_NOT_DUE, BUCKET_1_30, BUCKET_31_60, BUCKET_61_90, BUCKET_OVER_90),
+    )
+    assert card["amount"] == 200.0
+    assert card["not_due_amount"] == 100.0
+    assert card["overdue_amount"] == 100.0
+    assert card["aging"]["not_due"] == 100.0
+    assert card["aging"]["d1_30"] == 40.0
+    assert card["aging"]["d31_60"] == 30.0
+    assert card["aging"]["d61_90"] == 20.0
+    assert card["aging"]["over_90"] == 10.0
+    assert round(
+        card["aging"]["not_due"]
+        + card["aging"]["d1_30"]
+        + card["aging"]["d31_60"]
+        + card["aging"]["d61_90"]
+        + card["aging"]["over_90"],
+        2,
+    ) == 200.0
+    assert card["due_date_fallback_count"] == 1
+    assert card["document_mismatch_count"] == 1
+    assert card["completeness"] == "incomplete"
+    assert card["scope_label"] == "Saat Ini"
+    assert card["aging_reconcile_ok"] is True
+
+
+def test_finance_arap_due_today_is_not_due_bucket_contract():
+    """Due today uses service bucket NOT_DUE (Belum Jatuh Tempo)."""
+    from services.accounts_receivable import aging_bucket_for, BUCKET_NOT_DUE
+
+    assert aging_bucket_for("2026-03-20", "2026-03-20")[0] == BUCKET_NOT_DUE
+    assert aging_bucket_for("2026-03-21", "2026-03-20")[0] == BUCKET_NOT_DUE
+    assert aging_bucket_for("2026-03-19", "2026-03-20") == ("1_30", 1)
+    assert aging_bucket_for("2026-02-18", "2026-03-20") == ("1_30", 30)
+    assert aging_bucket_for("2026-02-17", "2026-03-20") == ("31_60", 31)
+    assert aging_bucket_for("2026-01-19", "2026-03-20") == ("31_60", 60)
+    assert aging_bucket_for("2026-01-18", "2026-03-20") == ("61_90", 61)
+    assert aging_bucket_for("2025-12-20", "2026-03-20") == ("61_90", 90)
+    assert aging_bucket_for("2025-12-19", "2026-03-20") == ("OVER_90", 91)
+
+
+@pytest.mark.anyio
+async def test_owner_arap_snapshot_ignores_historical_period(clean_db, monkeypatch):
+    from datetime import datetime, timezone
+
+    captured = {}
+
+    async def fake_ar(db, *, as_of):
+        captured["ar_as_of"] = as_of
+        return {
+            "status": "complete",
+            "amount": 111.0,
+            "label": "Piutang Usaha",
+            "scope": "current_snapshot",
+            "scope_label": "Saat Ini",
+            "as_of": as_of,
+            "source": "accounts_receivable.accounting_outstanding",
+            "overdue_amount": 11.0,
+            "not_due_amount": 100.0,
+            "aging": {"not_due": 100.0, "d1_30": 11.0, "d31_60": 0.0, "d61_90": 0.0, "over_90": 0.0},
+            "invoice_count": 1,
+            "overdue_invoice_count": 1,
+            "completeness": "complete",
+            "detail": None,
+            "note": None,
+        }
+
+    async def fake_ap(db, *, as_of):
+        captured["ap_as_of"] = as_of
+        return {
+            "status": "complete",
+            "amount": 222.0,
+            "label": "Hutang Usaha",
+            "scope": "current_snapshot",
+            "scope_label": "Saat Ini",
+            "as_of": as_of,
+            "source": "accounts_payable.accounting_outstanding",
+            "overdue_amount": 0.0,
+            "not_due_amount": 222.0,
+            "aging": {"not_due": 222.0, "d1_30": 0.0, "d31_60": 0.0, "d61_90": 0.0, "over_90": 0.0},
+            "invoice_count": 1,
+            "overdue_invoice_count": 0,
+            "completeness": "complete",
+            "detail": None,
+            "note": "Nilai hutang mengikuti jurnal AP yang telah diposting.",
+        }
+
+    monkeypatch.setattr("services.owner_analytics._owner_receivables", fake_ar)
+    monkeypatch.setattr("services.owner_analytics._owner_payables", fake_ap)
+    now = datetime(2026, 3, 20, 3, 0, 0, tzinfo=timezone.utc)
+    owner = await get_owner_analytics(
+        server.db,
+        start_date="2025-01-01",
+        end_date="2025-01-31",
+        preset="custom",
+        user=_user(),
+        permissions=[PERM_VIEW],
+        now=now,
+    )
+    assert captured["ar_as_of"] == "2026-03-20"
+    assert captured["ap_as_of"] == "2026-03-20"
+    assert owner["finance"]["receivables"]["amount"] == 111.0
+    assert owner["finance"]["payables"]["amount"] == 222.0
+    assert owner["finance"]["receivables"]["scope_label"] == "Saat Ini"
+    assert owner["finance"]["payables"]["scope_label"] == "Saat Ini"
+    assert "jurnal ap" in (owner["finance"]["payables"].get("note") or "").lower()
+
+
+@pytest.mark.anyio
+async def test_arap_error_isolation_and_phase3a_preserved(clean_db, monkeypatch):
+    await server.db.sales_invoices.insert_one(
+        _invoice(id="iso-arap", after_discount=900, invoice_date="2026-03-10"),
+    )
+
+    async def boom_ar(*args, **kwargs):
+        raise RuntimeError("ar boom")
+
+    async def ok_ap(db, *, as_of):
+        return {
+            "status": "complete",
+            "amount": 50.0,
+            "label": "Hutang Usaha",
+            "scope_label": "Saat Ini",
+            "as_of": as_of,
+            "overdue_amount": 0.0,
+            "not_due_amount": 50.0,
+            "aging": {"not_due": 50.0, "d1_30": 0.0, "d31_60": 0.0, "d61_90": 0.0, "over_90": 0.0},
+            "completeness": "complete",
+            "note": "Nilai hutang mengikuti jurnal AP yang telah diposting.",
+        }
+
+    monkeypatch.setattr("services.owner_analytics._owner_receivables", boom_ar)
+    monkeypatch.setattr("services.owner_analytics._owner_payables", ok_ap)
+    owner = await get_owner_analytics(
+        server.db,
+        start_date="2026-03-01",
+        end_date="2026-03-31",
+        preset="custom",
+        user=_user(),
+        permissions=[PERM_VIEW],
+    )
+    assert owner["omzet"]["amount"] == 900.0
+    assert owner["finance"]["receivables"]["amount"] is None
+    assert owner["finance"]["receivables"]["status"] == "error"
+    assert owner["finance"]["payables"]["amount"] == 50.0
+    assert "cash_balance" in owner["finance"]
+    assert "cash_trend" in owner["finance"]
+    assert owner["profit"]["status"] == "not_ready"
+
+
+@pytest.mark.anyio
+async def test_arap_matches_accounting_summary_engine(clean_db):
+    """Owner AR/AP totals follow the same current-invoice loader as AR/AP summary."""
+    from services.accounts_receivable import get_accounts_receivable_summary
+    from services.accounts_payable import get_accounts_payable_summary
+    from services.chart_of_accounts import create_account, ensure_indexes as ensure_coa
+    from services.journal_core import JOURNAL_ENTRIES, JOURNAL_LINES, STATUS_POSTED, ensure_indexes as ensure_journal
+    from datetime import datetime, timezone
+
+    await ensure_coa(server.db)
+    await ensure_journal(server.db)
+    arec = await create_account(
+        server.db, {"code": "1121", "name": "Piutang Usaha", "account_type": "AREC"}, user=_user(),
+    )
+    reve = await create_account(
+        server.db, {"code": "4109", "name": "Pendapatan AR", "account_type": "REVE"}, user=_user(),
+    )
+    apay = await create_account(
+        server.db, {"code": "2111", "name": "Hutang Usaha", "account_type": "APAY"}, user=_user(),
+    )
+    exps = await create_account(
+        server.db, {"code": "6109", "name": "Beban AP", "account_type": "EXPS"}, user=_user(),
+    )
+
+    inv_id = "ar-owner-1"
+    await server.db.sales_invoices.insert_one({
+        "id": inv_id,
+        "invoice_number": "INV-AR-1",
+        "invoice_date": "2026-03-01",
+        "due_date": "2026-03-25",
+        "grand_total": 10000,
+        "financial_status": "finalized",
+        "customer": "Cust A",
+        "po_id": None,
+    })
+    j_ar = uuid.uuid4().hex
+    await server.db[JOURNAL_ENTRIES].insert_one({
+        "id": j_ar,
+        "number": "JE-AR-1",
+        "date": "2026-03-01",
+        "status": STATUS_POSTED,
+        "source_type": "sales_invoice",
+        "source_id": inv_id,
+        "reversal_of": None,
+        "description": "AR invoice",
+    })
+    await server.db[JOURNAL_LINES].insert_many([
+        {"id": uuid.uuid4().hex, "journal_id": j_ar, "account_id": arec["id"], "debit": 10000, "credit": 0},
+        {"id": uuid.uuid4().hex, "journal_id": j_ar, "account_id": reve["id"], "debit": 0, "credit": 10000},
+    ])
+
+    pin_id = "ap-owner-1"
+    await server.db.purchase_invoices.insert_one({
+        "id": pin_id,
+        "invoice_number": "PIN-AP-1",
+        "invoice_date": "2026-03-02",
+        "due_date": "2026-02-01",
+        "grand_total": 7000,
+        "cancelled": False,
+        "supplier": "Supp A",
+    })
+    j_ap = uuid.uuid4().hex
+    await server.db[JOURNAL_ENTRIES].insert_one({
+        "id": j_ap,
+        "number": "JE-AP-1",
+        "date": "2026-03-02",
+        "status": STATUS_POSTED,
+        "source_type": "purchase_invoice",
+        "source_id": pin_id,
+        "reversal_of": None,
+        "description": "AP invoice",
+    })
+    await server.db[JOURNAL_LINES].insert_many([
+        {"id": uuid.uuid4().hex, "journal_id": j_ap, "account_id": exps["id"], "debit": 7000, "credit": 0},
+        {"id": uuid.uuid4().hex, "journal_id": j_ap, "account_id": apay["id"], "debit": 0, "credit": 7000},
+    ])
+
+    now = datetime(2026, 3, 20, 3, 0, 0, tzinfo=timezone.utc)
+    owner = await get_owner_analytics(
+        server.db,
+        start_date="2025-01-01",
+        end_date="2025-01-31",
+        preset="custom",
+        user=_user(),
+        permissions=[PERM_VIEW],
+        now=now,
+    )
+    ar_summary = await get_accounts_receivable_summary(server.db, aging_reference_date="2026-03-20")
+    ap_summary = await get_accounts_payable_summary(server.db, aging_reference_date="2026-03-20")
+    assert owner["finance"]["receivables"]["amount"] == ar_summary["total_accounting_ar"]
+    assert owner["finance"]["receivables"]["aging"]["not_due"] == ar_summary["not_due"]
+    assert owner["finance"]["payables"]["amount"] == ap_summary["total_accounting_ap"]
+    assert owner["finance"]["payables"]["aging"]["d31_60"] == ap_summary["d31_60"]
+    assert owner["finance"]["receivables"]["as_of"] == "2026-03-20"
+    assert owner["finance"]["payables"]["as_of"] == "2026-03-20"
+    assert "credit/advance/return" in (owner["finance"]["payables"].get("note") or "").lower()

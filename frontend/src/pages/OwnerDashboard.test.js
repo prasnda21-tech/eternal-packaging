@@ -107,6 +107,27 @@ beforeEach(() => {
         review_count: 1,
         label: "Rekonsiliasi Bulan Ini",
       },
+      receivables: {
+        status: "complete",
+        amount: 120000,
+        overdue_amount: 45000,
+        not_due_amount: 75000,
+        scope_label: "Saat Ini",
+        as_of: "2026-03-15",
+        completeness: "complete",
+        aging: { not_due: 75000, d1_30: 20000, d31_60: 15000, d61_90: 5000, over_90: 5000 },
+      },
+      payables: {
+        status: "complete",
+        amount: 80000,
+        overdue_amount: 30000,
+        not_due_amount: 50000,
+        scope_label: "Saat Ini",
+        as_of: "2026-03-15",
+        completeness: "complete",
+        note: "Nilai hutang mengikuti jurnal AP yang telah diposting. Penyesuaian supplier credit/advance/return yang belum tercakup engine tidak termasuk dalam perhitungan.",
+        aging: { not_due: 50000, d1_30: 10000, d31_60: 10000, d61_90: 5000, over_90: 5000 },
+      },
     },
     operations: {
       status: "complete",
@@ -169,6 +190,15 @@ test("authorized director loads KPIs without hardcoded sample millions", async (
   expect(view.host.querySelector("[data-testid='owner-recon-counts']").textContent).toMatch(/Belum cocok:\s*3/);
   expect(view.host.querySelector("[data-testid='owner-cash-trend-plot']")).toBeTruthy();
   expect(view.host.querySelector("[data-testid='owner-cash-trend-period']").textContent).toBe("Harian");
+  expect(view.host.querySelector("[data-testid='owner-arap']")).toBeTruthy();
+  expect(view.host.querySelector("[data-testid='owner-kpi-receivables']").textContent).toMatch(/120\.000|120,000|Rp/);
+  expect(view.host.querySelector("[data-testid='owner-kpi-receivables-badge']").textContent).toBe("Saat Ini");
+  expect(view.host.querySelector("[data-testid='owner-kpi-payables']").textContent).toMatch(/80\.000|80,000|Rp/);
+  expect(view.host.querySelector("[data-testid='owner-kpi-payables']").textContent).toMatch(/Overdue/);
+  expect(view.host.querySelector("[data-testid='owner-aging-receivables']").textContent).toMatch(/Belum Jatuh Tempo/);
+  expect(view.host.querySelector("[data-testid='owner-aging-receivables']").textContent).toMatch(/1–30 Hari|>90 Hari/);
+  expect(view.host.querySelector("[data-testid='owner-aging-payables']").textContent).toMatch(/Belum Jatuh Tempo/);
+  expect(view.host.querySelector("[data-testid='owner-kpi-payables'] button.owner-kpi__tip").getAttribute("title")).toMatch(/supplier credit\/advance\/return/i);
   expect(view.host.querySelector("[data-testid='owner-period-toolbar']")).toBeTruthy();
   expect(view.host.textContent).toMatch(/01 Mar|02 Mar|15 Mar/);
   expect(view.host.textContent).not.toMatch(/\bday\b/);
@@ -194,6 +224,8 @@ test("custom filter toolbar stays outside sticky collision zone", async () => {
   expect(custom.textContent).toMatch(/s\/d/);
   // Snapshot badges remain Saat Ini even on historical custom period.
   expect(view.host.querySelector("[data-testid='owner-kpi-cash-balance-badge']").textContent).toBe("Saat Ini");
+  expect(view.host.querySelector("[data-testid='owner-kpi-receivables-badge']").textContent).toBe("Saat Ini");
+  expect(view.host.querySelector("[data-testid='owner-kpi-payables-badge']").textContent).toBe("Saat Ini");
   expect(view.host.querySelector("[data-testid='owner-kpi-omzet']")).toBeTruthy();
   view.unmount();
 });

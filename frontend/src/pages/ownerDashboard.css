@@ -604,3 +604,121 @@
 .owner-cash-legend__out::before { background: #c45c26; }
 
 .owner-kpi__value.is-incomplete { color: var(--od-warn); font-size: 0.95rem; font-weight: 700; }
+
+.owner-finance__arap {
+  margin-top: 0.85rem;
+  padding-top: 0.65rem;
+  border-top: 1px solid var(--od-border);
+}
+
+.owner-finance__head--sub {
+  margin-bottom: 0.45rem;
+}
+
+.owner-finance__arap-kpis {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-bottom: 0.55rem;
+}
+
+.owner-kpi--ar {
+  border-color: #c5ddd2;
+  background: linear-gradient(180deg, #f3faf6 0%, #ffffff 55%);
+}
+
+.owner-kpi--ap {
+  border-color: #e6dcc8;
+  background: linear-gradient(180deg, #fbf8f2 0%, #ffffff 55%);
+}
+
+.owner-finance__aging-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55rem;
+}
+
+.owner-aging {
+  min-width: 0;
+  padding: 0.55rem 0.65rem 0.6rem;
+  border: 1px solid var(--od-border);
+  border-radius: 10px;
+  background: #fff;
+}
+
+.owner-aging--ar { border-color: #c5ddd2; }
+.owner-aging--ap { border-color: #e6dcc8; }
+
+.owner-aging__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.4rem;
+  margin-bottom: 0.4rem;
+}
+
+.owner-aging__head h3 {
+  margin: 0;
+  font-size: 0.84rem;
+  font-weight: 700;
+  color: var(--od-green-deep);
+}
+
+.owner-aging--ap .owner-aging__head h3 {
+  color: #6a5428;
+}
+
+.owner-aging__head span {
+  font-size: 0.68rem;
+  color: var(--od-muted);
+}
+
+.owner-aging__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.owner-aging__label-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.72rem;
+  color: #3d4f48;
+}
+
+.owner-aging__track {
+  height: 0.35rem;
+  border-radius: 999px;
+  background: #eef2f0;
+  overflow: hidden;
+}
+
+.owner-aging__fill {
+  height: 100%;
+  border-radius: inherit;
+  background: #176b4d;
+  max-width: 100%;
+}
+
+.owner-aging--ap .owner-aging__fill {
+  background: #b8860b;
+}
+
+.owner-aging__empty {
+  margin: 0.35rem 0 0;
+  font-size: 0.78rem;
+  color: var(--od-muted);
+}
+
+@media (max-width: 720px) {
+  .owner-finance__arap-kpis,
+  .owner-finance__aging-grid {
+    grid-template-columns: 1fr;
+  }
+
+  /* Keep Aging Hutang bars/nominals clear of the fixed notification FAB. */
+  .owner-aging--ap {
+    padding-bottom: calc(4.75rem + env(safe-area-inset-bottom, 0px));
+  }
+}

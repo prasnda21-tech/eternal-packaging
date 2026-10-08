@@ -203,6 +203,74 @@ export function mapOwnerCashTrend(trend) {
   };
 }
 
+export const OWNER_AGING_LABELS = [
+  { key: "not_due", label: "Belum Jatuh Tempo" },
+  { key: "d1_30", label: "1–30 Hari" },
+  { key: "d31_60", label: "31–60 Hari" },
+  { key: "d61_90", label: "61–90 Hari" },
+  { key: "over_90", label: ">90 Hari" },
+];
+
+/** Map Owner finance.receivables / finance.payables for display. */
+export function mapOwnerArapCard(section) {
+  if (!section) {
+    return {
+      status: "unavailable",
+      amount: null,
+      overdue_amount: null,
+      not_due_amount: null,
+      aging: null,
+      completeness: "unavailable",
+      detail: null,
+      note: null,
+      scope_label: "Saat Ini",
+      label: "",
+      as_of: null,
+      due_date_fallback_count: null,
+      document_mismatch_count: null,
+    };
+  }
+  const aging = section.aging && typeof section.aging === "object"
+    ? {
+      not_due: Number(section.aging.not_due) || 0,
+      d1_30: Number(section.aging.d1_30) || 0,
+      d31_60: Number(section.aging.d31_60) || 0,
+      d61_90: Number(section.aging.d61_90) || 0,
+      over_90: Number(section.aging.over_90) || 0,
+    }
+    : null;
+  return {
+    status: section.status || "unavailable",
+    amount: section.amount == null ? null : Number(section.amount),
+    overdue_amount: section.overdue_amount == null ? null : Number(section.overdue_amount),
+    not_due_amount: section.not_due_amount == null ? null : Number(section.not_due_amount),
+    aging,
+    completeness: section.completeness || section.status || "unavailable",
+    detail: section.detail || null,
+    note: section.note || null,
+    scope_label: section.scope_label || "Saat Ini",
+    label: section.label || "",
+    as_of: section.as_of || null,
+    invoice_count: section.invoice_count == null ? null : Number(section.invoice_count),
+    overdue_invoice_count: section.overdue_invoice_count == null ? null : Number(section.overdue_invoice_count),
+    due_date_fallback_count: section.due_date_fallback_count == null ? null : Number(section.due_date_fallback_count),
+    document_mismatch_count: section.document_mismatch_count == null ? null : Number(section.document_mismatch_count),
+  };
+}
+
+/** Proportional widths for positive classified aging; zeros stay at 0. */
+export function agingBarPercents(aging) {
+  if (!aging) return OWNER_AGING_LABELS.map(({ key }) => ({ key, pct: 0, amount: 0 }));
+  const amounts = OWNER_AGING_LABELS.map(({ key }) => Math.max(0, Number(aging[key]) || 0));
+  const total = amounts.reduce((sum, value) => sum + value, 0);
+  return OWNER_AGING_LABELS.map(({ key, label }, index) => ({
+    key,
+    label,
+    amount: amounts[index],
+    pct: total > 0 ? (amounts[index] / total) * 100 : 0,
+  }));
+}
+
 export function reconOrState(section) {
   if (!section) return { kind: "unavailable", text: "Belum Lengkap", unmatched: null, review: null };
   const status = section.status;
