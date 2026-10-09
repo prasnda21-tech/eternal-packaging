@@ -172,7 +172,13 @@ async def get_sales_receipt_detail(db, receipt_id: str) -> Dict[str, Any]:
 
 
 async def create_sales_receipt(
-    db, payload: Dict[str, Any], user: dict, *, claim_token: Optional[str] = None
+    db,
+    payload: Dict[str, Any],
+    user: dict,
+    *,
+    claim_token: Optional[str] = None,
+    defer_operational_settlement: bool = False,
+    require_posted_invoice_journal: bool = False,
 ) -> Dict[str, Any]:
     """Creates a new Sales Receipt (Penerimaan Penjualan) backend-authoritatively.
 
@@ -184,6 +190,11 @@ async def create_sales_receipt(
     - Automated workflow resolution for Payment & Approval Payment stage on PO:
       - If PO prerequisite stages (Design) are resolved, advances to Penjadwalan
       - If PO prerequisite stages (Design) are not yet resolved, records payment fact safely without skipping stages
+
+    When ``defer_operational_settlement`` is True (auto-lifecycle path):
+    - Persists receipt with settlement_effective=false
+    - Does NOT mutate invoice paid/outstanding or PO Approval Payment
+    - Caller must post journal then apply settlement via apply_operational_settlement_for_receipt
     """
     invoice_id = str(payload.get("invoice_id") or "").strip()
     if not invoice_id:
@@ -213,7 +224,8 @@ async def create_sales_receipt(
                             {"$set": {"payment_proof": proof_meta}},
                         )
                         existing_by_key["payment_proof"] = proof_meta
-                        await _patch_order_payment_receipt_proof(db, existing_by_key, proof_meta)
+                        if receipt_counts_toward_outstanding(existing_by_key):
+                            await _patch_order_payment_receipt_proof(db, existing_by_key, proof_meta)
                     except HTTPException:
                         raise
                 attached = await attach_receipt_accounting_fields(db, [_public_receipt(existing_by_key)])
@@ -243,6 +255,26 @@ async def create_sales_receipt(
             raise HTTPException(409, "Hanya faktur finalized yang dapat menerima Penerimaan Penjualan.")
         if reverse_claim_is_active(invoice):
             raise HTTPException(409, INVOICE_REVERSE_IN_PROGRESS_RECEIPT_CREATE_MESSAGE)
+
+        # Gate A / auto-lifecycle: require posted invoice journal (flag-driven unless forced).
+        # Helper/import failure fails closed — never silently skip a required gate.
+        gate_required = require_posted_invoice_journal
+        try:
+            from services.sales_receipt_auto_lifecycle import (
+                is_auto_sales_receipt_lifecycle_enabled,
+                is_receipt_create_requires_invoice_journal_posted,
+            )
+
+            if (
+                await is_receipt_create_requires_invoice_journal_posted(db)
+                or await is_auto_sales_receipt_lifecycle_enabled(db)
+            ):
+                gate_required = True
+        except Exception as exc:
+            raise HTTPException(
+                409,
+                "Dependency gate jurnal faktur untuk penerimaan tidak dapat diverifikasi.",
+            ) from exc
 
         from services.financial_statement_common import MONEY_Q, money_float
         from services.sales_customer_credit import (
@@ -277,6 +309,20 @@ async def create_sales_receipt(
                 raise HTTPException(409, "Hanya faktur finalized yang dapat menerima Penerimaan Penjualan.")
             if reverse_claim_is_active(invoice):
                 raise HTTPException(409, INVOICE_REVERSE_IN_PROGRESS_RECEIPT_CREATE_MESSAGE)
+
+            # Revalidate invoice journal under the create claim (blocks concurrent reverse via mutual claim).
+            if gate_required:
+                try:
+                    from services.sales_receipt_posting import assert_invoice_allows_receipt_journal
+
+                    await assert_invoice_allows_receipt_journal(db, invoice["id"])
+                except HTTPException:
+                    raise
+                except Exception as exc:
+                    raise HTTPException(
+                        409,
+                        "Pemeriksaan jurnal faktur untuk penerimaan tidak dapat dijalankan.",
+                    ) from exc
 
             grand_total = float(invoice.get("grand_total", 0))
             cash_bank_id = str(payload.get("cash_bank_id") or "").strip()
@@ -356,6 +402,9 @@ async def create_sales_receipt(
                     "role": str(user.get("role") or ""),
                 },
             }
+            if defer_operational_settlement:
+                # Auto-lifecycle: not confirmed paid until journal + settlement CAS.
+                receipt_doc["settlement_effective"] = False
 
             try:
                 await db.sales_receipts.insert_one(receipt_doc)
@@ -369,74 +418,75 @@ async def create_sales_receipt(
 
             receipt_doc.pop("_id", None)
 
-            await db.sales_invoices.update_one(
-                {"id": invoice["id"]},
-                {
-                    "$set": {
-                        "paid_total": new_paid_total,
-                        "outstanding_amount": new_outstanding,
-                        "payment_status": payment_state,
-                        "updated_at": now_iso(),
-                    }
-                }
-            )
-
-            po_id = invoice.get("po_id")
-            if po_id:
-                order = await db.orders.find_one({"id": str(po_id)})
-                if not order:
-                    order = await db.orders.find_one({"po_number": str(po_id)})
-
-                if order and not order.get("cancelled"):
-                    order.setdefault("payment_receipts", []).append({
-                        "receipt_id": receipt_id,
-                        "invoice_id": invoice["id"],
-                        "amount": amount,
-                        "allocated_amount": allocated_amount,
-                        "customer_credit_amount": customer_credit_amount,
-                        "payment_state": payment_state,
-                        "receipt_number": receipt_number,
-                        "receipt_date": receipt_date,
-                        "at": now_iso(),
-                    })
-                    order["payment_fact"] = {
-                        "receipt_id": receipt_id,
-                        "invoice_id": invoice["id"],
-                        "amount": amount,
-                        "allocated_amount": allocated_amount,
-                        "payment_state": payment_state,
-                        "updated_at": now_iso(),
-                    }
-
-                    if order.get("payment_status") != "Approved":
-                        order["payment_status"] = "Approved"
-                        order["payment_approved_by"] = "system"
-                        order["payment_approved_by_name"] = "Penerimaan Penjualan"
-                        order["payment_approved_at"] = now_iso()
-                        order.setdefault("payment_approval_history", []).append({
-                            "action": "approve",
-                            "by_email": "system",
-                            "by_name": "Penerimaan Penjualan",
-                            "at": now_iso(),
-                            "note": f"Otomatis disetujui dari Penerimaan Penjualan #{receipt_id} ({payment_state})",
-                            "receipt_id": receipt_id,
-                            "payment_state": payment_state,
-                            "amount_received": amount,
-                        })
-
-                        timeline_entry = {
-                            "stage": 4,
-                            "stage_label": "Approval Payment",
-                            "at": now_iso(),
-                            "by_email": "system",
-                            "by_role": "system",
-                            "by_name": "Penerimaan Penjualan",
-                            "note": f"Approval Payment otomatis disetujui ({payment_state}) via Penerimaan #{receipt_id}",
+            if not defer_operational_settlement:
+                await db.sales_invoices.update_one(
+                    {"id": invoice["id"]},
+                    {
+                        "$set": {
+                            "paid_total": new_paid_total,
+                            "outstanding_amount": new_outstanding,
+                            "payment_status": payment_state,
+                            "updated_at": now_iso(),
                         }
-                        order.setdefault("timeline", []).append(timeline_entry)
-                        sync_workflow_stage(order)
+                    }
+                )
 
-                    await db.orders.replace_one({"id": order["id"]}, order)
+                po_id = invoice.get("po_id")
+                if po_id:
+                    order = await db.orders.find_one({"id": str(po_id)})
+                    if not order:
+                        order = await db.orders.find_one({"po_number": str(po_id)})
+
+                    if order and not order.get("cancelled"):
+                        order.setdefault("payment_receipts", []).append({
+                            "receipt_id": receipt_id,
+                            "invoice_id": invoice["id"],
+                            "amount": amount,
+                            "allocated_amount": allocated_amount,
+                            "customer_credit_amount": customer_credit_amount,
+                            "payment_state": payment_state,
+                            "receipt_number": receipt_number,
+                            "receipt_date": receipt_date,
+                            "at": now_iso(),
+                        })
+                        order["payment_fact"] = {
+                            "receipt_id": receipt_id,
+                            "invoice_id": invoice["id"],
+                            "amount": amount,
+                            "allocated_amount": allocated_amount,
+                            "payment_state": payment_state,
+                            "updated_at": now_iso(),
+                        }
+
+                        if order.get("payment_status") != "Approved":
+                            order["payment_status"] = "Approved"
+                            order["payment_approved_by"] = "system"
+                            order["payment_approved_by_name"] = "Penerimaan Penjualan"
+                            order["payment_approved_at"] = now_iso()
+                            order.setdefault("payment_approval_history", []).append({
+                                "action": "approve",
+                                "by_email": "system",
+                                "by_name": "Penerimaan Penjualan",
+                                "at": now_iso(),
+                                "note": f"Otomatis disetujui dari Penerimaan Penjualan #{receipt_id} ({payment_state})",
+                                "receipt_id": receipt_id,
+                                "payment_state": payment_state,
+                                "amount_received": amount,
+                            })
+
+                            timeline_entry = {
+                                "stage": 4,
+                                "stage_label": "Approval Payment",
+                                "at": now_iso(),
+                                "by_email": "system",
+                                "by_role": "system",
+                                "by_name": "Penerimaan Penjualan",
+                                "note": f"Approval Payment otomatis disetujui ({payment_state}) via Penerimaan #{receipt_id}",
+                            }
+                            order.setdefault("timeline", []).append(timeline_entry)
+                            sync_workflow_stage(order)
+
+                        await db.orders.replace_one({"id": order["id"]}, order)
 
             if proof_input:
                 try:
@@ -458,12 +508,363 @@ async def create_sales_receipt(
                     {"$set": {"payment_proof": proof_meta}},
                 )
                 receipt_doc["payment_proof"] = proof_meta
-                await _patch_order_payment_receipt_proof(db, receipt_doc, proof_meta)
+                if receipt_counts_toward_outstanding(receipt_doc):
+                    await _patch_order_payment_receipt_proof(db, receipt_doc, proof_meta)
 
             attached = await attach_receipt_accounting_fields(db, [_public_receipt(receipt_doc)])
             return attached[0]
         finally:
             await clear_receipt_create_claim(db, invoice["id"], token=create_claim_token)
+
+
+def _approval_history_has_receipt(history: Any, receipt_id: str) -> bool:
+    rid = str(receipt_id or "").strip()
+    if not rid:
+        return False
+    for row in history or []:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("receipt_id") or "").strip() == rid:
+            return True
+    return False
+
+
+def _timeline_has_receipt_approval(timeline: Any, receipt_id: str) -> bool:
+    rid = str(receipt_id or "").strip()
+    if not rid:
+        return False
+    marker = f"#{rid}"
+    for row in timeline or []:
+        if not isinstance(row, dict):
+            continue
+        note = str(row.get("note") or "")
+        if marker in note and "Approval Payment" in str(row.get("stage_label") or note):
+            return True
+        if str(row.get("receipt_id") or "").strip() == rid:
+            return True
+    return False
+
+
+async def sync_order_payment_projections(db, po_id: str) -> None:
+    """Rebuild PO payment_receipts / payment_fact from settlement-effective receipts.
+
+    Aggregate Approval Payment: one transition to Approved per PO.
+    History/timeline appends are idempotent per receipt_id (no blind duplicate).
+    """
+    if not po_id:
+        return
+    order = await db.orders.find_one({"id": str(po_id)})
+    if not order:
+        order = await db.orders.find_one({"po_number": str(po_id)})
+    if not order or order.get("cancelled"):
+        return
+
+    from services.sales_receipt_posting import receipt_allocated_amount
+
+    effective = [
+        r
+        for r in await db.sales_receipts.find({"po_id": order["id"]}, {"_id": 0}).sort("created_at", 1).to_list(500)
+        if receipt_counts_toward_outstanding(r)
+    ]
+    prior_by_id = {
+        str(row.get("receipt_id") or ""): row
+        for row in (order.get("payment_receipts") or [])
+        if row.get("receipt_id")
+    }
+    rebuilt = []
+    for rec in effective:
+        rid = str(rec.get("id") or "")
+        prior = prior_by_id.get(rid) or {}
+        entry = {
+            "receipt_id": rid,
+            "invoice_id": rec.get("invoice_id"),
+            "amount": rec.get("amount"),
+            "allocated_amount": float(receipt_allocated_amount(rec)),
+            "customer_credit_amount": rec.get("customer_credit_amount"),
+            "payment_state": rec.get("payment_state"),
+            "receipt_number": rec.get("receipt_number"),
+            "receipt_date": rec.get("receipt_date"),
+            "at": prior.get("at") or rec.get("created_at") or now_iso(),
+        }
+        if prior.get("payment_proof"):
+            entry["payment_proof"] = prior.get("payment_proof")
+        rebuilt.append(entry)
+
+    # Always reconcile payment_receipts / payment_fact (idempotent rebuild).
+    base_patch: Dict[str, Any] = {"payment_receipts": rebuilt}
+    if effective:
+        last = effective[-1]
+        last_id = str(last.get("id") or "")
+        base_patch["payment_fact"] = {
+            "receipt_id": last.get("id"),
+            "invoice_id": last.get("invoice_id"),
+            "amount": last.get("amount"),
+            "allocated_amount": float(receipt_allocated_amount(last)),
+            "payment_state": last.get("payment_state"),
+            "updated_at": now_iso(),
+        }
+        await db.orders.update_one({"id": order["id"]}, {"$set": base_patch})
+
+        # Aggregate Approval Payment per PO (workflow semantics): one Waiting→Approved transition.
+        # Concurrent recover workers: CAS on payment_status; losers skip history/timeline append.
+        if order.get("payment_status") != "Approved":
+            history = list(order.get("payment_approval_history") or [])
+            timeline = list(order.get("timeline") or [])
+            if last_id and not _approval_history_has_receipt(history, last_id):
+                history = history + [{
+                    "action": "approve",
+                    "by_email": "system",
+                    "by_name": "Penerimaan Penjualan",
+                    "at": now_iso(),
+                    "note": f"Otomatis disetujui dari Penerimaan Penjualan #{last_id} ({last.get('payment_state')})",
+                    "receipt_id": last_id,
+                    "payment_state": last.get("payment_state"),
+                    "amount_received": last.get("amount"),
+                }]
+            if last_id and not _timeline_has_receipt_approval(timeline, last_id):
+                timeline = timeline + [{
+                    "stage": 4,
+                    "stage_label": "Approval Payment",
+                    "at": now_iso(),
+                    "by_email": "system",
+                    "by_role": "system",
+                    "by_name": "Penerimaan Penjualan",
+                    "receipt_id": last_id,
+                    "note": f"Approval Payment otomatis disetujui ({last.get('payment_state')}) via Penerimaan #{last_id}",
+                }]
+            approve_set: Dict[str, Any] = {
+                "payment_status": "Approved",
+                "payment_approved_by": "system",
+                "payment_approved_by_name": "Penerimaan Penjualan",
+                "payment_approved_at": now_iso(),
+                "payment_approval_history": history,
+                "timeline": timeline,
+            }
+            merged = {**order, **base_patch, **approve_set}
+            sync_workflow_stage(merged)
+            approve_set["current_stage"] = merged.get("current_stage")
+            approve_set["status_label"] = merged.get("status_label")
+            if "events" in merged:
+                approve_set["events"] = merged.get("events")
+            await db.orders.update_one(
+                {
+                    "id": order["id"],
+                    "$or": [
+                        {"payment_status": {"$ne": "Approved"}},
+                        {"payment_status": {"$exists": False}},
+                        {"payment_status": None},
+                        {"payment_status": ""},
+                    ],
+                },
+                {"$set": approve_set},
+            )
+    else:
+        base_patch["payment_fact"] = None
+        cs = int(order.get("current_stage") or 0)
+        if cs < 5 and order.get("payment_approved_by") == "system":
+            base_patch["payment_status"] = "Waiting"
+            base_patch["payment_approved_by"] = None
+            base_patch["payment_approved_by_name"] = None
+            base_patch["payment_approved_at"] = None
+        await db.orders.update_one({"id": order["id"]}, {"$set": base_patch})
+
+
+async def expected_invoice_payment_from_receipts(db, invoice_id: str) -> Optional[Dict[str, Any]]:
+    """Authoritative paid/outstanding/payment_status from counting receipts (+ credit apps)."""
+    if not invoice_id:
+        return None
+    invoice = await db.sales_invoices.find_one({"id": str(invoice_id)}, {"_id": 0})
+    if not invoice:
+        return None
+    from services.financial_statement_common import MONEY_Q, money_float
+    from services.sales_customer_credit import invoice_credit_applied_total
+    from services.sales_receipt_posting import receipt_allocated_amount
+
+    remaining = await db.sales_receipts.find({"invoice_id": invoice_id}, {"_id": 0}).to_list(500)
+    paid_dec = sum(
+        (receipt_allocated_amount(r) for r in remaining if receipt_counts_toward_outstanding(r)),
+        Decimal("0.00"),
+    )
+    paid_dec += await invoice_credit_applied_total(db, invoice_id)
+    paid_dec = paid_dec.quantize(MONEY_Q)
+    paid = money_float(paid_dec)
+    grand = float(invoice.get("grand_total", 0))
+    outstanding = money_float(max(Decimal(str(grand)).quantize(MONEY_Q) - paid_dec, Decimal("0.00")))
+    if paid <= 0:
+        p_status = "BELUM DIBAYAR"
+    elif paid < grand:
+        p_status = "DP"
+    else:
+        p_status = "LUNAS"
+    return {
+        "paid_total": paid,
+        "outstanding_amount": outstanding,
+        "payment_status": p_status,
+        "invoice": invoice,
+    }
+
+
+def _money_eq(a: Any, b: Any) -> bool:
+    try:
+        return abs(Decimal(str(a if a is not None else 0)) - Decimal(str(b if b is not None else 0))) < Decimal("0.005")
+    except Exception:
+        return False
+
+
+async def verify_settlement_projections(db, receipt_id: str) -> Dict[str, Any]:
+    """Verify journal + settlement_effective + invoice/PO projections. No writes."""
+    from services.sales_invoice_posting import ACCOUNTING_POSTED, accounting_status_from_journal
+    from services.sales_receipt_posting import SETTLEMENT_EFFECTIVE_FIELD, find_sales_receipt_source_journal
+
+    rec = await db.sales_receipts.find_one({"id": str(receipt_id)}, {"_id": 0})
+    if not rec:
+        return {"ok": False, "reason": "receipt_missing"}
+    if receipt_is_cancelled(rec):
+        return {"ok": False, "reason": "cancelled", "receipt": rec}
+    journal = await find_sales_receipt_source_journal(db, rec["id"])
+    if accounting_status_from_journal(journal) != ACCOUNTING_POSTED:
+        return {"ok": False, "reason": "journal_not_posted", "receipt": rec}
+    if rec.get(SETTLEMENT_EFFECTIVE_FIELD) is not True:
+        return {"ok": False, "reason": "settlement_not_effective", "receipt": rec}
+
+    expected = await expected_invoice_payment_from_receipts(db, rec.get("invoice_id"))
+    if not expected:
+        return {"ok": False, "reason": "invoice_missing", "receipt": rec}
+    inv = expected["invoice"]
+    if not _money_eq(inv.get("paid_total"), expected["paid_total"]):
+        return {"ok": False, "reason": "invoice_paid_stale", "receipt": rec, "expected": expected}
+    if not _money_eq(inv.get("outstanding_amount"), expected["outstanding_amount"]):
+        return {"ok": False, "reason": "invoice_outstanding_stale", "receipt": rec, "expected": expected}
+    if str(inv.get("payment_status") or "") != expected["payment_status"]:
+        return {"ok": False, "reason": "invoice_status_stale", "receipt": rec, "expected": expected}
+
+    po_id = rec.get("po_id")
+    if po_id:
+        order = await db.orders.find_one({"id": str(po_id)}, {"_id": 0})
+        if not order:
+            order = await db.orders.find_one({"po_number": str(po_id)}, {"_id": 0})
+        if order and not order.get("cancelled"):
+            fact = order.get("payment_fact") or {}
+            if str(fact.get("receipt_id") or "") != str(rec.get("id") or ""):
+                # payment_fact may point at another effective receipt on same PO — ok if ours is in payment_receipts
+                pr_ids = {
+                    str(row.get("receipt_id") or "")
+                    for row in (order.get("payment_receipts") or [])
+                    if isinstance(row, dict)
+                }
+                if str(rec.get("id") or "") not in pr_ids:
+                    return {"ok": False, "reason": "po_projection_stale", "receipt": rec}
+            if order.get("payment_status") != "Approved":
+                return {"ok": False, "reason": "po_not_approved", "receipt": rec}
+
+    return {"ok": True, "receipt": rec, "journal": journal, "expected": expected}
+
+
+async def apply_operational_settlement_for_receipt(db, receipt_id: str, user: Optional[dict] = None) -> dict:
+    """Make settlement effective only after a posted receipt primary journal.
+
+    CAS: settlement_effective false → true. Idempotent if already true.
+    Recomputes invoice paid/outstanding from counting receipts, then syncs PO.
+    Never settles cancelled receipts. Does not reverse journals.
+    """
+    from pymongo import ReturnDocument
+
+    from services.sales_invoice_posting import ACCOUNTING_POSTED, accounting_status_from_journal
+    from services.sales_receipt_posting import SETTLEMENT_EFFECTIVE_FIELD, find_sales_receipt_source_journal
+
+    rec = await db.sales_receipts.find_one({"id": str(receipt_id)}, {"_id": 0})
+    if not rec:
+        raise HTTPException(404, f"Penerimaan Penjualan '{receipt_id}' tidak ditemukan.")
+    if receipt_is_cancelled(rec):
+        raise HTTPException(
+            409,
+            {
+                "error_code": "receipt_cancelled",
+                "message": "Penerimaan yang dibatalkan tidak dapat diselesaikan settlement-nya.",
+            },
+        )
+
+    journal = await find_sales_receipt_source_journal(db, rec["id"])
+    if accounting_status_from_journal(journal) != ACCOUNTING_POSTED:
+        raise HTTPException(409, "Settlement memerlukan jurnal penerimaan yang sudah diposting.")
+
+    # Re-check cancel after journal read (cancel during recovery).
+    fresh = await db.sales_receipts.find_one({"id": rec["id"]}, {"_id": 0}) or rec
+    if receipt_is_cancelled(fresh):
+        raise HTTPException(
+            409,
+            {
+                "error_code": "receipt_cancelled",
+                "message": "Penerimaan dibatalkan selama recovery; settlement tidak diterapkan.",
+            },
+        )
+
+    now = now_iso()
+    if fresh.get(SETTLEMENT_EFFECTIVE_FIELD) is True:
+        await _recalc_invoice_payment_from_receipts(db, fresh.get("invoice_id"))
+        await sync_order_payment_projections(db, fresh.get("po_id"))
+        return await db.sales_receipts.find_one({"id": fresh["id"]}, {"_id": 0}) or fresh
+
+    # Absent field (legacy) already counts — treat as settled for projection sync.
+    if SETTLEMENT_EFFECTIVE_FIELD not in fresh:
+        await _recalc_invoice_payment_from_receipts(db, fresh.get("invoice_id"))
+        await sync_order_payment_projections(db, fresh.get("po_id"))
+        return fresh
+
+    claimed = await db.sales_receipts.find_one_and_update(
+        {
+            "id": fresh["id"],
+            SETTLEMENT_EFFECTIVE_FIELD: False,
+            "financial_status": {"$nin": ["cancelled", "reversed"]},
+            "cancelled": {"$ne": True},
+        },
+        {
+            "$set": {
+                SETTLEMENT_EFFECTIVE_FIELD: True,
+                "settlement_effective_at": now,
+                "settlement_effective_by": {
+                    "id": str((user or {}).get("id") or (user or {}).get("_id") or ""),
+                    "name": str((user or {}).get("name") or (user or {}).get("email") or ""),
+                },
+                "updated_at": now,
+            }
+        },
+        return_document=ReturnDocument.AFTER,
+    )
+    if claimed is None:
+        current = await db.sales_receipts.find_one({"id": fresh["id"]}, {"_id": 0}) or fresh
+        if receipt_is_cancelled(current):
+            raise HTTPException(
+                409,
+                {
+                    "error_code": "receipt_cancelled",
+                    "message": "Penerimaan dibatalkan selama recovery; settlement tidak diterapkan.",
+                },
+            )
+        if current.get(SETTLEMENT_EFFECTIVE_FIELD) is True:
+            await _recalc_invoice_payment_from_receipts(db, current.get("invoice_id"))
+            await sync_order_payment_projections(db, current.get("po_id"))
+            return current
+        raise HTTPException(409, "Settlement penerimaan gagal karena perubahan bersamaan.")
+
+    claimed.pop("_id", None)
+    # Cancel race after CAS win: revert effectiveness if cancelled slipped through (should not match filter).
+    if receipt_is_cancelled(claimed):
+        await db.sales_receipts.update_one(
+            {"id": claimed["id"], SETTLEMENT_EFFECTIVE_FIELD: True},
+            {"$set": {SETTLEMENT_EFFECTIVE_FIELD: False, "updated_at": now_iso()}},
+        )
+        raise HTTPException(
+            409,
+            {
+                "error_code": "receipt_cancelled",
+                "message": "Penerimaan dibatalkan selama recovery; settlement tidak diterapkan.",
+            },
+        )
+
+    await _recalc_invoice_payment_from_receipts(db, claimed.get("invoice_id"))
+    await sync_order_payment_projections(db, claimed.get("po_id"))
+    return claimed
 
 
 async def _patch_order_payment_receipt_proof(db, receipt: dict, proof_meta: dict) -> None:
