@@ -271,6 +271,125 @@ export function agingBarPercents(aging) {
   }));
 }
 
+/** Map Owner purchasing section for display (Phase 3C). */
+export function mapOwnerPurchasing(section) {
+  if (!section) {
+    return {
+      status: "unavailable",
+      scope_label: "Periode",
+      total: { status: "unavailable", amount: null, invoice_count: null, detail: null, label: "Total Pembelian Faktur" },
+      trend: { status: "unavailable", points: [], grain: "", grainKey: "" },
+      top_suppliers: { status: "unavailable", rows: [] },
+      distribution: { status: "unavailable", groups: [], show_share: false },
+      completeness: "unavailable",
+      note: null,
+      detail: null,
+    };
+  }
+  const status = section.status || "unavailable";
+  if (status === "error") {
+    return {
+      status: "error",
+      scope_label: section.scope_label || "Periode",
+      total: {
+        status: "error",
+        amount: null,
+        invoice_count: null,
+        detail: section.total?.detail || section.detail || "Tidak dapat memuat pembelian",
+        label: section.total?.label || "Total Pembelian Faktur",
+      },
+      trend: { status: "error", points: [], grain: "", grainKey: "", detail: section.detail },
+      top_suppliers: { status: "error", rows: [], detail: section.detail },
+      distribution: { status: "error", groups: [], show_share: false, detail: section.detail },
+      completeness: "error",
+      note: section.note || null,
+      detail: section.detail || null,
+    };
+  }
+  const grainKey = section.trend?.grain || "";
+  const grain = ownerCashGrainLabel(grainKey);
+  const rawPoints = Array.isArray(section.trend?.points) ? section.trend.points : [];
+  const years = new Set(
+    rawPoints
+      .map((p) => {
+        const m = /^(\d{4})/.exec(String(p.period || ""));
+        return m ? m[1] : null;
+      })
+      .filter(Boolean),
+  );
+  const showYear = grainKey === "month" && years.size > 1;
+  const points = rawPoints.map((p) => {
+    const period = p.period || p.label || "";
+    return {
+      period,
+      label: formatCashAxisLabel(period, { showYear }),
+      fullLabel: formatCashTooltipLabel(period),
+      amount: Number(p.amount) || 0,
+      invoice_count: Number(p.invoice_count) || 0,
+    };
+  });
+  const rows = Array.isArray(section.top_suppliers?.rows)
+    ? section.top_suppliers.rows.slice(0, 5).map((row) => ({
+      key: row.key,
+      label: row.label || "Supplier",
+      amount: row.amount == null ? null : Number(row.amount),
+      invoice_count: row.invoice_count == null ? null : Number(row.invoice_count),
+      share: row.share == null ? null : Number(row.share),
+    }))
+    : [];
+  const groups = Array.isArray(section.distribution?.groups)
+    ? section.distribution.groups.map((g) => ({
+      key: g.key,
+      label: g.label || "—",
+      amount: g.amount == null ? null : Number(g.amount),
+      invoice_count: g.invoice_count == null ? null : Number(g.invoice_count),
+      share: g.share == null ? null : Number(g.share),
+      supplier_count: g.supplier_count == null ? null : Number(g.supplier_count),
+    }))
+    : [];
+  const showShare = Boolean(section.distribution?.show_share);
+  const barSource = rows.length
+    ? rows.map((r) => Math.max(0, Number(r.amount) || 0))
+    : [];
+  const barMax = barSource.reduce((m, v) => Math.max(m, v), 0);
+  return {
+    status,
+    scope_label: section.scope_label || "Periode",
+    total: {
+      status: section.total?.status || status,
+      amount: section.total?.amount == null ? null : Number(section.total.amount),
+      invoice_count: section.total?.invoice_count == null ? null : Number(section.total.invoice_count),
+      detail: section.total?.detail || null,
+      label: section.total?.label || "Total Pembelian Faktur",
+      basis: section.total?.basis || "grand_total",
+    },
+    trend: {
+      status: section.trend?.status || status,
+      points,
+      grain,
+      grainKey,
+      detail: section.trend?.detail || null,
+    },
+    top_suppliers: {
+      status: section.top_suppliers?.status || status,
+      rows: rows.map((row) => ({
+        ...row,
+        barPct: barMax > 0 ? (Math.max(0, Number(row.amount) || 0) / barMax) * 100 : 0,
+      })),
+      detail: section.top_suppliers?.detail || null,
+    },
+    distribution: {
+      status: section.distribution?.status || status,
+      groups,
+      show_share: showShare,
+      detail: section.distribution?.detail || null,
+    },
+    completeness: section.completeness || status,
+    note: section.note || null,
+    detail: section.detail || null,
+  };
+}
+
 export function reconOrState(section) {
   if (!section) return { kind: "unavailable", text: "Belum Lengkap", unmatched: null, review: null };
   const status = section.status;
