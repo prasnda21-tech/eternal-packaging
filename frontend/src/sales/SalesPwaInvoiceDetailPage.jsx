@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { ChevronLeft } from "lucide-react";
 import api from "../lib/api";
-import { currentSalesMonth, formatSalesDate, formatSalesMoney } from "../lib/salesPwa";
+import { currentSalesMonth, formatSalesMoney } from "../lib/salesPwa";
+import { formatSalesInvoiceDate } from "../lib/salesInvoiceDate";
 import { mergeSalesInvoiceDetail, paymentStatusLabel, salesApiError, salesInvoiceMonth } from "./salesPwaFinance";
 
 function moneyOrDash(value) {
@@ -52,7 +53,7 @@ export default function SalesPwaInvoiceDetailPage() {
             <p className="spwa-kicker">Customer</p>
             <h1 className="spwa-top-customer">{invoice.customer_name || "—"}</h1>
             <p className="spwa-top-meta">{invoice.invoice_number || "—"}</p>
-            <p className="spwa-top-meta">{formatSalesDate(invoice.invoice_date)}</p>
+            <p className="spwa-top-meta">{formatSalesInvoiceDate(invoice.invoice_date) || "—"}</p>
           </div>
         ) : <h1>Detail invoice</h1>}
       </header>
@@ -64,7 +65,7 @@ export default function SalesPwaInvoiceDetailPage() {
             <h2>{paymentStatusLabel(invoice.payment_status)}</h2>
             <dl className="spwa-kv">
               <dt>Jatuh tempo</dt>
-              <dd>{formatSalesDate(invoice.due_date)}</dd>
+              <dd>{formatSalesInvoiceDate(invoice.due_date) || "—"}</dd>
               <dt>Total</dt>
               <dd>{moneyOrDash(invoice.grand_total)}</dd>
               <dt>Sudah dibayar</dt>

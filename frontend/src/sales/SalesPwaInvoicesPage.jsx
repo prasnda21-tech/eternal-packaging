@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import api from "../lib/api";
-import { currentSalesMonth, formatSalesDate, formatSalesMoney } from "../lib/salesPwa";
+import { currentSalesMonth, formatSalesMoney } from "../lib/salesPwa";
+import { formatSalesInvoiceDate } from "../lib/salesInvoiceDate";
 import {
   invoiceOutstandingAmount,
   paymentStatusLabel,
@@ -86,7 +87,7 @@ export default function SalesPwaInvoicesPage() {
                       </div>
                       <div className="spwa-po-card-line"><span>Total</span><strong>{formatSalesMoney(invoice.grand_total)}</strong></div>
                       <div className="spwa-po-card-line"><span>Sisa</span><strong>{outstanding == null ? "—" : formatSalesMoney(outstanding)}</strong></div>
-                      <div className="spwa-po-card-line"><span>Tanggal</span><strong>{formatSalesDate(invoice.invoice_date)}</strong></div>
+                      <div className="spwa-po-card-line"><span>Tanggal</span><strong>{formatSalesInvoiceDate(invoice.invoice_date) || "—"}</strong></div>
                     </Link>
                   </li>
                 );

@@ -15,6 +15,8 @@ import {
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDisplayDate } from "../lib/constants";
+import { addSalesInvoiceCalendarDays, formatSalesInvoiceDate, salesInvoiceDateToIso } from "../lib/salesInvoiceDate";
+import SalesInvoiceDateField from "../components/SalesInvoiceDateField";
 import HeaderSelectFilter from "../components/HeaderSelectFilter";
 import { FormSection, FormField, FormProgress, computeStatus } from "../components/form-standard";
 import { INVOICE_DATE_PRESET_OPTIONS, invoiceDatePresetRange } from "../lib/salesDatePresets";
@@ -515,6 +517,7 @@ export default function FakturPenjualan() {
   const [previewErr, setPreviewErr] = useState("");
 
   const [invoiceDate, setInvoiceDate] = useState(getTodayString());
+  const createDateRef = useRef(null);
   const [paymentTermDays, setPaymentTermDays] = useState(0);
   const [discountAmount, setDiscountAmount] = useState(0);
   const [ppnPercent, setPpnPercent] = useState(0);
@@ -539,6 +542,7 @@ export default function FakturPenjualan() {
   const [detailPpn, setDetailPpn] = useState(0);
   const [detailTermDays, setDetailTermDays] = useState(0);
   const [detailDate, setDetailDate] = useState("");
+  const detailDateRef = useRef(null);
   const [detailNotes, setDetailNotes] = useState("");
   const [detailCharges, setDetailCharges] = useState([]);
   const [showDetailChargeErrors, setShowDetailChargeErrors] = useState(false);
@@ -838,14 +842,9 @@ export default function FakturPenjualan() {
   // Due Date calculation helper
   const calculatedDueDate = useMemo(() => {
     const term = Math.max(0, Number(paymentTermDays) || 0);
-    const baseDateStr = invoiceDate || getTodayString();
-    try {
-      const d = new Date(baseDateStr);
-      d.setDate(d.getDate() + term);
-      return d.toISOString().split("T")[0];
-    } catch {
-      return baseDateStr;
-    }
+    const baseDateStr = invoiceDate;
+    if (!baseDateStr) return "";
+    return addSalesInvoiceCalendarDays(baseDateStr, term);
   }, [invoiceDate, paymentTermDays]);
 
   // Live calculation of line totals and grand total for Create form
@@ -950,6 +949,12 @@ export default function FakturPenjualan() {
       setFormErr(createCalculations.chargesMessage);
       return;
     }
+    const createDate = createDateRef.current?.read();
+    if (!createDate?.ok) {
+      setInvoiceFormTab("terms");
+      setFormErr(createDate?.message || "Tanggal faktur wajib diisi.");
+      return;
+    }
     if (createCalculations.hasErrors) {
       if (createCalculations.priceMissingAny) {
         setFormErr("Lengkapi harga jual yang belum tersedia. Harga kosong tidak dijadikan Rp0.");
@@ -986,7 +991,7 @@ export default function FakturPenjualan() {
 
       const payload = {
         po_id: selectedPoId,
-        invoice_date: invoiceDate || getTodayString(),
+        invoice_date: createDate.iso,
         payment_term_days: Number(paymentTermDays) || 0,
         discount_amount: Number(discountAmount) || 0,
         ppn_percent: Number(ppnPercent) || 0,
@@ -1026,7 +1031,7 @@ export default function FakturPenjualan() {
       const res = await api.getSalesInvoice(invId);
       const inv = res.invoice || res;
       setDetailData(inv);
-      setDetailDate(inv.invoice_date || "");
+      setDetailDate(salesInvoiceDateToIso(inv.invoice_date) || "");
       setDetailTermDays(inv.payment_term_days || 0);
       setDetailDiscount(inv.discount_amount || 0);
       setDetailPpn(inv.ppn_percent || 0);
@@ -1112,6 +1117,12 @@ export default function FakturPenjualan() {
       setDetailErr(detailCalculations.chargesMessage);
       return;
     }
+    const detailDateRead = detailDateRef.current?.read();
+    if (!detailDateRead?.ok) {
+      setInvoiceFormTab("terms");
+      setDetailErr(detailDateRead?.message || "Tanggal faktur wajib diisi.");
+      return;
+    }
     setDetailSaving(true);
     setDetailErr("");
     setSuccessMsg("");
@@ -1140,7 +1151,7 @@ export default function FakturPenjualan() {
       });
 
       const payload = {
-        invoice_date: detailDate,
+        invoice_date: detailDateRead.iso,
         payment_term_days: Number(detailTermDays) || 0,
         discount_amount: Number(detailDiscount) || 0,
         ppn_percent: Number(detailPpn) || 0,
@@ -1686,7 +1697,7 @@ export default function FakturPenjualan() {
                           {inv.po_number || "-"}
                         </Link>
                       </td>
-                      <td>{formatDisplayDate(inv.invoice_date || inv.created_at)}</td>
+                      <td>{formatSalesInvoiceDate(inv.invoice_date || inv.created_at) || "-"}</td>
                       <td className="sd-money">{formatRupiah(inv.grand_total)}</td>
                       <td className={"sd-money " + (Number(inv.outstanding_amount) > 0 ? "is-due" : "is-zero")}>
                         {formatRupiah(inv.outstanding_amount)}
@@ -1869,12 +1880,11 @@ export default function FakturPenjualan() {
                     <label style={{ fontSize: "0.85rem", fontWeight: 600, color: "#334155", display: "block", marginBottom: 6 }}>
                       Tanggal Faktur <span style={{ color: "#ef4444" }}>*</span>
                     </label>
-                    <input
-                      type="date"
-                      value={invoiceDate}
-                      onChange={(e) => setInvoiceDate(e.target.value)}
-                      data-testid="invoice-date-input"
-                      style={{ width: "100%", padding: "8px 12px", border: "1px solid #cbd5e1", borderRadius: 6 }}
+                    <SalesInvoiceDateField
+                      ref={createDateRef}
+                      valueIso={invoiceDate}
+                      onChange={setInvoiceDate}
+                      testId="invoice-date-input"
                     />
                   </div>
 
@@ -1892,7 +1902,7 @@ export default function FakturPenjualan() {
                       style={{ width: "100%", padding: "8px 12px", border: "1px solid #cbd5e1", borderRadius: 6 }}
                     />
                     <div style={{ fontSize: "0.75rem", color: "#64748b", marginTop: 4 }}>
-                      Jatuh Tempo: <strong>{formatDisplayDate(calculatedDueDate)}</strong>
+                      Jatuh Tempo: <strong>{formatSalesInvoiceDate(calculatedDueDate) || "-"}</strong>
                     </div>
                   </div>
 
@@ -2184,7 +2194,7 @@ export default function FakturPenjualan() {
                 </div>
                 <div>
                   <span>Jatuh Tempo</span>
-                  <strong>{formatDisplayDate(detailData.due_date)}</strong>
+                  <strong>{formatSalesInvoiceDate(detailData.due_date) || "-"}</strong>
                 </div>
                 <div>
                   <span>Total Tagihan</span>
@@ -2217,11 +2227,13 @@ export default function FakturPenjualan() {
               <div className="fp-terms sd-pane-terms">
                 <div>
                   <label>Tanggal Faktur</label>
-                  <input
-                    type="date"
-                    value={detailDate}
-                    onChange={(e) => setDetailDate(e.target.value)}
+                  <SalesInvoiceDateField
+                    key={selectedInvoiceId || "detail"}
+                    ref={detailDateRef}
+                    valueIso={detailDate}
+                    onChange={setDetailDate}
                     disabled={!canEditFinancial}
+                    testId="invoice-detail-date-input"
                   />
                 </div>
                 <div>
