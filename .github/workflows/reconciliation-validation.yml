@@ -95,6 +95,7 @@ jobs:
           tests/test_sales_receipt_posting.py
           tests/test_sales_receipt_payment_proof.py
           tests/test_sales_invoices_and_receipts.py
+          tests/test_sales_invoice_edit_revision.py
           tests/test_physical_stock_engine.py
           tests/test_confirm_delivered_sj_stock.py
           tests/test_operator_schedule.py
