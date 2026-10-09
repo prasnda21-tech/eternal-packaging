@@ -91,7 +91,17 @@ describe("Status PO workflow matrix UI", () => {
     document.body.appendChild(container);
     root = createRoot(container);
     api.statusPo.mockReset();
-    api.statusPo.mockResolvedValue({ rows, total: rows.length });
+    api.statusPo.mockResolvedValue({
+      rows,
+      total: rows.length,
+      total_count: rows.length,
+      page: 1,
+      page_size: 50,
+      total_pages: 1,
+      has_next: false,
+      has_prev: false,
+      status_options: [...new Set(rows.map((r) => r.status).filter(Boolean))],
+    });
   });
 
   afterEach(() => {

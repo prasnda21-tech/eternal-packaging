@@ -316,8 +316,15 @@ def test_status_po_handler_stays_read_only_and_uses_projection():
     body = _status_po_fn_body()
     assert "STATUS_PO_PROJECTION" in body
     assert "find(q, STATUS_PO_PROJECTION)" in body
-    assert "build_status_po" in body
+    assert "build_status_po_page_rows" in body
     assert "require_perm(\"schedule.view\")" in body
+    assert "page" in body and "page_size" in body
+    assert "async for raw in cursor" in body
+    assert "detail_docs_loaded" in body
+    assert "to_list(1000)" not in body
+    assert "to_list(None)" not in body
+    assert "sales_owner_match(user)" in body
+    assert 'view_key == "cancelled"' in body
     for banned in ("update_one", "insert_one", "delete_one", "replace_one", "update_many", "delete_many"):
         assert banned not in body
 

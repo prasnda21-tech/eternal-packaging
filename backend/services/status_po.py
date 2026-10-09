@@ -37,8 +37,12 @@ STAGES = (
 
 STATUS_PO_VIEWS = (
     "active", "urgent", "due_today", "today", "h1", "h6", "overdue",
-    "design", "payment", "hold", "completed", "work_today", "delivery_today",
+    "design", "payment", "hold", "completed", "cancelled", "all",
+    "work_today", "delivery_today",
 )
+
+STATUS_PO_DEFAULT_PAGE_SIZE = 50
+STATUS_PO_MAX_PAGE_SIZE = 50
 
 STATUS_PO_STAGE_KEYS = (
     "order", "design", "appr_design", "payment", "appr_payment",
@@ -268,26 +272,44 @@ def _parse_dt(iso: Any):
 
 
 def filter_orders_for_view(orders: Iterable[dict], view: Optional[str], *, now: Optional[datetime] = None) -> List[dict]:
-    """Reuse Dashboard card subsets. Unknown/empty view = all non-cancelled."""
+    """Filter orders for Status PO tabs and dashboard deep-links.
+
+    Tab views (empty/all, active, completed, cancelled):
+      - Semua = non-cancelled (aktif + selesai)
+      - Aktif = non-cancelled and not po_is_fully_delivered
+      - Selesai = non-cancelled and po_is_fully_delivered
+      - Dibatalkan = cancelled only
+    Special dashboard views keep prior stage-based active subset semantics.
+    """
     now = now or datetime.now(timezone.utc)
     today_iso = now.strftime("%Y-%m-%d")
     today = wib_today(now)
     key = (view or "").strip().lower()
     if key == "today":
         key = "due_today"
+    if key in ("semua",):
+        key = "all"
+
+    if key == "cancelled":
+        return [o for o in orders if o.get("cancelled")]
+
     src = [o for o in orders if not o.get("cancelled")]
-    if not key:
+    if not key or key == "all":
         return src
+
+    # Four-tab classification uses canonical delivery evidence.
+    if key == "active":
+        return [o for o in src if not po_is_fully_delivered(o)]
+    if key == "completed":
+        return [o for o in src if po_is_fully_delivered(o)]
+
     if key not in STATUS_PO_VIEWS:
         return src
 
+    # Special dashboard views: preserve stage < 14 active-subset semantics.
     active = [o for o in src if (o.get("current_stage") or 0) < 14]
-    if key == "active":
-        return active
     if key == "urgent":
         return [o for o in active if o.get("priority") == "urgent"]
-    if key == "completed":
-        return [o for o in src if (o.get("current_stage") or 0) >= 14]
     if key == "hold":
         return [o for o in active if o.get("hold")]
     if key == "design":
@@ -324,8 +346,51 @@ def _date_key(iso: Any) -> str:
     return dt.strftime("%Y-%m-%d") if dt else ""
 
 
+def _search_haystack_from_order(order: dict) -> str:
+    parts = [
+        str(order.get("po_number") or ""),
+        str(order.get("customer") or ""),
+    ]
+    for name in item_line_names(order):
+        parts.append(name)
+    return " ".join(parts).lower()
+
+
+def _search_haystack_from_row(row: dict) -> str:
+    parts = [
+        str(row.get("po_number") or ""),
+        str(row.get("customer") or ""),
+    ]
+    for name in row.get("item_lines") or []:
+        parts.append(str(name or ""))
+    return " ".join(parts).lower()
+
+
+def order_matches_search_date_filters(order: dict, filters: Optional[dict] = None) -> bool:
+    """Text/date filters on raw orders (before status_po_row). Status handled separately."""
+    if not filters:
+        return True
+    po = str(filters.get("po") or "").strip().lower()
+    customer = str(filters.get("customer") or "").strip().lower()
+    date_from = str(filters.get("date_from") or filters.get("dateFrom") or "").strip()
+    date_to = str(filters.get("date_to") or filters.get("dateTo") or "").strip()
+    if po and po not in _search_haystack_from_order(order):
+        return False
+    if customer and customer not in str(order.get("customer") or "").lower():
+        return False
+    key = _date_key(order.get("order_date"))
+    if date_from and (not key or key < date_from):
+        return False
+    if date_to and (not key or key > date_to):
+        return False
+    return True
+
+
 def matches_status_po_filters(row: dict, filters: Optional[dict] = None) -> bool:
-    """AND filters on Status PO rows. Empty filter = match. Does not change status calc."""
+    """AND filters on Status PO rows. Empty filter = match. Does not change status calc.
+
+    Search `po` matches No PO, pelanggan, or produk (item_lines) — same semantics as FE.
+    """
     if not filters:
         return True
     po = str(filters.get("po") or "").strip().lower()
@@ -333,7 +398,7 @@ def matches_status_po_filters(row: dict, filters: Optional[dict] = None) -> bool
     status = str(filters.get("status") or "").strip()
     date_from = str(filters.get("date_from") or filters.get("dateFrom") or "").strip()
     date_to = str(filters.get("date_to") or filters.get("dateTo") or "").strip()
-    if po and po not in str(row.get("po_number") or "").lower():
+    if po and po not in _search_haystack_from_row(row):
         return False
     if customer and customer not in str(row.get("customer") or "").lower():
         return False
@@ -345,6 +410,85 @@ def matches_status_po_filters(row: dict, filters: Optional[dict] = None) -> bool
     if date_to and (not key or key > date_to):
         return False
     return True
+
+
+def order_sort_key(order: dict) -> tuple:
+    return (
+        str(order.get("order_date") or ""),
+        str(order.get("po_number") or ""),
+        str(order.get("id") or ""),
+    )
+
+
+def select_status_po_eligible(
+    orders: Iterable[dict],
+    view: Optional[str] = None,
+    *,
+    now: Optional[datetime] = None,
+    filters: Optional[dict] = None,
+) -> Dict[str, Any]:
+    """Stream-friendly eligibility: view + search/date + status label.
+
+    Does not build status_po_row. Returns sorted id list, total, and global
+    status_options for the tab/search/date/customer scope (before status filter).
+    """
+    status_filter = str((filters or {}).get("status") or "").strip()
+    scoped = filter_orders_for_view(orders, view, now=now)
+    status_options: set = set()
+    eligible: List[tuple] = []
+    docs_scanned = 0
+    for order in scoped:
+        docs_scanned += 1
+        if not order_matches_search_date_filters(order, filters):
+            continue
+        label = effective_workflow_status(order)
+        if label:
+            status_options.add(label)
+        if status_filter and label != status_filter:
+            continue
+        eligible.append(order_sort_key(order))
+    eligible.sort()
+    return {
+        "eligible_keys": eligible,
+        "ids": [key[2] for key in eligible if key[2]],
+        "total_count": len(eligible),
+        "status_options": sorted(status_options, key=lambda s: s.lower()),
+        "docs_classified": docs_scanned,
+    }
+
+
+def slice_eligible_page(eligible_keys: List[tuple], page: Any = 1, page_size: Any = STATUS_PO_DEFAULT_PAGE_SIZE) -> Dict[str, Any]:
+    total = len(eligible_keys)
+    page_n, size = _normalize_page(page, page_size)
+    total_pages = (total + size - 1) // size if total else 0
+    if total_pages and page_n > total_pages:
+        page_n = total_pages
+    start = (page_n - 1) * size if total else 0
+    page_keys = eligible_keys[start : start + size]
+    return {
+        "page": page_n,
+        "page_size": size,
+        "total_count": total,
+        "total_pages": total_pages,
+        "has_next": bool(total_pages and page_n < total_pages),
+        "has_prev": bool(total and page_n > 1),
+        "page_ids": [key[2] for key in page_keys if key[2]],
+        "page_keys": page_keys,
+    }
+
+
+def _normalize_page(page: Any, page_size: Any) -> tuple:
+    try:
+        size = int(page_size if page_size is not None else STATUS_PO_DEFAULT_PAGE_SIZE)
+    except (TypeError, ValueError):
+        size = STATUS_PO_DEFAULT_PAGE_SIZE
+    size = max(1, min(size, STATUS_PO_MAX_PAGE_SIZE))
+    try:
+        pg = int(page if page is not None else 1)
+    except (TypeError, ValueError):
+        pg = 1
+    pg = max(1, pg)
+    return pg, size
 
 
 def _confirmation_is_valid_delivery(order: dict, rec: dict) -> bool:
@@ -443,20 +587,85 @@ def status_po_row(order: dict) -> dict:
     }
 
 
+def build_status_po_page_rows(
+    page_orders: Iterable[dict],
+    *,
+    page_ids: Optional[List[str]] = None,
+) -> List[dict]:
+    """Build display rows for one page only, preserving page_ids order when given."""
+    by_id = {}
+    for order in page_orders or []:
+        oid = str(order.get("id") or "")
+        if oid:
+            by_id[oid] = order
+    if page_ids:
+        ordered = [by_id[i] for i in page_ids if i in by_id]
+    else:
+        ordered = list(page_orders or [])
+    return [status_po_row(o) for o in ordered]
+
+
 def build_status_po(
     orders: Iterable[dict],
     view: Optional[str] = None,
     *,
     now: Optional[datetime] = None,
     filters: Optional[dict] = None,
+    page: Any = 1,
+    page_size: Any = STATUS_PO_DEFAULT_PAGE_SIZE,
+    paginate: bool = True,
 ) -> dict:
-    filtered = filter_orders_for_view(orders, view, now=now)
-    rows = [status_po_row(o) for o in filtered]
-    if filters:
-        rows = [r for r in rows if matches_status_po_filters(r, filters)]
-    rows.sort(key=lambda r: (r.get("order_date") or "", r.get("po_number") or ""))
+    """Classify → filter → sort → count → paginate; build rows only for the page.
+
+    Classification (po_is_fully_delivered) runs on the scoped set before
+    pagination so totals and page membership are globally accurate.
+    """
+    orders_list = list(orders)
+    selected = select_status_po_eligible(orders_list, view, now=now, filters=filters)
+    view_key = (view or "").strip().lower() or None
+    if view_key == "semua":
+        view_key = "all"
+    by_id = {str(o.get("id") or ""): o for o in orders_list if o.get("id") is not None}
+
+    if not paginate:
+        page_ids = selected["ids"]
+        rows = build_status_po_page_rows(
+            [by_id[i] for i in page_ids if i in by_id],
+            page_ids=page_ids,
+        )
+        total = selected["total_count"]
+        return {
+            "view": view_key,
+            "rows": rows,
+            "total": total,
+            "total_count": total,
+            "page": 1,
+            "page_size": total or STATUS_PO_DEFAULT_PAGE_SIZE,
+            "total_pages": 1 if total else 0,
+            "has_next": False,
+            "has_prev": False,
+            "status_options": selected["status_options"],
+            "docs_classified": selected["docs_classified"],
+            "detail_docs_loaded": len(rows),
+        }
+
+    sliced = slice_eligible_page(selected["eligible_keys"], page=page, page_size=page_size)
+    page_ids = sliced["page_ids"]
+    rows = build_status_po_page_rows(
+        [by_id[i] for i in page_ids if i in by_id],
+        page_ids=page_ids,
+    )
     return {
-        "view": (view or "").strip().lower() or None,
+        "view": view_key,
         "rows": rows,
-        "total": len(rows),
+        "total": sliced["total_count"],
+        "total_count": sliced["total_count"],
+        "page": sliced["page"],
+        "page_size": sliced["page_size"],
+        "total_pages": sliced["total_pages"],
+        "has_next": sliced["has_next"],
+        "has_prev": sliced["has_prev"],
+        "status_options": selected["status_options"],
+        "docs_classified": selected["docs_classified"],
+        "detail_docs_loaded": len(rows),
     }

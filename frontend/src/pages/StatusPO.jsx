@@ -17,8 +17,10 @@ import {
   EMPTY_STATUS_PO_FILTERS,
   formatStatusPoDate,
   formatStatusPoUpdated,
-  matchesStatusPoFilters,
   parseStatusPoDateInput,
+  resolveStatusPoTab,
+  STATUS_PO_PAGE_SIZE,
+  STATUS_PO_TABS,
   statusPoFilterOptions,
 } from "../lib/statusPo";
 import { isStatusPoMatrixPreviewEnabled, buildStatusPoMatrixPreviewRows } from "../lib/statusPoPreview";
@@ -61,9 +63,10 @@ function StatusPoDateInput({ value, onChange, ariaLabel, testId }) {
 export default function StatusPO() {
   const { user, hasPerm } = useAuth();
   const location = useLocation();
-  const [params] = useSearchParams();
+  const [params, setSearchParams] = useSearchParams();
   const deliveryTodayPage = location.pathname.startsWith("/produksi/pengiriman-hari-ini");
   const view = deliveryTodayPage ? "delivery_today" : (params.get("view") || "");
+  const activeTab = deliveryTodayPage ? null : resolveStatusPoTab(view);
   const routeKey = deliveryTodayPage ? "pengiriman-hari-ini" : `status-po.${view || "default"}`;
   const userKey = storageUserKey(user);
   const savedFilters = readListUiState(userKey, routeKey, EMPTY_STATUS_PO_FILTERS);
@@ -71,6 +74,12 @@ export default function StatusPO() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [filters, setFilters] = useState({ ...EMPTY_STATUS_PO_FILTERS, ...savedFilters });
+  const [debouncedFilters, setDebouncedFilters] = useState(() => ({ ...EMPTY_STATUS_PO_FILTERS, ...savedFilters }));
+  const [page, setPage] = useState(1);
+  const [totalCount, setTotalCount] = useState(0);
+  const [totalPages, setTotalPages] = useState(0);
+  const [hasNext, setHasNext] = useState(false);
+  const [hasPrev, setHasPrev] = useState(false);
   const [selected, setSelected] = useState(new Set());
   const [bulkAction, setBulkAction] = useState(null);
   const [bulkReason, setBulkReason] = useState("");
@@ -78,36 +87,76 @@ export default function StatusPO() {
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bulkErr, setBulkErr] = useState("");
   const [updatedAt, setUpdatedAt] = useState(null);
+  const [serverStatusOptions, setServerStatusOptions] = useState([]);
   const inFlight = useRef(false);
-  const loadInFlight = useRef(false);
+  const loadSeq = useRef(0);
   const headerRef = useRef(null);
+  const filterKey = useMemo(() => JSON.stringify(debouncedFilters), [debouncedFilters]);
 
   const canCancel = hasPerm("po.cancel");
   const canDelete = hasPerm("po.delete");
   const canSelect = canCancel || canDelete;
 
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedFilters(filters), 300);
+    return () => clearTimeout(t);
+  }, [filters]);
+
+  useEffect(() => {
+    setPage((prev) => (prev === 1 ? prev : 1));
+  }, [view, filterKey]);
+
   const load = useCallback(async () => {
-    if (loadInFlight.current) return;
-    loadInFlight.current = true;
+    const seq = ++loadSeq.current;
     setBusy(true);
     setErr("");
     try {
       if (isStatusPoMatrixPreviewEnabled(location.search)) {
+        if (seq !== loadSeq.current) return;
         setRows(buildStatusPoMatrixPreviewRows());
+        setTotalCount(0);
+        setTotalPages(0);
+        setHasNext(false);
+        setHasPrev(false);
         setUpdatedAt(new Date());
         return;
       }
-      const d = await api.statusPo(view ? { view } : {});
+      const req = {
+        page,
+        page_size: STATUS_PO_PAGE_SIZE,
+      };
+      if (view) req.view = view;
+      const po = (debouncedFilters.po || "").trim();
+      const customer = (debouncedFilters.customer || "").trim();
+      const status = (debouncedFilters.status || "").trim();
+      const dateFrom = (debouncedFilters.dateFrom || "").trim();
+      const dateTo = (debouncedFilters.dateTo || "").trim();
+      if (po) req.po = po;
+      if (customer) req.customer = customer;
+      if (status) req.status = status;
+      if (dateFrom) req.date_from = dateFrom;
+      if (dateTo) req.date_to = dateTo;
+      const d = await api.statusPo(req);
+      if (seq !== loadSeq.current) return;
       setRows(d.rows || []);
+      const total = Number(d.total_count ?? d.total ?? 0) || 0;
+      setTotalCount(total);
+      setTotalPages(Number(d.total_pages ?? 0) || 0);
+      setHasNext(Boolean(d.has_next));
+      setHasPrev(Boolean(d.has_prev));
+      setServerStatusOptions(Array.isArray(d.status_options) ? d.status_options : []);
+      if (d.page && Number(d.page) !== page) {
+        setPage(Number(d.page));
+      }
       setUpdatedAt(new Date());
     } catch (e) {
+      if (seq !== loadSeq.current) return;
       const det = e.response?.data?.detail;
       setErr(typeof det === "object" ? det.message : (det || "Gagal memuat Status PO"));
     } finally {
-      setBusy(false);
-      loadInFlight.current = false;
+      if (seq === loadSeq.current) setBusy(false);
     }
-  }, [view, location.search]);
+  }, [view, page, debouncedFilters, location.search]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -115,10 +164,7 @@ export default function StatusPO() {
     writeListUiState(userKey, routeKey, filters);
   }, [userKey, routeKey, filters]);
 
-  const visible = useMemo(
-    () => (rows || []).filter((r) => matchesStatusPoFilters(r, filters)),
-    [rows, filters],
-  );
+  const visible = rows || [];
   const visibleIds = useMemo(() => visibleRowIds(visible), [visible]);
   const visibleIdKey = visibleIds.join(",");
 
@@ -133,11 +179,23 @@ export default function StatusPO() {
   }, [headerState.indeterminate]);
 
   const statusOptions = useMemo(
-    () => statusPoFilterOptions(rows, filters.status),
-    [rows, filters.status],
+    () => statusPoFilterOptions(
+      (serverStatusOptions || []).map((status) => ({ status })),
+      filters.status,
+    ),
+    [serverStatusOptions, filters.status],
   );
 
   const setFilter = (key, value) => setFilters((prev) => ({ ...prev, [key]: value }));
+
+  const selectTab = (tabKey) => {
+    if (deliveryTodayPage) return;
+    const next = new URLSearchParams(params);
+    if (tabKey === "all") next.delete("view");
+    else next.set("view", tabKey);
+    setSearchParams(next, { replace: false });
+    setPage(1);
+  };
 
   const openBulk = (action) => {
     if (bulkBusy || inFlight.current || !selected.size) return;
@@ -202,6 +260,9 @@ export default function StatusPO() {
 
   const title = deliveryTodayPage ? "Pengiriman Hari Ini" : "Status PO";
   const updatedLabel = formatStatusPoUpdated(updatedAt);
+  const pageLabel = totalPages > 0
+    ? `Halaman ${page} dari ${totalPages}`
+    : (busy ? "Memuat…" : "Halaman 0 dari 0");
 
   return (
     <div className="ship-status-page status-po-page" data-testid="status-po-page" data-density="rapat">
@@ -212,7 +273,7 @@ export default function StatusPO() {
               <h1>{title}</h1>
               {!deliveryTodayPage && (
                 <span className="spo-po-count" data-testid="status-po-heading-count">
-                  {visible.length} PO
+                  {totalCount} PO
                 </span>
               )}
             </div>
@@ -222,6 +283,27 @@ export default function StatusPO() {
           </p>
         </header>
         <div className="ship-status-toolbar" data-testid="status-po-filter-bar">
+          {!deliveryTodayPage && (
+            <div className="spo-status-tabs" role="tablist" aria-label="Filter status PO" data-testid="status-po-tabs">
+              {STATUS_PO_TABS.map((tab) => {
+                const selectedTab = activeTab === tab.key;
+                return (
+                  <button
+                    key={tab.key}
+                    type="button"
+                    role="tab"
+                    aria-selected={selectedTab}
+                    className={`spo-status-tab${selectedTab ? " is-active" : ""}`}
+                    onClick={() => selectTab(tab.key)}
+                    data-testid={`status-po-tab-${tab.key}`}
+                    disabled={busy && selectedTab}
+                  >
+                    {tab.label}
+                  </button>
+                );
+              })}
+            </div>
+          )}
           <label className="ship-filter-field spo-filter-search">
             <span className="spo-sr-only">Cari</span>
             <span className="spo-search-wrap">
@@ -356,7 +438,32 @@ export default function StatusPO() {
         ) : null}
       </div>
       <div className="spo-footer" data-testid="status-po-footer">
-        <span data-testid="status-po-count">Menampilkan {visible.length} dari {rows.length} PO</span>
+        <div className="spo-footer-meta">
+          <span data-testid="status-po-count">
+            Menampilkan {visible.length} dari {totalCount} PO
+          </span>
+          <div className="spo-pager" data-testid="status-po-pager">
+            <button
+              type="button"
+              className="spo-pager-btn"
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              disabled={busy || !hasPrev}
+              data-testid="status-po-page-prev"
+            >
+              Sebelumnya
+            </button>
+            <span className="spo-pager-label" data-testid="status-po-page-label">{pageLabel}</span>
+            <button
+              type="button"
+              className="spo-pager-btn"
+              onClick={() => setPage((p) => p + 1)}
+              disabled={busy || !hasNext}
+              data-testid="status-po-page-next"
+            >
+              Berikutnya
+            </button>
+          </div>
+        </div>
         <div className="spo-legend" data-testid="status-po-legend">
           <span className="spo-legend-item"><span className="spo-legend-dot is-done" aria-hidden="true" /> Selesai</span>
           <span className="spo-legend-item"><span className="spo-legend-dot is-active" aria-hidden="true" /> Tahap Aktif</span>
