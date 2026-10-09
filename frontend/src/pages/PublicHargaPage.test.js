@@ -172,7 +172,8 @@ const flatDetail = {
 
 const flush = async () => {
   await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await Promise.resolve();
+    await Promise.resolve();
   });
 };
 
@@ -193,12 +194,18 @@ describe("PublicHargaPage catalog and detail", () => {
   };
 
   beforeEach(() => {
+    jest.useFakeTimers();
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
     api.publicCatalogHome.mockResolvedValue(homePayload);
     api.publicCustomerPricingGroup.mockResolvedValue({ group: cupDetail });
     api.publicCustomerPricingGroupBySlug.mockResolvedValue({ group: cupDetail });
+    api.calculatePublicCustomerPrice.mockResolvedValue({
+      quantity: 1000,
+      unit_price: 2500,
+      total: 2500000,
+    });
     mockNavigate.mockReset();
     mockParams = {};
   });
@@ -206,8 +213,17 @@ describe("PublicHargaPage catalog and detail", () => {
   afterEach(async () => {
     await act(async () => root.unmount());
     container.remove();
+    jest.useRealTimers();
     jest.clearAllMocks();
   });
+
+  const flushCalc = async () => {
+    await act(async () => {
+      jest.advanceTimersByTime(320);
+      await Promise.resolve();
+    });
+    await flush();
+  };
 
   test("home renders hero settings, categories, cards, min price, variant count", async () => {
     await renderAt("/harga");
@@ -345,6 +361,11 @@ describe("PublicHargaPage catalog and detail", () => {
   });
 
   test("structured selection changes price, tiers, and default image", async () => {
+    api.calculatePublicCustomerPrice.mockResolvedValue({
+      quantity: 1000,
+      unit_price: 2800,
+      total: 2800000,
+    });
     await renderAt("/harga/group-paper-cup");
     const beforeSrc = container.querySelector('[data-testid="harga-detail-image"] img')?.src || "";
     await act(async () => {
@@ -365,6 +386,14 @@ describe("PublicHargaPage catalog and detail", () => {
     const afterSrc = container.querySelector('[data-testid="harga-detail-image"] img')?.src || "";
     expect(afterSrc).toContain("variant-16");
     expect(afterSrc).not.toBe(beforeSrc);
+    await flushCalc();
+    expect(api.calculatePublicCustomerPrice).toHaveBeenCalledWith({
+      group_public_id: "group-paper-cup",
+      public_variant_id: "variant-16",
+      quantity: 1000,
+    });
+    expect(container.querySelector('[data-testid="harga-estimate-success"]').textContent)
+      .toContain("Rp 2.800.000");
   });
 
   test("thumbnail click changes preview only and does not change price/variant", async () => {
@@ -436,5 +465,84 @@ describe("PublicHargaPage catalog and detail", () => {
     expect(
       container.querySelector('[data-testid="harga-detail-image"] [data-testid="harga-image-placeholder"]')
     ).not.toBeNull();
+  });
+
+  test("official calculate API drives estimate total and WhatsApp quote lines", async () => {
+    api.calculatePublicCustomerPrice.mockResolvedValue({
+      quantity: 1000,
+      unit_price: 2500,
+      total: 2500000,
+    });
+    await renderAt("/harga/group-paper-cup");
+    await act(async () => {
+      container.querySelector('[data-testid="harga-size-12oz"]')
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await act(async () => {
+      container.querySelector('[data-testid="harga-color-Bening"]')
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+    await flushCalc();
+    expect(container.querySelector('[data-testid="harga-estimate-card"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="harga-estimate-success"]').textContent)
+      .toContain("Rp 2.500.000");
+    const wa = container.querySelector('[data-testid="harga-detail-whatsapp"]').getAttribute("href");
+    expect(decodeURIComponent(wa)).toContain("Harga satuan: Rp 2.500");
+    expect(decodeURIComponent(wa)).toContain("Estimasi total: Rp 2.500.000");
+    expect(decodeURIComponent(wa)).toContain("Varian: 12oz Bening");
+  });
+
+  test("failed calculate hides total estimate and omits price from WhatsApp", async () => {
+    api.calculatePublicCustomerPrice.mockRejectedValue({
+      response: { status: 400, data: { detail: "Jumlah di bawah minimum pembelian." } },
+    });
+    await renderAt("/harga/group-paper-cup");
+    await act(async () => {
+      container.querySelector('[data-testid="harga-size-12oz"]')
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await act(async () => {
+      container.querySelector('[data-testid="harga-color-Bening"]')
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+    await flushCalc();
+    expect(container.querySelector('[data-testid="harga-estimate-success"]')).toBeNull();
+    expect(container.querySelector('[data-testid="harga-estimate-error"]').textContent)
+      .toMatch(/minimum|tidak valid|Jumlah/i);
+    const wa = container.querySelector('[data-testid="harga-detail-whatsapp"]').getAttribute("href");
+    expect(decodeURIComponent(wa)).not.toContain("Estimasi total:");
+    expect(decodeURIComponent(wa)).not.toContain("Harga satuan:");
+  });
+
+  test("many flat variants use searchable selector", async () => {
+    const many = Array.from({ length: 8 }, (_, index) => ({
+      public_variant_id: `var-${index}`,
+      display_name: `Box ${index + 1}`,
+      unit: "pcs",
+      minimum_quantity: 100,
+      size: null,
+      color: null,
+      finishing: null,
+      image_url: null,
+      images: [],
+      tiers: [{ min_qty: 100, max_qty: null, unit_price: 1000 + index }],
+    }));
+    api.publicCustomerPricingGroup.mockResolvedValueOnce({
+      group: { ...flatDetail, variants: many, variant_count: many.length },
+    });
+    await renderAt("/harga/group-flat");
+    expect(container.querySelector('[data-testid="harga-variant-search"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="harga-variant-select"]')).not.toBeNull();
+  });
+
+  test("breadcrumb renders on detail page", async () => {
+    await renderAt("/produk/paper-cup");
+    const crumb = container.querySelector('[data-testid="harga-breadcrumb"]');
+    expect(crumb).not.toBeNull();
+    expect(crumb.textContent).toContain("Beranda");
+    expect(crumb.textContent).toContain("Cup");
+    expect(crumb.textContent).toContain("Paper Cup Premium");
   });
 });
