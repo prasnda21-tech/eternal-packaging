@@ -652,6 +652,9 @@ async def assert_invoice_allows_receipt_journal(db, invoice_id: str) -> dict:
         raise HTTPException(404, f"Faktur Penjualan '{invoice_id}' tidak ditemukan.")
     if effective_financial_status(invoice) != FINANCIAL_FINALIZED:
         raise HTTPException(409, INVOICE_NOT_FINALIZED_RECEIPT_POST_MESSAGE)
+    from services.sales_invoice_edit_revision import raise_if_revision_in_progress
+
+    await raise_if_revision_in_progress(db, invoice["id"])
     if reverse_claim_is_active(invoice):
         raise HTTPException(409, INVOICE_REVERSE_IN_PROGRESS_RECEIPT_MESSAGE)
     journal = await find_sales_invoice_source_journal(db, invoice["id"])
@@ -666,6 +669,9 @@ async def _require_invoice_posted(db, invoice_id: str) -> dict:
     invoice = await db.sales_invoices.find_one({"id": str(invoice_id)}, {"_id": 0})
     if not invoice:
         raise HTTPException(404, f"Faktur Penjualan '{invoice_id}' tidak ditemukan.")
+    from services.sales_invoice_edit_revision import raise_if_revision_in_progress
+
+    await raise_if_revision_in_progress(db, invoice["id"])
     journal = await find_sales_invoice_source_journal(db, invoice["id"])
     if accounting_status_from_journal(journal) != ACCOUNTING_POSTED:
         raise HTTPException(409, INVOICE_NOT_POSTED_MESSAGE)
@@ -764,9 +770,22 @@ async def post_sales_receipt_accounting(
             await _heal_posted_receipt_from_journal(db, rec, existing, user)
             return await _public_receipt_detail(db, rec["id"])
 
+        invoice_id = str(claimed.get("invoice_id") or rec.get("invoice_id") or "")
+        guard_token = str(uuid.uuid4())
         try:
-            await assert_invoice_allows_receipt_journal(db, claimed.get("invoice_id") or rec.get("invoice_id"))
-            journal = await _write_source_journal(db, claimed, user, cash_snap)
+            from services.sales_invoice_posting import (
+                acquire_receipt_create_claim,
+                clear_receipt_create_claim,
+            )
+
+            leased = await acquire_receipt_create_claim(db, invoice_id, token=guard_token)
+            if not leased:
+                raise HTTPException(409, "Revisi faktur belum selesai.")
+            try:
+                await assert_invoice_allows_receipt_journal(db, invoice_id)
+                journal = await _write_source_journal(db, claimed, user, cash_snap)
+            finally:
+                await clear_receipt_create_claim(db, invoice_id, token=guard_token)
         except Exception:
             still = await find_sales_receipt_source_journal(db, rec["id"])
             if still:

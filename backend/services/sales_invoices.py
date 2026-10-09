@@ -1376,6 +1376,13 @@ async def update_sales_invoice(db, invoice_id: str, payload: Dict[str, Any], use
 
         status = effective_financial_status(inv)
         if status != FINANCIAL_DRAFT:
+            from services.sales_invoice_edit_revision import (
+                is_sales_invoice_edit_revision_enabled,
+                revise_posted_sales_invoice,
+            )
+
+            if status == FINANCIAL_FINALIZED and await is_sales_invoice_edit_revision_enabled(db):
+                return await revise_posted_sales_invoice(db, inv["id"], payload, user)
             raise HTTPException(
                 409,
                 "Faktur yang sudah difinalisasi atau dibatalkan tidak dapat diubah field keuangannya.",
@@ -1625,6 +1632,9 @@ async def cancel_sales_invoice(
         status = effective_financial_status(inv)
         if status == FINANCIAL_DRAFT:
             raise HTTPException(409, "Hanya faktur yang sudah difinalisasi yang dapat dibatalkan.")
+        from services.sales_invoice_edit_revision import raise_if_revision_in_progress
+
+        await raise_if_revision_in_progress(db, inv["id"])
         if status == FINANCIAL_CANCELLED:
             return await get_sales_invoice_detail(db, inv["id"])
 
@@ -1654,6 +1664,7 @@ async def cancel_sales_invoice(
         )
         if claimed is None:
             current = await db.sales_invoices.find_one({"id": inv["id"]}, {"_id": 0})
+            await raise_if_revision_in_progress(db, inv["id"])
             if current and effective_financial_status(current) == FINANCIAL_CANCELLED:
                 return await get_sales_invoice_detail(db, inv["id"])
             if current and posting_claim_is_active(current):

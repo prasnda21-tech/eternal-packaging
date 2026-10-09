@@ -9801,6 +9801,7 @@ class SalesInvoiceUpdatePayload(BaseModel):
     lines: Optional[List[SalesInvoiceLineItemInput]] = None
     line_items: Optional[List[SalesInvoiceLineItemInput]] = None
     other_charges: Optional[List[SalesInvoiceOtherChargeInput]] = None
+    idempotency_key: Optional[str] = None
 
 
 class SalesInvoiceReverseAccountingPayload(BaseModel):

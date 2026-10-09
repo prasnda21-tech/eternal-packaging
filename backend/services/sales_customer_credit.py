@@ -635,10 +635,45 @@ async def _outstanding_now(db, invoice: dict) -> Decimal:
     return outstanding
 
 
+async def _lease_invoice_for_credit_mutation(db, invoice_id: str) -> str:
+    """Hold the invoice receipt lease across a credit journal or invoice recalc.
+
+    The lease compare-and-swap requires the revision fence to be absent, so a
+    recovery that already started cannot post or rewrite invoice balances
+    after the fence is acquired.
+    """
+    from services.sales_invoice_posting import acquire_receipt_create_claim
+
+    token = str(uuid.uuid4())
+    leased = await acquire_receipt_create_claim(db, str(invoice_id), token=token)
+    if not leased:
+        raise HTTPException(409, "Revisi faktur belum selesai.")
+    return token
+
+
+async def _release_invoice_credit_lease(db, invoice_id: str, token: str) -> None:
+    from services.sales_invoice_posting import clear_receipt_create_claim
+
+    await clear_receipt_create_claim(db, str(invoice_id), token=token)
+
+
 async def _complete_posting_application(
     db, doc: dict, user: dict, application_date: str,
 ) -> Dict[str, Any]:
     """Finish a fenced reservation that already owns its journal slot."""
+    invoice_id = str(doc.get("invoice_id") or "")
+    if not invoice_id:
+        raise HTTPException(400, "Faktur tujuan wajib diisi.")
+    lease = await _lease_invoice_for_credit_mutation(db, invoice_id)
+    try:
+        return await _complete_posting_application_leased(db, doc, user, application_date)
+    finally:
+        await _release_invoice_credit_lease(db, invoice_id, lease)
+
+
+async def _complete_posting_application_leased(
+    db, doc: dict, user: dict, application_date: str,
+) -> Dict[str, Any]:
     from services.sales_accounting_settings import require_customer_deposit_account
 
     journal = await find_primary_journal_for_source(db, SOURCE_TYPE, str(doc.get("id")))
@@ -709,19 +744,23 @@ async def apply_customer_credit(db, payload: Dict[str, Any], user: dict) -> Dict
             if healed.get("status") == "posted" or (
                 journal and accounting_status_from_journal(journal) == ACCOUNTING_POSTED
             ):
-                if healed.get("status") != "posted":
-                    await db[COLLECTION].update_one(
-                        {"id": healed["id"]},
-                        {"$set": {"status": "posted", "financial_status": "active", "updated_at": now_iso()}},
-                    )
-                    healed["status"] = "posted"
-                    healed["financial_status"] = "active"
-                await _sync_posted_counter(db, healed["source_receipt_id"])
-                from services.sales_receipts import _recalc_invoice_payment_from_receipts
+                lease = await _lease_invoice_for_credit_mutation(db, healed.get("invoice_id"))
+                try:
+                    if healed.get("status") != "posted":
+                        await db[COLLECTION].update_one(
+                            {"id": healed["id"]},
+                            {"$set": {"status": "posted", "financial_status": "active", "updated_at": now_iso()}},
+                        )
+                        healed["status"] = "posted"
+                        healed["financial_status"] = "active"
+                    await _sync_posted_counter(db, healed["source_receipt_id"])
+                    from services.sales_receipts import _recalc_invoice_payment_from_receipts
 
-                await _recalc_invoice_payment_from_receipts(db, healed.get("invoice_id"))
-                stored = await db[COLLECTION].find_one({"id": healed["id"]}, {"_id": 0})
-                return _public_application(stored or healed)
+                    await _recalc_invoice_payment_from_receipts(db, healed.get("invoice_id"))
+                    stored = await db[COLLECTION].find_one({"id": healed["id"]}, {"_id": 0})
+                    return _public_application(stored or healed)
+                finally:
+                    await _release_invoice_credit_lease(db, healed.get("invoice_id"), lease)
             if not journal:
                 if healed.get("status") == "posting":
                     return await _complete_posting_application(
