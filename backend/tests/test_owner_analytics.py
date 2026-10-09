@@ -49,14 +49,49 @@ def bind_motor():
 @pytest.fixture
 async def clean_db(bind_motor):
     db = server.db
-    for name in ("orders", "sales_invoices", "sales_receipts", "sales_customer_credit_applications",
-                 "users", "app_settings", "role_permissions"):
+    for name in (
+        "orders",
+        "sales_invoices",
+        "sales_receipts",
+        "sales_customer_credit_applications",
+        "purchase_invoices",
+        "purchase_orders",
+        "purchase_payments",
+        "users",
+        "app_settings",
+        "role_permissions",
+    ):
         await db[name].delete_many({})
     yield
-    for name in ("orders", "sales_invoices", "sales_receipts", "sales_customer_credit_applications",
-                 "users", "app_settings", "role_permissions"):
+    for name in (
+        "orders",
+        "sales_invoices",
+        "sales_receipts",
+        "sales_customer_credit_applications",
+        "purchase_invoices",
+        "purchase_orders",
+        "purchase_payments",
+        "users",
+        "app_settings",
+        "role_permissions",
+    ):
         await db[name].delete_many({})
     app.dependency_overrides.pop(current_user, None)
+
+
+def _purchase_invoice(**extra):
+    doc = {
+        "id": extra.pop("id", uuid.uuid4().hex),
+        "invoice_number": extra.pop("invoice_number", "PI-1"),
+        "invoice_date": "2026-03-10",
+        "supplier": "PT Sumber Makmur",
+        "grand_total": 1000.0,
+        "subtotal": 1000.0,
+        "cancelled": False,
+        "lines": [],
+    }
+    doc.update(extra)
+    return doc
 
 
 def _user(role="direktur_utama", perms=None, uid=None, deny=None):
@@ -805,3 +840,202 @@ async def test_arap_matches_accounting_summary_engine(clean_db):
     assert owner["finance"]["receivables"]["as_of"] == "2026-03-20"
     assert owner["finance"]["payables"]["as_of"] == "2026-03-20"
     assert "credit/advance/return" in (owner["finance"]["payables"].get("note") or "").lower()
+
+
+@pytest.mark.anyio
+async def test_purchasing_active_cancelled_unposted_and_excludes_po_payment(clean_db):
+    await server.db.purchase_invoices.insert_many([
+        _purchase_invoice(id="pi-a", invoice_date="2026-03-05", grand_total=1000, supplier="Alpha"),
+        _purchase_invoice(id="pi-b", invoice_date="2026-03-06", grand_total=2500, supplier="Beta"),
+        _purchase_invoice(id="pi-cancel", invoice_date="2026-03-07", grand_total=9999, supplier="Gamma", cancelled=True),
+        _purchase_invoice(id="pi-out", invoice_date="2026-02-28", grand_total=5000, supplier="Outside"),
+    ])
+    await server.db.purchase_orders.insert_one({
+        "id": "po-x", "po_number": "PO-X", "supplier": "PO Only", "grand_total": 8888, "cancelled": False,
+    })
+    await server.db.purchase_payments.insert_one({
+        "id": "pay-x",
+        "purchase_invoice_id": "pi-a",
+        "amount": 1000,
+        "settlement_status": "PAID",
+        "cancelled": False,
+        "payment_date": "2026-03-08",
+    })
+    owner = await get_owner_analytics(
+        server.db,
+        start_date="2026-03-01",
+        end_date="2026-03-31",
+        preset="custom",
+        user=_user(),
+        permissions=[PERM_VIEW],
+    )
+    purchasing = owner["purchasing"]
+    assert purchasing["total"]["amount"] == 3500.0
+    assert purchasing["total"]["invoice_count"] == 2
+    assert purchasing["total"]["basis"] == "grand_total"
+    assert purchasing["total"]["status"] == "complete"
+    assert "retur" in (purchasing.get("note") or "").lower()
+    trend_sum = round(sum(p["amount"] for p in purchasing["trend"]["points"]), 2)
+    assert trend_sum == 3500.0
+    labels = {row["label"] for row in purchasing["top_suppliers"]["rows"]}
+    assert "Alpha" in labels and "Beta" in labels
+    assert "PO Only" not in labels
+
+
+@pytest.mark.anyio
+async def test_purchasing_period_boundary_and_daily_grain(clean_db):
+    await server.db.purchase_invoices.insert_many([
+        _purchase_invoice(id="pi-start", invoice_date="2026-03-01", grand_total=100, supplier="A"),
+        _purchase_invoice(id="pi-end", invoice_date="2026-03-31", grand_total=200, supplier="B"),
+        _purchase_invoice(id="pi-after", invoice_date="2026-04-01", grand_total=900, supplier="C"),
+    ])
+    owner = await get_owner_analytics(
+        server.db,
+        start_date="2026-03-01",
+        end_date="2026-03-31",
+        preset="custom",
+        user=_user(),
+        permissions=[PERM_VIEW],
+    )
+    purchasing = owner["purchasing"]
+    assert purchasing["total"]["amount"] == 300.0
+    assert purchasing["trend"]["grain"] == "day"
+    assert len(purchasing["trend"]["points"]) == 31
+    by_period = {p["period"]: p["amount"] for p in purchasing["trend"]["points"]}
+    assert by_period["2026-03-01"] == 100.0
+    assert by_period["2026-03-31"] == 200.0
+    assert by_period["2026-03-15"] == 0.0
+
+
+@pytest.mark.anyio
+async def test_purchasing_monthly_grain_for_long_span(clean_db):
+    await server.db.purchase_invoices.insert_one(
+        _purchase_invoice(id="pi-long", invoice_date="2026-01-15", grand_total=400, supplier="Long"),
+    )
+    owner = await get_owner_analytics(
+        server.db,
+        start_date="2026-01-01",
+        end_date="2026-03-31",
+        preset="custom",
+        user=_user(),
+        permissions=[PERM_VIEW],
+    )
+    assert owner["purchasing"]["trend"]["grain"] == "month"
+    months = [p["period"] for p in owner["purchasing"]["trend"]["points"]]
+    assert months == ["2026-01", "2026-02", "2026-03"]
+    assert owner["purchasing"]["trend"]["points"][0]["amount"] == 400.0
+
+
+@pytest.mark.anyio
+async def test_purchasing_unknown_supplier_incomplete_and_top5_ties(clean_db):
+    docs = [
+        _purchase_invoice(id="pi-1", invoice_date="2026-03-02", grand_total=500, supplier="Zeta"),
+        _purchase_invoice(id="pi-2", invoice_date="2026-03-02", grand_total=500, supplier="Alpha"),
+        _purchase_invoice(id="pi-3", invoice_date="2026-03-03", grand_total=400, supplier="Beta"),
+        _purchase_invoice(id="pi-4", invoice_date="2026-03-03", grand_total=300, supplier="Gamma"),
+        _purchase_invoice(id="pi-5", invoice_date="2026-03-04", grand_total=200, supplier="Delta"),
+        _purchase_invoice(id="pi-6", invoice_date="2026-03-04", grand_total=100, supplier="Epsilon"),
+        _purchase_invoice(id="pi-u", invoice_date="2026-03-05", grand_total=50, supplier=""),
+    ]
+    await server.db.purchase_invoices.insert_many(docs)
+    owner = await get_owner_analytics(
+        server.db,
+        start_date="2026-03-01",
+        end_date="2026-03-31",
+        preset="custom",
+        user=_user(),
+        permissions=[PERM_VIEW],
+    )
+    purchasing = owner["purchasing"]
+    assert purchasing["total"]["amount"] == 2050.0
+    assert purchasing["completeness"] == "incomplete"
+    assert purchasing["distribution"]["show_share"] is False
+    rows = purchasing["top_suppliers"]["rows"]
+    assert len(rows) == 5
+    # Tie 500: Alpha before Zeta by label
+    assert rows[0]["label"] == "Alpha"
+    assert rows[1]["label"] == "Zeta"
+    dist = purchasing["distribution"]["groups"]
+    assert any(g["key"] == "other:" for g in dist)
+    other = next(g for g in dist if g["key"] == "other:")
+    assert other["amount"] == 150.0  # Epsilon 100 + unknown 50
+    assert purchasing["total"]["amount"] == round(sum(g["amount"] for g in dist), 2)
+
+
+@pytest.mark.anyio
+async def test_purchasing_negative_suppresses_share(clean_db):
+    await server.db.purchase_invoices.insert_many([
+        _purchase_invoice(id="pi-pos", invoice_date="2026-03-02", grand_total=1000, supplier="Good"),
+        _purchase_invoice(id="pi-neg", invoice_date="2026-03-03", grand_total=-200, supplier="Adj"),
+    ])
+    owner = await get_owner_analytics(
+        server.db,
+        start_date="2026-03-01",
+        end_date="2026-03-31",
+        preset="custom",
+        user=_user(),
+        permissions=[PERM_VIEW],
+    )
+    purchasing = owner["purchasing"]
+    assert purchasing["total"]["amount"] == 800.0
+    assert purchasing["distribution"]["show_share"] is False
+    assert all(g.get("share") is None for g in purchasing["distribution"]["groups"])
+
+
+@pytest.mark.anyio
+async def test_purchasing_invalid_amount_and_error_isolation(clean_db, monkeypatch):
+    await server.db.sales_invoices.insert_one(
+        _invoice(id="omzet-ok", after_discount=1200, invoice_date="2026-03-10"),
+    )
+    await server.db.purchase_invoices.insert_one(
+        _purchase_invoice(id="pi-bad", invoice_date="2026-03-10", grand_total="bukan-angka", supplier="X"),
+    )
+    owner = await get_owner_analytics(
+        server.db,
+        start_date="2026-03-01",
+        end_date="2026-03-31",
+        preset="custom",
+        user=_user(),
+        permissions=[PERM_VIEW],
+    )
+    assert owner["omzet"]["amount"] == 1200.0
+    assert owner["purchasing"]["status"] == "error"
+    assert owner["purchasing"]["total"]["amount"] is None
+    assert "finance" in owner
+    assert "receivables" in owner["finance"]
+    assert "payables" in owner["finance"]
+
+    async def boom_purchasing(*args, **kwargs):
+        raise RuntimeError("purchase boom")
+
+    monkeypatch.setattr("services.owner_analytics._build_purchasing", boom_purchasing)
+    owner2 = await get_owner_analytics(
+        server.db,
+        start_date="2026-03-01",
+        end_date="2026-03-31",
+        preset="custom",
+        user=_user(),
+        permissions=[PERM_VIEW],
+    )
+    assert owner2["omzet"]["amount"] == 1200.0
+    assert owner2["purchasing"]["status"] == "error"
+    assert owner2["purchasing"]["total"]["amount"] is None
+    assert "cash_balance" in owner2["finance"]
+
+
+@pytest.mark.anyio
+async def test_purchasing_http_owner_ok_admin_denied(clean_db):
+    await server.db.purchase_invoices.insert_one(
+        _purchase_invoice(id="pi-http", invoice_date="2026-03-10", grand_total=750, supplier="HTTP Co"),
+    )
+    director = _user(role="direktur_utama", perms=[PERM_VIEW])
+    async with await client_for(director) as client:
+        resp = await client.get(PATH, params={"start_date": "2026-03-01", "end_date": "2026-03-31", "preset": "custom"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["purchasing"]["total"]["amount"] == 750.0
+
+    admin = _user(role="admin", perms=[PERM_VIEW, "purchase_invoices.view"])
+    async with await client_for(admin) as client:
+        denied = await client.get(PATH, params={"start_date": "2026-03-01", "end_date": "2026-03-31", "preset": "custom"})
+    assert denied.status_code == 403

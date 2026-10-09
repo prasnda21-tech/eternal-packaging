@@ -1,4 +1,4 @@
-"""Owner Analytics Dashboard — thin read-only facade (Phase 2 + 3A + 3B).
+"""Owner Analytics Dashboard — thin read-only facade (Phase 2 + 3A + 3B + 3C).
 
 Reuses sales_dashboard omzet (after_discount / invoice_date / finalized).
 Adds Average PO Value from orders.selling_total when prices are complete.
@@ -6,6 +6,8 @@ Operational counts reuse delivery schedule + quantity delivery predicates.
 Phase 3A reuses financial_dashboard cash helpers and cash_bank_owner_recon MTD.
 Phase 3B reuses accounts_receivable / accounts_payable current-invoice loaders
 for accounting outstanding + aging (Saat Ini). Does not recompute settlements.
+Phase 3C aggregates active purchase_invoices by invoice_date / grand_total
+(Option A). Returns and payments do not reduce the purchasing KPI.
 
 No branch filter. No profit calculation. No OTP/OTD percentages.
 GET must not post, reverse, or backfill business documents.
@@ -23,7 +25,10 @@ from services.accounts_payable import (
     BUCKET_61_90 as AP_BUCKET_61_90,
     BUCKET_NOT_DUE as AP_BUCKET_NOT_DUE,
     BUCKET_OVER_90 as AP_BUCKET_OVER_90,
+    UNKNOWN_SUPPLIER_KEY,
     _current_invoice_sets as _ap_current_invoice_sets,
+    supplier_display_name,
+    supplier_identity_key,
 )
 from services.accounts_receivable import (
     BUCKET_1_30 as AR_BUCKET_1_30,
@@ -42,13 +47,20 @@ from services.delivery_schedule import (
 )
 from services.financial_dashboard import (
     _account_index,
+    _bucket_keys,
+    _bucket_of,
     _cash_movement,
     _cash_movement_trend,
+    _grain_for,
     _position,
 )
 from services.financial_statement_common import load_statement_accounts, parse_financial_date_range
+from services.purchase_common import with_active_filter
+from services.purchase_invoices import COLLECTION as PURCHASE_INVOICE_COLLECTION
 from services.sales_dashboard import (
     SalesDashboardValidationError,
+    _calendar_day,
+    _share_percent,
     get_sales_dashboard,
 )
 from services.status_po import STAGES
@@ -58,6 +70,17 @@ AP_COVERAGE_NOTE = (
     "Penyesuaian supplier credit/advance/return yang belum tercakup engine "
     "tidak termasuk dalam perhitungan."
 )
+PURCHASE_BASIS_NOTE = (
+    "Nilai grand_total faktur pembelian aktif. Belum dikurangi retur; "
+    "diskon dan PPN belum dipisahkan dalam model faktur."
+)
+PURCHASE_DISCLOSURE = (
+    "Nilai faktur aktif sebelum retur. "
+    "Diskon dan PPN belum dipisahkan dalam model faktur."
+)
+TOP_SUPPLIER_LIMIT = 5
+OTHER_SUPPLIER_KEY = "other:"
+OTHER_SUPPLIER_LABEL = "Lainnya"
 
 PERM_VIEW = "dashboard.owner.view"
 OWNER_ROLES = frozenset({"direktur_utama", "holding_team"})
@@ -832,6 +855,266 @@ def _drilldowns(permissions: Optional[Sequence[str]]) -> dict:
     }
 
 
+def _purchasing_error(start: str, end: str, detail: str) -> dict:
+    return {
+        "status": "error",
+        "scope": "period",
+        "scope_label": "Periode",
+        "start_date": start,
+        "end_date": end,
+        "timezone": "Asia/Jakarta",
+        "total": {
+            "status": "error",
+            "label": "Total Pembelian Faktur",
+            "amount": None,
+            "invoice_count": None,
+            "basis": "grand_total",
+            "detail": detail,
+        },
+        "trend": {"status": "error", "grain": None, "points": [], "detail": detail},
+        "top_suppliers": {"status": "error", "rows": [], "detail": detail},
+        "distribution": {
+            "status": "error",
+            "groups": [],
+            "show_share": False,
+            "detail": detail,
+        },
+        "completeness": "error",
+        "note": PURCHASE_DISCLOSURE,
+        "detail": detail,
+    }
+
+
+async def _load_eligible_purchase_invoices(db, *, start: str, end: str) -> List[dict]:
+    """Active purchase invoices in invoice_date range. One row per invoice id."""
+    query = with_active_filter({"invoice_date": {"$gte": start, "$lt": _next_day(end)}})
+    cursor = db[PURCHASE_INVOICE_COLLECTION].find(
+        query,
+        {"_id": 0, "id": 1, "invoice_date": 1, "grand_total": 1, "supplier": 1, "cancelled": 1},
+    )
+    seen: Dict[str, dict] = {}
+    async for doc in cursor:
+        invoice_id = str(doc.get("id") or "").strip()
+        if not invoice_id or invoice_id in seen:
+            continue
+        seen[invoice_id] = doc
+    return list(seen.values())
+
+
+async def _build_purchasing(db, *, start: str, end: str) -> dict:
+    """Phase 3C — period purchasing from active purchase_invoices.grand_total."""
+    invoices = await _load_eligible_purchase_invoices(db, start=start, end=end)
+    grain = _grain_for(start, end)
+    keys = _bucket_keys(start, end, grain)
+    empty_points = [
+        {"period": key, "amount": 0.0, "invoice_count": 0}
+        for key in keys
+    ]
+    if not invoices:
+        return {
+            "status": "empty",
+            "scope": "period",
+            "scope_label": "Periode",
+            "start_date": start,
+            "end_date": end,
+            "timezone": "Asia/Jakarta",
+            "total": {
+                "status": "empty",
+                "label": "Total Pembelian Faktur",
+                "amount": None,
+                "invoice_count": 0,
+                "basis": "grand_total",
+                "detail": "Belum ada faktur pembelian aktif pada periode ini.",
+            },
+            "trend": {
+                "status": "empty",
+                "grain": grain,
+                "points": empty_points,
+                "detail": "Belum ada faktur pembelian aktif pada periode ini.",
+            },
+            "top_suppliers": {
+                "status": "empty",
+                "rows": [],
+                "detail": "Belum ada faktur pembelian aktif pada periode ini.",
+            },
+            "distribution": {
+                "status": "empty",
+                "groups": [],
+                "show_share": False,
+                "detail": "Belum ada faktur pembelian aktif pada periode ini.",
+            },
+            "completeness": "complete",
+            "note": PURCHASE_DISCLOSURE,
+            "detail": PURCHASE_BASIS_NOTE,
+        }
+
+    total = Decimal("0.00")
+    buckets: Dict[str, Dict[str, Any]] = {
+        key: {"amount": Decimal("0.00"), "invoice_count": 0}
+        for key in keys
+    }
+    suppliers: Dict[str, Dict[str, Any]] = {}
+    unknown_invoice_count = 0
+    has_negative = False
+
+    for invoice in invoices:
+        day = _calendar_day(invoice.get("invoice_date"))
+        if not day:
+            return _purchasing_error(
+                start,
+                end,
+                "Ada faktur pembelian aktif tanpa invoice_date yang valid.",
+            )
+        amount = _money(invoice.get("grand_total"))
+        if amount is None:
+            return _purchasing_error(
+                start,
+                end,
+                "Ada faktur pembelian dengan grand_total yang tidak dapat dibaca.",
+            )
+        if amount < 0:
+            has_negative = True
+        total += amount
+        key = _bucket_of(day, grain)
+        if key in buckets:
+            buckets[key]["amount"] += amount
+            buckets[key]["invoice_count"] += 1
+        supplier_key = supplier_identity_key(invoice.get("supplier"))
+        label = supplier_display_name(invoice.get("supplier"))
+        if supplier_key == UNKNOWN_SUPPLIER_KEY:
+            unknown_invoice_count += 1
+            label = "Supplier tidak diketahui"
+        row = suppliers.setdefault(
+            supplier_key,
+            {
+                "key": supplier_key,
+                "label": label,
+                "amount": Decimal("0.00"),
+                "invoice_count": 0,
+            },
+        )
+        row["amount"] += amount
+        row["invoice_count"] += 1
+
+    total_q = total.quantize(MONEY_Q)
+    trend_sum = sum((buckets[key]["amount"] for key in keys), Decimal("0.00")).quantize(MONEY_Q)
+    if trend_sum != total_q:
+        return _purchasing_error(
+            start,
+            end,
+            "Agregasi tren pembelian tidak konsisten dengan Total Pembelian Faktur.",
+        )
+
+    ranked = sorted(
+        suppliers.values(),
+        key=lambda row: (-row["amount"], str(row["label"] or "").lower(), str(row["key"])),
+    )
+    top_rows = ranked[:TOP_SUPPLIER_LIMIT]
+    remainder = ranked[TOP_SUPPLIER_LIMIT:]
+    remainder_amount = sum((row["amount"] for row in remainder), Decimal("0.00"))
+    remainder_count = sum(int(row["invoice_count"]) for row in remainder)
+
+    completeness = "incomplete" if unknown_invoice_count else "complete"
+    show_share = (
+        completeness == "complete"
+        and total_q > 0
+        and not has_negative
+        and all(row["amount"] >= 0 for row in ranked)
+    )
+
+    distribution_groups: List[dict] = []
+    for row in top_rows:
+        distribution_groups.append({
+            "key": row["key"],
+            "label": row["label"],
+            "amount": _num(row["amount"]),
+            "invoice_count": row["invoice_count"],
+            "share": _share_percent(row["amount"], total_q) if show_share else None,
+        })
+    if remainder:
+        distribution_groups.append({
+            "key": OTHER_SUPPLIER_KEY,
+            "label": f"{OTHER_SUPPLIER_LABEL} ({len(remainder)} supplier)",
+            "amount": _num(remainder_amount.quantize(MONEY_Q)),
+            "invoice_count": remainder_count,
+            "share": _share_percent(remainder_amount, total_q) if show_share else None,
+            "supplier_count": len(remainder),
+        })
+
+    total_status = "zero" if total_q == 0 else ("incomplete" if completeness == "incomplete" else "complete")
+    section_status = total_status
+    detail_parts = [PURCHASE_BASIS_NOTE]
+    if unknown_invoice_count:
+        detail_parts.append(
+            f"{unknown_invoice_count} faktur tanpa nama supplier masuk "
+            "Supplier tidak diketahui."
+        )
+    if has_negative:
+        detail_parts.append(
+            "Ada nominal faktur negatif; persentase distribusi disembunyikan."
+        )
+
+    return {
+        "status": section_status,
+        "scope": "period",
+        "scope_label": "Periode",
+        "start_date": start,
+        "end_date": end,
+        "timezone": "Asia/Jakarta",
+        "total": {
+            "status": total_status,
+            "label": "Total Pembelian Faktur",
+            "amount": _num(total_q),
+            "invoice_count": len(invoices),
+            "basis": "grand_total",
+            "detail": PURCHASE_BASIS_NOTE,
+        },
+        "trend": {
+            "status": "complete" if total_q != 0 else "zero",
+            "grain": grain,
+            "points": [
+                {
+                    "period": key,
+                    "amount": _num(buckets[key]["amount"].quantize(MONEY_Q)),
+                    "invoice_count": buckets[key]["invoice_count"],
+                }
+                for key in keys
+            ],
+            "detail": None,
+        },
+        "top_suppliers": {
+            "status": total_status,
+            "rows": [
+                {
+                    "key": row["key"],
+                    "label": row["label"],
+                    "amount": _num(row["amount"].quantize(MONEY_Q)),
+                    "invoice_count": row["invoice_count"],
+                    "share": _share_percent(row["amount"], total_q) if show_share else None,
+                }
+                for row in top_rows
+            ],
+            "detail": None if not unknown_invoice_count else (
+                f"{unknown_invoice_count} faktur tanpa nama supplier."
+            ),
+        },
+        "distribution": {
+            "status": total_status,
+            "groups": distribution_groups,
+            "show_share": show_share,
+            "detail": None if show_share else (
+                "Persentase distribusi disembunyikan karena data tidak lengkap "
+                "atau mengandung nominal negatif."
+                if (unknown_invoice_count or has_negative)
+                else None
+            ),
+        },
+        "completeness": completeness,
+        "note": PURCHASE_DISCLOSURE,
+        "detail": " ".join(detail_parts),
+    }
+
+
 async def get_owner_analytics(
     db,
     *,
@@ -942,5 +1225,11 @@ async def get_owner_analytics(
                 "review_count": None,
             },
         }
+
+    # Phase 3C Purchasing — isolated; must not wipe finance / Phase 2.
+    try:
+        base["purchasing"] = await _build_purchasing(db, start=start, end=end)
+    except Exception as exc:
+        base["purchasing"] = _purchasing_error(start, end, str(exc) or "Gagal memuat pembelian")
 
     return base

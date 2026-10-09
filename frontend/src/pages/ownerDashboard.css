@@ -722,3 +722,168 @@
     padding-bottom: calc(4.75rem + env(safe-area-inset-bottom, 0px));
   }
 }
+
+.owner-purchasing {
+  margin-top: 0.85rem;
+  padding-top: 0.65rem;
+  border-top: 1px solid var(--od-border);
+}
+
+.owner-purchasing__kpis {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-bottom: 0.55rem;
+}
+
+.owner-purchasing__chart {
+  margin-bottom: 0.55rem;
+}
+
+.owner-purchasing__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55rem;
+}
+
+.owner-supplier-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.45rem;
+}
+
+.owner-supplier-row__label {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.78rem;
+  color: #3d4f48;
+}
+
+.owner-supplier-row__name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-weight: 600;
+}
+
+.owner-supplier-row__amt {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.owner-supplier-row__track {
+  margin-top: 0.2rem;
+  height: 0.35rem;
+  border-radius: 999px;
+  background: #eef2f0;
+  overflow: hidden;
+}
+
+.owner-supplier-row__fill {
+  height: 100%;
+  border-radius: inherit;
+  background: #176b4d;
+  max-width: 100%;
+}
+
+.owner-supplier-row__share {
+  display: inline-block;
+  margin-top: 0.12rem;
+  font-size: 0.68rem;
+  color: var(--od-muted);
+}
+
+.owner-purchasing__warn {
+  margin: 0.45rem 0 0;
+  font-size: 0.74rem;
+  color: var(--od-warn);
+}
+
+.owner-purchasing__quality {
+  margin: 0 0 0.55rem;
+  padding: 0.45rem 0.55rem;
+  border-radius: 8px;
+  border: 1px solid #f0c9b0;
+  background: #fffaf6;
+  color: #8a4b22;
+  font-size: 0.74rem;
+  line-height: 1.35;
+}
+
+.owner-purchasing__note {
+  margin: 0.55rem 0 0;
+  padding: 0.45rem 0.55rem;
+  border-radius: 8px;
+  background: #eef6f2;
+  color: #2f4a3f;
+  font-size: 0.74rem;
+  line-height: 1.35;
+}
+
+/* Mobile purchase trend: shrink fixed .owner-trend 210px shell without touching cash trend. */
+.owner-purchase-trend--compact {
+  height: 9.75rem;
+}
+
+.owner-purchase-trend--compact .owner-purchase-trend__svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.owner-purchase-donut {
+  display: flex;
+  justify-content: center;
+  margin: 0.2rem 0 0.55rem;
+}
+
+.owner-purchase-donut__ring {
+  width: 8.5rem;
+  height: 8.5rem;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+}
+
+.owner-purchase-donut__hole {
+  width: 5.1rem;
+  height: 5.1rem;
+  border-radius: 50%;
+  background: #fff;
+  display: grid;
+  place-items: center;
+  text-align: center;
+  font-size: 0.78rem;
+  color: var(--od-green-deep);
+}
+
+.owner-purchase-donut__hole strong {
+  font-size: 0.9rem;
+}
+
+@media (max-width: 720px) {
+  .owner-purchasing__kpis,
+  .owner-purchasing__grid {
+    grid-template-columns: 1fr;
+  }
+
+  .owner-purchasing__chart {
+    margin-bottom: 0.4rem;
+  }
+
+  /* Fallback before ResizeObserver sets data-compact — desktop unchanged. */
+  .owner-purchasing__chart .owner-purchase-trend {
+    height: 9.75rem;
+  }
+
+  /* Keep Distribusi Pembelian nominals clear of fixed notification FAB. */
+  .owner-purchasing__dist {
+    padding-bottom: calc(4.75rem + env(safe-area-inset-bottom, 0px));
+    padding-right: calc(5.5rem + env(safe-area-inset-right, 0px));
+  }
+
+  .owner-purchasing__note {
+    margin-bottom: 0.25rem;
+  }
+}
