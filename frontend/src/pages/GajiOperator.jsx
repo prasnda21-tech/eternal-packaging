@@ -343,7 +343,7 @@ export default function GajiOperator() {
     }
   };
 
-  const rows = data?.rows || [];
+  const rows = useMemo(() => data?.rows || [], [data]);
   const historicRows = data?.historic_rows || [];
   const people = useMemo(() => data?.people || [], [data]);
   const items = data?.filters?.items || [];
