@@ -66,6 +66,7 @@ PERMISSION_CATALOG = [
     ("Import PO", "po.import.spreadsheet", "Import PO dari file XLSX / CSV"),
     ("Persediaan", "master_items.view", "Lihat Barang/Jasa"),
     ("Persediaan", "master_items.sync", "Sinkronkan Barang/Jasa dari Accurate"),
+    ("Persediaan", "master_items.manage", "Tambah / kelola Barang/Jasa lokal"),
     ("Persediaan", "org.branches.view", "Lihat Cabang"),
     ("Persediaan", "org.branches.manage", "Kelola Cabang"),
     ("Persediaan", "org.warehouses.view", "Lihat Gudang"),

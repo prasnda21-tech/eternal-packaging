@@ -34,6 +34,8 @@ from services.master_items import (
     COLLECTION as MASTER_ITEMS_COLLECTION,
     MasterItemUnresolvedError,
     SyncInProgressError,
+    create_local_master_item,
+    ensure_master_item_indexes,
     list_master_items,
     list_master_items_picker,
     resolve_po_line_items,
@@ -12254,6 +12256,23 @@ async def master_items_get(
     )
 
 
+class MasterItemCreatePayload(BaseModel):
+    item_code: str
+    item_name: str
+    item_type: str
+    unit: str
+    is_active: bool = True
+
+
+@api_router.post("/master-items")
+async def master_items_create(
+    payload: MasterItemCreatePayload,
+    user=Depends(require_perm("master_items.manage")),
+):
+    """Create ERP-local Barang/Jasa metadata. No Accurate ID, stock, or HPP."""
+    return await create_local_master_item(db, payload.model_dump())
+
+
 @api_router.post("/master-items/sync")
 async def master_items_sync(user=Depends(require_perm("master_items.sync"))):
     """Manual Accurate item sync. Same client/auth as Import PO. Never truncates."""
@@ -15920,7 +15939,9 @@ async def seed():
     await db.master_items.create_index("id", unique=True)
     from services.physical_stock import ensure_indexes as ensure_physical_stock_indexes
     await ensure_physical_stock_indexes(db)
-    await db[MASTER_ITEMS_COLLECTION].create_index("accurate_item_id", unique=True)
+    # Partial unique Accurate ID + code claims (local masters omit accurate_item_id).
+    # Replaces legacy full unique accurate_item_id_1 when safe; never deletes masters.
+    await ensure_master_item_indexes(db)
     await db[STOCK_MANUAL_COLLECTION].create_index("id", unique=True)
     await db[STOCK_MANUAL_COLLECTION].create_index("accurate_item_id", unique=True, sparse=True)
     await db[STOCK_MANUAL_COLLECTION].create_index("master_item_id", unique=True, sparse=True)

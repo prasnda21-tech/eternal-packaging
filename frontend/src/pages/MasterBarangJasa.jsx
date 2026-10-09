@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { AlertCircle, CheckCircle2, RefreshCw, Search, X } from "lucide-react";
+import { AlertCircle, CheckCircle2, Plus, RefreshCw, Search, X } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDate } from "../lib/constants";
@@ -14,15 +14,37 @@ const TYPE_LABEL = {
   GROUP: "Grup",
 };
 
+const CREATE_TYPES = [
+  { value: "INVENTORY", label: "Barang" },
+  { value: "SERVICE", label: "Jasa" },
+  { value: "NON_INVENTORY", label: "Non-Persediaan" },
+];
+
+const EMPTY_CREATE = {
+  item_code: "",
+  item_name: "",
+  item_type: "INVENTORY",
+  unit: "pcs",
+  is_active: true,
+};
+
 function typeLabel(raw) {
   if (!raw) return "—";
   return TYPE_LABEL[raw] || raw;
+}
+
+function originLabel(it) {
+  if (it?.origin === "local") return "Lokal";
+  if (it?.origin === "accurate") return "Accurate";
+  if (it?.accurate_item_id) return "Accurate";
+  return "Lokal";
 }
 
 export default function MasterBarangJasa() {
   const navigate = useNavigate();
   const { hasPerm } = useAuth();
   const canSync = hasPerm("master_items.sync");
+  const canManage = hasPerm("master_items.manage");
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
@@ -35,6 +57,10 @@ export default function MasterBarangJasa() {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
   const loadSeq = useRef(0);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createForm, setCreateForm] = useState(EMPTY_CREATE);
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState("");
 
   useEffect(() => { setPage(1); }, [q]);
 
@@ -91,6 +117,38 @@ export default function MasterBarangJasa() {
     }
   };
 
+  const openCreate = () => {
+    if (!canManage) return;
+    setCreateForm(EMPTY_CREATE);
+    setCreateError("");
+    setCreateOpen(true);
+  };
+
+  const submitCreate = async (e) => {
+    e.preventDefault();
+    if (!canManage || creating) return;
+    setCreating(true);
+    setCreateError("");
+    try {
+      await api.masterItemsCreate({
+        item_code: createForm.item_code.trim(),
+        item_name: createForm.item_name.trim(),
+        item_type: createForm.item_type,
+        unit: createForm.unit.trim(),
+        is_active: Boolean(createForm.is_active),
+      });
+      setCreateOpen(false);
+      setCreateForm(EMPTY_CREATE);
+      setPage(1);
+      await load();
+    } catch (ex) {
+      const det = ex.response?.data?.detail;
+      setCreateError(typeof det === "object" ? (det.message || JSON.stringify(det)) : (det || "Gagal menambah Barang/Jasa"));
+    } finally {
+      setCreating(false);
+    }
+  };
+
   const bannerError = syncError || loadError;
 
   const summary = data?.summary || {};
@@ -105,25 +163,42 @@ export default function MasterBarangJasa() {
     itemCount: items.length,
   });
 
+  const typeOptions = types.length
+    ? types
+    : CREATE_TYPES.map((t) => t.value);
+
   return (
     <div className="prod-page master-items-page" data-testid="master-barang-jasa-page">
       <div className="page-heading prod-heading">
         <div className="prod-heading-copy">
           <p className="eyebrow">Persediaan</p>
           <h1 data-testid="master-items-title">Barang/Jasa</h1>
-          <p className="subhead">Referensi resmi item Eternal Packaging dari Accurate</p>
+          <p className="subhead">Referensi item Eternal Packaging (Accurate dan lokal)</p>
         </div>
-        {canSync && (
-          <button
-            className="primary"
-            onClick={doSync}
-            disabled={syncing}
-            data-testid="master-items-sync-button"
-          >
-            <RefreshCw size={14} className={syncing ? "spin" : ""} />
-            {syncing ? "Menyinkronkan…" : "Sinkronkan dari Accurate"}
-          </button>
-        )}
+        <div className="prod-heading-actions" style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          {canManage && (
+            <button
+              type="button"
+              className="primary"
+              onClick={openCreate}
+              data-testid="master-items-create-button"
+            >
+              <Plus size={14} />
+              Tambah Barang/Jasa
+            </button>
+          )}
+          {canSync && (
+            <button
+              className="primary"
+              onClick={doSync}
+              disabled={syncing}
+              data-testid="master-items-sync-button"
+            >
+              <RefreshCw size={14} className={syncing ? "spin" : ""} />
+              {syncing ? "Menyinkronkan…" : "Sinkronkan dari Accurate"}
+            </button>
+          )}
+        </div>
       </div>
 
       {bannerError && (
@@ -144,6 +219,77 @@ export default function MasterBarangJasa() {
               {" · "}Gagal: {syncResult.failed ?? 0}
             </p>
           </div>
+        </section>
+      )}
+
+      {createOpen && (
+        <section className="master-create-panel" data-testid="master-items-create-panel" style={{ marginBottom: 16, padding: 16, border: "1px solid var(--border, #d5dde5)", borderRadius: 8 }}>
+          <h2 style={{ fontSize: 16, margin: "0 0 12px" }}>Tambah Barang/Jasa lokal</h2>
+          <form onSubmit={submitCreate} data-testid="master-items-create-form">
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 12 }}>
+              <label>
+                <span className="muted small">Kode</span>
+                <input
+                  required
+                  value={createForm.item_code}
+                  onChange={(e) => setCreateForm((p) => ({ ...p, item_code: e.target.value }))}
+                  data-testid="master-create-code"
+                />
+              </label>
+              <label>
+                <span className="muted small">Nama</span>
+                <input
+                  required
+                  value={createForm.item_name}
+                  onChange={(e) => setCreateForm((p) => ({ ...p, item_name: e.target.value }))}
+                  data-testid="master-create-name"
+                />
+              </label>
+              <label>
+                <span className="muted small">Jenis</span>
+                <select
+                  value={createForm.item_type}
+                  onChange={(e) => setCreateForm((p) => ({ ...p, item_type: e.target.value }))}
+                  data-testid="master-create-type"
+                >
+                  {CREATE_TYPES.map((t) => (
+                    <option key={t.value} value={t.value}>{t.label}</option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                <span className="muted small">Satuan</span>
+                <input
+                  required
+                  value={createForm.unit}
+                  onChange={(e) => setCreateForm((p) => ({ ...p, unit: e.target.value }))}
+                  data-testid="master-create-unit"
+                />
+              </label>
+              <label>
+                <span className="muted small">Status</span>
+                <select
+                  value={createForm.is_active ? "active" : "inactive"}
+                  onChange={(e) => setCreateForm((p) => ({ ...p, is_active: e.target.value === "active" }))}
+                  data-testid="master-create-status"
+                >
+                  <option value="active">Aktif</option>
+                  <option value="inactive">Nonaktif</option>
+                </select>
+              </label>
+            </div>
+            {createError && (
+              <p role="alert" data-testid="master-create-error" className="muted small" style={{ color: "#b42318", marginTop: 8 }}>{createError}</p>
+            )}
+            <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+              <button type="submit" className="primary" disabled={creating} data-testid="master-create-submit">
+                {creating ? "Menyimpan…" : "Simpan"}
+              </button>
+              <button type="button" className="ghost" disabled={creating} onClick={() => setCreateOpen(false)} data-testid="master-create-cancel">
+                Batal
+              </button>
+            </div>
+          </form>
         </section>
       )}
 
@@ -181,14 +327,14 @@ export default function MasterBarangJasa() {
               </button>
             )}
           </form>
-          {types.length > 0 && (
+          {typeOptions.length > 0 && (
             <select
               value={itemType}
               onChange={(e) => { setItemType(e.target.value); setPage(1); }}
               data-testid="master-items-filter-type"
             >
               <option value="">Semua jenis</option>
-              {types.map((t) => (
+              {typeOptions.map((t) => (
                 <option key={t} value={t}>{typeLabel(t)}</option>
               ))}
             </select>
@@ -225,25 +371,29 @@ export default function MasterBarangJasa() {
               <th className="col-fit">Jenis</th>
               <th className="col-fit">Satuan</th>
               <th className="col-fit">Status</th>
+              <th className="col-fit">Sumber</th>
               <th className="col-fit">Accurate ID</th>
               <th className="col-fit">Terakhir Sync</th>
             </tr>
           </thead>
           <tbody data-testid="master-items-tbody" data-search-state={tableView}>
             {tableView === "loading" && (
-              <tr data-testid="master-items-loading"><td colSpan={7} className="muted small">Memuat…</td></tr>
+              <tr data-testid="master-items-loading"><td colSpan={8} className="muted small">Memuat…</td></tr>
             )}
             {tableView === "empty" && (
               <tr>
-                <td colSpan={7} className="muted small" data-testid="master-items-empty">
-                  Belum ada Barang/Jasa. {canSync ? "Klik Sinkronkan dari Accurate." : "Hubungi Admin untuk sinkronisasi."}
+                <td colSpan={8} className="muted small" data-testid="master-items-empty">
+                  Belum ada Barang/Jasa.
+                  {canManage ? " Klik Tambah Barang/Jasa." : ""}
+                  {canSync ? " Atau Sinkronkan dari Accurate." : (!canManage ? " Hubungi Admin." : "")}
                 </td>
               </tr>
             )}
             {tableView === "results" && items.map((it) => (
               <tr
                 key={it.id}
-                data-testid={`master-item-${it.accurate_item_id}`}
+                data-testid={`master-item-${it.id || it.accurate_item_id}`}
+                data-origin={originLabel(it)}
                 onClick={() => navigate(`/persediaan/master-barang-jasa/${it.id || it.accurate_item_id}`)}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" || e.key === " ") {
@@ -263,7 +413,8 @@ export default function MasterBarangJasa() {
                 <td className="col-fit">
                   {it.is_active === true ? "Aktif" : it.is_active === false ? "Nonaktif" : "—"}
                 </td>
-                <td className="col-fit mono">{it.accurate_item_id}</td>
+                <td className="col-fit" data-testid={`master-item-origin-${it.id}`}>{originLabel(it)}</td>
+                <td className="col-fit mono">{it.accurate_item_id || "—"}</td>
                 <td className="col-fit small nowrap">{it.last_synced_at ? formatDate(it.last_synced_at) : "—"}</td>
               </tr>
             ))}

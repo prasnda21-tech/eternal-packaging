@@ -1,7 +1,8 @@
-"""Master Barang/Jasa — Accurate item sync + PO line resolution.
+"""Master Barang/Jasa — Accurate item sync + local ERP create + PO resolution.
 
 Reuses AccurateClient (same auth, headers, timeouts, pagination as Import PO).
-Identity is always `accurate_item_id`. Never match by item_name.
+Accurate identity is `accurate_item_id` when present. Never match / auto-link by name.
+Local items omit accurate_item_id and use stable internal `id`.
 """
 from __future__ import annotations
 
@@ -11,11 +12,13 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-from pymongo.errors import DuplicateKeyError
+from fastapi import HTTPException
+from pymongo.errors import DuplicateKeyError, OperationFailure
 
 from services.accurate import AccurateClient, normalize_accurate_item
 
 COLLECTION = "master_items"
+CODE_CLAIMS_COLLECTION = "master_item_code_claims"
 UNKNOWN_ITEM_MSG = (
     "Item belum tersedia di Barang/Jasa. "
     "Sinkronkan Barang/Jasa dari Accurate terlebih dahulu."
@@ -28,6 +31,13 @@ ACCURATE_OWNED_FIELDS = (
     "is_active",
     "accurate_updated_at",
 )
+ORIGIN_LOCAL = "local"
+ORIGIN_ACCURATE = "accurate"
+ALLOWED_LOCAL_ITEM_TYPES = frozenset({"INVENTORY", "SERVICE", "NON_INVENTORY"})
+ACCURATE_ID_PARTIAL_INDEX = "accurate_item_id_partial_unique"
+LEGACY_ACCURATE_ID_INDEX = "accurate_item_id_1"
+CODE_CLAIMS_INDEX = "code_key_unique"
+DUPLICATE_CODE_MSG = "Kode barang/jasa sudah dipakai."
 
 _sync_lock = asyncio.Lock()
 
@@ -40,21 +50,43 @@ class SyncInProgressError(Exception):
     """A Master Item sync is already running in this process."""
 
 
+class DuplicateMasterItemCodeError(Exception):
+    """Normalized item_code already claimed or present on a master row."""
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def normalize_item_code_key(raw: Any) -> str:
+    return str(raw or "").strip().lower()
+
+
+def resolve_master_origin(doc: Optional[Dict[str, Any]]) -> Optional[str]:
+    if not doc:
+        return None
+    explicit = str(doc.get("origin") or "").strip().lower()
+    if explicit in (ORIGIN_LOCAL, ORIGIN_ACCURATE):
+        return explicit
+    if str(doc.get("accurate_item_id") or "").strip():
+        return ORIGIN_ACCURATE
+    return ORIGIN_LOCAL
 
 
 def public_master_item(doc: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     if not doc:
         return None
+    aid = doc.get("accurate_item_id")
+    aid_out = None if aid is None or str(aid).strip() == "" else str(aid).strip()
     return {
         "id": doc.get("id"),
-        "accurate_item_id": doc.get("accurate_item_id"),
+        "accurate_item_id": aid_out,
         "item_code": doc.get("item_code"),
         "item_name": doc.get("item_name"),
         "item_type": doc.get("item_type"),
         "unit": doc.get("unit"),
         "is_active": doc.get("is_active"),
+        "origin": resolve_master_origin(doc),
         "accurate_updated_at": doc.get("accurate_updated_at"),
         "last_synced_at": doc.get("last_synced_at"),
         "created_at": doc.get("created_at"),
@@ -82,10 +114,199 @@ def _fields_changed(existing: Dict[str, Any], incoming_owned: Dict[str, Any]) ->
     return False
 
 
+async def ensure_master_item_indexes(db) -> Dict[str, Any]:
+    """Startup-safe index ensure. Never drops indexes.
+
+    Creates (idempotent):
+    - partial unique on non-empty accurate_item_id
+    - unique code_key claims for concurrent local create
+
+    Does NOT drop the legacy full unique accurate_item_id_1. Structural drop
+    belongs in prepare_master_item_indexes_for_local_create (explicit migrate).
+    Never deletes master documents.
+    """
+    col = db[COLLECTION]
+    claims = db[CODE_CLAIMS_COLLECTION]
+    result: Dict[str, Any] = {
+        "partial_accurate_id": False,
+        "code_claims": False,
+        "legacy_full_unique_present": False,
+        "local_create_ready": False,
+    }
+
+    await col.create_index(
+        [("accurate_item_id", 1)],
+        unique=True,
+        name=ACCURATE_ID_PARTIAL_INDEX,
+        partialFilterExpression={
+            "accurate_item_id": {"$exists": True, "$type": "string", "$gt": ""},
+        },
+    )
+    result["partial_accurate_id"] = True
+
+    await claims.create_index(
+        [("code_key", 1)],
+        unique=True,
+        name=CODE_CLAIMS_INDEX,
+    )
+    result["code_claims"] = True
+
+    status = await local_master_create_index_status(db)
+    result["legacy_full_unique_present"] = status["legacy_full_unique_present"]
+    result["local_create_ready"] = status["local_create_ready"]
+    return result
+
+
+async def prepare_master_item_indexes_for_local_create(
+    db,
+    *,
+    allow_drop_legacy: bool = False,
+) -> Dict[str, Any]:
+    """Explicit structural prep for multi-local masters.
+
+    Always ensures partial + claims. Drops legacy full unique accurate_item_id_1
+    only when allow_drop_legacy=True (preview/migrate tooling — never implied by
+    ordinary server startup).
+    """
+    result = await ensure_master_item_indexes(db)
+    result["dropped_legacy_accurate_id"] = False
+    if not allow_drop_legacy:
+        return result
+    if not result.get("legacy_full_unique_present"):
+        return result
+    col = db[COLLECTION]
+    existing = await col.index_information()
+    if ACCURATE_ID_PARTIAL_INDEX not in existing:
+        return result
+    try:
+        await col.drop_index(LEGACY_ACCURATE_ID_INDEX)
+        result["dropped_legacy_accurate_id"] = True
+        result["legacy_full_unique_present"] = False
+        result["local_create_ready"] = True
+    except OperationFailure:
+        pass
+    return result
+
+
+async def local_master_create_index_status(db) -> Dict[str, Any]:
+    """Readiness check only — no create/drop."""
+    col = db[COLLECTION]
+    claims = db[CODE_CLAIMS_COLLECTION]
+    existing = await col.index_information()
+    claim_idx = await claims.index_information()
+    legacy = existing.get(LEGACY_ACCURATE_ID_INDEX) or {}
+    legacy_full = bool(
+        LEGACY_ACCURATE_ID_INDEX in existing and not legacy.get("partialFilterExpression")
+    )
+    return {
+        "partial_accurate_id": ACCURATE_ID_PARTIAL_INDEX in existing,
+        "code_claims": CODE_CLAIMS_INDEX in claim_idx,
+        "legacy_full_unique_present": legacy_full,
+        "local_create_ready": (
+            ACCURATE_ID_PARTIAL_INDEX in existing
+            and CODE_CLAIMS_INDEX in claim_idx
+            and not legacy_full
+        ),
+    }
+
+
+async def _code_taken_in_masters(db, code_key: str, *, session=None) -> bool:
+    if not code_key:
+        return False
+    kwargs = {"session": session} if session is not None else {}
+    try:
+        docs = await db[COLLECTION].find(
+            {"item_code": {"$exists": True, "$ne": ""}},
+            {"_id": 0, "item_code": 1},
+            **kwargs,
+        ).to_list(20000)
+    except TypeError:
+        # Fake / sync-style collections may not accept session=.
+        docs = await db[COLLECTION].find(
+            {"item_code": {"$exists": True, "$ne": ""}},
+            {"_id": 0, "item_code": 1},
+        ).to_list(20000)
+    for row in docs:
+        if normalize_item_code_key(row.get("item_code")) == code_key:
+            return True
+    return False
+
+
+async def create_local_master_item(db, payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Create ERP-local master metadata only. No stock / HPP / Accurate ID."""
+    code_raw = str((payload or {}).get("item_code") or "").strip()
+    name = str((payload or {}).get("item_name") or "").strip()
+    item_type = str((payload or {}).get("item_type") or "").strip().upper()
+    unit = str((payload or {}).get("unit") or "").strip()
+    is_active = (payload or {}).get("is_active", True)
+    if isinstance(is_active, str):
+        is_active = is_active.strip().lower() not in ("0", "false", "no", "nonaktif", "inactive")
+    else:
+        is_active = bool(is_active)
+
+    if not code_raw:
+        raise HTTPException(400, "Kode barang/jasa wajib diisi.")
+    if not name:
+        raise HTTPException(400, "Nama barang/jasa wajib diisi.")
+    if item_type not in ALLOWED_LOCAL_ITEM_TYPES:
+        raise HTTPException(400, "Jenis barang/jasa tidak valid.")
+    if not unit:
+        raise HTTPException(400, "Satuan wajib diisi.")
+    if "accurate_item_id" in (payload or {}) and str((payload or {}).get("accurate_item_id") or "").strip():
+        raise HTTPException(400, "Accurate ID tidak diisi pada create lokal.")
+
+    code_key = normalize_item_code_key(code_raw)
+    new_id = str(uuid.uuid4())
+    now = now_iso()
+    claim = {
+        "code_key": code_key,
+        "master_item_id": new_id,
+        "item_code": code_raw,
+        "created_at": now,
+    }
+    doc = {
+        "id": new_id,
+        "item_code": code_raw,
+        "item_name": name,
+        "item_type": item_type,
+        "unit": unit,
+        "is_active": is_active,
+        "origin": ORIGIN_LOCAL,
+        "created_at": now,
+        "updated_at": now,
+    }
+
+    if await _code_taken_in_masters(db, code_key):
+        raise HTTPException(409, DUPLICATE_CODE_MSG)
+
+    claimed = False
+    try:
+        await db[CODE_CLAIMS_COLLECTION].insert_one(claim)
+        claimed = True
+    except DuplicateKeyError as exc:
+        raise HTTPException(409, DUPLICATE_CODE_MSG) from exc
+
+    # Re-check after claim to close the race with Accurate sync inserting same code.
+    if await _code_taken_in_masters(db, code_key):
+        await db[CODE_CLAIMS_COLLECTION].delete_one({"code_key": code_key, "master_item_id": new_id})
+        raise HTTPException(409, DUPLICATE_CODE_MSG)
+
+    try:
+        await db[COLLECTION].insert_one(doc)
+    except Exception:
+        if claimed:
+            await db[CODE_CLAIMS_COLLECTION].delete_one({"code_key": code_key, "master_item_id": new_id})
+        raise
+
+    fresh = await db[COLLECTION].find_one({"id": new_id}, {"_id": 0})
+    return public_master_item(fresh)
+
+
 async def upsert_master_item(db, incoming: Dict[str, Any]) -> Tuple[Dict[str, Any], str]:
     """Upsert one Master Item keyed by accurate_item_id.
 
     Returns (public_doc, action) where action is 'created' | 'updated' | 'unchanged'.
+    Never matches or updates origin=local rows (they omit accurate_item_id).
     """
     if incoming.get("accurate_item_id") is None and incoming.get("id") is not None:
         incoming = normalize_accurate_item(incoming) or {}
@@ -97,8 +318,16 @@ async def upsert_master_item(db, incoming: Dict[str, Any]) -> Tuple[Dict[str, An
     col = db[COLLECTION]
     existing = await col.find_one({"accurate_item_id": aid}, {"_id": 0})
     if existing:
+        if resolve_master_origin(existing) == ORIGIN_LOCAL:
+            # Should not happen (local omits Accurate ID). Refuse auto-merge.
+            raise ValueError("Konflik identitas: Accurate ID menunjuk barang lokal")
         changed = _fields_changed(existing, owned)
-        update = {"last_synced_at": now, "updated_at": now, **owned}
+        update = {
+            "last_synced_at": now,
+            "updated_at": now,
+            "origin": ORIGIN_ACCURATE,
+            **owned,
+        }
         await col.update_one({"accurate_item_id": aid}, {"$set": update})
         fresh = await col.find_one({"accurate_item_id": aid}, {"_id": 0})
         return public_master_item(fresh), ("updated" if changed else "unchanged")
@@ -107,6 +336,7 @@ async def upsert_master_item(db, incoming: Dict[str, Any]) -> Tuple[Dict[str, An
     doc = {
         "id": new_id,
         "accurate_item_id": aid,
+        "origin": ORIGIN_ACCURATE,
         **{k: owned.get(k) for k in ACCURATE_OWNED_FIELDS},
         "last_synced_at": now,
         "created_at": now,
@@ -124,10 +354,12 @@ async def upsert_master_item(db, incoming: Dict[str, Any]) -> Tuple[Dict[str, An
     fresh = await col.find_one({"accurate_item_id": aid}, {"_id": 0})
     # If another worker inserted first, treat as update/unchanged of that row.
     if fresh and fresh.get("id") != new_id:
+        if resolve_master_origin(fresh) == ORIGIN_LOCAL:
+            raise ValueError("Konflik identitas: Accurate ID menunjuk barang lokal")
         changed = _fields_changed(fresh, owned)
         await col.update_one(
             {"accurate_item_id": aid},
-            {"$set": {"last_synced_at": now, "updated_at": now, **owned}},
+            {"$set": {"last_synced_at": now, "updated_at": now, "origin": ORIGIN_ACCURATE, **owned}},
         )
         fresh = await col.find_one({"accurate_item_id": aid}, {"_id": 0})
         return public_master_item(fresh), ("updated" if changed else "unchanged")
@@ -135,7 +367,10 @@ async def upsert_master_item(db, incoming: Dict[str, Any]) -> Tuple[Dict[str, An
 
 
 async def sync_master_items(db, client: AccurateClient) -> Dict[str, Any]:
-    """Pull Accurate items and upsert. Never truncates. Idempotent by accurate_item_id."""
+    """Pull Accurate items and upsert. Never truncates. Idempotent by accurate_item_id.
+
+    Local masters (origin=local / no accurate_item_id) are never overwritten or name-linked.
+    """
     if _sync_lock.locked():
         raise SyncInProgressError("Sinkronisasi Barang/Jasa sedang berjalan")
     async with _sync_lock:
@@ -155,7 +390,10 @@ async def sync_master_items(db, client: AccurateClient) -> Dict[str, Any]:
                     unchanged += 1
             except Exception:
                 failed += 1
-        last = await db[COLLECTION].find({}, {"_id": 0, "last_synced_at": 1}).sort("last_synced_at", -1).limit(1).to_list(1)
+        last = await db[COLLECTION].find(
+            {"last_synced_at": {"$exists": True}},
+            {"_id": 0, "last_synced_at": 1},
+        ).sort("last_synced_at", -1).limit(1).to_list(1)
         last_synced_at = (last[0].get("last_synced_at") if last else None)
         total = await db[COLLECTION].count_documents({})
         return {
