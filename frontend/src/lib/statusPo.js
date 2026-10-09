@@ -4,6 +4,15 @@ import { resolveTimelineChip } from "./timelineChip";
 
 export const EMPTY_STATUS_PO_FILTERS = { po: "", customer: "", status: "", dateFrom: "", dateTo: "" };
 
+export const STATUS_PO_PAGE_SIZE = 50;
+
+export const STATUS_PO_TABS = [
+  { key: "all", label: "Semua" },
+  { key: "active", label: "Aktif" },
+  { key: "completed", label: "Selesai" },
+  { key: "cancelled", label: "Dibatalkan" },
+];
+
 export const STATUS_PO_VIEWS = {
   active: "PO Aktif",
   urgent: "PO Urgent",
@@ -16,9 +25,21 @@ export const STATUS_PO_VIEWS = {
   payment: "Menunggu Approval Payment",
   hold: "HOLD",
   completed: "Selesai (Terkirim)",
+  cancelled: "Dibatalkan",
+  all: "Semua PO",
   work_today: "Pengerjaan Hari Ini",
   delivery_today: "Pengiriman Hari Ini",
 };
+
+/** Map URL ?view= to one of the four Status PO tabs, or null for special dashboard views. */
+export function resolveStatusPoTab(view) {
+  const key = String(view || "").trim().toLowerCase();
+  if (!key || key === "all" || key === "semua") return "all";
+  if (key === "active") return "active";
+  if (key === "completed") return "completed";
+  if (key === "cancelled") return "cancelled";
+  return null;
+}
 
 export const STATUS_PO_COLUMNS = [
   "No PO",

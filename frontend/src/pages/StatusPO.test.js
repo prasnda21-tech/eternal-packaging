@@ -20,7 +20,6 @@ describe("Status PO header filters", () => {
     expect(src).toMatch(/status-po-filter-reset/);
     expect(src).toMatch(/>\s*Reset\s*</);
     expect(src).toMatch(/status-po-refresh/);
-    expect(src).toMatch(/matchesStatusPoFilters/);
     expect(src).toMatch(/EMPTY_STATUS_PO_FILTERS/);
     expect(src).not.toMatch(/Pantau status pesanan dari semua cabang secara real-time/);
     expect(src).not.toMatch(/status-po-subtitle/);
@@ -30,21 +29,29 @@ describe("Status PO header filters", () => {
     expect(src).not.toMatch(/setDensity/);
   });
 
+  test("four status tabs and server pagination controls", () => {
+    expect(src).toMatch(/status-po-tabs/);
+    expect(src).toMatch(/status-po-tab-\$\{tab\.key\}/);
+    expect(src).toMatch(/STATUS_PO_TABS/);
+    expect(src).toMatch(/status-po-pager/);
+    expect(src).toMatch(/status-po-page-prev/);
+    expect(src).toMatch(/status-po-page-next/);
+    expect(src).toMatch(/STATUS_PO_PAGE_SIZE/);
+    expect(src).toMatch(/page_size/);
+    expect(src).toMatch(/setPage/);
+    expect(src).toMatch(/total_count/);
+  });
+
   test("G. dashboard view query still loads Status PO subset", () => {
     expect(src).toMatch(/params\.get\("view"\)/);
-    expect(src).toMatch(/api\.statusPo\(view \? \{ view \} : \{\}\)/);
-    expect(src).toMatch(/loadInFlight\.current/);
+    expect(src).toMatch(/api\.statusPo\(/);
+    expect(src).toMatch(/loadSeq\.current/);
   });
 
   test("reset clears header filters not dashboard view", () => {
     expect(src).toMatch(/setFilters\(EMPTY_STATUS_PO_FILTERS\)/);
     expect(src).not.toMatch(/params\.delete\("view"\)/);
-    expect(src).not.toMatch(/setSearchParams/);
-  });
-
-  test("no pagination to reset", () => {
-    expect(src).not.toMatch(/setPage/);
-    expect(src).not.toMatch(/page=/);
+    expect(src).toMatch(/setSearchParams/);
   });
 
   test("empty state preserved", () => {

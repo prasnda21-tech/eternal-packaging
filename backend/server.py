@@ -101,7 +101,6 @@ from services.inline_attachments import (
     find_inline_attachment as _find_inline_attachment,
     strip_inline_attachment_bytes as _strip_inline_attachment_bytes,
 )
-from services.status_po import build_status_po
 from services.order_prediction import (
     ORDER_PREDICTION_PROJECTION,
     PERM_VIEW as ORDER_PREDICTION_PERM,
@@ -7989,28 +7988,124 @@ async def status_po_dashboard(
     status: Optional[str] = None,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 50,
     include_cancelled: bool = False,
     user=Depends(require_perm("schedule.view")),
 ):
-    """Laporan Status PO — one query, dashboard card subsets, shipment % reuse."""
+    """Laporan Status PO — two-pass: stream classify, detail-fetch page only."""
+    from services.status_po import (
+        build_status_po_page_rows,
+        effective_workflow_status,
+        filter_orders_for_view,
+        order_matches_search_date_filters,
+        order_sort_key,
+        slice_eligible_page,
+    )
+
     reject_sales_pwa_bypass(user)
-    q: dict = {}
-    if not include_cancelled:
-        q["cancelled"] = {"$ne": True}
-    q.update(sales_owner_match(user))
-    orders = await db.orders.find(q, STATUS_PO_PROJECTION).sort("deadline", 1).to_list(1000)
-    _dd_settings = await _get_delivery_deadline_settings()
-    for o in orders:
-        _apply_hold_snapshot(o)
-        _attach_deadline_snapshot(o, _dd_settings["lead_time_days"])
-    data = build_status_po(orders, view, filters={
+    view_key = (view or "").strip().lower()
+    if view_key in ("semua",):
+        view_key = "all"
+    clauses: List[dict] = [sales_owner_match(user)]
+    # Cancelled tab needs cancelled docs; other tabs stay non-cancelled unless
+    # include_cancelled (legacy) is explicitly requested.
+    if view_key == "cancelled":
+        clauses.append({"cancelled": True})
+    elif not include_cancelled:
+        clauses.append({"cancelled": {"$ne": True}})
+    cust = (customer or "").strip()
+    if cust:
+        clauses.append({"customer": {"$regex": re.escape(cust), "$options": "i"}})
+    df = (date_from or "").strip()
+    dt = (date_to or "").strip()
+    if df or dt:
+        date_q: dict = {}
+        if df:
+            date_q["$gte"] = df
+        if dt:
+            date_q["$lte"] = dt + "\uffff" if len(dt) == 10 else dt
+        if date_q:
+            clauses.append({"order_date": date_q})
+    po_q = (po or "").strip()
+    if po_q:
+        # Over-fetch optimization; Python haystack keeps exact FE semantics.
+        rx = re.escape(po_q)
+        clauses.append({"$or": [
+            {"po_number": {"$regex": rx, "$options": "i"}},
+            {"customer": {"$regex": rx, "$options": "i"}},
+            {"line_items.name": {"$regex": rx, "$options": "i"}},
+            {"line_items.item_name": {"$regex": rx, "$options": "i"}},
+            {"line_items.product_name": {"$regex": rx, "$options": "i"}},
+        ]})
+    q: dict = {"$and": clauses} if len(clauses) > 1 else (clauses[0] if clauses else {})
+    filters = {
         "po": po or "",
         "customer": customer or "",
         "status": status or "",
         "date_from": date_from or "",
         "date_to": date_to or "",
-    })
-    data["generated_at"] = now_iso()
+    }
+    status_filter = (status or "").strip()
+    _dd_settings = await _get_delivery_deadline_settings()
+    lead_days = _dd_settings["lead_time_days"]
+
+    # Pass 1: stream classify projection; retain only sort keys + status facets.
+    eligible_keys: List[tuple] = []
+    status_options: set = set()
+    docs_scanned = 0
+    cursor = db.orders.find(q, STATUS_PO_PROJECTION).sort([
+        ("order_date", 1),
+        ("po_number", 1),
+        ("id", 1),
+    ])
+    async for raw in cursor:
+        docs_scanned += 1
+        o = raw
+        _apply_hold_snapshot(o)
+        _attach_deadline_snapshot(o, lead_days)
+        if not filter_orders_for_view([o], view_key or None):
+            continue
+        if not order_matches_search_date_filters(o, filters):
+            continue
+        label = effective_workflow_status(o)
+        if label:
+            status_options.add(label)
+        if status_filter and label != status_filter:
+            continue
+        eligible_keys.append(order_sort_key(o))
+    # Cursor is already ordered; filter preserves relative order. Re-sort for safety.
+    eligible_keys.sort()
+    sliced = slice_eligible_page(eligible_keys, page=page, page_size=page_size)
+    page_ids = sliced["page_ids"]
+
+    # Pass 2: detail projection only for the current page (≤ page_size).
+    page_orders: List[dict] = []
+    if page_ids:
+        found = await db.orders.find(
+            {"id": {"$in": page_ids}},
+            STATUS_PO_PROJECTION,
+        ).to_list(len(page_ids))
+        for o in found:
+            _apply_hold_snapshot(o)
+            _attach_deadline_snapshot(o, lead_days)
+            page_orders.append(o)
+    rows = build_status_po_page_rows(page_orders, page_ids=page_ids)
+    data = {
+        "view": view_key or None,
+        "rows": rows,
+        "total": sliced["total_count"],
+        "total_count": sliced["total_count"],
+        "page": sliced["page"],
+        "page_size": sliced["page_size"],
+        "total_pages": sliced["total_pages"],
+        "has_next": sliced["has_next"],
+        "has_prev": sliced["has_prev"],
+        "status_options": sorted(status_options, key=lambda s: s.lower()),
+        "docs_scanned": docs_scanned,
+        "detail_docs_loaded": len(rows),
+        "generated_at": now_iso(),
+    }
     return data
 
 
