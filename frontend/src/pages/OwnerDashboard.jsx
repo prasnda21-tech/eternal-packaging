@@ -11,6 +11,7 @@ import {
   formatOwnerStamp,
   mapOwnerArapCard,
   mapOwnerCashTrend,
+  mapOwnerPurchasing,
   mapOwnerTrend,
   moneyOrState,
   ownerRangeFromSearch,
@@ -168,6 +169,130 @@ function CashTrendPlot({ points, status }) {
             </g>
           );
         })}
+      </svg>
+    </div>
+  );
+}
+
+function PurchaseTrendPlot({ points, status }) {
+  const wrapRef = useRef(null);
+  const [chartWidth, setChartWidth] = useState(640);
+
+  // Re-bind when status leaves loading — wrapRef only mounts on the plot branch.
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return undefined;
+    const apply = () => {
+      const next = Math.max(280, Math.round(el.getBoundingClientRect().width || 640));
+      setChartWidth(next);
+    };
+    apply();
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", apply);
+      return () => window.removeEventListener("resize", apply);
+    }
+    const observer = new ResizeObserver(apply);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [status, points?.length]);
+
+  if (status === "loading") {
+    return <p className="owner-empty" data-testid="owner-purchase-trend-loading">Memuat tren pembelian…</p>;
+  }
+  if (status === "error") {
+    return <p className="owner-empty" data-testid="owner-purchase-trend-error">Tidak dapat memuat tren pembelian.</p>;
+  }
+  if (status === "empty" || !points?.length) {
+    return <p className="owner-empty" data-testid="owner-purchase-trend-empty">Belum ada faktur pembelian aktif pada periode ini.</p>;
+  }
+
+  // Compact SVG only on narrow panels (mobile); desktop chartWidth stays large → unchanged.
+  const compact = chartWidth > 0 && chartWidth <= 420;
+  const width = 640;
+  const height = compact ? 152 : 220;
+  const padL = 4;
+  const padR = compact ? 16 : 22;
+  const padT = compact ? 8 : 12;
+  const padB = compact ? 26 : 34;
+  const axis = compact ? 40 : 48;
+  const labelSize = compact ? 10 : 11;
+  const amounts = points.map((p) => Number(p.amount) || 0);
+  const yMax = Math.max(...amounts, 1);
+  const plotW = Math.max(1, width - axis - padL - padR);
+  const plotH = height - padT - padB;
+  const barGap = points.length > 1 ? plotW / points.length : plotW;
+  const barW = Math.max(2, Math.min(compact ? 14 : 18, barGap * 0.55));
+  const xAt = (index) => {
+    if (points.length === 1) return axis + padL + plotW / 2;
+    return axis + padL + (plotW * index) / (points.length - 1);
+  };
+  const yAt = (amount) => padT + plotH * (1 - Number(amount) / yMax);
+  const path = points
+    .map((point, index) => `${index === 0 ? "M" : "L"}${xAt(index)},${yAt(point.amount)}`)
+    .join(" ");
+  const tickIndexes = new Set(pickCashAxisTickIndexes(points.length, chartWidth));
+  const ticks = [0, yMax * 0.5, yMax];
+  const anchorFor = (index) => {
+    if (index === 0) return "start";
+    if (index === points.length - 1) return "end";
+    return "middle";
+  };
+
+  return (
+    <div
+      className={`owner-trend owner-purchase-trend${compact ? " owner-purchase-trend--compact" : ""}`}
+      data-testid="owner-purchase-trend-plot"
+      data-compact={compact ? "1" : "0"}
+      ref={wrapRef}
+    >
+      <svg
+        viewBox={`0 0 ${width} ${height}`}
+        role="img"
+        aria-label="Grafik tren pembelian faktur"
+        preserveAspectRatio="xMidYMid meet"
+        className="owner-purchase-trend__svg"
+      >
+        {ticks.map((tick) => (
+          <g key={tick}>
+            <line x1={axis} x2={width - padR} y1={yAt(tick)} y2={yAt(tick)} stroke="#e7f0eb" />
+            <text x={axis - 6} y={yAt(tick) + 4} textAnchor="end" fill="#3d4f48" fontSize={labelSize}>{formatAxisMoney(tick)}</text>
+          </g>
+        ))}
+        {points.map((point, index) => {
+          const h = Math.max(0, yAt(0) - yAt(point.amount));
+          return (
+            <rect
+              key={`bar-${point.period || index}`}
+              x={xAt(index) - barW / 2}
+              y={yAt(point.amount)}
+              width={barW}
+              height={h}
+              fill="#176B4D"
+              fillOpacity="0.22"
+            >
+              <title>{`${point.fullLabel || point.label || point.period}\n${formatMoney(point.amount)}\n${point.invoice_count || 0} faktur`}</title>
+            </rect>
+          );
+        })}
+        <path d={path} fill="none" stroke="#176B4D" strokeWidth={compact ? "2" : "2.4"} />
+        {points.map((point, index) => (
+          <g key={`${point.period || point.label}-${index}`}>
+            <circle cx={xAt(index)} cy={yAt(point.amount)} r={compact ? "2.8" : "3.2"} fill="#176B4D">
+              <title>{`${point.fullLabel || point.label || point.period}\n${formatMoney(point.amount)}\n${point.invoice_count || 0} faktur`}</title>
+            </circle>
+            {tickIndexes.has(index) ? (
+              <text
+                x={xAt(index)}
+                y={height - 8}
+                textAnchor={anchorFor(index)}
+                fill="#3d4f48"
+                fontSize={labelSize}
+              >
+                {point.label || point.period}
+              </text>
+            ) : null}
+          </g>
+        ))}
       </svg>
     </div>
   );
@@ -413,6 +538,21 @@ export default function OwnerDashboard() {
   const reconState = reconOrState(loading ? { status: "loading" } : finance?.reconciliation);
   const receivables = mapOwnerArapCard(loading ? { status: "loading" } : finance?.receivables);
   const payables = mapOwnerArapCard(loading ? { status: "loading" } : finance?.payables);
+  const purchasing = mapOwnerPurchasing(loading ? { status: "loading" } : data?.purchasing);
+  const purchaseTotalState = moneyOrState(
+    loading ? { status: "loading" } : purchasing.total,
+    { emptyText: "Belum ada faktur" },
+  );
+  const purchaseCountState = countOrState(
+    loading
+      ? { status: "loading" }
+      : {
+        status: purchasing.total.status,
+        count: purchasing.total.invoice_count,
+        detail: purchasing.total.detail,
+      },
+    { emptyText: "0" },
+  );
   const ops = data?.operations && data.operations.status !== "error" ? data.operations : null;
   const drills = data?.drilldowns || {};
   const openDrill = (key) => {
@@ -700,6 +840,148 @@ export default function OwnerDashboard() {
             />
           </div>
         </div>
+      </section>
+
+      <section className="owner-purchasing" data-testid="owner-purchasing" aria-label="Pembelian Supplier">
+        <div className="owner-finance__head">
+          <h2>Pembelian Supplier</h2>
+          <span data-testid="owner-purchasing-scope">
+            {purchasing.scope_label || "Periode"}
+            {purchasing.completeness === "incomplete" ? " · Tidak lengkap" : ""}
+          </span>
+        </div>
+        {purchasing.completeness === "incomplete" && purchasing.top_suppliers.detail ? (
+          <p className="owner-purchasing__quality" data-testid="owner-purchase-quality">
+            Data pengelompokan supplier tidak lengkap. {purchasing.top_suppliers.detail}
+            {!purchasing.distribution.show_share && purchasing.distribution.detail
+              ? ` ${purchasing.distribution.detail}`
+              : ""}
+          </p>
+        ) : null}
+        <div className="owner-dash__kpis owner-purchasing__kpis" aria-label="KPI pembelian supplier">
+          <KpiCard
+            testid="owner-kpi-purchase-total"
+            title="Total Pembelian Faktur"
+            tip={purchasing.total.detail || "Nilai grand_total faktur pembelian aktif pada periode terpilih."}
+            badge="Periode"
+            valueState={purchaseTotalState}
+            meta={purchasing.total.detail || "Basis grand_total"}
+          />
+          <KpiCard
+            testid="owner-kpi-purchase-count"
+            title="Jumlah Faktur"
+            tip="Jumlah dokumen faktur pembelian aktif pada periode terpilih."
+            badge="Periode"
+            valueState={purchaseCountState}
+            meta="Faktur pembelian aktif"
+          />
+        </div>
+        <div className="owner-panel owner-panel--trend owner-purchasing__chart">
+          <div className="owner-panel__head">
+            <h2>Tren Pembelian</h2>
+            <span data-testid="owner-purchase-trend-period">{purchasing.trend.grain || "Kinerja periode"}</span>
+          </div>
+          <PurchaseTrendPlot
+            points={purchasing.trend.points}
+            status={loading ? "loading" : purchasing.trend.status}
+          />
+        </div>
+        <div className="owner-purchasing__grid" aria-label="Supplier pembelian">
+          <div className="owner-panel owner-purchasing__top" data-testid="owner-purchase-top-suppliers">
+            <div className="owner-panel__head">
+              <h2>Top 5 Supplier</h2>
+              <span>Periode</span>
+            </div>
+            {loading || purchasing.top_suppliers.status === "loading" ? (
+              <p className="owner-empty">Memuat supplier…</p>
+            ) : purchasing.top_suppliers.status === "error" ? (
+              <p className="owner-empty">Tidak dapat memuat Top Supplier.</p>
+            ) : !purchasing.top_suppliers.rows.length ? (
+              <p className="owner-empty" data-testid="owner-purchase-top-empty">Belum ada faktur pembelian aktif.</p>
+            ) : (
+              <ul className="owner-supplier-list">
+                {purchasing.top_suppliers.rows.map((row) => (
+                  <li key={row.key} className="owner-supplier-row" data-testid={`owner-purchase-top-${row.key}`}>
+                    <div className="owner-supplier-row__label">
+                      <span className="owner-supplier-row__name">{row.label}</span>
+                      <span className="owner-supplier-row__amt">{formatMoney(row.amount)}</span>
+                    </div>
+                    <div className="owner-supplier-row__track" aria-hidden="true">
+                      <div className="owner-supplier-row__fill" style={{ width: `${row.barPct || 0}%` }} />
+                    </div>
+                    {row.share != null ? (
+                      <span className="owner-supplier-row__share">{`${row.share}%`}</span>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            )}
+            {purchasing.top_suppliers.detail ? (
+              <p className="owner-purchasing__warn" data-testid="owner-purchase-top-warn">{purchasing.top_suppliers.detail}</p>
+            ) : null}
+          </div>
+          <div className="owner-panel owner-purchasing__dist" data-testid="owner-purchase-distribution">
+            <div className="owner-panel__head">
+              <h2>Distribusi Pembelian</h2>
+              <span>Seluruh supplier</span>
+            </div>
+            {loading || purchasing.distribution.status === "loading" ? (
+              <p className="owner-empty">Memuat distribusi…</p>
+            ) : purchasing.distribution.status === "error" ? (
+              <p className="owner-empty">Tidak dapat memuat distribusi.</p>
+            ) : !purchasing.distribution.groups.length ? (
+              <p className="owner-empty">Belum ada distribusi pembelian.</p>
+            ) : (
+              <>
+                {purchasing.distribution.show_share ? (
+                  <div className="owner-purchase-donut" data-testid="owner-purchase-donut" aria-hidden="true">
+                    <div
+                      className="owner-purchase-donut__ring"
+                      style={{
+                        background: (() => {
+                          const groups = purchasing.distribution.groups;
+                          const colors = ["#176b4d", "#2f8f6b", "#6aa88a", "#b8860b", "#c45c26", "#8a9a92"];
+                          let cursor = 0;
+                          const stops = groups.map((g, i) => {
+                            const share = Math.max(0, Number(g.share) || 0);
+                            const start = cursor;
+                            cursor += share;
+                            return `${colors[i % colors.length]} ${start}% ${cursor}%`;
+                          });
+                          return `conic-gradient(${stops.join(", ")})`;
+                        })(),
+                      }}
+                    >
+                      <div className="owner-purchase-donut__hole">
+                        <strong>{formatAxisMoney(purchasing.total.amount || 0)}</strong>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="owner-empty" data-testid="owner-purchase-share-suppressed">
+                    {purchasing.distribution.detail || "Persentase distribusi tidak ditampilkan."}
+                  </p>
+                )}
+                <ul className="owner-supplier-list owner-supplier-list--dist">
+                  {purchasing.distribution.groups.map((g) => (
+                    <li key={g.key} className="owner-supplier-row owner-supplier-row--compact">
+                      <div className="owner-supplier-row__label">
+                        <span className="owner-supplier-row__name">{g.label}</span>
+                        <span className="owner-supplier-row__amt">
+                          {formatMoney(g.amount)}
+                          {purchasing.distribution.show_share && g.share != null ? ` · ${g.share}%` : ""}
+                        </span>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+          </div>
+        </div>
+        <p className="owner-purchasing__note" data-testid="owner-purchasing-note">
+          {purchasing.note || "Nilai faktur aktif sebelum retur. Diskon dan PPN belum dipisahkan dalam model faktur."}
+        </p>
       </section>
 
       <section className="owner-dash__grid">

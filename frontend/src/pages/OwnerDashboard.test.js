@@ -129,6 +129,49 @@ beforeEach(() => {
         aging: { not_due: 50000, d1_30: 10000, d31_60: 10000, d61_90: 5000, over_90: 5000 },
       },
     },
+    purchasing: {
+      status: "incomplete",
+      scope_label: "Periode",
+      completeness: "incomplete",
+      note: "Nilai faktur aktif sebelum retur. Diskon dan PPN belum dipisahkan dalam model faktur.",
+      total: {
+        status: "incomplete",
+        label: "Total Pembelian Faktur",
+        amount: 1842560,
+        invoice_count: 7,
+        basis: "grand_total",
+        detail: "Nilai grand_total faktur pembelian aktif. Belum dikurangi retur; diskon dan PPN belum dipisahkan dalam model faktur.",
+      },
+      trend: {
+        status: "complete",
+        grain: "day",
+        points: [
+          { period: "2026-03-01", amount: 800000, invoice_count: 3 },
+          { period: "2026-03-02", amount: 1042560, invoice_count: 4 },
+        ],
+      },
+      top_suppliers: {
+        status: "incomplete",
+        detail: "1 faktur tanpa nama supplier.",
+        rows: [
+          { key: "name:pt sumber makmur", label: "PT Sumber Makmur", amount: 500000, share: null },
+          { key: "name:cv global", label: "CV Global Kemasan", amount: 400000, share: null },
+          { key: "name:pt indah", label: "PT Indah Jaya", amount: 300000, share: null },
+          { key: "name:cv prima", label: "CV Prima Packaging", amount: 200000, share: null },
+          { key: "unknown:", label: "Supplier tidak diketahui", amount: 150000, share: null },
+        ],
+      },
+      distribution: {
+        status: "incomplete",
+        show_share: false,
+        detail: "Persentase distribusi disembunyikan karena data tidak lengkap atau mengandung nominal negatif.",
+        groups: [
+          { key: "name:pt sumber makmur", label: "PT Sumber Makmur", amount: 500000, share: null },
+          { key: "name:cv global", label: "CV Global Kemasan", amount: 400000, share: null },
+          { key: "other:", label: "Lainnya (3 supplier)", amount: 942560, share: null },
+        ],
+      },
+    },
     operations: {
       status: "complete",
       po_status: { aktif: 5, selesai: 3, terlambat_overlay: 2, partition: "disjoint_active_completed" },
@@ -199,6 +242,19 @@ test("authorized director loads KPIs without hardcoded sample millions", async (
   expect(view.host.querySelector("[data-testid='owner-aging-receivables']").textContent).toMatch(/1–30 Hari|>90 Hari/);
   expect(view.host.querySelector("[data-testid='owner-aging-payables']").textContent).toMatch(/Belum Jatuh Tempo/);
   expect(view.host.querySelector("[data-testid='owner-kpi-payables'] button.owner-kpi__tip").getAttribute("title")).toMatch(/supplier credit\/advance\/return/i);
+  expect(view.host.querySelector("[data-testid='owner-purchasing']")).toBeTruthy();
+  expect(view.host.querySelector("[data-testid='owner-purchasing-scope']").textContent).toMatch(/Tidak lengkap/);
+  expect(view.host.querySelector("[data-testid='owner-purchase-quality']").textContent).toMatch(/tidak lengkap|tanpa nama supplier/i);
+  expect(view.host.querySelector("[data-testid='owner-kpi-purchase-total']").textContent).toMatch(/1\.842\.560|1,842,560|Rp/);
+  expect(view.host.querySelector("[data-testid='owner-kpi-purchase-count']").textContent).toMatch(/7/);
+  expect(view.host.querySelector("[data-testid='owner-purchase-trend-plot']")).toBeTruthy();
+  expect(view.host.querySelector("[data-testid='owner-purchase-trend-period']").textContent).toBe("Harian");
+  expect(view.host.querySelector("[data-testid='owner-purchase-top-suppliers']").textContent).toMatch(/PT Sumber Makmur|tidak diketahui/);
+  expect(view.host.querySelectorAll("[data-testid^='owner-purchase-top-']").length).toBeGreaterThanOrEqual(5);
+  expect(view.host.querySelector("[data-testid='owner-purchase-distribution']").textContent).toMatch(/Lainnya|Persentase/);
+  expect(view.host.querySelector("[data-testid='owner-purchase-share-suppressed']")).toBeTruthy();
+  expect(view.host.querySelector("[data-testid='owner-purchasing-note']").textContent).toMatch(/Diskon dan PPN/i);
+  expect(view.host.querySelector("[data-testid='owner-purchase-quality']").textContent).not.toMatch(/Diskon dan PPN/);
   expect(view.host.querySelector("[data-testid='owner-period-toolbar']")).toBeTruthy();
   expect(view.host.textContent).toMatch(/01 Mar|02 Mar|15 Mar/);
   expect(view.host.textContent).not.toMatch(/\bday\b/);
