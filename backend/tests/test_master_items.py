@@ -31,13 +31,16 @@ from services.master_items import (
     UNKNOWN_ITEM_MSG,
     MasterItemUnresolvedError,
     build_list_query,
+    create_local_master_item,
     list_master_items,
     lookup_masters_by_accurate_ids,
     public_master_item,
+    resolve_master_origin,
     resolve_po_line_items,
     sync_master_items,
     upsert_master_item,
 )
+from fastapi import HTTPException
 
 
 def _await(coro):
@@ -81,6 +84,22 @@ class FakeCollection:
                 continue
             dv = doc.get(k)
             if isinstance(v, dict):
+                if "$exists" in v:
+                    exists = k in doc
+                    if bool(v["$exists"]) != exists:
+                        return False
+                if "$ne" in v and dv == v["$ne"]:
+                    return False
+                if "$gt" in v:
+                    try:
+                        if not (dv > v["$gt"]):
+                            return False
+                    except TypeError:
+                        return False
+                if "$type" in v:
+                    want = v["$type"]
+                    if want == "string" and not isinstance(dv, str):
+                        return False
                 if "$in" in v:
                     if dv not in v["$in"]:
                         return False
@@ -148,14 +167,41 @@ class FakeCollection:
     async def create_index(self, *args, **kwargs):
         return "ok"
 
+    async def insert_one(self, doc):
+        d = dict(doc)
+        if "code_key" in d and any(x.get("code_key") == d.get("code_key") for x in self.docs):
+            from pymongo.errors import DuplicateKeyError
+            raise DuplicateKeyError("E11000 duplicate code_key")
+        if "id" in d and any(x.get("id") == d.get("id") for x in self.docs):
+            from pymongo.errors import DuplicateKeyError
+            raise DuplicateKeyError("E11000 duplicate id")
+        self.docs.append(d)
+        return type("R", (), {"inserted_id": d.get("id") or d.get("code_key")})()
+
+    async def delete_one(self, query):
+        for i, d in enumerate(self.docs):
+            if self._match(d, query):
+                self.docs.pop(i)
+                return type("R", (), {"deleted_count": 1})()
+        return type("R", (), {"deleted_count": 0})()
+
+    async def index_information(self):
+        return {}
+
+    async def drop_index(self, name):
+        return None
+
 
 class FakeDB:
     def __init__(self):
         self.master_items = FakeCollection()
+        self.master_item_code_claims = FakeCollection()
 
     def __getitem__(self, name):
         if name == COLLECTION:
             return self.master_items
+        if name == "master_item_code_claims":
+            return self.master_item_code_claims
         raise KeyError(name)
 
 
@@ -1098,6 +1144,7 @@ def test_detail_enrichment_updates_existing_incomplete_mongo_row(monkeypatch):
 def test_rbac_catalog_and_defaults():
     assert "master_items.view" in ALL_PERMISSIONS
     assert "master_items.sync" in ALL_PERMISSIONS
+    assert "master_items.manage" in ALL_PERMISSIONS
     assert "nav.inventory.master_items" in ALL_PERMISSIONS
     assert "current_stock.view" in ALL_PERMISSIONS
     assert "current_stock.update" in ALL_PERMISSIONS
@@ -1109,18 +1156,146 @@ def test_rbac_catalog_and_defaults():
     admin = set(ROLE_DEFAULT_PERMISSIONS["admin"])
     assert "master_items.view" in admin
     assert "master_items.sync" in admin
+    assert "master_items.manage" in admin
     helper = effective_permissions("helper", None)
     assert "master_items.view" not in helper
     assert "master_items.sync" not in helper
+    assert "master_items.manage" not in helper
     assert "purchase_receipts.sync" not in helper
     hop = effective_permissions("head_production", None)
     assert "purchase_receipts.sync" in hop
     view_only = effective_permissions("helper", {"master_items.view": True, "nav.inventory.master_items": True})
     assert "master_items.view" in view_only
     assert "master_items.sync" not in view_only
+    assert "master_items.manage" not in view_only
     both = effective_permissions("helper", {
         "master_items.view": True,
         "master_items.sync": True,
         "nav.inventory.master_items": True,
     })
     assert "master_items.sync" in both
+
+
+def test_public_origin_legacy_and_local():
+    assert resolve_master_origin({"accurate_item_id": "9"}) == "accurate"
+    assert resolve_master_origin({"item_code": "X"}) == "local"
+    assert resolve_master_origin({"origin": "local", "accurate_item_id": None}) == "local"
+    pub = public_master_item({"id": "1", "item_code": "A", "item_name": "n", "unit": "pcs", "is_active": True})
+    assert pub["origin"] == "local"
+    assert pub["accurate_item_id"] is None
+
+
+def test_create_local_master_and_sync_preserves():
+    db = FakeDB()
+    created = _await(create_local_master_item(db, {
+        "item_code": "LOC-1",
+        "item_name": "Lokal Cup",
+        "item_type": "INVENTORY",
+        "unit": "pcs",
+        "is_active": True,
+    }))
+    assert created["origin"] == "local"
+    assert created["accurate_item_id"] is None
+    assert created["id"]
+    assert "accurate_item_id" not in db.master_items.docs[0] or db.master_items.docs[0].get("accurate_item_id") in (None, "")
+
+    client = FakeAccurate(items=[{
+        "id": 5700,
+        "no": "PC-12",
+        "name": "Paper cup 12oz",
+        "itemType": "INVENTORY",
+        "unit1Name": "pcs",
+        "suspended": False,
+    }])
+    result = _await(sync_master_items(db, client))
+    assert result["created"] == 1
+    locals_ = [d for d in db.master_items.docs if d.get("origin") == "local"]
+    assert len(locals_) == 1
+    assert locals_[0]["item_code"] == "LOC-1"
+    assert locals_[0].get("accurate_item_id") in (None, "")
+
+
+def test_create_local_duplicate_code_case_insensitive():
+    db = FakeDB()
+    _await(create_local_master_item(db, {
+        "item_code": "AbC",
+        "item_name": "One",
+        "item_type": "INVENTORY",
+        "unit": "pcs",
+        "is_active": True,
+    }))
+    try:
+        _await(create_local_master_item(db, {
+            "item_code": "abc",
+            "item_name": "Two",
+            "item_type": "INVENTORY",
+            "unit": "pcs",
+            "is_active": True,
+        }))
+        assert False, "expected 409"
+    except HTTPException as exc:
+        assert exc.status_code == 409
+
+
+def test_create_local_rejects_code_taken_by_accurate_row():
+    db = FakeDB()
+    db.master_items.docs.append({
+        "id": "acc-1",
+        "accurate_item_id": "99",
+        "item_code": "SHARED",
+        "item_name": "From Accurate",
+        "item_type": "INVENTORY",
+        "unit": "pcs",
+        "is_active": True,
+        "origin": "accurate",
+    })
+    try:
+        _await(create_local_master_item(db, {
+            "item_code": "shared",
+            "item_name": "Local try",
+            "item_type": "SERVICE",
+            "unit": "pcs",
+            "is_active": True,
+        }))
+        assert False, "expected 409"
+    except HTTPException as exc:
+        assert exc.status_code == 409
+    assert len(db.master_item_code_claims.docs) == 0
+
+
+def test_create_local_insert_failure_releases_claim():
+    db = FakeDB()
+    real_insert = FakeCollection.insert_one
+
+    async def boom(self, doc):
+        raise RuntimeError("forced insert failure")
+
+    FakeCollection.insert_one = boom  # type: ignore[method-assign]
+    try:
+        try:
+            _await(create_local_master_item(db, {
+                "item_code": "Orphan-Code",
+                "item_name": "Will Fail",
+                "item_type": "INVENTORY",
+                "unit": "pcs",
+                "is_active": True,
+            }))
+            assert False, "expected insert failure"
+        except RuntimeError as exc:
+            assert "forced insert failure" in str(exc)
+    finally:
+        FakeCollection.insert_one = real_insert  # type: ignore[method-assign]
+
+    assert db.master_item_code_claims.docs == []
+    assert db.master_items.docs == []
+
+    # Recovered create works after claim release.
+    created = _await(create_local_master_item(db, {
+        "item_code": "Orphan-Code",
+        "item_name": "Recovered",
+        "item_type": "SERVICE",
+        "unit": "pcs",
+        "is_active": True,
+    }))
+    assert created["origin"] == "local"
+    assert len(db.master_item_code_claims.docs) == 1

@@ -1012,6 +1012,10 @@ export default function PesananPenjualan() {
             unit: next.unit,
             quantity: next.quantity,
           };
+        } else if (!next.accurate_item_id) {
+          // Local master: keep master_item_id, no auto-quote / no fake image id.
+          next.price_review = true;
+          next.price_message = "Barang belum terhubung ke Pengaturan Harga. Isi manual.";
         }
         lines[index] = next;
       }

@@ -1442,6 +1442,9 @@ def _line_bits(order: dict, line_idx: Any) -> dict:
         "item_code": str(li.get("item_code") or "").strip(),
         "item_name": name,
         "accurate_item_id": str(li.get("accurate_item_id") or "").strip(),
+        "master_item_id": str(li.get("master_item_id") or "").strip(),
+        "unit": str(li.get("unit") or "").strip(),
+        "quantity": li.get("quantity"),
         "line_idx": line_idx,
     }
 
@@ -1658,6 +1661,8 @@ def assemble_gaji_operator_rows(
             "item_code": bits["item_code"],
             "item_name": bits["item_name"],
             "accurate_item_id": bits["accurate_item_id"],
+            "master_item_id": bits["master_item_id"],
+            "unit": bits["unit"],
             "line_idx": bits["line_idx"],
             "payroll_status": status,
             "payroll_reason": display_reason,

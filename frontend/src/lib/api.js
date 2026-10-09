@@ -256,6 +256,7 @@ export const api = {
     },
   }).then((r) => r.data),
   masterItemsSync: () => client.post(`/master-items/sync`).then((r) => r.data),
+  masterItemsCreate: (payload) => client.post(`/master-items`, payload).then((r) => r.data),
   replaceSalesOrderLineProduct: (orderId, lineIdx, payload) =>
     client.patch(`/sales-orders/${orderId}/lines/${lineIdx}/product`, payload).then((r) => r.data),
   updateSalesOrderLineColor: (orderId, lineIdx, payload) =>
