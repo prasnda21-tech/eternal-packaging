@@ -116,8 +116,24 @@ def receipt_is_cancelled(receipt: Optional[dict]) -> bool:
     return receipt.get("cancelled") is True
 
 
+SETTLEMENT_EFFECTIVE_FIELD = "settlement_effective"
+
+
 def receipt_counts_toward_outstanding(receipt: Optional[dict]) -> bool:
-    return not receipt_is_cancelled(receipt)
+    """Confirmed operational settlement only.
+
+    - Cancelled/reversed receipts never count.
+    - Explicit settlement_effective=False never counts (auto-lifecycle pending).
+    - Absent settlement_effective preserves legacy historical semantics (counts).
+    - Explicit True counts when not cancelled.
+    """
+    if receipt_is_cancelled(receipt):
+        return False
+    if not receipt:
+        return False
+    if SETTLEMENT_EFFECTIVE_FIELD in receipt and receipt.get(SETTLEMENT_EFFECTIVE_FIELD) is False:
+        return False
+    return True
 
 
 def posting_claim_is_active(receipt: Optional[dict]) -> bool:

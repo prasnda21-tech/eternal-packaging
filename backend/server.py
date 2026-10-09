@@ -9633,6 +9633,11 @@ from services.sales_receipt_posting import (
     post_sales_receipt_accounting as _post_sales_receipt_accounting,
     reverse_sales_receipt_accounting as _reverse_sales_receipt_accounting,
 )
+from services.sales_receipt_auto_lifecycle import (
+    create_sales_receipt_with_auto_lifecycle as _create_sales_receipt_auto_lifecycle,
+    is_auto_sales_receipt_lifecycle_enabled as _is_auto_sales_receipt_lifecycle_enabled,
+    recover_auto_sales_receipt_accounting as _recover_auto_sales_receipt_accounting,
+)
 from services.sales_receipts import (
     list_sales_receipts as _list_sales_receipts,
     get_sales_receipt_detail as _get_sales_receipt_detail,
@@ -11719,13 +11724,56 @@ async def get_sales_receipt_endpoint(id: str, user=Depends(current_user)):
 
 @api_router.post("/sales-receipts")
 async def create_sales_receipt_endpoint(payload: SalesReceiptCreatePayload, user=Depends(current_user)):
-    """Create a new Sales Receipt (Penerimaan Penjualan) backend-authoritatively."""
+    """Create a new Sales Receipt (Penerimaan Penjualan) backend-authoritatively.
+
+    Flag ``auto_sales_receipt_lifecycle_enabled`` (default OFF): when ON, also
+    posts and settles; financial success needs posted journal + settlement.
+    """
     await _require_any_perm(user, "sales.receipt.create", "sales.invoice.create", "sales_order.create", "po.edit")
     data = payload.model_dump()
     if data.get("payment_proof") is None:
         data.pop("payment_proof", None)
+    if await _is_auto_sales_receipt_lifecycle_enabled(db):
+        result = await _create_sales_receipt_auto_lifecycle(db, data, user)
+        body = {
+            "receipt": result["receipt"],
+            "message": result["message"],
+            "financial_complete": bool(result.get("financial_complete")),
+            "auto_accounting_status": result.get("auto_accounting_status"),
+        }
+        if result.get("error_code"):
+            body["error_code"] = result["error_code"]
+        if result.get("financial_complete"):
+            return body
+        raise HTTPException(
+            int(result.get("http_status") or 409),
+            body,
+        )
     receipt = await _create_sales_receipt(db, data, user)
     return {"receipt": receipt, "message": "Penerimaan Penjualan berhasil dibuat"}
+
+
+@api_router.post("/sales-receipts/{id}/recover-auto-accounting")
+async def recover_auto_sales_receipt_accounting_endpoint(id: str, user=Depends(current_user)):
+    """Idempotent recovery for auto-lifecycle receipts only (Pending/Failed).
+
+    Narrow authority: sales.receipt.create. Does not grant general
+    sales.receipt.accounting.post. Ownership enforced.
+    Fail-closed when ``auto_sales_receipt_lifecycle_enabled`` is OFF.
+    """
+    await _require_any_perm(user, "sales.receipt.create", "sales.invoice.create", "sales_order.create", "po.edit")
+    result = await _recover_auto_sales_receipt_accounting(db, id, user)
+    body = {
+        "receipt": result["receipt"],
+        "message": result["message"],
+        "financial_complete": bool(result.get("financial_complete")),
+        "auto_accounting_status": result.get("auto_accounting_status"),
+    }
+    if result.get("error_code"):
+        body["error_code"] = result["error_code"]
+    if result.get("financial_complete"):
+        return body
+    raise HTTPException(int(result.get("http_status") or 409), body)
 
 
 @api_router.post("/sales-receipts/{id}/post-accounting")
