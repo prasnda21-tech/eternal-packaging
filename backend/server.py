@@ -9619,6 +9619,11 @@ from services.sales_invoice_posting import (
     post_sales_invoice_accounting as _post_sales_invoice_accounting,
     reverse_sales_invoice_accounting as _reverse_sales_invoice_accounting,
 )
+from services.sales_invoice_auto_lifecycle import (
+    create_sales_invoice_with_auto_lifecycle as _create_sales_invoice_auto_lifecycle,
+    is_auto_sales_invoice_lifecycle_enabled as _is_auto_sales_invoice_lifecycle_enabled,
+    recover_auto_sales_invoice_accounting as _recover_auto_sales_invoice_accounting,
+)
 from services.sales_receipt_posting import (
     PERM_POST as _SALES_RECEIPT_ACCOUNTING_POST_PERM,
     PERM_REVERSE as _SALES_RECEIPT_ACCOUNTING_REVERSE_PERM,
@@ -11480,10 +11485,57 @@ async def get_po_invoice_preview_endpoint(po_id: str, user=Depends(current_user)
 
 @api_router.post("/sales-invoices")
 async def create_sales_invoice_endpoint(payload: SalesInvoiceCreatePayload, user=Depends(current_user)):
-    """Create a new Sales Invoice (Faktur Penjualan) backend-authoritatively."""
+    """Create a new Sales Invoice (Faktur Penjualan) backend-authoritatively.
+
+    When ``auto_sales_invoice_lifecycle_enabled`` is ON, eligible creates also
+    finalize and first-time post. Financial success requires a posted journal.
+    Flag default OFF preserves legacy draft-only create.
+    """
     await _require_any_perm(user, "sales.invoice.create", "sales_order.create", "po.edit")
+    if await _is_auto_sales_invoice_lifecycle_enabled(db):
+        result = await _create_sales_invoice_auto_lifecycle(db, payload.model_dump(), user)
+        body = {
+            "invoice": result["invoice"],
+            "message": result["message"],
+            "financial_complete": bool(result.get("financial_complete")),
+            "auto_accounting_status": result.get("auto_accounting_status"),
+        }
+        if result.get("error_code"):
+            body["error_code"] = result["error_code"]
+        if result.get("financial_complete"):
+            return body
+        # Document may exist; do not advertise financial success.
+        raise HTTPException(
+            int(result.get("http_status") or 409),
+            body,
+        )
     inv = await _create_sales_invoice(db, payload.model_dump(), user)
     return {"invoice": inv, "message": "Faktur Penjualan berhasil dibuat"}
+
+
+@api_router.post("/sales-invoices/{id}/recover-auto-accounting")
+async def recover_auto_sales_invoice_accounting_endpoint(id: str, user=Depends(current_user)):
+    """Idempotent recovery for auto-lifecycle invoices only (Pending/Failed).
+
+    Narrow authority: sales.invoice.create (same create-scoped auto-post rule).
+    Does not grant general sales_accounting.post. Ownership enforced.
+    Fail-closed when ``auto_sales_invoice_lifecycle_enabled`` is OFF.
+    """
+    await _require_any_perm(user, "sales.invoice.create", "sales_order.create", "po.edit")
+    inv = await _get_sales_invoice_detail(db, id)
+    await ensure_owned_po_id(db, user, (inv or {}).get("po_id"))
+    result = await _recover_auto_sales_invoice_accounting(db, id, user)
+    body = {
+        "invoice": result["invoice"],
+        "message": result["message"],
+        "financial_complete": bool(result.get("financial_complete")),
+        "auto_accounting_status": result.get("auto_accounting_status"),
+    }
+    if result.get("error_code"):
+        body["error_code"] = result["error_code"]
+    if result.get("financial_complete"):
+        return body
+    raise HTTPException(int(result.get("http_status") or 409), body)
 
 
 @api_router.get("/sales-invoices/{id}")
