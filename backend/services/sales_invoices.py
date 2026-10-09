@@ -780,12 +780,19 @@ async def create_sales_invoice(db, payload: Dict[str, Any], user: dict) -> Dict[
         if payment_term_days < 0:
             raise HTTPException(400, "Termin pembayaran tidak boleh negatif.")
 
-        invoice_date_str = str(payload.get("invoice_date") or now_iso()[:10]).strip()
-        try:
-            inv_dt = datetime.strptime(invoice_date_str[:10], "%Y-%m-%d")
-        except ValueError:
-            inv_dt = datetime.now(timezone.utc)
-            invoice_date_str = inv_dt.strftime("%Y-%m-%d")
+        from services.sales_invoice_dates import SalesInvoiceDateError, parse_sales_invoice_date
+
+        raw_invoice_date = payload.get("invoice_date")
+        if raw_invoice_date is None:
+            inv_dt = datetime.now(timezone.utc).date()
+        elif str(raw_invoice_date).strip() == "":
+            raise HTTPException(400, "Tanggal faktur wajib diisi.")
+        else:
+            try:
+                inv_dt = parse_sales_invoice_date(raw_invoice_date)
+            except SalesInvoiceDateError as exc:
+                raise HTTPException(400, "Tanggal faktur tidak valid.") from exc
+        invoice_date_str = inv_dt.isoformat()
 
         due_date_str = (inv_dt + timedelta(days=payment_term_days)).strftime("%Y-%m-%d")
 
@@ -958,8 +965,11 @@ def _amount_in_range(value: Any, low: Optional[float], high: Optional[float]) ->
 
 
 def _invoice_day(invoice: Dict[str, Any]) -> str:
-    raw = str(invoice.get("invoice_date") or invoice.get("created_at") or "").strip()
-    return raw[:10]
+    """Canonical YYYY-MM-DD for range checks. Mixed historical formats are not compared raw."""
+    from services.sales_invoice_dates import try_canonical_sales_invoice_date
+
+    raw = invoice.get("invoice_date") or invoice.get("created_at") or ""
+    return try_canonical_sales_invoice_date(raw)
 
 
 def _scope_clause(scope: str) -> Dict[str, Any]:
@@ -1451,12 +1461,15 @@ async def update_sales_invoice(db, invoice_id: str, payload: Dict[str, Any], use
         if payment_term_days < 0:
             raise HTTPException(400, "Termin pembayaran tidak boleh negatif.")
 
-        invoice_date_str = str(payload.get("invoice_date") or inv.get("invoice_date") or now_iso()[:10]).strip()
+        from services.sales_invoice_dates import SalesInvoiceDateError, persist_sales_invoice_date
+
         try:
-            inv_dt = datetime.strptime(invoice_date_str[:10], "%Y-%m-%d")
-        except ValueError:
-            inv_dt = datetime.now(timezone.utc)
-            invoice_date_str = inv_dt.strftime("%Y-%m-%d")
+            inv_dt, invoice_date_str = persist_sales_invoice_date(
+                inv.get("invoice_date"),
+                payload.get("invoice_date") if "invoice_date" in payload else None,
+            )
+        except SalesInvoiceDateError as exc:
+            raise HTTPException(400, "Tanggal faktur tidak valid.") from exc
 
         due_date_str = (inv_dt + timedelta(days=payment_term_days)).strftime("%Y-%m-%d")
 
@@ -1685,6 +1698,17 @@ async def invoice_pdf_presentation(db, invoice: dict) -> dict:
     return shown
 
 
+def _sales_invoice_pdf_date(raw) -> str:
+    """Sales Invoice PDF only. Four-digit DD/MM/YYYY. Does not change the shared PDF helper."""
+    from services.pdf_date import format_pdf_date
+    from services.sales_invoice_dates import format_sales_invoice_user_date
+
+    shown = format_sales_invoice_user_date(raw)
+    if shown:
+        return shown
+    return format_pdf_date(raw)
+
+
 def generate_sales_invoice_pdf_bytes(
     invoice: dict,
     document_type: str = DOCUMENT_INVOICE,
@@ -1700,7 +1724,6 @@ def generate_sales_invoice_pdf_bytes(
     from reportlab.lib.units import mm
     from reportlab.platypus import Paragraph, Spacer, Table, TableStyle
 
-    from services.pdf_date import format_pdf_date
     from services.pdf_layout import (
         build_pdf,
         content_width,
@@ -1789,7 +1812,7 @@ def generate_sales_invoice_pdf_bytes(
             f"Kepada :<br/><b>{esc(invoice.get('customer') or '-')}</b><br/>{esc(address)}",
             sty["body"],
         )
-        due = format_pdf_date(invoice.get("due_date"))
+        due = _sales_invoice_pdf_date(invoice.get("due_date"))
         jasa = str(invoice.get("presentation_expedition") or invoice.get("expedition") or "").strip()
         tipe = str(invoice.get("presentation_shipping_type") or invoice.get("shipping_type") or "").strip()
         bank_lines = bank_display_lines(inv_design.get("bank_accounts"))
@@ -1801,7 +1824,7 @@ def generate_sales_invoice_pdf_bytes(
 
         meta = [
             [
-                cell("Tanggal", esc(format_pdf_date(invoice.get("invoice_date")))),
+                cell("Tanggal", esc(_sales_invoice_pdf_date(invoice.get("invoice_date")))),
                 cell("Nomor", esc(invoice.get("invoice_number") or invoice.get("id") or "")),
             ],
             [

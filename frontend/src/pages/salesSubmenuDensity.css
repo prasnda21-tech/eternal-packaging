@@ -1052,6 +1052,31 @@
   width:100%;
   box-sizing:border-box;
 }
+.sd-density .fp-terms .fp-invoice-date,
+.fp-invoice-date{
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+  align-items:center;
+}
+.sd-density .fp-terms .fp-invoice-date input[type="text"],
+.fp-invoice-date input[type="text"]{
+  flex:1 1 140px;
+  width:auto;
+  min-width:0;
+}
+.sd-density .fp-terms .fp-invoice-date input[type="date"],
+.fp-invoice-date input[type="date"]{
+  width:42px;
+  min-width:42px;
+  flex:0 0 42px;
+  padding:6px;
+}
+.fp-invoice-date-error{
+  flex:1 0 100%;
+  color:#b91c1c;
+  font-size:12px;
+}
 .sd-density .fp-items{
   background:#fff;
   border:1px solid #e2e8e6;

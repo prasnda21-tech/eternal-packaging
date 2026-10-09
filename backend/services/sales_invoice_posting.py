@@ -94,10 +94,13 @@ def _money(raw: Any, field: str) -> Decimal:
 
 
 def journal_date_from_invoice(invoice: dict) -> str:
-    raw = str((invoice or {}).get("invoice_date") or "").strip()
-    if not raw:
-        raise HTTPException(400, "Tanggal faktur tidak valid.")
-    return raw[:10]
+    """Canonical journal date. Does not rewrite the stored invoice date."""
+    from services.sales_invoice_dates import SalesInvoiceDateError, canonical_sales_invoice_date
+
+    try:
+        return canonical_sales_invoice_date((invoice or {}).get("invoice_date"))
+    except SalesInvoiceDateError as exc:
+        raise HTTPException(400, "Tanggal faktur tidak valid.") from exc
 
 
 def accounting_status_from_journal(journal: Optional[dict]) -> str:

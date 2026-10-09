@@ -64,10 +64,10 @@ test("renders outstanding invoices", async () => {
   const card = node.querySelector("[data-testid='sales-receivable-inv-9']").textContent;
   const at = (label) => card.indexOf(label);
   expect(at("Toko Lama")).toBeLessThan(at("Rp400.000"));
-  expect(at("Rp400.000")).toBeLessThan(at("14/09/26"));
-  expect(at("14/09/26")).toBeLessThan(at("INV-OLD"));
-  expect(at("INV-OLD")).toBeLessThan(at("15/08/26"));
-  expect(at("15/08/26")).toBeLessThan(at("Rp0"));
+  expect(at("Rp400.000")).toBeLessThan(at("14/09/2026"));
+  expect(at("14/09/2026")).toBeLessThan(at("INV-OLD"));
+  expect(at("INV-OLD")).toBeLessThan(at("15/08/2026"));
+  expect(at("15/08/2026")).toBeLessThan(at("Rp0"));
   expect(node.querySelector("[data-testid='sales-receivable-inv-9']").getAttribute("href")).toBe("/sales/invoices/inv-9?month=2026-08&from=receivables");
   expect(node.innerHTML).not.toContain("/buku-besar/piutang-usaha");
   expect(node.innerHTML).not.toContain("/penjualan/faktur-penjualan");
