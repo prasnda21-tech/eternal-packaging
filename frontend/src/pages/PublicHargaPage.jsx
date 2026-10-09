@@ -1,9 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
   ArrowRight,
   MessageCircle,
+  Minus,
   PackageOpen,
+  Plus,
   Search,
 } from "lucide-react";
 import { Link, useNavigate, useParams } from "react-router-dom";
@@ -11,6 +13,9 @@ import BrandMark from "../components/BrandMark";
 import api, { publicApiUrl } from "../lib/api";
 import { formatApiError } from "../lib/errors";
 import "./PublicHargaPage.css";
+
+const VARIANT_SEARCH_THRESHOLD = 8;
+const CALC_DEBOUNCE_MS = 280;
 
 const formatNumber = (value) =>
   Number(value || 0).toLocaleString("id-ID", { maximumFractionDigits: 0 });
@@ -72,7 +77,7 @@ function PublicHeader({ phone, search, onSearchChange, showSearch = true }) {
             type="search"
             value={search}
             onChange={(event) => onSearchChange?.(event.target.value)}
-            placeholder="Cari produk..."
+            placeholder="Cari produk, contoh: cup, lid, box..."
             data-testid="harga-catalog-search"
           />
         </label>
@@ -80,7 +85,7 @@ function PublicHeader({ phone, search, onSearchChange, showSearch = true }) {
       {wa ? (
         <a className="ph-wa-btn" href={wa} target="_blank" rel="noreferrer" data-testid="harga-header-whatsapp">
           <MessageCircle size={16} aria-hidden="true" />
-          Tanya via WhatsApp
+          Hubungi Kami
         </a>
       ) : null}
     </header>
@@ -158,6 +163,9 @@ function CatalogPage() {
   const heroTitle = settings?.hero_title || settings?.catalog_name || "Kemasan Berkualitas untuk Bisnis Anda";
   const heroSubtitle = settings?.hero_subtitle
     || "Temukan produk kemasan dengan harga transparan berdasarkan jumlah pesanan.";
+  const waConsult = phone
+    ? buildWhatsAppUrl(phone, "Halo Eternal Packaging, saya ingin konsultasi produk kemasan.")
+    : "";
 
   return (
     <main className="public-harga-page ph-v2" data-testid="public-harga-page">
@@ -165,9 +173,25 @@ function CatalogPage() {
 
       <section className="ph-hero" aria-labelledby="ph-hero-title">
         <div className="ph-hero-copy">
-          <p className="ph-eyebrow">KATALOG PRODUK</p>
+          <p className="ph-eyebrow">ETERNAL PACKAGING</p>
           <h1 id="ph-hero-title">{heroTitle}</h1>
           <p>{heroSubtitle}</p>
+          <div className="ph-hero-actions">
+            <a className="ph-btn-primary" href="#katalog" data-testid="harga-hero-catalog-cta">
+              Lihat Katalog
+            </a>
+            {waConsult ? (
+              <a
+                className="ph-btn-link"
+                href={waConsult}
+                target="_blank"
+                rel="noreferrer"
+                data-testid="harga-hero-whatsapp"
+              >
+                Konsultasi via WhatsApp <ArrowRight size={16} aria-hidden="true" />
+              </a>
+            ) : null}
+          </div>
           <label className="ph-hero-search">
             <Search size={18} aria-hidden="true" />
             <span className="ph-sr-only">Cari produk katalog</span>
@@ -192,44 +216,50 @@ function CatalogPage() {
         </div>
       </section>
 
-      {categories.length > 0 && (
+      {categories.length > 0 ? (
         <section className="ph-section" aria-labelledby="ph-category-title">
           <div className="ph-section-head">
-            <h2 id="ph-category-title">Pilih Kategori Produk</h2>
+            <h2 id="ph-category-title">Kategori Produk</h2>
           </div>
-          <div className="ph-category-grid" data-testid="harga-category-grid">
-            <button
-              type="button"
-              className={`ph-category-card ${!categoryId ? "is-active" : ""}`}
-              onClick={() => setCategoryId("")}
-              aria-pressed={!categoryId}
-              data-testid="harga-category-all"
-            >
-              <span className="ph-category-visual"><PackageOpen size={22} /></span>
-              <strong>Semua</strong>
-            </button>
-            {categories.map((category) => (
+          <div className="ph-category-scroll" data-testid="harga-category-scroll">
+            <div className="ph-category-grid" data-testid="harga-category-grid">
               <button
                 type="button"
-                key={category.id}
-                className={`ph-category-card ${categoryId === category.id ? "is-active" : ""}`}
-                onClick={() => setCategoryId(category.id)}
-                aria-pressed={categoryId === category.id}
-                data-testid={`harga-category-${category.id}`}
+                className={`ph-category-card ${!categoryId ? "is-active" : ""}`}
+                onClick={() => setCategoryId("")}
+                aria-pressed={!categoryId}
+                data-testid="harga-category-all"
               >
-                <span className="ph-category-visual">
-                  {category.image_url ? (
-                    <img src={publicApiUrl(category.image_url)} alt="" />
-                  ) : (
-                    <PackageOpen size={22} aria-hidden="true" />
-                  )}
-                </span>
-                <strong>{category.name}</strong>
+                <span className="ph-category-visual"><PackageOpen size={22} /></span>
+                <strong>Semua</strong>
               </button>
-            ))}
+              {categories.map((category) => {
+                const count = groups.filter((group) => group.category?.id === category.id).length;
+                return (
+                  <button
+                    type="button"
+                    key={category.id}
+                    className={`ph-category-card ${categoryId === category.id ? "is-active" : ""}`}
+                    onClick={() => setCategoryId(category.id)}
+                    aria-pressed={categoryId === category.id}
+                    data-testid={`harga-category-${category.id}`}
+                  >
+                    <span className="ph-category-visual">
+                      {category.image_url ? (
+                        <img src={publicApiUrl(category.image_url)} alt="" />
+                      ) : (
+                        <PackageOpen size={22} aria-hidden="true" />
+                      )}
+                    </span>
+                    <strong>{category.name}</strong>
+                    <span className="ph-category-count">{count} produk</span>
+                  </button>
+                );
+              })}
+            </div>
           </div>
         </section>
-      )}
+      ) : null}
 
       <section className="ph-section" id="katalog" aria-labelledby="harga-catalog-title">
         <div className="ph-section-head">
@@ -276,7 +306,9 @@ function CatalogPage() {
                     <ProductVisual imageUrl={group.image_url} name={group.name} />
                     <span className="ph-card-content">
                       <span className="ph-card-title">{group.name}</span>
-                      {group.size_summary ? (
+                      {group.public_description ? (
+                        <span className="ph-card-desc">{group.public_description}</span>
+                      ) : group.size_summary ? (
                         <span className="ph-card-meta">{group.size_summary}</span>
                       ) : null}
                       {group.min_unit_price != null ? (
@@ -288,7 +320,7 @@ function CatalogPage() {
                         {(group.variant_count ?? group.variants?.length ?? 0)} varian
                       </span>
                       <span className="ph-card-cta">
-                        Lihat Harga <ArrowRight size={16} aria-hidden="true" />
+                        Lihat Detail <ArrowRight size={16} aria-hidden="true" />
                       </span>
                     </span>
                   </button>
@@ -340,6 +372,13 @@ function uniqueAxisValues(variants, key) {
   return values;
 }
 
+function parseQuantityInput(raw) {
+  const digits = String(raw ?? "").replace(/[^\d]/g, "");
+  if (!digits) return null;
+  const value = Number(digits);
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
+
 function DetailPage({ groupPublicId, slug }) {
   const [group, setGroup] = useState(null);
   const [selectedVariantId, setSelectedVariantId] = useState("");
@@ -349,6 +388,12 @@ function DetailPage({ groupPublicId, slug }) {
   const [previewUrl, setPreviewUrl] = useState("");
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
+  const [quantityInput, setQuantityInput] = useState("");
+  const [variantQuery, setVariantQuery] = useState("");
+  const [quote, setQuote] = useState(null);
+  const [quoteError, setQuoteError] = useState("");
+  const [quoteLoading, setQuoteLoading] = useState(false);
+  const calcSeq = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -360,6 +405,10 @@ function DetailPage({ groupPublicId, slug }) {
     setColorFilter("");
     setFinishingFilter("");
     setPreviewUrl("");
+    setQuantityInput("");
+    setVariantQuery("");
+    setQuote(null);
+    setQuoteError("");
     const request = slug
       ? api.publicCustomerPricingGroupBySlug(slug)
       : api.publicCustomerPricingGroup(groupPublicId);
@@ -369,13 +418,13 @@ function DetailPage({ groupPublicId, slug }) {
         const detail = data?.group || null;
         setGroup(detail);
         const first = detail?.variants?.[0] || null;
-        // Neutral start: no forced variant unless only one exists.
         if (detail?.variants?.length === 1 && first) {
           setSelectedVariantId(first.public_variant_id);
           setSizeFilter(first.size || "");
           setColorFilter(first.color || "");
           setFinishingFilter(first.finishing || "");
           setPreviewUrl(first.image_url || detail.image_url || "");
+          setQuantityInput(String(first.minimum_quantity || ""));
         } else {
           setPreviewUrl(detail?.image_url || "");
         }
@@ -424,6 +473,7 @@ function DetailPage({ groupPublicId, slug }) {
       if (only.public_variant_id !== selectedVariantId) {
         setSelectedVariantId(only.public_variant_id);
         setPreviewUrl(only.image_url || group?.image_url || "");
+        setQuantityInput(String(only.minimum_quantity || ""));
       }
     } else if (matchingVariants.length === 0) {
       setSelectedVariantId("");
@@ -439,6 +489,48 @@ function DetailPage({ groupPublicId, slug }) {
     (variant) => variant.public_variant_id === selectedVariantId
   ) || null;
 
+  useEffect(() => {
+    if (!selectedVariant) {
+      setQuote(null);
+      setQuoteError("");
+      setQuoteLoading(false);
+      return undefined;
+    }
+    const quantity = parseQuantityInput(quantityInput);
+    if (quantity == null) {
+      setQuote(null);
+      setQuoteError("");
+      setQuoteLoading(false);
+      return undefined;
+    }
+    const publicId = group?.public_id;
+    if (!publicId) return undefined;
+    const seq = ++calcSeq.current;
+    setQuoteLoading(true);
+    setQuoteError("");
+    const timer = window.setTimeout(() => {
+      api.calculatePublicCustomerPrice({
+        group_public_id: publicId,
+        public_variant_id: selectedVariant.public_variant_id,
+        quantity,
+      })
+        .then((data) => {
+          if (calcSeq.current !== seq) return;
+          setQuote(data);
+          setQuoteError("");
+        })
+        .catch((error) => {
+          if (calcSeq.current !== seq) return;
+          setQuote(null);
+          setQuoteError(formatApiError(error, "Jumlah tidak valid untuk tier harga ini."));
+        })
+        .finally(() => {
+          if (calcSeq.current === seq) setQuoteLoading(false);
+        });
+    }, CALC_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+  }, [selectedVariant, quantityInput, group?.public_id]);
+
   const galleryImages = selectedVariant?.images?.length
     ? selectedVariant.images
     : (selectedVariant?.image_url
@@ -451,6 +543,13 @@ function DetailPage({ groupPublicId, slug }) {
   const publicUrl = typeof window !== "undefined"
     ? `${window.location.origin}${slug ? `/produk/${slug}` : `/harga/${groupPublicId}`}`
     : productPath(group || { public_id: groupPublicId, slug });
+
+  const quantityValue = parseQuantityInput(quantityInput);
+  const displayUnitPrice = quote?.unit_price
+    ?? selectedVariant?.tiers?.[0]?.unit_price
+    ?? group?.min_unit_price
+    ?? null;
+
   const waMessage = [
     "Halo Eternal Packaging,",
     `saya tertarik dengan ${group?.name || "produk katalog"}.`,
@@ -458,6 +557,9 @@ function DetailPage({ groupPublicId, slug }) {
     selectedVariant?.size ? `Ukuran: ${selectedVariant.size}.` : "",
     selectedVariant?.color ? `Warna: ${selectedVariant.color}.` : "",
     selectedVariant?.finishing ? `Finishing: ${selectedVariant.finishing}.` : "",
+    quantityValue != null ? `Jumlah: ${formatNumber(quantityValue)} ${selectedVariant?.unit || "pcs"}.` : "",
+    quote?.unit_price != null ? `Harga satuan: ${formatMoney(quote.unit_price)} / pcs.` : "",
+    quote?.total != null ? `Estimasi total: ${formatMoney(quote.total)}.` : "",
     `Link: ${publicUrl}`,
   ].filter(Boolean).join(" ");
   const waUrl = phone ? buildWhatsAppUrl(phone, waMessage) : "";
@@ -469,14 +571,47 @@ function DetailPage({ groupPublicId, slug }) {
     setColorFilter(variant?.color || "");
     setFinishingFilter(variant?.finishing || "");
     setPreviewUrl(variant?.image_url || group?.image_url || "");
+    setQuantityInput(String(variant?.minimum_quantity || ""));
   };
 
-  const currentPrice = selectedVariant?.tiers?.[0]?.unit_price ?? group?.min_unit_price;
+  const adjustQuantity = (delta) => {
+    const current = parseQuantityInput(quantityInput)
+      || selectedVariant?.minimum_quantity
+      || 1;
+    const next = Math.max(1, current + delta);
+    setQuantityInput(String(next));
+  };
+
+  const filteredFlatVariants = useMemo(() => {
+    const query = variantQuery.trim().toLocaleLowerCase("id-ID");
+    if (!query) return variants;
+    return variants.filter((variant) => {
+      const hay = [variant.display_name, variant.size, variant.color, variant.finishing]
+        .filter(Boolean)
+        .join(" ")
+        .toLocaleLowerCase("id-ID");
+      return hay.includes(query);
+    });
+  }, [variants, variantQuery]);
+
+  const useSearchableVariants = !structured && variants.length >= VARIANT_SEARCH_THRESHOLD;
+  const moq = selectedVariant?.minimum_quantity;
 
   return (
     <main className="public-harga-page ph-v2" data-testid="public-harga-detail-page">
       <PublicHeader phone={phone} showSearch={false} />
       <div className="ph-detail-shell">
+        <nav className="ph-breadcrumb" aria-label="Breadcrumb" data-testid="harga-breadcrumb">
+          <Link to="/harga">Beranda</Link>
+          <span aria-hidden="true">/</span>
+          {group?.category?.name ? (
+            <>
+              <span>{group.category.name}</span>
+              <span aria-hidden="true">/</span>
+            </>
+          ) : null}
+          <span>{group?.name || "Produk"}</span>
+        </nav>
         <Link className="ph-back-link" to="/harga">
           <ArrowLeft size={18} aria-hidden="true" />
           Kembali ke Katalog
@@ -525,7 +660,9 @@ function DetailPage({ groupPublicId, slug }) {
               ) : null}
               <div className="ph-price-block" data-testid="harga-current-price">
                 {selectedVariant ? "Harga" : "Mulai dari"}{" "}
-                <strong>{currentPrice != null ? `${formatMoney(currentPrice)} / pcs` : "—"}</strong>
+                <strong>
+                  {displayUnitPrice != null ? `${formatMoney(displayUnitPrice)} / pcs` : "—"}
+                </strong>
               </div>
 
               {structured ? (
@@ -608,50 +745,148 @@ function DetailPage({ groupPublicId, slug }) {
                 <div className="ph-selectors" data-testid="harga-flat-variants">
                   <fieldset>
                     <legend>Pilihan Varian</legend>
-                    <div className="ph-chip-row">
-                      {variants.map((variant) => (
-                        <button
-                          key={variant.public_variant_id}
-                          type="button"
-                          className={`ph-chip ${selectedVariantId === variant.public_variant_id ? "is-active" : ""}`}
-                          aria-pressed={selectedVariantId === variant.public_variant_id}
-                          onClick={() => selectFlatVariant(variant.public_variant_id)}
-                          data-testid={`harga-variant-${variant.public_variant_id}`}
+                    {useSearchableVariants ? (
+                      <>
+                        <label className="ph-variant-search">
+                          <Search size={16} aria-hidden="true" />
+                          <span className="ph-sr-only">Cari varian</span>
+                          <input
+                            type="search"
+                            value={variantQuery}
+                            onChange={(event) => setVariantQuery(event.target.value)}
+                            placeholder="Cari varian..."
+                            data-testid="harga-variant-search"
+                          />
+                        </label>
+                        <select
+                          className="ph-variant-select"
+                          value={selectedVariantId}
+                          onChange={(event) => selectFlatVariant(event.target.value)}
+                          data-testid="harga-variant-select"
+                          aria-label="Pilih varian produk"
                         >
-                          {variant.display_name}
-                        </button>
-                      ))}
-                    </div>
+                          <option value="">Pilih varian…</option>
+                          {filteredFlatVariants.map((variant) => (
+                            <option key={variant.public_variant_id} value={variant.public_variant_id}>
+                              {variant.display_name}
+                            </option>
+                          ))}
+                        </select>
+                      </>
+                    ) : (
+                      <div className="ph-chip-row">
+                        {variants.map((variant) => (
+                          <button
+                            key={variant.public_variant_id}
+                            type="button"
+                            className={`ph-chip ${selectedVariantId === variant.public_variant_id ? "is-active" : ""}`}
+                            aria-pressed={selectedVariantId === variant.public_variant_id}
+                            onClick={() => selectFlatVariant(variant.public_variant_id)}
+                            data-testid={`harga-variant-${variant.public_variant_id}`}
+                          >
+                            {variant.display_name}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </fieldset>
                 </div>
               )}
 
               {selectedVariant && (
-                <div className="ph-tier-block" data-testid="harga-tier-block">
-                  <div className="ph-tier-head">
-                    <strong>Harga: {selectedVariant.display_name}</strong>
-                    <span data-testid="harga-moq">
-                      Minimum Order: {formatNumber(selectedVariant.minimum_quantity)} {selectedVariant.unit || "pcs"}
-                    </span>
+                <div className="ph-qty-block" data-testid="harga-qty-block">
+                  <label htmlFor="harga-qty-input">Jumlah Pembelian</label>
+                  <div className="ph-qty-controls">
+                    <button
+                      type="button"
+                      className="ph-qty-btn"
+                      onClick={() => adjustQuantity(-1)}
+                      aria-label="Kurangi jumlah"
+                      data-testid="harga-qty-minus"
+                    >
+                      <Minus size={16} aria-hidden="true" />
+                    </button>
+                    <input
+                      id="harga-qty-input"
+                      inputMode="numeric"
+                      value={quantityInput}
+                      onChange={(event) => setQuantityInput(event.target.value.replace(/[^\d]/g, ""))}
+                      data-testid="harga-qty-input"
+                      aria-describedby="harga-qty-hint"
+                    />
+                    <button
+                      type="button"
+                      className="ph-qty-btn"
+                      onClick={() => adjustQuantity(1)}
+                      aria-label="Tambah jumlah"
+                      data-testid="harga-qty-plus"
+                    >
+                      <Plus size={16} aria-hidden="true" />
+                    </button>
                   </div>
-                  <div className="ph-tier-grid">
-                    {selectedVariant.tiers.map((tier) => (
-                      <div
-                        key={`${tier.min_qty}-${tier.max_qty}`}
-                        className="ph-tier-card"
-                        data-testid="harga-tier-row"
-                      >
-                        <span>
-                          {tier.max_qty == null
-                            ? `${formatNumber(tier.min_qty)}+`
-                            : `${formatNumber(tier.min_qty)}–${formatNumber(tier.max_qty)}`} pcs
-                        </span>
-                        <strong>{formatMoney(tier.unit_price)} / pcs</strong>
-                      </div>
-                    ))}
-                  </div>
+                  <p id="harga-qty-hint" className="ph-qty-hint" data-testid="harga-moq">
+                    Minimal pembelian {formatNumber(moq)} {selectedVariant.unit || "pcs"}
+                  </p>
                 </div>
               )}
+
+              <aside className="ph-estimate-card" data-testid="harga-estimate-card">
+                <h2>Harga & Estimasi</h2>
+                <div className="ph-estimate-unit">
+                  {displayUnitPrice != null ? `${formatMoney(displayUnitPrice)} / pcs` : "—"}
+                </div>
+                {!selectedVariant && (
+                  <p className="ph-estimate-hint">Pilih varian untuk menghitung estimasi.</p>
+                )}
+                {selectedVariant && quoteLoading && (
+                  <p className="ph-estimate-hint" data-testid="harga-estimate-loading">Menghitung harga…</p>
+                )}
+                {selectedVariant && !quoteLoading && quoteError && (
+                  <p className="ph-estimate-error" role="alert" data-testid="harga-estimate-error">
+                    {quoteError}
+                  </p>
+                )}
+                {selectedVariant && !quoteLoading && quote && (
+                  <dl className="ph-estimate-grid" data-testid="harga-estimate-success">
+                    <div>
+                      <dt>Jumlah</dt>
+                      <dd>{formatNumber(quote.quantity)} {selectedVariant.unit || "pcs"}</dd>
+                    </div>
+                    <div>
+                      <dt>Harga per pcs</dt>
+                      <dd>{formatMoney(quote.unit_price)}</dd>
+                    </div>
+                    <div className="ph-estimate-total">
+                      <dt>Total estimasi</dt>
+                      <dd>{formatMoney(quote.total)}</dd>
+                    </div>
+                  </dl>
+                )}
+                {selectedVariant && (
+                  <div className="ph-tier-block" data-testid="harga-tier-block">
+                    <div className="ph-tier-head">
+                      <strong>Daftar Harga (Tier)</strong>
+                      <span>{selectedVariant.display_name}</span>
+                    </div>
+                    <div className="ph-tier-grid">
+                      {selectedVariant.tiers.map((tier) => (
+                        <div
+                          key={`${tier.min_qty}-${tier.max_qty}`}
+                          className="ph-tier-card"
+                          data-testid="harga-tier-row"
+                        >
+                          <span>
+                            {tier.max_qty == null
+                              ? `${formatNumber(tier.min_qty)}+`
+                              : `${formatNumber(tier.min_qty)}–${formatNumber(tier.max_qty)}`} pcs
+                          </span>
+                          <strong>{formatMoney(tier.unit_price)} / pcs</strong>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </aside>
 
               {waUrl ? (
                 <a
@@ -669,6 +904,40 @@ function DetailPage({ groupPublicId, slug }) {
           </div>
         )}
       </div>
+
+      {waUrl && selectedVariant ? (
+        <div className="ph-sticky-bar" data-testid="harga-sticky-wa">
+          <div className="ph-sticky-price">
+            <strong>
+              {quote?.unit_price != null
+                ? `${formatMoney(quote.unit_price)} / pcs`
+                : displayUnitPrice != null
+                  ? `${formatMoney(displayUnitPrice)} / pcs`
+                  : "—"}
+            </strong>
+            <span>
+              {quote?.total != null
+                ? `Total: ${formatMoney(quote.total)}`
+                : quoteLoading
+                  ? "Menghitung…"
+                  : quoteError
+                    ? "Periksa jumlah"
+                    : "Isi jumlah untuk total"}
+            </span>
+          </div>
+          <a
+            className="ph-wa-btn"
+            href={waUrl}
+            target="_blank"
+            rel="noreferrer"
+            data-testid="harga-sticky-whatsapp"
+          >
+            <MessageCircle size={16} aria-hidden="true" />
+            Pesan via WhatsApp
+          </a>
+        </div>
+      ) : null}
+
       <footer className="ph-footer">Eternal Packaging · Katalog produk terkini</footer>
     </main>
   );
