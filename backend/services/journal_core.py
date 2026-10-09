@@ -593,11 +593,43 @@ async def get_journal(db, journal_id: str, *, with_lines: bool = True) -> Option
 async def find_primary_journal_for_source(
     db, source_type: str, source_id: str
 ) -> Optional[dict]:
+    """Legacy primary lookup for status/UI/operational consumers.
+
+    Returns any primary with reversal_of=None, including reversed status.
+    Never hides historical reversed journals. Do not use this alone to decide
+    whether a revision repost is allowed — use find_active_posted_primary_for_source
+    and revision_enabled_for_source instead.
+    """
     doc = await db[JOURNAL_ENTRIES].find_one(
         {
             "source_type": source_type,
             "source_id": str(source_id),
             "reversal_of": None,
+        },
+        {"_id": 0},
+    )
+    if not doc:
+        return None
+    lines = await db[JOURNAL_LINES].find(
+        {"journal_id": doc["id"]}, {"_id": 0}
+    ).to_list(100)
+    return public_journal(doc, lines)
+
+
+async def find_active_posted_primary_for_source(
+    db, source_type: str, source_id: str
+) -> Optional[dict]:
+    """Revision-aware lookup: only an active posted primary (status=posted).
+
+    Used by the posting path when a source is explicitly allowlisted for revision.
+    Reversed historical primaries are intentionally excluded.
+    """
+    doc = await db[JOURNAL_ENTRIES].find_one(
+        {
+            "source_type": source_type,
+            "source_id": str(source_id),
+            "reversal_of": None,
+            "status": STATUS_POSTED,
         },
         {"_id": 0},
     )
@@ -621,6 +653,7 @@ async def _insert_journal_atomic(
     reversal_of: Optional[str] = None,
     status: str = STATUS_POSTED,
     writer_claim_token: Optional[str] = None,
+    revision_meta: Optional[dict] = None,
 ) -> dict:
     """Insert header + lines. Compensating delete on line failure. Caller holds lock."""
     _, _, normalized = validate_lines(lines)
@@ -648,6 +681,12 @@ async def _insert_journal_atomic(
         "posted_by": actor,
         "created_at": now,
     }
+    # Revision identity only when foundation flag ON supplies meta (never required).
+    if revision_meta:
+        if revision_meta.get("journal_revision") is not None:
+            header["journal_revision"] = int(revision_meta["journal_revision"])
+        if revision_meta.get("supersedes_journal_id"):
+            header["supersedes_journal_id"] = str(revision_meta["supersedes_journal_id"])
 
     saved = None
     last_err = None
@@ -707,6 +746,30 @@ async def _period_writer_guard(db, date: str, writer_claim_token: Optional[str] 
         await release_period_writer_claim(db, claim["period_key"], claim["token"])
 
 
+def _conflict_indicates_existing_primary(exc: BaseException) -> bool:
+    msg = str(exc or "").lower()
+    return (
+        "sudah ada" in msg
+        or "duplikat" in msg
+        or "uniq_primary_source_journal" in msg
+    )
+
+
+async def _idempotent_posted_primary(
+    db, source_type: str, source_id: str, *, revision_capable: bool
+) -> Optional[dict]:
+    """Re-read authoritative active posted primary after a race/conflict."""
+    if revision_capable:
+        active = await find_active_posted_primary_for_source(db, source_type, source_id)
+        if active and active.get("status") == STATUS_POSTED:
+            return active
+        return None
+    existing = await find_primary_journal_for_source(db, source_type, source_id)
+    if existing and existing.get("status") == STATUS_POSTED:
+        return existing
+    return None
+
+
 async def post_balanced_journal(
     db,
     *,
@@ -718,17 +781,82 @@ async def post_balanced_journal(
     posted_by: Optional[dict] = None,
     writer_claim_token: Optional[str] = None,
 ) -> dict:
-    """Create one primary posted journal for a source. Idempotent on retry."""
+    """Create one primary posted journal for a source. Idempotent on retry.
+
+    Legacy (default): returning an existing reversed primary blocks repost.
+    Revision-capable only when global flag ON AND source_type allowlisted:
+    after a completed reverse, a new posted primary may be created.
+    Activation still requires a separate verified production index preflight.
+    """
+    from services.financial_journal_foundation import (
+        CLAIM_HELD_MESSAGE,
+        acquire_source_post_claim,
+        latest_reversed_primary_id,
+        next_journal_revision,
+        release_source_post_claim,
+        revision_enabled_for_source,
+    )
+
+    revision_capable = await revision_enabled_for_source(db, source_type)
+
     existing = await find_primary_journal_for_source(db, source_type, source_id)
     if existing:
-        if existing.get("status") in (STATUS_POSTED, STATUS_REVERSED):
+        if existing.get("status") == STATUS_POSTED:
             return existing
-        raise JournalConflictError("Jurnal sumber bentrok")
+        if existing.get("status") == STATUS_REVERSED:
+            if not revision_capable:
+                # Legacy: status readers and posters still see reversed primary.
+                return existing
+            # Allowlisted revision: only an active posted primary short-circuits.
+            active = await find_active_posted_primary_for_source(db, source_type, source_id)
+            if active:
+                return active
+            # Fall through to create a new posted primary after reverse.
+        else:
+            raise JournalConflictError("Jurnal sumber bentrok")
+    elif revision_capable:
+        # No legacy primary row — still check active posted for races.
+        active = await find_active_posted_primary_for_source(db, source_type, source_id)
+        if active:
+            return active
 
     async with get_named_lock(f"journal_post:{source_type}:{source_id}"):
-        existing = await find_primary_journal_for_source(db, source_type, source_id)
-        if existing:
-            return existing
+        if revision_capable:
+            active = await find_active_posted_primary_for_source(db, source_type, source_id)
+            if active:
+                return active
+            existing = await find_primary_journal_for_source(db, source_type, source_id)
+            if existing and existing.get("status") == STATUS_POSTED:
+                return existing
+            if existing and existing.get("status") == STATUS_REVERSED:
+                pass  # proceed to revision insert
+            elif existing:
+                raise JournalConflictError("Jurnal sumber bentrok")
+        else:
+            existing = await find_primary_journal_for_source(db, source_type, source_id)
+            if existing:
+                return existing
+
+        source_claim = None
+        revision_meta = None
+        if revision_capable:
+            try:
+                source_claim = await acquire_source_post_claim(db, source_type, source_id)
+            except RuntimeError as exc:
+                # Live claim held — never steal. Re-check posted primary; else retryable conflict.
+                posted = await _idempotent_posted_primary(
+                    db, source_type, source_id, revision_capable=True
+                )
+                if posted:
+                    return posted
+                raise JournalConflictError(CLAIM_HELD_MESSAGE) from exc
+            revision_meta = {
+                "journal_revision": await next_journal_revision(db, source_type, source_id),
+                "supersedes_journal_id": await latest_reversed_primary_id(
+                    db, source_type, source_id
+                ),
+            }
+
         try:
             async with _period_writer_guard(db, date, writer_claim_token) as token:
                 return await _insert_journal_atomic(
@@ -742,16 +870,43 @@ async def post_balanced_journal(
                     reversal_of=None,
                     status=STATUS_POSTED,
                     writer_claim_token=token,
+                    revision_meta=revision_meta,
                 )
         except PeriodValidationError as exc:
             raise JournalValidationError(str(exc)) from exc
         except PeriodLockedError:
             raise
         except DuplicateKeyError as exc:
-            existing = await find_primary_journal_for_source(db, source_type, source_id)
-            if existing:
-                return existing
+            posted = await _idempotent_posted_primary(
+                db, source_type, source_id, revision_capable=revision_capable
+            )
+            if posted:
+                return posted
+            if not revision_capable:
+                legacy = await find_primary_journal_for_source(db, source_type, source_id)
+                if legacy:
+                    return legacy
             raise JournalConflictError("Jurnal duplikat") from exc
+        except JournalConflictError as exc:
+            if _conflict_indicates_existing_primary(exc):
+                posted = await _idempotent_posted_primary(
+                    db, source_type, source_id, revision_capable=revision_capable
+                )
+                if posted:
+                    return posted
+                if not revision_capable:
+                    legacy = await find_primary_journal_for_source(db, source_type, source_id)
+                    if legacy and legacy.get("status") in (STATUS_POSTED, STATUS_REVERSED):
+                        return legacy
+            raise
+        finally:
+            if source_claim:
+                await release_source_post_claim(
+                    db,
+                    source_claim["source_type"],
+                    source_claim["source_id"],
+                    source_claim["token"],
+                )
 
 
 async def reverse_journal(
