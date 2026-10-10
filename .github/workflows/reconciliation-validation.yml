@@ -102,6 +102,9 @@ jobs:
           tests/test_division_tasks.py::test_operator_task_keeps_each_allocation_screen
           tests/test_division_tasks.py::test_operator_task_keeps_screen_when_line_mirror_empty
           tests/test_production_dashboard_summary.py
+          tests/test_master_items.py
+          tests/test_stock_compatibility_read.py
+          tests/test_quantity_invariants.py
       # Phase 2.2C revision suite must run alone: it sets DB_NAME at import and
       # previously hung the combined xdist job after ~87% with no further output.
       - name: Run sales invoice edit revision tests
@@ -266,6 +269,9 @@ jobs:
           src/lib/salesOrderCreateWorkspace.test.js
           src/pages/PesananPenjualan.createWorkspace.test.js
           src/pages/PesananPenjualan.test.js
+          src/pages/MasterBarangJasa.create.test.js
+          src/pages/PhysicalStockSettings.test.js
+          src/pages/ProductDetail.test.js
           src/pages/FakturPenjualan.test.js
           src/pages/FakturPenjualan.listFilters.test.js
           src/components/MasterItemSearchSelect.picker.test.js
