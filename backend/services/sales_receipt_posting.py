@@ -515,6 +515,12 @@ async def attach_receipt_accounting_fields(db, receipts: List[Dict[str, Any]]) -
         )
         rec["allocated_amount"] = float(receipt_allocated_amount(rec))
         rec["customer_credit_amount"] = float(receipt_customer_credit_amount(rec))
+        # Surfaced for five-tab Pending before claim tokens are stripped.
+        rec["accounting_claim_active"] = bool(
+            posting_claim_is_active(rec)
+            or reverse_claim_is_active(rec)
+            or delete_claim_is_active(rec)
+        )
         rec.pop(CLAIM_FIELD, None)
         rec.pop(REVERSE_CLAIM_FIELD, None)
         rec.pop(DELETE_CLAIM_FIELD, None)

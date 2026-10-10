@@ -489,6 +489,12 @@ async def attach_invoice_accounting_fields(db, invoices: List[Dict[str, Any]]) -
                 inv["reverse_blockers"] = await collect_invoice_reverse_receipt_blockers(db, inv["id"])
             else:
                 inv["reverse_blockers"] = []
+        # Surfaced for five-tab Pending before claim tokens are stripped.
+        inv["accounting_claim_active"] = bool(
+            posting_claim_is_active(inv)
+            or reverse_claim_is_active(inv)
+            or receipt_create_claim_is_active(inv)
+        )
         inv.pop(CLAIM_FIELD, None)
         inv.pop(CLAIM_AT_FIELD, None)
         inv.pop(REVERSE_CLAIM_FIELD, None)
@@ -880,7 +886,9 @@ async def list_sales_invoices(db, q: Optional[str] = None, po_id: Optional[str] 
             {"sales": {"$regex": needle, "$options": "i"}},
         ]
 
-    invoices = await db.sales_invoices.find(filters, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    from services.sales_list_tabs import LIST_SORT
+
+    invoices = await db.sales_invoices.find(filters, {"_id": 0}).sort(LIST_SORT).to_list(1000)
 
     # Attach derived payment totals dynamically from db.sales_receipts
     inv_ids = [inv["id"] for inv in invoices if "id" in inv]
@@ -890,11 +898,10 @@ async def list_sales_invoices(db, q: Optional[str] = None, po_id: Optional[str] 
         for r in receipts:
             receipts_by_inv.setdefault(r.get("invoice_id"), []).append(r)
 
-        from services.sales_customer_credit import invoice_credit_applied_total
+        from services.sales_customer_credit import invoice_credit_applied_totals_by_invoice_ids
 
-        credit_by_invoice = {}
-        for inv_id in inv_ids:
-            credit_by_invoice[inv_id] = float(await invoice_credit_applied_total(db, inv_id))
+        credit_totals = await invoice_credit_applied_totals_by_invoice_ids(db, inv_ids)
+        credit_by_invoice = {inv_id: float(val) for inv_id, val in credit_totals.items()}
         for inv in invoices:
             apply_invoice_payment_fields(
                 inv,
@@ -907,13 +914,14 @@ async def list_sales_invoices(db, q: Optional[str] = None, po_id: Optional[str] 
 
 
 _CANCELLED_STATUS_VALUES = ["cancelled", "Cancelled", "CANCELLED"]
-# active = Aktif (excludes verified cancelled); cancelled = Faktur Batal;
-# all = Semua (includes cancelled for audit/search). Pending/failed cancel stay active.
-_INVOICE_SCOPES = frozenset({"active", "cancelled", "all"})
+# Legacy: active = non-Batal (incl. Pending/Selesai); cancelled = Batal; all = union.
+# Additive exclusive five-tab scopes: completed, pending.
+_INVOICE_SCOPES = frozenset({"active", "cancelled", "all", "completed", "pending"})
 _INVOICE_FINANCIAL_FILTERS = frozenset({FINANCIAL_DRAFT, FINANCIAL_FINALIZED, FINANCIAL_CANCELLED})
 _INVOICE_ACCOUNTING_FILTERS = frozenset({"not_posted", "posted", "reversed"})
 _INVOICE_PAYMENT_FILTERS = frozenset({"BELUM DIBAYAR", "DP", "LUNAS"})
 _INVOICE_PAGE_SIZE_MAX = 100
+_INVOICE_LIST_BATCH = 250
 
 
 def _optional_text(raw: Optional[Any]) -> str:
@@ -1014,11 +1022,10 @@ async def _attach_live_payment_fields(db, invoices: List[Dict[str, Any]]) -> Non
         for receipt in receipts:
             receipts_by_inv.setdefault(receipt.get("invoice_id"), []).append(receipt)
 
-        from services.sales_customer_credit import invoice_credit_applied_total
+        from services.sales_customer_credit import invoice_credit_applied_totals_by_invoice_ids
 
-        credit_by_invoice = {}
-        for inv_id in inv_ids:
-            credit_by_invoice[inv_id] = float(await invoice_credit_applied_total(db, inv_id))
+        credit_totals = await invoice_credit_applied_totals_by_invoice_ids(db, inv_ids)
+        credit_by_invoice = {inv_id: float(val) for inv_id, val in credit_totals.items()}
         for inv in invoices:
             apply_invoice_payment_fields(
                 inv,
@@ -1028,12 +1035,33 @@ async def _attach_live_payment_fields(db, invoices: List[Dict[str, Any]]) -> Non
     await attach_invoice_accounting_fields(db, invoices)
 
 
+async def _incomplete_revision_invoice_ids(db, invoice_ids: List[str]) -> set:
+    if not invoice_ids:
+        return set()
+    from services.sales_invoice_edit_revision import (
+        COLLECTION as REV_COLL,
+        PHASE_COMPLETE,
+        PHASE_FAILED,
+    )
+
+    rows = await db[REV_COLL].find(
+        {
+            "invoice_id": {"$in": [str(i) for i in invoice_ids]},
+            "financial_complete": {"$ne": True},
+            "phase": {"$nin": [PHASE_COMPLETE, PHASE_FAILED]},
+        },
+        {"_id": 0, "invoice_id": 1},
+    ).to_list(max(len(invoice_ids) * 4, 20))
+    return {str(r.get("invoice_id") or "") for r in rows if r.get("invoice_id")}
+
+
 async def query_sales_invoices(
     db,
     *,
     q: Optional[str] = None,
     po_id: Optional[str] = None,
     scope: str = "active",
+    list_tab: Optional[str] = None,
     party: Optional[str] = None,
     po_number: Optional[str] = None,
     date_from: Optional[str] = None,
@@ -1046,16 +1074,50 @@ async def query_sales_invoices(
     accounting_status: Optional[str] = None,
     payment_status: Optional[str] = None,
     page: int = 1,
-    page_size: int = 20,
+    page_size: int = 50,
 ) -> Dict[str, Any]:
-    """Paged invoice list. Cancellation is financial_status, never posting/reversed.
+    """Paged invoice list with five-tab classification.
 
-    Returned rows are the current page only. ``total`` is the filtered count inside
-    the tab. ``active_total`` and ``cancelled_total`` ignore search and column filters.
+    ``scope`` remains backward compatible:
+    - active = non-Batal (Aktif ∪ Selesai ∪ Pending)
+    - cancelled / all = legacy
+    - completed / pending = exclusive five-tab filters
+
+    ``list_tab`` when set selects an exclusive primary tab (including active unpaid-only).
+    Rows always include computed ``list_tab``. Tab count fields use the same classifier
+    under the same search/filters (not Mongo financial_status alone).
     """
+    from services.sales_list_tabs import (
+        DEFAULT_PAGE_SIZE,
+        LIST_HARD_MAX,
+        LIST_SORT,
+        TAB_ACTIVE,
+        TAB_ALL,
+        TAB_CANCELLED,
+        TAB_COMPLETED,
+        TAB_PENDING,
+        bump_tab_count,
+        classify_sales_invoice_list_tab,
+        empty_tab_counts,
+        legacy_invoice_scope_includes,
+        normalize_list_tab,
+        parse_page_params,
+    )
+
     scope_key = str(scope or "active").strip().lower()
     if scope_key not in _INVOICE_SCOPES:
-        raise HTTPException(400, "Tab faktur tidak valid. Gunakan active, cancelled, atau all.")
+        raise HTTPException(
+            400,
+            "Tab faktur tidak valid. Gunakan active, completed, pending, cancelled, atau all.",
+        )
+    exclusive_tab = None
+    if list_tab is not None and str(list_tab).strip() != "":
+        try:
+            exclusive_tab = normalize_list_tab(list_tab, default=TAB_ACTIVE)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+    elif scope_key in {TAB_COMPLETED, TAB_PENDING}:
+        exclusive_tab = scope_key
 
     financial_key = str(financial_status or "").strip().lower()
     if financial_key and financial_key not in _INVOICE_FINANCIAL_FILTERS:
@@ -1082,34 +1144,25 @@ async def query_sales_invoices(
     _reject_inverted_range(parsed_outstanding_min, parsed_outstanding_max, "Sisa Tagihan")
 
     try:
-        page_num = int(page or 1)
-        size = int(page_size or 20)
-    except (TypeError, ValueError):
-        raise HTTPException(400, "Halaman atau ukuran halaman tidak valid.")
-    if page_num < 1 or size < 1 or size > _INVOICE_PAGE_SIZE_MAX:
+        page_num, size = parse_page_params(page, page_size if page_size is not None else DEFAULT_PAGE_SIZE)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    if size > _INVOICE_PAGE_SIZE_MAX:
         raise HTTPException(400, "Halaman atau ukuran halaman tidak valid.")
 
     from services.sales_business_cancel import (
         DOC_INVOICE,
-        LIST_CLASS_CANCELLED,
         attach_invoice_business_cancel_fields,
         incomplete_or_failed_cancel_document_ids,
     )
 
     hold_ids = sorted(await incomplete_or_failed_cancel_document_ids(db, DOC_INVOICE))
-    active_clause = _scope_clause("active", incomplete_cancel_ids=hold_ids)
-    cancelled_clause = _scope_clause("cancelled", incomplete_cancel_ids=hold_ids)
-    if po_id:
-        owned = {"po_id": str(po_id)}
-        active_total = await db.sales_invoices.count_documents({"$and": [active_clause, owned]})
-        cancelled_total = await db.sales_invoices.count_documents({"$and": [cancelled_clause, owned]})
-        all_total = await db.sales_invoices.count_documents(owned)
-    else:
-        active_total = await db.sales_invoices.count_documents(active_clause)
-        cancelled_total = await db.sales_invoices.count_documents(cancelled_clause)
-        all_total = await db.sales_invoices.count_documents({})
 
-    scope_clause = _scope_clause(scope_key, incomplete_cancel_ids=hold_ids)
+    # Mongo prefilter: never narrow exclusive completed/pending in Mongo — classify in app.
+    mongo_scope = "all" if exclusive_tab or scope_key in {TAB_COMPLETED, TAB_PENDING, TAB_ALL} else (
+        "cancelled" if scope_key == TAB_CANCELLED else "active"
+    )
+    scope_clause = _scope_clause(mongo_scope, incomplete_cancel_ids=hold_ids)
     clauses: List[Dict[str, Any]] = []
     if scope_clause:
         clauses.append(scope_clause)
@@ -1129,56 +1182,99 @@ async def query_sales_invoices(
         clauses.append(_regex_or(["po_number"], po_needle))
 
     find_filter: Dict[str, Any] = {"$and": clauses} if clauses else {}
-    invoices = await db.sales_invoices.find(
-        find_filter, {"_id": 0}
-    ).sort("created_at", -1).to_list(None)
-    await _attach_live_payment_fields(db, invoices)
-    await attach_invoice_business_cancel_fields(db, invoices)
+    cursor = db.sales_invoices.find(find_filter, {"_id": 0}).sort(LIST_SORT)
 
+    tab_counts = empty_tab_counts()
     filtered: List[Dict[str, Any]] = []
-    for inv in invoices:
-        status = effective_financial_status(inv)
-        list_class = str(inv.get("list_class") or "")
-        # Batal/Aktif from durable cancel classification, not financial_status alone.
-        if scope_key == "cancelled" and list_class != LIST_CLASS_CANCELLED:
-            continue
-        if scope_key == "active" and list_class == LIST_CLASS_CANCELLED:
-            continue
-        if financial_key and status != financial_key:
-            continue
-        if accounting_key and str(inv.get("accounting_status") or "not_posted").lower() != accounting_key:
-            continue
-        if payment_key and str(inv.get("payment_status") or "").upper() != payment_key:
-            continue
-        day = _invoice_day(inv)
-        if day_from and (not day or day < day_from):
-            continue
-        if day_to and (not day or day > day_to):
-            continue
-        if not _amount_in_range(inv.get("grand_total"), parsed_total_min, parsed_total_max):
-            continue
-        if not _amount_in_range(inv.get("outstanding_amount"), parsed_outstanding_min, parsed_outstanding_max):
-            continue
-        filtered.append(inv)
+    scanned = 0
+    batch: List[Dict[str, Any]] = []
+
+    async def _flush(batch_rows: List[Dict[str, Any]]) -> None:
+        nonlocal scanned
+        if not batch_rows:
+            return
+        scanned += len(batch_rows)
+        if scanned > LIST_HARD_MAX:
+            raise HTTPException(
+                409,
+                f"Hasil daftar faktur melebihi batas aman ({LIST_HARD_MAX}). Perhalus pencarian/filter.",
+            )
+        await _attach_live_payment_fields(db, batch_rows)
+        await attach_invoice_business_cancel_fields(db, batch_rows)
+        rev_ids = await _incomplete_revision_invoice_ids(
+            db, [str(r.get("id") or "") for r in batch_rows if r.get("id")]
+        )
+        for inv in batch_rows:
+            status = effective_financial_status(inv)
+            if financial_key and status != financial_key:
+                continue
+            if accounting_key and str(inv.get("accounting_status") or "not_posted").lower() != accounting_key:
+                continue
+            if payment_key and str(inv.get("payment_status") or "").upper() != payment_key:
+                continue
+            day = _invoice_day(inv)
+            if day_from and (not day or day < day_from):
+                continue
+            if day_to and (not day or day > day_to):
+                continue
+            if not _amount_in_range(inv.get("grand_total"), parsed_total_min, parsed_total_max):
+                continue
+            if not _amount_in_range(inv.get("outstanding_amount"), parsed_outstanding_min, parsed_outstanding_max):
+                continue
+            inv_id = str(inv.get("id") or "")
+            primary = classify_sales_invoice_list_tab(
+                inv, revision_incomplete=inv_id in rev_ids
+            )
+            inv["list_tab"] = primary
+            inv["revision_incomplete"] = inv_id in rev_ids
+            bump_tab_count(tab_counts, primary)
+            if exclusive_tab is not None:
+                if exclusive_tab != TAB_ALL and primary != exclusive_tab:
+                    continue
+            elif not legacy_invoice_scope_includes(primary, scope_key):
+                continue
+            filtered.append(inv)
+
+    async for doc in cursor:
+        batch.append(doc)
+        if len(batch) >= _INVOICE_LIST_BATCH:
+            await _flush(batch)
+            batch = []
+    await _flush(batch)
 
     start = (page_num - 1) * size
     page_rows = filtered[start:start + size]
-    if scope_key == "cancelled":
-        tab_total = cancelled_total
-    elif scope_key == "all":
-        tab_total = all_total
+    if exclusive_tab == TAB_CANCELLED or (exclusive_tab is None and scope_key == TAB_CANCELLED):
+        tab_total = tab_counts[TAB_CANCELLED]
+    elif exclusive_tab == TAB_COMPLETED:
+        tab_total = tab_counts[TAB_COMPLETED]
+    elif exclusive_tab == TAB_PENDING:
+        tab_total = tab_counts[TAB_PENDING]
+    elif exclusive_tab == TAB_ACTIVE:
+        tab_total = tab_counts[TAB_ACTIVE]
+    elif exclusive_tab == TAB_ALL or scope_key == TAB_ALL:
+        tab_total = tab_counts[TAB_ALL]
     else:
-        tab_total = active_total
+        # Legacy scope=active → non-batal
+        tab_total = tab_counts[TAB_ALL] - tab_counts[TAB_CANCELLED]
+    legacy_active = tab_counts[TAB_ALL] - tab_counts[TAB_CANCELLED]
     return {
         "invoices": page_rows,
         "count": len(page_rows),
         "total": len(filtered),
         "tab_total": tab_total,
-        "active_total": active_total,
-        "cancelled_total": cancelled_total,
-        "all_total": all_total,
+        # Legacy badge: non-Batal (Aktif ∪ Selesai ∪ Pending) under same filters.
+        "active_total": legacy_active,
+        "completed_total": tab_counts[TAB_COMPLETED],
+        "pending_total": tab_counts[TAB_PENDING],
+        "cancelled_total": tab_counts[TAB_CANCELLED],
+        "all_total": tab_counts[TAB_ALL],
+        # Exclusive five-tab unpaid Aktif count.
+        "five_tab_active_total": tab_counts[TAB_ACTIVE],
         "page": page_num,
         "page_size": size,
+        "list_tab": exclusive_tab,
+        "scope": scope_key,
     }
 
 

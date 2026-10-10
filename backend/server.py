@@ -11142,18 +11142,43 @@ def _sales_order_list_match(clauses: list) -> dict:
 
 
 async def _fetch_sales_order_list_rows(match: dict) -> list:
+    from services.sales_list_tabs import LIST_SORT_DICT
+
     return await db.orders.aggregate([
         {"$match": match},
-        {"$sort": {"created_at": -1}},
+        {"$sort": LIST_SORT_DICT},
         {"$limit": _SALES_ORDER_LIST_FETCH_LIMIT},
         {"$project": _SALES_ORDER_LIST_PROJECTION},
     ]).to_list(_SALES_ORDER_LIST_FETCH_LIMIT)
+
+
+async def _fetch_sales_order_list_rows_unbounded(match: dict, *, hard_max: int) -> list:
+    """Stream all matching sales-order list rows. Raises 409 if hard_max exceeded."""
+    from services.sales_list_tabs import LIST_HARD_MAX, LIST_SORT_DICT
+
+    ceiling = int(hard_max or LIST_HARD_MAX)
+    cursor = db.orders.aggregate([
+        {"$match": match},
+        {"$sort": LIST_SORT_DICT},
+        {"$project": _SALES_ORDER_LIST_PROJECTION},
+    ], allowDiskUse=True)
+    rows = []
+    async for doc in cursor:
+        rows.append(doc)
+        if len(rows) > ceiling:
+            raise HTTPException(
+                409,
+                f"Hasil daftar pesanan melebihi batas aman ({ceiling}). Perhalus pencarian/filter.",
+            )
+    return rows
 
 
 async def _decorate_sales_order_list_rows(orders: list) -> None:
     """Existing list enrichment: unit totals, HOLD snapshot, deadline, delivery summary."""
     if not orders:
         return
+    from services.sales_list_tabs import classify_sales_order_list_tab
+
     dd_settings = await _get_delivery_deadline_settings()
     po_ids = [o["id"] for o in orders if o.get("id")]
     shipped_aggregates: Dict[str, dict] = {}
@@ -11168,6 +11193,8 @@ async def _decorate_sales_order_list_rows(orders: list) -> None:
         o["design_files"] = [True] if o.pop("_has_design_files", False) else []
         o["payment_files"] = [True] if o.pop("_has_payment_files", False) else []
         _apply_hold_snapshot(o)
+        # Five-tab classification before file existence flags are stripped.
+        o["list_tab"] = classify_sales_order_list_tab(o)
         _attach_deadline_snapshot(o, dd_settings["lead_time_days"])
         _strip_tracking_secret(o)
         o.pop("design_files", None)
@@ -11204,7 +11231,10 @@ def _merge_sales_order_branches(aktif_rows: list, histori_rows: list) -> list:
                 continue
             seen.add(oid)
         merged.append(row)
-    merged.sort(key=lambda row: row.get("created_at") or "", reverse=True)
+    merged.sort(
+        key=lambda row: (row.get("created_at") or "", row.get("id") or ""),
+        reverse=True,
+    )
     return merged
 
 
@@ -11281,6 +11311,7 @@ async def get_sales_order_item_image(
 async def list_sales_orders(
     q: Optional[str] = None,
     status: Optional[str] = None,
+    list_tab: Optional[str] = None,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     tanggal_pengiriman_preset: Optional[str] = None,
@@ -11290,15 +11321,45 @@ async def list_sales_orders(
     page_size: Optional[int] = None,
     user=Depends(current_user),
 ):
-    """List sales orders with search and status filtering for Pesanan Penjualan page."""
+    """List sales orders with search and status filtering for Pesanan Penjualan page.
+
+    Legacy ``status`` (aktif/histori/gabungan/…) is preserved.
+    Additive ``list_tab`` enables exclusive five-tab classification with uncapped
+    (hard-max) streaming pagination. Default page_size is 50 when paging.
+    """
     reject_sales_pwa_bypass(user)
     await _require_any_perm(user, "sales_order.view", "sales_order.create", "po.view")
+
+    from services.sales_list_tabs import (
+        DEFAULT_PAGE_SIZE,
+        LIST_HARD_MAX,
+        TAB_ACTIVE,
+        TAB_ALL,
+        TAB_CANCELLED,
+        TAB_COMPLETED,
+        TAB_PENDING,
+        bump_tab_count,
+        empty_tab_counts,
+        normalize_list_tab,
+        parse_page_params,
+    )
 
     shared: list = []
     owner = sales_owner_match(user)
     if owner:
         shared.append(owner)
     st = (status or "all").lower()
+    five_tab = None
+    if list_tab is not None and str(list_tab).strip() != "":
+        try:
+            five_tab = normalize_list_tab(list_tab, default=TAB_ACTIVE)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+    elif st in {TAB_ACTIVE, TAB_COMPLETED, TAB_PENDING, TAB_CANCELLED}:
+        # English five-tab scopes via status are additive.
+        # Do not treat legacy status=all / omitted status as five-tab mode.
+        five_tab = st
+
     if q and q.strip():
         needle = re.escape(q.strip())
         shared.append({"$or": [
@@ -11317,21 +11378,83 @@ async def list_sales_orders(
             {"sales_user": sales_key},
         ]})
 
+    paging = page is not None or page_size is not None or five_tab is not None
+    branch_capped = False
+
+    if five_tab is not None:
+        orders = await _fetch_sales_order_list_rows_unbounded(
+            _sales_order_list_match(list(shared)),
+            hard_max=LIST_HARD_MAX,
+        )
+        await _decorate_sales_order_list_rows(orders)
+        orders = _apply_sales_order_header_filters(
+            orders,
+            tanggal_pengiriman_preset=tanggal_pengiriman_preset,
+            sales=None,
+            delivery_status=delivery_status,
+        )
+        tab_counts = empty_tab_counts()
+        classified = []
+        for row in orders:
+            primary = str(row.get("list_tab") or TAB_ACTIVE)
+            bump_tab_count(tab_counts, primary)
+            if five_tab == TAB_ALL or primary == five_tab:
+                classified.append(row)
+        orders = classified
+        try:
+            current, size = parse_page_params(
+                page if page is not None else 1,
+                page_size if page_size is not None else DEFAULT_PAGE_SIZE,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        total = len(orders)
+        start = (current - 1) * size
+        page_rows = orders[start:start + size]
+        return {
+            "orders": page_rows,
+            "count": len(page_rows),
+            "total": total,
+            "tab_total": (
+                tab_counts[five_tab] if five_tab != TAB_ALL else tab_counts[TAB_ALL]
+            ),
+            "active_total": tab_counts[TAB_ACTIVE],
+            "completed_total": tab_counts[TAB_COMPLETED],
+            "pending_total": tab_counts[TAB_PENDING],
+            "cancelled_total": tab_counts[TAB_CANCELLED],
+            "all_total": tab_counts[TAB_ALL],
+            "page": current,
+            "page_size": size,
+            "list_tab": five_tab,
+            "capped": False,
+        }
+
     if st == "gabungan":
-        # Separate 1000-row windows. A mixed query would drop rows still visible
-        # on Aktif or Histori once the other classification fills the cap.
-        aktif_rows, histori_rows = await asyncio.gather(
-            _fetch_sales_order_list_rows(_sales_order_list_match([
-                *shared, _sales_order_status_clause("aktif"),
-            ])),
-            _fetch_sales_order_list_rows(_sales_order_list_match([
-                *shared, _sales_order_status_clause("histori"),
-            ])),
-        )
-        branch_capped = (
-            len(aktif_rows) >= _SALES_ORDER_LIST_FETCH_LIMIT
-            or len(histori_rows) >= _SALES_ORDER_LIST_FETCH_LIMIT
-        )
+        if paging:
+            aktif_rows, histori_rows = await asyncio.gather(
+                _fetch_sales_order_list_rows_unbounded(
+                    _sales_order_list_match([*shared, _sales_order_status_clause("aktif")]),
+                    hard_max=LIST_HARD_MAX,
+                ),
+                _fetch_sales_order_list_rows_unbounded(
+                    _sales_order_list_match([*shared, _sales_order_status_clause("histori")]),
+                    hard_max=LIST_HARD_MAX,
+                ),
+            )
+            branch_capped = False
+        else:
+            aktif_rows, histori_rows = await asyncio.gather(
+                _fetch_sales_order_list_rows(_sales_order_list_match([
+                    *shared, _sales_order_status_clause("aktif"),
+                ])),
+                _fetch_sales_order_list_rows(_sales_order_list_match([
+                    *shared, _sales_order_status_clause("histori"),
+                ])),
+            )
+            branch_capped = (
+                len(aktif_rows) >= _SALES_ORDER_LIST_FETCH_LIMIT
+                or len(histori_rows) >= _SALES_ORDER_LIST_FETCH_LIMIT
+            )
         await _decorate_sales_order_list_rows([*aktif_rows, *histori_rows])
         orders = _merge_sales_order_branches(
             [row for row in aktif_rows if not row.get("hold")],
@@ -11342,8 +11465,13 @@ async def list_sales_orders(
         status_clause = _sales_order_status_clause(st)
         if status_clause:
             clauses.append(status_clause)
-        orders = await _fetch_sales_order_list_rows(_sales_order_list_match(clauses))
-        branch_capped = len(orders) >= _SALES_ORDER_LIST_FETCH_LIMIT
+        match = _sales_order_list_match(clauses)
+        if paging:
+            orders = await _fetch_sales_order_list_rows_unbounded(match, hard_max=LIST_HARD_MAX)
+            branch_capped = False
+        else:
+            orders = await _fetch_sales_order_list_rows(match)
+            branch_capped = len(orders) >= _SALES_ORDER_LIST_FETCH_LIMIT
         await _decorate_sales_order_list_rows(orders)
         if st == "hold":
             orders = [o for o in orders if o.get("hold")]
@@ -11357,15 +11485,14 @@ async def list_sales_orders(
         delivery_status=delivery_status,
     )
 
-    paging = page is not None or page_size is not None
     if not paging:
-        return {"orders": orders, "count": len(orders)}
+        return {"orders": orders, "count": len(orders), "capped": branch_capped}
 
-    size = page_size if page_size is not None else 10
+    size = page_size if page_size is not None else DEFAULT_PAGE_SIZE
     try:
         size = int(size)
     except (TypeError, ValueError):
-        size = 10
+        size = DEFAULT_PAGE_SIZE
     size = min(50, max(1, size))
     try:
         current = int(page or 1)
@@ -11482,6 +11609,7 @@ async def list_sales_invoices_endpoint(
     q: Optional[str] = None,
     po_id: Optional[str] = None,
     scope: Optional[str] = None,
+    list_tab: Optional[str] = None,
     party: Optional[str] = None,
     po_number: Optional[str] = None,
     date_from: Optional[str] = None,
@@ -11501,14 +11629,15 @@ async def list_sales_invoices_endpoint(
 
     Callers that omit the tab/filter/page parameters keep the previous payload:
     ``{"invoices": [...], "count": n}`` capped by the existing list helper.
-    Passing scope, column filters, or page returns one page plus tab totals.
+    Passing scope, list_tab, column filters, or page returns one page plus tab totals.
+    ``list_tab`` selects an exclusive five-tab category; legacy ``scope=active`` stays non-Batal.
     """
     reject_sales_pwa_bypass(user)
     await _require_any_perm(user, "sales.invoice.view", "sales_order.view", "po.view", "sales.delivery.view")
     if po_id:
         await ensure_owned_po_id(db, user, po_id)
     paged = any(value is not None for value in (
-        scope, party, po_number, date_from, date_to, total_min, total_max,
+        scope, list_tab, party, po_number, date_from, date_to, total_min, total_max,
         outstanding_min, outstanding_max, financial_status, accounting_status,
         payment_status, page, page_size,
     ))
@@ -11518,6 +11647,7 @@ async def list_sales_invoices_endpoint(
             q=q,
             po_id=po_id,
             scope=scope or "active",
+            list_tab=list_tab,
             party=party,
             po_number=po_number,
             date_from=date_from,
@@ -11530,7 +11660,7 @@ async def list_sales_invoices_endpoint(
             accounting_status=accounting_status,
             payment_status=payment_status,
             page=page or 1,
-            page_size=page_size or 20,
+            page_size=page_size or 50,
         )
     invoices = await _list_sales_invoices(db, q=q, po_id=po_id)
     return {"invoices": invoices, "count": len(invoices)}
@@ -11746,25 +11876,27 @@ async def list_sales_receipts_endpoint(
     invoice_id: Optional[str] = None,
     po_id: Optional[str] = None,
     scope: Optional[str] = None,
+    list_tab: Optional[str] = None,
     page: Optional[int] = None,
     page_size: Optional[int] = None,
     user=Depends(current_user),
 ):
     """List sales receipts (Penerimaan Penjualan) with search and filters.
 
-    Passing scope/page returns tab totals (active / cancelled / all).
+    Passing scope/list_tab/page returns tab totals (five-tab + legacy).
     Omit them for the legacy unpaged payload.
     """
     await _require_any_perm(user, "sales.receipt.view", "sales.invoice.view", "sales_order.view", "po.view")
-    if scope is not None or page is not None or page_size is not None:
+    if scope is not None or list_tab is not None or page is not None or page_size is not None:
         return await _query_sales_receipts(
             db,
             q=q,
             invoice_id=invoice_id,
             po_id=po_id,
             scope=scope or "active",
+            list_tab=list_tab,
             page=page or 1,
-            page_size=page_size or 20,
+            page_size=page_size or 50,
         )
     receipts = await _list_sales_receipts(db, q=q, invoice_id=invoice_id, po_id=po_id)
     return {"receipts": receipts, "count": len(receipts)}

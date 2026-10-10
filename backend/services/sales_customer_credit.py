@@ -240,14 +240,68 @@ async def active_applied_total(db, source_receipt_id: str) -> Decimal:
 
 
 async def invoice_credit_applied_total(db, invoice_id: str) -> Decimal:
-    docs = await db[COLLECTION].find(
-        {"invoice_id": str(invoice_id), "financial_status": "active", "status": "posted"},
-        {"_id": 0, "amount": 1},
-    ).to_list(500)
-    total = Decimal("0.00")
-    for doc in docs:
-        total += parse_money(doc.get("amount") or 0, "Pemakaian saldo")
-    return total.quantize(MONEY_Q)
+    totals = await invoice_credit_applied_totals_by_invoice_ids(db, [str(invoice_id)])
+    return totals.get(str(invoice_id), Decimal("0.00"))
+
+
+# Bound Mongo ``$in`` size for credit batch reads (matches invoice list batch).
+CREDIT_INVOICE_ID_CHUNK = 250
+_CREDIT_APPS_PER_INVOICE_CAP = 500
+
+
+async def invoice_credit_applied_totals_by_invoice_ids(
+    db, invoice_ids: List[str]
+) -> Dict[str, Decimal]:
+    """Batch active+posted credit applications keyed by invoice_id.
+
+    Same match rules as the single-id helper. Invoice IDs are processed in
+    bounded ``$in`` chunks so callers with >500 IDs stay safe. Caps at 500
+    applications per invoice (legacy single-id to_list). Exceeding a chunk
+    read cap fails closed — never returns a partial total disguised as exact.
+    """
+    ids = [str(i).strip() for i in invoice_ids if str(i or "").strip()]
+    # Preserve call order uniqueness while keeping O(n) build.
+    seen: Dict[str, None] = {}
+    for iid in ids:
+        seen.setdefault(iid, None)
+    unique_ids = list(seen.keys())
+    out: Dict[str, Decimal] = {iid: Decimal("0.00") for iid in unique_ids}
+    if not unique_ids:
+        return out
+
+    counts: Dict[str, int] = {}
+    for offset in range(0, len(unique_ids), CREDIT_INVOICE_ID_CHUNK):
+        chunk = unique_ids[offset:offset + CREDIT_INVOICE_ID_CHUNK]
+        hard_cap = _CREDIT_APPS_PER_INVOICE_CAP * len(chunk)
+        docs = await db[COLLECTION].find(
+            {
+                "invoice_id": {"$in": chunk},
+                "financial_status": "active",
+                "status": "posted",
+            },
+            {"_id": 0, "invoice_id": 1, "amount": 1},
+        ).to_list(hard_cap + 1)
+        if len(docs) > hard_cap:
+            raise HTTPException(
+                409,
+                "Pemakaian saldo terlalu banyak untuk dihitung sekaligus. Perhalus pencarian/filter.",
+            )
+        for doc in docs:
+            iid = str(doc.get("invoice_id") or "").strip()
+            if iid not in out:
+                continue
+            n = counts.get(iid, 0)
+            if n >= _CREDIT_APPS_PER_INVOICE_CAP:
+                raise HTTPException(
+                    409,
+                    f"Pemakaian saldo faktur {iid} melebihi batas aman perhitungan.",
+                )
+            counts[iid] = n + 1
+            out[iid] += parse_money(doc.get("amount") or 0, "Pemakaian saldo")
+
+    for iid in out:
+        out[iid] = out[iid].quantize(MONEY_Q)
+    return out
 
 
 def _claim_cutoff(now: Optional[datetime] = None) -> str:
