@@ -11430,48 +11430,34 @@ async def list_sales_orders(
         }
 
     if st == "gabungan":
-        if paging:
-            aktif_rows, histori_rows = await asyncio.gather(
-                _fetch_sales_order_list_rows_unbounded(
-                    _sales_order_list_match([*shared, _sales_order_status_clause("aktif")]),
-                    hard_max=LIST_HARD_MAX,
-                ),
-                _fetch_sales_order_list_rows_unbounded(
-                    _sales_order_list_match([*shared, _sales_order_status_clause("histori")]),
-                    hard_max=LIST_HARD_MAX,
-                ),
-            )
-            branch_capped = False
-        else:
-            aktif_rows, histori_rows = await asyncio.gather(
-                _fetch_sales_order_list_rows(_sales_order_list_match([
-                    *shared, _sales_order_status_clause("aktif"),
-                ])),
-                _fetch_sales_order_list_rows(_sales_order_list_match([
-                    *shared, _sales_order_status_clause("histori"),
-                ])),
-            )
-            branch_capped = (
-                len(aktif_rows) >= _SALES_ORDER_LIST_FETCH_LIMIT
-                or len(histori_rows) >= _SALES_ORDER_LIST_FETCH_LIMIT
-            )
+        # Legacy gabungan keeps each branch's 1000-row window even when paged.
+        # Uncapped streaming is only for list_tab / English five-tab scopes above.
+        aktif_rows, histori_rows = await asyncio.gather(
+            _fetch_sales_order_list_rows(_sales_order_list_match([
+                *shared, _sales_order_status_clause("aktif"),
+            ])),
+            _fetch_sales_order_list_rows(_sales_order_list_match([
+                *shared, _sales_order_status_clause("histori"),
+            ])),
+        )
+        branch_capped = (
+            len(aktif_rows) >= _SALES_ORDER_LIST_FETCH_LIMIT
+            or len(histori_rows) >= _SALES_ORDER_LIST_FETCH_LIMIT
+        )
         await _decorate_sales_order_list_rows([*aktif_rows, *histori_rows])
         orders = _merge_sales_order_branches(
             [row for row in aktif_rows if not row.get("hold")],
             histori_rows,
         )
     else:
+        # Legacy status filters keep the prior 1000-row fetch ceiling.
         clauses = list(shared)
         status_clause = _sales_order_status_clause(st)
         if status_clause:
             clauses.append(status_clause)
         match = _sales_order_list_match(clauses)
-        if paging:
-            orders = await _fetch_sales_order_list_rows_unbounded(match, hard_max=LIST_HARD_MAX)
-            branch_capped = False
-        else:
-            orders = await _fetch_sales_order_list_rows(match)
-            branch_capped = len(orders) >= _SALES_ORDER_LIST_FETCH_LIMIT
+        orders = await _fetch_sales_order_list_rows(match)
+        branch_capped = len(orders) >= _SALES_ORDER_LIST_FETCH_LIMIT
         await _decorate_sales_order_list_rows(orders)
         if st == "hold":
             orders = [o for o in orders if o.get("hold")]
