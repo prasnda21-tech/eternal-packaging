@@ -317,6 +317,7 @@ jobs:
           src/lib/salesFiveTabs.test.js
           src/lib/salesLifecycleUi.test.js
           src/pages/salesPackageB2.test.js
+          src/pages/salesPackageC.test.js
           src/pages/PesananPenjualan.searchDebounce.test.js
           src/components/TrackingInvoicePdfViewer.test.js
           src/components/TrackingInvoices.test.js
