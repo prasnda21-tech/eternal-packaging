@@ -407,7 +407,14 @@ async def _assert_dependencies(
     )
     from services.journal_core import STATUS_INCOMPLETE
 
-    if posting_claim_is_active(invoice) or reverse_claim_is_active(invoice) or receipt_create_claim_is_active(invoice):
+    from services.sales_business_cancel import invoice_cancel_fence_is_active
+
+    if (
+        posting_claim_is_active(invoice)
+        or reverse_claim_is_active(invoice)
+        or receipt_create_claim_is_active(invoice)
+        or invoice_cancel_fence_is_active(invoice)
+    ):
         raise HTTPException(409, "Faktur sedang dikunci oleh proses akuntansi lain.")
     auto = str(invoice.get(AUTO_STATUS_FIELD) or "")
     if auto in {AUTO_STATUS_PENDING, AUTO_STATUS_POSTING, AUTO_STATUS_FAILED, AUTO_STATUS_RETRY_PENDING}:
@@ -447,6 +454,7 @@ async def _assert_dependencies(
 
 
 async def _acquire_fence(db, invoice_id: str, revision_id: str, token: str, key: str) -> Optional[dict]:
+    from services.sales_business_cancel import invoice_cancel_fence_absent_clause
     from services.sales_invoice_posting import (
         posting_claim_absent_or_stale_clause,
         receipt_create_claim_absent_or_stale_clause,
@@ -464,6 +472,7 @@ async def _acquire_fence(db, invoice_id: str, revision_id: str, token: str, key:
                 reverse_claim_absent_or_stale_clause(),
                 receipt_create_claim_absent_or_stale_clause(),
                 revision_fence_absent_clause(),
+                invoice_cancel_fence_absent_clause(),
             ],
         },
         {"$set": {

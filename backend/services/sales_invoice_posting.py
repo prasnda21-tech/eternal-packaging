@@ -335,6 +335,7 @@ def public_receipt_reverse_blocker(receipt: dict, journal: Optional[dict]) -> Di
 
 
 def cancel_unclaimed_filter(invoice_id: str) -> Dict[str, Any]:
+    from services.sales_business_cancel import invoice_cancel_fence_absent_clause
     from services.sales_invoice_edit_revision import edit_revision_claim_absent_or_stale_clause
     from services.sales_invoices import FINANCIAL_FINALIZED
 
@@ -344,6 +345,7 @@ def cancel_unclaimed_filter(invoice_id: str) -> Dict[str, Any]:
         "$and": [
             posting_claim_absent_or_stale_clause(),
             edit_revision_claim_absent_or_stale_clause(),
+            invoice_cancel_fence_absent_clause(),
         ],
     }
 
@@ -362,6 +364,7 @@ async def clear_posting_claim(db, invoice_id: str) -> None:
 
 async def acquire_posting_claim(db, invoice_id: str, *, token: Optional[str] = None) -> Optional[dict]:
     """Atomically claim a finalized invoice. Fresh reverse claim blocks it."""
+    from services.sales_business_cancel import invoice_cancel_fence_absent_clause
     from services.sales_invoices import FINANCIAL_FINALIZED, now_iso
 
     claim_token = str(token or uuid.uuid4())
@@ -375,6 +378,7 @@ async def acquire_posting_claim(db, invoice_id: str, *, token: Optional[str] = N
             "$and": [
                 reverse_claim_absent_or_stale_clause(),
                 edit_revision_claim_absent_or_stale_clause(),
+                invoice_cancel_fence_absent_clause(),
             ],
         },
         {
@@ -399,6 +403,7 @@ async def clear_reverse_claim(db, invoice_id: str) -> None:
 
 async def acquire_reverse_claim(db, invoice_id: str, *, token: Optional[str] = None) -> Optional[dict]:
     """Atomically claim a finalized invoice for reverse. Fresh post/create claims block it."""
+    from services.sales_business_cancel import invoice_cancel_fence_absent_clause
     from services.sales_invoice_edit_revision import edit_revision_claim_absent_or_stale_clause
     from services.sales_invoices import FINANCIAL_FINALIZED, now_iso
 
@@ -412,6 +417,7 @@ async def acquire_reverse_claim(db, invoice_id: str, *, token: Optional[str] = N
                 posting_claim_absent_or_stale_clause(),
                 receipt_create_claim_absent_or_stale_clause(),
                 edit_revision_claim_absent_or_stale_clause(),
+                invoice_cancel_fence_absent_clause(),
             ],
         },
         {
@@ -443,6 +449,7 @@ async def clear_receipt_create_claim(db, invoice_id: str, *, token: Optional[str
 
 async def acquire_receipt_create_claim(db, invoice_id: str, *, token: Optional[str] = None) -> Optional[dict]:
     """Lease a finalized invoice for receipt create. Fresh reverse claim blocks it."""
+    from services.sales_business_cancel import invoice_cancel_fence_absent_clause
     from services.sales_invoices import FINANCIAL_FINALIZED, now_iso
 
     from services.sales_invoice_edit_revision import edit_revision_claim_absent_or_stale_clause
@@ -459,6 +466,7 @@ async def acquire_receipt_create_claim(db, invoice_id: str, *, token: Optional[s
                 reverse_claim_absent_or_stale_clause(),
                 create_claim_ok,
                 edit_revision_claim_absent_or_stale_clause(),
+                invoice_cancel_fence_absent_clause(),
             ],
         },
         {

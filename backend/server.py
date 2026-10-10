@@ -495,14 +495,23 @@ async def _role_defaults_override():
 async def user_permissions(user: dict) -> set:
     """Compute effective permissions for the JWT payload / user."""
     from services.purchasing_inventory_access import filter_package_permissions
+    from permissions import OPT_IN_ONLY_PERMISSIONS, strip_opt_in_permissions
 
     # Super admin gets everything, always — except production package lock
     # which restricts Purchasing/Inventory/HPP to HOLDING_TEAM only.
+    # OPT_IN_ONLY keys (e.g. sales.*.cancel) are never auto-granted; they
+    # require an explicit permissions_override True.
     if user.get("email"):
         u = await db.users.find_one({"email": user["email"]}, {"is_super_admin": 1, "role": 1})
         if u and u.get("is_super_admin"):
+            base = strip_opt_in_permissions(ALL_PERMISSIONS)
+            for perm, allowed in (user.get("permissions_override") or {}).items():
+                if allowed is True and perm in OPT_IN_ONLY_PERMISSIONS:
+                    base.add(perm)
+                elif allowed is False:
+                    base.discard(perm)
             return filter_package_permissions(
-                ALL_PERMISSIONS,
+                base,
                 user,
                 os.environ.get("APP_ENV"),
                 os.environ.get("MONGO_URL"),
@@ -2397,22 +2406,48 @@ async def _audit_po(order: dict, action: str, actor: dict, before=None, after=No
 
 async def _require_perm(user: dict, perm: str):
     """Deny if the user lacks `perm` in their effective set (admin still passes locally)."""
+    from permissions import OPT_IN_ONLY_PERMISSIONS
     from services.purchasing_inventory_access import (
         require_purchasing_inventory_package_access,
         touches_package_permissions,
     )
 
     reject_sales_pwa_bypass(user)
+    if perm in OPT_IN_ONLY_PERMISSIONS:
+        await _require_opt_in_perm(user, perm)
+        return
     if touches_package_permissions([perm]):
         require_purchasing_inventory_package_access(
             user,
             os.environ.get("APP_ENV"),
             os.environ.get("MONGO_URL"),
         )
-    # Admin bypass remains for non-package perms; package access already gated above.
+    # Admin bypass remains for non-package / non-opt-in perms; package access already gated above.
     if user.get("role") == "admin":
         return
     eff = await user_permissions(user)
+    if perm not in eff:
+        raise HTTPException(403, f"Anda tidak punya permission '{perm}'")
+
+
+async def _require_opt_in_perm(user: dict, perm: str):
+    """Fail-closed opt-in permission. No admin or super-admin bypass.
+
+    Grant only via explicit permissions_override True or an audited role_permissions
+    document that already lists the key. Built-in ROLE_DEFAULT never includes these.
+    """
+    from permissions import OPT_IN_ONLY_PERMISSIONS, effective_permissions
+
+    reject_sales_pwa_bypass(user)
+    if perm not in OPT_IN_ONLY_PERMISSIONS:
+        raise HTTPException(500, f"Permission '{perm}' bukan opt-in.")
+    override = user.get("permissions_override") or {}
+    if override.get(perm) is True:
+        return
+    if override.get(perm) is False:
+        raise HTTPException(403, f"Anda tidak punya permission '{perm}'")
+    role_override = await _role_defaults_override()
+    eff = effective_permissions(user.get("role"), override, role_override)
     if perm not in eff:
         raise HTTPException(403, f"Anda tidak punya permission '{perm}'")
 
@@ -3970,9 +4005,16 @@ async def dashboard_action_items(user=Depends(current_user)):
     """Batch 3: Canonical action center. Backend menghitung PO yang benar-benar
     membutuhkan tindakan `action_key` DAN user punya permission efektif untuk
     action tsb. Frontend hanya render hasil. Count == list length."""
-    # Effective permissions: admin bypass, else union role + overrides.
+    # Effective permissions: admin bypass (minus OPT_IN_ONLY), else role + overrides.
+    from permissions import strip_opt_in_permissions
+
     if user.get("role") == "admin":
-        perms = set(ALL_PERMISSIONS)
+        perms = strip_opt_in_permissions(ALL_PERMISSIONS)
+        for _p, _ok in (user.get("permissions_override") or {}).items():
+            if _ok is True:
+                perms.add(_p)
+            elif _ok is False:
+                perms.discard(_p)
     else:
         perms = set(await user_permissions(user))
     user_email = (user.get("email") or "").strip()
@@ -4067,7 +4109,14 @@ async def work_division_tasks(
     cfg = _DIVISION_TASK_DEFS[div]
     await _require_perm(user, cfg["submit_perm"])
     if user.get("role") == "admin":
-        perms = set(ALL_PERMISSIONS)
+        from permissions import strip_opt_in_permissions
+
+        perms = strip_opt_in_permissions(ALL_PERMISSIONS)
+        for _p, _ok in (user.get("permissions_override") or {}).items():
+            if _ok is True:
+                perms.add(_p)
+            elif _ok is False:
+                perms.discard(_p)
     else:
         perms = set(await user_permissions(user))
     view_all = _can_view_all_division(perms)
@@ -8921,7 +8970,15 @@ async def user_permissions_effective(user_id: str, user=Depends(require_perm("us
         default_from_role = list(with_nav_defaults(set(ROLE_DEFAULT_PERMISSIONS.get(role, []))))
     override = dict(existing.get("permissions_override") or {})
     if existing.get("is_super_admin"):
-        effective = list(ALL_PERMISSIONS)
+        from permissions import OPT_IN_ONLY_PERMISSIONS, strip_opt_in_permissions
+
+        base = strip_opt_in_permissions(ALL_PERMISSIONS)
+        for perm, allowed in override.items():
+            if allowed is True and perm in OPT_IN_ONLY_PERMISSIONS:
+                base.add(perm)
+            elif allowed is False:
+                base.discard(perm)
+        effective = sorted(base)
     else:
         effective = sorted(effective_permissions(role, override, role_override))
     return {
@@ -9621,6 +9678,14 @@ from services.sales_invoice_posting import (
     post_sales_invoice_accounting as _post_sales_invoice_accounting,
     reverse_sales_invoice_accounting as _reverse_sales_invoice_accounting,
 )
+from services.sales_business_cancel import (
+    PERM_INVOICE_CANCEL as _SALES_INVOICE_CANCEL_PERM,
+    PERM_RECEIPT_CANCEL as _SALES_RECEIPT_CANCEL_PERM,
+    cancel_sales_invoice_business as _cancel_sales_invoice_business,
+    cancel_sales_receipt_business as _cancel_sales_receipt_business,
+    is_sales_invoice_business_cancel_enabled as _is_sales_invoice_business_cancel_enabled,
+    is_sales_receipt_business_cancel_enabled as _is_sales_receipt_business_cancel_enabled,
+)
 from services.sales_invoice_auto_lifecycle import (
     create_sales_invoice_with_auto_lifecycle as _create_sales_invoice_auto_lifecycle,
     is_auto_sales_invoice_lifecycle_enabled as _is_auto_sales_invoice_lifecycle_enabled,
@@ -9640,6 +9705,7 @@ from services.sales_receipt_auto_lifecycle import (
 )
 from services.sales_receipts import (
     list_sales_receipts as _list_sales_receipts,
+    query_sales_receipts as _query_sales_receipts,
     get_sales_receipt_detail as _get_sales_receipt_detail,
     create_sales_receipt as _create_sales_receipt,
     generate_sales_receipt_pdf_bytes,
@@ -9806,6 +9872,11 @@ class SalesInvoiceUpdatePayload(BaseModel):
 
 class SalesInvoiceReverseAccountingPayload(BaseModel):
     reason: str
+
+
+class SalesBusinessCancelPayload(BaseModel):
+    reason: str
+    idempotency_key: str
 
 
 # ---------- Sales Receipt (Penerimaan Penjualan) ----------
@@ -11620,10 +11691,30 @@ async def finalize_sales_invoice_endpoint(id: str, user=Depends(current_user)):
 
 @api_router.post("/sales-invoices/{id}/cancel")
 async def cancel_sales_invoice_endpoint(id: str, user=Depends(current_user)):
-    """Cancel a finalized invoice with no receipts. Does not reverse a journal."""
+    """Legacy cancel: finalized unposted invoice with no receipts. No journal reverse."""
     await _require_any_perm(user, "sales.invoice.edit", "sales.invoice.create", "sales_order.create", "po.edit")
     inv = await _cancel_sales_invoice(db, id, user)
     return {"invoice": inv, "message": "Faktur Penjualan dibatalkan"}
+
+
+@api_router.post("/sales-invoices/{id}/business-cancel")
+async def business_cancel_sales_invoice_endpoint(
+    id: str,
+    payload: SalesBusinessCancelPayload,
+    user=Depends(current_user),
+):
+    """Unified Hapus soft-cancel. Requires sales.invoice.cancel. Flag default OFF."""
+    await _require_opt_in_perm(user, _SALES_INVOICE_CANCEL_PERM)
+    if not await _is_sales_invoice_business_cancel_enabled(db):
+        raise HTTPException(409, "Pembatalan bisnis faktur belum diaktifkan.")
+    result = await _cancel_sales_invoice_business(
+        db,
+        id,
+        user,
+        reason=payload.reason,
+        idempotency_key=payload.idempotency_key,
+    )
+    return result
 
 
 @api_router.post("/sales-invoices/{id}/post-accounting")
@@ -11654,10 +11745,27 @@ async def list_sales_receipts_endpoint(
     q: Optional[str] = None,
     invoice_id: Optional[str] = None,
     po_id: Optional[str] = None,
+    scope: Optional[str] = None,
+    page: Optional[int] = None,
+    page_size: Optional[int] = None,
     user=Depends(current_user),
 ):
-    """List sales receipts (Penerimaan Penjualan) with search and filters."""
+    """List sales receipts (Penerimaan Penjualan) with search and filters.
+
+    Passing scope/page returns tab totals (active / cancelled / all).
+    Omit them for the legacy unpaged payload.
+    """
     await _require_any_perm(user, "sales.receipt.view", "sales.invoice.view", "sales_order.view", "po.view")
+    if scope is not None or page is not None or page_size is not None:
+        return await _query_sales_receipts(
+            db,
+            q=q,
+            invoice_id=invoice_id,
+            po_id=po_id,
+            scope=scope or "active",
+            page=page or 1,
+            page_size=page_size or 20,
+        )
     receipts = await _list_sales_receipts(db, q=q, invoice_id=invoice_id, po_id=po_id)
     return {"receipts": receipts, "count": len(receipts)}
 
@@ -11795,6 +11903,26 @@ async def reverse_sales_receipt_accounting_endpoint(id: str, user=Depends(curren
     await _require_perm(user, _SALES_RECEIPT_ACCOUNTING_REVERSE_PERM)
     receipt = await _reverse_sales_receipt_accounting(db, id, user)
     return {"receipt": receipt, "message": "Penerimaan Penjualan di-reverse dari accounting"}
+
+
+@api_router.post("/sales-receipts/{id}/business-cancel")
+async def business_cancel_sales_receipt_endpoint(
+    id: str,
+    payload: SalesBusinessCancelPayload,
+    user=Depends(current_user),
+):
+    """Unified Hapus soft-cancel. Requires sales.receipt.cancel. Flag default OFF."""
+    await _require_opt_in_perm(user, _SALES_RECEIPT_CANCEL_PERM)
+    if not await _is_sales_receipt_business_cancel_enabled(db):
+        raise HTTPException(409, "Pembatalan bisnis penerimaan belum diaktifkan.")
+    result = await _cancel_sales_receipt_business(
+        db,
+        id,
+        user,
+        reason=payload.reason,
+        idempotency_key=payload.idempotency_key,
+    )
+    return result
 
 
 @api_router.post("/sales-receipts/{id}/payment-proof")

@@ -125,6 +125,29 @@ jobs:
             mongosh --quiet mongodb://127.0.0.1:27017 --eval 'db.runCommand({ ping: 1 })' || true
             exit "${status}"
           fi
+      # Phase 2.2D business-cancel suite also pins DB_NAME at import; run serial
+      # and isolated so it cannot collide with other sales accounting modules.
+      - name: Run sales business cancel tests
+        working-directory: backend
+        timeout-minutes: 5
+        env:
+          MONGO_URL: mongodb://127.0.0.1:27017
+          DB_NAME: eternal_packaging_ci_sales_business_cancel
+          JWT_SECRET: ci-only-secret
+        run: |
+          set -euo pipefail
+          echo "Starting isolated business-cancel suite (serial, dedicated DB_NAME)"
+          if ! timeout --signal=TERM --kill-after=15s 180s \
+            python -m pytest -vv -n 0 --durations=20 \
+            tests/test_sales_business_cancel.py; then
+            status=$?
+            echo "::error::sales business cancel tests exited with status ${status}"
+            echo "--- process snapshot ---"
+            ps -eo pid,ppid,stat,etime,cmd --sort=etime | head -80 || true
+            echo "--- mongo ping ---"
+            mongosh --quiet mongodb://127.0.0.1:27017 --eval 'db.runCommand({ ping: 1 })' || true
+            exit "${status}"
+          fi
 
   backend-live-orders:
     name: Backend live orders summary
