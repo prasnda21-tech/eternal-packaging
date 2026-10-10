@@ -96,10 +96,14 @@ describe("Faktur Penjualan selectable header filters", () => {
       invoices: [row({})],
       total: 1,
       tab_total: 1,
-      active_total: 1,
+      all_total: 1,
+      five_tab_active_total: 1,
+      completed_total: 0,
+      pending_total: 0,
       cancelled_total: 0,
+      list_tab: "active",
       page: 1,
-      page_size: 20,
+      page_size: 50,
     });
   });
 
@@ -209,8 +213,12 @@ describe("Faktur Penjualan selectable header filters", () => {
     await act(async () => {
       await Promise.resolve();
     });
-    expect(lastParams().scope).toBe("cancelled");
+    expect(lastParams().list_tab).toBe("cancelled");
+    expect(lastParams().scope).toBeUndefined();
     expect(cancelledTab.getAttribute("aria-selected")).toBe("true");
+    expect(container.querySelector('[data-testid="tab-faktur-pending"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="tab-faktur-selesai"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="tab-faktur-semua"]')).toBeTruthy();
 
     await act(async () => {
       container.querySelector('[data-testid="reset-invoice-filters"]').click();
@@ -224,7 +232,8 @@ describe("Faktur Penjualan selectable header filters", () => {
     expect(last.accounting_status).toBeUndefined();
     expect(last.payment_status).toBeUndefined();
     expect(last.q).toBeUndefined();
-    expect(last.scope).toBe("cancelled");
+    expect(last.list_tab).toBe("cancelled");
     expect(last.page).toBe(1);
+    expect(last.page_size).toBe(50);
   });
 });

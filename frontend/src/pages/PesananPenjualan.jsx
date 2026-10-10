@@ -64,6 +64,7 @@ import {
   salesOrderIssuePlacement,
 } from "../lib/salesOrderCreateWorkspace";
 import {
+  SALES_ORDER_DEFAULT_PAGE_SIZE,
   SALES_ORDER_PAGE_SIZES,
   canShowAktifSummary,
   formatQuantityByUnit,
@@ -78,6 +79,10 @@ import {
   salesOrderStatusFromQuery,
   salesOrderTabDefaultStatus,
 } from "../lib/salesOrderListPresentation";
+import {
+  SALES_LIST_TABS,
+  salesFiveTabListMetaFromResponse,
+} from "../lib/salesFiveTabs";
 import {
   formatOrderRupiah,
   linePriceNumber,
@@ -367,9 +372,14 @@ export default function PesananPenjualan() {
   });
   const [pageSize, setPageSize] = useState(() => {
     const value = Number(searchParams.get("page_size"));
-    return SALES_ORDER_PAGE_SIZES.includes(value) ? value : 10;
+    return SALES_ORDER_PAGE_SIZES.includes(value) ? value : SALES_ORDER_DEFAULT_PAGE_SIZE;
   });
-  const [listMeta, setListMeta] = useState({ total: null, capped: false });
+  const [listMeta, setListMeta] = useState({
+    total: null,
+    capped: false,
+    tabTotal: 0,
+    counts: { all: 0, active: 0, completed: 0, pending: 0, cancelled: 0 },
+  });
   const [itemImages, setItemImages] = useState({});
   const [columnFilters, setColumnFilters] = useState(EMPTY_SALES_ORDER_COLUMN_FILTERS);
   const [selectedIds, setSelectedIds] = useState(new Set());
@@ -518,7 +528,7 @@ export default function PesananPenjualan() {
       const bounds = periodBounds(period);
       const params = salesOrderListRequest({
         q: searchQuery,
-        status: statusFilter,
+        listTab,
         dateFrom: bounds.date_from,
         dateTo: bounds.date_to,
         tanggalKirimPreset: columnFilters.tanggalKirimPreset,
@@ -529,11 +539,9 @@ export default function PesananPenjualan() {
       });
       const res = await api.listSalesOrders(params, { signal: ac.signal });
       if (ac.signal.aborted) return;
-      setOrders(res.orders || []);
-      setListMeta({
-        total: res.total == null ? null : Number(res.total),
-        capped: Boolean(res.capped),
-      });
+      const rows = res.orders || [];
+      setOrders(rows);
+      setListMeta(salesFiveTabListMetaFromResponse(res, { rowCount: rows.length }));
       setSelectedIds(new Set());
     } catch (e) {
       if (e?.code === "ERR_CANCELED" || e?.name === "CanceledError" || ac.signal.aborted) {
@@ -546,7 +554,7 @@ export default function PesananPenjualan() {
         setListLoading(false);
       }
     }
-  }, [searchQuery, statusFilter, period, page, pageSize, columnFilters]);
+  }, [searchQuery, listTab, period, page, pageSize, columnFilters]);
 
   const serverPaged = listMeta.total != null && Number.isFinite(Number(listMeta.total));
   const displayedOrders = useMemo(() => {
@@ -591,11 +599,10 @@ export default function PesananPenjualan() {
     if (searchQuery.trim()) next.set("q", searchQuery.trim());
     const tabDefault = salesOrderTabDefaultStatus(listTab);
     if (statusFilter && statusFilter !== tabDefault) next.set("status", statusFilter);
-    if (listTab === "histori") next.set("tab", "histori");
-    if (listTab === "semua") next.set("tab", "semua");
+    if (listTab && listTab !== "active") next.set("tab", listTab);
     if (period !== "all") next.set("period", period);
     if (page > 1) next.set("page", String(page));
-    if (pageSize !== 10) next.set("page_size", String(pageSize));
+    if (pageSize !== SALES_ORDER_DEFAULT_PAGE_SIZE) next.set("page_size", String(pageSize));
     const nextStr = next.toString();
     const curStr = searchParams.toString();
     if (nextStr === curStr) return;
@@ -1426,14 +1433,23 @@ export default function PesananPenjualan() {
     });
   };
 
+  const changeSalesOrderTab = (tab) => {
+    if (tab === listTab) return;
+    setListTab(tab);
+    setStatusFilter(salesOrderTabDefaultStatus(tab));
+  };
+
   const onStatusChange = (value) => {
     if (!value || value === "__tab__") {
       setStatusFilter(salesOrderTabDefaultStatus(listTab));
       return;
     }
     setStatusFilter(value);
-    if (value === "selesai" || value === "cancelled" || value === "histori") setListTab("histori");
-    else if (value === "aktif" || value === "hold" || value === "all") setListTab("aktif");
+    if (value === "selesai" || value === "completed") setListTab("completed");
+    else if (value === "cancelled" || value === "batal") setListTab("cancelled");
+    else if (value === "pending" || value === "hold") setListTab("pending");
+    else if (value === "aktif" || value === "active") setListTab("active");
+    else if (value === "gabungan" || value === "all") setListTab("all");
   };
 
   const resetToolbar = () => {
@@ -1509,45 +1525,26 @@ export default function PesananPenjualan() {
           </header>
 
           <div className="so-list-tabs" role="tablist" aria-label="Klasifikasi pesanan">
-            <button
-              type="button"
-              role="tab"
-              aria-selected={listTab === "aktif"}
-              data-testid="sales-order-tab-aktif"
-              className={listTab === "aktif" ? "is-active" : ""}
-              onClick={() => {
-                setListTab("aktif");
-                setStatusFilter("aktif");
-              }}
-            >
-              Aktif
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={listTab === "histori"}
-              data-testid="sales-order-tab-histori"
-              className={listTab === "histori" ? "is-active" : ""}
-              onClick={() => {
-                setListTab("histori");
-                setStatusFilter("histori");
-              }}
-            >
-              Histori
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={listTab === "semua"}
-              data-testid="sales-order-tab-semua"
-              className={listTab === "semua" ? "is-active" : ""}
-              onClick={() => {
-                setListTab("semua");
-                setStatusFilter("gabungan");
-              }}
-            >
-              Semua
-            </button>
+            {SALES_LIST_TABS.map((tab) => {
+              const count = Number(listMeta.counts?.[tab.id] || 0);
+              const selected = listTab === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={selected}
+                  data-testid={`sales-order-tab-${tab.testIdSuffix}`}
+                  className={selected ? "is-active" : ""}
+                  onClick={() => changeSalesOrderTab(tab.id)}
+                >
+                  {tab.label}
+                  <span className="so-tab-count" data-testid={`sales-order-tab-count-${tab.testIdSuffix}`}>
+                    {count.toLocaleString("id-ID")}
+                  </span>
+                </button>
+              );
+            })}
           </div>
 
           <div className="so-list-toolbar">

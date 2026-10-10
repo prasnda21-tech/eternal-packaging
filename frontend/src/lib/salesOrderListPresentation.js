@@ -5,8 +5,15 @@
  */
 
 import { salesOrderDeliveryStatus } from "./pesananPenjualanColumnFilters";
+import {
+  SALES_LIST_DEFAULT_PAGE_SIZE,
+  SALES_LIST_PAGE_SIZES,
+  normalizeSalesListTab,
+  salesFiveTabListParams,
+} from "./salesFiveTabs";
 
-export const SALES_ORDER_PAGE_SIZES = [10, 20, 50];
+export const SALES_ORDER_PAGE_SIZES = [...SALES_LIST_PAGE_SIZES];
+export const SALES_ORDER_DEFAULT_PAGE_SIZE = SALES_LIST_DEFAULT_PAGE_SIZE;
 
 export function quantityByUnitFromLines(lines) {
   const totals = new Map();
@@ -91,6 +98,7 @@ export function periodBounds(period, today = new Date()) {
 export function salesOrderListRequest({
   q,
   status,
+  listTab,
   dateFrom,
   dateTo,
   tanggalKirimPreset,
@@ -99,43 +107,72 @@ export function salesOrderListRequest({
   page,
   pageSize,
 } = {}) {
+  const shipPreset = String(tanggalKirimPreset || "all").trim() || "all";
+  const salesKey = String(sales || "").trim();
+  const statuses = Array.isArray(deliveryStatuses)
+    ? deliveryStatuses.map((item) => String(item || "").trim()).filter(Boolean)
+    : [];
+  // Prefer exclusive backend list_tab (five-tab). Legacy status kept only when listTab omitted.
+  if (listTab != null && String(listTab).trim() !== "") {
+    return salesFiveTabListParams({
+      listTab,
+      page,
+      pageSize: pageSize || SALES_LIST_DEFAULT_PAGE_SIZE,
+      q,
+      extra: {
+        date_from: dateFrom || undefined,
+        date_to: dateTo || undefined,
+        tanggal_pengiriman_preset: shipPreset !== "all" ? shipPreset : undefined,
+        sales: salesKey || undefined,
+        delivery_status: statuses.length ? statuses.join(",") : undefined,
+      },
+    });
+  }
   const params = {};
   const query = String(q || "").trim();
   if (query) params.q = query;
   if (status && status !== "all") params.status = status;
   if (dateFrom) params.date_from = dateFrom;
   if (dateTo) params.date_to = dateTo;
-  const shipPreset = String(tanggalKirimPreset || "all").trim() || "all";
   if (shipPreset !== "all") params.tanggal_pengiriman_preset = shipPreset;
-  const salesKey = String(sales || "").trim();
   if (salesKey) params.sales = salesKey;
-  const statuses = Array.isArray(deliveryStatuses)
-    ? deliveryStatuses.map((item) => String(item || "").trim()).filter(Boolean)
-    : [];
   if (statuses.length) params.delivery_status = statuses.join(",");
   if (page) params.page = page;
   if (pageSize) params.page_size = pageSize;
   return params;
 }
 
-/** Default status token for a Pesanan Penjualan list tab. */
+/** Default secondary status token for a Pesanan Penjualan list tab (legacy compat). */
 export function salesOrderTabDefaultStatus(listTab) {
-  if (listTab === "histori") return "histori";
-  if (listTab === "semua") return "gabungan";
+  const tab = normalizeSalesListTab(listTab, { defaultTab: "active" });
+  if (tab === "completed") return "selesai";
+  if (tab === "cancelled") return "cancelled";
+  if (tab === "all") return "gabungan";
+  if (tab === "pending") return "pending";
   return "aktif";
 }
 
 /**
- * Explicit existing status values choose the tab.
- * tab=semua or status=gabungan opens Semua only when no explicit status overrides it.
+ * URL → five-tab id (all|active|completed|pending|cancelled).
+ * Legacy aktif/histori/semua and status tokens map into the five-tab set.
  */
 export function salesOrderListTabFromQuery({ tab, status } = {}) {
-  const st = String(status || "");
-  if (st === "selesai" || st === "cancelled" || st === "histori") return "histori";
-  if (st === "aktif" || st === "hold" || st === "all") return "aktif";
-  if (tab === "semua" || st === "gabungan") return "semua";
-  if (tab === "histori") return "histori";
-  return "aktif";
+  const st = String(status || "").toLowerCase();
+  const tb = String(tab || "").toLowerCase();
+  // Explicit status wins over tab= (including tab=semua / all).
+  if (st === "pending") return "pending";
+  if (st === "cancelled" || st === "batal") return "cancelled";
+  if (st === "selesai" || st === "completed" || st === "histori") return "completed";
+  if (st === "hold" || st === "aktif" || st === "active") return "active";
+  if (st === "all") return "active";
+  if (st === "gabungan") return "all";
+  if (tb === "pending") return "pending";
+  if (tb === "cancelled" || tb === "batal") return "cancelled";
+  if (tb === "completed" || tb === "selesai" || tb === "histori") return "completed";
+  if (tb === "semua" || tb === "all") return "all";
+  if (tb === "aktif" || tb === "active") return "active";
+  if (tb) return normalizeSalesListTab(tb);
+  return "active";
 }
 
 export function salesOrderStatusFromQuery({ tab, status } = {}) {
@@ -144,8 +181,8 @@ export function salesOrderStatusFromQuery({ tab, status } = {}) {
 }
 
 /**
- * "Pesanan aktif" is the existing aktif classification counted by the server
- * for the unfiltered aktif query. A single page is not a valid total.
+ * "Pesanan aktif" summary uses the server total for the unfiltered active tab.
+ * A single page is not a valid total.
  */
 export function canShowAktifSummary({
   tab,
@@ -156,8 +193,9 @@ export function canShowAktifSummary({
   total,
   capped,
 } = {}) {
-  if (tab !== "aktif") return false;
-  if (status && status !== "aktif") return false;
+  const normalized = normalizeSalesListTab(tab, { defaultTab: "active" });
+  if (normalized !== "active") return false;
+  if (status && status !== "aktif" && status !== "active") return false;
   if (String(q || "").trim()) return false;
   if (period && period !== "all") return false;
   if (columnFiltersActive) return false;

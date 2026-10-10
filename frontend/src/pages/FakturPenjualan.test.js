@@ -96,6 +96,8 @@ describe("Faktur Penjualan UI & Navigation Suite", () => {
     expect(apiSrc).toMatch(/updateSalesInvoice:/);
     expect(apiSrc).toMatch(/finalizeSalesInvoice:/);
     expect(apiSrc).toMatch(/cancelSalesInvoice:/);
+    expect(apiSrc).toMatch(/businessCancelSalesInvoice:/);
+    expect(apiSrc).toMatch(/recoverAutoSalesInvoiceAccounting:/);
     expect(apiSrc).toMatch(/postSalesInvoiceAccounting:/);
     expect(apiSrc).toMatch(/reverseSalesInvoiceAccounting:/);
     expect(apiSrc).toMatch(/deleteSalesInvoice:/);
