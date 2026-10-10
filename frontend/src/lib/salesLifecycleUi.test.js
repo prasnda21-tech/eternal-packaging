@@ -2,6 +2,8 @@ import {
   bumpIdempotencyIntent,
   canBusinessCancelInvoice,
   canBusinessCancelReceipt,
+  canBusinessEditReceipt,
+  interpretReceiptUpdateResponse,
   canRecoverAutoAccounting,
   clearIdempotencyIntent,
   ensureIdempotencyIntent,
@@ -28,6 +30,27 @@ describe("salesLifecycleUi", () => {
     expect(canBusinessCancelReceipt((p) => p === "sales.receipt.delete")).toBe(false);
     expect(canBusinessCancelInvoice((p) => p === "sales.invoice.cancel")).toBe(true);
     expect(canBusinessCancelReceipt((p) => p === "sales.receipt.cancel")).toBe(true);
+    expect(canBusinessEditReceipt((p) => p === "sales.receipt.create")).toBe(false);
+    expect(canBusinessEditReceipt((p) => p === "sales.receipt.edit")).toBe(true);
+  });
+
+  test("receipt update response requires financial_complete for posted revision", () => {
+    expect(interpretReceiptUpdateResponse({
+      mode: "unposted",
+      receipt: { id: "1" },
+      message: "ok",
+    }).ok).toBe(true);
+    expect(interpretReceiptUpdateResponse({
+      mode: "posted_revision",
+      financial_complete: false,
+      message: "pending",
+      receipt: { id: "1" },
+    }).ok).toBe(false);
+    expect(interpretReceiptUpdateResponse({
+      mode: "posted_revision",
+      financial_complete: true,
+      receipt: { id: "1" },
+    }).ok).toBe(true);
   });
 
   test("auto-lifecycle response requires financial_complete for success", () => {

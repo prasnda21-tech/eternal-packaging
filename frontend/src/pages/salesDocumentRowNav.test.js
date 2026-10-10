@@ -48,7 +48,7 @@ describe("Sales document clickable rows + form open", () => {
     expect(faktur).toMatch(/financialLocked/);
   });
 
-  test("Penerimaan Penjualan row opens populated detail; financial Edit remains absent", () => {
+  test("Penerimaan Penjualan row opens populated detail; Package C Edit is capability-gated", () => {
     expect(penerimaan).toMatch(/clickableDocumentRowProps/);
     expect(penerimaan).toMatch(/openReceiptDetail/);
     expect(penerimaan).toMatch(/api\.getSalesReceipt/);
@@ -57,8 +57,10 @@ describe("Sales document clickable rows + form open", () => {
     expect(penerimaan).toMatch(/receipt-number-/);
     expect(penerimaan).toMatch(/btn-post-accounting-/);
     expect(penerimaan).toMatch(/btn-delete-receipt-/);
+    expect(penerimaan).toMatch(/updateSalesReceipt\(/);
+    expect(penerimaan).toMatch(/edit_capability/);
+    expect(penerimaan).toMatch(/canBusinessEditReceipt/);
     expect(penerimaan).not.toMatch(/Simpan Perubahan Penerimaan/);
-    expect(penerimaan).not.toMatch(/updateSalesReceipt\(/);
   });
 
   test("Pengiriman Pesanan row opens existing delivery detail; PO link and actions excluded", () => {

@@ -58,13 +58,14 @@ describe("Package B2 — five-tab + lifecycle UI contracts", () => {
     }).active).toBe(3);
   });
 
-  test("clickable rows remain wired; receipt financial Edit stays blocked", () => {
+  test("clickable rows remain wired; receipt Edit is Package C capability-gated", () => {
     expect(rowNav).toMatch(/clickableDocumentRowProps/);
     expect(pesanan).toMatch(/clickableDocumentRowProps/);
     expect(faktur).toMatch(/clickableDocumentRowProps/);
     expect(penerimaan).toMatch(/clickableDocumentRowProps/);
     expect(faktur).toMatch(/financialLocked/);
-    expect(penerimaan).not.toMatch(/updateSalesReceipt\(/);
+    expect(penerimaan).toMatch(/updateSalesReceipt\(/);
+    expect(penerimaan).toMatch(/edit_capability/);
     expect(penerimaan).not.toMatch(/Simpan Perubahan Penerimaan/);
   });
 
