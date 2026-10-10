@@ -9666,6 +9666,7 @@ from services.sales_invoices import (
     list_sales_invoices as _list_sales_invoices,
     query_sales_invoices as _query_sales_invoices,
     get_sales_invoice_detail as _get_sales_invoice_detail,
+    get_sales_invoice_detail_for_user as _get_sales_invoice_detail_for_user,
     update_sales_invoice as _update_sales_invoice,
     delete_sales_invoice as _delete_sales_invoice,
     bulk_delete_sales_invoices as _bulk_delete_sales_invoices,
@@ -9711,6 +9712,7 @@ from services.sales_receipts import (
     list_sales_receipts as _list_sales_receipts,
     query_sales_receipts as _query_sales_receipts,
     get_sales_receipt_detail as _get_sales_receipt_detail,
+    get_sales_receipt_detail_for_user as _get_sales_receipt_detail_for_user,
     create_sales_receipt as _create_sales_receipt,
     generate_sales_receipt_pdf_bytes,
     delete_sales_receipt as _delete_sales_receipt,
@@ -11746,11 +11748,20 @@ async def recover_auto_sales_invoice_accounting_endpoint(id: str, user=Depends(c
     raise HTTPException(int(result.get("http_status") or 409), body)
 
 
+@api_router.get("/sales-invoices/lifecycle-capability")
+async def sales_invoice_lifecycle_capability_endpoint(user=Depends(current_user)):
+    """Read-only invoice lifecycle capability for the authenticated user (no document)."""
+    await _require_any_perm(user, "sales.invoice.view", "sales.invoice.create", "sales_order.view", "po.view")
+    from services.sales_lifecycle_capability import build_invoice_lifecycle_capability
+
+    return {"lifecycle_capability": await build_invoice_lifecycle_capability(db, user, None)}
+
+
 @api_router.get("/sales-invoices/{id}")
 async def get_sales_invoice_endpoint(id: str, user=Depends(current_user)):
     """Get detail of a single sales invoice."""
     await _require_any_perm(user, "sales.invoice.view", "sales_order.view", "po.view", "sales.delivery.view")
-    inv = await _get_sales_invoice_detail(db, id)
+    inv = await _get_sales_invoice_detail_for_user(db, id, user)
     await ensure_owned_po_id(db, user, (inv or {}).get("po_id"))
     return {"invoice": inv}
 
@@ -11954,11 +11965,20 @@ async def reverse_sales_customer_credit_endpoint(application_id: str, user=Depen
     }
 
 
+@api_router.get("/sales-receipts/lifecycle-capability")
+async def sales_receipt_lifecycle_capability_endpoint(user=Depends(current_user)):
+    """Read-only receipt lifecycle capability for the authenticated user (no document)."""
+    await _require_any_perm(user, "sales.receipt.view", "sales.receipt.create", "sales.invoice.view", "po.view")
+    from services.sales_lifecycle_capability import build_receipt_lifecycle_capability
+
+    return {"lifecycle_capability": await build_receipt_lifecycle_capability(db, user, None)}
+
+
 @api_router.get("/sales-receipts/{id}")
 async def get_sales_receipt_endpoint(id: str, user=Depends(current_user)):
     """Get detail of a single sales receipt."""
     await _require_any_perm(user, "sales.receipt.view", "sales.invoice.view", "sales_order.view", "po.view")
-    receipt = await _get_sales_receipt_detail(db, id)
+    receipt = await _get_sales_receipt_detail_for_user(db, id, user)
     return {"receipt": receipt}
 
 

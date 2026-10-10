@@ -1366,6 +1366,15 @@ async def get_sales_invoice_detail(db, invoice_id: str) -> Dict[str, Any]:
     return inv
 
 
+async def get_sales_invoice_detail_for_user(db, invoice_id: str, user: Optional[dict]) -> Dict[str, Any]:
+    """Detail plus read-only lifecycle capability for the authenticated user."""
+    inv = await get_sales_invoice_detail(db, invoice_id)
+    from services.sales_lifecycle_capability import build_invoice_lifecycle_capability
+
+    inv["lifecycle_capability"] = await build_invoice_lifecycle_capability(db, user, inv)
+    return inv
+
+
 def _parse_draft_invoice_qty(raw: Any) -> int:
     """Whole number greater than zero. Floats that are not whole numbers are rejected."""
     if isinstance(raw, bool) or raw is None:

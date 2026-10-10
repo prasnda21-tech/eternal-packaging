@@ -55,6 +55,29 @@ export function canBusinessEditReceipt(hasPerm) {
 }
 
 /**
+ * Read backend lifecycle_capability only — never guess feature flags on the client.
+ * When auto_create_post is available, ordinary Finalisasi/Post/Reverse are not required.
+ */
+export function legacyManualActionsRequired(capability) {
+  if (!capability || typeof capability !== "object") return true;
+  if (Object.prototype.hasOwnProperty.call(capability, "legacy_manual_actions_required")) {
+    return capability.legacy_manual_actions_required !== false;
+  }
+  return true;
+}
+
+export function lifecycleOpAvailable(capability, op) {
+  if (!capability || typeof capability !== "object") return false;
+  const slice = capability[op];
+  return Boolean(slice && slice.available === true);
+}
+
+/** Hide ordinary Finalisasi / Post / Reverse only when backend capability says so. */
+export function shouldHideLegacyManualAccounting(capability) {
+  return legacyManualActionsRequired(capability) === false;
+}
+
+/**
  * Interpret receipt PUT response. Posted revision requires financial_complete;
  * unposted mode treats success when receipt is returned without lifecycle failure.
  */

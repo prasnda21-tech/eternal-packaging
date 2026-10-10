@@ -39,6 +39,7 @@ import {
   interpretBusinessCancelResponse,
   lifecycleChipClass,
   salesDocumentLifecyclePresentation,
+  shouldHideLegacyManualAccounting,
 } from "../lib/salesLifecycleUi";
 import "./salesSubmenuDensity.css";
 
@@ -601,6 +602,7 @@ export default function FakturPenjualan() {
   const [reverseReason, setReverseReason] = useState("");
   const [reverseErr, setReverseErr] = useState("");
   const [lifecycleBusy, setLifecycleBusy] = useState(false);
+  const [createLifecycleCapability, setCreateLifecycleCapability] = useState(null);
   const [invoiceFormTab, setInvoiceFormTab] = useState("items");
 
   const clearInvoiceSelection = useCallback(() => {
@@ -908,6 +910,9 @@ export default function FakturPenjualan() {
       if (selectedPoId) {
         loadPoPreview(selectedPoId);
       }
+      api.salesInvoiceLifecycleCapability()
+        .then((res) => setCreateLifecycleCapability(res?.lifecycle_capability || res || null))
+        .catch(() => setCreateLifecycleCapability(null));
     }
   }, [viewMode, loadInvoices, loadAvailablePOs, loadPoPreview, selectedPoId]);
 
@@ -1472,19 +1477,25 @@ export default function FakturPenjualan() {
   const accountingStatus = accountingStatusOf(detailData);
   const isAccountingPosted = accountingStatus === "posted" || detailData?.accounting_posted === true;
   const isAccountingReversed = accountingStatus === "reversed";
+  const detailLifecycleCapability = detailData?.lifecycle_capability || null;
+  const hideLegacyManualAccounting = shouldHideLegacyManualAccounting(detailLifecycleCapability);
+  const hideLegacyOnCreate = shouldHideLegacyManualAccounting(createLifecycleCapability);
   const showPostAccounting =
+    !hideLegacyManualAccounting &&
     canPostAccounting &&
     detailStatus === "finalized" &&
     !isAccountingPosted &&
     !isAccountingReversed &&
     detailData?.can_post_accounting === true;
   const showReverseAccounting =
+    !hideLegacyManualAccounting &&
     canReverseAccountingPerm &&
     detailStatus === "finalized" &&
     isAccountingPosted &&
     detailData?.can_reverse_accounting === true;
   const reverseBlockers = Array.isArray(detailData?.reverse_blockers) ? detailData.reverse_blockers : [];
   const showReverseBlocked =
+    !hideLegacyManualAccounting &&
     canReverseAccountingPerm &&
     detailStatus === "finalized" &&
     isAccountingPosted &&
@@ -1982,7 +1993,11 @@ export default function FakturPenjualan() {
 
       {/* VIEW: CREATE */}
       {viewMode === "create" && (
-        <div className="sd-form fp-create">
+        <div
+          className="sd-form fp-create"
+          data-testid="invoice-create-lifecycle"
+          data-legacy-manual={hideLegacyOnCreate ? "required" : "hidden"}
+        >
           {/* Step 1: PO Selector Panel (Only shown if opened directly from menu without pre-selected PO) */}
           {!queryPoId && (
             <FormSection
@@ -2623,7 +2638,7 @@ export default function FakturPenjualan() {
                   <FileText size={16} />
                   {pdfLoadingId === selectedInvoiceId ? "Memuat PDF..." : "Cetak PDF"}
                 </button>
-                {canEdit && detailStatus === "draft" && (
+                {canEdit && detailStatus === "draft" && !hideLegacyManualAccounting && (
                   <button
                     type="button"
                     data-testid="btn-finalize-invoice"

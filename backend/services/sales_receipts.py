@@ -419,6 +419,15 @@ async def get_sales_receipt_detail(db, receipt_id: str) -> Dict[str, Any]:
     return attached[0]
 
 
+async def get_sales_receipt_detail_for_user(db, receipt_id: str, user: Optional[dict]) -> Dict[str, Any]:
+    """Detail plus read-only lifecycle capability for the authenticated user."""
+    receipt = await get_sales_receipt_detail(db, receipt_id)
+    from services.sales_lifecycle_capability import build_receipt_lifecycle_capability
+
+    receipt["lifecycle_capability"] = await build_receipt_lifecycle_capability(db, user, receipt)
+    return receipt
+
+
 async def create_sales_receipt(
     db,
     payload: Dict[str, Any],
