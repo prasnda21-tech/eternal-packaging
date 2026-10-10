@@ -114,6 +114,39 @@ def _parse_non_negative_amount(raw: Any, field_name: str = "Jumlah pembayaran") 
     return float(d)
 
 
+_RECEIPT_SCOPES = frozenset({"active", "cancelled", "all"})
+_RECEIPT_CANCELLED_STATUS_VALUES = ["cancelled", "Cancelled", "CANCELLED", "reversed", "Reversed"]
+_RECEIPT_PAGE_SIZE_MAX = 100
+
+
+def _receipt_scope_clause(
+    scope: str, *, incomplete_cancel_ids: Optional[List[str]] = None
+) -> Dict[str, Any]:
+    """Tab Mongo prefilter with incomplete-cancel holdouts kept on Aktif."""
+    hold_ids = [str(i) for i in (incomplete_cancel_ids or []) if i]
+    cancelled = {
+        "$or": [
+            {"financial_status": {"$in": _RECEIPT_CANCELLED_STATUS_VALUES}},
+            {"cancelled": True},
+        ]
+    }
+    if scope == "cancelled":
+        if hold_ids:
+            return {"$and": [cancelled, {"id": {"$nin": hold_ids}}]}
+        return cancelled
+    if scope == "all":
+        return {}
+    active = {
+        "$and": [
+            {"financial_status": {"$nin": _RECEIPT_CANCELLED_STATUS_VALUES}},
+            {"cancelled": {"$ne": True}},
+        ]
+    }
+    if hold_ids:
+        return {"$or": [active, {"id": {"$in": hold_ids}}]}
+    return active
+
+
 async def list_sales_receipts(
     db,
     q: Optional[str] = None,
@@ -139,7 +172,118 @@ async def list_sales_receipts(
 
     cursor = db.sales_receipts.find(filters, {"_id": 0}).sort("created_at", -1)
     receipts = await cursor.to_list(1000)
-    return await attach_receipt_accounting_fields(db, [_public_receipt(r) for r in receipts])
+    public = await attach_receipt_accounting_fields(db, [_public_receipt(r) for r in receipts])
+    from services.sales_business_cancel import attach_receipt_business_cancel_fields
+
+    return await attach_receipt_business_cancel_fields(db, public)
+
+
+async def query_sales_receipts(
+    db,
+    *,
+    q: Optional[str] = None,
+    invoice_id: Optional[str] = None,
+    po_id: Optional[str] = None,
+    scope: str = "active",
+    page: int = 1,
+    page_size: int = 20,
+) -> Dict[str, Any]:
+    """Paged receipt list. Cancellation tabs use verified cancel state only."""
+    scope_key = str(scope or "active").strip().lower()
+    if scope_key not in _RECEIPT_SCOPES:
+        raise HTTPException(400, "Tab penerimaan tidak valid. Gunakan active, cancelled, atau all.")
+    try:
+        page_num = int(page or 1)
+        size = int(page_size or 20)
+    except (TypeError, ValueError):
+        raise HTTPException(400, "Halaman atau ukuran halaman tidak valid.")
+    if page_num < 1 or size < 1 or size > _RECEIPT_PAGE_SIZE_MAX:
+        raise HTTPException(400, "Halaman atau ukuran halaman tidak valid.")
+
+    from services.sales_business_cancel import (
+        DOC_RECEIPT,
+        LIST_CLASS_CANCELLED,
+        attach_receipt_business_cancel_fields,
+        incomplete_or_failed_cancel_document_ids,
+    )
+
+    hold_ids = sorted(await incomplete_or_failed_cancel_document_ids(db, DOC_RECEIPT))
+    active_clause = _receipt_scope_clause("active", incomplete_cancel_ids=hold_ids)
+    cancelled_clause = _receipt_scope_clause("cancelled", incomplete_cancel_ids=hold_ids)
+    base_owned: Dict[str, Any] = {}
+    if invoice_id:
+        base_owned["invoice_id"] = str(invoice_id)
+    if po_id:
+        base_owned["po_id"] = str(po_id)
+
+    def _and(clause: Dict[str, Any], owned: Dict[str, Any]) -> Dict[str, Any]:
+        parts = [p for p in (clause, owned) if p]
+        if not parts:
+            return {}
+        if len(parts) == 1:
+            return parts[0]
+        return {"$and": parts}
+
+    active_total = await db.sales_receipts.count_documents(_and(active_clause, base_owned))
+    cancelled_total = await db.sales_receipts.count_documents(_and(cancelled_clause, base_owned))
+    all_total = await db.sales_receipts.count_documents(base_owned or {})
+
+    clauses: List[Dict[str, Any]] = []
+    scope_clause = _receipt_scope_clause(scope_key, incomplete_cancel_ids=hold_ids)
+    if scope_clause:
+        clauses.append(scope_clause)
+    if invoice_id:
+        clauses.append({"invoice_id": str(invoice_id)})
+    if po_id:
+        clauses.append({"po_id": str(po_id)})
+    if q and str(q).strip():
+        needle = str(q).strip()
+        clauses.append({
+            "$or": [
+                {"id": {"$regex": needle, "$options": "i"}},
+                {"receipt_number": {"$regex": needle, "$options": "i"}},
+                {"invoice_id": {"$regex": needle, "$options": "i"}},
+                {"invoice_number": {"$regex": needle, "$options": "i"}},
+                {"po_number": {"$regex": needle, "$options": "i"}},
+                {"customer": {"$regex": needle, "$options": "i"}},
+            ]
+        })
+
+    find_filter: Dict[str, Any] = {"$and": clauses} if clauses else {}
+    receipts = await db.sales_receipts.find(find_filter, {"_id": 0}).sort(
+        "created_at", -1
+    ).to_list(None)
+    public = await attach_receipt_accounting_fields(db, [_public_receipt(r) for r in receipts])
+    public = await attach_receipt_business_cancel_fields(db, public)
+
+    filtered: List[Dict[str, Any]] = []
+    for rec in public:
+        klass = str(rec.get("list_class") or "")
+        if scope_key == "cancelled" and klass != LIST_CLASS_CANCELLED:
+            continue
+        if scope_key == "active" and klass == LIST_CLASS_CANCELLED:
+            continue
+        filtered.append(rec)
+
+    start = (page_num - 1) * size
+    page_rows = filtered[start:start + size]
+    if scope_key == "cancelled":
+        tab_total = cancelled_total
+    elif scope_key == "all":
+        tab_total = all_total
+    else:
+        tab_total = active_total
+    return {
+        "receipts": page_rows,
+        "count": len(page_rows),
+        "total": len(filtered),
+        "tab_total": tab_total,
+        "active_total": active_total,
+        "cancelled_total": cancelled_total,
+        "all_total": all_total,
+        "page": page_num,
+        "page_size": size,
+    }
 
 
 def _public_receipt(receipt: Dict[str, Any]) -> Dict[str, Any]:
@@ -811,12 +955,18 @@ async def apply_operational_settlement_for_receipt(db, receipt_id: str, user: Op
         await sync_order_payment_projections(db, fresh.get("po_id"))
         return fresh
 
+    from services.sales_business_cancel import (
+        receipt_cancel_fence_absent_clause,
+        receipt_cancel_fence_is_active,
+    )
+
     claimed = await db.sales_receipts.find_one_and_update(
         {
             "id": fresh["id"],
             SETTLEMENT_EFFECTIVE_FIELD: False,
             "financial_status": {"$nin": ["cancelled", "reversed"]},
             "cancelled": {"$ne": True},
+            "$and": [receipt_cancel_fence_absent_clause()],
         },
         {
             "$set": {
@@ -839,6 +989,14 @@ async def apply_operational_settlement_for_receipt(db, receipt_id: str, user: Op
                 {
                     "error_code": "receipt_cancelled",
                     "message": "Penerimaan dibatalkan selama recovery; settlement tidak diterapkan.",
+                },
+            )
+        if receipt_cancel_fence_is_active(current):
+            raise HTTPException(
+                409,
+                {
+                    "error_code": "receipt_cancel_in_progress",
+                    "message": "Pembatalan penerimaan belum selesai; settlement ditolak.",
                 },
             )
         if current.get(SETTLEMENT_EFFECTIVE_FIELD) is True:

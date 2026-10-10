@@ -543,6 +543,7 @@ async def clear_reverse_claim(db, receipt_id: str) -> None:
 
 
 async def acquire_posting_claim(db, receipt_id: str, *, token: Optional[str] = None) -> Optional[dict]:
+    from services.sales_business_cancel import receipt_cancel_fence_absent_clause
     from services.sales_receipts import now_iso
 
     claim_token = str(token or uuid.uuid4())
@@ -553,7 +554,10 @@ async def acquire_posting_claim(db, receipt_id: str, *, token: Optional[str] = N
                 {"financial_status": {"$in": ["cancelled", "reversed"]}},
                 {"cancelled": True},
             ],
-            **delete_claim_absent_or_stale_clause(),
+            "$and": [
+                delete_claim_absent_or_stale_clause(),
+                receipt_cancel_fence_absent_clause(),
+            ],
         },
         {
             "$set": {CLAIM_FIELD: claim_token, "updated_at": now_iso()},
@@ -564,6 +568,7 @@ async def acquire_posting_claim(db, receipt_id: str, *, token: Optional[str] = N
 
 
 async def acquire_delete_claim(db, receipt_id: str, token: str) -> Optional[dict]:
+    from services.sales_business_cancel import receipt_cancel_fence_absent_clause
     from services.sales_receipts import now_iso
 
     now = now_iso()
@@ -577,6 +582,7 @@ async def acquire_delete_claim(db, receipt_id: str, token: str) -> Optional[dict
             "$and": [
                 _claim_absent_clause(CLAIM_FIELD),
                 delete_claim_absent_or_stale_clause(),
+                receipt_cancel_fence_absent_clause(),
             ],
         },
         {
@@ -603,6 +609,7 @@ async def release_delete_claims(db, token: str) -> None:
 
 
 async def acquire_reverse_claim(db, receipt_id: str, *, token: Optional[str] = None) -> Optional[dict]:
+    from services.sales_business_cancel import receipt_cancel_fence_absent_clause
     from services.sales_receipts import now_iso
 
     claim_token = str(token or uuid.uuid4())
@@ -613,6 +620,7 @@ async def acquire_reverse_claim(db, receipt_id: str, *, token: Optional[str] = N
                 {"financial_status": {"$in": ["cancelled", "reversed"]}},
                 {"cancelled": True},
             ],
+            "$and": [receipt_cancel_fence_absent_clause()],
         },
         {"$set": {REVERSE_CLAIM_FIELD: claim_token, "updated_at": now_iso()}},
         return_document=ReturnDocument.AFTER,

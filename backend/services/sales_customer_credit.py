@@ -274,20 +274,44 @@ def claim_is_active(receipt: Optional[dict], *, now: Optional[datetime] = None) 
     return (current - claimed_at).total_seconds() < CLAIM_TTL_SECONDS
 
 
-async def _acquire_claim(db, receipt_id: str, token: str) -> Optional[dict]:
+async def _acquire_claim(
+    db, receipt_id: str, token: str, *, owned_cancel_fence: Optional[str] = None
+) -> Optional[dict]:
+    """CAS credit claim. Active receipt cancel fence rejects atomically.
+
+    Own-token renew is allowed. A foreign expired credit claim may be taken over
+    only when no foreign cancellation fence is present. Cancel-owned reverse may
+    pass ``owned_cancel_fence`` so credit fencing for that Hapus can proceed.
+    """
+    from services.sales_business_cancel import RECEIPT_FENCE_FIELD, receipt_cancel_fence_absent_clause
+
     cutoff = _claim_cutoff()
+    fence_ok: Dict[str, Any] = receipt_cancel_fence_absent_clause()
+    owned = str(owned_cancel_fence or "").strip()
+    if owned:
+        fence_ok = {
+            "$or": [
+                receipt_cancel_fence_absent_clause(),
+                {RECEIPT_FENCE_FIELD: owned},
+            ]
+        }
     return await db.sales_receipts.find_one_and_update(
         {
             "id": str(receipt_id),
-            "$or": [
-                {CLAIM_FIELD: {"$exists": False}},
-                {CLAIM_FIELD: None},
-                {CLAIM_FIELD: ""},
-                {CLAIM_AT_FIELD: {"$exists": False}},
-                {CLAIM_AT_FIELD: None},
-                {CLAIM_AT_FIELD: ""},
-                {CLAIM_AT_FIELD: {"$lte": cutoff}},
-                {CLAIM_FIELD: token},
+            "$and": [
+                fence_ok,
+                {
+                    "$or": [
+                        {CLAIM_FIELD: {"$exists": False}},
+                        {CLAIM_FIELD: None},
+                        {CLAIM_FIELD: ""},
+                        {CLAIM_AT_FIELD: {"$exists": False}},
+                        {CLAIM_AT_FIELD: None},
+                        {CLAIM_AT_FIELD: ""},
+                        {CLAIM_AT_FIELD: {"$lte": cutoff}},
+                        {CLAIM_FIELD: token},
+                    ]
+                },
             ],
         },
         {"$set": {CLAIM_FIELD: token, CLAIM_AT_FIELD: now_iso(), "updated_at": now_iso()}},
@@ -367,8 +391,12 @@ async def _release_reservation(db, receipt_id: str, amount: Decimal) -> None:
     )
 
 
-async def hold_source_credit_claim(db, receipt_id: str, token: str) -> Optional[dict]:
-    return await _acquire_claim(db, receipt_id, token)
+async def hold_source_credit_claim(
+    db, receipt_id: str, token: str, *, owned_cancel_fence: Optional[str] = None
+) -> Optional[dict]:
+    return await _acquire_claim(
+        db, receipt_id, token, owned_cancel_fence=owned_cancel_fence
+    )
 
 
 async def release_source_credit_claim(db, receipt_id: str, token: str) -> None:

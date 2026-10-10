@@ -907,7 +907,9 @@ async def list_sales_invoices(db, q: Optional[str] = None, po_id: Optional[str] 
 
 
 _CANCELLED_STATUS_VALUES = ["cancelled", "Cancelled", "CANCELLED"]
-_INVOICE_SCOPES = frozenset({"active", "cancelled"})
+# active = Aktif (excludes verified cancelled); cancelled = Faktur Batal;
+# all = Semua (includes cancelled for audit/search). Pending/failed cancel stay active.
+_INVOICE_SCOPES = frozenset({"active", "cancelled", "all"})
 _INVOICE_FINANCIAL_FILTERS = frozenset({FINANCIAL_DRAFT, FINANCIAL_FINALIZED, FINANCIAL_CANCELLED})
 _INVOICE_ACCOUNTING_FILTERS = frozenset({"not_posted", "posted", "reversed"})
 _INVOICE_PAYMENT_FILTERS = frozenset({"BELUM DIBAYAR", "DP", "LUNAS"})
@@ -972,11 +974,27 @@ def _invoice_day(invoice: Dict[str, Any]) -> str:
     return try_canonical_sales_invoice_date(raw)
 
 
-def _scope_clause(scope: str) -> Dict[str, Any]:
+def _scope_clause(
+    scope: str, *, incomplete_cancel_ids: Optional[List[str]] = None
+) -> Dict[str, Any]:
+    """Tab Mongo prefilter.
+
+    Incomplete/failed cancel intents stay on Aktif even when financial_status is
+    already cancelled (post-reverse crash window). Historic cancelled rows with
+    no incomplete intent remain on Batal.
+    """
+    hold_ids = [str(i) for i in (incomplete_cancel_ids or []) if i]
     cancelled = {"financial_status": {"$in": _CANCELLED_STATUS_VALUES}}
     if scope == "cancelled":
+        if hold_ids:
+            return {"$and": [cancelled, {"id": {"$nin": hold_ids}}]}
         return cancelled
-    return {"financial_status": {"$nin": _CANCELLED_STATUS_VALUES}}
+    if scope == "all":
+        return {}
+    active = {"financial_status": {"$nin": _CANCELLED_STATUS_VALUES}}
+    if hold_ids:
+        return {"$or": [active, {"id": {"$in": hold_ids}}]}
+    return active
 
 
 def _regex_or(fields: List[str], needle: str) -> Dict[str, Any]:
@@ -1037,7 +1055,7 @@ async def query_sales_invoices(
     """
     scope_key = str(scope or "active").strip().lower()
     if scope_key not in _INVOICE_SCOPES:
-        raise HTTPException(400, "Tab faktur tidak valid. Gunakan active atau cancelled.")
+        raise HTTPException(400, "Tab faktur tidak valid. Gunakan active, cancelled, atau all.")
 
     financial_key = str(financial_status or "").strip().lower()
     if financial_key and financial_key not in _INVOICE_FINANCIAL_FILTERS:
@@ -1071,17 +1089,30 @@ async def query_sales_invoices(
     if page_num < 1 or size < 1 or size > _INVOICE_PAGE_SIZE_MAX:
         raise HTTPException(400, "Halaman atau ukuran halaman tidak valid.")
 
-    active_clause = _scope_clause("active")
-    cancelled_clause = _scope_clause("cancelled")
+    from services.sales_business_cancel import (
+        DOC_INVOICE,
+        LIST_CLASS_CANCELLED,
+        attach_invoice_business_cancel_fields,
+        incomplete_or_failed_cancel_document_ids,
+    )
+
+    hold_ids = sorted(await incomplete_or_failed_cancel_document_ids(db, DOC_INVOICE))
+    active_clause = _scope_clause("active", incomplete_cancel_ids=hold_ids)
+    cancelled_clause = _scope_clause("cancelled", incomplete_cancel_ids=hold_ids)
     if po_id:
         owned = {"po_id": str(po_id)}
         active_total = await db.sales_invoices.count_documents({"$and": [active_clause, owned]})
         cancelled_total = await db.sales_invoices.count_documents({"$and": [cancelled_clause, owned]})
+        all_total = await db.sales_invoices.count_documents(owned)
     else:
         active_total = await db.sales_invoices.count_documents(active_clause)
         cancelled_total = await db.sales_invoices.count_documents(cancelled_clause)
+        all_total = await db.sales_invoices.count_documents({})
 
-    clauses: List[Dict[str, Any]] = [_scope_clause(scope_key)]
+    scope_clause = _scope_clause(scope_key, incomplete_cancel_ids=hold_ids)
+    clauses: List[Dict[str, Any]] = []
+    if scope_clause:
+        clauses.append(scope_clause)
     if po_id:
         clauses.append({"po_id": str(po_id)})
     needle = _optional_text(q)
@@ -1097,17 +1128,21 @@ async def query_sales_invoices(
     if po_needle:
         clauses.append(_regex_or(["po_number"], po_needle))
 
+    find_filter: Dict[str, Any] = {"$and": clauses} if clauses else {}
     invoices = await db.sales_invoices.find(
-        {"$and": clauses}, {"_id": 0}
+        find_filter, {"_id": 0}
     ).sort("created_at", -1).to_list(None)
     await _attach_live_payment_fields(db, invoices)
+    await attach_invoice_business_cancel_fields(db, invoices)
 
     filtered: List[Dict[str, Any]] = []
     for inv in invoices:
         status = effective_financial_status(inv)
-        if scope_key == "cancelled" and status != FINANCIAL_CANCELLED:
+        list_class = str(inv.get("list_class") or "")
+        # Batal/Aktif from durable cancel classification, not financial_status alone.
+        if scope_key == "cancelled" and list_class != LIST_CLASS_CANCELLED:
             continue
-        if scope_key == "active" and status == FINANCIAL_CANCELLED:
+        if scope_key == "active" and list_class == LIST_CLASS_CANCELLED:
             continue
         if financial_key and status != financial_key:
             continue
@@ -1128,7 +1163,12 @@ async def query_sales_invoices(
 
     start = (page_num - 1) * size
     page_rows = filtered[start:start + size]
-    tab_total = cancelled_total if scope_key == "cancelled" else active_total
+    if scope_key == "cancelled":
+        tab_total = cancelled_total
+    elif scope_key == "all":
+        tab_total = all_total
+    else:
+        tab_total = active_total
     return {
         "invoices": page_rows,
         "count": len(page_rows),
@@ -1136,6 +1176,7 @@ async def query_sales_invoices(
         "tab_total": tab_total,
         "active_total": active_total,
         "cancelled_total": cancelled_total,
+        "all_total": all_total,
         "page": page_num,
         "page_size": size,
     }
