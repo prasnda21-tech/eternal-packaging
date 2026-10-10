@@ -531,25 +531,16 @@ def _same_delivery_confirmation(existing: dict, spec: dict) -> bool:
 
 
 def _completed_qty_for_line(order: dict, line_idx: int) -> int:
+    """Ready qty for delivery / Belum Terkirim (read-only; no order mutation).
+
+    Print: operator completion. Non-print: full PO qty (siap kirim).
+    """
+    from quantity_rules import operational_ready_qty_for_line
+
     lines = list(order.get("line_items") or [])
     if line_idx < 0 or line_idx >= len(lines) or not isinstance(lines[line_idx], dict):
         raise PhysicalStockValidationError("Baris pesanan tidak ditemukan")
-    ordered = _qty_num(lines[line_idx].get("quantity"))
-    completed = 0.0
-    for split in order.get("operator_splits") or []:
-        if not isinstance(split, dict):
-            continue
-        raw_idx = split.get("line_idx")
-        if raw_idx is None or str(raw_idx).strip() == "":
-            continue
-        try:
-            idx = int(raw_idx)
-        except (TypeError, ValueError):
-            continue
-        if idx == line_idx:
-            completed += _qty_num(split.get("qty_completed"))
-    ready_base = min(max(completed, 0.0), max(ordered, 0.0))
-    return int(ready_base)
+    return int(operational_ready_qty_for_line(order, line_idx))
 
 
 def _resolve_requested_delivery_lines(order: dict, requested: List[dict]) -> List[dict]:
@@ -2002,12 +1993,15 @@ def aggregate_operational_orders(
     orders: Iterable[dict],
     accurate_owners: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Dict[str, float]]:
-    """Sum active ordered qty and operator qty_completed per master_item_id.
+    """Sum active ordered qty and ready qty per master_item_id.
 
-    Cancelled orders contribute nothing. Completion is not capped here;
+    Print lines: ready = operator qty_completed (unassigned splits only attach to
+    the sole print line when exactly one print line is identified).
+    Non-print lines: ready = ordered qty (siap kirim) without writing completed
+    or packed fields on the order. Cancelled orders contribute nothing.
     operational_availability floors the buckets.
     """
-    from quantity_rules import is_print_line
+    from quantity_rules import is_print_line, operational_ready_qty_for_line
 
     owners = accurate_owners or {}
     totals: Dict[str, Dict[str, float]] = {}
@@ -2024,6 +2018,7 @@ def aggregate_operational_orders(
             continue
         lines = list(order.get("line_items") or [])
         master_ids = [_line_master_id(line, owners) for line in lines]
+        # Attach unassigned operator splits to the sole print line (existing rule).
         completed_by_idx: Dict[int, float] = {}
         unassigned = []
         for split in order.get("operator_splits") or []:
@@ -2037,6 +2032,8 @@ def aggregate_operational_orders(
                 continue
             if idx < 0 or idx >= len(lines) or not master_ids[idx]:
                 continue
+            if not is_print_line(lines[idx]):
+                continue
             completed_by_idx[idx] = _qty_num(completed_by_idx.get(idx, 0)) + _qty_num(split.get("qty_completed"))
         identified = [idx for idx, master_id in enumerate(master_ids) if master_id and is_print_line(lines[idx])]
         if unassigned and len(identified) == 1:
@@ -2044,7 +2041,12 @@ def aggregate_operational_orders(
             extra = sum(_qty_num(split.get("qty_completed")) for split in unassigned)
             completed_by_idx[idx] = _qty_num(completed_by_idx.get(idx, 0)) + extra
         for idx, line in enumerate(lines):
-            add(master_ids[idx], _qty_num(line.get("quantity")), _qty_num(completed_by_idx.get(idx, 0)))
+            if not is_print_line(line):
+                ready = operational_ready_qty_for_line(order, idx)
+            else:
+                ordered = _qty_num(line.get("quantity"))
+                ready = min(_qty_num(completed_by_idx.get(idx, 0)), ordered)
+            add(master_ids[idx], _qty_num(line.get("quantity")), ready)
     return totals
 
 

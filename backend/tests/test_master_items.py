@@ -35,9 +35,11 @@ from services.master_items import (
     list_master_items,
     lookup_masters_by_accurate_ids,
     public_master_item,
+    resolve_line_production_process,
     resolve_master_origin,
     resolve_po_line_items,
     sync_master_items,
+    update_master_production_process,
     upsert_master_item,
 )
 from fastapi import HTTPException
@@ -1299,3 +1301,108 @@ def test_create_local_insert_failure_releases_claim():
     }))
     assert created["origin"] == "local"
     assert len(db.master_item_code_claims.docs) == 1
+
+
+def test_master_production_process_default_and_sync_preserve():
+    db = FakeDB()
+    created = _await(create_local_master_item(db, {
+        "item_code": "NP-1",
+        "item_name": "Lid lokal",
+        "item_type": "INVENTORY",
+        "unit": "pcs",
+        "is_active": True,
+        "production_process": "non_print",
+    }))
+    assert created["production_process"] == "non_print"
+
+    accurate, _action = _await(upsert_master_item(db, {
+        "accurate_item_id": "99001",
+        "item_code": "ACC-NP",
+        "item_name": "Accurate item",
+        "item_type": "INVENTORY",
+        "unit": "pcs",
+        "is_active": True,
+    }))
+    updated = _await(update_master_production_process(
+        db, accurate["id"], "non_print", user={"email": "owner@test.local"},
+    ))
+    assert updated["production_process"] == "non_print"
+
+    # Sync must not wipe ERP-owned production_process even if payload carries one.
+    r = _await(sync_master_items(db, FakeAccurate([{
+        "id": 99001,
+        "no": "ACC-NP",
+        "name": "Accurate item renamed",
+        "itemType": "INVENTORY",
+        "unit1Name": "pcs",
+        "suspended": False,
+        "production_process": "print",
+    }])))
+    assert r["updated"] + r["unchanged"] + r["created"] >= 1
+    fresh = next(d for d in db.master_items.docs if str(d.get("accurate_item_id")) == "99001")
+    assert fresh["production_process"] == "non_print"
+    assert fresh["item_name"] == "Accurate item renamed"
+
+    local = next(d for d in db.master_items.docs if d.get("item_code") == "NP-1")
+    assert local["production_process"] == "non_print"
+
+
+def test_resolve_line_production_process_explicit_wins_and_master_default():
+    db = FakeDB()
+    # Master belum diatur → perilaku existing (print).
+    unset = _await(create_local_master_item(db, {
+        "item_code": "UNSET-1",
+        "item_name": "Tanpa default",
+        "item_type": "INVENTORY",
+        "unit": "pcs",
+    }))
+    assert unset.get("production_process") is None
+    assert _await(resolve_line_production_process(
+        db, master_item_id=unset["id"], explicit=None,
+    )) == "print"
+    assert _await(resolve_line_production_process(
+        db, master_item_id=unset["id"], explicit="non_print",
+    )) == "non_print"
+
+    master = _await(create_local_master_item(db, {
+        "item_code": "DEF-1",
+        "item_name": "Default non print",
+        "item_type": "INVENTORY",
+        "unit": "pcs",
+        "production_process": "non_print",
+    }))
+    assert _await(resolve_line_production_process(
+        db, master_item_id=master["id"], explicit=None,
+    )) == "non_print"
+    # Pilihan transaksi eksplisit menang atas default master.
+    assert _await(resolve_line_production_process(
+        db, master_item_id=master["id"], explicit="print",
+    )) == "print"
+    assert _await(resolve_line_production_process(
+        db, master_item_id=None, accurate_item_id=None, explicit=None,
+    )) == "print"
+
+
+def test_master_default_change_does_not_mutate_stored_order_lines():
+    """Changing master default never rewrites existing order line production_process."""
+    db = FakeDB()
+    master = _await(create_local_master_item(db, {
+        "item_code": "SNAP-1",
+        "item_name": "Snapshot line",
+        "item_type": "INVENTORY",
+        "unit": "pcs",
+        "production_process": "print",
+    }))
+    order_line = {
+        "master_item_id": master["id"],
+        "quantity": 10,
+        "production_process": "print",
+    }
+    _await(update_master_production_process(
+        db, master["id"], "non_print", user={"email": "owner@test.local"},
+    ))
+    fresh = public_master_item(
+        next(d for d in db.master_items.docs if d["id"] == master["id"])
+    )
+    assert fresh["production_process"] == "non_print"
+    assert order_line["production_process"] == "print"

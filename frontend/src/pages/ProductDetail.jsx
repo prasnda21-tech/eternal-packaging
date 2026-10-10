@@ -36,6 +36,7 @@ export default function ProductDetail() {
   const { hasPerm } = useAuth();
   const canEditConversion = hasPerm("current_stock.update") || hasPerm("master_items.sync");
   const canEditOpeningBalance = hasPerm("current_stock.update") || hasPerm("permissions.manage");
+  const canManageMaster = hasPerm("master_items.manage");
 
   // Active tab: 'umum' | 'stok' | 'mutasi'
   const tabParam = searchParams.get("tab");
@@ -58,6 +59,9 @@ export default function ProductDetail() {
   const [savingSetting, setSavingSetting] = useState(false);
   const [settingSuccess, setSettingSuccess] = useState("");
   const [settingError, setSettingError] = useState("");
+  const [processSaving, setProcessSaving] = useState(false);
+  const [processSuccess, setProcessSuccess] = useState("");
+  const [processError, setProcessError] = useState("");
 
   const [physicalStock, setPhysicalStock] = useState(null);
   const [branches, setBranches] = useState([]);
@@ -458,6 +462,65 @@ export default function ProductDetail() {
                 <tr>
                   <td style={{ color: "#64748b", fontWeight: 500 }}>Status</td>
                   <td>{item.is_active === false ? "Nonaktif" : "Aktif"}</td>
+                </tr>
+                <tr>
+                  <td style={{ color: "#64748b", fontWeight: 500 }}>Default Cetak / Tidak cetak</td>
+                  <td>
+                    {canManageMaster ? (
+                      <select
+                        value={item.production_process === "non_print" ? "non_print" : item.production_process === "print" ? "print" : ""}
+                        disabled={processSaving || !item.id}
+                        onChange={async (e) => {
+                          const next = e.target.value;
+                          if (!next || !item.id) return;
+                          setProcessSaving(true);
+                          setProcessSuccess("");
+                          setProcessError("");
+                          try {
+                            const updated = await api.masterItemsSetProductionProcess(item.id, next);
+                            setProductData((prev) => (
+                              prev
+                                ? { ...prev, item: { ...(prev.item || {}), production_process: updated.production_process } }
+                                : prev
+                            ));
+                            setProcessSuccess(
+                              updated.production_process === "non_print"
+                                ? "Tersimpan: Tidak cetak — baris pesanan baru siap kirim (packing dilewati). Order lama tidak diubah."
+                                : "Tersimpan: Cetak — baris pesanan baru mengikuti tahap produksi hingga kirim. Order lama tidak diubah."
+                            );
+                          } catch (ex) {
+                            const det = ex.response?.data?.detail;
+                            setProcessError(typeof det === "object" ? (det.message || JSON.stringify(det)) : (det || "Gagal menyimpan"));
+                          } finally {
+                            setProcessSaving(false);
+                          }
+                        }}
+                        data-testid="product-production-process"
+                        aria-label="Default Cetak atau Tidak cetak"
+                      >
+                        {!item.production_process && <option value="">Belum diatur</option>}
+                        <option value="print">Cetak — tahap produksi hingga kirim</option>
+                        <option value="non_print">Tidak cetak — siap kirim</option>
+                      </select>
+                    ) : (
+                      <span data-testid="product-production-process-label">
+                        {item.production_process === "non_print"
+                          ? "Tidak cetak"
+                          : item.production_process === "print"
+                            ? "Cetak"
+                            : "Belum diatur"}
+                      </span>
+                    )}
+                    <p className="muted small" style={{ marginTop: 6 }}>
+                      Disalin ke baris pesanan baru. Sync Accurate tidak menimpa. Tidak mengisi selesai/packing palsu.
+                    </p>
+                    {processSuccess && (
+                      <p className="muted small" style={{ color: "#065f46", marginTop: 4 }} data-testid="product-process-success">{processSuccess}</p>
+                    )}
+                    {processError && (
+                      <p role="alert" className="muted small" style={{ color: "#b42318", marginTop: 4 }} data-testid="product-process-error">{processError}</p>
+                    )}
+                  </td>
                 </tr>
                 {item.accurate_item_id && (
                   <tr>

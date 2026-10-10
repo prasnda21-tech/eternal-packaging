@@ -14,6 +14,7 @@ from quantity_rules import (
     helper_prepared_print_qty,
     is_fully_delivered,
     non_print_qty_total,
+    operational_ready_qty_for_line,
     operator_assigned_qty,
     operator_assignment_cap,
     packing_line_breakdown,
@@ -21,6 +22,7 @@ from quantity_rules import (
     packing_required_total,
     packing_status_semantic,
     apply_confirmed_packing_progress,
+    physical_qty_for_loading_line,
     print_available_for_packing,
     print_completed_qty,
     print_qty_target,
@@ -833,6 +835,23 @@ def test_validate_packing_qty_below_delivered_still_rejected():
     assert err == (
         "Qty Packing (2500) tidak boleh lebih kecil dari qty sudah dikirim (4000)."
     )
+
+
+def test_operational_ready_and_loading_physical_print_vs_non_print():
+    order = {
+        "line_items": [
+            {"name": "Cetak", "quantity": 100, "production_process": "print"},
+            {"name": "Langsung", "quantity": 80, "production_process": "non_print"},
+        ],
+        "operator_splits": [{"line_idx": 0, "qty_completed": 40}],
+        "packing_info": {"lines": [{"line_idx": 0, "packed_qty": 30}]},
+    }
+    assert operational_ready_qty_for_line(order, 0) == 40
+    assert operational_ready_qty_for_line(order, 1) == 80
+    assert physical_qty_for_loading_line(order, 0) == 30
+    assert physical_qty_for_loading_line(order, 1) == 80
+    # Non-print readiness must not invent operator_splits / packing rows.
+    assert order["operator_splits"] == [{"line_idx": 0, "qty_completed": 40}]
 
 
 def run_all():

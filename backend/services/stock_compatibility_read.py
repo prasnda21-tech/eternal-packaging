@@ -247,7 +247,7 @@ async def list_compatibility_stock_catalog(
             ),
             "compatibility": {
                 "physical_source": "product_stock_state.total_qty",
-                "order_source": "orders.line_items + operator_splits",
+                "order_source": "orders.line_items + operator_splits (print) / PO qty ready (non_print)",
                 "delivery_source": "sales_deliveries (+ order.qty_delivered single-line fallback)",
                 "physical_qty_scope": "COMPANY",
                 "branch_filter_affects_physical_qty": False,
@@ -320,7 +320,7 @@ async def list_compatibility_stock_catalog(
         ),
         "compatibility": {
             "physical_source": "product_stock_state.total_qty",
-            "order_source": "orders.line_items + operator_splits",
+            "order_source": "orders.line_items + operator_splits (print) / PO qty ready (non_print)",
             "delivery_source": "sales_deliveries (+ order.qty_delivered single-line fallback)",
             "physical_qty_scope": "COMPANY",
             "branch_filter_affects_physical_qty": False,

@@ -290,3 +290,166 @@ async def test_aggregate_legacy_delivered_single_line_fallback():
     delivered, prov = aggregate_legacy_delivered_qty(orders, [])
     assert delivered["m1"] == 30
     assert prov["m1"] == "order_qty_delivered"
+
+
+async def test_non_print_demand_is_ready_without_operator_completed(db):
+    """Non-print: siap kirim = PO qty; sisa undelivered → Belum; no fake completed writes."""
+    item = await _seed_master(db, "NONP")
+    await db.product_stock_state.insert_one({
+        "master_item_id": item["id"],
+        "total_qty": 1000,
+        "initialized": True,
+        "status": "INITIALIZED",
+    })
+    oid = f"so-np-{uuid.uuid4().hex[:8]}"
+    order = {
+        "id": oid,
+        "cancelled": False,
+        "line_items": [{
+            "line_id": "ln-0",
+            "master_item_id": item["id"],
+            "quantity": 300,
+            "production_process": "non_print",
+            "name": "NONP",
+        }],
+        "operator_splits": [],
+        "qty_packed": 0,
+    }
+    await db.orders.insert_one(dict(order))
+
+    row = next(
+        r for r in (await list_compatibility_stock_catalog(db))["items"]
+        if r["master_item_id"] == item["id"]
+    )
+    assert row["qty_pesanan"] == 0
+    assert row["qty_belum_terkirim"] == 300
+    assert row["qty_tersedia"] == 1000 - 300
+    stored = await db.orders.find_one({"id": oid}, {"_id": 0})
+    assert stored.get("operator_splits") in (None, [])
+    assert stored.get("qty_packed") in (None, 0)
+
+    await db.sales_deliveries.insert_one({
+        "id": f"sj-{uuid.uuid4().hex[:8]}",
+        "po_id": oid,
+        "is_cancelled": False,
+        "line_items": [{"line_idx": 0, "master_item_id": item["id"], "qty": 100}],
+    })
+    row2 = next(
+        r for r in (await list_compatibility_stock_catalog(db))["items"]
+        if r["master_item_id"] == item["id"]
+    )
+    assert row2["qty_pesanan"] == 0
+    assert row2["qty_belum_terkirim"] == 200
+    assert row2["qty_tersedia"] == 1000 - 200
+
+
+async def test_mixed_print_non_print_no_double_count(db):
+    print_item = await _seed_master(db, "PRINTX")
+    non_item = await _seed_master(db, "NONX")
+    for item, qty in ((print_item, 500), (non_item, 500)):
+        await db.product_stock_state.insert_one({
+            "master_item_id": item["id"],
+            "total_qty": qty,
+            "initialized": True,
+            "status": "INITIALIZED",
+        })
+    oid = f"so-mix-{uuid.uuid4().hex[:6]}"
+    await db.orders.insert_one({
+        "id": oid,
+        "cancelled": False,
+        "line_items": [
+            {"line_id": "ln-0", "master_item_id": print_item["id"], "quantity": 100, "production_process": "print", "name": "P"},
+            {"line_id": "ln-1", "master_item_id": non_item["id"], "quantity": 80, "production_process": "non_print", "name": "N"},
+        ],
+        "operator_splits": [{"line_idx": 0, "qty_completed": 40}],
+    })
+    catalog = await list_compatibility_stock_catalog(db)
+    prow = next(r for r in catalog["items"] if r["master_item_id"] == print_item["id"])
+    nrow = next(r for r in catalog["items"] if r["master_item_id"] == non_item["id"])
+    assert prow["qty_pesanan"] == 60
+    assert prow["qty_belum_terkirim"] == 40
+    assert nrow["qty_pesanan"] == 0
+    assert nrow["qty_belum_terkirim"] == 80
+
+
+async def test_cancelled_non_print_excluded(db):
+    item = await _seed_master(db, "CANC")
+    await db.product_stock_state.insert_one({
+        "master_item_id": item["id"],
+        "total_qty": 50,
+        "initialized": True,
+        "status": "INITIALIZED",
+    })
+    await db.orders.insert_one({
+        "id": f"so-canc-{uuid.uuid4().hex[:6]}",
+        "cancelled": True,
+        "line_items": [{
+            "master_item_id": item["id"],
+            "quantity": 40,
+            "production_process": "non_print",
+        }],
+    })
+    row = next(
+        r for r in (await list_compatibility_stock_catalog(db))["items"]
+        if r["master_item_id"] == item["id"]
+    )
+    assert row["qty_pesanan"] == 0
+    assert row["qty_belum_terkirim"] == 0
+
+
+async def test_same_master_print_and_non_print_orders_independent(db):
+    """Same master item on two orders: print uses operator; non_print siap kirim; no double-count."""
+    item = await _seed_master(db, "DUAL")
+    await db.product_stock_state.insert_one({
+        "master_item_id": item["id"],
+        "total_qty": 1000,
+        "initialized": True,
+        "status": "INITIALIZED",
+    })
+    await db.orders.insert_one({
+        "id": f"so-print-{uuid.uuid4().hex[:6]}",
+        "cancelled": False,
+        "line_items": [{
+            "line_id": "ln-p",
+            "master_item_id": item["id"],
+            "quantity": 100,
+            "production_process": "print",
+            "name": "DUAL",
+        }],
+        "operator_splits": [{"line_idx": 0, "qty_completed": 40}],
+    })
+    await db.orders.insert_one({
+        "id": f"so-np-{uuid.uuid4().hex[:6]}",
+        "cancelled": False,
+        "line_items": [{
+            "line_id": "ln-n",
+            "master_item_id": item["id"],
+            "quantity": 80,
+            "production_process": "non_print",
+            "name": "DUAL",
+        }],
+        "operator_splits": [],
+    })
+    row = next(
+        r for r in (await list_compatibility_stock_catalog(db))["items"]
+        if r["master_item_id"] == item["id"]
+    )
+    # print: pesanan 60 + belum 40; non_print: pesanan 0 + belum 80
+    assert row["qty_pesanan"] == 60
+    assert row["qty_belum_terkirim"] == 120
+    assert row["qty_tersedia"] == 1000 - 60 - 120
+
+    await db.sales_deliveries.insert_one({
+        "id": f"sj-{uuid.uuid4().hex[:8]}",
+        "po_id": f"so-np-partial",
+        "is_cancelled": False,
+        "line_items": [{"line_idx": 0, "master_item_id": item["id"], "qty": 30}],
+    })
+    # Legacy delivery attribution by master only — reduces belum once, not twice.
+    row2 = next(
+        r for r in (await list_compatibility_stock_catalog(db))["items"]
+        if r["master_item_id"] == item["id"]
+    )
+    assert row2["qty_pesanan"] == 60
+    assert row2["qty_belum_terkirim"] == 90
+    assert row2["qty_tersedia"] == 1000 - 60 - 90

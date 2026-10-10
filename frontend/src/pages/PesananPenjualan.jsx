@@ -1002,6 +1002,11 @@ export default function PesananPenjualan() {
           price_source: hadPrice ? "manual" : "",
         };
       } else {
+        const masterProcess = master.production_process === "non_print"
+          ? "non_print"
+          : master.production_process === "print"
+            ? "print"
+            : null;
         const next = {
           ...current,
           name: master.item_name || current.name,
@@ -1010,6 +1015,7 @@ export default function PesananPenjualan() {
           accurate_item_id: master.accurate_item_id || null,
           master_item_id: master.id || master.master_item_id || null,
           price_message: "",
+          ...(masterProcess ? { production_process: masterProcess } : {}),
         };
         if (hadPrice || current.price_lock) {
           next.price_review = true;
