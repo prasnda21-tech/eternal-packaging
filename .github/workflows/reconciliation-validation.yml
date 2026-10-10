@@ -102,6 +102,74 @@ jobs:
           tests/test_division_tasks.py::test_operator_task_keeps_each_allocation_screen
           tests/test_division_tasks.py::test_operator_task_keeps_screen_when_line_mirror_empty
           tests/test_production_dashboard_summary.py
+      # Phase 2.2C revision suite must run alone: it sets DB_NAME at import and
+      # previously hung the combined xdist job after ~87% with no further output.
+      - name: Run sales invoice edit revision tests
+        working-directory: backend
+        timeout-minutes: 5
+        env:
+          MONGO_URL: mongodb://127.0.0.1:27017
+          DB_NAME: eternal_packaging_ci_sales_invoice_edit_revision
+          JWT_SECRET: ci-only-secret
+        run: |
+          set -euo pipefail
+          echo "Starting isolated revision suite (serial, dedicated DB_NAME)"
+          if ! timeout --signal=TERM --kill-after=15s 180s \
+            python -m pytest -vv -n 0 --durations=20 \
+            tests/test_sales_invoice_edit_revision.py; then
+            status=$?
+            echo "::error::sales invoice edit revision tests exited with status ${status}"
+            echo "--- process snapshot ---"
+            ps -eo pid,ppid,stat,etime,cmd --sort=etime | head -80 || true
+            echo "--- mongo ping ---"
+            mongosh --quiet mongodb://127.0.0.1:27017 --eval 'db.runCommand({ ping: 1 })' || true
+            exit "${status}"
+          fi
+      # Phase 2.2D business-cancel suite also pins DB_NAME at import; run serial
+      # and isolated so it cannot collide with other sales accounting modules.
+      - name: Run sales business cancel tests
+        working-directory: backend
+        timeout-minutes: 5
+        env:
+          MONGO_URL: mongodb://127.0.0.1:27017
+          DB_NAME: eternal_packaging_ci_sales_business_cancel
+          JWT_SECRET: ci-only-secret
+        run: |
+          set -euo pipefail
+          echo "Starting isolated business-cancel suite (serial, dedicated DB_NAME)"
+          if ! timeout --signal=TERM --kill-after=15s 180s \
+            python -m pytest -vv -n 0 --durations=20 \
+            tests/test_sales_business_cancel.py; then
+            status=$?
+            echo "::error::sales business cancel tests exited with status ${status}"
+            echo "--- process snapshot ---"
+            ps -eo pid,ppid,stat,etime,cmd --sort=etime | head -80 || true
+            echo "--- mongo ping ---"
+            mongosh --quiet mongodb://127.0.0.1:27017 --eval 'db.runCommand({ ping: 1 })' || true
+            exit "${status}"
+          fi
+      # Phase 2 Package A five-tab list suite pins DB_NAME at import; run serial.
+      - name: Run sales list five-tab tests
+        working-directory: backend
+        timeout-minutes: 5
+        env:
+          MONGO_URL: mongodb://127.0.0.1:27017
+          DB_NAME: eternal_packaging_ci_sales_list_tabs
+          JWT_SECRET: ci-only-secret
+        run: |
+          set -euo pipefail
+          echo "Starting isolated sales list five-tab suite (serial, dedicated DB_NAME)"
+          if ! timeout --signal=TERM --kill-after=15s 180s \
+            python -m pytest -vv -n 0 --durations=20 \
+            tests/test_sales_list_tabs.py; then
+            status=$?
+            echo "::error::sales list five-tab tests exited with status ${status}"
+            echo "--- process snapshot ---"
+            ps -eo pid,ppid,stat,etime,cmd --sort=etime | head -80 || true
+            echo "--- mongo ping ---"
+            mongosh --quiet mongodb://127.0.0.1:27017 --eval 'db.runCommand({ ping: 1 })' || true
+            exit "${status}"
+          fi
 
   backend-live-orders:
     name: Backend live orders summary
@@ -224,6 +292,9 @@ jobs:
           src/pages/FakturPenjualan.listFilters.test.js
           src/components/MasterItemSearchSelect.picker.test.js
           src/lib/salesOrderListPresentation.test.js
+          src/lib/salesFiveTabs.test.js
+          src/lib/salesLifecycleUi.test.js
+          src/pages/salesPackageB2.test.js
           src/pages/PesananPenjualan.searchDebounce.test.js
           src/components/TrackingInvoicePdfViewer.test.js
           src/components/TrackingInvoices.test.js
@@ -235,6 +306,9 @@ jobs:
           src/pages/CustomerTrackingPage.onescreen.test.js
           src/pages/CustomerTrackingPage.publicUrl.test.js
           src/pages/PenerimaanPenjualan.test.js
+          src/pages/PengirimanPesanan.test.js
+          src/lib/clickableListRow.test.js
+          src/pages/salesDocumentRowNav.test.js
           src/lib/salesReceipts.test.js
           src/lib/salesReceiptPaymentProof.test.js
           src/pages/SalesAccountingSettings.test.js

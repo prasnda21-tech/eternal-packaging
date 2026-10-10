@@ -15,9 +15,31 @@ import {
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDisplayDate } from "../lib/constants";
+import { addSalesInvoiceCalendarDays, formatSalesInvoiceDate, salesInvoiceDateToIso } from "../lib/salesInvoiceDate";
+import SalesInvoiceDateField from "../components/SalesInvoiceDateField";
 import HeaderSelectFilter from "../components/HeaderSelectFilter";
 import { FormSection, FormField, FormProgress, computeStatus } from "../components/form-standard";
 import { INVOICE_DATE_PRESET_OPTIONS, invoiceDatePresetRange } from "../lib/salesDatePresets";
+import { clickableDocumentRowProps } from "../lib/clickableListRow";
+import {
+  SALES_LIST_DEFAULT_PAGE_SIZE,
+  SALES_LIST_PAGE_SIZES,
+  SALES_LIST_TABS,
+  normalizeSalesListTab,
+  salesFiveTabListMetaFromResponse,
+  salesFiveTabListParams,
+  salesListTabLabel,
+} from "../lib/salesFiveTabs";
+import {
+  canBusinessCancelInvoice,
+  canRecoverAutoAccounting,
+  clearIdempotencyIntent,
+  ensureIdempotencyIntent,
+  interpretAutoLifecycleResponse,
+  interpretBusinessCancelResponse,
+  lifecycleChipClass,
+  salesDocumentLifecyclePresentation,
+} from "../lib/salesLifecycleUi";
 import "./salesSubmenuDensity.css";
 
 function getTodayString() {
@@ -364,7 +386,7 @@ const EMPTY_INVOICE_COLUMN_FILTERS = {
   paymentStatus: "",
 };
 
-const INVOICE_PAGE_SIZES = [20, 50, 100];
+const INVOICE_PAGE_SIZES = [...SALES_LIST_PAGE_SIZES];
 
 const INVOICE_POSTING_OPTIONS = [
   { value: "", label: "Semua" },
@@ -390,24 +412,47 @@ function invoiceFiltersActive(filters, query) {
   return false;
 }
 
-function invoiceDeletable(inv) {
+function invoiceDeletable(inv, { allowBusinessCancel = false } = {}) {
+  if (allowBusinessCancel) {
+    const progress = String(inv?.business_cancel_progress || "").toLowerCase();
+    if (progress === "complete" || progress === "completed") return false;
+    if (String(inv?.financial_status || "").toLowerCase() === "cancelled") return false;
+    if (String(inv?.list_tab || "").toLowerCase() === "cancelled") return false;
+    return true;
+  }
   return inv?.can_delete === true;
 }
 
 function invoiceListParams({ searchQuery, listTab, columnFilters, page, pageSize }) {
-  const params = {
-    scope: listTab === "cancelled" ? "cancelled" : "active",
-    page,
-    page_size: pageSize,
-  };
-  if (searchQuery.trim()) params.q = searchQuery.trim();
   const range = invoiceDatePresetRange(columnFilters.datePreset || "all");
-  if (range.date_from) params.date_from = range.date_from;
-  if (range.date_to) params.date_to = range.date_to;
-  if (columnFilters.financialStatus) params.financial_status = columnFilters.financialStatus;
-  if (columnFilters.accountingStatus) params.accounting_status = columnFilters.accountingStatus;
-  if (columnFilters.paymentStatus) params.payment_status = columnFilters.paymentStatus;
-  return params;
+  return salesFiveTabListParams({
+    listTab,
+    page,
+    pageSize,
+    q: searchQuery,
+    extra: {
+      date_from: range.date_from || undefined,
+      date_to: range.date_to || undefined,
+      financial_status: columnFilters.financialStatus || undefined,
+      accounting_status: columnFilters.accountingStatus || undefined,
+      payment_status: columnFilters.paymentStatus || undefined,
+    },
+  });
+}
+
+function LifecycleStatusChip({ doc, testId }) {
+  const presentation = salesDocumentLifecyclePresentation(doc || {});
+  if (!presentation) return null;
+  return (
+    <span
+      className={`sd-lifecycle-chip ${lifecycleChipClass(presentation.tone)}`}
+      data-testid={testId}
+      title={presentation.reason || presentation.label}
+    >
+      {presentation.label}
+      {presentation.reason ? ` · ${presentation.reason}` : ""}
+    </span>
+  );
 }
 
 function invoiceFinancialLabel(status) {
@@ -468,6 +513,7 @@ export default function FakturPenjualan() {
     hasPerm("sales.invoice.create") ||
     hasPerm("po.edit") ||
     user?.role === "admin";
+  const canCancelBusiness = canBusinessCancelInvoice(hasPerm);
   const canPrint =
     hasPerm("sales.invoice.view") ||
     hasPerm("sales_order.view") ||
@@ -485,18 +531,21 @@ export default function FakturPenjualan() {
   const [listLoading, setListLoading] = useState(false);
   const [listErr, setListErr] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
-  const [listTab, setListTab] = useState("active");
+  const [listTab, setListTab] = useState(() => normalizeSalesListTab(searchParams.get("tab") || "active"));
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
+  const [pageSize, setPageSize] = useState(SALES_LIST_DEFAULT_PAGE_SIZE);
   const [columnFilters, setColumnFilters] = useState(EMPTY_INVOICE_COLUMN_FILTERS);
   const [listMeta, setListMeta] = useState({
     total: 0,
     tabTotal: 0,
-    activeTotal: 0,
-    cancelledTotal: 0,
+    capped: false,
+    counts: { all: 0, active: 0, completed: 0, pending: 0, cancelled: 0 },
   });
   const requestSeq = useRef(0);
   const loadAbortRef = useRef(null);
+  const createIdempotencyRef = useRef({ signature: "", key: "" });
+  const editIdempotencyRef = useRef({ signature: "", key: "" });
+  const cancelIdempotencyRef = useRef({ signature: "", key: "" });
 
   // Checkbox selection
   const [selectedIds, setSelectedIds] = useState(new Set());
@@ -515,6 +564,7 @@ export default function FakturPenjualan() {
   const [previewErr, setPreviewErr] = useState("");
 
   const [invoiceDate, setInvoiceDate] = useState(getTodayString());
+  const createDateRef = useRef(null);
   const [paymentTermDays, setPaymentTermDays] = useState(0);
   const [discountAmount, setDiscountAmount] = useState(0);
   const [ppnPercent, setPpnPercent] = useState(0);
@@ -539,6 +589,7 @@ export default function FakturPenjualan() {
   const [detailPpn, setDetailPpn] = useState(0);
   const [detailTermDays, setDetailTermDays] = useState(0);
   const [detailDate, setDetailDate] = useState("");
+  const detailDateRef = useRef(null);
   const [detailNotes, setDetailNotes] = useState("");
   const [detailCharges, setDetailCharges] = useState([]);
   const [showDetailChargeErrors, setShowDetailChargeErrors] = useState(false);
@@ -579,14 +630,9 @@ export default function FakturPenjualan() {
       const params = invoiceListParams({ searchQuery, listTab, columnFilters, page, pageSize });
       const res = await api.listSalesInvoices(params, { signal: ac.signal });
       if (seq !== requestSeq.current || ac.signal.aborted) return;
-      setInvoices(res.invoices || []);
-      const tabTotal = Number(res.tab_total ?? res.total ?? (res.invoices || []).length) || 0;
-      setListMeta({
-        total: Number(res.total ?? (res.invoices || []).length) || 0,
-        tabTotal,
-        activeTotal: Number(res.active_total ?? 0) || 0,
-        cancelledTotal: Number(res.cancelled_total ?? 0) || 0,
-      });
+      const rows = res.invoices || [];
+      setInvoices(rows);
+      setListMeta(salesFiveTabListMetaFromResponse(res, { rowCount: rows.length }));
     } catch (e) {
       if (seq !== requestSeq.current || ac.signal.aborted || e?.code === "ERR_CANCELED" || e?.name === "CanceledError") {
         return;
@@ -603,9 +649,11 @@ export default function FakturPenjualan() {
   }, [searchQuery, listTab, columnFilters, page, pageSize]);
 
   // Checkbox helpers — current page, drafts that the backend marks deletable
-  const pageDeletableIds = invoices.filter((inv) => invoiceDeletable(inv)).map((inv) => inv.id);
+  const pageDeletableIds = invoices
+    .filter((inv) => invoiceDeletable(inv, { allowBusinessCancel: canCancelBusiness }))
+    .map((inv) => inv.id);
   const toggleSelect = (inv) => {
-    if (!invoiceDeletable(inv)) return;
+    if (!invoiceDeletable(inv, { allowBusinessCancel: canCancelBusiness })) return;
     setSelectedIds((prev) => {
       const next = new Set(prev);
       if (next.has(inv.id)) next.delete(inv.id);
@@ -622,11 +670,12 @@ export default function FakturPenjualan() {
   };
 
   const changeInvoiceTab = (tab) => {
-    if (tab === listTab) return;
-    setListTab(tab);
+    const next = normalizeSalesListTab(tab);
+    if (next === listTab) return;
+    setListTab(next);
     setColumnFilters((prev) => ({
       ...prev,
-      financialStatus: tab === "cancelled"
+      financialStatus: next === "cancelled"
         ? (prev.financialStatus === "cancelled" ? "cancelled" : "")
         : (prev.financialStatus === "draft" || prev.financialStatus === "finalized" ? prev.financialStatus : ""),
     }));
@@ -673,18 +722,46 @@ export default function FakturPenjualan() {
     });
   };
 
-  // Delete single
+  // Hapus: business-cancel when opt-in cancel perm; else legacy delete. No silent fallthrough.
   const handleDelete = async (id) => {
     setDeleteLoading(true);
     setDeleteErr("");
     try {
+      if (canCancelBusiness) {
+        const key = ensureIdempotencyIntent(cancelIdempotencyRef, `cancel-invoice|${id}`, { prefix: "inv-cancel" });
+        const res = await api.businessCancelSalesInvoice(id, {
+          reason: "Batalkan dari daftar Faktur Penjualan",
+          idempotency_key: key,
+        });
+        const interpreted = interpretBusinessCancelResponse(res);
+        if (!interpreted.ok) {
+          setDeleteErr(interpreted.message);
+          // Keep modal + same idempotency key. Refresh list only to surface Pending status.
+          if (interpreted.pending) loadInvoices();
+          return;
+        }
+        clearIdempotencyIntent(cancelIdempotencyRef);
+        setDeleteConfirm(null);
+        setDeleteHold(false);
+        setDeleteBlockedIds([]);
+        loadInvoices();
+        return;
+      }
       await api.deleteSalesInvoice(id);
       setDeleteConfirm(null);
       setDeleteHold(false);
       setDeleteBlockedIds([]);
       loadInvoices();
     } catch (e) {
-      rejectDeleteConfirm(e.response?.data?.detail, [id]);
+      const statusCode = e.response?.status;
+      const det = e.response?.data?.detail;
+      if (canCancelBusiness) {
+        const interpreted = interpretBusinessCancelResponse({}, { httpErrorBody: det, statusCode });
+        setDeleteErr(interpreted.message);
+        // Fail closed: do not fall through to legacy hard delete.
+        return;
+      }
+      rejectDeleteConfirm(det, [id]);
     } finally {
       setDeleteLoading(false);
     }
@@ -714,10 +791,32 @@ export default function FakturPenjualan() {
   };
 
   const handleBulkDelete = async () => {
-    const ids = Array.from(selectedIds);
+    const ids = deleteConfirm?.ids || Array.from(selectedIds);
     setDeleteLoading(true);
     setDeleteErr("");
     try {
+      if (canCancelBusiness) {
+        for (const id of ids) {
+          const key = ensureIdempotencyIntent(cancelIdempotencyRef, `cancel-invoice|${id}`, { prefix: "inv-cancel" });
+          const res = await api.businessCancelSalesInvoice(id, {
+            reason: "Batalkan terpilih dari daftar Faktur Penjualan",
+            idempotency_key: key,
+          });
+          const interpreted = interpretBusinessCancelResponse(res);
+          if (!interpreted.ok) {
+            setDeleteErr(interpreted.message);
+            if (interpreted.pending) loadInvoices();
+            return;
+          }
+          clearIdempotencyIntent(cancelIdempotencyRef);
+        }
+        setDeleteConfirm(null);
+        setDeleteHold(false);
+        setDeleteBlockedIds([]);
+        setSelectedIds(new Set());
+        loadInvoices();
+        return;
+      }
       await api.bulkDeleteSalesInvoices(ids);
       setDeleteConfirm(null);
       setDeleteHold(false);
@@ -725,7 +824,14 @@ export default function FakturPenjualan() {
       setSelectedIds(new Set());
       loadInvoices();
     } catch (e) {
-      rejectDeleteConfirm(e.response?.data?.detail, ids);
+      const statusCode = e.response?.status;
+      const det = e.response?.data?.detail;
+      if (canCancelBusiness) {
+        const interpreted = interpretBusinessCancelResponse({}, { httpErrorBody: det, statusCode });
+        setDeleteErr(interpreted.message);
+        return;
+      }
+      rejectDeleteConfirm(det, ids);
     } finally {
       setDeleteLoading(false);
     }
@@ -838,14 +944,9 @@ export default function FakturPenjualan() {
   // Due Date calculation helper
   const calculatedDueDate = useMemo(() => {
     const term = Math.max(0, Number(paymentTermDays) || 0);
-    const baseDateStr = invoiceDate || getTodayString();
-    try {
-      const d = new Date(baseDateStr);
-      d.setDate(d.getDate() + term);
-      return d.toISOString().split("T")[0];
-    } catch {
-      return baseDateStr;
-    }
+    const baseDateStr = invoiceDate;
+    if (!baseDateStr) return "";
+    return addSalesInvoiceCalendarDays(baseDateStr, term);
   }, [invoiceDate, paymentTermDays]);
 
   // Live calculation of line totals and grand total for Create form
@@ -950,6 +1051,12 @@ export default function FakturPenjualan() {
       setFormErr(createCalculations.chargesMessage);
       return;
     }
+    const createDate = createDateRef.current?.read();
+    if (!createDate?.ok) {
+      setInvoiceFormTab("terms");
+      setFormErr(createDate?.message || "Tanggal faktur wajib diisi.");
+      return;
+    }
     if (createCalculations.hasErrors) {
       if (createCalculations.priceMissingAny) {
         setFormErr("Lengkapi harga jual yang belum tersedia. Harga kosong tidak dijadikan Rp0.");
@@ -984,31 +1091,63 @@ export default function FakturPenjualan() {
         };
       });
 
+      const signature = [
+        selectedPoId,
+        createDate.iso,
+        Number(paymentTermDays) || 0,
+        Number(discountAmount) || 0,
+        Number(ppnPercent) || 0,
+        invoiceNotes.trim(),
+        JSON.stringify(otherChargePayload(otherCharges)),
+        JSON.stringify(linesPayload),
+      ].join("|");
+      const idempotencyKey = ensureIdempotencyIntent(createIdempotencyRef, signature, { prefix: "inv-create" });
       const payload = {
         po_id: selectedPoId,
-        invoice_date: invoiceDate || getTodayString(),
+        invoice_date: createDate.iso,
         payment_term_days: Number(paymentTermDays) || 0,
         discount_amount: Number(discountAmount) || 0,
         ppn_percent: Number(ppnPercent) || 0,
         notes: invoiceNotes.trim(),
         other_charges: otherChargePayload(otherCharges),
         lines: linesPayload,
+        idempotency_key: idempotencyKey,
       };
 
-      const res = await api.createSalesInvoice(payload);
-      setSuccessMsg(res.message || "Faktur Penjualan berhasil dibuat");
-      setTimeout(() => {
-        setSearchParams({});
-        setViewMode("list");
-        loadInvoices();
-      }, 900);
+      try {
+        const res = await api.createSalesInvoice(payload);
+        const interpreted = interpretAutoLifecycleResponse(res);
+        if (interpreted.mode === "auto" && !interpreted.ok) {
+          setFormErr(interpreted.message);
+          if (interpreted.document) setDetailData(interpreted.document);
+          return;
+        }
+        clearIdempotencyIntent(createIdempotencyRef);
+        setSuccessMsg(interpreted.message || res.message || "Faktur Penjualan berhasil dibuat");
+        setTimeout(() => {
+          setSearchParams({});
+          setViewMode("list");
+          loadInvoices();
+        }, 900);
+      } catch (err) {
+        const det = err.response?.data?.detail;
+        if (det && typeof det === "object" && ("financial_complete" in det || "auto_accounting_status" in det)) {
+          const interpreted = interpretAutoLifecycleResponse({}, { httpErrorBody: det });
+          setFormErr(interpreted.message);
+          if (interpreted.document) {
+            setSelectedInvoiceId(interpreted.document.id || selectedInvoiceId);
+            setDetailData(interpreted.document);
+          }
+          return;
+        }
+        setFormErr(
+          typeof det === "object"
+            ? det.message
+            : det || err.message || "Gagal menyimpan Faktur Penjualan"
+        );
+      }
     } catch (err) {
-      const det = err.response?.data?.detail;
-      setFormErr(
-        typeof det === "object"
-          ? det.message
-          : det || err.message || "Gagal menyimpan Faktur Penjualan"
-      );
+      setFormErr(err.message || "Gagal menyimpan Faktur Penjualan");
     } finally {
       setFormBusy(false);
     }
@@ -1026,7 +1165,7 @@ export default function FakturPenjualan() {
       const res = await api.getSalesInvoice(invId);
       const inv = res.invoice || res;
       setDetailData(inv);
-      setDetailDate(inv.invoice_date || "");
+      setDetailDate(salesInvoiceDateToIso(inv.invoice_date) || "");
       setDetailTermDays(inv.payment_term_days || 0);
       setDetailDiscount(inv.discount_amount || 0);
       setDetailPpn(inv.ppn_percent || 0);
@@ -1112,6 +1251,12 @@ export default function FakturPenjualan() {
       setDetailErr(detailCalculations.chargesMessage);
       return;
     }
+    const detailDateRead = detailDateRef.current?.read();
+    if (!detailDateRead?.ok) {
+      setInvoiceFormTab("terms");
+      setDetailErr(detailDateRead?.message || "Tanggal faktur wajib diisi.");
+      return;
+    }
     setDetailSaving(true);
     setDetailErr("");
     setSuccessMsg("");
@@ -1139,18 +1284,32 @@ export default function FakturPenjualan() {
         };
       });
 
+      const signature = [
+        selectedInvoiceId,
+        detailDateRead.iso,
+        Number(detailTermDays) || 0,
+        Number(detailDiscount) || 0,
+        Number(detailPpn) || 0,
+        detailNotes.trim(),
+        JSON.stringify(otherChargePayload(detailCharges)),
+        JSON.stringify(linesPayload),
+      ].join("|");
+      // New edit attempt (changed signature) gets a new key; retries reuse.
+      const idempotencyKey = ensureIdempotencyIntent(editIdempotencyRef, signature, { prefix: "inv-edit" });
       const payload = {
-        invoice_date: detailDate,
+        invoice_date: detailDateRead.iso,
         payment_term_days: Number(detailTermDays) || 0,
         discount_amount: Number(detailDiscount) || 0,
         ppn_percent: Number(detailPpn) || 0,
         notes: detailNotes.trim(),
         other_charges: otherChargePayload(detailCharges),
         lines: linesPayload,
+        idempotency_key: idempotencyKey,
       };
 
       const res = await api.updateSalesInvoice(selectedInvoiceId, payload);
-      const updated = res.invoice || res;
+      const interpreted = interpretAutoLifecycleResponse(res);
+      const updated = interpreted.document || res.invoice || res;
       setDetailData(updated);
       const savedQtys = {};
       (updated.lines || []).forEach((l) => {
@@ -1159,12 +1318,21 @@ export default function FakturPenjualan() {
       setDetailQuantities(savedQtys);
       setDetailCharges((updated.other_charges || []).map(otherChargeFromStored));
       setShowDetailChargeErrors(false);
-      setSuccessMsg("Perubahan Faktur Penjualan berhasil disimpan");
-      setTimeout(() => setSuccessMsg(""), 2500);
+      if (interpreted.mode === "auto" && !interpreted.ok) {
+        setDetailErr(interpreted.message);
+      } else {
+        clearIdempotencyIntent(editIdempotencyRef);
+        setSuccessMsg(interpreted.message || "Perubahan Faktur Penjualan berhasil disimpan");
+        setTimeout(() => setSuccessMsg(""), 2500);
+      }
     } catch (err) {
       const det = err.response?.data?.detail;
       if (det && typeof det === "object" && det.code === "FAKTUR_QTY_MELEBIHI_SISA_PO") {
         setDetailErr(DRAFT_QTY_OVER_MESSAGE);
+      } else if (det && typeof det === "object" && ("financial_complete" in det || "auto_accounting_status" in det)) {
+        const interpreted = interpretAutoLifecycleResponse({}, { httpErrorBody: det });
+        if (interpreted.document) setDetailData(interpreted.document);
+        setDetailErr(interpreted.message);
       } else {
         setDetailErr(
           typeof det === "object"
@@ -1329,11 +1497,12 @@ export default function FakturPenjualan() {
   const canEditFinancial = canEdit && !financialLocked;
 
   const filtersActive = invoiceFiltersActive(columnFilters, searchQuery);
-  const reserveCheckboxColumn = canDelete;
-  const showDeleteControls = canDelete && listTab === "active";
-  const tabLabel = listTab === "cancelled" ? "Faktur Dibatalkan" : "Faktur Aktif";
+  const reserveCheckboxColumn = canDelete || canCancelBusiness;
+  const showDeleteControls = (canDelete || canCancelBusiness) && listTab !== "cancelled";
+  const tabLabel = salesListTabLabel(listTab);
   const pageCount = Math.max(1, Math.ceil((Number(listMeta.total) || 0) / pageSize) || 1);
   const allPageDeletableSelected = pageDeletableIds.length > 0 && pageDeletableIds.every((id) => selectedIds.has(id));
+  const showRecoverAuto = canRecoverAutoAccounting(detailData, { hasPerm, kind: "invoice" });
   const financialStatusOptions = listTab === "cancelled"
     ? [{ value: "", label: "Semua" }, { value: "cancelled", label: "Dibatalkan" }]
     : [
@@ -1515,29 +1684,35 @@ export default function FakturPenjualan() {
           )}
 
           <div className="sd-list-toolbar fp-invoice-toolbar">
-            <div className="fp-invoice-tabs" role="tablist" aria-label="Status pembatalan faktur">
-              <button
-                type="button"
-                role="tab"
-                aria-selected={listTab === "active"}
-                className={listTab === "active" ? "is-active" : ""}
-                data-testid="tab-faktur-aktif"
-                onClick={() => changeInvoiceTab("active")}
-              >
-                Faktur Aktif
-                <span className="fp-tab-count" data-testid="tab-count-active">{listMeta.activeTotal.toLocaleString("id-ID")}</span>
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={listTab === "cancelled"}
-                className={listTab === "cancelled" ? "is-active" : ""}
-                data-testid="tab-faktur-dibatalkan"
-                onClick={() => changeInvoiceTab("cancelled")}
-              >
-                Faktur Dibatalkan
-                <span className="fp-tab-count" data-testid="tab-count-cancelled">{listMeta.cancelledTotal.toLocaleString("id-ID")}</span>
-              </button>
+            <div className="fp-invoice-tabs" role="tablist" aria-label="Klasifikasi faktur">
+              {SALES_LIST_TABS.map((tab) => {
+                const count = Number(listMeta.counts?.[tab.id] || 0);
+                const selected = listTab === tab.id;
+                const legacyTestId = tab.id === "active"
+                  ? "tab-faktur-aktif"
+                  : tab.id === "cancelled"
+                    ? "tab-faktur-dibatalkan"
+                    : `tab-faktur-${tab.testIdSuffix}`;
+                return (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    role="tab"
+                    aria-selected={selected}
+                    className={selected ? "is-active" : ""}
+                    data-testid={legacyTestId}
+                    onClick={() => changeInvoiceTab(tab.id)}
+                  >
+                    {tab.label}
+                    <span
+                      className="fp-tab-count"
+                      data-testid={tab.id === "active" ? "tab-count-active" : tab.id === "cancelled" ? "tab-count-cancelled" : `tab-count-${tab.id}`}
+                    >
+                      {count.toLocaleString("id-ID")}
+                    </span>
+                  </button>
+                );
+              })}
             </div>
             <div className="sd-list-search">
               <Search size={16} />
@@ -1657,12 +1832,19 @@ export default function FakturPenjualan() {
                   </tr>
                 ) : (
                   invoices.map((inv) => {
-                    const deletable = invoiceDeletable(inv);
+                    const deletable = invoiceDeletable(inv, { allowBusinessCancel: canCancelBusiness });
                     const draftEditable = listTab === "active" && invoiceFinancialStatus(inv) === "draft" && canEdit;
                     return (
-                    <tr key={inv.id} data-testid={`invoice-row-${inv.id}`}>
+                    <tr
+                      key={inv.id}
+                      {...clickableDocumentRowProps({
+                        onOpen: () => handleOpenDetail(inv.id),
+                        "data-testid": `invoice-row-${inv.id}`,
+                        ariaLabel: `Buka faktur ${inv.invoice_number || inv.id}`,
+                      })}
+                    >
                       {reserveCheckboxColumn && (
-                        <td>
+                        <td data-no-row-nav onClick={(e) => e.stopPropagation()}>
                           {showDeleteControls && deletable ? (
                             <input
                               type="checkbox"
@@ -1681,12 +1863,12 @@ export default function FakturPenjualan() {
                         </span>
                         {inv.outlet ? <span className="sd-support">{inv.outlet}</span> : null}
                       </td>
-                      <td className="fp-po-cell">
+                      <td className="fp-po-cell" data-no-row-nav onClick={(e) => e.stopPropagation()}>
                         <Link to={`/po/${inv.po_id}`} className="sd-doc" title={inv.po_number || "Buka PO"}>
                           {inv.po_number || "-"}
                         </Link>
                       </td>
-                      <td>{formatDisplayDate(inv.invoice_date || inv.created_at)}</td>
+                      <td>{formatSalesInvoiceDate(inv.invoice_date || inv.created_at) || "-"}</td>
                       <td className="sd-money">{formatRupiah(inv.grand_total)}</td>
                       <td className={"sd-money " + (Number(inv.outstanding_amount) > 0 ? "is-due" : "is-zero")}>
                         {formatRupiah(inv.outstanding_amount)}
@@ -1694,11 +1876,12 @@ export default function FakturPenjualan() {
                       <td className="fp-status-cell">
                         <span className="fp-status-main">{invoiceFinancialLabel(inv.financial_status)}</span>
                         <span className="fp-status-sub">{invoicePostingLabel(accountingStatusOf(inv))}</span>
+                        <LifecycleStatusChip doc={inv} testId={`invoice-lifecycle-${inv.id}`} />
                       </td>
                       <td className={"fp-pay-text is-" + String(inv.payment_status || "BELUM DIBAYAR").toLowerCase().replace(/\s+/g, "-")}>
                         {invoicePaymentLabel(inv.payment_status)}
                       </td>
-                      <td>
+                      <td data-no-row-nav onClick={(e) => e.stopPropagation()}>
                         <div className="sd-actions">
                         <button
                           type="button"
@@ -1869,12 +2052,11 @@ export default function FakturPenjualan() {
                     <label style={{ fontSize: "0.85rem", fontWeight: 600, color: "#334155", display: "block", marginBottom: 6 }}>
                       Tanggal Faktur <span style={{ color: "#ef4444" }}>*</span>
                     </label>
-                    <input
-                      type="date"
-                      value={invoiceDate}
-                      onChange={(e) => setInvoiceDate(e.target.value)}
-                      data-testid="invoice-date-input"
-                      style={{ width: "100%", padding: "8px 12px", border: "1px solid #cbd5e1", borderRadius: 6 }}
+                    <SalesInvoiceDateField
+                      ref={createDateRef}
+                      valueIso={invoiceDate}
+                      onChange={setInvoiceDate}
+                      testId="invoice-date-input"
                     />
                   </div>
 
@@ -1892,7 +2074,7 @@ export default function FakturPenjualan() {
                       style={{ width: "100%", padding: "8px 12px", border: "1px solid #cbd5e1", borderRadius: 6 }}
                     />
                     <div style={{ fontSize: "0.75rem", color: "#64748b", marginTop: 4 }}>
-                      Jatuh Tempo: <strong>{formatDisplayDate(calculatedDueDate)}</strong>
+                      Jatuh Tempo: <strong>{formatSalesInvoiceDate(calculatedDueDate) || "-"}</strong>
                     </div>
                   </div>
 
@@ -2184,7 +2366,7 @@ export default function FakturPenjualan() {
                 </div>
                 <div>
                   <span>Jatuh Tempo</span>
-                  <strong>{formatDisplayDate(detailData.due_date)}</strong>
+                  <strong>{formatSalesInvoiceDate(detailData.due_date) || "-"}</strong>
                 </div>
                 <div>
                   <span>Total Tagihan</span>
@@ -2217,11 +2399,13 @@ export default function FakturPenjualan() {
               <div className="fp-terms sd-pane-terms">
                 <div>
                   <label>Tanggal Faktur</label>
-                  <input
-                    type="date"
-                    value={detailDate}
-                    onChange={(e) => setDetailDate(e.target.value)}
+                  <SalesInvoiceDateField
+                    key={selectedInvoiceId || "detail"}
+                    ref={detailDateRef}
+                    valueIso={detailDate}
+                    onChange={setDetailDate}
                     disabled={!canEditFinancial}
+                    testId="invoice-detail-date-input"
                   />
                 </div>
                 <div>
@@ -2461,6 +2645,38 @@ export default function FakturPenjualan() {
                     Batalkan Faktur
                   </button>
                 )}
+                {showRecoverAuto && (
+                  <button
+                    type="button"
+                    data-testid="btn-recover-auto-invoice"
+                    disabled={lifecycleBusy}
+                    onClick={async () => {
+                      if (!selectedInvoiceId) return;
+                      setLifecycleBusy(true);
+                      setDetailErr("");
+                      try {
+                        const res = await api.recoverAutoSalesInvoiceAccounting(selectedInvoiceId);
+                        const interpreted = interpretAutoLifecycleResponse(res);
+                        if (interpreted.document) setDetailData(interpreted.document);
+                        if (!interpreted.ok) setDetailErr(interpreted.message);
+                        else {
+                          setSuccessMsg(interpreted.message || "Pemulihan akuntansi berhasil");
+                          setTimeout(() => setSuccessMsg(""), 2500);
+                        }
+                      } catch (err) {
+                        const det = err.response?.data?.detail;
+                        const interpreted = interpretAutoLifecycleResponse({}, { httpErrorBody: det });
+                        if (interpreted.document) setDetailData(interpreted.document);
+                        setDetailErr(interpreted.message || (typeof det === "object" ? det.message : det) || "Pemulihan gagal");
+                      } finally {
+                        setLifecycleBusy(false);
+                      }
+                    }}
+                    style={{ padding: "10px 24px", borderRadius: 8, background: "#b45309", color: "#fff", border: "none", cursor: "pointer", fontWeight: 600 }}
+                  >
+                    Pulihkan Posting
+                  </button>
+                )}
                 {showPostAccounting && (
                   <button
                     type="button"
@@ -2532,8 +2748,14 @@ export default function FakturPenjualan() {
           }}
         >
           <div style={{ background: "#fff", borderRadius: 12, padding: 24, width: "100%", maxWidth: 460, boxShadow: "0 20px 40px rgba(0,0,0,0.15)" }}>
-            <h3 style={{ margin: "0 0 8px", fontSize: "1.1rem" }}>Hapus Faktur Penjualan?</h3>
-            <p style={{ margin: "0 0 12px", color: "#64748b", fontSize: "0.9rem" }}>Dokumen berikut akan dihapus:</p>
+            <h3 style={{ margin: "0 0 8px", fontSize: "1.1rem" }}>
+              {canCancelBusiness ? "Batalkan Faktur Penjualan?" : "Hapus Faktur Penjualan?"}
+            </h3>
+            <p style={{ margin: "0 0 12px", color: "#64748b", fontSize: "0.9rem" }}>
+              {canCancelBusiness
+                ? "Dokumen berikut akan dibatalkan. Riwayat tetap tersimpan."
+                : "Dokumen berikut akan dihapus:"}
+            </p>
             <ul data-testid="delete-confirm-numbers" style={{ margin: "0 0 16px", paddingLeft: 18, fontWeight: 700, color: "#9333ea" }}>
               {(deleteConfirm.ids || [deleteConfirm.id]).filter(Boolean).map((id, index) => {
                 const number = (deleteConfirm.numbers || [deleteConfirm.number])[index] || id;
@@ -2571,7 +2793,9 @@ export default function FakturPenjualan() {
                 disabled={deleteLoading || deleteHold || !(deleteConfirm.ids ? deleteConfirm.ids.length : deleteConfirm.id)}
                 style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: "#dc2626", color: "#fff", fontWeight: 600, cursor: deleteHold ? "not-allowed" : "pointer", opacity: deleteHold ? 0.45 : 1 }}
               >
-                {deleteLoading ? "Menghapus..." : "Hapus"}
+                {deleteLoading
+                  ? (canCancelBusiness ? "Membatalkan..." : "Menghapus...")
+                  : (canCancelBusiness ? "Batalkan" : "Hapus")}
               </button>
             </div>
           </div>

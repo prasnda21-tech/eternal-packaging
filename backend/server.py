@@ -34,6 +34,8 @@ from services.master_items import (
     COLLECTION as MASTER_ITEMS_COLLECTION,
     MasterItemUnresolvedError,
     SyncInProgressError,
+    create_local_master_item,
+    ensure_master_item_indexes,
     list_master_items,
     list_master_items_picker,
     resolve_po_line_items,
@@ -493,14 +495,23 @@ async def _role_defaults_override():
 async def user_permissions(user: dict) -> set:
     """Compute effective permissions for the JWT payload / user."""
     from services.purchasing_inventory_access import filter_package_permissions
+    from permissions import OPT_IN_ONLY_PERMISSIONS, strip_opt_in_permissions
 
     # Super admin gets everything, always — except production package lock
     # which restricts Purchasing/Inventory/HPP to HOLDING_TEAM only.
+    # OPT_IN_ONLY keys (e.g. sales.*.cancel) are never auto-granted; they
+    # require an explicit permissions_override True.
     if user.get("email"):
         u = await db.users.find_one({"email": user["email"]}, {"is_super_admin": 1, "role": 1})
         if u and u.get("is_super_admin"):
+            base = strip_opt_in_permissions(ALL_PERMISSIONS)
+            for perm, allowed in (user.get("permissions_override") or {}).items():
+                if allowed is True and perm in OPT_IN_ONLY_PERMISSIONS:
+                    base.add(perm)
+                elif allowed is False:
+                    base.discard(perm)
             return filter_package_permissions(
-                ALL_PERMISSIONS,
+                base,
                 user,
                 os.environ.get("APP_ENV"),
                 os.environ.get("MONGO_URL"),
@@ -2395,22 +2406,48 @@ async def _audit_po(order: dict, action: str, actor: dict, before=None, after=No
 
 async def _require_perm(user: dict, perm: str):
     """Deny if the user lacks `perm` in their effective set (admin still passes locally)."""
+    from permissions import OPT_IN_ONLY_PERMISSIONS
     from services.purchasing_inventory_access import (
         require_purchasing_inventory_package_access,
         touches_package_permissions,
     )
 
     reject_sales_pwa_bypass(user)
+    if perm in OPT_IN_ONLY_PERMISSIONS:
+        await _require_opt_in_perm(user, perm)
+        return
     if touches_package_permissions([perm]):
         require_purchasing_inventory_package_access(
             user,
             os.environ.get("APP_ENV"),
             os.environ.get("MONGO_URL"),
         )
-    # Admin bypass remains for non-package perms; package access already gated above.
+    # Admin bypass remains for non-package / non-opt-in perms; package access already gated above.
     if user.get("role") == "admin":
         return
     eff = await user_permissions(user)
+    if perm not in eff:
+        raise HTTPException(403, f"Anda tidak punya permission '{perm}'")
+
+
+async def _require_opt_in_perm(user: dict, perm: str):
+    """Fail-closed opt-in permission. No admin or super-admin bypass.
+
+    Grant only via explicit permissions_override True or an audited role_permissions
+    document that already lists the key. Built-in ROLE_DEFAULT never includes these.
+    """
+    from permissions import OPT_IN_ONLY_PERMISSIONS, effective_permissions
+
+    reject_sales_pwa_bypass(user)
+    if perm not in OPT_IN_ONLY_PERMISSIONS:
+        raise HTTPException(500, f"Permission '{perm}' bukan opt-in.")
+    override = user.get("permissions_override") or {}
+    if override.get(perm) is True:
+        return
+    if override.get(perm) is False:
+        raise HTTPException(403, f"Anda tidak punya permission '{perm}'")
+    role_override = await _role_defaults_override()
+    eff = effective_permissions(user.get("role"), override, role_override)
     if perm not in eff:
         raise HTTPException(403, f"Anda tidak punya permission '{perm}'")
 
@@ -3968,9 +4005,16 @@ async def dashboard_action_items(user=Depends(current_user)):
     """Batch 3: Canonical action center. Backend menghitung PO yang benar-benar
     membutuhkan tindakan `action_key` DAN user punya permission efektif untuk
     action tsb. Frontend hanya render hasil. Count == list length."""
-    # Effective permissions: admin bypass, else union role + overrides.
+    # Effective permissions: admin bypass (minus OPT_IN_ONLY), else role + overrides.
+    from permissions import strip_opt_in_permissions
+
     if user.get("role") == "admin":
-        perms = set(ALL_PERMISSIONS)
+        perms = strip_opt_in_permissions(ALL_PERMISSIONS)
+        for _p, _ok in (user.get("permissions_override") or {}).items():
+            if _ok is True:
+                perms.add(_p)
+            elif _ok is False:
+                perms.discard(_p)
     else:
         perms = set(await user_permissions(user))
     user_email = (user.get("email") or "").strip()
@@ -4065,7 +4109,14 @@ async def work_division_tasks(
     cfg = _DIVISION_TASK_DEFS[div]
     await _require_perm(user, cfg["submit_perm"])
     if user.get("role") == "admin":
-        perms = set(ALL_PERMISSIONS)
+        from permissions import strip_opt_in_permissions
+
+        perms = strip_opt_in_permissions(ALL_PERMISSIONS)
+        for _p, _ok in (user.get("permissions_override") or {}).items():
+            if _ok is True:
+                perms.add(_p)
+            elif _ok is False:
+                perms.discard(_p)
     else:
         perms = set(await user_permissions(user))
     view_all = _can_view_all_division(perms)
@@ -8919,7 +8970,15 @@ async def user_permissions_effective(user_id: str, user=Depends(require_perm("us
         default_from_role = list(with_nav_defaults(set(ROLE_DEFAULT_PERMISSIONS.get(role, []))))
     override = dict(existing.get("permissions_override") or {})
     if existing.get("is_super_admin"):
-        effective = list(ALL_PERMISSIONS)
+        from permissions import OPT_IN_ONLY_PERMISSIONS, strip_opt_in_permissions
+
+        base = strip_opt_in_permissions(ALL_PERMISSIONS)
+        for perm, allowed in override.items():
+            if allowed is True and perm in OPT_IN_ONLY_PERMISSIONS:
+                base.add(perm)
+            elif allowed is False:
+                base.discard(perm)
+        effective = sorted(base)
     else:
         effective = sorted(effective_permissions(role, override, role_override))
     return {
@@ -9619,6 +9678,19 @@ from services.sales_invoice_posting import (
     post_sales_invoice_accounting as _post_sales_invoice_accounting,
     reverse_sales_invoice_accounting as _reverse_sales_invoice_accounting,
 )
+from services.sales_business_cancel import (
+    PERM_INVOICE_CANCEL as _SALES_INVOICE_CANCEL_PERM,
+    PERM_RECEIPT_CANCEL as _SALES_RECEIPT_CANCEL_PERM,
+    cancel_sales_invoice_business as _cancel_sales_invoice_business,
+    cancel_sales_receipt_business as _cancel_sales_receipt_business,
+    is_sales_invoice_business_cancel_enabled as _is_sales_invoice_business_cancel_enabled,
+    is_sales_receipt_business_cancel_enabled as _is_sales_receipt_business_cancel_enabled,
+)
+from services.sales_invoice_auto_lifecycle import (
+    create_sales_invoice_with_auto_lifecycle as _create_sales_invoice_auto_lifecycle,
+    is_auto_sales_invoice_lifecycle_enabled as _is_auto_sales_invoice_lifecycle_enabled,
+    recover_auto_sales_invoice_accounting as _recover_auto_sales_invoice_accounting,
+)
 from services.sales_receipt_posting import (
     PERM_POST as _SALES_RECEIPT_ACCOUNTING_POST_PERM,
     PERM_REVERSE as _SALES_RECEIPT_ACCOUNTING_REVERSE_PERM,
@@ -9626,8 +9698,14 @@ from services.sales_receipt_posting import (
     post_sales_receipt_accounting as _post_sales_receipt_accounting,
     reverse_sales_receipt_accounting as _reverse_sales_receipt_accounting,
 )
+from services.sales_receipt_auto_lifecycle import (
+    create_sales_receipt_with_auto_lifecycle as _create_sales_receipt_auto_lifecycle,
+    is_auto_sales_receipt_lifecycle_enabled as _is_auto_sales_receipt_lifecycle_enabled,
+    recover_auto_sales_receipt_accounting as _recover_auto_sales_receipt_accounting,
+)
 from services.sales_receipts import (
     list_sales_receipts as _list_sales_receipts,
+    query_sales_receipts as _query_sales_receipts,
     get_sales_receipt_detail as _get_sales_receipt_detail,
     create_sales_receipt as _create_sales_receipt,
     generate_sales_receipt_pdf_bytes,
@@ -9789,10 +9867,16 @@ class SalesInvoiceUpdatePayload(BaseModel):
     lines: Optional[List[SalesInvoiceLineItemInput]] = None
     line_items: Optional[List[SalesInvoiceLineItemInput]] = None
     other_charges: Optional[List[SalesInvoiceOtherChargeInput]] = None
+    idempotency_key: Optional[str] = None
 
 
 class SalesInvoiceReverseAccountingPayload(BaseModel):
     reason: str
+
+
+class SalesBusinessCancelPayload(BaseModel):
+    reason: str
+    idempotency_key: str
 
 
 # ---------- Sales Receipt (Penerimaan Penjualan) ----------
@@ -11058,18 +11142,43 @@ def _sales_order_list_match(clauses: list) -> dict:
 
 
 async def _fetch_sales_order_list_rows(match: dict) -> list:
+    from services.sales_list_tabs import LIST_SORT_DICT
+
     return await db.orders.aggregate([
         {"$match": match},
-        {"$sort": {"created_at": -1}},
+        {"$sort": LIST_SORT_DICT},
         {"$limit": _SALES_ORDER_LIST_FETCH_LIMIT},
         {"$project": _SALES_ORDER_LIST_PROJECTION},
     ]).to_list(_SALES_ORDER_LIST_FETCH_LIMIT)
+
+
+async def _fetch_sales_order_list_rows_unbounded(match: dict, *, hard_max: int) -> list:
+    """Stream all matching sales-order list rows. Raises 409 if hard_max exceeded."""
+    from services.sales_list_tabs import LIST_HARD_MAX, LIST_SORT_DICT
+
+    ceiling = int(hard_max or LIST_HARD_MAX)
+    cursor = db.orders.aggregate([
+        {"$match": match},
+        {"$sort": LIST_SORT_DICT},
+        {"$project": _SALES_ORDER_LIST_PROJECTION},
+    ], allowDiskUse=True)
+    rows = []
+    async for doc in cursor:
+        rows.append(doc)
+        if len(rows) > ceiling:
+            raise HTTPException(
+                409,
+                f"Hasil daftar pesanan melebihi batas aman ({ceiling}). Perhalus pencarian/filter.",
+            )
+    return rows
 
 
 async def _decorate_sales_order_list_rows(orders: list) -> None:
     """Existing list enrichment: unit totals, HOLD snapshot, deadline, delivery summary."""
     if not orders:
         return
+    from services.sales_list_tabs import classify_sales_order_list_tab
+
     dd_settings = await _get_delivery_deadline_settings()
     po_ids = [o["id"] for o in orders if o.get("id")]
     shipped_aggregates: Dict[str, dict] = {}
@@ -11084,6 +11193,8 @@ async def _decorate_sales_order_list_rows(orders: list) -> None:
         o["design_files"] = [True] if o.pop("_has_design_files", False) else []
         o["payment_files"] = [True] if o.pop("_has_payment_files", False) else []
         _apply_hold_snapshot(o)
+        # Five-tab classification before file existence flags are stripped.
+        o["list_tab"] = classify_sales_order_list_tab(o)
         _attach_deadline_snapshot(o, dd_settings["lead_time_days"])
         _strip_tracking_secret(o)
         o.pop("design_files", None)
@@ -11120,7 +11231,10 @@ def _merge_sales_order_branches(aktif_rows: list, histori_rows: list) -> list:
                 continue
             seen.add(oid)
         merged.append(row)
-    merged.sort(key=lambda row: row.get("created_at") or "", reverse=True)
+    merged.sort(
+        key=lambda row: (row.get("created_at") or "", row.get("id") or ""),
+        reverse=True,
+    )
     return merged
 
 
@@ -11197,6 +11311,7 @@ async def get_sales_order_item_image(
 async def list_sales_orders(
     q: Optional[str] = None,
     status: Optional[str] = None,
+    list_tab: Optional[str] = None,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     tanggal_pengiriman_preset: Optional[str] = None,
@@ -11206,15 +11321,45 @@ async def list_sales_orders(
     page_size: Optional[int] = None,
     user=Depends(current_user),
 ):
-    """List sales orders with search and status filtering for Pesanan Penjualan page."""
+    """List sales orders with search and status filtering for Pesanan Penjualan page.
+
+    Legacy ``status`` (aktif/histori/gabungan/…) is preserved.
+    Additive ``list_tab`` enables exclusive five-tab classification with uncapped
+    (hard-max) streaming pagination. Default page_size is 50 when paging.
+    """
     reject_sales_pwa_bypass(user)
     await _require_any_perm(user, "sales_order.view", "sales_order.create", "po.view")
+
+    from services.sales_list_tabs import (
+        DEFAULT_PAGE_SIZE,
+        LIST_HARD_MAX,
+        TAB_ACTIVE,
+        TAB_ALL,
+        TAB_CANCELLED,
+        TAB_COMPLETED,
+        TAB_PENDING,
+        bump_tab_count,
+        empty_tab_counts,
+        normalize_list_tab,
+        parse_page_params,
+    )
 
     shared: list = []
     owner = sales_owner_match(user)
     if owner:
         shared.append(owner)
     st = (status or "all").lower()
+    five_tab = None
+    if list_tab is not None and str(list_tab).strip() != "":
+        try:
+            five_tab = normalize_list_tab(list_tab, default=TAB_ACTIVE)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+    elif st in {TAB_ACTIVE, TAB_COMPLETED, TAB_PENDING, TAB_CANCELLED}:
+        # English five-tab scopes via status are additive.
+        # Do not treat legacy status=all / omitted status as five-tab mode.
+        five_tab = st
+
     if q and q.strip():
         needle = re.escape(q.strip())
         shared.append({"$or": [
@@ -11233,9 +11378,60 @@ async def list_sales_orders(
             {"sales_user": sales_key},
         ]})
 
+    paging = page is not None or page_size is not None or five_tab is not None
+    branch_capped = False
+
+    if five_tab is not None:
+        orders = await _fetch_sales_order_list_rows_unbounded(
+            _sales_order_list_match(list(shared)),
+            hard_max=LIST_HARD_MAX,
+        )
+        await _decorate_sales_order_list_rows(orders)
+        orders = _apply_sales_order_header_filters(
+            orders,
+            tanggal_pengiriman_preset=tanggal_pengiriman_preset,
+            sales=None,
+            delivery_status=delivery_status,
+        )
+        tab_counts = empty_tab_counts()
+        classified = []
+        for row in orders:
+            primary = str(row.get("list_tab") or TAB_ACTIVE)
+            bump_tab_count(tab_counts, primary)
+            if five_tab == TAB_ALL or primary == five_tab:
+                classified.append(row)
+        orders = classified
+        try:
+            current, size = parse_page_params(
+                page if page is not None else 1,
+                page_size if page_size is not None else DEFAULT_PAGE_SIZE,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        total = len(orders)
+        start = (current - 1) * size
+        page_rows = orders[start:start + size]
+        return {
+            "orders": page_rows,
+            "count": len(page_rows),
+            "total": total,
+            "tab_total": (
+                tab_counts[five_tab] if five_tab != TAB_ALL else tab_counts[TAB_ALL]
+            ),
+            "active_total": tab_counts[TAB_ACTIVE],
+            "completed_total": tab_counts[TAB_COMPLETED],
+            "pending_total": tab_counts[TAB_PENDING],
+            "cancelled_total": tab_counts[TAB_CANCELLED],
+            "all_total": tab_counts[TAB_ALL],
+            "page": current,
+            "page_size": size,
+            "list_tab": five_tab,
+            "capped": False,
+        }
+
     if st == "gabungan":
-        # Separate 1000-row windows. A mixed query would drop rows still visible
-        # on Aktif or Histori once the other classification fills the cap.
+        # Legacy gabungan keeps each branch's 1000-row window even when paged.
+        # Uncapped streaming is only for list_tab / English five-tab scopes above.
         aktif_rows, histori_rows = await asyncio.gather(
             _fetch_sales_order_list_rows(_sales_order_list_match([
                 *shared, _sales_order_status_clause("aktif"),
@@ -11254,11 +11450,13 @@ async def list_sales_orders(
             histori_rows,
         )
     else:
+        # Legacy status filters keep the prior 1000-row fetch ceiling.
         clauses = list(shared)
         status_clause = _sales_order_status_clause(st)
         if status_clause:
             clauses.append(status_clause)
-        orders = await _fetch_sales_order_list_rows(_sales_order_list_match(clauses))
+        match = _sales_order_list_match(clauses)
+        orders = await _fetch_sales_order_list_rows(match)
         branch_capped = len(orders) >= _SALES_ORDER_LIST_FETCH_LIMIT
         await _decorate_sales_order_list_rows(orders)
         if st == "hold":
@@ -11273,15 +11471,14 @@ async def list_sales_orders(
         delivery_status=delivery_status,
     )
 
-    paging = page is not None or page_size is not None
     if not paging:
-        return {"orders": orders, "count": len(orders)}
+        return {"orders": orders, "count": len(orders), "capped": branch_capped}
 
-    size = page_size if page_size is not None else 10
+    size = page_size if page_size is not None else DEFAULT_PAGE_SIZE
     try:
         size = int(size)
     except (TypeError, ValueError):
-        size = 10
+        size = DEFAULT_PAGE_SIZE
     size = min(50, max(1, size))
     try:
         current = int(page or 1)
@@ -11398,6 +11595,7 @@ async def list_sales_invoices_endpoint(
     q: Optional[str] = None,
     po_id: Optional[str] = None,
     scope: Optional[str] = None,
+    list_tab: Optional[str] = None,
     party: Optional[str] = None,
     po_number: Optional[str] = None,
     date_from: Optional[str] = None,
@@ -11417,14 +11615,15 @@ async def list_sales_invoices_endpoint(
 
     Callers that omit the tab/filter/page parameters keep the previous payload:
     ``{"invoices": [...], "count": n}`` capped by the existing list helper.
-    Passing scope, column filters, or page returns one page plus tab totals.
+    Passing scope, list_tab, column filters, or page returns one page plus tab totals.
+    ``list_tab`` selects an exclusive five-tab category; legacy ``scope=active`` stays non-Batal.
     """
     reject_sales_pwa_bypass(user)
     await _require_any_perm(user, "sales.invoice.view", "sales_order.view", "po.view", "sales.delivery.view")
     if po_id:
         await ensure_owned_po_id(db, user, po_id)
     paged = any(value is not None for value in (
-        scope, party, po_number, date_from, date_to, total_min, total_max,
+        scope, list_tab, party, po_number, date_from, date_to, total_min, total_max,
         outstanding_min, outstanding_max, financial_status, accounting_status,
         payment_status, page, page_size,
     ))
@@ -11434,6 +11633,7 @@ async def list_sales_invoices_endpoint(
             q=q,
             po_id=po_id,
             scope=scope or "active",
+            list_tab=list_tab,
             party=party,
             po_number=po_number,
             date_from=date_from,
@@ -11446,7 +11646,7 @@ async def list_sales_invoices_endpoint(
             accounting_status=accounting_status,
             payment_status=payment_status,
             page=page or 1,
-            page_size=page_size or 20,
+            page_size=page_size or 50,
         )
     invoices = await _list_sales_invoices(db, q=q, po_id=po_id)
     return {"invoices": invoices, "count": len(invoices)}
@@ -11480,10 +11680,57 @@ async def get_po_invoice_preview_endpoint(po_id: str, user=Depends(current_user)
 
 @api_router.post("/sales-invoices")
 async def create_sales_invoice_endpoint(payload: SalesInvoiceCreatePayload, user=Depends(current_user)):
-    """Create a new Sales Invoice (Faktur Penjualan) backend-authoritatively."""
+    """Create a new Sales Invoice (Faktur Penjualan) backend-authoritatively.
+
+    When ``auto_sales_invoice_lifecycle_enabled`` is ON, eligible creates also
+    finalize and first-time post. Financial success requires a posted journal.
+    Flag default OFF preserves legacy draft-only create.
+    """
     await _require_any_perm(user, "sales.invoice.create", "sales_order.create", "po.edit")
+    if await _is_auto_sales_invoice_lifecycle_enabled(db):
+        result = await _create_sales_invoice_auto_lifecycle(db, payload.model_dump(), user)
+        body = {
+            "invoice": result["invoice"],
+            "message": result["message"],
+            "financial_complete": bool(result.get("financial_complete")),
+            "auto_accounting_status": result.get("auto_accounting_status"),
+        }
+        if result.get("error_code"):
+            body["error_code"] = result["error_code"]
+        if result.get("financial_complete"):
+            return body
+        # Document may exist; do not advertise financial success.
+        raise HTTPException(
+            int(result.get("http_status") or 409),
+            body,
+        )
     inv = await _create_sales_invoice(db, payload.model_dump(), user)
     return {"invoice": inv, "message": "Faktur Penjualan berhasil dibuat"}
+
+
+@api_router.post("/sales-invoices/{id}/recover-auto-accounting")
+async def recover_auto_sales_invoice_accounting_endpoint(id: str, user=Depends(current_user)):
+    """Idempotent recovery for auto-lifecycle invoices only (Pending/Failed).
+
+    Narrow authority: sales.invoice.create (same create-scoped auto-post rule).
+    Does not grant general sales_accounting.post. Ownership enforced.
+    Fail-closed when ``auto_sales_invoice_lifecycle_enabled`` is OFF.
+    """
+    await _require_any_perm(user, "sales.invoice.create", "sales_order.create", "po.edit")
+    inv = await _get_sales_invoice_detail(db, id)
+    await ensure_owned_po_id(db, user, (inv or {}).get("po_id"))
+    result = await _recover_auto_sales_invoice_accounting(db, id, user)
+    body = {
+        "invoice": result["invoice"],
+        "message": result["message"],
+        "financial_complete": bool(result.get("financial_complete")),
+        "auto_accounting_status": result.get("auto_accounting_status"),
+    }
+    if result.get("error_code"):
+        body["error_code"] = result["error_code"]
+    if result.get("financial_complete"):
+        return body
+    raise HTTPException(int(result.get("http_status") or 409), body)
 
 
 @api_router.get("/sales-invoices/{id}")
@@ -11560,10 +11807,30 @@ async def finalize_sales_invoice_endpoint(id: str, user=Depends(current_user)):
 
 @api_router.post("/sales-invoices/{id}/cancel")
 async def cancel_sales_invoice_endpoint(id: str, user=Depends(current_user)):
-    """Cancel a finalized invoice with no receipts. Does not reverse a journal."""
+    """Legacy cancel: finalized unposted invoice with no receipts. No journal reverse."""
     await _require_any_perm(user, "sales.invoice.edit", "sales.invoice.create", "sales_order.create", "po.edit")
     inv = await _cancel_sales_invoice(db, id, user)
     return {"invoice": inv, "message": "Faktur Penjualan dibatalkan"}
+
+
+@api_router.post("/sales-invoices/{id}/business-cancel")
+async def business_cancel_sales_invoice_endpoint(
+    id: str,
+    payload: SalesBusinessCancelPayload,
+    user=Depends(current_user),
+):
+    """Unified Hapus soft-cancel. Requires sales.invoice.cancel. Flag default OFF."""
+    await _require_opt_in_perm(user, _SALES_INVOICE_CANCEL_PERM)
+    if not await _is_sales_invoice_business_cancel_enabled(db):
+        raise HTTPException(409, "Pembatalan bisnis faktur belum diaktifkan.")
+    result = await _cancel_sales_invoice_business(
+        db,
+        id,
+        user,
+        reason=payload.reason,
+        idempotency_key=payload.idempotency_key,
+    )
+    return result
 
 
 @api_router.post("/sales-invoices/{id}/post-accounting")
@@ -11594,10 +11861,29 @@ async def list_sales_receipts_endpoint(
     q: Optional[str] = None,
     invoice_id: Optional[str] = None,
     po_id: Optional[str] = None,
+    scope: Optional[str] = None,
+    list_tab: Optional[str] = None,
+    page: Optional[int] = None,
+    page_size: Optional[int] = None,
     user=Depends(current_user),
 ):
-    """List sales receipts (Penerimaan Penjualan) with search and filters."""
+    """List sales receipts (Penerimaan Penjualan) with search and filters.
+
+    Passing scope/list_tab/page returns tab totals (five-tab + legacy).
+    Omit them for the legacy unpaged payload.
+    """
     await _require_any_perm(user, "sales.receipt.view", "sales.invoice.view", "sales_order.view", "po.view")
+    if scope is not None or list_tab is not None or page is not None or page_size is not None:
+        return await _query_sales_receipts(
+            db,
+            q=q,
+            invoice_id=invoice_id,
+            po_id=po_id,
+            scope=scope or "active",
+            list_tab=list_tab,
+            page=page or 1,
+            page_size=page_size or 50,
+        )
     receipts = await _list_sales_receipts(db, q=q, invoice_id=invoice_id, po_id=po_id)
     return {"receipts": receipts, "count": len(receipts)}
 
@@ -11665,13 +11951,56 @@ async def get_sales_receipt_endpoint(id: str, user=Depends(current_user)):
 
 @api_router.post("/sales-receipts")
 async def create_sales_receipt_endpoint(payload: SalesReceiptCreatePayload, user=Depends(current_user)):
-    """Create a new Sales Receipt (Penerimaan Penjualan) backend-authoritatively."""
+    """Create a new Sales Receipt (Penerimaan Penjualan) backend-authoritatively.
+
+    Flag ``auto_sales_receipt_lifecycle_enabled`` (default OFF): when ON, also
+    posts and settles; financial success needs posted journal + settlement.
+    """
     await _require_any_perm(user, "sales.receipt.create", "sales.invoice.create", "sales_order.create", "po.edit")
     data = payload.model_dump()
     if data.get("payment_proof") is None:
         data.pop("payment_proof", None)
+    if await _is_auto_sales_receipt_lifecycle_enabled(db):
+        result = await _create_sales_receipt_auto_lifecycle(db, data, user)
+        body = {
+            "receipt": result["receipt"],
+            "message": result["message"],
+            "financial_complete": bool(result.get("financial_complete")),
+            "auto_accounting_status": result.get("auto_accounting_status"),
+        }
+        if result.get("error_code"):
+            body["error_code"] = result["error_code"]
+        if result.get("financial_complete"):
+            return body
+        raise HTTPException(
+            int(result.get("http_status") or 409),
+            body,
+        )
     receipt = await _create_sales_receipt(db, data, user)
     return {"receipt": receipt, "message": "Penerimaan Penjualan berhasil dibuat"}
+
+
+@api_router.post("/sales-receipts/{id}/recover-auto-accounting")
+async def recover_auto_sales_receipt_accounting_endpoint(id: str, user=Depends(current_user)):
+    """Idempotent recovery for auto-lifecycle receipts only (Pending/Failed).
+
+    Narrow authority: sales.receipt.create. Does not grant general
+    sales.receipt.accounting.post. Ownership enforced.
+    Fail-closed when ``auto_sales_receipt_lifecycle_enabled`` is OFF.
+    """
+    await _require_any_perm(user, "sales.receipt.create", "sales.invoice.create", "sales_order.create", "po.edit")
+    result = await _recover_auto_sales_receipt_accounting(db, id, user)
+    body = {
+        "receipt": result["receipt"],
+        "message": result["message"],
+        "financial_complete": bool(result.get("financial_complete")),
+        "auto_accounting_status": result.get("auto_accounting_status"),
+    }
+    if result.get("error_code"):
+        body["error_code"] = result["error_code"]
+    if result.get("financial_complete"):
+        return body
+    raise HTTPException(int(result.get("http_status") or 409), body)
 
 
 @api_router.post("/sales-receipts/{id}/post-accounting")
@@ -11692,6 +12021,26 @@ async def reverse_sales_receipt_accounting_endpoint(id: str, user=Depends(curren
     await _require_perm(user, _SALES_RECEIPT_ACCOUNTING_REVERSE_PERM)
     receipt = await _reverse_sales_receipt_accounting(db, id, user)
     return {"receipt": receipt, "message": "Penerimaan Penjualan di-reverse dari accounting"}
+
+
+@api_router.post("/sales-receipts/{id}/business-cancel")
+async def business_cancel_sales_receipt_endpoint(
+    id: str,
+    payload: SalesBusinessCancelPayload,
+    user=Depends(current_user),
+):
+    """Unified Hapus soft-cancel. Requires sales.receipt.cancel. Flag default OFF."""
+    await _require_opt_in_perm(user, _SALES_RECEIPT_CANCEL_PERM)
+    if not await _is_sales_receipt_business_cancel_enabled(db):
+        raise HTTPException(409, "Pembatalan bisnis penerimaan belum diaktifkan.")
+    result = await _cancel_sales_receipt_business(
+        db,
+        id,
+        user,
+        reason=payload.reason,
+        idempotency_key=payload.idempotency_key,
+    )
+    return result
 
 
 @api_router.post("/sales-receipts/{id}/payment-proof")
@@ -12200,6 +12549,23 @@ async def master_items_get(
     return await list_master_items(
         db, q=q, item_type=item_type, status=status, page=page, page_size=page_size,
     )
+
+
+class MasterItemCreatePayload(BaseModel):
+    item_code: str
+    item_name: str
+    item_type: str
+    unit: str
+    is_active: bool = True
+
+
+@api_router.post("/master-items")
+async def master_items_create(
+    payload: MasterItemCreatePayload,
+    user=Depends(require_perm("master_items.manage")),
+):
+    """Create ERP-local Barang/Jasa metadata. No Accurate ID, stock, or HPP."""
+    return await create_local_master_item(db, payload.model_dump())
 
 
 @api_router.post("/master-items/sync")
@@ -15805,6 +16171,10 @@ app.add_middleware(
     expose_headers=["Content-Disposition", "Content-Type"],
 )
 
+# Optional request-memory telemetry (Phase C). Default OFF; env + restart to enable.
+from services.memory_telemetry import install_memory_telemetry as _install_memory_telemetry
+_install_memory_telemetry(app)
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 _ct_mod.install_access_log_mask()
@@ -15868,7 +16238,9 @@ async def seed():
     await db.master_items.create_index("id", unique=True)
     from services.physical_stock import ensure_indexes as ensure_physical_stock_indexes
     await ensure_physical_stock_indexes(db)
-    await db[MASTER_ITEMS_COLLECTION].create_index("accurate_item_id", unique=True)
+    # Partial unique Accurate ID + code claims (local masters omit accurate_item_id).
+    # Replaces legacy full unique accurate_item_id_1 when safe; never deletes masters.
+    await ensure_master_item_indexes(db)
     await db[STOCK_MANUAL_COLLECTION].create_index("id", unique=True)
     await db[STOCK_MANUAL_COLLECTION].create_index("accurate_item_id", unique=True, sparse=True)
     await db[STOCK_MANUAL_COLLECTION].create_index("master_item_id", unique=True, sparse=True)

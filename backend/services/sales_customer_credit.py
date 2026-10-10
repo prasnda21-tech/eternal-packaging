@@ -240,14 +240,68 @@ async def active_applied_total(db, source_receipt_id: str) -> Decimal:
 
 
 async def invoice_credit_applied_total(db, invoice_id: str) -> Decimal:
-    docs = await db[COLLECTION].find(
-        {"invoice_id": str(invoice_id), "financial_status": "active", "status": "posted"},
-        {"_id": 0, "amount": 1},
-    ).to_list(500)
-    total = Decimal("0.00")
-    for doc in docs:
-        total += parse_money(doc.get("amount") or 0, "Pemakaian saldo")
-    return total.quantize(MONEY_Q)
+    totals = await invoice_credit_applied_totals_by_invoice_ids(db, [str(invoice_id)])
+    return totals.get(str(invoice_id), Decimal("0.00"))
+
+
+# Bound Mongo ``$in`` size for credit batch reads (matches invoice list batch).
+CREDIT_INVOICE_ID_CHUNK = 250
+_CREDIT_APPS_PER_INVOICE_CAP = 500
+
+
+async def invoice_credit_applied_totals_by_invoice_ids(
+    db, invoice_ids: List[str]
+) -> Dict[str, Decimal]:
+    """Batch active+posted credit applications keyed by invoice_id.
+
+    Same match rules as the single-id helper. Invoice IDs are processed in
+    bounded ``$in`` chunks so callers with >500 IDs stay safe. Caps at 500
+    applications per invoice (legacy single-id to_list). Exceeding a chunk
+    read cap fails closed — never returns a partial total disguised as exact.
+    """
+    ids = [str(i).strip() for i in invoice_ids if str(i or "").strip()]
+    # Preserve call order uniqueness while keeping O(n) build.
+    seen: Dict[str, None] = {}
+    for iid in ids:
+        seen.setdefault(iid, None)
+    unique_ids = list(seen.keys())
+    out: Dict[str, Decimal] = {iid: Decimal("0.00") for iid in unique_ids}
+    if not unique_ids:
+        return out
+
+    counts: Dict[str, int] = {}
+    for offset in range(0, len(unique_ids), CREDIT_INVOICE_ID_CHUNK):
+        chunk = unique_ids[offset:offset + CREDIT_INVOICE_ID_CHUNK]
+        hard_cap = _CREDIT_APPS_PER_INVOICE_CAP * len(chunk)
+        docs = await db[COLLECTION].find(
+            {
+                "invoice_id": {"$in": chunk},
+                "financial_status": "active",
+                "status": "posted",
+            },
+            {"_id": 0, "invoice_id": 1, "amount": 1},
+        ).to_list(hard_cap + 1)
+        if len(docs) > hard_cap:
+            raise HTTPException(
+                409,
+                "Pemakaian saldo terlalu banyak untuk dihitung sekaligus. Perhalus pencarian/filter.",
+            )
+        for doc in docs:
+            iid = str(doc.get("invoice_id") or "").strip()
+            if iid not in out:
+                continue
+            n = counts.get(iid, 0)
+            if n >= _CREDIT_APPS_PER_INVOICE_CAP:
+                raise HTTPException(
+                    409,
+                    f"Pemakaian saldo faktur {iid} melebihi batas aman perhitungan.",
+                )
+            counts[iid] = n + 1
+            out[iid] += parse_money(doc.get("amount") or 0, "Pemakaian saldo")
+
+    for iid in out:
+        out[iid] = out[iid].quantize(MONEY_Q)
+    return out
 
 
 def _claim_cutoff(now: Optional[datetime] = None) -> str:
@@ -274,20 +328,44 @@ def claim_is_active(receipt: Optional[dict], *, now: Optional[datetime] = None) 
     return (current - claimed_at).total_seconds() < CLAIM_TTL_SECONDS
 
 
-async def _acquire_claim(db, receipt_id: str, token: str) -> Optional[dict]:
+async def _acquire_claim(
+    db, receipt_id: str, token: str, *, owned_cancel_fence: Optional[str] = None
+) -> Optional[dict]:
+    """CAS credit claim. Active receipt cancel fence rejects atomically.
+
+    Own-token renew is allowed. A foreign expired credit claim may be taken over
+    only when no foreign cancellation fence is present. Cancel-owned reverse may
+    pass ``owned_cancel_fence`` so credit fencing for that Hapus can proceed.
+    """
+    from services.sales_business_cancel import RECEIPT_FENCE_FIELD, receipt_cancel_fence_absent_clause
+
     cutoff = _claim_cutoff()
+    fence_ok: Dict[str, Any] = receipt_cancel_fence_absent_clause()
+    owned = str(owned_cancel_fence or "").strip()
+    if owned:
+        fence_ok = {
+            "$or": [
+                receipt_cancel_fence_absent_clause(),
+                {RECEIPT_FENCE_FIELD: owned},
+            ]
+        }
     return await db.sales_receipts.find_one_and_update(
         {
             "id": str(receipt_id),
-            "$or": [
-                {CLAIM_FIELD: {"$exists": False}},
-                {CLAIM_FIELD: None},
-                {CLAIM_FIELD: ""},
-                {CLAIM_AT_FIELD: {"$exists": False}},
-                {CLAIM_AT_FIELD: None},
-                {CLAIM_AT_FIELD: ""},
-                {CLAIM_AT_FIELD: {"$lte": cutoff}},
-                {CLAIM_FIELD: token},
+            "$and": [
+                fence_ok,
+                {
+                    "$or": [
+                        {CLAIM_FIELD: {"$exists": False}},
+                        {CLAIM_FIELD: None},
+                        {CLAIM_FIELD: ""},
+                        {CLAIM_AT_FIELD: {"$exists": False}},
+                        {CLAIM_AT_FIELD: None},
+                        {CLAIM_AT_FIELD: ""},
+                        {CLAIM_AT_FIELD: {"$lte": cutoff}},
+                        {CLAIM_FIELD: token},
+                    ]
+                },
             ],
         },
         {"$set": {CLAIM_FIELD: token, CLAIM_AT_FIELD: now_iso(), "updated_at": now_iso()}},
@@ -367,8 +445,12 @@ async def _release_reservation(db, receipt_id: str, amount: Decimal) -> None:
     )
 
 
-async def hold_source_credit_claim(db, receipt_id: str, token: str) -> Optional[dict]:
-    return await _acquire_claim(db, receipt_id, token)
+async def hold_source_credit_claim(
+    db, receipt_id: str, token: str, *, owned_cancel_fence: Optional[str] = None
+) -> Optional[dict]:
+    return await _acquire_claim(
+        db, receipt_id, token, owned_cancel_fence=owned_cancel_fence
+    )
 
 
 async def release_source_credit_claim(db, receipt_id: str, token: str) -> None:
@@ -635,10 +717,45 @@ async def _outstanding_now(db, invoice: dict) -> Decimal:
     return outstanding
 
 
+async def _lease_invoice_for_credit_mutation(db, invoice_id: str) -> str:
+    """Hold the invoice receipt lease across a credit journal or invoice recalc.
+
+    The lease compare-and-swap requires the revision fence to be absent, so a
+    recovery that already started cannot post or rewrite invoice balances
+    after the fence is acquired.
+    """
+    from services.sales_invoice_posting import acquire_receipt_create_claim
+
+    token = str(uuid.uuid4())
+    leased = await acquire_receipt_create_claim(db, str(invoice_id), token=token)
+    if not leased:
+        raise HTTPException(409, "Revisi faktur belum selesai.")
+    return token
+
+
+async def _release_invoice_credit_lease(db, invoice_id: str, token: str) -> None:
+    from services.sales_invoice_posting import clear_receipt_create_claim
+
+    await clear_receipt_create_claim(db, str(invoice_id), token=token)
+
+
 async def _complete_posting_application(
     db, doc: dict, user: dict, application_date: str,
 ) -> Dict[str, Any]:
     """Finish a fenced reservation that already owns its journal slot."""
+    invoice_id = str(doc.get("invoice_id") or "")
+    if not invoice_id:
+        raise HTTPException(400, "Faktur tujuan wajib diisi.")
+    lease = await _lease_invoice_for_credit_mutation(db, invoice_id)
+    try:
+        return await _complete_posting_application_leased(db, doc, user, application_date)
+    finally:
+        await _release_invoice_credit_lease(db, invoice_id, lease)
+
+
+async def _complete_posting_application_leased(
+    db, doc: dict, user: dict, application_date: str,
+) -> Dict[str, Any]:
     from services.sales_accounting_settings import require_customer_deposit_account
 
     journal = await find_primary_journal_for_source(db, SOURCE_TYPE, str(doc.get("id")))
@@ -709,19 +826,23 @@ async def apply_customer_credit(db, payload: Dict[str, Any], user: dict) -> Dict
             if healed.get("status") == "posted" or (
                 journal and accounting_status_from_journal(journal) == ACCOUNTING_POSTED
             ):
-                if healed.get("status") != "posted":
-                    await db[COLLECTION].update_one(
-                        {"id": healed["id"]},
-                        {"$set": {"status": "posted", "financial_status": "active", "updated_at": now_iso()}},
-                    )
-                    healed["status"] = "posted"
-                    healed["financial_status"] = "active"
-                await _sync_posted_counter(db, healed["source_receipt_id"])
-                from services.sales_receipts import _recalc_invoice_payment_from_receipts
+                lease = await _lease_invoice_for_credit_mutation(db, healed.get("invoice_id"))
+                try:
+                    if healed.get("status") != "posted":
+                        await db[COLLECTION].update_one(
+                            {"id": healed["id"]},
+                            {"$set": {"status": "posted", "financial_status": "active", "updated_at": now_iso()}},
+                        )
+                        healed["status"] = "posted"
+                        healed["financial_status"] = "active"
+                    await _sync_posted_counter(db, healed["source_receipt_id"])
+                    from services.sales_receipts import _recalc_invoice_payment_from_receipts
 
-                await _recalc_invoice_payment_from_receipts(db, healed.get("invoice_id"))
-                stored = await db[COLLECTION].find_one({"id": healed["id"]}, {"_id": 0})
-                return _public_application(stored or healed)
+                    await _recalc_invoice_payment_from_receipts(db, healed.get("invoice_id"))
+                    stored = await db[COLLECTION].find_one({"id": healed["id"]}, {"_id": 0})
+                    return _public_application(stored or healed)
+                finally:
+                    await _release_invoice_credit_lease(db, healed.get("invoice_id"), lease)
             if not journal:
                 if healed.get("status") == "posting":
                     return await _complete_posting_application(

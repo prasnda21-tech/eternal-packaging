@@ -34,8 +34,10 @@ PERMISSION_CATALOG = [
     ("Penjualan", "proforma_invoice.view", "Lihat Proforma Invoice"),
     ("Penjualan", "sales.invoice.create", "Buat Faktur Penjualan"),
     ("Penjualan", "sales.invoice.edit", "Ubah Faktur Penjualan"),
+    ("Penjualan", "sales.invoice.cancel", "Batalkan Faktur Penjualan (bisnis)"),
     ("Penjualan", "sales.receipt.view", "Lihat Penerimaan Penjualan"),
     ("Penjualan", "sales.receipt.create", "Buat Penerimaan Penjualan"),
+    ("Penjualan", "sales.receipt.cancel", "Batalkan Penerimaan Penjualan (bisnis)"),
     ("Penjualan", "sales.delivery.delete", "Hapus Pengiriman Pesanan"),
     ("Penjualan", "sales.invoice.delete", "Hapus Faktur Penjualan"),
     ("Penjualan", "sales.receipt.delete", "Hapus Penerimaan Penjualan"),
@@ -66,6 +68,7 @@ PERMISSION_CATALOG = [
     ("Import PO", "po.import.spreadsheet", "Import PO dari file XLSX / CSV"),
     ("Persediaan", "master_items.view", "Lihat Barang/Jasa"),
     ("Persediaan", "master_items.sync", "Sinkronkan Barang/Jasa dari Accurate"),
+    ("Persediaan", "master_items.manage", "Tambah / kelola Barang/Jasa lokal"),
     ("Persediaan", "org.branches.view", "Lihat Cabang"),
     ("Persediaan", "org.branches.manage", "Kelola Cabang"),
     ("Persediaan", "org.warehouses.view", "Lihat Gudang"),
@@ -361,9 +364,29 @@ PERMISSION_DESCRIPTIONS = {
     "spk.cancel": "Membatalkan SPK yang belum selesai, dengan alasan wajib.",
     "spk.assign": "Memilih PIC saat menyusun SPK. Tidak memberi hak mengubah progres PIC lain.",
     "spk.manage": "Kelola administratif SPK, termasuk koreksi tercatat. Tidak memakai endpoint progres biasa.",
+    "sales.invoice.cancel": (
+        "Batalkan Faktur Penjualan secara bisnis (soft-cancel). Tidak diwariskan dari create/edit/delete. "
+        "Tidak memberi wewenang reverse jurnal accounting secara umum."
+    ),
+    "sales.receipt.cancel": (
+        "Batalkan Penerimaan Penjualan secara bisnis (soft-cancel). Tidak diwariskan dari create/edit/delete. "
+        "Tidak memberi wewenang reverse jurnal accounting secara umum."
+    ),
 }
 
 ALL_PERMISSIONS = tuple(p for _mod, p, _lbl in PERMISSION_CATALOG)
+
+# Opt-in only: never part of role defaults (including admin) or automatic
+# super-admin/admin bypass grants. Must be explicitly assigned via Hak Akses
+# or per-user override. Create/edit/delete must never imply these.
+OPT_IN_ONLY_PERMISSIONS = frozenset({
+    "sales.invoice.cancel",
+    "sales.receipt.cancel",
+})
+
+DEFAULT_GRANT_PERMISSIONS = tuple(
+    p for p in ALL_PERMISSIONS if p not in OPT_IN_ONLY_PERMISSIONS
+)
 
 # Sidebar visibility keys (excludes the internal "already configured" sentinel).
 NAV_PERMISSION_KEYS = tuple(
@@ -702,9 +725,9 @@ def with_nav_defaults(perms: set) -> set:
         return base
     return base | derived_nav_permissions(base)
 
-# Default permission set per role. Admin gets everything.
+# Default permission set per role. Admin gets everything except OPT_IN_ONLY.
 ROLE_DEFAULT_PERMISSIONS = {
-    "admin": list(ALL_PERMISSIONS),
+    "admin": list(DEFAULT_GRANT_PERMISSIONS),
     "head_production": [
         "po.view", "po.edit", "sales_order.view", "sales_order.create",
         "sales.delivery.view", "sales.delivery.create", "sales.delivery.print",
@@ -892,6 +915,12 @@ for _role, _keys in list(ROLE_DEFAULT_PERMISSIONS.items()):
 for _role, _keys in list(ROLE_DEFAULT_PERMISSIONS.items()):
     ROLE_DEFAULT_PERMISSIONS[_role] = sorted(set(_keys) | {"chat.use", "nav.chat"})
 
+# Fail-closed: opt-in cancellation must never appear in any role default.
+for _role, _keys in list(ROLE_DEFAULT_PERMISSIONS.items()):
+    ROLE_DEFAULT_PERMISSIONS[_role] = sorted(
+        p for p in _keys if p not in OPT_IN_ONLY_PERMISSIONS
+    )
+
 ROLE_LABELS = {
     "admin": "Admin",
     "head_production": "Kepala Produksi",
@@ -979,3 +1008,27 @@ def effective_permissions(role: str, override: dict | None, role_defaults_overri
 
 def has_permission(user_perms: set, perm: str) -> bool:
     return perm in user_perms
+
+
+def opt_in_permission_granted(role: str, override: dict | None, perm: str) -> bool:
+    """True only when an OPT_IN_ONLY permission is explicitly granted.
+
+    Role defaults never include opt-in keys. Admin / wildcard role membership
+    alone is insufficient — the key must appear via an explicit True override
+    or an explicit role_permissions document entry that already lists it.
+    """
+    if perm not in OPT_IN_ONLY_PERMISSIONS:
+        return False
+    override = override or {}
+    if override.get(perm) is False:
+        return False
+    if override.get(perm) is True:
+        return True
+    # Explicit role default override documents may list the key after an
+    # audited Hak Akses save. Built-in ROLE_DEFAULT never includes it.
+    return perm in effective_permissions(role, override)
+
+
+def strip_opt_in_permissions(perms) -> set:
+    """Remove OPT_IN_ONLY keys from an automatic wildcard grant set."""
+    return {p for p in (perms or []) if p not in OPT_IN_ONLY_PERMISSIONS}

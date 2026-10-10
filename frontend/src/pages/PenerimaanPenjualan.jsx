@@ -16,7 +16,27 @@ import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDisplayDate } from "../lib/constants";
 import { FormSection, FormField, FormProgress, computeStatus } from "../components/form-standard";
-import { loadedRangeLabel, showLoadedDocumentCount } from "../lib/salesSubmenuDensity";
+import { showLoadedDocumentCount } from "../lib/salesSubmenuDensity";
+import {
+  SALES_LIST_DEFAULT_PAGE_SIZE,
+  SALES_LIST_PAGE_SIZES,
+  SALES_LIST_TABS,
+  normalizeSalesListTab,
+  salesFiveTabListMetaFromResponse,
+  salesFiveTabListParams,
+  salesFiveTabRangeLabel,
+  salesListTabLabel,
+} from "../lib/salesFiveTabs";
+import {
+  canBusinessCancelReceipt,
+  canRecoverAutoAccounting,
+  clearIdempotencyIntent,
+  ensureIdempotencyIntent,
+  interpretAutoLifecycleResponse,
+  interpretBusinessCancelResponse,
+  lifecycleChipClass,
+  salesDocumentLifecyclePresentation,
+} from "../lib/salesLifecycleUi";
 import "./salesSubmenuDensity.css";
 
 function getTodayString() {
@@ -30,6 +50,7 @@ function formatRupiah(num) {
 }
 
 import { filterEligibleInvoices, resolvePreselectedInvoiceId, computeReceiptPreview } from "../lib/salesReceipts";
+import { clickableDocumentRowProps } from "../lib/clickableListRow";
 import SalesReceiptProofViewer from "./SalesReceiptProofViewer";
 import {
   RECEIPT_PROOF_ACCEPT,
@@ -53,6 +74,7 @@ export default function PenerimaanPenjualan() {
     hasPerm("sales.receipt.create") ||
     hasPerm("po.edit") ||
     user?.role === "admin";
+  const canCancelBusiness = canBusinessCancelReceipt(hasPerm);
   const canPostAccounting = hasPerm("sales.receipt.accounting.post") || user?.role === "admin";
   const canReverseAccounting = hasPerm("sales.receipt.accounting.reverse") || user?.role === "admin";
 
@@ -63,10 +85,21 @@ export default function PenerimaanPenjualan() {
   const [listLoading, setListLoading] = useState(false);
   const [listErr, setListErr] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
+  const [listTab, setListTab] = useState(() => normalizeSalesListTab(searchParams.get("tab") || "active"));
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(SALES_LIST_DEFAULT_PAGE_SIZE);
+  const [listMeta, setListMeta] = useState({
+    total: 0,
+    tabTotal: 0,
+    capped: false,
+    counts: { all: 0, active: 0, completed: 0, pending: 0, cancelled: 0 },
+  });
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [deleteConfirm, setDeleteConfirm] = useState(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [deleteErr, setDeleteErr] = useState("");
+  const createIdempotencyRef = useRef({ signature: "", key: "" });
+  const cancelIdempotencyRef = useRef({ signature: "", key: "" });
 
   // Modal / Create State
   const [isModalOpen, setIsModalOpen] = useState(Boolean(queryInvoiceId) || searchParams.get("action") === "create");
@@ -103,15 +136,33 @@ export default function PenerimaanPenjualan() {
   const [accountingBusy, setAccountingBusy] = useState(false);
   const [accountingErr, setAccountingErr] = useState("");
 
-  // Load receipts list
+  const resetReceiptListPosition = useCallback(() => {
+    setPage(1);
+    setSelectedIds(new Set());
+  }, []);
+
+  const changeReceiptTab = (tab) => {
+    const next = normalizeSalesListTab(tab);
+    if (next === listTab) return;
+    setListTab(next);
+    resetReceiptListPosition();
+  };
+
+  // Load receipts list — exclusive list_tab + server pagination/counts
   const loadReceipts = useCallback(async () => {
     setListLoading(true);
     setListErr("");
     try {
-      const params = {};
-      if (searchQuery.trim()) params.q = searchQuery.trim();
+      const params = salesFiveTabListParams({
+        listTab,
+        page,
+        pageSize,
+        q: searchQuery,
+      });
       const res = await api.listSalesReceipts(params);
-      setReceipts(res.receipts || []);
+      const rows = res.receipts || [];
+      setReceipts(rows);
+      setListMeta(salesFiveTabListMetaFromResponse(res, { rowCount: rows.length }));
       setSelectedIds(new Set());
     } catch (e) {
       const det = e.response?.data?.detail;
@@ -119,12 +170,30 @@ export default function PenerimaanPenjualan() {
     } finally {
       setListLoading(false);
     }
-  }, [searchQuery]);
+  }, [searchQuery, listTab, page, pageSize]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [searchQuery, listTab, pageSize]);
+
+  const receiptDeletable = useCallback((r) => {
+    if (canCancelBusiness) {
+      const progress = String(r?.business_cancel_progress || "").toLowerCase();
+      if (progress === "complete" || progress === "completed") return false;
+      if (String(r?.list_tab || "").toLowerCase() === "cancelled") return false;
+      if (String(r?.financial_status || "").toLowerCase() === "cancelled") return false;
+      return true;
+    }
+    return r?.can_delete !== false;
+  }, [canCancelBusiness]);
 
   const deletableReceipts = useMemo(
-    () => receipts.filter((r) => r.can_delete !== false),
-    [receipts]
+    () => receipts.filter((r) => receiptDeletable(r)),
+    [receipts, receiptDeletable]
   );
+  const showDeleteControls = (canDelete || canCancelBusiness) && listTab !== "cancelled";
+  const pageCount = Math.max(1, Math.ceil((Number(listMeta.total) || 0) / pageSize) || 1);
+  const tabLabel = salesListTabLabel(listTab);
   const toggleSelect = (id) => {
     setSelectedIds((prev) => {
       const next = new Set(prev);
@@ -154,6 +223,29 @@ export default function PenerimaanPenjualan() {
     setDeleteLoading(true);
     setDeleteErr("");
     try {
+      if (canCancelBusiness) {
+        const key = ensureIdempotencyIntent(cancelIdempotencyRef, `cancel-receipt|${id}`, { prefix: "rcpt-cancel" });
+        const res = await api.businessCancelSalesReceipt(id, {
+          reason: "Batalkan dari daftar Penerimaan Penjualan",
+          idempotency_key: key,
+        });
+        const interpreted = interpretBusinessCancelResponse(res);
+        if (!interpreted.ok) {
+          setDeleteErr(interpreted.message);
+          // Keep modal + same idempotency key. Refresh list only to surface Pending status.
+          if (interpreted.pending) loadReceipts();
+          return;
+        }
+        clearIdempotencyIntent(cancelIdempotencyRef);
+        setDeleteConfirm(null);
+        setSelectedIds((prev) => {
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        });
+        loadReceipts();
+        return;
+      }
       await api.deleteSalesReceipt(id);
       setDeleteConfirm(null);
       setSelectedIds((prev) => {
@@ -163,6 +255,14 @@ export default function PenerimaanPenjualan() {
       });
       loadReceipts();
     } catch (e) {
+      if (canCancelBusiness) {
+        const interpreted = interpretBusinessCancelResponse({}, {
+          httpErrorBody: e.response?.data?.detail,
+          statusCode: e.response?.status,
+        });
+        setDeleteErr(interpreted.message);
+        return;
+      }
       setDeleteErr(formatDeleteError(e.response?.data?.detail));
     } finally {
       setDeleteLoading(false);
@@ -195,11 +295,39 @@ export default function PenerimaanPenjualan() {
     setDeleteErr("");
     try {
       const ids = deleteConfirm?.ids || Array.from(selectedIds);
+      if (canCancelBusiness) {
+        for (const id of ids) {
+          const key = ensureIdempotencyIntent(cancelIdempotencyRef, `cancel-receipt|${id}`, { prefix: "rcpt-cancel" });
+          const res = await api.businessCancelSalesReceipt(id, {
+            reason: "Batalkan terpilih dari daftar Penerimaan Penjualan",
+            idempotency_key: key,
+          });
+          const interpreted = interpretBusinessCancelResponse(res);
+          if (!interpreted.ok) {
+            setDeleteErr(interpreted.message);
+            if (interpreted.pending) loadReceipts();
+            return;
+          }
+          clearIdempotencyIntent(cancelIdempotencyRef);
+        }
+        setDeleteConfirm(null);
+        setSelectedIds(new Set());
+        loadReceipts();
+        return;
+      }
       await api.bulkDeleteSalesReceipts(ids);
       setDeleteConfirm(null);
       setSelectedIds(new Set());
       loadReceipts();
     } catch (e) {
+      if (canCancelBusiness) {
+        const interpreted = interpretBusinessCancelResponse({}, {
+          httpErrorBody: e.response?.data?.detail,
+          statusCode: e.response?.status,
+        });
+        setDeleteErr(interpreted.message);
+        return;
+      }
       setDeleteErr(formatDeleteError(e.response?.data?.detail));
     } finally {
       setDeleteLoading(false);
@@ -333,6 +461,17 @@ export default function PenerimaanPenjualan() {
     setIsModalOpen(true);
   };
 
+  const openReceiptDetail = useCallback(async (receipt) => {
+    if (!receipt?.id) return;
+    setAccountingErr("");
+    try {
+      const fresh = await api.getSalesReceipt(receipt.id);
+      setDetailReceipt(fresh.receipt || fresh);
+    } catch {
+      setDetailReceipt(receipt);
+    }
+  }, []);
+
   const handleCloseCreateModal = () => {
     setIsModalOpen(false);
     setSelectedInvoiceId("");
@@ -460,6 +599,16 @@ export default function PenerimaanPenjualan() {
 
     try {
       const payment_proof = await buildReceiptProofPayload(proofFile);
+      const signature = [
+        selectedInvoiceId,
+        receiptDate || getTodayString(),
+        numAmount,
+        previewCalc.allocated,
+        cashBankId,
+        receiptNotes.trim(),
+        payment_proof?.name || "",
+      ].join("|");
+      const idempotencyKey = ensureIdempotencyIntent(createIdempotencyRef, signature, { prefix: "rcpt-create" });
       const payload = {
         invoice_id: selectedInvoiceId,
         receipt_date: receiptDate || getTodayString(),
@@ -468,18 +617,34 @@ export default function PenerimaanPenjualan() {
         notes: receiptNotes.trim(),
         cash_bank_id: cashBankId,
         payment_proof,
+        idempotency_key: idempotencyKey,
       };
-      const res = await api.createSalesReceipt(payload);
-      window.dispatchEvent(new CustomEvent("eternal:sales-receipt-saved"));
-      setSuccessMsg(res.message || "Penerimaan Penjualan berhasil disimpan!");
-      setTimeout(() => {
-        setSuccessMsg("");
-        handleCloseCreateModal();
-        loadReceipts();
-      }, 900);
+      try {
+        const res = await api.createSalesReceipt(payload);
+        const interpreted = interpretAutoLifecycleResponse(res);
+        if (interpreted.mode === "auto" && !interpreted.ok) {
+          setCreateErr(interpreted.message);
+          return;
+        }
+        clearIdempotencyIntent(createIdempotencyRef);
+        window.dispatchEvent(new CustomEvent("eternal:sales-receipt-saved"));
+        setSuccessMsg(interpreted.message || res.message || "Penerimaan Penjualan berhasil disimpan!");
+        setTimeout(() => {
+          setSuccessMsg("");
+          handleCloseCreateModal();
+          loadReceipts();
+        }, 900);
+      } catch (err) {
+        const det = err.response?.data?.detail;
+        if (det && typeof det === "object" && ("financial_complete" in det || "auto_accounting_status" in det)) {
+          const interpreted = interpretAutoLifecycleResponse({}, { httpErrorBody: det });
+          setCreateErr(interpreted.message);
+          return;
+        }
+        setCreateErr(typeof det === "object" ? det.message : det || err.message || "Gagal menyimpan Penerimaan Penjualan");
+      }
     } catch (err) {
-      const det = err.response?.data?.detail;
-      setCreateErr(typeof det === "object" ? det.message : det || err.message || "Gagal menyimpan Penerimaan Penjualan");
+      setCreateErr(err.message || "Gagal menyimpan Penerimaan Penjualan");
     } finally {
       setCreateBusy(false);
     }
@@ -563,13 +728,13 @@ export default function PenerimaanPenjualan() {
           <h1>Penerimaan Penjualan</h1>
           {showReceiptCount && (
             <div className="sd-list-summary" data-testid="receipt-list-count">
-              <strong>{receipts.length.toLocaleString("id-ID")}</strong>
-              <span>penerimaan</span>
+              <strong>{Number(listMeta.tabTotal || listMeta.total || receipts.length).toLocaleString("id-ID")}</strong>
+              <span>penerimaan · {tabLabel}</span>
             </div>
           )}
         </div>
         <div className="sd-list-header-actions">
-          {canDelete && selectedIds.size > 0 && (
+          {showDeleteControls && selectedIds.size > 0 && (
             <button
               type="button"
               className="sd-btn-danger"
@@ -609,6 +774,29 @@ export default function PenerimaanPenjualan() {
         </div>
       </header>
 
+      <div className="fp-invoice-tabs" role="tablist" aria-label="Klasifikasi penerimaan" data-testid="receipt-list-tabs">
+        {SALES_LIST_TABS.map((tab) => {
+          const count = Number(listMeta.counts?.[tab.id] || 0);
+          const selected = listTab === tab.id;
+          return (
+            <button
+              key={tab.id}
+              type="button"
+              role="tab"
+              aria-selected={selected}
+              className={selected ? "is-active" : ""}
+              data-testid={`tab-receipt-${tab.testIdSuffix}`}
+              onClick={() => changeReceiptTab(tab.id)}
+            >
+              {tab.label}
+              <span className="fp-tab-count" data-testid={`tab-receipt-count-${tab.testIdSuffix}`}>
+                {count.toLocaleString("id-ID")}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+
       <div className="sd-list-toolbar">
         <div className="sd-list-search">
           <Search size={16} />
@@ -618,7 +806,10 @@ export default function PenerimaanPenjualan() {
             data-testid="search-receipt-input"
             placeholder="Cari nomor penerimaan, no faktur, no PO, customer..."
             value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
+            onChange={(e) => {
+              setSearchQuery(e.target.value);
+              resetReceiptListPosition();
+            }}
           />
         </div>
       </div>
@@ -690,7 +881,7 @@ export default function PenerimaanPenjualan() {
         <div className="sd-list-table-scroll">
           <table className="sd-list-table">
             <colgroup>
-              {canDelete && <col style={{ width: 36 }} />}
+              {showDeleteControls && <col style={{ width: 36 }} />}
               <col />
               <col style={{ width: 108 }} />
               <col style={{ width: 130 }} />
@@ -701,7 +892,7 @@ export default function PenerimaanPenjualan() {
             </colgroup>
             <thead>
               <tr>
-                {canDelete && (
+                {showDeleteControls && (
                   <th>
                     <input type="checkbox" data-testid="select-all-receipts" checked={deletableReceipts.length > 0 && selectedIds.size === deletableReceipts.length} onChange={toggleSelectAll} aria-label="Pilih semua baris tampilan" />
                   </th>
@@ -718,34 +909,46 @@ export default function PenerimaanPenjualan() {
             <tbody>
               {listLoading ? (
                 <tr>
-                  <td colSpan={canDelete ? 8 : 7} className="sd-list-empty">
+                  <td colSpan={showDeleteControls ? 8 : 7} className="sd-list-empty">
                     Memuat data penerimaan penjualan...
                   </td>
                 </tr>
               ) : receipts.length === 0 ? (
                 <tr>
-                  <td colSpan={canDelete ? 8 : 7} className="sd-list-empty">
+                  <td colSpan={showDeleteControls ? 8 : 7} className="sd-list-empty" data-testid="empty-receipts">
                     <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
                       <FileText size={36} color="#9ca3af" />
-                      <span style={{ fontWeight: 600, color: "#374151" }}>Belum ada Penerimaan Penjualan</span>
+                      <span style={{ fontWeight: 600, color: "#374151" }}>
+                        Belum ada Penerimaan pada tab {tabLabel}
+                      </span>
                       <span style={{ fontSize: 12, color: "#6b7280" }}>
-                        Penerimaan pembayaran dari Faktur Penjualan akan tercatat di sini.
+                        {listMeta.capped
+                          ? "Hasil dibatasi server. Sempitkan pencarian atau filter."
+                          : "Penerimaan pembayaran dari Faktur Penjualan akan tercatat di sini."}
                       </span>
                     </div>
                   </td>
                 </tr>
               ) : (
-                receipts.map((r, idx) => (
+                receipts.map((r, idx) => {
+                  const lifecycle = salesDocumentLifecyclePresentation(r);
+                  const deletable = receiptDeletable(r);
+                  return (
                   <tr
                     key={r.id || idx}
+                    {...clickableDocumentRowProps({
+                      onOpen: () => openReceiptDetail(r),
+                      "data-testid": `receipt-row-${r.id}`,
+                      ariaLabel: `Buka penerimaan ${r.receipt_number || r.id}`,
+                    })}
                     style={{
                       borderBottom: "1px solid #f3f4f6",
                       backgroundColor: idx % 2 === 0 ? "#fff" : "#fafafa",
                     }}
                   >
-                    {canDelete && (
-                      <td style={{ padding: "12px 8px" }}>
-                        {r.can_delete !== false && (
+                    {showDeleteControls && (
+                      <td style={{ padding: "12px 8px" }} data-no-row-nav onClick={(e) => e.stopPropagation()}>
+                        {deletable && (
                           <input type="checkbox" data-testid={`receipt-checkbox-${r.id}`} checked={selectedIds.has(r.id)} onChange={() => toggleSelect(r.id)} aria-label={`Pilih ${r.receipt_number}`} />
                         )}
                       </td>
@@ -756,15 +959,7 @@ export default function PenerimaanPenjualan() {
                         type="button"
                         className="sd-doc"
                         data-testid={`receipt-number-${r.id}`}
-                        onClick={async () => {
-                          setAccountingErr("");
-                          try {
-                            const fresh = await api.getSalesReceipt(r.id);
-                            setDetailReceipt(fresh.receipt || fresh);
-                          } catch {
-                            setDetailReceipt(r);
-                          }
-                        }}
+                        onClick={() => openReceiptDetail(r)}
                       >
                         {r.receipt_number || "-"}
                       </button>
@@ -810,11 +1005,20 @@ export default function PenerimaanPenjualan() {
                       >
                         {accountingLabel(r.accounting_status)}
                       </span>
+                      {lifecycle && (
+                        <div
+                          className={`sd-lifecycle-chip ${lifecycleChipClass(lifecycle.tone)}`}
+                          data-testid={`receipt-lifecycle-${r.id}`}
+                          title={lifecycle.reason || lifecycle.label}
+                        >
+                          {lifecycle.label}
+                        </div>
+                      )}
                     </td>
                     <td style={{ padding: "12px 16px", color: "#374151" }} data-testid={`receipt-cash-bank-${r.id}`}>
                       {r.cash_bank_name || "-"}
                     </td>
-                    <td>
+                    <td data-no-row-nav onClick={(e) => e.stopPropagation()}>
                       <div className="sd-actions">
                         <button
                           type="button"
@@ -853,7 +1057,7 @@ export default function PenerimaanPenjualan() {
                             Reverse
                           </button>
                         )}
-                        {canDelete && r.can_delete !== false && (
+                        {showDeleteControls && deletable && (
                           <button
                             type="button"
                             className="sd-act sd-act-delete"
@@ -873,19 +1077,63 @@ export default function PenerimaanPenjualan() {
                       </div>
                     </td>
                   </tr>
-                ))
+                  );
+                })
               )}
             </tbody>
           </table>
         </div>
         <footer className="sd-list-footer" data-testid="receipt-list-footer">
-          <span>
+          <span data-testid="receipt-list-range">
             {listLoading
               ? "Memuat daftar penerimaan..."
               : listErr
               ? "Daftar penerimaan belum dapat ditampilkan"
-              : loadedRangeLabel(receipts.length, "penerimaan")}
+              : salesFiveTabRangeLabel({
+                  total: listMeta.total,
+                  page,
+                  pageSize,
+                  tabLabel,
+                  noun: "penerimaan",
+                  filtered: Boolean(searchQuery.trim()),
+                  capped: listMeta.capped,
+                })}
           </span>
+          <div className="fp-pager">
+            <button
+              type="button"
+              data-testid="receipt-page-prev"
+              disabled={listLoading || page <= 1}
+              onClick={() => setPage((current) => Math.max(1, current - 1))}
+            >
+              Sebelumnya
+            </button>
+            <span data-testid="receipt-page-indicator">{page} / {pageCount}</span>
+            <label className="fp-page-size">
+              <span>Baris</span>
+              <select
+                aria-label="Jumlah baris per halaman"
+                data-testid="receipt-page-size"
+                value={pageSize}
+                onChange={(e) => {
+                  setPageSize(Number(e.target.value));
+                  resetReceiptListPosition();
+                }}
+              >
+                {SALES_LIST_PAGE_SIZES.map((size) => (
+                  <option key={size} value={size}>{size}</option>
+                ))}
+              </select>
+            </label>
+            <button
+              type="button"
+              data-testid="receipt-page-next"
+              disabled={listLoading || page >= pageCount}
+              onClick={() => setPage((current) => current + 1)}
+            >
+              Berikutnya
+            </button>
+          </div>
         </footer>
       </div>
 
@@ -1432,8 +1680,14 @@ export default function PenerimaanPenjualan() {
       {deleteConfirm && (
         <div className="modal-overlay" data-testid="delete-confirm-modal" style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 80 }}>
           <div style={{ background: "#fff", borderRadius: 12, padding: 24, width: "100%", maxWidth: 460 }}>
-            <h3 style={{ margin: "0 0 8px" }}>Hapus Penerimaan Penjualan?</h3>
-            <p style={{ margin: "0 0 12px", color: "#64748b", fontSize: "0.9rem" }}>Dokumen berikut akan dihapus:</p>
+            <h3 style={{ margin: "0 0 8px" }}>
+              {canCancelBusiness ? "Batalkan Penerimaan Penjualan?" : "Hapus Penerimaan Penjualan?"}
+            </h3>
+            <p style={{ margin: "0 0 12px", color: "#64748b", fontSize: "0.9rem" }}>
+              {canCancelBusiness
+                ? "Dokumen berikut akan dibatalkan. Riwayat tetap tersimpan."
+                : "Dokumen berikut akan dihapus:"}
+            </p>
             <ul data-testid="delete-confirm-numbers" style={{ margin: "0 0 16px", paddingLeft: 18, fontWeight: 700, color: "#059669" }}>
               {(deleteConfirm.numbers || [deleteConfirm.number]).filter(Boolean).map((n) => <li key={n}>{n}</li>)}
             </ul>
@@ -1447,7 +1701,9 @@ export default function PenerimaanPenjualan() {
                 disabled={deleteLoading}
                 style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: "#dc2626", color: "#fff", fontWeight: 600 }}
               >
-                {deleteLoading ? "Menghapus..." : "Hapus"}
+                {deleteLoading
+                  ? (canCancelBusiness ? "Membatalkan..." : "Menghapus...")
+                  : (canCancelBusiness ? "Batalkan" : "Hapus")}
               </button>
             </div>
           </div>
@@ -1555,6 +1811,33 @@ export default function PenerimaanPenjualan() {
                 style={{ marginRight: 8, padding: "8px 14px", borderRadius: 8, border: "1px solid #fecaca", background: "#fff", color: "#b91c1c", fontWeight: 600 }}
               >
                 Reverse
+              </button>
+            )}
+            {canRecoverAutoAccounting(detailReceipt, { hasPerm, kind: "receipt" }) && (
+              <button
+                type="button"
+                data-testid="btn-recover-auto-receipt"
+                onClick={async () => {
+                  setAccountingErr("");
+                  try {
+                    const res = await api.recoverAutoSalesReceiptAccounting(detailReceipt.id);
+                    const interpreted = interpretAutoLifecycleResponse(res);
+                    if (interpreted.document) setDetailReceipt(interpreted.document);
+                    if (!interpreted.ok) setAccountingErr(interpreted.message);
+                    else {
+                      setSuccessMsg(interpreted.message || "Pemulihan akuntansi berhasil");
+                      loadReceipts();
+                    }
+                  } catch (err) {
+                    const det = err.response?.data?.detail;
+                    const interpreted = interpretAutoLifecycleResponse({}, { httpErrorBody: det });
+                    if (interpreted.document) setDetailReceipt(interpreted.document);
+                    setAccountingErr(interpreted.message || (typeof det === "object" ? det.message : det) || "Pemulihan gagal");
+                  }
+                }}
+                style={{ marginRight: 8, padding: "8px 14px", borderRadius: 8, border: "none", background: "#b45309", color: "#fff", fontWeight: 600 }}
+              >
+                Pulihkan Posting
               </button>
             )}
             <button type="button" onClick={() => setDetailReceipt(null)} style={{ padding: "8px 14px", borderRadius: 8, border: "1px solid #cbd5e1", background: "#fff" }}>

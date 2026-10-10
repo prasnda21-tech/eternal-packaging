@@ -116,8 +116,24 @@ def receipt_is_cancelled(receipt: Optional[dict]) -> bool:
     return receipt.get("cancelled") is True
 
 
+SETTLEMENT_EFFECTIVE_FIELD = "settlement_effective"
+
+
 def receipt_counts_toward_outstanding(receipt: Optional[dict]) -> bool:
-    return not receipt_is_cancelled(receipt)
+    """Confirmed operational settlement only.
+
+    - Cancelled/reversed receipts never count.
+    - Explicit settlement_effective=False never counts (auto-lifecycle pending).
+    - Absent settlement_effective preserves legacy historical semantics (counts).
+    - Explicit True counts when not cancelled.
+    """
+    if receipt_is_cancelled(receipt):
+        return False
+    if not receipt:
+        return False
+    if SETTLEMENT_EFFECTIVE_FIELD in receipt and receipt.get(SETTLEMENT_EFFECTIVE_FIELD) is False:
+        return False
+    return True
 
 
 def posting_claim_is_active(receipt: Optional[dict]) -> bool:
@@ -499,6 +515,12 @@ async def attach_receipt_accounting_fields(db, receipts: List[Dict[str, Any]]) -
         )
         rec["allocated_amount"] = float(receipt_allocated_amount(rec))
         rec["customer_credit_amount"] = float(receipt_customer_credit_amount(rec))
+        # Surfaced for five-tab Pending before claim tokens are stripped.
+        rec["accounting_claim_active"] = bool(
+            posting_claim_is_active(rec)
+            or reverse_claim_is_active(rec)
+            or delete_claim_is_active(rec)
+        )
         rec.pop(CLAIM_FIELD, None)
         rec.pop(REVERSE_CLAIM_FIELD, None)
         rec.pop(DELETE_CLAIM_FIELD, None)
@@ -527,6 +549,7 @@ async def clear_reverse_claim(db, receipt_id: str) -> None:
 
 
 async def acquire_posting_claim(db, receipt_id: str, *, token: Optional[str] = None) -> Optional[dict]:
+    from services.sales_business_cancel import receipt_cancel_fence_absent_clause
     from services.sales_receipts import now_iso
 
     claim_token = str(token or uuid.uuid4())
@@ -537,7 +560,10 @@ async def acquire_posting_claim(db, receipt_id: str, *, token: Optional[str] = N
                 {"financial_status": {"$in": ["cancelled", "reversed"]}},
                 {"cancelled": True},
             ],
-            **delete_claim_absent_or_stale_clause(),
+            "$and": [
+                delete_claim_absent_or_stale_clause(),
+                receipt_cancel_fence_absent_clause(),
+            ],
         },
         {
             "$set": {CLAIM_FIELD: claim_token, "updated_at": now_iso()},
@@ -548,6 +574,7 @@ async def acquire_posting_claim(db, receipt_id: str, *, token: Optional[str] = N
 
 
 async def acquire_delete_claim(db, receipt_id: str, token: str) -> Optional[dict]:
+    from services.sales_business_cancel import receipt_cancel_fence_absent_clause
     from services.sales_receipts import now_iso
 
     now = now_iso()
@@ -561,6 +588,7 @@ async def acquire_delete_claim(db, receipt_id: str, token: str) -> Optional[dict
             "$and": [
                 _claim_absent_clause(CLAIM_FIELD),
                 delete_claim_absent_or_stale_clause(),
+                receipt_cancel_fence_absent_clause(),
             ],
         },
         {
@@ -587,6 +615,7 @@ async def release_delete_claims(db, token: str) -> None:
 
 
 async def acquire_reverse_claim(db, receipt_id: str, *, token: Optional[str] = None) -> Optional[dict]:
+    from services.sales_business_cancel import receipt_cancel_fence_absent_clause
     from services.sales_receipts import now_iso
 
     claim_token = str(token or uuid.uuid4())
@@ -597,6 +626,7 @@ async def acquire_reverse_claim(db, receipt_id: str, *, token: Optional[str] = N
                 {"financial_status": {"$in": ["cancelled", "reversed"]}},
                 {"cancelled": True},
             ],
+            "$and": [receipt_cancel_fence_absent_clause()],
         },
         {"$set": {REVERSE_CLAIM_FIELD: claim_token, "updated_at": now_iso()}},
         return_document=ReturnDocument.AFTER,
@@ -636,6 +666,9 @@ async def assert_invoice_allows_receipt_journal(db, invoice_id: str) -> dict:
         raise HTTPException(404, f"Faktur Penjualan '{invoice_id}' tidak ditemukan.")
     if effective_financial_status(invoice) != FINANCIAL_FINALIZED:
         raise HTTPException(409, INVOICE_NOT_FINALIZED_RECEIPT_POST_MESSAGE)
+    from services.sales_invoice_edit_revision import raise_if_revision_in_progress
+
+    await raise_if_revision_in_progress(db, invoice["id"])
     if reverse_claim_is_active(invoice):
         raise HTTPException(409, INVOICE_REVERSE_IN_PROGRESS_RECEIPT_MESSAGE)
     journal = await find_sales_invoice_source_journal(db, invoice["id"])
@@ -650,6 +683,9 @@ async def _require_invoice_posted(db, invoice_id: str) -> dict:
     invoice = await db.sales_invoices.find_one({"id": str(invoice_id)}, {"_id": 0})
     if not invoice:
         raise HTTPException(404, f"Faktur Penjualan '{invoice_id}' tidak ditemukan.")
+    from services.sales_invoice_edit_revision import raise_if_revision_in_progress
+
+    await raise_if_revision_in_progress(db, invoice["id"])
     journal = await find_sales_invoice_source_journal(db, invoice["id"])
     if accounting_status_from_journal(journal) != ACCOUNTING_POSTED:
         raise HTTPException(409, INVOICE_NOT_POSTED_MESSAGE)
@@ -748,9 +784,22 @@ async def post_sales_receipt_accounting(
             await _heal_posted_receipt_from_journal(db, rec, existing, user)
             return await _public_receipt_detail(db, rec["id"])
 
+        invoice_id = str(claimed.get("invoice_id") or rec.get("invoice_id") or "")
+        guard_token = str(uuid.uuid4())
         try:
-            await assert_invoice_allows_receipt_journal(db, claimed.get("invoice_id") or rec.get("invoice_id"))
-            journal = await _write_source_journal(db, claimed, user, cash_snap)
+            from services.sales_invoice_posting import (
+                acquire_receipt_create_claim,
+                clear_receipt_create_claim,
+            )
+
+            leased = await acquire_receipt_create_claim(db, invoice_id, token=guard_token)
+            if not leased:
+                raise HTTPException(409, "Revisi faktur belum selesai.")
+            try:
+                await assert_invoice_allows_receipt_journal(db, invoice_id)
+                journal = await _write_source_journal(db, claimed, user, cash_snap)
+            finally:
+                await clear_receipt_create_claim(db, invoice_id, token=guard_token)
         except Exception:
             still = await find_sales_receipt_source_journal(db, rec["id"])
             if still:

@@ -82,7 +82,7 @@ test("renders finalized invoices for the selected month", async () => {
   expect(at("DP")).toBeLessThan(at("INV-001"));
   expect(at("INV-001")).toBeLessThan(at("Rp1.000.000"));
   expect(at("Rp1.000.000")).toBeLessThan(at("Rp750.000"));
-  expect(at("Rp750.000")).toBeLessThan(at("05/10/26"));
+  expect(at("Rp750.000")).toBeLessThan(at("05/10/2026"));
   expect(node.querySelector("[data-testid='sales-invoice-inv-1']").getAttribute("href")).toBe("/sales/invoices/inv-1?month=2026-10");
   expect(node.innerHTML).not.toContain("/penjualan/faktur-penjualan");
   expect(node.innerHTML).not.toContain("/buku-besar/piutang-usaha");
@@ -136,7 +136,7 @@ test("renders invoice detail from the sales invoice and receivable payloads", as
   expect(node.textContent).toContain("Customer");
   expect(node.textContent).toContain("Kopi Ayub");
   expect(node.textContent).toContain("INV-001");
-  expect(node.textContent).toContain("04/11/26");
+  expect(node.textContent).toContain("04/11/2026");
   expect(node.textContent).toContain("Rp250.000");
   expect(node.textContent).toContain("Rp750.000");
   expect(node.querySelector("[data-testid='sales-invoice-back']").getAttribute("href")).toBe("/sales/invoices?month=2026-10");

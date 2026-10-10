@@ -391,6 +391,13 @@
   cursor: pointer;
   border-bottom: 2px solid transparent;
 }
+.so-list-workspace .so-list-tabs button .so-tab-count{
+  margin-left:6px;
+  font-size:11px;
+  font-weight:700;
+  opacity:.75;
+}
+.so-list-workspace .so-list-tabs button.is-active .so-tab-count{opacity:1}
 .so-list-workspace .so-list-tabs button.is-active {
   color: var(--so-green);
   border-bottom-color: var(--so-green);
@@ -544,9 +551,18 @@
 .so-list-workspace .so-list-row { cursor: pointer; height: 60px; }
 .so-list-workspace .so-list-row:nth-child(even) td { background: #f6f7f8; }
 .so-list-workspace .so-list-row:hover td { background: #d5f5ef !important; }
+.so-list-workspace .so-list-row:focus { outline: none; }
+.so-list-workspace .so-list-row:focus-visible td {
+  box-shadow: inset 0 0 0 2px #0f766e;
+  background: #e8f7f3 !important;
+}
 .so-list-workspace .so-list-row.is-selected td { background: #dbeafe !important; }
 .so-list-workspace .so-list-row.is-selected td:first-child { box-shadow: inset 3px 0 0 #1d4ed8; }
 .so-list-workspace .so-list-row.is-selected:hover td { background: #dbeafe !important; }
+.so-list-workspace .so-list-row.is-selected:focus-visible td {
+  box-shadow: inset 3px 0 0 #1d4ed8, inset 0 0 0 2px #0f766e;
+  background: #dbeafe !important;
+}
 .so-list-workspace .so-list-identity { min-width: 0; max-width: 100%; }
 .so-list-workspace .so-list-customer {
   font-size: 14px;

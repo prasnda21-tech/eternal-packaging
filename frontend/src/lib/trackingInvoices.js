@@ -1,7 +1,7 @@
-import { formatTrackingPageDate } from "./constants";
+import { formatSalesInvoiceDate } from "./salesInvoiceDate";
 
 export function formatInvoiceDate(value) {
-  return formatTrackingPageDate(value);
+  return formatSalesInvoiceDate(value);
 }
 
 export function formatInvoiceMoney(value) {

@@ -561,10 +561,20 @@ async def _load_current_invoices(db, *, aging_reference_date: str) -> List[dict]
     """
     journals = await _cursor_all(
         db[JOURNAL_ENTRIES].find(
-            {"source_type": SOURCE_INVOICE, "reversal_of": None},
+            {"source_type": SOURCE_INVOICE, "reversal_of": None, "status": STATUS_POSTED},
             {"_id": 0},
         )
     )
+    from services.sales_invoice_posting import select_sales_invoice_primary
+
+    grouped_journals: Dict[str, List[dict]] = {}
+    for journal in journals:
+        grouped_journals.setdefault(str(journal.get("source_id") or ""), []).append(journal)
+    journals = []
+    for group in grouped_journals.values():
+        chosen = select_sales_invoice_primary(group)
+        if chosen and not chosen.get("ambiguous") and str(chosen.get("status") or "") == STATUS_POSTED:
+            journals.append(chosen)
     if not journals:
         return []
 

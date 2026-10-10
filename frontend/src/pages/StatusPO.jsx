@@ -164,14 +164,13 @@ export default function StatusPO() {
     writeListUiState(userKey, routeKey, filters);
   }, [userKey, routeKey, filters]);
 
-  const visible = rows || [];
+  const visible = useMemo(() => rows || [], [rows]);
   const visibleIds = useMemo(() => visibleRowIds(visible), [visible]);
-  const visibleIdKey = visibleIds.join(",");
+  const visibleIdKey = useMemo(() => visibleIds.join(","), [visibleIds]);
 
   useEffect(() => {
     setSelected((prev) => pruneSelection(prev, visibleIds));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visibleIdKey]);
+  }, [visibleIdKey, visibleIds]);
 
   const headerState = headerCheckState(selected, visibleIds);
   useEffect(() => {
