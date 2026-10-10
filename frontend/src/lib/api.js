@@ -970,6 +970,10 @@ export const api = {
   updateSalesInvoice: (id, payload) => client.put(`/sales-invoices/${encodeURIComponent(id)}`, payload).then((r) => r.data),
   finalizeSalesInvoice: (id) => client.post(`/sales-invoices/${encodeURIComponent(id)}/finalize`).then((r) => r.data),
   cancelSalesInvoice: (id) => client.post(`/sales-invoices/${encodeURIComponent(id)}/cancel`).then((r) => r.data),
+  businessCancelSalesInvoice: (id, payload) =>
+    client.post(`/sales-invoices/${encodeURIComponent(id)}/business-cancel`, payload).then((r) => r.data),
+  recoverAutoSalesInvoiceAccounting: (id) =>
+    client.post(`/sales-invoices/${encodeURIComponent(id)}/recover-auto-accounting`).then((r) => r.data),
   postSalesInvoiceAccounting: (id) => client.post(`/sales-invoices/${encodeURIComponent(id)}/post-accounting`).then((r) => r.data),
   reverseSalesInvoiceAccounting: (id, payload) => client.post(`/sales-invoices/${encodeURIComponent(id)}/reverse-accounting`, payload).then((r) => r.data),
   // ---- Sales Receipt (Penerimaan Penjualan) ----
@@ -982,6 +986,10 @@ export const api = {
   salesReceiptCashBankOptions: () => client.get(`/sales-receipts/cash-bank-options`).then((r) => r.data),
   postSalesReceiptAccounting: (id, payload = {}) => client.post(`/sales-receipts/${encodeURIComponent(id)}/post-accounting`, payload).then((r) => r.data),
   reverseSalesReceiptAccounting: (id) => client.post(`/sales-receipts/${encodeURIComponent(id)}/reverse-accounting`).then((r) => r.data),
+  businessCancelSalesReceipt: (id, payload) =>
+    client.post(`/sales-receipts/${encodeURIComponent(id)}/business-cancel`, payload).then((r) => r.data),
+  recoverAutoSalesReceiptAccounting: (id) =>
+    client.post(`/sales-receipts/${encodeURIComponent(id)}/recover-auto-accounting`).then((r) => r.data),
   attachSalesReceiptPaymentProof: (id, paymentProof) =>
     client.post(`/sales-receipts/${encodeURIComponent(id)}/payment-proof`, { payment_proof: paymentProof }).then((r) => r.data),
   // ---- Delete (Safe) ----

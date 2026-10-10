@@ -1466,6 +1466,30 @@ body .sd-density.penjualan-page .fp-detail textarea:not(:disabled):not([readonly
   background:#dcfce7;
   color:#14532d;
 }
+.sd-density .sd-lifecycle-chip{
+  display:inline-block;
+  margin-top:4px;
+  padding:2px 7px;
+  border-radius:4px;
+  font:650 10px/1.2 "IBM Plex Sans",sans-serif;
+  max-width:160px;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  vertical-align:top;
+}
+.sd-density .sd-lifecycle-chip.is-complete{background:#dcfce7;color:#14532d}
+.sd-density .sd-lifecycle-chip.is-unpaid{background:#e0e7ff;color:#3730a3}
+.sd-density .sd-lifecycle-chip.is-pending{background:#fef3c7;color:#92400e}
+.sd-density .sd-lifecycle-chip.is-failed{background:#fee2e2;color:#991b1b}
+.sd-density .sd-lifecycle-chip.is-cancelled{background:#f1f5f9;color:#475569}
+.sd-density .sd-lifecycle-chip.is-review{background:#ffedd5;color:#9a3412}
+.penjualan-page .fp-invoice-tabs{
+  display:flex;
+  flex-wrap:wrap;
+  gap:6px;
+  padding:0 0 8px;
+}
 .fp-invoice-page .sd-list-table{
   min-width:1240px;
 }

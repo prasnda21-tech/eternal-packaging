@@ -292,6 +292,9 @@ jobs:
           src/pages/FakturPenjualan.listFilters.test.js
           src/components/MasterItemSearchSelect.picker.test.js
           src/lib/salesOrderListPresentation.test.js
+          src/lib/salesFiveTabs.test.js
+          src/lib/salesLifecycleUi.test.js
+          src/pages/salesPackageB2.test.js
           src/pages/PesananPenjualan.searchDebounce.test.js
           src/components/TrackingInvoicePdfViewer.test.js
           src/components/TrackingInvoices.test.js

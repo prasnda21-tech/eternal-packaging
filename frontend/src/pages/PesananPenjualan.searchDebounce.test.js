@@ -111,7 +111,7 @@ describe("Pesanan Penjualan list search debounce", () => {
     await renderPage();
     expect(api.listSalesOrders).toHaveBeenCalledTimes(1);
     expect(api.listSalesOrders).toHaveBeenLastCalledWith(
-      { status: "aktif", page: 1, page_size: 10 },
+      { list_tab: "active", page: 1, page_size: 50 },
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
 
@@ -126,7 +126,7 @@ describe("Pesanan Penjualan list search debounce", () => {
     });
     expect(api.listSalesOrders).toHaveBeenCalledTimes(2);
     expect(api.listSalesOrders).toHaveBeenLastCalledWith(
-      { q: "ABC", status: "aktif", page: 1, page_size: 10 },
+      { list_tab: "active", page: 1, page_size: 50, q: "ABC" },
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
   });
@@ -139,7 +139,7 @@ describe("Pesanan Penjualan list search debounce", () => {
       await Promise.resolve();
     });
     expect(api.listSalesOrders).toHaveBeenLastCalledWith(
-      { q: "ABC", status: "aktif", page: 1, page_size: 10 },
+      { list_tab: "active", page: 1, page_size: 50, q: "ABC" },
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
 
@@ -155,7 +155,7 @@ describe("Pesanan Penjualan list search debounce", () => {
       return !params.q;
     })).toBe(true);
     expect(api.listSalesOrders).toHaveBeenLastCalledWith(
-      { status: "aktif", page: 1, page_size: 10 },
+      { list_tab: "active", page: 1, page_size: 50 },
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
   });
@@ -204,15 +204,23 @@ describe("Pesanan Penjualan list search debounce", () => {
     return next instanceof URLSearchParams ? next : new URLSearchParams(next || "");
   };
 
-  test("Semua requests gabungan, keeps search and period, and writes tab=semua", async () => {
+  test("Semua requests list_tab=all, keeps search and period, and writes tab=all", async () => {
     api.listSalesOrders.mockResolvedValue({
       orders: [listedOrder("a", "Maju"), listedOrder("b", "Sumber")],
       total: 4,
       capped: false,
+      all_total: 4,
+      active_total: 2,
+      completed_total: 1,
+      pending_total: 0,
+      cancelled_total: 1,
+      list_tab: "all",
     });
     await renderPage();
     expect(container.querySelector('[data-testid="sales-order-aktif-count"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="sales-order-tab-semua"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="sales-order-tab-pending"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="sales-order-tab-batal"]')).toBeTruthy();
 
     const period = container.querySelector('[data-testid="sales-order-period-filter"]');
     await act(async () => {
@@ -236,16 +244,16 @@ describe("Pesanan Penjualan list search debounce", () => {
     const bounds = periodBounds("last_month");
     expect(api.listSalesOrders).toHaveBeenLastCalledWith(
       {
+        list_tab: "all",
         q: "kopi",
-        status: "gabungan",
         date_from: bounds.date_from,
         date_to: bounds.date_to,
         page: 1,
-        page_size: 10,
+        page_size: 50,
       },
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
-    expect(lastParams().get("tab")).toBe("semua");
+    expect(lastParams().get("tab")).toBe("all");
     expect(lastParams().get("status")).toBeNull();
     expect(lastParams().get("q")).toBe("kopi");
     expect(lastParams().get("period")).toBe("last_month");
@@ -265,24 +273,26 @@ describe("Pesanan Penjualan list search debounce", () => {
       await Promise.resolve();
     });
     expect(api.listSalesOrders).toHaveBeenLastCalledWith(
-      expect.objectContaining({ status: "gabungan", page: 1, page_size: 20, q: "kopi" }),
+      expect.objectContaining({ list_tab: "all", page: 1, page_size: 20, q: "kopi" }),
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
   });
 
-  test("remount of tab=semua requests gabungan and opening detail stores that query", async () => {
-    setQuery("tab=semua&q=kopi&period=last_month&page=2&page_size=20");
+  test("remount of tab=all requests list_tab=all and opening detail stores that query", async () => {
+    setQuery("tab=all&q=kopi&period=last_month&page=2&page_size=20");
     api.listSalesOrders.mockResolvedValue({
       orders: [listedOrder("back", "Kopi")],
       total: 25,
       capped: false,
+      list_tab: "all",
+      all_total: 25,
     });
     await renderPage();
     const bounds = periodBounds("last_month");
     expect(api.listSalesOrders).toHaveBeenLastCalledWith(
       {
+        list_tab: "all",
         q: "kopi",
-        status: "gabungan",
         date_from: bounds.date_from,
         date_to: bounds.date_to,
         page: 2,
@@ -299,7 +309,7 @@ describe("Pesanan Penjualan list search debounce", () => {
     const href = readPoReturnContext("u1", "back")?.href || "";
     const stored = new URL(href, "http://local");
     expect(stored.pathname).toBe("/penjualan/pesanan-penjualan");
-    expect(stored.searchParams.get("tab")).toBe("semua");
+    expect(stored.searchParams.get("tab")).toBe("all");
     expect(stored.searchParams.get("q")).toBe("kopi");
     expect(stored.searchParams.get("period")).toBe("last_month");
     expect(stored.searchParams.get("page")).toBe("2");
@@ -307,7 +317,7 @@ describe("Pesanan Penjualan list search debounce", () => {
     expect(stored.searchParams.get("status")).toBeNull();
   });
 
-  test("reset on Semua stays on gabungan", async () => {
+  test("reset on Semua stays on list_tab=all", async () => {
     await renderPage();
     await act(async () => {
       container.querySelector('[data-testid="sales-order-tab-semua"]').click();
@@ -324,35 +334,36 @@ describe("Pesanan Penjualan list search debounce", () => {
       await Promise.resolve();
     });
     expect(api.listSalesOrders).toHaveBeenLastCalledWith(
-      { status: "gabungan", page: 1, page_size: 10 },
+      { list_tab: "all", page: 1, page_size: 50 },
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
     expect(container.querySelector('[data-testid="sales-order-tab-semua"]').getAttribute("aria-selected")).toBe("true");
-    expect(lastParams().get("tab")).toBe("semua");
+    expect(lastParams().get("tab")).toBe("all");
     expect(lastParams().get("status")).toBeNull();
   });
 
-  test("status dropdown and deep links keep the existing tab switch", async () => {
+  test("status dropdown and deep links switch five-tab list_tab", async () => {
     await renderPage();
     await act(async () => {
       container.querySelector('[data-testid="sales-order-tab-semua"]').click();
     });
     await chooseStatus("selesai");
     expect(api.listSalesOrders).toHaveBeenLastCalledWith(
-      expect.objectContaining({ status: "selesai", page: 1, page_size: 10 }),
+      expect.objectContaining({ list_tab: "completed", page: 1, page_size: 50 }),
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
-    expect(container.querySelector('[data-testid="sales-order-tab-histori"]').getAttribute("aria-selected")).toBe("true");
-    expect(lastParams().get("tab")).toBe("histori");
-    expect(lastParams().get("status")).toBe("selesai");
+    expect(container.querySelector('[data-testid="sales-order-tab-selesai"]').getAttribute("aria-selected")).toBe("true");
+    expect(lastParams().get("tab")).toBe("completed");
+    // selesai is the tab default for completed, so URL omits redundant status=
+    expect(lastParams().get("status")).toBeNull();
 
     await chooseStatus("hold");
     expect(api.listSalesOrders).toHaveBeenLastCalledWith(
-      expect.objectContaining({ status: "hold" }),
+      expect.objectContaining({ list_tab: "pending" }),
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
-    expect(container.querySelector('[data-testid="sales-order-tab-aktif"]').getAttribute("aria-selected")).toBe("true");
-    expect(lastParams().get("tab")).toBeNull();
+    expect(container.querySelector('[data-testid="sales-order-tab-pending"]').getAttribute("aria-selected")).toBe("true");
+    expect(lastParams().get("tab")).toBe("pending");
     expect(lastParams().get("status")).toBe("hold");
 
     await act(async () => {
@@ -362,14 +373,14 @@ describe("Pesanan Penjualan list search debounce", () => {
       container.querySelector('[data-testid="so-th-filter-stage-option-hold"]').click();
     });
     expect(api.listSalesOrders).toHaveBeenLastCalledWith(
-      expect.objectContaining({ status: "hold", page: 1, page_size: 10 }),
+      expect.objectContaining({ list_tab: "pending", page: 1, page_size: 50 }),
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
     await act(async () => {
       container.querySelector('[data-testid="so-th-filter-stage-clear"]').click();
     });
     expect(api.listSalesOrders).toHaveBeenLastCalledWith(
-      { status: "aktif", page: 1, page_size: 10 },
+      { list_tab: "pending", page: 1, page_size: 50 },
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
     await act(async () => {
@@ -377,20 +388,20 @@ describe("Pesanan Penjualan list search debounce", () => {
     });
     await chooseStatus("__tab__");
     expect(api.listSalesOrders).toHaveBeenLastCalledWith(
-      { status: "gabungan", page: 1, page_size: 10 },
+      { list_tab: "all", page: 1, page_size: 50 },
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
     expect(container.querySelector('[data-testid="sales-order-tab-semua"]').getAttribute("aria-selected")).toBe("true");
 
     act(() => root.unmount());
-    setQuery("tab=semua&status=selesai");
+    setQuery("tab=all&status=selesai");
     root = createRoot(container);
     await renderPage();
     expect(api.listSalesOrders).toHaveBeenLastCalledWith(
-      expect.objectContaining({ status: "selesai" }),
+      expect.objectContaining({ list_tab: "completed" }),
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
-    expect(container.querySelector('[data-testid="sales-order-tab-histori"]').getAttribute("aria-selected")).toBe("true");
+    expect(container.querySelector('[data-testid="sales-order-tab-selesai"]').getAttribute("aria-selected")).toBe("true");
     expect(container.querySelector('[data-testid="sales-order-tab-semua"]').getAttribute("aria-selected")).toBe("false");
   });
 });

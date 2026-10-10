@@ -391,6 +391,13 @@
   cursor: pointer;
   border-bottom: 2px solid transparent;
 }
+.so-list-workspace .so-list-tabs button .so-tab-count{
+  margin-left:6px;
+  font-size:11px;
+  font-weight:700;
+  opacity:.75;
+}
+.so-list-workspace .so-list-tabs button.is-active .so-tab-count{opacity:1}
 .so-list-workspace .so-list-tabs button.is-active {
   color: var(--so-green);
   border-bottom-color: var(--so-green);
