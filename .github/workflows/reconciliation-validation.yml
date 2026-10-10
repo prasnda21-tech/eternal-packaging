@@ -102,6 +102,29 @@ jobs:
           tests/test_division_tasks.py::test_operator_task_keeps_each_allocation_screen
           tests/test_division_tasks.py::test_operator_task_keeps_screen_when_line_mirror_empty
           tests/test_production_dashboard_summary.py
+      # Phase 2.2C revision suite must run alone: it sets DB_NAME at import and
+      # previously hung the combined xdist job after ~87% with no further output.
+      - name: Run sales invoice edit revision tests
+        working-directory: backend
+        timeout-minutes: 5
+        env:
+          MONGO_URL: mongodb://127.0.0.1:27017
+          DB_NAME: eternal_packaging_ci_sales_invoice_edit_revision
+          JWT_SECRET: ci-only-secret
+        run: |
+          set -euo pipefail
+          echo "Starting isolated revision suite (serial, dedicated DB_NAME)"
+          if ! timeout --signal=TERM --kill-after=15s 180s \
+            python -m pytest -vv -n 0 --durations=20 \
+            tests/test_sales_invoice_edit_revision.py; then
+            status=$?
+            echo "::error::sales invoice edit revision tests exited with status ${status}"
+            echo "--- process snapshot ---"
+            ps -eo pid,ppid,stat,etime,cmd --sort=etime | head -80 || true
+            echo "--- mongo ping ---"
+            mongosh --quiet mongodb://127.0.0.1:27017 --eval 'db.runCommand({ ping: 1 })' || true
+            exit "${status}"
+          fi
 
   backend-live-orders:
     name: Backend live orders summary

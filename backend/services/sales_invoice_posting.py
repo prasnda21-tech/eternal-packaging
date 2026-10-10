@@ -106,6 +106,8 @@ def journal_date_from_invoice(invoice: dict) -> str:
 def accounting_status_from_journal(journal: Optional[dict]) -> str:
     if not journal:
         return ACCOUNTING_NOT_POSTED
+    if journal.get("ambiguous"):
+        return "ambiguous"
     status = str(journal.get("status") or "").strip().lower()
     if status == STATUS_REVERSED:
         return ACCOUNTING_REVERSED
@@ -114,8 +116,49 @@ def accounting_status_from_journal(journal: Optional[dict]) -> str:
     return ACCOUNTING_NOT_POSTED
 
 
+def select_sales_invoice_primary(docs: List[dict]) -> Optional[dict]:
+    """One current primary. Active posted wins. Reversed history is not success."""
+    primaries = [doc for doc in docs if doc and not doc.get("reversal_of")]
+    posted = [
+        doc for doc in primaries
+        if str(doc.get("status") or "").strip().lower() == STATUS_POSTED
+    ]
+    if len(posted) > 1:
+        return {"ambiguous": True, "status": "ambiguous", "id": None, "source_id": posted[0].get("source_id")}
+    if len(posted) == 1:
+        return posted[0]
+    reversed_docs = [
+        doc for doc in primaries
+        if str(doc.get("status") or "").strip().lower() == STATUS_REVERSED
+    ]
+    if reversed_docs and len(reversed_docs) == len(primaries):
+        reversed_docs.sort(key=lambda doc: str(doc.get("posted_at") or doc.get("created_at") or ""))
+        return reversed_docs[-1]
+    if len(primaries) == 1:
+        return primaries[0]
+    if len(primaries) > 1:
+        return {"ambiguous": True, "status": "ambiguous", "id": None, "source_id": primaries[0].get("source_id")}
+    return None
+
+
 async def find_sales_invoice_source_journal(db, invoice_id: str) -> Optional[dict]:
-    return await find_primary_journal_for_source(db, SOURCE_TYPE, str(invoice_id))
+    docs = await db.journal_entries.find(
+        {
+            "source_type": SOURCE_TYPE,
+            "source_id": str(invoice_id),
+            "reversal_of": None,
+        },
+        {"_id": 0},
+    ).to_list(20)
+    chosen = select_sales_invoice_primary(docs)
+    if not chosen or chosen.get("ambiguous"):
+        return chosen
+    lines = await db.journal_lines.find(
+        {"journal_id": chosen.get("id")}, {"_id": 0}
+    ).to_list(100)
+    from services.journal_core import public_journal
+
+    return public_journal(chosen, lines)
 
 
 async def load_source_journals_by_invoice_ids(db, invoice_ids: List[str]) -> Dict[str, dict]:
@@ -129,8 +172,26 @@ async def load_source_journals_by_invoice_ids(db, invoice_ids: List[str]) -> Dic
             "reversal_of": None,
         },
         {"_id": 0, "id": 1, "source_id": 1, "status": 1},
-    ).to_list(len(ids) + 50)
-    return {str(doc.get("source_id")): doc for doc in docs}
+    ).to_list(max(len(ids) * 4, 20))
+    grouped: Dict[str, List[dict]] = {}
+    for doc in docs:
+        grouped.setdefault(str(doc.get("source_id") or ""), []).append(doc)
+    return {
+        source_id: chosen
+        for source_id, group in grouped.items()
+        if source_id and (chosen := select_sales_invoice_primary(group))
+    }
+
+
+def _is_active_posted_primary(journal: Optional[dict]) -> bool:
+    """True only for one active posted primary. Reversed or ambiguous is not success."""
+    if not journal:
+        return False
+    if journal.get("ambiguous") or accounting_status_from_journal(journal) == "ambiguous":
+        raise HTTPException(409, "Jurnal faktur tidak tunggal.")
+    if accounting_status_from_journal(journal) == ACCOUNTING_REVERSED:
+        raise HTTPException(409, "Jurnal faktur sudah di-reverse dan tidak memiliki primary aktif.")
+    return accounting_status_from_journal(journal) == ACCOUNTING_POSTED
 
 
 def raise_if_journal_blocks_cancel(journal: Optional[dict]) -> None:
@@ -274,12 +335,16 @@ def public_receipt_reverse_blocker(receipt: dict, journal: Optional[dict]) -> Di
 
 
 def cancel_unclaimed_filter(invoice_id: str) -> Dict[str, Any]:
+    from services.sales_invoice_edit_revision import edit_revision_claim_absent_or_stale_clause
     from services.sales_invoices import FINANCIAL_FINALIZED
 
     return {
         "id": invoice_id,
         "financial_status": FINANCIAL_FINALIZED,
-        **posting_claim_absent_or_stale_clause(),
+        "$and": [
+            posting_claim_absent_or_stale_clause(),
+            edit_revision_claim_absent_or_stale_clause(),
+        ],
     }
 
 
@@ -301,11 +366,16 @@ async def acquire_posting_claim(db, invoice_id: str, *, token: Optional[str] = N
 
     claim_token = str(token or uuid.uuid4())
     now = now_iso()
+    from services.sales_invoice_edit_revision import edit_revision_claim_absent_or_stale_clause
+
     return await db.sales_invoices.find_one_and_update(
         {
             "id": str(invoice_id),
             "financial_status": FINANCIAL_FINALIZED,
-            **reverse_claim_absent_or_stale_clause(),
+            "$and": [
+                reverse_claim_absent_or_stale_clause(),
+                edit_revision_claim_absent_or_stale_clause(),
+            ],
         },
         {
             "$set": {CLAIM_FIELD: claim_token, CLAIM_AT_FIELD: now, "updated_at": now},
@@ -329,6 +399,7 @@ async def clear_reverse_claim(db, invoice_id: str) -> None:
 
 async def acquire_reverse_claim(db, invoice_id: str, *, token: Optional[str] = None) -> Optional[dict]:
     """Atomically claim a finalized invoice for reverse. Fresh post/create claims block it."""
+    from services.sales_invoice_edit_revision import edit_revision_claim_absent_or_stale_clause
     from services.sales_invoices import FINANCIAL_FINALIZED, now_iso
 
     claim_token = str(token or uuid.uuid4())
@@ -340,6 +411,7 @@ async def acquire_reverse_claim(db, invoice_id: str, *, token: Optional[str] = N
             "$and": [
                 posting_claim_absent_or_stale_clause(),
                 receipt_create_claim_absent_or_stale_clause(),
+                edit_revision_claim_absent_or_stale_clause(),
             ],
         },
         {
@@ -373,6 +445,8 @@ async def acquire_receipt_create_claim(db, invoice_id: str, *, token: Optional[s
     """Lease a finalized invoice for receipt create. Fresh reverse claim blocks it."""
     from services.sales_invoices import FINANCIAL_FINALIZED, now_iso
 
+    from services.sales_invoice_edit_revision import edit_revision_claim_absent_or_stale_clause
+
     claim_token = str(token or uuid.uuid4())
     now = now_iso()
     create_claim_ok = receipt_create_claim_absent_or_stale_clause()
@@ -384,6 +458,7 @@ async def acquire_receipt_create_claim(db, invoice_id: str, *, token: Optional[s
             "$and": [
                 reverse_claim_absent_or_stale_clause(),
                 create_claim_ok,
+                edit_revision_claim_absent_or_stale_clause(),
             ],
         },
         {
@@ -448,7 +523,8 @@ async def _finalize_invoice_reversal_state(
     reason: str,
     reversal_journal: Optional[dict] = None,
 ) -> None:
-    from services.sales_invoices import FINANCIAL_CANCELLED, _actor_public, now_iso
+    from services.sales_invoice_edit_revision import revision_fence_absent_clause, revision_fence_is_active
+    from services.sales_invoices import FINANCIAL_CANCELLED, _actor_public, effective_financial_status, now_iso
 
     now = now_iso()
     stored = await db.sales_invoices.find_one({"id": invoice["id"]}, {"_id": 0}) or {}
@@ -473,8 +549,8 @@ async def _finalize_invoice_reversal_state(
         rev_id = stored.get("accounting_reversal_journal_id")
     if rev_id:
         patch["accounting_reversal_journal_id"] = rev_id
-    await db.sales_invoices.update_one(
-        {"id": invoice["id"]},
+    result = await db.sales_invoices.update_one(
+        {"id": invoice["id"], "$and": [revision_fence_absent_clause()]},
         {
             "$set": patch,
             "$unset": {
@@ -487,6 +563,18 @@ async def _finalize_invoice_reversal_state(
             },
         },
     )
+    if result.matched_count:
+        return
+    current = await db.sales_invoices.find_one({"id": invoice["id"]}, {"_id": 0}) or {}
+    if revision_fence_is_active(current):
+        raise HTTPException(409, "Revisi faktur belum selesai.")
+    from services.sales_invoice_edit_revision import incomplete_edit_revision
+
+    if await incomplete_edit_revision(db, invoice["id"]):
+        raise HTTPException(409, "Revisi faktur belum selesai.")
+    if effective_financial_status(current) == FINANCIAL_CANCELLED:
+        return
+    raise HTTPException(409, "Reversal accounting gagal karena perubahan bersamaan.")
 
 
 @asynccontextmanager
@@ -680,9 +768,13 @@ async def post_sales_invoice_accounting(
             raise HTTPException(409, "Faktur yang dibatalkan tidak dapat diposting ke accounting.")
         if status != FINANCIAL_FINALIZED:
             raise HTTPException(409, "Hanya faktur finalized yang dapat diposting ke accounting.")
+        from services.sales_invoice_edit_revision import raise_if_revision_in_progress
+
+        await raise_if_revision_in_progress(db, inv["id"])
 
         existing = await find_sales_invoice_source_journal(db, inv["id"])
-        if existing:
+        if _is_active_posted_primary(existing):
+            await raise_if_revision_in_progress(db, inv["id"])
             if inv.get(CLAIM_FIELD):
                 await clear_posting_claim(db, inv["id"])
             return await get_sales_invoice_detail(db, inv["id"])
@@ -700,12 +792,14 @@ async def post_sales_invoice_accounting(
             if current and reverse_claim_is_active(current):
                 raise HTTPException(409, REVERSE_CLAIM_MESSAGE)
             existing = await find_sales_invoice_source_journal(db, inv["id"])
-            if existing:
+            await raise_if_revision_in_progress(db, inv["id"])
+            if _is_active_posted_primary(existing):
                 return await get_sales_invoice_detail(db, inv["id"])
             raise HTTPException(409, "Posting accounting gagal karena perubahan bersamaan.")
 
         existing = await find_sales_invoice_source_journal(db, inv["id"])
-        if existing:
+        if _is_active_posted_primary(existing):
+            await raise_if_revision_in_progress(db, inv["id"])
             await clear_posting_claim(db, inv["id"])
             return await get_sales_invoice_detail(db, inv["id"])
 
@@ -752,6 +846,9 @@ async def reverse_sales_invoice_accounting(
 
     async with _optional_invoice_lock(serialize_in_process):
         inv = await _load_invoice(db, invoice_id)
+        from services.sales_invoice_edit_revision import raise_if_revision_in_progress
+
+        await raise_if_revision_in_progress(db, inv["id"])
         existing = await find_sales_invoice_source_journal(db, inv["id"])
         status = accounting_status_from_journal(existing)
 
