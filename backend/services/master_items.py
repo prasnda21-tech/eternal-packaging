@@ -38,6 +38,12 @@ ACCURATE_ID_PARTIAL_INDEX = "accurate_item_id_partial_unique"
 LEGACY_ACCURATE_ID_INDEX = "accurate_item_id_1"
 CODE_CLAIMS_INDEX = "code_key_unique"
 DUPLICATE_CODE_MSG = "Kode barang/jasa sudah dipakai."
+INDEX_NOT_READY_MSG = (
+    "Indeks Barang/Jasa belum siap untuk create lokal. "
+    "Partial unique Accurate ID dan unique code claims wajib ada, "
+    "dan unique penuh accurate_item_id legacy harus sudah diangkat. "
+    "Create ditolak; tidak ada data yang ditulis."
+)
 
 _sync_lock = asyncio.Lock()
 
@@ -188,25 +194,91 @@ async def prepare_master_item_indexes_for_local_create(
     return result
 
 
+def _index_field_names(spec: Dict[str, Any]) -> List[str]:
+    key = (spec or {}).get("key")
+    names: List[str] = []
+    if isinstance(key, dict):
+        names = [str(k) for k in key.keys()]
+    elif isinstance(key, (list, tuple)):
+        for item in key:
+            if isinstance(item, (list, tuple)) and item:
+                names.append(str(item[0]))
+            elif isinstance(item, dict) and item:
+                names.append(str(next(iter(item.keys()))))
+            else:
+                names.append(str(item))
+    return names
+
+
+def _is_ready_partial_accurate_id_index(spec: Dict[str, Any]) -> bool:
+    """Unique accurate_item_id with non-empty-string partial filter (definition, not name)."""
+    if not spec or not spec.get("unique"):
+        return False
+    if _index_field_names(spec) != ["accurate_item_id"]:
+        return False
+    pfe = spec.get("partialFilterExpression")
+    if not isinstance(pfe, dict):
+        return False
+    aid = pfe.get("accurate_item_id")
+    if not isinstance(aid, dict):
+        return False
+    # Accept the ensure() shape or equivalent non-empty string constraint.
+    if aid.get("$type") == "string" and aid.get("$gt") == "" and aid.get("$exists") is True:
+        return True
+    if aid.get("$gt") == "" or aid.get("$ne") in ("", None):
+        return True
+    return False
+
+
+def _is_legacy_full_accurate_id_index(spec: Dict[str, Any]) -> bool:
+    """Unique accurate_item_id without a partial filter — blocks multi-null locals."""
+    if not spec or not spec.get("unique"):
+        return False
+    if _index_field_names(spec) != ["accurate_item_id"]:
+        return False
+    return not bool(spec.get("partialFilterExpression"))
+
+
+def _is_ready_code_claims_index(spec: Dict[str, Any]) -> bool:
+    if not spec or not spec.get("unique"):
+        return False
+    return _index_field_names(spec) == ["code_key"]
+
+
 async def local_master_create_index_status(db) -> Dict[str, Any]:
-    """Readiness check only — no create/drop."""
+    """Readiness check only — no create/drop. Uses index definitions, not names alone."""
     col = db[COLLECTION]
     claims = db[CODE_CLAIMS_COLLECTION]
     existing = await col.index_information()
     claim_idx = await claims.index_information()
-    legacy = existing.get(LEGACY_ACCURATE_ID_INDEX) or {}
-    legacy_full = bool(
-        LEGACY_ACCURATE_ID_INDEX in existing and not legacy.get("partialFilterExpression")
+
+    partial_ok = any(
+        name != "_id_" and _is_ready_partial_accurate_id_index(spec or {})
+        for name, spec in (existing or {}).items()
     )
+    # Named partial must also match definition if present under expected name.
+    named_partial = (existing or {}).get(ACCURATE_ID_PARTIAL_INDEX)
+    if named_partial is not None and not _is_ready_partial_accurate_id_index(named_partial):
+        partial_ok = False
+
+    claims_ok = any(
+        name != "_id_" and _is_ready_code_claims_index(spec or {})
+        for name, spec in (claim_idx or {}).items()
+    )
+    named_claims = (claim_idx or {}).get(CODE_CLAIMS_INDEX)
+    if named_claims is not None and not _is_ready_code_claims_index(named_claims):
+        claims_ok = False
+
+    legacy_full = any(
+        name != "_id_" and _is_legacy_full_accurate_id_index(spec or {})
+        for name, spec in (existing or {}).items()
+    )
+
     return {
-        "partial_accurate_id": ACCURATE_ID_PARTIAL_INDEX in existing,
-        "code_claims": CODE_CLAIMS_INDEX in claim_idx,
+        "partial_accurate_id": partial_ok,
+        "code_claims": claims_ok,
         "legacy_full_unique_present": legacy_full,
-        "local_create_ready": (
-            ACCURATE_ID_PARTIAL_INDEX in existing
-            and CODE_CLAIMS_INDEX in claim_idx
-            and not legacy_full
-        ),
+        "local_create_ready": bool(partial_ok and claims_ok and not legacy_full),
     }
 
 
@@ -234,6 +306,11 @@ async def _code_taken_in_masters(db, code_key: str, *, session=None) -> bool:
 
 async def create_local_master_item(db, payload: Dict[str, Any]) -> Dict[str, Any]:
     """Create ERP-local master metadata only. No stock / HPP / Accurate ID."""
+    # Gate before any claim/master write. Does not create/drop/migrate indexes.
+    readiness = await local_master_create_index_status(db)
+    if not readiness.get("local_create_ready"):
+        raise HTTPException(503, INDEX_NOT_READY_MSG)
+
     code_raw = str((payload or {}).get("item_code") or "").strip()
     name = str((payload or {}).get("item_name") or "").strip()
     item_type = str((payload or {}).get("item_type") or "").strip().upper()
