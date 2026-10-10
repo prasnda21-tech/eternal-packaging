@@ -241,8 +241,28 @@ describe("PublicHargaPage catalog and detail", () => {
       "/api/public/customer-pricing/groups/group-paper-cup/image"
     );
     expect(container.querySelectorAll('[data-testid="harga-image-placeholder"]').length).toBe(1);
+    expect(container.querySelector('[data-testid="harga-hero-search-wrap"]')).not.toBeNull();
     expect(api.publicCatalogHome).toHaveBeenCalled();
     expect(api.publicCustomerPricingGroup).not.toHaveBeenCalled();
+  });
+
+  test("fractional min unit price keeps decimals in id-ID money format", async () => {
+    api.publicCatalogHome.mockResolvedValueOnce({
+      ...homePayload,
+      groups: [
+        {
+          ...homePayload.groups[0],
+          public_id: "group-fraction",
+          name: "Fraction Cup",
+          min_unit_price: 1.4,
+          variant_count: 1,
+        },
+      ],
+    });
+    await renderAt("/harga");
+    const price = container.querySelector('[data-testid="harga-min-price-group-fraction"]').textContent;
+    expect(price).toContain("Rp 1,40");
+    expect(price).not.toMatch(/Rp 1\s*\/\s*pcs/);
   });
 
   test("home uses Produk Tersedia and neutral hero labels without unsupported claims", async () => {
@@ -544,5 +564,43 @@ describe("PublicHargaPage catalog and detail", () => {
     expect(crumb.textContent).toContain("Beranda");
     expect(crumb.textContent).toContain("Cup");
     expect(crumb.textContent).toContain("Paper Cup Premium");
+  });
+
+  test("detail money formatting keeps whole rupiah compact and quotes decimals when needed", async () => {
+    api.publicCustomerPricingGroup.mockResolvedValueOnce({
+      group: {
+        ...cupDetail,
+        min_unit_price: 1.4,
+        variants: [{
+          ...cupDetail.variants[0],
+          tiers: [
+            { min_qty: 1000, max_qty: 2999, unit_price: 1.4 },
+            { min_qty: 3000, max_qty: null, unit_price: 2100 },
+          ],
+        }, cupDetail.variants[1]],
+      },
+    });
+    api.calculatePublicCustomerPrice.mockResolvedValue({
+      quantity: 1000,
+      unit_price: 1.4,
+      total: 1400,
+    });
+    await renderAt("/harga/group-paper-cup");
+    await act(async () => {
+      container.querySelector('[data-testid="harga-size-12oz"]')
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await act(async () => {
+      container.querySelector('[data-testid="harga-color-Bening"]')
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+    await flushCalc();
+    expect(container.querySelector('[data-testid="harga-estimate-success"]').textContent)
+      .toContain("Rp 1,40");
+    expect(container.querySelector('[data-testid="harga-tier-block"]').textContent)
+      .toContain("Rp 1,40");
+    expect(container.querySelector('[data-testid="harga-tier-block"]').textContent)
+      .toContain("Rp 2.100");
   });
 });
