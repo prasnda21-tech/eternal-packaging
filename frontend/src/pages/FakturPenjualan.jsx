@@ -20,6 +20,7 @@ import SalesInvoiceDateField from "../components/SalesInvoiceDateField";
 import HeaderSelectFilter from "../components/HeaderSelectFilter";
 import { FormSection, FormField, FormProgress, computeStatus } from "../components/form-standard";
 import { INVOICE_DATE_PRESET_OPTIONS, invoiceDatePresetRange } from "../lib/salesDatePresets";
+import { clickableDocumentRowProps } from "../lib/clickableListRow";
 import "./salesSubmenuDensity.css";
 
 function getTodayString() {
@@ -1671,9 +1672,16 @@ export default function FakturPenjualan() {
                     const deletable = invoiceDeletable(inv);
                     const draftEditable = listTab === "active" && invoiceFinancialStatus(inv) === "draft" && canEdit;
                     return (
-                    <tr key={inv.id} data-testid={`invoice-row-${inv.id}`}>
+                    <tr
+                      key={inv.id}
+                      {...clickableDocumentRowProps({
+                        onOpen: () => handleOpenDetail(inv.id),
+                        "data-testid": `invoice-row-${inv.id}`,
+                        ariaLabel: `Buka faktur ${inv.invoice_number || inv.id}`,
+                      })}
+                    >
                       {reserveCheckboxColumn && (
-                        <td>
+                        <td data-no-row-nav onClick={(e) => e.stopPropagation()}>
                           {showDeleteControls && deletable ? (
                             <input
                               type="checkbox"
@@ -1692,7 +1700,7 @@ export default function FakturPenjualan() {
                         </span>
                         {inv.outlet ? <span className="sd-support">{inv.outlet}</span> : null}
                       </td>
-                      <td className="fp-po-cell">
+                      <td className="fp-po-cell" data-no-row-nav onClick={(e) => e.stopPropagation()}>
                         <Link to={`/po/${inv.po_id}`} className="sd-doc" title={inv.po_number || "Buka PO"}>
                           {inv.po_number || "-"}
                         </Link>
@@ -1709,7 +1717,7 @@ export default function FakturPenjualan() {
                       <td className={"fp-pay-text is-" + String(inv.payment_status || "BELUM DIBAYAR").toLowerCase().replace(/\s+/g, "-")}>
                         {invoicePaymentLabel(inv.payment_status)}
                       </td>
-                      <td>
+                      <td data-no-row-nav onClick={(e) => e.stopPropagation()}>
                         <div className="sd-actions">
                         <button
                           type="button"

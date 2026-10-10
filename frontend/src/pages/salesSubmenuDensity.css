@@ -319,6 +319,12 @@
 }
 .sd-density .sd-list-table tbody tr:nth-child(even) td{background:#f6f7f8}
 .sd-density .sd-list-table tbody tr:hover td{background:#d5f5ef !important}
+.sd-density .sd-list-table tbody tr.sd-clickable-row{cursor:pointer}
+.sd-density .sd-list-table tbody tr.sd-clickable-row:focus{outline:none}
+.sd-density .sd-list-table tbody tr.sd-clickable-row:focus-visible td{
+  box-shadow:inset 0 0 0 2px #0f766e;
+  background:#e8f7f3 !important;
+}
 .sd-density .sd-identity{min-width:0}
 .sd-density .sd-customer{
   font-size:14px;

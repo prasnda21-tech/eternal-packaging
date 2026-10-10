@@ -39,6 +39,7 @@ import {
 import { SHIPPING_DATE_PRESET_OPTIONS } from "../lib/salesDatePresets";
 import "./pesananPenjualan.css";
 import "./pesananPenjualanPremium.css";
+import { clickableDocumentRowProps } from "../lib/clickableListRow";
 import {
   REPEAT_NO_PREVIOUS_MESSAGE,
   REPEAT_ORDER_QUERY_PARAM,
@@ -1714,9 +1715,12 @@ export default function PesananPenjualan() {
                   return (
                     <tr
                       key={o.id}
-                      data-testid={`order-row-${o.id}`}
-                      className={`so-list-row${selectedIds.has(o.id) ? " is-selected" : ""}`}
-                      onClick={() => openOrder(o)}
+                      {...clickableDocumentRowProps({
+                        onOpen: () => openOrder(o),
+                        className: `so-list-row${selectedIds.has(o.id) ? " is-selected" : ""}`,
+                        "data-testid": `order-row-${o.id}`,
+                        ariaLabel: `Buka pesanan ${o.po_number || o.id}`,
+                      })}
                     >
                       {canDelete && (
                         <td className="so-list-check" onClick={(e) => e.stopPropagation()}>

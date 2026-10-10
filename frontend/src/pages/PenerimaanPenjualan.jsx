@@ -30,6 +30,7 @@ function formatRupiah(num) {
 }
 
 import { filterEligibleInvoices, resolvePreselectedInvoiceId, computeReceiptPreview } from "../lib/salesReceipts";
+import { clickableDocumentRowProps } from "../lib/clickableListRow";
 import SalesReceiptProofViewer from "./SalesReceiptProofViewer";
 import {
   RECEIPT_PROOF_ACCEPT,
@@ -332,6 +333,17 @@ export default function PenerimaanPenjualan() {
     setCreateErr("");
     setIsModalOpen(true);
   };
+
+  const openReceiptDetail = useCallback(async (receipt) => {
+    if (!receipt?.id) return;
+    setAccountingErr("");
+    try {
+      const fresh = await api.getSalesReceipt(receipt.id);
+      setDetailReceipt(fresh.receipt || fresh);
+    } catch {
+      setDetailReceipt(receipt);
+    }
+  }, []);
 
   const handleCloseCreateModal = () => {
     setIsModalOpen(false);
@@ -738,13 +750,18 @@ export default function PenerimaanPenjualan() {
                 receipts.map((r, idx) => (
                   <tr
                     key={r.id || idx}
+                    {...clickableDocumentRowProps({
+                      onOpen: () => openReceiptDetail(r),
+                      "data-testid": `receipt-row-${r.id}`,
+                      ariaLabel: `Buka penerimaan ${r.receipt_number || r.id}`,
+                    })}
                     style={{
                       borderBottom: "1px solid #f3f4f6",
                       backgroundColor: idx % 2 === 0 ? "#fff" : "#fafafa",
                     }}
                   >
                     {canDelete && (
-                      <td style={{ padding: "12px 8px" }}>
+                      <td style={{ padding: "12px 8px" }} data-no-row-nav onClick={(e) => e.stopPropagation()}>
                         {r.can_delete !== false && (
                           <input type="checkbox" data-testid={`receipt-checkbox-${r.id}`} checked={selectedIds.has(r.id)} onChange={() => toggleSelect(r.id)} aria-label={`Pilih ${r.receipt_number}`} />
                         )}
@@ -756,15 +773,7 @@ export default function PenerimaanPenjualan() {
                         type="button"
                         className="sd-doc"
                         data-testid={`receipt-number-${r.id}`}
-                        onClick={async () => {
-                          setAccountingErr("");
-                          try {
-                            const fresh = await api.getSalesReceipt(r.id);
-                            setDetailReceipt(fresh.receipt || fresh);
-                          } catch {
-                            setDetailReceipt(r);
-                          }
-                        }}
+                        onClick={() => openReceiptDetail(r)}
                       >
                         {r.receipt_number || "-"}
                       </button>
@@ -814,7 +823,7 @@ export default function PenerimaanPenjualan() {
                     <td style={{ padding: "12px 16px", color: "#374151" }} data-testid={`receipt-cash-bank-${r.id}`}>
                       {r.cash_bank_name || "-"}
                     </td>
-                    <td>
+                    <td data-no-row-nav onClick={(e) => e.stopPropagation()}>
                       <div className="sd-actions">
                         <button
                           type="button"

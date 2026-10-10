@@ -303,6 +303,9 @@ jobs:
           src/pages/CustomerTrackingPage.onescreen.test.js
           src/pages/CustomerTrackingPage.publicUrl.test.js
           src/pages/PenerimaanPenjualan.test.js
+          src/pages/PengirimanPesanan.test.js
+          src/lib/clickableListRow.test.js
+          src/pages/salesDocumentRowNav.test.js
           src/lib/salesReceipts.test.js
           src/lib/salesReceiptPaymentProof.test.js
           src/pages/SalesAccountingSettings.test.js

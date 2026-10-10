@@ -23,6 +23,7 @@ import HeaderSelectFilter from "../components/HeaderSelectFilter";
 import SjDeliveryLocationPicker, { sjOverridePayload } from "../components/SjDeliveryLocationPicker";
 import { SHIPPING_DATE_PRESET_OPTIONS } from "../lib/salesDatePresets";
 import { loadedRangeLabel, showLoadedDocumentCount } from "../lib/salesSubmenuDensity";
+import { clickableDocumentRowProps } from "../lib/clickableListRow";
 import "./salesSubmenuDensity.css";
 
 function getTodayString() {
@@ -218,6 +219,12 @@ export default function PengirimanPesanan() {
       setDetailLoading(false);
     }
   }, []);
+
+  const openDeliveryDetail = useCallback((delivery) => {
+    if (!delivery?.id) return;
+    setSelectedDeliveryId(delivery.id);
+    loadDeliveryDetail(delivery.id);
+  }, [loadDeliveryDetail]);
 
   useEffect(() => {
     if (viewMode === "list") {
@@ -1077,9 +1084,16 @@ export default function PengirimanPesanan() {
                   </tr>
                 ) : (
                   deliveries.map((d) => (
-                    <tr key={d.id} data-testid={`delivery-row-${d.id}`}>
+                    <tr
+                      key={d.id}
+                      {...clickableDocumentRowProps({
+                        onOpen: () => openDeliveryDetail(d),
+                        "data-testid": `delivery-row-${d.id}`,
+                        ariaLabel: `Buka pengiriman ${d.sj_number || d.id}`,
+                      })}
+                    >
                       {canDelete && (
-                        <td>
+                        <td data-no-row-nav onClick={(e) => e.stopPropagation()}>
                           <input type="checkbox" data-testid={`delivery-checkbox-${d.id}`} checked={selectedIds.has(d.id)} onChange={() => toggleSelect(d.id)} aria-label={`Pilih ${d.sj_number}`} />
                         </td>
                       )}
@@ -1088,7 +1102,7 @@ export default function PengirimanPesanan() {
                         <span className="sd-doc is-static" data-testid={`sj-number-${d.sj_number}`}>{d.sj_number}</span>
                         {d.outlet ? <span className="sd-support">{d.outlet}</span> : null}
                       </td>
-                      <td>
+                      <td data-no-row-nav onClick={(e) => e.stopPropagation()}>
                         <Link to={`/po/${d.po_id}`} className="sd-doc" data-testid={`po-link-${d.po_number}`}>
                           {d.po_number}
                         </Link>
@@ -1116,15 +1130,12 @@ export default function PengirimanPesanan() {
                       <td style={{ padding: "10px 12px", color: "#64748b", fontSize: "0.85rem" }}>
                         {d.created_by_name || d.created_by || "-"}
                       </td>
-                      <td>
+                      <td data-no-row-nav onClick={(e) => e.stopPropagation()}>
                         <div className="sd-actions">
                           <button
                             type="button"
                             className="sd-act sd-act-view"
-                            onClick={() => {
-                              setSelectedDeliveryId(d.id);
-                              loadDeliveryDetail(d.id);
-                            }}
+                            onClick={() => openDeliveryDetail(d)}
                             data-testid={`btn-view-delivery-${d.id}`}
                           >
                             Lihat
