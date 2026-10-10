@@ -874,3 +874,483 @@ async def test_stale_reverse_finalizer_loses_to_revision_fence(indexes):
         await update_sales_invoice(db, plain, _payload(key="still-off"), ADMIN)
     assert legacy.value.status_code == 409
     assert "difinalisasi" in str(legacy.value.detail)
+
+
+async def _active_journal(db, invoice_id):
+    return await db.journal_entries.find_one(
+        {
+            "source_type": SOURCE_TYPE,
+            "source_id": invoice_id,
+            "reversal_of": None,
+            "status": "posted",
+        },
+        {"_id": 0},
+    )
+
+
+async def _revision_row(db, invoice_id):
+    return await db.sales_invoice_edit_revisions.find_one({"invoice_id": invoice_id}, {"_id": 0})
+
+
+async def _pause_after_repost(db, invoice_id, payload):
+    with pytest.raises(RevisionPaused):
+        await revise_posted_sales_invoice(
+            db, invoice_id, payload, ADMIN, stop_after="after_repost",
+        )
+
+
+def _detail_code(exc: HTTPException) -> str:
+    detail = exc.detail
+    if isinstance(detail, dict):
+        return str(detail.get("code") or "")
+    return ""
+
+
+async def _assert_blocked(db, invoice_id, payload, code, *, posted=1, reversals=1):
+    with pytest.raises(HTTPException) as blocked:
+        await revise_posted_sales_invoice(db, invoice_id, payload, ADMIN)
+    assert blocked.value.status_code == 409
+    assert _detail_code(blocked.value) == code
+    row = await _revision_row(db, invoice_id)
+    assert row["phase"] != "complete"
+    assert row.get("financial_complete") is not True
+    assert row.get("mismatch_code") == code
+    assert _fence(await db.sales_invoices.find_one({"id": invoice_id}))
+    assert await _posted_count(db, invoice_id) == posted
+    assert await db.journal_entries.count_documents(
+        {"source_id": invoice_id, "reversal_of": {"$ne": None}}
+    ) == reversals
+    return row
+
+
+@pytest.mark.anyio
+async def test_p2_valid_completion_sets_financial_complete(indexes):
+    db = server.db
+    await _enable(db)
+    invoice_id, _po = await _seed(db, invoice_date="2026-01-05", qty=2)
+    detail = await revise_posted_sales_invoice(
+        db, invoice_id, _payload(qty=3, invoice_date="2026-01-15", key="p2-ok"), ADMIN,
+    )
+    assert detail["grand_total"] == 3000
+    row = await _revision_row(db, invoice_id)
+    assert row["phase"] == "complete"
+    assert row["financial_complete"] is True
+    assert row.get("mismatch_code") in (None, "")
+    assert _fence(await db.sales_invoices.find_one({"id": invoice_id})) == ""
+
+
+@pytest.mark.anyio
+async def test_p2_ar_debit_mismatch_blocks_completion(indexes):
+    db = server.db
+    await _enable(db)
+    invoice_id, _po = await _seed(db, invoice_date="2026-01-06", qty=2)
+    payload = _payload(qty=3, invoice_date="2026-01-16", key="p2-ar")
+    await _pause_after_repost(db, invoice_id, payload)
+    active = await _active_journal(db, invoice_id)
+    settings = await db.app_settings.find_one({"key": SETTINGS_KEY})
+    ar = await db.journal_lines.find_one(
+        {"journal_id": active["id"], "account_id": settings["receivable_account_id"]},
+    )
+    rev = await db.journal_lines.find_one(
+        {"journal_id": active["id"], "account_id": settings["revenue_account_id"]},
+    )
+    await db.journal_lines.update_one({"id": ar["id"]}, {"$set": {"debit": float(ar["debit"]) + 1}})
+    await db.journal_lines.update_one({"id": rev["id"]}, {"$set": {"credit": float(rev["credit"]) + 1}})
+    await _assert_blocked(db, invoice_id, payload, "revision_ar_mismatch")
+    await _assert_blocked(db, invoice_id, payload, "revision_ar_mismatch")
+
+
+@pytest.mark.anyio
+async def test_p2_revenue_mismatch_blocks_completion(indexes):
+    db = server.db
+    await _enable(db)
+    invoice_id, _po = await _seed(db, invoice_date="2026-01-07", qty=2)
+    payload = _payload(qty=3, invoice_date="2026-01-17", key="p2-rev")
+    await _pause_after_repost(db, invoice_id, payload)
+    active = await _active_journal(db, invoice_id)
+    settings = await db.app_settings.find_one({"key": SETTINGS_KEY})
+    line = await db.journal_lines.find_one(
+        {"journal_id": active["id"], "account_id": settings["revenue_account_id"]},
+    )
+    # Keep AR unchanged and stay balanced via an unexpected balancing credit.
+    await db.journal_lines.update_one({"id": line["id"]}, {"$set": {"credit": float(line["credit"]) - 1}})
+    await db.journal_lines.insert_one({
+        "id": str(uuid.uuid4()),
+        "journal_id": active["id"],
+        "account_id": settings["output_tax_account_id"],
+        "debit": 0,
+        "credit": 1,
+        "description": "balance-noise",
+    })
+    await _assert_blocked(db, invoice_id, payload, "revision_revenue_mismatch")
+
+
+@pytest.mark.anyio
+async def test_p2_tax_mismatch_blocks_completion(indexes):
+    db = server.db
+    await _enable(db)
+    invoice_id, _po = await _seed(db, invoice_date="2026-01-08", qty=2)
+    payload = {
+        **_payload(qty=2, invoice_date="2026-01-18", key="p2-tax"),
+        "ppn_percent": 11,
+    }
+    await _pause_after_repost(db, invoice_id, payload)
+    active = await _active_journal(db, invoice_id)
+    settings = await db.app_settings.find_one({"key": SETTINGS_KEY})
+    tax = await db.journal_lines.find_one(
+        {"journal_id": active["id"], "account_id": settings["output_tax_account_id"]},
+    )
+    assert tax is not None
+    amount = float(tax["credit"])
+    await db.journal_lines.delete_one({"id": tax["id"]})
+    await db.journal_lines.insert_many([
+        {
+            "id": str(uuid.uuid4()),
+            "journal_id": active["id"],
+            "account_id": settings["output_tax_account_id"],
+            "debit": 0,
+            "credit": amount - 1,
+        },
+        {
+            "id": str(uuid.uuid4()),
+            "journal_id": active["id"],
+            "account_id": settings["output_tax_account_id"],
+            "debit": 0,
+            "credit": 1,
+        },
+    ])
+    await _assert_blocked(db, invoice_id, payload, "revision_tax_mismatch")
+
+
+@pytest.mark.anyio
+async def test_p2_other_charge_mismatch_blocks_completion(indexes):
+    db = server.db
+    await _enable(db)
+    invoice_id, _po = await _seed(db, invoice_date="2026-01-09", qty=2)
+    charge = await create_account(
+        db, {"code": f"51{uuid.uuid4().hex[:4]}", "name": "Ongkir", "account_type": "OINC"}, user=ADMIN,
+    )
+    other = await create_account(
+        db, {"code": f"52{uuid.uuid4().hex[:4]}", "name": "Noise", "account_type": "OINC"}, user=ADMIN,
+    )
+    payload = {
+        **_payload(qty=2, invoice_date="2026-01-19", key="p2-charge"),
+        "other_charges": [{"account_id": charge["id"], "amount": 500, "description": "Ongkir"}],
+    }
+    await _pause_after_repost(db, invoice_id, payload)
+    active = await _active_journal(db, invoice_id)
+    line = await db.journal_lines.find_one({"journal_id": active["id"], "account_id": charge["id"]})
+    assert line is not None
+    await db.journal_lines.update_one({"id": line["id"]}, {"$set": {"credit": 400.0}})
+    await db.journal_lines.insert_one({
+        "id": str(uuid.uuid4()),
+        "journal_id": active["id"],
+        "account_id": other["id"],
+        "debit": 0,
+        "credit": 100,
+        "description": "noise",
+    })
+    await _assert_blocked(db, invoice_id, payload, "revision_other_charge_mismatch")
+
+
+@pytest.mark.anyio
+async def test_p2_grand_total_snapshot_mismatch_blocks_completion(indexes):
+    db = server.db
+    await _enable(db)
+    invoice_id, _po = await _seed(db, invoice_date="2026-01-10", qty=2)
+    payload = _payload(qty=3, invoice_date="2026-01-20", key="p2-grand")
+    await _pause_after_repost(db, invoice_id, payload)
+    await db.sales_invoices.update_one(
+        {"id": invoice_id},
+        {"$set": {"grand_total": 9999, "outstanding_amount": 9999}},
+    )
+    await _assert_blocked(db, invoice_id, payload, "revision_grand_total_mismatch")
+
+
+@pytest.mark.anyio
+async def test_p2_invoice_date_mismatch_blocks_completion(indexes):
+    db = server.db
+    await _enable(db)
+    invoice_id, _po = await _seed(db, invoice_date="2026-01-11", qty=2)
+    payload = _payload(qty=3, invoice_date="2026-01-21", key="p2-date")
+    await _pause_after_repost(db, invoice_id, payload)
+    active = await _active_journal(db, invoice_id)
+    await db.journal_entries.update_one({"id": active["id"]}, {"$set": {"date": "2026-01-22"}})
+    await _assert_blocked(db, invoice_id, payload, "revision_date_mismatch")
+
+
+@pytest.mark.anyio
+async def test_p2_legacy_date_matches_canonical_journal_date(indexes):
+    db = server.db
+    await _enable(db)
+    invoice_id, _po = await _seed(db, invoice_date="2026/02/09", qty=2)
+    detail = await revise_posted_sales_invoice(
+        db, invoice_id, _payload(qty=2, invoice_date="09/02/2026", key="p2-legacy"), ADMIN,
+    )
+    assert detail["invoice_date"] == "2026/02/09"
+    active = await _active_journal(db, invoice_id)
+    assert active["date"] == "2026-02-09"
+    row = await _revision_row(db, invoice_id)
+    assert row["financial_complete"] is True
+
+
+@pytest.mark.anyio
+async def test_p2_wrong_source_id_blocks_completion(indexes):
+    db = server.db
+    await _enable(db)
+    invoice_id, _po = await _seed(db, invoice_date="2026-02-01", qty=2)
+    payload = _payload(qty=3, invoice_date="2026-02-11", key="p2-source")
+    await _pause_after_repost(db, invoice_id, payload)
+    active = await _active_journal(db, invoice_id)
+    # Moving source_id hides the primary from the invoice lookup; fail closed without completing.
+    await db.journal_entries.update_one({"id": active["id"]}, {"$set": {"source_id": "other-invoice"}})
+    await _assert_blocked(db, invoice_id, payload, "revision_incomplete", posted=0)
+
+
+@pytest.mark.anyio
+async def test_p2_wrong_journal_revision_blocks_completion(indexes):
+    db = server.db
+    await _enable(db)
+    invoice_id, _po = await _seed(db, invoice_date="2026-02-02", qty=2)
+    payload = _payload(qty=3, invoice_date="2026-02-12", key="p2-jrev")
+    await _pause_after_repost(db, invoice_id, payload)
+    active = await _active_journal(db, invoice_id)
+    await db.journal_entries.update_one({"id": active["id"]}, {"$set": {"journal_revision": 1}})
+    await _assert_blocked(db, invoice_id, payload, "revision_journal_revision_mismatch")
+
+
+@pytest.mark.anyio
+async def test_p2_wrong_supersedes_blocks_completion(indexes):
+    db = server.db
+    await _enable(db)
+    invoice_id, _po = await _seed(db, invoice_date="2026-02-03", qty=2)
+    payload = _payload(qty=3, invoice_date="2026-02-13", key="p2-super")
+    await _pause_after_repost(db, invoice_id, payload)
+    active = await _active_journal(db, invoice_id)
+    await db.journal_entries.update_one({"id": active["id"]}, {"$set": {"supersedes_journal_id": "nope"}})
+    await _assert_blocked(db, invoice_id, payload, "revision_supersedes_mismatch")
+
+
+@pytest.mark.anyio
+async def test_p2_missing_reversal_blocks_completion(indexes):
+    db = server.db
+    await _enable(db)
+    invoice_id, _po = await _seed(db, invoice_date="2026-02-04", qty=2)
+    payload = _payload(qty=3, invoice_date="2026-02-14", key="p2-revmiss")
+    await _pause_after_repost(db, invoice_id, payload)
+    active = await _active_journal(db, invoice_id)
+    original_id = active["supersedes_journal_id"]
+    await db.journal_entries.delete_many({"reversal_of": original_id})
+    await _assert_blocked(db, invoice_id, payload, "revision_reversal_missing", reversals=0)
+
+
+@pytest.mark.anyio
+async def test_p2_unbalanced_journal_blocks_completion(indexes):
+    db = server.db
+    await _enable(db)
+    invoice_id, _po = await _seed(db, invoice_date="2026-02-05", qty=2)
+    payload = _payload(qty=3, invoice_date="2026-02-15", key="p2-unbal")
+    await _pause_after_repost(db, invoice_id, payload)
+    active = await _active_journal(db, invoice_id)
+    settings = await db.app_settings.find_one({"key": SETTINGS_KEY})
+    ar = await db.journal_lines.find_one(
+        {"journal_id": active["id"], "account_id": settings["receivable_account_id"]},
+    )
+    await db.journal_lines.update_one({"id": ar["id"]}, {"$set": {"debit": float(ar["debit"]) + 50}})
+    await _assert_blocked(db, invoice_id, payload, "revision_journal_unbalanced")
+
+
+@pytest.mark.anyio
+async def test_p2_missing_or_extra_journal_line_blocks_completion(indexes):
+    db = server.db
+    await _enable(db)
+    invoice_id, _po = await _seed(db, invoice_date="2026-02-06", qty=2)
+    payload = _payload(qty=3, invoice_date="2026-02-16", key="p2-lines")
+    await _pause_after_repost(db, invoice_id, payload)
+    active = await _active_journal(db, invoice_id)
+    settings = await db.app_settings.find_one({"key": SETTINGS_KEY})
+    noise = await create_account(
+        db, {"code": f"53{uuid.uuid4().hex[:4]}", "name": "Noise", "account_type": "OINC"}, user=ADMIN,
+    )
+    # Balanced extra lines on an unexpected account keep AR/revenue intact.
+    await db.journal_lines.insert_many([
+        {
+            "id": str(uuid.uuid4()),
+            "journal_id": active["id"],
+            "account_id": noise["id"],
+            "debit": 1,
+            "credit": 0,
+            "description": "extra-dr",
+        },
+        {
+            "id": str(uuid.uuid4()),
+            "journal_id": active["id"],
+            "account_id": noise["id"],
+            "debit": 0,
+            "credit": 1,
+            "description": "extra-cr",
+        },
+    ])
+    await _assert_blocked(db, invoice_id, payload, "revision_journal_lines_mismatch")
+
+    await db.journal_lines.delete_many({"journal_id": active["id"]})
+    await _assert_blocked(db, invoice_id, payload, "revision_journal_lines_mismatch")
+
+
+@pytest.mark.anyio
+async def test_p2_invoice_snapshot_drift_blocks_completion(indexes):
+    db = server.db
+    await _enable(db)
+    invoice_id, _po = await _seed(db, invoice_date="2026-02-07", qty=2)
+    payload = _payload(qty=3, invoice_date="2026-02-17", key="p2-snap")
+    await _pause_after_repost(db, invoice_id, payload)
+    # Drift a derived monetary field that is outside the revision fingerprint inputs.
+    await db.sales_invoices.update_one(
+        {"id": invoice_id},
+        {"$set": {"subtotal": 1.0, "lines.0.line_subtotal": 1.0}},
+    )
+    await _assert_blocked(db, invoice_id, payload, "revision_snapshot_mismatch")
+
+
+@pytest.mark.anyio
+async def test_p2_retry_after_mismatch_does_not_duplicate_accounting(indexes):
+    db = server.db
+    await _enable(db)
+    invoice_id, _po = await _seed(db, invoice_date="2026-02-08", qty=2)
+    payload = _payload(qty=3, invoice_date="2026-02-18", key="p2-retry")
+    await _pause_after_repost(db, invoice_id, payload)
+    active = await _active_journal(db, invoice_id)
+    original_id = active["supersedes_journal_id"]
+    await db.journal_entries.update_one({"id": active["id"]}, {"$set": {"journal_revision": 1}})
+    before_primary = await _posted_count(db, invoice_id)
+    before_rev = await db.journal_entries.count_documents({"reversal_of": original_id})
+    await _assert_blocked(db, invoice_id, payload, "revision_journal_revision_mismatch")
+    await _assert_blocked(db, invoice_id, payload, "revision_journal_revision_mismatch")
+    assert await _posted_count(db, invoice_id) == before_primary == 1
+    assert await db.journal_entries.count_documents({"reversal_of": original_id}) == before_rev == 1
+
+
+@pytest.mark.anyio
+async def test_other_charges_missing_ids_same_key_retry_preserves_fingerprint(indexes):
+    """Same key + logically identical charges without ids stays one revision intent."""
+    db = server.db
+    await _enable(db)
+    invoice_id, _po = await _seed(db, invoice_date="2026-03-01", qty=2)
+    charge = await create_account(
+        db, {"code": f"54{uuid.uuid4().hex[:4]}", "name": "Ongkir", "account_type": "OINC"}, user=ADMIN,
+    )
+    payload = {
+        **_payload(qty=2, invoice_date="2026-03-11", key="charge-idem"),
+        "other_charges": [{"account_id": charge["id"], "amount": 250, "description": "Ongkir"}],
+    }
+    with pytest.raises(RevisionPaused):
+        await revise_posted_sales_invoice(
+            db, invoice_id, payload, ADMIN, stop_after="after_invoice",
+        )
+    row = await _revision_row(db, invoice_id)
+    first_fp = row["fingerprint"]
+    first_ids = [c["id"] for c in row["proposed"]["other_charges"]]
+    assert first_ids and all(first_ids)
+
+    detail = await revise_posted_sales_invoice(db, invoice_id, payload, ADMIN)
+    assert detail["grand_total"] == 2250
+    row = await _revision_row(db, invoice_id)
+    assert row["fingerprint"] == first_fp
+    assert [c["id"] for c in row["proposed"]["other_charges"]] == first_ids
+    assert row["financial_complete"] is True
+    # Completed same-key replay remains idempotent with freshly minted-looking payloads.
+    again = await revise_posted_sales_invoice(db, invoice_id, payload, ADMIN)
+    assert again["id"] == invoice_id
+    assert await _posted_count(db, invoice_id) == 1
+
+
+@pytest.mark.anyio
+async def test_multiple_other_charges_retry_after_crash_keeps_identities(indexes):
+    db = server.db
+    await _enable(db)
+    invoice_id, _po = await _seed(db, invoice_date="2026-03-02", qty=1)
+    a = await create_account(
+        db, {"code": f"55{uuid.uuid4().hex[:4]}", "name": "A", "account_type": "OINC"}, user=ADMIN,
+    )
+    b = await create_account(
+        db, {"code": f"56{uuid.uuid4().hex[:4]}", "name": "B", "account_type": "OINC"}, user=ADMIN,
+    )
+    payload = {
+        **_payload(qty=1, invoice_date="2026-03-12", key="multi-charge"),
+        "other_charges": [
+            {"account_id": a["id"], "amount": 100, "description": "Pack"},
+            {"account_id": b["id"], "amount": 50, "description": "Stamp"},
+        ],
+    }
+    await _pause_after_repost(db, invoice_id, payload)
+    row = await _revision_row(db, invoice_id)
+    first_ids = [c["id"] for c in row["proposed"]["other_charges"]]
+    assert len(first_ids) == 2
+
+    detail = await revise_posted_sales_invoice(db, invoice_id, payload, ADMIN)
+    assert detail["grand_total"] == 1150
+    row = await _revision_row(db, invoice_id)
+    assert [c["id"] for c in row["proposed"]["other_charges"]] == first_ids
+    assert row["financial_complete"] is True
+    active = await _active_journal(db, invoice_id)
+    credits = {
+        str(doc["account_id"]): float(doc["credit"])
+        for doc in await db.journal_lines.find({"journal_id": active["id"]}, {"_id": 0}).to_list(20)
+        if float(doc.get("credit") or 0) > 0
+    }
+    assert credits[a["id"]] == 100.0
+    assert credits[b["id"]] == 50.0
+
+
+@pytest.mark.anyio
+async def test_other_charges_different_amount_same_key_rejected(indexes):
+    db = server.db
+    await _enable(db)
+    invoice_id, _po = await _seed(db, invoice_date="2026-03-03", qty=1)
+    charge = await create_account(
+        db, {"code": f"57{uuid.uuid4().hex[:4]}", "name": "Fee", "account_type": "OINC"}, user=ADMIN,
+    )
+    first = {
+        **_payload(qty=1, invoice_date="2026-03-13", key="charge-change"),
+        "other_charges": [{"account_id": charge["id"], "amount": 100, "description": "Fee"}],
+    }
+    with pytest.raises(RevisionPaused):
+        await revise_posted_sales_invoice(
+            db, invoice_id, first, ADMIN, stop_after="before_reverse",
+        )
+    changed = {
+        **_payload(qty=1, invoice_date="2026-03-13", key="charge-change"),
+        "other_charges": [{"account_id": charge["id"], "amount": 200, "description": "Fee"}],
+    }
+    with pytest.raises(HTTPException) as blocked:
+        await revise_posted_sales_invoice(db, invoice_id, changed, ADMIN)
+    assert blocked.value.status_code == 409
+    assert "Idempotency key sudah dipakai" in str(blocked.value.detail)
+    row = await _revision_row(db, invoice_id)
+    assert row["phase"] == "pending"
+    assert row["proposed"]["other_charges"][0]["amount"] == 100.0
+
+
+@pytest.mark.anyio
+async def test_other_charges_retry_after_financial_mismatch_keeps_proposal(indexes):
+    db = server.db
+    await _enable(db)
+    invoice_id, _po = await _seed(db, invoice_date="2026-03-04", qty=2)
+    charge = await create_account(
+        db, {"code": f"58{uuid.uuid4().hex[:4]}", "name": "Ship", "account_type": "OINC"}, user=ADMIN,
+    )
+    payload = {
+        **_payload(qty=2, invoice_date="2026-03-14", key="charge-mismatch"),
+        "other_charges": [{"account_id": charge["id"], "amount": 75, "description": "Ship"}],
+    }
+    await _pause_after_repost(db, invoice_id, payload)
+    row = await _revision_row(db, invoice_id)
+    first_fp = row["fingerprint"]
+    first_ids = [c["id"] for c in row["proposed"]["other_charges"]]
+    active = await _active_journal(db, invoice_id)
+    await db.journal_entries.update_one({"id": active["id"]}, {"$set": {"date": "2026-03-15"}})
+    await _assert_blocked(db, invoice_id, payload, "revision_date_mismatch")
+    row = await _revision_row(db, invoice_id)
+    assert row["fingerprint"] == first_fp
+    assert [c["id"] for c in row["proposed"]["other_charges"]] == first_ids
+    assert await _posted_count(db, invoice_id) == 1

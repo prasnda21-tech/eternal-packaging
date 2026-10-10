@@ -161,6 +161,55 @@ async def _ensure_revision_indexes(db) -> None:
     )
 
 
+def _charge_logical_key(row: Optional[dict]) -> Optional[tuple]:
+    """Logical charge identity for revision idempotency. Excludes volatile row ids."""
+    if not isinstance(row, dict):
+        return None
+    account_id = str(row.get("account_id") or "").strip()
+    description = str(row.get("description") or "").strip()
+    amount = _as_money(row.get("amount"))
+    if not account_id or amount is None:
+        return None
+    return (account_id, str(amount), description)
+
+
+def _canonical_charges_for_fingerprint(charges: Any) -> list:
+    """Order-preserving logical charge rows. New UUIDs must not change the digest."""
+    out = []
+    for row in charges or []:
+        key = _charge_logical_key(row if isinstance(row, dict) else None)
+        if key is None:
+            # Fail-closed marker so malformed rows cannot collide with a valid payload.
+            out.append({"account_id": "", "amount": "", "description": ""})
+            continue
+        account_id, amount, description = key
+        out.append({
+            "account_id": account_id,
+            "amount": amount,
+            "description": description,
+        })
+    return out
+
+
+def _reuse_charge_identities(normalized: list, basis: Any) -> list:
+    """Keep first-intent charge ids when the logical charge row is unchanged."""
+    unused = [dict(row) for row in (basis or []) if isinstance(row, dict)]
+    reused = []
+    for row in normalized or []:
+        item = dict(row)
+        key = _charge_logical_key(item)
+        matched = None
+        if key is not None:
+            for idx, prior in enumerate(unused):
+                if _charge_logical_key(prior) == key:
+                    matched = unused.pop(idx)
+                    break
+        if matched and str(matched.get("id") or "").strip():
+            item["id"] = str(matched.get("id")).strip()
+        reused.append(item)
+    return reused
+
+
 def _fingerprint(proposed: dict) -> str:
     body = {
         "invoice_date": proposed.get("invoice_date"),
@@ -176,7 +225,7 @@ def _fingerprint(proposed: dict) -> str:
             }
             for line in proposed.get("lines") or []
         ],
-        "other_charges": proposed.get("other_charges") or [],
+        "other_charges": _canonical_charges_for_fingerprint(proposed.get("other_charges")),
     }
     raw = json.dumps(body, sort_keys=True, default=str, separators=(",", ":"))
     return hashlib.sha256(raw.encode()).hexdigest()
@@ -192,7 +241,13 @@ def _snapshot(invoice: dict) -> dict:
     return {key: invoice.get(key) for key in keep}
 
 
-async def _proposed_fields(db, invoice: dict, payload: dict) -> dict:
+async def _proposed_fields(
+    db,
+    invoice: dict,
+    payload: dict,
+    *,
+    basis_charges: Optional[list] = None,
+) -> dict:
     from decimal import Decimal
 
     from services.sales_invoice_dates import SalesInvoiceDateError, persist_sales_invoice_date
@@ -257,7 +312,12 @@ async def _proposed_fields(db, invoice: dict, payload: dict) -> dict:
     if payload.get("other_charges") is None:
         other_charges = list(invoice.get("other_charges") or [])
     else:
-        other_charges = await normalize_other_charges(db, payload.get("other_charges"))
+        # normalize_other_charges mints a new id when omitted; reuse first-intent ids locally.
+        normalized = await normalize_other_charges(db, payload.get("other_charges"))
+        basis = basis_charges
+        if basis is None:
+            basis = list(invoice.get("other_charges") or [])
+        other_charges = _reuse_charge_identities(normalized, basis)
     charges_total = float(other_charges_total({"other_charges": other_charges}))
     grand = round(float(Decimal(str(after_discount)) + Decimal(str(ppn_amount)) + Decimal(str(charges_total))), 2)
     paid = round(float(invoice.get("paid_total") or 0), 2)
@@ -514,6 +574,356 @@ def _pause(stop_after: Optional[str], phase: str) -> None:
         raise RevisionPaused(phase)
 
 
+def _as_money(raw: Any):
+    from decimal import Decimal, InvalidOperation
+
+    try:
+        return Decimal(str(raw if raw is not None else "")).quantize(Decimal("0.01"))
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+
+
+def _money_pair(left: Any, right: Any) -> bool:
+    a = _as_money(left)
+    b = _as_money(right)
+    return a is not None and b is not None and a == b
+
+
+def _canonical_day(raw: Any) -> str:
+    from services.sales_invoice_dates import SalesInvoiceDateError, canonical_sales_invoice_date
+
+    try:
+        return canonical_sales_invoice_date(raw)
+    except SalesInvoiceDateError:
+        return ""
+
+
+def _line_amount_tuple(row: Optional[dict]) -> Optional[tuple]:
+    account_id = str((row or {}).get("account_id") or "").strip()
+    debit = _as_money((row or {}).get("debit"))
+    credit = _as_money((row or {}).get("credit"))
+    if not account_id or debit is None or credit is None:
+        return None
+    return (account_id, debit, credit)
+
+
+def _charge_tuple(row: Optional[dict]) -> Optional[tuple]:
+    account_id = str((row or {}).get("account_id") or "").strip()
+    amount = _as_money((row or {}).get("amount"))
+    if not account_id or amount is None:
+        return None
+    description = str((row or {}).get("description") or "").strip()
+    return (account_id, amount, description)
+
+
+async def _persist_mismatch(db, revision_id: str, code: str, reason: str) -> None:
+    from services.sales_invoices import now_iso
+
+    await db[COLLECTION].update_one(
+        {"id": str(revision_id), "financial_complete": {"$ne": True}},
+        {"$set": {
+            "mismatch_code": str(code),
+            "mismatch_reason": str(reason),
+            "updated_at": now_iso(),
+        }},
+    )
+
+
+async def _fail_mismatch(db, revision_id: str, code: str, reason: str) -> None:
+    await _persist_mismatch(db, revision_id, code, reason)
+    raise HTTPException(409, {"code": code, "message": reason})
+
+
+def _snapshot_matches_proposed(invoice: dict, proposed: dict) -> Optional[str]:
+    """Return a mismatch code when persisted invoice drifts from the immutable proposal."""
+    money_fields = (
+        "subtotal",
+        "discount_amount",
+        "after_discount",
+        "ppn_percent",
+        "ppn_amount",
+        "other_charges_total",
+        "grand_total",
+        "paid_total",
+        "outstanding_amount",
+    )
+    for field in money_fields:
+        if not _money_pair(invoice.get(field), proposed.get(field)):
+            if field == "grand_total":
+                return "revision_grand_total_mismatch"
+            return "revision_snapshot_mismatch"
+    try:
+        if int(invoice.get("payment_term_days") or 0) != int(proposed.get("payment_term_days") or 0):
+            return "revision_snapshot_mismatch"
+    except (TypeError, ValueError):
+        return "revision_snapshot_mismatch"
+    if str(invoice.get("notes") or "").strip() != str(proposed.get("notes") or "").strip():
+        return "revision_snapshot_mismatch"
+    inv_day = _canonical_day(invoice.get("invoice_date"))
+    prop_day = _canonical_day(proposed.get("invoice_date"))
+    if not inv_day or not prop_day or inv_day != prop_day:
+        return "revision_date_mismatch"
+
+    inv_lines = {
+        int(line.get("line_idx", idx)): line
+        for idx, line in enumerate(invoice.get("lines") or [])
+        if isinstance(line, dict)
+    }
+    prop_lines = {
+        int(line.get("line_idx", idx)): line
+        for idx, line in enumerate(proposed.get("lines") or [])
+        if isinstance(line, dict)
+    }
+    if set(inv_lines) != set(prop_lines):
+        return "revision_snapshot_mismatch"
+    for idx, prop in prop_lines.items():
+        inv = inv_lines[idx]
+        if int(inv.get("quantity") or 0) != int(prop.get("quantity") or 0):
+            return "revision_snapshot_mismatch"
+        if not _money_pair(inv.get("unit_price"), prop.get("unit_price")):
+            return "revision_snapshot_mismatch"
+        if not _money_pair(inv.get("line_subtotal"), prop.get("line_subtotal")):
+            return "revision_snapshot_mismatch"
+
+    inv_charges = sorted(
+        tup for tup in (_charge_tuple(row) for row in (invoice.get("other_charges") or [])) if tup
+    )
+    prop_charges = sorted(
+        tup for tup in (_charge_tuple(row) for row in (proposed.get("other_charges") or [])) if tup
+    )
+    if len(inv_charges) != len(invoice.get("other_charges") or []) or len(prop_charges) != len(
+        proposed.get("other_charges") or []
+    ):
+        return "revision_snapshot_mismatch"
+    if inv_charges != prop_charges:
+        return "revision_other_charge_mismatch"
+    return None
+
+
+def _classify_journal_line_mismatch(
+    expected: list,
+    actual: list,
+    *,
+    receivable_account_id: str,
+    revenue_account_id: str,
+    output_tax_account_id: str,
+    charge_account_ids: set,
+) -> str:
+    exp_map = {}
+    act_map = {}
+    for account_id, debit, credit in expected:
+        exp_map.setdefault(account_id, []).append((debit, credit))
+    for account_id, debit, credit in actual:
+        act_map.setdefault(account_id, []).append((debit, credit))
+    for account_id in exp_map:
+        exp_map[account_id].sort()
+    for account_id in act_map:
+        act_map[account_id].sort()
+
+    if exp_map.get(receivable_account_id) != act_map.get(receivable_account_id):
+        return "revision_ar_mismatch"
+    if exp_map.get(revenue_account_id) != act_map.get(revenue_account_id):
+        return "revision_revenue_mismatch"
+    if output_tax_account_id in exp_map or output_tax_account_id in act_map:
+        if exp_map.get(output_tax_account_id) != act_map.get(output_tax_account_id):
+            return "revision_tax_mismatch"
+    for account_id in sorted(charge_account_ids):
+        if exp_map.get(account_id) != act_map.get(account_id):
+            return "revision_other_charge_mismatch"
+    return "revision_journal_lines_mismatch"
+
+
+async def _verify_financial_completion(
+    db,
+    *,
+    revision_id: str,
+    invoice_id: str,
+    original_id: str,
+) -> dict:
+    """Fail closed before PHASE_COMPLETE. Returns ids needed for the completion patch."""
+    from services.journal_core import (
+        JOURNAL_LINES,
+        STATUS_POSTED,
+        STATUS_REVERSED,
+        find_active_posted_primary_for_source,
+    )
+    from services.sales_invoice_posting import (
+        SOURCE_TYPE,
+        _build_journal_lines,
+        _require_posting_amounts,
+        _require_posting_settings,
+        find_sales_invoice_reversal_journal,
+        journal_date_from_invoice,
+    )
+    from services.sales_invoices import FINANCIAL_FINALIZED, effective_financial_status, normalize_other_charges
+
+    revision = await db[COLLECTION].find_one({"id": str(revision_id)}, {"_id": 0})
+    if not revision:
+        await _fail_mismatch(db, revision_id, "revision_incomplete", "Bukti revisi faktur tidak lengkap.")
+    proposed = revision.get("proposed")
+    if not isinstance(proposed, dict) or not proposed:
+        await _fail_mismatch(db, revision_id, "revision_incomplete", "Snapshot revisi faktur tidak lengkap.")
+    stored_fp = str(revision.get("fingerprint") or "")
+    if not stored_fp or stored_fp != _fingerprint(proposed):
+        await _fail_mismatch(
+            db, revision_id, "revision_snapshot_mismatch", "Fingerprint revisi faktur tidak konsisten."
+        )
+
+    invoice = await db.sales_invoices.find_one({"id": str(invoice_id)}, {"_id": 0})
+    if not invoice:
+        await _fail_mismatch(db, revision_id, "revision_incomplete", "Faktur revisi tidak ditemukan.")
+    if effective_financial_status(invoice) != FINANCIAL_FINALIZED:
+        await _fail_mismatch(db, revision_id, "revision_incomplete", "Status finansial faktur tidak finalized.")
+
+    snap_code = _snapshot_matches_proposed(invoice, proposed)
+    if snap_code:
+        await _fail_mismatch(db, revision_id, snap_code, "Faktur dan snapshot revisi tidak cocok.")
+
+    active = await find_active_posted_primary_for_source(db, SOURCE_TYPE, invoice_id)
+    if not active or not active.get("id"):
+        await _fail_mismatch(db, revision_id, "revision_incomplete", "Jurnal aktif revisi tidak ditemukan.")
+    raw_active = await db.journal_entries.find_one({"id": active["id"]}, {"_id": 0})
+    if not raw_active:
+        await _fail_mismatch(db, revision_id, "revision_incomplete", "Header jurnal aktif tidak ditemukan.")
+
+    posted_count = await db.journal_entries.count_documents({
+        "source_type": SOURCE_TYPE,
+        "source_id": str(invoice_id),
+        "reversal_of": None,
+        "status": STATUS_POSTED,
+    })
+    if posted_count != 1:
+        await _fail_mismatch(
+            db, revision_id, "revision_incomplete", "Jurnal primer aktif tidak tunggal."
+        )
+    if str(raw_active.get("id") or "") == str(original_id):
+        await _fail_mismatch(db, revision_id, "revision_incomplete", "Jurnal aktif masih jurnal asli.")
+    if str(raw_active.get("status") or "") != STATUS_POSTED:
+        await _fail_mismatch(db, revision_id, "revision_incomplete", "Jurnal aktif belum posted.")
+    if raw_active.get("reversal_of"):
+        await _fail_mismatch(db, revision_id, "revision_incomplete", "Jurnal aktif adalah dokumen reversal.")
+    if str(raw_active.get("source_type") or "") != SOURCE_TYPE:
+        await _fail_mismatch(db, revision_id, "revision_journal_source_mismatch", "source_type jurnal tidak valid.")
+    if str(raw_active.get("source_id") or "") != str(invoice_id):
+        await _fail_mismatch(db, revision_id, "revision_journal_source_mismatch", "source_id jurnal tidak valid.")
+    try:
+        revision_no = int(raw_active.get("journal_revision") or 0)
+    except (TypeError, ValueError):
+        revision_no = 0
+    if revision_no < 2:
+        await _fail_mismatch(
+            db, revision_id, "revision_journal_revision_mismatch", "Nomor revisi jurnal tidak valid."
+        )
+    if str(raw_active.get("supersedes_journal_id") or "") != str(original_id):
+        await _fail_mismatch(
+            db, revision_id, "revision_supersedes_mismatch", "Tautan supersedes jurnal tidak valid."
+        )
+
+    original = await db.journal_entries.find_one({"id": str(original_id)}, {"_id": 0})
+    if not original or str(original.get("status") or "") != STATUS_REVERSED:
+        await _fail_mismatch(
+            db, revision_id, "revision_reversal_missing", "Jurnal asli belum berstatus reverse."
+        )
+    reversal = await find_sales_invoice_reversal_journal(db, original_id)
+    if not reversal or str(reversal.get("reversal_of") or "") != str(original_id):
+        await _fail_mismatch(
+            db, revision_id, "revision_reversal_missing", "Dokumen reversal jurnal tidak valid."
+        )
+
+    invoice_day = _canonical_day(invoice.get("invoice_date"))
+    journal_day = _canonical_day(raw_active.get("date"))
+    expected_journal_day = _canonical_day(journal_date_from_invoice(invoice))
+    if not invoice_day or not journal_day or invoice_day != journal_day or journal_day != expected_journal_day:
+        await _fail_mismatch(
+            db, revision_id, "revision_date_mismatch", "Tanggal jurnal tidak cocok dengan tanggal faktur."
+        )
+
+    try:
+        grand, after, ppn, _charges = _require_posting_amounts(invoice)
+        charges = await normalize_other_charges(db, invoice.get("other_charges") or [])
+        mapped = await _require_posting_settings(db)
+        expected_lines = _build_journal_lines(
+            receivable_account_id=mapped["receivable_account_id"],
+            revenue_account_id=mapped["revenue_account_id"],
+            output_tax_account_id=mapped["output_tax_account_id"],
+            grand_total=grand,
+            after_discount=after,
+            ppn_amount=ppn,
+            other_charges=charges,
+            invoice_number=str(invoice.get("invoice_number") or ""),
+        )
+    except HTTPException as exc:
+        await _fail_mismatch(
+            db,
+            revision_id,
+            "revision_incomplete",
+            str(exc.detail if isinstance(exc.detail, str) else "Data posting revisi tidak lengkap."),
+        )
+
+    expected_tuples = []
+    for row in expected_lines:
+        tup = _line_amount_tuple(row)
+        if tup is None:
+            await _fail_mismatch(
+                db, revision_id, "revision_incomplete", "Baris jurnal yang diharapkan tidak valid."
+            )
+        expected_tuples.append(tup)
+    if len(expected_tuples) < 2:
+        await _fail_mismatch(db, revision_id, "revision_incomplete", "Baris jurnal yang diharapkan tidak lengkap.")
+
+    actual_rows = await db[JOURNAL_LINES].find(
+        {"journal_id": str(raw_active["id"])},
+        {"_id": 0, "account_id": 1, "debit": 1, "credit": 1},
+    ).to_list(200)
+    if not actual_rows:
+        await _fail_mismatch(
+            db, revision_id, "revision_journal_lines_mismatch", "Baris jurnal aktif tidak ditemukan."
+        )
+    actual_tuples = []
+    total_dr = _as_money(0)
+    total_cr = _as_money(0)
+    for row in actual_rows:
+        tup = _line_amount_tuple(row)
+        if tup is None:
+            await _fail_mismatch(
+                db, revision_id, "revision_journal_lines_mismatch", "Baris jurnal aktif tidak valid."
+            )
+        actual_tuples.append(tup)
+        total_dr += tup[1]
+        total_cr += tup[2]
+    if total_dr != total_cr:
+        await _fail_mismatch(
+            db, revision_id, "revision_journal_unbalanced", "Baris jurnal aktif tidak seimbang."
+        )
+
+    expected_sorted = sorted(expected_tuples)
+    actual_sorted = sorted(actual_tuples)
+    if expected_sorted != actual_sorted:
+        code = _classify_journal_line_mismatch(
+            expected_sorted,
+            actual_sorted,
+            receivable_account_id=str(mapped["receivable_account_id"]),
+            revenue_account_id=str(mapped["revenue_account_id"]),
+            output_tax_account_id=str(mapped["output_tax_account_id"]),
+            charge_account_ids={
+                str((row or {}).get("account_id") or "").strip()
+                for row in charges
+                if str((row or {}).get("account_id") or "").strip()
+            },
+        )
+        if code == "revision_ar_mismatch" and not _money_pair(
+            grand, next((d for a, d, c in actual_sorted if a == mapped["receivable_account_id"] and d > 0), None)
+        ):
+            # Keep AR-specific code; grand_total mismatches surface here when AR debit drifts.
+            pass
+        await _fail_mismatch(db, revision_id, code, "Baris jurnal aktif tidak cocok dengan faktur revisi.")
+
+    return {
+        "new_journal_id": str(raw_active.get("id") or ""),
+        "reversal_journal_id": str(reversal.get("id") or ""),
+    }
+
+
 async def revise_posted_sales_invoice(
     db,
     invoice_id: str,
@@ -574,9 +984,17 @@ async def revise_posted_sales_invoice(
     key = str((payload or {}).get("idempotency_key") or "").strip()
     if not key:
         raise HTTPException(400, "idempotency_key wajib diisi untuk revisi faktur yang sudah diposting.")
-    proposed = await _proposed_fields(db, invoice, payload or {})
-    fingerprint = _fingerprint(proposed)
     stored = await _load_revision(db, invoice["id"], key)
+    basis_charges = None
+    if stored and isinstance(stored.get("proposed"), dict):
+        basis_charges = list((stored.get("proposed") or {}).get("other_charges") or [])
+    proposed = await _proposed_fields(
+        db,
+        invoice,
+        payload or {},
+        basis_charges=basis_charges,
+    )
+    fingerprint = _fingerprint(proposed)
     if stored and stored.get("fingerprint") != fingerprint:
         raise HTTPException(409, "Idempotency key sudah dipakai untuk payload lain.")
     if stored and stored.get("phase") == PHASE_COMPLETE and stored.get("financial_complete") is True:
@@ -780,8 +1198,14 @@ async def revise_posted_sales_invoice(
         _pause(stop_after, "after_invoice")
 
         invoice = await _own(revision_id, token)
+        phase_row = await db[COLLECTION].find_one({"id": revision_id}, {"_id": 0, "phase": 1})
+        already_reposted = str((phase_row or {}).get("phase") or "") in {
+            PHASE_REPOSTED,
+            PHASE_COMPLETE,
+        }
         active = await find_active_posted_primary_for_source(db, SOURCE_TYPE, invoice["id"])
-        if not active:
+        # After PHASE_REPOSTED, never mint another primary — verify fail-closed instead.
+        if not active and not already_reposted:
             saved = await db.sales_invoices.find_one({"id": invoice["id"]}, {"_id": 0}) or fresh
             try:
                 grand, after, ppn, _charges = _require_posting_amounts(saved)
@@ -817,38 +1241,18 @@ async def revise_posted_sales_invoice(
         await _advance_phase(db, revision_id, PHASE_REPOSTED)
         _pause(stop_after, "after_repost")
 
-        active = await find_active_posted_primary_for_source(db, SOURCE_TYPE, invoice["id"])
-        raw_active = None
-        if active and active.get("id"):
-            raw_active = await db.journal_entries.find_one(
-                {"id": active["id"]},
-                {"_id": 0, "status": 1, "supersedes_journal_id": 1, "journal_revision": 1},
-            )
-        posted_count = await db.journal_entries.count_documents({
-            "source_type": SOURCE_TYPE,
-            "source_id": str(invoice["id"]),
-            "reversal_of": None,
-            "status": STATUS_POSTED,
-        })
-        reversal = await find_sales_invoice_reversal_journal(db, original_id)
-        current = await db.sales_invoices.find_one({"id": invoice["id"]}, {"_id": 0}) or {}
-        supersedes = str((raw_active or {}).get("supersedes_journal_id") or "")
-        verified = (
-            posted_count == 1
-            and raw_active
-            and str(active.get("id") or "") != original_id
-            and str(raw_active.get("status") or "") == STATUS_POSTED
-            and int(raw_active.get("journal_revision") or 0) >= 2
-            and supersedes == original_id
-            and reversal
-            and str(reversal.get("reversal_of") or "") == original_id
-            and effective_financial_status(current) == FINANCIAL_FINALIZED
+        # Same-key retries after PHASE_REPOSTED must re-run financial verification.
+        completion = await _verify_financial_completion(
+            db,
+            revision_id=revision_id,
+            invoice_id=str(invoice["id"]),
+            original_id=original_id,
         )
-        if not verified:
-            raise HTTPException(409, {"code": "revision_pending", "message": "Akuntansi revisi belum lengkap."})
         await _advance_phase(db, revision_id, PHASE_COMPLETE, {
-            "new_journal_id": active.get("id"),
-            "reversal_journal_id": reversal.get("id"),
+            "new_journal_id": completion["new_journal_id"],
+            "reversal_journal_id": completion["reversal_journal_id"],
+            "mismatch_code": None,
+            "mismatch_reason": None,
         })
         await _release_fence(db, invoice["id"], revision_id, token)
         return await get_sales_invoice_detail(db, invoice["id"])
