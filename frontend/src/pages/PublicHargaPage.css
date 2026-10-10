@@ -883,6 +883,10 @@
 }
 
 @media (max-width: 899px) {
+  .public-harga-page.ph-v2:has(.ph-sticky-bar) {
+    scroll-padding-bottom: calc(var(--ph-sticky-h) + env(safe-area-inset-bottom, 0px) + 16px);
+  }
+
   .ph-sticky-bar {
     display: flex;
     position: fixed;
@@ -897,6 +901,14 @@
     background: rgba(255, 255, 255, 0.98);
     border-top: 1px solid var(--ph-line);
     box-shadow: 0 -8px 24px rgba(0, 61, 50, 0.08);
+    transition: transform 0.2s ease, opacity 0.2s ease, visibility 0.2s ease;
+  }
+
+  .ph-sticky-bar.is-deferred {
+    transform: translateY(calc(100% + 16px));
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
   }
 
   .ph-sticky-price {
@@ -934,8 +946,13 @@
     padding-bottom: calc(var(--ph-sticky-h) + env(safe-area-inset-bottom, 0px) + 20px);
   }
 
-  .public-harga-page.ph-v2:has(.ph-sticky-bar) .ph-detail-info > .ph-wa-primary {
+  /* Hide in-flow WA only while sticky is actively clear of protected fields. */
+  .public-harga-page.ph-v2:has(.ph-sticky-bar.is-clear) .ph-detail-info > .ph-wa-primary {
     display: none;
+  }
+
+  .public-harga-page.ph-v2:has(.ph-sticky-bar.is-deferred) .ph-detail-info > .ph-wa-primary {
+    display: inline-flex;
   }
 
   .ph-qty-block,
@@ -984,7 +1001,10 @@
     border: 1px solid var(--ph-primary);
     border-radius: 999px;
   }
-  .ph-hero-search { display: none; }
+  /* Higher specificity than shared .ph-hero-search { display:flex } rule. */
+  .public-harga-page.ph-v2 .ph-hero .ph-hero-search {
+    display: none !important;
+  }
   .ph-hero-points { display: none; }
   .ph-hero-panel { display: none; }
   .ph-section { padding: 8px 14px; }
