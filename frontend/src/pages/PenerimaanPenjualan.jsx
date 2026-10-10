@@ -38,6 +38,7 @@ import {
   interpretReceiptUpdateResponse,
   lifecycleChipClass,
   salesDocumentLifecyclePresentation,
+  shouldHideLegacyManualAccounting,
 } from "../lib/salesLifecycleUi";
 import "./salesSubmenuDensity.css";
 
@@ -148,6 +149,12 @@ export default function PenerimaanPenjualan() {
   const [accountingTarget, setAccountingTarget] = useState(null);
   const [accountingBusy, setAccountingBusy] = useState(false);
   const [accountingErr, setAccountingErr] = useState("");
+  const [receiptLifecycleCapability, setReceiptLifecycleCapability] = useState(null);
+
+  const hideLegacyManualAccounting = shouldHideLegacyManualAccounting(
+    detailReceipt?.lifecycle_capability || receiptLifecycleCapability,
+  );
+  const showLegacyPostReverse = !hideLegacyManualAccounting;
 
   const beginReceiptEdit = () => {
     if (!detailReceipt || !canEditReceipt) return;
@@ -479,6 +486,20 @@ export default function PenerimaanPenjualan() {
   useEffect(() => {
     loadReceipts();
   }, [loadReceipts]);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.salesReceiptLifecycleCapability()
+      .then((res) => {
+        if (!cancelled) setReceiptLifecycleCapability(res?.lifecycle_capability || res || null);
+      })
+      .catch(() => {
+        if (!cancelled) setReceiptLifecycleCapability(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (isModalOpen) {
@@ -1136,7 +1157,7 @@ export default function PenerimaanPenjualan() {
                         >
                           {pdfLoadingId === r.id ? "Memuat..." : "Cetak PDF"}
                         </button>
-                        {canPostAccounting && r.can_post_accounting && (
+                        {showLegacyPostReverse && canPostAccounting && r.can_post_accounting && (
                           <button
                             type="button"
                             className="sd-act sd-btn-primary"
@@ -1150,7 +1171,7 @@ export default function PenerimaanPenjualan() {
                             Post Accounting
                           </button>
                         )}
-                        {canReverseAccounting && r.can_reverse_accounting && (
+                        {showLegacyPostReverse && canReverseAccounting && r.can_reverse_accounting && (
                           <button
                             type="button"
                             className="sd-act sd-act-delete"
@@ -1953,7 +1974,7 @@ export default function PenerimaanPenjualan() {
                   </button>
                 </>
               )}
-              {!detailEditMode && canPostAccounting && detailReceipt.can_post_accounting && (
+              {!detailEditMode && showLegacyPostReverse && canPostAccounting && detailReceipt.can_post_accounting && (
                 <button
                   type="button"
                   data-testid="btn-detail-post-accounting"
@@ -1967,7 +1988,7 @@ export default function PenerimaanPenjualan() {
                   Post Accounting
                 </button>
               )}
-              {!detailEditMode && canReverseAccounting && detailReceipt.can_reverse_accounting && (
+              {!detailEditMode && showLegacyPostReverse && canReverseAccounting && detailReceipt.can_reverse_accounting && (
                 <button
                   type="button"
                   data-testid="btn-detail-reverse-accounting"

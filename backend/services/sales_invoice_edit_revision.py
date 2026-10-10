@@ -134,6 +134,20 @@ async def _primary_index_ready(db) -> bool:
     )
 
 
+REQUIRED_INTENT_INDEX_NAME = "uniq_sales_invoice_edit_revision_key"
+REQUIRED_INTENT_INDEX_KEYS = ("invoice_id", "idempotency_key")
+
+
+async def _intent_index_ready(db) -> bool:
+    """Read-only. Missing/incompatible intent index → not ready (no DDL)."""
+    from services.sales_lifecycle_capability import invoice_edit_intent_index_ready
+
+    try:
+        return bool(await invoice_edit_intent_index_ready(db))
+    except Exception:
+        return False
+
+
 async def _activation_blockers(db) -> list:
     from services.financial_journal_foundation import (
         is_financial_journal_revision_enabled,
@@ -150,14 +164,17 @@ async def _activation_blockers(db) -> list:
         blockers.append("sales_invoice_not_allowlisted")
     if not await _primary_index_ready(db):
         blockers.append("primary_index_not_ready")
+    if not await _intent_index_ready(db):
+        blockers.append("intent_index_not_ready")
     return blockers
 
 
-async def _ensure_revision_indexes(db) -> None:
+async def prepare_invoice_edit_indexes_for_tests(db) -> None:
+    """Synthetic-test helper only. Never call from revision or production runtime."""
     await db[COLLECTION].create_index(
         [("invoice_id", 1), ("idempotency_key", 1)],
         unique=True,
-        name="uniq_sales_invoice_edit_revision_key",
+        name=REQUIRED_INTENT_INDEX_NAME,
     )
 
 
@@ -976,7 +993,6 @@ async def revise_posted_sales_invoice(
     if blockers:
         raise HTTPException(409, {"code": "revision_not_ready", "blockers": blockers})
     await _require_edit_permission(user)
-    await _ensure_revision_indexes(db)
 
     invoice = await db.sales_invoices.find_one({"id": str(invoice_id)}, {"_id": 0})
     if not invoice:

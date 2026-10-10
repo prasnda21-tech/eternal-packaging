@@ -32,6 +32,7 @@ from services.sales_invoice_edit_revision import (
     FENCE_KEY_FIELD,
     FLAG_KEY as EDIT_FLAG,
     RevisionPaused,
+    prepare_invoice_edit_indexes_for_tests,
     revise_posted_sales_invoice,
 )
 from services.sales_invoice_posting import (
@@ -65,6 +66,7 @@ async def indexes(bind_motor):
     await ensure_coa(db)
     await ensure_journal(db)
     await ensure_periods(db)
+    await prepare_invoice_edit_indexes_for_tests(db)
     await db.app_settings.delete_many({"key": {"$in": [SETTINGS_KEY, FLAG_KEY, ALLOWLIST_KEY, EDIT_FLAG]}})
     yield
     for name in (
@@ -341,6 +343,16 @@ async def test_missing_index_and_ambiguous_primary(indexes):
     assert "primary_index_not_ready" in exc.value.detail["blockers"]
     assert await _posted_count(db, invoice_id) == 1
     await ensure_journal(db)
+
+    # Missing edit-intent unique index fail-closes before mutation (no runtime DDL).
+    invoice_id2, _po2 = await _seed(db, invoice_date="2026-04-04")
+    await db.sales_invoice_edit_revisions.drop_indexes()
+    before = await _posted_count(db, invoice_id2)
+    with pytest.raises(HTTPException) as intent_exc:
+        await revise_posted_sales_invoice(db, invoice_id2, _payload(key="intent-idx"), ADMIN)
+    assert "intent_index_not_ready" in intent_exc.value.detail["blockers"]
+    assert await _posted_count(db, invoice_id2) == before
+    await prepare_invoice_edit_indexes_for_tests(db)
 
     invoice_id, _po = await _seed(db, invoice_date="2026-03-03")
     await db.journal_entries.drop_index("uniq_primary_source_journal")

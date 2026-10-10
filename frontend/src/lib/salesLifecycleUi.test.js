@@ -11,6 +11,8 @@ import {
   interpretBusinessCancelResponse,
   salesDocumentLifecyclePresentation,
   safeLifecycleReason,
+  shouldHideLegacyManualAccounting,
+  legacyManualActionsRequired,
 } from "./salesLifecycleUi";
 
 describe("salesLifecycleUi", () => {
@@ -221,5 +223,19 @@ describe("salesLifecycleUi", () => {
       { auto_accounting_status: "failed" },
       { hasPerm: () => false, kind: "invoice" },
     )).toBe(false);
+  });
+
+  test("legacy manual accounting hidden only when backend capability READY", () => {
+    expect(legacyManualActionsRequired(null)).toBe(true);
+    expect(shouldHideLegacyManualAccounting(undefined)).toBe(false);
+    expect(shouldHideLegacyManualAccounting({ legacy_manual_actions_required: true })).toBe(false);
+    expect(shouldHideLegacyManualAccounting({
+      legacy_manual_actions_required: false,
+      auto_create_post: { available: true },
+    })).toBe(true);
+    // Capability failure / 403 / absent field must preserve legacy workflows.
+    expect(shouldHideLegacyManualAccounting(null)).toBe(false);
+    expect(shouldHideLegacyManualAccounting({})).toBe(false);
+    expect(shouldHideLegacyManualAccounting({ auto_create_post: { available: true } })).toBe(false);
   });
 });

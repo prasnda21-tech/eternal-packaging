@@ -963,6 +963,7 @@ export const api = {
 
   listSalesInvoices: (params = {}, config = {}) =>
     client.get(`/sales-invoices`, { ...config, params }).then((r) => r.data),
+  salesInvoiceLifecycleCapability: () => client.get(`/sales-invoices/lifecycle-capability`).then((r) => r.data),
   getSalesInvoice: (id) => client.get(`/sales-invoices/${encodeURIComponent(id)}`).then((r) => r.data),
   getPoInvoicePreview: (poId) => client.get(`/sales-invoices/po/${encodeURIComponent(poId)}/preview`).then((r) => r.data),
   salesInvoiceChargeAccounts: (params = {}) => client.get(`/sales-invoices/charge-accounts`, { params }).then((r) => r.data),
@@ -981,6 +982,7 @@ export const api = {
     (params = {}) => client.get(`/sales-receipts`, { params }).then((r) => r.data),
     (params = {}) => `listSalesReceipts:${JSON.stringify(params || {})}`,
   ),
+  salesReceiptLifecycleCapability: () => client.get(`/sales-receipts/lifecycle-capability`).then((r) => r.data),
   getSalesReceipt: (id) => client.get(`/sales-receipts/${encodeURIComponent(id)}`).then((r) => r.data),
   createSalesReceipt: (payload) => client.post(`/sales-receipts`, payload).then((r) => r.data),
   updateSalesReceipt: (id, payload) => client.put(`/sales-receipts/${encodeURIComponent(id)}`, payload).then((r) => r.data),
