@@ -16053,6 +16053,10 @@ app.add_middleware(
     expose_headers=["Content-Disposition", "Content-Type"],
 )
 
+# Optional request-memory telemetry (Phase C). Default OFF; env + restart to enable.
+from services.memory_telemetry import install_memory_telemetry as _install_memory_telemetry
+_install_memory_telemetry(app)
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 _ct_mod.install_access_log_mask()
