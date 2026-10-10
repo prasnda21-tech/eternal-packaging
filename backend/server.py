@@ -40,6 +40,7 @@ from services.master_items import (
     list_master_items_picker,
     resolve_po_line_items,
     sync_master_items,
+    update_master_production_process,
 )
 from services.shipment_status import (
     SHIPMENT_STATUS_PROJECTION,
@@ -9751,7 +9752,8 @@ class SalesOrderLineItemInput(BaseModel):
     quantity: int
     unit: Optional[str] = "pcs"
     color: Optional[str] = ""
-    production_process: Optional[str] = "print"  # "print" | "non_print"
+    # None → backend copies master default (then legacy print). Explicit print|non_print wins.
+    production_process: Optional[str] = None
     notes: Optional[str] = ""
     accurate_item_id: Optional[str] = None
     master_item_id: Optional[str] = None
@@ -10208,6 +10210,8 @@ async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(curr
     if not payload.line_items:
         raise HTTPException(400, "Minimal 1 line item.")
     
+    from services.master_items import resolve_line_production_process
+
     normalized_lines = []
     for i, li in enumerate(payload.line_items):
         name = (li.name or "").strip()
@@ -10219,11 +10223,16 @@ async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(curr
             q = 0
         if q <= 0:
             raise HTTPException(400, f"Line item #{i+1}: Quantity harus > 0.")
-        
-        proc = (li.production_process or "").strip().lower()
-        if proc not in ("print", "non_print"):
-            proc = "print"
-        
+
+        mid = (li.master_item_id or "").strip() or None
+        aid = (li.accurate_item_id or "").strip() or None
+        proc = await resolve_line_production_process(
+            db,
+            master_item_id=mid,
+            accurate_item_id=aid,
+            explicit=li.production_process,
+        )
+
         normalized_lines.append({
             "item_code": (li.item_code or "").strip() or None,
             "name": name,
@@ -10232,8 +10241,8 @@ async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(curr
             "color": (li.color or "").strip() or None,
             "production_process": proc,
             "notes": (li.notes or "").strip() or None,
-            "accurate_item_id": (li.accurate_item_id or "").strip() or None,
-            "master_item_id": (li.master_item_id or "").strip() or None,
+            "accurate_item_id": aid,
+            "master_item_id": mid,
             "unit_price": li.unit_price,
             "price_source": li.price_source,
             "price_review": bool(li.price_review),
@@ -12439,6 +12448,11 @@ class MasterItemCreatePayload(BaseModel):
     item_type: str
     unit: str
     is_active: bool = True
+    production_process: Optional[str] = None
+
+
+class MasterItemProductionProcessPayload(BaseModel):
+    production_process: str
 
 
 @api_router.post("/master-items")
@@ -12448,6 +12462,18 @@ async def master_items_create(
 ):
     """Create ERP-local Barang/Jasa metadata. No Accurate ID, stock, or HPP."""
     return await create_local_master_item(db, payload.model_dump())
+
+
+@api_router.patch("/master-items/{item_id}/production-process")
+async def master_items_set_production_process(
+    item_id: str,
+    payload: MasterItemProductionProcessPayload,
+    user=Depends(require_perm("master_items.manage")),
+):
+    """Owner default Cetak/Tidak cetak. ERP-owned; Accurate sync does not overwrite."""
+    return await update_master_production_process(
+        db, item_id, payload.production_process, user=user,
+    )
 
 
 @api_router.post("/master-items/sync")
@@ -12533,8 +12559,10 @@ async def master_item_detail_get(
             "authority_status": "BELUM_TERSEDIA",
         }
 
+    from services.master_items import public_master_item
+
     return {
-        "item": item,
+        "item": public_master_item(item),
         "unit_setting": unit_setting or {
             "master_item_id": mid,
             "accurate_item_id": item.get("accurate_item_id"),

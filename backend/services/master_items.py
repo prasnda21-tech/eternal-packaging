@@ -34,10 +34,21 @@ ACCURATE_OWNED_FIELDS = (
 ORIGIN_LOCAL = "local"
 ORIGIN_ACCURATE = "accurate"
 ALLOWED_LOCAL_ITEM_TYPES = frozenset({"INVENTORY", "SERVICE", "NON_INVENTORY"})
+ALLOWED_PRODUCTION_PROCESS = frozenset({"print", "non_print"})
+# ERP-owned: never taken from Accurate sync payloads.
+ERP_OWNED_FIELDS = frozenset({"production_process"})
 ACCURATE_ID_PARTIAL_INDEX = "accurate_item_id_partial_unique"
 LEGACY_ACCURATE_ID_INDEX = "accurate_item_id_1"
 CODE_CLAIMS_INDEX = "code_key_unique"
 DUPLICATE_CODE_MSG = "Kode barang/jasa sudah dipakai."
+
+
+def normalize_production_process(value: Any) -> Optional[str]:
+    """Return print|non_print or None when unset/invalid."""
+    proc = str(value or "").strip().lower()
+    if proc in ALLOWED_PRODUCTION_PROCESS:
+        return proc
+    return None
 
 _sync_lock = asyncio.Lock()
 
@@ -86,6 +97,7 @@ def public_master_item(doc: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]
         "item_type": doc.get("item_type"),
         "unit": doc.get("unit"),
         "is_active": doc.get("is_active"),
+        "production_process": normalize_production_process(doc.get("production_process")),
         "origin": resolve_master_origin(doc),
         "accurate_updated_at": doc.get("accurate_updated_at"),
         "last_synced_at": doc.get("last_synced_at"),
@@ -243,6 +255,9 @@ async def create_local_master_item(db, payload: Dict[str, Any]) -> Dict[str, Any
         is_active = is_active.strip().lower() not in ("0", "false", "no", "nonaktif", "inactive")
     else:
         is_active = bool(is_active)
+    production_process = normalize_production_process((payload or {}).get("production_process"))
+    if (payload or {}).get("production_process") not in (None, "") and production_process is None:
+        raise HTTPException(400, "Default proses harus 'print' (Cetak) atau 'non_print' (Tidak cetak).")
 
     if not code_raw:
         raise HTTPException(400, "Kode barang/jasa wajib diisi.")
@@ -275,6 +290,8 @@ async def create_local_master_item(db, payload: Dict[str, Any]) -> Dict[str, Any
         "created_at": now,
         "updated_at": now,
     }
+    if production_process:
+        doc["production_process"] = production_process
 
     if await _code_taken_in_masters(db, code_key):
         raise HTTPException(409, DUPLICATE_CODE_MSG)
@@ -307,6 +324,7 @@ async def upsert_master_item(db, incoming: Dict[str, Any]) -> Tuple[Dict[str, An
 
     Returns (public_doc, action) where action is 'created' | 'updated' | 'unchanged'.
     Never matches or updates origin=local rows (they omit accurate_item_id).
+    Never overwrites ERP-owned production_process from Accurate payloads.
     """
     if incoming.get("accurate_item_id") is None and incoming.get("id") is not None:
         incoming = normalize_accurate_item(incoming) or {}
@@ -314,6 +332,8 @@ async def upsert_master_item(db, incoming: Dict[str, Any]) -> Tuple[Dict[str, An
     if not aid:
         raise ValueError("accurate_item_id wajib")
     owned = _owned_payload(incoming)
+    for erp_key in ERP_OWNED_FIELDS:
+        owned.pop(erp_key, None)
     now = now_iso()
     col = db[COLLECTION]
     existing = await col.find_one({"accurate_item_id": aid}, {"_id": 0})
@@ -364,6 +384,72 @@ async def upsert_master_item(db, incoming: Dict[str, Any]) -> Tuple[Dict[str, An
         fresh = await col.find_one({"accurate_item_id": aid}, {"_id": 0})
         return public_master_item(fresh), ("updated" if changed else "unchanged")
     return public_master_item(fresh), "created"
+
+
+async def update_master_production_process(
+    db,
+    item_id: str,
+    production_process: Any,
+    *,
+    user: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Set ERP default Cetak/Tidak cetak. Does not mutate orders or Accurate fields."""
+    item_id = str(item_id or "").strip()
+    if not item_id:
+        raise HTTPException(400, "ID barang/jasa wajib.")
+    proc = normalize_production_process(production_process)
+    if proc is None:
+        raise HTTPException(400, "Default proses harus 'print' (Cetak) atau 'non_print' (Tidak cetak).")
+    existing = await db[COLLECTION].find_one(
+        {"$or": [{"id": item_id}, {"accurate_item_id": item_id}]},
+        {"_id": 0},
+    )
+    if not existing:
+        raise HTTPException(404, "Barang/jasa tidak ditemukan.")
+    now = now_iso()
+    actor = ""
+    if isinstance(user, dict):
+        actor = str(user.get("email") or user.get("id") or "").strip()
+    await db[COLLECTION].update_one(
+        {"id": existing["id"]},
+        {"$set": {
+            "production_process": proc,
+            "production_process_updated_at": now,
+            "production_process_updated_by": actor or None,
+            "updated_at": now,
+        }},
+    )
+    fresh = await db[COLLECTION].find_one({"id": existing["id"]}, {"_id": 0})
+    return public_master_item(fresh)
+
+
+async def resolve_line_production_process(
+    db,
+    *,
+    master_item_id: Optional[str] = None,
+    accurate_item_id: Optional[str] = None,
+    explicit: Any = None,
+) -> str:
+    """Resolve production_process for a new order line.
+
+    Explicit print|non_print from the transaction wins. Otherwise master default,
+    then legacy fallback print. Never mutates master or existing orders.
+    """
+    proc = normalize_production_process(explicit)
+    if proc:
+        return proc
+    mid = str(master_item_id or "").strip()
+    aid = str(accurate_item_id or "").strip()
+    master = None
+    if mid:
+        master = await db[COLLECTION].find_one({"id": mid}, {"_id": 0, "production_process": 1})
+    if master is None and aid:
+        master = await db[COLLECTION].find_one(
+            {"accurate_item_id": aid},
+            {"_id": 0, "production_process": 1},
+        )
+    from_master = normalize_production_process((master or {}).get("production_process"))
+    return from_master or "print"
 
 
 async def sync_master_items(db, client: AccurateClient) -> Dict[str, Any]:

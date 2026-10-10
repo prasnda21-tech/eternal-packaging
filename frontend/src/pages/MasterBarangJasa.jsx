@@ -26,7 +26,14 @@ const EMPTY_CREATE = {
   item_type: "INVENTORY",
   unit: "pcs",
   is_active: true,
+  production_process: "print",
 };
+
+function processLabel(raw) {
+  if (raw === "non_print") return "Tidak cetak";
+  if (raw === "print") return "Cetak";
+  return "Belum diatur";
+}
 
 function typeLabel(raw) {
   if (!raw) return "—";
@@ -61,6 +68,8 @@ export default function MasterBarangJasa() {
   const [createForm, setCreateForm] = useState(EMPTY_CREATE);
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState("");
+  const [processBusyId, setProcessBusyId] = useState("");
+  const [processError, setProcessError] = useState("");
 
   useEffect(() => { setPage(1); }, [q]);
 
@@ -136,6 +145,7 @@ export default function MasterBarangJasa() {
         item_type: createForm.item_type,
         unit: createForm.unit.trim(),
         is_active: Boolean(createForm.is_active),
+        production_process: createForm.production_process === "non_print" ? "non_print" : "print",
       });
       setCreateOpen(false);
       setCreateForm(EMPTY_CREATE);
@@ -149,7 +159,32 @@ export default function MasterBarangJasa() {
     }
   };
 
-  const bannerError = syncError || loadError;
+  const saveProductionProcess = async (itemId, production_process) => {
+    if (!canManage || !itemId || processBusyId) return;
+    setProcessBusyId(itemId);
+    setProcessError("");
+    try {
+      const updated = await api.masterItemsSetProductionProcess(itemId, production_process);
+      setData((prev) => {
+        if (!prev?.items) return prev;
+        return {
+          ...prev,
+          items: prev.items.map((row) => (
+            row.id === itemId || row.accurate_item_id === itemId
+              ? { ...row, production_process: updated.production_process }
+              : row
+          )),
+        };
+      });
+    } catch (ex) {
+      const det = ex.response?.data?.detail;
+      setProcessError(typeof det === "object" ? (det.message || JSON.stringify(det)) : (det || "Gagal menyimpan default Cetak/Tidak cetak"));
+    } finally {
+      setProcessBusyId("");
+    }
+  };
+
+  const bannerError = syncError || loadError || processError;
 
   const summary = data?.summary || {};
   const items = data?.items || [];
@@ -277,7 +312,21 @@ export default function MasterBarangJasa() {
                   <option value="inactive">Nonaktif</option>
                 </select>
               </label>
+              <label>
+                <span className="muted small">Default Cetak / Tidak cetak</span>
+                <select
+                  value={createForm.production_process === "non_print" ? "non_print" : "print"}
+                  onChange={(e) => setCreateForm((p) => ({ ...p, production_process: e.target.value }))}
+                  data-testid="master-create-production-process"
+                >
+                  <option value="print">Cetak — ikuti tahap produksi hingga kirim</option>
+                  <option value="non_print">Tidak cetak — siap kirim (packing dilewati)</option>
+                </select>
+              </label>
             </div>
+            <p className="muted small" style={{ marginTop: 8 }} data-testid="master-create-process-hint">
+              Default ini disalin ke baris pesanan baru. Pilihan di transaksi tetap bisa diubah. Sync Accurate tidak menimpa pengaturan ini.
+            </p>
             {createError && (
               <p role="alert" data-testid="master-create-error" className="muted small" style={{ color: "#b42318", marginTop: 8 }}>{createError}</p>
             )}
@@ -370,6 +419,7 @@ export default function MasterBarangJasa() {
               <th className="col-text">Nama Item</th>
               <th className="col-fit">Jenis</th>
               <th className="col-fit">Satuan</th>
+              <th className="col-fit">Cetak / Tidak cetak</th>
               <th className="col-fit">Status</th>
               <th className="col-fit">Sumber</th>
               <th className="col-fit">Accurate ID</th>
@@ -378,11 +428,11 @@ export default function MasterBarangJasa() {
           </thead>
           <tbody data-testid="master-items-tbody" data-search-state={tableView}>
             {tableView === "loading" && (
-              <tr data-testid="master-items-loading"><td colSpan={8} className="muted small">Memuat…</td></tr>
+              <tr data-testid="master-items-loading"><td colSpan={9} className="muted small">Memuat…</td></tr>
             )}
             {tableView === "empty" && (
               <tr>
-                <td colSpan={8} className="muted small" data-testid="master-items-empty">
+                <td colSpan={9} className="muted small" data-testid="master-items-empty">
                   Belum ada Barang/Jasa.
                   {canManage ? " Klik Tambah Barang/Jasa." : ""}
                   {canSync ? " Atau Sinkronkan dari Accurate." : (!canManage ? " Hubungi Admin." : "")}
@@ -410,6 +460,27 @@ export default function MasterBarangJasa() {
                 <td className="col-text">{it.item_name || "—"}</td>
                 <td className="col-fit">{typeLabel(it.item_type)}</td>
                 <td className="col-fit">{it.unit || "—"}</td>
+                <td className="col-fit" onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
+                  {canManage ? (
+                    <select
+                      value={it.production_process === "non_print" ? "non_print" : it.production_process === "print" ? "print" : ""}
+                      disabled={processBusyId === it.id}
+                      onChange={(e) => {
+                        const next = e.target.value;
+                        if (!next) return;
+                        saveProductionProcess(it.id, next);
+                      }}
+                      data-testid={`master-item-process-${it.id}`}
+                      aria-label={`Default Cetak/Tidak cetak ${it.item_name || it.item_code}`}
+                    >
+                      {!it.production_process && <option value="">Belum diatur</option>}
+                      <option value="print">Cetak</option>
+                      <option value="non_print">Tidak cetak</option>
+                    </select>
+                  ) : (
+                    <span data-testid={`master-item-process-label-${it.id}`}>{processLabel(it.production_process)}</span>
+                  )}
+                </td>
                 <td className="col-fit">
                   {it.is_active === true ? "Aktif" : it.is_active === false ? "Nonaktif" : "—"}
                 </td>

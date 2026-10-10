@@ -43,6 +43,36 @@ def _safe_int(v, default=0) -> int:
         return default
 
 
+def operational_ready_qty_for_line(order: dict, line_idx: int) -> int:
+    """Qty considered ready for Siap-belum-terkirim / delivery eligibility.
+
+    Cetak (print): operator qty_completed, capped by PO qty.
+    Tidak cetak (non_print): full PO qty (siap kirim) — does not write
+    qty_completed or packed_qty onto the order document.
+    """
+    lis = order.get("line_items") or []
+    idx = int(line_idx)
+    if idx < 0 or idx >= len(lis) or not isinstance(lis[idx], dict):
+        return 0
+    ordered = max(0, _safe_int(lis[idx].get("quantity")))
+    if not is_print_line(lis[idx]):
+        return ordered
+    completed = 0
+    for split in order.get("operator_splits") or []:
+        if not isinstance(split, dict):
+            continue
+        raw_idx = split.get("line_idx")
+        if raw_idx is None or str(raw_idx).strip() == "":
+            continue
+        try:
+            split_idx = int(raw_idx)
+        except (TypeError, ValueError):
+            continue
+        if split_idx == idx:
+            completed += max(0, _safe_int(split.get("qty_completed")))
+    return max(0, min(completed, ordered))
+
+
 def print_qty_total(order: dict) -> int:
     """Qty yang boleh di-assign Operator / disiapkan Helper (scope Cetak saja)."""
     lis = order.get("line_items") or []

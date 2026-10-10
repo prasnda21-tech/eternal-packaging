@@ -106,6 +106,11 @@ export default function PhysicalStockSettings({ notify, canEdit }) {
           <p className="muted small" style={{ marginTop: 2 }}>
             Menonaktifkan stok fisik berlaku segera untuk aksi berikutnya pada order lama maupun baru (termasuk Cetak), tanpa menghitung ulang atau mengubah mutasi yang sudah tercatat. Saat stok fisik aktif kembali, order tetap memakai snapshot-nya untuk menentukan apakah pengakuan stok berlaku.
           </p>
+          <p className="muted small" style={{ marginTop: 8 }} data-testid="physical-stock-process-link-hint">
+            Default <strong>Cetak / Tidak cetak</strong> per barang diatur di{" "}
+            <a href="/persediaan/master-barang-jasa" data-testid="physical-stock-master-link">Barang/Jasa</a>
+            {" "}(bukan di trigger stok ini). Sync Accurate tidak menimpa pilihan itu.
+          </p>
         </div>
       </div>
 
