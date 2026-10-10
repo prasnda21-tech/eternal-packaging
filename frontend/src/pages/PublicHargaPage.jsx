@@ -20,7 +20,16 @@ const CALC_DEBOUNCE_MS = 280;
 const formatNumber = (value) =>
   Number(value || 0).toLocaleString("id-ID", { maximumFractionDigits: 0 });
 
-const formatMoney = (value) => `Rp ${formatNumber(value)}`;
+/** Public rupiah display: keep integers compact; show 2 decimals when fractional (id-ID). */
+const formatMoney = (value) => {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return "Rp 0";
+  const fractional = Math.abs(num - Math.trunc(num)) > 1e-9;
+  return `Rp ${num.toLocaleString("id-ID", {
+    minimumFractionDigits: fractional ? 2 : 0,
+    maximumFractionDigits: 2,
+  })}`;
+};
 
 const digitsOnlyPhone = (value) => String(value || "").replace(/\D/g, "");
 
@@ -192,7 +201,7 @@ function CatalogPage() {
               </a>
             ) : null}
           </div>
-          <label className="ph-hero-search">
+          <label className="ph-hero-search" data-testid="harga-hero-search-wrap">
             <Search size={18} aria-hidden="true" />
             <span className="ph-sr-only">Cari produk katalog</span>
             <input
@@ -393,7 +402,10 @@ function DetailPage({ groupPublicId, slug }) {
   const [quote, setQuote] = useState(null);
   const [quoteError, setQuoteError] = useState("");
   const [quoteLoading, setQuoteLoading] = useState(false);
+  const [stickyClear, setStickyClear] = useState(true);
   const calcSeq = useRef(0);
+  const stickyRef = useRef(null);
+  const qtyBlockRef = useRef(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -563,6 +575,64 @@ function DetailPage({ groupPublicId, slug }) {
     `Link: ${publicUrl}`,
   ].filter(Boolean).join(" ");
   const waUrl = phone ? buildWhatsAppUrl(phone, waMessage) : "";
+
+  useEffect(() => {
+    if (!waUrl || !selectedVariant) {
+      setStickyClear(true);
+      return undefined;
+    }
+    const sticky = stickyRef.current;
+    const qty = qtyBlockRef.current;
+    if (!sticky || !qty) return undefined;
+
+    const measure = () => {
+      if (typeof window === "undefined") return;
+      const isDesktop = typeof window.matchMedia === "function"
+        ? window.matchMedia("(min-width: 900px)").matches
+        : window.innerWidth >= 900;
+      if (isDesktop) {
+        setStickyClear(true);
+        return;
+      }
+      const stickyBox = sticky.getBoundingClientRect();
+      // Prefer measured height; when deferred (translated away) height remains usable.
+      const stickyHeight = Math.max(stickyBox.height, sticky.offsetHeight || 0, 64);
+      const bandTop = window.innerHeight - stickyHeight;
+      const protect = [
+        qty,
+        document.querySelector('[data-testid="harga-structured-selectors"]'),
+        document.querySelector('[data-testid="harga-flat-variants"]'),
+      ].filter(Boolean);
+      const covers = protect.some((el) => {
+        const box = el.getBoundingClientRect();
+        if (box.height < 4) return false;
+        return box.bottom > bandTop + 2 && box.top < window.innerHeight - 2;
+      });
+      setStickyClear(!covers);
+    };
+
+    measure();
+    window.addEventListener("scroll", measure, { passive: true });
+    window.addEventListener("resize", measure);
+    const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(measure) : null;
+    ro?.observe(qty);
+    ro?.observe(document.documentElement);
+    return () => {
+      window.removeEventListener("scroll", measure);
+      window.removeEventListener("resize", measure);
+      ro?.disconnect();
+    };
+  }, [
+    waUrl,
+    selectedVariant,
+    quantityInput,
+    sizeFilter,
+    colorFilter,
+    finishingFilter,
+    variantQuery,
+    quote,
+    quoteLoading,
+  ]);
 
   const selectFlatVariant = (publicVariantId) => {
     const variant = variants.find((item) => item.public_variant_id === publicVariantId);
@@ -794,7 +864,7 @@ function DetailPage({ groupPublicId, slug }) {
               )}
 
               {selectedVariant && (
-                <div className="ph-qty-block" data-testid="harga-qty-block">
+                <div className="ph-qty-block" data-testid="harga-qty-block" ref={qtyBlockRef}>
                   <label htmlFor="harga-qty-input">Jumlah Pembelian</label>
                   <div className="ph-qty-controls">
                     <button
@@ -906,7 +976,13 @@ function DetailPage({ groupPublicId, slug }) {
       </div>
 
       {waUrl && selectedVariant ? (
-        <div className="ph-sticky-bar" data-testid="harga-sticky-wa">
+        <div
+          ref={stickyRef}
+          className={`ph-sticky-bar ${stickyClear ? "is-clear" : "is-deferred"}`}
+          data-testid="harga-sticky-wa"
+          data-sticky-clear={stickyClear ? "true" : "false"}
+          aria-hidden={!stickyClear}
+        >
           <div className="ph-sticky-price">
             <strong>
               {quote?.unit_price != null
@@ -930,6 +1006,7 @@ function DetailPage({ groupPublicId, slug }) {
             href={waUrl}
             target="_blank"
             rel="noreferrer"
+            tabIndex={stickyClear ? 0 : -1}
             data-testid="harga-sticky-whatsapp"
           >
             <MessageCircle size={16} aria-hidden="true" />
