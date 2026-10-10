@@ -49,6 +49,40 @@ export function canBusinessCancelReceipt(hasPerm) {
   return typeof hasPerm === "function" && hasPerm("sales.receipt.cancel") === true;
 }
 
+/** Opt-in receipt edit only — never treat admin/create/delete as implicit grant. */
+export function canBusinessEditReceipt(hasPerm) {
+  return typeof hasPerm === "function" && hasPerm("sales.receipt.edit") === true;
+}
+
+/**
+ * Interpret receipt PUT response. Posted revision requires financial_complete;
+ * unposted mode treats success when receipt is returned without lifecycle failure.
+ */
+export function interpretReceiptUpdateResponse(res = {}, { httpErrorBody = null } = {}) {
+  const body = httpErrorBody && typeof httpErrorBody === "object" ? httpErrorBody : res;
+  const mode = String(body?.mode || "").toLowerCase();
+  const hasFinancial = Object.prototype.hasOwnProperty.call(body || {}, "financial_complete");
+  if (mode === "posted_revision" || (hasFinancial && mode !== "unposted")) {
+    const ok = body?.financial_complete === true;
+    return {
+      mode: mode || "posted_revision",
+      ok,
+      financialComplete: ok,
+      message: ok
+        ? (body?.message || "Penerimaan berhasil dikoreksi")
+        : (safeLifecycleReason(body?.message || body) || "Koreksi penerimaan belum selesai secara keuangan"),
+      document: body?.receipt || body,
+    };
+  }
+  return {
+    mode: mode || "unposted",
+    ok: Boolean(body?.receipt || body?.id),
+    financialComplete: body?.financial_complete !== false,
+    message: body?.message || "Penerimaan berhasil diperbarui",
+    document: body?.receipt || body,
+  };
+}
+
 export function safeLifecycleReason(source) {
   if (source == null) return "";
   if (typeof source === "string") {

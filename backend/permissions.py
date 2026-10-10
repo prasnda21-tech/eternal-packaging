@@ -37,6 +37,7 @@ PERMISSION_CATALOG = [
     ("Penjualan", "sales.invoice.cancel", "Batalkan Faktur Penjualan (bisnis)"),
     ("Penjualan", "sales.receipt.view", "Lihat Penerimaan Penjualan"),
     ("Penjualan", "sales.receipt.create", "Buat Penerimaan Penjualan"),
+    ("Penjualan", "sales.receipt.edit", "Ubah Penerimaan Penjualan"),
     ("Penjualan", "sales.receipt.cancel", "Batalkan Penerimaan Penjualan (bisnis)"),
     ("Penjualan", "sales.delivery.delete", "Hapus Pengiriman Pesanan"),
     ("Penjualan", "sales.invoice.delete", "Hapus Faktur Penjualan"),
@@ -368,6 +369,10 @@ PERMISSION_DESCRIPTIONS = {
         "Batalkan Faktur Penjualan secara bisnis (soft-cancel). Tidak diwariskan dari create/edit/delete. "
         "Tidak memberi wewenang reverse jurnal accounting secara umum."
     ),
+    "sales.receipt.edit": (
+        "Ubah Penerimaan Penjualan (koreksi field / revisi keuangan). Tidak diwariskan dari create/cancel/delete. "
+        "Tidak memberi wewenang post/reverse accounting secara umum. Opt-in eksplisit, termasuk admin."
+    ),
     "sales.receipt.cancel": (
         "Batalkan Penerimaan Penjualan secara bisnis (soft-cancel). Tidak diwariskan dari create/edit/delete. "
         "Tidak memberi wewenang reverse jurnal accounting secara umum."
@@ -382,6 +387,7 @@ ALL_PERMISSIONS = tuple(p for _mod, p, _lbl in PERMISSION_CATALOG)
 OPT_IN_ONLY_PERMISSIONS = frozenset({
     "sales.invoice.cancel",
     "sales.receipt.cancel",
+    "sales.receipt.edit",
 })
 
 DEFAULT_GRANT_PERMISSIONS = tuple(

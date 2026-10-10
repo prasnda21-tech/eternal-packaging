@@ -28,7 +28,6 @@ from services.journal_core import (
     STATUS_REVERSED,
     JournalConflictError,
     JournalValidationError,
-    find_primary_journal_for_source,
     post_balanced_journal,
     reverse_journal,
 )
@@ -197,8 +196,63 @@ def delete_claim_absent_or_stale_clause(*, now: Optional[datetime] = None) -> Di
     }
 
 
+def select_sales_receipt_primary(docs: List[dict]) -> Optional[dict]:
+    """One current sales_receipt primary. Active posted wins; never pick an arbitrary first.
+
+    Scoped to sales_receipt resolution only — does not change other modules' lookups.
+    """
+    primaries = [doc for doc in docs if doc and not doc.get("reversal_of")]
+    posted = [
+        doc for doc in primaries
+        if str(doc.get("status") or "").strip().lower() == STATUS_POSTED
+    ]
+    if len(posted) > 1:
+        return {
+            "ambiguous": True,
+            "status": "ambiguous",
+            "id": None,
+            "source_id": posted[0].get("source_id"),
+        }
+    if len(posted) == 1:
+        return posted[0]
+    reversed_docs = [
+        doc for doc in primaries
+        if str(doc.get("status") or "").strip().lower() == STATUS_REVERSED
+    ]
+    if reversed_docs and len(reversed_docs) == len(primaries):
+        reversed_docs.sort(key=lambda doc: str(doc.get("posted_at") or doc.get("created_at") or ""))
+        return reversed_docs[-1]
+    if len(primaries) == 1:
+        return primaries[0]
+    if len(primaries) > 1:
+        return {
+            "ambiguous": True,
+            "status": "ambiguous",
+            "id": None,
+            "source_id": primaries[0].get("source_id"),
+        }
+    return None
+
+
 async def find_sales_receipt_source_journal(db, receipt_id: str) -> Optional[dict]:
-    return await find_primary_journal_for_source(db, SOURCE_TYPE, str(receipt_id))
+    """Revision-aware sales_receipt primary lookup (active posted preferred)."""
+    from services.journal_core import public_journal
+
+    docs = await db.journal_entries.find(
+        {
+            "source_type": SOURCE_TYPE,
+            "source_id": str(receipt_id),
+            "reversal_of": None,
+        },
+        {"_id": 0},
+    ).to_list(20)
+    chosen = select_sales_receipt_primary(docs)
+    if not chosen or chosen.get("ambiguous"):
+        return chosen
+    lines = await db.journal_lines.find(
+        {"journal_id": chosen.get("id")}, {"_id": 0}
+    ).to_list(100)
+    return public_journal(chosen, lines)
 
 
 async def load_source_journals_by_receipt_ids(db, receipt_ids: List[str]) -> Dict[str, dict]:
@@ -211,9 +265,19 @@ async def load_source_journals_by_receipt_ids(db, receipt_ids: List[str]) -> Dic
             "source_id": {"$in": ids},
             "reversal_of": None,
         },
-        {"_id": 0, "id": 1, "source_id": 1, "status": 1},
-    ).to_list(len(ids) + 50)
-    return {str(doc.get("source_id")): doc for doc in docs}
+        {"_id": 0, "id": 1, "source_id": 1, "status": 1, "posted_at": 1, "created_at": 1, "reversal_of": 1},
+    ).to_list(max(len(ids) * 4, 20))
+    grouped: Dict[str, List[dict]] = {}
+    for doc in docs:
+        grouped.setdefault(str(doc.get("source_id") or ""), []).append(doc)
+    out: Dict[str, dict] = {}
+    for source_id, group in grouped.items():
+        if not source_id:
+            continue
+        chosen = select_sales_receipt_primary(group)
+        if chosen:
+            out[source_id] = chosen
+    return out
 
 
 def cash_bank_snapshot(master: dict, coa: Optional[dict] = None) -> Dict[str, Any]:
@@ -749,22 +813,40 @@ async def post_sales_receipt_accounting(
     *,
     cash_bank_id: Optional[str] = None,
     serialize_in_process: bool = True,
+    bypass_revision_guard: bool = False,
 ) -> Dict[str, Any]:
     """Post one active receipt. Idempotent. Finalize metadata from the actual journal."""
     async with _optional_receipt_lock(serialize_in_process):
         rec = await _load_receipt(db, receipt_id)
         if receipt_is_cancelled(rec):
             raise HTTPException(409, CANCELLED_POST_MESSAGE)
+        if not bypass_revision_guard:
+            from services.sales_receipt_edit_revision import raise_if_receipt_revision_in_progress
+
+            await raise_if_receipt_revision_in_progress(db, rec["id"])
 
         existing = await find_sales_receipt_source_journal(db, rec["id"])
         if existing:
-            await _heal_posted_receipt_from_journal(db, rec, existing, user)
-            return await _public_receipt_detail(db, rec["id"])
+            if existing.get("ambiguous"):
+                raise HTTPException(409, "Jurnal penerimaan tidak tunggal.")
+            if accounting_status_from_journal(existing) == ACCOUNTING_POSTED:
+                await _heal_posted_receipt_from_journal(db, rec, existing, user)
+                return await _public_receipt_detail(db, rec["id"])
+            # Reversed historical primary is not an active post — fall through to revision repost.
 
         _require_receipt_amount(rec)
         await _require_invoice_posted(db, rec.get("invoice_id"))
         await resolve_invoice_receivable_account(db, rec.get("invoice_id"))
-        cash_snap = await resolve_cash_bank_for_posting(db, rec, cash_bank_id)
+        # During edit revision, cash_bank may change; prefer payload when provided.
+        if cash_bank_id and str(rec.get("cash_bank_id") or "").strip() and str(cash_bank_id) != str(rec.get("cash_bank_id")):
+            from services.sales_receipt_edit_revision import revision_fence_is_active
+
+            if bypass_revision_guard and revision_fence_is_active(rec):
+                cash_snap = await resolve_cash_bank_for_create(db, cash_bank_id)
+            else:
+                cash_snap = await resolve_cash_bank_for_posting(db, rec, cash_bank_id)
+        else:
+            cash_snap = await resolve_cash_bank_for_posting(db, rec, cash_bank_id)
 
         claimed = await acquire_posting_claim(db, rec["id"])
         if claimed is None:
@@ -772,7 +854,7 @@ async def post_sales_receipt_accounting(
             if current and receipt_is_cancelled(current):
                 raise HTTPException(409, CANCELLED_POST_MESSAGE)
             existing = await find_sales_receipt_source_journal(db, rec["id"])
-            if existing:
+            if existing and accounting_status_from_journal(existing) == ACCOUNTING_POSTED:
                 await _heal_posted_receipt_from_journal(db, rec, existing, user)
                 return await _public_receipt_detail(db, rec["id"])
             if current and delete_claim_is_active(current):
@@ -780,7 +862,7 @@ async def post_sales_receipt_accounting(
             raise HTTPException(409, "Posting accounting gagal karena perubahan bersamaan.")
 
         existing = await find_sales_receipt_source_journal(db, rec["id"])
-        if existing:
+        if existing and accounting_status_from_journal(existing) == ACCOUNTING_POSTED:
             await _heal_posted_receipt_from_journal(db, rec, existing, user)
             return await _public_receipt_detail(db, rec["id"])
 
@@ -797,12 +879,14 @@ async def post_sales_receipt_accounting(
                 raise HTTPException(409, "Revisi faktur belum selesai.")
             try:
                 await assert_invoice_allows_receipt_journal(db, invoice_id)
-                journal = await _write_source_journal(db, claimed, user, cash_snap)
+                # Use freshest receipt fields (edit revision may have just patched cash/amount).
+                live = await db.sales_receipts.find_one({"id": rec["id"]}, {"_id": 0}) or claimed
+                journal = await _write_source_journal(db, live, user, cash_snap)
             finally:
                 await clear_receipt_create_claim(db, invoice_id, token=guard_token)
         except Exception:
             still = await find_sales_receipt_source_journal(db, rec["id"])
-            if still:
+            if still and accounting_status_from_journal(still) == ACCOUNTING_POSTED:
                 await _heal_posted_receipt_from_journal(db, rec, still, user)
                 return await _public_receipt_detail(db, rec["id"])
             await clear_posting_claim(db, rec["id"])
@@ -818,6 +902,9 @@ async def reverse_sales_receipt_accounting(
     """Reverse a posted receipt journal and exclude it from operational outstanding."""
     async with _optional_receipt_lock(serialize_in_process):
         rec = await _load_receipt(db, receipt_id)
+        from services.sales_receipt_edit_revision import raise_if_receipt_revision_in_progress
+
+        await raise_if_receipt_revision_in_progress(db, rec["id"])
         existing = await find_sales_receipt_source_journal(db, rec["id"])
         status = accounting_status_from_journal(existing)
 

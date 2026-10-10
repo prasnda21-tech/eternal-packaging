@@ -29,11 +29,13 @@ import {
 } from "../lib/salesFiveTabs";
 import {
   canBusinessCancelReceipt,
+  canBusinessEditReceipt,
   canRecoverAutoAccounting,
   clearIdempotencyIntent,
   ensureIdempotencyIntent,
   interpretAutoLifecycleResponse,
   interpretBusinessCancelResponse,
+  interpretReceiptUpdateResponse,
   lifecycleChipClass,
   salesDocumentLifecyclePresentation,
 } from "../lib/salesLifecycleUi";
@@ -75,6 +77,7 @@ export default function PenerimaanPenjualan() {
     hasPerm("po.edit") ||
     user?.role === "admin";
   const canCancelBusiness = canBusinessCancelReceipt(hasPerm);
+  const canEditReceipt = canBusinessEditReceipt(hasPerm);
   const canPostAccounting = hasPerm("sales.receipt.accounting.post") || user?.role === "admin";
   const canReverseAccounting = hasPerm("sales.receipt.accounting.reverse") || user?.role === "admin";
 
@@ -132,9 +135,108 @@ export default function PenerimaanPenjualan() {
 
   // Detail Modal State
   const [detailReceipt, setDetailReceipt] = useState(null);
+  const [detailEditMode, setDetailEditMode] = useState(false);
+  const [editReceiptDate, setEditReceiptDate] = useState("");
+  const [editAmount, setEditAmount] = useState("");
+  const [editAllocated, setEditAllocated] = useState("");
+  const [editCashBankId, setEditCashBankId] = useState("");
+  const [editNotes, setEditNotes] = useState("");
+  const [editBusy, setEditBusy] = useState(false);
+  const [editErr, setEditErr] = useState("");
+  const [editSuccess, setEditSuccess] = useState("");
+  const editIdempotencyRef = useRef({ signature: "", key: "" });
   const [accountingTarget, setAccountingTarget] = useState(null);
   const [accountingBusy, setAccountingBusy] = useState(false);
   const [accountingErr, setAccountingErr] = useState("");
+
+  const beginReceiptEdit = () => {
+    if (!detailReceipt || !canEditReceipt) return;
+    const cap = detailReceipt.edit_capability || {};
+    if (!cap.editable) {
+      setEditErr(cap.reason || "Penerimaan tidak dapat diubah.");
+      return;
+    }
+    setEditReceiptDate(String(detailReceipt.receipt_date || getTodayString()).slice(0, 10));
+    setEditAmount(String(detailReceipt.amount ?? ""));
+    setEditAllocated(String(detailReceipt.allocated_amount ?? detailReceipt.amount ?? ""));
+    setEditCashBankId(String(detailReceipt.cash_bank_id || ""));
+    setEditNotes(String(detailReceipt.notes || ""));
+    setEditErr("");
+    setEditSuccess("");
+    setDetailEditMode(true);
+    if (!cashBanks.length) {
+      api.salesReceiptCashBankOptions().then((res) => {
+        setCashBanks(res.items || res || []);
+      }).catch(() => {});
+    }
+  };
+
+  const handleSaveReceiptEdit = async (e) => {
+    if (e) e.preventDefault();
+    if (editBusy) return;
+    if (!detailReceipt?.id || !canEditReceipt) return;
+    const cap = detailReceipt.edit_capability || {};
+    if (!cap.editable) {
+      setEditErr(cap.reason || "Penerimaan tidak dapat diubah.");
+      return;
+    }
+    const amountNum = Number(editAmount);
+    const allocatedNum = Number(editAllocated);
+    if (!editReceiptDate) {
+      setEditErr("Tanggal penerimaan wajib diisi.");
+      return;
+    }
+    if (!(amountNum > 0)) {
+      setEditErr("Jumlah penerimaan harus lebih besar dari 0.");
+      return;
+    }
+    if (!editCashBankId) {
+      setEditErr("Kas/Bank wajib dipilih.");
+      return;
+    }
+    setEditBusy(true);
+    setEditErr("");
+    setEditSuccess("");
+    const signature = [
+      detailReceipt.id,
+      editReceiptDate,
+      amountNum,
+      allocatedNum,
+      editCashBankId,
+      editNotes.trim(),
+    ].join("|");
+    const idempotencyKey = ensureIdempotencyIntent(editIdempotencyRef, signature, { prefix: "rcpt-edit" });
+    const payload = {
+      receipt_date: editReceiptDate,
+      amount: amountNum,
+      allocated_amount: allocatedNum,
+      cash_bank_id: editCashBankId,
+      notes: editNotes.trim(),
+      idempotency_key: idempotencyKey,
+    };
+    try {
+      const res = await api.updateSalesReceipt(detailReceipt.id, payload);
+      const interpreted = interpretReceiptUpdateResponse(res);
+      if (!interpreted.ok) {
+        setEditErr(interpreted.message);
+        if (interpreted.document) setDetailReceipt(interpreted.document);
+        return;
+      }
+      clearIdempotencyIntent(editIdempotencyRef);
+      setDetailReceipt(interpreted.document || res.receipt);
+      setDetailEditMode(false);
+      setEditSuccess(interpreted.message);
+      loadReceipts();
+    } catch (err) {
+      const det = err.response?.data?.detail;
+      const body = typeof det === "object" && det ? det : { message: det || "Gagal menyimpan koreksi penerimaan." };
+      const interpreted = interpretReceiptUpdateResponse({}, { httpErrorBody: body });
+      setEditErr(interpreted.message || body.message || "Gagal menyimpan koreksi penerimaan.");
+      if (body.receipt) setDetailReceipt(body.receipt);
+    } finally {
+      setEditBusy(false);
+    }
+  };
 
   const resetReceiptListPosition = useCallback(() => {
     setPage(1);
@@ -464,6 +566,10 @@ export default function PenerimaanPenjualan() {
   const openReceiptDetail = useCallback(async (receipt) => {
     if (!receipt?.id) return;
     setAccountingErr("");
+    setDetailEditMode(false);
+    setEditErr("");
+    setEditSuccess("");
+    clearIdempotencyIntent(editIdempotencyRef);
     try {
       const fresh = await api.getSalesReceipt(receipt.id);
       setDetailReceipt(fresh.receipt || fresh);
@@ -1716,34 +1822,79 @@ export default function PenerimaanPenjualan() {
           data-testid="receipt-detail-modal"
           style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 80 }}
         >
-          <div style={{ background: "#fff", borderRadius: 12, padding: 24, width: "100%", maxWidth: 480 }}>
-            <h3 style={{ margin: "0 0 8px" }}>Detail Penerimaan</h3>
+          <div style={{ background: "#fff", borderRadius: 12, padding: 24, width: "100%", maxWidth: 520 }}>
+            <h3 style={{ margin: "0 0 8px" }}>{detailEditMode ? "Edit Penerimaan" : "Detail Penerimaan"}</h3>
             <p data-testid="receipt-detail-number" style={{ margin: "0 0 16px", fontFamily: "monospace", fontWeight: 700, color: "#059669" }}>
               {detailReceipt.receipt_number}
             </p>
-            <dl style={{ margin: "0 0 16px", display: "grid", gridTemplateColumns: "1fr auto", gap: "8px 16px", fontSize: "0.9rem" }}>
-              <dt>Accounting</dt>
-              <dd data-testid="receipt-detail-accounting-status" style={{ margin: 0, fontWeight: 700 }}>{accountingLabel(detailReceipt.accounting_status)}</dd>
-              <dt>Kas / Bank</dt>
-              <dd data-testid="receipt-detail-cash-bank" style={{ margin: 0 }}>{detailReceipt.cash_bank_name || "-"}</dd>
-              <dt>Jumlah</dt>
-              <dd style={{ margin: 0, fontWeight: 700 }}>{formatRupiah(detailReceipt.amount)}</dd>
-              <dt>Faktur</dt>
-              <dd style={{ margin: 0, fontFamily: "monospace" }}>{detailReceipt.invoice_number || "-"}</dd>
-              <dt>Dialokasikan</dt>
-              <dd style={{ margin: 0 }}>{formatRupiah(detailReceipt.allocated_amount ?? detailReceipt.amount)}</dd>
-              {Number(detailReceipt.customer_credit_amount) > 0 && (
-                <>
-                  <dt>Saldo pelanggan</dt>
-                  <dd data-testid="receipt-detail-credit" style={{ margin: 0 }}>
-                    {detailReceipt.customer_credit?.state === "available"
-                      ? `Tersedia ${formatRupiah(detailReceipt.customer_credit.available)}`
-                      : (detailReceipt.customer_credit?.reason || "Tidak tersedia")}
-                  </dd>
-                </>
-              )}
-            </dl>
-            {Array.isArray(detailReceipt.customer_credit_history) && detailReceipt.customer_credit_history.length > 0 && (
+            {!detailEditMode ? (
+              <dl style={{ margin: "0 0 16px", display: "grid", gridTemplateColumns: "1fr auto", gap: "8px 16px", fontSize: "0.9rem" }}>
+                <dt>Accounting</dt>
+                <dd data-testid="receipt-detail-accounting-status" style={{ margin: 0, fontWeight: 700 }}>{accountingLabel(detailReceipt.accounting_status)}</dd>
+                <dt>Tanggal</dt>
+                <dd data-testid="receipt-detail-date" style={{ margin: 0 }}>{formatDisplayDate(detailReceipt.receipt_date) || detailReceipt.receipt_date || "-"}</dd>
+                <dt>Kas / Bank</dt>
+                <dd data-testid="receipt-detail-cash-bank" style={{ margin: 0 }}>{detailReceipt.cash_bank_name || "-"}</dd>
+                <dt>Jumlah</dt>
+                <dd style={{ margin: 0, fontWeight: 700 }}>{formatRupiah(detailReceipt.amount)}</dd>
+                <dt>Faktur</dt>
+                <dd style={{ margin: 0, fontFamily: "monospace" }}>{detailReceipt.invoice_number || "-"}</dd>
+                <dt>Dialokasikan</dt>
+                <dd style={{ margin: 0 }}>{formatRupiah(detailReceipt.allocated_amount ?? detailReceipt.amount)}</dd>
+                {Number(detailReceipt.customer_credit_amount) > 0 && (
+                  <>
+                    <dt>Saldo pelanggan</dt>
+                    <dd data-testid="receipt-detail-credit" style={{ margin: 0 }}>
+                      {detailReceipt.customer_credit?.state === "available"
+                        ? `Tersedia ${formatRupiah(detailReceipt.customer_credit.available)}`
+                        : (detailReceipt.customer_credit?.reason || "Tidak tersedia")}
+                    </dd>
+                  </>
+                )}
+              </dl>
+            ) : (
+              <form data-testid="receipt-edit-form" onSubmit={handleSaveReceiptEdit} style={{ marginBottom: 16, display: "grid", gap: 10 }}>
+                <label style={{ fontSize: 13 }}>
+                  Tanggal
+                  <input data-testid="receipt-edit-date" type="date" value={editReceiptDate} onChange={(e) => setEditReceiptDate(e.target.value)} required style={{ display: "block", width: "100%", marginTop: 4, padding: 8, borderRadius: 8, border: "1px solid #cbd5e1" }} />
+                </label>
+                <label style={{ fontSize: 13 }}>
+                  Jumlah
+                  <input data-testid="receipt-edit-amount" type="number" min="0" step="0.01" value={editAmount} onChange={(e) => setEditAmount(e.target.value)} required style={{ display: "block", width: "100%", marginTop: 4, padding: 8, borderRadius: 8, border: "1px solid #cbd5e1" }} />
+                </label>
+                <label style={{ fontSize: 13 }}>
+                  Dialokasikan
+                  <input data-testid="receipt-edit-allocated" type="number" min="0" step="0.01" value={editAllocated} onChange={(e) => setEditAllocated(e.target.value)} required style={{ display: "block", width: "100%", marginTop: 4, padding: 8, borderRadius: 8, border: "1px solid #cbd5e1" }} />
+                </label>
+                <label style={{ fontSize: 13 }}>
+                  Kas / Bank
+                  <select data-testid="receipt-edit-cash-bank" value={editCashBankId} onChange={(e) => setEditCashBankId(e.target.value)} required style={{ display: "block", width: "100%", marginTop: 4, padding: 8, borderRadius: 8, border: "1px solid #cbd5e1" }}>
+                    <option value="">Pilih Kas/Bank</option>
+                    {cashBanks.map((b) => (
+                      <option key={b.id} value={b.id}>{b.name}</option>
+                    ))}
+                  </select>
+                </label>
+                <label style={{ fontSize: 13 }}>
+                  Catatan
+                  <textarea data-testid="receipt-edit-notes" value={editNotes} onChange={(e) => setEditNotes(e.target.value)} rows={2} style={{ display: "block", width: "100%", marginTop: 4, padding: 8, borderRadius: 8, border: "1px solid #cbd5e1" }} />
+                </label>
+                <p style={{ margin: 0, fontSize: 12, color: "#64748b" }}>
+                  Faktur {detailReceipt.invoice_number} terkunci. Identitas dokumen tidak diubah.
+                </p>
+              </form>
+            )}
+            {editErr && (
+              <div data-testid="receipt-edit-error" style={{ background: "#fef2f2", color: "#b91c1c", padding: "8px 12px", borderRadius: 8, marginBottom: 12, fontSize: "0.85rem" }}>
+                {editErr}
+              </div>
+            )}
+            {editSuccess && (
+              <div data-testid="receipt-edit-success" style={{ background: "#ecfdf5", color: "#047857", padding: "8px 12px", borderRadius: 8, marginBottom: 12, fontSize: "0.85rem" }}>
+                {editSuccess}
+              </div>
+            )}
+            {!detailEditMode && Array.isArray(detailReceipt.customer_credit_history) && detailReceipt.customer_credit_history.length > 0 && (
               <div data-testid="receipt-credit-history" style={{ marginBottom: 12, fontSize: 12 }}>
                 <strong>Riwayat saldo</strong>
                 <ul style={{ margin: "6px 0 0", paddingLeft: 16 }}>
@@ -1761,7 +1912,7 @@ export default function PenerimaanPenjualan() {
                 {creditMsg && <p>{creditMsg}</p>}
               </div>
             )}
-            {detailReceipt.has_payment_proof && (
+            {!detailEditMode && detailReceipt.has_payment_proof && (
               <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
                 <button type="button" data-testid="btn-lihat-bukti" onClick={() => setProofViewerReceipt(detailReceipt)} style={{ border: "none", background: "#0f766e", color: "#fff", borderRadius: 6, padding: "6px 10px" }}>
                   Lihat Bukti
@@ -1786,63 +1937,85 @@ export default function PenerimaanPenjualan() {
                 </button>
               </div>
             )}
-            {canPostAccounting && detailReceipt.can_post_accounting && (
-              <button
-                type="button"
-                data-testid="btn-detail-post-accounting"
-                onClick={() => {
-                  setAccountingErr("");
-                  if (!detailReceipt.cash_bank_id) loadCashBanks();
-                  setAccountingTarget({ action: "post", receipt: detailReceipt, cash_bank_id: detailReceipt.cash_bank_id || "" });
-                }}
-                style={{ marginRight: 8, padding: "8px 14px", borderRadius: 8, border: "none", background: "#047857", color: "#fff", fontWeight: 600 }}
-              >
-                Post Accounting
-              </button>
-            )}
-            {canReverseAccounting && detailReceipt.can_reverse_accounting && (
-              <button
-                type="button"
-                data-testid="btn-detail-reverse-accounting"
-                onClick={() => {
-                  setAccountingErr("");
-                  setAccountingTarget({ action: "reverse", receipt: detailReceipt });
-                }}
-                style={{ marginRight: 8, padding: "8px 14px", borderRadius: 8, border: "1px solid #fecaca", background: "#fff", color: "#b91c1c", fontWeight: 600 }}
-              >
-                Reverse
-              </button>
-            )}
-            {canRecoverAutoAccounting(detailReceipt, { hasPerm, kind: "receipt" }) && (
-              <button
-                type="button"
-                data-testid="btn-recover-auto-receipt"
-                onClick={async () => {
-                  setAccountingErr("");
-                  try {
-                    const res = await api.recoverAutoSalesReceiptAccounting(detailReceipt.id);
-                    const interpreted = interpretAutoLifecycleResponse(res);
-                    if (interpreted.document) setDetailReceipt(interpreted.document);
-                    if (!interpreted.ok) setAccountingErr(interpreted.message);
-                    else {
-                      setSuccessMsg(interpreted.message || "Pemulihan akuntansi berhasil");
-                      loadReceipts();
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+              {!detailEditMode && canEditReceipt && detailReceipt.edit_capability?.editable && (
+                <button type="button" data-testid="btn-edit-receipt" onClick={beginReceiptEdit} style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: "#0f766e", color: "#fff", fontWeight: 600 }}>
+                  Edit
+                </button>
+              )}
+              {detailEditMode && (
+                <>
+                  <button type="button" data-testid="btn-save-receipt-edit" disabled={editBusy} onClick={handleSaveReceiptEdit} style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: "#047857", color: "#fff", fontWeight: 600, opacity: editBusy ? 0.6 : 1 }}>
+                    {editBusy ? "Menyimpan..." : "Simpan"}
+                  </button>
+                  <button type="button" data-testid="btn-cancel-receipt-edit" disabled={editBusy} onClick={() => { setDetailEditMode(false); setEditErr(""); }} style={{ padding: "8px 14px", borderRadius: 8, border: "1px solid #cbd5e1", background: "#fff" }}>
+                    Batal Edit
+                  </button>
+                </>
+              )}
+              {!detailEditMode && canPostAccounting && detailReceipt.can_post_accounting && (
+                <button
+                  type="button"
+                  data-testid="btn-detail-post-accounting"
+                  onClick={() => {
+                    setAccountingErr("");
+                    if (!detailReceipt.cash_bank_id) loadCashBanks();
+                    setAccountingTarget({ action: "post", receipt: detailReceipt, cash_bank_id: detailReceipt.cash_bank_id || "" });
+                  }}
+                  style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: "#047857", color: "#fff", fontWeight: 600 }}
+                >
+                  Post Accounting
+                </button>
+              )}
+              {!detailEditMode && canReverseAccounting && detailReceipt.can_reverse_accounting && (
+                <button
+                  type="button"
+                  data-testid="btn-detail-reverse-accounting"
+                  onClick={() => {
+                    setAccountingErr("");
+                    setAccountingTarget({ action: "reverse", receipt: detailReceipt });
+                  }}
+                  style={{ padding: "8px 14px", borderRadius: 8, border: "1px solid #fecaca", background: "#fff", color: "#b91c1c", fontWeight: 600 }}
+                >
+                  Reverse
+                </button>
+              )}
+              {!detailEditMode && canRecoverAutoAccounting(detailReceipt, { hasPerm, kind: "receipt" }) && (
+                <button
+                  type="button"
+                  data-testid="btn-recover-auto-receipt"
+                  onClick={async () => {
+                    setAccountingErr("");
+                    try {
+                      const res = await api.recoverAutoSalesReceiptAccounting(detailReceipt.id);
+                      const interpreted = interpretAutoLifecycleResponse(res);
+                      if (interpreted.document) setDetailReceipt(interpreted.document);
+                      if (!interpreted.ok) setAccountingErr(interpreted.message);
+                      else {
+                        setSuccessMsg(interpreted.message || "Pemulihan akuntansi berhasil");
+                        loadReceipts();
+                      }
+                    } catch (err) {
+                      const det = err.response?.data?.detail;
+                      const interpreted = interpretAutoLifecycleResponse({}, { httpErrorBody: det });
+                      if (interpreted.document) setDetailReceipt(interpreted.document);
+                      setAccountingErr(interpreted.message || (typeof det === "object" ? det.message : det) || "Pemulihan gagal");
                     }
-                  } catch (err) {
-                    const det = err.response?.data?.detail;
-                    const interpreted = interpretAutoLifecycleResponse({}, { httpErrorBody: det });
-                    if (interpreted.document) setDetailReceipt(interpreted.document);
-                    setAccountingErr(interpreted.message || (typeof det === "object" ? det.message : det) || "Pemulihan gagal");
-                  }
-                }}
-                style={{ marginRight: 8, padding: "8px 14px", borderRadius: 8, border: "none", background: "#b45309", color: "#fff", fontWeight: 600 }}
+                  }}
+                  style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: "#b45309", color: "#fff", fontWeight: 600 }}
+                >
+                  Pulihkan Posting
+                </button>
+              )}
+              <button
+                type="button"
+                data-testid="btn-close-receipt-detail"
+                onClick={() => { setDetailReceipt(null); setDetailEditMode(false); setEditErr(""); setEditSuccess(""); }}
+                style={{ padding: "8px 14px", borderRadius: 8, border: "1px solid #cbd5e1", background: "#fff" }}
               >
-                Pulihkan Posting
+                Tutup
               </button>
-            )}
-            <button type="button" onClick={() => setDetailReceipt(null)} style={{ padding: "8px 14px", borderRadius: 8, border: "1px solid #cbd5e1", background: "#fff" }}>
-              Tutup
-            </button>
+            </div>
           </div>
         </div>
       )}

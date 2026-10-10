@@ -411,8 +411,11 @@ async def get_sales_receipt_detail(db, receipt_id: str) -> Dict[str, Any]:
         raise HTTPException(404, f"Penerimaan Penjualan '{receipt_id}' tidak ditemukan.")
     attached = await attach_receipt_accounting_fields(db, [_public_receipt(r)])
     from services.sales_customer_credit import list_applications_for_receipt
+    from services.sales_receipt_edit_revision import receipt_edit_capability
 
     attached[0]["customer_credit_history"] = await list_applications_for_receipt(db, attached[0]["id"])
+    # Safe Edit capability — no secrets/allowlist dump; permission checked separately.
+    attached[0]["edit_capability"] = await receipt_edit_capability(db, attached[0])
     return attached[0]
 
 

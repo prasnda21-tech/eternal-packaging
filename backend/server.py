@@ -9703,6 +9703,10 @@ from services.sales_receipt_auto_lifecycle import (
     is_auto_sales_receipt_lifecycle_enabled as _is_auto_sales_receipt_lifecycle_enabled,
     recover_auto_sales_receipt_accounting as _recover_auto_sales_receipt_accounting,
 )
+from services.sales_receipt_edit_revision import (
+    PERM_EDIT as _SALES_RECEIPT_EDIT_PERM,
+    update_sales_receipt as _update_sales_receipt,
+)
 from services.sales_receipts import (
     list_sales_receipts as _list_sales_receipts,
     query_sales_receipts as _query_sales_receipts,
@@ -9894,6 +9898,15 @@ class SalesReceiptCreatePayload(BaseModel):
     cash_bank_id: Optional[str] = None
     idempotency_key: Optional[str] = None
     payment_proof: Optional[SalesReceiptPaymentProofPayload] = None
+
+
+class SalesReceiptUpdatePayload(BaseModel):
+    receipt_date: Optional[str] = None
+    amount: Optional[Union[int, float, str]] = None
+    allocated_amount: Optional[Union[int, float, str]] = None
+    notes: Optional[str] = None
+    cash_bank_id: Optional[str] = None
+    idempotency_key: Optional[str] = None
 
 
 class SalesCustomerCreditApplyPayload(BaseModel):
@@ -11978,6 +11991,28 @@ async def create_sales_receipt_endpoint(payload: SalesReceiptCreatePayload, user
         )
     receipt = await _create_sales_receipt(db, data, user)
     return {"receipt": receipt, "message": "Penerimaan Penjualan berhasil dibuat"}
+
+
+
+@api_router.put("/sales-receipts/{id}")
+async def update_sales_receipt_endpoint(id: str, payload: SalesReceiptUpdatePayload, user=Depends(current_user)):
+    """Update unposted fields or revise posted receipt finances (flag-gated).
+
+    Requires opt-in sales.receipt.edit. Posted revision fails closed when
+    sales_receipt_edit_revision_enabled / journal allowlist / indexes are not ready.
+    """
+    await _require_opt_in_perm(user, _SALES_RECEIPT_EDIT_PERM)
+    data = payload.model_dump(exclude_unset=True)
+    result = await _update_sales_receipt(db, id, data, user)
+    body = {
+        "receipt": result["receipt"],
+        "message": result.get("message") or "Penerimaan Penjualan berhasil diperbarui",
+        "financial_complete": bool(result.get("financial_complete")),
+        "mode": result.get("mode"),
+    }
+    if result.get("financial_complete"):
+        return body
+    raise HTTPException(409, body)
 
 
 @api_router.post("/sales-receipts/{id}/recover-auto-accounting")

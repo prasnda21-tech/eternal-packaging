@@ -148,6 +148,28 @@ jobs:
             mongosh --quiet mongodb://127.0.0.1:27017 --eval 'db.runCommand({ ping: 1 })' || true
             exit "${status}"
           fi
+      # Package C receipt edit-revision suite pins DB_NAME at import; run serial.
+      - name: Run sales receipt edit revision tests
+        working-directory: backend
+        timeout-minutes: 5
+        env:
+          MONGO_URL: mongodb://127.0.0.1:27017
+          DB_NAME: eternal_packaging_ci_sales_receipt_edit_revision
+          JWT_SECRET: ci-only-secret
+        run: |
+          set -euo pipefail
+          echo "Starting isolated receipt edit-revision suite (serial, dedicated DB_NAME)"
+          if ! timeout --signal=TERM --kill-after=15s 180s \
+            python -m pytest -vv -n 0 --durations=20 \
+            tests/test_sales_receipt_edit_revision.py; then
+            status=$?
+            echo "::error::sales receipt edit revision tests exited with status ${status}"
+            echo "--- process snapshot ---"
+            ps -eo pid,ppid,stat,etime,cmd --sort=etime | head -80 || true
+            echo "--- mongo ping ---"
+            mongosh --quiet mongodb://127.0.0.1:27017 --eval 'db.runCommand({ ping: 1 })' || true
+            exit "${status}"
+          fi
       # Phase 2 Package A five-tab list suite pins DB_NAME at import; run serial.
       - name: Run sales list five-tab tests
         working-directory: backend
