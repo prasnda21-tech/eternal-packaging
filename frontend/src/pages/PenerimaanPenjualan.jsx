@@ -1754,15 +1754,7 @@ export default function PenerimaanPenjualan() {
               <div
                 className="sd-modal-footer"
                 data-testid="receipt-modal-footer"
-                style={{
-                  display: "flex",
-                  justifyContent: "flex-end",
-                  gap: 10,
-                  padding: "12px 20px 16px",
-                  borderTop: "1px solid #f1f5f9",
-                  backgroundColor: "#fff",
-                  flex: "0 0 auto",
-                }}
+                style={{ flex: "0 0 auto" }}
               >
                 <button
                   type="button"

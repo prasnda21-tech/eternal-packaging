@@ -2138,6 +2138,7 @@ export default function PesananPenjualan() {
                         return (
                           <Fragment key={line.rowKey}>
                             <tr
+                              className="so-line-main"
                               data-testid={`line-item-row-${originalIndex}`}
                             >
                               <td className="so-col-no" data-testid={`line-item-number-${originalIndex}`}>{originalIndex + 1}</td>
@@ -2196,7 +2197,7 @@ export default function PesananPenjualan() {
                                   </div>
                                 </div>
                               </td>
-                              <td>
+                              <td className="so-col-qty">
                                 <input
                                   type="number"
                                   min="1"
@@ -2207,7 +2208,7 @@ export default function PesananPenjualan() {
                                   required
                                 />
                               </td>
-                              <td>
+                              <td className="so-col-unit">
                                 <input
                                   type="text"
                                   className="so-line-input"
