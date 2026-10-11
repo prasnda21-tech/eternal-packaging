@@ -55,6 +55,16 @@ export function canBusinessEditReceipt(hasPerm) {
 }
 
 /**
+ * Phase 3/4 presentation freeze: Edit/Hapus/Batalkan Penerimaan stay OFF in UI.
+ * Does not change RBAC or backend capabilities — only whether mutation controls render.
+ */
+export const RECEIPT_MUTATION_UI_ENABLED = false;
+
+export function isReceiptMutationUiEnabled() {
+  return RECEIPT_MUTATION_UI_ENABLED === true;
+}
+
+/**
  * Read backend lifecycle_capability only — never guess feature flags on the client.
  * When auto_create_post is available, ordinary Finalisasi/Post/Reverse are not required.
  */

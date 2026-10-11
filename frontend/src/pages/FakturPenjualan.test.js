@@ -193,4 +193,15 @@ describe("Faktur Penjualan UI & Navigation Suite", () => {
     expect(proformaSrc).toMatch(/Proforma/);
     expect(proformaSrc).not.toMatch(/detail-qty-input/);
   });
+
+  test("detail shows live AR fields and PO/Penerimaan navigation links", () => {
+    expect(pageSrc).toMatch(/detail-outstanding-amount/);
+    expect(pageSrc).toMatch(/detail-paid-total/);
+    expect(pageSrc).toMatch(/detail-payment-status/);
+    expect(pageSrc).toMatch(/detail-po-link/);
+    expect(pageSrc).toMatch(/detail-receipt-link-/);
+    expect(pageSrc).toMatch(/queryInvoiceId/);
+    expect(pageSrc).toMatch(/Sudah Diterima \(AR\)/);
+    expect(pageSrc).toMatch(/Sisa Tagihan \(AR\)/);
+  });
 });

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams, useNavigate } from "react-router-dom";
+import { Link, useSearchParams, useNavigate } from "react-router-dom";
 import {
   AlertCircle,
   CheckCircle2,
@@ -15,6 +15,7 @@ import {
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDisplayDate } from "../lib/constants";
+import { formatSalesInvoiceDate } from "../lib/salesInvoiceDate";
 import { FormSection, FormField, computeStatus } from "../components/form-standard";
 import SalesInvoiceDateField from "../components/SalesInvoiceDateField";
 import { showLoadedDocumentCount } from "../lib/salesSubmenuDensity";
@@ -31,6 +32,7 @@ import {
 import {
   canBusinessCancelReceipt,
   canBusinessEditReceipt,
+  isReceiptMutationUiEnabled,
   canRecoverAutoAccounting,
   clearIdempotencyIntent,
   ensureIdempotencyIntent,
@@ -78,12 +80,14 @@ export default function PenerimaanPenjualan() {
     hasPerm("sales.receipt.create") ||
     hasPerm("po.edit") ||
     user?.role === "admin";
-  const canCancelBusiness = canBusinessCancelReceipt(hasPerm);
-  const canEditReceipt = canBusinessEditReceipt(hasPerm);
+  const receiptMutationUiEnabled = isReceiptMutationUiEnabled();
+  const canCancelBusiness = receiptMutationUiEnabled && canBusinessCancelReceipt(hasPerm);
+  const canEditReceipt = receiptMutationUiEnabled && canBusinessEditReceipt(hasPerm);
   const canPostAccounting = hasPerm("sales.receipt.accounting.post") || user?.role === "admin";
   const canReverseAccounting = hasPerm("sales.receipt.accounting.reverse") || user?.role === "admin";
 
   const queryInvoiceId = searchParams.get("invoice_id") || "";
+  const queryReceiptId = searchParams.get("receipt_id") || "";
 
   // List State
   const [receipts, setReceipts] = useState([]);
@@ -301,7 +305,8 @@ export default function PenerimaanPenjualan() {
     () => receipts.filter((r) => receiptDeletable(r)),
     [receipts, receiptDeletable]
   );
-  const showDeleteControls = (canDelete || canCancelBusiness) && listTab !== "cancelled";
+  const showDeleteControls =
+    receiptMutationUiEnabled && (canDelete || canCancelBusiness) && listTab !== "cancelled";
   const pageCount = Math.max(1, Math.ceil((Number(listMeta.total) || 0) / pageSize) || 1);
   const tabLabel = salesListTabLabel(listTab);
   const toggleSelect = (id) => {
@@ -599,6 +604,12 @@ export default function PenerimaanPenjualan() {
       setDetailReceipt(receipt);
     }
   }, []);
+
+  useEffect(() => {
+    if (!queryReceiptId || isModalOpen) return;
+    if (detailReceipt?.id === queryReceiptId) return;
+    openReceiptDetail({ id: queryReceiptId });
+  }, [queryReceiptId, isModalOpen, detailReceipt?.id, openReceiptDetail]);
 
   const handleCloseCreateModal = () => {
     setIsModalOpen(false);
@@ -1830,27 +1841,54 @@ export default function PenerimaanPenjualan() {
 
       {detailReceipt && (
         <div
-          className="modal-overlay"
+          className="modal-overlay sd-receipt-detail-overlay"
           data-testid="receipt-detail-modal"
           style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 80 }}
         >
-          <div style={{ background: "#fff", borderRadius: 12, padding: 24, width: "100%", maxWidth: 520 }}>
+          <div className="sd-receipt-detail-card" style={{ background: "#fff", borderRadius: 12, padding: 24, width: "100%", maxWidth: 520, maxHeight: "calc(100dvh - 24px)", overflow: "auto" }}>
             <h3 style={{ margin: "0 0 8px" }}>{detailEditMode ? "Edit Penerimaan" : "Detail Penerimaan"}</h3>
-            <p data-testid="receipt-detail-number" style={{ margin: "0 0 16px", fontFamily: "monospace", fontWeight: 700, color: "#059669" }}>
+            <p data-testid="receipt-detail-number" style={{ margin: "0 0 8px", fontFamily: "monospace", fontWeight: 700, color: "#059669" }}>
               {detailReceipt.receipt_number}
             </p>
+            {!receiptMutationUiEnabled && !detailEditMode && (
+              <p data-testid="receipt-mutation-frozen-note" className="sd-receipt-frozen-note">
+                Edit dan hapus penerimaan dinonaktifkan. Catat penerimaan baru bila perlu koreksi nominal.
+              </p>
+            )}
             {!detailEditMode ? (
-              <dl style={{ margin: "0 0 16px", display: "grid", gridTemplateColumns: "1fr auto", gap: "8px 16px", fontSize: "0.9rem" }}>
+              <dl className="sd-receipt-detail-grid" data-testid="receipt-detail-summary" style={{ margin: "0 0 16px", display: "grid", gridTemplateColumns: "1fr auto", gap: "8px 16px", fontSize: "0.9rem" }}>
+                <dt>Pelanggan</dt>
+                <dd data-testid="receipt-detail-customer" style={{ margin: 0, fontWeight: 650 }}>{detailReceipt.customer || "-"}</dd>
                 <dt>Jurnal</dt>
                 <dd data-testid="receipt-detail-accounting-status" style={{ margin: 0, fontWeight: 700 }}>{accountingLabel(detailReceipt.accounting_status)}</dd>
                 <dt>Tanggal</dt>
-                <dd data-testid="receipt-detail-date" style={{ margin: 0 }}>{formatDisplayDate(detailReceipt.receipt_date) || detailReceipt.receipt_date || "-"}</dd>
+                <dd data-testid="receipt-detail-date" style={{ margin: 0 }}>
+                  {formatSalesInvoiceDate(detailReceipt.receipt_date) || formatDisplayDate(detailReceipt.receipt_date) || detailReceipt.receipt_date || "-"}
+                </dd>
                 <dt>Kas / Bank</dt>
                 <dd data-testid="receipt-detail-cash-bank" style={{ margin: 0 }}>{detailReceipt.cash_bank_name || "-"}</dd>
                 <dt>Jumlah</dt>
-                <dd style={{ margin: 0, fontWeight: 700 }}>{formatRupiah(detailReceipt.amount)}</dd>
+                <dd data-testid="receipt-detail-amount" style={{ margin: 0, fontWeight: 700 }}>{formatRupiah(detailReceipt.amount)}</dd>
                 <dt>Faktur</dt>
-                <dd style={{ margin: 0, fontFamily: "monospace" }}>{detailReceipt.invoice_number || "-"}</dd>
+                <dd style={{ margin: 0, fontFamily: "monospace" }}>
+                  {detailReceipt.invoice_id ? (
+                    <Link
+                      data-testid="receipt-detail-invoice-link"
+                      to={`/penjualan/faktur-penjualan?invoice_id=${encodeURIComponent(detailReceipt.invoice_id)}`}
+                      onClick={() => setDetailReceipt(null)}
+                    >
+                      {detailReceipt.invoice_number || detailReceipt.invoice_id}
+                    </Link>
+                  ) : (detailReceipt.invoice_number || "-")}
+                </dd>
+                <dt>No. PO</dt>
+                <dd style={{ margin: 0, fontFamily: "monospace" }}>
+                  {detailReceipt.po_id ? (
+                    <Link data-testid="receipt-detail-po-link" to={`/po/${encodeURIComponent(detailReceipt.po_id)}`} onClick={() => setDetailReceipt(null)}>
+                      {detailReceipt.po_number || detailReceipt.po_id}
+                    </Link>
+                  ) : (detailReceipt.po_number || "-")}
+                </dd>
                 <dt>Dialokasikan</dt>
                 <dd style={{ margin: 0 }}>{formatRupiah(detailReceipt.allocated_amount ?? detailReceipt.amount)}</dd>
                 {Number(detailReceipt.customer_credit_amount) > 0 && (
