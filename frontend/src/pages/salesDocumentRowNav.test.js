@@ -79,7 +79,7 @@ describe("Sales document clickable rows + form open", () => {
   test("compact density and focus styles preserved", () => {
     expect(densityCss).toMatch(/sd-clickable-row/);
     expect(densityCss).toMatch(/focus-visible/);
-    expect(densityCss).toMatch(/height:60px/);
-    expect(pesananCss).toMatch(/height: 60px/);
+    expect(densityCss).toMatch(/height:38px/);
+    expect(pesananCss).toMatch(/height: 38px/);
   });
 });

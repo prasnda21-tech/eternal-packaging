@@ -1479,7 +1479,7 @@ export default function PesananPenjualan() {
         <div className="so-list" data-testid="sales-order-list">
           <header className="so-list-header">
             <div className="so-list-heading">
-              <h1 data-testid="sales-order-title">Seluruh Pesanan Penjualan</h1>
+              <h1 data-testid="sales-order-title">Pesanan Penjualan</h1>
               {showAktifCount && (
                 <div className="so-list-summary" data-testid="sales-order-aktif-count">
                   <strong>{Number(listMeta.total).toLocaleString("id-ID")}</strong>
@@ -1530,78 +1530,77 @@ export default function PesananPenjualan() {
             </div>
           </header>
 
-          <div className="so-list-tabs" role="tablist" aria-label="Klasifikasi pesanan">
-            {SALES_LIST_TABS.map((tab) => {
-              const count = Number(listMeta.counts?.[tab.id] || 0);
-              const selected = listTab === tab.id;
-              return (
-                <button
-                  key={tab.id}
-                  type="button"
-                  role="tab"
-                  aria-selected={selected}
-                  data-testid={`sales-order-tab-${tab.testIdSuffix}`}
-                  className={selected ? "is-active" : ""}
-                  onClick={() => changeSalesOrderTab(tab.id)}
-                >
-                  {tab.label}
-                  <span className="so-tab-count" data-testid={`sales-order-tab-count-${tab.testIdSuffix}`}>
-                    {count.toLocaleString("id-ID")}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-
-          <div className="so-list-toolbar">
-            <div className="so-list-search">
-              <Search size={16} />
-              <input
-                type="text"
-                placeholder="Cari pelanggan atau nomor PO..."
-                value={searchInput}
-                onChange={(e) => setSearchInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") flushSearch(e);
-                }}
-                data-testid="search-sales-orders-input"
-              />
-              {searchInput && (
-                <button
-                  type="button"
-                  onClick={() => clearSearch()}
-                  data-testid="search-sales-orders-clear"
-                  aria-label="Hapus pencarian"
-                >
-                  <X size={14} />
-                </button>
-              )}
+          <div className="so-list-chrome">
+            <div className="so-list-tabs" role="tablist" aria-label="Klasifikasi pesanan">
+              {SALES_LIST_TABS.map((tab) => {
+                const count = Number(listMeta.counts?.[tab.id] || 0);
+                const selected = listTab === tab.id;
+                return (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    role="tab"
+                    aria-selected={selected}
+                    data-testid={`sales-order-tab-${tab.testIdSuffix}`}
+                    className={selected ? "is-active" : ""}
+                    onClick={() => changeSalesOrderTab(tab.id)}
+                  >
+                    {tab.label}
+                    <span className="so-tab-count" data-testid={`sales-order-tab-count-${tab.testIdSuffix}`}>
+                      {count.toLocaleString("id-ID")}
+                    </span>
+                  </button>
+                );
+              })}
             </div>
-            <select
-              data-testid="sales-order-status-filter"
-              value={statusSelectValue}
-              onChange={(e) => onStatusChange(e.target.value)}
-              aria-label="Status"
-            >
-              <option value="__tab__">Semua status</option>
-              <option value="aktif">Aktif</option>
-              <option value="hold">HOLD</option>
-              <option value="selesai">Selesai</option>
-              <option value="cancelled">Batal</option>
-            </select>
-            <select
-              data-testid="sales-order-period-filter"
-              value={period}
-              onChange={(e) => setPeriod(e.target.value)}
-              aria-label="Periode"
-            >
-              <option value="all">Semua periode</option>
-              <option value="this_month">Bulan ini</option>
-              <option value="last_month">Bulan lalu</option>
-            </select>
-            <button type="button" className="so-list-reset" data-testid="sales-order-reset-filters" onClick={resetToolbar}>
-              Reset Filter
-            </button>
+
+            <div className="so-list-toolbar">
+              <div className="so-list-search">
+                <Search size={16} />
+                <input
+                  type="text"
+                  placeholder="Cari pelanggan atau nomor PO..."
+                  value={searchInput}
+                  onChange={(e) => setSearchInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") flushSearch(e);
+                  }}
+                  data-testid="search-sales-orders-input"
+                />
+                {searchInput && (
+                  <button
+                    type="button"
+                    onClick={() => clearSearch()}
+                    data-testid="search-sales-orders-clear"
+                    aria-label="Hapus pencarian"
+                  >
+                    <X size={14} />
+                  </button>
+                )}
+              </div>
+              <select
+                data-testid="sales-order-status-filter"
+                value={statusSelectValue === "hold" ? "hold" : "__tab__"}
+                onChange={(e) => onStatusChange(e.target.value)}
+                aria-label="Filter HOLD"
+              >
+                <option value="__tab__">Semua di tab ini</option>
+                <option value="hold">Hanya HOLD</option>
+              </select>
+              <select
+                data-testid="sales-order-period-filter"
+                value={period}
+                onChange={(e) => setPeriod(e.target.value)}
+                aria-label="Periode"
+              >
+                <option value="all">Semua periode</option>
+                <option value="this_month">Bulan ini</option>
+                <option value="last_month">Bulan lalu</option>
+              </select>
+              <button type="button" className="so-list-reset" data-testid="sales-order-reset-filters" onClick={resetToolbar}>
+                Reset Filter
+              </button>
+            </div>
           </div>
 
           {listErr && (

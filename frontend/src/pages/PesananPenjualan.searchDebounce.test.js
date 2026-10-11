@@ -342,12 +342,14 @@ describe("Pesanan Penjualan list search debounce", () => {
     expect(lastParams().get("status")).toBeNull();
   });
 
-  test("status dropdown and deep links switch five-tab list_tab", async () => {
+  test("tabs switch list_tab; HOLD filter and deep links remain", async () => {
     await renderPage();
     await act(async () => {
       container.querySelector('[data-testid="sales-order-tab-semua"]').click();
     });
-    await chooseStatus("selesai");
+    await act(async () => {
+      container.querySelector('[data-testid="sales-order-tab-selesai"]').click();
+    });
     expect(api.listSalesOrders).toHaveBeenLastCalledWith(
       expect.objectContaining({ list_tab: "completed", page: 1, page_size: 50 }),
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
@@ -356,6 +358,11 @@ describe("Pesanan Penjualan list search debounce", () => {
     expect(lastParams().get("tab")).toBe("completed");
     // selesai is the tab default for completed, so URL omits redundant status=
     expect(lastParams().get("status")).toBeNull();
+
+    const statusOptions = Array.from(
+      container.querySelector('[data-testid="sales-order-status-filter"]').options,
+    ).map((opt) => opt.value);
+    expect(statusOptions).toEqual(["__tab__", "hold"]);
 
     await chooseStatus("hold");
     expect(api.listSalesOrders).toHaveBeenLastCalledWith(
