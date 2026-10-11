@@ -1397,6 +1397,22 @@
 .so-create-workspace .so-sum-editor { margin-top: 2px; }
 .so-create-workspace .so-sum-editor .so-line-input,
 .so-create-workspace .so-sum-editor input { height: 30px; }
+.so-create-workspace .so-sum-editor-po {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.so-create-workspace .so-sum-editor-po .so-line-input { flex: 1 1 auto; min-width: 0; }
+.so-create-workspace .so-sum-editor-po .so-create-auto {
+  position: static;
+  flex: 0 0 auto;
+  height: 30px;
+  padding: 0 8px;
+}
+.so-create-workspace .so-sum-chip.is-editing {
+  padding-right: 10px;
+}
 .so-create-workspace .so-sum-pencil {
   position: absolute;
   top: 4px;
@@ -1412,13 +1428,6 @@
   border-radius: 6px;
 }
 .so-create-workspace .so-sum-pencil:hover { background: #e8f3ee; color: #166534; }
-.so-create-workspace .so-sum-chip .so-create-auto {
-  position: absolute;
-  right: 26px;
-  top: 3px;
-  height: 20px;
-  padding: 0 6px;
-}
 .so-create-workspace .so-form-tabs {
   display: flex;
   gap: 16px;

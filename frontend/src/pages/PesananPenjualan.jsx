@@ -1925,10 +1925,9 @@ export default function PesananPenjualan() {
           <div className="so-create-stage" data-scroll-owner="form" data-testid="so-create-scroll">
             <section className="so-create-main" data-so-region="main">
               <div className="so-sum-row" data-testid="so-main-fields">
-                <div className={`so-sum-chip is-customer${editingField === "customer" ? " is-editing" : ""}`}>
+                <div className="so-sum-chip is-customer is-editing">
                   <SoField field="customer" label="Pelanggan" required error={fieldHasError("customer")} className="so-sum-field">
-                    {editingField !== "customer" && <div className="so-sum-text">{formData.customer || "—"}</div>}
-                    <div className={editingField === "customer" ? "so-sum-editor" : "so-sum-dormant"}>
+                    <div className="so-sum-editor">
                       <CustomerSearchSelect
                         customers={masterCustomersForSearch}
                         value={formData.customer}
@@ -1942,15 +1941,11 @@ export default function PesananPenjualan() {
                       />
                     </div>
                   </SoField>
-                  <button type="button" className="so-sum-pencil" data-testid="so-edit-customer" aria-label="Ubah pelanggan" onClick={() => openSummaryEditor("customer")}>
-                    <Pencil size={14} />
-                  </button>
                 </div>
 
-                <div className={`so-sum-chip${editingField === "outlet" ? " is-editing" : ""}`}>
+                <div className="so-sum-chip is-editing">
                   <SoField field="outlet" label="Outlet" className="so-sum-field">
-                    {editingField !== "outlet" && <div className="so-sum-text">{formData.outlet || "—"}</div>}
-                    <div className={editingField === "outlet" ? "so-sum-editor" : "so-sum-dormant"}>
+                    <div className="so-sum-editor">
                       {outletsForSelectedCustomer.length > 0 ? (
                         <select
                           id="so-outlet"
@@ -1980,15 +1975,11 @@ export default function PesananPenjualan() {
                       )}
                     </div>
                   </SoField>
-                  <button type="button" className="so-sum-pencil" data-testid="so-edit-outlet" aria-label="Ubah outlet" onClick={() => openSummaryEditor("outlet")}>
-                    <Pencil size={14} />
-                  </button>
                 </div>
 
-                <div className={`so-sum-chip is-po${editingField === "po_number" ? " is-editing" : ""}`}>
+                <div className="so-sum-chip is-po is-editing">
                   <SoField field="po_number" label="Nomor PO" className="so-sum-field">
-                    {editingField !== "po_number" && <div className="so-sum-text">{formData.po_number || "—"}</div>}
-                    <div className={editingField === "po_number" ? "so-sum-editor" : "so-sum-dormant"}>
+                    <div className="so-sum-editor so-sum-editor-po">
                       <input
                         id="so-po_number"
                         type="text"
@@ -1998,20 +1989,16 @@ export default function PesananPenjualan() {
                         placeholder="mis. PO/26/09/26/002"
                         data-testid="input-po-number"
                       />
+                      <button type="button" className="so-create-auto" onClick={generatePoNumber} title="Buat Nomor Otomatis" data-testid="btn-generate-po">
+                        <Sparkles size={14} /> Auto
+                      </button>
                     </div>
                   </SoField>
-                  <button type="button" className="so-create-auto" onClick={generatePoNumber} title="Buat Nomor Otomatis" data-testid="btn-generate-po">
-                    <Sparkles size={14} /> Auto
-                  </button>
-                  <button type="button" className="so-sum-pencil" data-testid="so-edit-po" aria-label="Ubah nomor PO" onClick={() => openSummaryEditor("po_number")}>
-                    <Pencil size={14} />
-                  </button>
                 </div>
 
-                <div className={`so-sum-chip${editingField === "order_date" ? " is-editing" : ""}`}>
+                <div className="so-sum-chip is-editing">
                   <SoField field="order_date" label="Tanggal PO" className="so-sum-field">
-                    {editingField !== "order_date" && <div className="so-sum-text">{formatChipDate(formData.order_date) || "—"}</div>}
-                    <div className={editingField === "order_date" ? "so-sum-editor" : "so-sum-dormant"}>
+                    <div className="so-sum-editor">
                       <input
                         id="so-order_date"
                         type="date"
@@ -2022,15 +2009,11 @@ export default function PesananPenjualan() {
                       />
                     </div>
                   </SoField>
-                  <button type="button" className="so-sum-pencil" data-testid="so-edit-order-date" aria-label="Ubah tanggal PO" onClick={() => openSummaryEditor("order_date")}>
-                    <Pencil size={14} />
-                  </button>
                 </div>
 
-                <div className={`so-sum-chip${editingField === "estimated_delivery" ? " is-editing" : ""}`}>
+                <div className="so-sum-chip is-editing">
                   <SoField field="estimated_delivery" label="Rencana kirim" className="so-sum-field">
-                    {editingField !== "estimated_delivery" && <div className="so-sum-text">{formatChipDate(formData.estimated_delivery) || "—"}</div>}
-                    <div className={editingField === "estimated_delivery" ? "so-sum-editor" : "so-sum-dormant"}>
+                    <div className="so-sum-editor">
                       <input
                         id="so-estimated_delivery"
                         type="date"
@@ -2041,9 +2024,6 @@ export default function PesananPenjualan() {
                       />
                     </div>
                   </SoField>
-                  <button type="button" className="so-sum-pencil" data-testid="so-edit-ship-date" aria-label="Ubah rencana kirim" onClick={() => openSummaryEditor("estimated_delivery")}>
-                    <Pencil size={14} />
-                  </button>
                 </div>
 
                 <div className="so-ship-card">

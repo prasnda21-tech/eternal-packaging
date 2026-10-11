@@ -522,6 +522,19 @@
   overflow-y:auto;
   padding:16px 16px 28px;
 }
+.sd-density .sd-modal-body .sr-payment-grid{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:12px;
+}
+@media (max-width:520px){
+  .sd-density .sd-modal-body .sr-payment-grid{
+    grid-template-columns:1fr;
+  }
+  .sd-density .sd-modal-body .sr-money-triad{
+    grid-template-columns:1fr !important;
+  }
+}
 
 .sd-filter-popover{
   box-sizing:border-box;
@@ -999,6 +1012,34 @@
 }
 .sd-density .fp-chip.is-incomplete{background:#fffbeb;color:#92400e;border-color:#fde68a}
 .sd-density .fp-chip.is-complete{background:#ecfdf5;color:#047857;border-color:#a7f3d0}
+.sd-density .fp-create .fp-terms-essential{
+  display:grid;
+  grid-template-columns:repeat(4,minmax(0,1fr));
+  gap:8px 12px;
+  padding:10px 12px;
+  margin:0 0 8px;
+  background:#fff;
+  border:1px solid #CBD5E1;
+  border-radius:10px;
+}
+.sd-density .fp-create .fp-multi-invoice-hint{
+  margin:0 0 8px;
+  font-size:12px;
+  color:#475569;
+}
+.sd-density .fp-create .fp-breakdown-sticky{
+  margin:8px 0 0;
+  padding:10px 12px;
+  border:1px solid #e2e8e6;
+  border-radius:10px;
+  background:#f8faf9;
+}
+.sd-density .fp-create .fp-breakdown-remaining strong{color:#b91c1c}
+.sd-density .fp-create .fp-summary strong.is-due{color:#b91c1c}
+.sd-density .fp-create .fp-summary strong.is-paid{color:#047857}
+@media (max-width:720px){
+  .sd-density .fp-create .fp-terms-essential{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
 .sd-density .fp-create > .fp-po-section{
   flex:0 0 auto !important;
   display:flex !important;
