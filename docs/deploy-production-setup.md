@@ -42,21 +42,51 @@ Order matters — **preparation before activation**:
 3. As `eternaladmin`: `prepare-verified-baseline.sh --apply`
    - Freezes backend **without** copying live `.venv`
    - Snapshots live FE (selective-merge inclusive) into baseline
-   - Creates **fresh** isolated venv + validates uvicorn/python (no prod DB)
-   - Writes full integrity manifest (no 5000-file truncation) + runtime provenance
+   - Creates **fresh** isolated venv from **`requirements.portable.txt`** by default (`ETERNAL_REQUIREMENTS_FILE` override; no silent fallback to `requirements.txt`)
+   - Writes full integrity manifest + `requirements_file` / `requirements_sha256` provenance
+   - Completion markers (`.baseline` / `.deploy-ok`) only after checks pass
    - Refuses overwrite of existing baseline unless `--force-recreate` and CURRENT is not pointing at it
+4. If baseline already exists (integrity OK, venv already installed manually with portable):
+   - Owner session evidence first: install from `requirements.portable.txt` and `pip check` PASS
+   - Dry-run, then:
+     `finalize-existing-baseline.sh --apply --attest-requirements-file=requirements.portable.txt`
+   - `--apply` takes the shared deploy lock (`/tmp/eternal-packaging-deploy.lock`); busy lock fails with no writes
+   - Legacy baselines without requirements provenance **must** attest the file actually used for the install
+     (`provenance_source=owner_attested`); no silent invention from current policy
+   - Verifies digests + hash + installed packages vs requirements + `pip check` before markers
+   - Does **not** re-copy snapshot, recreate `.venv`, switch `current`, or restart systemd
 
 ### Phase B — activation (after verified baseline exists)
 
-4. Install/adapt unit from `scripts/deploy/systemd/eternal-packaging-backend.service`:
+5. Install/adapt unit from `scripts/deploy/systemd/eternal-packaging-backend.service`:
    - `User=eternaladmin` / `Group=eternaladmin`
    - `WorkingDirectory=/opt/eternal-packaging-runtime/current/backend`
    - `ExecStart=/opt/eternal-packaging-runtime/current/backend/.venv/bin/uvicorn ...`
    - Keep `EnvironmentFile=-/opt/eternal-packaging/backend/.env`
    - Keep `EnvironmentFile=-/etc/eternal-packaging-google-places.env`
-5. Point `current` at baseline tree **or** leave unset until first deploy.
-6. `install-gate.sh --activate` and confirm probe.
-7. Set Environment secrets + `DEPLOY_ALLOWED_ACTORS`.
+6. Point `current` at baseline tree **or** leave unset until first deploy.
+7. `install-gate.sh --activate` and confirm probe.
+8. Set Environment secrets + `DEPLOY_ALLOWED_ACTORS`.
+
+### Requirements policy (VPS)
+
+| Item | Rule |
+|------|------|
+| Default install file | `backend/requirements.portable.txt` |
+| Override | `ETERNAL_REQUIREMENTS_FILE` = relative path under `backend/` only |
+| Forbidden | absolute paths, `..`, missing file, silent fallback to `requirements.txt` |
+| Provenance | `.baseline-verified` records `requirements_file=` + `requirements_sha256=` of the file actually used |
+| Legacy finalize | Requires `--attest-requirements-file=REL` + `provenance_source=owner_attested` (hash + packages + `pip check`) |
+| Finalize lock | Same flock path as deploy runner; held for entire `--apply` verify+write |
+
+### Local startup smoke (not production deploy)
+
+```bash
+# Isolated mongod + temp backend copy without production .env; full lifespan/seed.
+bash scripts/deploy/smoke_startup_isolated.sh
+```
+
+Expect `SMOKE_STARTUP_OK`. This is **not** hooked into the production deploy runner.
 
 Keep dirty `/opt/eternal-packaging` overlay untouched. Pure SHA does **not** automatically preserve selective-merge FE — first cutover needs `ack_replace_live_frontend`.
 

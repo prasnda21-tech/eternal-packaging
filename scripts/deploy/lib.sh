@@ -203,11 +203,138 @@ eternal_assert_no_local_conflict() {
   fi
 }
 
+# Resolve requirements file relative to backend/. Default: requirements.portable.txt.
+# Override: ETERNAL_REQUIREMENTS_FILE (relative path under backend only).
+# No silent fallback to requirements.txt. Rejects absolute paths, .., and escapes.
+eternal_resolve_requirements_relpath() {
+  local backend_dir="$1"
+  local rel="${ETERNAL_REQUIREMENTS_FILE:-requirements.portable.txt}"
+
+  [[ -n "$rel" ]] || eternal_deploy_die "requirements: empty ETERNAL_REQUIREMENTS_FILE"
+  [[ "$rel" != /* ]] || eternal_deploy_die "requirements: absolute path forbidden ($rel)"
+  [[ "$rel" != *'..'* ]] || eternal_deploy_die "requirements: path must not contain '..' ($rel)"
+  case "$rel" in
+    *[[:space:]]*|*$'\n'*|*$'\r'*) eternal_deploy_die "requirements: whitespace/newline forbidden in path" ;;
+  esac
+
+  [[ -d "$backend_dir" ]] || eternal_deploy_die "requirements: backend dir missing: $backend_dir"
+  local candidate="$backend_dir/$rel"
+  [[ -e "$candidate" ]] || eternal_deploy_die "requirements: file missing: $rel (under $backend_dir); no fallback"
+  [[ -f "$candidate" ]] || eternal_deploy_die "requirements: not a regular file: $rel"
+  [[ ! -L "$candidate" ]] || eternal_deploy_die "requirements: symlink refused: $rel"
+
+  local real_backend real_file
+  real_backend="$(readlink -f "$backend_dir")"
+  real_file="$(readlink -f "$candidate")"
+  [[ -n "$real_backend" && -n "$real_file" ]] \
+    || eternal_deploy_die "requirements: cannot resolve real paths"
+  case "$real_file" in
+    "$real_backend"/*) ;;
+    *) eternal_deploy_die "requirements: path escapes backend dir ($rel)" ;;
+  esac
+
+  printf '%s\n' "$rel"
+}
+
+eternal_requirements_abs_path() {
+  local backend_dir="$1"
+  local rel
+  rel="$(eternal_resolve_requirements_relpath "$backend_dir")"
+  printf '%s\n' "$backend_dir/$rel"
+}
+
+eternal_requirements_sha256() {
+  local backend_dir="$1"
+  local abs
+  abs="$(eternal_requirements_abs_path "$backend_dir")"
+  sha256sum "$abs" | awk '{print $1}'
+}
+
+# Verify venv packages satisfy requirements file + pip check (no network).
+# Stub mode: stub pip check only (fixture requirements may be opaque markers).
+eternal_verify_requirements_installed() {
+  local backend_dir="$1"
+  local req_rel="$2"
+  local req_abs="$backend_dir/$req_rel"
+  local pip="$backend_dir/.venv/bin/pip"
+  [[ -f "$req_abs" ]] || eternal_deploy_die "dependency evidence: requirements missing: $req_rel"
+  [[ -d "$backend_dir/.venv" ]] || eternal_deploy_die "dependency evidence: .venv missing"
+  [[ -x "$pip" ]] || eternal_deploy_die "dependency evidence: pip missing/not executable: $pip"
+
+  if ! "$pip" check; then
+    eternal_deploy_die "dependency evidence: pip check FAILED for $req_rel"
+  fi
+  eternal_deploy_log "pip check PASS requirements_file=$req_rel"
+
+  if [[ "${ETERNAL_RUNTIME_MODE:-full}" == "stub" ]]; then
+    eternal_deploy_log "stub dependency evidence OK (pip check only) requirements_file=$req_rel"
+    return 0
+  fi
+
+  local freeze line pkg ver op
+  freeze="$("$pip" freeze 2>/dev/null || true)"
+  [[ -n "$freeze" ]] || eternal_deploy_die "dependency evidence: pip freeze empty"
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%%#*}"
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    [[ -z "$line" ]] && continue
+    [[ "$line" == -* ]] && continue
+    if [[ "$line" =~ ^([A-Za-z0-9_.-]+)==(.+)$ ]]; then
+      pkg="${BASH_REMATCH[1]}"
+      ver="${BASH_REMATCH[2]}"
+      if ! printf '%s\n' "$freeze" | grep -Eiq "^${pkg//_/-}==${ver}$|^${pkg}==${ver}$"; then
+        # pip normalizes _/- ; try both
+        if ! printf '%s\n' "$freeze" | grep -Eiq "^$(printf '%s' "$pkg" | tr '_' '-')==${ver}$"; then
+          if ! printf '%s\n' "$freeze" | grep -Eiq "^$(printf '%s' "$pkg" | tr '-' '_')==${ver}$"; then
+            eternal_deploy_die "dependency evidence: installed package missing/mismatch: ${pkg}==${ver}"
+          fi
+        fi
+      fi
+    elif [[ "$line" =~ ^([A-Za-z0-9_.-]+)([<>=!~]=?.*) ]]; then
+      pkg="${BASH_REMATCH[1]}"
+      if ! printf '%s\n' "$freeze" | grep -Eiq "^${pkg}==|^$(printf '%s' "$pkg" | tr '_' '-')==|^$(printf '%s' "$pkg" | tr '-' '_')=="; then
+        eternal_deploy_die "dependency evidence: installed package missing: $pkg"
+      fi
+    else
+      # Opaque / non-pin lines: refuse in full mode (cannot prove install).
+      eternal_deploy_die "dependency evidence: unsupported requirements line (need name==version): $line"
+    fi
+  done <"$req_abs"
+  eternal_deploy_log "installed packages match requirements_file=$req_rel"
+}
+
+# Verify provenance requirements_file + hash against disk (fail-closed).
+eternal_verify_requirements_provenance() {
+  local backend_dir="$1"
+  local recorded_file="${2:-}"
+  local recorded_hash="${3:-}"
+  [[ -n "$recorded_file" ]] || eternal_deploy_die "requirements provenance: requirements_file missing (refuse invented/legacy marker)"
+  [[ -n "$recorded_hash" ]] || eternal_deploy_die "requirements provenance: requirements_sha256 missing"
+
+  local prev="${ETERNAL_REQUIREMENTS_FILE:-}"
+  ETERNAL_REQUIREMENTS_FILE="$recorded_file"
+  local rel abs actual
+  rel="$(eternal_resolve_requirements_relpath "$backend_dir")"
+  if [[ -n "$prev" ]]; then
+    ETERNAL_REQUIREMENTS_FILE="$prev"
+  else
+    unset ETERNAL_REQUIREMENTS_FILE
+  fi
+  [[ "$rel" == "$recorded_file" ]] \
+    || eternal_deploy_die "requirements provenance: resolved=$rel != recorded=$recorded_file"
+  abs="$backend_dir/$rel"
+  actual="$(sha256sum "$abs" | awk '{print $1}')"
+  [[ "$actual" == "$recorded_hash" ]] \
+    || eternal_deploy_die "requirements provenance: hash mismatch for $recorded_file"
+}
+
 eternal_manifest_guard() {
   local release_dir="$1"
   if [[ -d "$release_dir/backend" ]]; then
-    [[ -f "$release_dir/backend/requirements.txt" ]] \
-      || eternal_deploy_die "manifest guard: backend/requirements.txt missing"
+    # Same resolver as runtime prep — default portable; no silent txt fallback.
+    eternal_resolve_requirements_relpath "$release_dir/backend" >/dev/null
   fi
   if [[ -d "$release_dir/frontend" ]]; then
     [[ -f "$release_dir/frontend/package.json" ]] \
@@ -277,6 +404,8 @@ eternal_baseline_collect_manifest() {
     # -print0 / sort -z / xargs -0: safe for spaces/newlines in names; no head truncate.
     find tree/backend frontend-snapshot \
       \( -path 'tree/backend/.venv' -o -path 'tree/backend/.venv/*' \
+         -o -path 'tree/backend/.eternal-requirements-file' \
+         -o -path 'tree/backend/.eternal-requirements-sha256' \
          -o -path '*/__pycache__' -o -path '*/__pycache__/*' \) -prune -o \
       -type f -print0 2>/dev/null \
       | LC_ALL=C sort -z \
@@ -286,13 +415,19 @@ eternal_baseline_collect_manifest() {
 
 # Fresh venv in target backend (never copy live venv; never mutate active service venv).
 # ETERNAL_RUNTIME_MODE=stub|full (default full). Stub is for synthetic tests only.
+# Installs ETERNAL_REQUIREMENTS_FILE (default requirements.portable.txt) — no silent txt fallback.
 eternal_prepare_backend_runtime() {
   local backend_dir="$1"
   local mode="${ETERNAL_RUNTIME_MODE:-full}"
   local py="${ETERNAL_PYTHON_BIN:-python3}"
+  local req_rel req_abs req_hash
   [[ -d "$backend_dir" ]] || eternal_deploy_die "runtime prep: backend dir missing: $backend_dir"
-  [[ -f "$backend_dir/requirements.txt" ]] || eternal_deploy_die "runtime prep: requirements.txt missing"
   command -v "$py" >/dev/null 2>&1 || eternal_deploy_die "runtime prep: python missing: $py"
+
+  req_rel="$(eternal_resolve_requirements_relpath "$backend_dir")"
+  req_abs="$backend_dir/$req_rel"
+  req_hash="$(sha256sum "$req_abs" | awk '{print $1}')"
+  eternal_deploy_log "runtime prep requirements_file=$req_rel sha256=$req_hash"
 
   # Never reuse/copy a foreign .venv (shebangs point at old absolute paths).
   if [[ -e "$backend_dir/.venv" ]]; then
@@ -311,14 +446,28 @@ eternal_prepare_backend_runtime() {
 exec "$(readlink -f "$backend_dir/.venv/bin/python")" -c 'import sys; sys.exit(0)' "\$@"
 EOF
     chmod +x "$backend_dir/.venv/bin/uvicorn"
+    # Stub pip: check/freeze succeed so finalize dependency evidence can run in harness.
+    cat >"$backend_dir/.venv/bin/pip" <<'EOF'
+#!/usr/bin/env bash
+# stub pip for synthetic harness — not production
+case "${1:-}" in
+  check) exit 0 ;;
+  freeze) exit 0 ;;
+  *) exit 0 ;;
+esac
+EOF
+    chmod +x "$backend_dir/.venv/bin/pip"
   else
     "$py" -m venv "$backend_dir/.venv" || eternal_deploy_die "runtime prep: venv create failed"
     # shellcheck disable=SC1091
     "$backend_dir/.venv/bin/pip" install --upgrade pip wheel >/dev/null \
       || eternal_deploy_die "runtime prep: pip bootstrap failed"
-    "$backend_dir/.venv/bin/pip" install -r "$backend_dir/requirements.txt" \
-      || eternal_deploy_die "runtime prep: pip install requirements failed"
+    "$backend_dir/.venv/bin/pip" install -r "$req_abs" \
+      || eternal_deploy_die "runtime prep: pip install failed for $req_rel"
   fi
+  # Record what was installed for callers (baseline write / release marker).
+  printf '%s\n' "$req_rel" >"$backend_dir/.eternal-requirements-file"
+  printf '%s\n' "$req_hash" >"$backend_dir/.eternal-requirements-sha256"
   eternal_validate_backend_runtime "$backend_dir"
 }
 
@@ -385,16 +534,26 @@ eternal_baseline_write_integrity() {
     eternal_deploy_die "baseline integrity: manifest collection failed (symlinks or find error)"
   fi
   [[ -s "$manifest" ]] || eternal_deploy_die "baseline integrity: empty manifest"
-  local fe_count file_count req_hash
+  local fe_count file_count req_rel req_hash
   fe_count="$(grep -c ' frontend-snapshot/' "$manifest" || true)"
   file_count="$(wc -l <"$manifest" | tr -d ' ')"
   [[ "${fe_count:-0}" -ge 1 ]] || eternal_deploy_die "baseline integrity: no frontend-snapshot files hashed"
-  req_hash="$(sha256sum "$baseline_dir/tree/backend/requirements.txt" | awk '{print $1}')"
+
+  # Prefer stamp from prepare_backend_runtime; else resolve current policy (no invented history).
+  if [[ -f "$baseline_dir/tree/backend/.eternal-requirements-file" \
+     && -f "$baseline_dir/tree/backend/.eternal-requirements-sha256" ]]; then
+    req_rel="$(tr -d '\n' <"$baseline_dir/tree/backend/.eternal-requirements-file")"
+    req_hash="$(tr -d '\n' <"$baseline_dir/tree/backend/.eternal-requirements-sha256")"
+    eternal_verify_requirements_provenance "$baseline_dir/tree/backend" "$req_rel" "$req_hash"
+  else
+    req_rel="$(eternal_resolve_requirements_relpath "$baseline_dir/tree/backend")"
+    req_hash="$(eternal_requirements_sha256 "$baseline_dir/tree/backend")"
+  fi
 
   local manifest_hash
   manifest_hash="$(sha256sum "$manifest" | awk '{print $1}')"
   {
-    printf 'version=2\n'
+    printf 'version=3\n'
     printf 'kind=verified-baseline\n'
     # Digests verified at write time; marker alone is never sufficient on read.
     printf 'immutable=1\n'
@@ -407,11 +566,12 @@ eternal_baseline_write_integrity() {
     printf 'integrity_sha256=%s\n' "$manifest_hash"
     printf 'file_count=%s\n' "$file_count"
     printf 'frontend_file_count=%s\n' "$fe_count"
+    printf 'requirements_file=%s\n' "$req_rel"
     printf 'requirements_sha256=%s\n' "$req_hash"
     printf 'runtime_python=%s\n' "$baseline_dir/tree/backend/.venv/bin/python"
     printf 'runtime_uvicorn=%s\n' "$baseline_dir/tree/backend/.venv/bin/uvicorn"
     printf 'captured_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    printf 'note=Capture live FE before retarget; digests+runtime validated; baseline before activation\n'
+    printf 'note=Capture live FE before retarget; digests+runtime+requirements provenance; baseline before activation\n'
   } >"$baseline_dir/.baseline-verified"
 }
 
@@ -428,7 +588,7 @@ eternal_baseline_verify_integrity() {
     eternal_deploy_die "baseline tree/backend is a symlink to mutable source; refuse"
   fi
 
-  local expected_hash actual_hash kind immutable frontend_src digests_ok
+  local expected_hash actual_hash kind immutable frontend_src digests_ok req_file req_hash
   expected_hash="$(sed -n 's/^integrity_sha256=//p' "$baseline_dir/.baseline-verified" | head -n1)"
   [[ -n "$expected_hash" ]] || eternal_deploy_die "baseline-verified missing integrity_sha256"
   actual_hash="$(sha256sum "$baseline_dir/.baseline-integrity" | awk '{print $1}')"
@@ -438,11 +598,15 @@ eternal_baseline_verify_integrity() {
   immutable="$(sed -n 's/^immutable=//p' "$baseline_dir/.baseline-verified" | head -n1)"
   frontend_src="$(sed -n 's/^frontend_src=//p' "$baseline_dir/.baseline-verified" | head -n1)"
   digests_ok="$(sed -n 's/^content_digests_verified_at_write=//p' "$baseline_dir/.baseline-verified" | head -n1)"
+  req_file="$(sed -n 's/^requirements_file=//p' "$baseline_dir/.baseline-verified" | head -n1)"
+  req_hash="$(sed -n 's/^requirements_sha256=//p' "$baseline_dir/.baseline-verified" | head -n1)"
   [[ "$kind" == "verified-baseline" ]] || eternal_deploy_die "baseline-verified kind invalid"
   [[ "$immutable" == "1" ]] || eternal_deploy_die "baseline-verified not marked immutable"
   # Marker immutable=1 is insufficient without digest proof fields + live check.
   [[ "$digests_ok" == "1" ]] || eternal_deploy_die "baseline-verified missing content_digests_verified_at_write (marker-only refuse)"
   [[ -n "$frontend_src" ]] || eternal_deploy_die "baseline-verified missing frontend_src provenance"
+  # Do not invent requirements provenance for legacy markers that omit it.
+  eternal_verify_requirements_provenance "$baseline_dir/tree/backend" "$req_file" "$req_hash"
 
   if ! (cd "$baseline_dir" && sha256sum -c .baseline-integrity >/dev/null 2>&1); then
     eternal_deploy_die "baseline content digest mismatch (frozen tree altered)"
@@ -456,6 +620,8 @@ eternal_baseline_verify_integrity() {
   disk_count="$(
     cd "$baseline_dir" && find tree/backend frontend-snapshot \
       \( -path 'tree/backend/.venv' -o -path 'tree/backend/.venv/*' \
+         -o -path 'tree/backend/.eternal-requirements-file' \
+         -o -path 'tree/backend/.eternal-requirements-sha256' \
          -o -path '*/__pycache__' -o -path '*/__pycache__/*' \) -prune -o \
       -type f -print 2>/dev/null | wc -l | tr -d ' '
   )"
@@ -463,5 +629,35 @@ eternal_baseline_verify_integrity() {
     || eternal_deploy_die "baseline integrity incomplete: manifest_files=$listed disk_files=$disk_count"
 
   eternal_validate_backend_runtime "$baseline_dir/tree/backend"
-  eternal_deploy_log "baseline integrity OK files=$listed frontend_src=$frontend_src runtime=ok"
+  eternal_deploy_log "baseline integrity OK files=$listed frontend_src=$frontend_src requirements_file=$req_file runtime=ok"
+}
+
+# Digest + runtime checks without requiring requirements_file (used by finalize before stamping).
+eternal_baseline_verify_integrity_core() {
+  local baseline_dir="$1"
+  [[ -f "$baseline_dir/.baseline-verified" ]] || eternal_deploy_die "baseline missing .baseline-verified"
+  [[ -f "$baseline_dir/.baseline-integrity" ]] || eternal_deploy_die "baseline missing .baseline-integrity provenance manifest"
+  [[ -d "$baseline_dir/tree/backend" ]] || eternal_deploy_die "baseline missing frozen backend tree"
+  [[ -d "$baseline_dir/frontend-snapshot" ]] || eternal_deploy_die "baseline missing frontend snapshot"
+  [[ -f "$baseline_dir/frontend-snapshot/index.html" ]] \
+    || eternal_deploy_die "baseline frontend-snapshot/index.html missing"
+  if [[ -L "$baseline_dir/tree/backend" ]]; then
+    eternal_deploy_die "baseline tree/backend is a symlink to mutable source; refuse"
+  fi
+
+  local expected_hash actual_hash kind immutable digests_ok
+  expected_hash="$(sed -n 's/^integrity_sha256=//p' "$baseline_dir/.baseline-verified" | head -n1)"
+  [[ -n "$expected_hash" ]] || eternal_deploy_die "baseline-verified missing integrity_sha256"
+  actual_hash="$(sha256sum "$baseline_dir/.baseline-integrity" | awk '{print $1}')"
+  [[ "$expected_hash" == "$actual_hash" ]] || eternal_deploy_die "baseline integrity manifest hash mismatch (tampered provenance)"
+  kind="$(sed -n 's/^kind=//p' "$baseline_dir/.baseline-verified" | head -n1)"
+  immutable="$(sed -n 's/^immutable=//p' "$baseline_dir/.baseline-verified" | head -n1)"
+  digests_ok="$(sed -n 's/^content_digests_verified_at_write=//p' "$baseline_dir/.baseline-verified" | head -n1)"
+  [[ "$kind" == "verified-baseline" ]] || eternal_deploy_die "baseline-verified kind invalid"
+  [[ "$immutable" == "1" ]] || eternal_deploy_die "baseline-verified not marked immutable"
+  [[ "$digests_ok" == "1" ]] || eternal_deploy_die "baseline-verified missing content_digests_verified_at_write"
+  if ! (cd "$baseline_dir" && sha256sum -c .baseline-integrity >/dev/null 2>&1); then
+    eternal_deploy_die "baseline content digest mismatch (frozen tree altered)"
+  fi
+  eternal_validate_backend_runtime "$baseline_dir/tree/backend"
 }
