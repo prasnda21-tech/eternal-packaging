@@ -5,14 +5,14 @@ Wants=network.target
 
 [Service]
 Type=simple
-User=deploy
-Group=deploy
-# Active code always comes from the isolated release symlink.
-WorkingDirectory=/opt/eternal-packaging-current/backend
-# Keep the existing environment file from the legacy tree intact (do not copy secrets into releases).
+User=eternaladmin
+Group=eternaladmin
+# Active code always comes from the isolated release symlink under the dedicated runtime root.
+WorkingDirectory=/opt/eternal-packaging-runtime/current/backend
+# Keep existing environment files (do not copy secrets into releases).
 EnvironmentFile=-/opt/eternal-packaging/backend/.env
-EnvironmentFile=-/etc/eternal-packaging/backend.env
-ExecStart=/opt/eternal-packaging-current/backend/.venv/bin/uvicorn server:app --host 127.0.0.1 --port 8000
+EnvironmentFile=-/etc/eternal-packaging-google-places.env
+ExecStart=/opt/eternal-packaging-runtime/current/backend/.venv/bin/uvicorn server:app --host 127.0.0.1 --port 8000
 Restart=on-failure
 RestartSec=5
 # Least privilege: no NewPrivileges escalation; Owner may tighten further.

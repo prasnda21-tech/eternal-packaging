@@ -31,17 +31,29 @@ assert_false() {
 }
 
 WORKDIR="$(mktemp -d)"
-trap 'rm -rf "$WORKDIR"' EXIT
+cleanup_work() {
+  # Permission fixtures may use mode 555 parents; restore before rm.
+  chmod -R u+w "$WORKDIR" 2>/dev/null || true
+  rm -rf "$WORKDIR"
+}
+trap cleanup_work EXIT
 BIN="$WORKDIR/bin"
 HARNESS="$WORKDIR/harness"
 MIRROR_SRC="$WORKDIR/repo"
-RELEASES="$HARNESS/releases"
+RUNTIME="$HARNESS/runtime"
+RELEASES="$RUNTIME/releases"
 FRONTEND="$HARNESS/www"
 LEGACY="$HARNESS/legacy-dirty"
-CURRENT="$HARNESS/current"
+CURRENT="$RUNTIME/current"
+FRONTEND_PREV="$RUNTIME/frontend-prev"
 LOCK="$HARNESS/deploy.lock"
 BASELINE="$RELEASES/baseline-active"
-mkdir -p "$BIN" "$RELEASES" "$FRONTEND/live" "$LEGACY/backend"
+# Simulate root-owned /var/www parent (mode 555) with writable webroot leaf.
+SIM_WWW_PARENT="$HARNESS/sim-var-www"
+mkdir -p "$BIN" "$RELEASES" "$FRONTEND_PREV" "$FRONTEND/live" "$LEGACY/backend" \
+  "$SIM_WWW_PARENT/eternal-packaging/static/js"
+chmod 755 "$SIM_WWW_PARENT/eternal-packaging"
+chmod 555 "$SIM_WWW_PARENT"
 
 # --- fixture repo ---
 git init -q -b main "$MIRROR_SRC"
@@ -56,6 +68,7 @@ printf 'yarn lockfile v1\n' >"$MIRROR_SRC/frontend/yarn.lock"
 printf 'app\n' >"$MIRROR_SRC/frontend/src/index.js"
 printf 'dirty\n' >"$LEGACY/DO_NOT_TOUCH"
 printf 'legacy\n' >"$LEGACY/backend/app.py"
+printf 'ok\n' >"$LEGACY/backend/requirements.txt"
 cp "$GATE" "$RUNNER" "$ROOT/scripts/deploy/lib.sh" "$MIRROR_SRC/scripts/deploy/"
 git -C "$MIRROR_SRC" add . && git -C "$MIRROR_SRC" commit -q -m base
 printf 'ok\n#pin\n' >"$MIRROR_SRC/backend/requirements.txt"
@@ -115,11 +128,12 @@ EOF
 chmod +x "$BIN/ssh"
 
 export PATH="$BIN:$PATH"
+export ETERNAL_RUNTIME_ROOT="$RUNTIME"
 export ETERNAL_RELEASES_ROOT="$RELEASES"
 export ETERNAL_CURRENT_LINK="$CURRENT"
 export ETERNAL_LEGACY_ROOT="$LEGACY"
 export ETERNAL_FRONTEND_ROOT="$FRONTEND/live"
-export ETERNAL_FRONTEND_PREV="$FRONTEND/prev"
+export ETERNAL_FRONTEND_PREV="$FRONTEND_PREV"
 export ETERNAL_DEPLOY_LOCK="$LOCK"
 export ETERNAL_SERVICE_NAME="eternal-packaging-backend.service"
 export ETERNAL_HEALTH_URL="http://127.0.0.1:9/api/system/health"
@@ -139,9 +153,11 @@ export ETERNAL_EXPECTED_EXEC_PREFIX="$EXPECTED_WD"
 export ETERNAL_SKIP_PROCCWD_CHECK=1
 export ETERNAL_REQUIRE_VERIFIED_BASELINE=1
 export ETERNAL_MIN_DISK_KB=1
+export ETERNAL_RUNTIME_MODE=stub
 : >"$ETERNAL_SYSTEMCTL_LOG"
+mkdir -p "$FRONTEND/live/static/js"
 printf 'old\n' >"$FRONTEND/live/index.html"
-printf 'old-asset\n' >"$FRONTEND/live/static/js/old.js" 2>/dev/null || mkdir -p "$FRONTEND/live/static/js" && printf 'old-asset\n' >"$FRONTEND/live/static/js/old.js"
+printf 'old-asset\n' >"$FRONTEND/live/static/js/old.js"
 printf 'active\n' >"$FRONTEND/live/active.txt"
 
 # shellcheck disable=SC1091
@@ -150,11 +166,13 @@ source "$ROOT/scripts/deploy/lib.sh"
 make_verified_baseline() {
   mkdir -p "$BASELINE/tree/backend" "$BASELINE/frontend-snapshot/static/js"
   cp -a "$LEGACY/backend"/. "$BASELINE/tree/backend"/
+  rm -rf "$BASELINE/tree/backend/.venv"
   cp -a "$FRONTEND/live"/. "$BASELINE/frontend-snapshot"/
   {
     printf 'kind=verified-baseline\nsha=baseline-active\nimmutable=1\n'
   } >"$BASELINE/.deploy-ok"
   : >"$BASELINE/.baseline"
+  ETERNAL_RUNTIME_MODE=stub eternal_prepare_backend_runtime "$BASELINE/tree/backend"
   eternal_baseline_write_integrity "$BASELINE" "$LEGACY" "$EXPECTED_WD" "$EXPECTED_WD/.venv/bin/uvicorn"
 }
 
@@ -303,7 +321,7 @@ assert_false "tampered baseline digests refused" "$RUNNER" deploy "$MAIN_SHA"
 # wrong systemd WD (retarget not done yet) — baseline ready but service not retargeted
 rm -rf "$BASELINE"
 make_verified_baseline
-export ETERNAL_EXPECTED_WD="/opt/eternal-packaging-current/backend"
+export ETERNAL_EXPECTED_WD="/opt/eternal-packaging-runtime/current/backend"
 assert_false "systemd WD mismatch blocks preflight before activation" "$RUNNER" deploy "$MAIN_SHA"
 export ETERNAL_EXPECTED_WD="$EXPECTED_WD"
 
@@ -379,7 +397,9 @@ set -e
 export ETERNAL_HEALTH_FORCE_FAIL=0
 assert_eq "health fail nonzero" "1" "$hf"
 assert_true "rollback while holding lock logged" grep -q 'attempting rollback while holding lock' "$HARNESS/hf.err"
-assert_false "lock released after cleanup" test -f "$LOCK"
+assert_true "lock file not unlinked after release" test -f "$LOCK"
+assert_true "flock available after runner release" flock -n "$LOCK" true
+assert_true "FE backup used runtime prev path" test -d "$FRONTEND_PREV"
 
 # ========== partial restart failure triggers recovery ==========
 rm -rf "$RELEASES/$BE2" # prior health-fail left incomplete release without .deploy-ok
@@ -397,10 +417,86 @@ assert_true "rollback restart attempted after partial failure" grep -q 'rollback
 assert_true "old asset still present after later FE publish" test -f "$FRONTEND/live/static/js/old.js"
 assert_true "index is not .new leftover" bash -c '! test -f "'"$FRONTEND"'/live/index.html.new"'
 
-# ========== lock contention ==========
-printf 'x\n' >"$LOCK"
-assert_false "deploy lock blocks" "$RUNNER" deploy "$FE_SHA"
-rm -f "$LOCK"
+# ========== flock interop: terminal holder blocks runner; stale file does not ==========
+printf 'stale-pid-note\n' >"$LOCK"
+assert_true "stale lock file without holder is acquirable" \
+  bash -c 'source "'"$ROOT"'/scripts/deploy/lib.sh"; eternal_acquire_lock "'"$LOCK"'" 0; eternal_release_lock "'"$LOCK"'"; test -f "'"$LOCK"'"'
+exec {TERM_LOCK_FD}<>"$LOCK"
+flock -n "$TERM_LOCK_FD" || { log "FAIL: could not hold terminal flock"; FAIL=$((FAIL+1)); }
+assert_false "runner blocked while terminal flock held" "$RUNNER" deploy "$FE_SHA"
+flock -u "$TERM_LOCK_FD"
+exec {TERM_LOCK_FD}>&-
+assert_true "runner proceeds after terminal flock release" \
+  bash -c 'ETERNAL_ACK_REPLACE_LIVE_FRONTEND=0 "'"$RUNNER"'" deploy "'"$FE_SHA"'" >/dev/null 2>&1'
+
+# ========== permission fixture: root-like parent blocks sibling; leaf publish works ==========
+assert_false "cannot create sibling under non-writable www parent" mkdir "$SIM_WWW_PARENT/eternal-packaging.prev"
+assert_false "bootstrap script never chowns /opt parent" \
+  grep -qE 'chown[[:space:]].*[[:space:]]/opt[[:space:]]*$|install -d .*[[:space:]]/opt[[:space:]]*$' \
+  "$ROOT/scripts/deploy/bootstrap-permissions.sh"
+assert_true "bootstrap validates refusing parent paths" \
+  grep -q 'refusing to operate on parent path' "$ROOT/scripts/deploy/bootstrap-permissions.sh"
+assert_true "bootstrap FE prev under runtime root" \
+  grep -q 'frontend-prev must be under runtime root' "$ROOT/scripts/deploy/bootstrap-permissions.sh"
+assert_true "unit uses eternaladmin + runtime current + google-places env" \
+  bash -c 'grep -q User=eternaladmin "'"$ROOT"'/scripts/deploy/systemd/eternal-packaging-backend.service" \
+    && grep -q /opt/eternal-packaging-runtime/current/backend "'"$ROOT"'/scripts/deploy/systemd/eternal-packaging-backend.service" \
+    && grep -q eternal-packaging-google-places.env "'"$ROOT"'/scripts/deploy/systemd/eternal-packaging-backend.service"'
+
+# ========== venv missing / invalid stops before activation ==========
+NO_VENV="$HARNESS/novenv-backend"
+mkdir -p "$NO_VENV"
+printf 'x\n' >"$NO_VENV/requirements.txt"
+assert_false "missing venv fails runtime validate" \
+  bash -c 'source "'"$ROOT"'/scripts/deploy/lib.sh"; eternal_validate_backend_runtime "'"$NO_VENV"'"'
+# Foreign shebang uvicorn must be refused
+mkdir -p "$NO_VENV/.venv/bin"
+ln -sfn "$(command -v python3)" "$NO_VENV/.venv/bin/python"
+cat >"$NO_VENV/.venv/bin/uvicorn" <<'EOF'
+#!/opt/eternal-packaging/backend/.venv/bin/python
+import sys
+sys.exit(0)
+EOF
+chmod +x "$NO_VENV/.venv/bin/uvicorn"
+assert_false "legacy shebang uvicorn refused" \
+  bash -c 'source "'"$ROOT"'/scripts/deploy/lib.sh"; eternal_validate_backend_runtime "'"$NO_VENV"'"'
+
+# ========== baseline: refuse overwrite; large manifest; symlink detect ==========
+rm -rf "$BASELINE"
+make_verified_baseline
+assert_false "prepare refuses overwrite without --force-recreate" \
+  env ETERNAL_RUNTIME_MODE=stub ETERNAL_USE_SYSTEMCTL_SUDO=0 ETERNAL_SYSTEMCTL_BIN="$BIN/systemctl" \
+      ETERNAL_BASELINE_DIR="$BASELINE" ETERNAL_FRONTEND_ROOT="$FRONTEND/live" \
+      ETERNAL_RELEASES_ROOT="$RELEASES" ETERNAL_RUNTIME_ROOT="$RUNTIME" \
+      ETERNAL_BASELINE_BACKEND_SRC="$LEGACY" \
+      "$PREPARE_BASELINE" --apply
+# marker-only immutable insufficient
+mkdir -p "$HARNESS/marker-only/tree/backend" "$HARNESS/marker-only/frontend-snapshot"
+printf 'kind=verified-baseline\nimmutable=1\nintegrity_sha256=dead\nfrontend_src=x\n' >"$HARNESS/marker-only/.baseline-verified"
+printf 'x\n' >"$HARNESS/marker-only/tree/backend/requirements.txt"
+printf 'y\n' >"$HARNESS/marker-only/frontend-snapshot/index.html"
+: >"$HARNESS/marker-only/.baseline-integrity"
+assert_false "marker-only baseline without digests_ok refused" \
+  bash -c 'source "'"$ROOT"'/scripts/deploy/lib.sh"; eternal_baseline_verify_integrity "'"$HARNESS"'/marker-only"'
+# symlink in frozen tree refused
+rm -rf "$BASELINE"
+make_verified_baseline
+ln -s /tmp/evil "$BASELINE/frontend-snapshot/evil-link"
+assert_false "baseline symlink in FE snapshot refused on rewrite" \
+  bash -c 'source "'"$ROOT"'/scripts/deploy/lib.sh"; ETERNAL_RUNTIME_MODE=stub eternal_baseline_write_integrity "'"$BASELINE"'" "'"$LEGACY"'" "'"$EXPECTED_WD"'" "'"$EXPECTED_WD"'/.venv/bin/uvicorn"'
+rm -f "$BASELINE/frontend-snapshot/evil-link"
+# >5000 files fully hashed
+rm -rf "$BASELINE"
+make_verified_baseline
+mkdir -p "$BASELINE/frontend-snapshot/bulk"
+for i in $(seq 1 5100); do printf 'f%s\n' "$i" >"$BASELINE/frontend-snapshot/bulk/f-$i.txt"; done
+ETERNAL_RUNTIME_MODE=stub eternal_baseline_write_integrity "$BASELINE" "$LEGACY" "$EXPECTED_WD" "$EXPECTED_WD/.venv/bin/uvicorn"
+fc="$(sed -n 's/^file_count=//p' "$BASELINE/.baseline-verified" | head -n1)"
+assert_true "manifest file_count >5000" bash -c "[[ \"$fc\" -gt 5000 ]]"
+assert_true "manifest lists all bulk files" bash -c "[[ \$(grep -c ' frontend-snapshot/bulk/' \"$BASELINE/.baseline-integrity\") -eq 5100 ]]"
+printf 'tamper-bulk\n' >>"$BASELINE/frontend-snapshot/bulk/f-1.txt"
+assert_false "change in file beyond 5000 detected" \
+  bash -c 'source "'"$ROOT"'/scripts/deploy/lib.sh"; ETERNAL_RUNTIME_MODE=stub eternal_baseline_verify_integrity "'"$BASELINE"'"'
 
 # ========== secret masking ==========
 FAKE=$'-----BEGIN OPENSSH PRIVATE KEY-----\nSECRETKEYMATERIAL1234567890\n-----END OPENSSH PRIVATE KEY-----'
@@ -408,9 +504,10 @@ red="$(eternal_redact_line "key=$FAKE")"
 assert_true "redactor masks key" grep -q REDACTED_PRIVATE_KEY <<<"$red"
 assert_false "redactor strips material" grep -q SECRETKEYMATERIAL1234567890 <<<"$red"
 
-# ========== workflow shape ==========
+# ========== workflow / docs shape ==========
 WF="$ROOT/.github/workflows/deploy-production.yml"
 PWF="$ROOT/.github/workflows/deploy-probe.yml"
+BOOT="$ROOT/scripts/deploy/bootstrap-permissions.sh"
 assert_true "deploy workflow_dispatch" grep -q workflow_dispatch "$WF"
 assert_true "deploy uses production env" grep -q 'environment: production' "$WF"
 assert_true "deploy_shared_secret input" grep -q deploy_shared_secret "$WF"
@@ -420,20 +517,20 @@ assert_true "probe uses ssh_gate_probe" grep -q ssh_gate_probe.sh "$PWF"
 assert_false "probe workflow steps do not invoke runner script path" \
   grep -q 'scripts/deploy/eternal-deploy-runner' "$PWF"
 assert_true "probe workflow only references ssh_gate_probe helper" grep -q 'ssh_gate_probe.sh' "$PWF"
-# Ensure run step invokes only the probe helper (not a deploy runner binary).
 assert_true "probe run step calls ssh_gate_probe.sh" \
   grep -A2 'Probe forced-command gate' "$PWF" | grep -q 'ssh_gate_probe.sh'
-assert_true "docs mention required reviewers" grep -q 'Required reviewers' "$ROOT/docs/deploy-production-setup.md"
+assert_true "docs mention runtime root" grep -q '/opt/eternal-packaging-runtime' "$ROOT/docs/deploy-production-setup.md"
 assert_true "docs enforce DEPLOY_ALLOWED_ACTORS" grep -q 'DEPLOY_ALLOWED_ACTORS' "$ROOT/docs/deploy-production-setup.md"
-assert_true "docs say shared secret is not human approval" \
-  grep -qiE 'Not\*\* human approval|secondary only|secret alone' "$ROOT/docs/deploy-production-setup.md"
-assert_true "docs order baseline before retarget" \
-  grep -q 'baseline + runtime dirs before service retarget' "$ROOT/docs/deploy-production-setup.md"
-assert_true "docs mention Cursor token store" grep -q 'ETERNAL_GH_TOKEN' "$ROOT/docs/deploy-production-setup.md"
-assert_true "docs mention ack-replace-live-frontend" grep -q 'ack-replace-live-frontend' "$ROOT/docs/deploy-production-setup.md"
-assert_true "docs warn pure SHA does not preserve overlay FE" \
-  grep -qi 'does \*\*not\*\* automatically preserve selective-merge' "$ROOT/docs/deploy-production-setup.md"
+assert_true "docs say never chown /opt or /var/www" \
+  grep -qiE 'Never chown `/opt`|never chown `/var/www`' "$ROOT/docs/deploy-production-setup.md"
+assert_true "docs separate preparation from activation" \
+  grep -q 'Phase A — preparation' "$ROOT/docs/deploy-production-setup.md"
+assert_true "docs mention flock" grep -q 'flock' "$ROOT/docs/deploy-production-setup.md"
+assert_true "docs mention ack-replace-live-frontend" grep -q 'ack_replace_live_frontend' "$ROOT/docs/deploy-production-setup.md"
 assert_true "prepare-verified-baseline exists" test -x "$PREPARE_BASELINE"
+assert_true "bootstrap default user eternaladmin" grep -q 'eternaladmin' "$BOOT"
+assert_true "lib uses flock not noclobber" \
+  bash -c 'grep -q flock "'"$ROOT"'/scripts/deploy/lib.sh" && ! grep -q noclobber "'"$ROOT"'/scripts/deploy/lib.sh"'
 assert_true "deploy workflow enforces actor allowlist" grep -q 'DEPLOY_ALLOWED_ACTORS' "$WF"
 assert_true "deploy workflow has ack_replace_live_frontend input" grep -q 'ack_replace_live_frontend' "$WF"
 assert_true "deploy workflow notes secret alone cannot authorize" \
@@ -446,6 +543,8 @@ assert_true "bash -n runner" bash -n "$RUNNER"
 assert_true "bash -n trigger" bash -n "$TRIGGER"
 assert_true "bash -n probe" bash -n "$PROBE_SH"
 assert_true "bash -n gate" bash -n "$GATE"
+assert_true "bash -n bootstrap" bash -n "$BOOT"
+assert_true "bash -n prepare-baseline" bash -n "$PREPARE_BASELINE"
 assert_true "deploy workflow has jobs:" grep -q '^jobs:' "$WF"
 assert_true "probe workflow has jobs:" grep -q '^jobs:' "$PWF"
 assert_true "deploy workflow on.workflow_dispatch" grep -q 'workflow_dispatch:' "$WF"

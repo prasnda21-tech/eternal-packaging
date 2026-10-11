@@ -15,11 +15,14 @@ RUNNER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
 source "$RUNNER_DIR/lib.sh"
 
-ETERNAL_RELEASES_ROOT="${ETERNAL_RELEASES_ROOT:-/opt/eternal-packaging-releases}"
-ETERNAL_CURRENT_LINK="${ETERNAL_CURRENT_LINK:-/opt/eternal-packaging-current}"
+# Dedicated runtime root (writable by deploy user). Never chown /opt or /var/www parents.
+ETERNAL_RUNTIME_ROOT="${ETERNAL_RUNTIME_ROOT:-/opt/eternal-packaging-runtime}"
+ETERNAL_RELEASES_ROOT="${ETERNAL_RELEASES_ROOT:-$ETERNAL_RUNTIME_ROOT/releases}"
+ETERNAL_CURRENT_LINK="${ETERNAL_CURRENT_LINK:-$ETERNAL_RUNTIME_ROOT/current}"
 ETERNAL_LEGACY_ROOT="${ETERNAL_LEGACY_ROOT:-/opt/eternal-packaging}"
 ETERNAL_FRONTEND_ROOT="${ETERNAL_FRONTEND_ROOT:-/var/www/eternal-packaging}"
-ETERNAL_FRONTEND_PREV="${ETERNAL_FRONTEND_PREV:-/var/www/eternal-packaging.prev}"
+# FE backup lives under runtime root (not a /var/www sibling — parent is often root-owned).
+ETERNAL_FRONTEND_PREV="${ETERNAL_FRONTEND_PREV:-$ETERNAL_RUNTIME_ROOT/frontend-prev}"
 ETERNAL_DEPLOY_LOCK="${ETERNAL_DEPLOY_LOCK:-/tmp/eternal-packaging-deploy.lock}"
 ETERNAL_SERVICE_NAME="${ETERNAL_SERVICE_NAME:-eternal-packaging-backend.service}"
 ETERNAL_HEALTH_URL="${ETERNAL_HEALTH_URL:-http://127.0.0.1:8000/api/system/health}"
@@ -37,13 +40,15 @@ ETERNAL_CURL_BIN="${ETERNAL_CURL_BIN:-curl}"
 ETERNAL_SKIP_FETCH="${ETERNAL_SKIP_FETCH:-0}"
 ETERNAL_DRY_BUILD="${ETERNAL_DRY_BUILD:-0}"
 ETERNAL_BASELINE_DIR="${ETERNAL_BASELINE_DIR:-$ETERNAL_RELEASES_ROOT/baseline-active}"
-ETERNAL_EXPECTED_WD="${ETERNAL_EXPECTED_WD:-/opt/eternal-packaging-current/backend}"
-ETERNAL_EXPECTED_EXEC_PREFIX="${ETERNAL_EXPECTED_EXEC_PREFIX:-/opt/eternal-packaging-current/backend}"
+ETERNAL_EXPECTED_WD="${ETERNAL_EXPECTED_WD:-$ETERNAL_CURRENT_LINK/backend}"
+ETERNAL_EXPECTED_EXEC_PREFIX="${ETERNAL_EXPECTED_EXEC_PREFIX:-$ETERNAL_CURRENT_LINK/backend}"
 ETERNAL_MIN_DISK_KB="${ETERNAL_MIN_DISK_KB:-524288}"
 ETERNAL_NODE_OPTIONS="${ETERNAL_NODE_OPTIONS:---max-old-space-size=2048}"
 ETERNAL_FRONTEND_ENV_FILE="${ETERNAL_FRONTEND_ENV_FILE:-}"
 # Optional read-only overlay marker: if legacy tree looks dirty without verified baseline, block.
 ETERNAL_REQUIRE_VERIFIED_BASELINE="${ETERNAL_REQUIRE_VERIFIED_BASELINE:-1}"
+ETERNAL_RUNTIME_MODE="${ETERNAL_RUNTIME_MODE:-full}"
+ETERNAL_PYTHON_BIN="${ETERNAL_PYTHON_BIN:-python3}"
 
 PREV_RELEASE=""
 PREV_IS_BASELINE=0
@@ -80,26 +85,50 @@ eternal_systemctl() {
   fi
 }
 
+# Restore frontend INTO existing webroot (no rename of /var/www child — parent may be root-owned).
+# Assets first, atomic index last. Keeps hashed assets that remain useful for old sessions when present in backup.
+eternal_restore_frontend_tree() {
+  local src="$1"
+  [[ -d "$src" ]] || eternal_deploy_die "frontend restore source missing: $src"
+  [[ -d "$ETERNAL_FRONTEND_ROOT" ]] || mkdir -p "$ETERNAL_FRONTEND_ROOT"
+  [[ -w "$ETERNAL_FRONTEND_ROOT" ]] || eternal_deploy_die "frontend root not writable: $ETERNAL_FRONTEND_ROOT"
+
+  if [[ -d "$src/static" ]]; then
+    mkdir -p "$ETERNAL_FRONTEND_ROOT/static"
+    cp -a "$src/static"/. "$ETERNAL_FRONTEND_ROOT/static"/
+  fi
+  local item base
+  shopt -s dotglob nullglob
+  for item in "$src"/*; do
+    base="$(basename "$item")"
+    if [[ "$base" == "index.html" || "$base" == "static" || "$base" == ".deploy-in-progress" ]]; then
+      continue
+    fi
+    if [[ -d "$item" ]]; then
+      mkdir -p "$ETERNAL_FRONTEND_ROOT/$base"
+      cp -a "$item"/. "$ETERNAL_FRONTEND_ROOT/$base"/
+    else
+      cp -a "$item" "$ETERNAL_FRONTEND_ROOT/$base"
+    fi
+  done
+  shopt -u dotglob nullglob
+  if [[ -f "$src/index.html" ]]; then
+    cp -a "$src/index.html" "$ETERNAL_FRONTEND_ROOT/index.html.new"
+    mv -Tf "$ETERNAL_FRONTEND_ROOT/index.html.new" "$ETERNAL_FRONTEND_ROOT/index.html"
+  fi
+}
+
 eternal_rollback() {
-  # Frontend first if publish started/switched.
+  # Frontend first if publish started/switched — in-place restore only.
   if [[ "$FRONTEND_SWITCHED" == "1" || "$FRONTEND_PUBLISH_STARTED" == "1" ]]; then
     if [[ -d "$ETERNAL_FRONTEND_PREV" ]]; then
-      eternal_deploy_log "rollback: restore frontend from verified previous tree"
-      rm -rf "${ETERNAL_FRONTEND_ROOT}.bad" 2>/dev/null || true
-      if [[ -d "$ETERNAL_FRONTEND_ROOT" ]]; then
-        mv "$ETERNAL_FRONTEND_ROOT" "${ETERNAL_FRONTEND_ROOT}.bad"
-      fi
-      mv "$ETERNAL_FRONTEND_PREV" "$ETERNAL_FRONTEND_ROOT"
+      eternal_deploy_log "rollback: restore frontend from $ETERNAL_FRONTEND_PREV (in-place)"
+      eternal_restore_frontend_tree "$ETERNAL_FRONTEND_PREV" || true
       FRONTEND_SWITCHED=0
       FRONTEND_PUBLISH_STARTED=0
     elif [[ "$PREV_IS_BASELINE" == "1" && -d "$ETERNAL_BASELINE_DIR/frontend-snapshot" ]]; then
-      eternal_deploy_log "rollback: restore frontend from verified baseline snapshot"
-      rm -rf "${ETERNAL_FRONTEND_ROOT}.bad" 2>/dev/null || true
-      if [[ -d "$ETERNAL_FRONTEND_ROOT" ]]; then
-        mv "$ETERNAL_FRONTEND_ROOT" "${ETERNAL_FRONTEND_ROOT}.bad"
-      fi
-      mkdir -p "$ETERNAL_FRONTEND_ROOT"
-      cp -a "$ETERNAL_BASELINE_DIR/frontend-snapshot"/. "$ETERNAL_FRONTEND_ROOT"/
+      eternal_deploy_log "rollback: restore frontend from verified baseline snapshot (in-place)"
+      eternal_restore_frontend_tree "$ETERNAL_BASELINE_DIR/frontend-snapshot" || true
       FRONTEND_SWITCHED=0
       FRONTEND_PUBLISH_STARTED=0
     fi
@@ -180,6 +209,13 @@ eternal_preflight_runtime() {
   [[ -d "$ETERNAL_RELEASES_ROOT" ]] || eternal_deploy_die "preflight: releases root missing: $ETERNAL_RELEASES_ROOT"
   [[ -w "$ETERNAL_RELEASES_ROOT" ]] || eternal_deploy_die "preflight: releases root not writable"
   [[ -d "$ETERNAL_MIRROR_DIR" ]] || eternal_deploy_die "preflight: mirror missing: $ETERNAL_MIRROR_DIR (bootstrap mirror before first deploy)"
+  local current_parent
+  current_parent="$(dirname "$ETERNAL_CURRENT_LINK")"
+  [[ -d "$current_parent" && -w "$current_parent" ]] \
+    || eternal_deploy_die "preflight: CURRENT parent not writable: $current_parent (bootstrap runtime root; never chown /opt)"
+  [[ -d "$ETERNAL_FRONTEND_ROOT" ]] || eternal_deploy_die "preflight: frontend root missing: $ETERNAL_FRONTEND_ROOT"
+  [[ -w "$ETERNAL_FRONTEND_ROOT" ]] \
+    || eternal_deploy_die "preflight: frontend root not writable by deploy user (fix leaf ownership; never chown /var/www)"
   local avail
   avail="$(df -Pk "$ETERNAL_RELEASES_ROOT" | awk 'NR==2{print $4}')"
   if [[ -n "$avail" && "$avail" -lt "$ETERNAL_MIN_DISK_KB" ]]; then
@@ -279,6 +315,7 @@ eternal_materialize_release() {
   NEW_RELEASE="$ETERNAL_RELEASES_ROOT/$sha"
   if [[ -f "$NEW_RELEASE/.deploy-ok" ]]; then
     eternal_deploy_log "reusing existing release $NEW_RELEASE"
+    eternal_validate_backend_runtime "$NEW_RELEASE/backend"
     return 0
   fi
   eternal_assert_no_local_conflict "$ETERNAL_FRONTEND_ROOT" "$NEW_RELEASE"
@@ -286,6 +323,8 @@ eternal_materialize_release() {
   mkdir -p "$NEW_RELEASE"
   eternal_deploy_log "materializing isolated release $sha"
   git --git-dir="$ETERNAL_MIRROR_DIR" archive --format=tar "$sha" | tar -x -C "$NEW_RELEASE"
+  # Never carry a foreign .venv from archive (should not be in git; belt-and-suspenders).
+  rm -rf "$NEW_RELEASE/backend/.venv" 2>/dev/null || true
   eternal_manifest_guard "$NEW_RELEASE"
   # Refuse selective-merge manual artifacts without provenance marker.
   if [[ -f "$NEW_RELEASE/.manual-selective-merge" ]]; then
@@ -354,10 +393,13 @@ eternal_verify_backup_ready() {
   elif [[ -n "$PREV_RELEASE" ]]; then
     [[ -d "$PREV_RELEASE" ]] || eternal_deploy_die "previous release path missing before activation"
   fi
-  # Preserve live frontend tree for rollback before activation when FE will change.
+  # Preserve live frontend contents under runtime root (not /var/www sibling).
   if [[ "$ETERNAL_NEED_FRONTEND" == "1" && -d "$ETERNAL_FRONTEND_ROOT" ]]; then
+    [[ -w "$(dirname "$ETERNAL_FRONTEND_PREV")" ]] \
+      || eternal_deploy_die "frontend backup parent not writable: $(dirname "$ETERNAL_FRONTEND_PREV")"
     rm -rf "$ETERNAL_FRONTEND_PREV"
-    cp -a "$ETERNAL_FRONTEND_ROOT" "$ETERNAL_FRONTEND_PREV"
+    mkdir -p "$ETERNAL_FRONTEND_PREV"
+    cp -a "$ETERNAL_FRONTEND_ROOT"/. "$ETERNAL_FRONTEND_PREV"/
     eternal_deploy_log "frontend pre-activation backup at $ETERNAL_FRONTEND_PREV"
   fi
   eternal_deploy_log "backup verification OK"
@@ -365,6 +407,12 @@ eternal_verify_backup_ready() {
 
 eternal_switch_current() {
   local release_dir="$1"
+  # Validate release runtime BEFORE flipping CURRENT (fail closed).
+  eternal_validate_backend_runtime "$release_dir/backend"
+  local parent
+  parent="$(dirname "$ETERNAL_CURRENT_LINK")"
+  [[ -d "$parent" && -w "$parent" ]] \
+    || eternal_deploy_die "CURRENT link parent not writable (bootstrap runtime root first): $parent"
   ln -sfn "$release_dir" "${ETERNAL_CURRENT_LINK}.tmp"
   mv -Tf "${ETERNAL_CURRENT_LINK}.tmp" "$ETERNAL_CURRENT_LINK"
   SWITCHED=1
@@ -527,8 +575,14 @@ EOF
   export ETERNAL_NEED_BACKEND ETERNAL_NEED_FRONTEND
   eternal_deploy_log "change classification backend=$ETERNAL_NEED_BACKEND frontend=$ETERNAL_NEED_FRONTEND"
 
-  # Build before any live activation.
+  # Build + fresh venv BEFORE any live activation. Never mutate active service venv.
   eternal_maybe_build_frontend "$NEW_RELEASE"
+  if [[ "$ETERNAL_NEED_BACKEND" == "1" || ! -x "$NEW_RELEASE/backend/.venv/bin/uvicorn" ]]; then
+    eternal_deploy_log "preparing isolated backend runtime for $sha"
+    eternal_prepare_backend_runtime "$NEW_RELEASE/backend"
+  else
+    eternal_validate_backend_runtime "$NEW_RELEASE/backend"
+  fi
   eternal_verify_backup_ready "$sha"
 
   eternal_switch_current "$NEW_RELEASE"

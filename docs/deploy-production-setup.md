@@ -2,129 +2,114 @@
 
 Scope: workflows, SSH gate, isolated release runner, Cursor trigger helper, least-privilege bootstrap docs, synthetic tests. Does **not** mutate ERP business source, MongoDB, or run production deploy by itself.
 
+## VPS path contract (aligned to production evidence)
+
+| Path | Role |
+|------|------|
+| `/opt/eternal-packaging-runtime/` | Dedicated runtime root (leaf created by root bootstrap; owned by `eternaladmin`). **Never chown `/opt`.** |
+| `/opt/eternal-packaging-runtime/releases/` | Isolated releases + `baseline-active` + `mirror.git` + backups |
+| `/opt/eternal-packaging-runtime/current` | Symlink to active release/baseline tree (replaceable by deploy user) |
+| `/opt/eternal-packaging-runtime/frontend-prev` | Frontend rollback backup (not a `/var/www` sibling) |
+| `/var/www/eternal-packaging` | Live webroot (leaf owned by `eternaladmin`; **never chown `/var/www`**) |
+| `/opt/eternal-packaging` | Legacy dirty overlay — left untouched; secrets via EnvironmentFile only |
+| `/opt/eternal-packaging/backend/.env` | Existing EnvironmentFile (kept) |
+| `/etc/eternal-packaging-google-places.env` | Existing EnvironmentFile (kept) |
+| Stage WD (pre-cutover) | `/home/eternaladmin/eternal-packaging-phase3-stage/backend` (retarget away from this) |
+| Legacy ExecStart venv | `/opt/eternal-packaging/backend/.venv/...` (do not copy; prepare fresh release venv) |
+
 ## Separation of concerns
 
 | Concern | Mechanism |
 |---------|-----------|
-| Trigger GitHub Actions | Credential with **Actions write** (Owner/`gh` or env secret store). `cursor[bot]` read ≠ write. |
-| Human deployment control (enforced) | Repository variable `DEPLOY_ALLOWED_ACTORS` (comma-separated GitHub logins). Fail-closed; shared secret alone cannot authorize. |
-| Human approval (preferred platform) | GitHub Environment `production` **Required reviewers** when available for this private repo. **Not claimed available without Owner proof.** |
-| Technical shared secret | Input `deploy_shared_secret` ↔ `DEPLOY_SHARED_SECRET` (secondary). **Not** human approval. |
+| Trigger GitHub Actions | Credential with **Actions write**. `cursor[bot]` read ≠ write. |
+| Human deployment control (enforced) | Repository variable `DEPLOY_ALLOWED_ACTORS` (fail-closed). |
+| Human approval (preferred platform) | Environment `production` **Required reviewers** only if/when available. |
+| Technical shared secret | `deploy_shared_secret` ↔ `DEPLOY_SHARED_SECRET` (secondary). **Not** human approval. |
 | SSH to VPS | Environment secrets `DEPLOY_SSH_*` only inside Actions jobs. |
+| Deploy mutual exclusion | `flock` on `/tmp/eternal-packaging-deploy.lock` (runner + terminal interoperable; no unlink). |
 
-### Approval reality for this private repo
+## Runtime bootstrap checklist (source/docs only — do not run from this agent)
 
-- Do **not** remove Environment protection or open deploy while migrating.
-- Keep technical shared-secret gate as secondary only.
-- Enforced substitute today: set `DEPLOY_ALLOWED_ACTORS` (repo Actions variable) to Owner/operator logins that may dispatch.
-- Prefer enabling Required reviewers on Environment `production` if/when the platform UI exposes them for this private repo. Until then, do **not** claim reviewers are available; do **not** bypass with secret-only auth.
-- Legacy secret name `DEPLOY_APPROVAL_TOKEN` still accepted as alias for `DEPLOY_SHARED_SECRET` during migration.
+Order matters — **preparation before activation**:
 
-## Cursor trigger helper (local)
+### Phase A — preparation (no live service retarget / no deploy)
+
+1. As root: `ETERNAL_BOOTSTRAP_DEPLOY_USER=eternaladmin bash scripts/deploy/bootstrap-permissions.sh` (dry-run), then `--apply`.
+   - Creates `/opt/eternal-packaging-runtime/{releases,frontend-prev}` owned by `eternaladmin`.
+   - Narrow sudoers: `systemctl restart|is-active|show` for the unit only.
+   - Does **not** chown/chmod `/opt` or `/var/www`.
+2. As `eternaladmin`: create bare mirror `git clone --mirror <repo> /opt/eternal-packaging-runtime/releases/mirror.git`
+3. As `eternaladmin`: `prepare-verified-baseline.sh --apply`
+   - Freezes backend **without** copying live `.venv`
+   - Snapshots live FE (selective-merge inclusive) into baseline
+   - Creates **fresh** isolated venv + validates uvicorn/python (no prod DB)
+   - Writes full integrity manifest (no 5000-file truncation) + runtime provenance
+   - Refuses overwrite of existing baseline unless `--force-recreate` and CURRENT is not pointing at it
+
+### Phase B — activation (after verified baseline exists)
+
+4. Install/adapt unit from `scripts/deploy/systemd/eternal-packaging-backend.service`:
+   - `User=eternaladmin` / `Group=eternaladmin`
+   - `WorkingDirectory=/opt/eternal-packaging-runtime/current/backend`
+   - `ExecStart=/opt/eternal-packaging-runtime/current/backend/.venv/bin/uvicorn ...`
+   - Keep `EnvironmentFile=-/opt/eternal-packaging/backend/.env`
+   - Keep `EnvironmentFile=-/etc/eternal-packaging-google-places.env`
+5. Point `current` at baseline tree **or** leave unset until first deploy.
+6. `install-gate.sh --activate` and confirm probe.
+7. Set Environment secrets + `DEPLOY_ALLOWED_ACTORS`.
+
+Keep dirty `/opt/eternal-packaging` overlay untouched. Pure SHA does **not** automatically preserve selective-merge FE — first cutover needs `ack_replace_live_frontend`.
+
+## Runner behaviour (high level)
+
+- Shared `flock` lock held through rollback; existing lock file without holder does not block; lock file is not unlinked.
+- Preflight: runtime root writable, FE leaf writable, mirror, disk, systemd WD/ExecStart match expected **runtime** paths.
+- Materialize via `git archive` then **fresh venv** + dependency install; validate executable before switching `current`.
+- Baseline rollback runtime must pass the same validation (not marker-only).
+- FE backup under runtime root; publish/restore in-place (assets then atomic `index.html`); never rename webroot under root-owned `/var/www`.
+- Health + MainPID/cwd checks after restart.
+- No business migrations/backfills.
+
+## Cursor trigger helper
 
 ```bash
-# Default: plan only — never POSTs
 bash scripts/deploy/trigger_github_actions.sh plan probe
-bash scripts/deploy/trigger_github_actions.sh plan deploy \
-  --sha <40-hex> --confirm-sha <40-hex>
-
-# Execute ONLY after Owner explicitly orders a named SHA deploy/probe
-# and a write-capable credential is configured in the environment secret store:
-#   ETERNAL_GH_TOKEN or gh auth with Actions write (never commit tokens)
+bash scripts/deploy/trigger_github_actions.sh plan deploy --sha <40-hex> --confirm-sha <40-hex>
+# execute only with write credential + Owner order:
 bash scripts/deploy/trigger_github_actions.sh execute probe --execute
-bash scripts/deploy/trigger_github_actions.sh execute deploy \
-  --sha <40-hex> --confirm-sha <40-hex> --execute
-
-# First cutover that will replace live webroot (e.g. selective-merge FE) with pure SHA:
 bash scripts/deploy/trigger_github_actions.sh execute deploy \
   --sha <40-hex> --confirm-sha <40-hex> --ack-replace-live-frontend --execute
 ```
 
-CLI confirmation flags do **not** prove human approval. Deploy never auto-selects `main` tip.
-Shared secret is passed from env into a JSON body via stdin (`gh api --input -`); it is never placed on `gh`/`jq` argv or written to helper logs.
-
-### Owner setup for Cursor-limited Actions write
-
-1. Prefer official Cursor/GitHub App permission upgrade **if** the product exposes Actions write for this repo (audit showed `cursor[bot]` was read-only).
-2. If not available: create a fine-scoped PAT or GitHub App installation with **only** `actions:write` + necessary `contents:read` on `prasnda21-tech/eternal-packaging`.
-3. Store it in the **Cursor Cloud environment secret store** as e.g. `ETERNAL_GH_TOKEN` (not in source, CLI history, logs, or chat).
-4. Helper/docs read from that env at execute time; never echo the value.
-5. Do not use `pull_request_target` as an access shortcut.
+Shared secret travels env → JSON stdin (`gh api --input -`), never argv/logs.
 
 ## Probe-only workflow
 
-Workflow: `.github/workflows/deploy-probe.yml` (manual, `main` only).
+`.github/workflows/deploy-probe.yml` — literal remote `probe` only. PASS ≠ runtime readiness.
 
-- Environment `production` (secrets + protection).
-- SSH: `BatchMode`, `StrictHostKeyChecking=yes`, key file mode `600`, cleanup always.
-- Remote command literal: `probe` only.
-- No deploy runner, build, restart, migrate, or publish.
-- Probe PASS = gate connectivity only — **not** runtime readiness.
+## GitHub Environment Secrets / Variables
 
-## Runtime bootstrap checklist (source/docs only — do not run from this agent)
+Secrets: `DEPLOY_SHARED_SECRET` (alias `DEPLOY_APPROVAL_TOKEN`), `DEPLOY_HOST`, `DEPLOY_USER` (=`eternaladmin` gate user), `DEPLOY_SSH_KEY`, `DEPLOY_KNOWN_HOSTS`, optional `DEPLOY_SSH_PORT`.
 
-Order matters — **baseline + runtime dirs before service retarget/activation**:
+Variable: `DEPLOY_ALLOWED_ACTORS` (comma-separated logins).
 
-### Phase A — preparation (no live activation)
+## Preflight VPS (read-only; no secrets)
 
-1. `bootstrap-permissions.sh --apply` (releases, current parent, webroot ownership; narrow sudoers for systemctl restart/is-active/show only).
-2. Create bare mirror: `/opt/eternal-packaging-releases/mirror.git`
-3. `prepare-verified-baseline.sh --apply` — immutable backend freeze + **live** frontend snapshot (must include `index.html` and selective-merge FE assets) + `.baseline-integrity` / `.baseline-verified` provenance with `frontend_src=` (not marker-only; not symlink to mutable overlay). Does **not** retarget systemd.
+```bash
+RUNTIME=/opt/eternal-packaging-runtime
+SVC=eternal-packaging-backend.service
+stat -c '%U:%G %a %n' /opt /var/www "$RUNTIME" "$RUNTIME/releases" /var/www/eternal-packaging 2>/dev/null || true
+systemctl show -p WorkingDirectory -p ExecStart -p MainPID -p ActiveState --value "$SVC"
+test -d "$RUNTIME/releases" && test -w "$RUNTIME/releases" && echo RELEASES_WRITABLE
+test -d /var/www/eternal-packaging && test -w /var/www/eternal-packaging && echo FE_LEAF_WRITABLE
+# parents must remain root-owned (evidence); do not "fix" by chowning them
+BASE="$RUNTIME/releases/baseline-active"
+test -f "$BASE/.baseline-verified" && grep -E '^(kind|immutable|content_digests|frontend_src|file_count|runtime_)' "$BASE/.baseline-verified"
+(cd "$BASE" && sha256sum -c .baseline-integrity >/dev/null && echo BASELINE_DIGEST_OK)
+test -x "$BASE/tree/backend/.venv/bin/uvicorn" && echo BASELINE_RUNTIME_OK
+```
 
-### Phase B — activation (after verified baseline exists)
-
-4. Install/adapt unit config (`scripts/deploy/systemd/eternal-packaging-backend.service`) so:
-   - `WorkingDirectory=/opt/eternal-packaging-current/backend`
-   - `ExecStart` under that prefix
-   - `EnvironmentFile=-/opt/eternal-packaging/backend/.env` (legacy secrets stay put)
-   Retarget is config-only and comes **after** baseline exists; deploy preflight BLOCKS if WD still points at the old stage path.
-5. Point `/opt/eternal-packaging-current` at baseline tree **or** leave unset until first deploy (runner validates integrity then uses baseline for rollback).
-6. `install-gate.sh --activate` and confirm probe.
-7. Set Environment secrets + repo variable (below).
-8. Set `DEPLOY_ALLOWED_ACTORS`. Prefer Required reviewers on Environment `production` when supported; until proven, treat reviewers as unavailable and rely on the allowlist (secret alone is insufficient).
-
-Keep dirty `/opt/eternal-packaging` overlay untouched. Do not archive `main` over it without an explicit Owner reconciliation decision.
-Pure SHA deploy does **not** automatically preserve selective-merge FE; first cutover that publishes FE requires `ack_replace_live_frontend` / `deploy <sha> ack-fe-replace`.
-
-## Runner behaviour (high level)
-
-- Shared lock `/tmp/eternal-packaging-deploy.lock` held through rollback.
-- Preflight: mirror, releases perms, disk, tools, systemd WD/ExecStart match expected current paths; verified baseline digests (backend + FE snapshot) before first cutover.
-- Build isolated; failure does not activate release.
-- Backup verified before activation.
-- Frontend: merge hashed assets, atomic `index.html` last (no empty webroot window).
-- Health requires `mongo=true` and `mode=operational` **and** process/cwd (MainPID) tied to target release after restart.
-- Partial restart failure triggers rollback while lock is held.
-- No business migrations/backfills.
-- Manual selective-merge artifacts (`.manual-selective-merge`) refused.
-
-## GitHub Environment Secrets
-
-| Secret | Purpose |
-|--------|---------|
-| `DEPLOY_SHARED_SECRET` | Technical gate (preferred). Alias: legacy `DEPLOY_APPROVAL_TOKEN`. |
-| `DEPLOY_HOST` | VPS host |
-| `DEPLOY_USER` | SSH user (forced-command gate) |
-| `DEPLOY_SSH_KEY` | Actions deploy private key only |
-| `DEPLOY_KNOWN_HOSTS` | Host key lines |
-| `DEPLOY_SSH_PORT` | Optional (default 22) |
-
-## GitHub repository Variables
-
-| Variable | Purpose |
-|----------|---------|
-| `DEPLOY_ALLOWED_ACTORS` | Comma-separated GitHub logins allowed to authorize deploy (fail-closed). |
-
-## First deploy plan (overlay-safe)
-
-1. Complete bootstrap checklist above (verified baseline + unit retarget).
-2. Choose explicit main SHA with required CI green.
-3. Run probe workflow; confirm gate only.
-4. Dispatch deploy with SHA/confirm/shared-secret + actor on allowlist (+ Environment reviewer approval if configured). For first cutover replacing live FE: set `ack_replace_live_frontend=true`.
-5. On failure: runner rolls back to verified baseline FE + CURRENT; overlay untouched.
-6. Do not publish manual frontend candidate as if it were a SHA release. Do not assume pure SHA retains overlay FE.
-
-## Synthetic verification (local mocks only)
+## Synthetic verification
 
 ```bash
 bash scripts/tests/test_deploy_infrastructure_synthetic.sh
@@ -134,5 +119,6 @@ bash scripts/tests/test_deploy_infrastructure_synthetic.sh
 
 - No production deploy from this document alone
 - No Mongo migration execution
-- No Owner Windows private key usage
+- No E2E claim without Owner-run cutover
 - No `sudo NOPASSWD:ALL` / arbitrary root script execution
+- No chown of `/opt` or `/var/www` parents
