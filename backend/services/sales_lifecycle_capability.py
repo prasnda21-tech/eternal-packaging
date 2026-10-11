@@ -169,7 +169,41 @@ async def receipt_auto_indexes_ready(db) -> bool:
         return False
 
 
-def _user_has_perm(user: Optional[dict], perm: str, *, opt_in: bool = False) -> bool:
+# Must match server.create_sales_invoice_endpoint /
+# recover_auto_sales_invoice_accounting_endpoint (_require_any_perm).
+INVOICE_CREATE_ENDPOINT_PERMS: Tuple[str, ...] = (
+    "sales.invoice.create",
+    "sales_order.create",
+    "po.edit",
+)
+
+
+async def _role_defaults_from_db(db) -> Dict[str, List[str]]:
+    """Same source as server._role_defaults_override — role_permissions docs."""
+    try:
+        docs = await db.role_permissions.find(
+            {}, {"_id": 0, "role": 1, "permissions": 1}
+        ).to_list(50)
+    except Exception:
+        return {}
+    out: Dict[str, List[str]] = {}
+    for doc in docs or []:
+        role = str((doc or {}).get("role") or "").strip()
+        if not role:
+            continue
+        perms = (doc or {}).get("permissions")
+        if isinstance(perms, list):
+            out[role] = list(perms)
+    return out
+
+
+def _user_has_perm(
+    user: Optional[dict],
+    perm: str,
+    *,
+    opt_in: bool = False,
+    role_defaults_override: Optional[Dict[str, List[str]]] = None,
+) -> bool:
     from permissions import OPT_IN_ONLY_PERMISSIONS, effective_permissions, opt_in_permission_granted
 
     role = str((user or {}).get("role") or "")
@@ -178,8 +212,27 @@ def _user_has_perm(user: Optional[dict], perm: str, *, opt_in: bool = False) -> 
         return bool(opt_in_permission_granted(role, override, perm))
     if role == "admin":
         return True
-    perms = effective_permissions(role, override)
+    perms = effective_permissions(role, override, role_defaults_override)
     return perm in perms
+
+
+def _user_has_any_perm(
+    user: Optional[dict],
+    perms: Sequence[str],
+    *,
+    opt_in: bool = False,
+    role_defaults_override: Optional[Dict[str, List[str]]] = None,
+) -> bool:
+    """True when any listed perm is granted — mirrors server._require_any_perm."""
+    for perm in perms:
+        if _user_has_perm(
+            user,
+            perm,
+            opt_in=opt_in,
+            role_defaults_override=role_defaults_override,
+        ):
+            return True
+    return False
 
 
 def _doc_pending_or_failed(doc: Optional[dict]) -> Tuple[bool, Optional[str]]:
@@ -314,7 +367,13 @@ async def build_invoice_lifecycle_capability(
     edit_sys, edit_reasons = await _invoice_edit_ready(db)
     cancel_sys, cancel_reasons = await _cancel_ready(db, kind="invoice")
 
-    can_create = _user_has_perm(user, "sales.invoice.create")
+    # Create/auto-post must match endpoint any-of auth + role_permissions docs.
+    role_defaults = await _role_defaults_from_db(db)
+    can_create = _user_has_any_perm(
+        user,
+        INVOICE_CREATE_ENDPOINT_PERMS,
+        role_defaults_override=role_defaults,
+    )
     can_edit = _user_has_perm(user, "sales.invoice.edit")
     can_cancel = _user_has_perm(user, "sales.invoice.cancel", opt_in=True)
 
