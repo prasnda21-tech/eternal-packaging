@@ -1,0 +1,229 @@
+name: Deploy production
+
+# Manual immutable-SHA production deploy.
+# Separate authorization job (Environment + DEPLOY_APPROVAL_TOKEN) must pass
+# before the deploy job uses SSH secrets.
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: Immutable 40-char lowercase commit SHA already merged to main
+        required: true
+        type: string
+      confirm_sha:
+        description: Must exactly equal commit_sha (operator confirmation)
+        required: true
+        type: string
+      approval_token:
+        description: Separate Owner approval token (must match Environment secret DEPLOY_APPROVAL_TOKEN)
+        required: true
+        type: string
+      allow_migrations:
+        description: Set true ONLY when Owner explicitly approved DB/business migrations in this SHA range
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  actions: read
+  checks: read
+
+concurrency:
+  group: eternal-packaging-production-deploy
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    name: Preflight (no deploy secrets)
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      sha: ${{ steps.normalize.outputs.sha }}
+    steps:
+      - name: Normalize and confirm SHA
+        id: normalize
+        env:
+          RAW_SHA: ${{ inputs.commit_sha }}
+          CONFIRM_SHA: ${{ inputs.confirm_sha }}
+        run: |
+          set -euo pipefail
+          sha="$(printf '%s' "$RAW_SHA" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+          confirm="$(printf '%s' "$CONFIRM_SHA" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+          if [[ ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "commit_sha must be 40 lowercase hex characters" >&2
+            exit 1
+          fi
+          if [[ "$sha" != "$confirm" ]]; then
+            echo "confirm_sha must exactly equal commit_sha" >&2
+            exit 1
+          fi
+          echo "sha=$sha" >>"$GITHUB_OUTPUT"
+
+      - name: Checkout main at requested SHA
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.normalize.outputs.sha }}
+          fetch-depth: 0
+
+      - name: Verify SHA is on origin/main ancestry
+        env:
+          SHA: ${{ steps.normalize.outputs.sha }}
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          git rev-parse --verify "${SHA}^{commit}" >/dev/null
+          if ! git merge-base --is-ancestor "$SHA" origin/main; then
+            echo "SHA is not an ancestor of origin/main (unmerged)" >&2
+            exit 1
+          fi
+          echo "ancestry OK for $SHA"
+
+      - name: Require explicit green CI jobs for SHA
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.normalize.outputs.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          bash scripts/deploy/verify_ci_for_sha.sh "$REPO" "$SHA"
+
+  authorize:
+    name: Separate production authorization
+    needs: preflight
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    steps:
+      - name: Verify DEPLOY_APPROVAL_TOKEN (separate from confirm_sha)
+        env:
+          GOT: ${{ inputs.approval_token }}
+          EXPECT: ${{ secrets.DEPLOY_APPROVAL_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${EXPECT}" ]]; then
+            echo "DEPLOY_APPROVAL_TOKEN secret missing on Environment production" >&2
+            exit 1
+          fi
+          if [[ -z "${GOT}" ]]; then
+            echo "approval_token input missing" >&2
+            exit 1
+          fi
+          echo "::add-mask::${GOT}"
+          got_h="$(printf '%s' "$GOT" | sha256sum | awk '{print $1}')"
+          exp_h="$(printf '%s' "$EXPECT" | sha256sum | awk '{print $1}')"
+          if [[ "$got_h" != "$exp_h" ]]; then
+            echo "approval_token does not match DEPLOY_APPROVAL_TOKEN" >&2
+            exit 1
+          fi
+          echo "AUTHORIZATION_OK"
+
+  deploy:
+    name: Deploy via SSH (environment secrets)
+    needs: [preflight, authorize]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: production
+    steps:
+      - name: Checkout deploy scripts at SHA
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.sha }}
+          fetch-depth: 1
+          sparse-checkout: |
+            scripts/deploy
+          sparse-checkout-cone-mode: true
+
+      - name: Mask deployment secrets in logs
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_SSH_PORT: ${{ secrets.DEPLOY_SSH_PORT }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          [[ -n "${DEPLOY_HOST}" ]] || { echo "DEPLOY_HOST missing" >&2; exit 1; }
+          [[ -n "${DEPLOY_USER}" ]] || { echo "DEPLOY_USER missing" >&2; exit 1; }
+          [[ -n "${DEPLOY_SSH_KEY}" ]] || { echo "DEPLOY_SSH_KEY missing" >&2; exit 1; }
+          [[ -n "${DEPLOY_KNOWN_HOSTS}" ]] || { echo "DEPLOY_KNOWN_HOSTS missing" >&2; exit 1; }
+          echo "::add-mask::${DEPLOY_HOST}"
+          echo "::add-mask::${DEPLOY_USER}"
+          while IFS= read -r line; do
+            [[ -n "$line" ]] || continue
+            echo "::add-mask::${line}"
+          done <<<"${DEPLOY_SSH_KEY}"
+          while IFS= read -r line; do
+            [[ -n "$line" ]] || continue
+            echo "::add-mask::${line}"
+          done <<<"${DEPLOY_KNOWN_HOSTS}"
+
+      - name: Probe SSH gate (accepted patterns)
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_SSH_PORT: ${{ secrets.DEPLOY_SSH_PORT }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          # shellcheck source=scripts/deploy/lib.sh
+          source scripts/deploy/lib.sh
+          key_file="$(mktemp)"
+          known_hosts="$(mktemp)"
+          printf '%s\n' "$DEPLOY_SSH_KEY" >"$key_file"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" >"$known_hosts"
+          chmod 600 "$key_file" "$known_hosts"
+          port="${DEPLOY_SSH_PORT:-22}"
+          cleanup() { rm -f "$key_file" "$known_hosts"; }
+          trap cleanup EXIT
+          out="$(ssh -i "$key_file" \
+            -p "$port" \
+            -o IdentitiesOnly=yes \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$known_hosts" \
+            "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            probe)"
+          printf '%s\n' "$out"
+          if ! eternal_probe_output_accepted "$out"; then
+            echo "probe output not accepted; run scripts/deploy/install-gate.sh --activate on VPS first" >&2
+            exit 1
+          fi
+
+      - name: Deploy immutable SHA
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_SSH_PORT: ${{ secrets.DEPLOY_SSH_PORT }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          SHA: ${{ needs.preflight.outputs.sha }}
+          ALLOW_MIGRATIONS: ${{ inputs.allow_migrations }}
+        run: |
+          set -euo pipefail
+          key_file="$(mktemp)"
+          known_hosts="$(mktemp)"
+          printf '%s\n' "$DEPLOY_SSH_KEY" >"$key_file"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" >"$known_hosts"
+          chmod 600 "$key_file" "$known_hosts"
+          port="${DEPLOY_SSH_PORT:-22}"
+          cleanup() { rm -f "$key_file" "$known_hosts"; }
+          trap cleanup EXIT
+
+          if [[ "$ALLOW_MIGRATIONS" == "true" ]]; then
+            echo "NOTE: allow_migrations=true requested; VPS must have ETERNAL_ALLOW_MIGRATIONS=1 (Owner-controlled)."
+          fi
+
+          ssh -i "$key_file" \
+            -p "$port" \
+            -o IdentitiesOnly=yes \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$known_hosts" \
+            "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "deploy ${SHA}"
