@@ -30,14 +30,56 @@ def _split_url(url: str) -> tuple[str, str | None]:
     return base, frag
 
 
-def _installed_archive_hash(direct: dict[str, Any]) -> str | None:
+def _norm_hash_token(h: str) -> str:
+    """Normalize to 'algo=hex' lowercase."""
+    h = h.strip().lower()
+    if "=" in h:
+        algo, digest = h.split("=", 1)
+        return f"{algo}={digest}"
+    if len(h) == 64 and all(c in "0123456789abcdef" for c in h):
+        return f"sha256={h}"
+    return h
+
+
+def _parse_req_hash_fragment(frag: str) -> tuple[str, str]:
+    """Return (algo, digest) from a URL fragment like sha256=hex."""
+    frag = frag.strip()
+    if "=" not in frag:
+        _die(f"dependency evidence: unsupported URL hash fragment: {frag}")
+    algo, digest = frag.split("=", 1)
+    algo = algo.strip().lower()
+    digest = digest.strip().lower()
+    if not algo or not digest:
+        _die(f"dependency evidence: invalid URL hash fragment: {frag}")
+    return algo, digest
+
+
+def _installed_hash_for_algo(direct: dict[str, Any], algo: str) -> str | None:
+    """Resolve installed archive hash for algo from PEP 610 direct_url.json.
+
+    Prefers archive_info.hashes[algo] (current), then legacy archive_info.hash
+    when it matches the requested algo, then URL fragment on the stored url.
+    """
     archive = direct.get("archive_info")
-    if not isinstance(archive, dict):
-        return None
-    h = archive.get("hash")
-    if not h or not isinstance(h, str):
-        return None
-    return h.strip()
+    if isinstance(archive, dict):
+        hashes = archive.get("hashes")
+        if isinstance(hashes, dict):
+            digest = hashes.get(algo)
+            if isinstance(digest, str) and digest.strip():
+                return f"{algo}={digest.strip().lower()}"
+        legacy = archive.get("hash")
+        if isinstance(legacy, str) and legacy.strip():
+            token = _norm_hash_token(legacy)
+            if token.startswith(f"{algo}="):
+                return token
+    installed_url = direct.get("url")
+    if isinstance(installed_url, str):
+        _, frag = _split_url(installed_url)
+        if frag:
+            token = _norm_hash_token(frag)
+            if token.startswith(f"{algo}="):
+                return token
+    return None
 
 
 def _find_dist(name: str, search_paths: list[str] | None) -> Distribution | None:
@@ -111,29 +153,19 @@ def _verify_direct_url(req: Requirement, dist: Distribution) -> None:
         )
 
     if req_frag:
-        # Prefer archive_info.hash (PEP 610); also accept fragment on stored url.
-        installed_hash = _installed_archive_hash(direct)
-        if installed_hash is None:
-            _, inst_frag = _split_url(installed_url)
-            installed_hash = inst_frag
+        algo, digest = _parse_req_hash_fragment(req_frag)
+        required_token = f"{algo}={digest}"
+        installed_hash = _installed_hash_for_algo(direct, algo)
         if not installed_hash:
             _die(
-                f"dependency evidence: direct_url.json missing hash for {req.name}; "
+                f"dependency evidence: direct_url.json missing hash for {req.name} "
+                f"(need archive_info.hashes.{algo} or legacy archive_info.hash); "
                 f"required fragment {req_frag}"
             )
-        # Normalize sha256=hex vs bare hex
-        def norm_hash(h: str) -> str:
-            h = h.strip().lower()
-            if h.startswith("sha256="):
-                return h
-            if len(h) == 64 and all(c in "0123456789abcdef" for c in h):
-                return f"sha256={h}"
-            return h
-
-        if norm_hash(installed_hash) != norm_hash(req_frag):
+        if _norm_hash_token(installed_hash) != _norm_hash_token(required_token):
             _die(
                 f"dependency evidence: direct URL hash mismatch for {req.name}: "
-                f"required={req_frag} installed={installed_hash}"
+                f"required={required_token} installed={installed_hash}"
             )
 
 
