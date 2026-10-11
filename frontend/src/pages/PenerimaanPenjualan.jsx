@@ -1480,7 +1480,7 @@ export default function PenerimaanPenjualan() {
                   status={computeStatus([{ value: receiptAmount, isRequired: true }, { value: receiptDate, isRequired: true }, { value: cashBankId, isRequired: true }])}
                   className="fs-section-scroll-safe"
                 >
-                  <div className="sr-payment-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
+                  <div className="sr-payment-grid">
                   <div>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
                       <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", margin: 0 }}>
@@ -1605,7 +1605,7 @@ export default function PenerimaanPenjualan() {
                   </div>
                 )}
 
-                <div className="sr-payment-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
+                <div className="sr-payment-grid">
                   <div>
                     <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 6 }}>
                       Tanggal penerimaan *

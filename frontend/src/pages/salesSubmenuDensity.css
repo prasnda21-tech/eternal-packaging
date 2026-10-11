@@ -526,6 +526,7 @@
   display:grid;
   grid-template-columns:1fr 1fr;
   gap:12px;
+  margin-bottom:12px;
 }
 .sd-density .sd-modal-body .sr-money-summary{
   background:#f8fafc;
