@@ -111,6 +111,10 @@ describe("Penerimaan Penjualan UI & Navigation Suite", () => {
     expect(pageSrc).toMatch(/isReceiptMutationUiEnabled/);
     expect(pageSrc).toMatch(/receiptMutationUiEnabled/);
     expect(pageSrc).toMatch(/receipt-mutation-frozen-note/);
+    expect(pageSrc).toMatch(
+      /Koreksi penerimaan dilakukan melalui Admin Keuangan\/Direktur sesuai SOP\. Edit dan hapus penerimaan belum tersedia\./,
+    );
+    expect(pageSrc).not.toMatch(/Catat penerimaan baru bila perlu koreksi/);
     expect(pageSrc).toMatch(/showDeleteControls\s*=\s*[\s\S]*receiptMutationUiEnabled/);
     expect(pageSrc).toMatch(/canEditReceipt\s*=\s*receiptMutationUiEnabled\s*&&/);
   });

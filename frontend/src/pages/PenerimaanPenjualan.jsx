@@ -1852,7 +1852,7 @@ export default function PenerimaanPenjualan() {
             </p>
             {!receiptMutationUiEnabled && !detailEditMode && (
               <p data-testid="receipt-mutation-frozen-note" className="sd-receipt-frozen-note">
-                Edit dan hapus penerimaan dinonaktifkan. Catat penerimaan baru bila perlu koreksi nominal.
+                Koreksi penerimaan dilakukan melalui Admin Keuangan/Direktur sesuai SOP. Edit dan hapus penerimaan belum tersedia.
               </p>
             )}
             {!detailEditMode ? (
