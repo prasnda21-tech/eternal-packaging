@@ -13,6 +13,9 @@ on:
         type: string
         default: ""
 
+# Whole-token correlation for trigger helper (exact request_id=… match, not prefix).
+run-name: Deploy probe · request_id=${{ inputs.request_id }}
+
 permissions:
   contents: read
 
