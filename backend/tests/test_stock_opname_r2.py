@@ -23,6 +23,7 @@ from services.physical_stock import (
     MOVEMENT_STOCK_OPNAME_ADJUSTMENT,
     WAREHOUSES_COLLECTION,
     PhysicalStockAbortError,
+    PhysicalStockUnavailableError,
     StockOpnameInProgressError,
     adjust_physical_stock_to_target,
     apply_confirmed_sales_delivery,
@@ -39,6 +40,7 @@ from services.physical_stock import (
     _client,
 )
 from services.r2_go_live import set_r2_authority_active  # noqa: E402
+import services.physical_stock as physical_stock_mod
 from services.stock_opname_count_import import (
     COUNT_HEADERS,
     build_count_template_xlsx,
@@ -927,3 +929,87 @@ async def test_http_routes_accept_json_bodies(db):
             assert await _qty(db, item_id, branch_id, warehouse_id) == 10
     finally:
         app.dependency_overrides.pop(current_user, None)
+
+
+async def test_cutoff_rejects_503_when_transactions_unavailable(db, monkeypatch):
+    """Txn preflight failure → HTTP 503; no cutoff/lines/freeze/balance/ledger writes."""
+    branch_id, warehouse_id = await _location(db)
+    item_id = await _item(db, name="TxnGate", code="TXN-GATE")
+    await _open(db, item_id, branch_id, warehouse_id, 7)
+
+    created = await create_stock_opname_session(db, {
+        "branch_id": branch_id,
+        "warehouse_id": warehouse_id,
+        "notes": "txn-unavailable",
+    }, USER)
+    before = await db[COLLECTION].find_one({"id": created["id"]}, {"_id": 0})
+    ledger_before = await db[LEDGER_COLLECTION].count_documents({})
+    balance_before = await db[BALANCE_COLLECTION].count_documents({})
+    qty_before = await _qty(db, item_id, branch_id, warehouse_id)
+
+    async def _unavailable(_client):
+        raise PhysicalStockUnavailableError(
+            "MongoDB transactions are unavailable. A replica set is required."
+        )
+
+    monkeypatch.setattr(physical_stock_mod, "require_transaction_support", _unavailable)
+
+    with pytest.raises(HTTPException) as rejected:
+        await start_stock_opname_cutoff(db, created["id"], USER)
+    assert rejected.value.status_code == 503
+    assert "transaksi" in str(rejected.value.detail).lower()
+    assert "replica set" in str(rejected.value.detail).lower()
+
+    after = await db[COLLECTION].find_one({"id": created["id"]}, {"_id": 0})
+    assert after["status"] == "DRAFT"
+    assert after.get("cutoff_at") in (None, "")
+    assert after.get("lines") in (None, [])
+    assert after == before
+    assert await db[LEDGER_COLLECTION].count_documents({}) == ledger_before
+    assert await db[BALANCE_COLLECTION].count_documents({}) == balance_before
+    assert await _qty(db, item_id, branch_id, warehouse_id) == qty_before == 7
+
+
+async def test_confirm_rejects_503_when_transactions_unavailable(db, monkeypatch):
+    """Confirm fail-closed on txn unavailable; REVIEW session and stock unchanged."""
+    branch_id, warehouse_id = await _location(db)
+    item_id = await _item(db, name="ConfirmGate", code="CFM-GATE")
+    await _open(db, item_id, branch_id, warehouse_id, 12)
+
+    created = await create_stock_opname_session(db, {
+        "branch_id": branch_id,
+        "warehouse_id": warehouse_id,
+    }, USER)
+    counting = await start_stock_opname_cutoff(db, created["id"], USER)
+    counted = await _count_all(db, counting, {item_id: 10})
+    review = await submit_stock_opname_review(db, counted["id"], USER)
+    assert review["status"] == "REVIEW"
+
+    before = await db[COLLECTION].find_one({"id": review["id"]}, {"_id": 0})
+    ledger_before = await db[LEDGER_COLLECTION].count_documents({})
+    qty_before = await _qty(db, item_id, branch_id, warehouse_id)
+
+    async def _unavailable(_client):
+        raise PhysicalStockUnavailableError(
+            "MongoDB transactions are unavailable. A replica set is required."
+        )
+
+    monkeypatch.setattr(physical_stock_mod, "require_transaction_support", _unavailable)
+
+    with pytest.raises(HTTPException) as rejected:
+        await confirm_stock_opname_session(
+            db, review["id"], {"idempotency_key": "txn-down"}, USER,
+        )
+    assert rejected.value.status_code == 503
+    assert "transaksi" in str(rejected.value.detail).lower()
+
+    after = await db[COLLECTION].find_one({"id": review["id"]}, {"_id": 0})
+    assert after["status"] == "REVIEW"
+    assert after.get("confirmed_at") in (None, "")
+    assert after == before
+    assert await db[LEDGER_COLLECTION].count_documents({}) == ledger_before
+    assert await _qty(db, item_id, branch_id, warehouse_id) == qty_before == 12
+    assert await db[LEDGER_COLLECTION].count_documents({
+        "movement_type": MOVEMENT_STOCK_OPNAME_ADJUSTMENT,
+        "reference_id": review["id"],
+    }) == 0
