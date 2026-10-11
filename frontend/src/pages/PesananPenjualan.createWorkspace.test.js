@@ -786,7 +786,7 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
       setNativeValue(container.querySelector('[data-testid="line-color-0"]'), "Merah");
       setNativeValue(container.querySelector('[data-testid="line-notes-0"]'), "Sablon depan");
     });
-    expect(container.querySelector(".so-sum-chip.is-customer .so-sum-text").textContent).toBe("GOHO COFFEE");
+    expect(container.querySelector('[data-testid="input-customer"]').value).toBe("GOHO COFFEE");
     expect(container.querySelector('[data-testid="line-item-detail-0"]').hidden).toBe(true);
     expect(container.querySelector('[data-testid="line-code-0"]').value).toBe("BRG-CP001");
     expect(container.querySelector('[data-testid="line-detail-summary-0"]').textContent).toContain("BRG-CP001");
@@ -818,7 +818,7 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
     expect(container.querySelector('[data-testid="input-po-number"]').value).toBe(poBefore);
     expect(container.querySelector(".so-ship-card").textContent).toContain("Ekspedisi Uji Draf");
     expect(container.querySelector(".so-ship-card").textContent).toContain("Jl. Malioboro 10");
-    expect(container.querySelector(".so-sum-chip.is-customer .so-sum-text").textContent).toBe("GOHO COFFEE");
+    expect(container.querySelector('[data-testid="input-customer"]').value).toBe("GOHO COFFEE");
     expect(container.querySelector('[data-testid="line-qty-0"]').value).toBe("1000");
     expect(container.querySelector('[data-testid="line-price-0"]').value).toBe("700");
     expect(container.querySelector('[data-testid="line-notes-0"]').value).toBe("Sablon depan");

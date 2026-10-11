@@ -1397,6 +1397,22 @@
 .so-create-workspace .so-sum-editor { margin-top: 2px; }
 .so-create-workspace .so-sum-editor .so-line-input,
 .so-create-workspace .so-sum-editor input { height: 30px; }
+.so-create-workspace .so-sum-editor-po {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.so-create-workspace .so-sum-editor-po .so-line-input { flex: 1 1 auto; min-width: 0; }
+.so-create-workspace .so-sum-editor-po .so-create-auto {
+  position: static;
+  flex: 0 0 auto;
+  height: 30px;
+  padding: 0 8px;
+}
+.so-create-workspace .so-sum-chip.is-editing {
+  padding-right: 10px;
+}
 .so-create-workspace .so-sum-pencil {
   position: absolute;
   top: 4px;
@@ -1412,13 +1428,6 @@
   border-radius: 6px;
 }
 .so-create-workspace .so-sum-pencil:hover { background: #e8f3ee; color: #166534; }
-.so-create-workspace .so-sum-chip .so-create-auto {
-  position: absolute;
-  right: 26px;
-  top: 3px;
-  height: 20px;
-  padding: 0 6px;
-}
 .so-create-workspace .so-form-tabs {
   display: flex;
   gap: 16px;
@@ -1557,4 +1566,148 @@
 .so-create-workspace .so-create-form[data-create-tab="ship"] .so-create-main {
   flex: none;
   overflow: visible;
+}
+
+/* Date chips use DD/MM/YYYY text + native calendar (same control as Faktur). */
+.so-create-workspace .so-sum-chip-date {
+  max-width: none;
+  flex: 1 1 160px;
+  padding-right: 10px;
+}
+.so-create-workspace .so-sum-chip-date .fp-invoice-date {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.so-create-workspace .so-sum-chip-date .fp-invoice-date input[type="text"] {
+  flex: 1 1 110px;
+  min-width: 0;
+  width: auto;
+  height: 30px;
+  box-sizing: border-box;
+}
+.so-create-workspace .so-sum-chip-date .fp-invoice-date input[type="date"] {
+  width: 36px;
+  min-width: 36px;
+  flex: 0 0 36px;
+  padding: 4px;
+  height: 30px;
+}
+.so-create-workspace .so-sum-chip-date .fp-invoice-date-error {
+  flex: 1 0 100%;
+  font-size: 11px;
+}
+
+/* Mobile 390: keep key line columns reachable, clear scroll cue, FAB-safe Simpan. */
+@media (max-width: 700px) {
+  .so-create-workspace,
+  .so-create-workspace .so-create-form,
+  .so-create-workspace .so-create-stage {
+    max-width: 100%;
+    overflow-x: hidden;
+  }
+  .so-create-workspace .so-create-stage {
+    overflow-x: hidden;
+    padding-bottom: 12px;
+  }
+  .so-create-workspace .so-sum-chip,
+  .so-create-workspace .so-ship-card {
+    max-width: none;
+    flex: 1 1 calc(50% - 6px);
+  }
+  .so-create-workspace .so-sum-chip.is-customer,
+  .so-create-workspace .so-sum-chip.is-po,
+  .so-create-workspace .so-sum-chip-date,
+  .so-create-workspace .so-ship-card {
+    flex: 1 1 100%;
+  }
+  .so-create-workspace .so-sum-chip-date .fp-invoice-date input[type="text"] {
+    flex: 1 1 auto;
+    min-width: 120px;
+    width: 100%;
+  }
+  .so-create-workspace .so-create-lines-scroll {
+    overflow-x: hidden !important;
+    overflow-y: visible;
+    max-width: 100%;
+    border: 0;
+    background: transparent;
+  }
+  .so-create-workspace .so-create-lines-table {
+    min-width: 0 !important;
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 0 8px;
+  }
+  .so-create-workspace .so-create-lines-table thead { display: none; }
+  .so-create-workspace .so-create-lines-table tbody tr.so-line-main {
+    display: grid;
+    grid-template-columns: 72px minmax(0, 1fr) minmax(0, 1fr) auto;
+    gap: 6px 8px;
+    align-items: start;
+    background: #fff;
+    border: 1px solid #e2e8e6;
+    border-radius: 10px;
+    padding: 8px;
+  }
+  .so-create-workspace .so-create-lines-table tbody tr.so-line-main td {
+    display: block;
+    border: 0 !important;
+    padding: 0 !important;
+    min-width: 0;
+  }
+  .so-create-workspace .so-col-no,
+  .so-create-workspace .so-col-unit { display: none !important; }
+  .so-create-workspace .so-col-name { grid-column: 1 / -1; }
+  .so-create-workspace .so-col-qty::before,
+  .so-create-workspace .so-col-price::before,
+  .so-create-workspace .so-col-sub::before {
+    display: block;
+    font: 650 10px/1.2 "IBM Plex Sans", sans-serif;
+    color: #64748b;
+    margin-bottom: 2px;
+  }
+  .so-create-workspace .so-col-qty::before { content: "Qty"; }
+  .so-create-workspace .so-col-price::before { content: "Harga"; }
+  .so-create-workspace .so-col-sub::before { content: "Subtotal"; }
+  .so-create-workspace .so-thumb,
+  .so-create-workspace .so-thumb-empty { display: none !important; }
+  .so-create-workspace .so-create-lines-table tbody tr.so-line-detail {
+    display: block;
+    margin: -4px 0 8px;
+    border: 1px solid #e2e8e6;
+    border-top: 0;
+    border-radius: 0 0 10px 10px;
+    background: #f8faf9;
+  }
+  .so-create-workspace .so-create-lines-table tbody tr.so-line-detail td {
+    display: block;
+    padding: 8px !important;
+  }
+  .so-create-workspace .so-create-actionbar {
+    padding-right: 112px !important;
+    padding-bottom: max(12px, env(safe-area-inset-bottom, 0px));
+    gap: 10px;
+  }
+  .so-create-workspace .so-footer-actions {
+    width: 100%;
+    margin-left: 0;
+    flex: 1 1 100%;
+    justify-content: stretch;
+    gap: 8px;
+    box-sizing: border-box;
+  }
+  .so-create-workspace .so-footer-actions [data-testid="btn-cancel-form"] {
+    flex: 0 0 88px;
+  }
+  .so-create-workspace .so-footer-actions .so-create-save,
+  .so-create-workspace .so-footer-actions [data-testid="btn-submit-sales-order"] {
+    flex: 1 1 auto;
+    min-width: 0;
+    max-width: none;
+  }
+  .so-create-workspace .so-footer-totals {
+    width: 100%;
+  }
 }

@@ -15,7 +15,8 @@ import {
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDisplayDate } from "../lib/constants";
-import { FormSection, FormField, FormProgress, computeStatus } from "../components/form-standard";
+import { FormSection, FormField, computeStatus } from "../components/form-standard";
+import SalesInvoiceDateField from "../components/SalesInvoiceDateField";
 import { showLoadedDocumentCount } from "../lib/salesSubmenuDensity";
 import {
   SALES_LIST_DEFAULT_PAGE_SIZE,
@@ -1394,24 +1395,17 @@ export default function PenerimaanPenjualan() {
                   </div>
                 )}
 
-                <FormProgress
-                  percentage={Math.round(([selectedInvoiceId, Number(receiptAmount) > 0, receiptDate, cashBankId, proofFile].filter(Boolean).length / 5) * 100)}
-                  completed={[selectedInvoiceId, Number(receiptAmount) > 0, receiptDate, cashBankId, proofFile].filter(Boolean).length}
-                  total={5}
-                  className="mb-4"
-                />
-
                 {/* 1. Pilih Faktur Penjualan */}
                 <FormSection
                   id="sr-invoice-section"
-                  title="1. Pilih Faktur Penjualan"
-                  description="Pilih faktur yang memiliki sisa tagihan."
+                  title="1. Pilih Faktur"
+                  description="Hanya faktur yang masih punya sisa tagihan."
                   status={selectedInvoiceId ? "complete" : "incomplete"}
                   className="fs-section-scroll-safe"
                 >
-                  <div style={{ marginBottom: 16 }}>
+                  <div style={{ marginBottom: 12 }}>
                     <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 6 }}>
-                      Pilih Faktur Penjualan *
+                      Faktur Penjualan *
                     </label>
                     <select
                       className="form-select"
@@ -1424,10 +1418,10 @@ export default function PenerimaanPenjualan() {
                         fontSize: 13,
                       }}
                     >
-                      <option value="">-- Pilih Faktur Penjualan --</option>
+                      <option value="">-- Pilih faktur --</option>
                       {invoicesWithBalance.map((inv) => (
                         <option key={inv.id} value={inv.id}>
-                          {inv.customer} — PO {inv.po_number} (Sisa: {formatRupiah(inv.outstanding_amount || inv.grand_total)})
+                          {inv.invoice_number || inv.id} · {inv.customer} · Sisa {formatRupiah(inv.outstanding_amount || inv.grand_total)}
                         </option>
                       ))}
                     </select>
@@ -1442,36 +1436,36 @@ export default function PenerimaanPenjualan() {
                   {selectedInvoice && (
                     <div
                       data-testid="selected-invoice-summary-card"
-                      style={{
-                        backgroundColor: "#f8fafc",
-                        border: "1px solid #e2e8f0",
-                        borderRadius: 8,
-                        padding: 14,
-                        marginBottom: 16,
-                      }}
+                      className="sr-money-summary"
                     >
-                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 12, fontSize: 13 }}>
+                      <div className="sr-invoice-meta">
                         <div>
-                          <span style={{ color: "#64748b" }}>Pelanggan:</span>
-                          <div data-testid="summary-customer" style={{ fontWeight: 600, color: "#1e293b" }}>{selectedInvoice.customer || "-"}</div>
+                          <span>Pelanggan</span>
+                          <div data-testid="summary-customer">{selectedInvoice.customer || "-"}</div>
                         </div>
                         <div>
-                          <span style={{ color: "#64748b" }}>No. Faktur:</span>
-                          <div data-testid="summary-invoice-number" style={{ fontWeight: 600, color: "#1e293b" }}>{selectedInvoice.invoice_number || "-"}</div>
+                          <span>No. Faktur</span>
+                          <div data-testid="summary-invoice-number">{selectedInvoice.invoice_number || "-"}</div>
                         </div>
                         <div>
-                          <span style={{ color: "#64748b" }}>No. PO:</span>
-                          <div data-testid="summary-po-number" style={{ fontWeight: 600, color: "#1e293b" }}>{selectedInvoice.po_number}</div>
+                          <span>No. PO</span>
+                          <div data-testid="summary-po-number">{selectedInvoice.po_number}</div>
+                        </div>
+                      </div>
+                      <div className="sr-money-triad" data-testid="receipt-money-triad">
+                        <div>
+                          <span>Total tagihan</span>
+                          <strong data-testid="summary-grand-total">{formatRupiah(selectedInvoice.grand_total)}</strong>
                         </div>
                         <div>
-                          <span style={{ color: "#64748b" }}>Total Faktur:</span>
-                          <div style={{ fontWeight: 600, color: "#1e293b" }}>{formatRupiah(selectedInvoice.grand_total)}</div>
+                          <span>Sudah dibayar</span>
+                          <strong data-testid="summary-paid-total" className="is-paid">{formatRupiah(selectedInvoice.paid_total)}</strong>
                         </div>
-                        <div>
-                          <span style={{ color: "#64748b" }}>Sisa Tagihan Saat Ini:</span>
-                          <div data-testid="summary-outstanding-amount" style={{ fontWeight: 700, color: "#dc2626" }}>
+                        <div className="is-due-box">
+                          <span>Sisa tagihan</span>
+                          <strong data-testid="summary-outstanding-amount" className="is-due">
                             {formatRupiah(selectedInvoice.outstanding_amount)}
-                          </div>
+                          </strong>
                         </div>
                       </div>
                     </div>
@@ -1481,20 +1475,22 @@ export default function PenerimaanPenjualan() {
                 {/* 2. Detail Pembayaran */}
                 <FormSection
                   id="sr-payment-section"
-                  title="2. Detail Penerimaan Pembayaran"
-                  description="Masukkan nominal pembayaran, tanggal, dan metode transfer."
+                  title="2. Nominal & Kas/Bank"
+                  description="Isi jumlah diterima, lalu pilih kas atau bank."
                   status={computeStatus([{ value: receiptAmount, isRequired: true }, { value: receiptDate, isRequired: true }, { value: cashBankId, isRequired: true }])}
                   className="fs-section-scroll-safe"
                 >
-                  <div style={{ marginBottom: 16 }}>
+                  <div className="sr-payment-grid">
+                  <div>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
                       <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", margin: 0 }}>
-                        Jumlah Penerimaan (Rp) *
+                        Jumlah diterima (Rp) *
                       </label>
                     {selectedInvoice && selectedInvoice.outstanding_amount > 0 && (
                       <button
                         type="button"
                         onClick={handlePayFull}
+                        data-testid="btn-pay-full-outstanding"
                         style={{
                           background: "none",
                           border: "none",
@@ -1505,7 +1501,7 @@ export default function PenerimaanPenjualan() {
                           textDecoration: "underline",
                         }}
                       >
-                        Bayar Sisa Tagihan (Lunas)
+                        Isi sisa tagihan
                       </button>
                     )}
                   </div>
@@ -1529,9 +1525,9 @@ export default function PenerimaanPenjualan() {
                   />
                 </div>
 
-                <div style={{ marginBottom: 16 }} data-testid="receipt-allocation-field">
+                <div data-testid="receipt-allocation-field">
                   <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 6 }}>
-                    Alokasi ke faktur (Rp)
+                    Dipakai untuk faktur ini (Rp)
                   </label>
                   <input
                     type="number"
@@ -1548,7 +1544,7 @@ export default function PenerimaanPenjualan() {
                   />
                   {previewCalc && previewCalc.amount > 0 && (
                     <p data-testid="receipt-allocation-total" style={{ margin: "6px 0 0", fontSize: 12, color: "#0f766e" }}>
-                      Total dialokasikan: {formatRupiah(previewCalc.allocationExceedsOutstanding || previewCalc.allocationExceedsReceived ? 0 : previewCalc.allocated)}
+                      Dipakai: {formatRupiah(previewCalc.allocationExceedsOutstanding || previewCalc.allocationExceedsReceived ? 0 : previewCalc.allocated)}
                     </p>
                   )}
                   {previewCalc && previewCalc.customerCredit > 0 && (
@@ -1556,7 +1552,13 @@ export default function PenerimaanPenjualan() {
                       Sisa menjadi saldo pelanggan: {formatRupiah(previewCalc.customerCredit)}
                     </p>
                   )}
+                  {previewCalc && previewCalc.allocationExceedsOutstanding && (
+                    <p data-testid="receipt-allocation-over-hint" style={{ margin: "4px 0 0", fontSize: 12, fontWeight: 600, color: "#b91c1c" }}>
+                      Melebihi sisa tagihan. Turunkan nominal atau alokasi.
+                    </p>
+                  )}
                 </div>
+                  </div>
 
                 {canPostAccounting && selectedInvoice && (
                   <div style={{ marginBottom: 16 }} data-testid="receipt-use-credit">
@@ -1603,49 +1605,44 @@ export default function PenerimaanPenjualan() {
                   </div>
                 )}
 
-                {/* 3. Tanggal Penerimaan */}
-                <div style={{ marginBottom: 16 }}>
-                  <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 6 }}>
-                    Tanggal Penerimaan *
-                  </label>
-                  <input
-                    type="date"
-                    className="form-input"
-                    data-testid="input-receipt-date"
-                    value={receiptDate}
-                    onChange={(e) => setReceiptDate(e.target.value)}
-                    disabled={createBusy}
-                    style={{
-                      width: "100%",
-                      fontSize: 13,
-                    }}
-                  />
-                </div>
-
-                <div style={{ marginBottom: 16 }}>
-                  <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 6 }}>
-                    Kas / Bank *
-                  </label>
-                  <select
-                    className="form-select"
-                    data-testid="select-receipt-cash-bank"
-                    value={cashBankId}
-                    onChange={(e) => setCashBankId(e.target.value)}
-                    disabled={createBusy || cashBanksLoading}
-                    style={{ width: "100%", fontSize: 13 }}
-                  >
-                    <option value="">-- Pilih Kas / Bank --</option>
-                    {cashBanks.map((acc) => (
-                      <option key={acc.id} value={acc.id}>
-                        {acc.name}
-                      </option>
-                    ))}
-                  </select>
-                  {cashBanks.length === 0 && !cashBanksLoading && (
-                    <p data-testid="no-cash-bank-hint" style={{ margin: "6px 0 0 0", fontSize: 12, color: "#64748b" }}>
-                      Belum ada Kas/Bank aktif. Tambahkan di menu Kas &amp; Bank terlebih dahulu.
-                    </p>
-                  )}
+                <div className="sr-payment-grid">
+                  <div>
+                    <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 6 }}>
+                      Tanggal penerimaan *
+                    </label>
+                    <SalesInvoiceDateField
+                      valueIso={receiptDate}
+                      onChange={setReceiptDate}
+                      disabled={createBusy}
+                      testId="input-receipt-date"
+                      calendarLabel="Kalender tanggal penerimaan"
+                    />
+                  </div>
+                  <div>
+                    <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 6 }}>
+                      Kas / Bank *
+                    </label>
+                    <select
+                      className="form-select"
+                      data-testid="select-receipt-cash-bank"
+                      value={cashBankId}
+                      onChange={(e) => setCashBankId(e.target.value)}
+                      disabled={createBusy || cashBanksLoading}
+                      style={{ width: "100%", fontSize: 13 }}
+                    >
+                      <option value="">-- Pilih Kas / Bank --</option>
+                      {cashBanks.map((acc) => (
+                        <option key={acc.id} value={acc.id}>
+                          {acc.name}
+                        </option>
+                      ))}
+                    </select>
+                    {cashBanks.length === 0 && !cashBanksLoading && (
+                      <p data-testid="no-cash-bank-hint" style={{ margin: "6px 0 0 0", fontSize: 12, color: "#64748b" }}>
+                        Belum ada Kas/Bank aktif. Tambahkan di menu Kas &amp; Bank terlebih dahulu.
+                      </p>
+                    )}
+                  </div>
                 </div>
 
                 {/* 4. Catatan */}
@@ -1757,15 +1754,7 @@ export default function PenerimaanPenjualan() {
               <div
                 className="sd-modal-footer"
                 data-testid="receipt-modal-footer"
-                style={{
-                  display: "flex",
-                  justifyContent: "flex-end",
-                  gap: 10,
-                  padding: "12px 20px 16px",
-                  borderTop: "1px solid #f1f5f9",
-                  backgroundColor: "#fff",
-                  flex: "0 0 auto",
-                }}
+                style={{ flex: "0 0 auto" }}
               >
                 <button
                   type="button"

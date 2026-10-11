@@ -2003,7 +2003,7 @@ export default function FakturPenjualan() {
             <FormSection
               id="fp-select-po"
               title="Pilih Pesanan Penjualan"
-              description="Pilih PO yang eligible untuk dibuatkan faktur penjualan."
+              description="Satu PO bisa difakturkan sebagian berkali-kali. Pilih PO, lalu sesuaikan sisa qty."
               status={computeStatus([{ value: selectedPoId, isRequired: true }])}
               className="fp-po-section"
             >
@@ -2037,7 +2037,7 @@ export default function FakturPenjualan() {
           {previewLoading ? (
             <div className="sd-form-stage" style={{ padding: 32, textAlign: "center", color: "#64748b" }}>Memuat data PO...</div>
           ) : previewData ? (
-            <form className="sd-form-fill" data-form-tab={invoiceFormTab} onSubmit={handleSaveInvoice}>
+            <form className="sd-form-fill fp-create-fill" data-form-tab={invoiceFormTab} onSubmit={handleSaveInvoice}>
               <div className="sd-form-stage">
               <div className="fp-summary" data-testid="po-snapshot-card">
                 <div>
@@ -2045,7 +2045,7 @@ export default function FakturPenjualan() {
                   <strong data-testid="snapshot-po-number">{previewData.po_number}</strong>
                 </div>
                 <div>
-                  <span>Customer</span>
+                  <span>Pelanggan</span>
                   <strong data-testid="snapshot-customer">{previewData.customer}</strong>
                 </div>
                 <div>
@@ -2053,16 +2053,17 @@ export default function FakturPenjualan() {
                   <strong data-testid="snapshot-outlet">{previewData.outlet || "-"}</strong>
                 </div>
                 <div>
-                  <span>Sales Representative</span>
-                  <strong data-testid="snapshot-sales">{previewData.sales || "-"}</strong>
+                  <span>Sisa qty dapat difakturkan</span>
+                  <strong data-testid="snapshot-remaining-qty" className={createCalculations.totalRemaining > 0 ? "is-due" : "is-paid"}>
+                    {Number(createCalculations.totalRemaining || 0).toLocaleString("id-ID")} pcs
+                  </strong>
                 </div>
               </div>
-              <div className="sd-form-tabs" role="tablist" aria-label="Bagian faktur">
-                <button type="button" className={invoiceFormTab === "items" ? "is-active" : ""} onClick={() => setInvoiceFormTab("items")}>Barang & Harga</button>
-                <button type="button" className={invoiceFormTab === "terms" ? "is-active" : ""} onClick={() => setInvoiceFormTab("terms")}>Tanggal & Ketentuan</button>
-              </div>
+              <p className="fp-multi-invoice-hint" data-testid="multi-invoice-hint">
+                Faktur parsial diperbolehkan. Qty faktur tidak boleh melebihi sisa per baris.
+              </p>
 
-              <div className="fp-terms sd-pane-terms">
+              <div className="fp-terms fp-terms-essential" data-testid="invoice-essential-terms">
                   <div>
                     <label style={{ fontSize: "0.85rem", fontWeight: 600, color: "#334155", display: "block", marginBottom: 6 }}>
                       Tanggal Faktur <span style={{ color: "#ef4444" }}>*</span>
@@ -2077,7 +2078,7 @@ export default function FakturPenjualan() {
 
                   <div>
                     <label style={{ fontSize: "0.85rem", fontWeight: 600, color: "#334155", display: "block", marginBottom: 6 }}>
-                      Termin Pembayaran (Hari)
+                      Termin (Hari)
                     </label>
                     <input
                       type="number"
@@ -2095,7 +2096,7 @@ export default function FakturPenjualan() {
 
                   <div>
                     <label style={{ fontSize: "0.85rem", fontWeight: 600, color: "#334155", display: "block", marginBottom: 6 }}>
-                      Diskon Nominal (Rp)
+                      Diskon (Rp)
                     </label>
                     <input
                       type="number"
@@ -2124,7 +2125,14 @@ export default function FakturPenjualan() {
                       style={{ width: "100%", padding: "8px 12px", border: "1px solid #cbd5e1", borderRadius: 6 }}
                     />
                   </div>
+              </div>
 
+              <div className="sd-form-tabs" role="tablist" aria-label="Bagian faktur">
+                <button type="button" className={invoiceFormTab === "items" ? "is-active" : ""} onClick={() => setInvoiceFormTab("items")}>Barang & Harga</button>
+                <button type="button" className={invoiceFormTab === "terms" ? "is-active" : ""} onClick={() => setInvoiceFormTab("terms")}>Catatan & Biaya</button>
+              </div>
+
+              <div className="fp-terms sd-pane-terms">
                   <div style={{ gridColumn: "1 / -1" }}>
                     <label style={{ fontSize: "0.85rem", fontWeight: 600, color: "#334155", display: "block", marginBottom: 6 }}>
                       Catatan Faktur (Opsional)
@@ -2149,7 +2157,7 @@ export default function FakturPenjualan() {
               </div>
 
               <div className="fp-items sd-pane-items">
-                <div className="sd-lines">
+                <div className="sd-lines sd-lines-scroll" data-testid="invoice-lines-scroll">
                   <table className="fp-lines">
                     <thead>
                       <tr>
@@ -2235,8 +2243,10 @@ export default function FakturPenjualan() {
                   </table>
                 </div>
 
-                <p className="fp-price-note">Harga mengikuti pesanan penjualan.</p>
-                <div className="fp-breakdown" data-testid="invoice-breakdown">
+                <p className="fp-price-note">Harga mengikuti pesanan penjualan. Sesuaikan qty faktur bila perlu (multi-faktur per PO).</p>
+              </div>
+
+              <div className="fp-breakdown fp-breakdown-sticky" data-testid="invoice-breakdown">
                   <div>
                     <span>Subtotal</span>
                     <strong>{invoiceCompleteness.totalsReady ? formatRupiah(createCalculations.subtotal) : "Belum lengkap"}</strong>
@@ -2255,7 +2265,12 @@ export default function FakturPenjualan() {
                       {createCalculations.chargesIncomplete ? "Belum lengkap" : formatRupiah(createCalculations.chargesTotal)}
                     </strong>
                   </div>
-                </div>
+                  <div className="fp-breakdown-remaining">
+                    <span>Sisa qty PO</span>
+                    <strong data-testid="invoice-remaining-qty-summary">
+                      {Number(createCalculations.totalRemaining || 0).toLocaleString("id-ID")} pcs
+                    </strong>
+                  </div>
               </div>
 
               {createCalculations.totalRemaining <= 0 && (
