@@ -41,16 +41,15 @@ cleanup() {
 }
 trap cleanup EXIT
 
-mkdir -p "$MONGO_DBPATH"
+mkdir -p "$MONGO_DBPATH" "$SMOKE_BACKEND"
 # Copy backend sources excluding secrets and venvs — production .env must not load.
-rsync -a \
-  --exclude '.env' \
-  --exclude '.env.*' \
-  --exclude '.venv' \
-  --exclude '__pycache__' \
-  --exclude '.pytest_cache' \
-  "$BACKEND_SRC"/ "$SMOKE_BACKEND"/
+# tar (no rsync dependency in CI/dev images).
+tar -C "$BACKEND_SRC" -cf - \
+  --exclude='./.env' --exclude='./.env.*' --exclude='./.venv' \
+  --exclude='./__pycache__' --exclude='./.pytest_cache' \
+  . | tar -C "$SMOKE_BACKEND" -xf -
 [[ ! -e "$SMOKE_BACKEND/.env" ]] || eternal_deploy_die "smoke: .env leaked into smoke tree"
+[[ -f "$SMOKE_BACKEND/requirements.portable.txt" ]] || eternal_deploy_die "smoke: backend copy incomplete"
 
 req_rel="$(eternal_resolve_requirements_relpath "$SMOKE_BACKEND")"
 eternal_deploy_log "smoke using requirements_file=$req_rel"
