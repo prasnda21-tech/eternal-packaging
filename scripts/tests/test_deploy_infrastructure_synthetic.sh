@@ -784,6 +784,8 @@ assert_true "deploy workflow has jobs:" grep -q '^jobs:' "$WF"
 assert_true "probe workflow has jobs:" grep -q '^jobs:' "$PWF"
 assert_true "deploy workflow on.workflow_dispatch" grep -q 'workflow_dispatch:' "$WF"
 assert_true "probe workflow on.workflow_dispatch" grep -q 'workflow_dispatch:' "$PWF"
+assert_true "direct-url dependency verifier suite" \
+  bash "$ROOT/scripts/tests/test_deploy_direct_url_dep_verify.sh"
 
 log ""
 log "SUMMARY pass=$PASS fail=$FAIL"

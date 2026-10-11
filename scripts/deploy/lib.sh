@@ -251,15 +251,21 @@ eternal_requirements_sha256() {
 }
 
 # Verify venv packages satisfy requirements file + pip check (no network).
+# Full mode: packaging.requirements.Requirement + importlib.metadata + PEP 610
+# direct_url.json for name @ url lines (see verify_requirements_installed.py).
 # Stub mode: stub pip check only (fixture requirements may be opaque markers).
 eternal_verify_requirements_installed() {
   local backend_dir="$1"
   local req_rel="$2"
   local req_abs="$backend_dir/$req_rel"
   local pip="$backend_dir/.venv/bin/pip"
+  local py="$backend_dir/.venv/bin/python"
+  local verifier="${ETERNAL_DEPLOY_LIB_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}/verify_requirements_installed.py"
   [[ -f "$req_abs" ]] || eternal_deploy_die "dependency evidence: requirements missing: $req_rel"
   [[ -d "$backend_dir/.venv" ]] || eternal_deploy_die "dependency evidence: .venv missing"
   [[ -x "$pip" ]] || eternal_deploy_die "dependency evidence: pip missing/not executable: $pip"
+  [[ -x "$py" ]] || eternal_deploy_die "dependency evidence: python missing/not executable: $py"
+  [[ -f "$verifier" ]] || eternal_deploy_die "dependency evidence: verifier missing: $verifier"
 
   if ! "$pip" check; then
     eternal_deploy_die "dependency evidence: pip check FAILED for $req_rel"
@@ -271,37 +277,10 @@ eternal_verify_requirements_installed() {
     return 0
   fi
 
-  local freeze line pkg ver op
-  freeze="$("$pip" freeze 2>/dev/null || true)"
-  [[ -n "$freeze" ]] || eternal_deploy_die "dependency evidence: pip freeze empty"
-
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    line="${line%%#*}"
-    line="${line#"${line%%[![:space:]]*}"}"
-    line="${line%"${line##*[![:space:]]}"}"
-    [[ -z "$line" ]] && continue
-    [[ "$line" == -* ]] && continue
-    if [[ "$line" =~ ^([A-Za-z0-9_.-]+)==(.+)$ ]]; then
-      pkg="${BASH_REMATCH[1]}"
-      ver="${BASH_REMATCH[2]}"
-      if ! printf '%s\n' "$freeze" | grep -Eiq "^${pkg//_/-}==${ver}$|^${pkg}==${ver}$"; then
-        # pip normalizes _/- ; try both
-        if ! printf '%s\n' "$freeze" | grep -Eiq "^$(printf '%s' "$pkg" | tr '_' '-')==${ver}$"; then
-          if ! printf '%s\n' "$freeze" | grep -Eiq "^$(printf '%s' "$pkg" | tr '-' '_')==${ver}$"; then
-            eternal_deploy_die "dependency evidence: installed package missing/mismatch: ${pkg}==${ver}"
-          fi
-        fi
-      fi
-    elif [[ "$line" =~ ^([A-Za-z0-9_.-]+)([<>=!~]=?.*) ]]; then
-      pkg="${BASH_REMATCH[1]}"
-      if ! printf '%s\n' "$freeze" | grep -Eiq "^${pkg}==|^$(printf '%s' "$pkg" | tr '_' '-')==|^$(printf '%s' "$pkg" | tr '-' '_')=="; then
-        eternal_deploy_die "dependency evidence: installed package missing: $pkg"
-      fi
-    else
-      # Opaque / non-pin lines: refuse in full mode (cannot prove install).
-      eternal_deploy_die "dependency evidence: unsupported requirements line (need name==version): $line"
-    fi
-  done <"$req_abs"
+  # Use venv python so packaging/importlib.metadata see that environment.
+  if ! "$py" "$verifier" "$req_abs"; then
+    eternal_deploy_die "dependency evidence: installed packages do not satisfy $req_rel"
+  fi
   eternal_deploy_log "installed packages match requirements_file=$req_rel"
 }
 
