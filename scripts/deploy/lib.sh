@@ -245,3 +245,73 @@ eternal_constant_time_eq() {
   hb="$(printf '%s' "$b" | sha256sum | awk '{print $1}')"
   [[ "$ha" == "$hb" ]]
 }
+
+# Write provenance + integrity manifest for a verified baseline directory.
+# Stores relative sha256 lines in .baseline-integrity and metadata in .baseline-verified.
+eternal_baseline_write_integrity() {
+  local baseline_dir="$1"
+  local backend_src="${2:-}"
+  local wd="${3:-}"
+  local exe="${4:-}"
+  [[ -d "$baseline_dir/tree/backend" ]] || eternal_deploy_die "baseline integrity: frozen backend missing"
+  [[ -d "$baseline_dir/frontend-snapshot" ]] || eternal_deploy_die "baseline integrity: frontend snapshot missing"
+  if [[ -L "$baseline_dir/tree/backend" ]]; then
+    eternal_deploy_die "baseline integrity: tree/backend must be a real directory, not a symlink"
+  fi
+
+  local manifest="$baseline_dir/.baseline-integrity"
+  (
+    cd "$baseline_dir"
+    # Stable, bounded file set for provenance (not a full recursive tree walk of huge trees).
+    find tree/backend frontend-snapshot -type f 2>/dev/null \
+      | LC_ALL=C sort \
+      | head -n 5000 \
+      | xargs -r sha256sum
+  ) >"$manifest"
+  [[ -s "$manifest" ]] || eternal_deploy_die "baseline integrity: empty manifest"
+
+  local manifest_hash
+  manifest_hash="$(sha256sum "$manifest" | awk '{print $1}')"
+  {
+    printf 'version=1\n'
+    printf 'kind=verified-baseline\n'
+    printf 'immutable=1\n'
+    printf 'backend_src=%s\n' "$backend_src"
+    printf 'systemd_wd_at_capture=%s\n' "$wd"
+    printf 'systemd_exec_at_capture=%s\n' "$exe"
+    printf 'integrity_manifest=.baseline-integrity\n'
+    printf 'integrity_sha256=%s\n' "$manifest_hash"
+    printf 'file_count=%s\n' "$(wc -l <"$manifest" | tr -d ' ')"
+    printf 'captured_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf 'note=Baseline must exist before systemd retarget/activation\n'
+  } >"$baseline_dir/.baseline-verified"
+}
+
+# Validate .baseline-verified provenance + integrity manifest. Fail-closed.
+eternal_baseline_verify_integrity() {
+  local baseline_dir="$1"
+  [[ -f "$baseline_dir/.baseline-verified" ]] || eternal_deploy_die "baseline missing .baseline-verified"
+  [[ -f "$baseline_dir/.baseline-integrity" ]] || eternal_deploy_die "baseline missing .baseline-integrity provenance manifest"
+  [[ -d "$baseline_dir/tree/backend" ]] || eternal_deploy_die "baseline missing frozen backend tree"
+  [[ -d "$baseline_dir/frontend-snapshot" ]] || eternal_deploy_die "baseline missing frontend snapshot"
+  if [[ -L "$baseline_dir/tree/backend" ]]; then
+    eternal_deploy_die "baseline tree/backend is a symlink to mutable source; refuse"
+  fi
+
+  local expected_hash actual_hash kind immutable
+  expected_hash="$(sed -n 's/^integrity_sha256=//p' "$baseline_dir/.baseline-verified" | head -n1)"
+  [[ -n "$expected_hash" ]] || eternal_deploy_die "baseline-verified missing integrity_sha256"
+  actual_hash="$(sha256sum "$baseline_dir/.baseline-integrity" | awk '{print $1}')"
+  [[ "$expected_hash" == "$actual_hash" ]] || eternal_deploy_die "baseline integrity manifest hash mismatch (tampered provenance)"
+
+  kind="$(sed -n 's/^kind=//p' "$baseline_dir/.baseline-verified" | head -n1)"
+  immutable="$(sed -n 's/^immutable=//p' "$baseline_dir/.baseline-verified" | head -n1)"
+  [[ "$kind" == "verified-baseline" ]] || eternal_deploy_die "baseline-verified kind invalid"
+  [[ "$immutable" == "1" ]] || eternal_deploy_die "baseline-verified not marked immutable"
+
+  # Verify file digests (fail if any listed file changed/missing).
+  if ! (cd "$baseline_dir" && sha256sum -c .baseline-integrity >/dev/null 2>&1); then
+    eternal_deploy_die "baseline content digest mismatch (frozen tree altered)"
+  fi
+  eternal_deploy_log "baseline integrity OK files=$(wc -l <"$baseline_dir/.baseline-integrity" | tr -d ' ')"
+}
