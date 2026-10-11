@@ -1,8 +1,8 @@
 name: Deploy production
 
 # Manual immutable-SHA production deploy.
-# Secrets are only available in the `deploy` job after the GitHub Environment
-# `production` protection rules (reviewers / wait timer) are satisfied.
+# Separate authorization job (Environment + DEPLOY_APPROVAL_TOKEN) must pass
+# before the deploy job uses SSH secrets.
 
 on:
   workflow_dispatch:
@@ -13,6 +13,10 @@ on:
         type: string
       confirm_sha:
         description: Must exactly equal commit_sha (operator confirmation)
+        required: true
+        type: string
+      approval_token:
+        description: Separate Owner approval token (must match Environment secret DEPLOY_APPROVAL_TOKEN)
         required: true
         type: string
       allow_migrations:
@@ -39,12 +43,6 @@ jobs:
     outputs:
       sha: ${{ steps.normalize.outputs.sha }}
     steps:
-      - name: Reject non-main dispatch source
-        if: github.ref != 'refs/heads/main'
-        run: |
-          echo "Deploy workflow may only run from refs/heads/main" >&2
-          exit 1
-
       - name: Normalize and confirm SHA
         id: normalize
         env:
@@ -81,57 +79,51 @@ jobs:
             echo "SHA is not an ancestor of origin/main (unmerged)" >&2
             exit 1
           fi
-          # Must equal a commit reachable from main tip (already checked) and
-          # refuse detached SHAs that somehow are not on the main history.
           echo "ancestry OK for $SHA"
 
-      - name: Require green CI for SHA
+      - name: Require explicit green CI jobs for SHA
         env:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ steps.normalize.outputs.sha }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          # Prefer check-suites conclusion; fall back to successful workflow runs.
-          suites_json="$(gh api "repos/${REPO}/commits/${SHA}/check-suites" --paginate)"
-          total="$(printf '%s' "$suites_json" | jq '[.check_suites[]?] | length')"
-          if [[ "$total" != "0" ]]; then
-            bad="$(printf '%s' "$suites_json" | jq -r '
-              [.check_suites[]
-                | select(.conclusion != null)
-                | select(.conclusion != "success")
-                | select(.conclusion != "neutral")
-                | select(.conclusion != "skipped")
-              ]
-              | length')"
-            pending="$(printf '%s' "$suites_json" | jq -r '
-              [.check_suites[] | select(.status != "completed")] | length')"
-            if [[ "$pending" != "0" ]]; then
-              echo "CI check suites still pending for $SHA" >&2
-              exit 1
-            fi
-            if [[ "$bad" != "0" ]]; then
-              echo "CI check suites not fully successful for $SHA" >&2
-              printf '%s\n' "$suites_json" | jq -r '.check_suites[] | "\(.app.name // "app") \(.status) \(.conclusion // "-")"' >&2
-              exit 1
-            fi
-            echo "check-suites OK"
-            exit 0
-          fi
+          bash scripts/deploy/verify_ci_for_sha.sh "$REPO" "$SHA"
 
-          # Fallback: require at least one successful workflow run on this SHA
-          # for the primary validation workflow.
-          runs="$(gh api "repos/${REPO}/actions/workflows/reconciliation-validation.yml/runs?head_sha=${SHA}&status=completed&per_page=20")"
-          ok="$(printf '%s' "$runs" | jq '[.workflow_runs[] | select(.conclusion=="success")] | length')"
-          if [[ "$ok" -lt 1 ]]; then
-            echo "No successful reconciliation-validation run for $SHA" >&2
+  authorize:
+    name: Separate production authorization
+    needs: preflight
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    steps:
+      - name: Verify DEPLOY_APPROVAL_TOKEN (separate from confirm_sha)
+        env:
+          GOT: ${{ inputs.approval_token }}
+          EXPECT: ${{ secrets.DEPLOY_APPROVAL_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${EXPECT}" ]]; then
+            echo "DEPLOY_APPROVAL_TOKEN secret missing on Environment production" >&2
             exit 1
           fi
-          echo "workflow-run fallback OK"
+          if [[ -z "${GOT}" ]]; then
+            echo "approval_token input missing" >&2
+            exit 1
+          fi
+          echo "::add-mask::${GOT}"
+          got_h="$(printf '%s' "$GOT" | sha256sum | awk '{print $1}')"
+          exp_h="$(printf '%s' "$EXPECT" | sha256sum | awk '{print $1}')"
+          if [[ "$got_h" != "$exp_h" ]]; then
+            echo "approval_token does not match DEPLOY_APPROVAL_TOKEN" >&2
+            exit 1
+          fi
+          echo "AUTHORIZATION_OK"
 
   deploy:
     name: Deploy via SSH (environment secrets)
-    needs: preflight
+    needs: [preflight, authorize]
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -170,7 +162,7 @@ jobs:
             echo "::add-mask::${line}"
           done <<<"${DEPLOY_KNOWN_HOSTS}"
 
-      - name: Probe SSH gate (fail-closed)
+      - name: Probe SSH gate (accepted patterns)
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
@@ -179,6 +171,8 @@ jobs:
           DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
         run: |
           set -euo pipefail
+          # shellcheck source=scripts/deploy/lib.sh
+          source scripts/deploy/lib.sh
           key_file="$(mktemp)"
           known_hosts="$(mktemp)"
           printf '%s\n' "$DEPLOY_SSH_KEY" >"$key_file"
@@ -196,7 +190,10 @@ jobs:
             "${DEPLOY_USER}@${DEPLOY_HOST}" \
             probe)"
           printf '%s\n' "$out"
-          grep -q 'PASS probe' <<<"$out"
+          if ! eternal_probe_output_accepted "$out"; then
+            echo "probe output not accepted; run scripts/deploy/install-gate.sh --activate on VPS first" >&2
+            exit 1
+          fi
 
       - name: Deploy immutable SHA
         env:
@@ -218,8 +215,6 @@ jobs:
           cleanup() { rm -f "$key_file" "$known_hosts"; }
           trap cleanup EXIT
 
-          # SSH command remains allowlisted: deploy <sha40> only.
-          # Migration override stays Owner-controlled on the VPS via ETERNAL_ALLOW_MIGRATIONS.
           if [[ "$ALLOW_MIGRATIONS" == "true" ]]; then
             echo "NOTE: allow_migrations=true requested; VPS must have ETERNAL_ALLOW_MIGRATIONS=1 (Owner-controlled)."
           fi

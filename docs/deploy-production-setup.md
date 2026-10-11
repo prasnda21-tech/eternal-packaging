@@ -1,108 +1,129 @@
 # Production deploy setup (GitHub Actions → VPS)
 
-Scope: GitHub Actions workflow, SSH forced-command gate, isolated release runner, and synthetic tests. Does **not** mutate ERP business source, MongoDB, or run production deploy by itself.
+Scope: GitHub Actions workflow, SSH forced-command gate, isolated release runner, least-privilege bootstrap, and synthetic tests. Does **not** mutate ERP business source, MongoDB, or run production deploy by itself.
 
-## Preconditions (already done / Owner-owned)
+## Preconditions (Owner-owned)
 
 - GitHub Environment `production` exists and is limited to branch `main`.
 - Dedicated GitHub Actions SSH deploy key exists on the VPS (not the Windows Owner key).
-- `authorized_keys` uses fail-closed forced command, for example:
-
-```
-restrict,command="/home/DEPLOY_USER/.ssh/eternal-actions-gate" ssh-ed25519 AAAA... eternal-gha-deploy
-```
-
-- Gate `probe` already PASSes; other commands are rejected.
-- VPS tree `/opt/eternal-packaging` may be dirty — deploys use isolated releases under `/opt/eternal-packaging-releases/<sha>` and never `git reset` / `git pull` that tree.
+- `authorized_keys` uses fail-closed forced command.
+- VPS tree `/opt/eternal-packaging` may be dirty — deploys use isolated releases and never `git reset` / `git pull` that tree.
 - Backend unit: `eternal-packaging-backend.service`
 - Frontend docroot: `/var/www/eternal-packaging`
 - Deploy lock: `/tmp/eternal-packaging-deploy.lock`
 
-## Install / refresh gate + runner on VPS
+## Gate probe compatibility + verified install
 
-Copy from an approved main SHA (example paths):
+Workflow accepts probe stdout matching any of:
 
-```bash
-install -d -m 755 ~/.ssh
-install -m 755 scripts/deploy/eternal-actions-gate ~/.ssh/eternal-actions-gate
-install -m 755 scripts/deploy/eternal-deploy-runner.sh ~/.ssh/eternal-deploy-runner.sh
-install -m 644 scripts/deploy/lib.sh ~/.ssh/lib.sh
-```
+- `ETERNAL_GATE_OK probe=pass` (canonical repo gate, required after install-gate activation)
+- `PASS probe` (legacy-compatible)
+- exact `OK`
+- `probe: PASS` / `probe: ok`
 
-Ensure `authorized_keys` `command=` points at `~/.ssh/eternal-actions-gate`.
+**Do not enable / dispatch the workflow against production until one of these is true:**
 
-Create writable roots owned by the deploy user (no `sudo NOPASSWD:ALL`):
-
-```bash
-sudo install -d -o DEPLOY_USER -g DEPLOY_USER /opt/eternal-packaging-releases
-sudo install -d -o DEPLOY_USER -g DEPLOY_USER /var/www/eternal-packaging
-# Optional symlink target parent for current release:
-sudo touch /opt/eternal-packaging-current 2>/dev/null || true
-sudo chown -h DEPLOY_USER:DEPLOY_USER /opt/eternal-packaging-current || \
-  sudo install -o DEPLOY_USER -g DEPLOY_USER -d "$(dirname /opt/eternal-packaging-current)"
-```
-
-Bootstrap bare mirror once (deploy user):
+A. Existing VPS gate already returns an accepted probe form **and** Owner has confirmed it, **or**
+B. Owner runs the verified install below and sees `GATE_ACTIVATE_OK`.
 
 ```bash
-git clone --mirror git@github.com:prasnda21-tech/eternal-packaging.git \
-  /opt/eternal-packaging-releases/mirror.git
+# From an approved checkout of scripts/deploy (on VPS, deploy user):
+./install-gate.sh --source /path/to/scripts/deploy
+# Review GATE_VERIFY_OK, then:
+./install-gate.sh --source /path/to/scripts/deploy --activate
 ```
 
-Configure systemd so `eternal-packaging-backend.service` `WorkingDirectory` / Exec paths follow `/opt/eternal-packaging-current` (or a unit drop-in), without granting broad sudo.
+`install-gate.sh` stages files, runs `probe`, requires the canonical `ETERNAL_GATE_OK` line, and only then atomically replaces `~/.ssh/eternal-actions-gate`.
 
-Optional Owner-only override for explicitly approved migrations:
+Ensure `authorized_keys` `command=` points at that path.
+
+## Least-privilege bootstrap (`/opt`, web root, systemd restart)
+
+Dry-run (safe):
 
 ```bash
-# Only when Owner approved migrations for that deploy window.
-export ETERNAL_ALLOW_MIGRATIONS=1
+sudo ./bootstrap-permissions.sh
 ```
 
-Prefer setting that in a root-owned env file read only by the deploy user for a single run — never commit secrets.
+Apply (root only):
+
+```bash
+sudo ETERNAL_BOOTSTRAP_DEPLOY_USER=DEPLOY_USER ./bootstrap-permissions.sh --apply
+```
+
+This creates/adjusts:
+
+- `/opt/eternal-packaging-releases` owned by deploy user
+- parent of `/opt/eternal-packaging-current` so the deploy user can atomically replace the symlink
+- `/var/www/eternal-packaging` owned by deploy user, group `www-data`
+- `/etc/sudoers.d/eternal-packaging-deploy` allowing **only**:
+  - `systemctl restart eternal-packaging-backend.service`
+  - `systemctl is-active eternal-packaging-backend.service`
+  - `systemctl show eternal-packaging-backend.service`
+
+**No `NOPASSWD:ALL`.** Dirty `/opt/eternal-packaging` contents are not rewritten.
+
+## Systemd unit (release symlink + intact env)
+
+Install/adapt the unit from `scripts/deploy/systemd/eternal-packaging-backend.service`:
+
+- `WorkingDirectory=/opt/eternal-packaging-current/backend`
+- `ExecStart=.../opt/eternal-packaging-current/backend/...`
+- `EnvironmentFile=-/opt/eternal-packaging/backend/.env` (existing secrets stay in the legacy tree)
+- Optional: `EnvironmentFile=-/etc/eternal-packaging/backend.env`
+
+First isolated cutover captures a baseline of the previously active backend root + frontend snapshot so rollback can restore them if the first deploy fails.
+
+## Deploy order / health / rollback
+
+1. Materialize isolated release under `/opt/eternal-packaging-releases/<sha>`
+2. Build frontend into the release (unpublished)
+3. Point `/opt/eternal-packaging-current` at the release
+4. Restart backend only if backend paths changed
+5. Health must return JSON with `mongo=true` and `mode=operational`
+6. Publish frontend to `/var/www/eternal-packaging` only after health PASS
+7. On failure: restore frontend (if publish started) and restore previous/current baseline backend symlink + restart
 
 ## GitHub Environment Secrets
 
-Set these on Environment **`production`** (not repository-wide if avoidable):
+Set on Environment **`production`**:
 
 | Secret | Purpose |
 |--------|---------|
+| `DEPLOY_APPROVAL_TOKEN` | **Required** separate authorization secret; workflow input `approval_token` must match |
 | `DEPLOY_HOST` | VPS hostname or IP |
-| `DEPLOY_USER` | SSH user whose `authorized_keys` forces `eternal-actions-gate` |
-| `DEPLOY_SSH_KEY` | **Private** key for the Actions deploy key only (PEM / OpenSSH). Never the Windows Owner key. |
-| `DEPLOY_KNOWN_HOSTS` | Exact `known_hosts` line(s) for the VPS host key (from Owner `ssh-keyscan`). Enables `StrictHostKeyChecking=yes`. |
-| `DEPLOY_SSH_PORT` | Optional SSH port (default 22) |
+| `DEPLOY_USER` | SSH user with forced-command gate |
+| `DEPLOY_SSH_KEY` | Actions deploy private key only (never Windows Owner key) |
+| `DEPLOY_KNOWN_HOSTS` | `known_hosts` line(s) for `StrictHostKeyChecking=yes` |
+| `DEPLOY_SSH_PORT` | Optional (default 22) |
 
-Also configure Environment protection:
+## Authorization (confirm_sha + wait timer are not enough)
 
-1. **Deployment branches**: `main` only (already).
-2. **Required reviewers** (preferred): Owner or a second trusted account.
-3. If Required Reviewers cannot be enabled, use one of the fallbacks below.
+Production deploy requires **all** of:
 
-Workflow also requires inputs `commit_sha` and matching `confirm_sha` before preflight succeeds. Deploy secrets are only injected in the `deploy` job after Environment approval.
+1. Environment `production` protection (Required Reviewers preferred; wait timer as extra brake)
+2. Separate secret `DEPLOY_APPROVAL_TOKEN` matched by workflow input `approval_token` (job `authorize`)
+3. `confirm_sha == commit_sha`
+4. Explicit CI verification via `scripts/deploy/verify_ci_for_sha.sh`:
+   - successful `reconciliation-validation.yml` run for the SHA
+   - required check-runs success:
+     - `Backend focused tests`
+     - `Backend stock compatibility (replica set)`
+     - `Frontend tests and build`
 
-## Approval when Required Reviewers is unavailable
+Deploy SSH secrets are only used in the `deploy` job after `authorize` succeeds.
 
-Use **all** of these compensating controls:
+If Required Reviewers cannot be enabled: keep `DEPLOY_APPROVAL_TOKEN` (rotate regularly), Environment branch filter `main`, wait timer, and Owner-only workflow dispatch permissions.
 
-1. Keep Environment `production` restricted to `main`.
-2. Enable an Environment **wait timer** (e.g. 5–15 minutes) so a mistaken dispatch can be cancelled.
-3. Require `confirm_sha == commit_sha` (workflow-enforced).
-4. Limit who can dispatch workflows (org/repo Actions permissions → Owner only).
-5. Optional: add a second Environment secret `DEPLOY_APPROVAL_TOKEN` later and a preflight check that an input must match it — only if reviewers remain unavailable; rotate after use.
+## Operator runbook (after this PR is merged — not automatic)
 
-Do **not** put deploy private keys in the repo, Issues, or chat logs.
+1. Bootstrap permissions + install systemd unit pointing at current symlink + EnvironmentFile legacy `.env`
+2. `install-gate.sh --activate` and confirm probe
+3. Set Environment secrets including `DEPLOY_APPROVAL_TOKEN`
+4. Dispatch **Deploy production** on `main` with `commit_sha`, `confirm_sha`, `approval_token`
+5. Approve Environment deployment; authorize job validates token; deploy job SSHs `probe` then `deploy <sha>`
 
-## Operator runbook (after this PR is merged)
-
-1. Merge only business-approved changes to `main`; note the immutable 40-char SHA.
-2. Confirm CI is green for that SHA.
-3. Actions → **Deploy production** → Run workflow on `main`.
-4. Inputs: `commit_sha`, `confirm_sha` (same value), `allow_migrations` only if Owner approved migrations.
-5. Approve the Environment `production` deployment (or wait out the timer).
-6. Watch job logs; SSH command is only `probe` then `deploy <sha>`.
-7. On failure the runner rolls back current symlink + frontend previous tree and leaves `/opt/eternal-packaging` untouched.
-
-## Synthetic verification (no production)
+## Synthetic verification (no production / no VPS mutation)
 
 ```bash
 bash scripts/tests/test_deploy_infrastructure_synthetic.sh
@@ -110,7 +131,7 @@ bash scripts/tests/test_deploy_infrastructure_synthetic.sh
 
 ## Explicit non-goals
 
-- No production deploy from this documentation alone.
-- No Mongo migration execution.
-- No use/creation/reading of Owner Windows private keys.
-- No `sudo NOPASSWD:ALL`.
+- No production deploy from this documentation alone
+- No Mongo migration execution
+- No use/creation/reading of Owner Windows private keys
+- No `sudo NOPASSWD:ALL`

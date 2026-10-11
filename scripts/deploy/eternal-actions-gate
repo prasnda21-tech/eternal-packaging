@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # SSH forced-command gate for Eternal Packaging GitHub Actions deploy key.
 #
-# Install on VPS as the authorized_keys command= target, e.g.:
+# Install via scripts/deploy/install-gate.sh (verified before activation).
+# authorized_keys example:
 #   restrict,command="/home/deploy/.ssh/eternal-actions-gate" ssh-ed25519 AAAA... eternal-gha-deploy
 #
 # Accepts ONLY:
@@ -20,7 +21,6 @@ source "$GATE_DIR/lib.sh"
 RUNNER="${ETERNAL_DEPLOY_RUNNER:-$GATE_DIR/eternal-deploy-runner.sh}"
 
 raw="${SSH_ORIGINAL_COMMAND-}"
-# Trim CR and collapse internal newlines (defense against smuggling).
 cmd="$(printf '%s' "$raw" | tr -d '\r' | tr '\n' ' ')"
 cmd="$(printf '%s' "$cmd" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
 
@@ -28,7 +28,6 @@ if [[ -z "$cmd" ]]; then
   eternal_deploy_die "empty SSH command rejected"
 fi
 
-# Absolute fail-closed denylist patterns before allowlist parse.
 case "$cmd" in
   *';'*|*'&'*|*'|'*|*'`'*|*$'('*|*')'*|*'<'*|*'>'*|*'$'*|*'\\'*)
     eternal_deploy_die "metacharacters rejected"
@@ -38,6 +37,7 @@ case "$cmd" in
     ;;
 esac
 
+# shellcheck disable=SC2086
 set -- $cmd
 verb="${1:-}"
 arg="${2:-}"
@@ -52,7 +52,7 @@ case "$verb" in
     if [[ -n "$arg" ]]; then
       eternal_deploy_die "probe takes no arguments"
     fi
-    printf 'eternal-actions-gate: PASS probe\n'
+    eternal_print_probe_ok
     exit 0
     ;;
   deploy)

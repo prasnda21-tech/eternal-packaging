@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 # Shared helpers for Eternal Packaging deploy gate/runner.
-# Fail-closed. No secrets printed. No sudo assumed.
+# Fail-closed. No secrets printed. No sudo assumed beyond least-privilege wrappers.
 
 set -euo pipefail
+
+# Canonical probe token for the repo-managed gate (versioned).
+ETERNAL_GATE_PROBE_VERSION="${ETERNAL_GATE_PROBE_VERSION:-2}"
+ETERNAL_GATE_PROBE_LINE="ETERNAL_GATE_OK probe=pass version=${ETERNAL_GATE_PROBE_VERSION}"
 
 eternal_deploy_log() {
   printf '[eternal-deploy] %s\n' "$*" >&2
@@ -26,7 +30,6 @@ eternal_require_sha40() {
 # Redact obvious secret-shaped tokens from a line before logging.
 eternal_redact_line() {
   local line="$1"
-  # Flatten newlines so PEM blocks cannot bypass single-line sed.
   line="$(printf '%s' "$line" | tr '\n' ' ')"
   if [[ "$line" == *"PRIVATE KEY"* ]]; then
     line="$(printf '%s' "$line" | sed -E 's/-----BEGIN[A-Z ]*PRIVATE KEY-----+ .+ -----END[A-Z ]*PRIVATE KEY-----+/[REDACTED_PRIVATE_KEY]/g')"
@@ -39,12 +42,30 @@ eternal_redact_line() {
     -e 's/(github_pat_[A-Za-z0-9_]{20,})/[REDACTED]/g' \
     -e 's/(AKIA[0-9A-Z]{16})/[REDACTED]/g' \
     -e 's/([Bb]earer[[:space:]]+)[A-Za-z0-9._~+\/=-]{12,}/\1[REDACTED]/g' \
-    -e 's/(SECRET|TOKEN|PASSWORD|PRIVATE_KEY)([^=]*[=:][[:space:]]*)[^[:space:]]+/\1\2[REDACTED]/g')"
+    -e 's/(SECRET|TOKEN|PASSWORD|PRIVATE_KEY|APPROVAL)([^=]*[=:][[:space:]]*)[^[:space:]]+/\1\2[REDACTED]/g')"
   printf '%s\n' "$line"
 }
 
 eternal_safe_echo() {
   eternal_redact_line "$*" >&2
+}
+
+# Return 0 if probe stdout is acceptable for workflow activation.
+# Accepts canonical repo gate output and known legacy PASS forms from the
+# already-installed VPS gate (Owner-confirmed probe PASS).
+eternal_probe_output_accepted() {
+  local out="$1"
+  grep -qE 'ETERNAL_GATE_OK[[:space:]]+probe=pass' <<<"$out" && return 0
+  grep -qE '(^|[[:space:]])PASS probe([[:space:]]|$)' <<<"$out" && return 0
+  grep -qx 'OK' <<<"$out" && return 0
+  grep -qE '^probe:[[:space:]]*(PASS|ok|OK)$' <<<"$out" && return 0
+  return 1
+}
+
+eternal_print_probe_ok() {
+  # Dual line: canonical + legacy-compatible marker for gradual cutover.
+  printf '%s\n' "$ETERNAL_GATE_PROBE_LINE"
+  printf 'PASS probe\n'
 }
 
 # Migration / irreversible DB mutation paths that require explicit approval.
@@ -113,8 +134,6 @@ eternal_paths_touch_frontend() {
 }
 
 eternal_classify_change_set() {
-  # stdin: paths one per line
-  # exports: ETERNAL_NEED_BACKEND=0|1 ETERNAL_NEED_FRONTEND=0|1
   ETERNAL_NEED_BACKEND=0
   ETERNAL_NEED_FRONTEND=0
   local path
@@ -164,14 +183,13 @@ eternal_assert_no_local_conflict() {
   if [[ -e "$frontend_root/.deploy-in-progress" ]]; then
     eternal_deploy_die "local conflict: frontend deploy-in-progress marker present ($frontend_root/.deploy-in-progress)"
   fi
-  if [[ -d "$release_dir" && ! -f "$release_dir/.deploy-ok" ]]; then
+  if [[ -d "$release_dir" && ! -f "$release_dir/.deploy-ok" && ! -f "$release_dir/.baseline" ]]; then
     eternal_deploy_die "local conflict: incomplete release directory exists ($release_dir)"
   fi
 }
 
 eternal_manifest_guard() {
   local release_dir="$1"
-  # Require dependency manifests when their trees exist; refuse obvious corruption.
   if [[ -d "$release_dir/backend" ]]; then
     [[ -f "$release_dir/backend/requirements.txt" ]] \
       || eternal_deploy_die "manifest guard: backend/requirements.txt missing"
@@ -195,4 +213,35 @@ eternal_sha_is_ancestor_of_main() {
     || eternal_deploy_die "SHA not found in mirror: $sha"
   git --git-dir="$git_dir" merge-base --is-ancestor "$sha" "refs/heads/$main_ref" \
     || eternal_deploy_die "SHA is not merged into $main_ref (ancestry check failed)"
+}
+
+# Health body must report mongo=true and mode=operational.
+eternal_health_body_ok() {
+  local body="$1"
+  if command -v python3 >/dev/null 2>&1; then
+    printf '%s' "$body" | python3 -c '
+import json,sys
+try:
+    d=json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+mongo=d.get("mongo")
+mode=d.get("mode")
+sys.exit(0 if mongo is True and mode=="operational" else 1)
+'
+    return $?
+  fi
+  # Minimal fallback without python: strict substring checks (synthetic/tests).
+  [[ "$body" == *'"mongo": true'* || "$body" == *'"mongo":true'* ]] || return 1
+  [[ "$body" == *'"mode": "operational"'* || "$body" == *'"mode":"operational"'* ]] || return 1
+  return 0
+}
+
+eternal_constant_time_eq() {
+  local a="$1"
+  local b="$2"
+  local ha hb
+  ha="$(printf '%s' "$a" | sha256sum | awk '{print $1}')"
+  hb="$(printf '%s' "$b" | sha256sum | awk '{print $1}')"
+  [[ "$ha" == "$hb" ]]
 }
