@@ -250,6 +250,61 @@ eternal_requirements_sha256() {
   sha256sum "$abs" | awk '{print $1}'
 }
 
+# Verify venv packages satisfy requirements file + pip check (no network).
+# Stub mode: stub pip check only (fixture requirements may be opaque markers).
+eternal_verify_requirements_installed() {
+  local backend_dir="$1"
+  local req_rel="$2"
+  local req_abs="$backend_dir/$req_rel"
+  local pip="$backend_dir/.venv/bin/pip"
+  [[ -f "$req_abs" ]] || eternal_deploy_die "dependency evidence: requirements missing: $req_rel"
+  [[ -d "$backend_dir/.venv" ]] || eternal_deploy_die "dependency evidence: .venv missing"
+  [[ -x "$pip" ]] || eternal_deploy_die "dependency evidence: pip missing/not executable: $pip"
+
+  if ! "$pip" check; then
+    eternal_deploy_die "dependency evidence: pip check FAILED for $req_rel"
+  fi
+  eternal_deploy_log "pip check PASS requirements_file=$req_rel"
+
+  if [[ "${ETERNAL_RUNTIME_MODE:-full}" == "stub" ]]; then
+    eternal_deploy_log "stub dependency evidence OK (pip check only) requirements_file=$req_rel"
+    return 0
+  fi
+
+  local freeze line pkg ver op
+  freeze="$("$pip" freeze 2>/dev/null || true)"
+  [[ -n "$freeze" ]] || eternal_deploy_die "dependency evidence: pip freeze empty"
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%%#*}"
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    [[ -z "$line" ]] && continue
+    [[ "$line" == -* ]] && continue
+    if [[ "$line" =~ ^([A-Za-z0-9_.-]+)==(.+)$ ]]; then
+      pkg="${BASH_REMATCH[1]}"
+      ver="${BASH_REMATCH[2]}"
+      if ! printf '%s\n' "$freeze" | grep -Eiq "^${pkg//_/-}==${ver}$|^${pkg}==${ver}$"; then
+        # pip normalizes _/- ; try both
+        if ! printf '%s\n' "$freeze" | grep -Eiq "^$(printf '%s' "$pkg" | tr '_' '-')==${ver}$"; then
+          if ! printf '%s\n' "$freeze" | grep -Eiq "^$(printf '%s' "$pkg" | tr '-' '_')==${ver}$"; then
+            eternal_deploy_die "dependency evidence: installed package missing/mismatch: ${pkg}==${ver}"
+          fi
+        fi
+      fi
+    elif [[ "$line" =~ ^([A-Za-z0-9_.-]+)([<>=!~]=?.*) ]]; then
+      pkg="${BASH_REMATCH[1]}"
+      if ! printf '%s\n' "$freeze" | grep -Eiq "^${pkg}==|^$(printf '%s' "$pkg" | tr '_' '-')==|^$(printf '%s' "$pkg" | tr '-' '_')=="; then
+        eternal_deploy_die "dependency evidence: installed package missing: $pkg"
+      fi
+    else
+      # Opaque / non-pin lines: refuse in full mode (cannot prove install).
+      eternal_deploy_die "dependency evidence: unsupported requirements line (need name==version): $line"
+    fi
+  done <"$req_abs"
+  eternal_deploy_log "installed packages match requirements_file=$req_rel"
+}
+
 # Verify provenance requirements_file + hash against disk (fail-closed).
 eternal_verify_requirements_provenance() {
   local backend_dir="$1"
@@ -391,6 +446,17 @@ eternal_prepare_backend_runtime() {
 exec "$(readlink -f "$backend_dir/.venv/bin/python")" -c 'import sys; sys.exit(0)' "\$@"
 EOF
     chmod +x "$backend_dir/.venv/bin/uvicorn"
+    # Stub pip: check/freeze succeed so finalize dependency evidence can run in harness.
+    cat >"$backend_dir/.venv/bin/pip" <<'EOF'
+#!/usr/bin/env bash
+# stub pip for synthetic harness — not production
+case "${1:-}" in
+  check) exit 0 ;;
+  freeze) exit 0 ;;
+  *) exit 0 ;;
+esac
+EOF
+    chmod +x "$backend_dir/.venv/bin/pip"
   else
     "$py" -m venv "$backend_dir/.venv" || eternal_deploy_die "runtime prep: venv create failed"
     # shellcheck disable=SC1091

@@ -705,34 +705,73 @@ sed -i "s/^requirements_sha256=.*/requirements_sha256=$bad_hash/" "$BASELINE/.ba
 assert_false "requirements hash mismatch refused" \
   bash -c 'source "'"$ROOT"'/scripts/deploy/lib.sh"; ETERNAL_RUNTIME_MODE=stub eternal_baseline_verify_integrity "'"$BASELINE"'"'
 
-# Finalize existing: no venv recreate; markers only after success
+# Finalize existing: lock + owner attest for legacy (no invented historical provenance)
 rm -rf "$BASELINE"
 make_verified_baseline
-# Strip requirements provenance to simulate legacy VPS baseline
-grep -vE '^(requirements_file|requirements_sha256)=' "$BASELINE/.baseline-verified" >"$BASELINE/.baseline-verified.tmp"
+# Strip recorded provenance + install stamps → simulate manual VPS baseline
+grep -vE '^(requirements_file|requirements_sha256|provenance_source)=' "$BASELINE/.baseline-verified" \
+  >"$BASELINE/.baseline-verified.tmp"
 mv "$BASELINE/.baseline-verified.tmp" "$BASELINE/.baseline-verified"
-rm -f "$BASELINE/.baseline" "$BASELINE/.deploy-ok"
+rm -f "$BASELINE/.baseline" "$BASELINE/.deploy-ok" \
+  "$BASELINE/tree/backend/.eternal-requirements-file" \
+  "$BASELINE/tree/backend/.eternal-requirements-sha256"
+cp "$BASELINE/.baseline-verified" "$HARNESS/baseline-verified.before-legacy"
 venv_inode_before="$(stat -c '%i' "$BASELINE/tree/backend/.venv" 2>/dev/null || stat -f '%i' "$BASELINE/tree/backend/.venv")"
+
 fin_dry="$(ETERNAL_RUNTIME_MODE=stub ETERNAL_BASELINE_DIR="$BASELINE" ETERNAL_SYSTEMCTL_BIN="$BIN/systemctl" \
   ETERNAL_USE_SYSTEMCTL_SUDO=0 ETERNAL_RELEASES_ROOT="$RELEASES" ETERNAL_RUNTIME_ROOT="$RUNTIME" \
+  ETERNAL_DEPLOY_LOCK="$LOCK" \
   "$FINALIZE_BASELINE" 2>"$HARNESS/fin-dry.err" || true)"
-assert_true "finalize dry-run needs apply for legacy" grep -q 'FINALIZE_DRY_RUN_NEEDS_APPLY' <<<"$fin_dry"
+assert_true "finalize dry-run needs attest for legacy" grep -q 'FINALIZE_DRY_RUN_NEEDS_ATTEST' <<<"$fin_dry"
 assert_false "finalize dry-run does not write .baseline" test -f "$BASELINE/.baseline"
+
+# Legacy without confirmation → fail, no markers
+assert_false "legacy finalize without attest refused" \
+  env ETERNAL_RUNTIME_MODE=stub ETERNAL_BASELINE_DIR="$BASELINE" ETERNAL_SYSTEMCTL_BIN="$BIN/systemctl" \
+      ETERNAL_USE_SYSTEMCTL_SUDO=0 ETERNAL_RELEASES_ROOT="$RELEASES" ETERNAL_RUNTIME_ROOT="$RUNTIME" \
+      ETERNAL_DEPLOY_LOCK="$LOCK" \
+      "$FINALIZE_BASELINE" --apply
+assert_false "legacy without attest left no .baseline" test -f "$BASELINE/.baseline"
+assert_true "legacy without attest left metadata unchanged" \
+  cmp -s "$HARNESS/baseline-verified.before-legacy" "$BASELINE/.baseline-verified"
+
+# Lock held by another process → fail, metadata unchanged
+exec {FIN_LOCK_FD}>"$LOCK"
+flock -n "$FIN_LOCK_FD" || { log "FAIL: could not hold finalize test flock"; FAIL=$((FAIL+1)); }
+assert_false "finalize blocked while shared deploy lock held" \
+  env ETERNAL_RUNTIME_MODE=stub ETERNAL_BASELINE_DIR="$BASELINE" ETERNAL_SYSTEMCTL_BIN="$BIN/systemctl" \
+      ETERNAL_USE_SYSTEMCTL_SUDO=0 ETERNAL_RELEASES_ROOT="$RELEASES" ETERNAL_RUNTIME_ROOT="$RUNTIME" \
+      ETERNAL_DEPLOY_LOCK="$LOCK" \
+      "$FINALIZE_BASELINE" --apply --attest-requirements-file=requirements.portable.txt
+flock -u "$FIN_LOCK_FD"
+exec {FIN_LOCK_FD}>&-
+assert_false "lock-busy finalize left no .baseline" test -f "$BASELINE/.baseline"
+assert_true "lock-busy finalize left metadata unchanged" \
+  cmp -s "$HARNESS/baseline-verified.before-legacy" "$BASELINE/.baseline-verified"
+
+# Owner attest portable + dependency validation → finalize OK
 ETERNAL_RUNTIME_MODE=stub ETERNAL_BASELINE_DIR="$BASELINE" ETERNAL_SYSTEMCTL_BIN="$BIN/systemctl" \
   ETERNAL_USE_SYSTEMCTL_SUDO=0 ETERNAL_RELEASES_ROOT="$RELEASES" ETERNAL_RUNTIME_ROOT="$RUNTIME" \
-  "$FINALIZE_BASELINE" --apply >"$HARNESS/fin.txt" 2>"$HARNESS/fin.err"
-assert_true "finalize apply OK" grep -q 'BASELINE_FINALIZE_OK' "$HARNESS/fin.txt"
+  ETERNAL_DEPLOY_LOCK="$LOCK" \
+  "$FINALIZE_BASELINE" --apply --attest-requirements-file=requirements.portable.txt \
+  >"$HARNESS/fin.txt" 2>"$HARNESS/fin.err"
+assert_true "finalize apply with attest OK" grep -q 'BASELINE_FINALIZE_OK' "$HARNESS/fin.txt"
 assert_true "finalize wrote .baseline marker" test -f "$BASELINE/.baseline"
 assert_true "finalize wrote requirements_file portable" \
   grep -q '^requirements_file=requirements.portable.txt' "$BASELINE/.baseline-verified"
+assert_true "finalize wrote provenance_source=owner_attested" \
+  grep -q '^provenance_source=owner_attested' "$BASELINE/.baseline-verified"
 venv_inode_after="$(stat -c '%i' "$BASELINE/tree/backend/.venv" 2>/dev/null || stat -f '%i' "$BASELINE/tree/backend/.venv")"
 assert_eq "finalize did not recreate .venv" "$venv_inode_before" "$venv_inode_after"
+assert_true "finalize released shared deploy lock" flock -n "$LOCK" true
+
 # Validation failure must not leave success markers when forced to fail mid-finalize:
 rm -f "$BASELINE/.baseline" "$BASELINE/.deploy-ok"
 chmod a-r "$BASELINE/tree/backend/requirements.portable.txt"
 assert_false "finalize apply fails closed without markers when req unreadable" \
   env ETERNAL_RUNTIME_MODE=stub ETERNAL_BASELINE_DIR="$BASELINE" ETERNAL_SYSTEMCTL_BIN="$BIN/systemctl" \
       ETERNAL_USE_SYSTEMCTL_SUDO=0 ETERNAL_RELEASES_ROOT="$RELEASES" ETERNAL_RUNTIME_ROOT="$RUNTIME" \
+      ETERNAL_DEPLOY_LOCK="$LOCK" \
       "$FINALIZE_BASELINE" --apply
 chmod u+r "$BASELINE/tree/backend/requirements.portable.txt"
 assert_false "failed finalize left no .baseline success marker" test -f "$BASELINE/.baseline"

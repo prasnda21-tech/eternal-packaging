@@ -47,11 +47,14 @@ Order matters — **preparation before activation**:
    - Completion markers (`.baseline` / `.deploy-ok`) only after checks pass
    - Refuses overwrite of existing baseline unless `--force-recreate` and CURRENT is not pointing at it
 4. If baseline already exists (integrity OK, venv already installed manually with portable):
-   run `finalize-existing-baseline.sh` then `--apply`
-   - Does **not** re-copy snapshot or recreate `.venv`
-   - Verifies digests + runtime + dependency file hash
-   - Stamps `requirements_file` honestly; writes markers only on success
-   - Does **not** switch `current` or restart systemd
+   - Owner session evidence first: install from `requirements.portable.txt` and `pip check` PASS
+   - Dry-run, then:
+     `finalize-existing-baseline.sh --apply --attest-requirements-file=requirements.portable.txt`
+   - `--apply` takes the shared deploy lock (`/tmp/eternal-packaging-deploy.lock`); busy lock fails with no writes
+   - Legacy baselines without requirements provenance **must** attest the file actually used for the install
+     (`provenance_source=owner_attested`); no silent invention from current policy
+   - Verifies digests + hash + installed packages vs requirements + `pip check` before markers
+   - Does **not** re-copy snapshot, recreate `.venv`, switch `current`, or restart systemd
 
 ### Phase B — activation (after verified baseline exists)
 
@@ -72,7 +75,9 @@ Order matters — **preparation before activation**:
 | Default install file | `backend/requirements.portable.txt` |
 | Override | `ETERNAL_REQUIREMENTS_FILE` = relative path under `backend/` only |
 | Forbidden | absolute paths, `..`, missing file, silent fallback to `requirements.txt` |
-| Provenance | `.baseline-verified` must record `requirements_file=` + `requirements_sha256=` of the file actually used |
+| Provenance | `.baseline-verified` records `requirements_file=` + `requirements_sha256=` of the file actually used |
+| Legacy finalize | Requires `--attest-requirements-file=REL` + `provenance_source=owner_attested` (hash + packages + `pip check`) |
+| Finalize lock | Same flock path as deploy runner; held for entire `--apply` verify+write |
 
 ### Local startup smoke (not production deploy)
 
