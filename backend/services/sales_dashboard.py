@@ -405,6 +405,7 @@ async def _load_receipts(db, invoice_ids: Sequence[str]) -> Dict[str, List[dict]
             "customer_credit_amount": 1,
             "financial_status": 1,
             "cancelled": 1,
+            "settlement_effective": 1,
         },
     )
     grouped: Dict[str, List[dict]] = {}

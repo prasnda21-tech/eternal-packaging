@@ -493,3 +493,52 @@ async def test_customer_identity_does_not_merge_names_or_split_ids(clean_db):
     assert body["customers"]["repeat_count"] == 0
     assert body["customers"]["unidentified_invoice_count"] == 1
     assert body["customers"]["percents_available"] is False
+
+
+def test_load_receipts_projection_includes_settlement_effective():
+    """Inclusion projection must keep settlement_effective for AR semantics."""
+    from pathlib import Path
+
+    src = Path(__file__).resolve().parents[1] / "services" / "sales_dashboard.py"
+    text = src.read_text(encoding="utf-8")
+    start = text.index("async def _load_receipts")
+    chunk = text[start:start + 500]
+    assert '"settlement_effective": 1' in chunk or "'settlement_effective': 1" in chunk
+    assert '"financial_status": 1' in chunk or "'financial_status': 1" in chunk
+
+
+@pytest.mark.anyio
+async def test_settlement_effective_false_does_not_reduce_receivables(clean_db):
+    """Pending auto-lifecycle receipts must not count as paid on the dashboard."""
+    db = server.db
+    await db.orders.insert_one(_order(id="po-pend", customer_id="cust-pend", customer="Pending Cust"))
+    await db.sales_invoices.insert_one(
+        _invoice(
+            id="inv-pend",
+            po_id="po-pend",
+            invoice_date="2026-03-10",
+            due_date="2026-03-24",
+            after_discount=10000,
+            grand_total=10000,
+            ppn_amount=0,
+        )
+    )
+    await db.sales_receipts.insert_one({
+        "id": "rc-pending-settle",
+        "invoice_id": "inv-pend",
+        "amount": 10000,
+        "allocated_amount": 10000,
+        "financial_status": "active",
+        "cancelled": False,
+        "settlement_effective": False,
+    })
+    async with await client_for(_user()) as client:
+        response = await client.get(
+            PATH,
+            params={"start_date": "2026-03-01", "end_date": "2026-03-31", "preset": "custom"},
+        )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["receivables"]["outstanding"] == 10000
+    assert body["settlement"]["open_outstanding"] == 10000
+    assert body["settlement"]["settled_count"] == 0
