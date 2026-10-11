@@ -36,7 +36,7 @@ Order matters — **preparation before activation**:
 
 1. As root: `ETERNAL_BOOTSTRAP_DEPLOY_USER=eternaladmin bash scripts/deploy/bootstrap-permissions.sh` (dry-run), then `--apply`.
    - Creates `/opt/eternal-packaging-runtime/{releases,frontend-prev}` owned by `eternaladmin`.
-   - Narrow sudoers: `systemctl restart|is-active|show` for the unit only.
+   - Narrow sudoers: exact `restart` / `is-active` / `show -p PROP --value` for the unit only (no wildcards). Runner prefers unprivileged read for show/is-active.
    - Does **not** chown/chmod `/opt` or `/var/www`.
 2. As `eternaladmin`: create bare mirror `git clone --mirror <repo> /opt/eternal-packaging-runtime/releases/mirror.git`
 3. As `eternaladmin`: `prepare-verified-baseline.sh --apply`
@@ -65,9 +65,11 @@ Keep dirty `/opt/eternal-packaging` overlay untouched. Pure SHA does **not** aut
 - Shared `flock` lock held through rollback; existing lock file without holder does not block; lock file is not unlinked.
 - Preflight: runtime root writable, FE leaf writable, mirror, disk, systemd WD/ExecStart match expected **runtime** paths.
 - Materialize via `git archive` then **fresh venv** + dependency install; validate executable before switching `current`.
+- **FE-only / no-backend-change:** keep `current` + running process on the active release (no switch, no restart); verify `/proc/<MainPID>/cwd` matches that release.
+- **Backend change:** switch `current`, restart, then verify process cwd == new release backend.
+- Rollback never swallows component failures: continues other restores, holds lock until finished, verifies pointer/process/health/index, prints `ROLLBACK_PASS` or `ROLLBACK_FAILED`.
 - Baseline rollback runtime must pass the same validation (not marker-only).
 - FE backup under runtime root; publish/restore in-place (assets then atomic `index.html`); never rename webroot under root-owned `/var/www`.
-- Health + MainPID/cwd checks after restart.
 - No business migrations/backfills.
 
 ## Cursor trigger helper
