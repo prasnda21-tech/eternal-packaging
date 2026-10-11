@@ -283,49 +283,310 @@ cat >"$MOCK/check-runs.json" <<'EOF'
 ]}
 EOF
 
-# ========== 403 no fallback / no double dispatch ==========
+# ========== trigger correlation: run-name + exact request_id + GET poll ==========
+assert_true "deploy-probe.yml run-name carries request_id" \
+  grep -qE '^run-name:.*request_id=\$\{\{ inputs\.request_id \}\}' "$ROOT/.github/workflows/deploy-probe.yml"
+assert_true "deploy-production.yml run-name carries request_id" \
+  grep -qE '^run-name:.*request_id=\$\{\{ inputs\.request_id \}\}' "$ROOT/.github/workflows/deploy-production.yml"
+
+POLL_ENV=(
+  ETERNAL_GH_API_MOCK_DIR="$MOCK"
+  ETERNAL_TRIGGER_DISPATCH_LOG="$HARNESS/dispatch.log"
+  ETERNAL_DEPLOY_SHARED_SECRET='test-secret'
+  ETERNAL_TRIGGER_POLL_INTERVAL_SEC=0
+  ETERNAL_TRIGGER_POLL_MAX_ATTEMPTS=3
+  ETERNAL_TRIGGER_POLL_TIMEOUT_SEC=3
+)
+
+# 5) Dispatch ditolak → tidak dilaporkan accepted; POST tepat 1
 printf '403\n' >"$MOCK/dispatch-status"
 cat >"$MOCK/trigger-runs.json" <<'EOF'
 {"workflow_runs":[]}
 EOF
+rm -f "$MOCK"/trigger-runs-poll-*.json "$MOCK/trigger-runs-http-status"
 : >"$HARNESS/dispatch.log"
-assert_false "execute 403 stops without success" \
-  env ETERNAL_GH_API_MOCK_DIR="$MOCK" ETERNAL_TRIGGER_DISPATCH_LOG="$HARNESS/dispatch.log" \
-      ETERNAL_DEPLOY_SHARED_SECRET='test-secret' \
-      "$TRIGGER" execute deploy --sha "$MAIN_SHA" --confirm-sha "$MAIN_SHA" --execute --request-id req-403
+set +e
+deny_out="$(env "${POLL_ENV[@]}" ETERNAL_DEPLOY_SHARED_SECRET='test-secret' \
+  "$TRIGGER" execute deploy --sha "$MAIN_SHA" --confirm-sha "$MAIN_SHA" --execute --request-id req-403 \
+  2>"$HARNESS/deny.err")"
+deny_ec=$?
+set -e
+assert_eq "403 execute exits non-zero" "1" "$deny_ec"
+assert_false "403 path does not claim DISPATCH_ACCEPTED" \
+  grep -q 'DISPATCH_ACCEPTED' <<<"$deny_out$(cat "$HARNESS/deny.err")"
+assert_false "403 path does not claim DISPATCH_OK" \
+  grep -q 'DISPATCH_OK' <<<"$deny_out$(cat "$HARNESS/deny.err")"
 dispatch_count="$(grep -c '^POST ' "$HARNESS/dispatch.log" || true)"
 assert_eq "403 path performs single POST attempt only" "1" "$dispatch_count"
 
-# Ambiguous runs refuse re-dispatch
-printf '403\n' >"$MOCK/dispatch-status"
-cat >"$MOCK/trigger-runs.json" <<EOF
+# Pre-existing ambiguous request_id → refuse before POST
+printf 'ok\n' >"$MOCK/dispatch-status"
+cat >"$MOCK/trigger-runs.json" <<'EOF'
 {"workflow_runs":[
- {"id":1,"html_url":"https://example.test/1","created_at":"2030-01-01T00:00:00Z","display_title":"req-ambig"},
- {"id":2,"html_url":"https://example.test/2","created_at":"2030-01-01T00:00:01Z","display_title":"req-ambig"}
+ {"id":1,"html_url":"https://example.test/1","event":"workflow_dispatch","head_branch":"main",
+  "display_title":"Deploy production · request_id=req-ambig"},
+ {"id":2,"html_url":"https://example.test/2","event":"workflow_dispatch","head_branch":"main",
+  "display_title":"Deploy production · request_id=req-ambig"}
 ]}
 EOF
-assert_false "ambiguous runs refuse dispatch" \
-  env ETERNAL_GH_API_MOCK_DIR="$MOCK" ETERNAL_DEPLOY_SHARED_SECRET='test-secret' \
-      "$TRIGGER" execute deploy --sha "$MAIN_SHA" --confirm-sha "$MAIN_SHA" --execute --request-id req-ambig
+: >"$HARNESS/dispatch.log"
+assert_false "ambiguous existing runs refuse before dispatch" \
+  env "${POLL_ENV[@]}" "$TRIGGER" execute deploy --sha "$MAIN_SHA" --confirm-sha "$MAIN_SHA" \
+      --execute --request-id req-ambig
+assert_eq "ambiguous pre-check performs zero POST" "0" "$(grep -c '^POST ' "$HARNESS/dispatch.log" || true)"
 
-# Successful correlate once
+# 1) List kosong lalu run cocok muncul → URL benar, POST tepat 1
 printf 'ok\n' >"$MOCK/dispatch-status"
 cat >"$MOCK/trigger-runs.json" <<'EOF'
 {"workflow_runs":[]}
 EOF
-cat >"$MOCK/trigger-runs-after.json" <<'EOF'
+rm -f "$MOCK"/trigger-runs-poll-*.json
+# post-dispatch poll 1 empty, poll 2 match (counter resets after POST)
+cat >"$MOCK/trigger-runs-poll-1.json" <<'EOF'
+{"workflow_runs":[]}
+EOF
+cat >"$MOCK/trigger-runs-poll-2.json" <<'EOF'
 {"workflow_runs":[
- {"id":9,"html_url":"https://example.test/runs/9","created_at":"2030-01-01T00:00:00Z","display_title":"Deploy production req-ok"}
+ {"id":9,"html_url":"https://example.test/runs/9","event":"workflow_dispatch","head_branch":"main",
+  "name":"Deploy production · request_id=req-ok",
+  "display_title":"Deploy production · request_id=req-ok"}
 ]}
 EOF
-ok_disp="$(ETERNAL_GH_API_MOCK_DIR="$MOCK" ETERNAL_TRIGGER_DISPATCH_LOG="$HARNESS/dispatch.log" \
-  ETERNAL_DEPLOY_SHARED_SECRET='test-secret-VALUE-NEVER-LOG' \
-  "$TRIGGER" execute deploy --sha "$MAIN_SHA" --confirm-sha "$MAIN_SHA" --execute --request-id req-ok 2>"$HARNESS/okdisp.err")"
+: >"$HARNESS/dispatch.log"
+ok_disp="$(env "${POLL_ENV[@]}" ETERNAL_DEPLOY_SHARED_SECRET='test-secret-VALUE-NEVER-LOG' \
+  "$TRIGGER" execute deploy --sha "$MAIN_SHA" --confirm-sha "$MAIN_SHA" --execute --request-id req-ok \
+  2>"$HARNESS/okdisp.err")"
 assert_true "dispatch OK returns run URL" grep -q 'run_url=https://example.test/runs/9' <<<"$ok_disp"
+assert_true "DISPATCH_OK printed" grep -q 'DISPATCH_OK' <<<"$ok_disp"
+assert_eq "empty-then-match POST exactly once" "1" "$(grep -c '^POST ' "$HARNESS/dispatch.log" || true)"
 assert_true "dispatch uses stdin-json (no secret argv)" grep -q 'secret_in_argv=no' "$HARNESS/dispatch.log"
 assert_false "dispatch log never contains shared secret" grep -q 'test-secret-VALUE-NEVER-LOG' "$HARNESS/dispatch.log"
 assert_false "dispatch stdout/err never contains shared secret" \
   grep -q 'test-secret-VALUE-NEVER-LOG' <<<"$ok_disp$(cat "$HARNESS/okdisp.err" 2>/dev/null || true)"
+
+# 2) Timeout → accepted/unresolved, POST tetap 1
+printf 'ok\n' >"$MOCK/dispatch-status"
+cat >"$MOCK/trigger-runs.json" <<'EOF'
+{"workflow_runs":[]}
+EOF
+rm -f "$MOCK"/trigger-runs-poll-*.json
+: >"$HARNESS/dispatch.log"
+set +e
+timeout_out="$(env "${POLL_ENV[@]}" "$TRIGGER" execute deploy --sha "$MAIN_SHA" --confirm-sha "$MAIN_SHA" \
+  --execute --request-id req-timeout 2>"$HARNESS/timeout.err")"
+timeout_ec=$?
+set -e
+assert_eq "correlation timeout exits non-zero" "1" "$timeout_ec"
+assert_true "timeout reports DISPATCH_ACCEPTED_UNRESOLVED" \
+  grep -q 'DISPATCH_ACCEPTED_UNRESOLVED request_id=req-timeout' <<<"$timeout_out$(cat "$HARNESS/timeout.err")"
+assert_true "timeout message forbids auto re-dispatch" \
+  grep -qi 'do not auto re-dispatch' "$HARNESS/timeout.err"
+assert_false "timeout does not claim DISPATCH_OK" \
+  grep -q 'DISPATCH_OK' <<<"$timeout_out$(cat "$HARNESS/timeout.err")"
+assert_eq "timeout path POST exactly once" "1" "$(grep -c '^POST ' "$HARNESS/dispatch.log" || true)"
+
+# 3) ID berbeda / prefix serupa → tidak cocok (timeout unresolved)
+printf 'ok\n' >"$MOCK/dispatch-status"
+cat >"$MOCK/trigger-runs.json" <<'EOF'
+{"workflow_runs":[]}
+EOF
+rm -f "$MOCK"/trigger-runs-poll-*.json
+cat >"$MOCK/trigger-runs-poll-1.json" <<'EOF'
+{"workflow_runs":[
+ {"id":11,"html_url":"https://example.test/runs/11","event":"workflow_dispatch","head_branch":"main",
+  "display_title":"Deploy production · request_id=req-ok-extra"},
+ {"id":12,"html_url":"https://example.test/runs/12","event":"workflow_dispatch","head_branch":"main",
+  "display_title":"Deploy production · request_id=req-ok2"}
+]}
+EOF
+: >"$HARNESS/dispatch.log"
+set +e
+prefix_out="$(env "${POLL_ENV[@]}" "$TRIGGER" execute deploy --sha "$MAIN_SHA" --confirm-sha "$MAIN_SHA" \
+  --execute --request-id req-ok 2>"$HARNESS/prefix.err")"
+prefix_ec=$?
+set -e
+assert_eq "prefix-similar IDs do not correlate" "1" "$prefix_ec"
+assert_false "prefix-similar does not return wrong URL" \
+  grep -qE 'run_url=https://example.test/runs/1[12]' <<<"$prefix_out$(cat "$HARNESS/prefix.err")"
+assert_true "prefix-similar ends unresolved not OK" \
+  grep -q 'DISPATCH_ACCEPTED_UNRESOLVED request_id=req-ok' <<<"$prefix_out$(cat "$HARNESS/prefix.err")"
+assert_eq "prefix-similar POST exactly once" "1" "$(grep -c '^POST ' "$HARNESS/dispatch.log" || true)"
+
+# 4) Beberapa run dengan ID sama setelah dispatch → ambiguous
+printf 'ok\n' >"$MOCK/dispatch-status"
+cat >"$MOCK/trigger-runs.json" <<'EOF'
+{"workflow_runs":[]}
+EOF
+rm -f "$MOCK"/trigger-runs-poll-*.json
+cat >"$MOCK/trigger-runs-poll-1.json" <<'EOF'
+{"workflow_runs":[
+ {"id":21,"html_url":"https://example.test/runs/21","event":"workflow_dispatch","head_branch":"main",
+  "display_title":"Deploy production · request_id=req-dup"},
+ {"id":22,"html_url":"https://example.test/runs/22","event":"workflow_dispatch","head_branch":"main",
+  "display_title":"Deploy production · request_id=req-dup"}
+]}
+EOF
+: >"$HARNESS/dispatch.log"
+set +e
+ambig_out="$(env "${POLL_ENV[@]}" "$TRIGGER" execute deploy --sha "$MAIN_SHA" --confirm-sha "$MAIN_SHA" \
+  --execute --request-id req-dup 2>"$HARNESS/ambig.err")"
+ambig_ec=$?
+set -e
+assert_eq "post-dispatch ambiguous exits non-zero" "1" "$ambig_ec"
+assert_true "post-dispatch ambiguous message" \
+  grep -qi 'ambiguous runs after dispatch' "$HARNESS/ambig.err"
+assert_false "ambiguous does not pick first run as DISPATCH_OK" \
+  grep -q 'DISPATCH_OK' <<<"$ambig_out$(cat "$HARNESS/ambig.err")"
+assert_eq "ambiguous post-dispatch POST exactly once" "1" "$(grep -c '^POST ' "$HARNESS/dispatch.log" || true)"
+
+# 6) Error API saat polling → diagnosis jelas, tanpa POST ulang
+printf 'ok\n' >"$MOCK/dispatch-status"
+cat >"$MOCK/trigger-runs.json" <<'EOF'
+{"workflow_runs":[]}
+EOF
+rm -f "$MOCK"/trigger-runs-poll-*.json "$MOCK"/trigger-runs-poll-*-http-status "$MOCK/trigger-runs-http-status"
+printf '500\n' >"$MOCK/trigger-runs-poll-1-http-status"
+: >"$HARNESS/dispatch.log"
+set +e
+apierr_out="$(env "${POLL_ENV[@]}" "$TRIGGER" execute deploy --sha "$MAIN_SHA" --confirm-sha "$MAIN_SHA" \
+  --execute --request-id req-apierr 2>"$HARNESS/apierr.err")"
+apierr_ec=$?
+set -e
+assert_eq "poll API error exits non-zero" "1" "$apierr_ec"
+assert_true "poll API error diagnosis mentions accepted" \
+  grep -qi 'dispatch was accepted' "$HARNESS/apierr.err"
+assert_true "poll API error forbids auto re-dispatch" \
+  grep -qi 'do not auto re-dispatch' "$HARNESS/apierr.err"
+assert_false "poll API error does not claim DISPATCH_OK" \
+  grep -q 'DISPATCH_OK' <<<"$apierr_out$(cat "$HARNESS/apierr.err")"
+assert_eq "poll API error POST exactly once" "1" "$(grep -c '^POST ' "$HARNESS/dispatch.log" || true)"
+rm -f "$MOCK/trigger-runs-poll-1-http-status"
+
+# ========== trigger: request_id + HTTP timeout bounds ==========
+printf 'ok\n' >"$MOCK/dispatch-status"
+cat >"$MOCK/trigger-runs.json" <<'EOF'
+{"workflow_runs":[]}
+EOF
+rm -f "$MOCK"/trigger-runs-poll-*.json "$MOCK"/dispatch-hang-sec "$MOCK"/dispatch-hang-ignore-term \
+  "$MOCK"/trigger-runs-hang-sec "$MOCK"/trigger-runs-hang-ignore-term \
+  "$MOCK"/trigger-runs-poll-*-hang-sec "$MOCK"/trigger-runs-poll-*-hang-ignore-term
+
+# Valid request_id accepted (regression smoke with explicit valid id)
+cat >"$MOCK/trigger-runs-poll-1.json" <<'EOF'
+{"workflow_runs":[
+ {"id":31,"html_url":"https://example.test/runs/31","event":"workflow_dispatch","head_branch":"main",
+  "display_title":"Deploy production · request_id=req.valid_1"}
+]}
+EOF
+: >"$HARNESS/dispatch.log"
+valid_id_out="$(env "${POLL_ENV[@]}" "$TRIGGER" execute deploy --sha "$MAIN_SHA" --confirm-sha "$MAIN_SHA" \
+  --execute --request-id 'req.valid_1' 2>"$HARNESS/validid.err")"
+assert_true "valid request_id accepted with DISPATCH_OK" grep -q 'DISPATCH_OK' <<<"$valid_id_out"
+assert_eq "valid request_id POST once" "1" "$(grep -c '^POST ' "$HARNESS/dispatch.log" || true)"
+
+# Invalid request_id rejected before POST (space / newline / symbol)
+for bad_id in 'req ok' $'req\nline' 'req@symbol'; do
+  : >"$HARNESS/dispatch.log"
+  set +e
+  env "${POLL_ENV[@]}" "$TRIGGER" execute deploy --sha "$MAIN_SHA" --confirm-sha "$MAIN_SHA" \
+    --execute --request-id "$bad_id" >/dev/null 2>"$HARNESS/badid.err"
+  bad_ec=$?
+  set -e
+  assert_eq "invalid request_id exits non-zero ($(printf '%q' "$bad_id"))" "1" "$bad_ec"
+  assert_true "invalid request_id refused before network ($(printf '%q' "$bad_id"))" \
+    grep -qi 'refused before network/POST' "$HARNESS/badid.err"
+  assert_eq "invalid request_id POST count 0 ($(printf '%q' "$bad_id"))" "0" \
+    "$(grep -c '^POST ' "$HARNESS/dispatch.log" || true)"
+done
+
+# Invalid timeout config rejected before dispatch
+: >"$HARNESS/dispatch.log"
+set +e
+env "${POLL_ENV[@]}" ETERNAL_TRIGGER_HTTP_TIMEOUT_SEC=0 \
+  "$TRIGGER" execute deploy --sha "$MAIN_SHA" --confirm-sha "$MAIN_SHA" \
+  --execute --request-id req-badtimeout >/dev/null 2>"$HARNESS/badto.err"
+badto_ec=$?
+set -e
+assert_eq "HTTP timeout 0 exits non-zero" "1" "$badto_ec"
+assert_true "HTTP timeout 0 refused before dispatch" \
+  grep -qi 'positive integer; refused before dispatch' "$HARNESS/badto.err"
+assert_eq "HTTP timeout 0 POST count 0" "0" "$(grep -c '^POST ' "$HARNESS/dispatch.log" || true)"
+
+: >"$HARNESS/dispatch.log"
+set +e
+env "${POLL_ENV[@]}" ETERNAL_TRIGGER_HTTP_TIMEOUT_SEC=abc \
+  "$TRIGGER" execute deploy --sha "$MAIN_SHA" --confirm-sha "$MAIN_SHA" \
+  --execute --request-id req-badtimeout2 >/dev/null 2>"$HARNESS/badto2.err"
+badto2_ec=$?
+set -e
+assert_eq "HTTP timeout abc exits non-zero" "1" "$badto2_ec"
+assert_eq "HTTP timeout abc POST count 0" "0" "$(grep -c '^POST ' "$HARNESS/dispatch.log" || true)"
+
+# GET hang (ignores TERM) stops within HTTP+KILL budget after accepted POST
+printf 'ok\n' >"$MOCK/dispatch-status"
+cat >"$MOCK/trigger-runs.json" <<'EOF'
+{"workflow_runs":[]}
+EOF
+rm -f "$MOCK"/trigger-runs-poll-*.json
+printf '30\n' >"$MOCK/trigger-runs-poll-1-hang-sec"
+: >"$MOCK/trigger-runs-poll-1-hang-ignore-term"
+: >"$HARNESS/dispatch.log"
+ghang_start="$(date +%s)"
+set +e
+env "${POLL_ENV[@]}" \
+  ETERNAL_TRIGGER_FORCE_HTTP_TIMEOUT=1 \
+  ETERNAL_TRIGGER_HTTP_TIMEOUT_SEC=1 \
+  ETERNAL_TRIGGER_HTTP_KILL_AFTER_SEC=1 \
+  ETERNAL_TRIGGER_POLL_MAX_ATTEMPTS=1 \
+  ETERNAL_TRIGGER_POLL_TIMEOUT_SEC=5 \
+  "$TRIGGER" execute deploy --sha "$MAIN_SHA" --confirm-sha "$MAIN_SHA" \
+  --execute --request-id req-gethang >/dev/null 2>"$HARNESS/gethang.err"
+ghang_ec=$?
+set -e
+ghang_elapsed=$(( $(date +%s) - ghang_start ))
+assert_eq "GET hang exits non-zero" "1" "$ghang_ec"
+assert_true "GET hang mentions HTTP timeout after accept" \
+  grep -qi 'HTTP timeout while correlating' "$HARNESS/gethang.err"
+assert_true "GET hang forbids auto re-dispatch" \
+  grep -qi 'do not auto re-dispatch' "$HARNESS/gethang.err"
+assert_false "GET hang does not claim DISPATCH_OK" grep -q 'DISPATCH_OK' "$HARNESS/gethang.err"
+assert_eq "GET hang POST exactly once" "1" "$(grep -c '^POST ' "$HARNESS/dispatch.log" || true)"
+# Bound: ~1s TERM + ~1s KILL (+ slack); must not approach the 30s hang.
+assert_true "GET hang stopped within 8s wall clock" test "$ghang_elapsed" -le 8
+rm -f "$MOCK/trigger-runs-poll-1-hang-sec" "$MOCK/trigger-runs-poll-1-hang-ignore-term"
+
+# POST timeout: acceptance unknown (not denied), no re-POST
+printf 'ok\n' >"$MOCK/dispatch-status"
+cat >"$MOCK/trigger-runs.json" <<'EOF'
+{"workflow_runs":[]}
+EOF
+rm -f "$MOCK"/trigger-runs-poll-*.json
+printf '30\n' >"$MOCK/dispatch-hang-sec"
+: >"$MOCK/dispatch-hang-ignore-term"
+: >"$HARNESS/dispatch.log"
+phang_start="$(date +%s)"
+set +e
+phang_out="$(env "${POLL_ENV[@]}" \
+  ETERNAL_TRIGGER_FORCE_HTTP_TIMEOUT=1 \
+  ETERNAL_TRIGGER_HTTP_TIMEOUT_SEC=1 \
+  ETERNAL_TRIGGER_HTTP_KILL_AFTER_SEC=1 \
+  "$TRIGGER" execute deploy --sha "$MAIN_SHA" --confirm-sha "$MAIN_SHA" \
+  --execute --request-id req-posthang 2>"$HARNESS/posthang.err")"
+phang_ec=$?
+set -e
+phang_elapsed=$(( $(date +%s) - phang_start ))
+assert_eq "POST timeout exits non-zero" "1" "$phang_ec"
+assert_true "POST timeout reports DISPATCH_ACCEPTANCE_UNKNOWN" \
+  grep -q 'DISPATCH_ACCEPTANCE_UNKNOWN request_id=req-posthang' <<<"$phang_out$(cat "$HARNESS/posthang.err")"
+assert_true "POST timeout note may have accepted" \
+  grep -qi 'may have accepted' <<<"$phang_out$(cat "$HARNESS/posthang.err")"
+assert_false "POST timeout does not claim denied" \
+  grep -qi 'workflow_dispatch denied' "$HARNESS/posthang.err"
+assert_false "POST timeout does not claim DISPATCH_ACCEPTED" \
+  grep -q 'DISPATCH_ACCEPTED ' <<<"$phang_out$(cat "$HARNESS/posthang.err")"
+assert_eq "POST timeout POST exactly once" "1" "$(grep -c '^POST ' "$HARNESS/dispatch.log" || true)"
+assert_true "POST timeout stopped within 8s wall clock" test "$phang_elapsed" -le 8
+rm -f "$MOCK/dispatch-hang-sec" "$MOCK/dispatch-hang-ignore-term"
 
 # ========== probe helper literal only + cleanup ==========
 export ETERNAL_SSH_BIN="$BIN/ssh"
