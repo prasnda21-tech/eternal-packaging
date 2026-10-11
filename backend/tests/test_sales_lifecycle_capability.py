@@ -204,3 +204,96 @@ async def test_document_pending_distinct_from_system_capability(indexes):
     assert cap["document_pending_or_failed"] is True
     assert cap[OP_AUTO_CREATE_POST].get("document_state") == "pending"
     assert cap[OP_LEGACY_MANUAL] is False
+
+
+DIREKTUR = {
+    "id": "dir-cap",
+    "email": "direktur@example.com",
+    "name": "Direktur",
+    "role": "direktur_utama",
+    "permissions_override": {},
+}
+
+
+@pytest.mark.anyio
+async def test_invoice_auto_create_matches_endpoint_any_of_for_direktur(indexes):
+    """Capability auto_create_post must mirror create endpoint any-of perms.
+
+    Endpoint: sales.invoice.create | sales_order.create | po.edit via
+    role_permissions (same as server.user_permissions). Builtin Direktur
+    ROLE_DEFAULT lacks these keys — production grants live in role_permissions.
+    """
+    db = server.db
+    await _enable_all(db)
+
+    # No role_permissions → Direktur cannot create (fail closed; no new grants).
+    await db.role_permissions.delete_many({"role": "direktur_utama"})
+    denied = await build_invoice_lifecycle_capability(db, DIREKTUR, None)
+    assert denied[OP_AUTO_CREATE_POST]["available"] is False
+    assert "permission_missing" in (denied[OP_AUTO_CREATE_POST].get("reasons") or [])
+
+    # Endpoint alternative: sales_order.create on role_permissions only.
+    await db.role_permissions.update_one(
+        {"role": "direktur_utama"},
+        {"$set": {"role": "direktur_utama", "permissions": ["sales_order.create"]}},
+        upsert=True,
+    )
+    via_so = await build_invoice_lifecycle_capability(db, DIREKTUR, None)
+    assert via_so[OP_AUTO_CREATE_POST]["available"] is True
+    assert "permission_missing" not in (via_so[OP_AUTO_CREATE_POST].get("reasons") or [])
+
+    # Endpoint alternative: po.edit
+    await db.role_permissions.update_one(
+        {"role": "direktur_utama"},
+        {"$set": {"permissions": ["po.edit"]}},
+    )
+    via_po = await build_invoice_lifecycle_capability(db, DIREKTUR, None)
+    assert via_po[OP_AUTO_CREATE_POST]["available"] is True
+
+    # Explicit sales.invoice.create
+    await db.role_permissions.update_one(
+        {"role": "direktur_utama"},
+        {"$set": {"permissions": ["sales.invoice.create"]}},
+    )
+    via_inv = await build_invoice_lifecycle_capability(db, DIREKTUR, None)
+    assert via_inv[OP_AUTO_CREATE_POST]["available"] is True
+
+
+@pytest.mark.anyio
+async def test_invoice_auto_create_denied_without_endpoint_perms(indexes):
+    db = server.db
+    await _enable_all(db)
+    await db.role_permissions.delete_many({"role": {"$in": ["sales", "helper"]}})
+
+    # Role with unrelated override — still denied.
+    no_access = {
+        "id": "no-create",
+        "email": "helper@example.com",
+        "name": "Helper",
+        "role": "helper",
+        "permissions_override": {"dashboard.owner.view": True},
+    }
+    cap = await build_invoice_lifecycle_capability(db, no_access, None)
+    assert cap[OP_AUTO_CREATE_POST]["available"] is False
+    assert "permission_missing" in (cap[OP_AUTO_CREATE_POST].get("reasons") or [])
+
+    # Explicit False on create must not unlock via other keys on same user.
+    blocked = {
+        "id": "blocked-create",
+        "email": "crm@example.com",
+        "name": "CRM",
+        "role": "crm",
+        "permissions_override": {
+            "sales.invoice.create": False,
+            "sales_order.create": False,
+            "po.edit": False,
+        },
+    }
+    await db.role_permissions.update_one(
+        {"role": "crm"},
+        {"$set": {"role": "crm", "permissions": ["sales.invoice.create", "po.edit"]}},
+        upsert=True,
+    )
+    blocked_cap = await build_invoice_lifecycle_capability(db, blocked, None)
+    assert blocked_cap[OP_AUTO_CREATE_POST]["available"] is False
+    assert "permission_missing" in (blocked_cap[OP_AUTO_CREATE_POST].get("reasons") or [])
