@@ -30,9 +30,8 @@ import {
   salesListTabLabel,
 } from "../lib/salesFiveTabs";
 import {
-  canBusinessCancelReceipt,
-  canBusinessEditReceipt,
-  isReceiptMutationUiEnabled,
+  canShowReceiptCancelUi,
+  canShowReceiptEditUi,
   canRecoverAutoAccounting,
   clearIdempotencyIntent,
   ensureIdempotencyIntent,
@@ -75,14 +74,6 @@ export default function PenerimaanPenjualan() {
     hasPerm("sales_order.create") ||
     hasPerm("po.edit") ||
     user?.role === "admin";
-  const canDelete =
-    hasPerm("sales.receipt.delete") ||
-    hasPerm("sales.receipt.create") ||
-    hasPerm("po.edit") ||
-    user?.role === "admin";
-  const receiptMutationUiEnabled = isReceiptMutationUiEnabled();
-  const canCancelBusiness = receiptMutationUiEnabled && canBusinessCancelReceipt(hasPerm);
-  const canEditReceipt = receiptMutationUiEnabled && canBusinessEditReceipt(hasPerm);
   const canPostAccounting = hasPerm("sales.receipt.accounting.post") || user?.role === "admin";
   const canReverseAccounting = hasPerm("sales.receipt.accounting.reverse") || user?.role === "admin";
 
@@ -156,9 +147,23 @@ export default function PenerimaanPenjualan() {
   const [accountingErr, setAccountingErr] = useState("");
   const [receiptLifecycleCapability, setReceiptLifecycleCapability] = useState(null);
 
-  const hideLegacyManualAccounting = shouldHideLegacyManualAccounting(
-    detailReceipt?.lifecycle_capability || receiptLifecycleCapability,
-  );
+  const detailCapability = detailReceipt?.lifecycle_capability || receiptLifecycleCapability;
+  // List Batalkan: capability READY + opt-in perm (document eligibility checked per row).
+  const canCancelBusiness = canShowReceiptCancelUi(hasPerm, {
+    capability: receiptLifecycleCapability,
+    document: null,
+  });
+  // Detail Edit: perm + edit_capability + posted edit_revision READY when applicable.
+  const canEditReceipt = canShowReceiptEditUi(hasPerm, {
+    capability: detailCapability,
+    document: detailReceipt,
+  });
+  const canCancelDetail = canShowReceiptCancelUi(hasPerm, {
+    capability: detailCapability,
+    document: detailReceipt,
+  });
+
+  const hideLegacyManualAccounting = shouldHideLegacyManualAccounting(detailCapability);
   const showLegacyPostReverse = !hideLegacyManualAccounting;
 
   const beginReceiptEdit = () => {
@@ -305,8 +310,8 @@ export default function PenerimaanPenjualan() {
     () => receipts.filter((r) => receiptDeletable(r)),
     [receipts, receiptDeletable]
   );
-  const showDeleteControls =
-    receiptMutationUiEnabled && (canDelete || canCancelBusiness) && listTab !== "cancelled";
+  // Soft-cancel only — never expose hard-delete Hapus when activating Edit/Batalkan.
+  const showDeleteControls = canCancelBusiness && listTab !== "cancelled";
   const pageCount = Math.max(1, Math.ceil((Number(listMeta.total) || 0) / pageSize) || 1);
   const tabLabel = salesListTabLabel(listTab);
   const toggleSelect = (id) => {
@@ -1850,9 +1855,9 @@ export default function PenerimaanPenjualan() {
             <p data-testid="receipt-detail-number" style={{ margin: "0 0 8px", fontFamily: "monospace", fontWeight: 700, color: "#059669" }}>
               {detailReceipt.receipt_number}
             </p>
-            {!receiptMutationUiEnabled && !detailEditMode && (
+            {!detailEditMode && !canEditReceipt && !canCancelDetail && (
               <p data-testid="receipt-mutation-frozen-note" className="sd-receipt-frozen-note">
-                Edit dan hapus penerimaan dinonaktifkan. Catat penerimaan baru bila perlu koreksi nominal.
+                Koreksi penerimaan dilakukan melalui Admin Keuangan/Direktur sesuai SOP. Edit dan batalkan memerlukan permission serta capability backend yang aktif.
               </p>
             )}
             {!detailEditMode ? (
@@ -1988,9 +1993,27 @@ export default function PenerimaanPenjualan() {
               </div>
             )}
             <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-              {!detailEditMode && canEditReceipt && detailReceipt.edit_capability?.editable && (
+              {!detailEditMode && canEditReceipt && (
                 <button type="button" data-testid="btn-edit-receipt" onClick={beginReceiptEdit} style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: "#0f766e", color: "#fff", fontWeight: 600 }}>
                   Edit
+                </button>
+              )}
+              {!detailEditMode && canCancelDetail && (
+                <button
+                  type="button"
+                  data-testid="btn-cancel-receipt-detail"
+                  onClick={() => {
+                    setDeleteErr("");
+                    setDeleteConfirm({
+                      ids: [detailReceipt.id],
+                      numbers: [detailReceipt.receipt_number],
+                      id: detailReceipt.id,
+                      number: detailReceipt.receipt_number,
+                    });
+                  }}
+                  style={{ padding: "8px 14px", borderRadius: 8, border: "1px solid #fecaca", background: "#fff", color: "#b91c1c", fontWeight: 600 }}
+                >
+                  Batalkan
                 </button>
               )}
               {detailEditMode && (
