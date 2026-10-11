@@ -653,11 +653,24 @@ eternal_publish_frontend() {
 eternal_write_ok_marker() {
   local release_dir="$1"
   local sha="$2"
+  local req_rel="" req_hash=""
+  if [[ -f "$release_dir/backend/.eternal-requirements-file" ]]; then
+    req_rel="$(tr -d '\n' <"$release_dir/backend/.eternal-requirements-file")"
+  fi
+  if [[ -f "$release_dir/backend/.eternal-requirements-sha256" ]]; then
+    req_hash="$(tr -d '\n' <"$release_dir/backend/.eternal-requirements-sha256")"
+  fi
   {
     printf 'sha=%s\n' "$sha"
     printf 'deployed_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf 'need_backend=%s\n' "$ETERNAL_NEED_BACKEND"
     printf 'need_frontend=%s\n' "$ETERNAL_NEED_FRONTEND"
+    if [[ -n "$req_rel" ]]; then
+      printf 'requirements_file=%s\n' "$req_rel"
+    fi
+    if [[ -n "$req_hash" ]]; then
+      printf 'requirements_sha256=%s\n' "$req_hash"
+    fi
   } >"$release_dir/.deploy-ok"
 }
 

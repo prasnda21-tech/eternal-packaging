@@ -8,6 +8,7 @@ RUNNER="$ROOT/scripts/deploy/eternal-deploy-runner.sh"
 TRIGGER="$ROOT/scripts/deploy/trigger_github_actions.sh"
 PROBE_SH="$ROOT/scripts/deploy/ssh_gate_probe.sh"
 PREPARE_BASELINE="$ROOT/scripts/deploy/prepare-verified-baseline.sh"
+FINALIZE_BASELINE="$ROOT/scripts/deploy/finalize-existing-baseline.sh"
 VERIFY_CI="$ROOT/scripts/deploy/verify_ci_for_sha.sh"
 PASS=0
 FAIL=0
@@ -60,6 +61,7 @@ git -C "$MIRROR_SRC" config user.email "synthetic@example.com"
 git -C "$MIRROR_SRC" config user.name "Synthetic"
 mkdir -p "$MIRROR_SRC/backend" "$MIRROR_SRC/frontend/src" "$MIRROR_SRC/scripts/deploy"
 printf 'ok\n' >"$MIRROR_SRC/backend/requirements.txt"
+printf 'ok-portable\n' >"$MIRROR_SRC/backend/requirements.portable.txt"
 cat >"$MIRROR_SRC/frontend/package.json" <<'EOF'
 {"name":"frontend","private":true,"scripts":{"build":"mkdir -p build/static/js && echo asset>build/static/js/app.js && echo built>build/index.html"}}
 EOF
@@ -68,10 +70,12 @@ printf 'app\n' >"$MIRROR_SRC/frontend/src/index.js"
 printf 'dirty\n' >"$LEGACY/DO_NOT_TOUCH"
 printf 'legacy\n' >"$LEGACY/backend/app.py"
 printf 'ok\n' >"$LEGACY/backend/requirements.txt"
+printf 'ok-portable\n' >"$LEGACY/backend/requirements.portable.txt"
 cp "$GATE" "$RUNNER" "$ROOT/scripts/deploy/lib.sh" "$MIRROR_SRC/scripts/deploy/"
 git -C "$MIRROR_SRC" add . && git -C "$MIRROR_SRC" commit -q -m base
 printf 'ok\n#pin\n' >"$MIRROR_SRC/backend/requirements.txt"
-git -C "$MIRROR_SRC" add backend/requirements.txt && git -C "$MIRROR_SRC" commit -q -m 'backend bump'
+printf 'ok-portable\n#pin\n' >"$MIRROR_SRC/backend/requirements.portable.txt"
+git -C "$MIRROR_SRC" add backend/requirements.txt backend/requirements.portable.txt && git -C "$MIRROR_SRC" commit -q -m 'backend bump'
 MAIN_SHA="$(git -C "$MIRROR_SRC" rev-parse HEAD)"
 git -C "$MIRROR_SRC" checkout -q -b feature/unmerged
 printf 'x\n' >"$MIRROR_SRC/backend/feature.txt"
@@ -662,6 +666,81 @@ assert_true "bash -n probe" bash -n "$PROBE_SH"
 assert_true "bash -n gate" bash -n "$GATE"
 assert_true "bash -n bootstrap" bash -n "$BOOT"
 assert_true "bash -n prepare-baseline" bash -n "$PREPARE_BASELINE"
+assert_true "bash -n finalize-baseline" bash -n "$FINALIZE_BASELINE"
+
+# ========== requirements resolver + finalize (no silent txt fallback) ==========
+REQ_BACKEND="$HARNESS/req-backend"
+mkdir -p "$REQ_BACKEND"
+printf 'portable-body\n' >"$REQ_BACKEND/requirements.portable.txt"
+printf 'txt-body\n' >"$REQ_BACKEND/requirements.txt"
+rel="$(eternal_resolve_requirements_relpath "$REQ_BACKEND")"
+assert_eq "default requirements is portable" "requirements.portable.txt" "$rel"
+assert_false "missing override file refused" \
+  env ETERNAL_REQUIREMENTS_FILE=requirements.missing.txt \
+  bash -c 'source "'"$ROOT"'/scripts/deploy/lib.sh"; eternal_resolve_requirements_relpath "'"$REQ_BACKEND"'"'
+assert_false "absolute requirements path refused" \
+  env ETERNAL_REQUIREMENTS_FILE=/tmp/requirements.portable.txt \
+  bash -c 'source "'"$ROOT"'/scripts/deploy/lib.sh"; eternal_resolve_requirements_relpath "'"$REQ_BACKEND"'"'
+assert_false "parent-escape requirements path refused" \
+  env ETERNAL_REQUIREMENTS_FILE=../requirements.portable.txt \
+  bash -c 'source "'"$ROOT"'/scripts/deploy/lib.sh"; eternal_resolve_requirements_relpath "'"$REQ_BACKEND"'"'
+ovr="$(ETERNAL_REQUIREMENTS_FILE=requirements.txt eternal_resolve_requirements_relpath "$REQ_BACKEND")"
+assert_eq "explicit override to requirements.txt allowed" "requirements.txt" "$ovr"
+
+# Prep stamps portable hash
+rm -rf "$REQ_BACKEND/.venv"
+ETERNAL_RUNTIME_MODE=stub eternal_prepare_backend_runtime "$REQ_BACKEND"
+assert_true "prep stamp requirements_file=portable" \
+  grep -qx 'requirements.portable.txt' "$REQ_BACKEND/.eternal-requirements-file"
+stamp_hash="$(cat "$REQ_BACKEND/.eternal-requirements-sha256")"
+actual_hash="$(sha256sum "$REQ_BACKEND/requirements.portable.txt" | awk '{print $1}')"
+assert_eq "prep stamp hash matches portable file" "$actual_hash" "$stamp_hash"
+
+# Hash mismatch detection
+rm -rf "$BASELINE"
+make_verified_baseline
+assert_true "baseline records requirements_file" grep -q '^requirements_file=requirements.portable.txt' "$BASELINE/.baseline-verified"
+bad_hash="$(printf 'deadbeef\n' | sha256sum | awk '{print $1}')"
+sed -i "s/^requirements_sha256=.*/requirements_sha256=$bad_hash/" "$BASELINE/.baseline-verified"
+assert_false "requirements hash mismatch refused" \
+  bash -c 'source "'"$ROOT"'/scripts/deploy/lib.sh"; ETERNAL_RUNTIME_MODE=stub eternal_baseline_verify_integrity "'"$BASELINE"'"'
+
+# Finalize existing: no venv recreate; markers only after success
+rm -rf "$BASELINE"
+make_verified_baseline
+# Strip requirements provenance to simulate legacy VPS baseline
+grep -vE '^(requirements_file|requirements_sha256)=' "$BASELINE/.baseline-verified" >"$BASELINE/.baseline-verified.tmp"
+mv "$BASELINE/.baseline-verified.tmp" "$BASELINE/.baseline-verified"
+rm -f "$BASELINE/.baseline" "$BASELINE/.deploy-ok"
+venv_inode_before="$(stat -c '%i' "$BASELINE/tree/backend/.venv" 2>/dev/null || stat -f '%i' "$BASELINE/tree/backend/.venv")"
+fin_dry="$(ETERNAL_RUNTIME_MODE=stub ETERNAL_BASELINE_DIR="$BASELINE" ETERNAL_SYSTEMCTL_BIN="$BIN/systemctl" \
+  ETERNAL_USE_SYSTEMCTL_SUDO=0 ETERNAL_RELEASES_ROOT="$RELEASES" ETERNAL_RUNTIME_ROOT="$RUNTIME" \
+  "$FINALIZE_BASELINE" 2>"$HARNESS/fin-dry.err" || true)"
+assert_true "finalize dry-run needs apply for legacy" grep -q 'FINALIZE_DRY_RUN_NEEDS_APPLY' <<<"$fin_dry"
+assert_false "finalize dry-run does not write .baseline" test -f "$BASELINE/.baseline"
+ETERNAL_RUNTIME_MODE=stub ETERNAL_BASELINE_DIR="$BASELINE" ETERNAL_SYSTEMCTL_BIN="$BIN/systemctl" \
+  ETERNAL_USE_SYSTEMCTL_SUDO=0 ETERNAL_RELEASES_ROOT="$RELEASES" ETERNAL_RUNTIME_ROOT="$RUNTIME" \
+  "$FINALIZE_BASELINE" --apply >"$HARNESS/fin.txt" 2>"$HARNESS/fin.err"
+assert_true "finalize apply OK" grep -q 'BASELINE_FINALIZE_OK' "$HARNESS/fin.txt"
+assert_true "finalize wrote .baseline marker" test -f "$BASELINE/.baseline"
+assert_true "finalize wrote requirements_file portable" \
+  grep -q '^requirements_file=requirements.portable.txt' "$BASELINE/.baseline-verified"
+venv_inode_after="$(stat -c '%i' "$BASELINE/tree/backend/.venv" 2>/dev/null || stat -f '%i' "$BASELINE/tree/backend/.venv")"
+assert_eq "finalize did not recreate .venv" "$venv_inode_before" "$venv_inode_after"
+# Validation failure must not leave success markers when forced to fail mid-finalize:
+rm -f "$BASELINE/.baseline" "$BASELINE/.deploy-ok"
+chmod a-r "$BASELINE/tree/backend/requirements.portable.txt"
+assert_false "finalize apply fails closed without markers when req unreadable" \
+  env ETERNAL_RUNTIME_MODE=stub ETERNAL_BASELINE_DIR="$BASELINE" ETERNAL_SYSTEMCTL_BIN="$BIN/systemctl" \
+      ETERNAL_USE_SYSTEMCTL_SUDO=0 ETERNAL_RELEASES_ROOT="$RELEASES" ETERNAL_RUNTIME_ROOT="$RUNTIME" \
+      "$FINALIZE_BASELINE" --apply
+chmod u+r "$BASELINE/tree/backend/requirements.portable.txt"
+assert_false "failed finalize left no .baseline success marker" test -f "$BASELINE/.baseline"
+
+assert_true "docs mention requirements.portable default" \
+  grep -q 'requirements.portable.txt' "$ROOT/docs/deploy-production-setup.md"
+assert_true "docs mention finalize-existing-baseline" \
+  grep -q 'finalize-existing-baseline.sh' "$ROOT/docs/deploy-production-setup.md"
 assert_true "deploy workflow has jobs:" grep -q '^jobs:' "$WF"
 assert_true "probe workflow has jobs:" grep -q '^jobs:' "$PWF"
 assert_true "deploy workflow on.workflow_dispatch" grep -q 'workflow_dispatch:' "$WF"

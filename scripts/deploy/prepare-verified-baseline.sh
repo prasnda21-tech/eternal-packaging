@@ -124,9 +124,16 @@ cp -a "$ETERNAL_FRONTEND_ROOT"/. "$ETERNAL_BASELINE_DIR/frontend-snapshot"/
   || eternal_deploy_die "frontend snapshot missing index.html"
 
 # Fresh isolated runtime for rollback (never copy live venv shebangs).
+# Uses requirements resolver (default requirements.portable.txt).
 eternal_deploy_log "preparing baseline rollback runtime (mode=$ETERNAL_RUNTIME_MODE)"
 eternal_prepare_backend_runtime "$ETERNAL_BASELINE_DIR/tree/backend"
 
+eternal_baseline_write_integrity "$ETERNAL_BASELINE_DIR" "$BACKEND_SRC" "${wd:-}" "${exe:-}"
+eternal_baseline_verify_integrity "$ETERNAL_BASELINE_DIR"
+
+# Completion markers only after integrity + requirements provenance succeed.
+req_rel="$(sed -n 's/^requirements_file=//p' "$ETERNAL_BASELINE_DIR/.baseline-verified" | head -n1)"
+req_hash="$(sed -n 's/^requirements_sha256=//p' "$ETERNAL_BASELINE_DIR/.baseline-verified" | head -n1)"
 {
   printf 'kind=verified-baseline\n'
   printf 'sha=baseline-active\n'
@@ -134,12 +141,12 @@ eternal_prepare_backend_runtime "$ETERNAL_BASELINE_DIR/tree/backend"
   printf 'systemd_wd_at_capture=%s\n' "${wd:-}"
   printf 'systemd_exec_at_capture=%s\n' "${exe:-}"
   printf 'expected_wd=%s\n' "$ETERNAL_EXPECTED_WD"
+  printf 'requirements_file=%s\n' "$req_rel"
+  printf 'requirements_sha256=%s\n' "$req_hash"
   printf 'captured_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   printf 'immutable=1\n'
 } >"$ETERNAL_BASELINE_DIR/.deploy-ok"
 : >"$ETERNAL_BASELINE_DIR/.baseline"
 
-eternal_baseline_write_integrity "$ETERNAL_BASELINE_DIR" "$BACKEND_SRC" "${wd:-}" "${exe:-}"
-eternal_baseline_verify_integrity "$ETERNAL_BASELINE_DIR"
-
-printf 'BASELINE_VERIFIED_OK path=%s integrity=1 runtime=1\n' "$ETERNAL_BASELINE_DIR"
+printf 'BASELINE_VERIFIED_OK path=%s integrity=1 runtime=1 requirements_file=%s\n' \
+  "$ETERNAL_BASELINE_DIR" "$req_rel"
