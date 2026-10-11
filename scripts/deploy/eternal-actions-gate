@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# SSH forced-command gate for Eternal Packaging GitHub Actions deploy key.
+#
+# Install on VPS as the authorized_keys command= target, e.g.:
+#   restrict,command="/home/deploy/.ssh/eternal-actions-gate" ssh-ed25519 AAAA... eternal-gha-deploy
+#
+# Accepts ONLY:
+#   probe
+#   deploy <40-char-lowercase-sha>
+#
+# Rejects arbitrary shell, paths, scp/sftp, and any other command.
+# Does not read or print private keys. Does not invoke sudo.
+
+set -euo pipefail
+
+GATE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib.sh
+source "$GATE_DIR/lib.sh"
+
+RUNNER="${ETERNAL_DEPLOY_RUNNER:-$GATE_DIR/eternal-deploy-runner.sh}"
+
+raw="${SSH_ORIGINAL_COMMAND-}"
+# Trim CR and collapse internal newlines (defense against smuggling).
+cmd="$(printf '%s' "$raw" | tr -d '\r' | tr '\n' ' ')"
+cmd="$(printf '%s' "$cmd" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+
+if [[ -z "$cmd" ]]; then
+  eternal_deploy_die "empty SSH command rejected"
+fi
+
+# Absolute fail-closed denylist patterns before allowlist parse.
+case "$cmd" in
+  *';'*|*'&'*|*'|'*|*'`'*|*$'('*|*')'*|*'<'*|*'>'*|*'$'*|*'\\'*)
+    eternal_deploy_die "metacharacters rejected"
+    ;;
+  *../*|*/..*|~/*)
+    eternal_deploy_die "path traversal rejected"
+    ;;
+esac
+
+set -- $cmd
+verb="${1:-}"
+arg="${2:-}"
+extra="${3:-}"
+
+if [[ -n "$extra" ]]; then
+  eternal_deploy_die "too many arguments"
+fi
+
+case "$verb" in
+  probe)
+    if [[ -n "$arg" ]]; then
+      eternal_deploy_die "probe takes no arguments"
+    fi
+    printf 'eternal-actions-gate: PASS probe\n'
+    exit 0
+    ;;
+  deploy)
+    eternal_require_sha40 "$arg"
+    if [[ ! -x "$RUNNER" ]]; then
+      eternal_deploy_die "deploy runner missing or not executable: $RUNNER"
+    fi
+    exec "$RUNNER" deploy "$arg"
+    ;;
+  *)
+    eternal_deploy_die "unsupported command (allowed: probe | deploy <sha40>)"
+    ;;
+esac
