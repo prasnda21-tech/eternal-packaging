@@ -1,6 +1,6 @@
 # SOP Operasional Penjualan — Phase 4
 
-Dokumen ringkas untuk Admin, CRM, Sales, dan Direktur.  
+Dokumen ringkas untuk Admin, CRM, Sales, dan Direktur.
 Hak akses mengikuti RBAC aktual; jangan mengasumsikan semua role punya izin yang sama.
 
 ## 1. Cara Buat PO (Pesanan Penjualan)
@@ -41,14 +41,17 @@ Hak akses mengikuti RBAC aktual; jangan mengasumsikan semua role punya izin yang
 4. **Simpan Penerimaan**.
 5. Cek status pembayaran faktur (Sudah Diterima / Sisa Tagihan AR) setelah simpan.
 
-### Edit / Hapus Penerimaan
-**DINONAKTIFKAN** pada Phase 3/4. Jangan mengaktifkan Edit/Hapus Penerimaan.
+### Edit / Batalkan Penerimaan
+Tersedia hanya untuk role berizin (`sales.receipt.edit` / `sales.receipt.cancel`) ketika capability backend READY dan dokumen eligible.
 
-Jika nominal atau data penerimaan salah:
+**Edit (posted):** reverse jurnal lama → update → posting ulang (idempotent).
+**Batalkan:** soft-cancel bisnis → reverse jurnal bila posted. Bukan hard-delete.
+
+Jika Anda tidak punya permission / tombol tidak muncul:
 1. **Jangan** membuat Penerimaan baru sendiri sebagai pengganti pembayaran yang salah.
 2. **Wajib eskalasi** ke **Admin Keuangan** atau **Direktur**.
-3. Admin Keuangan/Direktur memverifikasi dulu: status settlement, jurnal, alokasi ke faktur, dan riwayat pembayaran sebelumnya.
-4. Koreksi hanya melalui **prosedur resmi yang sudah didukung sistem** (setelah verifikasi dan persetujuan).
+3. Admin Keuangan/Direktur memverifikasi settlement, jurnal, alokasi, dan riwayat sebelum koreksi.
+4. Koreksi hanya lewat tombol Edit/Batalkan resmi di sistem.
 5. Jangan hard-delete; jangan menghapus jurnal, histori, atau audit trail.
 
 ## 5. Cara Memeriksa Piutang
@@ -67,7 +70,7 @@ Jika nominal atau data penerimaan salah:
 | Edit Faktur | `sales.invoice.edit` (+ fallback); finalized → revisi lifecycle |
 | Batalkan Faktur | Opt-in `sales.invoice.cancel` + eligible |
 | Catat Penerimaan | `sales.receipt.create` (+ fallback) |
-| Edit/Hapus Penerimaan | **UI OFF** (freeze Phase 4) |
+| Edit/Batalkan Penerimaan | Opt-in `sales.receipt.edit` / `sales.receipt.cancel` + capability READY + eligible |
 | Post/Reverse jurnal | Permission accounting masing-masing dokumen |
 
 CRM / Sales / Direktur: gunakan permission matrix di Settings; uji dengan akun role tersebut sebelum mengasumsikan akses.

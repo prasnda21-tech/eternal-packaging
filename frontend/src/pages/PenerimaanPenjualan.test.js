@@ -107,12 +107,16 @@ describe("Penerimaan Penjualan UI & Navigation Suite", () => {
     expect(pageSrc).toMatch(/loadReceipts\(\)/);
   });
 
-  test("Phase 4 keeps receipt edit/hapus UI frozen via presentation gate", () => {
-    expect(pageSrc).toMatch(/isReceiptMutationUiEnabled/);
-    expect(pageSrc).toMatch(/receiptMutationUiEnabled/);
+  test("receipt Edit/Batalkan UI is gated by capability helpers and soft-cancel only", () => {
+    expect(pageSrc).toMatch(/canShowReceiptEditUi/);
+    expect(pageSrc).toMatch(/canShowReceiptCancelUi/);
+    expect(pageSrc).toMatch(/btn-edit-receipt/);
+    expect(pageSrc).toMatch(/btn-cancel-receipt-detail/);
     expect(pageSrc).toMatch(/receipt-mutation-frozen-note/);
-    expect(pageSrc).toMatch(/showDeleteControls\s*=\s*[\s\S]*receiptMutationUiEnabled/);
-    expect(pageSrc).toMatch(/canEditReceipt\s*=\s*receiptMutationUiEnabled\s*&&/);
+    expect(pageSrc).toMatch(/Admin Keuangan\/Direktur sesuai SOP/);
+    expect(pageSrc).not.toMatch(/Catat penerimaan baru bila perlu koreksi/);
+    expect(pageSrc).toMatch(/showDeleteControls\s*=\s*canCancelBusiness/);
+    expect(pageSrc).toMatch(/Soft-cancel only/);
   });
 
   test("PenerimaanPenjualan modal has accessible close controls, testids, escape listener, and backdrop close", () => {

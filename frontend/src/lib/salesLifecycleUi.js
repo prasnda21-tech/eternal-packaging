@@ -55,13 +55,59 @@ export function canBusinessEditReceipt(hasPerm) {
 }
 
 /**
- * Phase 3/4 presentation freeze: Edit/Hapus/Batalkan Penerimaan stay OFF in UI.
- * Does not change RBAC or backend capabilities — only whether mutation controls render.
+ * Presentation master for receipt Edit/Batalkan controls.
+ * When true, controls still require opt-in permission + backend capability + eligibility.
+ * Never treat this flag alone as proof accounting is safe.
  */
-export const RECEIPT_MUTATION_UI_ENABLED = false;
+export const RECEIPT_MUTATION_UI_ENABLED = true;
 
 export function isReceiptMutationUiEnabled() {
   return RECEIPT_MUTATION_UI_ENABLED === true;
+}
+
+/** True when financial recovery / incomplete cancel must block new Edit/Cancel. */
+export function receiptDocumentBlocksMutation(document, capability) {
+  if (capability && capability.document_pending_or_failed === true) return true;
+  const progress = String(document?.business_cancel_progress || "").toLowerCase();
+  if (progress === "pending" || progress === "failed") return true;
+  const auto = String(document?.auto_accounting_status || "").toLowerCase();
+  if (auto === "pending" || auto === "in_progress" || auto === "processing" || auto === "failed" || auto === "error") {
+    return true;
+  }
+  const fin = String(document?.financial_status || "").toLowerCase();
+  if (fin === "cancelled") return true;
+  return false;
+}
+
+/**
+ * Show Edit only when presentation is on, opt-in perm, document eligible,
+ * and posted revision also has backend edit_revision capability READY.
+ */
+export function canShowReceiptEditUi(hasPerm, { capability = null, document = null } = {}) {
+  if (!isReceiptMutationUiEnabled()) return false;
+  if (!canBusinessEditReceipt(hasPerm)) return false;
+  if (receiptDocumentBlocksMutation(document, capability)) return false;
+  const editCap = document?.edit_capability;
+  if (editCap && editCap.editable !== true) return false;
+  const mode = String(editCap?.mode || "");
+  if (mode === "posted_revision") {
+    if (!lifecycleOpAvailable(capability, "edit_revision")) return false;
+  }
+  // Without document capability yet, do not show Edit (fail closed).
+  if (!editCap) return false;
+  return true;
+}
+
+/**
+ * Show Batalkan only when presentation is on, opt-in perm, capability READY,
+ * and document is not already cancelled / mid-recovery.
+ */
+export function canShowReceiptCancelUi(hasPerm, { capability = null, document = null } = {}) {
+  if (!isReceiptMutationUiEnabled()) return false;
+  if (!canBusinessCancelReceipt(hasPerm)) return false;
+  if (!lifecycleOpAvailable(capability, "business_cancel")) return false;
+  if (receiptDocumentBlocksMutation(document, capability)) return false;
+  return true;
 }
 
 /**

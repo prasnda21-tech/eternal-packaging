@@ -59,7 +59,7 @@ describe("Sales document clickable rows + form open", () => {
     expect(penerimaan).toMatch(/btn-delete-receipt-/);
     expect(penerimaan).toMatch(/updateSalesReceipt\(/);
     expect(penerimaan).toMatch(/edit_capability/);
-    expect(penerimaan).toMatch(/canBusinessEditReceipt/);
+    expect(penerimaan).toMatch(/canShowReceiptEditUi/);
     expect(penerimaan).not.toMatch(/Simpan Perubahan Penerimaan/);
   });
 

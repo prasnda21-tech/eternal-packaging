@@ -1,6 +1,6 @@
 # Acceptance Matrix — Phase 4 (Tahap 4 + 5 + 6)
 
-Baseline main: `72553b2` (PR #552 merged, not deployed).  
+Baseline main: `72553b2` (PR #552 merged, not deployed).
 Keputusan deploy: **HOLD**.
 
 ## A. Fitur × Status
@@ -19,14 +19,14 @@ Keputusan deploy: **HOLD**.
 | F10 | Navigasi PO → Faktur → Penerimaan | Deep link `invoice_id` / `receipt_id` + links | PASS |
 | F11 | Validasi input / error / retry idempotency | Existing idempotency helpers | PASS* |
 | F12 | Audit trail tidak dihapus UI | Tidak ada hard-delete path baru | PASS |
-| F13 | Edit Penerimaan OFF | `RECEIPT_MUTATION_UI_ENABLED=false` | PASS |
-| F14 | Hapus/Batalkan Penerimaan OFF | showDeleteControls gated | PASS |
+| F13 | Edit Penerimaan capability-gated | `canShowReceiptEditUi` + backend edit revision | PASS* |
+| F14 | Batalkan Penerimaan capability-gated (soft-cancel) | `canShowReceiptCancelUi`; no hard-delete list | PASS* |
 | F15 | Responsive desktop 1366/1440 | Preview screenshots | PASS** |
 | F16 | Responsive mobile 390/360 | Preview screenshots | PASS** |
 | F17 | DD/MM/YYYY date display | SalesInvoiceDateField + detail dates | PASS |
 | F18 | SOP operasional | `docs/sop-penjualan-phase4.md` | PASS |
 
-\* Regression guard via focused FE tests; full role E2E di test DB memerlukan akun role — lihat matriks role.  
+\* Regression guard via focused FE tests; full role E2E di test DB memerlukan akun role — lihat matriks role.
 \*\* Screenshot aktual real-shell; lihat artefak PR.
 
 ## B. Role × Hak (harus diuji dengan RBAC aktual)
@@ -38,7 +38,7 @@ Keputusan deploy: **HOLD**.
 | Buat Faktur | biasanya YA | cek `sales.invoice.create` | cek permission | cek permission |
 | Edit / Batalkan Faktur | YA bila perm | cek `edit`/`cancel` | cek permission | cek permission |
 | Catat Penerimaan | biasanya YA | cek `sales.receipt.create` | cek permission | cek permission |
-| Edit/Hapus Penerimaan | **UI OFF** | **UI OFF** | **UI OFF** | **UI OFF** |
+| Edit/Batalkan Penerimaan | opt-in + capability | opt-in + capability | opt-in + capability | opt-in + capability |
 
 Catatan: sel “tergantung permission” = jangan asumsikan; verifikasi di Settings → role sebelum Owner Acceptance.
 
@@ -57,10 +57,10 @@ Catatan: sel “tergantung permission” = jangan asumsikan; verifikasi di Setti
 - AR list projection vs detail live: detail memakai payload `getSalesInvoice`/`getSalesReceipt`; list mengandalkan field API list. Refresh setelah mutasi tetap diperlukan.
 - Role CRM/Sales/Direktur belum dijalankan login penuh di lingkungan Cloud Agent ini tanpa kredensial role terisolasi → Owner Acceptance wajib uji role.
 
-### Fitur tetap dinonaktifkan
-- Edit Penerimaan
-- Hapus / Business Cancel Penerimaan (UI)
+### Fitur tetap dinonaktifkan / HOLD
+- Hard-delete Penerimaan (UI tidak mengekspos Hapus permanen; hanya soft-cancel)
 - Migrasi historis / mass-post Faktur legacy
+- Flag production Edit/Batalkan (default OFF hingga Owner aktivasi)
 - Deploy production (HOLD)
 
 ## D. Keputusan

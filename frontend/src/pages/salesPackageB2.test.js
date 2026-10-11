@@ -77,7 +77,7 @@ describe("Package B2 — five-tab + lifecycle UI contracts", () => {
     expect(api).toMatch(/recoverAutoSalesInvoiceAccounting/);
     expect(api).toMatch(/recoverAutoSalesReceiptAccounting/);
     expect(faktur).toMatch(/canBusinessCancelInvoice/);
-    expect(penerimaan).toMatch(/canBusinessCancelReceipt/);
+    expect(penerimaan).toMatch(/canShowReceiptCancelUi/);
     expect(canBusinessCancelInvoice((p) => p === "sales.invoice.delete")).toBe(false);
     expect(canBusinessCancelInvoice((p) => p === "sales.invoice.cancel")).toBe(true);
     expect(canBusinessCancelReceipt((p) => p === "sales.receipt.cancel")).toBe(true);

@@ -3,8 +3,11 @@ import {
   canBusinessCancelInvoice,
   canBusinessCancelReceipt,
   canBusinessEditReceipt,
+  canShowReceiptCancelUi,
+  canShowReceiptEditUi,
   isReceiptMutationUiEnabled,
   RECEIPT_MUTATION_UI_ENABLED,
+  receiptDocumentBlocksMutation,
   interpretReceiptUpdateResponse,
   canRecoverAutoAccounting,
   clearIdempotencyIntent,
@@ -38,11 +41,30 @@ describe("salesLifecycleUi", () => {
     expect(canBusinessEditReceipt((p) => p === "sales.receipt.edit")).toBe(true);
   });
 
-  test("Phase 4 freezes receipt edit/delete UI without changing RBAC helpers", () => {
-    expect(RECEIPT_MUTATION_UI_ENABLED).toBe(false);
-    expect(isReceiptMutationUiEnabled()).toBe(false);
+  test("receipt Edit/Cancel UI requires opt-in perm + capability + eligibility", () => {
+    expect(RECEIPT_MUTATION_UI_ENABLED).toBe(true);
+    expect(isReceiptMutationUiEnabled()).toBe(true);
     expect(canBusinessEditReceipt((p) => p === "sales.receipt.edit")).toBe(true);
     expect(canBusinessCancelReceipt((p) => p === "sales.receipt.cancel")).toBe(true);
+
+    const hasEdit = (p) => p === "sales.receipt.edit";
+    const hasCancel = (p) => p === "sales.receipt.cancel";
+    const readyCap = {
+      edit_revision: { available: true },
+      business_cancel: { available: true },
+      document_pending_or_failed: false,
+    };
+    const unposted = { edit_capability: { editable: true, mode: "unposted" } };
+    const posted = { edit_capability: { editable: true, mode: "posted_revision" } };
+
+    expect(canShowReceiptEditUi(hasEdit, { capability: readyCap, document: unposted })).toBe(true);
+    expect(canShowReceiptEditUi(hasEdit, { capability: { edit_revision: { available: false } }, document: posted })).toBe(false);
+    expect(canShowReceiptEditUi(() => false, { capability: readyCap, document: unposted })).toBe(false);
+    expect(canShowReceiptCancelUi(hasCancel, { capability: readyCap, document: null })).toBe(true);
+    expect(canShowReceiptCancelUi(hasCancel, { capability: { business_cancel: { available: false } }, document: null })).toBe(false);
+    expect(canShowReceiptCancelUi(hasCancel, { capability: null, document: null })).toBe(false);
+    expect(receiptDocumentBlocksMutation({ auto_accounting_status: "pending" }, readyCap)).toBe(true);
+    expect(receiptDocumentBlocksMutation({ financial_status: "active" }, readyCap)).toBe(false);
   });
 
   test("receipt update response requires financial_complete for posted revision", () => {

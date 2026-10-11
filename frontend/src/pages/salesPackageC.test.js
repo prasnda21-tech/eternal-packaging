@@ -10,7 +10,7 @@ describe("Package C — receipt edit UI contracts", () => {
 
   test("updateSalesReceipt wired; edit is opt-in only; no flag guessing", () => {
     expect(api).toMatch(/updateSalesReceipt:/);
-    expect(page).toMatch(/canBusinessEditReceipt/);
+    expect(page).toMatch(/canShowReceiptEditUi/);
     expect(page).toMatch(/updateSalesReceipt/);
     expect(page).toMatch(/btn-edit-receipt/);
     expect(page).toMatch(/btn-save-receipt-edit/);
