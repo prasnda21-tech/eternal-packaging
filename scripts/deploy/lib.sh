@@ -149,31 +149,46 @@ eternal_classify_change_set() {
   export ETERNAL_NEED_BACKEND ETERNAL_NEED_FRONTEND
 }
 
+# Interoperable flock lock (same path as terminal `flock /tmp/eternal-packaging-deploy.lock`).
+# Existing lock file without a holder must NOT block. Do not unlink the lock file on release.
+ETERNAL_LOCK_FD="${ETERNAL_LOCK_FD:-}"
+
 eternal_acquire_lock() {
   local lock_path="$1"
   local timeout_s="${2:-0}"
-  local waited=0
   mkdir -p "$(dirname "$lock_path")"
-  while true; do
-    if (set -o noclobber; printf '%s\n' "$$" >"$lock_path") 2>/dev/null; then
-      return 0
-    fi
-    if (( timeout_s <= 0 || waited >= timeout_s )); then
+  # Create/open without truncating; bare file presence is not ownership.
+  if [[ ! -e "$lock_path" ]]; then
+    : >"$lock_path" || eternal_deploy_die "cannot create lock file: $lock_path"
+  fi
+  [[ -f "$lock_path" ]] || eternal_deploy_die "lock path is not a regular file: $lock_path"
+  if [[ -n "${ETERNAL_LOCK_FD:-}" ]]; then
+    eternal_deploy_die "internal: deploy lock FD already held"
+  fi
+  exec {ETERNAL_LOCK_FD}<>"$lock_path"
+  if [[ "${timeout_s:-0}" -le 0 ]]; then
+    if ! flock -n "$ETERNAL_LOCK_FD"; then
+      exec {ETERNAL_LOCK_FD}>&- || true
+      ETERNAL_LOCK_FD=""
       eternal_deploy_die "deploy lock held: $lock_path"
     fi
-    sleep 1
-    waited=$((waited + 1))
-  done
+  else
+    if ! flock -w "$timeout_s" "$ETERNAL_LOCK_FD"; then
+      exec {ETERNAL_LOCK_FD}>&- || true
+      ETERNAL_LOCK_FD=""
+      eternal_deploy_die "deploy lock held: $lock_path"
+    fi
+  fi
+  # Best-effort holder note for operators; not used for acquire/release logic.
+  printf 'pid=%s\nacquired_at=%s\n' "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$lock_path" || true
 }
 
 eternal_release_lock() {
-  local lock_path="$1"
-  if [[ -f "$lock_path" ]]; then
-    local owner
-    owner="$(cat "$lock_path" 2>/dev/null || true)"
-    if [[ "$owner" == "$$" ]]; then
-      rm -f "$lock_path"
-    fi
+  # Unlock FD only — never unlink the lock file (avoids races with flock waiters).
+  if [[ -n "${ETERNAL_LOCK_FD:-}" ]]; then
+    flock -u "$ETERNAL_LOCK_FD" 2>/dev/null || true
+    exec {ETERNAL_LOCK_FD}>&- 2>/dev/null || true
+    ETERNAL_LOCK_FD=""
   fi
 }
 
@@ -246,8 +261,108 @@ eternal_constant_time_eq() {
   [[ "$ha" == "$hb" ]]
 }
 
+# Hash all regular files under frozen source trees. No truncation.
+# Excludes .venv / __pycache__ (runtime validated separately). Refuses unexpected symlinks.
+eternal_baseline_collect_manifest() {
+  local baseline_dir="$1"
+  local manifest="$2"
+  (
+    cd "$baseline_dir" || exit 1
+    local symlinks
+    symlinks="$(find tree/backend frontend-snapshot \( -path 'tree/backend/.venv' -o -path 'tree/backend/.venv/*' \) -prune -o -type l -print 2>/dev/null | head -n 20 || true)"
+    if [[ -n "${symlinks//[[:space:]]/}" ]]; then
+      printf 'baseline integrity: unexpected symlinks in frozen trees:\n%s\n' "$symlinks" >&2
+      exit 1
+    fi
+    # -print0 / sort -z / xargs -0: safe for spaces/newlines in names; no head truncate.
+    find tree/backend frontend-snapshot \
+      \( -path 'tree/backend/.venv' -o -path 'tree/backend/.venv/*' \
+         -o -path '*/__pycache__' -o -path '*/__pycache__/*' \) -prune -o \
+      -type f -print0 2>/dev/null \
+      | LC_ALL=C sort -z \
+      | xargs -0 -r sha256sum
+  ) >"$manifest"
+}
+
+# Fresh venv in target backend (never copy live venv; never mutate active service venv).
+# ETERNAL_RUNTIME_MODE=stub|full (default full). Stub is for synthetic tests only.
+eternal_prepare_backend_runtime() {
+  local backend_dir="$1"
+  local mode="${ETERNAL_RUNTIME_MODE:-full}"
+  local py="${ETERNAL_PYTHON_BIN:-python3}"
+  [[ -d "$backend_dir" ]] || eternal_deploy_die "runtime prep: backend dir missing: $backend_dir"
+  [[ -f "$backend_dir/requirements.txt" ]] || eternal_deploy_die "runtime prep: requirements.txt missing"
+  command -v "$py" >/dev/null 2>&1 || eternal_deploy_die "runtime prep: python missing: $py"
+
+  # Never reuse/copy a foreign .venv (shebangs point at old absolute paths).
+  if [[ -e "$backend_dir/.venv" ]]; then
+    rm -rf "$backend_dir/.venv"
+  fi
+
+  if [[ "$mode" == "stub" ]]; then
+    mkdir -p "$backend_dir/.venv/bin"
+    local sys_py
+    sys_py="$(command -v "$py")"
+    ln -sfn "$sys_py" "$backend_dir/.venv/bin/python"
+    ln -sfn "$sys_py" "$backend_dir/.venv/bin/python3"
+    cat >"$backend_dir/.venv/bin/uvicorn" <<EOF
+#!/usr/bin/env bash
+# stub uvicorn for synthetic harness — not production
+exec "$(readlink -f "$backend_dir/.venv/bin/python")" -c 'import sys; sys.exit(0)' "\$@"
+EOF
+    chmod +x "$backend_dir/.venv/bin/uvicorn"
+  else
+    "$py" -m venv "$backend_dir/.venv" || eternal_deploy_die "runtime prep: venv create failed"
+    # shellcheck disable=SC1091
+    "$backend_dir/.venv/bin/pip" install --upgrade pip wheel >/dev/null \
+      || eternal_deploy_die "runtime prep: pip bootstrap failed"
+    "$backend_dir/.venv/bin/pip" install -r "$backend_dir/requirements.txt" \
+      || eternal_deploy_die "runtime prep: pip install requirements failed"
+  fi
+  eternal_validate_backend_runtime "$backend_dir"
+}
+
+eternal_validate_backend_runtime() {
+  local backend_dir="$1"
+  local py="$backend_dir/.venv/bin/python"
+  local uv="$backend_dir/.venv/bin/uvicorn"
+  [[ -x "$py" ]] || eternal_deploy_die "runtime validate: python missing/not executable: $py"
+  [[ -x "$uv" ]] || eternal_deploy_die "runtime validate: uvicorn missing/not executable: $uv"
+
+  local py_real uv_shebang
+  py_real="$(readlink -f "$py" 2>/dev/null || true)"
+  [[ -n "$py_real" && -x "$py_real" ]] || eternal_deploy_die "runtime validate: cannot resolve venv python"
+
+  # Refuse shebang still pointing at a foreign/legacy venv path.
+  if [[ -f "$uv" && ! -L "$uv" ]]; then
+    uv_shebang="$(head -n1 "$uv" 2>/dev/null || true)"
+    if [[ "$uv_shebang" == "#!"* ]]; then
+      if [[ "$uv_shebang" == *"/opt/eternal-packaging/backend/.venv/"* ]] \
+        || [[ "$uv_shebang" == *"phase3-stage"* ]]; then
+        eternal_deploy_die "runtime validate: uvicorn shebang points at legacy/stage venv; refuse"
+      fi
+      # Accept shebang under this backend's .venv or a stub/env bash wrapper.
+      if [[ "$uv_shebang" == "#!"*python* && "$uv_shebang" != *"$backend_dir/.venv/"* ]]; then
+        eternal_deploy_die "runtime validate: uvicorn shebang not under release venv ($uv_shebang)"
+      fi
+    fi
+  fi
+
+  # Isolated smoke only — no production DB connection.
+  if [[ "${ETERNAL_RUNTIME_MODE:-full}" == "stub" ]]; then
+    "$py" -c 'import sys; assert sys.version_info >= (3, 10)' \
+      || eternal_deploy_die "runtime validate: stub python smoke failed"
+  else
+    "$py" -c 'import uvicorn, fastapi' \
+      || eternal_deploy_die "runtime validate: cannot import uvicorn/fastapi in release venv"
+    "$uv" --help >/dev/null 2>&1 \
+      || eternal_deploy_die "runtime validate: uvicorn --help failed"
+  fi
+  eternal_deploy_log "runtime validate OK backend=$backend_dir"
+}
+
 # Write provenance + integrity manifest for a verified baseline directory.
-# Stores relative sha256 lines in .baseline-integrity and metadata in .baseline-verified.
+# Digests alone prove content; immutable=1 is recorded only after digest write succeeds.
 eternal_baseline_write_integrity() {
   local baseline_dir="$1"
   local backend_src="${2:-}"
@@ -261,41 +376,46 @@ eternal_baseline_write_integrity() {
     eternal_deploy_die "baseline integrity: tree/backend must be a real directory, not a symlink"
   fi
 
+  # Runtime must be valid before claiming a rollback-capable baseline.
+  eternal_validate_backend_runtime "$baseline_dir/tree/backend"
+
   local manifest="$baseline_dir/.baseline-integrity"
   local frontend_src="${ETERNAL_FRONTEND_ROOT:-/var/www/eternal-packaging}"
-  (
-    cd "$baseline_dir"
-    # Stable, bounded file set for provenance (backend freeze + live FE snapshot).
-    find tree/backend frontend-snapshot -type f 2>/dev/null \
-      | LC_ALL=C sort \
-      | head -n 5000 \
-      | xargs -r sha256sum
-  ) >"$manifest"
+  if ! eternal_baseline_collect_manifest "$baseline_dir" "$manifest"; then
+    eternal_deploy_die "baseline integrity: manifest collection failed (symlinks or find error)"
+  fi
   [[ -s "$manifest" ]] || eternal_deploy_die "baseline integrity: empty manifest"
-  local fe_count
+  local fe_count file_count req_hash
   fe_count="$(grep -c ' frontend-snapshot/' "$manifest" || true)"
+  file_count="$(wc -l <"$manifest" | tr -d ' ')"
   [[ "${fe_count:-0}" -ge 1 ]] || eternal_deploy_die "baseline integrity: no frontend-snapshot files hashed"
+  req_hash="$(sha256sum "$baseline_dir/tree/backend/requirements.txt" | awk '{print $1}')"
 
   local manifest_hash
   manifest_hash="$(sha256sum "$manifest" | awk '{print $1}')"
   {
-    printf 'version=1\n'
+    printf 'version=2\n'
     printf 'kind=verified-baseline\n'
+    # Digests verified at write time; marker alone is never sufficient on read.
     printf 'immutable=1\n'
+    printf 'content_digests_verified_at_write=1\n'
     printf 'backend_src=%s\n' "$backend_src"
     printf 'frontend_src=%s\n' "$frontend_src"
     printf 'systemd_wd_at_capture=%s\n' "$wd"
     printf 'systemd_exec_at_capture=%s\n' "$exe"
     printf 'integrity_manifest=.baseline-integrity\n'
     printf 'integrity_sha256=%s\n' "$manifest_hash"
-    printf 'file_count=%s\n' "$(wc -l <"$manifest" | tr -d ' ')"
+    printf 'file_count=%s\n' "$file_count"
     printf 'frontend_file_count=%s\n' "$fe_count"
+    printf 'requirements_sha256=%s\n' "$req_hash"
+    printf 'runtime_python=%s\n' "$baseline_dir/tree/backend/.venv/bin/python"
+    printf 'runtime_uvicorn=%s\n' "$baseline_dir/tree/backend/.venv/bin/uvicorn"
     printf 'captured_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    printf 'note=Capture live FE (incl. selective-merge) before retarget; baseline before activation\n'
+    printf 'note=Capture live FE before retarget; digests+runtime validated; baseline before activation\n'
   } >"$baseline_dir/.baseline-verified"
 }
 
-# Validate .baseline-verified provenance + integrity manifest. Fail-closed.
+# Validate .baseline-verified provenance + full integrity manifest + runtime. Fail-closed.
 eternal_baseline_verify_integrity() {
   local baseline_dir="$1"
   [[ -f "$baseline_dir/.baseline-verified" ]] || eternal_deploy_die "baseline missing .baseline-verified"
@@ -308,7 +428,7 @@ eternal_baseline_verify_integrity() {
     eternal_deploy_die "baseline tree/backend is a symlink to mutable source; refuse"
   fi
 
-  local expected_hash actual_hash kind immutable frontend_src
+  local expected_hash actual_hash kind immutable frontend_src digests_ok
   expected_hash="$(sed -n 's/^integrity_sha256=//p' "$baseline_dir/.baseline-verified" | head -n1)"
   [[ -n "$expected_hash" ]] || eternal_deploy_die "baseline-verified missing integrity_sha256"
   actual_hash="$(sha256sum "$baseline_dir/.baseline-integrity" | awk '{print $1}')"
@@ -317,16 +437,31 @@ eternal_baseline_verify_integrity() {
   kind="$(sed -n 's/^kind=//p' "$baseline_dir/.baseline-verified" | head -n1)"
   immutable="$(sed -n 's/^immutable=//p' "$baseline_dir/.baseline-verified" | head -n1)"
   frontend_src="$(sed -n 's/^frontend_src=//p' "$baseline_dir/.baseline-verified" | head -n1)"
+  digests_ok="$(sed -n 's/^content_digests_verified_at_write=//p' "$baseline_dir/.baseline-verified" | head -n1)"
   [[ "$kind" == "verified-baseline" ]] || eternal_deploy_die "baseline-verified kind invalid"
   [[ "$immutable" == "1" ]] || eternal_deploy_die "baseline-verified not marked immutable"
+  # Marker immutable=1 is insufficient without digest proof fields + live check.
+  [[ "$digests_ok" == "1" ]] || eternal_deploy_die "baseline-verified missing content_digests_verified_at_write (marker-only refuse)"
   [[ -n "$frontend_src" ]] || eternal_deploy_die "baseline-verified missing frontend_src provenance"
 
-  # Verify file digests (fail if any listed file changed/missing).
   if ! (cd "$baseline_dir" && sha256sum -c .baseline-integrity >/dev/null 2>&1); then
     eternal_deploy_die "baseline content digest mismatch (frozen tree altered)"
   fi
   if ! grep -q ' frontend-snapshot/' "$baseline_dir/.baseline-integrity"; then
     eternal_deploy_die "baseline integrity manifest lacks frontend-snapshot entries"
   fi
-  eternal_deploy_log "baseline integrity OK files=$(wc -l <"$baseline_dir/.baseline-integrity" | tr -d ' ') frontend_src=$frontend_src"
+  # Re-count files on disk vs manifest (detect truncation / missing paths).
+  local listed disk_count
+  listed="$(wc -l <"$baseline_dir/.baseline-integrity" | tr -d ' ')"
+  disk_count="$(
+    cd "$baseline_dir" && find tree/backend frontend-snapshot \
+      \( -path 'tree/backend/.venv' -o -path 'tree/backend/.venv/*' \
+         -o -path '*/__pycache__' -o -path '*/__pycache__/*' \) -prune -o \
+      -type f -print 2>/dev/null | wc -l | tr -d ' '
+  )"
+  [[ "$listed" == "$disk_count" ]] \
+    || eternal_deploy_die "baseline integrity incomplete: manifest_files=$listed disk_files=$disk_count"
+
+  eternal_validate_backend_runtime "$baseline_dir/tree/backend"
+  eternal_deploy_log "baseline integrity OK files=$listed frontend_src=$frontend_src runtime=ok"
 }

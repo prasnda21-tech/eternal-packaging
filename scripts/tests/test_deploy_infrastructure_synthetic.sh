@@ -31,17 +31,28 @@ assert_false() {
 }
 
 WORKDIR="$(mktemp -d)"
-trap 'rm -rf "$WORKDIR"' EXIT
+cleanup_work() {
+  # Permission fixtures may use mode 555 parents; restore before rm.
+  chmod -R u+w "$WORKDIR" 2>/dev/null || true
+  rm -rf "$WORKDIR"
+}
 BIN="$WORKDIR/bin"
 HARNESS="$WORKDIR/harness"
 MIRROR_SRC="$WORKDIR/repo"
-RELEASES="$HARNESS/releases"
+RUNTIME="$HARNESS/runtime"
+RELEASES="$RUNTIME/releases"
 FRONTEND="$HARNESS/www"
 LEGACY="$HARNESS/legacy-dirty"
-CURRENT="$HARNESS/current"
+CURRENT="$RUNTIME/current"
+FRONTEND_PREV="$RUNTIME/frontend-prev"
 LOCK="$HARNESS/deploy.lock"
 BASELINE="$RELEASES/baseline-active"
-mkdir -p "$BIN" "$RELEASES" "$FRONTEND/live" "$LEGACY/backend"
+# Simulate root-owned /var/www parent (mode 555) with writable webroot leaf.
+SIM_WWW_PARENT="$HARNESS/sim-var-www"
+mkdir -p "$BIN" "$RELEASES" "$FRONTEND_PREV" "$FRONTEND/live" "$LEGACY/backend" \
+  "$SIM_WWW_PARENT/eternal-packaging/static/js"
+chmod 755 "$SIM_WWW_PARENT/eternal-packaging"
+chmod 555 "$SIM_WWW_PARENT"
 
 # --- fixture repo ---
 git init -q -b main "$MIRROR_SRC"
@@ -56,6 +67,7 @@ printf 'yarn lockfile v1\n' >"$MIRROR_SRC/frontend/yarn.lock"
 printf 'app\n' >"$MIRROR_SRC/frontend/src/index.js"
 printf 'dirty\n' >"$LEGACY/DO_NOT_TOUCH"
 printf 'legacy\n' >"$LEGACY/backend/app.py"
+printf 'ok\n' >"$LEGACY/backend/requirements.txt"
 cp "$GATE" "$RUNNER" "$ROOT/scripts/deploy/lib.sh" "$MIRROR_SRC/scripts/deploy/"
 git -C "$MIRROR_SRC" add . && git -C "$MIRROR_SRC" commit -q -m base
 printf 'ok\n#pin\n' >"$MIRROR_SRC/backend/requirements.txt"
@@ -70,33 +82,92 @@ git clone -q --mirror "$MIRROR_SRC" "$RELEASES/mirror.git"
 git --git-dir="$RELEASES/mirror.git" fetch -q "$MIRROR_SRC" '+refs/heads/*:refs/heads/*'
 
 EXPECTED_WD="$CURRENT/backend"
+# Real isolated backend stand-in process (cwd = active release backend). No prod DB.
+start_harness_backend_proc() {
+  local cwd="$1"
+  mkdir -p "$cwd"
+  if [[ -f "$HARNESS/backend.pid" ]]; then
+    kill "$(cat "$HARNESS/backend.pid")" 2>/dev/null || true
+    rm -f "$HARNESS/backend.pid"
+  fi
+  ( cd "$cwd" && exec sleep 3600 ) &
+  echo $! >"$HARNESS/backend.pid"
+}
+stop_harness_backend_proc() {
+  if [[ -f "$HARNESS/backend.pid" ]]; then
+    kill "$(cat "$HARNESS/backend.pid")" 2>/dev/null || true
+    rm -f "$HARNESS/backend.pid"
+  fi
+}
+
 cat >"$BIN/systemctl" <<EOF
 #!/usr/bin/env bash
 echo "systemctl \$*" >>"\${ETERNAL_SYSTEMCTL_LOG}"
+# Enforce exact show argv contract used by runner (sudoers allowlist).
+if [[ "\$1" == "show" ]]; then
+  if [[ "\$#" -ne 5 || "\$2" != "-p" || "\$4" != "--value" ]]; then
+    echo "systemctl show argv not in allowlist form: \$*" >&2
+    exit 2
+  fi
+fi
 case "\$1" in
   show)
-    if [[ "\$*" == *WorkingDirectory* ]]; then printf '%s\n' "$EXPECTED_WD"; exit 0; fi
-    if [[ "\$*" == *ExecStart* ]]; then printf '%s\n' "$EXPECTED_WD/.venv/bin/uvicorn server:app"; exit 0; fi
-    if [[ "\$*" == *MainPID* ]]; then printf '0\n'; exit 0; fi
+    prop="\$3"
+    case "\$prop" in
+      WorkingDirectory) printf '%s\n' "$EXPECTED_WD"; exit 0 ;;
+      ExecStart) printf '%s\n' "$EXPECTED_WD/.venv/bin/uvicorn server:app"; exit 0 ;;
+      MainPID)
+        if [[ -f "$HARNESS/backend.pid" ]]; then cat "$HARNESS/backend.pid"; else printf '0\n'; fi
+        exit 0
+        ;;
+      ActiveState) printf 'active\n'; exit 0 ;;
+      *) echo "unexpected show property: \$prop" >&2; exit 3 ;;
+    esac
     ;;
-  is-active) exit 0 ;;
+  is-active) printf 'active\n'; exit 0 ;;
   restart)
+    n=0
+    if [[ -f "$HARNESS/restart.count" ]]; then n="\$(cat "$HARNESS/restart.count")"; fi
+    n=\$((n+1))
+    echo "\$n" >"$HARNESS/restart.count"
     if [[ "\${ETERNAL_FORCE_RESTART_FAIL:-0}" == "1" ]]; then exit 1; fi
+    if [[ -n "\${ETERNAL_RESTART_FAIL_FROM:-}" && "\$n" -ge "\${ETERNAL_RESTART_FAIL_FROM}" ]]; then exit 1; fi
+    # Respawn stand-in process at CURRENT/backend (isolated; no DB).
+    cwd="\$(readlink -f "${CURRENT}/backend" 2>/dev/null || true)"
+    if [[ -n "\$cwd" ]]; then
+      mkdir -p "\$cwd"
+      if [[ -f "$HARNESS/backend.pid" ]]; then kill "\$(cat "$HARNESS/backend.pid")" 2>/dev/null || true; fi
+      ( cd "\$cwd" && exec sleep 3600 ) &
+      echo \$! >"$HARNESS/backend.pid"
+    fi
     exit 0
     ;;
 esac
 exit 0
 EOF
 chmod +x "$BIN/systemctl"
+: >"$HARNESS/restart.count"
+trap 'stop_harness_backend_proc; cleanup_work' EXIT
 
 cat >"$BIN/curl" <<'EOF'
 #!/usr/bin/env bash
+# Counted failures via state file: activate can fail, rollback health can recover.
+if [[ -n "${ETERNAL_HEALTH_FAIL_STATE:-}" && -f "${ETERNAL_HEALTH_FAIL_STATE}" ]]; then
+  n="$(cat "${ETERNAL_HEALTH_FAIL_STATE}")"
+  if [[ "${n:-0}" -gt 0 ]]; then
+    echo $((n - 1)) >"$ETERNAL_HEALTH_FAIL_STATE"
+    echo '{"mongo":false,"mode":"degraded"}'
+    exit 0
+  fi
+fi
 if [[ "${ETERNAL_HEALTH_FORCE_FAIL:-0}" == "1" ]]; then echo '{"mongo":false,"mode":"degraded"}'; exit 0; fi
 if [[ "${ETERNAL_HEALTH_PARTIAL:-0}" == "1" ]]; then echo '{"mongo":false,"mode":"degraded"}'; exit 0; fi
 echo '{"mongo":true,"mode":"operational","checked_at":"t"}'
 exit 0
 EOF
 chmod +x "$BIN/curl"
+export ETERNAL_HEALTH_FAIL_STATE="$HARNESS/health-fail.remaining"
+echo 0 >"$ETERNAL_HEALTH_FAIL_STATE"
 
 cat >"$BIN/ssh" <<'EOF'
 #!/usr/bin/env bash
@@ -115,11 +186,12 @@ EOF
 chmod +x "$BIN/ssh"
 
 export PATH="$BIN:$PATH"
+export ETERNAL_RUNTIME_ROOT="$RUNTIME"
 export ETERNAL_RELEASES_ROOT="$RELEASES"
 export ETERNAL_CURRENT_LINK="$CURRENT"
 export ETERNAL_LEGACY_ROOT="$LEGACY"
 export ETERNAL_FRONTEND_ROOT="$FRONTEND/live"
-export ETERNAL_FRONTEND_PREV="$FRONTEND/prev"
+export ETERNAL_FRONTEND_PREV="$FRONTEND_PREV"
 export ETERNAL_DEPLOY_LOCK="$LOCK"
 export ETERNAL_SERVICE_NAME="eternal-packaging-backend.service"
 export ETERNAL_HEALTH_URL="http://127.0.0.1:9/api/system/health"
@@ -136,12 +208,14 @@ export ETERNAL_DEPLOY_RUNNER="$RUNNER"
 export ETERNAL_BASELINE_DIR="$BASELINE"
 export ETERNAL_EXPECTED_WD="$EXPECTED_WD"
 export ETERNAL_EXPECTED_EXEC_PREFIX="$EXPECTED_WD"
-export ETERNAL_SKIP_PROCCWD_CHECK=1
+export ETERNAL_REQUIRE_PROCCWD=1
 export ETERNAL_REQUIRE_VERIFIED_BASELINE=1
 export ETERNAL_MIN_DISK_KB=1
+export ETERNAL_RUNTIME_MODE=stub
 : >"$ETERNAL_SYSTEMCTL_LOG"
+mkdir -p "$FRONTEND/live/static/js"
 printf 'old\n' >"$FRONTEND/live/index.html"
-printf 'old-asset\n' >"$FRONTEND/live/static/js/old.js" 2>/dev/null || mkdir -p "$FRONTEND/live/static/js" && printf 'old-asset\n' >"$FRONTEND/live/static/js/old.js"
+printf 'old-asset\n' >"$FRONTEND/live/static/js/old.js"
 printf 'active\n' >"$FRONTEND/live/active.txt"
 
 # shellcheck disable=SC1091
@@ -150,11 +224,13 @@ source "$ROOT/scripts/deploy/lib.sh"
 make_verified_baseline() {
   mkdir -p "$BASELINE/tree/backend" "$BASELINE/frontend-snapshot/static/js"
   cp -a "$LEGACY/backend"/. "$BASELINE/tree/backend"/
+  rm -rf "$BASELINE/tree/backend/.venv"
   cp -a "$FRONTEND/live"/. "$BASELINE/frontend-snapshot"/
   {
     printf 'kind=verified-baseline\nsha=baseline-active\nimmutable=1\n'
   } >"$BASELINE/.deploy-ok"
   : >"$BASELINE/.baseline"
+  ETERNAL_RUNTIME_MODE=stub eternal_prepare_backend_runtime "$BASELINE/tree/backend"
   eternal_baseline_write_integrity "$BASELINE" "$LEGACY" "$EXPECTED_WD" "$EXPECTED_WD/.venv/bin/uvicorn"
 }
 
@@ -303,7 +379,7 @@ assert_false "tampered baseline digests refused" "$RUNNER" deploy "$MAIN_SHA"
 # wrong systemd WD (retarget not done yet) — baseline ready but service not retargeted
 rm -rf "$BASELINE"
 make_verified_baseline
-export ETERNAL_EXPECTED_WD="/opt/eternal-packaging-current/backend"
+export ETERNAL_EXPECTED_WD="/opt/eternal-packaging-runtime/current/backend"
 assert_false "systemd WD mismatch blocks preflight before activation" "$RUNNER" deploy "$MAIN_SHA"
 export ETERNAL_EXPECTED_WD="$EXPECTED_WD"
 
@@ -334,6 +410,45 @@ assert_true "legacy overlay untouched" grep -q dirty "$LEGACY/DO_NOT_TOUCH"
 assert_true "old hashed asset retained after publish" test -f "$FRONTEND/live/static/js/old.js"
 assert_true "new index published" grep -q dry-build "$FRONTEND/live/index.html"
 assert_true "ack logged on first cutover" grep -q 'ACK live frontend replace' "$HARNESS/ok.err"
+assert_true "runner used allowlisted systemctl show -p/--value" \
+  grep -qE 'show -p WorkingDirectory --value' "$ETERNAL_SYSTEMCTL_LOG"
+assert_true "real backend process cwd matches CURRENT/backend" \
+  bash -c 'pid=$(cat "'"$HARNESS"'/backend.pid"); cwd=$(readlink -f /proc/$pid/cwd); want=$(readlink -f "'"$CURRENT"'/backend"); [[ "$cwd" == "$want" ]]'
+
+# ========== sudoers contract matches runner show argv ==========
+BOOT="$ROOT/scripts/deploy/bootstrap-permissions.sh"
+assert_true "sudoers lists show -p WorkingDirectory --value" \
+  grep -q 'show -p WorkingDirectory --value' "$BOOT"
+assert_true "sudoers lists show -p MainPID --value" \
+  grep -q 'show -p MainPID --value' "$BOOT"
+assert_true "sudoers lists show -p ExecStart --value" \
+  grep -q 'show -p ExecStart --value' "$BOOT"
+assert_false "sudoers has no wildcard show" grep -qE 'show \\\*|show \*' "$BOOT"
+assert_false "sudoers does not allow bare show SERVICE alone" \
+  grep -qE "show ${ETERNAL_SERVICE_NAME}\$" "$BOOT"
+
+# ========== FE-only: CURRENT + process stay on active release ==========
+CUR_AFTER_FIRST="$(readlink -f "$CURRENT")"
+PID_AFTER_FIRST="$(cat "$HARNESS/backend.pid")"
+git -C "$MIRROR_SRC" checkout -q main
+printf 'fe2\n' >"$MIRROR_SRC/frontend/src/index.js"
+git -C "$MIRROR_SRC" add frontend/src/index.js && git -C "$MIRROR_SRC" commit -q -m fe2
+FE_SHA="$(git -C "$MIRROR_SRC" rev-parse HEAD)"
+git --git-dir="$RELEASES/mirror.git" fetch -q "$MIRROR_SRC" '+refs/heads/main:refs/heads/main'
+: >"$ETERNAL_SYSTEMCTL_LOG"
+if "$RUNNER" deploy "$FE_SHA" >"$HARNESS/feonly.txt" 2>"$HARNESS/feonly.err"; then
+  log "PASS: FE-only deploy exit 0"; PASS=$((PASS+1))
+else
+  log "FAIL: FE-only deploy"; cat "$HARNESS/feonly.err" >>"$REPORT"; FAIL=$((FAIL+1))
+fi
+assert_eq "FE-only keeps CURRENT pointer" "$CUR_AFTER_FIRST" "$(readlink -f "$CURRENT")"
+assert_true "FE-only logs keeping CURRENT" grep -q 'frontend-only/infra-only: keeping CURRENT' "$HARNESS/feonly.err"
+assert_true "FE-only does not restart backend" \
+  bash -c '! grep -q "restarting " "'"$HARNESS"'/feonly.err"'
+assert_eq "FE-only keeps same MainPID process" "$PID_AFTER_FIRST" "$(cat "$HARNESS/backend.pid")"
+assert_true "FE-only process cwd still active release backend" \
+  bash -c 'cwd=$(readlink -f /proc/'"$PID_AFTER_FIRST"'/cwd); want=$(readlink -f "'"$CUR_AFTER_FIRST"'/backend"); [[ "$cwd" == "$want" ]]'
+assert_true "FE-only published new index" grep -q dry-build "$FRONTEND/live/index.html"
 
 # ========== health degraded rejected ==========
 export ETERNAL_HEALTH_PARTIAL=1
@@ -341,12 +456,6 @@ assert_false "degraded health rejected" "$RUNNER" deploy "$MAIN_SHA"
 export ETERNAL_HEALTH_PARTIAL=0
 
 # ========== old health must not pass wrong runtime ==========
-# Force runtime verify fail by pointing expected WD elsewhere after a FE-only change
-git -C "$MIRROR_SRC" checkout -q main
-printf 'fe2\n' >"$MIRROR_SRC/frontend/src/index.js"
-git -C "$MIRROR_SRC" add frontend/src/index.js && git -C "$MIRROR_SRC" commit -q -m fe2
-FE_SHA="$(git -C "$MIRROR_SRC" rev-parse HEAD)"
-git --git-dir="$RELEASES/mirror.git" fetch -q "$MIRROR_SRC" '+refs/heads/main:refs/heads/main'
 export ETERNAL_EXPECTED_WD="/wrong/backend"
 assert_false "wrong runtime WD rejected even if health JSON ok" "$RUNNER" deploy "$FE_SHA"
 export ETERNAL_EXPECTED_WD="$EXPECTED_WD"
@@ -371,18 +480,41 @@ printf 'be2\n' >"$MIRROR_SRC/backend/requirements.txt"
 git -C "$MIRROR_SRC" add backend/requirements.txt && git -C "$MIRROR_SRC" commit -q -m be2
 BE2="$(git -C "$MIRROR_SRC" rev-parse HEAD)"
 git --git-dir="$RELEASES/mirror.git" fetch -q "$MIRROR_SRC" '+refs/heads/main:refs/heads/main'
-export ETERNAL_HEALTH_FORCE_FAIL=1
+# Activate health fails once (retries=2 → set remaining=2), rollback health recovers.
+: >"$HARNESS/restart.count"
+echo 2 >"$ETERNAL_HEALTH_FAIL_STATE"
 set +e
 "$RUNNER" deploy "$BE2" >"$HARNESS/hf.txt" 2>"$HARNESS/hf.err"
 hf=$?
 set -e
-export ETERNAL_HEALTH_FORCE_FAIL=0
+echo 0 >"$ETERNAL_HEALTH_FAIL_STATE"
 assert_eq "health fail nonzero" "1" "$hf"
 assert_true "rollback while holding lock logged" grep -q 'attempting rollback while holding lock' "$HARNESS/hf.err"
-assert_false "lock released after cleanup" test -f "$LOCK"
+assert_true "health-fail rollback reports ROLLBACK_PASS" grep -q 'ROLLBACK_PASS' "$HARNESS/hf.err"
+assert_false "health-fail path is not ROLLBACK_FAILED" grep -q 'ROLLBACK_FAILED' "$HARNESS/hf.err"
+assert_true "lock file not unlinked after release" test -f "$LOCK"
+assert_true "flock available after runner release" flock -n "$LOCK" true
+assert_true "FE backup used runtime prev path" test -d "$FRONTEND_PREV"
 
-# ========== partial restart failure triggers recovery ==========
-rm -rf "$RELEASES/$BE2" # prior health-fail left incomplete release without .deploy-ok
+# ========== rollback FAILED when restart recovery fails (no swallow) ==========
+rm -rf "$RELEASES/$BE2"
+: >"$HARNESS/restart.count"
+echo 2 >"$ETERNAL_HEALTH_FAIL_STATE"
+export ETERNAL_RESTART_FAIL_FROM=2
+set +e
+"$RUNNER" deploy "$BE2" >"$HARNESS/rbf.txt" 2>"$HARNESS/rbf.err"
+rbf=$?
+set -e
+unset ETERNAL_RESTART_FAIL_FROM
+echo 0 >"$ETERNAL_HEALTH_FAIL_STATE"
+assert_eq "rollback-failed path nonzero" "1" "$rbf"
+assert_true "rollback reports ROLLBACK_FAILED" grep -q 'ROLLBACK_FAILED' "$HARNESS/rbf.err"
+assert_true "rollback notes backend restart FAILED" grep -q 'rollback: backend restart FAILED' "$HARNESS/rbf.err"
+assert_true "flock released after ROLLBACK_FAILED" flock -n "$LOCK" true
+
+# ========== partial restart failure at activation triggers recovery ==========
+rm -rf "$RELEASES/$BE2"
+: >"$HARNESS/restart.count"
 export ETERNAL_FORCE_RESTART_FAIL=1
 set +e
 "$RUNNER" deploy "$BE2" >"$HARNESS/rs.txt" 2>"$HARNESS/rs.err"
@@ -392,15 +524,96 @@ export ETERNAL_FORCE_RESTART_FAIL=0
 assert_eq "restart fail nonzero" "1" "$rs"
 assert_true "rollback restart attempted after partial failure" grep -q 'rollback: restart backend' "$HARNESS/rs.err"
 
+# Ensure isolated backend process is alive for subsequent FE-only checks.
+start_harness_backend_proc "$(readlink -f "$CURRENT/backend")"
+
 # ========== publish keeps old assets + atomic index ==========
+CUR_BEFORE_FEOK="$(readlink -f "$CURRENT")"
 "$RUNNER" deploy "$FE_SHA" >"$HARNESS/feok.txt" 2>"$HARNESS/feok.err" || true
 assert_true "old asset still present after later FE publish" test -f "$FRONTEND/live/static/js/old.js"
 assert_true "index is not .new leftover" bash -c '! test -f "'"$FRONTEND"'/live/index.html.new"'
+assert_eq "FE republish still keeps CURRENT" "$CUR_BEFORE_FEOK" "$(readlink -f "$CURRENT")"
 
-# ========== lock contention ==========
-printf 'x\n' >"$LOCK"
-assert_false "deploy lock blocks" "$RUNNER" deploy "$FE_SHA"
-rm -f "$LOCK"
+# ========== flock interop: terminal holder blocks runner; stale file does not ==========
+printf 'stale-pid-note\n' >"$LOCK"
+assert_true "stale lock file without holder is acquirable" \
+  bash -c 'source "'"$ROOT"'/scripts/deploy/lib.sh"; eternal_acquire_lock "'"$LOCK"'" 0; eternal_release_lock "'"$LOCK"'"; test -f "'"$LOCK"'"'
+exec {TERM_LOCK_FD}<>"$LOCK"
+flock -n "$TERM_LOCK_FD" || { log "FAIL: could not hold terminal flock"; FAIL=$((FAIL+1)); }
+assert_false "runner blocked while terminal flock held" "$RUNNER" deploy "$FE_SHA"
+flock -u "$TERM_LOCK_FD"
+exec {TERM_LOCK_FD}>&-
+assert_true "runner proceeds after terminal flock release" \
+  bash -c 'ETERNAL_ACK_REPLACE_LIVE_FRONTEND=0 "'"$RUNNER"'" deploy "'"$FE_SHA"'" >/dev/null 2>&1'
+
+# ========== permission fixture: root-like parent blocks sibling; leaf publish works ==========
+assert_false "cannot create sibling under non-writable www parent" mkdir "$SIM_WWW_PARENT/eternal-packaging.prev"
+assert_false "bootstrap script never chowns /opt parent" \
+  grep -qE 'chown[[:space:]].*[[:space:]]/opt[[:space:]]*$|install -d .*[[:space:]]/opt[[:space:]]*$' \
+  "$ROOT/scripts/deploy/bootstrap-permissions.sh"
+assert_true "bootstrap validates refusing parent paths" \
+  grep -q 'refusing to operate on parent path' "$ROOT/scripts/deploy/bootstrap-permissions.sh"
+assert_true "bootstrap FE prev under runtime root" \
+  grep -q 'frontend-prev must be under runtime root' "$ROOT/scripts/deploy/bootstrap-permissions.sh"
+assert_true "unit uses eternaladmin + runtime current + google-places env" \
+  bash -c 'grep -q User=eternaladmin "'"$ROOT"'/scripts/deploy/systemd/eternal-packaging-backend.service" \
+    && grep -q /opt/eternal-packaging-runtime/current/backend "'"$ROOT"'/scripts/deploy/systemd/eternal-packaging-backend.service" \
+    && grep -q eternal-packaging-google-places.env "'"$ROOT"'/scripts/deploy/systemd/eternal-packaging-backend.service"'
+
+# ========== venv missing / invalid stops before activation ==========
+NO_VENV="$HARNESS/novenv-backend"
+mkdir -p "$NO_VENV"
+printf 'x\n' >"$NO_VENV/requirements.txt"
+assert_false "missing venv fails runtime validate" \
+  bash -c 'source "'"$ROOT"'/scripts/deploy/lib.sh"; eternal_validate_backend_runtime "'"$NO_VENV"'"'
+# Foreign shebang uvicorn must be refused
+mkdir -p "$NO_VENV/.venv/bin"
+ln -sfn "$(command -v python3)" "$NO_VENV/.venv/bin/python"
+cat >"$NO_VENV/.venv/bin/uvicorn" <<'EOF'
+#!/opt/eternal-packaging/backend/.venv/bin/python
+import sys
+sys.exit(0)
+EOF
+chmod +x "$NO_VENV/.venv/bin/uvicorn"
+assert_false "legacy shebang uvicorn refused" \
+  bash -c 'source "'"$ROOT"'/scripts/deploy/lib.sh"; eternal_validate_backend_runtime "'"$NO_VENV"'"'
+
+# ========== baseline: refuse overwrite; large manifest; symlink detect ==========
+rm -rf "$BASELINE"
+make_verified_baseline
+assert_false "prepare refuses overwrite without --force-recreate" \
+  env ETERNAL_RUNTIME_MODE=stub ETERNAL_USE_SYSTEMCTL_SUDO=0 ETERNAL_SYSTEMCTL_BIN="$BIN/systemctl" \
+      ETERNAL_BASELINE_DIR="$BASELINE" ETERNAL_FRONTEND_ROOT="$FRONTEND/live" \
+      ETERNAL_RELEASES_ROOT="$RELEASES" ETERNAL_RUNTIME_ROOT="$RUNTIME" \
+      ETERNAL_BASELINE_BACKEND_SRC="$LEGACY" \
+      "$PREPARE_BASELINE" --apply
+# marker-only immutable insufficient
+mkdir -p "$HARNESS/marker-only/tree/backend" "$HARNESS/marker-only/frontend-snapshot"
+printf 'kind=verified-baseline\nimmutable=1\nintegrity_sha256=dead\nfrontend_src=x\n' >"$HARNESS/marker-only/.baseline-verified"
+printf 'x\n' >"$HARNESS/marker-only/tree/backend/requirements.txt"
+printf 'y\n' >"$HARNESS/marker-only/frontend-snapshot/index.html"
+: >"$HARNESS/marker-only/.baseline-integrity"
+assert_false "marker-only baseline without digests_ok refused" \
+  bash -c 'source "'"$ROOT"'/scripts/deploy/lib.sh"; eternal_baseline_verify_integrity "'"$HARNESS"'/marker-only"'
+# symlink in frozen tree refused
+rm -rf "$BASELINE"
+make_verified_baseline
+ln -s /tmp/evil "$BASELINE/frontend-snapshot/evil-link"
+assert_false "baseline symlink in FE snapshot refused on rewrite" \
+  bash -c 'source "'"$ROOT"'/scripts/deploy/lib.sh"; ETERNAL_RUNTIME_MODE=stub eternal_baseline_write_integrity "'"$BASELINE"'" "'"$LEGACY"'" "'"$EXPECTED_WD"'" "'"$EXPECTED_WD"'/.venv/bin/uvicorn"'
+rm -f "$BASELINE/frontend-snapshot/evil-link"
+# >5000 files fully hashed
+rm -rf "$BASELINE"
+make_verified_baseline
+mkdir -p "$BASELINE/frontend-snapshot/bulk"
+for i in $(seq 1 5100); do printf 'f%s\n' "$i" >"$BASELINE/frontend-snapshot/bulk/f-$i.txt"; done
+ETERNAL_RUNTIME_MODE=stub eternal_baseline_write_integrity "$BASELINE" "$LEGACY" "$EXPECTED_WD" "$EXPECTED_WD/.venv/bin/uvicorn"
+fc="$(sed -n 's/^file_count=//p' "$BASELINE/.baseline-verified" | head -n1)"
+assert_true "manifest file_count >5000" bash -c "[[ \"$fc\" -gt 5000 ]]"
+assert_true "manifest lists all bulk files" bash -c "[[ \$(grep -c ' frontend-snapshot/bulk/' \"$BASELINE/.baseline-integrity\") -eq 5100 ]]"
+printf 'tamper-bulk\n' >>"$BASELINE/frontend-snapshot/bulk/f-1.txt"
+assert_false "change in file beyond 5000 detected" \
+  bash -c 'source "'"$ROOT"'/scripts/deploy/lib.sh"; ETERNAL_RUNTIME_MODE=stub eternal_baseline_verify_integrity "'"$BASELINE"'"'
 
 # ========== secret masking ==========
 FAKE=$'-----BEGIN OPENSSH PRIVATE KEY-----\nSECRETKEYMATERIAL1234567890\n-----END OPENSSH PRIVATE KEY-----'
@@ -408,9 +621,10 @@ red="$(eternal_redact_line "key=$FAKE")"
 assert_true "redactor masks key" grep -q REDACTED_PRIVATE_KEY <<<"$red"
 assert_false "redactor strips material" grep -q SECRETKEYMATERIAL1234567890 <<<"$red"
 
-# ========== workflow shape ==========
+# ========== workflow / docs shape ==========
 WF="$ROOT/.github/workflows/deploy-production.yml"
 PWF="$ROOT/.github/workflows/deploy-probe.yml"
+BOOT="${BOOT:-$ROOT/scripts/deploy/bootstrap-permissions.sh}"
 assert_true "deploy workflow_dispatch" grep -q workflow_dispatch "$WF"
 assert_true "deploy uses production env" grep -q 'environment: production' "$WF"
 assert_true "deploy_shared_secret input" grep -q deploy_shared_secret "$WF"
@@ -420,20 +634,20 @@ assert_true "probe uses ssh_gate_probe" grep -q ssh_gate_probe.sh "$PWF"
 assert_false "probe workflow steps do not invoke runner script path" \
   grep -q 'scripts/deploy/eternal-deploy-runner' "$PWF"
 assert_true "probe workflow only references ssh_gate_probe helper" grep -q 'ssh_gate_probe.sh' "$PWF"
-# Ensure run step invokes only the probe helper (not a deploy runner binary).
 assert_true "probe run step calls ssh_gate_probe.sh" \
   grep -A2 'Probe forced-command gate' "$PWF" | grep -q 'ssh_gate_probe.sh'
-assert_true "docs mention required reviewers" grep -q 'Required reviewers' "$ROOT/docs/deploy-production-setup.md"
+assert_true "docs mention runtime root" grep -q '/opt/eternal-packaging-runtime' "$ROOT/docs/deploy-production-setup.md"
 assert_true "docs enforce DEPLOY_ALLOWED_ACTORS" grep -q 'DEPLOY_ALLOWED_ACTORS' "$ROOT/docs/deploy-production-setup.md"
-assert_true "docs say shared secret is not human approval" \
-  grep -qiE 'Not\*\* human approval|secondary only|secret alone' "$ROOT/docs/deploy-production-setup.md"
-assert_true "docs order baseline before retarget" \
-  grep -q 'baseline + runtime dirs before service retarget' "$ROOT/docs/deploy-production-setup.md"
-assert_true "docs mention Cursor token store" grep -q 'ETERNAL_GH_TOKEN' "$ROOT/docs/deploy-production-setup.md"
-assert_true "docs mention ack-replace-live-frontend" grep -q 'ack-replace-live-frontend' "$ROOT/docs/deploy-production-setup.md"
-assert_true "docs warn pure SHA does not preserve overlay FE" \
-  grep -qi 'does \*\*not\*\* automatically preserve selective-merge' "$ROOT/docs/deploy-production-setup.md"
+assert_true "docs say never chown /opt or /var/www" \
+  grep -qiE 'Never chown `/opt`|never chown `/var/www`' "$ROOT/docs/deploy-production-setup.md"
+assert_true "docs separate preparation from activation" \
+  grep -q 'Phase A — preparation' "$ROOT/docs/deploy-production-setup.md"
+assert_true "docs mention flock" grep -q 'flock' "$ROOT/docs/deploy-production-setup.md"
+assert_true "docs mention ack-replace-live-frontend" grep -q 'ack_replace_live_frontend' "$ROOT/docs/deploy-production-setup.md"
 assert_true "prepare-verified-baseline exists" test -x "$PREPARE_BASELINE"
+assert_true "bootstrap default user eternaladmin" grep -q 'eternaladmin' "$BOOT"
+assert_true "lib uses flock not noclobber" \
+  bash -c 'grep -q flock "'"$ROOT"'/scripts/deploy/lib.sh" && ! grep -q noclobber "'"$ROOT"'/scripts/deploy/lib.sh"'
 assert_true "deploy workflow enforces actor allowlist" grep -q 'DEPLOY_ALLOWED_ACTORS' "$WF"
 assert_true "deploy workflow has ack_replace_live_frontend input" grep -q 'ack_replace_live_frontend' "$WF"
 assert_true "deploy workflow notes secret alone cannot authorize" \
@@ -446,6 +660,8 @@ assert_true "bash -n runner" bash -n "$RUNNER"
 assert_true "bash -n trigger" bash -n "$TRIGGER"
 assert_true "bash -n probe" bash -n "$PROBE_SH"
 assert_true "bash -n gate" bash -n "$GATE"
+assert_true "bash -n bootstrap" bash -n "$BOOT"
+assert_true "bash -n prepare-baseline" bash -n "$PREPARE_BASELINE"
 assert_true "deploy workflow has jobs:" grep -q '^jobs:' "$WF"
 assert_true "probe workflow has jobs:" grep -q '^jobs:' "$PWF"
 assert_true "deploy workflow on.workflow_dispatch" grep -q 'workflow_dispatch:' "$WF"

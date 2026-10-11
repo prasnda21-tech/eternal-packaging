@@ -15,11 +15,14 @@ RUNNER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
 source "$RUNNER_DIR/lib.sh"
 
-ETERNAL_RELEASES_ROOT="${ETERNAL_RELEASES_ROOT:-/opt/eternal-packaging-releases}"
-ETERNAL_CURRENT_LINK="${ETERNAL_CURRENT_LINK:-/opt/eternal-packaging-current}"
+# Dedicated runtime root (writable by deploy user). Never chown /opt or /var/www parents.
+ETERNAL_RUNTIME_ROOT="${ETERNAL_RUNTIME_ROOT:-/opt/eternal-packaging-runtime}"
+ETERNAL_RELEASES_ROOT="${ETERNAL_RELEASES_ROOT:-$ETERNAL_RUNTIME_ROOT/releases}"
+ETERNAL_CURRENT_LINK="${ETERNAL_CURRENT_LINK:-$ETERNAL_RUNTIME_ROOT/current}"
 ETERNAL_LEGACY_ROOT="${ETERNAL_LEGACY_ROOT:-/opt/eternal-packaging}"
 ETERNAL_FRONTEND_ROOT="${ETERNAL_FRONTEND_ROOT:-/var/www/eternal-packaging}"
-ETERNAL_FRONTEND_PREV="${ETERNAL_FRONTEND_PREV:-/var/www/eternal-packaging.prev}"
+# FE backup lives under runtime root (not a /var/www sibling — parent is often root-owned).
+ETERNAL_FRONTEND_PREV="${ETERNAL_FRONTEND_PREV:-$ETERNAL_RUNTIME_ROOT/frontend-prev}"
 ETERNAL_DEPLOY_LOCK="${ETERNAL_DEPLOY_LOCK:-/tmp/eternal-packaging-deploy.lock}"
 ETERNAL_SERVICE_NAME="${ETERNAL_SERVICE_NAME:-eternal-packaging-backend.service}"
 ETERNAL_HEALTH_URL="${ETERNAL_HEALTH_URL:-http://127.0.0.1:8000/api/system/health}"
@@ -37,13 +40,15 @@ ETERNAL_CURL_BIN="${ETERNAL_CURL_BIN:-curl}"
 ETERNAL_SKIP_FETCH="${ETERNAL_SKIP_FETCH:-0}"
 ETERNAL_DRY_BUILD="${ETERNAL_DRY_BUILD:-0}"
 ETERNAL_BASELINE_DIR="${ETERNAL_BASELINE_DIR:-$ETERNAL_RELEASES_ROOT/baseline-active}"
-ETERNAL_EXPECTED_WD="${ETERNAL_EXPECTED_WD:-/opt/eternal-packaging-current/backend}"
-ETERNAL_EXPECTED_EXEC_PREFIX="${ETERNAL_EXPECTED_EXEC_PREFIX:-/opt/eternal-packaging-current/backend}"
+ETERNAL_EXPECTED_WD="${ETERNAL_EXPECTED_WD:-$ETERNAL_CURRENT_LINK/backend}"
+ETERNAL_EXPECTED_EXEC_PREFIX="${ETERNAL_EXPECTED_EXEC_PREFIX:-$ETERNAL_CURRENT_LINK/backend}"
 ETERNAL_MIN_DISK_KB="${ETERNAL_MIN_DISK_KB:-524288}"
 ETERNAL_NODE_OPTIONS="${ETERNAL_NODE_OPTIONS:---max-old-space-size=2048}"
 ETERNAL_FRONTEND_ENV_FILE="${ETERNAL_FRONTEND_ENV_FILE:-}"
 # Optional read-only overlay marker: if legacy tree looks dirty without verified baseline, block.
 ETERNAL_REQUIRE_VERIFIED_BASELINE="${ETERNAL_REQUIRE_VERIFIED_BASELINE:-1}"
+ETERNAL_RUNTIME_MODE="${ETERNAL_RUNTIME_MODE:-full}"
+ETERNAL_PYTHON_BIN="${ETERNAL_PYTHON_BIN:-python3}"
 
 PREV_RELEASE=""
 PREV_IS_BASELINE=0
@@ -57,20 +62,31 @@ LOCK_HELD=0
 FRONTEND_PUBLISH_STARTED=0
 ROLLING_BACK=0
 
+ROLLBACK_STATUS="" # PASS | FAILED | "" (no rollback attempted)
+
 cleanup() {
   local ec=$?
   if (( ec != 0 )); then
     eternal_deploy_log "deploy failed (exit=$ec); attempting rollback while holding lock"
     ROLLING_BACK=1
-    eternal_rollback || true
+    if eternal_rollback; then
+      ROLLBACK_STATUS="PASS"
+    else
+      ROLLBACK_STATUS="FAILED"
+      eternal_deploy_log "ROLLBACK_FAILED (lock still held until release below)"
+    fi
   fi
   if (( LOCK_HELD == 1 )); then
     eternal_release_lock "$ETERNAL_DEPLOY_LOCK"
     LOCK_HELD=0
   fi
+  if [[ "$ROLLBACK_STATUS" == "FAILED" && "$ec" -eq 0 ]]; then
+    ec=1
+  fi
   exit "$ec"
 }
 
+# Mutating systemctl (restart) — sudo when enabled.
 eternal_systemctl() {
   if [[ "$ETERNAL_USE_SYSTEMCTL_SUDO" == "1" ]]; then
     # shellcheck disable=SC2086
@@ -80,46 +96,181 @@ eternal_systemctl() {
   fi
 }
 
+# Read-only systemctl: prefer unprivileged access; optional exact sudo fallback.
+# Never uses wildcard sudo. Allowed sudo show forms are listed in bootstrap-permissions.sh.
+eternal_systemctl_read() {
+  local out ec
+  set +e
+  out="$("$ETERNAL_SYSTEMCTL_BIN" "$@" 2>/dev/null)"
+  ec=$?
+  set -e
+  if [[ "$ec" -eq 0 ]]; then
+    printf '%s' "$out"
+    return 0
+  fi
+  if [[ "$ETERNAL_USE_SYSTEMCTL_SUDO" == "1" ]]; then
+    set +e
+    # shellcheck disable=SC2086
+    out="$($ETERNAL_SYSTEMCTL_SUDO "$ETERNAL_SYSTEMCTL_BIN" "$@" 2>/dev/null)"
+    ec=$?
+    set -e
+    if [[ "$ec" -eq 0 ]]; then
+      printf '%s' "$out"
+      return 0
+    fi
+  fi
+  return 1
+}
+
+eternal_systemctl_show_value() {
+  local prop="$1"
+  eternal_systemctl_read show -p "$prop" --value "$ETERNAL_SERVICE_NAME"
+}
+
+eternal_systemctl_is_active() {
+  eternal_systemctl_read is-active "$ETERNAL_SERVICE_NAME" >/dev/null
+}
+
+# Restore frontend INTO existing webroot (no rename of /var/www child — parent may be root-owned).
+# Assets first, atomic index last. Keeps hashed assets that remain useful for old sessions when present in backup.
+# Returns 0/1 (does not exit) so rollback can continue other components.
+eternal_restore_frontend_tree() {
+  local src="$1"
+  if [[ ! -d "$src" ]]; then
+    eternal_deploy_log "frontend restore source missing: $src"
+    return 1
+  fi
+  if [[ ! -d "$ETERNAL_FRONTEND_ROOT" ]]; then
+    mkdir -p "$ETERNAL_FRONTEND_ROOT" || return 1
+  fi
+  if [[ ! -w "$ETERNAL_FRONTEND_ROOT" ]]; then
+    eternal_deploy_log "frontend root not writable: $ETERNAL_FRONTEND_ROOT"
+    return 1
+  fi
+
+  if [[ -d "$src/static" ]]; then
+    mkdir -p "$ETERNAL_FRONTEND_ROOT/static" || return 1
+    cp -a "$src/static"/. "$ETERNAL_FRONTEND_ROOT/static"/ || return 1
+  fi
+  local item base
+  shopt -s dotglob nullglob
+  for item in "$src"/*; do
+    base="$(basename "$item")"
+    if [[ "$base" == "index.html" || "$base" == "static" || "$base" == ".deploy-in-progress" ]]; then
+      continue
+    fi
+    if [[ -d "$item" ]]; then
+      mkdir -p "$ETERNAL_FRONTEND_ROOT/$base" || return 1
+      cp -a "$item"/. "$ETERNAL_FRONTEND_ROOT/$base"/ || return 1
+    else
+      cp -a "$item" "$ETERNAL_FRONTEND_ROOT/$base" || return 1
+    fi
+  done
+  shopt -u dotglob nullglob
+  if [[ -f "$src/index.html" ]]; then
+    cp -a "$src/index.html" "$ETERNAL_FRONTEND_ROOT/index.html.new" || return 1
+    mv -Tf "$ETERNAL_FRONTEND_ROOT/index.html.new" "$ETERNAL_FRONTEND_ROOT/index.html" || return 1
+  else
+    eternal_deploy_log "frontend restore missing index.html in source"
+    return 1
+  fi
+  return 0
+}
+
+# Attempt full rollback while lock is held. Continues other components if one fails.
+# Prints ROLLBACK_PASS or ROLLBACK_FAILED. Returns 0 only on PASS.
 eternal_rollback() {
-  # Frontend first if publish started/switched.
+  local rb_fail=0
+  local fe_src=""
+  local had_switch="$SWITCHED"
+  local need_backend_restart=0
+  if [[ "$BACKEND_RESTART_ATTEMPTED" == "1" || "$BACKEND_RESTARTED" == "1" || "$PREV_IS_BASELINE" == "1" ]]; then
+    need_backend_restart=1
+  fi
+
+  # Frontend first if publish started/switched — in-place restore only.
   if [[ "$FRONTEND_SWITCHED" == "1" || "$FRONTEND_PUBLISH_STARTED" == "1" ]]; then
     if [[ -d "$ETERNAL_FRONTEND_PREV" ]]; then
-      eternal_deploy_log "rollback: restore frontend from verified previous tree"
-      rm -rf "${ETERNAL_FRONTEND_ROOT}.bad" 2>/dev/null || true
-      if [[ -d "$ETERNAL_FRONTEND_ROOT" ]]; then
-        mv "$ETERNAL_FRONTEND_ROOT" "${ETERNAL_FRONTEND_ROOT}.bad"
-      fi
-      mv "$ETERNAL_FRONTEND_PREV" "$ETERNAL_FRONTEND_ROOT"
-      FRONTEND_SWITCHED=0
-      FRONTEND_PUBLISH_STARTED=0
+      fe_src="$ETERNAL_FRONTEND_PREV"
     elif [[ "$PREV_IS_BASELINE" == "1" && -d "$ETERNAL_BASELINE_DIR/frontend-snapshot" ]]; then
-      eternal_deploy_log "rollback: restore frontend from verified baseline snapshot"
-      rm -rf "${ETERNAL_FRONTEND_ROOT}.bad" 2>/dev/null || true
-      if [[ -d "$ETERNAL_FRONTEND_ROOT" ]]; then
-        mv "$ETERNAL_FRONTEND_ROOT" "${ETERNAL_FRONTEND_ROOT}.bad"
+      fe_src="$ETERNAL_BASELINE_DIR/frontend-snapshot"
+    fi
+    if [[ -n "$fe_src" ]]; then
+      eternal_deploy_log "rollback: restore frontend from $fe_src (in-place)"
+      if eternal_restore_frontend_tree "$fe_src"; then
+        FRONTEND_SWITCHED=0
+        FRONTEND_PUBLISH_STARTED=0
+      else
+        eternal_deploy_log "rollback: frontend restore FAILED (continuing other components)"
+        rb_fail=1
       fi
-      mkdir -p "$ETERNAL_FRONTEND_ROOT"
-      cp -a "$ETERNAL_BASELINE_DIR/frontend-snapshot"/. "$ETERNAL_FRONTEND_ROOT"/
-      FRONTEND_SWITCHED=0
-      FRONTEND_PUBLISH_STARTED=0
+    else
+      eternal_deploy_log "rollback: no frontend backup/snapshot available"
+      rb_fail=1
     fi
   fi
 
-  if [[ "$SWITCHED" == "1" && -n "${PREV_RELEASE}" ]]; then
+  if [[ "$had_switch" == "1" && -n "${PREV_RELEASE}" ]]; then
     eternal_deploy_log "rollback: restore current link -> $PREV_RELEASE"
-    ln -sfn "$PREV_RELEASE" "${ETERNAL_CURRENT_LINK}.tmp"
-    mv -Tf "${ETERNAL_CURRENT_LINK}.tmp" "$ETERNAL_CURRENT_LINK"
-    SWITCHED=0
-    # Partial restart failure: ATTEMPTED may be 1 even if RESTARTED never set.
-    if [[ "$BACKEND_RESTART_ATTEMPTED" == "1" || "$BACKEND_RESTARTED" == "1" || "$PREV_IS_BASELINE" == "1" ]]; then
+    if ln -sfn "$PREV_RELEASE" "${ETERNAL_CURRENT_LINK}.tmp" \
+      && mv -Tf "${ETERNAL_CURRENT_LINK}.tmp" "$ETERNAL_CURRENT_LINK"; then
+      SWITCHED=0
+    else
+      eternal_deploy_log "rollback: CURRENT pointer restore FAILED"
+      rb_fail=1
+    fi
+    if [[ "$need_backend_restart" == "1" ]]; then
       eternal_deploy_log "rollback: restart backend against restored target"
-      eternal_systemctl restart "$ETERNAL_SERVICE_NAME" || true
-      BACKEND_RESTARTED=0
-      BACKEND_RESTART_ATTEMPTED=0
+      if eternal_systemctl restart "$ETERNAL_SERVICE_NAME"; then
+        BACKEND_RESTARTED=0
+        BACKEND_RESTART_ATTEMPTED=0
+      else
+        eternal_deploy_log "rollback: backend restart FAILED"
+        rb_fail=1
+      fi
     fi
   fi
   rm -f "${ETERNAL_FRONTEND_ROOT}/.deploy-in-progress" 2>/dev/null || true
   rm -f "${ETERNAL_FRONTEND_ROOT}/index.html.new" 2>/dev/null || true
+
+  # Post-rollback verification (pointer / process / health / index).
+  local cur_resolved prev_resolved
+  if [[ "$had_switch" == "1" && -n "${PREV_RELEASE}" ]]; then
+    cur_resolved="$(readlink -f "$ETERNAL_CURRENT_LINK" 2>/dev/null || true)"
+    prev_resolved="$(readlink -f "$PREV_RELEASE" 2>/dev/null || true)"
+    if [[ -z "$cur_resolved" || -z "$prev_resolved" || "$cur_resolved" != "$prev_resolved" ]]; then
+      eternal_deploy_log "rollback verify: CURRENT=${cur_resolved:-empty} != previous=${prev_resolved:-empty}"
+      rb_fail=1
+    fi
+  fi
+
+  if [[ -n "${PREV_RELEASE}" ]]; then
+    ETERNAL_RUNTIME_VERIFY_SOFT=1
+    if ! eternal_verify_runtime_points_at_release "$PREV_RELEASE"; then
+      eternal_deploy_log "rollback verify: runtime/process identity FAILED"
+      rb_fail=1
+    fi
+    ETERNAL_RUNTIME_VERIFY_SOFT=0
+  fi
+
+  if ! eternal_health_check; then
+    eternal_deploy_log "rollback verify: health FAILED"
+    rb_fail=1
+  fi
+
+  if [[ ! -f "$ETERNAL_FRONTEND_ROOT/index.html" ]]; then
+    eternal_deploy_log "rollback verify: frontend index.html missing"
+    rb_fail=1
+  fi
+
+  if [[ "$rb_fail" -eq 0 ]]; then
+    printf 'ROLLBACK_PASS\n'
+    eternal_deploy_log "ROLLBACK_PASS"
+    return 0
+  fi
+  printf 'ROLLBACK_FAILED\n'
+  eternal_deploy_log "ROLLBACK_FAILED"
+  return 1
 }
 
 eternal_health_check() {
@@ -136,40 +287,53 @@ eternal_health_check() {
   return 1
 }
 
+# Verify systemd WD string, CURRENT→release identity, and live process cwd.
+# When ETERNAL_RUNTIME_VERIFY_SOFT=1 (rollback path), return 1 instead of exiting.
+eternal_runtime_fail() {
+  local msg="$1"
+  if [[ "${ETERNAL_RUNTIME_VERIFY_SOFT:-0}" == "1" ]]; then
+    eternal_deploy_log "ERROR: $msg"
+    return 1
+  fi
+  eternal_deploy_die "$msg"
+}
+
 eternal_verify_runtime_points_at_release() {
   local release_dir="$1"
-  local wd pid cwd
-  wd="$(eternal_systemctl show -p WorkingDirectory --value "$ETERNAL_SERVICE_NAME" 2>/dev/null || true)"
+  local wd pid cwd active expected_resolved release_backend
+  wd="$(eternal_systemctl_show_value WorkingDirectory 2>/dev/null || true)"
   if [[ "$wd" != "$ETERNAL_EXPECTED_WD" ]]; then
-    eternal_deploy_die "runtime WD mismatch: got=${wd:-empty} expected=$ETERNAL_EXPECTED_WD (symlink swap alone does not retarget a wrong unit)"
+    eternal_runtime_fail "runtime WD mismatch: got=${wd:-empty} expected=$ETERNAL_EXPECTED_WD (symlink swap alone does not retarget a wrong unit)" || return 1
   fi
-  # Resolve expected WD through CURRENT link to the release backend.
-  local expected_resolved
   expected_resolved="$(readlink -f "$ETERNAL_CURRENT_LINK/backend" 2>/dev/null || true)"
-  local release_backend
   release_backend="$(readlink -f "$release_dir/backend" 2>/dev/null || true)"
   if [[ -n "$expected_resolved" && -n "$release_backend" && "$expected_resolved" != "$release_backend" ]]; then
-    eternal_deploy_die "CURRENT/backend does not resolve to target release backend"
+    eternal_runtime_fail "CURRENT/backend does not resolve to target release backend" || return 1
   fi
-  if [[ "${ETERNAL_SKIP_PROCCWD_CHECK:-0}" == "1" ]]; then
-    eternal_deploy_log "proc cwd check skipped (test harness)"
-    return 0
-  fi
+
+  # Always require a live process cwd match when a MainPID is available.
+  # FE-only deploys must leave CURRENT on the release the process still runs.
+  active="$(eternal_systemctl_show_value ActiveState 2>/dev/null || true)"
   if [[ "$BACKEND_RESTART_ATTEMPTED" == "1" || "$BACKEND_RESTARTED" == "1" ]]; then
-    active="$(eternal_systemctl is-active "$ETERNAL_SERVICE_NAME" 2>/dev/null || true)"
-    [[ "$active" == "active" ]] || eternal_deploy_die "backend service not active after restart attempt (got=${active:-empty})"
+    [[ "$active" == "active" ]] || eternal_runtime_fail "backend service not active after restart attempt (got=${active:-empty})" || return 1
   fi
-  pid="$(eternal_systemctl show -p MainPID --value "$ETERNAL_SERVICE_NAME" 2>/dev/null || true)"
+  pid="$(eternal_systemctl_show_value MainPID 2>/dev/null || true)"
   if [[ "$BACKEND_RESTART_ATTEMPTED" == "1" || "$BACKEND_RESTARTED" == "1" ]]; then
-    [[ -n "$pid" && "$pid" != "0" ]] || eternal_deploy_die "backend MainPID missing after restart; refusing to trust stale health"
+    [[ -n "$pid" && "$pid" != "0" ]] || eternal_runtime_fail "backend MainPID missing after restart; refusing to trust stale health" || return 1
   fi
-  if [[ -n "$pid" && "$pid" != "0" && -d "/proc/$pid/cwd" ]]; then
-    cwd="$(readlink -f "/proc/$pid/cwd" 2>/dev/null || true)"
-    if [[ -n "$cwd" && -n "$release_backend" && "$cwd" != "$release_backend" ]]; then
-      # Health of an old process must not pass activation.
-      eternal_deploy_die "active process cwd=$cwd is not target release backend=$release_backend"
+  if [[ -n "$pid" && "$pid" != "0" ]]; then
+    if [[ ! -d "/proc/$pid/cwd" ]]; then
+      eternal_runtime_fail "active MainPID=$pid has no /proc/cwd (process gone)" || return 1
     fi
+    cwd="$(readlink -f "/proc/$pid/cwd" 2>/dev/null || true)"
+    if [[ -z "$cwd" || -z "$release_backend" || "$cwd" != "$release_backend" ]]; then
+      eternal_runtime_fail "active process cwd=${cwd:-empty} is not target release backend=${release_backend:-empty}" || return 1
+    fi
+  elif [[ "${ETERNAL_REQUIRE_PROCCWD:-1}" == "1" ]]; then
+    # No skip switch: FE/backend deploys must prove process identity with a real PID.
+    eternal_runtime_fail "MainPID unavailable; cannot verify process cwd against release" || return 1
   fi
+  return 0
 }
 
 eternal_preflight_runtime() {
@@ -180,6 +344,13 @@ eternal_preflight_runtime() {
   [[ -d "$ETERNAL_RELEASES_ROOT" ]] || eternal_deploy_die "preflight: releases root missing: $ETERNAL_RELEASES_ROOT"
   [[ -w "$ETERNAL_RELEASES_ROOT" ]] || eternal_deploy_die "preflight: releases root not writable"
   [[ -d "$ETERNAL_MIRROR_DIR" ]] || eternal_deploy_die "preflight: mirror missing: $ETERNAL_MIRROR_DIR (bootstrap mirror before first deploy)"
+  local current_parent
+  current_parent="$(dirname "$ETERNAL_CURRENT_LINK")"
+  [[ -d "$current_parent" && -w "$current_parent" ]] \
+    || eternal_deploy_die "preflight: CURRENT parent not writable: $current_parent (bootstrap runtime root; never chown /opt)"
+  [[ -d "$ETERNAL_FRONTEND_ROOT" ]] || eternal_deploy_die "preflight: frontend root missing: $ETERNAL_FRONTEND_ROOT"
+  [[ -w "$ETERNAL_FRONTEND_ROOT" ]] \
+    || eternal_deploy_die "preflight: frontend root not writable by deploy user (fix leaf ownership; never chown /var/www)"
   local avail
   avail="$(df -Pk "$ETERNAL_RELEASES_ROOT" | awk 'NR==2{print $4}')"
   if [[ -n "$avail" && "$avail" -lt "$ETERNAL_MIN_DISK_KB" ]]; then
@@ -187,8 +358,8 @@ eternal_preflight_runtime() {
   fi
 
   local wd exe
-  wd="$(eternal_systemctl show -p WorkingDirectory --value "$ETERNAL_SERVICE_NAME" 2>/dev/null || true)"
-  exe="$(eternal_systemctl show -p ExecStart --value "$ETERNAL_SERVICE_NAME" 2>/dev/null || true)"
+  wd="$(eternal_systemctl_show_value WorkingDirectory 2>/dev/null || true)"
+  exe="$(eternal_systemctl_show_value ExecStart 2>/dev/null || true)"
   if [[ -z "$wd" ]]; then
     eternal_deploy_die "preflight: cannot read systemd WorkingDirectory for $ETERNAL_SERVICE_NAME"
   fi
@@ -279,6 +450,7 @@ eternal_materialize_release() {
   NEW_RELEASE="$ETERNAL_RELEASES_ROOT/$sha"
   if [[ -f "$NEW_RELEASE/.deploy-ok" ]]; then
     eternal_deploy_log "reusing existing release $NEW_RELEASE"
+    eternal_validate_backend_runtime "$NEW_RELEASE/backend"
     return 0
   fi
   eternal_assert_no_local_conflict "$ETERNAL_FRONTEND_ROOT" "$NEW_RELEASE"
@@ -286,6 +458,8 @@ eternal_materialize_release() {
   mkdir -p "$NEW_RELEASE"
   eternal_deploy_log "materializing isolated release $sha"
   git --git-dir="$ETERNAL_MIRROR_DIR" archive --format=tar "$sha" | tar -x -C "$NEW_RELEASE"
+  # Never carry a foreign .venv from archive (should not be in git; belt-and-suspenders).
+  rm -rf "$NEW_RELEASE/backend/.venv" 2>/dev/null || true
   eternal_manifest_guard "$NEW_RELEASE"
   # Refuse selective-merge manual artifacts without provenance marker.
   if [[ -f "$NEW_RELEASE/.manual-selective-merge" ]]; then
@@ -354,10 +528,13 @@ eternal_verify_backup_ready() {
   elif [[ -n "$PREV_RELEASE" ]]; then
     [[ -d "$PREV_RELEASE" ]] || eternal_deploy_die "previous release path missing before activation"
   fi
-  # Preserve live frontend tree for rollback before activation when FE will change.
+  # Preserve live frontend contents under runtime root (not /var/www sibling).
   if [[ "$ETERNAL_NEED_FRONTEND" == "1" && -d "$ETERNAL_FRONTEND_ROOT" ]]; then
+    [[ -w "$(dirname "$ETERNAL_FRONTEND_PREV")" ]] \
+      || eternal_deploy_die "frontend backup parent not writable: $(dirname "$ETERNAL_FRONTEND_PREV")"
     rm -rf "$ETERNAL_FRONTEND_PREV"
-    cp -a "$ETERNAL_FRONTEND_ROOT" "$ETERNAL_FRONTEND_PREV"
+    mkdir -p "$ETERNAL_FRONTEND_PREV"
+    cp -a "$ETERNAL_FRONTEND_ROOT"/. "$ETERNAL_FRONTEND_PREV"/
     eternal_deploy_log "frontend pre-activation backup at $ETERNAL_FRONTEND_PREV"
   fi
   eternal_deploy_log "backup verification OK"
@@ -365,6 +542,12 @@ eternal_verify_backup_ready() {
 
 eternal_switch_current() {
   local release_dir="$1"
+  # Validate release runtime BEFORE flipping CURRENT (fail closed).
+  eternal_validate_backend_runtime "$release_dir/backend"
+  local parent
+  parent="$(dirname "$ETERNAL_CURRENT_LINK")"
+  [[ -d "$parent" && -w "$parent" ]] \
+    || eternal_deploy_die "CURRENT link parent not writable (bootstrap runtime root first): $parent"
   ln -sfn "$release_dir" "${ETERNAL_CURRENT_LINK}.tmp"
   mv -Tf "${ETERNAL_CURRENT_LINK}.tmp" "$ETERNAL_CURRENT_LINK"
   SWITCHED=1
@@ -383,9 +566,39 @@ eternal_maybe_restart_backend() {
   fi
   eternal_systemctl restart "$ETERNAL_SERVICE_NAME" || eternal_deploy_die "backend restart failed"
   BACKEND_RESTARTED=1
-  if ! eternal_systemctl is-active "$ETERNAL_SERVICE_NAME" >/dev/null 2>&1; then
+  if ! eternal_systemctl_is_active; then
     eternal_deploy_die "backend service not active after restart"
   fi
+}
+
+# Activate release consistently: pointer + process must agree.
+# FE-only / infra-without-backend: keep CURRENT on the running release (no switch, no restart).
+eternal_activate_release() {
+  local release_dir="$1"
+  if [[ "$ETERNAL_NEED_BACKEND" == "1" ]]; then
+    eternal_switch_current "$release_dir"
+    eternal_maybe_restart_backend
+    eternal_verify_runtime_points_at_release "$release_dir"
+    return 0
+  fi
+
+  local active_release=""
+  if [[ -n "${PREV_RELEASE}" ]]; then
+    active_release="$PREV_RELEASE"
+  elif [[ -L "$ETERNAL_CURRENT_LINK" ]]; then
+    active_release="$(readlink -f "$ETERNAL_CURRENT_LINK" 2>/dev/null || true)"
+  fi
+  [[ -n "$active_release" ]] \
+    || eternal_deploy_die "frontend-only deploy requires an active CURRENT/previous release for process identity"
+  eternal_deploy_log "frontend-only/infra-only: keeping CURRENT at $active_release (no switch, no restart)"
+  # Ensure CURRENT already points at the active release identity.
+  local cur
+  cur="$(readlink -f "$ETERNAL_CURRENT_LINK" 2>/dev/null || true)"
+  local want
+  want="$(readlink -f "$active_release" 2>/dev/null || true)"
+  [[ -n "$cur" && -n "$want" && "$cur" == "$want" ]] \
+    || eternal_deploy_die "frontend-only deploy: CURRENT ($cur) is not active release ($want); refuse inconsistent pointer"
+  eternal_verify_runtime_points_at_release "$active_release"
 }
 
 eternal_publish_frontend() {
@@ -527,13 +740,17 @@ EOF
   export ETERNAL_NEED_BACKEND ETERNAL_NEED_FRONTEND
   eternal_deploy_log "change classification backend=$ETERNAL_NEED_BACKEND frontend=$ETERNAL_NEED_FRONTEND"
 
-  # Build before any live activation.
+  # Build + fresh venv BEFORE any live activation. Never mutate active service venv.
   eternal_maybe_build_frontend "$NEW_RELEASE"
+  if [[ "$ETERNAL_NEED_BACKEND" == "1" || ! -x "$NEW_RELEASE/backend/.venv/bin/uvicorn" ]]; then
+    eternal_deploy_log "preparing isolated backend runtime for $sha"
+    eternal_prepare_backend_runtime "$NEW_RELEASE/backend"
+  else
+    eternal_validate_backend_runtime "$NEW_RELEASE/backend"
+  fi
   eternal_verify_backup_ready "$sha"
 
-  eternal_switch_current "$NEW_RELEASE"
-  eternal_maybe_restart_backend
-  eternal_verify_runtime_points_at_release "$NEW_RELEASE"
+  eternal_activate_release "$NEW_RELEASE"
 
   if ! eternal_health_check; then
     eternal_deploy_die "health check failed after backend switch (frontend not published)"
@@ -550,8 +767,8 @@ EOF
   FRONTEND_SWITCHED=0
   FRONTEND_PUBLISH_STARTED=0
   eternal_deploy_log "DEPLOY PASS sha=$sha"
-  printf 'DEPLOY_OK sha=%s backend_restarted=%s frontend_published=%s\n' \
-    "$sha" "$BACKEND_RESTARTED" "$ETERNAL_NEED_FRONTEND"
+  printf 'DEPLOY_OK sha=%s backend_restarted=%s frontend_published=%s current_switched=%s\n' \
+    "$sha" "$BACKEND_RESTARTED" "$ETERNAL_NEED_FRONTEND" "$([[ "$ETERNAL_NEED_BACKEND" == "1" ]] && echo 1 || echo 0)"
 }
 
 cmd_usage() {
