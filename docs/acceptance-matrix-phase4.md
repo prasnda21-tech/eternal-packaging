@@ -51,7 +51,7 @@ Catatan: sel “tergantung permission” = jangan asumsikan; verifikasi di Setti
 ### Non-blocker
 - Detail faktur lines masih scroll horizontal internal di mobile sempit (indikator overflow container); tidak overflow viewport halaman.
 - Widget notifikasi tetap ada; footer detail/create memakai padding aman FAB.
-- Hapus/Edit Penerimaan tetap OFF — koreksi via penerimaan baru / eskalasi.
+- Hapus/Edit Penerimaan tetap OFF — koreksi wajib eskalasi Admin Keuangan/Direktur; verifikasi settlement/jurnal/alokasi; hanya prosedur resmi sistem (bukan buat penerimaan pengganti sendiri).
 
 ### Risiko residual
 - AR list projection vs detail live: detail memakai payload `getSalesInvoice`/`getSalesReceipt`; list mengandalkan field API list. Refresh setelah mutasi tetap diperlukan.
