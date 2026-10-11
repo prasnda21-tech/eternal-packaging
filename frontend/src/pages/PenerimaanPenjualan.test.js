@@ -107,6 +107,14 @@ describe("Penerimaan Penjualan UI & Navigation Suite", () => {
     expect(pageSrc).toMatch(/loadReceipts\(\)/);
   });
 
+  test("Phase 4 keeps receipt edit/hapus UI frozen via presentation gate", () => {
+    expect(pageSrc).toMatch(/isReceiptMutationUiEnabled/);
+    expect(pageSrc).toMatch(/receiptMutationUiEnabled/);
+    expect(pageSrc).toMatch(/receipt-mutation-frozen-note/);
+    expect(pageSrc).toMatch(/showDeleteControls\s*=\s*[\s\S]*receiptMutationUiEnabled/);
+    expect(pageSrc).toMatch(/canEditReceipt\s*=\s*receiptMutationUiEnabled\s*&&/);
+  });
+
   test("PenerimaanPenjualan modal has accessible close controls, testids, escape listener, and backdrop close", () => {
     expect(pageSrc).toMatch(/btn-close-receipt-modal/);
     expect(pageSrc).toMatch(/btn-cancel-receipt-modal/);

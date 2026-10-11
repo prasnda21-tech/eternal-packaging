@@ -523,6 +523,7 @@ export default function FakturPenjualan() {
     user?.role === "admin";
 
   const queryPoId = searchParams.get("po_id") || "";
+  const queryInvoiceId = searchParams.get("invoice_id") || "";
   const initialMode =
     searchParams.get("action") === "create" || Boolean(queryPoId) ? "create" : "list";
   const [viewMode, setViewMode] = useState(initialMode);
@@ -1196,6 +1197,14 @@ export default function FakturPenjualan() {
       setDetailLoading(false);
     }
   };
+
+  useEffect(() => {
+    if (!queryInvoiceId || viewMode === "create") return;
+    if (selectedInvoiceId === queryInvoiceId && viewMode === "detail") return;
+    handleOpenDetail(queryInvoiceId);
+    // Open once per invoice_id deep link.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [queryInvoiceId]);
 
   // Detail live calculation
   const detailCalculations = useMemo(() => {
@@ -2384,35 +2393,52 @@ export default function FakturPenjualan() {
                 </div>
                 <div>
                   <span>No PO</span>
-                  <strong>{detailData.po_number}</strong>
+                  <strong data-testid="detail-po-number">
+                    {detailData.po_id ? (
+                      <Link to={`/po/${encodeURIComponent(detailData.po_id)}`} data-testid="detail-po-link">
+                        {detailData.po_number || detailData.po_id}
+                      </Link>
+                    ) : (detailData.po_number || "-")}
+                  </strong>
                 </div>
                 <div>
                   <span>Customer</span>
-                  <strong>{detailData.customer}</strong>
+                  <strong data-testid="detail-customer">{detailData.customer}</strong>
                 </div>
                 <div>
                   <span>Sales</span>
                   <strong data-testid="detail-sales">{detailData.sales || "-"}</strong>
                 </div>
                 <div>
+                  <span>Tanggal Faktur</span>
+                  <strong data-testid="detail-invoice-date">{formatSalesInvoiceDate(detailData.invoice_date || detailDate) || "-"}</strong>
+                </div>
+                <div>
                   <span>Jatuh Tempo</span>
-                  <strong>{formatSalesInvoiceDate(detailData.due_date) || "-"}</strong>
+                  <strong data-testid="detail-due-date">{formatSalesInvoiceDate(detailData.due_date) || "-"}</strong>
                 </div>
                 <div>
                   <span>Total Tagihan</span>
-                  <strong>{formatRupiah(detailData.grand_total)}</strong>
+                  <strong data-testid="detail-grand-total">{formatRupiah(detailData.grand_total)}</strong>
                 </div>
                 <div>
-                  <span>Sudah Diterima</span>
-                  <strong>{formatRupiah(detailData.paid_total)}</strong>
+                  <span>Sudah Diterima (AR)</span>
+                  <strong data-testid="detail-paid-total">{formatRupiah(detailData.paid_total)}</strong>
                 </div>
                 <div>
-                  <span>Sisa Tagihan</span>
-                  <strong className={Number(detailData.outstanding_amount) > 0 ? "is-due" : "is-paid"}>{formatRupiah(detailData.outstanding_amount)}</strong>
+                  <span>Sisa Tagihan (AR)</span>
+                  <strong
+                    data-testid="detail-outstanding-amount"
+                    className={Number(detailData.outstanding_amount) > 0 ? "is-due" : "is-paid"}
+                  >
+                    {formatRupiah(detailData.outstanding_amount)}
+                  </strong>
                 </div>
                 <div>
-                  <span>Status Pembayaran</span>
-                  <div className="fp-detail-badges">{renderPaymentBadge(detailData.payment_status)}</div>
+                  <span>Status Pembayaran (AR)</span>
+                  <div className="fp-detail-badges" data-testid="detail-payment-status">
+                    {renderPaymentBadge(detailData.payment_status)}
+                  </div>
                 </div>
               </div>
               {showAccountingUnconfigured && (
@@ -2598,8 +2624,15 @@ export default function FakturPenjualan() {
                       <tbody>
                         {detailData.receipts.map((r, idx) => (
                           <tr key={r.id || idx}>
-                            <td className="fp-receipt-no">{r.receipt_number || r.id}</td>
-                            <td>{formatDisplayDate(r.receipt_date)}</td>
+                            <td className="fp-receipt-no">
+                              <Link
+                                data-testid={`detail-receipt-link-${r.id || idx}`}
+                                to={`/penjualan/penerimaan-penjualan?receipt_id=${encodeURIComponent(r.id || "")}`}
+                              >
+                                {r.receipt_number || r.id}
+                              </Link>
+                            </td>
+                            <td>{formatSalesInvoiceDate(r.receipt_date) || formatDisplayDate(r.receipt_date)}</td>
                             <td className="is-num">{formatRupiah(r.amount)}</td>
                             <td className="is-center">{r.payment_state}</td>
                             <td>{r.notes || "-"}</td>

@@ -1611,6 +1611,62 @@
   align-content:center;
   row-gap:8px;
 }
+.sd-density .fp-detail .fp-summary a{
+  color:#166534;
+  font-weight:700;
+  text-decoration:underline;
+  text-underline-offset:2px;
+}
+.sd-density .fp-detail-receipts a{
+  color:#0f766e;
+  font-weight:650;
+}
+.sd-receipt-frozen-note{
+  margin:0 0 12px;
+  padding:8px 10px;
+  border-radius:8px;
+  background:#fff7ed;
+  border:1px solid #fed7aa;
+  color:#9a3412;
+  font-size:12px;
+  line-height:1.35;
+}
+@media (max-width:700px){
+  .sd-density .fp-detail,
+  .sd-density .fp-detail .sd-form-fill,
+  .sd-density .fp-detail .sd-form-stage{
+    max-width:100%;
+    overflow-x:hidden;
+  }
+  .sd-density .fp-detail .fp-summary{
+    grid-template-columns:1fr 1fr;
+    gap:8px;
+    padding:8px;
+  }
+  .sd-density .fp-detail .sd-form-stage{padding:8px 10px 20px}
+  .sd-density .fp-detail .sd-lines,
+  .sd-density .fp-detail .fp-detail-lines{
+    overflow-x:auto;
+    -webkit-overflow-scrolling:touch;
+    max-width:100%;
+  }
+  .sd-density .fp-detail .fp-detail-lines{min-width:480px}
+  .sd-density .fp-detail .invoice-actions{
+    padding:10px 12px !important;
+    padding-right:112px !important;
+    gap:8px;
+  }
+  .sd-receipt-detail-card{
+    max-width:calc(100vw - 16px) !important;
+    padding:16px !important;
+  }
+  .sd-receipt-detail-grid{
+    grid-template-columns:1fr !important;
+    gap:4px 0 !important;
+  }
+  .sd-receipt-detail-grid dt{color:#64748b;font-size:11px;font-weight:650}
+  .sd-receipt-detail-grid dd{margin:0 0 8px !important}
+}
 body .sd-density.penjualan-page .fp-detail input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]):not([type="file"]):not([type="button"]):not([type="submit"]):not(:disabled):not([readonly]),
 body .sd-density.penjualan-page .fp-detail select:not(:disabled),
 body .sd-density.penjualan-page .fp-detail textarea:not(:disabled):not([readonly]){

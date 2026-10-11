@@ -3,6 +3,8 @@ import {
   canBusinessCancelInvoice,
   canBusinessCancelReceipt,
   canBusinessEditReceipt,
+  isReceiptMutationUiEnabled,
+  RECEIPT_MUTATION_UI_ENABLED,
   interpretReceiptUpdateResponse,
   canRecoverAutoAccounting,
   clearIdempotencyIntent,
@@ -34,6 +36,13 @@ describe("salesLifecycleUi", () => {
     expect(canBusinessCancelReceipt((p) => p === "sales.receipt.cancel")).toBe(true);
     expect(canBusinessEditReceipt((p) => p === "sales.receipt.create")).toBe(false);
     expect(canBusinessEditReceipt((p) => p === "sales.receipt.edit")).toBe(true);
+  });
+
+  test("Phase 4 freezes receipt edit/delete UI without changing RBAC helpers", () => {
+    expect(RECEIPT_MUTATION_UI_ENABLED).toBe(false);
+    expect(isReceiptMutationUiEnabled()).toBe(false);
+    expect(canBusinessEditReceipt((p) => p === "sales.receipt.edit")).toBe(true);
+    expect(canBusinessCancelReceipt((p) => p === "sales.receipt.cancel")).toBe(true);
   });
 
   test("receipt update response requires financial_complete for posted revision", () => {
