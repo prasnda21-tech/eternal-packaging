@@ -597,3 +597,12 @@ def test_invoice_routes_do_not_write():
     block = routes.read_text(encoding="utf-8").split("async def public_tracking_invoices")[1].split("async def tracking_link")[0]
     for word in ("update_one", "insert_one", "delete_one", "ensure_tracking_token"):
         assert word not in block
+
+
+def test_receipt_projection_keeps_settlement_effective():
+    src = Path(__file__).resolve().parents[1] / "services" / "customer_tracking_invoices.py"
+    text = src.read_text(encoding="utf-8")
+    start = text.index("_RECEIPT_FIELDS")
+    chunk = text[start:start + 280]
+    assert '"settlement_effective": 1' in chunk
+    assert '"allocated_amount": 1' in chunk

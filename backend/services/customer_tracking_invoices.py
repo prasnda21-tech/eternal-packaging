@@ -27,7 +27,15 @@ from services.sales_invoices import (
 
 PUBLIC_INVOICE_STATUSES = frozenset({FINANCIAL_FINALIZED, FINANCIAL_CANCELLED})
 _FOREIGN_LIST_KEYS = ("po_ids", "order_ids", "source_po_ids", "linked_po_ids")
-_RECEIPT_FIELDS = {"_id": 0, "invoice_id": 1, "amount": 1, "financial_status": 1, "cancelled": 1}
+_RECEIPT_FIELDS = {
+    "_id": 0,
+    "invoice_id": 1,
+    "amount": 1,
+    "allocated_amount": 1,
+    "financial_status": 1,
+    "cancelled": 1,
+    "settlement_effective": 1,
+}
 
 
 def _money(raw: Any) -> float:

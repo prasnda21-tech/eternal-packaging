@@ -1115,7 +1115,15 @@ async def _load_owned_finalized_finance(db, user: dict) -> tuple:
     if inv_ids:
         receipts = await _cursor_rows(db.sales_receipts.find(
             {"invoice_id": {"$in": inv_ids}},
-            {"_id": 0, "invoice_id": 1, "amount": 1, "financial_status": 1, "cancelled": 1},
+            {
+                "_id": 0,
+                "invoice_id": 1,
+                "amount": 1,
+                "allocated_amount": 1,
+                "financial_status": 1,
+                "cancelled": 1,
+                "settlement_effective": 1,
+            },
         ))
     from services.sales_receipt_posting import receipt_counts_toward_outstanding
 
