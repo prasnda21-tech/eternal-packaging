@@ -42,8 +42,14 @@ Hak akses mengikuti RBAC aktual; jangan mengasumsikan semua role punya izin yang
 5. Cek status pembayaran faktur (Sudah Diterima / Sisa Tagihan AR) setelah simpan.
 
 ### Edit / Hapus Penerimaan
-**DINONAKTIFKAN** pada Phase 3/4.  
-Jika nominal salah: catat penerimaan koreksi baru atau eskalasi ke Owner/Admin keuangan. Jangan hard-delete.
+**DINONAKTIFKAN** pada Phase 3/4. Jangan mengaktifkan Edit/Hapus Penerimaan.
+
+Jika nominal atau data penerimaan salah:
+1. **Jangan** membuat Penerimaan baru sendiri sebagai pengganti pembayaran yang salah.
+2. **Wajib eskalasi** ke **Admin Keuangan** atau **Direktur**.
+3. Admin Keuangan/Direktur memverifikasi dulu: status settlement, jurnal, alokasi ke faktur, dan riwayat pembayaran sebelumnya.
+4. Koreksi hanya melalui **prosedur resmi yang sudah didukung sistem** (setelah verifikasi dan persetujuan).
+5. Jangan hard-delete; jangan menghapus jurnal, histori, atau audit trail.
 
 ## 5. Cara Memeriksa Piutang
 
@@ -72,8 +78,8 @@ CRM / Sales / Direktur: gunakan permission matrix di Settings; uji dengan akun r
 |--------|------------------|----------|
 | Validasi qty melebihi sisa | Turunkan qty faktur | Ops / CRM |
 | Simpan faktur gagal financial | Catat pesan error + nomor dokumen | Admin keuangan |
-| Penerimaan pending settlement | Jangan dihapus; pantau status AR | Admin keuangan |
+| Penerimaan pending settlement | Jangan dihapus/diedit; verifikasi settlement & AR | Admin Keuangan / Direktur |
 | Faktur legacy warning | Pisahkan dari alur baru; jangan mass-post | Owner |
-| Butuh koreksi penerimaan | Buat penerimaan baru / minta Owner | Owner |
+| Butuh koreksi penerimaan (nominal/alokasi/jurnal salah) | Jangan buat penerimaan pengganti sendiri; kumpulkan nomor dokumen + bukti | Admin Keuangan / Direktur → prosedur resmi sistem |
 
 **Eskalasi Owner** bila menyentuh data production, migrasi historis, atau perubahan lifecycle keuangan.
