@@ -91,7 +91,7 @@ describe("Penerimaan Penjualan UI & Navigation Suite", () => {
     expect(pageSrc).toMatch(/reverse-accounting-confirm-modal/);
     expect(pageSrc).toMatch(/btn-confirm-post-accounting/);
     expect(pageSrc).toMatch(/btn-confirm-reverse-accounting/);
-    expect(pageSrc).toMatch(/Belum Diposting/);
+    expect(pageSrc).toMatch(/Belum posting/);
     expect(pageSrc).toMatch(/api\.postSalesReceiptAccounting/);
     expect(pageSrc).toMatch(/api\.reverseSalesReceiptAccounting/);
     expect(pageSrc).toMatch(/can_delete !== false/);

@@ -140,7 +140,7 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
     const page = container.querySelector('[data-testid="sales-order-page"]');
     expect(page.className).toContain("penjualan-page");
     expect(page.className).not.toContain("so-create-workspace");
-    expect(container.querySelector('[data-testid="sales-order-title"]').textContent).toBe("Seluruh Pesanan Penjualan");
+    expect(container.querySelector('[data-testid="sales-order-title"]').textContent).toBe("Pesanan Penjualan");
     expect(container.querySelector('[data-testid="so-create-actionbar"]')).toBeNull();
     expect(container.querySelector('[data-testid="btn-detail-tambahan"]')).toBeNull();
   });

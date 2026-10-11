@@ -446,9 +446,9 @@ export default function PenerimaanPenjualan() {
   // Load unpaid / partially paid invoices for the dropdown
   const accountingLabel = (status) => {
     const raw = String(status || "not_posted").toLowerCase();
-    if (raw === "posted") return "Posted";
-    if (raw === "reversed") return "Reversed";
-    return "Belum Diposting";
+    if (raw === "posted") return "Sudah posting";
+    if (raw === "reversed") return "Dibalik";
+    return "Belum posting";
   };
 
   const loadCashBanks = useCallback(async () => {
@@ -901,43 +901,45 @@ export default function PenerimaanPenjualan() {
         </div>
       </header>
 
-      <div className="fp-invoice-tabs" role="tablist" aria-label="Klasifikasi penerimaan" data-testid="receipt-list-tabs">
-        {SALES_LIST_TABS.map((tab) => {
-          const count = Number(listMeta.counts?.[tab.id] || 0);
-          const selected = listTab === tab.id;
-          return (
-            <button
-              key={tab.id}
-              type="button"
-              role="tab"
-              aria-selected={selected}
-              className={selected ? "is-active" : ""}
-              data-testid={`tab-receipt-${tab.testIdSuffix}`}
-              onClick={() => changeReceiptTab(tab.id)}
-            >
-              {tab.label}
-              <span className="fp-tab-count" data-testid={`tab-receipt-count-${tab.testIdSuffix}`}>
-                {count.toLocaleString("id-ID")}
-              </span>
-            </button>
-          );
-        })}
-      </div>
+      <div className="sd-list-chrome">
+        <div className="fp-invoice-tabs" role="tablist" aria-label="Klasifikasi penerimaan" data-testid="receipt-list-tabs">
+          {SALES_LIST_TABS.map((tab) => {
+            const count = Number(listMeta.counts?.[tab.id] || 0);
+            const selected = listTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                role="tab"
+                aria-selected={selected}
+                className={selected ? "is-active" : ""}
+                data-testid={`tab-receipt-${tab.testIdSuffix}`}
+                onClick={() => changeReceiptTab(tab.id)}
+              >
+                {tab.label}
+                <span className="fp-tab-count" data-testid={`tab-receipt-count-${tab.testIdSuffix}`}>
+                  {count.toLocaleString("id-ID")}
+                </span>
+              </button>
+            );
+          })}
+        </div>
 
-      <div className="sd-list-toolbar">
-        <div className="sd-list-search">
-          <Search size={16} />
-          <input
-            type="text"
-            className="form-input"
-            data-testid="search-receipt-input"
-            placeholder="Cari nomor penerimaan, no faktur, no PO, customer..."
-            value={searchQuery}
-            onChange={(e) => {
-              setSearchQuery(e.target.value);
-              resetReceiptListPosition();
-            }}
-          />
+        <div className="sd-list-toolbar">
+          <div className="sd-list-search">
+            <Search size={16} />
+            <input
+              type="text"
+              className="form-input"
+              data-testid="search-receipt-input"
+              placeholder="Cari no penerimaan, faktur, PO, pelanggan..."
+              value={searchQuery}
+              onChange={(e) => {
+                setSearchQuery(e.target.value);
+                resetReceiptListPosition();
+              }}
+            />
+          </div>
         </div>
       </div>
 
@@ -1028,7 +1030,7 @@ export default function PenerimaanPenjualan() {
                 <th>Tanggal</th>
                 <th>Jumlah</th>
                 <th>Status Faktur</th>
-                <th>Accounting</th>
+                <th>Jurnal</th>
                 <th>Kas / Bank</th>
                 <th>Aksi</th>
               </tr>
@@ -1168,7 +1170,7 @@ export default function PenerimaanPenjualan() {
                               setAccountingTarget({ action: "post", receipt: r, cash_bank_id: r.cash_bank_id || "" });
                             }}
                           >
-                            Post Accounting
+                            Posting
                           </button>
                         )}
                         {showLegacyPostReverse && canReverseAccounting && r.can_reverse_accounting && (
@@ -1181,7 +1183,7 @@ export default function PenerimaanPenjualan() {
                               setAccountingTarget({ action: "reverse", receipt: r });
                             }}
                           >
-                            Reverse
+                            Balik
                           </button>
                         )}
                         {showDeleteControls && deletable && (
@@ -1850,7 +1852,7 @@ export default function PenerimaanPenjualan() {
             </p>
             {!detailEditMode ? (
               <dl style={{ margin: "0 0 16px", display: "grid", gridTemplateColumns: "1fr auto", gap: "8px 16px", fontSize: "0.9rem" }}>
-                <dt>Accounting</dt>
+                <dt>Jurnal</dt>
                 <dd data-testid="receipt-detail-accounting-status" style={{ margin: 0, fontWeight: 700 }}>{accountingLabel(detailReceipt.accounting_status)}</dd>
                 <dt>Tanggal</dt>
                 <dd data-testid="receipt-detail-date" style={{ margin: 0 }}>{formatDisplayDate(detailReceipt.receipt_date) || detailReceipt.receipt_date || "-"}</dd>
@@ -1985,7 +1987,7 @@ export default function PenerimaanPenjualan() {
                   }}
                   style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: "#047857", color: "#fff", fontWeight: 600 }}
                 >
-                  Post Accounting
+                  Posting
                 </button>
               )}
               {!detailEditMode && showLegacyPostReverse && canReverseAccounting && detailReceipt.can_reverse_accounting && (
@@ -1998,7 +2000,7 @@ export default function PenerimaanPenjualan() {
                   }}
                   style={{ padding: "8px 14px", borderRadius: 8, border: "1px solid #fecaca", background: "#fff", color: "#b91c1c", fontWeight: 600 }}
                 >
-                  Reverse
+                  Balik
                 </button>
               )}
               {!detailEditMode && canRecoverAutoAccounting(detailReceipt, { hasPerm, kind: "receipt" }) && (
@@ -2056,7 +2058,7 @@ export default function PenerimaanPenjualan() {
         >
           <div style={{ background: "#fff", borderRadius: 12, padding: 24, width: "100%", maxWidth: 480 }}>
             <h3 style={{ margin: "0 0 8px" }}>
-              {accountingTarget.action === "reverse" ? "Reverse Accounting?" : "Post ke Accounting?"}
+              {accountingTarget.action === "reverse" ? "Balik jurnal?" : "Posting jurnal?"}
             </h3>
             <p style={{ margin: "0 0 12px", color: "#64748b", fontSize: "0.9rem" }}>
               {accountingTarget.action === "reverse"
@@ -2119,8 +2121,8 @@ export default function PenerimaanPenjualan() {
                 {accountingBusy
                   ? "Memproses..."
                   : accountingTarget.action === "reverse"
-                    ? "Reverse Accounting"
-                    : "Post ke Accounting"}
+                    ? "Balik jurnal"
+                    : "Posting"}
               </button>
             </div>
           </div>

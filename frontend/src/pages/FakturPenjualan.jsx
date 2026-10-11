@@ -1729,7 +1729,7 @@ export default function FakturPenjualan() {
               <Search size={16} />
               <input
                 type="text"
-                placeholder="Cari No PO / Customer / Sales / Faktur..."
+                placeholder="Cari no PO, pelanggan, sales, atau faktur..."
                 value={searchQuery}
                 onChange={(e) => {
                   setSearchQuery(e.target.value);
