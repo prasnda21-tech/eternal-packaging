@@ -2157,7 +2157,7 @@ export default function FakturPenjualan() {
               </div>
 
               <div className="fp-items sd-pane-items">
-                <div className="sd-lines">
+                <div className="sd-lines sd-lines-scroll" data-testid="invoice-lines-scroll">
                   <table className="fp-lines">
                     <thead>
                       <tr>

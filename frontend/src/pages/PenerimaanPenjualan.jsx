@@ -16,6 +16,7 @@ import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDisplayDate } from "../lib/constants";
 import { FormSection, FormField, computeStatus } from "../components/form-standard";
+import SalesInvoiceDateField from "../components/SalesInvoiceDateField";
 import { showLoadedDocumentCount } from "../lib/salesSubmenuDensity";
 import {
   SALES_LIST_DEFAULT_PAGE_SIZE,
@@ -1436,40 +1437,33 @@ export default function PenerimaanPenjualan() {
                     <div
                       data-testid="selected-invoice-summary-card"
                       className="sr-money-summary"
-                      style={{
-                        backgroundColor: "#f8fafc",
-                        border: "1px solid #e2e8f0",
-                        borderRadius: 8,
-                        padding: 12,
-                        marginBottom: 12,
-                      }}
                     >
-                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 10, fontSize: 13, marginBottom: 10 }}>
+                      <div className="sr-invoice-meta">
                         <div>
-                          <span style={{ color: "#64748b" }}>Pelanggan</span>
-                          <div data-testid="summary-customer" style={{ fontWeight: 600, color: "#1e293b" }}>{selectedInvoice.customer || "-"}</div>
+                          <span>Pelanggan</span>
+                          <div data-testid="summary-customer">{selectedInvoice.customer || "-"}</div>
                         </div>
                         <div>
-                          <span style={{ color: "#64748b" }}>No. Faktur</span>
-                          <div data-testid="summary-invoice-number" style={{ fontWeight: 600, color: "#1e293b" }}>{selectedInvoice.invoice_number || "-"}</div>
+                          <span>No. Faktur</span>
+                          <div data-testid="summary-invoice-number">{selectedInvoice.invoice_number || "-"}</div>
                         </div>
                         <div>
-                          <span style={{ color: "#64748b" }}>No. PO</span>
-                          <div data-testid="summary-po-number" style={{ fontWeight: 600, color: "#1e293b" }}>{selectedInvoice.po_number}</div>
+                          <span>No. PO</span>
+                          <div data-testid="summary-po-number">{selectedInvoice.po_number}</div>
                         </div>
                       </div>
-                      <div className="sr-money-triad" data-testid="receipt-money-triad" style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 8 }}>
-                        <div style={{ background: "#fff", border: "1px solid #e2e8f0", borderRadius: 6, padding: "8px 10px" }}>
-                          <span style={{ display: "block", fontSize: 11, color: "#64748b" }}>Total tagihan</span>
-                          <strong data-testid="summary-grand-total" style={{ fontSize: 13, color: "#1e293b" }}>{formatRupiah(selectedInvoice.grand_total)}</strong>
+                      <div className="sr-money-triad" data-testid="receipt-money-triad">
+                        <div>
+                          <span>Total tagihan</span>
+                          <strong data-testid="summary-grand-total">{formatRupiah(selectedInvoice.grand_total)}</strong>
                         </div>
-                        <div style={{ background: "#fff", border: "1px solid #e2e8f0", borderRadius: 6, padding: "8px 10px" }}>
-                          <span style={{ display: "block", fontSize: 11, color: "#64748b" }}>Sudah dibayar</span>
-                          <strong data-testid="summary-paid-total" style={{ fontSize: 13, color: "#047857" }}>{formatRupiah(selectedInvoice.paid_total)}</strong>
+                        <div>
+                          <span>Sudah dibayar</span>
+                          <strong data-testid="summary-paid-total" className="is-paid">{formatRupiah(selectedInvoice.paid_total)}</strong>
                         </div>
-                        <div style={{ background: "#fff", border: "1px solid #fecaca", borderRadius: 6, padding: "8px 10px" }}>
-                          <span style={{ display: "block", fontSize: 11, color: "#64748b" }}>Sisa tagihan</span>
-                          <strong data-testid="summary-outstanding-amount" style={{ fontSize: 13, color: "#dc2626" }}>
+                        <div className="is-due-box">
+                          <span>Sisa tagihan</span>
+                          <strong data-testid="summary-outstanding-amount" className="is-due">
                             {formatRupiah(selectedInvoice.outstanding_amount)}
                           </strong>
                         </div>
@@ -1616,14 +1610,12 @@ export default function PenerimaanPenjualan() {
                     <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 6 }}>
                       Tanggal penerimaan *
                     </label>
-                    <input
-                      type="date"
-                      className="form-input"
-                      data-testid="input-receipt-date"
-                      value={receiptDate}
-                      onChange={(e) => setReceiptDate(e.target.value)}
+                    <SalesInvoiceDateField
+                      valueIso={receiptDate}
+                      onChange={setReceiptDate}
                       disabled={createBusy}
-                      style={{ width: "100%", fontSize: 13 }}
+                      testId="input-receipt-date"
+                      calendarLabel="Kalender tanggal penerimaan"
                     />
                   </div>
                   <div>

@@ -141,10 +141,10 @@
   .so-create-workspace .so-sum-chip.is-po { grid-column: 1 / -1; }
   .so-create-workspace .so-ship-card { grid-column: 1 / -1; }
   .so-create-workspace .so-create-line-toolbar { flex-wrap: wrap; gap: 8px; }
-  .so-create-workspace .so-create-actionbar { flex-wrap: wrap; gap: 8px; }
+  .so-create-workspace .so-create-actionbar { flex-wrap: wrap; gap: 8px; padding-right: 76px; }
   .so-create-workspace .so-footer-totals { width: 100%; justify-content: space-between; }
-  .so-create-workspace .so-footer-actions { width: 100%; }
-  .so-create-workspace .so-footer-actions button { flex: 1; justify-content: center; }
+  .so-create-workspace .so-footer-actions { width: auto; margin-left: auto; justify-content: flex-end; }
+  .so-create-workspace .so-footer-actions button { flex: 1 1 auto; justify-content: center; min-width: 0; }
   .so-create-workspace .so-ship-panel,
   .so-create-workspace .so-create-extra { grid-template-columns: 1fr; }
   .so-create-workspace .so-create-progress { display: none; }

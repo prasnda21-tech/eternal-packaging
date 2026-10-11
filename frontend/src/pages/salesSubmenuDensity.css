@@ -527,12 +527,92 @@
   grid-template-columns:1fr 1fr;
   gap:12px;
 }
+.sd-density .sd-modal-body .sr-money-summary{
+  background:#f8fafc;
+  border:1px solid #e2e8f0;
+  border-radius:8px;
+  padding:10px;
+  margin-bottom:10px;
+}
+.sd-density .sd-modal-body .sr-invoice-meta{
+  display:grid;
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:6px 8px;
+  margin-bottom:8px;
+  font-size:12px;
+}
+.sd-density .sd-modal-body .sr-invoice-meta span{
+  display:block;
+  color:#64748b;
+  font-size:10px;
+  font-weight:600;
+}
+.sd-density .sd-modal-body .sr-invoice-meta div{
+  font-weight:650;
+  color:#1e293b;
+  overflow-wrap:anywhere;
+}
+.sd-density .sd-modal-body .sr-money-triad{
+  display:grid;
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:6px;
+}
+.sd-density .sd-modal-body .sr-money-triad > div{
+  background:#fff;
+  border:1px solid #e2e8f0;
+  border-radius:6px;
+  padding:6px 8px;
+  min-width:0;
+}
+.sd-density .sd-modal-body .sr-money-triad > div.is-due-box{border-color:#fecaca}
+.sd-density .sd-modal-body .sr-money-triad span{
+  display:block;
+  font-size:10px;
+  color:#64748b;
+  font-weight:600;
+}
+.sd-density .sd-modal-body .sr-money-triad strong{
+  display:block;
+  margin-top:2px;
+  font-size:12px;
+  color:#1e293b;
+  overflow-wrap:anywhere;
+}
+.sd-density .sd-modal-body .sr-money-triad strong.is-paid{color:#047857}
+.sd-density .sd-modal-body .sr-money-triad strong.is-due{color:#dc2626}
 @media (max-width:520px){
   .sd-density .sd-modal-body .sr-payment-grid{
-    grid-template-columns:1fr;
+    grid-template-columns:1fr 1fr;
+    gap:8px;
   }
+  .sd-density .sd-modal-body .sr-invoice-meta{
+    grid-template-columns:1fr 1fr;
+    gap:4px 8px;
+    margin-bottom:6px;
+  }
+  .sd-density .sd-modal-body .sr-money-summary{padding:8px;margin-bottom:8px}
   .sd-density .sd-modal-body .sr-money-triad{
-    grid-template-columns:1fr !important;
+    grid-template-columns:repeat(3,minmax(0,1fr)) !important;
+    gap:4px;
+  }
+  .sd-density .sd-modal-body .sr-money-triad > div{padding:5px 6px}
+  .sd-density .sd-modal-body .sr-money-triad strong{font-size:11px}
+  .sd-density .sd-modal-card{
+    max-height:calc(100dvh - 16px) !important;
+    max-width:calc(100vw - 16px);
+  }
+  .sd-density .sd-modal-body{
+    padding:12px 12px 20px;
+    scroll-padding-bottom:88px;
+  }
+  .sd-density .sd-modal-footer{
+    padding:10px 12px;
+    padding-right:76px;
+    gap:8px;
+    min-height:52px;
+  }
+  .sd-density .sd-modal-footer button{
+    min-height:36px;
   }
 }
 
@@ -1267,6 +1347,82 @@
   .sd-density .fp-terms{grid-template-columns:1fr 1fr}
   .sd-density .fp-charge-row{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
   .sd-density .fp-charge-remove{grid-column:2}
+}
+
+/* Mobile create Faktur: internal table scroll + FAB-safe footer. */
+@media (max-width:700px){
+  .sd-density .fp-create,
+  .sd-density .fp-create .sd-form-fill,
+  .sd-density .fp-create .sd-form-stage{
+    max-width:100%;
+    overflow-x:hidden;
+  }
+  .sd-density .fp-create .fp-summary{grid-template-columns:1fr 1fr}
+  .sd-density .fp-create .fp-terms-essential{grid-template-columns:1fr 1fr;gap:8px;padding:8px}
+  .sd-density .fp-create .sd-form-stage{padding:8px 10px 20px}
+  .sd-density .fp-create .sd-lines-scroll,
+  .sd-density .fp-create .sd-lines{
+    position:relative;
+    overflow-x:auto !important;
+    overflow-y:visible;
+    -webkit-overflow-scrolling:touch;
+    max-width:100%;
+    border:1px solid #e2e8e6;
+    border-radius:8px;
+    background:
+      linear-gradient(90deg,#fff 70%,rgba(255,255,255,0)) 0 0 / 28px 100% local,
+      linear-gradient(90deg,rgba(255,255,255,0),#fff 30%) 100% 0 / 28px 100% local,
+      linear-gradient(90deg,rgba(15,23,42,.08),transparent 40%) 0 0 / 16px 100% local,
+      linear-gradient(270deg,rgba(15,23,42,.12),transparent 40%) 100% 0 / 18px 100% local;
+    background-repeat:no-repeat;
+    background-attachment:local,local,scroll,scroll;
+  }
+  .sd-density .fp-create .sd-lines-scroll::before,
+  .sd-density .fp-create .sd-lines::before{
+    content:"Geser tabel →";
+    position:sticky;
+    top:0;
+    left:0;
+    z-index:2;
+    display:inline-block;
+    margin:6px 8px;
+    padding:3px 8px;
+    font:600 11px/1.2 "IBM Plex Sans",sans-serif;
+    color:#166534;
+    background:#ecfdf5;
+    border:1px solid #a7f3d0;
+    border-radius:999px;
+    pointer-events:none;
+  }
+  .sd-density .fp-create .fp-lines{
+    min-width:540px;
+    width:100%;
+  }
+  .sd-density .fp-create .fp-lines input[type="number"]{
+    width:88px !important;
+    max-width:100%;
+    box-sizing:border-box;
+  }
+  .sd-density .fp-create .invoice-actions,
+  .sd-density .fp-create .sd-form-footer{
+    flex-wrap:wrap;
+    gap:8px;
+    padding:10px 12px;
+    padding-right:76px;
+    min-height:52px;
+  }
+  .sd-density .fp-create .fp-total{
+    width:100%;
+  }
+  .sd-density .fp-create .fp-action-buttons{
+    width:100%;
+    justify-content:flex-end;
+    padding-right:4px;
+  }
+  .sd-density .fp-create .fp-action-buttons button{
+    flex:1 1 auto;
+    min-width:0;
+  }
 }
 
 /* Detail Faktur. The receipt action stays in the page header so the

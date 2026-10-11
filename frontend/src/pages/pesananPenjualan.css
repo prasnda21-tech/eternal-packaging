@@ -1567,3 +1567,122 @@
   flex: none;
   overflow: visible;
 }
+
+/* Date chips use DD/MM/YYYY text + native calendar (same control as Faktur). */
+.so-create-workspace .so-sum-chip-date {
+  max-width: none;
+  flex: 1 1 160px;
+  padding-right: 10px;
+}
+.so-create-workspace .so-sum-chip-date .fp-invoice-date {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.so-create-workspace .so-sum-chip-date .fp-invoice-date input[type="text"] {
+  flex: 1 1 110px;
+  min-width: 0;
+  width: auto;
+  height: 30px;
+  box-sizing: border-box;
+}
+.so-create-workspace .so-sum-chip-date .fp-invoice-date input[type="date"] {
+  width: 36px;
+  min-width: 36px;
+  flex: 0 0 36px;
+  padding: 4px;
+  height: 30px;
+}
+.so-create-workspace .so-sum-chip-date .fp-invoice-date-error {
+  flex: 1 0 100%;
+  font-size: 11px;
+}
+
+/* Mobile 390: keep key line columns reachable, clear scroll cue, FAB-safe Simpan. */
+@media (max-width: 700px) {
+  .so-create-workspace,
+  .so-create-workspace .so-create-form,
+  .so-create-workspace .so-create-stage {
+    max-width: 100%;
+    overflow-x: hidden;
+  }
+  .so-create-workspace .so-create-stage {
+    overflow-x: hidden;
+    padding-bottom: 12px;
+  }
+  .so-create-workspace .so-sum-chip,
+  .so-create-workspace .so-ship-card {
+    max-width: none;
+    flex: 1 1 calc(50% - 6px);
+  }
+  .so-create-workspace .so-sum-chip.is-customer,
+  .so-create-workspace .so-sum-chip.is-po,
+  .so-create-workspace .so-ship-card {
+    flex: 1 1 100%;
+  }
+  .so-create-workspace .so-create-lines-scroll {
+    position: relative;
+    overflow-x: auto !important;
+    overflow-y: visible;
+    -webkit-overflow-scrolling: touch;
+    max-width: 100%;
+    border: 1px solid #e2e8e6;
+    border-radius: 8px;
+    background:
+      linear-gradient(90deg, #fff 70%, rgba(255,255,255,0)) 0 0 / 28px 100% local,
+      linear-gradient(90deg, rgba(255,255,255,0), #fff 30%) 100% 0 / 28px 100% local,
+      linear-gradient(90deg, rgba(15,23,42,.08), transparent 40%) 0 0 / 16px 100% local,
+      linear-gradient(270deg, rgba(15,23,42,.12), transparent 40%) 100% 0 / 18px 100% local;
+    background-repeat: no-repeat;
+    background-attachment: local, local, scroll, scroll;
+  }
+  .so-create-workspace .so-create-lines-scroll::before {
+    content: "Geser tabel →";
+    position: sticky;
+    top: 0;
+    left: 0;
+    display: inline-block;
+    margin: 6px 8px;
+    padding: 3px 8px;
+    font: 600 11px/1.2 "IBM Plex Sans", sans-serif;
+    color: #166534;
+    background: #ecfdf5;
+    border: 1px solid #a7f3d0;
+    border-radius: 999px;
+    pointer-events: none;
+    z-index: 2;
+  }
+  .so-create-workspace .so-create-lines-table {
+    min-width: 560px;
+  }
+  .so-create-workspace .so-col-no,
+  .so-create-workspace .so-col-unit {
+    width: 48px;
+  }
+  .so-create-workspace .so-col-name { min-width: 160px; }
+  .so-create-workspace .so-col-qty { width: 72px; }
+  .so-create-workspace .so-col-price { width: 120px; }
+  .so-create-workspace .so-col-sub { width: 96px; }
+  .so-create-workspace .so-create-actionbar {
+    padding-right: 76px !important;
+    padding-bottom: max(10px, env(safe-area-inset-bottom, 0px));
+    gap: 10px;
+  }
+  .so-create-workspace .so-footer-actions {
+    width: auto;
+    margin-left: auto;
+    flex: 1 1 auto;
+    justify-content: flex-end;
+    padding-right: 4px;
+  }
+  .so-create-workspace .so-footer-actions .so-create-save,
+  .so-create-workspace .so-footer-actions [data-testid="btn-submit-sales-order"] {
+    flex: 1 1 auto;
+    min-width: 0;
+    max-width: calc(100% - 8px);
+  }
+  .so-create-workspace .so-footer-totals {
+    width: 100%;
+  }
+}

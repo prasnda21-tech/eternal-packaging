@@ -25,6 +25,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "../components/ui/popove
 import HeaderSelectFilter from "../components/HeaderSelectFilter";
 import MasterItemSearchSelect from "../components/MasterItemSearchSelect";
 import CustomerSearchSelect from "../components/CustomerSearchSelect";
+import SalesInvoiceDateField from "../components/SalesInvoiceDateField";
 import {
   EMPTY_SALES_ORDER_COLUMN_FILTERS,
   SALES_ORDER_DELIVERY_STATUS_OPTIONS,
@@ -1996,31 +1997,27 @@ export default function PesananPenjualan() {
                   </SoField>
                 </div>
 
-                <div className="so-sum-chip is-editing">
+                <div className="so-sum-chip is-editing so-sum-chip-date">
                   <SoField field="order_date" label="Tanggal PO" className="so-sum-field">
                     <div className="so-sum-editor">
-                      <input
-                        id="so-order_date"
-                        type="date"
-                        className="so-line-input"
-                        value={formData.order_date}
-                        onChange={(e) => setFormData((p) => ({ ...p, order_date: e.target.value }))}
-                        data-testid="input-order-date"
+                      <SalesInvoiceDateField
+                        valueIso={formData.order_date}
+                        onChange={(iso) => setFormData((p) => ({ ...p, order_date: iso }))}
+                        testId="input-order-date"
+                        calendarLabel="Kalender tanggal PO"
                       />
                     </div>
                   </SoField>
                 </div>
 
-                <div className="so-sum-chip is-editing">
+                <div className="so-sum-chip is-editing so-sum-chip-date">
                   <SoField field="estimated_delivery" label="Rencana kirim" className="so-sum-field">
                     <div className="so-sum-editor">
-                      <input
-                        id="so-estimated_delivery"
-                        type="date"
-                        className="so-line-input"
-                        value={formData.estimated_delivery}
-                        onChange={(e) => setFormData((p) => ({ ...p, estimated_delivery: e.target.value }))}
-                        data-testid="input-estimated-delivery"
+                      <SalesInvoiceDateField
+                        valueIso={formData.estimated_delivery}
+                        onChange={(iso) => setFormData((p) => ({ ...p, estimated_delivery: iso }))}
+                        testId="input-estimated-delivery"
+                        calendarLabel="Kalender rencana kirim"
                       />
                     </div>
                   </SoField>
