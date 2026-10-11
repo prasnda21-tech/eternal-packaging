@@ -238,9 +238,14 @@ cat >"$MOCK/trigger-runs-after.json" <<'EOF'
  {"id":9,"html_url":"https://example.test/runs/9","created_at":"2030-01-01T00:00:00Z","display_title":"Deploy production req-ok"}
 ]}
 EOF
-ok_disp="$(ETERNAL_GH_API_MOCK_DIR="$MOCK" ETERNAL_DEPLOY_SHARED_SECRET='test-secret' \
+ok_disp="$(ETERNAL_GH_API_MOCK_DIR="$MOCK" ETERNAL_TRIGGER_DISPATCH_LOG="$HARNESS/dispatch.log" \
+  ETERNAL_DEPLOY_SHARED_SECRET='test-secret-VALUE-NEVER-LOG' \
   "$TRIGGER" execute deploy --sha "$MAIN_SHA" --confirm-sha "$MAIN_SHA" --execute --request-id req-ok 2>"$HARNESS/okdisp.err")"
 assert_true "dispatch OK returns run URL" grep -q 'run_url=https://example.test/runs/9' <<<"$ok_disp"
+assert_true "dispatch uses stdin-json (no secret argv)" grep -q 'secret_in_argv=no' "$HARNESS/dispatch.log"
+assert_false "dispatch log never contains shared secret" grep -q 'test-secret-VALUE-NEVER-LOG' "$HARNESS/dispatch.log"
+assert_false "dispatch stdout/err never contains shared secret" \
+  grep -q 'test-secret-VALUE-NEVER-LOG' <<<"$ok_disp$(cat "$HARNESS/okdisp.err" 2>/dev/null || true)"
 
 # ========== probe helper literal only + cleanup ==========
 export ETERNAL_SSH_BIN="$BIN/ssh"
@@ -263,6 +268,8 @@ assert_false "ssh log never contains deploy remote command" grep -qE ' deploy($|
 # Gate itself
 assert_true "gate probe canonical" bash -c 'SSH_ORIGINAL_COMMAND=probe "'"$GATE"'" | grep -q ETERNAL_GATE_OK'
 assert_false "gate rejects deploy metachar" run_gate 'deploy $(id)'
+assert_false "gate rejects unknown deploy option" run_gate "deploy $MAIN_SHA evil-opt"
+# ack-fe-replace is allowlisted; gate must set env for runner (smoke via export check in runner tests)
 
 # ========== runtime not ready blocks before activation ==========
 rm -f "$CURRENT"
@@ -277,9 +284,20 @@ printf 'y\n' >"$BASELINE/frontend-snapshot/index.html"
 : >"$BASELINE/.baseline-verified"
 printf 'kind=verified-baseline\n' >"$BASELINE/.deploy-ok"
 assert_false "baseline-verified without integrity manifest refused" "$RUNNER" deploy "$MAIN_SHA"
+# FE snapshot without index.html refused at integrity write/verify
+rm -rf "$BASELINE"
+mkdir -p "$BASELINE/tree/backend" "$BASELINE/frontend-snapshot/static"
+printf 'x\n' >"$BASELINE/tree/backend/app.py"
+printf 'asset\n' >"$BASELINE/frontend-snapshot/static/a.js"
+: >"$BASELINE/.baseline"
+printf 'kind=verified-baseline\nsha=baseline-active\nimmutable=1\n' >"$BASELINE/.deploy-ok"
+assert_false "baseline FE without index.html refused" \
+  bash -c 'source "'"$ROOT"'/scripts/deploy/lib.sh"; eternal_baseline_write_integrity "'"$BASELINE"'" "'"$LEGACY"'" "'"$EXPECTED_WD"'" "'"$EXPECTED_WD"'/.venv/bin/uvicorn"'
 # tampered baseline content after integrity write
 rm -rf "$BASELINE"
 make_verified_baseline
+assert_true "baseline verified records frontend_src" grep -q '^frontend_src=' "$BASELINE/.baseline-verified"
+assert_true "baseline integrity hashes FE files" grep -q ' frontend-snapshot/' "$BASELINE/.baseline-integrity"
 printf 'tampered\n' >>"$BASELINE/tree/backend/app.py"
 assert_false "tampered baseline digests refused" "$RUNNER" deploy "$MAIN_SHA"
 # wrong systemd WD (retarget not done yet) — baseline ready but service not retargeted
@@ -289,10 +307,24 @@ export ETERNAL_EXPECTED_WD="/opt/eternal-packaging-current/backend"
 assert_false "systemd WD mismatch blocks preflight before activation" "$RUNNER" deploy "$MAIN_SHA"
 export ETERNAL_EXPECTED_WD="$EXPECTED_WD"
 
-# ========== first deploy with verified baseline ==========
+# ========== first cutover requires FE replace ack ==========
+rm -rf "$BASELINE" "$RELEASES/$MAIN_SHA"
+make_verified_baseline
+set +e
+"$RUNNER" deploy "$MAIN_SHA" >"$HARNESS/noack.txt" 2>"$HARNESS/noack.err"
+noack=$?
+set -e
+assert_eq "first cutover without ack-fe-replace refused" "1" "$noack"
+assert_true "refuse message mentions live frontend replace" \
+  grep -qi 'live frontend replace' "$HARNESS/noack.err"
+assert_false "refuse before materialize leaves no incomplete release" \
+  test -d "$RELEASES/$MAIN_SHA"
+
+# ========== first deploy with verified baseline + ack ==========
+rm -rf "$BASELINE" "$RELEASES/$MAIN_SHA"
 make_verified_baseline
 : >"$ETERNAL_SYSTEMCTL_LOG"
-if "$RUNNER" deploy "$MAIN_SHA" >"$HARNESS/ok.txt" 2>"$HARNESS/ok.err"; then
+if ETERNAL_ACK_REPLACE_LIVE_FRONTEND=1 "$RUNNER" deploy "$MAIN_SHA" >"$HARNESS/ok.txt" 2>"$HARNESS/ok.err"; then
   log "PASS: valid sha deploy exit 0"; PASS=$((PASS+1))
 else
   log "FAIL: valid sha deploy"; cat "$HARNESS/ok.err" >>"$REPORT"; FAIL=$((FAIL+1))
@@ -301,6 +333,7 @@ assert_true "DEPLOY_OK printed" grep -q "DEPLOY_OK sha=$MAIN_SHA" "$HARNESS/ok.t
 assert_true "legacy overlay untouched" grep -q dirty "$LEGACY/DO_NOT_TOUCH"
 assert_true "old hashed asset retained after publish" test -f "$FRONTEND/live/static/js/old.js"
 assert_true "new index published" grep -q dry-build "$FRONTEND/live/index.html"
+assert_true "ack logged on first cutover" grep -q 'ACK live frontend replace' "$HARNESS/ok.err"
 
 # ========== health degraded rejected ==========
 export ETERNAL_HEALTH_PARTIAL=1
@@ -391,14 +424,21 @@ assert_true "probe workflow only references ssh_gate_probe helper" grep -q 'ssh_
 assert_true "probe run step calls ssh_gate_probe.sh" \
   grep -A2 'Probe forced-command gate' "$PWF" | grep -q 'ssh_gate_probe.sh'
 assert_true "docs mention required reviewers" grep -q 'Required reviewers' "$ROOT/docs/deploy-production-setup.md"
-assert_true "docs say technical secret does not replace reviewers" \
-  grep -qiE 'does \*\*not\*\* replace|NOT replace' "$ROOT/docs/deploy-production-setup.md"
+assert_true "docs enforce DEPLOY_ALLOWED_ACTORS" grep -q 'DEPLOY_ALLOWED_ACTORS' "$ROOT/docs/deploy-production-setup.md"
+assert_true "docs say shared secret is not human approval" \
+  grep -qiE 'Not\*\* human approval|secondary only|secret alone' "$ROOT/docs/deploy-production-setup.md"
 assert_true "docs order baseline before retarget" \
   grep -q 'baseline + runtime dirs before service retarget' "$ROOT/docs/deploy-production-setup.md"
 assert_true "docs mention Cursor token store" grep -q 'ETERNAL_GH_TOKEN' "$ROOT/docs/deploy-production-setup.md"
+assert_true "docs mention ack-replace-live-frontend" grep -q 'ack-replace-live-frontend' "$ROOT/docs/deploy-production-setup.md"
+assert_true "docs warn pure SHA does not preserve overlay FE" \
+  grep -qi 'does \*\*not\*\* automatically preserve selective-merge' "$ROOT/docs/deploy-production-setup.md"
 assert_true "prepare-verified-baseline exists" test -x "$PREPARE_BASELINE"
-assert_true "deploy workflow notes technical gate != human approval" \
-  grep -q 'does NOT replace Environment Required reviewers' "$WF"
+assert_true "deploy workflow enforces actor allowlist" grep -q 'DEPLOY_ALLOWED_ACTORS' "$WF"
+assert_true "deploy workflow has ack_replace_live_frontend input" grep -q 'ack_replace_live_frontend' "$WF"
+assert_true "deploy workflow notes secret alone cannot authorize" \
+  grep -q 'Secret alone cannot authorize' "$WF"
+assert_true "deploy workflow can send ack-fe-replace remote token" grep -q 'ack-fe-replace' "$WF"
 assert_true "probe workflow asserts PROBE_NO_DEPLOY" grep -q 'PROBE_NO_DEPLOY=1' "$PWF"
 
 # syntax checks (no new deps)

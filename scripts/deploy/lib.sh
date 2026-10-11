@@ -255,20 +255,26 @@ eternal_baseline_write_integrity() {
   local exe="${4:-}"
   [[ -d "$baseline_dir/tree/backend" ]] || eternal_deploy_die "baseline integrity: frozen backend missing"
   [[ -d "$baseline_dir/frontend-snapshot" ]] || eternal_deploy_die "baseline integrity: frontend snapshot missing"
+  [[ -f "$baseline_dir/frontend-snapshot/index.html" ]] \
+    || eternal_deploy_die "baseline integrity: frontend-snapshot/index.html missing (capture live webroot after selective-merge publish)"
   if [[ -L "$baseline_dir/tree/backend" ]]; then
     eternal_deploy_die "baseline integrity: tree/backend must be a real directory, not a symlink"
   fi
 
   local manifest="$baseline_dir/.baseline-integrity"
+  local frontend_src="${ETERNAL_FRONTEND_ROOT:-/var/www/eternal-packaging}"
   (
     cd "$baseline_dir"
-    # Stable, bounded file set for provenance (not a full recursive tree walk of huge trees).
+    # Stable, bounded file set for provenance (backend freeze + live FE snapshot).
     find tree/backend frontend-snapshot -type f 2>/dev/null \
       | LC_ALL=C sort \
       | head -n 5000 \
       | xargs -r sha256sum
   ) >"$manifest"
   [[ -s "$manifest" ]] || eternal_deploy_die "baseline integrity: empty manifest"
+  local fe_count
+  fe_count="$(grep -c ' frontend-snapshot/' "$manifest" || true)"
+  [[ "${fe_count:-0}" -ge 1 ]] || eternal_deploy_die "baseline integrity: no frontend-snapshot files hashed"
 
   local manifest_hash
   manifest_hash="$(sha256sum "$manifest" | awk '{print $1}')"
@@ -277,13 +283,15 @@ eternal_baseline_write_integrity() {
     printf 'kind=verified-baseline\n'
     printf 'immutable=1\n'
     printf 'backend_src=%s\n' "$backend_src"
+    printf 'frontend_src=%s\n' "$frontend_src"
     printf 'systemd_wd_at_capture=%s\n' "$wd"
     printf 'systemd_exec_at_capture=%s\n' "$exe"
     printf 'integrity_manifest=.baseline-integrity\n'
     printf 'integrity_sha256=%s\n' "$manifest_hash"
     printf 'file_count=%s\n' "$(wc -l <"$manifest" | tr -d ' ')"
+    printf 'frontend_file_count=%s\n' "$fe_count"
     printf 'captured_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    printf 'note=Baseline must exist before systemd retarget/activation\n'
+    printf 'note=Capture live FE (incl. selective-merge) before retarget; baseline before activation\n'
   } >"$baseline_dir/.baseline-verified"
 }
 
@@ -294,11 +302,13 @@ eternal_baseline_verify_integrity() {
   [[ -f "$baseline_dir/.baseline-integrity" ]] || eternal_deploy_die "baseline missing .baseline-integrity provenance manifest"
   [[ -d "$baseline_dir/tree/backend" ]] || eternal_deploy_die "baseline missing frozen backend tree"
   [[ -d "$baseline_dir/frontend-snapshot" ]] || eternal_deploy_die "baseline missing frontend snapshot"
+  [[ -f "$baseline_dir/frontend-snapshot/index.html" ]] \
+    || eternal_deploy_die "baseline frontend-snapshot/index.html missing"
   if [[ -L "$baseline_dir/tree/backend" ]]; then
     eternal_deploy_die "baseline tree/backend is a symlink to mutable source; refuse"
   fi
 
-  local expected_hash actual_hash kind immutable
+  local expected_hash actual_hash kind immutable frontend_src
   expected_hash="$(sed -n 's/^integrity_sha256=//p' "$baseline_dir/.baseline-verified" | head -n1)"
   [[ -n "$expected_hash" ]] || eternal_deploy_die "baseline-verified missing integrity_sha256"
   actual_hash="$(sha256sum "$baseline_dir/.baseline-integrity" | awk '{print $1}')"
@@ -306,12 +316,17 @@ eternal_baseline_verify_integrity() {
 
   kind="$(sed -n 's/^kind=//p' "$baseline_dir/.baseline-verified" | head -n1)"
   immutable="$(sed -n 's/^immutable=//p' "$baseline_dir/.baseline-verified" | head -n1)"
+  frontend_src="$(sed -n 's/^frontend_src=//p' "$baseline_dir/.baseline-verified" | head -n1)"
   [[ "$kind" == "verified-baseline" ]] || eternal_deploy_die "baseline-verified kind invalid"
   [[ "$immutable" == "1" ]] || eternal_deploy_die "baseline-verified not marked immutable"
+  [[ -n "$frontend_src" ]] || eternal_deploy_die "baseline-verified missing frontend_src provenance"
 
   # Verify file digests (fail if any listed file changed/missing).
   if ! (cd "$baseline_dir" && sha256sum -c .baseline-integrity >/dev/null 2>&1); then
     eternal_deploy_die "baseline content digest mismatch (frozen tree altered)"
   fi
-  eternal_deploy_log "baseline integrity OK files=$(wc -l <"$baseline_dir/.baseline-integrity" | tr -d ' ')"
+  if ! grep -q ' frontend-snapshot/' "$baseline_dir/.baseline-integrity"; then
+    eternal_deploy_die "baseline integrity manifest lacks frontend-snapshot entries"
+  fi
+  eternal_deploy_log "baseline integrity OK files=$(wc -l <"$baseline_dir/.baseline-integrity" | tr -d ' ') frontend_src=$frontend_src"
 }

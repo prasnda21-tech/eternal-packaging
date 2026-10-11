@@ -8,6 +8,7 @@
 # Accepts ONLY:
 #   probe
 #   deploy <40-char-lowercase-sha>
+#   deploy <40-char-lowercase-sha> ack-fe-replace
 #
 # Rejects arbitrary shell, paths, scp/sftp, and any other command.
 # Does not read or print private keys. Does not invoke sudo.
@@ -41,7 +42,8 @@ esac
 set -- $cmd
 verb="${1:-}"
 arg="${2:-}"
-extra="${3:-}"
+opt="${3:-}"
+extra="${4:-}"
 
 if [[ -n "$extra" ]]; then
   eternal_deploy_die "too many arguments"
@@ -49,7 +51,7 @@ fi
 
 case "$verb" in
   probe)
-    if [[ -n "$arg" ]]; then
+    if [[ -n "$arg" || -n "$opt" ]]; then
       eternal_deploy_die "probe takes no arguments"
     fi
     eternal_print_probe_ok
@@ -57,12 +59,18 @@ case "$verb" in
     ;;
   deploy)
     eternal_require_sha40 "$arg"
+    if [[ -n "$opt" && "$opt" != "ack-fe-replace" ]]; then
+      eternal_deploy_die "unsupported deploy option (allowed optional: ack-fe-replace)"
+    fi
+    if [[ "$opt" == "ack-fe-replace" ]]; then
+      export ETERNAL_ACK_REPLACE_LIVE_FRONTEND=1
+    fi
     if [[ ! -x "$RUNNER" ]]; then
       eternal_deploy_die "deploy runner missing or not executable: $RUNNER"
     fi
     exec "$RUNNER" deploy "$arg"
     ;;
   *)
-    eternal_deploy_die "unsupported command (allowed: probe | deploy <sha40>)"
+    eternal_deploy_die "unsupported command (allowed: probe | deploy <sha40> [ack-fe-replace])"
     ;;
 esac

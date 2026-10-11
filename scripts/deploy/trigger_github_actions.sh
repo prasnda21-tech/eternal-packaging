@@ -14,7 +14,7 @@
 #   ETERNAL_GH_REPO                 default prasnda21-tech/eternal-packaging
 #   ETERNAL_GH_API_MOCK_DIR         synthetic mocks (no network)
 #   ETERNAL_TRIGGER_DISPATCH_LOG    records mock POSTs for tests
-#   ETERNAL_DEPLOY_SHARED_SECRET    execute+deploy only (never printed)
+#   ETERNAL_DEPLOY_SHARED_SECRET    execute+deploy only (env → JSON body; never argv/logs)
 #   GH_TOKEN / ETERNAL_GH_TOKEN     write-capable token from env secret store
 
 set -euo pipefail
@@ -31,6 +31,7 @@ CONFIRM_SHA=""
 REQUEST_ID=""
 DO_EXECUTE=0
 ALLOW_MIGRATIONS=0
+ACK_REPLACE_LIVE_FRONTEND=0
 
 if [[ $# -lt 2 ]]; then
   eternal_deploy_die "usage: $0 plan|execute probe|deploy [options]"
@@ -46,11 +47,13 @@ while [[ $# -gt 0 ]]; do
     --request-id) REQUEST_ID="${2:-}"; shift 2 ;;
     --execute) DO_EXECUTE=1; shift ;;
     --allow-migrations) ALLOW_MIGRATIONS=1; shift ;;
+    --ack-replace-live-frontend) ACK_REPLACE_LIVE_FRONTEND=1; shift ;;
     -h|--help)
       cat <<'EOF'
 Modes: plan (default, no POST) | execute (requires --execute)
 Actions: probe | deploy
 Deploy requires --sha and --confirm-sha (identical 40-char hex). Never auto-picks main tip.
+Optional: --ack-replace-live-frontend (first cutover when pure SHA replaces live selective-merge FE).
 EOF
       exit 0
       ;;
@@ -82,7 +85,12 @@ eternal_gh_api() {
   if [[ -n "${ETERNAL_GH_API_MOCK_DIR:-}" ]]; then
     case "$path" in
       */actions/workflows/*/dispatches)
-        printf '%s\n' "POST $path" >>"${ETERNAL_TRIGGER_DISPATCH_LOG:-/dev/null}"
+        # Log POST metadata only — never echo secret-bearing JSON/argv fields.
+        printf 'POST %s' "$path" >>"${ETERNAL_TRIGGER_DISPATCH_LOG:-/dev/null}"
+        if [[ "$*" == *secret_in_argv=no* ]]; then
+          printf ' input=stdin-json secret_in_argv=no' >>"${ETERNAL_TRIGGER_DISPATCH_LOG:-/dev/null}"
+        fi
+        printf '\n' >>"${ETERNAL_TRIGGER_DISPATCH_LOG:-/dev/null}"
         if [[ -f "${ETERNAL_GH_API_MOCK_DIR}/dispatch-status" ]]; then
           local st
           st="$(cat "${ETERNAL_GH_API_MOCK_DIR}/dispatch-status")"
@@ -185,10 +193,46 @@ plan_summary() {
     printf 'TARGET_SHA=%s\n' "$SHA"
     printf 'CONFIRM_SHA=%s\n' "$CONFIRM_SHA"
     printf 'ALLOW_MIGRATIONS=%s\n' "$ALLOW_MIGRATIONS"
+    printf 'ACK_REPLACE_LIVE_FRONTEND=%s\n' "$ACK_REPLACE_LIVE_FRONTEND"
   fi
   printf 'REQUEST_ID=%s\n' "${REQUEST_ID:-}"
   printf 'POST=no\n'
   printf 'PLAN_OK note=no workflow_dispatch performed\n'
+}
+
+# Build workflow_dispatch JSON on stdout. Shared secret comes from env only
+# (never argv of jq/gh) so process listings and helper logs cannot leak it.
+eternal_build_dispatch_payload() {
+  local shared="${ETERNAL_DEPLOY_SHARED_SECRET:-}"
+  if [[ "$ACTION" == "deploy" ]]; then
+    [[ -n "$shared" ]] || eternal_deploy_die "ETERNAL_DEPLOY_SHARED_SECRET unset for execute deploy (use env secret store)"
+  fi
+  # shellcheck disable=SC2016
+  ETERNAL_DEPLOY_SHARED_SECRET="$shared" jq -n \
+    --arg ref "main" \
+    --arg action "$ACTION" \
+    --arg sha "$SHA" \
+    --arg confirm "$CONFIRM_SHA" \
+    --arg rid "$REQUEST_ID" \
+    --argjson allow_mig "$ALLOW_MIGRATIONS" \
+    --argjson ack_fe "$ACK_REPLACE_LIVE_FRONTEND" \
+    '
+    {
+      ref: $ref,
+      inputs: (
+        {}
+        + (if ($rid | length) > 0 then {request_id: $rid} else {} end)
+        + (if $action == "deploy" then
+            {
+              commit_sha: $sha,
+              confirm_sha: $confirm,
+              deploy_shared_secret: env.ETERNAL_DEPLOY_SHARED_SECRET
+            }
+            + (if $allow_mig == 1 then {allow_migrations: "true"} else {} end)
+            + (if $ack_fe == 1 then {ack_replace_live_frontend: "true"} else {} end)
+          else {} end)
+      )
+    }'
 }
 
 do_dispatch() {
@@ -202,23 +246,23 @@ do_dispatch() {
     eternal_deploy_die "existing ambiguous runs; resolve before dispatch"
   fi
 
-  local args=(-f "ref=main")
-  if [[ -n "$REQUEST_ID" ]]; then
-    args+=(-f "inputs[request_id]=${REQUEST_ID}")
-  fi
-  if [[ "$ACTION" == "deploy" ]]; then
-    args+=(-f "inputs[commit_sha]=${SHA}" -f "inputs[confirm_sha]=${CONFIRM_SHA}")
-    local shared="${ETERNAL_DEPLOY_SHARED_SECRET:-}"
-    [[ -n "$shared" ]] || eternal_deploy_die "ETERNAL_DEPLOY_SHARED_SECRET unset for execute deploy (use env secret store)"
-    args+=(-f "inputs[deploy_shared_secret]=${shared}")
-    if [[ "$ALLOW_MIGRATIONS" == "1" ]]; then
-      args+=(-f "inputs[allow_migrations]=true")
-    fi
-  fi
+  local payload ec
+  payload="$(eternal_build_dispatch_payload)"
+  # Never log payload (contains shared secret for deploy).
 
   set +e
-  eternal_gh_api POST "repos/${REPO}/actions/workflows/${WORKFLOW_FILE}/dispatches" "${args[@]}"
-  local ec=$?
+  if [[ -n "${ETERNAL_GH_API_MOCK_DIR:-}" ]]; then
+    # Mock path: status gate only; secret stays in payload var (not argv).
+    eternal_gh_api POST "repos/${REPO}/actions/workflows/${WORKFLOW_FILE}/dispatches" \
+      input=stdin-json secret_in_argv=no
+    ec=$?
+  else
+    # Live: pipe JSON body via --input - so gh argv has no secret fields.
+    printf '%s' "$payload" | gh api --method POST \
+      "repos/${REPO}/actions/workflows/${WORKFLOW_FILE}/dispatches" \
+      --input -
+    ec=$?
+  fi
   set -e
   if [[ "$ec" -ne 0 ]]; then
     eternal_deploy_log "dispatch denied or failed (exit=$ec); no deploy/probe fallback"

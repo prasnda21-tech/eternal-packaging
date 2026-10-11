@@ -155,7 +155,14 @@ eternal_verify_runtime_points_at_release() {
     eternal_deploy_log "proc cwd check skipped (test harness)"
     return 0
   fi
+  if [[ "$BACKEND_RESTART_ATTEMPTED" == "1" || "$BACKEND_RESTARTED" == "1" ]]; then
+    active="$(eternal_systemctl is-active "$ETERNAL_SERVICE_NAME" 2>/dev/null || true)"
+    [[ "$active" == "active" ]] || eternal_deploy_die "backend service not active after restart attempt (got=${active:-empty})"
+  fi
   pid="$(eternal_systemctl show -p MainPID --value "$ETERNAL_SERVICE_NAME" 2>/dev/null || true)"
+  if [[ "$BACKEND_RESTART_ATTEMPTED" == "1" || "$BACKEND_RESTARTED" == "1" ]]; then
+    [[ -n "$pid" && "$pid" != "0" ]] || eternal_deploy_die "backend MainPID missing after restart; refusing to trust stale health"
+  fi
   if [[ -n "$pid" && "$pid" != "0" && -d "/proc/$pid/cwd" ]]; then
     cwd="$(readlink -f "/proc/$pid/cwd" 2>/dev/null || true)"
     if [[ -n "$cwd" && -n "$release_backend" && "$cwd" != "$release_backend" ]]; then
@@ -485,6 +492,24 @@ cmd_deploy() {
     fi
   elif [[ "$ETERNAL_ALLOW_MIGRATIONS" == "1" ]]; then
     eternal_deploy_log "ALLOW_MIGRATIONS=1 (explicit operator override)"
+  fi
+
+  # Pure SHA publish on first cutover replaces live webroot (e.g. selective-merge FE).
+  # Gate BEFORE materialize so refuse leaves no incomplete release dir.
+  # First cutover always classifies FE=1 (see below); do not assume overlay FE is preserved.
+  if [[ "$prev_sha" == "baseline-active" ]]; then
+    if [[ "${ETERNAL_ACK_REPLACE_LIVE_FRONTEND:-0}" != "1" ]]; then
+      cat >&2 <<EOF
+[eternal-deploy] ERROR: first-cutover frontend publish blocked.
+Pure SHA deploy will replace live webroot ($ETERNAL_FRONTEND_ROOT), including any
+selective-merge frontend that is not present in the SHA artifact.
+Baseline rollback can restore the snapshot only if prepare-verified-baseline
+captured that live FE. Refusing automatic overlay preservation assumptions.
+Set ETERNAL_ACK_REPLACE_LIVE_FRONTEND=1 (or SSH: deploy <sha> ack-fe-replace) after Owner ack.
+EOF
+      eternal_deploy_die "live frontend replace requires explicit ack"
+    fi
+    eternal_deploy_log "ACK live frontend replace on first cutover acknowledged"
   fi
 
   eternal_backup_pointer "$sha"

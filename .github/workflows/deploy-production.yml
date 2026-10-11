@@ -31,6 +31,11 @@ on:
         required: false
         type: boolean
         default: false
+      ack_replace_live_frontend:
+        description: Required true on first cutover when deploy will replace live webroot (e.g. selective-merge FE) with pure SHA build. Pure SHA does NOT preserve overlay FE automatically.
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -102,14 +107,35 @@ jobs:
           bash scripts/deploy/verify_ci_for_sha.sh "$REPO" "$SHA"
 
   authorize:
-    name: Environment gate (platform approval + technical secret)
+    name: Environment gate (actor allowlist + technical secret)
     needs: preflight
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: production
     steps:
-      - name: Technical shared-secret gate (not human approval)
+      - name: Enforce Owner actor allowlist (not bypassable by shared secret alone)
+        env:
+          ALLOWED: ${{ vars.DEPLOY_ALLOWED_ACTORS }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          # Fail-closed: technical secret must not be the only gate.
+          # Preferred human gate = Environment Required reviewers (if/when available).
+          # Enforced substitute for this private repo = repository variable DEPLOY_ALLOWED_ACTORS
+          # (comma-separated GitHub logins). Secret alone cannot authorize deploy.
+          if [[ -z "${ALLOWED//[[:space:]]/}" ]]; then
+            echo "DEPLOY_ALLOWED_ACTORS unset. Owner must set repo variable to allowed dispatch logins (and prefer Environment Required reviewers if the platform supports them). Refusing secret-only authorization." >&2
+            exit 1
+          fi
+          norm=",$(printf '%s' "$ALLOWED" | tr -d '[:space:]'),"
+          if [[ "$norm" != *",${ACTOR},"* ]]; then
+            echo "actor=${ACTOR} is not in DEPLOY_ALLOWED_ACTORS; deploy authorization refused" >&2
+            exit 1
+          fi
+          echo "ACTOR_ALLOWLIST_OK actor=${ACTOR}"
+
+      - name: Technical shared-secret gate (secondary; not human approval)
         env:
           GOT: ${{ inputs.deploy_shared_secret }}
           EXPECT: ${{ secrets.DEPLOY_SHARED_SECRET }}
@@ -137,8 +163,7 @@ jobs:
             exit 1
           fi
           echo "TECHNICAL_GATE_OK"
-          echo "OWNER_APPROVAL_NOTE=deploy_shared_secret is a technical gate only; it does NOT replace Environment Required reviewers / Owner human approval."
-          echo "SETUP_BLOCKER_IF_NO_REVIEWERS=If Required reviewers are not configured on Environment production, treat human approval as BLOCKED before relying on this workflow for production."
+          echo "OWNER_APPROVAL_NOTE=Shared secret is secondary only. Human control = DEPLOY_ALLOWED_ACTORS (+ Required reviewers when available). Secret alone cannot authorize."
 
   deploy:
     name: Deploy via SSH (environment secrets)
@@ -201,6 +226,7 @@ jobs:
           DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
           SHA: ${{ needs.preflight.outputs.sha }}
           ALLOW_MIGRATIONS: ${{ inputs.allow_migrations }}
+          ACK_REPLACE_LIVE_FRONTEND: ${{ inputs.ack_replace_live_frontend }}
           REQUEST_ID: ${{ needs.preflight.outputs.request_id }}
         run: |
           set -euo pipefail
@@ -216,7 +242,12 @@ jobs:
           if [[ "$ALLOW_MIGRATIONS" == "true" ]]; then
             echo "NOTE: allow_migrations=true requested; VPS must have ETERNAL_ALLOW_MIGRATIONS=1 (Owner-controlled)."
           fi
-          echo "DEPLOY request_id=${REQUEST_ID:-none} sha=${SHA}"
+          remote_cmd="deploy ${SHA}"
+          if [[ "$ACK_REPLACE_LIVE_FRONTEND" == "true" ]]; then
+            # Allowlisted optional token only — never arbitrary shell.
+            remote_cmd="deploy ${SHA} ack-fe-replace"
+          fi
+          echo "DEPLOY request_id=${REQUEST_ID:-none} sha=${SHA} ack_fe=${ACK_REPLACE_LIVE_FRONTEND}"
 
           # Literal allowlisted remote command only — never a shell.
           ssh -i "$key_file" \
@@ -227,4 +258,4 @@ jobs:
             -o UserKnownHostsFile="$known_hosts" \
             -o ConnectTimeout=30 \
             "${DEPLOY_USER}@${DEPLOY_HOST}" \
-            "deploy ${SHA}"
+            "$remote_cmd"
