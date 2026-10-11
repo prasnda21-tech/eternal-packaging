@@ -1,8 +1,10 @@
 name: Deploy production
 
 # Manual immutable-SHA production deploy.
-# Separate authorization job (Environment + DEPLOY_APPROVAL_TOKEN) must pass
-# before the deploy job uses SSH secrets.
+# Platform approval: GitHub Environment `production` required reviewers (Owner setup).
+# Shared input `deploy_shared_secret` is NOT human approval and NOT a secret store;
+# it only matches Environment secret DEPLOY_SHARED_SECRET as a secondary technical gate.
+# SSH keys remain Environment secrets only (never in Cursor workspace).
 
 on:
   workflow_dispatch:
@@ -15,12 +17,22 @@ on:
         description: Must exactly equal commit_sha (operator confirmation)
         required: true
         type: string
-      approval_token:
-        description: Separate Owner approval token (must match Environment secret DEPLOY_APPROVAL_TOKEN)
+      deploy_shared_secret:
+        description: Technical shared secret (NOT human approval). Must match DEPLOY_SHARED_SECRET. Prefer Environment required reviewers for human approval.
         required: true
         type: string
+      request_id:
+        description: Correlation id from trigger helper (not a secret)
+        required: false
+        type: string
+        default: ""
       allow_migrations:
         description: Set true ONLY when Owner explicitly approved DB/business migrations in this SHA range
+        required: false
+        type: boolean
+        default: false
+      ack_replace_live_frontend:
+        description: Required true on first cutover when deploy will replace live webroot (e.g. selective-merge FE) with pure SHA build. Pure SHA does NOT preserve overlay FE automatically.
         required: false
         type: boolean
         default: false
@@ -42,12 +54,14 @@ jobs:
     timeout-minutes: 15
     outputs:
       sha: ${{ steps.normalize.outputs.sha }}
+      request_id: ${{ steps.normalize.outputs.request_id }}
     steps:
       - name: Normalize and confirm SHA
         id: normalize
         env:
           RAW_SHA: ${{ inputs.commit_sha }}
           CONFIRM_SHA: ${{ inputs.confirm_sha }}
+          REQUEST_ID: ${{ inputs.request_id }}
         run: |
           set -euo pipefail
           sha="$(printf '%s' "$RAW_SHA" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
@@ -61,6 +75,8 @@ jobs:
             exit 1
           fi
           echo "sha=$sha" >>"$GITHUB_OUTPUT"
+          echo "request_id=${REQUEST_ID}" >>"$GITHUB_OUTPUT"
+          echo "PREFLIGHT request_id=${REQUEST_ID:-none}"
 
       - name: Checkout main at requested SHA
         uses: actions/checkout@v4
@@ -91,35 +107,63 @@ jobs:
           bash scripts/deploy/verify_ci_for_sha.sh "$REPO" "$SHA"
 
   authorize:
-    name: Separate production authorization
+    name: Environment gate (actor allowlist + technical secret)
     needs: preflight
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: production
     steps:
-      - name: Verify DEPLOY_APPROVAL_TOKEN (separate from confirm_sha)
+      - name: Enforce Owner actor allowlist (not bypassable by shared secret alone)
         env:
-          GOT: ${{ inputs.approval_token }}
-          EXPECT: ${{ secrets.DEPLOY_APPROVAL_TOKEN }}
+          ALLOWED: ${{ vars.DEPLOY_ALLOWED_ACTORS }}
+          ACTOR: ${{ github.actor }}
         run: |
           set -euo pipefail
-          if [[ -z "${EXPECT}" ]]; then
-            echo "DEPLOY_APPROVAL_TOKEN secret missing on Environment production" >&2
+          # Fail-closed: technical secret must not be the only gate.
+          # Preferred human gate = Environment Required reviewers (if/when available).
+          # Enforced substitute for this private repo = repository variable DEPLOY_ALLOWED_ACTORS
+          # (comma-separated GitHub logins). Secret alone cannot authorize deploy.
+          if [[ -z "${ALLOWED//[[:space:]]/}" ]]; then
+            echo "DEPLOY_ALLOWED_ACTORS unset. Owner must set repo variable to allowed dispatch logins (and prefer Environment Required reviewers if the platform supports them). Refusing secret-only authorization." >&2
+            exit 1
+          fi
+          norm=",$(printf '%s' "$ALLOWED" | tr -d '[:space:]'),"
+          if [[ "$norm" != *",${ACTOR},"* ]]; then
+            echo "actor=${ACTOR} is not in DEPLOY_ALLOWED_ACTORS; deploy authorization refused" >&2
+            exit 1
+          fi
+          echo "ACTOR_ALLOWLIST_OK actor=${ACTOR}"
+
+      - name: Technical shared-secret gate (secondary; not human approval)
+        env:
+          GOT: ${{ inputs.deploy_shared_secret }}
+          EXPECT: ${{ secrets.DEPLOY_SHARED_SECRET }}
+          # Backward-compatible alias while Owner migrates secret name.
+          EXPECT_LEGACY: ${{ secrets.DEPLOY_APPROVAL_TOKEN }}
+        run: |
+          set -euo pipefail
+          expect="${EXPECT:-}"
+          if [[ -z "$expect" ]]; then
+            expect="${EXPECT_LEGACY:-}"
+          fi
+          if [[ -z "$expect" ]]; then
+            echo "DEPLOY_SHARED_SECRET (or legacy DEPLOY_APPROVAL_TOKEN) missing on Environment production" >&2
             exit 1
           fi
           if [[ -z "${GOT}" ]]; then
-            echo "approval_token input missing" >&2
+            echo "deploy_shared_secret input missing" >&2
             exit 1
           fi
           echo "::add-mask::${GOT}"
           got_h="$(printf '%s' "$GOT" | sha256sum | awk '{print $1}')"
-          exp_h="$(printf '%s' "$EXPECT" | sha256sum | awk '{print $1}')"
+          exp_h="$(printf '%s' "$expect" | sha256sum | awk '{print $1}')"
           if [[ "$got_h" != "$exp_h" ]]; then
-            echo "approval_token does not match DEPLOY_APPROVAL_TOKEN" >&2
+            echo "deploy_shared_secret does not match environment technical secret" >&2
             exit 1
           fi
-          echo "AUTHORIZATION_OK"
+          echo "TECHNICAL_GATE_OK"
+          echo "OWNER_APPROVAL_NOTE=Shared secret is secondary only. Human control = DEPLOY_ALLOWED_ACTORS (+ Required reviewers when available). Secret alone cannot authorize."
 
   deploy:
     name: Deploy via SSH (environment secrets)
@@ -162,7 +206,7 @@ jobs:
             echo "::add-mask::${line}"
           done <<<"${DEPLOY_KNOWN_HOSTS}"
 
-      - name: Probe SSH gate (accepted patterns)
+      - name: Probe SSH gate before deploy
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
@@ -171,29 +215,7 @@ jobs:
           DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
         run: |
           set -euo pipefail
-          # shellcheck source=scripts/deploy/lib.sh
-          source scripts/deploy/lib.sh
-          key_file="$(mktemp)"
-          known_hosts="$(mktemp)"
-          printf '%s\n' "$DEPLOY_SSH_KEY" >"$key_file"
-          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" >"$known_hosts"
-          chmod 600 "$key_file" "$known_hosts"
-          port="${DEPLOY_SSH_PORT:-22}"
-          cleanup() { rm -f "$key_file" "$known_hosts"; }
-          trap cleanup EXIT
-          out="$(ssh -i "$key_file" \
-            -p "$port" \
-            -o IdentitiesOnly=yes \
-            -o BatchMode=yes \
-            -o StrictHostKeyChecking=yes \
-            -o UserKnownHostsFile="$known_hosts" \
-            "${DEPLOY_USER}@${DEPLOY_HOST}" \
-            probe)"
-          printf '%s\n' "$out"
-          if ! eternal_probe_output_accepted "$out"; then
-            echo "probe output not accepted; run scripts/deploy/install-gate.sh --activate on VPS first" >&2
-            exit 1
-          fi
+          bash scripts/deploy/ssh_gate_probe.sh
 
       - name: Deploy immutable SHA
         env:
@@ -204,6 +226,8 @@ jobs:
           DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
           SHA: ${{ needs.preflight.outputs.sha }}
           ALLOW_MIGRATIONS: ${{ inputs.allow_migrations }}
+          ACK_REPLACE_LIVE_FRONTEND: ${{ inputs.ack_replace_live_frontend }}
+          REQUEST_ID: ${{ needs.preflight.outputs.request_id }}
         run: |
           set -euo pipefail
           key_file="$(mktemp)"
@@ -218,12 +242,20 @@ jobs:
           if [[ "$ALLOW_MIGRATIONS" == "true" ]]; then
             echo "NOTE: allow_migrations=true requested; VPS must have ETERNAL_ALLOW_MIGRATIONS=1 (Owner-controlled)."
           fi
+          remote_cmd="deploy ${SHA}"
+          if [[ "$ACK_REPLACE_LIVE_FRONTEND" == "true" ]]; then
+            # Allowlisted optional token only — never arbitrary shell.
+            remote_cmd="deploy ${SHA} ack-fe-replace"
+          fi
+          echo "DEPLOY request_id=${REQUEST_ID:-none} sha=${SHA} ack_fe=${ACK_REPLACE_LIVE_FRONTEND}"
 
+          # Literal allowlisted remote command only — never a shell.
           ssh -i "$key_file" \
             -p "$port" \
             -o IdentitiesOnly=yes \
             -o BatchMode=yes \
             -o StrictHostKeyChecking=yes \
             -o UserKnownHostsFile="$known_hosts" \
+            -o ConnectTimeout=30 \
             "${DEPLOY_USER}@${DEPLOY_HOST}" \
-            "deploy ${SHA}"
+            "$remote_cmd"

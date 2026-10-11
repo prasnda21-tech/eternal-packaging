@@ -1,0 +1,85 @@
+name: Deploy probe (SSH gate only)
+
+# Manual connectivity probe for the production SSH forced-command gate.
+# Does NOT deploy, build, restart, migrate, or publish.
+# Probe PASS ≠ runtime release readiness.
+
+on:
+  workflow_dispatch:
+    inputs:
+      request_id:
+        description: Optional correlation id for trigger helper (not a secret)
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: eternal-packaging-production-probe
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    name: SSH gate probe only
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    steps:
+      - name: Checkout probe helpers
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          sparse-checkout: |
+            scripts/deploy
+          sparse-checkout-cone-mode: true
+
+      - name: Mask SSH-related secrets
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_SSH_PORT: ${{ secrets.DEPLOY_SSH_PORT }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          [[ -n "${DEPLOY_HOST}" ]] || { echo "DEPLOY_HOST missing" >&2; exit 1; }
+          [[ -n "${DEPLOY_USER}" ]] || { echo "DEPLOY_USER missing" >&2; exit 1; }
+          [[ -n "${DEPLOY_SSH_KEY}" ]] || { echo "DEPLOY_SSH_KEY missing" >&2; exit 1; }
+          [[ -n "${DEPLOY_KNOWN_HOSTS}" ]] || { echo "DEPLOY_KNOWN_HOSTS missing" >&2; exit 1; }
+          echo "::add-mask::${DEPLOY_HOST}"
+          echo "::add-mask::${DEPLOY_USER}"
+          while IFS= read -r line; do
+            [[ -n "$line" ]] || continue
+            echo "::add-mask::${line}"
+          done <<<"${DEPLOY_SSH_KEY}"
+          while IFS= read -r line; do
+            [[ -n "$line" ]] || continue
+            echo "::add-mask::${line}"
+          done <<<"${DEPLOY_KNOWN_HOSTS}"
+
+      - name: Probe forced-command gate (literal probe only)
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_SSH_PORT: ${{ secrets.DEPLOY_SSH_PORT }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          REQUEST_ID: ${{ inputs.request_id }}
+        run: |
+          set -euo pipefail
+          # Hard guard: probe helper must only send literal remote command "probe".
+          if grep -nE '[[:space:]]deploy[[:space:]]+[0-9a-f]{40}' scripts/deploy/ssh_gate_probe.sh >/dev/null 2>&1; then
+            echo "probe workflow guard failed: sha deploy command found in probe helper" >&2
+            exit 1
+          fi
+          # Detect deploy command override without embedding the forbidden literal in this workflow file.
+          if grep -nE 'SSH_ORIGINAL_COMMAND=deplo[y]' scripts/deploy/ssh_gate_probe.sh >/dev/null 2>&1; then
+            echo "probe workflow guard failed: deploy command override found in probe helper" >&2
+            exit 1
+          fi
+          bash scripts/deploy/ssh_gate_probe.sh
+          echo "PROBE_WORKFLOW_OK request_id=${REQUEST_ID:-none}"
+          echo "PROBE_NO_DEPLOY=1"
