@@ -274,14 +274,18 @@ MOCK="$HARNESS/gh-mock"
 mkdir -p "$MOCK"
 printf '{"login":"cursor[bot]"}\n' >"$MOCK/actor.json"
 printf '{"ancestor_ok":true}\n' >"$MOCK/ancestry.json"
-cat >"$MOCK/workflow-runs.json" <<'EOF'
-{"workflow_runs":[{"id":1,"status":"completed","conclusion":"success"}]}
+cat >"$MOCK/workflow.json" <<'EOF'
+{"id":100,"path":".github/workflows/reconciliation-validation.yml","state":"active"}
 EOF
-cat >"$MOCK/check-runs.json" <<'EOF'
-{"check_runs":[
+cat >"$MOCK/workflow-runs.json" <<EOF
+{"workflow_runs":[{"id":1,"workflow_id":100,"status":"completed","conclusion":"success","head_sha":"${MAIN_SHA}","path":".github/workflows/reconciliation-validation.yml","repository":{"full_name":"prasnda21-tech/eternal-packaging"}}]}
+EOF
+cat >"$MOCK/jobs-1.json" <<'EOF'
+{"jobs":[
  {"name":"Backend focused tests","status":"completed","conclusion":"success"},
  {"name":"Backend stock compatibility (replica set)","status":"completed","conclusion":"success"},
- {"name":"Frontend tests and build","status":"completed","conclusion":"success"}
+ {"name":"Frontend tests and build","status":"completed","conclusion":"success"},
+ {"name":"Backend live orders summary","status":"completed","conclusion":"skipped"}
 ]}
 EOF
 : >"$HARNESS/dispatch.log"
@@ -298,17 +302,17 @@ assert_false "trigger rejects unmerged via ancestry mock" \
   env ETERNAL_GH_API_MOCK_DIR="$MOCK" \
   bash -c 'jq -n "{ancestor_ok:false}" >"'"$MOCK"'/ancestry.json"; '"$TRIGGER"' plan deploy --sha '"$MAIN_SHA"' --confirm-sha '"$MAIN_SHA"''
 printf '{"ancestor_ok":true}\n' >"$MOCK/ancestry.json"
-cat >"$MOCK/check-runs.json" <<'EOF'
-{"check_runs":[{"name":"Backend focused tests","status":"completed","conclusion":"success"}]}
+cat >"$MOCK/jobs-1.json" <<'EOF'
+{"jobs":[{"name":"Backend focused tests","status":"completed","conclusion":"success"}]}
 EOF
-assert_false "trigger rejects missing required checks" \
+assert_false "trigger rejects missing required jobs" \
   env ETERNAL_GH_API_MOCK_DIR="$MOCK" "$TRIGGER" plan deploy --sha "$MAIN_SHA" --confirm-sha "$MAIN_SHA"
-# restore checks
-cat >"$MOCK/check-runs.json" <<'EOF'
-{"check_runs":[
+cat >"$MOCK/jobs-1.json" <<'EOF'
+{"jobs":[
  {"name":"Backend focused tests","status":"completed","conclusion":"success"},
  {"name":"Backend stock compatibility (replica set)","status":"completed","conclusion":"success"},
- {"name":"Frontend tests and build","status":"completed","conclusion":"success"}
+ {"name":"Frontend tests and build","status":"completed","conclusion":"success"},
+ {"name":"Backend live orders summary","status":"completed","conclusion":"skipped"}
 ]}
 EOF
 
