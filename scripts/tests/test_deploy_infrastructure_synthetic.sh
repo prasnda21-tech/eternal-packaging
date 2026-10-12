@@ -63,7 +63,7 @@ mkdir -p "$MIRROR_SRC/backend" "$MIRROR_SRC/frontend/src" "$MIRROR_SRC/scripts/d
 printf 'ok\n' >"$MIRROR_SRC/backend/requirements.txt"
 printf 'ok-portable\n' >"$MIRROR_SRC/backend/requirements.portable.txt"
 cat >"$MIRROR_SRC/frontend/package.json" <<'EOF'
-{"name":"frontend","private":true,"scripts":{"build":"mkdir -p build/static/js && echo asset>build/static/js/app.js && echo built>build/index.html"}}
+{"name":"frontend","private":true,"scripts":{"build":"mkdir -p build/static/js && echo asset>build/static/js/app.js && printf '%s\\n' '{\"files\":{\"main.js\":\"/static/js/app.js\"}}'>build/asset-manifest.json && printf '%s\\n' '<script src=\"/static/js/app.js\"></script>'>build/index.html"}}
 EOF
 printf 'yarn lockfile v1\n' >"$MIRROR_SRC/frontend/yarn.lock"
 printf 'app\n' >"$MIRROR_SRC/frontend/src/index.js"
@@ -1138,6 +1138,114 @@ assert_true "runner has no npm ci fallback" \
   bash -c '! grep -qE "npm ci|ETERNAL_NPM_BIN" "'"$ROOT"'/scripts/deploy/eternal-deploy-runner.sh"'
 assert_true "lib exposes eternal_frontend_production_build" \
   grep -q 'eternal_frontend_production_build' "$ROOT/scripts/deploy/lib.sh"
+
+# ========== FE publish: skip identical root-owned / collision fail-closed / path escape ==========
+source "$ROOT/scripts/deploy/lib.sh"
+PUB_ROOT="$HARNESS/publish-webroot"
+rm -rf "$PUB_ROOT"
+mkdir -p "$PUB_ROOT/static/js" "$HARNESS/publish-build/static/js"
+printf 'same-bytes\n' >"$PUB_ROOT/static/js/main.aaaa.js"
+chmod 444 "$PUB_ROOT/static/js/main.aaaa.js"
+# Simulate non-writable identical hashed asset (root-owned stand-in).
+printf 'same-bytes\n' >"$HARNESS/publish-build/static/js/main.aaaa.js"
+printf 'brand-new\n' >"$HARNESS/publish-build/static/js/main.bbbb.js"
+printf '{"files":{"main.js":"/static/js/main.bbbb.js"}}\n' >"$HARNESS/publish-build/asset-manifest.json"
+printf '<script src="/static/js/main.bbbb.js"></script>\n' >"$HARNESS/publish-build/index.html"
+assert_true "merge skips identical hashed file" \
+  eternal_webroot_merge_tree "$HARNESS/publish-build" "$PUB_ROOT" 0
+assert_true "SKIP_IDENTICAL logged for hashed asset" \
+  bash -c 'source "'"$ROOT"'/scripts/deploy/lib.sh"; eternal_webroot_install_file "'"$HARNESS"'/publish-build/static/js/main.aaaa.js" "'"$PUB_ROOT"'" "static/js/main.aaaa.js" 0 2>"'"$HARNESS"'/skip.err"; grep -q SKIP_IDENTICAL "'"$HARNESS"'/skip.err"'
+assert_true "new hashed asset copied" test -f "$PUB_ROOT/static/js/main.bbbb.js"
+# Collision: same name, different bytes → fail closed; original intact.
+printf 'OTHER\n' >"$HARNESS/publish-build/static/js/main.aaaa.js"
+set +e
+coll_err="$(eternal_webroot_install_file "$HARNESS/publish-build/static/js/main.aaaa.js" "$PUB_ROOT" "static/js/main.aaaa.js" 0 2>&1)"
+coll_ec=$?
+set -e
+assert_eq "hashed collision exits nonzero" "1" "$coll_ec"
+assert_true "hashed collision message" grep -q 'hashed asset collision' <<<"$coll_err"
+assert_true "original hashed bytes preserved" grep -q 'same-bytes' "$PUB_ROOT/static/js/main.aaaa.js"
+# Path traversal refused.
+set +e
+trav_err="$(eternal_webroot_install_file "$HARNESS/publish-build/index.html" "$PUB_ROOT" "../escape.html" 0 2>&1)"
+trav_ec=$?
+set -e
+assert_eq "path traversal refused" "1" "$trav_ec"
+assert_true "traversal error mentions refuse" grep -qiE 'traversal|refused' <<<"$trav_err"
+
+# ========== partial publish → index unchanged → ROLLBACK_PASS ==========
+git -C "$MIRROR_SRC" checkout -q main
+printf 'fe-partial\n' >"$MIRROR_SRC/frontend/src/index.js"
+git -C "$MIRROR_SRC" add frontend/src/index.js && git -C "$MIRROR_SRC" commit -q -m fe-partial
+FE_PARTIAL="$(git -C "$MIRROR_SRC" rev-parse HEAD)"
+git --git-dir="$RELEASES/mirror.git" fetch -q "$MIRROR_SRC" '+refs/heads/main:refs/heads/main'
+# Seed live with immutable root-owned-identical asset that new dry-build also emits as app.js content change path:
+# Force publish fail after merge start via ETERNAL_FORCE_PUBLISH_FAIL (index never swapped).
+printf 'live-index-keep\n' >"$FRONTEND/live/index.html"
+mkdir -p "$FRONTEND/live/static/js"
+printf 'live-main\n' >"$FRONTEND/live/static/js/main.f7129337.js"
+chmod 644 "$FRONTEND/live/index.html" "$FRONTEND/live/static/js/main.f7129337.js"
+# Ensure CURRENT/baseline path exists for rollback pointer tests.
+if [[ ! -e "$CURRENT" ]]; then
+  make_verified_baseline
+  ETERNAL_ACK_REPLACE_LIVE_FRONTEND=1 "$RUNNER" deploy "$MAIN_SHA" >/dev/null 2>&1 || true
+fi
+CUR_BEFORE_PARTIAL="$(readlink -f "$CURRENT" || true)"
+printf 'live-index-keep\n' >"$FRONTEND/live/index.html"
+export ETERNAL_FORCE_PUBLISH_FAIL=1
+set +e
+"$RUNNER" deploy "$FE_PARTIAL" >"$HARNESS/partial.txt" 2>"$HARNESS/partial.err"
+partial_ec=$?
+set -e
+export ETERNAL_FORCE_PUBLISH_FAIL=0
+assert_eq "partial publish deploy nonzero" "1" "$partial_ec"
+assert_true "partial publish rollback PASS when index never switched" \
+  grep -q 'ROLLBACK_PASS' "$HARNESS/partial.err"
+assert_false "partial publish is not ROLLBACK_FAILED" grep -q 'ROLLBACK_FAILED' "$HARNESS/partial.err"
+assert_true "live index preserved after forced publish fail" grep -q 'live-index-keep' "$FRONTEND/live/index.html"
+assert_true "live hashed main preserved" test -f "$FRONTEND/live/static/js/main.f7129337.js"
+
+# ========== required FE state fails when backup index missing ==========
+rm -rf "$HARNESS/bad-fe-src"
+mkdir -p "$HARNESS/bad-fe-src/static/js" "$HARNESS/bad-fe-live"
+printf 'x\n' >"$HARNESS/bad-fe-src/static/js/x.js"
+printf '<html>live</html>\n' >"$HARNESS/bad-fe-live/index.html"
+assert_false "required state fails without backup index" \
+  eternal_frontend_required_state_ok "$HARNESS/bad-fe-live" "$HARNESS/bad-fe-src"
+
+# ========== reuse incomplete release fingerprint ==========
+if [[ -d "$RELEASES/$MAIN_SHA" ]]; then
+  REUSE_DIR="$RELEASES/$MAIN_SHA"
+  printf '%s\n' "$MAIN_SHA" >"$REUSE_DIR/.eternal-source-sha"
+  if [[ ! -f "$REUSE_DIR/.eternal-frontend-fingerprint" ]]; then
+    eternal_write_frontend_fingerprint "$REUSE_DIR"
+  fi
+  if [[ -f "$REUSE_DIR/frontend/build/index.html" && -x "$REUSE_DIR/backend/.venv/bin/uvicorn" \
+     && -f "$REUSE_DIR/backend/.eternal-requirements-file" \
+     && -f "$REUSE_DIR/backend/.eternal-requirements-sha256" ]]; then
+    rm -f "$REUSE_DIR/.deploy-ok"
+    set +e
+    ETERNAL_RUNTIME_MODE=stub eternal_try_reuse_incomplete_release "$REUSE_DIR" "$MAIN_SHA" \
+      >"$HARNESS/reuse.out" 2>"$HARNESS/reuse.err"
+    reuse_ec=$?
+    set -e
+    assert_eq "incomplete release reuse integrity OK" "0" "$reuse_ec"
+    printf 'deadbeef\n' >"$REUSE_DIR/.eternal-frontend-fingerprint"
+    set +e
+    ETERNAL_RUNTIME_MODE=stub eternal_try_reuse_incomplete_release "$REUSE_DIR" "$MAIN_SHA" \
+      >/dev/null 2>"$HARNESS/reuse-bad.err"
+    reuse_bad=$?
+    set -e
+    assert_eq "fingerprint mismatch refuses reuse" "1" "$reuse_bad"
+  else
+    log "SKIP: reuse fixture incomplete (missing build/venv markers)"
+  fi
+fi
+# ========== regression: yarn-only + health budget + flock + ack still present ==========
+assert_true "runner still Yarn-only helper" grep -q 'eternal_frontend_production_build' "$ROOT/scripts/deploy/eternal-deploy-runner.sh"
+assert_true "runner health budget default 60" grep -q 'ETERNAL_HEALTH_BUDGET_S:-60' "$ROOT/scripts/deploy/eternal-deploy-runner.sh"
+assert_true "runner ack-fe still gated" grep -q 'ETERNAL_ACK_REPLACE_LIVE_FRONTEND' "$ROOT/scripts/deploy/eternal-deploy-runner.sh"
+assert_true "runner still uses flock acquire" grep -q 'eternal_acquire_lock' "$ROOT/scripts/deploy/eternal-deploy-runner.sh"
 
 log ""
 log "SUMMARY pass=$PASS fail=$FAIL"
