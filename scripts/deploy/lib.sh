@@ -208,6 +208,49 @@ eternal_fe_is_hashed_relpath() {
   [[ "$rel" == static/* ]]
 }
 
+# Emit required static/ asset relpaths (one per line) for reuse / integrity checks.
+# Sources (real refs only):
+#   1) index.html src= / href= attributes pointing at /static/... or static/...
+#   2) optional asset-manifest.json values/entrypoints under static/
+# Does NOT treat arbitrary "static/..." substrings inside inline scripts (e.g. PostHog
+# concatenating remote ".../static/array.js") as local build assets.
+eternal_fe_list_required_static_assets() {
+  local index_html="$1"
+  local manifest="${2:-}"
+  local ref raw
+  [[ -f "$index_html" ]] || return 1
+
+  while IFS= read -r raw; do
+    [[ -z "$raw" ]] && continue
+    # strip src=" / href=' wrappers
+    ref="${raw#*=}"
+    ref="${ref#\"}"
+    ref="${ref#\'}"
+    ref="${ref%\"}"
+    ref="${ref%\'}"
+    ref="${ref#./}"
+    ref="${ref#/}"
+    [[ "$ref" == static/* ]] || continue
+    [[ "$ref" == *..* ]] && continue
+    printf '%s\n' "$ref"
+  done < <(grep -oE '(src|href)=["'\'']/?static/[^"'\'']+["'\'']' "$index_html" 2>/dev/null || true)
+
+  if [[ -n "$manifest" && -f "$manifest" ]]; then
+    while IFS= read -r raw; do
+      [[ -z "$raw" ]] && continue
+      ref="${raw#\"}"
+      ref="${ref%\"}"
+      ref="${ref#./}"
+      ref="${ref#/}"
+      [[ "$ref" == static/* ]] || continue
+      [[ "$ref" == *..* ]] && continue
+      # Manifest may list index.html under files; only static/ is required here.
+      printf '%s\n' "$ref"
+    done < <(grep -oE '"/?static/[^"]+"' "$manifest" 2>/dev/null || true)
+  fi
+  return 0
+}
+
 # True for static/**/*.js.map only. Does NOT match .css.map or other artifacts.
 eternal_fe_is_js_sourcemap_relpath() {
   local rel="${1#./}"
@@ -430,15 +473,17 @@ eternal_try_reuse_incomplete_release() {
     return 1
   }
   local ref
+  local manifest="$release_dir/frontend/build/asset-manifest.json"
+  # Deduplicate refs (index attrs + manifest may overlap).
   while IFS= read -r ref; do
     [[ -z "$ref" ]] && continue
-    ref="${ref#./}"
-    [[ "$ref" == *..* ]] && return 1
     [[ -f "$release_dir/frontend/build/$ref" ]] || {
       eternal_deploy_log "reuse refused: build asset missing $ref"
       return 1
     }
-  done < <(grep -oE '(static/[^"'\''[:space:]>]+)' "$release_dir/frontend/build/index.html" 2>/dev/null || true)
+  done < <(eternal_fe_list_required_static_assets \
+    "$release_dir/frontend/build/index.html" \
+    "$([[ -f "$manifest" ]] && printf '%s' "$manifest")" | awk 'NF && !seen[$0]++')
 
   [[ -x "$release_dir/backend/.venv/bin/uvicorn" ]] || {
     eternal_deploy_log "reuse refused: backend .venv/uvicorn missing"
@@ -459,7 +504,9 @@ eternal_try_reuse_incomplete_release() {
 }
 
 # True when live required FE state matches backup: index (+ manifest when present in
-# backup) byte-identical, and every static asset referenced by the live index exists.
+# backup) byte-identical, and every *real* static asset ref exists on live.
+# Asset refs use eternal_fe_list_required_static_assets (src/href + manifest only) —
+# inline/remote strings such as PostHog ".../static/array.js" are ignored.
 # Executable .js/.css refs present in the backup must also be byte-identical on live.
 # Extra unreferenced files on live (including leftover hashed assets / .js.map) do not
 # fail this check. Does not treat HTTP health as sufficient.
@@ -468,17 +515,17 @@ eternal_frontend_required_state_ok() {
   local backup_root="$2"
   local live_index="$live_root/index.html"
   local bak_index="$backup_root/index.html"
+  local bak_manifest="$backup_root/asset-manifest.json"
+  local live_manifest="$live_root/asset-manifest.json"
   [[ -f "$live_index" && -f "$bak_index" ]] || return 1
   cmp -s "$live_index" "$bak_index" || return 1
-  if [[ -f "$backup_root/asset-manifest.json" ]]; then
-    [[ -f "$live_root/asset-manifest.json" ]] || return 1
-    cmp -s "$backup_root/asset-manifest.json" "$live_root/asset-manifest.json" || return 1
+  if [[ -f "$bak_manifest" ]]; then
+    [[ -f "$live_manifest" ]] || return 1
+    cmp -s "$bak_manifest" "$live_manifest" || return 1
   fi
   local ref
   while IFS= read -r ref; do
     [[ -z "$ref" ]] && continue
-    ref="${ref#./}"
-    [[ "$ref" == *..* ]] && return 1
     [[ -f "$live_root/$ref" ]] || return 1
     # Main executable assets from the previous frontend must match backup bytes when
     # the backup still holds them. Source maps are not required to match.
@@ -490,7 +537,9 @@ eternal_frontend_required_state_ok() {
         fi
         ;;
     esac
-  done < <(grep -oE '(static/[^"'\''[:space:]>]+)' "$live_index" 2>/dev/null || true)
+  done < <(eternal_fe_list_required_static_assets \
+    "$live_index" \
+    "$([[ -f "$bak_manifest" ]] && printf '%s' "$bak_manifest")" | awk 'NF && !seen[$0]++')
   return 0
 }
 
