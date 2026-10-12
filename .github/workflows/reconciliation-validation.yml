@@ -427,6 +427,8 @@ jobs:
           src/pages/PesananPenjualan.test.js
           src/pages/MasterBarangJasa.create.test.js
           src/pages/PhysicalStockSettings.test.js
+          src/pages/StockOpname.test.js
+          src/lib/stockOpnameTime.test.js
           src/pages/ProductDetail.test.js
           src/pages/FakturPenjualan.test.js
           src/pages/FakturPenjualan.listFilters.test.js

@@ -1,5 +1,6 @@
 import fs from "fs";
 import path from "path";
+import { stockOpnameErrorMessage } from "../lib/stockOpnameErrors";
 
 const src = fs.readFileSync(path.join(__dirname, "StockOpname.jsx"), "utf8");
 
@@ -23,11 +24,66 @@ describe("Stock Opname operational workflow", () => {
       "Qty Pesanan",
       "Qty Belum Terkirim",
       "Stock Fisik",
-      "Selisih",
       "Qty Tersedia Setelah Opname",
       "Status Hitung",
     ]) {
       expect(src).toMatch(new RegExp(`<th>${label}</th>`));
     }
+    expect(src).toMatch(/Selisih/);
+    expect(src).toMatch(/Adjustment \(perkiraan\)/);
+  });
+
+  test("create payload carries explicit mode freeze|operational and defaults freeze", () => {
+    expect(src).toMatch(/data-testid="opname-create-mode"/);
+    expect(src).toMatch(/createMode === "operational" \? "operational" : "freeze"/);
+    expect(src).toMatch(/useState\("freeze"\)/);
+    expect(src).toMatch(/mode: createMode === "operational" \? "operational" : "freeze"/);
+    expect(src).toMatch(/Never silently change mode/);
+  });
+
+  test("count payload separates physical_count_qty, physical_count_at, and imported_at", () => {
+    expect(src).toMatch(/physical_count_qty/);
+    expect(src).toMatch(/physical_count_at/);
+    expect(src).toMatch(/imported_at/);
+    expect(src).toMatch(/wibLocalInputToIso/);
+    expect(src).toMatch(/isoToWibLocalInput/);
+    expect(src).toMatch(/STOCK_OPNAME_TZ_LABEL/);
+    expect(src).toMatch(/data-testid="opname-apply-bulk-time"/);
+    expect(src).toMatch(/pilihan eksplisit/);
+    expect(src).toMatch(/never treat import time as count time/i);
+    expect(src).toMatch(/Kosong bukan nol|kosong ≠ 0/);
+  });
+
+  test("operational review shows API book/net/target/adjustment fields", () => {
+    expect(src).toMatch(/book_qty_live/);
+    expect(src).toMatch(/net_movement_after_count/);
+    expect(src).toMatch(/target_qty/);
+    expect(src).toMatch(/data-testid=\{`opname-net-\$\{line\.item_code\}`\}/);
+    expect(src).toMatch(/data-testid=\{`opname-target-\$\{line\.item_code\}`\}/);
+    expect(src).toMatch(/diverifikasi ulang saat konfirmasi/);
+    expect(src).toMatch(/data-testid="opname-operational-banner"/);
+    expect(src).toMatch(/data-testid="opname-freeze"/);
+  });
+
+  test("confirm guards double-submit and only shows success after CONFIRMED", () => {
+    expect(src).toMatch(/if \(busy \|\| session\?\.status === "CONFIRMED"\) return/);
+    expect(src).toMatch(/confirmed\?\.status !== "CONFIRMED"/);
+    expect(src).toMatch(/Tidak menampilkan sukses/);
+    expect(src).toMatch(/disabled=\{busy \|\| session\.status === "CONFIRMED"\}/);
+  });
+});
+
+describe("stockOpnameErrorMessage", () => {
+  test("maps 400/409/503 without inventing retries", () => {
+    expect(stockOpnameErrorMessage({ response: { status: 400, data: { detail: "Hitungan kosong" } } }))
+      .toMatch(/Perbaiki input/);
+    expect(stockOpnameErrorMessage({ response: { status: 409, data: { detail: "Backdated" } } }))
+      .toMatch(/review ulang/);
+    expect(stockOpnameErrorMessage({ response: { status: 409, data: { detail: "Backdated" } } }))
+      .not.toMatch(/otomatis retry posting/i);
+    expect(stockOpnameErrorMessage({ response: { status: 503, data: { detail: "Transaksi tidak tersedia" } } }))
+      .toMatch(/R2/);
+    expect(stockOpnameErrorMessage({ response: { status: 400, data: { detail: "r2 belum diaktifkan" } } }))
+      .toMatch(/R2|r2/);
   });
 });
