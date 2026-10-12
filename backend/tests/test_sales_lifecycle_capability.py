@@ -297,3 +297,69 @@ async def test_invoice_auto_create_denied_without_endpoint_perms(indexes):
     blocked_cap = await build_invoice_lifecycle_capability(db, blocked, None)
     assert blocked_cap[OP_AUTO_CREATE_POST]["available"] is False
     assert "permission_missing" in (blocked_cap[OP_AUTO_CREATE_POST].get("reasons") or [])
+
+
+@pytest.mark.anyio
+async def test_receipt_opt_in_via_role_permissions_for_direktur(indexes):
+    """Receipt edit/cancel capability must honor Hak Akses role_permissions.
+
+    Regression: opt_in_permission_granted previously ignored role_defaults, so
+    Direktur with sales.receipt.edit/cancel only on role_permissions got
+    permission_missing while cancel write path and /auth/me already granted.
+    """
+    db = server.db
+    await _enable_all(db)
+    await db.role_permissions.delete_many({"role": "direktur_utama"})
+
+    # No grant → denied (OPT_IN_ONLY; no admin/role wildcard).
+    denied = await build_receipt_lifecycle_capability(db, DIREKTUR, None)
+    assert denied[OP_EDIT_REVISION]["available"] is False
+    assert "permission_missing" in (denied[OP_EDIT_REVISION].get("reasons") or [])
+    assert denied[OP_BUSINESS_CANCEL]["available"] is False
+    assert "permission_missing" in (denied[OP_BUSINESS_CANCEL].get("reasons") or [])
+
+    # Role & Hak Akses grant via role_permissions only (empty user override).
+    await db.role_permissions.update_one(
+        {"role": "direktur_utama"},
+        {
+            "$set": {
+                "role": "direktur_utama",
+                "permissions": ["sales.receipt.edit", "sales.receipt.cancel"],
+            }
+        },
+        upsert=True,
+    )
+    granted = await build_receipt_lifecycle_capability(db, DIREKTUR, None)
+    assert granted[OP_EDIT_REVISION]["available"] is True
+    assert "permission_missing" not in (granted[OP_EDIT_REVISION].get("reasons") or [])
+    assert granted[OP_BUSINESS_CANCEL]["available"] is True
+    assert "permission_missing" not in (granted[OP_BUSINESS_CANCEL].get("reasons") or [])
+
+
+@pytest.mark.anyio
+async def test_receipt_opt_in_override_false_denies_despite_role_permissions(indexes):
+    db = server.db
+    await _enable_all(db)
+    await db.role_permissions.update_one(
+        {"role": "direktur_utama"},
+        {
+            "$set": {
+                "role": "direktur_utama",
+                "permissions": ["sales.receipt.edit", "sales.receipt.cancel"],
+            }
+        },
+        upsert=True,
+    )
+    blocked = {
+        **DIREKTUR,
+        "id": "dir-blocked",
+        "permissions_override": {
+            "sales.receipt.edit": False,
+            "sales.receipt.cancel": False,
+        },
+    }
+    cap = await build_receipt_lifecycle_capability(db, blocked, None)
+    assert cap[OP_EDIT_REVISION]["available"] is False
+    assert "permission_missing" in (cap[OP_EDIT_REVISION].get("reasons") or [])
+    assert cap[OP_BUSINESS_CANCEL]["available"] is False
+    assert "permission_missing" in (cap[OP_BUSINESS_CANCEL].get("reasons") or [])

@@ -1016,12 +1016,21 @@ def has_permission(user_perms: set, perm: str) -> bool:
     return perm in user_perms
 
 
-def opt_in_permission_granted(role: str, override: dict | None, perm: str) -> bool:
+def opt_in_permission_granted(
+    role: str,
+    override: dict | None,
+    perm: str,
+    role_defaults_override: dict | None = None,
+) -> bool:
     """True only when an OPT_IN_ONLY permission is explicitly granted.
 
     Role defaults never include opt-in keys. Admin / wildcard role membership
     alone is insufficient — the key must appear via an explicit True override
     or an explicit role_permissions document entry that already lists it.
+
+    ``role_defaults_override`` is the same Hak Akses map used by
+    ``require_cancel_permission`` / ``server.user_permissions`` (role → permissions).
+    When omitted, only built-in ROLE_DEFAULT is consulted (which never grants opt-in).
     """
     if perm not in OPT_IN_ONLY_PERMISSIONS:
         return False
@@ -1032,7 +1041,7 @@ def opt_in_permission_granted(role: str, override: dict | None, perm: str) -> bo
         return True
     # Explicit role default override documents may list the key after an
     # audited Hak Akses save. Built-in ROLE_DEFAULT never includes it.
-    return perm in effective_permissions(role, override)
+    return perm in effective_permissions(role, override, role_defaults_override)
 
 
 def strip_opt_in_permissions(perms) -> set:
