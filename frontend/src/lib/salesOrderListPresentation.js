@@ -221,3 +221,36 @@ export function listRangeLabel(total, page, pageSize) {
   const to = Math.min(count, current * size);
   return `Menampilkan ${from.toLocaleString("id-ID")}–${to.toLocaleString("id-ID")} dari ${count.toLocaleString("id-ID")} pesanan`;
 }
+
+/** Snapshot creator for list column. Empty → Tidak diketahui. Never use sales. */
+export function orderCreatorLabel(order) {
+  const text = String(order?.created_by_user ?? "").trim();
+  return text || "Tidak diketahui";
+}
+
+const INVOICE_STATUS_LABELS = {
+  belum: "Belum",
+  sebagian: "Sebagian",
+  sudah: "Sudah",
+  perlu_pemeriksaan: "Perlu Pemeriksaan",
+};
+
+/** Invoice coverage chip label from list API. Null when hidden by RBAC. */
+export function orderInvoiceStatusLabel(order) {
+  if (!order || order.invoice_status == null || order.invoice_status === "") {
+    if (order?.invoice_status_label) return String(order.invoice_status_label);
+    return null;
+  }
+  const key = String(order.invoice_status).trim().toLowerCase();
+  if (order.invoice_status_label) return String(order.invoice_status_label);
+  return INVOICE_STATUS_LABELS[key] || null;
+}
+
+export function orderInvoiceStatusTone(order) {
+  const key = String(order?.invoice_status || "").trim().toLowerCase();
+  if (key === "sudah") return "done";
+  if (key === "sebagian") return "partial";
+  if (key === "perlu_pemeriksaan") return "review";
+  if (key === "belum") return "open";
+  return "open";
+}
