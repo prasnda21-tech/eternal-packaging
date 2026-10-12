@@ -9,6 +9,8 @@
 #   probe
 #   deploy <40-char-lowercase-sha>
 #   deploy <40-char-lowercase-sha> ack-fe-replace
+#   rollback <40-char-lowercase-sha> <previous_id>
+#     previous_id = 40-char-lowercase-sha | baseline-active
 #
 # Rejects arbitrary shell, paths, scp/sftp, and any other command.
 # Does not read or print private keys. Does not invoke sudo.
@@ -70,7 +72,15 @@ case "$verb" in
     fi
     exec "$RUNNER" deploy "$arg"
     ;;
+  rollback)
+    eternal_require_sha40 "$arg"
+    eternal_require_previous_id "$opt"
+    if [[ ! -x "$RUNNER" ]]; then
+      eternal_deploy_die "deploy runner missing or not executable: $RUNNER"
+    fi
+    exec "$RUNNER" rollback "$arg" "$opt"
+    ;;
   *)
-    eternal_deploy_die "unsupported command (allowed: probe | deploy <sha40> [ack-fe-replace])"
+    eternal_deploy_die "unsupported command (allowed: probe | deploy <sha40> [ack-fe-replace] | rollback <sha40> <previous_id>)"
     ;;
 esac

@@ -996,3 +996,212 @@ eternal_baseline_verify_integrity_core() {
   fi
   eternal_validate_backend_runtime "$baseline_dir/tree/backend"
 }
+
+# --- Post-success rollback identity (rollback-points/<sha40>/) ---
+# previous_id is either a 40-hex SHA or the literal baseline-active (first cutover).
+
+eternal_is_previous_id() {
+  local value="${1:-}"
+  [[ "$value" == "baseline-active" ]] && return 0
+  eternal_is_sha40 "$value"
+}
+
+eternal_require_previous_id() {
+  local value="${1:-}"
+  eternal_is_previous_id "$value" \
+    || eternal_deploy_die "previous release id must be 40 lowercase hex or baseline-active"
+}
+
+eternal_rollback_points_root() {
+  local releases_root="${1:-}"
+  [[ -n "$releases_root" ]] || eternal_deploy_die "rollback points root requires releases root"
+  printf '%s/rollback-points\n' "$releases_root"
+}
+
+eternal_rollback_point_dir() {
+  local releases_root="$1"
+  local deployed_sha="$2"
+  eternal_require_sha40 "$deployed_sha"
+  printf '%s/%s\n' "$(eternal_rollback_points_root "$releases_root")" "$deployed_sha"
+}
+
+# Refuse symlink escape / arbitrary path for a rollback-point directory.
+eternal_assert_safe_rollback_point_dir() {
+  local point_dir="$1"
+  local releases_root="$2"
+  local root points resolved
+  points="$(eternal_rollback_points_root "$releases_root")"
+  [[ -d "$points" ]] || eternal_deploy_die "rollback-points root missing: $points"
+  root="$(readlink -f "$points" 2>/dev/null || true)"
+  [[ -n "$root" ]] || eternal_deploy_die "rollback-points root unreadable"
+  resolved="$(readlink -f "$point_dir" 2>/dev/null || true)"
+  [[ -n "$resolved" ]] || eternal_deploy_die "rollback point path unreadable: $point_dir"
+  eternal_path_is_under_root "$root" "$resolved" \
+    || eternal_deploy_die "rollback point escapes rollback-points root"
+  # Point dir itself must not be a symlink.
+  [[ ! -L "$point_dir" ]] || eternal_deploy_die "rollback point directory must not be a symlink"
+}
+
+eternal_meta_get() {
+  local meta_file="$1"
+  local key="$2"
+  [[ -f "$meta_file" ]] || return 1
+  sed -n "s/^${key}=//p" "$meta_file" | head -n1
+}
+
+# Write identity-scoped FE backup + meta after DEPLOY_OK.
+# fe_src may be empty when frontend was not published in this deploy.
+eternal_write_rollback_point() {
+  local releases_root="$1"
+  local deployed_sha="$2"
+  local previous_id="$3"
+  local previous_path="$4"
+  local previous_is_baseline="$5"
+  local current_switched="$6"
+  local frontend_published="$7"
+  local fe_src="${8:-}"
+  local retention="${ETERNAL_ROLLBACK_POINT_RETENTION:-5}"
+  local point_dir meta fe_dst parent
+
+  eternal_require_sha40 "$deployed_sha"
+  eternal_require_previous_id "$previous_id"
+  [[ "$previous_is_baseline" == "0" || "$previous_is_baseline" == "1" ]] \
+    || eternal_deploy_die "previous_is_baseline must be 0|1"
+  [[ "$current_switched" == "0" || "$current_switched" == "1" ]] \
+    || eternal_deploy_die "current_switched must be 0|1"
+  [[ "$frontend_published" == "0" || "$frontend_published" == "1" ]] \
+    || eternal_deploy_die "frontend_published must be 0|1"
+  [[ -n "$previous_path" ]] || eternal_deploy_die "previous_path required for rollback point"
+
+  parent="$(eternal_rollback_points_root "$releases_root")"
+  mkdir -p "$parent"
+  point_dir="$(eternal_rollback_point_dir "$releases_root" "$deployed_sha")"
+  # Replace any prior point for this SHA (redeploy of same SHA).
+  rm -rf "$point_dir"
+  mkdir -p "$point_dir"
+  eternal_assert_safe_rollback_point_dir "$point_dir" "$releases_root"
+
+  meta="$point_dir/meta.txt"
+  {
+    printf 'deployed_sha=%s\n' "$deployed_sha"
+    printf 'previous_id=%s\n' "$previous_id"
+    printf 'previous_path=%s\n' "$previous_path"
+    printf 'previous_is_baseline=%s\n' "$previous_is_baseline"
+    printf 'current_switched=%s\n' "$current_switched"
+    printf 'frontend_published=%s\n' "$frontend_published"
+    printf 'created_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  } >"$meta"
+
+  if [[ "$frontend_published" == "1" ]]; then
+    [[ -n "$fe_src" && -d "$fe_src" ]] \
+      || eternal_deploy_die "frontend backup source missing for rollback point"
+    [[ -f "$fe_src/index.html" ]] \
+      || eternal_deploy_die "frontend backup source missing index.html"
+    [[ ! -L "$fe_src" ]] || eternal_deploy_die "frontend backup source must not be a symlink"
+    fe_dst="$point_dir/frontend"
+    mkdir -p "$fe_dst"
+    cp -a "$fe_src"/. "$fe_dst"/
+    [[ -f "$fe_dst/index.html" ]] || eternal_deploy_die "rollback point frontend missing index.html after copy"
+    printf 'frontend_backup_ok=1\n' >>"$meta"
+  else
+    printf 'frontend_backup_ok=0\n' >>"$meta"
+  fi
+
+  eternal_write_active_release_marker "$releases_root" "$deployed_sha" "$previous_id"
+  eternal_prune_rollback_points "$releases_root" "$retention" "$deployed_sha"
+  eternal_deploy_log "rollback point recorded sha=$deployed_sha previous=$previous_id"
+}
+
+eternal_write_active_release_marker() {
+  local releases_root="$1"
+  local sha="$2"
+  local previous_id="$3"
+  local marker="$releases_root/active-release.txt"
+  mkdir -p "$releases_root"
+  {
+    printf 'sha=%s\n' "$sha"
+    printf 'previous_id=%s\n' "$previous_id"
+    printf 'updated_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  } >"$marker"
+}
+
+eternal_read_active_release_sha() {
+  local releases_root="$1"
+  local marker="$releases_root/active-release.txt"
+  [[ -f "$marker" ]] || return 1
+  eternal_meta_get "$marker" "sha"
+}
+
+# Keep newest N points; never delete the point for keep_sha (active deploy identity).
+eternal_prune_rollback_points() {
+  local releases_root="$1"
+  local retention="$2"
+  local keep_sha="$3"
+  local parent entry meta created
+  local -a entries=()
+  parent="$(eternal_rollback_points_root "$releases_root")"
+  [[ -d "$parent" ]] || return 0
+  [[ "$retention" =~ ^[1-9][0-9]*$ ]] || retention=5
+
+  while IFS= read -r entry; do
+    [[ -n "$entry" ]] || continue
+    meta="$entry/meta.txt"
+    [[ -f "$meta" ]] || continue
+    created="$(eternal_meta_get "$meta" "created_at")"
+    [[ -n "$created" ]] || created="1970-01-01T00:00:00Z"
+    entries+=("$created|$entry")
+  done < <(find "$parent" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
+
+  if ((${#entries[@]} <= retention)); then
+    return 0
+  fi
+  # Newest first.
+  local sorted
+  mapfile -t sorted < <(printf '%s\n' "${entries[@]}" | sort -r)
+  local i=0
+  local path base
+  for item in "${sorted[@]}"; do
+    i=$((i + 1))
+    path="${item#*|}"
+    base="$(basename "$path")"
+    if [[ "$base" == "$keep_sha" ]]; then
+      continue
+    fi
+    if (( i > retention )); then
+      eternal_deploy_log "prune rollback point (retention=$retention): $base"
+      rm -rf "$path"
+    fi
+  done
+}
+
+# Validate rollback-point meta + optional FE backup. Prints nothing; returns 0/1 or dies on hard errors.
+eternal_validate_rollback_point() {
+  local releases_root="$1"
+  local deployed_sha="$2"
+  local expected_previous_id="$3"
+  local point_dir meta prev_id fe_ok published fe_dir
+
+  eternal_require_sha40 "$deployed_sha"
+  eternal_require_previous_id "$expected_previous_id"
+  point_dir="$(eternal_rollback_point_dir "$releases_root" "$deployed_sha")"
+  [[ -d "$point_dir" ]] || eternal_deploy_die "rollback point missing for sha=$deployed_sha"
+  eternal_assert_safe_rollback_point_dir "$point_dir" "$releases_root"
+  meta="$point_dir/meta.txt"
+  [[ -f "$meta" && ! -L "$meta" ]] || eternal_deploy_die "rollback point meta missing or symlink"
+  prev_id="$(eternal_meta_get "$meta" "previous_id")"
+  [[ "$prev_id" == "$expected_previous_id" ]] \
+    || eternal_deploy_die "previous release mismatch: requested=$expected_previous_id recorded=$prev_id"
+  [[ "$(eternal_meta_get "$meta" "deployed_sha")" == "$deployed_sha" ]] \
+    || eternal_deploy_die "rollback point deployed_sha mismatch"
+  published="$(eternal_meta_get "$meta" "frontend_published")"
+  fe_ok="$(eternal_meta_get "$meta" "frontend_backup_ok")"
+  if [[ "$published" == "1" ]]; then
+    [[ "$fe_ok" == "1" ]] || eternal_deploy_die "rollback point frontend backup not marked ok"
+    fe_dir="$point_dir/frontend"
+    [[ -d "$fe_dir" && ! -L "$fe_dir" ]] || eternal_deploy_die "rollback point frontend backup missing or symlink"
+    [[ -f "$fe_dir/index.html" ]] || eternal_deploy_die "rollback point frontend backup corrupt (no index.html)"
+    eternal_path_is_under_root "$point_dir" "$(readlink -f "$fe_dir")" \
+      || eternal_deploy_die "rollback point frontend escapes point dir"
+  fi
+  return 0
+}

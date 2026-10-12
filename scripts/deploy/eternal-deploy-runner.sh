@@ -51,6 +51,8 @@ ETERNAL_FRONTEND_ENV_FILE="${ETERNAL_FRONTEND_ENV_FILE:-}"
 ETERNAL_REQUIRE_VERIFIED_BASELINE="${ETERNAL_REQUIRE_VERIFIED_BASELINE:-1}"
 ETERNAL_RUNTIME_MODE="${ETERNAL_RUNTIME_MODE:-full}"
 ETERNAL_PYTHON_BIN="${ETERNAL_PYTHON_BIN:-python3}"
+# Keep newest N identity-scoped rollback points (active SHA never pruned).
+ETERNAL_ROLLBACK_POINT_RETENTION="${ETERNAL_ROLLBACK_POINT_RETENTION:-5}"
 
 PREV_RELEASE=""
 PREV_IS_BASELINE=0
@@ -64,12 +66,14 @@ LOCK_HELD=0
 FRONTEND_PUBLISH_STARTED=0
 ROLLING_BACK=0
 ETERNAL_REUSED_RELEASE=0
+# deploy = failure-path auto rollback; post_success = Owner-requested cmd_rollback
+RUNNER_MODE="deploy"
 
-ROLLBACK_STATUS="" # PASS | FAILED | "" (no rollback attempted)
+ROLLBACK_STATUS="" # PASS | FAILED | SUCCESS | "" (no rollback attempted)
 
 cleanup() {
   local ec=$?
-  if (( ec != 0 )); then
+  if [[ "$RUNNER_MODE" == "deploy" && "$ec" -ne 0 ]]; then
     eternal_deploy_log "deploy failed (exit=$ec); attempting rollback while holding lock"
     ROLLING_BACK=1
     if eternal_rollback; then
@@ -141,6 +145,10 @@ eternal_restore_frontend_tree() {
   local src="$1"
   if [[ ! -d "$src" ]]; then
     eternal_deploy_log "frontend restore source missing: $src"
+    return 1
+  fi
+  if [[ "${ETERNAL_FORCE_FRONTEND_RESTORE_FAIL:-0}" == "1" ]]; then
+    eternal_deploy_log "frontend restore failed (forced)"
     return 1
   fi
   if [[ ! -d "$ETERNAL_FRONTEND_ROOT" ]]; then
@@ -839,29 +847,256 @@ EOF
     eternal_deploy_die "health check failed after frontend publish"
   fi
 
+  local current_switched=0
+  if [[ "$ETERNAL_NEED_BACKEND" == "1" ]]; then
+    current_switched=1
+  fi
+  local fe_src=""
+  if [[ "$ETERNAL_NEED_FRONTEND" == "1" ]]; then
+    if [[ -d "$ETERNAL_FRONTEND_PREV" && -f "$ETERNAL_FRONTEND_PREV/index.html" ]]; then
+      fe_src="$ETERNAL_FRONTEND_PREV"
+    elif [[ "$PREV_IS_BASELINE" == "1" && -d "$ETERNAL_BASELINE_DIR/frontend-snapshot" ]]; then
+      fe_src="$ETERNAL_BASELINE_DIR/frontend-snapshot"
+    else
+      eternal_deploy_die "DEPLOY_OK blocked: no identity-scoped frontend backup for rollback point"
+    fi
+  fi
   eternal_write_ok_marker "$NEW_RELEASE" "$sha"
+  # Durable predecessor identity + FE backup (not mutable frontend-prev alone).
+  eternal_write_rollback_point \
+    "$ETERNAL_RELEASES_ROOT" \
+    "$sha" \
+    "$prev_sha" \
+    "$PREV_RELEASE" \
+    "$PREV_IS_BASELINE" \
+    "$current_switched" \
+    "$ETERNAL_NEED_FRONTEND" \
+    "$fe_src"
   SWITCHED=0
   FRONTEND_SWITCHED=0
   FRONTEND_PUBLISH_STARTED=0
   eternal_deploy_log "DEPLOY PASS sha=$sha"
   printf 'DEPLOY_OK sha=%s backend_restarted=%s frontend_published=%s current_switched=%s\n' \
-    "$sha" "$BACKEND_RESTARTED" "$ETERNAL_NEED_FRONTEND" "$([[ "$ETERNAL_NEED_BACKEND" == "1" ]] && echo 1 || echo 0)"
+    "$sha" "$BACKEND_RESTARTED" "$ETERNAL_NEED_FRONTEND" "$current_switched"
+}
+
+# Resolve previous release path for a recorded previous_id (sha40 or baseline-active).
+eternal_resolve_previous_path_for_id() {
+  local previous_id="$1"
+  local recorded_path="${2:-}"
+  if [[ "$previous_id" == "baseline-active" ]]; then
+    eternal_baseline_verify_integrity "$ETERNAL_BASELINE_DIR"
+    [[ -d "$ETERNAL_BASELINE_DIR/tree" ]] || eternal_deploy_die "baseline tree missing for rollback"
+    printf '%s\n' "$ETERNAL_BASELINE_DIR/tree"
+    return 0
+  fi
+  eternal_require_sha40 "$previous_id"
+  local candidate="$ETERNAL_RELEASES_ROOT/$previous_id"
+  if [[ -n "$recorded_path" ]]; then
+    local rec_resolved cand_resolved
+    rec_resolved="$(readlink -f "$recorded_path" 2>/dev/null || true)"
+    cand_resolved="$(readlink -f "$candidate" 2>/dev/null || true)"
+    if [[ -n "$rec_resolved" && -n "$cand_resolved" && "$rec_resolved" != "$cand_resolved" ]]; then
+      eternal_deploy_die "previous release path mismatch vs recorded meta"
+    fi
+  fi
+  [[ -d "$candidate" ]] || eternal_deploy_die "previous release directory missing: $candidate"
+  [[ -f "$candidate/.deploy-ok" ]] || eternal_deploy_die "previous release missing .deploy-ok"
+  local ok_sha
+  ok_sha="$(sed -n 's/^sha=//p' "$candidate/.deploy-ok" | head -n1)"
+  [[ "$ok_sha" == "$previous_id" ]] \
+    || eternal_deploy_die "previous release .deploy-ok sha mismatch"
+  # Must live under releases root (no arbitrary path).
+  eternal_path_is_under_root "$(readlink -f "$ETERNAL_RELEASES_ROOT")" "$(readlink -f "$candidate")" \
+    || eternal_deploy_die "previous release escapes releases root"
+  [[ ! -L "$candidate" ]] || eternal_deploy_die "previous release must not be a symlink directory"
+  printf '%s\n' "$candidate"
+}
+
+# Owner-requested post-success rollback. Same flock. No DB mutation.
+# Prints ROLLBACK_SUCCESS or ROLLBACK_FAILED. Does not use failure-path eternal_rollback.
+cmd_rollback() {
+  local deployed_sha="$1"
+  local previous_id="$2"
+  local rb_fail=0
+  local point_dir meta active_sha prev_path fe_dir
+  local current_switched frontend_published previous_is_baseline recorded_path
+  local cur_resolved want_resolved ok_sha
+
+  RUNNER_MODE="post_success"
+  eternal_require_sha40 "$deployed_sha"
+  eternal_require_previous_id "$previous_id"
+  TARGET_SHA="$deployed_sha"
+
+  trap cleanup EXIT
+
+  eternal_acquire_lock "$ETERNAL_DEPLOY_LOCK" 0
+  LOCK_HELD=1
+  eternal_deploy_log "rollback lock acquired pid=$$"
+
+  # Preflight service/health before mutating live (fail closed if already unhealthy
+  # only when we cannot establish a restore target — still require active marker).
+  eternal_preflight_runtime
+
+  active_sha="$(eternal_read_active_release_sha "$ETERNAL_RELEASES_ROOT" || true)"
+  [[ -n "$active_sha" ]] || eternal_deploy_die "active-release marker missing; refuse rollback"
+  [[ "$active_sha" == "$deployed_sha" ]] \
+    || eternal_deploy_die "current active sha mismatch: active=$active_sha requested_undo=$deployed_sha (another deployment or state drift)"
+
+  eternal_validate_rollback_point "$ETERNAL_RELEASES_ROOT" "$deployed_sha" "$previous_id"
+  point_dir="$(eternal_rollback_point_dir "$ETERNAL_RELEASES_ROOT" "$deployed_sha")"
+  meta="$point_dir/meta.txt"
+  current_switched="$(eternal_meta_get "$meta" "current_switched")"
+  frontend_published="$(eternal_meta_get "$meta" "frontend_published")"
+  previous_is_baseline="$(eternal_meta_get "$meta" "previous_is_baseline")"
+  recorded_path="$(eternal_meta_get "$meta" "previous_path")"
+
+  # CURRENT must still reflect the deploy being undone.
+  if [[ ! -L "$ETERNAL_CURRENT_LINK" ]]; then
+    eternal_deploy_die "CURRENT link missing; refuse rollback"
+  fi
+  cur_resolved="$(readlink -f "$ETERNAL_CURRENT_LINK" 2>/dev/null || true)"
+  [[ -n "$cur_resolved" ]] || eternal_deploy_die "CURRENT unreadable"
+  if [[ "$current_switched" == "1" ]]; then
+    want_resolved="$(readlink -f "$ETERNAL_RELEASES_ROOT/$deployed_sha" 2>/dev/null || true)"
+    [[ -n "$want_resolved" && "$cur_resolved" == "$want_resolved" ]] \
+      || eternal_deploy_die "CURRENT does not point at deployed sha being rolled back"
+    [[ -f "$cur_resolved/.deploy-ok" ]] || eternal_deploy_die "deployed release missing .deploy-ok"
+    ok_sha="$(sed -n 's/^sha=//p' "$cur_resolved/.deploy-ok" | head -n1)"
+    [[ "$ok_sha" == "$deployed_sha" ]] || eternal_deploy_die "CURRENT .deploy-ok sha mismatch"
+  else
+    # FE-only deploy kept CURRENT on predecessor.
+    prev_path="$(eternal_resolve_previous_path_for_id "$previous_id" "$recorded_path")"
+    want_resolved="$(readlink -f "$prev_path" 2>/dev/null || true)"
+    [[ -n "$want_resolved" && "$cur_resolved" == "$want_resolved" ]] \
+      || eternal_deploy_die "FE-only rollback: CURRENT is not the recorded predecessor (state changed)"
+  fi
+
+  prev_path="$(eternal_resolve_previous_path_for_id "$previous_id" "$recorded_path")"
+  PREV_RELEASE="$prev_path"
+  PREV_IS_BASELINE="$previous_is_baseline"
+
+  if ! eternal_health_check; then
+    eternal_deploy_log "rollback precheck: health not operational before restore (continuing with restore)"
+  fi
+
+  # Restore frontend first when this deploy published FE.
+  if [[ "$frontend_published" == "1" ]]; then
+    fe_dir="$point_dir/frontend"
+    eternal_deploy_log "rollback: restore frontend from identity backup $fe_dir"
+    if eternal_restore_frontend_tree "$fe_dir" \
+      && eternal_frontend_required_state_ok "$ETERNAL_FRONTEND_ROOT" "$fe_dir"; then
+      eternal_deploy_log "rollback: frontend restore verified"
+    else
+      eternal_deploy_log "rollback: frontend restore/verify FAILED"
+      rb_fail=1
+    fi
+  fi
+
+  # Restore CURRENT + backend when this deploy switched pointer.
+  if [[ "$current_switched" == "1" && "$rb_fail" -eq 0 ]]; then
+    eternal_deploy_log "rollback: restore current link -> $prev_path"
+    if ln -sfn "$prev_path" "${ETERNAL_CURRENT_LINK}.tmp" \
+      && mv -Tf "${ETERNAL_CURRENT_LINK}.tmp" "$ETERNAL_CURRENT_LINK"; then
+      :
+    else
+      eternal_deploy_log "rollback: CURRENT pointer restore FAILED"
+      rb_fail=1
+    fi
+    if [[ "$rb_fail" -eq 0 ]]; then
+      eternal_deploy_log "rollback: restart backend against restored target"
+      if eternal_systemctl restart "$ETERNAL_SERVICE_NAME" && eternal_systemctl_is_active; then
+        :
+      else
+        eternal_deploy_log "rollback: backend restart/health-active FAILED"
+        rb_fail=1
+      fi
+    fi
+  elif [[ "$current_switched" == "1" && "$rb_fail" -ne 0 ]]; then
+    eternal_deploy_log "rollback: skip CURRENT/backend restore after frontend failure (partial state)"
+  fi
+
+  rm -f "${ETERNAL_FRONTEND_ROOT}/.deploy-in-progress" 2>/dev/null || true
+  rm -f "${ETERNAL_FRONTEND_ROOT}/index.html.new" 2>/dev/null || true
+
+  # Post-restore verification — never claim success from HTTP 200 alone.
+  if [[ "$current_switched" == "1" ]]; then
+    cur_resolved="$(readlink -f "$ETERNAL_CURRENT_LINK" 2>/dev/null || true)"
+    want_resolved="$(readlink -f "$prev_path" 2>/dev/null || true)"
+    if [[ -z "$cur_resolved" || -z "$want_resolved" || "$cur_resolved" != "$want_resolved" ]]; then
+      eternal_deploy_log "rollback verify: CURRENT=${cur_resolved:-empty} != previous=${want_resolved:-empty}"
+      rb_fail=1
+    fi
+    ETERNAL_RUNTIME_VERIFY_SOFT=1
+    if ! eternal_verify_runtime_points_at_release "$prev_path"; then
+      eternal_deploy_log "rollback verify: runtime/process identity FAILED"
+      rb_fail=1
+    fi
+    ETERNAL_RUNTIME_VERIFY_SOFT=0
+  else
+    ETERNAL_RUNTIME_VERIFY_SOFT=1
+    if ! eternal_verify_runtime_points_at_release "$prev_path"; then
+      eternal_deploy_log "rollback verify: runtime/process identity FAILED"
+      rb_fail=1
+    fi
+    ETERNAL_RUNTIME_VERIFY_SOFT=0
+  fi
+
+  if ! eternal_health_check; then
+    eternal_deploy_log "rollback verify: health FAILED (mongo=true mode=operational required)"
+    rb_fail=1
+  fi
+
+  if [[ ! -f "$ETERNAL_FRONTEND_ROOT/index.html" ]]; then
+    eternal_deploy_log "rollback verify: frontend index.html missing"
+    rb_fail=1
+  fi
+  if [[ "$frontend_published" == "1" ]]; then
+    if ! eternal_frontend_required_state_ok "$ETERNAL_FRONTEND_ROOT" "$point_dir/frontend"; then
+      eternal_deploy_log "rollback verify: frontend required state != identity backup"
+      rb_fail=1
+    fi
+  fi
+
+  if [[ "$rb_fail" -eq 0 ]]; then
+    # Active marker now points at predecessor (baseline-active has no sha40).
+    eternal_write_active_release_marker "$ETERNAL_RELEASES_ROOT" "$previous_id" "rollback-of-${deployed_sha}"
+    printf 'ROLLBACK_SUCCESS deployed_sha=%s previous_id=%s\n' "$deployed_sha" "$previous_id"
+    eternal_deploy_log "ROLLBACK_SUCCESS deployed_sha=$deployed_sha previous_id=$previous_id"
+    eternal_deploy_log "NOTE: code rollback does not reverse MongoDB/business transactions already committed"
+    ROLLBACK_STATUS="SUCCESS"
+    return 0
+  fi
+
+  printf 'ROLLBACK_FAILED deployed_sha=%s previous_id=%s current=%s\n' \
+    "$deployed_sha" "$previous_id" "$(readlink -f "$ETERNAL_CURRENT_LINK" 2>/dev/null || echo unknown)"
+  eternal_deploy_log "ROLLBACK_FAILED (see logs for partial state)"
+  ROLLBACK_STATUS="FAILED"
+  return 1
 }
 
 cmd_usage() {
   cat <<'EOF'
 Usage:
   eternal-deploy-runner.sh deploy <sha40>
+  eternal-deploy-runner.sh rollback <deployed_sha40> <previous_id>
+    previous_id = 40-hex SHA or baseline-active
 EOF
 }
 
 main() {
   local verb="${1:-}"
   local sha="${2:-}"
+  local previous_id="${3:-}"
   case "$verb" in
     deploy)
       [[ -n "$sha" ]] || eternal_deploy_die "missing sha"
       cmd_deploy "$sha"
+      ;;
+    rollback)
+      [[ -n "$sha" ]] || eternal_deploy_die "missing deployed sha"
+      [[ -n "$previous_id" ]] || eternal_deploy_die "missing previous release id"
+      cmd_rollback "$sha" "$previous_id"
       ;;
     *)
       cmd_usage >&2
