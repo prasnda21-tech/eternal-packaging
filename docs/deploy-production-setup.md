@@ -95,6 +95,8 @@ Keep dirty `/opt/eternal-packaging` overlay untouched. Pure SHA does **not** aut
 - Shared `flock` lock held through rollback; existing lock file without holder does not block; lock file is not unlinked.
 - Preflight: runtime root writable, FE leaf writable, mirror, disk, systemd WD/ExecStart match expected **runtime** paths.
 - Materialize via `git archive` then **fresh venv** + dependency install; validate executable before switching `current`.
+- Frontend production build is **Yarn only** (`yarn.lock` + `yarn install --frozen-lockfile`); npm fallback removed (fail closed if Yarn/lock missing).
+- Health checks after restart/publish use a **60s wall-clock budget** (retries include transient HTTP 502); success still requires `mongo=true` and `mode=operational`.
 - **FE-only / no-backend-change:** keep `current` + running process on the active release (no switch, no restart); verify `/proc/<MainPID>/cwd` matches that release.
 - **Backend change:** switch `current`, restart, then verify process cwd == new release backend.
 - Rollback never swallows component failures: continues other restores, holds lock until finished, verifies pointer/process/health/index, prints `ROLLBACK_PASS` or `ROLLBACK_FAILED`.

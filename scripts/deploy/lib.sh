@@ -358,6 +358,22 @@ sys.exit(0 if mongo is True and mode=="operational" else 1)
   return 0
 }
 
+# Production frontend install/build: Yarn only (matches CI). No npm fallback.
+eternal_frontend_production_build() {
+  local frontend_dir="$1"
+  [[ -d "$frontend_dir" ]] || eternal_deploy_die "frontend tree missing: $frontend_dir"
+  [[ -f "$frontend_dir/yarn.lock" ]] \
+    || eternal_deploy_die "frontend yarn.lock missing; production deploy requires Yarn (CI standard); npm fallback removed"
+  command -v yarn >/dev/null 2>&1 \
+    || eternal_deploy_die "yarn required but not found; production deploy does not use npm"
+
+  (
+    cd "$frontend_dir"
+    yarn install --frozen-lockfile
+    yarn build
+  ) || eternal_deploy_die "frontend yarn install/build failed; live not activated"
+}
+
 eternal_constant_time_eq() {
   local a="$1"
   local b="$2"
