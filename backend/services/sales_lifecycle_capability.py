@@ -209,7 +209,16 @@ def _user_has_perm(
     role = str((user or {}).get("role") or "")
     override = (user or {}).get("permissions_override") or {}
     if opt_in or perm in OPT_IN_ONLY_PERMISSIONS:
-        return bool(opt_in_permission_granted(role, override, perm))
+        # Same semantics as require_cancel_permission: override True/False first,
+        # else role_permissions via role_defaults_override.
+        return bool(
+            opt_in_permission_granted(
+                role,
+                override,
+                perm,
+                role_defaults_override=role_defaults_override,
+            )
+        )
     if role == "admin":
         return True
     perms = effective_permissions(role, override, role_defaults_override)
@@ -374,8 +383,15 @@ async def build_invoice_lifecycle_capability(
         INVOICE_CREATE_ENDPOINT_PERMS,
         role_defaults_override=role_defaults,
     )
-    can_edit = _user_has_perm(user, "sales.invoice.edit")
-    can_cancel = _user_has_perm(user, "sales.invoice.cancel", opt_in=True)
+    can_edit = _user_has_perm(
+        user, "sales.invoice.edit", role_defaults_override=role_defaults
+    )
+    can_cancel = _user_has_perm(
+        user,
+        "sales.invoice.cancel",
+        opt_in=True,
+        role_defaults_override=role_defaults,
+    )
 
     auto_available = auto_sys and can_create
     if not can_create:
@@ -415,9 +431,23 @@ async def build_receipt_lifecycle_capability(
     edit_sys, edit_reasons = await _receipt_edit_ready(db)
     cancel_sys, cancel_reasons = await _cancel_ready(db, kind="receipt")
 
-    can_create = _user_has_perm(user, "sales.receipt.create")
-    can_edit = _user_has_perm(user, "sales.receipt.edit", opt_in=True)
-    can_cancel = _user_has_perm(user, "sales.receipt.cancel", opt_in=True)
+    # Hak Akses role_permissions must feed opt-in the same way as cancel write path.
+    role_defaults = await _role_defaults_from_db(db)
+    can_create = _user_has_perm(
+        user, "sales.receipt.create", role_defaults_override=role_defaults
+    )
+    can_edit = _user_has_perm(
+        user,
+        "sales.receipt.edit",
+        opt_in=True,
+        role_defaults_override=role_defaults,
+    )
+    can_cancel = _user_has_perm(
+        user,
+        "sales.receipt.cancel",
+        opt_in=True,
+        role_defaults_override=role_defaults,
+    )
 
     auto_available = auto_sys and can_create
     if not can_create:

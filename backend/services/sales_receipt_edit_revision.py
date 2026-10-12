@@ -118,15 +118,43 @@ async def raise_if_receipt_revision_in_progress(db, receipt_id: str) -> None:
         raise HTTPException(409, "Revisi penerimaan belum selesai.")
 
 
-async def _require_edit_permission(user: dict) -> None:
-    """Opt-in only — no admin / create / delete inference."""
+async def _role_defaults_from_db(db) -> Optional[Dict[str, list]]:
+    """Hak Akses role_permissions — same source as require_cancel_permission."""
+    try:
+        docs = await db.role_permissions.find(
+            {}, {"_id": 0, "role": 1, "permissions": 1}
+        ).to_list(200)
+    except Exception:
+        return None
+    out: Dict[str, list] = {}
+    for doc in docs or []:
+        role = str(doc.get("role") or "").strip()
+        if not role:
+            continue
+        out[role] = list(doc.get("permissions") or [])
+    return out or None
+
+
+async def _require_edit_permission(db, user: dict) -> None:
+    """Opt-in only — aligned with require_cancel_permission / Role & Hak Akses.
+
+    No admin/super-admin bypass. Explicit override True wins. Explicit False
+    denies. Otherwise effective_permissions(role, override, role_permissions).
+    """
     from permissions import OPT_IN_ONLY_PERMISSIONS, effective_permissions
 
     if PERM_EDIT not in OPT_IN_ONLY_PERMISSIONS:
         raise HTTPException(500, f"Permission '{PERM_EDIT}' bukan opt-in.")
+    override = (user or {}).get("permissions_override") or {}
+    if override.get(PERM_EDIT) is True:
+        return
+    if override.get(PERM_EDIT) is False:
+        raise HTTPException(403, f"Anda tidak punya permission '{PERM_EDIT}'")
+    role_override = await _role_defaults_from_db(db)
     perms = effective_permissions(
         str((user or {}).get("role") or ""),
-        (user or {}).get("permissions_override") or {},
+        override,
+        role_override,
     )
     if PERM_EDIT not in perms:
         raise HTTPException(403, f"Anda tidak punya permission '{PERM_EDIT}'")
@@ -515,7 +543,7 @@ async def update_unposted_sales_receipt(db, receipt_id: str, payload: dict, user
         sync_order_payment_projections,
     )
 
-    await _require_edit_permission(user)
+    await _require_edit_permission(db, user)
     rec = await db.sales_receipts.find_one({"id": str(receipt_id)}, {"_id": 0})
     if not rec:
         rec = await db.sales_receipts.find_one({"receipt_number": str(receipt_id)}, {"_id": 0})
@@ -605,7 +633,7 @@ async def revise_posted_sales_receipt(
         verify_settlement_projections,
     )
 
-    await _require_edit_permission(user)
+    await _require_edit_permission(db, user)
     blockers = await _activation_blockers(db)
     if blockers:
         raise HTTPException(409, {"code": "revision_not_ready", "blockers": blockers})
@@ -929,7 +957,7 @@ async def update_sales_receipt(db, receipt_id: str, payload: dict, user: dict) -
         receipt_is_cancelled,
     )
 
-    await _require_edit_permission(user)
+    await _require_edit_permission(db, user)
     rec = await db.sales_receipts.find_one({"id": str(receipt_id)}, {"_id": 0})
     if not rec:
         rec = await db.sales_receipts.find_one({"receipt_number": str(receipt_id)}, {"_id": 0})
