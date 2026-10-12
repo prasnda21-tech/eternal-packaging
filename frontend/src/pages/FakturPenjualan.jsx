@@ -32,6 +32,8 @@ import {
 } from "../lib/salesFiveTabs";
 import {
   canBusinessCancelInvoice,
+  canShowInvoiceCancelUi,
+  canShowInvoiceEditUi,
   canRecoverAutoAccounting,
   clearIdempotencyIntent,
   ensureIdempotencyIntent,
@@ -1429,6 +1431,31 @@ export default function FakturPenjualan() {
     setLifecycleBusy(true);
     setDetailErr("");
     try {
+      if (canCancelDetailBusiness) {
+        const key = ensureIdempotencyIntent(
+          cancelIdempotencyRef,
+          `cancel-invoice-detail|${selectedInvoiceId}`,
+          { prefix: "inv-cancel" },
+        );
+        const res = await api.businessCancelSalesInvoice(selectedInvoiceId, {
+          reason: "Batalkan dari detail Faktur Penjualan",
+          idempotency_key: key,
+        });
+        const interpreted = interpretBusinessCancelResponse(res);
+        if (!interpreted.ok) {
+          setDetailErr(interpreted.message);
+          if (interpreted.document) setDetailData(interpreted.document);
+          if (interpreted.pending) loadInvoices();
+          return;
+        }
+        clearIdempotencyIntent(cancelIdempotencyRef);
+        if (interpreted.document) setDetailData(interpreted.document);
+        setCancelConfirm(false);
+        setSuccessMsg(interpreted.message || "Faktur dibatalkan.");
+        setTimeout(() => setSuccessMsg(""), 2500);
+        loadInvoices();
+        return;
+      }
       const res = await api.cancelSalesInvoice(selectedInvoiceId);
       const updated = res.invoice || res;
       setDetailData(updated);
@@ -1436,7 +1463,14 @@ export default function FakturPenjualan() {
       setSuccessMsg("Faktur dibatalkan.");
       setTimeout(() => setSuccessMsg(""), 2500);
     } catch (err) {
+      const statusCode = err.response?.status;
       const det = err.response?.data?.detail;
+      if (canCancelDetailBusiness) {
+        const interpreted = interpretBusinessCancelResponse({}, { httpErrorBody: det, statusCode });
+        setDetailErr(interpreted.message || (typeof det === "object" ? det.message : det) || "Gagal membatalkan faktur");
+        if (interpreted.document) setDetailData(interpreted.document);
+        return;
+      }
       setDetailErr(typeof det === "object" ? det.message : det || err.message || "Gagal membatalkan faktur");
     } finally {
       setLifecycleBusy(false);
@@ -1486,7 +1520,7 @@ export default function FakturPenjualan() {
   const accountingStatus = accountingStatusOf(detailData);
   const isAccountingPosted = accountingStatus === "posted" || detailData?.accounting_posted === true;
   const isAccountingReversed = accountingStatus === "reversed";
-  const detailLifecycleCapability = detailData?.lifecycle_capability || null;
+  const detailLifecycleCapability = detailData?.lifecycle_capability || createLifecycleCapability;
   const hideLegacyManualAccounting = shouldHideLegacyManualAccounting(detailLifecycleCapability);
   const hideLegacyOnCreate = shouldHideLegacyManualAccounting(createLifecycleCapability);
   const showPostAccounting =
@@ -1514,7 +1548,22 @@ export default function FakturPenjualan() {
     detailStatus === "finalized" &&
     !isAccountingPosted &&
     detailData?.accounting_ready === false;
-  const canEditFinancial = canEdit && !financialLocked;
+  // Finalized revision unlocks when edit_revision capability + sales.invoice.edit + no active receipts.
+  const canReviseInvoice = canShowInvoiceEditUi(hasPerm, {
+    capability: detailLifecycleCapability,
+    document: detailData,
+  });
+  const canEditFinancial = (canEdit && !financialLocked) || canReviseInvoice;
+  // Business-cancel (posted OK) vs legacy cancel (unposted + no receipts only).
+  const canCancelDetailBusiness = canShowInvoiceCancelUi(hasPerm, {
+    capability: detailLifecycleCapability,
+    document: detailData,
+  });
+  const canCancelDetailLegacy =
+    !canCancelDetailBusiness
+    && canEdit
+    && detailStatus === "finalized"
+    && detailData?.can_cancel === true;
 
   const filtersActive = invoiceFiltersActive(columnFilters, searchQuery);
   const reserveCheckboxColumn = canDelete || canCancelBusiness;
@@ -2697,7 +2746,7 @@ export default function FakturPenjualan() {
                     Finalisasi Invoice
                   </button>
                 )}
-                {canEdit && detailStatus === "finalized" && detailData.can_cancel !== false && (
+                {(canCancelDetailBusiness || canCancelDetailLegacy) && (
                   <button
                     type="button"
                     data-testid="btn-cancel-invoice"
@@ -2782,10 +2831,11 @@ export default function FakturPenjualan() {
                   <button
                     type="submit"
                     className="primary"
+                    data-testid={canReviseInvoice ? "btn-edit-invoice" : "btn-save-invoice"}
                     disabled={detailSaving}
                     style={{ padding: "10px 24px", borderRadius: 8, background: detailSaving ? "#94a3b8" : "#9333ea", color: "#fff", border: "none", cursor: detailSaving ? "not-allowed" : "pointer", fontWeight: 600 }}
                   >
-                    {detailSaving ? "Menyimpan..." : "Simpan Perubahan"}
+                    {detailSaving ? "Menyimpan..." : (canReviseInvoice ? "Simpan Edit Faktur" : "Simpan Perubahan")}
                   </button>
                 )}
               </div>

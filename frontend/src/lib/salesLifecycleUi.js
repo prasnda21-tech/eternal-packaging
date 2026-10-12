@@ -122,6 +122,43 @@ export function canShowReceiptCancelUi(hasPerm, { capability = null, document = 
   return true;
 }
 
+/** Explicit invoice edit only — do not treat create/po.edit as revision grant. */
+export function canBusinessEditInvoice(hasPerm) {
+  return typeof hasPerm === "function" && hasPerm("sales.invoice.edit") === true;
+}
+
+/**
+ * Invoice Edit (finalized revision) — capability READY + explicit edit perm +
+ * document not blocked. Active receipts make the document ineligible (backend
+ * raise_active_receipt_blockers); zero receipts alone is not a grant.
+ */
+export function canShowInvoiceEditUi(hasPerm, { capability = null, document = null } = {}) {
+  if (!canBusinessEditInvoice(hasPerm)) return false;
+  if (!lifecycleOpAvailable(capability, "edit_revision")) return false;
+  if (receiptDocumentBlocksMutation(document, capability)) return false;
+  const fin = String(document?.financial_status || "").toLowerCase();
+  if (fin !== "finalized") return false;
+  const activeReceipts = Number(document?.active_receipt_count);
+  if (Number.isFinite(activeReceipts) && activeReceipts > 0) return false;
+  const receiptCount = Number(document?.receipt_count);
+  if (Number.isFinite(receiptCount) && receiptCount > 0) return false;
+  if (Array.isArray(document?.receipts) && document.receipts.length > 0) return false;
+  return true;
+}
+
+/**
+ * Invoice Batalkan (business-cancel) — opt-in cancel + capability READY +
+ * document not blocked. Independent of legacy can_cancel (unposted-only).
+ */
+export function canShowInvoiceCancelUi(hasPerm, { capability = null, document = null } = {}) {
+  if (!canBusinessCancelInvoice(hasPerm)) return false;
+  if (!lifecycleOpAvailable(capability, "business_cancel")) return false;
+  if (receiptDocumentBlocksMutation(document, capability)) return false;
+  const fin = String(document?.financial_status || "").toLowerCase();
+  if (fin && fin !== "finalized") return false;
+  return true;
+}
+
 /**
  * Read backend lifecycle_capability only — never guess feature flags on the client.
  * When auto_create_post is available, ordinary Finalisasi/Post/Reverse are not required.
