@@ -3,6 +3,9 @@ import {
   formatQuantityByUnit,
   listDeliveryProgress,
   listProgressText,
+  orderCreatorLabel,
+  orderInvoiceStatusLabel,
+  orderInvoiceStatusTone,
   orderQuantityLabel,
   quantityByUnitFromLines,
   salesOrderListRequest,
@@ -161,5 +164,26 @@ describe("Five-tab query state", () => {
     expect(salesOrderListTabFromQuery({ tab: "semua", status: "all" })).toBe("active");
     expect(salesOrderListTabFromQuery({ tab: "histori", status: "aktif" })).toBe("active");
     expect(salesOrderListTabFromQuery({ status: "hold" })).toBe("active");
+  });
+});
+
+describe("creator and invoice status presentation", () => {
+  test("creator uses snapshot and falls back to Tidak diketahui", () => {
+    expect(orderCreatorLabel({ created_by_user: "Budi" })).toBe("Budi");
+    expect(orderCreatorLabel({ created_by_user: "budi@example.com" })).toBe("budi@example.com");
+    expect(orderCreatorLabel({ created_by_user: "" })).toBe("Tidak diketahui");
+    expect(orderCreatorLabel({})).toBe("Tidak diketahui");
+    expect(orderCreatorLabel({ sales: "Vira", created_by_user: "" })).toBe("Tidak diketahui");
+  });
+
+  test("invoice status labels and tones", () => {
+    expect(orderInvoiceStatusLabel({ invoice_status: "belum" })).toBe("Belum");
+    expect(orderInvoiceStatusLabel({ invoice_status: "sebagian" })).toBe("Sebagian");
+    expect(orderInvoiceStatusLabel({ invoice_status: "sudah" })).toBe("Sudah");
+    expect(orderInvoiceStatusLabel({ invoice_status: "perlu_pemeriksaan" })).toBe("Perlu Pemeriksaan");
+    expect(orderInvoiceStatusLabel({})).toBe(null);
+    expect(orderInvoiceStatusTone({ invoice_status: "sudah" })).toBe("done");
+    expect(orderInvoiceStatusTone({ invoice_status: "sebagian" })).toBe("partial");
+    expect(orderInvoiceStatusTone({ invoice_status: "perlu_pemeriksaan" })).toBe("review");
   });
 });

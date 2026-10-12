@@ -26,13 +26,16 @@
 .so-list-workspace [data-testid="sales-order-period-filter"] { background: #fff8e8 !important; border-color: #edddb4 !important; color: #75491b !important; }
 .so-list-workspace .so-list-reset { border-color: transparent; color: var(--so-green); }
 .so-list-workspace .so-list-table-scroll { border-radius: 0; padding-right: 0; overflow-x: auto; }
-.so-list-workspace .so-list-table { min-width: 870px; }
+.so-list-workspace .so-list-table { min-width: 1120px; }
 .so-list-workspace .so-col-customer { width: auto; }
-.so-list-workspace .so-col-date { width: 100px; }
-.so-list-workspace .so-col-qty { width: 94px; }
-.so-list-workspace .so-col-progress { width: 165px; }
-.so-list-workspace .so-col-status { width: 155px; }
-.so-list-workspace .so-col-actions { width: 128px; }
+.so-list-workspace .so-col-date { width: 92px; }
+.so-list-workspace .so-col-qty { width: 86px; }
+.so-list-workspace .so-col-progress { width: 132px; }
+.so-list-workspace .so-col-status { width: 100px; }
+.so-list-workspace .so-col-sales { width: 96px; }
+.so-list-workspace .so-col-creator { width: 110px; }
+.so-list-workspace .so-col-invoice-status { width: 120px; }
+.so-list-workspace .so-col-actions { width: 120px; }
 .so-list-workspace .so-list-table thead th { background: #f6f8f8 !important; color: #34464e !important; border-bottom: 1px solid var(--so-line) !important; padding: 8px 10px; text-transform: none; letter-spacing: 0; font-size: 12px; }
 .so-list-workspace .so-list-table thead .so-th-filter { color: #526b69; width: 24px; height: 24px; }
 .so-list-workspace .so-list-table thead .so-th-filter:is(:hover,.is-active) { color: #075344; background: #d9eee5; }
@@ -172,9 +175,8 @@
 .so-list-workspace .so-list-po { flex: 0 1 auto; font-size: 10px; line-height: 13px; }
 .so-list-workspace .so-list-outlet { min-width: 0; font-size: 10px; line-height: 13px; }
 .so-list-workspace .so-list-outlet::before { content: "· "; }
-.so-list-workspace .so-list-status { gap: 0; }
 .so-list-workspace .so-list-badge { min-height: 16px; height: 16px; padding: 0 5px; font-size: 10px; line-height: 14px; }
-.so-list-workspace .so-list-sales { font-size: 10px; line-height: 13px; }
+.so-list-workspace .so-list-sales { font-size: 11px; line-height: 14px; }
 .so-list-workspace .so-progress-track { height: 4px; }
 .so-list-workspace .so-progress-label { font-size: 10px; line-height: 12px; }
 .so-list-workspace .so-act-view,

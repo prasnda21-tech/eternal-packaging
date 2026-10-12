@@ -11024,6 +11024,7 @@ _SALES_ORDER_LIST_PROJECTION = {
     "total_quantity": 1,
     "sales": 1,
     "sales_user": 1,
+    "created_by_user": 1,
     "status_label": 1,
     "current_stage": 1,
     "cancelled": 1,
@@ -11331,6 +11332,25 @@ async def get_sales_order_item_image(
     )
 
 
+async def _enrich_sales_order_list_page(orders: list, user: dict) -> None:
+    """Page-only extras for Pesanan Penjualan: invoice coverage when permitted."""
+    if not orders:
+        return
+    if user.get("role") == "admin":
+        can_invoice = True
+    else:
+        eff = await user_permissions(user)
+        can_invoice = "sales.invoice.view" in eff
+    if not can_invoice:
+        for row in orders:
+            row.pop("invoice_status", None)
+            row.pop("invoice_status_label", None)
+        return
+    from services.sales_order_invoice_status import attach_sales_order_list_invoice_status
+
+    await attach_sales_order_list_invoice_status(db, orders)
+
+
 @api_router.get("/sales-orders")
 async def list_sales_orders(
     q: Optional[str] = None,
@@ -11435,6 +11455,7 @@ async def list_sales_orders(
         total = len(orders)
         start = (current - 1) * size
         page_rows = orders[start:start + size]
+        await _enrich_sales_order_list_page(page_rows, user)
         return {
             "orders": page_rows,
             "count": len(page_rows),
@@ -11496,6 +11517,7 @@ async def list_sales_orders(
     )
 
     if not paging:
+        await _enrich_sales_order_list_page(orders, user)
         return {"orders": orders, "count": len(orders), "capped": branch_capped}
 
     size = page_size if page_size is not None else DEFAULT_PAGE_SIZE
@@ -11512,6 +11534,7 @@ async def list_sales_orders(
     total = len(orders)
     start = (current - 1) * size
     page_rows = orders[start:start + size]
+    await _enrich_sales_order_list_page(page_rows, user)
     return {
         "orders": page_rows,
         "count": len(page_rows),
