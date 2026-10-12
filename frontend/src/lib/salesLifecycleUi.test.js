@@ -2,7 +2,10 @@ import {
   bumpIdempotencyIntent,
   canBusinessCancelInvoice,
   canBusinessCancelReceipt,
+  canBusinessEditInvoice,
   canBusinessEditReceipt,
+  canShowInvoiceCancelUi,
+  canShowInvoiceEditUi,
   canShowReceiptCancelUi,
   canShowReceiptEditUi,
   isReceiptMutationUiEnabled,
@@ -65,6 +68,77 @@ describe("salesLifecycleUi", () => {
     expect(canShowReceiptCancelUi(hasCancel, { capability: null, document: null })).toBe(false);
     expect(receiptDocumentBlocksMutation({ auto_accounting_status: "pending" }, readyCap)).toBe(true);
     expect(receiptDocumentBlocksMutation({ financial_status: "active" }, readyCap)).toBe(false);
+  });
+
+  test("Direktur authorized + posted eligible shows Edit/Batalkan; cancel progress none does not hide", () => {
+    const hasDirektur = (p) => p === "sales.receipt.edit" || p === "sales.receipt.cancel";
+    const readyCap = {
+      edit_revision: { available: true },
+      business_cancel: { available: true },
+      // Legacy misclassification: idle "none" was reported as pending.
+      document_pending_or_failed: true,
+    };
+    const postedEligible = {
+      financial_status: "active",
+      business_cancel_progress: "none",
+      auto_accounting_status: "complete",
+      edit_capability: { editable: true, mode: "posted_revision" },
+    };
+    expect(receiptDocumentBlocksMutation(postedEligible, readyCap)).toBe(false);
+    expect(canShowReceiptEditUi(hasDirektur, { capability: readyCap, document: postedEligible })).toBe(true);
+    expect(canShowReceiptCancelUi(hasDirektur, { capability: readyCap, document: postedEligible })).toBe(true);
+
+    expect(canShowReceiptEditUi(() => false, { capability: readyCap, document: postedEligible })).toBe(false);
+    expect(canShowReceiptCancelUi(() => false, { capability: readyCap, document: postedEligible })).toBe(false);
+
+    const overrideFalse = (p) => false;
+    expect(canShowReceiptEditUi(overrideFalse, { capability: readyCap, document: postedEligible })).toBe(false);
+
+    expect(receiptDocumentBlocksMutation(
+      { ...postedEligible, business_cancel_progress: "pending" },
+      readyCap,
+    )).toBe(true);
+    expect(canShowReceiptCancelUi(hasDirektur, {
+      capability: readyCap,
+      document: { ...postedEligible, business_cancel_progress: "pending" },
+    })).toBe(false);
+  });
+
+  test("invoice Edit/Batalkan: eligible finalized no receipts; deny perm; deny with receipts", () => {
+    const hasAll = (p) => p === "sales.invoice.edit" || p === "sales.invoice.cancel";
+    const readyCap = {
+      edit_revision: { available: true },
+      business_cancel: { available: true },
+      document_pending_or_failed: true,
+    };
+    const eligible = {
+      financial_status: "finalized",
+      business_cancel_progress: "none",
+      auto_accounting_status: "complete",
+      active_receipt_count: 0,
+      receipt_count: 0,
+      receipts: [],
+      can_cancel: false, // legacy unposted-only gate — must not block business-cancel UI
+    };
+    expect(canBusinessEditInvoice(hasAll)).toBe(true);
+    expect(canShowInvoiceEditUi(hasAll, { capability: readyCap, document: eligible })).toBe(true);
+    expect(canShowInvoiceCancelUi(hasAll, { capability: readyCap, document: eligible })).toBe(true);
+
+    expect(canShowInvoiceEditUi(() => false, { capability: readyCap, document: eligible })).toBe(false);
+    expect(canShowInvoiceCancelUi(() => false, { capability: readyCap, document: eligible })).toBe(false);
+
+    expect(canShowInvoiceEditUi(hasAll, {
+      capability: readyCap,
+      document: { ...eligible, active_receipt_count: 1, receipts: [{ id: "r1" }] },
+    })).toBe(false);
+    expect(canShowInvoiceEditUi(hasAll, {
+      capability: { edit_revision: { available: false }, business_cancel: { available: true } },
+      document: eligible,
+    })).toBe(false);
+    expect(canShowInvoiceCancelUi(hasAll, {
+      capability: readyCap,
+      document: { ...eligible, business_cancel_progress: "pending" },
+    })).toBe(false);
   });
 
   test("receipt update response requires financial_complete for posted revision", () => {

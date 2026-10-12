@@ -254,10 +254,11 @@ def _doc_pending_or_failed(doc: Optional[dict]) -> Tuple[bool, Optional[str]]:
     if doc.get("revision_incomplete") is True or doc.get("edit_revision_incomplete") is True:
         return True, "revision_incomplete"
     progress = str(doc.get("business_cancel_progress") or "").strip().lower()
-    if progress and progress not in {"", "complete", "completed", "failed"}:
-        return True, f"cancel_{progress}"
+    # "none" is the idle sentinel from cancel_progress_from_intent — not in-flight.
     if progress == "failed":
         return True, "cancel_failed"
+    if progress in {"pending", "in_progress", "reversing", "reversed", "cancelled"}:
+        return True, f"cancel_{progress}"
     return False, None
 
 

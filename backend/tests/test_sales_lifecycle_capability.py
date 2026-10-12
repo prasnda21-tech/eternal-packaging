@@ -216,6 +216,41 @@ DIREKTUR = {
 
 
 @pytest.mark.anyio
+async def test_receipt_cancel_progress_none_is_not_document_pending(indexes):
+    """Healthy receipts attach business_cancel_progress='none' — must stay eligible."""
+    db = server.db
+    await _enable_all(db)
+    await db.role_permissions.update_one(
+        {"role": "direktur_utama"},
+        {
+            "$set": {
+                "role": "direktur_utama",
+                "permissions": [
+                    "sales.receipt.create",
+                    "sales.receipt.edit",
+                    "sales.receipt.cancel",
+                ],
+            }
+        },
+        upsert=True,
+    )
+    idle = {
+        "id": str(uuid.uuid4()),
+        "financial_status": "active",
+        "business_cancel_progress": "none",
+        "auto_accounting_status": "complete",
+    }
+    cap = await build_receipt_lifecycle_capability(db, DIREKTUR, idle)
+    assert cap["document_pending_or_failed"] is False
+    assert cap[OP_EDIT_REVISION]["available"] is True
+    assert cap[OP_BUSINESS_CANCEL]["available"] is True
+
+    pending_cancel = {**idle, "business_cancel_progress": "pending"}
+    blocked = await build_receipt_lifecycle_capability(db, DIREKTUR, pending_cancel)
+    assert blocked["document_pending_or_failed"] is True
+
+
+@pytest.mark.anyio
 async def test_invoice_auto_create_matches_endpoint_any_of_for_direktur(indexes):
     """Capability auto_create_post must mirror create endpoint any-of perms.
 

@@ -35,6 +35,16 @@ describe("Phase 3 — capability-gated one-save UI", () => {
     expect(shouldHideLegacyManualAccounting(null)).toBe(false);
   });
 
+  test("invoice detail Batalkan/Edit use business-cancel and edit_revision gates not legacy can_cancel alone", () => {
+    expect(faktur).toMatch(/canShowInvoiceCancelUi/);
+    expect(faktur).toMatch(/canShowInvoiceEditUi/);
+    expect(faktur).toMatch(/canCancelDetailBusiness/);
+    expect(faktur).toMatch(/canReviseInvoice/);
+    expect(faktur).toMatch(/businessCancelSalesInvoice/);
+    expect(faktur).toMatch(/btn-edit-invoice/);
+    expect(faktur).toMatch(/btn-cancel-invoice/);
+  });
+
   test("five-tab and clickable row contracts remain wired", () => {
     expect(faktur).toMatch(/salesFiveTabListParams|normalizeSalesListTab/);
     expect(penerimaan).toMatch(/normalizeSalesListTab|salesFiveTab/);
