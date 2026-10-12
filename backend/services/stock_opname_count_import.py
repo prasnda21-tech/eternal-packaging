@@ -166,4 +166,10 @@ async def import_physical_counts(db, session_id: str, data: bytes, user: dict) -
     counts = parse_count_rows(data, session)
     if not counts:
         return session
-    return await record_stock_opname_counts(db, session["id"], {"lines": counts}, user)
+    # Import records qty + imported_at only. physical_count_at must be set explicitly.
+    return await record_stock_opname_counts(
+        db,
+        session["id"],
+        {"lines": counts, "source": "import"},
+        user,
+    )

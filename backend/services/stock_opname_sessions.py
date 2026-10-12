@@ -1,12 +1,18 @@
-"""Warehouse-wide frozen stock opname against R2 physical balances.
+"""Warehouse-wide stock opname against R2 physical balances.
 
-Book quantities are snapshotted from physical_stock_balances at cutoff.
-Confirmed differences append STOCK_OPNAME_ADJUSTMENT physical movements and
-canonical valuation events when a valid HPP already exists. No GL posting.
+Modes:
+- freeze (default/legacy): cutoff freezes the warehouse; adjustment = count - book snapshot.
+- operational: warehouse stays open; adjustment uses explicit physical_count_at,
+  target = count + net warehouse movements after that time, delta = target - book at posting.
+
+Import time (imported_at / counted_at system stamp) is never treated as count time.
+Confirmed differences append STOCK_OPNAME_ADJUSTMENT only — never re-post receipt/delivery.
+Canonical valuation events when a valid HPP already exists. No GL posting.
 """
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import Body, File, HTTPException, UploadFile
@@ -26,6 +32,10 @@ STATUS_CONFIRMED = "CONFIRMED"
 STATUS_CANCELLED = "CANCELLED"
 ACTIVE_STATUSES = (STATUS_DRAFT, STATUS_COUNTING, STATUS_REVIEW)
 FROZEN_STATUSES = (STATUS_COUNTING, STATUS_REVIEW)
+
+MODE_FREEZE = "freeze"
+MODE_OPERATIONAL = "operational"
+ALLOWED_MODES = frozenset({MODE_FREEZE, MODE_OPERATIONAL})
 
 _fail_after_adjustments = False
 
@@ -63,13 +73,39 @@ def _number(value: Any) -> float:
     return _qty_num(value)
 
 
-def present_opname_line(line: dict) -> dict:
-    """Display fields from the cutoff snapshot. Counts stay blank until entered."""
+def session_mode(doc: Optional[dict]) -> str:
+    mode = str((doc or {}).get("mode") or "").strip().lower()
+    if mode == MODE_OPERATIONAL:
+        return MODE_OPERATIONAL
+    return MODE_FREEZE
+
+
+def parse_physical_count_at(value: Any) -> Optional[str]:
+    """Parse explicit physical count time. Blank → None. Invalid → HTTP 400."""
+    if value is None or value == "":
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    normalized = text.replace("Z", "+00:00") if text.endswith("Z") else text
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError as exc:
+        raise HTTPException(400, "Waktu hitung fisik tidak valid. Gunakan ISO-8601.") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).isoformat()
+
+
+def present_opname_line(line: dict, *, mode: str = MODE_FREEZE) -> dict:
+    """Display fields. Freeze uses cutoff book; operational may carry live posting fields."""
     row = dict(line or {})
     pesanan = _number(row.get("qty_pesanan"))
     belum = _number(row.get("qty_belum_terkirim"))
     row["qty_pesanan"] = pesanan
     row["qty_belum_terkirim"] = belum
+    if row.get("demand_allocation") is None:
+        row["demand_allocation"] = "unallocated"
     count = row.get("physical_count_qty")
     if count is None or count == "":
         row["physical_count_qty"] = None
@@ -77,8 +113,21 @@ def present_opname_line(line: dict) -> dict:
         row["qty_tersedia_setelah"] = None
         return row
     counted = int(count)
-    book = int(row.get("book_qty") or 0)
     row["physical_count_qty"] = counted
+    if mode == MODE_OPERATIONAL and row.get("target_qty") is not None:
+        book = int(row.get("book_qty_at_posting") if row.get("book_qty_at_posting") is not None else row.get("book_qty") or 0)
+        target = int(row.get("target_qty") or 0)
+        row["difference_qty"] = target - book if row.get("difference_qty") is None else int(row.get("difference_qty"))
+        row["qty_tersedia_setelah"] = target - pesanan - belum
+        return row
+    if mode == MODE_OPERATIONAL and row.get("book_qty_live") is not None and row.get("net_movement_after_count") is not None:
+        target = counted + int(row.get("net_movement_after_count") or 0)
+        book_live = int(row.get("book_qty_live") or 0)
+        row["target_qty"] = target
+        row["difference_qty"] = target - book_live
+        row["qty_tersedia_setelah"] = target - pesanan - belum
+        return row
+    book = int(row.get("book_qty") or 0)
     row["difference_qty"] = counted - book
     row["qty_tersedia_setelah"] = counted - pesanan - belum
     return row
@@ -89,7 +138,9 @@ def _public(doc: Optional[dict]) -> dict:
         raise HTTPException(404, "Sesi stock opname tidak ditemukan.")
     doc = dict(doc)
     doc.pop("_id", None)
-    lines = [present_opname_line(line) for line in doc.get("lines") or []]
+    mode = session_mode(doc)
+    doc["mode"] = mode
+    lines = [present_opname_line(line, mode=mode) for line in doc.get("lines") or []]
     doc["lines"] = lines
     doc["item_count"] = len(lines)
     doc["difference_count"] = sum(
@@ -98,8 +149,18 @@ def _public(doc: Optional[dict]) -> dict:
     return doc
 
 
-async def _snapshot_order_buckets(db, mongo_session, lines: List[dict]) -> None:
-    """Freeze Qty Pesanan and Qty Belum Terkirim with the same rules as Stock Saat Ini."""
+async def _snapshot_order_buckets(
+    db,
+    mongo_session,
+    lines: List[dict],
+    *,
+    warehouse_id: Optional[str] = None,
+) -> None:
+    """Snapshot Qty Pesanan / Belum Terkirim with Stock Saat Ini readiness (print/non_print).
+
+    Order demand stays company-wide and unallocated (no auto warehouse assign).
+    Delivered qty for Belum Terkirim is scoped to the session warehouse when provided.
+    """
     from services.physical_stock import (
         LEDGER_COLLECTION,
         MASTER_ITEMS_COLLECTION,
@@ -129,8 +190,15 @@ async def _snapshot_order_buckets(db, mongo_session, lines: List[dict]) -> None:
     ids = [str(line.get("master_item_id") or "") for line in lines if line.get("master_item_id")]
     movements = []
     if ids:
+        query: Dict[str, Any] = {
+            "movement_type": MOVEMENT_SALES_DELIVERY,
+            "master_item_id": {"$in": ids},
+        }
+        wid = str(warehouse_id or "").strip()
+        if wid:
+            query["warehouse_id"] = wid
         movements = await db[LEDGER_COLLECTION].find(
-            {"movement_type": MOVEMENT_SALES_DELIVERY, "master_item_id": {"$in": ids}},
+            query,
             {"_id": 0, "master_item_id": 1, "qty_delta": 1},
             session=mongo_session,
         ).to_list(20000)
@@ -152,6 +220,8 @@ async def _snapshot_order_buckets(db, mongo_session, lines: List[dict]) -> None:
         )
         line["qty_pesanan"] = buckets["qty_pesanan"]
         line["qty_belum_terkirim"] = buckets["qty_belum_terkirim"]
+        # Demand is not warehouse-assigned; keep visible as unallocated.
+        line["demand_allocation"] = "unallocated"
 
 
 def parse_count_qty(value: Any) -> int:
@@ -249,9 +319,12 @@ def _line_snapshot(master: dict, book_qty: int, base_uom: str) -> dict:
         "book_qty": int(book_qty),
         "physical_count_qty": None,
         "difference_qty": None,
+        "physical_count_at": None,
+        "imported_at": None,
         "counted_at": None,
         "counted_by": None,
         "note": "",
+        "demand_allocation": "unallocated",
     }
 
 
@@ -307,8 +380,17 @@ async def _book_lines(db, session, *, warehouse_id: str) -> List[dict]:
         str(row.get("item_name") or ""),
         str(row.get("master_item_id") or ""),
     ))
-    await _snapshot_order_buckets(db, session, lines)
+    await _snapshot_order_buckets(db, session, lines, warehouse_id=warehouse_id)
     return lines
+
+
+def _normalize_mode(raw: Any) -> str:
+    if raw is None or raw == "":
+        return MODE_FREEZE
+    mode = str(raw).strip().lower()
+    if mode not in ALLOWED_MODES:
+        raise HTTPException(400, "Mode stock opname harus 'freeze' atau 'operational'.")
+    return mode
 
 
 async def create_stock_opname_session(db, payload: Optional[dict], user: dict) -> dict:
@@ -326,13 +408,16 @@ async def create_stock_opname_session(db, payload: Optional[dict], user: dict) -
         branch_id=payload.get("branch_id"),
         warehouse_id=payload.get("warehouse_id"),
     )
+    mode = _normalize_mode(payload.get("mode"))
     key = str(payload.get("idempotency_key") or "").strip()
     if key:
         existing = await db[COLLECTION].find_one({"idempotency_key": key}, {"_id": 0})
         if existing:
             if existing.get("warehouse_id") != warehouse["id"] or existing.get("branch_id") != branch["id"]:
                 raise HTTPException(409, "Idempotency key sudah digunakan dengan payload yang berbeda")
-            return existing
+            if session_mode(existing) != mode:
+                raise HTTPException(409, "Idempotency key sudah digunakan dengan payload yang berbeda")
+            return _public(existing)
     active = await db[COLLECTION].find_one(
         {"warehouse_id": warehouse["id"], "status": {"$in": list(ACTIVE_STATUSES)}},
         {"_id": 0, "id": 1, "opname_number": 1},
@@ -348,6 +433,7 @@ async def create_stock_opname_session(db, payload: Optional[dict], user: dict) -
         "branch_name": branch.get("name") or "",
         "warehouse_code": warehouse.get("code") or "",
         "warehouse_name": warehouse.get("name") or "",
+        "mode": mode,
         "status": STATUS_DRAFT,
         "cutoff_at": None,
         "created_at": stamp,
@@ -382,7 +468,9 @@ async def create_stock_opname_session(db, payload: Optional[dict], user: dict) -
                 if existing:
                     if existing.get("warehouse_id") != warehouse["id"] or existing.get("branch_id") != branch["id"]:
                         raise HTTPException(409, "Idempotency key sudah digunakan dengan payload yang berbeda")
-                    return existing
+                    if session_mode(existing) != mode:
+                        raise HTTPException(409, "Idempotency key sudah digunakan dengan payload yang berbeda")
+                    return _public(existing)
                 raise HTTPException(409, "Dokumen duplikat terdeteksi.") from exc
             if "opname_number" in message:
                 continue
@@ -390,10 +478,131 @@ async def create_stock_opname_session(db, payload: Optional[dict], user: dict) -
     raise HTTPException(409, f"Gagal menyimpan nomor stock opname. {last_error}")
 
 
+async def _net_movement_after_count(
+    db,
+    mongo_session,
+    *,
+    warehouse_id: str,
+    master_item_id: str,
+    physical_count_at: str,
+    exclude_session_id: Optional[str] = None,
+) -> int:
+    """Sum qty_delta in the session warehouse with occurred_at > physical_count_at."""
+    from services.physical_stock import LEDGER_COLLECTION, MOVEMENT_STOCK_OPNAME_ADJUSTMENT, _qty_num
+
+    rows = await db[LEDGER_COLLECTION].find(
+        {
+            "warehouse_id": str(warehouse_id),
+            "master_item_id": str(master_item_id),
+            "occurred_at": {"$gt": str(physical_count_at)},
+        },
+        {
+            "_id": 0,
+            "qty_delta": 1,
+            "movement_type": 1,
+            "metadata": 1,
+            "reference_id": 1,
+        },
+        session=mongo_session,
+    ).to_list(50000)
+    total = 0
+    session_id = str(exclude_session_id or "")
+    for row in rows:
+        if row.get("movement_type") == MOVEMENT_STOCK_OPNAME_ADJUSTMENT:
+            meta = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+            if session_id and (
+                str(meta.get("stock_opname_session_id") or "") == session_id
+                or str(row.get("reference_id") or "") == session_id
+            ):
+                continue
+        total += int(_qty_num(row.get("qty_delta")))
+    return total
+
+
+async def _has_backdated_movement(
+    db,
+    mongo_session,
+    *,
+    warehouse_id: str,
+    master_item_id: str,
+    physical_count_at: str,
+    count_recorded_at: str,
+) -> bool:
+    """True when a movement was created after count entry but dated at/before count time."""
+    from services.physical_stock import LEDGER_COLLECTION
+
+    found = await db[LEDGER_COLLECTION].find_one(
+        {
+            "warehouse_id": str(warehouse_id),
+            "master_item_id": str(master_item_id),
+            "created_at": {"$gt": str(count_recorded_at)},
+            "occurred_at": {"$lte": str(physical_count_at)},
+        },
+        {"_id": 1},
+        session=mongo_session,
+    )
+    return found is not None
+
+
+async def _book_qty_now(db, mongo_session, *, master_item_id: str, branch_id: str, warehouse_id: str) -> int:
+    from services.physical_stock import BALANCE_COLLECTION
+
+    doc = await db[BALANCE_COLLECTION].find_one(
+        {
+            "master_item_id": str(master_item_id),
+            "branch_id": str(branch_id),
+            "warehouse_id": str(warehouse_id),
+        },
+        {"_id": 0, "physical_qty": 1},
+        session=mongo_session,
+    )
+    return int((doc or {}).get("physical_qty") or 0)
+
+
+async def _enrich_operational_preview(db, doc: dict) -> dict:
+    """Attach live book + net movement preview for operational sessions (read-only)."""
+    if session_mode(doc) != MODE_OPERATIONAL:
+        return doc
+    if doc.get("status") not in (STATUS_COUNTING, STATUS_REVIEW):
+        return doc
+    from services.physical_stock import _client
+
+    warehouse_id = str(doc.get("warehouse_id") or "")
+    branch_id = str(doc.get("branch_id") or "")
+    lines = [dict(line) for line in doc.get("lines") or []]
+    async with await _client(db).start_session() as mongo_session:
+        for line in lines:
+            count_at = parse_physical_count_at(line.get("physical_count_at"))
+            mid = str(line.get("master_item_id") or "")
+            line["book_qty_live"] = await _book_qty_now(
+                db, mongo_session, master_item_id=mid, branch_id=branch_id, warehouse_id=warehouse_id,
+            )
+            if count_at and line.get("physical_count_qty") is not None:
+                net = await _net_movement_after_count(
+                    db,
+                    mongo_session,
+                    warehouse_id=warehouse_id,
+                    master_item_id=mid,
+                    physical_count_at=count_at,
+                    exclude_session_id=doc.get("id"),
+                )
+                line["net_movement_after_count"] = net
+                line["target_qty"] = int(line["physical_count_qty"]) + net
+            else:
+                line["net_movement_after_count"] = None
+                line["target_qty"] = None
+    doc = dict(doc)
+    doc["lines"] = lines
+    return doc
+
+
 async def get_stock_opname_session(db, session_id: str, user: Optional[dict] = None) -> dict:
     doc = await db[COLLECTION].find_one({"id": str(session_id)}, {"_id": 0})
     if not doc:
         doc = await db[COLLECTION].find_one({"opname_number": str(session_id)}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Sesi stock opname tidak ditemukan.")
+    doc = await _enrich_operational_preview(db, doc)
     public = _public(doc)
     if user is not None:
         from services.branch_access import require_branch_access
@@ -482,13 +691,25 @@ async def record_stock_opname_counts(db, session_id: str, payload: Optional[dict
         incoming = [payload]
     if not isinstance(incoming, list) or not incoming:
         raise HTTPException(400, "Minimal satu baris hitungan.")
-    doc = await get_stock_opname_session(db, session_id, user=user)
-    if doc["status"] != STATUS_COUNTING:
+    # Read raw doc (avoid enrichment noise while mutating).
+    raw_doc = await db[COLLECTION].find_one({"id": str(session_id)}, {"_id": 0})
+    if not raw_doc:
+        raw_doc = await db[COLLECTION].find_one({"opname_number": str(session_id)}, {"_id": 0})
+    if not raw_doc:
+        raise HTTPException(404, "Sesi stock opname tidak ditemukan.")
+    if user is not None:
+        from services.branch_access import require_branch_access
+        await require_branch_access(db, user, raw_doc.get("branch_id"))
+    if raw_doc.get("status") != STATUS_COUNTING:
         raise HTTPException(400, "Hitungan hanya dapat diisi selama status COUNTING.")
-    by_id = {str(line.get("line_id")): dict(line) for line in doc.get("lines") or []}
+    mode = session_mode(raw_doc)
+    by_id = {str(line.get("line_id")): dict(line) for line in raw_doc.get("lines") or []}
     seen = set()
     actor = _actor(user)
     stamp = _now()
+    session_count_at = parse_physical_count_at(payload.get("physical_count_at"))
+    source = str(payload.get("source") or "").strip().lower()
+    is_import = source == "import"
     for raw in incoming:
         if not isinstance(raw, dict):
             raise HTTPException(400, "Baris hitungan tidak valid.")
@@ -498,15 +719,26 @@ async def record_stock_opname_counts(db, session_id: str, payload: Optional[dict
         if line_id in seen:
             raise HTTPException(400, "Baris hitungan duplikat.")
         seen.add(line_id)
-        if "physical_count_qty" not in raw or raw.get("physical_count_qty") is None or raw.get("physical_count_qty") == "":
-            raise HTTPException(400, "Hitungan kosong bukan nol. Isi 0 secara eksplisit.")
-        qty = parse_count_qty(raw.get("physical_count_qty"))
         line = by_id[line_id]
         book = int(line.get("book_qty") or 0)
-        line["physical_count_qty"] = qty
-        line["difference_qty"] = qty - book
-        line["counted_at"] = stamp
-        line["counted_by"] = actor
+        has_qty = "physical_count_qty" in raw and raw.get("physical_count_qty") is not None and raw.get("physical_count_qty") != ""
+        has_time = "physical_count_at" in raw or session_count_at is not None
+        if not has_qty and not has_time:
+            raise HTTPException(400, "Hitungan kosong bukan nol. Isi 0 secara eksplisit.")
+        if has_qty:
+            qty = parse_count_qty(raw.get("physical_count_qty"))
+            line["physical_count_qty"] = qty
+            if mode == MODE_FREEZE:
+                line["difference_qty"] = qty - book
+            line["counted_at"] = stamp
+            line["counted_by"] = actor
+            if is_import:
+                line["imported_at"] = stamp
+        # Explicit count time only — never copy import/system stamp into physical_count_at.
+        if "physical_count_at" in raw:
+            line["physical_count_at"] = parse_physical_count_at(raw.get("physical_count_at"))
+        elif session_count_at is not None:
+            line["physical_count_at"] = session_count_at
         if "note" in raw or "reason" in raw:
             line["note"] = str(raw.get("note") if "note" in raw else raw.get("reason") or "").strip()
         line["book_qty"] = book
@@ -517,12 +749,12 @@ async def record_stock_opname_counts(db, session_id: str, payload: Optional[dict
         str(row.get("master_item_id") or ""),
     ))
     result = await db[COLLECTION].update_one(
-        {"id": doc["id"], "status": STATUS_COUNTING},
+        {"id": raw_doc["id"], "status": STATUS_COUNTING},
         {"$set": {"lines": lines, "updated_at": stamp}},
     )
     if result.matched_count != 1:
         raise HTTPException(409, "Hitungan gagal karena status sesi berubah.")
-    return await get_stock_opname_session(db, doc["id"])
+    return await get_stock_opname_session(db, raw_doc["id"])
 
 
 async def submit_stock_opname_review(db, session_id: str, user: dict) -> dict:
@@ -571,6 +803,79 @@ def _retryable(exc: BaseException) -> bool:
     return getattr(exc, "code", None) in (112, 251)
 
 
+def _require_operational_count_times(lines: List[dict]) -> None:
+    """Reject confirm when any line lacks an unambiguous physical_count_at.
+
+    Import/system stamps (imported_at / counted_at) are never used as fallback.
+    """
+    ambiguous = []
+    for line in lines:
+        try:
+            count_at = parse_physical_count_at(line.get("physical_count_at"))
+        except HTTPException:
+            ambiguous.append(str(line.get("item_code") or line.get("master_item_id") or "?"))
+            continue
+        if not count_at:
+            ambiguous.append(str(line.get("item_code") or line.get("master_item_id") or "?"))
+            continue
+        line["physical_count_at"] = count_at
+    if ambiguous:
+        raise HTTPException(
+            400,
+            "Waktu hitung fisik ambigu atau kosong. Isi physical_count_at eksplisit sebelum konfirmasi. "
+            "Waktu import bukan waktu hitung. Tidak ada posting.",
+        )
+
+
+async def _prepare_operational_lines(
+    db,
+    mongo_session,
+    current: dict,
+    lines: List[dict],
+) -> List[dict]:
+    """Compute target/adjustment for operational mode inside the confirm transaction."""
+    warehouse_id = str(current.get("warehouse_id") or "")
+    branch_id = str(current.get("branch_id") or "")
+    session_id = str(current.get("id") or "")
+    prepared = []
+    for line in lines:
+        row = dict(line)
+        mid = str(row.get("master_item_id") or "")
+        count_at = str(row.get("physical_count_at") or "")
+        count_recorded = str(row.get("counted_at") or row.get("imported_at") or count_at)
+        if await _has_backdated_movement(
+            db,
+            mongo_session,
+            warehouse_id=warehouse_id,
+            master_item_id=mid,
+            physical_count_at=count_at,
+            count_recorded_at=count_recorded,
+        ):
+            raise HTTPException(
+                409,
+                "Ada mutasi backdated/terlambat setelah waktu hitung. Konfirmasi ditolak tanpa posting.",
+            )
+        net = await _net_movement_after_count(
+            db,
+            mongo_session,
+            warehouse_id=warehouse_id,
+            master_item_id=mid,
+            physical_count_at=count_at,
+            exclude_session_id=session_id,
+        )
+        book_now = await _book_qty_now(
+            db, mongo_session, master_item_id=mid, branch_id=branch_id, warehouse_id=warehouse_id,
+        )
+        counted = int(row["physical_count_qty"])
+        target = counted + int(net)
+        row["net_movement_after_count"] = int(net)
+        row["target_qty"] = target
+        row["book_qty_at_posting"] = book_now
+        row["difference_qty"] = target - book_now
+        prepared.append(row)
+    return prepared
+
+
 async def _confirm_once(db, doc: dict, confirmation_key: str, user: dict) -> dict:
     from services.hpp_cutover import (
         _current_canonical_hpp_snapshot,
@@ -607,10 +912,18 @@ async def _confirm_once(db, doc: dict, confirmation_key: str, user: dict) -> dic
                     raise HTTPException(409, "Idempotency key sudah digunakan dengan payload yang berbeda")
             lines = [dict(line) for line in current.get("lines") or []]
             _require_complete(lines)
-            for line in lines:
-                qty = int(line["physical_count_qty"])
-                book = int(line.get("book_qty") or 0)
-                line["difference_qty"] = qty - book
+            mode = session_mode(current)
+            if mode == MODE_OPERATIONAL:
+                _require_operational_count_times(lines)
+                lines = await _prepare_operational_lines(db, mongo_session, current, lines)
+            else:
+                for line in lines:
+                    qty = int(line["physical_count_qty"])
+                    book = int(line.get("book_qty") or 0)
+                    line["difference_qty"] = qty - book
+                    line["book_qty_at_posting"] = book
+                    line["target_qty"] = qty
+                    line["net_movement_after_count"] = 0
             # Capture canonical HPP before physical adjustment mutates R2 balances.
             hpp_by_item: Dict[str, Any] = {}
             for line in lines:
@@ -650,6 +963,7 @@ async def _confirm_once(db, doc: dict, confirmation_key: str, user: dict) -> dic
             )
             fields = {
                 "status": STATUS_CONFIRMED,
+                "mode": mode,
                 "lines": lines,
                 "confirmed_at": occurred_at,
                 "confirmed_by": actor,
