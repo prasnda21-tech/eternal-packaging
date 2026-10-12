@@ -159,11 +159,54 @@ async def test_no_double_recognition_in_event_builder():
 
 @pytest.mark.anyio
 async def test_hpp_recalc_switches_and_preserves_sources_and_stock():
+    """R2-era path: GR requires authority; cutover locks to RATA-RATA + goods_receipt."""
+    from services.physical_stock import (
+        PhysicalStockUnavailableError,
+        ensure_indexes as ensure_physical_indexes,
+        require_transaction_support,
+    )
+    from services.r2_go_live import set_r2_authority_active
+
+    try:
+        await require_transaction_support(server.client)
+    except PhysicalStockUnavailableError:
+        pytest.skip("MongoDB replica set required for R2 goods receipts")
+
+    await ensure_physical_indexes(server.db)
+    await set_r2_authority_active(server.db, active=True, actor={"email": "a@x"})
+    await server.db.branches.update_one(
+        {"id": "branch-ygy"},
+        {"$set": {"id": "branch-ygy", "code": "YGY", "name": "Yogyakarta", "active": True}},
+        upsert=True,
+    )
+    await server.db.warehouses.update_one(
+        {"id": "wh-main"},
+        {"$set": {
+            "id": "wh-main", "branch_id": "branch-ygy", "code": "MAIN",
+            "name": "Gudang Yogyakarta", "active": True,
+        }},
+        upsert=True,
+    )
+
     app.dependency_overrides[current_user] = lambda: {"role": "admin", "name": "Admin", "email": "a@x"}
     try:
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as c:
             aid = f"hpp{uuid.uuid4().hex[:8]}"
             mid = f"m-{uuid.uuid4().hex[:8]}"
+            await server.db.master_items.update_one(
+                {"id": mid},
+                {"$set": {
+                    "id": mid,
+                    "accurate_item_id": aid,
+                    "item_code": "FILM",
+                    "item_name": "Film",
+                    "item_type": "INVENTORY",
+                    "unit": "PCS",
+                    "base_unit": "PCS",
+                    "is_active": True,
+                }},
+                upsert=True,
+            )
             req = (await c.post("/api/purchase-requests", json={
                 "lines": [{"item_name": "Film", "requested_qty": 8, "accurate_item_id": aid, "master_item_id": mid}],
             })).json()["request"]
@@ -171,40 +214,44 @@ async def test_hpp_recalc_switches_and_preserves_sources_and_stock():
                 "request_id": req["id"], "supplier": "S",
                 "lines": [{"request_line_id": req["lines"][0]["line_id"], "ordered_qty": 8, "unit_price": 2500}],
             })).json()["order"]
-            await c.post("/api/purchase-goods-receipts", json={
+            gr = await c.post("/api/purchase-goods-receipts", json={
                 "purchase_order_id": po["id"],
                 "lines": [{"purchase_order_line_id": po["lines"][0]["line_id"], "received_qty": 5}],
             })
+            assert gr.status_code == 200, gr.text
             src_po = await server.db.purchase_orders.find_one({"id": po["id"]}, {"_id": 0})
             stock_before = build_stock_rows([], [], [], [], purchase_source="MANUAL_FALLBACK")
 
             ident = f"a:{aid}"
-            r1 = await c.put("/api/settings/hpp", json={"method": "FIFO", "recognition_point": "purchase_order"})
-            assert r1.status_code == 200, r1.text
-            assert r1.json()["settings"]["last_recalculation_status"] == "SUCCESS"
-            q1 = (await c.get("/api/hpp/cost-query", params={"item_identity": ident})).json()
-            assert q1["method"] == "FIFO"
-            assert q1["recognition_point"] == "purchase_order"
-            assert q1["cogs_available"] is False
-            assert q1["cogs_unavailable_reason"] == COGS_UNAVAILABLE_REASON
-            assert q1["acquisitions"][0]["quantity"] == 8
-            assert q1["acquisitions"][0]["unit_hpp"] == 2500
-
-            r2 = await c.put("/api/settings/hpp", json={"method": "RATA-RATA", "recognition_point": "purchase_order"})
-            assert r2.status_code == 200
+            # Cutover / R2 authority: only RATA-RATA + goods_receipt is allowed.
             r3 = await c.put("/api/settings/hpp", json={"method": "RATA-RATA", "recognition_point": "goods_receipt"})
-            assert r3.status_code == 200
+            assert r3.status_code == 200, r3.text
+            assert r3.json()["settings"]["last_recalculation_status"] == "SUCCESS"
             q3 = (await c.get("/api/hpp/cost-query", params={"item_identity": ident})).json()
+            assert q3["method"] == "RATA-RATA"
             assert q3["recognition_point"] == "goods_receipt"
+            assert q3["cogs_available"] is False
+            assert q3["cogs_unavailable_reason"] == COGS_UNAVAILABLE_REASON
             assert q3["acquisitions"]
             assert q3["acquisitions"][0]["quantity"] == 5
-            r4 = await c.put("/api/settings/hpp", json={"method": "FIFO", "recognition_point": "goods_receipt"})
-            assert r4.status_code == 200
+            assert q3["acquisitions"][0]["unit_hpp"] == 2500
+
+            for forbidden in (
+                {"method": "FIFO", "recognition_point": "purchase_order"},
+                {"method": "RATA-RATA", "recognition_point": "purchase_order"},
+                {"method": "FIFO", "recognition_point": "goods_receipt"},
+            ):
+                blocked = await c.put("/api/settings/hpp", json=forbidden)
+                assert blocked.status_code == 409, blocked.text
+                detail = blocked.json().get("detail") or {}
+                assert detail.get("code") == "SETTINGS_CONFLICT"
+
             r4b = await c.post("/api/settings/hpp/recalculate", json={})
-            assert r4b.status_code == 200
+            assert r4b.status_code == 200, r4b.text
             q4 = (await c.get("/api/hpp/cost-query", params={"item_identity": ident})).json()
             q4b = (await c.get("/api/hpp/cost-query", params={"item_identity": ident})).json()
             assert q4["acquisitions"] == q4b["acquisitions"]
+            assert q4["acquisitions"][0]["quantity"] == 5
 
             src_after = await server.db.purchase_orders.find_one({"id": po["id"]}, {"_id": 0})
             assert src_after["lines"][0]["unit_price"] == src_po["lines"][0]["unit_price"]
@@ -217,6 +264,16 @@ async def test_hpp_recalc_switches_and_preserves_sources_and_stock():
             assert len(actives) == 1
     finally:
         app.dependency_overrides.pop(current_user, None)
+        # Isolate cutover/R2 side effects from sibling tests sharing this DB.
+        try:
+            from services.hpp_cutover import CUTOVERS, STATUS_ACTIVE
+            await server.db[CUTOVERS].update_many(
+                {"status": STATUS_ACTIVE},
+                {"$set": {"status": "SUPERSEDED"}},
+            )
+            await set_r2_authority_active(server.db, active=False, actor={"email": "a@x"})
+        except Exception:
+            pass
 
 
 @pytest.mark.anyio

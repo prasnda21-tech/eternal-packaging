@@ -23,7 +23,9 @@ from quantity_rules import (
     qty_shipped,
     qty_shipped_for_line,
     remaining_delivery_note_updates,
+    shipment_is_active,
     shipment_line_mismatches,
+    surat_jalan_created,
     surat_jalan_status_semantic,
     validate_loading_increments,
     validate_loading_lines,
@@ -31,6 +33,16 @@ from quantity_rules import (
     validate_shipment_lines,
     validate_print_completed_total,
 )
+
+
+def _live_sj_file(shipment_id, *, name="SJ.pdf"):
+    """Minimal live Surat Jalan file evidence (storage + upload stamp)."""
+    return {
+        "id": shipment_id,
+        "name": name,
+        "storage_path": f"sj/{shipment_id}/{name}",
+        "uploaded_at": "2026-10-01T00:00:00+00:00",
+    }
 from services.accurate import (
     ACCURATE_DELIVERY_ENDPOINT_AVAILABLE,
     fetch_delivery_notes,
@@ -130,7 +142,20 @@ def test_second_partial_sj_remaining_3000():
     assert available_for_delivery_note_line(o, 0) == 3000
     assert validate_shipment_lines([{"line_idx": 0, "qty": 3000}], o) is None
     assert validate_shipment_lines([{"line_idx": 0, "qty": 3001}], o) is not None
+    # Ghost allocation without live SJ file stays pending for stage/badge.
+    assert surat_jalan_created(o) is False
+    assert surat_jalan_status_semantic(o) == "pending"
+    # Valid live file evidence → partial while packed remains open.
+    o["surat_jalan_files"] = [_live_sj_file("s1")]
+    assert surat_jalan_created(o) is True
     assert surat_jalan_status_semantic(o) == "partial"
+    # Cancelled/deleted SJ is inactive: qty and stage badge do not stay partial.
+    o["shipments"][0]["status"] = "cancelled"
+    o["surat_jalan_files"][0]["is_deleted"] = True
+    assert shipment_is_active(o["shipments"][0]) is False
+    assert qty_shipped(o) == 0
+    assert surat_jalan_created(o) is False
+    assert surat_jalan_status_semantic(o) == "pending"
 
 
 # --- Scenario 4 / 5: loading partial + overload ---
@@ -193,6 +218,9 @@ def test_import_accurate_sj_line_mapping_by_item_id():
     assert qty_shipped_for_line(o, 1) == 1000
     assert available_for_loading_line(o, 0) == 3000
     assert available_for_loading_line(o, 1) == 1000
+    # Import allocation alone is not an active SJ document.
+    assert surat_jalan_status_semantic(o) == "pending"
+    o["surat_jalan_files"] = [_live_sj_file("x", name="SJ-2001-01.pdf")]
     assert surat_jalan_status_semantic(o) == "partial"
 
 
@@ -343,11 +371,11 @@ def test_proof_evidence_partial_does_not_mark_full_po():
 
 
 def test_proof_evidence_uses_packed_sj_without_loading():
+    """SJ allocation without Loading must not become delivery evidence."""
     o = _po_a(packed=4000, shipped_lines=[{"id": "s1", "lines": [{"line_idx": 0, "qty": 4000}]}])
+    o["surat_jalan_files"] = [_live_sj_file("s1")]
     ev = apply_delivery_from_proof_evidence(o)
-    assert ev is not None
-    assert ev["qty_delivered"] == 4000
-    assert ev["full"] is False
+    assert ev is None
 
 
 def test_multi_item_loading_not_fully_complete():
