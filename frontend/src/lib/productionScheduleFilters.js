@@ -73,6 +73,25 @@ export function toDateKey(value) {
   return toDateKey(parsed);
 }
 
+/**
+ * Tanggal Pengiriman shown in the schedule table cell.
+ * Keep this fallback chain identical to ProductionScheduleSheetCells "deadline".
+ * Legacy `deadline` is intentionally excluded.
+ */
+export function productionScheduleDisplayedShippingDate(row) {
+  if (!row) return null;
+  return row.tanggal_pengiriman
+    || row.effective_delivery_date
+    || row.delivery_deadline_effective
+    || row.scheduled_delivery_date
+    || row.delivery_deadline_manual
+    || null;
+}
+
+export function productionScheduleDisplayedShippingDateKey(row) {
+  return toDateKey(productionScheduleDisplayedShippingDate(row));
+}
+
 export function workDateKeys(r) {
   const keys = [];
   const own = toDateKey(r.work_date);
@@ -403,7 +422,7 @@ export function applyProductionFilters(rows, filters = {}) {
     if (f.bufferFilter === "yes" && !r.buffer_stock) return false;
     if (f.bufferFilter === "no" && !!r.buffer_stock) return false;
 
-    const deadlineKey = toDateKey(r.deadline);
+    const deadlineKey = productionScheduleDisplayedShippingDateKey(r);
     if (f.dateFrom) {
       const from = toDateKey(f.dateFrom);
       if (!deadlineKey || !from || deadlineKey < from) return false;
@@ -499,4 +518,32 @@ export function productionFiltersAreActive(filters = {}) {
     || f.includeCancelled !== FILTER_DEFAULTS.includeCancelled
     || f.includeCompleted !== FILTER_DEFAULTS.includeCompleted
   );
+}
+
+/**
+ * Table-mode only: after PO → display-row expansion, keep rows whose
+ * visible operator name matches the header Operator filter (exact name,
+ * same as the select options built from operator_name).
+ * Unassigned/placeholder rows never match an active operator filter.
+ */
+export function applyProductionScheduleDisplayRowFilters(displayRows, filters = {}) {
+  const f = { ...FILTER_DEFAULTS, ...filters };
+  if (f.operatorFilter === "all" || f.operatorFilter == null || f.operatorFilter === "") {
+    return displayRows || [];
+  }
+  const wanted = String(f.operatorFilter);
+  return (displayRows || []).filter((row) => {
+    const name = row?.displayOperator?.operator_name;
+    return name != null && name !== "" && String(name) === wanted;
+  });
+}
+
+/** Unique PO count for the table counter — stable id, not po_number alone. */
+export function countUniqueProductionSchedulePos(displayRows) {
+  const ids = new Set();
+  for (const row of displayRows || []) {
+    if (row?.id == null || row.id === "") continue;
+    ids.add(String(row.id));
+  }
+  return ids.size;
 }

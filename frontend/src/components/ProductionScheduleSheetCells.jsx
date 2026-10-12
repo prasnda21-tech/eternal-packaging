@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
 import { XCircle } from "lucide-react";
 import { formatDate, formatDisplayDate } from "../lib/constants";
+import { productionScheduleDisplayedShippingDate } from "../lib/productionScheduleFilters";
 import {
   formatIdQty,
   formatOperatorAssignedQty,
@@ -273,13 +274,7 @@ function cellContent(col, ctx) {
     case "outlet":
       return row.outlet || "-";
     case "deadline":
-      return formatDate(
-        row.tanggal_pengiriman
-        || row.effective_delivery_date
-        || row.delivery_deadline_effective
-        || row.scheduled_delivery_date
-        || row.delivery_deadline_manual
-      );
+      return formatDate(productionScheduleDisplayedShippingDate(row));
     case "deadline_ship":
       return <DeadlineShipCell row={row} variant={variant} />;
     case "work_date":
