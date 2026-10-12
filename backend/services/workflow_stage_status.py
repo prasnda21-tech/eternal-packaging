@@ -38,6 +38,8 @@ from workflow_gates import (
     group2_complete,
     helper_done,
     packing_unlocked,
+    payment_evidence_present,
+    payment_stage_done,
     penjadwalan_done,
     sample_ok,
     sample_uploaded,
@@ -146,7 +148,7 @@ def resolve_stage_chip(idx: int, order: dict, current_stage: int | None = None) 
     if idx == STAGE_PAYMENT:
         if order.get("payment_bypassed"):
             return {"state": "bypass", "label": "BYPASS"}
-        if order.get("payment_files"):
+        if payment_stage_done(order):
             return {"state": "done", "label": "Selesai"}
         return {"state": "current", "label": "Belum dikerjakan"}
 
@@ -155,7 +157,7 @@ def resolve_stage_chip(idx: int, order: dict, current_stage: int | None = None) 
             return {"state": "done", "label": "Selesai"}
         if order.get("payment_bypassed"):
             return {"state": "bypass", "label": "BYPASS"}
-        if order.get("payment_files"):
+        if payment_evidence_present(order):
             return {"state": "current", "label": "Menunggu approval"}
         return {"state": "pending", "label": "Menunggu"}
 

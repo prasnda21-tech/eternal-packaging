@@ -415,13 +415,18 @@ async def _heal_posted_receipt_from_journal(db, receipt: dict, journal: dict, us
 
 
 async def _finalize_reversal_operational_state(db, receipt: dict, user: dict) -> None:
-    from services.sales_receipts import _recalc_invoice_payment_from_receipts, now_iso
+    from services.sales_receipts import (
+        _recalc_invoice_payment_from_receipts,
+        now_iso,
+        sync_order_payment_projections,
+    )
 
     now = now_iso()
     stored = await db.sales_receipts.find_one({"id": receipt["id"]}, {"_id": 0}) or {}
     patch: Dict[str, Any] = {
         "financial_status": "cancelled",
         "cancelled": True,
+        "settlement_effective": False,
         "updated_at": now,
     }
     if not stored.get("cancelled_at"):
@@ -435,6 +440,9 @@ async def _finalize_reversal_operational_state(db, receipt: dict, user: dict) ->
         {"$set": patch, "$unset": {REVERSE_CLAIM_FIELD: ""}},
     )
     await _recalc_invoice_payment_from_receipts(db, stored.get("invoice_id") or receipt.get("invoice_id"))
+    # Rebuild PO payment_receipts / Approval Payment from remaining settlement-effective receipts.
+    # Does not rewind current_stage (sync_workflow_stage is increase-only).
+    await sync_order_payment_projections(db, stored.get("po_id") or receipt.get("po_id"))
 
 
 def _require_receipt_amount(receipt: dict) -> Decimal:

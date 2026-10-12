@@ -101,6 +101,26 @@ export function orderReceiptProofStamp(order) {
     .join("|");
 }
 
+/** Legacy Payment upload evidence awaiting Approval (not orphan payment_receipts). */
+export function orderHasPaymentEvidence(order) {
+  if (!order || typeof order !== "object") return false;
+  if (order.payment_bypassed) return true;
+  if ((order.payment_files || []).length > 0) return true;
+  return false;
+}
+
+/**
+ * Payment stage complete: settlement-canonical Approved, bypass, or legacy payment_files.
+ * Stale payment_receipts / payment_fact alone must not mark complete.
+ */
+export function orderPaymentStageDone(order) {
+  if (!order || typeof order !== "object") return false;
+  if (order.payment_bypassed) return true;
+  if (order.payment_status === "Approved") return true;
+  if ((order.payment_files || []).length > 0) return true;
+  return false;
+}
+
 /** Badge considers legacy PO files and penerimaan proofs. Approval text stays unchanged. */
 export function paymentEvidenceBadge(order, receipts) {
   if (order?.payment_bypassed) return { tone: "bypass", label: "Payment Bypass" };

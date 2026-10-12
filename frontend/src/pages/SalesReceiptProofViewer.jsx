@@ -2,6 +2,7 @@ import { useCallback } from "react";
 import InAppDocumentViewer from "../components/InAppDocumentViewer";
 import api from "../lib/api";
 
+/** Receipt-only proof viewer: compact modal/drawer; does not change default InAppDocumentViewer size. */
 export default function SalesReceiptProofViewer({ receipt, onClose }) {
   const loadFile = useCallback(({ download = false, signal } = {}) => (
     api.downloadSalesReceiptPaymentProof(receipt.id, download, { signal })
@@ -17,6 +18,7 @@ export default function SalesReceiptProofViewer({ receipt, onClose }) {
       allowDownload
       onClose={onClose}
       testId="receipt-proof-viewer"
+      layout="compact"
     />
   );
 }

@@ -65,6 +65,58 @@ def test_design_and_payment_use_file_and_approval_evidence():
     assert wf["appr_payment"] == "active"
 
 
+def test_receipt_settlement_marks_payment_without_payment_files():
+    """Settlement-effective penerimaan: Payment + Appr. Payment without duplicate payment_files."""
+    wf = status_po_workflow(_order(
+        design_files=[{"id": "d1"}],
+        design_status="Approved",
+        payment_files=[],
+        payment_status="Approved",
+        payment_receipts=[{"receipt_id": "r1", "payment_state": "DP"}],
+        payment_fact={"receipt_id": "r1", "payment_state": "DP"},
+    ))
+    assert wf["payment"] == "completed"
+    assert wf["appr_payment"] == "completed"
+
+
+def test_unsettled_receipt_does_not_complete_payment_stage():
+    wf = status_po_workflow(_order(
+        payment_files=[],
+        payment_status="Waiting",
+        payment_receipts=[],
+        payment_fact=None,
+    ))
+    assert wf["payment"] == "pending"
+    assert wf["appr_payment"] == "pending"
+
+
+def test_stale_payment_receipts_without_approved_do_not_complete_payment():
+    """Orphan projections must not mark Payment complete (deferred/cancelled race)."""
+    from workflow_gates import payment_stage_done, payment_evidence_present
+
+    order = _order(
+        payment_files=[],
+        payment_status="Waiting",
+        payment_receipts=[{"receipt_id": "stale-r1", "payment_state": "DP"}],
+        payment_fact={"receipt_id": "stale-r1"},
+    )
+    assert payment_stage_done(order) is False
+    assert payment_evidence_present(order) is False
+    wf = status_po_workflow(order)
+    assert wf["payment"] == "pending"
+    assert wf["appr_payment"] == "pending"
+
+
+def test_legacy_payment_files_complete_payment_but_not_approval():
+    wf = status_po_workflow(_order(
+        payment_files=[{"id": "p1"}],
+        payment_status="Waiting",
+        payment_receipts=[],
+    ))
+    assert wf["payment"] == "completed"
+    assert wf["appr_payment"] == "active"
+
+
 def test_item_lines_are_names_only_one_po_one_list():
     names = item_line_names(_order())
     assert names == ["Cup 16oz", "Lid 98 mm", "Add On Warna"]

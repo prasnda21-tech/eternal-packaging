@@ -22,7 +22,9 @@ from workflow_gates import (
     customer_design_approved,
     design_ok,
     helper_done,
+    payment_evidence_present,
     payment_ok,
+    payment_stage_done,
     penjadwalan_done,
     sample_ok,
     sample_uploaded,
@@ -119,14 +121,14 @@ def status_po_workflow(order: dict) -> Dict[str, str]:
     else:
         workflow["appr_design"] = out("pending")
 
-    if order.get("payment_bypassed") or _has_file_records(order.get("payment_files")):
+    if payment_stage_done(order):
         workflow["payment"] = out("completed")
     else:
         workflow["payment"] = out("pending")
 
     if payment_ok(order):
         workflow["appr_payment"] = out("completed")
-    elif _has_file_records(order.get("payment_files")):
+    elif payment_evidence_present(order):
         workflow["appr_payment"] = out("active")
     else:
         workflow["appr_payment"] = out("pending")

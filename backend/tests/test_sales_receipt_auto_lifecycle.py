@@ -1094,3 +1094,85 @@ async def test_flag_off_parity_create_still_settles_without_auto_fields():
         assert receipt.get(AUTO_ELIGIBLE_FIELD) is not True
         stored = await server.db.sales_invoices.find_one({"id": inv["id"]}, {"_id": 0})
         assert float(stored["paid_total"]) == 12_000.0
+
+
+@pytest.mark.anyio
+async def test_auto_settle_completes_status_po_payment_without_payment_files():
+    """DP settlement fills Payment + Approval Payment projections without payment_files."""
+    from services.status_po import status_po_workflow
+
+    _admin()
+    await _set_auto(True)
+    await _configure_settings()
+    bca = await _cash_bank()
+    po = await _seed_po()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        inv = await _posted_invoice(client, po["id"], unit_price=1_000_000)
+        res = await client.post("/api/sales-receipts", json=_payload(inv["id"], bca["id"], amount=250_000))
+        assert res.status_code == 200, res.text
+        assert res.json()["financial_complete"] is True
+    order = await server.db.orders.find_one({"id": po["id"]}, {"_id": 0})
+    assert order.get("payment_status") == "Approved"
+    assert not (order.get("payment_files") or [])
+    assert order.get("payment_fact", {}).get("receipt_id")
+    wf = status_po_workflow(order)
+    assert wf["payment"] == "completed"
+    assert wf["appr_payment"] == "completed"
+
+
+@pytest.mark.anyio
+async def test_deferred_unsettled_does_not_approve_payment_workflow():
+    _admin()
+    await _set_auto(True)
+    await _configure_settings()
+    bca = await _cash_bank()
+    po = await _seed_po()
+    from services.sales_receipts import create_sales_receipt
+    from services.status_po import status_po_workflow
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        inv = await _posted_invoice(client, po["id"])
+    draft = await create_sales_receipt(
+        server.db,
+        _payload(inv["id"], bca["id"], amount=33_000),
+        ADMIN,
+        defer_operational_settlement=True,
+        require_posted_invoice_journal=True,
+    )
+    assert draft.get(SETTLEMENT_EFFECTIVE_FIELD) is False
+    order = await server.db.orders.find_one({"id": po["id"]}, {"_id": 0})
+    assert order.get("payment_status") != "Approved"
+    wf = status_po_workflow(order)
+    assert wf["payment"] == "pending"
+    assert wf["appr_payment"] == "pending"
+
+
+@pytest.mark.anyio
+async def test_reverse_last_receipt_resyncs_approval_when_stage_before_penjadwalan():
+    _admin()
+    await _set_auto(True)
+    await _configure_settings()
+    bca = await _cash_bank()
+    # Keep design pending so current_stage stays < 5 after payment approve.
+    po = await _seed_po()
+    await server.db.orders.update_one(
+        {"id": po["id"]},
+        {"$set": {"design_status": "Waiting", "design_files": [], "current_stage": 0}},
+    )
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        inv = await _posted_invoice(client, po["id"], unit_price=500_000)
+        created = await client.post(
+            "/api/sales-receipts",
+            json=_payload(inv["id"], bca["id"], amount=100_000),
+        )
+        assert created.status_code == 200, created.text
+        receipt_id = created.json()["receipt"]["id"]
+        order = await server.db.orders.find_one({"id": po["id"]}, {"_id": 0})
+        assert order.get("payment_status") == "Approved"
+        assert int(order.get("current_stage") or 0) < 5
+        rev = await client.post(f"/api/sales-receipts/{receipt_id}/reverse-accounting")
+        assert rev.status_code == 200, rev.text
+    order_after = await server.db.orders.find_one({"id": po["id"]}, {"_id": 0})
+    assert order_after.get("payment_status") == "Waiting"
+    assert not order_after.get("payment_fact")
+    assert not (order_after.get("payment_receipts") or [])

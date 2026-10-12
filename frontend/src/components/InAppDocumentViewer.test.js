@@ -3,7 +3,7 @@ import path from "path";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { getDocument } from "pdfjs-dist";
-import InAppDocumentViewer from "./InAppDocumentViewer";
+import InAppDocumentViewer, { fittedPageWidthWithinFrame } from "./InAppDocumentViewer";
 
 jest.mock("pdfjs-dist", () => ({
   GlobalWorkerOptions: { workerSrc: "" },
@@ -36,14 +36,17 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
-function mockPdf(pages = 3) {
+function mockPdf(pages = 3, pageSize = { width: 200, height: 280 }) {
   const render = jest.fn(() => ({ promise: Promise.resolve(), cancel: jest.fn() }));
   return {
     pdf: {
       numPages: pages,
       destroy: jest.fn(),
       getPage: jest.fn(async () => ({
-        getViewport: ({ scale }) => ({ width: 200 * scale, height: 280 * scale }),
+        getViewport: ({ scale }) => ({
+          width: pageSize.width * scale,
+          height: pageSize.height * scale,
+        }),
         render,
         cleanup: jest.fn(),
       })),
@@ -52,10 +55,14 @@ function mockPdf(pages = 3) {
   };
 }
 
-function installWidth(px) {
+function installFrame(widthPx, heightPx = 600) {
   Object.defineProperty(HTMLElement.prototype, "clientWidth", {
     configurable: true,
-    get() { return px; },
+    get() { return widthPx; },
+  });
+  Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+    configurable: true,
+    get() { return heightPx; },
   });
 }
 
@@ -78,7 +85,7 @@ describe("InAppDocumentViewer", () => {
     URL.createObjectURL = jest.fn(() => "blob:doc");
     URL.revokeObjectURL = jest.fn();
     window.open = jest.fn();
-    installWidth(800);
+    installFrame(800, 600);
     jest.spyOn(Storage.prototype, "setItem").mockImplementation(() => {});
     jest.spyOn(Storage.prototype, "getItem").mockImplementation(() => null);
   });
@@ -131,7 +138,7 @@ describe("InAppDocumentViewer", () => {
   });
 
   test("narrow stage caps page width to the available space", async () => {
-    installWidth(390);
+    installFrame(390, 700);
     const { pdf } = mockPdf(2);
     getDocument.mockReturnValue({ promise: Promise.resolve(pdf), destroy: jest.fn() });
     const { host, root } = await renderViewer({
@@ -146,6 +153,109 @@ describe("InAppDocumentViewer", () => {
     const width = Number(host.querySelector('[data-testid="doc-canvas"]').style.width.replace("px", ""));
     expect(width).toBe(374);
     expect(width).toBeLessThanOrEqual(390);
+    await act(async () => { root.unmount(); });
+  });
+
+  test("fittedPageWidthWithinFrame scales by both width and height", () => {
+    const node = { clientWidth: 800, clientHeight: 400 };
+    // page aspect 1.4 → height budget caps width below width-only fit
+    expect(fittedPageWidthWithinFrame(node, 1.4)).toBe(Math.floor((400 - 16) / 1.4));
+    // tall frame: height no longer constrains → width-only fit (800 - 16)
+    expect(fittedPageWidthWithinFrame({ clientWidth: 800, clientHeight: 1200 }, 1.4)).toBe(784);
+  });
+
+  test("compact layout is opt-in and default shell stays fullscreen", async () => {
+    const { pdf } = mockPdf(1);
+    getDocument.mockReturnValue({ promise: Promise.resolve(pdf), destroy: jest.fn() });
+    const defaultView = await renderViewer({
+      documentKey: "default-shell",
+      fileName: "bukti.pdf",
+      contentType: "application/pdf",
+      loadFile: jest.fn(async () => pdfBlob()),
+      onClose: jest.fn(),
+    });
+    expect(defaultView.host.querySelector('[data-testid="doc"]').getAttribute("data-layout")).toBe("default");
+    expect(defaultView.host.querySelector(".inapp-doc-overlay--compact")).toBeFalsy();
+    expect(defaultView.host.querySelector('[data-testid="doc"]').getAttribute("data-fit")).toBe("default");
+    await act(async () => { defaultView.root.unmount(); });
+
+    const compactView = await renderViewer({
+      documentKey: "compact-shell",
+      fileName: "bukti.pdf",
+      contentType: "application/pdf",
+      layout: "compact",
+      loadFile: jest.fn(async () => pdfBlob()),
+      onClose: jest.fn(),
+    });
+    expect(compactView.host.querySelector('[data-testid="doc"]').getAttribute("data-layout")).toBe("compact");
+    expect(compactView.host.querySelector('[data-testid="doc"]').getAttribute("data-fit")).toBe("viewport");
+    expect(compactView.host.querySelector(".inapp-doc-overlay--compact")).toBeTruthy();
+    expect(compactView.host.querySelector(".inapp-doc--compact")).toBeTruthy();
+    expect(compactView.host.querySelector(".inapp-doc-stage--fit")).toBeTruthy();
+    expect(compactView.host.querySelector('[data-testid="doc-stage"]').getAttribute("data-overflow")).toBe("fit");
+    expect(compactView.host.querySelectorAll('[data-testid="doc-canvas"]')).toHaveLength(1);
+    await act(async () => { compactView.root.unmount(); });
+  });
+
+  test("compact PDF fits tall pages into the stage height and navigates multipage", async () => {
+    installFrame(800, 360);
+    const { pdf } = mockPdf(2, { width: 200, height: 400 });
+    getDocument.mockReturnValue({ promise: Promise.resolve(pdf), destroy: jest.fn() });
+    const { host, root } = await renderViewer({
+      documentKey: "compact-pdf-fit",
+      fileName: "bukti.pdf",
+      contentType: "application/pdf",
+      layout: "compact",
+      loadFile: jest.fn(async () => pdfBlob()),
+      onClose: jest.fn(),
+    });
+    await flush();
+    const pageWidth = Number(host.querySelector('[data-testid="doc"]').getAttribute("data-page-width"));
+    // height-limited: (360-16)/2 = 172
+    expect(pageWidth).toBe(172);
+    expect(host.querySelectorAll('[data-testid="doc-canvas"]')).toHaveLength(1);
+    expect(host.querySelector('[data-testid="doc-page-label"]').textContent).toMatch(/1 \/ 2/);
+    expect(host.querySelector('[data-testid="doc-prev-page"]').disabled).toBe(true);
+    await act(async () => {
+      host.querySelector('[data-testid="doc-next-page"]').click();
+    });
+    await flush();
+    expect(host.querySelector('[data-testid="doc-page-label"]').textContent).toMatch(/2 \/ 2/);
+    expect(host.querySelector('[data-testid="doc-next-page"]').disabled).toBe(true);
+    expect(host.querySelector('[data-testid="doc-download"]')).toBeTruthy();
+    expect(host.querySelector('[data-testid="doc-close"]')).toBeTruthy();
+    await act(async () => { root.unmount(); });
+  });
+
+  test("compact image uses contain fit with zoom controls", async () => {
+    const { host, root } = await renderViewer({
+      documentKey: "compact-img",
+      fileName: "bukti.png",
+      contentType: "image/png",
+      layout: "compact",
+      loadFile: jest.fn(async () => pngBlob()),
+      onClose: jest.fn(),
+    });
+    const img = host.querySelector('[data-testid="doc-image"]');
+    expect(img).toBeTruthy();
+    expect(img.classList.contains("inapp-doc-image--contain")).toBe(true);
+    expect(host.querySelector('[data-testid="doc-stage"]').getAttribute("data-overflow")).toBe("fit");
+    expect(host.querySelector('[data-testid="doc"]').getAttribute("data-image-zoom")).toBe("1");
+    expect(host.querySelector('[data-testid="doc-zoom-fit"]')).toBeTruthy();
+    expect(host.querySelector('[data-testid="doc-zoom-out"]').disabled).toBe(true);
+    await act(async () => {
+      host.querySelector('[data-testid="doc-zoom-in"]').click();
+    });
+    expect(host.querySelector('[data-testid="doc"]').getAttribute("data-image-zoom")).toBe("1.25");
+    expect(host.querySelector('[data-testid="doc-stage"]').getAttribute("data-overflow")).toBe("scroll");
+    expect(host.querySelector(".inapp-doc.is-zoomed")).toBeTruthy();
+    await act(async () => {
+      host.querySelector('[data-testid="doc-zoom-fit"]').click();
+    });
+    expect(host.querySelector('[data-testid="doc"]').getAttribute("data-image-zoom")).toBe("1");
+    expect(host.querySelector('[data-testid="doc-stage"]').getAttribute("data-overflow")).toBe("fit");
+    expect(host.querySelector('[data-testid="doc-download"]')).toBeTruthy();
+    expect(host.querySelector('[data-testid="doc-close"]')).toBeTruthy();
     await act(async () => { root.unmount(); });
   });
 
@@ -311,6 +421,9 @@ describe("InAppDocumentViewer", () => {
     expect(src).not.toMatch(/window\.open/);
     expect(src).not.toMatch(/target=_blank/);
     expect(src).toMatch(/MAX_PAGE_WIDTH = 920/);
-    expect(src).not.toMatch(/Sebelumnya|Berikutnya|Sesuaikan Lebar|Zoom -/);
+    expect(src).toMatch(/fittedPageWidthWithinFrame/);
+    expect(src).toMatch(/layout === "compact"/);
+    expect(src).toMatch(/object-fit|inapp-doc-image--contain/);
+    expect(src).not.toMatch(/Sesuaikan Lebar|Zoom -/);
   });
 });
