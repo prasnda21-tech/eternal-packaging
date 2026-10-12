@@ -208,6 +208,13 @@ eternal_fe_is_hashed_relpath() {
   [[ "$rel" == static/* ]]
 }
 
+# True for static/**/*.js.map only. Does NOT match .css.map or other artifacts.
+eternal_fe_is_js_sourcemap_relpath() {
+  local rel="${1#./}"
+  eternal_fe_is_hashed_relpath "$rel" || return 1
+  [[ "$rel" == *.js.map ]]
+}
+
 # Ensure candidate path resolves inside webroot (blocks symlink/path escape).
 eternal_path_is_under_root() {
   local root="$1"
@@ -314,6 +321,22 @@ eternal_webroot_install_file() {
       return 0
     fi
     if eternal_fe_is_hashed_relpath "$rel"; then
+      # .js.map only: when the paired .js is present on both sides and byte-identical,
+      # keep the live map (no overwrite). Does not claim debug equivalence to the new
+      # build sources — only that the executable .js payload matches. .css.map and
+      # other hashed assets remain fail-closed.
+      if eternal_fe_is_js_sourcemap_relpath "$rel"; then
+        local js_src="${src%.map}"
+        local js_dest="${dest%.map}"
+        if [[ -f "$js_src" && -f "$js_dest" && ! -L "$js_src" && ! -L "$js_dest" ]] \
+          && cmp -s "$js_src" "$js_dest"; then
+          eternal_deploy_log "SKIP_SOURCEMAP_COLLISION $rel (paired .js byte-identical; keep live map)"
+          return 0
+        fi
+        eternal_deploy_log "ERROR: js sourcemap collision without identical paired .js path=$rel — refuse overwrite"
+        [[ "$soft" == "1" ]] && return 1
+        eternal_deploy_die "js sourcemap collision without identical paired .js: $rel"
+      fi
       eternal_deploy_log "ERROR: hashed asset collision (byte-different) path=$rel — refuse overwrite"
       [[ "$soft" == "1" ]] && return 1
       eternal_deploy_die "hashed asset collision (byte-different): $rel"
@@ -435,7 +458,11 @@ eternal_try_reuse_incomplete_release() {
   return 0
 }
 
-# True when live index matches backup and every static asset it references exists.
+# True when live required FE state matches backup: index (+ manifest when present in
+# backup) byte-identical, and every static asset referenced by the live index exists.
+# Executable .js/.css refs present in the backup must also be byte-identical on live.
+# Extra unreferenced files on live (including leftover hashed assets / .js.map) do not
+# fail this check. Does not treat HTTP health as sufficient.
 eternal_frontend_required_state_ok() {
   local live_root="$1"
   local backup_root="$2"
@@ -453,6 +480,16 @@ eternal_frontend_required_state_ok() {
     ref="${ref#./}"
     [[ "$ref" == *..* ]] && return 1
     [[ -f "$live_root/$ref" ]] || return 1
+    # Main executable assets from the previous frontend must match backup bytes when
+    # the backup still holds them. Source maps are not required to match.
+    case "$ref" in
+      *.js.map|*.css.map) ;;
+      *.js|*.css)
+        if [[ -f "$backup_root/$ref" ]]; then
+          cmp -s "$live_root/$ref" "$backup_root/$ref" || return 1
+        fi
+        ;;
+    esac
   done < <(grep -oE '(static/[^"'\''[:space:]>]+)' "$live_index" 2>/dev/null || true)
   return 0
 }
