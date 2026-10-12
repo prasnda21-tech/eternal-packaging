@@ -95,7 +95,7 @@ Keep dirty `/opt/eternal-packaging` overlay untouched. Pure SHA does **not** aut
 - Shared `flock` lock held through rollback; existing lock file without holder does not block; lock file is not unlinked.
 - Preflight: runtime root writable, FE leaf writable, mirror, disk, systemd WD/ExecStart match expected **runtime** paths.
 - Materialize via `git archive` then **fresh venv** + dependency install; validate executable before switching `current`.
-- Failed/incomplete release dirs are **not** deleted automatically. Reuse is allowed only when source SHA, frontend build fingerprint, referenced assets, and venv/requirements provenance all validate; otherwise fail closed for Owner inspection (never `rm -rf` on failed reuse).
+- Failed/incomplete release dirs are **not** deleted automatically. Reuse is allowed only when source SHA, frontend build fingerprint, referenced assets, and venv/requirements provenance all validate; otherwise fail closed for Owner inspection (never `rm -rf` on failed reuse). Required frontend assets are taken from `index.html` `src`/`href` attributes and `asset-manifest.json` `static/…` paths only — inline script strings such as third-party `…/static/array.js` (e.g. PostHog) are not treated as local build assets.
 - Frontend production build is **Yarn only** (`yarn.lock` + `yarn install --frozen-lockfile`); npm fallback removed (fail closed if Yarn/lock missing). Matching fingerprint skips rebuild. Fingerprint hashes `package.json`, `yarn.lock`, optional in-tree CRA config/`.env*`, and when set the external `ETERNAL_FRONTEND_ENV_FILE` **content hash only** (values never logged).
 - Health checks after restart/publish use a **60s wall-clock budget** (retries include transient HTTP 502); success still requires `mongo=true` and `mode=operational`.
 - **FE-only / no-backend-change:** keep `current` + running process on the active release (no switch, no restart); verify `/proc/<MainPID>/cwd` matches that release.
@@ -119,6 +119,8 @@ bash scripts/deploy/trigger_github_actions.sh execute deploy \
 ```
 
 Shared secret travels env → JSON stdin (`gh api --input -`), never argv/logs.
+
+After a successful single POST, the helper correlates `request_id`, prints `DISPATCH_OK`, then **bounded-waits** for workflow completion (`ETERNAL_TRIGGER_WAIT_*`). It reports `WORKFLOW_SUCCESS|FAILED|CANCELLED|TIMED_OUT` and classifies runner evidence from redacted logs (`RUNNER_DEPLOY_SUCCESS`, `RUNNER_ROLLBACK_PASS`, `RUNNER_ROLLBACK_FAILED`, or `RESULT_UNKNOWN`). GitHub `success` alone is never treated as an active release without `DEPLOY_OK` (or probe `ETERNAL_GATE_OK`) evidence.
 
 ## Probe-only workflow
 
