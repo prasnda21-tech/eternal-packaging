@@ -192,11 +192,15 @@ eternal_rollback() {
       rb_fail=1
     elif [[ "$FRONTEND_SWITCHED" != "1" ]] \
       && eternal_frontend_required_state_ok "$ETERNAL_FRONTEND_ROOT" "$fe_src"; then
-      # Publish failed before atomic index swap — live FE already matches backup.
+      # Publish failed before atomic index swap — required FE state already matches backup
+      # (index/manifest/main assets). Extra unreferenced files do not force overwrite.
       eternal_deploy_log "rollback: frontend index unchanged; required FE state already OK (skip forced overwrite)"
       FRONTEND_SWITCHED=0
       FRONTEND_PUBLISH_STARTED=0
     else
+      # Index switched or required state drifted (e.g. mutable manifest written before a
+      # later publish failure). In-place restore; soft merge keeps identical hashed assets
+      # and safe .js.map collisions (SKIP_SOURCEMAP_COLLISION) without failing rollback.
       eternal_deploy_log "rollback: restore frontend from $fe_src (in-place)"
       if eternal_restore_frontend_tree "$fe_src" \
         && eternal_frontend_required_state_ok "$ETERNAL_FRONTEND_ROOT" "$fe_src"; then

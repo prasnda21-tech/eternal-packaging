@@ -1173,6 +1173,156 @@ set -e
 assert_eq "path traversal refused" "1" "$trav_ec"
 assert_true "traversal error mentions refuse" grep -qiE 'traversal|refused' <<<"$trav_err"
 
+# ========== .js.map collision policy + hashed css fail-closed ==========
+MAP_ROOT="$HARNESS/map-webroot"
+MAP_BUILD="$HARNESS/map-build"
+rm -rf "$MAP_ROOT" "$MAP_BUILD"
+mkdir -p "$MAP_ROOT/static/js" "$MAP_ROOT/static/css" "$MAP_BUILD/static/js" "$MAP_BUILD/static/css"
+# 1) identical .js + different .js.map → SKIP_SOURCEMAP_COLLISION, keep live map
+printf 'js-same\n' >"$MAP_ROOT/static/js/chunk.1111.js"
+printf 'map-live-old\n' >"$MAP_ROOT/static/js/chunk.1111.js.map"
+chmod 444 "$MAP_ROOT/static/js/chunk.1111.js.map"
+printf 'js-same\n' >"$MAP_BUILD/static/js/chunk.1111.js"
+printf 'map-build-new\n' >"$MAP_BUILD/static/js/chunk.1111.js.map"
+set +e
+map_skip_err="$(eternal_webroot_install_file "$MAP_BUILD/static/js/chunk.1111.js.map" "$MAP_ROOT" "static/js/chunk.1111.js.map" 0 2>&1)"
+map_skip_ec=$?
+set -e
+assert_eq "js.map collision with identical paired js exits 0" "0" "$map_skip_ec"
+assert_true "SKIP_SOURCEMAP_COLLISION logged" grep -q 'SKIP_SOURCEMAP_COLLISION' <<<"$map_skip_err"
+assert_true "live js.map retained (root-owned stand-in)" grep -q 'map-live-old' "$MAP_ROOT/static/js/chunk.1111.js.map"
+# 2) different .js + different .js.map → FAIL_CLOSED
+printf 'js-NEW\n' >"$MAP_BUILD/static/js/chunk.1111.js"
+printf 'map-build-new\n' >"$MAP_BUILD/static/js/chunk.1111.js.map"
+set +e
+map_jsdiff_err="$(eternal_webroot_install_file "$MAP_BUILD/static/js/chunk.1111.js.map" "$MAP_ROOT" "static/js/chunk.1111.js.map" 0 2>&1)"
+map_jsdiff_ec=$?
+set -e
+assert_eq "js.map collision with different paired js fails" "1" "$map_jsdiff_ec"
+assert_true "js.map different-js error" grep -qiE 'sourcemap collision|without identical paired' <<<"$map_jsdiff_err"
+assert_true "live js.map still old after fail" grep -q 'map-live-old' "$MAP_ROOT/static/js/chunk.1111.js.map"
+# 3) missing paired .js on live → FAIL_CLOSED
+rm -f "$MAP_ROOT/static/js/chunk.2222.js"
+printf 'js-orphan\n' >"$MAP_BUILD/static/js/chunk.2222.js"
+printf 'map-orphan-live\n' >"$MAP_ROOT/static/js/chunk.2222.js.map"
+printf 'map-orphan-build\n' >"$MAP_BUILD/static/js/chunk.2222.js.map"
+set +e
+map_miss_err="$(eternal_webroot_install_file "$MAP_BUILD/static/js/chunk.2222.js.map" "$MAP_ROOT" "static/js/chunk.2222.js.map" 0 2>&1)"
+map_miss_ec=$?
+set -e
+assert_eq "js.map collision without live paired js fails" "1" "$map_miss_ec"
+assert_true "missing paired js mentioned" grep -qiE 'sourcemap collision|without identical paired' <<<"$map_miss_err"
+# 3b) missing paired .js on build source → FAIL_CLOSED
+printf 'js-live-only\n' >"$MAP_ROOT/static/js/chunk.3333.js"
+printf 'map-3333-live\n' >"$MAP_ROOT/static/js/chunk.3333.js.map"
+printf 'map-3333-build\n' >"$MAP_BUILD/static/js/chunk.3333.js.map"
+rm -f "$MAP_BUILD/static/js/chunk.3333.js"
+set +e
+map_miss_src_err="$(eternal_webroot_install_file "$MAP_BUILD/static/js/chunk.3333.js.map" "$MAP_ROOT" "static/js/chunk.3333.js.map" 0 2>&1)"
+map_miss_src_ec=$?
+set -e
+assert_eq "js.map collision without build paired js fails" "1" "$map_miss_src_ec"
+assert_true "missing build paired js mentioned" grep -qiE 'sourcemap collision|without identical paired' <<<"$map_miss_src_err"
+# 4) identical .js.map → SKIP_IDENTICAL
+chmod u+w "$MAP_ROOT/static/js/chunk.1111.js.map" 2>/dev/null || true
+printf 'js-same\n' >"$MAP_ROOT/static/js/chunk.1111.js"
+printf 'map-same\n' >"$MAP_ROOT/static/js/chunk.1111.js.map"
+printf 'js-same\n' >"$MAP_BUILD/static/js/chunk.1111.js"
+printf 'map-same\n' >"$MAP_BUILD/static/js/chunk.1111.js.map"
+set +e
+map_id_err="$(eternal_webroot_install_file "$MAP_BUILD/static/js/chunk.1111.js.map" "$MAP_ROOT" "static/js/chunk.1111.js.map" 0 2>&1)"
+map_id_ec=$?
+set -e
+assert_eq "identical js.map exits 0" "0" "$map_id_ec"
+assert_true "identical js.map SKIP_IDENTICAL" grep -q 'SKIP_IDENTICAL' <<<"$map_id_err"
+# 5) hashed .js collision still fail-closed (regression)
+printf 'js-live\n' >"$MAP_ROOT/static/js/main.cccc.js"
+printf 'js-other\n' >"$MAP_BUILD/static/js/main.cccc.js"
+set +e
+js_coll_err="$(eternal_webroot_install_file "$MAP_BUILD/static/js/main.cccc.js" "$MAP_ROOT" "static/js/main.cccc.js" 0 2>&1)"
+js_coll_ec=$?
+set -e
+assert_eq "hashed js collision fails" "1" "$js_coll_ec"
+assert_true "hashed js collision message" grep -q 'hashed asset collision' <<<"$js_coll_err"
+# 6) hashed .css collision fail-closed
+printf 'css-live\n' >"$MAP_ROOT/static/css/main.dddd.css"
+printf 'css-other\n' >"$MAP_BUILD/static/css/main.dddd.css"
+set +e
+css_coll_err="$(eternal_webroot_install_file "$MAP_BUILD/static/css/main.dddd.css" "$MAP_ROOT" "static/css/main.dddd.css" 0 2>&1)"
+css_coll_ec=$?
+set -e
+assert_eq "hashed css collision fails" "1" "$css_coll_ec"
+assert_true "hashed css collision message" grep -q 'hashed asset collision' <<<"$css_coll_err"
+# 7) .css.map different is NOT granted the js.map exception
+printf 'css-same\n' >"$MAP_ROOT/static/css/main.eeee.css"
+printf 'cssmap-live\n' >"$MAP_ROOT/static/css/main.eeee.css.map"
+printf 'css-same\n' >"$MAP_BUILD/static/css/main.eeee.css"
+printf 'cssmap-build\n' >"$MAP_BUILD/static/css/main.eeee.css.map"
+set +e
+cssmap_err="$(eternal_webroot_install_file "$MAP_BUILD/static/css/main.eeee.css.map" "$MAP_ROOT" "static/css/main.eeee.css.map" 0 2>&1)"
+cssmap_ec=$?
+set -e
+assert_eq "css.map collision still fail-closed" "1" "$cssmap_ec"
+assert_true "css.map uses hashed collision path" grep -q 'hashed asset collision' <<<"$cssmap_err"
+# 8) symlink destination refused
+ln -s "$MAP_ROOT/static/js/chunk.1111.js.map" "$MAP_ROOT/static/js/linky.js.map"
+printf 'js-same\n' >"$MAP_BUILD/static/js/linky.js"
+printf 'map-via-link\n' >"$MAP_BUILD/static/js/linky.js.map"
+set +e
+sym_err="$(eternal_webroot_install_file "$MAP_BUILD/static/js/linky.js.map" "$MAP_ROOT" "static/js/linky.js.map" 0 2>&1)"
+sym_ec=$?
+set -e
+assert_eq "symlink dest refused" "1" "$sym_ec"
+assert_true "symlink refuse message" grep -qiE 'symlink' <<<"$sym_err"
+# Merge with safe map collision must PASS (publish path) — isolated trees only.
+MERGE_ROOT="$HARNESS/map-merge-webroot"
+MERGE_BUILD="$HARNESS/map-merge-build"
+rm -rf "$MERGE_ROOT" "$MERGE_BUILD"
+mkdir -p "$MERGE_ROOT/static/js" "$MERGE_BUILD/static/js"
+printf 'js-same\n' >"$MERGE_ROOT/static/js/chunk.1111.js"
+printf 'map-live-old\n' >"$MERGE_ROOT/static/js/chunk.1111.js.map"
+chmod 444 "$MERGE_ROOT/static/js/chunk.1111.js.map"
+printf 'js-same\n' >"$MERGE_BUILD/static/js/chunk.1111.js"
+printf 'map-build-new\n' >"$MERGE_BUILD/static/js/chunk.1111.js.map"
+printf '{"files":{}}\n' >"$MERGE_BUILD/asset-manifest.json"
+printf '<script src="/static/js/chunk.1111.js"></script>\n' >"$MERGE_BUILD/index.html"
+assert_true "merge PASS with safe js.map collision" \
+  eternal_webroot_merge_tree "$MERGE_BUILD" "$MERGE_ROOT" 0
+assert_true "merge kept live map bytes" grep -q 'map-live-old' "$MERGE_ROOT/static/js/chunk.1111.js.map"
+
+# ========== required_state: extra unreferenced files OK; missing main asset FAIL ==========
+REQ_LIVE="$HARNESS/req-live"
+REQ_BAK="$HARNESS/req-bak"
+rm -rf "$REQ_LIVE" "$REQ_BAK"
+mkdir -p "$REQ_LIVE/static/js" "$REQ_BAK/static/js"
+printf '<script src="/static/js/main.ok.js"></script>\n' >"$REQ_LIVE/index.html"
+cp -a "$REQ_LIVE/index.html" "$REQ_BAK/index.html"
+printf '{"main":"static/js/main.ok.js"}\n' >"$REQ_BAK/asset-manifest.json"
+cp -a "$REQ_BAK/asset-manifest.json" "$REQ_LIVE/asset-manifest.json"
+printf 'main-bytes\n' >"$REQ_LIVE/static/js/main.ok.js"
+cp -a "$REQ_LIVE/static/js/main.ok.js" "$REQ_BAK/static/js/main.ok.js"
+printf 'extra-unreferenced\n' >"$REQ_LIVE/static/js/extra.ffff.js"
+printf 'extra-map\n' >"$REQ_LIVE/static/js/extra.ffff.js.map"
+assert_true "required_state OK with extra unreferenced assets" \
+  eternal_frontend_required_state_ok "$REQ_LIVE" "$REQ_BAK"
+printf 'tampered\n' >"$REQ_LIVE/static/js/main.ok.js"
+assert_false "required_state fails when main js bytes drift" \
+  eternal_frontend_required_state_ok "$REQ_LIVE" "$REQ_BAK"
+printf 'main-bytes\n' >"$REQ_LIVE/static/js/main.ok.js"
+printf '{"main":"DRIFTED"}\n' >"$REQ_LIVE/asset-manifest.json"
+assert_false "required_state fails when manifest drifts" \
+  eternal_frontend_required_state_ok "$REQ_LIVE" "$REQ_BAK"
+# Soft restore after manifest drift + safe map collision on unrelated hashed map → PASS
+printf 'map-live\n' >"$REQ_LIVE/static/js/main.ok.js.map"
+printf 'map-bak\n' >"$REQ_BAK/static/js/main.ok.js.map"
+chmod 444 "$REQ_LIVE/static/js/main.ok.js.map"
+assert_true "soft restore recovers manifest despite map collision" \
+  eternal_webroot_merge_tree "$REQ_BAK" "$REQ_LIVE" 1
+cp -a "$REQ_BAK/index.html" "$REQ_LIVE/index.html"
+assert_true "required_state OK after soft restore" \
+  eternal_frontend_required_state_ok "$REQ_LIVE" "$REQ_BAK"
+assert_true "soft restore kept live map" grep -q 'map-live' "$REQ_LIVE/static/js/main.ok.js.map"
+
 # ========== partial publish → index unchanged → ROLLBACK_PASS ==========
 git -C "$MIRROR_SRC" checkout -q main
 printf 'fe-partial\n' >"$MIRROR_SRC/frontend/src/index.js"
