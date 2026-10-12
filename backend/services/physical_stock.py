@@ -292,13 +292,28 @@ async def _existing_movement(db, idempotency_key: str, session):
     )
 
 
+def _opname_session_mode(doc: Optional[dict]) -> str:
+    """freeze (legacy default) or operational (warehouse stays open)."""
+    mode = str((doc or {}).get("mode") or "").strip().lower()
+    if mode == "operational":
+        return "operational"
+    return "freeze"
+
+
 async def _frozen_opname_session(db, warehouse_id: str, session):
+    """Active freeze-mode opname only. Operational sessions do not freeze the warehouse."""
     return await db[OPNAME_SESSIONS].find_one(
         {
             "warehouse_id": str(warehouse_id),
             "status": {"$in": list(FROZEN_OPNAME_STATUSES)},
+            "$or": [
+                {"mode": {"$exists": False}},
+                {"mode": None},
+                {"mode": ""},
+                {"mode": "freeze"},
+            ],
         },
-        {"_id": 0, "id": 1},
+        {"_id": 0, "id": 1, "mode": 1},
         session=session,
     )
 
@@ -311,21 +326,48 @@ async def _guard_opname_freeze(
     movement_type: str,
     allow_opname_session_id: Optional[str] = None,
 ) -> None:
-    """Reject normal R2 writes while a warehouse stock opname is frozen.
+    """Reject normal R2 writes while a freeze-mode stock opname owns the warehouse.
 
-    STOCK_OPNAME_ADJUSTMENT posts only for the owning frozen session.
-    Reversal is not exempt.
+    STOCK_OPNAME_ADJUSTMENT posts only for the owning active session (freeze or
+    operational). Operational mode does not block receipt/delivery; freeze mode does.
+    Reversal is not exempt from freeze.
     """
     frozen = await _frozen_opname_session(db, warehouse_id, session)
     allowed = str(allow_opname_session_id or "").strip()
     if movement_type == MOVEMENT_STOCK_OPNAME_ADJUSTMENT:
-        if frozen and allowed and allowed == str(frozen.get("id") or ""):
-            return
-        if frozen:
-            raise StockOpnameInProgressError(STOCK_OPNAME_IN_PROGRESS)
-        raise PhysicalStockValidationError(
-            "Penyesuaian stock opname hanya dapat diposting dari konfirmasi sesi yang sedang berjalan"
+        if not allowed:
+            if frozen:
+                raise StockOpnameInProgressError(STOCK_OPNAME_IN_PROGRESS)
+            raise PhysicalStockValidationError(
+                "Penyesuaian stock opname hanya dapat diposting dari konfirmasi sesi yang sedang berjalan"
+            )
+        owning = await db[OPNAME_SESSIONS].find_one(
+            {
+                "id": allowed,
+                "warehouse_id": str(warehouse_id),
+                "status": {"$in": list(FROZEN_OPNAME_STATUSES)},
+            },
+            {"_id": 0, "id": 1, "mode": 1},
+            session=session,
         )
+        if not owning:
+            if frozen:
+                raise StockOpnameInProgressError(STOCK_OPNAME_IN_PROGRESS)
+            raise PhysicalStockValidationError(
+                "Penyesuaian stock opname hanya dapat diposting dari konfirmasi sesi yang sedang berjalan"
+            )
+        if _opname_session_mode(owning) == "freeze":
+            if frozen and allowed == str(frozen.get("id") or ""):
+                return
+            if frozen:
+                raise StockOpnameInProgressError(STOCK_OPNAME_IN_PROGRESS)
+            raise PhysicalStockValidationError(
+                "Penyesuaian stock opname hanya dapat diposting dari konfirmasi sesi yang sedang berjalan"
+            )
+        # operational: warehouse not frozen by this session; still block if another freeze owns it
+        if frozen and allowed != str(frozen.get("id") or ""):
+            raise StockOpnameInProgressError(STOCK_OPNAME_IN_PROGRESS)
+        return
     if frozen:
         raise StockOpnameInProgressError(STOCK_OPNAME_IN_PROGRESS)
 
@@ -983,6 +1025,25 @@ def _stock_opname_adjustment_request(session_doc: dict, line: dict, *, actor_id:
     line_id = str(line.get("line_id") or "")
     delta = int(line.get("difference_qty") or 0)
     _check_sign(MOVEMENT_STOCK_OPNAME_ADJUSTMENT, delta)
+    book_at_posting = line.get("book_qty_at_posting")
+    if book_at_posting is None:
+        book_at_posting = line.get("book_qty") or 0
+    metadata = {
+        "stock_opname_session_id": session_id,
+        "stock_opname_line_id": line_id,
+        "opname_number": str(session_doc.get("opname_number") or ""),
+        "mode": _opname_session_mode(session_doc),
+        "book_qty": int(line.get("book_qty") or 0),
+        "book_qty_at_posting": int(book_at_posting or 0),
+        "physical_count_qty": int(line.get("physical_count_qty") or 0),
+        "difference_qty": delta,
+    }
+    if line.get("physical_count_at"):
+        metadata["physical_count_at"] = str(line.get("physical_count_at"))
+    if line.get("net_movement_after_count") is not None:
+        metadata["net_movement_after_count"] = int(line.get("net_movement_after_count") or 0)
+    if line.get("target_qty") is not None:
+        metadata["target_qty"] = int(line.get("target_qty") or 0)
     return {
         "master_item_id": str(line.get("master_item_id") or ""),
         "branch_id": str(session_doc.get("branch_id") or ""),
@@ -996,14 +1057,7 @@ def _stock_opname_adjustment_request(session_doc: dict, line: dict, *, actor_id:
         "occurred_at": occurred_at,
         "created_at": occurred_at,
         "idempotency_key": f"stock-opname:{session_id}:{line_id}",
-        "metadata": {
-            "stock_opname_session_id": session_id,
-            "stock_opname_line_id": line_id,
-            "opname_number": str(session_doc.get("opname_number") or ""),
-            "book_qty": int(line.get("book_qty") or 0),
-            "physical_count_qty": int(line.get("physical_count_qty") or 0),
-            "difference_qty": delta,
-        },
+        "metadata": metadata,
     }
 
 
@@ -1016,7 +1070,7 @@ async def apply_stock_opname_adjustments(
     actor_id: str,
     occurred_at: str,
 ) -> List[dict]:
-    """Post non-zero STOCK_OPNAME_ADJUSTMENT rows for the owning frozen session."""
+    """Post non-zero STOCK_OPNAME_ADJUSTMENT rows for the owning active session."""
     session_id = str(session_doc.get("id") or "")
     movements = []
     for line in lines:

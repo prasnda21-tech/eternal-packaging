@@ -289,6 +289,24 @@ jobs:
       - name: Run test_stock_compatibility_read.py
         working-directory: backend
         run: python -m pytest -q -n 0 tests/test_stock_compatibility_read.py
+      # Stock opname suites need multi-doc transactions (replica set). Each file
+      # pins its own TEST_DB; R2 authority is fixture-only inside those DBs.
+      - name: Run stock opname operational suite (replica set)
+        working-directory: backend
+        env:
+          MONGO_URL: mongodb://127.0.0.1:27017/?replicaSet=eternal_local_rs
+          DB_NAME: eternal_packaging_ci_stock_opname_operational
+        run: >-
+          python -m pytest -vv -n 0 --tb=short
+          tests/test_stock_opname_operational.py
+      - name: Run stock opname freeze regression suite (replica set)
+        working-directory: backend
+        env:
+          MONGO_URL: mongodb://127.0.0.1:27017/?replicaSet=eternal_local_rs
+          DB_NAME: eternal_packaging_ci_stock_opname_freeze
+        run: >-
+          python -m pytest -vv -n 0 --tb=short
+          tests/test_stock_opname_r2.py
 
   backend-live-orders:
     name: Backend live orders summary
