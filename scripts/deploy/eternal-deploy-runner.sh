@@ -26,8 +26,11 @@ ETERNAL_FRONTEND_PREV="${ETERNAL_FRONTEND_PREV:-$ETERNAL_RUNTIME_ROOT/frontend-p
 ETERNAL_DEPLOY_LOCK="${ETERNAL_DEPLOY_LOCK:-/tmp/eternal-packaging-deploy.lock}"
 ETERNAL_SERVICE_NAME="${ETERNAL_SERVICE_NAME:-eternal-packaging-backend.service}"
 ETERNAL_HEALTH_URL="${ETERNAL_HEALTH_URL:-http://127.0.0.1:8000/api/system/health}"
-ETERNAL_HEALTH_RETRIES="${ETERNAL_HEALTH_RETRIES:-5}"
+# Wall-clock budget for post-restart / post-publish health (includes transient HTTP 502).
+ETERNAL_HEALTH_BUDGET_S="${ETERNAL_HEALTH_BUDGET_S:-60}"
 ETERNAL_HEALTH_SLEEP_S="${ETERNAL_HEALTH_SLEEP_S:-2}"
+# Optional attempt cap for tests (0 = budget-only). Production default is budget-only.
+ETERNAL_HEALTH_RETRIES="${ETERNAL_HEALTH_RETRIES:-0}"
 ETERNAL_MAIN_REF="${ETERNAL_MAIN_REF:-main}"
 ETERNAL_ALLOW_MIGRATIONS="${ETERNAL_ALLOW_MIGRATIONS:-0}"
 ETERNAL_MIRROR_DIR="${ETERNAL_MIRROR_DIR:-$ETERNAL_RELEASES_ROOT/mirror.git}"
@@ -35,7 +38,6 @@ ETERNAL_GIT_REMOTE="${ETERNAL_GIT_REMOTE:-}"
 ETERNAL_SYSTEMCTL_BIN="${ETERNAL_SYSTEMCTL_BIN:-systemctl}"
 ETERNAL_SYSTEMCTL_SUDO="${ETERNAL_SYSTEMCTL_SUDO:-sudo -n}"
 ETERNAL_USE_SYSTEMCTL_SUDO="${ETERNAL_USE_SYSTEMCTL_SUDO:-1}"
-ETERNAL_NPM_BIN="${ETERNAL_NPM_BIN:-npm}"
 ETERNAL_CURL_BIN="${ETERNAL_CURL_BIN:-curl}"
 ETERNAL_SKIP_FETCH="${ETERNAL_SKIP_FETCH:-0}"
 ETERNAL_DRY_BUILD="${ETERNAL_DRY_BUILD:-0}"
@@ -274,17 +276,70 @@ eternal_rollback() {
 }
 
 eternal_health_check() {
-  local i body
-  for ((i = 1; i <= ETERNAL_HEALTH_RETRIES; i++)); do
-    body="$("$ETERNAL_CURL_BIN" -fsS --max-time 5 "$ETERNAL_HEALTH_URL" || true)"
-    if [[ -n "$body" ]] && eternal_health_body_ok "$body"; then
-      eternal_deploy_log "health PASS attempt=$i mongo=true mode=operational"
+  # Bounded retry: wall-clock budget (default 60s). Transient HTTP 502/503/504 and
+  # connection failures retry; success still requires mongo=true + mode=operational.
+  # ETERNAL_HEALTH_RETRIES>0 caps attempts (synthetic tests); 0 = budget-only.
+  local attempt=0 body code tmp started now elapsed remaining sleep_for curl_t
+  local budget_s="${ETERNAL_HEALTH_BUDGET_S:-60}"
+  local sleep_s="${ETERNAL_HEALTH_SLEEP_S:-2}"
+  local max_attempts="${ETERNAL_HEALTH_RETRIES:-0}"
+  started="$(date +%s)"
+
+  while true; do
+    now="$(date +%s)"
+    elapsed=$((now - started))
+    remaining=$((budget_s - elapsed))
+    if (( remaining <= 0 )); then
+      eternal_deploy_log "health FAIL budget_exhausted elapsed=${elapsed}s budget=${budget_s}s attempts=$attempt"
+      return 1
+    fi
+    attempt=$((attempt + 1))
+    if (( max_attempts > 0 && attempt > max_attempts )); then
+      eternal_deploy_log "health FAIL attempts_exhausted attempts=$attempt max=$max_attempts"
+      return 1
+    fi
+
+    # Cap curl --max-time to remaining budget so wall clock cannot exceed budget_s.
+    curl_t=5
+    if (( curl_t > remaining )); then
+      curl_t=$remaining
+    fi
+    if (( curl_t < 1 )); then
+      eternal_deploy_log "health FAIL budget_exhausted elapsed=${elapsed}s budget=${budget_s}s attempts=$attempt"
+      return 1
+    fi
+
+    tmp="$(mktemp)"
+    code="$("$ETERNAL_CURL_BIN" -sS -o "$tmp" -w '%{http_code}' --max-time "$curl_t" "$ETERNAL_HEALTH_URL" 2>/dev/null || true)"
+    body="$(cat "$tmp" 2>/dev/null || true)"
+    rm -f "$tmp"
+    [[ -n "$code" ]] || code="000"
+
+    if [[ "$code" == "200" && -n "$body" ]] && eternal_health_body_ok "$body"; then
+      eternal_deploy_log "health PASS attempt=$attempt http=$code mongo=true mode=operational"
       return 0
     fi
-    eternal_deploy_log "health retry attempt=$i/$ETERNAL_HEALTH_RETRIES body=$(eternal_redact_line "${body:-<empty>}")"
-    sleep "$ETERNAL_HEALTH_SLEEP_S"
+
+    if [[ "$code" == "502" || "$code" == "503" || "$code" == "504" || "$code" == "000" ]]; then
+      eternal_deploy_log "health transient http=$code attempt=$attempt elapsed=${elapsed}s body=$(eternal_redact_line "${body:-<empty>}")"
+    else
+      eternal_deploy_log "health retry attempt=$attempt http=$code elapsed=${elapsed}s body=$(eternal_redact_line "${body:-<empty>}")"
+    fi
+
+    now="$(date +%s)"
+    remaining=$((budget_s - (now - started)))
+    if (( remaining <= 0 )); then
+      eternal_deploy_log "health FAIL budget_exhausted elapsed=$((now - started))s budget=${budget_s}s attempts=$attempt"
+      return 1
+    fi
+    sleep_for="$sleep_s"
+    if (( sleep_for > remaining )); then
+      sleep_for="$remaining"
+    fi
+    if (( sleep_for > 0 )); then
+      sleep "$sleep_for"
+    fi
   done
-  return 1
 }
 
 # Verify systemd WD string, CURRENT→release identity, and live process cwd.
@@ -497,25 +552,17 @@ eternal_maybe_build_frontend() {
     eternal_deploy_log "frontend dry-build written (unpublished)"
     return 0
   fi
-  (
-    cd "$release_dir/frontend"
-    export NODE_OPTIONS="${ETERNAL_NODE_OPTIONS}"
-    # NODE_OPTIONS heap limit is NOT a cgroup/RAM ceiling for the whole process tree.
-    if [[ -n "$ETERNAL_FRONTEND_ENV_FILE" ]]; then
-      set -a
-      # shellcheck disable=SC1090
-      source "$ETERNAL_FRONTEND_ENV_FILE"
-      set +a
-    fi
-    if [[ -f yarn.lock ]]; then
-      command -v yarn >/dev/null 2>&1 || eternal_deploy_die "yarn required but not found"
-      yarn install --frozen-lockfile
-      yarn build
-    else
-      "$ETERNAL_NPM_BIN" ci
-      "$ETERNAL_NPM_BIN" run build
-    fi
-  ) || eternal_deploy_die "frontend install/build failed; live not activated"
+  export NODE_OPTIONS="${ETERNAL_NODE_OPTIONS}"
+  # NODE_OPTIONS heap limit is NOT a cgroup/RAM ceiling for the whole process tree.
+  if [[ -n "$ETERNAL_FRONTEND_ENV_FILE" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "$ETERNAL_FRONTEND_ENV_FILE"
+    set +a
+  fi
+  # Yarn-only (CI standard). npm fallback removed — fail closed if yarn/lock missing.
+  # Must not run in a subshell: eternal_deploy_die uses exit.
+  eternal_frontend_production_build "$release_dir/frontend"
 }
 
 eternal_verify_backup_ready() {

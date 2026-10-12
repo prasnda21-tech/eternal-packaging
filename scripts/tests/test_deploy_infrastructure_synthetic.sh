@@ -155,23 +155,52 @@ trap 'stop_harness_backend_proc; cleanup_work' EXIT
 
 cat >"$BIN/curl" <<'EOF'
 #!/usr/bin/env bash
-# Counted failures via state file: activate can fail, rollback health can recover.
-if [[ -n "${ETERNAL_HEALTH_FAIL_STATE:-}" && -f "${ETERNAL_HEALTH_FAIL_STATE}" ]]; then
+# Harness curl: supports -o BODY -w '%{http_code}' used by eternal_health_check.
+out_file=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -o|--output) out_file="${2:-}"; shift 2 ;;
+    -w|--write-out) shift 2 ;;
+    --max-time) shift 2 ;;
+    -s|-S|-f|-sS) shift ;;
+    *) shift ;;
+  esac
+done
+body='{"mongo":true,"mode":"operational","checked_at":"t"}'
+code=200
+# Transient HTTP 502 sequence (post-restart warming).
+if [[ -n "${ETERNAL_HEALTH_HTTP_FAIL_STATE:-}" && -f "${ETERNAL_HEALTH_HTTP_FAIL_STATE}" ]]; then
+  n="$(cat "${ETERNAL_HEALTH_HTTP_FAIL_STATE}")"
+  if [[ "${n:-0}" -gt 0 ]]; then
+    echo $((n - 1)) >"$ETERNAL_HEALTH_HTTP_FAIL_STATE"
+    body=""
+    code=502
+  fi
+fi
+# Counted payload failures: activate can fail, rollback health can recover.
+if [[ "$code" == "200" && -n "${ETERNAL_HEALTH_FAIL_STATE:-}" && -f "${ETERNAL_HEALTH_FAIL_STATE}" ]]; then
   n="$(cat "${ETERNAL_HEALTH_FAIL_STATE}")"
   if [[ "${n:-0}" -gt 0 ]]; then
     echo $((n - 1)) >"$ETERNAL_HEALTH_FAIL_STATE"
-    echo '{"mongo":false,"mode":"degraded"}'
-    exit 0
+    body='{"mongo":false,"mode":"degraded"}'
+    code=200
   fi
 fi
-if [[ "${ETERNAL_HEALTH_FORCE_FAIL:-0}" == "1" ]]; then echo '{"mongo":false,"mode":"degraded"}'; exit 0; fi
-if [[ "${ETERNAL_HEALTH_PARTIAL:-0}" == "1" ]]; then echo '{"mongo":false,"mode":"degraded"}'; exit 0; fi
-echo '{"mongo":true,"mode":"operational","checked_at":"t"}'
+if [[ "$code" == "200" && "${ETERNAL_HEALTH_FORCE_FAIL:-0}" == "1" ]]; then body='{"mongo":false,"mode":"degraded"}'; code=200; fi
+if [[ "$code" == "200" && "${ETERNAL_HEALTH_PARTIAL:-0}" == "1" ]]; then body='{"mongo":false,"mode":"degraded"}'; code=200; fi
+if [[ -n "$out_file" ]]; then
+  printf '%s' "$body" >"$out_file"
+  printf '%s' "$code"
+else
+  printf '%s' "$body"
+fi
 exit 0
 EOF
 chmod +x "$BIN/curl"
 export ETERNAL_HEALTH_FAIL_STATE="$HARNESS/health-fail.remaining"
 echo 0 >"$ETERNAL_HEALTH_FAIL_STATE"
+export ETERNAL_HEALTH_HTTP_FAIL_STATE="$HARNESS/health-http-fail.remaining"
+echo 0 >"$ETERNAL_HEALTH_HTTP_FAIL_STATE"
 
 cat >"$BIN/ssh" <<'EOF'
 #!/usr/bin/env bash
@@ -720,6 +749,28 @@ export ETERNAL_HEALTH_PARTIAL=1
 assert_false "degraded health rejected" "$RUNNER" deploy "$MAIN_SHA"
 export ETERNAL_HEALTH_PARTIAL=0
 
+# ========== health payload validation (mongo=true + mode=operational) ==========
+assert_true "health body operational accepted" \
+  bash -c 'source "'"$ROOT"'/scripts/deploy/lib.sh"; eternal_health_body_ok "{\"mongo\":true,\"mode\":\"operational\"}"'
+assert_false "health body mongo false rejected" \
+  bash -c 'source "'"$ROOT"'/scripts/deploy/lib.sh"; eternal_health_body_ok "{\"mongo\":false,\"mode\":\"operational\"}"'
+assert_false "health body mode degraded rejected" \
+  bash -c 'source "'"$ROOT"'/scripts/deploy/lib.sh"; eternal_health_body_ok "{\"mongo\":true,\"mode\":\"degraded\"}"'
+
+# ========== transient HTTP 502 then recovery (post-restart warming) ==========
+echo 2 >"$ETERNAL_HEALTH_HTTP_FAIL_STATE"
+export ETERNAL_HEALTH_RETRIES=6
+export ETERNAL_HEALTH_SLEEP_S=0
+export ETERNAL_HEALTH_BUDGET_S=60
+assert_true "transient 502 recovers within health budget" "$RUNNER" deploy "$FE_SHA"
+echo 0 >"$ETERNAL_HEALTH_HTTP_FAIL_STATE"
+export ETERNAL_HEALTH_RETRIES=2
+
+# ========== permanent health failure still fail-closed ==========
+export ETERNAL_HEALTH_FORCE_FAIL=1
+assert_false "permanent health failure fail-closed" "$RUNNER" deploy "$MAIN_SHA"
+export ETERNAL_HEALTH_FORCE_FAIL=0
+
 # ========== old health must not pass wrong runtime ==========
 export ETERNAL_EXPECTED_WD="/wrong/backend"
 assert_false "wrong runtime WD rejected even if health JSON ok" "$RUNNER" deploy "$FE_SHA"
@@ -1041,12 +1092,52 @@ assert_true "docs mention requirements.portable default" \
   grep -q 'requirements.portable.txt' "$ROOT/docs/deploy-production-setup.md"
 assert_true "docs mention finalize-existing-baseline" \
   grep -q 'finalize-existing-baseline.sh' "$ROOT/docs/deploy-production-setup.md"
+assert_true "docs mention Yarn only frontend build" \
+  grep -q 'Yarn only' "$ROOT/docs/deploy-production-setup.md"
+assert_true "docs mention 60s health budget" \
+  grep -q '60s wall-clock budget' "$ROOT/docs/deploy-production-setup.md"
 assert_true "deploy workflow has jobs:" grep -q '^jobs:' "$WF"
 assert_true "probe workflow has jobs:" grep -q '^jobs:' "$PWF"
 assert_true "deploy workflow on.workflow_dispatch" grep -q 'workflow_dispatch:' "$WF"
 assert_true "probe workflow on.workflow_dispatch" grep -q 'workflow_dispatch:' "$PWF"
 assert_true "direct-url dependency verifier suite" \
   bash "$ROOT/scripts/tests/test_deploy_direct_url_dep_verify.sh"
+
+# ========== Yarn-only production frontend build (no npm fallback) ==========
+YARN_FE="$(mktemp -d)/frontend"
+mkdir -p "$YARN_FE"
+printf '{}\n' >"$YARN_FE/package.json"
+set +e
+yarn_nolock_err="$(bash -c 'source "'"$ROOT"'/scripts/deploy/lib.sh"; eternal_frontend_production_build "'"$YARN_FE"'"' 2>&1)"
+yarn_nolock_ec=$?
+set -e
+assert_eq "yarn.lock missing exit nonzero" "1" "$yarn_nolock_ec"
+assert_true "yarn.lock missing error mentions npm fallback removed" \
+  grep -q 'npm fallback removed' <<<"$yarn_nolock_err"
+printf 'yarn lockfile v1\n' >"$YARN_FE/yarn.lock"
+set +e
+yarn_nobin_err="$(env PATH="/usr/bin:/bin" bash -c 'source "'"$ROOT"'/scripts/deploy/lib.sh"; eternal_frontend_production_build "'"$YARN_FE"'"' 2>&1)"
+yarn_nobin_ec=$?
+set -e
+assert_eq "yarn binary missing exit nonzero" "1" "$yarn_nobin_ec"
+assert_true "yarn binary missing error refuses npm" \
+  grep -q 'does not use npm' <<<"$yarn_nobin_err"
+: >"$HARNESS/yarn.cmd.log"
+cat >"$BIN/yarn" <<EOF
+#!/usr/bin/env bash
+echo "YARN \$*" >>"$HARNESS/yarn.cmd.log"
+exit 0
+EOF
+chmod +x "$BIN/yarn"
+assert_true "yarn install path succeeds with stub yarn" \
+  bash -c 'source "'"$ROOT"'/scripts/deploy/lib.sh"; eternal_frontend_production_build "'"$YARN_FE"'"'
+assert_true "yarn install --frozen-lockfile invoked" \
+  grep -q 'install --frozen-lockfile' "$HARNESS/yarn.cmd.log"
+assert_true "yarn build invoked" grep -q 'YARN build' "$HARNESS/yarn.cmd.log"
+assert_true "runner has no npm ci fallback" \
+  bash -c '! grep -qE "npm ci|ETERNAL_NPM_BIN" "'"$ROOT"'/scripts/deploy/eternal-deploy-runner.sh"'
+assert_true "lib exposes eternal_frontend_production_build" \
+  grep -q 'eternal_frontend_production_build' "$ROOT/scripts/deploy/lib.sh"
 
 log ""
 log "SUMMARY pass=$PASS fail=$FAIL"
