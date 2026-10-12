@@ -63,6 +63,7 @@ BACKEND_RESTARTED=0
 LOCK_HELD=0
 FRONTEND_PUBLISH_STARTED=0
 ROLLING_BACK=0
+ETERNAL_REUSED_RELEASE=0
 
 ROLLBACK_STATUS="" # PASS | FAILED | "" (no rollback attempted)
 
@@ -134,7 +135,7 @@ eternal_systemctl_is_active() {
 }
 
 # Restore frontend INTO existing webroot (no rename of /var/www child — parent may be root-owned).
-# Assets first, atomic index last. Keeps hashed assets that remain useful for old sessions when present in backup.
+# Skip byte-identical hashed files; refuse hashed collisions; atomic index last.
 # Returns 0/1 (does not exit) so rollback can continue other components.
 eternal_restore_frontend_tree() {
   local src="$1"
@@ -150,28 +151,17 @@ eternal_restore_frontend_tree() {
     return 1
   fi
 
-  if [[ -d "$src/static" ]]; then
-    mkdir -p "$ETERNAL_FRONTEND_ROOT/static" || return 1
-    cp -a "$src/static"/. "$ETERNAL_FRONTEND_ROOT/static"/ || return 1
-  fi
-  local item base
-  shopt -s dotglob nullglob
-  for item in "$src"/*; do
-    base="$(basename "$item")"
-    if [[ "$base" == "index.html" || "$base" == "static" || "$base" == ".deploy-in-progress" ]]; then
-      continue
-    fi
-    if [[ -d "$item" ]]; then
-      mkdir -p "$ETERNAL_FRONTEND_ROOT/$base" || return 1
-      cp -a "$item"/. "$ETERNAL_FRONTEND_ROOT/$base"/ || return 1
-    else
-      cp -a "$item" "$ETERNAL_FRONTEND_ROOT/$base" || return 1
-    fi
-  done
-  shopt -u dotglob nullglob
+  eternal_webroot_merge_tree "$src" "$ETERNAL_FRONTEND_ROOT" 1 || return 1
+
   if [[ -f "$src/index.html" ]]; then
-    cp -a "$src/index.html" "$ETERNAL_FRONTEND_ROOT/index.html.new" || return 1
-    mv -Tf "$ETERNAL_FRONTEND_ROOT/index.html.new" "$ETERNAL_FRONTEND_ROOT/index.html" || return 1
+    if [[ -f "$ETERNAL_FRONTEND_ROOT/index.html" ]] \
+      && cmp -s "$src/index.html" "$ETERNAL_FRONTEND_ROOT/index.html"; then
+      eternal_deploy_log "SKIP_IDENTICAL index.html"
+    else
+      cp -a "$src/index.html" "$ETERNAL_FRONTEND_ROOT/index.html.new" || return 1
+      eternal_path_is_under_root "$ETERNAL_FRONTEND_ROOT" "$ETERNAL_FRONTEND_ROOT/index.html.new" || return 1
+      mv -Tf "$ETERNAL_FRONTEND_ROOT/index.html.new" "$ETERNAL_FRONTEND_ROOT/index.html" || return 1
+    fi
   else
     eternal_deploy_log "frontend restore missing index.html in source"
     return 1
@@ -197,18 +187,25 @@ eternal_rollback() {
     elif [[ "$PREV_IS_BASELINE" == "1" && -d "$ETERNAL_BASELINE_DIR/frontend-snapshot" ]]; then
       fe_src="$ETERNAL_BASELINE_DIR/frontend-snapshot"
     fi
-    if [[ -n "$fe_src" ]]; then
+    if [[ -z "$fe_src" ]]; then
+      eternal_deploy_log "rollback: no frontend backup/snapshot available"
+      rb_fail=1
+    elif [[ "$FRONTEND_SWITCHED" != "1" ]] \
+      && eternal_frontend_required_state_ok "$ETERNAL_FRONTEND_ROOT" "$fe_src"; then
+      # Publish failed before atomic index swap — live FE already matches backup.
+      eternal_deploy_log "rollback: frontend index unchanged; required FE state already OK (skip forced overwrite)"
+      FRONTEND_SWITCHED=0
+      FRONTEND_PUBLISH_STARTED=0
+    else
       eternal_deploy_log "rollback: restore frontend from $fe_src (in-place)"
-      if eternal_restore_frontend_tree "$fe_src"; then
+      if eternal_restore_frontend_tree "$fe_src" \
+        && eternal_frontend_required_state_ok "$ETERNAL_FRONTEND_ROOT" "$fe_src"; then
         FRONTEND_SWITCHED=0
         FRONTEND_PUBLISH_STARTED=0
       else
-        eternal_deploy_log "rollback: frontend restore FAILED (continuing other components)"
+        eternal_deploy_log "rollback: frontend restore/verify FAILED (continuing other components)"
         rb_fail=1
       fi
-    else
-      eternal_deploy_log "rollback: no frontend backup/snapshot available"
-      rb_fail=1
     fi
   fi
 
@@ -506,15 +503,24 @@ eternal_materialize_release() {
   if [[ -f "$NEW_RELEASE/.deploy-ok" ]]; then
     eternal_deploy_log "reusing existing release $NEW_RELEASE"
     eternal_validate_backend_runtime "$NEW_RELEASE/backend"
+    ETERNAL_REUSED_RELEASE=1
     return 0
   fi
   eternal_assert_no_local_conflict "$ETERNAL_FRONTEND_ROOT" "$NEW_RELEASE"
-  rm -rf "$NEW_RELEASE"
+  if [[ -d "$NEW_RELEASE" ]]; then
+    if eternal_try_reuse_incomplete_release "$NEW_RELEASE" "$sha"; then
+      eternal_deploy_log "reusing incomplete/failed release $NEW_RELEASE (integrity OK; skip rematerialize)"
+      ETERNAL_REUSED_RELEASE=1
+      return 0
+    fi
+    eternal_deploy_die "incomplete release exists but failed reuse integrity checks: $NEW_RELEASE (not deleting; Owner must inspect or clear)"
+  fi
   mkdir -p "$NEW_RELEASE"
   eternal_deploy_log "materializing isolated release $sha"
   git --git-dir="$ETERNAL_MIRROR_DIR" archive --format=tar "$sha" | tar -x -C "$NEW_RELEASE"
   # Never carry a foreign .venv from archive (should not be in git; belt-and-suspenders).
   rm -rf "$NEW_RELEASE/backend/.venv" 2>/dev/null || true
+  printf '%s\n' "$sha" >"$NEW_RELEASE/.eternal-source-sha"
   eternal_manifest_guard "$NEW_RELEASE"
   # Refuse selective-merge manual artifacts without provenance marker.
   if [[ -f "$NEW_RELEASE/.manual-selective-merge" ]]; then
@@ -537,18 +543,37 @@ eternal_diff_paths() {
 
 eternal_maybe_build_frontend() {
   local release_dir="$1"
+  local fp recorded
   if [[ "$ETERNAL_NEED_FRONTEND" != "1" ]]; then
     eternal_deploy_log "frontend unchanged; skip build"
     return 0
   fi
   [[ -d "$release_dir/frontend" ]] || eternal_deploy_die "frontend tree missing in release"
+
+  # Reuse existing build when fingerprint matches recorded post-build marker.
+  if [[ -f "$release_dir/frontend/build/index.html" \
+     && -f "$release_dir/.eternal-frontend-fingerprint" ]]; then
+    recorded="$(tr -d '\n' <"$release_dir/.eternal-frontend-fingerprint")"
+    fp="$(eternal_frontend_input_fingerprint "$release_dir/frontend")"
+    if [[ -n "$recorded" && "$recorded" == "$fp" ]]; then
+      eternal_deploy_log "frontend build reuse fingerprint OK; skip yarn install/build"
+      return 0
+    fi
+    eternal_deploy_log "frontend build present but fingerprint mismatch; rebuilding"
+  fi
+
   if [[ "$ETERNAL_DRY_BUILD" == "1" ]]; then
     if [[ "${ETERNAL_FORCE_BUILD_FAIL:-0}" == "1" ]]; then
       eternal_deploy_die "frontend build failed (forced)"
     fi
     mkdir -p "$release_dir/frontend/build/static/js"
     printf 'dry-asset\n' >"$release_dir/frontend/build/static/js/app.js"
-    printf 'dry-build\n' >"$release_dir/frontend/build/index.html"
+    # Keep dry-build token for synthetic assertions; include static ref for required-state checks.
+    printf 'dry-build\n<script src="/static/js/app.js"></script>\n' \
+      >"$release_dir/frontend/build/index.html"
+    printf '{"files":{"main.js":"/static/js/app.js"}}\n' \
+      >"$release_dir/frontend/build/asset-manifest.json"
+    eternal_write_frontend_fingerprint "$release_dir"
     eternal_deploy_log "frontend dry-build written (unpublished)"
     return 0
   fi
@@ -563,6 +588,7 @@ eternal_maybe_build_frontend() {
   # Yarn-only (CI standard). npm fallback removed — fail closed if yarn/lock missing.
   # Must not run in a subshell: eternal_deploy_die uses exit.
   eternal_frontend_production_build "$release_dir/frontend"
+  eternal_write_frontend_fingerprint "$release_dir"
 }
 
 eternal_verify_backup_ready() {
@@ -666,31 +692,14 @@ eternal_publish_frontend() {
     eternal_deploy_die "frontend publish failed (forced)"
   fi
 
-  # Copy/merge hashed assets first; keep previously published hashed files.
-  if [[ -d "$built/static" ]]; then
-    mkdir -p "$ETERNAL_FRONTEND_ROOT/static"
-    cp -a "$built/static"/. "$ETERNAL_FRONTEND_ROOT/static"/
-  fi
-  # Copy other non-index artifacts (favicon, manifest, etc.) without removing old hashed assets.
-  local item
-  shopt -s dotglob nullglob
-  for item in "$built"/*; do
-    local base
-    base="$(basename "$item")"
-    if [[ "$base" == "index.html" || "$base" == "static" ]]; then
-      continue
-    fi
-    if [[ -d "$item" ]]; then
-      mkdir -p "$ETERNAL_FRONTEND_ROOT/$base"
-      cp -a "$item"/. "$ETERNAL_FRONTEND_ROOT/$base"/
-    else
-      cp -a "$item" "$ETERNAL_FRONTEND_ROOT/$base"
-    fi
-  done
-  shopt -u dotglob nullglob
+  # Merge hashed/static + mutable metadata: skip identical, fail-closed on hashed collision,
+  # never blind cp -a overwrite of root-owned identical files. Old unreferenced hashes kept.
+  eternal_webroot_merge_tree "$built" "$ETERNAL_FRONTEND_ROOT" 0
 
   # Atomic index swap last — never leave an empty webroot interval.
   cp -a "$built/index.html" "$ETERNAL_FRONTEND_ROOT/index.html.new"
+  eternal_path_is_under_root "$ETERNAL_FRONTEND_ROOT" "$ETERNAL_FRONTEND_ROOT/index.html.new" \
+    || eternal_deploy_die "frontend publish: index.html.new escapes webroot"
   mv -Tf "$ETERNAL_FRONTEND_ROOT/index.html.new" "$ETERNAL_FRONTEND_ROOT/index.html"
   rm -f "$ETERNAL_FRONTEND_ROOT/.deploy-in-progress"
   FRONTEND_SWITCHED=1
@@ -801,8 +810,12 @@ EOF
   eternal_deploy_log "change classification backend=$ETERNAL_NEED_BACKEND frontend=$ETERNAL_NEED_FRONTEND"
 
   # Build + fresh venv BEFORE any live activation. Never mutate active service venv.
+  # Reused incomplete/successful releases keep validated build + venv (no wipe).
   eternal_maybe_build_frontend "$NEW_RELEASE"
-  if [[ "$ETERNAL_NEED_BACKEND" == "1" || ! -x "$NEW_RELEASE/backend/.venv/bin/uvicorn" ]]; then
+  if [[ "$ETERNAL_REUSED_RELEASE" == "1" && -x "$NEW_RELEASE/backend/.venv/bin/uvicorn" ]]; then
+    eternal_deploy_log "backend runtime reuse OK; skip fresh venv prepare"
+    eternal_validate_backend_runtime "$NEW_RELEASE/backend"
+  elif [[ "$ETERNAL_NEED_BACKEND" == "1" || ! -x "$NEW_RELEASE/backend/.venv/bin/uvicorn" ]]; then
     eternal_deploy_log "preparing isolated backend runtime for $sha"
     eternal_prepare_backend_runtime "$NEW_RELEASE/backend"
   else

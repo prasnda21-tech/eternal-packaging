@@ -95,13 +95,15 @@ Keep dirty `/opt/eternal-packaging` overlay untouched. Pure SHA does **not** aut
 - Shared `flock` lock held through rollback; existing lock file without holder does not block; lock file is not unlinked.
 - Preflight: runtime root writable, FE leaf writable, mirror, disk, systemd WD/ExecStart match expected **runtime** paths.
 - Materialize via `git archive` then **fresh venv** + dependency install; validate executable before switching `current`.
-- Frontend production build is **Yarn only** (`yarn.lock` + `yarn install --frozen-lockfile`); npm fallback removed (fail closed if Yarn/lock missing).
+- Failed/incomplete release dirs are **not** deleted automatically. Reuse is allowed only when source SHA, frontend build fingerprint, referenced assets, and venv/requirements provenance all validate; otherwise fail closed for Owner inspection (never `rm -rf` on failed reuse).
+- Frontend production build is **Yarn only** (`yarn.lock` + `yarn install --frozen-lockfile`); npm fallback removed (fail closed if Yarn/lock missing). Matching fingerprint skips rebuild. Fingerprint hashes `package.json`, `yarn.lock`, optional in-tree CRA config/`.env*`, and when set the external `ETERNAL_FRONTEND_ENV_FILE` **content hash only** (values never logged).
 - Health checks after restart/publish use a **60s wall-clock budget** (retries include transient HTTP 502); success still requires `mongo=true` and `mode=operational`.
 - **FE-only / no-backend-change:** keep `current` + running process on the active release (no switch, no restart); verify `/proc/<MainPID>/cwd` matches that release.
 - **Backend change:** switch `current`, restart, then verify process cwd == new release backend.
-- Rollback never swallows component failures: continues other restores, holds lock until finished, verifies pointer/process/health/index, prints `ROLLBACK_PASS` or `ROLLBACK_FAILED`.
+- FE publish merges into the webroot leaf: skip byte-identical files (safe with root-owned hashed assets), fail closed on hashed path collisions with different bytes, never recursive `chown`/`chmod`, atomic `index.html` last. Old unreferenced hashed assets are retained.
+- Rollback never swallows component failures: continues other restores, holds lock until finished, verifies pointer/process/health/index (+ FE required state vs backup when publish was attempted), prints `ROLLBACK_PASS` or `ROLLBACK_FAILED`. If publish failed before the index swap and live FE still matches backup, rollback does not force overwrite of identical root-owned assets.
 - Baseline rollback runtime must pass the same validation (not marker-only).
-- FE backup under runtime root; publish/restore in-place (assets then atomic `index.html`); never rename webroot under root-owned `/var/www`.
+- FE backup under runtime root; publish/restore in-place; never rename webroot under root-owned `/var/www`.
 - No business migrations/backfills.
 
 ## Cursor trigger helper
