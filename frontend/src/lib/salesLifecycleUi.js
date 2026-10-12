@@ -67,15 +67,27 @@ export function isReceiptMutationUiEnabled() {
 
 /** True when financial recovery / incomplete cancel must block new Edit/Cancel. */
 export function receiptDocumentBlocksMutation(document, capability) {
-  if (capability && capability.document_pending_or_failed === true) return true;
   const progress = String(document?.business_cancel_progress || "").toLowerCase();
+  // Idle cancel sentinel "none" must never block (backend attaches it on healthy docs).
   if (progress === "pending" || progress === "failed") return true;
   const auto = String(document?.auto_accounting_status || "").toLowerCase();
   if (auto === "pending" || auto === "in_progress" || auto === "processing" || auto === "failed" || auto === "error") {
     return true;
   }
+  if (document?.revision_incomplete === true || document?.edit_revision_incomplete === true) {
+    return true;
+  }
   const fin = String(document?.financial_status || "").toLowerCase();
   if (fin === "cancelled") return true;
+  // Honor capability pending flag only when document fields do not prove idle.
+  // Misclassified cancel progress "none" previously set document_pending_or_failed
+  // and hid Edit/Batalkan while legacy Balik still rendered.
+  if (capability && capability.document_pending_or_failed === true) {
+    const cancelIdle = !progress || progress === "none" || progress === "complete" || progress === "completed";
+    const autoIdle = !auto || ["complete", "completed", "posted", "success", "none", "n/a"].includes(auto);
+    if (document && cancelIdle && autoIdle) return false;
+    return true;
+  }
   return false;
 }
 

@@ -67,6 +67,40 @@ describe("salesLifecycleUi", () => {
     expect(receiptDocumentBlocksMutation({ financial_status: "active" }, readyCap)).toBe(false);
   });
 
+  test("Direktur authorized + posted eligible shows Edit/Batalkan; cancel progress none does not hide", () => {
+    const hasDirektur = (p) => p === "sales.receipt.edit" || p === "sales.receipt.cancel";
+    const readyCap = {
+      edit_revision: { available: true },
+      business_cancel: { available: true },
+      // Legacy misclassification: idle "none" was reported as pending.
+      document_pending_or_failed: true,
+    };
+    const postedEligible = {
+      financial_status: "active",
+      business_cancel_progress: "none",
+      auto_accounting_status: "complete",
+      edit_capability: { editable: true, mode: "posted_revision" },
+    };
+    expect(receiptDocumentBlocksMutation(postedEligible, readyCap)).toBe(false);
+    expect(canShowReceiptEditUi(hasDirektur, { capability: readyCap, document: postedEligible })).toBe(true);
+    expect(canShowReceiptCancelUi(hasDirektur, { capability: readyCap, document: postedEligible })).toBe(true);
+
+    expect(canShowReceiptEditUi(() => false, { capability: readyCap, document: postedEligible })).toBe(false);
+    expect(canShowReceiptCancelUi(() => false, { capability: readyCap, document: postedEligible })).toBe(false);
+
+    const overrideFalse = (p) => false;
+    expect(canShowReceiptEditUi(overrideFalse, { capability: readyCap, document: postedEligible })).toBe(false);
+
+    expect(receiptDocumentBlocksMutation(
+      { ...postedEligible, business_cancel_progress: "pending" },
+      readyCap,
+    )).toBe(true);
+    expect(canShowReceiptCancelUi(hasDirektur, {
+      capability: readyCap,
+      document: { ...postedEligible, business_cancel_progress: "pending" },
+    })).toBe(false);
+  });
+
   test("receipt update response requires financial_complete for posted revision", () => {
     expect(interpretReceiptUpdateResponse({
       mode: "unposted",

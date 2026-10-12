@@ -1,12 +1,37 @@
 import fs from "fs";
 import path from "path";
-import { canBusinessEditReceipt, interpretReceiptUpdateResponse } from "../lib/salesLifecycleUi";
+import {
+  canBusinessEditReceipt,
+  canShowReceiptCancelUi,
+  canShowReceiptEditUi,
+  interpretReceiptUpdateResponse,
+} from "../lib/salesLifecycleUi";
 
 const read = (rel) => fs.readFileSync(path.join(__dirname, rel), "utf8");
 
 describe("Package C — receipt edit UI contracts", () => {
   const page = read("PenerimaanPenjualan.jsx");
   const api = read("../lib/api.js");
+
+  test("Direktur posted eligible detail shows Edit and Batalkan testids", () => {
+    expect(page).toMatch(/btn-edit-receipt/);
+    expect(page).toMatch(/btn-cancel-receipt-detail/);
+    expect(page).toMatch(/canShowReceiptEditUi/);
+    expect(page).toMatch(/canShowReceiptCancelUi/);
+    const hasDirektur = (p) => p === "sales.receipt.edit" || p === "sales.receipt.cancel";
+    const cap = {
+      edit_revision: { available: true },
+      business_cancel: { available: true },
+      document_pending_or_failed: true,
+    };
+    const doc = {
+      business_cancel_progress: "none",
+      auto_accounting_status: "complete",
+      edit_capability: { editable: true, mode: "posted_revision" },
+    };
+    expect(canShowReceiptEditUi(hasDirektur, { capability: cap, document: doc })).toBe(true);
+    expect(canShowReceiptCancelUi(hasDirektur, { capability: cap, document: doc })).toBe(true);
+  });
 
   test("updateSalesReceipt wired; edit is opt-in only; no flag guessing", () => {
     expect(api).toMatch(/updateSalesReceipt:/);
