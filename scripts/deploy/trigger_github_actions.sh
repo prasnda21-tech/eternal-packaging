@@ -7,15 +7,17 @@
 # Usage:
 #   trigger_github_actions.sh plan  probe
 #   trigger_github_actions.sh plan  deploy --sha <40> --confirm-sha <40>
+#   trigger_github_actions.sh plan  rollback --sha <40> --confirm-sha <40> --previous-id <40|baseline-active>
 #   trigger_github_actions.sh execute probe --execute
 #   trigger_github_actions.sh execute deploy --sha <40> --confirm-sha <40> --execute
+#   trigger_github_actions.sh execute rollback --sha <40> --confirm-sha <40> --previous-id <id> --execute
 #
 # Env:
 #   ETERNAL_GH_REPO                 default prasnda21-tech/eternal-packaging
 #   ETERNAL_GH_API_MOCK_DIR         synthetic mocks (no network)
 #   ETERNAL_GH_BIN                  override gh binary (tests/stubs)
 #   ETERNAL_TRIGGER_DISPATCH_LOG    records mock POSTs for tests
-#   ETERNAL_DEPLOY_SHARED_SECRET    execute+deploy only (env → JSON body; never argv/logs)
+#   ETERNAL_DEPLOY_SHARED_SECRET    execute+deploy|rollback only (env → JSON body; never argv/logs)
 #   GH_TOKEN / ETERNAL_GH_TOKEN     write-capable token from env secret store
 #   ETERNAL_TRIGGER_POLL_TIMEOUT_SEC   wall-clock budget to correlate run URL (default 45)
 #   ETERNAL_TRIGGER_POLL_INTERVAL_SEC  sleep between correlation GETs (default 2; 0 = no sleep)
@@ -38,6 +40,7 @@ MODE="plan"
 ACTION=""
 SHA=""
 CONFIRM_SHA=""
+PREVIOUS_ID=""
 REQUEST_ID=""
 DO_EXECUTE=0
 ALLOW_MIGRATIONS=0
@@ -56,7 +59,7 @@ HTTP_TIMEOUT_SEC="${ETERNAL_TRIGGER_HTTP_TIMEOUT_SEC:-30}"
 HTTP_KILL_AFTER_SEC="${ETERNAL_TRIGGER_HTTP_KILL_AFTER_SEC:-2}"
 
 if [[ $# -lt 2 ]]; then
-  eternal_deploy_die "usage: $0 plan|execute probe|deploy [options]"
+  eternal_deploy_die "usage: $0 plan|execute probe|deploy|rollback [options]"
 fi
 MODE="$1"
 ACTION="$2"
@@ -66,6 +69,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --sha) SHA="${2:-}"; shift 2 ;;
     --confirm-sha) CONFIRM_SHA="${2:-}"; shift 2 ;;
+    --previous-id) PREVIOUS_ID="${2:-}"; shift 2 ;;
     --request-id) REQUEST_ID="${2:-}"; shift 2 ;;
     --execute) DO_EXECUTE=1; shift ;;
     --allow-migrations) ALLOW_MIGRATIONS=1; shift ;;
@@ -73,9 +77,11 @@ while [[ $# -gt 0 ]]; do
     -h|--help)
       cat <<'EOF'
 Modes: plan (default, no POST) | execute (requires --execute)
-Actions: probe | deploy
+Actions: probe | deploy | rollback
 Deploy requires --sha and --confirm-sha (identical 40-char hex). Never auto-picks main tip.
-Optional: --ack-replace-live-frontend (first cutover when pure SHA replaces live selective-merge FE).
+Rollback requires --sha/--confirm-sha (exact deployed SHA to undo) and --previous-id
+  (40-hex or baseline-active). Never auto-rollback from a bug report alone.
+Optional deploy: --ack-replace-live-frontend (first cutover when pure SHA replaces live FE).
 EOF
       exit 0
       ;;
@@ -84,7 +90,8 @@ EOF
 done
 
 [[ "$MODE" == "plan" || "$MODE" == "execute" ]] || eternal_deploy_die "mode must be plan|execute"
-[[ "$ACTION" == "probe" || "$ACTION" == "deploy" ]] || eternal_deploy_die "action must be probe|deploy"
+[[ "$ACTION" == "probe" || "$ACTION" == "deploy" || "$ACTION" == "rollback" ]] \
+  || eternal_deploy_die "action must be probe|deploy|rollback"
 
 if [[ "$MODE" == "execute" && "$DO_EXECUTE" != "1" ]]; then
   eternal_deploy_die "execute mode requires explicit --execute (refusing accidental POST)"
@@ -537,9 +544,9 @@ eternal_print_log_evidence_summary() {
 }
 
 # Classify runner evidence from logs fetched for a single correlated run_id.
-# DEPLOY_OK must match the runner line shape (DEPLOY_OK sha=<40-hex>), not a loose
-# substring. Returns 0 only for deploy/probe success markers (caller still requires
-# workflow conclusion=success before treating the overall execute as PASS).
+# DEPLOY_OK / ROLLBACK_SUCCESS must match runner line shapes, not loose substrings.
+# Returns 0 only for action success markers (caller still requires workflow
+# conclusion=success before treating the overall execute as PASS).
 eternal_classify_runner_evidence() {
   local log_body="$1"
   local action="$2"
@@ -547,6 +554,23 @@ eternal_classify_runner_evidence() {
     if grep -qE 'ETERNAL_GATE_OK[[:space:]]+probe=pass' <<<"$log_body"; then
       printf 'RUNNER_PROBE_SUCCESS\n'
       return 0
+    fi
+    printf 'RESULT_UNKNOWN\n'
+    return 1
+  fi
+  if [[ "$action" == "rollback" ]]; then
+    # Post-success rollback only — not failure-path ROLLBACK_PASS.
+    if grep -qE 'ROLLBACK_SUCCESS[[:space:]]+deployed_sha=[0-9a-f]{40}' <<<"$log_body"; then
+      printf 'RUNNER_ROLLBACK_SUCCESS\n'
+      return 0
+    fi
+    if grep -qE 'ROLLBACK_FAILED[[:space:]]+deployed_sha=[0-9a-f]{40}' <<<"$log_body"; then
+      printf 'RUNNER_ROLLBACK_FAILED\n'
+      return 1
+    fi
+    if grep -qE '(^|[[:space:]])ROLLBACK_FAILED([[:space:]]|$)' <<<"$log_body"; then
+      printf 'RUNNER_ROLLBACK_FAILED\n'
+      return 1
     fi
     printf 'RESULT_UNKNOWN\n'
     return 1
@@ -743,10 +767,16 @@ plan_summary() {
   printf 'WORKFLOW=%s\n' "$WORKFLOW_FILE"
   printf 'REPO=%s\n' "$REPO"
   if [[ "$ACTION" == "deploy" ]]; then
+    printf 'OPERATION=deploy\n'
     printf 'TARGET_SHA=%s\n' "$SHA"
     printf 'CONFIRM_SHA=%s\n' "$CONFIRM_SHA"
     printf 'ALLOW_MIGRATIONS=%s\n' "$ALLOW_MIGRATIONS"
     printf 'ACK_REPLACE_LIVE_FRONTEND=%s\n' "$ACK_REPLACE_LIVE_FRONTEND"
+  elif [[ "$ACTION" == "rollback" ]]; then
+    printf 'OPERATION=rollback\n'
+    printf 'DEPLOYED_SHA=%s\n' "$SHA"
+    printf 'CONFIRM_SHA=%s\n' "$CONFIRM_SHA"
+    printf 'PREVIOUS_ID=%s\n' "$PREVIOUS_ID"
   fi
   printf 'REQUEST_ID=%s\n' "${REQUEST_ID:-}"
   printf 'POST=no\n'
@@ -755,8 +785,8 @@ plan_summary() {
 
 eternal_build_dispatch_payload() {
   local shared="${ETERNAL_DEPLOY_SHARED_SECRET:-}"
-  if [[ "$ACTION" == "deploy" ]]; then
-    [[ -n "$shared" ]] || eternal_deploy_die "ETERNAL_DEPLOY_SHARED_SECRET unset for execute deploy (use env secret store)"
+  if [[ "$ACTION" == "deploy" || "$ACTION" == "rollback" ]]; then
+    [[ -n "$shared" ]] || eternal_deploy_die "ETERNAL_DEPLOY_SHARED_SECRET unset for execute ${ACTION} (use env secret store)"
   fi
   # shellcheck disable=SC2016
   ETERNAL_DEPLOY_SHARED_SECRET="$shared" jq -n \
@@ -764,6 +794,7 @@ eternal_build_dispatch_payload() {
     --arg action "$ACTION" \
     --arg sha "$SHA" \
     --arg confirm "$CONFIRM_SHA" \
+    --arg prev "$PREVIOUS_ID" \
     --arg rid "$REQUEST_ID" \
     --argjson allow_mig "$ALLOW_MIGRATIONS" \
     --argjson ack_fe "$ACK_REPLACE_LIVE_FRONTEND" \
@@ -775,12 +806,21 @@ eternal_build_dispatch_payload() {
         + (if ($rid | length) > 0 then {request_id: $rid} else {} end)
         + (if $action == "deploy" then
             {
+              operation: "deploy",
               commit_sha: $sha,
               confirm_sha: $confirm,
               deploy_shared_secret: env.ETERNAL_DEPLOY_SHARED_SECRET
             }
             + (if $allow_mig == 1 then {allow_migrations: "true"} else {} end)
             + (if $ack_fe == 1 then {ack_replace_live_frontend: "true"} else {} end)
+          elif $action == "rollback" then
+            {
+              operation: "rollback",
+              commit_sha: $sha,
+              confirm_sha: $confirm,
+              previous_release: $prev,
+              deploy_shared_secret: env.ETERNAL_DEPLOY_SHARED_SECRET
+            }
           else {} end)
       )
     }'
@@ -917,6 +957,15 @@ report_actor
 if [[ "$ACTION" == "deploy" ]]; then
   [[ -n "$SHA" && -n "$CONFIRM_SHA" ]] || eternal_deploy_die "deploy requires --sha and --confirm-sha"
   validate_deploy_target
+elif [[ "$ACTION" == "rollback" ]]; then
+  [[ -n "$SHA" && -n "$CONFIRM_SHA" ]] || eternal_deploy_die "rollback requires --sha and --confirm-sha (exact deployed SHA)"
+  [[ -n "$PREVIOUS_ID" ]] || eternal_deploy_die "rollback requires --previous-id (40-hex or baseline-active)"
+  eternal_require_sha40 "$SHA"
+  eternal_require_sha40 "$CONFIRM_SHA"
+  [[ "$SHA" == "$CONFIRM_SHA" ]] || eternal_deploy_die "confirm_sha must exactly equal sha for rollback"
+  eternal_require_previous_id "$PREVIOUS_ID"
+  # Rollback does not require green CI re-check (code already deployed); still refuse
+  # path-like previous ids via eternal_require_previous_id.
 fi
 
 if [[ "$MODE" == "plan" ]]; then

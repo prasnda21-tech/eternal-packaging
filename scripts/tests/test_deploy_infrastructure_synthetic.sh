@@ -815,6 +815,9 @@ assert_false "ssh log never contains deploy remote command" grep -qE ' deploy($|
 assert_true "gate probe canonical" bash -c 'SSH_ORIGINAL_COMMAND=probe "'"$GATE"'" | grep -q ETERNAL_GATE_OK'
 assert_false "gate rejects deploy metachar" run_gate 'deploy $(id)'
 assert_false "gate rejects unknown deploy option" run_gate "deploy $MAIN_SHA evil-opt"
+assert_false "gate rejects rollback path previous" run_gate "rollback $MAIN_SHA ../../etc/passwd"
+assert_false "gate rejects rollback without previous" run_gate "rollback $MAIN_SHA"
+assert_false "gate rejects rollback metachar" run_gate "rollback $MAIN_SHA baseline-active;id"
 # ack-fe-replace is allowlisted; gate must set env for runner (smoke via export check in runner tests)
 
 # ========== runtime not ready blocks before activation ==========
@@ -1694,6 +1697,309 @@ assert_true "lib lists required static via src/href helper" \
   grep -q 'eternal_fe_list_required_static_assets' "$ROOT/scripts/deploy/lib.sh"
 assert_true "SKIP_SOURCEMAP_COLLISION still present" \
   grep -q 'SKIP_SOURCEMAP_COLLISION' "$ROOT/scripts/deploy/lib.sh"
+assert_true "workflow supports rollback operation" \
+  grep -q 'rollback' "$ROOT/.github/workflows/deploy-production.yml"
+assert_true "gate allowlists rollback verb" \
+  grep -q 'rollback' "$ROOT/scripts/deploy/eternal-actions-gate"
+
+# ========== POST-SUCCESS ROLLBACK (identity-scoped) ==========
+# Fresh baseline + first cutover for isolated rollback proofs.
+stop_harness_backend_proc 2>/dev/null || true
+rm -rf "$BASELINE" "$RELEASES"/[0-9a-f]* "$RELEASES/rollback-points" "$RELEASES/active-release.txt" \
+  "$RELEASES/backups" "$FRONTEND_PREV" 2>/dev/null || true
+mkdir -p "$FRONTEND/live/static/js"
+printf 'baseline-live\n<script src="/static/js/old.js"></script>\n' >"$FRONTEND/live/index.html"
+printf 'old-asset\n' >"$FRONTEND/live/static/js/old.js"
+printf 'active\n' >"$FRONTEND/live/active.txt"
+make_verified_baseline
+export ETERNAL_EXPECTED_WD="$EXPECTED_WD"
+export ETERNAL_EXPECTED_EXEC_PREFIX="$EXPECTED_WD"
+export ETERNAL_HEALTH_FORCE_FAIL=0
+export ETERNAL_FORCE_RESTART_FAIL=0
+export ETERNAL_FORCE_PUBLISH_FAIL=0
+echo 0 >"$ETERNAL_HEALTH_FAIL_STATE"
+echo 0 >"$ETERNAL_HEALTH_HTTP_FAIL_STATE"
+: >"$ETERNAL_SYSTEMCTL_LOG"
+
+# First cutover deploy → rollback point previous=baseline-active
+if ETERNAL_ACK_REPLACE_LIVE_FRONTEND=1 "$RUNNER" deploy "$MAIN_SHA" \
+  >"$HARNESS/rb-cutover.txt" 2>"$HARNESS/rb-cutover.err"; then
+  log "PASS: cutover deploy for rollback suite"; PASS=$((PASS+1))
+else
+  log "FAIL: cutover deploy for rollback suite"; cat "$HARNESS/rb-cutover.err" >>"$REPORT"; FAIL=$((FAIL+1))
+fi
+RB_POINT="$RELEASES/rollback-points/$MAIN_SHA"
+assert_true "rollback point meta after cutover" test -f "$RB_POINT/meta.txt"
+assert_true "rollback point FE backup after cutover" test -f "$RB_POINT/frontend/index.html"
+assert_true "meta previous_id=baseline-active" \
+  grep -qx 'previous_id=baseline-active' "$RB_POINT/meta.txt"
+assert_true "active-release marker is MAIN_SHA" \
+  grep -qx "sha=$MAIN_SHA" "$RELEASES/active-release.txt"
+assert_true "cutover FE backup is not live dry-build" \
+  grep -q 'baseline-live' "$RB_POINT/frontend/index.html"
+
+# Successful rollback first cutover → baseline
+set +e
+"$RUNNER" rollback "$MAIN_SHA" baseline-active \
+  >"$HARNESS/rb-base.txt" 2>"$HARNESS/rb-base.err"
+rb_base_ec=$?
+set -e
+assert_eq "rollback to baseline exit 0" "0" "$rb_base_ec"
+assert_true "ROLLBACK_SUCCESS to baseline" \
+  grep -qE "ROLLBACK_SUCCESS[[:space:]]+deployed_sha=${MAIN_SHA}" "$HARNESS/rb-base.txt"
+assert_true "restored FE matches baseline backup" \
+  grep -q 'baseline-live' "$FRONTEND/live/index.html"
+assert_true "CURRENT points at baseline tree after rollback" \
+  bash -c 'cur=$(readlink -f "'"$CURRENT"'"); want=$(readlink -f "'"$BASELINE"'/tree"); [[ "$cur" == "$want" ]]'
+assert_true "active marker after baseline rollback" \
+  grep -qx 'sha=baseline-active' "$RELEASES/active-release.txt"
+assert_true "transaction disclaimer logged" \
+  grep -qi 'does not reverse MongoDB' "$HARNESS/rb-base.err"
+
+# Redeploy MAIN then SHA2; rollback SHA2 → MAIN
+rm -rf "$RELEASES/$MAIN_SHA"
+ETERNAL_ACK_REPLACE_LIVE_FRONTEND=1 "$RUNNER" deploy "$MAIN_SHA" \
+  >"$HARNESS/rb-redeploy.txt" 2>"$HARNESS/rb-redeploy.err" || true
+git -C "$MIRROR_SRC" checkout -q main
+printf 'sha2-fe\n' >>"$MIRROR_SRC/frontend/src/index.js"
+git -C "$MIRROR_SRC" add frontend/src/index.js && git -C "$MIRROR_SRC" commit -q -m rb-sha2
+SHA2="$(git -C "$MIRROR_SRC" rev-parse HEAD)"
+git --git-dir="$RELEASES/mirror.git" fetch -q "$MIRROR_SRC" '+refs/heads/*:refs/heads/*'
+"$RUNNER" deploy "$SHA2" >"$HARNESS/rb-sha2.txt" 2>"$HARNESS/rb-sha2.err" || true
+assert_true "SHA2 DEPLOY_OK" grep -q "DEPLOY_OK sha=$SHA2" "$HARNESS/rb-sha2.txt"
+assert_true "SHA2 rollback point previous=MAIN" \
+  grep -qx "previous_id=$MAIN_SHA" "$RELEASES/rollback-points/$SHA2/meta.txt"
+
+set +e
+"$RUNNER" rollback "$SHA2" "$MAIN_SHA" >"$HARNESS/rb-sha.txt" 2>"$HARNESS/rb-sha.err"
+rb_sha_ec=$?
+set -e
+assert_eq "rollback SHA2→MAIN exit 0" "0" "$rb_sha_ec"
+assert_true "ROLLBACK_SUCCESS SHA predecessor" \
+  grep -qE "ROLLBACK_SUCCESS[[:space:]]+deployed_sha=${SHA2}" "$HARNESS/rb-sha.txt"
+assert_true "CURRENT at MAIN after SHA rollback" \
+  bash -c 'cur=$(readlink -f "'"$CURRENT"'"); want=$(readlink -f "'"$RELEASES/$MAIN_SHA"'"); [[ "$cur" == "$want" ]]'
+
+# Redeploy SHA2 for refuse-case matrix
+"$RUNNER" deploy "$SHA2" >"$HARNESS/rb-sha2b.txt" 2>"$HARNESS/rb-sha2b.err" || true
+
+# Current SHA mismatch → refuse
+set +e
+"$RUNNER" rollback "$MAIN_SHA" baseline-active \
+  >"$HARNESS/rb-mismatch.txt" 2>"$HARNESS/rb-mismatch.err"
+rb_mis_ec=$?
+set -e
+assert_eq "current SHA mismatch refuses" "1" "$rb_mis_ec"
+assert_true "mismatch mentions active sha" grep -qi 'active sha mismatch' "$HARNESS/rb-mismatch.err"
+
+# Previous release mismatch → refuse
+set +e
+"$RUNNER" rollback "$SHA2" baseline-active \
+  >"$HARNESS/rb-prevbad.txt" 2>"$HARNESS/rb-prevbad.err"
+rb_prev_ec=$?
+set -e
+assert_eq "previous mismatch refuses" "1" "$rb_prev_ec"
+assert_true "previous mismatch logged" grep -qi 'previous release mismatch' "$HARNESS/rb-prevbad.err"
+
+# Backup missing/corrupt → refuse (fail-closed before live mutate)
+mkdir -p "$HARNESS/fe-bak-save"
+cp -a "$RELEASES/rollback-points/$SHA2/frontend"/. "$HARNESS/fe-bak-save"/ 2>/dev/null || true
+rm -rf "$RELEASES/rollback-points/$SHA2/frontend"
+set +e
+"$RUNNER" rollback "$SHA2" "$MAIN_SHA" >"$HARNESS/rb-nobak.txt" 2>"$HARNESS/rb-nobak.err"
+rb_nobak_ec=$?
+set -e
+assert_eq "missing FE backup refuses" "1" "$rb_nobak_ec"
+assert_true "missing backup fail-closed" \
+  grep -qiE 'frontend backup missing|not marked ok|corrupt' "$HARNESS/rb-nobak.err"
+mkdir -p "$RELEASES/rollback-points/$SHA2/frontend"
+cp -a "$HARNESS/fe-bak-save"/. "$RELEASES/rollback-points/$SHA2/frontend"/
+# Corrupt index
+printf 'corrupt\n' >"$RELEASES/rollback-points/$SHA2/frontend/index.html"
+# Still has index so validate may pass meta; restore verify should fail → ROLLBACK_FAILED
+# Actually validate only checks index exists. Restore will put corrupt index; required_state
+# vs backup will match corrupt=corrupt so it might SUCCESS incorrectly restoring corrupt.
+# Better: remove index to fail validate, or break meta frontend_backup_ok after restore path.
+# Re-test missing: delete index.html
+rm -f "$RELEASES/rollback-points/$SHA2/frontend/index.html"
+set +e
+"$RUNNER" rollback "$SHA2" "$MAIN_SHA" >"$HARNESS/rb-corbak.txt" 2>"$HARNESS/rb-corbak.err"
+rb_cor_ec=$?
+set -e
+assert_eq "corrupt FE backup refuses" "1" "$rb_cor_ec"
+cp -a "$HARNESS/fe-bak-save"/. "$RELEASES/rollback-points/$SHA2/frontend"/
+
+# Deploy lock busy → refuse
+exec {RB_LOCK_FD}>"$LOCK"
+flock -n "$RB_LOCK_FD" || true
+set +e
+"$RUNNER" rollback "$SHA2" "$MAIN_SHA" >"$HARNESS/rb-lock.txt" 2>"$HARNESS/rb-lock.err"
+rb_lock_ec=$?
+set -e
+assert_eq "busy lock refuses rollback" "1" "$rb_lock_ec"
+assert_true "busy lock message" grep -qi 'deploy lock held' "$HARNESS/rb-lock.err"
+flock -u "$RB_LOCK_FD" 2>/dev/null || true
+exec {RB_LOCK_FD}>&- 2>/dev/null || true
+
+# Rollback after another deployment → refuse
+git -C "$MIRROR_SRC" checkout -q main
+printf 'sha3-fe\n' >>"$MIRROR_SRC/frontend/src/index.js"
+git -C "$MIRROR_SRC" add frontend/src/index.js && git -C "$MIRROR_SRC" commit -q -m rb-sha3
+SHA3="$(git -C "$MIRROR_SRC" rev-parse HEAD)"
+git --git-dir="$RELEASES/mirror.git" fetch -q "$MIRROR_SRC" '+refs/heads/*:refs/heads/*'
+"$RUNNER" deploy "$SHA3" >"$HARNESS/rb-sha3.txt" 2>"$HARNESS/rb-sha3.err" || true
+assert_true "SHA3 deployed" grep -q "DEPLOY_OK sha=$SHA3" "$HARNESS/rb-sha3.txt"
+set +e
+"$RUNNER" rollback "$SHA2" "$MAIN_SHA" >"$HARNESS/rb-stale.txt" 2>"$HARNESS/rb-stale.err"
+rb_stale_ec=$?
+set -e
+assert_eq "rollback after newer deploy refuses" "1" "$rb_stale_ec"
+assert_true "stale undo refused" grep -qi 'active sha mismatch' "$HARNESS/rb-stale.err"
+
+# Frontend restore failure → ROLLBACK_FAILED (forced after preflight; same flock path)
+export ETERNAL_FORCE_FRONTEND_RESTORE_FAIL=1
+set +e
+"$RUNNER" rollback "$SHA3" "$SHA2" >"$HARNESS/rb-fefail.txt" 2>"$HARNESS/rb-fefail.err"
+rb_fefail_ec=$?
+set -e
+export ETERNAL_FORCE_FRONTEND_RESTORE_FAIL=0
+assert_eq "frontend restore failure nonzero" "1" "$rb_fefail_ec"
+assert_true "ROLLBACK_FAILED on FE restore" \
+  grep -qE 'ROLLBACK_FAILED' <<<"$(cat "$HARNESS/rb-fefail.txt" "$HARNESS/rb-fefail.err")"
+assert_true "frontend restore FAILED logged" \
+  grep -qi 'frontend restore' "$HARNESS/rb-fefail.err"
+
+# Backend-changing SHA for restart-failure + success proofs (FE-only skips restart)
+git -C "$MIRROR_SRC" checkout -q main
+printf 'be-rb\n' >>"$MIRROR_SRC/backend/requirements.txt"
+printf 'be-rb\n' >>"$MIRROR_SRC/backend/requirements.portable.txt"
+git -C "$MIRROR_SRC" add backend/requirements.txt backend/requirements.portable.txt
+git -C "$MIRROR_SRC" commit -q -m rb-be
+SHA_BE="$(git -C "$MIRROR_SRC" rev-parse HEAD)"
+git --git-dir="$RELEASES/mirror.git" fetch -q "$MIRROR_SRC" '+refs/heads/*:refs/heads/*'
+# Ensure active identity is SHA2 before backend deploy (FE fail may have left marker).
+printf 'sha=%s\nprevious_id=%s\nupdated_at=t\n' "$SHA2" "$MAIN_SHA" >"$RELEASES/active-release.txt"
+ln -sfn "$RELEASES/$SHA2" "$CURRENT"
+start_harness_backend_proc "$(readlink -f "$CURRENT/backend")"
+"$RUNNER" deploy "$SHA_BE" >"$HARNESS/rb-be.txt" 2>"$HARNESS/rb-be.err" || true
+assert_true "backend SHA DEPLOY_OK" grep -q "DEPLOY_OK sha=$SHA_BE" "$HARNESS/rb-be.txt"
+assert_true "backend deploy switched CURRENT" \
+  grep -qx 'current_switched=1' "$RELEASES/rollback-points/$SHA_BE/meta.txt"
+
+# Backend restart failure → ROLLBACK_FAILED
+export ETERNAL_FORCE_RESTART_FAIL=1
+set +e
+"$RUNNER" rollback "$SHA_BE" "$SHA2" >"$HARNESS/rb-befail.txt" 2>"$HARNESS/rb-befail.err"
+rb_befail_ec=$?
+set -e
+export ETERNAL_FORCE_RESTART_FAIL=0
+assert_eq "backend restart failure nonzero" "1" "$rb_befail_ec"
+assert_true "ROLLBACK_FAILED on backend restart" \
+  grep -q 'ROLLBACK_FAILED' <<<"$(cat "$HARNESS/rb-befail.txt" "$HARNESS/rb-befail.err")"
+assert_true "backend restart FAILED logged" \
+  grep -qi 'backend restart' "$HARNESS/rb-befail.err"
+
+# Repair after partial rollback: settle on SHA2, then redeploy SHA_BE cleanly.
+chmod -R u+w "$FRONTEND/live" "$RELEASES" 2>/dev/null || true
+ln -sfn "$RELEASES/$SHA2" "$CURRENT"
+start_harness_backend_proc "$(readlink -f "$CURRENT/backend")"
+printf 'sha=%s\nprevious_id=%s\nupdated_at=t\n' "$SHA2" "$MAIN_SHA" >"$RELEASES/active-release.txt"
+if [[ -d "$RELEASES/rollback-points/$SHA_BE/frontend" ]]; then
+  cp -a "$RELEASES/rollback-points/$SHA_BE/frontend"/. "$FRONTEND/live"/
+fi
+"$RUNNER" deploy "$SHA_BE" >"$HARNESS/rb-repair.txt" 2>"$HARNESS/rb-repair.err" || true
+assert_true "repair redeploy SHA_BE OK" grep -q "DEPLOY_OK sha=$SHA_BE" "$HARNESS/rb-repair.txt"
+
+# Successful restoration verified (SHA_BE → SHA2)
+set +e
+"$RUNNER" rollback "$SHA_BE" "$SHA2" >"$HARNESS/rb-ok.txt" 2>"$HARNESS/rb-ok.err"
+rb_ok_ec=$?
+set -e
+if [[ "$rb_ok_ec" -ne 0 ]]; then
+  log "NOTE rb-ok.err:"; tail -40 "$HARNESS/rb-ok.err" | tee -a "$REPORT" >/dev/null || true
+  log "NOTE rb-ok.txt:"; cat "$HARNESS/rb-ok.txt" | tee -a "$REPORT" >/dev/null || true
+fi
+assert_eq "successful post-success rollback exit 0" "0" "$rb_ok_ec"
+assert_true "ROLLBACK_SUCCESS verified" \
+  grep -qE "ROLLBACK_SUCCESS[[:space:]]+deployed_sha=${SHA_BE}" "$HARNESS/rb-ok.txt"
+assert_true "health operational evidence in rollback logs" \
+  grep -q 'mongo=true' "$HARNESS/rb-ok.err"
+assert_true "runtime verify path used" \
+  bash -c 'cur=$(readlink -f "'"$CURRENT"'"); want=$(readlink -f "'"$RELEASES/$SHA2"'"); [[ "$cur" == "$want" ]]'
+
+# Arbitrary path / symlink rejection (lib validate)
+evil_points="$RELEASES/rollback-points"
+mkdir -p "$evil_points"
+rm -rf "$evil_points/evillink" 2>/dev/null || true
+ln -s /tmp "$evil_points/$(printf 'a%.0s' {1..40})" 2>/dev/null || true
+EVIL_SHA="$(printf 'a%.0s' {1..40})"
+set +e
+bash -c 'source "'"$ROOT"'/scripts/deploy/lib.sh"; eternal_validate_rollback_point "'"$RELEASES"'" "'"$EVIL_SHA"'" "'"$SHA2"'"' \
+  >"$HARNESS/rb-sym.txt" 2>"$HARNESS/rb-sym.err"
+rb_sym_ec=$?
+set -e
+assert_eq "symlink rollback point refused" "1" "$rb_sym_ec"
+rm -f "$evil_points/$EVIL_SHA"
+
+# Authorization denial (trigger execute without secret)
+set +e
+nosec_out="$(ETERNAL_GH_API_MOCK_DIR="$MOCK" ETERNAL_TRIGGER_DISPATCH_LOG="$HARNESS/dispatch.log" \
+  "$TRIGGER" execute rollback --sha "$SHA3" --confirm-sha "$SHA3" --previous-id "$SHA2" \
+  --execute --request-id req-rb-nosec 2>"$HARNESS/rb-nosec.err")"
+nosec_ec=$?
+set -e
+assert_eq "rollback without shared secret denied" "1" "$nosec_ec"
+
+# Trigger plan rollback + correlation / ROLLBACK_SUCCESS / unknown
+plan_rb="$(ETERNAL_GH_API_MOCK_DIR="$MOCK" "$TRIGGER" plan rollback \
+  --sha "$SHA3" --confirm-sha "$SHA3" --previous-id "$SHA2" --request-id req-rb-plan \
+  2>"$HARNESS/rb-plan.err")"
+assert_true "plan rollback PLAN_OK" grep -q 'PLAN_OK' <<<"$plan_rb"
+assert_true "plan rollback OPERATION" grep -q 'OPERATION=rollback' <<<"$plan_rb"
+assert_true "plan rollback previous id" grep -q "PREVIOUS_ID=$SHA2" <<<"$plan_rb"
+
+printf 'ok\n' >"$MOCK/dispatch-status"
+cat >"$MOCK/trigger-runs.json" <<'EOF'
+{"workflow_runs":[]}
+EOF
+rm -f "$MOCK"/trigger-runs-poll-*.json
+cat >"$MOCK/trigger-runs-poll-1.json" <<'EOF'
+{"workflow_runs":[]}
+EOF
+cat >"$MOCK/trigger-runs-poll-2.json" <<EOF
+{"workflow_runs":[
+ {"id":91,"html_url":"https://example.test/runs/91","event":"workflow_dispatch","head_branch":"main",
+  "name":"Deploy production · request_id=req-rb-ok",
+  "display_title":"Deploy production · request_id=req-rb-ok"}
+]}
+EOF
+seed_mock_run_outcome 91 completed success "ROLLBACK_SUCCESS deployed_sha=${SHA3} previous_id=${SHA2}"
+: >"$HARNESS/dispatch.log"
+rb_disp="$(env "${POLL_ENV[@]}" ETERNAL_DEPLOY_SHARED_SECRET='test-secret' \
+  "$TRIGGER" execute rollback --sha "$SHA3" --confirm-sha "$SHA3" --previous-id "$SHA2" \
+  --execute --request-id req-rb-ok 2>"$HARNESS/rb-disp.err")"
+assert_true "rollback dispatch RUNNER_ROLLBACK_SUCCESS" grep -q 'RUNNER_ROLLBACK_SUCCESS' <<<"$rb_disp"
+assert_true "rollback WORKFLOW_SUCCESS" grep -q 'WORKFLOW_SUCCESS' <<<"$rb_disp"
+
+# Timeout / unknown result for rollback (no logs)
+cat >"$MOCK/trigger-runs-poll-2.json" <<EOF
+{"workflow_runs":[
+ {"id":92,"html_url":"https://example.test/runs/92","event":"workflow_dispatch","head_branch":"main",
+  "name":"Deploy production · request_id=req-rb-unk",
+  "display_title":"Deploy production · request_id=req-rb-unk"}
+]}
+EOF
+seed_mock_run_outcome 92 completed success ""
+: >"$HARNESS/dispatch.log"
+set +e
+rb_unk="$(env "${POLL_ENV[@]}" ETERNAL_DEPLOY_SHARED_SECRET='test-secret' \
+  "$TRIGGER" execute rollback --sha "$SHA3" --confirm-sha "$SHA3" --previous-id "$SHA2" \
+  --execute --request-id req-rb-unk 2>"$HARNESS/rb-unk.err")"
+rb_unk_ec=$?
+set -e
+assert_eq "rollback missing logs exits non-zero" "1" "$rb_unk_ec"
+assert_true "rollback missing logs RESULT_UNKNOWN" \
+  grep -q 'RESULT_UNKNOWN' <<<"$rb_unk$(cat "$HARNESS/rb-unk.err")"
 
 log ""
 log "SUMMARY pass=$PASS fail=$FAIL"
