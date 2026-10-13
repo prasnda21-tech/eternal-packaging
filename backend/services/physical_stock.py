@@ -129,30 +129,6 @@ class StockOpnameInProgressError(PhysicalStockConflictError):
     """A frozen stock-opname session owns this warehouse."""
 
 
-class InterveningPhysicalMutationError(PhysicalStockConflictError):
-    """Cancel blocked: another physical mutation landed after this delivery.
-
-    Append-only REVERSAL would corrupt book qty relative to a later opname,
-    transfer, adjustment, receipt, or production move on the same item+warehouse.
-    Fail closed with no partial writes.
-    """
-
-
-# Physical mutations that establish a new physical truth (or move stock) after
-# a SALES_DELIVERY. Cancelling that delivery via REVERSAL would misstate book.
-_INTERVENING_MUTATION_TYPES = frozenset({
-    MOVEMENT_STOCK_OPNAME_ADJUSTMENT,
-    MOVEMENT_MANUAL_ADJUSTMENT,
-    MOVEMENT_WAREHOUSE_TRANSFER_OUT,
-    MOVEMENT_WAREHOUSE_TRANSFER_IN,
-    MOVEMENT_PURCHASE_RECEIPT,
-    MOVEMENT_PURCHASE_RETURN,
-    MOVEMENT_PRODUCTION_CONSUMPTION,
-    MOVEMENT_PRODUCTION_OUTPUT,
-    MOVEMENT_OPENING_BALANCE,
-})
-
-
 OPNAME_SESSIONS = "stock_opname_sessions"
 FROZEN_OPNAME_STATUSES = ("COUNTING", "REVIEW")
 STOCK_OPNAME_IN_PROGRESS = "STOCK_OPNAME_IN_PROGRESS"
@@ -1487,64 +1463,6 @@ _REVERSIBLE_MOVEMENT_TYPES = frozenset({
 })
 
 
-async def _assert_no_intervening_physical_mutations(
-    db,
-    session,
-    original: dict,
-) -> None:
-    """Fail closed if item+warehouse was mutated after this SALES_DELIVERY.
-
-    Later opname/adjust/transfer/receipt/production on the same keys would make
-    an append-only REVERSAL corrupt the reconciled book. Other SALES_DELIVERY
-    rows are allowed (they reverse independently).
-    """
-    if not isinstance(original, dict):
-        return
-    if str(original.get("movement_type") or "") != MOVEMENT_SALES_DELIVERY:
-        return
-    master_item_id = str(original.get("master_item_id") or "").strip()
-    warehouse_id = str(original.get("warehouse_id") or "").strip()
-    movement_id = str(original.get("id") or "").strip()
-    if not master_item_id or not warehouse_id or not movement_id:
-        return
-    marker = str(
-        original.get("occurred_at")
-        or original.get("created_at")
-        or ""
-    ).strip()
-    if not marker:
-        return
-    intervening = await db[LEDGER_COLLECTION].find_one(
-        {
-            "master_item_id": master_item_id,
-            "warehouse_id": warehouse_id,
-            "id": {"$ne": movement_id},
-            "movement_type": {"$in": list(_INTERVENING_MUTATION_TYPES)},
-            "$or": [
-                {"occurred_at": {"$gt": marker}},
-                {
-                    "occurred_at": {"$exists": False},
-                    "created_at": {"$gt": marker},
-                },
-                {
-                    "occurred_at": None,
-                    "created_at": {"$gt": marker},
-                },
-            ],
-        },
-        {"_id": 0, "id": 1, "movement_type": 1, "occurred_at": 1, "created_at": 1},
-        session=session,
-    )
-    if intervening:
-        mtype = str(intervening.get("movement_type") or "UNKNOWN")
-        raise InterveningPhysicalMutationError(
-            "Pembatalan ditolak: ada mutasi stok fisik setelah pengiriman "
-            f"({mtype}) pada item/gudang yang sama. "
-            "Batalkan atau koreksi mutasi tersebut terlebih dahulu, "
-            "atau sesuaikan stok secara manual. Dokumen tidak diubah."
-        )
-
-
 async def reverse_movement_in_session(
     db,
     session,
@@ -1554,7 +1472,13 @@ async def reverse_movement_in_session(
     idempotency_key: str,
     reason: str = "",
 ) -> dict:
-    """Append one reversal inside the caller's transaction. The original row is unchanged."""
+    """Append one REVERSAL against CURRENT book at cancel time.
+
+    OWNER semantics: cancellation returns goods to the origin warehouse now.
+    Intervening additive/reconcile movements stay intact; historical
+    balance_before/after and opname counts are never rewritten. Active
+    freeze-mode stock-opname still blocks via `_guard_opname_freeze`.
+    """
     original = await db[LEDGER_COLLECTION].find_one(
         {"id": str(movement_id)},
         {"_id": 0},
@@ -1568,7 +1492,6 @@ async def reverse_movement_in_session(
         raise PhysicalStockValidationError(
             "Hanya penerimaan, retur pembelian, atau pengiriman R2 yang dapat dibatalkan pada jalur ini"
         )
-    await _assert_no_intervening_physical_mutations(db, session, original)
     return await _apply_movement_in_session(
         db,
         _reversal_request(original, actor_id=actor_id, idempotency_key=idempotency_key, reason=reason),
@@ -1829,8 +1752,10 @@ async def cancel_sales_delivery_document(
 ) -> dict:
     """Option B: cancel SJ + reverse R2 + reconcile order in one transaction.
 
-    Append-only REVERSAL; original SALES_DELIVERY kept. Proofs/signatures retained.
-    Idempotent when SJ already cancelled.
+    Append-only REVERSAL at cancellation time against current book (goods return
+    now). Intervening ledger rows are preserved; no retroactive restatement.
+    Original SALES_DELIVERY, proofs, and signatures retained. Idempotent when
+    SJ already cancelled. Freeze-mode active opname still fail-closed.
     """
     if not isinstance(delivery, dict) or not str(delivery.get("id") or "").strip():
         raise PhysicalStockValidationError("Surat Jalan tidak ditemukan")

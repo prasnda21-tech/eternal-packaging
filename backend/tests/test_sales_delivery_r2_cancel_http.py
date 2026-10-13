@@ -38,15 +38,25 @@ from services.physical_stock import (  # noqa: E402
     BALANCE_COLLECTION,
     LEDGER_COLLECTION,
     MOVEMENT_OPENING_BALANCE,
+    MOVEMENT_PURCHASE_RECEIPT,
+    MOVEMENT_PRODUCTION_CONSUMPTION,
+    MOVEMENT_PRODUCTION_OUTPUT,
     MOVEMENT_REVERSAL,
     MOVEMENT_SALES_DELIVERY,
     MOVEMENT_MANUAL_ADJUSTMENT,
     MOVEMENT_STOCK_OPNAME_ADJUSTMENT,
+    MOVEMENT_WAREHOUSE_TRANSFER_IN,
+    MOVEMENT_WAREHOUSE_TRANSFER_OUT,
+    OPNAME_SESSIONS,
     SALES_DELIVERY_CONFIRMATIONS,
+    STOCK_OPNAME_IN_PROGRESS,
+    adjust_physical_stock_to_target,
+    apply_stock_opname_adjustments,
     confirm_sales_delivery,
     ensure_indexes as ensure_physical_indexes,
     post_movement,
     set_fail_after_balance,
+    _client,
 )
 from services.r2_go_live import set_r2_authority_active  # noqa: E402
 from services.sales_deliveries import get_po_delivery_summary  # noqa: E402
@@ -587,69 +597,202 @@ async def test_phase1_can_uat_style_e2e_cancel_idempotent(db):
     assert await _legacy_counts(database) == legacy_before
 
 
-async def test_intervening_opname_blocks_cancel_fail_closed(db):
-    """After TERKIRIM, opname on same item+warehouse → cancel 400, no reversal."""
-    database, fx = db
-    seeded = await _seed_sj(database, fx, qty=15, confirmed_r2=True, terkirim=True)
-    assert await _qty(database, fx, fx["wh_a"]) == -4
-    sales = await database[LEDGER_COLLECTION].find_one({
-        "movement_type": MOVEMENT_SALES_DELIVERY,
-        "metadata.sales_delivery_id": seeded["sj_id"],
-    })
-    # STOCK_OPNAME_ADJUSTMENT must go through session confirm; plant ledger row
-    # after the delivery timestamp to prove the fail-closed guard (no balance rewrite).
-    assert sales is not None
-    await database[LEDGER_COLLECTION].insert_one({
-        "id": str(uuid.uuid4()),
-        "master_item_id": fx["item"],
-        "branch_id": fx["branch_id"],
-        "warehouse_id": fx["wh_a"],
-        "movement_type": MOVEMENT_STOCK_OPNAME_ADJUSTMENT,
-        "qty_delta": 4,
-        "reference_type": "stock_opname",
-        "reference_id": "opname-after-ship",
-        "idempotency_key": f"opname-after-{uuid.uuid4().hex}",
-        "occurred_at": "2099-01-01T00:00:00+00:00",
-        "created_at": "2099-01-01T00:00:00+00:00",
-        "actor_id": "seed",
-        "metadata": {"note": "intervening-opname"},
-    })
-    before_a = await _qty(database, fx, fx["wh_a"])
-
+async def _cancel(sj_id):
     _admin()
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        res = await client.delete(f"/api/sales-deliveries/{seeded['sj_id']}")
-    assert res.status_code == 400, res.text
-    assert "mutasi stok fisik setelah pengiriman" in res.text.lower() or "STOCK_OPNAME" in res.text
-    delivery = await database.sales_deliveries.find_one({"id": seeded["sj_id"]})
-    assert delivery.get("is_cancelled") is not True
-    assert delivery.get("status") == "SELESAI"
-    assert await database[LEDGER_COLLECTION].count_documents({"movement_type": MOVEMENT_REVERSAL}) == 0
-    assert await _qty(database, fx, fx["wh_a"]) == before_a
+        return await client.delete(f"/api/sales-deliveries/{sj_id}")
+
+
+async def test_B_purchase_receipt_after_delivery_then_cancel(db):
+    """A=-4 → receipt +5 =1 → cancel +15 =16. Receipt history intact."""
+    database, fx = db
+    seeded = await _seed_sj(database, fx, qty=15, confirmed_r2=True, terkirim=True)
+    assert await _qty(database, fx, fx["wh_a"]) == -4
+    receipt = await post_movement(database, {
+        "master_item_id": fx["item"], "branch_id": fx["branch_id"],
+        "warehouse_id": fx["wh_a"],
+        "movement_type": MOVEMENT_PURCHASE_RECEIPT,
+        "qty_delta": 5, "reference_type": "purchase_receipt",
+        "reference_id": "rcpt-after", "idempotency_key": f"rcpt-{uuid.uuid4().hex}",
+    }, actor_id="seed")
+    assert await _qty(database, fx, fx["wh_a"]) == 1
+    res = await _cancel(seeded["sj_id"])
+    assert res.status_code == 200, res.text
+    assert await _qty(database, fx, fx["wh_a"]) == 16
     assert await _qty(database, fx, fx["wh_b"]) == 5
-    order = await database.orders.find_one({"id": seeded["po_id"]})
-    assert order["qty_delivered"] == 15
-    assert order["delivery_status"] == "Terkirim"
+    kept = await database[LEDGER_COLLECTION].find_one({"id": receipt["id"]})
+    assert kept is not None and int(kept["qty_delta"]) == 5
+    assert await database[LEDGER_COLLECTION].count_documents({"movement_type": MOVEMENT_REVERSAL}) == 1
 
 
-async def test_intervening_manual_adjust_blocks_cancel_fail_closed(db):
+async def test_C_transfer_after_delivery_then_cancel(db):
+    """A=-4,B=5 → transfer 2 A→B → A=-6,B=7 → cancel → A=9,B=7."""
+    database, fx = db
+    seeded = await _seed_sj(database, fx, qty=15, confirmed_r2=True, terkirim=True)
+    xfer = f"xfer-{uuid.uuid4().hex[:8]}"
+    out = await post_movement(database, {
+        "master_item_id": fx["item"], "branch_id": fx["branch_id"],
+        "warehouse_id": fx["wh_a"],
+        "movement_type": MOVEMENT_WAREHOUSE_TRANSFER_OUT,
+        "qty_delta": -2, "reference_type": "warehouse_transfer",
+        "reference_id": xfer, "idempotency_key": f"{xfer}-out",
+    }, actor_id="seed")
+    inn = await post_movement(database, {
+        "master_item_id": fx["item"], "branch_id": fx["branch_id"],
+        "warehouse_id": fx["wh_b"],
+        "movement_type": MOVEMENT_WAREHOUSE_TRANSFER_IN,
+        "qty_delta": 2, "reference_type": "warehouse_transfer",
+        "reference_id": xfer, "idempotency_key": f"{xfer}-in",
+    }, actor_id="seed")
+    assert await _qty(database, fx, fx["wh_a"]) == -6
+    assert await _qty(database, fx, fx["wh_b"]) == 7
+    res = await _cancel(seeded["sj_id"])
+    assert res.status_code == 200, res.text
+    assert await _qty(database, fx, fx["wh_a"]) == 9
+    assert await _qty(database, fx, fx["wh_b"]) == 7
+    assert await database[LEDGER_COLLECTION].find_one({"id": out["id"]})
+    assert await database[LEDGER_COLLECTION].find_one({"id": inn["id"]})
+
+
+async def test_D_opname_after_delivery_then_cancel_returns_to_current_book(db):
+    """Book -4 → physical count 8 → cancel +15 → A=23; opname history unchanged."""
+    database, fx = db
+    seeded = await _seed_sj(database, fx, qty=15, confirmed_r2=True, terkirim=True)
+    assert await _qty(database, fx, fx["wh_a"]) == -4
+    session_doc = {
+        "id": f"opn-{uuid.uuid4().hex[:8]}",
+        "opname_number": "OP-CANCEL-D",
+        "branch_id": fx["branch_id"],
+        "warehouse_id": fx["wh_a"],
+        "mode": "operational",
+        "status": "REVIEW",
+    }
+    await database[OPNAME_SESSIONS].insert_one(dict(session_doc))
+    lines = [{
+        "line_id": "L1",
+        "master_item_id": fx["item"],
+        "book_qty": -4,
+        "book_qty_at_posting": -4,
+        "physical_count_qty": 8,
+        "difference_qty": 12,  # 8 - (-4)
+        "target_qty": 8,
+    }]
+    async with await _client(database).start_session() as session:
+        async with session.start_transaction():
+            moved = await apply_stock_opname_adjustments(
+                database, session, session_doc, lines, actor_id="op-user",
+                occurred_at="2026-10-13T20:00:00+00:00",
+            )
+    assert len(moved) == 1
+    opname_id = moved[0]["id"]
+    opname_before = await database[LEDGER_COLLECTION].find_one({"id": opname_id}, {"_id": 0})
+    assert int(opname_before["qty_delta"]) == 12
+    assert int(opname_before["balance_before"]) == -4
+    assert int(opname_before["balance_after"]) == 8
+    assert await _qty(database, fx, fx["wh_a"]) == 8
+
+    res = await _cancel(seeded["sj_id"])
+    assert res.status_code == 200, res.text
+    assert await _qty(database, fx, fx["wh_a"]) == 23
+    assert await _qty(database, fx, fx["wh_b"]) == 5
+    opname_after = await database[LEDGER_COLLECTION].find_one({"id": opname_id}, {"_id": 0})
+    assert opname_after["qty_delta"] == opname_before["qty_delta"]
+    assert opname_after["balance_before"] == opname_before["balance_before"]
+    assert opname_after["balance_after"] == opname_before["balance_after"]
+    assert opname_after["occurred_at"] == opname_before["occurred_at"]
+
+
+async def test_E_manual_adjust_after_delivery_then_cancel(db):
+    """A=-4 → target adjust to 8 → cancel +15 → A=23; adjustment history intact."""
+    database, fx = db
+    seeded = await _seed_sj(database, fx, qty=15, confirmed_r2=True, terkirim=True)
+    adj = await adjust_physical_stock_to_target(
+        database, fx["item"],
+        {
+            "branch_id": fx["branch_id"], "warehouse_id": fx["wh_a"],
+            "target_physical_qty": 8, "reason": "Hitung fisik 8",
+            "idempotency_key": f"adj-tgt-{uuid.uuid4().hex}",
+        },
+        actor_id="seed",
+    )
+    assert adj["changed"] is True
+    assert await _qty(database, fx, fx["wh_a"]) == 8
+    adj_row = await database[LEDGER_COLLECTION].find_one({"id": adj["movement_id"]}, {"_id": 0})
+    assert adj_row is not None
+    snap = {k: adj_row.get(k) for k in ("id", "qty_delta", "balance_before", "balance_after", "occurred_at")}
+
+    res = await _cancel(seeded["sj_id"])
+    assert res.status_code == 200, res.text
+    assert await _qty(database, fx, fx["wh_a"]) == 23
+    kept = await database[LEDGER_COLLECTION].find_one({"id": snap["id"]}, {"_id": 0})
+    assert kept["qty_delta"] == snap["qty_delta"]
+    assert kept["balance_before"] == snap["balance_before"]
+    assert kept["balance_after"] == snap["balance_after"]
+
+
+async def test_F_production_after_delivery_then_cancel(db):
+    database, fx = db
+    seeded = await _seed_sj(database, fx, qty=15, confirmed_r2=True, terkirim=True)
+    cons = await post_movement(database, {
+        "master_item_id": fx["item"], "branch_id": fx["branch_id"],
+        "warehouse_id": fx["wh_a"],
+        "movement_type": MOVEMENT_PRODUCTION_CONSUMPTION,
+        "qty_delta": -1, "reference_type": "production",
+        "reference_id": "prod-1", "idempotency_key": f"prod-c-{uuid.uuid4().hex}",
+    }, actor_id="seed")
+    out = await post_movement(database, {
+        "master_item_id": fx["item"], "branch_id": fx["branch_id"],
+        "warehouse_id": fx["wh_a"],
+        "movement_type": MOVEMENT_PRODUCTION_OUTPUT,
+        "qty_delta": 3, "reference_type": "production",
+        "reference_id": "prod-1", "idempotency_key": f"prod-o-{uuid.uuid4().hex}",
+    }, actor_id="seed")
+    # -4 -1 +3 = -2
+    assert await _qty(database, fx, fx["wh_a"]) == -2
+    res = await _cancel(seeded["sj_id"])
+    assert res.status_code == 200, res.text
+    assert await _qty(database, fx, fx["wh_a"]) == 13
+    assert await database[LEDGER_COLLECTION].find_one({"id": cons["id"]})
+    assert await database[LEDGER_COLLECTION].find_one({"id": out["id"]})
+
+
+async def test_G_unrelated_warehouse_movement_never_blocks(db):
     database, fx = db
     seeded = await _seed_sj(database, fx, qty=15, confirmed_r2=True, terkirim=True)
     await post_movement(database, {
         "master_item_id": fx["item"], "branch_id": fx["branch_id"],
-        "warehouse_id": fx["wh_a"],
+        "warehouse_id": fx["wh_b"],
         "movement_type": MOVEMENT_MANUAL_ADJUSTMENT,
-        "qty_delta": 2,
-        "reference_type": "manual", "reference_id": "adj-after-ship",
-        "idempotency_key": f"adj-after-{uuid.uuid4().hex}",
+        "qty_delta": 10, "reference_type": "manual",
+        "reference_id": "other-wh", "idempotency_key": f"other-{uuid.uuid4().hex}",
     }, actor_id="seed")
-    before_a = await _qty(database, fx, fx["wh_a"])
-    _admin()
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        res = await client.delete(f"/api/sales-deliveries/{seeded['sj_id']}")
+    assert await _qty(database, fx, fx["wh_b"]) == 15
+    res = await _cancel(seeded["sj_id"])
+    assert res.status_code == 200, res.text
+    assert await _qty(database, fx, fx["wh_a"]) == 11
+    assert await _qty(database, fx, fx["wh_b"]) == 15
+
+
+async def test_N_active_freeze_opname_blocks_cancel_fail_closed(db):
+    """Freeze-mode COUNTING session: cancel must not corrupt; no partial writes."""
+    database, fx = db
+    seeded = await _seed_sj(database, fx, qty=15, confirmed_r2=True, terkirim=True)
+    await database[OPNAME_SESSIONS].insert_one({
+        "id": f"opn-freeze-{uuid.uuid4().hex[:8]}",
+        "opname_number": "OP-FREEZE",
+        "branch_id": fx["branch_id"],
+        "warehouse_id": fx["wh_a"],
+        "mode": "freeze",
+        "status": "COUNTING",
+    })
+    res = await _cancel(seeded["sj_id"])
     assert res.status_code == 400, res.text
-    assert await database.sales_deliveries.find_one({"id": seeded["sj_id"], "is_cancelled": {"$ne": True}})
+    assert STOCK_OPNAME_IN_PROGRESS in res.text or "opname" in res.text.lower()
+    delivery = await database.sales_deliveries.find_one({"id": seeded["sj_id"]})
+    assert delivery.get("is_cancelled") is not True
     assert await database[LEDGER_COLLECTION].count_documents({"movement_type": MOVEMENT_REVERSAL}) == 0
-    assert await _qty(database, fx, fx["wh_a"]) == before_a
+    assert await _qty(database, fx, fx["wh_a"]) == -4
+    order = await database.orders.find_one({"id": seeded["po_id"]})
+    assert order["qty_delivered"] == 15
+    assert order["delivery_status"] == "Terkirim"
