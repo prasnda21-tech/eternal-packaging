@@ -207,6 +207,59 @@ def projection_flag_analysis(docs: Sequence[dict]) -> Dict[str, int]:
     return dict(out)
 
 
+def journal_fetch_limit(chunk_len: int) -> int:
+    """Intended max journals returned per source_id batch (before +1 probe)."""
+    return max(int(chunk_len) * 4, 20)
+
+
+def journal_batch_is_truncated(fetched_count: int, fetch_limit: int) -> bool:
+    """True when fetch used limit+1 and returned more than the intended limit."""
+    return int(fetched_count) > int(fetch_limit)
+
+
+def resolve_dup_primary_status(
+    *,
+    scan_complete: bool,
+    dup_groups: int,
+    error: Optional[str] = None,
+) -> Tuple[str, str]:
+    """Fail-closed duplicate primary verdict.
+
+    Returns (level, message) where level is 'ok' or 'blocked'.
+    Incomplete/error/timeout scans must NEVER report ok/PASS.
+    """
+    if not scan_complete:
+        detail = f" error={error}" if error else ""
+        return "blocked", f"duplicate_posted_primary_scan_incomplete{detail}"
+    if int(dup_groups) > 0:
+        return "blocked", f"duplicate_posted_primary_groups={int(dup_groups)}"
+    return "ok", "duplicate_posted_primary_groups=0"
+
+
+def legacy_settlement_explained_by_documents(
+    legacy_absent_active_posted_count: int,
+) -> Optional[str]:
+    """Explain legacy settlement only from per-document category evidence.
+
+    Aggregate count deltas (journals vs settlement_effective=true) are never
+    sufficient to claim an explanation.
+    """
+    n = int(legacy_absent_active_posted_count)
+    if n <= 0:
+        return None
+    return f"legacy_settlement_absent_active_posted_documents={n}"
+
+
+def legacy_explained_by_count_delta(
+    posted_primary_journals: int,
+    settlement_effective_true: int,
+    settlement_effective_absent: int,
+) -> bool:
+    """Count deltas alone never explain legacy reconciliation."""
+    _ = (posted_primary_journals, settlement_effective_true, settlement_effective_absent)
+    return False
+
+
 # ---------------------------------------------------------------------------
 # IO helpers
 # ---------------------------------------------------------------------------
@@ -313,7 +366,10 @@ async def run_audit(env_file: Path, timeout_sec: float) -> int:
                 break
             skip += PAGE
         if len(out) >= HARD_DOC_CAP:
-            review(f"{label} hit HARD_DOC_CAP={HARD_DOC_CAP} (truncated)")
+            blocked(
+                f"{label} hit HARD_DOC_CAP={HARD_DOC_CAP} "
+                "(truncated; fail-closed)"
+            )
         return out
 
     async def journals_for(
@@ -324,6 +380,7 @@ async def run_audit(env_file: Path, timeout_sec: float) -> int:
             chunk = list(source_ids[i : i + JOURNAL_BATCH])
             if not chunk:
                 continue
+            fetch_limit = journal_fetch_limit(len(chunk))
             try:
                 docs = await _with_timeout(
                     db.journal_entries.find(
@@ -344,7 +401,7 @@ async def run_audit(env_file: Path, timeout_sec: float) -> int:
                             "journal_revision": 1,
                         },
                         max_time_ms=mt_ms,
-                    ).to_list(max(len(chunk) * 4, 20)),
+                    ).to_list(fetch_limit + 1),
                     per_op,
                     f"journals:{source_type}:{i}",
                 )
@@ -354,7 +411,16 @@ async def run_audit(env_file: Path, timeout_sec: float) -> int:
             except Exception as exc:
                 blocked(f"journals failed ({type(exc).__name__})")
                 return grouped
-            for d in docs or []:
+            fetched = list(docs or [])
+            if journal_batch_is_truncated(len(fetched), fetch_limit):
+                blocked(
+                    f"journals TRUNCATED source_type={source_type} "
+                    f"batch_offset={i} fetch_limit={fetch_limit} "
+                    f"fetched={len(fetched)} (fail-closed)"
+                )
+                # Keep only the intended window; do not silently treat as complete.
+                fetched = fetched[:fetch_limit]
+            for d in fetched:
                 sid = str(d.get("source_id") or "")
                 if sid in grouped:
                     grouped[sid].append(d)
@@ -417,6 +483,8 @@ async def run_audit(env_file: Path, timeout_sec: float) -> int:
         "je_credit_rev",
     )
     dup_groups = 0
+    dup_scan_complete = False
+    dup_error: Optional[str] = None
     try:
         dups = await _with_timeout(
             db.journal_entries.aggregate(
@@ -443,14 +511,20 @@ async def run_audit(env_file: Path, timeout_sec: float) -> int:
             "dup_primary",
         )
         dup_groups = int((dups[0] or {}).get("groups") or 0) if dups else 0
+        dup_scan_complete = True
     except TimeoutError:
-        blocked("dup_primary TIMEOUT")
+        dup_error = "TIMEOUT"
     except Exception as exc:
-        blocked(f"dup_primary failed ({type(exc).__name__})")
-    if dup_groups:
-        blocked(f"duplicate_posted_primary_groups={dup_groups}")
+        dup_error = type(exc).__name__
+    dup_level, dup_msg = resolve_dup_primary_status(
+        scan_complete=dup_scan_complete,
+        dup_groups=dup_groups,
+        error=dup_error,
+    )
+    if dup_level == "ok":
+        ok(dup_msg)
     else:
-        ok("duplicate_posted_primary_groups=0")
+        blocked(dup_msg)
 
     print(
         "JOURNAL_INVENTORY "
@@ -544,18 +618,18 @@ async def run_audit(env_file: Path, timeout_sec: float) -> int:
     )
     print(f"RECEIPT_PROJECTION_FLAGS {rcpt_proj}")
 
-    # Explain baseline gaps without inventing bugs
-    if (
-        je_rcpt_posted >= 0
-        and settlement_true >= 0
-        and je_rcpt_posted > settlement_true
-        and settlement_absent > 0
+    # Legacy settlement: per-document category evidence only (never count deltas).
+    legacy_rcpt_docs = int(
+        rcpt_cats.get("legacy_settlement_absent_active_posted", 0)
+    )
+    legacy_msg = legacy_settlement_explained_by_documents(legacy_rcpt_docs)
+    if legacy_msg:
+        ok(legacy_msg)
+    if legacy_explained_by_count_delta(
+        je_rcpt_posted, settlement_true, settlement_absent
     ):
-        ok(
-            "receipt_journal_gt_settlement_true_explained_by_legacy_absent_field "
-            f"(delta_journals_vs_true={je_rcpt_posted - settlement_true} "
-            f"absent={settlement_absent})"
-        )
+        # Unreachable by contract; guard against future regressions.
+        blocked("legacy_explained_by_count_delta_must_remain_false")
 
     # Projection flag analysis verdict
     stored_true = int(inv_proj.get("stored_accounting_posted_true", 0)) + int(

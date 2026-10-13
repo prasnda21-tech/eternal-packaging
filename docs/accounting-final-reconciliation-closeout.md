@@ -52,7 +52,7 @@ Code-contract interpretation:
 - Prior audit counted only `settlement_effective: true`.
 - Legacy receipts with **absent** field still count toward settlement and may hold journals.
 - Therefore journals (135) ≫ true-flag (22) is **explained by legacy semantics**, not automatic missing/duplicate financial effect.
-- Confirm with script lines `RECEIPT_SETTLEMENT_SHAPE` + categories `legacy_settlement_absent_active_posted`.
+- Confirm only via per-document category `legacy_settlement_absent_active_posted` (never journal-vs-true count deltas).
 
 ## AR_GL_RECONCILIATION
 
