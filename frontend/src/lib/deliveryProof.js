@@ -1,6 +1,5 @@
 import { actionablePengirimanOptions, shipmentIsInactive } from "./sjIntegrity";
 
-export const MAX_PHOTOS = 5;
 export const MIN_DELIVERY_PROOFS = 2;
 export const DELIVERY_PROOF_ACCEPT = "image/*";
 export const DELIVERY_PROOF_ACCEPTED_TYPES = [
@@ -49,10 +48,9 @@ export function isDeliveryProofUploadBusy(slots) {
   return (slots || []).some((s) => s.status === "selecting" || s.status === "uploading");
 }
 
-/** Empty add-slots to render: fill up to the minimum, then one extra Tambah Foto until max. */
-export function emptyDeliveryPhotoSlotCount(storedCount, pendingCount = 0, min = MIN_DELIVERY_PROOFS, max = MAX_PHOTOS) {
+/** Empty add-slots to render: fill up to the minimum, then one extra Tambah Foto (no max). */
+export function emptyDeliveryPhotoSlotCount(storedCount, pendingCount = 0, min = MIN_DELIVERY_PROOFS) {
   const used = Number(storedCount || 0) + Number(pendingCount || 0);
-  if (used >= max) return 0;
   if (used < min) return min - used;
   return 1;
 }

@@ -5,7 +5,6 @@ import {
   confirmDeliveredLoadingBlockReason,
   MSG_DELIVERY_LOADING_INCOMPLETE,
   MIN_DELIVERY_PROOFS,
-  MAX_PHOTOS,
   proofUploadUserError,
   confirmableProofCount,
   hasValidRecipientName,
@@ -223,7 +222,8 @@ describe("deliveryProof helpers", () => {
     expect(isDeliveryProofUploadBusy([{ status: "error" }])).toBe(false);
     expect(emptyDeliveryPhotoSlotCount(0, 0)).toBe(MIN_DELIVERY_PROOFS);
     expect(emptyDeliveryPhotoSlotCount(2, 0)).toBe(1);
-    expect(emptyDeliveryPhotoSlotCount(MAX_PHOTOS, 0)).toBe(0);
+    expect(emptyDeliveryPhotoSlotCount(6, 0)).toBe(1);
+    expect(emptyDeliveryPhotoSlotCount(10, 1)).toBe(1);
   });
 
   test("compressed file over backend limit surfaces the existing 5MB message", () => {

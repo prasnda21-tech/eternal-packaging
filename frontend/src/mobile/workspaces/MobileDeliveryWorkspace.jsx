@@ -24,7 +24,6 @@ import { formatApiError } from "../../lib/errors";
 import { MOBILE_LOAD_TIMEOUT_MS, withTimeout } from "../../lib/mobileRequest";
 import { newActionId } from "../../lib/workflowEntries";
 import {
-  MAX_PHOTOS,
   DELIVERY_PROOF_ACCEPT,
   canConfirmDelivered,
   canSubmitConfirmDelivered,
@@ -291,19 +290,14 @@ export default function MobileDeliveryWorkspace({
         patchSlot(clientId, { status: "error", error: sizeErr });
         return;
       }
-      const currentProofs = order?.delivery_proofs || [];
+      // Append-only upload. Explicit replace deletes the prior proof after a
+      // successful upload so a failed upload never removes an existing photo.
       let latestOrder = order;
-      if (replaceId && currentProofs.length >= MAX_PHOTOS) {
-        const del = await api.deleteDeliveryProof(order.id, replaceId, { params: { view: "operational" } });
-        latestOrder = del.order;
-        onUpdated(latestOrder);
-        patchSlot(clientId, { replaceId: null });
-      }
       const res = await api.uploadDeliveryProof(order.id, uploadFile, "", undefined, selectedShipmentKey, { params: { view: "operational" } });
       latestOrder = res.order;
       onUpdated(latestOrder);
-      if (replaceId && currentProofs.length < MAX_PHOTOS) {
-        const del = await api.deleteDeliveryProof(order.id, replaceId, { params: { view: "operational" } });
+      if (replaceId) {
+        const del = await api.deleteDeliveryProof(latestOrder.id, replaceId, { params: { view: "operational" } });
         latestOrder = del.order;
         onUpdated(latestOrder);
       }

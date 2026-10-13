@@ -32,12 +32,11 @@ import ConfirmActionModal from "./ConfirmActionModal";
 import RescheduleDeliveryModal from "./RescheduleDeliveryModal";
 import SignaturePad from "./SignaturePad";
 
-const MAX_PHOTOS = 5;
-
 // Multi-foto Bukti Kirim: driver can select/capture multiple photos, review the
 // staged list (with per-photo note + remove/replace), then confirm upload.
 // Files are compressed client-side, then streamed one-by-one to the backend
 // which stores each via the storage service (local filesystem in preview, S3/Emergent in production).
+// No business max on photo count per SJ/PO — only min proofs for confirm.
 function urlShipmentId() {
   if (typeof window === "undefined") return "";
   try {
@@ -196,12 +195,6 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
     .sort()
     .concat(historyProofIds.map((proofId) => `${proofId}:history`))
     .join("|");
-  const remainingSlots = Math.max(0, MAX_PHOTOS - proofs.length);
-  const photoLimitHint = sjOptions.length > 1
-    ? `Maksimal ${MAX_PHOTOS} foto untuk Surat Jalan ini`
-    : `Batas ${MAX_PHOTOS} foto per PO`;
-  const stagedNotYetUploaded = staged.filter((s) => s.status !== "done");
-  const freeSlotsForNewSelection = Math.max(0, remainingSlots - stagedNotYetUploaded.length);
   const readyCount = confirmableProofCount(staged);
   const doneCount = staged.filter((s) => s.status === "done").length;
   // Button APPEARS after existing 2-photo rule; submit still needs name + both signatures.
@@ -280,18 +273,9 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
     }
     const files = Array.from(fileList || []);
     if (files.length === 0) return;
-    if (freeSlotsForNewSelection <= 0) {
-      setErr(`Sudah mencapai batas ${MAX_PHOTOS} foto.`);
-      return;
-    }
-    // Limit selection to free slots
-    const toStage = files.slice(0, freeSlotsForNewSelection);
-    if (files.length > toStage.length) {
-      setErr(`Hanya ${toStage.length} foto ditambahkan (${photoLimitHint}).`);
-    }
 
     // Compress each and add to staged (streaming so UI updates progressively)
-    for (const raw of toStage) {
+    for (const raw of files) {
       const clientId = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
       if (!raw.type?.startsWith("image/")) {
         setStaged((prev) => [...prev, { id: clientId, file: raw, previewUrl: null, note: "", status: "error", error: "Bukan file gambar", progress: 0 }]);
@@ -546,7 +530,7 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
       <header className="panel-head">
         <h3>Bukti Kirim</h3>
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-          <span className="muted small">{proofs.length}/{MAX_PHOTOS} foto tersimpan</span>
+          <span className="muted small" data-testid="proof-stored-count">{proofs.length} foto tersimpan</span>
           <span
             className={selectedDelivered ? "status-ok" : "status-wait"}
             data-testid="pengiriman-selected-status"
@@ -696,7 +680,13 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
           {proofs.map((p) => (
             <figure key={p.id} className="proof-card" data-testid={`proof-${p.id}`}>
               {proofBlobs[p.id] ? (
-                <img src={proofBlobs[p.id]} alt={p.original_filename} loading="lazy" />
+                <img
+                  src={proofBlobs[p.id]}
+                  alt={p.original_filename}
+                  loading="lazy"
+                  onClick={() => setPreviewId(p.id)}
+                  data-testid={`proof-thumb-${p.id}`}
+                />
               ) : proofLoadErrors[p.id] ? (
                 <div className="proof-loading proof-unavailable">Foto tidak tersedia</div>
               ) : (
@@ -758,7 +748,7 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
               type="button"
               className="primary"
               onClick={pickCamera}
-              disabled={uploading || remainingSlots <= 0 || !canWritePhoto}
+              disabled={uploading || !canWritePhoto}
               data-testid="proof-camera-button"
             >
               <Camera size={16} /> Ambil foto (kamera)
@@ -767,7 +757,7 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
               type="button"
               className="ghost"
               onClick={pickGallery}
-              disabled={uploading || remainingSlots <= 0 || !canWritePhoto}
+              disabled={uploading || !canWritePhoto}
               data-testid="proof-gallery-button"
             >
               <ImagePlus size={16} /> Pilih dari galeri
@@ -961,9 +951,8 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
             <p className="muted small" data-testid="confirm-delivered-hint">{deliverBlockReason}</p>
           )}
           <p className="muted small" data-testid="proof-photo-limit-hint">
-            Upload foto tidak menandai Terkirim. Minimal {MIN_DELIVERY_PROOFS} foto, lalu isi nama penerima + TTD penerima + TTD driver, kemudian Konfirmasi Terkirim.
-            {" "}{photoLimitHint}. Foto dikompres otomatis (~1600px, ~1MB) sebelum dikirim ke storage.
-            {remainingSlots > 0 ? ` Sisa slot: ${remainingSlots}.` : " Slot penuh — hapus foto untuk menambah."}
+            Upload foto tidak menandai Terkirim. Minimal {MIN_DELIVERY_PROOFS} foto untuk Surat Jalan yang dipilih, lalu isi nama penerima + TTD penerima + TTD driver, kemudian Konfirmasi Terkirim.
+            {" "}Tidak ada batas maksimum jumlah foto. Foto dikompres otomatis (~1600px, ~1MB) sebelum dikirim ke storage.
           </p>
         </div>
       )}

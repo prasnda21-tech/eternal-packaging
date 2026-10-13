@@ -879,6 +879,7 @@ def is_fully_delivered(order: dict) -> bool:
 
 
 MIN_DELIVERY_PROOFS = 2
+# Customer-tracking / public presentation only — not an operational upload cap.
 MAX_PUBLIC_DELIVERY_PROOFS = 5
 
 
@@ -3049,7 +3050,11 @@ def valid_delivery_proofs_for_shipment(order: dict, shipment: Optional[dict] = N
 
 
 def delivery_proofs_for_upload_limit(order: dict, shipment: Optional[dict] = None) -> list:
-    """5-photo cap grain: exact SJ when multiple shipments exist, else PO."""
+    """Shipment-scoped proof listing (multi-SJ: exact SJ; else all PO proofs).
+
+    Operational upload has no business max count. Kept for callers that need
+    the same grain as historical upload-limit checks / tests.
+    """
     ships = [sh for sh in shipments_stored(order) if isinstance(sh, dict)]
     if shipment is not None and len(ships) > 1:
         keys = shipment_identity_keys(order, shipment)

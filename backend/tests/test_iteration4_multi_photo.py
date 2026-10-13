@@ -111,11 +111,11 @@ def po_multi(sessions):
 
 
 class TestIter4MultiPhoto:
-    def test_upload_5_then_reject_6th(self, sessions, po_multi):
+    def test_upload_beyond_five_succeeds(self, sessions, po_multi):
         oid = po_multi["id"]
         existing = len(po_multi.get("delivery_proofs", []))
-        # Fill up to 5 total
-        to_upload = max(0, 5 - existing)
+        # Fill up to 6 total — no business max on photo count
+        to_upload = max(0, 6 - existing)
         proof_ids = []
         for i in range(to_upload):
             files = {"file": (f"proof_{i}.jpg", TINY_JPEG, "image/jpeg")}
@@ -126,31 +126,32 @@ class TestIter4MultiPhoto:
             assert r.status_code == 200, f"upload {i} failed: {r.text}"
             proof_ids.append(r.json()["proof"]["id"])
 
-        # Sanity: exactly 5 now
         order = sessions["driver"].get(f"{BASE_URL}/api/orders/{oid}").json()["order"]
-        assert len(order["delivery_proofs"]) == 5, f"expected 5 got {len(order['delivery_proofs'])}"
+        assert len(order["delivery_proofs"]) >= 6, f"expected >=6 got {len(order['delivery_proofs'])}"
 
-        # 6th must reject with 400 "Maksimum 5 foto"
-        files = {"file": ("proof_6.jpg", TINY_JPEG, "image/jpeg")}
+        # 7th still accepts (unlimited operational upload)
+        files = {"file": ("proof_7.jpg", TINY_JPEG, "image/jpeg")}
         r = sessions["driver"].post(
             f"{BASE_URL}/api/orders/{oid}/delivery-proof",
-            files=files, data={"note": "should fail"}, timeout=15,
+            files=files, data={"note": "beyond five"}, timeout=15,
         )
-        assert r.status_code == 400
-        assert "Maksimum 5 foto" in r.text or "maksimum" in r.text.lower()
+        assert r.status_code == 200, r.text
+        assert "maksimum" not in r.text.lower()
         pytest.iter4_oid = oid
         pytest.iter4_proof_ids = proof_ids
 
     def test_delete_one_then_upload_succeeds(self, sessions):
         oid = pytest.iter4_oid
+        before = sessions["driver"].get(f"{BASE_URL}/api/orders/{oid}").json()["order"]
+        before_n = len(before.get("delivery_proofs") or [])
         # Admin deletes one
         first_id = pytest.iter4_proof_ids[0] if pytest.iter4_proof_ids else \
-            sessions["driver"].get(f"{BASE_URL}/api/orders/{oid}").json()["order"]["delivery_proofs"][0]["id"]
+            before["delivery_proofs"][0]["id"]
         r = sessions["admin"].delete(f"{BASE_URL}/api/orders/{oid}/delivery-proof/{first_id}", timeout=15)
         assert r.status_code == 200
-        assert len(r.json()["order"]["delivery_proofs"]) == 4
+        assert len(r.json()["order"]["delivery_proofs"]) == before_n - 1
 
-        # Now upload again — succeeds
+        # Now upload again — succeeds (append, no max refill gate)
         files = {"file": ("refill.jpg", TINY_JPEG, "image/jpeg")}
         r = sessions["driver"].post(
             f"{BASE_URL}/api/orders/{oid}/delivery-proof",
@@ -158,7 +159,7 @@ class TestIter4MultiPhoto:
         )
         assert r.status_code == 200, r.text
         order = r.json()["order"]
-        assert len(order["delivery_proofs"]) == 5
+        assert len(order["delivery_proofs"]) == before_n
         # Verify the new proof has the right note
         new_proof = order["delivery_proofs"][-1]
         assert new_proof["note"] == "refill after delete"

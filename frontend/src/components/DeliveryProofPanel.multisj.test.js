@@ -218,7 +218,8 @@ describe("DeliveryProofPanel multi-SJ desktop exact identity", () => {
     expect(src).toMatch(/isPengirimanMutationLocked/);
     expect(src).toMatch(/proofsForShipment/);
     expect(src).toMatch(/selectedPengirimanShipmentId\(order, urlShipmentId\(\)\)/);
-    expect(src).toMatch(/Maksimal \$\{MAX_PHOTOS\} foto untuk Surat Jalan ini/);
+    expect(src).toMatch(/Tidak ada batas maksimum jumlah foto/);
+    expect(src).not.toMatch(/MAX_PHOTOS/);
     expect(src).toMatch(/onSelectSj/);
     expect(src).toMatch(/selectionKey/);
   });
@@ -519,7 +520,7 @@ describe("DeliveryProofPanel multi-SJ desktop exact identity", () => {
     unmount();
   });
 
-  test("selected-SJ 5-photo cap is not a PO-wide block", () => {
+  test("selected-SJ with 6+ photos still allows more uploads and isolates siblings", () => {
     const order = demoMultiSjPhotoOrder({
       delivery_proofs: [
         proof("a1", "demo-multisj-photo-001"),
@@ -527,6 +528,7 @@ describe("DeliveryProofPanel multi-SJ desktop exact identity", () => {
         proof("a3", "demo-multisj-photo-001"),
         proof("a4", "demo-multisj-photo-001"),
         proof("a5", "demo-multisj-photo-001"),
+        proof("a6", "demo-multisj-photo-001"),
         proof("b1", "demo-multisj-photo-002"),
         proof("b2", "demo-multisj-photo-002"),
       ],
@@ -535,16 +537,19 @@ describe("DeliveryProofPanel multi-SJ desktop exact identity", () => {
     const { container, unmount } = mount(
       <DeliveryProofPanel order={order} onUpdated={() => {}} />
     );
-    expect(container.querySelector('[data-testid="proof-gallery-button"]').disabled).toBe(true);
+    expect(container.querySelector('[data-testid="proof-gallery-button"]').disabled).toBe(false);
+    expect(container.querySelector('[data-testid="proof-stored-count"]').textContent)
+      .toContain("6 foto tersimpan");
     expect(container.querySelector('[data-testid="proof-photo-limit-hint"]').textContent)
-      .toContain("Maksimal 5 foto untuk Surat Jalan ini");
+      .toContain("Tidak ada batas maksimum jumlah foto");
     expect(container.querySelector('[data-testid="proof-photo-limit-hint"]').textContent)
-      .toContain("Slot penuh");
+      .not.toContain("Slot penuh");
+    expect(container.querySelectorAll(".proof-card").length).toBe(6);
 
     selectSj(container, "demo-multisj-photo-002");
     expect(container.querySelector('[data-testid="proof-gallery-button"]').disabled).toBe(false);
-    expect(container.querySelector('[data-testid="proof-photo-limit-hint"]').textContent)
-      .toContain("Sisa slot: 3");
+    expect(container.querySelector('[data-testid="proof-stored-count"]').textContent)
+      .toContain("2 foto tersimpan");
     expect(container.querySelector('[data-testid="proof-p-a1"]') || container.querySelector('[data-testid="proof-a1"]'))
       .toBeFalsy();
     expect(container.querySelector('[data-testid="proof-b1"]')).toBeTruthy();
@@ -553,13 +558,13 @@ describe("DeliveryProofPanel multi-SJ desktop exact identity", () => {
 
     selectSj(container, "demo-multisj-photo-003");
     expect(container.querySelector('[data-testid="proof-gallery-button"]').disabled).toBe(false);
-    expect(container.querySelector('[data-testid="proof-photo-limit-hint"]').textContent)
-      .toContain("Sisa slot: 5");
+    expect(container.querySelector('[data-testid="proof-stored-count"]').textContent)
+      .toContain("0 foto tersimpan");
     expect(container.querySelectorAll(".proof-card").length).toBe(0);
     unmount();
   });
 
-  test("single-SJ flow remains convenient and uses per-PO copy", async () => {
+  test("single-SJ flow remains convenient without a max-photo cap", async () => {
     setSearch("");
     const { container, unmount } = mount(
       <DeliveryProofPanel order={singleSjOrder()} onUpdated={() => {}} />
@@ -570,9 +575,9 @@ describe("DeliveryProofPanel multi-SJ desktop exact identity", () => {
     expect(container.querySelector('[data-testid="pengiriman-sj-unmatched"]')).toBeFalsy();
     expect(container.querySelector('[data-testid="proof-gallery-button"]').disabled).toBe(false);
     expect(container.querySelector('[data-testid="proof-photo-limit-hint"]').textContent)
-      .toContain("Batas 5 foto per PO");
+      .toContain("Tidak ada batas maksimum jumlah foto");
     expect(container.querySelector('[data-testid="proof-photo-limit-hint"]').textContent)
-      .not.toContain("Surat Jalan ini");
+      .not.toContain("Batas 5 foto");
     setInputFiles(container.querySelector('[data-testid="proof-file-input"]'), [jpegFile("one.jpg")]);
     await flush();
     expect(container.querySelector('[data-testid="staged-block"]')).toBeTruthy();
