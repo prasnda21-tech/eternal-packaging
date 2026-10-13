@@ -7,19 +7,24 @@
 # Usage:
 #   trigger_github_actions.sh plan  probe
 #   trigger_github_actions.sh plan  deploy --sha <40> --confirm-sha <40>
+#   trigger_github_actions.sh plan  rollback --sha <40> --confirm-sha <40> --previous-id <40|baseline-active>
 #   trigger_github_actions.sh execute probe --execute
 #   trigger_github_actions.sh execute deploy --sha <40> --confirm-sha <40> --execute
+#   trigger_github_actions.sh execute rollback --sha <40> --confirm-sha <40> --previous-id <id> --execute
 #
 # Env:
 #   ETERNAL_GH_REPO                 default prasnda21-tech/eternal-packaging
 #   ETERNAL_GH_API_MOCK_DIR         synthetic mocks (no network)
 #   ETERNAL_GH_BIN                  override gh binary (tests/stubs)
 #   ETERNAL_TRIGGER_DISPATCH_LOG    records mock POSTs for tests
-#   ETERNAL_DEPLOY_SHARED_SECRET    execute+deploy only (env → JSON body; never argv/logs)
+#   ETERNAL_DEPLOY_SHARED_SECRET    execute+deploy|rollback only (env → JSON body; never argv/logs)
 #   GH_TOKEN / ETERNAL_GH_TOKEN     write-capable token from env secret store
-#   ETERNAL_TRIGGER_POLL_TIMEOUT_SEC   wall-clock poll budget (default 45)
-#   ETERNAL_TRIGGER_POLL_INTERVAL_SEC  sleep between GETs (default 2; 0 = no sleep)
+#   ETERNAL_TRIGGER_POLL_TIMEOUT_SEC   wall-clock budget to correlate run URL (default 45)
+#   ETERNAL_TRIGGER_POLL_INTERVAL_SEC  sleep between correlation GETs (default 2; 0 = no sleep)
 #   ETERNAL_TRIGGER_POLL_MAX_ATTEMPTS  optional hard cap (required for fast zero-sleep mocks)
+#   ETERNAL_TRIGGER_WAIT_TIMEOUT_SEC   wall-clock budget after DISPATCH_OK for workflow completion (default 900)
+#   ETERNAL_TRIGGER_WAIT_INTERVAL_SEC  sleep between run-status GETs (default 5; 0 = no sleep)
+#   ETERNAL_TRIGGER_WAIT_MAX_ATTEMPTS  optional hard cap for completion polls (tests)
 #   ETERNAL_TRIGGER_HTTP_TIMEOUT_SEC   per-request gh api bound (default 30)
 #   ETERNAL_TRIGGER_HTTP_KILL_AFTER_SEC  SIGKILL after TERM on hung child (default 2)
 #   ETERNAL_TRIGGER_FORCE_HTTP_TIMEOUT   when set with mock dir, apply timeout to mock calls (tests)
@@ -35,6 +40,7 @@ MODE="plan"
 ACTION=""
 SHA=""
 CONFIRM_SHA=""
+PREVIOUS_ID=""
 REQUEST_ID=""
 DO_EXECUTE=0
 ALLOW_MIGRATIONS=0
@@ -46,11 +52,14 @@ GH_BIN="${ETERNAL_GH_BIN:-gh}"
 POLL_TIMEOUT_SEC="${ETERNAL_TRIGGER_POLL_TIMEOUT_SEC:-45}"
 POLL_INTERVAL_SEC="${ETERNAL_TRIGGER_POLL_INTERVAL_SEC:-2}"
 POLL_MAX_ATTEMPTS="${ETERNAL_TRIGGER_POLL_MAX_ATTEMPTS:-}"
+WAIT_TIMEOUT_SEC="${ETERNAL_TRIGGER_WAIT_TIMEOUT_SEC:-900}"
+WAIT_INTERVAL_SEC="${ETERNAL_TRIGGER_WAIT_INTERVAL_SEC:-5}"
+WAIT_MAX_ATTEMPTS="${ETERNAL_TRIGGER_WAIT_MAX_ATTEMPTS:-}"
 HTTP_TIMEOUT_SEC="${ETERNAL_TRIGGER_HTTP_TIMEOUT_SEC:-30}"
 HTTP_KILL_AFTER_SEC="${ETERNAL_TRIGGER_HTTP_KILL_AFTER_SEC:-2}"
 
 if [[ $# -lt 2 ]]; then
-  eternal_deploy_die "usage: $0 plan|execute probe|deploy [options]"
+  eternal_deploy_die "usage: $0 plan|execute probe|deploy|rollback [options]"
 fi
 MODE="$1"
 ACTION="$2"
@@ -60,6 +69,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --sha) SHA="${2:-}"; shift 2 ;;
     --confirm-sha) CONFIRM_SHA="${2:-}"; shift 2 ;;
+    --previous-id) PREVIOUS_ID="${2:-}"; shift 2 ;;
     --request-id) REQUEST_ID="${2:-}"; shift 2 ;;
     --execute) DO_EXECUTE=1; shift ;;
     --allow-migrations) ALLOW_MIGRATIONS=1; shift ;;
@@ -67,9 +77,11 @@ while [[ $# -gt 0 ]]; do
     -h|--help)
       cat <<'EOF'
 Modes: plan (default, no POST) | execute (requires --execute)
-Actions: probe | deploy
+Actions: probe | deploy | rollback
 Deploy requires --sha and --confirm-sha (identical 40-char hex). Never auto-picks main tip.
-Optional: --ack-replace-live-frontend (first cutover when pure SHA replaces live selective-merge FE).
+Rollback requires --sha/--confirm-sha (exact deployed SHA to undo) and --previous-id
+  (40-hex or baseline-active). Never auto-rollback from a bug report alone.
+Optional deploy: --ack-replace-live-frontend (first cutover when pure SHA replaces live FE).
 EOF
       exit 0
       ;;
@@ -78,7 +90,8 @@ EOF
 done
 
 [[ "$MODE" == "plan" || "$MODE" == "execute" ]] || eternal_deploy_die "mode must be plan|execute"
-[[ "$ACTION" == "probe" || "$ACTION" == "deploy" ]] || eternal_deploy_die "action must be probe|deploy"
+[[ "$ACTION" == "probe" || "$ACTION" == "deploy" || "$ACTION" == "rollback" ]] \
+  || eternal_deploy_die "action must be probe|deploy|rollback"
 
 if [[ "$MODE" == "execute" && "$DO_EXECUTE" != "1" ]]; then
   eternal_deploy_die "execute mode requires explicit --execute (refusing accidental POST)"
@@ -119,8 +132,13 @@ eternal_validate_timeout_configs() {
   eternal_require_positive_int_cfg "ETERNAL_TRIGGER_HTTP_KILL_AFTER_SEC" "$HTTP_KILL_AFTER_SEC"
   eternal_require_positive_int_cfg "ETERNAL_TRIGGER_POLL_TIMEOUT_SEC" "$POLL_TIMEOUT_SEC"
   eternal_require_nonneg_int_cfg "ETERNAL_TRIGGER_POLL_INTERVAL_SEC" "$POLL_INTERVAL_SEC"
+  eternal_require_positive_int_cfg "ETERNAL_TRIGGER_WAIT_TIMEOUT_SEC" "$WAIT_TIMEOUT_SEC"
+  eternal_require_nonneg_int_cfg "ETERNAL_TRIGGER_WAIT_INTERVAL_SEC" "$WAIT_INTERVAL_SEC"
   if [[ -n "${POLL_MAX_ATTEMPTS}" ]]; then
     eternal_require_positive_int_cfg "ETERNAL_TRIGGER_POLL_MAX_ATTEMPTS" "$POLL_MAX_ATTEMPTS"
+  fi
+  if [[ -n "${WAIT_MAX_ATTEMPTS}" ]]; then
+    eternal_require_positive_int_cfg "ETERNAL_TRIGGER_WAIT_MAX_ATTEMPTS" "$WAIT_MAX_ATTEMPTS"
   fi
 }
 
@@ -229,6 +247,7 @@ eternal_gh_api_mock() {
         fi
       fi
       printf '0\n' >"${ETERNAL_GH_API_MOCK_DIR}/.runs-get-count"
+      printf '0\n' >"${ETERNAL_GH_API_MOCK_DIR}/.run-detail-get-count"
       return 0
       ;;
     */actions/workflows/*/runs*)
@@ -288,6 +307,51 @@ eternal_gh_api_mock() {
         return 0
       fi
       eternal_deploy_die "mock API missing trigger-runs.json for: $method $path"
+      ;;
+    */actions/runs/[0-9]*/logs|*/actions/runs/[0-9]*/logs/*)
+      # Mock log body (plain text). Live path uses `gh run view --log`.
+      local log_id
+      log_id="$(printf '%s' "$path" | sed -E 's|.*/actions/runs/([0-9]+)/logs.*|\1|')"
+      if [[ -f "${ETERNAL_GH_API_MOCK_DIR}/trigger-run-${log_id}-log.txt" ]]; then
+        cat "${ETERNAL_GH_API_MOCK_DIR}/trigger-run-${log_id}-log.txt"
+        return 0
+      fi
+      if [[ -f "${ETERNAL_GH_API_MOCK_DIR}/trigger-run-log.txt" ]]; then
+        cat "${ETERNAL_GH_API_MOCK_DIR}/trigger-run-log.txt"
+        return 0
+      fi
+      echo "{\"message\":\"mock run logs missing\",\"status\":\"404\"}" >&2
+      return 1
+      ;;
+    */actions/runs/[0-9]*)
+      local rid n rst
+      rid="$(printf '%s' "$path" | sed -E 's|.*/actions/runs/([0-9]+).*|\1|')"
+      n="$(( $(cat "${ETERNAL_GH_API_MOCK_DIR}/.run-detail-get-count" 2>/dev/null || echo 0) + 1 ))"
+      printf '%s\n' "$n" >"${ETERNAL_GH_API_MOCK_DIR}/.run-detail-get-count"
+      if [[ -f "${ETERNAL_GH_API_MOCK_DIR}/trigger-run-detail-poll-${n}-http-status" ]]; then
+        rst="$(cat "${ETERNAL_GH_API_MOCK_DIR}/trigger-run-detail-poll-${n}-http-status")"
+        if [[ "$rst" != "200" && "$rst" != "ok" && "$rst" != "0" ]]; then
+          echo "{\"message\":\"mock run detail API error\",\"status\":\"$rst\"}" >&2
+          return 1
+        fi
+      fi
+      if [[ -f "${ETERNAL_GH_API_MOCK_DIR}/trigger-run-detail-poll-${n}.json" ]]; then
+        cat "${ETERNAL_GH_API_MOCK_DIR}/trigger-run-detail-poll-${n}.json"
+        return 0
+      fi
+      if [[ -f "${ETERNAL_GH_API_MOCK_DIR}/trigger-run-${rid}-poll-${n}.json" ]]; then
+        cat "${ETERNAL_GH_API_MOCK_DIR}/trigger-run-${rid}-poll-${n}.json"
+        return 0
+      fi
+      if [[ -f "${ETERNAL_GH_API_MOCK_DIR}/trigger-run-${rid}.json" ]]; then
+        cat "${ETERNAL_GH_API_MOCK_DIR}/trigger-run-${rid}.json"
+        return 0
+      fi
+      if [[ -f "${ETERNAL_GH_API_MOCK_DIR}/trigger-run-detail.json" ]]; then
+        cat "${ETERNAL_GH_API_MOCK_DIR}/trigger-run-detail.json"
+        return 0
+      fi
+      eternal_deploy_die "mock API missing trigger-run detail JSON for: $method $path"
       ;;
   esac
   if [[ "$method" == "GET" && -f "${ETERNAL_GH_API_MOCK_DIR}/actor.json" && "$path" == *"graphql"* ]]; then
@@ -364,7 +428,7 @@ validate_deploy_target() {
 }
 
 # Extract whole request_id token from run-name/display_title (not prefix-contains).
-# Returns: 0 + single URL | 1 none | 2 ambiguous | 3 API error | 4 HTTP timeout
+# Returns: 0 + "RUN_ID<TAB>HTML_URL" | 1 none | 2 ambiguous | 3 API error | 4 HTTP timeout
 find_correlated_run() {
   local want_request_id="$1"
   local runs_json
@@ -381,8 +445,8 @@ find_correlated_run() {
     return 3
   fi
 
-  local urls
-  urls="$(printf '%s' "$runs_json" | jq -r --arg id "$want_request_id" --arg ref "$DISPATCH_REF" '
+  local rows
+  rows="$(printf '%s' "$runs_json" | jq -r --arg id "$want_request_id" --arg ref "$DISPATCH_REF" '
     def title:
       (.display_title // .name // "");
     def rid:
@@ -393,19 +457,283 @@ find_correlated_run() {
       | select((.event // "workflow_dispatch") == "workflow_dispatch")
       | select((.head_branch // $ref) == $ref)
       | select(rid == $id)
-      | .html_url] | .[]
+      | "\(.id)\t\(.html_url)"] | .[]
   ' 2>/dev/null || true)"
 
   local count
-  count="$(printf '%s\n' "$urls" | sed '/^$/d' | wc -l | tr -d ' ')"
+  count="$(printf '%s\n' "$rows" | sed '/^$/d' | wc -l | tr -d ' ')"
   if [[ "$count" == "1" ]]; then
-    printf '%s\n' "$urls"
+    printf '%s\n' "$rows"
     return 0
   fi
   if [[ "${count:-0}" -gt 1 ]]; then
     eternal_deploy_log "ambiguous correlated runs ($count) for request_id=${want_request_id}"
-    printf '%s\n' "$urls" >&2
+    printf '%s\n' "$rows" >&2
     return 2
+  fi
+  return 1
+}
+
+eternal_wait_max_attempts() {
+  if [[ -n "${WAIT_MAX_ATTEMPTS}" ]]; then
+    printf '%s\n' "${WAIT_MAX_ATTEMPTS}"
+    return 0
+  fi
+  if [[ "${WAIT_INTERVAL_SEC}" -le 0 ]]; then
+    printf '%s\n' "${WAIT_TIMEOUT_SEC}"
+    return 0
+  fi
+  printf '%s\n' "$(( (WAIT_TIMEOUT_SEC / WAIT_INTERVAL_SEC) + 1 ))"
+}
+
+eternal_wait_sleep() {
+  local secs="${1:-$WAIT_INTERVAL_SEC}"
+  if [[ -n "${ETERNAL_GH_API_MOCK_DIR:-}" ]]; then
+    return 0
+  fi
+  if ! eternal_is_positive_int "$secs"; then
+    return 0
+  fi
+  sleep "$secs"
+}
+
+# Fetch run detail JSON: {id,status,conclusion,html_url}. Exit 0 ok, 3 API err, 4 timeout.
+eternal_fetch_run_detail() {
+  local run_id="$1"
+  eternal_gh_api GET "repos/${REPO}/actions/runs/${run_id}"
+}
+
+# Fetch plain-text job logs (mock file or gh run view --log). Never prints secrets.
+eternal_fetch_run_logs() {
+  local run_id="$1"
+  if [[ -n "${ETERNAL_GH_API_MOCK_DIR:-}" ]]; then
+    eternal_gh_api GET "repos/${REPO}/actions/runs/${run_id}/logs"
+    return $?
+  fi
+  local call_timeout="${ETERNAL_GH_CALL_TIMEOUT:-$HTTP_TIMEOUT_SEC}"
+  eternal_run_with_http_timeout "$call_timeout" \
+    "$GH_BIN" run view "$run_id" --repo "$REPO" --log
+}
+
+# Print a short redacted evidence summary (never dumps full logs / secrets).
+eternal_print_log_evidence_summary() {
+  local log_body="$1"
+  local line redacted count=0
+  printf 'LOG_EVIDENCE_BEGIN\n'
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -z "$line" ]] && continue
+    if [[ "$line" == *"PRIVATE KEY"* ]] \
+      || [[ "$line" == *"DEPLOY_SSH"* ]] \
+      || [[ "$line" == *"ETERNAL_DEPLOY_SHARED_SECRET"* ]]; then
+      continue
+    fi
+    if [[ "$line" == *"DEPLOY_OK"* ]] \
+      || [[ "$line" == *"ROLLBACK_PASS"* ]] \
+      || [[ "$line" == *"ROLLBACK_FAILED"* ]] \
+      || [[ "$line" == *"ETERNAL_GATE_OK"* ]] \
+      || [[ "$line" == *"[eternal-deploy]"* ]]; then
+      redacted="$(eternal_redact_line "$line")"
+      printf '%s\n' "$redacted"
+      count=$((count + 1))
+      if [[ "$count" -ge 40 ]]; then
+        break
+      fi
+    fi
+  done <<<"$log_body"
+  printf 'LOG_EVIDENCE_END lines=%s\n' "$count"
+}
+
+# Classify runner evidence from logs fetched for a single correlated run_id.
+# DEPLOY_OK / ROLLBACK_SUCCESS must match runner line shapes, not loose substrings.
+# Returns 0 only for action success markers (caller still requires workflow
+# conclusion=success before treating the overall execute as PASS).
+eternal_classify_runner_evidence() {
+  local log_body="$1"
+  local action="$2"
+  if [[ "$action" == "probe" ]]; then
+    if grep -qE 'ETERNAL_GATE_OK[[:space:]]+probe=pass' <<<"$log_body"; then
+      printf 'RUNNER_PROBE_SUCCESS\n'
+      return 0
+    fi
+    printf 'RESULT_UNKNOWN\n'
+    return 1
+  fi
+  if [[ "$action" == "rollback" ]]; then
+    # Post-success rollback only — not failure-path ROLLBACK_PASS.
+    if grep -qE 'ROLLBACK_SUCCESS[[:space:]]+deployed_sha=[0-9a-f]{40}' <<<"$log_body"; then
+      printf 'RUNNER_ROLLBACK_SUCCESS\n'
+      return 0
+    fi
+    if grep -qE 'ROLLBACK_FAILED[[:space:]]+deployed_sha=[0-9a-f]{40}' <<<"$log_body"; then
+      printf 'RUNNER_ROLLBACK_FAILED\n'
+      return 1
+    fi
+    if grep -qE '(^|[[:space:]])ROLLBACK_FAILED([[:space:]]|$)' <<<"$log_body"; then
+      printf 'RUNNER_ROLLBACK_FAILED\n'
+      return 1
+    fi
+    printf 'RESULT_UNKNOWN\n'
+    return 1
+  fi
+  # Runner prints: DEPLOY_OK sha=<40-hex> backend_restarted=... (gh --log may prefix columns).
+  if grep -qE 'DEPLOY_OK[[:space:]]+sha=[0-9a-f]{40}' <<<"$log_body"; then
+    printf 'RUNNER_DEPLOY_SUCCESS\n'
+    return 0
+  fi
+  if grep -qE '(^|[[:space:]])ROLLBACK_FAILED([[:space:]]|$)' <<<"$log_body"; then
+    printf 'RUNNER_ROLLBACK_FAILED\n'
+    return 1
+  fi
+  if grep -qE '(^|[[:space:]])ROLLBACK_PASS([[:space:]]|$)' <<<"$log_body"; then
+    printf 'RUNNER_ROLLBACK_PASS\n'
+    return 1
+  fi
+  printf 'RESULT_UNKNOWN\n'
+  return 1
+}
+
+# After DISPATCH_OK: bounded wait for workflow completion + runner evidence.
+# Does not re-POST. GitHub conclusion alone is never enough for deploy success.
+wait_and_report_workflow_run() {
+  local run_id="$1"
+  local run_url="$2"
+  local max_attempts attempt now rem call_to sleep_for deadline
+  local detail status conclusion api_ec logs log_ec evidence ev_ec
+
+  [[ -n "$run_id" ]] || {
+    printf 'RESULT_UNKNOWN reason=missing_run_id\n'
+    return 1
+  }
+
+  max_attempts="$(eternal_wait_max_attempts)"
+  deadline=$(( $(date +%s) + WAIT_TIMEOUT_SEC ))
+  attempt=0
+  status=""
+  conclusion=""
+
+  while [[ "$attempt" -lt "$max_attempts" ]]; do
+    now="$(date +%s)"
+    rem=$(( deadline - now ))
+    if [[ "$rem" -le 0 ]]; then
+      break
+    fi
+    attempt=$((attempt + 1))
+    call_to="$HTTP_TIMEOUT_SEC"
+    if [[ "$rem" -lt "$call_to" ]]; then
+      call_to="$rem"
+    fi
+    if [[ "$call_to" -lt 1 ]]; then
+      break
+    fi
+    set +e
+    detail="$(ETERNAL_GH_CALL_TIMEOUT="$call_to" eternal_fetch_run_detail "$run_id")"
+    api_ec=$?
+    set -e
+    if [[ "$api_ec" -eq 124 ]]; then
+      printf 'WORKFLOW_TIMED_OUT request_id=%s run_id=%s reason=http_timeout_on_run_detail\n' \
+        "$REQUEST_ID" "$run_id"
+      printf 'RESULT_UNKNOWN\n'
+      return 1
+    fi
+    if [[ "$api_ec" -ne 0 || -z "$detail" ]]; then
+      printf 'RESULT_UNKNOWN reason=run_detail_api_error run_id=%s\n' "$run_id"
+      return 1
+    fi
+    status="$(printf '%s' "$detail" | jq -r '.status // empty')"
+    conclusion="$(printf '%s' "$detail" | jq -r '.conclusion // empty')"
+    if [[ "$status" == "completed" ]]; then
+      break
+    fi
+    now="$(date +%s)"
+    rem=$(( deadline - now ))
+    if [[ "$rem" -le 0 || "$attempt" -ge "$max_attempts" ]]; then
+      break
+    fi
+    if [[ "$WAIT_INTERVAL_SEC" -gt 0 ]]; then
+      sleep_for="$WAIT_INTERVAL_SEC"
+      if [[ "$rem" -lt "$sleep_for" ]]; then
+        sleep_for="$rem"
+      fi
+      eternal_wait_sleep "$sleep_for"
+    fi
+  done
+
+  if [[ "$status" != "completed" ]]; then
+    printf 'WORKFLOW_TIMED_OUT request_id=%s run_id=%s run_url=%s last_status=%s\n' \
+      "$REQUEST_ID" "$run_id" "$run_url" "${status:-unknown}"
+    printf 'RESULT_UNKNOWN\n'
+    return 1
+  fi
+
+  case "$conclusion" in
+    success)
+      printf 'WORKFLOW_SUCCESS run_id=%s run_url=%s request_id=%s\n' \
+        "$run_id" "$run_url" "$REQUEST_ID"
+      ;;
+    failure)
+      printf 'WORKFLOW_FAILED run_id=%s run_url=%s request_id=%s\n' \
+        "$run_id" "$run_url" "$REQUEST_ID"
+      ;;
+    cancelled)
+      printf 'WORKFLOW_CANCELLED run_id=%s run_url=%s request_id=%s\n' \
+        "$run_id" "$run_url" "$REQUEST_ID"
+      ;;
+    timed_out)
+      printf 'WORKFLOW_TIMED_OUT run_id=%s run_url=%s request_id=%s conclusion=timed_out\n' \
+        "$run_id" "$run_url" "$REQUEST_ID"
+      ;;
+    *)
+      printf 'RESULT_UNKNOWN reason=unexpected_conclusion conclusion=%s run_id=%s\n' \
+        "${conclusion:-empty}" "$run_id"
+      return 1
+      ;;
+  esac
+
+  # Bound gh run view --log by remaining wait budget and per-call HTTP timeout.
+  now="$(date +%s)"
+  rem=$(( deadline - now ))
+  if [[ "$rem" -le 0 ]]; then
+    printf 'WORKFLOW_TIMED_OUT request_id=%s run_id=%s reason=no_time_left_for_log_fetch\n' \
+      "$REQUEST_ID" "$run_id"
+    printf 'RESULT_UNKNOWN\n'
+    return 1
+  fi
+  call_to="$HTTP_TIMEOUT_SEC"
+  if [[ "$rem" -lt "$call_to" ]]; then
+    call_to="$rem"
+  fi
+  if [[ "$call_to" -lt 1 ]]; then
+    call_to=1
+  fi
+  set +e
+  logs="$(ETERNAL_GH_CALL_TIMEOUT="$call_to" eternal_fetch_run_logs "$run_id")"
+  log_ec=$?
+  set -e
+  if [[ "$log_ec" -eq 124 ]]; then
+    printf 'RESULT_UNKNOWN reason=log_fetch_http_timeout run_id=%s\n' "$run_id"
+    return 1
+  fi
+  if [[ "$log_ec" -ne 0 || -z "$logs" ]]; then
+    printf 'RESULT_UNKNOWN reason=runner_logs_unavailable run_id=%s\n' "$run_id"
+    return 1
+  fi
+  eternal_print_log_evidence_summary "$logs"
+  set +e
+  evidence="$(eternal_classify_runner_evidence "$logs" "$ACTION")"
+  ev_ec=$?
+  set -e
+  printf '%s\n' "$evidence"
+  # Never PASS when the correlated workflow conclusion is not success — even if a
+  # DEPLOY_OK-shaped marker appears in logs (stale/partial job output).
+  if [[ "$conclusion" != "success" ]]; then
+    if [[ "$ev_ec" -eq 0 ]]; then
+      printf 'RESULT_UNKNOWN reason=workflow_conclusion_not_success_ignoring_success_marker conclusion=%s run_id=%s\n' \
+        "$conclusion" "$run_id"
+    fi
+    return 1
+  fi
+  if [[ "$ev_ec" -eq 0 ]]; then
+    return 0
   fi
   return 1
 }
@@ -439,10 +767,16 @@ plan_summary() {
   printf 'WORKFLOW=%s\n' "$WORKFLOW_FILE"
   printf 'REPO=%s\n' "$REPO"
   if [[ "$ACTION" == "deploy" ]]; then
+    printf 'OPERATION=deploy\n'
     printf 'TARGET_SHA=%s\n' "$SHA"
     printf 'CONFIRM_SHA=%s\n' "$CONFIRM_SHA"
     printf 'ALLOW_MIGRATIONS=%s\n' "$ALLOW_MIGRATIONS"
     printf 'ACK_REPLACE_LIVE_FRONTEND=%s\n' "$ACK_REPLACE_LIVE_FRONTEND"
+  elif [[ "$ACTION" == "rollback" ]]; then
+    printf 'OPERATION=rollback\n'
+    printf 'DEPLOYED_SHA=%s\n' "$SHA"
+    printf 'CONFIRM_SHA=%s\n' "$CONFIRM_SHA"
+    printf 'PREVIOUS_ID=%s\n' "$PREVIOUS_ID"
   fi
   printf 'REQUEST_ID=%s\n' "${REQUEST_ID:-}"
   printf 'POST=no\n'
@@ -451,8 +785,8 @@ plan_summary() {
 
 eternal_build_dispatch_payload() {
   local shared="${ETERNAL_DEPLOY_SHARED_SECRET:-}"
-  if [[ "$ACTION" == "deploy" ]]; then
-    [[ -n "$shared" ]] || eternal_deploy_die "ETERNAL_DEPLOY_SHARED_SECRET unset for execute deploy (use env secret store)"
+  if [[ "$ACTION" == "deploy" || "$ACTION" == "rollback" ]]; then
+    [[ -n "$shared" ]] || eternal_deploy_die "ETERNAL_DEPLOY_SHARED_SECRET unset for execute ${ACTION} (use env secret store)"
   fi
   # shellcheck disable=SC2016
   ETERNAL_DEPLOY_SHARED_SECRET="$shared" jq -n \
@@ -460,6 +794,7 @@ eternal_build_dispatch_payload() {
     --arg action "$ACTION" \
     --arg sha "$SHA" \
     --arg confirm "$CONFIRM_SHA" \
+    --arg prev "$PREVIOUS_ID" \
     --arg rid "$REQUEST_ID" \
     --argjson allow_mig "$ALLOW_MIGRATIONS" \
     --argjson ack_fe "$ACK_REPLACE_LIVE_FRONTEND" \
@@ -471,23 +806,32 @@ eternal_build_dispatch_payload() {
         + (if ($rid | length) > 0 then {request_id: $rid} else {} end)
         + (if $action == "deploy" then
             {
+              operation: "deploy",
               commit_sha: $sha,
               confirm_sha: $confirm,
               deploy_shared_secret: env.ETERNAL_DEPLOY_SHARED_SECRET
             }
             + (if $allow_mig == 1 then {allow_migrations: "true"} else {} end)
             + (if $ack_fe == 1 then {ack_replace_live_frontend: "true"} else {} end)
+          elif $action == "rollback" then
+            {
+              operation: "rollback",
+              commit_sha: $sha,
+              confirm_sha: $confirm,
+              previous_release: $prev,
+              deploy_shared_secret: env.ETERNAL_DEPLOY_SHARED_SECRET
+            }
           else {} end)
       )
     }'
 }
 
 do_dispatch() {
-  local url
+  local row run_id url
 
   # Pre-dispatch: refuse if this request_id already correlates (no POST).
   set +e
-  url="$(find_correlated_run "$REQUEST_ID")"
+  row="$(find_correlated_run "$REQUEST_ID")"
   local pre=$?
   set -e
   if [[ "$pre" == "4" ]]; then
@@ -500,6 +844,7 @@ do_dispatch() {
     eternal_deploy_die "ambiguous existing runs for request_id=${REQUEST_ID}; resolve before dispatch; not dispatching"
   fi
   if [[ "$pre" == "0" ]]; then
+    url="${row#*$'\t'}"
     printf 'EXISTING_CORRELATED_RUN=%s\n' "$url"
     eternal_deploy_die "request_id=${REQUEST_ID} already correlates to a run; not re-dispatching"
   fi
@@ -556,13 +901,17 @@ do_dispatch() {
       break
     fi
     set +e
-    url="$(ETERNAL_GH_CALL_TIMEOUT="$call_to" find_correlated_run "$REQUEST_ID")"
+    row="$(ETERNAL_GH_CALL_TIMEOUT="$call_to" find_correlated_run "$REQUEST_ID")"
     fc=$?
     set -e
-    if [[ "$fc" == "0" && -n "$url" ]]; then
-      printf 'DISPATCH_OK workflow=%s run_url=%s request_id=%s\n' \
-        "$WORKFLOW_FILE" "$url" "$REQUEST_ID"
-      return 0
+    if [[ "$fc" == "0" && -n "$row" ]]; then
+      run_id="${row%%$'\t'*}"
+      url="${row#*$'\t'}"
+      printf 'DISPATCH_OK workflow=%s run_id=%s run_url=%s request_id=%s\n' \
+        "$WORKFLOW_FILE" "$run_id" "$url" "$REQUEST_ID"
+      # Bounded wait for workflow conclusion + runner evidence (still no re-POST).
+      wait_and_report_workflow_run "$run_id" "$url"
+      return $?
     fi
     if [[ "$fc" == "2" ]]; then
       eternal_deploy_die "ambiguous runs after dispatch for request_id=${REQUEST_ID}; not re-dispatching"
@@ -608,6 +957,15 @@ report_actor
 if [[ "$ACTION" == "deploy" ]]; then
   [[ -n "$SHA" && -n "$CONFIRM_SHA" ]] || eternal_deploy_die "deploy requires --sha and --confirm-sha"
   validate_deploy_target
+elif [[ "$ACTION" == "rollback" ]]; then
+  [[ -n "$SHA" && -n "$CONFIRM_SHA" ]] || eternal_deploy_die "rollback requires --sha and --confirm-sha (exact deployed SHA)"
+  [[ -n "$PREVIOUS_ID" ]] || eternal_deploy_die "rollback requires --previous-id (40-hex or baseline-active)"
+  eternal_require_sha40 "$SHA"
+  eternal_require_sha40 "$CONFIRM_SHA"
+  [[ "$SHA" == "$CONFIRM_SHA" ]] || eternal_deploy_die "confirm_sha must exactly equal sha for rollback"
+  eternal_require_previous_id "$PREVIOUS_ID"
+  # Rollback does not require green CI re-check (code already deployed); still refuse
+  # path-like previous ids via eternal_require_previous_id.
 fi
 
 if [[ "$MODE" == "plan" ]]; then

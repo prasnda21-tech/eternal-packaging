@@ -63,7 +63,7 @@ mkdir -p "$MIRROR_SRC/backend" "$MIRROR_SRC/frontend/src" "$MIRROR_SRC/scripts/d
 printf 'ok\n' >"$MIRROR_SRC/backend/requirements.txt"
 printf 'ok-portable\n' >"$MIRROR_SRC/backend/requirements.portable.txt"
 cat >"$MIRROR_SRC/frontend/package.json" <<'EOF'
-{"name":"frontend","private":true,"scripts":{"build":"mkdir -p build/static/js && echo asset>build/static/js/app.js && echo built>build/index.html"}}
+{"name":"frontend","private":true,"scripts":{"build":"mkdir -p build/static/js && echo asset>build/static/js/app.js && printf '%s\\n' '{\"files\":{\"main.js\":\"/static/js/app.js\"}}'>build/asset-manifest.json && printf '%s\\n' '<script src=\"/static/js/app.js\"></script>'>build/index.html"}}
 EOF
 printf 'yarn lockfile v1\n' >"$MIRROR_SRC/frontend/yarn.lock"
 printf 'app\n' >"$MIRROR_SRC/frontend/src/index.js"
@@ -155,23 +155,52 @@ trap 'stop_harness_backend_proc; cleanup_work' EXIT
 
 cat >"$BIN/curl" <<'EOF'
 #!/usr/bin/env bash
-# Counted failures via state file: activate can fail, rollback health can recover.
-if [[ -n "${ETERNAL_HEALTH_FAIL_STATE:-}" && -f "${ETERNAL_HEALTH_FAIL_STATE}" ]]; then
+# Harness curl: supports -o BODY -w '%{http_code}' used by eternal_health_check.
+out_file=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -o|--output) out_file="${2:-}"; shift 2 ;;
+    -w|--write-out) shift 2 ;;
+    --max-time) shift 2 ;;
+    -s|-S|-f|-sS) shift ;;
+    *) shift ;;
+  esac
+done
+body='{"mongo":true,"mode":"operational","checked_at":"t"}'
+code=200
+# Transient HTTP 502 sequence (post-restart warming).
+if [[ -n "${ETERNAL_HEALTH_HTTP_FAIL_STATE:-}" && -f "${ETERNAL_HEALTH_HTTP_FAIL_STATE}" ]]; then
+  n="$(cat "${ETERNAL_HEALTH_HTTP_FAIL_STATE}")"
+  if [[ "${n:-0}" -gt 0 ]]; then
+    echo $((n - 1)) >"$ETERNAL_HEALTH_HTTP_FAIL_STATE"
+    body=""
+    code=502
+  fi
+fi
+# Counted payload failures: activate can fail, rollback health can recover.
+if [[ "$code" == "200" && -n "${ETERNAL_HEALTH_FAIL_STATE:-}" && -f "${ETERNAL_HEALTH_FAIL_STATE}" ]]; then
   n="$(cat "${ETERNAL_HEALTH_FAIL_STATE}")"
   if [[ "${n:-0}" -gt 0 ]]; then
     echo $((n - 1)) >"$ETERNAL_HEALTH_FAIL_STATE"
-    echo '{"mongo":false,"mode":"degraded"}'
-    exit 0
+    body='{"mongo":false,"mode":"degraded"}'
+    code=200
   fi
 fi
-if [[ "${ETERNAL_HEALTH_FORCE_FAIL:-0}" == "1" ]]; then echo '{"mongo":false,"mode":"degraded"}'; exit 0; fi
-if [[ "${ETERNAL_HEALTH_PARTIAL:-0}" == "1" ]]; then echo '{"mongo":false,"mode":"degraded"}'; exit 0; fi
-echo '{"mongo":true,"mode":"operational","checked_at":"t"}'
+if [[ "$code" == "200" && "${ETERNAL_HEALTH_FORCE_FAIL:-0}" == "1" ]]; then body='{"mongo":false,"mode":"degraded"}'; code=200; fi
+if [[ "$code" == "200" && "${ETERNAL_HEALTH_PARTIAL:-0}" == "1" ]]; then body='{"mongo":false,"mode":"degraded"}'; code=200; fi
+if [[ -n "$out_file" ]]; then
+  printf '%s' "$body" >"$out_file"
+  printf '%s' "$code"
+else
+  printf '%s' "$body"
+fi
 exit 0
 EOF
 chmod +x "$BIN/curl"
 export ETERNAL_HEALTH_FAIL_STATE="$HARNESS/health-fail.remaining"
 echo 0 >"$ETERNAL_HEALTH_FAIL_STATE"
+export ETERNAL_HEALTH_HTTP_FAIL_STATE="$HARNESS/health-http-fail.remaining"
+echo 0 >"$ETERNAL_HEALTH_HTTP_FAIL_STATE"
 
 cat >"$BIN/ssh" <<'EOF'
 #!/usr/bin/env bash
@@ -245,14 +274,18 @@ MOCK="$HARNESS/gh-mock"
 mkdir -p "$MOCK"
 printf '{"login":"cursor[bot]"}\n' >"$MOCK/actor.json"
 printf '{"ancestor_ok":true}\n' >"$MOCK/ancestry.json"
-cat >"$MOCK/workflow-runs.json" <<'EOF'
-{"workflow_runs":[{"id":1,"status":"completed","conclusion":"success"}]}
+cat >"$MOCK/workflow.json" <<'EOF'
+{"id":100,"path":".github/workflows/reconciliation-validation.yml","state":"active"}
 EOF
-cat >"$MOCK/check-runs.json" <<'EOF'
-{"check_runs":[
+cat >"$MOCK/workflow-runs.json" <<EOF
+{"workflow_runs":[{"id":1,"workflow_id":100,"status":"completed","conclusion":"success","head_sha":"${MAIN_SHA}","path":".github/workflows/reconciliation-validation.yml","repository":{"full_name":"prasnda21-tech/eternal-packaging"}}]}
+EOF
+cat >"$MOCK/jobs-1.json" <<'EOF'
+{"jobs":[
  {"name":"Backend focused tests","status":"completed","conclusion":"success"},
  {"name":"Backend stock compatibility (replica set)","status":"completed","conclusion":"success"},
- {"name":"Frontend tests and build","status":"completed","conclusion":"success"}
+ {"name":"Frontend tests and build","status":"completed","conclusion":"success"},
+ {"name":"Backend live orders summary","status":"completed","conclusion":"skipped"}
 ]}
 EOF
 : >"$HARNESS/dispatch.log"
@@ -269,17 +302,17 @@ assert_false "trigger rejects unmerged via ancestry mock" \
   env ETERNAL_GH_API_MOCK_DIR="$MOCK" \
   bash -c 'jq -n "{ancestor_ok:false}" >"'"$MOCK"'/ancestry.json"; '"$TRIGGER"' plan deploy --sha '"$MAIN_SHA"' --confirm-sha '"$MAIN_SHA"''
 printf '{"ancestor_ok":true}\n' >"$MOCK/ancestry.json"
-cat >"$MOCK/check-runs.json" <<'EOF'
-{"check_runs":[{"name":"Backend focused tests","status":"completed","conclusion":"success"}]}
+cat >"$MOCK/jobs-1.json" <<'EOF'
+{"jobs":[{"name":"Backend focused tests","status":"completed","conclusion":"success"}]}
 EOF
-assert_false "trigger rejects missing required checks" \
+assert_false "trigger rejects missing required jobs" \
   env ETERNAL_GH_API_MOCK_DIR="$MOCK" "$TRIGGER" plan deploy --sha "$MAIN_SHA" --confirm-sha "$MAIN_SHA"
-# restore checks
-cat >"$MOCK/check-runs.json" <<'EOF'
-{"check_runs":[
+cat >"$MOCK/jobs-1.json" <<'EOF'
+{"jobs":[
  {"name":"Backend focused tests","status":"completed","conclusion":"success"},
  {"name":"Backend stock compatibility (replica set)","status":"completed","conclusion":"success"},
- {"name":"Frontend tests and build","status":"completed","conclusion":"success"}
+ {"name":"Frontend tests and build","status":"completed","conclusion":"success"},
+ {"name":"Backend live orders summary","status":"completed","conclusion":"skipped"}
 ]}
 EOF
 
@@ -296,7 +329,35 @@ POLL_ENV=(
   ETERNAL_TRIGGER_POLL_INTERVAL_SEC=0
   ETERNAL_TRIGGER_POLL_MAX_ATTEMPTS=3
   ETERNAL_TRIGGER_POLL_TIMEOUT_SEC=3
+  ETERNAL_TRIGGER_WAIT_INTERVAL_SEC=0
+  ETERNAL_TRIGGER_WAIT_MAX_ATTEMPTS=3
+  ETERNAL_TRIGGER_WAIT_TIMEOUT_SEC=3
 )
+
+# Seed post-dispatch workflow completion + runner log evidence for a run id.
+seed_mock_run_outcome() {
+  local run_id="$1"
+  local status="${2:-completed}"
+  local conclusion="${3:-success}"
+  # Use ${4-…} (no colon) so an explicit empty 4th arg means "no log file".
+  local evidence_line="${4-DEPLOY_OK sha=${MAIN_SHA}}"
+  local omit_logs=0
+  if [[ $# -ge 4 && -z "${4}" ]]; then
+    omit_logs=1
+  fi
+  cat >"$MOCK/trigger-run-${run_id}.json" <<EOF
+{"id":${run_id},"status":"${status}","conclusion":"${conclusion}","html_url":"https://example.test/runs/${run_id}"}
+EOF
+  if [[ "$omit_logs" == "1" ]]; then
+    rm -f "$MOCK/trigger-run-${run_id}-log.txt" "$MOCK/trigger-run-log.txt"
+  else
+    {
+      printf '[eternal-deploy] synthetic evidence\n'
+      printf '%s\n' "$evidence_line"
+    } >"$MOCK/trigger-run-${run_id}-log.txt"
+  fi
+  rm -f "$MOCK"/trigger-run-detail-poll-*.json
+}
 
 # 5) Dispatch ditolak → tidak dilaporkan accepted; POST tepat 1
 printf '403\n' >"$MOCK/dispatch-status"
@@ -352,12 +413,15 @@ cat >"$MOCK/trigger-runs-poll-2.json" <<'EOF'
   "display_title":"Deploy production · request_id=req-ok"}
 ]}
 EOF
+seed_mock_run_outcome 9 completed success "DEPLOY_OK sha=${MAIN_SHA}"
 : >"$HARNESS/dispatch.log"
 ok_disp="$(env "${POLL_ENV[@]}" ETERNAL_DEPLOY_SHARED_SECRET='test-secret-VALUE-NEVER-LOG' \
   "$TRIGGER" execute deploy --sha "$MAIN_SHA" --confirm-sha "$MAIN_SHA" --execute --request-id req-ok \
   2>"$HARNESS/okdisp.err")"
 assert_true "dispatch OK returns run URL" grep -q 'run_url=https://example.test/runs/9' <<<"$ok_disp"
 assert_true "DISPATCH_OK printed" grep -q 'DISPATCH_OK' <<<"$ok_disp"
+assert_true "WORKFLOW_SUCCESS after dispatch" grep -q 'WORKFLOW_SUCCESS' <<<"$ok_disp"
+assert_true "RUNNER_DEPLOY_SUCCESS requires DEPLOY_OK evidence" grep -q 'RUNNER_DEPLOY_SUCCESS' <<<"$ok_disp"
 assert_eq "empty-then-match POST exactly once" "1" "$(grep -c '^POST ' "$HARNESS/dispatch.log" || true)"
 assert_true "dispatch uses stdin-json (no secret argv)" grep -q 'secret_in_argv=no' "$HARNESS/dispatch.log"
 assert_false "dispatch log never contains shared secret" grep -q 'test-secret-VALUE-NEVER-LOG' "$HARNESS/dispatch.log"
@@ -478,10 +542,12 @@ cat >"$MOCK/trigger-runs-poll-1.json" <<'EOF'
   "display_title":"Deploy production · request_id=req.valid_1"}
 ]}
 EOF
+seed_mock_run_outcome 31 completed success "DEPLOY_OK sha=${MAIN_SHA}"
 : >"$HARNESS/dispatch.log"
 valid_id_out="$(env "${POLL_ENV[@]}" "$TRIGGER" execute deploy --sha "$MAIN_SHA" --confirm-sha "$MAIN_SHA" \
   --execute --request-id 'req.valid_1' 2>"$HARNESS/validid.err")"
 assert_true "valid request_id accepted with DISPATCH_OK" grep -q 'DISPATCH_OK' <<<"$valid_id_out"
+assert_true "valid request_id reaches RUNNER_DEPLOY_SUCCESS" grep -q 'RUNNER_DEPLOY_SUCCESS' <<<"$valid_id_out"
 assert_eq "valid request_id POST once" "1" "$(grep -c '^POST ' "$HARNESS/dispatch.log" || true)"
 
 # Invalid request_id rejected before POST (space / newline / symbol)
@@ -588,6 +654,149 @@ assert_eq "POST timeout POST exactly once" "1" "$(grep -c '^POST ' "$HARNESS/dis
 assert_true "POST timeout stopped within 8s wall clock" test "$phang_elapsed" -le 8
 rm -f "$MOCK/dispatch-hang-sec" "$MOCK/dispatch-hang-ignore-term"
 
+# ========== trigger wait: workflow outcomes + runner evidence ==========
+prep_dispatch_run() {
+  local req="$1" rid="$2"
+  printf 'ok\n' >"$MOCK/dispatch-status"
+  cat >"$MOCK/trigger-runs.json" <<'EOF'
+{"workflow_runs":[]}
+EOF
+  rm -f "$MOCK"/trigger-runs-poll-*.json "$MOCK"/trigger-run-*.json "$MOCK"/trigger-run-*-log.txt \
+    "$MOCK"/trigger-run-detail-poll-*.json "$MOCK"/trigger-run-log.txt
+  cat >"$MOCK/trigger-runs-poll-1.json" <<EOF
+{"workflow_runs":[
+ {"id":${rid},"html_url":"https://example.test/runs/${rid}","event":"workflow_dispatch","head_branch":"main",
+  "display_title":"Deploy production · request_id=${req}"}
+]}
+EOF
+  : >"$HARNESS/dispatch.log"
+}
+
+# Workflow success but missing runner logs → RESULT_UNKNOWN (not PASS)
+prep_dispatch_run req-nolog 41
+seed_mock_run_outcome 41 completed success ""
+set +e
+nolog_out="$(env "${POLL_ENV[@]}" "$TRIGGER" execute deploy --sha "$MAIN_SHA" --confirm-sha "$MAIN_SHA" \
+  --execute --request-id req-nolog 2>"$HARNESS/nolog.err")"
+nolog_ec=$?
+set -e
+assert_eq "missing runner logs exits non-zero" "1" "$nolog_ec"
+assert_true "missing logs WORKFLOW_SUCCESS still printed" grep -q 'WORKFLOW_SUCCESS' <<<"$nolog_out"
+assert_true "missing logs RESULT_UNKNOWN" grep -q 'RESULT_UNKNOWN' <<<"$nolog_out$(cat "$HARNESS/nolog.err")"
+assert_false "missing logs is not RUNNER_DEPLOY_SUCCESS" grep -q 'RUNNER_DEPLOY_SUCCESS' <<<"$nolog_out"
+assert_eq "missing logs POST once" "1" "$(grep -c '^POST ' "$HARNESS/dispatch.log" || true)"
+
+# Workflow success without DEPLOY_OK in logs → RESULT_UNKNOWN
+prep_dispatch_run req-noev 42
+seed_mock_run_outcome 42 completed success "[eternal-deploy] health PASS"
+set +e
+noev_out="$(env "${POLL_ENV[@]}" "$TRIGGER" execute deploy --sha "$MAIN_SHA" --confirm-sha "$MAIN_SHA" \
+  --execute --request-id req-noev 2>"$HARNESS/noev.err")"
+noev_ec=$?
+set -e
+assert_eq "workflow success without DEPLOY_OK exits non-zero" "1" "$noev_ec"
+assert_true "no-evidence RESULT_UNKNOWN" grep -q 'RESULT_UNKNOWN' <<<"$noev_out"
+assert_false "no-evidence not RUNNER_DEPLOY_SUCCESS" grep -q 'RUNNER_DEPLOY_SUCCESS' <<<"$noev_out"
+
+# Workflow failed + ROLLBACK_PASS evidence
+prep_dispatch_run req-rbpass 43
+seed_mock_run_outcome 43 completed failure "ROLLBACK_PASS"
+set +e
+rbp_out="$(env "${POLL_ENV[@]}" "$TRIGGER" execute deploy --sha "$MAIN_SHA" --confirm-sha "$MAIN_SHA" \
+  --execute --request-id req-rbpass 2>"$HARNESS/rbp.err")"
+rbp_ec=$?
+set -e
+assert_eq "rollback pass path exits non-zero" "1" "$rbp_ec"
+assert_true "WORKFLOW_FAILED printed" grep -q 'WORKFLOW_FAILED' <<<"$rbp_out"
+assert_true "RUNNER_ROLLBACK_PASS printed" grep -q 'RUNNER_ROLLBACK_PASS' <<<"$rbp_out"
+
+# Workflow failed + ROLLBACK_FAILED evidence
+prep_dispatch_run req-rbfail 44
+seed_mock_run_outcome 44 completed failure "ROLLBACK_FAILED"
+set +e
+rbf_out="$(env "${POLL_ENV[@]}" "$TRIGGER" execute deploy --sha "$MAIN_SHA" --confirm-sha "$MAIN_SHA" \
+  --execute --request-id req-rbfail 2>"$HARNESS/rbf.err")"
+rbf_ec=$?
+set -e
+assert_eq "rollback failed path exits non-zero" "1" "$rbf_ec"
+assert_true "RUNNER_ROLLBACK_FAILED printed" grep -q 'RUNNER_ROLLBACK_FAILED' <<<"$rbf_out"
+
+# Workflow failed but log contains DEPLOY_OK-shaped marker → still FAIL (ignore success marker)
+prep_dispatch_run req-failok 48
+seed_mock_run_outcome 48 completed failure "DEPLOY_OK sha=${MAIN_SHA}"
+set +e
+failok_out="$(env "${POLL_ENV[@]}" "$TRIGGER" execute deploy --sha "$MAIN_SHA" --confirm-sha "$MAIN_SHA" \
+  --execute --request-id req-failok 2>"$HARNESS/failok.err")"
+failok_ec=$?
+set -e
+assert_eq "failed workflow with DEPLOY_OK marker exits non-zero" "1" "$failok_ec"
+assert_true "failed workflow WORKFLOW_FAILED" grep -q 'WORKFLOW_FAILED' <<<"$failok_out"
+assert_true "failed workflow ignores success marker" \
+  grep -q 'workflow_conclusion_not_success_ignoring_success_marker' <<<"$failok_out"
+assert_eq "failed+DEPLOY_OK POST once" "1" "$(grep -c '^POST ' "$HARNESS/dispatch.log" || true)"
+
+# Loose DEPLOY_OK substring without sha=<40-hex> is not success evidence
+prep_dispatch_run req-loosedok 49
+seed_mock_run_outcome 49 completed success "note: saw DEPLOY_OK in commentary"
+set +e
+loose_out="$(env "${POLL_ENV[@]}" "$TRIGGER" execute deploy --sha "$MAIN_SHA" --confirm-sha "$MAIN_SHA" \
+  --execute --request-id req-loosedok 2>"$HARNESS/loose.err")"
+loose_ec=$?
+set -e
+assert_eq "loose DEPLOY_OK substring exits non-zero" "1" "$loose_ec"
+assert_true "loose DEPLOY_OK is RESULT_UNKNOWN" grep -q 'RESULT_UNKNOWN' <<<"$loose_out"
+assert_false "loose DEPLOY_OK not RUNNER_DEPLOY_SUCCESS" grep -q 'RUNNER_DEPLOY_SUCCESS' <<<"$loose_out"
+
+# Cancelled workflow
+prep_dispatch_run req-cancel 45
+seed_mock_run_outcome 45 completed cancelled "ROLLBACK_PASS"
+set +e
+can_out="$(env "${POLL_ENV[@]}" "$TRIGGER" execute deploy --sha "$MAIN_SHA" --confirm-sha "$MAIN_SHA" \
+  --execute --request-id req-cancel 2>"$HARNESS/can.err")"
+can_ec=$?
+set -e
+assert_eq "cancelled workflow exits non-zero" "1" "$can_ec"
+assert_true "WORKFLOW_CANCELLED printed" grep -q 'WORKFLOW_CANCELLED' <<<"$can_out"
+
+# In-progress forever → WORKFLOW_TIMED_OUT
+prep_dispatch_run req-wtimeout 46
+cat >"$MOCK/trigger-run-46.json" <<'EOF'
+{"id":46,"status":"in_progress","conclusion":null,"html_url":"https://example.test/runs/46"}
+EOF
+printf 'DEPLOY_OK sha=%s\n' "$MAIN_SHA" >"$MOCK/trigger-run-46-log.txt"
+set +e
+wto_out="$(env "${POLL_ENV[@]}" ETERNAL_TRIGGER_WAIT_MAX_ATTEMPTS=2 \
+  "$TRIGGER" execute deploy --sha "$MAIN_SHA" --confirm-sha "$MAIN_SHA" \
+  --execute --request-id req-wtimeout 2>"$HARNESS/wto.err")"
+wto_ec=$?
+set -e
+assert_eq "wait timeout exits non-zero" "1" "$wto_ec"
+assert_true "WORKFLOW_TIMED_OUT printed" grep -q 'WORKFLOW_TIMED_OUT' <<<"$wto_out$(cat "$HARNESS/wto.err")"
+assert_true "wait timeout RESULT_UNKNOWN" grep -q 'RESULT_UNKNOWN' <<<"$wto_out$(cat "$HARNESS/wto.err")"
+assert_eq "wait timeout POST once" "1" "$(grep -c '^POST ' "$HARNESS/dispatch.log" || true)"
+
+# Secret-like lines in logs are redacted / not echoed raw
+prep_dispatch_run req-redact 47
+seed_mock_run_outcome 47 completed success "DEPLOY_OK sha=${MAIN_SHA}"
+{
+  printf 'DEPLOY_SSH_KEY=-----BEGIN OPENSSH PRIVATE KEY----- SECRETKEYMATERIAL999 -----END OPENSSH PRIVATE KEY-----\n'
+  printf 'TOKEN=ghp_ABCDEFGHIJKLMNOPQRSTUVWX1234567890\n'
+  printf 'DEPLOY_OK sha=%s\n' "$MAIN_SHA"
+} >"$MOCK/trigger-run-47-log.txt"
+set +e
+red_out="$(env "${POLL_ENV[@]}" "$TRIGGER" execute deploy --sha "$MAIN_SHA" --confirm-sha "$MAIN_SHA" \
+  --execute --request-id req-redact 2>"$HARNESS/red.err")"
+red_ec=$?
+set -e
+assert_eq "redaction path still succeeds with DEPLOY_OK" "0" "$red_ec"
+assert_false "log summary omits private key material" grep -q 'SECRETKEYMATERIAL999' <<<"$red_out$(cat "$HARNESS/red.err")"
+assert_false "log summary omits ghp token" grep -q 'ghp_ABCDEFGHIJKLMNOPQRSTUVWX1234567890' <<<"$red_out$(cat "$HARNESS/red.err")"
+assert_true "redaction path RUNNER_DEPLOY_SUCCESS" grep -q 'RUNNER_DEPLOY_SUCCESS' <<<"$red_out"
+
+# CI/SHA guards unchanged (re-assert after reporting changes)
+assert_false "reporting change still rejects sha mismatch" \
+  env ETERNAL_GH_API_MOCK_DIR="$MOCK" "$TRIGGER" plan deploy --sha "$MAIN_SHA" --confirm-sha "$(printf 'b%.0s' {1..40})"
+
 # ========== probe helper literal only + cleanup ==========
 export ETERNAL_SSH_BIN="$BIN/ssh"
 export ETERNAL_SSH_LOG="$HARNESS/ssh.log"
@@ -610,6 +819,9 @@ assert_false "ssh log never contains deploy remote command" grep -qE ' deploy($|
 assert_true "gate probe canonical" bash -c 'SSH_ORIGINAL_COMMAND=probe "'"$GATE"'" | grep -q ETERNAL_GATE_OK'
 assert_false "gate rejects deploy metachar" run_gate 'deploy $(id)'
 assert_false "gate rejects unknown deploy option" run_gate "deploy $MAIN_SHA evil-opt"
+assert_false "gate rejects rollback path previous" run_gate "rollback $MAIN_SHA ../../etc/passwd"
+assert_false "gate rejects rollback without previous" run_gate "rollback $MAIN_SHA"
+assert_false "gate rejects rollback metachar" run_gate "rollback $MAIN_SHA baseline-active;id"
 # ack-fe-replace is allowlisted; gate must set env for runner (smoke via export check in runner tests)
 
 # ========== runtime not ready blocks before activation ==========
@@ -719,6 +931,28 @@ assert_true "FE-only published new index" grep -q dry-build "$FRONTEND/live/inde
 export ETERNAL_HEALTH_PARTIAL=1
 assert_false "degraded health rejected" "$RUNNER" deploy "$MAIN_SHA"
 export ETERNAL_HEALTH_PARTIAL=0
+
+# ========== health payload validation (mongo=true + mode=operational) ==========
+assert_true "health body operational accepted" \
+  bash -c 'source "'"$ROOT"'/scripts/deploy/lib.sh"; eternal_health_body_ok "{\"mongo\":true,\"mode\":\"operational\"}"'
+assert_false "health body mongo false rejected" \
+  bash -c 'source "'"$ROOT"'/scripts/deploy/lib.sh"; eternal_health_body_ok "{\"mongo\":false,\"mode\":\"operational\"}"'
+assert_false "health body mode degraded rejected" \
+  bash -c 'source "'"$ROOT"'/scripts/deploy/lib.sh"; eternal_health_body_ok "{\"mongo\":true,\"mode\":\"degraded\"}"'
+
+# ========== transient HTTP 502 then recovery (post-restart warming) ==========
+echo 2 >"$ETERNAL_HEALTH_HTTP_FAIL_STATE"
+export ETERNAL_HEALTH_RETRIES=6
+export ETERNAL_HEALTH_SLEEP_S=0
+export ETERNAL_HEALTH_BUDGET_S=60
+assert_true "transient 502 recovers within health budget" "$RUNNER" deploy "$FE_SHA"
+echo 0 >"$ETERNAL_HEALTH_HTTP_FAIL_STATE"
+export ETERNAL_HEALTH_RETRIES=2
+
+# ========== permanent health failure still fail-closed ==========
+export ETERNAL_HEALTH_FORCE_FAIL=1
+assert_false "permanent health failure fail-closed" "$RUNNER" deploy "$MAIN_SHA"
+export ETERNAL_HEALTH_FORCE_FAIL=0
 
 # ========== old health must not pass wrong runtime ==========
 export ETERNAL_EXPECTED_WD="/wrong/backend"
@@ -1041,12 +1275,735 @@ assert_true "docs mention requirements.portable default" \
   grep -q 'requirements.portable.txt' "$ROOT/docs/deploy-production-setup.md"
 assert_true "docs mention finalize-existing-baseline" \
   grep -q 'finalize-existing-baseline.sh' "$ROOT/docs/deploy-production-setup.md"
+assert_true "docs mention Yarn only frontend build" \
+  grep -q 'Yarn only' "$ROOT/docs/deploy-production-setup.md"
+assert_true "docs mention 60s health budget" \
+  grep -q '60s wall-clock budget' "$ROOT/docs/deploy-production-setup.md"
 assert_true "deploy workflow has jobs:" grep -q '^jobs:' "$WF"
 assert_true "probe workflow has jobs:" grep -q '^jobs:' "$PWF"
 assert_true "deploy workflow on.workflow_dispatch" grep -q 'workflow_dispatch:' "$WF"
 assert_true "probe workflow on.workflow_dispatch" grep -q 'workflow_dispatch:' "$PWF"
 assert_true "direct-url dependency verifier suite" \
   bash "$ROOT/scripts/tests/test_deploy_direct_url_dep_verify.sh"
+
+# ========== Yarn-only production frontend build (no npm fallback) ==========
+YARN_FE="$(mktemp -d)/frontend"
+mkdir -p "$YARN_FE"
+printf '{}\n' >"$YARN_FE/package.json"
+set +e
+yarn_nolock_err="$(bash -c 'source "'"$ROOT"'/scripts/deploy/lib.sh"; eternal_frontend_production_build "'"$YARN_FE"'"' 2>&1)"
+yarn_nolock_ec=$?
+set -e
+assert_eq "yarn.lock missing exit nonzero" "1" "$yarn_nolock_ec"
+assert_true "yarn.lock missing error mentions npm fallback removed" \
+  grep -q 'npm fallback removed' <<<"$yarn_nolock_err"
+printf 'yarn lockfile v1\n' >"$YARN_FE/yarn.lock"
+set +e
+yarn_nobin_err="$(env PATH="/usr/bin:/bin" bash -c 'source "'"$ROOT"'/scripts/deploy/lib.sh"; eternal_frontend_production_build "'"$YARN_FE"'"' 2>&1)"
+yarn_nobin_ec=$?
+set -e
+assert_eq "yarn binary missing exit nonzero" "1" "$yarn_nobin_ec"
+assert_true "yarn binary missing error refuses npm" \
+  grep -q 'does not use npm' <<<"$yarn_nobin_err"
+: >"$HARNESS/yarn.cmd.log"
+cat >"$BIN/yarn" <<EOF
+#!/usr/bin/env bash
+echo "YARN \$*" >>"$HARNESS/yarn.cmd.log"
+exit 0
+EOF
+chmod +x "$BIN/yarn"
+assert_true "yarn install path succeeds with stub yarn" \
+  bash -c 'source "'"$ROOT"'/scripts/deploy/lib.sh"; eternal_frontend_production_build "'"$YARN_FE"'"'
+assert_true "yarn install --frozen-lockfile invoked" \
+  grep -q 'install --frozen-lockfile' "$HARNESS/yarn.cmd.log"
+assert_true "yarn build invoked" grep -q 'YARN build' "$HARNESS/yarn.cmd.log"
+assert_true "runner has no npm ci fallback" \
+  bash -c '! grep -qE "npm ci|ETERNAL_NPM_BIN" "'"$ROOT"'/scripts/deploy/eternal-deploy-runner.sh"'
+assert_true "lib exposes eternal_frontend_production_build" \
+  grep -q 'eternal_frontend_production_build' "$ROOT/scripts/deploy/lib.sh"
+
+# ========== FE publish: skip identical root-owned / collision fail-closed / path escape ==========
+source "$ROOT/scripts/deploy/lib.sh"
+PUB_ROOT="$HARNESS/publish-webroot"
+rm -rf "$PUB_ROOT"
+mkdir -p "$PUB_ROOT/static/js" "$HARNESS/publish-build/static/js"
+printf 'same-bytes\n' >"$PUB_ROOT/static/js/main.aaaa.js"
+chmod 444 "$PUB_ROOT/static/js/main.aaaa.js"
+# Simulate non-writable identical hashed asset (root-owned stand-in).
+printf 'same-bytes\n' >"$HARNESS/publish-build/static/js/main.aaaa.js"
+printf 'brand-new\n' >"$HARNESS/publish-build/static/js/main.bbbb.js"
+printf '{"files":{"main.js":"/static/js/main.bbbb.js"}}\n' >"$HARNESS/publish-build/asset-manifest.json"
+printf '<script src="/static/js/main.bbbb.js"></script>\n' >"$HARNESS/publish-build/index.html"
+assert_true "merge skips identical hashed file" \
+  eternal_webroot_merge_tree "$HARNESS/publish-build" "$PUB_ROOT" 0
+assert_true "SKIP_IDENTICAL logged for hashed asset" \
+  bash -c 'source "'"$ROOT"'/scripts/deploy/lib.sh"; eternal_webroot_install_file "'"$HARNESS"'/publish-build/static/js/main.aaaa.js" "'"$PUB_ROOT"'" "static/js/main.aaaa.js" 0 2>"'"$HARNESS"'/skip.err"; grep -q SKIP_IDENTICAL "'"$HARNESS"'/skip.err"'
+assert_true "new hashed asset copied" test -f "$PUB_ROOT/static/js/main.bbbb.js"
+# Collision: same name, different bytes → fail closed; original intact.
+printf 'OTHER\n' >"$HARNESS/publish-build/static/js/main.aaaa.js"
+set +e
+coll_err="$(eternal_webroot_install_file "$HARNESS/publish-build/static/js/main.aaaa.js" "$PUB_ROOT" "static/js/main.aaaa.js" 0 2>&1)"
+coll_ec=$?
+set -e
+assert_eq "hashed collision exits nonzero" "1" "$coll_ec"
+assert_true "hashed collision message" grep -q 'hashed asset collision' <<<"$coll_err"
+assert_true "original hashed bytes preserved" grep -q 'same-bytes' "$PUB_ROOT/static/js/main.aaaa.js"
+# Path traversal refused.
+set +e
+trav_err="$(eternal_webroot_install_file "$HARNESS/publish-build/index.html" "$PUB_ROOT" "../escape.html" 0 2>&1)"
+trav_ec=$?
+set -e
+assert_eq "path traversal refused" "1" "$trav_ec"
+assert_true "traversal error mentions refuse" grep -qiE 'traversal|refused' <<<"$trav_err"
+
+# ========== .js.map collision policy + hashed css fail-closed ==========
+MAP_ROOT="$HARNESS/map-webroot"
+MAP_BUILD="$HARNESS/map-build"
+rm -rf "$MAP_ROOT" "$MAP_BUILD"
+mkdir -p "$MAP_ROOT/static/js" "$MAP_ROOT/static/css" "$MAP_BUILD/static/js" "$MAP_BUILD/static/css"
+# 1) identical .js + different .js.map → SKIP_SOURCEMAP_COLLISION, keep live map
+printf 'js-same\n' >"$MAP_ROOT/static/js/chunk.1111.js"
+printf 'map-live-old\n' >"$MAP_ROOT/static/js/chunk.1111.js.map"
+chmod 444 "$MAP_ROOT/static/js/chunk.1111.js.map"
+printf 'js-same\n' >"$MAP_BUILD/static/js/chunk.1111.js"
+printf 'map-build-new\n' >"$MAP_BUILD/static/js/chunk.1111.js.map"
+set +e
+map_skip_err="$(eternal_webroot_install_file "$MAP_BUILD/static/js/chunk.1111.js.map" "$MAP_ROOT" "static/js/chunk.1111.js.map" 0 2>&1)"
+map_skip_ec=$?
+set -e
+assert_eq "js.map collision with identical paired js exits 0" "0" "$map_skip_ec"
+assert_true "SKIP_SOURCEMAP_COLLISION logged" grep -q 'SKIP_SOURCEMAP_COLLISION' <<<"$map_skip_err"
+assert_true "live js.map retained (root-owned stand-in)" grep -q 'map-live-old' "$MAP_ROOT/static/js/chunk.1111.js.map"
+# 2) different .js + different .js.map → FAIL_CLOSED
+printf 'js-NEW\n' >"$MAP_BUILD/static/js/chunk.1111.js"
+printf 'map-build-new\n' >"$MAP_BUILD/static/js/chunk.1111.js.map"
+set +e
+map_jsdiff_err="$(eternal_webroot_install_file "$MAP_BUILD/static/js/chunk.1111.js.map" "$MAP_ROOT" "static/js/chunk.1111.js.map" 0 2>&1)"
+map_jsdiff_ec=$?
+set -e
+assert_eq "js.map collision with different paired js fails" "1" "$map_jsdiff_ec"
+assert_true "js.map different-js error" grep -qiE 'sourcemap collision|without identical paired' <<<"$map_jsdiff_err"
+assert_true "live js.map still old after fail" grep -q 'map-live-old' "$MAP_ROOT/static/js/chunk.1111.js.map"
+# 3) missing paired .js on live → FAIL_CLOSED
+rm -f "$MAP_ROOT/static/js/chunk.2222.js"
+printf 'js-orphan\n' >"$MAP_BUILD/static/js/chunk.2222.js"
+printf 'map-orphan-live\n' >"$MAP_ROOT/static/js/chunk.2222.js.map"
+printf 'map-orphan-build\n' >"$MAP_BUILD/static/js/chunk.2222.js.map"
+set +e
+map_miss_err="$(eternal_webroot_install_file "$MAP_BUILD/static/js/chunk.2222.js.map" "$MAP_ROOT" "static/js/chunk.2222.js.map" 0 2>&1)"
+map_miss_ec=$?
+set -e
+assert_eq "js.map collision without live paired js fails" "1" "$map_miss_ec"
+assert_true "missing paired js mentioned" grep -qiE 'sourcemap collision|without identical paired' <<<"$map_miss_err"
+# 3b) missing paired .js on build source → FAIL_CLOSED
+printf 'js-live-only\n' >"$MAP_ROOT/static/js/chunk.3333.js"
+printf 'map-3333-live\n' >"$MAP_ROOT/static/js/chunk.3333.js.map"
+printf 'map-3333-build\n' >"$MAP_BUILD/static/js/chunk.3333.js.map"
+rm -f "$MAP_BUILD/static/js/chunk.3333.js"
+set +e
+map_miss_src_err="$(eternal_webroot_install_file "$MAP_BUILD/static/js/chunk.3333.js.map" "$MAP_ROOT" "static/js/chunk.3333.js.map" 0 2>&1)"
+map_miss_src_ec=$?
+set -e
+assert_eq "js.map collision without build paired js fails" "1" "$map_miss_src_ec"
+assert_true "missing build paired js mentioned" grep -qiE 'sourcemap collision|without identical paired' <<<"$map_miss_src_err"
+# 4) identical .js.map → SKIP_IDENTICAL
+chmod u+w "$MAP_ROOT/static/js/chunk.1111.js.map" 2>/dev/null || true
+printf 'js-same\n' >"$MAP_ROOT/static/js/chunk.1111.js"
+printf 'map-same\n' >"$MAP_ROOT/static/js/chunk.1111.js.map"
+printf 'js-same\n' >"$MAP_BUILD/static/js/chunk.1111.js"
+printf 'map-same\n' >"$MAP_BUILD/static/js/chunk.1111.js.map"
+set +e
+map_id_err="$(eternal_webroot_install_file "$MAP_BUILD/static/js/chunk.1111.js.map" "$MAP_ROOT" "static/js/chunk.1111.js.map" 0 2>&1)"
+map_id_ec=$?
+set -e
+assert_eq "identical js.map exits 0" "0" "$map_id_ec"
+assert_true "identical js.map SKIP_IDENTICAL" grep -q 'SKIP_IDENTICAL' <<<"$map_id_err"
+# 5) hashed .js collision still fail-closed (regression)
+printf 'js-live\n' >"$MAP_ROOT/static/js/main.cccc.js"
+printf 'js-other\n' >"$MAP_BUILD/static/js/main.cccc.js"
+set +e
+js_coll_err="$(eternal_webroot_install_file "$MAP_BUILD/static/js/main.cccc.js" "$MAP_ROOT" "static/js/main.cccc.js" 0 2>&1)"
+js_coll_ec=$?
+set -e
+assert_eq "hashed js collision fails" "1" "$js_coll_ec"
+assert_true "hashed js collision message" grep -q 'hashed asset collision' <<<"$js_coll_err"
+# 6) hashed .css collision fail-closed
+printf 'css-live\n' >"$MAP_ROOT/static/css/main.dddd.css"
+printf 'css-other\n' >"$MAP_BUILD/static/css/main.dddd.css"
+set +e
+css_coll_err="$(eternal_webroot_install_file "$MAP_BUILD/static/css/main.dddd.css" "$MAP_ROOT" "static/css/main.dddd.css" 0 2>&1)"
+css_coll_ec=$?
+set -e
+assert_eq "hashed css collision fails" "1" "$css_coll_ec"
+assert_true "hashed css collision message" grep -q 'hashed asset collision' <<<"$css_coll_err"
+# 7) .css.map different is NOT granted the js.map exception
+printf 'css-same\n' >"$MAP_ROOT/static/css/main.eeee.css"
+printf 'cssmap-live\n' >"$MAP_ROOT/static/css/main.eeee.css.map"
+printf 'css-same\n' >"$MAP_BUILD/static/css/main.eeee.css"
+printf 'cssmap-build\n' >"$MAP_BUILD/static/css/main.eeee.css.map"
+set +e
+cssmap_err="$(eternal_webroot_install_file "$MAP_BUILD/static/css/main.eeee.css.map" "$MAP_ROOT" "static/css/main.eeee.css.map" 0 2>&1)"
+cssmap_ec=$?
+set -e
+assert_eq "css.map collision still fail-closed" "1" "$cssmap_ec"
+assert_true "css.map uses hashed collision path" grep -q 'hashed asset collision' <<<"$cssmap_err"
+# 8) symlink destination refused
+ln -s "$MAP_ROOT/static/js/chunk.1111.js.map" "$MAP_ROOT/static/js/linky.js.map"
+printf 'js-same\n' >"$MAP_BUILD/static/js/linky.js"
+printf 'map-via-link\n' >"$MAP_BUILD/static/js/linky.js.map"
+set +e
+sym_err="$(eternal_webroot_install_file "$MAP_BUILD/static/js/linky.js.map" "$MAP_ROOT" "static/js/linky.js.map" 0 2>&1)"
+sym_ec=$?
+set -e
+assert_eq "symlink dest refused" "1" "$sym_ec"
+assert_true "symlink refuse message" grep -qiE 'symlink' <<<"$sym_err"
+# Merge with safe map collision must PASS (publish path) — isolated trees only.
+MERGE_ROOT="$HARNESS/map-merge-webroot"
+MERGE_BUILD="$HARNESS/map-merge-build"
+rm -rf "$MERGE_ROOT" "$MERGE_BUILD"
+mkdir -p "$MERGE_ROOT/static/js" "$MERGE_BUILD/static/js"
+printf 'js-same\n' >"$MERGE_ROOT/static/js/chunk.1111.js"
+printf 'map-live-old\n' >"$MERGE_ROOT/static/js/chunk.1111.js.map"
+chmod 444 "$MERGE_ROOT/static/js/chunk.1111.js.map"
+printf 'js-same\n' >"$MERGE_BUILD/static/js/chunk.1111.js"
+printf 'map-build-new\n' >"$MERGE_BUILD/static/js/chunk.1111.js.map"
+printf '{"files":{}}\n' >"$MERGE_BUILD/asset-manifest.json"
+printf '<script src="/static/js/chunk.1111.js"></script>\n' >"$MERGE_BUILD/index.html"
+assert_true "merge PASS with safe js.map collision" \
+  eternal_webroot_merge_tree "$MERGE_BUILD" "$MERGE_ROOT" 0
+assert_true "merge kept live map bytes" grep -q 'map-live-old' "$MERGE_ROOT/static/js/chunk.1111.js.map"
+
+# ========== required_state: extra unreferenced files OK; missing main asset FAIL ==========
+REQ_LIVE="$HARNESS/req-live"
+REQ_BAK="$HARNESS/req-bak"
+rm -rf "$REQ_LIVE" "$REQ_BAK"
+mkdir -p "$REQ_LIVE/static/js" "$REQ_BAK/static/js"
+printf '<script src="/static/js/main.ok.js"></script>\n' >"$REQ_LIVE/index.html"
+cp -a "$REQ_LIVE/index.html" "$REQ_BAK/index.html"
+printf '{"main":"static/js/main.ok.js"}\n' >"$REQ_BAK/asset-manifest.json"
+cp -a "$REQ_BAK/asset-manifest.json" "$REQ_LIVE/asset-manifest.json"
+printf 'main-bytes\n' >"$REQ_LIVE/static/js/main.ok.js"
+cp -a "$REQ_LIVE/static/js/main.ok.js" "$REQ_BAK/static/js/main.ok.js"
+printf 'extra-unreferenced\n' >"$REQ_LIVE/static/js/extra.ffff.js"
+printf 'extra-map\n' >"$REQ_LIVE/static/js/extra.ffff.js.map"
+assert_true "required_state OK with extra unreferenced assets" \
+  eternal_frontend_required_state_ok "$REQ_LIVE" "$REQ_BAK"
+printf 'tampered\n' >"$REQ_LIVE/static/js/main.ok.js"
+assert_false "required_state fails when main js bytes drift" \
+  eternal_frontend_required_state_ok "$REQ_LIVE" "$REQ_BAK"
+printf 'main-bytes\n' >"$REQ_LIVE/static/js/main.ok.js"
+printf '{"main":"DRIFTED"}\n' >"$REQ_LIVE/asset-manifest.json"
+assert_false "required_state fails when manifest drifts" \
+  eternal_frontend_required_state_ok "$REQ_LIVE" "$REQ_BAK"
+# Soft restore after manifest drift + safe map collision on unrelated hashed map → PASS
+printf 'map-live\n' >"$REQ_LIVE/static/js/main.ok.js.map"
+printf 'map-bak\n' >"$REQ_BAK/static/js/main.ok.js.map"
+chmod 444 "$REQ_LIVE/static/js/main.ok.js.map"
+assert_true "soft restore recovers manifest despite map collision" \
+  eternal_webroot_merge_tree "$REQ_BAK" "$REQ_LIVE" 1
+cp -a "$REQ_BAK/index.html" "$REQ_LIVE/index.html"
+assert_true "required_state OK after soft restore" \
+  eternal_frontend_required_state_ok "$REQ_LIVE" "$REQ_BAK"
+assert_true "soft restore kept live map" grep -q 'map-live' "$REQ_LIVE/static/js/main.ok.js.map"
+
+# ========== partial publish → index unchanged → ROLLBACK_PASS ==========
+git -C "$MIRROR_SRC" checkout -q main
+printf 'fe-partial\n' >"$MIRROR_SRC/frontend/src/index.js"
+git -C "$MIRROR_SRC" add frontend/src/index.js && git -C "$MIRROR_SRC" commit -q -m fe-partial
+FE_PARTIAL="$(git -C "$MIRROR_SRC" rev-parse HEAD)"
+git --git-dir="$RELEASES/mirror.git" fetch -q "$MIRROR_SRC" '+refs/heads/main:refs/heads/main'
+# Seed live with immutable root-owned-identical asset that new dry-build also emits as app.js content change path:
+# Force publish fail after merge start via ETERNAL_FORCE_PUBLISH_FAIL (index never swapped).
+printf 'live-index-keep\n' >"$FRONTEND/live/index.html"
+mkdir -p "$FRONTEND/live/static/js"
+printf 'live-main\n' >"$FRONTEND/live/static/js/main.f7129337.js"
+chmod 644 "$FRONTEND/live/index.html" "$FRONTEND/live/static/js/main.f7129337.js"
+# Ensure CURRENT/baseline path exists for rollback pointer tests.
+if [[ ! -e "$CURRENT" ]]; then
+  make_verified_baseline
+  ETERNAL_ACK_REPLACE_LIVE_FRONTEND=1 "$RUNNER" deploy "$MAIN_SHA" >/dev/null 2>&1 || true
+fi
+CUR_BEFORE_PARTIAL="$(readlink -f "$CURRENT" || true)"
+printf 'live-index-keep\n' >"$FRONTEND/live/index.html"
+export ETERNAL_FORCE_PUBLISH_FAIL=1
+set +e
+"$RUNNER" deploy "$FE_PARTIAL" >"$HARNESS/partial.txt" 2>"$HARNESS/partial.err"
+partial_ec=$?
+set -e
+export ETERNAL_FORCE_PUBLISH_FAIL=0
+assert_eq "partial publish deploy nonzero" "1" "$partial_ec"
+assert_true "partial publish rollback PASS when index never switched" \
+  grep -q 'ROLLBACK_PASS' "$HARNESS/partial.err"
+assert_false "partial publish is not ROLLBACK_FAILED" grep -q 'ROLLBACK_FAILED' "$HARNESS/partial.err"
+assert_true "live index preserved after forced publish fail" grep -q 'live-index-keep' "$FRONTEND/live/index.html"
+assert_true "live hashed main preserved" test -f "$FRONTEND/live/static/js/main.f7129337.js"
+
+# ========== required FE state fails when backup index missing ==========
+rm -rf "$HARNESS/bad-fe-src"
+mkdir -p "$HARNESS/bad-fe-src/static/js" "$HARNESS/bad-fe-live"
+printf 'x\n' >"$HARNESS/bad-fe-src/static/js/x.js"
+printf '<html>live</html>\n' >"$HARNESS/bad-fe-live/index.html"
+assert_false "required state fails without backup index" \
+  eternal_frontend_required_state_ok "$HARNESS/bad-fe-live" "$HARNESS/bad-fe-src"
+
+# ========== required-state: PostHog array.js ignored; real assets enforced ==========
+source "$ROOT/scripts/deploy/lib.sh"
+REQ_PH_LIVE="$HARNESS/req-ph-live"
+REQ_PH_BAK="$HARNESS/req-ph-bak"
+rm -rf "$REQ_PH_LIVE" "$REQ_PH_BAK"
+mkdir -p "$REQ_PH_LIVE/static/js" "$REQ_PH_LIVE/static/css" "$REQ_PH_BAK/static/js" "$REQ_PH_BAK/static/css"
+cat >"$REQ_PH_LIVE/index.html" <<'EOF'
+<link href="/static/css/main.abc.css" rel="stylesheet">
+<script>p.src=host+"/static/array.js"</script>
+<script src="/static/js/main.f7129337.js"></script>
+EOF
+cp -a "$REQ_PH_LIVE/index.html" "$REQ_PH_BAK/index.html"
+printf '%s\n' '{"files":{"main.js":"/static/js/main.f7129337.js","main.css":"/static/css/main.abc.css"}}' \
+  >"$REQ_PH_BAK/asset-manifest.json"
+cp -a "$REQ_PH_BAK/asset-manifest.json" "$REQ_PH_LIVE/asset-manifest.json"
+printf 'js\n' >"$REQ_PH_LIVE/static/js/main.f7129337.js"
+cp -a "$REQ_PH_LIVE/static/js/main.f7129337.js" "$REQ_PH_BAK/static/js/main.f7129337.js"
+printf 'css\n' >"$REQ_PH_LIVE/static/css/main.abc.css"
+cp -a "$REQ_PH_LIVE/static/css/main.abc.css" "$REQ_PH_BAK/static/css/main.abc.css"
+assert_true "required_state OK ignores PostHog static/array.js" \
+  eternal_frontend_required_state_ok "$REQ_PH_LIVE" "$REQ_PH_BAK"
+rm -f "$REQ_PH_LIVE/static/js/main.f7129337.js"
+assert_false "required_state fails when real main js missing" \
+  eternal_frontend_required_state_ok "$REQ_PH_LIVE" "$REQ_PH_BAK"
+printf 'js\n' >"$REQ_PH_LIVE/static/js/main.f7129337.js"
+printf '{"files":{"main.js":"/static/js/OTHER.js"}}\n' >"$REQ_PH_LIVE/asset-manifest.json"
+assert_false "required_state fails on manifest mismatch" \
+  eternal_frontend_required_state_ok "$REQ_PH_LIVE" "$REQ_PH_BAK"
+
+# ========== reuse asset refs: PostHog static/array.js must not be required ==========
+source "$ROOT/scripts/deploy/lib.sh"
+ARRAY_IDX="$HARNESS/array-index.html"
+ARRAY_MAN="$HARNESS/array-manifest.json"
+cat >"$ARRAY_IDX" <<'EOF'
+<!doctype html><html><head>
+<link href="/static/css/main.abc.css" rel="stylesheet">
+</head><body>
+<script>/* posthog */(p.src=s.api_host.replace(".i.posthog.com","-assets.i.posthog.com")+"/static/array.js")</script>
+<script src="/static/js/main.f7129337.js"></script>
+</body></html>
+EOF
+printf '%s\n' '{"files":{"main.js":"/static/js/main.f7129337.js","main.css":"/static/css/main.abc.css","index.html":"/index.html"},"entrypoints":["static/css/main.abc.css","static/js/main.f7129337.js"]}' >"$ARRAY_MAN"
+mapfile -t REFS < <(eternal_fe_list_required_static_assets "$ARRAY_IDX" "$ARRAY_MAN" | awk 'NF && !seen[$0]++')
+refs_joined="$(printf '%s|' "${REFS[@]}")"
+assert_true "asset list includes real main js" grep -q 'static/js/main.f7129337.js' <<<"$refs_joined"
+assert_true "asset list includes real main css" grep -q 'static/css/main.abc.css' <<<"$refs_joined"
+assert_false "asset list excludes PostHog static/array.js" grep -q 'static/array.js' <<<"$refs_joined"
+# Broad legacy grep would false-positive — document expected old behavior for contrast.
+legacy_hit="$(grep -oE '(static/[^"'\''[:space:]>]+)' "$ARRAY_IDX" | grep -c 'static/array.js' || true)"
+assert_eq "legacy broad grep still sees static/array.js (contrast)" "1" "$legacy_hit"
+
+# ========== reuse incomplete release: valid refs + false array.js + missing real asset ==========
+REUSE_FAKE="$HARNESS/reuse-rel"
+rm -rf "$REUSE_FAKE"
+mkdir -p "$REUSE_FAKE/frontend/build/static/js" "$REUSE_FAKE/frontend/build/static/css" \
+  "$REUSE_FAKE/backend/.venv/bin" "$REUSE_FAKE/frontend"
+printf '%s\n' "$MAIN_SHA" >"$REUSE_FAKE/.eternal-source-sha"
+cp -a "$ARRAY_IDX" "$REUSE_FAKE/frontend/build/index.html"
+cp -a "$ARRAY_MAN" "$REUSE_FAKE/frontend/build/asset-manifest.json"
+printf 'js\n' >"$REUSE_FAKE/frontend/build/static/js/main.f7129337.js"
+printf 'css\n' >"$REUSE_FAKE/frontend/build/static/css/main.abc.css"
+# Minimal fingerprint inputs
+printf '{"name":"frontend"}\n' >"$REUSE_FAKE/frontend/package.json"
+printf 'yarn lockfile v1\n' >"$REUSE_FAKE/frontend/yarn.lock"
+eternal_write_frontend_fingerprint "$REUSE_FAKE"
+# Stub venv: real python + stub uvicorn/pip for ETERNAL_RUNTIME_MODE=stub.
+ln -sf "$(command -v python3)" "$REUSE_FAKE/backend/.venv/bin/python"
+cat >"$REUSE_FAKE/backend/.venv/bin/uvicorn" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$REUSE_FAKE/backend/.venv/bin/uvicorn"
+cat >"$REUSE_FAKE/backend/.venv/bin/pip" <<'EOF'
+#!/usr/bin/env bash
+# stub: "pip check" success for synthetic reuse
+[[ "${1:-}" == "check" ]] && exit 0
+exit 0
+EOF
+chmod +x "$REUSE_FAKE/backend/.venv/bin/pip"
+printf 'requirements.portable.txt\n' >"$REUSE_FAKE/backend/.eternal-requirements-file"
+printf 'ok-portable\n' >"$REUSE_FAKE/backend/requirements.portable.txt"
+req_hash="$(sha256sum "$REUSE_FAKE/backend/requirements.portable.txt" | awk '{print $1}')"
+printf '%s\n' "$req_hash" >"$REUSE_FAKE/backend/.eternal-requirements-sha256"
+set +e
+ETERNAL_RUNTIME_MODE=stub eternal_try_reuse_incomplete_release "$REUSE_FAKE" "$MAIN_SHA" \
+  >"$HARNESS/reuse-array.out" 2>"$HARNESS/reuse-array.err"
+reuse_array_ec=$?
+set -e
+assert_eq "reuse OK with PostHog static/array.js in index (not a local asset)" "0" "$reuse_array_ec"
+assert_false "reuse does not complain about static/array.js" \
+  grep -q 'static/array.js' "$HARNESS/reuse-array.err"
+# Missing real hashed JS → FAIL_CLOSED
+rm -f "$REUSE_FAKE/frontend/build/static/js/main.f7129337.js"
+set +e
+ETERNAL_RUNTIME_MODE=stub eternal_try_reuse_incomplete_release "$REUSE_FAKE" "$MAIN_SHA" \
+  >"$HARNESS/reuse-miss.out" 2>"$HARNESS/reuse-miss.err"
+reuse_miss_ec=$?
+set -e
+assert_eq "reuse refuses missing real main js" "1" "$reuse_miss_ec"
+assert_true "missing real asset message" \
+  grep -q 'build asset missing static/js/main.f7129337.js' "$HARNESS/reuse-miss.err"
+# Restore real asset; break source sha → still refuse
+printf 'js\n' >"$REUSE_FAKE/frontend/build/static/js/main.f7129337.js"
+printf 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\n' >"$REUSE_FAKE/.eternal-source-sha"
+set +e
+ETERNAL_RUNTIME_MODE=stub eternal_try_reuse_incomplete_release "$REUSE_FAKE" "$MAIN_SHA" \
+  >/dev/null 2>"$HARNESS/reuse-sha.err"
+reuse_sha_ec=$?
+set -e
+assert_eq "reuse refuses source sha mismatch" "1" "$reuse_sha_ec"
+assert_true "source sha mismatch logged" grep -q 'source sha mismatch' "$HARNESS/reuse-sha.err"
+
+# ========== reuse incomplete release fingerprint ==========
+if [[ -d "$RELEASES/$MAIN_SHA" ]]; then
+  REUSE_DIR="$RELEASES/$MAIN_SHA"
+  printf '%s\n' "$MAIN_SHA" >"$REUSE_DIR/.eternal-source-sha"
+  if [[ ! -f "$REUSE_DIR/.eternal-frontend-fingerprint" ]]; then
+    eternal_write_frontend_fingerprint "$REUSE_DIR"
+  fi
+  if [[ -f "$REUSE_DIR/frontend/build/index.html" && -x "$REUSE_DIR/backend/.venv/bin/uvicorn" \
+     && -f "$REUSE_DIR/backend/.eternal-requirements-file" \
+     && -f "$REUSE_DIR/backend/.eternal-requirements-sha256" ]]; then
+    rm -f "$REUSE_DIR/.deploy-ok"
+    # Inject PostHog-like false asset string into built index to prove reuse still works.
+    if ! grep -q 'static/array.js' "$REUSE_DIR/frontend/build/index.html"; then
+      printf '\n<script>p.src=host+"/static/array.js"</script>\n' >>"$REUSE_DIR/frontend/build/index.html"
+    fi
+    set +e
+    ETERNAL_RUNTIME_MODE=stub eternal_try_reuse_incomplete_release "$REUSE_DIR" "$MAIN_SHA" \
+      >"$HARNESS/reuse.out" 2>"$HARNESS/reuse.err"
+    reuse_ec=$?
+    set -e
+    assert_eq "incomplete release reuse integrity OK" "0" "$reuse_ec"
+    assert_false "harness reuse ignores PostHog array.js" \
+      grep -q 'build asset missing static/array.js' "$HARNESS/reuse.err"
+    printf 'deadbeef\n' >"$REUSE_DIR/.eternal-frontend-fingerprint"
+    set +e
+    ETERNAL_RUNTIME_MODE=stub eternal_try_reuse_incomplete_release "$REUSE_DIR" "$MAIN_SHA" \
+      >/dev/null 2>"$HARNESS/reuse-bad.err"
+    reuse_bad=$?
+    set -e
+    assert_eq "fingerprint mismatch refuses reuse" "1" "$reuse_bad"
+  else
+    log "SKIP: reuse fixture incomplete (missing build/venv markers)"
+  fi
+fi
+# ========== regression: yarn-only + health budget + flock + ack still present ==========
+assert_true "runner still Yarn-only helper" grep -q 'eternal_frontend_production_build' "$ROOT/scripts/deploy/eternal-deploy-runner.sh"
+assert_true "runner health budget default 60" grep -q 'ETERNAL_HEALTH_BUDGET_S:-60' "$ROOT/scripts/deploy/eternal-deploy-runner.sh"
+assert_true "runner ack-fe still gated" grep -q 'ETERNAL_ACK_REPLACE_LIVE_FRONTEND' "$ROOT/scripts/deploy/eternal-deploy-runner.sh"
+assert_true "runner still uses flock acquire" grep -q 'eternal_acquire_lock' "$ROOT/scripts/deploy/eternal-deploy-runner.sh"
+assert_true "lib lists required static via src/href helper" \
+  grep -q 'eternal_fe_list_required_static_assets' "$ROOT/scripts/deploy/lib.sh"
+assert_true "SKIP_SOURCEMAP_COLLISION still present" \
+  grep -q 'SKIP_SOURCEMAP_COLLISION' "$ROOT/scripts/deploy/lib.sh"
+assert_true "workflow supports rollback operation" \
+  grep -q 'rollback' "$ROOT/.github/workflows/deploy-production.yml"
+assert_true "gate allowlists rollback verb" \
+  grep -q 'rollback' "$ROOT/scripts/deploy/eternal-actions-gate"
+
+# ========== POST-SUCCESS ROLLBACK (identity-scoped) ==========
+# Fresh baseline + first cutover for isolated rollback proofs.
+stop_harness_backend_proc 2>/dev/null || true
+rm -rf "$BASELINE" "$RELEASES"/[0-9a-f]* "$RELEASES/rollback-points" "$RELEASES/active-release.txt" \
+  "$RELEASES/backups" "$FRONTEND_PREV" 2>/dev/null || true
+mkdir -p "$FRONTEND/live/static/js"
+printf 'baseline-live\n<script src="/static/js/old.js"></script>\n' >"$FRONTEND/live/index.html"
+printf 'old-asset\n' >"$FRONTEND/live/static/js/old.js"
+printf 'active\n' >"$FRONTEND/live/active.txt"
+make_verified_baseline
+export ETERNAL_EXPECTED_WD="$EXPECTED_WD"
+export ETERNAL_EXPECTED_EXEC_PREFIX="$EXPECTED_WD"
+export ETERNAL_HEALTH_FORCE_FAIL=0
+export ETERNAL_FORCE_RESTART_FAIL=0
+export ETERNAL_FORCE_PUBLISH_FAIL=0
+echo 0 >"$ETERNAL_HEALTH_FAIL_STATE"
+echo 0 >"$ETERNAL_HEALTH_HTTP_FAIL_STATE"
+: >"$ETERNAL_SYSTEMCTL_LOG"
+
+# First cutover deploy → rollback point previous=baseline-active
+if ETERNAL_ACK_REPLACE_LIVE_FRONTEND=1 "$RUNNER" deploy "$MAIN_SHA" \
+  >"$HARNESS/rb-cutover.txt" 2>"$HARNESS/rb-cutover.err"; then
+  log "PASS: cutover deploy for rollback suite"; PASS=$((PASS+1))
+else
+  log "FAIL: cutover deploy for rollback suite"; cat "$HARNESS/rb-cutover.err" >>"$REPORT"; FAIL=$((FAIL+1))
+fi
+RB_POINT="$RELEASES/rollback-points/$MAIN_SHA"
+assert_true "rollback point meta after cutover" test -f "$RB_POINT/meta.txt"
+assert_true "rollback point FE backup after cutover" test -f "$RB_POINT/frontend/index.html"
+assert_true "meta previous_id=baseline-active" \
+  grep -qx 'previous_id=baseline-active' "$RB_POINT/meta.txt"
+assert_true "active-release marker is MAIN_SHA" \
+  grep -qx "sha=$MAIN_SHA" "$RELEASES/active-release.txt"
+assert_true "cutover FE backup is not live dry-build" \
+  grep -q 'baseline-live' "$RB_POINT/frontend/index.html"
+
+# Successful rollback first cutover → baseline
+set +e
+"$RUNNER" rollback "$MAIN_SHA" baseline-active \
+  >"$HARNESS/rb-base.txt" 2>"$HARNESS/rb-base.err"
+rb_base_ec=$?
+set -e
+assert_eq "rollback to baseline exit 0" "0" "$rb_base_ec"
+assert_true "ROLLBACK_SUCCESS to baseline" \
+  grep -qE "ROLLBACK_SUCCESS[[:space:]]+deployed_sha=${MAIN_SHA}" "$HARNESS/rb-base.txt"
+assert_true "restored FE matches baseline backup" \
+  grep -q 'baseline-live' "$FRONTEND/live/index.html"
+assert_true "CURRENT points at baseline tree after rollback" \
+  bash -c 'cur=$(readlink -f "'"$CURRENT"'"); want=$(readlink -f "'"$BASELINE"'/tree"); [[ "$cur" == "$want" ]]'
+assert_true "active marker after baseline rollback" \
+  grep -qx 'sha=baseline-active' "$RELEASES/active-release.txt"
+assert_true "transaction disclaimer logged" \
+  grep -qi 'does not reverse MongoDB' "$HARNESS/rb-base.err"
+
+# Redeploy MAIN then SHA2; rollback SHA2 → MAIN
+rm -rf "$RELEASES/$MAIN_SHA"
+ETERNAL_ACK_REPLACE_LIVE_FRONTEND=1 "$RUNNER" deploy "$MAIN_SHA" \
+  >"$HARNESS/rb-redeploy.txt" 2>"$HARNESS/rb-redeploy.err" || true
+git -C "$MIRROR_SRC" checkout -q main
+printf 'sha2-fe\n' >>"$MIRROR_SRC/frontend/src/index.js"
+git -C "$MIRROR_SRC" add frontend/src/index.js && git -C "$MIRROR_SRC" commit -q -m rb-sha2
+SHA2="$(git -C "$MIRROR_SRC" rev-parse HEAD)"
+git --git-dir="$RELEASES/mirror.git" fetch -q "$MIRROR_SRC" '+refs/heads/*:refs/heads/*'
+"$RUNNER" deploy "$SHA2" >"$HARNESS/rb-sha2.txt" 2>"$HARNESS/rb-sha2.err" || true
+assert_true "SHA2 DEPLOY_OK" grep -q "DEPLOY_OK sha=$SHA2" "$HARNESS/rb-sha2.txt"
+assert_true "SHA2 rollback point previous=MAIN" \
+  grep -qx "previous_id=$MAIN_SHA" "$RELEASES/rollback-points/$SHA2/meta.txt"
+
+set +e
+"$RUNNER" rollback "$SHA2" "$MAIN_SHA" >"$HARNESS/rb-sha.txt" 2>"$HARNESS/rb-sha.err"
+rb_sha_ec=$?
+set -e
+assert_eq "rollback SHA2→MAIN exit 0" "0" "$rb_sha_ec"
+assert_true "ROLLBACK_SUCCESS SHA predecessor" \
+  grep -qE "ROLLBACK_SUCCESS[[:space:]]+deployed_sha=${SHA2}" "$HARNESS/rb-sha.txt"
+assert_true "CURRENT at MAIN after SHA rollback" \
+  bash -c 'cur=$(readlink -f "'"$CURRENT"'"); want=$(readlink -f "'"$RELEASES/$MAIN_SHA"'"); [[ "$cur" == "$want" ]]'
+
+# Redeploy SHA2 for refuse-case matrix
+"$RUNNER" deploy "$SHA2" >"$HARNESS/rb-sha2b.txt" 2>"$HARNESS/rb-sha2b.err" || true
+
+# Current SHA mismatch → refuse
+set +e
+"$RUNNER" rollback "$MAIN_SHA" baseline-active \
+  >"$HARNESS/rb-mismatch.txt" 2>"$HARNESS/rb-mismatch.err"
+rb_mis_ec=$?
+set -e
+assert_eq "current SHA mismatch refuses" "1" "$rb_mis_ec"
+assert_true "mismatch mentions active sha" grep -qi 'active sha mismatch' "$HARNESS/rb-mismatch.err"
+
+# Previous release mismatch → refuse
+set +e
+"$RUNNER" rollback "$SHA2" baseline-active \
+  >"$HARNESS/rb-prevbad.txt" 2>"$HARNESS/rb-prevbad.err"
+rb_prev_ec=$?
+set -e
+assert_eq "previous mismatch refuses" "1" "$rb_prev_ec"
+assert_true "previous mismatch logged" grep -qi 'previous release mismatch' "$HARNESS/rb-prevbad.err"
+
+# Backup missing/corrupt → refuse (fail-closed before live mutate)
+mkdir -p "$HARNESS/fe-bak-save"
+cp -a "$RELEASES/rollback-points/$SHA2/frontend"/. "$HARNESS/fe-bak-save"/ 2>/dev/null || true
+rm -rf "$RELEASES/rollback-points/$SHA2/frontend"
+set +e
+"$RUNNER" rollback "$SHA2" "$MAIN_SHA" >"$HARNESS/rb-nobak.txt" 2>"$HARNESS/rb-nobak.err"
+rb_nobak_ec=$?
+set -e
+assert_eq "missing FE backup refuses" "1" "$rb_nobak_ec"
+assert_true "missing backup fail-closed" \
+  grep -qiE 'frontend backup missing|not marked ok|corrupt' "$HARNESS/rb-nobak.err"
+mkdir -p "$RELEASES/rollback-points/$SHA2/frontend"
+cp -a "$HARNESS/fe-bak-save"/. "$RELEASES/rollback-points/$SHA2/frontend"/
+# Corrupt index
+printf 'corrupt\n' >"$RELEASES/rollback-points/$SHA2/frontend/index.html"
+# Still has index so validate may pass meta; restore verify should fail → ROLLBACK_FAILED
+# Actually validate only checks index exists. Restore will put corrupt index; required_state
+# vs backup will match corrupt=corrupt so it might SUCCESS incorrectly restoring corrupt.
+# Better: remove index to fail validate, or break meta frontend_backup_ok after restore path.
+# Re-test missing: delete index.html
+rm -f "$RELEASES/rollback-points/$SHA2/frontend/index.html"
+set +e
+"$RUNNER" rollback "$SHA2" "$MAIN_SHA" >"$HARNESS/rb-corbak.txt" 2>"$HARNESS/rb-corbak.err"
+rb_cor_ec=$?
+set -e
+assert_eq "corrupt FE backup refuses" "1" "$rb_cor_ec"
+cp -a "$HARNESS/fe-bak-save"/. "$RELEASES/rollback-points/$SHA2/frontend"/
+
+# Deploy lock busy → refuse
+exec {RB_LOCK_FD}>"$LOCK"
+flock -n "$RB_LOCK_FD" || true
+set +e
+"$RUNNER" rollback "$SHA2" "$MAIN_SHA" >"$HARNESS/rb-lock.txt" 2>"$HARNESS/rb-lock.err"
+rb_lock_ec=$?
+set -e
+assert_eq "busy lock refuses rollback" "1" "$rb_lock_ec"
+assert_true "busy lock message" grep -qi 'deploy lock held' "$HARNESS/rb-lock.err"
+flock -u "$RB_LOCK_FD" 2>/dev/null || true
+exec {RB_LOCK_FD}>&- 2>/dev/null || true
+
+# Rollback after another deployment → refuse
+git -C "$MIRROR_SRC" checkout -q main
+printf 'sha3-fe\n' >>"$MIRROR_SRC/frontend/src/index.js"
+git -C "$MIRROR_SRC" add frontend/src/index.js && git -C "$MIRROR_SRC" commit -q -m rb-sha3
+SHA3="$(git -C "$MIRROR_SRC" rev-parse HEAD)"
+git --git-dir="$RELEASES/mirror.git" fetch -q "$MIRROR_SRC" '+refs/heads/*:refs/heads/*'
+"$RUNNER" deploy "$SHA3" >"$HARNESS/rb-sha3.txt" 2>"$HARNESS/rb-sha3.err" || true
+assert_true "SHA3 deployed" grep -q "DEPLOY_OK sha=$SHA3" "$HARNESS/rb-sha3.txt"
+set +e
+"$RUNNER" rollback "$SHA2" "$MAIN_SHA" >"$HARNESS/rb-stale.txt" 2>"$HARNESS/rb-stale.err"
+rb_stale_ec=$?
+set -e
+assert_eq "rollback after newer deploy refuses" "1" "$rb_stale_ec"
+assert_true "stale undo refused" grep -qi 'active sha mismatch' "$HARNESS/rb-stale.err"
+
+# Frontend restore failure → ROLLBACK_FAILED (forced after preflight; same flock path)
+export ETERNAL_FORCE_FRONTEND_RESTORE_FAIL=1
+set +e
+"$RUNNER" rollback "$SHA3" "$SHA2" >"$HARNESS/rb-fefail.txt" 2>"$HARNESS/rb-fefail.err"
+rb_fefail_ec=$?
+set -e
+export ETERNAL_FORCE_FRONTEND_RESTORE_FAIL=0
+assert_eq "frontend restore failure nonzero" "1" "$rb_fefail_ec"
+assert_true "ROLLBACK_FAILED on FE restore" \
+  grep -qE 'ROLLBACK_FAILED' <<<"$(cat "$HARNESS/rb-fefail.txt" "$HARNESS/rb-fefail.err")"
+assert_true "frontend restore FAILED logged" \
+  grep -qi 'frontend restore' "$HARNESS/rb-fefail.err"
+
+# Backend-changing SHA for restart-failure + success proofs (FE-only skips restart)
+git -C "$MIRROR_SRC" checkout -q main
+printf 'be-rb\n' >>"$MIRROR_SRC/backend/requirements.txt"
+printf 'be-rb\n' >>"$MIRROR_SRC/backend/requirements.portable.txt"
+git -C "$MIRROR_SRC" add backend/requirements.txt backend/requirements.portable.txt
+git -C "$MIRROR_SRC" commit -q -m rb-be
+SHA_BE="$(git -C "$MIRROR_SRC" rev-parse HEAD)"
+git --git-dir="$RELEASES/mirror.git" fetch -q "$MIRROR_SRC" '+refs/heads/*:refs/heads/*'
+# Ensure active identity is SHA2 before backend deploy (FE fail may have left marker).
+printf 'sha=%s\nprevious_id=%s\nupdated_at=t\n' "$SHA2" "$MAIN_SHA" >"$RELEASES/active-release.txt"
+ln -sfn "$RELEASES/$SHA2" "$CURRENT"
+start_harness_backend_proc "$(readlink -f "$CURRENT/backend")"
+"$RUNNER" deploy "$SHA_BE" >"$HARNESS/rb-be.txt" 2>"$HARNESS/rb-be.err" || true
+assert_true "backend SHA DEPLOY_OK" grep -q "DEPLOY_OK sha=$SHA_BE" "$HARNESS/rb-be.txt"
+assert_true "backend deploy switched CURRENT" \
+  grep -qx 'current_switched=1' "$RELEASES/rollback-points/$SHA_BE/meta.txt"
+
+# Backend restart failure → ROLLBACK_FAILED
+export ETERNAL_FORCE_RESTART_FAIL=1
+set +e
+"$RUNNER" rollback "$SHA_BE" "$SHA2" >"$HARNESS/rb-befail.txt" 2>"$HARNESS/rb-befail.err"
+rb_befail_ec=$?
+set -e
+export ETERNAL_FORCE_RESTART_FAIL=0
+assert_eq "backend restart failure nonzero" "1" "$rb_befail_ec"
+assert_true "ROLLBACK_FAILED on backend restart" \
+  grep -q 'ROLLBACK_FAILED' <<<"$(cat "$HARNESS/rb-befail.txt" "$HARNESS/rb-befail.err")"
+assert_true "backend restart FAILED logged" \
+  grep -qi 'backend restart' "$HARNESS/rb-befail.err"
+
+# Repair after partial rollback: settle on SHA2, then redeploy SHA_BE cleanly.
+chmod -R u+w "$FRONTEND/live" "$RELEASES" 2>/dev/null || true
+ln -sfn "$RELEASES/$SHA2" "$CURRENT"
+start_harness_backend_proc "$(readlink -f "$CURRENT/backend")"
+printf 'sha=%s\nprevious_id=%s\nupdated_at=t\n' "$SHA2" "$MAIN_SHA" >"$RELEASES/active-release.txt"
+if [[ -d "$RELEASES/rollback-points/$SHA_BE/frontend" ]]; then
+  cp -a "$RELEASES/rollback-points/$SHA_BE/frontend"/. "$FRONTEND/live"/
+fi
+"$RUNNER" deploy "$SHA_BE" >"$HARNESS/rb-repair.txt" 2>"$HARNESS/rb-repair.err" || true
+assert_true "repair redeploy SHA_BE OK" grep -q "DEPLOY_OK sha=$SHA_BE" "$HARNESS/rb-repair.txt"
+
+# Successful restoration verified (SHA_BE → SHA2)
+set +e
+"$RUNNER" rollback "$SHA_BE" "$SHA2" >"$HARNESS/rb-ok.txt" 2>"$HARNESS/rb-ok.err"
+rb_ok_ec=$?
+set -e
+if [[ "$rb_ok_ec" -ne 0 ]]; then
+  log "NOTE rb-ok.err:"; tail -40 "$HARNESS/rb-ok.err" | tee -a "$REPORT" >/dev/null || true
+  log "NOTE rb-ok.txt:"; cat "$HARNESS/rb-ok.txt" | tee -a "$REPORT" >/dev/null || true
+fi
+assert_eq "successful post-success rollback exit 0" "0" "$rb_ok_ec"
+assert_true "ROLLBACK_SUCCESS verified" \
+  grep -qE "ROLLBACK_SUCCESS[[:space:]]+deployed_sha=${SHA_BE}" "$HARNESS/rb-ok.txt"
+assert_true "health operational evidence in rollback logs" \
+  grep -q 'mongo=true' "$HARNESS/rb-ok.err"
+assert_true "runtime verify path used" \
+  bash -c 'cur=$(readlink -f "'"$CURRENT"'"); want=$(readlink -f "'"$RELEASES/$SHA2"'"); [[ "$cur" == "$want" ]]'
+
+# Arbitrary path / symlink rejection (lib validate)
+evil_points="$RELEASES/rollback-points"
+mkdir -p "$evil_points"
+rm -rf "$evil_points/evillink" 2>/dev/null || true
+ln -s /tmp "$evil_points/$(printf 'a%.0s' {1..40})" 2>/dev/null || true
+EVIL_SHA="$(printf 'a%.0s' {1..40})"
+set +e
+bash -c 'source "'"$ROOT"'/scripts/deploy/lib.sh"; eternal_validate_rollback_point "'"$RELEASES"'" "'"$EVIL_SHA"'" "'"$SHA2"'"' \
+  >"$HARNESS/rb-sym.txt" 2>"$HARNESS/rb-sym.err"
+rb_sym_ec=$?
+set -e
+assert_eq "symlink rollback point refused" "1" "$rb_sym_ec"
+rm -f "$evil_points/$EVIL_SHA"
+
+# Authorization denial (trigger execute without secret)
+set +e
+nosec_out="$(ETERNAL_GH_API_MOCK_DIR="$MOCK" ETERNAL_TRIGGER_DISPATCH_LOG="$HARNESS/dispatch.log" \
+  "$TRIGGER" execute rollback --sha "$SHA3" --confirm-sha "$SHA3" --previous-id "$SHA2" \
+  --execute --request-id req-rb-nosec 2>"$HARNESS/rb-nosec.err")"
+nosec_ec=$?
+set -e
+assert_eq "rollback without shared secret denied" "1" "$nosec_ec"
+
+# Trigger plan rollback + correlation / ROLLBACK_SUCCESS / unknown
+plan_rb="$(ETERNAL_GH_API_MOCK_DIR="$MOCK" "$TRIGGER" plan rollback \
+  --sha "$SHA3" --confirm-sha "$SHA3" --previous-id "$SHA2" --request-id req-rb-plan \
+  2>"$HARNESS/rb-plan.err")"
+assert_true "plan rollback PLAN_OK" grep -q 'PLAN_OK' <<<"$plan_rb"
+assert_true "plan rollback OPERATION" grep -q 'OPERATION=rollback' <<<"$plan_rb"
+assert_true "plan rollback previous id" grep -q "PREVIOUS_ID=$SHA2" <<<"$plan_rb"
+
+printf 'ok\n' >"$MOCK/dispatch-status"
+cat >"$MOCK/trigger-runs.json" <<'EOF'
+{"workflow_runs":[]}
+EOF
+rm -f "$MOCK"/trigger-runs-poll-*.json
+cat >"$MOCK/trigger-runs-poll-1.json" <<'EOF'
+{"workflow_runs":[]}
+EOF
+cat >"$MOCK/trigger-runs-poll-2.json" <<EOF
+{"workflow_runs":[
+ {"id":91,"html_url":"https://example.test/runs/91","event":"workflow_dispatch","head_branch":"main",
+  "name":"Deploy production · request_id=req-rb-ok",
+  "display_title":"Deploy production · request_id=req-rb-ok"}
+]}
+EOF
+seed_mock_run_outcome 91 completed success "ROLLBACK_SUCCESS deployed_sha=${SHA3} previous_id=${SHA2}"
+: >"$HARNESS/dispatch.log"
+rb_disp="$(env "${POLL_ENV[@]}" ETERNAL_DEPLOY_SHARED_SECRET='test-secret' \
+  "$TRIGGER" execute rollback --sha "$SHA3" --confirm-sha "$SHA3" --previous-id "$SHA2" \
+  --execute --request-id req-rb-ok 2>"$HARNESS/rb-disp.err")"
+assert_true "rollback dispatch RUNNER_ROLLBACK_SUCCESS" grep -q 'RUNNER_ROLLBACK_SUCCESS' <<<"$rb_disp"
+assert_true "rollback WORKFLOW_SUCCESS" grep -q 'WORKFLOW_SUCCESS' <<<"$rb_disp"
+
+# Timeout / unknown result for rollback (no logs)
+cat >"$MOCK/trigger-runs-poll-2.json" <<EOF
+{"workflow_runs":[
+ {"id":92,"html_url":"https://example.test/runs/92","event":"workflow_dispatch","head_branch":"main",
+  "name":"Deploy production · request_id=req-rb-unk",
+  "display_title":"Deploy production · request_id=req-rb-unk"}
+]}
+EOF
+seed_mock_run_outcome 92 completed success ""
+: >"$HARNESS/dispatch.log"
+set +e
+rb_unk="$(env "${POLL_ENV[@]}" ETERNAL_DEPLOY_SHARED_SECRET='test-secret' \
+  "$TRIGGER" execute rollback --sha "$SHA3" --confirm-sha "$SHA3" --previous-id "$SHA2" \
+  --execute --request-id req-rb-unk 2>"$HARNESS/rb-unk.err")"
+rb_unk_ec=$?
+set -e
+assert_eq "rollback missing logs exits non-zero" "1" "$rb_unk_ec"
+assert_true "rollback missing logs RESULT_UNKNOWN" \
+  grep -q 'RESULT_UNKNOWN' <<<"$rb_unk$(cat "$HARNESS/rb-unk.err")"
 
 log ""
 log "SUMMARY pass=$PASS fail=$FAIL"

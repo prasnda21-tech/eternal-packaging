@@ -13,11 +13,13 @@ import ProductionScheduleRingkasan, { ProductionScheduleSearchCluster } from "..
 import {
   FILTER_DEFAULTS,
   applyProductionFilters,
+  applyProductionScheduleDisplayRowFilters,
   applyDeadlineTodayShortcut,
   applyWorkDateFilterControl,
   applyWorkDateRangeControl,
   applyWorkDateTodayShortcut,
   buildHariIniDisplayRows,
+  countUniqueProductionSchedulePos,
   isScheduledToday,
   DESKTOP_PRODUCTION_SCHEDULE_SORT_DEFAULT,
   productionFiltersAreActive,
@@ -239,8 +241,13 @@ export default function ProductionSchedule() {
     const expanded = workDateFilter === "hari_ini"
       ? buildHariIniDisplayRows(sorted, undefined, includeCompleted)
       : buildProductionScheduleDisplayRows(sorted);
-    return sortScheduleDisplayRows(expanded, sortBy);
-  }, [sorted, workDateFilter, includeCompleted, sortBy]);
+    const ordered = sortScheduleDisplayRows(expanded, sortBy);
+    return applyProductionScheduleDisplayRowFilters(ordered, { operatorFilter });
+  }, [sorted, workDateFilter, includeCompleted, sortBy, operatorFilter]);
+  const tableVisiblePoCount = useMemo(
+    () => countUniqueProductionSchedulePos(displayRows),
+    [displayRows],
+  );
   const summaryMetrics = useMemo(() => buildProductionScheduleSummary(filtered), [filtered]);
   const filtersActive = productionFiltersAreActive(filterState);
 
@@ -446,7 +453,7 @@ export default function ProductionSchedule() {
             searchButtonTestId="prod-search-btn"
           />
           <ProductionScheduleRingkasan metrics={summaryMetrics} testidPrefix="prod" />
-          <span className="muted small" data-testid="prod-total-visible">{filtered.length} / {rows.length} entri</span>
+          <span className="muted small" data-testid="prod-total-visible">{mode === "tabel" ? tableVisiblePoCount : filtered.length} / {rows.length} entri</span>
           <label className="prod-check"><input type="checkbox" checked={includeCompleted} onChange={(e) => setIncludeCompleted(e.target.checked)} data-testid="prod-include-completed"/> Selesai</label>
           <label className="prod-check"><input type="checkbox" checked={includeCancelled} onChange={(e) => setIncludeCancelled(e.target.checked)} data-testid="prod-include-cancelled"/> Cancelled</label>
           <button className="ghost sm prod-filter-reset" onClick={resetFilters} data-testid="prod-filter-reset" disabled={!filtersActive && sortBy === DESKTOP_PRODUCTION_SCHEDULE_SORT_DEFAULT}>

@@ -7,9 +7,11 @@ Scope: workflows, SSH gate, isolated release runner, Cursor trigger helper, leas
 | Path | Role |
 |------|------|
 | `/opt/eternal-packaging-runtime/` | Dedicated runtime root (leaf created by root bootstrap; owned by `eternaladmin`). **Never chown `/opt`.** |
-| `/opt/eternal-packaging-runtime/releases/` | Isolated releases + `baseline-active` + `mirror.git` + backups |
+| `/opt/eternal-packaging-runtime/releases/` | Isolated releases + `baseline-active` + `mirror.git` + backups + `rollback-points/` |
+| `/opt/eternal-packaging-runtime/releases/rollback-points/<sha40>/` | Post-success rollback identity: `meta.txt` + optional `frontend/` backup for that deploy |
+| `/opt/eternal-packaging-runtime/releases/active-release.txt` | Active deploy identity marker (`sha=` + `previous_id=`) |
 | `/opt/eternal-packaging-runtime/current` | Symlink to active release/baseline tree (replaceable by deploy user) |
-| `/opt/eternal-packaging-runtime/frontend-prev` | Frontend rollback backup (not a `/var/www` sibling) |
+| `/opt/eternal-packaging-runtime/frontend-prev` | Pre-activation FE copy for in-flight failure-path rollback (mutable; not the durable post-success identity) |
 | `/var/www/eternal-packaging` | Live webroot (leaf owned by `eternaladmin`; **never chown `/var/www`**) |
 | `/opt/eternal-packaging` | Legacy dirty overlay — left untouched; secrets via EnvironmentFile only |
 | `/opt/eternal-packaging/backend/.env` | Existing EnvironmentFile (kept) |
@@ -95,11 +97,18 @@ Keep dirty `/opt/eternal-packaging` overlay untouched. Pure SHA does **not** aut
 - Shared `flock` lock held through rollback; existing lock file without holder does not block; lock file is not unlinked.
 - Preflight: runtime root writable, FE leaf writable, mirror, disk, systemd WD/ExecStart match expected **runtime** paths.
 - Materialize via `git archive` then **fresh venv** + dependency install; validate executable before switching `current`.
+- Failed/incomplete release dirs are **not** deleted automatically. Reuse is allowed only when source SHA, frontend build fingerprint, referenced assets, and venv/requirements provenance all validate; otherwise fail closed for Owner inspection (never `rm -rf` on failed reuse). Required frontend assets are taken from `index.html` `src`/`href` attributes and `asset-manifest.json` `static/…` paths only — inline script strings such as third-party `…/static/array.js` (e.g. PostHog) are not treated as local build assets.
+- Frontend production build is **Yarn only** (`yarn.lock` + `yarn install --frozen-lockfile`); npm fallback removed (fail closed if Yarn/lock missing). Matching fingerprint skips rebuild. Fingerprint hashes `package.json`, `yarn.lock`, optional in-tree CRA config/`.env*`, and when set the external `ETERNAL_FRONTEND_ENV_FILE` **content hash only** (values never logged).
+- Health checks after restart/publish use a **60s wall-clock budget** (retries include transient HTTP 502); success still requires `mongo=true` and `mode=operational`.
 - **FE-only / no-backend-change:** keep `current` + running process on the active release (no switch, no restart); verify `/proc/<MainPID>/cwd` matches that release.
 - **Backend change:** switch `current`, restart, then verify process cwd == new release backend.
-- Rollback never swallows component failures: continues other restores, holds lock until finished, verifies pointer/process/health/index, prints `ROLLBACK_PASS` or `ROLLBACK_FAILED`.
+- FE publish merges into the webroot leaf: skip byte-identical files (safe with root-owned hashed assets), fail closed on hashed `.js`/`.css` path collisions with different bytes, never recursive `chown`/`chmod`, atomic `index.html` last. Old unreferenced hashed assets are retained.
+- **`.js.map` exception (narrow):** when a hashed `static/**/*.js.map` collides with different bytes but the paired `.js` exists on both build and live and is byte-identical (`cmp`), publish/restore logs `SKIP_SOURCEMAP_COLLISION` and **keeps the live map** (no overwrite, no delete). If the paired `.js` is missing or byte-different → fail closed. This exception does **not** apply to `.js`, `.css`, `.css.map`, manifests, or other files. Caveat: a retained older map may not accurately represent the new build’s original sources even when the emitted `.js` matches — use for operational cutover safety, not as a guarantee of debug fidelity.
+- **Failure-path rollback** (deploy exits non-zero while lock held): never swallows component failures; continues other restores; verifies pointer/process/health/index (+ FE required state vs backup when publish was attempted); prints `ROLLBACK_PASS` or `ROLLBACK_FAILED`. Required FE state = live `index.html` (+ `asset-manifest.json` when present in backup) byte-identical to backup, index-referenced static assets present, and backup’s referenced `.js`/`.css` byte-identical on live; extra unreferenced files do not fail verification. If publish failed before the index swap and required FE state already matches backup, rollback does not force overwrite. `ROLLBACK_PASS` is never granted from HTTP 200 alone.
+- **Post-success rollback** (Owner-requested after `DEPLOY_OK`): separate allowlisted gate verb `rollback <deployed_sha40> <previous_id>` (`previous_id` = 40-hex or `baseline-active`). Uses the same flock. Validates `active-release.txt`, CURRENT identity, recorded rollback-point predecessor, and identity-scoped FE backup under `rollback-points/<sha>/` (not mutable `frontend-prev`). Restores FE+BE as the recorded pair; verifies index/manifest/required assets, CURRENT, systemd runtime identity, and health (`mongo=true` + `mode=operational`). Prints `ROLLBACK_SUCCESS` or `ROLLBACK_FAILED` with current state. Refuse closed on SHA mismatch, predecessor mismatch, missing/corrupt backup, busy lock, or a newer deployment. Retention: `ETERNAL_ROLLBACK_POINT_RETENTION` (default 5); active SHA point is never pruned.
+- **Code rollback does not reverse MongoDB or business transactions** already committed under the rolled-back release.
 - Baseline rollback runtime must pass the same validation (not marker-only).
-- FE backup under runtime root; publish/restore in-place (assets then atomic `index.html`); never rename webroot under root-owned `/var/www`.
+- FE backup under runtime root; publish/restore in-place; never rename webroot under root-owned `/var/www`.
 - No business migrations/backfills.
 
 ## Cursor trigger helper
@@ -107,13 +116,29 @@ Keep dirty `/opt/eternal-packaging` overlay untouched. Pure SHA does **not** aut
 ```bash
 bash scripts/deploy/trigger_github_actions.sh plan probe
 bash scripts/deploy/trigger_github_actions.sh plan deploy --sha <40-hex> --confirm-sha <40-hex>
-# execute only with write credential + Owner order:
+bash scripts/deploy/trigger_github_actions.sh plan rollback \
+  --sha <deployed-40-hex> --confirm-sha <deployed-40-hex> \
+  --previous-id <previous-40-hex|baseline-active>
+# execute only with write credential + Owner order (exact targets required):
 bash scripts/deploy/trigger_github_actions.sh execute probe --execute
 bash scripts/deploy/trigger_github_actions.sh execute deploy \
   --sha <40-hex> --confirm-sha <40-hex> --ack-replace-live-frontend --execute
+bash scripts/deploy/trigger_github_actions.sh execute rollback \
+  --sha <deployed-40-hex> --confirm-sha <deployed-40-hex> \
+  --previous-id <previous-40-hex|baseline-active> --execute
 ```
 
 Shared secret travels env → JSON stdin (`gh api --input -`), never argv/logs.
+
+After a successful single POST, the helper correlates `request_id`, prints `DISPATCH_OK`, then **bounded-waits** for workflow completion (`ETERNAL_TRIGGER_WAIT_*`). It reports `WORKFLOW_SUCCESS|FAILED|CANCELLED|TIMED_OUT` and classifies runner evidence from redacted logs (`RUNNER_DEPLOY_SUCCESS`, `RUNNER_ROLLBACK_SUCCESS`, `RUNNER_ROLLBACK_PASS`, `RUNNER_ROLLBACK_FAILED`, or `RESULT_UNKNOWN`). GitHub `success` alone is never treated as deploy/rollback success without matching runner evidence (`DEPLOY_OK` / `ROLLBACK_SUCCESS` / probe `ETERNAL_GATE_OK`). Missing logs → `RESULT_UNKNOWN`. Never auto-rollback from a bug report without exact deployed SHA + previous id.
+
+### Owner post-success rollback procedure
+
+1. Confirm production still runs the SHA to undo (`active-release.txt` / `DEPLOY_OK` evidence) and note the recorded `previous_id` from that deploy’s rollback point / deploy log.
+2. `plan rollback` with exact `--sha` / `--confirm-sha` / `--previous-id` (no tip auto-pick).
+3. Owner-authorized `execute rollback … --execute` (actor allowlist + Environment approval + shared secret).
+4. Accept only `ROLLBACK_SUCCESS` with FE/BE verification evidence — not HTTP 200 alone.
+5. Remember: code rollback ≠ transaction rollback.
 
 ## Probe-only workflow
 

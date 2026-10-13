@@ -701,6 +701,7 @@ async def test_two_concurrent_receipts_do_not_double_count_baseline():
         post_movement,
         require_transaction_support,
     )
+    from services.r2_go_live import set_r2_authority_active
 
     # Goods receipt posts R2 inside a Mongo transaction. CI mongo:7 is standalone.
     try:
@@ -709,6 +710,7 @@ async def test_two_concurrent_receipts_do_not_double_count_baseline():
         pytest.skip("MongoDB replica set required for concurrent R2 goods receipts")
 
     await ensure_physical_indexes(server.db)
+    await set_r2_authority_active(server.db, active=True, actor={"email": USER["email"]})
     await server.db.branches.update_one(
         {"id": "branch-ygy"},
         {"$set": {"id": "branch-ygy", "code": "YGY", "name": "Yogyakarta", "active": True}},

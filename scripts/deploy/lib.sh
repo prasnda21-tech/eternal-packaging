@@ -194,13 +194,353 @@ eternal_release_lock() {
 
 eternal_assert_no_local_conflict() {
   local frontend_root="$1"
-  local release_dir="$2"
+  # release_dir arg retained for call-site compatibility; incomplete releases are
+  # handled by eternal_materialize_release reuse/fail-closed (never silent rm -rf).
+  local _release_dir="${2:-}"
   if [[ -e "$frontend_root/.deploy-in-progress" ]]; then
     eternal_deploy_die "local conflict: frontend deploy-in-progress marker present ($frontend_root/.deploy-in-progress)"
   fi
-  if [[ -d "$release_dir" && ! -f "$release_dir/.deploy-ok" && ! -f "$release_dir/.baseline" ]]; then
-    eternal_deploy_die "local conflict: incomplete release directory exists ($release_dir)"
+}
+
+# True when relpath is under static/ (immutable hashed asset policy).
+eternal_fe_is_hashed_relpath() {
+  local rel="${1#./}"
+  [[ "$rel" == static/* ]]
+}
+
+# Emit required static/ asset relpaths (one per line) for reuse / integrity checks.
+# Sources (real refs only):
+#   1) index.html src= / href= attributes pointing at /static/... or static/...
+#   2) optional asset-manifest.json values/entrypoints under static/
+# Does NOT treat arbitrary "static/..." substrings inside inline scripts (e.g. PostHog
+# concatenating remote ".../static/array.js") as local build assets.
+eternal_fe_list_required_static_assets() {
+  local index_html="$1"
+  local manifest="${2:-}"
+  local ref raw
+  [[ -f "$index_html" ]] || return 1
+
+  while IFS= read -r raw; do
+    [[ -z "$raw" ]] && continue
+    # strip src=" / href=' wrappers
+    ref="${raw#*=}"
+    ref="${ref#\"}"
+    ref="${ref#\'}"
+    ref="${ref%\"}"
+    ref="${ref%\'}"
+    ref="${ref#./}"
+    ref="${ref#/}"
+    [[ "$ref" == static/* ]] || continue
+    [[ "$ref" == *..* ]] && continue
+    printf '%s\n' "$ref"
+  done < <(grep -oE '(src|href)=["'\'']/?static/[^"'\'']+["'\'']' "$index_html" 2>/dev/null || true)
+
+  if [[ -n "$manifest" && -f "$manifest" ]]; then
+    while IFS= read -r raw; do
+      [[ -z "$raw" ]] && continue
+      ref="${raw#\"}"
+      ref="${ref%\"}"
+      ref="${ref#./}"
+      ref="${ref#/}"
+      [[ "$ref" == static/* ]] || continue
+      [[ "$ref" == *..* ]] && continue
+      # Manifest may list index.html under files; only static/ is required here.
+      printf '%s\n' "$ref"
+    done < <(grep -oE '"/?static/[^"]+"' "$manifest" 2>/dev/null || true)
   fi
+  return 0
+}
+
+# True for static/**/*.js.map only. Does NOT match .css.map or other artifacts.
+eternal_fe_is_js_sourcemap_relpath() {
+  local rel="${1#./}"
+  eternal_fe_is_hashed_relpath "$rel" || return 1
+  [[ "$rel" == *.js.map ]]
+}
+
+# Ensure candidate path resolves inside webroot (blocks symlink/path escape).
+eternal_path_is_under_root() {
+  local root="$1"
+  local candidate="$2"
+  local root_real cand_real
+  root_real="$(readlink -f "$root" 2>/dev/null || true)"
+  [[ -n "$root_real" ]] || return 1
+  if [[ -e "$candidate" || -L "$candidate" ]]; then
+    cand_real="$(readlink -f "$candidate" 2>/dev/null || true)"
+  else
+    local parent base
+    parent="$(dirname "$candidate")"
+    base="$(basename "$candidate")"
+    mkdir -p "$parent" 2>/dev/null || true
+    parent="$(readlink -f "$parent" 2>/dev/null || true)"
+    [[ -n "$parent" ]] || return 1
+    cand_real="$parent/$base"
+  fi
+  [[ -n "$cand_real" ]] || return 1
+  [[ "$cand_real" == "$root_real" || "$cand_real" == "$root_real"/* ]]
+}
+
+# Fingerprint of frontend build inputs (no secret values logged — hashes only).
+# Includes in-tree config and, when set, the external ETERNAL_FRONTEND_ENV_FILE content hash
+# so reuse cannot skip rebuild after effective CRA/env inputs change.
+eternal_frontend_input_fingerprint() {
+  local frontend_dir="$1"
+  local pkg="$frontend_dir/package.json"
+  local lock=""
+  if [[ -f "$frontend_dir/yarn.lock" ]]; then
+    lock="$frontend_dir/yarn.lock"
+  elif [[ -f "$frontend_dir/../yarn.lock" ]]; then
+    lock="$frontend_dir/../yarn.lock"
+  fi
+  [[ -f "$pkg" ]] || eternal_deploy_die "frontend fingerprint: package.json missing"
+  [[ -n "$lock" && -f "$lock" ]] || eternal_deploy_die "frontend fingerprint: yarn.lock missing"
+  if [[ -n "${ETERNAL_FRONTEND_ENV_FILE:-}" ]]; then
+    [[ -f "$ETERNAL_FRONTEND_ENV_FILE" ]] \
+      || eternal_deploy_die "frontend fingerprint: ETERNAL_FRONTEND_ENV_FILE missing ($ETERNAL_FRONTEND_ENV_FILE)"
+  fi
+  {
+    sha256sum "$pkg" "$lock"
+    if [[ -f "$frontend_dir/craco.config.js" ]]; then
+      sha256sum "$frontend_dir/craco.config.js"
+    fi
+    if [[ -f "$frontend_dir/config-overrides.js" ]]; then
+      sha256sum "$frontend_dir/config-overrides.js"
+    fi
+    if [[ -f "$frontend_dir/.env.production" ]]; then
+      sha256sum "$frontend_dir/.env.production"
+    fi
+    if [[ -f "$frontend_dir/.env" ]]; then
+      sha256sum "$frontend_dir/.env"
+    fi
+    if [[ -n "${ETERNAL_FRONTEND_ENV_FILE:-}" && -f "$ETERNAL_FRONTEND_ENV_FILE" ]]; then
+      # Hash only — never print file contents (may contain non-secret CRA public vars).
+      sha256sum "$ETERNAL_FRONTEND_ENV_FILE"
+    fi
+  } | sha256sum | awk '{print $1}'
+}
+
+eternal_write_frontend_fingerprint() {
+  local release_dir="$1"
+  local fp
+  fp="$(eternal_frontend_input_fingerprint "$release_dir/frontend")"
+  printf '%s\n' "$fp" >"$release_dir/.eternal-frontend-fingerprint"
+  eternal_deploy_log "frontend build fingerprint recorded"
+}
+
+# Merge one file into webroot with skip-identical / hashed fail-closed / mutable overwrite.
+# Returns 0 on success; dies on policy violation (publish) or returns 1 when soft=1.
+eternal_webroot_install_file() {
+  local src="$1"
+  local dest_root="$2"
+  local rel="${3#./}"
+  local soft="${4:-0}"
+  local dest="$dest_root/$rel"
+  local dest_dir
+
+  [[ -f "$src" ]] || {
+    eternal_deploy_log "webroot install: source missing $src"
+    [[ "$soft" == "1" ]] && return 1
+    eternal_deploy_die "webroot install: source missing $src"
+  }
+  [[ "$rel" != *..* ]] || eternal_deploy_die "webroot install: path traversal refused ($rel)"
+  [[ "$rel" != /* ]] || eternal_deploy_die "webroot install: absolute relpath refused ($rel)"
+
+  dest_dir="$(dirname "$dest")"
+  mkdir -p "$dest_dir" || {
+    [[ "$soft" == "1" ]] && return 1
+    eternal_deploy_die "webroot install: cannot mkdir $dest_dir"
+  }
+  eternal_path_is_under_root "$dest_root" "$dest" \
+    || eternal_deploy_die "webroot install: destination escapes webroot ($rel)"
+
+  if [[ -e "$dest" || -L "$dest" ]]; then
+    if [[ -L "$dest" ]]; then
+      eternal_deploy_log "ERROR: webroot install refuses symlink destination $rel"
+      [[ "$soft" == "1" ]] && return 1
+      eternal_deploy_die "webroot install: symlink destination refused ($rel)"
+    fi
+    if [[ -f "$dest" ]] && cmp -s "$src" "$dest"; then
+      eternal_deploy_log "SKIP_IDENTICAL $rel"
+      return 0
+    fi
+    if eternal_fe_is_hashed_relpath "$rel"; then
+      # .js.map only: when the paired .js is present on both sides and byte-identical,
+      # keep the live map (no overwrite). Does not claim debug equivalence to the new
+      # build sources — only that the executable .js payload matches. .css.map and
+      # other hashed assets remain fail-closed.
+      if eternal_fe_is_js_sourcemap_relpath "$rel"; then
+        local js_src="${src%.map}"
+        local js_dest="${dest%.map}"
+        if [[ -f "$js_src" && -f "$js_dest" && ! -L "$js_src" && ! -L "$js_dest" ]] \
+          && cmp -s "$js_src" "$js_dest"; then
+          eternal_deploy_log "SKIP_SOURCEMAP_COLLISION $rel (paired .js byte-identical; keep live map)"
+          return 0
+        fi
+        eternal_deploy_log "ERROR: js sourcemap collision without identical paired .js path=$rel — refuse overwrite"
+        [[ "$soft" == "1" ]] && return 1
+        eternal_deploy_die "js sourcemap collision without identical paired .js: $rel"
+      fi
+      eternal_deploy_log "ERROR: hashed asset collision (byte-different) path=$rel — refuse overwrite"
+      [[ "$soft" == "1" ]] && return 1
+      eternal_deploy_die "hashed asset collision (byte-different): $rel"
+    fi
+    # Mutable metadata (manifest, favicon, …): overwrite only when writable.
+    if [[ -w "$dest" ]]; then
+      cp -a "$src" "$dest" || {
+        [[ "$soft" == "1" ]] && return 1
+        eternal_deploy_die "webroot install: failed writing mutable $rel"
+      }
+      return 0
+    fi
+    eternal_deploy_log "ERROR: mutable webroot file not writable path=$rel (no recursive chown)"
+    [[ "$soft" == "1" ]] && return 1
+    eternal_deploy_die "webroot install: not writable $rel"
+  fi
+
+  # New file — copy into place (parent dir must be writable; preflight checks leaf).
+  cp -a "$src" "$dest" || {
+    [[ "$soft" == "1" ]] && return 1
+    eternal_deploy_die "webroot install: copy failed $rel"
+  }
+  eternal_path_is_under_root "$dest_root" "$dest" \
+    || eternal_deploy_die "webroot install: post-copy escape ($rel)"
+  return 0
+}
+
+# Merge build/backup tree into webroot except index.html (atomic separately).
+# soft=1 → return 1 on failure instead of die (rollback restore).
+eternal_webroot_merge_tree() {
+  local src_root="$1"
+  local dest_root="$2"
+  local soft="${3:-0}"
+  local src_file rel
+  [[ -d "$src_root" ]] || {
+    eternal_deploy_log "webroot merge: source tree missing $src_root"
+    return 1
+  }
+  [[ -d "$dest_root" ]] || mkdir -p "$dest_root" || return 1
+  [[ -w "$dest_root" ]] || {
+    eternal_deploy_log "webroot merge: dest not writable $dest_root"
+    return 1
+  }
+
+  while IFS= read -r -d '' src_file; do
+    rel="${src_file#"$src_root"/}"
+    [[ "$rel" == "index.html" ]] && continue
+    [[ "$rel" == ".deploy-in-progress" ]] && continue
+    if [[ "$soft" == "1" ]]; then
+      eternal_webroot_install_file "$src_file" "$dest_root" "$rel" 1 || return 1
+    else
+      eternal_webroot_install_file "$src_file" "$dest_root" "$rel" 0
+    fi
+  done < <(find "$src_root" -type f -print0 2>/dev/null)
+
+  return 0
+}
+
+# Validate a failed/incomplete release for reuse (no .deploy-ok). Never deletes the tree.
+# Uses die-based validators; on failure the process exits (fail closed).
+eternal_try_reuse_incomplete_release() {
+  local release_dir="$1"
+  local sha="$2"
+  local recorded_sha recorded_fp actual_fp req_rel req_hash
+  [[ -d "$release_dir" ]] || return 1
+  [[ ! -f "$release_dir/.deploy-corrupt" ]] || {
+    eternal_deploy_log "reuse refused: .deploy-corrupt present"
+    return 1
+  }
+  [[ -f "$release_dir/.eternal-source-sha" ]] || {
+    eternal_deploy_log "reuse refused: .eternal-source-sha missing"
+    return 1
+  }
+  recorded_sha="$(tr -d '\n' <"$release_dir/.eternal-source-sha")"
+  [[ "$recorded_sha" == "$sha" ]] || {
+    eternal_deploy_log "reuse refused: source sha mismatch recorded=$recorded_sha want=$sha"
+    return 1
+  }
+  [[ -f "$release_dir/frontend/build/index.html" ]] || {
+    eternal_deploy_log "reuse refused: frontend/build/index.html missing"
+    return 1
+  }
+  [[ -f "$release_dir/.eternal-frontend-fingerprint" ]] || {
+    eternal_deploy_log "reuse refused: .eternal-frontend-fingerprint missing"
+    return 1
+  }
+  recorded_fp="$(tr -d '\n' <"$release_dir/.eternal-frontend-fingerprint")"
+  actual_fp="$(eternal_frontend_input_fingerprint "$release_dir/frontend")"
+  [[ "$recorded_fp" == "$actual_fp" ]] || {
+    eternal_deploy_log "reuse refused: frontend input fingerprint mismatch"
+    return 1
+  }
+  local ref
+  local manifest="$release_dir/frontend/build/asset-manifest.json"
+  # Deduplicate refs (index attrs + manifest may overlap).
+  while IFS= read -r ref; do
+    [[ -z "$ref" ]] && continue
+    [[ -f "$release_dir/frontend/build/$ref" ]] || {
+      eternal_deploy_log "reuse refused: build asset missing $ref"
+      return 1
+    }
+  done < <(eternal_fe_list_required_static_assets \
+    "$release_dir/frontend/build/index.html" \
+    "$([[ -f "$manifest" ]] && printf '%s' "$manifest")" | awk 'NF && !seen[$0]++')
+
+  [[ -x "$release_dir/backend/.venv/bin/uvicorn" ]] || {
+    eternal_deploy_log "reuse refused: backend .venv/uvicorn missing"
+    return 1
+  }
+  eternal_validate_backend_runtime "$release_dir/backend" || return 1
+  if [[ -f "$release_dir/backend/.eternal-requirements-file" \
+     && -f "$release_dir/backend/.eternal-requirements-sha256" ]]; then
+    req_rel="$(tr -d '\n' <"$release_dir/backend/.eternal-requirements-file")"
+    req_hash="$(tr -d '\n' <"$release_dir/backend/.eternal-requirements-sha256")"
+    eternal_verify_requirements_provenance "$release_dir/backend" "$req_rel" "$req_hash" || return 1
+    eternal_verify_requirements_installed "$release_dir/backend" "$req_rel" || return 1
+  else
+    eternal_deploy_log "reuse refused: requirements provenance markers missing"
+    return 1
+  fi
+  return 0
+}
+
+# True when live required FE state matches backup: index (+ manifest when present in
+# backup) byte-identical, and every *real* static asset ref exists on live.
+# Asset refs use eternal_fe_list_required_static_assets (src/href + manifest only) —
+# inline/remote strings such as PostHog ".../static/array.js" are ignored.
+# Executable .js/.css refs present in the backup must also be byte-identical on live.
+# Extra unreferenced files on live (including leftover hashed assets / .js.map) do not
+# fail this check. Does not treat HTTP health as sufficient.
+eternal_frontend_required_state_ok() {
+  local live_root="$1"
+  local backup_root="$2"
+  local live_index="$live_root/index.html"
+  local bak_index="$backup_root/index.html"
+  local bak_manifest="$backup_root/asset-manifest.json"
+  local live_manifest="$live_root/asset-manifest.json"
+  [[ -f "$live_index" && -f "$bak_index" ]] || return 1
+  cmp -s "$live_index" "$bak_index" || return 1
+  if [[ -f "$bak_manifest" ]]; then
+    [[ -f "$live_manifest" ]] || return 1
+    cmp -s "$bak_manifest" "$live_manifest" || return 1
+  fi
+  local ref
+  while IFS= read -r ref; do
+    [[ -z "$ref" ]] && continue
+    [[ -f "$live_root/$ref" ]] || return 1
+    # Main executable assets from the previous frontend must match backup bytes when
+    # the backup still holds them. Source maps are not required to match.
+    case "$ref" in
+      *.js.map|*.css.map) ;;
+      *.js|*.css)
+        if [[ -f "$backup_root/$ref" ]]; then
+          cmp -s "$live_root/$ref" "$backup_root/$ref" || return 1
+        fi
+        ;;
+    esac
+  done < <(eternal_fe_list_required_static_assets \
+    "$live_index" \
+    "$([[ -f "$bak_manifest" ]] && printf '%s' "$bak_manifest")" | awk 'NF && !seen[$0]++')
+  return 0
 }
 
 # Resolve requirements file relative to backend/. Default: requirements.portable.txt.
@@ -356,6 +696,22 @@ sys.exit(0 if mongo is True and mode=="operational" else 1)
   [[ "$body" == *'"mongo": true'* || "$body" == *'"mongo":true'* ]] || return 1
   [[ "$body" == *'"mode": "operational"'* || "$body" == *'"mode":"operational"'* ]] || return 1
   return 0
+}
+
+# Production frontend install/build: Yarn only (matches CI). No npm fallback.
+eternal_frontend_production_build() {
+  local frontend_dir="$1"
+  [[ -d "$frontend_dir" ]] || eternal_deploy_die "frontend tree missing: $frontend_dir"
+  [[ -f "$frontend_dir/yarn.lock" ]] \
+    || eternal_deploy_die "frontend yarn.lock missing; production deploy requires Yarn (CI standard); npm fallback removed"
+  command -v yarn >/dev/null 2>&1 \
+    || eternal_deploy_die "yarn required but not found; production deploy does not use npm"
+
+  (
+    cd "$frontend_dir"
+    yarn install --frozen-lockfile
+    yarn build
+  ) || eternal_deploy_die "frontend yarn install/build failed; live not activated"
 }
 
 eternal_constant_time_eq() {
@@ -639,4 +995,213 @@ eternal_baseline_verify_integrity_core() {
     eternal_deploy_die "baseline content digest mismatch (frozen tree altered)"
   fi
   eternal_validate_backend_runtime "$baseline_dir/tree/backend"
+}
+
+# --- Post-success rollback identity (rollback-points/<sha40>/) ---
+# previous_id is either a 40-hex SHA or the literal baseline-active (first cutover).
+
+eternal_is_previous_id() {
+  local value="${1:-}"
+  [[ "$value" == "baseline-active" ]] && return 0
+  eternal_is_sha40 "$value"
+}
+
+eternal_require_previous_id() {
+  local value="${1:-}"
+  eternal_is_previous_id "$value" \
+    || eternal_deploy_die "previous release id must be 40 lowercase hex or baseline-active"
+}
+
+eternal_rollback_points_root() {
+  local releases_root="${1:-}"
+  [[ -n "$releases_root" ]] || eternal_deploy_die "rollback points root requires releases root"
+  printf '%s/rollback-points\n' "$releases_root"
+}
+
+eternal_rollback_point_dir() {
+  local releases_root="$1"
+  local deployed_sha="$2"
+  eternal_require_sha40 "$deployed_sha"
+  printf '%s/%s\n' "$(eternal_rollback_points_root "$releases_root")" "$deployed_sha"
+}
+
+# Refuse symlink escape / arbitrary path for a rollback-point directory.
+eternal_assert_safe_rollback_point_dir() {
+  local point_dir="$1"
+  local releases_root="$2"
+  local root points resolved
+  points="$(eternal_rollback_points_root "$releases_root")"
+  [[ -d "$points" ]] || eternal_deploy_die "rollback-points root missing: $points"
+  root="$(readlink -f "$points" 2>/dev/null || true)"
+  [[ -n "$root" ]] || eternal_deploy_die "rollback-points root unreadable"
+  resolved="$(readlink -f "$point_dir" 2>/dev/null || true)"
+  [[ -n "$resolved" ]] || eternal_deploy_die "rollback point path unreadable: $point_dir"
+  eternal_path_is_under_root "$root" "$resolved" \
+    || eternal_deploy_die "rollback point escapes rollback-points root"
+  # Point dir itself must not be a symlink.
+  [[ ! -L "$point_dir" ]] || eternal_deploy_die "rollback point directory must not be a symlink"
+}
+
+eternal_meta_get() {
+  local meta_file="$1"
+  local key="$2"
+  [[ -f "$meta_file" ]] || return 1
+  sed -n "s/^${key}=//p" "$meta_file" | head -n1
+}
+
+# Write identity-scoped FE backup + meta after DEPLOY_OK.
+# fe_src may be empty when frontend was not published in this deploy.
+eternal_write_rollback_point() {
+  local releases_root="$1"
+  local deployed_sha="$2"
+  local previous_id="$3"
+  local previous_path="$4"
+  local previous_is_baseline="$5"
+  local current_switched="$6"
+  local frontend_published="$7"
+  local fe_src="${8:-}"
+  local retention="${ETERNAL_ROLLBACK_POINT_RETENTION:-5}"
+  local point_dir meta fe_dst parent
+
+  eternal_require_sha40 "$deployed_sha"
+  eternal_require_previous_id "$previous_id"
+  [[ "$previous_is_baseline" == "0" || "$previous_is_baseline" == "1" ]] \
+    || eternal_deploy_die "previous_is_baseline must be 0|1"
+  [[ "$current_switched" == "0" || "$current_switched" == "1" ]] \
+    || eternal_deploy_die "current_switched must be 0|1"
+  [[ "$frontend_published" == "0" || "$frontend_published" == "1" ]] \
+    || eternal_deploy_die "frontend_published must be 0|1"
+  [[ -n "$previous_path" ]] || eternal_deploy_die "previous_path required for rollback point"
+
+  parent="$(eternal_rollback_points_root "$releases_root")"
+  mkdir -p "$parent"
+  point_dir="$(eternal_rollback_point_dir "$releases_root" "$deployed_sha")"
+  # Replace any prior point for this SHA (redeploy of same SHA).
+  rm -rf "$point_dir"
+  mkdir -p "$point_dir"
+  eternal_assert_safe_rollback_point_dir "$point_dir" "$releases_root"
+
+  meta="$point_dir/meta.txt"
+  {
+    printf 'deployed_sha=%s\n' "$deployed_sha"
+    printf 'previous_id=%s\n' "$previous_id"
+    printf 'previous_path=%s\n' "$previous_path"
+    printf 'previous_is_baseline=%s\n' "$previous_is_baseline"
+    printf 'current_switched=%s\n' "$current_switched"
+    printf 'frontend_published=%s\n' "$frontend_published"
+    printf 'created_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  } >"$meta"
+
+  if [[ "$frontend_published" == "1" ]]; then
+    [[ -n "$fe_src" && -d "$fe_src" ]] \
+      || eternal_deploy_die "frontend backup source missing for rollback point"
+    [[ -f "$fe_src/index.html" ]] \
+      || eternal_deploy_die "frontend backup source missing index.html"
+    [[ ! -L "$fe_src" ]] || eternal_deploy_die "frontend backup source must not be a symlink"
+    fe_dst="$point_dir/frontend"
+    mkdir -p "$fe_dst"
+    cp -a "$fe_src"/. "$fe_dst"/
+    [[ -f "$fe_dst/index.html" ]] || eternal_deploy_die "rollback point frontend missing index.html after copy"
+    printf 'frontend_backup_ok=1\n' >>"$meta"
+  else
+    printf 'frontend_backup_ok=0\n' >>"$meta"
+  fi
+
+  eternal_write_active_release_marker "$releases_root" "$deployed_sha" "$previous_id"
+  eternal_prune_rollback_points "$releases_root" "$retention" "$deployed_sha"
+  eternal_deploy_log "rollback point recorded sha=$deployed_sha previous=$previous_id"
+}
+
+eternal_write_active_release_marker() {
+  local releases_root="$1"
+  local sha="$2"
+  local previous_id="$3"
+  local marker="$releases_root/active-release.txt"
+  mkdir -p "$releases_root"
+  {
+    printf 'sha=%s\n' "$sha"
+    printf 'previous_id=%s\n' "$previous_id"
+    printf 'updated_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  } >"$marker"
+}
+
+eternal_read_active_release_sha() {
+  local releases_root="$1"
+  local marker="$releases_root/active-release.txt"
+  [[ -f "$marker" ]] || return 1
+  eternal_meta_get "$marker" "sha"
+}
+
+# Keep newest N points; never delete the point for keep_sha (active deploy identity).
+eternal_prune_rollback_points() {
+  local releases_root="$1"
+  local retention="$2"
+  local keep_sha="$3"
+  local parent entry meta created
+  local -a entries=()
+  parent="$(eternal_rollback_points_root "$releases_root")"
+  [[ -d "$parent" ]] || return 0
+  [[ "$retention" =~ ^[1-9][0-9]*$ ]] || retention=5
+
+  while IFS= read -r entry; do
+    [[ -n "$entry" ]] || continue
+    meta="$entry/meta.txt"
+    [[ -f "$meta" ]] || continue
+    created="$(eternal_meta_get "$meta" "created_at")"
+    [[ -n "$created" ]] || created="1970-01-01T00:00:00Z"
+    entries+=("$created|$entry")
+  done < <(find "$parent" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
+
+  if ((${#entries[@]} <= retention)); then
+    return 0
+  fi
+  # Newest first.
+  local sorted
+  mapfile -t sorted < <(printf '%s\n' "${entries[@]}" | sort -r)
+  local i=0
+  local path base
+  for item in "${sorted[@]}"; do
+    i=$((i + 1))
+    path="${item#*|}"
+    base="$(basename "$path")"
+    if [[ "$base" == "$keep_sha" ]]; then
+      continue
+    fi
+    if (( i > retention )); then
+      eternal_deploy_log "prune rollback point (retention=$retention): $base"
+      rm -rf "$path"
+    fi
+  done
+}
+
+# Validate rollback-point meta + optional FE backup. Prints nothing; returns 0/1 or dies on hard errors.
+eternal_validate_rollback_point() {
+  local releases_root="$1"
+  local deployed_sha="$2"
+  local expected_previous_id="$3"
+  local point_dir meta prev_id fe_ok published fe_dir
+
+  eternal_require_sha40 "$deployed_sha"
+  eternal_require_previous_id "$expected_previous_id"
+  point_dir="$(eternal_rollback_point_dir "$releases_root" "$deployed_sha")"
+  [[ -d "$point_dir" ]] || eternal_deploy_die "rollback point missing for sha=$deployed_sha"
+  eternal_assert_safe_rollback_point_dir "$point_dir" "$releases_root"
+  meta="$point_dir/meta.txt"
+  [[ -f "$meta" && ! -L "$meta" ]] || eternal_deploy_die "rollback point meta missing or symlink"
+  prev_id="$(eternal_meta_get "$meta" "previous_id")"
+  [[ "$prev_id" == "$expected_previous_id" ]] \
+    || eternal_deploy_die "previous release mismatch: requested=$expected_previous_id recorded=$prev_id"
+  [[ "$(eternal_meta_get "$meta" "deployed_sha")" == "$deployed_sha" ]] \
+    || eternal_deploy_die "rollback point deployed_sha mismatch"
+  published="$(eternal_meta_get "$meta" "frontend_published")"
+  fe_ok="$(eternal_meta_get "$meta" "frontend_backup_ok")"
+  if [[ "$published" == "1" ]]; then
+    [[ "$fe_ok" == "1" ]] || eternal_deploy_die "rollback point frontend backup not marked ok"
+    fe_dir="$point_dir/frontend"
+    [[ -d "$fe_dir" && ! -L "$fe_dir" ]] || eternal_deploy_die "rollback point frontend backup missing or symlink"
+    [[ -f "$fe_dir/index.html" ]] || eternal_deploy_die "rollback point frontend backup corrupt (no index.html)"
+    eternal_path_is_under_root "$point_dir" "$(readlink -f "$fe_dir")" \
+      || eternal_deploy_die "rollback point frontend escapes point dir"
+  fi
+  return 0
 }

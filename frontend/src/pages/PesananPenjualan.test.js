@@ -135,6 +135,72 @@ describe("Pesanan Penjualan UI & Data Invariants", () => {
     expect(src).toMatch(/create-sales-order-btn/);
   });
 
+  test("list shows Dibuat Oleh and Status Faktur before Aksi with invoice deep link", () => {
+    expect(src).toMatch(/const canViewInvoice = hasPerm\("sales\.invoice\.view"\)/);
+    expect(src).toMatch(/Dibuat Oleh/);
+    expect(src).toMatch(/Status Faktur/);
+    expect(src).toMatch(/orderCreatorLabel\(o\)/);
+    expect(src).toMatch(/InvoiceStatusCell/);
+    expect(src).toMatch(/order-creator-\$/);
+    expect(src).toMatch(/order-invoice-status-/);
+    expect(src).toMatch(/faktur-penjualan\?invoice_id=/);
+    expect(src).not.toMatch(/faktur-penjualan\?po_id=/);
+    expect(src).toMatch(/api\.listSalesInvoices\(\{ po_id: order\.id \}\)/);
+    const creatorIdx = src.indexOf("Dibuat Oleh");
+    const invoiceIdx = src.indexOf("Status Faktur");
+    const aksiIdx = src.lastIndexOf(">Aksi<") >= 0 ? src.lastIndexOf(">Aksi<") : src.indexOf("Aksi");
+    expect(creatorIdx).toBeGreaterThan(-1);
+    expect(invoiceIdx).toBeGreaterThan(creatorIdx);
+    expect(aksiIdx).toBeGreaterThan(invoiceIdx);
+  });
+
+  test("list columns are independently resizable with persisted widths and reset", () => {
+    expect(src).toMatch(/so-resize-\$/);
+    expect(src).toMatch(/onColResizePointerDown/);
+    expect(src).toMatch(/setPointerCapture/);
+    expect(src).toMatch(/releasePointerCapture/);
+    expect(src).toMatch(/sales-order-reset-col-widths/);
+    expect(src).toMatch(/Reset Lebar Kolom/);
+    expect(src).toMatch(/readSalesOrderColWidths/);
+    expect(src).toMatch(/writeSalesOrderColWidths/);
+    expect(src).toMatch(/clearSalesOrderColWidths/);
+    expect(src).toMatch(/clampSalesOrderColWidth/);
+    for (const key of [
+      "customer",
+      "orderDate",
+      "shipDate",
+      "qty",
+      "progress",
+      "status",
+      "sales",
+      "creator",
+      "invoice",
+      "actions",
+    ]) {
+      expect(src).toMatch(new RegExp(`colKey="${key}"`));
+    }
+  });
+
+  test("Proses and Sales are separate table columns before Dibuat Oleh", () => {
+    expect(src).toMatch(/className="so-col-status"/);
+    expect(src).toMatch(/className="so-col-sales"/);
+    expect(src).toMatch(/so-th-filter-stage/);
+    expect(src).toMatch(/so-th-filter-sales/);
+    expect(src).toMatch(/order-stage-\$/);
+    expect(src).toMatch(/order-sales-\$/);
+    expect(src).toMatch(/salesOrderSalesName\(o\)/);
+    expect(src).not.toMatch(/so-th-status-filters/);
+    expect(src).not.toMatch(/\{salesName \? <span className="so-list-sales"/);
+    const prosesTh = src.indexOf('testid="so-th-filter-stage"');
+    const salesTh = src.indexOf('testid="so-th-filter-sales"');
+    const creatorTh = src.indexOf("Dibuat Oleh");
+    const aksiTh = src.indexOf('colKey="actions"');
+    expect(prosesTh).toBeGreaterThan(-1);
+    expect(salesTh).toBeGreaterThan(prosesTh);
+    expect(creatorTh).toBeGreaterThan(salesTh);
+    expect(aksiTh).toBeGreaterThan(creatorTh);
+  });
+
   test("Barang/Jasa live search uses shared picker with 5-row list capacity", () => {
     const picker = fs.readFileSync(
       path.join(__dirname, "../components/MasterItemSearchSelect.jsx"),

@@ -1,22 +1,36 @@
 name: Deploy production
 
-# Manual immutable-SHA production deploy.
+# Manual immutable-SHA production deploy or post-success rollback.
 # Platform approval: GitHub Environment `production` required reviewers (Owner setup).
 # Shared input `deploy_shared_secret` is NOT human approval and NOT a secret store;
 # it only matches Environment secret DEPLOY_SHARED_SECRET as a secondary technical gate.
 # SSH keys remain Environment secrets only (never in Cursor workspace).
+# Rollback does not reverse MongoDB/business transactions.
 
 on:
   workflow_dispatch:
     inputs:
+      operation:
+        description: deploy (activate SHA) or rollback (restore previous release after DEPLOY_OK)
+        required: true
+        type: choice
+        options:
+          - deploy
+          - rollback
+        default: deploy
       commit_sha:
-        description: Immutable 40-char lowercase commit SHA already merged to main
+        description: For deploy = target SHA. For rollback = exact deployed SHA to undo.
         required: true
         type: string
       confirm_sha:
         description: Must exactly equal commit_sha (operator confirmation)
         required: true
         type: string
+      previous_release:
+        description: Rollback only — predecessor id (40-hex SHA or baseline-active). Ignored for deploy.
+        required: false
+        type: string
+        default: ""
       deploy_shared_secret:
         description: Technical shared secret (NOT human approval). Must match DEPLOY_SHARED_SECRET. Prefer Environment required reviewers for human approval.
         required: true
@@ -27,12 +41,12 @@ on:
         type: string
         default: ""
       allow_migrations:
-        description: Set true ONLY when Owner explicitly approved DB/business migrations in this SHA range
+        description: Deploy only — true ONLY when Owner explicitly approved DB/business migrations in this SHA range
         required: false
         type: boolean
         default: false
       ack_replace_live_frontend:
-        description: Required true on first cutover when deploy will replace live webroot (e.g. selective-merge FE) with pure SHA build. Pure SHA does NOT preserve overlay FE automatically.
+        description: Deploy only — required true on first cutover when pure SHA replaces live webroot
         required: false
         type: boolean
         default: false
@@ -57,16 +71,25 @@ jobs:
     timeout-minutes: 15
     outputs:
       sha: ${{ steps.normalize.outputs.sha }}
+      previous_id: ${{ steps.normalize.outputs.previous_id }}
+      operation: ${{ steps.normalize.outputs.operation }}
       request_id: ${{ steps.normalize.outputs.request_id }}
     steps:
-      - name: Normalize and confirm SHA
+      - name: Normalize and confirm targets
         id: normalize
         env:
           RAW_SHA: ${{ inputs.commit_sha }}
           CONFIRM_SHA: ${{ inputs.confirm_sha }}
+          RAW_PREV: ${{ inputs.previous_release }}
+          OPERATION: ${{ inputs.operation }}
           REQUEST_ID: ${{ inputs.request_id }}
         run: |
           set -euo pipefail
+          op="$(printf '%s' "$OPERATION" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+          if [[ "$op" != "deploy" && "$op" != "rollback" ]]; then
+            echo "operation must be deploy or rollback" >&2
+            exit 1
+          fi
           sha="$(printf '%s' "$RAW_SHA" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
           confirm="$(printf '%s' "$CONFIRM_SHA" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
           if [[ ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
@@ -77,14 +100,32 @@ jobs:
             echo "confirm_sha must exactly equal commit_sha" >&2
             exit 1
           fi
+          prev=""
+          if [[ "$op" == "rollback" ]]; then
+            prev="$(printf '%s' "$RAW_PREV" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+            if [[ "$prev" != "baseline-active" && ! "$prev" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "previous_release must be 40 lowercase hex or baseline-active" >&2
+              exit 1
+            fi
+          fi
+          echo "operation=$op" >>"$GITHUB_OUTPUT"
           echo "sha=$sha" >>"$GITHUB_OUTPUT"
+          echo "previous_id=$prev" >>"$GITHUB_OUTPUT"
           echo "request_id=${REQUEST_ID}" >>"$GITHUB_OUTPUT"
-          echo "PREFLIGHT request_id=${REQUEST_ID:-none}"
+          echo "PREFLIGHT operation=${op} request_id=${REQUEST_ID:-none} sha=${sha} previous_id=${prev:-n/a}"
 
       - name: Checkout main at requested SHA
+        if: steps.normalize.outputs.operation == 'deploy'
         uses: actions/checkout@v4
         with:
           ref: ${{ steps.normalize.outputs.sha }}
+          fetch-depth: 0
+
+      - name: Checkout main tip for rollback scripts
+        if: steps.normalize.outputs.operation == 'rollback'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
           fetch-depth: 0
 
       - name: Verify SHA is on origin/main ancestry
@@ -100,7 +141,8 @@ jobs:
           fi
           echo "ancestry OK for $SHA"
 
-      - name: Require explicit green CI jobs for SHA
+      - name: Require explicit green CI jobs for deploy SHA
+        if: steps.normalize.outputs.operation == 'deploy'
         env:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ steps.normalize.outputs.sha }}
@@ -126,14 +168,14 @@ jobs:
           # Fail-closed: technical secret must not be the only gate.
           # Preferred human gate = Environment Required reviewers (if/when available).
           # Enforced substitute for this private repo = repository variable DEPLOY_ALLOWED_ACTORS
-          # (comma-separated GitHub logins). Secret alone cannot authorize deploy.
+          # (comma-separated GitHub logins). Secret alone cannot authorize deploy/rollback.
           if [[ -z "${ALLOWED//[[:space:]]/}" ]]; then
             echo "DEPLOY_ALLOWED_ACTORS unset. Owner must set repo variable to allowed dispatch logins (and prefer Environment Required reviewers if the platform supports them). Refusing secret-only authorization." >&2
             exit 1
           fi
           norm=",$(printf '%s' "$ALLOWED" | tr -d '[:space:]'),"
           if [[ "$norm" != *",${ACTOR},"* ]]; then
-            echo "actor=${ACTOR} is not in DEPLOY_ALLOWED_ACTORS; deploy authorization refused" >&2
+            echo "actor=${ACTOR} is not in DEPLOY_ALLOWED_ACTORS; authorization refused" >&2
             exit 1
           fi
           echo "ACTOR_ALLOWLIST_OK actor=${ACTOR}"
@@ -169,17 +211,28 @@ jobs:
           echo "OWNER_APPROVAL_NOTE=Shared secret is secondary only. Human control = DEPLOY_ALLOWED_ACTORS (+ Required reviewers when available). Secret alone cannot authorize."
 
   deploy:
-    name: Deploy via SSH (environment secrets)
+    name: Deploy or rollback via SSH (environment secrets)
     needs: [preflight, authorize]
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     environment: production
     steps:
-      - name: Checkout deploy scripts at SHA
+      - name: Checkout deploy scripts (deploy target SHA)
+        if: needs.preflight.outputs.operation == 'deploy'
         uses: actions/checkout@v4
         with:
           ref: ${{ needs.preflight.outputs.sha }}
+          fetch-depth: 1
+          sparse-checkout: |
+            scripts/deploy
+          sparse-checkout-cone-mode: true
+
+      - name: Checkout deploy scripts (main tip for rollback)
+        if: needs.preflight.outputs.operation == 'rollback'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
           fetch-depth: 1
           sparse-checkout: |
             scripts/deploy
@@ -209,7 +262,7 @@ jobs:
             echo "::add-mask::${line}"
           done <<<"${DEPLOY_KNOWN_HOSTS}"
 
-      - name: Probe SSH gate before deploy
+      - name: Probe SSH gate before operation
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
@@ -220,7 +273,7 @@ jobs:
           set -euo pipefail
           bash scripts/deploy/ssh_gate_probe.sh
 
-      - name: Deploy immutable SHA
+      - name: Run allowlisted SSH operation
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
@@ -228,6 +281,8 @@ jobs:
           DEPLOY_SSH_PORT: ${{ secrets.DEPLOY_SSH_PORT }}
           DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
           SHA: ${{ needs.preflight.outputs.sha }}
+          PREVIOUS_ID: ${{ needs.preflight.outputs.previous_id }}
+          OPERATION: ${{ needs.preflight.outputs.operation }}
           ALLOW_MIGRATIONS: ${{ inputs.allow_migrations }}
           ACK_REPLACE_LIVE_FRONTEND: ${{ inputs.ack_replace_live_frontend }}
           REQUEST_ID: ${{ needs.preflight.outputs.request_id }}
@@ -242,15 +297,21 @@ jobs:
           cleanup() { rm -f "$key_file" "$known_hosts"; }
           trap cleanup EXIT
 
-          if [[ "$ALLOW_MIGRATIONS" == "true" ]]; then
-            echo "NOTE: allow_migrations=true requested; VPS must have ETERNAL_ALLOW_MIGRATIONS=1 (Owner-controlled)."
+          if [[ "$OPERATION" == "rollback" ]]; then
+            # Allowlisted rollback only — never arbitrary shell / paths.
+            remote_cmd="rollback ${SHA} ${PREVIOUS_ID}"
+            echo "ROLLBACK request_id=${REQUEST_ID:-none} deployed_sha=${SHA} previous_id=${PREVIOUS_ID}"
+          else
+            if [[ "$ALLOW_MIGRATIONS" == "true" ]]; then
+              echo "NOTE: allow_migrations=true requested; VPS must have ETERNAL_ALLOW_MIGRATIONS=1 (Owner-controlled)."
+            fi
+            remote_cmd="deploy ${SHA}"
+            if [[ "$ACK_REPLACE_LIVE_FRONTEND" == "true" ]]; then
+              # Allowlisted optional token only — never arbitrary shell.
+              remote_cmd="deploy ${SHA} ack-fe-replace"
+            fi
+            echo "DEPLOY request_id=${REQUEST_ID:-none} sha=${SHA} ack_fe=${ACK_REPLACE_LIVE_FRONTEND}"
           fi
-          remote_cmd="deploy ${SHA}"
-          if [[ "$ACK_REPLACE_LIVE_FRONTEND" == "true" ]]; then
-            # Allowlisted optional token only — never arbitrary shell.
-            remote_cmd="deploy ${SHA} ack-fe-replace"
-          fi
-          echo "DEPLOY request_id=${REQUEST_ID:-none} sha=${SHA} ack_fe=${ACK_REPLACE_LIVE_FRONTEND}"
 
           # Literal allowlisted remote command only — never a shell.
           ssh -i "$key_file" \

@@ -72,6 +72,9 @@ import {
   listDeliveryProgress,
   listPageCount,
   listRangeLabel,
+  orderCreatorLabel,
+  orderInvoiceStatusLabel,
+  orderInvoiceStatusTone,
   orderQuantityLabel,
   periodBounds,
   quantityByUnitFromLines,
@@ -80,6 +83,14 @@ import {
   salesOrderStatusFromQuery,
   salesOrderTabDefaultStatus,
 } from "../lib/salesOrderListPresentation";
+import {
+  SALES_ORDER_DEFAULT_COL_WIDTHS,
+  clearSalesOrderColWidths,
+  clampSalesOrderColWidth,
+  readSalesOrderColWidths,
+  salesOrderTableMinWidth,
+  writeSalesOrderColWidths,
+} from "../lib/salesOrderListColumnWidths";
 import {
   SALES_LIST_TABS,
   salesFiveTabListMetaFromResponse,
@@ -98,6 +109,106 @@ let salesOrderLineKeySeq = 0;
 function nextSalesOrderLineKey() {
   salesOrderLineKeySeq += 1;
   return `so-line-${salesOrderLineKeySeq}`;
+}
+
+function SoColResizeHandle({ colKey, onPointerDown }) {
+  return (
+    <span
+      className="so-col-resize"
+      role="separator"
+      aria-orientation="vertical"
+      aria-label={`Ubah lebar kolom ${colKey}`}
+      data-testid={`so-resize-${colKey}`}
+      onPointerDown={(event) => onPointerDown(event, colKey)}
+      onClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      }}
+    />
+  );
+}
+
+function InvoiceStatusCell({ order, canOpen }) {
+  const label = orderInvoiceStatusLabel(order);
+  const tone = orderInvoiceStatusTone(order);
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState("");
+  const [rows, setRows] = useState([]);
+
+  const loadRelated = useCallback(async () => {
+    if (!order?.id) return;
+    setLoading(true);
+    setErr("");
+    try {
+      const res = await api.listSalesInvoices({ po_id: order.id });
+      setRows(Array.isArray(res?.invoices) ? res.invoices : []);
+    } catch (e) {
+      const det = e?.response?.data?.detail;
+      setErr(typeof det === "object" ? (det.message || "Gagal memuat faktur") : (det || "Gagal memuat faktur"));
+      setRows([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [order?.id]);
+
+  if (!label) return <span className="so-list-muted">—</span>;
+  if (!canOpen) {
+    return (
+      <span className={`so-inv-status is-${tone}`} data-testid={`order-invoice-status-${order.id}`}>
+        {label}
+      </span>
+    );
+  }
+  return (
+    <Popover
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (next) void loadRelated();
+      }}
+    >
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className={`so-inv-status is-${tone} is-clickable`}
+          data-testid={`order-invoice-status-${order.id}`}
+          onClick={(e) => e.stopPropagation()}
+        >
+          {label}
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="end"
+        className="so-invoice-status-popover"
+        sideOffset={6}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="so-invoice-status-popover-title">Faktur terkait</div>
+        {loading ? <div className="so-invoice-status-popover-empty">Memuat…</div> : null}
+        {!loading && err ? <div className="so-invoice-status-popover-error" role="alert">{err}</div> : null}
+        {!loading && !err && rows.length === 0 ? (
+          <div className="so-invoice-status-popover-empty">Belum ada faktur untuk PO ini.</div>
+        ) : null}
+        {!loading && !err && rows.length > 0 ? (
+          <ul className="so-invoice-status-popover-list">
+            {rows.map((inv) => (
+              <li key={inv.id}>
+                <Link
+                  to={`/penjualan/faktur-penjualan?invoice_id=${encodeURIComponent(inv.id)}`}
+                  data-testid={`order-invoice-link-${inv.id}`}
+                  onClick={() => setOpen(false)}
+                >
+                  <span className="so-invoice-status-num">{inv.invoice_number || inv.id}</span>
+                  <span className="so-invoice-status-fin">{inv.financial_status || "draft"}</span>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+      </PopoverContent>
+    </Popover>
+  );
 }
 
 export function createSalesOrderLineItem(overrides = {}) {
@@ -335,6 +446,7 @@ export default function PesananPenjualan() {
 
   const canCreate = hasPerm("sales_order.create") || hasPerm("po.edit") || user?.role === "admin";
   const canDelete = hasPerm("po.delete") || user?.role === "admin";
+  const canViewInvoice = hasPerm("sales.invoice.view") || user?.role === "admin";
   const [viewMode, setViewMode] = useState(() =>
     searchParams.get(REPEAT_ORDER_QUERY_PARAM) ? "create" : "list"
   ); // 'list' | 'create'
@@ -348,6 +460,8 @@ export default function PesananPenjualan() {
   const [orders, setOrders] = useState([]);
   const [listLoading, setListLoading] = useState(false);
   const [listErr, setListErr] = useState("");
+  const [colWidths, setColWidths] = useState(() => readSalesOrderColWidths());
+  const colResizeRef = useRef(null);
   const {
     input: searchInput,
     setInput: setSearchInput,
@@ -1467,6 +1581,78 @@ export default function PesananPenjualan() {
     setPage(1);
   };
 
+  const resetColumnWidths = useCallback(() => {
+    clearSalesOrderColWidths();
+    setColWidths({ ...SALES_ORDER_DEFAULT_COL_WIDTHS });
+  }, []);
+
+  const onColResizePointerDown = useCallback((event, key) => {
+    if (event.button != null && event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const handleEl = event.currentTarget;
+    const pointerId = event.pointerId;
+    const startX = event.clientX;
+    const startW = colWidths[key] ?? SALES_ORDER_DEFAULT_COL_WIDTHS[key];
+    try {
+      handleEl.setPointerCapture(pointerId);
+    } catch {
+      /* ignore unsupported capture */
+    }
+    document.body.classList.add("so-col-resizing");
+    handleEl.classList.add("is-active");
+
+    const onMove = (moveEvent) => {
+      if (moveEvent.pointerId !== pointerId) return;
+      const nextW = clampSalesOrderColWidth(key, startW + (moveEvent.clientX - startX));
+      setColWidths((prev) => {
+        if (prev[key] === nextW) return prev;
+        return { ...prev, [key]: nextW };
+      });
+    };
+    const onUp = (upEvent) => {
+      if (upEvent.pointerId !== pointerId) return;
+      handleEl.removeEventListener("pointermove", onMove);
+      handleEl.removeEventListener("pointerup", onUp);
+      handleEl.removeEventListener("pointercancel", onUp);
+      try {
+        handleEl.releasePointerCapture(pointerId);
+      } catch {
+        /* already released */
+      }
+      handleEl.classList.remove("is-active");
+      document.body.classList.remove("so-col-resizing");
+      setColWidths((prev) => {
+        writeSalesOrderColWidths(prev);
+        return prev;
+      });
+      if (colResizeRef.current?.pointerId === pointerId) colResizeRef.current = null;
+    };
+
+    colResizeRef.current = { pointerId, handleEl, onMove, onUp };
+    handleEl.addEventListener("pointermove", onMove);
+    handleEl.addEventListener("pointerup", onUp);
+    handleEl.addEventListener("pointercancel", onUp);
+  }, [colWidths]);
+
+  useEffect(() => () => {
+    const active = colResizeRef.current;
+    if (!active) return;
+    active.handleEl.removeEventListener("pointermove", active.onMove);
+    active.handleEl.removeEventListener("pointerup", active.onUp);
+    active.handleEl.removeEventListener("pointercancel", active.onUp);
+    document.body.classList.remove("so-col-resizing");
+    colResizeRef.current = null;
+  }, []);
+
+  const tableMinWidth = useMemo(
+    () => salesOrderTableMinWidth(colWidths, {
+      includeCheck: canDelete,
+      includeInvoice: canViewInvoice,
+    }),
+    [colWidths, canDelete, canViewInvoice],
+  );
+
   return (
     <div
       className={viewMode === "create"
@@ -1601,6 +1787,14 @@ export default function PesananPenjualan() {
               <button type="button" className="so-list-reset" data-testid="sales-order-reset-filters" onClick={resetToolbar}>
                 Reset Filter
               </button>
+              <button
+                type="button"
+                className="so-list-reset so-list-reset-widths"
+                data-testid="sales-order-reset-col-widths"
+                onClick={resetColumnWidths}
+              >
+                Reset Lebar Kolom
+              </button>
             </div>
           </div>
 
@@ -1612,16 +1806,19 @@ export default function PesananPenjualan() {
           )}
 
           <div className="so-list-table-scroll" data-testid="sales-order-table-scroll">
-            <table className="so-list-table">
+            <table className="so-list-table" style={{ minWidth: tableMinWidth }}>
               <colgroup>
-                {canDelete && <col className="so-col-check" />}
-                <col className="so-col-customer" />
-                <col className="so-col-date" />
-                <col className="so-col-date" />
-                <col className="so-col-qty" />
-                <col className="so-col-progress" />
-                <col className="so-col-status" />
-                <col className="so-col-actions" />
+                {canDelete && <col className="so-col-check" style={{ width: colWidths.check }} />}
+                <col className="so-col-customer" style={{ width: colWidths.customer }} />
+                <col className="so-col-date" style={{ width: colWidths.orderDate }} />
+                <col className="so-col-date" style={{ width: colWidths.shipDate }} />
+                <col className="so-col-qty" style={{ width: colWidths.qty }} />
+                <col className="so-col-progress" style={{ width: colWidths.progress }} />
+                <col className="so-col-status" style={{ width: colWidths.status }} />
+                <col className="so-col-sales" style={{ width: colWidths.sales }} />
+                <col className="so-col-creator" style={{ width: colWidths.creator }} />
+                {canViewInvoice && <col className="so-col-invoice-status" style={{ width: colWidths.invoice }} />}
+                <col className="so-col-actions" style={{ width: colWidths.actions }} />
               </colgroup>
               <thead>
                 <tr>
@@ -1636,9 +1833,15 @@ export default function PesananPenjualan() {
                       />
                     </th>
                   )}
-                  <th>Pelanggan / No. PO</th>
-                  <th>Tanggal PO</th>
-                  <th>
+                  <th className="so-th-resizable">
+                    <span className="so-th-label-text">Pelanggan / No. PO</span>
+                    <SoColResizeHandle colKey="customer" onPointerDown={onColResizePointerDown} />
+                  </th>
+                  <th className="so-th-resizable">
+                    <span className="so-th-label-text">Tanggal PO</span>
+                    <SoColResizeHandle colKey="orderDate" onPointerDown={onColResizePointerDown} />
+                  </th>
+                  <th className="so-th-resizable">
                     <HeaderSelectFilter
                       label="Tanggal Kirim"
                       testid="so-th-filter-ship-date"
@@ -1647,9 +1850,13 @@ export default function PesananPenjualan() {
                       emptyValue="all"
                       onChange={(next) => patchColumnFilter({ tanggalKirimPreset: next })}
                     />
+                    <SoColResizeHandle colKey="shipDate" onPointerDown={onColResizePointerDown} />
                   </th>
-                  <th>Qty</th>
-                  <th>
+                  <th className="so-th-resizable">
+                    <span className="so-th-label-text">Qty</span>
+                    <SoColResizeHandle colKey="qty" onPointerDown={onColResizePointerDown} />
+                  </th>
+                  <th className="so-th-resizable">
                     <HeaderSelectFilter
                       label="Pengiriman"
                       testid="so-th-filter-delivery"
@@ -1658,41 +1865,57 @@ export default function PesananPenjualan() {
                       multi
                       onChange={(next) => patchColumnFilter({ deliveryStatuses: next })}
                     />
+                    <SoColResizeHandle colKey="progress" onPointerDown={onColResizePointerDown} />
                   </th>
-                  <th className="so-th-status">
-                    <div className="so-th-inner so-th-status-filters">
-                      <HeaderSelectFilter
-                        label="Proses"
-                        testid="so-th-filter-stage"
-                        options={SALES_ORDER_STATUS_FILTERS.map((tab) => ({
-                          value: tab.id,
-                          label: tab.label,
-                        }))}
-                        value={statusFilter === tabDefaultStatus ? "all" : statusFilter}
-                        emptyValue="all"
-                        onChange={(next) => onStatusChange(next === "all" ? "__tab__" : next)}
-                      />
-                      <HeaderSelectFilter
-                        label="Sales"
-                        testid="so-th-filter-sales"
-                        options={salesFilterOptions}
-                        value={columnFilters.sales || ""}
-                        emptyValue=""
-                        onChange={(next) => patchColumnFilter({ sales: next })}
-                      />
-                    </div>
+                  <th className="so-th-status so-th-resizable">
+                    <HeaderSelectFilter
+                      label="Proses"
+                      testid="so-th-filter-stage"
+                      options={SALES_ORDER_STATUS_FILTERS.map((tab) => ({
+                        value: tab.id,
+                        label: tab.label,
+                      }))}
+                      value={statusFilter === tabDefaultStatus ? "all" : statusFilter}
+                      emptyValue="all"
+                      onChange={(next) => onStatusChange(next === "all" ? "__tab__" : next)}
+                    />
+                    <SoColResizeHandle colKey="status" onPointerDown={onColResizePointerDown} />
                   </th>
-                  <th>Aksi</th>
+                  <th className="so-th-sales so-th-resizable">
+                    <HeaderSelectFilter
+                      label="Sales"
+                      testid="so-th-filter-sales"
+                      options={salesFilterOptions}
+                      value={columnFilters.sales || ""}
+                      emptyValue=""
+                      onChange={(next) => patchColumnFilter({ sales: next })}
+                    />
+                    <SoColResizeHandle colKey="sales" onPointerDown={onColResizePointerDown} />
+                  </th>
+                  <th className="so-th-resizable">
+                    <span className="so-th-label-text">Dibuat Oleh</span>
+                    <SoColResizeHandle colKey="creator" onPointerDown={onColResizePointerDown} />
+                  </th>
+                  {canViewInvoice && (
+                    <th className="so-th-resizable">
+                      <span className="so-th-label-text">Status Faktur</span>
+                      <SoColResizeHandle colKey="invoice" onPointerDown={onColResizePointerDown} />
+                    </th>
+                  )}
+                  <th className="so-th-resizable">
+                    <span className="so-th-label-text">Aksi</span>
+                    <SoColResizeHandle colKey="actions" onPointerDown={onColResizePointerDown} />
+                  </th>
                 </tr>
               </thead>
               <tbody>
                 {listLoading ? (
                   <tr>
-                    <td colSpan={canDelete ? 8 : 7} className="so-list-empty">Memuat daftar Pesanan Penjualan...</td>
+                    <td colSpan={(canDelete ? 10 : 9) + (canViewInvoice ? 1 : 0)} className="so-list-empty">Memuat daftar Pesanan Penjualan...</td>
                   </tr>
                 ) : displayedOrders.length === 0 ? (
                   <tr>
-                    <td colSpan={canDelete ? 8 : 7} className="so-list-empty" data-testid="empty-sales-orders">
+                    <td colSpan={(canDelete ? 10 : 9) + (canViewInvoice ? 1 : 0)} className="so-list-empty" data-testid="empty-sales-orders">
                       <FileText size={28} />
                       <p>Belum ada Pesanan Penjualan yang sesuai filter.</p>
                       {canCreate && (
@@ -1761,18 +1984,26 @@ export default function PesananPenjualan() {
                       <td>
                         <SalesOrderDeliveryProgress order={o} />
                       </td>
-                      <td>
-                        <div className="so-list-status">
-                          {isCancelled ? (
-                            <span className="so-list-badge is-cancel">{stageLabel || "—"}</span>
-                          ) : isHold ? (
-                            <span className="so-list-badge is-hold">{stageLabel || "—"}</span>
-                          ) : (
-                            <span className={`so-list-badge${o.current_stage >= 14 ? " is-done" : " is-open"}`}>{stageLabel || "—"}</span>
-                          )}
-                          {salesName ? <span className="so-list-sales" title={salesName}>{salesName}</span> : null}
-                        </div>
+                      <td className="so-list-status" data-testid={`order-stage-${o.id}`}>
+                        {isCancelled ? (
+                          <span className="so-list-badge is-cancel">{stageLabel || "—"}</span>
+                        ) : isHold ? (
+                          <span className="so-list-badge is-hold">{stageLabel || "—"}</span>
+                        ) : (
+                          <span className={`so-list-badge${o.current_stage >= 14 ? " is-done" : " is-open"}`}>{stageLabel || "—"}</span>
+                        )}
                       </td>
+                      <td className="so-list-sales" data-testid={`order-sales-${o.id}`} title={salesName || undefined}>
+                        {salesName || "—"}
+                      </td>
+                      <td className="so-list-creator" data-testid={`order-creator-${o.id}`} title={orderCreatorLabel(o)}>
+                        {orderCreatorLabel(o)}
+                      </td>
+                      {canViewInvoice ? (
+                        <td className="so-list-invoice-status" onClick={(e) => e.stopPropagation()}>
+                          <InvoiceStatusCell order={o} canOpen={canViewInvoice} />
+                        </td>
+                      ) : null}
                       <td onClick={(e) => e.stopPropagation()}>
                         <div className="so-list-actions">
                           <Link
