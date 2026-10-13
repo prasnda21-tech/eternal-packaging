@@ -521,6 +521,16 @@
 }
 .so-list-workspace .so-th-resizable {
   position: relative;
+  padding-right: 14px !important; /* keep filter icon clear of 8px resize handle */
+}
+.so-list-workspace .so-th-resizable .hsf-th-inner {
+  max-width: 100%;
+  padding-right: 2px;
+  box-sizing: border-box;
+}
+.so-list-workspace .so-th-resizable .hsf-th-filter {
+  position: relative;
+  z-index: 9;
 }
 .so-list-workspace .so-th-label-text {
   display: inline-block;

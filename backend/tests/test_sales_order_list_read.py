@@ -614,3 +614,158 @@ async def test_list_projection_customer_approval_reaches_hold_snapshot():
     finally:
         app.dependency_overrides.pop(current_user, None)
         await server.db.orders.delete_many({"po_number": {"$regex": marker}})
+
+
+@pytest.mark.anyio
+async def test_header_filters_and_invoice_pre_pagination_acceptance():
+    """Owner matrix: Sales ∩ Tanggal PO ∩ Status Faktur; process independent of tab; >50 page."""
+    import server
+
+    marker = uuid.uuid4().hex[:8].upper()
+    base = dict(
+        design_status="Approved",
+        payment_status="Approved",
+        design_files=[{"name": "d.pdf"}],
+        payment_files=[{"name": "p.pdf"}],
+        line_items=[{"line_idx": 0, "name": "Box", "quantity": 100, "unit": "pcs"}],
+        total_quantity=100,
+    )
+    po001 = _order(
+        marker=f"A{marker}",
+        sales="Sales A",
+        order_date="2026-10-10",
+        current_stage=0,
+        design_files=[],
+        payment_files=[],
+        design_status="Waiting",
+        payment_status="Waiting",
+        line_items=[{"line_idx": 0, "name": "Box", "quantity": 100, "unit": "pcs"}],
+        total_quantity=100,
+        created_by_user="Creator A",
+        created_at="2026-10-10T10:00:00+00:00",
+    )
+    po002 = _order(
+        marker=f"B{marker}",
+        **base,
+        sales="Sales A",
+        order_date="2026-10-12",
+        current_stage=5,
+        status_label="Penjadwalan",
+        created_by_user="Creator A",
+        created_at="2026-10-12T10:00:00+00:00",
+    )
+    po003 = _order(
+        marker=f"C{marker}",
+        **base,
+        sales="Sales B",
+        order_date="2026-10-10",
+        current_stage=5,
+        status_label="Penjadwalan",
+        created_by_user="",
+        created_at="2026-10-10T11:00:00+00:00",
+    )
+    filler = []
+    for i in range(55):
+        filler.append(_order(
+            marker=f"F{i:02d}{marker}",
+            **base,
+            sales="Sales A",
+            order_date="2026-10-05",
+            current_stage=5,
+            status_label="Penjadwalan",
+            created_by_user="Creator A",
+            created_at=f"2026-10-05T{i % 20:02d}:00:00+00:00",
+        ))
+    await server.db.orders.insert_many([po001, po002, po003, *filler])
+    await server.db.sales_invoices.insert_many([
+        {
+            "id": str(uuid.uuid4()),
+            "po_id": po001["id"],
+            "financial_status": "draft",
+            "lines": [{"line_idx": 0, "quantity": 100}],
+        },
+        {
+            "id": str(uuid.uuid4()),
+            "po_id": po003["id"],
+            "financial_status": "finalized",
+            "lines": [{"line_idx": 0, "quantity": 100}],
+        },
+    ])
+
+    app.dependency_overrides[current_user] = _admin
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            matrix = await client.get("/api/sales-orders", params={
+                "list_tab": "all",
+                "q": marker,
+                "sales": "Sales A",
+                "order_date_from": "2026-10-01",
+                "order_date_to": "2026-10-11",
+                "invoice_status": "sudah",
+                "page": 1,
+                "page_size": 50,
+            })
+            assert matrix.status_code == 200, matrix.text
+            body = matrix.json()
+            assert body["total"] == 1
+            assert [row["id"] for row in body["orders"]] == [po001["id"]]
+            assert body["orders"][0]["invoice_status"] == "sudah"
+
+            hold = await client.get("/api/sales-orders", params={
+                "list_tab": "all",
+                "q": marker,
+                "process_label": "HOLD",
+                "page": 1,
+                "page_size": 50,
+            })
+            assert hold.status_code == 200
+            hold_ids = {row["id"] for row in hold.json()["orders"]}
+            assert po001["id"] in hold_ids
+            assert po002["id"] not in hold_ids
+
+            active_hold = await client.get("/api/sales-orders", params={
+                "list_tab": "active",
+                "q": marker,
+                "process_label": "HOLD",
+                "page": 1,
+                "page_size": 50,
+            })
+            assert active_hold.status_code == 200
+            # Missing design/payment files → HOLD badge, but five-tab stays Aktif
+            # unless approval files are waiting. Intersection must keep HOLD rows.
+            assert po001["id"] in {row["id"] for row in active_hold.json()["orders"]}
+            assert all(row.get("hold") for row in active_hold.json()["orders"])
+
+            creator = await client.get("/api/sales-orders", params={
+                "list_tab": "all",
+                "q": marker,
+                "created_by": "__unknown__",
+                "page": 1,
+                "page_size": 50,
+            })
+            assert creator.status_code == 200
+            assert [row["id"] for row in creator.json()["orders"]] == [po003["id"]]
+
+            # Invoice match beyond first page of unfiltered Sales A set.
+            page_probe = await client.get("/api/sales-orders", params={
+                "list_tab": "all",
+                "q": marker,
+                "sales": "Sales A",
+                "invoice_status": "sudah",
+                "page": 1,
+                "page_size": 50,
+            })
+            assert page_probe.status_code == 200
+            assert page_probe.json()["total"] == 1
+            assert page_probe.json()["orders"][0]["id"] == po001["id"]
+
+            opts = await client.get("/api/sales-orders/options")
+            assert opts.status_code == 200
+            opt_body = opts.json()
+            assert "creator_options" in opt_body
+            assert "qty_unit_options" in opt_body
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+        await server.db.orders.delete_many({"po_number": {"$regex": marker}})
+        await server.db.sales_invoices.delete_many({"po_id": {"$in": [po001["id"], po002["id"], po003["id"]]}})

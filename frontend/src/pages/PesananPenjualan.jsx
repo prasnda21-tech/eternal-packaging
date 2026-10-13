@@ -23,21 +23,23 @@ import { useAuth } from "../lib/auth";
 import { formatDisplayDate } from "../lib/constants";
 import { Popover, PopoverContent, PopoverTrigger } from "../components/ui/popover";
 import HeaderSelectFilter from "../components/HeaderSelectFilter";
+import HeaderFieldFilter from "../components/HeaderFieldFilter";
 import MasterItemSearchSelect from "../components/MasterItemSearchSelect";
 import CustomerSearchSelect from "../components/CustomerSearchSelect";
 import SalesInvoiceDateField from "../components/SalesInvoiceDateField";
 import {
   EMPTY_SALES_ORDER_COLUMN_FILTERS,
   SALES_ORDER_DELIVERY_STATUS_OPTIONS,
-  SALES_ORDER_STATUS_FILTERS,
+  SALES_ORDER_INVOICE_STATUS_OPTIONS,
+  SALES_ORDER_PROCESS_LABEL_OPTIONS,
   salesOrderColumnFilterActive,
+  salesOrderColumnFilterValidation,
   salesOrderColumnFiltersAreActive,
   salesOrderDeliveryStatus,
   salesOrderRemainingQty,
   salesOrderSalesName,
   salesOrderStageLabel,
 } from "../lib/pesananPenjualanColumnFilters";
-import { SHIPPING_DATE_PRESET_OPTIONS } from "../lib/salesDatePresets";
 import "./pesananPenjualan.css";
 import "./pesananPenjualanPremium.css";
 import { clickableDocumentRowProps } from "../lib/clickableListRow";
@@ -496,7 +498,13 @@ export default function PesananPenjualan() {
     counts: { all: 0, active: 0, completed: 0, pending: 0, cancelled: 0 },
   });
   const [itemImages, setItemImages] = useState({});
-  const [columnFilters, setColumnFilters] = useState(EMPTY_SALES_ORDER_COLUMN_FILTERS);
+  const [columnFilters, setColumnFilters] = useState(() => ({
+    ...EMPTY_SALES_ORDER_COLUMN_FILTERS,
+  }));
+  const [customerFilterDraft, setCustomerFilterDraft] = useState("");
+  useEffect(() => {
+    setCustomerFilterDraft(columnFilters.customerQ || "");
+  }, [columnFilters.customerQ]);
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [deleteConfirm, setDeleteConfirm] = useState(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
@@ -507,6 +515,9 @@ export default function PesananPenjualan() {
     customers: [],
     outlets_by_customer: {},
     sales_options: [],
+    creator_options: [],
+    qty_unit_options: [],
+    process_label_options: [],
     master_items: [],
     suggested_po_number: "",
   });
@@ -639,6 +650,19 @@ export default function PesananPenjualan() {
     loadOrdersAbortRef.current = ac;
     setListLoading(true);
     setListErr("");
+    const validationError = salesOrderColumnFilterValidation(columnFilters);
+    if (validationError) {
+      setListErr(validationError);
+      setOrders([]);
+      setListMeta({
+        total: 0,
+        capped: false,
+        tabTotal: 0,
+        counts: { all: 0, active: 0, completed: 0, pending: 0, cancelled: 0 },
+      });
+      setListLoading(false);
+      return;
+    }
     try {
       const bounds = periodBounds(period);
       const params = salesOrderListRequest({
@@ -646,9 +670,19 @@ export default function PesananPenjualan() {
         listTab,
         dateFrom: bounds.date_from,
         dateTo: bounds.date_to,
-        tanggalKirimPreset: columnFilters.tanggalKirimPreset,
+        orderDateFrom: columnFilters.orderDateFrom,
+        orderDateTo: columnFilters.orderDateTo,
+        shipDateFrom: columnFilters.shipDateFrom,
+        shipDateTo: columnFilters.shipDateTo,
+        customerQ: columnFilters.customerQ,
         sales: columnFilters.sales,
+        createdBy: columnFilters.createdBy,
         deliveryStatuses: columnFilters.deliveryStatuses,
+        processLabels: columnFilters.processLabels,
+        invoiceStatuses: canViewInvoice ? columnFilters.invoiceStatuses : [],
+        qtyMin: columnFilters.qtyMin,
+        qtyMax: columnFilters.qtyMax,
+        qtyUnit: columnFilters.qtyUnit,
         page,
         pageSize,
       });
@@ -669,7 +703,7 @@ export default function PesananPenjualan() {
         setListLoading(false);
       }
     }
-  }, [searchQuery, listTab, period, page, pageSize, columnFilters]);
+  }, [searchQuery, listTab, period, page, pageSize, columnFilters, canViewInvoice]);
 
   const serverPaged = listMeta.total != null && Number.isFinite(Number(listMeta.total));
   const displayedOrders = useMemo(() => {
@@ -680,10 +714,7 @@ export default function PesananPenjualan() {
   const listTotal = serverPaged ? Number(listMeta.total) : orders.length;
   const pageCount = listPageCount(listTotal, pageSize);
   const tabDefaultStatus = salesOrderTabDefaultStatus(listTab);
-  const columnFiltersActive = salesOrderColumnFiltersAreActive(
-    columnFilters,
-    statusFilter === tabDefaultStatus ? "all" : statusFilter,
-  );
+  const columnFiltersActive = salesOrderColumnFiltersAreActive(columnFilters);
   const salesFilterOptions = useMemo(() => {
     const names = Array.isArray(options.sales_options) ? options.sales_options : [];
     return [
@@ -691,9 +722,44 @@ export default function PesananPenjualan() {
       ...names.filter(Boolean).map((name) => ({ value: name, label: name })),
     ];
   }, [options.sales_options]);
+  const creatorFilterOptions = useMemo(() => {
+    const rows = Array.isArray(options.creator_options) ? options.creator_options : [];
+    return [
+      { value: "", label: "Semua" },
+      ...rows.map((row) => ({
+        value: row.value ?? "",
+        label: row.label || row.value || "Tidak diketahui",
+      })),
+    ];
+  }, [options.creator_options]);
+  const processFilterOptions = useMemo(() => {
+    const fromApi = Array.isArray(options.process_label_options)
+      ? options.process_label_options
+      : [];
+    if (fromApi.length) {
+      return fromApi.map((label) => ({ value: label, label }));
+    }
+    return SALES_ORDER_PROCESS_LABEL_OPTIONS;
+  }, [options.process_label_options]);
+  const qtyUnitFilterOptions = useMemo(() => {
+    const units = Array.isArray(options.qty_unit_options) ? options.qty_unit_options : [];
+    return units.filter(Boolean);
+  }, [options.qty_unit_options]);
 
   const patchColumnFilter = (patch) => {
     setColumnFilters((prev) => ({ ...prev, ...patch }));
+  };
+  const clearColumnFilter = (keys) => {
+    const list = Array.isArray(keys) ? keys : [keys];
+    setColumnFilters((prev) => {
+      const next = { ...prev };
+      list.forEach((key) => {
+        if (Object.prototype.hasOwnProperty.call(EMPTY_SALES_ORDER_COLUMN_FILTERS, key)) {
+          next[key] = EMPTY_SALES_ORDER_COLUMN_FILTERS[key];
+        }
+      });
+      return next;
+    });
   };
 
   useEffect(() => {
@@ -1561,22 +1627,33 @@ export default function PesananPenjualan() {
   };
 
   const onStatusChange = (value) => {
+    // Toolbar HOLD is a process-label shortcut — does not remap five-tab.
     if (!value || value === "__tab__") {
       setStatusFilter(salesOrderTabDefaultStatus(listTab));
+      setColumnFilters((prev) => ({
+        ...prev,
+        processLabels: (prev.processLabels || []).filter((label) => label !== "HOLD"),
+      }));
+      return;
+    }
+    if (value === "hold") {
+      setStatusFilter("hold");
+      setColumnFilters((prev) => {
+        const current = Array.isArray(prev.processLabels) ? prev.processLabels : [];
+        return {
+          ...prev,
+          processLabels: current.includes("HOLD") ? current : [...current, "HOLD"],
+        };
+      });
       return;
     }
     setStatusFilter(value);
-    if (value === "selesai" || value === "completed") setListTab("completed");
-    else if (value === "cancelled" || value === "batal") setListTab("cancelled");
-    else if (value === "pending" || value === "hold") setListTab("pending");
-    else if (value === "aktif" || value === "active") setListTab("active");
-    else if (value === "gabungan" || value === "all") setListTab("all");
   };
 
   const resetToolbar = () => {
     clearSearch();
     setPeriod("all");
-    setColumnFilters(EMPTY_SALES_ORDER_COLUMN_FILTERS);
+    setColumnFilters({ ...EMPTY_SALES_ORDER_COLUMN_FILTERS });
     setStatusFilter(salesOrderTabDefaultStatus(listTab));
     setPage(1);
   };
@@ -1834,26 +1911,152 @@ export default function PesananPenjualan() {
                     </th>
                   )}
                   <th className="so-th-resizable">
-                    <span className="so-th-label-text">Pelanggan / No. PO</span>
+                    <HeaderFieldFilter
+                      label="Pelanggan / No. PO"
+                      testid="so-th-filter-customer"
+                      active={salesOrderColumnFilterActive("customer", columnFilters)}
+                      onClear={() => clearColumnFilter("customerQ")}
+                      onApply={() => patchColumnFilter({ customerQ: customerFilterDraft })}
+                    >
+                      <label>
+                        Cari pelanggan / No. PO / outlet
+                        <input
+                          type="text"
+                          data-testid="so-filter-customer"
+                          value={customerFilterDraft}
+                          onChange={(e) => setCustomerFilterDraft(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              patchColumnFilter({ customerQ: customerFilterDraft });
+                            }
+                          }}
+                          placeholder="Ketik untuk memfilter"
+                        />
+                      </label>
+                    </HeaderFieldFilter>
                     <SoColResizeHandle colKey="customer" onPointerDown={onColResizePointerDown} />
                   </th>
                   <th className="so-th-resizable">
-                    <span className="so-th-label-text">Tanggal PO</span>
+                    <HeaderFieldFilter
+                      label="Tanggal PO"
+                      testid="so-th-filter-order-date"
+                      active={salesOrderColumnFilterActive("orderDate", columnFilters)}
+                      error={
+                        columnFilters.orderDateFrom
+                        && columnFilters.orderDateTo
+                        && columnFilters.orderDateFrom > columnFilters.orderDateTo
+                          ? "Dari tidak boleh lebih besar dari Sampai"
+                          : ""
+                      }
+                      onClear={() => clearColumnFilter(["orderDateFrom", "orderDateTo"])}
+                    >
+                      <label>
+                        Dari
+                        <input
+                          type="date"
+                          data-testid="so-filter-order-date-from"
+                          value={columnFilters.orderDateFrom || ""}
+                          onChange={(e) => patchColumnFilter({ orderDateFrom: e.target.value })}
+                        />
+                      </label>
+                      <label>
+                        Sampai
+                        <input
+                          type="date"
+                          data-testid="so-filter-order-date-to"
+                          value={columnFilters.orderDateTo || ""}
+                          onChange={(e) => patchColumnFilter({ orderDateTo: e.target.value })}
+                        />
+                      </label>
+                    </HeaderFieldFilter>
                     <SoColResizeHandle colKey="orderDate" onPointerDown={onColResizePointerDown} />
                   </th>
                   <th className="so-th-resizable">
-                    <HeaderSelectFilter
+                    <HeaderFieldFilter
                       label="Tanggal Kirim"
                       testid="so-th-filter-ship-date"
-                      options={SHIPPING_DATE_PRESET_OPTIONS}
-                      value={columnFilters.tanggalKirimPreset || "all"}
-                      emptyValue="all"
-                      onChange={(next) => patchColumnFilter({ tanggalKirimPreset: next })}
-                    />
+                      active={salesOrderColumnFilterActive("shipDate", columnFilters)}
+                      error={
+                        columnFilters.shipDateFrom
+                        && columnFilters.shipDateTo
+                        && columnFilters.shipDateFrom > columnFilters.shipDateTo
+                          ? "Dari tidak boleh lebih besar dari Sampai"
+                          : ""
+                      }
+                      onClear={() => clearColumnFilter(["shipDateFrom", "shipDateTo"])}
+                    >
+                      <label>
+                        Dari
+                        <input
+                          type="date"
+                          data-testid="so-filter-ship-date-from"
+                          value={columnFilters.shipDateFrom || ""}
+                          onChange={(e) => patchColumnFilter({ shipDateFrom: e.target.value })}
+                        />
+                      </label>
+                      <label>
+                        Sampai
+                        <input
+                          type="date"
+                          data-testid="so-filter-ship-date-to"
+                          value={columnFilters.shipDateTo || ""}
+                          onChange={(e) => patchColumnFilter({ shipDateTo: e.target.value })}
+                        />
+                      </label>
+                    </HeaderFieldFilter>
                     <SoColResizeHandle colKey="shipDate" onPointerDown={onColResizePointerDown} />
                   </th>
                   <th className="so-th-resizable">
-                    <span className="so-th-label-text">Qty</span>
+                    <HeaderFieldFilter
+                      label="Qty"
+                      testid="so-th-filter-qty"
+                      active={salesOrderColumnFilterActive("qty", columnFilters)}
+                      error={
+                        salesOrderColumnFilterValidation({
+                          ...EMPTY_SALES_ORDER_COLUMN_FILTERS,
+                          qtyMin: columnFilters.qtyMin,
+                          qtyMax: columnFilters.qtyMax,
+                        }) || ""
+                      }
+                      onClear={() => clearColumnFilter(["qtyMin", "qtyMax", "qtyUnit"])}
+                    >
+                      <label>
+                        Minimum
+                        <input
+                          type="number"
+                          min="0"
+                          step="1"
+                          data-testid="so-filter-qty-min"
+                          value={columnFilters.qtyMin || ""}
+                          onChange={(e) => patchColumnFilter({ qtyMin: e.target.value })}
+                        />
+                      </label>
+                      <label>
+                        Maksimum
+                        <input
+                          type="number"
+                          min="0"
+                          step="1"
+                          data-testid="so-filter-qty-max"
+                          value={columnFilters.qtyMax || ""}
+                          onChange={(e) => patchColumnFilter({ qtyMax: e.target.value })}
+                        />
+                      </label>
+                      <label>
+                        Satuan
+                        <select
+                          data-testid="so-filter-qty-unit"
+                          value={columnFilters.qtyUnit || ""}
+                          onChange={(e) => patchColumnFilter({ qtyUnit: e.target.value })}
+                        >
+                          <option value="">Otomatis (PO satu satuan)</option>
+                          {qtyUnitFilterOptions.map((unit) => (
+                            <option key={unit} value={unit}>{unit}</option>
+                          ))}
+                        </select>
+                      </label>
+                    </HeaderFieldFilter>
                     <SoColResizeHandle colKey="qty" onPointerDown={onColResizePointerDown} />
                   </th>
                   <th className="so-th-resizable">
@@ -1871,13 +2074,17 @@ export default function PesananPenjualan() {
                     <HeaderSelectFilter
                       label="Proses"
                       testid="so-th-filter-stage"
-                      options={SALES_ORDER_STATUS_FILTERS.map((tab) => ({
-                        value: tab.id,
-                        label: tab.label,
-                      }))}
-                      value={statusFilter === tabDefaultStatus ? "all" : statusFilter}
-                      emptyValue="all"
-                      onChange={(next) => onStatusChange(next === "all" ? "__tab__" : next)}
+                      options={processFilterOptions}
+                      value={columnFilters.processLabels}
+                      multi
+                      onChange={(next) => {
+                        patchColumnFilter({ processLabels: next });
+                        setStatusFilter(
+                          Array.isArray(next) && next.includes("HOLD")
+                            ? "hold"
+                            : salesOrderTabDefaultStatus(listTab),
+                        );
+                      }}
                     />
                     <SoColResizeHandle colKey="status" onPointerDown={onColResizePointerDown} />
                   </th>
@@ -1893,12 +2100,26 @@ export default function PesananPenjualan() {
                     <SoColResizeHandle colKey="sales" onPointerDown={onColResizePointerDown} />
                   </th>
                   <th className="so-th-resizable">
-                    <span className="so-th-label-text">Dibuat Oleh</span>
+                    <HeaderSelectFilter
+                      label="Dibuat Oleh"
+                      testid="so-th-filter-creator"
+                      options={creatorFilterOptions}
+                      value={columnFilters.createdBy || ""}
+                      emptyValue=""
+                      onChange={(next) => patchColumnFilter({ createdBy: next })}
+                    />
                     <SoColResizeHandle colKey="creator" onPointerDown={onColResizePointerDown} />
                   </th>
                   {canViewInvoice && (
                     <th className="so-th-resizable">
-                      <span className="so-th-label-text">Status Faktur</span>
+                      <HeaderSelectFilter
+                        label="Status Faktur"
+                        testid="so-th-filter-invoice"
+                        options={SALES_ORDER_INVOICE_STATUS_OPTIONS}
+                        value={columnFilters.invoiceStatuses}
+                        multi
+                        onChange={(next) => patchColumnFilter({ invoiceStatuses: next })}
+                      />
                       <SoColResizeHandle colKey="invoice" onPointerDown={onColResizePointerDown} />
                     </th>
                   )}

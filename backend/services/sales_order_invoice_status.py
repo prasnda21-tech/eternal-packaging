@@ -22,10 +22,31 @@ STATUS_LABELS = {
     STATUS_PERLU_PEMERIKSAAN: "Perlu Pemeriksaan",
 }
 
+CREATOR_UNKNOWN_LABEL = "Tidak diketahui"
+INVOICE_STATUS_FILTER_CHUNK = 400
+VALID_INVOICE_STATUS_FILTERS = frozenset(STATUS_LABELS.keys())
+
 
 def creator_display(raw: Any) -> str:
     text = str(raw or "").strip()
-    return text if text else "Tidak diketahui"
+    return text if text else CREATOR_UNKNOWN_LABEL
+
+
+def normalize_invoice_status_filters(raw: Any) -> List[str]:
+    if raw is None:
+        return []
+    if isinstance(raw, (list, tuple, set, frozenset)):
+        parts = [str(item or "").strip().lower() for item in raw]
+    else:
+        parts = [part.strip().lower() for part in str(raw).split(",")]
+    out: List[str] = []
+    seen = set()
+    for part in parts:
+        if not part or part not in VALID_INVOICE_STATUS_FILTERS or part in seen:
+            continue
+        seen.add(part)
+        out.append(part)
+    return out
 
 
 def _po_ordered_by_line(line_items: Optional[Iterable[dict]]) -> Dict[int, int]:
@@ -166,3 +187,31 @@ async def attach_sales_order_list_invoice_status(db, orders: List[dict]) -> None
         status = classify_po_invoice_status(lines_by_po.get(pid) or [], inv_by_po.get(pid) or [])
         o["invoice_status"] = status
         o["invoice_status_label"] = STATUS_LABELS.get(status, status)
+
+
+async def filter_orders_by_invoice_statuses(
+    db,
+    orders: List[dict],
+    statuses: Iterable[str],
+    *,
+    chunk_size: int = INVOICE_STATUS_FILTER_CHUNK,
+) -> List[dict]:
+    """Classify candidates in batches and keep rows whose status is in ``statuses``.
+
+    Call only when an invoice-status filter is active and the caller is permitted.
+    Mutates matching page candidates with invoice_status fields (same as attach).
+    """
+    wanted = set(normalize_invoice_status_filters(list(statuses or [])))
+    if not wanted:
+        return list(orders or [])
+    if not orders:
+        return []
+    size = max(1, int(chunk_size or INVOICE_STATUS_FILTER_CHUNK))
+    kept: List[dict] = []
+    for start in range(0, len(orders), size):
+        chunk = orders[start:start + size]
+        await attach_sales_order_list_invoice_status(db, chunk)
+        for row in chunk:
+            if str(row.get("invoice_status") or "").strip().lower() in wanted:
+                kept.append(row)
+    return kept
