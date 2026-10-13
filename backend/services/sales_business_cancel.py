@@ -729,7 +729,7 @@ async def _soft_cancel_receipt_business(
     db, receipt: dict, user: dict, reason: str, *, cancel_id: str, token: str
 ) -> dict:
     from services.sales_receipt_posting import receipt_is_cancelled
-    from services.sales_receipts import _recalc_invoice_payment_from_receipts, _recalc_order_payment_facts_after_receipt_delete
+    from services.sales_receipts import _recalc_invoice_payment_from_receipts, sync_order_payment_projections
 
     now = _now_iso()
     stored = await db.sales_receipts.find_one({"id": receipt["id"]}, {"_id": 0}) or {}
@@ -764,12 +764,14 @@ async def _soft_cancel_receipt_business(
     if result.matched_count:
         await _recalc_invoice_payment_from_receipts(db, invoice_id)
         if po_id:
-            await _recalc_order_payment_facts_after_receipt_delete(db, po_id, [])
+            await sync_order_payment_projections(db, po_id)
         return await _public_receipt(db, receipt["id"])
 
     current = await db.sales_receipts.find_one({"id": receipt["id"]}, {"_id": 0}) or {}
     if receipt_is_cancelled(current):
         await _recalc_invoice_payment_from_receipts(db, invoice_id)
+        if po_id:
+            await sync_order_payment_projections(db, po_id)
         return await _public_receipt(db, receipt["id"])
     if str(current.get(RECEIPT_CLAIM_FIELD) or "") != token:
         raise HTTPException(409, "Kepemilikan pembatalan penerimaan sudah berubah.")

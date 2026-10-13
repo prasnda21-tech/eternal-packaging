@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Download } from "lucide-react";
+import { Download, Minus, Plus, RotateCcw } from "lucide-react";
 import { GlobalWorkerOptions, getDocument } from "pdfjs-dist";
 
 GlobalWorkerOptions.workerSrc = `${process.env.PUBLIC_URL || ""}/pdf.worker.min.mjs`;
 
 const MAX_PAGE_WIDTH = 920;
+const FIT_ZOOM = 1;
 
 function emptyView(key, attempt = 0) {
   return {
@@ -36,10 +37,25 @@ function isImage(contentType, name, bytes) {
   return type === "image/jpeg" || type === "image/png" || /\.(jpe?g|png)$/i.test(name || "");
 }
 
+/** Width-only fit (default historical shell). */
 function fittedPageWidth(node) {
   const inner = Math.max(0, (node?.clientWidth || 0) - 16);
   if (!inner) return 0;
   return Math.min(MAX_PAGE_WIDTH, inner);
+}
+
+/**
+ * Compact fit-to-page: scale by both available width and height so one page
+ * is fully visible without initial scroll. pageAspect = pageHeight / pageWidth.
+ */
+export function fittedPageWidthWithinFrame(node, pageAspect = 1) {
+  const pad = 16;
+  const innerW = Math.max(0, (node?.clientWidth || 0) - pad);
+  const innerH = Math.max(0, (node?.clientHeight || 0) - pad);
+  if (!innerW) return 0;
+  const aspect = Number(pageAspect) > 0 ? Number(pageAspect) : 1;
+  const byHeight = innerH > 0 ? innerH / aspect : innerW;
+  return Math.max(1, Math.floor(Math.min(MAX_PAGE_WIDTH, innerW, byHeight)));
 }
 
 function PdfPage({ pdf, pageNumber, width, testId, onFail }) {
@@ -94,7 +110,8 @@ function PdfPage({ pdf, pageNumber, width, testId, onFail }) {
 }
 
 /**
- * In-app PDF.js / image viewer. All PDF pages stack in the scrolling stage.
+ * In-app PDF.js / image viewer. All PDF pages stack in the scrolling stage (default).
+ * layout="compact" (receipt proof): fit-to-viewport image/PDF without initial scroll.
  * The header stays outside that scroll. Does not open a new tab.
  */
 export default function InAppDocumentViewer({
@@ -107,7 +124,10 @@ export default function InAppDocumentViewer({
   loadFile,
   onClose,
   testId = "inapp-doc-viewer",
+  /** "default" keeps historical fullscreen shell; "compact" is opt-in for receipt proof only. */
+  layout = "default",
 }) {
+  const compact = layout === "compact";
   const [view, setView] = useState(() => emptyView(documentKey));
   if (view.key !== documentKey) {
     setView(emptyView(documentKey));
@@ -116,6 +136,15 @@ export default function InAppDocumentViewer({
   const objectUrlRef = useRef("");
   const [objectUrl, setObjectUrl] = useState("");
   const [pageWidth, setPageWidth] = useState(0);
+  const [pageAspect, setPageAspect] = useState(1);
+  const [pdfPage, setPdfPage] = useState(1);
+  const [imageZoom, setImageZoom] = useState(FIT_ZOOM);
+
+  useEffect(() => {
+    setPdfPage(1);
+    setImageZoom(FIT_ZOOM);
+    setPageAspect(1);
+  }, [documentKey]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -144,6 +173,18 @@ export default function InAppDocumentViewer({
           if (!active) {
             doc?.destroy?.();
             return;
+          }
+          if (compact) {
+            try {
+              const first = await doc.getPage(1);
+              const base = first.getViewport({ scale: 1 });
+              if (active && base.width > 0) {
+                setPageAspect(base.height / base.width);
+              }
+              first.cleanup?.();
+            } catch {
+              /* keep default aspect */
+            }
           }
           setView((current) => (
             current.key === documentKey
@@ -204,9 +245,15 @@ export default function InAppDocumentViewer({
       task = null;
       Promise.resolve(pending?.destroy?.()).catch(() => {});
     };
-  }, [documentKey, contentType, fileName, loadFile, view.attempt]);
+  }, [documentKey, contentType, fileName, loadFile, view.attempt, compact]);
 
   const pdfMode = view.status === "ready" && view.pdf && view.key === documentKey;
+  const pageCount = view.pdf?.numPages || 0;
+
+  useEffect(() => {
+    if (!pdfMode || pageCount < 1) return;
+    setPdfPage((current) => Math.min(Math.max(1, current), pageCount));
+  }, [pdfMode, pageCount]);
 
   useEffect(() => {
     const node = frameRef.current;
@@ -214,13 +261,19 @@ export default function InAppDocumentViewer({
       setPageWidth(0);
       return undefined;
     }
-    const apply = () => setPageWidth(fittedPageWidth(node));
+    const apply = () => {
+      if (compact) {
+        setPageWidth(fittedPageWidthWithinFrame(node, pageAspect));
+      } else {
+        setPageWidth(fittedPageWidth(node));
+      }
+    };
     apply();
     if (typeof ResizeObserver === "undefined") return undefined;
     const observer = new ResizeObserver(apply);
     observer.observe(node);
     return () => observer.disconnect();
-  }, [pdfMode, documentKey]);
+  }, [pdfMode, documentKey, compact, pageAspect]);
 
   useEffect(() => {
     const imageReady = view.status === "ready" && view.blob && isImage(view.contentType, fileName) && view.key === documentKey;
@@ -296,12 +349,17 @@ export default function InAppDocumentViewer({
   };
 
   const imageMode = view.status === "ready" && objectUrl && view.key === documentKey;
-  const pageCount = view.pdf?.numPages || 0;
+  const zoomed = compact && imageMode && imageZoom > FIT_ZOOM + 0.01;
+  const showCompactZoom = compact && imageMode && view.status === "ready";
+  const showPdfNav = compact && pdfMode && pageCount > 1;
 
   return (
     <div
-      className="inapp-doc-overlay"
+      className={`inapp-doc-overlay${compact ? " inapp-doc-overlay--compact" : ""}`}
       data-testid={testId}
+      data-layout={compact ? "compact" : "default"}
+      data-fit={compact ? "viewport" : "default"}
+      data-image-zoom={compact && imageMode ? String(imageZoom) : "1"}
       data-document-key={documentKey}
       data-page-count={pdfMode ? String(pageCount) : "0"}
       data-page-width={pdfMode ? String(pageWidth) : "0"}
@@ -309,10 +367,64 @@ export default function InAppDocumentViewer({
       aria-modal="true"
       aria-label={title}
     >
-      <div className="inapp-doc">
+      <div className={`inapp-doc${compact ? " inapp-doc--compact" : ""}${zoomed ? " is-zoomed" : ""}`}>
         <header className="inapp-doc-head">
           <strong>{title}</strong>
           <div className="inapp-doc-head-actions">
+            {showPdfNav && (
+              <>
+                <button
+                  type="button"
+                  data-testid={`${testId}-prev-page`}
+                  disabled={pdfPage <= 1}
+                  onClick={() => setPdfPage((p) => Math.max(1, p - 1))}
+                >
+                  Sebelumnya
+                </button>
+                <span className="inapp-doc-page-label" data-testid={`${testId}-page-label`}>
+                  {pdfPage} / {pageCount}
+                </span>
+                <button
+                  type="button"
+                  data-testid={`${testId}-next-page`}
+                  disabled={pdfPage >= pageCount}
+                  onClick={() => setPdfPage((p) => Math.min(pageCount, p + 1))}
+                >
+                  Berikutnya
+                </button>
+              </>
+            )}
+            {showCompactZoom && (
+              <>
+                <button
+                  type="button"
+                  data-testid={`${testId}-zoom-out`}
+                  disabled={imageZoom <= FIT_ZOOM}
+                  onClick={() => setImageZoom((z) => Math.max(FIT_ZOOM, Math.round((z - 0.25) * 100) / 100))}
+                  aria-label="Perkecil"
+                >
+                  <Minus size={14} aria-hidden="true" />
+                </button>
+                <button
+                  type="button"
+                  data-testid={`${testId}-zoom-fit`}
+                  onClick={() => setImageZoom(FIT_ZOOM)}
+                  aria-label="Fit layar"
+                >
+                  <RotateCcw size={14} aria-hidden="true" />
+                  Fit
+                </button>
+                <button
+                  type="button"
+                  data-testid={`${testId}-zoom-in`}
+                  disabled={imageZoom >= 3}
+                  onClick={() => setImageZoom((z) => Math.min(3, Math.round((z + 0.25) * 100) / 100))}
+                  aria-label="Perbesar"
+                >
+                  <Plus size={14} aria-hidden="true" />
+                </button>
+              </>
+            )}
             {pdfDownload && (
               <button
                 type="button"
@@ -330,7 +442,12 @@ export default function InAppDocumentViewer({
             <button type="button" data-testid={`${testId}-close`} onClick={onClose}>Tutup</button>
           </div>
         </header>
-        <div className="inapp-doc-stage" ref={frameRef} data-testid={`${testId}-stage`}>
+        <div
+          className={`inapp-doc-stage${compact ? " inapp-doc-stage--fit" : ""}`}
+          ref={frameRef}
+          data-testid={`${testId}-stage`}
+          data-overflow={zoomed ? "scroll" : compact ? "fit" : "scroll"}
+        >
           {view.status === "loading" && <p data-testid={`${testId}-loading`}>Memuat dokumen...</p>}
           {view.status === "error" && (
             <div data-testid={`${testId}-error`}>
@@ -340,7 +457,7 @@ export default function InAppDocumentViewer({
           )}
           {view.status === "denied" && <p data-testid={`${testId}-denied`}>{view.message}</p>}
           {view.status === "unsupported" && <p data-testid={`${testId}-unsupported`}>{view.message}</p>}
-          {pdfMode && (
+          {pdfMode && !compact && (
             <div className="inapp-doc-pages" data-testid={`${testId}-pages`}>
               {Array.from({ length: pageCount }, (_, index) => (
                 <PdfPage
@@ -354,8 +471,29 @@ export default function InAppDocumentViewer({
               ))}
             </div>
           )}
+          {pdfMode && compact && pageWidth > 0 && (
+            <div className="inapp-doc-pages inapp-doc-pages--fit" data-testid={`${testId}-pages`}>
+              <PdfPage
+                key={`${documentKey}:${pdfPage}`}
+                pdf={view.pdf}
+                pageNumber={pdfPage}
+                width={pageWidth}
+                testId={testId}
+                onFail={failPages}
+              />
+            </div>
+          )}
           {imageMode && (
-            <img data-testid={`${testId}-image`} alt={fileName} src={objectUrl} />
+            <img
+              data-testid={`${testId}-image`}
+              alt={fileName}
+              src={objectUrl}
+              className={compact ? "inapp-doc-image--contain" : undefined}
+              style={compact ? {
+                transform: imageZoom === FIT_ZOOM ? undefined : `scale(${imageZoom})`,
+                transformOrigin: "center center",
+              } : undefined}
+            />
           )}
         </div>
       </div>

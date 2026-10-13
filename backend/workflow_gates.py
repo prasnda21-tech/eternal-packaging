@@ -54,6 +54,46 @@ def payment_ok(order: dict) -> bool:
     return bool(order.get("payment_bypassed")) or (order.get("payment_status") == "Approved")
 
 
+def _has_payment_file_records(files) -> bool:
+    if not isinstance(files, list) or not files:
+        return False
+    return any(isinstance(f, dict) and f for f in files)
+
+
+def payment_stage_done(order: dict) -> bool:
+    """Payment stage complete without requiring a duplicate payment_files upload.
+
+    Canonical after settlement-effective Penerimaan: ``payment_status == Approved``
+    (written only by create-settle / sync_order_payment_projections from counting receipts).
+
+    Do NOT treat raw ``payment_receipts`` / ``payment_fact`` alone as complete — those
+    fields can be stale if a deferred/cancelled receipt left orphan projections.
+    Legacy: payment_files upload completes Payment (Approval still needs Approved/bypass).
+    """
+    order = order or {}
+    if bool(order.get("payment_bypassed")):
+        return True
+    if order.get("payment_status") == "Approved":
+        return True
+    if _has_payment_file_records(order.get("payment_files")):
+        return True
+    return False
+
+
+def payment_evidence_present(order: dict) -> bool:
+    """Evidence waiting for Approval Payment (legacy upload path).
+
+    Receipt settlement auto-approves via payment_status; orphan payment_receipts /
+    payment_fact must not unlock Approval UI or mark Payment complete.
+    """
+    order = order or {}
+    if bool(order.get("payment_bypassed")):
+        return True
+    if _has_payment_file_records(order.get("payment_files")):
+        return True
+    return False
+
+
 def group2_complete(order: dict) -> bool:
     """Design + Payment branches both satisfied (approve or official bypass)."""
     return design_ok(order) and payment_ok(order)
@@ -241,7 +281,7 @@ def workflow_ready(order: dict) -> dict:
         "design": True,
         "approval_design": bool(order.get("design_files")) or bool(order.get("design_bypassed")),
         "payment": True,
-        "approval_payment": bool(order.get("payment_files")) or bool(order.get("payment_bypassed")),
+        "approval_payment": payment_evidence_present(order),
         "penjadwalan": g2,
         "screener": screener_unlocked(order),
         "helper": helper_unlocked(order),

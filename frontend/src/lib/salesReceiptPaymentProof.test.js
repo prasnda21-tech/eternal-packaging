@@ -6,6 +6,8 @@ import {
   buildReceiptProofPayload,
   canViewSalesReceiptPaymentProof,
   paymentEvidenceBadge,
+  orderHasPaymentEvidence,
+  orderPaymentStageDone,
   SALES_RECEIPT_PROOF_VIEW_PERMS,
 } from "./salesReceiptPaymentProof";
 
@@ -71,5 +73,40 @@ describe("salesReceiptPaymentProof", () => {
     expect(canViewSalesReceiptPaymentProof((p) => p === "sales.receipt.view")).toBe(true);
     expect(canViewSalesReceiptPaymentProof((p) => p === "payment.view")).toBe(true);
     expect(canViewSalesReceiptPaymentProof((p) => p === "sales.invoice.view")).toBe(false);
+  });
+
+  test("receipt settlement completes Payment without duplicate payment_files", () => {
+    expect(orderPaymentStageDone({
+      payment_status: "Approved",
+      payment_files: [],
+      payment_receipts: [{ receipt_id: "r1" }],
+    })).toBe(true);
+    expect(orderPaymentStageDone({
+      payment_status: "Waiting",
+      payment_files: [],
+      payment_receipts: [],
+    })).toBe(false);
+    expect(orderPaymentStageDone({
+      payment_status: "Waiting",
+      payment_files: [{ id: "legacy" }],
+    })).toBe(true);
+    expect(orderHasPaymentEvidence({
+      payment_files: [{ id: "legacy" }],
+      payment_status: "Waiting",
+    })).toBe(true);
+  });
+
+  test("stale payment_receipts without Approved do not complete Payment", () => {
+    expect(orderPaymentStageDone({
+      payment_status: "Waiting",
+      payment_files: [],
+      payment_receipts: [{ receipt_id: "stale" }],
+      payment_fact: { receipt_id: "stale" },
+    })).toBe(false);
+    expect(orderHasPaymentEvidence({
+      payment_files: [],
+      payment_receipts: [{ receipt_id: "stale" }],
+      payment_fact: { receipt_id: "stale" },
+    })).toBe(false);
   });
 });

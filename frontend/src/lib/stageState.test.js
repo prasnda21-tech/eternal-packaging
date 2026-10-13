@@ -404,4 +404,30 @@ describe("Customer Approval Design StageFlow", () => {
     expect(payment.label).toBe("Menunggu");
     expect(resolveStageState(4, order, 2).state).not.toBe("done");
   });
+
+  test("settled receipt completes Payment and Approval Payment without payment_files", () => {
+    const order = {
+      current_stage: 5,
+      design_status: "Approved",
+      design_files: [uploaded],
+      payment_status: "Approved",
+      payment_files: [],
+      payment_receipts: [{ receipt_id: "r1", payment_state: "DP" }],
+      payment_fact: { receipt_id: "r1" },
+    };
+    expect(resolveStageState(3, order, 5).state).toBe("done");
+    expect(resolveStageState(4, order, 5).state).toBe("done");
+  });
+
+  test("stale payment_receipts without Approved leave Payment incomplete", () => {
+    const order = {
+      current_stage: 3,
+      payment_status: "Waiting",
+      payment_files: [],
+      payment_receipts: [{ receipt_id: "stale" }],
+      payment_fact: { receipt_id: "stale" },
+    };
+    expect(resolveStageState(3, order, 3).state).not.toBe("done");
+    expect(resolveStageState(4, order, 3).state).not.toBe("done");
+  });
 });

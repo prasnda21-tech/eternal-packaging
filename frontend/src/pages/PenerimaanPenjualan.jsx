@@ -113,6 +113,7 @@ export default function PenerimaanPenjualan() {
   const [receiptDate, setReceiptDate] = useState(getTodayString());
   const [receiptNotes, setReceiptNotes] = useState("");
   const [proofFile, setProofFile] = useState(null);
+  const [proofThumbUrl, setProofThumbUrl] = useState("");
   const [proofErr, setProofErr] = useState("");
   const [cashBankId, setCashBankId] = useState("");
   const [cashBanks, setCashBanks] = useState([]);
@@ -128,6 +129,7 @@ export default function PenerimaanPenjualan() {
   const [creditBusy, setCreditBusy] = useState(false);
   const [creditMsg, setCreditMsg] = useState("");
   const [proofViewerReceipt, setProofViewerReceipt] = useState(null);
+  const [detailProofThumbUrl, setDetailProofThumbUrl] = useState("");
   const creditRequestRef = useRef({ key: "", signature: "" });
 
   // Detail Modal State
@@ -680,6 +682,42 @@ export default function PenerimaanPenjualan() {
     }
     setProofFile(f);
   };
+
+  useEffect(() => {
+    if (!proofFile || !String(proofFile.type || "").startsWith("image/")) {
+      setProofThumbUrl("");
+      return undefined;
+    }
+    const url = URL.createObjectURL(proofFile);
+    setProofThumbUrl(url);
+    return () => {
+      URL.revokeObjectURL(url);
+    };
+  }, [proofFile]);
+
+  useEffect(() => {
+    let active = true;
+    let objectUrl = "";
+    setDetailProofThumbUrl("");
+    const receipt = detailReceipt;
+    const ct = String(receipt?.payment_proof?.content_type || "");
+    if (!receipt?.id || !receipt?.has_payment_proof || !ct.startsWith("image/")) {
+      return undefined;
+    }
+    api.downloadSalesReceiptPaymentProof(receipt.id, false)
+      .then((file) => {
+        if (!active) return;
+        objectUrl = URL.createObjectURL(file);
+        setDetailProofThumbUrl(objectUrl);
+      })
+      .catch(() => {
+        if (active) setDetailProofThumbUrl("");
+      });
+    return () => {
+      active = false;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [detailReceipt]);
 
   // Close create modal on Escape key
   useEffect(() => {
@@ -1681,41 +1719,44 @@ export default function PenerimaanPenjualan() {
                   />
                 </div>
 
-                {/* 5. Bukti Payment */}
+                {/* 5. Bukti Payment — compact row (no large inline preview) */}
                 <div style={{ marginBottom: 18 }} data-testid="receipt-payment-proof-field">
                   <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 6 }}>
                     Bukti Payment *
                   </label>
                   <p style={{ margin: "0 0 8px 0", fontSize: 12, color: "#64748b" }}>
-                    Unggah JPG, JPEG, PNG, atau PDF. Nominal pembayaran tetap mengikuti jumlah penerimaan di atas — bukan dari file.
+                    JPG, JPEG, PNG, atau PDF (maks. 6MB). Nominal mengikuti jumlah penerimaan — bukan dari file.
                   </p>
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
-                    <label
-                      className={"primary btn-file" + (createBusy ? " disabled" : "")}
-                      data-testid="receipt-proof-upload-label"
-                      style={{
-                        display: "inline-flex",
-                        alignItems: "center",
-                        gap: 6,
-                        cursor: createBusy ? "not-allowed" : "pointer",
-                        opacity: createBusy ? 0.6 : 1,
-                      }}
-                    >
-                      <input
-                        type="file"
-                        accept={RECEIPT_PROOF_ACCEPT}
-                        disabled={createBusy}
-                        onChange={handleProofFileChange}
-                        data-testid="input-receipt-payment-proof"
-                        style={{ display: "none" }}
-                      />
-                      <FileText size={14} /> {proofFile ? "Ganti File" : "Pilih File"}
-                    </label>
-                    {proofFile && (
-                      <>
-                        <span className="muted small" data-testid="receipt-proof-filename" style={{ fontSize: 13, color: "#0f172a" }}>
+                  {proofFile ? (
+                    <div className="receipt-proof-row" data-testid="receipt-proof-compact-row">
+                      <div className="receipt-proof-thumb" aria-hidden="true">
+                        {proofThumbUrl ? (
+                          <img src={proofThumbUrl} alt="" data-testid="receipt-proof-thumb-img" />
+                        ) : (
+                          <FileText size={22} data-testid="receipt-proof-thumb-pdf" />
+                        )}
+                      </div>
+                      <div className="receipt-proof-meta">
+                        <span className="receipt-proof-name" data-testid="receipt-proof-filename" title={proofFile.name}>
                           {proofFile.name}
                         </span>
+                      </div>
+                      <div className="receipt-proof-actions">
+                        <label
+                          className={"ghost sm btn-file" + (createBusy ? " disabled" : "")}
+                          data-testid="receipt-proof-upload-label"
+                          style={{ cursor: createBusy ? "not-allowed" : "pointer", opacity: createBusy ? 0.6 : 1, margin: 0 }}
+                        >
+                          <input
+                            type="file"
+                            accept={RECEIPT_PROOF_ACCEPT}
+                            disabled={createBusy}
+                            onChange={handleProofFileChange}
+                            data-testid="input-receipt-payment-proof"
+                            style={{ display: "none" }}
+                          />
+                          Ganti
+                        </label>
                         <button
                           type="button"
                           className="ghost sm"
@@ -1725,9 +1766,44 @@ export default function PenerimaanPenjualan() {
                         >
                           Hapus
                         </button>
-                      </>
-                    )}
-                  </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="receipt-proof-row" data-testid="receipt-proof-empty-row">
+                      <div className="receipt-proof-thumb" aria-hidden="true">
+                        <FileText size={22} />
+                      </div>
+                      <div className="receipt-proof-meta">
+                        <span className="receipt-proof-name" style={{ fontWeight: 500, color: "#64748b" }}>
+                          Belum ada file
+                        </span>
+                      </div>
+                      <div className="receipt-proof-actions">
+                        <label
+                          className={"primary btn-file" + (createBusy ? " disabled" : "")}
+                          data-testid="receipt-proof-upload-label"
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 6,
+                            cursor: createBusy ? "not-allowed" : "pointer",
+                            opacity: createBusy ? 0.6 : 1,
+                            margin: 0,
+                          }}
+                        >
+                          <input
+                            type="file"
+                            accept={RECEIPT_PROOF_ACCEPT}
+                            disabled={createBusy}
+                            onChange={handleProofFileChange}
+                            data-testid="input-receipt-payment-proof"
+                            style={{ display: "none" }}
+                          />
+                          Pilih File
+                        </label>
+                      </div>
+                    </div>
+                  )}
                   {proofErr && (
                     <div className="error" data-testid="receipt-proof-error" style={{ marginTop: 8, fontSize: 12, color: "#b91c1c" }}>
                       {proofErr}
@@ -1968,28 +2044,51 @@ export default function PenerimaanPenjualan() {
               </div>
             )}
             {!detailEditMode && detailReceipt.has_payment_proof && (
-              <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-                <button type="button" data-testid="btn-lihat-bukti" onClick={() => setProofViewerReceipt(detailReceipt)} style={{ border: "none", background: "#0f766e", color: "#fff", borderRadius: 6, padding: "6px 10px" }}>
-                  Lihat Bukti
-                </button>
-                <button
-                  type="button"
-                  data-testid="btn-unduh-bukti"
-                  onClick={async () => {
-                    const file = await api.downloadSalesReceiptPaymentProof(detailReceipt.id, true);
-                    const url = URL.createObjectURL(file);
-                    const link = document.createElement("a");
-                    link.href = url;
-                    link.download = detailReceipt.payment_proof?.name || "bukti-pembayaran";
-                    document.body.appendChild(link);
-                    link.click();
-                    link.remove();
-                    URL.revokeObjectURL(url);
-                  }}
-                  style={{ border: "1px solid #cbd5e1", background: "#fff", borderRadius: 6, padding: "6px 10px" }}
-                >
-                  Unduh Bukti
-                </button>
+              <div className="receipt-proof-row" data-testid="receipt-detail-proof-row" style={{ marginBottom: 12 }}>
+                <div className="receipt-proof-thumb receipt-proof-thumb--sm" aria-hidden="true">
+                  {detailProofThumbUrl ? (
+                    <img src={detailProofThumbUrl} alt="" data-testid="receipt-detail-proof-thumb-img" />
+                  ) : (
+                    <FileText size={18} data-testid="receipt-detail-proof-icon" />
+                  )}
+                </div>
+                <div className="receipt-proof-meta">
+                  <span
+                    className="receipt-proof-name"
+                    data-testid="receipt-detail-proof-filename"
+                    title={detailReceipt.payment_proof?.name || "bukti-pembayaran"}
+                  >
+                    {detailReceipt.payment_proof?.name || "bukti-pembayaran"}
+                  </span>
+                </div>
+                <div className="receipt-proof-actions">
+                  <button
+                    type="button"
+                    data-testid="btn-lihat-bukti"
+                    onClick={() => setProofViewerReceipt(detailReceipt)}
+                    style={{ border: "none", background: "#0f766e", color: "#fff", borderRadius: 6, padding: "6px 10px", fontSize: 12 }}
+                  >
+                    Lihat
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="btn-unduh-bukti"
+                    onClick={async () => {
+                      const file = await api.downloadSalesReceiptPaymentProof(detailReceipt.id, true);
+                      const url = URL.createObjectURL(file);
+                      const link = document.createElement("a");
+                      link.href = url;
+                      link.download = detailReceipt.payment_proof?.name || "bukti-pembayaran";
+                      document.body.appendChild(link);
+                      link.click();
+                      link.remove();
+                      URL.revokeObjectURL(url);
+                    }}
+                    style={{ border: "1px solid #cbd5e1", background: "#fff", borderRadius: 6, padding: "6px 10px", fontSize: 12 }}
+                  >
+                    Unduh
+                  </button>
+                </div>
               </div>
             )}
             <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>

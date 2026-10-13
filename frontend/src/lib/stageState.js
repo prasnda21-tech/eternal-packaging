@@ -2,6 +2,7 @@
 // Design/Payment/Approval stages must NOT inherit "done" from current_stage alone.
 
 import { isApprovalDesignComplete, resolveDesignChip, resolveApprovalDesignChip } from "./designEvidence.js";
+import { orderHasPaymentEvidence, orderPaymentStageDone } from "./salesReceiptPaymentProof.js";
 
 const STAGE_DESIGN = 1;
 const STAGE_APPROVAL_DESIGN = 2;
@@ -50,7 +51,7 @@ export function getWorkflowReady(order) {
     design: true,
     approval_design: (order?.design_files || []).length > 0 || !!order?.design_bypassed,
     payment: true,
-    approval_payment: (order?.payment_files || []).length > 0 || !!order?.payment_bypassed,
+    approval_payment: orderHasPaymentEvidence(order),
     penjadwalan: g2,
     screener: g2 && scheduled,
     helper: g2 && scheduled,
@@ -159,7 +160,7 @@ export function resolveStageState(idx, order, currentStage) {
   if (idx === STAGE_APPROVAL_DESIGN) return resolveApprovalDesignChip(order, currentStage);
   if (idx === STAGE_PAYMENT) {
     if (order?.payment_bypassed) return { state: "bypass", label: "BYPASS" };
-    if ((order?.payment_files || []).length > 0) return { state: "done", label: "Selesai" };
+    if (orderPaymentStageDone(order)) return { state: "done", label: "Selesai" };
     // Empty Payment is current only when workflow is actually on Payment — not a default empty-files active.
     if (Number(currentStage || 0) === STAGE_PAYMENT) return { state: "current", label: "Belum dikerjakan" };
     return { state: "pending", label: "Menunggu" };
@@ -167,7 +168,7 @@ export function resolveStageState(idx, order, currentStage) {
   if (idx === STAGE_APPROVAL_PAYMENT) {
     if (order?.payment_status === "Approved") return { state: "done", label: "Selesai" };
     if (order?.payment_bypassed) return { state: "bypass", label: "BYPASS" };
-    if ((order?.payment_files || []).length > 0) return { state: "current", label: "Menunggu approval" };
+    if (orderHasPaymentEvidence(order)) return { state: "current", label: "Menunggu approval" };
     return { state: "pending", label: "Menunggu" };
   }
 
