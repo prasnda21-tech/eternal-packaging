@@ -1230,12 +1230,33 @@ async def apply_stock_opname_adjustments(
     actor_id: str,
     occurred_at: str,
 ) -> List[dict]:
-    """Post non-zero STOCK_OPNAME_ADJUSTMENT rows for the owning active session."""
+    """Post STOCK_OPNAME_ADJUSTMENT rows for the owning active session.
+
+    Non-zero differences post qty movements. Zero differences still mark the
+    warehouse balance baseline as reconciled when a balance row exists
+    (count equals book, including both zero) — without inventing a qty change.
+    """
     session_id = str(session_doc.get("id") or "")
     movements = []
     for line in lines:
         delta = int(line.get("difference_qty") or 0)
         if delta == 0:
+            identity = {
+                "master_item_id": str(line.get("master_item_id") or "").strip(),
+                "branch_id": str(session_doc.get("branch_id") or "").strip(),
+                "warehouse_id": str(session_doc.get("warehouse_id") or "").strip(),
+            }
+            if all(identity.values()):
+                await db[BALANCE_COLLECTION].update_one(
+                    identity,
+                    {
+                        "$set": {
+                            "baseline_status": BASELINE_RECONCILED,
+                            "updated_at": occurred_at,
+                        }
+                    },
+                    session=mongo_session,
+                )
             continue
         movements.append(await _apply_movement_in_session(
             db,
@@ -1923,25 +1944,79 @@ async def _adjust_to_target_once(
                 "branch_id": branch_id,
                 "warehouse_id": warehouse_id,
             }
-            current_doc = await balances.find_one(identity, {"_id": 0, "physical_qty": 1}, session=session)
+            current_doc = await balances.find_one(
+                identity,
+                {"_id": 0, "physical_qty": 1, "baseline_status": 1},
+                session=session,
+            )
             current = int((current_doc or {}).get("physical_qty") or 0)
             delta = target - current
-            if delta == 0:
-                return {
-                    "master_item_id": master_item_id,
-                    "branch_id": branch_id,
-                    "warehouse_id": warehouse_id,
-                    "previous_physical_qty": current,
-                    "target_physical_qty": target,
-                    "qty_delta": 0,
-                    "physical_qty": current,
-                    "movement_id": None,
-                    "changed": False,
-                }
+            prior_baseline = str((current_doc or {}).get("baseline_status") or "").strip()
             # Physical count target must be >= 0; book before may already be negative.
             if target < 0:
                 raise PhysicalStockValidationError("Hasil hitung fisik harus >= 0")
             created_at = now_iso()
+            # Zero qty delta: still reconcile an unreconciled baseline to the counted
+            # target (including count=0). Do not invent a qty change; write an audit
+            # MANUAL_ADJUSTMENT with qty_delta=0 so the count event is traceable.
+            if delta == 0:
+                if current_doc is None or prior_baseline != BASELINE_UNRECONCILED:
+                    return {
+                        "master_item_id": master_item_id,
+                        "branch_id": branch_id,
+                        "warehouse_id": warehouse_id,
+                        "previous_physical_qty": current,
+                        "target_physical_qty": target,
+                        "qty_delta": 0,
+                        "physical_qty": current,
+                        "movement_id": None,
+                        "changed": False,
+                    }
+                movement_id = str(uuid.uuid4())
+                updated = await balances.find_one_and_update(
+                    {
+                        **identity,
+                        "physical_qty": current,
+                        "baseline_status": BASELINE_UNRECONCILED,
+                    },
+                    {
+                        "$set": {
+                            "baseline_status": BASELINE_RECONCILED,
+                            "last_movement_id": movement_id,
+                            "updated_at": created_at,
+                        },
+                        "$inc": {"version": 1},
+                    },
+                    upsert=False,
+                    return_document=ReturnDocument.BEFORE,
+                    session=session,
+                )
+                if not updated:
+                    raise PhysicalStockRetryError("Saldo fisik berubah sebelum rekonsiliasi diterapkan")
+                doc = {
+                    "id": movement_id,
+                    "master_item_id": master_item_id,
+                    "branch_id": branch_id,
+                    "warehouse_id": warehouse_id,
+                    "movement_type": MOVEMENT_MANUAL_ADJUSTMENT,
+                    "qty_delta": 0,
+                    "balance_before": current,
+                    "balance_after": target,
+                    "reference_type": MOVEMENT_MANUAL_ADJUSTMENT,
+                    "reference_id": idempotency_key,
+                    "reason": reason,
+                    "actor_id": actor_id,
+                    "occurred_at": created_at,
+                    "created_at": created_at,
+                    "idempotency_key": idempotency_key,
+                    "metadata": {
+                        "target_physical_qty": target,
+                        "baseline_status": BASELINE_RECONCILED,
+                        "reconcile_only": True,
+                    },
+                }
+                await ledger.insert_one(doc, session=session)
+                return _adjustment_result(doc, target=target, changed=True)
             movement_id = str(uuid.uuid4())
             update = {
                 "$inc": {"physical_qty": delta, "version": 1},
@@ -2014,7 +2089,8 @@ async def adjust_physical_stock_to_target(
     """Set one warehouse balance to a target qty by posting the delta in one transaction.
 
     The current balance is read again on every attempt, then the delta is
-    recalculated against the target. A zero delta writes no ledger row.
+    recalculated against the target. A zero delta writes no qty change; if the
+    baseline is still unreconciled it is marked reconciled with an audit row.
     """
     await require_transaction_support(_client(db))
     payload = raw or {}

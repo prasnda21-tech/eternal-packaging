@@ -16,6 +16,8 @@ os.environ.setdefault(
 
 from services.physical_stock import (  # noqa: E402
     BALANCE_COLLECTION,
+    BASELINE_RECONCILED,
+    BASELINE_UNRECONCILED,
     BRANCHES_COLLECTION,
     LEDGER_COLLECTION,
     MASTER_ITEMS_COLLECTION,
@@ -158,6 +160,7 @@ async def test_negative_target_and_blank_reason_write_nothing(db):
 
 async def test_zero_delta_writes_no_movement_and_retry_is_safe(db):
     item, branch, warehouse = await _location(db, qty=1000)
+    # Seeded balance without unreconciled flag is treated as already settled.
     first = await adjust_physical_stock_to_target(db, item["id"], _body(branch, warehouse, 1000, "same"), actor_id="admin-1")
     second = await adjust_physical_stock_to_target(db, item["id"], _body(branch, warehouse, 1000, "same"), actor_id="admin-1")
     assert first["changed"] is False
@@ -165,6 +168,49 @@ async def test_zero_delta_writes_no_movement_and_retry_is_safe(db):
     assert first["movement_id"] is None
     assert await db[LEDGER_COLLECTION].count_documents({"movement_type": MOVEMENT_MANUAL_ADJUSTMENT}) == 0
     assert await _qty(db, item, warehouse) == 1000
+
+
+async def test_zero_target_unreconciled_marks_baseline_reconciled_with_audit(db):
+    """Count=0 on book=0 unreconciled must reconcile without inventing qty."""
+    item, branch, warehouse = await _location(db, qty=None)
+    await db[BALANCE_COLLECTION].insert_one({
+        "id": f"bal-{uuid.uuid4().hex[:8]}",
+        "master_item_id": item["id"],
+        "branch_id": branch["id"],
+        "warehouse_id": warehouse["id"],
+        "physical_qty": 0,
+        "baseline_status": BASELINE_UNRECONCILED,
+        "version": 1,
+    })
+    body = _body(branch, warehouse, 0, key="reconcile-zero", reason="Opname fisik 0")
+    first = await adjust_physical_stock_to_target(db, item["id"], body, actor_id="admin-1")
+    assert first["changed"] is True
+    assert first["qty_delta"] == 0
+    assert first["physical_qty"] == 0
+    assert first["movement_id"]
+    bal = await db[BALANCE_COLLECTION].find_one(
+        {"master_item_id": item["id"], "warehouse_id": warehouse["id"]},
+        {"_id": 0},
+    )
+    assert bal["physical_qty"] == 0
+    assert bal["baseline_status"] == BASELINE_RECONCILED
+    row = await db[LEDGER_COLLECTION].find_one({"id": first["movement_id"]}, {"_id": 0})
+    assert row["qty_delta"] == 0
+    assert row["balance_before"] == 0
+    assert row["balance_after"] == 0
+    assert row["reason"] == "Opname fisik 0"
+    assert row["metadata"]["reconcile_only"] is True
+    # Idempotent replay
+    second = await adjust_physical_stock_to_target(db, item["id"], body, actor_id="admin-1")
+    assert second["movement_id"] == first["movement_id"]
+    assert await db[LEDGER_COLLECTION].count_documents({"idempotency_key": "reconcile-zero"}) == 1
+    # Already reconciled + zero delta → no-op
+    noop = await adjust_physical_stock_to_target(
+        db, item["id"], _body(branch, warehouse, 0, key="reconcile-zero-2"), actor_id="admin-1",
+    )
+    assert noop["changed"] is False
+    assert noop["movement_id"] is None
+    assert await db[LEDGER_COLLECTION].count_documents({"movement_type": MOVEMENT_MANUAL_ADJUSTMENT}) == 1
 
 
 async def test_idempotent_retry_and_payload_conflict(db):
