@@ -297,4 +297,3 @@ async def test_director_auth_passes_but_business_and_r2_gates_still_enforce(bind
             user=director,
         )
     assert biz_exc.value.status_code == 400
-
