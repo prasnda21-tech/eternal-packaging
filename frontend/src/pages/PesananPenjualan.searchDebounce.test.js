@@ -261,7 +261,7 @@ describe("Pesanan Penjualan list search debounce", () => {
     expect(container.querySelector('[data-testid="sales-order-aktif-count"]')).toBeFalsy();
 
     expect(container.querySelector('[data-testid="so-th-filter-ship-date"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="so-filter-customer"]')).toBeNull();
+    expect(container.querySelector('[data-testid="so-filter-customer"]')).toBeTruthy();
 
     const pageSize = container.querySelector('[data-testid="sales-order-page-size"]');
     await act(async () => {
@@ -366,33 +366,56 @@ describe("Pesanan Penjualan list search debounce", () => {
 
     await chooseStatus("hold");
     expect(api.listSalesOrders).toHaveBeenLastCalledWith(
-      expect.objectContaining({ list_tab: "pending" }),
+      expect.objectContaining({
+        list_tab: "completed",
+        page: 1,
+        page_size: 50,
+        process_label: "HOLD",
+      }),
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
-    expect(container.querySelector('[data-testid="sales-order-tab-pending"]').getAttribute("aria-selected")).toBe("true");
-    expect(lastParams().get("tab")).toBe("pending");
+    expect(container.querySelector('[data-testid="sales-order-tab-selesai"]').getAttribute("aria-selected")).toBe("true");
+    expect(lastParams().get("tab")).toBe("completed");
     expect(lastParams().get("status")).toBe("hold");
+
+    // Clear toolbar HOLD, then apply HOLD via header Proses filter on tab Semua.
+    await chooseStatus("__tab__");
+    expect(api.listSalesOrders).toHaveBeenLastCalledWith(
+      { list_tab: "completed", page: 1, page_size: 50 },
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    expect(container.querySelector('[data-testid="sales-order-tab-selesai"]').getAttribute("aria-selected")).toBe("true");
+    expect(lastParams().get("tab")).toBe("completed");
+    expect(lastParams().get("status")).toBeNull();
 
     await act(async () => {
       container.querySelector('[data-testid="sales-order-tab-semua"]').click();
     });
     await act(async () => {
-      container.querySelector('[data-testid="so-th-filter-stage-option-hold"]').click();
+      container.querySelector('[data-testid="so-th-filter-stage-option-HOLD"]').click();
     });
     expect(api.listSalesOrders).toHaveBeenLastCalledWith(
-      expect.objectContaining({ list_tab: "pending", page: 1, page_size: 50 }),
+      expect.objectContaining({
+        list_tab: "all",
+        page: 1,
+        page_size: 50,
+        process_label: "HOLD",
+      }),
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
+    expect(container.querySelector('[data-testid="sales-order-tab-semua"]').getAttribute("aria-selected")).toBe("true");
+    expect(lastParams().get("tab")).toBe("all");
+    expect(lastParams().get("status")).toBe("hold");
+
     await act(async () => {
       container.querySelector('[data-testid="so-th-filter-stage-clear"]').click();
     });
     expect(api.listSalesOrders).toHaveBeenLastCalledWith(
-      { list_tab: "pending", page: 1, page_size: 50 },
+      { list_tab: "all", page: 1, page_size: 50 },
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
-    await act(async () => {
-      container.querySelector('[data-testid="sales-order-tab-semua"]').click();
-    });
+    expect(lastParams().get("status")).toBeNull();
+
     await chooseStatus("__tab__");
     expect(api.listSalesOrders).toHaveBeenLastCalledWith(
       { list_tab: "all", page: 1, page_size: 50 },
