@@ -4,10 +4,18 @@ LOCAL / preview / development / test (explicit APP_ENV only):
   Existing role permissions apply (admin keeps full package access).
 
 All other runtimes (including APP_ENV unset/unknown, and production):
-  Only role holding_team may hold package permission keys.
-  Mongo on 127.0.0.1/localhost alone NEVER implies local.
-  Sidebar, routes, and APIs all derive from filtered effective permissions —
+  - holding_team: package keys pass (unchanged)
+  - direktur_utama: package keys pass (Owner full-access policy)
+  - other roles: package keys pass only when present in that role's
+    (or user's) explicit ``package_production_confirmed_keys`` stamp.
+    Legacy persisted grants without confirmation stay stripped.
+
+Mongo on 127.0.0.1/localhost alone NEVER implies local.
+Sidebar, routes, and APIs all derive from filtered effective permissions —
   no separate soft-hide.
+
+r2_go_live / r2_authority_active is a separate operational mutation gate
+and is NOT used here as an RBAC feature flag.
 """
 from __future__ import annotations
 
@@ -17,6 +25,7 @@ from urllib.parse import urlparse
 from fastapi import HTTPException
 
 HOLDING_TEAM_ROLE = "holding_team"
+DIRECTOR_FULL_ACCESS_ROLE = "direktur_utama"
 PACKAGE_DENIED_MSG = "Modul Pembelian/Persediaan/HPP hanya untuk HOLDING_TEAM di production."
 
 LOCAL_ENVS = frozenset({"local", "development", "preview", "test"})
@@ -24,7 +33,8 @@ LOCAL_ENVS = frozenset({"local", "development", "preview", "test"})
 LOCAL_MONGO_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
 # Capability + nav keys restored by PR495 recovery. Filtered out for
-# non-HOLDING_TEAM users when runtime is not an explicit LOCAL_ENVS.
+# non-HOLDING_TEAM / non-Direktur users when runtime is not LOCAL_ENVS,
+# unless the key was explicitly confirmed for production package access.
 PACKAGE_PERMISSIONS: frozenset[str] = frozenset({
     # Purchasing capabilities
     "purchase_requests.view",
@@ -70,6 +80,11 @@ PACKAGE_PERMISSIONS: frozenset[str] = frozenset({
     "nav.inventory.current_stock",
     "nav.inventory.inventory_value",
 })
+
+# Field on role_permissions / users docs — exact package keys reviewed & confirmed.
+PACKAGE_CONFIRMED_KEYS_FIELD = "package_production_confirmed_keys"
+PACKAGE_CONFIRMED_AT_FIELD = "package_production_confirmed_at"
+PACKAGE_CONFIRMED_BY_FIELD = "package_production_confirmed_by"
 
 # Builtin defaults granted to holding_team so production Holding can operate
 # the recovered package without relying on Mongo role document edits yet.
@@ -140,15 +155,46 @@ def is_local_runtime(app_env: Optional[str], mongo_url: Optional[str] = None) ->
     return False
 
 
+def normalize_package_confirmed_keys(raw) -> Set[str]:
+    """Sanitize a confirmed-keys list to known PACKAGE_PERMISSIONS only."""
+    out: Set[str] = set()
+    if not isinstance(raw, (list, tuple, set)):
+        return out
+    for item in raw:
+        key = str(item or "").strip()
+        if key in PACKAGE_PERMISSIONS:
+            out.add(key)
+    return out
+
+
+def shrink_package_confirmed_keys(confirmed, next_permissions) -> list:
+    """On ordinary save: never grow; drop confirmed keys no longer granted."""
+    confirmed_set = normalize_package_confirmed_keys(confirmed)
+    next_set = set(next_permissions or [])
+    return sorted(confirmed_set & next_set & PACKAGE_PERMISSIONS)
+
+
+def apply_explicit_package_confirmation(confirmed, next_permissions, confirm_keys) -> list:
+    """Replace confirmed set with the explicitly reviewed list ∩ next grants.
+
+    Keys outside confirm_keys are NOT carried forward — confirmation covers
+    only the reviewed subset. New package keys never inherit an old stamp.
+    """
+    next_set = set(next_permissions or [])
+    reviewed = normalize_package_confirmed_keys(confirm_keys)
+    return sorted(reviewed & next_set & PACKAGE_PERMISSIONS)
+
+
 def can_access_purchasing_inventory_package(
     user: Optional[Dict[str, Any]],
     app_env: Optional[str] = None,
     mongo_url: Optional[str] = None,
 ) -> bool:
+    """Unrestricted package holder (local / Holding / Direktur)."""
     if is_local_runtime(app_env, mongo_url):
         return True
     role = str((user or {}).get("role") or "").strip().lower()
-    return role == HOLDING_TEAM_ROLE
+    return role in {HOLDING_TEAM_ROLE, DIRECTOR_FULL_ACCESS_ROLE}
 
 
 def filter_package_permissions(
@@ -156,12 +202,35 @@ def filter_package_permissions(
     user: Optional[Dict[str, Any]],
     app_env: Optional[str] = None,
     mongo_url: Optional[str] = None,
+    *,
+    role_confirmed_keys: Optional[Iterable[str]] = None,
+    user_confirmed_keys: Optional[Iterable[str]] = None,
 ) -> Set[str]:
-    """Drop package keys for non-HOLDING_TEAM users outside local runtime."""
+    """Drop unconfirmed package keys for non-Holding/non-Direktur outside local.
+
+    Role confirmation and user-override confirmation are independent:
+    neither stamp validates the other's legacy grants.
+    """
     out = set(perms or [])
     if can_access_purchasing_inventory_package(user, app_env, mongo_url):
         return out
-    return out - PACKAGE_PERMISSIONS
+    role_ok = normalize_package_confirmed_keys(role_confirmed_keys)
+    user_ok = normalize_package_confirmed_keys(user_confirmed_keys)
+    override = (user or {}).get("permissions_override") or {}
+    kept = set()
+    for key in out:
+        if key not in PACKAGE_PERMISSIONS:
+            kept.add(key)
+            continue
+        if key in role_ok:
+            kept.add(key)
+            continue
+        # Personal override True + user-level confirmation for that exact key.
+        if override.get(key) is True and key in user_ok:
+            kept.add(key)
+            continue
+        # stripped
+    return kept
 
 
 def require_purchasing_inventory_package_access(

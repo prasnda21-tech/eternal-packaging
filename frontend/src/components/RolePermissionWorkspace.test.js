@@ -212,6 +212,60 @@ describe("RolePermissionWorkspace", () => {
     unmount();
   });
 
+  test("Direktur shows full-access lock and hides permission editor", () => {
+    const { container, unmount } = mount({
+      selected: "direktur_utama",
+      isAdminRole: false,
+      isDirectorRole: true,
+      currentRole: {
+        role: "direktur_utama",
+        label: "Direktur",
+        status: "active",
+        is_builtin: true,
+        user_count: 1,
+      },
+      permsDraft: new Set(["po.view"]),
+      initialPerms: new Set(["po.view"]),
+    });
+    expect(container.querySelector('[data-testid="role-director-lock"]')).toBeTruthy();
+    expect(container.textContent).toMatch(/Akses penuh sistem/);
+    expect(container.querySelector('[data-testid="role-full-access-notice"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="role-save-permissions"]')).toBeNull();
+    expect(container.querySelector('[data-testid="role-package-confirm-panel"]')).toBeNull();
+    expect(container.querySelector('[data-testid="role-perm-direktur_utama-po.view"]')).toBeNull();
+    unmount();
+  });
+
+  test("package confirm panel lists exact activation keys", () => {
+    const onConfirmPackageOptInChange = jest.fn();
+    const onConfirmReviewKeysChange = jest.fn();
+    const { container, rerender, unmount } = mount({
+      permsDraft: new Set(["po.view", "purchase_hpp.view", "nav.purchasing"]),
+      initialPerms: new Set(["po.view", "purchase_hpp.view", "nav.purchasing"]),
+      confirmedPackageKeys: [],
+      confirmPackageOptIn: false,
+      onConfirmPackageOptInChange,
+      confirmReviewKeys: [],
+      onConfirmReviewKeysChange,
+    });
+    expect(container.querySelector('[data-testid="role-package-confirm-panel"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="role-package-unconfirmed-hint"]')).toBeTruthy();
+    rerender({
+      confirmPackageOptIn: true,
+      confirmReviewKeys: ["purchase_hpp.view"],
+      permsDraft: new Set(["po.view", "purchase_hpp.view", "nav.purchasing"]),
+      initialPerms: new Set(["po.view", "purchase_hpp.view", "nav.purchasing"]),
+      confirmedPackageKeys: [],
+      onConfirmPackageOptInChange,
+      onConfirmReviewKeysChange,
+    });
+    expect(container.querySelector('[data-testid="role-package-confirm-list"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="role-package-review-purchase_hpp.view"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="role-package-activation-preview"]').textContent).toMatch(/1 key/);
+    expect(container.querySelector('[data-testid="role-save-bar"]').classList.contains("show")).toBe(true);
+    unmount();
+  });
+
   test("Role & Hak Akses lists Lihat Proforma Invoice", () => {
     const { container, unmount } = mount({
       permissionCatalog: {

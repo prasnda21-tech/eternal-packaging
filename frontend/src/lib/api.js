@@ -816,7 +816,14 @@ export const api = {
   adminListRoles: () => client.get(`/admin/roles`).then((r) => r.data),
   adminCreateRole: (payload) => client.post(`/admin/roles`, payload).then((r) => r.data),
   adminUpdateRole: (role, payload) => client.patch(`/admin/roles/${role}`, payload).then((r) => r.data),
-  adminUpdateRolePermissions: (role, permissions) => client.put(`/admin/roles/${role}/permissions`, { permissions }).then((r) => r.data),
+  // permissions: string[] | { permissions, confirm_package_keys? }
+  // Legacy callers pass an array (shrink-only; never activates package grants).
+  adminUpdateRolePermissions: (role, permissionsOrBody) => {
+    const body = Array.isArray(permissionsOrBody)
+      ? { permissions: permissionsOrBody }
+      : (permissionsOrBody || {});
+    return client.put(`/admin/roles/${role}/permissions`, body).then((r) => r.data);
+  },
   adminDeactivateRole: (role) => client.post(`/admin/roles/${role}/deactivate`).then((r) => r.data),
   adminActivateRole: (role) => client.post(`/admin/roles/${role}/activate`).then((r) => r.data),
   adminDeleteRole: (role) => client.delete(`/admin/roles/${role}`).then((r) => r.data),

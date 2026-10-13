@@ -566,41 +566,73 @@ export function reportsNavVisible(hasPerm) {
   return { parent: !!(analytics || gajiOperator), analytics, statusPo, shipmentStatus, gajiOperator, orderPrediction };
 }
 
+/** When nav is configured, module fallback must not defeat explicit nav deny. */
+function navOrModule(hasPerm, navKey, ...moduleKeys) {
+  const configured = canSeeNav(hasPerm, "nav.configured");
+  if (canSeeNav(hasPerm, navKey)) return true;
+  if (configured) return false;
+  return moduleKeys.some((k) => canSeeNav(hasPerm, k));
+}
+
 export function purchasingNavVisible(hasPerm) {
   const parent = canSeeNav(hasPerm, NAV_KEYS.purchasing);
-  const requests = parent && (canSeeNav(hasPerm, NAV_KEYS.purchaseRequests) || canSeeNav(hasPerm, "purchase_requests.view") || canSeeNav(hasPerm, "purchase_requests.create"));
-  const orders = parent && (canSeeNav(hasPerm, NAV_KEYS.purchaseOrders) || canSeeNav(hasPerm, "purchase_orders.view") || canSeeNav(hasPerm, "purchase_orders.create"));
-  const advances = orders || (parent && (canSeeNav(hasPerm, "purchase_payments.view") || canSeeNav(hasPerm, "purchase_payments.create")));
-  const invoices = parent && (canSeeNav(hasPerm, NAV_KEYS.purchaseInvoices) || canSeeNav(hasPerm, "purchase_invoices.view") || canSeeNav(hasPerm, "purchase_invoices.create"));
-  const payments = parent && (canSeeNav(hasPerm, NAV_KEYS.purchasePayments) || canSeeNav(hasPerm, "purchase_payments.view") || canSeeNav(hasPerm, "purchase_payments.create"));
-  const receipts = parent && canSeeNav(hasPerm, NAV_KEYS.purchaseReceipts);
-  const returns = receipts || (parent && canSeeNav(hasPerm, NAV_KEYS.purchaseReturns));
-  const hpp = parent && (canSeeNav(hasPerm, NAV_KEYS.purchaseHpp) || canSeeNav(hasPerm, "purchase_hpp.view"));
+  const requests = parent && navOrModule(hasPerm, NAV_KEYS.purchaseRequests, "purchase_requests.view", "purchase_requests.create");
+  const orders = parent && navOrModule(hasPerm, NAV_KEYS.purchaseOrders, "purchase_orders.view", "purchase_orders.create");
+  const invoices = parent && navOrModule(hasPerm, NAV_KEYS.purchaseInvoices, "purchase_invoices.view", "purchase_invoices.create");
+  const payments = parent && navOrModule(hasPerm, NAV_KEYS.purchasePayments, "purchase_payments.view", "purchase_payments.create");
+  const receipts = parent && navOrModule(hasPerm, NAV_KEYS.purchaseReceipts, "purchase_receipts.view");
+  const advances = parent && (
+    canSeeNav(hasPerm, NAV_KEYS.purchaseAdvances)
+    || (!canSeeNav(hasPerm, "nav.configured") && (orders || payments))
+  );
+  // Explicit nav deny must not be overridden by receipts/module fallback.
+  const returns = parent && (
+    canSeeNav(hasPerm, NAV_KEYS.purchaseReturns)
+    || (!canSeeNav(hasPerm, "nav.configured") && receipts)
+  );
+  const hpp = parent && navOrModule(hasPerm, NAV_KEYS.purchaseHpp, "purchase_hpp.view");
+  // Menu leaf requires matching read capability when module keys exist.
+  const reqRead = !requests || canSeeNav(hasPerm, "purchase_requests.view") || canSeeNav(hasPerm, "purchase_requests.create") || canSeeNav(hasPerm, NAV_KEYS.purchaseRequests);
+  const ordRead = !orders || canSeeNav(hasPerm, "purchase_orders.view") || canSeeNav(hasPerm, "purchase_orders.create") || canSeeNav(hasPerm, NAV_KEYS.purchaseOrders);
+  const invRead = !invoices || canSeeNav(hasPerm, "purchase_invoices.view") || canSeeNav(hasPerm, "purchase_invoices.create") || canSeeNav(hasPerm, NAV_KEYS.purchaseInvoices);
+  const payRead = !payments || canSeeNav(hasPerm, "purchase_payments.view") || canSeeNav(hasPerm, "purchase_payments.create") || canSeeNav(hasPerm, NAV_KEYS.purchasePayments);
+  const rcpRead = !receipts || canSeeNav(hasPerm, "purchase_receipts.view") || canSeeNav(hasPerm, NAV_KEYS.purchaseReceipts);
+  const hppRead = !hpp || canSeeNav(hasPerm, "purchase_hpp.view") || canSeeNav(hasPerm, NAV_KEYS.purchaseHpp);
+  const showRequests = !!(requests && reqRead);
+  const showOrders = !!(orders && ordRead);
+  const showInvoices = !!(invoices && invRead);
+  const showPayments = !!(payments && payRead);
+  const showReceipts = !!(receipts && rcpRead);
+  const showAdvances = !!(advances && (showOrders || showPayments || canSeeNav(hasPerm, NAV_KEYS.purchaseAdvances)));
+  const showReturns = !!(returns && (showReceipts || canSeeNav(hasPerm, NAV_KEYS.purchaseReturns)));
+  const showHpp = !!(hpp && hppRead);
   return {
-    parent: !!(requests || orders || invoices || payments || receipts || returns || hpp),
-    requests: !!requests,
-    orders: !!orders,
-    advances: !!advances,
-    invoices: !!invoices,
-    payments: !!payments,
-    receipts: !!receipts,
-    returns: !!returns,
-    hpp: !!hpp,
+    parent: !!(showRequests || showOrders || showInvoices || showPayments || showReceipts || showReturns || showHpp || showAdvances),
+    requests: showRequests,
+    orders: showOrders,
+    advances: showAdvances,
+    invoices: showInvoices,
+    payments: showPayments,
+    receipts: showReceipts,
+    returns: showReturns,
+    hpp: showHpp,
   };
 }
 
 export function inventoryNavVisible(hasPerm) {
   const parent = canSeeNav(hasPerm, NAV_KEYS.inventory);
-  const masterItems = parent && canSeeNav(hasPerm, NAV_KEYS.masterItems);
-  const branchesWarehouses = parent && (
-    canSeeNav(hasPerm, NAV_KEYS.branchesWarehouses)
-    || canSeeNav(hasPerm, "org.branches.view")
-    || canSeeNav(hasPerm, "org.warehouses.view")
+  const masterItems = parent && navOrModule(hasPerm, NAV_KEYS.masterItems, "master_items.view");
+  const branchesWarehouses = parent && navOrModule(
+    hasPerm,
+    NAV_KEYS.branchesWarehouses,
+    "org.branches.view",
+    "org.warehouses.view",
   );
-  const currentStock = parent && canSeeNav(hasPerm, NAV_KEYS.currentStock);
-  const inventoryValue = parent && (
-    canSeeNav(hasPerm, NAV_KEYS.inventoryValue)
-    || canSeeNav(hasPerm, "inventory_valuation.view")
+  const currentStock = parent && navOrModule(hasPerm, NAV_KEYS.currentStock, "current_stock.view");
+  const inventoryValue = parent && navOrModule(
+    hasPerm,
+    NAV_KEYS.inventoryValue,
+    "inventory_valuation.view",
   );
   return {
     parent: !!(masterItems || currentStock || inventoryValue || branchesWarehouses),

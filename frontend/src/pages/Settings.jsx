@@ -16,6 +16,17 @@ import { formatDate } from "../lib/constants";
 import { NAV_MENU_FALLBACK, settingsAliasFromPath, settingsTabFromPath } from "../lib/navAccess";
 import PricingCatalogSettings from "./PricingCatalogSettings";
 import { businessPermissionModules, isSidebarNavPermissionKey, roleBusinessSavePayload, expandLoadingDraftForEdit } from "../lib/settingsPermissionUi";
+import {
+  confirmPackageKeysForSave,
+  isDirectorFullAccessRole,
+  isPackagePermissionKey,
+  packageKeysFromOverride,
+  packageKeysToActivate,
+  pruneConfirmReviewKeys,
+  rolePermissionsPutBody,
+  unconfirmedPackageKeys,
+  userOverridePutBody,
+} from "../lib/packagePermissions";
 import RolePermissionWorkspace from "../components/RolePermissionWorkspace";
 import OperatorWageSettings from "./OperatorWageSettings";
 import HppSettings from "./HppSettings";
@@ -102,6 +113,13 @@ function EmployeeForm({ initial, onSubmit, onCancel, mode, permissionCatalog, ca
   const [err, setErr] = useState("");
   const [permQuery, setPermQuery] = useState("");
   const [effective, setEffective] = useState(null); // {default_from_role, effective}
+  const [userPkgConfirmOptIn, setUserPkgConfirmOptIn] = useState(false);
+  const [userPkgReviewKeys, setUserPkgReviewKeys] = useState([]);
+  const userConfirmedPackageKeys = initial?.package_production_confirmed_keys || [];
+  const userOverridePackageKeys = packageKeysFromOverride(form.permissions_override);
+  const userPendingPackage = unconfirmedPackageKeys(userOverridePackageKeys, userConfirmedPackageKeys);
+  const userActivationPreview = packageKeysToActivate(userOverridePackageKeys, userPkgReviewKeys);
+  const isDirectorEmployee = isDirectorFullAccessRole(form.role);
 
   // Req 15: fetch effective breakdown (default_from_role + effective) so UI
   // shows Default / Override / Effective triad instead of asking Admin to guess.
@@ -116,6 +134,17 @@ function EmployeeForm({ initial, onSubmit, onCancel, mode, permissionCatalog, ca
   const roleDefaultSet = new Set(effective?.default_from_role || []);
   const effectiveSet = new Set(effective?.effective || []);
 
+  // Drop carried confirm state when switching employee/target.
+  useEffect(() => {
+    setUserPkgConfirmOptIn(false);
+    setUserPkgReviewKeys([]);
+  }, [initial?.id]);
+
+  // Unchecked / non-grant package overrides leave the reviewed confirm set.
+  useEffect(() => {
+    setUserPkgReviewKeys((prev) => pruneConfirmReviewKeys(prev, userOverridePackageKeys));
+  }, [userOverridePackageKeys.join("|")]);
+
   const togglePerm = (key, value) => {
     setForm((f) => {
       const next = { ...f.permissions_override };
@@ -123,6 +152,11 @@ function EmployeeForm({ initial, onSubmit, onCancel, mode, permissionCatalog, ca
       else next[key] = value === "grant";
       return { ...f, permissions_override: next };
     });
+    // Uncheck / deny / inherit cancels confirm for that package key.
+    // Re-grant does NOT restore a previous confirm — must re-review.
+    if (isPackagePermissionKey(key) && value !== "grant") {
+      setUserPkgReviewKeys((prev) => prev.filter((k) => k !== key));
+    }
   };
 
   const submit = async (e) => {
@@ -139,7 +173,19 @@ function EmployeeForm({ initial, onSubmit, onCancel, mode, permissionCatalog, ca
         payload.joined_at = form.joined_at || null;
         payload.notes = form.notes || null;
       }
-      if (showPerms) payload.permissions_override = form.permissions_override;
+      if (showPerms) {
+        const confirmKeys = confirmPackageKeysForSave(
+          userOverridePackageKeys,
+          userPkgReviewKeys,
+          { optIn: userPkgConfirmOptIn },
+        );
+        // Keep UI state aligned with payload before request.
+        if (confirmKeys) setUserPkgReviewKeys(confirmKeys);
+        const overrideBody = confirmKeys !== undefined
+          ? userOverridePutBody(form.permissions_override, confirmKeys)
+          : userOverridePutBody(form.permissions_override);
+        Object.assign(payload, overrideBody);
+      }
       if (!isEdit) {
         payload.email = form.email.trim().toLowerCase();
         if (form.password) payload.password = form.password;
@@ -249,6 +295,20 @@ function EmployeeForm({ initial, onSubmit, onCancel, mode, permissionCatalog, ca
         </FormSection>
       )}
 
+      {showPerms && isDirectorEmployee && (
+        <FormSection
+          id="settings-emp-director-lock"
+          title="Akses penuh sistem"
+          description="Role Direktur mengabaikan override deny/grant pendek untuk akses efektif."
+          status="neutral"
+        >
+          <div className="settings-info" data-testid="emp-director-lock">
+            Karyawan dengan role <b>Direktur</b> mendapat akses penuh sistem. Override di bawah tidak mengurangi
+            akses efektif; simpan override tetap diperbolehkan untuk audit dokumen saja.
+          </div>
+        </FormSection>
+      )}
+
       {showPerms && (
         <FormSection
           id="settings-emp-perms"
@@ -257,6 +317,64 @@ function EmployeeForm({ initial, onSubmit, onCancel, mode, permissionCatalog, ca
           status="neutral"
         >
           <div className="emp-perms">
+          {userOverridePackageKeys.length > 0 && (
+            <div className="settings-info" data-testid="emp-package-confirm-panel" style={{ marginBottom: 12 }}>
+              <strong>Package override (production)</strong>
+              <p className="hint">
+                Override Grant pada izin package tidak aktif di production sampai dikonfirmasi eksplisit.
+                Role stamp dan user stamp saling independen.
+              </p>
+              <label style={{ display: "flex", gap: 8, alignItems: "flex-start", marginTop: 8 }}>
+                <input
+                  type="checkbox"
+                  checked={userPkgConfirmOptIn}
+                  onChange={(e) => {
+                    const on = e.target.checked;
+                    setUserPkgConfirmOptIn(on);
+                    if (on && !userPkgReviewKeys.length) {
+                      // Seed with already-active confirms still granted; new grants stay unchecked.
+                      setUserPkgReviewKeys(
+                        packageKeysToActivate(userOverridePackageKeys, userConfirmedPackageKeys),
+                      );
+                    }
+                  }}
+                  data-testid="emp-package-confirm-optin"
+                />
+                <span>Konfirmasi aktivasi package override untuk daftar yang ditinjau</span>
+              </label>
+              {userPkgConfirmOptIn && (
+                <ul data-testid="emp-package-confirm-list" style={{ marginTop: 8, paddingLeft: 18 }}>
+                  {userOverridePackageKeys.map((key) => (
+                    <li key={key}>
+                      <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                        <input
+                          type="checkbox"
+                          checked={userPkgReviewKeys.includes(key)}
+                          onChange={() => {
+                            setUserPkgReviewKeys((prev) => {
+                              const next = new Set(prev);
+                              if (next.has(key)) next.delete(key);
+                              else next.add(key);
+                              return [...next].sort();
+                            });
+                          }}
+                          data-testid={`emp-package-review-check-${key}`}
+                        />
+                        <code>{key}</code>
+                      </label>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {userPkgConfirmOptIn && (
+                <p className="muted small" data-testid="emp-package-activation-preview">
+                  {userActivationPreview.length
+                    ? `${userActivationPreview.length} key override akan dikonfirmasi.`
+                    : "Tidak ada key override yang dikonfirmasi pada simpan ini."}
+                </p>
+              )}
+            </div>
+          )}
           <div className="emp-perms-head">
             <div>
               <h4>Hak akses khusus (override)</h4>
@@ -719,7 +837,7 @@ function NavAccessMatrix({ roles, permissionCatalog, canManagePerms, notify, onS
 
   const dirty = useMemo(() => {
     return visibleRoles.some((r) => {
-      if (r.role === "admin") return false;
+      if (r.role === "admin" || isDirectorFullAccessRole(r.role)) return false;
       const a = draft[r.role] || new Set();
       const b = initial[r.role] || new Set();
       if (a.size !== b.size) return true;
@@ -731,7 +849,7 @@ function NavAccessMatrix({ roles, permissionCatalog, canManagePerms, notify, onS
   const hasNav = (slug, key) => (draft[slug] || new Set()).has(key);
 
   const toggle = (roleDoc, key) => {
-    if (!canManagePerms || roleDoc.role === "admin") return;
+    if (!canManagePerms || roleDoc.role === "admin" || isDirectorFullAccessRole(roleDoc.role)) return;
     const current = new Set(draft[roleDoc.role] || []);
     const turningOff = current.has(key);
     if (turningOff && key === "nav.settings") {
@@ -765,7 +883,7 @@ function NavAccessMatrix({ roles, permissionCatalog, canManagePerms, notify, onS
     setErr("");
     try {
       const changed = visibleRoles.filter((r) => {
-        if (r.role === "admin") return false;
+        if (r.role === "admin" || isDirectorFullAccessRole(r.role)) return false;
         const a = draft[r.role] || new Set();
         const b = initial[r.role] || new Set();
         if (a.size !== b.size) return true;
@@ -775,6 +893,7 @@ function NavAccessMatrix({ roles, permissionCatalog, canManagePerms, notify, onS
       for (const r of changed) {
         const nonNav = (r.permissions || []).filter((p) => !String(p).startsWith("nav."));
         const nav = [...(draft[r.role] || [])];
+        // Sidebar-only save: omit confirm_package_keys (never activates legacy package grants).
         await api.adminUpdateRolePermissions(r.role, [...nonNav, ...nav, "nav.configured"]);
       }
       setInitial(draft);
@@ -825,8 +944,9 @@ function NavAccessMatrix({ roles, permissionCatalog, canManagePerms, notify, onS
               <tr key={m.key} data-testid={`nav-access-row-${m.key}`}>
                 <th scope="row" className={rowClass}>{m.label}</th>
                 {visibleRoles.map((r) => {
-                  const locked = r.role === "admin" || !canManagePerms;
-                  const checked = r.role === "admin" ? true : hasNav(r.role, m.key);
+                  const director = isDirectorFullAccessRole(r.role);
+                  const locked = r.role === "admin" || director || !canManagePerms;
+                  const checked = r.role === "admin" || director ? true : hasNav(r.role, m.key);
                   return (
                     <td key={r.role}>
                       <label className={"nav-access-cell" + (checked ? " on" : "") + (locked ? " locked" : "")}>
@@ -868,9 +988,16 @@ function RolesTab({ permissionCatalog, canManagePerms, notify }) {
   const [permStateFilter, setPermStateFilter] = useState("all");
   const [showCreate, setShowCreate] = useState(false);
   const [createForm, setCreateForm] = useState({ role: "", label: "", description: "" });
+  const [confirmPackageOptIn, setConfirmPackageOptIn] = useState(false);
+  const [confirmReviewKeys, setConfirmReviewKeys] = useState([]);
 
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
+
+  const resetPackageConfirmUi = () => {
+    setConfirmPackageOptIn(false);
+    setConfirmReviewKeys([]);
+  };
 
   const load = useCallback(async (keepSelected = true) => {
     setBusy(true);
@@ -885,14 +1012,16 @@ function RolesTab({ permissionCatalog, canManagePerms, notify }) {
         setLabelDraft(target.label || "");
         setDescDraft(target.description || "");
         setMetaInitial({ label: target.label || "", description: target.description || "" });
+        resetPackageConfirmUi();
       } else if (d.roles?.length) {
-        const first = d.roles.find((r) => r.role !== "admin") || d.roles[0];
+        const first = d.roles.find((r) => r.role !== "admin" && !isDirectorFullAccessRole(r.role)) || d.roles.find((r) => r.role !== "admin") || d.roles[0];
         setSelected(first.role);
         setPermsDraft(expandLoadingDraftForEdit(first.permissions));
         setInitial(expandLoadingDraftForEdit(first.permissions));
         setLabelDraft(first.label || "");
         setDescDraft(first.description || "");
         setMetaInitial({ label: first.label || "", description: first.description || "" });
+        resetPackageConfirmUi();
       }
     } catch (e) { setErr(e.response?.data?.detail || "Gagal memuat"); }
     finally { setBusy(false); }
@@ -909,12 +1038,26 @@ function RolesTab({ permissionCatalog, canManagePerms, notify }) {
     setPermQuery("");
     setPermStateFilter("all");
     setErr("");
+    resetPackageConfirmUi();
   };
+
+  // Keep reviewed confirm keys ⊆ current draft grants (stale keys cannot be sent).
+  useEffect(() => {
+    setConfirmReviewKeys((prev) => pruneConfirmReviewKeys(prev, permsDraft));
+  }, [permsDraft]);
 
   const togglePerm = (key) => {
     setPermsDraft((prev) => {
       const next = new Set(prev);
-      if (next.has(key)) next.delete(key); else next.add(key);
+      if (next.has(key)) {
+        next.delete(key);
+        if (isPackagePermissionKey(key)) {
+          setConfirmReviewKeys((rev) => rev.filter((k) => k !== key));
+        }
+      } else {
+        next.add(key);
+        // Re-check does not restore prior confirm — must review again.
+      }
       return next;
     });
   };
@@ -922,9 +1065,17 @@ function RolesTab({ permissionCatalog, canManagePerms, notify }) {
   const toggleCategoryKeys = (keys, enable) => {
     setPermsDraft((prev) => {
       const next = new Set(prev);
+      const touchedPkg = [];
       for (const key of keys || []) {
         if (enable) next.add(key);
-        else next.delete(key);
+        else {
+          next.delete(key);
+          if (isPackagePermissionKey(key)) touchedPkg.push(key);
+        }
+      }
+      if (!enable && touchedPkg.length) {
+        const drop = new Set(touchedPkg);
+        setConfirmReviewKeys((rev) => rev.filter((k) => !drop.has(k)));
       }
       return next;
     });
@@ -934,20 +1085,49 @@ function RolesTab({ permissionCatalog, canManagePerms, notify }) {
     setBusy(true);
     setErr("");
     try {
+      if (isDirectorFullAccessRole(selected)) {
+        setErr("Permission role Direktur tidak dapat diubah (akses penuh sistem)");
+        return;
+      }
       // Save label/description if changed and non-admin
       if (selected !== "admin" && (labelDraft !== metaInitial.label || descDraft !== metaInitial.description)) {
         await api.adminUpdateRole(selected, { label: labelDraft, description: descDraft });
       }
       if (selected !== "admin") {
         const roleDoc = roles.find((r) => r.role === selected);
-        await api.adminUpdateRolePermissions(selected, roleBusinessSavePayload(permsDraft, roleDoc?.permissions));
+        const permissions = roleBusinessSavePayload(permsDraft, roleDoc?.permissions);
+        const confirmKeys = confirmPackageKeysForSave(permissions, confirmReviewKeys, {
+          optIn: confirmPackageOptIn,
+        });
+        if (confirmPackageOptIn) {
+          const preview = confirmKeys || [];
+          const ok = window.confirm(
+            preview.length
+              ? `Konfirmasi aktivasi ${preview.length} izin package production?\n\n${preview.join("\n")}\n\nStamp hanya berlaku untuk himpunan ini.`
+              : "Konfirmasi package tanpa key? Stamp package untuk grant saat ini akan dikosongkan."
+          );
+          if (!ok) return;
+          // UI list and request payload must be identical.
+          setConfirmReviewKeys(preview);
+          await api.adminUpdateRolePermissions(
+            selected,
+            rolePermissionsPutBody(permissions, preview),
+          );
+        } else {
+          // Ordinary save: shrink-only — never activates legacy package grants.
+          await api.adminUpdateRolePermissions(selected, permissions);
+        }
       }
       setInitial(new Set(permsDraft));
       setMetaInitial({ label: labelDraft, description: descDraft });
       notify("Perubahan role disimpan");
+      // Refresh own session so sidebar/API.me reflect the new effective set immediately.
       if (selected === user?.role) await refresh();
       await load(true);
-    } catch (e) { setErr(e.response?.data?.detail?.message || e.response?.data?.detail || "Gagal menyimpan"); }
+    } catch (e) {
+      // Keep draft + confirm UI; do not notify success or reload-away the draft.
+      setErr(e.response?.data?.detail?.message || e.response?.data?.detail || "Gagal menyimpan");
+    }
     finally { setBusy(false); }
   };
 
@@ -992,6 +1172,7 @@ function RolesTab({ permissionCatalog, canManagePerms, notify }) {
 
   const currentRole = roles.find((r) => r.role === selected);
   const isAdminRole = selected === "admin";
+  const isDirectorRole = isDirectorFullAccessRole(selected);
 
   return (
     <div className="settings-body" data-testid="roles-tab">
@@ -1013,6 +1194,7 @@ function RolesTab({ permissionCatalog, canManagePerms, notify }) {
           {roles.map((r) => {
             const active = selected === r.role;
             const built = permissionCatalog ? Object.values(permissionCatalog.modules || {}).flat().length : 0;
+            const director = isDirectorFullAccessRole(r.role);
             return (
               <button
                 key={r.role}
@@ -1024,12 +1206,15 @@ function RolesTab({ permissionCatalog, canManagePerms, notify }) {
                 <div className="role-card-top">
                   <span className="role-card-name">{r.label}</span>
                   {r.status === "inactive" && <span className="pill sm" data-testid={`role-status-${r.role}`}>Nonaktif</span>}
-                  {r.is_customized && r.status === "active" && <span className="pill sm">disesuaikan</span>}
+                  {r.is_customized && r.status === "active" && !director && <span className="pill sm">disesuaikan</span>}
                   {r.role === "admin" && <span className="pill sm pill-lock"><Lock size={10}/> Terkunci</span>}
+                  {director && <span className="pill sm pill-lock" data-testid="role-director-badge"><Lock size={10}/> Akses penuh</span>}
                   {!r.is_builtin && <span className="pill sm" data-testid={`role-custom-${r.role}`}>custom</span>}
                 </div>
                 <div className="role-card-meta">
-                  {r.permissions.length} / {built || r.permissions.length} hak akses · <span data-testid={`role-user-count-${r.role}`}>{r.user_count} user</span>
+                  {director
+                    ? "Akses penuh sistem"
+                    : <>{r.permissions.length} / {built || r.permissions.length} hak akses · <span data-testid={`role-user-count-${r.role}`}>{r.user_count} user</span></>}
                 </div>
               </button>
             );
@@ -1040,10 +1225,16 @@ function RolesTab({ permissionCatalog, canManagePerms, notify }) {
           currentRole={currentRole}
           selected={selected}
           isAdminRole={isAdminRole}
+          isDirectorRole={isDirectorRole}
           canManagePerms={canManagePerms}
           permissionCatalog={permissionCatalog}
           permsDraft={permsDraft}
           initialPerms={initial}
+          confirmedPackageKeys={currentRole?.package_production_confirmed_keys || []}
+          confirmPackageOptIn={confirmPackageOptIn}
+          onConfirmPackageOptInChange={setConfirmPackageOptIn}
+          confirmReviewKeys={confirmReviewKeys}
+          onConfirmReviewKeysChange={setConfirmReviewKeys}
           labelDraft={labelDraft}
           descDraft={descDraft}
           onLabelChange={setLabelDraft}
@@ -1058,7 +1249,12 @@ function RolesTab({ permissionCatalog, canManagePerms, notify }) {
           busy={busy}
           err={err}
           onSave={save}
-          onDiscard={() => { setPermsDraft(new Set(initial)); setLabelDraft(metaInitial.label); setDescDraft(metaInitial.description); }}
+          onDiscard={() => {
+            setPermsDraft(new Set(initial));
+            setLabelDraft(metaInitial.label);
+            setDescDraft(metaInitial.description);
+            resetPackageConfirmUi();
+          }}
           onToggleActive={doToggleActive}
           onDelete={doDelete}
         />

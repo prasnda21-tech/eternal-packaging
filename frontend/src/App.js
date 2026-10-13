@@ -368,14 +368,14 @@ export default function App() {
             <Route path="/penjualan/aktivitas-sales/outlet/:id" element={<PermGate anyOf={[NAV_KEYS.salesActivity, "sales.activity.view", "sales.activity.create"]}><SalesActivityOutletDetail /></PermGate>} />
             <Route path="/penjualan/aktivitas-sales" element={<PermGate anyOf={[NAV_KEYS.salesActivity, "sales.activity.view", "sales.activity.create", "sales.outlet.create"]}><SalesActivityPage /></PermGate>} />
             <Route path="/penjualan" element={<Navigate to="/penjualan/pesanan-penjualan" replace />} />
-            <Route path="/pembelian/permintaan" element={<PermGate anyOf={[NAV_KEYS.purchaseRequests, NAV_KEYS.purchasing, "purchase_requests.view", "purchase_requests.create"]}><PermintaanPembelian /></PermGate>} />
-            <Route path="/pembelian/pesanan-pembelian" element={<PermGate anyOf={[NAV_KEYS.purchaseOrders, NAV_KEYS.purchasing, "purchase_orders.view", "purchase_orders.create"]}><PesananPembelian /></PermGate>} />
-            <Route path="/pembelian/uang-muka" element={<PermGate anyOf={[NAV_KEYS.purchaseAdvances, NAV_KEYS.purchaseOrders, NAV_KEYS.purchasing, "purchase_orders.view", "purchase_orders.create", "purchase_payments.view", "purchase_payments.create"]}><UangMukaPembelian /></PermGate>} />
-            <Route path="/pembelian/faktur-pembelian" element={<PermGate anyOf={[NAV_KEYS.purchaseInvoices, NAV_KEYS.purchasing, "purchase_invoices.view", "purchase_invoices.create"]}><FakturPembelian /></PermGate>} />
-            <Route path="/pembelian/pembayaran-pembelian" element={<PermGate anyOf={[NAV_KEYS.purchasePayments, NAV_KEYS.purchasing, "purchase_payments.view", "purchase_payments.create"]}><PembayaranPembelian /></PermGate>} />
-            <Route path="/pembelian/penerimaan-barang" element={<PermGate anyOf={[NAV_KEYS.purchaseReceipts]} alsoAnyOf={["purchase_receipts.view"]}><PenerimaanBarang /></PermGate>} />
-            <Route path="/pembelian/retur" element={<PermGate anyOf={[NAV_KEYS.purchaseReturns, NAV_KEYS.purchaseReceipts]} alsoAnyOf={["purchase_receipts.view"]}><ReturPembelian /></PermGate>} />
-            <Route path="/pembelian/hpp-pembelian" element={<PermGate anyOf={[NAV_KEYS.purchaseHpp]} alsoAnyOf={["purchase_hpp.view"]}><HppPembelian /></PermGate>} />
+            <Route path="/pembelian/permintaan" element={<PermGate anyOf={["purchase_requests.view", "purchase_requests.create"]}><PermintaanPembelian /></PermGate>} />
+            <Route path="/pembelian/pesanan-pembelian" element={<PermGate anyOf={["purchase_orders.view", "purchase_orders.create"]}><PesananPembelian /></PermGate>} />
+            <Route path="/pembelian/uang-muka" element={<PermGate anyOf={["purchase_orders.view", "purchase_orders.create", "purchase_payments.view", "purchase_payments.create"]}><UangMukaPembelian /></PermGate>} />
+            <Route path="/pembelian/faktur-pembelian" element={<PermGate anyOf={["purchase_invoices.view", "purchase_invoices.create"]}><FakturPembelian /></PermGate>} />
+            <Route path="/pembelian/pembayaran-pembelian" element={<PermGate anyOf={["purchase_payments.view", "purchase_payments.create"]}><PembayaranPembelian /></PermGate>} />
+            <Route path="/pembelian/penerimaan-barang" element={<PermGate anyOf={["purchase_receipts.view"]}><PenerimaanBarang /></PermGate>} />
+            <Route path="/pembelian/retur" element={<PermGate anyOf={["purchase_receipts.view"]}><ReturPembelian /></PermGate>} />
+            <Route path="/pembelian/hpp-pembelian" element={<PermGate anyOf={["purchase_hpp.view"]}><HppPembelian /></PermGate>} />
             <Route path="/pembelian" element={<PembelianIndex />} />
             <Route path="/persediaan/master-barang-jasa" element={<PermGate anyOf={[NAV_KEYS.masterItems]} alsoAnyOf={["master_items.view"]}><MasterBarangJasa /></PermGate>} />
             <Route path="/persediaan/master-barang-jasa/:id" element={<PermGate anyOf={[NAV_KEYS.masterItems]} alsoAnyOf={["master_items.view"]}><ProductDetail /></PermGate>} />
