@@ -6,6 +6,7 @@ on:
       - main
       - cursor/hpp-financial-opening-13bd
       - cursor/sales-order-redesign-b7d7
+      - cursor/purchasing-pr-v4-preview-716f
   workflow_dispatch:
     inputs:
       run_live_orders:
