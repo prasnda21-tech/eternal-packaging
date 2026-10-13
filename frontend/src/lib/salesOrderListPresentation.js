@@ -95,23 +95,57 @@ export function periodBounds(period, today = new Date()) {
   return { date_from: "", date_to: "" };
 }
 
+function csvParam(values) {
+  if (!Array.isArray(values)) return undefined;
+  const parts = values.map((item) => String(item || "").trim()).filter(Boolean);
+  return parts.length ? parts.join(",") : undefined;
+}
+
 export function salesOrderListRequest({
   q,
   status,
   listTab,
   dateFrom,
   dateTo,
-  tanggalKirimPreset,
+  orderDateFrom,
+  orderDateTo,
+  shipDateFrom,
+  shipDateTo,
+  customerQ,
   sales,
+  createdBy,
   deliveryStatuses,
+  processLabels,
+  invoiceStatuses,
+  qtyMin,
+  qtyMax,
+  qtyUnit,
   page,
   pageSize,
 } = {}) {
-  const shipPreset = String(tanggalKirimPreset || "all").trim() || "all";
   const salesKey = String(sales || "").trim();
-  const statuses = Array.isArray(deliveryStatuses)
-    ? deliveryStatuses.map((item) => String(item || "").trim()).filter(Boolean)
-    : [];
+  const creatorKey = String(createdBy || "").trim();
+  const customerKey = String(customerQ || "").trim();
+  const qtyUnitKey = String(qtyUnit || "").trim();
+  const qtyMinKey = String(qtyMin ?? "").trim();
+  const qtyMaxKey = String(qtyMax ?? "").trim();
+  const extra = {
+    date_from: dateFrom || undefined,
+    date_to: dateTo || undefined,
+    order_date_from: orderDateFrom || undefined,
+    order_date_to: orderDateTo || undefined,
+    ship_date_from: shipDateFrom || undefined,
+    ship_date_to: shipDateTo || undefined,
+    customer_q: customerKey || undefined,
+    sales: salesKey || undefined,
+    created_by: creatorKey || undefined,
+    delivery_status: csvParam(deliveryStatuses),
+    process_label: csvParam(processLabels),
+    invoice_status: csvParam(invoiceStatuses),
+    qty_min: qtyMinKey || undefined,
+    qty_max: qtyMaxKey || undefined,
+    qty_unit: qtyUnitKey || undefined,
+  };
   // Prefer exclusive backend list_tab (five-tab). Legacy status kept only when listTab omitted.
   if (listTab != null && String(listTab).trim() !== "") {
     return salesFiveTabListParams({
@@ -119,24 +153,13 @@ export function salesOrderListRequest({
       page,
       pageSize: pageSize || SALES_LIST_DEFAULT_PAGE_SIZE,
       q,
-      extra: {
-        date_from: dateFrom || undefined,
-        date_to: dateTo || undefined,
-        tanggal_pengiriman_preset: shipPreset !== "all" ? shipPreset : undefined,
-        sales: salesKey || undefined,
-        delivery_status: statuses.length ? statuses.join(",") : undefined,
-      },
+      extra,
     });
   }
-  const params = {};
+  const params = { ...extra };
   const query = String(q || "").trim();
   if (query) params.q = query;
   if (status && status !== "all") params.status = status;
-  if (dateFrom) params.date_from = dateFrom;
-  if (dateTo) params.date_to = dateTo;
-  if (shipPreset !== "all") params.tanggal_pengiriman_preset = shipPreset;
-  if (salesKey) params.sales = salesKey;
-  if (statuses.length) params.delivery_status = statuses.join(",");
   if (page) params.page = page;
   if (pageSize) params.page_size = pageSize;
   return params;

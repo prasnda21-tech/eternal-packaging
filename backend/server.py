@@ -10366,12 +10366,67 @@ async def get_sales_order_options(user=Depends(current_user)):
                     "payment_terms": ro.get("payment_terms") or "",
                 })
 
-    sales_from_orders = await db.orders.distinct("sales", {"cancelled": {"$ne": True}})
+    owner = sales_owner_match(user)
+    scoped_order_match = dict(owner) if owner else {}
+    sales_from_orders = await db.orders.distinct("sales", scoped_order_match)
+    creator_raw = await db.orders.distinct("created_by_user", scoped_order_match)
+    from services.sales_order_list_filters import (
+        CREATOR_UNKNOWN_TOKEN,
+        process_label_options,
+        scoped_creator_option_values,
+    )
+    from services.sales_order_invoice_status import CREATOR_UNKNOWN_LABEL
+
+    creator_labels = scoped_creator_option_values(creator_raw)
+    # Detect empty/legacy creators in scope even when distinct omits nulls.
+    if CREATOR_UNKNOWN_LABEL not in creator_labels:
+        unknown_match = {
+            **scoped_order_match,
+            "$or": [
+                {"created_by_user": {"$exists": False}},
+                {"created_by_user": None},
+                {"created_by_user": ""},
+                {"created_by_user": {"$regex": r"^\s*$"}},
+            ],
+        }
+        if await db.orders.find_one(unknown_match, {"_id": 1}):
+            creator_labels = scoped_creator_option_values(
+                [*creator_raw, None]
+            )
+    creator_options = []
+    for label in creator_labels:
+        value = CREATOR_UNKNOWN_TOKEN if label == CREATOR_UNKNOWN_LABEL else label
+        creator_options.append({"value": value, "label": label})
+
+    qty_unit_options: List[str] = []
+    seen_units = set()
+    async for doc in db.orders.find(
+        scoped_order_match,
+        {"_id": 0, "line_items.unit": 1},
+    ).limit(5000):
+        for line in doc.get("line_items") or []:
+            if not isinstance(line, dict):
+                continue
+            unit = str(line.get("unit") or "").strip() or "pcs"
+            if unit in seen_units:
+                continue
+            seen_units.add(unit)
+            qty_unit_options.append(unit)
+    qty_unit_options.sort(key=lambda item: item.lower())
+
     sales_users = await db.users.find(
         {"role": {"$in": ["admin", "crm", "head_production", "head_operations"]}, "status": {"$ne": "inactive"}},
         {"_id": 0, "name": 1, "email": 1}
     ).to_list(200)
-    all_sales = sorted({s.strip() for s in sales_from_orders if s and str(s).strip()} | {u["name"] for u in sales_users if u.get("name")})
+    # Create-form suggestions may include role names; list filter uses scoped order sales.
+    all_sales = sorted(
+        {s.strip() for s in sales_from_orders if s and str(s).strip()}
+        | ({u["name"] for u in sales_users if u.get("name")} if not owner else set())
+    )
+    if owner and user.get("name"):
+        name = str(user.get("name") or "").strip()
+        if name and name not in all_sales:
+            all_sales = sorted({*all_sales, name})
 
     master_items = await db.master_items.find(
         {"is_active": True},
@@ -10384,6 +10439,9 @@ async def get_sales_order_options(user=Depends(current_user)):
         "master_customers": master_customers,
         "outlets_by_customer": outlets_by_customer,
         "sales_options": all_sales,
+        "creator_options": creator_options,
+        "qty_unit_options": qty_unit_options,
+        "process_label_options": process_label_options(),
         "master_items": master_items,
         "suggested_po_number": suggested_po,
     }
@@ -11296,11 +11354,23 @@ def _apply_sales_order_header_filters(
     orders: list,
     *,
     tanggal_pengiriman_preset: Optional[str] = None,
+    ship_date_from: Optional[str] = None,
+    ship_date_to: Optional[str] = None,
     sales: Optional[str] = None,
     delivery_status: Optional[str] = None,
+    process_label: Optional[str] = None,
+    qty_min: Optional[str] = None,
+    qty_max: Optional[str] = None,
+    qty_unit: Optional[str] = None,
 ) -> list:
-    """Post-decorate header filters applied before pagination."""
+    """Post-decorate header filters applied before pagination / invoice filter."""
     from services.sales_date_presets import match_shipping_date
+    from services.sales_order_list_filters import (
+        match_calendar_date_range,
+        match_process_labels,
+        match_qty_range,
+        parse_csv_tokens,
+    )
 
     sales_key = str(sales or "").strip()
     status_tokens = [
@@ -11310,8 +11380,24 @@ def _apply_sales_order_header_filters(
     ]
     status_tokens = [token for token in status_tokens if token]
     preset = str(tanggal_pengiriman_preset or "all").strip().lower() or "all"
+    ship_from = str(ship_date_from or "").strip()
+    ship_to = str(ship_date_to or "").strip()
+    process_labels = parse_csv_tokens(process_label)
+    qty_active = (
+        str(qty_min or "").strip() != ""
+        or str(qty_max or "").strip() != ""
+        or str(qty_unit or "").strip() != ""
+    )
 
-    if not sales_key and not status_tokens and preset in ("", "all"):
+    if (
+        not sales_key
+        and not status_tokens
+        and preset in ("", "all")
+        and not ship_from
+        and not ship_to
+        and not process_labels
+        and not qty_active
+    ):
         return orders
 
     filtered = []
@@ -11327,7 +11413,15 @@ def _apply_sales_order_header_filters(
             )
             if row_status not in status_tokens:
                 continue
-        if preset not in ("", "all"):
+        if ship_from or ship_to:
+            if not match_calendar_date_range(
+                order.get("tanggal_pengiriman"),
+                ship_from,
+                ship_to,
+            ):
+                continue
+        elif preset not in ("", "all"):
+            # Legacy preset param kept for backward compatibility only.
             active = _sales_order_is_active_for_overdue(order) if preset == "overdue" else None
             if not match_shipping_date(
                 order.get("tanggal_pengiriman"),
@@ -11335,6 +11429,15 @@ def _apply_sales_order_header_filters(
                 is_active_order=active,
             ):
                 continue
+        if process_labels and not match_process_labels(order, process_labels):
+            continue
+        if qty_active and not match_qty_range(
+            order,
+            qty_min=qty_min,
+            qty_max=qty_max,
+            qty_unit=qty_unit,
+        ):
+            continue
         filtered.append(order)
     return filtered
 
@@ -11538,9 +11641,20 @@ async def list_sales_orders(
     list_tab: Optional[str] = None,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
+    order_date_from: Optional[str] = None,
+    order_date_to: Optional[str] = None,
+    ship_date_from: Optional[str] = None,
+    ship_date_to: Optional[str] = None,
     tanggal_pengiriman_preset: Optional[str] = None,
+    customer_q: Optional[str] = None,
     sales: Optional[str] = None,
+    created_by: Optional[str] = None,
     delivery_status: Optional[str] = None,
+    process_label: Optional[str] = None,
+    qty_min: Optional[str] = None,
+    qty_max: Optional[str] = None,
+    qty_unit: Optional[str] = None,
+    invoice_status: Optional[str] = None,
     page: Optional[int] = None,
     page_size: Optional[int] = None,
     user=Depends(current_user),
@@ -11550,6 +11664,8 @@ async def list_sales_orders(
     Legacy ``status`` (aktif/histori/gabungan/…) is preserved.
     Additive ``list_tab`` enables exclusive five-tab classification with uncapped
     (hard-max) streaming pagination. Default page_size is 50 when paging.
+    Header column filters AND together; invoice status is classified before page
+    only when ``invoice_status`` is set.
     """
     reject_sales_pwa_bypass(user)
     await _require_any_perm(user, "sales_order.view", "sales_order.create", "po.view")
@@ -11567,6 +11683,37 @@ async def list_sales_orders(
         normalize_list_tab,
         parse_page_params,
     )
+    from services.sales_order_invoice_status import (
+        filter_orders_by_invoice_statuses,
+        normalize_invoice_status_filters,
+        user_can_see_invoice_status,
+    )
+    from services.sales_order_list_filters import (
+        creator_mongo_clause,
+        order_date_mongo_clause,
+        text_search_or_clause,
+        validate_date_range,
+        validate_qty_range,
+    )
+
+    for err in (
+        validate_date_range(date_from, date_to),
+        validate_date_range(order_date_from, order_date_to),
+        validate_date_range(ship_date_from, ship_date_to),
+        validate_qty_range(qty_min, qty_max),
+    ):
+        if err:
+            raise HTTPException(400, err)
+
+    invoice_status_tokens = normalize_invoice_status_filters(invoice_status)
+    if invoice_status_tokens:
+        if user.get("role") == "admin":
+            can_invoice = True
+        else:
+            eff = await user_permissions(user)
+            can_invoice = "sales.invoice.view" in eff
+        if not can_invoice:
+            raise HTTPException(403, "Tidak memiliki izin melihat status faktur.")
 
     shared: list = []
     owner = sales_owner_match(user)
@@ -11592,18 +11739,49 @@ async def list_sales_orders(
             {"outlet": {"$regex": needle, "$options": "i"}},
             {"sales": {"$regex": needle, "$options": "i"}},
         ]})
-    date_clause = _sales_order_date_clause(date_from, date_to)
-    if date_clause:
-        shared.append(date_clause)
+    customer_clause = text_search_or_clause(
+        customer_q, ("customer", "po_number", "outlet")
+    )
+    if customer_clause:
+        shared.append(customer_clause)
+    # Toolbar period AND header Tanggal PO range (both on order_date).
+    period_clause = order_date_mongo_clause(date_from, date_to)
+    if period_clause:
+        shared.append(period_clause)
+    header_order_clause = order_date_mongo_clause(order_date_from, order_date_to)
+    if header_order_clause:
+        shared.append(header_order_clause)
     sales_key = str(sales or "").strip()
     if sales_key:
         shared.append({"$or": [
             {"sales": sales_key},
             {"sales_user": sales_key},
         ]})
+    creator_clause = creator_mongo_clause(created_by)
+    if creator_clause:
+        shared.append(creator_clause)
 
     paging = page is not None or page_size is not None or five_tab is not None
     branch_capped = False
+
+    async def _apply_invoice_then_page(rows: list, *, current: int, size: int):
+        working = rows
+        if invoice_status_tokens:
+            working = await filter_orders_by_invoice_statuses(
+                db, working, invoice_status_tokens
+            )
+        total = len(working)
+        start = (current - 1) * size
+        page_rows = working[start:start + size]
+        if not invoice_status_tokens:
+            await _enrich_sales_order_list_page(page_rows, user)
+        else:
+            # Already classified for matching rows; strip if caller somehow lacked perm.
+            if not user_can_see_invoice_status(user) and user.get("role") != "admin":
+                for row in page_rows:
+                    row.pop("invoice_status", None)
+                    row.pop("invoice_status_label", None)
+        return page_rows, total
 
     if five_tab is not None:
         orders = await _fetch_sales_order_list_rows_unbounded(
@@ -11614,8 +11792,14 @@ async def list_sales_orders(
         orders = _apply_sales_order_header_filters(
             orders,
             tanggal_pengiriman_preset=tanggal_pengiriman_preset,
+            ship_date_from=ship_date_from,
+            ship_date_to=ship_date_to,
             sales=None,
             delivery_status=delivery_status,
+            process_label=process_label,
+            qty_min=qty_min,
+            qty_max=qty_max,
+            qty_unit=qty_unit,
         )
         tab_counts = empty_tab_counts()
         classified = []
@@ -11632,10 +11816,9 @@ async def list_sales_orders(
             )
         except ValueError as exc:
             raise HTTPException(400, str(exc))
-        total = len(orders)
-        start = (current - 1) * size
-        page_rows = orders[start:start + size]
-        await _enrich_sales_order_list_page(page_rows, user)
+        page_rows, total = await _apply_invoice_then_page(
+            orders, current=current, size=size
+        )
         return {
             "orders": page_rows,
             "count": len(page_rows),
@@ -11692,12 +11875,23 @@ async def list_sales_orders(
     orders = _apply_sales_order_header_filters(
         orders,
         tanggal_pengiriman_preset=tanggal_pengiriman_preset,
+        ship_date_from=ship_date_from,
+        ship_date_to=ship_date_to,
         sales=None,  # already applied in Mongo when present
         delivery_status=delivery_status,
+        process_label=process_label,
+        qty_min=qty_min,
+        qty_max=qty_max,
+        qty_unit=qty_unit,
     )
 
     if not paging:
-        await _enrich_sales_order_list_page(orders, user)
+        if invoice_status_tokens:
+            orders = await filter_orders_by_invoice_statuses(
+                db, orders, invoice_status_tokens
+            )
+        else:
+            await _enrich_sales_order_list_page(orders, user)
         return {"orders": orders, "count": len(orders), "capped": branch_capped}
 
     size = page_size if page_size is not None else DEFAULT_PAGE_SIZE
@@ -11711,10 +11905,9 @@ async def list_sales_orders(
     except (TypeError, ValueError):
         current = 1
     current = max(1, current)
-    total = len(orders)
-    start = (current - 1) * size
-    page_rows = orders[start:start + size]
-    await _enrich_sales_order_list_page(page_rows, user)
+    page_rows, total = await _apply_invoice_then_page(
+        orders, current=current, size=size
+    )
     return {
         "orders": page_rows,
         "count": len(page_rows),

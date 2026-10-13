@@ -126,11 +126,15 @@ describe("Pesanan Penjualan UI & Data Invariants", () => {
     expect(src).toMatch(/so-th-filter-delivery/);
     expect(src).toMatch(/so-th-filter-sales/);
     expect(src).toMatch(/so-th-filter-stage/);
+    expect(src).toMatch(/so-th-filter-customer/);
+    expect(src).toMatch(/so-th-filter-invoice/);
     expect(src).toMatch(/HeaderSelectFilter/);
-    expect(src).toMatch(/tanggalKirimPreset/);
+    expect(src).toMatch(/HeaderFieldFilter/);
+    expect(src).toMatch(/shipDateFrom/);
     expect(src).toMatch(/Reset Filter/);
-    expect(src).not.toMatch(/so-filter-customer/);
-    expect(src).not.toMatch(/so-filter-qty-min/);
+    expect(src).toMatch(/so-filter-customer/);
+    expect(src).toMatch(/so-filter-qty-min/);
+    expect(src).not.toMatch(/tanggalKirimPreset/);
     expect(src).toMatch(/sales-order-refresh-button/);
     expect(src).toMatch(/create-sales-order-btn/);
   });
