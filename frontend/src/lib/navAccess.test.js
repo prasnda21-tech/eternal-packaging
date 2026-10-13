@@ -268,6 +268,29 @@ describe("purchasingNavVisible", () => {
     expect(v.parent).toBe(true);
     expect(v.receipts).toBe(true);
   });
+
+  test("explicit nav deny wins over module fallback when configured", () => {
+    const v = purchasingNavVisible(has(
+      "nav.configured",
+      NAV_KEYS.purchasing,
+      NAV_KEYS.purchaseOrders,
+      "purchase_orders.view",
+      "purchase_hpp.view",
+    ));
+    expect(v.orders).toBe(true);
+    expect(v.hpp).toBe(false);
+    expect(v.returns).toBe(false);
+  });
+
+  test("module fallback works only before nav.configured", () => {
+    const before = purchasingNavVisible(has(
+      NAV_KEYS.purchasing,
+      "purchase_hpp.view",
+      "purchase_orders.view",
+    ));
+    expect(before.hpp).toBe(true);
+    expect(before.orders).toBe(true);
+  });
 });
 
 describe("reportsNavVisible", () => {

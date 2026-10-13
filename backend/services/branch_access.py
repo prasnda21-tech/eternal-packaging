@@ -93,14 +93,15 @@ def has_global_branch_scope(
     user = user or {}
     if is_local_runtime(app_env, mongo_url):
         role = _role(user)
-        if role in {"admin", "holding_team"} or user.get("is_super_admin"):
+        if role in {"admin", "holding_team", "direktur_utama"} or user.get("is_super_admin"):
             return True
         # Local preview: treat as unrestricted for UAT unless explicitly assigned
         # (assigned local users stay scoped so access tests work).
         if not assigned_branch_ids(user):
             return True
         return False
-    return _role(user) == HOLDING_TEAM_ROLE
+    # Production: Holding (package ops) + Direktur (Owner full-access policy).
+    return _role(user) in {HOLDING_TEAM_ROLE, "direktur_utama"}
 
 
 async def find_branch_by_code(db, code: str = DEFAULT_BRANCH_CODE) -> Optional[dict]:

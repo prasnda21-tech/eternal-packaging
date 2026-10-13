@@ -294,10 +294,14 @@ PERMISSION_CATALOG = [
     ("Akses Menu", "nav.purchasing", "Menu Pembelian"),
     ("Akses Menu", "nav.purchasing.requests", "Menu Permintaan"),
     ("Akses Menu", "nav.purchasing.orders", "Menu Pesanan Pembelian"),
+    ("Akses Menu", "nav.purchasing.advances", "Menu Uang Muka Pembelian"),
     ("Akses Menu", "nav.purchasing.invoices", "Menu Faktur Pembelian"),
     ("Akses Menu", "nav.purchasing.payments", "Menu Pembayaran Pembelian"),
     ("Akses Menu", "nav.purchasing.receipts", "Menu Penerimaan Barang"),
+    ("Akses Menu", "nav.purchasing.returns", "Menu Retur Pembelian"),
     ("Akses Menu", "nav.purchasing.hpp", "Menu HPP Pembelian"),
+    ("Akses Menu", "nav.dashboard.owner", "Menu Dashboard Owner"),
+    ("Akses Menu", "nav.cash_bank.reconciliation_owner", "Menu Rekonsiliasi Owner"),
     ("Akses Menu", "nav.inventory", "Menu Persediaan"),
     ("Akses Menu", "nav.inventory.master_items", "Menu Barang/Jasa"),
     ("Akses Menu", "nav.inventory.branches_warehouses", "Menu Cabang & Gudang"),
@@ -456,9 +460,11 @@ NAV_MENU_ITEMS = (
     ("nav.purchasing", "Pembelian", None),
     ("nav.purchasing.requests", "Permintaan", "nav.purchasing"),
     ("nav.purchasing.orders", "Pesanan Pembelian", "nav.purchasing"),
+    ("nav.purchasing.advances", "Uang Muka", "nav.purchasing"),
     ("nav.purchasing.invoices", "Faktur Pembelian", "nav.purchasing"),
     ("nav.purchasing.payments", "Pembayaran Pembelian", "nav.purchasing"),
     ("nav.purchasing.receipts", "Penerimaan Barang", "nav.purchasing"),
+    ("nav.purchasing.returns", "Retur Pembelian", "nav.purchasing"),
     ("nav.purchasing.hpp", "HPP Pembelian", "nav.purchasing"),
     ("nav.inventory", "Persediaan", None),
     ("nav.inventory.master_items", "Barang/Jasa", "nav.inventory"),
@@ -501,6 +507,10 @@ NAV_MENU_ITEMS = (
     ("nav.cash_bank.receipts", "Penerimaan", "nav.cash_bank"),
     ("nav.cash_bank.payments", "Pembayaran", "nav.cash_bank"),
     ("nav.cash_bank.transfers", "Transfer", "nav.cash_bank"),
+    ("nav.cash_bank.mutasi", "Mutasi Kas & Bank", "nav.cash_bank"),
+    ("nav.cash_bank.reconciliation", "Rekonsiliasi Bank", "nav.cash_bank"),
+    ("nav.cash_bank.reconciliation_owner", "Rekonsiliasi Owner", "nav.cash_bank"),
+    ("nav.chat", "Chat", None),
     ("nav.settings", "Pengaturan", None),
 )
 
@@ -928,19 +938,32 @@ for _role, _keys in list(ROLE_DEFAULT_PERMISSIONS.items()):
     )
 
 ROLE_LABELS = {
-    "admin": "Admin",
-    "head_production": "Kepala Produksi",
-    "head_operations": "Kepala Operasional",
-    "designer": "Designer",
-    "screener": "Screener",
-    "helper": "Helper",
-    "operator": "Operator",
-    "driver": "Driver",
-    "crm": "CRM",
-    "holding_team": "Holding",
-    "direktur_utama": "Direktur",
-    "sales_eternal": "Sales Eternal",
+  "admin": "Admin",
+  "head_production": "Kepala Produksi",
+  "head_operations": "Kepala Operasional",
+  "designer": "Designer",
+  "screener": "Screener",
+  "helper": "Helper",
+  "operator": "Operator",
+  "driver": "Driver",
+  "crm": "CRM",
+  "holding_team": "Holding",
+  "direktur_utama": "Direktur",
+  "sales_eternal": "Sales Eternal",
 }
+
+# Full-application access role (Owner policy). Runtime ignores shortfall
+# role_permissions / deny overrides; Mongo docs are left intact.
+DIRECTOR_FULL_ACCESS_ROLE = "direktur_utama"
+
+
+def director_full_permission_set() -> set:
+    """Every registered permission, including OPT_IN_ONLY and owner nav keys."""
+    return set(ALL_PERMISSIONS)
+
+
+def is_director_full_access_role(role: str | None) -> bool:
+    return str(role or "").strip().lower() == DIRECTOR_FULL_ACCESS_ROLE
 
 # Stage index → permission required to advance from that stage.
 STAGE_PERMISSION = {

@@ -20,6 +20,12 @@ import {
   filterRolePermissionModules,
   isSensitivePermissionKey,
 } from "../lib/settingsPermissionUi";
+import {
+  isPackagePermissionKey,
+  packageKeysInGrant,
+  packageKeysToActivate,
+  unconfirmedPackageKeys,
+} from "../lib/packagePermissions";
 
 const DEFAULT_OPEN_COUNT = 2;
 
@@ -34,10 +40,16 @@ export default function RolePermissionWorkspace({
   currentRole,
   selected,
   isAdminRole,
+  isDirectorRole = false,
   canManagePerms,
   permissionCatalog,
   permsDraft,
   initialPerms,
+  confirmedPackageKeys = [],
+  confirmPackageOptIn = false,
+  onConfirmPackageOptInChange,
+  confirmReviewKeys = [],
+  onConfirmReviewKeysChange,
   labelDraft,
   descDraft,
   onLabelChange,
@@ -72,7 +84,8 @@ export default function RolePermissionWorkspace({
     () => countRolePermissionDirty(permsDraft, initialPerms),
     [permsDraft, initialPerms]
   );
-  const dirtyCount = permDirtyCount + (metaDirty ? 1 : 0);
+  const packageConfirmDirty = confirmPackageOptIn ? 1 : 0;
+  const dirtyCount = permDirtyCount + (metaDirty ? 1 : 0) + packageConfirmDirty;
   const dirty = dirtyCount > 0;
   const filtering = Boolean(String(permQuery || "").trim()) || stateFilter !== "all";
 
@@ -105,6 +118,20 @@ export default function RolePermissionWorkspace({
     onToggleCategoryKeys(keys, !allOn);
   };
 
+  const draftPackageKeys = useMemo(() => packageKeysInGrant(permsDraft), [permsDraft]);
+  const confirmedSet = useMemo(
+    () => new Set(packageKeysInGrant(confirmedPackageKeys)),
+    [confirmedPackageKeys]
+  );
+  const pendingUnconfirmed = useMemo(
+    () => unconfirmedPackageKeys(permsDraft, confirmedPackageKeys),
+    [permsDraft, confirmedPackageKeys]
+  );
+  const activationPreview = useMemo(
+    () => packageKeysToActivate(permsDraft, confirmReviewKeys),
+    [permsDraft, confirmReviewKeys]
+  );
+
   if (!currentRole) {
     return (
       <div className="role-detail" data-testid="role-detail">
@@ -114,14 +141,23 @@ export default function RolePermissionWorkspace({
   }
 
   const statusActive = currentRole.status !== "inactive";
-  const canEdit = canManagePerms && !isAdminRole;
+  const lockedFullAccess = isAdminRole || isDirectorRole;
+  const canEdit = canManagePerms && !lockedFullAccess;
+
+  const toggleReviewKey = (key) => {
+    if (!onConfirmReviewKeysChange || !isPackagePermissionKey(key)) return;
+    const next = new Set(confirmReviewKeys || []);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    onConfirmReviewKeysChange([...next].sort());
+  };
 
   return (
     <div className="role-detail role-workspace" data-testid="role-detail">
       <div className="role-workspace-head" data-testid="role-workspace-head">
         <div className="role-workspace-head-row">
           <div className="role-workspace-identity">
-            {isAdminRole ? (
+            {lockedFullAccess ? (
               <h3 className="role-workspace-title" data-testid="role-detail-title">{currentRole.label}</h3>
             ) : (
               <input
@@ -140,16 +176,18 @@ export default function RolePermissionWorkspace({
               >
                 {statusActive ? "Aktif" : "Nonaktif"}
               </span>
-              {isAdminRole && (
+              {lockedFullAccess && (
                 <span className="pill sm pill-lock"><Lock size={10}/> Terkunci</span>
               )}
               <span className="role-perm-tally" data-testid="role-perm-count">
-                <b>{totals.active}</b> / {totals.total} aktif
+                <b>{isDirectorRole ? totals.total : totals.active}</b> / {totals.total} aktif
               </span>
               <span className="muted small role-workspace-slug">
                 {isAdminRole
                   ? "Seluruh hak akses · tidak dapat diubah"
-                  : `${currentRole.role} · ${currentRole.is_builtin ? "built-in" : "custom"} · ${currentRole.user_count} user`}
+                  : isDirectorRole
+                    ? "Akses penuh sistem · tidak dapat diubah"
+                    : `${currentRole.role} · ${currentRole.is_builtin ? "built-in" : "custom"} · ${currentRole.user_count} user`}
               </span>
             </div>
           </div>
@@ -204,7 +242,7 @@ export default function RolePermissionWorkspace({
             )}
           </div>
         </div>
-        {!isAdminRole && (
+        {!lockedFullAccess && (
           <textarea
             className="role-desc-input"
             value={descDraft}
@@ -215,34 +253,36 @@ export default function RolePermissionWorkspace({
             data-testid="role-description-input"
           />
         )}
-        <div className="role-workspace-controls">
-          <div className="perm-search role-perm-search">
-            <Search size={14}/>
-            <input
-              placeholder="Cari label, key, atau kategori..."
-              value={permQuery}
-              onChange={(e) => onPermQueryChange(e.target.value)}
-              data-testid="role-perm-search"
-            />
+        {!lockedFullAccess && (
+          <div className="role-workspace-controls">
+            <div className="perm-search role-perm-search">
+              <Search size={14}/>
+              <input
+                placeholder="Cari label, key, atau kategori..."
+                value={permQuery}
+                onChange={(e) => onPermQueryChange(e.target.value)}
+                data-testid="role-perm-search"
+              />
+            </div>
+            <div className="role-perm-filters" data-testid="role-perm-filters" role="tablist">
+              {[
+                ["all", "Semua"],
+                ["active", "Aktif"],
+                ["inactive", "Tidak Aktif"],
+              ].map(([id, label]) => (
+                <button
+                  key={id}
+                  type="button"
+                  className={"role-perm-filter" + (stateFilter === id ? " on" : "")}
+                  onClick={() => onStateFilterChange(id)}
+                  data-testid={`role-perm-filter-${id}`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
           </div>
-          <div className="role-perm-filters" data-testid="role-perm-filters" role="tablist">
-            {[
-              ["all", "Semua"],
-              ["active", "Aktif"],
-              ["inactive", "Tidak Aktif"],
-            ].map(([id, label]) => (
-              <button
-                key={id}
-                type="button"
-                className={"role-perm-filter" + (stateFilter === id ? " on" : "")}
-                onClick={() => onStateFilterChange(id)}
-                data-testid={`role-perm-filter-${id}`}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-        </div>
+        )}
       </div>
 
       {isAdminRole && (
@@ -251,85 +291,175 @@ export default function RolePermissionWorkspace({
         </div>
       )}
 
+      {isDirectorRole && (
+        <div className="settings-info" data-testid="role-director-lock">
+          <span>
+            Role <b>Direktur</b> memiliki <b>Akses penuh sistem</b>. Permission tersimpan atau override deny lama
+            tidak mengurangi akses efektif; dokumen tidak diubah dari editor ini.
+          </span>
+        </div>
+      )}
+
       {err && <div className="error" data-testid="role-error">{typeof err === "object" ? err.message : err}</div>}
 
-      <div className="role-perm-flow" data-testid={`role-perms-${selected}`}>
-        {visibleModules.map(([mod, perms]) => {
-          const catalogPerms = (allModules.find(([name]) => name === mod) || [mod, perms])[1];
-          const catTotals = countRolePermissionTotals([[mod, catalogPerms]], permsDraft);
-          const open = openMods.has(mod);
-          const slug = moduleSlug(mod);
-          const visibleKeys = perms.map((p) => p.key);
-          const allVisibleOn = visibleKeys.length > 0 && visibleKeys.every((k) => permsDraft.has(k));
-          return (
-            <section
-              key={mod}
-              className={"role-cat" + (open ? " is-open" : "")}
-              data-testid={`role-cat-${slug}`}
-            >
-              <div className="role-cat-head">
-                <button
-                  type="button"
-                  className="role-cat-toggle"
-                  aria-expanded={open}
-                  onClick={() => toggleMod(mod)}
-                  data-testid={`role-cat-toggle-${slug}`}
-                >
-                  <ChevronDown size={14} className={"role-cat-chevron" + (open ? " is-open" : "")} />
-                  <span className="role-cat-name">{mod}</span>
-                  <span className="role-cat-count" data-testid={`role-cat-count-${slug}`}>
-                    {catTotals.active} / {catTotals.total} aktif
-                  </span>
-                </button>
-                {canEdit && (
-                  <label className="role-cat-select-all">
-                    <input
-                      type="checkbox"
-                      checked={allVisibleOn}
-                      onChange={() => toggleCategoryAll(mod, perms)}
-                      data-testid={`role-cat-select-all-${slug}`}
-                    />
-                    Pilih semua
-                  </label>
-                )}
-              </div>
-              {open && (
-                <div className="role-perm-grid" data-testid={`role-cat-grid-${slug}`}>
-                  {perms.map((p) => {
-                    const checked = permsDraft.has(p.key);
-                    const sensitive = isSensitivePermissionKey(p.key);
-                    return (
-                      <label
-                        key={p.key}
-                        className={"role-perm-cell" + (checked ? " is-on" : "") + (sensitive ? " is-sensitive" : "")}
-                        data-testid={`role-perm-${selected}-${p.key}`}
-                      >
+      {canEdit && draftPackageKeys.length > 0 && (
+        <div className="settings-info" data-testid="role-package-confirm-panel" style={{ marginBottom: 12 }}>
+          <div style={{ marginBottom: 8 }}>
+            <strong>Package Pembelian / Persediaan / HPP (production)</strong>
+            <p className="hint" style={{ margin: "4px 0 0" }}>
+              Grant tersimpan belum otomatis aktif di production. Simpan biasa / sidebar / revoke tidak mengaktifkan
+              grant lama. Centang konfirmasi eksplisit hanya untuk himpunan yang ditinjau di bawah.
+            </p>
+            <p className="muted small" data-testid="role-package-confirm-meta">
+              Sudah dikonfirmasi: {confirmedSet.size} · Belum aktif: {pendingUnconfirmed.length}
+              {currentRole.package_production_confirmed_by
+                ? ` · terakhir oleh ${currentRole.package_production_confirmed_by}`
+                : ""}
+            </p>
+          </div>
+          <label className="role-package-confirm-optin" style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+            <input
+              type="checkbox"
+              checked={!!confirmPackageOptIn}
+              onChange={(e) => {
+                const on = e.target.checked;
+                onConfirmPackageOptInChange?.(on);
+                if (on && !(confirmReviewKeys || []).length) {
+                  // Seed with already-confirmed keys still granted; new grants stay unchecked.
+                  onConfirmReviewKeysChange?.(
+                    packageKeysToActivate(permsDraft, confirmedPackageKeys),
+                  );
+                }
+              }}
+              data-testid="role-package-confirm-optin"
+            />
+            <span>Konfirmasi aktivasi package production untuk daftar yang ditinjau</span>
+          </label>
+          {confirmPackageOptIn && (
+            <div data-testid="role-package-confirm-list" style={{ marginTop: 8 }}>
+              <p className="hint">Izin yang akan diaktifkan jika Anda simpan sekarang:</p>
+              <ul style={{ margin: "4px 0 0", paddingLeft: 18, maxHeight: 160, overflow: "auto" }}>
+                {draftPackageKeys.map((key) => {
+                  const reviewed = (confirmReviewKeys || []).includes(key);
+                  const already = confirmedSet.has(key);
+                  return (
+                    <li key={key} data-testid={`role-package-review-${key}`}>
+                      <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
                         <input
                           type="checkbox"
-                          checked={checked}
-                          onChange={() => onTogglePerm(p.key)}
-                          disabled={!canEdit}
+                          checked={reviewed}
+                          onChange={() => toggleReviewKey(key)}
+                          data-testid={`role-package-review-check-${key}`}
                         />
-                        <span className="role-perm-copy">
-                          <span className="role-perm-label">
-                            {p.label}
-                            {sensitive && (
-                              <span className="role-perm-sensitive" data-testid={`role-perm-sensitive-${p.key}`}>
-                                <AlertTriangle size={10}/> Sensitif
-                              </span>
-                            )}
-                          </span>
-                          <span className="role-perm-key">{p.key}</span>
-                        </span>
+                        <code>{key}</code>
+                        <span className="muted small">{already ? "(sudah aktif)" : "(baru)"}</span>
                       </label>
-                    );
-                  })}
-                </div>
-              )}
-            </section>
-          );
-        })}
-        {!visibleModules.length && <p className="muted small" data-testid="role-perm-empty">Tidak ada permission cocok.</p>}
+                    </li>
+                  );
+                })}
+              </ul>
+              <p className="muted small" data-testid="role-package-activation-preview">
+                {activationPreview.length
+                  ? `${activationPreview.length} key akan menjadi stamp konfirmasi (mengganti stamp sebelumnya untuk himpunan ini).`
+                  : "Tidak ada key yang akan dikonfirmasi — stamp package akan dikosongkan untuk grant saat ini."}
+              </p>
+            </div>
+          )}
+          {!confirmPackageOptIn && pendingUnconfirmed.length > 0 && (
+            <p className="muted small" data-testid="role-package-unconfirmed-hint" style={{ marginTop: 8 }}>
+              {pendingUnconfirmed.length} izin package tersimpan tetapi belum aktif di production sampai dikonfirmasi.
+            </p>
+          )}
+        </div>
+      )}
+
+      <div className="role-perm-flow" data-testid={`role-perms-${selected}`}>
+        {lockedFullAccess ? (
+          <p className="muted" data-testid="role-full-access-notice">
+            {isDirectorRole
+              ? "Akses penuh sistem — editor permission tidak tersedia untuk role Direktur."
+              : "Seluruh hak akses — editor permission tidak tersedia untuk role Admin."}
+          </p>
+        ) : (
+          <>
+            {visibleModules.map(([mod, perms]) => {
+              const catalogPerms = (allModules.find(([name]) => name === mod) || [mod, perms])[1];
+              const catTotals = countRolePermissionTotals([[mod, catalogPerms]], permsDraft);
+              const open = openMods.has(mod);
+              const slug = moduleSlug(mod);
+              const visibleKeys = perms.map((p) => p.key);
+              const allVisibleOn = visibleKeys.length > 0 && visibleKeys.every((k) => permsDraft.has(k));
+              return (
+                <section
+                  key={mod}
+                  className={"role-cat" + (open ? " is-open" : "")}
+                  data-testid={`role-cat-${slug}`}
+                >
+                  <div className="role-cat-head">
+                    <button
+                      type="button"
+                      className="role-cat-toggle"
+                      aria-expanded={open}
+                      onClick={() => toggleMod(mod)}
+                      data-testid={`role-cat-toggle-${slug}`}
+                    >
+                      <ChevronDown size={14} className={"role-cat-chevron" + (open ? " is-open" : "")} />
+                      <span className="role-cat-name">{mod}</span>
+                      <span className="role-cat-count" data-testid={`role-cat-count-${slug}`}>
+                        {catTotals.active} / {catTotals.total} aktif
+                      </span>
+                    </button>
+                    {canEdit && (
+                      <label className="role-cat-select-all">
+                        <input
+                          type="checkbox"
+                          checked={allVisibleOn}
+                          onChange={() => toggleCategoryAll(mod, perms)}
+                          data-testid={`role-cat-select-all-${slug}`}
+                        />
+                        Pilih semua
+                      </label>
+                    )}
+                  </div>
+                  {open && (
+                    <div className="role-perm-grid" data-testid={`role-cat-grid-${slug}`}>
+                      {perms.map((p) => {
+                        const checked = permsDraft.has(p.key);
+                        const sensitive = isSensitivePermissionKey(p.key);
+                        return (
+                          <label
+                            key={p.key}
+                            className={"role-perm-cell" + (checked ? " is-on" : "") + (sensitive ? " is-sensitive" : "")}
+                            data-testid={`role-perm-${selected}-${p.key}`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => onTogglePerm(p.key)}
+                              disabled={!canEdit}
+                            />
+                            <span className="role-perm-copy">
+                              <span className="role-perm-label">
+                                {p.label}
+                                {sensitive && (
+                                  <span className="role-perm-sensitive" data-testid={`role-perm-sensitive-${p.key}`}>
+                                    <AlertTriangle size={10}/> Sensitif
+                                  </span>
+                                )}
+                              </span>
+                              <span className="role-perm-key">{p.key}</span>
+                            </span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  )}
+                </section>
+              );
+            })}
+            {!visibleModules.length && <p className="muted small" data-testid="role-perm-empty">Tidak ada permission cocok.</p>}
+          </>
+        )}
       </div>
 
       {canEdit && (

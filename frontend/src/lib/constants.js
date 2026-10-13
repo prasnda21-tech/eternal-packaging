@@ -34,26 +34,26 @@ export const ROLES = {
 
 // Who is allowed to advance from a stage index (matches backend STAGE_EDIT_ROLES)
 export const STAGE_EDIT_ROLES = {
-  0: ["admin", "head_production"],
-  1: ["admin", "designer", "head_production"],
-  2: ["admin", "designer", "head_production"],
-  3: ["admin", "head_production"],
-  4: ["admin", "head_production"],
-  5: ["admin", "head_production"],
-  6: ["admin", "head_production", "screener"],
-  7: ["admin", "head_production", "helper"],
-  8: ["admin", "head_production", "operator"],
-  9: ["admin", "head_production", "operator", "designer"],
-  10: ["admin", "head_production", "operator"],
-  11: ["admin", "head_production", "helper"],
-  12: ["admin", "head_production"],
-  13: ["admin", "head_production", "driver", "helper"],
-  14: ["admin", "head_production"],  // Task 13: stage 14 = Terkirim (final). Driver hanya metadata pengantar di stage 13 Loading + mark_delivered — bukan actor advance stage.
+  0: ["admin", "direktur_utama", "head_production"],
+  1: ["admin", "direktur_utama", "designer", "head_production"],
+  2: ["admin", "direktur_utama", "designer", "head_production"],
+  3: ["admin", "direktur_utama", "head_production"],
+  4: ["admin", "direktur_utama", "head_production"],
+  5: ["admin", "direktur_utama", "head_production"],
+  6: ["admin", "direktur_utama", "head_production", "screener"],
+  7: ["admin", "direktur_utama", "head_production", "helper"],
+  8: ["admin", "direktur_utama", "head_production", "operator"],
+  9: ["admin", "direktur_utama", "head_production", "operator", "designer"],
+  10: ["admin", "direktur_utama", "head_production", "operator"],
+  11: ["admin", "direktur_utama", "head_production", "helper"],
+  12: ["admin", "direktur_utama", "head_production"],
+  13: ["admin", "direktur_utama", "head_production", "driver", "helper"],
+  14: ["admin", "direktur_utama", "head_production"],  // Task 13: stage 14 = Terkirim (final). Driver hanya metadata pengantar di stage 13 Loading + mark_delivered — bukan actor advance stage.
 };
 
 export const canAdvance = (role, stageIdx) => {
   const allowed = STAGE_EDIT_ROLES[stageIdx] || [];
-  return role === "admin" || allowed.includes(role);
+  return role === "admin" || role === "direktur_utama" || allowed.includes(role);
 };
 
 const DATE_ONLY_RE = /^(\d{4})-(\d{2})-(\d{2})$/;

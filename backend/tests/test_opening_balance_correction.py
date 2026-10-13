@@ -26,6 +26,7 @@ def test_db():
 HOLDING = {"id": "ht-1", "email": "holding@test.com", "name": "Holding", "role": "holding_team"}
 ADMIN = {"id": "ad-1", "email": "admin@test.com", "name": "Admin", "role": "admin"}
 HEAD = {"id": "hp-1", "email": "kepala@test.com", "name": "Kepala", "role": "head_production"}
+DIREKTUR = {"id": "dir-1", "email": "direktur@test.com", "name": "Direktur", "role": "direktur_utama"}
 
 
 def test_physical_stock_correction_access_matrix():
@@ -33,6 +34,7 @@ def test_physical_stock_correction_access_matrix():
     production_mongo = "mongodb://mongo.internal:27017"
     assert can_correct_physical_stock(ADMIN, "development", local_mongo) is True
     assert can_correct_physical_stock(HOLDING, "production", production_mongo) is True
+    assert can_correct_physical_stock(DIREKTUR, "production", production_mongo) is True
     assert can_correct_physical_stock(ADMIN, "production", production_mongo) is False
     assert can_correct_physical_stock(HEAD, "production", production_mongo) is False
     assert can_correct_physical_stock(ADMIN, None) is False

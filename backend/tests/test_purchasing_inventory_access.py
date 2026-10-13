@@ -38,9 +38,12 @@ def test_local_runtime_fail_closed():
     assert is_local_runtime(None, "mongodb://prod-mongo.example:27017") is False
 
 
-def test_production_allows_only_holding_team():
+def test_production_allows_holding_and_director():
     assert can_access_purchasing_inventory_package(
         {"role": "holding_team"}, "production", "mongodb://prod:27017"
+    )
+    assert can_access_purchasing_inventory_package(
+        {"role": "direktur_utama"}, "production", "mongodb://prod:27017"
     )
     assert not can_access_purchasing_inventory_package(
         {"role": "admin"}, "production", "mongodb://prod:27017"

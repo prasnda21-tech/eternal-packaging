@@ -441,7 +441,7 @@ def _actor_from_user(user: Optional[Dict[str, Any]]) -> Optional[Dict[str, str]]
 
 def require_holding_team(user: Optional[Dict[str, Any]]) -> None:
     role = str((user or {}).get("role") or "").strip().lower()
-    if role != HOLDING_TEAM_ROLE:
+    if role not in {HOLDING_TEAM_ROLE, "direktur_utama"}:
         raise HTTPException(403, HOLDING_TEAM_ONLY_MSG)
 
 
@@ -457,7 +457,11 @@ def can_correct_physical_stock(
     except ValueError:
         mongo_host = None
     explicit_local = env in LOCAL_CORRECTION_ENVS and mongo_host in LOCAL_MONGO_HOSTS
-    return role == HOLDING_TEAM_ROLE or (role == "admin" and explicit_local)
+    return (
+        role == HOLDING_TEAM_ROLE
+        or role == "direktur_utama"
+        or (role == "admin" and explicit_local)
+    )
 
 
 def require_physical_stock_correction_access(

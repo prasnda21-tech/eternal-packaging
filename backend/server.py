@@ -429,21 +429,21 @@ LEGACY_STAGE_MAX = 15  # untuk safety comparison PO existing yang belum dimigras
 
 # Who is allowed to advance from a given stage (index) to next
 STAGE_EDIT_ROLES = {
-    0: ["admin", "head_production", "head_operations"],
-    1: ["admin", "designer", "head_production", "head_operations"],
-    2: ["admin", "designer", "head_production", "head_operations"],
-    3: ["admin", "head_production", "head_operations"],
-    4: ["admin", "head_production", "head_operations"],
-    5: ["admin", "head_production", "head_operations"],
-    6: ["admin", "head_production", "head_operations", "screener"],
-    7: ["admin", "head_production", "head_operations", "helper"],
-    8: ["admin", "head_production", "head_operations", "operator"],
-    9: ["admin", "head_production", "head_operations", "operator", "designer"],
-    10: ["admin", "head_production", "head_operations", "operator"],
-    11: ["admin", "head_production", "head_operations", "helper"],
-    12: ["admin", "head_production", "head_operations"],
-    13: ["admin", "head_production", "head_operations", "driver", "helper"],
-    14: ["admin", "head_production", "head_operations", "driver"],
+    0: ["admin", "direktur_utama", "head_production", "head_operations"],
+    1: ["admin", "direktur_utama", "designer", "head_production", "head_operations"],
+    2: ["admin", "direktur_utama", "designer", "head_production", "head_operations"],
+    3: ["admin", "direktur_utama", "head_production", "head_operations"],
+    4: ["admin", "direktur_utama", "head_production", "head_operations"],
+    5: ["admin", "direktur_utama", "head_production", "head_operations"],
+    6: ["admin", "direktur_utama", "head_production", "head_operations", "screener"],
+    7: ["admin", "direktur_utama", "head_production", "head_operations", "helper"],
+    8: ["admin", "direktur_utama", "head_production", "head_operations", "operator"],
+    9: ["admin", "direktur_utama", "head_production", "head_operations", "operator", "designer"],
+    10: ["admin", "direktur_utama", "head_production", "head_operations", "operator"],
+    11: ["admin", "direktur_utama", "head_production", "head_operations", "helper"],
+    12: ["admin", "direktur_utama", "head_production", "head_operations"],
+    13: ["admin", "direktur_utama", "head_production", "head_operations", "driver", "helper"],
+    14: ["admin", "direktur_utama", "head_production", "head_operations", "driver"],
 }
 
 
@@ -473,14 +473,22 @@ async def current_user(request: Request):
         payload = jwt.decode(token, os.environ["JWT_SECRET"], algorithms=[JWT_ALGORITHM])
     except jwt.InvalidTokenError:
         raise HTTPException(401, "Sesi berakhir, silakan masuk kembali")
-    # Look up user for status + fresh permission override
-    if payload.get("email"):
-        u = await db.users.find_one({"email": payload["email"]}, {"password_hash": 0})
-        if u:
-            if u.get("status", "active") != "active":
-                raise HTTPException(403, "Akun dinonaktifkan")
-            payload["permissions_override"] = u.get("permissions_override") or {}
-            payload["user_id"] = u.get("id")
+    # Authorization identity from DB (role + status + overrides). JWT role is not trusted.
+    email = payload.get("email")
+    if not email:
+        raise HTTPException(401, "Silakan masuk terlebih dahulu")
+    u = await db.users.find_one({"email": email}, {"password_hash": 0})
+    if not u:
+        raise HTTPException(401, "Sesi berakhir, silakan masuk kembali")
+    if u.get("status", "active") != "active":
+        raise HTTPException(403, "Akun dinonaktifkan")
+    payload["role"] = u.get("role") or ""
+    payload["name"] = u.get("name") or payload.get("name") or ""
+    payload["permissions_override"] = u.get("permissions_override") or {}
+    payload["user_id"] = u.get("id")
+    payload["email"] = u.get("email") or email
+    from services.purchasing_inventory_access import PACKAGE_CONFIRMED_KEYS_FIELD
+    payload["_package_confirmed_keys"] = list(u.get(PACKAGE_CONFIRMED_KEYS_FIELD) or [])
     enforce_sales_eternal_surface(request, payload)
     return payload
 
@@ -491,15 +499,40 @@ async def _role_defaults_override():
     return {d["role"]: d.get("permissions", []) for d in docs}
 
 
-async def user_permissions(user: dict) -> set:
-    """Compute effective permissions for the JWT payload / user."""
-    from services.purchasing_inventory_access import filter_package_permissions
-    from permissions import OPT_IN_ONLY_PERMISSIONS, strip_opt_in_permissions
+async def _package_confirm_context(user: dict):
+    """Load role + user package confirmation stamps (independent of each other)."""
+    from services.purchasing_inventory_access import PACKAGE_CONFIRMED_KEYS_FIELD
 
-    # Super admin gets everything, always — except production package lock
-    # which restricts Purchasing/Inventory/HPP to HOLDING_TEAM only.
-    # OPT_IN_ONLY keys (e.g. sales.*.cancel) are never auto-granted; they
-    # require an explicit permissions_override True.
+    role = str(user.get("role") or "").strip().lower()
+    role_doc = await db.role_permissions.find_one({"role": role}, {"_id": 0, PACKAGE_CONFIRMED_KEYS_FIELD: 1}) if role else None
+    role_confirmed = list((role_doc or {}).get(PACKAGE_CONFIRMED_KEYS_FIELD) or [])
+    user_confirmed = list(user.get("_package_confirmed_keys") or [])
+    if not user_confirmed and user.get("email"):
+        u = await db.users.find_one(
+            {"email": user["email"]},
+            {"_id": 0, PACKAGE_CONFIRMED_KEYS_FIELD: 1},
+        )
+        user_confirmed = list((u or {}).get(PACKAGE_CONFIRMED_KEYS_FIELD) or [])
+    return role_confirmed, user_confirmed
+
+
+async def user_permissions(user: dict) -> set:
+    """Compute effective permissions for the authenticated user (DB role)."""
+    from services.purchasing_inventory_access import filter_package_permissions
+    from permissions import (
+        OPT_IN_ONLY_PERMISSIONS,
+        director_full_permission_set,
+        is_director_full_access_role,
+        strip_opt_in_permissions,
+    )
+
+    role = str(user.get("role") or "").strip().lower()
+    inactive = await _inactive_role_slugs()
+    role_confirmed, user_confirmed = await _package_confirm_context(user)
+
+    # Super admin gets everything, always — except production package filter
+    # (Holding/Direktur unrestricted; others need explicit package confirmation).
+    # OPT_IN_ONLY keys require explicit permissions_override True for super-admin.
     if user.get("email"):
         u = await db.users.find_one({"email": user["email"]}, {"is_super_admin": 1, "role": 1})
         if u and u.get("is_super_admin"):
@@ -514,11 +547,12 @@ async def user_permissions(user: dict) -> set:
                 user,
                 os.environ.get("APP_ENV"),
                 os.environ.get("MONGO_URL"),
+                role_confirmed_keys=role_confirmed,
+                user_confirmed_keys=user_confirmed,
             )
-    role_override = await _role_defaults_override()
-    # Inactive roles: user with an inactive role gets empty defaults (still keeps overrides).
-    inactive = await _inactive_role_slugs()
-    if user.get("role") in inactive:
+
+    # Inactive roles: empty defaults (still keeps overrides); no director bypass.
+    if role in inactive:
         base = set()
         for perm, allowed in (user.get("permissions_override") or {}).items():
             if allowed:
@@ -528,12 +562,30 @@ async def user_permissions(user: dict) -> set:
             user,
             os.environ.get("APP_ENV"),
             os.environ.get("MONGO_URL"),
+            role_confirmed_keys=role_confirmed,
+            user_confirmed_keys=user_confirmed,
         )
+
+    # Direktur: full registered permission set. Short role_permissions / deny
+    # overrides do not reduce access; Mongo docs are left intact.
+    if is_director_full_access_role(role):
+        return filter_package_permissions(
+            director_full_permission_set(),
+            user,
+            os.environ.get("APP_ENV"),
+            os.environ.get("MONGO_URL"),
+            role_confirmed_keys=role_confirmed,
+            user_confirmed_keys=user_confirmed,
+        )
+
+    role_override = await _role_defaults_override()
     return filter_package_permissions(
         effective_permissions(user.get("role"), user.get("permissions_override"), role_override),
         user,
         os.environ.get("APP_ENV"),
         os.environ.get("MONGO_URL"),
+        role_confirmed_keys=role_confirmed,
+        user_confirmed_keys=user_confirmed,
     )
 
 
@@ -1871,8 +1923,9 @@ async def get_sales_order_pdf_endpoint(order_id: str, user=Depends(current_user)
 
 
 def _check_stage_permission(current_stage: int, role: str):
-    allowed = STAGE_EDIT_ROLES.get(current_stage, ["admin", "head_production"])
-    if role not in allowed and role != "admin":
+    from permissions import is_director_full_access_role
+    allowed = STAGE_EDIT_ROLES.get(current_stage, ["admin", "head_production", "direktur_utama"])
+    if role not in allowed and role != "admin" and not is_director_full_access_role(role):
         raise HTTPException(403, "Role Anda tidak diizinkan memajukan tahap ini")
 
 
@@ -8422,6 +8475,8 @@ class EmployeeUpdate(BaseModel):
     joined_at: Optional[str] = None
     notes: Optional[str] = None
     permissions_override: Optional[Dict[str, bool]] = None
+    # Explicit user-level package confirmation (independent of role stamp).
+    confirm_package_keys: Optional[List[str]] = None
 
 
 class PasswordResetPayload(BaseModel):
@@ -8430,6 +8485,10 @@ class PasswordResetPayload(BaseModel):
 
 class RolePermissionsPayload(BaseModel):
     permissions: List[str]
+    # Explicit production package confirmation: exact keys reviewed in the UI.
+    # Absent / omitted → never grows confirmation (legacy editor safe).
+    # Ordinary save shrinks confirmation to ∩ permissions only.
+    confirm_package_keys: Optional[List[str]] = None
 
 
 class RoleCreatePayload(BaseModel):
@@ -8555,8 +8614,24 @@ async def _role_slug_is_valid(slug: str) -> bool:
 
 @api_router.get("/admin/roles")
 async def list_roles(user=Depends(require_perm("users.view"))):
+    from services.purchasing_inventory_access import (
+        PACKAGE_CONFIRMED_AT_FIELD,
+        PACKAGE_CONFIRMED_BY_FIELD,
+        PACKAGE_CONFIRMED_KEYS_FIELD,
+    )
+
     await _seed_roles_collection()
     overrides = await _role_defaults_override()
+    perm_docs = await db.role_permissions.find({}, {"_id": 0}).to_list(200)
+    confirm_by_role = {
+        d["role"]: {
+            PACKAGE_CONFIRMED_KEYS_FIELD: list(d.get(PACKAGE_CONFIRMED_KEYS_FIELD) or []),
+            PACKAGE_CONFIRMED_AT_FIELD: d.get(PACKAGE_CONFIRMED_AT_FIELD),
+            PACKAGE_CONFIRMED_BY_FIELD: d.get(PACKAGE_CONFIRMED_BY_FIELD),
+        }
+        for d in perm_docs
+        if d.get("role")
+    }
     docs = await db.roles.find({}, {"_id": 0}).sort("is_builtin", -1).to_list(200)
     slugs_seen = set()
     out = []
@@ -8565,6 +8640,7 @@ async def list_roles(user=Depends(require_perm("users.view"))):
         slugs_seen.add(slug)
         raw = list(overrides.get(slug, ROLE_DEFAULT_PERMISSIONS.get(slug, [])))
         base = sorted(with_nav_defaults(set(raw)))
+        conf = confirm_by_role.get(slug) or {}
         out.append({
             "role": slug,
             "label": d.get("label") or ROLE_LABELS.get(slug, slug),
@@ -8575,17 +8651,24 @@ async def list_roles(user=Depends(require_perm("users.view"))):
             "is_customized": slug in overrides,
             "builtin_permissions": sorted(with_nav_defaults(set(ROLE_DEFAULT_PERMISSIONS.get(slug, [])))),
             "user_count": await _role_user_count(slug),
+            PACKAGE_CONFIRMED_KEYS_FIELD: conf.get(PACKAGE_CONFIRMED_KEYS_FIELD) or [],
+            PACKAGE_CONFIRMED_AT_FIELD: conf.get(PACKAGE_CONFIRMED_AT_FIELD),
+            PACKAGE_CONFIRMED_BY_FIELD: conf.get(PACKAGE_CONFIRMED_BY_FIELD),
         })
     # Include any built-in that isn't in the collection yet (safety)
     for slug in BUILTIN_ROLES - slugs_seen:
         raw = list(overrides.get(slug, ROLE_DEFAULT_PERMISSIONS.get(slug, [])))
         base = sorted(with_nav_defaults(set(raw)))
+        conf = confirm_by_role.get(slug) or {}
         out.append({
             "role": slug, "label": ROLE_LABELS.get(slug, slug), "description": "",
             "is_builtin": True, "status": "active",
             "permissions": base, "is_customized": slug in overrides,
             "builtin_permissions": sorted(with_nav_defaults(set(ROLE_DEFAULT_PERMISSIONS.get(slug, [])))),
             "user_count": await _role_user_count(slug),
+            PACKAGE_CONFIRMED_KEYS_FIELD: conf.get(PACKAGE_CONFIRMED_KEYS_FIELD) or [],
+            PACKAGE_CONFIRMED_AT_FIELD: conf.get(PACKAGE_CONFIRMED_AT_FIELD),
+            PACKAGE_CONFIRMED_BY_FIELD: conf.get(PACKAGE_CONFIRMED_BY_FIELD),
         })
     return {"roles": out}
 
@@ -8659,24 +8742,73 @@ async def update_role(role: str, payload: RoleUpdatePayload, user=Depends(requir
 
 @api_router.put("/admin/roles/{role}/permissions")
 async def update_role_permissions(role: str, payload: RolePermissionsPayload, user=Depends(require_perm("permissions.manage"))):
+    from permissions import is_director_full_access_role
+    from services.purchasing_inventory_access import (
+        PACKAGE_CONFIRMED_AT_FIELD,
+        PACKAGE_CONFIRMED_BY_FIELD,
+        PACKAGE_CONFIRMED_KEYS_FIELD,
+        PACKAGE_PERMISSIONS,
+        apply_explicit_package_confirmation,
+        normalize_package_confirmed_keys,
+        shrink_package_confirmed_keys,
+    )
+
     slug = role.strip().lower()
     existing = await _load_role_doc(slug)
     if not existing and slug not in BUILTIN_ROLES:
         raise HTTPException(404, "Role tidak dikenal")
     if slug == "admin":
         raise HTTPException(400, "Permission role admin tidak dapat diubah")
+    if is_director_full_access_role(slug):
+        raise HTTPException(400, "Permission role Direktur tidak dapat diubah (akses penuh sistem)")
     invalid = [p for p in payload.permissions if p not in ALL_PERMISSIONS]
     if invalid:
         raise HTTPException(400, f"Permission tidak dikenal: {invalid}")
     before = await db.role_permissions.find_one({"role": slug}, {"_id": 0})
-    await db.role_permissions.update_one(
-        {"role": slug},
-        {"$set": {"role": slug, "permissions": sorted(set(payload.permissions)), "updated_at": now_iso(), "updated_by": user.get("email")}},
-        upsert=True,
-    )
+    prev_confirmed = list((before or {}).get(PACKAGE_CONFIRMED_KEYS_FIELD) or [])
+    next_perms = sorted(set(payload.permissions))
+    if payload.confirm_package_keys is not None:
+        unknown = [k for k in payload.confirm_package_keys if str(k) not in PACKAGE_PERMISSIONS]
+        if unknown:
+            raise HTTPException(400, f"confirm_package_keys tidak valid: {unknown}")
+        not_granted = [
+            k for k in normalize_package_confirmed_keys(payload.confirm_package_keys)
+            if k not in next_perms
+        ]
+        if not_granted:
+            raise HTTPException(
+                400,
+                f"confirm_package_keys harus termasuk permission yang disimpan: {not_granted}",
+            )
+        confirmed = apply_explicit_package_confirmation(
+            prev_confirmed, next_perms, payload.confirm_package_keys
+        )
+        confirm_meta = {
+            PACKAGE_CONFIRMED_AT_FIELD: now_iso(),
+            PACKAGE_CONFIRMED_BY_FIELD: user.get("email"),
+        }
+    else:
+        # Legacy editor / ordinary save: shrink only — never activate legacy grants.
+        confirmed = shrink_package_confirmed_keys(prev_confirmed, next_perms)
+        confirm_meta = {}
+    set_doc = {
+        "role": slug,
+        "permissions": next_perms,
+        PACKAGE_CONFIRMED_KEYS_FIELD: confirmed,
+        "updated_at": now_iso(),
+        "updated_by": user.get("email"),
+        **confirm_meta,
+    }
+    await db.role_permissions.update_one({"role": slug}, {"$set": set_doc}, upsert=True)
     after = await db.role_permissions.find_one({"role": slug}, {"_id": 0})
     await _write_audit("role.permissions.update", user, target_email=None, before=before, after=after, note=f"Role {slug} permissions")
-    return {"role": slug, "permissions": after.get("permissions", [])}
+    return {
+        "role": slug,
+        "permissions": after.get("permissions", []),
+        PACKAGE_CONFIRMED_KEYS_FIELD: after.get(PACKAGE_CONFIRMED_KEYS_FIELD) or [],
+        PACKAGE_CONFIRMED_AT_FIELD: after.get(PACKAGE_CONFIRMED_AT_FIELD),
+        PACKAGE_CONFIRMED_BY_FIELD: after.get(PACKAGE_CONFIRMED_BY_FIELD),
+    }
 
 
 @api_router.post("/admin/roles/{role}/deactivate")
@@ -8932,11 +9064,50 @@ async def update_user_admin(user_id: str, payload: EmployeeUpdate, user=Depends(
             raise HTTPException(400, "Role tidak dikenal")
         updates["role"] = payload.role
     if payload.permissions_override is not None:
+        from services.purchasing_inventory_access import (
+            PACKAGE_CONFIRMED_AT_FIELD,
+            PACKAGE_CONFIRMED_BY_FIELD,
+            PACKAGE_CONFIRMED_KEYS_FIELD,
+            PACKAGE_PERMISSIONS,
+            apply_explicit_package_confirmation,
+            normalize_package_confirmed_keys,
+            shrink_package_confirmed_keys,
+        )
+
         # Reject unknown permission keys
         invalid = [k for k in payload.permissions_override if k not in ALL_PERMISSIONS]
         if invalid:
             raise HTTPException(400, f"Permission tidak dikenal: {invalid}")
         updates["permissions_override"] = payload.permissions_override
+        # User package confirmation tracks override-True package keys only.
+        override_true_pkg = {
+            k for k, v in payload.permissions_override.items()
+            if v is True and k in PACKAGE_PERMISSIONS
+        }
+        prev_confirmed = list(existing.get(PACKAGE_CONFIRMED_KEYS_FIELD) or [])
+        if payload.confirm_package_keys is not None:
+            unknown = [k for k in payload.confirm_package_keys if str(k) not in PACKAGE_PERMISSIONS]
+            if unknown:
+                raise HTTPException(400, f"confirm_package_keys tidak valid: {unknown}")
+            not_granted = [
+                k for k in normalize_package_confirmed_keys(payload.confirm_package_keys)
+                if k not in override_true_pkg
+            ]
+            if not_granted:
+                raise HTTPException(
+                    400,
+                    f"confirm_package_keys override harus True pada key: {not_granted}",
+                )
+            confirmed = apply_explicit_package_confirmation(
+                prev_confirmed, override_true_pkg, payload.confirm_package_keys
+            )
+            updates[PACKAGE_CONFIRMED_KEYS_FIELD] = confirmed
+            updates[PACKAGE_CONFIRMED_AT_FIELD] = now_iso()
+            updates[PACKAGE_CONFIRMED_BY_FIELD] = user.get("email")
+        else:
+            updates[PACKAGE_CONFIRMED_KEYS_FIELD] = shrink_package_confirmed_keys(
+                prev_confirmed, override_true_pkg
+            )
     await db.users.update_one({"id": user_id}, {"$set": updates})
     after = await db.users.find_one({"id": user_id}, {"password_hash": 0, "_id": 0})
     await _write_audit("user.update", user, target_email=existing.get("email"), before=before, after=after, note=f"Update karyawan {existing.get('email')}")
@@ -8955,6 +9126,13 @@ async def user_permissions_effective(user_id: str, user=Depends(require_perm("us
     - `effective`: final set actually enforced (role_default ∪ override(true) − override(false));
       Super Admin returns ALL_PERMISSIONS.
     """
+    from permissions import (
+        OPT_IN_ONLY_PERMISSIONS,
+        director_full_permission_set,
+        is_director_full_access_role,
+        strip_opt_in_permissions,
+    )
+
     existing = await db.users.find_one({"id": user_id}, {"password_hash": 0, "_id": 0})
     if not existing:
         raise HTTPException(404, "Karyawan tidak ditemukan")
@@ -8963,14 +9141,16 @@ async def user_permissions_effective(user_id: str, user=Depends(require_perm("us
     inactive = await _inactive_role_slugs()
     if role in inactive:
         default_from_role = []
+    elif is_director_full_access_role(role):
+        # Runtime full-access; persisted role_permissions may be short — do not
+        # present that shortfall as the Direktur default in the triad UI.
+        default_from_role = sorted(director_full_permission_set())
     elif role_override and role in role_override:
         default_from_role = list(with_nav_defaults(set(role_override[role] or [])))
     else:
         default_from_role = list(with_nav_defaults(set(ROLE_DEFAULT_PERMISSIONS.get(role, []))))
     override = dict(existing.get("permissions_override") or {})
     if existing.get("is_super_admin"):
-        from permissions import OPT_IN_ONLY_PERMISSIONS, strip_opt_in_permissions
-
         base = strip_opt_in_permissions(ALL_PERMISSIONS)
         for perm, allowed in override.items():
             if allowed is True and perm in OPT_IN_ONLY_PERMISSIONS:
@@ -8978,6 +9158,8 @@ async def user_permissions_effective(user_id: str, user=Depends(require_perm("us
             elif allowed is False:
                 base.discard(perm)
         effective = sorted(base)
+    elif is_director_full_access_role(role) and role not in inactive:
+        effective = sorted(director_full_permission_set())
     else:
         effective = sorted(effective_permissions(role, override, role_override))
     return {
