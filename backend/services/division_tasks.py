@@ -147,11 +147,15 @@ TASK_PROJECTION = {
     "delivered_at": 1,
     "work_date": 1,
     "delivery_deadline_manual": 1,
+    "scheduled_delivery_date": 1,
+    "delivery_reschedules": 1,
     "buffer_stock": 1,
     "design_approved_at": 1,
     "design_bypassed_at": 1,
     "payment_approved_at": 1,
     "payment_bypassed_at": 1,
+    "qty_delivered": 1,
+    "payment_files": 1,
     "line_items": 1,
     "operator_splits": 1,
     "screener_info": 1,
@@ -322,6 +326,27 @@ def division_tasks_read_pipeline(query: dict) -> list:
                     }
                 },
             ),
+            # Presence-only stubs for HOLD snapshot (no file bytes).
+            "payment_files": {
+                "$cond": [
+                    {
+                        "$gt": [
+                            {
+                                "$size": {
+                                    "$filter": {
+                                        "input": {"$ifNull": ["$payment_files", []]},
+                                        "as": "pf",
+                                        "cond": {"$eq": [{"$type": "$$pf"}, "object"]},
+                                    }
+                                }
+                            },
+                            0,
+                        ]
+                    },
+                    [{"id": "present"}],
+                    [],
+                ]
+            },
         }},
     ]
 

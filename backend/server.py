@@ -249,6 +249,12 @@ from services.division_tasks import (
     po_needs_loading_task as _po_needs_loading_task,
     resolve_division as _resolve_division,
 )
+from services.kepala_produksi_board import (
+    KPI_META as _KP_KPI_META,
+    build_kepala_produksi_board as _build_kepala_produksi_board,
+    filter_rows_for_kpi as _filter_kepala_kpi_rows,
+    resolve_kpi_key as _resolve_kepala_kpi_key,
+)
 from services.operational_order_view import (
     is_operational_view as _is_operational_view,
     operational_order_pipeline as _operational_order_pipeline,
@@ -4152,9 +4158,14 @@ async def dashboard_action_items(user=Depends(current_user)):
 async def work_division_tasks(
     division: str,
     scope: str = "mine",
+    kpi: Optional[str] = None,
     user=Depends(current_user),
 ):
-    """One list query per division. Server scopes Operator rows to the session user."""
+    """One list query per division. Server scopes Operator rows to the session user.
+
+    Kepala Produksi also returns Priority Board KPIs + board_rows (HOLD union).
+    Optional ``kpi`` filters board_rows for detail pages (same classification as cards).
+    """
     div = _resolve_division(division)
     if not div:
         raise HTTPException(400, "Divisi tidak dikenali")
@@ -4183,12 +4194,11 @@ async def work_division_tasks(
     lead_days = dd_settings["lead_time_days"]
     for o in raw:
         _attach_deadline_snapshot(o, lead_days)
+        if div == "kepala_produksi":
+            _apply_hold_snapshot(o)
     tasks = _build_division_tasks(raw, div, user, mine_only=mine_only)
     # Kepala Produksi: one batch Persediaan read-model lookup (no N+1, no writes).
-    if div == "kepala_produksi":
-        stock_rows, _, _ = await _load_stock_context()
-        _enrich_tasks_current_stock(tasks, stock_rows)
-    return {
+    payload = {
         "division": div,
         "slug": cfg["slug"],
         "label": cfg["label"],
@@ -4200,6 +4210,33 @@ async def work_division_tasks(
         "count": len(tasks),
         "generated_at": now_iso(),
     }
+    if div == "kepala_produksi":
+        stock_rows, _, _ = await _load_stock_context()
+        _enrich_tasks_current_stock(tasks, stock_rows)
+        board = _build_kepala_produksi_board(raw, tasks)
+        payload["tasks"] = board["tasks"]
+        payload["count"] = len(board["tasks"])
+        payload["board_rows"] = board["board_rows"]
+        payload["kpis"] = board["kpis"]
+        payload["hold_readonly_count"] = board["hold_readonly_count"]
+        kpi_key = _resolve_kepala_kpi_key(kpi) if kpi else None
+        if kpi and not kpi_key:
+            raise HTTPException(400, "KPI tidak dikenali")
+        if kpi_key:
+            detail_rows = _filter_kepala_kpi_rows(board["board_rows"], kpi_key)
+            po_ids = {str(r.get("order_id")) for r in detail_rows if r.get("order_id")}
+            meta = _KP_KPI_META[kpi_key]
+            card = (board["kpis"] or {}).get(kpi_key) or {}
+            payload["kpi"] = kpi_key
+            payload["kpi_meta"] = meta
+            payload["kpi_value"] = card
+            payload["detail_rows"] = detail_rows
+            payload["detail_po_count"] = len(po_ids)
+            payload["detail_row_count"] = len(detail_rows)
+            # Fail-closed: detail PO count must match card when unfiltered.
+            if card.get("metric") == "po_count" and card.get("count") != len(po_ids):
+                raise HTTPException(500, "KPI/detail count mismatch — hitung ulang gagal")
+    return payload
 
 
 # ---- Screener info (Requirement 10) ----

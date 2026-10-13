@@ -4880,6 +4880,116 @@ html:has(.ship-status-page) #root{
 .division-task-actions{display:flex;flex-wrap:wrap;gap:6px}
 .division-task-page .prod-priority-badges{margin-left:4px}
 .division-task-page .prod-table-wrap{overflow:auto}
+/* Kepala Produksi Priority Board — compact desktop (1366 / 1440) */
+.content:has(.kp-board-page){padding:8px 12px 28px}
+.kp-board-page.prod-page{padding-bottom:8px}
+.kp-board-page .page-heading{margin-bottom:4px;align-items:flex-start;gap:8px}
+.kp-board-page .page-heading .eyebrow{margin-bottom:0}
+.kp-board-page .page-heading h1{font-size:clamp(15px,1.25vw,17px);line-height:1.15;letter-spacing:-.015em;font-weight:650}
+.kp-board-page .page-heading .muted.small{margin:2px 0 0;font-size:11px;line-height:1.3}
+.kp-board-page .division-task-toolbar{gap:6px;margin:0 0 6px}
+.kp-board-page .division-task-search{min-width:min(100%,220px);padding:2px 6px}
+.kp-board-page .division-task-search input{font-size:12px}
+.kp-board-page .division-task-filters .sm,
+.kp-board-page .division-task-scope .sm,
+.kp-board-page .division-task-toolbar select.sm{padding:3px 8px;font-size:12px}
+/* Single row of 6 KPIs on target desktops; wrap only below usable width */
+.kp-kpi-strip{
+  display:grid;
+  grid-template-columns:repeat(6,minmax(0,1fr));
+  gap:6px;
+  margin:0 0 6px;
+  width:100%;
+}
+.kp-kpi-card{padding:5px 8px;gap:0;min-height:0;min-width:0}
+.kp-kpi-card .kpi-head{
+  font-size:10px;font-weight:650;color:var(--soft);letter-spacing:.02em;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.kp-kpi-card strong{font-size:15px;line-height:1.2;letter-spacing:-.02em}
+.kp-kpi-card em{display:none} /* affordance via cursor + title; save vertical space */
+.kp-kpi-card.kpi-danger{border-color:#f0c2b8}
+.kp-kpi-card.kpi-warn{border-color:#f0d9a8}
+.kp-kpi-card.kpi-hold{border-color:#f0e0a8;background:#FFFBEB}
+.kp-kpi-card.kpi-success{border-color:#b7d4c3}
+.kp-kpi-card:focus-visible{outline:2px solid var(--ink);outline-offset:1px}
+.kp-priority-badges{display:inline-flex;flex-wrap:wrap;gap:3px;align-items:center}
+.kp-priority-badges .urgent-badge,
+.kp-priority-badges .standard-badge,
+.kp-priority-badges .pill{font-size:9.5px;padding:2px 5px}
+.kp-priority-table{font-size:12px;border-collapse:separate;border-spacing:0;width:max-content;min-width:100%}
+/*
+  Header visibility: global `.prod-table thead th` uses color:#fff on ep-dark.
+  An earlier KP override set background:surface without resetting color → white-on-white.
+  Keep dark header + explicit white text; sticky left header cells match.
+*/
+.kp-priority-table.prod-table thead th,
+.kp-priority-table thead th{
+  position:sticky;top:0;z-index:3;
+  background:var(--ep-dark,#0F3D2E);
+  color:#fff;
+  box-shadow:inset 0 -1px 0 #0b2d22;
+  white-space:nowrap;padding:6px 8px;
+  font:10.5px/1.25 'IBM Plex Mono',monospace;
+  letter-spacing:.06em;text-transform:uppercase;
+  border-bottom:1px solid #0b2d22;
+  opacity:1;visibility:visible;
+}
+.kp-priority-table thead th.num{text-align:right;color:#fff}
+.kp-priority-table tbody td{padding:4px 7px;vertical-align:top;line-height:1.3;color:var(--ink)}
+.kp-priority-table .num{white-space:nowrap}
+.kp-priority-table .division-task-actions{flex-wrap:nowrap;gap:4px}
+.kp-priority-table .division-task-actions .sm{padding:3px 7px;font-size:11px;white-space:nowrap}
+/* Sticky Prioritas + PO/Customer while scrolling horizontally inside table wrap */
+.kp-priority-table thead th:nth-child(1),
+.kp-priority-table tbody td:nth-child(1){
+  position:sticky;left:0;
+  width:6rem;min-width:6rem;max-width:6rem;box-shadow:1px 0 0 rgba(0,0,0,.12);
+}
+.kp-priority-table thead th:nth-child(2),
+.kp-priority-table tbody td:nth-child(2){
+  position:sticky;left:6rem;
+  width:9.5rem;min-width:9.5rem;max-width:9.5rem;box-shadow:1px 0 0 rgba(0,0,0,.12);
+}
+.kp-priority-table tbody td:nth-child(1),
+.kp-priority-table tbody td:nth-child(2){
+  z-index:1;background:var(--surface,#fff);
+}
+.kp-priority-table thead th:nth-child(1),
+.kp-priority-table thead th:nth-child(2){
+  z-index:4;background:var(--ep-dark,#0F3D2E);color:#fff;
+}
+.kp-priority-table tbody tr:hover td:nth-child(1),
+.kp-priority-table tbody tr:hover td:nth-child(2){background:#F3FAF6}
+.kp-priority-table tbody td:nth-child(2) .mono{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.kp-priority-table tbody td:nth-child(2) .muted{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.kp-table-wrap{
+  max-width:100%;
+  overflow-x:auto;
+  overflow-y:auto;
+  max-height:calc(100vh - 220px);
+  border:1px solid var(--line);
+  border-radius:4px;
+  background:var(--surface,#fff);
+  /* Do not use overflow:hidden — date inputs live outside this wrap */
+}
+.kp-board-page .content,
+.kp-board-page{overflow-x:visible}
+.kp-date-filter{display:inline-flex;align-items:center;gap:4px;position:relative;z-index:5}
+.kp-date-filter input[type="date"]{font-size:12px;padding:3px 6px;position:relative;z-index:5}
+.kp-pagination{display:flex;align-items:center;justify-content:flex-end;gap:10px;margin-top:8px}
+.kp-detail-toolbar{margin-bottom:6px;flex-wrap:wrap;overflow:visible}
+@media (max-width:1200px){
+  .kp-kpi-strip{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .kp-table-wrap{max-height:none}
+}
+@media (max-width:900px){
+  .kp-kpi-strip{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .kp-priority-table thead th:nth-child(1),
+  .kp-priority-table tbody td:nth-child(1),
+  .kp-priority-table thead th:nth-child(2),
+  .kp-priority-table tbody td:nth-child(2){position:static;left:auto;box-shadow:none;max-width:none}
+}
 @media (max-width:720px){
   .work-panel-hero{flex-direction:column}
 }
