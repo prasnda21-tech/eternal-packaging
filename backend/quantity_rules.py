@@ -3068,12 +3068,17 @@ def delivery_proofs_for_upload_limit(order: dict, shipment: Optional[dict] = Non
 def qty_delivered_for_shipment(order: dict, shipment: Optional[dict]) -> int:
     if not isinstance(shipment, dict):
         return 0
+    # Cancelled / inactive SJ must not contribute to order delivered qty.
+    if not shipment_is_active(shipment):
+        return 0
     if str(shipment.get("delivery_status") or "").strip() == "Terkirim" or shipment.get("delivered_at"):
         return delivery_batch_qty(shipment)
     keys = shipment_identity_keys(order, shipment)
     total = 0
     for rec in order.get("delivery_confirmations") or []:
         if not isinstance(rec, dict):
+            continue
+        if rec.get("is_cancelled") or rec.get("cancelled") or rec.get("is_deleted"):
             continue
         if str(rec.get("shipment_id") or "").strip() in keys:
             total += max(0, _safe_int(rec.get("qty")))
@@ -3083,6 +3088,8 @@ def qty_delivered_for_shipment(order: dict, shipment: Optional[dict]) -> int:
 def shipment_is_delivered(order: dict, shipment: Optional[dict]) -> bool:
     batch = delivery_batch_qty(shipment)
     if batch <= 0 or not isinstance(shipment, dict):
+        return False
+    if not shipment_is_active(shipment):
         return False
     if str(shipment.get("delivery_status") or "").strip() == "Terkirim" or shipment.get("delivered_at"):
         return True

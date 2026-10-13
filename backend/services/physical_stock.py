@@ -129,6 +129,30 @@ class StockOpnameInProgressError(PhysicalStockConflictError):
     """A frozen stock-opname session owns this warehouse."""
 
 
+class InterveningPhysicalMutationError(PhysicalStockConflictError):
+    """Cancel blocked: another physical mutation landed after this delivery.
+
+    Append-only REVERSAL would corrupt book qty relative to a later opname,
+    transfer, adjustment, receipt, or production move on the same item+warehouse.
+    Fail closed with no partial writes.
+    """
+
+
+# Physical mutations that establish a new physical truth (or move stock) after
+# a SALES_DELIVERY. Cancelling that delivery via REVERSAL would misstate book.
+_INTERVENING_MUTATION_TYPES = frozenset({
+    MOVEMENT_STOCK_OPNAME_ADJUSTMENT,
+    MOVEMENT_MANUAL_ADJUSTMENT,
+    MOVEMENT_WAREHOUSE_TRANSFER_OUT,
+    MOVEMENT_WAREHOUSE_TRANSFER_IN,
+    MOVEMENT_PURCHASE_RECEIPT,
+    MOVEMENT_PURCHASE_RETURN,
+    MOVEMENT_PRODUCTION_CONSUMPTION,
+    MOVEMENT_PRODUCTION_OUTPUT,
+    MOVEMENT_OPENING_BALANCE,
+})
+
+
 OPNAME_SESSIONS = "stock_opname_sessions"
 FROZEN_OPNAME_STATUSES = ("COUNTING", "REVIEW")
 STOCK_OPNAME_IN_PROGRESS = "STOCK_OPNAME_IN_PROGRESS"
@@ -1221,6 +1245,133 @@ def _stock_opname_adjustment_request(session_doc: dict, line: dict, *, actor_id:
     }
 
 
+async def _reconcile_opname_zero_difference_in_session(
+    db,
+    mongo_session,
+    session_doc: dict,
+    line: dict,
+    *,
+    actor_id: str,
+    occurred_at: str,
+) -> Optional[dict]:
+    """Reconcile unreconciled baseline when count equals book (incl. both zero).
+
+    Writes a durable STOCK_OPNAME_ADJUSTMENT audit with qty_delta=0. Does not
+    invent a balance row or change physical_qty. Already-reconciled lines are
+    no-ops. Idempotent on stock-opname:{session_id}:{line_id}.
+    """
+    session_id = str(session_doc.get("id") or "").strip()
+    identity = {
+        "master_item_id": str(line.get("master_item_id") or "").strip(),
+        "branch_id": str(session_doc.get("branch_id") or "").strip(),
+        "warehouse_id": str(session_doc.get("warehouse_id") or "").strip(),
+    }
+    if not session_id or not all(identity.values()):
+        return None
+
+    requested = _stock_opname_adjustment_request(
+        session_doc, line, actor_id=actor_id, occurred_at=occurred_at,
+    )
+    metadata = dict(requested.get("metadata") or {})
+    metadata["reconcile_only"] = True
+    metadata["baseline_status"] = BASELINE_RECONCILED
+    requested["metadata"] = metadata
+
+    existing = await _existing_movement(db, requested["idempotency_key"], mongo_session)
+    if existing:
+        if not _same_payload(existing, requested):
+            raise PhysicalStockConflictError(
+                "Idempotency key sudah digunakan dengan payload yang berbeda"
+            )
+        return _public_movement(existing)
+
+    balances = db[BALANCE_COLLECTION]
+    ledger = db[LEDGER_COLLECTION]
+    current_doc = await balances.find_one(
+        identity,
+        {"_id": 0, "physical_qty": 1, "baseline_status": 1},
+        session=mongo_session,
+    )
+    if current_doc is None:
+        # Do not invent a zero opening / fictitious receipt.
+        return None
+    current = int(current_doc.get("physical_qty") or 0)
+    prior_baseline = str(current_doc.get("baseline_status") or "").strip()
+    if prior_baseline != BASELINE_UNRECONCILED:
+        # Already settled — no unnecessary movement.
+        return None
+
+    await _guard_opname_freeze(
+        db,
+        mongo_session,
+        warehouse_id=identity["warehouse_id"],
+        movement_type=MOVEMENT_STOCK_OPNAME_ADJUSTMENT,
+        allow_opname_session_id=session_id,
+    )
+    await _validate_masters(
+        db,
+        master_item_id=identity["master_item_id"],
+        branch_id=identity["branch_id"],
+        warehouse_id=identity["warehouse_id"],
+        session=mongo_session,
+    )
+
+    movement_id = str(uuid.uuid4())
+    metadata["target_physical_qty"] = current
+    requested["metadata"] = metadata
+    updated = await balances.find_one_and_update(
+        {
+            **identity,
+            "physical_qty": current,
+            "baseline_status": BASELINE_UNRECONCILED,
+        },
+        {
+            "$set": {
+                "baseline_status": BASELINE_RECONCILED,
+                "last_movement_id": movement_id,
+                "updated_at": occurred_at,
+            },
+            "$inc": {"version": 1},
+        },
+        upsert=False,
+        return_document=ReturnDocument.BEFORE,
+        session=mongo_session,
+    )
+    if not updated:
+        raced = await _existing_movement(db, requested["idempotency_key"], mongo_session)
+        if raced:
+            if not _same_payload(raced, requested):
+                raise PhysicalStockConflictError(
+                    "Idempotency key sudah digunakan dengan payload yang berbeda"
+                )
+            return _public_movement(raced)
+        fresh = await balances.find_one(
+            identity,
+            {"_id": 0, "physical_qty": 1, "baseline_status": 1},
+            session=mongo_session,
+        )
+        if (
+            fresh is not None
+            and str(fresh.get("baseline_status") or "").strip() == BASELINE_RECONCILED
+            and int(fresh.get("physical_qty") or 0) == current
+        ):
+            # Another reconciler won; no duplicate audit for this key.
+            return None
+        raise PhysicalStockRetryError("Saldo fisik berubah sebelum rekonsiliasi opname diterapkan")
+
+    if _fail_after_balance:
+        raise PhysicalStockAbortError("forced transaction abort")
+
+    doc = {
+        **requested,
+        "id": movement_id,
+        "balance_before": current,
+        "balance_after": current,
+    }
+    await ledger.insert_one(doc, session=mongo_session)
+    return _public_movement(doc)
+
+
 async def apply_stock_opname_adjustments(
     db,
     mongo_session,
@@ -1232,31 +1383,25 @@ async def apply_stock_opname_adjustments(
 ) -> List[dict]:
     """Post STOCK_OPNAME_ADJUSTMENT rows for the owning active session.
 
-    Non-zero differences post qty movements. Zero differences still mark the
-    warehouse balance baseline as reconciled when a balance row exists
-    (count equals book, including both zero) — without inventing a qty change.
+    Non-zero differences post qty movements. Zero differences reconcile an
+    unreconciled baseline with a qty_delta=0 audit row (count equals book,
+    including both zero) — without inventing a qty change or balance row.
     """
     session_id = str(session_doc.get("id") or "")
     movements = []
     for line in lines:
         delta = int(line.get("difference_qty") or 0)
         if delta == 0:
-            identity = {
-                "master_item_id": str(line.get("master_item_id") or "").strip(),
-                "branch_id": str(session_doc.get("branch_id") or "").strip(),
-                "warehouse_id": str(session_doc.get("warehouse_id") or "").strip(),
-            }
-            if all(identity.values()):
-                await db[BALANCE_COLLECTION].update_one(
-                    identity,
-                    {
-                        "$set": {
-                            "baseline_status": BASELINE_RECONCILED,
-                            "updated_at": occurred_at,
-                        }
-                    },
-                    session=mongo_session,
-                )
+            audit = await _reconcile_opname_zero_difference_in_session(
+                db,
+                mongo_session,
+                session_doc,
+                line,
+                actor_id=actor_id,
+                occurred_at=occurred_at,
+            )
+            if audit is not None:
+                movements.append(audit)
             continue
         movements.append(await _apply_movement_in_session(
             db,
@@ -1342,6 +1487,64 @@ _REVERSIBLE_MOVEMENT_TYPES = frozenset({
 })
 
 
+async def _assert_no_intervening_physical_mutations(
+    db,
+    session,
+    original: dict,
+) -> None:
+    """Fail closed if item+warehouse was mutated after this SALES_DELIVERY.
+
+    Later opname/adjust/transfer/receipt/production on the same keys would make
+    an append-only REVERSAL corrupt the reconciled book. Other SALES_DELIVERY
+    rows are allowed (they reverse independently).
+    """
+    if not isinstance(original, dict):
+        return
+    if str(original.get("movement_type") or "") != MOVEMENT_SALES_DELIVERY:
+        return
+    master_item_id = str(original.get("master_item_id") or "").strip()
+    warehouse_id = str(original.get("warehouse_id") or "").strip()
+    movement_id = str(original.get("id") or "").strip()
+    if not master_item_id or not warehouse_id or not movement_id:
+        return
+    marker = str(
+        original.get("occurred_at")
+        or original.get("created_at")
+        or ""
+    ).strip()
+    if not marker:
+        return
+    intervening = await db[LEDGER_COLLECTION].find_one(
+        {
+            "master_item_id": master_item_id,
+            "warehouse_id": warehouse_id,
+            "id": {"$ne": movement_id},
+            "movement_type": {"$in": list(_INTERVENING_MUTATION_TYPES)},
+            "$or": [
+                {"occurred_at": {"$gt": marker}},
+                {
+                    "occurred_at": {"$exists": False},
+                    "created_at": {"$gt": marker},
+                },
+                {
+                    "occurred_at": None,
+                    "created_at": {"$gt": marker},
+                },
+            ],
+        },
+        {"_id": 0, "id": 1, "movement_type": 1, "occurred_at": 1, "created_at": 1},
+        session=session,
+    )
+    if intervening:
+        mtype = str(intervening.get("movement_type") or "UNKNOWN")
+        raise InterveningPhysicalMutationError(
+            "Pembatalan ditolak: ada mutasi stok fisik setelah pengiriman "
+            f"({mtype}) pada item/gudang yang sama. "
+            "Batalkan atau koreksi mutasi tersebut terlebih dahulu, "
+            "atau sesuaikan stok secara manual. Dokumen tidak diubah."
+        )
+
+
 async def reverse_movement_in_session(
     db,
     session,
@@ -1365,6 +1568,7 @@ async def reverse_movement_in_session(
         raise PhysicalStockValidationError(
             "Hanya penerimaan, retur pembelian, atau pengiriman R2 yang dapat dibatalkan pada jalur ini"
         )
+    await _assert_no_intervening_physical_mutations(db, session, original)
     return await _apply_movement_in_session(
         db,
         _reversal_request(original, actor_id=actor_id, idempotency_key=idempotency_key, reason=reason),
@@ -1450,7 +1654,12 @@ async def reverse_confirmed_sales_delivery(
                         "reversed": True,
                         "reversals": reversal_ids,
                     }
-        except (PhysicalStockValidationError, PhysicalStockConflictError, InsufficientPhysicalStockError):
+        except (
+            PhysicalStockValidationError,
+            PhysicalStockConflictError,
+            InsufficientPhysicalStockError,
+            PhysicalStockAbortError,
+        ):
             raise
         except PyMongoError as exc:
             last_error = exc
@@ -1459,6 +1668,129 @@ async def reverse_confirmed_sales_delivery(
     raise PhysicalStockUnavailableError(
         "Transaksi pembatalan pengiriman stok fisik gagal setelah percobaan ulang"
     ) from last_error
+
+
+def _sales_delivery_identity_tokens(delivery: dict) -> set:
+    return {
+        token
+        for token in (
+            str(delivery.get("id") or "").strip(),
+            str(delivery.get("delivery_id") or "").strip(),
+            str(delivery.get("sj_number") or "").strip(),
+        )
+        if token
+    }
+
+
+async def _r2_confirmation_ids_for_sales_delivery(db, delivery: dict, *, session=None) -> list:
+    """Resolve physical R2 confirmation ids linked to one SJ document."""
+    if not isinstance(delivery, dict):
+        return []
+    identity = _sales_delivery_identity_tokens(delivery)
+    confirmation_ids = set()
+    find_kwargs = {"session": session} if session is not None else {}
+    if identity:
+        linked = await db[SALES_DELIVERY_CONFIRMATIONS].find(
+            {
+                "$or": [
+                    {"sales_delivery_id": {"$in": list(identity)}},
+                    {"id": {"$in": list(identity)}},
+                ]
+            },
+            {"_id": 0, "id": 1},
+            **find_kwargs,
+        ).to_list(200)
+        for row in linked:
+            if row.get("id"):
+                confirmation_ids.add(str(row["id"]))
+        rows = await db[LEDGER_COLLECTION].find(
+            {
+                "movement_type": MOVEMENT_SALES_DELIVERY,
+                "metadata.sales_delivery_id": {"$in": list(identity)},
+            },
+            {"_id": 0, "metadata.confirmation_id": 1},
+            **find_kwargs,
+        ).to_list(500)
+        for row in rows:
+            cid = str((row.get("metadata") or {}).get("confirmation_id") or "").strip()
+            if cid:
+                confirmation_ids.add(cid)
+
+    po_id = str(delivery.get("po_id") or delivery.get("order_id") or "").strip()
+    if po_id and not confirmation_ids:
+        # Fallback: only explicit R2 confirmation ids on the order.
+        order = await db.orders.find_one(
+            {"id": po_id},
+            {"_id": 0, "r2_confirmed_delivery_ids": 1},
+            **find_kwargs,
+        )
+        if order:
+            for cid in order.get("r2_confirmed_delivery_ids") or []:
+                if cid:
+                    confirmation_ids.add(str(cid))
+    return sorted(confirmation_ids)
+
+
+def _shipment_matches_delivery(shipment: dict, identity: set) -> bool:
+    if not isinstance(shipment, dict) or not identity:
+        return False
+    for field in ("id", "sales_delivery_id", "sj_number", "number"):
+        token = str(shipment.get(field) or "").strip()
+        if token and token in identity:
+            return True
+    return False
+
+
+def _recompute_order_delivery_after_cancel(order: dict) -> dict:
+    """Recompute qty_delivered / delivery_status / stage from active shipments."""
+    from quantity_rules import (
+        delivery_batch_qty,
+        packing_required_total,
+        qty_delivered_for_shipment,
+        shipment_is_active,
+    )
+
+    delivered = 0
+    for sh in order.get("shipments") or []:
+        if not isinstance(sh, dict) or not shipment_is_active(sh):
+            continue
+        delivered += max(0, int(qty_delivered_for_shipment(order, sh) or 0))
+    required = max(0, int(packing_required_total(order) or 0))
+    if required <= 0:
+        required = sum(
+            max(0, int((ln or {}).get("quantity") or 0))
+            for ln in (order.get("line_items") or [])
+            if isinstance(ln, dict)
+        )
+    delivered = min(delivered, required) if required > 0 else delivered
+    if delivered <= 0:
+        status = "Belum Terkirim"
+    elif required > 0 and delivered >= required:
+        status = "Terkirim"
+    else:
+        status = "Sebagian Terkirim"
+
+    stage = int(order.get("current_stage") or 0)
+    if status == "Terkirim":
+        stage = max(stage, 14)
+    elif status == "Sebagian Terkirim":
+        stage = min(max(stage, 13), 14)
+    else:
+        # No active delivered qty — leave Loading/SJ stage, not selesai.
+        if stage >= 14:
+            stage = 13
+
+    return {
+        "qty_delivered": delivered,
+        "delivery_status": status,
+        "current_stage": stage,
+        "required_qty": required,
+        "active_batch_qty": sum(
+            delivery_batch_qty(sh)
+            for sh in (order.get("shipments") or [])
+            if isinstance(sh, dict) and shipment_is_active(sh)
+        ),
+    }
 
 
 async def reverse_r2_deliveries_for_sales_delivery(
@@ -1474,63 +1806,9 @@ async def reverse_r2_deliveries_for_sales_delivery(
     """
     if not isinstance(delivery, dict):
         return {"reversed_confirmations": [], "replayed": True}
-    identity = {
-        token
-        for token in (
-            str(delivery.get("id") or "").strip(),
-            str(delivery.get("delivery_id") or "").strip(),
-            str(delivery.get("sj_number") or "").strip(),
-        )
-        if token
-    }
-    confirmation_ids = set()
-    if identity:
-        linked = await db[SALES_DELIVERY_CONFIRMATIONS].find(
-            {
-                "$or": [
-                    {"sales_delivery_id": {"$in": list(identity)}},
-                    {"id": {"$in": list(identity)}},
-                ]
-            },
-            {"_id": 0, "id": 1},
-        ).to_list(200)
-        for row in linked:
-            if row.get("id"):
-                confirmation_ids.add(str(row["id"]))
-        rows = await db[LEDGER_COLLECTION].find(
-            {
-                "movement_type": MOVEMENT_SALES_DELIVERY,
-                "metadata.sales_delivery_id": {"$in": list(identity)},
-            },
-            {"_id": 0, "metadata.confirmation_id": 1},
-        ).to_list(500)
-        for row in rows:
-            cid = str((row.get("metadata") or {}).get("confirmation_id") or "").strip()
-            if cid:
-                confirmation_ids.add(cid)
-
-    po_id = str(delivery.get("po_id") or delivery.get("order_id") or "").strip()
-    if po_id and not confirmation_ids:
-        # Fallback: order-level r2 confirmation ids when SJ link was not stored.
-        order = await db.orders.find_one(
-            {"id": po_id},
-            {"_id": 0, "r2_confirmed_delivery_ids": 1, "delivery_confirmations": 1},
-        )
-        if order:
-            for cid in order.get("r2_confirmed_delivery_ids") or []:
-                if cid:
-                    confirmation_ids.add(str(cid))
-            for conf in order.get("delivery_confirmations") or []:
-                if not isinstance(conf, dict):
-                    continue
-                for field in ("sales_delivery_id", "shipment_id", "surat_jalan_id", "sj_number", "delivery_id"):
-                    token = str(conf.get(field) or "").strip()
-                    if token and token in identity and conf.get("id"):
-                        confirmation_ids.add(str(conf["id"]))
-                        break
-
+    confirmation_ids = await _r2_confirmation_ids_for_sales_delivery(db, delivery)
     results = []
-    for cid in sorted(confirmation_ids):
+    for cid in confirmation_ids:
         results.append(
             await reverse_confirmed_sales_delivery(
                 db, confirmation_id=cid, actor_id=actor_id, reason=reason,
@@ -1538,8 +1816,225 @@ async def reverse_r2_deliveries_for_sales_delivery(
         )
     return {
         "reversed_confirmations": results,
-        "confirmation_ids": sorted(confirmation_ids),
+        "confirmation_ids": confirmation_ids,
     }
+
+
+async def cancel_sales_delivery_document(
+    db,
+    delivery: dict,
+    *,
+    actor_id: str,
+    reason: str = "",
+) -> dict:
+    """Option B: cancel SJ + reverse R2 + reconcile order in one transaction.
+
+    Append-only REVERSAL; original SALES_DELIVERY kept. Proofs/signatures retained.
+    Idempotent when SJ already cancelled.
+    """
+    if not isinstance(delivery, dict) or not str(delivery.get("id") or "").strip():
+        raise PhysicalStockValidationError("Surat Jalan tidak ditemukan")
+    delivery_id = str(delivery["id"])
+    actor = _as_text(actor_id, "actor_id")
+    note = str(reason or "").strip() or "Pembatalan Surat Jalan"
+    await require_transaction_support(_client(db))
+    identity = _sales_delivery_identity_tokens(delivery)
+    po_id = str(delivery.get("po_id") or delivery.get("order_id") or "").strip()
+
+    last_error: Optional[BaseException] = None
+    for _attempt in range(_MAX_ATTEMPTS):
+        try:
+            async with await _client(db).start_session() as session:
+                async with session.start_transaction():
+                    fresh = await db.sales_deliveries.find_one(
+                        {"id": delivery_id}, {"_id": 0}, session=session,
+                    )
+                    if not fresh:
+                        raise PhysicalStockNotFoundError("Pengiriman Pesanan tidak ditemukan.")
+                    if fresh.get("is_cancelled") is True or str(fresh.get("status") or "").lower() in (
+                        "cancelled", "dibatalkan", "deleted",
+                    ):
+                        order = await db.orders.find_one({"id": po_id}, {"_id": 0}, session=session) if po_id else None
+                        return {
+                            "id": delivery_id,
+                            "sj_number": fresh.get("sj_number", delivery_id),
+                            "soft_cancelled": True,
+                            "deleted": False,
+                            "replayed": True,
+                            "r2_reversal": {"reversed_confirmations": [], "confirmation_ids": []},
+                            "order_id": po_id or None,
+                            "qty_delivered": (order or {}).get("qty_delivered"),
+                            "delivery_status": (order or {}).get("delivery_status"),
+                        }
+
+                    confirmation_ids = await _r2_confirmation_ids_for_sales_delivery(
+                        db, fresh, session=session,
+                    )
+                    reversal_results = []
+                    all_reversal_ids = []
+                    for cid in confirmation_ids:
+                        confirmation = await db[SALES_DELIVERY_CONFIRMATIONS].find_one(
+                            {"id": cid}, {"_id": 0}, session=session,
+                        )
+                        if not confirmation:
+                            reversal_results.append({
+                                "confirmation_id": cid,
+                                "replayed": True,
+                                "reversed": False,
+                                "reason": "confirmation_not_found",
+                                "reversals": [],
+                            })
+                            continue
+                        if confirmation.get("reversed") is True:
+                            ids = list(confirmation.get("reversal_movement_ids") or [])
+                            reversal_results.append({
+                                "confirmation_id": cid,
+                                "replayed": True,
+                                "reversed": True,
+                                "reversals": ids,
+                            })
+                            all_reversal_ids.extend(ids)
+                            continue
+                        originals = await db[LEDGER_COLLECTION].find(
+                            {
+                                "movement_type": MOVEMENT_SALES_DELIVERY,
+                                "metadata.confirmation_id": cid,
+                            },
+                            {"_id": 0, "id": 1},
+                            session=session,
+                        ).to_list(500)
+                        reversal_ids = []
+                        for original in originals:
+                            movement = await reverse_movement_in_session(
+                                db,
+                                session,
+                                original["id"],
+                                actor_id=actor,
+                                idempotency_key=f"sales-delivery-reversal:{cid}:{original['id']}",
+                                reason=note,
+                            )
+                            reversal_ids.append(movement["id"])
+                        await db[SALES_DELIVERY_CONFIRMATIONS].update_one(
+                            {"id": cid, "reversed": {"$ne": True}},
+                            {"$set": {
+                                "reversed": True,
+                                "reversed_at": now_iso(),
+                                "reversed_by": actor,
+                                "reversal_reason": note,
+                                "reversal_movement_ids": reversal_ids,
+                            }},
+                            session=session,
+                        )
+                        reversal_results.append({
+                            "confirmation_id": cid,
+                            "replayed": False,
+                            "reversed": True,
+                            "reversals": reversal_ids,
+                        })
+                        all_reversal_ids.extend(reversal_ids)
+
+                    cancelled_at = now_iso()
+                    await db.sales_deliveries.update_one(
+                        {"id": delivery_id},
+                        {"$set": {
+                            "is_cancelled": True,
+                            "cancelled": True,
+                            "status": "DIBATALKAN",
+                            "cancelled_at": cancelled_at,
+                            "cancel_reason": note,
+                            "r2_reversal": {
+                                "reversed_confirmations": reversal_results,
+                                "confirmation_ids": confirmation_ids,
+                            },
+                            "updated_at": cancelled_at,
+                        }},
+                        session=session,
+                    )
+
+                    order_patch = {}
+                    if po_id:
+                        order = await db.orders.find_one({"id": po_id}, {"_id": 0}, session=session)
+                        if order:
+                            shipments = []
+                            for sh in order.get("shipments") or []:
+                                if not isinstance(sh, dict):
+                                    continue
+                                row = dict(sh)
+                                if _shipment_matches_delivery(row, identity):
+                                    row["is_cancelled"] = True
+                                    row["cancelled"] = True
+                                    row["status"] = "cancelled"
+                                    row["sj_status"] = "cancelled"
+                                    row["cancelled_at"] = cancelled_at
+                                    # Keep delivered_at / proofs linkage for audit; inactive via flags.
+                                shipments.append(row)
+                            confirmations = []
+                            for rec in order.get("delivery_confirmations") or []:
+                                if not isinstance(rec, dict):
+                                    continue
+                                row = dict(rec)
+                                linked = False
+                                for field in (
+                                    "shipment_id", "surat_jalan_id", "sj_number",
+                                    "sales_delivery_id", "delivery_id",
+                                ):
+                                    token = str(row.get(field) or "").strip()
+                                    if token and token in identity:
+                                        linked = True
+                                        break
+                                if linked:
+                                    row["is_cancelled"] = True
+                                    row["cancelled"] = True
+                                    row["cancelled_at"] = cancelled_at
+                                confirmations.append(row)
+                            order["shipments"] = shipments
+                            order["delivery_confirmations"] = confirmations
+                            recomputed = _recompute_order_delivery_after_cancel(order)
+                            order_patch = {
+                                "shipments": shipments,
+                                "delivery_confirmations": confirmations,
+                                "qty_delivered": recomputed["qty_delivered"],
+                                "delivery_status": recomputed["delivery_status"],
+                                "current_stage": recomputed["current_stage"],
+                                "updated_at": cancelled_at,
+                            }
+                            await db.orders.update_one(
+                                {"id": po_id},
+                                {"$set": order_patch},
+                                session=session,
+                            )
+
+                    return {
+                        "id": delivery_id,
+                        "sj_number": fresh.get("sj_number", delivery_id),
+                        "soft_cancelled": True,
+                        "deleted": False,
+                        "replayed": False,
+                        "r2_reversal": {
+                            "reversed_confirmations": reversal_results,
+                            "confirmation_ids": confirmation_ids,
+                            "reversal_movement_ids": all_reversal_ids,
+                        },
+                        "order_id": po_id or None,
+                        "qty_delivered": order_patch.get("qty_delivered"),
+                        "delivery_status": order_patch.get("delivery_status"),
+                        "current_stage": order_patch.get("current_stage"),
+                    }
+        except (
+            PhysicalStockValidationError,
+            PhysicalStockConflictError,
+            InsufficientPhysicalStockError,
+            PhysicalStockAbortError,
+            PhysicalStockNotFoundError,
+        ):
+            raise
+        except PyMongoError as exc:
+            last_error = exc
+            if not _retryable(exc):
+                raise
+    raise PhysicalStockUnavailableError(
+        "Transaksi pembatalan Surat Jalan gagal setelah percobaan ulang"
+    ) from last_error
 
 
 async def reverse_movement(
@@ -1993,6 +2488,8 @@ async def _adjust_to_target_once(
                 )
                 if not updated:
                     raise PhysicalStockRetryError("Saldo fisik berubah sebelum rekonsiliasi diterapkan")
+                if _fail_after_balance:
+                    raise PhysicalStockAbortError("forced transaction abort")
                 doc = {
                     "id": movement_id,
                     "master_item_id": master_item_id,
@@ -2244,12 +2741,22 @@ def _is_operational_branch(branch: dict) -> bool:
 
 
 def resolve_operational_branch(branches: Iterable[dict]) -> Optional[dict]:
-    """The single operational sales branch is Yogyakarta. Code YGY wins when several match."""
-    rows = [row for row in branches if row.get("id") and _is_operational_branch(row)]
+    """Default operational branch: Yogyakarta (YGY), else sole active branch.
+
+    Never aggregates multiple branches. When YGY is absent and exactly one
+    active branch exists (typical isolated UAT), that branch is the default.
+    """
+    all_rows = [row for row in branches if row.get("id")]
+    rows = [row for row in all_rows if _is_operational_branch(row)]
     coded = [row for row in rows if str(row.get("code") or "").strip().upper() == "YGY"]
     if coded:
         return coded[0]
-    return rows[0] if rows else None
+    if rows:
+        return rows[0]
+    active = [row for row in all_rows if row.get("active") is not False]
+    if len(active) == 1:
+        return active[0]
+    return None
 
 
 def _line_master_id(line: dict, accurate_owners: Dict[str, str]) -> str:
@@ -2542,6 +3049,11 @@ async def list_physical_stock_catalog(
     cutover = await get_delivery_cutover_baseline(db)
     baseline_by_item = cutover.get("baseline_by_master_item_id") or {} if cutover.get("initialized") else {}
     warehouse_ids = [row.get("id") for row in warehouses if row.get("id")]
+    warehouse_by_id = {
+        str(row.get("id")): row for row in warehouses if row.get("id")
+    }
+    selected_warehouse_id = str(warehouse_id or "").strip()
+    selected_warehouse = warehouse_by_id.get(selected_warehouse_id) if selected_warehouse_id else None
     balance_docs = []
     if warehouse_ids and master_ids:
         balance_docs = await db[BALANCE_COLLECTION].find(
@@ -2578,7 +3090,46 @@ async def list_physical_stock_catalog(
             baseline_status = BASELINE_UNRECONCILED
         else:
             baseline_status = BASELINE_RECONCILED
-        rows.append({
+        docs_by_wh = {
+            str(doc.get("warehouse_id") or ""): doc
+            for doc in docs
+            if doc.get("warehouse_id")
+        }
+        # Per-warehouse book balances so "Semua Gudang" can show shortages
+        # independently of the branch aggregate. Missing balance ≠ verified zero.
+        warehouse_balances = []
+        for wh in warehouses:
+            wid = str(wh.get("id") or "")
+            if not wid:
+                continue
+            doc = docs_by_wh.get(wid)
+            if doc is None:
+                wh_qty = None
+                wh_baseline = None
+                wh_label = BASELINE_UNRECONCILED_LABEL
+            else:
+                wh_qty = _qty_num(doc.get("physical_qty"))
+                wh_baseline = (
+                    str(doc.get("baseline_status") or BASELINE_RECONCILED).strip()
+                    or BASELINE_RECONCILED
+                )
+                wh_label = (
+                    BASELINE_UNRECONCILED_LABEL
+                    if wh_baseline == BASELINE_UNRECONCILED
+                    else None
+                )
+            warehouse_balances.append({
+                "warehouse_id": wid,
+                "warehouse_code": wh.get("code") or "",
+                "warehouse_name": wh.get("name") or "",
+                "physical_qty": wh_qty,
+                "baseline_status": wh_baseline,
+                "baseline_label": wh_label,
+                "saldo_buku_negatif": bool(wh_qty is not None and wh_qty < 0),
+                "balance_present": doc is not None,
+                "physical_qty_is_book": True,
+            })
+        row = {
             "master_item_id": master.get("id"),
             "item_code": master.get("item_code") or "",
             "item_name": master.get("item_name") or "",
@@ -2597,7 +3148,29 @@ async def list_physical_stock_catalog(
             ),
             "saldo_buku_negatif": buckets["physical_qty"] < 0,
             "physical_qty_is_book": True,
-        })
+            "warehouse_balances": warehouse_balances,
+            # Demand/availability is branch-level — never fabricate per-warehouse
+            # allocation of orders across gudang.
+            "demand_scope": "BRANCH",
+            "availability_scope": "BRANCH",
+        }
+        if selected_warehouse:
+            row["warehouse_id"] = str(selected_warehouse.get("id") or "")
+            row["warehouse_code"] = selected_warehouse.get("code") or ""
+            row["warehouse_name"] = selected_warehouse.get("name") or ""
+            row["physical_qty_scope"] = "WAREHOUSE"
+            row["availability_scope"] = "BRANCH_DEMAND_VS_WAREHOUSE_BOOK"
+            row["demand_scope_note"] = (
+                "Qty Pesanan / Belum Terkirim adalah lingkup cabang; "
+                "bukan alokasi per gudang."
+            )
+            row["qty_tersedia_note"] = (
+                "Qty Tersedia memakai permintaan cabang terhadap saldo buku gudang ini "
+                "— bukan ketersediaan yang dialokasikan per gudang."
+            )
+        else:
+            row["physical_qty_scope"] = "BRANCH"
+        rows.append(row)
     total = len(rows)
     start = (safe_page - 1) * safe_limit
     page_count = (total + safe_limit - 1) // safe_limit if total else 0
@@ -2611,10 +3184,20 @@ async def list_physical_stock_catalog(
         "warehouse_count": len(warehouses),
         "stock_read_mode": "r2",
         "r2_authority_active": True,
-        "physical_qty_scope": "BRANCH",
+        "physical_qty_scope": "WAREHOUSE" if selected_warehouse else "BRANCH",
         "branch_filter_affects_physical_qty": True,
+        "warehouse_filter_affects_physical_qty": bool(selected_warehouse),
+        "effective_warehouse_id": (
+            str(selected_warehouse.get("id") or "") if selected_warehouse else None
+        ),
+        "effective_warehouse_code": (
+            (selected_warehouse.get("code") or None) if selected_warehouse else None
+        ),
+        "demand_scope": "BRANCH",
         "physical_qty_note": (
-            "Qty fisik resmi dari physical_stock_balances pada cabang yang dipilih."
+            "Saldo buku R2 gudang terpilih (boleh negatif)."
+            if selected_warehouse
+            else "Saldo buku R2 agregat cabang; rincian per gudang ada di warehouse_balances."
         ),
     }
 

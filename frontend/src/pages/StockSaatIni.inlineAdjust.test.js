@@ -208,4 +208,46 @@ describe("Stock Saat Ini inline physical correction", () => {
     expect(api.createPhysicalAdjustment).not.toHaveBeenCalled();
     view.cleanup();
   });
+
+  test("sole non-YGY branch auto-selects and opens multi-warehouse adjust modal", async () => {
+    const uatBranch = { id: "br-uat", code: "UAT-YGY", name: "Cabang UAT Adjust", active: true };
+    const whA = { id: "wh-a", branch_id: "br-uat", code: "GUD-A", name: "Gudang A", active: true, is_operational: true };
+    const whB = { id: "wh-b", branch_id: "br-uat", code: "GUD-B", name: "Gudang B", active: true, is_operational: true };
+    api.branches.mockResolvedValue({ items: [uatBranch] });
+    api.warehouses.mockResolvedValue({ items: [whA, whB] });
+    api.physicalStockCatalog.mockImplementation(async (params = {}) => ({
+      ...catalog(),
+      can_adjust_physical_stock: true,
+      can_switch_branches: true,
+      r2_authority_active: true,
+      stock_read_mode: "r2",
+      effective_branch_id: params.branch_id || uatBranch.id,
+      effective_branch_code: "UAT-YGY",
+      warehouse_count: 2,
+      items: [{ ...ITEM, physical_qty: 15 }],
+    }));
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    await act(async () => { root.render(<StockSaatIni />); });
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
+    const select = container.querySelector('[data-testid="stock-branch-select-input"]');
+    expect(select).not.toBeNull();
+    expect(select.value).toBe("br-uat");
+    expect(api.physicalStockCatalog).toHaveBeenCalledWith(
+      expect.objectContaining({ branch_id: "br-uat" }),
+    );
+    await act(async () => {
+      container.querySelector('[data-testid="stock-adjust-item-1"]').click();
+    });
+    expect(container.textContent).not.toMatch(/belum ada gudang aktif/);
+    const modal = container.querySelector('[data-testid="stock-adjust-modal"]');
+    expect(modal).not.toBeNull();
+    const options = [...modal.querySelectorAll('[data-testid="stock-adjust-warehouse"] option')]
+      .map((opt) => opt.value)
+      .filter(Boolean);
+    expect(options).toEqual(["wh-a", "wh-b"]);
+    act(() => root.unmount());
+    container.remove();
+  });
 });

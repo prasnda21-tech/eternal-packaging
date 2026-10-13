@@ -33,6 +33,11 @@ export default function BranchScopeSelect({
         data-testid={`${testId}-input`}
         aria-label={label}
       >
+        {!value && (
+          <option value="" disabled>
+            Pilih cabang
+          </option>
+        )}
         {rows.map((row) => (
           <option key={row.id} value={row.id}>
             {row.code || row.name || row.id}

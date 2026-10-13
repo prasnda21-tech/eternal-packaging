@@ -29,6 +29,8 @@ from services.physical_stock import (  # noqa: E402
     MOVEMENT_PURCHASE_RECEIPT,
     MOVEMENT_REVERSAL,
     MOVEMENT_SALES_DELIVERY,
+    MOVEMENT_STOCK_OPNAME_ADJUSTMENT,
+    OPNAME_SESSIONS,
     WAREHOUSES_COLLECTION,
     PhysicalStockConflictError,
     _client,
@@ -319,8 +321,10 @@ async def test_zero_target_unreconciled_and_opname_zero_diff(db):
         "opname_number": "OP-E2E-0",
         "branch_id": branch2["id"],
         "warehouse_id": wh2["id"],
-        "mode": "full",
+        "mode": "operational",
+        "status": "REVIEW",
     }
+    await db[OPNAME_SESSIONS].insert_one(dict(session_doc))
     lines = [{
         "line_id": "L1",
         "master_item_id": item2["id"],
@@ -333,10 +337,32 @@ async def test_zero_target_unreconciled_and_opname_zero_diff(db):
             moved = await apply_stock_opname_adjustments(
                 db, session, session_doc, lines, actor_id="e2e", occurred_at="2026-10-13T00:00:00+00:00",
             )
-    assert moved == []
+    assert len(moved) == 1
+    assert moved[0]["qty_delta"] == 0
+    assert moved[0]["movement_type"] == MOVEMENT_STOCK_OPNAME_ADJUSTMENT
     bal2 = await get_balance(db, item2["id"], branch2["id"], wh2["id"])
     assert bal2["physical_qty"] == 0
     assert bal2["baseline_status"] == BASELINE_RECONCILED
+    audit = await db[LEDGER_COLLECTION].find_one({"id": moved[0]["id"]}, {"_id": 0})
+    assert audit["qty_delta"] == 0
+    assert audit["actor_id"] == "e2e"
+    assert audit["reference_id"] == session_doc["id"]
+    assert audit["metadata"]["reconcile_only"] is True
+    assert audit["metadata"]["stock_opname_session_id"] == session_doc["id"]
+    assert audit["metadata"]["stock_opname_line_id"] == "L1"
+    # Idempotent replay inside a new transaction must not duplicate
+    async with await _client(db).start_session() as session:
+        async with session.start_transaction():
+            again = await apply_stock_opname_adjustments(
+                db, session, session_doc, lines, actor_id="e2e", occurred_at="2026-10-13T00:00:01+00:00",
+            )
+    assert len(again) == 1
+    assert again[0]["id"] == moved[0]["id"]
+    assert await db[LEDGER_COLLECTION].count_documents({
+        "movement_type": MOVEMENT_STOCK_OPNAME_ADJUSTMENT,
+        "warehouse_id": wh2["id"],
+        "qty_delta": 0,
+    }) == 1
 
 
 async def test_r2_off_legacy_stock_out_gate_still_active(db):

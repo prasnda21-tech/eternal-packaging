@@ -120,6 +120,7 @@ export const api = {
   deleteSuratJalanFile: (id, fileId) =>
     client.delete(`/orders/${id}/surat-jalan/files/${encodeURIComponent(fileId)}`).then((r) => r.data),
   confirmDelivered: (id, payload = {}, config) => client.post(`/orders/${id}/confirm-delivered`, payload, config).then((r) => r.data),
+  deliveryStockPreflight: (id, payload = {}) => client.post(`/orders/${id}/delivery-stock-preflight`, payload).then((r) => r.data),
   syncAccurate: () => client.post(`/accurate/sync`).then((r) => r.data),
   accurateStatus: () => client.get(`/accurate/status`).then((r) => r.data),
   accurateList: (limit = 20, refresh = false, page = 1, keyword = "") =>

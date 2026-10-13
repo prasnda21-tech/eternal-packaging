@@ -6,8 +6,11 @@ const src = fs.readFileSync(path.join(__dirname, "StockOpname.jsx"), "utf8");
 
 describe("Stock Opname operational workflow", () => {
   test("opens from stock, limits warehouses, and keeps the count lifecycle", () => {
-    expect(src).toMatch(/operationalOpeningWarehouses/);
+    expect(src).toMatch(/opnameWarehouseChoices/);
     expect(src).toMatch(/warehouseLocationLabel/);
+    expect(src).not.toMatch(/operationalOpeningWarehouses/);
+    expect(src).toMatch(/Tidak ada gudang operasional aktif/);
+    expect(src).toMatch(/Only auto-select when exactly one warehouse/);
     expect(src).toMatch(/opnameLocationLabel/);
     expect(src).toMatch(/data-testid="opname-start"/);
     expect(src).toMatch(/Mulai Stock Opname/);

@@ -17,6 +17,8 @@ os.environ.setdefault("CORS_ORIGINS", "*")
 import server
 from server import app, current_user
 
+_DOC_DELETE_DB = "eternal_packaging_test"
+
 
 @pytest.fixture
 def anyio_backend():
@@ -27,8 +29,10 @@ def anyio_backend():
 async def bind_motor_and_clean():
     """Bind Motor only. Do not wipe shared DELDOC-* prefixes under xdist."""
     from motor.motor_asyncio import AsyncIOMotorClient
+    # Pin DB explicitly — sibling suites may overwrite os.environ["DB_NAME"].
+    os.environ["DB_NAME"] = _DOC_DELETE_DB
     server.client = AsyncIOMotorClient(os.environ["MONGO_URL"])
-    server.db = server.client[os.environ["DB_NAME"]]
+    server.db = server.client[_DOC_DELETE_DB]
     yield
     # Best-effort cleanup of leftover docs from this worker's UUID-suffixed PO numbers is unnecessary;
     # each seed uses a unique uuid suffix so concurrent workers do not collide.
@@ -230,10 +234,12 @@ async def test_delete_sj_safe_and_locks():
                     "lines": [{"line_idx": 0, "qty": 10}],
                 }]}},
             )
-            blocked_load = await client.delete(f"/api/sales-deliveries/{sj_loading['id']}")
-            assert blocked_load.status_code == 400
-            assert "Loading" in str(blocked_load.json()["detail"])
-            assert await server.db.sales_deliveries.find_one({"id": sj_loading["id"]}) is not None
+            # Option B: Loading-linked SJ soft-cancels (document retained).
+            cancelled_load = await client.delete(f"/api/sales-deliveries/{sj_loading['id']}")
+            assert cancelled_load.status_code == 200, cancelled_load.text
+            assert cancelled_load.json().get("soft_cancelled") is True
+            load_doc = await server.db.sales_deliveries.find_one({"id": sj_loading["id"]})
+            assert load_doc is not None and load_doc.get("is_cancelled") is True
 
             sj_sent = await _create_sj(client, order["id"], qty=10)
             fresh = await server.db.orders.find_one({"id": order["id"]})
@@ -247,11 +253,13 @@ async def test_delete_sj_safe_and_locks():
                 {"id": order["id"]},
                 {"$set": {"shipments": shipments, "loading_confirmations": []}},
             )
-            blocked_sent = await client.delete(f"/api/sales-deliveries/{sj_sent['id']}")
-            assert blocked_sent.status_code == 400
-            assert "Pengiriman" in str(blocked_sent.json()["detail"])
-            assert "Penerimaan" not in str(blocked_sent.json()["detail"])
-            assert await server.db.sales_deliveries.find_one({"id": sj_sent["id"]}) is not None
+            # Option B: Terkirim may be cancelled; finance still does not block.
+            cancelled_sent = await client.delete(f"/api/sales-deliveries/{sj_sent['id']}")
+            assert cancelled_sent.status_code == 200, cancelled_sent.text
+            assert cancelled_sent.json().get("soft_cancelled") is True
+            assert "Penerimaan" not in str(cancelled_sent.json())
+            sent_doc = await server.db.sales_deliveries.find_one({"id": sj_sent["id"]})
+            assert sent_doc is not None and sent_doc.get("is_cancelled") is True
     finally:
         app.dependency_overrides.clear()
 
@@ -276,16 +284,18 @@ async def test_delete_sj_with_loading_rejected():
             )
             for locked in (sj, by_number, by_shipment):
                 res = await client.delete(f"/api/sales-deliveries/{locked['id']}")
-                assert res.status_code == 400
-                assert "Loading" in str(res.json()["detail"])
-                assert await server.db.sales_deliveries.find_one({"id": locked["id"]}) is not None
+                # Option B: Loading evidence → soft-cancel, not hard reject.
+                assert res.status_code == 200, res.text
+                assert res.json().get("soft_cancelled") is True
+                doc = await server.db.sales_deliveries.find_one({"id": locked["id"]})
+                assert doc is not None and doc.get("is_cancelled") is True
     finally:
         app.dependency_overrides.clear()
 
 
 @pytest.mark.anyio
 async def test_delete_sj_with_delivery_proof_rejected():
-    """PO status and untagged proofs do not lock a sibling. Linked evidence does."""
+    """PO status and untagged proofs do not lock a sibling. Linked evidence soft-cancels (Option B)."""
     order = await _seed_order("DELDOC-SJ-PROOF")
     _admin()
     try:
@@ -314,9 +324,13 @@ async def test_delete_sj_with_delivery_proof_rejected():
             sibling_res = await client.delete(f"/api/sales-deliveries/{sibling['id']}")
             assert sibling_res.status_code == 200, sibling_res.text
             res = await client.delete(f"/api/sales-deliveries/{sj['id']}")
-            assert res.status_code == 400
-            assert "Pengiriman" in str(res.json()["detail"])
-            assert await server.db.sales_deliveries.find_one({"id": sj["id"]}) is not None
+            assert res.status_code == 200, res.text
+            assert res.json().get("soft_cancelled") is True
+            linked = await server.db.sales_deliveries.find_one({"id": sj["id"]})
+            assert linked is not None and linked.get("is_cancelled") is True
+            order_after = await server.db.orders.find_one({"id": order["id"]})
+            proofs = order_after.get("delivery_proofs") or []
+            assert any(p.get("id") == "linked" for p in proofs)
     finally:
         app.dependency_overrides.clear()
 

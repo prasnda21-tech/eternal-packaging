@@ -322,8 +322,17 @@ async def resolve_stock_catalog_branch_id(
 
     ygy = await find_branch_by_code(db, DEFAULT_BRANCH_CODE)
     if not ygy:
-        # No YGY yet — HOLDING/local may still browse empty; scoped users blocked
+        # No YGY: prefer the sole active branch so Stock Saat Ini / adjustment
+        # work on isolated UAT (and other single-branch) databases. Never sum
+        # all branches — multi-branch without YGY still requires an explicit pick.
         if access.get("scope") == SCOPE_ALL:
+            active = await db[BRANCHES_COLLECTION].find(
+                {"active": {"$ne": False}},
+                {"_id": 0},
+            ).sort([("code", 1), ("id", 1)]).to_list(500)
+            active = [row for row in active if str(row.get("id") or "").strip()]
+            if len(active) == 1:
+                return {"branch": active[0], "access": access, "defaulted": True}
             return {"branch": None, "access": access, "defaulted": True}
         raise HTTPException(409, "Cabang operasional Yogyakarta belum dikonfigurasi")
     if not branch_id_allowed(access, ygy.get("id")):

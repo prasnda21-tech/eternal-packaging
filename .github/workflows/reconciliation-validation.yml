@@ -357,6 +357,38 @@ jobs:
         run: >-
           python -m pytest -vv -n 0 --tb=short
           tests/test_r2_allow_negative_book.py
+      # Target adjust + concurrent zero-delta reconciliation (isolated RS DB).
+      - name: Run physical adjustment suite (replica set)
+        working-directory: backend
+        env:
+          MONGO_URL: mongodb://127.0.0.1:27017/?replicaSet=eternal_local_rs
+          DB_NAME: eternal_packaging_test_physical_adjustment
+          APP_ENV: test
+          JWT_SECRET: ci-only-secret
+        run: >-
+          python -m pytest -vv -n 0 --tb=short
+          tests/test_physical_adjustment.py
+      # Opname zero-diff unreconciled → reconcile_only audit (isolated RS DB).
+      - name: Run opname zero-diff audit suite (replica set)
+        working-directory: backend
+        env:
+          MONGO_URL: mongodb://127.0.0.1:27017/?replicaSet=eternal_local_rs
+          DB_NAME: eternal_packaging_test_opname_zero_diff_audit
+        run: >-
+          python -m pytest -vv -n 0 --tb=short
+          tests/test_opname_zero_diff_audit.py
+      # Option B SJ cancel → REVERSAL + intervening-mutation fail-closed (isolated RS DB).
+      - name: Run sales delivery R2 cancel suite (replica set)
+        working-directory: backend
+        env:
+          MONGO_URL: mongodb://127.0.0.1:27017/?replicaSet=eternal_local_rs
+          DB_NAME: eternal_packaging_test_sales_delivery_r2_cancel_http
+          APP_ENV: test
+          JWT_SECRET: ci-only-secret-sales-delivery-r2-cancel-32
+          CORS_ORIGINS: "*"
+        run: >-
+          python -m pytest -vv -n 0 --tb=short
+          tests/test_sales_delivery_r2_cancel_http.py
       # Full R2 inventory chain on isolated RS test DB (never preview/production).
       - name: Run R2 inventory E2E suite (replica set)
         working-directory: backend

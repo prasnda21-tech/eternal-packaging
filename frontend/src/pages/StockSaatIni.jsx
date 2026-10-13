@@ -33,6 +33,7 @@ export default function StockSaatIni() {
   const [branches, setBranches] = useState([]);
   const [warehouses, setWarehouses] = useState([]);
   const [branchId, setBranchId] = useState("");
+  const [warehouseId, setWarehouseId] = useState(""); // "" = Semua Gudang
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
   const { input: qInput, setInput: setQInput, q, flush: doSearch, clear: clearQuery, pending: searchPending } = useDebouncedLiveSearch();
@@ -45,7 +46,7 @@ export default function StockSaatIni() {
   const saveLock = useRef(false);
   const loadSeq = useRef(0);
 
-  useEffect(() => { setPage(1); }, [q, branchId]);
+  useEffect(() => { setPage(1); }, [q, branchId, warehouseId]);
 
   useEffect(() => {
     if (!searchPending) return;
@@ -58,8 +59,16 @@ export default function StockSaatIni() {
     Promise.all([api.branches(), api.warehouses()])
       .then(([branchRes, warehouseRes]) => {
         if (cancelled) return;
-        setBranches(branchRes.items || []);
+        const branchRows = branchRes.items || [];
+        setBranches(branchRows);
         setWarehouses(warehouseRes.items || []);
+        // Controlled <select> with value="" can visually show the first option
+        // while state stays empty — pin the sole active branch immediately.
+        setBranchId((current) => {
+          if (current) return current;
+          const active = branchRows.filter((row) => row?.active !== false && row?.id);
+          return active.length === 1 ? active[0].id : current;
+        });
       })
       .catch(() => {
         if (!cancelled) setErr("Gagal memuat cabang dan gudang");
@@ -75,6 +84,7 @@ export default function StockSaatIni() {
     try {
       const params = { q, page, limit: pageSize };
       if (branchId) params.branch_id = branchId;
+      if (warehouseId) params.warehouse_id = warehouseId;
       const d = await api.physicalStockCatalog(params);
       if (seq !== loadSeq.current) return;
       setData(d);
@@ -88,7 +98,7 @@ export default function StockSaatIni() {
     } finally {
       if (seq === loadSeq.current) setLoading(false);
     }
-  }, [q, page, pageSize, branchId]);
+  }, [q, page, pageSize, branchId, warehouseId]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -100,10 +110,16 @@ export default function StockSaatIni() {
   const items = data?.items || [];
   const effectiveBranchId = branchId || data?.effective_branch_id || "";
   const canSwitchBranches = Boolean(data?.can_switch_branches);
+  const filterWarehouses = effectiveBranchId
+    ? warehouseChoices(warehouses, effectiveBranchId).filter(
+      (row) => row.active !== false && isOperationalWarehouse(row),
+    )
+    : [];
   const adjustWarehouses = effectiveBranchId
     ? warehouseChoices(warehouses, effectiveBranchId).filter((row) => row.active !== false)
     : yogyakartaWarehouses(branches, warehouses);
   const singleWarehouse = adjustWarehouses.length === 1 ? adjustWarehouses[0] : null;
+  const selectedFilterWarehouse = filterWarehouses.find((row) => row.id === warehouseId) || null;
 
   const beginAdjust = (item) => {
     if (savingAdjust || saveLock.current) return;
@@ -166,22 +182,64 @@ export default function StockSaatIni() {
     readMode,
   });
 
-  const physicalHeader = r2Active ? "Stock Fisik" : "Stock Fisik (perusahaan)";
+  const physicalHeader = r2Active
+    ? (selectedFilterWarehouse ? "Saldo Buku R2 (gudang)" : "Saldo Buku R2 (cabang)")
+    : "Stock Fisik (perusahaan)";
   const download = () => {
-    const header = ["Kode", "Nama Barang", "Satuan Dasar", physicalHeader, "Qty Pesanan", "Qty Belum Terkirim", "Qty Tersedia", "Terakhir Update"];
+    const header = [
+      "Kode",
+      "Nama Barang",
+      "Satuan Dasar",
+      "Lokasi",
+      physicalHeader,
+      "Qty Pesanan (cabang)",
+      "Qty Belum Terkirim (cabang)",
+      "Qty Tersedia",
+      "Baseline",
+      "Terakhir Update",
+    ];
     const lines = [header.join(",")];
     items.forEach((row) => {
+      const location = selectedFilterWarehouse
+        ? warehouseLocationLabel(selectedFilterWarehouse, branches)
+        : (data?.effective_branch_code || "Cabang");
       const cells = [
         row.item_code,
         row.item_name,
         row.base_unit,
+        location,
         row.physical_qty,
         row.qty_pesanan,
         row.qty_belum_terkirim,
         row.qty_tersedia,
+        row.baseline_status || "",
         row.updated_at || "",
       ].map((value) => `"${String(value ?? "").replace(/"/g, '""')}"`);
       lines.push(cells.join(","));
+      if (!selectedFilterWarehouse && Array.isArray(row.warehouse_balances)) {
+        row.warehouse_balances.forEach((wb) => {
+          const whLabel = warehouseLocationLabel({
+            id: wb.warehouse_id,
+            code: wb.warehouse_code,
+            name: wb.warehouse_name,
+            branch_id: effectiveBranchId,
+          }, branches);
+          const qty = wb.balance_present ? wb.physical_qty : "";
+          const detail = [
+            row.item_code,
+            row.item_name,
+            row.base_unit,
+            whLabel,
+            qty,
+            "",
+            "",
+            "",
+            wb.baseline_status || (wb.balance_present ? "" : "unreconciled"),
+            "",
+          ].map((value) => `"${String(value ?? "").replace(/"/g, '""')}"`);
+          lines.push(detail.join(","));
+        });
+      }
     });
     const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
@@ -223,9 +281,10 @@ export default function StockSaatIni() {
           )}
           {data && r2Active && (
             <p className="muted small" data-testid="stock-book-vs-count-note">
-              Kolom Stock Fisik adalah saldo buku R2 (boleh negatif). Hasil hitung fisik aktual
-              dicatat lewat Stock Opname (≥ 0). Status “Saldo awal belum direkonsiliasi” berarti
-              belum ada opening/opname — bukan klaim fisik nol.
+              Kolom Saldo Buku R2 adalah buku stok (boleh negatif), bukan hasil hitung fisik.
+              Hitung fisik aktual dicatat lewat Stock Opname (≥ 0). Status “Saldo awal belum
+              direkonsiliasi” berarti belum ada opening/opname — bukan klaim fisik nol.
+              Qty Pesanan / Belum Terkirim lingkup cabang — tidak dialokasikan per gudang.
             </p>
           )}
         </div>
@@ -264,12 +323,36 @@ export default function StockSaatIni() {
             effectiveCode={data?.effective_branch_code}
             onChange={(next) => {
               setBranchId(next);
+              setWarehouseId("");
               setPage(1);
               setInlineItemId(null);
               setAdjustItem(null);
             }}
             testId="stock-branch-select"
           />
+          {r2Active && (
+            <label className="field stock-warehouse-filter" data-testid="stock-warehouse-filter">
+              <span className="muted small">Gudang</span>
+              <select
+                value={warehouseId}
+                onChange={(e) => {
+                  setWarehouseId(e.target.value);
+                  setPage(1);
+                  setInlineItemId(null);
+                  setAdjustItem(null);
+                }}
+                data-testid="stock-warehouse-select"
+                aria-label="Filter gudang"
+              >
+                <option value="">Semua Gudang</option>
+                {filterWarehouses.map((wh) => (
+                  <option key={wh.id} value={wh.id}>
+                    {wh.code ? `${wh.code} — ${wh.name || wh.code}` : (wh.name || wh.id)}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           <form className="search-inline" onSubmit={doSearch}>
             <Search size={14} />
             <input
@@ -305,29 +388,34 @@ export default function StockSaatIni() {
               <th className="col-fit">Kode</th>
               <th className="col-text">Nama Barang</th>
               <th className="col-fit">Satuan Dasar</th>
+              <th className="col-fit" data-testid="stock-location-header">Lokasi</th>
               <th
                 className="col-fit num"
                 data-testid="stock-physical-header"
-                data-physical-scope={r2Active ? "BRANCH_WAREHOUSE" : "COMPANY"}
+                data-physical-scope={r2Active ? (selectedFilterWarehouse ? "WAREHOUSE" : "BRANCH") : "COMPANY"}
                 title={r2Active
-                  ? "Saldo fisik R2 pada cabang/gudang terpilih"
+                  ? "Saldo buku R2 (boleh negatif) — bukan hasil hitung fisik"
                   : "Legacy company-wide — bukan saldo per gudang"}
               >
                 {physicalHeader}
               </th>
-              <th className="col-fit num">Qty Pesanan</th>
-              <th className="col-fit num">Qty Belum Terkirim</th>
+              <th className="col-fit num" title="Lingkup cabang — bukan alokasi per gudang">
+                Qty Pesanan{r2Active ? " (cabang)" : ""}
+              </th>
+              <th className="col-fit num" title="Lingkup cabang — bukan alokasi per gudang">
+                Qty Belum Terkirim{r2Active ? " (cabang)" : ""}
+              </th>
               <th className="col-fit num">Qty Tersedia</th>
               <th className="col-fit">Terakhir Update</th>
             </tr>
           </thead>
           <tbody data-testid="stock-tbody" data-search-state={tableView}>
             {tableView === "loading" && (
-              <tr data-testid="stock-loading"><td colSpan={8} className="muted small">Memuat…</td></tr>
+              <tr data-testid="stock-loading"><td colSpan={9} className="muted small">Memuat…</td></tr>
             )}
             {tableView === "empty" && (
               <tr>
-                <td colSpan={8} className="muted small" data-testid="stock-empty">{emptyText}</td>
+                <td colSpan={9} className="muted small" data-testid="stock-empty">{emptyText}</td>
               </tr>
             )}
             {tableView === "results" && items.map((it) => (
@@ -335,7 +423,16 @@ export default function StockSaatIni() {
                 <td className="col-fit mono">{it.item_code || "—"}</td>
                 <td className="col-text">{it.item_name || "—"}</td>
                 <td className="col-fit">{it.base_unit || "—"}</td>
-                <td className="col-fit num mono" data-testid={`stock-physical-${it.master_item_id}`}>
+                <td className="col-fit small" data-testid={`stock-location-${it.master_item_id}`}>
+                  {selectedFilterWarehouse
+                    ? warehouseLocationLabel(selectedFilterWarehouse, branches)
+                    : (data?.effective_branch_code || "Cabang")}
+                </td>
+                <td
+                  className={`col-fit num mono${it.saldo_buku_negatif ? " stock-book-negative" : ""}`}
+                  data-testid={`stock-physical-${it.master_item_id}`}
+                  data-negative={it.saldo_buku_negatif ? "true" : "false"}
+                >
                   {canAdjust && inlineItemId === it.master_item_id && singleWarehouse ? (
                     <InlinePhysicalEditor
                       item={it}
@@ -359,9 +456,35 @@ export default function StockSaatIni() {
                     </div>
                   )}
                   {it.saldo_buku_negatif && (
-                    <div className="muted small" data-testid={`stock-book-negative-${it.master_item_id}`}>
-                      Saldo buku negatif (bukan hasil hitung fisik)
+                    <div className="stock-book-negative-note" data-testid={`stock-book-negative-${it.master_item_id}`}>
+                      Saldo buku negatif
                     </div>
+                  )}
+                  {r2Active && !selectedFilterWarehouse && Array.isArray(it.warehouse_balances) && it.warehouse_balances.length > 0 && (
+                    <ul className="stock-warehouse-breakdown" data-testid={`stock-warehouse-breakdown-${it.master_item_id}`}>
+                      {it.warehouse_balances.map((wb) => (
+                        <li
+                          key={wb.warehouse_id}
+                          data-testid={`stock-wh-bal-${it.master_item_id}-${wb.warehouse_code || wb.warehouse_id}`}
+                          className={wb.saldo_buku_negatif ? "stock-book-negative" : undefined}
+                          data-negative={wb.saldo_buku_negatif ? "true" : "false"}
+                        >
+                          <span className="mono">{wb.warehouse_code || wb.warehouse_name}</span>
+                          {": "}
+                          <span className="mono">
+                            {wb.balance_present ? fmtQty(wb.physical_qty) : "—"}
+                          </span>
+                          {" "}
+                          <span className="muted">{it.base_unit || "PCS"}</span>
+                          {!wb.balance_present && (
+                            <span className="muted small"> (belum ada saldo buku)</span>
+                          )}
+                          {wb.baseline_status === "unreconciled" && (
+                            <span className="muted small"> · belum direkonsiliasi</span>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
                   )}
                 </td>
                 <td className="col-fit num mono" data-testid={`stock-order-${it.master_item_id}`}>{fmtQty(it.qty_pesanan)}</td>
@@ -377,7 +500,11 @@ export default function StockSaatIni() {
                 <td
                   className="col-fit num mono"
                   data-testid={`stock-available-${it.master_item_id}`}
-                  title={Number(it.qty_tersedia) < 0 ? "Kebutuhan stok (informasi) — tidak memblokir pesanan" : undefined}
+                  title={
+                    selectedFilterWarehouse
+                      ? (it.qty_tersedia_note || "Permintaan cabang vs saldo buku gudang — bukan alokasi per gudang")
+                      : (Number(it.qty_tersedia) < 0 ? "Kebutuhan stok (informasi) — tidak memblokir pesanan" : undefined)
+                  }
                 >
                   {fmtQty(it.qty_tersedia)}
                 </td>

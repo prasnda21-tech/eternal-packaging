@@ -74,24 +74,26 @@ describe("Pengiriman Pesanan UI & Data Invariants", () => {
     expect(appSrc).toMatch(/NAV_KEYS\.salesDeliveryOrder/);
   });
 
-  test("SJ list has checkbox, visible-only select all, Hapus Terpilih, and SJ number confirm", () => {
+  test("SJ list has checkbox, visible-only select all, Batal Terpilih, and SJ number confirm", () => {
     expect(src).toMatch(/select-all-deliveries/);
     expect(src).toMatch(/delivery-checkbox-/);
-    expect(src).toMatch(/btn-hapus-terpilih/);
-    expect(src).toMatch(/Hapus Terpilih/);
-    expect(src).toMatch(/delete-confirm-modal/);
+    expect(src).toMatch(/btn-batal-terpilih/);
+    expect(src).toMatch(/Batal Terpilih/);
+    expect(src).toMatch(/batal-confirm-modal/);
     expect(src).toMatch(/sj_number/);
     expect(src).toMatch(/selectedIds\.size === deliveries\.length/);
   });
 
-  test("Pengiriman row has Hapus button with SJ business number confirmation and safe-delete wiring", () => {
-    expect(src).toMatch(/btn-delete-delivery-/);
+  test("Pengiriman row has Batal button with SJ business number confirmation and cancel wiring", () => {
+    expect(src).toMatch(/btn-batal-delivery-/);
     expect(src).toMatch(/number: d\.sj_number/);
     expect(src).toMatch(/numbers: \[d\.sj_number\]/);
     expect(src).toMatch(/api\.deleteSalesDelivery/);
     expect(src).toMatch(/handleBulkDelete\(\) : handleDelete\(deleteConfirm\.id\)/);
-    expect(src).toMatch(/delete-error/);
+    expect(src).toMatch(/batal-error|batal-success/);
     expect(src).toMatch(/loadDeliveries\(\)/);
+    expect(src).toMatch(/if \(deleteLoading\) return/);
+    expect(src).toMatch(/Tidak perlu mengisi alasan/);
   });
 
   test("renders required helper texts and read-only attributes for PO and SJ numbers", () => {

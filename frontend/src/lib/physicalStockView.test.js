@@ -6,6 +6,7 @@ import {
   mutationQtyColumns,
   openingReady,
   opnameLocationLabel,
+  opnameWarehouseChoices,
   preselectedWarehouseId,
   stockEmptyMessage,
   warehouseChoices,
@@ -56,6 +57,23 @@ describe("physical stock view helpers", () => {
     expect(warehouseChoices(warehouses, "smg")).toHaveLength(1);
     expect(warehouseChoices(warehouses, "empty")).toEqual([]);
     expect(warehouseChoices(warehouses, "").map((row) => row.id)).toEqual(["w1", "w2"]);
+  });
+
+  test("opname warehouse choices include UAT-YGY by branch id, not YGY hardcode", () => {
+    const branches = [
+      { id: "br-uat", code: "UAT-YGY", name: "Cabang UAT Adjust", active: true },
+    ];
+    const warehouses = [
+      { id: "wh-a", branch_id: "br-uat", code: "GUD-A", name: "Gudang A", active: true, is_operational: true },
+      { id: "wh-b", branch_id: "br-uat", code: "GUD-B", name: "Gudang B", active: true, is_operational: true },
+      { id: "wh-x", branch_id: "br-uat", code: "X", name: "Non-ops", active: true, is_operational: false },
+      { id: "wh-old", branch_id: "gone", code: "OLD", active: true, is_operational: true },
+    ];
+    expect(operationalOpeningWarehouses(branches, warehouses)).toEqual([]);
+    expect(opnameWarehouseChoices(branches, warehouses).map((row) => row.code)).toEqual(["GUD-A", "GUD-B"]);
+    expect(preselectedWarehouseId(opnameWarehouseChoices(branches, warehouses))).toBe("");
+    expect(warehouseLocationLabel(warehouses[0], branches)).toMatch(/UAT-YGY/);
+    expect(warehouseLocationLabel(warehouses[0], branches)).toMatch(/GUD-A/);
   });
 
   test("mutation qty maps positive to masuk and negative to keluar", () => {
