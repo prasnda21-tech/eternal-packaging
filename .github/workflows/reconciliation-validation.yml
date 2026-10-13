@@ -71,6 +71,8 @@ jobs:
           pdfplumber==0.11.10
       - name: Accounting final reconciliation audit hardening
         run: python scripts/tests/test_accounting_final_reconciliation_categories.py
+      - name: Accounting exception investigation classifiers
+        run: python scripts/tests/test_accounting_exception_investigation.py
       # Screen regressions stay in this job. The live orders comparison is
       # collected here and skips unless LIVE_ORDERS_SUMMARY=1. Finance modules
       # and the two pre-existing finance tests stay enabled.
