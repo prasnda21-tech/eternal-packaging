@@ -330,6 +330,15 @@ jobs:
         run: >-
           python -m pytest -vv -n 0 --tb=short
           tests/test_warehouse_ab_http_flow.py
+      # STATUS_CETAK demand vs R2 physical (isolated DB; needs replica set txns).
+      - name: Run STATUS_CETAK R2 demand suite (replica set)
+        working-directory: backend
+        env:
+          MONGO_URL: mongodb://127.0.0.1:27017/?replicaSet=eternal_local_rs
+          DB_NAME: eternal_packaging_test_status_cetak_r2_demand
+        run: >-
+          python -m pytest -vv -n 0 --tb=short
+          tests/test_status_cetak_r2_demand.py
 
   backend-live-orders:
     name: Backend live orders summary
