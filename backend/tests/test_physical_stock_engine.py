@@ -2774,7 +2774,13 @@ def test_confirm_delivered_stock_claim_uses_selected_sj_rows():
     window = server[start:start + 9000]
     assert "claim_selected_delivery_stock(" in window
     assert 'claim_delivery_confirmed_stock(' not in window
-    assert 'existing_order.get("line_items")' not in window
+    # R2 readiness / warnings use SJ plan ready_lines (not a full-PO claim).
+    assert "plan_confirmed_sj_stock(" in window
+    assert "lines=ready_lines if ready_lines else None" in window
+    # line_items may be read only to label warning item names — not as claim qty source.
+    if 'existing_order.get("line_items")' in window:
+        assert "item_names" in window
+        assert "_enrich_delivery_stock_warnings" in window
     assert "reject_sj_stock_qty_drift" in window
     reconcile_at = window.index("_qr_reconcile_sj_quantities_to_loaded_delivery")
     drift_at = window.index("reject_sj_stock_qty_drift")
