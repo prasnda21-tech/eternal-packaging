@@ -304,8 +304,6 @@ from quantity_rules import (
     shipment_is_delivered as _qr_shipment_is_delivered,
     reconcile_sj_quantities_to_loaded_delivery as _qr_reconcile_sj_quantities_to_loaded_delivery,
     valid_delivery_proof_count as _qr_valid_delivery_proof_count,
-    delivery_proofs_for_upload_limit as _qr_delivery_proofs_for_upload_limit,
-    MAX_PUBLIC_DELIVERY_PROOFS as _QR_MAX_PUBLIC_DELIVERY_PROOFS,
     apply_loading_increments as _qr_apply_loading_increments,
     apply_loading_confirmation as _qr_apply_loading_confirmation,
     validate_loading_match_confirmation as _qr_validate_loading_match_confirmation,
@@ -14884,7 +14882,8 @@ async def upload_delivery_proof(
 ):
     """Upload a delivery-proof photo (from driver's phone). Stores to object
     storage and references it on the PO document — never as inline binary.
-    Max 5 photos per Surat Jalan when multiple SJ exist; otherwise max 5 per PO."""
+    No business max on photo count per SJ/PO; customer tracking display cap
+    remains separate (MAX_PUBLIC_DELIVERY_PROOFS)."""
     order = await db.orders.find_one({"id": order_id}, {"_id": 0})
     if not order:
         raise HTTPException(404, "PO tidak ditemukan")
@@ -14899,15 +14898,6 @@ async def upload_delivery_proof(
     ct = (file.content_type or "").lower()
     if ct not in ("image/jpeg", "image/jpg", "image/png", "image/webp", "image/gif"):
         raise HTTPException(400, "Hanya file gambar yang diperbolehkan")
-    existing_proofs = _qr_delivery_proofs_for_upload_limit(order, selected_sh)
-    if len(existing_proofs) >= _QR_MAX_PUBLIC_DELIVERY_PROOFS:
-        grain = "Surat Jalan" if selected_sh and len([
-            sh for sh in (order.get("shipments") or []) if isinstance(sh, dict)
-        ]) > 1 else "PO"
-        raise HTTPException(
-            400,
-            f"Maksimum {_QR_MAX_PUBLIC_DELIVERY_PROOFS} foto bukti kirim per {grain} — hapus salah satu untuk mengganti",
-        )
 
     body = await file.read()
     if len(body) > 5 * 1024 * 1024:

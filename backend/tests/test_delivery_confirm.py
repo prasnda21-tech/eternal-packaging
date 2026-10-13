@@ -205,15 +205,26 @@ def test_single_sj_still_reads_untagged_proofs():
     assert [p["id"] for p in valid_delivery_proofs_for_shipment(order, order["shipments"][0])] == ["legacy"]
 
 
-def test_multi_sj_upload_limit_is_per_shipment_not_po():
-    proofs = [{"id": f"p1-{i}", "shipment_id": "demo-multisj-photo-001"} for i in range(5)]
+def test_multi_sj_proof_scope_is_per_shipment_not_po():
+    proofs = [{"id": f"p1-{i}", "shipment_id": "demo-multisj-photo-001"} for i in range(6)]
     proofs += [{"id": f"p2-{i}", "shipment_id": "demo-multisj-photo-002"} for i in range(2)]
     order = _multi_sj_photo_po(proofs)
     sj1, sj2, sj3 = order["shipments"]
-    assert len(delivery_proofs_for_upload_limit(order, sj1)) == 5
+    assert len(delivery_proofs_for_upload_limit(order, sj1)) == 6
     assert len(delivery_proofs_for_upload_limit(order, sj2)) == 2
     assert len(delivery_proofs_for_upload_limit(order, sj3)) == 0
-    assert len(delivery_proofs_for_upload_limit(order, None)) == 7
+    assert len(delivery_proofs_for_upload_limit(order, None)) == 8
+    # >5 photos on one SJ is still confirm-eligible on photo count
+    blocked = confirm_delivery_block_reason(order, sj1)
+    assert blocked is None or "foto" not in blocked.lower()
+
+
+def test_single_sj_allows_more_than_five_proofs_for_confirm():
+    order = _po(6, with_signature=True)
+    assert valid_delivery_proof_count(order) == 6
+    assert can_confirm_delivery(order) is True
+    blocked = confirm_delivery_block_reason(order, order["shipments"][0])
+    assert blocked is None or "foto" not in blocked.lower()
 
 
 def test_sibling_proof_does_not_satisfy_current_sj_confirm():
