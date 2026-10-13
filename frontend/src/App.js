@@ -83,6 +83,7 @@ const CustomerTrackingPage = lazy(() => import("./pages/CustomerTrackingPage"));
 const PublicHargaPage = lazy(() => import("./pages/PublicHargaPage"));
 const DivisionTaskPage = lazy(() => import("./pages/DivisionTaskPage"));
 const DivisionTaskIndex = lazy(() => import("./pages/DivisionTaskPage").then((mod) => ({ default: mod.DivisionTaskIndex })));
+const KepalaProduksiKpiDetailPage = lazy(() => import("./pages/KepalaProduksiKpiDetailPage"));
 const DeliverySchedulePage = lazy(() => import("./pages/DeliverySchedulePage"));
 const DeliveryScheduleRouteReviewPage = lazy(() => import("./pages/DeliveryScheduleRouteReviewPage"));
 const DeliveryReschedulePage = lazy(() => import("./pages/DeliveryReschedulePage"));
@@ -339,6 +340,7 @@ export default function App() {
             <Route path="/dashboard" element={<PermGate anyOf={[NAV_KEYS.dashboard]}><HoPDashboard /></PermGate>} />
             <Route path="/tasks" element={<DivisionTaskIndex />} />
             <Route path="/tasks/designer" element={<PermGate anyOf={[NAV_KEYS.tasksDesigner, "design.upload"]}><DivisionTaskPage /></PermGate>} />
+            <Route path="/tasks/kepala-produksi/prioritas/:kpi" element={<PermGate anyOf={[NAV_KEYS.tasksKepalaProduksi, "schedule.edit"]}><KepalaProduksiKpiDetailPage /></PermGate>} />
             <Route path="/tasks/kepala-produksi" element={<PermGate anyOf={[NAV_KEYS.tasksKepalaProduksi, "schedule.edit"]}><DivisionTaskPage /></PermGate>} />
             <Route path="/tasks/screener" element={<PermGate anyOf={[NAV_KEYS.tasksScreener, "screen.update"]}><DivisionTaskPage /></PermGate>} />
             <Route path="/tasks/helper" element={<PermGate anyOf={[NAV_KEYS.tasksHelper, "helper.prepare"]}><DivisionTaskPage /></PermGate>} />
