@@ -174,18 +174,19 @@ async def test_opening_receipt_and_delivery(db):
 
 
 @pytest.mark.anyio
-async def test_outbound_above_physical_writes_nothing(db):
+async def test_outbound_above_physical_writes_negative_book(db):
     fx = await _seed(db)
     await post_movement(db, _move(fx, qty_delta=100), actor_id="tester")
     before_ledger = await db[LEDGER_COLLECTION].count_documents({})
-    with pytest.raises(InsufficientPhysicalStockError):
-        await post_movement(
-            db,
-            _move(fx, movement_type=MOVEMENT_SALES_DELIVERY, qty_delta=-101),
-            actor_id="tester",
-        )
-    assert await db[LEDGER_COLLECTION].count_documents({}) == before_ledger
-    assert await _qty(db, fx) == 100
+    mov = await post_movement(
+        db,
+        _move(fx, movement_type=MOVEMENT_SALES_DELIVERY, qty_delta=-101),
+        actor_id="tester",
+    )
+    assert mov["balance_before"] == 100
+    assert mov["balance_after"] == -1
+    assert await db[LEDGER_COLLECTION].count_documents({}) == before_ledger + 1
+    assert await _qty(db, fx) == -1
 
 
 @pytest.mark.anyio
@@ -232,7 +233,7 @@ async def test_locations_stay_separate_and_invalid_locations_rejected(db):
 
 
 @pytest.mark.anyio
-async def test_concurrent_outbound_cannot_go_negative(db):
+async def test_concurrent_outbound_both_may_succeed_negative_book(db):
     fx = await _seed(db)
     await post_movement(db, _move(fx, qty_delta=100), actor_id="tester")
 
@@ -246,13 +247,12 @@ async def test_concurrent_outbound_cannot_go_negative(db):
     results = await asyncio.gather(outbound(-80), outbound(-50), return_exceptions=True)
     successes = [item for item in results if not isinstance(item, Exception)]
     failures = [item for item in results if isinstance(item, Exception)]
-    assert len(successes) == 1
-    assert len(failures) == 1
-    assert isinstance(failures[0], InsufficientPhysicalStockError)
+    # Shortage no longer serializes to a single winner — both postings may commit.
+    assert len(successes) >= 1
+    assert len(successes) + len(failures) == 2
     final_qty = await _qty(db, fx)
-    assert final_qty in (20, 50)
-    assert final_qty >= 0
-    assert await db[LEDGER_COLLECTION].count_documents({"movement_type": MOVEMENT_SALES_DELIVERY}) == 1
+    assert final_qty == 100 + sum(int(s["qty_delta"]) for s in successes)
+    assert await db[LEDGER_COLLECTION].count_documents({"movement_type": MOVEMENT_SALES_DELIVERY}) == len(successes)
 
 
 @pytest.mark.anyio

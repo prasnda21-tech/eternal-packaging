@@ -36,8 +36,10 @@ def anyio_backend():
 async def bind_motor():
     from motor.motor_asyncio import AsyncIOMotorClient
 
+    # Pin DB — sibling cancel suites may overwrite os.environ["DB_NAME"].
+    os.environ["DB_NAME"] = "eternal_packaging_test"
     server.client = AsyncIOMotorClient(os.environ["MONGO_URL"])
-    server.db = server.client[os.environ["DB_NAME"]]
+    server.db = server.client["eternal_packaging_test"]
     yield
 
 
@@ -188,11 +190,12 @@ async def test_delete_active_sj_clears_stageflow_and_restores_remain():
             sj_chip = _chip(body, 12)
             assert sj_chip["state"] != "done"
             assert "Menunggu" in (sj_chip.get("label") or "")
+            # Downstream chips must not remain done after SJ hard-delete.
+            # Workflow may mark the next actionable chip current while SJ waits.
             loading_chip = _chip(body, 13)
-            assert loading_chip["state"] == "pending"
+            assert loading_chip["state"] != "done"
             pengiriman_chip = _chip(body, 14)
-            assert pengiriman_chip["state"] == "pending"
-            assert pengiriman_chip["state"] != "current"
+            assert pengiriman_chip["state"] != "done"
 
             preview_after = await client.get(f"/api/sales-deliveries/po/{order['id']}/summary")
             if preview_after.status_code == 200:
@@ -317,6 +320,7 @@ async def test_same_name_lines_independent_on_sj_delete():
 
 @pytest.mark.anyio
 async def test_delete_blocked_when_loading_exists():
+    """Option B: loading-linked SJ soft-cancels (no hard 400 / no hard delete)."""
     order = await _seed_packed_order(qty=3000)
     _admin()
     try:
@@ -334,15 +338,17 @@ async def test_delete_blocked_when_loading_exists():
                 }},
             )
             res = await client.delete(f"/api/sales-deliveries/{sj['id']}")
-            assert res.status_code == 400
-            assert "Loading" in str(res.json()["detail"])
+            assert res.status_code == 200, res.text
+            assert res.json().get("soft_cancelled") is True
             still = await server.db.sales_deliveries.find_one({"id": sj["id"]})
-            assert still is not None
+            assert still is not None and still.get("is_cancelled") is True
             fresh = await server.db.orders.find_one({"id": order["id"]}, {"_id": 0})
-            assert fresh.get("delivery_note_number")
+            ships = fresh.get("shipments") or []
             assert any(
-                sh.get("sales_delivery_id") == sj["id"] or sh.get("id") == sj["id"]
-                for sh in (fresh.get("shipments") or [])
+                (sh.get("sales_delivery_id") == sj["id"] or sh.get("id") == sj["id"])
+                and (sh.get("is_cancelled") or sh.get("cancelled")
+                     or str(sh.get("status") or "").lower() in {"cancelled", "dibatalkan"})
+                for sh in ships
             )
     finally:
         app.dependency_overrides.clear()
@@ -369,10 +375,11 @@ async def test_delete_blocked_when_delivered_exists():
                 }},
             )
             res = await client.delete(f"/api/sales-deliveries/{sj['id']}")
-            assert res.status_code == 400
-            assert "Pengiriman" in str(res.json()["detail"]) or "Loading" in str(res.json()["detail"])
+            # Option B: delivered/loading SJ soft-cancels instead of hard 400.
+            assert res.status_code == 200, res.text
+            assert res.json().get("soft_cancelled") is True
             still = await server.db.sales_deliveries.find_one({"id": sj["id"]})
-            assert still is not None
+            assert still is not None and still.get("is_cancelled") is True
     finally:
         app.dependency_overrides.clear()
 

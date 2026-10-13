@@ -18,6 +18,25 @@ export function operationalOpeningWarehouses(branches, warehouses) {
   return yogyakartaWarehouses(branches, warehouses).filter(isOperationalWarehouse);
 }
 
+/**
+ * Stock Opname location choices: active + operational warehouses whose
+ * branch_id matches an active branch returned by the API (already access-scoped).
+ * Does not hardcode YGY — isolated UAT branches like UAT-YGY must appear.
+ */
+export function opnameWarehouseChoices(branches, warehouses) {
+  const activeBranchIds = new Set(
+    (Array.isArray(branches) ? branches : [])
+      .filter((row) => row?.id && row.active !== false)
+      .map((row) => row.id),
+  );
+  return (Array.isArray(warehouses) ? warehouses : []).filter((row) => (
+    Boolean(row?.id)
+    && row.active !== false
+    && isOperationalWarehouse(row)
+    && activeBranchIds.has(row.branch_id)
+  ));
+}
+
 export function goodsReceiptWarehouseChoice(branches, warehouses) {
   const rows = yogyakartaWarehouses(branches, warehouses);
   if (rows.length === 1) return { rows, warehouseId: rows[0].id, blocked: false, explicit: false };

@@ -4,8 +4,8 @@ import api from "../lib/api";
 import { formatDate } from "../lib/constants";
 import { fmtQty } from "../components/qtyUi";
 import {
-  operationalOpeningWarehouses,
   opnameLocationLabel,
+  opnameWarehouseChoices,
   preselectedWarehouseId,
   warehouseLocationLabel,
 } from "../lib/physicalStockView";
@@ -59,7 +59,7 @@ export default function StockOpname() {
   const [successNote, setSuccessNote] = useState("");
 
   const choices = useMemo(
-    () => operationalOpeningWarehouses(branches, warehouses),
+    () => opnameWarehouseChoices(branches, warehouses),
     [branches, warehouses],
   );
 
@@ -73,8 +73,12 @@ export default function StockOpname() {
         setBranches(branchRows);
         setWarehouses(warehouseRows);
         setSessions(Array.isArray(sessionRes) ? sessionRes : []);
-        const operational = operationalOpeningWarehouses(branchRows, warehouseRows);
+        const operational = opnameWarehouseChoices(branchRows, warehouseRows);
+        // Only auto-select when exactly one warehouse; OWNER picks when several.
         setWarehouseId(preselectedWarehouseId(operational));
+        if (operational.length === 0) {
+          setError("Tidak ada gudang operasional aktif pada cabang yang tersedia.");
+        }
       })
       .catch((err) => { if (!cancelled) setError(stockOpnameErrorMessage(err)); });
     return () => { cancelled = true; };

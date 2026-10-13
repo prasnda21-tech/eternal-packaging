@@ -110,12 +110,48 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
   const [savingSig, setSavingSig] = useState(false);
   const [sigPadKey, setSigPadKey] = useState(0);
   const [driverPadKey, setDriverPadKey] = useState(0);
+  const [deliveryWarehouses, setDeliveryWarehouses] = useState([]);
+  const [deliveryWarehouseId, setDeliveryWarehouseId] = useState("");
+  const [stockPreflight, setStockPreflight] = useState(null);
+  const [stockPreflightErr, setStockPreflightErr] = useState("");
+  const [stockPreflightLoading, setStockPreflightLoading] = useState(false);
 
   useEffect(() => {
     const n = order.delivery_recipient_signature?.recipient_name;
     if (n && !recipientName) setRecipientName(n);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [order.delivery_recipient_signature?.id]);
+
+  // R2 confirm-delivered requires an explicit warehouse when multiple gudang exist.
+  useEffect(() => {
+    if (!isOpen) return;
+    let cancelled = false;
+    const branchId = String(order?.branch_id || "").trim();
+    const loadWarehouses = typeof api.warehouses === "function"
+      ? api.warehouses(branchId ? { branch_id: branchId } : {})
+      : Promise.resolve({ items: [] });
+    Promise.resolve(loadWarehouses)
+      .then((res) => {
+        if (cancelled) return;
+        const rows = (res?.warehouses || res?.items || res || [])
+          .filter((w) => w && w.active !== false && w.id)
+          .map((w) => ({
+            id: String(w.id),
+            code: w.code || "",
+            name: w.name || w.code || w.id,
+            branch_id: w.branch_id || "",
+          }));
+        setDeliveryWarehouses(rows);
+        setDeliveryWarehouseId((prev) => {
+          if (prev && rows.some((r) => r.id === prev)) return prev;
+          return rows.length === 1 ? rows[0].id : "";
+        });
+      })
+      .catch(() => {
+        if (!cancelled) setDeliveryWarehouses([]);
+      });
+    return () => { cancelled = true; };
+  }, [isOpen, order?.branch_id, order?.id]);
 
   useEffect(() => {
     setStaged((prev) => {
@@ -139,6 +175,8 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
     setSigPadKey((k) => k + 1);
     setDriverPadKey((k) => k + 1);
     setRecipientName(order.delivery_recipient_signature?.recipient_name || "");
+    setStockPreflight(null);
+    setStockPreflightErr("");
   }, [selectionKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const canUpload = hasPerm("delivery.update");
@@ -154,6 +192,60 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
     : { allowed: false, loadedTotal: 0, requiredTotal: 0, lines: [] };
   const selectedDelivered = isShipmentDelivered(order, activeShipment);
   const mutationLocked = isPengirimanMutationLocked(order, activeShipment);
+
+  // Server-authoritative shortage preflight when warehouse + SJ are known.
+  useEffect(() => {
+    if (!isOpen || selectedDelivered || mutationLocked) {
+      setStockPreflight(null);
+      setStockPreflightErr("");
+      return undefined;
+    }
+    const whId = String(deliveryWarehouseId || "").trim();
+    const shipId = String(selectedShipmentKey || "").trim();
+    if (!whId || !shipId || !order?.id) {
+      setStockPreflight(null);
+      setStockPreflightErr("");
+      return undefined;
+    }
+    if (typeof api.deliveryStockPreflight !== "function") {
+      setStockPreflight(null);
+      setStockPreflightErr("");
+      return undefined;
+    }
+    let cancelled = false;
+    setStockPreflightLoading(true);
+    setStockPreflightErr("");
+    Promise.resolve(api.deliveryStockPreflight(order.id, {
+      shipment_id: shipId,
+      warehouse_id: whId,
+      branch_id: order.branch_id || undefined,
+    }))
+      .then((res) => {
+        if (cancelled) return;
+        setStockPreflight(res);
+      })
+      .catch((ex) => {
+        if (cancelled) return;
+        const det = ex?.response?.data?.detail;
+        setStockPreflight(null);
+        setStockPreflightErr(
+          typeof det === "object" ? (det.message || JSON.stringify(det)) : (det || "Gagal cek stok gudang"),
+        );
+      })
+      .finally(() => {
+        if (!cancelled) setStockPreflightLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [
+    isOpen,
+    order?.id,
+    order?.branch_id,
+    deliveryWarehouseId,
+    selectedShipmentKey,
+    selectedDelivered,
+    mutationLocked,
+  ]);
+
   const canWritePhoto = canUpload && shipmentResolved && batchPhotoReady && !mutationLocked;
   const canDelete = hasPerm("delivery.update");
   const canReschedule = hasPerm("delivery.reschedule") || hasPerm("delivery.reschedule.set_date");
@@ -409,6 +501,10 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
       setErr(blocked);
       return;
     }
+    if (deliveryWarehouses.length > 0 && !String(deliveryWarehouseId || "").trim()) {
+      setErr("Pilih gudang stok sebelum Konfirmasi Terkirim.");
+      return;
+    }
     setErr("");
     setConfirmDeliver({
       count: proofs.length,
@@ -416,6 +512,7 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
       actionId: newActionId(),
       recipientName: (recipientName || orderSig?.recipient_name || "").trim(),
       driverName: driverDisplayName,
+      warehouseId: String(deliveryWarehouseId || "").trim(),
     });
   };
 
@@ -483,10 +580,18 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
     setErr("");
     try {
       await ensureSignaturesSaved();
+      const warehouseId = String(
+        confirmDeliver.warehouseId || deliveryWarehouseId || ""
+      ).trim();
+      const selectedWh = deliveryWarehouses.find((w) => w.id === warehouseId);
       const res = await api.confirmDelivered(order.id, {
         action_id: confirmDeliver.actionId,
         shipment_id: selectedShipmentKey,
         recipient_name: (recipientName || orderSig?.recipient_name || "").trim(),
+        ...(warehouseId ? {
+          warehouse_id: warehouseId,
+          branch_id: selectedWh?.branch_id || order.branch_id || undefined,
+        } : {}),
       });
       onUpdated(res.order);
       setConfirmDeliver(null);
@@ -923,6 +1028,78 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
             </div>
           )}
 
+          {deliverButtonVisible && deliveryWarehouses.length > 0 && (
+            <label className="field" style={{ display: "block", marginTop: 12 }} data-testid="confirm-delivered-warehouse-field">
+              <span className="muted small">Gudang stok (R2)</span>
+              <select
+                value={deliveryWarehouseId}
+                onChange={(e) => setDeliveryWarehouseId(e.target.value)}
+                disabled={confirming || uploading || savingSig}
+                data-testid="confirm-delivered-warehouse"
+                style={{ display: "block", width: "100%", maxWidth: 360, marginTop: 4 }}
+              >
+                <option value="">Pilih gudang…</option>
+                {deliveryWarehouses.map((w) => (
+                  <option key={w.id} value={w.id}>
+                    {w.code ? `${w.code} — ${w.name}` : w.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          {deliverButtonVisible && stockPreflightLoading && (
+            <p className="muted small" data-testid="delivery-stock-preflight-loading">
+              Mengecek saldo buku gudang…
+            </p>
+          )}
+          {deliverButtonVisible && stockPreflightErr && (
+            <div className="signal-strip" role="status" data-testid="delivery-stock-preflight-error">
+              <div><AlertCircle size={16} /><span>{stockPreflightErr}</span></div>
+            </div>
+          )}
+          {deliverButtonVisible && stockPreflight?.r2_authority_active && Array.isArray(stockPreflight.stock_warnings) && (
+            <div
+              className={`signal-strip${stockPreflight.has_shortage_warning ? "" : " ok"}`}
+              role="status"
+              data-testid="delivery-stock-shortage-warning"
+              style={{ marginTop: 10, display: "block" }}
+            >
+              {stockPreflight.has_shortage_warning ? (
+                <>
+                  <p style={{ margin: "0 0 6px", fontWeight: 600 }}>
+                    Peringatan kekurangan stok buku (tidak memblokir pengiriman)
+                  </p>
+                  {(stockPreflight.stock_warnings || []).filter((w) => w.has_shortage).map((w) => (
+                    <div
+                      key={`${w.master_item_id}-${w.warehouse_id}`}
+                      data-testid={`delivery-stock-warning-row-${w.master_item_id}`}
+                      style={{ fontSize: 13, marginBottom: 4 }}
+                    >
+                      <div>
+                        Gudang: <strong>{w.warehouse_code ? `${w.warehouse_code} — ${w.warehouse_name}` : (w.warehouse_name || "—")}</strong>
+                      </div>
+                      <div>
+                        Saldo buku saat ini: <strong>{w.stok_tercatat}</strong>
+                        {" · "}Qty kirim: <strong>{w.kebutuhan}</strong>
+                        {" · "}Kekurangan: <strong>{w.kekurangan}</strong>
+                        {" · "}Saldo buku proyeksi: <strong>{w.projected_book}</strong>
+                      </div>
+                      {w.baseline_status === "unreconciled" && (
+                        <div className="muted small">
+                          {w.baseline_label || "Saldo awal belum direkonsiliasi"}
+                          {w.stok_tercatat_uncertain ? " — saldo belum terverifikasi" : ""}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </>
+              ) : (
+                <p style={{ margin: 0 }} data-testid="delivery-stock-sufficient">
+                  Saldo buku gudang cukup untuk qty Surat Jalan ini.
+                </p>
+              )}
+            </div>
+          )}
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 8 }}>
             {deliverButtonVisible && (
               <button
@@ -983,6 +1160,24 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
             <p className="muted small" data-testid="confirm-proof-count">Bukti Kirim: {confirmDeliver.count} foto</p>
             <p className="muted small" data-testid="confirm-recipient-name">Penerima: {confirmDeliver.recipientName}</p>
             <p className="muted small" data-testid="confirm-driver-name">Driver: {confirmDeliver.driverName || "—"}</p>
+            <p className="muted small" data-testid="confirm-warehouse-name">
+              Gudang stok:{" "}
+              {(() => {
+                const wh = deliveryWarehouses.find((w) => w.id === (confirmDeliver.warehouseId || deliveryWarehouseId));
+                return wh ? (wh.code ? `${wh.code} — ${wh.name}` : wh.name) : "—";
+              })()}
+            </p>
+            {stockPreflight?.has_shortage_warning && (
+              <div data-testid="confirm-modal-stock-warning" style={{ marginTop: 8, fontSize: 13 }}>
+                <strong>Peringatan kekurangan stok buku</strong>
+                {(stockPreflight.stock_warnings || []).filter((w) => w.has_shortage).map((w) => (
+                  <p key={w.master_item_id} className="muted small" style={{ margin: "4px 0 0" }}>
+                    {w.warehouse_code || "Gudang"}: buku {w.stok_tercatat} → kirim {w.kebutuhan}
+                    {" "}(kurang {w.kekurangan}, proyeksi {w.projected_book}). Tidak memblokir.
+                  </p>
+                ))}
+              </div>
+            )}
           </div>
         ) : null}
         busy={confirming || savingSig}

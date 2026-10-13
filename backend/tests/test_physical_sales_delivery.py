@@ -195,16 +195,22 @@ async def test_delivery_over_ready_is_rejected(db):
     assert row["qty_belum_terkirim"] == 100
 
 
-async def test_insufficient_physical_is_rejected(db):
+async def test_insufficient_physical_posts_negative_book_with_warning(db):
     item, _branch, warehouse, order = await _place(db, physical=50, ordered=100, completed=100, code="SHORT")
-    with pytest.raises(InsufficientPhysicalStockError):
-        await _deliver(db, order, 80, warehouse=warehouse, confirmation_id="short-phys")
+    result = await _deliver(db, order, 80, warehouse=warehouse, confirmation_id="short-phys")
+    assert result["movements"][0]["balance_before"] == 50
+    assert result["movements"][0]["balance_after"] == -30
+    warn = result["stock_warnings"][0]
+    assert warn["stok_tercatat"] == 50
+    assert warn["kebutuhan"] == 80
+    assert warn["kekurangan"] == 30
+    assert warn["blocks_delivery"] is False
     balance = await db[BALANCE_COLLECTION].find_one({"master_item_id": item["id"]}, {"_id": 0, "physical_qty": 1})
-    assert balance["physical_qty"] == 50
-    assert await db[LEDGER_COLLECTION].count_documents({"movement_type": MOVEMENT_SALES_DELIVERY}) == 0
-    assert await db[SALES_DELIVERY_CONFIRMATIONS].count_documents({}) == 0
+    assert balance["physical_qty"] == -30
+    assert await db[LEDGER_COLLECTION].count_documents({"movement_type": MOVEMENT_SALES_DELIVERY}) == 1
     row = await _buckets(db, "SHORT")
-    assert row["qty_belum_terkirim"] == 100
+    assert row["qty_belum_terkirim"] == 20
+    assert row["physical_qty"] == -30
 
 
 async def test_exact_physical_depletion(db):
@@ -291,21 +297,22 @@ async def test_multi_line_is_atomic(db):
         ],
     }
     await db.orders.insert_one(order)
-    with pytest.raises(InsufficientPhysicalStockError):
-        await confirm_sales_delivery(
-            db,
-            order_id=order["id"],
-            confirmation_id="multi-fail",
-            lines=[{"line_idx": 0, "qty": 100}, {"line_idx": 1, "qty": 50}],
-            actor_id="tester",
-            warehouse_id=warehouse["id"],
-        )
-    assert await db[LEDGER_COLLECTION].count_documents({"movement_type": MOVEMENT_SALES_DELIVERY}) == 0
-    assert await db[SALES_DELIVERY_CONFIRMATIONS].count_documents({}) == 0
+    # Line B only has 30 physical — still posts; book may go negative. Atomic for both lines.
+    result = await confirm_sales_delivery(
+        db,
+        order_id=order["id"],
+        confirmation_id="multi-neg",
+        lines=[{"line_idx": 0, "qty": 100}, {"line_idx": 1, "qty": 50}],
+        actor_id="tester",
+        warehouse_id=warehouse["id"],
+    )
+    assert len(result["movements"]) == 2
+    assert await db[LEDGER_COLLECTION].count_documents({"movement_type": MOVEMENT_SALES_DELIVERY}) == 2
+    assert await db[SALES_DELIVERY_CONFIRMATIONS].count_documents({}) == 1
     bal_a = await db[BALANCE_COLLECTION].find_one({"master_item_id": item_a["id"]}, {"_id": 0, "physical_qty": 1})
     bal_b = await db[BALANCE_COLLECTION].find_one({"master_item_id": item_b["id"]}, {"_id": 0, "physical_qty": 1})
-    assert bal_a["physical_qty"] == 500
-    assert bal_b["physical_qty"] == 30
+    assert bal_a["physical_qty"] == 400
+    assert bal_b["physical_qty"] == -20
 
 
 async def test_warehouse_isolation_and_explicit_choice(db):

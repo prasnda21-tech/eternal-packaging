@@ -58,6 +58,7 @@ export default function PengirimanPesanan() {
   const [deleteConfirm, setDeleteConfirm] = useState(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [deleteErr, setDeleteErr] = useState("");
+  const [deleteSuccess, setDeleteSuccess] = useState("");
 
   // Selected PO for Create Delivery Form
   const [selectedPoId, setSelectedPoId] = useState(queryPoId);
@@ -425,35 +426,56 @@ export default function PengirimanPesanan() {
     return det || "Gagal menghapus.";
   };
   const handleDelete = async (id) => {
+    if (deleteLoading) return;
     setDeleteLoading(true);
     setDeleteErr("");
+    setDeleteSuccess("");
     try {
-      await api.deleteSalesDelivery(id);
+      const result = await api.deleteSalesDelivery(id);
       setDeleteConfirm(null);
       setSelectedIds((prev) => {
         const next = new Set(prev);
         next.delete(id);
         return next;
       });
-      loadDeliveries();
+      if (result?.soft_cancelled || result?.cancelled) {
+        setDeleteSuccess(result?.message || "Surat Jalan dibatalkan. Stok dan qty pesanan telah dikoreksi.");
+      } else if (result?.deleted) {
+        setDeleteSuccess("Surat Jalan dihapus.");
+      } else {
+        setDeleteSuccess("Pembatalan berhasil.");
+      }
+      await loadDeliveries();
+      if (selectedPoId) {
+        // Refresh create-form remaining qty if user still has a PO open.
+        try {
+          const summary = await api.getPoDeliverySummary(selectedPoId);
+          setPoSummary(summary);
+        } catch (_) {
+          /* ignore summary refresh errors after cancel */
+        }
+      }
     } catch (e) {
-      setDeleteErr(formatDeleteError(e.response?.data?.detail));
+      setDeleteErr(formatDeleteError(e.response?.data?.detail) || e.message || "Gagal membatalkan.");
     } finally {
       setDeleteLoading(false);
     }
   };
 
   const handleBulkDelete = async () => {
+    if (deleteLoading) return;
     setDeleteLoading(true);
     setDeleteErr("");
+    setDeleteSuccess("");
     try {
       const ids = deleteConfirm?.ids || Array.from(selectedIds);
       await api.bulkDeleteSalesDeliveries(ids);
       setDeleteConfirm(null);
       setSelectedIds(new Set());
-      loadDeliveries();
+      setDeleteSuccess("Pembatalan massal selesai.");
+      await loadDeliveries();
     } catch (e) {
-      setDeleteErr(formatDeleteError(e.response?.data?.detail));
+      setDeleteErr(formatDeleteError(e.response?.data?.detail) || e.message || "Gagal membatalkan.");
     } finally {
       setDeleteLoading(false);
     }
@@ -498,7 +520,7 @@ export default function PengirimanPesanan() {
               <button
                 type="button"
                 className="sd-btn-danger"
-                data-testid="btn-hapus-terpilih"
+                data-testid="btn-batal-terpilih"
                 onClick={() => {
                   setDeleteErr("");
                   setDeleteConfirm({
@@ -507,7 +529,7 @@ export default function PengirimanPesanan() {
                   });
                 }}
               >
-                <Trash2 size={16} /> Hapus Terpilih ({selectedIds.size})
+                <Trash2 size={16} /> Batal Terpilih ({selectedIds.size})
               </button>
             )}
             {canCreate && (
@@ -1151,13 +1173,14 @@ export default function PengirimanPesanan() {
                               <Printer size={14} /> PDF
                             </button>
                           )}
-                          {canDelete && (
+                          {canDelete && !d.is_cancelled && String(d.status || "").toUpperCase() !== "DIBATALKAN" && (
                             <button
                               type="button"
                               className="sd-act sd-act-delete"
-                              data-testid={`btn-delete-delivery-${d.id}`}
+                              data-testid={`btn-batal-delivery-${d.id}`}
                               onClick={() => {
                                 setDeleteErr("");
+                                setDeleteSuccess("");
                                 setDeleteConfirm({
                                   id: d.id,
                                   number: d.sj_number,
@@ -1165,7 +1188,7 @@ export default function PengirimanPesanan() {
                                 });
                               }}
                             >
-                              Hapus
+                              Batal
                             </button>
                           )}
                         </div>
@@ -1443,25 +1466,34 @@ export default function PengirimanPesanan() {
         </div>
       )}
 
+      {deleteSuccess && (
+        <div data-testid="batal-success" style={{ position: "fixed", right: 16, bottom: 16, zIndex: 90, background: "#ecfdf5", color: "#065f46", border: "1px solid #6ee7b7", padding: "10px 14px", borderRadius: 10, maxWidth: 420, boxShadow: "0 8px 24px rgba(15,23,42,0.12)" }}>
+          {deleteSuccess}
+          <button type="button" onClick={() => setDeleteSuccess("")} style={{ marginLeft: 10, border: "none", background: "transparent", color: "#065f46", fontWeight: 700, cursor: "pointer" }}>Tutup</button>
+        </div>
+      )}
+
       {deleteConfirm && (
-        <div className="modal-overlay" data-testid="delete-confirm-modal" style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 80 }}>
+        <div className="modal-overlay" data-testid="batal-confirm-modal" style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 80 }}>
           <div style={{ background: "#fff", borderRadius: 12, padding: 24, width: "100%", maxWidth: 460 }}>
-            <h3 style={{ margin: "0 0 8px" }}>Hapus Surat Jalan?</h3>
-            <p style={{ margin: "0 0 12px", color: "#64748b", fontSize: "0.9rem" }}>Dokumen berikut akan dihapus:</p>
-            <ul data-testid="delete-confirm-numbers" style={{ margin: "0 0 16px", paddingLeft: 18, fontWeight: 700, color: "#0369a1" }}>
+            <h3 style={{ margin: "0 0 8px" }}>Batalkan Surat Jalan?</h3>
+            <p style={{ margin: "0 0 12px", color: "#64748b", fontSize: "0.9rem" }}>
+              Stok dan qty pesanan akan dikoreksi otomatis. Dokumen, tanda tangan, dan foto tetap tersimpan sebagai riwayat. Tidak perlu mengisi alasan.
+            </p>
+            <ul data-testid="batal-confirm-numbers" style={{ margin: "0 0 16px", paddingLeft: 18, fontWeight: 700, color: "#0369a1" }}>
               {(deleteConfirm.numbers || [deleteConfirm.number]).filter(Boolean).map((n) => <li key={n}>{n}</li>)}
             </ul>
-            {deleteErr && <div data-testid="delete-error" style={{ background: "#fef2f2", color: "#b91c1c", padding: "8px 12px", borderRadius: 8, marginBottom: 12, fontSize: "0.85rem" }}>{deleteErr}</div>}
+            {deleteErr && <div data-testid="batal-error" style={{ background: "#fef2f2", color: "#b91c1c", padding: "8px 12px", borderRadius: 8, marginBottom: 12, fontSize: "0.85rem" }}>{deleteErr}</div>}
             <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
-              <button type="button" onClick={() => { setDeleteConfirm(null); setDeleteErr(""); }} disabled={deleteLoading} style={{ padding: "8px 14px", borderRadius: 8, border: "1px solid #cbd5e1", background: "#fff" }}>Batal</button>
+              <button type="button" onClick={() => { setDeleteConfirm(null); setDeleteErr(""); }} disabled={deleteLoading} style={{ padding: "8px 14px", borderRadius: 8, border: "1px solid #cbd5e1", background: "#fff" }}>Tutup</button>
               <button
                 type="button"
-                data-testid="btn-confirm-delete"
+                data-testid="btn-confirm-batal"
                 onClick={() => (deleteConfirm.ids ? handleBulkDelete() : handleDelete(deleteConfirm.id))}
                 disabled={deleteLoading}
                 style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: "#dc2626", color: "#fff", fontWeight: 600 }}
               >
-                {deleteLoading ? "Menghapus..." : "Hapus"}
+                {deleteLoading ? "Membatalkan..." : "Batal"}
               </button>
             </div>
           </div>

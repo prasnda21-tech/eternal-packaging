@@ -70,6 +70,35 @@ PROD = {"app_env": "production", "mongo_url": "mongodb://prod.example.com:27017"
 LOCAL = {"app_env": "local", "mongo_url": "mongodb://127.0.0.1:27017"}
 
 
+async def test_local_admin_defaults_to_sole_active_branch_when_no_ygy(db):
+    """UAT-style DB: no YGY code — Stock Saat Ini must still pick the only branch."""
+    await db.branches.delete_many({})
+    await db.warehouses.delete_many({})
+    sole = {
+        "id": "br-uat-ygy",
+        "code": "UAT-YGY",
+        "name": "Cabang UAT Adjust",
+        "active": True,
+    }
+    await db.branches.insert_one(dict(sole))
+    await db.warehouses.insert_many([
+        {
+            "id": "wh-a", "branch_id": sole["id"], "code": "GUD-A",
+            "name": "Gudang A", "active": True, "is_operational": True,
+        },
+        {
+            "id": "wh-b", "branch_id": sole["id"], "code": "GUD-B",
+            "name": "Gudang B", "active": True, "is_operational": True,
+        },
+    ])
+    admin = {"id": "a-uat", "email": "uat.adjust@eternal-local.test", "role": "admin"}
+    resolved = await resolve_stock_catalog_branch_id(db, admin, None, **LOCAL)
+    assert resolved["defaulted"] is True
+    assert resolved["branch"]["id"] == sole["id"]
+    assert resolved["branch"]["code"] == "UAT-YGY"
+    assert can_switch_branches(resolved["access"]) is True
+
+
 async def test_local_admin_all_branches(db):
     admin = {"id": "a1", "email": "admin@test", "role": "admin", "is_super_admin": True}
     access = await resolve_branch_access(db, admin, **LOCAL)

@@ -71,7 +71,8 @@ describe("Sales document clickable rows + form open", () => {
     expect(pengiriman).toMatch(/delivery-detail-modal/);
     expect(pengiriman).toMatch(/delivery-checkbox-/);
     expect(pengiriman).toMatch(/btn-view-delivery-/);
-    expect(pengiriman).toMatch(/btn-delete-delivery-/);
+    // Option B: row action is soft-cancel Batal (not hard-delete).
+    expect(pengiriman).toMatch(/btn-batal-delivery-/);
     expect(pengiriman).toMatch(/po-link-/);
     expect(pengiriman).not.toMatch(/updateSalesDelivery\(/);
   });

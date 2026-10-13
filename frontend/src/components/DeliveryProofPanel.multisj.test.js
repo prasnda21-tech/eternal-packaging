@@ -16,6 +16,12 @@ jest.mock("../lib/api", () => ({
     confirmDelivered: jest.fn(),
     clearDeliveryRecipientSignature: jest.fn(),
     clearDeliveryDriverSignature: jest.fn(),
+    warehouses: jest.fn(async () => ({ items: [] })),
+    deliveryStockPreflight: jest.fn(async () => ({
+      r2_authority_active: false,
+      stock_warnings: [],
+      has_shortage_warning: false,
+    })),
   },
 }));
 

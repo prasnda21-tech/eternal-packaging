@@ -943,8 +943,11 @@ async def _confirm_once(db, doc: dict, confirmation_key: str, user: dict) -> dic
                 actor_id=actor,
                 occurred_at=occurred_at,
             )
+            # Qty-changing lines must each produce a movement. Zero-diff may also
+            # append reconcile_only audits (qty_delta=0) for unreconciled baselines.
             expected = [line for line in lines if int(line.get("difference_qty") or 0) != 0]
-            if len(movements) != len(expected):
+            qty_movements = [row for row in movements if int(row.get("qty_delta") or 0) != 0]
+            if len(qty_movements) != len(expected):
                 raise HTTPException(409, "Konfirmasi stock opname tidak lengkap.")
             if _fail_after_adjustments:
                 raise PhysicalStockAbortError("forced stock opname confirm abort")

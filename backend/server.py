@@ -6184,6 +6184,130 @@ class ConfirmDeliveredPayload(BaseModel):
     branch_id: Optional[str] = None
 
 
+class DeliveryStockPreflightPayload(BaseModel):
+    shipment_id: Optional[str] = None
+    warehouse_id: Optional[str] = None
+    branch_id: Optional[str] = None
+
+
+def _enrich_delivery_stock_warnings(
+    warnings: list,
+    *,
+    warehouse: Optional[dict] = None,
+    item_names: Optional[dict] = None,
+) -> list:
+    """Attach display fields for UI; never mutates stock."""
+    wh = warehouse if isinstance(warehouse, dict) else {}
+    names = item_names if isinstance(item_names, dict) else {}
+    out = []
+    for row in warnings or []:
+        if not isinstance(row, dict):
+            continue
+        book = int(row.get("stok_tercatat") or 0)
+        need = int(row.get("kebutuhan") or 0)
+        shortage = int(row.get("kekurangan") or 0)
+        mid = str(row.get("master_item_id") or "")
+        enriched = dict(row)
+        enriched["warehouse_id"] = wh.get("id")
+        enriched["warehouse_code"] = wh.get("code") or ""
+        enriched["warehouse_name"] = wh.get("name") or wh.get("code") or ""
+        enriched["item_name"] = names.get(mid) or ""
+        enriched["projected_book"] = book - need
+        enriched["has_shortage"] = shortage > 0 or bool(row.get("stok_tercatat_uncertain"))
+        out.append(enriched)
+    return out
+
+
+@api_router.post("/orders/{order_id}/delivery-stock-preflight")
+async def delivery_stock_preflight(
+    order_id: str,
+    payload: DeliveryStockPreflightPayload,
+    user=Depends(current_user),
+):
+    """Read-only R2 shortage preflight before Konfirmasi Terkirim.
+
+    Never posts ledger/balance movements. Shortage warns; identity errors still 400.
+    R2 OFF returns r2_authority_active=false without fabricating warehouse warnings.
+    """
+    await _require_perm(user, "delivery.update")
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(404, "PO tidak ditemukan")
+    from services.r2_go_live import is_r2_authority_active as _is_r2_authority_active
+    r2_on = await _is_r2_authority_active(db)
+    if not r2_on:
+        return {
+            "r2_authority_active": False,
+            "blocks_delivery": False,
+            "stock_warnings": [],
+            "warehouse_id": None,
+            "branch_id": None,
+            "message": "Mode R2 nonaktif — preflight kekurangan gudang tidak berlaku.",
+        }
+    from services.physical_stock import (
+        PhysicalStockNotFoundError,
+        PhysicalStockValidationError,
+        require_r2_delivery_stock_ready,
+    )
+    from quantity_rules import resolve_delivery_shipment
+    from services.physical_stock_engine import plan_confirmed_sj_stock
+    shipment_id = str(payload.shipment_id or "").strip() or None
+    shipment, resolve_err = resolve_delivery_shipment(order, shipment_id)
+    if resolve_err:
+        raise HTTPException(400, resolve_err)
+    plan = plan_confirmed_sj_stock(order, shipment, allow_delivered=False)
+    if isinstance(plan, dict) and plan.get("error"):
+        raise HTTPException(400, plan["error"])
+    if isinstance(plan, dict) and plan.get("skip"):
+        return {
+            "r2_authority_active": True,
+            "blocks_delivery": False,
+            "stock_warnings": [],
+            "warehouse_id": str(payload.warehouse_id or "").strip() or None,
+            "branch_id": str(payload.branch_id or "").strip() or None,
+            "message": "Surat Jalan sudah terkirim — preflight dilewati.",
+        }
+    ready_lines = (plan or {}).get("lines") if isinstance(plan, dict) else None
+    try:
+        branch_id, warehouse_id, warnings = await require_r2_delivery_stock_ready(
+            db,
+            order,
+            warehouse_id=payload.warehouse_id,
+            branch_id=payload.branch_id,
+            lines=ready_lines if ready_lines else None,
+        )
+    except PhysicalStockValidationError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except PhysicalStockNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    warehouse = await db.warehouses.find_one(
+        {"id": warehouse_id},
+        {"_id": 0, "id": 1, "code": 1, "name": 1, "branch_id": 1},
+    )
+    item_names = {}
+    for ln in (ready_lines or []):
+        mid = str((ln or {}).get("master_item_id") or "")
+        if mid and mid not in item_names:
+            for oli in (order.get("line_items") or []):
+                if str(oli.get("master_item_id") or "") == mid:
+                    item_names[mid] = oli.get("name") or oli.get("item_code") or ""
+                    break
+    enriched = _enrich_delivery_stock_warnings(
+        warnings, warehouse=warehouse, item_names=item_names,
+    )
+    return {
+        "r2_authority_active": True,
+        "blocks_delivery": False,
+        "stock_warnings": enriched,
+        "has_shortage_warning": any(w.get("has_shortage") for w in enriched),
+        "warehouse_id": warehouse_id,
+        "warehouse_code": (warehouse or {}).get("code"),
+        "warehouse_name": (warehouse or {}).get("name"),
+        "branch_id": branch_id,
+        "lines": ready_lines or [],
+    }
+
+
 @api_router.post("/orders/{order_id}/confirm-delivered")
 async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPayload] = None, view: Optional[str] = None, user=Depends(current_user)):
     """Explicit Konfirmasi Terkirim after >= 2 bukti kirim + recipient name + e-signature.
@@ -6220,12 +6344,77 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
     frozen_sig_holder = {"sig": None, "driver_sig": None}
     conf_holder = {}
     reconcile_holder = {"result": None}
+    r2_stock_warnings_holder = {"warnings": [], "warehouse_id": None, "branch_id": None}
 
     from services.physical_stock import order_has_r2_balance as _order_has_r2_balance
-    uses_r2_stock = bool(existing_order) and await _order_has_r2_balance(db, existing_order)
+    from services.r2_go_live import is_r2_authority_active as _is_r2_authority_active
+    r2_authority_on = await _is_r2_authority_active(db)
+    # R2 ON: always R2 path — never fall back to PSS because balances are missing.
+    # R2 OFF: keep existing optional R2 path when balances already exist.
+    if r2_authority_on:
+        uses_r2_stock = bool(existing_order)
+    else:
+        uses_r2_stock = bool(existing_order) and await _order_has_r2_balance(db, existing_order)
     r2_request = {}
 
     try:
+        if r2_authority_on and existing_order and op.get("ready"):
+            from services.physical_stock import (
+                PhysicalStockNotFoundError,
+                PhysicalStockValidationError,
+                require_r2_delivery_stock_ready,
+            )
+            from quantity_rules import resolve_delivery_shipment
+            from services.physical_stock_engine import plan_confirmed_sj_stock
+            shipment_for_ready, resolve_err = resolve_delivery_shipment(
+                existing_order, selected_shipment_id,
+            )
+            if resolve_err:
+                raise HTTPException(400, resolve_err)
+            plan_ready = plan_confirmed_sj_stock(
+                existing_order, shipment_for_ready, allow_delivered=False,
+            )
+            if isinstance(plan_ready, dict) and plan_ready.get("error"):
+                raise HTTPException(400, plan_ready["error"])
+            if not (isinstance(plan_ready, dict) and plan_ready.get("skip")):
+                ready_lines = (plan_ready or {}).get("lines") if isinstance(plan_ready, dict) else None
+                try:
+                    # Identity/location only — shortage or missing baseline warns, never blocks.
+                    _br, _wh, _warns = await require_r2_delivery_stock_ready(
+                        db,
+                        existing_order,
+                        warehouse_id=(payload.warehouse_id if payload else None),
+                        branch_id=(payload.branch_id if payload else None),
+                        lines=ready_lines if ready_lines else None,
+                    )
+                    wh_doc = await db.warehouses.find_one(
+                        {"id": _wh}, {"_id": 0, "id": 1, "code": 1, "name": 1},
+                    )
+                    item_names = {
+                        str(ln.get("master_item_id") or ""): (
+                            next(
+                                (
+                                    oli.get("name") or oli.get("item_code") or ""
+                                    for oli in (existing_order.get("line_items") or [])
+                                    if str(oli.get("master_item_id") or "")
+                                    == str(ln.get("master_item_id") or "")
+                                ),
+                                "",
+                            )
+                        )
+                        for ln in (ready_lines or [])
+                        if isinstance(ln, dict)
+                    }
+                    r2_stock_warnings_holder["warnings"] = _enrich_delivery_stock_warnings(
+                        _warns, warehouse=wh_doc, item_names=item_names,
+                    )
+                    r2_stock_warnings_holder["warehouse_id"] = _wh
+                    r2_stock_warnings_holder["branch_id"] = _br
+                except PhysicalStockValidationError as exc:
+                    raise HTTPException(400, str(exc)) from exc
+                except PhysicalStockNotFoundError as exc:
+                    raise HTTPException(404, str(exc)) from exc
+
         if existing_order and op.get("ready") and not uses_r2_stock:
             claimed_stock = await claim_selected_delivery_stock(
                 db, existing_order, selected_shipment_id, action_id, user, claim_plan_holder,
@@ -6471,7 +6660,8 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
         if claimed_stock and (conf_holder.get("conf") or recorded):
             from services.physical_stock_engine import finalize_delivery_confirmed_stock
             await finalize_delivery_confirmed_stock(db, claimed_stock, user)
-    elif conf_holder.get("conf"):
+    elif conf_holder.get("conf") and not uses_r2_stock:
+        # R2 path already posted SALES_DELIVERY in-txn; never dual-write PSS.
         from services.physical_stock_engine import handle_delivery_confirmed
         await handle_delivery_confirmed(db, order, conf_holder["conf"], user)
     # Generate signed SJ after persist — document rendering only (no qty mutation)
@@ -6519,7 +6709,15 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
             logging.getLogger(__name__).warning("route stop progress update failed", exc_info=True)
     if isinstance(order, dict):
         order.pop("delivery_confirm_fence", None)
-    return {"order": _public_saved_order(order, view)}
+    result = {"order": _public_saved_order(order, view)}
+    if r2_authority_on:
+        result["stock_warnings"] = list(r2_stock_warnings_holder.get("warnings") or [])
+        result["has_shortage_warning"] = any(
+            w.get("has_shortage") for w in result["stock_warnings"]
+        )
+        result["warehouse_id"] = r2_stock_warnings_holder.get("warehouse_id")
+        result["branch_id"] = r2_stock_warnings_holder.get("branch_id")
+    return result
 
 
 class DeliveryRecipientSignaturePayload(BaseModel):
@@ -12780,47 +12978,94 @@ async def bulk_delete_sales_invoices_endpoint(payload: BulkPayload, user=Depends
 
 @api_router.delete("/sales-deliveries/{id}")
 async def delete_sales_delivery_endpoint(id: str, user=Depends(current_user)):
-    """Delete a single sales delivery (Surat Jalan) with dependency safety."""
+    """Cancel or delete a sales delivery (Surat Jalan).
+
+    Option B: TERKIRIM / Loading / proof-linked SJ → soft-cancel + R2 REVERSAL
+    + order qty/status reconcile (no reason required). Draft SJ without delivery
+    evidence remains hard-deletable.
+    """
     await _require_any_perm(user, "sales.delivery.delete", "sales.delivery.create", "po.edit")
     delivery = await db.sales_deliveries.find_one({"id": str(id)}, {"_id": 0})
     if not delivery:
         raise HTTPException(404, "Pengiriman Pesanan tidak ditemukan.")
-    from services.physical_stock import reverse_r2_deliveries_for_sales_delivery
-    r2_reverse = await reverse_r2_deliveries_for_sales_delivery(
-        db,
-        delivery,
-        actor_id=str(user.get("id") or user.get("email") or "user"),
-        reason="Pembatalan Surat Jalan",
+    from services.physical_stock import (
+        PhysicalStockAbortError,
+        PhysicalStockConflictError,
+        PhysicalStockNotFoundError,
+        PhysicalStockUnavailableError,
+        PhysicalStockValidationError,
+        _r2_confirmation_ids_for_sales_delivery,
+        cancel_sales_delivery_document,
+        reverse_r2_deliveries_for_sales_delivery,
     )
     blocker = await _sales_delivery_delete_blocker(delivery)
-    if blocker:
-        if r2_reverse.get("reversed_confirmations"):
-            await db.sales_deliveries.update_one(
-                {"id": delivery["id"]},
-                {"$set": {
-                    "is_cancelled": True,
-                    "cancelled_at": now_iso(),
-                    "cancel_reason": "R2 delivery reversed; SJ soft-cancelled",
-                    "r2_reversal": r2_reverse,
-                    "updated_at": now_iso(),
-                }},
+    already_cancelled = bool(
+        delivery.get("is_cancelled")
+        or str(delivery.get("status") or "").strip().upper() in {"DIBATALKAN", "CANCELLED", "DELETED"}
+    )
+    r2_ids = await _r2_confirmation_ids_for_sales_delivery(db, delivery)
+    needs_soft_cancel = bool(blocker or already_cancelled or r2_ids)
+    actor_id = str(user.get("id") or user.get("email") or "user")
+
+    if needs_soft_cancel:
+        try:
+            result = await cancel_sales_delivery_document(
+                db,
+                delivery,
+                actor_id=actor_id,
+                reason="Pembatalan Surat Jalan",
             )
-            await _write_audit(
-                action="sales.delivery.r2_reverse_soft_cancel",
-                actor=user,
-                target_email=f"delivery:{delivery.get('sj_number', delivery['id'])}",
-                before={"id": delivery["id"]},
-                after={"r2_reversal": r2_reverse, "soft_cancelled": True},
-            )
-            return {
-                "deleted": False,
+        except PhysicalStockNotFoundError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except PhysicalStockAbortError as exc:
+            raise HTTPException(503, "Pembatalan stok gagal; dokumen tidak diubah.") from exc
+        except PhysicalStockUnavailableError as exc:
+            raise HTTPException(503, str(exc)) from exc
+        except (PhysicalStockValidationError, PhysicalStockConflictError) as exc:
+            raise HTTPException(400, str(exc)) from exc
+        await _write_audit(
+            action="sales.delivery.cancel",
+            actor=user,
+            target_email=f"delivery:{result.get('sj_number', delivery.get('id'))}",
+            before={"id": delivery["id"], "is_cancelled": delivery.get("is_cancelled")},
+            after={
                 "soft_cancelled": True,
-                "sj_number": delivery.get("sj_number", delivery["id"]),
-                "id": delivery["id"],
-                "r2_reversal": r2_reverse,
-                "blocker": blocker,
-            }
-        raise HTTPException(400, blocker)
+                "replayed": result.get("replayed"),
+                "r2_reversal": result.get("r2_reversal"),
+                "qty_delivered": result.get("qty_delivered"),
+                "delivery_status": result.get("delivery_status"),
+            },
+        )
+        return {
+            "deleted": False,
+            "soft_cancelled": True,
+            "cancelled": True,
+            "replayed": bool(result.get("replayed")),
+            "sj_number": result.get("sj_number"),
+            "id": result.get("id"),
+            "status": "DIBATALKAN",
+            "r2_reversal": result.get("r2_reversal"),
+            "order_id": result.get("order_id"),
+            "qty_delivered": result.get("qty_delivered"),
+            "delivery_status": result.get("delivery_status"),
+            "current_stage": result.get("current_stage"),
+            "message": "Surat Jalan dibatalkan. Stok dan qty pesanan telah dikoreksi.",
+        }
+
+    # Draft SJ — no delivery evidence: hard delete (legacy).
+    try:
+        r2_reverse = await reverse_r2_deliveries_for_sales_delivery(
+            db,
+            delivery,
+            actor_id=actor_id,
+            reason="Pembatalan Surat Jalan",
+        )
+    except PhysicalStockAbortError as exc:
+        raise HTTPException(503, "Pembatalan stok gagal; dokumen tidak diubah.") from exc
+    except PhysicalStockUnavailableError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    except (PhysicalStockValidationError, PhysicalStockConflictError) as exc:
+        raise HTTPException(400, str(exc)) from exc
     sj_number = delivery.get("sj_number", delivery["id"])
     await db.sales_deliveries.delete_one({"id": delivery["id"]})
     await _remove_matching_business_sj_shipment(delivery.get("po_id"), delivery)
