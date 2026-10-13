@@ -36,6 +36,44 @@ export function warehouseChoices(warehouses, branchId) {
   return rows.filter((row) => row.branch_id === branchId);
 }
 
+/** Cabang + kode/nama gudang when location choice is ambiguous. Uses IDs via branch map. */
+export function warehouseLocationLabel(warehouse, branches) {
+  if (!warehouse) return "";
+  const whCode = String(warehouse.code || "").trim();
+  const whName = String(warehouse.name || "").trim();
+  const whPart = whCode && whName && whCode !== whName
+    ? `${whCode} — ${whName}`
+    : (whName || whCode || String(warehouse.id || "").trim());
+  const branchRows = Array.isArray(branches) ? branches : [];
+  const branch = branchRows.find((row) => row?.id === warehouse.branch_id)
+    || (warehouse.branch_code || warehouse.branch_name
+      ? { code: warehouse.branch_code, name: warehouse.branch_name }
+      : null);
+  if (!branch) return whPart;
+  const brCode = String(branch.code || "").trim();
+  const brName = String(branch.name || "").trim();
+  const brPart = brCode || brName;
+  if (!brPart) return whPart;
+  if (brName && brCode && brName !== brCode) return `${brCode} (${brName}) · ${whPart}`;
+  return `${brPart} · ${whPart}`;
+}
+
+/** Session/history rows already carry branch_* and warehouse_* denormalized fields. */
+export function opnameLocationLabel(row) {
+  if (!row) return "";
+  return warehouseLocationLabel(
+    {
+      id: row.warehouse_id,
+      code: row.warehouse_code,
+      name: row.warehouse_name,
+      branch_id: row.branch_id,
+      branch_code: row.branch_code,
+      branch_name: row.branch_name,
+    },
+    [],
+  );
+}
+
 export function mutationQtyColumns(qtyDelta) {
   const qty = Number(qtyDelta);
   if (!Number.isFinite(qty) || qty === 0) return { masuk: null, keluar: null };

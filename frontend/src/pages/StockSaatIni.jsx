@@ -6,7 +6,16 @@ import { useAuth } from "../lib/auth";
 import { formatDate } from "../lib/constants";
 import { fmtQty } from "../components/qtyUi";
 import { useDebouncedLiveSearch, liveSearchTableView } from "../hooks/useDebouncedLiveSearch";
-import { isOperationalWarehouse, openingReady, operationalOpeningWarehouses, preselectedWarehouseId, stockEmptyMessage, warehouseChoices, yogyakartaWarehouses } from "../lib/physicalStockView";
+import {
+  isOperationalWarehouse,
+  openingReady,
+  operationalOpeningWarehouses,
+  preselectedWarehouseId,
+  stockEmptyMessage,
+  warehouseChoices,
+  warehouseLocationLabel,
+  yogyakartaWarehouses,
+} from "../lib/physicalStockView";
 import BranchScopeSelect from "../components/BranchScopeSelect";
 
 const INLINE_ADJUST_REASON = "Koreksi manual dari Stock Saat Ini";
@@ -157,8 +166,9 @@ export default function StockSaatIni() {
     readMode,
   });
 
+  const physicalHeader = r2Active ? "Stock Fisik" : "Stock Fisik (perusahaan)";
   const download = () => {
-    const header = ["Kode", "Nama Barang", "Satuan Dasar", "Stock Fisik", "Qty Pesanan", "Qty Belum Terkirim", "Qty Tersedia", "Terakhir Update"];
+    const header = ["Kode", "Nama Barang", "Satuan Dasar", physicalHeader, "Qty Pesanan", "Qty Belum Terkirim", "Qty Tersedia", "Terakhir Update"];
     const lines = [header.join(",")];
     items.forEach((row) => {
       const cells = [
@@ -194,14 +204,14 @@ export default function StockSaatIni() {
           {data && (
             <p className="muted small" data-testid="stock-read-mode">
               {r2Active
-                ? "Mode R2 aktif — sumber stok fisik: physical_stock_balances per cabang."
-                : "Mode kompatibilitas pra-cutover — stok fisik legacy digabung perusahaan (product_stock_state, baca saja); belum dipisah per cabang."}
+                ? "Mode R2 aktif — sumber stok fisik: physical_stock_balances per cabang/gudang (bukan gabungan semua gudang)."
+                : "Mode kompatibilitas pra-cutover — stok fisik legacy digabung perusahaan (product_stock_state, baca saja); bukan saldo per gudang."}
             </p>
           )}
           {data && !r2Active && (
             <p className="muted small" data-testid="stock-compat-branch-note">
               {data.physical_qty_note
-                || "Filter cabang tidak mengubah qty fisik legacy. Qty pesanan / belum terkirim tetap dari sumber kompatibilitas perusahaan."}
+                || "Angka di kolom Stock Fisik (perusahaan) adalah gabungan legacy company-wide — jangan dibaca sebagai saldo gudang. Filter cabang tidak mengubah qty fisik legacy. Opname/adjustment memakai saldo R2 per gudang setelah cutover."}
             </p>
           )}
         </div>
@@ -281,7 +291,16 @@ export default function StockSaatIni() {
               <th className="col-fit">Kode</th>
               <th className="col-text">Nama Barang</th>
               <th className="col-fit">Satuan Dasar</th>
-              <th className="col-fit num">Stock Fisik</th>
+              <th
+                className="col-fit num"
+                data-testid="stock-physical-header"
+                data-physical-scope={r2Active ? "BRANCH_WAREHOUSE" : "COMPANY"}
+                title={r2Active
+                  ? "Saldo fisik R2 pada cabang/gudang terpilih"
+                  : "Legacy company-wide — bukan saldo per gudang"}
+              >
+                {physicalHeader}
+              </th>
               <th className="col-fit num">Qty Pesanan</th>
               <th className="col-fit num">Qty Belum Terkirim</th>
               <th className="col-fit num">Qty Tersedia</th>
@@ -359,6 +378,7 @@ export default function StockSaatIni() {
       {adjustItem && adjustWarehouses.length > 1 && (
         <PhysicalAdjustModal
           item={adjustItem}
+          branches={branches}
           warehouses={adjustWarehouses}
           onClose={() => setAdjustItem(null)}
           onSaved={load}
@@ -426,7 +446,7 @@ function InlinePhysicalEditor({ item, saving, onCancel, onSave }) {
   );
 }
 
-function PhysicalAdjustModal({ item, warehouses, onClose, onSaved }) {
+function PhysicalAdjustModal({ item, branches = [], warehouses, onClose, onSaved }) {
   const [warehouseId, setWarehouseId] = useState(() => preselectedWarehouseId(warehouses));
   const [currentQty, setCurrentQty] = useState(null);
   const [target, setTarget] = useState("");
@@ -495,7 +515,7 @@ function PhysicalAdjustModal({ item, warehouses, onClose, onSaved }) {
           <select value={warehouseId} onChange={(e) => setWarehouseId(e.target.value)} data-testid="stock-adjust-warehouse">
             <option value="">Pilih gudang</option>
             {warehouses.map((row) => (
-              <option key={row.id} value={row.id}>{row.code} — {row.name}</option>
+              <option key={row.id} value={row.id}>{warehouseLocationLabel(row, branches)}</option>
             ))}
           </select>
         </label>
@@ -681,7 +701,7 @@ function SaldoAwalModal({ canSubmit, branches, warehouses, onClose, onSaved }) {
             <select value={templateWarehouseId} onChange={(e) => setTemplateWarehouseId(e.target.value)} data-testid="opening-import-warehouse">
               <option value="">Pilih gudang</option>
               {templateWarehouses.map((row) => (
-                <option key={row.id} value={row.id}>{row.name || row.code}</option>
+                <option key={row.id} value={row.id}>{warehouseLocationLabel(row, branches)}</option>
               ))}
             </select>
           </label>
@@ -759,7 +779,7 @@ function SaldoAwalModal({ canSubmit, branches, warehouses, onClose, onSaved }) {
           <select value={warehouseId} onChange={(e) => setWarehouseId(e.target.value)} data-testid="saldo-awal-warehouse" disabled={established}>
             <option value="">Pilih gudang</option>
             {options.map((row) => (
-              <option key={row.id} value={row.id}>{row.code} — {row.name}</option>
+              <option key={row.id} value={row.id}>{warehouseLocationLabel(row, branches)}</option>
             ))}
           </select>
         </label>

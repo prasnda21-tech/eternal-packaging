@@ -3,7 +3,12 @@ import { Link } from "react-router-dom";
 import api from "../lib/api";
 import { formatDate } from "../lib/constants";
 import { fmtQty } from "../components/qtyUi";
-import { operationalOpeningWarehouses, preselectedWarehouseId } from "../lib/physicalStockView";
+import {
+  operationalOpeningWarehouses,
+  opnameLocationLabel,
+  preselectedWarehouseId,
+  warehouseLocationLabel,
+} from "../lib/physicalStockView";
 import {
   STOCK_OPNAME_TZ_LABEL,
   formatWibDateTime,
@@ -324,7 +329,7 @@ export default function StockOpname() {
             >
               <option value="">Pilih gudang</option>
               {choices.map((row) => (
-                <option key={row.id} value={row.id}>{row.name || row.code}</option>
+                <option key={row.id} value={row.id}>{warehouseLocationLabel(row, branches)}</option>
               ))}
             </select>
           </label>
@@ -352,7 +357,7 @@ export default function StockOpname() {
         <section data-testid="stock-opname-session">
           <p data-testid="opname-status">Status: {statusLabel(session.status)}</p>
           <p data-testid="opname-mode">Mode: {modeLabel(mode)}</p>
-          <p data-testid="opname-warehouse-name">Gudang: {session.warehouse_name || session.warehouse_code}</p>
+          <p data-testid="opname-warehouse-name">Lokasi: {opnameLocationLabel(session)}</p>
           <p data-testid="opname-cutoff">Tanggal Cutoff: {session.cutoff_at ? formatDate(session.cutoff_at) : "-"}</p>
           <p data-testid="opname-item-count">Jumlah Barang: {session.item_count ?? lines.length}</p>
           <p data-testid="opname-number">Nomor: {session.opname_number}</p>
@@ -546,7 +551,7 @@ export default function StockOpname() {
           <thead>
             <tr>
               <th>Nomor / Session</th>
-              <th>Gudang</th>
+              <th>Lokasi</th>
               <th>Mode</th>
               <th>Tanggal Cutoff</th>
               <th>Status</th>
@@ -559,7 +564,7 @@ export default function StockOpname() {
             {sessions.map((row) => (
               <tr key={row.id} data-testid={`opname-history-${row.opname_number}`}>
                 <td>{row.opname_number}</td>
-                <td>{row.warehouse_name || row.warehouse_code}</td>
+                <td data-testid={`opname-history-location-${row.opname_number}`}>{opnameLocationLabel(row)}</td>
                 <td>{modeLabel(sessionMode(row))}</td>
                 <td>{row.cutoff_at ? formatDate(row.cutoff_at) : "-"}</td>
                 <td>{statusLabel(row.status)}</td>
