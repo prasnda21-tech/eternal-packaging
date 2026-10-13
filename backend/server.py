@@ -6217,6 +6217,7 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
             if not (isinstance(plan_ready, dict) and plan_ready.get("skip")):
                 ready_lines = (plan_ready or {}).get("lines") if isinstance(plan_ready, dict) else None
                 try:
+                    # Identity/location only — shortage or missing baseline warns, never blocks.
                     await require_r2_delivery_stock_ready(
                         db,
                         existing_order,

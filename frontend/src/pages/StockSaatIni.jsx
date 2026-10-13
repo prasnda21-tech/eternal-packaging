@@ -214,6 +214,20 @@ export default function StockSaatIni() {
                 || "Angka di kolom Stock Fisik (perusahaan) adalah gabungan legacy company-wide — jangan dibaca sebagai saldo gudang. Filter cabang tidak mengubah qty fisik legacy. Opname/adjustment memakai saldo R2 per gudang setelah cutover."}
             </p>
           )}
+          {data && !r2Active && (
+            <p className="muted small" data-testid="stock-adjust-blocked-reason">
+              Koreksi/Saldo Awal R2 dan Stock Opname R2 memerlukan r2_authority_active.
+              Preview utama masih mode kompatibilitas (R2 OFF) — endpoint adjustment
+              menolak dengan 409 sampai cutover. Qty tersedia negatif tidak memblokir pesanan.
+            </p>
+          )}
+          {data && r2Active && (
+            <p className="muted small" data-testid="stock-book-vs-count-note">
+              Kolom Stock Fisik adalah saldo buku R2 (boleh negatif). Hasil hitung fisik aktual
+              dicatat lewat Stock Opname (≥ 0). Status “Saldo awal belum direkonsiliasi” berarti
+              belum ada opening/opname — bukan klaim fisik nol.
+            </p>
+          )}
         </div>
         <div className="stock-heading-actions">
           <button
@@ -339,6 +353,16 @@ export default function StockSaatIni() {
                       {fmtQty(it.physical_qty)}
                     </button>
                   ) : fmtQty(it.physical_qty)}
+                  {it.baseline_status === "unreconciled" && (
+                    <div className="muted small" data-testid={`stock-baseline-${it.master_item_id}`}>
+                      {it.baseline_label || "Saldo awal belum direkonsiliasi"}
+                    </div>
+                  )}
+                  {it.saldo_buku_negatif && (
+                    <div className="muted small" data-testid={`stock-book-negative-${it.master_item_id}`}>
+                      Saldo buku negatif (bukan hasil hitung fisik)
+                    </div>
+                  )}
                 </td>
                 <td className="col-fit num mono" data-testid={`stock-order-${it.master_item_id}`}>{fmtQty(it.qty_pesanan)}</td>
                 <td
@@ -350,7 +374,13 @@ export default function StockSaatIni() {
                     ? "Cutover pending"
                     : fmtQty(it.qty_belum_terkirim)}
                 </td>
-                <td className="col-fit num mono" data-testid={`stock-available-${it.master_item_id}`}>{fmtQty(it.qty_tersedia)}</td>
+                <td
+                  className="col-fit num mono"
+                  data-testid={`stock-available-${it.master_item_id}`}
+                  title={Number(it.qty_tersedia) < 0 ? "Kebutuhan stok (informasi) — tidak memblokir pesanan" : undefined}
+                >
+                  {fmtQty(it.qty_tersedia)}
+                </td>
                 <td className="col-fit small nowrap">{it.updated_at ? formatDate(it.updated_at) : "—"}</td>
               </tr>
             ))}

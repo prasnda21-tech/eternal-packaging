@@ -296,10 +296,10 @@ async def test_r2_on_delivery_25_once_no_pss_parallel_other_wh_intact(db):
     assert {name: await db[name].count_documents({}) for name in LEGACY} == legacy_before
 
 
-async def test_r2_unreadiness_rejects_without_fallback(db):
+async def test_r2_missing_baseline_warns_not_blocked_no_pss_fallback(db):
     item, branch, wh_a, wh_b = await _seed_locations(db)
     await set_r2_authority_active(db, active=True)
-    # Only WH-B has balance; WH-A missing (not zero).
+    # Only WH-B has balance; WH-A missing baseline (not a reconciled zero).
     await post_opening_balance(
         db, item["id"],
         {
@@ -314,33 +314,34 @@ async def test_r2_unreadiness_rejects_without_fallback(db):
     order = _order(item)
     await db.orders.insert_one(dict(order))
 
-    with pytest.raises(PhysicalStockValidationError, match="belum tersedia"):
-        await require_r2_delivery_stock_ready(
-            db, order, warehouse_id=wh_a["id"], branch_id=branch["id"],
-        )
     with pytest.raises(PhysicalStockValidationError, match="Pilih gudang"):
         await require_r2_delivery_stock_ready(
             db, order, warehouse_id=None, branch_id=branch["id"],
         )
-    # Zero balance is ready (valid); outbound may still fail insufficient later.
-    await post_opening_balance(
-        db, item["id"],
-        {
-            "branch_id": branch["id"],
-            "warehouse_id": wh_a["id"],
-            "physical_qty": 0,
-            "reason": "open-zero",
-            "idempotency_key": f"open-a-zero-{item['id']}",
-        },
-        actor_id="t",
-    )
-    br, wh = await require_r2_delivery_stock_ready(
+    br, wh, warnings = await require_r2_delivery_stock_ready(
         db, order, warehouse_id=wh_a["id"], branch_id=branch["id"],
+        lines=[{"master_item_id": item["id"], "qty": 5}],
     )
     assert br == branch["id"] and wh == wh_a["id"]
-    assert (await get_balance(db, item["id"], branch["id"], wh_a["id"]))["physical_qty"] == 0
+    assert warnings[0]["baseline_status"] == "unreconciled"
+    assert warnings[0]["blocks_delivery"] is False
+    assert warnings[0].get("stok_tercatat_uncertain") is True
+
+    # Delivery succeeds without inventing OPENING; book goes negative; WH-B intact.
+    result = await confirm_sales_delivery(
+        db,
+        order_id=order["id"],
+        confirmation_id="miss-base-1",
+        lines=[{"line_idx": 0, "qty": 5}],
+        actor_id="tester",
+        warehouse_id=wh_a["id"],
+        branch_id=branch["id"],
+    )
+    assert result["movements"][0]["balance_after"] == -5
+    assert (result["movements"][0].get("metadata") or {}).get("baseline_status") == "unreconciled"
+    assert (await get_balance(db, item["id"], branch["id"], wh_a["id"]))["baseline_status"] == "unreconciled"
     assert (await get_balance(db, item["id"], branch["id"], wh_b["id"]))["physical_qty"] == 500
-    doc = await db.orders.find_one({"id": order["id"]}, {"_id": 0})
-    assert int(doc.get("qty_delivered") or 0) == 0
-    assert await db[LEDGER_COLLECTION].count_documents({"movement_type": MOVEMENT_SALES_DELIVERY}) == 0
-    assert await db[BALANCE_COLLECTION].count_documents({"warehouse_id": wh_a["id"]}) == 1
+    assert await db[LEDGER_COLLECTION].count_documents({
+        "warehouse_id": wh_a["id"], "movement_type": "OPENING_BALANCE",
+    }) == 0
+    assert await should_claim_delivery_confirmed_stock(db, order) is False

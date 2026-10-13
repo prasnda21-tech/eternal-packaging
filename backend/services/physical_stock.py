@@ -1,7 +1,12 @@
 """Append-only physical stock ledger and balance.
 
 Ledger insert and balance mutation commit in one MongoDB transaction.
-There is no non-transactional fallback. physical_qty cannot go below zero.
+There is no non-transactional fallback.
+
+Book physical_qty may go negative when a legitimate outbound posts
+(shortage is recorded/warned, not blocked). Target physical counts from
+opname/adjustment remain >= 0. Missing opening baseline is tracked as
+unreconciled — not treated as a reconciled zero opening.
 """
 from __future__ import annotations
 
@@ -21,6 +26,10 @@ SALES_DELIVERY_CONFIRMATIONS = "physical_sales_delivery_confirmations"
 MASTER_ITEMS_COLLECTION = "master_items"
 BRANCHES_COLLECTION = "branches"
 WAREHOUSES_COLLECTION = "warehouses"
+
+BASELINE_RECONCILED = "reconciled"
+BASELINE_UNRECONCILED = "unreconciled"
+BASELINE_UNRECONCILED_LABEL = "Saldo awal belum direkonsiliasi"
 
 MOVEMENT_OPENING_BALANCE = "OPENING_BALANCE"
 MOVEMENT_PURCHASE_RECEIPT = "PURCHASE_RECEIPT"
@@ -101,7 +110,11 @@ class PhysicalStockConflictError(PhysicalStockError):
 
 
 class InsufficientPhysicalStockError(PhysicalStockError):
-    """Outbound quantity would make physical_qty negative."""
+    """Legacy/guard error: kept for callers that still reject negatives.
+
+    Legitimate R2 sales delivery / outbound book updates no longer raise this
+    solely because the resulting book qty would be negative.
+    """
 
 
 class PhysicalStockAbortError(PhysicalStockError):
@@ -437,42 +450,59 @@ async def _apply_movement_in_session(
             raise PhysicalStockConflictError(
                 "Saldo awal ditolak karena saldo fisik sudah ada"
             )
-    if qty_delta >= 0:
-        before_doc = await balances.find_one_and_update(
-            identity,
-            {
-                "$inc": {"physical_qty": qty_delta, "version": 1},
-                "$set": {"last_movement_id": movement_id, "updated_at": created_at},
-                "$setOnInsert": {"id": str(uuid.uuid4()), "created_at": created_at},
-            },
-            upsert=True,
-            return_document=ReturnDocument.BEFORE,
-            session=session,
-        )
-        balance_before = int((before_doc or {}).get("physical_qty") or 0)
+    movement_type = requested["movement_type"]
+    establishes_reconciled_baseline = movement_type in (
+        MOVEMENT_OPENING_BALANCE,
+        MOVEMENT_STOCK_OPNAME_ADJUSTMENT,
+        MOVEMENT_MANUAL_ADJUSTMENT,
+    )
+    # Mongo forbids the same path in both $set and $setOnInsert.
+    set_fields = {"last_movement_id": movement_id, "updated_at": created_at}
+    set_on_insert = {
+        "id": str(uuid.uuid4()),
+        "created_at": created_at,
+    }
+    if establishes_reconciled_baseline:
+        set_fields["baseline_status"] = BASELINE_RECONCILED
     else:
-        before_doc = await balances.find_one_and_update(
-            {**identity, "physical_qty": {"$gte": abs(qty_delta)}},
-            {
-                "$inc": {"physical_qty": qty_delta, "version": 1},
-                "$set": {"last_movement_id": movement_id, "updated_at": created_at},
-            },
-            upsert=False,
-            return_document=ReturnDocument.BEFORE,
-            session=session,
-        )
-        if not before_doc:
-            raise InsufficientPhysicalStockError(
-                "Stok fisik tidak mencukupi dan tidak boleh menjadi negatif"
-            )
-        balance_before = int(before_doc.get("physical_qty") or 0)
+        set_on_insert["baseline_status"] = BASELINE_UNRECONCILED
+
+    # Outbound may create the first balance row (unreconciled baseline) and may
+    # drive book qty negative. Do not invent a reconciled opening of zero.
+    before_doc = await balances.find_one_and_update(
+        identity,
+        {
+            "$inc": {"physical_qty": qty_delta, "version": 1},
+            "$set": set_fields,
+            "$setOnInsert": set_on_insert,
+        },
+        upsert=True,
+        return_document=ReturnDocument.BEFORE,
+        session=session,
+    )
+    created_balance = before_doc is None
+    balance_before = int((before_doc or {}).get("physical_qty") or 0)
     balance_after = balance_before + qty_delta
-    if balance_after < 0:
-        raise InsufficientPhysicalStockError(
-            "Stok fisik tidak mencukupi dan tidak boleh menjadi negatif"
-        )
     if _fail_after_balance:
         raise PhysicalStockAbortError("forced transaction abort")
+
+    metadata = dict(requested.get("metadata") or {})
+    prior_baseline = str((before_doc or {}).get("baseline_status") or "").strip()
+    if created_balance and not establishes_reconciled_baseline:
+        baseline_status = BASELINE_UNRECONCILED
+    elif establishes_reconciled_baseline:
+        baseline_status = BASELINE_RECONCILED
+    elif prior_baseline == BASELINE_UNRECONCILED:
+        baseline_status = BASELINE_UNRECONCILED
+    else:
+        baseline_status = prior_baseline or BASELINE_RECONCILED
+    if baseline_status == BASELINE_UNRECONCILED:
+        metadata["baseline_status"] = BASELINE_UNRECONCILED
+        metadata["baseline_label"] = BASELINE_UNRECONCILED_LABEL
+        if created_balance:
+            metadata["baseline_created_by_outbound"] = True
+    elif establishes_reconciled_baseline:
+        metadata["baseline_status"] = BASELINE_RECONCILED
 
     doc = {
         **requested,
@@ -480,6 +510,8 @@ async def _apply_movement_in_session(
         "balance_before": balance_before,
         "balance_after": balance_after,
     }
+    if metadata:
+        doc["metadata"] = metadata
     await ledger.insert_one(doc, session=session)
     return _public_movement(doc)
 
@@ -805,6 +837,7 @@ async def apply_confirmed_sales_delivery(
             "warehouse_id": resolved_warehouse,
             "replayed": True,
             "movements": movements,
+            "stock_warnings": list(existing.get("stock_warnings") or []),
         }
 
     from services.r2_go_live import cutover_delivered_qty_for_order_line
@@ -818,6 +851,35 @@ async def apply_confirmed_sales_delivery(
             raise PhysicalStockValidationError(
                 "Kuantitas terkirim melebihi Qty Belum Terkirim pada baris pesanan ini"
             )
+
+    stock_warnings = []
+    for line in resolved:
+        bal = await db[BALANCE_COLLECTION].find_one(
+            {
+                "master_item_id": str(line["master_item_id"]),
+                "branch_id": str(resolved_branch),
+                "warehouse_id": str(resolved_warehouse),
+            },
+            {"_id": 0},
+            session=session,
+        )
+        if bal is None:
+            status = BASELINE_UNRECONCILED
+            book = 0
+            uncertain = True
+        else:
+            status = str(bal.get("baseline_status") or BASELINE_RECONCILED).strip() or BASELINE_RECONCILED
+            book = int(_qty_num(bal.get("physical_qty")))
+            uncertain = status == BASELINE_UNRECONCILED
+        warning = build_stock_shortage_warning(
+            master_item_id=line["master_item_id"],
+            stok_tercatat=book,
+            kebutuhan=line["qty"],
+            baseline_status=status,
+        )
+        if uncertain:
+            warning["stok_tercatat_uncertain"] = True
+        stock_warnings.append(warning)
 
     movements = []
     for line in resolved:
@@ -845,6 +907,7 @@ async def apply_confirmed_sales_delivery(
         "reason": note,
         "sales_delivery_id": sj_id or None,
         "reversed": False,
+        "stock_warnings": stock_warnings,
         "created_at": now_iso(),
     }
     await db[SALES_DELIVERY_CONFIRMATIONS].insert_one(confirmation, session=session)
@@ -871,6 +934,7 @@ async def apply_confirmed_sales_delivery(
         "warehouse_id": resolved_warehouse,
         "replayed": False,
         "movements": movements,
+        "stock_warnings": stock_warnings,
     }
 
 
@@ -936,6 +1000,36 @@ async def order_has_r2_balance(db, order: Optional[dict]) -> bool:
     return found > 0
 
 
+def build_stock_shortage_warning(
+    *,
+    master_item_id: str,
+    stok_tercatat: Any,
+    kebutuhan: Any,
+    baseline_status: Optional[str] = None,
+) -> dict:
+    """Warning payload for shortage / unreconciled baseline — never a hard block."""
+    book = int(_qty_num(stok_tercatat))
+    need = int(_qty_num(kebutuhan))
+    if need < 0:
+        need = 0
+    shortage = need - book
+    if shortage < 0:
+        shortage = 0
+    status = str(baseline_status or BASELINE_RECONCILED).strip() or BASELINE_RECONCILED
+    return {
+        "master_item_id": str(master_item_id or ""),
+        "stok_tercatat": book,
+        "kebutuhan": need,
+        "kekurangan": shortage,
+        "baseline_status": status,
+        "baseline_label": (
+            BASELINE_UNRECONCILED_LABEL if status == BASELINE_UNRECONCILED else None
+        ),
+        "saldo_buku_negatif": book < 0,
+        "blocks_delivery": False,
+    }
+
+
 async def require_r2_delivery_stock_ready(
     db,
     order: Optional[dict],
@@ -943,14 +1037,12 @@ async def require_r2_delivery_stock_ready(
     warehouse_id: Optional[str],
     branch_id: Optional[str] = None,
     lines: Optional[List[dict]] = None,
-) -> Tuple[str, str]:
-    """Require R2 location + balance rows before confirm-delivered when authority is on.
+) -> Tuple[str, str, List[dict]]:
+    """Resolve R2 delivery location + master identity; never block on book qty.
 
-    Distinguishes:
-    - missing balance document → not ready (no PSS fallback)
-    - balance present with physical_qty == 0 → ready (outbound may still fail insufficient)
-
-    Returns resolved (branch_id, warehouse_id).
+    Warehouse/master identity must be valid (no guessing). Missing balance is
+    unreconciled baseline — delivery may proceed; warnings describe uncertainty.
+    Zero book qty is valid and not a readiness failure.
     """
     if not isinstance(order, dict):
         raise PhysicalStockValidationError("Pesanan tidak ditemukan")
@@ -967,36 +1059,41 @@ async def require_r2_delivery_stock_ready(
     if str(warehouse.get("branch_id") or "") != str(branch.get("id") or ""):
         raise PhysicalStockValidationError("Gudang tidak berada pada cabang ini")
 
-    master_ids: List[str] = []
     source_lines = lines if lines is not None else (order.get("line_items") or [])
+    warnings: List[dict] = []
+    seen = set()
     for line in source_lines:
         if not isinstance(line, dict):
             continue
         mid = str(line.get("master_item_id") or "").strip()
-        if mid:
-            master_ids.append(mid)
-    # Deduplicate while preserving order
-    seen = set()
-    unique_masters = []
-    for mid in master_ids:
-        if mid in seen:
+        if not mid or mid in seen:
             continue
         seen.add(mid)
-        unique_masters.append(mid)
-    if not unique_masters:
+        await _require_master_item(db, mid)
+        bal = await get_balance(db, mid, branch["id"], warehouse["id"])
+        need = int(_qty_num(line.get("qty") if line.get("qty") is not None else line.get("quantity")))
+        if bal is None:
+            warnings.append(build_stock_shortage_warning(
+                master_item_id=mid,
+                stok_tercatat=0,
+                kebutuhan=need,
+                baseline_status=BASELINE_UNRECONCILED,
+            ))
+            # Do not claim physical is a reconciled zero — flag uncertainty only.
+            warnings[-1]["stok_tercatat_uncertain"] = True
+        else:
+            status = str(bal.get("baseline_status") or BASELINE_RECONCILED).strip()
+            warnings.append(build_stock_shortage_warning(
+                master_item_id=mid,
+                stok_tercatat=bal.get("physical_qty"),
+                kebutuhan=need,
+                baseline_status=status or BASELINE_RECONCILED,
+            ))
+    if not seen:
         raise PhysicalStockValidationError(
             "Baris pengiriman tidak dapat dipetakan ke master item untuk stok R2"
         )
-
-    for mid in unique_masters:
-        await _require_master_item(db, mid)
-        bal = await get_balance(db, mid, branch["id"], warehouse["id"])
-        if bal is None:
-            raise PhysicalStockValidationError(
-                "Saldo fisik R2 belum tersedia untuk barang ini di gudang terpilih. "
-                "Selesaikan opening/opname R2 sebelum konfirmasi terkirim."
-            )
-    return str(branch["id"]), str(warehouse["id"])
+    return str(branch["id"]), str(warehouse["id"]), warnings
 
 
 def _purchase_receipt_request(receipt: dict, line: dict, *, actor_id: str) -> dict:
@@ -1841,14 +1938,24 @@ async def _adjust_to_target_once(
                     "movement_id": None,
                     "changed": False,
                 }
+            # Physical count target must be >= 0; book before may already be negative.
+            if target < 0:
+                raise PhysicalStockValidationError("Hasil hitung fisik harus >= 0")
             created_at = now_iso()
             movement_id = str(uuid.uuid4())
             update = {
                 "$inc": {"physical_qty": delta, "version": 1},
-                "$set": {"last_movement_id": movement_id, "updated_at": created_at},
+                "$set": {
+                    "last_movement_id": movement_id,
+                    "updated_at": created_at,
+                    "baseline_status": BASELINE_RECONCILED,
+                },
             }
-            if delta > 0 and current_doc is None:
-                update["$setOnInsert"] = {"id": str(uuid.uuid4()), "created_at": created_at}
+            if current_doc is None:
+                update["$setOnInsert"] = {
+                    "id": str(uuid.uuid4()),
+                    "created_at": created_at,
+                }
                 before_doc = await balances.find_one_and_update(
                     identity,
                     update,
@@ -1868,10 +1975,8 @@ async def _adjust_to_target_once(
                 if not before_doc:
                     raise PhysicalStockRetryError("Saldo fisik berubah sebelum delta diterapkan")
                 balance_before = int(before_doc.get("physical_qty") or 0)
-            if balance_before + delta != target or target < 0 or balance_before + delta < 0:
-                raise InsufficientPhysicalStockError(
-                    "Stok fisik tidak mencukupi dan tidak boleh menjadi negatif"
-                )
+            if balance_before + delta != target:
+                raise PhysicalStockRetryError("Saldo fisik berubah sebelum delta diterapkan")
             if _fail_after_balance:
                 raise PhysicalStockAbortError("forced transaction abort")
             doc = {
@@ -1890,7 +1995,10 @@ async def _adjust_to_target_once(
                 "occurred_at": created_at,
                 "created_at": created_at,
                 "idempotency_key": idempotency_key,
-                "metadata": {"target_physical_qty": target},
+                "metadata": {
+                    "target_physical_qty": target,
+                    "baseline_status": BASELINE_RECONCILED,
+                },
             }
             await ledger.insert_one(doc, session=session)
             return _adjustment_result(doc, target=target, changed=True)
@@ -2085,13 +2193,14 @@ def operational_availability(
     completed_qty: Any,
     r2_delivered_qty: Any = 0,
 ) -> dict:
-    """Qty Tersedia = Stock Fisik - Qty Pesanan - Qty Belum Terkirim.
+    """Qty Tersedia = Stock Fisik (buku) - Qty Pesanan - Qty Belum Terkirim.
 
+    Book physical_qty is not clamped to zero — negative book and negative
+    qty_tersedia are informational and must not block orders/production.
     Operator completion only moves Qty Pesanan into Qty Belum Terkirim.
-    Legacy delivery does not reduce Qty Belum Terkirim. Pass r2_delivered_qty
-    only for quantity already posted as an R2 SALES_DELIVERY movement.
+    Pass r2_delivered_qty only for quantity already posted as R2 SALES_DELIVERY.
     """
-    physical = max(_qty_num(physical_qty), 0.0)
+    physical = _qty_num(physical_qty)
     ordered = max(_qty_num(ordered_qty), 0.0)
     completed = max(_qty_num(completed_qty), 0.0)
     delivered = max(_qty_num(r2_delivered_qty), 0.0)
@@ -2383,6 +2492,16 @@ async def list_physical_stock_catalog(
             completed_qty=demand["completed_qty"],
             r2_delivered_qty=effective_delivered,
         )
+        baseline_statuses = [
+            str(doc.get("baseline_status") or BASELINE_RECONCILED).strip() or BASELINE_RECONCILED
+            for doc in docs
+        ]
+        if not docs:
+            baseline_status = None
+        elif any(status == BASELINE_UNRECONCILED for status in baseline_statuses):
+            baseline_status = BASELINE_UNRECONCILED
+        else:
+            baseline_status = BASELINE_RECONCILED
         rows.append({
             "master_item_id": master.get("id"),
             "item_code": master.get("item_code") or "",
@@ -2396,6 +2515,12 @@ async def list_physical_stock_catalog(
             "updated_at": max(updated) if updated else None,
             "belum_terkirim_status": "READY",
             "stock_read_mode": "r2",
+            "baseline_status": baseline_status,
+            "baseline_label": (
+                BASELINE_UNRECONCILED_LABEL if baseline_status == BASELINE_UNRECONCILED else None
+            ),
+            "saldo_buku_negatif": buckets["physical_qty"] < 0,
+            "physical_qty_is_book": True,
         })
     total = len(rows)
     start = (safe_page - 1) * safe_limit
