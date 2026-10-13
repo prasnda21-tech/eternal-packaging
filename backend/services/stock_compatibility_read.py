@@ -243,7 +243,8 @@ async def list_compatibility_stock_catalog(
             "branch_filter_affects_physical_qty": False,
             "physical_qty_note": (
                 "Qty fisik legacy digabung perusahaan (product_stock_state); "
-                "belum dipisahkan per cabang. Filter cabang tidak mengubah qty fisik legacy."
+                "bukan saldo per gudang. Belum dipisahkan per cabang. "
+                "Filter cabang tidak mengubah qty fisik legacy."
             ),
             "compatibility": {
                 "physical_source": "product_stock_state.total_qty",
@@ -316,7 +317,8 @@ async def list_compatibility_stock_catalog(
         "branch_filter_affects_physical_qty": False,
         "physical_qty_note": (
             "Qty fisik legacy digabung perusahaan (product_stock_state); "
-            "belum dipisahkan per cabang. Filter cabang tidak mengubah qty fisik legacy."
+            "bukan saldo per gudang. Belum dipisahkan per cabang. "
+            "Filter cabang tidak mengubah qty fisik legacy."
         ),
         "compatibility": {
             "physical_source": "product_stock_state.total_qty",

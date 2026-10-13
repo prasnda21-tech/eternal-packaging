@@ -5,9 +5,11 @@ import {
   operationalOpeningWarehouses,
   mutationQtyColumns,
   openingReady,
+  opnameLocationLabel,
   preselectedWarehouseId,
   stockEmptyMessage,
   warehouseChoices,
+  warehouseLocationLabel,
   yogyakartaWarehouses,
 } from "./physicalStockView";
 
@@ -93,6 +95,27 @@ describe("physical stock view helpers", () => {
     expect(movementLabel("SALES_DELIVERY")).toBe("Pengiriman");
     expect(movementLabel("MANUAL_ADJUSTMENT")).toBe("Penyesuaian");
     expect(movementLabel("REVERSAL")).toBe("Reversal");
+  });
+
+  test("warehouse location label shows cabang + gudang, not name-only", () => {
+    const branches = [
+      { id: "ygy", code: "YGY", name: "Yogyakarta" },
+      { id: "smg", code: "SMG", name: "Semarang" },
+    ];
+    expect(warehouseLocationLabel(
+      { id: "main", branch_id: "ygy", code: "MAIN", name: "Gudang Utama" },
+      branches,
+    )).toBe("YGY (Yogyakarta) · MAIN — Gudang Utama");
+    expect(warehouseLocationLabel(
+      { id: "alt", branch_id: "smg", code: "ALT", name: "ALT" },
+      branches,
+    )).toBe("SMG (Semarang) · ALT");
+    expect(opnameLocationLabel({
+      warehouse_code: "MAIN",
+      warehouse_name: "Gudang Utama",
+      branch_code: "YGY",
+      branch_name: "Yogyakarta",
+    })).toBe("YGY (Yogyakarta) · MAIN — Gudang Utama");
   });
 
   test("goods receipt warehouse choice never guesses among several warehouses", () => {

@@ -7,6 +7,8 @@ const src = fs.readFileSync(path.join(__dirname, "StockOpname.jsx"), "utf8");
 describe("Stock Opname operational workflow", () => {
   test("opens from stock, limits warehouses, and keeps the count lifecycle", () => {
     expect(src).toMatch(/operationalOpeningWarehouses/);
+    expect(src).toMatch(/warehouseLocationLabel/);
+    expect(src).toMatch(/opnameLocationLabel/);
     expect(src).toMatch(/data-testid="opname-start"/);
     expect(src).toMatch(/Mulai Stock Opname/);
     expect(src).toMatch(/Download Excel Hitung Fisik/);
