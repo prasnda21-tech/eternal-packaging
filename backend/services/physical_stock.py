@@ -936,6 +936,69 @@ async def order_has_r2_balance(db, order: Optional[dict]) -> bool:
     return found > 0
 
 
+async def require_r2_delivery_stock_ready(
+    db,
+    order: Optional[dict],
+    *,
+    warehouse_id: Optional[str],
+    branch_id: Optional[str] = None,
+    lines: Optional[List[dict]] = None,
+) -> Tuple[str, str]:
+    """Require R2 location + balance rows before confirm-delivered when authority is on.
+
+    Distinguishes:
+    - missing balance document → not ready (no PSS fallback)
+    - balance present with physical_qty == 0 → ready (outbound may still fail insufficient)
+
+    Returns resolved (branch_id, warehouse_id).
+    """
+    if not isinstance(order, dict):
+        raise PhysicalStockValidationError("Pesanan tidak ditemukan")
+    wh_id = str(warehouse_id or "").strip()
+    if not wh_id:
+        raise PhysicalStockValidationError(
+            "Pilih gudang sebelum konfirmasi terkirim saat stok R2 aktif"
+        )
+    warehouse = await _require_warehouse_any(db, wh_id)
+    br_id = str(branch_id or warehouse.get("branch_id") or "").strip()
+    if not br_id:
+        raise PhysicalStockValidationError("Cabang gudang tidak valid")
+    branch = await _require_branch_any(db, br_id)
+    if str(warehouse.get("branch_id") or "") != str(branch.get("id") or ""):
+        raise PhysicalStockValidationError("Gudang tidak berada pada cabang ini")
+
+    master_ids: List[str] = []
+    source_lines = lines if lines is not None else (order.get("line_items") or [])
+    for line in source_lines:
+        if not isinstance(line, dict):
+            continue
+        mid = str(line.get("master_item_id") or "").strip()
+        if mid:
+            master_ids.append(mid)
+    # Deduplicate while preserving order
+    seen = set()
+    unique_masters = []
+    for mid in master_ids:
+        if mid in seen:
+            continue
+        seen.add(mid)
+        unique_masters.append(mid)
+    if not unique_masters:
+        raise PhysicalStockValidationError(
+            "Baris pengiriman tidak dapat dipetakan ke master item untuk stok R2"
+        )
+
+    for mid in unique_masters:
+        await _require_master_item(db, mid)
+        bal = await get_balance(db, mid, branch["id"], warehouse["id"])
+        if bal is None:
+            raise PhysicalStockValidationError(
+                "Saldo fisik R2 belum tersedia untuk barang ini di gudang terpilih. "
+                "Selesaikan opening/opname R2 sebelum konfirmasi terkirim."
+            )
+    return str(branch["id"]), str(warehouse["id"])
+
+
 def _purchase_receipt_request(receipt: dict, line: dict, *, actor_id: str) -> dict:
     receipt_id = str(receipt.get("id") or "")
     line_id = str(line.get("line_id") or "")

@@ -67,6 +67,18 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+async def legacy_pss_stock_out_writes_enabled(db) -> bool:
+    """PSS physical stock-out (PENGIRIMAN) writers run only while R2 authority is OFF.
+
+    When r2_authority_active is True, packing/loading/SJ/delivery-confirmed must not
+    claim or finalize product_stock_state. Business docs and STATUS_CETAK (Δ0) stay
+    on their existing gates; this helper only blocks legacy physical stock-out writes.
+    """
+    from services.r2_go_live import is_r2_authority_active
+
+    return not await is_r2_authority_active(db)
+
+
 async def attach_po_stock_snapshot(db, po_doc: Dict[str, Any]) -> Dict[str, Any]:
     """Snapshots the active physical stock settings onto a new Purchase Order."""
     settings = await get_physical_stock_settings(db)
@@ -1197,6 +1209,8 @@ async def handle_packing_completed(
     snapshot = order.get("physical_stock_snapshot") or {}
     if not snapshot.get("enabled") or snapshot.get("stock_out_trigger") != "packing_completed":
         return []
+    if not await legacy_pss_stock_out_writes_enabled(db):
+        return []
 
     order_id = str(order.get("id") or "").strip()
     po_num = str(order.get("po_number") or order_id).strip()
@@ -1260,6 +1274,8 @@ async def handle_loading_confirmed(
     snapshot = order.get("physical_stock_snapshot") or {}
     if not snapshot.get("enabled") or snapshot.get("stock_out_trigger") != "loading_confirmation":
         return []
+    if not await legacy_pss_stock_out_writes_enabled(db):
+        return []
 
     order_id = str(order.get("id") or "").strip()
     po_num = str(order.get("po_number") or order_id).strip()
@@ -1320,6 +1336,8 @@ async def handle_sales_delivery_created(
     """Evaluates Stock-Out on Sales Delivery (SJ) creation according to snapshot rule."""
     snapshot = order.get("physical_stock_snapshot") or {}
     if not snapshot.get("enabled") or snapshot.get("stock_out_trigger") != "sales_delivery":
+        return []
+    if not await legacy_pss_stock_out_writes_enabled(db):
         return []
 
     order_id = str(order.get("id") or "").strip()
@@ -1386,6 +1404,8 @@ async def handle_delivery_confirmed(
     """Evaluates Stock-Out on Delivery Confirmed according to snapshot rule."""
     snapshot = order.get("physical_stock_snapshot") or {}
     if not snapshot.get("enabled") or snapshot.get("stock_out_trigger") != "delivery_confirmed":
+        return []
+    if not await legacy_pss_stock_out_writes_enabled(db):
         return []
 
     order_id = str(order.get("id") or "").strip()
@@ -1533,6 +1553,8 @@ async def precheck_packing_completed(
     snap = order.get("physical_stock_snapshot") or {}
     if not snap.get("enabled") or snap.get("stock_out_trigger") != "packing_completed":
         return
+    if not await legacy_pss_stock_out_writes_enabled(db):
+        return
 
     lis = order.get("line_items") or []
     for inc in increment_rows:
@@ -1571,6 +1593,8 @@ async def precheck_loading_confirmed(
     snap = order.get("physical_stock_snapshot") or {}
     if not snap.get("enabled") or snap.get("stock_out_trigger") != "loading_confirmation":
         return
+    if not await legacy_pss_stock_out_writes_enabled(db):
+        return
 
     lis = order.get("line_items") or []
     for line in lines:
@@ -1606,6 +1630,8 @@ async def precheck_sales_delivery(
     """Pre-checks stock availability before sales delivery (SJ) is persisted."""
     snap = order.get("physical_stock_snapshot") or {}
     if not snap.get("enabled") or snap.get("stock_out_trigger") != "sales_delivery":
+        return
+    if not await legacy_pss_stock_out_writes_enabled(db):
         return
 
     lis = order.get("line_items") or []
@@ -1774,6 +1800,8 @@ async def precheck_delivery_confirmed(
     snap = order.get("physical_stock_snapshot") or {}
     if not snap.get("enabled") or snap.get("stock_out_trigger") != "delivery_confirmed":
         return
+    if not await legacy_pss_stock_out_writes_enabled(db):
+        return
 
     lis = order.get("line_items") or []
     for idx, line in enumerate(lines):
@@ -1916,6 +1944,8 @@ async def should_claim_loading_stock(
     db,
     order: Dict[str, Any],
 ) -> bool:
+    if not await legacy_pss_stock_out_writes_enabled(db):
+        return False
     snap = order.get("physical_stock_snapshot") or {}
     return bool(snap.get("enabled") and snap.get("stock_out_trigger") == "loading_confirmation")
 
@@ -2014,6 +2044,8 @@ async def should_claim_packing_stock(
     db,
     order: Dict[str, Any],
 ) -> bool:
+    if not await legacy_pss_stock_out_writes_enabled(db):
+        return False
     snap = order.get("physical_stock_snapshot") or {}
     return bool(snap.get("enabled") and snap.get("stock_out_trigger") == "packing_completed")
 
@@ -2114,6 +2146,8 @@ async def should_claim_sales_delivery_stock(
     db,
     order: Dict[str, Any],
 ) -> bool:
+    if not await legacy_pss_stock_out_writes_enabled(db):
+        return False
     snap = order.get("physical_stock_snapshot") or {}
     return bool(snap.get("enabled") and snap.get("stock_out_trigger") == "sales_delivery")
 
@@ -2213,6 +2247,8 @@ async def should_claim_delivery_confirmed_stock(
     db,
     order: Dict[str, Any],
 ) -> bool:
+    if not await legacy_pss_stock_out_writes_enabled(db):
+        return False
     snap = order.get("physical_stock_snapshot") or {}
     return bool(snap.get("enabled") and snap.get("stock_out_trigger") == "delivery_confirmed")
 

@@ -339,6 +339,15 @@ jobs:
         run: >-
           python -m pytest -vv -n 0 --tb=short
           tests/test_status_cetak_r2_demand.py
+      # R2 ON: block PSS stock-out dual-write; no confirm-delivered PSS fallback.
+      - name: Run R2 no-PSS dual-write suite (replica set)
+        working-directory: backend
+        env:
+          MONGO_URL: mongodb://127.0.0.1:27017/?replicaSet=eternal_local_rs
+          DB_NAME: eternal_packaging_test_r2_no_pss_dual_write
+        run: >-
+          python -m pytest -vv -n 0 --tb=short
+          tests/test_r2_no_pss_dual_write.py
 
   backend-live-orders:
     name: Backend live orders summary

@@ -6185,10 +6185,50 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
     reconcile_holder = {"result": None}
 
     from services.physical_stock import order_has_r2_balance as _order_has_r2_balance
-    uses_r2_stock = bool(existing_order) and await _order_has_r2_balance(db, existing_order)
+    from services.r2_go_live import is_r2_authority_active as _is_r2_authority_active
+    r2_authority_on = await _is_r2_authority_active(db)
+    # R2 ON: always R2 path — never fall back to PSS because balances are missing.
+    # R2 OFF: keep existing optional R2 path when balances already exist.
+    if r2_authority_on:
+        uses_r2_stock = bool(existing_order)
+    else:
+        uses_r2_stock = bool(existing_order) and await _order_has_r2_balance(db, existing_order)
     r2_request = {}
 
     try:
+        if r2_authority_on and existing_order and op.get("ready"):
+            from services.physical_stock import (
+                PhysicalStockNotFoundError,
+                PhysicalStockValidationError,
+                require_r2_delivery_stock_ready,
+            )
+            from quantity_rules import resolve_delivery_shipment
+            from services.physical_stock_engine import plan_confirmed_sj_stock
+            shipment_for_ready, resolve_err = resolve_delivery_shipment(
+                existing_order, selected_shipment_id,
+            )
+            if resolve_err:
+                raise HTTPException(400, resolve_err)
+            plan_ready = plan_confirmed_sj_stock(
+                existing_order, shipment_for_ready, allow_delivered=False,
+            )
+            if isinstance(plan_ready, dict) and plan_ready.get("error"):
+                raise HTTPException(400, plan_ready["error"])
+            if not (isinstance(plan_ready, dict) and plan_ready.get("skip")):
+                ready_lines = (plan_ready or {}).get("lines") if isinstance(plan_ready, dict) else None
+                try:
+                    await require_r2_delivery_stock_ready(
+                        db,
+                        existing_order,
+                        warehouse_id=(payload.warehouse_id if payload else None),
+                        branch_id=(payload.branch_id if payload else None),
+                        lines=ready_lines if ready_lines else None,
+                    )
+                except PhysicalStockValidationError as exc:
+                    raise HTTPException(400, str(exc)) from exc
+                except PhysicalStockNotFoundError as exc:
+                    raise HTTPException(404, str(exc)) from exc
+
         if existing_order and op.get("ready") and not uses_r2_stock:
             claimed_stock = await claim_selected_delivery_stock(
                 db, existing_order, selected_shipment_id, action_id, user, claim_plan_holder,
@@ -6434,7 +6474,8 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
         if claimed_stock and (conf_holder.get("conf") or recorded):
             from services.physical_stock_engine import finalize_delivery_confirmed_stock
             await finalize_delivery_confirmed_stock(db, claimed_stock, user)
-    elif conf_holder.get("conf"):
+    elif conf_holder.get("conf") and not uses_r2_stock:
+        # R2 path already posted SALES_DELIVERY in-txn; never dual-write PSS.
         from services.physical_stock_engine import handle_delivery_confirmed
         await handle_delivery_confirmed(db, order, conf_holder["conf"], user)
     # Generate signed SJ after persist — document rendering only (no qty mutation)
