@@ -62,12 +62,13 @@ async def db():
         client.close()
 
 
-async def _seed_master(db, code="BOX"):
+async def _seed_master(db, code="BOX", *, item_type="INVENTORY"):
     item = {
         "id": f"item-{uuid.uuid4().hex[:8]}",
         "item_code": code,
         "item_name": code,
         "unit": "PCS",
+        "item_type": item_type,
         "is_active": True,
     }
     await db.master_items.insert_one(dict(item))
@@ -341,6 +342,67 @@ async def test_aggregate_legacy_delivered_single_line_fallback():
     delivered, prov = aggregate_legacy_delivered_qty(orders, [])
     assert delivered["m1"] == 30
     assert prov["m1"] == "order_qty_delivered"
+
+
+async def test_case_a_proven_plus_ambiguous_is_unverified_not_ready():
+    """Regression: partial confirmed must not keep READY when another ship is ambiguous."""
+    orders = [{
+        "id": "o-mix",
+        "cancelled": False,
+        "line_items": [
+            {"master_item_id": "m1", "quantity": 100},
+            {"master_item_id": "m2", "quantity": 100},
+        ],
+        "shipments": [
+            {
+                "id": "ship-ok",
+                "delivery_status": "Terkirim",
+                "delivered_at": "2026-01-01T00:00:00+00:00",
+                "total_qty": 40,
+                "lines": [{"line_idx": 0, "qty": 40}],
+            },
+            {
+                "id": "ship-ambig",
+                "delivery_status": "Terkirim",
+                "delivered_at": "2026-01-02T00:00:00+00:00",
+                "total_qty": 20,
+                "lines": [{"qty": 20}],
+            },
+        ],
+    }]
+    delivered, prov = aggregate_legacy_delivered_qty(orders, [])
+    assert delivered.get("m1") == 40  # proven qty retained for audit
+    assert prov["m1"] == "unproven"
+    assert prov["m2"] == "unproven"
+
+
+async def test_case_b_qty_delivered_fallback_is_per_po_not_global_master():
+    """Regression: PO2 qty_delivered must apply even if PO1 already confirmed same master."""
+    orders = [
+        {
+            "id": "po1",
+            "cancelled": False,
+            "qty_delivered": 0,
+            "line_items": [{"master_item_id": "m1", "quantity": 100}],
+            "shipments": [{
+                "id": "s1",
+                "delivery_status": "Terkirim",
+                "delivered_at": "2026-01-01T00:00:00+00:00",
+                "total_qty": 50,
+                "lines": [{"line_idx": 0, "qty": 50}],
+            }],
+        },
+        {
+            "id": "po2",
+            "cancelled": False,
+            "qty_delivered": 30,
+            "line_items": [{"master_item_id": "m1", "quantity": 80}],
+            "shipments": [],
+        },
+    ]
+    delivered, prov = aggregate_legacy_delivered_qty(orders, [])
+    assert delivered["m1"] == 80  # 50 confirmed + 30 fallback on other PO
+    assert prov["m1"] == "confirmed_shipment"
 
 
 async def test_non_print_demand_is_ready_without_operator_completed(db):
@@ -634,3 +696,331 @@ async def test_fase1_scenario_matrix_po_prod_sj_partial_cancel_multi(db):
         assert row["belum_terkirim_status"] == BELUM_STATUS_UNVERIFIED
         assert row["qty_belum_terkirim"] is None
         assert row["qty_tersedia_valid"] is False
+
+
+async def test_fase1_addon_service_matrix_and_attribution(db):
+    """Add On proses = SERVICE; physical demand stays on INVENTORY parent qty.
+
+    Schema fact: no parent_line_id. Explicit signal is master_items.item_type=SERVICE
+    (Accurate mock: SVC-CETAK / Jasa cetak). Colors are process work, not +pcs.
+    """
+    physical = await _seed_master(db, "BARANG-A", item_type="INVENTORY")
+    warna2 = await _seed_master(db, "ADDON-W2", item_type="SERVICE")
+    warna3 = await _seed_master(db, "ADDON-W3", item_type="SERVICE")
+    await db.product_stock_state.insert_one({
+        "master_item_id": physical["id"],
+        "total_qty": 5000,
+        "initialized": True,
+        "status": "INITIALIZED",
+    })
+    oid = f"so-addon-{uuid.uuid4().hex[:6]}"
+    await db.orders.insert_one({
+        "id": oid,
+        "cancelled": False,
+        "line_items": [
+            {
+                "line_id": "ln-main",
+                "master_item_id": physical["id"],
+                "quantity": 1000,
+                "production_process": "print",
+                "name": "Barang A warna 1",
+                "color": "PUTIH",
+            },
+            {
+                "line_id": "ln-w2",
+                "master_item_id": warna2["id"],
+                "quantity": 1000,
+                "production_process": "print",
+                "name": "Add On warna 2",
+                "color": "HIJAU",
+            },
+            {
+                "line_id": "ln-w3",
+                "master_item_id": warna3["id"],
+                "quantity": 1000,
+                "production_process": "print",
+                "name": "Add On warna 3",
+                "color": "PINK",
+            },
+        ],
+        "operator_splits": [
+            {"line_idx": 0, "qty_completed": 0},
+            {"line_idx": 1, "qty_completed": 0},
+            {"line_idx": 2, "qty_completed": 0},
+        ],
+    })
+
+    # (1) Physical pesanan = 1000, not 3000; SERVICE absent from catalog
+    catalog = await list_compatibility_stock_catalog(db)
+    mids = {r["master_item_id"] for r in catalog["items"]}
+    assert physical["id"] in mids
+    assert warna2["id"] not in mids
+    assert warna3["id"] not in mids
+    row = next(r for r in catalog["items"] if r["master_item_id"] == physical["id"])
+    assert row["qty_pesanan"] == 1000
+    assert row["qty_belum_terkirim"] == 0
+    assert row["qty_tersedia_valid"] is False
+
+    # (2) Warna1 complete 1000; warna2/3 unfinished — physical siap = 1000
+    # No parent_line_id → cannot invent min() gate across SERVICE processes.
+    await db.orders.update_one({"id": oid}, {"$set": {
+        "operator_splits": [
+            {"line_idx": 0, "qty_completed": 1000},
+            {"line_idx": 1, "qty_completed": 0},
+            {"line_idx": 2, "qty_completed": 0},
+        ],
+    }})
+    row = next(r for r in (await list_compatibility_stock_catalog(db))["items"] if r["master_item_id"] == physical["id"])
+    assert row["qty_pesanan"] == 0
+    assert row["qty_belum_terkirim"] == 1000
+
+    # (3) Warna1+2 done; warna3 unfinished — physical still siap 1000
+    await db.orders.update_one({"id": oid}, {"$set": {
+        "operator_splits": [
+            {"line_idx": 0, "qty_completed": 1000},
+            {"line_idx": 1, "qty_completed": 1000},
+            {"line_idx": 2, "qty_completed": 0},
+        ],
+    }})
+    row = next(r for r in (await list_compatibility_stock_catalog(db))["items"] if r["master_item_id"] == physical["id"])
+    assert row["qty_pesanan"] == 0
+    assert row["qty_belum_terkirim"] == 1000
+
+    # (4) All three process lines complete — physical still 1000 siap, not 3000
+    await db.orders.update_one({"id": oid}, {"$set": {
+        "operator_splits": [
+            {"line_idx": 0, "qty_completed": 1000},
+            {"line_idx": 1, "qty_completed": 1000},
+            {"line_idx": 2, "qty_completed": 1000},
+        ],
+    }})
+    row = next(r for r in (await list_compatibility_stock_catalog(db))["items"] if r["master_item_id"] == physical["id"])
+    assert row["qty_pesanan"] == 0
+    assert row["qty_belum_terkirim"] == 1000
+
+    # (5) Partial different progress — do not sum operator outputs into physical selesai
+    await db.orders.update_one({"id": oid}, {"$set": {
+        "operator_splits": [
+            {"line_idx": 0, "qty_completed": 400},
+            {"line_idx": 1, "qty_completed": 700},
+            {"line_idx": 2, "qty_completed": 200},
+        ],
+    }})
+    row = next(r for r in (await list_compatibility_stock_catalog(db))["items"] if r["master_item_id"] == physical["id"])
+    assert row["qty_pesanan"] == 600  # 1000 - 400 on inventory line only
+    assert row["qty_belum_terkirim"] == 400
+
+    # (6) Cancelled SERVICE Add On does not change physical demand
+    await db.orders.update_one({"id": oid}, {"$set": {
+        "operator_splits": [{"line_idx": 0, "qty_completed": 400}],
+        "line_items": [
+            {
+                "line_id": "ln-main",
+                "master_item_id": physical["id"],
+                "quantity": 1000,
+                "production_process": "print",
+                "name": "Barang A warna 1",
+            },
+            {
+                "line_id": "ln-w2",
+                "master_item_id": warna2["id"],
+                "quantity": 1000,
+                "production_process": "print",
+                "name": "Add On warna 2",
+                "cancelled": True,
+            },
+        ],
+    }})
+    row = next(r for r in (await list_compatibility_stock_catalog(db))["items"] if r["master_item_id"] == physical["id"])
+    assert row["qty_pesanan"] == 600
+    assert row["qty_belum_terkirim"] == 400
+
+    # (7) Second PO same physical master — independent demand
+    await db.orders.insert_one({
+        "id": f"so-addon-b-{uuid.uuid4().hex[:6]}",
+        "cancelled": False,
+        "line_items": [{
+            "master_item_id": physical["id"],
+            "quantity": 200,
+            "production_process": "print",
+        }],
+        "operator_splits": [{"line_idx": 0, "qty_completed": 0}],
+        "qty_delivered": 0,
+    })
+    row = next(r for r in (await list_compatibility_stock_catalog(db))["items"] if r["master_item_id"] == physical["id"])
+    assert row["qty_pesanan"] == 800  # 600 + 200
+    assert row["qty_belum_terkirim"] == 400
+
+    # (8) Proven + ambiguous together → BELUM TERVERIFIKASI
+    await db.orders.update_one({"id": oid}, {"$set": {
+        "line_items": [
+            {
+                "line_id": "ln-main",
+                "master_item_id": physical["id"],
+                "quantity": 1000,
+                "production_process": "print",
+            },
+            {
+                "line_id": "ln-other",
+                "master_item_id": (await _seed_master(db, "OTHER", item_type="INVENTORY"))["id"],
+                "quantity": 100,
+                "production_process": "print",
+            },
+        ],
+        "operator_splits": [
+            {"line_idx": 0, "qty_completed": 1000},
+            {"line_idx": 1, "qty_completed": 50},
+        ],
+        "shipments": [
+            {
+                "id": "ship-ok",
+                "delivery_status": "Terkirim",
+                "delivered_at": "2026-01-01T00:00:00+00:00",
+                "total_qty": 100,
+                "lines": [{"line_idx": 0, "qty": 100}],
+            },
+            {
+                "id": "ship-ambig",
+                "delivery_status": "Terkirim",
+                "delivered_at": "2026-01-02T00:00:00+00:00",
+                "total_qty": 40,
+                "lines": [{"qty": 40}],
+            },
+        ],
+    }})
+    row = next(r for r in (await list_compatibility_stock_catalog(db))["items"] if r["master_item_id"] == physical["id"])
+    assert row["belum_terkirim_status"] == BELUM_STATUS_UNVERIFIED
+    assert row["qty_belum_terkirim"] is None
+
+    # Reset to clean single-line PO for remaining delivery scenarios
+    await db.orders.delete_many({})
+    await db.orders.insert_one({
+        "id": oid,
+        "cancelled": False,
+        "line_items": [{
+            "line_id": "ln-main",
+            "master_item_id": physical["id"],
+            "quantity": 1000,
+            "production_process": "print",
+        }],
+        "operator_splits": [{"line_idx": 0, "qty_completed": 1000}],
+        "shipments": [],
+    })
+    await db.sales_deliveries.delete_many({})
+
+    # (9) Partial proven ship after process complete
+    await db.orders.update_one({"id": oid}, {"$set": {
+        "shipments": [{
+            "id": "ship-partial",
+            "delivery_status": "Terkirim",
+            "delivered_at": "2026-01-04T00:00:00+00:00",
+            "total_qty": 250,
+            "lines": [{"line_idx": 0, "qty": 250}],
+        }],
+    }})
+    row = next(r for r in (await list_compatibility_stock_catalog(db))["items"] if r["master_item_id"] == physical["id"])
+    assert row["qty_pesanan"] == 0
+    assert row["qty_belum_terkirim"] == 750
+    assert row["belum_terkirim_status"] == BELUM_STATUS_READY
+
+    # (10) SJ SELESAI without proof — Belum stays completed
+    await db.orders.update_one({"id": oid}, {"$set": {"shipments": []}})
+    await db.sales_deliveries.insert_one({
+        "id": "sj-alloc",
+        "po_id": oid,
+        "status": "SELESAI",
+        "is_cancelled": False,
+        "line_items": [{"line_idx": 0, "master_item_id": physical["id"], "qty": 1000}],
+    })
+    row = next(r for r in (await list_compatibility_stock_catalog(db))["items"] if r["master_item_id"] == physical["id"])
+    assert row["qty_belum_terkirim"] == 1000
+
+    # (11) Physical Add On (INVENTORY) vs process Add On (SERVICE)
+    extra_phys = await _seed_master(db, "ADDON-PHYS", item_type="INVENTORY")
+    await db.product_stock_state.insert_one({
+        "master_item_id": extra_phys["id"],
+        "total_qty": 100,
+        "initialized": True,
+        "status": "INITIALIZED",
+    })
+    await db.orders.update_one({"id": oid}, {"$set": {
+        "line_items": [
+            {
+                "master_item_id": physical["id"],
+                "quantity": 1000,
+                "production_process": "print",
+            },
+            {
+                "master_item_id": warna2["id"],
+                "quantity": 1000,
+                "production_process": "print",
+            },
+            {
+                "master_item_id": extra_phys["id"],
+                "quantity": 50,
+                "production_process": "non_print",
+            },
+        ],
+        "operator_splits": [{"line_idx": 0, "qty_completed": 1000}],
+        "shipments": [],
+    }})
+    catalog = await list_compatibility_stock_catalog(db)
+    prow = next(r for r in catalog["items"] if r["master_item_id"] == physical["id"])
+    xrow = next(r for r in catalog["items"] if r["master_item_id"] == extra_phys["id"])
+    assert warna2["id"] not in {r["master_item_id"] for r in catalog["items"]}
+    assert prow["qty_belum_terkirim"] == 1000
+    assert xrow["qty_pesanan"] == 0
+    assert xrow["qty_belum_terkirim"] == 50  # physical addon counts
+
+    # (12) Incomplete parent–Add On relation: unnamed process lines without master → ignored
+    await db.orders.update_one({"id": oid}, {"$set": {
+        "line_items": [
+            {
+                "master_item_id": physical["id"],
+                "quantity": 1000,
+                "production_process": "print",
+            },
+            {
+                "name": "Add On Warna misterius",
+                "quantity": 1000,
+                "production_process": "print",
+            },
+        ],
+        "operator_splits": [
+            {"line_idx": 0, "qty_completed": 500},
+            {"line_idx": 1, "qty_completed": 1000},
+        ],
+    }})
+    row = next(r for r in (await list_compatibility_stock_catalog(db))["items"] if r["master_item_id"] == physical["id"])
+    # No invented link: only inventory line progress counts; orphan Add On ignored
+    assert row["qty_pesanan"] == 500
+    assert row["qty_belum_terkirim"] == 500
+
+    # (13) Cancelled PO / cancelled SJ — no double count
+    await db.orders.insert_one({
+        "id": "po-canc-addon",
+        "cancelled": True,
+        "line_items": [{
+            "master_item_id": physical["id"],
+            "quantity": 999,
+            "production_process": "print",
+        }],
+        "operator_splits": [{"line_idx": 0, "qty_completed": 999}],
+        "shipments": [{
+            "id": "ship-canc",
+            "delivery_status": "Terkirim",
+            "delivered_at": "2026-01-05T00:00:00+00:00",
+            "total_qty": 999,
+            "lines": [{"line_idx": 0, "qty": 999}],
+        }],
+    })
+    await db.sales_deliveries.insert_one({
+        "id": "sj-canc",
+        "po_id": oid,
+        "status": "SELESAI",
+        "is_cancelled": True,
+        "line_items": [{"line_idx": 0, "qty": 500}],
+    })
+    row = next(r for r in (await list_compatibility_stock_catalog(db))["items"] if r["master_item_id"] == physical["id"])
+    assert row["qty_pesanan"] == 500
+    assert row["qty_belum_terkirim"] == 500

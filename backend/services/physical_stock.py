@@ -2726,6 +2726,8 @@ def operational_availability(
 def aggregate_operational_orders(
     orders: Iterable[dict],
     accurate_owners: Optional[Dict[str, str]] = None,
+    *,
+    exclude_master_ids: Optional[Iterable[str]] = None,
 ) -> Dict[str, Dict[str, float]]:
     """Sum active ordered qty and ready qty per master_item_id.
 
@@ -2733,15 +2735,18 @@ def aggregate_operational_orders(
     the sole print line when exactly one print line is identified).
     Non-print lines: ready = ordered qty (siap kirim) without writing completed
     or packed fields on the order. Cancelled orders contribute nothing.
+    Masters in exclude_master_ids (e.g. item_type=SERVICE process Add On) never
+    contribute physical stock demand — work qty stays on production tracking.
     operational_availability floors the buckets.
     """
     from quantity_rules import is_print_line, operational_ready_qty_for_line
 
     owners = accurate_owners or {}
+    excluded = {str(mid).strip() for mid in (exclude_master_ids or []) if str(mid).strip()}
     totals: Dict[str, Dict[str, float]] = {}
 
     def add(master_id: str, ordered: float, completed: float) -> None:
-        if not master_id:
+        if not master_id or master_id in excluded:
             return
         slot = totals.setdefault(master_id, {"ordered_qty": 0.0, "completed_qty": 0.0})
         slot["ordered_qty"] = _qty_num(slot["ordered_qty"]) + _qty_num(ordered)
@@ -2766,21 +2771,29 @@ def aggregate_operational_orders(
                 continue
             if idx < 0 or idx >= len(lines) or not master_ids[idx]:
                 continue
+            if master_ids[idx] in excluded:
+                continue
             if not is_print_line(lines[idx]):
                 continue
             completed_by_idx[idx] = _qty_num(completed_by_idx.get(idx, 0)) + _qty_num(split.get("qty_completed"))
-        identified = [idx for idx, master_id in enumerate(master_ids) if master_id and is_print_line(lines[idx])]
+        identified = [
+            idx for idx, master_id in enumerate(master_ids)
+            if master_id and master_id not in excluded and is_print_line(lines[idx])
+        ]
         if unassigned and len(identified) == 1:
             idx = identified[0]
             extra = sum(_qty_num(split.get("qty_completed")) for split in unassigned)
             completed_by_idx[idx] = _qty_num(completed_by_idx.get(idx, 0)) + extra
         for idx, line in enumerate(lines):
+            mid = master_ids[idx]
+            if not mid or mid in excluded:
+                continue
             if not is_print_line(line):
                 ready = operational_ready_qty_for_line(order, idx)
             else:
                 ordered = _qty_num(line.get("quantity"))
                 ready = min(_qty_num(completed_by_idx.get(idx, 0)), ordered)
-            add(master_ids[idx], _qty_num(line.get("quantity")), ready)
+            add(mid, _qty_num(line.get("quantity")), ready)
     return totals
 
 
@@ -2952,6 +2965,21 @@ async def list_physical_stock_catalog(
     masters = await db[MASTER_ITEMS_COLLECTION].find(item_query, {"_id": 0}).sort(
         [("item_name", 1), ("id", 1)]
     ).to_list(1000)
+    from services.inventory_accounting import ITEM_TYPE_SERVICE
+
+    type_rows = await db[MASTER_ITEMS_COLLECTION].find(
+        {}, {"_id": 0, "id": 1, "item_type": 1},
+    ).to_list(5000)
+    service_master_ids = {
+        str(row.get("id") or "").strip()
+        for row in type_rows
+        if str(row.get("item_type") or "").strip().upper() == ITEM_TYPE_SERVICE
+        and str(row.get("id") or "").strip()
+    }
+    masters = [
+        row for row in masters
+        if str(row.get("id") or "").strip() not in service_master_ids
+    ]
     safe_page, safe_limit = _catalog_page(page, limit)
     if not masters:
         return {
@@ -2966,7 +2994,9 @@ async def list_physical_stock_catalog(
     units = await _catalog_units(db, masters)
     owners = await _unique_accurate_owners(db)
     orders = await db.orders.find({}, {"_id": 0}).to_list(20000)
-    progress = aggregate_operational_orders(orders, owners)
+    progress = aggregate_operational_orders(
+        orders, owners, exclude_master_ids=service_master_ids,
+    )
     master_ids = [master["id"] for master in masters if master.get("id")]
     delivered = await _r2_confirmed_delivery_qty(db, master_ids)
     from services.r2_go_live import get_delivery_cutover_baseline

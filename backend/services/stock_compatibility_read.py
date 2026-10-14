@@ -16,6 +16,7 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from services.inventory_accounting import ITEM_TYPE_SERVICE
 from services.physical_stock import (
     MASTER_ITEMS_COLLECTION,
     _catalog_page,
@@ -79,6 +80,10 @@ def aggregate_legacy_delivered_qty(
     delivered: Dict[str, float] = {}
     provenance: Dict[str, str] = {}
     unproven_masters: Dict[str, bool] = {}
+    # (order_id, master_id) that already received confirmed-shipment attribution.
+    # qty_delivered fallback is per-PO — never skipped just because another PO
+    # already delivered the same master.
+    confirmed_order_masters: set = set()
     # deliveries arg kept for API compatibility; SELESAI/SEBAGIAN are not proof.
     _ = deliveries
 
@@ -95,6 +100,7 @@ def aggregate_legacy_delivered_qty(
             provenance[mid] = source
 
     for order in order_by_id.values():
+        order_id = str(order.get("id") or "").strip()
         order_lines = list(order.get("line_items") or [])
         if not order_lines:
             continue
@@ -141,7 +147,7 @@ def aggregate_legacy_delivered_qty(
                     continue
             sh_tokens = _delivery_identity_tokens(sh)
             attributed, resolve_issues = _resolve_proven_line_attribution(
-                order_id=str(order.get("id") or ""),
+                order_id=order_id or "(missing-order)",
                 identity=sh_tokens[0] if sh_tokens else "(missing-id)",
                 proven=proven,
                 order_line_count=len(order_lines),
@@ -159,26 +165,29 @@ def aggregate_legacy_delivered_qty(
                     continue
                 mid = _line_master_id(order_lines[idx], owners)
                 add(mid, float(qty), "confirmed_shipment")
+                if order_id and mid:
+                    confirmed_order_masters.add((order_id, mid))
 
-    # Single-line order.qty_delivered fallback when no confirmed shipment contributed
+    # Single-line order.qty_delivered fallback when THIS PO has no confirmed
+    # shipment attribution for that master (other POs must not suppress it).
     for order in order_by_id.values():
+        order_id = str(order.get("id") or "").strip()
         order_lines = list(order.get("line_items") or [])
         master_ids = [_line_master_id(li, owners) for li in order_lines]
         identified = [m for m in master_ids if m]
         if len(identified) != 1:
             continue
         mid = identified[0]
-        if mid in delivered:
+        if order_id and (order_id, mid) in confirmed_order_masters:
             continue
         qd = _qty_num(order.get("qty_delivered"))
         if qd > 0:
             add(mid, qd, "order_qty_delivered")
 
+    # Ambiguous attribution always wins over partial confirmed totals — never
+    # leave READY/confirmed when any shipment for the master is unproven.
     for mid in unproven_masters:
-        if mid not in delivered:
-            provenance[mid] = "unproven"
-        elif provenance.get(mid) != "confirmed_shipment":
-            provenance[mid] = "unproven"
+        provenance[mid] = "unproven"
 
     return delivered, provenance
 
@@ -279,6 +288,21 @@ async def list_compatibility_stock_catalog(
     masters = await db[MASTER_ITEMS_COLLECTION].find(item_query, {"_id": 0}).sort(
         [("item_name", 1), ("id", 1)]
     ).to_list(1000)
+    # Process / jasa Add On (item_type=SERVICE) is work qty, not physical stock.
+    # No parent_line_id exists in schema — SERVICE type is the explicit signal.
+    type_rows = await db[MASTER_ITEMS_COLLECTION].find(
+        {}, {"_id": 0, "id": 1, "item_type": 1},
+    ).to_list(5000)
+    service_master_ids = {
+        str(row.get("id") or "").strip()
+        for row in type_rows
+        if str(row.get("item_type") or "").strip().upper() == ITEM_TYPE_SERVICE
+        and str(row.get("id") or "").strip()
+    }
+    masters = [
+        row for row in masters
+        if str(row.get("id") or "").strip() not in service_master_ids
+    ]
     safe_page, safe_limit = _catalog_page(page, limit)
     if not masters:
         return {
@@ -322,7 +346,9 @@ async def list_compatibility_stock_catalog(
         {"is_cancelled": {"$ne": True}, "cancelled": {"$ne": True}},
         {"_id": 0},
     ).to_list(20000)
-    progress = aggregate_operational_orders(orders, owners)
+    progress = aggregate_operational_orders(
+        orders, owners, exclude_master_ids=service_master_ids,
+    )
     delivered_map, provenance = aggregate_legacy_delivered_qty(orders, deliveries, owners)
 
     state_by_mid: Dict[str, dict] = {}
