@@ -6,7 +6,8 @@ production-compatible sources without writing R2 balances.
 Sources (read-only):
 - product_stock_state.total_qty → Stock Fisik
 - orders + operator_splits → Qty Pesanan / completed
-- sales_deliveries line qty → delivered for Belum Terkirim when identity is proven
+- order.shipments with delivery confirmation / Terkirim → delivered for Belum Terkirim
+  (sales_deliveries.status SELESAI/SEBAGIAN is SJ allocation, not customer delivery)
 
 Never mutates product_stock_state, physical_stock_balances, or ledgers.
 """
@@ -46,13 +47,23 @@ def aggregate_legacy_delivered_qty(
     deliveries: Iterable[dict],
     accurate_owners: Optional[Dict[str, str]] = None,
 ) -> Tuple[Dict[str, float], Dict[str, str]]:
-    """Map sales_deliveries into delivered qty per master_item_id.
+    """Map PROVEN customer deliveries into delivered qty per master_item_id.
+
+    sales_deliveries.status SELESAI/SEBAGIAN means SJ allocation vs PO remaining,
+    not customer receipt — those rows alone never reduce Qty Belum Terkirim.
 
     Returns (delivered_by_master, provenance_by_master) where provenance is:
-    - "sales_delivery_line" when line identity (or line_idx→order line) resolved
+    - "confirmed_shipment" when order.shipment has delivery confirmation / Terkirim
     - "order_qty_delivered" when single-line order falls back to order.qty_delivered
-    - "unproven" when delivery rows exist but cannot be attributed safely
+    - "unproven" when confirmation exists but line attribution is unsafe
     """
+    from services.r2_go_live import (
+        _confirmation_line_qtys,
+        _proven_shipped_qty_for_shipment,
+        _scale_attributed_to_proven,
+        _delivery_identity_tokens,
+    )
+
     owners = accurate_owners or {}
     order_by_id: Dict[str, dict] = {}
     for order in orders:
@@ -65,6 +76,8 @@ def aggregate_legacy_delivered_qty(
     delivered: Dict[str, float] = {}
     provenance: Dict[str, str] = {}
     unproven_masters: Dict[str, bool] = {}
+    # deliveries arg kept for API compatibility; SELESAI/SEBAGIAN are not proof.
+    _ = deliveries
 
     def add(mid: str, qty: float, source: str) -> None:
         if not mid or qty <= 0:
@@ -74,58 +87,81 @@ def aggregate_legacy_delivered_qty(
         if prev == "unproven" or source == "unproven":
             provenance[mid] = "unproven"
         elif prev and prev != source:
-            provenance[mid] = "sales_delivery_line"
+            provenance[mid] = "confirmed_shipment"
         else:
             provenance[mid] = source
 
-    for delivery in deliveries:
-        if delivery.get("is_cancelled") or delivery.get("cancelled"):
+    for order in order_by_id.values():
+        order_lines = list(order.get("line_items") or [])
+        if not order_lines:
             continue
-        po_id = str(delivery.get("po_id") or delivery.get("order_id") or "").strip()
-        order = order_by_id.get(po_id)
-        lines = list(delivery.get("line_items") or delivery.get("lines") or [])
-        if not lines:
-            # Header-only delivery: only safe for single-master orders via qty on header
-            if order is None:
+        seen_identities: set = set()
+        for sh in order.get("shipments") or []:
+            if not isinstance(sh, dict):
                 continue
-            order_lines = list(order.get("line_items") or [])
-            master_ids = [_line_master_id(li, owners) for li in order_lines]
-            identified = [m for m in master_ids if m]
-            header_qty = _qty_num(
-                delivery.get("total_qty")
-                or delivery.get("qty")
-                or delivery.get("quantity")
-            )
-            if len(identified) == 1 and header_qty > 0:
-                add(identified[0], header_qty, "sales_delivery_line")
-            elif identified:
-                for mid in set(identified):
-                    unproven_masters[mid] = True
-            continue
+            proven = _proven_shipped_qty_for_shipment(order, sh)
+            if proven <= 0:
+                continue
+            tokens = _delivery_identity_tokens(sh)
+            if tokens and any(t in seen_identities for t in tokens):
+                continue
+            for t in tokens:
+                seen_identities.add(t)
 
-        for ln in lines:
-            if not isinstance(ln, dict):
-                continue
-            mid = _line_master_id(ln, owners)
-            if not mid and order is not None:
-                try:
-                    idx = int(ln.get("line_idx"))
-                except (TypeError, ValueError):
-                    idx = None
-                order_lines = order.get("line_items") or []
-                if idx is not None and 0 <= idx < len(order_lines):
-                    mid = _line_master_id(order_lines[idx], owners)
-            qty = _delivery_line_qty(ln)
-            if mid and qty > 0:
-                add(mid, qty, "sales_delivery_line")
-            elif qty > 0 and order is not None:
-                # Delivery line qty present but identity unknown → mark order masters unproven
-                for oli in order.get("line_items") or []:
+            attributed = _confirmation_line_qtys(
+                order, sh, order_line_count=len(order_lines),
+            )
+            if attributed:
+                attributed = _scale_attributed_to_proven(attributed, proven)
+            else:
+                line_rows = sh.get("lines") if isinstance(sh.get("lines"), list) else []
+                attributed = {}
+                unresolved = False
+                for ln in line_rows:
+                    if not isinstance(ln, dict):
+                        continue
+                    qty = _delivery_line_qty(ln)
+                    if qty <= 0:
+                        continue
+                    try:
+                        idx = int(ln.get("line_idx"))
+                    except (TypeError, ValueError):
+                        unresolved = True
+                        continue
+                    if idx < 0 or idx >= len(order_lines):
+                        unresolved = True
+                        continue
+                    attributed[idx] = float(attributed.get(idx, 0.0)) + qty
+                if unresolved and len(order_lines) > 1:
+                    for oli in order_lines:
+                        om = _line_master_id(oli, owners)
+                        if om:
+                            unproven_masters[om] = True
+                    continue
+                if not attributed and len(order_lines) == 1:
+                    attributed = {0: proven}
+                elif attributed:
+                    attributed = _scale_attributed_to_proven(attributed, proven)
+                else:
+                    for oli in order_lines:
+                        om = _line_master_id(oli, owners)
+                        if om:
+                            unproven_masters[om] = True
+                    continue
+
+            if not attributed:
+                for oli in order_lines:
                     om = _line_master_id(oli, owners)
                     if om:
                         unproven_masters[om] = True
+                continue
+            for idx, qty in attributed.items():
+                if idx < 0 or idx >= len(order_lines):
+                    continue
+                mid = _line_master_id(order_lines[idx], owners)
+                add(mid, float(qty), "confirmed_shipment")
 
-    # Single-line order.qty_delivered fallback when no sales_delivery lines contributed
+    # Single-line order.qty_delivered fallback when no confirmed shipment contributed
     for order in order_by_id.values():
         order_lines = list(order.get("line_items") or [])
         master_ids = [_line_master_id(li, owners) for li in order_lines]
@@ -142,7 +178,7 @@ def aggregate_legacy_delivered_qty(
     for mid in unproven_masters:
         if mid not in delivered:
             provenance[mid] = "unproven"
-        elif provenance.get(mid) != "sales_delivery_line":
+        elif provenance.get(mid) != "confirmed_shipment":
             provenance[mid] = "unproven"
 
     return delivered, provenance
@@ -249,7 +285,11 @@ async def list_compatibility_stock_catalog(
             "compatibility": {
                 "physical_source": "product_stock_state.total_qty",
                 "order_source": "orders.line_items + operator_splits (print) / PO qty ready (non_print)",
-                "delivery_source": "sales_deliveries (+ order.qty_delivered single-line fallback)",
+                "delivery_source": (
+                    "confirmed order.shipments / delivery_confirmations "
+                    "(+ order.qty_delivered single-line fallback); "
+                    "not sales_deliveries.status SELESAI/SEBAGIAN"
+                ),
                 "physical_qty_scope": "COMPANY",
                 "branch_filter_affects_physical_qty": False,
             },

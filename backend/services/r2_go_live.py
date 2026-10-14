@@ -127,12 +127,6 @@ class DeliveryCutoverBlockedError(Exception):
         self.ambiguous = list(ambiguous or [])
 
 
-_INACTIVE_SD_STATUSES = frozenset({
-    "draft", "dibatalkan", "cancelled", "canceled", "deleted", "superseded",
-})
-_PROVEN_SD_STATUSES = frozenset({"selesai", "terkirim"})
-
-
 _DELIVERY_IDENTITY_KEYS = (
     "id",
     "sales_delivery_id",
@@ -186,19 +180,94 @@ def _mark_identities_seen(tokens: Iterable[str], seen_identities: set) -> None:
             seen_identities.add(token)
 
 
-def _sd_is_cancelled(doc: dict) -> bool:
-    if doc.get("is_cancelled") or doc.get("cancelled") or doc.get("deleted") or doc.get("is_deleted"):
-        return True
-    st = str(doc.get("status") or "").strip().lower()
-    return st in _INACTIVE_SD_STATUSES
+def _proven_shipped_qty_for_shipment(order: dict, shipment: dict) -> float:
+    """Qty actually confirmed delivered for one SJ — never from sales_deliveries.status.
+
+    create_sales_delivery sets sales_deliveries.status to SELESAI/SEBAGIAN when the
+    SJ allocation fills the PO remaining qty. That is NOT customer delivery proof.
+    Proof is delivery_confirmations and/or shipment delivery_status=Terkirim /
+    delivered_at (with qty_delivered when present).
+    """
+    from quantity_rules import (
+        delivery_batch_qty,
+        shipment_identity_keys,
+        shipment_is_active,
+    )
+    from services.physical_stock import _qty_num
+
+    if not isinstance(shipment, dict) or not shipment_is_active(shipment):
+        return 0.0
+    keys = shipment_identity_keys(order, shipment)
+    conf_total = 0.0
+    for rec in order.get("delivery_confirmations") or []:
+        if not isinstance(rec, dict):
+            continue
+        if rec.get("is_cancelled") or rec.get("cancelled") or rec.get("is_deleted"):
+            continue
+        if str(rec.get("shipment_id") or "").strip() not in keys:
+            continue
+        conf_total += float(_qty_num(rec.get("qty") if rec.get("qty") is not None else rec.get("quantity")))
+    batch = float(delivery_batch_qty(shipment))
+    if conf_total > 0:
+        return min(conf_total, batch) if batch > 0 else conf_total
+    if str(shipment.get("delivery_status") or "").strip() == "Terkirim" or shipment.get("delivered_at"):
+        if shipment.get("qty_delivered") is not None and str(shipment.get("qty_delivered")).strip() != "":
+            qd = float(_qty_num(shipment.get("qty_delivered")))
+            if qd <= 0:
+                return 0.0
+            return min(qd, batch) if batch > 0 else qd
+        return batch if batch > 0 else 0.0
+    return 0.0
 
 
-def _sd_is_proven_delivered(doc: dict) -> bool:
-    """Surat Jalan row counts as historically delivered only when status proves it."""
-    if _sd_is_cancelled(doc):
-        return False
-    st = str(doc.get("status") or "").strip().lower()
-    return st in _PROVEN_SD_STATUSES
+def _confirmation_line_qtys(
+    order: dict,
+    shipment: dict,
+    *,
+    order_line_count: int,
+) -> Dict[int, float]:
+    """Line-level qty from delivery_confirmations items when present."""
+    from quantity_rules import shipment_identity_keys
+    from services.physical_stock import _qty_num
+
+    keys = shipment_identity_keys(order, shipment)
+    out: Dict[int, float] = {}
+    for rec in order.get("delivery_confirmations") or []:
+        if not isinstance(rec, dict):
+            continue
+        if rec.get("is_cancelled") or rec.get("cancelled") or rec.get("is_deleted"):
+            continue
+        if str(rec.get("shipment_id") or "").strip() not in keys:
+            continue
+        items = [it for it in (rec.get("items") or []) if isinstance(it, dict)]
+        if not items:
+            continue
+        for it in items:
+            try:
+                idx = int(it.get("line_idx"))
+            except (TypeError, ValueError):
+                continue
+            if idx < 0 or idx >= order_line_count:
+                continue
+            qty = float(_qty_num(it.get("qty") if it.get("qty") is not None else it.get("quantity")))
+            if qty > 0:
+                out[idx] = float(out.get(idx, 0.0)) + qty
+    return out
+
+
+def _scale_attributed_to_proven(
+    attributed: Dict[int, float],
+    proven: float,
+) -> Dict[int, float]:
+    if proven <= 0 or not attributed:
+        return {}
+    total = sum(attributed.values())
+    if total <= 0:
+        return {}
+    if abs(total - proven) < 1e-9:
+        return dict(attributed)
+    factor = proven / total
+    return {idx: float(qty) * factor for idx, qty in attributed.items()}
 
 
 def _attribute_line_qtys(
@@ -293,15 +362,14 @@ def _build_delivery_baseline(
     """Snapshot PROVEN historically shipped qty as cutover delivery baseline.
 
     Operator completion alone never fills the baseline — production selesai ≠
-    barang sudah dikirim. Baseline prevents R2 from re-shipping qty that was
-    already proven delivered pre-cutover, while Qty Belum Terkirim for
-    completed-but-unshipped stock remains.
+    barang sudah dikirim. sales_deliveries.status SELESAI/SEBAGIAN is SJ
+    allocation against the PO, NOT customer delivery proof, and never fills
+    the baseline by itself.
 
-    Dedupes order.shipments vs sales_deliveries by shipment identity token.
-    Identities already booked in R2 confirmations are excluded (no double count).
-    Ambiguous attribution is returned (never invented as delivered/zero).
+    Only order.shipments with delivery_confirmations and/or delivery_status
+    Terkirim contribute. Alias identity dedupe prevents double counting the
+    same real shipment. Ambiguous line attribution fail-closes.
     """
-    from quantity_rules import shipment_is_delivered
     from services.physical_stock import _line_master_id, _order_cancelled, _qty_num
 
     owners = accurate_owners or {}
@@ -311,15 +379,9 @@ def _build_delivery_baseline(
     ambiguous: List[dict] = []
     order_count = 0
     line_count = 0
-
-    deliveries_by_po: Dict[str, List[dict]] = {}
-    for doc in sales_deliveries or []:
-        if not isinstance(doc, dict):
-            continue
-        po_id = str(doc.get("po_id") or doc.get("order_id") or "").strip()
-        if not po_id:
-            continue
-        deliveries_by_po.setdefault(po_id, []).append(doc)
+    # sales_deliveries retained in signature for callers/preview; never used as
+    # delivery proof (SELESAI/SEBAGIAN = allocation, not customer receipt).
+    _ = sales_deliveries
 
     for order in orders:
         if _order_cancelled(order):
@@ -334,11 +396,11 @@ def _build_delivery_baseline(
         shipped_by_idx: Dict[int, float] = {}
         seen_identities: set = set()
 
-        # 1) Proven delivered shipments on the order (Terkirim / confirmation).
         for sh in order.get("shipments") or []:
             if not isinstance(sh, dict):
                 continue
-            if not shipment_is_delivered(order, sh):
+            proven = _proven_shipped_qty_for_shipment(order, sh)
+            if proven <= 0:
                 continue
             tokens = _delivery_identity_tokens(sh)
             identity = tokens[0] if tokens else ""
@@ -347,92 +409,56 @@ def _build_delivery_baseline(
             ):
                 continue
             _mark_identities_seen(tokens, seen_identities)
-            rows = sh.get("lines") if isinstance(sh.get("lines"), list) else []
-            attributed, issues = _attribute_line_qtys(
-                order_id=order_id,
-                source="order.shipment",
-                identity=identity or "(missing-id)",
-                line_rows=rows,
-                order_line_count=len(lines),
-            )
-            ambiguous.extend(issues)
-            if issues:
-                continue
-            header_qty = float(_qty_num(sh.get("total_qty") or sh.get("qty")))
-            attributed, header_issues = _header_qty_for_sole_line(
-                order_id=order_id,
-                source="order.shipment",
-                identity=identity or "(missing-id)",
-                header_qty=header_qty,
-                order_line_count=len(lines),
-                attributed=attributed,
-            )
-            ambiguous.extend(header_issues)
-            if header_issues:
-                continue
-            for idx, qty in attributed.items():
-                shipped_by_idx[idx] = float(shipped_by_idx.get(idx, 0.0)) + qty
 
-        # 2) Proven sales_deliveries (SELESAI/TERKIRIM), skip identities already counted.
-        for sd in deliveries_by_po.get(order_id, []):
-            if not _sd_is_proven_delivered(sd):
-                # Non-draft active SJ without proven delivered status is not silently
-                # treated as shipped; if it has qty but unclear status, flag when it
-                # looks like a completed document we cannot classify.
-                st = str(sd.get("status") or "").strip().lower()
-                if st and st not in _INACTIVE_SD_STATUSES and st not in _PROVEN_SD_STATUSES:
-                    if st == "sebagian":
-                        # Partial PO fulfillment docs may still be undelivered to customer.
-                        # Do not invent delivery; leave Belum Terkirim intact.
+            attributed = _confirmation_line_qtys(
+                order, sh, order_line_count=len(lines),
+            )
+            if attributed:
+                attributed = _scale_attributed_to_proven(attributed, proven)
+            else:
+                rows = sh.get("lines") if isinstance(sh.get("lines"), list) else []
+                attributed, issues = _attribute_line_qtys(
+                    order_id=order_id,
+                    source="order.shipment",
+                    identity=identity or "(missing-id)",
+                    line_rows=rows,
+                    order_line_count=len(lines),
+                )
+                ambiguous.extend(issues)
+                if issues:
+                    continue
+                if not attributed:
+                    attributed, header_issues = _header_qty_for_sole_line(
+                        order_id=order_id,
+                        source="order.shipment",
+                        identity=identity or "(missing-id)",
+                        header_qty=proven,
+                        order_line_count=len(lines),
+                        attributed=attributed,
+                    )
+                    ambiguous.extend(header_issues)
+                    if header_issues:
                         continue
-                    ambiguous.append({
-                        "order_id": order_id,
-                        "source": "sales_delivery",
-                        "identity": _delivery_identity_token(sd) or "(missing-id)",
-                        "reason": f"unproven_status:{st or 'blank'}",
-                    })
-                continue
-            tokens = _delivery_identity_tokens(sd)
-            identity = tokens[0] if tokens else ""
-            if tokens and _identity_already_counted(
-                tokens, seen_identities=seen_identities, exclude_identities=excluded,
-            ):
-                continue
-            _mark_identities_seen(tokens, seen_identities)
-            rows = sd.get("line_items") if isinstance(sd.get("line_items"), list) else []
-            if not rows and isinstance(sd.get("lines"), list):
-                rows = sd.get("lines")
-            attributed, issues = _attribute_line_qtys(
-                order_id=order_id,
-                source="sales_delivery",
-                identity=identity or "(missing-id)",
-                line_rows=rows,
-                order_line_count=len(lines),
-            )
-            ambiguous.extend(issues)
-            if issues:
-                continue
-            header_qty = float(_qty_num(sd.get("total_qty") or sd.get("qty")))
-            attributed, header_issues = _header_qty_for_sole_line(
-                order_id=order_id,
-                source="sales_delivery",
-                identity=identity or "(missing-id)",
-                header_qty=header_qty,
-                order_line_count=len(lines),
-                attributed=attributed,
-            )
-            ambiguous.extend(header_issues)
-            if header_issues:
+                else:
+                    attributed = _scale_attributed_to_proven(attributed, proven)
+            if not attributed:
+                ambiguous.append({
+                    "order_id": order_id,
+                    "source": "order.shipment",
+                    "identity": identity or "(missing-id)",
+                    "reason": "proven_delivery_without_attributable_lines",
+                    "qty": proven,
+                })
                 continue
             for idx, qty in attributed.items():
-                shipped_by_idx[idx] = float(shipped_by_idx.get(idx, 0.0)) + qty
+                shipped_by_idx[idx] = float(shipped_by_idx.get(idx, 0.0)) + float(qty)
 
         touched = False
         for idx, shipped in shipped_by_idx.items():
             if idx < 0 or idx >= len(lines) or not master_ids[idx]:
                 continue
             ordered = float(_qty_num(lines[idx].get("quantity")))
-            # Never baseline above ordered qty; never invent from completion.
+            # Never baseline above ordered qty; never invent from completion/SJ status.
             qty = min(max(float(shipped), 0.0), max(ordered, 0.0))
             if qty <= 0:
                 continue
