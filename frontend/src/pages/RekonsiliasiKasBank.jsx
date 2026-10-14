@@ -1,11 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { AlertCircle, CheckSquare, Eye, Plus, Trash2, X, RefreshCw, Upload, Landmark, BookOpen, ArrowLeftRight, Link2 } from "lucide-react";
+import { AlertCircle, Check, CheckSquare, Eye, Plus, Trash2, X, RefreshCw, Upload, Landmark, BookOpen, ArrowLeftRight, Link2, Search, Pencil } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { newOperationKey, reconViewState, shouldApplyResponse } from "../lib/cashBankReconView";
 import { useDebouncedLiveSearch, liveSearchTableView } from "../hooks/useDebouncedLiveSearch";
 import { KbField, KbSection, KbSearchField } from "../components/CashBankFormPrimitives";
+
+/** Cent-based money for UI totals only; server Decimal remains the authority. */
+const moneyCents = (value) => {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 0;
+  return Math.round(n * 100);
+};
 
 import "./RekonsiliasiKasBank.css";
 
@@ -692,7 +699,9 @@ export default function RekonsiliasiKasBank() {
   const { hasPerm } = useAuth();
   const canReconcile = hasPerm("cash_bank.reconcile");
   const canManage = hasPerm("cash_bank.manage");
-  const canOpenPayment = hasPerm("cash_bank.view") || hasPerm("cash_bank.manage");
+  const canViewCashBank = hasPerm("cash_bank.view") || hasPerm("cash_bank.manage");
+  const canOpenReceipt = canViewCashBank;
+  const canOpenPayment = canViewCashBank;
   const [mode, setMode] = useState("pairs");
   const [banks, setBanks] = useState([]);
   const [cashBankId, setCashBankId] = useState("");
@@ -715,6 +724,22 @@ export default function RekonsiliasiKasBank() {
   const [selectedBank, setSelectedBank] = useState("");
   const [selectedBook, setSelectedBook] = useState("");
   const [suggestions, setSuggestions] = useState(null);
+  const [cariOpen, setCariOpen] = useState(false);
+  const [cariTarget, setCariTarget] = useState(null);
+  const [cariItems, setCariItems] = useState([]);
+  const [cariSelected, setCariSelected] = useState(() => new Set());
+  const [cariSelectedMeta, setCariSelectedMeta] = useState(() => ({}));
+  const [cariSearch, setCariSearch] = useState("");
+  const [cariMessage, setCariMessage] = useState("");
+  const [cariLoading, setCariLoading] = useState(false);
+  const [cariPage, setCariPage] = useState(1);
+  const [cariTotal, setCariTotal] = useState(0);
+  const [cariPageSize] = useState(50);
+  const [expandedGroups, setExpandedGroups] = useState(() => ({}));
+  const cariGen = useRef(0);
+  const cariSearchInput = useRef(null);
+  const [buatOpen, setBuatOpen] = useState(false);
+  const [buatBank, setBuatBank] = useState(null);
   const [preview, setPreview] = useState(null);
   const [importOpen, setImportOpen] = useState(false);
   const [bcaOpen, setBcaOpen] = useState(false);
@@ -723,11 +748,15 @@ export default function RekonsiliasiKasBank() {
   const [bcaMessage, setBcaMessage] = useState("");
   const importDialog = useRef(null);
   const bcaDialog = useRef(null);
+  const cariDialog = useRef(null);
+  const buatDialog = useRef(null);
   const importFile = useRef(null);
   const uploadInput = useRef(null);
   const bcaInput = useRef(null);
   const bcaFile = useRef(null);
   const importButton = useRef(null);
+  const groupMatchKey = useRef("");
+  const groupMatchingRef = useRef(false);
   const [mapping, setMapping] = useState({
     header_row: 0,
     date_column: 0,
@@ -752,6 +781,7 @@ export default function RekonsiliasiKasBank() {
   const requestRef = useRef(0);
   const decisionKeys = useRef({});
   const matchKey = useRef("");
+  const matchSlot = useRef("");
   const cancelKeys = useRef({});
   const matchingRef = useRef(false);
   const suggestionGen = useRef(0);
@@ -767,11 +797,30 @@ export default function RekonsiliasiKasBank() {
   }, [bcaOpen]);
 
   useEffect(() => {
+    if (cariOpen && cariDialog.current && !cariDialog.current.open) cariDialog.current.showModal();
+    if (!cariOpen && cariDialog.current?.open) cariDialog.current.close();
+  }, [cariOpen]);
+
+  useEffect(() => {
+    if (buatOpen && buatDialog.current && !buatDialog.current.open) buatDialog.current.showModal();
+    if (!buatOpen && buatDialog.current?.open) buatDialog.current.close();
+  }, [buatOpen]);
+
+  useEffect(() => {
     setSelectedBank("");
     setSelectedBook("");
     setSuggestions(null);
     setRecommendationRows([]);
     matchKey.current = "";
+    groupMatchKey.current = "";
+    setCariOpen(false);
+    setCariTarget(null);
+    setCariSelected(new Set());
+    setCariSelectedMeta({});
+    setCariPage(1);
+    setCariTotal(0);
+    setBuatOpen(false);
+    setBuatBank(null);
     suggestionGen.current += 1;
   }, [cashBankId, startDate, endDate, q]);
 
@@ -1174,9 +1223,15 @@ export default function RekonsiliasiKasBank() {
     }
   };
 
-  const onMatch = async () => {
-    if (!canReconcile || !selectedBank || !selectedBook || matchingRef.current) return;
-    if (!matchKey.current) matchKey.current = newOperationKey();
+  const onMatchDirect = async (statementLineId, journalLineId) => {
+    const bankId = String(statementLineId || "");
+    const bookId = String(journalLineId || "");
+    if (!canReconcile || !bankId || !bookId || matchingRef.current) return;
+    const slot = `${bankId}|${bookId}`;
+    if (!matchKey.current || matchSlot.current !== slot) {
+      matchKey.current = newOperationKey();
+      matchSlot.current = slot;
+    }
     const idempotencyKey = matchKey.current;
     matchingRef.current = true;
     setBusy(true);
@@ -1184,8 +1239,8 @@ export default function RekonsiliasiKasBank() {
     try {
       const saved = await api.createCashBankPair({
         cash_bank_id: cashBankId,
-        statement_line_id: selectedBank,
-        journal_line_id: selectedBook,
+        statement_line_id: bankId,
+        journal_line_id: bookId,
         idempotency_key: idempotencyKey,
         start_date: startDate,
         end_date: endDate,
@@ -1200,6 +1255,7 @@ export default function RekonsiliasiKasBank() {
       setSuggestions(null);
       setRecommendationRows([]);
       matchKey.current = "";
+      matchSlot.current = "";
       suggestionGen.current += 1;
       await loadWorkspace(cashBankId, startDate, endDate, q);
     } catch (ex) {
@@ -1210,15 +1266,191 @@ export default function RekonsiliasiKasBank() {
     }
   };
 
-  const onCancel = async (matchId) => {
+  const onMatch = async () => {
+    if (!selectedBank || !selectedBook) return;
+    await onMatchDirect(selectedBank, selectedBook);
+  };
+
+  const fetchCariCandidates = async ({
+    journalLineId,
+    needle = "",
+    page = 1,
+    append = false,
+    applyTarget = false,
+  }) => {
+    if (!journalLineId || !cashBankId) return;
+    const gen = ++cariGen.current;
+    setCariLoading(true);
+    setCariMessage("");
+    try {
+      const res = await api.cashBankPairGroupCandidates({
+        cash_bank_id: cashBankId,
+        journal_line_id: journalLineId,
+        start_date: startDate,
+        end_date: endDate,
+        q: needle || undefined,
+        page,
+        page_size: cariPageSize,
+      });
+      if (gen !== cariGen.current) return;
+      const items = Array.isArray(res?.items) ? res.items : [];
+      setCariItems((prev) => (append ? [...prev, ...items] : items));
+      setCariPage(Number(res?.page) || page);
+      setCariTotal(Number(res?.total) || items.length);
+      if (applyTarget && res?.target_amount != null) {
+        setCariTarget((current) => (current ? {
+          ...current,
+          amount: res.target_amount,
+          direction: res.direction || current.direction,
+          journal_number: res.journal_number || current.journal_number,
+          description: res.description || current.description,
+          date: res.journal_date || current.date,
+        } : current));
+      }
+    } catch (ex) {
+      if (gen !== cariGen.current) return;
+      if (!append) setCariItems([]);
+      setCariMessage(errPayload(ex).message);
+    } finally {
+      if (gen === cariGen.current) setCariLoading(false);
+    }
+  };
+
+  const openCari = async (bookRow, bankRow = null) => {
+    if (!canReconcile || !bookRow?.journal_line_id || !cashBankId) return;
+    setCariOpen(true);
+    setCariMessage("");
+    setCariSearch("");
+    setCariSelected(new Set());
+    setCariSelectedMeta({});
+    setCariItems([]);
+    setCariPage(1);
+    setCariTotal(0);
+    setCariTarget({
+      journal_line_id: bookRow.journal_line_id,
+      journal_number: bookRow.journal_number,
+      date: bookRow.date,
+      description: bookRow.description,
+      amount: bookRow.absolute_amount,
+      direction: bookRow.direction,
+      currency_code: bookRow.currency_code,
+      bank_hint_id: bankRow?.id || null,
+    });
+    groupMatchKey.current = newOperationKey();
+    await fetchCariCandidates({
+      journalLineId: bookRow.journal_line_id,
+      needle: "",
+      page: 1,
+      append: false,
+      applyTarget: true,
+    });
+  };
+
+  const searchCari = (needle) => {
+    if (!cariTarget?.journal_line_id || !cashBankId) return;
+    setCariSearch(needle);
+    // Keep selection across search refreshes; only replace the visible page.
+    fetchCariCandidates({
+      journalLineId: cariTarget.journal_line_id,
+      needle,
+      page: 1,
+      append: false,
+      applyTarget: false,
+    });
+  };
+
+  const loadMoreCari = () => {
+    if (!cariTarget?.journal_line_id || cariLoading) return;
+    if (cariItems.length >= cariTotal) return;
+    fetchCariCandidates({
+      journalLineId: cariTarget.journal_line_id,
+      needle: cariSearch,
+      page: cariPage + 1,
+      append: true,
+      applyTarget: false,
+    });
+  };
+
+  const toggleCariLine = (row) => {
+    const lineId = row?.id;
+    if (!lineId) return;
+    setCariSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(lineId)) next.delete(lineId);
+      else next.add(lineId);
+      return next;
+    });
+    setCariSelectedMeta((prev) => {
+      const next = { ...prev };
+      if (next[lineId]) delete next[lineId];
+      else next[lineId] = row;
+      return next;
+    });
+  };
+
+  const confirmCariGroup = async () => {
+    if (!canReconcile || !cariTarget?.journal_line_id || groupMatchingRef.current) return;
+    const ids = Array.from(cariSelected);
+    if (ids.length < 2) return;
+    if (!groupMatchKey.current) groupMatchKey.current = newOperationKey();
+    const idempotencyKey = groupMatchKey.current;
+    groupMatchingRef.current = true;
+    setBusy(true);
+    setCariMessage("");
+    try {
+      const saved = await api.createCashBankPairGroup({
+        cash_bank_id: cashBankId,
+        journal_line_id: cariTarget.journal_line_id,
+        statement_line_ids: ids,
+        idempotency_key: idempotencyKey,
+        start_date: startDate,
+        end_date: endDate,
+      });
+      if (saved.status !== "active") {
+        setMessage("Operasi grup sebelumnya tidak diaktifkan kembali.");
+      }
+      setCariOpen(false);
+      setCariTarget(null);
+      setCariSelected(new Set());
+      setCariSelectedMeta({});
+      setCariItems([]);
+      setCariPage(1);
+      setCariTotal(0);
+      groupMatchKey.current = "";
+      setRecommendationRows([]);
+      suggestionGen.current += 1;
+      setTab("matched");
+      await loadWorkspace(cashBankId, startDate, endDate, q);
+    } catch (ex) {
+      setCariMessage(errPayload(ex).message);
+    } finally {
+      groupMatchingRef.current = false;
+      setBusy(false);
+    }
+  };
+
+  const openBuat = (bankRow) => {
+    if (!bankRow) return;
+    setBuatBank(bankRow);
+    setBuatOpen(true);
+  };
+
+  const onCancel = async (matchId, kind = "pair") => {
     if (!canReconcile) return;
     if (!cancelKeys.current[matchId]) cancelKeys.current[matchId] = newOperationKey();
     setBusy(true);
     try {
-      await api.cancelCashBankPair(matchId, {
-        idempotency_key: cancelKeys.current[matchId],
-        reason: "Batalkan pencocokan",
-      });
+      if (kind === "pair_group") {
+        await api.cancelCashBankPairGroup(matchId, {
+          idempotency_key: cancelKeys.current[matchId],
+          reason: "Batalkan pencocokan grup",
+        });
+      } else {
+        await api.cancelCashBankPair(matchId, {
+          idempotency_key: cancelKeys.current[matchId],
+          reason: "Batalkan pencocokan",
+        });
+      }
       setRecommendationRows([]);
       suggestionGen.current += 1;
       await loadWorkspace(cashBankId, startDate, endDate, q);
@@ -1306,54 +1538,92 @@ export default function RekonsiliasiKasBank() {
   const suggestionList = suggestions?.suggestions || [];
   const sortedSuggestions = sortCandidateSuggestions(suggestionList, selectedBankRow);
   const suggestionById = new Map(sortedSuggestions.map((item) => [item.journal_line_id, item]));
-  const candidateIds = new Set(suggestionById.keys());
-  const visibleBookIds = new Set(visibleBook.map((row) => row.journal_line_id));
-  const offPageSuggestions = sortedSuggestions.filter((item) => !visibleBookIds.has(item.journal_line_id));
-  const suggestionBookRow = (item) => ({
+  const suggestionBookRow = (item, bankRow = selectedBankRow) => ({
     journal_line_id: item.journal_line_id,
     journal_number: item.journal_number || "—",
     date: item.date,
     description: item.description || item.journal_number || "Kandidat pembukuan",
-    direction: item.direction || selectedBankRow?.direction,
+    direction: item.direction || bankRow?.direction,
     absolute_amount: item.amount,
-    currency_code: item.currency_code || selectedBankRow?.currency_code || currency,
+    currency_code: item.currency_code || bankRow?.currency_code || currency,
     matchable: true,
     status: "posted",
   });
-  const selectedBookRow = pageBookRow || sortedSuggestions.map(suggestionBookRow).find((row) => row.journal_line_id === selectedBook);
-  const orderedBook = (() => {
-    const candidates = [];
-    const rest = [];
-    visibleBook.forEach((row) => (candidateIds.has(row.journal_line_id) ? candidates : rest).push(row));
-    candidates.sort((left, right) => sortedSuggestions.findIndex((item) => item.journal_line_id === left.journal_line_id) - sortedSuggestions.findIndex((item) => item.journal_line_id === right.journal_line_id));
-    return [...candidates, ...rest];
-  })();
-  const selectedBankTotal = selectedBankRow ? Number(selectedBankRow.amount || 0) : 0;
-  const selectedBookTotal = selectedBookRow ? Number(selectedBookRow.absolute_amount || 0) : 0;
-  const selectionDiff = selectedBank && selectedBook ? selectedBankTotal - selectedBookTotal : null;
-  const bankHasCandidate = sortedSuggestions.length > 0;
+  const selectedBookRow = pageBookRow || sortedSuggestions.map((item) => suggestionBookRow(item)).find((row) => row.journal_line_id === selectedBook);
   const ready = phase === "ready";
-  const canMatch = ready && !busy && workspace?.feature_ready !== false && selectedBankRow?.matchable && selectedBookRow?.matchable;
-  const matchHint = (() => {
-    if (!canReconcile) return "Tidak berizin mencocokkan";
-    if (busy) return "Sedang memproses";
-    if (!ready) return "Data rekonsiliasi belum siap";
-    if (workspace?.feature_ready === false) return workspace.feature_message || "Pencocokan belum tersedia";
-    if (!selectedBankRow) return "Belum memilih transaksi bank";
-    if (!selectedBankRow.matchable) return /duplikat/i.test(selectedBankRow.block_reason || "") ? "Transaksi menunggu keputusan duplikat" : (selectedBankRow.block_reason || "Transaksi bank tidak dapat dicocokkan");
-    if (!selectedBookRow) return "Belum memilih transaksi pembukuan";
-    if (!selectedBookRow.matchable) return selectedBookRow.block_reason || "Transaksi pembukuan tidak dapat dicocokkan";
-    return "Satu transaksi di setiap sisi";
-  })();
   const matched = workspaceInScope ? (workspace?.matched_pairs || []) : [];
-  const recommendationViews = (ready && workspaceInScope ? recommendationRows : []).flatMap((entry) => {
+  const recommendationByBank = new Map();
+  (ready && workspaceInScope ? recommendationRows : []).forEach((entry) => {
     const bankRow = visibleBank.find((row) => row.id === entry.statement_line_id && row.matchable);
-    if (!bankRow) return [];
-    return sortCandidateSuggestions(entry.suggestions, bankRow)
-      .filter((item) => item?.journal_line_id)
-      .map((item) => ({ bank: bankRow, item, response: entry.response }));
+    if (!bankRow) return;
+    const sorted = sortCandidateSuggestions(entry.suggestions, bankRow).filter((item) => item?.journal_line_id);
+    const ambiguous = Boolean(entry.response?.ambiguous) || sorted.length > 1;
+    const unique = !ambiguous && sorted.length === 1 ? sorted[0] : null;
+    recommendationByBank.set(bankRow.id, {
+      bank: bankRow,
+      suggestions: sorted,
+      response: entry.response,
+      ambiguous,
+      unique,
+      offered: Boolean(unique),
+    });
   });
-  const selectionIsRecommendation = recommendationViews.some((row) => row.bank.id === selectedBank && row.item.journal_line_id === selectedBook);
+  const usedBookIds = new Set(
+    [...recommendationByBank.values()]
+      .filter((row) => row.offered && row.unique)
+      .map((row) => row.unique.journal_line_id),
+  );
+  const unpairedBooks = visibleBook.filter((row) => !usedBookIds.has(row.journal_line_id));
+  const alignRows = (() => {
+    const previewBookIds = new Set(usedBookIds);
+    const rows = visibleBank.map((bankRow) => {
+      const rec = recommendationByBank.get(bankRow.id);
+      let book = null;
+      if (rec?.offered) {
+        book = visibleBook.find((row) => row.journal_line_id === rec.unique.journal_line_id) || suggestionBookRow(rec.unique, bankRow);
+      } else if (rec?.ambiguous && rec.suggestions?.[0]) {
+        // Preview first candidate without blue offer; Cocok stays disabled.
+        const first = rec.suggestions[0];
+        book = visibleBook.find((row) => row.journal_line_id === first.journal_line_id) || suggestionBookRow(first, bankRow);
+        if (book?.journal_line_id) previewBookIds.add(book.journal_line_id);
+      }
+      return {
+        key: bankRow.id,
+        bank: bankRow,
+        book,
+        offered: Boolean(rec?.offered),
+        ambiguous: Boolean(rec?.ambiguous),
+        suggestionCount: rec?.suggestions?.length || 0,
+      };
+    });
+    visibleBook.forEach((bookRow) => {
+      if (previewBookIds.has(bookRow.journal_line_id)) return;
+      rows.push({
+        key: `book:${bookRow.journal_line_id}`,
+        bank: null,
+        book: bookRow,
+        offered: false,
+        ambiguous: false,
+        suggestionCount: 0,
+      });
+    });
+    return rows;
+  })();
+  const cariSelectedRows = Array.from(cariSelected).map((id) => (
+    cariSelectedMeta[id] || cariItems.find((row) => row.id === id) || { id, amount: 0 }
+  ));
+  const cariTotalCents = cariSelectedRows.reduce((sum, row) => sum + moneyCents(row.amount), 0);
+  const cariTargetCents = moneyCents(cariTarget?.amount);
+  const cariDiffCents = cariTarget ? cariTotalCents - cariTargetCents : null;
+  const cariHasMore = cariItems.length < cariTotal;
+  const cariConfirmEnabled = Boolean(
+    canReconcile
+    && !busy
+    && cariTarget
+    && cariSelected.size >= 2
+    && cariDiffCents === 0
+    && workspace?.feature_ready !== false,
+  );
   const sample = preview?.sample_rows || [];
   const headers = sample[Number(mapping.header_row) || 0] || [];
   const columnCount = Math.max(0, ...sample.map((row) => row.length));
@@ -1390,16 +1660,65 @@ export default function RekonsiliasiKasBank() {
     if (!Number.isFinite(value)) return null;
     return `SALDO ${money(value, row.currency_code || currency)}`;
   };
-  const matchControl = canReconcile ? (
-    <button type="button" className="primary sm kb-row-match" disabled={!canMatch} onClick={onMatch} data-testid="kas-bank-pair-match"><Link2 size={15} />{busy ? "Memproses…" : "Cocokkan"}</button>
-  ) : null;
-  const hintNode = <span className="kb-match-hint" data-testid="kas-bank-match-hint">{matchHint}</span>;
   const stateMessage = (state, label, count) => {
     if (state === "loading") return <p className="recon-empty" role="status">Memuat {label}…</p>;
     if (state === "forbidden") return <p className="recon-empty" role="alert">Tidak berizin melihat {label}.</p>;
     if (state === "error" || state === "conflict") return <p className="recon-empty" role="alert">{state === "error" ? "Gagal memuat" : "Konflik data"} {label}.</p>;
     if (ready && !count) return <p className="recon-empty">Tidak ada baris belum cocok pada tampilan ini.</p>;
     return null;
+  };
+  const actionButtons = (row) => {
+    const bankRow = row.bank;
+    const bookRow = row.book;
+    const cocokEnabled = Boolean(
+      canReconcile
+      && ready
+      && !busy
+      && workspace?.feature_ready !== false
+      && row.offered
+      && bankRow?.matchable
+      && bookRow?.matchable
+      && !row.ambiguous,
+    );
+    const cariEnabled = Boolean(canReconcile && ready && !busy && (bookRow?.matchable || bankRow?.matchable));
+    const buatEnabled = Boolean(canReconcile && ready && !busy && bankRow);
+    return (
+      <div className="kb-card-actions" data-testid="kas-bank-card-actions">
+        <button
+          type="button"
+          className={`kb-action-cocok${cocokEnabled ? " is-ready" : ""}`}
+          disabled={!cocokEnabled}
+          data-testid="kas-bank-pair-match"
+          onClick={() => onMatchDirect(bankRow.id, bookRow.journal_line_id)}
+          title="Cocok"
+        >
+          <Check size={15} />
+          <span>Cocok</span>
+        </button>
+        <button
+          type="button"
+          className="kb-action-cari"
+          disabled={!cariEnabled || !bookRow}
+          data-testid="kas-bank-pair-search"
+          onClick={() => openCari(bookRow || unpairedBooks[0], bankRow)}
+          title="Cari"
+        >
+          <Search size={15} />
+          <span>Cari</span>
+        </button>
+        <button
+          type="button"
+          className="kb-action-buat"
+          disabled={!buatEnabled}
+          data-testid="kas-bank-pair-create"
+          onClick={() => openBuat(bankRow)}
+          title="Buat"
+        >
+          <Pencil size={15} />
+          <span>Buat</span>
+        </button>
+      </div>
+    );
   };
 
   return (
@@ -1454,127 +1773,161 @@ export default function RekonsiliasiKasBank() {
         {[["unmatched", "Belum Cocok"], ["matched", "Sudah Cocok"], ["import", "Riwayat Impor"], ["duplicates", `Review Duplikat (${pendingBadge})`]].map(([id, label]) => <button key={id} id={`recon-tab-${id}`} role="tab" aria-selected={tab === id} aria-controls={`recon-panel-${id}`} type="button" className={tab === id ? "is-active" : ""} onClick={() => setTab(id)}>{label}</button>)}
       </div>
 
-      {tab === "unmatched" && <div className="recon-tab-body" role="tabpanel" id="recon-panel-unmatched" aria-labelledby="recon-tab-unmatched">
-        <div className="kb-pane-switch" aria-label="Panel"><button type="button" aria-pressed={pane === "bank"} className={pane === "bank" ? "primary sm" : "ghost sm"} onClick={() => setPane("bank")}>Bank</button><button type="button" aria-pressed={pane === "book"} className={pane === "book" ? "primary sm" : "ghost sm"} onClick={() => setPane("book")}>Buku</button></div>
-        {recommendationViews.length > 0 && <section className="kb-recommendations" data-testid="kas-bank-recommendations">
-          <h2>Rekomendasi pasangan</h2>
-          <p>Nominal sama bukan persetujuan. Pilih satu pasangan secara eksplisit sebelum mencocokkan.</p>
-          {recommendationViews.map(({ bank: bankRow, item, response }) => {
-            const pageBook = bookRows.find((row) => row.journal_line_id === item.journal_line_id);
-            const bookAmount = item.amount != null && item.amount !== "" ? item.amount : pageBook?.absolute_amount;
-            const bookDisplay = pageBook || {
-              journal_number: item.journal_number || "—",
-              date: item.date,
-              description: item.description || item.journal_number || "Kandidat pembukuan",
-              direction: item.direction || bankRow.direction,
-              currency_code: item.currency_code || bankRow.currency_code || currency,
-            };
-            const selected = selectedBank === bankRow.id && selectedBook === item.journal_line_id;
-            const notes = candidateNotes(item, bankRow);
-            return <div key={`${bankRow.id}:${item.journal_line_id}`} className={`kb-matched-pair kb-recommendation${selected ? " is-selected" : ""}`} data-testid="kas-bank-recommendation">
-              <div className="kb-matched-side kb-rec-bank">
-                <input type="radio" name="recommendation-pair" checked={selected} onChange={() => selectRecommendation(bankRow, item, response)} disabled={!canReconcile || busy || !bankRow.matchable} aria-label={`Pilih rekomendasi ${bankRow.description || bankRow.id} ${item.journal_number || item.journal_line_id}`} />
-                <div><span className="recon-date">{reconDate(bankRow.date)}</span><span className="recon-description">{bankRow.description || "—"}</span><small>{bankRow.reference || "—"}</small>{amountBits(bankRow, bankRow.amount, false)}{runningLabel(bankRow) && <small className="kb-running-balance">{runningLabel(bankRow)}</small>}</div>
-              </div>
-              <span className="kb-inline-arrow" aria-hidden="true">←</span>
-              <div className="kb-matched-side kb-live-book">
-                <div><span className="recon-date">{reconDate(bookDisplay.date)}</span><span className="recon-description">{bookDisplay.description || "—"}</span><small>{bookDisplay.journal_number || item.journal_number || "—"}</small>{amountBits(bookDisplay, bookAmount, true)}{notes.map((note) => <small key={note}>{note}</small>)}</div>
-                {selected ? <div className="kb-live-action">{hintNode}{matchControl}</div> : null}
-              </div>
-            </div>;
-          })}
-        </section>}
-        {selectedBankRow && <div className="kb-matched-pair kb-live-pair" data-testid="kas-bank-live-pair">
-          <div className="kb-matched-side"><span className="recon-date">{reconDate(selectedBankRow.date)}</span><span className="recon-description">{selectedBankRow.description || "—"}</span><small>{selectedBankRow.reference || "—"}</small>{amountBits(selectedBankRow, selectedBankRow.amount, false)}{runningLabel(selectedBankRow) && <small className="kb-running-balance">{runningLabel(selectedBankRow)}</small>}</div>
-          <span className="kb-inline-arrow" aria-hidden="true">←</span>
-          <div className="kb-matched-side kb-live-book">{selectedBookRow ? <div><span className="recon-date">{reconDate(selectedBookRow.date)}</span><span className="recon-description">{selectedBookRow.description || "—"}</span><small>{selectedBookRow.journal_number || "—"}</small>{amountBits(selectedBookRow, selectedBookRow.absolute_amount, true)}</div> : <span className="recon-description">Belum memilih transaksi pembukuan</span>}{selectionIsRecommendation ? null : <div className="kb-live-action">{hintNode}{matchControl}</div>}</div>
-        </div>}
-        <div className={`kb-pair-columns${bankHasCandidate ? " has-link" : ""}`}>
-          <section className={`kb-pane ${pane === "bank" ? "is-shown" : ""}`} aria-label="Mutasi bank">
-            <div className="recon-pane-title">
-              <div><h2>Mutasi Bank</h2><span className="kb-pane-balance">Saldo {ready ? money(closing?.amount) : "—"}</span></div>
-              <span className={ready && Number(workspace?.unmatched_bank_count) > 0 ? "kb-unmatched-flag" : ""}>{ready ? (Number(workspace?.unmatched_bank_count) > 0 ? `${workspace.unmatched_bank_count} data belum cocok` : `${visibleBank.length} baris ditampilkan`) : ""}</span>
+      {tab === "unmatched" && <div className="recon-tab-body" role="tabpanel" id="recon-panel-unmatched" aria-labelledby="recon-tab-unmatched" data-testid="kas-bank-workspace-pairs">
+        <div className="kb-pane-switch" aria-label="Panel"><button type="button" aria-pressed={pane === "bank"} className={pane === "bank" ? "primary sm" : "ghost sm"} onClick={() => setPane("bank")}>Bank</button><button type="button" aria-pressed={pane === "book"} className={pane === "book" ? "primary sm" : "ghost sm"} onClick={() => setPane("book")}>Jurnal</button></div>
+        {(bankView !== "results" && bookView !== "results") && stateMessage(bankView, "mutasi bank", alignRows.length)}
+        {ready && !alignRows.length && <p className="recon-empty">Tidak ada baris belum cocok pada tampilan ini.</p>}
+        {ready && alignRows.length > 0 && (
+          <div className="kb-accurate-board" data-testid="kas-bank-accurate-board">
+            <div className="kb-accurate-head">
+              <section className={`kb-pane kb-accurate-pane ${pane === "bank" ? "is-shown" : ""}`} aria-label="Rekening bank">
+                <div className="recon-pane-title">
+                  <div><h2>REKENING BANK</h2><span className="kb-pane-balance">Saldo {money(closing?.amount)}</span></div>
+                  <span className={Number(workspace?.unmatched_bank_count) > 0 ? "kb-unmatched-flag" : ""}>{Number(workspace?.unmatched_bank_count) > 0 ? `${workspace.unmatched_bank_count} data belum cocok` : `${visibleBank.length} baris`}</span>
+                </div>
+              </section>
+              <div className="kb-pair-link kb-accurate-link" aria-hidden="true" />
+              <section className={`kb-pane kb-accurate-pane ${pane === "book" ? "is-shown" : ""}`} aria-label="Jurnal Eternal">
+                <div className="recon-pane-title">
+                  <div><h2>JURNAL ETERNAL</h2><span className="kb-pane-balance">Saldo {money(workspace?.book_ending_balance)}</span></div>
+                  <span>{`${visibleBook.length} baris`}</span>
+                </div>
+              </section>
             </div>
-            {stateMessage(bankView, "mutasi bank", visibleBank.length)}
-            {bankView === "results" && visibleBank.length > 0 && <div className="kb-pair-scroll"><table className="prod-table kas-bank-table" data-testid="kas-bank-pair-bank-table">
-              <thead><tr><th aria-label="Pilih satu baris" /><th>Tanggal</th><th>Uraian</th><th className="num">Nominal</th></tr></thead><tbody>
-                {visibleBank.map((row) => {
-                  const bankSelected = selectedBank === row.id;
-                  const saldo = runningLabel(row);
-                  return <tr key={row.id} className={bankSelected ? "kb-row-selected" : ""} onClick={() => { if (!busy && canReconcile) pickBank(row); }}>
-                  <td><input type="radio" name="bank-line" checked={bankSelected} onChange={() => pickBank(row)} disabled={!row.matchable || busy || !canReconcile} aria-label={`Pilih bank ${row.description}`} /></td>
-                  <td className="recon-date">{reconDate(row.date)}</td><td><span className="recon-description">{row.description || "—"}</span><small>{row.reference || "—"}</small>{bankSelected && <span className="recon-badge kb-selected-badge">Terpilih</span>}{row.original_date === "PEND" && row.date_status === "temporary" && <small>PEND - tanggal sementara</small>}{row.block_reason && <span className="recon-row-warning">{row.block_reason}</span>}{row.identity_guarantee === "tidak_dijamin" && <small>Identitas bank tidak dijamin</small>}{saldo && <small className="kb-running-balance">{saldo}</small>}</td>
-                  <td className="num kb-money">{amountBits(row, row.amount, false)}</td>
-                </tr>;
-                })}
-              </tbody></table></div>}
-          </section>
-          {bankHasCandidate && <div className={`kb-pair-link${selectedBank && selectedBook ? " is-paired" : ""}`} data-testid="kas-bank-pair-link" aria-hidden="true"><strong><span className="kb-link-visible">←</span><span className="kb-sr-keep">↔</span></strong></div>}
-          <section className={`kb-pane ${pane === "book" ? "is-shown" : ""}`} aria-label="Pembukuan Eternal">
-            <div className="recon-pane-title">
-              <div><h2>Pembukuan Eternal</h2><span className="kb-pane-balance">Saldo {ready ? money(workspace?.book_ending_balance) : "—"}</span></div>
-              <span>{ready ? `${visibleBook.length} baris ditampilkan` : ""}</span>
+            <div className="kb-accurate-scroll kb-pair-scroll">
+              {alignRows.map((row) => {
+                const offered = row.offered;
+                const ambiguous = row.ambiguous;
+                return (
+                  <div
+                    key={row.key}
+                    className={`kb-accurate-row${offered ? " is-offered" : ""}${ambiguous ? " is-ambiguous" : ""}`}
+                    data-testid={offered ? "kas-bank-recommendation" : "kas-bank-align-row"}
+                    data-offered={offered ? "true" : "false"}
+                    data-ambiguous={ambiguous ? "true" : "false"}
+                  >
+                    <article className={`kb-txn-card kb-bank-card${pane === "bank" ? " is-shown" : ""}${offered ? " is-offered" : ""}`} data-testid={row.bank ? "kas-bank-bank-card" : "kas-bank-bank-card-empty"}>
+                      {row.bank ? (
+                        <>
+                          <div className="kb-card-main">
+                            <span className="recon-date">{reconDate(row.bank.date)}</span>
+                            <span className="recon-description">{row.bank.description || "—"}</span>
+                            <small>{row.bank.reference || "—"}</small>
+                            {runningLabel(row.bank) && <small className="kb-running-balance">{runningLabel(row.bank)}</small>}
+                            {row.bank.block_reason && <span className="recon-row-warning">{row.bank.block_reason}</span>}
+                            {ambiguous && <span className="recon-row-warning" data-testid="kas-bank-ambiguous-flag">Beberapa kandidat — gunakan Cari</span>}
+                          </div>
+                          <div className="kb-card-amount">{amountBits(row.bank, row.bank.amount, false)}</div>
+                        </>
+                      ) : <p className="recon-empty kb-card-empty">Tidak ada mutasi sejajar</p>}
+                    </article>
+                    <div className={`kb-pair-link${offered ? " is-paired" : ""}`} data-testid={offered ? "kas-bank-pair-link" : undefined} aria-hidden="true">
+                      {offered ? <strong><span className="kb-link-visible">↔</span></strong> : null}
+                    </div>
+                    <article className={`kb-txn-card kb-book-card${pane === "book" ? " is-shown" : ""}${offered ? " is-offered" : ""}`} data-testid={row.book ? "kas-bank-book-card" : "kas-bank-book-card-empty"}>
+                      {row.book ? (
+                        <>
+                          <div className="kb-card-main">
+                            <span className="recon-date">{reconDate(row.book.date)}</span>
+                            <span className="recon-description">{row.book.description || "—"}</span>
+                            <small>{row.book.journal_number || "—"}</small>
+                            {row.book.block_reason && <span className="recon-row-warning">{row.book.block_reason}</span>}
+                          </div>
+                          <div className="kb-card-amount">{amountBits(row.book, row.book.absolute_amount, true)}</div>
+                          {actionButtons(row)}
+                        </>
+                      ) : (
+                        <>
+                          <p className="recon-empty kb-card-empty">{ambiguous ? "Kandidat ambigu" : "Belum ada jurnal sejajar"}</p>
+                          {row.bank && (
+                            <div className="kb-card-actions" data-testid="kas-bank-card-actions">
+                              <button type="button" className="kb-action-cocok" disabled data-testid="kas-bank-pair-match" title="Cocok"><Check size={15} /><span>Cocok</span></button>
+                              <button type="button" className="kb-action-cari" disabled={!canReconcile || busy || !unpairedBooks.length} data-testid="kas-bank-pair-search" title="Cari" onClick={() => unpairedBooks[0] && openCari(unpairedBooks[0], row.bank)}><Search size={15} /><span>Cari</span></button>
+                              <button type="button" className="kb-action-buat" disabled={!canReconcile || busy} data-testid="kas-bank-pair-create" title="Buat" onClick={() => openBuat(row.bank)}><Pencil size={15} /><span>Buat</span></button>
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </article>
+                  </div>
+                );
+              })}
             </div>
-            {offPageSuggestions.length > 0 && <div className="kb-offpage-candidates" data-testid="kas-bank-offpage-candidates">
-              <p>{offPageSuggestions.length} kandidat di luar 50 baris ini. Pilihan bank tetap aktif.</p>
-              <table className="prod-table kas-bank-table" data-testid="kas-bank-offpage-table">
-                <tbody>
-                  {offPageSuggestions.map((item) => {
-                    const row = suggestionBookRow(item);
-                    const notes = candidateNotes(item, selectedBankRow);
-                    const bookSelected = selectedBook === row.journal_line_id;
-                    return <tr key={row.journal_line_id} className={bookSelected ? "kb-row-selected" : "kb-row-candidate"}>
-                      <td><input type="radio" name="book-line" checked={bookSelected} onChange={() => { setSelectedBook(row.journal_line_id); matchKey.current = newOperationKey(); }} disabled={busy || !canReconcile} aria-label={`Pilih buku ${row.journal_number}`} /></td>
-                      <td className="recon-date">{reconDate(row.date)}</td>
-                      <td><span className="recon-description">{row.description}</span><small>{row.journal_number}</small>{bookSelected ? <span className="recon-badge kb-selected-badge">Terpilih</span> : <span className="recon-badge kb-candidate-badge">Kandidat</span>}{notes.map((note) => <small key={note} className="kb-candidate-reason">{note}</small>)}</td>
-                      <td className="num kb-money">{amountBits(row, row.absolute_amount, true)}</td>
-                    </tr>;
-                  })}
-                </tbody>
-              </table>
-            </div>}
-            {stateMessage(bookView, "pembukuan", visibleBook.length)}
-            {bookView === "results" && visibleBook.length > 0 && <div className="kb-pair-scroll"><table className="prod-table kas-bank-table" data-testid="kas-bank-pair-book-table">
-              <thead><tr><th aria-label="Pilih satu baris" /><th>Tanggal</th><th>Uraian</th><th className="num">Nominal</th></tr></thead><tbody>
-                {orderedBook.map((row) => {
-                  const suggestion = suggestionById.get(row.journal_line_id);
-                  const isCandidate = Boolean(suggestion);
-                  const bookSelected = selectedBook === row.journal_line_id;
-                  const notes = isCandidate ? candidateNotes(suggestion, selectedBankRow) : [];
-                  return <tr key={row.journal_line_id} className={bookSelected ? "kb-row-selected" : isCandidate ? "kb-row-candidate" : ""}>
-                  <td><input type="radio" name="book-line" checked={bookSelected} onChange={() => { setSelectedBook(row.journal_line_id); matchKey.current = newOperationKey(); }} disabled={!row.matchable || busy || !canReconcile} aria-label={`Pilih buku ${row.journal_number}`} /></td>
-                  <td className="recon-date">{reconDate(row.date)}</td><td><span className="recon-description">{row.description || "—"}</span><small>{row.source_path && row.source_id ? <Link to={`${row.source_path}?id=${encodeURIComponent(row.source_id)}`}>{row.journal_number}</Link> : row.journal_number}</small>{bookSelected && <span className="recon-badge kb-selected-badge">Terpilih</span>}{isCandidate && !bookSelected && <span className="recon-badge kb-candidate-badge">Kandidat</span>}{notes.map((note) => <small key={note} className="kb-candidate-reason">{note}</small>)}{row.block_reason && <span className="recon-row-warning">{row.block_reason}</span>}<small>{reconStatus(row.status)}</small></td>
-                  <td className="num kb-money">{amountBits(row, row.absolute_amount, true)}</td>
-                </tr>;
-                })}
-              </tbody></table></div>}
-          </section>
-        </div>
-        {suggestions?.suggestions?.length > 0 && <details className="recon-suggestions" data-testid="kas-bank-pair-suggestions"><summary><AlertCircle size={15} />{suggestions.ambiguous ? "Beberapa kandidat bernominal sama. Periksa referensi sebelum mencocokkan." : "Ada saran pasangan. Periksa sebelum mencocokkan."}</summary><p>Saran tidak disimpan otomatis.</p><ul>{suggestions.suggestions.map((item) => <li key={item.journal_line_id}>{item.journal_number} · {item.reasons.join(", ")}</li>)}</ul></details>}
-        <footer className="kb-pair-footer">
-          <div className="kb-foot-side"><span>Pilihan bank</span><strong>{selectedBankRow ? money(selectedBankTotal, selectedBankRow.currency_code || currency) : "—"}</strong>{selectedBankRow && <small>{reconDate(selectedBankRow.date)} · {selectedBankRow.description || "—"}</small>}</div>
-          <div className="kb-foot-arrow" aria-hidden="true">←</div>
-          <div className="kb-foot-side"><span>Pilihan buku</span><strong>{selectedBookRow ? money(selectedBookTotal, selectedBookRow.currency_code || currency) : "—"}</strong>{selectedBookRow && <small>{reconDate(selectedBookRow.date)} · {selectedBookRow.journal_number || selectedBookRow.description || "—"}</small>}</div>
-          <div><span>Selisih pilihan</span><strong>{selectionDiff == null ? "—" : money(selectionDiff)}</strong></div>
-          {!selectedBankRow && <div className="recon-footer-action">{hintNode}{matchControl}{canOpenPayment && <Link to="/kas-bank/pembayaran">Buka Pembayaran</Link>}</div>}
-          {selectedBankRow && canOpenPayment && <div className="recon-footer-action"><Link to="/kas-bank/pembayaran">Buka Pembayaran</Link></div>}
+          </div>
+        )}
+        <footer className="kb-pair-footer" data-testid="kas-bank-pair-footer">
+          <div className="kb-foot-side"><span>Menampilkan</span><strong>{visibleBank.length} dari {workspace?.bank_total ?? visibleBank.length} data bank · {visibleBook.length} dari {workspace?.book_total ?? visibleBook.length} data jurnal</strong></div>
+          <span className="kb-match-hint" data-testid="kas-bank-match-hint">{
+            !canReconcile ? "Tidak berizin mencocokkan"
+              : workspace?.feature_ready === false ? (workspace.feature_message || "Pencocokan belum tersedia")
+                : "Cocok untuk pasangan unik · Cari untuk 1:N · Buat untuk voucher baru"
+          }</span>
         </footer>
       </div>}
 
       {tab === "matched" && <section className="recon-tab-body recon-history" role="tabpanel" id="recon-panel-matched" aria-labelledby="recon-tab-matched">
         <div className="recon-pane-title"><h2>Pasangan Tersimpan</h2><span>Snapshot saat pencocokan, bukan saldo terkini</span></div>
         {!ready && <p className="recon-empty" role="status">{phase === "loading" ? "Memuat pasangan…" : "Pasangan tidak dapat dimuat."}</p>}
-        {ready && <div className="kb-pair-scroll"><table className="prod-table kas-bank-table kb-matched-table" data-testid="kas-bank-pair-matched"><thead><tr><th>Pasangan</th><th>Status / Tinjauan</th><th>Aksi</th></tr></thead><tbody>
+        {ready && <div className="kb-pair-scroll"><table className="prod-table kas-bank-table kb-matched-table" data-testid="kas-bank-pair-matched"><thead><tr><th>Pasangan</th><th>Jenis</th><th>Status / Tinjauan</th><th>Aksi</th></tr></thead><tbody>
           {matched.map((row) => {
-            const sourceBank = bankRows.find((bank) => bank.id === (row.statement_line_id || row.history_statement_line_id));
+            const isGroup = row.match_kind === "pair_group";
+            const sourceBank = !isGroup ? bankRows.find((bank) => bank.id === (row.statement_line_id || row.history_statement_line_id)) : null;
             const reconciled = row.status === "active" && row.review_state !== "perlu_tinjauan";
             const sourceBook = bookRows.find((book) => book.journal_line_id === (row.journal_line_id || row.history_journal_line_id));
             const bankViewRow = sourceBank || { direction: row.direction, currency_code: row.currency_code };
             const bookViewRow = sourceBook || { ...(row.book_snapshot || {}), direction: row.direction, currency_code: row.currency_code };
             const saldo = runningLabel(sourceBank);
-            return <tr key={row.id} className={reconciled ? "kb-row-reconciled" : ""}><td><div className="kb-matched-pair"><div className="kb-matched-side"><span className="recon-date">{reconDate(sourceBank?.date)}</span><span className="recon-description">{sourceBank?.description || "Detail bank tidak tersedia"}</span><small>{sourceBank?.reference || row.statement_line_id || row.history_statement_line_id || "—"}</small>{amountBits(bankViewRow, row.amount, false)}{saldo && <small className="kb-running-balance">{saldo}</small>}</div><span className="kb-inline-arrow" aria-hidden="true">←</span><div className="kb-matched-side"><span className="recon-date">{reconDate(row.book_snapshot?.date)}</span><span className="recon-description">{row.book_snapshot?.description || "—"}</span><small>{row.book_snapshot?.journal_number || "—"}</small>{amountBits(bookViewRow, row.amount, true)}</div></div></td><td><span className={`recon-badge ${row.review_state === "perlu_tinjauan" ? "is-warning" : reconciled ? "is-matched" : ""}`}>{row.review_state === "perlu_tinjauan" ? "Perlu tinjauan" : reconciled ? "✓ Cocok" : reconStatus(row.status)}</span></td><td>{canReconcile && row.status === "active" && <button type="button" className="ghost sm" disabled={busy} onClick={() => onCancel(row.id)}>Batalkan pencocokan</button>}</td></tr>;
+            const members = Array.isArray(row.members) ? row.members : [];
+            return <tr key={row.id} className={reconciled ? "kb-row-reconciled is-saved" : ""} data-match-kind={row.match_kind || "pair"}>
+              <td>
+                {isGroup ? (
+                  <div className="kb-matched-pair kb-group-pair" data-testid="kas-bank-matched-group">
+                    <div className="kb-matched-side">
+                      <strong>Grup bank ({members.length || row.member_count || (row.statement_line_ids || []).length})</strong>
+                      <p className="kb-group-total" data-testid="kas-bank-group-total">Total grup {money(row.amount, row.currency_code || currency)}</p>
+                      <ul className={`kb-group-members${expandedGroups[row.id] ? " is-expanded" : ""}`} data-testid="kas-bank-group-members">
+                        {members.map((member) => (
+                          <li key={member.statement_line_id || member.history_statement_line_id}>
+                            <span className="recon-date">{reconDate(member.date)}</span>
+                            <span className="recon-description">{member.description || "—"}</span>
+                            <small>{member.reference || member.statement_line_id || "—"}</small>
+                            {amountBits({ direction: member.direction, currency_code: row.currency_code }, member.amount, false)}
+                          </li>
+                        ))}
+                      </ul>
+                      {members.length > 2 && (
+                        <button
+                          type="button"
+                          className="ghost sm kb-group-expand"
+                          data-testid="kas-bank-group-expand"
+                          onClick={() => setExpandedGroups((prev) => ({ ...prev, [row.id]: !prev[row.id] }))}
+                        >
+                          {expandedGroups[row.id] ? "Sembunyikan detail" : `Tampilkan semua ${members.length} anggota`}
+                        </button>
+                      )}
+                    </div>
+                    <span className="kb-inline-arrow" aria-hidden="true">↔</span>
+                    <div className="kb-matched-side">
+                      <span className="recon-date">{reconDate(row.book_snapshot?.date)}</span>
+                      <span className="recon-description">{row.book_snapshot?.description || "—"}</span>
+                      <small>{row.book_snapshot?.journal_number || "—"}</small>
+                      {amountBits(bookViewRow, row.amount, true)}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="kb-matched-pair">
+                    <div className="kb-matched-side"><span className="recon-date">{reconDate(sourceBank?.date)}</span><span className="recon-description">{sourceBank?.description || "Detail bank tidak tersedia"}</span><small>{sourceBank?.reference || row.statement_line_id || row.history_statement_line_id || "—"}</small>{amountBits(bankViewRow, row.amount, false)}{saldo && <small className="kb-running-balance">{saldo}</small>}</div>
+                    <span className="kb-inline-arrow" aria-hidden="true">↔</span>
+                    <div className="kb-matched-side"><span className="recon-date">{reconDate(row.book_snapshot?.date)}</span><span className="recon-description">{row.book_snapshot?.description || "—"}</span><small>{row.book_snapshot?.journal_number || "—"}</small>{amountBits(bookViewRow, row.amount, true)}</div>
+                  </div>
+                )}
+              </td>
+              <td><span className="recon-badge">{isGroup ? "Grup 1:N" : "1:1"}</span></td>
+              <td><span className={`recon-badge ${row.review_state === "perlu_tinjauan" ? "is-warning" : reconciled ? "is-matched" : ""}`}>{row.review_state === "perlu_tinjauan" ? "Perlu tinjauan" : reconciled ? "✓ Tersimpan" : reconStatus(row.status)}</span></td>
+              <td>{canReconcile && row.status === "active" && <button type="button" className="ghost sm" disabled={busy} onClick={() => onCancel(row.id, isGroup ? "pair_group" : "pair")}>Batalkan pencocokan</button>}</td>
+            </tr>;
           })}
-          {!matched.length && <tr><td colSpan={3}>Belum ada pencocokan baris pada tampilan ini.</td></tr>}
+          {!matched.length && <tr><td colSpan={4}>Belum ada pencocokan baris pada tampilan ini.</td></tr>}
         </tbody></table></div>}
       </section>}
 
@@ -1728,6 +2081,75 @@ export default function RekonsiliasiKasBank() {
           </>}
         </div>
         <footer className="recon-drawer-footer"><span>Baris PEND memakai tanggal impor WIB dan tetap masuk rekonsiliasi.</span>{canReconcile && <button type="button" className="primary sm" data-testid="kas-bank-bca-import" disabled={busy || !bcaImportReady} onClick={onBcaImport}>Impor mutasi BCA</button>}</footer>
+      </dialog>
+
+      <dialog ref={cariDialog} className="recon-import-dialog recon-cari-dialog" aria-labelledby="recon-cari-title" data-testid="kas-bank-cari-dialog" onCancel={(event) => { if (busy) event.preventDefault(); else setCariOpen(false); }} onClose={() => setCariOpen(false)}>
+        <div className="recon-drawer-heading"><div><p>Pencocokan 1 jurnal · beberapa mutasi bank</p><h2 id="recon-cari-title">Cari Pencocokan Transaksi</h2></div><button type="button" className="ghost sm" aria-label="Tutup pencarian pencocokan" onClick={() => setCariOpen(false)} disabled={busy}><X size={20} /></button></div>
+        <div className="recon-drawer-content">
+          {cariTarget && <div className="kb-cari-target" data-testid="kas-bank-cari-target">
+            <h3>Transaksi Jurnal Dipilih</h3>
+            <p><span className="recon-date">{reconDate(cariTarget.date)}</span> · {cariTarget.journal_number || "—"}</p>
+            <p className="recon-description">{cariTarget.description || "—"}</p>
+            <p>Nominal target: <strong>{money(cariTarget.amount, cariTarget.currency_code || currency)}</strong></p>
+          </div>}
+          <label className="kb-cari-search">Cari mutasi bank
+            <input
+              ref={cariSearchInput}
+              data-testid="kas-bank-cari-search"
+              value={cariSearch}
+              onChange={(e) => searchCari(e.target.value)}
+              placeholder="Tanggal, nominal, referensi, keterangan…"
+              disabled={busy}
+              autoComplete="off"
+            />
+          </label>
+          {cariMessage && <p className="recon-notice" role="alert">{cariMessage}</p>}
+          {cariLoading && <p className="kb-cari-loading" data-testid="kas-bank-cari-loading" role="status" aria-live="polite">Memuat mutasi bank…</p>}
+          <div className="recon-bca-table-wrap kb-cari-table-wrap"><table className="prod-table kas-bank-table" data-testid="kas-bank-cari-table"><thead><tr><th aria-label="Pilih" /><th>Tanggal</th><th>Uraian</th><th className="num">Nominal</th></tr></thead><tbody>
+            {cariItems.map((row) => <tr key={row.id} className={cariSelected.has(row.id) ? "kb-row-selected" : ""}>
+              <td><input type="checkbox" checked={cariSelected.has(row.id)} onChange={() => toggleCariLine(row)} disabled={busy} aria-label={`Pilih mutasi ${row.description || row.id}`} data-testid={`kas-bank-cari-check-${row.id}`} /></td>
+              <td className="recon-date">{reconDate(row.date)}</td>
+              <td><span className="recon-description">{row.description || "—"}</span><small>{row.reference || row.bank_txn_id || "—"}</small></td>
+              <td className="num kb-money">{amountBits(row, row.amount, false)}</td>
+            </tr>)}
+            {!cariItems.length && !cariLoading && <tr><td colSpan={4}>Tidak ada mutasi bank eligible.</td></tr>}
+          </tbody></table></div>
+          {cariHasMore && (
+            <button type="button" className="ghost sm kb-cari-more" data-testid="kas-bank-cari-more" onClick={loadMoreCari} disabled={busy || cariLoading}>
+              {cariLoading ? "Memuat…" : `Muat lagi (${cariItems.length} dari ${cariTotal})`}
+            </button>
+          )}
+          <div className="kb-cari-summary" data-testid="kas-bank-cari-summary">
+            <span>Total dipilih <strong>{money(cariTotalCents / 100, cariTarget?.currency_code || currency)}</strong></span>
+            <span>Nominal jurnal <strong>{money(cariTarget?.amount, cariTarget?.currency_code || currency)}</strong></span>
+            <span className={cariDiffCents === 0 ? "is-zero" : "is-diff"}>Selisih <strong data-testid="kas-bank-cari-diff">{cariDiffCents == null ? "—" : money(cariDiffCents / 100, cariTarget?.currency_code || currency)}</strong></span>
+            <span data-testid="kas-bank-cari-selected-count">{cariSelected.size} dipilih</span>
+          </div>
+          {!cariConfirmEnabled && cariTarget && <p className="kb-match-hint" data-testid="kas-bank-cari-reason">{cariSelected.size < 2 ? "Pilih minimal dua mutasi bank untuk grup 1:N." : cariDiffCents !== 0 ? "Total mutasi harus sama persis dengan nominal jurnal." : "Konfirmasi belum siap."}</p>}
+        </div>
+        <footer className="recon-drawer-footer">
+          <button type="button" className="ghost sm" onClick={() => setCariOpen(false)} disabled={busy}>Batal</button>
+          <button type="button" className="primary sm" data-testid="kas-bank-cari-confirm" disabled={!cariConfirmEnabled} onClick={confirmCariGroup}>{busy ? "Memproses…" : "Konfirmasi Pencocokan"}</button>
+        </footer>
+      </dialog>
+
+      <dialog ref={buatDialog} className="recon-import-dialog recon-buat-dialog" aria-labelledby="recon-buat-title" data-testid="kas-bank-buat-dialog" onCancel={(event) => { if (busy) event.preventDefault(); else setBuatOpen(false); }} onClose={() => setBuatOpen(false)}>
+        <div className="recon-drawer-heading"><div><p>Buat voucher dari mutasi bank</p><h2 id="recon-buat-title">Pilih Jenis Transaksi</h2></div><button type="button" className="ghost sm" aria-label="Tutup pilihan buat" onClick={() => setBuatOpen(false)} disabled={busy}><X size={20} /></button></div>
+        <div className="recon-drawer-content">
+          <p className="recon-context">Navigasi saja. Tidak membuat, menyetujui, atau mencocokkan otomatis.</p>
+          {buatBank && <p data-testid="kas-bank-buat-bank">{reconDate(buatBank.date)} · {buatBank.description || "—"} · {money(buatBank.amount, buatBank.currency_code || currency)} · {duplicateDirection(buatBank.direction)}</p>}
+          <div className="kb-buat-actions">
+            {(buatBank?.direction !== "out") && canOpenReceipt && <Link className="primary sm" data-testid="kas-bank-buat-receipt" to={`/kas-bank/penerimaan?cash_bank_id=${encodeURIComponent(cashBankId || "")}`} onClick={() => setBuatOpen(false)}>Penerimaan</Link>}
+            {(buatBank?.direction !== "in") && canOpenPayment && <Link className="primary sm" data-testid="kas-bank-buat-payment" to={`/kas-bank/pembayaran?cash_bank_id=${encodeURIComponent(cashBankId || "")}`} onClick={() => setBuatOpen(false)}>Pembayaran</Link>}
+            {buatBank?.direction !== "in" && buatBank?.direction !== "out" && (
+              <>
+                {canOpenReceipt && <Link className="ghost sm" to={`/kas-bank/penerimaan?cash_bank_id=${encodeURIComponent(cashBankId || "")}`} onClick={() => setBuatOpen(false)}>Penerimaan</Link>}
+                {canOpenPayment && <Link className="ghost sm" to={`/kas-bank/pembayaran?cash_bank_id=${encodeURIComponent(cashBankId || "")}`} onClick={() => setBuatOpen(false)}>Pembayaran</Link>}
+              </>
+            )}
+          </div>
+        </div>
+        <footer className="recon-drawer-footer"><button type="button" className="ghost sm" onClick={() => setBuatOpen(false)}>Tutup</button></footer>
       </dialog>
     </div>
   );

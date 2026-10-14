@@ -353,6 +353,10 @@ export default function RekonsiliasiOwnerKasBank() {
               <h3>Match</h3>
               <div className="drawer-prop-list">
                 <Prop label="Pair id">{selected.match?.id}</Prop>
+                <Prop label="Jenis">{selected.match?.match_kind === "pair_group" ? (selected.match?.label || "Grup 1:N") : (selected.match ? "1:1" : "—")}</Prop>
+                {selected.match?.match_kind === "pair_group" ? (
+                  <Prop label="Anggota grup">{selected.match?.member_count ?? (selected.match?.members || []).length ?? "—"}</Prop>
+                ) : null}
                 <Prop label="Matched">{selected.match?.claim_active ? "Ya" : "Tidak"}</Prop>
                 <Prop label="Review">{selected.match?.review_state}</Prop>
                 <Prop label="Saran">
