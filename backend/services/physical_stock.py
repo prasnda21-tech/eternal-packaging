@@ -3010,11 +3010,13 @@ async def list_physical_stock_catalog(
             for doc in docs
         ]
         if not docs:
-            baseline_status = None
+            # No R2 balance row yet — missing opening/opname is not a verified zero.
+            baseline_status = BASELINE_UNRECONCILED
         elif any(status == BASELINE_UNRECONCILED for status in baseline_statuses):
             baseline_status = BASELINE_UNRECONCILED
         else:
             baseline_status = BASELINE_RECONCILED
+        qty_tersedia_valid = baseline_status == BASELINE_RECONCILED
         docs_by_wh = {
             str(doc.get("warehouse_id") or ""): doc
             for doc in docs
@@ -3063,7 +3065,9 @@ async def list_physical_stock_catalog(
             "physical_qty": buckets["physical_qty"],
             "qty_pesanan": buckets["qty_pesanan"],
             "qty_belum_terkirim": buckets["qty_belum_terkirim"],
+            # Informational book math only — not definitive until baseline reconciled.
             "qty_tersedia": buckets["qty_tersedia"],
+            "qty_tersedia_valid": qty_tersedia_valid,
             "updated_at": max(updated) if updated else None,
             "belum_terkirim_status": "READY",
             "stock_read_mode": "r2",
@@ -3095,6 +3099,12 @@ async def list_physical_stock_catalog(
             )
         else:
             row["physical_qty_scope"] = "BRANCH"
+        if not qty_tersedia_valid:
+            row["qty_tersedia_note"] = (
+                (str(row.get("qty_tersedia_note") or "").strip() + " ").lstrip()
+                + "Qty Tersedia belum valid — saldo fisik belum direkonsiliasi "
+                "(Saldo Awal / Stock Opname)."
+            ).strip()
         rows.append(row)
     total = len(rows)
     start = (safe_page - 1) * safe_limit

@@ -500,13 +500,20 @@ export default function StockSaatIni() {
                 <td
                   className="col-fit num mono"
                   data-testid={`stock-available-${it.master_item_id}`}
+                  data-tersedia-valid={it.qty_tersedia_valid === false ? "false" : "true"}
                   title={
-                    selectedFilterWarehouse
-                      ? (it.qty_tersedia_note || "Permintaan cabang vs saldo buku gudang — bukan alokasi per gudang")
-                      : (Number(it.qty_tersedia) < 0 ? "Kebutuhan stok (informasi) — tidak memblokir pesanan" : undefined)
+                    it.qty_tersedia_valid === false
+                      ? (it.qty_tersedia_note || "Qty Tersedia belum valid — saldo fisik belum direkonsiliasi")
+                      : selectedFilterWarehouse
+                        ? (it.qty_tersedia_note || "Permintaan cabang vs saldo buku gudang — bukan alokasi per gudang")
+                        : (Number(it.qty_tersedia) < 0 ? "Kebutuhan stok (informasi) — tidak memblokir pesanan" : undefined)
                   }
                 >
-                  {fmtQty(it.qty_tersedia)}
+                  {it.qty_tersedia_valid === false ? (
+                    <span className="muted" data-testid={`stock-available-invalid-${it.master_item_id}`}>
+                      Belum valid
+                    </span>
+                  ) : fmtQty(it.qty_tersedia)}
                 </td>
                 <td className="col-fit small nowrap">{it.updated_at ? formatDate(it.updated_at) : "—"}</td>
               </tr>
