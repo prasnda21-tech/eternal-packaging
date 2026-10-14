@@ -59,9 +59,9 @@ def aggregate_legacy_delivered_qty(
     """
     from services.r2_go_live import (
         _confirmation_line_qtys,
-        _proven_shipped_qty_for_shipment,
-        _scale_attributed_to_proven,
         _delivery_identity_tokens,
+        _proven_shipped_qty_for_shipment,
+        _resolve_proven_line_attribution,
     )
 
     owners = accurate_owners or {}
@@ -108,14 +108,12 @@ def aggregate_legacy_delivered_qty(
             for t in tokens:
                 seen_identities.add(t)
 
-            attributed = _confirmation_line_qtys(
+            confirmation_lines = _confirmation_line_qtys(
                 order, sh, order_line_count=len(order_lines),
             )
-            if attributed:
-                attributed = _scale_attributed_to_proven(attributed, proven)
-            else:
+            shipment_lines: Dict[int, float] = {}
+            if not confirmation_lines:
                 line_rows = sh.get("lines") if isinstance(sh.get("lines"), list) else []
-                attributed = {}
                 unresolved = False
                 for ln in line_rows:
                     if not isinstance(ln, dict):
@@ -131,25 +129,23 @@ def aggregate_legacy_delivered_qty(
                     if idx < 0 or idx >= len(order_lines):
                         unresolved = True
                         continue
-                    attributed[idx] = float(attributed.get(idx, 0.0)) + qty
+                    shipment_lines[idx] = float(shipment_lines.get(idx, 0.0)) + qty
                 if unresolved and len(order_lines) > 1:
                     for oli in order_lines:
                         om = _line_master_id(oli, owners)
                         if om:
                             unproven_masters[om] = True
                     continue
-                if not attributed and len(order_lines) == 1:
-                    attributed = {0: proven}
-                elif attributed:
-                    attributed = _scale_attributed_to_proven(attributed, proven)
-                else:
-                    for oli in order_lines:
-                        om = _line_master_id(oli, owners)
-                        if om:
-                            unproven_masters[om] = True
-                    continue
-
-            if not attributed:
+            sh_tokens = _delivery_identity_tokens(sh)
+            attributed, resolve_issues = _resolve_proven_line_attribution(
+                order_id=str(order.get("id") or ""),
+                identity=sh_tokens[0] if sh_tokens else "(missing-id)",
+                proven=proven,
+                order_line_count=len(order_lines),
+                confirmation_lines=confirmation_lines,
+                shipment_lines=shipment_lines,
+            )
+            if resolve_issues or not attributed:
                 for oli in order_lines:
                     om = _line_master_id(oli, owners)
                     if om:

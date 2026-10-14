@@ -558,6 +558,104 @@ async def test_cutover_two_distinct_deliveries_sum_not_qty_dedupe(db):
     assert by_line[f"{order_id}:0"] == 200
 
 
+async def test_cutover_multi_sku_partial_total_blocks_no_proportional_split(db):
+    """SJ 100 cup + 100 lid, confirm total 40 without line items → BLOCK, never 20/20."""
+    cup_id = f"item-cup-{uuid.uuid4().hex[:6]}"
+    lid_id = f"item-lid-{uuid.uuid4().hex[:6]}"
+    order_id = f"so-{uuid.uuid4().hex[:8]}"
+    sj_id = "sj-multi-partial"
+    order = {
+        "id": order_id,
+        "cancelled": False,
+        "line_items": [
+            _print_line(cup_id, 200, line_id="ln-cup", name="Cup"),
+            _print_line(lid_id, 200, line_id="ln-lid", name="Lid"),
+        ],
+        "operator_splits": [
+            {"line_idx": 0, "qty_completed": 100},
+            {"line_idx": 1, "qty_completed": 100},
+        ],
+        "shipments": [{
+            "id": sj_id,
+            "sales_delivery_id": sj_id,
+            "total_qty": 200,
+            "lines": [
+                {"line_idx": 0, "qty": 100},
+                {"line_idx": 1, "qty": 100},
+            ],
+        }],
+        "delivery_confirmations": [{
+            "id": "conf-total-only",
+            "shipment_id": sj_id,
+            "qty": 40,
+            "confirmed_at": "2026-01-02T00:00:00+00:00",
+            # no items breakdown
+        }],
+    }
+    by_item, by_line, _oc, _lc, ambiguous = _build_delivery_baseline([order], [])
+    assert by_item == {}
+    assert by_line == {}
+    assert any(
+        a.get("reason") == "partial_proven_without_line_breakdown" for a in ambiguous
+    )
+    # Must not invent proportional 20/20
+    assert by_item.get(cup_id, 0) != 20
+    assert by_item.get(lid_id, 0) != 20
+
+    await db.orders.insert_one(dict(order))
+    preview = await preview_delivery_cutover_baseline(db)
+    assert preview["blocked"] is True
+    with pytest.raises(DeliveryCutoverBlockedError):
+        await initialize_delivery_cutover_baseline(db)
+    cut = await db.app_settings.find_one({"key": "r2_go_live"})
+    assert not (cut or {}).get("delivery_cutover", {}).get("initialized")
+
+
+async def test_cutover_multi_sku_confirmation_line_items_exact(db):
+    """Confirmation items 30 cup + 10 lid → baseline exactly 30 and 10."""
+    cup_id = f"item-cup-{uuid.uuid4().hex[:6]}"
+    lid_id = f"item-lid-{uuid.uuid4().hex[:6]}"
+    order_id = f"so-{uuid.uuid4().hex[:8]}"
+    sj_id = "sj-multi-items"
+    order = {
+        "id": order_id,
+        "cancelled": False,
+        "line_items": [
+            _print_line(cup_id, 200, line_id="ln-cup", name="Cup"),
+            _print_line(lid_id, 200, line_id="ln-lid", name="Lid"),
+        ],
+        "operator_splits": [
+            {"line_idx": 0, "qty_completed": 100},
+            {"line_idx": 1, "qty_completed": 100},
+        ],
+        "shipments": [{
+            "id": sj_id,
+            "total_qty": 200,
+            "lines": [
+                {"line_idx": 0, "qty": 100},
+                {"line_idx": 1, "qty": 100},
+            ],
+        }],
+        "delivery_confirmations": [{
+            "id": "conf-lines",
+            "shipment_id": sj_id,
+            "qty": 40,
+            "items": [
+                {"line_idx": 0, "qty": 30},
+                {"line_idx": 1, "qty": 10},
+            ],
+            "confirmed_at": "2026-01-02T00:00:00+00:00",
+        }],
+    }
+    by_item, by_line, order_count, _lc, ambiguous = _build_delivery_baseline([order], [])
+    assert ambiguous == []
+    assert order_count == 1
+    assert by_item[cup_id] == 30
+    assert by_item[lid_id] == 10
+    assert by_line[f"{order_id}:0"] == 30
+    assert by_line[f"{order_id}:1"] == 10
+
+
 async def test_cutover_multi_sku_line_attribution(db):
     await set_r2_authority_active(db, active=True)
     item_a, branch, warehouse = await _seed_ygy(db)

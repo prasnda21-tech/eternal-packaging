@@ -206,7 +206,17 @@ def _proven_shipped_qty_for_shipment(order: dict, shipment: dict) -> float:
             continue
         if str(rec.get("shipment_id") or "").strip() not in keys:
             continue
-        conf_total += float(_qty_num(rec.get("qty") if rec.get("qty") is not None else rec.get("quantity")))
+        items = [it for it in (rec.get("items") or []) if isinstance(it, dict)]
+        if items:
+            # Line breakdown is authoritative when present (never invent proportions).
+            for it in items:
+                conf_total += float(
+                    _qty_num(it.get("qty") if it.get("qty") is not None else it.get("quantity"))
+                )
+        else:
+            conf_total += float(
+                _qty_num(rec.get("qty") if rec.get("qty") is not None else rec.get("quantity"))
+            )
     batch = float(delivery_batch_qty(shipment))
     if conf_total > 0:
         return min(conf_total, batch) if batch > 0 else conf_total
@@ -255,19 +265,48 @@ def _confirmation_line_qtys(
     return out
 
 
-def _scale_attributed_to_proven(
-    attributed: Dict[int, float],
+def _resolve_proven_line_attribution(
+    *,
+    order_id: str,
+    identity: str,
     proven: float,
-) -> Dict[int, float]:
-    if proven <= 0 or not attributed:
-        return {}
-    total = sum(attributed.values())
-    if total <= 0:
-        return {}
-    if abs(total - proven) < 1e-9:
-        return dict(attributed)
-    factor = proven / total
-    return {idx: float(qty) * factor for idx, qty in attributed.items()}
+    order_line_count: int,
+    confirmation_lines: Dict[int, float],
+    shipment_lines: Dict[int, float],
+) -> Tuple[Dict[int, float], List[dict]]:
+    """Map proven shipped qty to order lines without inventing proportions.
+
+    - Confirmation line items → exact qtys (30 cup + 10 lid stays 30/10).
+    - Sole order line → attribute the proven total to line 0.
+    - Multi-line with only a header/total proven and SJ allocation lines →
+      accept only when proven equals the full SJ line sum (whole SJ delivered).
+      Partial totals without per-item proof are ambiguous (never 20/20 from 40).
+    """
+    if proven <= 0:
+        return {}, []
+    if confirmation_lines:
+        return {idx: float(qty) for idx, qty in confirmation_lines.items() if qty > 0}, []
+    if order_line_count == 1:
+        return {0: float(proven)}, []
+    if not shipment_lines:
+        return {}, [{
+            "order_id": order_id,
+            "source": "order.shipment",
+            "identity": identity,
+            "reason": "proven_delivery_without_attributable_lines",
+            "qty": float(proven),
+        }]
+    sj_total = float(sum(shipment_lines.values()))
+    if sj_total > 0 and abs(sj_total - float(proven)) < 1e-9:
+        return {idx: float(qty) for idx, qty in shipment_lines.items() if qty > 0}, []
+    return {}, [{
+        "order_id": order_id,
+        "source": "order.shipment",
+        "identity": identity,
+        "reason": "partial_proven_without_line_breakdown",
+        "qty": float(proven),
+        "sj_line_total": sj_total,
+    }]
 
 
 def _attribute_line_qtys(
@@ -330,29 +369,6 @@ def _attribute_line_qtys(
     return attributed, ambiguous
 
 
-def _header_qty_for_sole_line(
-    *,
-    order_id: str,
-    source: str,
-    identity: str,
-    header_qty: float,
-    order_line_count: int,
-    attributed: Dict[int, float],
-) -> Tuple[Dict[int, float], List[dict]]:
-    """Attribute proven header-only qty to line 0 when the PO has exactly one line."""
-    if attributed or header_qty <= 0:
-        return attributed, []
-    if order_line_count == 1:
-        return {0: float(header_qty)}, []
-    return {}, [{
-        "order_id": order_id,
-        "source": source,
-        "identity": identity,
-        "reason": "proven_delivery_without_attributable_lines",
-        "qty": float(header_qty),
-    }]
-
-
 def _build_delivery_baseline(
     orders: Iterable[dict],
     sales_deliveries: Optional[Iterable[dict]] = None,
@@ -410,14 +426,13 @@ def _build_delivery_baseline(
                 continue
             _mark_identities_seen(tokens, seen_identities)
 
-            attributed = _confirmation_line_qtys(
+            confirmation_lines = _confirmation_line_qtys(
                 order, sh, order_line_count=len(lines),
             )
-            if attributed:
-                attributed = _scale_attributed_to_proven(attributed, proven)
-            else:
+            shipment_lines: Dict[int, float] = {}
+            if not confirmation_lines:
                 rows = sh.get("lines") if isinstance(sh.get("lines"), list) else []
-                attributed, issues = _attribute_line_qtys(
+                shipment_lines, issues = _attribute_line_qtys(
                     order_id=order_id,
                     source="order.shipment",
                     identity=identity or "(missing-id)",
@@ -427,28 +442,16 @@ def _build_delivery_baseline(
                 ambiguous.extend(issues)
                 if issues:
                     continue
-                if not attributed:
-                    attributed, header_issues = _header_qty_for_sole_line(
-                        order_id=order_id,
-                        source="order.shipment",
-                        identity=identity or "(missing-id)",
-                        header_qty=proven,
-                        order_line_count=len(lines),
-                        attributed=attributed,
-                    )
-                    ambiguous.extend(header_issues)
-                    if header_issues:
-                        continue
-                else:
-                    attributed = _scale_attributed_to_proven(attributed, proven)
-            if not attributed:
-                ambiguous.append({
-                    "order_id": order_id,
-                    "source": "order.shipment",
-                    "identity": identity or "(missing-id)",
-                    "reason": "proven_delivery_without_attributable_lines",
-                    "qty": proven,
-                })
+            attributed, resolve_issues = _resolve_proven_line_attribution(
+                order_id=order_id,
+                identity=identity or "(missing-id)",
+                proven=proven,
+                order_line_count=len(lines),
+                confirmation_lines=confirmation_lines,
+                shipment_lines=shipment_lines,
+            )
+            ambiguous.extend(resolve_issues)
+            if resolve_issues or not attributed:
                 continue
             for idx, qty in attributed.items():
                 shipped_by_idx[idx] = float(shipped_by_idx.get(idx, 0.0)) + float(qty)
