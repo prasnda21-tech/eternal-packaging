@@ -13920,11 +13920,24 @@ async def r2_delivery_cutover_initialize(
     payload: dict = Body(default={}),
     user=Depends(current_user),
 ):
-    """Persist Belum Terkirim cutover baseline (idempotent). Local/go-live tooling."""
+    """Persist proven-shipped Belum Terkirim cutover baseline (idempotent). Local/go-live tooling."""
     await _require_any_perm(user, "current_stock.update", "permissions.manage")
-    from services.r2_go_live import initialize_delivery_cutover_baseline
+    from services.r2_go_live import (
+        DeliveryCutoverBlockedError,
+        initialize_delivery_cutover_baseline,
+    )
     force = bool((payload or {}).get("force"))
-    return await initialize_delivery_cutover_baseline(db, actor=user, force=force)
+    try:
+        return await initialize_delivery_cutover_baseline(db, actor=user, force=force)
+    except DeliveryCutoverBlockedError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": str(exc),
+                "blocked": True,
+                "ambiguous": list(exc.ambiguous or [])[:100],
+            },
+        ) from exc
 
 
 @api_router.get("/r2-go-live/opening-cutover/dry-run")

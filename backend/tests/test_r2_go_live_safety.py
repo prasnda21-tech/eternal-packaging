@@ -30,7 +30,10 @@ from services.physical_stock import (  # noqa: E402
     reverse_confirmed_sales_delivery,
 )
 from services.r2_go_live import (  # noqa: E402
+    DeliveryCutoverBlockedError,
     OpeningCutoverError,
+    _build_delivery_baseline,
+    _delivery_identity_tokens,
     apply_holding_team_permission_top_up,
     check_r2_production_readiness,
     dry_run_legacy_to_r2_opening,
@@ -101,10 +104,84 @@ async def _seed_ygy(db):
     return item, branch, warehouse
 
 
-# ---- 1. Historical Belum Terkirim cutover ----
+# ---- 1. Historical Belum Terkirim cutover (proven shipped only) ----
 
 
-async def test_cutover_baseline_zeros_historical_belum_terkirim(db):
+def _print_line(item_id: str, qty: int, *, line_id: str = "ln-0", name: str = "Box"):
+    return {
+        "line_id": line_id,
+        "master_item_id": item_id,
+        "quantity": qty,
+        "production_process": "print",
+        "name": name,
+    }
+
+
+def _proven_shipment(*, sid: str, qty: int, line_idx: int = 0, lines=None):
+    payload = {
+        "id": sid,
+        "sales_delivery_id": sid,
+        "delivery_status": "Terkirim",
+        "delivered_at": "2026-01-01T00:00:00+00:00",
+        "total_qty": qty,
+        "lines": lines if lines is not None else [{"line_idx": line_idx, "qty": qty}],
+    }
+    return payload
+
+
+async def test_cutover_ordered_1000_completed_600_shipped_200(db):
+    """OWNER case: Pesanan 400, Belum Terkirim 400 — completion ≠ delivered."""
+    await set_r2_authority_active(db, active=True)
+    item, branch, warehouse = await _seed_ygy(db)
+    await post_opening_balance(
+        db,
+        item["id"],
+        {
+            "branch_id": branch["id"],
+            "warehouse_id": warehouse["id"],
+            "physical_qty": 2000,
+            "reason": "open",
+            "idempotency_key": f"open-{item['id']}",
+        },
+        actor_id="t",
+    )
+    order_id = f"so-{uuid.uuid4().hex[:8]}"
+    await db.orders.insert_one({
+        "id": order_id,
+        "cancelled": False,
+        "line_items": [_print_line(item["id"], 1000)],
+        "operator_splits": [{"line_idx": 0, "qty_completed": 600}],
+        "shipments": [_proven_shipment(sid=f"sj-{uuid.uuid4().hex[:8]}", qty=200)],
+    })
+    before = await list_physical_stock_catalog(db)
+    row = next(r for r in before["items"] if r["master_item_id"] == item["id"])
+    assert row["qty_pesanan"] == 400
+    assert row["qty_belum_terkirim"] == 600  # no cutover yet; R2 ledger empty
+
+    preview = await preview_delivery_cutover_baseline(db)
+    assert preview["blocked"] is False
+    assert preview["baseline_basis"] == "proven_shipped"
+    assert preview["baseline_qty_total"] == 200
+    assert preview["item_count"] == 1
+
+    init = await initialize_delivery_cutover_baseline(db, actor={"email": "a@test"})
+    assert init["initialized"] is True
+    assert init["baseline_basis"] == "proven_shipped"
+    assert init["baseline_qty_total"] == 200
+    replay = await initialize_delivery_cutover_baseline(db)
+    assert replay["replayed"] is True
+
+    after = await list_physical_stock_catalog(db)
+    row2 = next(r for r in after["items"] if r["master_item_id"] == item["id"])
+    assert row2["qty_pesanan"] == 400
+    assert row2["qty_belum_terkirim"] == 400  # 600 completed - 200 proven shipped
+    assert row2["physical_qty"] == 2000
+    # Operator history untouched
+    order = await db.orders.find_one({"id": order_id})
+    assert order["operator_splits"][0]["qty_completed"] == 600
+
+
+async def test_cutover_completed_but_not_shipped_keeps_belum_terkirim(db):
     await set_r2_authority_active(db, active=True)
     item, branch, warehouse = await _seed_ygy(db)
     await post_opening_balance(
@@ -122,35 +199,114 @@ async def test_cutover_baseline_zeros_historical_belum_terkirim(db):
     await db.orders.insert_one({
         "id": f"so-{uuid.uuid4().hex[:8]}",
         "cancelled": False,
-        "line_items": [{
-            "line_id": "ln-0",
-            "master_item_id": item["id"],
-            "quantity": 500,
-            "production_process": "print",
-            "name": "Box",
-        }],
+        "line_items": [_print_line(item["id"], 500)],
         "operator_splits": [{"line_idx": 0, "qty_completed": 500}],
     })
-    before = await list_physical_stock_catalog(db)
-    row = next(r for r in before["items"] if r["master_item_id"] == item["id"])
-    assert row["qty_belum_terkirim"] == 500
-
     preview = await preview_delivery_cutover_baseline(db)
-    assert preview["item_count"] == 1
-    assert preview["baseline_qty_total"] == 500
+    assert preview["baseline_qty_total"] == 0
+    assert preview["item_count"] == 0
 
-    init = await initialize_delivery_cutover_baseline(db, actor={"email": "a@test"})
-    assert init["initialized"] is True
-    replay = await initialize_delivery_cutover_baseline(db)
-    assert replay["replayed"] is True
+    init = await initialize_delivery_cutover_baseline(db)
+    assert init["baseline_qty_total"] == 0
 
     after = await list_physical_stock_catalog(db)
-    row2 = next(r for r in after["items"] if r["master_item_id"] == item["id"])
-    assert row2["qty_belum_terkirim"] == 0
-    assert row2["physical_qty"] == 1000
+    row = next(r for r in after["items"] if r["master_item_id"] == item["id"])
+    assert row["qty_pesanan"] == 0
+    assert row["qty_belum_terkirim"] == 500
+    assert row["physical_qty"] == 1000
 
 
-async def test_post_cutover_new_completion_creates_belum_terkirim(db):
+async def test_cutover_fully_shipped_zeros_belum_terkirim(db):
+    await set_r2_authority_active(db, active=True)
+    item, branch, warehouse = await _seed_ygy(db)
+    await post_opening_balance(
+        db,
+        item["id"],
+        {
+            "branch_id": branch["id"],
+            "warehouse_id": warehouse["id"],
+            "physical_qty": 1000,
+            "reason": "open",
+            "idempotency_key": f"open-{item['id']}",
+        },
+        actor_id="t",
+    )
+    await db.orders.insert_one({
+        "id": f"so-{uuid.uuid4().hex[:8]}",
+        "cancelled": False,
+        "line_items": [_print_line(item["id"], 500)],
+        "operator_splits": [{"line_idx": 0, "qty_completed": 500}],
+        "shipments": [_proven_shipment(sid=f"sj-{uuid.uuid4().hex[:8]}", qty=500)],
+    })
+    await initialize_delivery_cutover_baseline(db)
+    after = await list_physical_stock_catalog(db)
+    row = next(r for r in after["items"] if r["master_item_id"] == item["id"])
+    assert row["qty_belum_terkirim"] == 0
+
+
+async def test_cutover_cancelled_sj_excluded_partial_sj_counted(db):
+    await set_r2_authority_active(db, active=True)
+    item, branch, warehouse = await _seed_ygy(db)
+    await post_opening_balance(
+        db,
+        item["id"],
+        {
+            "branch_id": branch["id"],
+            "warehouse_id": warehouse["id"],
+            "physical_qty": 1000,
+            "reason": "open",
+            "idempotency_key": f"open-{item['id']}",
+        },
+        actor_id="t",
+    )
+    order_id = f"so-{uuid.uuid4().hex[:8]}"
+    sj_ok = f"sj-{uuid.uuid4().hex[:8]}"
+    sj_cancel = f"sj-{uuid.uuid4().hex[:8]}"
+    await db.orders.insert_one({
+        "id": order_id,
+        "cancelled": False,
+        "line_items": [_print_line(item["id"], 1000)],
+        "operator_splits": [{"line_idx": 0, "qty_completed": 800}],
+        "shipments": [
+            _proven_shipment(sid=sj_ok, qty=150),
+            {
+                **_proven_shipment(sid=sj_cancel, qty=200),
+                "status": "cancelled",
+                "is_cancelled": True,
+            },
+        ],
+    })
+    await db.sales_deliveries.insert_many([
+        {
+            "id": sj_ok,
+            "po_id": order_id,
+            "status": "SELESAI",
+            "total_qty": 150,
+            "line_items": [{"line_idx": 0, "qty": 150}],
+        },
+        {
+            "id": sj_cancel,
+            "po_id": order_id,
+            "status": "SELESAI",
+            "is_cancelled": True,
+            "total_qty": 200,
+            "line_items": [{"line_idx": 0, "qty": 200}],
+        },
+    ])
+    preview = await preview_delivery_cutover_baseline(db)
+    assert preview["blocked"] is False
+    # Deduped: order.shipment + sales_delivery same id → 150 once; cancelled ignored
+    assert preview["baseline_qty_total"] == 150
+    await initialize_delivery_cutover_baseline(db)
+    row = next(
+        r for r in (await list_physical_stock_catalog(db))["items"]
+        if r["master_item_id"] == item["id"]
+    )
+    assert row["qty_belum_terkirim"] == 650  # 800 - 150
+
+
+async def test_cutover_alias_identity_dedupes_shipment_and_sales_delivery(db):
+    """shipment-1 + sales_delivery_id=delivery-1 vs sales_deliveries.id=delivery-1 → 100 not 200."""
     await set_r2_authority_active(db, active=True)
     item, branch, warehouse = await _seed_ygy(db)
     await post_opening_balance(
@@ -169,24 +325,385 @@ async def test_post_cutover_new_completion_creates_belum_terkirim(db):
     await db.orders.insert_one({
         "id": order_id,
         "cancelled": False,
-        "line_items": [{
-            "line_id": "ln-0",
-            "master_item_id": item["id"],
-            "quantity": 500,
-            "production_process": "print",
-            "name": "Box",
+        "line_items": [_print_line(item["id"], 500)],
+        "operator_splits": [{"line_idx": 0, "qty_completed": 400}],
+        "shipments": [{
+            "id": "shipment-1",
+            "sales_delivery_id": "delivery-1",
+            "delivery_status": "Terkirim",
+            "delivered_at": "2026-01-01T00:00:00+00:00",
+            "total_qty": 100,
+            "lines": [{"line_idx": 0, "qty": 100}],
         }],
+    })
+    await db.sales_deliveries.insert_one({
+        "id": "delivery-1",
+        "po_id": order_id,
+        "status": "SELESAI",
+        "total_qty": 100,
+        "line_items": [{"line_idx": 0, "qty": 100}],
+    })
+    # Alias set must bridge shipment id ↔ sales_delivery id
+    tokens = _delivery_identity_tokens({
+        "id": "shipment-1",
+        "sales_delivery_id": "delivery-1",
+    })
+    assert "shipment-1" in tokens and "delivery-1" in tokens
+
+    preview = await preview_delivery_cutover_baseline(db)
+    assert preview["blocked"] is False
+    assert preview["baseline_qty_total"] == 100  # not 200
+
+    init = await initialize_delivery_cutover_baseline(db)
+    assert init["baseline_qty_total"] == 100
+    row = next(
+        r for r in (await list_physical_stock_catalog(db))["items"]
+        if r["master_item_id"] == item["id"]
+    )
+    assert row["qty_belum_terkirim"] == 300  # 400 completed - 100 proven once
+
+
+async def test_cutover_two_distinct_deliveries_sum_not_qty_dedupe(db):
+    """Two real deliveries with different identities both count — never dedupe by qty/PO."""
+    item_id = f"item-{uuid.uuid4().hex[:8]}"
+    order_id = f"so-{uuid.uuid4().hex[:8]}"
+    order = {
+        "id": order_id,
+        "cancelled": False,
+        "line_items": [_print_line(item_id, 500)],
+        "operator_splits": [{"line_idx": 0, "qty_completed": 400}],
+        "shipments": [
+            {
+                "id": "shipment-a",
+                "sales_delivery_id": "delivery-a",
+                "delivery_status": "Terkirim",
+                "delivered_at": "2026-01-01T00:00:00+00:00",
+                "total_qty": 100,
+                "lines": [{"line_idx": 0, "qty": 100}],
+            },
+            {
+                "id": "shipment-b",
+                "sales_delivery_id": "delivery-b",
+                "delivery_status": "Terkirim",
+                "delivered_at": "2026-01-02T00:00:00+00:00",
+                "total_qty": 100,  # same qty as A — must NOT collapse
+                "lines": [{"line_idx": 0, "qty": 100}],
+            },
+        ],
+    }
+    sales_deliveries = [
+        {
+            "id": "delivery-a",
+            "po_id": order_id,
+            "status": "SELESAI",
+            "total_qty": 100,
+            "line_items": [{"line_idx": 0, "qty": 100}],
+        },
+        {
+            "id": "delivery-b",
+            "po_id": order_id,
+            "status": "SELESAI",
+            "total_qty": 100,
+            "line_items": [{"line_idx": 0, "qty": 100}],
+        },
+    ]
+    by_item, by_line, order_count, line_count, ambiguous = _build_delivery_baseline(
+        [order], sales_deliveries,
+    )
+    assert ambiguous == []
+    assert order_count == 1
+    assert by_item[item_id] == 200  # 100 + 100, not qty-collapsed to 100
+    assert by_line[f"{order_id}:0"] == 200
+
+
+async def test_cutover_multi_sku_line_attribution(db):
+    await set_r2_authority_active(db, active=True)
+    item_a, branch, warehouse = await _seed_ygy(db)
+    item_b = {
+        "id": f"item-{uuid.uuid4().hex[:8]}",
+        "item_code": "BAG",
+        "item_name": "Bag",
+        "unit": "PCS",
+        "is_active": True,
+    }
+    await db[MASTER_ITEMS_COLLECTION].insert_one(dict(item_b))
+    for mid, open_qty in ((item_a["id"], 1000), (item_b["id"], 1000)):
+        await post_opening_balance(
+            db,
+            mid,
+            {
+                "branch_id": branch["id"],
+                "warehouse_id": warehouse["id"],
+                "physical_qty": open_qty,
+                "reason": "open",
+                "idempotency_key": f"open-{mid}",
+            },
+            actor_id="t",
+        )
+    order_id = f"so-{uuid.uuid4().hex[:8]}"
+    await db.orders.insert_one({
+        "id": order_id,
+        "cancelled": False,
+        "line_items": [
+            _print_line(item_a["id"], 400, line_id="ln-a", name="Box"),
+            _print_line(item_b["id"], 300, line_id="ln-b", name="Bag"),
+        ],
+        "operator_splits": [
+            {"line_idx": 0, "qty_completed": 400},
+            {"line_idx": 1, "qty_completed": 300},
+        ],
+        "shipments": [{
+            "id": "sj-multi",
+            "delivery_status": "Terkirim",
+            "delivered_at": "2026-01-01T00:00:00+00:00",
+            "total_qty": 250,
+            "lines": [
+                {"line_idx": 0, "qty": 100},
+                {"line_idx": 1, "qty": 150},
+            ],
+        }],
+    })
+    init = await initialize_delivery_cutover_baseline(db)
+    assert init["baseline_qty_total"] == 250
+    catalog = await list_physical_stock_catalog(db)
+    by_id = {r["master_item_id"]: r for r in catalog["items"]}
+    assert by_id[item_a["id"]]["qty_belum_terkirim"] == 300  # 400 - 100
+    assert by_id[item_b["id"]]["qty_belum_terkirim"] == 150  # 300 - 150
+
+
+async def test_cutover_ambiguous_history_blocks_initialize(db):
+    await set_r2_authority_active(db, active=True)
+    item_a, branch, warehouse = await _seed_ygy(db)
+    item_b = {
+        "id": f"item-{uuid.uuid4().hex[:8]}",
+        "item_code": "BAG",
+        "item_name": "Bag",
+        "unit": "PCS",
+        "is_active": True,
+    }
+    await db[MASTER_ITEMS_COLLECTION].insert_one(dict(item_b))
+    order_id = f"so-{uuid.uuid4().hex[:8]}"
+    await db.orders.insert_one({
+        "id": order_id,
+        "cancelled": False,
+        "line_items": [
+            _print_line(item_a["id"], 400, line_id="ln-a"),
+            _print_line(item_b["id"], 300, line_id="ln-b", name="Bag"),
+        ],
+        "operator_splits": [
+            {"line_idx": 0, "qty_completed": 100},
+            {"line_idx": 1, "qty_completed": 100},
+        ],
+        "shipments": [{
+            "id": "sj-ambig",
+            "delivery_status": "Terkirim",
+            "delivered_at": "2026-01-01T00:00:00+00:00",
+            "total_qty": 50,
+            "lines": [{"qty": 50}],  # missing line_idx on multi-SKU → ambiguous
+        }],
+    })
+    preview = await preview_delivery_cutover_baseline(db)
+    assert preview["blocked"] is True
+    assert preview["ambiguous_count"] >= 1
+    with pytest.raises(DeliveryCutoverBlockedError) as exc:
+        await initialize_delivery_cutover_baseline(db)
+    assert exc.value.ambiguous
+    # No settings written
+    cut = await db.app_settings.find_one({"key": "r2_go_live"})
+    assert not (cut or {}).get("delivery_cutover", {}).get("initialized")
+
+
+async def test_post_cutover_new_delivery_reduces_belum_terkirim(db):
+    await set_r2_authority_active(db, active=True)
+    item, branch, warehouse = await _seed_ygy(db)
+    await post_opening_balance(
+        db,
+        item["id"],
+        {
+            "branch_id": branch["id"],
+            "warehouse_id": warehouse["id"],
+            "physical_qty": 1000,
+            "reason": "open",
+            "idempotency_key": f"open-{item['id']}",
+        },
+        actor_id="t",
+    )
+    order = {
+        "id": f"so-{uuid.uuid4().hex[:8]}",
+        "cancelled": False,
+        "line_items": [_print_line(item["id"], 500)],
+        "operator_splits": [{"line_idx": 0, "qty_completed": 400}],
+        "shipments": [_proven_shipment(sid=f"sj-{uuid.uuid4().hex[:8]}", qty=100)],
+    }
+    await db.orders.insert_one(dict(order))
+    await initialize_delivery_cutover_baseline(db)
+    mid = await list_physical_stock_catalog(db)
+    row = next(r for r in mid["items"] if r["master_item_id"] == item["id"])
+    assert row["qty_belum_terkirim"] == 300  # 400 - 100 baseline
+
+    await confirm_sales_delivery(
+        db,
+        order_id=order["id"],
+        confirmation_id=f"conf-{uuid.uuid4().hex[:8]}",
+        lines=[{"line_idx": 0, "qty": 80, "master_item_id": item["id"], "line_id": "ln-0"}],
+        actor_id="t",
+        warehouse_id=warehouse["id"],
+        branch_id=branch["id"],
+        reason="post-cutover",
+    )
+    after = await list_physical_stock_catalog(db)
+    row2 = next(r for r in after["items"] if r["master_item_id"] == item["id"])
+    assert row2["qty_belum_terkirim"] == 220  # 400 - 100 baseline - 80 R2
+    assert row2["physical_qty"] == 920
+
+
+async def test_cutover_blocks_redelivery_of_proven_shipped_only(db):
+    await set_r2_authority_active(db, active=True)
+    item, branch, warehouse = await _seed_ygy(db)
+    await post_opening_balance(
+        db,
+        item["id"],
+        {
+            "branch_id": branch["id"],
+            "warehouse_id": warehouse["id"],
+            "physical_qty": 500,
+            "reason": "open",
+            "idempotency_key": f"open-{item['id']}",
+        },
+        actor_id="t",
+    )
+    order = {
+        "id": f"so-{uuid.uuid4().hex[:8]}",
+        "cancelled": False,
+        "line_items": [_print_line(item["id"], 200)],
         "operator_splits": [{"line_idx": 0, "qty_completed": 200}],
+        "shipments": [_proven_shipment(sid=f"sj-{uuid.uuid4().hex[:8]}", qty=200)],
+    }
+    await db.orders.insert_one(dict(order))
+    await initialize_delivery_cutover_baseline(db)
+    from services.physical_stock import PhysicalStockValidationError
+    with pytest.raises(PhysicalStockValidationError):
+        await confirm_sales_delivery(
+            db,
+            order_id=order["id"],
+            confirmation_id=f"conf-{uuid.uuid4().hex[:8]}",
+            lines=[{"line_idx": 0, "qty": 50, "master_item_id": item["id"], "line_id": "ln-0"}],
+            actor_id="t",
+            warehouse_id=warehouse["id"],
+            branch_id=branch["id"],
+        )
+
+
+async def test_cutover_allows_delivery_of_completed_unshipped(db):
+    await set_r2_authority_active(db, active=True)
+    item, branch, warehouse = await _seed_ygy(db)
+    await post_opening_balance(
+        db,
+        item["id"],
+        {
+            "branch_id": branch["id"],
+            "warehouse_id": warehouse["id"],
+            "physical_qty": 500,
+            "reason": "open",
+            "idempotency_key": f"open-{item['id']}",
+        },
+        actor_id="t",
+    )
+    order = {
+        "id": f"so-{uuid.uuid4().hex[:8]}",
+        "cancelled": False,
+        "line_items": [_print_line(item["id"], 200)],
+        "operator_splits": [{"line_idx": 0, "qty_completed": 200}],
+    }
+    await db.orders.insert_one(dict(order))
+    await initialize_delivery_cutover_baseline(db)
+    result = await confirm_sales_delivery(
+        db,
+        order_id=order["id"],
+        confirmation_id=f"conf-{uuid.uuid4().hex[:8]}",
+        lines=[{"line_idx": 0, "qty": 50, "master_item_id": item["id"], "line_id": "ln-0"}],
+        actor_id="t",
+        warehouse_id=warehouse["id"],
+        branch_id=branch["id"],
+    )
+    assert result["replayed"] is False
+    bal = await db[BALANCE_COLLECTION].find_one({"master_item_id": item["id"]})
+    assert int(bal["physical_qty"]) == 450
+
+
+async def test_cutover_force_reinit_blocked_after_r2_delivery(db):
+    await set_r2_authority_active(db, active=True)
+    item, branch, warehouse = await _seed_ygy(db)
+    await post_opening_balance(
+        db,
+        item["id"],
+        {
+            "branch_id": branch["id"],
+            "warehouse_id": warehouse["id"],
+            "physical_qty": 500,
+            "reason": "open",
+            "idempotency_key": f"open-{item['id']}",
+        },
+        actor_id="t",
+    )
+    order = {
+        "id": f"so-{uuid.uuid4().hex[:8]}",
+        "cancelled": False,
+        "line_items": [_print_line(item["id"], 200)],
+        "operator_splits": [{"line_idx": 0, "qty_completed": 200}],
+    }
+    await db.orders.insert_one(dict(order))
+    await initialize_delivery_cutover_baseline(db)
+    await confirm_sales_delivery(
+        db,
+        order_id=order["id"],
+        confirmation_id=f"conf-{uuid.uuid4().hex[:8]}",
+        lines=[{"line_idx": 0, "qty": 40, "master_item_id": item["id"], "line_id": "ln-0"}],
+        actor_id="t",
+        warehouse_id=warehouse["id"],
+        branch_id=branch["id"],
+    )
+    with pytest.raises(DeliveryCutoverBlockedError) as exc:
+        await initialize_delivery_cutover_baseline(db, force=True)
+    assert "R2" in str(exc.value)
+
+
+async def test_post_cutover_new_completion_creates_belum_terkirim(db):
+    """Completion after cutover still fills Belum Terkirim; baseline stays shipped-only."""
+    await set_r2_authority_active(db, active=True)
+    item, branch, warehouse = await _seed_ygy(db)
+    await post_opening_balance(
+        db,
+        item["id"],
+        {
+            "branch_id": branch["id"],
+            "warehouse_id": warehouse["id"],
+            "physical_qty": 1000,
+            "reason": "open",
+            "idempotency_key": f"open-{item['id']}",
+        },
+        actor_id="t",
+    )
+    order_id = f"so-{uuid.uuid4().hex[:8]}"
+    await db.orders.insert_one({
+        "id": order_id,
+        "cancelled": False,
+        "line_items": [_print_line(item["id"], 500)],
+        "operator_splits": [{"line_idx": 0, "qty_completed": 200}],
+        "shipments": [_proven_shipment(sid=f"sj-{uuid.uuid4().hex[:8]}", qty=50)],
     })
     await initialize_delivery_cutover_baseline(db)
-    # New completion after cutover
+    mid = await list_physical_stock_catalog(db)
+    row0 = next(r for r in mid["items"] if r["master_item_id"] == item["id"])
+    assert row0["qty_belum_terkirim"] == 150  # 200 completed - 50 shipped baseline
+
     await db.orders.update_one(
         {"id": order_id},
         {"$set": {"operator_splits": [{"line_idx": 0, "qty_completed": 350}]}},
     )
     catalog = await list_physical_stock_catalog(db)
     row = next(r for r in catalog["items"] if r["master_item_id"] == item["id"])
-    assert row["qty_belum_terkirim"] == 150
+    assert row["qty_belum_terkirim"] == 300  # 350 - 50 baseline; +150 from new completion
 
 
 async def test_operational_availability_formula():
@@ -307,48 +824,6 @@ async def test_r2_delivery_confirm_and_reverse_idempotent(db):
         db, confirmation_id="never-existed", actor_id="t",
     )
     assert missing["reversed"] is False
-
-
-async def test_cutover_blocks_r2_redelivery_of_historical_completion(db):
-    await set_r2_authority_active(db, active=True)
-    item, branch, warehouse = await _seed_ygy(db)
-    await post_opening_balance(
-        db,
-        item["id"],
-        {
-            "branch_id": branch["id"],
-            "warehouse_id": warehouse["id"],
-            "physical_qty": 500,
-            "reason": "open",
-            "idempotency_key": f"open-{item['id']}",
-        },
-        actor_id="t",
-    )
-    order = {
-        "id": f"so-{uuid.uuid4().hex[:8]}",
-        "cancelled": False,
-        "line_items": [{
-            "line_id": "ln-0",
-            "master_item_id": item["id"],
-            "quantity": 200,
-            "production_process": "print",
-            "name": "Box",
-        }],
-        "operator_splits": [{"line_idx": 0, "qty_completed": 200}],
-    }
-    await db.orders.insert_one(dict(order))
-    await initialize_delivery_cutover_baseline(db)
-    from services.physical_stock import PhysicalStockValidationError
-    with pytest.raises(PhysicalStockValidationError):
-        await confirm_sales_delivery(
-            db,
-            order_id=order["id"],
-            confirmation_id=f"conf-{uuid.uuid4().hex[:8]}",
-            lines=[{"line_idx": 0, "qty": 50, "master_item_id": item["id"], "line_id": "ln-0"}],
-            actor_id="t",
-            warehouse_id=warehouse["id"],
-            branch_id=branch["id"],
-        )
 
 
 # ---- 4. HOLDING_TEAM top-up ----
