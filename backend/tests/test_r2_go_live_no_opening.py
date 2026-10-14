@@ -380,6 +380,54 @@ async def test_verified_zero_opname_vs_unknown_missing_balance(db):
     assert await get_balance(db, item["id"], branch["id"], wh_b["id"]) is None
 
 
+async def test_branch_tersedia_invalid_when_one_warehouse_missing_balance(db):
+    """A reconciled + B missing → branch invalid; filter A valid; filter B invalid."""
+    await set_r2_authority_active(db, active=True)
+    item, branch, wh_a = await _seed_ygy(db, with_opening=True, opening_qty=100)
+    wh_b = {
+        "id": f"wh-b-{uuid.uuid4().hex[:6]}",
+        "branch_id": branch["id"],
+        "code": "WHB",
+        "name": "Cadangan",
+        "active": True,
+        "is_operational": True,
+    }
+    await db[WAREHOUSES_COLLECTION].insert_one(dict(wh_b))
+    bal_a = await get_balance(db, item["id"], branch["id"], wh_a["id"])
+    assert bal_a["baseline_status"] == BASELINE_RECONCILED
+    assert await get_balance(db, item["id"], branch["id"], wh_b["id"]) is None
+
+    branch_cat = await list_physical_stock_catalog(db, branch_id=branch["id"])
+    branch_row = next(r for r in branch_cat["items"] if r["master_item_id"] == item["id"])
+    assert branch_row["qty_tersedia_valid"] is False
+    assert branch_row["baseline_status"] == BASELINE_UNRECONCILED
+    by_code = {w["warehouse_code"]: w for w in branch_row["warehouse_balances"]}
+    assert by_code["MAIN"]["baseline_status"] == BASELINE_RECONCILED
+    assert by_code["WHB"]["baseline_status"] == BASELINE_UNRECONCILED
+    assert by_code["WHB"]["balance_present"] is False
+    # Demand buckets unchanged / physical-independent
+    pesanan = branch_row["qty_pesanan"]
+    belum = branch_row["qty_belum_terkirim"]
+
+    cat_a = await list_physical_stock_catalog(
+        db, branch_id=branch["id"], warehouse_id=wh_a["id"],
+    )
+    row_a = next(r for r in cat_a["items"] if r["master_item_id"] == item["id"])
+    assert row_a["qty_tersedia_valid"] is True
+    assert row_a["baseline_status"] == BASELINE_RECONCILED
+    assert row_a["qty_pesanan"] == pesanan
+    assert row_a["qty_belum_terkirim"] == belum
+
+    cat_b = await list_physical_stock_catalog(
+        db, branch_id=branch["id"], warehouse_id=wh_b["id"],
+    )
+    row_b = next(r for r in cat_b["items"] if r["master_item_id"] == item["id"])
+    assert row_b["qty_tersedia_valid"] is False
+    assert row_b["baseline_status"] == BASELINE_UNRECONCILED
+    assert row_b["qty_pesanan"] == pesanan
+    assert row_b["qty_belum_terkirim"] == belum
+
+
 async def test_warehouses_not_mixed_on_pre_opname_movements(db):
     await set_r2_authority_active(db, active=True)
     item, branch, wh_a = await _seed_ygy(db, with_opening=False)
