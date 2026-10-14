@@ -16,6 +16,7 @@ os.environ.setdefault(
 
 from services.physical_stock import (  # noqa: E402
     BALANCE_COLLECTION,
+    aggregate_operational_orders,
     list_physical_stock_catalog,
 )
 from services.r2_go_live import (  # noqa: E402
@@ -342,6 +343,27 @@ async def test_aggregate_legacy_delivered_single_line_fallback():
     delivered, prov = aggregate_legacy_delivered_qty(orders, [])
     assert delivered["m1"] == 30
     assert prov["m1"] == "order_qty_delivered"
+
+
+async def test_unassigned_splits_not_attributed_when_multiple_print_candidates():
+    """Regression: SERVICE print lines remain candidates — do not dump unassigned onto INVENTORY."""
+    orders = [{
+        "id": "o-unassigned",
+        "cancelled": False,
+        "line_items": [
+            {"master_item_id": "inv-1", "quantity": 1000, "production_process": "print"},
+            {"master_item_id": "svc-1", "quantity": 1000, "production_process": "print"},
+        ],
+        # Ambiguous color progress without line_idx must not become inventory completed.
+        "operator_splits": [{"qty_completed": 1000}],
+    }]
+    progress = aggregate_operational_orders(
+        orders, exclude_master_ids={"svc-1"},
+    )
+    slot = progress["inv-1"]
+    assert slot["ordered_qty"] == 1000
+    assert slot["completed_qty"] == 0
+    assert slot.get("completion_unproven") is True
 
 
 async def test_case_a_proven_plus_ambiguous_is_unverified_not_ready():
@@ -761,8 +783,8 @@ async def test_fase1_addon_service_matrix_and_attribution(db):
     assert row["qty_belum_terkirim"] == 0
     assert row["qty_tersedia_valid"] is False
 
-    # (2) Warna1 complete 1000; warna2/3 unfinished — physical siap = 1000
-    # No parent_line_id → cannot invent min() gate across SERVICE processes.
+    # (2) Warna1 complete 1000; warna2/3 unfinished — NOT READY 1000 siap.
+    # No parent_line_id → fail-closed BELUM TERVERIFIKASI (do not invent min()).
     await db.orders.update_one({"id": oid}, {"$set": {
         "operator_splits": [
             {"line_idx": 0, "qty_completed": 1000},
@@ -771,10 +793,11 @@ async def test_fase1_addon_service_matrix_and_attribution(db):
         ],
     }})
     row = next(r for r in (await list_compatibility_stock_catalog(db))["items"] if r["master_item_id"] == physical["id"])
-    assert row["qty_pesanan"] == 0
-    assert row["qty_belum_terkirim"] == 1000
+    assert row["qty_pesanan"] == 0  # physical line progress only
+    assert row["belum_terkirim_status"] == BELUM_STATUS_UNVERIFIED
+    assert row["qty_belum_terkirim"] is None
 
-    # (3) Warna1+2 done; warna3 unfinished — physical still siap 1000
+    # (3) Warna1+2 done; warna3 unfinished — still unverified siap kirim
     await db.orders.update_one({"id": oid}, {"$set": {
         "operator_splits": [
             {"line_idx": 0, "qty_completed": 1000},
@@ -784,9 +807,10 @@ async def test_fase1_addon_service_matrix_and_attribution(db):
     }})
     row = next(r for r in (await list_compatibility_stock_catalog(db))["items"] if r["master_item_id"] == physical["id"])
     assert row["qty_pesanan"] == 0
-    assert row["qty_belum_terkirim"] == 1000
+    assert row["belum_terkirim_status"] == BELUM_STATUS_UNVERIFIED
+    assert row["qty_belum_terkirim"] is None
 
-    # (4) All three process lines complete — physical still 1000 siap, not 3000
+    # (4) All process lines complete — still no parent link → unverified, not READY 1000/3000
     await db.orders.update_one({"id": oid}, {"$set": {
         "operator_splits": [
             {"line_idx": 0, "qty_completed": 1000},
@@ -796,9 +820,10 @@ async def test_fase1_addon_service_matrix_and_attribution(db):
     }})
     row = next(r for r in (await list_compatibility_stock_catalog(db))["items"] if r["master_item_id"] == physical["id"])
     assert row["qty_pesanan"] == 0
-    assert row["qty_belum_terkirim"] == 1000
+    assert row["belum_terkirim_status"] == BELUM_STATUS_UNVERIFIED
+    assert row["qty_belum_terkirim"] is None
 
-    # (5) Partial different progress — do not sum operator outputs into physical selesai
+    # (5) Partial different progress — pesanan from inventory line; siap not a fake number
     await db.orders.update_one({"id": oid}, {"$set": {
         "operator_splits": [
             {"line_idx": 0, "qty_completed": 400},
@@ -808,9 +833,10 @@ async def test_fase1_addon_service_matrix_and_attribution(db):
     }})
     row = next(r for r in (await list_compatibility_stock_catalog(db))["items"] if r["master_item_id"] == physical["id"])
     assert row["qty_pesanan"] == 600  # 1000 - 400 on inventory line only
-    assert row["qty_belum_terkirim"] == 400
+    assert row["belum_terkirim_status"] == BELUM_STATUS_UNVERIFIED
+    assert row["qty_belum_terkirim"] is None
 
-    # (6) Cancelled SERVICE Add On does not change physical demand
+    # (6) Cancelled SERVICE Add On ignored for process gate → inventory-only READY again
     await db.orders.update_one({"id": oid}, {"$set": {
         "operator_splits": [{"line_idx": 0, "qty_completed": 400}],
         "line_items": [
@@ -834,6 +860,7 @@ async def test_fase1_addon_service_matrix_and_attribution(db):
     row = next(r for r in (await list_compatibility_stock_catalog(db))["items"] if r["master_item_id"] == physical["id"])
     assert row["qty_pesanan"] == 600
     assert row["qty_belum_terkirim"] == 400
+    assert row["belum_terkirim_status"] == BELUM_STATUS_READY
 
     # (7) Second PO same physical master — independent demand
     await db.orders.insert_one({
@@ -850,6 +877,7 @@ async def test_fase1_addon_service_matrix_and_attribution(db):
     row = next(r for r in (await list_compatibility_stock_catalog(db))["items"] if r["master_item_id"] == physical["id"])
     assert row["qty_pesanan"] == 800  # 600 + 200
     assert row["qty_belum_terkirim"] == 400
+    assert row["belum_terkirim_status"] == BELUM_STATUS_READY
 
     # (8) Proven + ambiguous together → BELUM TERVERIFIKASI
     await db.orders.update_one({"id": oid}, {"$set": {
@@ -955,24 +983,33 @@ async def test_fase1_addon_service_matrix_and_attribution(db):
                 "quantity": 1000,
                 "production_process": "print",
             },
-            {
-                "master_item_id": extra_phys["id"],
-                "quantity": 50,
-                "production_process": "non_print",
-            },
         ],
         "operator_splits": [{"line_idx": 0, "qty_completed": 1000}],
         "shipments": [],
     }})
+    # Physical-goods Add On on its own PO (explicit INVENTORY) — counts separately.
+    await db.orders.insert_one({
+        "id": f"so-phys-addon-{uuid.uuid4().hex[:6]}",
+        "cancelled": False,
+        "line_items": [{
+            "master_item_id": extra_phys["id"],
+            "quantity": 50,
+            "production_process": "non_print",
+        }],
+        "operator_splits": [],
+    })
     catalog = await list_compatibility_stock_catalog(db)
     prow = next(r for r in catalog["items"] if r["master_item_id"] == physical["id"])
     xrow = next(r for r in catalog["items"] if r["master_item_id"] == extra_phys["id"])
     assert warna2["id"] not in {r["master_item_id"] for r in catalog["items"]}
-    assert prow["qty_belum_terkirim"] == 1000
+    assert prow["qty_pesanan"] == 0
+    assert prow["belum_terkirim_status"] == BELUM_STATUS_UNVERIFIED
+    assert prow["qty_belum_terkirim"] is None  # SERVICE process on PO — not READY 1000
     assert xrow["qty_pesanan"] == 0
-    assert xrow["qty_belum_terkirim"] == 50  # physical addon counts
+    assert xrow["qty_belum_terkirim"] == 50
+    assert xrow["belum_terkirim_status"] == BELUM_STATUS_READY
 
-    # (12) Incomplete parent–Add On relation: unnamed process lines without master → ignored
+    # (12) Incomplete parent–Add On relation: orphan print line without master → unverified
     await db.orders.update_one({"id": oid}, {"$set": {
         "line_items": [
             {
@@ -992,11 +1029,12 @@ async def test_fase1_addon_service_matrix_and_attribution(db):
         ],
     }})
     row = next(r for r in (await list_compatibility_stock_catalog(db))["items"] if r["master_item_id"] == physical["id"])
-    # No invented link: only inventory line progress counts; orphan Add On ignored
+    # No invented link: inventory pesanan from proven line_idx; siap kirim fail-closed
     assert row["qty_pesanan"] == 500
-    assert row["qty_belum_terkirim"] == 500
+    assert row["belum_terkirim_status"] == BELUM_STATUS_UNVERIFIED
+    assert row["qty_belum_terkirim"] is None
 
-    # (13) Cancelled PO / cancelled SJ — no double count
+    # (13) Cancelled PO / cancelled SJ — no double count; orphan process still blocks siap
     await db.orders.insert_one({
         "id": "po-canc-addon",
         "cancelled": True,
@@ -1023,4 +1061,5 @@ async def test_fase1_addon_service_matrix_and_attribution(db):
     })
     row = next(r for r in (await list_compatibility_stock_catalog(db))["items"] if r["master_item_id"] == physical["id"])
     assert row["qty_pesanan"] == 500
-    assert row["qty_belum_terkirim"] == 500
+    assert row["belum_terkirim_status"] == BELUM_STATUS_UNVERIFIED
+    assert row["qty_belum_terkirim"] is None

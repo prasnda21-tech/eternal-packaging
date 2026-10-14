@@ -2723,6 +2723,10 @@ def operational_availability(
     }
 
 
+def _line_item_cancelled(line: dict) -> bool:
+    return bool(line.get("cancelled") or line.get("is_cancelled"))
+
+
 def aggregate_operational_orders(
     orders: Iterable[dict],
     accurate_owners: Optional[Dict[str, str]] = None,
@@ -2732,32 +2736,53 @@ def aggregate_operational_orders(
     """Sum active ordered qty and ready qty per master_item_id.
 
     Print lines: ready = operator qty_completed (unassigned splits only attach to
-    the sole print line when exactly one print line is identified).
+    the sole print line when exactly one print process candidate exists —
+    including SERVICE process Add Ons that are excluded from demand).
     Non-print lines: ready = ordered qty (siap kirim) without writing completed
     or packed fields on the order. Cancelled orders contribute nothing.
     Masters in exclude_master_ids (e.g. item_type=SERVICE process Add On) never
     contribute physical stock demand — work qty stays on production tracking.
+
+    When a PO has active SERVICE print lines or orphan print lines without a
+    master id, physical masters on that PO are flagged completion_unproven —
+    siap kirim must not invent full-process completion without parent_line_id.
     operational_availability floors the buckets.
     """
     from quantity_rules import is_print_line, operational_ready_qty_for_line
 
     owners = accurate_owners or {}
     excluded = {str(mid).strip() for mid in (exclude_master_ids or []) if str(mid).strip()}
-    totals: Dict[str, Dict[str, float]] = {}
+    totals: Dict[str, Dict[str, Any]] = {}
 
-    def add(master_id: str, ordered: float, completed: float) -> None:
+    def add(master_id: str, ordered: float, completed: float, *, unproven: bool = False) -> None:
         if not master_id or master_id in excluded:
             return
-        slot = totals.setdefault(master_id, {"ordered_qty": 0.0, "completed_qty": 0.0})
+        slot = totals.setdefault(
+            master_id,
+            {"ordered_qty": 0.0, "completed_qty": 0.0, "completion_unproven": False},
+        )
         slot["ordered_qty"] = _qty_num(slot["ordered_qty"]) + _qty_num(ordered)
         slot["completed_qty"] = _qty_num(slot["completed_qty"]) + _qty_num(completed)
+        if unproven:
+            slot["completion_unproven"] = True
 
     for order in orders:
         if _order_cancelled(order):
             continue
         lines = list(order.get("line_items") or [])
         master_ids = [_line_master_id(line, owners) for line in lines]
-        # Attach unassigned operator splits to the sole print line (existing rule).
+        active_idxs = [
+            idx for idx, line in enumerate(lines)
+            if isinstance(line, dict) and not _line_item_cancelled(line)
+        ]
+        # All active print process candidates (SERVICE + orphan included).
+        print_candidates = [idx for idx in active_idxs if is_print_line(lines[idx])]
+        has_service_print = any(
+            master_ids[idx] in excluded for idx in print_candidates if master_ids[idx]
+        )
+        has_orphan_print = any(not master_ids[idx] for idx in print_candidates)
+        process_gate_unproven = has_service_print or has_orphan_print
+
         completed_by_idx: Dict[int, float] = {}
         unassigned = []
         for split in order.get("operator_splits") or []:
@@ -2771,29 +2796,43 @@ def aggregate_operational_orders(
                 continue
             if idx < 0 or idx >= len(lines) or not master_ids[idx]:
                 continue
+            if _line_item_cancelled(lines[idx]):
+                continue
             if master_ids[idx] in excluded:
                 continue
             if not is_print_line(lines[idx]):
                 continue
             completed_by_idx[idx] = _qty_num(completed_by_idx.get(idx, 0)) + _qty_num(split.get("qty_completed"))
-        identified = [
-            idx for idx, master_id in enumerate(master_ids)
-            if master_id and master_id not in excluded and is_print_line(lines[idx])
-        ]
-        if unassigned and len(identified) == 1:
-            idx = identified[0]
-            extra = sum(_qty_num(split.get("qty_completed")) for split in unassigned)
-            completed_by_idx[idx] = _qty_num(completed_by_idx.get(idx, 0)) + extra
-        for idx, line in enumerate(lines):
+
+        unassigned_ambiguous = False
+        if unassigned:
+            # Attribute only when exactly one print process candidate exists overall.
+            if len(print_candidates) == 1 and master_ids[print_candidates[0]] and (
+                master_ids[print_candidates[0]] not in excluded
+            ):
+                idx = print_candidates[0]
+                extra = sum(_qty_num(split.get("qty_completed")) for split in unassigned)
+                completed_by_idx[idx] = _qty_num(completed_by_idx.get(idx, 0)) + extra
+            else:
+                unassigned_ambiguous = True
+                process_gate_unproven = True
+
+        for idx in active_idxs:
             mid = master_ids[idx]
             if not mid or mid in excluded:
                 continue
+            line = lines[idx]
             if not is_print_line(line):
                 ready = operational_ready_qty_for_line(order, idx)
             else:
                 ordered = _qty_num(line.get("quantity"))
                 ready = min(_qty_num(completed_by_idx.get(idx, 0)), ordered)
-            add(mid, _qty_num(line.get("quantity")), ready)
+            add(
+                mid,
+                _qty_num(line.get("quantity")),
+                ready,
+                unproven=process_gate_unproven or unassigned_ambiguous,
+            )
     return totals
 
 
@@ -3026,15 +3065,29 @@ async def list_physical_stock_catalog(
         docs = balances.get(master.get("id"), [])
         physical = sum(_qty_num(doc.get("physical_qty")) for doc in docs)
         updated = [doc.get("updated_at") for doc in docs if doc.get("updated_at")]
-        demand = progress.get(master.get("id")) or {"ordered_qty": 0.0, "completed_qty": 0.0}
+        demand = progress.get(master.get("id")) or {
+            "ordered_qty": 0.0,
+            "completed_qty": 0.0,
+            "completion_unproven": False,
+        }
         mid = master.get("id")
         effective_delivered = _qty_num(delivered.get(mid, 0)) + _qty_num(baseline_by_item.get(str(mid), 0))
+        completion_unproven = bool(demand.get("completion_unproven"))
+        completed_for_buckets = demand["completed_qty"]
         buckets = operational_availability(
             physical_qty=physical,
             ordered_qty=demand["ordered_qty"],
-            completed_qty=demand["completed_qty"],
+            completed_qty=completed_for_buckets,
             r2_delivered_qty=effective_delivered,
         )
+        # Fail-closed siap kirim when process Add On completion cannot be proven.
+        if completion_unproven and _qty_num(completed_for_buckets) > 0:
+            buckets = dict(buckets)
+            buckets["qty_belum_terkirim"] = None  # type: ignore[assignment]
+            # Qty Tersedia informational only excludes pesanan (not fabricated belum).
+            buckets["qty_tersedia"] = (
+                _qty_num(buckets["physical_qty"]) - _qty_num(buckets["qty_pesanan"])
+            )
         docs_by_wh = {
             str(doc.get("warehouse_id") or ""): doc
             for doc in docs
@@ -3099,7 +3152,11 @@ async def list_physical_stock_catalog(
             "qty_tersedia": buckets["qty_tersedia"],
             "qty_tersedia_valid": qty_tersedia_valid,
             "updated_at": max(updated) if updated else None,
-            "belum_terkirim_status": "READY",
+            "belum_terkirim_status": (
+                "BELUM_TERVERIFIKASI"
+                if completion_unproven and _qty_num(completed_for_buckets) > 0
+                else "READY"
+            ),
             "stock_read_mode": "r2",
             "baseline_status": baseline_status,
             "baseline_label": (

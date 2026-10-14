@@ -363,13 +363,18 @@ async def list_compatibility_stock_catalog(
         state = state_by_mid.get(mid) or {}
         initialized = bool(state.get("initialized") or state.get("status") == "INITIALIZED")
         physical = _qty_num(state.get("total_qty")) if initialized else 0.0
-        demand = progress.get(mid) or {"ordered_qty": 0.0, "completed_qty": 0.0}
+        demand = progress.get(mid) or {
+            "ordered_qty": 0.0,
+            "completed_qty": 0.0,
+            "completion_unproven": False,
+        }
         ordered = _qty_num(demand["ordered_qty"])
         completed = _qty_num(demand["completed_qty"])
         delivered = _qty_num(delivered_map.get(mid, 0))
         prov = provenance.get(mid) or ""
-        # Unproven delivery attribution with open completion → do not invent Belum Terkirim
-        if completed > 0 and prov == "unproven":
+        completion_unproven = bool(demand.get("completion_unproven"))
+        # Unproven process completion or delivery attribution → never invent siap kirim.
+        if (completion_unproven and completed > 0) or (completed > 0 and prov == "unproven"):
             belum_status = BELUM_STATUS_UNVERIFIED
         else:
             belum_status = BELUM_STATUS_READY
