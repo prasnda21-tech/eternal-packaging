@@ -3005,16 +3005,6 @@ async def list_physical_stock_catalog(
             completed_qty=demand["completed_qty"],
             r2_delivered_qty=effective_delivered,
         )
-        baseline_statuses = [
-            str(doc.get("baseline_status") or BASELINE_RECONCILED).strip() or BASELINE_RECONCILED
-            for doc in docs
-        ]
-        if not docs:
-            baseline_status = None
-        elif any(status == BASELINE_UNRECONCILED for status in baseline_statuses):
-            baseline_status = BASELINE_UNRECONCILED
-        else:
-            baseline_status = BASELINE_RECONCILED
         docs_by_wh = {
             str(doc.get("warehouse_id") or ""): doc
             for doc in docs
@@ -3023,6 +3013,7 @@ async def list_physical_stock_catalog(
         # Per-warehouse book balances so "Semua Gudang" can show shortages
         # independently of the branch aggregate. Missing balance ≠ verified zero.
         warehouse_balances = []
+        scope_baselines: List[str] = []
         for wh in warehouses:
             wid = str(wh.get("id") or "")
             if not wid:
@@ -3030,7 +3021,7 @@ async def list_physical_stock_catalog(
             doc = docs_by_wh.get(wid)
             if doc is None:
                 wh_qty = None
-                wh_baseline = None
+                wh_baseline = BASELINE_UNRECONCILED
                 wh_label = BASELINE_UNRECONCILED_LABEL
             else:
                 wh_qty = _qty_num(doc.get("physical_qty"))
@@ -3043,6 +3034,7 @@ async def list_physical_stock_catalog(
                     if wh_baseline == BASELINE_UNRECONCILED
                     else None
                 )
+            scope_baselines.append(wh_baseline)
             warehouse_balances.append({
                 "warehouse_id": wid,
                 "warehouse_code": wh.get("code") or "",
@@ -3054,6 +3046,16 @@ async def list_physical_stock_catalog(
                 "balance_present": doc is not None,
                 "physical_qty_is_book": True,
             })
+        # Branch summary valid only when EVERY operational warehouse in scope has
+        # a RECONCILED balance. Selected-warehouse view uses that gudang alone
+        # (warehouses list is already filtered to the selection).
+        if not scope_baselines or any(
+            status != BASELINE_RECONCILED for status in scope_baselines
+        ):
+            baseline_status = BASELINE_UNRECONCILED
+        else:
+            baseline_status = BASELINE_RECONCILED
+        qty_tersedia_valid = baseline_status == BASELINE_RECONCILED
         row = {
             "master_item_id": master.get("id"),
             "item_code": master.get("item_code") or "",
@@ -3063,7 +3065,9 @@ async def list_physical_stock_catalog(
             "physical_qty": buckets["physical_qty"],
             "qty_pesanan": buckets["qty_pesanan"],
             "qty_belum_terkirim": buckets["qty_belum_terkirim"],
+            # Informational book math only — not definitive until baseline reconciled.
             "qty_tersedia": buckets["qty_tersedia"],
+            "qty_tersedia_valid": qty_tersedia_valid,
             "updated_at": max(updated) if updated else None,
             "belum_terkirim_status": "READY",
             "stock_read_mode": "r2",
@@ -3095,6 +3099,12 @@ async def list_physical_stock_catalog(
             )
         else:
             row["physical_qty_scope"] = "BRANCH"
+        if not qty_tersedia_valid:
+            row["qty_tersedia_note"] = (
+                (str(row.get("qty_tersedia_note") or "").strip() + " ").lstrip()
+                + "Qty Tersedia belum valid — saldo fisik belum direkonsiliasi "
+                "(Saldo Awal / Stock Opname)."
+            ).strip()
         rows.append(row)
     total = len(rows)
     start = (safe_page - 1) * safe_limit
