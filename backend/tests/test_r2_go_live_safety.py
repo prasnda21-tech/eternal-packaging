@@ -295,7 +295,7 @@ async def test_cutover_cancelled_sj_excluded_partial_sj_counted(db):
     ])
     preview = await preview_delivery_cutover_baseline(db)
     assert preview["blocked"] is False
-    # Deduped: order.shipment + sales_delivery same id → 150 once; cancelled ignored
+    # Proven Terkirim shipment only; cancelled ignored; SELESAI row is not proof
     assert preview["baseline_qty_total"] == 150
     await initialize_delivery_cutover_baseline(db)
     row = next(
@@ -305,8 +305,138 @@ async def test_cutover_cancelled_sj_excluded_partial_sj_counted(db):
     assert row["qty_belum_terkirim"] == 650  # 800 - 150
 
 
+async def test_cutover_created_sj_selesai_without_confirm_is_zero(db):
+    """Real create-SJ workflow: SELESAI allocation ≠ customer delivery → baseline 0."""
+    from services.sales_deliveries import create_sales_delivery
+    import services.sales_deliveries as sd_mod
+
+    await set_r2_authority_active(db, active=True)
+    item, branch, warehouse = await _seed_ygy(db)
+    await post_opening_balance(
+        db,
+        item["id"],
+        {
+            "branch_id": branch["id"],
+            "warehouse_id": warehouse["id"],
+            "physical_qty": 1000,
+            "reason": "open",
+            "idempotency_key": f"open-{item['id']}",
+        },
+        actor_id="t",
+    )
+    await db.sales_deliveries.create_index("id", unique=True)
+    await db.sales_deliveries.create_index("sj_number", unique=True)
+    await db.sales_deliveries.create_index([("po_id", 1), ("shipment_index", 1)], unique=True)
+    order_id = f"so-{uuid.uuid4().hex[:8]}"
+    po_number = f"PO/2026/10/14/{uuid.uuid4().hex[:6]}"
+    await db.orders.insert_one({
+        "id": order_id,
+        "po_number": po_number,
+        "customer": "PT Uji",
+        "outlet": "Gudang",
+        "recipient": "Penerima",
+        "address": "Jl. Uji",
+        "delivery_zone": "Barat",
+        "sales": "Sari",
+        "cancelled": False,
+        "line_items": [{
+            **_print_line(item["id"], 100),
+            "line_id": f"{order_id}_line_0",
+            "unit": "pcs",
+        }],
+        "operator_splits": [{"line_idx": 0, "qty_completed": 100}],
+        "shipments": [],
+    })
+
+    async def _noop_stock(*_a, **_k):
+        return []
+
+    original = sd_mod.handle_sales_delivery_created
+    sd_mod.handle_sales_delivery_created = _noop_stock
+    try:
+        created = await create_sales_delivery(
+            db,
+            {"po_id": order_id, "line_items": [{"line_idx": 0, "qty": 100}]},
+            {"email": "crm@test", "name": "CRM", "role": "admin"},
+        )
+    finally:
+        sd_mod.handle_sales_delivery_created = original
+
+    assert created["status"] == "SELESAI"
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    assert order["shipments"]
+    assert not order["shipments"][0].get("delivery_status")
+    assert not order["shipments"][0].get("delivered_at")
+
+    preview = await preview_delivery_cutover_baseline(db)
+    assert preview["blocked"] is False
+    assert preview["baseline_qty_total"] == 0
+    await initialize_delivery_cutover_baseline(db)
+    row = next(
+        r for r in (await list_physical_stock_catalog(db))["items"]
+        if r["master_item_id"] == item["id"]
+    )
+    assert row["qty_pesanan"] == 0
+    assert row["qty_belum_terkirim"] == 100
+
+
+async def test_cutover_sj_100_confirmed_40_counts_proven_only(db):
+    """SJ allocated 100; delivery_confirmations prove only 40 → baseline 40."""
+    await set_r2_authority_active(db, active=True)
+    item, branch, warehouse = await _seed_ygy(db)
+    await post_opening_balance(
+        db,
+        item["id"],
+        {
+            "branch_id": branch["id"],
+            "warehouse_id": warehouse["id"],
+            "physical_qty": 1000,
+            "reason": "open",
+            "idempotency_key": f"open-{item['id']}",
+        },
+        actor_id="t",
+    )
+    order_id = f"so-{uuid.uuid4().hex[:8]}"
+    sj_id = f"sj-{uuid.uuid4().hex[:8]}"
+    await db.orders.insert_one({
+        "id": order_id,
+        "cancelled": False,
+        "line_items": [_print_line(item["id"], 200)],
+        "operator_splits": [{"line_idx": 0, "qty_completed": 150}],
+        "shipments": [{
+            "id": sj_id,
+            "sales_delivery_id": sj_id,
+            "number": "SJ-PARTIAL",
+            # Created SJ shape — not Terkirim yet
+            "total_qty": 100,
+            "lines": [{"line_idx": 0, "qty": 100}],
+        }],
+        "delivery_confirmations": [{
+            "id": "conf-1",
+            "shipment_id": sj_id,
+            "qty": 40,
+            "confirmed_at": "2026-01-02T00:00:00+00:00",
+        }],
+    })
+    await db.sales_deliveries.insert_one({
+        "id": sj_id,
+        "po_id": order_id,
+        "status": "SELESAI",
+        "total_qty": 100,
+        "line_items": [{"line_idx": 0, "qty": 100}],
+    })
+    preview = await preview_delivery_cutover_baseline(db)
+    assert preview["baseline_qty_total"] == 40
+    await initialize_delivery_cutover_baseline(db)
+    row = next(
+        r for r in (await list_physical_stock_catalog(db))["items"]
+        if r["master_item_id"] == item["id"]
+    )
+    assert row["qty_belum_terkirim"] == 110  # 150 - 40
+
+
 async def test_cutover_alias_identity_dedupes_shipment_and_sales_delivery(db):
-    """shipment-1 + sales_delivery_id=delivery-1 vs sales_deliveries.id=delivery-1 → 100 not 200."""
+    """Two shipment refs for one real delivery (alias ids) → count 100 once."""
     await set_r2_authority_active(db, active=True)
     item, branch, warehouse = await _seed_ygy(db)
     await post_opening_balance(
@@ -327,14 +457,27 @@ async def test_cutover_alias_identity_dedupes_shipment_and_sales_delivery(db):
         "cancelled": False,
         "line_items": [_print_line(item["id"], 500)],
         "operator_splits": [{"line_idx": 0, "qty_completed": 400}],
-        "shipments": [{
-            "id": "shipment-1",
-            "sales_delivery_id": "delivery-1",
-            "delivery_status": "Terkirim",
-            "delivered_at": "2026-01-01T00:00:00+00:00",
-            "total_qty": 100,
-            "lines": [{"line_idx": 0, "qty": 100}],
-        }],
+        "shipments": [
+            {
+                "id": "shipment-1",
+                "sales_delivery_id": "delivery-1",
+                "delivery_status": "Terkirim",
+                "delivered_at": "2026-01-01T00:00:00+00:00",
+                "total_qty": 100,
+                "qty_delivered": 100,
+                "lines": [{"line_idx": 0, "qty": 100}],
+            },
+            # Duplicate mirror under sales_delivery id — same real delivery
+            {
+                "id": "delivery-1",
+                "sales_delivery_id": "delivery-1",
+                "delivery_status": "Terkirim",
+                "delivered_at": "2026-01-01T00:00:00+00:00",
+                "total_qty": 100,
+                "qty_delivered": 100,
+                "lines": [{"line_idx": 0, "qty": 100}],
+            },
+        ],
     })
     await db.sales_deliveries.insert_one({
         "id": "delivery-1",
@@ -343,7 +486,6 @@ async def test_cutover_alias_identity_dedupes_shipment_and_sales_delivery(db):
         "total_qty": 100,
         "line_items": [{"line_idx": 0, "qty": 100}],
     })
-    # Alias set must bridge shipment id ↔ sales_delivery id
     tokens = _delivery_identity_tokens({
         "id": "shipment-1",
         "sales_delivery_id": "delivery-1",
@@ -414,6 +556,104 @@ async def test_cutover_two_distinct_deliveries_sum_not_qty_dedupe(db):
     assert order_count == 1
     assert by_item[item_id] == 200  # 100 + 100, not qty-collapsed to 100
     assert by_line[f"{order_id}:0"] == 200
+
+
+async def test_cutover_multi_sku_partial_total_blocks_no_proportional_split(db):
+    """SJ 100 cup + 100 lid, confirm total 40 without line items → BLOCK, never 20/20."""
+    cup_id = f"item-cup-{uuid.uuid4().hex[:6]}"
+    lid_id = f"item-lid-{uuid.uuid4().hex[:6]}"
+    order_id = f"so-{uuid.uuid4().hex[:8]}"
+    sj_id = "sj-multi-partial"
+    order = {
+        "id": order_id,
+        "cancelled": False,
+        "line_items": [
+            _print_line(cup_id, 200, line_id="ln-cup", name="Cup"),
+            _print_line(lid_id, 200, line_id="ln-lid", name="Lid"),
+        ],
+        "operator_splits": [
+            {"line_idx": 0, "qty_completed": 100},
+            {"line_idx": 1, "qty_completed": 100},
+        ],
+        "shipments": [{
+            "id": sj_id,
+            "sales_delivery_id": sj_id,
+            "total_qty": 200,
+            "lines": [
+                {"line_idx": 0, "qty": 100},
+                {"line_idx": 1, "qty": 100},
+            ],
+        }],
+        "delivery_confirmations": [{
+            "id": "conf-total-only",
+            "shipment_id": sj_id,
+            "qty": 40,
+            "confirmed_at": "2026-01-02T00:00:00+00:00",
+            # no items breakdown
+        }],
+    }
+    by_item, by_line, _oc, _lc, ambiguous = _build_delivery_baseline([order], [])
+    assert by_item == {}
+    assert by_line == {}
+    assert any(
+        a.get("reason") == "partial_proven_without_line_breakdown" for a in ambiguous
+    )
+    # Must not invent proportional 20/20
+    assert by_item.get(cup_id, 0) != 20
+    assert by_item.get(lid_id, 0) != 20
+
+    await db.orders.insert_one(dict(order))
+    preview = await preview_delivery_cutover_baseline(db)
+    assert preview["blocked"] is True
+    with pytest.raises(DeliveryCutoverBlockedError):
+        await initialize_delivery_cutover_baseline(db)
+    cut = await db.app_settings.find_one({"key": "r2_go_live"})
+    assert not (cut or {}).get("delivery_cutover", {}).get("initialized")
+
+
+async def test_cutover_multi_sku_confirmation_line_items_exact(db):
+    """Confirmation items 30 cup + 10 lid → baseline exactly 30 and 10."""
+    cup_id = f"item-cup-{uuid.uuid4().hex[:6]}"
+    lid_id = f"item-lid-{uuid.uuid4().hex[:6]}"
+    order_id = f"so-{uuid.uuid4().hex[:8]}"
+    sj_id = "sj-multi-items"
+    order = {
+        "id": order_id,
+        "cancelled": False,
+        "line_items": [
+            _print_line(cup_id, 200, line_id="ln-cup", name="Cup"),
+            _print_line(lid_id, 200, line_id="ln-lid", name="Lid"),
+        ],
+        "operator_splits": [
+            {"line_idx": 0, "qty_completed": 100},
+            {"line_idx": 1, "qty_completed": 100},
+        ],
+        "shipments": [{
+            "id": sj_id,
+            "total_qty": 200,
+            "lines": [
+                {"line_idx": 0, "qty": 100},
+                {"line_idx": 1, "qty": 100},
+            ],
+        }],
+        "delivery_confirmations": [{
+            "id": "conf-lines",
+            "shipment_id": sj_id,
+            "qty": 40,
+            "items": [
+                {"line_idx": 0, "qty": 30},
+                {"line_idx": 1, "qty": 10},
+            ],
+            "confirmed_at": "2026-01-02T00:00:00+00:00",
+        }],
+    }
+    by_item, by_line, order_count, _lc, ambiguous = _build_delivery_baseline([order], [])
+    assert ambiguous == []
+    assert order_count == 1
+    assert by_item[cup_id] == 30
+    assert by_item[lid_id] == 10
+    assert by_line[f"{order_id}:0"] == 30
+    assert by_line[f"{order_id}:1"] == 10
 
 
 async def test_cutover_multi_sku_line_attribution(db):

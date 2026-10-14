@@ -95,9 +95,11 @@ async def test_compatibility_reads_product_stock_state_and_orders(db):
         "operator_splits": [{"line_idx": 0, "qty_completed": 400}],
         "qty_delivered": 0,
     })
+    # Created SJ (SELESAI allocation) without confirmed delivery must not reduce Belum.
     await db.sales_deliveries.insert_one({
         "id": f"sj-{uuid.uuid4().hex[:8]}",
         "po_id": oid,
+        "status": "SELESAI",
         "is_cancelled": False,
         "line_items": [{"line_idx": 0, "master_item_id": item["id"], "qty": 150}],
     })
@@ -113,11 +115,32 @@ async def test_compatibility_reads_product_stock_state_and_orders(db):
     row = next(r for r in catalog["items"] if r["master_item_id"] == item["id"])
     assert row["physical_qty"] == 15900
     assert row["qty_pesanan"] == 600  # 1000 - 400
-    assert row["qty_belum_terkirim"] == 250  # 400 - 150
-    assert row["qty_tersedia"] == 15900 - 600 - 250
+    assert row["qty_belum_terkirim"] == 400  # completed only; SJ create ≠ delivered
+    assert row["qty_tersedia"] == 15900 - 600 - 400
     assert row["belum_terkirim_status"] == BELUM_STATUS_READY
     # Must not have written R2
     assert await db[BALANCE_COLLECTION].count_documents({}) == 0
+
+    # Confirmed shipment proves delivery → Belum drops by proven qty only.
+    await db.orders.update_one(
+        {"id": oid},
+        {"$set": {
+            "shipments": [{
+                "id": "ship-confirmed",
+                "sales_delivery_id": "ship-confirmed",
+                "delivery_status": "Terkirim",
+                "delivered_at": "2026-01-01T00:00:00+00:00",
+                "total_qty": 150,
+                "qty_delivered": 150,
+                "lines": [{"line_idx": 0, "qty": 150}],
+            }],
+        }},
+    )
+    row2 = next(
+        r for r in (await list_physical_stock_catalog(db))["items"]
+        if r["master_item_id"] == item["id"]
+    )
+    assert row2["qty_belum_terkirim"] == 250  # 400 - 150 proven
 
 
 async def test_cancelled_order_excluded_from_qty_pesanan(db):
@@ -208,19 +231,39 @@ async def test_unproven_delivery_lineage_is_cutover_pending(db):
             {"line_idx": 1, "qty_completed": 80},
         ],
     })
-    # Delivery lines without identity and without line_idx → unproven
+    # Created SJ without confirmation does not invent delivery; Belum stays completed.
     await db.sales_deliveries.insert_one({
         "id": f"sj-{uuid.uuid4().hex[:8]}",
         "po_id": oid,
+        "status": "SELESAI",
         "is_cancelled": False,
         "line_items": [{"qty": 50}],
     })
     catalog = await list_compatibility_stock_catalog(db)
     for mid in (item_a["id"], item_b["id"]):
         row = next(r for r in catalog["items"] if r["master_item_id"] == mid)
+        assert row["belum_terkirim_status"] == BELUM_STATUS_READY
+        assert row["qty_belum_terkirim"] == 80
+        assert row["qty_pesanan"] == 20  # 100-80 still proven
+
+    # Proven multi-line confirmation without line_idx → unproven / CUTOVER_PENDING
+    await db.orders.update_one(
+        {"id": oid},
+        {"$set": {
+            "shipments": [{
+                "id": "sj-ambig",
+                "delivery_status": "Terkirim",
+                "delivered_at": "2026-01-01T00:00:00+00:00",
+                "total_qty": 50,
+                "lines": [{"qty": 50}],
+            }],
+        }},
+    )
+    catalog2 = await list_compatibility_stock_catalog(db)
+    for mid in (item_a["id"], item_b["id"]):
+        row = next(r for r in catalog2["items"] if r["master_item_id"] == mid)
         assert row["belum_terkirim_status"] == BELUM_STATUS_CUTOVER_PENDING
         assert row["qty_belum_terkirim"] is None
-        assert row["qty_pesanan"] == 20  # 100-80 still proven
 
 
 async def test_authority_switch_to_r2_stops_legacy_physical(db):
@@ -331,6 +374,7 @@ async def test_non_print_demand_is_ready_without_operator_completed(db):
     await db.sales_deliveries.insert_one({
         "id": f"sj-{uuid.uuid4().hex[:8]}",
         "po_id": oid,
+        "status": "SELESAI",
         "is_cancelled": False,
         "line_items": [{"line_idx": 0, "master_item_id": item["id"], "qty": 100}],
     })
@@ -339,8 +383,9 @@ async def test_non_print_demand_is_ready_without_operator_completed(db):
         if r["master_item_id"] == item["id"]
     )
     assert row2["qty_pesanan"] == 0
-    assert row2["qty_belum_terkirim"] == 200
-    assert row2["qty_tersedia"] == 1000 - 200
+    # SJ create alone does not prove delivery
+    assert row2["qty_belum_terkirim"] == 300
+    assert row2["qty_tersedia"] == 1000 - 300
 
 
 async def test_mixed_print_non_print_no_double_count(db):
@@ -439,17 +484,29 @@ async def test_same_master_print_and_non_print_orders_independent(db):
     assert row["qty_belum_terkirim"] == 120
     assert row["qty_tersedia"] == 1000 - 60 - 120
 
-    await db.sales_deliveries.insert_one({
-        "id": f"sj-{uuid.uuid4().hex[:8]}",
-        "po_id": f"so-np-partial",
-        "is_cancelled": False,
-        "line_items": [{"line_idx": 0, "master_item_id": item["id"], "qty": 30}],
-    })
-    # Legacy delivery attribution by master only — reduces belum once, not twice.
+    np_doc = await db.orders.find_one(
+        {"line_items.production_process": "non_print", "line_items.master_item_id": item["id"]},
+        {"_id": 0, "id": 1},
+    )
+    assert np_doc
+    np_oid = np_doc["id"]
+    await db.orders.update_one(
+        {"id": np_oid},
+        {"$set": {
+            "shipments": [{
+                "id": "sj-np-30",
+                "delivery_status": "Terkirim",
+                "delivered_at": "2026-01-01T00:00:00+00:00",
+                "total_qty": 30,
+                "qty_delivered": 30,
+                "lines": [{"line_idx": 0, "qty": 30}],
+            }],
+        }},
+    )
     row2 = next(
         r for r in (await list_compatibility_stock_catalog(db))["items"]
         if r["master_item_id"] == item["id"]
     )
     assert row2["qty_pesanan"] == 60
-    assert row2["qty_belum_terkirim"] == 90
+    assert row2["qty_belum_terkirim"] == 90  # 120 - 30 proven on non_print order
     assert row2["qty_tersedia"] == 1000 - 60 - 90
