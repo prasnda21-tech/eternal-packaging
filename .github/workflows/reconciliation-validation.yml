@@ -222,6 +222,8 @@ jobs:
             exit "${status}"
           fi
       # Cash-bank Accurate 1:N group match + Owner View pin DB_NAME at import.
+      # Capture status after the command (not inside `if ! …; status=$?`), or a
+      # failing suite is reported as exit 0 and the job stays green.
       - name: Run cash-bank recon group and owner tests
         working-directory: backend
         timeout-minutes: 5
@@ -231,11 +233,14 @@ jobs:
         run: |
           set -euo pipefail
           echo "Starting isolated cash-bank recon group/owner suite (serial)"
-          if ! timeout --signal=TERM --kill-after=15s 180s \
+          set +e
+          timeout --signal=TERM --kill-after=15s 180s \
             python -m pytest -vv -n 0 --durations=20 \
             tests/test_cash_bank_recon_group_match.py \
-            tests/test_cash_bank_owner_recon.py; then
-            status=$?
+            tests/test_cash_bank_owner_recon.py
+          status=$?
+          set -e
+          if [ "${status}" -ne 0 ]; then
             echo "::error::cash-bank recon group/owner tests exited with status ${status}"
             echo "--- process snapshot ---"
             ps -eo pid,ppid,stat,etime,cmd --sort=etime | head -80 || true

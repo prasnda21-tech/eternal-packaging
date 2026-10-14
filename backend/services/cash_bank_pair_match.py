@@ -153,15 +153,38 @@ async def _pair_for_key(db, cash_bank_id: str, key: str) -> Optional[dict]:
 
 
 async def _adopt_active_claim(db, line_id: str, key: str, pair_id: str) -> None:
-    """Point the line at the stored pair only while it still holds this key.
+    """Point the line at the stored pair only while it still holds this match's token.
 
-    A cancelled pair is not adopted. A newer claim token does not match the filter.
+    Accepts the create idempotency key or the pair id (already adopted). A
+    cancelled pair is not adopted. Foreign tokens and import-hold are left alone.
     """
     if not line_id or not pair_id:
         return
+    tokens = [t for t in (str(key or ""), str(pair_id)) if t]
+    if not tokens:
+        return
     await db[LINES].update_one(
-        {"id": str(line_id), "active_claim": str(key)},
+        {"id": str(line_id), "active_claim": {"$in": tokens}},
         {"$set": {"active_claim": str(pair_id)}, "$unset": {"claim_slot": ""}},
+    )
+
+
+async def _active_match_by_payload(
+    db,
+    *,
+    cash_bank_id: str,
+    payload_hash: str,
+    match_kind: str,
+) -> Optional[dict]:
+    """Return an active pair/group for this exact business payload, if any."""
+    return await db[RECON_MATCHES].find_one(
+        {
+            "cash_bank_id": str(cash_bank_id),
+            "payload_hash": str(payload_hash),
+            "match_kind": str(match_kind),
+            "status": "active",
+        },
+        {"_id": 0},
     )
 
 
@@ -188,7 +211,8 @@ async def _reply_stored_pair(
             await _release_statement_claim(db, claimed_line_id, key)
         raise PairConflictError("Idempotency key yang sama dipakai untuk payload berbeda")
     if existing.get("status") == "active" and existing.get("statement_line_id"):
-        await _adopt_active_claim(db, existing["statement_line_id"], key, existing["id"])
+        adopt_key = str(existing.get("idempotency_key") or key)
+        await _adopt_active_claim(db, existing["statement_line_id"], adopt_key, existing["id"])
     return await _public_existing_pair(db, existing)
 
 
@@ -718,6 +742,21 @@ async def create_pair(
         return await _reply_stored_pair(
             db, existing, key=key, payload_hash=payload_hash,
         )
+    # Same business payload already durable (e.g. unadopted claim after crash):
+    # repair via create mutation without requiring the original idempotency key.
+    by_payload = await _active_match_by_payload(
+        db,
+        cash_bank_id=str(cash_bank_id),
+        payload_hash=payload_hash,
+        match_kind="pair",
+    )
+    if by_payload:
+        return await _reply_stored_pair(
+            db,
+            by_payload,
+            key=str(by_payload.get("idempotency_key") or key),
+            payload_hash=payload_hash,
+        )
 
     cb = await get_cash_bank_raw(db, cash_bank_id)
     if not cb:
@@ -904,7 +943,9 @@ async def cancel_pair(
         await _clear_line_claim(db, by_key)
         return _public_pair(by_key)
     if doc.get("status") != "active":
-        raise PairConflictError("Pencocokan sudah dibatalkan dan tidak diaktifkan kembali")
+        # Crashed cancel can leave an owned claim; clear only matching tokens.
+        await _clear_line_claim(db, doc)
+        return _public_pair(doc)
     journal_line_id = doc.get("journal_line_id")
     statement_line_id = doc.get("statement_line_id")
     result = await db[RECON_MATCHES].update_one(
@@ -932,6 +973,9 @@ async def cancel_pair(
     )
     current = await db[RECON_MATCHES].find_one({"id": doc["id"]}, {"_id": 0})
     if result.matched_count != 1:
+        if current and current.get("status") != "active":
+            await _clear_line_claim(db, current)
+            return _public_pair(current)
         if current and current.get("cancel_idempotency_key") == key:
             await _clear_line_claim(db, current)
             return _public_pair(current)
@@ -1076,9 +1120,13 @@ async def _public_existing_group(db, existing: dict) -> dict:
 
 
 async def _adopt_group_claims(db, *, group_id: str, key: str, statement_line_ids: List[str]) -> None:
+    """Adopt only lines still holding this group's create key or group id."""
+    tokens = [t for t in (str(key or ""), str(group_id or "")) if t]
+    if not tokens:
+        return
     for line_id in statement_line_ids:
         await db[LINES].update_one(
-            {"id": str(line_id), "active_claim": str(key)},
+            {"id": str(line_id), "active_claim": {"$in": tokens}},
             {"$set": {"active_claim": str(group_id)}, "$unset": {"claim_slot": ""}},
         )
 
@@ -1107,51 +1155,98 @@ async def _reply_stored_group(
     if existing.get("status") == "active":
         ids = list(existing.get("statement_line_ids") or [])
         await _ensure_group_members(db, existing)
-        await _adopt_group_claims(db, group_id=existing["id"], key=key, statement_line_ids=ids)
+        adopt_key = str(existing.get("idempotency_key") or key)
+        await _adopt_group_claims(db, group_id=existing["id"], key=adopt_key, statement_line_ids=ids)
     elif claimed_line_ids:
         await _release_group_line_claims(db, statement_line_ids=claimed_line_ids, token=key)
     return await _public_existing_group(db, existing)
 
 
 async def _ensure_group_members(db, group: dict) -> None:
-    """Repair members after crash between group insert and member insert."""
+    """Repair members after crash between group insert and member insert.
+
+    Re-reads the header before inserting. Stops if the group was cancelled.
+    Never resurrects a cancelled member row for the same statement line.
+    """
     if group.get("status") != "active":
         return
-    group_id = str(group.get("id"))
+    group_id = str(group.get("id") or "")
+    if not group_id:
+        return
+    fresh = await db[RECON_MATCHES].find_one(
+        {"id": group_id, "match_kind": "pair_group", "status": "active"},
+        {"_id": 0},
+    )
+    if not fresh:
+        return
     existing = {
         str(m.get("statement_line_id") or m.get("history_statement_line_id")): m
         for m in await _load_group_members(db, group_id)
+        if m.get("statement_line_id") or m.get("history_statement_line_id")
     }
-    for line_id, snap in zip(
-        list(group.get("statement_line_ids") or []),
-        list(group.get("member_snapshots") or []),
-    ):
+    expected_ids = list(fresh.get("statement_line_ids") or [])
+    snapshots = list(fresh.get("member_snapshots") or [])
+    if len(snapshots) < len(expected_ids):
+        # Incomplete durable header metadata — do not invent members.
+        return
+    for line_id, snap in zip(expected_ids, snapshots):
         sid = str(line_id)
         if sid in existing and existing[sid].get("status") == "active" and existing[sid].get("statement_line_id"):
             continue
         if sid in existing:
+            # Cancelled (or other) member history for this line — do not resurrect.
             continue
+        still_active = await db[RECON_MATCHES].find_one(
+            {"id": group_id, "match_kind": "pair_group", "status": "active"},
+            {"_id": 0, "id": 1},
+        )
+        if not still_active:
+            return
         member = {
             "id": str(uuid.uuid4()),
             "match_kind": "pair_group_member",
             "status": "active",
             "group_id": group_id,
-            "cash_bank_id": group.get("cash_bank_id"),
+            "cash_bank_id": fresh.get("cash_bank_id"),
             "statement_line_id": sid,
             "amount": snap.get("amount"),
             "direction": snap.get("direction"),
             "date": snap.get("date"),
             "description": snap.get("description") or "",
             "reference": snap.get("reference") or "",
-            "currency_code": group.get("currency_code"),
-            "created_at": group.get("created_at") or now_iso(),
+            "currency_code": fresh.get("currency_code"),
+            "created_at": fresh.get("created_at") or now_iso(),
         }
         try:
             await db[RECON_MATCHES].insert_one(dict(member))
         except DuplicateKeyError:
             # Another writer owns this statement line; leave repair incomplete.
             # Caller revalidates via public read / conflict on next mutation.
-            pass
+            continue
+        # Cancel can win between the active check and this insert — neutralize.
+        header_ok = await db[RECON_MATCHES].find_one(
+            {"id": group_id, "match_kind": "pair_group", "status": "active"},
+            {"_id": 0, "id": 1},
+        )
+        if not header_ok:
+            await db[RECON_MATCHES].update_one(
+                {
+                    "id": member["id"],
+                    "match_kind": "pair_group_member",
+                    "group_id": group_id,
+                    "status": "active",
+                },
+                {
+                    "$set": {
+                        "status": "cancelled",
+                        "history_statement_line_id": sid,
+                        "cancel_reason": "repair aborted: group not active",
+                        "cancelled_at": now_iso(),
+                    },
+                    "$unset": {"statement_line_id": ""},
+                },
+            )
+            return
 
 
 async def _validate_group_statement(
@@ -1317,6 +1412,19 @@ async def create_pair_group(
         stored = _business_group(existing) or existing
         return await _reply_stored_group(
             db, stored, key=key, payload_hash=payload_hash,
+        )
+    by_payload = await _active_match_by_payload(
+        db,
+        cash_bank_id=str(cash_bank_id),
+        payload_hash=payload_hash,
+        match_kind="pair_group",
+    )
+    if by_payload:
+        return await _reply_stored_group(
+            db,
+            by_payload,
+            key=str(by_payload.get("idempotency_key") or key),
+            payload_hash=payload_hash,
         )
 
     cb = await get_cash_bank_raw(db, cash_bank_id)
@@ -1581,7 +1689,10 @@ async def cancel_pair_group(
         members = await _load_group_members(db, by_key["id"])
         return _public_group(by_key, None, members)
     if doc.get("status") != "active":
-        raise PairConflictError("Pencocokan sudah dibatalkan dan tidak diaktifkan kembali")
+        # Crashed cancel can leave owned claims; clear only matching tokens.
+        await _clear_group_claims(db, doc)
+        members = await _load_group_members(db, doc["id"])
+        return _public_group(doc, None, members)
 
     journal_line_id = doc.get("journal_line_id")
     statement_line_ids = list(doc.get("statement_line_ids") or [])
@@ -1635,6 +1746,10 @@ async def cancel_pair_group(
     )
     current = await db[RECON_MATCHES].find_one({"id": doc["id"]}, {"_id": 0})
     if result.matched_count != 1:
+        if current and current.get("status") != "active":
+            await _clear_group_claims(db, current)
+            members = await _load_group_members(db, current["id"])
+            return _public_group(current, None, members)
         if current and current.get("cancel_idempotency_key") == key:
             await _clear_group_claims(db, current)
             members = await _load_group_members(db, current["id"])

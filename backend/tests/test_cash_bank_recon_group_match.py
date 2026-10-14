@@ -26,6 +26,7 @@ import services.cash_bank_pair_match as pair_svc
 from services.cash_bank_pair_match import (
     PairConflictError,
     ProcessInterrupt,
+    cancel_pair,
     cancel_pair_group,
     create_pair,
     create_pair_group,
@@ -750,30 +751,16 @@ async def test_hard_interrupt_after_group_header_incomplete_members_not_fully_ma
             assert len(group_rows) == 1
             assert group_rows[0]["status"] == STATUS_REVIEW_CANON
             assert group_rows[0]["status"] != STATUS_SESUAI
-
-            with pytest.raises(PairConflictError):
-                await create_pair_group(
-                    server.db,
-                    cash_bank_id=bank["id"],
-                    journal_line_id=book_line,
-                    statement_line_ids=bank_ids,
-                    idempotency_key="group-partial-other",
-                    start="2026-09-01",
-                    end="2026-09-30",
-                    user=admin,
-                )
-            assert await server.db[RECON_MATCHES].count_documents(
-                {"match_kind": "pair_group", "status": "active"}
-            ) == 1
         finally:
             _restore_hooks()
 
+        # Same payload with a new create key still repairs incomplete members.
         healed = await create_pair_group(
             server.db,
             cash_bank_id=bank["id"],
             journal_line_id=book_line,
             statement_line_ids=bank_ids,
-            idempotency_key="group-partial",
+            idempotency_key="group-partial-other",
             start="2026-09-01",
             end="2026-09-30",
             user=admin,
@@ -784,6 +771,9 @@ async def test_hard_interrupt_after_group_header_incomplete_members_not_fully_ma
         assert await server.db[RECON_MATCHES].count_documents(
             {"match_kind": "pair_group_member", "group_id": group["id"], "status": "active"}
         ) == 3
+        for line_id in bank_ids:
+            row = await server.db[LINES].find_one({"id": line_id}, {"_id": 0, "active_claim": 1})
+            assert row.get("active_claim") == group["id"]
         owner2 = await get_owner_recon_view(
             server.db,
             cash_bank_id=bank["id"],
@@ -843,17 +833,30 @@ async def test_hard_interrupt_mid_cancel_keeps_claims_until_retry():
                 )
                 assert row.get("active_claim") in (group_id, "group-cancel-mid")
 
-            with pytest.raises(PairConflictError):
-                await create_pair_group(
-                    server.db,
-                    cash_bank_id=bank["id"],
-                    journal_line_id=book_line,
-                    statement_line_ids=bank_ids,
-                    idempotency_key="steal-during-cancel",
-                    start="2026-09-01",
-                    end="2026-09-30",
-                    user=admin,
-                )
+            # Same payload create finds the still-active header; must not open a
+            # second group and must not resurrect the cancelled member.
+            stolen = await create_pair_group(
+                server.db,
+                cash_bank_id=bank["id"],
+                journal_line_id=book_line,
+                statement_line_ids=bank_ids,
+                idempotency_key="steal-during-cancel",
+                start="2026-09-01",
+                end="2026-09-30",
+                user=admin,
+            )
+            assert stolen["id"] == group_id
+            assert stolen["members_complete"] is False
+            assert await server.db[RECON_MATCHES].count_documents(
+                {"match_kind": "pair_group", "status": "active"}
+            ) == 1
+            assert await server.db[RECON_MATCHES].count_documents(
+                {
+                    "match_kind": "pair_group_member",
+                    "group_id": group_id,
+                    "status": "cancelled",
+                }
+            ) == 1
         finally:
             _restore_hooks()
 
@@ -1016,3 +1019,454 @@ async def test_workspace_inflight_claim_not_counted_as_unmatched():
             assert all(not row["matchable"] for row in held)
         finally:
             _restore_hooks()
+
+
+async def test_recover_unadopted_pair_via_create_same_payload():
+    admin = _user()
+    async with await client_for(admin) as c:
+        bank, income = await _setup(c, currency="IDR")
+        await _receipt(c, bank["id"], income["id"], 1000000, desc="Terima 1jt")
+        _preview, imported = await _import(
+            c,
+            bank["id"],
+            "tanggal,uraian,masuk,keluar,referensi,id,saldo\n"
+            "2026-09-01,Mutasi 1jt,1000000,,REF-P1,TX-P1,\n",
+        )
+        assert imported.status_code == 201, imported.text
+        ws = await c.get(
+            "/api/cash-bank/reconciliations/pairs/workspace",
+            params={"cash_bank_id": bank["id"], **PERIOD},
+        )
+        body = ws.json()
+        bank_id = body["bank_lines"][0]["id"]
+        book_line = body["book_lines"][0]["journal_line_id"]
+        journals_before = await server.db[JOURNAL_ENTRIES].count_documents({})
+        receipts_before = await server.db[RECEIPTS].count_documents({})
+
+        created = await create_pair(
+            server.db,
+            cash_bank_id=bank["id"],
+            statement_line_id=bank_id,
+            journal_line_id=book_line,
+            idempotency_key="pair-unadopted",
+            start="2026-09-01",
+            end="2026-09-30",
+            user=admin,
+        )
+        await server.db[LINES].update_one(
+            {"id": bank_id},
+            {"$set": {"active_claim": "pair-unadopted"}},
+        )
+        line = await server.db[LINES].find_one({"id": bank_id}, {"_id": 0, "active_claim": 1})
+        assert line.get("active_claim") == "pair-unadopted"
+
+        healed = await create_pair(
+            server.db,
+            cash_bank_id=bank["id"],
+            statement_line_id=bank_id,
+            journal_line_id=book_line,
+            idempotency_key="pair-unadopted-new-key",
+            start="2026-09-01",
+            end="2026-09-30",
+            user=admin,
+        )
+        assert healed["id"] == created["id"]
+        assert healed["claim_active"] is True
+        line2 = await server.db[LINES].find_one({"id": bank_id}, {"_id": 0, "active_claim": 1})
+        assert line2.get("active_claim") == created["id"]
+        assert await server.db[JOURNAL_ENTRIES].count_documents({}) == journals_before
+        assert await server.db[RECEIPTS].count_documents({}) == receipts_before
+
+
+async def test_recover_unadopted_group_via_create_same_payload():
+    admin = _user()
+    async with await client_for(admin) as c:
+        bank, book_line, bank_ids = await _three_bank_one_journal(c)
+        created = await create_pair_group(
+            server.db,
+            cash_bank_id=bank["id"],
+            journal_line_id=book_line,
+            statement_line_ids=bank_ids,
+            idempotency_key="group-unadopted",
+            start="2026-09-01",
+            end="2026-09-30",
+            user=admin,
+        )
+        for line_id in bank_ids:
+            await server.db[LINES].update_one(
+                {"id": line_id},
+                {"$set": {"active_claim": "group-unadopted"}},
+            )
+        healed = await create_pair_group(
+            server.db,
+            cash_bank_id=bank["id"],
+            journal_line_id=book_line,
+            statement_line_ids=bank_ids,
+            idempotency_key="group-unadopted-new",
+            start="2026-09-01",
+            end="2026-09-30",
+            user=admin,
+        )
+        assert healed["id"] == created["id"]
+        assert healed["members_complete"] is True
+        assert healed["claim_active"] is True
+        for line_id in bank_ids:
+            row = await server.db[LINES].find_one({"id": line_id}, {"_id": 0, "active_claim": 1})
+            assert row.get("active_claim") == created["id"]
+
+
+async def test_cancelled_group_leftover_claim_cleared_with_new_cancel_key():
+    admin = _user()
+    async with await client_for(admin) as c:
+        bank, book_line, bank_ids = await _three_bank_one_journal(c)
+        created = await create_pair_group(
+            server.db,
+            cash_bank_id=bank["id"],
+            journal_line_id=book_line,
+            statement_line_ids=bank_ids,
+            idempotency_key="group-cancel-left",
+            start="2026-09-01",
+            end="2026-09-30",
+            user=admin,
+        )
+        group_id = created["id"]
+        # Simulate crashed cancel: header cancelled, claims still held.
+        await server.db[RECON_MATCHES].update_one(
+            {"id": group_id},
+            {
+                "$set": {
+                    "status": "cancelled",
+                    "history_journal_line_id": book_line,
+                    "history_statement_line_ids": bank_ids,
+                    "cancel_reason": "partial crash",
+                    "review_state": "riwayat",
+                },
+                "$unset": {"journal_line_id": ""},
+            },
+        )
+        for member in await server.db[RECON_MATCHES].find(
+            {"match_kind": "pair_group_member", "group_id": group_id},
+            {"_id": 0},
+        ).to_list(20):
+            sid = member.get("statement_line_id")
+            await server.db[RECON_MATCHES].update_one(
+                {"id": member["id"]},
+                {
+                    "$set": {
+                        "status": "cancelled",
+                        "history_statement_line_id": sid,
+                    },
+                    "$unset": {"statement_line_id": ""},
+                },
+            )
+        for line_id in bank_ids:
+            await server.db[LINES].update_one(
+                {"id": line_id},
+                {"$set": {"active_claim": group_id}},
+            )
+
+        foreign_id = bank_ids[0]
+        # Plant a foreign token on a different line shape: keep one line import-hold.
+        hold = f"import-hold:batch-x:{bank_ids[1]}"
+        await server.db[LINES].update_one(
+            {"id": bank_ids[1]},
+            {"$set": {"active_claim": hold}},
+        )
+        # Foreign create-key on another account line stays put — use bank_ids[2] as owned leftover.
+        await server.db[LINES].update_one(
+            {"id": bank_ids[2]},
+            {"$set": {"active_claim": "someone-else"}},
+        )
+        await server.db[LINES].update_one(
+            {"id": foreign_id},
+            {"$set": {"active_claim": group_id}},
+        )
+
+        finished = await cancel_pair_group(
+            server.db,
+            group_id,
+            idempotency_key="cancel-left-NEW",
+            reason="ulangi batal setelah crash",
+            user=admin,
+        )
+        assert finished["status"] == "cancelled"
+        assert finished.get("history_journal_line_id") == book_line
+        row0 = await server.db[LINES].find_one({"id": foreign_id}, {"_id": 0, "active_claim": 1})
+        assert row0.get("active_claim") in (None, "")
+        row1 = await server.db[LINES].find_one({"id": bank_ids[1]}, {"_id": 0, "active_claim": 1})
+        assert row1.get("active_claim") == hold
+        row2 = await server.db[LINES].find_one({"id": bank_ids[2]}, {"_id": 0, "active_claim": 1})
+        assert row2.get("active_claim") == "someone-else"
+
+
+async def test_cancelled_pair_leftover_claim_cleared_with_new_cancel_key():
+    admin = _user()
+    async with await client_for(admin) as c:
+        bank, income = await _setup(c, currency="IDR")
+        await _receipt(c, bank["id"], income["id"], 500000, desc="Terima 500")
+        _preview, imported = await _import(
+            c,
+            bank["id"],
+            "tanggal,uraian,masuk,keluar,referensi,id,saldo\n"
+            "2026-09-02,Mutasi 500,500000,,REF-PC,TX-PC,\n",
+        )
+        assert imported.status_code == 201, imported.text
+        ws = await c.get(
+            "/api/cash-bank/reconciliations/pairs/workspace",
+            params={"cash_bank_id": bank["id"], **PERIOD},
+        )
+        body = ws.json()
+        bank_id = body["bank_lines"][0]["id"]
+        book_line = body["book_lines"][0]["journal_line_id"]
+        created = await create_pair(
+            server.db,
+            cash_bank_id=bank["id"],
+            statement_line_id=bank_id,
+            journal_line_id=book_line,
+            idempotency_key="pair-cancel-left",
+            start="2026-09-01",
+            end="2026-09-30",
+            user=admin,
+        )
+        await server.db[RECON_MATCHES].update_one(
+            {"id": created["id"]},
+            {
+                "$set": {
+                    "status": "cancelled",
+                    "history_journal_line_id": book_line,
+                    "history_statement_line_id": bank_id,
+                    "cancel_reason": "crash",
+                    "review_state": "riwayat",
+                },
+                "$unset": {"journal_line_id": "", "statement_line_id": ""},
+            },
+        )
+        await server.db[LINES].update_one(
+            {"id": bank_id},
+            {"$set": {"active_claim": created["id"]}},
+        )
+        finished = await cancel_pair(
+            server.db,
+            created["id"],
+            idempotency_key="cancel-pair-NEW",
+            reason="ulangi batal pair",
+            user=admin,
+        )
+        assert finished["status"] == "cancelled"
+        line = await server.db[LINES].find_one({"id": bank_id}, {"_id": 0, "active_claim": 1})
+        assert line.get("active_claim") in (None, "")
+
+
+async def test_ensure_stops_when_group_cancelled_no_member_resurrection():
+    admin = _user()
+    async with await client_for(admin) as c:
+        bank, book_line, bank_ids = await _three_bank_one_journal(c)
+        created = await create_pair_group(
+            server.db,
+            cash_bank_id=bank["id"],
+            journal_line_id=book_line,
+            statement_line_ids=bank_ids,
+            idempotency_key="group-no-resurrect",
+            start="2026-09-01",
+            end="2026-09-30",
+            user=admin,
+        )
+        group_id = created["id"]
+        members = await server.db[RECON_MATCHES].find(
+            {"match_kind": "pair_group_member", "group_id": group_id},
+            {"_id": 0},
+        ).to_list(20)
+        # Cancel one member + header while leaving snapshots intact.
+        victim = members[0]
+        sid = victim["statement_line_id"]
+        await server.db[RECON_MATCHES].update_one(
+            {"id": victim["id"]},
+            {
+                "$set": {
+                    "status": "cancelled",
+                    "history_statement_line_id": sid,
+                },
+                "$unset": {"statement_line_id": ""},
+            },
+        )
+        await server.db[RECON_MATCHES].update_one(
+            {"id": group_id},
+            {
+                "$set": {
+                    "status": "cancelled",
+                    "history_journal_line_id": book_line,
+                    "history_statement_line_ids": bank_ids,
+                },
+                "$unset": {"journal_line_id": ""},
+            },
+        )
+        before = await server.db[RECON_MATCHES].count_documents(
+            {"match_kind": "pair_group_member", "group_id": group_id}
+        )
+        # Repair path must not resurrect cancelled member or re-activate header.
+        await pair_svc._ensure_group_members(
+            server.db,
+            {
+                "id": group_id,
+                "status": "active",  # stale caller view
+                "statement_line_ids": bank_ids,
+                "member_snapshots": created.get("members") or [],
+            },
+        )
+        # Use real snapshots from stored header
+        header = await server.db[RECON_MATCHES].find_one({"id": group_id}, {"_id": 0})
+        await pair_svc._ensure_group_members(
+            server.db,
+            {**header, "status": "active"},
+        )
+        after = await server.db[RECON_MATCHES].count_documents(
+            {"match_kind": "pair_group_member", "group_id": group_id}
+        )
+        assert after == before
+        active_members = await server.db[RECON_MATCHES].count_documents(
+            {
+                "match_kind": "pair_group_member",
+                "group_id": group_id,
+                "status": "active",
+                "statement_line_id": sid,
+            }
+        )
+        assert active_members == 0
+        header2 = await server.db[RECON_MATCHES].find_one({"id": group_id}, {"_id": 0})
+        assert header2["status"] == "cancelled"
+
+
+async def test_concurrent_cancel_vs_member_repair():
+    admin = _user()
+    async with await client_for(admin) as c:
+        bank, book_line, bank_ids = await _three_bank_one_journal(c)
+        seen = {"n": 0}
+
+        async def stop_after_one_member():
+            seen["n"] += 1
+            if seen["n"] >= 1:
+                raise ProcessInterrupt("partial for concurrency")
+
+        pair_svc._after_group_member_insert = stop_after_one_member
+        try:
+            with pytest.raises(ProcessInterrupt):
+                await create_pair_group(
+                    server.db,
+                    cash_bank_id=bank["id"],
+                    journal_line_id=book_line,
+                    statement_line_ids=bank_ids,
+                    idempotency_key="group-race-repair",
+                    start="2026-09-01",
+                    end="2026-09-30",
+                    user=admin,
+                )
+        finally:
+            _restore_hooks()
+
+        group = await server.db[RECON_MATCHES].find_one(
+            {"match_kind": "pair_group", "idempotency_key": "group-race-repair"},
+            {"_id": 0},
+        )
+        assert group and group["status"] == "active"
+
+        async def repair():
+            return await create_pair_group(
+                server.db,
+                cash_bank_id=bank["id"],
+                journal_line_id=book_line,
+                statement_line_ids=bank_ids,
+                idempotency_key="group-race-repair-b",
+                start="2026-09-01",
+                end="2026-09-30",
+                user=admin,
+            )
+
+        async def cancel():
+            return await cancel_pair_group(
+                server.db,
+                group["id"],
+                idempotency_key="cancel-race-repair",
+                reason="batal saat repair",
+                user=admin,
+            )
+
+        results = await asyncio.gather(repair(), cancel(), return_exceptions=True)
+        assert not any(isinstance(r, BaseException) and not isinstance(r, Exception) for r in results)
+        # One effective outcome: cancelled or fully active — never double-active groups.
+        active_groups = await server.db[RECON_MATCHES].count_documents(
+            {"match_kind": "pair_group", "status": "active", "journal_line_id": book_line}
+        )
+        cancelled = await server.db[RECON_MATCHES].find_one({"id": group["id"]}, {"_id": 0})
+        assert active_groups in (0, 1)
+        if cancelled.get("status") == "cancelled":
+            assert active_groups == 0
+            # No active member with statement_line_id after cancel wins.
+            assert await server.db[RECON_MATCHES].count_documents(
+                {
+                    "match_kind": "pair_group_member",
+                    "group_id": group["id"],
+                    "status": "active",
+                    "statement_line_id": {"$type": "string"},
+                }
+            ) == 0
+        else:
+            public = next(r for r in results if isinstance(r, dict) and r.get("status") == "active")
+            assert public.get("members_complete") is True
+
+
+async def test_true_orphan_remains_blocked_without_auto_release():
+    admin = _user()
+    async with await client_for(admin) as c:
+        bank, book_line, bank_ids = await _three_bank_one_journal(c)
+
+        async def hard_stop():
+            raise ProcessInterrupt("true orphan")
+
+        pair_svc._after_statement_claim = hard_stop
+        try:
+            with pytest.raises(ProcessInterrupt):
+                await create_pair_group(
+                    server.db,
+                    cash_bank_id=bank["id"],
+                    journal_line_id=book_line,
+                    statement_line_ids=bank_ids,
+                    idempotency_key="orphan-stay",
+                    start="2026-09-01",
+                    end="2026-09-30",
+                    user=admin,
+                )
+        finally:
+            _restore_hooks()
+
+        assert await server.db[RECON_MATCHES].count_documents(
+            {"match_kind": "pair_group", "idempotency_key": "orphan-stay"}
+        ) == 0
+        for line_id in bank_ids:
+            row = await server.db[LINES].find_one({"id": line_id}, {"_id": 0, "active_claim": 1})
+            assert row.get("active_claim") == "orphan-stay"
+
+        # Cancel paths do not apply (no match id). Different create key stays blocked.
+        with pytest.raises(PairConflictError):
+            await create_pair_group(
+                server.db,
+                cash_bank_id=bank["id"],
+                journal_line_id=book_line,
+                statement_line_ids=bank_ids,
+                idempotency_key="orphan-other",
+                start="2026-09-01",
+                end="2026-09-30",
+                user=admin,
+            )
+        for line_id in bank_ids:
+            row = await server.db[LINES].find_one({"id": line_id}, {"_id": 0, "active_claim": 1})
+            assert row.get("active_claim") == "orphan-stay"
+
+        ws = await pair_workspace(
+            server.db,
+            cash_bank_id=bank["id"],
+            start="2026-09-01",
+            end="2026-09-30",
+        )
+        assert ws["unmatched_bank_count"] == 0
+        held = [row for row in ws["bank_lines"] if row["id"] in bank_ids]
+        assert all(row["claim_in_flight"] for row in held)
