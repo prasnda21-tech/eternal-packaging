@@ -32,6 +32,8 @@ from services.physical_stock import (  # noqa: E402
 from services.r2_go_live import (  # noqa: E402
     DeliveryCutoverBlockedError,
     OpeningCutoverError,
+    _build_delivery_baseline,
+    _delivery_identity_tokens,
     apply_holding_team_permission_top_up,
     check_r2_production_readiness,
     dry_run_legacy_to_r2_opening,
@@ -301,6 +303,117 @@ async def test_cutover_cancelled_sj_excluded_partial_sj_counted(db):
         if r["master_item_id"] == item["id"]
     )
     assert row["qty_belum_terkirim"] == 650  # 800 - 150
+
+
+async def test_cutover_alias_identity_dedupes_shipment_and_sales_delivery(db):
+    """shipment-1 + sales_delivery_id=delivery-1 vs sales_deliveries.id=delivery-1 → 100 not 200."""
+    await set_r2_authority_active(db, active=True)
+    item, branch, warehouse = await _seed_ygy(db)
+    await post_opening_balance(
+        db,
+        item["id"],
+        {
+            "branch_id": branch["id"],
+            "warehouse_id": warehouse["id"],
+            "physical_qty": 1000,
+            "reason": "open",
+            "idempotency_key": f"open-{item['id']}",
+        },
+        actor_id="t",
+    )
+    order_id = f"so-{uuid.uuid4().hex[:8]}"
+    await db.orders.insert_one({
+        "id": order_id,
+        "cancelled": False,
+        "line_items": [_print_line(item["id"], 500)],
+        "operator_splits": [{"line_idx": 0, "qty_completed": 400}],
+        "shipments": [{
+            "id": "shipment-1",
+            "sales_delivery_id": "delivery-1",
+            "delivery_status": "Terkirim",
+            "delivered_at": "2026-01-01T00:00:00+00:00",
+            "total_qty": 100,
+            "lines": [{"line_idx": 0, "qty": 100}],
+        }],
+    })
+    await db.sales_deliveries.insert_one({
+        "id": "delivery-1",
+        "po_id": order_id,
+        "status": "SELESAI",
+        "total_qty": 100,
+        "line_items": [{"line_idx": 0, "qty": 100}],
+    })
+    # Alias set must bridge shipment id ↔ sales_delivery id
+    tokens = _delivery_identity_tokens({
+        "id": "shipment-1",
+        "sales_delivery_id": "delivery-1",
+    })
+    assert "shipment-1" in tokens and "delivery-1" in tokens
+
+    preview = await preview_delivery_cutover_baseline(db)
+    assert preview["blocked"] is False
+    assert preview["baseline_qty_total"] == 100  # not 200
+
+    init = await initialize_delivery_cutover_baseline(db)
+    assert init["baseline_qty_total"] == 100
+    row = next(
+        r for r in (await list_physical_stock_catalog(db))["items"]
+        if r["master_item_id"] == item["id"]
+    )
+    assert row["qty_belum_terkirim"] == 300  # 400 completed - 100 proven once
+
+
+async def test_cutover_two_distinct_deliveries_sum_not_qty_dedupe(db):
+    """Two real deliveries with different identities both count — never dedupe by qty/PO."""
+    item_id = f"item-{uuid.uuid4().hex[:8]}"
+    order_id = f"so-{uuid.uuid4().hex[:8]}"
+    order = {
+        "id": order_id,
+        "cancelled": False,
+        "line_items": [_print_line(item_id, 500)],
+        "operator_splits": [{"line_idx": 0, "qty_completed": 400}],
+        "shipments": [
+            {
+                "id": "shipment-a",
+                "sales_delivery_id": "delivery-a",
+                "delivery_status": "Terkirim",
+                "delivered_at": "2026-01-01T00:00:00+00:00",
+                "total_qty": 100,
+                "lines": [{"line_idx": 0, "qty": 100}],
+            },
+            {
+                "id": "shipment-b",
+                "sales_delivery_id": "delivery-b",
+                "delivery_status": "Terkirim",
+                "delivered_at": "2026-01-02T00:00:00+00:00",
+                "total_qty": 100,  # same qty as A — must NOT collapse
+                "lines": [{"line_idx": 0, "qty": 100}],
+            },
+        ],
+    }
+    sales_deliveries = [
+        {
+            "id": "delivery-a",
+            "po_id": order_id,
+            "status": "SELESAI",
+            "total_qty": 100,
+            "line_items": [{"line_idx": 0, "qty": 100}],
+        },
+        {
+            "id": "delivery-b",
+            "po_id": order_id,
+            "status": "SELESAI",
+            "total_qty": 100,
+            "line_items": [{"line_idx": 0, "qty": 100}],
+        },
+    ]
+    by_item, by_line, order_count, line_count, ambiguous = _build_delivery_baseline(
+        [order], sales_deliveries,
+    )
+    assert ambiguous == []
+    assert order_count == 1
+    assert by_item[item_id] == 200  # 100 + 100, not qty-collapsed to 100
+    assert by_line[f"{order_id}:0"] == 200
 
 
 async def test_cutover_multi_sku_line_attribution(db):

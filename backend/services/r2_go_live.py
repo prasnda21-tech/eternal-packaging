@@ -133,14 +133,57 @@ _INACTIVE_SD_STATUSES = frozenset({
 _PROVEN_SD_STATUSES = frozenset({"selesai", "terkirim"})
 
 
-def _delivery_identity_token(doc: Optional[dict]) -> str:
+_DELIVERY_IDENTITY_KEYS = (
+    "id",
+    "sales_delivery_id",
+    "delivery_id",
+    "sj_number",
+    "number",
+    "shipment_id",
+)
+
+
+def _delivery_identity_tokens(doc: Optional[dict]) -> List[str]:
+    """All stable identity aliases for one shipment/SJ (order preserves primary).
+
+    A single real delivery often appears as order.shipment.id=shipment-1 with
+    sales_delivery_id=delivery-1 AND sales_deliveries.id=delivery-1. Dedup must
+    match on any shared alias — not on qty or PO alone.
+    """
     if not isinstance(doc, dict):
-        return ""
-    for key in ("id", "sales_delivery_id", "sj_number", "number", "shipment_id"):
+        return []
+    out: List[str] = []
+    seen: set = set()
+    for key in _DELIVERY_IDENTITY_KEYS:
         token = str(doc.get(key) or "").strip()
+        if token and token not in seen:
+            seen.add(token)
+            out.append(token)
+    return out
+
+
+def _delivery_identity_token(doc: Optional[dict]) -> str:
+    """Primary display/report identity (first non-empty alias)."""
+    tokens = _delivery_identity_tokens(doc)
+    return tokens[0] if tokens else ""
+
+
+def _identity_already_counted(
+    tokens: Iterable[str],
+    *,
+    seen_identities: set,
+    exclude_identities: set,
+) -> bool:
+    for token in tokens:
+        if token in seen_identities or token in exclude_identities:
+            return True
+    return False
+
+
+def _mark_identities_seen(tokens: Iterable[str], seen_identities: set) -> None:
+    for token in tokens:
         if token:
-            return token
-    return ""
+            seen_identities.add(token)
 
 
 def _sd_is_cancelled(doc: dict) -> bool:
@@ -297,11 +340,13 @@ def _build_delivery_baseline(
                 continue
             if not shipment_is_delivered(order, sh):
                 continue
-            identity = _delivery_identity_token(sh)
-            if identity and (identity in seen_identities or identity in excluded):
+            tokens = _delivery_identity_tokens(sh)
+            identity = tokens[0] if tokens else ""
+            if tokens and _identity_already_counted(
+                tokens, seen_identities=seen_identities, exclude_identities=excluded,
+            ):
                 continue
-            if identity:
-                seen_identities.add(identity)
+            _mark_identities_seen(tokens, seen_identities)
             rows = sh.get("lines") if isinstance(sh.get("lines"), list) else []
             attributed, issues = _attribute_line_qtys(
                 order_id=order_id,
@@ -347,11 +392,13 @@ def _build_delivery_baseline(
                         "reason": f"unproven_status:{st or 'blank'}",
                     })
                 continue
-            identity = _delivery_identity_token(sd)
-            if identity and (identity in seen_identities or identity in excluded):
+            tokens = _delivery_identity_tokens(sd)
+            identity = tokens[0] if tokens else ""
+            if tokens and _identity_already_counted(
+                tokens, seen_identities=seen_identities, exclude_identities=excluded,
+            ):
                 continue
-            if identity:
-                seen_identities.add(identity)
+            _mark_identities_seen(tokens, seen_identities)
             rows = sd.get("line_items") if isinstance(sd.get("line_items"), list) else []
             if not rows and isinstance(sd.get("lines"), list):
                 rows = sd.get("lines")
