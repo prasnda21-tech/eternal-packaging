@@ -1533,7 +1533,8 @@ export default function RekonsiliasiKasBank() {
     + (pendingAccess.outside_period || []).length
     + (pendingAccess.unreachable || []).length;
   const pendingBadge = pendingTotal == null ? "—" : String(pendingTotal);
-  const visibleBank = bankRows.filter((row) => !row.claim_id);
+  // In-flight CAS (active_claim without saved match) is not Belum-Cocok eligible.
+  const visibleBank = bankRows.filter((row) => !row.claim_id && !row.active_claim);
   const visibleBook = bookRows.filter((row) => !row.claim_id);
   const suggestionList = suggestions?.suggestions || [];
   const sortedSuggestions = sortCandidateSuggestions(suggestionList, selectedBankRow);

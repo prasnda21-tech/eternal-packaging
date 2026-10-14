@@ -51,6 +51,12 @@ class PairConflictError(Exception):
     pass
 
 
+class ProcessInterrupt(BaseException):
+    """Test-only abrupt stop. Not a subclass of Exception, so create/cancel
+    Exception cleanup handlers do not run — approximates process death.
+    """
+
+
 async def _before_pair_claim() -> None:
     """Test seam immediately before the statement-line claim compare-and-swap."""
     return None
@@ -62,7 +68,17 @@ async def _after_statement_claim() -> None:
 
 
 async def _after_pair_insert() -> None:
-    """Test seam after the pair document is stored and before the response."""
+    """Test seam after the pair/group document is stored and before members/adopt."""
+    return None
+
+
+async def _after_group_member_insert() -> None:
+    """Test seam after one pair_group_member document is inserted."""
+    return None
+
+
+async def _after_group_member_cancel() -> None:
+    """Test seam after one pair_group_member is cancelled during group cancel."""
     return None
 
 
@@ -435,10 +451,19 @@ async def pair_workspace(
     bank = []
     for row in bank_rows:
         claim = by_statement.get(row.get("id"))
+        active_claim = row.get("active_claim") or None
         ok, reason = line_matchable(row, account_currency)
         if claim is not None:
             ok = False
             reason = "Sudah dicocokkan"
+        elif active_claim:
+            ok = False
+            reason = reason or "Baris sedang diklaim pencocokan"
+        claim_id = None
+        if claim and claim.get("match_kind") != "pair_group_member":
+            claim_id = (claim or {}).get("id")
+        elif claim:
+            claim_id = (claim or {}).get("group_id") or (claim or {}).get("id")
         bank.append({
             "id": row.get("id"),
             "import_id": row.get("import_id"),
@@ -458,7 +483,9 @@ async def pair_workspace(
             "date_status": row.get("date_status"),
             "matchable": ok,
             "block_reason": reason,
-            "claim_id": (claim or {}).get("id") if claim and claim.get("match_kind") != "pair_group_member" else (claim or {}).get("group_id") or (claim or {}).get("id"),
+            "active_claim": active_claim,
+            "claim_in_flight": bool(active_claim) and claim is None,
+            "claim_id": claim_id,
             "claim_kind": (claim or {}).get("match_kind"),
             "group_id": (claim or {}).get("group_id") if (claim or {}).get("match_kind") == "pair_group_member" else (
                 (claim or {}).get("id") if (claim or {}).get("match_kind") == "pair_group" else None
@@ -475,7 +502,11 @@ async def pair_workspace(
     needle = str(q or "").strip().lower()
     visible_bank = [row for row in bank if not needle or hits(row, needle)]
     visible_book = [row for row in book if not needle or hits(row, needle)]
-    unmatched_bank = [row for row in bank if not row.get("claim_id")]
+    # In-flight CAS holds (active_claim without match doc) are not unmatched-eligible.
+    unmatched_bank = [
+        row for row in bank
+        if not row.get("claim_id") and not row.get("active_claim")
+    ]
     unmatched_book = [row for row in book if not row.get("claim_id")]
     start_i = (page - 1) * page_size
     closing = await statement_closing(db, cash_bank_id=cash_bank_id, end=end)
@@ -955,10 +986,25 @@ def _public_group(
         }
         for m in member_rows
     ]
+    expected_ids = [
+        str(sid) for sid in (doc.get("statement_line_ids") or []) if sid
+    ]
+    active_ids = {
+        str(m.get("statement_line_id"))
+        for m in active_members
+        if m.get("statement_line_id")
+    }
+    members_complete = (
+        doc.get("status") == "active"
+        and bool(expected_ids)
+        and len(active_members) >= 2
+        and len(active_ids) == len(expected_ids)
+        and active_ids == set(expected_ids)
+    )
     claim_active = (
         doc.get("status") == "active"
         and bool(doc.get("journal_line_id"))
-        and len(active_members) >= 2
+        and members_complete
     )
     return {
         "id": doc.get("id"),
@@ -974,6 +1020,8 @@ def _public_group(
         ]),
         "members": history_members,
         "member_count": len(history_members),
+        "active_member_count": len(active_members),
+        "members_complete": members_complete,
         "claim_active": claim_active,
         "source_history": {
             "journal_line_id": doc.get("history_journal_line_id") or doc.get("journal_line_id"),
@@ -1425,6 +1473,7 @@ async def create_pair_group(
                     claimed_line_ids=claimed_ids,
                 )
                 raise PairConflictError("Baris bank atau baris buku sudah diklaim") from exc
+            await _after_group_member_insert()
 
         await _adopt_group_claims(
             db, group_id=group_id, key=key, statement_line_ids=claimed_ids,
@@ -1560,6 +1609,7 @@ async def cancel_pair_group(
                 "$unset": {"statement_line_id": ""},
             },
         )
+        await _after_group_member_cancel()
 
     result = await db[RECON_MATCHES].update_one(
         {

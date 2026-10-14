@@ -371,3 +371,21 @@ test('BCA preview import controls still present', async () => {
   expect(container.querySelector('[data-testid=kas-bank-bca-file]')).toBeTruthy();
   expect(container.querySelector('[data-testid=kas-bank-pair-import]')).toBeTruthy();
 });
+
+test('in-flight active_claim bank line is hidden from Belum Cocok board', async () => {
+  workspace.bank_lines = [{
+    ...bank,
+    id: 'bank-inflight',
+    matchable: false,
+    active_claim: 'inflight-key',
+    claim_in_flight: true,
+    claim_id: null,
+    block_reason: 'Baris sedang diklaim pencocokan',
+  }];
+  workspace.book_lines = [{ ...book, matchable: true }];
+  workspace.unmatched_bank_count = 0;
+  workspace.bank_total = 1;
+  await renderPage();
+  expect(container.textContent).not.toContain('Transfer pelanggan');
+  expect(container.querySelector('[data-testid=kas-bank-recommendation]')).toBeNull();
+});
