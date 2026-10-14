@@ -25,6 +25,7 @@ from services.r2_go_live import (  # noqa: E402
 from services.stock_compatibility_read import (  # noqa: E402
     BELUM_STATUS_CUTOVER_PENDING,
     BELUM_STATUS_READY,
+    BELUM_STATUS_UNVERIFIED,
     MODE_COMPATIBILITY,
     aggregate_legacy_delivered_qty,
     list_compatibility_stock_catalog,
@@ -118,6 +119,10 @@ async def test_compatibility_reads_product_stock_state_and_orders(db):
     assert row["qty_belum_terkirim"] == 400  # completed only; SJ create ≠ delivered
     assert row["qty_tersedia"] == 15900 - 600 - 400
     assert row["belum_terkirim_status"] == BELUM_STATUS_READY
+    assert row["qty_tersedia_valid"] is False
+    assert row["physical_qty_warehouse_valid"] is False
+    assert row["baseline_status"] == "unreconciled"
+    assert catalog.get("physical_qty_warehouse_valid") is False
     # Must not have written R2
     assert await db[BALANCE_COLLECTION].count_documents({}) == 0
 
@@ -246,7 +251,7 @@ async def test_unproven_delivery_lineage_is_cutover_pending(db):
         assert row["qty_belum_terkirim"] == 80
         assert row["qty_pesanan"] == 20  # 100-80 still proven
 
-    # Proven multi-line confirmation without line_idx → unproven / CUTOVER_PENDING
+    # Proven multi-line confirmation without line_idx → unproven / BELUM TERVERIFIKASI
     await db.orders.update_one(
         {"id": oid},
         {"$set": {
@@ -262,8 +267,11 @@ async def test_unproven_delivery_lineage_is_cutover_pending(db):
     catalog2 = await list_compatibility_stock_catalog(db)
     for mid in (item_a["id"], item_b["id"]):
         row = next(r for r in catalog2["items"] if r["master_item_id"] == mid)
-        assert row["belum_terkirim_status"] == BELUM_STATUS_CUTOVER_PENDING
+        assert row["belum_terkirim_status"] == BELUM_STATUS_UNVERIFIED
+        assert row["belum_terkirim_status"] == BELUM_STATUS_CUTOVER_PENDING  # alias
         assert row["qty_belum_terkirim"] is None
+        assert row["qty_tersedia_valid"] is False
+        assert row["physical_qty_warehouse_valid"] is False
 
 
 async def test_authority_switch_to_r2_stops_legacy_physical(db):
@@ -510,3 +518,119 @@ async def test_same_master_print_and_non_print_orders_independent(db):
     assert row2["qty_pesanan"] == 60
     assert row2["qty_belum_terkirim"] == 90  # 120 - 30 proven on non_print order
     assert row2["qty_tersedia"] == 1000 - 60 - 90
+
+
+async def test_fase1_scenario_matrix_po_prod_sj_partial_cancel_multi(db):
+    """FASE 1 matrix: PO partial, prod partial, SJ unproven, partial ship, cancel, multi-item."""
+    lid = await _seed_master(db, "LID")
+    cup = await _seed_master(db, "CUP")
+    for item, qty in ((lid, 2000), (cup, 2000)):
+        await db.product_stock_state.insert_one({
+            "master_item_id": item["id"],
+            "total_qty": qty,
+            "initialized": True,
+            "status": "INITIALIZED",
+        })
+
+    # Active multi-item PO: print LID partial complete; CUP non_print siap kirim.
+    active_oid = f"so-fase1-{uuid.uuid4().hex[:6]}"
+    await db.orders.insert_one({
+        "id": active_oid,
+        "cancelled": False,
+        "line_items": [
+            {
+                "line_id": "ln-0",
+                "master_item_id": lid["id"],
+                "quantity": 500,
+                "production_process": "print",
+                "name": "LID",
+            },
+            {
+                "line_id": "ln-1",
+                "master_item_id": cup["id"],
+                "quantity": 200,
+                "production_process": "non_print",
+                "name": "CUP",
+            },
+        ],
+        "operator_splits": [{"line_idx": 0, "qty_completed": 300}],
+    })
+    # SJ created SELESAI — allocation only, not customer proof.
+    await db.sales_deliveries.insert_one({
+        "id": f"sj-{uuid.uuid4().hex[:8]}",
+        "po_id": active_oid,
+        "status": "SELESAI",
+        "is_cancelled": False,
+        "line_items": [
+            {"line_idx": 0, "master_item_id": lid["id"], "qty": 100},
+            {"line_idx": 1, "master_item_id": cup["id"], "qty": 50},
+        ],
+    })
+    # Cancelled PO must not contribute.
+    await db.orders.insert_one({
+        "id": f"so-canc-{uuid.uuid4().hex[:6]}",
+        "cancelled": True,
+        "line_items": [{
+            "master_item_id": lid["id"],
+            "quantity": 999,
+            "production_process": "print",
+        }],
+        "operator_splits": [{"line_idx": 0, "qty_completed": 999}],
+    })
+
+    catalog = await list_compatibility_stock_catalog(db)
+    lid_row = next(r for r in catalog["items"] if r["master_item_id"] == lid["id"])
+    cup_row = next(r for r in catalog["items"] if r["master_item_id"] == cup["id"])
+
+    # LID: ordered 500, completed 300 → pesanan 200, belum 300 (SJ not proof)
+    assert lid_row["qty_pesanan"] == 200
+    assert lid_row["qty_belum_terkirim"] == 300
+    assert lid_row["belum_terkirim_status"] == BELUM_STATUS_READY
+    # CUP non_print: siap kirim = ordered
+    assert cup_row["qty_pesanan"] == 0
+    assert cup_row["qty_belum_terkirim"] == 200
+    # Compatibility never claims warehouse-valid physical / Qty Tersedia
+    for row in (lid_row, cup_row):
+        assert row["physical_qty_warehouse_valid"] is False
+        assert row["qty_tersedia_valid"] is False
+        assert row["physical_qty_scope"] == "COMPANY"
+
+    # Partial proven shipment on LID only (line-attributed).
+    await db.orders.update_one(
+        {"id": active_oid},
+        {"$set": {
+            "shipments": [{
+                "id": "ship-lid-100",
+                "delivery_status": "Terkirim",
+                "delivered_at": "2026-01-02T00:00:00+00:00",
+                "total_qty": 100,
+                "lines": [{"line_idx": 0, "qty": 100}],
+            }],
+        }},
+    )
+    catalog2 = await list_compatibility_stock_catalog(db)
+    lid2 = next(r for r in catalog2["items"] if r["master_item_id"] == lid["id"])
+    cup2 = next(r for r in catalog2["items"] if r["master_item_id"] == cup["id"])
+    assert lid2["qty_pesanan"] == 200
+    assert lid2["qty_belum_terkirim"] == 200  # 300 - 100 proven
+    assert cup2["qty_belum_terkirim"] == 200  # unchanged; no CUP proof
+
+    # Ambiguous multi-SKU partial confirmation without line breakdown → BELUM TERVERIFIKASI
+    await db.orders.update_one(
+        {"id": active_oid},
+        {"$set": {
+            "shipments": [{
+                "id": "ship-ambig-40",
+                "delivery_status": "Terkirim",
+                "delivered_at": "2026-01-03T00:00:00+00:00",
+                "total_qty": 40,
+                "lines": [{"qty": 40}],
+            }],
+        }},
+    )
+    catalog3 = await list_compatibility_stock_catalog(db)
+    for mid in (lid["id"], cup["id"]):
+        row = next(r for r in catalog3["items"] if r["master_item_id"] == mid)
+        assert row["belum_terkirim_status"] == BELUM_STATUS_UNVERIFIED
+        assert row["qty_belum_terkirim"] is None
+        assert row["qty_tersedia_valid"] is False

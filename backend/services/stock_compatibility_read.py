@@ -32,7 +32,10 @@ MODE_COMPATIBILITY = "compatibility"
 MODE_R2 = "r2"
 
 BELUM_STATUS_READY = "READY"
-BELUM_STATUS_CUTOVER_PENDING = "CUTOVER_PENDING"
+# Insufficient delivery proof → never invent Belum Terkirim as zero.
+BELUM_STATUS_UNVERIFIED = "BELUM_TERVERIFIKASI"
+# Alias retained for older clients/tests that still expect the cutover label.
+BELUM_STATUS_CUTOVER_PENDING = BELUM_STATUS_UNVERIFIED
 
 
 def _delivery_line_qty(line: dict) -> float:
@@ -180,6 +183,22 @@ def aggregate_legacy_delivered_qty(
     return delivered, provenance
 
 
+def _compatibility_flags() -> dict:
+    """Legacy company stock is informational only — never warehouse-valid."""
+    return {
+        "stock_read_mode": MODE_COMPATIBILITY,
+        "physical_qty_scope": "COMPANY",
+        "physical_qty_warehouse_valid": False,
+        "qty_tersedia_valid": False,
+        "qty_tersedia_note": (
+            "Qty Tersedia belum valid — stok fisik legacy digabung perusahaan "
+            "dan belum direkonsiliasi per gudang (Saldo Awal / Stock Opname R2)."
+        ),
+        "baseline_status": "unreconciled",
+        "baseline_label": "Stok fisik legacy (perusahaan) — bukan saldo per gudang",
+    }
+
+
 def compatibility_row(
     *,
     master: dict,
@@ -191,7 +210,8 @@ def compatibility_row(
     updated_at: Optional[str],
     base_unit: str,
 ) -> dict:
-    if belum_status == BELUM_STATUS_CUTOVER_PENDING:
+    flags = _compatibility_flags()
+    if belum_status in (BELUM_STATUS_UNVERIFIED, BELUM_STATUS_CUTOVER_PENDING):
         # Do not invent Belum Terkirim. Qty Tersedia excludes only Qty Pesanan.
         buckets = operational_availability(
             physical_qty=physical_qty,
@@ -212,8 +232,8 @@ def compatibility_row(
             "qty_belum_terkirim": None,
             "qty_tersedia": buckets["physical_qty"] - qty_pesanan,
             "updated_at": updated_at,
-            "belum_terkirim_status": BELUM_STATUS_CUTOVER_PENDING,
-            "stock_read_mode": MODE_COMPATIBILITY,
+            "belum_terkirim_status": BELUM_STATUS_UNVERIFIED,
+            **flags,
         }
 
     buckets = operational_availability(
@@ -234,7 +254,7 @@ def compatibility_row(
         "qty_tersedia": buckets["qty_tersedia"],
         "updated_at": updated_at,
         "belum_terkirim_status": BELUM_STATUS_READY,
-        "stock_read_mode": MODE_COMPATIBILITY,
+        **flags,
     }
 
 
@@ -278,6 +298,8 @@ async def list_compatibility_stock_catalog(
                 "bukan saldo per gudang. Belum dipisahkan per cabang. "
                 "Filter cabang tidak mengubah qty fisik legacy."
             ),
+            "physical_qty_warehouse_valid": False,
+            "qty_tersedia_valid": False,
             "compatibility": {
                 "physical_source": "product_stock_state.total_qty",
                 "order_source": "orders.line_items + operator_splits (print) / PO qty ready (non_print)",
@@ -287,7 +309,9 @@ async def list_compatibility_stock_catalog(
                     "not sales_deliveries.status SELESAI/SEBAGIAN"
                 ),
                 "physical_qty_scope": "COMPANY",
+                "physical_qty_warehouse_valid": False,
                 "branch_filter_affects_physical_qty": False,
+                "qty_tersedia_valid": False,
             },
         }
 
@@ -320,7 +344,7 @@ async def list_compatibility_stock_catalog(
         prov = provenance.get(mid) or ""
         # Unproven delivery attribution with open completion → do not invent Belum Terkirim
         if completed > 0 and prov == "unproven":
-            belum_status = BELUM_STATUS_CUTOVER_PENDING
+            belum_status = BELUM_STATUS_UNVERIFIED
         else:
             belum_status = BELUM_STATUS_READY
         rows.append(
@@ -359,8 +383,16 @@ async def list_compatibility_stock_catalog(
         "compatibility": {
             "physical_source": "product_stock_state.total_qty",
             "order_source": "orders.line_items + operator_splits (print) / PO qty ready (non_print)",
-            "delivery_source": "sales_deliveries (+ order.qty_delivered single-line fallback)",
+            "delivery_source": (
+                "confirmed order.shipments / delivery_confirmations "
+                "(+ order.qty_delivered single-line fallback); "
+                "not sales_deliveries.status SELESAI/SEBAGIAN"
+            ),
             "physical_qty_scope": "COMPANY",
+            "physical_qty_warehouse_valid": False,
             "branch_filter_affects_physical_qty": False,
+            "qty_tersedia_valid": False,
         },
+        "physical_qty_warehouse_valid": False,
+        "qty_tersedia_valid": False,
     }
