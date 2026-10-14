@@ -36,6 +36,7 @@ def default_go_live_doc() -> Dict[str, Any]:
         "delivery_cutover": {
             "initialized": False,
             "cutover_at": None,
+            "baseline_basis": None,
             "baseline_by_master_item_id": {},
             "baseline_by_order_line": {},
             "order_count": 0,
@@ -118,36 +119,164 @@ async def cutover_delivered_qty_for_order_line(db, order_id: str, line_idx: int)
     return float((cut.get("baseline_by_order_line") or {}).get(key, 0) or 0)
 
 
+class DeliveryCutoverBlockedError(Exception):
+    """Cutover cannot proceed: shipment attribution is ambiguous/unproven."""
+
+    def __init__(self, message: str, *, ambiguous: Optional[List[dict]] = None):
+        super().__init__(message)
+        self.ambiguous = list(ambiguous or [])
+
+
+_INACTIVE_SD_STATUSES = frozenset({
+    "draft", "dibatalkan", "cancelled", "canceled", "deleted", "superseded",
+})
+_PROVEN_SD_STATUSES = frozenset({"selesai", "terkirim"})
+
+
+def _delivery_identity_token(doc: Optional[dict]) -> str:
+    if not isinstance(doc, dict):
+        return ""
+    for key in ("id", "sales_delivery_id", "sj_number", "number", "shipment_id"):
+        token = str(doc.get(key) or "").strip()
+        if token:
+            return token
+    return ""
+
+
+def _sd_is_cancelled(doc: dict) -> bool:
+    if doc.get("is_cancelled") or doc.get("cancelled") or doc.get("deleted") or doc.get("is_deleted"):
+        return True
+    st = str(doc.get("status") or "").strip().lower()
+    return st in _INACTIVE_SD_STATUSES
+
+
+def _sd_is_proven_delivered(doc: dict) -> bool:
+    """Surat Jalan row counts as historically delivered only when status proves it."""
+    if _sd_is_cancelled(doc):
+        return False
+    st = str(doc.get("status") or "").strip().lower()
+    return st in _PROVEN_SD_STATUSES
+
+
+def _attribute_line_qtys(
+    *,
+    order_id: str,
+    source: str,
+    identity: str,
+    line_rows: Iterable[dict],
+    order_line_count: int,
+) -> Tuple[Dict[int, float], List[dict]]:
+    """Map shipment/SJ lines → order line_idx. Fail closed when attribution is unclear."""
+    from services.physical_stock import _qty_num
+
+    attributed: Dict[int, float] = {}
+    ambiguous: List[dict] = []
+    rows = [ln for ln in line_rows if isinstance(ln, dict)]
+    if not rows:
+        return attributed, ambiguous
+
+    unresolved = []
+    for ln in rows:
+        qty = float(_qty_num(ln.get("qty") if ln.get("qty") is not None else ln.get("quantity")))
+        if qty <= 0:
+            continue
+        raw_idx = ln.get("line_idx")
+        if raw_idx is None or str(raw_idx).strip() == "":
+            unresolved.append({"qty": qty, "line": ln})
+            continue
+        try:
+            idx = int(raw_idx)
+        except (TypeError, ValueError):
+            unresolved.append({"qty": qty, "line": ln})
+            continue
+        if idx < 0 or idx >= order_line_count:
+            ambiguous.append({
+                "order_id": order_id,
+                "source": source,
+                "identity": identity,
+                "reason": "line_idx_out_of_range",
+                "line_idx": idx,
+                "qty": qty,
+            })
+            continue
+        attributed[idx] = float(attributed.get(idx, 0.0)) + qty
+
+    if unresolved:
+        if order_line_count == 1 and len(unresolved) >= 1:
+            # Sole line on the PO: safe to attribute unmarked qty to line 0.
+            for row in unresolved:
+                attributed[0] = float(attributed.get(0, 0.0)) + float(row["qty"])
+        else:
+            for row in unresolved:
+                ambiguous.append({
+                    "order_id": order_id,
+                    "source": source,
+                    "identity": identity,
+                    "reason": "missing_or_invalid_line_idx",
+                    "qty": row["qty"],
+                })
+    return attributed, ambiguous
+
+
+def _header_qty_for_sole_line(
+    *,
+    order_id: str,
+    source: str,
+    identity: str,
+    header_qty: float,
+    order_line_count: int,
+    attributed: Dict[int, float],
+) -> Tuple[Dict[int, float], List[dict]]:
+    """Attribute proven header-only qty to line 0 when the PO has exactly one line."""
+    if attributed or header_qty <= 0:
+        return attributed, []
+    if order_line_count == 1:
+        return {0: float(header_qty)}, []
+    return {}, [{
+        "order_id": order_id,
+        "source": source,
+        "identity": identity,
+        "reason": "proven_delivery_without_attributable_lines",
+        "qty": float(header_qty),
+    }]
+
+
 def _build_delivery_baseline(
     orders: Iterable[dict],
+    sales_deliveries: Optional[Iterable[dict]] = None,
     accurate_owners: Optional[Dict[str, str]] = None,
-) -> Tuple[Dict[str, float], Dict[str, float], int, int]:
-    """Snapshot operator-completed qty as Belum-Terkirim-satisfied baseline.
+    exclude_identities: Optional[Iterable[str]] = None,
+) -> Tuple[Dict[str, float], Dict[str, float], int, int, List[dict]]:
+    """Snapshot PROVEN historically shipped qty as cutover delivery baseline.
 
-    Does not create ledger movements. Post-cutover completion above this
-    baseline still creates Qty Belum Terkirim until an R2 SALES_DELIVERY.
+    Operator completion alone never fills the baseline — production selesai ≠
+    barang sudah dikirim. Baseline prevents R2 from re-shipping qty that was
+    already proven delivered pre-cutover, while Qty Belum Terkirim for
+    completed-but-unshipped stock remains.
+
+    Dedupes order.shipments vs sales_deliveries by shipment identity token.
+    Identities already booked in R2 confirmations are excluded (no double count).
+    Ambiguous attribution is returned (never invented as delivered/zero).
     """
-    from services.physical_stock import (
-        _line_master_id,
-        _order_cancelled,
-        _qty_num,
-        aggregate_operational_orders,
-    )
+    from quantity_rules import shipment_is_delivered
+    from services.physical_stock import _line_master_id, _order_cancelled, _qty_num
 
     owners = accurate_owners or {}
+    excluded = {str(x).strip() for x in (exclude_identities or []) if str(x).strip()}
     by_item: Dict[str, float] = {}
     by_line: Dict[str, float] = {}
+    ambiguous: List[dict] = []
     order_count = 0
     line_count = 0
 
-    # Reuse aggregate for item totals, then capture per-order-line for delivery ready.
-    item_totals = aggregate_operational_orders(orders, owners)
-    for mid, slot in item_totals.items():
-        completed = float(slot.get("completed_qty") or 0)
-        if completed > 0:
-            by_item[str(mid)] = completed
-
-    from quantity_rules import is_print_line
+    deliveries_by_po: Dict[str, List[dict]] = {}
+    for doc in sales_deliveries or []:
+        if not isinstance(doc, dict):
+            continue
+        po_id = str(doc.get("po_id") or doc.get("order_id") or "").strip()
+        if not po_id:
+            continue
+        deliveries_by_po.setdefault(po_id, []).append(doc)
 
     for order in orders:
         if _order_cancelled(order):
@@ -156,55 +285,151 @@ def _build_delivery_baseline(
         if not order_id:
             continue
         lines = list(order.get("line_items") or [])
+        if not lines:
+            continue
         master_ids = [_line_master_id(line, owners) for line in lines]
-        completed_by_idx: Dict[int, float] = {}
-        unassigned = []
-        for split in order.get("operator_splits") or []:
-            raw_idx = split.get("line_idx")
-            if raw_idx is None or str(raw_idx).strip() == "":
-                unassigned.append(split)
+        shipped_by_idx: Dict[int, float] = {}
+        seen_identities: set = set()
+
+        # 1) Proven delivered shipments on the order (Terkirim / confirmation).
+        for sh in order.get("shipments") or []:
+            if not isinstance(sh, dict):
                 continue
-            try:
-                idx = int(raw_idx)
-            except (TypeError, ValueError):
+            if not shipment_is_delivered(order, sh):
                 continue
-            if idx < 0 or idx >= len(lines) or not master_ids[idx]:
+            identity = _delivery_identity_token(sh)
+            if identity and (identity in seen_identities or identity in excluded):
                 continue
-            completed_by_idx[idx] = _qty_num(completed_by_idx.get(idx, 0)) + _qty_num(
-                split.get("qty_completed")
+            if identity:
+                seen_identities.add(identity)
+            rows = sh.get("lines") if isinstance(sh.get("lines"), list) else []
+            attributed, issues = _attribute_line_qtys(
+                order_id=order_id,
+                source="order.shipment",
+                identity=identity or "(missing-id)",
+                line_rows=rows,
+                order_line_count=len(lines),
             )
-        identified = [
-            idx
-            for idx, master_id in enumerate(master_ids)
-            if master_id and is_print_line(lines[idx])
-        ]
-        if unassigned and len(identified) == 1:
-            idx = identified[0]
-            extra = sum(_qty_num(split.get("qty_completed")) for split in unassigned)
-            completed_by_idx[idx] = _qty_num(completed_by_idx.get(idx, 0)) + extra
+            ambiguous.extend(issues)
+            if issues:
+                continue
+            header_qty = float(_qty_num(sh.get("total_qty") or sh.get("qty")))
+            attributed, header_issues = _header_qty_for_sole_line(
+                order_id=order_id,
+                source="order.shipment",
+                identity=identity or "(missing-id)",
+                header_qty=header_qty,
+                order_line_count=len(lines),
+                attributed=attributed,
+            )
+            ambiguous.extend(header_issues)
+            if header_issues:
+                continue
+            for idx, qty in attributed.items():
+                shipped_by_idx[idx] = float(shipped_by_idx.get(idx, 0.0)) + qty
+
+        # 2) Proven sales_deliveries (SELESAI/TERKIRIM), skip identities already counted.
+        for sd in deliveries_by_po.get(order_id, []):
+            if not _sd_is_proven_delivered(sd):
+                # Non-draft active SJ without proven delivered status is not silently
+                # treated as shipped; if it has qty but unclear status, flag when it
+                # looks like a completed document we cannot classify.
+                st = str(sd.get("status") or "").strip().lower()
+                if st and st not in _INACTIVE_SD_STATUSES and st not in _PROVEN_SD_STATUSES:
+                    if st == "sebagian":
+                        # Partial PO fulfillment docs may still be undelivered to customer.
+                        # Do not invent delivery; leave Belum Terkirim intact.
+                        continue
+                    ambiguous.append({
+                        "order_id": order_id,
+                        "source": "sales_delivery",
+                        "identity": _delivery_identity_token(sd) or "(missing-id)",
+                        "reason": f"unproven_status:{st or 'blank'}",
+                    })
+                continue
+            identity = _delivery_identity_token(sd)
+            if identity and (identity in seen_identities or identity in excluded):
+                continue
+            if identity:
+                seen_identities.add(identity)
+            rows = sd.get("line_items") if isinstance(sd.get("line_items"), list) else []
+            if not rows and isinstance(sd.get("lines"), list):
+                rows = sd.get("lines")
+            attributed, issues = _attribute_line_qtys(
+                order_id=order_id,
+                source="sales_delivery",
+                identity=identity or "(missing-id)",
+                line_rows=rows,
+                order_line_count=len(lines),
+            )
+            ambiguous.extend(issues)
+            if issues:
+                continue
+            header_qty = float(_qty_num(sd.get("total_qty") or sd.get("qty")))
+            attributed, header_issues = _header_qty_for_sole_line(
+                order_id=order_id,
+                source="sales_delivery",
+                identity=identity or "(missing-id)",
+                header_qty=header_qty,
+                order_line_count=len(lines),
+                attributed=attributed,
+            )
+            ambiguous.extend(header_issues)
+            if header_issues:
+                continue
+            for idx, qty in attributed.items():
+                shipped_by_idx[idx] = float(shipped_by_idx.get(idx, 0.0)) + qty
 
         touched = False
-        for idx, completed in completed_by_idx.items():
-            qty = float(_qty_num(completed))
-            if qty <= 0 or not master_ids[idx]:
+        for idx, shipped in shipped_by_idx.items():
+            if idx < 0 or idx >= len(lines) or not master_ids[idx]:
                 continue
-            by_line[order_line_baseline_key(order_id, idx)] = qty
+            ordered = float(_qty_num(lines[idx].get("quantity")))
+            # Never baseline above ordered qty; never invent from completion.
+            qty = min(max(float(shipped), 0.0), max(ordered, 0.0))
+            if qty <= 0:
+                continue
+            key = order_line_baseline_key(order_id, idx)
+            by_line[key] = qty
+            mid = str(master_ids[idx])
+            by_item[mid] = float(by_item.get(mid, 0.0)) + qty
             line_count += 1
             touched = True
         if touched:
             order_count += 1
 
-    return by_item, by_line, order_count, line_count
+    return by_item, by_line, order_count, line_count, ambiguous
+
+
+async def _r2_booked_delivery_identities(db) -> set:
+    """Identities already deducted via R2 confirmations — must not enter baseline."""
+    from services.physical_stock import SALES_DELIVERY_CONFIRMATIONS
+
+    rows = await db[SALES_DELIVERY_CONFIRMATIONS].find(
+        {"reversed": {"$ne": True}},
+        {"_id": 0, "id": 1, "sales_delivery_id": 1},
+    ).to_list(100000)
+    out: set = set()
+    for row in rows:
+        for key in ("id", "sales_delivery_id"):
+            token = str(row.get(key) or "").strip()
+            if token:
+                out.add(token)
+    return out
 
 
 async def preview_delivery_cutover_baseline(db) -> Dict[str, Any]:
-    """Read-only preview of the Belum Terkirim cutover baseline."""
+    """Read-only preview of PROVEN shipped cutover baseline (not production completed)."""
     from services.physical_stock import _unique_accurate_owners
 
     existing = await get_delivery_cutover_baseline(db)
     owners = await _unique_accurate_owners(db)
     orders = await db.orders.find({}, {"_id": 0}).to_list(50000)
-    by_item, by_line, order_count, line_count = _build_delivery_baseline(orders, owners)
+    sales_deliveries = await db.sales_deliveries.find({}, {"_id": 0}).to_list(100000)
+    exclude = await _r2_booked_delivery_identities(db)
+    by_item, by_line, order_count, line_count, ambiguous = _build_delivery_baseline(
+        orders, sales_deliveries, owners, exclude_identities=exclude,
+    )
     return {
         "already_initialized": bool(existing.get("initialized")),
         "existing_cutover_at": existing.get("cutover_at"),
@@ -214,6 +439,10 @@ async def preview_delivery_cutover_baseline(db) -> Dict[str, Any]:
         "baseline_qty_total": sum(by_item.values()),
         "baseline_by_master_item_id": by_item,
         "baseline_by_order_line": by_line,
+        "baseline_basis": "proven_shipped",
+        "ambiguous_count": len(ambiguous),
+        "ambiguous": ambiguous[:100],
+        "blocked": bool(ambiguous),
     }
 
 
@@ -223,7 +452,11 @@ async def initialize_delivery_cutover_baseline(
     actor: Optional[dict] = None,
     force: bool = False,
 ) -> Dict[str, Any]:
-    """Persist Belum Terkirim cutover baseline. Idempotent unless force=True."""
+    """Persist proven-shipped cutover baseline. Idempotent unless force=True.
+
+    Fail-closed when any shipment/SJ cannot be attributed safely — never treats
+    completed production as delivered and never invents zeros for ambiguous rows.
+    """
     current = await get_go_live_settings(db)
     cut = current["delivery_cutover"]
     if cut.get("initialized") and not force:
@@ -235,9 +468,34 @@ async def initialize_delivery_cutover_baseline(
             "line_count": cut.get("line_count") or 0,
             "item_count": len(cut.get("baseline_by_master_item_id") or {}),
             "baseline_qty_total": sum((cut.get("baseline_by_master_item_id") or {}).values()),
+            "baseline_basis": cut.get("baseline_basis") or "proven_shipped",
         }
 
+    if force:
+        from services.physical_stock import SALES_DELIVERY_CONFIRMATIONS
+
+        r2_booked = await db[SALES_DELIVERY_CONFIRMATIONS].count_documents(
+            {"reversed": {"$ne": True}}
+        )
+        if r2_booked:
+            raise DeliveryCutoverBlockedError(
+                "Force re-init cutover ditolak: sudah ada konfirmasi pengiriman R2. "
+                "Re-inisialisasi akan menduplikasi qty terkirim (baseline + ledger).",
+                ambiguous=[{
+                    "source": "r2_confirmation",
+                    "reason": "force_reinit_after_r2_delivery",
+                    "count": int(r2_booked),
+                }],
+            )
+
     preview = await preview_delivery_cutover_baseline(db)
+    if preview.get("blocked"):
+        raise DeliveryCutoverBlockedError(
+            "Cutover baseline ditolak: ada pengiriman historis yang tidak dapat "
+            "diatribusikan ke baris pesanan secara aman. "
+            "Selesaikan atribusi SJ/line_idx sebelum inisialisasi.",
+            ambiguous=preview.get("ambiguous") or [],
+        )
     cutover_at = now_iso()
     actor_info = None
     if isinstance(actor, dict):
@@ -250,6 +508,7 @@ async def initialize_delivery_cutover_baseline(
     delivery_cutover = {
         "initialized": True,
         "cutover_at": cutover_at,
+        "baseline_basis": "proven_shipped",
         "baseline_by_master_item_id": preview["baseline_by_master_item_id"],
         "baseline_by_order_line": preview["baseline_by_order_line"],
         "order_count": preview["order_count"],
@@ -271,6 +530,7 @@ async def initialize_delivery_cutover_baseline(
         "line_count": preview["line_count"],
         "item_count": preview["item_count"],
         "baseline_qty_total": preview["baseline_qty_total"],
+        "baseline_basis": "proven_shipped",
     }
 
 
