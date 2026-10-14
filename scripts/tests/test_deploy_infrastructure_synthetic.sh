@@ -155,17 +155,95 @@ trap 'stop_harness_backend_proc; cleanup_work' EXIT
 
 cat >"$BIN/curl" <<'EOF'
 #!/usr/bin/env bash
-# Harness curl: supports -o BODY -w '%{http_code}' used by eternal_health_check.
+# Harness curl: supports -o BODY -w '%{http_code}' used by eternal_health_check
+# and the public frontend Nginx check. No production server.
 out_file=""
+dump_header=""
+url=""
+if [[ -n "${ETERNAL_CURL_ARGS_LOG:-}" ]]; then
+  printf '%s\n' "$*" >>"${ETERNAL_CURL_ARGS_LOG}"
+fi
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -o|--output) out_file="${2:-}"; shift 2 ;;
+    -D|--dump-header) dump_header="${2:-}"; shift 2 ;;
     -w|--write-out) shift 2 ;;
     --max-time) shift 2 ;;
-    -s|-S|-f|-sS) shift ;;
+    -s|-S|-f|-sS|-L|-k|--insecure) shift ;;
+    http://*|https://*) url="$1"; shift ;;
     *) shift ;;
   esac
 done
+# Frontend fixture is any URL that is not the backend health endpoint.
+if [[ "$url" != *"/api/system/health"* ]]; then
+  body="fixture-frontend"
+  code=200
+  location=""
+  fe_scheme="${url%%://*}"
+  fe_rest="${url#*://}"
+  fe_hostport="${fe_rest%%/*}"
+  fe_host="${fe_hostport%%:*}"
+  fe_path="/${fe_rest#*/}"
+  if [[ "$fe_rest" != */* ]]; then
+    fe_path="/"
+  fi
+  if [[ "$fe_scheme" == "https" && "${ETERNAL_FRONTEND_TLS_FAIL:-0}" == "1" ]]; then
+    echo "SSL certificate problem: unable to get local issuer certificate" >&2
+    printf '%s' "000"
+    exit 60
+  fi
+  if [[ -n "${ETERNAL_FRONTEND_HTTP_FAIL_STATE:-}" && -f "${ETERNAL_FRONTEND_HTTP_FAIL_STATE}" ]]; then
+    n="$(cat "${ETERNAL_FRONTEND_HTTP_FAIL_STATE}")"
+    if [[ "${n:-0}" -gt 0 ]]; then
+      echo $((n - 1)) >"${ETERNAL_FRONTEND_HTTP_FAIL_STATE}"
+      body=""
+      code=403
+    fi
+  fi
+  if [[ "$code" == "200" && -n "${ETERNAL_FRONTEND_HTTP_CODE:-}" ]]; then
+    code="${ETERNAL_FRONTEND_HTTP_CODE}"
+    if [[ "$code" != "200" ]]; then
+      body=""
+    fi
+  fi
+  if [[ "$code" == "200" && "${ETERNAL_FRONTEND_FORCE_200:-0}" != "1" ]]; then
+    case "${ETERNAL_FRONTEND_REDIRECT_MODE:-}" in
+      other)
+        code=301
+        location="https://evil.example${fe_path}"
+        body=""
+        ;;
+      loop)
+        code=301
+        location="$url"
+        body=""
+        ;;
+      https)
+        if [[ "$fe_scheme" == "http" ]]; then
+          code=301
+          location="https://${fe_host}${fe_path}"
+          body=""
+        fi
+        ;;
+    esac
+  fi
+  if [[ -n "$dump_header" ]]; then
+    {
+      printf 'HTTP/1.1 %s\r\n' "$code"
+      if [[ -n "$location" ]]; then
+        printf 'Location: %s\r\n' "$location"
+      fi
+      printf '\r\n'
+    } >"$dump_header"
+  fi
+  if [[ -n "$out_file" ]]; then
+    printf '%s' "$body" >"$out_file"
+    printf '%s' "$code"
+  else
+    printf '%s' "$body"
+  fi
+  exit 0
+fi
 body='{"mongo":true,"mode":"operational","checked_at":"t"}'
 code=200
 # Transient HTTP 502 sequence (post-restart warming).
@@ -201,6 +279,10 @@ export ETERNAL_HEALTH_FAIL_STATE="$HARNESS/health-fail.remaining"
 echo 0 >"$ETERNAL_HEALTH_FAIL_STATE"
 export ETERNAL_HEALTH_HTTP_FAIL_STATE="$HARNESS/health-http-fail.remaining"
 echo 0 >"$ETERNAL_HEALTH_HTTP_FAIL_STATE"
+export ETERNAL_FRONTEND_HTTP_FAIL_STATE="$HARNESS/frontend-http-fail.remaining"
+echo 0 >"$ETERNAL_FRONTEND_HTTP_FAIL_STATE"
+export ETERNAL_FRONTEND_PUBLIC_URL="https://fixture.nginx.local"
+export ETERNAL_FRONTEND_HTTP_TIMEOUT_S=2
 
 cat >"$BIN/ssh" <<'EOF'
 #!/usr/bin/env bash
@@ -2004,6 +2086,276 @@ set -e
 assert_eq "rollback missing logs exits non-zero" "1" "$rb_unk_ec"
 assert_true "rollback missing logs RESULT_UNKNOWN" \
   grep -q 'RESULT_UNKNOWN' <<<"$rb_unk$(cat "$HARNESS/rb-unk.err")"
+
+# ========== public webroot modes (umask 077 must not publish 600) ==========
+PERM_ROOT="$HARNESS/perm-web"
+PERM_BUILD="$HARNESS/perm-build"
+PERM_SECRET="$HARNESS/secret.env"
+rm -rf "$PERM_ROOT" "$PERM_BUILD"
+mkdir -p "$PERM_ROOT/static/js" "$PERM_BUILD/static/js"
+chmod 755 "$PERM_ROOT" "$PERM_ROOT/static" "$PERM_ROOT/static/js"
+printf 'SECRET\n' >"$PERM_SECRET"
+chmod 600 "$PERM_SECRET"
+secret_mode_before="$(stat -c '%a' "$PERM_SECRET")"
+printf 'old-hash-keep\n' >"$PERM_ROOT/static/js/main.oldkeep.js"
+chmod 644 "$PERM_ROOT/static/js/main.oldkeep.js"
+oldkeep_mode_before="$(stat -c '%a' "$PERM_ROOT/static/js/main.oldkeep.js")"
+live_before_stage="$(sha256sum "$PERM_ROOT/static/js/main.oldkeep.js" | awk '{print $1}')"
+# Build/staging writes only under the release tree.
+(
+  umask 077
+  mkdir -p "$PERM_BUILD/static/css" "$HARNESS/stage-release/frontend/build/static/js"
+  printf 'built-js\n' >"$PERM_BUILD/static/js/main.abcd.js"
+  printf 'built-css\n' >"$PERM_BUILD/static/css/main.abcd.css"
+  printf 'built-index\n<script src="/static/js/main.abcd.js"></script>\n<link href="/static/css/main.abcd.css">\n' \
+    >"$PERM_BUILD/index.html"
+  printf 'staged-only\n' >"$HARNESS/stage-release/frontend/build/index.html"
+)
+assert_eq "umask 077 build js is 600" "600" "$(stat -c '%a' "$PERM_BUILD/static/js/main.abcd.js")"
+assert_eq "umask 077 build index is 600" "600" "$(stat -c '%a' "$PERM_BUILD/index.html")"
+stage_live_after="$(sha256sum "$PERM_ROOT/static/js/main.oldkeep.js" | awk '{print $1}')"
+assert_eq "staging build does not modify live webroot" "$live_before_stage" "$stage_live_after"
+src_js_hash="$(sha256sum "$PERM_BUILD/static/js/main.abcd.js" | awk '{print $1}')"
+(
+  umask 077
+  eternal_webroot_install_file "$PERM_BUILD/static/js/main.abcd.js" "$PERM_ROOT" "static/js/main.abcd.js" 0
+  eternal_webroot_install_file "$PERM_BUILD/static/css/main.abcd.css" "$PERM_ROOT" "static/css/main.abcd.css" 0
+)
+assert_eq "published js is 644 under umask 077" "644" "$(stat -c '%a' "$PERM_ROOT/static/js/main.abcd.js")"
+assert_eq "published css is 644 under umask 077" "644" "$(stat -c '%a' "$PERM_ROOT/static/css/main.abcd.css")"
+assert_eq "new public css dir is 755" "755" "$(stat -c '%a' "$PERM_ROOT/static/css")"
+assert_eq "build artifact mode unchanged" "600" "$(stat -c '%a' "$PERM_BUILD/static/js/main.abcd.js")"
+assert_eq "build artifact hash unchanged" "$src_js_hash" "$(sha256sum "$PERM_BUILD/static/js/main.abcd.js" | awk '{print $1}')"
+assert_eq "old hashed asset retained" "old-hash-keep" "$(cat "$PERM_ROOT/static/js/main.oldkeep.js")"
+assert_eq "old hashed asset mode unchanged" "$oldkeep_mode_before" "$(stat -c '%a' "$PERM_ROOT/static/js/main.oldkeep.js")"
+# Owner can read 600; Nginx other-read cannot. The check must not use test -r.
+printf 'owner-only\n' >"$PERM_ROOT/static/js/main.owner.js"
+chmod 600 "$PERM_ROOT/static/js/main.owner.js"
+assert_true "owner test -r succeeds on mode 600" test -r "$PERM_ROOT/static/js/main.owner.js"
+assert_false "other-read rejects mode 600" eternal_file_other_readable "$PERM_ROOT/static/js/main.owner.js"
+# SKIP_IDENTICAL repairs a 600 file the deploy user owns.
+printf 'same-public\n' >"$PERM_ROOT/static/js/main.same.js"
+printf 'same-public\n' >"$PERM_BUILD/static/js/main.same.js"
+chmod 600 "$PERM_ROOT/static/js/main.same.js"
+skip_err="$(eternal_webroot_install_file "$PERM_BUILD/static/js/main.same.js" "$PERM_ROOT" "static/js/main.same.js" 0 2>&1)"
+assert_true "SKIP_IDENTICAL logged for mode repair" grep -q 'SKIP_IDENTICAL' <<<"$skip_err"
+assert_eq "SKIP_IDENTICAL 600 repaired to 644" "644" "$(stat -c '%a' "$PERM_ROOT/static/js/main.same.js")"
+assert_eq "SKIP_IDENTICAL bytes preserved" "same-public" "$(cat "$PERM_ROOT/static/js/main.same.js")"
+# Atomic index: temp mode 644 is observed by mv before rename.
+real_mv="$(PATH="/usr/bin:/bin" command -v mv)"
+MV_BIN="$HARNESS/mv-capture"
+MV_MODE="$HARNESS/index-temp.mode"
+rm -rf "$MV_BIN"
+mkdir -p "$MV_BIN"
+cat >"$MV_BIN/mv" <<EOF
+#!/usr/bin/env bash
+for a in "\$@"; do
+  if [[ "\$a" == */index.html.new && -e "\$a" ]]; then
+    stat -c '%a' "\$a" >"$MV_MODE"
+  fi
+done
+exec "$real_mv" "\$@"
+EOF
+chmod +x "$MV_BIN/mv"
+rm -f "$MV_MODE" "$PERM_ROOT/index.html" "$PERM_ROOT/index.html.new"
+set +e
+PATH="$MV_BIN:$PATH" eternal_atomic_publish_index "$PERM_BUILD/index.html" "$PERM_ROOT" 0 \
+  >"$HARNESS/atomic.out" 2>"$HARNESS/atomic.err"
+atomic_ec=$?
+set -e
+assert_eq "atomic index publish exit 0" "0" "$atomic_ec"
+assert_eq "index temp mode before rename is 644" "644" "$(cat "$MV_MODE")"
+assert_true "index temp mode logged before rename" grep -q 'index temp mode=644 before atomic rename' "$HARNESS/atomic.err"
+assert_eq "live index mode 644" "644" "$(stat -c '%a' "$PERM_ROOT/index.html")"
+assert_false "index.html.new removed after rename" test -f "$PERM_ROOT/index.html.new"
+assert_true "live index has published bytes" grep -q 'built-index' "$PERM_ROOT/index.html"
+# Unowned files are not chmod'd. Fail closed when Nginx cannot read them.
+real_stat="$(PATH="/usr/bin:/bin" command -v stat)"
+real_chmod="$(PATH="/usr/bin:/bin" command -v chmod)"
+SHIM="$HARNESS/perm-shim"
+UNOWN_LOG="$HARNESS/unowned-chmod.log"
+rm -rf "$SHIM"
+mkdir -p "$SHIM"
+printf 'already-public\n' >"$PERM_ROOT/unowned-ok.js"
+chmod 644 "$PERM_ROOT/unowned-ok.js"
+cat >"$SHIM/stat" <<EOF
+#!/usr/bin/env bash
+if [[ "\$1" == "-c" && "\$2" == "%u" ]]; then
+  printf '0\n'
+  exit 0
+fi
+if [[ "\$1" == "-c" && "\$2" == "%a" ]]; then
+  printf '%s\n' "\${ETERNAL_FAKE_MODE:?}"
+  exit 0
+fi
+exec "$real_stat" "\$@"
+EOF
+cat >"$SHIM/chmod" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"$UNOWN_LOG"
+exit 0
+EOF
+chmod +x "$SHIM/stat" "$SHIM/chmod"
+: >"$UNOWN_LOG"
+set +e
+ETERNAL_FAKE_MODE=644 PATH="$SHIM:$PATH" \
+  eternal_webroot_ensure_public_file "$PERM_ROOT/unowned-ok.js" 0 \
+  >"$HARNESS/unowned-ok.out" 2>"$HARNESS/unowned-ok.err"
+unowned_ok_ec=$?
+set -e
+assert_eq "unowned readable file left in place" "0" "$unowned_ok_ec"
+assert_false "unowned readable file was not chmod'd" test -s "$UNOWN_LOG"
+assert_eq "unowned readable mode unchanged" "644" "$(stat -c '%a' "$PERM_ROOT/unowned-ok.js")"
+: >"$UNOWN_LOG"
+set +e
+(
+  ETERNAL_FAKE_MODE=600 PATH="$SHIM:$PATH" \
+    eternal_webroot_ensure_public_file "$PERM_ROOT/unowned-ok.js" 0
+) >"$HARNESS/unowned-bad.out" 2>"$HARNESS/unowned-bad.err"
+unowned_bad_ec=$?
+set -e
+assert_eq "unowned unreadable file fails closed" "1" "$unowned_bad_ec"
+assert_true "unowned unreadable mentions refuse" grep -q 'not owned' "$HARNESS/unowned-bad.err"
+assert_false "unowned unreadable file was not chmod'd" test -s "$UNOWN_LOG"
+assert_eq "unowned unreadable real mode unchanged" "644" "$(stat -c '%a' "$PERM_ROOT/unowned-ok.js")"
+# Rollback from a 600 backup normalizes the public tree and leaves secrets alone.
+RB_BAK="$HARNESS/perm-backup"
+RB_LIVE="$HARNESS/perm-restore"
+rm -rf "$RB_BAK" "$RB_LIVE"
+mkdir -p "$RB_LIVE/static/js"
+printf 'keep-old-hash\n' >"$RB_LIVE/static/js/main.keepold.js"
+chmod 644 "$RB_LIVE/static/js/main.keepold.js"
+(
+  umask 077
+  mkdir -p "$RB_BAK/static/js"
+  printf 'restored-index\n<script src="/static/js/app.js"></script>\n' >"$RB_BAK/index.html"
+  printf 'restored-js\n' >"$RB_BAK/static/js/app.js"
+)
+printf 'live-before-rollback\n' >"$RB_LIVE/index.html"
+chmod 644 "$RB_LIVE/index.html"
+assert_eq "backup index captured as 600" "600" "$(stat -c '%a' "$RB_BAK/index.html")"
+assert_true "rollback merge from 600 backup" eternal_webroot_merge_tree "$RB_BAK" "$RB_LIVE" 1
+assert_true "rollback atomic index from 600 backup" \
+  eternal_atomic_publish_index "$RB_BAK/index.html" "$RB_LIVE" 1
+assert_eq "rollback index is 644" "644" "$(stat -c '%a' "$RB_LIVE/index.html")"
+assert_eq "rollback js is 644" "644" "$(stat -c '%a' "$RB_LIVE/static/js/app.js")"
+assert_true "rollback index bytes restored" grep -q 'restored-index' "$RB_LIVE/index.html"
+assert_eq "rollback keeps unreferenced hashed asset" "keep-old-hash" "$(cat "$RB_LIVE/static/js/main.keepold.js")"
+assert_true "rollback public tree passes nginx mode+http check" \
+  eternal_frontend_nginx_ready "$RB_LIVE"
+assert_eq "secret outside webroot mode unchanged" "$secret_mode_before" "$(stat -c '%a' "$PERM_SECRET")"
+assert_eq "secret outside webroot bytes unchanged" "SECRET" "$(cat "$PERM_SECRET")"
+# HTTP 403 is not a frontend pass, even when the owner could read the files.
+echo 1 >"$ETERNAL_FRONTEND_HTTP_FAIL_STATE"
+set +e
+http403_err="$(eternal_frontend_nginx_ready "$RB_LIVE" 2>&1)"
+http403_ec=$?
+set -e
+echo 0 >"$ETERNAL_FRONTEND_HTTP_FAIL_STATE"
+assert_eq "frontend HTTP 403 rejected" "1" "$http403_ec"
+assert_true "frontend HTTP 403 status logged" grep -q 'frontend HTTP FAIL label=index http=403' <<<"$http403_err"
+assert_true "backend health body still operational" \
+  eternal_health_body_ok '{"mongo":true,"mode":"operational"}'
+# 301 to the expected HTTPS host, then 200, is success. Other targets are not.
+saved_public_url="$ETERNAL_FRONTEND_PUBLIC_URL"
+export ETERNAL_FRONTEND_PUBLIC_URL="http://fixture.nginx.local"
+export ETERNAL_FRONTEND_PUBLIC_HOST="fixture.nginx.local"
+export ETERNAL_FRONTEND_REDIRECT_MODE=https
+set +e
+redir_ok_err="$(eternal_frontend_nginx_ready "$RB_LIVE" 2>&1)"
+redir_ok_ec=$?
+set -e
+assert_eq "301 to expected HTTPS then 200 passes" "0" "$redir_ok_ec"
+assert_true "301 follow logs https 200 on expected host" \
+  grep -q 'frontend HTTP PASS label=index http=200 host=fixture.nginx.local' <<<"$redir_ok_err"
+export ETERNAL_FRONTEND_REDIRECT_MODE=other
+export ETERNAL_CURL_ARGS_LOG="$HARNESS/curl-redirect-other.args"
+: >"$ETERNAL_CURL_ARGS_LOG"
+set +e
+redir_bad_err="$(eternal_frontend_nginx_ready "$RB_LIVE" 2>&1)"
+redir_bad_ec=$?
+set -e
+assert_eq "redirect to other host fails" "1" "$redir_bad_ec"
+assert_true "other-host redirect is refused" \
+  grep -q 'redirect_host=evil.example' <<<"$redir_bad_err"
+assert_false "disallowed redirect target is not fetched" \
+  grep -q 'https://evil.example' "$ETERNAL_CURL_ARGS_LOG"
+export ETERNAL_FRONTEND_PUBLIC_URL="https://fixture.nginx.local"
+export ETERNAL_FRONTEND_REDIRECT_MODE=loop
+set +e
+loop_err="$(eternal_frontend_nginx_ready "$RB_LIVE" 2>&1)"
+loop_ec=$?
+set -e
+assert_eq "redirect loop fails" "1" "$loop_ec"
+assert_true "redirect loop logged" grep -q 'redirect_loop' <<<"$loop_err"
+unset ETERNAL_FRONTEND_REDIRECT_MODE
+unset ETERNAL_CURL_ARGS_LOG
+export ETERNAL_FRONTEND_HTTP_CODE=404
+set +e
+http404_err="$(eternal_frontend_nginx_ready "$RB_LIVE" 2>&1)"
+http404_ec=$?
+set -e
+assert_eq "frontend HTTP 404 rejected" "1" "$http404_ec"
+assert_true "frontend HTTP 404 logged" grep -q 'frontend HTTP FAIL label=index http=404' <<<"$http404_err"
+export ETERNAL_FRONTEND_HTTP_CODE=502
+set +e
+http502_err="$(eternal_frontend_nginx_ready "$RB_LIVE" 2>&1)"
+http502_ec=$?
+set -e
+assert_eq "frontend HTTP 502 rejected" "1" "$http502_ec"
+assert_true "frontend HTTP 502 logged" grep -q 'frontend HTTP FAIL label=index http=502' <<<"$http502_err"
+unset ETERNAL_FRONTEND_HTTP_CODE
+export ETERNAL_FRONTEND_PUBLIC_URL="http://127.0.0.1"
+export ETERNAL_FRONTEND_PUBLIC_HOST="fixture.nginx.local"
+export ETERNAL_FRONTEND_FORCE_200=1
+set +e
+wrong_host_err="$(eternal_frontend_nginx_ready "$RB_LIVE" 2>&1)"
+wrong_host_ec=$?
+set -e
+assert_eq "HTTP 200 from wrong host fails" "1" "$wrong_host_ec"
+assert_true "wrong host identity logged" \
+  grep -q 'http=200 host=127.0.0.1 scheme=http expected=fixture.nginx.local' <<<"$wrong_host_err"
+unset ETERNAL_FRONTEND_FORCE_200
+export ETERNAL_FRONTEND_PUBLIC_URL="https://fixture.nginx.local"
+unset ETERNAL_FRONTEND_PUBLIC_HOST
+export ETERNAL_FRONTEND_TLS_FAIL=1
+export ETERNAL_CURL_ARGS_LOG="$HARNESS/curl-tls.args"
+: >"$ETERNAL_CURL_ARGS_LOG"
+set +e
+tls_err="$(eternal_frontend_nginx_ready "$RB_LIVE" 2>&1)"
+tls_ec=$?
+set -e
+unset ETERNAL_FRONTEND_TLS_FAIL
+unset ETERNAL_CURL_ARGS_LOG
+assert_eq "invalid TLS fails" "1" "$tls_ec"
+assert_true "invalid TLS logged" grep -q 'tls_invalid' <<<"$tls_err"
+assert_false "TLS check does not disable verification" grep -qE '(^|[[:space:]])-k([[:space:]]|$)|--insecure' "$HARNESS/curl-tls.args"
+export ETERNAL_FRONTEND_PUBLIC_URL="$saved_public_url"
+# Full runner: backend health PASS must not print DEPLOY_OK when Nginx returns 403.
+git -C "$MIRROR_SRC" checkout -q main
+printf 'fe-403-marker\n' >>"$MIRROR_SRC/frontend/src/index.js"
+git -C "$MIRROR_SRC" add frontend/src/index.js
+git -C "$MIRROR_SRC" commit -q -m 'fe 403 fixture'
+FE403_SHA="$(git -C "$MIRROR_SRC" rev-parse HEAD)"
+git --git-dir="$RELEASES/mirror.git" fetch -q "$MIRROR_SRC" '+refs/heads/main:refs/heads/main'
+index_before_403="$(sha256sum "$FRONTEND/live/index.html" | awk '{print $1}')"
+echo 1 >"$ETERNAL_FRONTEND_HTTP_FAIL_STATE"
+set +e
+"$RUNNER" deploy "$FE403_SHA" >"$HARNESS/fe403.txt" 2>"$HARNESS/fe403.err"
+fe403_ec=$?
+set -e
+echo 0 >"$ETERNAL_FRONTEND_HTTP_FAIL_STATE"
+assert_eq "HTTP 403 deploy exits nonzero" "1" "$fe403_ec"
+assert_false "HTTP 403 does not print DEPLOY_OK" grep -q 'DEPLOY_OK' "$HARNESS/fe403.txt"
+assert_true "backend health PASS is present" grep -q 'health PASS' "$HARNESS/fe403.err"
+assert_true "403 blocks before DEPLOY_OK" grep -q 'frontend HTTP FAIL label=index http=403' "$HARNESS/fe403.err"
+assert_true "403 failure names backend health as insufficient" \
+  grep -q 'backend health is not frontend proof' "$HARNESS/fe403.err"
+assert_true "403 uses existing rollback" grep -q 'ROLLBACK_PASS' "$HARNESS/fe403.txt"
+index_after_403="$(sha256sum "$FRONTEND/live/index.html" | awk '{print $1}')"
+assert_eq "403 rollback restores previous index bytes" "$index_before_403" "$index_after_403"
+assert_true "403 rollback index remains other-readable" \
+  eternal_file_other_readable "$FRONTEND/live/index.html"
 
 log ""
 log "SUMMARY pass=$PASS fail=$FAIL"

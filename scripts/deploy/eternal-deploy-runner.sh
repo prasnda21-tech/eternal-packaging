@@ -26,6 +26,11 @@ ETERNAL_FRONTEND_PREV="${ETERNAL_FRONTEND_PREV:-$ETERNAL_RUNTIME_ROOT/frontend-p
 ETERNAL_DEPLOY_LOCK="${ETERNAL_DEPLOY_LOCK:-/tmp/eternal-packaging-deploy.lock}"
 ETERNAL_SERVICE_NAME="${ETERNAL_SERVICE_NAME:-eternal-packaging-backend.service}"
 ETERNAL_HEALTH_URL="${ETERNAL_HEALTH_URL:-http://127.0.0.1:8000/api/system/health}"
+# Public Nginx origin. Production default is the HTTPS site hostname.
+# Synthetic tests override this with a fixture origin. Backend :8000 is not a substitute.
+# Optional ETERNAL_FRONTEND_PUBLIC_HOST overrides the expected hostname.
+ETERNAL_FRONTEND_PUBLIC_URL="${ETERNAL_FRONTEND_PUBLIC_URL:-https://produksi.eternalpackaging.id}"
+ETERNAL_FRONTEND_HTTP_TIMEOUT_S="${ETERNAL_FRONTEND_HTTP_TIMEOUT_S:-5}"
 # Wall-clock budget for post-restart / post-publish health (includes transient HTTP 502).
 ETERNAL_HEALTH_BUDGET_S="${ETERNAL_HEALTH_BUDGET_S:-60}"
 ETERNAL_HEALTH_SLEEP_S="${ETERNAL_HEALTH_SLEEP_S:-2}"
@@ -160,18 +165,9 @@ eternal_restore_frontend_tree() {
   fi
 
   eternal_webroot_merge_tree "$src" "$ETERNAL_FRONTEND_ROOT" 1 || return 1
-
-  if [[ -f "$src/index.html" ]]; then
-    if [[ -f "$ETERNAL_FRONTEND_ROOT/index.html" ]] \
-      && cmp -s "$src/index.html" "$ETERNAL_FRONTEND_ROOT/index.html"; then
-      eternal_deploy_log "SKIP_IDENTICAL index.html"
-    else
-      cp -a "$src/index.html" "$ETERNAL_FRONTEND_ROOT/index.html.new" || return 1
-      eternal_path_is_under_root "$ETERNAL_FRONTEND_ROOT" "$ETERNAL_FRONTEND_ROOT/index.html.new" || return 1
-      mv -Tf "$ETERNAL_FRONTEND_ROOT/index.html.new" "$ETERNAL_FRONTEND_ROOT/index.html" || return 1
-    fi
-  else
-    eternal_deploy_log "frontend restore missing index.html in source"
+  eternal_atomic_publish_index "$src/index.html" "$ETERNAL_FRONTEND_ROOT" 1 || return 1
+  if ! eternal_frontend_nginx_ready "$ETERNAL_FRONTEND_ROOT"; then
+    eternal_deploy_log "frontend restore: public access check failed"
     return 1
   fi
   return 0
@@ -706,13 +702,11 @@ eternal_publish_frontend() {
 
   # Merge hashed/static + mutable metadata: skip identical, fail-closed on hashed collision,
   # never blind cp -a overwrite of root-owned identical files. Old unreferenced hashes kept.
+  # cp -a keeps source mode; public files are normalized to 644 and dirs to 755.
   eternal_webroot_merge_tree "$built" "$ETERNAL_FRONTEND_ROOT" 0
 
-  # Atomic index swap last — never leave an empty webroot interval.
-  cp -a "$built/index.html" "$ETERNAL_FRONTEND_ROOT/index.html.new"
-  eternal_path_is_under_root "$ETERNAL_FRONTEND_ROOT" "$ETERNAL_FRONTEND_ROOT/index.html.new" \
-    || eternal_deploy_die "frontend publish: index.html.new escapes webroot"
-  mv -Tf "$ETERNAL_FRONTEND_ROOT/index.html.new" "$ETERNAL_FRONTEND_ROOT/index.html"
+  # Atomic index swap last — temp file is 644 before rename.
+  eternal_atomic_publish_index "$built/index.html" "$ETERNAL_FRONTEND_ROOT" 0
   rm -f "$ETERNAL_FRONTEND_ROOT/.deploy-in-progress"
   FRONTEND_SWITCHED=1
   eternal_deploy_log "frontend published atomically to $ETERNAL_FRONTEND_ROOT"
@@ -845,6 +839,13 @@ EOF
 
   if ! eternal_health_check; then
     eternal_deploy_die "health check failed after frontend publish"
+  fi
+
+  # Backend mongo/mode success does not prove Nginx can read the static site.
+  if [[ "$ETERNAL_NEED_FRONTEND" == "1" ]]; then
+    if ! eternal_frontend_nginx_ready "$ETERNAL_FRONTEND_ROOT"; then
+      eternal_deploy_die "frontend public access failed after publish; backend health is not frontend proof"
+    fi
   fi
 
   local current_switched=0
