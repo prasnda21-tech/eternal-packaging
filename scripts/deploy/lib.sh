@@ -327,8 +327,454 @@ eternal_write_frontend_fingerprint() {
   eternal_deploy_log "frontend build fingerprint recorded"
 }
 
+# Other-class permission bits. Owner `test -r` is not a Nginx check: mode 600 is
+# readable by the deploy user and still returns EACCES for www-data.
+eternal_mode_other_digit() {
+  local path="$1"
+  local mode
+  mode="$(stat -c '%a' "$path" 2>/dev/null || stat -f '%OLp' "$path" 2>/dev/null || true)"
+  [[ -n "$mode" ]] || return 1
+  printf '%s\n' "${mode: -1}"
+}
+
+eternal_file_other_readable() {
+  local path="$1"
+  local other
+  [[ -f "$path" && ! -L "$path" ]] || return 1
+  other="$(eternal_mode_other_digit "$path")" || return 1
+  (( (10#$other & 4) == 4 ))
+}
+
+eternal_dir_other_traversable() {
+  local path="$1"
+  local other
+  [[ -d "$path" && ! -L "$path" ]] || return 1
+  other="$(eternal_mode_other_digit "$path")" || return 1
+  (( (10#$other & 1) == 1 ))
+}
+
+eternal_path_owned_by_invoker() {
+  local path="$1"
+  local owner uid
+  uid="$(id -u)"
+  owner="$(stat -c '%u' "$path" 2>/dev/null || stat -f '%u' "$path" 2>/dev/null || true)"
+  [[ -n "$owner" && "$owner" == "$uid" ]]
+}
+
+# soft=1 returns 1; otherwise exits. Never chmod 777 and never chown.
+eternal_webroot_perm_fail() {
+  local soft="$1"
+  shift
+  eternal_deploy_log "ERROR: $*"
+  if [[ "$soft" == "1" ]]; then
+    return 1
+  fi
+  eternal_deploy_die "$*"
+}
+
+# Directories under the webroot that the invoker owns become 755 when Nginx
+# cannot traverse them. Unowned directories are left untouched when already
+# traversable, and fail closed otherwise. Parents outside dest_root are not touched.
+eternal_webroot_ensure_public_dir() {
+  local dir="$1"
+  local soft="${2:-0}"
+  if eternal_dir_other_traversable "$dir"; then
+    return 0
+  fi
+  if eternal_path_owned_by_invoker "$dir"; then
+    chmod 755 "$dir" || {
+      eternal_webroot_perm_fail "$soft" "webroot dir chmod 755 failed: $dir" || return 1
+      return 1
+    }
+    eternal_dir_other_traversable "$dir" || {
+      eternal_webroot_perm_fail "$soft" "webroot dir still not traversable: $dir" || return 1
+      return 1
+    }
+    return 0
+  fi
+  eternal_webroot_perm_fail "$soft" "webroot dir not traversable and not owned; refuse chmod: $dir" || return 1
+  return 1
+}
+
+eternal_webroot_ensure_traverse() {
+  local dest_root="$1"
+  local dir="$2"
+  local soft="${3:-0}"
+  local root_real dir_real rel acc part
+  [[ -d "$dir" ]] || {
+    eternal_webroot_perm_fail "$soft" "webroot traverse: missing dir $dir" || return 1
+    return 1
+  }
+  root_real="$(readlink -f "$dest_root" 2>/dev/null || true)"
+  dir_real="$(readlink -f "$dir" 2>/dev/null || true)"
+  [[ -n "$root_real" && -n "$dir_real" ]] || {
+    eternal_webroot_perm_fail "$soft" "webroot traverse: unreadable path" || return 1
+    return 1
+  }
+  case "$dir_real" in
+    "$root_real"|"$root_real"/*) ;;
+    *)
+      eternal_webroot_perm_fail "$soft" "webroot traverse: escapes webroot ($dir)" || return 1
+      return 1
+      ;;
+  esac
+  eternal_webroot_ensure_public_dir "$root_real" "$soft" || return 1
+  if [[ "$dir_real" == "$root_real" ]]; then
+    return 0
+  fi
+  rel="${dir_real#"$root_real"/}"
+  acc="$root_real"
+  local IFS='/'
+  for part in $rel; do
+    [[ -z "$part" ]] && continue
+    acc="$acc/$part"
+    eternal_webroot_ensure_public_dir "$acc" "$soft" || return 1
+  done
+  return 0
+}
+
+# Public webroot file. Owned files are normalized to 644 (content unchanged).
+# Unowned files that are already other-readable are left alone. Unowned files
+# that Nginx cannot read fail closed — no chown, no chmod of someone else's file.
+eternal_webroot_ensure_public_file() {
+  local dest="$1"
+  local soft="${2:-0}"
+  [[ -f "$dest" && ! -L "$dest" ]] || {
+    eternal_webroot_perm_fail "$soft" "webroot public file missing: $dest" || return 1
+    return 1
+  }
+  if eternal_path_owned_by_invoker "$dest"; then
+    chmod 644 "$dest" || {
+      eternal_webroot_perm_fail "$soft" "webroot file chmod 644 failed: $dest" || return 1
+      return 1
+    }
+    eternal_file_other_readable "$dest" || {
+      eternal_webroot_perm_fail "$soft" "webroot file still not other-readable: $dest" || return 1
+      return 1
+    }
+    return 0
+  fi
+  if eternal_file_other_readable "$dest"; then
+    eternal_deploy_log "webroot public file left unchanged (not owner, already other-readable): $dest"
+    return 0
+  fi
+  eternal_webroot_perm_fail "$soft" "webroot public file not other-readable and not owned; refuse chmod: $dest" || return 1
+  return 1
+}
+
+# Read-only: every directory from dest_root through the file's parent has other-execute.
+eternal_webroot_path_traversable() {
+  local dest_root="$1"
+  local target="$2"
+  local root_real dir_real rel acc part
+  root_real="$(readlink -f "$dest_root" 2>/dev/null || true)"
+  if [[ -d "$target" ]]; then
+    dir_real="$(readlink -f "$target" 2>/dev/null || true)"
+  else
+    dir_real="$(readlink -f "$(dirname "$target")" 2>/dev/null || true)"
+  fi
+  [[ -n "$root_real" && -n "$dir_real" ]] || return 1
+  case "$dir_real" in
+    "$root_real"|"$root_real"/*) ;;
+    *) return 1 ;;
+  esac
+  eternal_dir_other_traversable "$root_real" || return 1
+  if [[ "$dir_real" == "$root_real" ]]; then
+    return 0
+  fi
+  rel="${dir_real#"$root_real"/}"
+  acc="$root_real"
+  local IFS='/'
+  for part in $rel; do
+    [[ -z "$part" ]] && continue
+    acc="$acc/$part"
+    eternal_dir_other_traversable "$acc" || return 1
+  done
+  return 0
+}
+
+# Stage index.html.new as 644, then atomically rename it over index.html.
+# soft=1 returns 1 instead of exiting (rollback restore).
+eternal_atomic_publish_index() {
+  local src="$1"
+  local dest_root="$2"
+  local soft="${3:-0}"
+  local dest="$dest_root/index.html"
+  local tmp="$dest_root/index.html.new"
+  local tmp_mode
+
+  [[ -f "$src" && ! -L "$src" ]] || {
+    eternal_webroot_perm_fail "$soft" "frontend index source missing: $src" || return 1
+    return 1
+  }
+  eternal_webroot_ensure_traverse "$dest_root" "$dest_root" "$soft" || return 1
+  if [[ -L "$dest" ]]; then
+    eternal_webroot_perm_fail "$soft" "frontend index destination is a symlink" || return 1
+    return 1
+  fi
+  if [[ -f "$dest" ]] && cmp -s "$src" "$dest"; then
+    eternal_deploy_log "SKIP_IDENTICAL index.html"
+    eternal_webroot_ensure_public_file "$dest" "$soft" || return 1
+    return 0
+  fi
+  cp -a "$src" "$tmp" || {
+    eternal_webroot_perm_fail "$soft" "frontend index stage copy failed" || return 1
+    return 1
+  }
+  # 644 before rename so the inode Nginx observes is already other-readable.
+  chmod 644 "$tmp" || {
+    rm -f "$tmp" 2>/dev/null || true
+    eternal_webroot_perm_fail "$soft" "frontend index temp chmod 644 failed" || return 1
+    return 1
+  }
+  eternal_file_other_readable "$tmp" || {
+    rm -f "$tmp" 2>/dev/null || true
+    eternal_webroot_perm_fail "$soft" "frontend index temp not other-readable before rename" || return 1
+    return 1
+  }
+  tmp_mode="$(stat -c '%a' "$tmp" 2>/dev/null || stat -f '%OLp' "$tmp" 2>/dev/null || echo unknown)"
+  eternal_deploy_log "index temp mode=$tmp_mode before atomic rename"
+  eternal_path_is_under_root "$dest_root" "$tmp" || {
+    rm -f "$tmp" 2>/dev/null || true
+    eternal_webroot_perm_fail "$soft" "frontend publish: index.html.new escapes webroot" || return 1
+    return 1
+  }
+  mv -Tf "$tmp" "$dest" || {
+    rm -f "$tmp" 2>/dev/null || true
+    eternal_webroot_perm_fail "$soft" "frontend index atomic mv failed" || return 1
+    return 1
+  }
+  eternal_file_other_readable "$dest" || {
+    eternal_webroot_perm_fail "$soft" "frontend index not other-readable after rename" || return 1
+    return 1
+  }
+  return 0
+}
+
+# Scheme and hostname only. Port, userinfo, path, and query are not part of identity.
+eternal_url_scheme() {
+  local url="$1"
+  printf '%s\n' "${url%%://*}"
+}
+
+eternal_url_host() {
+  local url="$1"
+  local rest host
+  rest="${url#*://}"
+  rest="${rest%%/*}"
+  rest="${rest%%\?*}"
+  rest="${rest##*@}"
+  if [[ "$rest" == \[* ]]; then
+    host="${rest%%]*}"
+    host="${host#[}"
+  else
+    host="${rest%%:*}"
+  fi
+  printf '%s\n' "$(printf '%s' "$host" | tr '[:upper:]' '[:lower:]')"
+}
+
+# Expected site hostname. Explicit env wins; otherwise the public URL host.
+# The production hostname is not hardcoded in the comparison.
+eternal_frontend_expect_host() {
+  local configured="${ETERNAL_FRONTEND_PUBLIC_HOST:-}"
+  local base="${ETERNAL_FRONTEND_PUBLIC_URL:-https://produksi.eternalpackaging.id}"
+  if [[ -n "$configured" ]]; then
+    printf '%s\n' "$(printf '%s' "$configured" | tr '[:upper:]' '[:lower:]')"
+    return 0
+  fi
+  eternal_url_host "$base"
+}
+
+# Absolute or relative Location. Protocol-relative and path redirects are pinned
+# to HTTPS on the current host; the caller still rejects a different host.
+eternal_frontend_resolve_redirect() {
+  local base="$1"
+  local loc="$2"
+  local host
+  loc="${loc//$'\r'/}"
+  loc="${loc#"${loc%%[![:space:]]*}"}"
+  loc="${loc%"${loc##*[![:space:]]}"}"
+  if [[ "$loc" == http://* || "$loc" == https://* ]]; then
+    printf '%s\n' "$loc"
+    return 0
+  fi
+  host="$(eternal_url_host "$base")"
+  if [[ "$loc" == //* ]]; then
+    printf '%s\n' "https:${loc}"
+    return 0
+  fi
+  if [[ "$loc" == /* ]]; then
+    printf '%s\n' "https://${host}${loc}"
+    return 0
+  fi
+  printf '%s\n' "https://${host}/${loc}"
+}
+
+# Final response must be HTTPS on the expected host. Other hosts are refused.
+eternal_frontend_https_host_ok() {
+  local url="$1"
+  local expect="$2"
+  local scheme host
+  scheme="$(eternal_url_scheme "$url")"
+  host="$(eternal_url_host "$url")"
+  [[ "$scheme" == "https" && -n "$host" && "$host" == "$expect" ]]
+}
+
+# Limited-timeout GET. Does not use curl -L or -k.
+# 301/302/303/307/308 are followed only to HTTPS on the expected host.
+# 403, 404, 5xx, TLS failure, redirect loops, and other hosts fail closed.
+# A 200 from a different host is not success.
+eternal_frontend_http_status() {
+  local start_url="$1"
+  local label="$2"
+  local expect="${3:-}"
+  local timeout="${ETERNAL_FRONTEND_HTTP_TIMEOUT_S:-5}"
+  local curl_bin="${ETERNAL_CURL_BIN:-curl}"
+  local url="$start_url"
+  local hop=0 max_hops=4
+  local seen=$'\n'
+  local tmp hdr err code ec loc next scheme host
+  if [[ -z "$expect" ]]; then
+    expect="$(eternal_frontend_expect_host)"
+  fi
+  expect="$(printf '%s' "$expect" | tr '[:upper:]' '[:lower:]')"
+  [[ -n "$expect" ]] || {
+    eternal_deploy_log "frontend HTTP FAIL label=$label expected_host_unset"
+    return 1
+  }
+  while (( hop < max_hops )); do
+    case "$seen" in
+      *$'\n'"$url"$'\n'*)
+        eternal_deploy_log "frontend HTTP FAIL label=$label redirect_loop"
+        return 1
+        ;;
+    esac
+    seen+="$url"$'\n'
+    tmp="$(mktemp)"
+    hdr="$(mktemp)"
+    err="$(mktemp)"
+    ec=0
+    # TLS verification stays at curl's default. Never pass -k/--insecure or -L.
+    code="$("$curl_bin" -sS --dump-header "$hdr" -o "$tmp" -w '%{http_code}' --max-time "$timeout" "$url" 2>"$err")" || ec=$?
+    rm -f "$tmp"
+    [[ -n "$code" ]] || code="000"
+    if [[ "$ec" -ne 0 ]]; then
+      if [[ "$ec" -eq 60 ]] || grep -qiE 'certificate|ssl|tls' "$err" 2>/dev/null; then
+        eternal_deploy_log "frontend HTTP FAIL label=$label tls_invalid curl_exit=$ec http=$code"
+      else
+        eternal_deploy_log "frontend HTTP FAIL label=$label transport curl_exit=$ec http=$code"
+      fi
+      rm -f "$hdr" "$err"
+      return 1
+    fi
+    rm -f "$err"
+    case "$code" in
+      200)
+        scheme="$(eternal_url_scheme "$url")"
+        host="$(eternal_url_host "$url")"
+        rm -f "$hdr"
+        if eternal_frontend_https_host_ok "$url" "$expect"; then
+          eternal_deploy_log "frontend HTTP PASS label=$label http=200 host=$host"
+          return 0
+        fi
+        eternal_deploy_log "frontend HTTP FAIL label=$label http=200 host=${host:-unknown} scheme=${scheme:-unknown} expected=$expect"
+        return 1
+        ;;
+      301|302|303|307|308)
+        loc="$(grep -i '^Location:' "$hdr" 2>/dev/null | tail -n 1 | sed -e 's/^[Ll]ocation:[[:space:]]*//' -e 's/[[:space:]\r]*$//' || true)"
+        rm -f "$hdr"
+        if [[ -z "$loc" ]]; then
+          eternal_deploy_log "frontend HTTP FAIL label=$label http=$code redirect_missing"
+          return 1
+        fi
+        next="$(eternal_frontend_resolve_redirect "$url" "$loc")"
+        if ! eternal_frontend_https_host_ok "$next" "$expect"; then
+          eternal_deploy_log "frontend HTTP FAIL label=$label http=$code redirect_host=$(eternal_url_host "$next") redirect_scheme=$(eternal_url_scheme "$next") expected=$expect"
+          return 1
+        fi
+        url="$next"
+        hop=$((hop + 1))
+        ;;
+      *)
+        rm -f "$hdr"
+        eternal_deploy_log "frontend HTTP FAIL label=$label http=$code"
+        return 1
+        ;;
+    esac
+  done
+  eternal_deploy_log "frontend HTTP FAIL label=$label redirect_loop"
+  return 1
+}
+
+# Mode bits plus public HTTP. Owner readability is not accepted as proof.
+# HTTP target is ETERNAL_FRONTEND_PUBLIC_URL (fixture in synthetic tests).
+eternal_frontend_nginx_ready() {
+  local root="$1"
+  local index="$root/index.html"
+  local manifest="$root/asset-manifest.json"
+  local base ref path url
+  local -a refs=()
+  [[ -f "$index" && ! -L "$index" ]] || {
+    eternal_deploy_log "frontend mode FAIL index.html missing"
+    return 1
+  }
+  if ! eternal_file_other_readable "$index"; then
+    eternal_deploy_log "frontend mode FAIL index.html not other-readable mode=$(eternal_mode_other_digit "$index" 2>/dev/null || echo unknown) (owner test -r is not sufficient)"
+    return 1
+  fi
+  if ! eternal_webroot_path_traversable "$root" "$index"; then
+    eternal_deploy_log "frontend mode FAIL index directory not traversable"
+    return 1
+  fi
+  while IFS= read -r ref; do
+    [[ -z "$ref" ]] && continue
+    case "$ref" in
+      *.js|*.css) ;;
+      *) continue ;;
+    esac
+    path="$root/$ref"
+    [[ -f "$path" && ! -L "$path" ]] || {
+      eternal_deploy_log "frontend mode FAIL missing published asset $ref"
+      return 1
+    }
+    if ! eternal_file_other_readable "$path"; then
+      eternal_deploy_log "frontend mode FAIL asset not other-readable path=$ref mode=$(eternal_mode_other_digit "$path" 2>/dev/null || echo unknown)"
+      return 1
+    fi
+    if ! eternal_webroot_path_traversable "$root" "$path"; then
+      eternal_deploy_log "frontend mode FAIL asset directory not traversable path=$ref"
+      return 1
+    fi
+    refs+=("$ref")
+  done < <(eternal_fe_list_required_static_assets \
+    "$index" \
+    "$([[ -f "$manifest" ]] && printf '%s' "$manifest")" | awk 'NF && !seen[$0]++')
+
+  base="${ETERNAL_FRONTEND_PUBLIC_URL:-https://produksi.eternalpackaging.id}"
+  base="${base%/}"
+  [[ -n "$base" ]] || {
+    eternal_deploy_log "frontend HTTP FAIL public URL unset"
+    return 1
+  }
+  local expect_host
+  expect_host="$(eternal_frontend_expect_host)"
+  [[ -n "$expect_host" ]] || {
+    eternal_deploy_log "frontend HTTP FAIL expected host unset"
+    return 1
+  }
+  eternal_frontend_http_status "$base/" "index" "$expect_host" || return 1
+  eternal_frontend_http_status "$base/index.html" "index.html" "$expect_host" || return 1
+  for ref in "${refs[@]}"; do
+    url="$base/$ref"
+    eternal_frontend_http_status "$url" "$ref" "$expect_host" || return 1
+  done
+  eternal_deploy_log "frontend public access PASS"
+  return 0
+}
+
 # Merge one file into webroot with skip-identical / hashed fail-closed / mutable overwrite.
 # Returns 0 on success; dies on policy violation (publish) or returns 1 when soft=1.
+# Copies preserve source bytes. Public mode is normalized afterwards (644 / 755).
 eternal_webroot_install_file() {
   local src="$1"
   local dest_root="$2"
@@ -352,6 +798,7 @@ eternal_webroot_install_file() {
   }
   eternal_path_is_under_root "$dest_root" "$dest" \
     || eternal_deploy_die "webroot install: destination escapes webroot ($rel)"
+  eternal_webroot_ensure_traverse "$dest_root" "$dest_dir" "$soft" || return 1
 
   if [[ -e "$dest" || -L "$dest" ]]; then
     if [[ -L "$dest" ]]; then
@@ -361,6 +808,8 @@ eternal_webroot_install_file() {
     fi
     if [[ -f "$dest" ]] && cmp -s "$src" "$dest"; then
       eternal_deploy_log "SKIP_IDENTICAL $rel"
+      # Identical bytes do not prove Nginx can read the live file.
+      eternal_webroot_ensure_public_file "$dest" "$soft" || return 1
       return 0
     fi
     if eternal_fe_is_hashed_relpath "$rel"; then
@@ -374,6 +823,7 @@ eternal_webroot_install_file() {
         if [[ -f "$js_src" && -f "$js_dest" && ! -L "$js_src" && ! -L "$js_dest" ]] \
           && cmp -s "$js_src" "$js_dest"; then
           eternal_deploy_log "SKIP_SOURCEMAP_COLLISION $rel (paired .js byte-identical; keep live map)"
+          eternal_webroot_ensure_public_file "$dest" "$soft" || return 1
           return 0
         fi
         eternal_deploy_log "ERROR: js sourcemap collision without identical paired .js path=$rel — refuse overwrite"
@@ -390,6 +840,7 @@ eternal_webroot_install_file() {
         [[ "$soft" == "1" ]] && return 1
         eternal_deploy_die "webroot install: failed writing mutable $rel"
       }
+      eternal_webroot_ensure_public_file "$dest" "$soft" || return 1
       return 0
     fi
     eternal_deploy_log "ERROR: mutable webroot file not writable path=$rel (no recursive chown)"
@@ -404,6 +855,7 @@ eternal_webroot_install_file() {
   }
   eternal_path_is_under_root "$dest_root" "$dest" \
     || eternal_deploy_die "webroot install: post-copy escape ($rel)"
+  eternal_webroot_ensure_public_file "$dest" "$soft" || return 1
   return 0
 }
 
