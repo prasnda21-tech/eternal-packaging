@@ -1153,10 +1153,24 @@ async def _reply_stored_group(
             await _release_group_line_claims(db, statement_line_ids=claimed_line_ids, token=key)
         raise PairConflictError("Idempotency key yang sama dipakai untuk payload berbeda")
     if existing.get("status") == "active":
-        ids = list(existing.get("statement_line_ids") or [])
         await _ensure_group_members(db, existing)
-        adopt_key = str(existing.get("idempotency_key") or key)
-        await _adopt_group_claims(db, group_id=existing["id"], key=adopt_key, statement_line_ids=ids)
+        # Cancel can win during member repair — do not adopt onto a cancelled header.
+        fresh = await db[RECON_MATCHES].find_one(
+            {"id": existing["id"], "match_kind": "pair_group", "status": "active"},
+            {"_id": 0},
+        )
+        if fresh is None:
+            current = await db[RECON_MATCHES].find_one({"id": existing["id"]}, {"_id": 0})
+            await _scrub_active_group_members(
+                db, group_id=existing["id"], reason="repair aborted: group not active",
+            )
+            if current:
+                await _clear_group_claims(db, current)
+            return await _public_existing_group(db, current or existing)
+        ids = list(fresh.get("statement_line_ids") or [])
+        adopt_key = str(fresh.get("idempotency_key") or key)
+        await _adopt_group_claims(db, group_id=fresh["id"], key=adopt_key, statement_line_ids=ids)
+        return await _public_existing_group(db, fresh)
     elif claimed_line_ids:
         await _release_group_line_claims(db, statement_line_ids=claimed_line_ids, token=key)
     return await _public_existing_group(db, existing)
@@ -1685,11 +1699,17 @@ async def cancel_pair_group(
     if by_key:
         if by_key.get("cancel_payload_hash") != payload_hash or by_key.get("id") != str(group_id):
             raise PairConflictError("Kunci pembatalan yang sama dipakai untuk payload berbeda")
+        await _scrub_active_group_members(
+            db, group_id=by_key["id"], reason=why, user=user,
+        )
         await _clear_group_claims(db, by_key)
         members = await _load_group_members(db, by_key["id"])
         return _public_group(by_key, None, members)
     if doc.get("status") != "active":
-        # Crashed cancel can leave owned claims; clear only matching tokens.
+        # Crashed cancel / repair race can leave owned claims or active members.
+        await _scrub_active_group_members(
+            db, group_id=doc["id"], reason=why, user=user,
+        )
         await _clear_group_claims(db, doc)
         members = await _load_group_members(db, doc["id"])
         return _public_group(doc, None, members)
@@ -1747,18 +1767,64 @@ async def cancel_pair_group(
     current = await db[RECON_MATCHES].find_one({"id": doc["id"]}, {"_id": 0})
     if result.matched_count != 1:
         if current and current.get("status") != "active":
+            await _scrub_active_group_members(
+                db, group_id=current["id"], reason=why, user=user,
+            )
             await _clear_group_claims(db, current)
             members = await _load_group_members(db, current["id"])
             return _public_group(current, None, members)
         if current and current.get("cancel_idempotency_key") == key:
+            await _scrub_active_group_members(
+                db, group_id=current["id"], reason=why, user=user,
+            )
             await _clear_group_claims(db, current)
             members = await _load_group_members(db, current["id"])
             return _public_group(current, None, members)
         raise PairConflictError("Pembatalan bentrok. Klaim pemenang tidak dilepas.")
     await _after_pair_cancel_stored()
+    # Repair can insert a member after the member-cancel loop above — scrub again.
+    await _scrub_active_group_members(
+        db, group_id=current["id"], reason=why, user=user,
+    )
     await _clear_group_claims(db, current)
     members = await _load_group_members(db, current["id"])
     return _public_group(current, None, members)
+
+
+async def _scrub_active_group_members(
+    db,
+    *,
+    group_id: str,
+    reason: str,
+    user: Optional[dict] = None,
+) -> None:
+    """Cancel any still-active members for a group (cancel/repair race cleanup)."""
+    members = await _load_group_members(db, group_id)
+    for member in members:
+        if member.get("status") != "active":
+            continue
+        sid = member.get("statement_line_id")
+        if not sid:
+            continue
+        await db[RECON_MATCHES].update_one(
+            {
+                "id": member["id"],
+                "match_kind": "pair_group_member",
+                "group_id": str(group_id),
+                "status": "active",
+                "statement_line_id": sid,
+            },
+            {
+                "$set": {
+                    "status": "cancelled",
+                    "history_statement_line_id": sid,
+                    "cancelled_at": now_iso(),
+                    "cancelled_by": actor_snapshot(user) if user else None,
+                    "cancel_reason": reason,
+                },
+                "$unset": {"statement_line_id": ""},
+            },
+        )
 
 
 async def _clear_group_claims(db, match: dict) -> None:

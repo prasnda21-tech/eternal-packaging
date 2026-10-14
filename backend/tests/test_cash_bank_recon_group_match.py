@@ -15,7 +15,14 @@ os.environ.setdefault("MONGO_URL", "mongodb://127.0.0.1:27017")
 _worker = os.environ.get("PYTEST_XDIST_WORKER") or "main"
 GROUP_DB = f"recon_group_isolated_{_worker}_{uuid.uuid4().hex[:6]}"
 os.environ["DB_NAME"] = GROUP_DB
-os.environ.setdefault("JWT_SECRET", "test-secret-key-12345678901234567890")
+# Preview HMAC requires JWT_SECRET length >= 16 (cash_bank_statement._preview_secret).
+# CI job env historically sets JWT_SECRET=ci-only-secret (14 chars); setdefault would
+# keep that short value and every HTTP import seed fails with "Kunci pratinjau…".
+_TEST_JWT_SECRET = "test-secret-key-12345678901234567890"
+if len(os.environ.get("JWT_SECRET") or "") < 16:
+    os.environ["JWT_SECRET"] = _TEST_JWT_SECRET
+else:
+    os.environ.setdefault("JWT_SECRET", _TEST_JWT_SECRET)
 os.environ.setdefault("CORS_ORIGINS", "*")
 os.environ.setdefault("STORAGE_PROVIDER", "local")
 
@@ -39,7 +46,14 @@ from services.cash_bank_reconciliation import (
     ClaimFeatureNotReady,
     ensure_indexes as ensure_recon,
 )
-from services.cash_bank_statement import IMPORTS, LINES, PREVIEWS, ensure_indexes as ensure_statement
+from services.cash_bank_statement import (
+    IMPORTS,
+    LINES,
+    PREVIEWS,
+    StatementConflictError as StatementPreviewConflictError,
+    _preview_secret,
+    ensure_indexes as ensure_statement,
+)
 from services.cash_bank_vouchers import PAYMENTS, RECEIPTS, TRANSFERS, ensure_indexes as ensure_vouchers
 from services.chart_of_accounts import COLLECTION as COA_COLLECTION, ensure_indexes as ensure_coa
 from services.journal_core import JOURNAL_ENTRIES, JOURNAL_LINES, ensure_indexes as ensure_journal
@@ -120,6 +134,20 @@ async def _three_bank_one_journal(c, amounts=(200000, 500000, 300000)):
     bank_ids = [row["id"] for row in body["bank_lines"]]
     book_line = body["book_lines"][0]["journal_line_id"]
     return bank, book_line, bank_ids
+
+
+async def test_preview_secret_rejects_short_jwt_key():
+    """CI-length secrets must still fail closed; do not weaken production guard."""
+    previous = os.environ.get("JWT_SECRET")
+    try:
+        os.environ["JWT_SECRET"] = "ci-only-secret"  # 14 chars — same as old CI value
+        with pytest.raises(StatementPreviewConflictError, match="Kunci pratinjau tidak tersedia"):
+            _preview_secret()
+    finally:
+        if previous is None:
+            os.environ.pop("JWT_SECRET", None)
+        else:
+            os.environ["JWT_SECRET"] = previous
 
 
 async def test_group_200_500_300_equals_one_million():
@@ -1400,7 +1428,15 @@ async def test_concurrent_cancel_vs_member_repair():
         assert active_groups in (0, 1)
         if cancelled.get("status") == "cancelled":
             assert active_groups == 0
-            # No active member with statement_line_id after cancel wins.
+            # Cancel replay scrubs members inserted by a racing repair after the
+            # first cancel loop (recovery C). New cancel-key is allowed.
+            await cancel_pair_group(
+                server.db,
+                group["id"],
+                idempotency_key="cancel-race-repair-scrub",
+                reason="bersihkan sisa member race",
+                user=admin,
+            )
             assert await server.db[RECON_MATCHES].count_documents(
                 {
                     "match_kind": "pair_group_member",

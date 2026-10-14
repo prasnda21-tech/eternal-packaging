@@ -229,7 +229,8 @@ jobs:
         timeout-minutes: 5
         env:
           MONGO_URL: mongodb://127.0.0.1:27017
-          JWT_SECRET: ci-only-secret
+          # Must be >= 16 chars: statement preview HMAC refuses shorter secrets.
+          JWT_SECRET: ci-only-secret-cash-bank-32
         run: |
           set -euo pipefail
           echo "Starting isolated cash-bank recon group/owner suite (serial)"
