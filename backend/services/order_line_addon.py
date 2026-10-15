@@ -152,6 +152,12 @@ def ensure_line_identity_fields(line: dict, idx: int) -> dict:
     return row
 
 
+def _line_item_type(line: Optional[dict]) -> str:
+    if not isinstance(line, dict):
+        return ""
+    return str(line.get("item_type") or "").strip().upper()
+
+
 def validate_parent_relation(
     line: dict,
     lines: Sequence[dict],
@@ -174,6 +180,13 @@ def validate_parent_relation(
         return "Add On tidak boleh merujuk dirinya sendiri sebagai induk."
     if line_cancelled(lines[parent]):
         return "Barang induk tidak aktif / dibatalkan."
+    # When types are stamped: SERVICE process Add On must not point at SERVICE induk.
+    child_type = _line_item_type(line)
+    parent_type = _line_item_type(lines[parent])
+    if child_type == "SERVICE" and parent_type == "SERVICE":
+        return "Induk Add On SERVICE tidak valid — pilih barang fisik (INVENTORY)."
+    if parent_type == "SERVICE":
+        return "Barang induk tidak boleh bertipe SERVICE."
     # Cycle detection: walk explicit parent chain.
     seen = {idx}
     cur: Optional[int] = parent

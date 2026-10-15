@@ -1854,6 +1854,7 @@ async def get_order(order_id: str, view: Optional[str] = None, user=Depends(curr
         if not view_ok:
             raise HTTPException(403, "Anda tidak punya permission untuk melihat PO ini")
     _apply_hold_snapshot(order)
+    await _stamp_order_line_item_types(order)
     # Workflow 06-12 targeted bugfix: expose prereq status untuk UI gating.
     order["packing_prereq_reasons"] = _prereq_reasons_for_packing(order)
     order["packing_ready"] = len(order["packing_prereq_reasons"]) == 0
@@ -1863,7 +1864,7 @@ async def get_order(order_id: str, view: Optional[str] = None, user=Depends(curr
     order["surat_jalan_created"] = _surat_jalan_created(order)
     order["loading_prereq_reasons"] = _prereq_reasons_for_loading(order)
     order["loading_ready"] = len(order["loading_prereq_reasons"]) == 0
-    # Task 14 bugfix: expose Loading completion + Terkirim gate.
+    # Task 14 bug fix: expose Loading completion + Terkirim gate.
     order["loading_completed"] = _loading_completed(order)
     order["terkirim_prereq_reasons"] = _prereq_reasons_for_terkirim(order)
     order["terkirim_ready"] = len(order["terkirim_prereq_reasons"]) == 0
@@ -2139,11 +2140,42 @@ class _OrderMutationSkipped(Exception):
     """Idempotent progress save. Leave the order document untouched."""
 
 
+async def _stamp_order_line_item_types(order: dict) -> None:
+    """In-memory stamp of master item_type onto lines missing it (not persisted).
+
+    Enables sync packing/SJ/loading helpers to exclude SERVICE process qty.
+    """
+    from quantity_rules import stamp_line_item_types
+
+    need: list = []
+    for li in (order.get("line_items") or []):
+        if not isinstance(li, dict):
+            continue
+        if str(li.get("item_type") or "").strip():
+            continue
+        mid = str(li.get("master_item_id") or "").strip()
+        if mid:
+            need.append(mid)
+    if not need:
+        return
+    rows = await db.master_items.find(
+        {"id": {"$in": list(set(need))}},
+        {"_id": 0, "id": 1, "item_type": 1},
+    ).to_list(len(set(need)))
+    type_by_master = {
+        str(r.get("id") or "").strip(): str(r.get("item_type") or "").strip().upper()
+        for r in rows
+        if str(r.get("id") or "").strip() and str(r.get("item_type") or "").strip()
+    }
+    stamp_line_item_types(order, type_by_master)
+
+
 async def _load_order_for_mutation(order_id: str) -> dict:
     order = await db.orders.find_one({"id": order_id}, {"_id": 0})
     if not order:
         raise HTTPException(404, "PO tidak ditemukan")
     _ensure_not_cancelled(order)
+    await _stamp_order_line_item_types(order)
     return order
 
 
@@ -2269,6 +2301,7 @@ async def _persist_order(order, *, require_lock: bool = False, persist_keys: Opt
     if require_lock and result.modified_count == 0 and result.matched_count == 0:
         raise HTTPException(409, _CONFLICT_MSG)
     # Attach derived fields untuk response (workflow 06-12 bugfix).
+    await _stamp_order_line_item_types(order)
     order["packing_prereq_reasons"] = _prereq_reasons_for_packing(order)
     order["packing_ready"] = len(order["packing_prereq_reasons"]) == 0
     # Task 12 bugfix: derived packing_status semantic — konsistensi antara
@@ -5341,6 +5374,7 @@ async def delete_surat_jalan_file(
     # Recompute derived SJ / stage flags + remain so Aksi PO matches stageflow
     # immediately (no stale "Seluruh Qty Selesai Dibuatkan SJ").
     order["surat_jalan_created"] = _surat_jalan_created(order)
+    await _stamp_order_line_item_types(order)
     _attach_quantity_snapshot(order)
     order["sales_delivery_summary"] = await _get_po_delivery_summary(db, order)
     return {"order": _strip_sj_bytes(order)}

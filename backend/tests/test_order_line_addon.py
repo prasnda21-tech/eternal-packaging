@@ -119,6 +119,12 @@ def test_validate_rejects_cancelled_parent_cycle_and_duplicate_ids():
     assert duplicate_line_id_error(dup)
     assert validate_lines_parent_graph(dup)
 
+    service_parent = [
+        {"line_id": "ln-svc", "item_type": "SERVICE"},
+        {"line_id": "ln-w2", "item_type": "SERVICE", "parent_line_id": "ln-svc"},
+    ]
+    assert "SERVICE" in (validate_parent_relation(service_parent[1], service_parent, idx=1) or "")
+
 
 def test_aggregate_service_without_parent_fail_closed():
     orders = [{
