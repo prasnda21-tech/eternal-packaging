@@ -62,11 +62,15 @@ import {
   buildReceiptProofPayload,
   validateReceiptProofFile,
 } from "../lib/salesReceiptPaymentProof";
+import { listIdentityBranchId, listIdentityUserId } from "../lib/listIdentity";
+import { salesReceiptListCache } from "../lib/smartListCaches";
 
 export default function PenerimaanPenjualan() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { user, hasPerm } = useAuth();
+  const listUserId = listIdentityUserId(user);
+  const listBranchId = listIdentityBranchId(user);
 
   const canCreate =
     hasPerm("sales.receipt.create") ||
@@ -83,13 +87,22 @@ export default function PenerimaanPenjualan() {
   // List State
   const [receipts, setReceipts] = useState([]);
   const [listLoading, setListLoading] = useState(false);
+  const [listRefreshing, setListRefreshing] = useState(false);
   const [listErr, setListErr] = useState("");
-  const [searchQuery, setSearchQuery] = useState("");
+  const [listSyncErr, setListSyncErr] = useState("");
+  const [listShowingCache, setListShowingCache] = useState(false);
+  const [searchQuery, setSearchQuery] = useState(() => searchParams.get("q") || "");
   const [listTab, setListTab] = useState(() => normalizeSalesListTab(searchParams.get("tab") || "active"));
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(SALES_LIST_DEFAULT_PAGE_SIZE);
+  const [page, setPage] = useState(() => {
+    const value = Number(searchParams.get("page"));
+    return Number.isFinite(value) && value >= 1 ? Math.floor(value) : 1;
+  });
+  const [pageSize, setPageSize] = useState(() => {
+    const value = Number(searchParams.get("page_size"));
+    return SALES_LIST_PAGE_SIZES.includes(value) ? value : SALES_LIST_DEFAULT_PAGE_SIZE;
+  });
   const [listMeta, setListMeta] = useState({
-    total: 0,
+    total: null,
     tabTotal: 0,
     capped: false,
     counts: { all: 0, active: 0, completed: 0, pending: 0, cancelled: 0 },
@@ -100,6 +113,9 @@ export default function PenerimaanPenjualan() {
   const [deleteErr, setDeleteErr] = useState("");
   const createIdempotencyRef = useRef({ signature: "", key: "" });
   const cancelIdempotencyRef = useRef({ signature: "", key: "" });
+  const requestSeq = useRef(0);
+  const skipPageResetRef = useRef(true);
+  const prevListUserRef = useRef(listUserId);
 
   // Modal / Create State
   const [isModalOpen, setIsModalOpen] = useState(Boolean(queryInvoiceId) || searchParams.get("action") === "create");
@@ -245,7 +261,7 @@ export default function PenerimaanPenjualan() {
       setDetailReceipt(interpreted.document || res.receipt);
       setDetailEditMode(false);
       setEditSuccess(interpreted.message);
-      loadReceipts();
+      void reloadReceiptListAuthoritative();
     } catch (err) {
       const det = err.response?.data?.detail;
       const body = typeof det === "object" && det ? det : { message: det || "Gagal menyimpan koreksi penerimaan." };
@@ -269,9 +285,55 @@ export default function PenerimaanPenjualan() {
     resetReceiptListPosition();
   };
 
-  // Load receipts list — exclusive list_tab + server pagination/counts
-  const loadReceipts = useCallback(async () => {
-    setListLoading(true);
+  const applyReceiptListPayload = useCallback((rows, meta, { fromCache = false } = {}) => {
+    setReceipts(rows);
+    setListMeta(meta);
+    setListShowingCache(Boolean(fromCache));
+    if (!fromCache) setListSyncErr("");
+  }, []);
+
+  // Load receipts — SWR display cache + full-page refetch of the same query.
+  const loadReceipts = useCallback(async ({ force = false } = {}) => {
+    const cacheKey = salesReceiptListCache.buildKey({
+      u: listUserId,
+      b: listBranchId,
+      tab: listTab,
+      q: searchQuery,
+      page,
+      pageSize,
+    });
+    const cached = salesReceiptListCache.get(cacheKey);
+    const hasCache = Boolean(cached?.data);
+    if (hasCache) {
+      applyReceiptListPayload(
+        cached.data.receipts || [],
+        cached.data.listMeta || {
+          total: null,
+          tabTotal: 0,
+          capped: false,
+          counts: { all: 0, active: 0, completed: 0, pending: 0, cancelled: 0 },
+        },
+        { fromCache: true },
+      );
+      setSelectedIds(new Set());
+    } else {
+      applyReceiptListPayload([], {
+        total: null,
+        tabTotal: 0,
+        capped: false,
+        counts: { all: 0, active: 0, completed: 0, pending: 0, cancelled: 0 },
+      }, { fromCache: false });
+    }
+
+    const seq = requestSeq.current + 1;
+    requestSeq.current = seq;
+    if (hasCache) {
+      setListRefreshing(true);
+      setListLoading(false);
+    } else {
+      setListLoading(true);
+      setListRefreshing(false);
+    }
     setListErr("");
     try {
       const params = salesFiveTabListParams({
@@ -281,21 +343,87 @@ export default function PenerimaanPenjualan() {
         q: searchQuery,
       });
       const res = await api.listSalesReceipts(params);
+      if (seq !== requestSeq.current) return;
       const rows = res.receipts || [];
-      setReceipts(rows);
-      setListMeta(salesFiveTabListMetaFromResponse(res, { rowCount: rows.length }));
+      const meta = salesFiveTabListMetaFromResponse(res, { rowCount: rows.length });
+      salesReceiptListCache.set(cacheKey, { receipts: rows, listMeta: meta, res });
+      applyReceiptListPayload(rows, meta, { fromCache: false });
       setSelectedIds(new Set());
     } catch (e) {
+      if (seq !== requestSeq.current) return;
       const det = e.response?.data?.detail;
-      setListErr(typeof det === "object" ? det.message : det || "Gagal memuat daftar Penerimaan Penjualan");
+      const message = typeof det === "object" ? det.message : det || "Gagal memuat daftar Penerimaan Penjualan";
+      if (hasCache) {
+        setListSyncErr(message || "Gagal menyinkronkan daftar. Menampilkan data tersimpan sementara.");
+        setListShowingCache(true);
+      } else {
+        setListErr(message);
+      }
     } finally {
-      setListLoading(false);
+      if (seq === requestSeq.current) {
+        setListLoading(false);
+        setListRefreshing(false);
+      }
     }
-  }, [searchQuery, listTab, page, pageSize]);
+  }, [applyReceiptListPayload, listBranchId, listTab, listUserId, page, pageSize, searchQuery]);
+
+  const reloadReceiptListAuthoritative = useCallback(async () => {
+    salesReceiptListCache.invalidate();
+    setListShowingCache(false);
+    setListSyncErr("");
+    await loadReceipts({ force: true });
+  }, [loadReceipts]);
 
   useEffect(() => {
+    if (skipPageResetRef.current) {
+      skipPageResetRef.current = false;
+      return;
+    }
     setPage(1);
   }, [searchQuery, listTab, pageSize]);
+
+  useEffect(() => {
+    if (prevListUserRef.current === listUserId) return;
+    salesReceiptListCache.clear();
+    prevListUserRef.current = listUserId;
+  }, [listUserId]);
+
+  useEffect(() => {
+    const onVisible = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      if (!salesReceiptListCache.shouldRevalidateOnFocus()) return;
+      loadReceipts({ force: false });
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onVisible);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onVisible);
+    };
+  }, [loadReceipts]);
+
+  // URL sync placed after modal state exists — keep list query for rememberSearch.
+  useEffect(() => {
+    if (isModalOpen || queryInvoiceId || queryReceiptId) return;
+    if (searchParams.get("action") === "create") return;
+    const next = new URLSearchParams();
+    if (searchQuery.trim()) next.set("q", searchQuery.trim());
+    if (listTab && listTab !== "active") next.set("tab", listTab);
+    if (page > 1) next.set("page", String(page));
+    if (pageSize !== SALES_LIST_DEFAULT_PAGE_SIZE) next.set("page_size", String(pageSize));
+    if (next.toString() === searchParams.toString()) return;
+    setSearchParams(next, { replace: true });
+  }, [
+    searchQuery,
+    listTab,
+    page,
+    pageSize,
+    isModalOpen,
+    queryInvoiceId,
+    queryReceiptId,
+    searchParams,
+    setSearchParams,
+  ]);
 
   const receiptDeletable = useCallback((r) => {
     if (canCancelBusiness) {
@@ -355,7 +483,7 @@ export default function PenerimaanPenjualan() {
         if (!interpreted.ok) {
           setDeleteErr(interpreted.message);
           // Keep modal + same idempotency key. Refresh list only to surface Pending status.
-          if (interpreted.pending) loadReceipts();
+          if (interpreted.pending) void reloadReceiptListAuthoritative();
           return;
         }
         clearIdempotencyIntent(cancelIdempotencyRef);
@@ -365,7 +493,7 @@ export default function PenerimaanPenjualan() {
           next.delete(id);
           return next;
         });
-        loadReceipts();
+        void reloadReceiptListAuthoritative();
         return;
       }
       await api.deleteSalesReceipt(id);
@@ -375,7 +503,7 @@ export default function PenerimaanPenjualan() {
         next.delete(id);
         return next;
       });
-      loadReceipts();
+      void reloadReceiptListAuthoritative();
     } catch (e) {
       if (canCancelBusiness) {
         const interpreted = interpretBusinessCancelResponse({}, {
@@ -427,20 +555,20 @@ export default function PenerimaanPenjualan() {
           const interpreted = interpretBusinessCancelResponse(res);
           if (!interpreted.ok) {
             setDeleteErr(interpreted.message);
-            if (interpreted.pending) loadReceipts();
+            if (interpreted.pending) void reloadReceiptListAuthoritative();
             return;
           }
           clearIdempotencyIntent(cancelIdempotencyRef);
         }
         setDeleteConfirm(null);
         setSelectedIds(new Set());
-        loadReceipts();
+        void reloadReceiptListAuthoritative();
         return;
       }
       await api.bulkDeleteSalesReceipts(ids);
       setDeleteConfirm(null);
       setSelectedIds(new Set());
-      loadReceipts();
+      void reloadReceiptListAuthoritative();
     } catch (e) {
       if (canCancelBusiness) {
         const interpreted = interpretBusinessCancelResponse({}, {
@@ -656,7 +784,7 @@ export default function PenerimaanPenjualan() {
         ? "Penerimaan di-reverse dari accounting."
         : "Penerimaan diposting ke accounting."));
       if (detailReceipt?.id === target.receipt.id) setDetailReceipt(updated);
-      loadReceipts();
+      void reloadReceiptListAuthoritative();
       setTimeout(() => setSuccessMsg(""), 2500);
     } catch (e) {
       const det = e.response?.data?.detail;
@@ -814,7 +942,7 @@ export default function PenerimaanPenjualan() {
         setTimeout(() => {
           setSuccessMsg("");
           handleCloseCreateModal();
-          loadReceipts();
+          void reloadReceiptListAuthoritative();
         }, 900);
       } catch (err) {
         const det = err.response?.data?.detail;
@@ -866,7 +994,7 @@ export default function PenerimaanPenjualan() {
       const offer = await api.listSalesCustomerCredit({ invoice_id: selectedInvoiceId });
       setCreditOffer(offer);
       setCreditOfferErr("");
-      loadReceipts();
+      void reloadReceiptListAuthoritative();
     } catch (error) {
       const detail = error?.response?.data?.detail;
       setCreditMsg(typeof detail === "object" ? detail.message : detail || "Pemakaian saldo gagal.");
@@ -885,7 +1013,7 @@ export default function PenerimaanPenjualan() {
         const fresh = await api.getSalesReceipt(detailReceipt.id);
         setDetailReceipt(fresh.receipt || fresh);
       }
-      loadReceipts();
+      void reloadReceiptListAuthoritative();
     } catch (error) {
       const detail = error?.response?.data?.detail;
       setCreditMsg(typeof detail === "object" ? detail.message : detail || "Pembalikan pemakaian gagal.");
@@ -912,8 +1040,12 @@ export default function PenerimaanPenjualan() {
             <div className="sd-list-summary" data-testid="receipt-list-count">
               <strong>{Number(listMeta.tabTotal || listMeta.total || receipts.length).toLocaleString("id-ID")}</strong>
               <span>penerimaan · {tabLabel}</span>
+              {listRefreshing ? <span data-testid="receipt-list-refreshing"> · menyegarkan</span> : null}
             </div>
           )}
+          {!showReceiptCount && listRefreshing ? (
+            <div className="sd-list-summary" data-testid="receipt-list-refreshing">menyegarkan</div>
+          ) : null}
         </div>
         <div className="sd-list-header-actions">
           {showDeleteControls && selectedIds.size > 0 && (
@@ -935,12 +1067,12 @@ export default function PenerimaanPenjualan() {
           <button
             type="button"
             className="sd-list-refresh"
-            onClick={loadReceipts}
-            disabled={listLoading}
+            onClick={() => loadReceipts({ force: true })}
+            disabled={listLoading || listRefreshing}
             title="Segarkan"
             aria-label="Segarkan"
           >
-            <RefreshCw size={16} className={listLoading ? "animate-spin" : ""} />
+            <RefreshCw size={16} className={(listLoading || listRefreshing) ? "animate-spin" : ""} />
           </button>
           {canCreate && (
             <button
@@ -1015,6 +1147,30 @@ export default function PenerimaanPenjualan() {
         >
           <AlertCircle size={16} />
           <span>{listErr}</span>
+        </div>
+      )}
+      {listSyncErr && (
+        <div
+          data-testid="receipt-list-sync-error"
+          role="status"
+          style={{
+            padding: "10px 14px",
+            backgroundColor: "#fffbeb",
+            border: "1px solid #fde68a",
+            color: "#92400e",
+            borderRadius: 6,
+            marginBottom: 16,
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            fontSize: 13,
+          }}
+        >
+          <AlertCircle size={16} />
+          <span>
+            {listSyncErr}
+            {listShowingCache ? " Data di bawah belum disinkronkan ulang." : ""}
+          </span>
         </div>
       )}
 
@@ -2165,7 +2321,7 @@ export default function PenerimaanPenjualan() {
                       if (!interpreted.ok) setAccountingErr(interpreted.message);
                       else {
                         setSuccessMsg(interpreted.message || "Pemulihan akuntansi berhasil");
-                        loadReceipts();
+                        void reloadReceiptListAuthoritative();
                       }
                     } catch (err) {
                       const det = err.response?.data?.detail;

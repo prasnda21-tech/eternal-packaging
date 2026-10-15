@@ -9,6 +9,7 @@ import { clearPoListReturnForUser, storageUserKey } from "./poListReturn";
 import { clearSalesPwaPoListState } from "./salesPwaPoListState";
 import { clearSalesInvoiceListCache } from "./salesInvoiceListCache";
 import { clearSalesOrderListCache } from "./salesOrderListCache";
+import { clearAllSmartListCaches } from "./smartListCaches";
 import { clearSalesWorkspaceTabs } from "./salesWorkspace";
 
 const AuthContext = createContext(null);
@@ -59,6 +60,7 @@ export function AuthProvider({ children }) {
       clearSalesWorkspaceTabs(null);
       clearSalesInvoiceListCache();
       clearSalesOrderListCache();
+      clearAllSmartListCaches();
       clearSalesPwaPoListState();
       clearPoListReturnForUser(previous);
       clearMobileOpsSessionForUser(storageUserKey(previous));

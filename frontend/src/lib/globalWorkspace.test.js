@@ -245,7 +245,7 @@ describe("global workspace tabs", () => {
     const faktur = GLOBAL_WORKSPACE_TABS.find((t) => t.id === "faktur-penjualan");
     expect(faktur?.rememberSearch).toBe(true);
     const delivery = GLOBAL_WORKSPACE_TABS.find((t) => t.id === "pengiriman-pesanan");
-    expect(delivery?.rememberSearch).toBeFalsy();
+    expect(delivery?.rememberSearch).toBe(true);
 
     const a = openOrActivateGlobalTab([], "/penjualan/faktur-penjualan", () => true, null, { id: "u1" });
     // 4th arg is hasPerm in this helper — pass search via pathname query (compat path).
@@ -255,18 +255,19 @@ describe("global workspace tabs", () => {
     expect(c.tabs.find((t) => t.id === "faktur-penjualan").search).toBe("?tab=pending&q=kopi");
   });
 
-  test("Pesanan Penjualan opts into rememberSearch; sibling without flag stays path-only", () => {
+  test("Pesanan and Pengiriman both rememberSearch; reconciliation stays path-only", () => {
     const pesanan = GLOBAL_WORKSPACE_TABS.find((t) => t.id === "pesanan-penjualan");
     expect(pesanan?.rememberSearch).toBe(true);
     const delivery = GLOBAL_WORKSPACE_TABS.find((t) => t.id === "pengiriman-pesanan");
-    expect(delivery?.rememberSearch).toBeFalsy();
+    expect(delivery?.rememberSearch).toBe(true);
+    const rekonsiliasi = GLOBAL_WORKSPACE_TABS.find((t) => t.path === "/kas-bank/rekonsiliasi");
+    expect(rekonsiliasi?.rememberSearch).toBeFalsy();
 
     const a = openOrActivateGlobalTab([], "/penjualan/pesanan-penjualan?tab=completed&page=3");
     expect(a.activated.search).toBe("?tab=completed&page=3");
-    const b = openOrActivateGlobalTab(a.tabs, "/penjualan/pengiriman-pesanan?q=x");
+    const b = openOrActivateGlobalTab(a.tabs, "/penjualan/pengiriman-pesanan?q=x&status=SELESAI");
     expect(b.tabs.find((t) => t.id === "pesanan-penjualan").search).toBe("?tab=completed&page=3");
-    // Path-only tabs do not retain search across activation.
-    expect(b.tabs.find((t) => t.id === "pengiriman-pesanan").search).toBeFalsy();
+    expect(b.tabs.find((t) => t.id === "pengiriman-pesanan").search).toBe("?q=x&status=SELESAI");
   });
 
   test("visible catalog follows hasPerm and does not invent parent-group tabs", () => {

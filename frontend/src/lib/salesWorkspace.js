@@ -11,7 +11,12 @@ export const SALES_WORKSPACE_TABS = [
     // Keep list query (tab/filter/page/q/period) when leaving via workspace chrome.
     rememberSearch: true,
   },
-  { id: "pengiriman-pesanan", path: SALES_NAV_ROUTES[NAV_KEYS.salesDeliveryOrder], label: "Pengiriman Pesanan" },
+  {
+    id: "pengiriman-pesanan",
+    path: SALES_NAV_ROUTES[NAV_KEYS.salesDeliveryOrder],
+    label: "Pengiriman Pesanan",
+    rememberSearch: true,
+  },
   {
     id: "faktur-penjualan",
     path: SALES_NAV_ROUTES[NAV_KEYS.salesInvoice],
@@ -19,8 +24,18 @@ export const SALES_WORKSPACE_TABS = [
     // Keep list query (tab/filter/page/q) when leaving via workspace chrome.
     rememberSearch: true,
   },
-  { id: "penerimaan-penjualan", path: SALES_NAV_ROUTES[NAV_KEYS.salesReceipt], label: "Penerimaan Penjualan" },
-  { id: "import-po", path: SALES_NAV_ROUTES[NAV_KEYS.importPo], label: "Import PO" },
+  {
+    id: "penerimaan-penjualan",
+    path: SALES_NAV_ROUTES[NAV_KEYS.salesReceipt],
+    label: "Penerimaan Penjualan",
+    rememberSearch: true,
+  },
+  {
+    id: "import-po",
+    path: SALES_NAV_ROUTES[NAV_KEYS.importPo],
+    label: "Import PO",
+    rememberSearch: true,
+  },
   { id: "aktivitas-sales", path: SALES_NAV_ROUTES[NAV_KEYS.salesActivity], label: "Aktivitas Sales", matchPrefix: true },
 ];
 
