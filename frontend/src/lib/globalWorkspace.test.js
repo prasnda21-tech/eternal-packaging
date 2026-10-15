@@ -241,6 +241,20 @@ describe("global workspace tabs", () => {
     expect(c.tabs.map((t) => t.path)).toEqual(["/kas-bank/daftar", "/penjualan/faktur-penjualan"]);
   });
 
+  test("Faktur Penjualan opts into rememberSearch and keeps list query on the tab", () => {
+    const faktur = GLOBAL_WORKSPACE_TABS.find((t) => t.id === "faktur-penjualan");
+    expect(faktur?.rememberSearch).toBe(true);
+    const delivery = GLOBAL_WORKSPACE_TABS.find((t) => t.id === "pengiriman-pesanan");
+    expect(delivery?.rememberSearch).toBeFalsy();
+
+    const a = openOrActivateGlobalTab([], "/penjualan/faktur-penjualan", () => true, null, { id: "u1" });
+    // 4th arg is hasPerm in this helper — pass search via pathname query (compat path).
+    const b = openOrActivateGlobalTab(a.tabs, "/penjualan/faktur-penjualan?tab=pending&q=kopi");
+    expect(b.activated.search).toBe("?tab=pending&q=kopi");
+    const c = openOrActivateGlobalTab(b.tabs, "/penjualan/pengiriman-pesanan");
+    expect(c.tabs.find((t) => t.id === "faktur-penjualan").search).toBe("?tab=pending&q=kopi");
+  });
+
   test("visible catalog follows hasPerm and does not invent parent-group tabs", () => {
     const limited = visibleGlobalWorkspaceCatalog((key) => key === NAV_KEYS.dashboard || key === NAV_KEYS.settings);
     expect(limited.map((t) => t.id).sort()).toEqual(["dashboard", "settings"]);

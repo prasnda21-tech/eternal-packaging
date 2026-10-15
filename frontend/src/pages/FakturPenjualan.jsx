@@ -21,11 +21,24 @@ import HeaderSelectFilter from "../components/HeaderSelectFilter";
 import { FormSection, FormField, FormProgress, computeStatus } from "../components/form-standard";
 import { INVOICE_DATE_PRESET_OPTIONS, invoiceDatePresetRange } from "../lib/salesDatePresets";
 import { clickableDocumentRowProps } from "../lib/clickableListRow";
+import { useDebouncedLiveSearch } from "../hooks/useDebouncedLiveSearch";
+import {
+  buildSalesInvoiceListCacheKey,
+  clearSalesInvoiceListCache,
+  getSalesInvoiceListCache,
+  getSalesInvoiceListScroll,
+  invalidateSalesInvoiceListCache,
+  isSalesInvoiceListCacheFresh,
+  setSalesInvoiceListCache,
+  setSalesInvoiceListScroll,
+  shouldRevalidateSalesInvoiceListOnFocus,
+} from "../lib/salesInvoiceListCache";
 import {
   SALES_LIST_DEFAULT_PAGE_SIZE,
   SALES_LIST_PAGE_SIZES,
   SALES_LIST_TABS,
   normalizeSalesListTab,
+  parseSalesListPageSize,
   salesFiveTabListMetaFromResponse,
   salesFiveTabListParams,
   salesListTabLabel,
@@ -390,6 +403,10 @@ const EMPTY_INVOICE_COLUMN_FILTERS = {
 };
 
 const INVOICE_PAGE_SIZES = [...SALES_LIST_PAGE_SIZES];
+const INVOICE_FINANCIAL_FILTER_VALUES = new Set(["", "draft", "finalized", "cancelled"]);
+const INVOICE_ACCOUNTING_FILTER_VALUES = new Set(["", "not_posted", "posted", "reversed"]);
+const INVOICE_PAYMENT_FILTER_VALUES = new Set(["", "BELUM DIBAYAR", "DP", "LUNAS"]);
+const INVOICE_DATE_PRESET_VALUES = new Set(INVOICE_DATE_PRESET_OPTIONS.map((opt) => opt.value));
 
 const INVOICE_POSTING_OPTIONS = [
   { value: "", label: "Semua" },
@@ -413,6 +430,28 @@ function invoiceFiltersActive(filters, query) {
   if (String(f.accountingStatus || "").trim()) return true;
   if (String(f.paymentStatus || "").trim()) return true;
   return false;
+}
+
+function invoiceColumnFiltersFromSearchParams(params) {
+  const datePresetRaw = String(params.get("date_preset") || "all").trim() || "all";
+  const datePreset = INVOICE_DATE_PRESET_VALUES.has(datePresetRaw) ? datePresetRaw : "all";
+  const financialStatus = String(params.get("financial_status") || "").trim();
+  const accountingStatus = String(params.get("accounting_status") || "").trim();
+  const paymentStatus = String(params.get("payment_status") || "").trim().toUpperCase();
+  return {
+    datePreset,
+    financialStatus: INVOICE_FINANCIAL_FILTER_VALUES.has(financialStatus) ? financialStatus : "",
+    accountingStatus: INVOICE_ACCOUNTING_FILTER_VALUES.has(accountingStatus) ? accountingStatus : "",
+    paymentStatus: INVOICE_PAYMENT_FILTER_VALUES.has(paymentStatus) ? paymentStatus : "",
+  };
+}
+
+function listIdentityUserId(user) {
+  return user?.id || user?.email || user?.sub || "";
+}
+
+function listIdentityBranchId(user) {
+  return user?.branch_id || user?.active_branch_id || user?.branchId || "";
 }
 
 function invoiceDeletable(inv, { allowBusinessCancel = false } = {}) {
@@ -533,12 +572,27 @@ export default function FakturPenjualan() {
   // List state
   const [invoices, setInvoices] = useState([]);
   const [listLoading, setListLoading] = useState(false);
+  const [listRefreshing, setListRefreshing] = useState(false);
   const [listErr, setListErr] = useState("");
-  const [searchQuery, setSearchQuery] = useState("");
+  const [listSyncErr, setListSyncErr] = useState("");
+  const [listShowingCache, setListShowingCache] = useState(false);
+  const {
+    input: searchInput,
+    setInput: setSearchInput,
+    q: searchQuery,
+    flush: flushSearch,
+    clear: clearSearch,
+  } = useDebouncedLiveSearch(searchParams.get("q") || "");
   const [listTab, setListTab] = useState(() => normalizeSalesListTab(searchParams.get("tab") || "active"));
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(SALES_LIST_DEFAULT_PAGE_SIZE);
-  const [columnFilters, setColumnFilters] = useState(EMPTY_INVOICE_COLUMN_FILTERS);
+  const [page, setPage] = useState(() => {
+    const value = Number(searchParams.get("page"));
+    return Number.isFinite(value) && value >= 1 ? Math.floor(value) : 1;
+  });
+  const [pageSize, setPageSize] = useState(() => parseSalesListPageSize(
+    searchParams.get("page_size"),
+    { fallback: SALES_LIST_DEFAULT_PAGE_SIZE },
+  ));
+  const [columnFilters, setColumnFilters] = useState(() => invoiceColumnFiltersFromSearchParams(searchParams));
   const [listMeta, setListMeta] = useState({
     total: 0,
     tabTotal: 0,
@@ -547,9 +601,16 @@ export default function FakturPenjualan() {
   });
   const requestSeq = useRef(0);
   const loadAbortRef = useRef(null);
+  const tableScrollRef = useRef(null);
+  const activeListCacheKeyRef = useRef("");
+  const lastScrollTopRef = useRef(0);
+  const pendingScrollRestoreKeyRef = useRef("");
+  const skipPageResetRef = useRef(true);
   const createIdempotencyRef = useRef({ signature: "", key: "" });
   const editIdempotencyRef = useRef({ signature: "", key: "" });
   const cancelIdempotencyRef = useRef({ signature: "", key: "" });
+  const listUserId = listIdentityUserId(user);
+  const listBranchId = listIdentityBranchId(user);
 
   // Checkbox selection
   const [selectedIds, setSelectedIds] = useState(new Set());
@@ -621,14 +682,116 @@ export default function FakturPenjualan() {
     clearInvoiceSelection();
   }, [clearInvoiceSelection]);
 
-  // Load Invoices List
-  const loadInvoices = useCallback(async () => {
+  const rememberTableScroll = useCallback(() => {
+    // While a restore is in flight, ignore transient scrollTop=0 from remounts
+    // so we do not clobber the saved offset for this query key.
+    if (pendingScrollRestoreKeyRef.current) return;
+    const key = activeListCacheKeyRef.current;
+    const node = tableScrollRef.current;
+    if (!key) return;
+    const top = node ? node.scrollTop : lastScrollTopRef.current;
+    if (node) lastScrollTopRef.current = node.scrollTop;
+    setSalesInvoiceListScroll(key, top);
+  }, []);
+
+  const restoreTableScroll = useCallback((key) => {
+    if (!key) return;
+    pendingScrollRestoreKeyRef.current = key;
+    const top = getSalesInvoiceListScroll(key);
+    if (!(top > 0)) {
+      pendingScrollRestoreKeyRef.current = "";
+      return;
+    }
+    const apply = () => {
+      const node = tableScrollRef.current;
+      if (!node || pendingScrollRestoreKeyRef.current !== key) return false;
+      // Wait until the table can actually scroll; otherwise the browser clamps to 0.
+      if (node.scrollHeight <= node.clientHeight + 1) return false;
+      node.scrollTop = top;
+      const landed = node.scrollTop;
+      lastScrollTopRef.current = landed;
+      // Require a real land; remounts can leave scrollTop at 0 after a false success.
+      return landed > 0 && Math.abs(landed - top) <= Math.max(4, top * 0.05);
+    };
+    const schedule = (attempt) => {
+      window.requestAnimationFrame(() => {
+        if (pendingScrollRestoreKeyRef.current !== key) return;
+        if (apply()) {
+          // Confirm one more frame later in case row remount resets scrollTop.
+          window.requestAnimationFrame(() => {
+            if (pendingScrollRestoreKeyRef.current !== key) return;
+            if (apply()) pendingScrollRestoreKeyRef.current = "";
+            else if (attempt < 8) schedule(attempt + 1);
+          });
+          return;
+        }
+        if (attempt < 8) schedule(attempt + 1);
+      });
+    };
+    if (apply()) {
+      schedule(0);
+      return;
+    }
+    schedule(0);
+  }, []);
+
+  const applyInvoiceListPayload = useCallback((rows, meta, { fromCache = false } = {}) => {
+    setInvoices(rows);
+    setListMeta(meta);
+    setListShowingCache(Boolean(fromCache));
+    if (!fromCache) setListSyncErr("");
+  }, []);
+
+  // Load Invoices List — stale-while-revalidate when cache hits; blank only for cold queries.
+  const loadInvoices = useCallback(async ({ force = false } = {}) => {
+    const cacheKey = buildSalesInvoiceListCacheKey({
+      userId: listUserId,
+      branchId: listBranchId,
+      listTab,
+      q: searchQuery,
+      columnFilters,
+      page,
+      pageSize,
+    });
+    rememberTableScroll();
+    activeListCacheKeyRef.current = cacheKey;
+
+    const cached = getSalesInvoiceListCache(cacheKey);
+    const hasCache = Boolean(cached);
+    const fresh = isSalesInvoiceListCacheFresh(cached);
+
+    if (hasCache) {
+      applyInvoiceListPayload(cached.invoices, cached.listMeta, { fromCache: true });
+      restoreTableScroll(cacheKey);
+      clearInvoiceSelection();
+      if (!force && fresh) {
+        setListLoading(false);
+        setListRefreshing(false);
+        setListErr("");
+        return;
+      }
+    } else {
+      // Never show rows from a different query while waiting for a cold fetch.
+      applyInvoiceListPayload([], {
+        total: 0,
+        tabTotal: 0,
+        capped: false,
+        counts: { all: 0, active: 0, completed: 0, pending: 0, cancelled: 0 },
+      }, { fromCache: false });
+    }
+
     const seq = requestSeq.current + 1;
     requestSeq.current = seq;
     loadAbortRef.current?.abort();
     const ac = new AbortController();
     loadAbortRef.current = ac;
-    setListLoading(true);
+    if (hasCache) {
+      setListRefreshing(true);
+      setListLoading(false);
+    } else {
+      setListLoading(true);
+      setListRefreshing(false);
+    }
     setListErr("");
     setSelectedIds(new Set());
     try {
@@ -636,22 +799,50 @@ export default function FakturPenjualan() {
       const res = await api.listSalesInvoices(params, { signal: ac.signal });
       if (seq !== requestSeq.current || ac.signal.aborted) return;
       const rows = res.invoices || [];
-      setInvoices(rows);
-      setListMeta(salesFiveTabListMetaFromResponse(res, { rowCount: rows.length }));
+      const meta = salesFiveTabListMetaFromResponse(res, { rowCount: rows.length });
+      setSalesInvoiceListCache(cacheKey, { invoices: rows, listMeta: meta, res });
+      applyInvoiceListPayload(rows, meta, { fromCache: false });
+      restoreTableScroll(cacheKey);
     } catch (e) {
       if (seq !== requestSeq.current || ac.signal.aborted || e?.code === "ERR_CANCELED" || e?.name === "CanceledError") {
         return;
       }
       const det = e.response?.data?.detail;
-      setListErr(
-        typeof det === "object"
-          ? det.message
-          : det || "Gagal memuat daftar Faktur Penjualan"
-      );
+      const message = typeof det === "object"
+        ? det.message
+        : det || "Gagal memuat daftar Faktur Penjualan";
+      if (hasCache) {
+        setListSyncErr(message || "Gagal menyinkronkan daftar. Menampilkan data tersimpan sementara.");
+        setListShowingCache(true);
+      } else {
+        setListErr(message);
+      }
     } finally {
-      if (seq === requestSeq.current && !ac.signal.aborted) setListLoading(false);
+      if (seq === requestSeq.current && !ac.signal.aborted) {
+        setListLoading(false);
+        setListRefreshing(false);
+      }
     }
-  }, [searchQuery, listTab, columnFilters, page, pageSize]);
+  }, [
+    applyInvoiceListPayload,
+    clearInvoiceSelection,
+    columnFilters,
+    listBranchId,
+    listTab,
+    listUserId,
+    page,
+    pageSize,
+    rememberTableScroll,
+    restoreTableScroll,
+    searchQuery,
+  ]);
+
+  const reloadInvoiceListAuthoritative = useCallback(async () => {
+    invalidateSalesInvoiceListCache();
+    setListShowingCache(false);
+    setListSyncErr("");
+    await loadInvoices({ force: true });
+  }, [loadInvoices]);
 
   // Checkbox helpers — current page, drafts that the backend marks deletable
   const pageDeletableIds = invoices
@@ -694,7 +885,7 @@ export default function FakturPenjualan() {
 
   const resetColumnFilters = () => {
     setColumnFilters(EMPTY_INVOICE_COLUMN_FILTERS);
-    setSearchQuery("");
+    clearSearch();
     resetInvoiceListPosition();
   };
 
@@ -742,21 +933,21 @@ export default function FakturPenjualan() {
         if (!interpreted.ok) {
           setDeleteErr(interpreted.message);
           // Keep modal + same idempotency key. Refresh list only to surface Pending status.
-          if (interpreted.pending) loadInvoices();
+          if (interpreted.pending) reloadInvoiceListAuthoritative();
           return;
         }
         clearIdempotencyIntent(cancelIdempotencyRef);
         setDeleteConfirm(null);
         setDeleteHold(false);
         setDeleteBlockedIds([]);
-        loadInvoices();
+        reloadInvoiceListAuthoritative();
         return;
       }
       await api.deleteSalesInvoice(id);
       setDeleteConfirm(null);
       setDeleteHold(false);
       setDeleteBlockedIds([]);
-      loadInvoices();
+      reloadInvoiceListAuthoritative();
     } catch (e) {
       const statusCode = e.response?.status;
       const det = e.response?.data?.detail;
@@ -810,7 +1001,7 @@ export default function FakturPenjualan() {
           const interpreted = interpretBusinessCancelResponse(res);
           if (!interpreted.ok) {
             setDeleteErr(interpreted.message);
-            if (interpreted.pending) loadInvoices();
+            if (interpreted.pending) reloadInvoiceListAuthoritative();
             return;
           }
           clearIdempotencyIntent(cancelIdempotencyRef);
@@ -819,7 +1010,7 @@ export default function FakturPenjualan() {
         setDeleteHold(false);
         setDeleteBlockedIds([]);
         setSelectedIds(new Set());
-        loadInvoices();
+        reloadInvoiceListAuthoritative();
         return;
       }
       await api.bulkDeleteSalesInvoices(ids);
@@ -827,7 +1018,7 @@ export default function FakturPenjualan() {
       setDeleteHold(false);
       setDeleteBlockedIds([]);
       setSelectedIds(new Set());
-      loadInvoices();
+      reloadInvoiceListAuthoritative();
     } catch (e) {
       const statusCode = e.response?.status;
       const det = e.response?.data?.detail;
@@ -918,6 +1109,84 @@ export default function FakturPenjualan() {
         .catch(() => setCreateLifecycleCapability(null));
     }
   }, [viewMode, loadInvoices, loadAvailablePOs, loadPoPreview, selectedPoId]);
+
+  // Settled search / filter changes reset page — not every keystroke.
+  useEffect(() => {
+    if (skipPageResetRef.current) {
+      skipPageResetRef.current = false;
+      return;
+    }
+    setPage(1);
+    clearInvoiceSelection();
+  }, [searchQuery, listTab, pageSize, columnFilters, clearInvoiceSelection]);
+
+  // Sync list presentation into URL so workspace remount restores the same view.
+  useEffect(() => {
+    if (viewMode !== "list") return;
+    if (searchParams.get("action") === "create") return;
+    if (searchParams.get("invoice_id") || searchParams.get("po_id")) return;
+    const next = new URLSearchParams();
+    if (searchQuery.trim()) next.set("q", searchQuery.trim());
+    if (listTab && listTab !== "active") next.set("tab", listTab);
+    if (page > 1) next.set("page", String(page));
+    if (pageSize !== SALES_LIST_DEFAULT_PAGE_SIZE) next.set("page_size", String(pageSize));
+    if (columnFilters.datePreset && columnFilters.datePreset !== "all") {
+      next.set("date_preset", columnFilters.datePreset);
+    }
+    if (columnFilters.financialStatus) next.set("financial_status", columnFilters.financialStatus);
+    if (columnFilters.accountingStatus) next.set("accounting_status", columnFilters.accountingStatus);
+    if (columnFilters.paymentStatus) next.set("payment_status", columnFilters.paymentStatus);
+    const nextStr = next.toString();
+    if (nextStr === searchParams.toString()) return;
+    setSearchParams(next, { replace: true });
+  }, [
+    searchQuery,
+    listTab,
+    page,
+    pageSize,
+    columnFilters,
+    viewMode,
+    searchParams,
+    setSearchParams,
+  ]);
+
+  // Drop financial cache when session identity changes (same user after re-login handled in auth logout).
+  const prevListUserRef = useRef(listUserId);
+  useEffect(() => {
+    if (prevListUserRef.current === listUserId) return;
+    clearSalesInvoiceListCache();
+    prevListUserRef.current = listUserId;
+  }, [listUserId]);
+
+  useEffect(() => {
+    if (viewMode !== "list") return undefined;
+    const onVisible = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      if (!shouldRevalidateSalesInvoiceListOnFocus()) return;
+      loadInvoices({ force: false });
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onVisible);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onVisible);
+    };
+  }, [viewMode, loadInvoices]);
+
+  useEffect(() => () => {
+    rememberTableScroll();
+  }, [rememberTableScroll]);
+
+  // Retry scroll restore after rows paint / SWR refresh when first attempt ran early.
+  useEffect(() => {
+    if (viewMode !== "list" || listLoading || !invoices.length) return undefined;
+    const key = pendingScrollRestoreKeyRef.current;
+    if (!key) return undefined;
+    const id = window.requestAnimationFrame(() => {
+      restoreTableScroll(key);
+    });
+    return () => window.cancelAnimationFrame(id);
+  }, [viewMode, listLoading, listRefreshing, invoices, restoreTableScroll]);
 
   useEffect(() => {
     if (viewMode === "list") return undefined;
@@ -1135,7 +1404,7 @@ export default function FakturPenjualan() {
         setTimeout(() => {
           setSearchParams({});
           setViewMode("list");
-          loadInvoices();
+          reloadInvoiceListAuthoritative();
         }, 900);
       } catch (err) {
         const det = err.response?.data?.detail;
@@ -1336,10 +1605,12 @@ export default function FakturPenjualan() {
       setShowDetailChargeErrors(false);
       if (interpreted.mode === "auto" && !interpreted.ok) {
         setDetailErr(interpreted.message);
+        invalidateSalesInvoiceListCache();
       } else {
         clearIdempotencyIntent(editIdempotencyRef);
         setSuccessMsg(interpreted.message || "Perubahan Faktur Penjualan berhasil disimpan");
         setTimeout(() => setSuccessMsg(""), 2500);
+        invalidateSalesInvoiceListCache();
       }
     } catch (err) {
       const det = err.response?.data?.detail;
@@ -1349,6 +1620,7 @@ export default function FakturPenjualan() {
         const interpreted = interpretAutoLifecycleResponse({}, { httpErrorBody: det });
         if (interpreted.document) setDetailData(interpreted.document);
         setDetailErr(interpreted.message);
+        invalidateSalesInvoiceListCache();
       } else {
         setDetailErr(
           typeof det === "object"
@@ -1372,6 +1644,7 @@ export default function FakturPenjualan() {
       setFinalizeConfirm(false);
       setSuccessMsg("Faktur berhasil difinalisasi. Field keuangan terkunci.");
       setTimeout(() => setSuccessMsg(""), 2500);
+      invalidateSalesInvoiceListCache();
     } catch (err) {
       const det = err.response?.data?.detail;
       if (det && typeof det === "object" && det.code === "FAKTUR_QTY_MELEBIHI_SISA_PO") {
@@ -1395,6 +1668,7 @@ export default function FakturPenjualan() {
       setPostAccountingConfirm(false);
       setSuccessMsg("Faktur diposting ke accounting.");
       setTimeout(() => setSuccessMsg(""), 2500);
+      invalidateSalesInvoiceListCache();
     } catch (err) {
       const det = err.response?.data?.detail;
       setDetailErr(typeof det === "object" ? det.message : det || err.message || "Gagal posting accounting");
@@ -1416,6 +1690,7 @@ export default function FakturPenjualan() {
       setReverseReason("");
       setSuccessMsg("Faktur di-reverse dari accounting.");
       setTimeout(() => setSuccessMsg(""), 2500);
+      invalidateSalesInvoiceListCache();
     } catch (err) {
       const det = err.response?.data?.detail;
       const msg = typeof det === "object" ? det.message : det || err.message || "Gagal reverse accounting";
@@ -1445,7 +1720,7 @@ export default function FakturPenjualan() {
         if (!interpreted.ok) {
           setDetailErr(interpreted.message);
           if (interpreted.document) setDetailData(interpreted.document);
-          if (interpreted.pending) loadInvoices();
+          if (interpreted.pending) reloadInvoiceListAuthoritative();
           return;
         }
         clearIdempotencyIntent(cancelIdempotencyRef);
@@ -1453,7 +1728,7 @@ export default function FakturPenjualan() {
         setCancelConfirm(false);
         setSuccessMsg(interpreted.message || "Faktur dibatalkan.");
         setTimeout(() => setSuccessMsg(""), 2500);
-        loadInvoices();
+        reloadInvoiceListAuthoritative();
         return;
       }
       const res = await api.cancelSalesInvoice(selectedInvoiceId);
@@ -1462,6 +1737,7 @@ export default function FakturPenjualan() {
       setCancelConfirm(false);
       setSuccessMsg("Faktur dibatalkan.");
       setTimeout(() => setSuccessMsg(""), 2500);
+      invalidateSalesInvoiceListCache();
     } catch (err) {
       const statusCode = err.response?.status;
       const det = err.response?.data?.detail;
@@ -1626,10 +1902,11 @@ export default function FakturPenjualan() {
               ? "Detail Faktur Penjualan"
               : "Faktur Penjualan"}
           </h1>
-          {viewMode === "list" && !listLoading && !listErr && (
+          {viewMode === "list" && (!listLoading || invoices.length > 0) && !listErr && (
             <div className="sd-list-summary" data-testid="invoice-list-count">
               <strong>{(filtersActive ? listMeta.total : listMeta.tabTotal).toLocaleString("id-ID")}</strong>
               <span>{filtersActive ? "hasil filter" : "pada tab"}</span>
+              {listRefreshing ? <span data-testid="invoice-list-refreshing"> · menyegarkan</span> : null}
             </div>
           )}
           {viewMode === "detail" && (
@@ -1684,12 +1961,12 @@ export default function FakturPenjualan() {
             <button
               type="button"
               className="sd-list-refresh"
-              onClick={loadInvoices}
-              disabled={listLoading}
+              onClick={() => loadInvoices({ force: true })}
+              disabled={listLoading || listRefreshing}
               title="Refresh data"
               data-testid="refresh-invoice-btn"
             >
-              <RefreshCw size={16} className={listLoading ? "spin" : ""} />
+              <RefreshCw size={16} className={(listLoading || listRefreshing) ? "spin" : ""} />
             </button>
             {canCreate && (
               <button
@@ -1788,10 +2065,10 @@ export default function FakturPenjualan() {
               <input
                 type="text"
                 placeholder="Cari no PO, pelanggan, sales, atau faktur..."
-                value={searchQuery}
-                onChange={(e) => {
-                  setSearchQuery(e.target.value);
-                  resetInvoiceListPosition();
+                value={searchInput}
+                onChange={(e) => setSearchInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") flushSearch(e);
                 }}
                 data-testid="search-invoice-input"
               />
@@ -1807,7 +2084,18 @@ export default function FakturPenjualan() {
             </button>
           </div>
 
-          <div className="sd-list-table-scroll">
+          {listSyncErr && (
+            <div className="sd-banner is-error" role="status" data-testid="invoice-list-sync-error">
+              {listSyncErr}
+              {listShowingCache ? " Data di bawah belum disinkronkan ulang." : ""}
+            </div>
+          )}
+          <div
+            className="sd-list-table-scroll"
+            ref={tableScrollRef}
+            onScroll={rememberTableScroll}
+            data-testid="invoice-list-scroll"
+          >
             <table className="sd-list-table" data-testid="invoices-table">
               <colgroup>
                 {reserveCheckboxColumn && <col style={{ width: 36 }} />}
@@ -1878,7 +2166,7 @@ export default function FakturPenjualan() {
                 </tr>
               </thead>
               <tbody>
-                {listLoading ? (
+                {listLoading && invoices.length === 0 ? (
                   <tr>
                     <td colSpan={columnCount} className="sd-list-empty">
                       Memuat daftar Faktur Penjualan...
@@ -1997,7 +2285,7 @@ export default function FakturPenjualan() {
           </div>
           <footer className="sd-list-footer" data-testid="invoice-list-footer">
             <span data-testid="invoice-list-range">
-              {listLoading
+              {listLoading && invoices.length === 0
                 ? "Memuat daftar faktur..."
                 : listErr
                 ? "Daftar faktur belum dapat ditampilkan"
@@ -2014,7 +2302,7 @@ export default function FakturPenjualan() {
               <button
                 type="button"
                 data-testid="invoice-page-prev"
-                disabled={listLoading || page <= 1}
+                disabled={(listLoading && invoices.length === 0) || page <= 1}
                 onClick={() => setPage((current) => Math.max(1, current - 1))}
               >
                 Sebelumnya
@@ -2039,7 +2327,7 @@ export default function FakturPenjualan() {
               <button
                 type="button"
                 data-testid="invoice-page-next"
-                disabled={listLoading || page >= pageCount}
+                disabled={(listLoading && invoices.length === 0) || page >= pageCount}
                 onClick={() => setPage((current) => current + 1)}
               >
                 Berikutnya
@@ -2775,6 +3063,7 @@ export default function FakturPenjualan() {
                           setSuccessMsg(interpreted.message || "Pemulihan akuntansi berhasil");
                           setTimeout(() => setSuccessMsg(""), 2500);
                         }
+                        invalidateSalesInvoiceListCache();
                       } catch (err) {
                         const det = err.response?.data?.detail;
                         const interpreted = interpretAutoLifecycleResponse({}, { httpErrorBody: det });
