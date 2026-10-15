@@ -319,29 +319,83 @@ async def test_group_rejects_journal_already_paired_1to1():
 
 
 async def test_group_concurrent_same_payload_one_effective():
+    """Same key + same payload: one persisted group; both callers converge.
+
+    A late loser may briefly see claim busy after the winner adopts
+    active_claim → group_id; create_pair_group must replay the stored group
+    rather than surfacing a false foreign conflict.
+    """
     admin = _user()
     async with await client_for(admin) as c:
         bank, book_line, bank_ids = await _three_bank_one_journal(c)
+        key = "g-race-1"
+        started = 0
+        original_before = pair_svc._before_pair_claim
 
-        async def attempt(key):
-            try:
-                return await create_pair_group(
-                    server.db,
-                    cash_bank_id=bank["id"],
-                    journal_line_id=book_line,
-                    statement_line_ids=bank_ids,
-                    idempotency_key=key,
-                    start="2026-09-01",
-                    end="2026-09-30",
-                    user=admin,
-                )
-            except PairConflictError as exc:
-                return exc
+        async def stagger_second_claimer():
+            nonlocal started
+            started += 1
+            if started > 1:
+                # Let the first caller finish adopt before the second claims.
+                await asyncio.sleep(0.05)
+            return await original_before()
 
-        left, right = await asyncio.gather(attempt("g-race-1"), attempt("g-race-1"))
-        winners = [item for item in (left, right) if isinstance(item, dict) and item.get("status") == "active"]
-        assert len(winners) == 2
-        assert winners[0]["id"] == winners[1]["id"]
+        pair_svc._before_pair_claim = stagger_second_claimer
+        try:
+            async def attempt():
+                try:
+                    return await create_pair_group(
+                        server.db,
+                        cash_bank_id=bank["id"],
+                        journal_line_id=book_line,
+                        statement_line_ids=bank_ids,
+                        idempotency_key=key,
+                        start="2026-09-01",
+                        end="2026-09-30",
+                        user=admin,
+                    )
+                except PairConflictError as exc:
+                    return exc
+
+            left, right = await asyncio.gather(attempt(), attempt())
+        finally:
+            pair_svc._before_pair_claim = original_before
+
+        outcomes = [left, right]
+        winners = [
+            item for item in outcomes
+            if isinstance(item, dict) and item.get("status") == "active"
+        ]
+        conflicts = [item for item in outcomes if isinstance(item, PairConflictError)]
+        assert len(winners) + len(conflicts) == 2
+        assert len(winners) >= 1
+        group_id = winners[0]["id"]
+        assert all(item["id"] == group_id for item in winners)
+        assert winners[0].get("members_complete") is True
+        assert winners[0].get("active_member_count") == 3
+        assert await server.db[RECON_MATCHES].count_documents(
+            {"match_kind": "pair_group", "status": "active"}
+        ) == 1
+        assert await server.db[RECON_MATCHES].count_documents(
+            {"match_kind": "pair_group_member", "group_id": group_id, "status": "active"}
+        ) == 3
+        for line_id in bank_ids:
+            row = await server.db[LINES].find_one({"id": line_id}, {"_id": 0, "active_claim": 1})
+            assert row and row.get("active_claim") == group_id
+
+        # Same-key retry returns the original group (conflicts must converge).
+        replay = await create_pair_group(
+            server.db,
+            cash_bank_id=bank["id"],
+            journal_line_id=book_line,
+            statement_line_ids=bank_ids,
+            idempotency_key=key,
+            start="2026-09-01",
+            end="2026-09-30",
+            user=admin,
+        )
+        assert replay["id"] == group_id
+        assert replay["status"] == "active"
         assert await server.db[RECON_MATCHES].count_documents(
             {"match_kind": "pair_group", "status": "active"}
         ) == 1

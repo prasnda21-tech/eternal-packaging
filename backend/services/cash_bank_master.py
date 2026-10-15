@@ -28,6 +28,7 @@ PERM_MANAGE = "cash_bank.manage"
 PERM_POST = "cash_bank.post"
 PERM_REVERSE = "cash_bank.reverse"
 PERM_RECONCILE = "cash_bank.reconcile"
+PERM_PURGE_UNMATCHED = "cash_bank.reconcile.purge_unmatched"
 
 
 class CashBankValidationError(ValueError):

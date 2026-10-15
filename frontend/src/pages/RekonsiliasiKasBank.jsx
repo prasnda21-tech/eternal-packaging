@@ -698,6 +698,7 @@ const appendGroups = (current, incoming) => {
 export default function RekonsiliasiKasBank() {
   const { hasPerm } = useAuth();
   const canReconcile = hasPerm("cash_bank.reconcile");
+  const canPurgeUnmatched = hasPerm("cash_bank.reconcile.purge_unmatched");
   const canManage = hasPerm("cash_bank.manage");
   const canViewCashBank = hasPerm("cash_bank.view") || hasPerm("cash_bank.manage");
   const canOpenReceipt = canViewCashBank;
@@ -742,6 +743,12 @@ export default function RekonsiliasiKasBank() {
   const [buatBank, setBuatBank] = useState(null);
   const [preview, setPreview] = useState(null);
   const [importOpen, setImportOpen] = useState(false);
+  const [purgeOpen, setPurgeOpen] = useState(false);
+  const [purgePreview, setPurgePreview] = useState(null);
+  const [purgeMessage, setPurgeMessage] = useState("");
+  const [purgeBusy, setPurgeBusy] = useState(false);
+  const purgeDialog = useRef(null);
+  const purgeKeyRef = useRef("");
   const [bcaOpen, setBcaOpen] = useState(false);
   const [bcaPreview, setBcaPreview] = useState(null);
   const [bcaFilename, setBcaFilename] = useState("");
@@ -805,6 +812,11 @@ export default function RekonsiliasiKasBank() {
     if (buatOpen && buatDialog.current && !buatDialog.current.open) buatDialog.current.showModal();
     if (!buatOpen && buatDialog.current?.open) buatDialog.current.close();
   }, [buatOpen]);
+
+  useEffect(() => {
+    if (purgeOpen && purgeDialog.current && !purgeDialog.current.open) purgeDialog.current.showModal();
+    if (!purgeOpen && purgeDialog.current?.open) purgeDialog.current.close();
+  }, [purgeOpen]);
 
   useEffect(() => {
     setSelectedBank("");
@@ -1461,6 +1473,51 @@ export default function RekonsiliasiKasBank() {
     }
   };
 
+  const openPurgeDialog = async () => {
+    if (!canPurgeUnmatched || !cashBankId || !startDate || !endDate || busy || purgeBusy) return;
+    setPurgeBusy(true);
+    setPurgeMessage("");
+    setPurgePreview(null);
+    purgeKeyRef.current = newOperationKey();
+    try {
+      const preview = await api.previewCashBankUnmatchedPurge({
+        cash_bank_id: cashBankId,
+        start_date: startDate,
+        end_date: endDate,
+      });
+      setPurgePreview(preview);
+      setPurgeOpen(true);
+    } catch (ex) {
+      setMessage(errPayload(ex).message);
+    } finally {
+      setPurgeBusy(false);
+    }
+  };
+
+  const confirmPurgeUnmatched = async () => {
+    const n = Number(purgePreview?.eligible_count || 0);
+    if (!canPurgeUnmatched || !cashBankId || n < 1 || purgeBusy) return;
+    if (!purgeKeyRef.current) purgeKeyRef.current = newOperationKey();
+    setPurgeBusy(true);
+    setPurgeMessage("");
+    try {
+      const result = await api.executeCashBankUnmatchedPurge({
+        cash_bank_id: cashBankId,
+        start_date: startDate,
+        end_date: endDate,
+        idempotency_key: purgeKeyRef.current,
+      });
+      setPurgeOpen(false);
+      setPurgePreview(null);
+      setMessage(result.message || `${result.deleted_count || 0} mutasi belum cocok dihapus.`);
+      await loadWorkspace(cashBankId, startDate, endDate, q);
+    } catch (ex) {
+      setPurgeMessage(errPayload(ex).message);
+    } finally {
+      setPurgeBusy(false);
+    }
+  };
+
   const decideDuplicate = async (group, line, action) => {
     if (!canReconcile || busy || !line?.statement_line_id) return;
     const reason = (decisionReasons[line.statement_line_id] || "").trim();
@@ -1784,7 +1841,22 @@ export default function RekonsiliasiKasBank() {
               <section className={`kb-pane kb-accurate-pane ${pane === "bank" ? "is-shown" : ""}`} aria-label="Rekening bank">
                 <div className="recon-pane-title">
                   <div><h2>REKENING BANK</h2><span className="kb-pane-balance">Saldo {money(closing?.amount)}</span></div>
-                  <span className={Number(workspace?.unmatched_bank_count) > 0 ? "kb-unmatched-flag" : ""}>{Number(workspace?.unmatched_bank_count) > 0 ? `${workspace.unmatched_bank_count} data belum cocok` : `${visibleBank.length} baris`}</span>
+                  <div className="kb-bank-pane-actions">
+                    <span className={Number(workspace?.unmatched_bank_count) > 0 ? "kb-unmatched-flag" : ""}>{Number(workspace?.unmatched_bank_count) > 0 ? `${workspace.unmatched_bank_count} data belum cocok` : `${visibleBank.length} baris`}</span>
+                    {canPurgeUnmatched && (
+                      <button
+                        type="button"
+                        className="ghost sm recon-purge-btn"
+                        data-testid="kas-bank-purge-unmatched"
+                        disabled={busy || purgeBusy || !cashBankId || !ready}
+                        onClick={openPurgeDialog}
+                        title="Hapus Belum Cocok"
+                      >
+                        <Trash2 size={15} />
+                        <span>Hapus Belum Cocok</span>
+                      </button>
+                    )}
+                  </div>
                 </div>
               </section>
               <div className="kb-pair-link kb-accurate-link" aria-hidden="true" />
@@ -2131,6 +2203,51 @@ export default function RekonsiliasiKasBank() {
         <footer className="recon-drawer-footer">
           <button type="button" className="ghost sm" onClick={() => setCariOpen(false)} disabled={busy}>Batal</button>
           <button type="button" className="primary sm" data-testid="kas-bank-cari-confirm" disabled={!cariConfirmEnabled} onClick={confirmCariGroup}>{busy ? "Memproses…" : "Konfirmasi Pencocokan"}</button>
+        </footer>
+      </dialog>
+
+      <dialog
+        ref={purgeDialog}
+        className="recon-import-dialog recon-purge-dialog"
+        aria-labelledby="recon-purge-title"
+        data-testid="kas-bank-purge-dialog"
+        onCancel={(event) => { if (purgeBusy) event.preventDefault(); else setPurgeOpen(false); }}
+        onClose={() => setPurgeOpen(false)}
+      >
+        <div className="recon-drawer-heading">
+          <div>
+            <p>Hapus mutasi rekening koran belum cocok</p>
+            <h2 id="recon-purge-title">Hapus Belum Cocok</h2>
+          </div>
+          <button type="button" className="ghost sm" aria-label="Tutup dialog hapus" onClick={() => setPurgeOpen(false)} disabled={purgeBusy}><X size={20} /></button>
+        </div>
+        <div className="recon-drawer-content">
+          <p className="recon-context">Rekening: <strong>{purgePreview?.cash_bank_name || banks.find((b) => b.id === cashBankId)?.name || "—"}</strong></p>
+          <p className="recon-context">Periode: <strong>{reconDate(startDate)} – {reconDate(endDate)}</strong></p>
+          <ul className="recon-purge-counts" data-testid="kas-bank-purge-counts">
+            <li>Eligible dihapus: <strong>{purgePreview?.eligible_count ?? "—"}</strong></li>
+            <li>Terlindungi (sudah cocok / klaim / review): <strong>{purgePreview?.protected_count ?? "—"}</strong></li>
+            <li>Ambigu / tidak dihapus: <strong>{purgePreview?.ambiguous_count ?? "—"}</strong></li>
+          </ul>
+          <p className="recon-notice" role="status">
+            Jurnal, General Ledger, dan transaksi yang sudah cocok tidak diubah.
+            Setelah dihapus, unggah ulang berkas yang sama untuk mengembalikan baris belum cocok.
+          </p>
+          {purgePreview?.fence_busy && <p className="recon-notice" role="alert">Impor/purge lain sedang berjalan pada rekening ini.</p>}
+          {purgeMessage && <p className="recon-notice" role="alert">{purgeMessage}</p>}
+        </div>
+        <footer className="recon-drawer-footer">
+          <button type="button" className="ghost sm" onClick={() => setPurgeOpen(false)} disabled={purgeBusy}>Batal</button>
+          <button
+            type="button"
+            className="recon-purge-confirm sm"
+            data-testid="kas-bank-purge-confirm"
+            disabled={purgeBusy || !Number(purgePreview?.eligible_count)}
+            onClick={confirmPurgeUnmatched}
+          >
+            <Trash2 size={15} />
+            {purgeBusy ? "Menghapus…" : `Hapus ${Number(purgePreview?.eligible_count || 0)} Transaksi`}
+          </button>
         </footer>
       </dialog>
 

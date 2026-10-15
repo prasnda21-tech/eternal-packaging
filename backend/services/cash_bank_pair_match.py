@@ -1454,22 +1454,53 @@ async def create_pair_group(
         journal, line, account_id=str(cb.get("account_id")), start=start, end=end
     )
 
+    async def _replay_same_key_group_if_ready(
+        claimed_line_ids: Optional[List[str]] = None,
+    ) -> Optional[dict]:
+        """Same-key concurrent loser: winner may already own the group.
+
+        After the winner adopts ``active_claim`` from the idempotency key to the
+        group id, the loser sees claim ``busy``. That is not a foreign conflict
+        when this key already has an active ``pair_group`` — return that group.
+        """
+        stored = _business_group(await _pair_for_key(db, cash_bank_id, key))
+        if stored is None or stored.get("status") != "active":
+            return None
+        return await _reply_stored_group(
+            db,
+            stored,
+            key=key,
+            payload_hash=payload_hash,
+            claimed_line_ids=claimed_line_ids,
+        )
+
+    # Winner may finish between the initial key read and statement validation.
     statements = []
     total = Decimal("0.00")
     for sid in ordered:
-        stmt = await _validate_group_statement(
-            db,
-            cash_bank_id=str(cash_bank_id),
-            statement_line_id=sid,
-            direction=direction,
-            account_currency=account_currency,
-            start=start,
-            end=end,
-            key=key,
-        )
+        try:
+            stmt = await _validate_group_statement(
+                db,
+                cash_bank_id=str(cash_bank_id),
+                statement_line_id=sid,
+                direction=direction,
+                account_currency=account_currency,
+                start=start,
+                end=end,
+                key=key,
+            )
+        except PairConflictError:
+            replay = await _replay_same_key_group_if_ready()
+            if replay is not None:
+                return replay
+            raise
         total += _money(stmt.get("amount"))
         statements.append(stmt)
     if total != amount:
+        # Re-check: peer may have completed the same key while we validated.
+        replay = await _replay_same_key_group_if_ready()
+        if replay is not None:
+            return replay
         raise PairConflictError(
             f"Total mutasi bank ({total}) tidak sama dengan nominal jurnal ({amount})"
         )
@@ -1482,6 +1513,9 @@ async def create_pair_group(
             sid = str(stmt["id"])
             claim = await _claim_statement_line(db, sid, key)
             if claim == "busy":
+                replay = await _replay_same_key_group_if_ready(claimed_ids)
+                if replay is not None:
+                    return replay
                 raise PairConflictError("Baris bank sudah diklaim atau tidak siap dicocokkan")
             claimed_ids.append(sid)
             if claim == "created":
@@ -1494,6 +1528,10 @@ async def create_pair_group(
         for sid in claimed_ids:
             fresh = await db[LINES].find_one({"id": sid, "active_claim": key}, {"_id": 0})
             if not fresh:
+                # Winner may have adopted key → group_id between claim and revalidate.
+                replay = await _replay_same_key_group_if_ready(claimed_ids)
+                if replay is not None:
+                    return replay
                 raise PairConflictError("Baris bank sudah diklaim atau tidak siap dicocokkan")
             visible = dict(fresh)
             visible["active_claim"] = None

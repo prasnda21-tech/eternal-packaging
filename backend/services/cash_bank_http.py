@@ -12,6 +12,7 @@ from services import cash_bank_attachment as attachment_svc
 from services.cash_bank_master import (
     PERM_MANAGE,
     PERM_POST,
+    PERM_PURGE_UNMATCHED,
     PERM_RECONCILE,
     PERM_REVERSE,
     PERM_VIEW,
@@ -91,6 +92,13 @@ from services.cash_bank_pair_match import (
     suggest_pairs,
 )
 from services.cash_bank_owner_recon import get_owner_recon_view
+from services.cash_bank_statement_purge import (
+    PurgeConflictError,
+    PurgeValidationError,
+    ensure_purge_indexes,
+    execute_unmatched_purge,
+    preview_unmatched_purge,
+)
 from services.general_ledger import GeneralLedgerValidationError
 
 
@@ -205,6 +213,14 @@ class PairCancelPayload(BaseModel):
     reason: str = Field(..., min_length=1)
 
 
+class PurgeUnmatchedPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    cash_bank_id: str = Field(..., min_length=1)
+    start_date: str = Field(..., min_length=1)
+    end_date: str = Field(..., min_length=1)
+    idempotency_key: str = Field(..., min_length=8)
+
+
 class PairGroupMatchPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     cash_bank_id: str = Field(..., min_length=1)
@@ -247,6 +263,7 @@ async def _ensure_all(db) -> None:
     await ensure_journal_indexes(db)
     await ensure_recon_indexes(db)
     await ensure_statement_indexes(db)
+    await ensure_purge_indexes(db)
 
 
 async def _maybe_attach(db, kind: str, voucher: dict, raw: dict, user) -> dict:
@@ -1020,6 +1037,47 @@ def register_cash_bank_routes(
             raise HTTPException(400, str(exc)) from exc
         except GeneralLedgerValidationError as exc:
             raise HTTPException(400, str(exc)) from exc
+
+    @api_router.get("/cash-bank/reconciliations/unmatched-purge/preview")
+    async def get_unmatched_purge_preview(
+        cash_bank_id: str = Query(..., min_length=1),
+        start_date: str = Query(..., min_length=1),
+        end_date: str = Query(..., min_length=1),
+        user=Depends(require_perm(PERM_PURGE_UNMATCHED)),
+    ):
+        """Read-only eligibility counts for Hapus Belum Cocok. Zero-write."""
+        db = get_db()
+        try:
+            return await preview_unmatched_purge(
+                db,
+                cash_bank_id=cash_bank_id,
+                start_date=start_date,
+                end_date=end_date,
+                user=user,
+            )
+        except PurgeValidationError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @api_router.post("/cash-bank/reconciliations/unmatched-purge")
+    async def post_unmatched_purge(
+        payload: PurgeUnmatchedPayload,
+        user=Depends(require_perm(PERM_PURGE_UNMATCHED)),
+    ):
+        db = get_db()
+        await _ensure_all(db)
+        try:
+            return await execute_unmatched_purge(
+                db,
+                cash_bank_id=payload.cash_bank_id,
+                start_date=payload.start_date,
+                end_date=payload.end_date,
+                idempotency_key=payload.idempotency_key,
+                user=user,
+            )
+        except PurgeValidationError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except PurgeConflictError as exc:
+            raise HTTPException(409, str(exc)) from exc
 
     @api_router.get("/cash-bank/reconciliation/owner-view")
     async def get_reconciliation_owner_view(
