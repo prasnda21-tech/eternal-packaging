@@ -1,9 +1,12 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { AlertCircle, Eye, Pencil, Plus, Search, Trash2, X } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { useDebouncedLiveSearch, liveSearchTableView } from "../hooks/useDebouncedLiveSearch";
 import { KbField, KbSection } from "../components/CashBankFormPrimitives";
+import { listIdentityBranchId, listIdentityUserId } from "../lib/listIdentity";
+import { ledgerListCache } from "../lib/smartListCaches";
 
 const errText = (ex) => {
   const det = ex?.response?.data?.detail;
@@ -52,7 +55,10 @@ function lineMoney(raw) {
 }
 
 export default function JurnalUmum() {
-  const { hasPerm } = useAuth();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const { user, hasPerm } = useAuth();
+  const listUserId = listIdentityUserId(user);
+  const listBranchId = listIdentityBranchId(user);
   const canManage = hasPerm("general_journal.manage");
   const canPost = hasPerm("general_journal.post");
   const canReverse = hasPerm("general_journal.reverse");
@@ -60,9 +66,12 @@ export default function JurnalUmum() {
   const [items, setItems] = useState([]);
   const [coa, setCoa] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [loadError, setLoadError] = useState("");
-  const [statusFilter, setStatusFilter] = useState("all");
-  const { input: qInput, setInput: setQInput, q, flush: doSearch, clear: clearQuery, pending: searchPending } = useDebouncedLiveSearch();
+  const [statusFilter, setStatusFilter] = useState(() => searchParams.get("status") || "all");
+  const { input: qInput, setInput: setQInput, q, flush: doSearch, clear: clearQuery, pending: searchPending } = useDebouncedLiveSearch(searchParams.get("q") || "");
+  const requestSeq = useRef(0);
+  const prevListUserRef = useRef(listUserId);
 
   const [mode, setMode] = useState("list"); // list | form | view
   const [editRow, setEditRow] = useState(null);
@@ -74,25 +83,71 @@ export default function JurnalUmum() {
   const [acting, setActing] = useState(false);
   const [formError, setFormError] = useState("");
 
+  // List display cache only — post/reverse/delete always hit the server and invalidate.
   const load = useCallback(async () => {
-    setLoading(true);
+    const cacheKey = ledgerListCache.buildKey({
+      u: listUserId,
+      b: listBranchId,
+      kind: "general_journals",
+    });
+    const cached = ledgerListCache.get(cacheKey);
+    const hasCache = Boolean(cached?.data);
+    if (hasCache) {
+      setItems(Array.isArray(cached.data.items) ? cached.data.items : []);
+      setCoa(Array.isArray(cached.data.coa) ? cached.data.coa : []);
+      setRefreshing(true);
+      setLoading(false);
+    } else {
+      setLoading(true);
+      setRefreshing(false);
+    }
+    const seq = requestSeq.current + 1;
+    requestSeq.current = seq;
     setLoadError("");
     try {
       const [gj, accounts] = await Promise.all([
         api.generalJournals(),
         api.ledgerAccounts().catch(() => ({ items: [] })),
       ]);
-      setItems(Array.isArray(gj?.items) ? gj.items : []);
-      setCoa(Array.isArray(accounts?.items) ? accounts.items : []);
+      if (seq !== requestSeq.current) return;
+      const nextItems = Array.isArray(gj?.items) ? gj.items : [];
+      const nextCoa = Array.isArray(accounts?.items) ? accounts.items : [];
+      ledgerListCache.set(cacheKey, { items: nextItems, coa: nextCoa });
+      setItems(nextItems);
+      setCoa(nextCoa);
     } catch (ex) {
+      if (seq !== requestSeq.current) return;
       setLoadError(errText(ex));
-      setItems([]);
+      if (!hasCache) setItems([]);
     } finally {
-      setLoading(false);
+      if (seq === requestSeq.current) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
-  }, []);
+  }, [listBranchId, listUserId]);
+
+  const reloadAuthoritative = useCallback(async () => {
+    ledgerListCache.invalidate();
+    await load();
+  }, [load]);
 
   useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    if (mode !== "list") return;
+    const next = new URLSearchParams();
+    if (q.trim()) next.set("q", q.trim());
+    if (statusFilter && statusFilter !== "all") next.set("status", statusFilter);
+    if (next.toString() === searchParams.toString()) return;
+    setSearchParams(next, { replace: true });
+  }, [mode, q, statusFilter, searchParams, setSearchParams]);
+
+  useEffect(() => {
+    if (prevListUserRef.current === listUserId) return;
+    ledgerListCache.clear();
+    prevListUserRef.current = listUserId;
+  }, [listUserId]);
 
   const filtered = useMemo(() => {
     const needle = String(q || "").trim().toLowerCase();
@@ -199,7 +254,7 @@ export default function JurnalUmum() {
         saved = await api.createGeneralJournal(payload);
       }
       setEditRow(saved);
-      await load();
+      await reloadAuthoritative();
       return saved;
     } catch (ex) {
       setFormError(errText(ex));
@@ -229,7 +284,7 @@ export default function JurnalUmum() {
       const posted = await api.postGeneralJournal(id);
       setViewRow(posted);
       setMode("view");
-      await load();
+      await reloadAuthoritative();
     } catch (ex) {
       setFormError(errText(ex));
     } finally {
@@ -245,7 +300,7 @@ export default function JurnalUmum() {
       const rev = await api.reverseGeneralJournal(id);
       setViewRow(rev);
       setMode("view");
-      await load();
+      await reloadAuthoritative();
     } catch (ex) {
       setFormError(errText(ex));
     } finally {
@@ -259,7 +314,7 @@ export default function JurnalUmum() {
     try {
       await api.deleteGeneralJournal(id);
       setMode("list");
-      await load();
+      await reloadAuthoritative();
     } catch (ex) {
       setLoadError(errText(ex));
     } finally {
@@ -516,7 +571,10 @@ export default function JurnalUmum() {
         <div className="prod-heading-copy">
           <p className="eyebrow">Buku Besar</p>
           <h1 data-testid="jurnal-umum-title">Jurnal Umum</h1>
-          <p className="subhead">Draft → Posting → journal_core → Reversal</p>
+          <p className="subhead">
+            Draft → Posting → journal_core → Reversal
+            {refreshing ? <span data-testid="jurnal-umum-refreshing"> · menyegarkan</span> : null}
+          </p>
         </div>
         {canManage && (
           <button type="button" className="primary" onClick={openCreate} data-testid="jurnal-umum-add">

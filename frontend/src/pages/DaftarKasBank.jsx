@@ -1,9 +1,12 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { AlertCircle, Eye, Pencil, Plus, Search, X } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { useDebouncedLiveSearch, liveSearchTableView } from "../hooks/useDebouncedLiveSearch";
 import { KbField, KbSection } from "../components/CashBankFormPrimitives";
+import { listIdentityBranchId, listIdentityUserId } from "../lib/listIdentity";
+import { cashBankListCache } from "../lib/smartListCaches";
 
 const errText = (ex) => {
   const det = ex?.response?.data?.detail;
@@ -18,11 +21,15 @@ const coaLabel = (row) => ({
 });
 
 export default function DaftarKasBank() {
-  const { hasPerm } = useAuth();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const { user, hasPerm } = useAuth();
+  const listUserId = listIdentityUserId(user);
+  const listBranchId = listIdentityBranchId(user);
   const canManage = hasPerm("cash_bank.manage");
   const [items, setItems] = useState([]);
   const [coa, setCoa] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [loadError, setLoadError] = useState("");
   const [formOpen, setFormOpen] = useState(false);
   const [viewOpen, setViewOpen] = useState(false);
@@ -34,8 +41,10 @@ export default function DaftarKasBank() {
   const [active, setActive] = useState(true);
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState("");
-  const [activeFilter, setActiveFilter] = useState("all");
-  const { input: qInput, setInput: setQInput, q, flush: doSearch, clear: clearQuery, pending: searchPending } = useDebouncedLiveSearch();
+  const [activeFilter, setActiveFilter] = useState(() => searchParams.get("status") || "all");
+  const { input: qInput, setInput: setQInput, q, flush: doSearch, clear: clearQuery, pending: searchPending } = useDebouncedLiveSearch(searchParams.get("q") || "");
+  const requestSeq = useRef(0);
+  const prevListUserRef = useRef(listUserId);
 
   const usedAccountIds = useMemo(() => {
     const set = new Set(items.map((r) => r.account_id).filter(Boolean));
@@ -56,25 +65,66 @@ export default function DaftarKasBank() {
     });
   }, [coa, usedAccountIds, accountId]);
 
+  // Display-only account registry cache — never authorizes reconciliation/posting.
   const load = useCallback(async () => {
-    setLoading(true);
+    const cacheKey = cashBankListCache.buildKey({
+      u: listUserId,
+      b: listBranchId,
+      kind: "cash_bank_accounts",
+    });
+    const cached = cashBankListCache.get(cacheKey);
+    const hasCache = Boolean(cached?.data);
+    if (hasCache) {
+      setItems(Array.isArray(cached.data.items) ? cached.data.items : []);
+      setCoa(Array.isArray(cached.data.coa) ? cached.data.coa : []);
+      setRefreshing(true);
+      setLoading(false);
+    } else {
+      setLoading(true);
+      setRefreshing(false);
+    }
+    const seq = requestSeq.current + 1;
+    requestSeq.current = seq;
     setLoadError("");
     try {
       const [cb, accounts] = await Promise.all([
         api.cashBankAccounts(),
         api.ledgerAccounts().catch(() => ({ items: [] })),
       ]);
-      setItems(Array.isArray(cb?.items) ? cb.items : []);
-      setCoa(Array.isArray(accounts?.items) ? accounts.items : []);
+      if (seq !== requestSeq.current) return;
+      const nextItems = Array.isArray(cb?.items) ? cb.items : [];
+      const nextCoa = Array.isArray(accounts?.items) ? accounts.items : [];
+      cashBankListCache.set(cacheKey, { items: nextItems, coa: nextCoa });
+      setItems(nextItems);
+      setCoa(nextCoa);
     } catch (ex) {
+      if (seq !== requestSeq.current) return;
       setLoadError(errText(ex));
-      setItems([]);
+      if (!hasCache) setItems([]);
     } finally {
-      setLoading(false);
+      if (seq === requestSeq.current) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
-  }, []);
+  }, [listBranchId, listUserId]);
 
   useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    if (formOpen || viewOpen) return;
+    const next = new URLSearchParams();
+    if (q.trim()) next.set("q", q.trim());
+    if (activeFilter && activeFilter !== "all") next.set("status", activeFilter);
+    if (next.toString() === searchParams.toString()) return;
+    setSearchParams(next, { replace: true });
+  }, [q, activeFilter, formOpen, viewOpen, searchParams, setSearchParams]);
+
+  useEffect(() => {
+    if (prevListUserRef.current === listUserId) return;
+    cashBankListCache.clear();
+    prevListUserRef.current = listUserId;
+  }, [listUserId]);
 
   const filtered = useMemo(() => {
     const needle = String(q || "").trim().toLowerCase();
@@ -133,6 +183,7 @@ export default function DaftarKasBank() {
         await api.createCashBankAccount({ name, account_id: accountId, description, active });
       }
       setFormOpen(false);
+      cashBankListCache.invalidate();
       await load();
     } catch (ex) {
       setFormError(errText(ex));
@@ -264,7 +315,10 @@ export default function DaftarKasBank() {
         <div className="prod-heading-copy">
           <p className="eyebrow">Kas & Bank</p>
           <h1 data-testid="kas-bank-daftar-title">Daftar Kas & Bank</h1>
-          <p className="subhead">Satu Kas/Bank terhubung ke tepat satu Akun Perkiraan</p>
+          <p className="subhead">
+            Satu Kas/Bank terhubung ke tepat satu Akun Perkiraan
+            {refreshing ? <span data-testid="kas-bank-daftar-refreshing"> · menyegarkan</span> : null}
+          </p>
         </div>
         {canManage && (
           <button type="button" className="primary" onClick={openCreate} data-testid="kas-bank-daftar-add">
