@@ -515,3 +515,163 @@ async def test_mtd_global_caps_unbounded_account_fanout(monkeypatch):
     assert summary["unmatched_count"] is None
     assert summary["review_count"] is None
     assert MAX_OWNER_RECON_ACCOUNTS < summary["accounts_total"]
+
+
+async def _group(*, cash_bank_id, account_id, journal_line_id, journal_id, members, amount=1000000):
+    group_id = str(uuid.uuid4())
+    await server.db[RECON_MATCHES].insert_one({
+        "id": group_id,
+        "match_kind": "pair_group",
+        "status": "active",
+        "cash_bank_id": cash_bank_id,
+        "account_id": account_id,
+        "journal_line_id": journal_line_id,
+        "journal_id": journal_id,
+        "journal_number": "JE-G",
+        "date": "2026-09-10",
+        "description": "group",
+        "debit": amount,
+        "credit": 0,
+        "amount": float(amount),
+        "direction": "in",
+        "currency_code": "IDR",
+        "line_status": STATUS_POSTED,
+        "statement_line_ids": [m["statement_line_id"] for m in members],
+        "member_snapshots": [
+            {
+                "statement_line_id": m["statement_line_id"],
+                "amount": float(m["amount"]),
+                "direction": "in",
+                "date": m["date"],
+                "description": m.get("description") or "m",
+                "reference": "R",
+            }
+            for m in members
+        ],
+        "idempotency_key": str(uuid.uuid4()),
+        "payload_hash": "hg",
+        "created_at": "2026-09-10T00:00:00+00:00",
+    })
+    for m in members:
+        await server.db[RECON_MATCHES].insert_one({
+            "id": str(uuid.uuid4()),
+            "match_kind": "pair_group_member",
+            "status": "active",
+            "group_id": group_id,
+            "cash_bank_id": cash_bank_id,
+            "statement_line_id": m["statement_line_id"],
+            "amount": float(m["amount"]),
+            "direction": "in",
+            "date": m["date"],
+            "description": m.get("description") or "m",
+            "reference": "R",
+            "currency_code": "IDR",
+            "created_at": "2026-09-10T00:00:00+00:00",
+        })
+    return group_id
+
+
+async def test_active_pair_group_members_sesuai_no_double_count():
+    coa = await _coa("1181", "BankG")
+    bank = await _bank(coa["id"], "Bank Group")
+    book = await _journal(account_id=coa["id"], date="2026-09-10", debit=1000000, credit=0)
+    s1 = await _import_and_line(cash_bank_id=bank["id"], date="2026-09-08", amount=200000, direction="in", description="G200")
+    s2 = await _import_and_line(cash_bank_id=bank["id"], date="2026-09-09", amount=500000, direction="in", description="G500")
+    s3 = await _import_and_line(cash_bank_id=bank["id"], date="2026-09-10", amount=300000, direction="in", description="G300")
+    group_id = await _group(
+        cash_bank_id=bank["id"],
+        account_id=coa["id"],
+        journal_line_id=book["journal_line_id"],
+        journal_id=book["journal_id"],
+        members=[
+            {"statement_line_id": s1["statement_line_id"], "amount": 200000, "date": "2026-09-08"},
+            {"statement_line_id": s2["statement_line_id"], "amount": 500000, "date": "2026-09-09"},
+            {"statement_line_id": s3["statement_line_id"], "amount": 300000, "date": "2026-09-10"},
+        ],
+    )
+    view = await get_owner_recon_view(server.db, cash_bank_id=bank["id"], **PERIOD)
+    group_rows = [r for r in view["items"] if str(r.get("id") or "").startswith("group:")]
+    assert len(group_rows) == 1
+    row = group_rows[0]
+    assert row["status"] == STATUS_SESUAI
+    assert row["match"]["match_kind"] == "pair_group"
+    assert row["match"]["member_count"] == 3
+    assert row["nominal"] == 1000000.0
+    # Members must not appear as unmatched statement rows.
+    stmt_ids = {s1["statement_line_id"], s2["statement_line_id"], s3["statement_line_id"]}
+    unmatched_stmt = [
+        r for r in view["items"]
+        if r.get("status") == STATUS_STMT_ONLY and (r.get("statement") or {}).get("id") in stmt_ids
+    ]
+    assert unmatched_stmt == []
+    book_unmatched = [
+        r for r in view["items"]
+        if r.get("status") == STATUS_BOOK_ONLY
+        and (r.get("book") or {}).get("journal_line_id") == book["journal_line_id"]
+    ]
+    assert book_unmatched == []
+    assert view["summary"]["cocok"] == 1
+    assert view["summary"]["belum_cocok"] == 0
+    assert any(m.get("statement_line_id") in stmt_ids for m in (row["match"].get("members") or []))
+    assert row["match"]["id"] == group_id
+
+
+async def test_cancelled_pair_group_not_treated_as_active():
+    coa = await _coa("1182", "BankGC")
+    bank = await _bank(coa["id"], "Bank Group Cancelled")
+    book = await _journal(account_id=coa["id"], date="2026-09-11", debit=1000000, credit=0)
+    s1 = await _import_and_line(cash_bank_id=bank["id"], date="2026-09-08", amount=400000, direction="in")
+    s2 = await _import_and_line(cash_bank_id=bank["id"], date="2026-09-09", amount=600000, direction="in")
+    group_id = await _group(
+        cash_bank_id=bank["id"],
+        account_id=coa["id"],
+        journal_line_id=book["journal_line_id"],
+        journal_id=book["journal_id"],
+        members=[
+            {"statement_line_id": s1["statement_line_id"], "amount": 400000, "date": "2026-09-08"},
+            {"statement_line_id": s2["statement_line_id"], "amount": 600000, "date": "2026-09-09"},
+        ],
+    )
+    await server.db[RECON_MATCHES].update_one(
+        {"id": group_id},
+        {"$set": {"status": "cancelled"}, "$unset": {"journal_line_id": ""}},
+    )
+    await server.db[RECON_MATCHES].update_many(
+        {"group_id": group_id, "match_kind": "pair_group_member"},
+        {"$set": {"status": "cancelled"}, "$unset": {"statement_line_id": ""}},
+    )
+    view = await get_owner_recon_view(server.db, cash_bank_id=bank["id"], **PERIOD)
+    assert not any(str(r.get("id") or "").startswith("group:") for r in view["items"])
+    assert view["summary"]["cocok"] == 0
+    assert view["summary"]["belum_cocok"] >= 3
+
+
+async def test_pair_and_group_coexist_in_owner_view():
+    coa = await _coa("1183", "BankMix")
+    bank = await _bank(coa["id"], "Bank Mix")
+    book1 = await _journal(account_id=coa["id"], date="2026-09-12", debit=100000, credit=0)
+    book2 = await _journal(account_id=coa["id"], date="2026-09-13", debit=1000000, credit=0)
+    stmt = await _import_and_line(cash_bank_id=bank["id"], date="2026-09-12", amount=100000, direction="in")
+    await _pair(
+        cash_bank_id=bank["id"], account_id=coa["id"],
+        statement_line_id=stmt["statement_line_id"],
+        journal_line_id=book1["journal_line_id"], journal_id=book1["journal_id"],
+        amount=100000, direction="in", date="2026-09-12",
+    )
+    s1 = await _import_and_line(cash_bank_id=bank["id"], date="2026-09-08", amount=200000, direction="in")
+    s2 = await _import_and_line(cash_bank_id=bank["id"], date="2026-09-09", amount=800000, direction="in")
+    await _group(
+        cash_bank_id=bank["id"],
+        account_id=coa["id"],
+        journal_line_id=book2["journal_line_id"],
+        journal_id=book2["journal_id"],
+        members=[
+            {"statement_line_id": s1["statement_line_id"], "amount": 200000, "date": "2026-09-08"},
+            {"statement_line_id": s2["statement_line_id"], "amount": 800000, "date": "2026-09-09"},
+        ],
+    )
+    view = await get_owner_recon_view(server.db, cash_bank_id=bank["id"], **PERIOD)
+    kinds = {(r.get("match") or {}).get("match_kind") for r in view["items"] if r.get("match")}
+    assert "pair" in kinds
+    assert "pair_group" in kinds
+    assert view["summary"]["cocok"] == 2

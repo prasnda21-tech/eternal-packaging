@@ -213,3 +213,128 @@
   .kas-bank-page.recon-workspace .recon-drawer-footer > span { width:100%; }
 }
 @media (min-width:768px) { .kas-bank-page.recon-workspace .kb-pane-switch { display:none; } }
+
+/* Accurate-style dual card board — compact cards, date|amount row, internal scroll */
+.kas-bank-page.recon-workspace .kb-accurate-board {
+  display:flex; flex-direction:column; gap:0; flex:1 1 auto; min-height:0;
+  max-height:min(68vh, 640px); background:#fff; border:1px solid var(--recon-border);
+  border-radius:8px; overflow:hidden;
+}
+.kas-bank-page.recon-workspace .kb-accurate-head {
+  display:grid; grid-template-columns:minmax(0,1fr) 24px minmax(0,1fr);
+  border-bottom:1px solid var(--recon-border); background:#f7fafc; flex-shrink:0;
+}
+.kas-bank-page.recon-workspace .kb-accurate-pane { border:0; border-radius:0; background:transparent; overflow:visible; }
+.kas-bank-page.recon-workspace .kb-accurate-pane .recon-pane-title { padding:6px 10px; }
+.kas-bank-page.recon-workspace .kb-accurate-pane .recon-pane-title h2 { font-size:12px; letter-spacing:.03em; }
+.kas-bank-page.recon-workspace .kb-pane-balance { margin-top:1px; font-size:11px; }
+.kas-bank-page.recon-workspace .kb-accurate-link { min-height:auto; }
+.kas-bank-page.recon-workspace .kb-accurate-scroll {
+  display:flex; flex-direction:column; gap:5px; padding:6px 8px; flex:1; min-height:0; overflow:auto;
+}
+.kas-bank-page.recon-workspace .kb-accurate-row {
+  display:grid; grid-template-columns:minmax(0,1fr) 24px minmax(0,1fr); gap:6px; align-items:stretch;
+}
+/* Grid: main+amount side-by-side (Accurate density), actions full-width bottom */
+.kas-bank-page.recon-workspace .kb-txn-card {
+  display:grid;
+  grid-template-columns:minmax(0,1fr) auto;
+  column-gap:8px; row-gap:2px;
+  min-height:0; padding:7px 8px;
+  border:1px solid #d5e2ee; border-radius:4px; background:#f4f6f8; color:#18332a;
+  align-content:start;
+}
+.kas-bank-page.recon-workspace .kb-txn-card .kb-card-main {
+  grid-column:1; grid-row:1;
+  display:flex; flex-direction:column; gap:0; min-width:0; flex:none;
+}
+.kas-bank-page.recon-workspace .kb-txn-card .kb-card-amount {
+  grid-column:2; grid-row:1; align-self:start; justify-self:end; text-align:right;
+}
+.kas-bank-page.recon-workspace .kb-txn-card .kb-card-actions {
+  grid-column:1 / -1; grid-row:2;
+  display:flex; flex-wrap:nowrap; gap:4px; margin-top:2px; justify-content:flex-start; align-items:center;
+}
+.kas-bank-page.recon-workspace .kb-txn-card .kb-card-empty {
+  grid-column:1 / -1; grid-row:1;
+  margin:0; padding:2px 0; font-size:11px; line-height:1.25; text-align:left; color:var(--recon-muted);
+}
+.kas-bank-page.recon-workspace .kb-txn-card .kb-card-empty + .kb-card-actions { grid-row:2; }
+.kas-bank-page.recon-workspace .kb-txn-card .recon-description {
+  display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden;
+  font-size:11px; line-height:1.25; margin-top:1px;
+}
+.kas-bank-page.recon-workspace .kb-txn-card .recon-date { font-size:10px; line-height:1.2; color:#365345; }
+.kas-bank-page.recon-workspace .kb-txn-card .kb-card-main > small {
+  display:block; font-size:10px; line-height:1.2; color:var(--recon-muted); margin-top:1px;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.kas-bank-page.recon-workspace .kb-txn-card .kb-running-balance { font-size:10px; margin-top:1px; }
+.kas-bank-page.recon-workspace .kb-txn-card .recon-row-warning { font-size:10px; margin-top:2px; }
+.kas-bank-page.recon-workspace .kb-txn-card .kb-single-amount { display:inline-flex; flex-direction:column; align-items:flex-end; gap:0; line-height:1.15; }
+.kas-bank-page.recon-workspace .kb-txn-card .kb-single-amount strong { font-size:12px; font-weight:750; font-variant-numeric:tabular-nums; }
+.kas-bank-page.recon-workspace .kb-txn-card .kb-single-amount small { font-size:10px; line-height:1.15; }
+.kas-bank-page.recon-workspace .kb-txn-card .kb-dc { font-size:10px; font-weight:700; }
+.kas-bank-page.recon-workspace .kb-txn-card.is-offered { background:#1d4e89; border-color:#163a66; color:#fff; }
+.kas-bank-page.recon-workspace .kb-txn-card.is-offered .recon-description,
+.kas-bank-page.recon-workspace .kb-txn-card.is-offered .recon-date,
+.kas-bank-page.recon-workspace .kb-txn-card.is-offered small,
+.kas-bank-page.recon-workspace .kb-txn-card.is-offered .kb-running-balance,
+.kas-bank-page.recon-workspace .kb-txn-card.is-offered .kb-card-main > small,
+.kas-bank-page.recon-workspace .kb-txn-card.is-offered .kb-single-amount strong,
+.kas-bank-page.recon-workspace .kb-txn-card.is-offered .kb-dc { color:#fff; }
+.kas-bank-page.recon-workspace .kb-txn-card.is-offered .recon-row-warning { color:#ffe08a; }
+.kas-bank-page.recon-workspace .kb-card-actions button {
+  display:inline-flex; align-items:center; gap:3px; padding:3px 7px; border-radius:3px; min-height:24px;
+  border:1px solid #c5d3e0; background:#eef2f6; color:#243447; font-weight:650; font-size:10px; white-space:nowrap;
+}
+.kas-bank-page.recon-workspace .kb-card-actions button svg { width:13px; height:13px; }
+.kas-bank-page.recon-workspace .kb-action-cocok.is-ready { background:#1d4e89; border-color:#163a66; color:#fff; }
+.kas-bank-page.recon-workspace .kb-txn-card.is-offered .kb-card-actions button { background:rgba(255,255,255,.16); border-color:rgba(255,255,255,.35); color:#fff; }
+.kas-bank-page.recon-workspace .kb-txn-card.is-offered .kb-action-cocok.is-ready { background:#0b1f39; border-color:#07162a; }
+.kas-bank-page.recon-workspace .kb-accurate-row .kb-pair-link { align-self:center; }
+.kas-bank-page.recon-workspace tr.kb-row-reconciled.is-saved .kb-matched-side { background:#e1f3e8; border-color:#8fbfa4; }
+.kas-bank-page.recon-workspace .kb-group-total { margin:4px 0 0; font-size:12px; font-weight:700; color:#146344; }
+.kas-bank-page.recon-workspace .kb-group-members {
+  list-style:none; margin:6px 0 0; padding:0; display:flex; flex-direction:column; gap:4px;
+  max-height:168px; overflow:auto; scrollbar-gutter:stable;
+}
+.kas-bank-page.recon-workspace .kb-group-members.is-expanded { max-height:none; }
+.kas-bank-page.recon-workspace .kb-group-members li { padding:6px 8px; border:1px solid #d5e2ee; border-radius:6px; background:#fff; }
+.kas-bank-page.recon-workspace .kb-group-expand { margin-top:6px; }
+.kas-bank-page.recon-workspace .kb-cari-target { padding:12px; border:1px solid #d5e2ee; border-radius:8px; background:#f7fafc; margin-bottom:12px; }
+.kas-bank-page.recon-workspace .kb-cari-target h3 { margin:0 0 6px; font-size:14px; }
+.kas-bank-page.recon-workspace .kb-cari-target p { margin:4px 0; }
+.kas-bank-page.recon-workspace .kb-cari-search { display:flex; flex-direction:column; gap:6px; margin-bottom:8px; font-size:12px; color:var(--recon-muted); }
+.kas-bank-page.recon-workspace .kb-cari-loading { margin:0 0 8px; font-size:11px; color:var(--recon-muted); }
+.kas-bank-page.recon-workspace .kb-cari-table-wrap { max-height:min(42vh, 320px); overflow:auto; border:1px solid var(--recon-border); border-radius:6px; }
+.kas-bank-page.recon-workspace .kb-cari-more { margin-top:8px; }
+.kas-bank-page.recon-workspace .kb-cari-summary { display:flex; flex-wrap:wrap; gap:14px; margin-top:12px; padding:10px 12px; border:1px solid var(--recon-border); border-radius:8px; background:#fff; font-size:12px; }
+.kas-bank-page.recon-workspace .kb-cari-summary .is-zero strong { color:#146344; }
+.kas-bank-page.recon-workspace .kb-cari-summary .is-diff strong { color:#a72f28; }
+.kas-bank-page.recon-workspace .kb-buat-actions { display:flex; flex-wrap:wrap; gap:10px; margin-top:14px; }
+.kas-bank-page.recon-workspace .recon-cari-dialog,
+.kas-bank-page.recon-workspace .recon-buat-dialog {
+  width:min(720px,96vw); inset:0; margin:auto; height:auto; max-height:92dvh;
+  border:1px solid var(--recon-border); border-radius:10px; box-shadow:0 18px 60px #133b2540;
+}
+@media (max-width:767px) {
+  .kas-bank-page.recon-workspace .kb-accurate-board { max-height:none; flex:1; }
+  .kas-bank-page.recon-workspace .kb-accurate-head,
+  .kas-bank-page.recon-workspace .kb-accurate-row { grid-template-columns:minmax(0,1fr); }
+  .kas-bank-page.recon-workspace .kb-accurate-link,
+  .kas-bank-page.recon-workspace .kb-accurate-row .kb-pair-link { display:none; }
+  .kas-bank-page.recon-workspace .kb-txn-card { display:none; min-height:0; padding:7px 8px; }
+  .kas-bank-page.recon-workspace .kb-txn-card.is-shown { display:grid; }
+  .kas-bank-page.recon-workspace .kb-card-empty { padding:2px 0; }
+  .kas-bank-page.recon-workspace .kb-txn-card .kb-card-actions {
+    position:sticky; bottom:0; background:inherit; padding-top:4px; flex-wrap:wrap; gap:4px;
+  }
+  .kas-bank-page.recon-workspace .kb-card-actions button { flex:1 1 auto; justify-content:center; min-height:32px; font-size:11px; }
+  .kas-bank-page.recon-workspace .recon-cari-dialog,
+  .kas-bank-page.recon-workspace .recon-buat-dialog { width:100vw; max-width:100vw; max-height:100dvh; border-radius:0; }
+  .kas-bank-page.recon-workspace .kb-cari-table-wrap { max-height:40dvh; }
+  .kas-bank-page.recon-workspace .kb-group-members { max-height:220px; }
+  .kas-bank-page.recon-workspace .kb-matched-pair { gap:6px; }
+  .kas-bank-page.recon-workspace .kb-single-amount strong { overflow-wrap:anywhere; white-space:normal; }
+}

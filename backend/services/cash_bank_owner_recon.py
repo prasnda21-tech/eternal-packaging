@@ -13,6 +13,7 @@ from services.cash_bank_master import COLLECTION as CASH_BANK_COLLECTION, get_ca
 from services.cash_bank_mutasi import SOURCE_LABELS, _resolve_voucher_meta
 from services.cash_bank_pair_match import (
     PairValidationError,
+    _public_group,
     _public_pair,
     book_direction,
     review_state,
@@ -173,6 +174,8 @@ async def get_owner_recon_view(
         claim_query["$or"].append({"journal_line_id": {"$in": line_ids}})
     if bank_ids:
         claim_query["$or"].append({"statement_line_id": {"$in": bank_ids}})
+        # pair_group stores members as statement_line_ids[]; include those docs.
+        claim_query["$or"].append({"statement_line_ids": {"$in": bank_ids}})
     claims: List[dict] = []
     if claim_query["$or"]:
         claims = await db[RECON_MATCHES].find(claim_query, {"_id": 0}).to_list(100000)
@@ -182,11 +185,66 @@ async def get_owner_recon_view(
         if c.get("match_kind") == "pair" and c.get("status") == "active"
         and c.get("statement_line_id") and c.get("journal_line_id")
     ]
+    active_groups = [
+        c for c in claims
+        if c.get("match_kind") == "pair_group" and c.get("status") == "active"
+        and c.get("journal_line_id")
+    ]
+    # Member docs alone can surface a group_id when the group header was not
+    # already pulled via journal_line_id / statement_line_ids.
+    member_group_ids = {
+        str(c.get("group_id"))
+        for c in claims
+        if c.get("match_kind") == "pair_group_member"
+        and c.get("status") == "active"
+        and c.get("group_id")
+    }
+    known_group_ids = {str(g.get("id")) for g in active_groups if g.get("id")}
+    missing_group_ids = [gid for gid in member_group_ids if gid not in known_group_ids]
+    if missing_group_ids:
+        extra_groups = await db[RECON_MATCHES].find(
+            {
+                "id": {"$in": missing_group_ids},
+                "match_kind": "pair_group",
+                "status": "active",
+            },
+            {"_id": 0},
+        ).to_list(len(missing_group_ids))
+        active_groups.extend(extra_groups)
+        known_group_ids.update(str(g.get("id")) for g in extra_groups if g.get("id"))
+
+    members_by_group: Dict[str, List[dict]] = {gid: [] for gid in known_group_ids}
+    if known_group_ids:
+        for member in await db[RECON_MATCHES].find(
+            {
+                "match_kind": "pair_group_member",
+                "group_id": {"$in": list(known_group_ids)},
+            },
+            {"_id": 0},
+        ).to_list(100000):
+            gid = str(member.get("group_id") or "")
+            if gid in members_by_group:
+                members_by_group[gid].append(member)
+
     by_statement = {c["statement_line_id"]: c for c in active_pairs}
     by_journal = {c["journal_line_id"]: c for c in active_pairs}
+    for group in active_groups:
+        jid = str(group.get("journal_line_id") or "")
+        if jid:
+            by_journal[jid] = group
+        for sid in group.get("statement_line_ids") or []:
+            if sid:
+                by_statement[str(sid)] = group
+        for member in members_by_group.get(str(group.get("id")), []):
+            if member.get("status") != "active":
+                continue
+            sid = str(member.get("statement_line_id") or "")
+            if sid:
+                by_statement[sid] = group
 
     journal_ids = list({
         *(c.get("journal_id") for c in active_pairs if c.get("journal_id")),
+        *(c.get("journal_id") for c in active_groups if c.get("journal_id")),
         *(r.get("journal_id") for r in gl["items"] if r.get("journal_id")),
     })
     journals: Dict[str, dict] = {}
@@ -214,8 +272,91 @@ async def get_owner_recon_view(
     emitted_book: set = set()
     emitted_stmt: set = set()
 
+    # Active 1:N groups → one SESUAI/PERLU_REVIEW row each (no per-member double count)
+    for group in active_groups:
+        gid = str(group.get("id") or "")
+        members = members_by_group.get(gid) or []
+        active_members = [
+            m for m in members
+            if m.get("status") == "active" and m.get("statement_line_id")
+        ]
+        book = book_by_line.get(str(group.get("journal_line_id")))
+        journal = journals.get(group.get("journal_id") or "") or (
+            journals.get((book or {}).get("journal_id") or "")
+        )
+        book_dir, book_amt = "none", Decimal("0.00")
+        if book:
+            try:
+                book_dir, book_amt = book_direction(book.get("debit"), book.get("credit"))
+            except Exception:
+                book_dir, book_amt = "none", Decimal("0.00")
+        j_status = str((journal or {}).get("status") or (book or {}).get("status") or "")
+        member_sum = sum((_money(m.get("amount")) for m in active_members), Decimal("0.00"))
+        group_amount = _money(group.get("amount"))
+        first_stmt = None
+        for m in active_members:
+            first_stmt = bank_by_id.get(str(m.get("statement_line_id"))) or first_stmt
+        if j_status == JOURNAL_STATUS_REVERSED:
+            status_code = STATUS_REVERSED
+        elif review_state(journal) == "perlu_tinjauan":
+            status_code = STATUS_REVIEW_CANON
+        elif (
+            book
+            and book_dir == str(group.get("direction") or "")
+            and group_amount == book_amt
+            and member_sum == book_amt
+            and len(active_members) >= 2
+        ):
+            status_code = STATUS_SESUAI
+        else:
+            status_code = STATUS_REVIEW_CANON
+        st = str((book or {}).get("source_type") or "")
+        sid = str((book or {}).get("source_id") or "")
+        meta = source_cache.get((st, sid)) or {}
+        public = _public_group(group, journal, members)
+        # One row per group: nominal = group total (not a single member amount).
+        group_stmt = None
+        if first_stmt:
+            group_stmt = {
+                **first_stmt,
+                "amount": float(group_amount),
+                "description": f"Grup bank ({len(active_members)} anggota)",
+                "reference": (first_stmt.get("reference") or "") ,
+            }
+        rows.append(_row(
+            row_id=f"group:{group.get('id')}",
+            date=str((book or {}).get("date") or group.get("date") or ""),
+            cash_bank_id=cb_id,
+            cash_bank_name=cb.get("name"),
+            statement=group_stmt,
+            book=book,
+            book_direction=book_dir if book else str(group.get("direction") or "") or None,
+            book_amount=float(group_amount),
+            source_type=st or None,
+            source_id=sid or None,
+            source_label=_source_label(st) if st else ((book or {}).get("source_label") or "—"),
+            voucher_number=meta.get("voucher_number"),
+            source_path=meta.get("source_path"),
+            status=status_code,
+            pair=public,
+            journal_status=j_status or None,
+        ))
+        for m in active_members:
+            sid_m = str(m.get("statement_line_id") or "")
+            if sid_m:
+                emitted_stmt.add(sid_m)
+        for sid_m in group.get("statement_line_ids") or []:
+            if sid_m:
+                emitted_stmt.add(str(sid_m))
+        if group.get("journal_line_id"):
+            emitted_book.add(str(group["journal_line_id"]))
+
     # Matched pairs → one row each
     for pair in active_pairs:
+        if pair.get("statement_line_id") and str(pair["statement_line_id"]) in emitted_stmt:
+            continue
+        if pair.get("journal_line_id") and str(pair["journal_line_id"]) in emitted_book:
+            continue
         stmt = bank_by_id.get(str(pair.get("statement_line_id")))
         book = book_by_line.get(str(pair.get("journal_line_id")))
         journal = journals.get(pair.get("journal_id") or "") or (

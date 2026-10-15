@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 from fastapi import File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import Response as FastAPIResponse
@@ -80,8 +80,12 @@ from services.cash_bank_pair_match import (
     PairConflictError,
     PairValidationError,
     cancel_pair,
+    cancel_pair_group,
     create_pair,
+    create_pair_group,
     get_pair,
+    get_pair_group,
+    list_group_candidates,
     list_legacy_reconciliations,
     pair_workspace,
     suggest_pairs,
@@ -199,6 +203,16 @@ class PairCancelPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     idempotency_key: str = Field(..., min_length=1)
     reason: str = Field(..., min_length=1)
+
+
+class PairGroupMatchPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    cash_bank_id: str = Field(..., min_length=1)
+    journal_line_id: str = Field(..., min_length=1)
+    statement_line_ids: List[str] = Field(..., min_length=2)
+    idempotency_key: str = Field(..., min_length=1)
+    start_date: str = Field(..., min_length=1)
+    end_date: str = Field(..., min_length=1)
 
 
 def _mapping_form(raw: str) -> dict:
@@ -1110,6 +1124,90 @@ def register_cash_bank_routes(
             )
         except KeyError:
             raise HTTPException(404, "Pencocokan tidak ditemukan") from None
+        except PairValidationError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except PairConflictError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @api_router.get("/cash-bank/reconciliations/pair-groups/candidates")
+    async def get_pair_group_candidates(
+        cash_bank_id: str = Query(..., min_length=1),
+        journal_line_id: str = Query(..., min_length=1),
+        start_date: str = Query(..., min_length=1),
+        end_date: str = Query(..., min_length=1),
+        q: Optional[str] = Query(None),
+        page: int = Query(1, ge=1),
+        page_size: int = Query(50, ge=1, le=100),
+        user=Depends(require_perm(PERM_VIEW)),
+    ):
+        db = get_db()
+        try:
+            return await list_group_candidates(
+                db,
+                cash_bank_id=cash_bank_id,
+                journal_line_id=journal_line_id,
+                start=start_date,
+                end=end_date,
+                q=q,
+                page=page,
+                page_size=page_size,
+            )
+        except PairValidationError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except PairConflictError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @api_router.get("/cash-bank/reconciliations/pair-groups/{group_id}")
+    async def get_pair_group_match(
+        group_id: str,
+        user=Depends(require_perm(PERM_VIEW)),
+    ):
+        db = get_db()
+        try:
+            return await get_pair_group(db, group_id)
+        except KeyError:
+            raise HTTPException(404, "Pencocokan grup tidak ditemukan") from None
+
+    @api_router.post("/cash-bank/reconciliations/pair-groups", status_code=201)
+    async def post_pair_group_match(
+        payload: PairGroupMatchPayload,
+        user=Depends(require_perm(PERM_RECONCILE)),
+    ):
+        db = get_db()
+        await _ensure_all(db)
+        try:
+            return await create_pair_group(
+                db,
+                cash_bank_id=payload.cash_bank_id,
+                journal_line_id=payload.journal_line_id,
+                statement_line_ids=payload.statement_line_ids,
+                idempotency_key=payload.idempotency_key,
+                start=payload.start_date,
+                end=payload.end_date,
+                user=user,
+            )
+        except PairValidationError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except PairConflictError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @api_router.post("/cash-bank/reconciliations/pair-groups/{group_id}/cancel")
+    async def post_pair_group_cancel(
+        group_id: str,
+        payload: PairCancelPayload,
+        user=Depends(require_perm(PERM_RECONCILE)),
+    ):
+        db = get_db()
+        try:
+            return await cancel_pair_group(
+                db,
+                group_id,
+                idempotency_key=payload.idempotency_key,
+                reason=payload.reason,
+                user=user,
+            )
+        except KeyError:
+            raise HTTPException(404, "Pencocokan grup tidak ditemukan") from None
         except PairValidationError as exc:
             raise HTTPException(400, str(exc)) from exc
         except PairConflictError as exc:
