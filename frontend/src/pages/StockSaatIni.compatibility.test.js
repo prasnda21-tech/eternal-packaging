@@ -74,16 +74,17 @@ describe("Stock Saat Ini compatibility mode", () => {
     });
     expect(container.querySelector('[data-testid="stock-read-mode"]')?.textContent).toMatch(/kompatibilitas/i);
     expect(container.querySelector('[data-testid="stock-read-mode"]')?.textContent).toMatch(/perusahaan/i);
-    expect(container.querySelector('[data-testid="stock-read-mode"]')?.textContent).toMatch(/bukan saldo per gudang/i);
-    expect(container.querySelector('[data-testid="stock-compat-branch-note"]')?.textContent).toMatch(/cabang|perusahaan|gudang/i);
-    expect(container.querySelector('[data-testid="stock-physical-header"]')?.textContent).toMatch(/perusahaan/i);
+    expect(container.querySelector('[data-testid="stock-compat-branch-note"]')?.textContent).toMatch(/perusahaan|gudang/i);
+    expect(container.querySelector('[data-testid="stock-adjust-blocked-reason"]')?.textContent).toMatch(/otoritas R2|R2 aktif/i);
+    expect(container.querySelector('[data-testid="stock-adjust-blocked-reason"]')?.textContent).not.toMatch(/Preview|R2 OFF/i);
+    expect(container.querySelector('[data-testid="stock-physical-header"]')?.textContent).toMatch(/Stock Fisik/i);
     expect(container.querySelector('[data-testid="stock-physical-header"]')?.getAttribute("data-physical-scope")).toBe("COMPANY");
     expect(container.querySelector('[data-testid="stock-branch-select-input"]')).toBeNull();
     expect(container.querySelector('[data-testid="stock-undelivered-m1"]')?.textContent).toMatch(/Belum terverifikasi/i);
     expect(container.querySelector('[data-testid="stock-undelivered-m1"]')?.getAttribute("data-belum-status")).toBe("BELUM_TERVERIFIKASI");
     expect(container.querySelector('[data-testid="stock-available-m1"]')?.getAttribute("data-tersedia-valid")).toBe("false");
     expect(container.querySelector('[data-testid="stock-available-invalid-m1"]')?.textContent).toMatch(/Belum valid/i);
-    expect(container.querySelector('[data-testid="stock-legacy-physical-m1"]')?.textContent).toMatch(/bukan saldo gudang/i);
+    expect(container.querySelector('[data-testid="stock-baseline-m1"]')?.textContent).toMatch(/legacy|gudang|direkonsiliasi/i);
   });
 
   test("legacy CUTOVER_PENDING status still renders Belum terverifikasi", async () => {
@@ -136,8 +137,10 @@ describe("Stock Saat Ini compatibility mode", () => {
       await Promise.resolve();
     });
     expect(container.querySelector('[data-testid="stock-read-mode"]')?.textContent).toMatch(/Mode R2/i);
-    expect(container.querySelector('[data-testid="stock-physical-header"]')?.textContent).toBe("Saldo Buku R2 (cabang)");
+    expect(container.querySelector('[data-testid="stock-physical-header"]')?.textContent).toBe("Stock Fisik");
     expect(container.querySelector('[data-testid="stock-physical-header"]')?.getAttribute("data-physical-scope")).toBe("BRANCH");
     expect(container.querySelector('[data-testid="stock-warehouse-select"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="stock-book-vs-count-note"]')?.textContent).toMatch(/belum direkonsiliasi|cabang/i);
+    expect(container.textContent).not.toMatch(/Preview.*R2 OFF|R2 OFF/i);
   });
 });

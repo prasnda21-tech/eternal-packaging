@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import api from "../lib/api";
 import { formatDate } from "../lib/constants";
 import { fmtQty } from "../components/qtyUi";
@@ -43,6 +43,8 @@ function sessionMode(session) {
 }
 
 export default function StockOpname() {
+  const [searchParams] = useSearchParams();
+  const requestedWarehouseId = String(searchParams.get("warehouse_id") || "").trim();
   const [branches, setBranches] = useState([]);
   const [warehouses, setWarehouses] = useState([]);
   const [warehouseId, setWarehouseId] = useState("");
@@ -74,15 +76,20 @@ export default function StockOpname() {
         setWarehouses(warehouseRows);
         setSessions(Array.isArray(sessionRes) ? sessionRes : []);
         const operational = opnameWarehouseChoices(branchRows, warehouseRows);
-        // Only auto-select when exactly one warehouse; OWNER picks when several.
-        setWarehouseId(preselectedWarehouseId(operational));
+        // Prefer warehouse_id from Stock Saat Ini deep-link when it is in scope;
+        // otherwise only auto-select when exactly one warehouse.
+        const fromLink = requestedWarehouseId
+          && operational.some((row) => row.id === requestedWarehouseId)
+          ? requestedWarehouseId
+          : "";
+        setWarehouseId(fromLink || preselectedWarehouseId(operational));
         if (operational.length === 0) {
           setError("Tidak ada gudang operasional aktif pada cabang yang tersedia.");
         }
       })
       .catch((err) => { if (!cancelled) setError(stockOpnameErrorMessage(err)); });
     return () => { cancelled = true; };
-  }, []);
+  }, [requestedWarehouseId]);
 
   const sessionDraftKey = useMemo(() => {
     if (!session) return "";

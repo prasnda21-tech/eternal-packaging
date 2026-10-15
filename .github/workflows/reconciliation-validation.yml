@@ -557,6 +557,12 @@ jobs:
           src/pages/PhysicalStockSettings.test.js
           src/pages/StockOpname.test.js
           src/lib/stockOpnameTime.test.js
+          src/lib/physicalStockView.test.js
+          src/lib/purchaseUi.receiveRefresh.test.js
+          src/pages/StockSaatIni.compatibility.test.js
+          src/pages/StockSaatIni.inlineAdjust.test.js
+          src/pages/PenerimaanBarang.warehouse.test.js
+          src/pages/PenerimaanBarang.receiveRefresh.test.js
           src/pages/ProductDetail.test.js
           src/pages/FakturPenjualan.test.js
           src/pages/FakturPenjualan.listFilters.test.js

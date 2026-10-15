@@ -10,7 +10,10 @@ describe("Stock Opname operational workflow", () => {
     expect(src).toMatch(/warehouseLocationLabel/);
     expect(src).not.toMatch(/operationalOpeningWarehouses/);
     expect(src).toMatch(/Tidak ada gudang operasional aktif/);
-    expect(src).toMatch(/Only auto-select when exactly one warehouse/);
+    expect(src).toMatch(/Prefer warehouse_id from Stock Saat Ini deep-link/);
+    expect(src).toMatch(/only auto-select when exactly one warehouse/);
+    expect(src).toMatch(/useSearchParams/);
+    expect(src).toMatch(/requestedWarehouseId/);
     expect(src).toMatch(/opnameLocationLabel/);
     expect(src).toMatch(/data-testid="opname-start"/);
     expect(src).toMatch(/Mulai Stock Opname/);

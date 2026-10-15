@@ -1,4 +1,5 @@
 import {
+  bookPhysicalDisplay,
   goodsReceiptWarehouseChoice,
   isOperationalWarehouse,
   movementLabel,
@@ -152,5 +153,49 @@ describe("physical stock view helpers", () => {
     const none = goodsReceiptWarehouseChoice(branches, []);
     expect(none.blocked).toBe(true);
     expect(none.warehouseId).toBe("");
+  });
+
+  test("goods receipt warehouse choice matches UAT branch by id, not YGY code", () => {
+    const branches = [{ id: "uat-ygy", code: "UAT-YGY", name: "Cabang UAT Adjust", active: true }];
+    const many = goodsReceiptWarehouseChoice(branches, [
+      { id: "a", branch_id: "uat-ygy", code: "GUD-A", name: "Gudang A", active: true, is_operational: true },
+      { id: "b", branch_id: "uat-ygy", code: "GUD-B", name: "Gudang B", active: true, is_operational: true },
+    ]);
+    expect(many.blocked).toBe(false);
+    expect(many.explicit).toBe(true);
+    expect(many.warehouseId).toBe("");
+    expect(many.rows.map((r) => r.code)).toEqual(["GUD-A", "GUD-B"]);
+  });
+
+  test("bookPhysicalDisplay never treats missing balance as proven zero", () => {
+    const absent = bookPhysicalDisplay({
+      physical_qty: 0,
+      warehouse_balances: [{
+        warehouse_id: "wh-b",
+        physical_qty: null,
+        balance_present: false,
+      }],
+    }, { warehouseId: "wh-b" });
+    expect(absent).toEqual({ present: false, qty: null, text: "Belum tersedia" });
+
+    const zeroBook = bookPhysicalDisplay({
+      physical_qty: 0,
+      warehouse_balances: [{
+        warehouse_id: "wh-a",
+        physical_qty: 0,
+        balance_present: true,
+      }],
+    }, { warehouseId: "wh-a" });
+    expect(zeroBook).toEqual({ present: true, qty: 0, text: null });
+
+    const book20 = bookPhysicalDisplay({
+      physical_qty: 20,
+      warehouse_balances: [{
+        warehouse_id: "wh-a",
+        physical_qty: 20,
+        balance_present: true,
+      }],
+    }, { warehouseId: "wh-a" });
+    expect(book20).toEqual({ present: true, qty: 20, text: null });
   });
 });
