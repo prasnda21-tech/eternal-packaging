@@ -1834,8 +1834,7 @@ export default function RekonsiliasiKasBank() {
       {tab === "unmatched" && <div className="recon-tab-body" role="tabpanel" id="recon-panel-unmatched" aria-labelledby="recon-tab-unmatched" data-testid="kas-bank-workspace-pairs">
         <div className="kb-pane-switch" aria-label="Panel"><button type="button" aria-pressed={pane === "bank"} className={pane === "bank" ? "primary sm" : "ghost sm"} onClick={() => setPane("bank")}>Bank</button><button type="button" aria-pressed={pane === "book"} className={pane === "book" ? "primary sm" : "ghost sm"} onClick={() => setPane("book")}>Jurnal</button></div>
         {(bankView !== "results" && bookView !== "results") && stateMessage(bankView, "mutasi bank", alignRows.length)}
-        {ready && !alignRows.length && <p className="recon-empty">Tidak ada baris belum cocok pada tampilan ini.</p>}
-        {ready && alignRows.length > 0 && (
+        {ready && (
           <div className="kb-accurate-board" data-testid="kas-bank-accurate-board">
             <div className="kb-accurate-head">
               <section className={`kb-pane kb-accurate-pane ${pane === "bank" ? "is-shown" : ""}`} aria-label="Rekening bank">
@@ -1868,6 +1867,12 @@ export default function RekonsiliasiKasBank() {
               </section>
             </div>
             <div className="kb-accurate-scroll kb-pair-scroll">
+              {!alignRows.length && (
+                <p className="recon-empty" data-testid="kas-bank-unmatched-empty">
+                  Tidak ada baris belum cocok pada tampilan ini.
+                  {canPurgeUnmatched ? " Tombol Hapus Belum Cocok tetap tersedia untuk memeriksa eligible pada periode terpilih." : ""}
+                </p>
+              )}
               {alignRows.map((row) => {
                 const offered = row.offered;
                 const ambiguous = row.ambiguous;

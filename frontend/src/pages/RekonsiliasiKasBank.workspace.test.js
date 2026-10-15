@@ -397,6 +397,46 @@ test('Hapus Belum Cocok hidden without purge permission', async () => {
   expect(container.querySelector('[data-testid=kas-bank-purge-unmatched]')).toBeNull();
 });
 
+test('Hapus Belum Cocok visible when unmatched table is empty', async () => {
+  mockPermissions = ['cash_bank.view', 'cash_bank.reconcile', 'cash_bank.reconcile.purge_unmatched'];
+  workspace = {
+    ...workspace,
+    unmatched_bank_count: 0,
+    unmatched_book_count: 0,
+    visible_bank_count: 0,
+    visible_book_count: 0,
+    bank_total: 0,
+    book_total: 0,
+    bank_lines: [],
+    book_lines: [],
+  };
+  api.previewCashBankUnmatchedPurge.mockResolvedValue({
+    cash_bank_id: 'account-1',
+    cash_bank_name: 'Rekening uji',
+    eligible_count: 0,
+    protected_count: 0,
+    ambiguous_count: 0,
+    fence_busy: false,
+    zero_write: true,
+  });
+  await renderPage();
+  const select = container.querySelector('[data-testid=kas-bank-pair-bank]');
+  await act(async () => {
+    select.value = 'account-1';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  await flush();
+  await flush();
+  const btn = container.querySelector('[data-testid=kas-bank-purge-unmatched]');
+  expect(btn).toBeTruthy();
+  expect(container.querySelector('[data-testid=kas-bank-unmatched-empty]')).toBeTruthy();
+  expect(container.querySelector('[data-testid=kas-bank-pair-match]')).toBeNull();
+  await click(btn);
+  await flush();
+  expect(api.previewCashBankUnmatchedPurge).toHaveBeenCalled();
+  expect(container.querySelector('[data-testid=kas-bank-purge-confirm]').disabled).toBe(true);
+});
+
 test('Hapus Belum Cocok dialog shows counts and confirm disabled when zero', async () => {
   mockPermissions = ['cash_bank.view', 'cash_bank.reconcile', 'cash_bank.reconcile.purge_unmatched'];
   api.previewCashBankUnmatchedPurge.mockResolvedValue({
