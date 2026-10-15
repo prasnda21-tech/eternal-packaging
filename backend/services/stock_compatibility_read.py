@@ -16,6 +16,7 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from services.inventory_accounting import ITEM_TYPE_SERVICE
 from services.physical_stock import (
     MASTER_ITEMS_COLLECTION,
     _catalog_page,
@@ -32,7 +33,10 @@ MODE_COMPATIBILITY = "compatibility"
 MODE_R2 = "r2"
 
 BELUM_STATUS_READY = "READY"
-BELUM_STATUS_CUTOVER_PENDING = "CUTOVER_PENDING"
+# Insufficient delivery proof → never invent Belum Terkirim as zero.
+BELUM_STATUS_UNVERIFIED = "BELUM_TERVERIFIKASI"
+# Alias retained for older clients/tests that still expect the cutover label.
+BELUM_STATUS_CUTOVER_PENDING = BELUM_STATUS_UNVERIFIED
 
 
 def _delivery_line_qty(line: dict) -> float:
@@ -76,6 +80,10 @@ def aggregate_legacy_delivered_qty(
     delivered: Dict[str, float] = {}
     provenance: Dict[str, str] = {}
     unproven_masters: Dict[str, bool] = {}
+    # (order_id, master_id) that already received confirmed-shipment attribution.
+    # qty_delivered fallback is per-PO — never skipped just because another PO
+    # already delivered the same master.
+    confirmed_order_masters: set = set()
     # deliveries arg kept for API compatibility; SELESAI/SEBAGIAN are not proof.
     _ = deliveries
 
@@ -92,6 +100,7 @@ def aggregate_legacy_delivered_qty(
             provenance[mid] = source
 
     for order in order_by_id.values():
+        order_id = str(order.get("id") or "").strip()
         order_lines = list(order.get("line_items") or [])
         if not order_lines:
             continue
@@ -138,7 +147,7 @@ def aggregate_legacy_delivered_qty(
                     continue
             sh_tokens = _delivery_identity_tokens(sh)
             attributed, resolve_issues = _resolve_proven_line_attribution(
-                order_id=str(order.get("id") or ""),
+                order_id=order_id or "(missing-order)",
                 identity=sh_tokens[0] if sh_tokens else "(missing-id)",
                 proven=proven,
                 order_line_count=len(order_lines),
@@ -156,28 +165,47 @@ def aggregate_legacy_delivered_qty(
                     continue
                 mid = _line_master_id(order_lines[idx], owners)
                 add(mid, float(qty), "confirmed_shipment")
+                if order_id and mid:
+                    confirmed_order_masters.add((order_id, mid))
 
-    # Single-line order.qty_delivered fallback when no confirmed shipment contributed
+    # Single-line order.qty_delivered fallback when THIS PO has no confirmed
+    # shipment attribution for that master (other POs must not suppress it).
     for order in order_by_id.values():
+        order_id = str(order.get("id") or "").strip()
         order_lines = list(order.get("line_items") or [])
         master_ids = [_line_master_id(li, owners) for li in order_lines]
         identified = [m for m in master_ids if m]
         if len(identified) != 1:
             continue
         mid = identified[0]
-        if mid in delivered:
+        if order_id and (order_id, mid) in confirmed_order_masters:
             continue
         qd = _qty_num(order.get("qty_delivered"))
         if qd > 0:
             add(mid, qd, "order_qty_delivered")
 
+    # Ambiguous attribution always wins over partial confirmed totals — never
+    # leave READY/confirmed when any shipment for the master is unproven.
     for mid in unproven_masters:
-        if mid not in delivered:
-            provenance[mid] = "unproven"
-        elif provenance.get(mid) != "confirmed_shipment":
-            provenance[mid] = "unproven"
+        provenance[mid] = "unproven"
 
     return delivered, provenance
+
+
+def _compatibility_flags() -> dict:
+    """Legacy company stock is informational only — never warehouse-valid."""
+    return {
+        "stock_read_mode": MODE_COMPATIBILITY,
+        "physical_qty_scope": "COMPANY",
+        "physical_qty_warehouse_valid": False,
+        "qty_tersedia_valid": False,
+        "qty_tersedia_note": (
+            "Qty Tersedia belum valid — stok fisik legacy digabung perusahaan "
+            "dan belum direkonsiliasi per gudang (Saldo Awal / Stock Opname R2)."
+        ),
+        "baseline_status": "unreconciled",
+        "baseline_label": "Stok fisik legacy (perusahaan) — bukan saldo per gudang",
+    }
 
 
 def compatibility_row(
@@ -191,7 +219,8 @@ def compatibility_row(
     updated_at: Optional[str],
     base_unit: str,
 ) -> dict:
-    if belum_status == BELUM_STATUS_CUTOVER_PENDING:
+    flags = _compatibility_flags()
+    if belum_status in (BELUM_STATUS_UNVERIFIED, BELUM_STATUS_CUTOVER_PENDING):
         # Do not invent Belum Terkirim. Qty Tersedia excludes only Qty Pesanan.
         buckets = operational_availability(
             physical_qty=physical_qty,
@@ -212,8 +241,8 @@ def compatibility_row(
             "qty_belum_terkirim": None,
             "qty_tersedia": buckets["physical_qty"] - qty_pesanan,
             "updated_at": updated_at,
-            "belum_terkirim_status": BELUM_STATUS_CUTOVER_PENDING,
-            "stock_read_mode": MODE_COMPATIBILITY,
+            "belum_terkirim_status": BELUM_STATUS_UNVERIFIED,
+            **flags,
         }
 
     buckets = operational_availability(
@@ -234,7 +263,7 @@ def compatibility_row(
         "qty_tersedia": buckets["qty_tersedia"],
         "updated_at": updated_at,
         "belum_terkirim_status": BELUM_STATUS_READY,
-        "stock_read_mode": MODE_COMPATIBILITY,
+        **flags,
     }
 
 
@@ -259,6 +288,21 @@ async def list_compatibility_stock_catalog(
     masters = await db[MASTER_ITEMS_COLLECTION].find(item_query, {"_id": 0}).sort(
         [("item_name", 1), ("id", 1)]
     ).to_list(1000)
+    # Process / jasa Add On (item_type=SERVICE) is work qty, not physical stock.
+    # No parent_line_id exists in schema — SERVICE type is the explicit signal.
+    type_rows = await db[MASTER_ITEMS_COLLECTION].find(
+        {}, {"_id": 0, "id": 1, "item_type": 1},
+    ).to_list(5000)
+    service_master_ids = {
+        str(row.get("id") or "").strip()
+        for row in type_rows
+        if str(row.get("item_type") or "").strip().upper() == ITEM_TYPE_SERVICE
+        and str(row.get("id") or "").strip()
+    }
+    masters = [
+        row for row in masters
+        if str(row.get("id") or "").strip() not in service_master_ids
+    ]
     safe_page, safe_limit = _catalog_page(page, limit)
     if not masters:
         return {
@@ -278,6 +322,8 @@ async def list_compatibility_stock_catalog(
                 "bukan saldo per gudang. Belum dipisahkan per cabang. "
                 "Filter cabang tidak mengubah qty fisik legacy."
             ),
+            "physical_qty_warehouse_valid": False,
+            "qty_tersedia_valid": False,
             "compatibility": {
                 "physical_source": "product_stock_state.total_qty",
                 "order_source": "orders.line_items + operator_splits (print) / PO qty ready (non_print)",
@@ -287,7 +333,9 @@ async def list_compatibility_stock_catalog(
                     "not sales_deliveries.status SELESAI/SEBAGIAN"
                 ),
                 "physical_qty_scope": "COMPANY",
+                "physical_qty_warehouse_valid": False,
                 "branch_filter_affects_physical_qty": False,
+                "qty_tersedia_valid": False,
             },
         }
 
@@ -298,7 +346,9 @@ async def list_compatibility_stock_catalog(
         {"is_cancelled": {"$ne": True}, "cancelled": {"$ne": True}},
         {"_id": 0},
     ).to_list(20000)
-    progress = aggregate_operational_orders(orders, owners)
+    progress = aggregate_operational_orders(
+        orders, owners, exclude_master_ids=service_master_ids,
+    )
     delivered_map, provenance = aggregate_legacy_delivered_qty(orders, deliveries, owners)
 
     state_by_mid: Dict[str, dict] = {}
@@ -313,14 +363,19 @@ async def list_compatibility_stock_catalog(
         state = state_by_mid.get(mid) or {}
         initialized = bool(state.get("initialized") or state.get("status") == "INITIALIZED")
         physical = _qty_num(state.get("total_qty")) if initialized else 0.0
-        demand = progress.get(mid) or {"ordered_qty": 0.0, "completed_qty": 0.0}
+        demand = progress.get(mid) or {
+            "ordered_qty": 0.0,
+            "completed_qty": 0.0,
+            "completion_unproven": False,
+        }
         ordered = _qty_num(demand["ordered_qty"])
         completed = _qty_num(demand["completed_qty"])
         delivered = _qty_num(delivered_map.get(mid, 0))
         prov = provenance.get(mid) or ""
-        # Unproven delivery attribution with open completion → do not invent Belum Terkirim
-        if completed > 0 and prov == "unproven":
-            belum_status = BELUM_STATUS_CUTOVER_PENDING
+        completion_unproven = bool(demand.get("completion_unproven"))
+        # Unproven process completion or delivery attribution → never invent siap kirim.
+        if (completion_unproven and completed > 0) or (completed > 0 and prov == "unproven"):
+            belum_status = BELUM_STATUS_UNVERIFIED
         else:
             belum_status = BELUM_STATUS_READY
         rows.append(
@@ -359,8 +414,16 @@ async def list_compatibility_stock_catalog(
         "compatibility": {
             "physical_source": "product_stock_state.total_qty",
             "order_source": "orders.line_items + operator_splits (print) / PO qty ready (non_print)",
-            "delivery_source": "sales_deliveries (+ order.qty_delivered single-line fallback)",
+            "delivery_source": (
+                "confirmed order.shipments / delivery_confirmations "
+                "(+ order.qty_delivered single-line fallback); "
+                "not sales_deliveries.status SELESAI/SEBAGIAN"
+            ),
             "physical_qty_scope": "COMPANY",
+            "physical_qty_warehouse_valid": False,
             "branch_filter_affects_physical_qty": False,
+            "qty_tersedia_valid": False,
         },
+        "physical_qty_warehouse_valid": False,
+        "qty_tersedia_valid": False,
     }

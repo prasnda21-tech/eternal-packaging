@@ -1854,6 +1854,7 @@ async def get_order(order_id: str, view: Optional[str] = None, user=Depends(curr
         if not view_ok:
             raise HTTPException(403, "Anda tidak punya permission untuk melihat PO ini")
     _apply_hold_snapshot(order)
+    await _stamp_order_line_item_types(order)
     # Workflow 06-12 targeted bugfix: expose prereq status untuk UI gating.
     order["packing_prereq_reasons"] = _prereq_reasons_for_packing(order)
     order["packing_ready"] = len(order["packing_prereq_reasons"]) == 0
@@ -1863,7 +1864,7 @@ async def get_order(order_id: str, view: Optional[str] = None, user=Depends(curr
     order["surat_jalan_created"] = _surat_jalan_created(order)
     order["loading_prereq_reasons"] = _prereq_reasons_for_loading(order)
     order["loading_ready"] = len(order["loading_prereq_reasons"]) == 0
-    # Task 14 bugfix: expose Loading completion + Terkirim gate.
+    # Task 14 bug fix: expose Loading completion + Terkirim gate.
     order["loading_completed"] = _loading_completed(order)
     order["terkirim_prereq_reasons"] = _prereq_reasons_for_terkirim(order)
     order["terkirim_ready"] = len(order["terkirim_prereq_reasons"]) == 0
@@ -2139,11 +2140,42 @@ class _OrderMutationSkipped(Exception):
     """Idempotent progress save. Leave the order document untouched."""
 
 
+async def _stamp_order_line_item_types(order: dict) -> None:
+    """In-memory stamp of master item_type onto lines missing it (not persisted).
+
+    Enables sync packing/SJ/loading helpers to exclude SERVICE process qty.
+    """
+    from quantity_rules import stamp_line_item_types
+
+    need: list = []
+    for li in (order.get("line_items") or []):
+        if not isinstance(li, dict):
+            continue
+        if str(li.get("item_type") or "").strip():
+            continue
+        mid = str(li.get("master_item_id") or "").strip()
+        if mid:
+            need.append(mid)
+    if not need:
+        return
+    rows = await db.master_items.find(
+        {"id": {"$in": list(set(need))}},
+        {"_id": 0, "id": 1, "item_type": 1},
+    ).to_list(len(set(need)))
+    type_by_master = {
+        str(r.get("id") or "").strip(): str(r.get("item_type") or "").strip().upper()
+        for r in rows
+        if str(r.get("id") or "").strip() and str(r.get("item_type") or "").strip()
+    }
+    stamp_line_item_types(order, type_by_master)
+
+
 async def _load_order_for_mutation(order_id: str) -> dict:
     order = await db.orders.find_one({"id": order_id}, {"_id": 0})
     if not order:
         raise HTTPException(404, "PO tidak ditemukan")
     _ensure_not_cancelled(order)
+    await _stamp_order_line_item_types(order)
     return order
 
 
@@ -2269,6 +2301,7 @@ async def _persist_order(order, *, require_lock: bool = False, persist_keys: Opt
     if require_lock and result.modified_count == 0 and result.matched_count == 0:
         raise HTTPException(409, _CONFLICT_MSG)
     # Attach derived fields untuk response (workflow 06-12 bugfix).
+    await _stamp_order_line_item_types(order)
     order["packing_prereq_reasons"] = _prereq_reasons_for_packing(order)
     order["packing_ready"] = len(order["packing_prereq_reasons"]) == 0
     # Task 12 bugfix: derived packing_status semantic — konsistensi antara
@@ -3558,6 +3591,93 @@ async def set_line_items_route(order_id: str, payload: LineItemRoutePayload, use
     await _audit_po(order, "production.route.update", user,
                     before={"routes": {str(i): p for i, p in before}},
                     after={"routes": {str(i): li.get("production_process") for i, li in enumerate(lis)}})
+    return {"order": order}
+
+
+class AddonParentItem(BaseModel):
+    line_idx: int
+    parent_line_id: Optional[str] = None
+    parent_line_idx: Optional[int] = None
+    clear: bool = False
+
+
+class AddonParentPayload(BaseModel):
+    items: List[AddonParentItem]
+
+
+@api_router.patch("/orders/{order_id}/line-items/addon-parent")
+async def set_line_items_addon_parent(order_id: str, payload: AddonParentPayload, user=Depends(current_user)):
+    """Set/clear explicit Add On → Barang Utama relation (parent_line_id).
+
+    Does not change quantity, name, color, Accurate ids, or production_process.
+    Never invents links from item names. Invalid parent refs are rejected.
+    Uses optimistic updated_at lock to avoid lost updates on concurrent PO edits.
+    """
+    from services.order_line_addon import (
+        ensure_line_identity_fields,
+        line_identity,
+        validate_lines_parent_graph,
+    )
+
+    await _require_perm(user, "production.route.edit")
+
+    before_holder = {"addon_parents": None}
+    after_holder = {"addon_parents": None}
+
+    def _mutate(order: dict):
+        lis = [dict(li) if isinstance(li, dict) else {} for li in (order.get("line_items") or [])]
+        if not lis:
+            raise HTTPException(400, "PO tidak memiliki line item")
+        for i, li in enumerate(lis):
+            lis[i] = ensure_line_identity_fields(li, i)
+
+        before_holder["addon_parents"] = {
+            str(i): {
+                "line_id": line_identity(li, i),
+                "parent_line_id": li.get("parent_line_id"),
+                "parent_line_idx": li.get("parent_line_idx"),
+            }
+            for i, li in enumerate(lis)
+        }
+        for it in payload.items or []:
+            if it.line_idx < 0 or it.line_idx >= len(lis):
+                raise HTTPException(400, f"line_idx {it.line_idx} tidak valid")
+            row = lis[it.line_idx]
+            if it.clear:
+                row.pop("parent_line_id", None)
+                row.pop("parent_line_idx", None)
+                continue
+            if it.parent_line_id is not None:
+                pid = str(it.parent_line_id or "").strip()
+                if pid:
+                    row["parent_line_id"] = pid
+                else:
+                    row.pop("parent_line_id", None)
+            if it.parent_line_idx is not None:
+                row["parent_line_idx"] = int(it.parent_line_idx)
+        err = validate_lines_parent_graph(lis)
+        if err:
+            raise HTTPException(400, err)
+        order["line_items"] = lis
+        after_holder["addon_parents"] = {
+            str(i): {
+                "line_id": line_identity(li, i),
+                "parent_line_id": li.get("parent_line_id"),
+                "parent_line_idx": li.get("parent_line_idx"),
+            }
+            for i, li in enumerate(lis)
+        }
+
+    order = await _with_quantity_lock(
+        order_id, _mutate, persist_keys=("line_items",),
+    )
+    await _audit_po(
+        order,
+        "production.addon_parent.update",
+        user,
+        before={"addon_parents": before_holder["addon_parents"]},
+        after={"addon_parents": after_holder["addon_parents"]},
+    )
     return {"order": order}
 
 
@@ -5254,6 +5374,7 @@ async def delete_surat_jalan_file(
     # Recompute derived SJ / stage flags + remain so Aksi PO matches stageflow
     # immediately (no stale "Seluruh Qty Selesai Dibuatkan SJ").
     order["surat_jalan_created"] = _surat_jalan_created(order)
+    await _stamp_order_line_item_types(order)
     _attach_quantity_snapshot(order)
     order["sales_delivery_summary"] = await _get_po_delivery_summary(db, order)
     return {"order": _strip_sj_bytes(order)}
@@ -10181,6 +10302,10 @@ class SalesOrderLineItemInput(BaseModel):
     unit_price: Optional[Union[int, float, str]] = None
     price_source: Optional[str] = None
     price_review: Optional[bool] = None
+    # Explicit Add On → Barang Utama relation (opt-in; never inferred from names).
+    line_id: Optional[str] = None
+    parent_line_id: Optional[str] = None
+    parent_line_idx: Optional[int] = None
 
 
 class SalesOrderPriceQuotePayload(BaseModel):
@@ -10699,8 +10824,26 @@ async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(curr
         raise HTTPException(400, "Minimal 1 line item.")
     
     from services.master_items import resolve_line_production_process
+    from services.order_line_addon import validate_lines_parent_graph
+
+    master_ids_for_type = [
+        (li.master_item_id or "").strip()
+        for li in payload.line_items
+        if (li.master_item_id or "").strip()
+    ]
+    item_type_by_master: Dict[str, str] = {}
+    if master_ids_for_type:
+        type_rows = await db.master_items.find(
+            {"id": {"$in": list(set(master_ids_for_type))}},
+            {"_id": 0, "id": 1, "item_type": 1},
+        ).to_list(len(set(master_ids_for_type)))
+        for row in type_rows:
+            mid_key = str(row.get("id") or "").strip()
+            if mid_key:
+                item_type_by_master[mid_key] = str(row.get("item_type") or "").strip().upper()
 
     normalized_lines = []
+    seen_line_ids = set()
     for i, li in enumerate(payload.line_items):
         name = (li.name or "").strip()
         if not name:
@@ -10721,7 +10864,13 @@ async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(curr
             explicit=li.production_process,
         )
 
-        normalized_lines.append({
+        line_id = (li.line_id or "").strip() or f"ln-{uuid.uuid4().hex[:12]}"
+        if line_id in seen_line_ids:
+            raise HTTPException(400, f"Line item #{i+1}: line_id duplikat '{line_id}'.")
+        seen_line_ids.add(line_id)
+
+        row = {
+            "line_id": line_id,
             "item_code": (li.item_code or "").strip() or None,
             "name": name,
             "quantity": q,
@@ -10734,7 +10883,20 @@ async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(curr
             "unit_price": li.unit_price,
             "price_source": li.price_source,
             "price_review": bool(li.price_review),
-        })
+        }
+        stamped_type = item_type_by_master.get(mid or "")
+        if stamped_type:
+            row["item_type"] = stamped_type
+        parent_id = (li.parent_line_id or "").strip() if li.parent_line_id is not None else ""
+        if parent_id:
+            row["parent_line_id"] = parent_id
+        if li.parent_line_idx is not None:
+            row["parent_line_idx"] = int(li.parent_line_idx)
+        normalized_lines.append(row)
+
+    graph_err = validate_lines_parent_graph(normalized_lines)
+    if graph_err:
+        raise HTTPException(400, graph_err)
     
     order_date = _parse_order_date_iso(payload.order_date, default_days_ahead=0)
     deadline = _parse_order_date_iso(payload.deadline or payload.estimated_delivery, default_days_ahead=3)

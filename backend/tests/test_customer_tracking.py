@@ -400,7 +400,9 @@ def test_public_url_labels_customer_po_and_keeps_the_access_code():
     path, rule = tracking_public_path(order, code)
     assert rule == "single"
     assert path == f"/t/frutavor/PO-2026-10-02-000012/{code}"
-    assert "SJ" not in path
+    # Label segments only — never scan the random access-code token for "SJ".
+    label_path = path.rsplit("/", 1)[0]
+    assert "SJ" not in label_path
     assert code not in customer_slug("Frutavor")
     assert "frutavor" not in code.lower()
     assert "PO-2026" not in code

@@ -38,11 +38,13 @@ describe("Stock Saat Ini compatibility mode", () => {
     jest.clearAllMocks();
   });
 
-  test("shows compatibility read mode and cutover-pending belum", async () => {
+  test("shows compatibility read mode, belum terverifikasi, and belum valid tersedia", async () => {
     api.physicalStockCatalog.mockResolvedValue({
       stock_read_mode: "compatibility",
       r2_authority_active: false,
       can_adjust_physical_stock: false,
+      physical_qty_warehouse_valid: false,
+      qty_tersedia_valid: false,
       master_item_count: 1,
       warehouse_count: 0,
       total: 1,
@@ -54,10 +56,14 @@ describe("Stock Saat Ini compatibility mode", () => {
         item_name: "Box",
         base_unit: "PCS",
         physical_qty: 15900,
+        physical_qty_warehouse_valid: false,
         qty_pesanan: 600,
         qty_belum_terkirim: null,
         qty_tersedia: 15300,
-        belum_terkirim_status: "CUTOVER_PENDING",
+        qty_tersedia_valid: false,
+        belum_terkirim_status: "BELUM_TERVERIFIKASI",
+        baseline_status: "unreconciled",
+        baseline_label: "Stok fisik legacy (perusahaan) — bukan saldo per gudang",
       }],
     });
     await act(async () => {
@@ -73,8 +79,42 @@ describe("Stock Saat Ini compatibility mode", () => {
     expect(container.querySelector('[data-testid="stock-physical-header"]')?.textContent).toMatch(/perusahaan/i);
     expect(container.querySelector('[data-testid="stock-physical-header"]')?.getAttribute("data-physical-scope")).toBe("COMPANY");
     expect(container.querySelector('[data-testid="stock-branch-select-input"]')).toBeNull();
-    expect(container.querySelector('[data-testid="stock-undelivered-m1"]')?.textContent).toMatch(/Cutover pending/i);
-    expect(container.querySelector('[data-testid="stock-undelivered-m1"]')?.getAttribute("data-belum-status")).toBe("CUTOVER_PENDING");
+    expect(container.querySelector('[data-testid="stock-undelivered-m1"]')?.textContent).toMatch(/Belum terverifikasi/i);
+    expect(container.querySelector('[data-testid="stock-undelivered-m1"]')?.getAttribute("data-belum-status")).toBe("BELUM_TERVERIFIKASI");
+    expect(container.querySelector('[data-testid="stock-available-m1"]')?.getAttribute("data-tersedia-valid")).toBe("false");
+    expect(container.querySelector('[data-testid="stock-available-invalid-m1"]')?.textContent).toMatch(/Belum valid/i);
+    expect(container.querySelector('[data-testid="stock-legacy-physical-m1"]')?.textContent).toMatch(/bukan saldo gudang/i);
+  });
+
+  test("legacy CUTOVER_PENDING status still renders Belum terverifikasi", async () => {
+    api.physicalStockCatalog.mockResolvedValue({
+      stock_read_mode: "compatibility",
+      r2_authority_active: false,
+      can_adjust_physical_stock: false,
+      total: 1,
+      page: 1,
+      page_count: 1,
+      items: [{
+        master_item_id: "m2",
+        item_code: "CUP",
+        item_name: "Cup",
+        base_unit: "PCS",
+        physical_qty: 10,
+        qty_pesanan: 1,
+        qty_belum_terkirim: null,
+        qty_tersedia: 9,
+        qty_tersedia_valid: false,
+        physical_qty_warehouse_valid: false,
+        belum_terkirim_status: "CUTOVER_PENDING",
+      }],
+    });
+    await act(async () => {
+      root.render(<StockSaatIni />);
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(container.querySelector('[data-testid="stock-undelivered-m2"]')?.textContent).toMatch(/Belum terverifikasi/i);
   });
 
   test("shows R2 mode when authority active", async () => {

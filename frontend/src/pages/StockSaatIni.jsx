@@ -450,6 +450,11 @@ export default function StockSaatIni() {
                       {fmtQty(it.physical_qty)}
                     </button>
                   ) : fmtQty(it.physical_qty)}
+                  {!r2Active && it.physical_qty_warehouse_valid === false && (
+                    <div className="muted small" data-testid={`stock-legacy-physical-${it.master_item_id}`}>
+                      Legacy perusahaan — bukan saldo gudang
+                    </div>
+                  )}
                   {it.baseline_status === "unreconciled" && (
                     <div className="muted small" data-testid={`stock-baseline-${it.master_item_id}`}>
                       {it.baseline_label || "Saldo awal belum direkonsiliasi"}
@@ -493,8 +498,9 @@ export default function StockSaatIni() {
                   data-testid={`stock-undelivered-${it.master_item_id}`}
                   data-belum-status={it.belum_terkirim_status || "READY"}
                 >
-                  {it.belum_terkirim_status === "CUTOVER_PENDING"
-                    ? "Cutover pending"
+                  {(it.belum_terkirim_status === "BELUM_TERVERIFIKASI"
+                    || it.belum_terkirim_status === "CUTOVER_PENDING")
+                    ? "Belum terverifikasi"
                     : fmtQty(it.qty_belum_terkirim)}
                 </td>
                 <td

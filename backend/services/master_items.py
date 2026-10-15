@@ -546,6 +546,7 @@ async def resolve_po_line_items(
             "accurate_item_id": doc["accurate_item_id"],
             "item_code": doc.get("item_code"),
             "item_name": doc.get("item_name"),
+            "item_type": doc.get("item_type"),
         }
 
     out: List[Dict[str, Any]] = []
@@ -559,6 +560,9 @@ async def resolve_po_line_items(
             row["name"] = master.get("item_name") or row.get("name")
         if not row.get("item_code"):
             row["item_code"] = master.get("item_code") or row.get("item_code")
+        stamped_type = str(master.get("item_type") or "").strip().upper()
+        if stamped_type and not str(row.get("item_type") or "").strip():
+            row["item_type"] = stamped_type
         out.append(row)
     return out
 
