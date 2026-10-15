@@ -11722,16 +11722,77 @@ async def _decorate_sales_order_list_rows(orders: list) -> None:
         return
     from services.sales_list_tabs import classify_sales_order_list_tab
 
+    from services.sales_deliveries import summarize_po_delivery_quantities
+    from services.sales_order_delivery_display import build_sales_order_delivery_progress
+
     dd_settings = await _get_delivery_deadline_settings()
     po_ids = [o["id"] for o in orders if o.get("id")]
-    shipped_aggregates: Dict[str, dict] = {}
+    display_shipments: Dict[str, list] = {}
+    confirmation_rows: Dict[str, list] = {}
+    embedded_shipments: Dict[str, list] = {}
     if po_ids:
-        pipe = [
-            {"$match": {"po_id": {"$in": po_ids}, "is_cancelled": {"$ne": True}}},
-            {"$group": {"_id": "$po_id", "total_shipped": {"$sum": "$total_qty"}, "count": {"$sum": 1}}},
-        ]
-        shipped_aggregates = {doc["_id"]: doc async for doc in db.sales_deliveries.aggregate(pipe)}
+        display_projection = {
+            "_id": 0,
+            "po_id": 1,
+            "id": 1,
+            "sj_number": 1,
+            "number": 1,
+            "is_cancelled": 1,
+            "cancelled": 1,
+            "deleted": 1,
+            "is_deleted": 1,
+            "superseded": 1,
+            "status": 1,
+            "total_qty": 1,
+            "delivered_at": 1,
+            "delivery_status": 1,
+            "line_items.qty": 1,
+            "line_items.quantity": 1,
+            "line_items.line_idx": 1,
+        }
+        async for shipment in db.sales_deliveries.find(
+            {"po_id": {"$in": po_ids}},
+            display_projection,
+        ):
+            display_shipments.setdefault(shipment.get("po_id"), []).append(shipment)
+        evidence_projection = {
+            "_id": 0,
+            "id": 1,
+            "delivery_confirmations.shipment_id": 1,
+            "delivery_confirmations.action_id": 1,
+            "delivery_confirmations.id": 1,
+            "delivery_confirmations.qty": 1,
+            "delivery_confirmations.items.line_idx": 1,
+            "delivery_confirmations.items.qty": 1,
+            "delivery_confirmations.items.quantity": 1,
+            "delivery_confirmations.is_cancelled": 1,
+            "delivery_confirmations.cancelled": 1,
+            "delivery_confirmations.is_deleted": 1,
+            "shipments.id": 1,
+            "shipments.sales_delivery_id": 1,
+            "shipments.number": 1,
+            "shipments.sj_number": 1,
+            "shipments.delivered_at": 1,
+            "shipments.delivery_status": 1,
+            "shipments.cancelled": 1,
+            "shipments.is_cancelled": 1,
+            "shipments.deleted": 1,
+            "shipments.is_deleted": 1,
+            "shipments.superseded": 1,
+            "shipments.superseded_by_shipment_id": 1,
+            "shipments.status": 1,
+            "shipments.sj_status": 1,
+            "shipments.total_qty": 1,
+            "shipments.qty": 1,
+            "shipments.lines.line_idx": 1,
+            "shipments.lines.qty": 1,
+            "shipments.lines.quantity": 1,
+        }
+        async for evidence in db.orders.find({"id": {"$in": po_ids}}, evidence_projection):
+            confirmation_rows[evidence.get("id")] = evidence.get("delivery_confirmations") or []
+            embedded_shipments[evidence.get("id")] = evidence.get("shipments") or []
     for o in orders:
+        raw_lines = o.get("line_items") or []
         o["quantity_by_unit"] = _quantity_by_unit(o.pop("line_items", None))
         o["design_files"] = [True] if o.pop("_has_design_files", False) else []
         o["payment_files"] = [True] if o.pop("_has_payment_files", False) else []
@@ -11742,10 +11803,16 @@ async def _decorate_sales_order_list_rows(orders: list) -> None:
         _strip_tracking_secret(o)
         o.pop("design_files", None)
         o.pop("payment_files", None)
-        agg = shipped_aggregates.get(o.get("id"), {})
-        tot_shipped = int(agg.get("total_shipped", 0))
-        tot_ordered = int(o.get("total_quantity", 0))
-        tot_remain = max(0, tot_ordered - tot_shipped)
+        qty = summarize_po_delivery_quantities(
+            {"id": o.get("id"), "cancelled": o.get("cancelled"), "line_items": raw_lines},
+            display_shipments.get(o.get("id")) or [],
+            po_id=o.get("id"),
+        )
+        tot_shipped = qty["total_shipped"]
+        tot_ordered = qty["total_ordered"]
+        tot_remain = qty["total_remaining"]
+        # List label stays BELUM DIKIRIM when nothing was counted. Detail calls
+        # that same zero SEBAGIAN. Totals and Kirim follow the detail totals.
         if o.get("cancelled"):
             deliv_st = "DIBATALKAN"
         elif tot_shipped == 0:
@@ -11759,8 +11826,16 @@ async def _decorate_sales_order_list_rows(orders: list) -> None:
             "total_shipped": tot_shipped,
             "total_remaining": tot_remain,
             "status": deliv_st,
-            "shipment_count": int(agg.get("count", 0)),
+            "shipment_count": qty["shipment_count"],
         }
+        progress = build_sales_order_delivery_progress(
+            raw_lines,
+            display_shipments.get(o.get("id")) or [],
+            cancelled=bool(o.get("cancelled")),
+            confirmations=confirmation_rows.get(o.get("id")) or [],
+            embedded_shipments=embedded_shipments.get(o.get("id")) or [],
+        )
+        o["delivery_progress"] = progress
 
 
 def _merge_sales_order_branches(aktif_rows: list, histori_rows: list) -> list:

@@ -370,10 +370,10 @@ function SalesOrderThumb({ src }) {
   );
 }
 
-function salesOrderProgressTone(order) {
+function salesOrderProgressTone(order, status) {
   if (order?.cancelled) return "is-cancel";
   if (order?.hold) return "is-hold";
-  const status = salesOrderDeliveryStatus(order);
+  if (!status) status = salesOrderDeliveryStatus(order);
   if (status === "SELESAI" || status === "SELESAI PENGIRIMAN") return "is-done";
   if (status === "DIBATALKAN") return "is-cancel";
   if (status === "SEBAGIAN" || status === "SEBAGIAN DIKIRIM") return "is-open";
@@ -391,7 +391,7 @@ function confirmDiscardSalesOrder() {
 
 function SalesOrderDeliveryProgress({ order }) {
   const progress = listDeliveryProgress(order);
-  const tone = salesOrderProgressTone(order);
+  const tone = salesOrderProgressTone(order, progress.status);
   return (
     <div className={`so-progress ${tone}`} data-testid={`order-progress-${order.id}`}>
       {progress.ratio != null && (

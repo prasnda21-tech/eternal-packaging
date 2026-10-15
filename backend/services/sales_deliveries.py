@@ -451,6 +451,97 @@ async def _reuse_existing_delivery_if_retry(db, order: dict, validated_lines: Li
     return None
 
 
+_DETAIL_EXCLUDED_SHIPMENT_STATUSES = ("superseded", "cancelled", "deleted")
+
+
+def summarize_po_delivery_quantities(
+    order: dict,
+    shipments: Optional[list],
+    *,
+    po_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Quantity block shared by Detail PO and the sales-order list gate.
+
+    This is the existing get_po_delivery_summary math, including its shipment
+    filter, line_idx fallback, and raw multi-unit sum. It does not decide a
+    new business rule.
+    """
+    existing_deliveries: List[dict] = []
+    for doc in shipments or []:
+        if not isinstance(doc, dict):
+            continue
+        if doc.get("is_cancelled") is True:
+            continue
+        status = str(doc.get("status") or "").strip().lower()
+        if status in _DETAIL_EXCLUDED_SHIPMENT_STATUSES:
+            continue
+        if doc.get("cancelled"):
+            continue
+        existing_deliveries.append(doc)
+
+    shipped_by_line_idx: Dict[int, int] = {}
+    for delivery in existing_deliveries:
+        for li in delivery.get("line_items", []):
+            l_idx = int(li.get("line_idx", 0))
+            q = int(li.get("qty") if li.get("qty") is not None else li.get("quantity", 0))
+            shipped_by_line_idx[l_idx] = shipped_by_line_idx.get(l_idx, 0) + q
+
+    raw_lines = order.get("line_items") or []
+    line_po_id = po_id if po_id is not None else order.get("id")
+    lines_summary = []
+    total_ordered = 0
+    total_shipped = 0
+
+    for idx, li in enumerate(raw_lines):
+        ordered_q = int(li.get("quantity") or 0)
+        shipped_q = shipped_by_line_idx.get(idx, 0)
+        remain_q = max(0, ordered_q - shipped_q)
+
+        total_ordered += ordered_q
+        total_shipped += shipped_q
+
+        stable_line_id = li.get("line_id") or f"{line_po_id}_line_{idx}"
+        lines_summary.append({
+            "line_idx": idx,
+            "line_id": stable_line_id,
+            "item_code": li.get("item_code"),
+            "name": li.get("name") or f"Item #{idx+1}",
+            "unit": li.get("unit") or "pcs",
+            "color": li.get("color"),
+            "production_process": li.get("production_process") or "print",
+            "ordered_qty": ordered_q,
+            "shipped_qty": shipped_q,
+            "remaining_qty": remain_q,
+            "notes": li.get("notes") or "",
+        })
+
+    total_remaining = max(0, total_ordered - total_shipped)
+    is_cancelled = bool(order.get("cancelled"))
+
+    all_lines_fulfilled = len(raw_lines) > 0 and all(
+        shipped_by_line_idx.get(idx, 0) >= int(li.get("quantity") or 0)
+        for idx, li in enumerate(raw_lines)
+    )
+
+    if is_cancelled:
+        delivery_status = "DIBATALKAN"
+    elif all_lines_fulfilled or (total_ordered > 0 and total_shipped >= total_ordered):
+        delivery_status = "SELESAI"
+    else:
+        delivery_status = "SEBAGIAN"
+
+    return {
+        "lines": lines_summary,
+        "deliveries": existing_deliveries,
+        "total_ordered": total_ordered,
+        "total_shipped": total_shipped,
+        "total_remaining": total_remaining,
+        "delivery_status": delivery_status,
+        "can_create_delivery": (not is_cancelled and total_remaining > 0),
+        "shipment_count": len(existing_deliveries),
+    }
+
+
 async def get_po_delivery_summary(db, po_id_or_doc: Any) -> Dict[str, Any]:
     """Calculate delivered & remaining quantities per line item for a PO.
     
@@ -530,66 +621,18 @@ async def get_po_delivery_summary(db, po_id_or_doc: Any) -> Dict[str, Any]:
                 if not sales_val:
                     sales_val = (recent_cust_po.get("sales") or recent_cust_po.get("seller") or "").strip()
 
-    # Fetch all existing sales deliveries for this exact PO sorted by shipment_index
+    # Fetch all existing sales deliveries for this exact PO sorted by shipment_index.
+    # is_cancelled is excluded here; summarize_po_delivery_quantities applies the
+    # same status and cancelled filter as before.
     deliveries_cursor = db.sales_deliveries.find({"po_id": po_id, "is_cancelled": {"$ne": True}}, {"_id": 0}).sort("shipment_index", 1)
-    existing_deliveries = await deliveries_cursor.to_list(1000)
-    existing_deliveries = [
-        d for d in existing_deliveries
-        if str((d or {}).get("status") or "").strip().lower() not in ("superseded", "cancelled", "deleted")
-        and not (d or {}).get("cancelled")
-    ]
-
-    # Accumulate shipped quantities per line_idx / line_id
-    shipped_by_line_idx: Dict[int, int] = {}
-    for d in existing_deliveries:
-        for li in d.get("line_items", []):
-            l_idx = int(li.get("line_idx", 0))
-            q = int(li.get("qty") if li.get("qty") is not None else li.get("quantity", 0))
-            shipped_by_line_idx[l_idx] = shipped_by_line_idx.get(l_idx, 0) + q
-
-    # Build line item summary
-    raw_lines = order.get("line_items") or []
-    lines_summary = []
-    total_ordered = 0
-    total_shipped = 0
-
-    for idx, li in enumerate(raw_lines):
-        ordered_q = int(li.get("quantity") or 0)
-        shipped_q = shipped_by_line_idx.get(idx, 0)
-        remain_q = max(0, ordered_q - shipped_q)
-        
-        total_ordered += ordered_q
-        total_shipped += shipped_q
-
-        stable_line_id = li.get("line_id") or f"{po_id}_line_{idx}"
-        lines_summary.append({
-            "line_idx": idx,
-            "line_id": stable_line_id,
-            "item_code": li.get("item_code"),
-            "name": li.get("name") or f"Item #{idx+1}",
-            "unit": li.get("unit") or "pcs",
-            "color": li.get("color"),
-            "production_process": li.get("production_process") or "print",
-            "ordered_qty": ordered_q,
-            "shipped_qty": shipped_q,
-            "remaining_qty": remain_q,
-            "notes": li.get("notes") or "",
-        })
-
-    total_remaining = max(0, total_ordered - total_shipped)
-    is_cancelled = bool(order.get("cancelled"))
-
-    all_lines_fulfilled = len(raw_lines) > 0 and all(
-        shipped_by_line_idx.get(idx, 0) >= int(li.get("quantity") or 0)
-        for idx, li in enumerate(raw_lines)
-    )
-
-    if is_cancelled:
-        delivery_status = "DIBATALKAN"
-    elif all_lines_fulfilled or (total_ordered > 0 and total_shipped >= total_ordered):
-        delivery_status = "SELESAI"
-    else:
-        delivery_status = "SEBAGIAN"
+    fetched_deliveries = await deliveries_cursor.to_list(1000)
+    qty = summarize_po_delivery_quantities(order, fetched_deliveries, po_id=po_id)
+    existing_deliveries = qty["deliveries"]
+    lines_summary = qty["lines"]
+    total_ordered = qty["total_ordered"]
+    total_shipped = qty["total_shipped"]
+    total_remaining = qty["total_remaining"]
+    delivery_status = qty["delivery_status"]
 
     next_shipment_index, suggested_sj = await allocate_sales_delivery_identity(db, po_id, po_number)
 
@@ -621,7 +664,7 @@ async def get_po_delivery_summary(db, po_id_or_doc: Any) -> Dict[str, Any]:
         "delivery_status": delivery_status,
         "next_shipment_index": next_shipment_index,
         "suggested_sj_number": suggested_sj,
-        "can_create_delivery": (not is_cancelled and total_remaining > 0),
+        "can_create_delivery": qty["can_create_delivery"],
         "deliveries": existing_deliveries,
         "delivery_location": persistable_delivery_location(order.get("delivery_location")),
     }
