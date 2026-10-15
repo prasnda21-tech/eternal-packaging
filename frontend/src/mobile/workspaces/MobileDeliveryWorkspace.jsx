@@ -82,6 +82,12 @@ function urlShipmentId() {
   }
 }
 
+export function recipientWhatsappHref(shipment) {
+  const digits = String(shipment?.recipient_phone_wa || "").replace(/\D/g, "");
+  if (!digits) return "";
+  return `https://wa.me/${digits}`;
+}
+
 function statusTone(selectedDelivered, batchAllowed) {
   if (selectedDelivered) return { key: "done", label: "Terkirim" };
   if (batchAllowed) return { key: "wait", label: "Siap Kirim" };
@@ -127,6 +133,7 @@ export default function MobileDeliveryWorkspace({
   const proofs = proofsForShipment(order, activeShipment);
   const address = deliveryAddressFromOrder(order);
   const maps = mapsSearchUrl(address);
+  const whatsappHref = recipientWhatsappHref(activeShipment);
   const cameraRef = useRef(null);
   const galleryRef = useRef(null);
   const pickerIntentRef = useRef({ type: "add" });
@@ -623,6 +630,17 @@ export default function MobileDeliveryWorkspace({
         <p>{address || "Alamat tidak tersedia"}</p>
         {maps ? (
           <a className="mop-delivery-maps" href={maps} target="_blank" rel="noreferrer">Buka Maps</a>
+        ) : null}
+        {whatsappHref ? (
+          <a
+            className="mop-delivery-wa"
+            href={whatsappHref}
+            target="_blank"
+            rel="noopener noreferrer"
+            data-testid="mobile-delivery-whatsapp"
+          >
+            WhatsApp Penerima
+          </a>
         ) : null}
       </article>
 
