@@ -25,7 +25,9 @@ from services.accurate import normalize_accurate_item  # noqa: E402
 from services.master_items import (  # noqa: E402
     ACCURATE_ID_PARTIAL_INDEX,
     CODE_CLAIMS_COLLECTION,
+    CODE_CLAIMS_INDEX,
     COLLECTION,
+    INDEX_NOT_READY_MSG,
     LEGACY_ACCURATE_ID_INDEX,
     create_local_master_item,
     ensure_master_item_indexes,
@@ -37,6 +39,7 @@ from services.master_items import (  # noqa: E402
 )
 
 TEST_DB = "eternal_packaging_test_master_local_create"
+TEST_DB_INDEX_GATE = "eternal_packaging_test_master_local_index_gate"
 MONGO_URL = os.environ.get("MONGO_URL", "mongodb://127.0.0.1:27017/?replicaSet=eternal_local_rs")
 if "replicaSet=" not in MONGO_URL:
     MONGO_URL = MONGO_URL.rstrip("/") + ("&" if "?" in MONGO_URL else "?") + "replicaSet=eternal_local_rs"
@@ -227,3 +230,112 @@ async def test_sync_new_accurate_id_with_code_collision_does_not_overwrite_local
     assert acc["id"] != local_id
     # Normalized code collision is allowed across origins after sync; no merge.
     assert normalize_item_code_key(acc.get("item_code")) == normalize_item_code_key("Share-99")
+
+
+@pytest.fixture
+async def db_index_gate():
+    """Separate DB for index-not-ready create gates. Never touches preview."""
+    assert TEST_DB_INDEX_GATE != "eternal_packaging"
+    assert "preview" not in TEST_DB_INDEX_GATE
+    client = AsyncIOMotorClient(MONGO_URL)
+    database = client[TEST_DB_INDEX_GATE]
+    await client.drop_database(TEST_DB_INDEX_GATE)
+    yield database
+    await client.drop_database(TEST_DB_INDEX_GATE)
+    client.close()
+
+
+async def _assert_create_503_no_writes(database, code: str):
+    before_masters = await database[COLLECTION].count_documents({})
+    before_claims = await database[CODE_CLAIMS_COLLECTION].count_documents({})
+    with pytest.raises(HTTPException) as exc:
+        await create_local_master_item(database, {
+            "item_code": code,
+            "item_name": "Blocked by indexes",
+            "item_type": "INVENTORY",
+            "unit": "pcs",
+            "is_active": True,
+        })
+    assert exc.value.status_code == 503
+    assert INDEX_NOT_READY_MSG in str(exc.value.detail)
+    assert await database[COLLECTION].count_documents({}) == before_masters
+    assert await database[CODE_CLAIMS_COLLECTION].count_documents({}) == before_claims
+
+
+async def test_create_rejected_when_legacy_full_unique_present(db_index_gate):
+    """Matches live snapshot shape: full unique accurate_item_id_1, claims may exist."""
+    db = db_index_gate
+    await db[COLLECTION].create_index(
+        [("accurate_item_id", 1)],
+        unique=True,
+        name=LEGACY_ACCURATE_ID_INDEX,
+    )
+    await db[CODE_CLAIMS_COLLECTION].create_index(
+        [("code_key", 1)],
+        unique=True,
+        name=CODE_CLAIMS_INDEX,
+    )
+    status = await local_master_create_index_status(db)
+    assert status["legacy_full_unique_present"] is True
+    assert status["partial_accurate_id"] is False
+    assert status["local_create_ready"] is False
+    await _assert_create_503_no_writes(db, "GATE-LEGACY-1")
+
+
+async def test_create_rejected_when_partial_missing(db_index_gate):
+    db = db_index_gate
+    await db[CODE_CLAIMS_COLLECTION].create_index(
+        [("code_key", 1)],
+        unique=True,
+        name=CODE_CLAIMS_INDEX,
+    )
+    status = await local_master_create_index_status(db)
+    assert status["partial_accurate_id"] is False
+    assert status["local_create_ready"] is False
+    await _assert_create_503_no_writes(db, "GATE-NOPART-1")
+
+
+async def test_create_rejected_when_claims_unique_missing(db_index_gate):
+    db = db_index_gate
+    await db[COLLECTION].create_index(
+        [("accurate_item_id", 1)],
+        unique=True,
+        name=ACCURATE_ID_PARTIAL_INDEX,
+        partialFilterExpression={
+            "accurate_item_id": {"$exists": True, "$type": "string", "$gt": ""},
+        },
+    )
+    status = await local_master_create_index_status(db)
+    assert status["code_claims"] is False
+    assert status["local_create_ready"] is False
+    await _assert_create_503_no_writes(db, "GATE-NOCLAIM-1")
+
+
+async def test_create_succeeds_when_indexes_fully_ready(db_index_gate):
+    db = db_index_gate
+    await prepare_master_item_indexes_for_local_create(db, allow_drop_legacy=True)
+    status = await local_master_create_index_status(db)
+    assert status["local_create_ready"] is True
+    created = await create_local_master_item(db, {
+        "item_code": "GATE-OK-1",
+        "item_name": "Ready Create",
+        "item_type": "INVENTORY",
+        "unit": "pcs",
+        "is_active": True,
+    })
+    assert created["origin"] == "local"
+    assert created["accurate_item_id"] is None
+    assert await db[COLLECTION].count_documents({"id": created["id"]}) == 1
+    assert await db[CODE_CLAIMS_COLLECTION].count_documents({}) == 1
+
+    with pytest.raises(HTTPException) as exc:
+        await create_local_master_item(db, {
+            "item_code": "gate-ok-1",
+            "item_name": "Dup",
+            "item_type": "SERVICE",
+            "unit": "pcs",
+            "is_active": True,
+        })
+    assert exc.value.status_code == 409
+    assert await db[COLLECTION].count_documents({}) == 1
+    assert await db[CODE_CLAIMS_COLLECTION].count_documents({}) == 1
