@@ -736,35 +736,38 @@ async def test_fase1_addon_service_matrix_and_attribution(db):
         "status": "INITIALIZED",
     })
     oid = f"so-addon-{uuid.uuid4().hex[:6]}"
+    linked_lines = [
+        {
+            "line_id": "ln-main",
+            "master_item_id": physical["id"],
+            "quantity": 1000,
+            "production_process": "print",
+            "name": "Barang A warna 1",
+            "color": "PUTIH",
+        },
+        {
+            "line_id": "ln-w2",
+            "master_item_id": warna2["id"],
+            "parent_line_id": "ln-main",
+            "quantity": 1000,
+            "production_process": "print",
+            "name": "Add On warna 2",
+            "color": "HIJAU",
+        },
+        {
+            "line_id": "ln-w3",
+            "master_item_id": warna3["id"],
+            "parent_line_id": "ln-main",
+            "quantity": 1000,
+            "production_process": "print",
+            "name": "Add On warna 3",
+            "color": "PINK",
+        },
+    ]
     await db.orders.insert_one({
         "id": oid,
         "cancelled": False,
-        "line_items": [
-            {
-                "line_id": "ln-main",
-                "master_item_id": physical["id"],
-                "quantity": 1000,
-                "production_process": "print",
-                "name": "Barang A warna 1",
-                "color": "PUTIH",
-            },
-            {
-                "line_id": "ln-w2",
-                "master_item_id": warna2["id"],
-                "quantity": 1000,
-                "production_process": "print",
-                "name": "Add On warna 2",
-                "color": "HIJAU",
-            },
-            {
-                "line_id": "ln-w3",
-                "master_item_id": warna3["id"],
-                "quantity": 1000,
-                "production_process": "print",
-                "name": "Add On warna 3",
-                "color": "PINK",
-            },
-        ],
+        "line_items": linked_lines,
         "operator_splits": [
             {"line_idx": 0, "qty_completed": 0},
             {"line_idx": 1, "qty_completed": 0},
@@ -783,8 +786,27 @@ async def test_fase1_addon_service_matrix_and_attribution(db):
     assert row["qty_belum_terkirim"] == 0
     assert row["qty_tersedia_valid"] is False
 
-    # (2) Warna1 complete 1000; warna2/3 unfinished — NOT READY 1000 siap.
-    # No parent_line_id → fail-closed BELUM TERVERIFIKASI (do not invent min()).
+    # (1b) Without parent_line_id → fail-closed even if warna1 complete
+    await db.orders.update_one({"id": oid}, {"$set": {
+        "line_items": [
+            {**linked_lines[0]},
+            {k: v for k, v in linked_lines[1].items() if k != "parent_line_id"},
+            {k: v for k, v in linked_lines[2].items() if k != "parent_line_id"},
+        ],
+        "operator_splits": [
+            {"line_idx": 0, "qty_completed": 1000},
+            {"line_idx": 1, "qty_completed": 0},
+            {"line_idx": 2, "qty_completed": 0},
+        ],
+    }})
+    row = next(r for r in (await list_compatibility_stock_catalog(db))["items"] if r["master_item_id"] == physical["id"])
+    assert row["belum_terkirim_status"] == BELUM_STATUS_UNVERIFIED
+    assert row["qty_belum_terkirim"] is None
+
+    # Restore explicit parent links for remaining matrix.
+    await db.orders.update_one({"id": oid}, {"$set": {"line_items": linked_lines}})
+
+    # (2) Warna1 complete; warna2/3 unfinished — siap = min = 0 (proven relation)
     await db.orders.update_one({"id": oid}, {"$set": {
         "operator_splits": [
             {"line_idx": 0, "qty_completed": 1000},
@@ -793,11 +815,11 @@ async def test_fase1_addon_service_matrix_and_attribution(db):
         ],
     }})
     row = next(r for r in (await list_compatibility_stock_catalog(db))["items"] if r["master_item_id"] == physical["id"])
-    assert row["qty_pesanan"] == 0  # physical line progress only
-    assert row["belum_terkirim_status"] == BELUM_STATUS_UNVERIFIED
-    assert row["qty_belum_terkirim"] is None
+    assert row["qty_pesanan"] == 1000  # 1000 - min(1000,0,0)
+    assert row["qty_belum_terkirim"] == 0
+    assert row["belum_terkirim_status"] == BELUM_STATUS_READY
 
-    # (3) Warna1+2 done; warna3 unfinished — still unverified siap kirim
+    # (3) Warna1+2 done; warna3 unfinished — siap still 0
     await db.orders.update_one({"id": oid}, {"$set": {
         "operator_splits": [
             {"line_idx": 0, "qty_completed": 1000},
@@ -806,11 +828,11 @@ async def test_fase1_addon_service_matrix_and_attribution(db):
         ],
     }})
     row = next(r for r in (await list_compatibility_stock_catalog(db))["items"] if r["master_item_id"] == physical["id"])
-    assert row["qty_pesanan"] == 0
-    assert row["belum_terkirim_status"] == BELUM_STATUS_UNVERIFIED
-    assert row["qty_belum_terkirim"] is None
+    assert row["qty_pesanan"] == 1000
+    assert row["qty_belum_terkirim"] == 0
+    assert row["belum_terkirim_status"] == BELUM_STATUS_READY
 
-    # (4) All process lines complete — still no parent link → unverified, not READY 1000/3000
+    # (4) All processes complete — siap 1000 fisik, not 3000
     await db.orders.update_one({"id": oid}, {"$set": {
         "operator_splits": [
             {"line_idx": 0, "qty_completed": 1000},
@@ -820,10 +842,10 @@ async def test_fase1_addon_service_matrix_and_attribution(db):
     }})
     row = next(r for r in (await list_compatibility_stock_catalog(db))["items"] if r["master_item_id"] == physical["id"])
     assert row["qty_pesanan"] == 0
-    assert row["belum_terkirim_status"] == BELUM_STATUS_UNVERIFIED
-    assert row["qty_belum_terkirim"] is None
+    assert row["qty_belum_terkirim"] == 1000
+    assert row["belum_terkirim_status"] == BELUM_STATUS_READY
 
-    # (5) Partial different progress — pesanan from inventory line; siap not a fake number
+    # (5) Partial different progress — conservative min siap = 200
     await db.orders.update_one({"id": oid}, {"$set": {
         "operator_splits": [
             {"line_idx": 0, "qty_completed": 400},
@@ -832,9 +854,9 @@ async def test_fase1_addon_service_matrix_and_attribution(db):
         ],
     }})
     row = next(r for r in (await list_compatibility_stock_catalog(db))["items"] if r["master_item_id"] == physical["id"])
-    assert row["qty_pesanan"] == 600  # 1000 - 400 on inventory line only
-    assert row["belum_terkirim_status"] == BELUM_STATUS_UNVERIFIED
-    assert row["qty_belum_terkirim"] is None
+    assert row["qty_pesanan"] == 800  # 1000 - 200
+    assert row["qty_belum_terkirim"] == 200
+    assert row["belum_terkirim_status"] == BELUM_STATUS_READY
 
     # (6) Cancelled SERVICE Add On ignored for process gate → inventory-only READY again
     await db.orders.update_one({"id": oid}, {"$set": {

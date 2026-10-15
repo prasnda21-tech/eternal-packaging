@@ -2743,12 +2743,16 @@ def aggregate_operational_orders(
     Masters in exclude_master_ids (e.g. item_type=SERVICE process Add On) never
     contribute physical stock demand — work qty stays on production tracking.
 
-    When a PO has active SERVICE print lines or orphan print lines without a
-    master id, physical masters on that PO are flagged completion_unproven —
-    siap kirim must not invent full-process completion without parent_line_id.
-    operational_availability floors the buckets.
+    Explicit parent_line_id / parent_line_idx on process Add Ons enables
+    conservative siap = min(parent, linked processes). Unlinked SERVICE/orphan
+    print processes keep completion_unproven (fail-closed). Never invent links
+    from item names.
     """
     from quantity_rules import is_print_line, operational_ready_qty_for_line
+    from services.order_line_addon import (
+        conservative_full_process_ready,
+        process_children_for_parent,
+    )
 
     owners = accurate_owners or {}
     excluded = {str(mid).strip() for mid in (exclude_master_ids or []) if str(mid).strip()}
@@ -2777,12 +2781,10 @@ def aggregate_operational_orders(
         ]
         # All active print process candidates (SERVICE + orphan included).
         print_candidates = [idx for idx in active_idxs if is_print_line(lines[idx])]
-        has_service_print = any(
-            master_ids[idx] in excluded for idx in print_candidates if master_ids[idx]
-        )
         has_orphan_print = any(not master_ids[idx] for idx in print_candidates)
-        process_gate_unproven = has_service_print or has_orphan_print
 
+        # Track completions for physical AND process (SERVICE) print lines.
+        process_completed_by_idx: Dict[int, float] = {}
         completed_by_idx: Dict[int, float] = {}
         unassigned = []
         for split in order.get("operator_splits") or []:
@@ -2798,11 +2800,12 @@ def aggregate_operational_orders(
                 continue
             if _line_item_cancelled(lines[idx]):
                 continue
-            if master_ids[idx] in excluded:
-                continue
             if not is_print_line(lines[idx]):
                 continue
-            completed_by_idx[idx] = _qty_num(completed_by_idx.get(idx, 0)) + _qty_num(split.get("qty_completed"))
+            qty = _qty_num(split.get("qty_completed"))
+            process_completed_by_idx[idx] = _qty_num(process_completed_by_idx.get(idx, 0)) + qty
+            if master_ids[idx] not in excluded:
+                completed_by_idx[idx] = _qty_num(completed_by_idx.get(idx, 0)) + qty
 
         unassigned_ambiguous = False
         if unassigned:
@@ -2812,27 +2815,68 @@ def aggregate_operational_orders(
             ):
                 idx = print_candidates[0]
                 extra = sum(_qty_num(split.get("qty_completed")) for split in unassigned)
+                process_completed_by_idx[idx] = _qty_num(process_completed_by_idx.get(idx, 0)) + extra
                 completed_by_idx[idx] = _qty_num(completed_by_idx.get(idx, 0)) + extra
             else:
                 unassigned_ambiguous = True
-                process_gate_unproven = True
+
+        # Detect unlinked process Add Ons once per order (fail-closed).
+        order_unlinked_process = False
+        children_by_parent: Dict[int, List[int]] = {}
+        for idx in active_idxs:
+            mid = master_ids[idx]
+            if not mid or mid in excluded:
+                continue
+            children, unlinked = process_children_for_parent(
+                idx,
+                lines,
+                process_master_ids=excluded,
+                master_ids=master_ids,
+                is_print_line=is_print_line,
+            )
+            children_by_parent[idx] = children
+            if unlinked:
+                order_unlinked_process = True
+
+        process_gate_unproven = (
+            order_unlinked_process or has_orphan_print or unassigned_ambiguous
+        )
 
         for idx in active_idxs:
             mid = master_ids[idx]
             if not mid or mid in excluded:
                 continue
             line = lines[idx]
+            ordered = _qty_num(line.get("quantity"))
             if not is_print_line(line):
                 ready = operational_ready_qty_for_line(order, idx)
+                add(mid, ordered, ready, unproven=False)
+                continue
+
+            parent_completed = min(_qty_num(completed_by_idx.get(idx, 0)), ordered)
+            children = children_by_parent.get(idx) or []
+            if children and not process_gate_unproven:
+                child_pairs = [
+                    (
+                        _qty_num(lines[c].get("quantity")),
+                        _qty_num(process_completed_by_idx.get(c, 0)),
+                    )
+                    for c in children
+                ]
+                ready = conservative_full_process_ready(
+                    parent_ordered=ordered,
+                    parent_completed=parent_completed,
+                    child_ordered_completed=child_pairs,
+                )
+                add(mid, ordered, ready, unproven=False)
+            elif process_gate_unproven and (
+                order_unlinked_process or has_orphan_print or unassigned_ambiguous
+            ):
+                # Relation insufficient — keep physical-line progress for Qty Pesanan,
+                # but mark siap/belum unverified when any completed exists.
+                add(mid, ordered, parent_completed, unproven=True)
             else:
-                ordered = _qty_num(line.get("quantity"))
-                ready = min(_qty_num(completed_by_idx.get(idx, 0)), ordered)
-            add(
-                mid,
-                _qty_num(line.get("quantity")),
-                ready,
-                unproven=process_gate_unproven or unassigned_ambiguous,
-            )
+                add(mid, ordered, parent_completed, unproven=False)
     return totals
 
 
