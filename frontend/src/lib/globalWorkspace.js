@@ -22,6 +22,7 @@ import { hydratePoDetailStoredTab, poDetailWorkspaceTab } from "./poWorkspaceTab
 import { canSeeSpkNav } from "./spk";
 import { canOpenWidgetDashboard } from "../components/widgetDashboard/widgetDashboardCatalog";
 import { canAccessOwnerDashboard } from "./ownerAnalytics";
+import { withWorkspaceRememberSearch } from "./workspaceSmartOptIn";
 
 export const GLOBAL_WORKSPACE_STORAGE_PREFIX = "ep.workspaceTabs.";
 
@@ -83,8 +84,8 @@ export function visibleGlobalWorkspaceCatalog(hasPerm, user) {
     tabs.push({ id: "spk", path: "/spk", label: "SPK", matchPrefix: true });
   }
 
-  productionMenuItems(hasPerm).forEach((item) => tabs.push(itemToTab(item)));
-  taskMenuItems(hasPerm).forEach((item) => tabs.push(itemToTab(item)));
+  productionMenuItems(hasPerm).forEach((item) => tabs.push(withWorkspaceRememberSearch(itemToTab(item))));
+  taskMenuItems(hasPerm).forEach((item) => tabs.push(withWorkspaceRememberSearch(itemToTab(item))));
   const salesCatalogByPath = Object.fromEntries(SALES_WORKSPACE_TABS.map((t) => [t.path, t]));
   salesMenuItems(hasPerm).forEach((item) => {
     const tab = itemToTab(item, salesIdByPath[item.to]);
@@ -100,15 +101,19 @@ export function visibleGlobalWorkspaceCatalog(hasPerm, user) {
       return;
     }
     const catalog = salesCatalogByPath[item.to];
-    tabs.push(catalog?.rememberSearch ? { ...tab, rememberSearch: true } : tab);
+    const withCatalog = catalog?.rememberSearch ? { ...tab, rememberSearch: true } : tab;
+    tabs.push(withWorkspaceRememberSearch(withCatalog));
   });
-  purchasingMenuItems(hasPerm).forEach((item) => tabs.push(itemToTab(item)));
-  inventoryMenuItems(hasPerm).forEach((item) => tabs.push(itemToTab(item)));
-  cashBankMenuItems(hasPerm).forEach((item) => tabs.push(itemToTab(item, cashBankIdByPath[item.to])));
-  ledgerMenuItems(hasPerm).forEach((item) => tabs.push(itemToTab(item)));
-  reportsMenuItems(hasPerm).forEach((item) => tabs.push(itemToTab(item)));
-  employeeAdminMenuItems(hasPerm).forEach((item) => tabs.push(itemToTab(item)));
-  hrPayrollMenuItems(hasPerm).forEach((item) => tabs.push(itemToTab(item)));
+  purchasingMenuItems(hasPerm).forEach((item) => tabs.push(withWorkspaceRememberSearch(itemToTab(item))));
+  inventoryMenuItems(hasPerm).forEach((item) => tabs.push(withWorkspaceRememberSearch(itemToTab(item))));
+  cashBankMenuItems(hasPerm).forEach((item) => {
+    tabs.push(withWorkspaceRememberSearch(itemToTab(item, cashBankIdByPath[item.to])));
+  });
+  ledgerMenuItems(hasPerm).forEach((item) => tabs.push(withWorkspaceRememberSearch(itemToTab(item))));
+  reportsMenuItems(hasPerm).forEach((item) => tabs.push(withWorkspaceRememberSearch(itemToTab(item))));
+  employeeAdminMenuItems(hasPerm).forEach((item) => tabs.push(withWorkspaceRememberSearch(itemToTab(item))));
+  // HR/Payroll: restore-only opt-in is intentionally sparse; sensitive leaves stay excluded.
+  hrPayrollMenuItems(hasPerm).forEach((item) => tabs.push(withWorkspaceRememberSearch(itemToTab(item))));
 
   if (showRouteOptimizer(hasPerm)) {
     tabs.push({

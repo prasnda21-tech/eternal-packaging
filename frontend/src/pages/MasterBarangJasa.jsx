@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { AlertCircle, CheckCircle2, Plus, RefreshCw, Search, X } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDate } from "../lib/constants";
 import { useDebouncedLiveSearch, liveSearchTableView } from "../hooks/useDebouncedLiveSearch";
+import { listIdentityBranchId, listIdentityUserId } from "../lib/listIdentity";
+import { inventoryMasterListCache } from "../lib/smartListCaches";
 import { nextMasterSyncBanner } from "./masterItemsSyncBanner";
 
 const TYPE_LABEL = {
@@ -49,21 +51,33 @@ function originLabel(it) {
 
 export default function MasterBarangJasa() {
   const navigate = useNavigate();
-  const { hasPerm } = useAuth();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const { user, hasPerm } = useAuth();
+  const listUserId = listIdentityUserId(user);
+  const listBranchId = listIdentityBranchId(user);
   const canSync = hasPerm("master_items.sync");
   const canManage = hasPerm("master_items.manage");
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [loadError, setLoadError] = useState("");
   const [syncError, setSyncError] = useState("");
   const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState(null);
-  const { input: qInput, setInput: setQInput, q, flush: doSearch, clear: clearQuery, pending: searchPending } = useDebouncedLiveSearch();
-  const [itemType, setItemType] = useState("");
-  const [status, setStatus] = useState("");
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(50);
+  const { input: qInput, setInput: setQInput, q, flush: doSearch, clear: clearQuery, pending: searchPending } = useDebouncedLiveSearch(searchParams.get("q") || "");
+  const [itemType, setItemType] = useState(() => searchParams.get("item_type") || "");
+  const [status, setStatus] = useState(() => searchParams.get("status") || "");
+  const [page, setPage] = useState(() => {
+    const value = Number(searchParams.get("page"));
+    return Number.isFinite(value) && value >= 1 ? Math.floor(value) : 1;
+  });
+  const [pageSize, setPageSize] = useState(() => {
+    const value = Number(searchParams.get("page_size"));
+    return [20, 50, 100].includes(value) ? value : 50;
+  });
   const loadSeq = useRef(0);
+  const skipPageResetRef = useRef(true);
+  const prevListUserRef = useRef(listUserId);
   const [createOpen, setCreateOpen] = useState(false);
   const [createForm, setCreateForm] = useState(EMPTY_CREATE);
   const [creating, setCreating] = useState(false);
@@ -71,33 +85,78 @@ export default function MasterBarangJasa() {
   const [processBusyId, setProcessBusyId] = useState("");
   const [processError, setProcessError] = useState("");
 
-  useEffect(() => { setPage(1); }, [q]);
+  useEffect(() => {
+    if (skipPageResetRef.current) {
+      skipPageResetRef.current = false;
+      return;
+    }
+    setPage(1);
+  }, [q, itemType, status, pageSize]);
 
   useEffect(() => {
     if (!searchPending) return;
-    setLoading(true);
-    setData((prev) => (prev ? { ...prev, items: [] } : prev));
+    // Keep prior rows visible while debounce settles — avoid draft/input wipe.
+    setRefreshing(true);
   }, [searchPending]);
 
   const load = useCallback(async () => {
+    const cacheKey = inventoryMasterListCache.buildKey({
+      u: listUserId,
+      b: listBranchId,
+      q,
+      itemType,
+      status,
+      page,
+      pageSize,
+    });
+    const cached = inventoryMasterListCache.get(cacheKey);
+    const hasCache = Boolean(cached?.data);
+    if (hasCache) {
+      setData(cached.data.payload || null);
+      setRefreshing(true);
+      setLoading(false);
+    } else {
+      setLoading(true);
+      setRefreshing(false);
+      setData((prev) => (prev ? { ...prev, items: [] } : prev));
+    }
     const seq = ++loadSeq.current;
-    setLoading(true);
     setLoadError("");
-    setData((prev) => (prev ? { ...prev, items: [] } : prev));
     try {
       const d = await api.masterItems({ q, item_type: itemType, status, page, page_size: pageSize });
       if (seq !== loadSeq.current) return;
+      inventoryMasterListCache.set(cacheKey, { payload: d });
       setData(d);
     } catch (ex) {
       if (seq !== loadSeq.current) return;
       const det = ex.response?.data?.detail;
       setLoadError(typeof det === "object" ? det.message : (det || "Gagal memuat Barang/Jasa"));
     } finally {
-      if (seq === loadSeq.current) setLoading(false);
+      if (seq === loadSeq.current) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
-  }, [q, itemType, status, page, pageSize]);
+  }, [itemType, listBranchId, listUserId, page, pageSize, q, status]);
 
   useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    const next = new URLSearchParams();
+    if (q.trim()) next.set("q", q.trim());
+    if (itemType) next.set("item_type", itemType);
+    if (status) next.set("status", status);
+    if (page > 1) next.set("page", String(page));
+    if (pageSize !== 50) next.set("page_size", String(pageSize));
+    if (next.toString() === searchParams.toString()) return;
+    setSearchParams(next, { replace: true });
+  }, [q, itemType, status, page, pageSize, searchParams, setSearchParams]);
+
+  useEffect(() => {
+    if (prevListUserRef.current === listUserId) return;
+    inventoryMasterListCache.clear();
+    prevListUserRef.current = listUserId;
+  }, [listUserId]);
 
   const clearSearch = () => {
     clearQuery();
@@ -116,6 +175,7 @@ export default function MasterBarangJasa() {
       setSyncError(ok.error);
       setSyncResult(ok.result);
       setPage(1);
+      inventoryMasterListCache.invalidate();
       await load();
     } catch (ex) {
       const fail = nextMasterSyncBanner("fail");
@@ -150,6 +210,7 @@ export default function MasterBarangJasa() {
       setCreateOpen(false);
       setCreateForm(EMPTY_CREATE);
       setPage(1);
+      inventoryMasterListCache.invalidate();
       await load();
     } catch (ex) {
       const det = ex.response?.data?.detail;
@@ -208,7 +269,10 @@ export default function MasterBarangJasa() {
         <div className="prod-heading-copy">
           <p className="eyebrow">Persediaan</p>
           <h1 data-testid="master-items-title">Barang/Jasa</h1>
-          <p className="subhead">Referensi item Eternal Packaging (Accurate dan lokal)</p>
+          <p className="subhead">
+            Referensi item Eternal Packaging (Accurate dan lokal)
+            {refreshing ? <span data-testid="master-items-refreshing"> · menyegarkan</span> : null}
+          </p>
         </div>
         <div className="prod-heading-actions" style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           {canManage && (

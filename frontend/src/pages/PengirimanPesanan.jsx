@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import {
   AlertCircle,
@@ -24,6 +24,8 @@ import SjDeliveryLocationPicker, { sjOverridePayload } from "../components/SjDel
 import { SHIPPING_DATE_PRESET_OPTIONS } from "../lib/salesDatePresets";
 import { loadedRangeLabel, showLoadedDocumentCount } from "../lib/salesSubmenuDensity";
 import { clickableDocumentRowProps } from "../lib/clickableListRow";
+import { listIdentityBranchId, listIdentityUserId } from "../lib/listIdentity";
+import { salesDeliveryListCache } from "../lib/smartListCaches";
 import "./salesSubmenuDensity.css";
 
 function getTodayString() {
@@ -48,6 +50,8 @@ export default function PengirimanPesanan() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { user, hasPerm } = useAuth();
+  const listUserId = listIdentityUserId(user);
+  const listBranchId = listIdentityBranchId(user);
 
   const canCreate = hasPerm("sales.delivery.create") || hasPerm("sales_order.create") || hasPerm("po.edit") || user?.role === "admin";
   const canPrint = hasPerm("sales.delivery.print") || hasPerm("sales.delivery.view") || hasPerm("sales_order.view") || user?.role === "admin";
@@ -58,20 +62,25 @@ export default function PengirimanPesanan() {
   const initialMode = (searchParams.get("action") === "create" || !!queryPoId) ? "create" : "list";
   const [viewMode, setViewMode] = useState(initialMode);
   
-  // List state
+  // List state — no server pagination; cache keyed by filter identity only.
   const [deliveries, setDeliveries] = useState([]);
   const [listLoading, setListLoading] = useState(false);
+  const [listRefreshing, setListRefreshing] = useState(false);
   const [listErr, setListErr] = useState("");
-  const [searchQuery, setSearchQuery] = useState("");
-  const [statusFilter, setStatusFilter] = useState("all");
-  const [deliveryDatePreset, setDeliveryDatePreset] = useState("all");
-  const [createdByFilter, setCreatedByFilter] = useState("");
+  const [listSyncErr, setListSyncErr] = useState("");
+  const [listShowingCache, setListShowingCache] = useState(false);
+  const [searchQuery, setSearchQuery] = useState(() => searchParams.get("q") || "");
+  const [statusFilter, setStatusFilter] = useState(() => searchParams.get("status") || "all");
+  const [deliveryDatePreset, setDeliveryDatePreset] = useState(() => searchParams.get("period") || "all");
+  const [createdByFilter, setCreatedByFilter] = useState(() => searchParams.get("created_by") || "");
   const [createdByOptions, setCreatedByOptions] = useState([]);
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [deleteConfirm, setDeleteConfirm] = useState(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [deleteErr, setDeleteErr] = useState("");
   const [deleteSuccess, setDeleteSuccess] = useState("");
+  const requestSeq = useRef(0);
+  const prevListUserRef = useRef(listUserId);
 
   // Selected PO for Create Delivery Form
   const [selectedPoId, setSelectedPoId] = useState(queryPoId);
@@ -111,9 +120,36 @@ export default function PengirimanPesanan() {
   const [availablePOs, setAvailablePOs] = useState([]);
   const [loadingPOs, setLoadingPOs] = useState(false);
 
-  // Load deliveries list
-  const loadDeliveries = useCallback(async () => {
-    setListLoading(true);
+  // Load deliveries — display-only SWR (no server pagination; never authorizes qty writes).
+  const loadDeliveries = useCallback(async ({ force = false } = {}) => {
+    const cacheKey = salesDeliveryListCache.buildKey({
+      u: listUserId,
+      b: listBranchId,
+      q: searchQuery,
+      status: statusFilter,
+      period: deliveryDatePreset,
+      createdBy: createdByFilter,
+    });
+    const cached = salesDeliveryListCache.get(cacheKey);
+    const hasCache = Boolean(cached?.data);
+    if (hasCache) {
+      setDeliveries(Array.isArray(cached.data.deliveries) ? cached.data.deliveries : []);
+      setListShowingCache(true);
+      setSelectedIds(new Set());
+    } else {
+      setDeliveries([]);
+      setListShowingCache(false);
+    }
+
+    const seq = requestSeq.current + 1;
+    requestSeq.current = seq;
+    if (hasCache) {
+      setListRefreshing(true);
+      setListLoading(false);
+    } else {
+      setListLoading(true);
+      setListRefreshing(false);
+    }
     setListErr("");
     try {
       const params = {};
@@ -124,15 +160,37 @@ export default function PengirimanPesanan() {
       }
       if (createdByFilter.trim()) params.created_by = createdByFilter.trim();
       const res = await api.listSalesDeliveries(params);
-      setDeliveries(res.deliveries || []);
+      if (seq !== requestSeq.current) return;
+      const rows = res.deliveries || [];
+      salesDeliveryListCache.set(cacheKey, { deliveries: rows, res });
+      setDeliveries(rows);
+      setListShowingCache(false);
+      setListSyncErr("");
       setSelectedIds(new Set());
     } catch (e) {
+      if (seq !== requestSeq.current) return;
       const det = e.response?.data?.detail;
-      setListErr(typeof det === "object" ? det.message : (det || "Gagal memuat daftar Pengiriman Pesanan"));
+      const message = typeof det === "object" ? det.message : (det || "Gagal memuat daftar Pengiriman Pesanan");
+      if (hasCache) {
+        setListSyncErr(message || "Gagal menyinkronkan daftar. Menampilkan data tersimpan sementara.");
+        setListShowingCache(true);
+      } else {
+        setListErr(message);
+      }
     } finally {
-      setListLoading(false);
+      if (seq === requestSeq.current) {
+        setListLoading(false);
+        setListRefreshing(false);
+      }
     }
-  }, [searchQuery, statusFilter, deliveryDatePreset, createdByFilter]);
+  }, [createdByFilter, deliveryDatePreset, listBranchId, listUserId, searchQuery, statusFilter]);
+
+  const reloadDeliveryListAuthoritative = useCallback(async () => {
+    salesDeliveryListCache.invalidate();
+    setListShowingCache(false);
+    setListSyncErr("");
+    await loadDeliveries({ force: true });
+  }, [loadDeliveries]);
 
   const loadDeliveryFilterOptions = useCallback(async () => {
     try {
@@ -254,6 +312,47 @@ export default function PengirimanPesanan() {
       loadDeliveryFilterOptions();
     }
   }, [viewMode, loadDeliveries, loadDeliveryFilterOptions]);
+
+  useEffect(() => {
+    if (viewMode !== "list") return;
+    if (searchParams.get("action") === "create" || searchParams.get("po_id")) return;
+    const next = new URLSearchParams();
+    if (searchQuery.trim()) next.set("q", searchQuery.trim());
+    if (statusFilter && statusFilter !== "all") next.set("status", statusFilter);
+    if (deliveryDatePreset && deliveryDatePreset !== "all") next.set("period", deliveryDatePreset);
+    if (createdByFilter.trim()) next.set("created_by", createdByFilter.trim());
+    if (next.toString() === searchParams.toString()) return;
+    setSearchParams(next, { replace: true });
+  }, [
+    viewMode,
+    searchQuery,
+    statusFilter,
+    deliveryDatePreset,
+    createdByFilter,
+    searchParams,
+    setSearchParams,
+  ]);
+
+  useEffect(() => {
+    if (prevListUserRef.current === listUserId) return;
+    salesDeliveryListCache.clear();
+    prevListUserRef.current = listUserId;
+  }, [listUserId]);
+
+  useEffect(() => {
+    if (viewMode !== "list") return undefined;
+    const onVisible = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      if (!salesDeliveryListCache.shouldRevalidateOnFocus()) return;
+      loadDeliveries({ force: false });
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onVisible);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onVisible);
+    };
+  }, [viewMode, loadDeliveries]);
 
   useEffect(() => {
     if (viewMode === "create") {
@@ -421,7 +520,7 @@ export default function PengirimanPesanan() {
       }
 
       // Refresh list
-      loadDeliveries();
+      void reloadDeliveryListAuthoritative();
       setViewMode("list");
       setSearchParams({});
     } catch (err) {
@@ -480,7 +579,7 @@ export default function PengirimanPesanan() {
       } else {
         setDeleteSuccess("Pembatalan berhasil.");
       }
-      await loadDeliveries();
+      await void reloadDeliveryListAuthoritative();
       if (selectedPoId) {
         // Refresh create-form remaining qty if user still has a PO open.
         try {
@@ -508,7 +607,7 @@ export default function PengirimanPesanan() {
       setDeleteConfirm(null);
       setSelectedIds(new Set());
       setDeleteSuccess("Pembatalan massal selesai.");
-      await loadDeliveries();
+      await void reloadDeliveryListAuthoritative();
     } catch (e) {
       setDeleteErr(formatDeleteError(e.response?.data?.detail) || e.message || "Gagal membatalkan.");
     } finally {
@@ -546,8 +645,12 @@ export default function PengirimanPesanan() {
             <div className="sd-list-summary" data-testid="delivery-list-count">
               <strong>{deliveries.length.toLocaleString("id-ID")}</strong>
               <span>pengiriman</span>
+              {listRefreshing ? <span data-testid="delivery-list-refreshing"> · menyegarkan</span> : null}
             </div>
           )}
+          {viewMode === "list" && !showDeliveryCount && listRefreshing ? (
+            <div className="sd-list-summary" data-testid="delivery-list-refreshing">menyegarkan</div>
+          ) : null}
         </div>
         {viewMode === "list" && (
           <div className="sd-list-header-actions">
@@ -1082,6 +1185,15 @@ export default function PengirimanPesanan() {
             <div className="sd-banner is-error" data-testid="list-error-banner" role="alert">
               <AlertCircle size={16} />
               <span>{listErr}</span>
+            </div>
+          )}
+          {listSyncErr && (
+            <div className="sd-banner is-warning" data-testid="delivery-list-sync-error" role="status">
+              <AlertCircle size={16} />
+              <span>
+                {listSyncErr}
+                {listShowingCache ? " Data di bawah belum disinkronkan ulang." : ""}
+              </span>
             </div>
           )}
 

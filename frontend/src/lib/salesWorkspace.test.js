@@ -60,6 +60,18 @@ describe("salesWorkspace tabs", () => {
     expect(b.tabs.find((t) => t.id === "faktur-penjualan").search).toBe("?tab=pending&page=2");
   });
 
+  test("Pesanan Penjualan remembers list search across sibling activation", () => {
+    expect(SALES_WORKSPACE_TABS.find((t) => t.id === "pesanan-penjualan")?.rememberSearch).toBe(true);
+    expect(SALES_WORKSPACE_TABS.find((t) => t.id === "pengiriman-pesanan")?.rememberSearch).toBe(true);
+    expect(SALES_WORKSPACE_TABS.find((t) => t.id === "penerimaan-penjualan")?.rememberSearch).toBe(true);
+    const a = openOrActivateSalesTab([], "/penjualan/pesanan-penjualan?tab=pending&period=this_month&page=2&q=kopi");
+    expect(a.activated.search).toBe("?tab=pending&period=this_month&page=2&q=kopi");
+    const b = openOrActivateSalesTab(a.tabs, "/penjualan/pengiriman-pesanan?status=SELESAI");
+    expect(b.tabs.find((t) => t.id === "pesanan-penjualan").search)
+      .toBe("?tab=pending&period=this_month&page=2&q=kopi");
+    expect(b.tabs.find((t) => t.id === "pengiriman-pesanan").search).toBe("?status=SELESAI");
+  });
+
   test("close active moves to nearest neighbor", () => {
     const tabs = SALES_WORKSPACE_TABS.slice(0, 3);
     const mid = closeSalesTab(tabs, "pengiriman-pesanan", "/penjualan/pengiriman-pesanan");

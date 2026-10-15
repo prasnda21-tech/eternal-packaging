@@ -1,11 +1,12 @@
 /** Kas & Bank workspace tab catalog + sessionStorage helpers (user-scoped). */
 
 export const CASH_BANK_WORKSPACE_TABS = [
-  { id: "daftar", path: "/kas-bank/daftar", label: "Daftar Kas & Bank" },
-  { id: "penerimaan", path: "/kas-bank/penerimaan", label: "Penerimaan" },
-  { id: "pembayaran", path: "/kas-bank/pembayaran", label: "Pembayaran" },
-  { id: "transfer", path: "/kas-bank/transfer", label: "Transfer" },
-  { id: "mutasi", path: "/kas-bank/mutasi", label: "Mutasi Kas & Bank" },
+  { id: "daftar", path: "/kas-bank/daftar", label: "Daftar Kas & Bank", rememberSearch: true },
+  { id: "penerimaan", path: "/kas-bank/penerimaan", label: "Penerimaan", rememberSearch: true },
+  { id: "pembayaran", path: "/kas-bank/pembayaran", label: "Pembayaran", rememberSearch: true },
+  { id: "transfer", path: "/kas-bank/transfer", label: "Transfer", rememberSearch: true },
+  { id: "mutasi", path: "/kas-bank/mutasi", label: "Mutasi Kas & Bank", rememberSearch: true },
+  // Reconciliation stays path-only — actions require latest server data.
   { id: "rekonsiliasi", path: "/kas-bank/rekonsiliasi", label: "Rekonsiliasi Bank" },
   { id: "rekonsiliasi-owner", path: "/kas-bank/rekonsiliasi-owner", label: "Rekonsiliasi Owner" },
 ];

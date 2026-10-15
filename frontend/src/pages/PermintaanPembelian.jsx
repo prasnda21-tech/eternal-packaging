@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { AlertCircle, Plus, Search } from "lucide-react";
 import api from "../lib/api";
@@ -12,24 +12,32 @@ import PurchaseCancelModal from "./PurchaseCancelModal";
 import PurchaseActivityHistory from "./PurchaseActivityHistory";
 import PurchaseDocumentLayout from "../components/purchase-document/PurchaseDocumentLayout";
 import { actorName, dash, formatLongDate, requestStatusSentence, transactionSteps } from "../components/purchase-document/model";
+import { listIdentityBranchId, listIdentityUserId } from "../lib/listIdentity";
+import { purchasingListCache } from "../lib/smartListCaches";
 import "./purchasePages.css";
 
 export default function PermintaanPembelian() {
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { hasPerm, user } = useAuth();
+  const listUserId = listIdentityUserId(user);
+  const listBranchId = listIdentityBranchId(user);
   const canCreate = hasPerm("purchase_requests.create");
   const canCreatePo = hasPerm("purchase_orders.create");
   const initial = searchParams.get("action") === "create" ? "create" : "list";
   const [view, setView] = useState(initial);
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [err, setErr] = useState("");
+  const [syncErr, setSyncErr] = useState("");
   const [ok, setOk] = useState("");
-  const [q, setQ] = useState("");
+  const [q, setQ] = useState(() => searchParams.get("q") || "");
   const [detail, setDetail] = useState(null);
   const [cancelTarget, setCancelTarget] = useState(null);
   const [cancelBusy, setCancelBusy] = useState(false);
   const [cancelErr, setCancelErr] = useState("");
+  const requestSeq = useRef(0);
+  const prevListUserRef = useRef(listUserId);
 
   const [requestDate, setRequestDate] = useState(todayYmd());
   const [notes, setNotes] = useState("");
@@ -38,20 +46,72 @@ export default function PermintaanPembelian() {
   const [focusQty, setFocusQty] = useState(null);
   const [busy, setBusy] = useState(false);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const load = useCallback(async ({ force = false } = {}) => {
+    const cacheKey = purchasingListCache.buildKey({
+      u: listUserId,
+      b: listBranchId,
+      kind: "purchase_requests",
+      q,
+    });
+    const cached = purchasingListCache.get(cacheKey);
+    const hasCache = Boolean(cached?.data);
+    if (hasCache) {
+      setRows(Array.isArray(cached.data.requests) ? cached.data.requests : []);
+    } else {
+      setRows([]);
+    }
+    const seq = requestSeq.current + 1;
+    requestSeq.current = seq;
+    if (hasCache) {
+      setRefreshing(true);
+      setLoading(false);
+    } else {
+      setLoading(true);
+      setRefreshing(false);
+    }
     setErr("");
     try {
       const res = await api.listPurchaseRequests({ q });
-      setRows(res.requests || []);
+      if (seq !== requestSeq.current) return;
+      const nextRows = res.requests || [];
+      purchasingListCache.set(cacheKey, { requests: nextRows, res });
+      setRows(nextRows);
+      setSyncErr("");
     } catch (ex) {
-      setErr(friendlyLoadError(ex, "Tidak dapat memuat permintaan. Periksa koneksi server lalu coba lagi."));
+      if (seq !== requestSeq.current) return;
+      const message = friendlyLoadError(ex, "Tidak dapat memuat permintaan. Periksa koneksi server lalu coba lagi.");
+      if (hasCache) setSyncErr(message);
+      else setErr(message);
     } finally {
-      setLoading(false);
+      if (seq === requestSeq.current) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
-  }, [q]);
+  }, [listBranchId, listUserId, q]);
+
+  const reloadAuthoritative = useCallback(async () => {
+    purchasingListCache.invalidate();
+    setSyncErr("");
+    await load({ force: true });
+  }, [load]);
 
   useEffect(() => { if (view === "list") load(); }, [load, view]);
+
+  useEffect(() => {
+    if (view !== "list") return;
+    if (searchParams.get("action") === "create") return;
+    const next = new URLSearchParams();
+    if (q.trim()) next.set("q", q.trim());
+    if (next.toString() === searchParams.toString()) return;
+    setSearchParams(next, { replace: true });
+  }, [view, q, searchParams, setSearchParams]);
+
+  useEffect(() => {
+    if (prevListUserRef.current === listUserId) return;
+    purchasingListCache.clear();
+    prevListUserRef.current = listUserId;
+  }, [listUserId]);
 
   useEffect(() => {
     if (focusLine == null || view !== "create") return;
@@ -175,7 +235,7 @@ export default function PermintaanPembelian() {
         setView("list");
         setDetail(null);
       }
-      await load();
+      await reloadAuthoritative();
     } catch (ex) {
       setCancelErr(errDetail(ex));
     } finally {
@@ -189,7 +249,10 @@ export default function PermintaanPembelian() {
         <div className="prod-heading-copy">
           <p className="eyebrow">Pembelian</p>
           <h1 data-testid="permintaan-title">Permintaan Pembelian</h1>
-          <p className="subhead">Ajukan kebutuhan barang sebelum dibuat menjadi pesanan pembelian.</p>
+          <p className="subhead">
+            Ajukan kebutuhan barang sebelum dibuat menjadi pesanan pembelian.
+            {refreshing ? <span data-testid="permintaan-list-refreshing"> · menyegarkan</span> : null}
+          </p>
         </div>
         {canCreate && (
           <button className="primary" onClick={openCreate} data-testid="btn-create-permintaan"><Plus size={14} /> Buat Permintaan</button>
@@ -205,11 +268,16 @@ export default function PermintaanPembelian() {
         </div>
       )}
       {ok && <p className="purchase-inline-ok" data-testid="permintaan-success">{ok}</p>}
+      {syncErr && (
+        <p className="purchase-inline-ok" data-testid="permintaan-list-sync-error" role="status" style={{ color: "#92400e" }}>
+          {syncErr} Data di bawah belum disinkronkan ulang.
+        </p>
+      )}
 
       {view === "list" && (
         <>
           <div className="purchase-search-bar is-toolbar">
-            <form className="search-inline" onSubmit={(e) => { e.preventDefault(); load(); }}>
+            <form className="search-inline" onSubmit={(e) => { e.preventDefault(); load({ force: true }); }}>
               <Search size={14} />
               <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Cari no permintaan / item" data-testid="permintaan-search" />
             </form>
