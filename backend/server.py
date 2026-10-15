@@ -538,10 +538,21 @@ async def user_permissions(user: dict) -> set:
 
     # Super admin gets everything, always — except production package filter
     # (Holding/Direktur unrestricted; others need explicit package confirmation).
-    # OPT_IN_ONLY keys require explicit permissions_override True for super-admin.
+    # OPT_IN_ONLY keys require explicit permissions_override True for super-admin
+    # unless the account role is direktur_utama (director-full includes OPT_IN).
     if user.get("email"):
         u = await db.users.find_one({"email": user["email"]}, {"is_super_admin": 1, "role": 1})
         if u and u.get("is_super_admin"):
+            sa_role = str(u.get("role") or role).strip().lower()
+            if is_director_full_access_role(sa_role) and sa_role not in inactive:
+                return filter_package_permissions(
+                    director_full_permission_set(),
+                    user,
+                    os.environ.get("APP_ENV"),
+                    os.environ.get("MONGO_URL"),
+                    role_confirmed_keys=role_confirmed,
+                    user_confirmed_keys=user_confirmed,
+                )
             base = strip_opt_in_permissions(ALL_PERMISSIONS)
             for perm, allowed in (user.get("permissions_override") or {}).items():
                 if allowed is True and perm in OPT_IN_ONLY_PERMISSIONS:
@@ -9506,7 +9517,10 @@ async def user_permissions_effective(user_id: str, user=Depends(require_perm("us
     else:
         default_from_role = list(with_nav_defaults(set(ROLE_DEFAULT_PERMISSIONS.get(role, []))))
     override = dict(existing.get("permissions_override") or {})
-    if existing.get("is_super_admin"):
+    # Direktur full-access (incl. OPT_IN) before Super Admin OPT_IN strip.
+    if is_director_full_access_role(role) and role not in inactive:
+        effective = sorted(director_full_permission_set())
+    elif existing.get("is_super_admin"):
         base = strip_opt_in_permissions(ALL_PERMISSIONS)
         for perm, allowed in override.items():
             if allowed is True and perm in OPT_IN_ONLY_PERMISSIONS:
@@ -9514,8 +9528,6 @@ async def user_permissions_effective(user_id: str, user=Depends(require_perm("us
             elif allowed is False:
                 base.discard(perm)
         effective = sorted(base)
-    elif is_director_full_access_role(role) and role not in inactive:
-        effective = sorted(director_full_permission_set())
     else:
         effective = sorted(effective_permissions(role, override, role_override))
     return {

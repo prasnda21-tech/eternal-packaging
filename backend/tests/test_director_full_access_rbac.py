@@ -121,9 +121,114 @@ async def test_director_full_access_despite_short_persisted_and_deny(bind_db, mo
     assert "dashboard.owner.view" in perms
     assert "current_stock.update" in perms
     assert "nav.purchasing.advances" in perms
+    assert "cash_bank.reconcile.purge_unmatched" in perms
     # persisted short doc left intact
     doc = await server.db.role_permissions.find_one({"role": "direktur_utama"})
     assert doc["permissions"] == ["po.view", "chat.use"]
+
+
+PURGE = "cash_bank.reconcile.purge_unmatched"
+
+
+@pytest.mark.anyio
+async def test_director_super_admin_keeps_opt_in_purge_and_auth_me(bind_db, monkeypatch):
+    """Direktur + is_super_admin must not lose OPT_IN via SA strip."""
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("MONGO_URL", "mongodb://prod:27017")
+    await server.db.users.insert_one(
+        {
+            "id": "dir-sa-1",
+            "email": "dir.sa@test.local",
+            "role": "direktur_utama",
+            "status": "active",
+            "is_super_admin": True,
+            "permissions_override": {},
+        }
+    )
+    await server.db.users.insert_one(
+        {
+            "id": "admin-sa-1",
+            "email": "admin.sa@test.local",
+            "role": "admin",
+            "status": "active",
+            "is_super_admin": True,
+            "permissions_override": {},
+        }
+    )
+    await server.db.users.insert_one(
+        {
+            "id": "hold-1",
+            "email": "hold@test.local",
+            "role": "holding_team",
+            "status": "active",
+            "is_super_admin": False,
+            "permissions_override": {},
+        }
+    )
+
+    dir_sa = await user_permissions(
+        {"role": "direktur_utama", "email": "dir.sa@test.local", "permissions_override": {}}
+    )
+    dir_nosa = await user_permissions(
+        {"role": "direktur_utama", "email": "dir.nosa@missing.local", "permissions_override": {}}
+    )
+    admin_sa = await user_permissions(
+        {"role": "admin", "email": "admin.sa@test.local", "permissions_override": {}}
+    )
+    holding = await user_permissions(
+        {"role": "holding_team", "email": "hold@test.local", "permissions_override": {}}
+    )
+    operator = await user_permissions(
+        {
+            "role": "operator",
+            "email": "op@missing.local",
+            "permissions_override": {
+                "cash_bank.view": True,
+                "cash_bank.reconcile": True,
+            },
+        }
+    )
+
+    assert PURGE in dir_sa
+    assert PURGE in dir_nosa
+    assert PURGE not in admin_sa
+    assert PURGE in holding
+    assert PURGE not in operator
+    # Director-full includes other OPT_IN keys; non-director SA still strips them.
+    for opt_in in OPT_IN_ONLY_PERMISSIONS:
+        assert opt_in in dir_sa
+        assert opt_in not in admin_sa
+
+    app.dependency_overrides[current_user] = lambda: {
+        "id": "dir-sa-1",
+        "email": "dir.sa@test.local",
+        "role": "direktur_utama",
+        "name": "Dir SA",
+        "permissions_override": {},
+    }
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        me = await client.get("/api/auth/me")
+        assert me.status_code == 200, me.text
+        body = me.json()
+        assert body["role"] == "direktur_utama"
+        assert body["is_super_admin"] is True
+        assert PURGE in body["permissions"]
+
+        # Effective triad matches runtime for Direktur+SA
+        app.dependency_overrides[current_user] = lambda: {
+            "id": "admin-sa-1",
+            "email": "admin.sa@test.local",
+            "role": "admin",
+            "permissions_override": {},
+        }
+        triad_dir = await client.get("/api/admin/users/dir-sa-1/permissions/effective")
+        assert triad_dir.status_code == 200, triad_dir.text
+        assert PURGE in triad_dir.json()["effective"]
+        triad_admin = await client.get("/api/admin/users/admin-sa-1/permissions/effective")
+        assert triad_admin.status_code == 200, triad_admin.text
+        assert PURGE not in triad_admin.json()["effective"]
 
 
 @pytest.mark.anyio
