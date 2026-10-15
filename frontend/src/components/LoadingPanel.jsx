@@ -431,8 +431,6 @@ export default function LoadingPanel({ order, canManage = false, onUpdated }) {
         {confirmations.length > 0 ? (
           <p className="muted small" data-testid="loading-correction-hint">
             {MSG_LOADING_CORRECTION_SJ_CANCEL}
-            {" "}
-            Gunakan aksi Batalkan Surat Jalan di Pengiriman Pesanan.
           </p>
         ) : null}
 
@@ -463,7 +461,7 @@ export default function LoadingPanel({ order, canManage = false, onUpdated }) {
                         disabled={busy}
                         onClick={() => setDeleteTarget(c)}
                         data-testid={`loading-delete-${c.id}`}
-                        title="Admin saja. Koreksi normal: batalkan Surat Jalan terkait."
+                        title="Hapus setelah Surat Jalan terkait dibatalkan."
                       >
                         Hapus
                       </button>
@@ -489,7 +487,7 @@ export default function LoadingPanel({ order, canManage = false, onUpdated }) {
                     </div>
                   ))}
                   <span className="muted small">
-                    {c.cancelled_reason || "Dibatalkan bersama Surat Jalan"}
+                    {c.cancelled_reason || "Hapus data Loading"}
                     {c.cancelled_at ? ` · ${formatDate(c.cancelled_at)}` : ""}
                   </span>
                 </div>

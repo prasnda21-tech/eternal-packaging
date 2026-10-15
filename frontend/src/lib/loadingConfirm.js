@@ -323,7 +323,10 @@ export function nextSelectedLoadingSjId(files, sjId) {
 }
 
 export const MSG_LOADING_CORRECTION_SJ_CANCEL =
-  "Untuk mengoreksi Loading yang sudah dikonfirmasi, batalkan Surat Jalan terkait terlebih dahulu. Loading akan dinonaktifkan otomatis.";
+  "Untuk mengoreksi barang atau qty Loading, batalkan Surat Jalan terkait terlebih dahulu, kemudian hapus konfirmasi Loading.";
+
+export const MSG_LOADING_DELETE_REQUIRES_SJ_CANCEL =
+  "Batalkan Surat Jalan terkait terlebih dahulu, kemudian hapus konfirmasi Loading.";
 
 /** Active (non-cancelled) Loading confirmations. */
 export function loadingConfirmations(order) {
@@ -337,14 +340,56 @@ export function loadingConfirmationsAll(order) {
     .filter((c) => c && typeof c === "object");
 }
 
+function _shipmentIsActive(sh) {
+  if (!sh || typeof sh !== "object") return false;
+  if (sh.cancelled || sh.is_cancelled || sh.deleted || sh.is_deleted) return false;
+  if (sh.superseded || String(sh.superseded_by_shipment_id || "").trim()) return false;
+  const st = String(sh.status || sh.sj_status || "").trim().toLowerCase();
+  return !["cancelled", "dibatalkan", "superseded", "deleted"].includes(st);
+}
+
+/** Shipment linked to one Loading confirmation (id fields only, never name). */
+export function loadingRelatedShipment(order, confirmation) {
+  const sid = String(
+    confirmation?.shipment_id || confirmation?.surat_jalan_id || confirmation?.sales_delivery_id || "",
+  ).trim();
+  if (!sid) return null;
+  const ships = Array.isArray(order?.shipments) ? order.shipments : [];
+  const exact = ships.filter((sh) => String(sh?.id || "").trim() === sid);
+  if (exact.length === 1) return exact[0];
+  const alias = ships.filter((sh) => (
+    String(sh?.sales_delivery_id || "").trim() === sid
+    || String(sh?.sj_number || "").trim() === sid
+    || String(sh?.number || "").trim() === sid
+  ));
+  return alias.length === 1 ? alias[0] : null;
+}
+
+/** Active delivered qty for this Loading (excludes cancelled delivery evidence). */
 export function deliveredQtyForLoadingConfirmation(order, confirmationId) {
-  let leftover = Math.max(0, Number(order?.qty_delivered || order?.delivered_qty || 0));
-  const list = loadingConfirmations(order);
-  for (const conf of list) {
+  const conf = loadingConfirmations(order).find((c) => String(c.id) === String(confirmationId));
+  if (!conf) return 0;
+  let sid = String(conf.shipment_id || conf.surat_jalan_id || "").trim();
+  if (!sid) {
+    const activeShips = (Array.isArray(order?.shipments) ? order.shipments : []).filter(_shipmentIsActive);
+    if (activeShips.length === 1) sid = String(activeShips[0].id || "").trim();
+    else return 0;
+  }
+  const recs = (Array.isArray(order?.delivery_confirmations) ? order.delivery_confirmations : [])
+    .filter((r) => r && typeof r === "object");
+  const activeRecs = recs.filter((r) => !(r.is_cancelled || r.cancelled || r.is_deleted || r.deleted));
+  if (activeRecs.length) {
+    const total = activeRecs
+      .filter((r) => String(r.shipment_id || "").trim() === sid)
+      .reduce((s, r) => s + Math.max(0, Number(r.qty || 0)), 0);
     const cap = (conf.lines || []).reduce((s, ln) => s + Math.max(0, Number(ln.qty || ln.quantity || 0)), 0);
-    const allocated = Math.min(cap, leftover);
-    leftover -= allocated;
-    if (String(conf.id) === String(confirmationId)) return allocated;
+    return Math.min(total, cap);
+  }
+  if (recs.length && !activeRecs.length) return 0;
+  const sh = loadingRelatedShipment(order, conf);
+  if (sh && _shipmentIsActive(sh) && (sh.delivered_at || String(sh.delivery_status || "").trim() === "Terkirim")) {
+    const cap = (conf.lines || []).reduce((s, ln) => s + Math.max(0, Number(ln.qty || ln.quantity || 0)), 0);
+    return Math.min(cap, cap);
   }
   return 0;
 }
@@ -356,6 +401,8 @@ export function canDeleteLoadingConfirmation(order, confirmation) {
   const delivered = Number(order?.qty_delivered || order?.delivered_qty || 0);
   const required = Number(order?.total_quantity || 0);
   if (required > 0 && delivered >= required) return false;
+  const related = loadingRelatedShipment(order, confirmation);
+  if (related && _shipmentIsActive(related)) return false;
   if (deliveredQtyForLoadingConfirmation(order, confirmation.id) > 0) return false;
   return true;
 }

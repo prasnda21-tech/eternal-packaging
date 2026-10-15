@@ -1,27 +1,41 @@
-"""SJ cancel soft-cancels exact-SJ Loading; multi-SJ isolation; fail-closed stock."""
+"""SJ-first Loading correction: Batalkan SJ does not auto-cancel Loading;
+
+Hapus Loading requires cancelled SJ and ignores cancelled delivery evidence.
+"""
 from __future__ import annotations
 
-import pytest
-
-from services.physical_stock import (
-    MSG_LOADING_STOCK_UNSUPPORTED,
-    PhysicalStockValidationError,
-    _assert_no_unsupported_loading_stock,
-    _expand_sj_cancel_identity,
-    _loading_confirmation_matches_sj,
-    _soft_cancel_loading_for_sj_identity,
-)
 from quantity_rules import (
+    MSG_LOADING_DELETE_REQUIRES_SJ_CANCEL,
     available_for_loading_confirm_line,
+    cancel_loading_confirmation,
+    delivered_qty_for_loading_confirmation,
     loading_confirmations_stored,
     qty_loaded_for_line,
+    validate_cancel_loading_confirmation,
 )
 from services.line_product_replacement import collect_order_embedded_downstream_hits
 
 
-def _order_two_sj():
+def _order_two_sj(*, sj_a_cancelled=False, delivery_a=None):
+    ship_a = {
+        "id": "sj-a",
+        "number": "SJ-A",
+        "sales_delivery_id": "sj-a",
+        "lines": [{"line_idx": 0, "qty": 400}, {"line_idx": 1, "qty": 400}],
+    }
+    if sj_a_cancelled:
+        ship_a.update({
+            "is_cancelled": True,
+            "cancelled": True,
+            "status": "cancelled",
+            "sj_status": "cancelled",
+        })
+    deliveries = []
+    if delivery_a is not None:
+        deliveries.append(delivery_a)
     return {
         "id": "po-1",
+        "total_quantity": 2000,
         "line_items": [
             {"name": "Cup", "quantity": 1000, "production_process": "print", "line_id": "L0"},
             {"name": "Lid", "quantity": 1000, "production_process": "non_print", "line_id": "L1"},
@@ -31,12 +45,7 @@ def _order_two_sj():
             "lines": [{"line_idx": 0, "packed_qty": 1000}],
         },
         "shipments": [
-            {
-                "id": "sj-a",
-                "number": "SJ-A",
-                "sales_delivery_id": "sj-a",
-                "lines": [{"line_idx": 0, "qty": 400}, {"line_idx": 1, "qty": 400}],
-            },
+            ship_a,
             {
                 "id": "sj-b",
                 "number": "SJ-B",
@@ -48,6 +57,9 @@ def _order_two_sj():
             {"id": "sj-a", "shipment_id": "sj-a", "sj_number": "SJ-A", "name": "a.pdf"},
             {"id": "sj-b", "shipment_id": "sj-b", "sj_number": "SJ-B", "name": "b.pdf"},
         ],
+        "delivery_confirmations": deliveries,
+        "qty_delivered": 0,
+        "delivery_status": "Belum Terkirim",
         "loading_confirmations": [
             {
                 "id": "lc-a1",
@@ -64,7 +76,7 @@ def _order_two_sj():
                 "surat_jalan_id": "sj-a",
                 "shipment_id": "sj-a",
                 "sj_number": "SJ-A",
-                "lines": [{"line_idx": 0, "qty": 0}],  # edge — still matched by SJ
+                "lines": [{"line_idx": 0, "qty": 0}],
             },
             {
                 "id": "lc-b",
@@ -74,110 +86,88 @@ def _order_two_sj():
                 "lines": [{"line_idx": 0, "qty": 600, "name": "Cup"}, {"line_idx": 1, "qty": 600, "name": "Lid"}],
             },
         ],
-        "loading_snapshots": [
-            {"id": "snap-a", "surat_jalan_id": "sj-a", "shipment_id": "sj-a", "status": "active"},
-            {"id": "snap-b", "surat_jalan_id": "sj-b", "shipment_id": "sj-b", "status": "active"},
-        ],
     }
 
 
-def test_identity_match_and_expand():
+def test_hapus_blocked_while_related_sj_active():
     order = _order_two_sj()
-    identity = {"sj-a", "SJ-A"}
-    expanded = _expand_sj_cancel_identity(order, identity)
-    assert "sj-a" in expanded
-    assert "SJ-A" in expanded
-    assert _loading_confirmation_matches_sj(order["loading_confirmations"][0], expanded)
-    assert not _loading_confirmation_matches_sj(order["loading_confirmations"][2], expanded)
+    err = validate_cancel_loading_confirmation(order, "lc-a1")
+    assert err == MSG_LOADING_DELETE_REQUIRES_SJ_CANCEL
 
 
-def test_soft_cancel_only_matching_sj_and_releases_qty():
-    order = _order_two_sj()
-    before_cup = qty_loaded_for_line(order, 0)
-    assert before_cup == 1000
-    expanded = _expand_sj_cancel_identity(order, {"sj-a"})
-    cancelled = _soft_cancel_loading_for_sj_identity(
-        order, expanded, actor_id="admin@x", cancelled_at="t1", reason="Pembatalan Surat Jalan",
-    )
-    assert set(cancelled) == {"lc-a1", "lc-a2"}
+def test_sj_cancel_does_not_auto_cancel_loading():
+    """Simulated post-Batalkan-SJ state: shipment cancelled, Loading still active."""
+    order = _order_two_sj(sj_a_cancelled=True)
+    active = loading_confirmations_stored(order)
+    assert [c["id"] for c in active] == ["lc-a1", "lc-a2", "lc-b"]
+    assert qty_loaded_for_line(order, 0) == 1000
+
+
+def test_hapus_after_sj_cancel_releases_qty_and_isolates_multi_sj():
+    order = _order_two_sj(sj_a_cancelled=True)
+    assert validate_cancel_loading_confirmation(order, "lc-a1") is None
+    cancel_loading_confirmation(order, "lc-a1", actor={"email": "admin@x"}, cancelled_at="t1")
+    assert validate_cancel_loading_confirmation(order, "lc-a2") is None
+    cancel_loading_confirmation(order, "lc-a2", actor={"email": "admin@x"}, cancelled_at="t2")
     active = loading_confirmations_stored(order)
     assert [c["id"] for c in active] == ["lc-b"]
     assert order["loading_confirmations"][0]["cancelled"] is True
     assert order["loading_confirmations"][0]["confirmed_by"] == "a@x"
-    assert order["loading_confirmations"][0]["cancelled_reason"] == "Pembatalan Surat Jalan"
-    assert order["loading_snapshots"][0]["status"] == "cancelled"
-    assert order["loading_snapshots"][1]["status"] == "active"
+    assert order["loading_confirmations"][2].get("cancelled") is not True
     assert qty_loaded_for_line(order, 0) == 600
-    assert available_for_loading_confirm_line(order, 0) == 400  # packed 1000 - loaded 600
+    assert available_for_loading_confirm_line(order, 0) == 400
+    # Sibling Loading still protected by active SJ B
+    assert validate_cancel_loading_confirmation(order, "lc-b") == MSG_LOADING_DELETE_REQUIRES_SJ_CANCEL
 
 
-def test_soft_cancel_idempotent():
-    order = _order_two_sj()
-    expanded = _expand_sj_cancel_identity(order, {"sj-a"})
-    first = _soft_cancel_loading_for_sj_identity(
-        order, expanded, actor_id="a", cancelled_at="t1", reason="x",
+def test_cancelled_delivery_evidence_does_not_block_hapus():
+    order = _order_two_sj(
+        sj_a_cancelled=True,
+        delivery_a={
+            "shipment_id": "sj-a",
+            "qty": 400,
+            "cancelled": True,
+            "is_cancelled": True,
+            "cancelled_at": "t0",
+        },
     )
-    second = _soft_cancel_loading_for_sj_identity(
-        order, expanded, actor_id="a", cancelled_at="t2", reason="x",
+    assert delivered_qty_for_loading_confirmation(order, "lc-a1") == 0
+    assert validate_cancel_loading_confirmation(order, "lc-a1") is None
+
+
+def test_active_delivery_still_blocks_hapus():
+    order = _order_two_sj(
+        sj_a_cancelled=True,
+        delivery_a={"shipment_id": "sj-a", "qty": 400},
     )
-    assert first
-    assert second == []
+    # Active delivery on cancelled SJ should not happen after official cancel,
+    # but if evidence remains active the guard must still protect.
+    assert delivered_qty_for_loading_confirmation(order, "lc-a1") == 400
+    assert validate_cancel_loading_confirmation(order, "lc-a1")
+
+
+def test_hapus_idempotent_missing_after_cancel():
+    order = _order_two_sj(sj_a_cancelled=True)
+    cancel_loading_confirmation(order, "lc-a1", actor={"email": "a@x"}, cancelled_at="t1")
+    err = validate_cancel_loading_confirmation(order, "lc-a1")
+    assert err == "Konfirmasi Loading tidak ditemukan."
 
 
 def test_cancelled_loading_does_not_block_product_replace_hits():
-    order = _order_two_sj()
+    order = _order_two_sj(sj_a_cancelled=True)
     assert "loading" in collect_order_embedded_downstream_hits(order, 1)
-    expanded = _expand_sj_cancel_identity(order, {"sj-a", "sj-b"})
-    _soft_cancel_loading_for_sj_identity(
-        order, expanded, actor_id="a", cancelled_at="t", reason="x",
-    )
+    cancel_loading_confirmation(order, "lc-a1", actor={"email": "a@x"}, cancelled_at="t")
+    cancel_loading_confirmation(order, "lc-a2", actor={"email": "a@x"}, cancelled_at="t")
+    # Sibling Loading B still active → still blocks
+    assert "loading" in collect_order_embedded_downstream_hits(order, 1)
+    # Cancel B after its SJ cancelled
+    order["shipments"][1]["is_cancelled"] = True
+    order["shipments"][1]["cancelled"] = True
+    order["shipments"][1]["status"] = "cancelled"
+    cancel_loading_confirmation(order, "lc-b", actor={"email": "a@x"}, cancelled_at="t")
     assert "loading" not in collect_order_embedded_downstream_hits(order, 1)
 
 
-def test_active_loading_still_blocks():
+def test_active_loading_still_blocks_replace():
     order = _order_two_sj()
-    hits = collect_order_embedded_downstream_hits(order, 0)
-    assert "loading" in hits
-
-
-def test_fail_closed_when_loading_stock_movement_exists():
-    import asyncio
-
-    class _FakeCursor:
-        def __init__(self, doc):
-            self._doc = doc
-
-        async def find_one(self, *a, **k):
-            return self._doc
-
-    class _FakeDb:
-        def __init__(self, mov):
-            self.stock_movements = _FakeCursor(mov)
-            self.product_stock_state = _FakeCursor(None)
-
-    db = _FakeDb({"id": "m1"})
-
-    async def _run():
-        with pytest.raises(PhysicalStockValidationError) as exc:
-            await _assert_no_unsupported_loading_stock(
-                db, order_id="po-1", confirmation_ids=["lc-a1"],
-            )
-        assert MSG_LOADING_STOCK_UNSUPPORTED in str(exc.value)
-
-    asyncio.run(_run())
-
-
-def test_fail_closed_passes_when_no_loading_movements():
-    import asyncio
-
-    class _FakeCursor:
-        async def find_one(self, *a, **k):
-            return None
-
-    class _FakeDb:
-        stock_movements = _FakeCursor()
-        product_stock_state = _FakeCursor()
-
-    asyncio.run(_assert_no_unsupported_loading_stock(
-        _FakeDb(), order_id="po-1", confirmation_ids=["lc-a1"],
-    ))
+    assert "loading" in collect_order_embedded_downstream_hits(order, 0)
