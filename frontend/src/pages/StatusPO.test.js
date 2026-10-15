@@ -50,6 +50,7 @@ describe("Status PO header filters", () => {
 
   test("reset clears header filters not dashboard view", () => {
     expect(src).toMatch(/setFilters\(EMPTY_STATUS_PO_FILTERS\)/);
+    expect(src).toMatch(/params\.get\("po"\)/);
     expect(src).not.toMatch(/params\.delete\("view"\)/);
     expect(src).toMatch(/setSearchParams/);
   });

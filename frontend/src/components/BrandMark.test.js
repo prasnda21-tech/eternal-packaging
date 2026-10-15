@@ -19,7 +19,7 @@ describe("Eternal web branding", () => {
   });
 
   test("sidebar uses the Eternal symbol, not a letter placeholder", () => {
-    expect(shell).toMatch(/BrandMark compact/);
+    expect(shell).toMatch(/BrandMark compact=\{!sidebarExpanded\}/);
     expect(shell).toMatch(/sidebar-brand/);
     expect(mark).toMatch(/eternal-logo-symbol/);
     expect(mark).toMatch(/brand-symbol/);

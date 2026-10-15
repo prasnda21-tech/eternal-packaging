@@ -2621,3 +2621,22 @@
   text-align: center;
 }
 .mop-sj-viewer .spwa-viewer-state.is-error { color: #a12622; }
+
+/* ===== UX 9.0 Phase 3A — Ops PWA task clarity ===== */
+.mop-empty{
+  margin:12px 0;padding:16px 12px;border-radius:12px;border:1px dashed var(--mop-line);
+  background:#fff;text-align:center;color:var(--mop-muted);font-size:13px;line-height:1.4;
+}
+.mop-summary-cell{
+  min-height:48px;
+}
+.mop-delivery-customer-card .mop-card-title{
+  font-size:18px;font-weight:750;letter-spacing:-.01em;color:var(--mop-ink);
+}
+.mop-delivery-task-head{
+  position:sticky;top:0;z-index:5;background:var(--mop-bg);padding-bottom:6px;
+}
+.mop-task-card .mop-card-title,
+.mop-card .mop-card-title{
+  font-weight:750;letter-spacing:-.01em;
+}

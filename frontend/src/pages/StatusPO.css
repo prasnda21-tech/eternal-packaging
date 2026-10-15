@@ -825,3 +825,19 @@
   color:var(--spo-filter-refresh-ink);
   border-color:transparent;
 }
+
+/* UX 9.0 Phase 2A — Status PO compact hierarchy */
+.status-po-page .spo-table tbody td.ship-cust{
+  font-weight:700;font-size:13px;color:var(--spo-navy,#0F172A);
+}
+.status-po-page .spo-po-link{
+  font-family:'IBM Plex Mono',monospace;font-weight:600;font-size:12.5px;
+}
+.status-po-page .spo-toolbar,
+.status-po-page .ship-filters{
+  gap:8px;
+}
+@media (max-height:800px){
+  .status-po-page{--spo-row-h:34px}
+  .status-po-page .spo-page-title{font-size:18px}
+}

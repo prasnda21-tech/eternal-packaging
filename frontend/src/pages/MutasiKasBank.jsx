@@ -209,8 +209,8 @@ export default function MutasiKasBank() {
                   <td className="kb-doc-number">{row.transaction_number || row.journal_number || "—"}</td>
                   <td>{row.source_label}</td>
                   <td className="kb-ellipsis" title={row.description || ""}>{row.description || "—"}</td>
-                  <td className="num kb-money">{row.debit ? formatRp(row.debit) : ""}</td>
-                  <td className="num kb-money">{row.credit ? formatRp(row.credit) : ""}</td>
+                  <td className="num kb-money is-debit">{row.debit ? formatRp(row.debit) : ""}</td>
+                  <td className="num kb-money is-credit">{row.credit ? formatRp(row.credit) : ""}</td>
                   <td className="num kb-money">{formatRp(row.running_balance)}</td>
                   <td><span className={`pill ${st.className}`}>{st.label}</span></td>
                   <td>

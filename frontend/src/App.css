@@ -1,5 +1,6 @@
 /* -------- Shell & Topbar -------- */
 .app-shell{--sidebar-rail:64px;--ep-topbar-height:48px;--ep-workspace-tabs-height:34px;min-height:100vh;display:grid;grid-template-columns:var(--sidebar-rail) minmax(0,1fr);background:var(--paper)}
+.app-shell[data-sidebar-mode="expanded"]{--sidebar-rail:220px}
 .app-sidebar-slot{position:relative;z-index:56;width:var(--sidebar-rail);min-width:var(--sidebar-rail);max-width:var(--sidebar-rail);overflow:visible}
 .app-sidebar{background:var(--ep-dark);color:#fff;display:flex;flex-direction:column;position:sticky;top:0;height:100vh;width:100%;overflow:visible;z-index:2;border-right:1px solid #0b2d22;box-sizing:border-box}
 .app-sidebar .brand{padding:10px 8px;border-bottom:1px solid rgba(255,255,255,.08);color:#fff;gap:0;justify-content:center}
@@ -9,9 +10,25 @@
 .rail-btn{position:relative;width:44px;height:44px;display:grid;place-items:center;border:0;background:transparent;color:#C5D9CF;border-radius:8px;cursor:pointer;text-decoration:none;flex-shrink:0}
 .rail-btn:hover,.rail-btn:focus-visible{background:rgba(255,255,255,.1);color:#fff;outline:none}
 .rail-btn.is-active,.rail-btn.is-open{background:var(--ep-primary);color:#fff}
+.rail-label{display:none;min-width:0;text-align:left;font:500 12.5px/1.25 'IBM Plex Sans',sans-serif;color:inherit;white-space:normal;overflow-wrap:anywhere}
 .rail-tooltip{position:absolute;left:calc(100% + 10px);top:50%;transform:translateY(-50%);background:var(--ink);color:#fff;font:600 12px 'IBM Plex Sans',sans-serif;padding:6px 8px;border-radius:6px;white-space:nowrap;opacity:0;pointer-events:none;box-shadow:var(--shadow);z-index:60}
 .rail-btn:hover .rail-tooltip,.rail-btn:focus-visible .rail-tooltip{opacity:1}
 .rail-btn.is-open .rail-tooltip,.rail-btn.is-open:hover .rail-tooltip,.rail-btn.is-open:focus-visible .rail-tooltip{opacity:0}
+.sidebar-mode-toggle{margin:8px;width:calc(100% - 16px);min-height:40px;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.06);color:#C5D9CF;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;gap:8px;cursor:pointer;padding:8px;box-sizing:border-box;flex-shrink:0}
+.sidebar-mode-toggle:hover,.sidebar-mode-toggle:focus-visible{background:rgba(255,255,255,.12);color:#fff;outline:none}
+.sidebar-mode-toggle:focus-visible{outline:2px solid #fff;outline-offset:2px}
+.sidebar-mode-toggle-label{display:none;font:500 12px 'IBM Plex Sans',sans-serif;text-align:left;min-width:0}
+.app-shell[data-sidebar-mode="expanded"] .app-sidebar .brand{justify-content:flex-start;gap:10px;padding:12px 12px}
+.app-shell[data-sidebar-mode="expanded"] .app-sidebar .brand-copy{display:flex}
+.app-shell[data-sidebar-mode="expanded"] .app-sidebar-nav{align-items:stretch;padding:10px 8px}
+.app-shell[data-sidebar-mode="expanded"] .rail-btn{width:100%;min-height:44px;height:auto;display:flex;align-items:center;justify-content:flex-start;gap:10px;padding:8px 10px;box-sizing:border-box}
+.app-shell[data-sidebar-mode="expanded"] .rail-btn svg{flex-shrink:0}
+.app-shell[data-sidebar-mode="expanded"] .rail-label{display:block}
+.app-shell[data-sidebar-mode="expanded"] .rail-tooltip{display:none}
+.app-shell[data-sidebar-mode="expanded"] .app-sidebar .nav-group{align-items:stretch;width:100%}
+.app-shell[data-sidebar-mode="expanded"] .sidebar-mode-toggle{justify-content:flex-start;padding:8px 10px}
+.app-shell[data-sidebar-mode="expanded"] .sidebar-mode-toggle-label{display:block}
+.app-shell[data-sidebar-mode="expanded"] .rail-btn .rail-unread-badge{top:6px;right:8px}
 .sidebar-flyout-scrim{position:fixed;inset:0;left:var(--sidebar-rail);border:0;padding:0;margin:0;background:transparent;z-index:54;cursor:default}
 .sidebar-flyout{position:fixed;left:var(--sidebar-rail);width:260px;max-width:min(320px,calc(100vw - var(--sidebar-rail)));max-height:calc(100vh - 16px);overflow-x:hidden;overflow-y:auto;background:var(--surface);color:var(--ink);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);z-index:1;padding:8px 8px 10px;box-sizing:border-box}
 .sidebar-flyout-head{padding:8px 10px 10px;border-bottom:1px solid var(--line);margin-bottom:6px}
@@ -8206,3 +8223,58 @@ button.ghost.sm.icon{padding:4px 6px}
 }
 .stock-page .stock-warehouse-breakdown li{margin:0}
 .stock-page .stock-warehouse-breakdown .stock-book-negative{font-weight:600}
+
+/* ===== UX 9.0 Phase 2 — Sales process nav + Roles accordion tools ===== */
+.sales-process-nav{
+  display:flex;flex-wrap:wrap;align-items:center;gap:6px;
+  margin:0 0 10px;padding:8px 10px;
+  border:1px solid var(--line,#E2E8F0);border-radius:8px;
+  background:linear-gradient(180deg,#F8FAFC 0%,#FFFFFF 100%);
+}
+.sales-process-link{
+  display:inline-flex;align-items:center;min-height:28px;padding:4px 10px;
+  border-radius:6px;border:1px solid transparent;
+  font:600 12px/1.2 'IBM Plex Sans',sans-serif;color:#334155;text-decoration:none;
+}
+.sales-process-link:hover,.sales-process-link:focus-visible{
+  background:#EEF2F7;color:#0F172A;outline:none;
+}
+.sales-process-link:focus-visible{box-shadow:0 0 0 2px #94A3B8}
+.sales-process-link.is-active{
+  background:#E2E8F0;border-color:#CBD5E1;color:#0F172A;
+}
+.sales-process-link.is-related{
+  border-color:#BAE6FD;background:#F0F9FF;color:#0C4A6E;
+}
+.role-perm-accordion-tools{display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap}
+.role-perm-accordion-tools .ghost.sm{min-height:30px}
+
+/* ===== UX 9.0 Phase 3B — Financial amount / status hierarchy ===== */
+.kas-bank-page .kb-summary-strip strong.kb-money{
+  font-size:15px;font-weight:700;letter-spacing:-.01em;
+}
+.kas-bank-page .kb-money.is-debit{color:#b91c1c}
+.kas-bank-page .kb-money.is-credit{color:#047857}
+.kas-bank-page .kb-status-draft,
+.kas-bank-page .kb-status-posted,
+.kas-bank-page .kb-status-reversed{
+  font-weight:700;letter-spacing:.01em;
+}
+
+/* ===== UX 9.0 Phase 3C — HR lifecycle clarity ===== */
+.hr-status-paid{background:#dbeafe;color:#1d4ed8}
+.hr-status-reversed{background:#faece9;color:#a53f2b}
+.hr-list-button .hr-status{margin-left:8px}
+.hr-pay-steps li.current{
+  padding:2px 8px;border-radius:999px;background:#ecfeff;color:#0e7490;
+}
+.hr-pay-visibility{font-weight:600}
+
+/* ===== UX 9.0 Phase 3D — Settings consistency ===== */
+.role-perm-search-hint{
+  width:100%;margin:0;font-size:12px;color:var(--soft,#64748B);line-height:1.35;
+}
+.role-cat.is-open .role-cat-name{font-weight:700}
+.role-perm-cell.is-sensitive{
+  box-shadow:inset 3px 0 0 #f59e0b;
+}

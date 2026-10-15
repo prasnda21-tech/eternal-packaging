@@ -187,12 +187,18 @@ export default function MobileTasksPage() {
           />
         )}
         {busy && !tasks.length && <p className="mop-empty">Memuat tugas...</p>}
-        {err && <div className="mop-error">{err}</div>}
-        {!workspaces.length && <p className="mop-empty">Tidak ada workspace operasional untuk akun ini.</p>}
+        {err && <div className="mop-error" role="alert">{err}</div>}
+        {!workspaces.length && (
+          <p className="mop-empty">
+            Tidak ada workspace operasional untuk akun ini. Pastikan role Anda memiliki akses tugas produksi.
+          </p>
+        )}
         {selected && sortedTasks.map((task) => (
           <MobileTaskCard key={task.task_id || task.order_id} task={task} workspaceId={selected.id} />
         ))}
-        {selected && !busy && !sortedTasks.length && !err && <p className="mop-empty">Tidak ada tugas.</p>}
+        {selected && !busy && !sortedTasks.length && !err && (
+          <p className="mop-empty">Tidak ada tugas di filter ini. Coba ubah ringkasan atau workspace.</p>
+        )}
       </main>
     </>
   );
