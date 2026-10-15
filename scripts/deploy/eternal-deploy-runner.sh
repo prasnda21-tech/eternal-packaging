@@ -204,7 +204,7 @@ eternal_rollback() {
     else
       # Index switched or required state drifted (e.g. mutable manifest written before a
       # later publish failure). In-place restore; soft merge keeps identical hashed assets
-      # and safe .js.map collisions (SKIP_SOURCEMAP_COLLISION) without failing rollback.
+      # and safe .js.map/.css.map collisions (SKIP_SOURCEMAP_COLLISION) without failing rollback.
       eternal_deploy_log "rollback: restore frontend from $fe_src (in-place)"
       if eternal_restore_frontend_tree "$fe_src" \
         && eternal_frontend_required_state_ok "$ETERNAL_FRONTEND_ROOT" "$fe_src"; then

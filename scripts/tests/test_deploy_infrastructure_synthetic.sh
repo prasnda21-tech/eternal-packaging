@@ -1464,7 +1464,7 @@ map_jsdiff_err="$(eternal_webroot_install_file "$MAP_BUILD/static/js/chunk.1111.
 map_jsdiff_ec=$?
 set -e
 assert_eq "js.map collision with different paired js fails" "1" "$map_jsdiff_ec"
-assert_true "js.map different-js error" grep -qiE 'sourcemap collision|without identical paired' <<<"$map_jsdiff_err"
+assert_true "js.map different-js error" grep -qiE 'sourcemap collision without identical paired runtime asset' <<<"$map_jsdiff_err"
 assert_true "live js.map still old after fail" grep -q 'map-live-old' "$MAP_ROOT/static/js/chunk.1111.js.map"
 # 3) missing paired .js on live → FAIL_CLOSED
 rm -f "$MAP_ROOT/static/js/chunk.2222.js"
@@ -1476,7 +1476,7 @@ map_miss_err="$(eternal_webroot_install_file "$MAP_BUILD/static/js/chunk.2222.js
 map_miss_ec=$?
 set -e
 assert_eq "js.map collision without live paired js fails" "1" "$map_miss_ec"
-assert_true "missing paired js mentioned" grep -qiE 'sourcemap collision|without identical paired' <<<"$map_miss_err"
+assert_true "missing paired js mentioned" grep -qiE 'sourcemap collision without identical paired runtime asset' <<<"$map_miss_err"
 # 3b) missing paired .js on build source → FAIL_CLOSED
 printf 'js-live-only\n' >"$MAP_ROOT/static/js/chunk.3333.js"
 printf 'map-3333-live\n' >"$MAP_ROOT/static/js/chunk.3333.js.map"
@@ -1487,7 +1487,7 @@ map_miss_src_err="$(eternal_webroot_install_file "$MAP_BUILD/static/js/chunk.333
 map_miss_src_ec=$?
 set -e
 assert_eq "js.map collision without build paired js fails" "1" "$map_miss_src_ec"
-assert_true "missing build paired js mentioned" grep -qiE 'sourcemap collision|without identical paired' <<<"$map_miss_src_err"
+assert_true "missing build paired js mentioned" grep -qiE 'sourcemap collision without identical paired runtime asset' <<<"$map_miss_src_err"
 # 4) identical .js.map → SKIP_IDENTICAL
 chmod u+w "$MAP_ROOT/static/js/chunk.1111.js.map" 2>/dev/null || true
 printf 'js-same\n' >"$MAP_ROOT/static/js/chunk.1111.js"
@@ -1518,17 +1518,30 @@ css_coll_ec=$?
 set -e
 assert_eq "hashed css collision fails" "1" "$css_coll_ec"
 assert_true "hashed css collision message" grep -q 'hashed asset collision' <<<"$css_coll_err"
-# 7) .css.map different is NOT granted the js.map exception
+# 7) identical .css + different .css.map → SKIP_SOURCEMAP_COLLISION (same policy as .js.map)
 printf 'css-same\n' >"$MAP_ROOT/static/css/main.eeee.css"
 printf 'cssmap-live\n' >"$MAP_ROOT/static/css/main.eeee.css.map"
+chmod 444 "$MAP_ROOT/static/css/main.eeee.css.map"
 printf 'css-same\n' >"$MAP_BUILD/static/css/main.eeee.css"
 printf 'cssmap-build\n' >"$MAP_BUILD/static/css/main.eeee.css.map"
 set +e
 cssmap_err="$(eternal_webroot_install_file "$MAP_BUILD/static/css/main.eeee.css.map" "$MAP_ROOT" "static/css/main.eeee.css.map" 0 2>&1)"
 cssmap_ec=$?
 set -e
-assert_eq "css.map collision still fail-closed" "1" "$cssmap_ec"
-assert_true "css.map uses hashed collision path" grep -q 'hashed asset collision' <<<"$cssmap_err"
+assert_eq "css.map collision with identical paired css exits 0" "0" "$cssmap_ec"
+assert_true "css.map SKIP_SOURCEMAP_COLLISION logged" grep -q 'SKIP_SOURCEMAP_COLLISION' <<<"$cssmap_err"
+assert_true "live css.map retained" grep -q 'cssmap-live' "$MAP_ROOT/static/css/main.eeee.css.map"
+# 7b) different .css + different .css.map → FAIL_CLOSED
+printf 'css-NEW\n' >"$MAP_BUILD/static/css/main.eeee.css"
+printf 'cssmap-build\n' >"$MAP_BUILD/static/css/main.eeee.css.map"
+set +e
+cssmap_diff_err="$(eternal_webroot_install_file "$MAP_BUILD/static/css/main.eeee.css.map" "$MAP_ROOT" "static/css/main.eeee.css.map" 0 2>&1)"
+cssmap_diff_ec=$?
+set -e
+assert_eq "css.map collision with different paired css fails" "1" "$cssmap_diff_ec"
+assert_true "css.map different-css error" \
+  grep -qiE 'sourcemap collision without identical paired runtime asset' <<<"$cssmap_diff_err"
+assert_true "live css.map still old after fail" grep -q 'cssmap-live' "$MAP_ROOT/static/css/main.eeee.css.map"
 # 8) symlink destination refused
 ln -s "$MAP_ROOT/static/js/chunk.1111.js.map" "$MAP_ROOT/static/js/linky.js.map"
 printf 'js-same\n' >"$MAP_BUILD/static/js/linky.js"
@@ -1554,6 +1567,43 @@ printf '<script src="/static/js/chunk.1111.js"></script>\n' >"$MERGE_BUILD/index
 assert_true "merge PASS with safe js.map collision" \
   eternal_webroot_merge_tree "$MERGE_BUILD" "$MERGE_ROOT" 0
 assert_true "merge kept live map bytes" grep -q 'map-live-old' "$MERGE_ROOT/static/js/chunk.1111.js.map"
+# Soft rollback restore with both .js.map and .css.map collisions + leftover new maps → PASS
+RB_MAP_LIVE="$HARNESS/rb-map-live"
+RB_MAP_BAK="$HARNESS/rb-map-bak"
+rm -rf "$RB_MAP_LIVE" "$RB_MAP_BAK"
+mkdir -p "$RB_MAP_LIVE/static/js" "$RB_MAP_LIVE/static/css" \
+  "$RB_MAP_BAK/static/js" "$RB_MAP_BAK/static/css"
+printf '<script src="/static/js/main.328943d0.js"></script>\n<link href="/static/css/main.aaaa.css" rel="stylesheet">\n' \
+  >"$RB_MAP_BAK/index.html"
+printf '{"files":{"main.js":"/static/js/main.328943d0.js","main.css":"/static/css/main.aaaa.css"}}\n' \
+  >"$RB_MAP_BAK/asset-manifest.json"
+printf 'JS_BASE\n' >"$RB_MAP_BAK/static/js/main.328943d0.js"
+printf 'MAP_JS_BASE\n' >"$RB_MAP_BAK/static/js/main.328943d0.js.map"
+printf 'CSS_BASE\n' >"$RB_MAP_BAK/static/css/main.aaaa.css"
+printf 'MAP_CSS_BASE\n' >"$RB_MAP_BAK/static/css/main.aaaa.css.map"
+cp -a "$RB_MAP_BAK"/. "$RB_MAP_LIVE"/
+# Simulate failed publish leftovers: switched index + new hashed maps + collided maps
+printf '<script src="/static/js/main.newhash.js"></script>\n' >"$RB_MAP_LIVE/index.html"
+printf 'JS_NEW\n' >"$RB_MAP_LIVE/static/js/main.newhash.js"
+printf 'MAP_JS_ORPHAN\n' >"$RB_MAP_LIVE/static/js/main.newhash.js.map"
+printf 'MAP_JS_NEW\n' >"$RB_MAP_LIVE/static/js/main.328943d0.js.map"
+printf 'MAP_CSS_NEW\n' >"$RB_MAP_LIVE/static/css/main.aaaa.css.map"
+chmod 444 "$RB_MAP_LIVE/static/js/main.328943d0.js.map" "$RB_MAP_LIVE/static/css/main.aaaa.css.map"
+assert_true "soft rollback merge PASS with js+css map collisions" \
+  eternal_webroot_merge_tree "$RB_MAP_BAK" "$RB_MAP_LIVE" 1
+assert_true "soft rollback atomic index" \
+  eternal_atomic_publish_index "$RB_MAP_BAK/index.html" "$RB_MAP_LIVE" 1
+assert_true "soft rollback required_state OK" \
+  eternal_frontend_required_state_ok "$RB_MAP_LIVE" "$RB_MAP_BAK"
+assert_true "soft rollback kept live js.map (non-authoritative)" \
+  grep -q 'MAP_JS_NEW' "$RB_MAP_LIVE/static/js/main.328943d0.js.map"
+assert_true "soft rollback kept live css.map (non-authoritative)" \
+  grep -q 'MAP_CSS_NEW' "$RB_MAP_LIVE/static/css/main.aaaa.css.map"
+assert_eq "soft rollback keeps leftover new hashed js" "JS_NEW" "$(cat "$RB_MAP_LIVE/static/js/main.newhash.js")"
+assert_true "soft rollback runtime js matches backup" \
+  cmp -s "$RB_MAP_LIVE/static/js/main.328943d0.js" "$RB_MAP_BAK/static/js/main.328943d0.js"
+assert_true "soft rollback runtime css matches backup" \
+  cmp -s "$RB_MAP_LIVE/static/css/main.aaaa.css" "$RB_MAP_BAK/static/css/main.aaaa.css"
 
 # ========== required_state: extra unreferenced files OK; missing main asset FAIL ==========
 REQ_LIVE="$HARNESS/req-live"
@@ -2254,6 +2304,8 @@ set -e
 echo 0 >"$ETERNAL_FRONTEND_HTTP_FAIL_STATE"
 assert_eq "frontend HTTP 403 rejected" "1" "$http403_ec"
 assert_true "frontend HTTP 403 status logged" grep -q 'frontend HTTP FAIL label=index http=403' <<<"$http403_err"
+assert_true "frontend HTTP 403 logs asset+host" \
+  grep -q 'http=403 host=fixture.nginx.local asset=index' <<<"$http403_err"
 assert_true "backend health body still operational" \
   eternal_health_body_ok '{"mongo":true,"mode":"operational"}'
 # 301 to the expected HTTPS host, then 200, is success. Other targets are not.
@@ -2297,6 +2349,8 @@ http404_ec=$?
 set -e
 assert_eq "frontend HTTP 404 rejected" "1" "$http404_ec"
 assert_true "frontend HTTP 404 logged" grep -q 'frontend HTTP FAIL label=index http=404' <<<"$http404_err"
+assert_true "frontend HTTP 404 logs asset+host" \
+  grep -q 'http=404 host=fixture.nginx.local asset=index' <<<"$http404_err"
 export ETERNAL_FRONTEND_HTTP_CODE=502
 set +e
 http502_err="$(eternal_frontend_nginx_ready "$RB_LIVE" 2>&1)"

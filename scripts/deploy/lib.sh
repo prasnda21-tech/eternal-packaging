@@ -251,11 +251,17 @@ eternal_fe_list_required_static_assets() {
   return 0
 }
 
-# True for static/**/*.js.map only. Does NOT match .css.map or other artifacts.
+# True for hashed runtime sourcemaps under static/: *.js.map and *.css.map.
+# Non-authoritative for runtime correctness when the paired .js/.css is identical.
 eternal_fe_is_js_sourcemap_relpath() {
+  # Backward-compatible name; matches JS and CSS sourcemaps.
+  eternal_fe_is_runtime_sourcemap_relpath "$@"
+}
+
+eternal_fe_is_runtime_sourcemap_relpath() {
   local rel="${1#./}"
   eternal_fe_is_hashed_relpath "$rel" || return 1
-  [[ "$rel" == *.js.map ]]
+  [[ "$rel" == *.js.map || "$rel" == *.css.map ]]
 }
 
 # Ensure candidate path resolves inside webroot (blocks symlink/path escape).
@@ -696,13 +702,15 @@ eternal_frontend_http_status() {
         hop=$((hop + 1))
         ;;
       *)
+        host="$(eternal_url_host "$url")"
         rm -f "$hdr"
-        eternal_deploy_log "frontend HTTP FAIL label=$label http=$code"
+        # label=asset identity; keep "label=… http=…" contiguous for operators/tests.
+        eternal_deploy_log "frontend HTTP FAIL label=$label http=$code host=${host:-unknown} asset=$label url=$url"
         return 1
         ;;
     esac
   done
-  eternal_deploy_log "frontend HTTP FAIL label=$label redirect_loop"
+  eternal_deploy_log "frontend HTTP FAIL label=$label redirect_loop host=$expect asset=$label url=$start_url"
   return 1
 }
 
@@ -813,22 +821,22 @@ eternal_webroot_install_file() {
       return 0
     fi
     if eternal_fe_is_hashed_relpath "$rel"; then
-      # .js.map only: when the paired .js is present on both sides and byte-identical,
-      # keep the live map (no overwrite). Does not claim debug equivalence to the new
-      # build sources — only that the executable .js payload matches. .css.map and
-      # other hashed assets remain fail-closed.
-      if eternal_fe_is_js_sourcemap_relpath "$rel"; then
-        local js_src="${src%.map}"
-        local js_dest="${dest%.map}"
-        if [[ -f "$js_src" && -f "$js_dest" && ! -L "$js_src" && ! -L "$js_dest" ]] \
-          && cmp -s "$js_src" "$js_dest"; then
-          eternal_deploy_log "SKIP_SOURCEMAP_COLLISION $rel (paired .js byte-identical; keep live map)"
+      # *.js.map / *.css.map: when the paired runtime asset (.js / .css) is present on
+      # both sides and byte-identical, keep the live map (no overwrite, no delete).
+      # Does not claim debug equivalence — only that the executable payload matches.
+      # Hashed .js / .css and other artifacts remain fail-closed.
+      if eternal_fe_is_runtime_sourcemap_relpath "$rel"; then
+        local pair_src="${src%.map}"
+        local pair_dest="${dest%.map}"
+        if [[ -f "$pair_src" && -f "$pair_dest" && ! -L "$pair_src" && ! -L "$pair_dest" ]] \
+          && cmp -s "$pair_src" "$pair_dest"; then
+          eternal_deploy_log "SKIP_SOURCEMAP_COLLISION $rel (paired runtime asset byte-identical; keep live map)"
           eternal_webroot_ensure_public_file "$dest" "$soft" || return 1
           return 0
         fi
-        eternal_deploy_log "ERROR: js sourcemap collision without identical paired .js path=$rel — refuse overwrite"
+        eternal_deploy_log "ERROR: sourcemap collision without identical paired runtime asset path=$rel — refuse overwrite"
         [[ "$soft" == "1" ]] && return 1
-        eternal_deploy_die "js sourcemap collision without identical paired .js: $rel"
+        eternal_deploy_die "sourcemap collision without identical paired runtime asset: $rel"
       fi
       eternal_deploy_log "ERROR: hashed asset collision (byte-different) path=$rel — refuse overwrite"
       [[ "$soft" == "1" ]] && return 1
