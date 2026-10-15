@@ -2743,14 +2743,19 @@ def aggregate_operational_orders(
     Masters in exclude_master_ids (e.g. item_type=SERVICE process Add On) never
     contribute physical stock demand — work qty stays on production tracking.
 
-    Explicit parent_line_id / parent_line_idx links process Add Ons to a parent.
-    operator_splits have no per-unit batch/unit IDs, so linked children never
-    prove physical siap via min() — completion_unproven stays True (Belum =
-    BELUM_TERVERIFIKASI). Unlinked SERVICE/orphan print processes also
-    fail-closed. Never invent links from item names.
+    Explicit parent_line_id / parent_line_idx links process Add Ons to a parent
+    on THIS order only (never global by master item). FULLY_COMPLETED when
+    parent + linked processes have operator confirmation covering ordered qty
+    → physical siap = parent qty. Partial stays fail-closed (no READY via min).
+    Unlinked SERVICE/orphan print processes mark UNVERIFIED for affected lines.
+    Never invent links from item names.
     """
     from quantity_rules import is_print_line, operational_ready_qty_for_line
-    from services.order_line_addon import process_children_for_parent
+    from services.order_line_addon import (
+        STATUS_FULLY_COMPLETED,
+        evaluate_process_group,
+        process_children_for_parent,
+    )
 
     owners = accurate_owners or {}
     excluded = {str(mid).strip() for mid in (exclude_master_ids or []) if str(mid).strip()}
@@ -2854,9 +2859,23 @@ def aggregate_operational_orders(
             parent_completed = min(_qty_num(completed_by_idx.get(idx, 0)), ordered)
             children = children_by_parent.get(idx) or []
             if children:
-                # Linked process Add Ons present. Without batch/unit overlap proof,
-                # never promote min(parent, warna) to READY physical siap.
-                add(mid, ordered, parent_completed, unproven=True)
+                group = evaluate_process_group(
+                    order,
+                    idx,
+                    process_master_ids=excluded,
+                    master_ids=master_ids,
+                    is_print_line=is_print_line,
+                    completed_by_idx=process_completed_by_idx,
+                )
+                if group.status == STATUS_FULLY_COMPLETED and not process_gate_unproven:
+                    # Physical siap = parent qty only (not sum of SERVICE process).
+                    add(mid, ordered, group.physical_ready_qty, unproven=False)
+                elif group.status == STATUS_FULLY_COMPLETED and process_gate_unproven:
+                    # Linked group looks done but PO has orphan/ambiguous process.
+                    add(mid, ordered, group.physical_ready_qty, unproven=True)
+                else:
+                    # Fail-closed partial / incomplete — no READY via min().
+                    add(mid, ordered, 0.0, unproven=False)
             elif process_gate_unproven:
                 # Unlinked/orphan/ambiguous process work on this PO — fail-closed.
                 add(mid, ordered, parent_completed, unproven=True)

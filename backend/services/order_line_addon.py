@@ -1,4 +1,4 @@
-"""Explicit Barang Utama ↔ Add On (process) line relations for Stock Saat Ini.
+"""Explicit Barang Utama ↔ Add On (process) line relations.
 
 Schema (backward-compatible, opt-in on line_items):
 - line_id: stable identity for the PO line (preferred)
@@ -7,15 +7,22 @@ Schema (backward-compatible, opt-in on line_items):
 
 Rules:
 - Never invent parent links from item names.
-- Historical lines without parent_line_id stay fail-closed for siap-kirim gating.
+- Scope is per order_id + per parent line — never global by master item,
+  and never a whole-PO gate that blocks unrelated sibling lines.
 - SERVICE / excluded masters are process work — not physical stock demand.
-- operator_splits have no per-unit batch/unit IDs linking warna processes to the
-  same physical pcs. Therefore min(parent, children) is NOT proof of physical
-  siap — linked process children force completion_unproven (BELUM_TERVERIFIKASI).
+- FULLY_COMPLETED: parent + every linked required process has operator
+  qty_completed covering its ordered qty on THIS PO. Physical siap qty =
+  parent ordered qty (not sum of process lines).
+- Partial / ambiguous: fail-closed (no READY partial via min()).
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
+
+STATUS_FULLY_COMPLETED = "FULLY_COMPLETED"
+STATUS_INCOMPLETE = "INCOMPLETE"
+STATUS_UNVERIFIED = "UNVERIFIED"
 
 
 def line_identity(line: Optional[dict], idx: int) -> str:
@@ -104,7 +111,7 @@ def process_children_for_parent(
     """Return (linked child idxs, has_unlinked_process_on_order).
 
     has_unlinked_process_on_order is True when any active process print line
-    lacks a valid parent relation (fail-closed for the whole PO).
+    lacks a valid parent relation (ambiguous for stock attribution).
     """
     ids = build_line_id_index(lines)
     linked: List[int] = []
@@ -126,17 +133,237 @@ def process_children_for_parent(
     return linked, unlinked_process
 
 
+def _qty(value: Any) -> float:
+    try:
+        if value is None or str(value).strip() == "":
+            return 0.0
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def line_operator_completed(order: dict, line_idx: int) -> float:
+    """Sum operator qty_completed for one line_idx (ignores unassigned splits)."""
+    total = 0.0
+    for split in order.get("operator_splits") or []:
+        if not isinstance(split, dict):
+            continue
+        raw = split.get("line_idx")
+        if raw is None or str(raw).strip() == "":
+            continue
+        try:
+            idx = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if idx == int(line_idx):
+            total += max(_qty(split.get("qty_completed")), 0.0)
+    return total
+
+
+@dataclass(frozen=True)
+class ProcessGroupCompletion:
+    """Per-PO + per-parent process group completion for packing / stock / SJ."""
+
+    status: str
+    parent_idx: int
+    parent_ordered: float
+    parent_completed: float
+    physical_ready_qty: float
+    child_idxs: Tuple[int, ...]
+    reason: str = ""
+
+    @property
+    def fully_completed(self) -> bool:
+        return self.status == STATUS_FULLY_COMPLETED
+
+
+def evaluate_process_group(
+    order: dict,
+    parent_idx: int,
+    *,
+    process_master_ids: Optional[Set[str]] = None,
+    master_ids: Optional[Sequence[str]] = None,
+    is_print_line=None,
+    completed_by_idx: Optional[Dict[int, float]] = None,
+    require_linked_children: bool = False,
+) -> ProcessGroupCompletion:
+    """Evaluate one barang induk + its linked process Add Ons on THIS order.
+
+    FULLY_COMPLETED when parent and every linked required process have
+    operator confirmation covering ordered qty. Physical siap = parent qty only.
+
+    Partial never invents siap via min(). Ambiguous relation → UNVERIFIED.
+    """
+    from quantity_rules import is_print_line as _default_is_print
+    from quantity_rules import is_service_process_line
+
+    is_print = is_print_line or _default_is_print
+    lines = list(order.get("line_items") or [])
+    if parent_idx < 0 or parent_idx >= len(lines) or not isinstance(lines[parent_idx], dict):
+        return ProcessGroupCompletion(
+            status=STATUS_UNVERIFIED,
+            parent_idx=parent_idx,
+            parent_ordered=0.0,
+            parent_completed=0.0,
+            physical_ready_qty=0.0,
+            child_idxs=(),
+            reason="Line induk tidak valid.",
+        )
+    parent = lines[parent_idx]
+    if line_cancelled(parent):
+        return ProcessGroupCompletion(
+            status=STATUS_INCOMPLETE,
+            parent_idx=parent_idx,
+            parent_ordered=0.0,
+            parent_completed=0.0,
+            physical_ready_qty=0.0,
+            child_idxs=(),
+            reason="Line induk dibatalkan.",
+        )
+
+    ordered = max(_qty(parent.get("quantity")), 0.0)
+    if completed_by_idx is not None and parent_idx in completed_by_idx:
+        parent_done = min(max(_qty(completed_by_idx.get(parent_idx)), 0.0), ordered)
+    else:
+        parent_done = min(line_operator_completed(order, parent_idx), ordered)
+
+    # Resolve linked process children (SERVICE masters and/or stamped SERVICE).
+    mids = list(master_ids) if master_ids is not None else [
+        str((li or {}).get("master_item_id") or "").strip() if isinstance(li, dict) else ""
+        for li in lines
+    ]
+    process_ids = set(process_master_ids or set())
+    # Also treat stamped SERVICE lines as process even if master set empty.
+    for i, li in enumerate(lines):
+        if isinstance(li, dict) and is_service_process_line(li):
+            mid = mids[i] if i < len(mids) else ""
+            if mid:
+                process_ids.add(mid)
+
+    children, unlinked = process_children_for_parent(
+        parent_idx,
+        lines,
+        process_master_ids=process_ids,
+        master_ids=mids,
+        is_print_line=is_print,
+    )
+
+    # Duplicate line_id on this PO → ambiguous identities.
+    if duplicate_line_id_error(lines):
+        return ProcessGroupCompletion(
+            status=STATUS_UNVERIFIED,
+            parent_idx=parent_idx,
+            parent_ordered=ordered,
+            parent_completed=parent_done,
+            physical_ready_qty=0.0,
+            child_idxs=tuple(children),
+            reason="line_id duplikat — relasi ambigu.",
+        )
+
+    if require_linked_children and not children and unlinked:
+        return ProcessGroupCompletion(
+            status=STATUS_UNVERIFIED,
+            parent_idx=parent_idx,
+            parent_ordered=ordered,
+            parent_completed=parent_done,
+            physical_ready_qty=0.0,
+            child_idxs=(),
+            reason="Ada proses Add On tanpa parent_line_id yang valid.",
+        )
+
+    if not children:
+        # Inventory-only parent on this group: own operator progress.
+        if parent_done + 1e-9 >= ordered and ordered > 0:
+            return ProcessGroupCompletion(
+                status=STATUS_FULLY_COMPLETED,
+                parent_idx=parent_idx,
+                parent_ordered=ordered,
+                parent_completed=parent_done,
+                physical_ready_qty=ordered,
+                child_idxs=(),
+            )
+        return ProcessGroupCompletion(
+            status=STATUS_INCOMPLETE,
+            parent_idx=parent_idx,
+            parent_ordered=ordered,
+            parent_completed=parent_done,
+            physical_ready_qty=0.0,
+            child_idxs=(),
+            reason="Progres operator induk belum mencapai target.",
+        )
+
+    # Linked process group: every child + parent must hit ordered target.
+    child_pairs: List[Tuple[int, float, float]] = []
+    all_done = parent_done + 1e-9 >= ordered and ordered > 0
+    for cidx in children:
+        child = lines[cidx]
+        c_ordered = max(_qty(child.get("quantity")), 0.0)
+        if completed_by_idx is not None and cidx in completed_by_idx:
+            c_done = min(max(_qty(completed_by_idx.get(cidx)), 0.0), c_ordered)
+        else:
+            c_done = min(line_operator_completed(order, cidx), c_ordered)
+        child_pairs.append((cidx, c_ordered, c_done))
+        if c_done + 1e-9 < c_ordered or c_ordered <= 0:
+            all_done = False
+
+    if all_done:
+        return ProcessGroupCompletion(
+            status=STATUS_FULLY_COMPLETED,
+            parent_idx=parent_idx,
+            parent_ordered=ordered,
+            parent_completed=parent_done,
+            physical_ready_qty=ordered,
+            child_idxs=tuple(children),
+            reason="Semua proses wajib pada kelompok induk ini selesai.",
+        )
+
+    return ProcessGroupCompletion(
+        status=STATUS_INCOMPLETE,
+        parent_idx=parent_idx,
+        parent_ordered=ordered,
+        parent_completed=parent_done,
+        physical_ready_qty=0.0,  # fail-closed: no partial siap via min()
+        child_idxs=tuple(children),
+        reason="Masih ada proses Add On wajib yang belum selesai pada kelompok ini.",
+    )
+
+
+def parent_has_linked_process_children(
+    order: dict,
+    parent_idx: int,
+    *,
+    process_master_ids: Optional[Set[str]] = None,
+) -> bool:
+    from quantity_rules import is_print_line, is_service_process_line
+
+    lines = list(order.get("line_items") or [])
+    mids = [
+        str((li or {}).get("master_item_id") or "").strip() if isinstance(li, dict) else ""
+        for li in lines
+    ]
+    process_ids = set(process_master_ids or set())
+    for i, li in enumerate(lines):
+        if isinstance(li, dict) and is_service_process_line(li):
+            mid = mids[i] if i < len(mids) else ""
+            if mid:
+                process_ids.add(mid)
+    children, _ = process_children_for_parent(
+        parent_idx,
+        lines,
+        process_master_ids=process_ids,
+        master_ids=mids,
+        is_print_line=is_print_line,
+    )
+    return bool(children)
+
+
 def conservative_full_process_ready(
     *,
     parent_ordered: float,
     parent_completed: float,
     child_ordered_completed: Iterable[Tuple[float, float]],
 ) -> float:
-    """Upper-bound helper only — NOT proof of physical siap without batch IDs.
-
-    Kept for diagnostics / future batch-proven paths. Stock Saat Ini must not
-    promote this value to READY while per-unit overlap is unproven.
-    """
+    """Diagnostic upper bound only — packing/stock use evaluate_process_group."""
     ready = min(max(parent_ordered, 0.0), max(parent_completed, 0.0))
     for ordered, completed in child_ordered_completed:
         child_ready = min(max(ordered, 0.0), max(completed, 0.0))
@@ -180,14 +407,12 @@ def validate_parent_relation(
         return "Add On tidak boleh merujuk dirinya sendiri sebagai induk."
     if line_cancelled(lines[parent]):
         return "Barang induk tidak aktif / dibatalkan."
-    # When types are stamped: SERVICE process Add On must not point at SERVICE induk.
     child_type = _line_item_type(line)
     parent_type = _line_item_type(lines[parent])
     if child_type == "SERVICE" and parent_type == "SERVICE":
         return "Induk Add On SERVICE tidak valid — pilih barang fisik (INVENTORY)."
     if parent_type == "SERVICE":
         return "Barang induk tidak boleh bertipe SERVICE."
-    # Cycle detection: walk explicit parent chain.
     seen = {idx}
     cur: Optional[int] = parent
     while cur is not None:

@@ -63,7 +63,7 @@ def _addon_po(*, packed_main: int = 0):
         "operator_splits": [
             {"line_idx": 0, "quantity": 1000, "qty_completed": 1000},
             {"line_idx": 1, "quantity": 1000, "qty_completed": 1000},
-            {"line_idx": 2, "quantity": 1000, "qty_completed": 400},
+            {"line_idx": 2, "quantity": 1000, "qty_completed": 1000},
         ],
         "helper_prep": {"qty_prepared": 1000, "items": [{"line_idx": 0, "qty_prepared": 1000}]},
         "packing_info": {},
@@ -164,7 +164,7 @@ def test_invoice_line_math_keeps_service_prices():
     assert packing_required_total(o) == 1000
 
 
-def test_stock_aggregate_physical_demand_1000_unverified_siap():
+def test_stock_aggregate_physical_demand_1000_fully_completed():
     orders = [{
         "id": "so-1",
         "cancelled": False,
@@ -205,4 +205,5 @@ def test_stock_aggregate_physical_demand_1000_unverified_siap():
     assert "svc-w2" not in progress and "svc-w3" not in progress
     slot = progress["inv-a"]
     assert slot["ordered_qty"] == 1000
-    assert slot["completion_unproven"] is True
+    assert slot["completed_qty"] == 1000
+    assert slot.get("completion_unproven") is False

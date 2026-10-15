@@ -49,8 +49,8 @@ def test_conservative_min_ready():
     ) == 200
 
 
-def test_aggregate_with_parent_links_never_promotes_min_to_proven():
-    """No batch/unit IDs on splits → linked Add On ≠ READY physical siap."""
+def test_aggregate_with_parent_links_fully_completed_ready():
+    """All linked processes confirmed → physical siap = parent qty (not 3000)."""
     orders = [{
         "id": "o1",
         "cancelled": False,
@@ -60,6 +60,7 @@ def test_aggregate_with_parent_links_never_promotes_min_to_proven():
                 "master_item_id": "inv",
                 "quantity": 1000,
                 "production_process": "print",
+                "item_type": "INVENTORY",
             },
             {
                 "line_id": "ln-w2",
@@ -67,6 +68,7 @@ def test_aggregate_with_parent_links_never_promotes_min_to_proven():
                 "parent_line_id": "ln-main",
                 "quantity": 1000,
                 "production_process": "print",
+                "item_type": "SERVICE",
             },
             {
                 "line_id": "ln-w3",
@@ -74,6 +76,7 @@ def test_aggregate_with_parent_links_never_promotes_min_to_proven():
                 "parent_line_id": "ln-main",
                 "quantity": 1000,
                 "production_process": "print",
+                "item_type": "SERVICE",
             },
         ],
         "operator_splits": [
@@ -87,10 +90,27 @@ def test_aggregate_with_parent_links_never_promotes_min_to_proven():
     )
     slot = progress["inv"]
     assert slot["ordered_qty"] == 1000
-    # Parent progress kept for buckets; never proven siap via min().
     assert slot["completed_qty"] == 1000
-    assert slot.get("completion_unproven") is True
+    assert slot.get("completion_unproven") is False
     assert "svc2" not in progress
+
+
+def test_aggregate_partial_linked_fail_closed():
+    orders = [{
+        "id": "o1",
+        "cancelled": False,
+        "line_items": [
+            {"line_id": "ln-main", "master_item_id": "inv", "quantity": 1000, "production_process": "print", "item_type": "INVENTORY"},
+            {"line_id": "ln-w2", "master_item_id": "svc2", "parent_line_id": "ln-main", "quantity": 1000, "production_process": "print", "item_type": "SERVICE"},
+        ],
+        "operator_splits": [
+            {"line_idx": 0, "qty_completed": 1000},
+            {"line_idx": 1, "qty_completed": 400},
+        ],
+    }]
+    progress = aggregate_operational_orders(orders, exclude_master_ids={"svc2"})
+    assert progress["inv"]["completed_qty"] == 0
+    assert progress["inv"].get("completion_unproven") is False
 
 
 def test_validate_rejects_cancelled_parent_cycle_and_duplicate_ids():

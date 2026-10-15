@@ -174,10 +174,10 @@ async def test_r2_parent_linked_addon_completion_and_adjust_idempotent(db):
     assert svc["id"] not in {r["master_item_id"] for r in catalog["items"]}
     row = next(r for r in catalog["items"] if r["master_item_id"] == item["id"])
     assert row["qty_pesanan"] == 0
-    # Linked SERVICE Add On without per-unit batch proof → Belum unverified.
-    assert row["qty_belum_terkirim"] is None
-    assert row["belum_terkirim_status"] == "BELUM_TERVERIFIKASI"
-    assert row["qty_tersedia_valid"] is False
+    # Linked SERVICE Add On fully confirmed → physical siap = parent qty.
+    assert row["qty_belum_terkirim"] == 1000
+    assert row["belum_terkirim_status"] == "READY"
+    assert row["qty_tersedia_valid"] is True
     assert row["baseline_status"] == BASELINE_RECONCILED
 
     first = await adjust_physical_stock_to_target(

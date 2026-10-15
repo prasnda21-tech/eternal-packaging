@@ -472,7 +472,9 @@ def _unassigned_print_completed(order: dict) -> int:
 def available_for_packing_line(order: dict, line_idx: int) -> int:
     """Availability satu line. Tidak memakai sisa availability line lain.
 
-    Cetak INVENTORY: MIN(print_completed, helper_prepared, qty_po)
+    Cetak INVENTORY: MIN(print_completed, helper_prepared, qty_po) when the
+    per-PO parent process group is FULLY_COMPLETED (linked SERVICE Add Ons
+    all confirmed). Sibling lines on the same PO do not block this line.
     Non-cetak / SERVICE: 0 (SERVICE is process work, not physical packing).
     """
     lis = order.get("line_items") or []
@@ -485,8 +487,21 @@ def available_for_packing_line(order: dict, line_idx: int) -> int:
     qty = max(0, _safe_int(li.get("quantity")))
     if not is_print_line(li) or is_service_process_line(li):
         return 0
+    # Per-parent process group gate (does not wait on unrelated sibling items).
+    from services.order_line_addon import (
+        STATUS_FULLY_COMPLETED,
+        evaluate_process_group,
+        parent_has_linked_process_children,
+    )
+    if parent_has_linked_process_children(order, idx):
+        group = evaluate_process_group(order, idx)
+        if group.status != STATUS_FULLY_COMPLETED:
+            return 0
     completed = print_completed_for_line(order, idx)
-    print_idxs = print_line_indices(order)
+    print_idxs = [
+        i for i, row in enumerate(lis)
+        if is_print_line(row) and not is_service_process_line(row)
+    ]
     if len(print_idxs) == 1 and print_idxs[0] == idx:
         completed += _unassigned_print_completed(order)
     completed = min(completed, qty)
@@ -602,7 +617,7 @@ def apply_confirmed_packing_progress(order: dict) -> bool:
     """After packing qty is confirmed, packed qty is immediately eligible downstream.
 
     Partial packing opens Surat Jalan (stage 12). Does not invent packed qty.
-    Non-cetak tidak dihitung sebagai target Packing.
+    Target Packing = physical print qty (excludes SERVICE process Add Ons).
     Returns True if packing_status or current_stage changed.
     """
     packed_total = qty_packed(order)
@@ -610,7 +625,7 @@ def apply_confirmed_packing_progress(order: dict) -> bool:
         return False
     changed = False
     lis = order.get("line_items") or []
-    required = print_qty_total(order) if lis else packing_required_total(order)
+    required = physical_print_qty_total(order) if lis else packing_required_total(order)
     packed = qty_packed_print(order) if lis else packed_total
     status = "Sudah" if (required <= 0 or (required and packed >= required)) else "Berjalan"
     if order.get("packing_status") != status:
