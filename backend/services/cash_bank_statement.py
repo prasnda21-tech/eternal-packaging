@@ -1974,6 +1974,118 @@ async def _claim_batch_writer(db, batch_id: str, attempt_id: str) -> None:
     )
 
 
+async def _claim_gap_fill_writer(db, batch_id: str, attempt_id: str) -> None:
+    """Writer claim for COMPLETE batches that allow unmatched gap-fill after purge.
+
+    Mutual exclusion is the per-account import fence (held by the caller). The
+    COMPLETE batch may still carry a stale writer_attempt from the original import.
+    """
+    claimed = await db[IMPORTS].update_one(
+        {
+            "id": batch_id,
+            "status": STATUS_COMPLETE,
+            "allows_unmatched_gap_fill": True,
+        },
+        {"$set": {"writer_attempt": str(attempt_id)}},
+    )
+    if claimed.matched_count != 1:
+        raise StatementConflictError(
+            "Batch impor tidak siap untuk mengisi ulang baris yang dihapus. "
+            "Ulangi setelah operasi lain pada rekening ini selesai."
+        )
+
+
+async def _gap_fill_complete_batch(
+    db, existing: dict, parsed: dict, actor: dict, attempt: dict, cash_bank_id: str,
+) -> dict:
+    """Insert only missing rows into an existing COMPLETE batch after unmatched purge.
+
+    Matched / still-present rows stay reuse/protected. Same file_sha256; no new batch.
+    Re-classifies against the same batch (do not ignore_import_id) so surviving
+    matched lines are reused instead of inserted again.
+    """
+    acquired_here = False
+    if not attempt.get("fenced"):
+        await _acquire_import_fence(
+            db,
+            cash_bank_id,
+            attempt["attempt_id"],
+            operation_id=attempt.get("operation_id") or attempt["attempt_id"],
+            file_hash=str(existing.get("file_sha256") or ""),
+            wait=True,
+            timeout=20.0,
+        )
+        attempt["fenced"] = True
+        acquired_here = True
+    try:
+        mapping = existing.get("mapping") or {}
+        authoritative = bool(mapping.get("bank_txn_id_authoritative"))
+        # Re-run classification including this batch's surviving lines.
+        await _flag_duplicates(
+            db,
+            cash_bank_id,
+            parsed["accepted"],
+            authoritative=authoritative,
+            ignore_import_id=None,
+            attempt=attempt,
+        )
+        await _acknowledge_reused_rows(db, parsed["accepted"], attempt)
+        await _assert_import_attempt(db, attempt)
+        await _claim_gap_fill_writer(db, existing["id"], attempt["attempt_id"])
+        await _bind_import_fence(db, cash_bank_id, attempt["attempt_id"], existing["id"])
+        await _apply_reimport_updates(db, existing, parsed["accepted"], actor, attempt)
+        to_insert = _rows_to_insert(parsed["accepted"])
+        stored_rows = (
+            await _insert_prepared_lines(db, existing, to_insert, actor, attempt)
+            if to_insert else []
+        )
+        await _assert_import_attempt(db, attempt)
+        summary = _stamp_outcome(existing, parsed["accepted"])
+        count, _total_in, _total_out = await _stored_totals(db, existing["id"])
+        await db[IMPORTS].update_one(
+            {
+                "id": existing["id"],
+                "status": STATUS_COMPLETE,
+                "writer_attempt": str(attempt["attempt_id"]),
+            },
+            {"$set": {
+                "stored_count": count,
+                "reused_count": int(summary.get("reused_count") or 0),
+                "new_count": summary.get("new_count"),
+                "updated_count": summary.get("updated_count"),
+                "protected_count": summary.get("protected_count"),
+                "unchanged_count": summary.get("unchanged_count"),
+                "conflict_count": summary.get("conflict_count"),
+                "conflicts": summary.get("conflicts"),
+                "fully_accepted": summary.get("fully_accepted"),
+                "result_note": (
+                    "Isi ulang setelah hapus belum cocok. "
+                    + str(summary.get("result_note") or "")
+                ).strip(),
+                "gap_filled_at": now_iso(),
+                "writer_attempt": DISPLACED_WRITER,
+            }},
+        )
+        refreshed = await db[IMPORTS].find_one({"id": existing["id"]}, {"_id": 0, "file_bytes": 0})
+        body = public_import(refreshed or existing) or {}
+        body.update({
+            "new_count": summary.get("new_count"),
+            "updated_count": summary.get("updated_count"),
+            "protected_count": summary.get("protected_count"),
+            "unchanged_count": summary.get("unchanged_count"),
+            "conflict_count": summary.get("conflict_count"),
+            "conflicts": summary.get("conflicts") or [],
+            "fully_accepted": summary.get("fully_accepted"),
+            "result_note": body.get("result_note") or summary.get("result_note"),
+            "gap_fill": True,
+            "inserted_now": len(stored_rows),
+        })
+        return body
+    finally:
+        if acquired_here:
+            await _release_import_fence(db, cash_bank_id, attempt["attempt_id"])
+
+
 async def _continue_importing_batch(db, existing: dict, parsed: dict, actor: dict, attempt: dict, cash_bank_id: str) -> dict:
     await _assert_import_attempt(db, attempt)
     await _claim_batch_writer(db, existing["id"], attempt["attempt_id"])
@@ -2031,6 +2143,10 @@ async def _store_pinned_import(
                 "Batch lama tidak diubah."
             )
         if existing.get("status") == STATUS_COMPLETE:
+            if existing.get("allows_unmatched_gap_fill"):
+                return await _gap_fill_complete_batch(
+                    db, existing, parsed, actor, attempt, cash_bank_id,
+                )
             return _idempotent_file_result(existing, len(parsed["accepted"]))
         if existing.get("status") == STATUS_IMPORTING:
             return await _continue_importing_batch(db, existing, parsed, actor, attempt, cash_bank_id)
@@ -2075,6 +2191,10 @@ async def _store_pinned_import(
         if existing and existing.get("mapping_hash") == mapping_hash:
             existing.pop("_id", None)
             if existing.get("status") == STATUS_COMPLETE:
+                if existing.get("allows_unmatched_gap_fill"):
+                    return await _gap_fill_complete_batch(
+                        db, existing, parsed, actor, attempt, cash_bank_id,
+                    )
                 return _idempotent_file_result(existing, len(parsed["accepted"]))
             if existing.get("status") == STATUS_IMPORTING:
                 return await _continue_importing_batch(db, existing, parsed, actor, attempt, cash_bank_id)

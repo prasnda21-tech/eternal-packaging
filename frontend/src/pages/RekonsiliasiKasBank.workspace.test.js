@@ -15,6 +15,7 @@ jest.mock('../lib/api', () => ({ __esModule: true, default: {
   cashBankPairSuggestions: jest.fn(), createCashBankPair: jest.fn(), cancelCashBankPair: jest.fn(),
   cashBankPairGroupCandidates: jest.fn(), createCashBankPairGroup: jest.fn(), cancelCashBankPairGroup: jest.fn(),
   previewCashBankStatement: jest.fn(), previewCashBankBcaStatement: jest.fn(), commitCashBankBcaStatement: jest.fn(), validateCashBankStatement: jest.fn(), commitCashBankStatement: jest.fn(),
+  previewCashBankUnmatchedPurge: jest.fn(), executeCashBankUnmatchedPurge: jest.fn(),
 } }));
 jest.mock('../lib/auth', () => ({ useAuth: () => ({ hasPerm: (perm) => mockPermissions.includes(perm) }) }));
 const api = require('../lib/api').default;
@@ -388,4 +389,74 @@ test('in-flight active_claim bank line is hidden from Belum Cocok board', async 
   await renderPage();
   expect(container.textContent).not.toContain('Transfer pelanggan');
   expect(container.querySelector('[data-testid=kas-bank-recommendation]')).toBeNull();
+});
+
+test('Hapus Belum Cocok hidden without purge permission', async () => {
+  mockPermissions = ['cash_bank.view', 'cash_bank.reconcile'];
+  await renderPage();
+  expect(container.querySelector('[data-testid=kas-bank-purge-unmatched]')).toBeNull();
+});
+
+test('Hapus Belum Cocok dialog shows counts and confirm disabled when zero', async () => {
+  mockPermissions = ['cash_bank.view', 'cash_bank.reconcile', 'cash_bank.reconcile.purge_unmatched'];
+  api.previewCashBankUnmatchedPurge.mockResolvedValue({
+    cash_bank_id: 'account-1',
+    cash_bank_name: 'Rekening uji',
+    start_date: '2026-09-01',
+    end_date: '2026-09-30',
+    eligible_count: 0,
+    protected_count: 2,
+    ambiguous_count: 1,
+    fence_busy: false,
+    zero_write: true,
+  });
+  await renderPage();
+  const select = container.querySelector('[data-testid=kas-bank-pair-bank]');
+  await act(async () => {
+    select.value = 'account-1';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  await flush();
+  await flush();
+  const btn = container.querySelector('[data-testid=kas-bank-purge-unmatched]');
+  expect(btn).toBeTruthy();
+  await click(btn);
+  await flush();
+  expect(api.previewCashBankUnmatchedPurge).toHaveBeenCalled();
+  expect(container.querySelector('[data-testid=kas-bank-purge-dialog]')).toBeTruthy();
+  expect(container.querySelector('[data-testid=kas-bank-purge-counts]').textContent).toContain('Eligible dihapus');
+  expect(container.querySelector('[data-testid=kas-bank-purge-confirm]').disabled).toBe(true);
+});
+
+test('Hapus Belum Cocok execute calls API and refreshes workspace', async () => {
+  mockPermissions = ['cash_bank.view', 'cash_bank.reconcile', 'cash_bank.reconcile.purge_unmatched'];
+  api.previewCashBankUnmatchedPurge.mockResolvedValue({
+    cash_bank_id: 'account-1',
+    cash_bank_name: 'Rekening uji',
+    eligible_count: 2,
+    protected_count: 1,
+    ambiguous_count: 0,
+    fence_busy: false,
+  });
+  api.executeCashBankUnmatchedPurge.mockResolvedValue({
+    status: 'completed', deleted_count: 2, message: '2 mutasi belum cocok dihapus.',
+  });
+  await renderPage();
+  const select = container.querySelector('[data-testid=kas-bank-pair-bank]');
+  await act(async () => {
+    select.value = 'account-1';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  await flush();
+  await flush();
+  await click(container.querySelector('[data-testid=kas-bank-purge-unmatched]'));
+  await flush();
+  const confirm = container.querySelector('[data-testid=kas-bank-purge-confirm]');
+  expect(confirm.disabled).toBe(false);
+  const before = api.cashBankPairWorkspace.mock.calls.length;
+  await click(confirm);
+  await flush();
+  await flush();
+  expect(api.executeCashBankUnmatchedPurge).toHaveBeenCalled();
+  expect(api.cashBankPairWorkspace.mock.calls.length).toBeGreaterThan(before);
 });

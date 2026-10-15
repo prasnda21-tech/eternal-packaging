@@ -245,6 +245,11 @@ PERMISSION_CATALOG = [
     ("Kas & Bank", "cash_bank.post", "Posting Kas & Bank"),
     ("Kas & Bank", "cash_bank.reverse", "Reversal Kas & Bank"),
     ("Kas & Bank", "cash_bank.reconcile", "Rekonsiliasi Kas & Bank"),
+    (
+        "Kas & Bank",
+        "cash_bank.reconcile.purge_unmatched",
+        "Hapus mutasi rekening koran belum cocok",
+    ),
     ("Chat", "chat.use", "Gunakan Chat Internal"),
     ("Chat", "chat.group.manage", "Kelola Grup Chat"),
     ("Chat", "chat.moderate", "Moderasi Chat"),
@@ -392,6 +397,8 @@ OPT_IN_ONLY_PERMISSIONS = frozenset({
     "sales.invoice.cancel",
     "sales.receipt.cancel",
     "sales.receipt.edit",
+    # Destructive unmatched statement purge — never in admin/operator defaults.
+    "cash_bank.reconcile.purge_unmatched",
 })
 
 DEFAULT_GRANT_PERMISSIONS = tuple(
@@ -936,6 +943,14 @@ for _role, _keys in list(ROLE_DEFAULT_PERMISSIONS.items()):
     ROLE_DEFAULT_PERMISSIONS[_role] = sorted(
         p for p in _keys if p not in OPT_IN_ONLY_PERMISSIONS
     )
+
+# Holding team is an explicit Owner-approved grantee for unmatched purge.
+# Re-added after the OPT_IN strip so admin/operator defaults stay clean.
+# Direktur receives it via director_full_permission_set() (ALL_PERMISSIONS).
+ROLE_DEFAULT_PERMISSIONS["holding_team"] = sorted(
+    set(ROLE_DEFAULT_PERMISSIONS.get("holding_team", []))
+    | {"cash_bank.reconcile.purge_unmatched"}
+)
 
 ROLE_LABELS = {
   "admin": "Admin",
