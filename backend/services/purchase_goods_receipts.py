@@ -656,6 +656,85 @@ async def _commit_r2_goods_receipt(
     raise HTTPException(409, f"Gagal menyimpan penerimaan. {last_error}")
 
 
+async def _commit_standalone_goods_receipt(
+    db,
+    doc: dict,
+    *,
+    user: dict,
+    po_number: str,
+    existing_count: int,
+    warehouse_id: Optional[str],
+) -> dict:
+    """Persist receipt + per-line warehouse movements without multi-doc transactions."""
+    from services.physical_stock import (
+        PhysicalStockAbortError,
+        resolve_purchase_receipt_warehouse,
+    )
+    from services.warehouse_stock_standalone import (
+        apply_purchase_receipt_lines_standalone,
+        require_warehouse_stock_standalone,
+    )
+
+    actor_id = str((user or {}).get("id") or (user or {}).get("email") or "user")
+    await require_warehouse_stock_standalone(db)
+    branch_id, resolved_warehouse = await resolve_purchase_receipt_warehouse(
+        db, None, warehouse_id=warehouse_id,
+    )
+    doc["branch_id"] = branch_id
+    doc["warehouse_id"] = resolved_warehouse
+    doc["r2_physical"] = False
+    doc["warehouse_standalone"] = True
+    for line in doc["lines"]:
+        line["branch_id"] = branch_id
+        line["warehouse_id"] = resolved_warehouse
+        line["received_qty"] = _whole_received_qty(line["received_qty"])
+
+    if doc.get("idempotency_key"):
+        existing = await db[COLLECTION].find_one(
+            {"idempotency_key": doc["idempotency_key"]},
+            {"_id": 0},
+        )
+        if existing:
+            spec = {
+                "purchase_order_id": doc["purchase_order_id"],
+                "branch_id": branch_id,
+                "warehouse_id": resolved_warehouse,
+                "lines": _receipt_line_identity(doc.get("lines") or []),
+            }
+            if not _same_receipt_payload(existing, spec):
+                from services.physical_stock import PhysicalStockConflictError
+                raise PhysicalStockConflictError(
+                    "Idempotency key sudah digunakan dengan payload yang berbeda"
+                )
+            return existing
+
+    number_index = existing_count + 1
+    candidate = derive_child_number(po_number, PREFIX_GOODS_RECEIPT, number_index)
+    while await db[COLLECTION].find_one({"receipt_number": candidate}, {"_id": 1}):
+        number_index += 1
+        candidate = derive_child_number(po_number, PREFIX_GOODS_RECEIPT, number_index)
+    doc["receipt_number"] = candidate
+
+    try:
+        await db[COLLECTION].insert_one(dict(doc))
+    except DuplicateKeyError as exc:
+        if doc.get("idempotency_key") and "idempotency_key" in str(exc):
+            existing = await db[COLLECTION].find_one(
+                {"idempotency_key": doc["idempotency_key"]}, {"_id": 0},
+            )
+            if existing:
+                return existing
+        raise HTTPException(409, "Dokumen duplikat terdeteksi.") from exc
+
+    try:
+        await apply_purchase_receipt_lines_standalone(db, doc, actor_id=actor_id)
+    except Exception as exc:
+        # Receipt row exists; movements may be partial — surface clearly for recovery.
+        _r2_http(exc)
+    doc.pop("_id", None)
+    return doc
+
+
 async def _cancel_r2_goods_receipt(db, doc: dict, user: dict, reason: str) -> dict:
     from services.physical_stock import (
         LEDGER_COLLECTION,
@@ -874,14 +953,29 @@ async def create_purchase_goods_receipt(db, payload: Dict[str, Any], user: dict)
             ygy = await find_branch_by_code(db, "YGY")
             if ygy and ygy.get("id"):
                 await require_branch_access(db, user, ygy["id"])
-        saved = await _commit_r2_goods_receipt(
-            db,
-            doc,
-            user=user,
-            po_number=preview["po_number"],
-            existing_count=existing_count,
-            warehouse_id=requested_warehouse_id,
-        )
+        from services.r2_go_live import is_r2_authority_active
+        from services.warehouse_stock_standalone import is_warehouse_stock_standalone_active
+
+        r2_on = await is_r2_authority_active(db)
+        standalone_on = (not r2_on) and await is_warehouse_stock_standalone_active(db)
+        if standalone_on:
+            saved = await _commit_standalone_goods_receipt(
+                db,
+                doc,
+                user=user,
+                po_number=preview["po_number"],
+                existing_count=existing_count,
+                warehouse_id=requested_warehouse_id,
+            )
+        else:
+            saved = await _commit_r2_goods_receipt(
+                db,
+                doc,
+                user=user,
+                po_number=preview["po_number"],
+                existing_count=existing_count,
+                warehouse_id=requested_warehouse_id,
+            )
         from services.hpp_cutover import register_baseline_participants, recognize_posted_goods_receipt
         await register_baseline_participants(db, saved)
         await recognize_posted_goods_receipt(db, saved, user)

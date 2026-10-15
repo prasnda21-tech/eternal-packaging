@@ -176,6 +176,13 @@ export default function StockSaatIni() {
   });
   const readMode = data?.stock_read_mode || (data?.r2_authority_active ? "r2" : "compatibility");
   const r2Active = Boolean(data?.r2_authority_active);
+  // Warehouse-scoped UI (filters, Saldo Awal/Opname) when R2 OR standalone warehouse flag is on.
+  const warehouseActive = Boolean(
+    r2Active
+    || data?.warehouse_stock_standalone
+    || readMode === "warehouse_standalone"
+    || readMode === "r2"
+  );
   const emptyText = stockEmptyMessage({
     masterItemCount: data?.master_item_count || 0,
     warehouseCount: data?.warehouse_count || 0,
@@ -184,7 +191,9 @@ export default function StockSaatIni() {
 
   const physicalHeader = r2Active
     ? (selectedFilterWarehouse ? "Saldo Buku R2 (gudang)" : "Saldo Buku R2 (cabang)")
-    : "Stock Fisik (perusahaan)";
+    : warehouseActive
+      ? (selectedFilterWarehouse ? "Saldo Buku (gudang)" : "Saldo Buku (cabang)")
+      : "Stock Fisik (perusahaan)";
   const download = () => {
     const header = [
       "Kode",
@@ -263,25 +272,27 @@ export default function StockSaatIni() {
             <p className="muted small" data-testid="stock-read-mode">
               {r2Active
                 ? "Mode R2 aktif — sumber stok fisik: physical_stock_balances per cabang/gudang (bukan gabungan semua gudang)."
-                : "Mode kompatibilitas pra-cutover — stok fisik legacy digabung perusahaan (product_stock_state, baca saja); bukan saldo per gudang."}
+                : warehouseActive
+                  ? "Mode warehouse standalone — sumber stok fisik: physical_stock_balances per cabang/gudang (tanpa Replica Set / tanpa R2 authority)."
+                  : "Mode kompatibilitas pra-cutover — stok fisik legacy digabung perusahaan (product_stock_state, baca saja); bukan saldo per gudang."}
             </p>
           )}
-          {data && !r2Active && (
+          {data && !warehouseActive && (
             <p className="muted small" data-testid="stock-compat-branch-note">
               {data.physical_qty_note
-                || "Angka di kolom Stock Fisik (perusahaan) adalah gabungan legacy company-wide — jangan dibaca sebagai saldo gudang. Filter cabang tidak mengubah qty fisik legacy. Opname/adjustment memakai saldo R2 per gudang setelah cutover."}
+                || "Angka di kolom Stock Fisik (perusahaan) adalah gabungan legacy company-wide — jangan dibaca sebagai saldo gudang. Filter cabang tidak mengubah qty fisik legacy."}
             </p>
           )}
-          {data && !r2Active && (
+          {data && !warehouseActive && (
             <p className="muted small" data-testid="stock-adjust-blocked-reason">
-              Koreksi/Saldo Awal R2 dan Stock Opname R2 memerlukan r2_authority_active.
-              Preview utama masih mode kompatibilitas (R2 OFF) — endpoint adjustment
-              menolak dengan 409 sampai cutover. Qty tersedia negatif tidak memblokir pesanan.
+              Koreksi/Saldo Awal/Opname gudang memerlukan r2_authority_active atau flag
+              warehouse_stock_standalone. Mode kompatibilitas menolak mutasi gudang dengan 409.
+              Qty tersedia negatif tidak memblokir pesanan.
             </p>
           )}
-          {data && r2Active && (
+          {data && warehouseActive && (
             <p className="muted small" data-testid="stock-book-vs-count-note">
-              Kolom Saldo Buku R2 adalah buku stok (boleh negatif), bukan hasil hitung fisik.
+              Kolom Saldo Buku adalah buku stok (boleh negatif sebagai peringatan), bukan hasil hitung fisik.
               Hitung fisik aktual dicatat lewat Stock Opname (≥ 0). Status “Saldo awal belum
               direkonsiliasi” berarti belum ada opening/opname — bukan klaim fisik nol.
               Qty Pesanan / Belum Terkirim lingkup cabang — tidak dialokasikan per gudang.
@@ -319,7 +330,7 @@ export default function StockSaatIni() {
           <BranchScopeSelect
             branches={branches}
             value={effectiveBranchId}
-            canSwitch={Boolean(canSwitchBranches && r2Active)}
+            canSwitch={Boolean(canSwitchBranches && warehouseActive)}
             effectiveCode={data?.effective_branch_code}
             onChange={(next) => {
               setBranchId(next);
@@ -330,7 +341,7 @@ export default function StockSaatIni() {
             }}
             testId="stock-branch-select"
           />
-          {r2Active && (
+          {warehouseActive && (
             <label className="field stock-warehouse-filter" data-testid="stock-warehouse-filter">
               <span className="muted small">Gudang</span>
               <select
@@ -392,18 +403,18 @@ export default function StockSaatIni() {
               <th
                 className="col-fit num"
                 data-testid="stock-physical-header"
-                data-physical-scope={r2Active ? (selectedFilterWarehouse ? "WAREHOUSE" : "BRANCH") : "COMPANY"}
-                title={r2Active
+                data-physical-scope={warehouseActive ? (selectedFilterWarehouse ? "WAREHOUSE" : "BRANCH") : "COMPANY"}
+                title={warehouseActive
                   ? "Saldo buku R2 (boleh negatif) — bukan hasil hitung fisik"
                   : "Legacy company-wide — bukan saldo per gudang"}
               >
                 {physicalHeader}
               </th>
               <th className="col-fit num" title="Lingkup cabang — bukan alokasi per gudang">
-                Qty Pesanan{r2Active ? " (cabang)" : ""}
+                Qty Pesanan{warehouseActive ? " (cabang)" : ""}
               </th>
               <th className="col-fit num" title="Lingkup cabang — bukan alokasi per gudang">
-                Qty Belum Terkirim{r2Active ? " (cabang)" : ""}
+                Qty Belum Terkirim{warehouseActive ? " (cabang)" : ""}
               </th>
               <th className="col-fit num">Qty Tersedia</th>
               <th className="col-fit">Terakhir Update</th>
@@ -450,7 +461,7 @@ export default function StockSaatIni() {
                       {fmtQty(it.physical_qty)}
                     </button>
                   ) : fmtQty(it.physical_qty)}
-                  {!r2Active && it.physical_qty_warehouse_valid === false && (
+                  {!warehouseActive && it.physical_qty_warehouse_valid === false && (
                     <div className="muted small" data-testid={`stock-legacy-physical-${it.master_item_id}`}>
                       Legacy perusahaan — bukan saldo gudang
                     </div>
@@ -465,7 +476,7 @@ export default function StockSaatIni() {
                       Saldo buku negatif
                     </div>
                   )}
-                  {r2Active && !selectedFilterWarehouse && Array.isArray(it.warehouse_balances) && it.warehouse_balances.length > 0 && (
+                  {warehouseActive && !selectedFilterWarehouse && Array.isArray(it.warehouse_balances) && it.warehouse_balances.length > 0 && (
                     <ul className="stock-warehouse-breakdown" data-testid={`stock-warehouse-breakdown-${it.master_item_id}`}>
                       {it.warehouse_balances.map((wb) => (
                         <li

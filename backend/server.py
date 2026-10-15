@@ -13882,11 +13882,20 @@ async def master_item_physical_opening_balance_post(
     payload: dict = Body(...),
     user=Depends(current_user),
 ):
-    """Create one R2 OPENING_BALANCE through the physical stock transaction engine."""
+    """Create one OPENING_BALANCE per warehouse.
+
+    Prefers R2 transactional engine when r2_authority_active. Otherwise uses
+    warehouse_stock_standalone (pending-event, no multi-doc txn) when that flag
+    is enabled. Never bypasses either gate.
+    """
     await _require_any_perm(user, "current_stock.update", "permissions.manage")
     from services.branch_access import authorize_stock_location
-    from services.r2_go_live import require_r2_authority_active
-    await require_r2_authority_active(db)
+    from services.r2_go_live import is_r2_authority_active, require_r2_authority_active
+    from services.warehouse_stock_standalone import (
+        is_warehouse_stock_standalone_active,
+        post_opening_balance_standalone,
+        require_warehouse_stock_standalone,
+    )
     body = payload or {}
     await authorize_stock_location(
         db,
@@ -13905,7 +13914,12 @@ async def master_item_physical_opening_balance_post(
     actor_id = str((user or {}).get("id") or (user or {}).get("user_id") or "").strip()
     if not actor_id:
         raise HTTPException(401, "Aktor tidak dikenal")
+    use_standalone = (not await is_r2_authority_active(db)) and await is_warehouse_stock_standalone_active(db)
     try:
+        if use_standalone:
+            await require_warehouse_stock_standalone(db)
+            return await post_opening_balance_standalone(db, item_id, body, actor_id=actor_id)
+        await require_r2_authority_active(db)
         return await post_opening_balance(db, item_id, body, actor_id=actor_id)
     except PhysicalStockNotFoundError as exc:
         raise HTTPException(404, str(exc)) from exc
@@ -13936,10 +13950,14 @@ async def master_item_physical_adjustment_post(
     payload: dict = Body(...),
     user=Depends(current_user),
 ):
-    """Correct one warehouse to a target physical qty through an R2 MANUAL_ADJUSTMENT."""
+    """Correct one warehouse to a target physical qty (R2 txn or standalone CAS)."""
     from services.branch_access import authorize_stock_location
-    from services.r2_go_live import require_r2_authority_active
-    await require_r2_authority_active(db)
+    from services.r2_go_live import is_r2_authority_active, require_r2_authority_active
+    from services.warehouse_stock_standalone import (
+        adjust_to_target_standalone,
+        is_warehouse_stock_standalone_active,
+        require_warehouse_stock_standalone,
+    )
     from services.product_stock_state import require_physical_stock_correction_access
 
     if not _adjustment_allowed(user):
@@ -13964,7 +13982,12 @@ async def master_item_physical_adjustment_post(
     actor_id = str((user or {}).get("id") or (user or {}).get("user_id") or "").strip()
     if not actor_id:
         raise HTTPException(401, "Aktor tidak dikenal")
+    use_standalone = (not await is_r2_authority_active(db)) and await is_warehouse_stock_standalone_active(db)
     try:
+        if use_standalone:
+            await require_warehouse_stock_standalone(db)
+            return await adjust_to_target_standalone(db, item_id, body, actor_id=actor_id)
+        await require_r2_authority_active(db)
         return await adjust_physical_stock_to_target(db, item_id, body, actor_id=actor_id)
     except PhysicalStockValidationError as exc:
         raise HTTPException(400, str(exc)) from exc
